@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import time
+import traceback
 
 os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
 # A core that never finishes makes the host's wait throw (naming the cores) in time.
@@ -409,53 +410,18 @@ def main():
 def run(device, args):
     n = args.records
     runtime = x280mod.Runtime(device, pll_mhz=args.pll)
-    plan = runtime.plan(IMAGE, args.depth, 0)
-    gx, gy = plan.grid_x, plan.grid_y
-    assert gx * gy == N_CORES, (gx, gy)
-    mhz = plan.aiclk_mhz()
-    log(f"plan: grid {gx}x{gy} panels {plan.panels} depth {plan.depth} aiclk {mhz}")
-
-    def zeros(rows):
-        return ttnn.from_torch(
-            torch.zeros(rows, WORDS, dtype=torch.int32),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-        )
-
-    rec_cnt, lane_cnt = zeros(N_CORES), zeros(N_CORES)
-    wait_cycles = int(args.wait_ms * 1e3 * mhz)
-    assert wait_cycles < 1 << 32
-
-    # The X280 starts first: it picks the tag the kernel args carry.
-    session = plan.start(n)
-    roles = lane_roles(plan, args)
-    prog = program(
-        plan,
-        rec_cnt.buffer_address(),
-        lane_cnt.buffer_address(),
-        args,
-        roles,
-        wait_cycles,
-    )
-    finished = False
-    log(f"launch: {len(roles)} lane cores")
-    t0 = time.perf_counter()
     try:
-        ttnn.generic_op([rec_cnt, lane_cnt], prog)
-        log("program enqueued")
-        ticks = plan.finish(session, args.timeout)
-        finished = True
+        ticks, wall, rec_cnt, lane_cnt, roles, gx, mhz = x280_phase(
+            device, args, runtime
+        )
+    except BaseException as e:  # the frames must not keep the runtime open
+        traceback.clear_frames(e.__traceback__)
+        raise
     finally:
-        if not finished:  # stop the X280 image before anything else
-            plan.finish(session, 5.0)
-    wall = time.perf_counter() - t0
-    log(f"x280 done: {ticks} ticks, host wall {wall:.2f}s")
-
-    # Close the X280 runtime before reading anything back.
-    del plan, runtime
-    gc.collect()
-    log("x280 runtime closed")
+        # Close the X280 runtime on every path, before anything is read back.
+        del runtime
+        gc.collect()
+        log("x280 runtime closed")
 
     rc = ttnn.to_torch(rec_cnt).long() & 0xFFFFFFFF
     lc = ttnn.to_torch(lane_cnt).long() & 0xFFFFFFFF
@@ -487,6 +453,54 @@ def run(device, args):
     )
     out["ok"] = bool(rec_ok and lane_ok)
     return out
+
+
+def x280_phase(device, args, runtime):
+    """Starts the X280 image and the kernels, waits; returns what run() reads."""
+    n = args.records
+    plan = runtime.plan(IMAGE, args.depth, 0)
+    gx, gy = plan.grid_x, plan.grid_y
+    assert gx * gy == N_CORES, (gx, gy)
+    mhz = plan.aiclk_mhz()
+    log(f"plan: grid {gx}x{gy} panels {plan.panels} depth {plan.depth} aiclk {mhz}")
+
+    def zeros(rows):
+        return ttnn.from_torch(
+            torch.zeros(rows, WORDS, dtype=torch.int32),
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=device,
+        )
+
+    rec_cnt, lane_cnt = zeros(N_CORES), zeros(N_CORES)
+    wait_cycles = int(args.wait_ms * 1e3 * mhz)
+    assert wait_cycles < 1 << 32
+
+    roles = lane_roles(plan, args)
+    # The X280 starts first: it picks the tag the kernel args carry.
+    session = plan.start(n)
+    finished = False
+    t0 = time.perf_counter()
+    try:  # from here an error stops the X280 image first
+        prog = program(
+            plan,
+            rec_cnt.buffer_address(),
+            lane_cnt.buffer_address(),
+            args,
+            roles,
+            wait_cycles,
+        )
+        log(f"launch: {len(roles)} lane cores")
+        ttnn.generic_op([rec_cnt, lane_cnt], prog)
+        log("program enqueued")
+        ticks = plan.finish(session, args.timeout)
+        finished = True
+    finally:
+        if not finished:  # stop the X280 image before anything else
+            plan.finish(session, 5.0)
+    wall = time.perf_counter() - t0
+    log(f"x280 done: {ticks} ticks, host wall {wall:.2f}s")
+    return ticks, wall, rec_cnt, lane_cnt, roles, gx, mhz
 
 
 if __name__ == "__main__":
