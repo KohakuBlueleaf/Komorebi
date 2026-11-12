@@ -32,6 +32,9 @@ place to ask a question and to be wrong.
   the destination, carrying the source line's bytes at the destination's offset, and is
   acknowledged as usual: silently wrong. Small writes go from a 16-byte slot to a
   16-byte slot.
+- [wall_clock](wall_clock/README.md): whether the Tensix wall clock is one count for
+  the whole chip. It is: every core within 90 cycles of core (0, 0), no measurable
+  drift, 1343 to 1347 MHz against host time with the driver reporting 1350.
 - [stream_checks](stream_checks/README.md): the reference streams of the micro-op
   simulator and a mutation run over its source. Every one of 104 mutants changes some
   saved answer.

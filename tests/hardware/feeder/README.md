@@ -50,8 +50,9 @@ refused records or last seen and reported sequence numbers differ from what the 
 of the issued and acknowledged records give.
 
 Times in the summary and the trace are Tensix wall-clock cycles compared across cores
-and converted with the AICLK the driver reports. Measured with `tests/hardware/clock/`
-(one Blackhole p150a, core (0, 0) against six cores from the corners to the centre):
-the clock is one chip-wide count, every core within 90 cycles (67 ns) of the first,
-with no measurable drift over 2 s (under 0.01 ppm); against host time it runs at
-1343 to 1347 MHz with the driver reporting 1350 (within the host timing's error).
+and converted with the AICLK the driver reports. Measured with
+`experiments/wall_clock/` (one Blackhole p150a, core (0, 0) against six cores from the
+corners to the centre): the clock is one chip-wide count, every core within 90 cycles
+(67 ns) of the first, with no measurable drift over 2 s (under 0.01 ppm); against host
+time it runs at 1343 to 1347 MHz with the driver reporting 1350 (within the host
+timing's error).

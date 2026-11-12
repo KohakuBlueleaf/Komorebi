@@ -13,7 +13,7 @@ import numpy as np
 import ttnn
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "feeder"))
+sys.path.insert(0, str(HERE.parents[1] / "tests" / "hardware" / "feeder"))
 
 import fed  # noqa: E402
 import records as rec  # noqa: E402
