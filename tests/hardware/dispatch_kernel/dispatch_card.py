@@ -24,6 +24,7 @@ import torch  # noqa: E402
 import ttnn  # noqa: E402
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
+INCLUDE = os.path.join(HERE, "..", "..", "..", "src", "komorebi_native", "include")
 IMAGE = os.path.join(BUILD, "km-dispatch.bin")
 VERIFY_IMAGE = os.path.join(BUILD, "km-dispatch-verify.bin")
 MEMCOST = os.path.join(BUILD, "km-memcost.bin")
@@ -208,6 +209,7 @@ def program(plan, table, out, limit_s, defines):
         config=ttnn.DataMovementConfigDescriptor(
             processor=ttnn.DataMovementProcessor.RISCV_0, noc=ttnn.NOC.RISCV_0_default
         ),
+        compiler_include_paths=[os.path.abspath(INCLUDE)],
     )
     return ttnn.ProgramDescriptor(
         kernels=[kernel],

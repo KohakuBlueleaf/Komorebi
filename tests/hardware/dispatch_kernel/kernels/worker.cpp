@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "../../../../src/komorebi_native/include/komorebi/abi/km_abi.h"
 #include "dk_test.h"
+#include "komorebi/abi/km_abi.h"
 
 #ifdef DK_COMPILE_ERROR
 #error "DK_COMPILE_ERROR: the compile-error test of the harness"
