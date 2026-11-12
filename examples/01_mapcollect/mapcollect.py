@@ -43,7 +43,6 @@ def parse():
     p.add_argument("--stall-member", type=int, default=0)
     p.add_argument("--deadline", type=float, default=1.0, help="per record, seconds")
     p.add_argument("--trace", action="store_true")
-    p.add_argument("--rows", action="store_true", help="complete through row leaders")
     p.add_argument("--batch", type=int, default=64, help="commands per host store")
     p.add_argument("--settle-us", type=float, default=1.0, help="pause after a fence")
     p.add_argument("--no-check", action="store_true", help="skip reading outputs")
@@ -159,7 +158,6 @@ def run(session, args, rng):
             "writer": ttnn.TensorAccessorArgs(outs[0]).get_compile_time_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
-        defines={"KM_ROW_LEADERS": grid.x} if args.rows else {},
         depth=args.depth,
         segments=KERNELS / "mapcollect.h",
     )
@@ -202,7 +200,6 @@ def run(session, args, rng):
         "depth": args.depth,
         "count": args.count if args.teams in ("fixed", "rotate") else None,
         "tiles": tiles,
-        "completion": "row leaders" if args.rows else "first member",
         "kernel": {
             k: result[k] for k in ("error_name", "records", "events", "max_busy")
         },

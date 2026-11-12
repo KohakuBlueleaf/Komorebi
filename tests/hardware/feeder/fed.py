@@ -159,6 +159,7 @@ class Fed:
             "ready_base": ctl_addr + K["KM_CTL_BOOT"],
             "tag": tag,
             "depth": depth,
+            "row": self.grid[0],
             "wait_limit": rec.limit_units(wait_s, mhz),
             "idle_limit": rec.limit_units(idle_s, mhz),
             "trace": trace_t.buffer_address() if trace_t is not None else 0,

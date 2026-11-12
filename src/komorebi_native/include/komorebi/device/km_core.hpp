@@ -74,6 +74,7 @@ namespace km {
         uint32_t ready_base;  // the dispatcher's READY words (not the ack words)
         uint32_t tag;         // per-process random tag, 16 bits
         uint32_t depth;       // ring slots scanned, 1 to KM_RING_SLOTS
+        uint32_t row;         // cores per grid row (completion); 0: one level always
         uint32_t wait_limit;  // bound of a wait for another core, 1024-cycle units
         uint32_t idle_limit;  // bound of a wait for the next record, same units
         uint32_t trace;       // DRAM address of the trace, a page per core; 0: none

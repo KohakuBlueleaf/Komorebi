@@ -46,9 +46,6 @@ def parse():
     p.add_argument("--stall-member", type=int, default=0)
     p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
     p.add_argument("--trace", action="store_true")
-    p.add_argument(
-        "--rows", action="store_true", help="complete through row leaders (two levels)"
-    )
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--dump", type=Path, help="save records, trace and state (npz)")
     return p.parse_args()
@@ -234,7 +231,6 @@ def run(device, args, rng):
         compute_config=ttnn.ComputeConfigDescriptor(
             math_fidelity=ttnn.MathFidelity.HiFi4, fp32_dest_acc_en=True
         ),
-        defines=[("KM_ROW_LEADERS", str(runner.grid[0]))] if args.rows else [],
         cbs=[
             (SEGMENTS["kCbIn"], ttnn.bfloat16, 2048, SEGMENTS["kInPages"]),
             (SEGMENTS["kCbOut"], ttnn.bfloat16, 2048, 2),
@@ -270,7 +266,6 @@ def run(device, args, rng):
         "count": args.count if args.teams == "fixed" else None,
         "tiles": tiles,
         "depth": args.depth,
-        "completion": "row leaders" if args.rows else "first member",
         "aiclk_mhz": res.mhz,
         "feeder": s,
         "us_per_record": round(s["span_cycles"] / res.mhz / max(s["done"], 1), 3),

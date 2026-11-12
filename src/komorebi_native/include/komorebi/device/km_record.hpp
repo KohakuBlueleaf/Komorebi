@@ -64,30 +64,28 @@ namespace km {
     }
 
     // Where core `me` reports record r (`parent`; me == first: the dispatcher) and how
-    // many reports it waits for first (`want`). One level: every member to the first
-    // member.
+    // many reports it waits for first (`want`). A team inside one grid row of `row`
+    // cores (or row == 0): one level, every member to the first member. A team that
+    // spans rows: two levels, members to the first team member of their row, row
+    // leaders to the first member.
     struct Report {
         uint32_t parent;
         uint32_t want;
     };
 
-    inline Report report_to(const km_record_t& r, uint32_t me) {
-        const uint32_t f = first(r), n = count(r);
-#if defined(KM_ROW_LEADERS)
-        // Two levels (KM_ROW_LEADERS = cores per grid row): members report to the first
-        // team member of their row, row leaders to the first member.
-        const uint32_t w = KM_ROW_LEADERS;
-        const uint32_t row0 = (me / w) * w, end = f + n;
+    inline Report report_to(const km_record_t& r, uint32_t me, uint32_t row) {
+        const uint32_t f = first(r), n = count(r), end = f + n;
+        if (row == 0 || f / row == (end - 1) / row) {
+            return {f, me == f ? n - 1 : 0};
+        }
+        const uint32_t row0 = me / row * row;
         const uint32_t lead = row0 > f ? row0 : f;
         if (me != lead) {
             return {lead, 0};
         }
-        const uint32_t row_end = row0 + w < end ? row0 + w : end;
-        const uint32_t rows = me == f ? (end - 1) / w - f / w : 0;
+        const uint32_t row_end = row0 + row < end ? row0 + row : end;
+        const uint32_t rows = me == f ? (end - 1) / row - f / row : 0;
         return {f, row_end - lead - 1 + rows};
-#else
-        return {f, me == f ? n - 1 : 0};
-#endif
     }
 
     // Copies a record word by word (from a ring slot or into the job copy).

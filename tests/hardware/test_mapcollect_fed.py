@@ -44,10 +44,10 @@ def test_random_teams_with_four_in_flight():
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
 
 
-@pytest.mark.parametrize("count", [60, 119])
-def test_row_leader_completion(count):
-    out = run("--jobs", 20, "--count", count, "--rows", "--out-tensors", 2)
-    assert out["completion"] == "row leaders" and out["feeder"]["exit_acked"]
+@pytest.mark.parametrize("first, count", [(6, 13), (11, 14), (0, 60)])
+def test_teams_across_rows_complete_through_row_leaders(first, count):
+    out = run("--jobs", 20, "--first", first, "--count", count, "--out-tensors", 2)
+    assert out["feeder"]["status"] == "done" and out["feeder"]["exit_acked"]
     assert out["jobs_checked"] == 20 and out["jobs_bad"] == 0
 
 
@@ -64,3 +64,30 @@ def test_a_stalled_member_ends_in_the_feeder_timeout():
     assert 6 in out["not_reported"] and every_kernel_returned(out)
     stalled = [n for n in out["named"] if n.get("reader", {}).get("where") == "stall"]
     assert [(n["core"], n["reader"]["seq"]) for n in stalled] == [(6, seq)]
+
+
+def waiting(out, where):
+    """Cores named by their state words as waiting in `where`, with the sequence."""
+    return sorted(
+        (n["core"], n[k]["seq"])
+        for n in out["named"]
+        for k in ("reader", "writer")
+        if n.get(k, {}).get("where") == where
+    )
+
+
+# Team of cores 4 to 23 on a grid 12 wide: row leaders 4 (the first member) and 12.
+@pytest.mark.parametrize(
+    "member, stalled, complete",
+    [(8, 12, [4]), (10, 14, [4, 12])],
+    ids=["row-leader", "member"],
+)
+def test_a_stalled_member_across_rows_is_named(member, stalled, complete):
+    stall = ["--stall", 3, "--stall-member", member, "--deadline", 0.02]
+    out = run("--jobs", 10, "--count", 20, "--first", 4, *stall)
+    seq = out["feeder"]["seq"]
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == seq
+    assert every_kernel_returned(out)
+    assert waiting(out, "stall") == [(stalled, seq)]
+    assert waiting(out, "complete") == [(c, seq) for c in complete]
+    assert sorted(out["not_reported"]) == sorted([stalled, *complete])

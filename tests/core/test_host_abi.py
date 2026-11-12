@@ -18,9 +18,9 @@ def test_record_and_event_fields_follow_the_abi_header():
 
 def test_start_up_arguments_are_in_header_order():
     assert H.arg_fields[:6] == ["ctl", "me", "cores", "disp_xy", "ack_base", "mailbox"]
-    assert len(H.arg_fields) == H["kArgs"] == 17
+    assert len(H.arg_fields) == H["kArgs"] == 18 and "row" in H.arg_fields
     values = {name: i for i, name in enumerate(H.arg_fields)}
-    assert abi.start_args(values) == list(range(17))
+    assert abi.start_args(values) == list(range(18))
     with pytest.raises(ValueError, match="missing"):
         abi.start_args({"ctl": 1})
     with pytest.raises(ValueError, match="unknown"):

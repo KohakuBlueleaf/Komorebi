@@ -85,8 +85,9 @@ dispatch kernel uses (default 4). Outputs go to a ring of `--out-tensors` tensor
 reading back runs at about 1 MB/s in slow dispatch. `--trace` adds the per-record
 phases (microseconds after the first member took the record: last member took it,
 last outputs written, leader pushed the completion) and counts consecutive jobs on
-disjoint teams that were in flight at once. `--rows` builds the kernels with
-completion through row leaders.
+disjoint teams that were in flight at once. A team inside one grid row completes in
+one level (every member reports to the first member); a team that spans rows completes
+through row leaders (the runtime chooses per record).
 
 The JSON line reports microseconds per job by the dispatch kernel's clock and by the
 host's, the issue-to-completion latency, the Python time per record in `issue` and in

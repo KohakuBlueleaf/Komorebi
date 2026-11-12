@@ -15,7 +15,7 @@ namespace km {
         const Args& a = c.args();
         const uint32_t j = slot(r);
         const uint32_t counter = KM_CTL_DONE + j * 16;
-        const Report to = report_to(r, a.me);
+        const Report to = report_to(r, a.me, a.row);
         if (to.want != 0) {
             volatile tt_l1_ptr uint32_t* done = c.ctl(counter);
             const uint32_t code = c.poll(

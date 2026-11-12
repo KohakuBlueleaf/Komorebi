@@ -52,9 +52,9 @@ def test_constants_come_from_the_headers():
 
 def test_start_up_arguments_are_in_header_order():
     assert rec.ARG_FIELDS[:3] == ["ctl", "me", "cores"]
-    assert len(rec.ARG_FIELDS) == 17 and "ready_base" in rec.ARG_FIELDS
+    assert len(rec.ARG_FIELDS) == 18 and {"ready_base", "row"} <= set(rec.ARG_FIELDS)
     values = {name: i for i, name in enumerate(rec.ARG_FIELDS)}
-    assert rec.start_args(values) == list(range(17))
+    assert rec.start_args(values) == list(range(18))
     with pytest.raises(ValueError, match="missing"):
         rec.start_args({"ctl": 1})
 
@@ -205,32 +205,54 @@ def test_record_header_logic_on_the_host(tmp_path):
 
 REPORT_CHECK = r"""
 #include <cstdio>
+#include <cstdlib>
 #include "komorebi/device/km_record.hpp"
 
-int main() {
-    const unsigned teams[][2] = {{0, 1}, {0, 8}, {5, 30}, {0, 60}, {0, 119}, {11, 2},
-                                 {23, 1}, {7, 112}};
-    for (const auto& t : teams) {
+int main(int argc, char** argv) {
+    const unsigned row = static_cast<unsigned>(std::atoi(argv[1]));
+    for (int k = 2; k + 1 < argc; k += 2) {
+        const unsigned f = std::atoi(argv[k]), n = std::atoi(argv[k + 1]);
         km_record_t r = {};
-        r.team = km::make_team(t[0], t[1]);
-        for (unsigned me = t[0]; me < t[0] + t[1]; me++) {
-            const km::Report to = km::report_to(r, me);
-            std::printf("%u %u %u %u %u\n", t[0], t[1], me, to.parent, to.want);
+        r.team = km::make_team(f, n);
+        for (unsigned me = f; me < f + n; me++) {
+            const km::Report to = km::report_to(r, me, row);
+            std::printf("%u %u %u %u %u\n", f, n, me, to.parent, to.want);
         }
     }
     return 0;
 }
 """
 
+# Teams (first, count) on a grid 12 cores wide: of 1; inside one row; exactly one row;
+# starting or ending mid-row; a row with a single member at either end; the whole grid.
+TEAMS = [
+    (0, 1),
+    (23, 1),
+    (118, 1),
+    (0, 8),
+    (3, 6),
+    (0, 12),
+    (12, 12),
+    (11, 2),
+    (6, 13),
+    (5, 30),
+    (11, 14),
+    (24, 25),
+    (0, 60),
+    (7, 112),
+    (0, 119),
+]
 
-def report_tree(tmp_path, *defines):
+
+def report_tree(tmp_path, row, teams):
     """{(first, count): {me: (parent, want)}} from the header, compiled on the host."""
     src = tmp_path / "report.cpp"
     src.write_text(REPORT_CHECK)
     exe = tmp_path / "report"
-    cmd = ["c++", "-std=c++17", "-Wall", "-Werror", *defines, "-I", str(rec.INCLUDE)]
+    cmd = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
     subprocess.run([*cmd, str(src), "-o", str(exe)], check=True)
-    out = subprocess.run([str(exe)], capture_output=True, text=True, check=True)
+    argv = [str(exe), str(row), *(str(v) for t in teams for v in t)]
+    out = subprocess.run(argv, capture_output=True, text=True, check=True)
     trees = {}
     for line in out.stdout.splitlines():
         f, n, me, parent, want = map(int, line.split())
@@ -239,22 +261,41 @@ def report_tree(tmp_path, *defines):
 
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
-@pytest.mark.parametrize("row", [None, 12])
+@pytest.mark.parametrize("row", [0, 12, 10])
 def test_reports_form_a_tree_rooted_at_the_first_member(tmp_path, row):
-    trees = report_tree(tmp_path, *([f"-DKM_ROW_LEADERS={row}"] if row else []))
-    assert len(trees) == 8
+    trees = report_tree(tmp_path, row, TEAMS)
+    assert sorted(trees) == sorted(TEAMS)
     for (f, n), tree in trees.items():
+        assert sorted(tree) == list(range(f, f + n))
         children = {me: 0 for me in tree}
         for me, (parent, _) in tree.items():
             if me != f:
                 assert parent in tree and parent < me
                 children[parent] += 1
         assert all(tree[me][1] == children[me] for me in tree), (f, n)
+        one_row = row == 0 or f // row == (f + n - 1) // row
         for me, (parent, _) in tree.items():
             if me == f:
                 continue
-            if row is None:
-                assert parent == f
+            if one_row:  # one level
+                assert parent == f, (f, n, me)
             else:  # a member reports in its own row; a row leader to the first member
                 lead = max(f, me // row * row)
-                assert parent == (lead if me != lead else f)
+                assert parent == (lead if me != lead else f), (f, n, me)
+                assert tree[parent][0] == f or parent == f  # two levels at most
+        if n == 1:
+            assert tree == {f: (f, 0)}
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
+def test_row_leaders_only_for_teams_that_span_rows(tmp_path):
+    trees = report_tree(tmp_path, 12, TEAMS)
+    assert trees[(12, 12)][12] == (12, 11)  # exactly one row: one level
+    assert trees[(3, 6)][3] == (3, 5)
+    assert trees[(11, 2)][12] == (11, 0)  # a row of one member: its row leader
+    assert trees[(11, 2)][11] == (11, 1)
+    assert trees[(11, 14)][11] == (11, 2)  # rows of 1, 12, 1: two row leaders report
+    assert trees[(11, 14)][12] == (11, 11) and trees[(11, 14)][24] == (11, 0)
+    assert trees[(0, 119)][0] == (0, 11 + 9)  # its own row, then nine row leaders
+    assert all(trees[(0, 119)][c] == (0, 11) for c in range(12, 108, 12))
+    assert trees[(0, 119)][108] == (0, 10)
