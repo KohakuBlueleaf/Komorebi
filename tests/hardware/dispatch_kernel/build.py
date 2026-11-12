@@ -1,5 +1,5 @@
-"""Builds the kernel images (also the KMD_VERIFY_LINES one and the measuring image) and
-the host module against a tt-metal tree (--tree, default TT_METAL_HOME):
+"""Builds the kernel images (also the KMD_VERIFY_LINES one), the measuring image of
+experiments/dispatch_kernel and the host module against a tt-metal tree (--tree):
 
     python build.py [--tree TT_METAL_TREE] [--out DIR] [--image-only] [--define N=V]
 """
@@ -43,7 +43,8 @@ def main():
     build.build_image(
         args.tree, args.out / VERIFY, sources, includes=INCLUDES, defines=defines
     )
-    build.build_image(args.tree, args.out / MEMCOST, [HERE / "x280" / "memcost.c"])
+    memcost = ROOT / "experiments" / "dispatch_kernel" / "memcost.c"
+    build.build_image(args.tree, args.out / MEMCOST, [memcost])
     if not args.image_only:
         module = args.out / MODULE
         build.build_cxx(

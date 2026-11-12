@@ -1,12 +1,11 @@
 """Dispatch kernel tests on a card: the kernel on X280 cluster 0, fed from the host,
-the stand-in worker (kernels/worker.cpp) on every Tensix core. One case per run, one
-JSON line at the end: python dispatch_card.py <case> [options] (see README.md).
+the stand-in worker (kernels/worker.cpp) on every Tensix core. One case per run (or
+the regression set), one JSON line at the end: python dispatch_card.py <case> [options].
 """
 
 import argparse
 import contextlib
 import gc
-import itertools
 import json
 import os
 import sys
@@ -32,22 +31,6 @@ KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
 INCLUDE = os.path.join(HERE, "..", "..", "..", "src", "komorebi_native", "include")
 IMAGE = os.path.join(BUILD, "km-dispatch.bin")
 VERIFY_IMAGE = os.path.join(BUILD, "km-dispatch-verify.bin")
-MEMCOST = os.path.join(BUILD, "km-memcost.bin")
-MEMCOST_TESTS = [
-    "loop",
-    "stack_load",
-    "stack_store",
-    "stack_chain",
-    "ddr_load",
-    "ddr_store",
-    "ddr_chain",
-    "lim_poll",
-    "fence_ir",
-    "fence_ow",
-    "mtime",
-    "store_fence",
-    "ddr_fence_ir",
-]
 IPI_ACK_DDR = 0x470020  # the runtime's IPI ack in the cluster's DRAM bank
 STATE_BYTES = 8192  # KMD_STATE_BYTES: the kernel's state in its DRAM bank
 # The longest host wait without a log line; run.sh keeps the watcher's stall above it.
@@ -135,7 +118,6 @@ WHERE = {
 GAVE = {0: "none", 1: "stop", 2: "limit", 3: "noc", 4: "align"}
 
 M32 = 0xFFFFFFFF
-TARGETS = {"lim": 0, "l1": 1}
 
 
 def log(msg):
@@ -438,17 +420,6 @@ def check_events(events, reqs, first, kinds=(EV_DONE,)):
 # Cases
 
 
-def case_limit(device, args):
-    runtime = dk.Runtime(device, pll_mhz=args.pll)
-    try:
-        out = dict(runtime.image_limit())
-    finally:
-        del runtime
-        gc.collect()
-    out["image_bytes"] = os.path.getsize(args.image)
-    return out
-
-
 def case_ping(device, args, issue_one=False):
     n_cores = 0
 
@@ -614,138 +585,6 @@ def case_stall(device, args, leader=False):
         and [c["core"] for c in out["not_reported"]] == [stalled]
     )
     return out
-
-
-def case_bench(device, args):
-    """args.n NOP records at depth args.depth to teams of args.team cores (0 = all),
-    random first core, then EXIT; microseconds per command. --preload stores every
-    command before the kernel starts (kernel only); else the host feeds in batches."""
-    rng = np.random.default_rng(args.seed)
-    n_cores, sent, recs = 0, [], []
-
-    def commands(plan):
-        nonlocal n_cores
-        n_cores = plan.grid_x * plan.grid_y
-        team = args.team or n_cores
-        firsts = rng.integers(0, n_cores - team + 1, size=args.n)
-        r = np.zeros((args.n + 1, 16), dtype=np.uint32)
-        r[:, 1] = SEG_NOP
-        r[:-1, 2] = firsts.astype(np.uint32) | (team << 16)
-        r[:, 3] = np.arange(1, args.n + 2, dtype=np.uint32)
-        r[-1] = record(SEG_EXIT, 0, n_cores)
-        recs.append(r)
-        sent.extend(zip(firsts.tolist(), [team] * args.n, r[:-1, 3].tolist()))
-        if args.preload:
-            for rec in r.tolist():
-                plan.submit(rec)
-
-    def body(plan):
-        if args.preload:
-            events, times = plan.take(args.n + 1, HOST_WAIT_S), {}
-        else:
-            events, times = plan.stream(
-                recs[0], HOST_WAIT_S, args.batch, args.settle_us
-            )
-        plan.submit(command(SEG_STOP))
-        out = {"tag": plan.tag, "times": times}
-        out["check"] = check_events(events, list(range(1, args.n + 2)), 1)
-        ticks = np.array([e[3] for e in events[:-1]], dtype=np.float64)
-        out["latency_us"] = {
-            "mean": round(float(ticks.mean()) / 50, 3),
-            "p50": round(float(np.median(ticks)) / 50, 3),
-            "max": round(float(ticks.max()) / 50, 3),
-        }
-        return out
-
-    if args.preload and args.n + 1 > args.host_depth:
-        raise SystemExit("--preload needs n + 1 <= host depth")
-    out, fin, cnt = with_kernel(device, args, body, depth=args.depth, preload=commands)
-    blk = fin["block"]
-    n = args.n
-    t = out["times"]
-    out["finish"] = fin
-    out["cores"] = core_report(cnt, n_cores, out["tag"])
-    out["team_mismatch"], out["first_mismatch"] = check_teams(cnt, n_cores, sent)
-    # The kernel's span runs from the first command taken to the EXIT's event, over
-    # n + 1 commands; the host's from the first store to the last event read.
-    out["us_per_command_kernel"] = round(blk["last"] / dk.MTIME_HZ * 1e6 / (n + 1), 4)
-    if t:
-        out["us_per_command_host"] = round(t["total_s"] * 1e6 / (n + 1), 4)
-        out["us_store_per_command"] = round(t["store_s"] * 1e6 / (n + 1), 4)
-    out["idle_pass_share"] = round(blk["idle_passes"] / max(blk["passes"], 1), 4)
-    out["full_pass_share"] = round(blk["full_passes"] / max(blk["passes"], 1), 4)
-    out["no_room"] = blk["no_room"]
-    out["ok"] = bool(
-        fin["result_ready"]
-        and blk["error"] == 0
-        and all(out["check"].values())
-        and out["team_mismatch"] == 0
-        and out["cores"]["cores_finished"] == n_cores
-    )
-    return out
-
-
-def percentiles(us):
-    return {
-        str(q): round(float(np.percentile(us, q)), 3)
-        for q in (0, 1, 10, 25, 50, 75, 90, 99, 100)
-    }
-
-
-def case_store(device, args):
-    """Host store cost, no kernel running: --n bursts of --lines 64-byte stores and a
-    fence, per idle gap (--gaps-us), keep-busy period (--busy-us, 0 = none), burst
-    positions (--spread), a read before each burst (--read); LIM or a Tensix L1."""
-    runtime = dk.Runtime(device, pll_mhz=args.pll)
-    plan = runtime.plan()
-    configs = []
-    try:
-        grid = itertools.product(args.busy_us, args.spread, args.lines, args.gaps_us)
-        for busy, spread, lines, gap in grid:
-            target = TARGETS[args.target]
-            log(f"store: busy {busy} lines {lines} gap {gap}")
-            t = np.array(
-                plan.store_probe(args.n, lines, spread, gap, busy, args.read, target)
-            ).reshape(-1, 2)
-            us = t.sum(axis=1) * 1e6
-            log(f"store: busy {busy} lines {lines} gap {gap}: p50 {np.median(us):.2f}")
-            configs.append(
-                {
-                    "busy_us": busy,
-                    "lines": lines,
-                    "spread": spread,
-                    "gap_us": gap,
-                    "pct_us": percentiles(us),
-                    "store_pct_us": percentiles(t[:, 0] * 1e6),
-                    "fence_pct_us": percentiles(t[:, 1] * 1e6),
-                    "over_5us": round(float((us > 5).mean()), 4),
-                    "raw_store_fence_us": np.round(t * 1e6, 2).tolist(),
-                }
-            )
-    finally:
-        del plan, runtime
-        gc.collect()
-    return {"target": args.target, "read": args.read, "configs": configs, "ok": True}
-
-
-def case_memcost(device, args):
-    """x280/memcost.c: picoseconds per load, store and fence in the stack (LIM),
-    cached DRAM (a buffer of ours in every bank) and registers; no grid."""
-    ddr = dram_area(device)
-    runtime = dk.Runtime(device, pll_mhz=args.pll)
-    plan = runtime.plan()
-    try:
-        log("running the memory cost image")
-        fin = plan.run_image(MEMCOST, [ddr], 10.0)
-        log(f"memory cost image finished: result {fin['result']}")
-    finally:
-        if plan.running():
-            plan.abort()
-        del plan, runtime
-        gc.collect()
-    words = fin.pop("words")
-    ps = dict(zip(MEMCOST_TESTS, words))
-    return {"ddr_offset": ddr, "finish": fin, "ps_per_op": ps, "ok": fin["result"] == 0}
 
 
 def case_compile_error(device, args):
@@ -1691,136 +1530,13 @@ def case_stream_deadline(device, args):
     return out
 
 
-def timed_stream(n, first, team, req):
-    """n records one at a time on cores [first, first + team) (DK_SEG_RESULT, key i),
-    timed by the stream itself: its end carries the ticks from the first ISSUE to the
-    last acknowledgement."""
-    s = ks.Stream(req=req)
-    i, t0, t1 = s.regs(3)
-    s.set(i, 0)
-    s.time(t0)
-    top = s.label()
-    s.issue(SEG_RESULT, (first, team), args=[i, 5], result=True)
-    s.wait(0)
-    s.addi(i, i, 1)
-    s.jlt(i, s.const(n), top)
-    s.time(t1)
-    s.sub(t1, t1, t0)
-    s.halt(t1)
-    return s
-
-
-def compute_stream(n, req):
-    """n rounds of ADDI and JLT, no record, timed by the stream (ticks in its end)."""
-    s = ks.Stream(max_steps=2 * n + 16, req=req)
-    i, t0, t1 = s.regs(3)
-    s.set(i, 0)
-    s.time(t0)
-    top = s.label()
-    s.addi(i, i, 1)
-    s.jlt(i, s.const(n), top)
-    s.time(t1)
-    s.sub(t1, t1, t0)
-    s.halt(t1)
-    return s
-
-
-def case_stream_bench(device, args):
-    """The kernel's pass with --streams busy streams (JMP loops): idle for --seconds
-    (--n 0), or --issuers streams each issuing --n records one at a time on its own
-    --team cores; then (--compute) a stream of 2 x --compute micro-ops alone. Pass
-    period from the result block, per record from the streams, reissue from the trace.
-    """
-    if args.image == IMAGE:
-        args.image = VERIFY_IMAGE
-    trace = {}
-
-    def body(plan):
-        base = stream_base(plan)
-        out = {"tag": plan.tag, "streams": args.streams}
-        plan.submit(command(SEG_PING))
-        for j in range(args.streams):
-            data = loop_stream(200 + j).encode()
-            put_upload(plan, base + 4096 * (j + 1), data)
-            plan.submit(run_command(base + 4096 * (j + 1), len(data)))
-        if args.n:
-            team = args.team or 1
-            for j in range(args.issuers):
-                data = timed_stream(args.n, j * team, team, 9 + j).encode()
-                put_upload(plan, base + 65536 * (j + 1), data)
-            t = time.perf_counter()
-            for j in range(args.issuers):
-                plan.submit(run_command(base + 65536 * (j + 1), len(data)))
-            log(f"{args.issuers} streams of {args.n} records started")
-            ev = stream_events(plan, range(9, 9 + args.issuers))
-            log("streams ended")
-            out["host_s"] = round(time.perf_counter() - t, 4)
-            ends = [e[3] for e in ev if kind(e[2])[0] == EV_STREAM_END]
-            out["us_per_record"] = [round(e / 50 / args.n, 4) for e in ends]
-            out["stream_events"] = [list(e) for e in ev]
-        else:
-            log(f"idle {min(args.seconds, HOST_WAIT_S)} s")
-            time.sleep(min(args.seconds, HOST_WAIT_S))
-            log("idle done")
-        for j in range(args.streams):
-            plan.submit(command(SEG_CANCEL, 200 + j))
-        if args.compute:
-            s = compute_stream(args.compute, 11)
-            data = s.encode()
-            put_upload(plan, base, data)
-            plan.submit(run_command(base, len(data)))
-            log("compute stream started")
-            ev = stream_events(plan, 11)
-            log("compute stream ended")
-            ends = [e[3] for e in ev if kind(e[2])[0] == EV_STREAM_END]
-            ops = 2 * args.compute
-            out["uops_per_s"] = round(ops * 50e6 / ends[0]) if ends else None
-            out["compute_events"] = [list(e) for e in ev]
-        out["exit"] = exit_and_stop(plan)
-        return out
-
-    def after(plan, fin):
-        trace["head"], trace["entries"] = read_trace(plan)
-
-    out, fin, cnt = with_kernel(device, args, body, depth=16, after=after)
-    out["finish"] = fin
-    n_cores = cnt.shape[0]
-    out["cores"] = core_report(cnt, n_cores, out["tag"])
-    blk = fin["block"]
-    out["pass_ns"] = round(blk["ticks"] * 20 / max(1, blk["passes"]), 2)
-    # Per issuing stream: its record's issue to the sweep that freed it, and that
-    # sweep to the stream's next issue (timer ticks of the trace, 50 per us).
-    freed, busy, reissue, latency = {}, {}, [], []
-    for k_, slot, req, _, _, t in trace["entries"]:
-        if not 9 <= req < 9 + args.issuers:
-            continue
-        if k_ == TRACE_ISSUE:
-            if req in freed:
-                reissue.append((t - freed.pop(req)) & M32)
-            busy[slot] = t
-        elif k_ == TRACE_FREE and slot in busy:
-            freed[req] = t
-            latency.append((t - busy.pop(slot)) & M32)
-    if reissue:
-        out["free_to_reissue_us"] = percentiles(np.array(reissue) / 50)
-        out["issue_to_free_us"] = percentiles(np.array(latency) / 50)
-    out["ok"] = bool(
-        finished_clean(fin, n_cores, out["cores"])
-        and (not args.n or len(out["us_per_record"]) == args.issuers)
-        and (not args.compute or out["uops_per_s"])
-    )
-    return out
-
-
 CASES = {
-    "limit": case_limit,
     "ping": case_ping,
     "issue": lambda device, args: case_ping(device, args, issue_one=True),
     "teams": case_teams,
     "disjoint": case_disjoint,
     "stall": case_stall,
     "stall-leader": lambda device, args: case_stall(device, args, leader=True),
-    "bench": case_bench,
     "compile-error": case_compile_error,
     "fill": case_fill,
     "exit-busy": case_exit_busy,
@@ -1832,18 +1548,48 @@ CASES = {
     "queue": case_queue,
     "streams": case_streams,
     "stream-deadline": case_stream_deadline,
-    "stream-bench": case_stream_bench,
     "verify": case_verify,
     "upload": case_upload,
     "result": case_result,
-    "store": case_store,
-    "memcost": case_memcost,
 }
 
+# The regression set: one behaviour per case on a small input, in one device open.
+FED = {"host_depth": 64, "batch": 64}
+SET = [
+    ("ping", {}),
+    ("teams", {"n": 200}),
+    ("disjoint", {"n": 8}),
+    ("stall", {}),
+    ("fill", {"n": 50}),
+    ("exit-busy", {}),
+    ("after-exit", {}),
+    ("malformed", {}),
+    ("stop-busy", {}),
+    ("excl", {}),
+    ("queue", {"n": 200, "delay_us": 20.0, **FED}),
+    ("verify", {"n": 2000, "settle_us": 1.0, **FED}),
+    ("result", {"n": 1000, **FED}),
+    ("upload", {}),
+    ("streams", {"n": 100}),
+    ("stream-deadline", {}),
+]
 
-def main():
+
+def case_set(device, args):
+    """Every case of SET in turn; a JSON line per case."""
+    oks = {}
+    for name, changes in SET:
+        log(f"case {name}")
+        out = CASES[name](device, argparse.Namespace(**{**vars(args), **changes}))
+        print(json.dumps({"case": name, **out}, default=str), flush=True)
+        oks[name] = bool(out.get("ok"))
+    return {"cases": oks, "ok": all(oks.values())}
+
+
+def parser(cases):
+    """The options of every case in `cases`."""
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("case", choices=sorted(CASES))
+    p.add_argument("case", choices=sorted(cases))
     p.add_argument("--n", type=int, default=1000)
     p.add_argument("--depth", type=int, default=16)
     p.add_argument("--team", type=int, default=0, help="team size, 0 = all cores")
@@ -1860,22 +1606,13 @@ def main():
     p.add_argument("--pll", type=int, default=1750)
     p.add_argument("--image-first", action="store_true")
     p.add_argument("--batch", type=int, default=1, help="commands per store batch")
-    p.add_argument("--settle-us", type=float, default=0.0, help="bench: fence to store")
-    p.add_argument(
-        "--preload", action="store_true", help="bench: store every command first"
-    )
-    p.add_argument("--gaps-us", type=float, nargs="+", default=[0.0], help="store")
-    p.add_argument("--busy-us", type=float, nargs="+", default=[0.0], help="store")
-    p.add_argument("--lines", type=int, nargs="+", default=[2], help="store")
-    p.add_argument("--spread", type=int, nargs="+", default=[1], help="store")
-    p.add_argument("--read", action="store_true", help="store: read before a burst")
-    p.add_argument("--target", choices=sorted(TARGETS), default="lim", help="store")
-    p.add_argument("--streams", type=int, default=0, help="stream-bench: loops")
-    p.add_argument("--seconds", type=float, default=1.0, help="stream-bench: idle")
-    p.add_argument("--compute", type=int, default=0, help="stream-bench: rounds")
-    p.add_argument("--issuers", type=int, default=1, help="stream-bench: streams")
+    p.add_argument("--settle-us", type=float, default=0.0, help="fence to next store")
     p.add_argument("--image", default=IMAGE, type=os.path.abspath, help="kernel image")
-    args = p.parse_args()
+    return p
+
+
+def main(cases, args):
+    """Opens the device, runs args.case of `cases`, prints its JSON line."""
     out = {"case": args.case, "argv": sys.argv[1:], "load_start": loadavg()}
     t_start = time.time()
     log("opening the device")
@@ -1883,7 +1620,7 @@ def main():
     device.disable_and_clear_program_cache()
     log(f"device open {time.time() - t_start:.1f}s")
     try:
-        out.update(CASES[args.case](device, args))
+        out.update(cases[args.case](device, args))
     finally:
         log("closing the device")
         ttnn.close_mesh_device(device)
@@ -1894,4 +1631,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    ALL = {**CASES, "set": case_set}
+    main(ALL, parser(ALL).parse_args())

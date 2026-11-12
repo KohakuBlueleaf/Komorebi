@@ -35,6 +35,10 @@ place to ask a question and to be wrong.
 - [stream_checks](stream_checks/README.md): the reference streams of the micro-op
   simulator and a mutation run over its source. Every one of 104 mutants changes some
   saved answer.
+- [dispatch_kernel](dispatch_kernel/README.md): what the dispatch kernel costs on the
+  card: microseconds per command, the host's stores into the card (a store right after
+  a fence stalls for about 12 microseconds), loads, stores and fences per X280 memory,
+  and the stream engine's share of the kernel's loop.
 - [runtime_harness](runtime_harness/README.md): the Tensix runtime's kernels as host
   threads on a simulated grid, with failure paths forced on purpose (stop words,
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven

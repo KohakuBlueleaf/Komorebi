@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # run.sh <tag> <dispatch_card.py args...>: one card job under a hang watcher, an external
 # tool of the machine these tests were written on (not part of this repository).
+#   SCRIPT        the driver (default dispatch_card.py beside this file)
 #   KMR_CARD_ENV  script to source for the tt-metal environment; it must set $PY
 #   HANGWATCH     the hang watcher (takes the card lock, kills on limit or stall)
 #   LOCK_DIR      directory of the lab's stop / reset lock files
@@ -38,7 +39,7 @@ echo "load $(cut -d' ' -f1-3 /proc/loadavg)"
 cd "$logs"
 python3 "$HANGWATCH" --tag "dk-$tag" --cards "${CARD:-1}" --limit "$limit" \
     --stall "$stall" --wait 600 --log "$logs/dk-$tag.log" -- \
-    "$PY" "$here/dispatch_card.py" "$@"
+    "$PY" "${SCRIPT:-$here/dispatch_card.py}" "$@"
 rc=$?
 echo "rc=$rc"
 grep -E '^\{|Traceback|Error|FATAL|kernel ' "$logs/dk-$tag.log" | tail -20
