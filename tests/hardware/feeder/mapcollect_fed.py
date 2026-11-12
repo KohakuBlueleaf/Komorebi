@@ -24,7 +24,7 @@ KERNELS = HERE.parents[2] / "examples" / "01_mapcollect" / "kernels"
 SEGMENTS = rec.constants(KERNELS / "mapcollect.h")
 SEG_MAP, SEG_STALL = SEGMENTS["kSegMap"], SEGMENTS["kSegStall"]
 SEG_ALIGN, SEG_LATE = SEGMENTS["kSegAlign"], SEGMENTS["kSegLate"]
-SEG_BAD_ITEM = SEGMENTS["kSegBadItem"]
+SEG_BAD_ITEM, SEG_RESULT = SEGMENTS["kSegBadItem"], SEGMENTS["kSegResult"]
 TILE = 32
 
 
@@ -55,6 +55,8 @@ def parse(argv=None):
     p.add_argument("--slow", type=int, default=-1, help="MAP job with slow compute")
     p.add_argument("--bad-item", type=int, default=-1, help="job index made a BAD_ITEM")
     p.add_argument("--bad-side", choices=["writer", "reader"], default="writer")
+    p.add_argument("--result", type=int, default=-1, help="job made a flagged RESULT")
+    p.add_argument("--result-value", type=int, default=0x5EED, help="its a0")
     p.add_argument("--slow-member", type=int, default=0)
     p.add_argument("--slow-cycles", type=int, default=0)
     p.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
@@ -309,6 +311,9 @@ def run(device, args, rng):
         elif j == args.bad_item:
             side = [0, int(args.bad_side == "reader")]
             records.append(rec.record(SEG_BAD_ITEM, first, count, side))
+        elif j == args.result:
+            value, flag = [args.result_value], K["KM_F_RESULT"]
+            records.append(rec.record(SEG_RESULT, first, count, value, flag))
         elif j == args.late:
             late = [args.late_member, args.late_cycles]
             records.append(rec.record(SEG_LATE, first, count, late))
@@ -384,6 +389,7 @@ def run(device, args, rng):
         "depth": args.depth,
         "excl": args.excl,
         "held": int(res.records["held"].sum()),
+        "result": int(res.records["result"][args.result]) if args.result >= 0 else None,
         "aiclk_mhz": res.mhz,
         "feeder": s,
         "us_per_record": round(s["span_cycles"] / res.mhz / max(s["done"], 1), 3),
@@ -484,7 +490,7 @@ def check(args, teams, base, outs, xs):
     jobs = [
         j
         for j in checked_jobs(teams, base, pages)
-        if j not in (args.stall, args.late, args.bad_item) and j < last
+        if j not in (args.stall, args.late, args.bad_item, args.result) and j < last
     ]
     bad, rel_max, exact_jobs = [], 0.0, 0
     for j in jobs:

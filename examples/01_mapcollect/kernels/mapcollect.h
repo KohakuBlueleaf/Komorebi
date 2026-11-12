@@ -16,6 +16,9 @@ constexpr uint32_t kSegLate = 4;
 // BAD_ITEM (a test): member a0 asks for an item past the buffer end; a1 = 0: writer,
 // 2 pages of kCbOut (after an odd number of pages); 1: reader, kInPages of kCbIn.
 constexpr uint32_t kSegBadItem = 5;
+// RESULT (a test): every member's writer gives a0 + its index as the result; with
+// KM_F_RESULT the record is acknowledged with the leader's, a0.
+constexpr uint32_t kSegResult = 6;
 
 constexpr uint32_t kCbIn = 0;
 constexpr uint32_t kCbOut = 16;

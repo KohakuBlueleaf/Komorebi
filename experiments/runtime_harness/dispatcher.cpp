@@ -138,6 +138,7 @@ namespace kmsim {
                 JobResult& r = sim.jobs[busy[j]];
                 if (disp_word(kDispAck + j * 16) == KM_ACK(r.seq)) {
                     r.acked = clock;
+                    r.result = disp_word(kDispAck + j * 16 + 4);
                     r.status = kDone;
                     if (jobs[busy[j]].map) {
                         r.data_bad = check_map(jobs[busy[j]], busy[j]);

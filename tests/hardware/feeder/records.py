@@ -150,12 +150,14 @@ def feeder_summary(rows):
 
 
 def feeder_records(rows):
-    """Per record (rows 1 to n): seq, slot, status, issue, issued, acked, busy, held."""
+    """Per record (rows 1 to n): seq, slot, status, issue, issued, acked, busy, held,
+    result."""
     r = as_uint32(rows)[1:]
     names = ("RecSeq", "RecSlot", "RecStatus", "RecIssue", "RecIssued", "RecAcked")
     out = {n[3:].lower(): r[:, K[f"kFr{n}"]].astype(np.int64) for n in names}
     out["busy"] = r[:, K["kFrRecBusy"]].astype(np.int64)
     out["held"] = r[:, K["kFrRecHeld"]].astype(np.int64)
+    out["result"] = r[:, K["kFrRecResult"]].astype(np.int64)
     return out
 
 

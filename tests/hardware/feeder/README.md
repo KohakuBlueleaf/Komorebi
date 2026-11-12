@@ -25,6 +25,8 @@ Longer runs are run by hand: `experiments/feeder_runs/`.
 - A record that is not acknowledged within the deadline (from its issue) stops the run:
   the feeder writes the stop word of every core and records the slot, sequence number
   and table index.
+- A record with `KM_F_RESULT` is acknowledged with `{ack, result}` in one 8-byte write;
+  the feeder keeps the result word in the record's row.
 
 ## mapcollect_fed.py
 
@@ -38,6 +40,7 @@ Longer runs are run by hand: `experiments/feeder_runs/`.
 | `--stall J --stall-member M` | Job J: member M waits for the stop word. |
 | `--late J --late-member M --late-cycles C` | Job J: member M reports C cycles late. |
 | `--bad-item J --bad-side writer\|reader` | Job J: member 0 asks for an item past the end of its buffer. |
+| `--result J --result-value V` | Job J is a RESULT record with `KM_F_RESULT`: the leader acknowledges it with the result word V, shown as `result`. |
 | `--slow J --slow-member M --slow-cycles C` | MAP job J: member M's compute holds its tile C cycles. |
 | `--exit-at J`, `--exit-team f:c` | Job J is an EXIT (with that team in the table). |
 | `--raw J`, `--raw-slot S` | Job J is issued as built: the header names slot S and the team is kept (tests of records that name the wrong slot, or an EXIT with a partial team). |

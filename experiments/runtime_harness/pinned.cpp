@@ -104,6 +104,36 @@ namespace scen {
             }
         }
 
+        // One slot, three records on cores 1 to 3: a flagged RESULT is acked with the
+        // leader's result, an unflagged one leaves word 1 alone, a flagged NOP sends 0.
+        void result_word_from_the_leader(Outcome& o) {
+            Config cfg = fault_config(4);
+            cfg.depth = 1;
+            Job res = nop_job(1, 3);
+            res.seg = kSegResult;
+            res.a[0] = 0x5EED;
+            res.flags = KM_F_RESULT;
+            Job plain = res;
+            plain.a[0] = 0x1234;
+            plain.flags = 0;
+            Job nop = nop_job(1, 3);
+            nop.flags = KM_F_RESULT;
+            cfg.jobs = {res, plain, nop};
+            Sim s(cfg);
+            s.run();
+            common(s, o.check);
+            o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+            const auto& j = s.jobs;
+            o.check.expect(
+                j[0].result == 0x5EED, fmt("result %x, not the leader's", j[0].result)
+            );
+            o.check.expect(
+                j[1].result == 0x5EED, "an unflagged ack left the result word"
+            );
+            o.check.expect(j[2].result == 0, "a result never given is acked as 0");
+            finish(s, o);
+        }
+
         // ---- the bounded buffer wrappers against an item past the end ----
 
         void item_feed() {  // one page for the compute input buffer
@@ -221,6 +251,7 @@ namespace scen {
             {"exit_partial_team", exit_partial_team},
             {"no_output_waits_for_compute", no_output_waits_for_compute},
             {"wall_clock_across_a_carry", wall_clock_across_a_carry},
+            {"result_word_from_the_leader", result_word_from_the_leader},
             {"wrappers_refuse_straddling_items", wrappers_refuse_straddling_items},
             {"excl_waits_for_overlapping_team", excl_waits_for_overlapping_team},
         };

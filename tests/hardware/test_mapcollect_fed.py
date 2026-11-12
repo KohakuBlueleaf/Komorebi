@@ -80,6 +80,13 @@ def test_records_past_the_trace_capacity_are_counted(run):
     assert every_kernel_returned(out) and ran_as_members(out)
 
 
+def test_a_flagged_record_is_acknowledged_with_the_leaders_result(run):
+    out = run("--jobs", 3, "--first", 4, "--count", 8, "--result", 1)
+    assert out["feeder"]["status"] == "done" and out["feeder"]["done"] == 3
+    assert out["result"] == 0x5EED  # the leader's: a0 plus index 0
+    assert every_kernel_returned(out) and ran_as_members(out)
+
+
 def test_a_stalled_member_is_named_after_the_feeder_timeout(run):
     # Team of cores 4 to 23 (row leaders 4 and 12); member 10 (core 14) stalls job 3.
     stall = ["--stall", 3, "--stall-member", 10, "--deadline", 0.02]

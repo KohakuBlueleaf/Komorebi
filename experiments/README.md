@@ -51,5 +51,5 @@ place to ask a question and to be wrong.
 - [runtime_harness](runtime_harness/README.md): the Tensix runtime's kernels as host
   threads on a simulated grid, with failure paths forced on purpose (stop words,
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
-  defects in the runtime and replays a card hang and two card findings; 26 scenarios,
+  defects in the runtime and replays a card hang and two card findings; 27 scenarios,
   run by hand.

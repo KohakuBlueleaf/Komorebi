@@ -24,6 +24,7 @@ namespace scen {
     constexpr uint32_t kSegMap = 1;  // the example's segments
     constexpr uint32_t kSegStall = 2;
     constexpr uint32_t kSegBadItem = 5;  // a0: the member; a1 = 0: writer, 1: reader
+    constexpr uint32_t kSegResult = 6;   // each member's result: a0 + its index
     constexpr uint32_t kSegNop = 9;      // unknown to the example: every body returns
     constexpr uint32_t kCbIn = 0;
 

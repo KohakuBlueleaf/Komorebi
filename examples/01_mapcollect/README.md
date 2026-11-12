@@ -14,6 +14,7 @@ has finished, the team's first member tells the dispatch kernel, which tells the
 | `LATE` (a test) | a0 member, a1 cycles | member a0 reports a1 cycles after it took the record; the others report at once |
 | `NOP` | none | reports |
 | `BAD_ITEM` (a test) | a0 member, a1 side (0 writer, 1 reader) | member a0 asks for an item that passes the end of its buffer and gives up with `bad_item`; the others report |
+| `RESULT` (a test) | a0 value | each member gives a0 plus its index as the result word; with `KM_F_RESULT` the record is acknowledged with the leader's, a0 |
 
 The host checks every member's tile against numpy: bit-exact on integer inputs (even
 jobs), and the relative RMS error of the total on uniform random inputs (odd jobs).

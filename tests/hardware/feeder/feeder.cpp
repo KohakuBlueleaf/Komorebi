@@ -90,6 +90,7 @@ void kernel_main() {
     int32_t busy[KM_RING_SLOTS];
     uint32_t busy_seq[KM_RING_SLOTS];
     uint32_t busy_team[KM_RING_SLOTS];
+    bool busy_result[KM_RING_SLOTS];
     uint64_t t_issue[KM_RING_SLOTS];
     for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
         busy[j] = -1;
@@ -142,6 +143,9 @@ void kernel_main() {
                 volatile tt_l1_ptr uint32_t* r = row(1 + busy[j]);
                 if (ack[j * 4] == KM_ACK(busy_seq[j])) {
                     r[kFrRecAcked] = static_cast<uint32_t>(now);
+                    if (busy_result[j]) {  // one 8-byte write with the ack word
+                        r[kFrRecResult] = ack[j * 4 + 1];
+                    }
                     r[kFrRecStatus] = kFsDone;
                     t_last = now;
                     busy[j] = -1;
@@ -198,6 +202,7 @@ void kernel_main() {
             busy[j] = static_cast<int32_t>(next);
             busy_seq[j] = seq;
             busy_team[j] = w[2];
+            busy_result[j] = (w[1] >> 8) & KM_F_RESULT;
             t_issue[j] = t0;
             in_flight++;
             max_busy = in_flight > max_busy ? in_flight : max_busy;

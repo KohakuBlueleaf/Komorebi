@@ -108,6 +108,7 @@ namespace kmsim {
         uint64_t acked = 0;
         uint32_t status = kNotIssued;
         uint32_t data_bad = 0;  // output elements that differ from the expectation
+        uint32_t result = 0;    // word 1 of its ack line when it was acknowledged
     };
 
     // A circular buffer of every core: id, offset in the L1 image, page size, pages.

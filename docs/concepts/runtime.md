@@ -45,6 +45,14 @@ addressed by multicast, each rectangle must be a physically contiguous, Tensix-o
 span in NoC0 coordinates, so a team is cut at panel boundaries. The layout module of
 the Python package computes these rectangles.
 
+A record with `KM_F_RESULT` carries one 32-bit result word back with its
+acknowledgement. The leader's writer gives it with `wr.result(value)` before the record
+completes, and the leader acknowledges with `{ack, result}` as one 8-byte write into
+the slot's acknowledgement line, so the result is there whenever the acknowledgement
+is. A member that is not the leader may call it too; its value is not sent. A flagged
+record whose leader never gave a result is acknowledged with 0, and a record without
+the flag is acknowledged with the ack word alone.
+
 ## Breakpoints
 
 A static breakpoint is known before the run: who sends, who receives and how many

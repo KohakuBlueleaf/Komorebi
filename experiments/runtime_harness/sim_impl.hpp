@@ -334,7 +334,7 @@ namespace kmsim {
                 };
                 return (
                     !q.atomic &&
-                    (in(kDispAck, KM_RING_SLOTS, 4) || in(kDispReady, 16, 4) ||
+                    (in(kDispAck, KM_RING_SLOTS, 8) || in(kDispReady, 16, 4) ||
                      (q.off == kDispMailbox && q.bytes <= 8))
                 );
             }

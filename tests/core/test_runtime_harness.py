@@ -43,6 +43,11 @@ def test_the_wall_clock_reads_across_a_carry_of_its_low_word(scenario):
     assert got["ok"], got
 
 
+def test_a_flagged_record_is_acked_with_the_leaders_result(scenario):
+    got = scenario("result_word_from_the_leader")
+    assert got["ok"], got
+
+
 def test_an_item_past_the_buffer_end_gives_up_with_its_word(scenario):
     got = scenario("wrappers_refuse_straddling_items")
     assert got["ok"], got

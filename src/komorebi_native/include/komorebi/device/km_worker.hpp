@@ -291,10 +291,11 @@ namespace km {
                     }
                     break;
                 }
+                result_ = 0;
                 const bool report = body(r);
                 noc_async_write_barrier();
                 trace_.stamp(r.seq, kTraceDone);
-                if (report && compute_done(r) && complete(*this, r)) {
+                if (report && compute_done(r) && complete(*this, r, result_)) {
                     trace_.stamp(r.seq, kTraceSent);
                 }
                 add_sat(state() + kStCompleted, 1);
@@ -302,6 +303,12 @@ namespace km {
             noc_async_write_barrier();  // the last acknowledgement has landed
             trace_.flush(a.me);
             put_byte(state(), kStEnds, kEndWriter, end);
+        }
+
+        // The record's result word, sent with the leader's ack when the record has
+        // KM_F_RESULT (0 if never called). Elsewhere it is not sent.
+        void result(uint32_t value) {
+            result_ = value;
         }
 
         // Bounded cb_wait_front of a contiguous item: the buffer, every push and every
@@ -347,6 +354,7 @@ namespace km {
         }
 
         Trace trace_;
+        uint32_t result_ = 0;
     };
 
 }  // namespace km

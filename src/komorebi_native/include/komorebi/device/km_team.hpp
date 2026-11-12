@@ -10,7 +10,7 @@ namespace km {
 
     // Writer, outputs landed: waits (bounded) for `want` reports in DONE[slot], clears
     // it, then increments the parent's DONE[slot] (NoC1) or, as first member, acks.
-    inline bool complete(const Core& c, const km_record_t& r) {
+    inline bool complete(const Core& c, const km_record_t& r, uint32_t result = 0) {
         const Args& a = c.args();
         if (!in_team(r, a.me)) {  // the reader never hands a non-member one
             return false;
@@ -41,8 +41,15 @@ namespace km {
             noc_semaphore_inc(c.core_noc(to.parent, a.ctl + counter), 1);
             noc_async_atomic_barrier();  // a write barrier does not cover atomics
         } else {
-            *out_slot(a.ctl, kOutAck) = KM_ACK(r.seq);
-            small_write<kOutAck, 4>(a.ctl, c.disp_noc(a.ack_base), j);
+            volatile tt_l1_ptr uint32_t* ack = out_slot(a.ctl, kOutAck);
+            ack[0] = KM_ACK(r.seq);
+            // KM_F_RESULT: {ack, result} as one 8-byte write.
+            if (flags(r) & KM_F_RESULT) {
+                ack[1] = result;
+                small_write<kOutAck, 8>(a.ctl, c.disp_noc(a.ack_base), j);
+            } else {
+                small_write<kOutAck, 4>(a.ctl, c.disp_noc(a.ack_base), j);
+            }
             noc_async_writes_flushed();
         }
         c.state()[kStReported + j] = r.seq;
