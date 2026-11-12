@@ -74,7 +74,8 @@ class Run:
             k.get("KM_EV_REFUSED", 3): "refused",
         }
         self._done = k["KM_EV_DONE"]
-        self._f_result = k["KM_F_RESULT"]
+        self._f_result, self._f_queue = k["KM_F_RESULT"], k["KM_F_QUEUE"]
+        self._f_excl = k["KM_F_EXCL"]
         self._refusals = {
             v: n[len("KMD_REFUSE_") :].lower()
             for n, v in k.items()
@@ -118,21 +119,29 @@ class Run:
 
     # Issuing --------------------------------------------------------------------
 
-    def issue(self, seg, team=None, args=(), exclusive=False, result=False):
+    def issue(
+        self, seg, team=None, args=(), exclusive=False, result=False, queued=False
+    ):
         """Queues a record for segment `seg` (name or number) on cores [first, first +
         count) (default every core); returns its ticket. Nothing is sent until a wait.
-        `result`: the event carries the leader's result word."""
+        `result`: the event carries the leader's result word. `queued`: `team` is a
+        count and the kernel picks the first core (team() then has first None)."""
         t0 = time.perf_counter()
         if seg.__class__ is not int:
             seg = self.program.seg(seg) if self.program is not None else int(seg)
         if not (seg == self._nop or 1 <= seg <= self._user_max):
             raise ValueError(f"segment {seg}: not NOP and not in 1..KM_SEG_USER_MAX")
-        team = self._team(team)
+        if queued:
+            if exclusive:
+                raise ValueError("a queued record cannot be exclusive")
+            team = self._team((0, team))
+        else:
+            team = self._team(team)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a record has 10")
         if any(not 0 <= int(a) <= M32 for a in args):
             raise ValueError("arguments are 32-bit unsigned words")
-        flags = self._f_result if result else 0
+        flags = (self._f_result if result else 0) | (self._f_queue if queued else 0)
         ticket = self._queue_command(seg, team, args, exclusive, flags)
         self.issue_s += time.perf_counter() - t0
         return ticket
@@ -184,7 +193,10 @@ class Run:
         self._hand()
         start = self._next
         self._next += n[0]
-        excl = np.ones(n[0], np.uint8) if exclusive else None
+        excl = None
+        if exclusive:
+            excl = np.ones(n[0], np.uint8)
+            words[:, self._hdr] |= self._f_excl << 8
         self._send_block(words, first, count, excl, np.zeros(n[0], np.uint8))
         self.issue_s += time.perf_counter() - t0
         return range(start, self._next)
@@ -202,13 +214,14 @@ class Run:
     def _queue_command(self, seg, team, args=(), exclusive=False, flags=0):
         self._check_alive()
         first, count = team if team else (0, 0)
+        flags |= self._f_excl if exclusive else 0  # the kernel checks the real teams
         w = [0] * 16
         w[self._hdr] = seg & 0xFF | flags << 8
         w[self._team_at] = first | count << 16
         for at, value in zip(self._arg_at, args):
             w[at] = int(value) & M32
         self._words.extend(w)
-        self._firsts.append(first)
+        self._firsts.append(-1 if flags & self._f_queue else first)
         self._counts.append(count)
         self._excl.append(1 if exclusive else 0)
         self._fl.append(flags)
@@ -231,7 +244,7 @@ class Run:
 
     def _send_block(self, words, first, count, excl, flags):
         """Notes tickets handed .. handed + n - 1 (teams, flags, sequences) and queues
-        their records in the port."""
+        their records in the port. A queued record's first is -1 (the kernel's)."""
         n = len(words)
         lo = self._handed - self._base
         self._grow(lo + n)
@@ -438,7 +451,8 @@ class Run:
             return None
         if self._gone[i] and not self._keep:
             return None
-        return (int(self._first[i]), int(self._count[i]))
+        first = int(self._first[i])
+        return (first if first >= 0 else None, int(self._count[i]))
 
     @property
     def stored(self):
@@ -569,7 +583,7 @@ class Run:
         if trace_rows is not None:
             n = self._handed - self._base
             tickets = np.arange(n) + self._base
-            rec = self._seq[:n] > 0
+            rec = (self._seq[:n] > 0) & (self._first[:n] >= 0)  # queued: team unknown
             numbers = (self._seq[:n][rec] - 1) % M32 + 1  # skips 0, as the kernel
             seqs = dict(zip(tickets[rec].tolist(), numbers.tolist()))
             teams = {
@@ -592,7 +606,8 @@ class Run:
         team = self.team(ev.ticket)
         seq = r["seq"] if r["error"] == self.h["KMD_ERR_DEADLINE"] else None
         seq = seq if seq is not None else self.seq(ev.ticket)
-        cores = st.not_reported(self._state, team, ev.aux, seq, self.h) if team else []
+        known = team and team[0] is not None
+        cores = st.not_reported(self._state, team, ev.aux, seq, self.h) if known else []
         raise self._remember(RecordTimeout(ev.ticket, ev.aux, seq, team, cores, r))
 
     def _fail_kernel(self, why):

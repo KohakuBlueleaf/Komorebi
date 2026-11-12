@@ -448,3 +448,15 @@ def test_a_result_record_returns_the_leaders_word_on_its_done_event():
     one, other = run.wait([with_result, plain])
     assert one.result == 0xBEEF and other.result is None
     assert port.ring[with_result][1] >> 8 == K["KM_F_RESULT"]
+
+
+def test_a_queued_record_takes_its_count_and_the_kernel_picks_the_team():
+    run, port, _ = make_run()
+    port.auto = False
+    run.issue(1, (0, 60))
+    queued = run.issue(1, 30, queued=True)
+    with pytest.raises(WaitTimeout):
+        run.wait(queued, timeout=0.05)
+    assert port.issued[-1][4] == (60, 30) and run.team(queued) == (None, 30)
+    with pytest.raises(ValueError, match="team"):
+        run.issue(1, 121, queued=True)

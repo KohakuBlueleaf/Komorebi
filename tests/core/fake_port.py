@@ -196,6 +196,16 @@ class FakePort:
                     return
                 first, count = 0, self.cores  # to every core
                 self.exited = True
+            elif flags & K["KM_F_QUEUE"]:  # the lowest first overlapping no busy team
+                taken = [t for _, _, t in self.busy.values()]
+                fits = [
+                    f
+                    for f in range(self.cores - count + 1)
+                    if all(f + count <= a or a + n <= f for a, n in taken)
+                ]
+                if not fits:
+                    return
+                first = fits[0]
             free = [j for j in range(self.depth) if j not in self.busy]
             if not free:
                 return
@@ -220,6 +230,8 @@ class FakePort:
             return K["KMD_REFUSE_SEG"]
         if flags & 1:
             return K["KMD_REFUSE_FLAGS"]
+        if flags & K["KM_F_QUEUE"]:
+            first = 0  # only the count is checked
         if seg != K["KM_SEG_EXIT"] and (count == 0 or first + count > self.cores):
             return K["KMD_REFUSE_TEAM"]
         return 0
