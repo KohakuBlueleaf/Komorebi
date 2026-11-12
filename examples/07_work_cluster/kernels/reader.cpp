@@ -1,5 +1,4 @@
-// Work-cluster example, grid side: the resident worker has no segment of its own in
-// this first form (the X280 thread does the work), so every record is a NOP.
+// Work-cluster example, grid side: no segment needs input through the reader.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

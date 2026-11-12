@@ -1,4 +1,4 @@
-// Work-cluster example, grid side: no compute in this first form.
+// Work-cluster example, grid side: no segment uses the matrix or vector units.
 #include <stdint.h>
 
 #include "api/compute/compute_kernel_api.h"
