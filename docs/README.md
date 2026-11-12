@@ -33,8 +33,8 @@ between cores, deciding on the card and the thread language are planned.
 
 ### Start
 
-- [Install](install.md): from a clone, against a tt-metal source tree; running on a
-  card; watching a card's power with `kmr power`.
+- [Install](install.md): from a clone or a wheel, against a tt-metal source tree;
+  running on a card; watching a card's power with `kmr power`.
 - [Development](development.md): repository layout, checks, conventions and known
   limits.
 
@@ -68,6 +68,25 @@ Mental models: why things are the way they are. Every page carries a status line
   its services and engines, command sources and the work clusters.
 - [The Tensix runtime](concepts/runtime.md): the resident worker, the 64-byte record,
   teams and completion, and static and dynamic breakpoints.
+
+### Pages by part
+
+One page per part of the framework, or the part listed as missing. "Concept" pages
+describe the design; "reference" pages describe what is built.
+
+| Part | Page | State |
+|---|---|---|
+| Resident worker on the Tensix cores: records, mailbox slots, teams, completion, trace | [Tensix runtime](concepts/runtime.md) (concept); [device headers](../src/komorebi_native/include/komorebi/device/) | reference page missing |
+| Static breakpoints between cores: `emit`, `wait`, `reduce`, lane broadcast | [Tensix runtime](concepts/runtime.md) (concept) | reference page missing |
+| Dynamic breakpoints: `at`, inbox rings, packets, credits | [Tensix runtime](concepts/runtime.md) (concept) | reference page missing |
+| Dispatch kernel on X280 cluster 0: rings, slots, deadlines, events, upload region | [dispatch kernel](concepts/dispatch.md) (concept); [kernel README](../src/komorebi_native/x280/kernel/README.md) (reference) | written |
+| Deciding on the card: micro-op streams | [micro-op streams](streams.md) | written |
+| Deciding on the card: the job queue | [dispatch kernel](concepts/dispatch.md) (concept) | reference page missing |
+| Graph executor | [graphs](graphs.md); [dispatch kernel](concepts/dispatch.md) (concept) | written (format, executor in C and Python, simulator) |
+| User threads on the X280 work clusters | [dispatch kernel](concepts/dispatch.md) (concept) | reference page missing |
+| Host launcher: `Program`, `Session`, `Run` | [host API](reference/host.md) | written |
+| Python package and C++ headers: install, wheel, builds | [install](install.md), [packaging](../packaging/README.md) | written |
+| The runtime on the CPU (harness for the Tensix runtime) | [development](development.md), [runtime harness](../experiments/runtime_harness/README.md) | written |
 
 ### Measurements
 
