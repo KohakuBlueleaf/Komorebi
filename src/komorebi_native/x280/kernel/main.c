@@ -393,7 +393,10 @@ static void finish(kmd_t* k) {
     grid_close(k);
     events_close(k);
     const uint64_t ticks = k->t_first ? now - k->t_first : 0;
-    x280_hart_set_result(k->hart, k->error ? ~(uint64_t)k->error : ticks);
+    const uint64_t hart = k->hart;
+    const uint64_t result = k->error ? ~(uint64_t)k->error : ticks;
+    kmd_flush_lines(k, KMD_STATE_BYTES);
+    x280_hart_set_result(hart, result);
 }
 
 /* Core 0's kernel; kept out of main so main's prologue touches no FP register. */

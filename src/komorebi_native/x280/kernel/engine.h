@@ -724,6 +724,7 @@ static void eng_run(uint64_t hart, const volatile kmd_args_t* a, uint64_t run) {
     harts[KMD_H_POSTS] = e->posts;
     harts[KMD_H_EVENTS] = e->events_in;
     harts[KMD_H_RUNS] = e->runs;
+    kmd_flush_lines(state + KMD_STATE_ENGINE, KMD_STATE_BYTES - KMD_STATE_ENGINE);
     x280_fence_ow();
     harts[KMD_H_ENGINE] = KMD_ENGINE_STOPPED;
     x280_fence_ow();

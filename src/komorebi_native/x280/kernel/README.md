@@ -30,6 +30,10 @@ slots, then takes at most one command from each source in the order host, engine
 engine is looked at only while it has a stream, a record in flight or a waiting command.
 A record's `KM_EV_DONE` or `KM_EV_TIMEOUT` goes to the source that sent it.
 
+Nothing the kernel writes through the cached port stays dirty at exit: core 1 flushes its
+part of the state area before it reports stopped and core 0 flushes the whole area before
+the result (a core the runtime kills never gets there).
+
 ## Protocol with the host
 
 These rules are part of the protocol; a host that relies on anything else is wrong.

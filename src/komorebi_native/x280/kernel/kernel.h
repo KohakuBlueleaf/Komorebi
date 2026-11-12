@@ -12,6 +12,9 @@
 #include "rt/x280_idle.h"
 #include "x280_address_map.h"
 
+/* The L3 cache's flush register: a store of a physical line address writes the line
+ * back and drops it. */
+#define KMD_CCACHE_FLUSH64 0x02010200ull
 /* The loop checks stop, deadlines and the idle time every this many passes. */
 #define KMD_POLL_EVERY 1024u
 /* The team allocator's answer when no team of the count fits now. */
@@ -148,4 +151,14 @@ static inline void kmd_store_chunk(volatile void* dst, const uint32_t* src) {
         : "r"(src), "r"(dst)
         : "memory", "v9"
     );
+}
+
+/* Writes the lines of [from, from + bytes) back to DRAM and drops them from the cache,
+ * so no dirty line is written over the next process's data later. */
+static inline void kmd_flush_lines(const volatile void* from, uint64_t bytes) {
+    volatile uint64_t* flush = (volatile uint64_t*)(uintptr_t)KMD_CCACHE_FLUSH64;
+    for (uint64_t at = 0; at < bytes; at += 64u) {
+        *flush = (uint64_t)(uintptr_t)from + at;
+        x280_fence_iorw();
+    }
 }
