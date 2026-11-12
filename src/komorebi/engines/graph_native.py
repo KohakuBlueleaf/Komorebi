@@ -104,12 +104,23 @@ class NativeExecutor:
         )
 
     def step(self, issue):
-        """One `kmg_step`; `issue(node, words)` gets the record's 16 words."""
+        """One `kmg_step`; `issue(node, words)` gets the record's 16 words. An error
+        raised by `issue` counts as busy inside the step and is raised after it."""
+        raised = []
 
         def call(_ctx, node, rec):
-            return issue(node, list(rec[:16]))
+            if raised:
+                return gr.BUSY
+            try:
+                return issue(node, list(rec[:16]))
+            except Exception as err:  # noqa: BLE001 (raised again below)
+                raised.append(err)
+                return gr.BUSY
 
-        return self.lib.kmg_step(self._state, ISSUE_FN(call), None)
+        code = self.lib.kmg_step(self._state, ISSUE_FN(call), None)
+        if raised:
+            raise raised[0]
+        return code
 
     def complete(self, node, result):
         return self.lib.kmg_complete(self._state, node, result & gr.MASK)

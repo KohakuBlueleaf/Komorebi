@@ -12,6 +12,7 @@ import numpy as np
 
 from komorebi import abi
 from komorebi import state as st
+from komorebi.engines import graph_hostfed
 from komorebi.errors import (
     KernelFailed,
     KomorebiError,
@@ -504,6 +505,14 @@ class Run:
     def stored(self):
         """Commands stored into the card so far."""
         return self._handed - self._base - self.port.queued
+
+    # Graphs -----------------------------------------------------------------------
+
+    def run_hostfed(self, graph, bindings=None, timeout=10.0, engine=None):
+        """Runs a graph host-fed: its executor on the host, its records through this
+        run's host ring. Returns a HostfedResult (status, error, regs, runs, records,
+        events); see `komorebi.engines.graph_hostfed`."""
+        return graph_hostfed.run_hostfed(self, graph, bindings, timeout, engine)
 
     # Stopping ---------------------------------------------------------------------
 

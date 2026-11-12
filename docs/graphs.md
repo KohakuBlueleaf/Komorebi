@@ -240,6 +240,26 @@ stopped, kept)` (`kept`: the graph stays kept after this run): every record as `
 args, pass_index, queued)`; events as `Event(kind, req, aux, extra, pass_index)`;
 `status` `"ended"`, `"error"` or `"stuck"`.
 
+## Host-fed
+
+```python
+done = run.run_hostfed(g, {"it": 0}, timeout=10.0)  # run: a komorebi.run.Run
+```
+
+`Run.run_hostfed(graph, bindings=None, timeout=10.0)` runs the same C engine on the
+host and issues its records through the run's host ring, so a graph gives the same set
+of records and the same registers host-fed and in the dispatch kernel. After each step
+the host waits for the first record in flight to finish (`Run.wait_any`), then hands
+every completion seen to the engine, with the result word of a record that asked for
+one (`Run.issue(..., result=True)`). A queued record goes to the kernel by its count
+(`queued=True`), whose allocator picks its team; its `first` is None here. A record's
+timeout ends the graph with reason 8; after any other error the records still in
+flight are drained. It returns `HostfedResult(status, error, regs, runs, records,
+events)`: `records` are
+`HostfedRecord(node, run, ticket, seg, first, count, flags, args, queued)`, `events`
+the graph events the kernel would have posted. A graph that does not end within
+`timeout` seconds raises `WaitTimeout`.
+
 ## Reference graphs
 
 `experiments/graph_checks/graphs/` holds 39 named graphs as `.bin` uploads with a
