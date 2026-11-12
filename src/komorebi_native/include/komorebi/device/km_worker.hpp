@@ -309,16 +309,17 @@ namespace km {
 }  // namespace km
 
 #else
-#include "api/compute/cb_api.h"
-#include "api/compute/common.h"
-
 namespace km {
 
-    // Compute: unpack waits for the token and passes its sequence to math and pack; all
-    // three read KM_CTL_JOB and confirm by mailbox before the token is freed.
+    // Compute: unpack waits (bounded) for the token and tells math and pack by mailbox;
+    // all three copy KM_CTL_JOB and confirm by mailbox before the token is freed.
     class Compute {
     public:
-        Compute() : ctl_(get_arg_val<uint32_t>(0)), me_(get_arg_val<uint32_t>(1)) {
+        Compute()
+            : ctl_(get_arg_val<uint32_t>(kCArgCtl)),
+              me_(get_arg_val<uint32_t>(kCArgMe)),
+              wait_(get_arg_val<uint32_t>(kCArgWait)),
+              idle_(get_arg_val<uint32_t>(kCArgIdle)) {
         }
 
         uint32_t me() const {
@@ -329,13 +330,91 @@ namespace km {
             return get_arg_val<uint32_t>(kComputeArgs + i);
         }
 
+        // Bounded cb_wait_front: unpack polls, math and pack get its answer. False on
+        // every thread: gave up (recorded); the body returns without using the pages.
+        bool wait_front(uint32_t cb, uint32_t pages) const {
+            uint32_t ok = 0;
+            UNPACK(({
+                volatile tt_l1_ptr uint32_t* got = get_cb_tiles_received_ptr(cb);
+                const uint32_t code = poll_stop(
+                    stop(),
+                    [&] {
+                        const uint16_t n = (
+                            static_cast<uint16_t>(
+                                ckernel::reg_read(
+                                    static_cast<uint32_t>(
+                                        reinterpret_cast<uintptr_t>(got)
+                                    )
+                                ) -
+                                get_local_cb_interface(cb).tiles_acked
+                            )
+                        );
+                        return n >= pages;
+                    },
+                    wait_,
+                    0
+                );
+                ok = code == kGaveNone;
+                if (ok) {
+                    cb_wait_front(cb, pages);
+                } else {
+                    record_gave_up(state(), kStCompute, code, kWhereCInput, 0, seq_);
+                }
+                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, ok);
+                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, ok);
+            }));
+            MATH((ok = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)));
+            PACK((ok = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)));
+            return ok != 0;
+        }
+
+        // Bounded cb_reserve_back, decided by pack alone (only pack writes the
+        // buffer). False on pack: gave up (recorded); true on unpack and math.
+        bool reserve_back(uint32_t cb, uint32_t pages) const {
+            bool ok = true;
+            PACK(({
+                volatile tt_reg_ptr uint32_t* acked = get_cb_tiles_acked_ptr(cb);
+                const uint32_t code = poll_stop(
+                    stop(),
+                    [&] {
+                        const uint16_t used = (
+                            static_cast<uint16_t>(
+                                get_local_cb_interface(cb).tiles_received -
+                                ckernel::reg_read(
+                                    static_cast<uint32_t>(
+                                        reinterpret_cast<uintptr_t>(acked)
+                                    )
+                                )
+                            )
+                        );
+                        return (
+                            get_local_cb_interface(cb).fifo_num_pages - used >= pages
+                        );
+                    },
+                    wait_,
+                    0
+                );
+                ok = code == kGaveNone;
+                if (ok) {
+                    cb_reserve_back(cb, pages);
+                } else {
+                    record_gave_up(state(), kStCompute, code, kWhereCOutput, 0, seq_);
+                }
+            }));
+            return ok;
+        }
+
         template <typename Body>
         void run(Body body) {
-            volatile tt_l1_ptr uint32_t* st = l1(ctl_ + KM_CTL_STATE);
+            volatile tt_l1_ptr uint32_t* st = state();
             uint32_t wrong = 0, end = kEndExit;
             for (;;) {
-                cb_wait_front(kCbTokenCompute, 1);
-                const uint32_t seq = ckernel::read_tile_value(kCbTokenCompute, 0, 0);
+                uint32_t seq = 0;
+                if (!take(seq)) {
+                    end = kEndGaveUp;
+                    break;
+                }
+                seq_ = seq;
                 invalidate_l1_cache();
                 km_record_t r;
                 copy_record(l1(ctl_ + KM_CTL_JOB), &r);
@@ -359,8 +438,69 @@ namespace km {
         }
 
     private:
+        volatile tt_l1_ptr uint32_t* state() const {
+            return l1(ctl_ + KM_CTL_STATE);
+        }
+
+        volatile tt_l1_ptr uint32_t* stop() const {
+            return l1(ctl_ + KM_CTL_STOP);
+        }
+
+        // The next token (bounded like the reader's wait for a record): unpack polls
+        // and sends ok, then the sequence, to math and pack. False: gave up (recorded).
+        bool take(uint32_t& seq) const {
+            uint32_t ok = 0;
+            UNPACK(({
+                volatile tt_l1_ptr uint32_t* got = (
+                    get_cb_tiles_received_ptr(kCbTokenCompute)
+                );
+                const uint32_t code = poll_stop(
+                    stop(),
+                    [&] {
+                        return (
+                            static_cast<uint16_t>(
+                                ckernel::reg_read(
+                                    static_cast<uint32_t>(
+                                        reinterpret_cast<uintptr_t>(got)
+                                    )
+                                ) -
+                                get_local_cb_interface(kCbTokenCompute).tiles_acked
+                            ) >= 1
+                        );
+                    },
+                    idle_,
+                    wait_
+                );
+                ok = code == kGaveNone;
+                if (ok) {
+                    cb_wait_front(kCbTokenCompute, 1);
+                    seq = l1(ckernel::get_tile_l1_byte_address(kCbTokenCompute, 0))[0];
+                } else {
+                    record_gave_up(state(), kStCompute, code, kWhereCToken, 0, 0);
+                }
+                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, ok);
+                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, ok);
+                if (ok) {
+                    ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, seq);
+                    ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, seq);
+                }
+            }));
+            MATH(({
+                ok = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
+                seq = ok ? ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId) : 0;
+            }));
+            PACK(({
+                ok = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
+                seq = ok ? ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId) : 0;
+            }));
+            return ok != 0;
+        }
+
         uint32_t ctl_;
         uint32_t me_;
+        uint32_t wait_;
+        uint32_t idle_;
+        uint32_t seq_ = 0;  // the record being run, for give-up words
     };
 
 }  // namespace km

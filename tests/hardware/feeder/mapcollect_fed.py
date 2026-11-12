@@ -38,6 +38,9 @@ def parse():
         "--teams", choices=["fixed", "random", "pair", "overlap"], default="fixed"
     )
     p.add_argument("--count", type=int, default=8, help="team size (fixed)")
+    p.add_argument(
+        "--team-list", help="first:count per job, comma-separated (overrides --teams)"
+    )
     p.add_argument("--first", type=int, default=0, help="first core (fixed)")
     p.add_argument("--tiles", type=int, default=64, help="input tiles T")
     p.add_argument("--depth", type=int, default=4, help="ring slots used")
@@ -57,6 +60,10 @@ def parse():
 
 
 def make_teams(args, workers, rng):
+    if args.team_list:
+        teams = [tuple(map(int, t.split(":"))) for t in args.team_list.split(",")]
+        args.jobs = len(teams)
+        return teams
     if args.teams == "fixed":
         return [(args.first, args.count)] * args.jobs
     if args.teams == "pair":
@@ -206,8 +213,8 @@ def main():
 
 def run(device, args, rng):
     runner = fed.Fed(device)
+    teams = make_teams(args, runner.workers, rng)
     workers, n, tiles = runner.workers, args.jobs, args.tiles
-    teams = make_teams(args, workers, rng)
     fed.log(f"grid {runner.grid}, {workers} workers, aiclk {runner.mhz} MHz")
 
     # Exact inputs: integers in [-2, 2], so every partial sum (|s| <= 2T) is exact in
@@ -344,6 +351,11 @@ def run(device, args, rng):
         w: sum(1 for g in gave for k in parts if g[k] and g[k]["where"] == w)
         for w in sorted({g[k]["where"] for g in gave for k in parts if g[k]})
     }
+    out["gave_up_busy"] = [  # cores that gave up anywhere but waiting for a record
+        {"core": g["core"], **{k: g[k] for k in parts if g[k]}}
+        for g in gave
+        if any(g[k] and g[k]["where"] != "next" for k in parts)
+    ][:16]
     if s["status"] == "timeout":
         first, count = teams[s["index"]]
         team = range(first, first + count)

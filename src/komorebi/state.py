@@ -14,6 +14,9 @@ WHERES = (
     "Complete",
     "Writer",
     "Data",
+    "CToken",
+    "CInput",
+    "COutput",
 )
 KMD_PREFIXES = {"error": "KMD_ERR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 

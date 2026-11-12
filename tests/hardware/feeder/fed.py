@@ -185,7 +185,8 @@ class Fed:
             extra = program_args(core) if program_args else ([], [], [])
             reader_args[x][y] = start + list(extra[0])
             writer_args[x][y] = start + list(extra[1])
-            compute_args[x][y] = [ctl_addr, core, *extra[2]]
+            compute = [ctl_addr, core, base["wait_limit"], base["idle_limit"]]
+            compute_args[x][y] = compute + list(extra[2])
         feeder_args = ttnn.RuntimeArgs()
         fx, fy = self.logical[feeder]
         fd = {

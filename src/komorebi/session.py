@@ -266,7 +266,8 @@ class _Backend:
             reader, writer, compute = program.core_args(core)
             reader_args[x][y] = start + reader
             writer_args[x][y] = start + writer
-            compute_args[x][y] = [ctl, core, *compute]
+            limits = [common["wait_limit"], common["idle_limit"]]
+            compute_args[x][y] = [ctl, core, *limits, *compute]
         all_cores = ttnn.CoreRangeSet(
             [
                 ttnn.CoreRange(

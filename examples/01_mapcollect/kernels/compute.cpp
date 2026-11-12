@@ -22,6 +22,7 @@ void kernel_main() {
         }
         const km::Share s = km::share(r.a1, cp.me() - km::first(r), km::count(r));
         tile_regs_acquire();
+        bool ok = true;  // the same on all three threads (wait_front tells them)
         if (s.len == 0) {
             fill_tile_init();
             fill_tile(0, 0.0f);
@@ -29,23 +30,28 @@ void kernel_main() {
             // The sum stays in DST (fp32): each tile is copied to DST 1, the SFPU adds
             // it.
             copy_init(kCbIn);
-            cb_wait_front(kCbIn, 1);
-            copy_tile(kCbIn, 0, 0);
-            cb_pop_front(kCbIn, 1);
-            for (uint32_t i = 1; i < s.len; i++) {
-                cb_wait_front(kCbIn, 1);
-                copy_init(kCbIn);
-                copy_tile(kCbIn, 0, 1);
-                add_binary_tile_init();
-                add_binary_tile(0, 1, 0);
+            ok = cp.wait_front(kCbIn, 1);
+            if (ok) {
+                copy_tile(kCbIn, 0, 0);
                 cb_pop_front(kCbIn, 1);
+            }
+            for (uint32_t i = 1; ok && i < s.len; i++) {
+                ok = cp.wait_front(kCbIn, 1);
+                if (ok) {
+                    copy_init(kCbIn);
+                    copy_tile(kCbIn, 0, 1);
+                    add_binary_tile_init();
+                    add_binary_tile(0, 1, 0);
+                    cb_pop_front(kCbIn, 1);
+                }
             }
         }
         tile_regs_commit();
         tile_regs_wait();
-        cb_reserve_back(kCbOut, 1);
-        pack_tile(0, kCbOut);
-        cb_push_back(kCbOut, 1);
+        if (ok && cp.reserve_back(kCbOut, 1)) {  // a give-up: no output tile
+            pack_tile(0, kCbOut);
+            cb_push_back(kCbOut, 1);
+        }
         tile_regs_release();
     });
 }

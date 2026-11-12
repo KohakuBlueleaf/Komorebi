@@ -39,7 +39,7 @@ def test_core_state_and_gave_up_words():
     rows[2, K["kStReaderSeq"]] = 9
     rows[1, K["kStWrong"]] = 2 << 8
     rows[1, K["kStEnds"]] = K["kEndExit"] | K["kEndAbort"] << 16
-    rows[3, K["kStCompute"]] = K["kGaveStop"] | K["kWhereData"] << 8
+    rows[3, K["kStCompute"]] = K["kGaveStop"] | K["kWhereCInput"] << 8
     rows[3, K["kStComputeSeq"]] = 6
     c = st.core_state(rows, 2)
     assert c["magic_ok"] and c["writer"] is None
@@ -49,7 +49,7 @@ def test_core_state_and_gave_up_words():
     assert (c1["reader_end"], c1["writer_end"], c1["compute_end"]) == (1, 0, 3)
     assert st.core_state(rows, 3)["compute"] == {
         "code": "stop",
-        "where": "data",
+        "where": "cinput",
         "slot": 0,
         "seq": 6,
     }

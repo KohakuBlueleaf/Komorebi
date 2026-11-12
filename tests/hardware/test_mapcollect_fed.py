@@ -114,3 +114,18 @@ def test_an_exit_record_goes_to_every_core_once_no_slot_is_busy():
     assert out["exit"] == {"held": True, "status": 1, "after_every_ack": True}
     assert out["jobs_checked"] == 5 and out["jobs_bad"] == 0
     assert every_kernel_returned(out)
+
+
+def test_a_long_record_in_flight_at_the_stop_ends_on_every_tile():
+    # Core 1 stalls (job 0); core 0 runs a MAP of 16384 tiles (job 1, through a buffer
+    # of 16 pages) that is still running when the feeder's deadline sets the stop word.
+    args = ["--team-list", "1:1,0:1", "--stall", 0, "--tiles", 16384]
+    out = run(*args, "--deadline", 0.001, "--out-tensors", 1)
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 1
+    assert every_kernel_returned(out)
+    assert waiting(out, "stall") == [(1, 1)]
+    busy = {g["core"]: g for g in out["gave_up_busy"]}
+    assert set(busy) == {0, 1}
+    core0 = busy[0]
+    assert core0["reader"]["code"] == "stop" and core0["reader"]["where"] == "data"
+    assert core0["compute"] == {"code": "stop", "where": "cinput", "slot": 0, "seq": 2}

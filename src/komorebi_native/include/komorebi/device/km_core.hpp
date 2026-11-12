@@ -4,6 +4,12 @@
 
 #include <stdint.h>
 
+#if defined(COMPILE_FOR_TRISC)
+#include "api/compute/cb_api.h"
+#include "api/compute/common.h"
+#else
+#include "api/dataflow/dataflow_api.h"
+#endif
 #include "km_record.hpp"
 
 namespace km {
@@ -49,6 +55,9 @@ namespace km {
     constexpr uint32_t kWhereComplete = 5;  // leader waiting for its members
     constexpr uint32_t kWhereWriter = 6;    // writer waiting for a token
     constexpr uint32_t kWhereData = 7;      // a segment's bounded buffer wait
+    constexpr uint32_t kWhereCToken = 8;    // compute (unpack) waiting for a token
+    constexpr uint32_t kWhereCInput = 9;    // compute (unpack) waiting for input pages
+    constexpr uint32_t kWhereCOutput = 10;  // compute (pack) waiting for output space
     constexpr uint32_t kEndExit = 1;        // left on an EXIT record
     constexpr uint32_t kEndGaveUp = 2;      // left after its own wait gave up
     constexpr uint32_t kEndAbort = 3;       // left on the EXIT handed after a give-up
@@ -64,7 +73,7 @@ namespace km {
     constexpr uint32_t kOutAck = KM_CTL_OUT + 48;
 
     // Start-up arguments of the reader and the writer: runtime args 0 to kArgs - 1. The
-    // program's own arguments follow. The compute kernel gets ctl and me only.
+    // program's own arguments follow. The compute kernel gets the kCArg* words.
     struct Args {
         uint32_t ctl;         // control block address, the same on every core
         uint32_t me;          // this core's index in the core order
@@ -87,7 +96,11 @@ namespace km {
     };
 
     constexpr uint32_t kArgs = sizeof(Args) / 4;
-    constexpr uint32_t kComputeArgs = 2;
+    constexpr uint32_t kCArgCtl = 0;   // compute: control block address
+    constexpr uint32_t kCArgMe = 1;    // this core's index
+    constexpr uint32_t kCArgWait = 2;  // wait_limit, as for reader and writer
+    constexpr uint32_t kCArgIdle = 3;  // idle_limit
+    constexpr uint32_t kComputeArgs = 4;
 
     // Trace record per sequence number: 4 words of wall-clock cycles (low 32 bits).
     constexpr uint32_t kTraceSeen = 0;   // reader took the record
@@ -137,11 +150,53 @@ namespace km {
         reinterpret_cast<volatile tt_l1_ptr uint8_t*>(state + word)[b] = v;
     }
 
+    // Polls ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle
+    // units; kGaveStop `grace` units after *stop is set (0: at once).
+    template <typename Ready>
+    inline uint32_t poll_stop(
+        volatile tt_l1_ptr uint32_t* stop, Ready ready, uint32_t limit, uint32_t grace
+    ) {
+        uint64_t end = wall64() + (static_cast<uint64_t>(limit) << 10);
+        bool stopped = false;
+        for (uint32_t i = 0;; i++) {
+            invalidate_l1_cache();
+            if (ready()) {
+                return kGaveNone;
+            }
+            if (!stopped && *stop != 0) {
+                if (grace == 0) {
+                    return kGaveStop;
+                }
+                stopped = true;
+                const uint64_t e = wall64() + (static_cast<uint64_t>(grace) << 10);
+                end = e < end ? e : end;
+            }
+            if ((i & 15) == 15 && wall64() > end) {
+                return stopped ? kGaveStop : kGaveLimit;
+            }
+        }
+    }
+
+    // Records a give-up in the state word pair `word` (kStReader, kStWriter or
+    // kStCompute); the first one is kept, as it names the cause.
+    inline void record_gave_up(
+        volatile tt_l1_ptr uint32_t* state,
+        uint32_t word,
+        uint32_t code,
+        uint32_t where,
+        uint32_t slot,
+        uint32_t seq
+    ) {
+        if (state[word] != 0) {
+            return;
+        }
+        state[word] = code | where << 8 | slot << 16;
+        state[word + 1] = seq;
+    }
+
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
-#include "api/dataflow/dataflow_api.h"
-
 namespace km {
 
     // A data-movement kernel's view of the control block and of its start-up arguments.
@@ -194,41 +249,17 @@ namespace km {
             return get_noc_addr(a_.disp_xy & 0xFFFFu, a_.disp_xy >> 16, addr);
         }
 
-        // Polls ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle
-        // units; kGaveStop `grace` units after the stop word is set (0: at once).
+        // poll_stop on this tile's stop word.
         template <typename Ready>
         uint32_t poll(Ready ready, uint32_t limit, uint32_t grace = 0) const {
-            uint64_t end = wall64() + (static_cast<uint64_t>(limit) << 10);
-            bool stopped = false;
-            for (uint32_t i = 0;; i++) {
-                invalidate_l1_cache();
-                if (ready()) {
-                    return kGaveNone;
-                }
-                if (!stopped && stop()) {
-                    if (grace == 0) {
-                        return kGaveStop;
-                    }
-                    stopped = true;
-                    const uint64_t e = wall64() + (static_cast<uint64_t>(grace) << 10);
-                    end = e < end ? e : end;
-                }
-                if ((i & 15) == 15 && wall64() > end) {
-                    return stopped ? kGaveStop : kGaveLimit;
-                }
-            }
+            return poll_stop(ctl(KM_CTL_STOP), ready, limit, grace);
         }
 
-        // Records a give-up in the state word pair `word` (kStReader or kStWriter); the
-        // first one is kept, as it names the cause.
+        // Records a give-up in the state word pair `word` (kStReader or kStWriter).
         void gave_up(
             uint32_t word, uint32_t code, uint32_t where, uint32_t slot, uint32_t seq
         ) const {
-            if (state()[word] != 0) {
-                return;
-            }
-            state()[word] = code | where << 8 | slot << 16;
-            state()[word + 1] = seq;
+            record_gave_up(state(), word, code, where, slot, seq);
         }
 
     private:

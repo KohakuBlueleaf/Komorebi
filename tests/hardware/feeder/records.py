@@ -170,18 +170,7 @@ def gave_up(word, seq):
     code = word & 0xFF
     if code == K["kGaveNone"]:
         return None
-    wheres = {
-        K[k]: k[6:].lower()
-        for k in (
-            "kWhereCheckin",
-            "kWhereToken",
-            "kWhereNext",
-            "kWhereStall",
-            "kWhereComplete",
-            "kWhereWriter",
-            "kWhereData",
-        )
-    }
+    wheres = {v: k[6:].lower() for k, v in K.items() if k.startswith("kWhere")}
     return {
         "code": "stop" if code == K["kGaveStop"] else "limit",
         "where": wheres.get((word >> 8) & 0xFF, (word >> 8) & 0xFF),
