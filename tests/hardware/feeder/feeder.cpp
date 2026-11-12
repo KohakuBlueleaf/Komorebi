@@ -58,9 +58,9 @@ void kernel_main() {
     // Ends the run: records `status` and writes 1 to the stop word of every worker.
     auto stop_all = [&](uint32_t status) {
         row(0)[kFrStatus] = status;
-        *km::l1(ctl + KM_CTL_OUT) = 1;
+        *km::out_slot(ctl, 0) = 1;
         for (uint32_t w = 0; w < workers; w++) {
-            noc_async_write(ctl + KM_CTL_OUT, core(w, ctl + KM_CTL_STOP), 4);
+            km::small_write<0, 4>(ctl, core(w, ctl + KM_CTL_STOP), 0);
         }
         noc_async_write_barrier();
     };

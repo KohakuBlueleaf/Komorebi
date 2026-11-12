@@ -88,6 +88,7 @@ addresses share their low four bits. Measured on a Blackhole p150a
 write lands at the destination address but carries the bytes found at the destination's
 offset within the source's 16-byte line, and a non-posted write is acknowledged as
 usual. The mismatch is silent and wrong, never an error. The runtime's small writes
-therefore go from a 16-byte slot of the sender's control block to a 16-byte slot of the
-receiver, and the control block and every base the host hands to the kernels must be
-multiples of 16.
+therefore go through one helper, `km::small_write`, that takes slot numbers, not
+addresses, on both ends: from a 16-byte slot of the sender's control block to a 16-byte
+slot above a base on the receiver. The control block and every base the host hands to
+the kernels must be multiples of 16.

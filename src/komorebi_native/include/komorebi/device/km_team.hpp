@@ -41,10 +41,8 @@ namespace km {
             noc_semaphore_inc(c.core_noc(to.parent, a.ctl + counter), 1);
             noc_async_atomic_barrier();  // a write barrier does not cover atomics
         } else {
-            *c.ctl(kOutAck) = KM_ACK(r.seq);
-            noc_async_write(
-                a.ctl + kOutAck, c.disp_noc(a.ack_base + j * KM_ACK_STRIDE), 4
-            );
+            *out_slot(a.ctl, kOutAck) = KM_ACK(r.seq);
+            small_write<kOutAck, 4>(a.ctl, c.disp_noc(a.ack_base), j);
             noc_async_writes_flushed();
         }
         c.state()[kStReported + j] = r.seq;

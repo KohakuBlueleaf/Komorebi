@@ -33,7 +33,10 @@ def test_constants_of_all_three_headers():
     assert H["KM_READY"] == 0xFFFFFFFF and H["KM_SEG_EXIT"] == 255
     assert H["KMD_LIM_MAILBOX"] == 0x100 and H["KMD_HOST_EVENTS"] == 2
     assert H["KMD_R_WORDS"] == 32 and H["KMD_R_LAST_HI"] == 23
-    assert H["kOutReady"] == H["KM_CTL_OUT"] + 16
+    assert (
+        H["kOutReady"] == 1
+        and H["kOutSlots"] == (H["KM_CTL_CORES"] - H["KM_CTL_OUT"]) // 16
+    )
     assert "KM_TEAM_ALL" not in H.constants  # a function-like macro
 
 

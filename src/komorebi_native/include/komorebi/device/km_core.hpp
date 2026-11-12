@@ -66,12 +66,15 @@ namespace km {
     constexpr uint32_t kEndWriter = 1;
     constexpr uint32_t kEndCompute = 2;
 
-    // Scratch for outgoing NoC writes (16-byte parts of KM_CTL_OUT): check-in, READY,
-    // hello (reader); acknowledgement (writer).
-    constexpr uint32_t kOutCheckin = KM_CTL_OUT;
-    constexpr uint32_t kOutReady = KM_CTL_OUT + 16;
-    constexpr uint32_t kOutHello = KM_CTL_OUT + 32;
-    constexpr uint32_t kOutAck = KM_CTL_OUT + 48;
+    // Slots of KM_CTL_OUT (16 bytes each), the sources of small NoC writes: check-in,
+    // READY, hello (reader); acknowledgement (writer).
+    constexpr uint32_t kOutCheckin = 0;
+    constexpr uint32_t kOutReady = 1;
+    constexpr uint32_t kOutHello = 2;
+    constexpr uint32_t kOutAck = 3;
+    constexpr uint32_t kOutSlots = (KM_CTL_CORES - KM_CTL_OUT) / 16;
+    static_assert(KM_CTL_OUT % 16 == 0 && kOutAck < kOutSlots, "KM_CTL_OUT slots");
+    static_assert(KM_ACK_STRIDE == 16, "ack words are 16-byte slots");
 
     // Start-up arguments of the reader and the writer: runtime args 0 to kArgs - 1. The
     // program's own arguments follow. The compute kernel gets the kCArg* words.
@@ -209,6 +212,19 @@ namespace km {
 
 #if !defined(COMPILE_FOR_TRISC)
 namespace km {
+
+    // Word 0 of slot `slot` of KM_CTL_OUT in the control block at `ctl`.
+    inline volatile tt_l1_ptr uint32_t* out_slot(uint32_t ctl, uint32_t slot) {
+        return l1(ctl + KM_CTL_OUT + 16 * slot);
+    }
+
+    // A small NoC write: Bytes from slot From of KM_CTL_OUT to slot `to` above the
+    // 16-byte aligned `base`, so both ends share their low four address bits.
+    template <uint32_t From, uint32_t Bytes>
+    inline void small_write(uint32_t ctl, uint64_t base, uint32_t to) {
+        static_assert(From < kOutSlots && Bytes > 0 && Bytes <= 16, "one slot");
+        noc_async_write(ctl + KM_CTL_OUT + 16 * From, base + 16 * to, Bytes);
+    }
 
     // A data-movement kernel's view of the control block and of its start-up arguments.
     class Core {

@@ -98,11 +98,9 @@ namespace km {
             state()[kStMagic] = kStateMagic | a.tag << 8 | a.me;
 
             if (a.me != a.leader) {
-                *ctl(kOutCheckin) = a.tag << 16;
-                noc_async_write(
-                    a.ctl + kOutCheckin,
-                    core_noc(a.leader, a.ctl + KM_CTL_BOOT + 16 * a.rank),
-                    4
+                *out_slot(a.ctl, kOutCheckin) = a.tag << 16;
+                small_write<kOutCheckin, 4>(
+                    a.ctl, core_noc(a.leader, a.ctl + KM_CTL_BOOT), a.rank
                 );
                 noc_async_write_barrier();
             } else {
@@ -122,16 +120,14 @@ namespace km {
                     gave_up(kStReader, code, kWhereCheckin, 0, 0);
                     return false;
                 }
-                *ctl(kOutReady) = KM_READY;
-                noc_async_write(
-                    a.ctl + kOutReady, disp_noc(a.ready_base + a.ready_slot * 16), 4
-                );
+                *out_slot(a.ctl, kOutReady) = KM_READY;
+                small_write<kOutReady, 4>(a.ctl, disp_noc(a.ready_base), a.ready_slot);
                 noc_async_write_barrier();
             }
             if (a.mailbox != 0) {
-                ctl(kOutHello)[0] = 1;
-                ctl(kOutHello)[1] = a.ctl;
-                noc_async_write(a.ctl + kOutHello, disp_noc(a.mailbox), 8);
+                out_slot(a.ctl, kOutHello)[0] = 1;
+                out_slot(a.ctl, kOutHello)[1] = a.ctl;
+                small_write<kOutHello, 8>(a.ctl, disp_noc(a.mailbox), 0);
                 noc_async_write_barrier();
             }
             return true;
