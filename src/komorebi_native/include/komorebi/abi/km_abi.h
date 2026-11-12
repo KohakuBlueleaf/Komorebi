@@ -19,6 +19,8 @@
 /* host -> dispatch kernel only: a0 = request id of the stream to cancel */
 #define KM_SEG_CANCEL 250u
 /* Flags: bit 0 is reserved and zero. Every record reports completion (revision 2). */
+/* issued only when no in-flight team overlaps the team of this record */
+#define KM_F_EXCL 2u
 /* a queued job: `first` is ignored, the team allocator chooses it */
 #define KM_F_QUEUE 8u
 #define KM_TEAM_ALL(n) ((uint32_t)(n) << 16) /* first 0, count n */

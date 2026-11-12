@@ -51,6 +51,13 @@ namespace km {
         return me - first(r) < count(r);  // unsigned: me < first wraps to a large value
     }
 
+    // True when teams `a` and `b` (first | count << 16) share a core: the test that
+    // holds a KM_F_EXCL record while an overlapping team is in flight.
+    inline bool teams_overlap(uint32_t a, uint32_t b) {
+        const uint32_t fa = a & 0xFFFFu, na = a >> 16, fb = b & 0xFFFFu, nb = b >> 16;
+        return na != 0 && nb != 0 && fa < fb + nb && fb < fa + na;
+    }
+
     // Member `index` of `count` takes items [start, start + len) of `n`: contiguous
     // parts covering every item once, the first n % count members one item more.
     struct Share {

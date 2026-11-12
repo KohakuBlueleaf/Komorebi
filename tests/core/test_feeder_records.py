@@ -299,3 +299,41 @@ def test_row_leaders_only_for_teams_that_span_rows(tmp_path):
     assert trees[(0, 119)][0] == (0, 11 + 9)  # its own row, then nine row leaders
     assert all(trees[(0, 119)][c] == (0, 11) for c in range(12, 108, 12))
     assert trees[(0, 119)][108] == (0, 10)
+
+
+OVERLAP_CHECK = r"""
+#include <cstdio>
+#include "komorebi/device/km_record.hpp"
+
+int main() {
+    for (unsigned fa = 0; fa < 8; fa++)
+        for (unsigned na = 0; na < 6; na++)
+            for (unsigned fb = 0; fb < 8; fb++)
+                for (unsigned nb = 0; nb < 6; nb++)
+                    std::printf("%d", km::teams_overlap(km::make_team(fa, na),
+                                                        km::make_team(fb, nb)));
+    std::printf(" %d\n", km::teams_overlap(KM_TEAM_ALL(119), km::make_team(118, 1)));
+    return 0;
+}
+"""
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
+def test_excl_overlap_is_a_shared_core(tmp_path):
+    assert rec.K["KM_F_EXCL"] == 2  # flag bit 1; bit 0 stays reserved
+    src = tmp_path / "overlap.cpp"
+    src.write_text(OVERLAP_CHECK)
+    exe = tmp_path / "overlap"
+    cmd = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
+    subprocess.run([*cmd, str(src), "-o", str(exe)], check=True)
+    got, last = subprocess.run(
+        [str(exe)], capture_output=True, text=True, check=True
+    ).stdout.split()
+    want = "".join(
+        str(int(bool(set(range(fa, fa + na)) & set(range(fb, fb + nb)))))
+        for fa in range(8)
+        for na in range(6)
+        for fb in range(8)
+        for nb in range(6)
+    )
+    assert got == want and last == "1"
