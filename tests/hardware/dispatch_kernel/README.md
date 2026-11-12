@@ -13,7 +13,8 @@ the counters back only after the X280 runtime is closed.
 | Stand-in worker, one data-movement kernel per core | `kernels/worker.cpp` |
 | Its test segments, argument function and counter indices | `kernels/dk_test.h` |
 | Driver, one case per run | `dispatch_card.py` |
-| Builds the kernel image and the host module | `build.py` |
+| Measuring image: cost of loads, stores and fences per memory | `x280/memcost.c` |
+| Builds the kernel image, the measuring image and the host module | `build.py` |
 | One run under a hang watcher | `run.sh` |
 
 ## Cases
@@ -32,6 +33,7 @@ case's checks hold.
 | `bench` | `--n` NOP records at `--depth` to teams of `--team` cores (0 = all), then EXIT | every event and every core count is right; reports microseconds per command |
 | `compile-error` | The worker is built with `DK_COMPILE_ERROR`, so it fails to compile | the error is raised and the X280 image was never started (or, with `--image-first`, was stopped) |
 | `store` | No kernel: `--n` bursts of `--lines` 64-byte stores into LIM (or, with `--target l1`, a Tensix core's free L1) and one fence each, for every idle gap in `--gaps-us`, keep-busy period in `--busy-us` (a second thread storing one line per period; 0 = none) and number of burst positions in `--spread`; `--read` reads LIM through the runtime before each burst | always (it reports the time in the stores and in the fence of each burst, as percentiles and raw) |
+| `memcost` | Runs `x280/memcost.c` alone (no grid): nanoseconds per load, store and fence on the stack (cluster local memory, uncached), in cached DRAM of this cluster's bank (through the Memory Port, in a DRAM buffer the test owns), and in registers | the image returned 0 |
 
 The harness always launches the grid before it starts the image, so a compile error is
 raised before any image exists. `--image-first` reverses the order, to test that the

@@ -29,6 +29,24 @@ import ttnn  # noqa: E402
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
 IMAGE = os.path.join(BUILD, "km-dispatch.bin")
+MEMCOST = os.path.join(BUILD, "km-memcost.bin")
+MEMCOST_TESTS = [
+    "loop",
+    "stack_load",
+    "stack_store",
+    "stack_chain",
+    "ddr_load",
+    "ddr_store",
+    "ddr_chain",
+    "lim_poll",
+    "fence_ir",
+    "fence_ow",
+    "mtime",
+    "store_fence",
+    "ddr_fence_ir",
+]
+IPI_ACK_DDR = 0x470020  # the runtime's IPI ack in the cluster's DRAM bank
+DRAM_KEEP = []  # DRAM tensors a running image may use
 CTL_CB, OUT_CB = 8, 9
 CTL_BYTES = 0xA00  # KM_CTL_BYTES (0x980) rounded up to whole 64-byte lines
 AICLK_HZ = 1.35e9  # Tensix clock of this card, for the wait limit only
@@ -181,6 +199,17 @@ def int_tensor(device, array):
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=device,
     )
+
+
+def dram_area(device):
+    """The bank address of 4 KiB that is ours in every DRAM bank (bank offset 0):
+    page rows of a DRAM tensor of 1024 pages, kept alive with the device."""
+    pages = int_tensor(device, np.zeros((1024, 1024), dtype=np.uint32))
+    DRAM_KEEP.append(pages)
+    ddr = pages.buffer_address()
+    if ddr <= IPI_ACK_DDR < ddr + 4096:
+        raise SystemExit("the buffer covers the runtime's IPI ack word")
+    return ddr
 
 
 def result_block(words):
@@ -587,6 +616,24 @@ def case_store(device, args):
     return {"target": args.target, "read": args.read, "configs": configs, "ok": True}
 
 
+def case_memcost(device, args):
+    """x280/memcost.c: picoseconds per load, store and fence in the stack (LIM),
+    cached DRAM (a buffer of ours in every bank) and registers; no grid."""
+    ddr = dram_area(device)
+    runtime = dk.Runtime(device, pll_mhz=args.pll)
+    plan = runtime.plan()
+    try:
+        fin = plan.run_image(MEMCOST, [ddr], 10.0)
+    finally:
+        if plan.running():
+            plan.abort()
+        del plan, runtime
+        gc.collect()
+    words = fin.pop("words")
+    ps = dict(zip(MEMCOST_TESTS, words))
+    return {"ddr_offset": ddr, "finish": fin, "ps_per_op": ps, "ok": fin["result"] == 0}
+
+
 def case_compile_error(device, args):
     """The worker fails to compile; the kernel must be stopped (or never started)."""
     try:
@@ -606,6 +653,7 @@ CASES = {
     "bench": case_bench,
     "compile-error": case_compile_error,
     "store": case_store,
+    "memcost": case_memcost,
 }
 
 

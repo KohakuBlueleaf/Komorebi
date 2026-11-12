@@ -538,6 +538,27 @@ namespace {
             };
         }
 
+        // Runs a measuring image on cluster 0: argument block {run, words...}, a zeroed
+        // result block; waits for the result and returns what finish() returns.
+        Finish run_image(
+            const std::string& image,
+            const std::vector<uint64_t>& words,
+            double timeout_s
+        ) {
+            if (session || words.size() > 31) {
+                throw std::runtime_error("a kernel is running, or more than 31 words");
+            }
+            std::random_device rd;
+            run = (0x6b6d640000000000ull ^ (static_cast<uint64_t>(rd()) << 16)) + rd();
+            std::vector<uint8_t> block(KMD_LIM_RESULT + 4 * KMD_R_WORDS + 64 - 1, 0);
+            block.resize(block.size() / 64 * 64);
+            std::memcpy(block.data(), &run, 8);
+            std::memcpy(block.data() + 8, words.data(), 8 * words.size());
+            tile->write_available_lim(base, block);
+            start(image);
+            return finish(timeout_s);
+        }
+
         // Waits for the kernel's hart result, stops the session and reads the result
         // block.
         Finish finish(double timeout_s) {
@@ -852,6 +873,28 @@ NB_MODULE(_km_dispatch_test, m) {
                 out["words"] = f.words;
                 return out;
             },
+            nb::arg("timeout_s") = 10.0
+        )
+        .def(
+            "run_image",
+            [](Plan& p,
+               const std::string& image,
+               const std::vector<uint64_t>& words,
+               double timeout_s) {
+                Finish f;
+                {
+                    nb::gil_scoped_release release;
+                    f = p.run_image(image, words, timeout_s);
+                }
+                nb::dict out;
+                out["result_ready"] = f.ready;
+                out["result"] = f.result ? nb::object(nb::int_(*f.result)) : nb::none();
+                out["cleaned"] = f.cleaned;
+                out["words"] = f.words;
+                return out;
+            },
+            nb::arg("image"),
+            nb::arg("words"),
             nb::arg("timeout_s") = 10.0
         )
         .def("abort", &Plan::abort)
