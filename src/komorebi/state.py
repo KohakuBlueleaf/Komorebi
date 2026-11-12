@@ -79,22 +79,25 @@ def core_state(st, core, h=None):
     """One core's state words as a dict."""
     h = h or abi.headers()
     s = [int(v) for v in st[core]]
-    compute = [(w & 0xFFFF, w >> 16) for w in s[h["kStCompute"] : h["kStCompute"] + 3]]
+    magic, ends, wrong = s[h["kStMagic"]], s[h["kStEnds"]], s[h["kStWrong"]]
     return {
         "core": core,
-        "magic_ok": s[h["kStMagic"]] == (h["kStateMagic"] | core),
-        "tag": s[h["kStTag"]],
+        "magic_ok": magic >> 24 == h["kStateMagic"] >> 24 and magic & 0xFF == core,
+        "tag": (magic >> 8) & 0xFFFF,
         "runs": s[h["kStRuns"]],
         "completed": s[h["kStCompleted"]],
         "passes": s[h["kStPasses"]],
         "next_cycles": s[h["kStNextCycles"]] * 16,
-        "compute_seen": [c[0] for c in compute],
-        "compute_wrong": [c[1] for c in compute],
-        "reader_end": s[h["kStReaderEnd"]],
-        "writer_end": s[h["kStWriterEnd"]],
-        "compute_end": s[h["kStComputeEnd"]],
+        "compute_seen": s[h["kStSeen"]],
+        "compute_wrong": [(wrong >> (8 * b)) & 0xFF for b in range(3)],
+        "reader_end": ends & 0xFF,
+        "writer_end": (ends >> 8) & 0xFF,
+        "compute_end": (ends >> 16) & 0xFF,
+        "slot_wrong": s[h["kStSlotWrong"]],
+        "trace_dropped": s[h["kStTraceDropped"]],
         "reader": gave_up(s[h["kStReader"]], s[h["kStReaderSeq"]], h),
         "writer": gave_up(s[h["kStWriter"]], s[h["kStWriterSeq"]], h),
+        "compute": gave_up(s[h["kStCompute"]], s[h["kStComputeSeq"]], h),
         "last": s[h["kStLast"] : h["kStLast"] + 16],
         "reported": s[h["kStReported"] : h["kStReported"] + 16],
     }
@@ -109,7 +112,9 @@ def not_reported(st, team, slot, seq, h=None):
     for core in range(first, first + count):
         c = core_state(st, core, h)
         if c["reported"][slot] != seq:
-            out.append({"core": core, "reader": c["reader"], "writer": c["writer"]})
+            out.append(
+                {"core": core, **{k: c[k] for k in ("reader", "writer", "compute")}}
+            )
     return out
 
 

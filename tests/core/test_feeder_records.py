@@ -128,14 +128,30 @@ def test_feeder_rows_decode():
 def test_state_words_decode():
     ctl = np.zeros((2, K["KM_CTL_BYTES"] // 4), dtype=np.uint64)
     base = K["KM_CTL_STATE"] // 4
-    ctl[1, base + K["kStMagic"]] = K["kStateMagic"] | 1
+    ctl[1, base + K["kStMagic"]] = K["kStateMagic"] | 0xBEEF << 8 | 1
     word = K["kGaveStop"] | K["kWhereStall"] << 8 | 4 << 16
     ctl[1, base + K["kStReader"]], ctl[1, base + K["kStReaderSeq"]] = word, 77
+    ctl[1, base + K["kStEnds"]] = K["kEndExit"] | K["kEndAbort"] << 8 | 2 << 16
+    ctl[1, base + K["kStWrong"]] = 3 << 16
     st = rec.state_words(rec.as_int32(ctl))
-    c = rec.core_state(st, 1)
-    assert c["magic_ok"] and c["writer"] is None
+    c = rec.core_state(st, 1, tag=0xBEEF)
+    assert c["magic_ok"] and c["writer"] is None and c["compute"] is None
     assert c["reader"] == {"code": "stop", "where": "stall", "slot": 4, "seq": 77}
+    assert (c["reader_end"], c["writer_end"], c["compute_end"]) == (1, 3, 2)
+    assert c["compute_wrong"] == [0, 0, 3]
+    assert not rec.core_state(st, 1, tag=0xBEEE)["magic_ok"]
     assert not rec.core_state(st, 0)["magic_ok"]
+
+
+def test_state_words_are_distinct_and_fit():
+    words = {k: v for k, v in K.items() if k.startswith("kSt") and k != "kStateWords"}
+    words.pop("kStateMagic")
+    taken = []
+    for name, at in words.items():
+        size = 16 if name in ("kStLast", "kStReported") else 1
+        taken += range(at, at + size)
+    assert len(taken) == len(set(taken)) == K["kStateWords"]
+    assert max(taken) < K["kStateWords"]
 
 
 HOST_CHECK = r"""

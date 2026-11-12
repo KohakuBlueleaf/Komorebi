@@ -16,26 +16,27 @@ namespace km {
     constexpr uint32_t kTokenBytes = 64;
 
     // State words (32-bit, from KM_CTL_STATE). A gave-up word is code | where << 8 |
-    // slot << 16; its sequence number is in the next word.
+    // slot << 16; its sequence number is in the next word. Counters saturate.
     constexpr uint32_t kStLast = 0;        // 16 words: last sequence consumed, per slot
     constexpr uint32_t kStReported = 16;   // 16 words: last sequence reported, per slot
     constexpr uint32_t kStReader = 32;     // reader gave-up word
     constexpr uint32_t kStReaderSeq = 33;  // its sequence number
     constexpr uint32_t kStWriter = 34;     // writer gave-up word
     constexpr uint32_t kStWriterSeq = 35;  // its sequence number
-    constexpr uint32_t kStRuns = 36;       // records the reader took
-    constexpr uint32_t kStPasses = 37;     // ring passes in next(), all calls
-    constexpr uint32_t kStNextCycles = 38;  // cycles in next(), all calls, / 16
-    constexpr uint32_t kStCompleted = 39;   // records the writer finished
-    constexpr uint32_t kStCompute = 40;     // 3 words, unpack, math, pack: records |
-                                            // copies whose sequence disagreed << 16
-    constexpr uint32_t kStReaderEnd = 43;   // how each kernel left (kEnd*)
-    constexpr uint32_t kStMagic = 44;       // kStateMagic | me, written at start-up
-    constexpr uint32_t kStTag = 45;         // the run's tag
-    constexpr uint32_t kStWriterEnd = 46;
-    constexpr uint32_t kStComputeEnd = 47;
+    constexpr uint32_t kStCompute = 36;    // compute gave-up word
+    constexpr uint32_t kStComputeSeq = 37;  // its sequence number
+    constexpr uint32_t kStRuns = 38;        // records the reader took
+    constexpr uint32_t kStPasses = 39;      // ring passes in next(), all calls
+    constexpr uint32_t kStNextCycles = 40;  // cycles in next(), all calls, / 16
+    constexpr uint32_t kStCompleted = 41;   // records the writer finished
+    constexpr uint32_t kStSeen = 42;        // records compute took
+    constexpr uint32_t kStWrong = 43;       // bytes unpack, math, pack: bad job copies
+    constexpr uint32_t kStEnds = 44;        // bytes reader, writer, compute: kEnd*
+    constexpr uint32_t kStMagic = 45;       // kStateMagic | tag << 8 | me
+    constexpr uint32_t kStSlotWrong = 46;   // records not run: header slot not theirs
+    constexpr uint32_t kStTraceDropped = 47;  // trace stamps beyond its capacity
     constexpr uint32_t kStateWords = 48;
-    constexpr uint32_t kStateMagic = 0x4B4D0000;
+    constexpr uint32_t kStateMagic = 0x4B000000;
 
     // Gave-up codes, where codes and how a kernel left.
     constexpr uint32_t kGaveNone = 0;
@@ -49,7 +50,11 @@ namespace km {
     constexpr uint32_t kWhereWriter = 6;    // writer waiting for a token
     constexpr uint32_t kWhereData = 7;      // a segment's bounded buffer wait
     constexpr uint32_t kEndExit = 1;        // left on an EXIT record
-    constexpr uint32_t kEndGaveUp = 2;      // left after a wait gave up
+    constexpr uint32_t kEndGaveUp = 2;      // left after its own wait gave up
+    constexpr uint32_t kEndAbort = 3;       // left on the EXIT handed after a give-up
+    constexpr uint32_t kEndReader = 0;      // bytes of kStEnds; kStWrong: unpack, ...
+    constexpr uint32_t kEndWriter = 1;
+    constexpr uint32_t kEndCompute = 2;
 
     // Scratch for outgoing NoC writes (16-byte parts of KM_CTL_OUT): check-in, READY,
     // hello (reader); acknowledgement (writer).
@@ -117,6 +122,19 @@ namespace km {
 
     inline volatile tt_l1_ptr uint32_t* l1(uint32_t addr) {
         return reinterpret_cast<volatile tt_l1_ptr uint32_t*>(addr);
+    }
+
+    // Adds v to a counter that stops at 0xFFFFFFFF.
+    inline void add_sat(volatile tt_l1_ptr uint32_t* w, uint32_t v) {
+        const uint32_t x = *w + v;
+        *w = x < v ? 0xFFFFFFFFu : x;
+    }
+
+    // Byte `b` of state word `word` (each byte has one writer).
+    inline void put_byte(
+        volatile tt_l1_ptr uint32_t* state, uint32_t word, uint32_t b, uint32_t v
+    ) {
+        reinterpret_cast<volatile tt_l1_ptr uint8_t*>(state + word)[b] = v;
     }
 
 }  // namespace km

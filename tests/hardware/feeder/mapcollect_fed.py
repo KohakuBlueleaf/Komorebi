@@ -333,19 +333,16 @@ def run(device, args, rng):
     out["next_cycles_per_pass"] = round(
         sum(c["next_cycles"] for c in states) / max(passes, 1), 1
     )
+    parts = ("reader", "writer", "compute")
     gave = [
-        {"core": c["core"], "reader": c["reader"], "writer": c["writer"]}
+        {"core": c["core"], **{k: c[k] for k in parts}}
         for c in states
-        if c["reader"] or c["writer"]
+        if any(c[k] for k in parts)
     ]
     out["gave_up_cores"] = len(gave)
     out["gave_up_where"] = {
-        w: sum(
-            1 for g in gave for k in ("reader", "writer") if g[k] and g[k]["where"] == w
-        )
-        for w in sorted(
-            {g[k]["where"] for g in gave for k in ("reader", "writer") if g[k]}
-        )
+        w: sum(1 for g in gave for k in parts if g[k] and g[k]["where"] == w)
+        for w in sorted({g[k]["where"] for g in gave for k in parts if g[k]})
     }
     if s["status"] == "timeout":
         first, count = teams[s["index"]]
@@ -355,12 +352,9 @@ def run(device, args, rng):
             c for c in team if states[c]["reported"][s["slot"]] != s["seq"]
         ]
         out["named"] = [
-            {"core": g["core"], **{k: g[k] for k in ("reader", "writer") if g[k]}}
+            {"core": g["core"], **{k: g[k] for k in parts if g[k]}}
             for g in gave
-            if any(
-                g[k] and g[k]["where"] in ("stall", "complete")
-                for k in ("reader", "writer")
-            )
+            if any(g[k] and g[k]["where"] in ("stall", "complete") for k in parts)
         ]
     if args.trace and res.trace is not None:
         phases = trace_phases(res, teams, n)

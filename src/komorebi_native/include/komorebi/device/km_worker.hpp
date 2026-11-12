@@ -24,17 +24,17 @@ namespace km {
         void run(Body body) {
             if (!start()) {
                 leave_others();
-                state()[kStReaderEnd] = kEndGaveUp;
+                put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
                 return;
             }
             while (const km_record_t* r = next()) {
                 if (seg(*r) == KM_SEG_EXIT) {
-                    state()[kStReaderEnd] = kEndExit;
+                    put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
                 body(*r);
             }
-            state()[kStReaderEnd] = kEndGaveUp;
+            put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
         // A wait only the stop word ends (bounded by the idle limit). Returns true on
@@ -90,8 +90,7 @@ namespace km {
             );
             noc_async_read_barrier();
             invalidate_l1_cache();
-            state()[kStMagic] = kStateMagic | a.me;
-            state()[kStTag] = a.tag;
+            state()[kStMagic] = kStateMagic | a.tag << 8 | a.me;
 
             if (a.me != a.leader) {
                 *ctl(kOutCheckin) = a.tag << 16;
@@ -185,8 +184,10 @@ namespace km {
                 }
             }
             const uint32_t t1 = wall();
-            state()[kStPasses] += passes;
-            state()[kStNextCycles] += static_cast<uint32_t>((wall64() - t0) >> 4);
+            add_sat(state() + kStPasses, passes);
+            add_sat(
+                state() + kStNextCycles, static_cast<uint32_t>((wall64() - t0) >> 4)
+            );
             if (gave != kGaveNone) {
                 gave_up(kStReader, gave, kWhereNext, 0, 0);
                 hand_off_exit();
@@ -194,7 +195,7 @@ namespace km {
             }
             trace_.put(seq, kTraceSeen, t1);
             trace_.put(seq, kTraceExtra, passes);
-            state()[kStRuns]++;
+            add_sat(state() + kStRuns, 1);
             hand_off(seq);
             return const_cast<const km_record_t*>(job);
         }
@@ -266,8 +267,9 @@ namespace km {
                 copy_record(ctl(KM_CTL_JOB), &r);
                 cb_pop_front(kCbTokenWriter, 1);
                 if (seg(r) == KM_SEG_EXIT) {
-                    if (r.seq != 0 &&
-                        complete(*this, r)) {  // seq 0: the reader gave up
+                    if (r.seq == 0) {  // the reader gave up
+                        end = kEndAbort;
+                    } else if (complete(*this, r)) {
                         trace_.stamp(r.seq, kTraceSent);
                     }
                     break;
@@ -278,10 +280,10 @@ namespace km {
                 if (report && complete(*this, r)) {
                     trace_.stamp(r.seq, kTraceSent);
                 }
-                state()[kStCompleted]++;
+                add_sat(state() + kStCompleted, 1);
             }
             trace_.flush(a.me);
-            state()[kStWriterEnd] = end;
+            put_byte(state(), kStEnds, kEndWriter, end);
         }
 
         // Bounded cb_wait_front for a segment's data. False: gave up (recorded).
@@ -330,29 +332,30 @@ namespace km {
         template <typename Body>
         void run(Body body) {
             volatile tt_l1_ptr uint32_t* st = l1(ctl_ + KM_CTL_STATE);
-            uint32_t seen = 0, wrong = 0;
+            uint32_t wrong = 0, end = kEndExit;
             for (;;) {
                 cb_wait_front(kCbTokenCompute, 1);
                 const uint32_t seq = ckernel::read_tile_value(kCbTokenCompute, 0, 0);
                 invalidate_l1_cache();
                 km_record_t r;
                 copy_record(l1(ctl_ + KM_CTL_JOB), &r);
-                seen++;
-                wrong += r.seq != seq || !KM_LANDED(&r);
+                wrong += (r.seq != seq || !KM_LANDED(&r)) && wrong < 255;
                 MATH((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, seq)));
                 PACK((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, seq)));
                 UNPACK(((void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId)));
                 UNPACK(((void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
                 cb_pop_front(kCbTokenCompute, 1);
-                UNPACK((st[kStCompute + 0] = seen | wrong << 16));
-                MATH((st[kStCompute + 1] = seen | wrong << 16));
-                PACK((st[kStCompute + 2] = seen | wrong << 16));
+                UNPACK((add_sat(st + kStSeen, 1)));
+                UNPACK((put_byte(st, kStWrong, 0, wrong)));
+                MATH((put_byte(st, kStWrong, 1, wrong)));
+                PACK((put_byte(st, kStWrong, 2, wrong)));
                 if (seg(r) == KM_SEG_EXIT) {
+                    end = r.seq == 0 ? kEndAbort : kEndExit;
                     break;
                 }
                 body(r);
             }
-            PACK((st[kStComputeEnd] = kEndExit));
+            PACK((put_byte(st, kStEnds, kEndCompute, end)));
         }
 
     private:

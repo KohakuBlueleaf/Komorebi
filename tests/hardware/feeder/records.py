@@ -190,24 +190,30 @@ def gave_up(word, seq):
     }
 
 
-def core_state(st, core):
-    """One core's state words as a dict."""
+def core_state(st, core, tag=None):
+    """One core's state words as a dict (`tag`: the run's tag, checked with magic)."""
     s = [int(v) for v in st[core]]
-    compute = [(w & 0xFFFF, w >> 16) for w in s[K["kStCompute"] : K["kStCompute"] + 3]]
+    magic = s[K["kStMagic"]]
+    ends, wrong = s[K["kStEnds"]], s[K["kStWrong"]]
     return {
         "core": core,
-        "magic_ok": s[K["kStMagic"]] == (K["kStateMagic"] | core),
+        "magic_ok": magic >> 24 == K["kStateMagic"] >> 24
+        and magic & 0xFF == core
+        and (tag is None or (magic >> 8) & 0xFFFF == tag),
         "runs": s[K["kStRuns"]],
         "completed": s[K["kStCompleted"]],
         "passes": s[K["kStPasses"]],
         "next_cycles": s[K["kStNextCycles"]] * 16,
-        "compute_seen": [c[0] for c in compute],
-        "compute_wrong": [c[1] for c in compute],
-        "reader_end": s[K["kStReaderEnd"]],
-        "writer_end": s[K["kStWriterEnd"]],
-        "compute_end": s[K["kStComputeEnd"]],
+        "compute_seen": s[K["kStSeen"]],
+        "compute_wrong": [(wrong >> (8 * b)) & 0xFF for b in range(3)],
+        "reader_end": ends & 0xFF,
+        "writer_end": (ends >> 8) & 0xFF,
+        "compute_end": (ends >> 16) & 0xFF,
+        "slot_wrong": s[K["kStSlotWrong"]],
+        "trace_dropped": s[K["kStTraceDropped"]],
         "reader": gave_up(s[K["kStReader"]], s[K["kStReaderSeq"]]),
         "writer": gave_up(s[K["kStWriter"]], s[K["kStWriterSeq"]]),
+        "compute": gave_up(s[K["kStCompute"]], s[K["kStComputeSeq"]]),
         "last": s[K["kStLast"] : K["kStLast"] + 16],
         "reported": s[K["kStReported"] : K["kStReported"] + 16],
     }

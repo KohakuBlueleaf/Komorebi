@@ -29,7 +29,7 @@ def test_result_block_joins_wide_counts_and_names_codes():
 
 def state_rows(cores=4):
     rows = np.zeros((cores, K["kStateWords"]), dtype=np.uint32)
-    rows[:, K["kStMagic"]] = K["kStateMagic"] | np.arange(cores)
+    rows[:, K["kStMagic"]] = K["kStateMagic"] | 0xBEEF << 8 | np.arange(cores)
     return rows
 
 
@@ -37,11 +37,22 @@ def test_core_state_and_gave_up_words():
     rows = state_rows()
     rows[2, K["kStReader"]] = K["kGaveStop"] | K["kWhereStall"] << 8 | 5 << 16
     rows[2, K["kStReaderSeq"]] = 9
-    rows[1, K["kStCompute"] + 1] = 7 | 2 << 16
+    rows[1, K["kStWrong"]] = 2 << 8
+    rows[1, K["kStEnds"]] = K["kEndExit"] | K["kEndAbort"] << 16
+    rows[3, K["kStCompute"]] = K["kGaveStop"] | K["kWhereData"] << 8
+    rows[3, K["kStComputeSeq"]] = 6
     c = st.core_state(rows, 2)
     assert c["magic_ok"] and c["writer"] is None
     assert c["reader"] == {"code": "stop", "where": "stall", "slot": 5, "seq": 9}
-    assert st.core_state(rows, 1)["compute_wrong"] == [0, 2, 0]
+    c1 = st.core_state(rows, 1)
+    assert c1["compute_wrong"] == [0, 2, 0] and c1["tag"] == 0xBEEF
+    assert (c1["reader_end"], c1["writer_end"], c1["compute_end"]) == (1, 0, 3)
+    assert st.core_state(rows, 3)["compute"] == {
+        "code": "stop",
+        "where": "data",
+        "slot": 0,
+        "seq": 6,
+    }
     limit = K["kGaveLimit"] | K["kWhereComplete"] << 8
     assert st.gave_up(limit, 4)["code"] == "limit"
     assert st.gave_up(0, 0) is None
