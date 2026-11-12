@@ -43,6 +43,9 @@ typedef struct {
     uint32_t slot_seq[KM_RING_SLOTS]; /* last sequence: the ack word once free */
     uint32_t slot_req[KM_RING_SLOTS];
     uint32_t slot_team[KM_RING_SLOTS];
+    uint32_t result_busy; /* busy slots whose record has KM_F_RESULT */
+    uint32_t last_result; /* the latest KM_F_RESULT record's result (0: none yet) */
+    uint32_t results;     /* KM_F_RESULT records completed */
     uint64_t slot_t0[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* counters */

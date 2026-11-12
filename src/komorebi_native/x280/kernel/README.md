@@ -62,6 +62,10 @@ These rules are part of the protocol; a host that relies on anything else is wro
   acknowledgement word still holds from the slot's previous record, so a stale
   acknowledgement can never match. The host needs none of this; only a worker reads
   `seq`.
+- **Result word.** A record with `KM_F_RESULT` is acknowledged by its team's leader with
+  `{ack, result}` written as one 8-byte NoC write into the slot's acknowledgement line;
+  the kernel reads the pair with one 8-byte load, keeps the result, and puts it in the
+  `ticks` field of the record's `KM_EV_DONE` event instead of the time.
 - **EXIT** goes to every core whatever its team field says, and only once no slot is
   busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own. A
   waiting command holds up every command behind it.

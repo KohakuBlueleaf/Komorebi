@@ -237,7 +237,7 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
     hring_consumed(k);
     k->records++;
     k->exited = seg == KM_SEG_EXIT;
-    slot_take(k, slot, seq, req, (uint32_t)l[1], now, k->t_record);
+    slot_take(k, slot, seq, req, (uint32_t)l[1], now, k->t_record, flags & KM_F_RESULT);
     return KMD_TAKEN;
 }
 

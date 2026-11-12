@@ -112,6 +112,8 @@ enum {
     KMD_R_CHECKED = 27, /* KMD_VERIFY_LINES builds: records whose words were checked */
     KMD_R_BAD_LINES = 28, /* of those, records with a word that did not match */
     KMD_R_BAD_FIRST = 29, /* the first such command's number */
+    KMD_R_RESULTS = 30,   /* KM_F_RESULT records completed */
+    KMD_R_RESULT = 31,    /* the latest one's result */
     KMD_R_WORDS = 32
 };
 
