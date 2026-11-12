@@ -43,7 +43,8 @@ static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
     );
 }
 
-/* Start-up: host window, hello, READY, panels. Returns KMD_ERR_NONE or an error. */
+/* Start-up: host window, hello, panels (so a failed READY wait can stop the grid),
+ * READY. Returns KMD_ERR_NONE or an error. */
 static uint32_t boot(kmd_t* k) {
     const volatile kmd_args_t* a = k->args;
     if (events_open(k) != KMD_ERR_NONE) {
@@ -66,6 +67,10 @@ static uint32_t boot(kmd_t* k) {
         result_error(k, KMD_ERR_ALIGN, 0, 0, 0, ctl);
         return k->error;
     }
+    if (grid_open(k, ctl) != KMD_ERR_NONE) {
+        result_error(k, KMD_ERR_WINDOW, 0, 0, 0, 0);
+        return k->error;
+    }
     result_where(k, KMD_WHERE_READY);
     for (uint32_t c = 0; c < (uint32_t)a->columns; c++) {
         w = (
@@ -81,10 +86,6 @@ static uint32_t boot(kmd_t* k) {
             result_error(k, e, 0, 0, 0, c);
             return k->error;
         }
-    }
-    if (grid_open(k, ctl) != KMD_ERR_NONE) {
-        result_error(k, KMD_ERR_WINDOW, 0, 0, 0, 0);
-        return k->error;
     }
     return KMD_ERR_NONE;
 }
