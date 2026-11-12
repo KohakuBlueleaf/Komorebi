@@ -203,6 +203,33 @@ def test_stop_drains_sends_exit_to_every_core_then_stop():
     assert run.stop() is result
 
 
+@pytest.mark.parametrize(
+    "answer, says",
+    [
+        ({"result_ready": False, "failed": "timeout waiting for the hart"}, "never"),
+        ({"cleaned": False}, "could not restore"),
+        ({"state": K["KMD_STATE_READY"]}, "state ready"),
+    ],
+)
+def test_stop_raises_unless_the_kernel_finished_cleanly(answer, says):
+    run, port, backend = make_run()
+    backend.answer = answer
+    run.wait(run.issue(1, (0, 2)))
+    with pytest.raises(KernelFailed, match=says) as caught:
+        run.stop()
+    assert caught.value.result is not None and run.stopped
+    with pytest.raises(KernelFailed):
+        run.issue(1, (0, 1))
+
+
+def test_abort_raises_when_the_runtime_could_not_restore_the_tile():
+    run, _, backend = make_run()
+    backend.cleaned = False
+    with pytest.raises(KernelFailed, match="reset"):
+        run.abort()
+    assert backend.calls == ["abort", "read_back"]
+
+
 def test_state_and_trace_only_after_the_stop():
     run, _, _ = make_run()
     with pytest.raises(KomorebiError, match="after"):

@@ -17,6 +17,7 @@ from komorebi.errors import (
     KomorebiError,
     RecordRefused,
     RecordTimeout,
+    StartError,
     WaitTimeout,
 )
 
@@ -310,15 +311,30 @@ class Run:
             raise
         self._finish(timeout)
         result = self._result
-        if result["error"] != 0:
+        wrong = self._finish_problems(result)
+        if wrong:
             raise self._remember(
-                KernelFailed(
-                    f"the dispatch kernel finished with error {result['error_name']} "
-                    f"in {result['where_name']}",
-                    result=result,
-                )
+                KernelFailed(f"the stop did not end cleanly: {wrong}", result=result)
             )
         return result
+
+    def _finish_problems(self, r):
+        """What is wrong with a finish, as text ("" when the result is ready, the tile
+        restored, the state DONE and the error 0)."""
+        wrong = []
+        if not r.get("result_ready", True):
+            wrong.append("the kernel's result never became ready")
+        if not r.get("cleaned", True):
+            wrong.append(
+                "the X280 runtime could not restore cluster 0 (reset the card)"
+            )
+        if r["state"] != self.h["KMD_STATE_DONE"]:
+            wrong.append(f"state {r['state_name']}")
+        if r["error"] != 0:
+            wrong.append(f"error {r['error_name']} in {r['where_name']}")
+        if r.get("failed"):
+            wrong.append(r["failed"])
+        return "; ".join(wrong)
 
     def abort(self):
         """Stops the kernel through the runtime and reads back what the cores left;
@@ -326,8 +342,32 @@ class Run:
         if self._stopped:
             return
         self._stopped = True
-        self.backend.abort()
+        cleaned = self.backend.abort()
         self._read_back()
+        if not cleaned:
+            raise self._remember(
+                KernelFailed(
+                    "the X280 runtime could not restore cluster 0 after the stop; "
+                    "the card may need a reset"
+                )
+            )
+
+    def _fail_start(self, state, timeout=1.0):
+        """The kernel did not report READY: finishes it, reads back, raises StartError
+        with its result block."""
+        try:
+            self._finish(timeout)
+        except BaseException:
+            self._stopped = True
+            raise
+        r = self._result
+        raise self._remember(
+            StartError(
+                f"the dispatch kernel did not report READY (state {state}): "
+                f"{self._finish_problems(r) or 'no error recorded'}",
+                result=r,
+            )
+        )
 
     def _finish(self, timeout):
         self._stopped = True

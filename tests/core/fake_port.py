@@ -172,27 +172,34 @@ class FakeBackend:
         self.trace_cap = trace_cap
         self.stalled_core = stalled_core
         self.calls = []
+        self.answer = {}  # finish() fields to answer instead (result_ready, ...)
+        self.cleaned = True  # what abort() answers
 
     def finish(self, timeout):
         self.calls.append("finish")
         self.port._step()  # the kernel takes what is in its ring (STOP)
-        assert self.port.state != K["KMD_STATE_READY"], "finish before the kernel ended"
+        if self.answer.get("result_ready", True):
+            assert self.port.state != K["KMD_STATE_READY"], "finished while running"
         words = [0] * K["KMD_R_WORDS"]
         words[K["KMD_R_STATE"]] = self.port.state
         for name, value in self.port.result.items():
             words[K[f"KMD_R_{name.upper()}"]] = value
         words[K["KMD_R_RECORDS"]] = len(self.port.issued)
-        return {
+        if "state" in self.answer:
+            words[K["KMD_R_STATE"]] = self.answer["state"]
+        out = {
             "result_ready": True,
             "result": 0,
             "cleaned": True,
             "failed": "",
             "words": words,
         }
+        out.update({k: v for k, v in self.answer.items() if k in out})
+        return out
 
     def abort(self):
         self.calls.append("abort")
-        return True
+        return self.cleaned
 
     def read_back(self):
         """State words: every member reported its records' sequences, except the

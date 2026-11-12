@@ -172,10 +172,7 @@ class Session:
         run = Run(backend, (dispatch.grid_x, dispatch.grid_y), program, batch)
         self.run = run
         if state != abi.headers()["KMD_STATE_READY"]:
-            run.abort()
-            raise StartError(
-                f"the dispatch kernel did not report READY (state {state})"
-            )
+            run._fail_start(state)
         self.log("ready")
         return run
 

@@ -1,9 +1,9 @@
 """Session.load and its failure paths over a stub ttnn and the fake kernel."""
 
 import pytest
-from fake_session import load_session, program
+from fake_session import FakeDispatch, K, load_session, program
 
-from komorebi.errors import ProgramError
+from komorebi.errors import ProgramError, StartError
 
 
 @pytest.fixture
@@ -41,3 +41,13 @@ def test_a_compile_error_raises_program_error_and_reads_back(card, tmp_path):
     with pytest.raises(ProgramError, match="expected"):
         session.Session(device=object()).load(program(tmp_path))
     assert "start" not in log and log[-2:] == ["close", "read_back"]
+
+
+def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):
+    session, log, _, _ = card
+    monkeypatch.setattr(FakeDispatch, "boot_error", K["KMD_ERR_START"])
+    with pytest.raises(StartError, match="error start") as caught:
+        session.Session(device=object()).load(program(tmp_path))
+    assert caught.value.result["error_name"] == "start"
+    assert caught.value.result["state_name"] == "failed"
+    assert log[-3:] == ["finish", "close", "read_back"]
