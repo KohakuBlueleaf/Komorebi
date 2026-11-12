@@ -1177,3 +1177,13 @@ def test_reference_streams_use_every_micro_op():
         if check(upload, ref.REGION) is None:
             seen |= {o.op for o in Stream.decode(upload).uops()}
     assert seen == set(st.OPS)
+
+
+def test_the_example_in_the_docs_runs():
+    text = (ROOT / "docs" / "streams.md").read_text()
+    code = re.search(r"```python\n(.*?)```", text, re.S)[1]
+    scope = {}
+    exec(code, scope)
+    done = scope["s"].simulate()
+    assert done.status == "ended" and len(done.records) == 1000
+    assert all(1 <= r.count <= 119 for r in done.records)

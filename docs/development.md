@@ -18,12 +18,13 @@ src/komorebi/                  the package you import
   layout.py                    the grid, its panels and teams of cores (pure functions)
   stats.py                     timing statistics and error against a reference
   build.py                     out-of-tree builds: host program, Python module, X280 image
+  engines/stream.py            micro-op streams: builder, upload encoding, check, simulator
   tools/cxx_format.py          clang-format with the rules it cannot express
   manifest/  lang/             reserved for later tiers (README inside, no code yet)
 src/komorebi_native/           the native layer (README inside; directories only)
 examples/  projects/           runnable examples; larger programs (README inside)
 experiments/  ref/             standalone proofs; CPU references (README inside)
-tests/core/                    tests that need no card
+tests/core/                    tests that need no card (reference streams in data/streams)
 docs/                          concepts, install, this page
 packaging/                     tt-metal.pin: the tt-metal version Komorebi is developed against
 ```

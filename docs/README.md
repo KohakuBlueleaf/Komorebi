@@ -47,6 +47,11 @@ Mental models: why things are the way they are. Every page carries a status line
 - [The Tensix runtime](concepts/runtime.md): the resident worker, the 64-byte record,
   teams and completion, and static and dynamic breakpoints.
 
+### Reference
+
+- [Micro-op streams](streams.md): the upload format, the builder, the check, the
+  simulator and the error reasons of the programs the dispatch kernel runs.
+
 ## Codebase map
 
 ```text
