@@ -297,6 +297,7 @@ namespace km {
                 }
                 add_sat(state() + kStCompleted, 1);
             }
+            noc_async_write_barrier();  // the last acknowledgement has landed
             trace_.flush(a.me);
             put_byte(state(), kStEnds, kEndWriter, end);
         }
