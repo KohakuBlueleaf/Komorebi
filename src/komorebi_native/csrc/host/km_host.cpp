@@ -321,7 +321,7 @@ namespace {
         }
 
         // Picks the run and the tag, zeroes LIM layout and host buffer, writes the
-        // argument block (state_ddr: the kernel's state in its DRAM bank).
+        // argument block (state_ddr: the kernel's state; upload_bytes: -1 all free).
         uint32_t prepare(
             uint32_t depth,
             uint32_t host_depth,
@@ -334,7 +334,8 @@ namespace {
             uint64_t work_depth,
             uint64_t work_event_depth,
             uint64_t work_noc,
-            uint64_t work_noc_addr
+            uint64_t work_noc_addr,
+            int64_t upload_bytes
         ) {
             require_open();
             if (session_) {
@@ -358,6 +359,24 @@ namespace {
                  base_ + work_cmds + work_bytes > tile_->available_lim().end)) {
                 throw std::runtime_error("the work ring's lines are not inside LIM");
             }
+            // The upload region ends at the work ring, at the end of LIM or of the
+            // window.
+            const uint64_t end = (
+                std::min<uint64_t>(
+                    work_cmds ? base_ + work_cmds : tile_->available_lim().end,
+                    base_ + win_->get_size()
+                )
+            );
+            const uint64_t lo = base_ + KMD_LIM_UPLOAD;
+            const uint64_t room = end > lo ? (end - lo) & ~63ull : 0;
+            if (upload_bytes > static_cast<int64_t>(room) ||
+                (upload_bytes >= 0 && upload_bytes % 64 != 0)) {
+                throw std::runtime_error(
+                    "upload_bytes: a multiple of 64, at most the room"
+                );
+            }
+            upload_bytes_ =
+                (upload_bytes < 0 ? room : static_cast<uint64_t>(upload_bytes));
             depth_ = depth;
             host_depth_ = host_depth;
             event_depth_ = event_depth;
@@ -408,6 +427,7 @@ namespace {
             a.work_event_depth = work_event_depth;
             a.work_noc = work_noc;
             a.work_noc_addr = work_noc_addr;
+            a.upload_bytes = upload_bytes_;
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &a, sizeof(a));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
@@ -430,6 +450,31 @@ namespace {
                 throw std::runtime_error("X280 enqueue failed: " + x280::describe(enq));
             }
             session_ = enq.session;
+        }
+
+        // Stores whole 64-byte lines at `offset` of the upload region, then a fence.
+        void upload(uint64_t offset, const nb::bytes& data) {
+            require_open();
+            const uint64_t n = data.size();
+            if (offset % 64 != 0 || n % 64 != 0 || offset > upload_bytes_ ||
+                n > upload_bytes_ - offset) {
+                throw std::runtime_error("upload: whole lines inside the region");
+            }
+            settle();
+            win_->write_block(KMD_LIM_UPLOAD + offset, data.c_str(), n);
+            _mm_sfence();
+            fenced_ = Clock::now();
+        }
+
+        // Stores the read count and a fence: an engine's posts wait for event room.
+        void publish() {
+            require_open();
+            if (seen_ != published_) {
+                settle();
+                store_read();
+                _mm_sfence();
+                fenced_ = Clock::now();
+            }
         }
 
         uint32_t host_word(uint32_t w) const {
@@ -828,6 +873,7 @@ namespace {
         uint32_t published_ = 0;  // the read count last stored into LIM
         double settle_us_ = 1.0;  // pause between a fence and the next store
         Clock::time_point fenced_{};
+        uint64_t upload_bytes_ = 0;  // the upload region's size
 
     private:
         x280::X280Runtime& rt() const {
@@ -1166,10 +1212,14 @@ NB_MODULE(_km_host, m) {
             nb::arg("work_depth") = 0,
             nb::arg("work_event_depth") = 0,
             nb::arg("work_noc") = 0,
-            nb::arg("work_noc_addr") = 0
+            nb::arg("work_noc_addr") = 0,
+            nb::arg("upload_bytes") = -1
         )
         .def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
+        .def_ro("upload_bytes", &Dispatch::upload_bytes_)
+        .def("upload", &Dispatch::upload, nb::arg("offset"), nb::arg("data"))
+        .def("publish", &Dispatch::publish)
         .def(
             "wait_ready",
             [](const Dispatch& d, double timeout_s) {
