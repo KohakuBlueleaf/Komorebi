@@ -64,10 +64,14 @@ def setup(scene):
     lo_y = np.minimum(np.minimum(y[:, 0], y[:, 1]), y[:, 2])
     hi_y = np.maximum(np.maximum(y[:, 0], y[:, 1]), y[:, 2])
     half = F(0.5)
-    ix0 = np.maximum(np.ceil(lo_x - half), F(0)).astype(np.int64)
-    ix1 = np.minimum(np.floor(hi_x - half), F(WIDTH - 1)).astype(np.int64)
-    iy0 = np.maximum(np.ceil(lo_y - half), F(0)).astype(np.int64)
-    iy1 = np.minimum(np.floor(hi_y - half), F(HEIGHT - 1)).astype(np.int64)
+    ix0 = np.minimum(np.maximum(np.ceil(lo_x - half), F(0)), F(WIDTH)).astype(np.int64)
+    ix1 = np.maximum(np.minimum(np.floor(hi_x - half), F(WIDTH - 1)), F(-1)).astype(
+        np.int64
+    )
+    iy0 = np.minimum(np.maximum(np.ceil(lo_y - half), F(0)), F(HEIGHT)).astype(np.int64)
+    iy1 = np.maximum(np.minimum(np.floor(hi_y - half), F(HEIGHT - 1)), F(-1)).astype(
+        np.int64
+    )
     cand &= (ix0 <= ix1) & (iy0 <= iy1)
     keep = np.nonzero(cand)[0]
     x, y, ww, col = x[keep], y[keep], ww[keep], col[keep]
