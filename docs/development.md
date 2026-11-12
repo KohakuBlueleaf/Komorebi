@@ -61,6 +61,10 @@ two lines and docstrings of at most four; comments that say what the code does;
 numerics reported as statistics, with exactness checked on exactly representable
 inputs; every check able to fail on a broken implementation.
 
+Files that must stay as they are (copies of another project's files) are listed in
+`.clang-format-ignore`, one path, directory or pattern per line; the formatter skips them
+unless they are named on its command line.
+
 Experiments come first; a regression test comes after behaviour settles (see
 `experiments/README.md`).
 

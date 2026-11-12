@@ -152,3 +152,17 @@ def test_default_listing_splits_on_null_and_skips_deleted_files(monkeypatch, tmp
     (repo / "sub").mkdir()
     monkeypatch.chdir(repo / "sub")
     assert sorted(cxx_format.sources([])) == [repo / "new.hpp", repo / "with space.cpp"]
+
+
+def test_files_matching_the_ignore_file_are_skipped_unless_named(monkeypatch, tmp_path):
+    repo = tmp_path.resolve()
+    git("init", cwd=repo)
+    (repo / ".clang-format-ignore").write_text("# copies\nvendor/\nkeep.hpp\n*_gen.c\n")
+    names = ["a.cpp", "keep.hpp", "x_gen.c", "vendor/v.h", "vendor/sub/w.h", "b/c.cc"]
+    for name in names:
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text("int x;\n")
+    monkeypatch.chdir(repo)
+    assert sorted(cxx_format.sources([])) == [repo / "a.cpp", repo / "b/c.cc"]
+    assert sorted(cxx_format.sources(["."])) == [Path("a.cpp"), Path("b/c.cc")]
+    assert cxx_format.sources(["keep.hpp"]) == [Path("keep.hpp")]

@@ -6,6 +6,7 @@ Usage: python -m komorebi.tools.cxx_format [--check] [--config FILE] [paths...]
 import argparse
 import atexit
 import contextlib
+import fnmatch
 import functools
 import re
 import shutil
@@ -408,17 +409,41 @@ def format_text(text, binary, passes=4):
     return text
 
 
+def is_ignored(path, root):
+    """True when `path` matches a pattern of <root>/.clang-format-ignore."""
+    try:
+        lines = (root / ".clang-format-ignore").read_text().splitlines()
+    except OSError:
+        return False
+    try:
+        rel = Path(path).resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return False
+    patterns = [x.strip() for x in lines if x.strip() and not x.startswith("#")]
+    return any(
+        fnmatch.fnmatch(rel, pat) or rel.startswith(pat.rstrip("/") + "/")
+        for pat in patterns
+    )
+
+
 def sources(paths):
-    """C / C++ files under `paths`; default: the repository's, outside out/."""
+    """C / C++ files under `paths` or, by default, the repository's, outside out/.
+
+    Files matching .clang-format-ignore are skipped, unless named on the command line.
+    """
+    root = repo_root()
     if paths:
         found = []
         for p in map(Path, paths):
             if p.is_dir():
-                found += sorted(f for f in p.rglob("*") if f.suffix in SUFFIXES)
+                found += sorted(
+                    f
+                    for f in p.rglob("*")
+                    if f.suffix in SUFFIXES and not is_ignored(f, root)
+                )
             else:
                 found.append(p)
         return found
-    root = repo_root()
     listed = subprocess.run(
         ["git", "ls-files", "-z", "-co", "--exclude-standard"],
         capture_output=True,
@@ -432,6 +457,7 @@ def sources(paths):
         if Path(f).suffix in SUFFIXES
         and not f.startswith("out/")
         and (root / f).is_file()
+        and not is_ignored(root / f, root)
     ]
 
 
