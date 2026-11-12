@@ -78,7 +78,9 @@ def fmt(x, digits=1):
 HEADER = (
     "| scene | implementation | setup ms | binning ms | fill ms | total ms | "
     "ms per frame | GPU W idle / mean / peak | GPU J per frame | "
-    "CPU package J per frame | host load |\n" + "|---" * 11 + "|"
+    "CPU package J per frame | card W idle / mean / peak, J per frame | host load |\n"
+    + "|---" * 12
+    + "|"
 )
 
 
@@ -93,10 +95,14 @@ def row(scene, label, stages, power, load=""):
         gpu += f"{power['gpu_peak_w']:.0f}"
     joules = power.get("gpu_joules_per_frame")
     cpu = power.get("cpu_package_joules_per_frame")
+    card = "n/a"
+    if "card_mean_w" in power:
+        card = f"{power['card_idle_w']:.0f} / {power['card_mean_w']:.0f} / "
+        card += f"{power['card_peak_w']:.0f}, {power['card_joules_per_frame']:.3f}"
     spf = power["seconds_per_frame"]
     return (
         f"| {scene} | {label} | {cells} | {spf * 1000:.2f} | {gpu} | "
-        f"{fmt(joules, 3)} | {fmt(cpu, 3)} | {load} |"
+        f"{fmt(joules, 3)} | {fmt(cpu, 3)} | {card} | {load} |"
     )
 
 
