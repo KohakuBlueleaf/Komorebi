@@ -102,7 +102,11 @@ def test_colour_is_interpolated_linearly_in_screen_space():
 def test_triangles_that_cover_nothing_are_dropped():
     cases = {
         "behind the camera": [(300, 300, -1), (400, 300, -1), (300, 400, -1)],
-        "one vertex behind": [(300, 300, 1), (400, 300, 1), (300, 400, 0.01)],
+        "every vertex nearer than near": [
+            (300, 300, 0.04),
+            (400, 300, 0.01),
+            (300, 400, 0.03),
+        ],
         "off screen": [(-300, 300, 1), (-100, 300, 1), (-300, 400, 1)],
         "zero area": [(300, 300, 1), (400, 400, 1), (500, 500, 1)],
         "between pixel centres": [
@@ -114,6 +118,65 @@ def test_triangles_that_cover_nothing_are_dropped():
     for name, tri in cases.items():
         out = raster.rasterize(screen_scene(tri))
         assert (out["tri"] < 0).all() and out["tile_counts"].sum() == 0, name
+
+
+def crossing_scene():
+    """A floor quad from behind the camera to z = 100 and two triangles that cross
+    the near plane (one and two vertices behind it), in camera space."""
+    pos = [(-100, -1, -10), (100, -1, -10), (100, -1, 100), (-100, -1, 100)]
+    pos += [(-0.5, 0.2, 0.01), (0.4, 0.3, 2), (-0.2, 0.6, 3)]
+    pos += [(0.1, -0.2, 0.02), (0.6, -0.1, -1), (0.3, -0.5, 4)]
+    colors = np.linspace(0.1, 0.9, 3 * len(pos)).reshape(-1, 3)
+    return {
+        "positions": np.array(pos, dtype=np.float32),
+        "colors": colors.astype(np.float32),
+        "indices": np.array(
+            [[0, 1, 2], [0, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int32
+        ),
+        "camera": CAMERA,
+    }
+
+
+def test_crossing_triangles_are_clipped():
+    scene = crossing_scene()
+    out = raster.rasterize(scene)
+    floor = np.isin(out["tri"], [0, 1])
+    # floor row y is hit at z = 512 / (y + 0.5 - 512): rows 517 on are nearer than 100
+    rows = np.arange(1024)
+    assert (floor | (out["tri"] >= 2))[rows >= 517].all()
+    assert not floor[rows <= 516].any()
+    for t in (2, 3):
+        assert (out["tri"] == t).sum() > 1000, t
+    assert out["depth"].max() <= np.float32(1) / CAMERA[15]
+
+
+def test_clipped_pieces_equal_the_pieces_drawn_whole():
+    scene = crossing_scene()
+    pieces, colours, src = [], [], []
+    for t, tri in enumerate(scene["indices"]):
+        corners = np.concatenate(
+            [scene["positions"][tri], scene["colors"][tri]], axis=1
+        )
+        poly = raster.clip_polygon(corners, CAMERA[15])
+        for fan in ([0, 1, 2], [0, 2, 3])[: len(poly) - 2]:
+            pieces += [poly[i][:3] for i in fan]
+            colours += [poly[i][3:] for i in fan]
+            src.append(t)
+        assert all(p[2] >= CAMERA[15] for p in poly)
+    whole = {
+        "positions": np.array(pieces, dtype=np.float32),
+        "colors": np.array(colours, dtype=np.float32),
+        "indices": np.arange(len(pieces), dtype=np.int32).reshape(-1, 3),
+        # points on the near plane are not beyond it: draw them with a nearer plane
+        "camera": np.concatenate([CAMERA[:15], [0.04]]).astype(np.float32),
+    }
+    assert len(src) == 6
+    a, b = raster.rasterize(scene), raster.rasterize(whole)
+    assert np.array_equal(a["depth"], b["depth"])
+    assert np.array_equal(a["colour"], b["colour"])
+    assert np.array_equal(
+        a["tri"], np.where(b["tri"] >= 0, np.array(src)[b["tri"]], -1)
+    )
 
 
 def test_winding_does_not_matter():

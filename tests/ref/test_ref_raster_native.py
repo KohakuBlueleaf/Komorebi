@@ -7,7 +7,7 @@ import pytest
 
 from projects.raster.reference import harness
 from ref import native, raster, scenes
-from tests.core.test_ref_raster import screen_scene
+from tests.core.test_ref_raster import crossing_scene, screen_scene
 
 HAND_MADE = {
     "diagonal": [(10, 10, 1), (18, 10, 1), (18, 18, 1), (10, 10, 1), (18, 18, 1)]
@@ -108,4 +108,26 @@ def test_gpu_matches_numpy_on_hand_made_triangles(paths, name):
 def test_gpu_matches_numpy_on_the_ten_thousand_triangle_scene(paths):
     scene = scenes.make_preset("s10k")
     folder = scene_folder(paths, "s10k", scene)
+    assert_same(run_folder("gpu", folder), raster.rasterize(scene))
+
+
+def with_extras(scene):
+    """The arrays a scene folder needs beyond the mesh and camera."""
+    scene = dict(scene)
+    scene |= {"light": np.zeros(3, np.float32), "eps": np.zeros(1, np.float32)}
+    scene["meta"] = np.zeros(5, np.int32)
+    return scene
+
+
+@needs_cxx
+def test_cpu_matches_numpy_on_crossing_triangles(paths):
+    scene = with_extras(crossing_scene())
+    folder = scene_folder(paths, "crossing", scene)
+    assert_same(run_folder("cpu", folder), raster.rasterize(scene))
+
+
+@needs_gpu
+def test_gpu_matches_numpy_on_crossing_triangles(paths):
+    scene = with_extras(crossing_scene())
+    folder = scene_folder(paths, "crossing_gpu", scene)
     assert_same(run_folder("gpu", folder), raster.rasterize(scene))

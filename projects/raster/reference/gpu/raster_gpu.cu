@@ -24,19 +24,25 @@ using namespace kr;
 constexpr int N_TILES = TILES_X * TILES_Y;
 constexpr int BATCH = 64;
 
-__global__ void setup_kernel(Mesh mesh, Record* records, int32_t* counts) {
+// records: (2T), the first piece of triangle t at t and a second one at T + t.
+__global__ void setup_kernel(
+    Mesh mesh, Record* records, uint8_t* pieces, int32_t* counts
+) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= mesh.n_tris) {
         return;
     }
-    Record& r = records[t];
-    setup_triangle(mesh, t, r);
-    if (r.tri < 0) {
-        return;
-    }
-    for (int ty = r.box[2] / TILE; ty <= r.box[3] / TILE; ty++) {
-        for (int tx = r.box[0] / TILE; tx <= r.box[1] / TILE; tx++) {
-            atomicAdd(&counts[ty * TILES_X + tx], 1);
+    int bits = setup_triangle(mesh, t, records[t], records[mesh.n_tris + t]);
+    pieces[t] = (uint8_t)bits;
+    for (int piece = 0; piece < 2; piece++) {
+        if (!((bits >> piece) & 1)) {
+            continue;
+        }
+        const Record& r = records[t + piece * mesh.n_tris];
+        for (int ty = r.box[2] / TILE; ty <= r.box[3] / TILE; ty++) {
+            for (int tx = r.box[0] / TILE; tx <= r.box[1] / TILE; tx++) {
+                atomicAdd(&counts[ty * TILES_X + tx], 1);
+            }
         }
     }
 }
@@ -62,16 +68,27 @@ __global__ void scan_kernel(const int32_t* counts, int32_t* offsets, int32_t* cu
 }
 
 __global__ void scatter_kernel(
-    Mesh mesh, const Record* records, int32_t* cursor, int32_t* list
+    Mesh mesh,
+    const Record* records,
+    const uint8_t* pieces,
+    int32_t* cursor,
+    int32_t* list
 ) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= mesh.n_tris || records[t].tri < 0) {
+    if (t >= mesh.n_tris) {
         return;
     }
-    const Record& r = records[t];
-    for (int ty = r.box[2] / TILE; ty <= r.box[3] / TILE; ty++) {
-        for (int tx = r.box[0] / TILE; tx <= r.box[1] / TILE; tx++) {
-            list[atomicAdd(&cursor[ty * TILES_X + tx], 1)] = t;
+    int bits = pieces[t];
+    for (int piece = 0; piece < 2; piece++) {
+        if (!((bits >> piece) & 1)) {
+            continue;
+        }
+        const int k = t + piece * mesh.n_tris;
+        const Record& r = records[k];
+        for (int ty = r.box[2] / TILE; ty <= r.box[3] / TILE; ty++) {
+            for (int tx = r.box[0] / TILE; tx <= r.box[1] / TILE; tx++) {
+                list[atomicAdd(&cursor[ty * TILES_X + tx], 1)] = k;
+            }
         }
     }
 }
@@ -166,6 +183,7 @@ __global__ void fill_kernel(
 
 struct Device {
     Record* records;
+    uint8_t* pieces;
     int32_t *counts, *offsets, *cursor, *order, *list, *owner;
     float *colour, *depth;
     size_t list_capacity;
@@ -183,7 +201,7 @@ static Times run(const Mesh& mesh, Device& d, bool grow) {
     const int blocks = (mesh.n_tris + 255) / 256;
     CHECK(cudaEventRecord(e[0]));
     CHECK(cudaMemset(d.counts, 0, N_TILES * sizeof(int32_t)));
-    setup_kernel<<<blocks, 256>>>(mesh, d.records, d.counts);
+    setup_kernel<<<blocks, 256>>>(mesh, d.records, d.pieces, d.counts);
     CHECK(cudaEventRecord(e[1]));
     scan_kernel<<<1, N_TILES>>>(d.counts, d.offsets, d.cursor);
     int32_t total = 0;
@@ -197,7 +215,7 @@ static Times run(const Mesh& mesh, Device& d, bool grow) {
         CHECK(cudaMalloc(&d.list, (size_t)total * 4));
         d.list_capacity = total;
     }
-    scatter_kernel<<<blocks, 256>>>(mesh, d.records, d.cursor, d.list);
+    scatter_kernel<<<blocks, 256>>>(mesh, d.records, d.pieces, d.cursor, d.list);
     order_kernel<<<1, N_TILES>>>(d.counts, d.order);
     CHECK(cudaEventRecord(e[2]));
     dim3 block(TILE, 8);
@@ -241,7 +259,8 @@ int main(int argc, char** argv) {
     std::copy(cam.data<float>(), cam.data<float>() + 16, mesh.camera);
 
     Device d{};
-    CHECK(cudaMalloc(&d.records, (size_t)mesh.n_tris * sizeof(Record)));
+    CHECK(cudaMalloc(&d.records, 2 * (size_t)mesh.n_tris * sizeof(Record)));
+    CHECK(cudaMalloc(&d.pieces, (size_t)mesh.n_tris));
     CHECK(cudaMalloc(&d.counts, N_TILES * 4));
     CHECK(cudaMalloc(&d.offsets, (N_TILES + 1) * 4));
     CHECK(cudaMalloc(&d.cursor, N_TILES * 4));

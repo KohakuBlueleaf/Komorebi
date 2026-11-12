@@ -18,10 +18,19 @@ grid of tiles), float32 arithmetic in the order written in `ref/raster.py`, no f
 multiply-add.
 
 1. **Setup**, one triangle at a time (no triangle depends on another). The three
-   vertices are projected with the camera (a triangle with a vertex nearer than the near
-   distance is dropped; there is no clipping). The triangle is turned to positive
-   orientation by swapping two vertices, a zero-area triangle is dropped, and the
-   record is built: three edge functions `a x + b y + c`, the planes of `1/z` and of the
+   vertices are taken into camera space (`x`, `y`, `z` along right, up, forward). A
+   triangle with no vertex beyond the near distance `n` (`z > n`) is dropped; one with
+   all three beyond is kept whole; any other is **clipped** at the plane `z = n`: its
+   edges are walked in order (0-1, 1-2, 2-0), each vertex beyond the plane is kept and
+   each edge that crosses the plane adds the point where it crosses, computed from the
+   vertex beyond (`a`) toward the other (`b`) as `s = (n - z_a) / (z_b - z_a)`,
+   `x = x_a + s (x_b - x_a)`, `y` likewise, `z = n`, colour `c_a + s (c_b - c_a)`
+   (float32, in this order). The 3 or 4 points give one triangle or two (0, 1, 2 and
+   0, 2, 3), each with the original triangle's index; they go through the rest of the
+   setup like whole triangles, so up to two records come from one triangle. Every
+   point is then projected (`1/z`, screen `x` and `y`). Each triangle is turned to
+   positive orientation by swapping two vertices, a zero-area triangle is dropped, and
+   the record is built: three edge functions `a x + b y + c`, the planes of `1/z` and of the
    three colour channels (linear in screen space, no perspective correction), the box of
    pixel centres it can cover (empty box: dropped), and which edges are top or left.
 2. **Binning.** A triangle goes to every tile its pixel box touches, in triangle order.

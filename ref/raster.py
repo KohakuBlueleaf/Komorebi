@@ -1,13 +1,7 @@
-"""Rasterization in numpy, float32: the definition the C++ and CUDA versions match.
-
-Per triangle: project the three vertices (a triangle with a vertex nearer than the
-near distance is dropped), orient it, build edge and attribute planes and its pixel and
-tile boxes. Binning: a triangle goes to every 32 x 32 tile its pixel box touches, in
-triangle order. Fill: a pixel centre is inside when every edge value is > 0, or == 0
-on a top or left edge; the fragment with the larger 1/z wins, a tie goes to the lower
-triangle index. Colour is interpolated linearly in screen space. All arithmetic is
-float32 in the order written here, with no fused multiply-add.
-"""
+"""Rasterization in numpy, float32 in the order written, no fused multiply-add: the
+definition the C++ and CUDA versions match (projects/raster/reference/README.md).
+Triangles are clipped at the near distance, binned to 32 x 32 tiles by pixel box, filled
+by the top-left rule; the larger 1/z wins, a tie goes to the lower triangle index."""
 
 import numpy as np
 
@@ -21,18 +15,66 @@ CHUNK = 128
 F = np.float32
 
 
-def project(scene):
-    """Screen x, y, 1/z per vertex (float32) and the mask of vertices to drop."""
+def camera_space(scene):
+    """Coordinates x, y, z (V,) float32 of the vertices along right, up, forward."""
     cam = scene["camera"]
     d = scene["positions"] - cam[0:3]
     xc = (d[:, 0] * cam[3] + d[:, 1] * cam[4]) + d[:, 2] * cam[5]
     yc = (d[:, 0] * cam[6] + d[:, 1] * cam[7]) + d[:, 2] * cam[8]
     zc = (d[:, 0] * cam[9] + d[:, 1] * cam[10]) + d[:, 2] * cam[11]
-    drop = zc <= cam[15]
-    inv = F(1.0) / np.where(drop, F(1.0), zc)
-    sx = cam[13] + cam[12] * (xc * inv)
-    sy = cam[14] - cam[12] * (yc * inv)
-    return sx, sy, inv, drop
+    return xc, yc, zc
+
+
+def to_screen(cam, xc, yc, zc):
+    """Screen x, y and 1/z of camera-space points with z beyond the near distance."""
+    inv = F(1.0) / zc
+    return cam[13] + cam[12] * (xc * inv), cam[14] - cam[12] * (yc * inv), inv
+
+
+def clip_polygon(corners, near):
+    """The polygon (list of 6-vectors x, y, z, colour) of a triangle cut at z = near.
+
+    corners: (3, 6) float32; a crossing edge adds the point from its vertex beyond.
+    """
+    out = []
+    for k in range(3):
+        a, b = corners[k], corners[(k + 1) % 3]
+        if a[2] > near:
+            out.append(a)
+        if (a[2] > near) != (b[2] > near):
+            inside, outside = (a, b) if a[2] > near else (b, a)
+            t = (near - inside[2]) / (outside[2] - inside[2])
+            point = inside + t * (outside - inside)
+            point[2] = near
+            out.append(point.astype(np.float32))
+    return out
+
+
+def corners(scene):
+    """Screen x, y, 1/z and colour (R, 3) per corner of every piece, and its triangle.
+
+    Whole triangles keep their vertices; crossing ones are clipped (1 or 2 pieces).
+    """
+    cam, idx = scene["camera"], scene["indices"]
+    xc, yc, zc = camera_space(scene)
+    beyond = (zc > cam[15])[idx].sum(axis=1)
+    whole = np.nonzero(beyond == 3)[0]
+    pos = np.stack([xc, yc, zc], axis=1)
+    pieces, src = [pos[idx[whole]]], [whole]
+    cols = [scene["colors"][idx[whole]]]
+    for t in np.nonzero((beyond == 1) | (beyond == 2))[0]:
+        tri = np.concatenate([pos[idx[t]], scene["colors"][idx[t]]], axis=1)
+        poly = clip_polygon(tri, cam[15])
+        for fan in ([0, 1, 2], [0, 2, 3])[: len(poly) - 2]:
+            piece = np.stack([poly[i] for i in fan])
+            pieces.append(piece[None, :, :3])
+            cols.append(piece[None, :, 3:])
+            src.append([t])
+    pos, col, src = np.concatenate(pieces), np.concatenate(cols), np.concatenate(src)
+    order = np.argsort(src, kind="stable")
+    pos, col, src = pos[order], col[order], src[order]
+    x, y, w = to_screen(cam, pos[..., 0], pos[..., 1], pos[..., 2])
+    return x, y, w, col, src.astype(np.int64)
 
 
 def planes(values, coef, inv_area):
@@ -45,18 +87,14 @@ def planes(values, coef, inv_area):
 
 def setup(scene):
     """Per-triangle records of the triangles that can cover a pixel (dict of arrays)."""
-    sx, sy, w, drop = project(scene)
-    idx = scene["indices"]
-    area2 = None
-    x, y, ww = sx[idx], sy[idx], w[idx]
-    col = scene["colors"][idx]
-    cand = ~drop[idx].any(axis=1)
+    x, y, ww, col, src = corners(scene)
+    cand = np.ones(len(src), dtype=bool)
     area2 = (x[:, 1] - x[:, 0]) * (y[:, 2] - y[:, 0])
     area2 = area2 - (x[:, 2] - x[:, 0]) * (y[:, 1] - y[:, 0])
     cand &= area2 != 0
     flip = area2 < 0
     order = np.where(flip[:, None], [0, 2, 1], [0, 1, 2])
-    rows = np.arange(len(idx))[:, None]
+    rows = np.arange(len(src))[:, None]
     x, y, ww, col = x[rows, order], y[rows, order], ww[rows, order], col[rows, order]
     area2 = np.where(flip, -area2, area2)
     lo_x = np.minimum(np.minimum(x[:, 0], x[:, 1]), x[:, 2])
@@ -91,7 +129,7 @@ def setup(scene):
         for k, c in enumerate((a_coef, b_coef, c_coef)):
             cp[:, k, ch] = planes(col[:, :, ch], c, inv_area)
     return {
-        "tri": keep.astype(np.int32),
+        "tri": src[keep].astype(np.int32),
         "a": a_coef,
         "b": b_coef,
         "c": c_coef,

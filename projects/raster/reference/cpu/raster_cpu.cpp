@@ -13,7 +13,8 @@
 using namespace kr;
 
 struct Buffers {
-    std::vector<Record> records;
+    std::vector<Record> records;  // (2T): first pieces, then second pieces
+    std::vector<uint8_t> pieces;  // per triangle, setup_triangle's bits
     std::vector<int32_t> counts, offsets, list;
     std::vector<int32_t> chunk_counts;  // (tiles, chunks)
     std::vector<float> colour, depth;
@@ -87,7 +88,11 @@ static Times run(const Mesh& mesh, Pool& pool, Buffers& b) {
     double t0 = now_ms();
     pool.for_chunks(mesh.n_tris, 256, [&](int64_t a, int64_t e) {
         for (int64_t i = a; i < e; i++) {
-            setup_triangle(mesh, (int)i, b.records[i]);
+            b.pieces[i] = (
+                (uint8_t)setup_triangle(
+                    mesh, (int)i, b.records[i], b.records[mesh.n_tris + i]
+                )
+            );
         }
     });
     double t1 = now_ms();
@@ -96,15 +101,17 @@ static Times run(const Mesh& mesh, Pool& pool, Buffers& b) {
         int32_t* count = &b.chunk_counts[c];
         int64_t end = std::min<int64_t>((c + 1) * per_chunk, mesh.n_tris);
         for (int64_t i = c * per_chunk; i < end; i++) {
-            const Record& r = b.records[i];
-            if (r.tri < 0) {
-                continue;
-            }
-            int tx0, tx1, ty0, ty1;
-            for_tiles_of(r, tx0, tx1, ty0, ty1);
-            for (int ty = ty0; ty <= ty1; ty++) {
-                for (int tx = tx0; tx <= tx1; tx++) {
-                    count[(ty * TILES_X + tx) * n_chunks]++;
+            for (int piece = 0; piece < 2; piece++) {
+                if (!((b.pieces[i] >> piece) & 1)) {
+                    continue;
+                }
+                const Record& r = b.records[i + piece * (int64_t)mesh.n_tris];
+                int tx0, tx1, ty0, ty1;
+                for_tiles_of(r, tx0, tx1, ty0, ty1);
+                for (int ty = ty0; ty <= ty1; ty++) {
+                    for (int tx = tx0; tx <= tx1; tx++) {
+                        count[(ty * TILES_X + tx) * n_chunks]++;
+                    }
                 }
             }
         }
@@ -125,15 +132,18 @@ static Times run(const Mesh& mesh, Pool& pool, Buffers& b) {
         int32_t* cursor = &b.chunk_counts[c];
         int64_t end = std::min<int64_t>((c + 1) * per_chunk, mesh.n_tris);
         for (int64_t i = c * per_chunk; i < end; i++) {
-            const Record& r = b.records[i];
-            if (r.tri < 0) {
-                continue;
-            }
-            int tx0, tx1, ty0, ty1;
-            for_tiles_of(r, tx0, tx1, ty0, ty1);
-            for (int ty = ty0; ty <= ty1; ty++) {
-                for (int tx = tx0; tx <= tx1; tx++) {
-                    b.list[cursor[(ty * TILES_X + tx) * n_chunks]++] = (int32_t)i;
+            for (int piece = 0; piece < 2; piece++) {
+                if (!((b.pieces[i] >> piece) & 1)) {
+                    continue;
+                }
+                const int64_t k = i + piece * (int64_t)mesh.n_tris;
+                const Record& r = b.records[k];
+                int tx0, tx1, ty0, ty1;
+                for_tiles_of(r, tx0, tx1, ty0, ty1);
+                for (int ty = ty0; ty <= ty1; ty++) {
+                    for (int tx = tx0; tx <= tx1; tx++) {
+                        b.list[cursor[(ty * TILES_X + tx) * n_chunks]++] = (int32_t)k;
+                    }
                 }
             }
         }
@@ -173,7 +183,8 @@ int main(int argc, char** argv) {
     Pool pool(n_threads);
     Buffers b;
     const int n_tiles = TILES_X * TILES_Y;
-    b.records.resize(mesh.n_tris);
+    b.records.resize(2 * (size_t)mesh.n_tris);
+    b.pieces.resize(mesh.n_tris);
     b.counts.resize(n_tiles);
     b.offsets.resize(n_tiles + 1);
     b.chunk_counts.resize((size_t)n_threads * 2 * n_tiles);
@@ -200,8 +211,8 @@ int main(int argc, char** argv) {
     }
     double loop_ms = log.finish();
     int valid = 0;
-    for (const Record& r : b.records) {
-        valid += r.tri >= 0;
+    for (uint8_t bits : b.pieces) {
+        valid += (bits & 1) + (bits >> 1);
     }
     std::printf(
         "{\"impl\": \"cpu\", \"threads\": %d, \"triangles\": %d, \"reps_n\": %d, "
