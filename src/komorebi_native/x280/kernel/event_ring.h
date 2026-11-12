@@ -37,7 +37,8 @@ static inline void events_word(kmd_t* k, uint32_t word, uint32_t value) {
     }
 }
 
-/* Stores event number ++events {req, status, ticks}; events_flush makes it known. */
+/* Stores event ++events {req, status, ticks} as one 16-byte store (README.md: one store
+ * per event); events_flush makes it known. */
 static inline void events_push(
     kmd_t* k, uint32_t req, uint32_t status, uint32_t ticks
 ) {
