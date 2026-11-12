@@ -36,7 +36,8 @@ static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
         a->depth >= 1 && a->depth <= KM_RING_SLOTS && a->host_depth >= 1 &&
         a->host_depth <= KMD_HOST_DEPTH_MAX && a->event_depth >= 1 && a->columns >= 1 &&
         a->columns <= KMD_READY_MAX && a->cores >= 1 && a->cores <= KM_CORES_MAX &&
-        a->panels >= 1 && a->panels <= 2 && a->t_record != 0 &&
+        a->panels >= 1 && a->panels <= 2 && a->t_record != 0 && a->state_ddr != 0 &&
+        (a->state_ddr & 63u) == 0 &&
         (a->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE
     );
@@ -213,41 +214,44 @@ static void finish(kmd_t* k) {
 
 /* Core 0's kernel; kept out of main so main's prologue touches no FP register. */
 static __attribute__((noinline)) void run(uint64_t hart) {
-    kmd_t k;
-    /* Zeroed through a volatile pointer: a plain loop may become a memset call, and the
-     * image links without a C library. */
-    volatile uint64_t* raw = (volatile uint64_t*)&k;
-    for (uint32_t i = 0; i < sizeof(k) / sizeof(uint64_t); i++) {
-        raw[i] = 0;
-    }
-    k.hart = hart;
-    k.line = (uint64_t*)(((uintptr_t)k.line_buf + 63u) & ~(uintptr_t)63u);
-    k.run = x280_hart_control(hart)->run_value;
-    k.t_boot = x280_mtime();
+    uint64_t line_buf[24];
+    const uint64_t run_value = x280_hart_control(hart)->run_value;
+    const uint64_t t_boot = x280_mtime();
     const volatile kmd_args_t* a = (const volatile kmd_args_t*)x280_hart_args(hart);
-    if (a == 0 || !args_valid(a, k.run)) {
+    if (a == 0 || !args_valid(a, run_value)) {
         x280_hart_set_result(hart, ~(uint64_t)KMD_ERR_ARGS);
         return;
     }
-    k.args = a;
-    k.lim = (volatile uint8_t*)a;
-    k.result = (volatile uint32_t*)(k.lim + KMD_LIM_RESULT);
-    k.panels = (uint32_t)a->panels;
-    k.host_depth = (uint32_t)a->host_depth;
-    k.event_depth = (uint32_t)a->event_depth;
-    k.depth = (uint32_t)a->depth;
-    k.full = (1u << k.depth) - 1u;
-    k.cores = (uint32_t)a->cores;
-    k.t_record = a->t_record;
-    k.next = 1;
-    result_word(&k, KMD_R_STATE, KMD_STATE_BOOT);
-    if (boot(&k) == KMD_ERR_NONE) {
-        result_word(&k, KMD_R_BOOT_TICKS, (uint32_t)(x280_mtime() - k.t_boot));
-        result_word(&k, KMD_R_STATE, KMD_STATE_READY);
-        events_word(&k, KMD_HOST_STATE, KMD_STATE_READY);
-        loop(&k);
+    kmd_t* k = (kmd_t*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + a->state_ddr);
+    /* Zeroed through a volatile pointer: a plain loop may become a memset call, and the
+     * image links without a C library. */
+    volatile uint64_t* raw = (volatile uint64_t*)k;
+    for (uint32_t i = 0; i < sizeof(*k) / sizeof(uint64_t); i++) {
+        raw[i] = 0;
     }
-    finish(&k);
+    k->hart = hart;
+    k->line = (uint64_t*)(((uintptr_t)line_buf + 63u) & ~(uintptr_t)63u);
+    k->run = run_value;
+    k->t_boot = t_boot;
+    k->args = a;
+    k->lim = (volatile uint8_t*)a;
+    k->result = (volatile uint32_t*)(k->lim + KMD_LIM_RESULT);
+    k->panels = (uint32_t)a->panels;
+    k->host_depth = (uint32_t)a->host_depth;
+    k->event_depth = (uint32_t)a->event_depth;
+    k->depth = (uint32_t)a->depth;
+    k->full = (1u << k->depth) - 1u;
+    k->cores = (uint32_t)a->cores;
+    k->t_record = a->t_record;
+    k->next = 1;
+    result_word(k, KMD_R_STATE, KMD_STATE_BOOT);
+    if (boot(k) == KMD_ERR_NONE) {
+        result_word(k, KMD_R_BOOT_TICKS, (uint32_t)(x280_mtime() - k->t_boot));
+        result_word(k, KMD_R_STATE, KMD_STATE_READY);
+        events_word(k, KMD_HOST_STATE, KMD_STATE_READY);
+        loop(k);
+    }
+    finish(k);
 }
 
 int main(uint64_t hartid) {

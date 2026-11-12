@@ -10,6 +10,7 @@
 #include "noc.h"
 #include "rt/x280_hw.h"
 #include "rt/x280_idle.h"
+#include "x280_address_map.h"
 
 /* The loop checks stop, deadlines and the idle time every this many passes. */
 #define KMD_POLL_EVERY 1024u
@@ -44,11 +45,12 @@ typedef struct {
     uint32_t records, max_busy;
     uint64_t passes, idle_passes, full_passes;
     uint64_t t_first, t_last_event;
-    /* the command being taken, as 8 little-endian 64-bit words: 64-byte aligned inside
-     * line_buf for the vector store (set at the start) */
+    /* the command being taken, as 8 little-endian 64-bit words, on the stack and
+     * 64-byte aligned for the vector store */
     uint64_t* line;
-    uint64_t line_buf[16];
 } kmd_t;
+
+_Static_assert(sizeof(kmd_t) <= KMD_STATE_BYTES, "kmd_t outgrows its DRAM area");
 
 /* A wait's outcome. */
 typedef enum { KMD_OK = 0, KMD_STOP = 1, KMD_LATE = 2 } kmd_wait_t;

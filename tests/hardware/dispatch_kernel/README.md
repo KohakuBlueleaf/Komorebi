@@ -19,6 +19,9 @@ the counters back only after the X280 runtime is closed.
 
 ## Cases
 
+The kernel keeps its state in this cluster's DRAM bank (cached); every case that runs
+the kernel gives it 4 KiB of a DRAM buffer the test owns.
+
 `python dispatch_card.py <case> [options]` prints one JSON line. `ok` is true when the
 case's checks hold.
 

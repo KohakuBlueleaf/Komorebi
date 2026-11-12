@@ -99,7 +99,12 @@ typedef struct {
     uint64_t host_noc_addr; /* NoC address of the host buffer */
     uint64_t pcie_x;        /* the PCIe tile that reaches it */
     uint64_t pcie_y;
-    uint64_t t_start;  /* deadline for the hello and every READY */
-    uint64_t t_record; /* a record's deadline until a KM_SEG_DEADLINE command */
-    uint64_t t_idle;   /* deadline with no command and nothing in flight */
+    uint64_t t_start;   /* deadline for the hello and every READY */
+    uint64_t t_record;  /* a record's deadline until a KM_SEG_DEADLINE command */
+    uint64_t t_idle;    /* deadline with no command and nothing in flight */
+    uint64_t state_ddr; /* offset in this cluster's DRAM bank of KMD_STATE_BYTES */
 } kmd_args_t;
+
+/* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory
+ * Port: the host gives it KMD_STATE_BYTES there, 64-byte aligned (LIM is uncached). */
+#define KMD_STATE_BYTES 1024u

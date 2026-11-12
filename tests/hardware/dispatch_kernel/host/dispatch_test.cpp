@@ -289,7 +289,8 @@ namespace {
             uint32_t event_depth_,
             double t_start_s,
             double t_record_s,
-            double t_idle_s
+            double t_idle_s,
+            uint64_t state_ddr
         ) {
             if (session) {
                 throw std::runtime_error("a kernel is running");
@@ -338,6 +339,7 @@ namespace {
             a.t_start = static_cast<uint64_t>(t_start_s * kMtimeHz);
             a.t_record = static_cast<uint64_t>(t_record_s * kMtimeHz);
             a.t_idle = static_cast<uint64_t>(t_idle_s * kMtimeHz);
+            a.state_ddr = state_ddr;
             std::vector<uint8_t> block(256, 0);  // whole 64-byte lines
             std::memcpy(block.data(), &a, sizeof(a));
             tile->write_available_lim(base + KMD_LIM_ARGS, block);
@@ -801,7 +803,8 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("event_depth") = 252,
             nb::arg("t_start_s") = 30.0,
             nb::arg("t_record_s") = 1.0,
-            nb::arg("t_idle_s") = 30.0
+            nb::arg("t_idle_s") = 30.0,
+            nb::arg("state_ddr") = 0
         )
         .def("start", &Plan::start, nb::arg("image"))
         .def("host_word", &Plan::host_word, nb::arg("word"))

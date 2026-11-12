@@ -228,8 +228,11 @@ def with_kernel(device, args, body, depth=1, t_record_s=1.0, defines=(), preload
     plan = runtime.plan()
     gx, gy = plan.grid_x, plan.grid_y
     log(f"plan: grid {gx}x{gy} panels {plan.panels}")
-    plan.prepare(depth, args.host_depth, args.event_depth, 30.0, t_record_s, 30.0)
     table = int_tensor(device, np.array([plan.core_table()], dtype=np.uint32))
+    state = dram_area(device)
+    plan.prepare(
+        depth, args.host_depth, args.event_depth, 30.0, t_record_s, 30.0, state
+    )
     out = int_tensor(device, np.zeros((gx * gy, DK_WORDS), dtype=np.uint32))
     prog = program(
         plan, table.buffer_address(), out.buffer_address(), args.limit, list(defines)
