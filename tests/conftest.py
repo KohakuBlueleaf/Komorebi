@@ -5,6 +5,13 @@ import os
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def no_inherited_git_environment(monkeypatch):
+    """Drops GIT_DIR and the other GIT_* variables a hook or rebase exports."""
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
+
 def pytest_collection_modifyitems(config, items):
     """Skips card tests unless KMR_CARD=1."""
     if os.environ.get("KMR_CARD") == "1":
