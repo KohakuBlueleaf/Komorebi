@@ -89,7 +89,6 @@ KM_STATIC_ASSERT(KM_CTL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte slots
 
 KM_STATIC_ASSERT(KM_CTL_LANE == KM_CTL_CORES + 4u * KM_CORES_MAX + 0x80u, "ports room");
 KM_STATIC_ASSERT(KM_LANE_DONE + 16u * KM_LANE_RANKS == KM_LANE_BYTES, "lane area");
-KM_STATIC_ASSERT(KM_CTL_LANE + KM_LANES * KM_LANE_BYTES == KM_CTL_DYN, "lane end");
 KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte slots");
 
 #define KM_CTL_DYN 0xC80u /* dynamic crossing: queue counters, idle words, status */
@@ -121,6 +120,7 @@ KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte sl
 KM_STATIC_ASSERT(
     KM_CTL_DYN == KM_CTL_CORES + 4u * KM_CORES_MAX + 0x300u, "after lanes"
 );
+KM_STATIC_ASSERT(KM_CTL_LANE + KM_LANES * KM_LANE_BYTES == KM_CTL_DYN, "lane end");
 KM_STATIC_ASSERT(KM_CTL_DYN + KM_DYN_BYTES == KM_CTL_BYTES, "dynamic area ends");
 KM_STATIC_ASSERT(KM_CTL_DYN % 16u == 0 && KM_DYN_RET + 16u <= KM_DYN_BYTES, "slots");
 KM_STATIC_ASSERT(KM_DYN_IN_TAIL % 16u == 0 && KM_DYN_OUT % 16u == 0, "16-byte slots");
