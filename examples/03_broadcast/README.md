@@ -45,14 +45,18 @@ and passes each core its lane words as program arguments.
 
 ## Run
 
-The example runs on the test feeder (`tests/hardware/feeder/`): the last core of the
-grid issues the records, no X280 is involved.
+The driver loads the program with `komorebi.Session` and issues one `CAST` (or `READ`)
+record per job with `Run.issue(..., exclusive=True)`: the records reach the grid
+through the dispatch kernel on X280 cluster 0. A record that uses lanes is exclusive,
+so the kernel never starts it while another record on an overlapping team runs (the
+two would share the lane buffers). Setup is that of
+[01_mapcollect](../01_mapcollect/README.md#what-it-needs).
 
 ```
-python broadcast.py --rect 0,0,12,9 --blocks 16 --pages 4 --window 2 --jobs 8
-python broadcast.py --rect 0,0,12,9 --blocks 16 --pages 4 --window 2 --read
-python broadcast.py --rect 0,0,6,4 --jobs 2 --stall-job 0 --stall-member 1 \
-    --stall-block 3 --wait 0.05 --deadline 0.5 --again
+python broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --jobs 8
+python broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --read
+python broadcast.py --rect 4,0,4,3 --blocks 6 --pages 2 --jobs 2 --stall-job 0 \
+    --stall-member 13 --stall-block 2 --wait 0.05 --deadline 0.5 --again
 ```
 
 `--rect x0,y0,columns,rows` places the rectangle; its team is the smallest range of the
@@ -60,13 +64,19 @@ core order that covers it. Inputs are integers in [-2, 2], so every checksum is 
 and the driver compares each member's tile with numpy bit for bit. With
 `--stall-job`, that job's member (team index) stops taking row blocks at the given block
 and waits for the stop word: the lane's sender gives up waiting for its stamp, the
-other cores of the lane give up waiting for the next block, the feeder reports the
-record's timeout, and every kernel returns; `lane_gave_up` names, per core, the lane,
-where it waited and the block. `--again` then runs the clean case in the same device
-open.
+other cores of the lane give up waiting for the next block, the dispatch kernel reports
+the record's deadline and the host raises `RecordTimeout`, which names the ticket and
+the members that did not report. Every kernel returns; `lane_gave_up` names, per core,
+the lane, where it waited and the block. `--again` then loads the program again in the
+same session and runs the clean case.
 
-The JSON line reports, per run, the feeder's status, microseconds per job, the blocks
-every lane handed over, every core's end state, and `members_bad`.
+The JSON line reports, per run, the dispatch kernel's error and record count, the
+host's microseconds per job, the blocks every lane handed over, every core's end
+state, and `members_bad`.
+
+`--feeder` runs the same records on the test feeder (`tests/hardware/feeder/`): the
+last core of the grid issues them and no X280 is involved, so the rectangle must leave
+that core out (12 x 9 at most). The measurements below were taken that way.
 
 ## Measured: lanes against every member reading DRAM itself
 
@@ -96,4 +106,4 @@ one tile, reading DRAM directly costs no more.
 |---|---|
 | `kernels/reader.cpp`, `writer.cpp`, `compute.cpp` | the three kernels: the row lane, the column lane and the output, the checksum |
 | `kernels/broadcast.h` | segments, buffers, arguments, and the two block loops (cast, read) shared by reader and writer |
-| `broadcast.py` | builds the lanes and records, runs them on the feeder, checks every member |
+| `broadcast.py` | builds the lanes and records, runs them through a session (or the feeder), checks every member |
