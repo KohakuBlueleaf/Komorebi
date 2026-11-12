@@ -48,9 +48,11 @@ These rules are part of the protocol; a host that relies on anything else is wro
   `first + count` above the cores; 4 any record after EXIT; 5 a range of the upload
   region that is not whole lines inside it. A refused command's event has ticks 0.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
-  into words 4 to 7 of the host buffer as one store: the mark, the upload region's
-  LIM address and size, and `KMD_LIM_BYTES`. The host waits for the mark, not for the
-  state word, since the two are separate stores.
+  into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
+  word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
+  word 6 its size in bytes, word 7 `KMD_LIM_BYTES`. The host zeroes its buffer before
+  the run and waits for the mark in word 4, not for the state word: the two are separate
+  stores, so READY may be seen first. Once word 4 holds the mark, words 5 to 7 are valid.
 - **Upload region.** It follows the layout (`KMD_LIM_UPLOAD`) and is `upload_bytes` of
   the argument block long: a multiple of 64 that ends inside LIM (the reference host
   gives it the rest of the runtime's available LIM, 707,840 bytes on card 1). The host
@@ -65,7 +67,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
 - **Result word.** A record with `KM_F_RESULT` is acknowledged by its team's leader with
   `{ack, result}` written as one 8-byte NoC write into the slot's acknowledgement line;
   the kernel reads the pair with one 8-byte load, keeps the result, and puts it in the
-  `ticks` field of the record's `KM_EV_DONE` event instead of the time.
+  `ticks` field of the record's `KM_EV_DONE` event. Such an event has no time; every
+  other `KM_EV_DONE` event's ticks are the record's time from issue to acknowledgement.
 - **EXIT** goes to every core whatever its team field says, and only once no slot is
   busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own. A
   waiting command holds up every command behind it.
