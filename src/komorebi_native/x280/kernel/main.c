@@ -152,7 +152,12 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
     } else if ((flags & KM_F_EXCL) && slots_overlap(k, team)) {
         return KMD_HELD;
     }
-    const uint32_t slot = slot_free(k), seq = ++k->seq;
+    const uint32_t slot = slot_free(k);
+    /* Skips 0 (an unused slot's ack word) and the slot's last one (its ack word). */
+    uint32_t seq = ++k->seq;
+    while (seq == 0 || seq == k->slot_seq[slot]) {
+        seq = ++k->seq;
+    }
     l[0] = seq | ((uint64_t)((hdr & 0xFFFFu) | (slot << 16)) << 32);
     for (uint32_t j = 2; j < 8; j += 2) {
         l[j] = (l[j] & ~(uint64_t)0xFFFFFFFFu) | seq;

@@ -36,10 +36,10 @@ typedef struct {
     uint32_t line_state; /* 0: k->line is free; 1: it holds command k->next; 2: held */
     /* completion table */
     uint32_t depth, full, busy, nbusy, cores;
-    uint32_t seq;      /* last sequence number issued */
-    uint32_t exited;   /* an EXIT record was issued */
-    uint64_t t_record; /* deadline of the next record, in ticks */
-    uint32_t slot_seq[KM_RING_SLOTS];
+    uint32_t seq;                     /* last sequence number issued */
+    uint32_t exited;                  /* an EXIT record was issued */
+    uint64_t t_record;                /* deadline of the next record, in ticks */
+    uint32_t slot_seq[KM_RING_SLOTS]; /* last sequence: the ack word once free */
     uint32_t slot_req[KM_RING_SLOTS];
     uint32_t slot_team[KM_RING_SLOTS];
     uint64_t slot_t0[KM_RING_SLOTS];
