@@ -191,6 +191,26 @@ def test_a_name_an_earlier_header_defined_decides_a_conditional(tmp_path):
         abi.constants(two)
 
 
+def test_a_programs_header_reads_the_package_constants_by_their_km_names(tmp_path):
+    header = write(
+        tmp_path,
+        '#include "komorebi/device/km_lane.hpp"\n'
+        "constexpr uint32_t kArgLane = 0;\n"
+        "constexpr uint32_t kArgIndex = km::kLaneArgs + 1;\n"
+        "#if !defined(COMPILE_FOR_TRISC)\n"
+        "inline void f() { if constexpr (true) {} }\n"
+        "#endif\n",
+        "program.h",
+    )
+    assert H["kLaneArgs"] == 11 and H["kWherePort"] == 17  # device headers too
+    assert abi.constants(header, known=H.constants) == {
+        "kArgLane": 0,
+        "kArgIndex": 12,
+    }
+    with pytest.raises(abi.HeaderError, match="km::kLaneArgs"):
+        abi.constants(header)
+
+
 def test_a_struct_must_be_defined_once_with_distinct_members(tmp_path):
     path = tmp_path / "s.h"
     path.write_text("typedef struct { uint32_t a, a; } two_t;")

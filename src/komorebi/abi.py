@@ -7,6 +7,7 @@ import ast
 import functools
 import operator
 import re
+from collections import ChainMap
 from pathlib import Path
 
 from komorebi import _env
@@ -18,7 +19,7 @@ LEXEME = re.compile(
 DIRECTIVE = re.compile(r"^\s*#\s*(\w+)\s*(.*?)\s*$")
 DEFINE = re.compile(r"^\s*#\s*define\s+(KM[DX]?_\w+)(\(?)(.*)$", re.M)
 CONSTEXPR = re.compile(r"\bconstexpr\s+uint32_t\s+(k\w+)\s*=\s*([^;]*);")
-ANY_CONSTEXPR = re.compile(r"\bconstexpr\b[^;{]*")
+ANY_CONSTEXPR = re.compile(r"(?<!\bif )\bconstexpr\b[^;{]*")  # not `if constexpr`
 ENUM = re.compile(r"\benum\s*\{([^{}]*)\}\s*;")
 ANY_ENUM = re.compile(r"\benum\b")
 NUMBER = re.compile(r"\b\d\w*")
@@ -26,6 +27,7 @@ C_NUMBER = re.compile(r"(0[xX][0-9A-Fa-f]+|0|[1-9][0-9]*)")
 SUFFIX = re.compile(
     r"\b(0[xX][0-9A-Fa-f]+|\d+)(?:[uU](?:ll|LL|l|L)?|(?:ll|LL|l|L)[uU]?)\b"
 )
+KM_SCOPE = re.compile(r"\bkm::")  # the package's constants by their C++ names
 SIZEOF = re.compile(r"\bsizeof\s*\(\s*(\w+)\s*\)")
 FIELD = re.compile(r"^uint32_t\s+(\w+(?:\s*,\s*\w+)*)$")
 OPERATORS = {
@@ -53,14 +55,23 @@ class Headers:
 
     def __init__(self, include, kernel):
         self.abi = Path(include) / "komorebi" / "abi" / "km_abi.h"
-        self.core = Path(include) / "komorebi" / "device" / "km_core.hpp"
+        device = Path(include) / "komorebi" / "device"
+        self.core = device / "km_core.hpp"
+        # the device headers whose constants a program's header may use (km::name)
+        self.device = [
+            device / f"km_{n}.hpp" for n in ("record", "group", "port", "lane")
+        ]
         self.dispatch = Path(kernel) / "km_dispatch.h"
 
     @functools.cached_property
     def constants(self):
-        """Every KM_* and KMD_* define, constexpr k*, and enum value of the three."""
-        sizes = {"Args": 4 * len(self.arg_fields)}
-        return constants(self.abi, self.core, self.dispatch, sizes=sizes)
+        """Every KM_* and KMD_* define, constexpr k*, and enum value of the ABI header,
+        the device headers and the dispatch kernel's header."""
+        sizes = {
+            "Args": 4 * len(self.arg_fields),
+            "LaneArgs": 4 * len(struct_fields(self.device[-1], "LaneArgs")),
+        }
+        return constants(self.abi, self.core, *self.device, self.dispatch, sizes=sizes)
 
     @functools.cached_property
     def record_fields(self):
@@ -94,7 +105,7 @@ def evaluate(expr, known, sizes=None, where=""):
     text = SIZEOF.sub(
         lambda m: str((sizes or {}).get(m[1], f"sizeof_{m[1]}")), expr.strip()
     )
-    text = SUFFIX.sub(r"\1", text)
+    text = SUFFIX.sub(r"\1", KM_SCOPE.sub("", text))
     if any(not C_NUMBER.fullmatch(n) for n in NUMBER.findall(text)):
         raise HeaderError(f"{what}: not a C integer literal")
     try:
@@ -198,12 +209,13 @@ def _clean(text, where="", known=()):
     return "\n".join(active), "\n".join(unsure)
 
 
-def constants(*paths, sizes=None):
-    """The named integer constants of the given headers, as a dict: every object-like
-    `#define KM_*` / `KMD_*` / `KMX_*`, `constexpr uint32_t k*` and enum value. A
-    definition that cannot be read, or a name defined twice differently, raises.
-    """
-    found = {}
+def constants(*paths, sizes=None, known=None):
+    """The integer constants of the headers as a dict: object-like `#define KM*_*`,
+    `constexpr uint32_t k*`, enum values; an unreadable or conflicting one raises.
+    `known`: constants they may use (also as km::name), not returned; for a program's
+    header, known=abi.headers().constants."""
+    known = dict(known or {})
+    found = ChainMap({}, known)
     for path in paths:
         text, unsure = _clean(Path(path).read_text(), path, found)
         objects = [m for m in DEFINE.finditer(unsure) if not m[2]]
@@ -239,7 +251,7 @@ def constants(*paths, sizes=None):
                 at = evaluate(expr, found, sizes, f"{path}") if expr else at
                 _add(found, name, at, path)
                 at += 1
-    return found
+    return dict(found.maps[0])
 
 
 def struct_fields(path, name):

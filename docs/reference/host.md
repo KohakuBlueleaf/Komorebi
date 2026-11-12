@@ -45,6 +45,12 @@ nothing.
 prefetch="documented")` adds an
 X280 thread on a work cluster (one per program); see [X280 threads](../threads.md).
 
+A program's own header (its segments, buffers and argument indices, shared by its
+kernels and its driver) is read with `km.abi.constants(path,
+known=km.abi.headers().constants)`: every `constexpr uint32_t k*`, `#define KM*_*` and
+enum value, as a dict; it may use the package's constants by their C++ names
+(`km::kLaneArgs`). A constant the reader cannot evaluate raises `abi.HeaderError`.
+
 The runtime owns circular buffers 29 and 30 (the record's token for compute and
 writer) and 31 (the trace); a program uses the others.
 
