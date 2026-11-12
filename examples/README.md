@@ -7,4 +7,4 @@ checked, and does not depend on another example.
 
 | Example | What it shows |
 |---|---|
-| [01_mapcollect](01_mapcollect/) | resident workers, teams named per record, per-team completion, the stop word; fed by the test feeder |
+| [01_mapcollect](01_mapcollect/) | resident workers under the dispatch kernel, teams named per record, per-team completion, a timeout that names the core |

@@ -1,4 +1,4 @@
-"""The map/collect example on a card, fed by the test feeder (KMR_CARD=1)."""
+"""The map/collect kernels on a card, fed by the test feeder (KMR_CARD=1)."""
 
 import json
 import subprocess
@@ -8,9 +8,7 @@ from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.card
-SCRIPT = (
-    Path(__file__).resolve().parents[2] / "examples" / "01_mapcollect" / "mapcollect.py"
-)
+SCRIPT = Path(__file__).resolve().parent / "feeder" / "mapcollect_fed.py"
 
 
 def run(*args):

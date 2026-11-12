@@ -1,81 +1,80 @@
-"""Map/collect on resident workers, fed by the test feeder (no X280).
-
-Each MAP record names a team; every member adds its share of T input tiles into one
-tile and stores it at out[job][member]; the host sums the members' tiles and checks
-them against numpy. Jobs alternate exact-valued and random inputs.
-
-    python mapcollect.py --jobs 20 --teams fixed --count 8
+"""Map/collect on resident workers under the dispatch kernel on X280 cluster 0: each
+member of a MAP record's team adds its share of T input tiles into one tile; the host
+checks every tile against numpy and prints one JSON line. See README.md.
 """
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 
 import numpy as np
+import torch
+import ttnn
+
+import komorebi as km
+from komorebi.layout import share
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / "tests" / "hardware" / "feeder"))
-
-import fed  # noqa: E402
-import records as rec  # noqa: E402
-import torch  # noqa: E402
-import ttnn  # noqa: E402
-
-K = rec.K
 KERNELS = HERE / "kernels"
-SEGMENTS = rec.constants(KERNELS / "mapcollect.h")
-SEG_MAP, SEG_STALL = SEGMENTS["kSegMap"], SEGMENTS["kSegStall"]
-SEG_ALIGN = SEGMENTS["kSegAlign"]
 TILE = 32
+T0 = time.monotonic()
+
+
+def log(msg):
+    """A progress line with seconds since start, flushed."""
+    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
 
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--jobs", type=int, default=20)
-    p.add_argument("--seg", choices=["map", "nop", "align"], default="map")
+    p.add_argument("--seg", choices=["map", "nop"], default="map")
     p.add_argument(
-        "--release", type=int, default=8000, help="align: cycles after issue"
+        "--teams", choices=["fixed", "random", "pair", "rotate"], default="fixed"
     )
-    p.add_argument("--teams", choices=["fixed", "random", "pair"], default="fixed")
-    p.add_argument("--count", type=int, default=8, help="team size (fixed)")
+    p.add_argument("--count", type=int, default=8, help="team size (fixed, rotate)")
     p.add_argument("--first", type=int, default=0, help="first core (fixed)")
     p.add_argument("--tiles", type=int, default=64, help="input tiles T")
-    p.add_argument("--depth", type=int, default=16, help="ring slots used")
+    p.add_argument("--depth", type=int, default=4, help="ring slots used")
     p.add_argument("--out-pages", type=int, default=2048, help="pages per output")
     p.add_argument("--out-tensors", type=int, default=1, help="output tensors")
     p.add_argument("--stall", type=int, default=-1, help="job index made a STALL")
     p.add_argument("--stall-member", type=int, default=0)
-    p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
+    p.add_argument("--deadline", type=float, default=1.0, help="per record, seconds")
     p.add_argument("--trace", action="store_true")
-    p.add_argument(
-        "--rows", action="store_true", help="complete through row leaders (two levels)"
-    )
+    p.add_argument("--rows", action="store_true", help="complete through row leaders")
+    p.add_argument("--batch", type=int, default=64, help="commands per host store")
+    p.add_argument("--settle-us", type=float, default=1.0, help="pause after a fence")
+    p.add_argument("--no-check", action="store_true", help="skip reading outputs")
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--dump", type=Path, help="save records, trace and state (npz)")
     return p.parse_args()
 
 
-def make_teams(args, workers, rng):
+def make_teams(args, cores, rng):
+    """(first, count) per job. rotate: disjoint teams of --count cores in turn."""
     if args.teams == "fixed":
         return [(args.first, args.count)] * args.jobs
     if args.teams == "pair":
-        half = workers // 2
+        half = cores // 2
         return [
-            (0, half) if j % 2 == 0 else (half, workers - half)
-            for j in range(args.jobs)
+            (0, half) if j % 2 == 0 else (half, cores - half) for j in range(args.jobs)
         ]
-    return rec.random_teams(rng, args.jobs, workers)
+    if args.teams == "rotate":
+        slots = max(1, cores // args.count)
+        return [((j % slots) * args.count, args.count) for j in range(args.jobs)]
+    teams = []
+    for _ in range(args.jobs):
+        count = int(rng.integers(1, cores + 1))
+        teams.append((int(rng.integers(0, cores - count + 1)), count))
+    return teams
 
 
 def place_outputs(teams, pages, tensors):
-    """Global output page of member 0 per job: a ring of `tensors` x `pages` pages
-    in which no job crosses a tensor."""
+    """Global output page of member 0 per job: a ring of `tensors` x `pages` pages in
+    which no job crosses a tensor."""
     base, at = [], 0
     for _, count in teams:
-        if count > pages:
-            raise ValueError(f"a team of {count} needs more than {pages} output pages")
         if at % pages + count > pages:
             at = (at // pages + 1) * pages
         if at >= tensors * pages:
@@ -102,91 +101,28 @@ def member_sums(x, count):
     tiles = x.reshape(-1, TILE, TILE)
     out = np.zeros((count, TILE, TILE))
     for m in range(count):
-        start, length = rec.share(len(tiles), m, count)
-        out[m] = tiles[start : start + length].sum(0)
+        part = share(range(len(tiles)), m, count)
+        out[m] = tiles[part.start : part.stop].sum(0)
     return out
-
-
-def trace_phases(res, teams, n):
-    """Per job from the trace: microseconds of each phase (see the README)."""
-    tr = res.trace.astype(np.int64)
-    rows = res.records
-    mhz = res.mhz
-    out = []
-    for j in range(n):
-        first, count = teams[j]
-        seq = int(rows["seq"][j])
-        if seq == 0 or seq > tr.shape[1]:
-            continue
-        t = tr[first : first + count, seq - 1]
-        issue = int(rows["issue"][j])
-        rel = rec.wrap(t - issue)
-        seen, done, sent = rel[:, 0], rel[:, 1], rel[:, 2]
-        out.append(
-            {
-                "count": count,
-                "first_seen": seen.min() / mhz,
-                "last_seen": seen.max() / mhz,
-                "last_done": done.max() / mhz,
-                "last_member_sent": (sent[1:].max() if count > 1 else sent[0]) / mhz,
-                "leader_sent": sent[0] / mhz,
-                "push_after_last_done": (sent[0] - done.max()) / mhz,
-                "acked": int(rec.wrap(rows["acked"][j] - issue)) / mhz,
-                "passes_mean": float(t[:, 3].mean()),
-            }
-        )
-    return out
-
-
-def overlaps(res, teams, n):
-    """Consecutive jobs on disjoint teams where a member of the second took its record
-    before the first job's leader pushed its completion (wall clock, from the trace)."""
-    tr = res.trace.astype(np.int64)
-    seqs = res.records["seq"]
-    found = []
-    for j in range(n - 1):
-        (fa, ca), (fb, cb) = teams[j], teams[j + 1]
-        sa, sb = int(seqs[j]), int(seqs[j + 1])
-        disjoint = fa + ca <= fb or fb + cb <= fa
-        if not disjoint or 0 in (sa, sb) or max(sa, sb) > tr.shape[1]:
-            continue
-        pushed = tr[fa, sa - 1, 2]
-        seen = tr[fb : fb + cb, sb - 1, 0].min()
-        lead = int(rec.wrap(pushed - seen))
-        if 0 < lead < 1 << 31:
-            found.append(lead / res.mhz)
-    return {
-        "pairs": n - 1,
-        "overlapping": len(found),
-        "lead_us_mean": round(float(np.mean(found)) if found else 0.0, 3),
-    }
-
-
-def summarize_phases(phases):
-    keys = [k for k in phases[0] if k != "count"] if phases else []
-    return {k: round(float(np.mean([p[k] for p in phases])), 3) for k in keys}
 
 
 def main():
     args = parse()
     rng = np.random.default_rng(args.seed)
-    t_start = time.time()
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    device.disable_and_clear_program_cache()
-    fed.log(f"device open {time.time() - t_start:.1f}s")
-    try:
-        out = run(device, args, rng)
-    finally:
-        ttnn.close_mesh_device(device)
-    out["wall_s"] = round(time.time() - t_start, 1)
+    out = {"jobs": args.jobs, "seg": args.seg, "teams": args.teams}
+    with km.Session(log=log) as session:
+        log("device open")
+        out.update(run(session, args, rng))
+    out["wall_s"] = round(time.monotonic() - T0, 1)
     print(json.dumps(out), flush=True)
 
 
-def run(device, args, rng):
-    runner = fed.Fed(device)
-    workers, n, tiles = runner.workers, args.jobs, args.tiles
-    teams = make_teams(args, workers, rng)
-    fed.log(f"grid {runner.grid}, {workers} workers, aiclk {runner.mhz} MHz")
+def run(session, args, rng):
+    device = session.device
+    grid = device.compute_with_storage_grid_size()
+    cores = grid.x * grid.y
+    teams = make_teams(args, cores, rng)
+    n, tiles = args.jobs, args.tiles
 
     # Exact inputs: integers in [-2, 2], so every partial sum (|s| <= 2T) is exact in
     # bf16 for T <= 64. Random inputs: uniform in [-1, 1], rounded to bf16.
@@ -206,172 +142,151 @@ def run(device, args, rng):
 
     inputs = [tile_tensor(x_exact), tile_tensor(x_rand)]
     pages = args.out_pages
-    zeros = np.zeros((pages * TILE, TILE), dtype=np.float32)
-    outs = [tile_tensor(zeros) for _ in range(args.out_tensors)]
+    outs = [tile_tensor(np.zeros((pages * TILE, TILE), np.float32))]
+    outs += [tile_tensor(np.zeros((pages * TILE, TILE), np.float32))
+             for _ in range(args.out_tensors - 1)]  # fmt: skip
     base = place_outputs(teams, pages, args.out_tensors)
 
-    records = []
-    for j, (first, count) in enumerate(teams):
-        if j == args.stall:
-            records.append(rec.record(SEG_STALL, first, count, [args.stall_member]))
-        elif args.seg == "align":
-            records.append(rec.record(SEG_ALIGN, first, count))
-        elif args.seg == "nop":
-            records.append(rec.record(K["KM_SEG_NOP"], first, count))
-        else:
-            words = [
-                inputs[j % 2].buffer_address(),
-                tiles,
-                outs[base[j] // pages].buffer_address(),
-                base[j] % pages,
-            ]
-            records.append(rec.record(SEG_MAP, first, count, words))
-
-    accessor = ttnn.TensorAccessorArgs(inputs[0]).get_compile_time_args()
-    kernels = fed.Kernels(
-        reader=KERNELS / "reader.cpp",
-        compute=KERNELS / "compute.cpp",
-        writer=KERNELS / "writer.cpp",
-        reader_ct=accessor,
-        writer_ct=ttnn.TensorAccessorArgs(outs[0]).get_compile_time_args(),
-        compute_config=ttnn.ComputeConfigDescriptor(
-            math_fidelity=ttnn.MathFidelity.HiFi4, fp32_dest_acc_en=True
-        ),
-        defines=[("KM_ROW_LEADERS", str(runner.grid[0]))] if args.rows else [],
-        cbs=[
-            (SEGMENTS["kCbIn"], ttnn.bfloat16, 2048, SEGMENTS["kInPages"]),
-            (SEGMENTS["kCbOut"], ttnn.bfloat16, 2048, 2),
+    program = km.Program(
+        "mapcollect",
+        kernels=KERNELS,
+        buffers=[
+            km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16),  # kCbIn
+            km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),  # kCbOut
         ],
-    )
-    trace_cap = (n + 4) // 4 * 4 if args.trace else 0  # 64-byte pages
-    res = runner.run(
-        kernels,
-        records,
-        tensors=[*inputs, *outs],
+        compile_args={
+            "reader": ttnn.TensorAccessorArgs(inputs[0]).get_compile_time_args(),
+            "writer": ttnn.TensorAccessorArgs(outs[0]).get_compile_time_args(),
+        },
+        compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
+        defines={"KM_ROW_LEADERS": grid.x} if args.rows else {},
         depth=args.depth,
-        deadline_s=args.deadline,
-        trace_cap=trace_cap,
-        release=args.release if args.seg == "align" else 0,
+        segments=KERNELS / "mapcollect.h",
     )
-    if args.dump:
-        np.savez(
-            args.dump,
-            teams=np.asarray(teams),
-            base=np.asarray(base),
-            seq=res.records["seq"],
-            slot=res.records["slot"],
-            issue=res.records["issue"],
-            acked=res.records["acked"],
-            state=res.state,
-            trace=res.trace if res.trace is not None else np.zeros(0),
-        )
-    s = res.summary
+    run = session.load(
+        program,
+        trace=n + 1 if args.trace else 0,
+        deadline=args.deadline,
+        batch=args.batch,
+        settle_us=args.settle_us,
+    )
+    log(f"loaded: {cores} cores, depth {args.depth}")
+
+    tickets, timed_out = [], None
+    t0 = time.perf_counter()
+    try:
+        for j, (first, count) in enumerate(teams):
+            if j == args.stall:
+                tickets.append(run.issue("stall", (first, count), [args.stall_member]))
+            elif args.seg == "nop":
+                tickets.append(run.issue(0, (first, count)))
+            else:
+                words = [
+                    inputs[j % 2].buffer_address(),
+                    tiles,
+                    outs[base[j] // pages].buffer_address(),
+                    base[j] % pages,
+                ]
+                tickets.append(run.issue("map", (first, count), words))
+        waited = run.drain(timeout=60.0)
+        host_s = time.perf_counter() - t0
+        log(f"{waited} events")
+        run.stop()
+    except km.RecordTimeout as err:
+        host_s = time.perf_counter() - t0
+        timed_out = err
+        log(f"timeout: {err}")
+    result = run.result()
     out = {
-        "jobs": n,
-        "seg": args.seg,
-        "teams": args.teams,
-        "count": args.count if args.teams == "fixed" else None,
-        "tiles": tiles,
+        "cores": cores,
         "depth": args.depth,
+        "count": args.count if args.teams in ("fixed", "rotate") else None,
+        "tiles": tiles,
         "completion": "row leaders" if args.rows else "first member",
-        "aiclk_mhz": res.mhz,
-        "feeder": s,
-        "us_per_record": round(s["span_cycles"] / res.mhz / max(s["done"], 1), 3),
-        "issue_us_mean": round(s["issue_cycles"] / res.mhz / max(s["issued"], 1), 3),
-        "host_program_s": round(res.host_s, 2),
+        "kernel": {
+            k: result[k] for k in ("error_name", "records", "events", "max_busy")
+        },
+        "us_per_job_kernel": round(result["last"] / 50 / max(result["records"], 1), 3),
+        "us_per_job_host": round(host_s * 1e6 / n, 3),
+        "python_us_per_record": {
+            "issue": round(run.issue_s * 1e6 / n, 3),
+            "store": round(run.flush_s * 1e6 / max(run.stored, 1), 3),
+        },
     }
-    lat = rec.wrap(res.records["acked"] - res.records["issue"])[
-        res.records["status"] == 1
+    done = [
+        run.event(t) for t in tickets if run.event(t) and run.event(t).kind == "done"
     ]
-    if len(lat):
+    if done:
+        us = np.array([e.us for e in done])
         out["latency_us"] = {
-            "mean": round(float(lat.mean()) / res.mhz, 3),
-            "min": round(float(lat.min()) / res.mhz, 3),
-            "max": round(float(lat.max()) / res.mhz, 3),
+            "mean": round(float(us.mean()), 3),
+            "max": round(float(us.max()), 3),
         }
-    states = [rec.core_state(res.state, c) for c in range(workers)]
+    states = run.state()
     out["cores_magic_ok"] = sum(c["magic_ok"] for c in states)
     out["cores_ended"] = {
         k: sum(c[k] != 0 for c in states)
         for k in ("reader_end", "writer_end", "compute_end")
     }
     out["compute_wrong"] = sum(sum(c["compute_wrong"]) for c in states)
-    passes = sum(c["passes"] for c in states)
-    out["next_cycles_per_pass"] = round(
-        sum(c["next_cycles"] for c in states) / max(passes, 1), 1
-    )
-    gave = [
-        {"core": c["core"], "reader": c["reader"], "writer": c["writer"]}
-        for c in states
-        if c["reader"] or c["writer"]
-    ]
-    out["gave_up_cores"] = len(gave)
-    out["gave_up_where"] = {
-        w: sum(
-            1 for g in gave for k in ("reader", "writer") if g[k] and g[k]["where"] == w
-        )
-        for w in sorted(
-            {g[k]["where"] for g in gave for k in ("reader", "writer") if g[k]}
-        )
-    }
-    if s["status"] == "timeout":
-        first, count = teams[s["index"]]
-        team = range(first, first + count)
-        out["timed_out"] = {"slot": s["slot"], "seq": s["seq"], "team": [first, count]}
-        out["not_reported"] = [
-            c for c in team if states[c]["reported"][s["slot"]] != s["seq"]
-        ]
-        out["named"] = [
-            {"core": g["core"], **{k: g[k] for k in ("reader", "writer") if g[k]}}
-            for g in gave
-            if any(
-                g[k] and g[k]["where"] in ("stall", "complete")
-                for k in ("reader", "writer")
-            )
-        ]
-    if args.trace and res.trace is not None:
-        phases = trace_phases(res, teams, n)
-        if args.seg == "align":  # release at issue + args.release cycles
-            for p in phases:
-                p["push_after_release"] = p["leader_sent"] - args.release / res.mhz
-        out["trace_us"] = summarize_phases(phases)
-        out["overlap"] = overlaps(res, teams, n)
-
-    if args.seg == "map" and s["status"] == "done":
+    out["gave_up_cores"] = sum(1 for c in states if c["reader"] or c["writer"])
+    if timed_out is not None:
+        out["timed_out"] = {
+            "ticket": timed_out.ticket,
+            "slot": timed_out.slot,
+            "seq": timed_out.seq,
+            "team": list(timed_out.team),
+            "not_reported": timed_out.cores,
+        }
+    trace = run.trace()
+    if trace is not None:
+        out.update(trace_summary(trace, tickets, teams))
+    if args.seg == "map" and timed_out is None and not args.no_check:
         out.update(check(args, teams, base, outs, [x_exact, x_rand]))
     return out
 
 
+def trace_summary(trace, tickets, teams):
+    """Mean per-phase times, and how many consecutive disjoint pairs overlapped."""
+    phases = [p for p in map(trace.phases, tickets) if p]
+    keys = [k for k in phases[0] if k != "count"] if phases else []
+    leads = []
+    for j in range(len(tickets) - 1):
+        (fa, ca), (fb, cb) = teams[j], teams[j + 1]
+        if fa + ca <= fb or fb + cb <= fa:
+            lead = trace.lead(tickets[j], tickets[j + 1])
+            if lead is not None and lead > 0:
+                leads.append(lead)
+    return {
+        "trace_us": {k: round(float(np.mean([p[k] for p in phases])), 3) for k in keys},
+        "overlap": {
+            "pairs": len(tickets) - 1,
+            "overlapping": len(leads),
+            "lead_us_mean": round(float(np.mean(leads)), 3) if leads else 0.0,
+        },
+    }
+
+
 def check(args, teams, base, outs, xs):
-    pages = args.out_pages * len(outs)
+    """Every member's tile of every job not overwritten: bit-exact on exact inputs,
+    relative RMS of the total on random inputs."""
     got = []
     for i, t in enumerate(outs):
         got.append(ttnn.to_torch(t).float().numpy())
-        fed.log(f"output {i + 1} of {len(outs)} read back")
-    got = np.concatenate(got)
-    got = got.reshape(pages, TILE, TILE)
-    fed.log("outputs read back")
-    jobs = [j for j in checked_jobs(teams, base, pages) if j != args.stall]
-    refs = {}
-    bad, rel_max, exact_jobs = [], 0.0, 0
+        log(f"output {i + 1} of {len(outs)} read back")
+    got = np.concatenate(got).reshape(-1, TILE, TILE)
+    jobs = [j for j in checked_jobs(teams, base, len(got)) if j != args.stall]
+    refs, bad, rel_max, exact = {}, [], 0.0, 0
     for j in jobs:
-        _, count = teams[j]
+        count = teams[j][1]
         key = (j % 2, count)
         if key not in refs:
             refs[key] = member_sums(xs[j % 2].astype(np.float64), count)
-        ref = refs[key]
-        mine = got[base[j] : base[j] + count].astype(np.float64)
+        ref, mine = refs[key], got[base[j] : base[j] + count].astype(np.float64)
         if j % 2 == 0:
-            exact_jobs += 1
+            exact += 1
             if not np.array_equal(mine, ref):
-                bad.append(
-                    {
-                        "job": j,
-                        "team": teams[j],
-                        "base": base[j],
-                        "wrong_members": int((mine != ref).any((1, 2)).sum()),
-                    }
-                )
+                bad.append({"job": j, "team": teams[j]})
         else:
             total, ref_total = mine.sum(0), ref.sum(0)
             rel = float(
@@ -379,12 +294,10 @@ def check(args, teams, base, outs, xs):
             )
             rel_max = max(rel_max, rel)
             if rel > 1e-2:
-                bad.append(
-                    {"job": j, "team": teams[j], "base": base[j], "rel_rms": rel}
-                )
+                bad.append({"job": j, "team": teams[j], "rel_rms": rel})
     return {
         "jobs_checked": len(jobs),
-        "exact_jobs_checked": exact_jobs,
+        "exact_jobs_checked": exact,
         "jobs_bad": len(bad),
         "first_bad": bad[:5],
         "random_total_rel_rms_max": float(f"{rel_max:.3e}"),
