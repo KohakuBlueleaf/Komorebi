@@ -34,16 +34,16 @@ Prints one JSON line: the replay's code, rounds and sum, and for each path wheth
 matched (`same_as_numpy`, `same_records`, `state_wrong`), and `ok`.
 
 On a Blackhole p150a with the defaults: 204 rounds (408 records), final sum 1,004,917;
-host-fed in 46 ms (about 0.23 ms per round, issue to result), state and records exact;
-the CPU path exact. The thread path needs the dispatch kernel to serve a work
-cluster's ring, which it does not yet: the thread starts, finds no ring and returns
-code 3 at once, without touching the grid.
+the thread on the card took 10.3 ms (about 50 microseconds per round, two records
+issued and waited for in turn over its ring); host-fed 50 ms (about 0.24 ms per round);
+records, teams, sums and the state tensor exact on every path.
 
 ## The thread
 
 `thread/driver.c` is the whole thread: it reads the program's words, runs
-`wc_round` / `wc_result` from `decide.c`, issues both records of a round, waits for
-both events, and passes SUM's result word (the event's `ticks`) to `wc_result`. It
+`wc_round` / `wc_result` from `decide.c`, issues the round's two records one after
+the other, waiting for each (an exclusive SUM issued while STEP is in flight on an
+overlapping team would be refused, reason 11), and passes SUM's result word (the event's `ticks`) to `wc_result`. It
 writes each round's STEP team into region 0 (`teams`) and gives it back at the end.
 
 | Words | `state address, cores, count, limit, max rounds` |

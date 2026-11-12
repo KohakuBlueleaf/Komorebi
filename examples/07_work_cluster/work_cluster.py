@@ -209,8 +209,9 @@ def host_fallback(lib, records):
 def card_paths(args, words, which):
     """One program, its thread on the host (`hostfed`) or on the card (`thread`), each
     run on its own state tensor. Returns {path: (code, rounds, sum, trail, teams,
-    records or None, state)}."""
-    lib, got = decision(), {}
+    records or None, state)} and each path's time in ms (the thread's own on the card,
+    the fallback's on the host)."""
+    lib, got, ms = decision(), {}, {}
     with km.Session(log=log) as session:
         log("device open")
         for path in which:
@@ -223,7 +224,9 @@ def card_paths(args, words, which):
             log(f"{path}: loaded, thread on the {where}")
             t = time.monotonic()
             r = run.thread_result(timeout=15.0)
-            log(f"{path}: {r.state}, code {r.code}, {time.monotonic() - t:.3f} s")
+            took = time.monotonic() - t if path == "hostfed" else r.us / 1e6
+            ms[path] = round(took * 1e3, 2)
+            log(f"{path}: {r.state}, code {r.code}, {ms[path]} ms")
             run.stop()
             log(f"{path}: stopped")
             teams = run.thread.read("teams").view(np.uint32)
@@ -231,7 +234,7 @@ def card_paths(args, words, which):
             out = (r.code, *(list(r.words) + [0, 0, 0])[:3])
             out = (*out, [int(t) for t in teams[:rounds]], records or None)
             got[path] = (*out, read_state(state, args.cores))
-    return got
+    return got, ms
 
 
 def send_run(run):
@@ -278,8 +281,10 @@ def main():
     if "cpu" in args.paths:
         got["cpu"] = (*cpu_path(words), None)
     on_card = [path for path in ("hostfed", "thread") if path in args.paths]
+    ms = {}
     if on_card:
-        got.update(card_paths(args, words, on_card))
+        card, ms = card_paths(args, words, on_card)
+        got.update(card)
     for path, (c, n, s, t, tm, records, state) in got.items():
         out[path] = {
             "code": c,
@@ -295,6 +300,7 @@ def main():
             out[path]["same_records"] = same
         if state is not None:
             out[path]["state_wrong"] = int((state != x).sum())
+            out[path]["ms"] = ms[path]
     out["wall_s"] = round(time.monotonic() - T0, 1)
     checks = [out["decide_matches_numpy"]]
     for path in got:

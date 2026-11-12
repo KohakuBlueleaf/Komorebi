@@ -55,15 +55,15 @@ int kmx_main(int hart) {
         wc_round(&s, w);
         teams[s.round] = w[0].first;
         kmx_progress(s.round * 4 + 1);
+        /* One record at a time: the kernel refuses a thread's record that would wait
+         * (SUM is exclusive), so SUM goes once STEP's event is in. */
         for (int i = 0; i < 2; i++) {
             record(&w[i], &r);
             if (issue(&r, &ticket[i]) != KMX_OK) {
                 finish(3, &s);
                 return 0;
             }
-        }
-        kmx_progress(s.round * 4 + 2);
-        for (int i = 0; i < 2; i++) {
+            kmx_progress(s.round * 4 + 2);
             const int e = kmx_wait(ticket[i], kmx_time() + WAIT_TICKS, &ev[i]);
             if (e != KMX_OK) {
                 finish(3, &s);
