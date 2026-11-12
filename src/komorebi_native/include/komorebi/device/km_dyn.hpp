@@ -45,7 +45,8 @@ namespace km {
     constexpr uint32_t kDynFlagCompute = 0x10;  // waiting in next() | items pushed
     constexpr uint32_t kDynFlagWriter = 0x20;   // every bin sent | items taken
 
-    // Where a dynamic run gave up (KM_DYN_GAVE word 0); word 1 position, word 2 run.
+    // Where a dynamic run gave up (KM_DYN_GAVE word 0); word 1 position, word 2 run,
+    // word 3: for a gap the word 0 found there, for a lost answer the destination.
     constexpr uint32_t kDynGap = 1;       // a reserved item did not land in time
     constexpr uint32_t kDynOverflow = 2;  // IN_TAIL - IN_HEAD passed the capacity
     constexpr uint32_t kDynAtomic = 3;    // a reservation was not answered in time
@@ -59,6 +60,7 @@ namespace km {
     constexpr uint32_t kDynOutbox = 11;   // the writer's wait for an outgoing item
     constexpr uint32_t kDynStopped = 12;  // the stop word ended the run
     constexpr uint32_t kDynAlign = 13;    // packet pages or items not 64-byte aligned
+    constexpr uint32_t kDynLost = 14;     // a reservation's answer never landed
 
     // The mark of the item at queue position `pos`. It is word 0 of every 16-byte
     // chunk of the item: chunks of one write land in no defined order.
@@ -89,11 +91,14 @@ namespace km {
     }
 
     // Records the first give-up of a dynamic run (where, position, run).
-    inline void dyn_gave_up(uint32_t ctl, uint32_t where, uint32_t pos, uint32_t run) {
+    inline void dyn_gave_up(
+        uint32_t ctl, uint32_t where, uint32_t pos, uint32_t run, uint32_t seen = 0
+    ) {
         volatile tt_l1_ptr uint32_t* g = l1(ctl + KM_CTL_DYN + KM_DYN_GAVE);
         if (g[0] == 0) {
             g[1] = pos;
             g[2] = run;
+            g[3] = seen;
             g[0] = where;
         }
     }
@@ -165,6 +170,7 @@ namespace km {
             out[1] = state;
             out[2] = sent;
             out[3] = consumed;
+            invalidate_l1_cache();  // a fence: the NoC reads the stored line
             noc_async_write(a.ctl + KM_CTL_DYN + KM_DYN_OUT, line, 16);
             return noc_bounded(rd, [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
@@ -322,7 +328,10 @@ namespace km {
             *head_w = head;
         }
         if (where != 0) {
-            dyn_gave_up(a.ctl, where, head, run);
+            // a gap: word 0 of the item found at the head, for the report
+            dyn_gave_up(
+                a.ctl, where, head, run, l1(get_write_ptr(kCbDynIn))[kDynHeader / 4]
+            );
             status(KM_DYN_GAVE_UP, head, where);
             rd.gave_up(kStReader, kGaveStop, kWhereData, slot(r), run);
         }
@@ -364,7 +373,7 @@ namespace km {
             dest[b] = kDynEnd;
             fill[b] = 0;
         }
-        uint32_t taken = 0, sent = 0, held = 0, where = 0, flag = 0;
+        uint32_t taken = 0, sent = 0, held = 0, where = 0, flag = 0, lost_to = 0;
         dyn[KM_DYN_SENT / 4] = 0;
         wf[1] = 0;
         wf[0] = run;
@@ -373,6 +382,7 @@ namespace km {
         auto flush = [&](uint32_t b) {
             const uint32_t n = fill[b];
             ret[0] = kDynEnd;
+            invalidate_l1_cache();  // a fence: the store lands before the answer can
             noc_fast_atomic_increment<noc_mode, true>(
                 noc_index,
                 write_at_cmd_buf,
@@ -390,13 +400,22 @@ namespace km {
                 where = kDynAtomic;
                 return false;
             }
-            invalidate_l1_cache();
+            // On the card the answer can stay away although its count moved.
+            if (!noc_bounded(wr, [&] {
+                    invalidate_l1_cache();
+                    return ret[0] != kDynEnd;
+                })) {
+                where = kDynLost;
+                lost_to = dest[b];
+                return false;
+            }
             const uint32_t p = ret[0], base = store + b * kDynPacket * d.item_bytes;
             for (uint32_t i = 0; i < n; i++) {
                 dyn_set_mark(
                     base + i * d.item_bytes, d.item_bytes, dyn_mark(p + i, d.salt)
                 );
             }
+            invalidate_l1_cache();  // a fence: the NoC reads the stored marks
             for (uint32_t i = 0; i < n;) {
                 const uint32_t pos = (p + i) & (d.cap - 1);
                 const uint32_t in_page = pos % kDynPageItems;
@@ -491,7 +510,7 @@ namespace km {
             }
         }
         if (where != 0) {
-            dyn_gave_up(a.ctl, where, taken, run);
+            dyn_gave_up(a.ctl, where, taken, run, lost_to);
             wr.gave_up(kStWriter, kGaveStop, kWhereData, slot(r), run);
             return false;
         }

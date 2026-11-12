@@ -105,7 +105,7 @@ def report(a, dyn, result, res):
     lines = result.lines[: a.count]
     gave_at = (K["KM_CTL_DYN"] + K["KM_DYN_GAVE"]) // 4
     gave = {
-        c: [int(v) for v in result.ctl[c, gave_at : gave_at + 3]]
+        c: [int(v) for v in result.ctl[c, gave_at : gave_at + 4]]
         for c in range(a.count)
         if result.ctl[c, gave_at]
     }

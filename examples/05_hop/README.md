@@ -51,6 +51,11 @@ items, queues of 16384 items, `max_live` 16384 (quota 137 per core).
 | member 2 stalls in its body (8 cores) | the run stopped; core 2 named, its reader gave up waiting for a free packet page; the next run on the card exact, no reset |
 | `max_live` 1000000 with queues of 65536 | refused before any device opened |
 
+Not every run passes yet: about one run of 10^6 hops in four stops with reason 14
+(`lost`). A writer's atomic add is counted as answered and the destination's tail has
+moved, but the returned position never lands in the writer's L1, so the reserved
+positions are never written and the destination reports the gap. The cause is open.
+
 A reserved position that is never written (a gap) cannot be made on the card; the CPU
 harness (`experiments/runtime_harness`, case `dyn_gap`) shows it reported with the core
 and the position.

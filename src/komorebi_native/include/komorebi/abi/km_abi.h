@@ -103,7 +103,7 @@ KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte sl
 #define KM_DYN_QUOTA 0x40u    /* compute: spawns left */
 #define KM_DYN_FLAGS 0x50u /* idle words of reader, compute, writer, 16 bytes apart */
 #define KM_DYN_OUT 0x80u   /* source slot of the status line */
-#define KM_DYN_GAVE 0x90u  /* first give-up: where, position, run */
+#define KM_DYN_GAVE 0x90u  /* first give-up: where, position, run, word seen */
 #define KM_DYN_RET 0xA0u   /* writer: the reservation's returned position */
 #define KM_DYN_BYTES 0xC0u
 /* the issuer ends a dynamic run with this record to the run's team; a0 = run's seq */

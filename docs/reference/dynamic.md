@@ -149,6 +149,7 @@ the same loaded program.
 | 9, 10, 11 | next, out page, outbox | a wait between the compute kernel and the reader or writer ran out |
 | 12 | stopped | the stop word was set |
 | 13 | align | the packet buffer or the item size is not a multiple of 64 bytes |
+| 14 | lost | a reservation was answered but its returned position never landed; word 3 names the destination |
 
 The codes are `kDyn*` in `km_dyn.hpp`.
 
