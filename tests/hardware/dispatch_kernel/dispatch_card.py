@@ -1826,6 +1826,67 @@ def case_engine_busy(device, args):
     return out
 
 
+def case_exit_flush(device, args):
+    """A stream issuing records and a looping one on core 1 when STOP ends the kernel;
+    the host then writes a pattern over the state's DRAM buffer, a second kernel runs,
+    and the pattern reads back unchanged: no line of the first run was left dirty."""
+    n_cores = 0
+
+    def first(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        base = stream_base(plan)
+        issuing = ks.Stream(req=71)
+        i = issuing.regs(1)[0]
+        issuing.set(i, 0)
+        top = issuing.label()
+        issuing.issue(SEG_DELAY, (0, n_cores), args=[i, 0])
+        issuing.wait(0)
+        issuing.addi(i, i, 1)
+        issuing.jlt(i, issuing.const(args.n), top)
+        issuing.halt(i)
+        for j, st in enumerate((issuing, loop_stream(72))):
+            data = st.encode()
+            put_upload(plan, base + 4096 * j, data)
+            plan.submit(run_command(base + 4096 * j, len(data)))
+        events = stream_events(plan, 71)
+        out = {"tag": plan.tag, "ended": [kind(e[2])[0] for e in events if e[1] == 71]}
+        plan.submit(command(SEG_STOP))
+        return out
+
+    out, fin, _ = with_kernel(device, args, first, depth=4)
+    out["finish"] = {k: fin["block"][k] for k in ("error", "engine", "engine_records")}
+    # The host writes a pattern over the first run's state buffer, in place.
+    state = DRAM_KEEP[-1]
+    shape = tuple(state.shape)
+    pattern = (np.arange(shape[0] * shape[1], dtype=np.uint64) * 2654435761) & M32
+    pattern = pattern.astype(np.uint32).reshape(shape)
+    host = ttnn.from_torch(
+        torch.from_numpy(pattern.view(np.int32)),
+        dtype=ttnn.int32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+    )
+    ttnn.copy_host_to_device_tensor(host, state)
+
+    def second(plan):
+        i = plan.submit(command(SEG_PING))
+        got = [e for e in plan.take(plan.seen + 1, 5.0) if e[1] == i]
+        return {"pong": bool(got), "exit": exit_and_stop(plan)}
+
+    out["second"], fin2, _ = with_kernel(device, args, second, depth=4)
+    back = ttnn.to_torch(state).numpy().view(np.uint32)
+    out["words_changed"] = int(np.count_nonzero(back != pattern))
+    out["ok"] = bool(
+        out["ended"] == [EV_STREAM_END]
+        and out["finish"]["error"] == 0
+        and out["finish"]["engine"] == ENGINE_STOPPED
+        and out["second"]["pong"]
+        and fin2["block"]["error"] == 0
+        and out["words_changed"] == 0
+    )
+    return out
+
+
 CASES = {
     "ping": case_ping,
     "issue": lambda device, args: case_ping(device, args, issue_one=True),
@@ -1847,6 +1908,7 @@ CASES = {
     "replay": case_replay,
     "stream-deadline": case_stream_deadline,
     "engine-busy": case_engine_busy,
+    "exit-flush": case_exit_flush,
     "verify": case_verify,
     "upload": case_upload,
     "result": case_result,
@@ -1874,6 +1936,7 @@ SET = [
     ("replay", {}),
     ("stream-deadline", {}),
     ("engine-busy", {"n": 20, "delay_us": 2000.0}),
+    ("exit-flush", {"n": 50}),
 ]
 
 
