@@ -54,6 +54,7 @@ AICLK_HZ = 1.35e9  # Tensix clock of this card, for the wait limit only
 # km_abi.h and km_dispatch.h
 SEG_NOP, SEG_EXIT = 0, 255
 SEG_PING, SEG_STOP, SEG_DEADLINE = 254, 253, 252
+F_EXCL = 2
 EV_DONE, EV_TIMEOUT, EV_PONG, EV_REFUSED = 0, 1, 2, 3
 REFUSE_SEG, REFUSE_FLAGS, REFUSE_TEAM, REFUSE_EXITED = 1, 2, 3, 4
 STATE_READY, STATE_DONE, STATE_FAILED = 2, 3, 4

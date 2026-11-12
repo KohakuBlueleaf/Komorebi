@@ -40,6 +40,7 @@ typedef struct {
     uint64_t t_record; /* deadline of the next record, in ticks */
     uint32_t slot_seq[KM_RING_SLOTS];
     uint32_t slot_req[KM_RING_SLOTS];
+    uint32_t slot_team[KM_RING_SLOTS];
     uint64_t slot_t0[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* counters */

@@ -145,6 +145,8 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
             return KMD_HELD;
         }
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_TEAM_ALL(k->cores);
+    } else if ((flags & KM_F_EXCL) && slots_overlap(k, team)) {
+        return KMD_HELD;
     }
     const uint32_t slot = slot_free(k), seq = ++k->seq;
     l[0] = seq | ((uint64_t)((hdr & 0xFFFFu) | (slot << 16)) << 32);
@@ -155,7 +157,7 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
     hring_consumed(k);
     k->records++;
     k->exited = seg == KM_SEG_EXIT;
-    slot_take(k, slot, seq, req, now, k->t_record);
+    slot_take(k, slot, seq, req, (uint32_t)l[1], now, k->t_record);
     return KMD_TAKEN;
 }
 

@@ -8,6 +8,11 @@
 
 #include "komorebi/abi/km_abi.h"
 
+/* Flag of km_abi.h: issued only when no busy slot's team overlaps the record's. */
+#ifndef KM_F_EXCL
+#define KM_F_EXCL 2u
+#endif
+
 #if defined(__cplusplus)
 #define KMD_STATIC_ASSERT(c, msg) static_assert(c, msg)
 #else

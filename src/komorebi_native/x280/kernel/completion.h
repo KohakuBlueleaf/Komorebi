@@ -19,12 +19,19 @@ static inline uint32_t slot_free(const kmd_t* k) {
     return KM_RING_SLOTS;
 }
 
-/* Marks `slot` busy with record `seq` of request `req`, issued at `now`. */
+/* Marks `slot` busy with record `seq` of request `req` for `team`, issued at `now`. */
 static inline void slot_take(
-    kmd_t* k, uint32_t slot, uint32_t seq, uint32_t req, uint64_t now, uint64_t ticks
+    kmd_t* k,
+    uint32_t slot,
+    uint32_t seq,
+    uint32_t req,
+    uint32_t team,
+    uint64_t now,
+    uint64_t ticks
 ) {
     k->slot_seq[slot] = seq;
     k->slot_req[slot] = req;
+    k->slot_team[slot] = team;
     k->slot_t0[slot] = now;
     k->slot_deadline[slot] = now + ticks;
     k->busy |= 1u << slot;
@@ -35,6 +42,18 @@ static inline void slot_take(
     if (n > k->max_busy) {
         k->max_busy = n;
     }
+}
+
+/* Whether a busy slot's team shares a core with `team` (first | count << 16). */
+static inline int slots_overlap(const kmd_t* k, uint32_t team) {
+    const uint32_t first = team & 0xFFFFu, end = first + (team >> 16);
+    for (uint32_t j = 0; j < k->depth; j++) {
+        const uint32_t t = k->slot_team[j], f = t & 0xFFFFu;
+        if ((k->busy & (1u << j)) && f < end && first < f + (t >> 16)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* Sweeps the ack words of the busy slots. A slot whose word shows its sequence is
