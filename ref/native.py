@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ref import scenes
+from ref import public, scenes
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "ref" / "native"
@@ -108,10 +108,22 @@ def run_json(command, gpu=None):
 
 
 def ensure_scene(name):
-    """Writes <data>/<name>.npz and <name>/*.npy if missing; returns the folder."""
+    """Writes <data>/<name>.npz and <name>/*.npy if missing; returns the folder.
+
+    A generated preset is made here; a public scene's view is made from its converted
+    mesh, which only `python -m ref.public fetch` downloads (missing: an error).
+    """
     folder = data_dir() / name
     if not (data_dir() / f"{name}.npz").exists() or not folder.exists():
-        scene = scenes.make_preset(name)
+        if public.is_view(name):
+            scene = public.make_view(name, data_dir())
+        else:
+            scene = scenes.make_preset(name)
         scenes.save_scene(data_dir() / f"{name}.npz", scene)
         scenes.export_npy(scene, folder)
     return folder
+
+
+def scene_triangles(name):
+    """Triangle count of a scene by name: the preset's target or the public table's."""
+    return public.triangles(name) if public.is_view(name) else scenes.PRESETS[name]

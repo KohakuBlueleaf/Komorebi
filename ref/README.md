@@ -17,6 +17,8 @@ whose result is exactly representable.
 | `power.py` | GPU power from `nvidia-smi` and CPU package energy where readable |
 | `png.py` | a PNG writer and colour map for the pictures (numpy and zlib only) |
 | `native.py`, `native/` | building and running the C++ and CUDA references; shared headers |
+| `meshio.py` | OBJ (with MTL) and PLY readers in numpy |
+| `public.py`, `public_scenes.json` | public demo scenes: download, check, convert ([SCENES.md](SCENES.md)) |
 
 ## Scenes
 
@@ -33,3 +35,8 @@ point, near distance), `light` (3,) float32, `eps` (1,) float32 (ray offset), `m
 root in float64, and every random number comes from one 32-bit hash of (index, stream,
 seed), so the files are the same on every host. Nothing is shipped: the scenes are
 generated.
+
+Public demo scenes (Crytek Sponza, the conference room, the Amazon Lumberyard Bistro, San
+Miguel) are downloaded and converted by `python -m ref.public fetch`; see
+[SCENES.md](SCENES.md) for the list, the attribution each one asks for and how they are
+converted.
