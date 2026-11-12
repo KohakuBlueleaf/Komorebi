@@ -16,6 +16,9 @@
 #define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_record_t */
 #define KMD_LIM_BYTES 0x1800u
 #define KMD_READY_MAX 16u
+/* A hello's control block lies in [KMD_CTL_FLOOR, KMD_L1_BYTES - KM_CTL_BYTES]. */
+#define KMD_CTL_FLOOR 0x10000u /* below: the Tensix firmware and its mailboxes */
+#define KMD_L1_BYTES 0x180000u /* Blackhole Tensix L1, 1536 KiB */
 #define KMD_HOST_DEPTH_MAX 64u
 
 /* Host buffer (pinned host memory the kernel writes through a posted window): four
@@ -38,7 +41,7 @@
 #define KMD_ERR_NONE 0u
 #define KMD_ERR_ARGS 1u      /* the argument block is not this run's or out of range */
 #define KMD_ERR_WINDOW 2u    /* a window did not read back as programmed */
-#define KMD_ERR_ALIGN 3u     /* control block address not 64-byte aligned */
+#define KMD_ERR_ALIGN 3u     /* control block address unaligned or outside L1 */
 #define KMD_ERR_DEADLINE 4u  /* a record's team missed its deadline */
 #define KMD_ERR_START 5u     /* the hello or a READY did not arrive in time */
 #define KMD_ERR_IDLE 6u      /* no command and nothing in flight for t_idle */

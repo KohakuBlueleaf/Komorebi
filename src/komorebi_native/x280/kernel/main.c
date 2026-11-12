@@ -59,9 +59,10 @@ static uint32_t boot(kmd_t* k) {
         result_error(k, w == KMD_STOP ? KMD_ERR_STOPPED : KMD_ERR_START, 0, 0, 0, 0);
         return k->error;
     }
+    x280_fence_ir();
     const uint32_t ctl = mb[1];
     result_word(k, KMD_R_CTL, ctl);
-    if (ctl & 63u) {
+    if ((ctl & 63u) || ctl < KMD_CTL_FLOOR || ctl > KMD_L1_BYTES - KM_CTL_BYTES) {
         result_error(k, KMD_ERR_ALIGN, 0, 0, 0, ctl);
         return k->error;
     }
