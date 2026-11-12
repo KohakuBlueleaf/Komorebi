@@ -108,7 +108,8 @@ int kmx_main(int hart) {                  /* hart 0 */
 
 The library's start-up is the image's `main`. It turns floating point and vector on,
 sets each core's L2 prefetcher to the values the chip's documentation recommends
-(scalar code that walks memory runs about 20 % faster; vector streams do not gain),
+(scalar code that walks memory runs about 20 % faster; vector reads do not gain and
+vector writes lose 20 to 40 %; `prefetch="keep"` on the host leaves them as they are),
 checks that the argument block is this run's and every region lies in range, checks
 that the cluster sees the bank the host wrote (a line with a value only this run
 knows), then calls `kmx_main` on hart 0. Harts 1 to 3 wait for `kmx_par` calls until
@@ -185,6 +186,10 @@ developed this way first, and its card result is checked against it bit for bit
 
 ## Limits
 
+- The prefetcher registers keep their values until a card reset: once a thread set
+  them, every later image on that cluster runs with them, whatever it asks. The
+  cluster's L3 stays as the runtime sets it (one 128 KiB cache way); the library
+  never changes it.
 - One work cluster per program, cluster 1. Its DRAM bank (bank 6 on the p150a) was
   measured; a wrong bank fails the start-up check with the error `bank`.
 - A thread that never returns and polls nothing cannot be stopped: the runtime marks

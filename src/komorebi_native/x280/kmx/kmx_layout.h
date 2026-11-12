@@ -31,6 +31,10 @@
 #define KMX_LIM_BYTES 0x440u
 #define KMX_STOP_WORD 0x53544F50u /* "STOP" */
 
+/* Argument flags. KEEP_PREFETCH: leave the L2 prefetchers as they are instead of the
+ * documented values (they keep either until a card reset). */
+#define KMX_FLAG_KEEP_PREFETCH 1u
+
 /* Argument block offsets, in bytes. */
 #define KMX_ARGS_REGIONS 0x040u
 #define KMX_ARGS_WORDS 0x140u
@@ -52,7 +56,8 @@ typedef struct {
     uint32_t nwords;      /* entries of words[] in use */
     uint64_t check;       /* bank address of the check line (the bank check) */
     uint64_t check_value; /* what the host wrote at the start of that line */
-    uint64_t reserved[2];
+    uint64_t flags;       /* KMX_FLAG_* */
+    uint64_t reserved;
     kmx_region_t region[KMX_REGIONS_MAX];
     uint32_t words[KMX_WORDS_MAX];
 } kmx_args;
@@ -117,6 +122,7 @@ typedef struct {
 KMX_STATIC_ASSERT(offsetof(kmx_args, deadline) == 16, "kmx_args.deadline at 16");
 KMX_STATIC_ASSERT(offsetof(kmx_args, check) == 32, "kmx_args.check at 32");
 KMX_STATIC_ASSERT(offsetof(kmx_args, check_value) == 40, "check_value at 40");
+KMX_STATIC_ASSERT(offsetof(kmx_args, flags) == 48, "kmx_args.flags at 48");
 KMX_STATIC_ASSERT(offsetof(kmx_args, region) == KMX_ARGS_REGIONS, "region table");
 KMX_STATIC_ASSERT(offsetof(kmx_args, words) == KMX_ARGS_WORDS, "argument words");
 KMX_STATIC_ASSERT(sizeof(kmx_args) == KMX_ARGS_BYTES, "kmx_args size");

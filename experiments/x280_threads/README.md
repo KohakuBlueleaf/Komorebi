@@ -144,6 +144,10 @@ documented; vector streams are not faster, and vector writes are 20 to 40 % slow
 The registers keep their values until a card reset, so every later image on the
 cluster runs with them.
 
+`CCACHE0_WAYENABLE` reads 0 on cluster 1: one 128 KiB way of L3 cache, the rest local
+memory. Neither these probes nor the thread library write it; enlarging the L3 is
+one-way until a card reset and takes local memory from the runtime's images.
+
 ## A thread that ignores its deadline (from the sources, not run)
 
 Read in tt-metal's X280 runtime (`tt_metal/fabric/experimental/x280`):

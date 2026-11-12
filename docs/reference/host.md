@@ -41,7 +41,8 @@ nothing.
 | `depth` | mailbox slots the cores scan and the dispatch kernel uses, 1 to 16 |
 | `segments` | `{name: number}`, or a header whose `constexpr uint32_t kSegName = n;` lines give them (`kSegBigStep` becomes `"big_step"`); numbers 1 to 239 |
 
-`program.thread(cluster=1, sources, regions, words, host_fallback, deadline)` adds an
+`program.thread(cluster=1, sources, regions, words, host_fallback, deadline,
+prefetch="documented")` adds an
 X280 thread on a work cluster (one per program); see [X280 threads](../threads.md).
 
 The runtime owns circular buffers 29 and 30 (the record's token for compute and

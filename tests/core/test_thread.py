@@ -41,7 +41,7 @@ def test_ring_line_names_the_placement():
 def test_argument_block_holds_the_region_table_and_words():
     block = kt.args_block(a_thread(deadline=2.0), base=0x100000, check_value=0xABC)
     assert len(block) == K["KMX_LIM_BYTES"]
-    head = struct.unpack_from("<QIIQIIQQ", block)
+    head = struct.unpack_from("<QIIQIIQQQ", block)
     assert head == (
         0,
         K["KMX_MAGIC"],
@@ -51,6 +51,7 @@ def test_argument_block_holds_the_region_table_and_words():
         2,
         0x100000,
         0xABC,
+        0,
     )
     table = struct.unpack_from("<4Q", block, K["KMX_ARGS_REGIONS"])
     assert table == (0x100000 + kt.PAGE, 40, 0x100000 + 2 * kt.PAGE, 5000)
@@ -121,3 +122,8 @@ def test_a_thread_past_its_timeout_is_asked_to_stop_then_stopped():
         ("stop", 1),
     ]
     assert not r.ran and r.state == "running" and not run.running
+
+
+def test_prefetch_keep_is_a_flag_in_the_argument_block():
+    block = kt.args_block(a_thread(prefetch="keep"), base=0, check_value=1)
+    assert struct.unpack_from("<Q", block, 48)[0] == K["KMX_FLAG_KEEP_PREFETCH"]

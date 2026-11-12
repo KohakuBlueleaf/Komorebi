@@ -45,6 +45,7 @@ class Thread:
     deadline: float = 10.0
     includes: list = field(default_factory=list)
     defines: dict = field(default_factory=dict)
+    prefetch: str = "documented"  # or "keep": the L2 prefetchers as they are
 
     def __post_init__(self):
         k = layout()
@@ -59,6 +60,8 @@ class Thread:
         ticks = self.deadline * TIMER_HZ
         if not 0 < ticks <= k["KMX_DEADLINE_MAX"]:
             raise ValueError(f"deadline {self.deadline} s is out of range")
+        if self.prefetch not in ("documented", "keep"):
+            raise ValueError(f"prefetch={self.prefetch!r}: 'documented' or 'keep'")
         for name in self.regions:
             if self.region_bytes(name) <= 0:
                 raise ValueError(f"region {name!r} is empty")
@@ -122,8 +125,9 @@ def args_block(thread, base, check_value, run_value=0, ring=None):
     k = layout()
     placed, _ = place(thread)
     block = bytearray(k["KMX_LIM_BYTES"])
+    flags = k["KMX_FLAG_KEEP_PREFETCH"] if thread.prefetch == "keep" else 0
     head = struct.pack(
-        "<QIIQIIQQ",
+        "<QIIQIIQQQ",
         run_value,
         k["KMX_MAGIC"],
         k["KMX_VERSION"],
@@ -132,6 +136,7 @@ def args_block(thread, base, check_value, run_value=0, ring=None):
         len(thread.words),
         base,
         check_value,
+        flags,
     )
     block[: len(head)] = head
     for i, p in enumerate(placed):
