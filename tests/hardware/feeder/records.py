@@ -167,6 +167,23 @@ def state_words(ctl_rows):
     return as_uint32(ctl_rows)[:, start : start + K["kStateWords"]]
 
 
+def port_words(ctl_rows):
+    """[cores, KM_PORTS, 2] uint32 (count, wanted) of every port, from the blocks."""
+    start, stride = K["KM_CTL_PORT"] // 4, K["KM_PORT_STRIDE"] // 4
+    words = as_uint32(ctl_rows)[:, start : start + K["KM_PORTS"] * stride]
+    words = words.reshape(len(words), K["KM_PORTS"], stride)
+    return words[:, :, [K["KM_PORT_COUNT"], K["KM_PORT_WANT"]]]
+
+
+def waiting_ports(ports, core):
+    """Ports of `core` still wanting arrivals: {port: missing count}."""
+    return {
+        p: int(want) - int(count)
+        for p, (count, want) in enumerate(ports[core])
+        if want != 0
+    }
+
+
 GAVES = {
     K["kGaveStop"]: "stop",
     K["kGaveLimit"]: "limit",
@@ -180,12 +197,16 @@ def gave_up(word, seq):
     if code == K["kGaveNone"]:
         return None
     wheres = {v: k[6:].lower() for k, v in K.items() if k.startswith("kWhere")}
-    return {
+    where = (word >> 8) & 0xFF
+    out = {
         "code": GAVES.get(code, code),
-        "where": wheres.get((word >> 8) & 0xFF, (word >> 8) & 0xFF),
+        "where": wheres.get(where, where),
         "slot": (word >> 16) & 0xFF,
         "seq": int(seq),
     }
+    if where in (K["kWherePort"], K["kWhereEmit"]):  # the top byte names the port
+        out["port"] = word >> 24
+    return out
 
 
 def core_state(st, core, tag=None):

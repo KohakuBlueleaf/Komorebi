@@ -77,6 +77,7 @@ class Result:
     summary: dict
     records: dict
     state: np.ndarray
+    ports: np.ndarray  # [cores, KM_PORTS, 2]: count, wanted
     trace: np.ndarray | None
     mhz: int
     host_s: float
@@ -292,7 +293,7 @@ class Fed:
         log(f"program done in {host_s:.2f}s")
         rows = read_int32(results_t)
         ctl_words = read_int32(ctl)
-        state = rec.state_words(ctl_words)
+        state, ports = rec.state_words(ctl_words), rec.port_words(ctl_words)
         trace = None
         if trace_t is not None:
             trace = rec.as_uint32(read_int32(trace_t)).reshape(self.workers, -1, 4)
@@ -301,6 +302,7 @@ class Fed:
             summary=rec.feeder_summary(rows),
             records=rec.feeder_records(rows),
             state=state,
+            ports=ports,
             trace=trace,
             mhz=mhz,
             host_s=host_s,
