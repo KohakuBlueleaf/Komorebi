@@ -174,10 +174,13 @@ class Run:
         reqs = rows[:, 1].astype(np.int64)
         tickets = (base + ((reqs - base) & M32)).tolist()
         statuses, ticks = rows[:, 2].tolist(), rows[:, 3].tolist()
-        pop, events, done = self._flight.pop, self._events, self._done
-        timeout = None
+        flight, events, done = self._flight, self._events, self._done
+        timeout, stray = None, None
         for ticket, status, tick in zip(tickets, statuses, ticks):
-            team = pop(ticket, None)
+            if ticket not in flight:
+                stray = stray or ticket  # never stored, or its event already filed
+                continue
+            team = flight.pop(ticket)
             events[ticket] = (status, tick)
             if status & 0xFF == done:
                 continue
@@ -188,7 +191,15 @@ class Run:
                     self._unsequence(ticket)
             elif ev.kind == "timeout":
                 timeout = ev
-        self._arrived.extend(tickets)
+        self._arrived.extend(t for t in tickets if t in events)
+        if stray is not None:
+            self.abort()
+            raise self._remember(
+                KernelFailed(
+                    f"an event for command {stray & M32} (ticket {stray}), which is "
+                    "not in flight: the run is stopped"
+                )
+            )
         if timeout is not None:
             self._fail_timeout(timeout)
 

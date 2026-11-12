@@ -245,6 +245,21 @@ def test_stop_waits_for_records_in_flight_before_exit():
     assert port.issued[-1][3] == K["KM_SEG_EXIT"] and port.issued[-1][4] == (0, 120)
 
 
+def stray_event(port, req):
+    port.pushed_events += 1
+    port.events.append([port.pushed_events, req, K["KM_EV_DONE"], 7])
+
+
+@pytest.mark.parametrize("req", [9, 1])  # never stored; already filed
+def test_an_event_for_a_command_not_in_flight_stops_the_run(req):
+    run, port, backend = make_run()
+    run.wait(run.issue(1, (0, 1)))
+    stray_event(port, req)
+    with pytest.raises(KernelFailed, match=f"command {req} .*not in flight"):
+        run.wait(run.issue(1, (0, 1)))
+    assert backend.calls == ["abort", "read_back"] and run.stopped
+
+
 def test_state_and_trace_only_after_the_stop():
     run, _, _ = make_run()
     with pytest.raises(KomorebiError, match="after"):
