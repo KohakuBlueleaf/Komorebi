@@ -35,3 +35,7 @@ place to ask a question and to be wrong.
 - [stream_checks](stream_checks/README.md): the reference streams of the micro-op
   simulator and a mutation run over its source. Every one of 104 mutants changes some
   saved answer.
+- [runtime_harness](runtime_harness/README.md): the Tensix runtime's kernels as host
+  threads on a simulated grid, with failure paths forced on purpose (stop words,
+  give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
+  defects in the runtime and replays a card hang; 24 scenarios, run by hand.
