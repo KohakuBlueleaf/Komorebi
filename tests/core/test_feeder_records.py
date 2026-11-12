@@ -47,14 +47,15 @@ def test_constants_come_from_the_headers():
     assert K["KM_READY"] == 0xFFFFFFFF and K["KM_SEG_EXIT"] == 255
     assert K["KM_SEG_USER_MAX"] == 239 and "KM_F_ACK" not in K
     assert K["kStateWords"] * 4 <= K["KM_CTL_JOB"] - K["KM_CTL_STATE"]
-    assert K["kFdArgs"] == 12 and K["kFeederMagic"] == 0xFEED0000
+    assert K["kFdArgs"] == 13 and K["kFeederMagic"] == 0xFEED0000
 
 
 def test_start_up_arguments_are_in_header_order():
     assert rec.ARG_FIELDS[:3] == ["ctl", "me", "cores"]
-    assert len(rec.ARG_FIELDS) == 18 and {"ready_base", "row"} <= set(rec.ARG_FIELDS)
+    assert len(rec.ARG_FIELDS) == 19
+    assert {"ready_base", "row", "workers"} <= set(rec.ARG_FIELDS)
     values = {name: i for i, name in enumerate(rec.ARG_FIELDS)}
-    assert rec.start_args(values) == list(range(18))
+    assert rec.start_args(values) == list(range(19))
     with pytest.raises(ValueError, match="missing"):
         rec.start_args({"ctl": 1})
 

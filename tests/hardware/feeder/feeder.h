@@ -16,7 +16,9 @@ constexpr uint32_t kFdGroups = 8;     // start-up groups: READY words to wait fo
 constexpr uint32_t kFdBootLimit = 9;  // bound of the start-up wait, 1024-cycle units
 constexpr uint32_t kFdExit = 10;      // nonzero: EXIT last (if the table has none)
 constexpr uint32_t kFdRelease = 11;  // nonzero: a9 = issue time + this (cycles, low word)
-constexpr uint32_t kFdArgs = 12;
+// Nonzero: record kFdRaw - 1 is issued with the slot and team it names (test only).
+constexpr uint32_t kFdRaw = 12;
+constexpr uint32_t kFdArgs = 13;
 
 // Buffers on the feeder core: the records plus a spare (n + 1 rows), the results.
 constexpr uint32_t kFdCbTable = 0;

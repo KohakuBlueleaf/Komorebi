@@ -126,6 +126,8 @@ class Fed:
         trace_cap=0,
         send_exit=True,
         release=0,
+        row=None,
+        raw=0,
     ):
         """Runs `records` (lists of 16 words) and returns a Result.
 
@@ -157,7 +159,8 @@ class Fed:
             "ready_base": ctl_addr + K["KM_CTL_BOOT"],
             "tag": tag,
             "depth": depth,
-            "row": self.grid[0],
+            "workers": self.workers,
+            "row": self.grid[0] if row is None else row,
             "wait_limit": rec.limit_units(wait_s, mhz),
             "idle_limit": rec.limit_units(idle_s, mhz) if idle_s else 0,  # 0: none
             "trace": trace_t.buffer_address() if trace_t is not None else 0,
@@ -202,6 +205,7 @@ class Fed:
             "kFdBootLimit": rec.limit_units(wait_s, mhz),
             "kFdExit": int(send_exit),
             "kFdRelease": release,
+            "kFdRaw": raw,
         }
         words = [0] * K["kFdArgs"]
         for name, value in fd.items():

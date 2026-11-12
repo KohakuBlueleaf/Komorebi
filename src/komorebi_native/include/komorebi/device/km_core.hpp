@@ -87,6 +87,7 @@ namespace km {
         uint32_t ready_slot;  // leader: its READY word, at ready_base + slot * 16
         uint32_t ready_base;  // the dispatcher's READY words (not the ack words)
         uint32_t tag;         // per-process random tag, 16 bits
+        uint32_t workers;     // cores 0 to workers - 1 run records (an EXIT's team)
         uint32_t depth;       // ring slots scanned, 1 to KM_RING_SLOTS
         uint32_t row;         // cores per grid row (completion); 0: one level always
         uint32_t wait_limit;  // bound of a wait for another core, 1024-cycle units

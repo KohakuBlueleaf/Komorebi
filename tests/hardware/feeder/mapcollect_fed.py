@@ -59,6 +59,12 @@ def parse():
         "--exit-at", type=int, default=-1, help="job index made an EXIT (team of 1)"
     )
     p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
+    p.add_argument("--raw", type=int, default=-1, help="job index issued raw")
+    p.add_argument("--raw-slot", type=int, default=0, help="slot its header names")
+    p.add_argument("--exit-team", default="", help="first:count kept on the EXIT")
+    p.add_argument(
+        "--row", type=int, help="cores per row for completion (0: one level)"
+    )
     p.add_argument("--trace", action="store_true")
     p.add_argument("--excl", action="store_true", help="KM_F_EXCL on every MAP record")
     p.add_argument("--seed", type=int, default=1)
@@ -255,7 +261,8 @@ def run(device, args, rng):
             late = [args.late_member, args.late_cycles]
             records.append(rec.record(SEG_LATE, first, count, late))
         elif j == args.exit_at:  # the feeder sets the team to every worker
-            records.append(rec.record(K["KM_SEG_EXIT"], first, 1))
+            x = tuple(map(int, args.exit_team.split(":"))) if args.exit_team else (0, 1)
+            records.append(rec.record(K["KM_SEG_EXIT"], *x))
         elif args.seg == "align":
             records.append(rec.record(SEG_ALIGN, first, count))
         elif args.seg == "nop":
@@ -270,6 +277,8 @@ def run(device, args, rng):
                 args.slow_member if j == args.slow else 0xFFFFFFFF,
             ]
             records.append(rec.record(SEG_MAP, first, count, words, flags))
+        if j == args.raw:  # issued as built: the slot it names and its team kept
+            records[-1][rec.RECORD_FIELDS.index("hdr")] |= args.raw_slot << 16
 
     accessor = ttnn.TensorAccessorArgs(inputs[0]).get_compile_time_args()
     kernels = fed.Kernels(
@@ -296,6 +305,8 @@ def run(device, args, rng):
         wait_s=args.wait,
         trace_cap=trace_cap,
         release=args.release if args.seg == "align" else 0,
+        row=args.row,
+        raw=args.raw + 1 if args.raw >= 0 else 0,
     )
     if args.dump:
         np.savez(
@@ -343,6 +354,13 @@ def run(device, args, rng):
             "after_every_ack": bool(((gap > 0) & (gap < 1 << 31)).all()),
         }
     states = [rec.core_state(res.state, c) for c in range(workers)]
+    out["runs"] = sum(c["runs"] for c in states)
+    if "exit" in out:  # cores whose report of the EXIT landed
+        slot, seq = int(res.records["slot"][args.exit_at]), int(
+            res.records["seq"][args.exit_at]
+        )
+        out["exit"]["reported_by"] = sum(c["reported"][slot] == seq for c in states)
+    out["slot_wrong"] = {c["core"]: c["slot_wrong"] for c in states if c["slot_wrong"]}
     out["cores_magic_ok"] = sum(c["magic_ok"] for c in states)
     out["cores_ended"] = {
         k: sum(c[k] != 0 for c in states)

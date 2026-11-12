@@ -238,6 +238,7 @@ class _Backend:
             "ready_base": base + h["KMD_LIM_READY"],
             "tag": tag,
             "depth": depth,
+            "workers": cores,
             "row": grid[0],
             "wait_limit": abi.limit_units(wait, self.mhz),
             "idle_limit": abi.limit_units(idle, self.mhz) if idle else 0,  # 0: none

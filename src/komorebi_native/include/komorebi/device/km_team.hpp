@@ -12,6 +12,9 @@ namespace km {
     // it, then increments the parent's DONE[slot] (NoC1) or, as first member, acks.
     inline bool complete(const Core& c, const km_record_t& r) {
         const Args& a = c.args();
+        if (!in_team(r, a.me)) {  // the reader never hands a non-member one
+            return false;
+        }
         const uint32_t j = slot(r);
         const uint32_t counter = KM_CTL_DONE + j * 16;
         const Report to = report_to(r, a.me, a.row);

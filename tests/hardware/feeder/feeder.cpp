@@ -99,7 +99,7 @@ void kernel_main() {
     uint64_t t_first = 0, t_last = 0, issue_cycles = 0;
 
     // Issues record `src` (64 bytes in L1) to slot j of every worker.
-    auto issue = [&](uint32_t j, uint32_t src) {
+    auto issue = [&](uint32_t j, uint32_t src, bool raw) {
         volatile tt_l1_ptr km_record_t*
             st = (
                 reinterpret_cast<volatile tt_l1_ptr km_record_t*>(
@@ -109,7 +109,9 @@ void kernel_main() {
         km::copy_record(reinterpret_cast<volatile tt_l1_ptr km_record_t*>(src), st);
         seq++;
         st->seq = st->land1 = st->land2 = st->land3 = seq;
-        st->hdr = (st->hdr & 0xFFFFu) | j << 16;
+        if (!raw) {  // a raw record keeps the slot it names (test only)
+            st->hdr = (st->hdr & 0xFFFFu) | j << 16;
+        }
         const uint64_t t0 = km::wall64();
         if (arg(kFdRelease) != 0) {  // one release time for every core (test only)
             st->a9 = static_cast<uint32_t>(t0) + arg(kFdRelease);
@@ -162,8 +164,9 @@ void kernel_main() {
             volatile tt_l1_ptr uint32_t* r = row(1 + next);
             volatile tt_l1_ptr uint32_t* w = km::l1(src);
             const bool is_exit = (w[1] & 0xFFu) == KM_SEG_EXIT;
+            const bool raw = arg(kFdRaw) == next + 1;
             if (is_exit) {  // to every worker, and only when no slot is busy
-                w[2] = KM_TEAM_ALL(workers);
+                w[2] = raw ? w[2] : KM_TEAM_ALL(workers);
                 if (in_flight != 0) {
                     r[kFrRecHeld] = 1;
                     continue;
@@ -186,7 +189,7 @@ void kernel_main() {
             if (j == depth) {
                 continue;
             }
-            const uint64_t t0 = issue(j, src);
+            const uint64_t t0 = issue(j, src, raw);
             t_first = next == 0 ? t0 : t_first;
             r[kFrRecSeq] = seq;
             r[kFrRecSlot] = j;
@@ -211,7 +214,7 @@ void kernel_main() {
             }
             x[1] = km::make_hdr(KM_SEG_EXIT, 0, 0);
             x[2] = KM_TEAM_ALL(workers);
-            const uint64_t t0 = issue(0, tab + n * 64);  // every slot is free now
+            const uint64_t t0 = issue(0, tab + n * 64, false);  // every slot is free
             for (;;) {  // EXIT completes like any record
                 invalidate_l1_cache();
                 if (ack[0] == KM_ACK(seq)) {

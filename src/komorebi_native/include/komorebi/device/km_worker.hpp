@@ -177,6 +177,16 @@ namespace km {
                     copy_record(&ring[p.pick], job);
                     if (job->seq == p.pick_seq && KM_LANDED(job)) {
                         last[p.pick] = p.pick_seq;
+                        const km_record_t& got = *const_cast<const km_record_t*>(job);
+                        // A record names its own slot; one found elsewhere is not run.
+                        if (slot(got) != static_cast<uint32_t>(p.pick)) {
+                            add_sat(state() + kStSlotWrong, 1);
+                            continue;
+                        }
+                        // EXIT completes as a team of every worker, whatever it names.
+                        if (seg(got) == KM_SEG_EXIT) {
+                            job->team = make_team(0, a.workers);
+                        }
                         seq = p.pick_seq;
                         break;
                     }

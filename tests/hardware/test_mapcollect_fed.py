@@ -111,9 +111,29 @@ def test_an_exit_record_goes_to_every_core_once_no_slot_is_busy():
     out = run("--jobs", 10, "--count", 60, "--exit-at", 5)  # EXIT with a team of 1
     assert out["feeder"]["status"] == "done" and out["feeder"]["exit_acked"]
     assert out["feeder"]["issued"] == out["feeder"]["done"] == 6
-    assert out["exit"] == {"held": True, "status": 1, "after_every_ack": True}
+    exit_ = {"held": True, "status": 1, "after_every_ack": True, "reported_by": 119}
+    assert out["exit"] == exit_
     assert out["jobs_checked"] == 5 and out["jobs_bad"] == 0
     assert every_kernel_returned(out)
+
+
+@pytest.mark.parametrize("row", [0, 12])
+def test_an_exit_naming_a_partial_team_completes_as_every_core(row):
+    exit_ = ["--exit-at", 5, "--exit-team", "0:2", "--raw", 5, "--row", row]
+    out = run("--jobs", 10, "--count", 60, *exit_)  # the feeder keeps the team 0:2
+    assert out["feeder"]["status"] == "done" and out["feeder"]["exit_acked"]
+    assert out["exit"]["status"] == 1 and out["exit"]["reported_by"] == 119
+    assert out["jobs_checked"] == 5 and out["jobs_bad"] == 0
+    assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
+
+
+@pytest.mark.parametrize("named", [20, 3])
+def test_a_record_naming_another_slot_is_not_run(named):
+    raw = ["--seg", "nop", "--raw", 0, "--raw-slot", named, "--deadline", 0.02]
+    out = run("--jobs", 2, "--depth", 1, "--first", 10, "--count", 8, *raw)  # slot 0
+    assert out["feeder"]["status"] == "timeout" and out["feeder"]["index"] == 0
+    assert out["slot_wrong"] == {str(c): 1 for c in range(10, 18)}  # JSON keys
+    assert out["runs"] == 0 and every_kernel_returned(out)
 
 
 def test_a_long_record_in_flight_at_the_stop_ends_on_every_tile():
