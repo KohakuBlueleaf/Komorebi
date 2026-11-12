@@ -9,14 +9,20 @@ tags:
 
 # Micro-op streams
 
-Status: the format, the builder, the check and the simulator are implemented and tested
-on the CPU. The interpreter in the dispatch kernel is not part of this page's code yet;
-the simulator is the definition it is tested against.
-
 A stream is a small program that runs on the card's dispatch cluster and decides which
 records to issue to the Tensix grid: which segment, on which team, with which
 arguments, in which order and how many at once. The host builds it, uploads it once
 and waits for one event, instead of sending one command per record.
+
+Terms, defined on [the Tensix runtime](concepts/runtime.md) and
+[the dispatch kernel](concepts/dispatch.md) pages: a *record* is the 64-byte unit sent
+to the grid; a *segment* is the number of the code a record runs (1 to 239 belong to
+the program); a *team* is a contiguous range of cores `[first, first + count)` out of
+the grid's cores (119 on the card this is developed on; the simulator's `n_cores`); the
+team's *leader* reports its completion with one word. The kernel keeps 16 *completion
+slots*: a record occupies one from issue until its team's acknowledgement is swept up,
+so at most 16 records are in flight. The kernel loop runs in *passes*, described
+[below](#the-kernel-pass-and-the-job-queue).
 
 The code is `komorebi.engines.stream`; the shared definitions are in
 `src/komorebi_native/include/komorebi/abi/km_stream.h`.
@@ -58,15 +64,24 @@ all are done.
   a label for a later position. Jumps take labels.
 - `s.issue(seg, team=(first, count), args=[...], exclusive=False, result=False)`: `first`
   and `count` are integers or registers; `args` are up to ten integers, of which up to
-  four may be registers.
+  four may be registers. `exclusive=True` makes this one record wait at its own issue
+  while a busy team overlaps its team; it does not stop a later plain record from
+  overlapping it.
 - `s.submit(seg, count, args=[...], exclusive=False, result=False)`: the same through the
   job queue; `count` is an integer or a register and the allocator chooses `first`.
 - `s.encode()` gives the upload bytes; `Stream.decode(bytes)` is its inverse and raises
   `StreamFormatError` for an upload the check refuses.
 
+The builder refuses what the check would refuse, and names the field: `max_steps`,
+`seed`, `req` and `deadline_us` out of range, a `wait` count outside 0 to 4,294,967,295,
+a program of more than 65,535 micro-ops, an argument that does not fit 32 bits, a team
+field that does not fit 16 bits, a segment outside 1 to 239.
+
 ## Micro-ops
 
-Registers are unsigned 32-bit and arithmetic wraps. Unused operand fields are ignored.
+Registers are unsigned 32-bit and arithmetic wraps. The operand fields a micro-op reads
+are the ones in its row; every other field and byte is ignored by the kernel and the
+check.
 
 | Micro-op | Meaning |
 |---|---|
@@ -89,14 +104,18 @@ Registers are unsigned 32-bit and arithmetic wraps. Unused operand fields are ig
 | `EVENT a` | post a progress event; its aux is the low 24 bits of `a` |
 | `TIME a` | `a` = low 32 bits of the tick counter |
 
-A record is pending from `ISSUE`, or from `SUBMIT`, until the grid acknowledges it.
+A record is pending from `ISSUE`, or from `SUBMIT`, until the grid acknowledges it. A
+queued job carries the argument values the registers had when `SUBMIT` ran, not the
+values they have when the job is finally issued.
 
 `ISSUE` and `SUBMIT` fill a record from the template and the registers named in its
 patch list, then wait if they cannot go on: `ISSUE` waits while all 16 completion slots
-are busy, and with `exclusive=True` also while any busy team overlaps its team. A
-program counter that reaches the end of the micro-ops is an error, as is a stream that
-has run `max_steps` micro-ops. An `ISSUE` onto a team outside the grid and a job that
-can never fit are errors too; see [Errors](#errors).
+are busy, and with `exclusive=True` also while any busy team overlaps its team. A team
+is outside the grid when `count == 0 || first > n_cores || count > n_cores - first`
+(no sum is formed, so nothing wraps); `ISSUE` onto such a team is an error before any
+waiting, and so is a `SUBMIT` whose count is 0 or above the grid. A program counter that
+reaches the end of the micro-ops is an error, as is a stream that has run `max_steps`
+micro-ops; see [Errors](#errors).
 
 A record issued with `result=True` makes the team's leader return one 32-bit value with
 its acknowledgement; `RESULT` reads it. When several results are swept together, the one
@@ -120,6 +139,10 @@ argument wins. `first_reg` and `count_reg` are a register number, or 0xFF to tak
 `first` or `count` from the record. `SUBMIT` takes the count from its own register and
 ignores `first_reg` and `count_reg`; the issued record never carries the queue flag.
 
+Every byte the layout does not name (the padding, the header's last 32 bytes, unused
+operand fields, `imm2`, the record's sequence and landing words and the slot bits of its
+`hdr` word, the template's last 5 bytes, patch entries past `n_patch`) is ignored.
+
 Opcodes: SET 1, MOV 2, ADD 3, ADDI 4, SUB 5, MUL 6, AND 7, SHR 8, MOD 9, RAND 10,
 JMP 16, JLT 17, JEQ 18, JNZ 19, HALT 20, ISSUE 32, SUBMIT 33, WAIT 40, RESULT 41,
 EVENT 48, TIME 49. Opcode 0 is invalid. A stream has at most 65,535 micro-ops.
@@ -127,7 +150,16 @@ EVENT 48, TIME 49. Opcode 0 is invalid. A stream has at most 65,535 micro-ops.
 The host writes the upload as whole 64-byte lines into the region the kernel publishes,
 then sends the `KM_SEG_RUN` command (`a0` = offset in the region, `a1` = byte count).
 `KM_SEG_CANCEL` (`a0` = request id) ends a running stream with reason 10. At most four
-streams run at once; a fifth `KM_SEG_RUN` is refused.
+streams run at once; a fifth `KM_SEG_RUN` is refused, and the host does not write into
+the range of a running stream.
+
+`check_run(upload, offset, region_size, active=(), active_reqs=())` gives what the kernel
+must answer a `KM_SEG_RUN`: `(error, req)`, where `req` is the id for the error event
+(the header's, or 0 if the header is not inside the region). The `RUN` is refused with
+reason 1 when the offset is not a multiple of 64, when the range is not inside the
+region (tested as `offset > region_size || length > region_size - offset`), when the
+range overlaps an `active` `(offset, length)` range, or when the header's `req` is an
+active stream's. Otherwise the answer is that of `check`.
 
 ## The check
 
@@ -135,7 +167,8 @@ streams run at once; a fifth `KM_SEG_RUN` is refused.
 `None`, or `StreamError(reason, pc)`, the reason and program counter of the error event.
 The checks run in this order and the first fault wins.
 
-1. Header (reason 1, pc 0): at least 64 bytes and a multiple of 64; at most the region;
+1. Header (reason 1, pc 0): at least 64 bytes and a multiple of 64; at most the region
+   size (a stream as large as the region is accepted);
    magic and version; `seed` not 0; `n_ops` from 1 to 65,535; `n_records` at most 65,535;
    `max_steps` not 0; the total size equals the header's layout exactly.
 2. Each micro-op in order: an unknown opcode (reason 2); a register number of 16 or more
@@ -158,7 +191,8 @@ is the kind in the low 8 bits and the aux above it.
 |---|---|---|
 | `KM_EV_STREAM` 4 | by `EVENT a` | low 24 bits of `a` |
 | `KM_EV_STREAM_END` 5 | when `HALT` ends the stream | low 24 bits of the halt register |
-| `KM_EV_STREAM_ERROR` 6 | on any error; nothing follows it | reason in the low 8 bits, the program counter in the 16 bits above |
+| `KM_EV_STREAM_ERROR` 6 | on any error; the stream posts nothing after it | reason in the low 8 bits, the program counter in the 16 bits above |
+| `KM_EV_TIMEOUT` 1 | after a stream's error, for a record it left in flight that passes its deadline; the grid is stopped | the slot |
 
 ### Errors
 
@@ -171,25 +205,36 @@ is the kind in the low 8 bits and the aux above it.
 | 5 | bad template or patch, or template index out of range | the micro-op that uses it (0 if none) |
 | 6 | step limit | the micro-op that would have been the `max_steps + 1`th |
 | 7 | `MOD` by zero | the `MOD` |
-| 8 | a record's deadline passed (the grid is also stopped) | the `ISSUE` or `SUBMIT` that made it |
+| 8 | a record's deadline passed (the grid is also stopped); if several are late in one pass, the lowest slot's | the `ISSUE` or `SUBMIT` that made it |
 | 9 | a `SUBMIT` whose count is 0 or above the grid | the `SUBMIT` |
 | 10 | cancelled | the micro-op the stream had reached |
 | 11 | an `ISSUE` whose team is empty or leaves the grid | the `ISSUE` |
 
-After an error the stream's queued jobs are dropped; records already issued stay on the
-grid until they complete and nobody waits for them.
+After an error the stream's queued jobs are dropped. Records it had already issued stay
+on the grid until they complete and nobody waits for them, but they keep their
+deadlines: a late one stops the grid and posts a `KM_EV_TIMEOUT` event for its slot with
+the ended stream's `req`.
+
+Every record has a deadline, counted from its issue. The header's `deadline_us` sets it;
+0 means the kernel's default deadline, which is a start-up setting and never zero (a
+`KM_SEG_DEADLINE` command of 0 is refused).
 
 ## The kernel pass and the job queue
 
 The kernel loop runs in passes. In one pass it sweeps acknowledgements (freeing
-completion slots, lowest slot first), checks deadlines, takes host commands, runs each
-active stream for at most 64 micro-ops (a micro-op that has to wait does not count and
-ends the stream's turn), then lets the queue issue.
+completion slots, lowest slot first), checks deadlines, takes host commands, then gives
+each issuer a turn: a stream runs for at most 64 micro-ops (a micro-op that has to wait
+does not count and ends the turn); the queue issues what fits. The issuers are the
+active streams in the order they started, then the queue. The first turn rotates: in
+pass `p`, with `n` streams, the turns start at issuer `p % (n + 1)` and go on cyclically.
+With one stream, the stream goes first in even passes and the queue in odd ones, so
+neither can keep the other from freed slots.
 
 A record takes the lowest free completion slot. The team allocator returns the lowest
 `first` such that cores `[first, first + count)` overlap no busy slot's team.
 
-The queue holds at most 64 waiting jobs; a `SUBMIT` into a full queue waits. Each pass
+The queue holds at most 64 waiting jobs, shared by every stream and by queued jobs from
+the host; a `SUBMIT` into a full queue waits. Each pass
 the queue looks at the first 16 waiting jobs in order and issues each that finds a free
 slot and room. A job that does not fit does not block those behind it, but once 1,024
 jobs have been issued ahead of it nothing behind it is issued until it fits, so a large
@@ -206,22 +251,27 @@ done = simulate(upload, n_cores=119, delay=0)
 ```
 
 `simulate(upload, ...)` and `Stream.simulate(...)` run the check and then the stream as
-the kernel would. They return `SimResult(records, events, status, passes, error, halt,
+the kernel would; an upload the check refuses ends in one error event at pass 0. They return `SimResult(records, events, status, passes, error, halt,
 stopped)`:
 
 - `records`: every record issued, in order, as `IssuedRecord(seq, slot, seg, first,
   count, flags, args, pass_index, pc, queued)`; `args` has ten words.
 - `events`: `Event(kind, req, aux, pass_index)`, in order.
 - `status`: `"ended"` (`halt` holds the status), `"error"` (`error` holds the reason and
-  pc; `stopped` is true for reason 8) or `"stuck"` (no end within `max_passes`).
+  pc) or `"stuck"` (no end within `max_passes`). `stopped` is true when a late record
+  stopped the grid.
 - `passes`: the number of passes up to the one that posted the last event.
 
 How completions arrive is a parameter. `delay` is an integer or a function of the
 record: a record issued in pass `p` is acknowledged by the sweep of pass
 `p + 1 + delay`, and `None` means never. `result(record)` gives the value of a record
 with `result=True`. `deadline_passes` makes a record late when it is still busy after
-the sweep of pass `p + deadline_passes`. `cancel_pass` delivers a cancel command in that
-pass. `n_cores` is the grid size (119 by default); `ticks_per_pass` sets `TIME`.
+the sweep of pass `p + deadline_passes`; it replaces the header's deadline, while
+`default_deadline_passes` (1,000,000 unless given; both at least 1) stands for a header
+with `deadline_us` 0. `cancel_pass` delivers a cancel command in that pass. `n_cores` is
+the grid size (119 by default); `ticks_per_pass` sets `TIME` (`pass * ticks_per_pass`);
+`max_passes` ends a run that does not end by itself (status `"stuck"`); `region_size`
+is the size the check allows an upload (1 MiB by default).
 
 The simulator runs one stream. Pass counts, and what `TIME` returns, depend on the
 model and are not what a card shows; the order of records and events is what a card
@@ -230,9 +280,13 @@ sets of records where it is not.
 
 ## Reference streams
 
-`tests/core/data/streams/` holds named streams as `.bin` uploads, each with a `.json`
-beside it giving the simulator's answer: the check result, the issued records, the
-events, the status and the halt value. They cover every micro-op and every error reason,
-and exist so that another implementation, such as the kernel's interpreter, can replay
-them. `python tests/core/stream_reference.py` rewrites them, and a test keeps the files
-equal to what the simulator gives.
+`tests/core/data/streams/` holds about ninety named streams as `.bin` uploads, each with
+a `.json` beside it giving the parameters of the simulation and the simulator's answer:
+the check result, every issued record (`seq`, `slot`, issue `pass`, `pc`, `queued`,
+`seg`, `first`, `count`, `flags`, `args`), the events, the status, the error, the halt
+value and whether the grid was stopped. Each file's notes say how completions are
+modelled. They exist so that another implementation, such as the kernel's interpreter,
+can replay them, and they are chosen so that a deliberate slip in the simulator is
+noticed: a test applies about a hundred small patches to it and requires every one to
+change some saved answer. `python tests/core/stream_reference.py` rewrites the files, and
+a test keeps them equal to what the simulator gives.
