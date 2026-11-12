@@ -1,6 +1,6 @@
 """Builds the runtime harness and runs its scenarios, by hand: python run.py [--tree
-DIR] [--rows] [--tsan] [names...]; --build-only prints the program's path (reused while
-the sources are unchanged). Exits non-zero if a scenario fails.
+DIR] [--rows] [--tsan] [names...]; --build-only [--pinned] prints a program's path
+(reused while the sources are unchanged). Exits non-zero if a scenario fails.
 """
 
 import argparse
@@ -16,18 +16,23 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+# Builds: one-level tree, row leaders, thread sanitizer; pinned: the tests' quick build.
 FORMS = {
-    "one": [],
-    "rows": ["-DKM_ROW_LEADERS=3", "-DKMSIM_TREE_ROW=3"],
-    "tsan": ["-fsanitize=thread"],
+    "one": ["-O1", "-g"],
+    "rows": ["-O1", "-g", "-DKM_ROW_LEADERS=3", "-DKMSIM_TREE_ROW=3"],
+    "tsan": ["-O1", "-g", "-fsanitize=thread"],
+    "pinned": ["-O0"],
 }
+HARNESS = ["sim", "stub_calls", "dispatcher", "checks", "pinned"]
 ROWS = ["smoke", "exit_partial_team", "completion_every_team"]
 PARTS = ("unpack", "math", "pack")
 
 
-def units(tree):
-    """(name, source, flags) of every translation unit of the program."""
+def units(tree, main):
+    """(name, source, flags) of every translation unit of a program."""
     kernels = tree / "examples" / "01_mapcollect" / "kernels"
+    # Each compute thread is its own program on the card: -Dkm=km_<thread> and static
+    # stub functions keep one thread's inline code from replacing another's at link.
     trisc = ["-std=c++17", "-DCOMPILE_FOR_TRISC"]
     return [
         (
@@ -44,7 +49,12 @@ def units(tree):
             (
                 p,
                 kernels / "compute.cpp",
-                [*trisc, f"-DTRISC_{p.upper()}", f"-Dkernel_main=kmsim_{p}_main"],
+                [
+                    *trisc,
+                    f"-DTRISC_{p.upper()}",
+                    f"-Dkm=km_{p}",
+                    f"-Dkernel_main=kmsim_{p}_main",
+                ],
             )
             for p in PARTS
         ],
@@ -52,12 +62,11 @@ def units(tree):
             (
                 f"item_{p}",
                 HERE / "item_kernels.cpp",
-                [*trisc, f"-DTRISC_{p.upper()}", f"-DKMSIM_PART={p}"],
+                [*trisc, f"-DTRISC_{p.upper()}", f"-Dkm=km_{p}", f"-DKMSIM_PART={p}"],
             )
             for p in PARTS
         ],
-        ("sim", HERE / "sim.cpp", ["-std=c++20", "-Werror"]),
-        ("scenarios", HERE / "scenarios.cpp", ["-std=c++20", "-Werror"]),
+        *[(u, HERE / f"{u}.cpp", ["-std=c++17", "-Werror"]) for u in [*HARNESS, main]],
     ]
 
 
@@ -69,8 +78,8 @@ def build(out, tree=ROOT, form="one"):
         f"-I{HERE}",
         f"-I{tree / 'src' / 'komorebi_native' / 'include'}",
     ]
-    common = [cxx, "-O1", "-g", "-Wall", *include, *FORMS[form]]
-    todo = units(tree)
+    common = [cxx, "-Wall", *include, *FORMS[form]]
+    todo = units(tree, "pinned_main" if form == "pinned" else "scenarios")
     sources = sorted(
         {
             *HERE.rglob("*.[ch]*"),
@@ -90,7 +99,7 @@ def build(out, tree=ROOT, form="one"):
         [*common, *flags, "-c", str(src), "-o", str(d / f"{name}.o")]
         for name, src, flags in todo
     ]
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=16) as pool:
         for r in pool.map(
             lambda a: subprocess.run(a, capture_output=True, text=True), jobs
         ):
@@ -123,9 +132,10 @@ def main():
     ap.add_argument("--rows", action="store_true", help="also the row-leader tree")
     ap.add_argument("--tsan", action="store_true", help="also under thread sanitizer")
     ap.add_argument("--build-only", action="store_true")
+    ap.add_argument("--pinned", action="store_true", help="the tests' quick build")
     a = ap.parse_args()
     if a.build_only:
-        print(build(a.out, a.tree))
+        print(build(a.out, a.tree, "pinned" if a.pinned else "one"))
         return 0
     every = subprocess.run(
         [build(a.out, a.tree), "list"], capture_output=True, text=True, check=True

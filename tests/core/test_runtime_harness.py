@@ -18,7 +18,7 @@ pytestmark = pytest.mark.skipif(shutil.which("c++") is None, reason="needs c++")
 
 @pytest.fixture(scope="module")
 def scenario():
-    build = [sys.executable, str(RUN), "--build-only"]
+    build = [sys.executable, str(RUN), "--build-only", "--pinned"]
     program = subprocess.run(build, capture_output=True, text=True, check=True)
 
     def run(name):

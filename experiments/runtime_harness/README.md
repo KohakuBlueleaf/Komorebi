@@ -3,10 +3,22 @@
 A tool for hunting defects in the Tensix runtime without a card. The headers in
 `src/komorebi_native/include/komorebi/device/` and the kernels of
 `examples/01_mapcollect` are compiled unchanged against `stub/`, a stand-in for the
-tt-metal calls they use, and run as host threads on a simulated grid (`sim.cpp`,
-`harness.hpp`). `scenarios.cpp` forces failure paths on that grid and checks what the
-kernels do. It is run by hand. Four of its scenarios pin known behaviour in
+tt-metal calls they use, and run as host threads on a simulated grid. The scenarios
+force failure paths on that grid and check what the kernels do. The harness is run by
+hand. Four of its scenarios pin known behaviour in
 `tests/core/test_runtime_harness.py`.
+
+| file | what it holds |
+|---|---|
+| `stub/` | the tt-metal calls, each saying what it models and what it leaves out |
+| `harness.hpp` | what a scenario sets and reads: grid, jobs, faults, the log |
+| `sim_impl.hpp`, `sim.cpp` | the scheduler, L1 images, NoC delivery and the grid's run |
+| `stub_calls.cpp` | the calls behind the stub headers |
+| `dispatcher.cpp` | the dispatcher model and the grid's set-up |
+| `checks.hpp`, `checks.cpp` | the checks every scenario ends with, and the runner |
+| `pinned.cpp` | the four scenarios the tests run |
+| `scenarios.cpp`, `item_kernels.cpp` | the other scenarios, and a scenario's own compute kernels |
+| `run.py` | builds the programs and runs the scenarios |
 
 ## Running it
 
@@ -16,7 +28,14 @@ kernels do. It is run by hand. Four of its scenarios pin known behaviour in
     python experiments/runtime_harness/run.py --tree <other checkout>
 
 The program is built into `build/runtime_harness/` and reused while the sources are
-unchanged. Each scenario prints `ok` or `FAIL`, followed by any failed checks, kernels
+unchanged. `--build-only --pinned` builds the tests' program instead: the four pinned
+scenarios, at `-O0`.
+
+Each compute thread is compiled as its own object, as it is its own program on the
+card. The build renames the runtime's namespace per thread (`-Dkm=km_unpack`, and so
+on), and the compute stub's functions are `static`. Without that, the linker keeps one
+thread's copy of an inline function for all three. At `-O0`, where little is inlined,
+that made pack run unpack's buffer calls. Each scenario prints `ok` or `FAIL`, followed by any failed checks, kernels
 that did not return, and broken stub rules. `--tree` builds another checkout's runtime
 headers and example kernels against this harness.
 
@@ -116,11 +135,12 @@ subject on the main branch.
 
 ## Result
 
-At the commit that added this folder:
+At the last change to this folder:
 - all 24 scenarios pass in the one-level form;
 - 3 scenarios pass in the row-leader form;
 - all 24 pass under the thread sanitizer.
 
 Times on the shared development host, from a cold build:
 - one form: about 17 s, of which 13 s is `random_jobs`;
-- all three forms: about 61 s.
+- all three forms: about 56 s;
+- the tests' program: about 1.1 s to build.

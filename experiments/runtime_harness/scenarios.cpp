@@ -11,295 +11,15 @@
 #include <vector>
 
 #include "api/dataflow/dataflow_api.h"
-#include "harness.hpp"
+#include "checks.hpp"
 #include "komorebi/device/km_core.hpp"
 
 using namespace kmsim;
-
-// A case's compute kernels (item_kernels.cpp), one per thread.
-void kmsim_item_in_unpack_main();
-void kmsim_item_in_math_main();
-void kmsim_item_in_pack_main();
-void kmsim_item_out_unpack_main();
-void kmsim_item_out_math_main();
-void kmsim_item_out_pack_main();
+using namespace scen;
 
 namespace {
 
-    constexpr uint32_t kSegMap = 1;  // the example's segments
-    constexpr uint32_t kSegStall = 2;
-    constexpr uint32_t kSegBadItem = 5;  // a0: the member; a1 = 0: writer, 1: reader
-    constexpr uint32_t kSegNop = 9;      // unknown to the example: every body returns
-    constexpr uint32_t kCbIn = 0;
-
-    struct Check {
-        std::vector<std::string> fails;
-
-        void expect(bool ok, const std::string& what) {
-            if (!ok && fails.size() < 40) {
-                fails.push_back(what);
-            }
-        }
-    };
-
-    std::string fmt(const char* f, unsigned a = 0, unsigned b = 0, unsigned c = 0) {
-        char buf[200];
-        std::snprintf(buf, sizeof buf, f, a, b, c);
-        return buf;
-    }
-
-    Job map_job(uint32_t first, uint32_t count, uint32_t tiles) {
-        Job j;
-        j.seg = kSegMap;
-        j.first = first;
-        j.count = count;
-        j.a[1] = tiles;
-        j.map = true;
-        return j;
-    }
-
-    Job nop_job(uint32_t first, uint32_t count) {
-        Job j;
-        j.seg = kSegNop;
-        j.first = first;
-        j.count = count;
-        return j;
-    }
-
-    // Settings for the fault cases: short bounds, so that a stranded kernel shows fast.
-    Config fault_config(uint32_t cores) {
-        Config c;
-        c.cores = cores;
-        c.row = 2;
-        c.wait_limit = 8;
-        c.idle_limit = 64;
-        c.deadline = 200000;
-        c.bound = 1500000;
-        return c;
-    }
-
-    // A record as the cores saw it, for the checks: its team and the slot it went to.
-    struct Issued {
-        uint32_t first, count, slot;
-        bool exit;
-        bool done;
-    };
-
-    std::map<uint32_t, Issued> issued(const Sim& s) {
-        std::map<uint32_t, Issued> m;
-        for (size_t k = 0; k < s.jobs.size(); k++) {
-            const JobResult& r = s.jobs[k];
-            if (r.status != kNotIssued) {
-                const Job& j = s.cfg.jobs[k];
-                m[r.seq] = {j.first, j.count, r.slot, false, r.status == kDone};
-            }
-        }
-        if (s.exit_job.status != kNotIssued) {
-            // EXIT is completed as a team of every core, whatever its team field says.
-            m[s.exit_job.seq] = {0, s.cfg.cores, 0, true, s.exit_job.status == kDone};
-        }
-        return m;
-    }
-
-    bool all_done(const Sim& s) {
-        for (const JobResult& r : s.jobs) {
-            if (r.status != kDone) {
-                return false;
-            }
-        }
-        return s.exit_job.status == kDone;
-    }
-
-    // What every case ends with: every thread returned, no stub contract broken, state
-    // words consistent, and each acknowledged record completed by its whole team.
-    void common(const Sim& s, Check& c) {
-        c.expect(
-            s.all_returned, "every thread of every core returned within the bound"
-        );
-        c.expect(s.violations.empty(), "no stub contract or landing violation");
-        if (all_done(s)) {
-            for (uint32_t core = 0; core < s.cfg.cores; core++) {
-                c.expect(
-                    (s.state(core, km::kStEnds) & 0xFFFFFF) == 0x010101 * km::kEndExit,
-                    fmt("core %u's reader, writer and compute left on the EXIT", core)
-                );
-            }
-        }
-        const auto recs = issued(s);
-        std::map<uint32_t, std::map<uint32_t, uint32_t>> takes, reports, acks;
-        std::map<uint32_t, uint32_t> runs;
-        std::map<uint32_t, std::vector<Event>> by_seq;
-        for (const Event& e : s.events) {
-            if (e.kind != kEvStop) {
-                by_seq[e.a].push_back(e);
-            }
-            if (e.kind == kEvTake && e.a != 0) {
-                takes[e.a][e.core]++;
-                runs[e.core]++;
-            } else if (e.kind == kEvReport) {
-                reports[e.a][e.core]++;
-            } else if (e.kind == kEvAck) {
-                acks[e.a][e.core]++;
-                const auto it = recs.find(e.a);
-                c.expect(
-                    it != recs.end() && it->second.slot == e.b,
-                    fmt("core %u acknowledged %u in ack word %u, the slot it was "
-                        "issued to",
-                        e.core,
-                        e.a,
-                        e.b)
-                );
-            }
-        }
-        for (uint32_t core = 0; core < s.cfg.cores; core++) {
-            c.expect(
-                s.state(core, km::kStMagic) == (km::kStateMagic | 0x5A5Au << 8 | core),
-                fmt("core %u start-up word intact", core)
-            );
-            c.expect(
-                s.state(core, km::kStRuns) == runs[core],
-                fmt("core %u counts %u records taken, the log shows %u",
-                    core,
-                    s.state(core, km::kStRuns),
-                    runs[core])
-            );
-        }
-        for (const auto& [seq, r] : recs) {
-            if (!r.done) {
-                continue;
-            }
-            for (uint32_t core = 0; core < s.cfg.cores; core++) {
-                const bool member = core - r.first < r.count;
-                const uint32_t t = takes[seq][core];
-                c.expect(
-                    t == (member ? 1u : 0u),
-                    fmt("record %u taken %u times by core %u", seq, t, core)
-                );
-                if (member) {
-                    const uint32_t want = core == r.first ? 0 : 1;
-                    c.expect(
-                        reports[seq][core] == want,
-                        fmt("record %u: core %u sent %u reports",
-                            seq,
-                            core,
-                            reports[seq][core])
-                    );
-                    c.expect(
-                        acks[seq][core] == (core == r.first ? 1u : 0u),
-                        fmt("record %u: core %u sent %u acks",
-                            seq,
-                            core,
-                            acks[seq][core])
-                    );
-                } else {
-                    c.expect(
-                        reports[seq][core] + acks[seq][core] == 0,
-                        fmt("record %u: core %u, not in the team, reported", seq, core)
-                    );
-                }
-            }
-            // A core reports (or acks) only after every report to it for the record
-            // landed, and it waits for exactly as many as its children in the tree.
-            km_record_t rec = {};
-            rec.team = km::make_team(r.first, r.count);
-            std::map<uint32_t, std::vector<uint64_t>> landed;
-            for (const Event& e : by_seq[seq]) {
-                if (e.kind == kEvReportLand) {
-                    landed[e.b].push_back(e.t);
-                }
-            }
-            for (const Event& e : by_seq[seq]) {
-                if (e.kind != kEvReport && e.kind != kEvAck) {
-                    continue;
-                }
-                const uint32_t want = km::report_to(rec, e.core, s.cfg.tree_row).want;
-                uint32_t before = 0;
-                for (uint64_t t : landed[e.core]) {
-                    before += t <= e.t;
-                }
-                c.expect(
-                    before == want,
-                    fmt("record %u: core %u sent its report after %u of the "
-                        "reports to it landed",
-                        seq,
-                        e.core,
-                        before) +
-                        fmt(", not %u", want)
-                );
-            }
-        }
-        for (size_t k = 0; k < s.jobs.size(); k++) {
-            c.expect(
-                s.jobs[k].data_bad == 0,
-                fmt("job %u: %u output elements wrong", k, s.jobs[k].data_bad)
-            );
-        }
-        if (!s.timed_out && s.all_returned) {
-            for (uint32_t core = 0; core < s.cfg.cores; core++) {
-                for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
-                    c.expect(
-                        s.word(core, KM_CTL_DONE + j * 16) == 0,
-                        fmt("core %u: completion counter %u is zero at the end",
-                            core,
-                            j)
-                    );
-                }
-            }
-        }
-    }
-
-    // A tile that gave up acknowledges nothing afterwards: no report or ack from `core`
-    // for record `seq` or any later one.
-    void silent_from(const Sim& s, Check& c, uint32_t core, uint32_t seq) {
-        for (const Event& e : s.events) {
-            if ((e.kind == kEvReport || e.kind == kEvAck) && e.core == core &&
-                km::newer(e.a + 1, seq)) {
-                c.expect(
-                    false,
-                    fmt("core %u reported record %u after giving up on %u",
-                        core,
-                        e.a,
-                        seq)
-                );
-            }
-        }
-    }
-
-    struct Outcome {
-        Check check;
-        uint64_t cycles = 0;
-        double host_ms = 0;
-        std::vector<std::string> stuck, violations;
-        size_t jobs = 0, done = 0;
-        uint32_t mailbox_peak = 0;
-    };
-
-    void finish(const Sim& s, Outcome& o) {
-        o.cycles = s.end_cycles;
-        o.host_ms = s.host_ms;
-        o.stuck = s.stuck;
-        o.violations = s.violations;
-        o.jobs = s.jobs.size();
-        o.mailbox_peak = s.mailbox_peak;
-        for (const JobResult& r : s.jobs) {
-            o.done += r.status == kDone;
-        }
-    }
-
     // ---- cases ----
-
-    // A few MAP jobs on a 4-core grid, no fault: everything completes.
-    void smoke(Outcome& o) {
-        Config cfg = fault_config(4);
-        cfg.jobs = {
-            map_job(0, 4, 20), map_job(1, 2, 5), nop_job(3, 1), map_job(0, 1, 18)
-        };
-        Sim s(cfg);
-        s.run();
-        common(s, o.check);
-        o.check.expect(all_done(s), "every record and the EXIT acknowledged");
-        finish(s, o);
-    }
 
     // A long MAP record is in flight on core 1 (compute slow, reader waiting for room)
     // when the dispatcher stops the grid because core 2 stalls.
@@ -486,27 +206,6 @@ namespace {
         }
         o.check.expect(s.jobs[0].status != kDone, "the record is not acknowledged");
         refused_counted(s, o.check);
-        finish(s, o);
-    }
-
-    // EXIT with team (0, 2) on four cores; the increments of cores 2 and 3 are late.
-    void exit_partial_team(Outcome& o) {
-        Config cfg = fault_config(4);
-        cfg.jobs = {nop_job(0, 4)};
-        cfg.exit_team = km::make_team(0, 2);
-        cfg.delay = [](const Chunk& c) -> int64_t {
-            return c.atomic && c.src >= 2 ? 3000 : 40;
-        };
-        Sim s(cfg);
-        s.run();
-        common(s, o.check);
-        o.check.expect(all_done(s), "every record and the EXIT acknowledged");
-        for (uint32_t core = 0; core < cfg.cores; core++) {
-            o.check.expect(
-                s.state(core, km::kStWriter) == 0,
-                fmt("core %u's writer did not give up", core)
-            );
-        }
         finish(s, o);
     }
 
@@ -881,9 +580,6 @@ namespace {
     constexpr uint32_t kItemRecords = 20;
     uint32_t items_n = 5, items_last = 1;
 
-    void items_none() {
-    }
-
     template <bool Producer>
     void items_side() {
         for (uint32_t rec = 1; rec <= kItemRecords; rec++) {
@@ -948,193 +644,37 @@ namespace {
         }
     }
 
-    // ---- the bounded buffer wrappers against an item past the end ----
-
-    void item_feed() {  // one page for the compute input buffer
-        cb_reserve_back(24, 1);
-        cb_push_back(24, 1);
-    }
-
-    void expect_bad_item(
-        const Sim& s,
-        Check& c,
-        uint32_t core,
-        uint32_t word,
-        uint32_t where,
-        const char* w
-    ) {
-        c.expect(
-            (s.state(core, word) & 0xFFFF) == (km::kGaveBadItem | where << 8),
-            std::string(w) + " recorded the bad-item give-up"
-        );
-        c.expect(s.word(core, KM_CTL_STOP) != 0, std::string(w) + " set the stop word");
-        c.expect(s.all_returned, std::string(w) + ": every thread returned");
-    }
-
-    // Each of the four wrappers is asked for an item that starts one page before the
-    // end: it gives up with the bad-item code and sets the stop word.
-    void wrappers_refuse_straddling_items(Outcome& o) {
-        for (uint32_t a1 : {1u, 0u}) {  // reader (after 5 input pages), writer (after
-                                        // 1)
-            Config cfg = fault_config(2);
-            Job bad;
-            bad.seg = kSegBadItem;
-            bad.first = 1;
-            bad.a[1] = a1;
-            cfg.jobs = {map_job(1, 1, 5), bad};
-            Sim s(cfg);
-            s.run();
-            common(s, o.check);
-            const char* w = a1 ? "the reader's reserve" : "the writer's wait_front";
-            expect_bad_item(
-                s, o.check, 1, a1 ? km::kStReader : km::kStWriter, km::kWhereData, w
-            );
-            o.check.expect(
-                s.jobs[1].status != kDone,
-                std::string(w) + ": the bad record is not acked"
-            );
-            finish(s, o);
-        }
-        for (bool in : {true, false}) {
-            Config cfg;
-            cfg.cores = 1;
-            cfg.dispatch = false;
-            cfg.exit = false;
-            cfg.cbs = {{24, 0xC000, 64, 2}, {25, 0xC100, 64, 2}};
-            for (void (*&k)() : cfg.kernels) {
-                k = items_none;
-            }
-            if (in) {
-                cfg.kernels[kReader] = item_feed;
-                cfg.kernels[kUnpack] = kmsim_item_in_unpack_main;
-                cfg.kernels[kMath] = kmsim_item_in_math_main;
-                cfg.kernels[kPack] = kmsim_item_in_pack_main;
-            } else {
-                cfg.kernels[kUnpack] = kmsim_item_out_unpack_main;
-                cfg.kernels[kMath] = kmsim_item_out_math_main;
-                cfg.kernels[kPack] = kmsim_item_out_pack_main;
-            }
-            Sim s(cfg);
-            s.run();
-            const char* w = in ? "compute's wait_front" : "compute's reserve_back";
-            expect_bad_item(
-                s,
-                o.check,
-                0,
-                km::kStCompute,
-                in ? km::kWhereCInput : km::kWhereCOutput,
-                w
-            );
-            o.check.expect(
-                s.violations.empty(), std::string(w) + ": no stub violation"
-            );
-        }
-    }
-
-    // ---- KM_F_EXCL ----
-
-    // An EXCL record on a team disjoint from the one in flight is issued at once; one
-    // that overlaps either waits until both are acknowledged.
-    void excl_waits_for_overlapping_team(Outcome& o) {
-        Config cfg = fault_config(4);
-        cfg.jobs = {map_job(0, 2, 24), map_job(2, 2, 4), map_job(1, 2, 4)};
-        cfg.jobs[1].flags = cfg.jobs[2].flags = KM_F_EXCL;
-        Sim s(cfg);
-        s.run();
-        common(s, o.check);
-        o.check.expect(all_done(s), "every record and the EXIT acknowledged");
-        const auto& j = s.jobs;
-        o.check.expect(
-            j[1].issued < j[0].acked, "the disjoint EXCL record ran beside the first"
-        );
-        o.check.expect(
-            j[2].issued >= j[0].acked && j[2].issued >= j[1].acked,
-            "the overlapping EXCL record waited for both teams"
-        );
-        finish(s, o);
-    }
-
-    struct Case {
-        const char* name;
-        void (*fn)(Outcome&);
-    };
-
-    const Case kCases[] = {
-        {"smoke", smoke},
-        {"stop_during_long_compute", stop_during_long_compute},
-        {"writer_gives_up", writer_gives_up},
-        {"leader_gives_up", leader_gives_up},
-        {"reader_gives_up", reader_gives_up},
-        {"token_wait_after_stop", token_wait_after_stop},
-        {"slot_out_of_range", slot_out_of_range},
-        {"slot_not_ring_slot", slot_not_ring_slot},
-        {"exit_partial_team", exit_partial_team},
-        {"scan_across_wrap", scan_across_wrap},
-        {"smallest_unless_part_landed", smallest_unless_part_landed},
-        {"dropped_chunk_times_out", dropped_chunk_times_out},
-        {"idle_zero_means_no_limit", idle_zero_means_no_limit},
-        {"idle_expiry_is_a_give_up", idle_expiry_is_a_give_up},
-        {"mb_stop_between_ok_and_seq", mb_stop_between_ok_and_seq},
-        {"mb_math_held_while_unpack_aborts", mb_math_held_while_unpack_aborts},
-        {"mb_pack_held_while_input_wait_aborts", mb_pack_held_while_input_wait_aborts},
-        {"mb_abort_then_good_token", mb_abort_then_good_token},
-        {"mb_exit_during_input_wait", mb_exit_during_input_wait},
-        {"items_straddle_the_end", items_straddle_the_end},
-        {"wrappers_refuse_straddling_items", wrappers_refuse_straddling_items},
-        {"excl_waits_for_overlapping_team", excl_waits_for_overlapping_team},
-        {"completion_every_team", completion_every_team},
-        {"random_jobs", random_jobs},
-    };
-
-    std::string json(const std::string& s) {
-        std::string out = "\"";
-        for (char ch : s) {
-            if (ch == '"' || ch == '\\') {
-                out += '\\';
-            }
-            out += ch;
-        }
-        return out + "\"";
-    }
-
-    std::string json(const std::vector<std::string>& v) {
-        std::string out = "[";
-        for (size_t i = 0; i < v.size(); i++) {
-            out += (i ? ", " : "") + json(v[i]);
-        }
-        return out + "]";
-    }
-
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        std::fprintf(stderr, "usage: scenarios <name> | list\n");
-        return 2;
-    }
-    for (const Case& c : kCases) {
-        if (std::strcmp(argv[1], "list") == 0) {
-            std::printf("%s\n", c.name);
-        } else if (std::strcmp(argv[1], c.name) == 0) {
-            Outcome o;
-            c.fn(o);
-            std::printf(
-                "{\"case\": %s, \"ok\": %s, \"fails\": %s, \"stuck\": %s, "
-                "\"violations\": %s, \"cycles\": %llu, \"host_ms\": %.1f, "
-                "\"jobs\": %zu, \"done\": %zu, \"mailbox_peak\": %u}\n",
-                json(c.name).c_str(),
-                o.check.fails.empty() ? "true" : "false",
-                json(o.check.fails).c_str(),
-                json(o.stuck).c_str(),
-                json(o.violations).c_str(),
-                static_cast<unsigned long long>(o.cycles),
-                o.host_ms,
-                o.jobs,
-                o.done,
-                o.mailbox_peak
-            );
-            return 0;
+    std::vector<Case> cases = pinned();
+    cases.insert(
+        cases.end(),
+        {
+            {"stop_during_long_compute", stop_during_long_compute},
+            {"writer_gives_up", writer_gives_up},
+            {"leader_gives_up", leader_gives_up},
+            {"reader_gives_up", reader_gives_up},
+            {"token_wait_after_stop", token_wait_after_stop},
+            {"slot_out_of_range", slot_out_of_range},
+            {"slot_not_ring_slot", slot_not_ring_slot},
+            {"scan_across_wrap", scan_across_wrap},
+            {"smallest_unless_part_landed", smallest_unless_part_landed},
+            {"dropped_chunk_times_out", dropped_chunk_times_out},
+            {"idle_zero_means_no_limit", idle_zero_means_no_limit},
+            {"idle_expiry_is_a_give_up", idle_expiry_is_a_give_up},
+            {"mb_stop_between_ok_and_seq", mb_stop_between_ok_and_seq},
+            {"mb_math_held_while_unpack_aborts", mb_math_held_while_unpack_aborts},
+            {
+                "mb_pack_held_while_input_wait_aborts",
+                mb_pack_held_while_input_wait_aborts
+            },
+            {"mb_abort_then_good_token", mb_abort_then_good_token},
+            {"mb_exit_during_input_wait", mb_exit_during_input_wait},
+            {"items_straddle_the_end", items_straddle_the_end},
+            {"completion_every_team", completion_every_team},
+            {"random_jobs", random_jobs},
         }
-    }
-    return std::strcmp(argv[1], "list") == 0 ? 0 : 2;
+    );
+    return run_cases(cases, argc, argv);
 }
