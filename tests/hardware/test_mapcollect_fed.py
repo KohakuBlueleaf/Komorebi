@@ -105,3 +105,12 @@ def test_excl_records_on_overlapping_teams_are_never_in_flight_together(excl):
         assert seen["together"] == 0 and out["held"] > 0
     else:  # the check sees overlap when nothing holds the records
         assert seen["together"] > 0 and out["held"] == 0
+
+
+def test_an_exit_record_goes_to_every_core_once_no_slot_is_busy():
+    out = run("--jobs", 10, "--count", 60, "--exit-at", 5)  # EXIT with a team of 1
+    assert out["feeder"]["status"] == "done" and out["feeder"]["exit_acked"]
+    assert out["feeder"]["issued"] == out["feeder"]["done"] == 6
+    assert out["exit"] == {"held": True, "status": 1, "after_every_ack": True}
+    assert out["jobs_checked"] == 5 and out["jobs_bad"] == 0
+    assert every_kernel_returned(out)

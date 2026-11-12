@@ -46,6 +46,9 @@ def parse():
     p.add_argument("--out-tensors", type=int, default=1, help="output tensors")
     p.add_argument("--stall", type=int, default=-1, help="job index made a STALL")
     p.add_argument("--stall-member", type=int, default=0)
+    p.add_argument(
+        "--exit-at", type=int, default=-1, help="job index made an EXIT (team of 1)"
+    )
     p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
     p.add_argument("--trace", action="store_true")
     p.add_argument("--excl", action="store_true", help="KM_F_EXCL on every MAP record")
@@ -235,6 +238,8 @@ def run(device, args, rng):
     for j, (first, count) in enumerate(teams):
         if j == args.stall:
             records.append(rec.record(SEG_STALL, first, count, [args.stall_member]))
+        elif j == args.exit_at:  # the feeder sets the team to every worker
+            records.append(rec.record(K["KM_SEG_EXIT"], first, 1))
         elif args.seg == "align":
             records.append(rec.record(SEG_ALIGN, first, count))
         elif args.seg == "nop":
@@ -310,6 +315,14 @@ def run(device, args, rng):
             "min": round(float(lat.min()) / res.mhz, 3),
             "max": round(float(lat.max()) / res.mhz, 3),
         }
+    if 0 <= args.exit_at < n:  # issued only when every earlier record was acked
+        r, k = res.records, args.exit_at
+        gap = rec.wrap(r["issue"][k] - r["acked"][:k])
+        out["exit"] = {
+            "held": bool(r["held"][k]),
+            "status": int(r["status"][k]),
+            "after_every_ack": bool(((gap > 0) & (gap < 1 << 31)).all()),
+        }
     states = [rec.core_state(res.state, c) for c in range(workers)]
     out["cores_magic_ok"] = sum(c["magic_ok"] for c in states)
     out["cores_ended"] = {
@@ -373,7 +386,8 @@ def check(args, teams, base, outs, xs):
     got = np.concatenate(got)
     got = got.reshape(pages, TILE, TILE)
     fed.log("outputs read back")
-    jobs = [j for j in checked_jobs(teams, base, pages) if j != args.stall]
+    last = args.exit_at if args.exit_at >= 0 else len(teams)
+    jobs = [j for j in checked_jobs(teams, base, pages) if j != args.stall and j < last]
     refs = {}
     bad, rel_max, exact_jobs = [], 0.0, 0
     for j in jobs:

@@ -14,7 +14,7 @@ constexpr uint32_t kFdDeadline = 6;   // per record, issue to ack, 1024-cycle un
 constexpr uint32_t kFdResults = 7;    // DRAM address of the results, 64 bytes a row
 constexpr uint32_t kFdGroups = 8;     // start-up groups: READY words to wait for
 constexpr uint32_t kFdBootLimit = 9;  // bound of the start-up wait, 1024-cycle units
-constexpr uint32_t kFdExit = 10;      // nonzero: send EXIT after the last record
+constexpr uint32_t kFdExit = 10;      // nonzero: EXIT last (if the table has none)
 constexpr uint32_t kFdRelease = 11;  // nonzero: a9 = issue time + this (cycles, low word)
 constexpr uint32_t kFdArgs = 12;
 

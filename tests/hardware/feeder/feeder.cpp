@@ -97,6 +97,7 @@ void kernel_main() {
         busy[j] = -1;
     }
     uint32_t seq = 0, next = 0, done = 0, in_flight = 0, max_busy = 0;
+    bool exited = false;  // an EXIT record of the table was issued: nothing after it
     uint64_t t_first = 0, t_last = 0, issue_cycles = 0;
 
     // Issues record `src` (64 bytes in L1) to slot j of every worker.
@@ -131,7 +132,7 @@ void kernel_main() {
     } else {
         row(0)[kFrStatus] = kFsDone;
         bool failed = false;
-        while (done < n && !failed) {
+        while (!failed && (exited ? in_flight != 0 : done < n)) {
             invalidate_l1_cache();
             const uint64_t now = km::wall64();
             for (uint32_t j = 0; j < depth; j++) {
@@ -156,12 +157,20 @@ void kernel_main() {
                     break;
                 }
             }
-            if (failed || next >= n) {
+            if (failed || next >= n || exited) {
                 continue;
             }
             const uint32_t src = tab + next * 64;
             volatile tt_l1_ptr uint32_t* r = row(1 + next);
             volatile tt_l1_ptr uint32_t* w = km::l1(src);
+            const bool is_exit = (w[1] & 0xFFu) == KM_SEG_EXIT;
+            if (is_exit) {  // to every worker, and only when no slot is busy
+                w[2] = KM_TEAM_ALL(workers);
+                if (in_flight != 0) {
+                    r[kFrRecHeld] = 1;
+                    continue;
+                }
+            }
             if ((w[1] >> 8) & KM_F_EXCL) {  // held while an overlapping team is busy
                 bool held = false;
                 for (uint32_t k = 0; k < depth; k++) {
@@ -193,8 +202,11 @@ void kernel_main() {
             max_busy = in_flight > max_busy ? in_flight : max_busy;
             r[kFrRecBusy] = in_flight;
             next++;
+            exited = is_exit;
         }
-        if (!failed && arg(kFdExit) != 0) {
+        if (exited && !failed) {
+            row(0)[kFrExitAcked] = row(next)[kFrRecStatus] == kFsDone;
+        } else if (!failed && arg(kFdExit) != 0) {
             volatile tt_l1_ptr uint32_t* x = km::l1(tab + n * 64);  // spare record
             for (uint32_t w = 0; w < 16; w++) {
                 x[w] = 0;
