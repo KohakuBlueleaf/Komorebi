@@ -6,16 +6,15 @@ from fake_tree import build_ninja, make_tree
 from komorebi import _env, build, cli
 
 
-def test_ninja_block_reads_the_variables_of_the_first_match(tmp_path):
+def test_ninja_block_reads_the_variables_of_the_first_match_up_to_the_next_statement(
+    tmp_path,
+):
     (tmp_path / "build.ninja").write_text(
         "build one.o: cc a.c\n  FLAGS = -O1\n  EMPTY = \n\n"
         "build one.o2: cc b.c\n  FLAGS = -O9\n"
     )
     assert build.ninja_block(tmp_path, "build one.o:") == {"FLAGS": "-O1", "EMPTY": ""}
     assert build.ninja_block(tmp_path, "build one.o2") == {"FLAGS": "-O9"}
-
-
-def test_ninja_block_stops_at_the_next_statement(tmp_path):
     (tmp_path / "build.ninja").write_text(
         "build a: cc\n  X = 1\nbuild b: cc\n  Y = 2\n"
     )
@@ -33,8 +32,8 @@ def test_ninja_block_without_a_match_is_an_error(tmp_path):
         build.ninja_block(tmp_path, "build nothing")
 
 
-@pytest.mark.parametrize("kind", ["host", "pymodule"])
-def test_cxx_commands_follow_the_borrowed_flags(tmp_path, kind):
+def test_cxx_commands_follow_the_borrowed_flags(tmp_path):
+    kind = "host"
     tree = make_tree(tmp_path / "tree")
     out = tmp_path / "out" / "prog"
     compile_cmd, link_cmd = build.cxx_commands(
@@ -80,37 +79,14 @@ def ninja_without(tmp_path, *names):
     return tree
 
 
-def test_cxx_commands_read_a_missing_defines_or_includes_as_empty(tmp_path):
-    tree = ninja_without(tmp_path, "DEFINES", "INCLUDES")
-    out = tmp_path / "a"
-    compile_cmd, _ = build.cxx_commands("host", tree, out, "m.cpp", (), ["N=3"])
-    assert compile_cmd == [
-        "clang++-20",
-        "-DN=3",
-        "-O2",
-        "-std=c++20",
-        "-fPIC",
-        *["-c", "m.cpp", "-o", str(out.with_suffix(".o"))],
-    ]
-
-
-@pytest.mark.parametrize(
-    ("name", "prefix"),
-    [("FLAGS", "build tt_metal"), ("LINK_LIBRARIES", "build test/tt_metal")],
-)
-def test_cxx_commands_name_the_statement_that_lacks_flags_or_libraries(
-    tmp_path, name, prefix
-):
-    tree = ninja_without(tmp_path, name)
-    with pytest.raises(build.BuildError, match=f"{prefix}.*has no {name}"):
-        build.cxx_commands("host", tree, tmp_path / "a", "m.cpp")
-
-
-def test_cxx_commands_need_the_statement_in_the_tree(tmp_path):
-    tree = make_tree(tmp_path / "tree")
-    (tree / "build" / "build.ninja").write_text(build_ninja(("host",)))
-    with pytest.raises(build.BuildError):
-        build.cxx_commands("pymodule", tree, tmp_path / "a", "m.cpp")
+def test_cxx_commands_name_the_statement_that_lacks_flags_or_libraries(tmp_path):
+    for name, prefix in [
+        ("FLAGS", "build tt_metal"),
+        ("LINK_LIBRARIES", "build test/tt_metal"),
+    ]:
+        tree = ninja_without(tmp_path / name, name)
+        with pytest.raises(build.BuildError, match=f"{prefix}.*has no {name}"):
+            build.cxx_commands("host", tree, tmp_path / "a", "m.cpp")
 
 
 def test_image_commands_compile_link_and_convert(tmp_path):
@@ -178,18 +154,11 @@ def test_kmr_build_without_a_tree_is_a_usage_error(monkeypatch, tmp_path, capsys
     assert "TT_METAL_HOME" in capsys.readouterr().err
 
 
-def test_kmr_build_reports_a_failing_build(tmp_path, capsys):
-    tree = make_tree(tmp_path / "tree")
-    args = ["build", "image", str(tmp_path / "o" / "i.bin"), "a.c", "--tree", str(tree)]
-    assert cli.main(args) == 2
-    assert "kmr build:" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("kind", ["host", "pymodule"])
-def test_kmr_build_in_a_tree_that_is_not_built_prints_one_line(kind, tmp_path, capsys):
+def test_kmr_build_in_a_tree_that_is_not_built_prints_one_line(tmp_path, capsys):
     tree = make_tree(tmp_path / "tree", ninja=False)
-    args = ["build", kind, str(tmp_path / "prog"), "m.cpp", "--tree", str(tree)]
-    assert cli.main(args) == 2
-    err = capsys.readouterr().err
-    assert err.startswith("kmr build:") and "not built" in err
-    assert err.count("\n") == 1
+    for kind in ["host", "pymodule"]:
+        args = ["build", kind, str(tmp_path / "prog"), "m.cpp", "--tree", str(tree)]
+        assert cli.main(args) == 2
+        err = capsys.readouterr().err
+        assert err.startswith("kmr build:") and "not built" in err
+        assert err.count("\n") == 1

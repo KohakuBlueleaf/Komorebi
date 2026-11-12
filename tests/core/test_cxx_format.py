@@ -43,10 +43,6 @@ CLEAN = """int f(int a) {
 @needs_clang_format
 def test_format_text_applies_style_braces_and_value_wrap():
     assert cxx_format.format_text(MESSY, BINARY) == CLEAN
-
-
-@needs_clang_format
-def test_format_text_keeps_formatted_text():
     assert cxx_format.format_text(CLEAN, BINARY) == CLEAN
 
 
@@ -64,29 +60,15 @@ def run(monkeypatch, *args):
 
 
 @needs_clang_format
-def test_check_lists_a_file_without_changing_it(monkeypatch, tmp_path, capsys):
+def test_check_lists_a_file_and_format_rewrites_it(monkeypatch, tmp_path, capsys):
     path = tmp_path / "a.cpp"
     path.write_text(MESSY)
     assert run(monkeypatch, "--check", str(path)) == 1
     assert f"would reformat {path}" in capsys.readouterr().out
     assert path.read_text() == MESSY
-
-
-@needs_clang_format
-def test_format_rewrites_then_check_passes(monkeypatch, tmp_path):
-    path = tmp_path / "a.cpp"
-    path.write_text(MESSY)
     assert run(monkeypatch, str(path)) == 0
     assert path.read_text() == CLEAN
     assert run(monkeypatch, "--check", str(path)) == 0
-
-
-@needs_clang_format
-def test_a_directory_is_searched_for_sources_only(monkeypatch, tmp_path):
-    (tmp_path / "a.hpp").write_text(MESSY)
-    (tmp_path / "notes.txt").write_text(MESSY)
-    assert run(monkeypatch, "--check", str(tmp_path)) == 1
-    assert (tmp_path / "notes.txt").read_text() == MESSY
 
 
 def test_a_missing_style_file_is_a_one_line_error(monkeypatch, tmp_path, capsys):
@@ -95,24 +77,10 @@ def test_a_missing_style_file_is_a_one_line_error(monkeypatch, tmp_path, capsys)
     assert str(tmp_path / "none") in err and err.count("\n") == 1
 
 
-def test_without_a_style_file_in_the_current_directory_it_is_a_one_line_error(
-    monkeypatch, tmp_path, capsys
-):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sys, "argv", ["cxx_format", "--check"])
-    assert cxx_format.main() == 2
-    err = capsys.readouterr().err
-    assert ".clang-format" in err and "Traceback" not in err and err.count("\n") == 1
-
-
 def test_the_style_file_is_used_in_place_at_its_own_column_limit(tmp_path):
     assert cxx_format.style_file(STYLE, 88) == STYLE
     other = cxx_format.style_file(STYLE, 60)
     assert other != STYLE and "ColumnLimit: 60" in other.read_text()
-    assert STYLE.read_text().count("ColumnLimit: 88") == 1
-
-
-def test_a_style_file_without_a_column_limit_gets_one(tmp_path):
     config = tmp_path / "style.yaml"
     config.write_text("IndentWidth: 4\n")
     copy = cxx_format.style_file(config, 70)

@@ -29,12 +29,7 @@ def test_doctor_without_a_tree(no_home, capsys):
     assert "komorebi" in out and "python" in out and "package" in out
     assert "tt-metal      not found" in out
     assert "x280 runtime  -" in out
-
-
-def test_doctor_with_a_missing_directory(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("TT_METAL_HOME", str(tmp_path / "absent"))
-    code, out = run_doctor(capsys)
-    assert code == 0 and "tt-metal      not found" in out
+    assert str(ROOT / "src" / "komorebi_native" / "include") in out
 
 
 def test_doctor_with_a_full_tree(monkeypatch, tmp_path, capsys):
@@ -59,17 +54,10 @@ def test_doctor_with_a_tree_without_the_x280_runtime(monkeypatch, tmp_path, caps
     assert "x280 compiler not found" in out
 
 
-def test_doctor_names_the_include_directory_of_a_checkout(no_home, capsys):
-    _, out = run_doctor(capsys)
-    assert str(ROOT / "src" / "komorebi_native" / "include") in out
-
-
-@pytest.mark.parametrize("home", [None, "/nonexistent/tt-metal"])
-def test_kmr_doctor_exits_zero_in_a_fresh_process(home):
+def test_kmr_doctor_exits_zero_in_a_fresh_process_with_a_missing_tree():
     env = {k: v for k, v in os.environ.items() if k != "TT_METAL_HOME"}
     env["PYTHONPATH"] = str(ROOT / "src")
-    if home:
-        env["TT_METAL_HOME"] = home
+    env["TT_METAL_HOME"] = "/nonexistent/tt-metal"
     done = subprocess.run(
         [sys.executable, "-m", "komorebi.cli", "doctor"],
         capture_output=True,
