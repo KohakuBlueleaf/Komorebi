@@ -68,12 +68,16 @@ int kmx_main(int hart) {                  /* hart 0 */
 ```
 
 The library's start-up is the image's `main`. It turns floating point and vector on,
+sets each core's L2 prefetcher to the values the chip's documentation recommends
+(scalar code that walks memory runs about 20 % faster; vector streams do not gain),
 checks that the argument block is this run's and every region lies in range, checks
 that the cluster sees the bank the host wrote (a line with a value only this run
 knows), then calls `kmx_main` on hart 0. Harts 1 to 3 wait for `kmx_par` calls until
 `kmx_main` returns. The full interface is `src/komorebi_native/x280/kmx/kmx.h`.
 
-Rules (a stuck X280 core can only be released by a reset of the whole card):
+Rules. The runtime's stop is a word the cores must poll: a core that never polls it
+never returns, its cluster stays stuck, and only a reset of the whole card brings it
+back. That is why every loop in a thread is bounded:
 
 - **Every loop ends by itself.** Bound it by a count, or poll `kmx_stop_requested()`,
   which is true once the host or the runtime asked for a stop or the thread's deadline
@@ -88,6 +92,11 @@ Rules (a stuck X280 core can only be released by a reset of the whole card):
   instructions can be fetched from); globals count.
 
 `kmx_time()` counts the 50 MHz timer (`KMX_TICKS_PER_SECOND`).
+
+What it costs: the cluster reads its bank at about 1.3 GB/s and writes it at about
+1.3 to 1.8 GB/s with four cores, and a hand-over sweep runs at 5 to 8 GB/s of region.
+Prefix sums over 119 x 1,024 counters take about 1.7 ms on four cores (a decision per
+frame, not per segment); see `experiments/x280_threads/`.
 
 ## From the host
 

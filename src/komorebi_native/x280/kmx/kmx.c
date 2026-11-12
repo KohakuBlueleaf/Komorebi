@@ -12,6 +12,12 @@
  * that holds the physical address stored into it. */
 #define KMX_CCACHE_FLUSH64 0x02010200ull
 #define KMX_POLL_EVERY 256u
+/* Hart h's L2 prefetcher (BASIC_CONTROL, then USER_CONTROL) and the values the chip's
+ * documentation recommends after reset: scalar code that walks memory runs faster. */
+#define KMX_L2PF_BASE 0x02030000ull
+#define KMX_L2PF_STRIDE 0x2000ull
+#define KMX_L2PF_BASIC 0x15811u
+#define KMX_L2PF_USER 0x38c84eu
 #define KMX_UNSET 0xFFFFFFFFu
 
 /* Image globals live in .data (the image has no .bss): non-zero initialisers. */
@@ -287,6 +293,12 @@ int main(uint64_t hartid) {
     /* Floating point and vector on first, on every hart: the harness leaves them off
      * and the first such instruction would trap. */
     __asm__ volatile("csrs mstatus, %0" ::"r"((3ul << 9) | (3ul << 13)));
+    volatile uint32_t* pf = (
+        (volatile uint32_t*)(uintptr_t)(KMX_L2PF_BASE + (hartid & 3u) * KMX_L2PF_STRIDE)
+    );
+    pf[0] = KMX_L2PF_BASIC;
+    pf[1] = KMX_L2PF_USER;
+    x280_fence_iorw();
     boot(hartid);
     return 0;
 }
