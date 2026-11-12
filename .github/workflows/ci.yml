@@ -23,8 +23,10 @@ jobs:
           ruff check .
           blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 
-      - name: C/C++ format
-        run: python -m komorebi.tools.cxx_format --check
+      - name: C/C++ format and comment lengths
+        run: |
+          python -m komorebi.tools.cxx_format --check
+          python -m komorebi.tools.comment_lint --check src tests examples experiments packaging
 
       - name: CPU tests
         run: python -m pytest -q tests/core
