@@ -22,3 +22,8 @@ place to ask a question and to be wrong.
   step depending on how the core copies; the node-first walk is 1.6 to 2.3 times faster
   from 256 rays on, because the ray-first walk is bound by the core's stack and copy
   work.
+- [collision](collision/README.md): whether the X280's record multicasts on NoC0 and
+  lane broadcasts inside a grid column (NoC0 or NoC1, short blocks checked word by
+  word and long multicasts back to back) can run at the same time. No lost or wrong
+  word and no hang in any arrangement measured; NoC1 recommended for lanes while the
+  X280 dispatches.
