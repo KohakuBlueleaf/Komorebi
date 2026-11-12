@@ -8,7 +8,6 @@
 
 void kernel_main() {
     constexpr auto in_args = TensorAccessorArgs<0>();
-    constexpr km::Arrival arrival = {kCbArrive, kArrivePages};
     km::Reader rd;
     uint32_t at = 0;  // write position in kCbIn, in pages: a block never wraps
     rd.run([&](const km_record_t& r) {
@@ -35,6 +34,6 @@ void kernel_main() {
             done += n;
             at = (at + n) % kInPages;
         }
-        km::reduce_arrive(rd, r, arrival, g, r.a4);
+        km::reduce_arrive(rd, r, {kCbArrive, kArrivePages, r.a7}, g, r.a4);
     });
 }

@@ -46,6 +46,7 @@ def parse():
     p.add_argument("--tiles", type=int, default=64, help="input tiles T")
     p.add_argument("--depth", type=int, default=4, help="ring slots used")
     p.add_argument("--out-pages", type=int, default=256, help="output tiles")
+    p.add_argument("--part", type=int, default=1, help="tiles per part P (1 to 3)")
     p.add_argument("--wait", type=float, default=0.5, help="wait limit, seconds")
     p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
     p.add_argument(
@@ -55,7 +56,10 @@ def parse():
         help="then a launch of one job whose member M stalls, and a clean launch",
     )
     p.add_argument("--seed", type=int, default=1)
-    return p.parse_args()
+    args = p.parse_args()
+    if not 1 <= args.part <= M["kPartMax"]:
+        p.error(f"--part: 1 to {M['kPartMax']}")
+    return args
 
 
 def make_jobs(args, workers, rng):
@@ -96,13 +100,13 @@ def kernels(inp, out):
         cbs=[
             (M["kCbIn"], ttnn.float32, page, M["kInPages"]),
             (M["kCbArrive"], ttnn.float32, page, M["kArrivePages"]),
-            (M["kCbOut"], ttnn.float32, page, 2),
+            (M["kCbOut"], ttnn.float32, page, M["kOutPages"]),
         ],
     )
 
 
 def launch(runner, args, jobs, inputs, out, stall=-1, stall_member=NONE):
-    """Runs the jobs (job j writes output page j % out_pages); job `stall` has member
+    """Runs the jobs (job j writes output part j % parts); job `stall` has member
     `stall_member` stall, under a deadline long enough for its receiver's wait to
     give up first."""
     records = []
@@ -111,10 +115,11 @@ def launch(runner, args, jobs, inputs, out, stall=-1, stall_member=NONE):
             inputs[src % 2].buffer_address(),
             args.tiles,
             out.buffer_address(),
-            j % args.out_pages,
+            j % (args.out_pages // args.part) * args.part,
             form,
             stall_member if j == stall else NONE,
             src,
+            args.part,
         ]
         records.append(rec.record(M["kSegMerge"], first, count, words, K["KM_F_EXCL"]))
     return runner.run(
@@ -165,17 +170,22 @@ def check(args, jobs, res, out, xs):
     fed.log("outputs read back")
     n = len(jobs)
     done = res.records["status"] == 1
-    last = {j % args.out_pages: j for j in range(n)}  # jobs whose page is not reused
+    P = args.part
+    last = {j % (args.out_pages // P): j for j in range(n)}  # parts not reused
     bad, rel_max, exact, pairs = [], 0.0, {0: 0, 1: 0}, [0, 0]
     kept = {j: page for page, j in last.items() if done[j]}
     for j, page in sorted(kept.items()):
         first, count, form, src = jobs[j]
         x = xs[src % 2][src * TILE : (src + args.tiles) * TILE].astype(np.float64)
-        ref = x.reshape(-1, TILE, TILE).sum(0)
-        mine = got[page].astype(np.float64)
+        tiles = x.reshape(-1, TILE, TILE)
+        ref = np.stack([tiles[d::P].sum(0) for d in range(P)])  # sum d: tiles d mod P
+        mine = got[page * P : page * P + P].astype(np.float64)
         if args.form == "both" and j % 2 == 1 and j - 1 in kept and src % 2 == 0:
+            other = kept[j - 1] * P
             pairs[0] += 1
-            pairs[1] += np.array_equal(got[page], got[kept[j - 1]])
+            pairs[1] += np.array_equal(
+                got[page * P : page * P + P], got[other : other + P]
+            )
         if src % 2 == 0:
             exact[form] += 1
             if not np.array_equal(mine, ref):
@@ -242,6 +252,7 @@ def run(device, args, rng):
     result = {
         "jobs": n,
         "tiles": args.tiles,
+        "part": args.part,
         "form": args.form,
         "aiclk_mhz": res.mhz,
         "us_per_job": round(
