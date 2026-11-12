@@ -148,6 +148,7 @@ namespace km {
             );
             if (code != kGaveNone) {
                 gave_up(kStReader, code, kWhereToken, 0, 0);
+                leave_others();
                 return nullptr;
             }
             cb_reserve_back(kCbTokenCompute, 1);
@@ -219,7 +220,8 @@ namespace km {
             cb_push_back(kCbTokenWriter, 1);
         }
 
-        // After a failed start-up: compute and writer get an EXIT record if they can.
+        // After a give-up: compute and writer get an EXIT record if its token pages
+        // free up within the grace of a stop.
         void leave_others() {
             const uint32_t code = poll(
                 [] {
@@ -228,6 +230,7 @@ namespace km {
                         cb_pages_reservable_at_back(kCbTokenWriter, 1)
                     );
                 },
+                args().wait_limit,
                 args().wait_limit
             );
             if (code == kGaveNone) {

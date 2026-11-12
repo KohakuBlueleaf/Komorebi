@@ -154,3 +154,15 @@ def test_a_leader_whose_member_is_late_acknowledges_nothing():
     assert every_kernel_returned(out)
     leader = {g["core"]: g for g in out["named"]}[0]["writer"]
     assert leader == {"code": "limit", "where": "complete", "slot": 0, "seq": 1}
+
+
+def test_a_reader_stopped_in_its_token_wait_hands_off_and_every_kernel_returns():
+    # Core 0's compute holds job 0 for 0.3 s (past stop and grace); job 1 needs no data
+    # (LATE for a non-member), so the reader waits for token room for job 2.
+    slow = ["--slow", 0, "--slow-member", 0, "--slow-cycles", CYCLES_300MS]
+    slow += ["--late", 1, "--late-member", 7, "--wait", 0.1, "--deadline", 0.05]
+    out = run("--team-list", "0:1,0:1,0:1", *slow)
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 1
+    assert every_kernel_returned(out)
+    core0 = {g["core"]: g for g in out["gave_up_busy"]}[0]
+    assert (core0["reader"]["code"], core0["reader"]["where"]) == ("stop", "token")
