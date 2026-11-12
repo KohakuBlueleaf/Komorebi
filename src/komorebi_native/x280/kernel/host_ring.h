@@ -4,8 +4,8 @@
 
 #include "kernel.h"
 
-/* Copies command k->next into k->line if the host has stored it whole (64-bit loads;
- * the rest of the line only once seq shows k). Returns 1 if it is there, else 0. */
+/* Copies command k->next into k->line if the host has stored it whole: 64-bit loads,
+ * the rest of the line after a second load fence once seq shows k. Returns 1 or 0. */
 static inline int hring_take(kmd_t* k) {
     const uint32_t i = k->next;
     volatile const uint64_t* w = (
@@ -18,6 +18,7 @@ static inline int hring_take(kmd_t* k) {
     if ((uint32_t)l[0] != i) {
         return 0;
     }
+    x280_fence_ir();
     for (uint32_t j = 1; j < 8; j++) {
         l[j] = w[j];
     }
