@@ -1,16 +1,18 @@
-"""The X280 thread's host side: argument block and region table layout, the result
-block, the host fallback and the stop of a thread that does not return."""
+"""The X280 thread's host side: argument block, region table and ring line, the result
+block, the host fallback, the stop of a thread that does not return, and the ring
+calls against a fake kernel on the CPU."""
 
 import shutil
 import struct
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from komorebi import thread as kt
 
-HEADER = kt.native.kmx_dir() / "kmx_layout.h"
+KMX = kt.native.kmx_dir()
 K = kt.layout()
 
 
@@ -20,9 +22,20 @@ def a_thread(**kw):
 
 
 @pytest.mark.skipif(shutil.which("cc") is None, reason="needs a C compiler")
-def test_the_layout_header_compiles_with_its_offset_checks():
-    cmd = ["cc", "-std=c11", "-fsyntax-only", "-x", "c", str(HEADER)]
-    assert subprocess.run(cmd, capture_output=True).returncode == 0
+def test_ring_calls_against_a_fake_kernel(tmp_path):
+    source = Path(__file__).resolve().parent / "kmx_ring_check.c"
+    includes = [f"-I{KMX}", f"-I{KMX.parents[1] / 'include'}"]
+    exe = tmp_path / "ring_check"
+    cmd = ["cc", "-std=c11", "-Wall", "-Werror", *includes, str(source), "-o", str(exe)]
+    subprocess.run(cmd, check=True)
+    assert subprocess.run([exe], capture_output=True, text=True).stdout == "ok\n"
+
+
+def test_ring_line_names_the_placement():
+    ring = kt.RingPlacement(0x1000, 0x2040, 0x3000, 0x4000, 16, 64, cached=True)
+    block = kt.args_block(a_thread(), base=0, check_value=1, ring=ring)
+    line = struct.unpack_from("<4Q3I", block, K["KMX_LIM_RING"])
+    assert line == (0x1000, 0x2040, 0x3000, 0x4000, 16, 64, K["KMX_RING_CACHED"])
 
 
 def test_argument_block_holds_the_region_table_and_words():

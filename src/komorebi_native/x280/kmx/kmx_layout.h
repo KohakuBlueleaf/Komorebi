@@ -25,7 +25,10 @@
 #define KMX_LIM_RESULT 0x280u /* kmx_result_block (the thread) */
 #define KMX_LIM_PAR 0x380u    /* hart 0's kmx_par mailbox */
 #define KMX_LIM_DONE 0x3C0u   /* hart h's last finished kmx_par at + 8 * h */
-#define KMX_LIM_BYTES 0x400u
+#define KMX_LIM_RING                                                \
+    0x400u /* kmx_ring_desc (host, before the start); zero: no ring \
+            */
+#define KMX_LIM_BYTES 0x440u
 #define KMX_STOP_WORD 0x53544F50u /* "STOP" */
 
 /* Argument block offsets, in bytes. */
@@ -53,6 +56,36 @@ typedef struct {
     kmx_region_t region[KMX_REGIONS_MAX];
     uint32_t words[KMX_WORDS_MAX];
 } kmx_args;
+
+/* The command ring as the thread's cluster addresses it: command slots, the kernel's
+ * consumed word, the events, the read-count line. Depths: powers of two. */
+#define KMX_RING_DEPTH_MAX 1024u
+#define KMX_RING_CACHED \
+    1u /* flags: the ring is in cached memory, sweep each hand-over */
+
+typedef struct {
+    uint64_t cmd;      /* cmd_depth 64-byte slots, 64-byte aligned */
+    uint64_t consumed; /* a 32-bit word the kernel writes */
+    uint64_t events;   /* event_depth 16-byte events (km_event_t) */
+    uint64_t read;     /* a 64-byte line: word 0 the number of events the thread took */
+    uint32_t cmd_depth;
+    uint32_t event_depth;
+    uint32_t flags; /* KMX_RING_* */
+    uint32_t reserved[5];
+} kmx_ring_desc;
+
+/* Return codes of the calls that can fail. */
+#define KMX_OK 0
+#define KMX_FULL 1    /* no free command slot, or kmx_wait has set aside all it can */
+#define KMX_STOPPED 2 /* a stop was asked for, or the thread has no ring */
+#define KMX_LATE 3    /* the deadline passed */
+#define KMX_NONE 4    /* kmx_poll: no event yet */
+
+/* An event of a command the thread issued: its ticket, kind (KM_EV_*), aux and ticks
+ * (for KM_F_RESULT records: the team leader's result word). */
+typedef struct {
+    uint32_t ticket, kind, aux, ticks;
+} kmx_event;
 
 /* States, in the result block. */
 #define KMX_STATE_BOOT 1u    /* start-up, before kmx_main */
@@ -90,4 +123,6 @@ KMX_STATIC_ASSERT(sizeof(kmx_args) == KMX_ARGS_BYTES, "kmx_args size");
 KMX_STATIC_ASSERT(KMX_LIM_ARGS + KMX_ARGS_BYTES <= KMX_LIM_STOP, "LIM: args");
 KMX_STATIC_ASSERT(sizeof(kmx_result_block) == 256, "kmx_result_block size");
 KMX_STATIC_ASSERT(KMX_LIM_RESULT + 256 <= KMX_LIM_PAR, "LIM: result");
-KMX_STATIC_ASSERT(KMX_LIM_DONE + 32 <= KMX_LIM_BYTES, "LIM: kmx_par");
+KMX_STATIC_ASSERT(KMX_LIM_DONE + 32 <= KMX_LIM_RING, "LIM: kmx_par");
+KMX_STATIC_ASSERT(sizeof(kmx_ring_desc) == 64, "kmx_ring_desc is one line");
+KMX_STATIC_ASSERT(KMX_LIM_RING + 64 <= KMX_LIM_BYTES, "LIM: ring");

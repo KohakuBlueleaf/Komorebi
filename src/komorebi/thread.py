@@ -102,9 +102,23 @@ def place(thread):
     return out, at
 
 
-def args_block(thread, base, check_value, run_value=0):
+class RingPlacement(NamedTuple):
+    """Where the thread's command ring lives, as its cluster addresses it: command
+    slots, the kernel's consumed word, the events, the read-count line."""
+
+    cmd: int
+    consumed: int
+    events: int
+    read: int
+    cmd_depth: int
+    event_depth: int
+    cached: bool = False
+
+
+def args_block(thread, base, check_value, run_value=0, ring=None):
     """The thread's whole LIM block (KMX_LIM_BYTES): the argument block with the
-    region table at bank address `base` (page 0 the check line), the rest zeroed."""
+    region table at bank address `base` (page 0 the check line), the ring's line
+    (zero without a `ring`, a RingPlacement), the rest zeroed."""
     k = layout()
     placed, _ = place(thread)
     block = bytearray(k["KMX_LIM_BYTES"])
@@ -126,6 +140,12 @@ def args_block(thread, base, check_value, run_value=0):
     words = struct.pack(f"<{len(thread.words)}I", *map(int, thread.words))
     at = k["KMX_LIM_ARGS"] + k["KMX_ARGS_WORDS"]
     block[at : at + len(words)] = words
+    if ring is not None:
+        flags = k["KMX_RING_CACHED"] if ring.cached else 0
+        line = struct.pack(
+            "<4Q3I5I", *ring[:4], ring.cmd_depth, ring.event_depth, flags, *[0] * 5
+        )
+        block[k["KMX_LIM_RING"] : k["KMX_LIM_RING"] + 64] = line
     return bytes(block)
 
 
@@ -191,6 +211,7 @@ class ThreadRun:
         self.running = False
         self.result = None
         self.arrays = None  # the host fallback's regions, uint32, once it ran
+        self.ring = None  # RingPlacement of the command ring, when the kernel has one
 
     def start(self):
         """Starts the image on the card (no-op for the host fallback)."""
@@ -198,7 +219,7 @@ class ThreadRun:
             if self.thread.host_fallback is None:
                 raise ValueError("the thread has no host_fallback")
             return
-        block = args_block(self.thread, self.base, self.check_value)
+        block = args_block(self.thread, self.base, self.check_value, ring=self.ring)
         self.port.work_start(self.thread.cluster, str(self.image), block)
         self.running = True
 

@@ -14,7 +14,7 @@ C (also built for the host). `include/komorebi/x280/`, `include/komorebi/host/`,
 | `kernels/` | The generic reader and writer kernels that own inbox and outbox traffic, shipped as source and compiled by tt-metal when a program runs. |
 | `x280/kernel/` | The dispatch kernel for X280 cluster 0: the main loop, the services (grid port, completion table, rings, timers, memory) and the code that runs on the cluster's other cores. |
 | `x280/engines/` | The engines the dispatch kernel runs from uploaded data: the micro-op interpreter, the job queue and the graph executor. |
-| `x280/kmx/` | The library an X280 thread on a work cluster is linked with: `kmx.h` (its entry point, regions, hand-over with the grid, four-core calls, result and progress; the calls of the ring to the dispatch kernel return `KMX_STOPPED` for now), the start-up, and `kmx_layout.h`, the layout of its argument and result blocks shared with the host. |
+| `x280/kmx/` | The library an X280 thread on a work cluster is linked with: `kmx.h` (its entry point, regions, hand-over with the grid, four-core calls, result and progress, the command ring to the dispatch kernel), the start-up, `kmx_ring.h` (the thread's side of the ring, the host ring's protocol, with its placement as data) and `kmx_layout.h`, the layout of its argument, ring and result blocks shared with the host. |
 | `csrc/host/` | The native Python module: the runtime (open the card, load X280 images, start, stop) and plans (upload a stream, a job list or a graph, run, read back). |
 | `cmake/` | CMake helpers to build a C++ host and an X280 image against a tt-metal tree. |
 

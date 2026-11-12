@@ -11,18 +11,7 @@
 extern "C" {
 #endif
 
-/* Return codes of the calls that can fail. */
-#define KMX_OK 0
-#define KMX_FULL 1    /* the command ring has no free slot */
-#define KMX_STOPPED 2 /* a stop was asked for, or the call is not available yet */
-#define KMX_LATE 3    /* the deadline passed */
-
 #define KMX_TICKS_PER_SECOND 50000000ull /* kmx_time() counts the 50 MHz timer */
-
-/* An event of a command the thread issued: its ticket, kind, aux byte and ticks. */
-typedef struct {
-    uint32_t ticket, kind, aux, ticks;
-} kmx_event;
 
 /* The user's entry, on hart 0. Its return value is the result code unless the thread
  * called kmx_result. */
@@ -39,10 +28,15 @@ void* kmx_region(int id, uint64_t* bytes);
 void kmx_take(int id);
 void kmx_give(int id);
 
-/* The command ring to the dispatch kernel. Not available yet: they return
- * KMX_STOPPED. */
+/* The command ring to the dispatch kernel (hart 0; KMX_STOPPED without a ring).
+ * issue: KMX_OK and the ticket, or KMX_FULL when no slot is free. */
 int kmx_issue(const km_record_t* r, uint32_t* ticket);
+
+/* The event of `ticket`, by kmx_time() == `deadline` at the latest (KMX_LATE), or a
+ * stop; events of other tickets are kept for kmx_poll, up to KMX_STASH (KMX_FULL). */
 int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev);
+
+/* One event if any (a kept one first): KMX_OK, or KMX_NONE. Never waits. */
 int kmx_poll(kmx_event* ev);
 
 /* Hart 0 only: runs fn(hart, arg) on all four harts and returns when all are done:

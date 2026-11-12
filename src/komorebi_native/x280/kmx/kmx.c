@@ -20,8 +20,22 @@
 #define KMX_L2PF_USER 0x38c84eu
 #define KMX_UNSET 0xFFFFFFFFu
 
-/* Image globals live in .data (the image has no .bss): non-zero initialisers. */
 static uint64_t g_deadline[4] __attribute__((section(".data"))) = {1, 1, 1, 1};
+static int must_end(uint64_t h);
+static void flush(uint64_t addr, uint64_t bytes);
+static inline uint64_t hart_id(void);
+
+#define KMX_RING_FENCE_W() x280_fence_ow()
+#define KMX_RING_FENCE_R() x280_fence_ir()
+#define KMX_RING_SWEEP(p, n) flush((p), (n))
+#define KMX_RING_NOW() x280_mtime()
+#define KMX_RING_END() must_end(0)
+#include "kmx_ring.h"
+
+/* The ring, hart 0's (a .data global: the image has no .bss). */
+static kmx_ring_t g_ring __attribute__((section(".data"))) = {.next = 1};
+
+/* Image globals live in .data (the image has no .bss): non-zero initialisers. */
 static uint64_t g_start __attribute__((section(".data"))) = 1;
 static uint32_t g_code __attribute__((section(".data"))) = KMX_UNSET;
 
@@ -113,22 +127,34 @@ void kmx_give(int id) {
     kmx_take(id); /* Flush64 both writes back and drops a line */
 }
 
+/* KMX_OK on hart 0; elsewhere the error is recorded and the call refused. */
+static int ring_hart(void) {
+    if (hart_id() != 0) {
+        fail(KMX_ERR_PAR);
+        return KMX_STOPPED;
+    }
+    return KMX_OK;
+}
+
 int kmx_issue(const km_record_t* r, uint32_t* ticket) {
-    (void)r;
-    (void)ticket;
-    return KMX_STOPPED;
+    const int h = ring_hart();
+    return h != KMX_OK ? h : kmx_ring_issue(&g_ring, r, ticket);
 }
 
 int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev) {
-    (void)ticket;
-    (void)deadline;
-    (void)ev;
-    return KMX_STOPPED;
+    int e = ring_hart();
+    if (e == KMX_OK) {
+        e = kmx_ring_wait(&g_ring, ticket, deadline, ev);
+    }
+    if (e == KMX_LATE || (e == KMX_STOPPED && g_ring.cmd != 0)) {
+        fail(e == KMX_LATE ? KMX_ERR_LATE : KMX_ERR_STOPPED);
+    }
+    return e;
 }
 
 int kmx_poll(kmx_event* ev) {
-    (void)ev;
-    return KMX_STOPPED;
+    const int h = ring_hart();
+    return h != KMX_OK ? h : kmx_ring_poll(&g_ring, ev);
 }
 
 int kmx_par(void (*fn)(int hart, void* arg), void* arg) {
@@ -243,11 +269,18 @@ static uint64_t run_main(const volatile kmx_args* a) {
     volatile kmx_result_block* r = result();
     r->state = KMX_STATE_BOOT;
     x280_fence_ow();
+    const volatile kmx_ring_desc* d = (
+        (const volatile kmx_ring_desc*)(lim() + KMX_LIM_RING)
+    );
+    if (d->cmd != 0 && !kmx_ring_open(&g_ring, d)) {
+        fail(KMX_ERR_ARGS); /* a ring is named but its line is out of range */
+    }
     const uint64_t check = X280_LOCAL_DDR_TILE_BASE + a->check;
     flush(check, 64);
     if (*(volatile uint64_t*)(uintptr_t)check != a->check_value) {
         fail(KMX_ERR_BANK);
-    } else {
+    }
+    if (r->error == KMX_ERR_NONE) {
         r->state = KMX_STATE_RUNNING;
         x280_fence_ow();
         const int code = kmx_main(0);
