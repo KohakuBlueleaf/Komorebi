@@ -23,9 +23,11 @@ static void totals(int hart, void* arg) {
     for (uint32_t b = 0; b < chunk; b++) {
         s[b] = 0;
     }
-    for (uint32_t c = 0; c < j->cores; c++) {
+    const uint32_t cores = j->cores, bins = j->bins; /* bounds in registers */
+    const volatile uint32_t* in = j->counts + b0;
+    for (uint32_t c = 0; c < cores; c++, in += bins) {
         for (uint32_t b = 0; b < chunk; b++) {
-            s[b] += j->counts[c * j->bins + b0 + b];
+            s[b] += in[b];
         }
     }
     uint32_t run = 0;
@@ -46,10 +48,13 @@ static void offsets(int hart, void* arg) {
     for (int h = 0; h < hart; h++) {
         base += j->total[h];
     }
-    for (uint32_t c = 0; c < j->cores; c++) {
+    const uint32_t cores = j->cores, bins = j->bins; /* bounds in registers */
+    const volatile uint32_t* in = j->counts + b0;
+    volatile uint32_t* out = j->offsets + b0;
+    for (uint32_t c = 0; c < cores; c++, in += bins, out += bins) {
         for (uint32_t b = 0; b < chunk; b++) {
-            j->offsets[c * j->bins + b0 + b] = base + s[b];
-            s[b] += j->counts[c * j->bins + b0 + b];
+            out[b] = base + s[b];
+            s[b] += in[b];
         }
     }
 }
