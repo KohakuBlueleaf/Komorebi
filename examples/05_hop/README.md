@@ -45,15 +45,18 @@ items, queues of 16384 items, `max_live` 16384 (quota 137 per core).
 
 | Case | Result |
 |---|---|
-| 10000 items, 100 hops each (10^6 hops) | exact in 17 of 18 runs; 1010000 items sent and consumed; issue to quiet end 11.4 ms; last retire to quiet end 28 to 33 µs; quiet end to the end record's completion 5.7 µs |
+| 10000 items, 100 hops each (10^6 hops) | exact in 18 of 22 runs; 1010000 items sent and consumed; issue to quiet end 11.4 ms; last retire to quiet end 28 to 33 µs; quiet end to the end record's completion 5.7 µs |
 | 10000 items, 10 hops each, every hop to member 0 | exact; issue to quiet end 22.9 ms |
 | member 3 spawns until its quota is gone (8 cores) | 2 seeded items and 135 spawns, then `spawn` returned false; exact |
 | member 2 stalls in its body (8 cores) | the run stopped; core 2 named, its reader gave up waiting for a free packet page; the next run on the card exact, no reset |
 | `max_live` 1000000 with queues of 65536 | refused before any device opened |
 
-Not every run passes yet: one run of 10^6 hops in 18 stopped with reason 32 (`lost`). A writer's atomic add is counted as answered and the destination's tail has
-moved, but the returned position never lands in the writer's L1, so the reserved
-positions are never written and the destination reports the gap. The cause is open.
+Not every run passes yet: of 22 runs of 10^6 hops, two stopped with reason 32 (`lost`) and
+two in a packet wait (24, 28). A writer's atomic add is counted as answered and the
+destination's tail has moved, but the returned position never lands in the writer's L1,
+so the reserved positions are never written and the destination reports the gap. The
+packet waits are, as far as read so far, the same stall seen first by another wait. The
+cause is open.
 
 A reserved position that is never written (a gap) cannot be made on the card; the CPU
 harness (`experiments/runtime_harness`, case `dyn_gap`) shows it reported with the core
