@@ -58,7 +58,9 @@ def ensure_results(scene, numpy_max=None, fresh=False):
     def todo(folder):
         return fresh or not (root / folder / f"{scene}.npz").exists()
 
-    if todo("numpy") and (numpy_max is None or scenes.PRESETS[scene] <= numpy_max):
+    if todo("numpy") and (
+        numpy_max is None or native.scene_triangles(scene) <= numpy_max
+    ):
         run_numpy(scene)
     if todo("cpu_all"):
         run_cpu(scene, runner.threads_all(), reps=1)

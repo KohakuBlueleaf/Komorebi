@@ -16,7 +16,7 @@ import argparse
 import json
 
 from projects.raytrace.reference import harness
-from ref import scenes
+from ref import native
 
 STRIDE = 4
 
@@ -36,7 +36,7 @@ def prepare(scene, numpy_max, fresh=False):
     """Runs the implementations of this repository; returns numpy's subset or None."""
     subset = None
     harness.ensure_results(scene, numpy_max, fresh)
-    if numpy_max is not None and scenes.PRESETS[scene] > numpy_max:
+    if numpy_max is not None and native.scene_triangles(scene) > numpy_max:
         pixels = harness.lattice(STRIDE)
         subset = (pixels, harness.run_numpy(scene, pixels))
     return subset
