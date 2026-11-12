@@ -975,23 +975,53 @@ def case_excl(device, args):
     return out
 
 
+def verify_command(i, cores):
+    """Command i of the verify case and the event it must produce, (kind, aux, ticks>0):
+    every 7th a PING, every 11th a record of segment 245 (refused), else a NOP record.
+    """
+    if i % 7 == 3:
+        return command(SEG_PING), (EV_PONG, 0, False)
+    if i % 11 == 5:
+        return record(245, 0, cores), (EV_REFUSED, REFUSE_SEG, False)
+    return verify_record(i, cores), (EV_DONE, 0, True)
+
+
 def case_verify(device, args):
-    """The KMD_VERIFY_LINES kernel image: --n NOP records whose header, team and ten
-    argument words are functions of the command number; the kernel checks each word."""
+    """The KMD_VERIFY_LINES image under load: --n commands, mostly NOP records whose
+    words the kernel checks, with PINGs and refused records; each event is checked
+    against what its command must produce."""
     if args.image == IMAGE:
         args.image = VERIFY_IMAGE
-    n_cores, sent = 0, []
+    n_cores, sent, n_records, n_refused = 0, [], 0, 0
 
     def body(plan):
-        nonlocal n_cores
+        nonlocal n_cores, n_records, n_refused
         n_cores = plan.grid_x * plan.grid_y
         first_req, first_event = plan.next, plan.seen + 1
         reqs = list(range(first_req, first_req + args.n))
-        recs = np.array([verify_record(i, n_cores) for i in reqs], dtype=np.uint32)
-        sent.extend((r[2] & 0xFFFF, r[2] >> 16, r[3]) for r in recs.tolist())
+        made = {i: verify_command(i, n_cores) for i in reqs}
+        recs = np.array([made[i][0] for i in reqs], dtype=np.uint32)
+        for i in reqs:
+            if made[i][1][0] == EV_DONE:
+                r = made[i][0]
+                sent.append((r[2] & 0xFFFF, r[2] >> 16, r[3]))
+        n_records = len(sent)
+        n_refused = sum(1 for i in reqs if made[i][1][0] == EV_REFUSED)
         events, times = plan.stream(recs, 30.0, args.batch, args.settle_us)
-        out = {"tag": plan.tag, "times": times}
-        out["check"] = check_events(events, reqs, first_event)
+        out = {"tag": plan.tag, "times": times, "records": n_records}
+        out["check"] = check_events(
+            events, reqs, first_event, kinds=(EV_DONE, EV_PONG, EV_REFUSED)
+        )
+        limit = 50 * 1_000_000  # the default record deadline, 1 s in ticks
+        wrong, by_index = [], {e[0]: e for e in events}
+        for e in events:
+            k, aux, timed = made.get(e[1], (None, (None, None, None)))[1]
+            ticks_ok = (0 < e[3] <= limit) if timed else e[3] == 0
+            if kind(e[2]) != (k, aux) or not ticks_ok:
+                # with the event that used the same ring slot before it
+                before = by_index.get(e[0] - plan.event_depth)
+                wrong.append([list(e), list(before) if before else None])
+        out["event_errors"], out["first_event_errors"] = len(wrong), wrong[:8]
         out["exit"] = exit_and_stop(plan)
         return out
 
@@ -1003,9 +1033,11 @@ def case_verify(device, args):
     out["ok"] = bool(
         finished_clean(fin, n_cores, out["cores"])
         and all(out["check"].values())
+        and out["event_errors"] == 0
         and out["team_mismatch"] == 0
-        and blk["checked"] == args.n
+        and blk["checked"] == n_records
         and blk["bad_lines"] == 0
+        and blk["refused"] == n_refused
     )
     return out
 
