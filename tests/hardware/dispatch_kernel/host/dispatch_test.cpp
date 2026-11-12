@@ -258,6 +258,9 @@ namespace {
         std::vector<uint32_t> worker_args(
             uint32_t x, uint32_t y, uint32_t table, uint32_t out, uint32_t limit
         ) const {
+            if ((table | out) % 16 != 0) {
+                throw std::runtime_error("worker buffers not 16-byte aligned");
+            }
             const auto leader = translated(x, gy - 1);
             const bool is_leader = y == gy - 1;
             return {

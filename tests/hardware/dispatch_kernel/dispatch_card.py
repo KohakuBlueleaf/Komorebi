@@ -100,8 +100,18 @@ C = {
     "state": 16,
 }
 S_GAVE, S_WHERE, S_SEQ = 16, 17, 18
-WHERE = {1: "boot", 2: "next", 3: "done", 4: "stall", 5: "delay", 6: "exit"}
-GAVE = {0: "none", 1: "stop", 2: "limit"}
+WHERE = {
+    1: "boot",
+    2: "next",
+    3: "done",
+    4: "stall",
+    5: "delay",
+    6: "exit",
+    7: "noc_read",
+    8: "noc_write",
+    9: "noc_atomic",
+}
+GAVE = {0: "none", 1: "stop", 2: "limit", 3: "noc", 4: "align"}
 
 M32 = 0xFFFFFFFF
 TARGETS = {"lim": 0, "l1": 1}
@@ -272,27 +282,34 @@ def with_kernel(
         preload(plan)
     try:
         if args.image_first:
+            log("starting the kernel")
             plan.start(args.image)
             info["started"] = True
             log("kernel started")
+        log("launching the grid")
         ttnn.generic_op([table, out], prog)
         log("grid launched")
         if not args.image_first:
+            log("starting the kernel")
             plan.start(args.image)
             info["started"] = True
             log("kernel started")
+        log("waiting for READY")
         state = plan.wait_ready(30.0)
         log(f"kernel state {state}")
         body_out = body(plan) if state == STATE_READY else {"ready_state": state}
+        log("finishing the kernel")
         fin = plan.finish(10.0, wait=not stop)
         log(f"kernel finished: result {fin['result']} cleaned {fin['cleaned']}")
     finally:
         if plan.running():
+            log("stopping the kernel")
             info["aborted"] = plan.abort()
             log(f"stopping the kernel: cleaned {info['aborted']}")
         del plan, runtime
         gc.collect()
         log("x280 runtime closed")
+    log("reading the counters")
     cnt = ttnn.to_torch(out).numpy().astype(np.int64) & M32
     log("counters read back")
     fin["block"] = result_block(fin.pop("words"))
@@ -636,6 +653,7 @@ def case_store(device, args):
         grid = itertools.product(args.busy_us, args.spread, args.lines, args.gaps_us)
         for busy, spread, lines, gap in grid:
             target = TARGETS[args.target]
+            log(f"store: busy {busy} lines {lines} gap {gap}")
             t = np.array(
                 plan.store_probe(args.n, lines, spread, gap, busy, args.read, target)
             ).reshape(-1, 2)
@@ -667,7 +685,9 @@ def case_memcost(device, args):
     runtime = dk.Runtime(device, pll_mhz=args.pll)
     plan = runtime.plan()
     try:
+        log("running the memory cost image")
         fin = plan.run_image(MEMCOST, [ddr], 10.0)
+        log(f"memory cost image finished: result {fin['result']}")
     finally:
         if plan.running():
             plan.abort()
@@ -1098,13 +1118,16 @@ def main():
     args = p.parse_args()
     out = {"case": args.case, "argv": sys.argv[1:], "load_start": loadavg()}
     t_start = time.time()
+    log("opening the device")
     device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
     device.disable_and_clear_program_cache()
     log(f"device open {time.time() - t_start:.1f}s")
     try:
         out.update(CASES[args.case](device, args))
     finally:
+        log("closing the device")
         ttnn.close_mesh_device(device)
+        log("device closed")
     out["load_end"] = loadavg()
     out["wall_s"] = round(time.time() - t_start, 1)
     print(json.dumps(out, default=str), flush=True)

@@ -26,12 +26,17 @@ static inline uint32_t dk_mix(uint32_t key) {
 /* Gave-up codes and where codes of the state words. */
 #define DK_GAVE_STOP 1u  /* the stop word was set */
 #define DK_GAVE_LIMIT 2u /* the wait's own bound ran out */
+#define DK_GAVE_NOC 3u   /* a NoC transfer did not complete within the bound */
+#define DK_GAVE_ALIGN 4u /* an address from the host is not 16-byte aligned */
 #define DK_WHERE_BOOT 1u /* a leader collecting its column's check-ins */
 #define DK_WHERE_NEXT 2u /* waiting for a record */
 #define DK_WHERE_DONE 3u /* a team leader waiting for its members */
 #define DK_WHERE_STALL 4u
 #define DK_WHERE_DELAY 5u
-#define DK_WHERE_EXIT 6u /* left on an EXIT record */
+#define DK_WHERE_EXIT 6u       /* left on an EXIT record */
+#define DK_WHERE_NOC_READ 7u   /* waiting for reads to arrive */
+#define DK_WHERE_NOC_WRITE 8u  /* waiting for writes to be acknowledged */
+#define DK_WHERE_NOC_ATOMIC 9u /* waiting for atomics to be acknowledged */
 
 /* State words at KM_CTL_STATE: last sequence consumed per slot, then these. */
 #define DK_S_GAVE 16u

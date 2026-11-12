@@ -107,11 +107,18 @@ python dispatch_card.py bench --depth 16 --n 100000 --host-depth 64 --batch 64
 
 On a shared machine, `run.sh <tag> <dispatch_card.py args>` runs one case under a hang
 watcher. The watcher is a tool of the host these tests were written on, not part of this
-repository. It holds the card lock and kills the job on a time limit. Set:
+repository. It holds the card lock and kills the job on a time limit, or sooner when the
+log gains no line for a third of it: the harness prints a line before and after every
+launch and readback. Set:
 
 - `KMR_CARD_ENV`: an environment script that sets `$PY`, the Python to run;
 - `HANGWATCH`: the watcher's path;
 - `LOCK_DIR`: the directory of its stop and reset lock files;
-- optionally `CARD` and `LIMIT`.
+- optionally `CARD`, `LIMIT` (seconds, default 120), `STALL` (at most a third of
+  `LIMIT`) and `OP_TIMEOUT` (`TT_METAL_OPERATION_TIMEOUT_SECONDS`, default 30, so a
+  blocked host call raises before the watcher acts).
+
+The stand-in worker bounds every wait, NoC barriers included, by `--limit`, and checks
+that every address the host hands it is 16-byte aligned.
 
 Logs go to `<repo>/.logs/`, which git ignores.

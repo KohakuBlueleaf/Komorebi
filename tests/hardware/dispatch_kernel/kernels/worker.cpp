@@ -16,6 +16,13 @@ namespace {
     constexpr uint32_t kOutCb = 9;
     constexpr uint32_t kPollEvery = 256;
 
+    // A NoC write's source and destination share their low 4 address bits.
+    static_assert(KM_CTL_OUT % 16 == 0 && KM_CTL_BOOT % 16 == 0, "16-byte slots");
+    static_assert(KM_CTL_CORES % 16 == 0 && KM_ACK_STRIDE % 16 == 0, "16-byte slots");
+    static_assert(
+        noc_mode != DM_DYNAMIC_NOC, "the bounded NoC waits use the static NoC"
+    );
+
     // Runtime arguments (host module: Plan::worker_args).
     struct Args {
         uint32_t me, cores, tag, l2_x, l2_y, mailbox, ready, ack_base, leader_x,
@@ -76,12 +83,71 @@ namespace {
             return true;
         }
 
+        // Waits until flushed() holds, at most `limit` cycles; false (with the gave-up
+        // record) if it does not.
+        template <typename F>
+        bool settle(F flushed, uint32_t where) {
+            if (flushed()) {
+                invalidate_l1_cache();
+                return true;
+            }
+            const uint64_t by = now() + limit;
+            while (!flushed()) {
+                if (now() > by) {
+                    gave_up(DK_GAVE_NOC, where);
+                    return false;
+                }
+            }
+            invalidate_l1_cache();
+            return true;
+        }
+
+        bool reads_done() {
+            return settle(
+                [] {
+                    return ncrisc_noc_reads_flushed(noc_index);
+                },
+                DK_WHERE_NOC_READ
+            );
+        }
+
+        bool writes_done() {
+            return settle(
+                [] {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                },
+                DK_WHERE_NOC_WRITE
+            );
+        }
+
+        bool atomics_done() {
+            return settle(
+                [] {
+                    return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+                },
+                DK_WHERE_NOC_ATOMIC
+            );
+        }
+
+        // Whether every address the host handed over is 16-byte aligned (else the
+        // gave-up record).
+        bool aligned() {
+            const uint32_t any =
+                (ctl | a.mailbox | a.ready | a.ack_base | a.table | a.out |
+                 get_write_ptr(kOutCb));
+            if (any & 15u) {
+                gave_up(DK_GAVE_ALIGN, DK_WHERE_BOOT);
+                return false;
+            }
+            return true;
+        }
+
         // Writes the 4-byte word `v` to NoC address `dst` (16-byte aligned) and waits
-        // for it.
-        void send_word(uint64_t dst, uint32_t v) {
+        // for it, at most `limit` cycles.
+        bool send_word(uint64_t dst, uint32_t v) {
             *at(KM_CTL_OUT) = v;
             noc_async_write(ctl + KM_CTL_OUT, dst, 4);
-            noc_async_write_barrier();
+            return writes_done();
         }
 
         // Clears the ring, stop word, counters and state, loads the core table, checks
@@ -103,14 +169,18 @@ namespace {
             noc_async_read(
                 get_noc_addr(0, table), ctl + KM_CTL_CORES, KM_CORES_MAX * 4
             );
-            noc_async_read_barrier();
+            if (!reads_done()) {
+                return false;
+            }
             if (!a.is_leader) {
-                send_word(
-                    get_noc_addr(
-                        a.leader_x, a.leader_y, ctl + KM_CTL_BOOT + 16 * a.rank
-                    ),
-                    a.tag << 16
-                );
+                if (!send_word(
+                        get_noc_addr(
+                            a.leader_x, a.leader_y, ctl + KM_CTL_BOOT + 16 * a.rank
+                        ),
+                        a.tag << 16
+                    )) {
+                    return false;
+                }
             } else {
                 const uint64_t by = now() + limit;
                 uint32_t spins = 0;
@@ -122,7 +192,9 @@ namespace {
                         return false;
                     }
                 }
-                send_word(get_noc_addr(a.l2_x, a.l2_y, a.ready), KM_READY);
+                if (!send_word(get_noc_addr(a.l2_x, a.l2_y, a.ready), KM_READY)) {
+                    return false;
+                }
             }
             if (a.is_hello) {
                 *at(KM_CTL_OUT) = 1;
@@ -130,7 +202,7 @@ namespace {
                 noc_async_write(
                     ctl + KM_CTL_OUT, get_noc_addr(a.l2_x, a.l2_y, a.mailbox), 8
                 );
-                noc_async_write_barrier();
+                return writes_done();
             }
             return true;
         }
@@ -269,7 +341,9 @@ namespace {
                     get_noc_addr(xy & 0xFFFFu, xy >> 16, ctl + KM_CTL_DONE + 16 * slot),
                     1
                 );
-                noc_async_atomic_barrier();
+                if (!atomics_done()) {
+                    return false;
+                }
                 cnt[DK_C_INCS]++;
                 return true;
             }
@@ -290,10 +364,12 @@ namespace {
                 }
             }
             *done = 0;
-            send_word(
-                get_noc_addr(a.l2_x, a.l2_y, a.ack_base + slot * KM_ACK_STRIDE),
-                KM_ACK(r->seq)
-            );
+            if (!send_word(
+                    get_noc_addr(a.l2_x, a.l2_y, a.ack_base + slot * KM_ACK_STRIDE),
+                    KM_ACK(r->seq)
+                )) {
+                return false;
+            }
             cnt[DK_C_ACKS]++;
             return true;
         }
@@ -320,7 +396,7 @@ namespace {
             noc_async_write(
                 get_write_ptr(kOutCb), get_noc_addr(a.me, out), DK_WORDS * 4
             );
-            noc_async_write_barrier();
+            writes_done();
         }
     };
 
@@ -338,7 +414,8 @@ void kernel_main() {
     for (uint32_t w = 0; w < DK_WORDS; w++) {
         k.cnt[w] = 0;
     }
-    if (k.start()) {
+    const bool aligned = k.aligned();
+    if (aligned && k.start()) {
         uint32_t slot = 0;
         while (k.next(slot)) {
             auto* r = (
@@ -359,5 +436,7 @@ void kernel_main() {
             }
         }
     }
-    k.flush();
+    if (aligned) {
+        k.flush();
+    }
 }

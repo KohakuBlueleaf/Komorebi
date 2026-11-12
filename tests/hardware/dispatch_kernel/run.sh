@@ -5,6 +5,9 @@
 #   HANGWATCH     the hang watcher (takes the card lock, kills on limit or stall)
 #   LOCK_DIR      directory of the lab's stop / reset lock files
 #   CARD          card index (default 1), LIMIT seconds (default 120)
+#   STALL         seconds without a new log line (default LIMIT / 3)
+#   OP_TIMEOUT    TT_METAL_OPERATION_TIMEOUT_SECONDS (default 30: three times the
+#                 longest job, at least 20)
 set -uo pipefail
 tag=${1:?usage: run.sh <tag> <dispatch_card.py args...>}
 shift
@@ -20,10 +23,17 @@ for f in bench.stop reset.pending mesh.request; do
         exit 3
     fi
 done
+limit=${LIMIT:-120}
+stall=${STALL:-$((limit / 3))}
+if ((stall * 3 > limit)); then
+    echo "STALL must be at most a third of LIMIT"
+    exit 2
+fi
+export TT_METAL_OPERATION_TIMEOUT_SECONDS=${OP_TIMEOUT:-30}
 echo "load $(cut -d' ' -f1-3 /proc/loadavg)"
 cd "$logs"
-python3 "$HANGWATCH" --tag "dk-$tag" --cards "${CARD:-1}" --limit "${LIMIT:-120}" \
-    --stall "${LIMIT:-120}" --wait 600 --log "$logs/dk-$tag.log" -- \
+python3 "$HANGWATCH" --tag "dk-$tag" --cards "${CARD:-1}" --limit "$limit" \
+    --stall "$stall" --wait 600 --log "$logs/dk-$tag.log" -- \
     "$PY" "$here/dispatch_card.py" "$@"
 rc=$?
 echo "rc=$rc"
