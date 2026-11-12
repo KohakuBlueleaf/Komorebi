@@ -39,7 +39,7 @@ def parse():
     p.add_argument("--count", type=int, default=8, help="team size (fixed)")
     p.add_argument("--first", type=int, default=0, help="first core (fixed)")
     p.add_argument("--tiles", type=int, default=64, help="input tiles T")
-    p.add_argument("--depth", type=int, default=16, help="ring slots used")
+    p.add_argument("--depth", type=int, default=4, help="ring slots used")
     p.add_argument("--out-pages", type=int, default=2048, help="pages per output")
     p.add_argument("--out-tensors", type=int, default=1, help="output tensors")
     p.add_argument("--stall", type=int, default=-1, help="job index made a STALL")

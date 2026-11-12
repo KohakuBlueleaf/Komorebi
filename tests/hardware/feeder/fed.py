@@ -120,7 +120,7 @@ class Fed:
         records,
         program_args=None,
         tensors=(),
-        depth=16,
+        depth=4,
         deadline_s=0.05,
         wait_s=2.0,
         idle_s=10.0,
