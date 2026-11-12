@@ -36,6 +36,10 @@ def parse():
     p.add_argument("--count", type=int, default=8, help="team size (fixed, rotate)")
     p.add_argument("--first", type=int, default=0, help="first core (fixed)")
     p.add_argument("--tiles", type=int, default=64, help="input tiles T")
+    p.add_argument("--in-tiles", type=int, default=512, help="tiles per input tensor")
+    p.add_argument(
+        "--issue", choices=["many", "single"], default="many", help="issue_many or not"
+    )
     p.add_argument("--depth", type=int, default=4, help="ring slots used")
     p.add_argument("--out-pages", type=int, default=2048, help="pages per output")
     p.add_argument("--out-tensors", type=int, default=1, help="output tensors")
@@ -95,14 +99,30 @@ def checked_jobs(teams, base, pages):
     ]
 
 
-def member_sums(x, count):
-    """Float64 sum of each member's share of the tiles of x: [count, 32, 32]."""
-    tiles = x.reshape(-1, TILE, TILE)
+def input_pages(jobs, tiles, in_tiles):
+    """First input page per job: the window moves with the job number, so a tile left
+    by an earlier job differs from the right one (the check counts where not)."""
+    return (np.arange(jobs) * 61) % (in_tiles - tiles + 1)
+
+
+def member_sums(prefix, start, tiles, count):
+    """Float64 sum of each member's share of tiles [start, start + tiles) of an input,
+    from its prefix sums over tiles: [count, 32, 32]."""
     out = np.zeros((count, TILE, TILE))
     for m in range(count):
-        part = share(range(len(tiles)), m, count)
-        out[m] = tiles[part.start : part.stop].sum(0)
+        part = share(range(start, start + tiles), m, count)
+        out[m] = prefix[part.stop] - prefix[part.start]
     return out
+
+
+def membership(teams, cores):
+    """Records each core is a member of."""
+    edge = np.zeros(cores + 1, np.int64)
+    first = np.array([f for f, _ in teams], np.int64)
+    end = first + np.array([c for _, c in teams], np.int64)
+    np.add.at(edge, first, 1)
+    np.add.at(edge, end, -1)
+    return np.cumsum(edge)[:cores]
 
 
 def main():
@@ -123,11 +143,12 @@ def run(session, args, rng):
     teams = make_teams(args, cores, rng)
     n, tiles = args.jobs, args.tiles
 
-    # Exact inputs: integers in [-2, 2], so every partial sum (|s| <= 2T) is exact in
-    # bf16 for T <= 64. Random inputs: uniform in [-1, 1], rounded to bf16.
-    x_exact = rng.integers(-2, 3, (tiles * TILE, TILE)).astype(np.float32)
+    # Exact inputs: integers in [-2, 2], every partial sum exact in bf16 for T <= 64.
+    # Random inputs: uniform in [-1, 1]. Job j reads T tiles from page in_page[j] on.
+    in_tiles = max(args.in_tiles, tiles)
+    x_exact = rng.integers(-2, 3, (in_tiles * TILE, TILE)).astype(np.float32)
     x_rand = torch.from_numpy(
-        rng.uniform(-1, 1, (tiles * TILE, TILE)).astype(np.float32)
+        rng.uniform(-1, 1, (in_tiles * TILE, TILE)).astype(np.float32)
     )
     x_rand = x_rand.bfloat16().float().numpy()
 
@@ -145,6 +166,7 @@ def run(session, args, rng):
     outs += [tile_tensor(np.zeros((pages * TILE, TILE), np.float32))
              for _ in range(args.out_tensors - 1)]  # fmt: skip
     base = place_outputs(teams, pages, args.out_tensors)
+    in_page = input_pages(n, tiles, in_tiles)
 
     program = km.Program(
         "mapcollect",
@@ -170,22 +192,33 @@ def run(session, args, rng):
     )
     log(f"loaded: {cores} cores, depth {args.depth}")
 
+    # MAP arguments per job: input, T, output, output page of member 0, no slow
+    # member (a4 0 cycles, a5 none), first input page
+    in_addr = np.array([t.buffer_address() for t in inputs], np.int64)
+    out_addr = np.array([t.buffer_address() for t in outs], np.int64)
+    jobs = np.arange(n)
+    base_a = np.asarray(base, np.int64)
+    words = np.stack(
+        [in_addr[jobs % 2], np.full(n, tiles), out_addr[base_a // pages],
+         base_a % pages, np.zeros(n, np.int64), np.full(n, 0xFFFFFFFF), in_page]
+    ).T  # fmt: skip
+    segs = np.full(n, 0 if args.seg == "nop" else program.seg("map"))
+    if 0 <= args.stall < n:
+        segs[args.stall] = program.seg("stall")
+        words[args.stall] = [args.stall_member, 0, 0, 0, 0, 0, 0]
+    firsts = np.array([f for f, _ in teams])
+    counts = np.array([c for _, c in teams])
+
     tickets, timed_out = [], None
     t0 = time.perf_counter()
     try:
-        for j, (first, count) in enumerate(teams):
-            if j == args.stall:
-                tickets.append(run.issue("stall", (first, count), [args.stall_member]))
-            elif args.seg == "nop":
-                tickets.append(run.issue(0, (first, count)))
-            else:
-                words = [
-                    inputs[j % 2].buffer_address(),
-                    tiles,
-                    outs[base[j] // pages].buffer_address(),
-                    base[j] % pages,
-                ]
-                tickets.append(run.issue("map", (first, count), words))
+        if args.issue == "many":
+            tickets = list(run.issue_many(segs, firsts, counts, words))
+        else:
+            rows = words.tolist()
+            for j, (first, count) in enumerate(teams):
+                arg = rows[j] if segs[j] else []
+                tickets.append(run.issue(int(segs[j]), (first, count), arg))
         waited = run.drain(timeout=60.0)
         host_s = time.perf_counter() - t0
         log(f"{waited} events")
@@ -205,9 +238,11 @@ def run(session, args, rng):
         },
         "us_per_job_kernel": round(result["last"] / 50 / max(result["records"], 1), 3),
         "us_per_job_host": round(host_s * 1e6 / n, 3),
-        "python_us_per_record": {
+        "issue": args.issue,
+        "host_us_per_record": {
             "issue": round(run.issue_s * 1e6 / n, 3),
-            "store": round(run.flush_s * 1e6 / max(run.stored, 1), 3),
+            "wait_python": round((run.wait_s - run.native_s) * 1e6 / n, 3),
+            "wait_native": round(run.native_s * 1e6 / n, 3),
         },
     }
     done = [
@@ -227,6 +262,8 @@ def run(session, args, rng):
     }
     out["compute_wrong"] = sum(sum(c["compute_wrong"]) for c in states)
     out["gave_up_cores"] = sum(1 for c in states if c["reader"] or c["writer"])
+    if timed_out is None:
+        out.update(core_counts(states, teams, cores))
     if timed_out is not None:
         out["timed_out"] = {
             "ticket": timed_out.ticket,
@@ -239,8 +276,26 @@ def run(session, args, rng):
     if trace is not None:
         out.update(trace_summary(trace, tickets, teams))
     if args.seg == "map" and timed_out is None and not args.no_check:
-        out.update(check(args, teams, base, outs, [x_exact, x_rand]))
+        out.update(check(args, teams, base, in_page, outs, [x_exact, x_rand]))
     return out
+
+
+def core_counts(states, teams, cores):
+    """Each core's records taken (EXIT too) and finished (EXIT not) against its team
+    memberships."""
+    member = membership(teams, cores)
+    runs = np.array([c["runs"] for c in states])
+    done = np.array([c["completed"] for c in states])
+    bad = np.flatnonzero((runs != member + 1) | (done != member))
+    return {
+        "member_records": int(member.sum()),
+        "core_counts_bad": len(bad),
+        "first_bad_cores": [
+            {"core": int(c), "member": int(member[c]), "runs": int(runs[c]),
+             "completed": int(done[c])}
+            for c in bad[:5]
+        ],  # fmt: skip
+    }
 
 
 def trace_summary(trace, tickets, teams):
@@ -264,28 +319,53 @@ def trace_summary(trace, tickets, teams):
     }
 
 
-def check(args, teams, base, outs, xs):
+def check(args, teams, base, in_page, outs, xs):
     """Every member's tile of every job not overwritten: bit-exact on exact inputs,
-    relative RMS of the total on random inputs."""
+    relative RMS of the total on random inputs. Counts the tiles that equal what the
+    page held before (zeros or an earlier job's): there a stale tile would pass."""
     got = []
     for i, t in enumerate(outs):
         got.append(ttnn.to_torch(t).float().numpy())
         log(f"output {i + 1} of {len(outs)} read back")
     got = np.concatenate(got).reshape(-1, TILE, TILE)
+    prefix = []
+    for x in xs:
+        sums = np.cumsum(x.reshape(-1, TILE, TILE).astype(np.float64), 0)
+        prefix.append(np.concatenate([np.zeros((1, TILE, TILE)), sums]))
+    tiles = args.tiles
+
+    def ref(j):
+        count = teams[j][1]
+        if j == args.stall:
+            return None
+        return member_sums(prefix[j % 2], int(in_page[j]), tiles, count)
+
+    writers = [[] for _ in range(len(got))]  # jobs per page, in order
+    for j, ((_, count), b) in enumerate(zip(teams, base)):
+        for p in range(b, b + count):
+            writers[p].append(j)
     jobs = [j for j in checked_jobs(teams, base, len(got)) if j != args.stall]
-    refs, bad, rel_max, exact = {}, [], 0.0, 0
+    bad, rel_max, exact, same_as_before, empty = [], 0.0, 0, 0, 0
     for j in jobs:
         count = teams[j][1]
-        key = (j % 2, count)
-        if key not in refs:
-            refs[key] = member_sums(xs[j % 2].astype(np.float64), count)
-        ref, mine = refs[key], got[base[j] : base[j] + count].astype(np.float64)
+        want = ref(j)
+        mine = got[base[j] : base[j] + count].astype(np.float64)
+        for m in range(count):
+            page = base[j] + m
+            earlier = writers[page][-2] if len(writers[page]) > 1 else None
+            before = np.zeros((TILE, TILE))
+            if earlier is not None and earlier != args.stall:
+                before = ref(earlier)[page - base[earlier]]
+            if not share(range(tiles), m, count):
+                empty += 1  # no input tiles: zeros, as the page held
+            elif np.array_equal(want[m], before):
+                same_as_before += 1
         if j % 2 == 0:
             exact += 1
-            if not np.array_equal(mine, ref):
+            if not np.array_equal(mine, want):
                 bad.append({"job": j, "team": teams[j]})
         else:
-            total, ref_total = mine.sum(0), ref.sum(0)
+            total, ref_total = mine.sum(0), want.sum(0)
             rel = float(
                 np.sqrt(((total - ref_total) ** 2).mean() / (ref_total**2).mean())
             )
@@ -294,10 +374,13 @@ def check(args, teams, base, outs, xs):
                 bad.append({"job": j, "team": teams[j], "rel_rms": rel})
     return {
         "jobs_checked": len(jobs),
+        "jobs_overwritten": len(teams) - len(jobs) - (0 <= args.stall < len(teams)),
         "exact_jobs_checked": exact,
         "jobs_bad": len(bad),
         "first_bad": bad[:5],
         "random_total_rel_rms_max": float(f"{rel_max:.3e}"),
+        "tiles_same_as_before": same_as_before,
+        "tiles_without_input": empty,
     }
 
 

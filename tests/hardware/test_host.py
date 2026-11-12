@@ -33,24 +33,41 @@ def every_kernel_returned(out, cores=120):
     return out["cores_magic_ok"] == cores and set(ended.values()) == {cores}
 
 
+def counts_match(out):
+    """Each core took and finished as many records as it is a member of."""
+    return out["core_counts_bad"] == 0 and out["member_records"] > 0
+
+
+def all_checked(out, jobs, stalled=0):
+    """Every job not stalled was read back and checked; none overwritten, no stale
+    tile could pass (the page held something else before)."""
+    return (
+        out["jobs_checked"] == jobs - stalled
+        and out["jobs_overwritten"] == 0
+        and out["tiles_same_as_before"] == 0
+        and out["jobs_bad"] == 0
+    )
+
+
 @pytest.mark.parametrize("count", [1, 8, 120])
 def test_fixed_team_is_exact(count):
     out = run(EXAMPLE, "--jobs", 20, "--count", count, "--out-tensors", 2)
     assert out["kernel"]["error_name"] == "none" and out["kernel"]["events"] == 21
-    assert out["jobs_checked"] == 20 and out["exact_jobs_checked"] == 10
-    assert out["jobs_bad"] == 0 and out["compute_wrong"] == 0
+    assert all_checked(out, 20) and out["exact_jobs_checked"] == 10
+    assert out["compute_wrong"] == 0 and counts_match(out)
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
 
 
 def test_random_teams_with_four_in_flight():
     out = run(EXAMPLE, "--jobs", 100, "--teams", "random", "--out-tensors", 4)
-    assert out["jobs_checked"] >= 90 and out["jobs_bad"] == 0
+    assert all_checked(out, 100) and counts_match(out)
     assert out["random_total_rel_rms_max"] < 1e-2 and every_kernel_returned(out)
 
 
 def test_disjoint_teams_run_at_once():
-    out = run(EXAMPLE, "--jobs", 40, "--teams", "pair", "--trace")
-    assert out["jobs_bad"] == 0 and out["overlap"]["overlapping"] > 0
+    out = run(EXAMPLE, "--jobs", 40, "--teams", "pair", "--trace", "--out-tensors", 2)
+    assert all_checked(out, 40) and counts_match(out)
+    assert out["overlap"]["overlapping"] > 0
 
 
 def test_a_stalled_member_ends_in_the_timeout_exception():
@@ -83,6 +100,6 @@ def test_an_exclusive_record_waits_for_the_team_it_overlaps():
 @pytest.mark.skipif(os.environ.get("KMR_CARD_LONG") != "1", reason="KMR_CARD_LONG=1")
 def test_thousand_random_jobs_are_exact():
     out = run(
-        EXAMPLE, "--jobs", 1000, "--teams", "random", "--out-tensors", 32, timeout=600
+        EXAMPLE, "--jobs", 1000, "--teams", "random", "--out-tensors", 34, timeout=900
     )
-    assert out["jobs_checked"] >= 900 and out["jobs_bad"] == 0
+    assert all_checked(out, 1000) and counts_match(out)
