@@ -14,7 +14,13 @@
 /* host -> dispatch kernel only: a0 = microseconds for later records */
 #define KM_SEG_DEADLINE 252u
 #define KM_SEG_USER_MAX 239u /* segments 1..239 belong to the program */
+/* host -> dispatch kernel only: a0 = offset of a stream upload, a1 = its bytes */
+#define KM_SEG_RUN 251u
+/* host -> dispatch kernel only: a0 = request id of the stream to cancel */
+#define KM_SEG_CANCEL 250u
 /* Flags: bit 0 is reserved and zero. Every record reports completion (revision 2). */
+/* a queued job: `first` is ignored, the team allocator chooses it */
+#define KM_F_QUEUE 8u
 #define KM_TEAM_ALL(n) ((uint32_t)(n) << 16) /* first 0, count n */
 
 /* One record: four 16-byte chunks. Word 0 of each chunk carries the sequence number;
