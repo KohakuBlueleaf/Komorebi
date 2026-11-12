@@ -48,6 +48,9 @@ place to ask a question and to be wrong.
 - [graph_checks](graph_checks/README.md): the reference graphs of the graph executor
   and a comparison of its two implementations (Python and the plain-C engine built for
   the host) on random graphs and mutated uploads. No difference found.
+- [page_index](page_index/README.md): whether the compute kernel can read page k of a
+  circular buffer it waited for in full, by index, with nothing popped before it. Yes:
+  two runs, exact. Values put into fixed slots are handed over as the whole buffer.
 - [runtime_harness](runtime_harness/README.md): the Tensix runtime's kernels as host
   threads on a simulated grid, with failure paths forced on purpose (stop words,
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
