@@ -12,7 +12,7 @@ import numpy as np
 
 from komorebi import abi
 from komorebi import state as st
-from komorebi.engines import control, graph_hostfed
+from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.errors import (
     KernelFailed,
     KomorebiError,
@@ -512,9 +512,11 @@ class Run:
     # Graphs -----------------------------------------------------------------------
 
     def run_hostfed(self, graph, bindings=None, timeout=10.0, engine=None):
-        """Runs a graph host-fed: its executor on the host, its records through this
-        run's host ring. Returns a HostfedResult (status, error, regs, runs, records,
-        events); see `komorebi.engines.graph_hostfed`."""
+        """Runs a graph or a stream host-fed: its executor on the host, its records
+        through this run's host ring. Returns a HostfedResult (status, error, regs,
+        runs, records, events); see `komorebi.engines.graph_hostfed`."""
+        if stream_hostfed.is_stream(graph):
+            return stream_hostfed.run_hostfed(self, graph, bindings, timeout)
         return graph_hostfed.run_hostfed(self, graph, bindings, timeout, engine)
 
     # Engines ----------------------------------------------------------------------
