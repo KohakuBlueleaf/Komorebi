@@ -1404,8 +1404,16 @@ def run_command(offset, size):
     return words
 
 
+def stream_base(plan):
+    """First 4 KiB boundary above the trace part (KMD_TRACE_PART, the lower half)."""
+    return -(-(plan.upload_bytes // 2) // 4096) * 4096
+
+
 def put_upload(plan, offset, data):
-    """Writes `data` at `offset` as whole lines, cut at the region's end."""
+    """Writes `data` at `offset` as whole lines, cut at the region's end; never into the
+    trace part, which the KMD_TRACE image overwrites."""
+    if offset < stream_base(plan):
+        raise ValueError(f"upload at {offset}: inside the trace part")
     room = plan.upload_bytes - offset
     data = bytes(data)[:room]
     data += bytes(-len(data) % 64)
@@ -1519,7 +1527,7 @@ def case_streams(device, args):
         nonlocal n_cores
         n_cores = plan.grid_x * plan.grid_y
         region = plan.upload_bytes
-        base = (region // 2) & ~4095  # the trace grows from the region's start
+        base = stream_base(plan)
         out = {"tag": plan.tag, "pings": {}, "streams": {}, "wrong": [], "run": {}}
         ping(plan, "start", out)
 
@@ -1649,8 +1657,8 @@ def case_stream_deadline(device, args):
         s.wait(0)
         s.halt(s.const(0))
         data = s.encode()
-        put_upload(plan, 0, data)
-        plan.submit(run_command(0, len(data)))
+        put_upload(plan, stream_base(plan), data)
+        plan.submit(run_command(stream_base(plan), len(data)))
         issues = [pc for pc, o in enumerate(s.uops()) if o.op == ks.OP_ISSUE]
         out = {"tag": plan.tag, "stall_pc": issues[1]}
         log("stream started")
@@ -1718,8 +1726,7 @@ def case_stream_bench(device, args):
     trace = {}
 
     def body(plan):
-        region = plan.upload_bytes
-        base = (region // 2) & ~4095
+        base = stream_base(plan)
         out = {"tag": plan.tag, "streams": args.streams}
         plan.submit(command(SEG_PING))
         for j in range(args.streams):

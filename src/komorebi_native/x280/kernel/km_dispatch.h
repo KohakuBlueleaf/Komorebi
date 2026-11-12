@@ -77,7 +77,8 @@
 #define KMD_SEG_CHECK_UPLOAD 249u
 
 /* KMD_TRACE builds: kmd_trace_t, then 16-byte entries {kind | slot << 8, req, team,
- * mtime} per slot taken or freed, in the lower half of the upload region. */
+ * mtime} per slot taken or freed, in the trace part: the region's lower half. */
+#define KMD_TRACE_PART(upload_bytes) ((upload_bytes) / 2u & ~63u)
 #define KMD_TRACE_ISSUE 1u
 #define KMD_TRACE_FREE 2u
 #define KMD_TRACE_MARK 0x54524345u /* "TRCE" */

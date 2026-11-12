@@ -22,11 +22,14 @@ static inline uint32_t slot_free(const kmd_t* k) {
 }
 
 #ifdef KMD_TRACE
-/* Test builds: entry {kind | slot << 8, req, team, mtime} of 16 bytes into the lower
- * half of the upload region from its second line on; kmd_trace_t at its start. */
+/* Test builds: entry {kind | slot << 8, req, team, mtime} into the trace part from its
+ * second line on. The first entry that does not fit writes the header at once. */
 static inline void trace(kmd_t* k, uint32_t kind, uint32_t slot, uint32_t req) {
-    if (64u + 16u * (k->traced + 1u) > k->upload_bytes / 2u) {
-        k->untraced++;
+    if (64u + 16u * (k->traced + 1u) > KMD_TRACE_PART(k->upload_bytes)) {
+        if (k->untraced++ == 0u && k->upload_bytes >= 64u) {
+            const uint32_t head[4] = {KMD_TRACE_MARK, k->traced, 1u, 0u};
+            kmd_store_chunk((volatile uint8_t*)k->upload, head);
+        }
         return;
     }
     const uint32_t e[4] = {
