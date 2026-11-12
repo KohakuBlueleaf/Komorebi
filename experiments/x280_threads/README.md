@@ -15,6 +15,7 @@ writes it, and what the host can do about a thread that does not return.
 | How fast does the X280 read and write its bank? | About 1.3 GB/s read and 1.8 GB/s write with four cores, the same for 1 MB and 64 MB; Flush64 sweeps run at 5 to 8 GB/s of region |
 | What does a decision over every core's data cost? | Prefix sums over 119 x 1,024 counters: 2.13 ms on four cores, take and give included, exact; 1.70 ms with the L2 prefetchers set as documented |
 | A thread that ignores its deadline? | The host asks it to stop; if it polls nothing, the cluster stays stuck until a card reset (from the runtime's sources, not run) |
+| What does a thread's ring cost the dispatch kernel's core 0 when it is empty? | Its idle pass from 32.1 ns to 40.8 ns (1.27 times) with a look at the ring every fourth pass; 63.5 ns (1.98 times) when it looked every pass (`ring_cost.py`) |
 
 All card numbers: one Blackhole p150a, slow dispatch, the X280 at the runtime's
 1,750 MHz PLL setting, Tensix clock 1,350 MHz throughout, the host's load average
@@ -148,6 +149,18 @@ cluster runs with them.
 memory. Neither these probes nor the thread library write it; enlarging the L3 is
 one-way until a card reset and takes local memory from the runtime's images.
 
+## The cost of a thread's ring (`ring_cost.py`)
+
+Loads a program whose records do nothing, once without a thread and once with one that
+only waits for its stop, issues one record, leaves the kernel idle for a second and
+stops; the pass period is the kernel's ticks over its passes. Three runs each, card 0:
+32.1 ns without a thread, 40.7 to 40.9 ns with one. One look at the ring's line, a read
+of this cluster's LIM that a thread's write keeps changing, costs about 31 ns, so the
+loop looks every fourth pass; a thread's command then waits at most four passes
+(about 160 ns) longer.
+
+    python ring_cost.py --idle 1.0 --reps 3
+
 ## A thread that ignores its deadline (from the sources, not run)
 
 Read in tt-metal's X280 runtime (`tt_metal/fabric/experimental/x280`):
@@ -173,6 +186,7 @@ line and the runtime's STOP then end any thread that follows the rule.
 | File | What |
 |---|---|
 | `probe.py` | the host side of the three card probes; one JSON line per run |
+| `ring_cost.py` | the idle pass of the dispatch kernel with and without a thread's ring; one JSON line |
 | `build.py` | builds the images into `build/` with the X280 toolchain of the tt-metal tree |
 | `x280/probe.h` | the images' shared layout: argument block, progress stamps, go line, result words, bounded waits, the Flush64 sweep |
 | `x280/beat.c`, `x280/dram.c`, `x280/rates.c` | the images |
