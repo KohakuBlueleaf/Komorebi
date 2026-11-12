@@ -9,10 +9,9 @@ tags:
 
 # X280 threads reference
 
-Status: implemented on one Blackhole p150a, work cluster 1, except the command ring,
-which the dispatch kernel does not serve yet: the host writes no ring line, and
-`kmx_issue`, `kmx_wait` and `kmx_poll` return `KMX_STOPPED`. The library's ring calls
-are checked on the CPU against a fake kernel.
+Status: implemented on one Blackhole p150a, work cluster 1, with the command ring to
+the dispatch kernel (its source 2). The library's ring calls are also checked on the
+CPU against a fake kernel.
 
 The guide is [X280 threads](../threads.md): what a thread is for, how regions change
 hands, the rules. This page lists the interface. The sources are
@@ -45,7 +44,10 @@ Ring calls from harts 1 to 3 record the library error `par` and return
 `hdr = seg | flags << 8`, `team = first | count << 16`, arguments `a0` to `a9`; the
 library writes `seq` and the landing words. Flags: `KM_F_EXCL` (issued only when no
 team in flight overlaps it), `KM_F_RESULT` (the team leader's `wr.result(value)`
-comes back in the event's `ticks`), `KM_F_QUEUE` (the kernel chooses `first`).
+comes back in the event's `ticks`), `KM_F_QUEUE` (the kernel chooses `first`). A
+record that cannot be issued now is refused at once (`KM_EV_REFUSED`, aux 11); the
+kernel's other refusals are its README's ("Refused commands"), and STOP, EXIT, RUN and
+CANCEL from a thread are refused with aux 1.
 
 `kmx_event`: `ticket`, `kind` (`KM_EV_DONE`, `KM_EV_TIMEOUT`, `KM_EV_REFUSED`),
 `aux` (the slot of a timeout, the reason of a refusal), `ticks` (issue to completion
@@ -92,9 +94,14 @@ on the p150a); page 0 of the thread's pages is the check line. The thread sees r
 aligned), `consumed` (the kernel's count of commands taken), `events` (`event_depth`
 16-byte events), `read` (a 64-byte line, word 0 the events the thread took),
 `cmd_depth`, `event_depth` (powers of two, at most 1,024), `flags`
-(`KMX_RING_CACHED` 1: each hand-over is a sweep). Addresses are as the thread's
-cluster sees them. A line that names a ring but is out of range ends the start-up
-with error `args`. The protocol is the host ring's (the dispatch kernel's README,
+(`KMX_RING_CACHED` 1: each hand-over is a sweep; `KMX_RING_REMOTE` 2: `cmd` and `read`
+are NoC addresses in the tile `reserved[0]` names, `x | y << 16`, inside one 2 MiB
+window that the start-up opens in slot `KMX_RING_WINDOW` and closes after `kmx_main`),
+`reserved[0]`. Other addresses are as the thread's cluster sees them. A line that
+names a ring but is out of range ends the start-up with error `args`. The session's
+ring: 16 command lines and the read line in the dispatch kernel's LIM after its layout
+(`KMD_LIM_BYTES`), 64 events after the kmx block in the thread's LIM
+(`KMD_WORK_*` from `KMX_LIM_BYTES`). The protocol is the host ring's (the dispatch kernel's README,
 "Protocol with the host").
 
 ## Python
@@ -122,15 +129,16 @@ ready. `run.thread` is a `ThreadRun`:
 | `run.thread_result(timeout)` | waits for the thread to return (asks it to stop at the timeout), stops it, returns a `ThreadResult`; with `thread="host"` runs the fallback |
 | `run.thread.read(name)` | the region's bytes (`uint8`), only after `run.stop()` |
 | `run.thread.regions.address(name)` | `(bank, bank address)` for a Tensix kernel |
-| `run.thread.ring` | the `RingPlacement` the host writes into the ring line, `None` until the kernel serves one |
+| `run.thread.ring` | the `RingPlacement` the host wrote into the ring line (`None` with `thread="host"`) |
 | `run.stop()` | stops a thread still running, then the run |
 
 `ThreadResult`: `ran` (false when it was stopped at the timeout), `state`, `error`
 (names, as in the result block), `code`, `words`, `where`, `where_us`, `us`.
 
-`RingPlacement(cmd, consumed, events, read, cmd_depth, event_depth, cached=False)`
-and `args_block(thread, base, check_value, run_value=0, ring=None)` build the LIM
-block; they need no device.
+`RingPlacement(cmd, consumed, events, read, cmd_depth, event_depth, cached=False,
+remote=None)`, `work_ring(kernel_lim, kernel_xy, work_lim, work_xy)` (the session's
+placement and the kernel's `work_*` words) and `args_block(thread, base, check_value,
+run_value=0, ring=None)` build the LIM block; they need no device.
 
 ## Measured
 

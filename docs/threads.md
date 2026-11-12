@@ -18,10 +18,8 @@ on the cluster's four coherent 64-bit cores. It does not compute on tiles.
 
 Status: a thread can be declared, built, loaded beside the dispatch kernel, read and
 write its regions, run on all four cores, return a result, and be replaced by its host
-fallback. The library's side of the command ring to the dispatch kernel
-(`kmx_issue`, `kmx_wait`, `kmx_poll`) is written and checked against a fake kernel on
-the CPU; the kernel does not serve a work cluster's ring yet, so the host gives the
-thread no ring and those calls return `KMX_STOPPED`.
+fallback, and issue records to the grid through its command ring to the dispatch
+kernel (`kmx_issue`, `kmx_wait`, `kmx_poll`), which the session sets up at load.
 
 ## What a thread can touch
 
@@ -77,11 +75,21 @@ is reused once the kernel's consumed count allows it; each finished command come
 as one 16-byte event whose index is read before and after its fields; the thread
 writes the number of events it took into a line the kernel reads. The ticket is the
 command's number. `kmx_wait` keeps the events of other tickets for `kmx_poll`, up to
-32. Where the ring lives is data: the host writes its addresses, depths and whether it
-is cached into the thread's ring line before the start (`kmx_ring_desc` in
-`kmx_layout.h`); in cached memory every hand-over is a sweep, as for regions. Only
-hart 0 issues and waits. A missed deadline or a stop while waiting ends the thread's
-run as `late` or `stopped`.
+32. Where the ring lives is data: the host writes its addresses, depths and kind into
+the thread's ring line before the start (`kmx_ring_desc` in `kmx_layout.h`). The
+session puts each half where its reader is: the command lines and the read line in the
+dispatch kernel's local memory, which the thread writes through a NoC window its
+start-up opens (`KMX_RING_REMOTE`), and the counts and events in the thread's own local
+memory, which the kernel writes. Nothing passes through a cache, so no hand-over needs
+a sweep (a ring in cached memory, `KMX_RING_CACHED`, would). Only hart 0 issues and
+waits. A missed deadline or a stop while waiting ends the thread's run as `late` or
+`stopped`.
+
+The kernel never makes a thread's record wait: one that cannot be issued now (an
+exclusive record whose team overlaps one in flight, a full job queue, no free slot) is
+refused at once with reason 11, and the thread issues it again later or waits for the
+record it depends on first. A round of two records issued and waited for in turn takes
+about 50 microseconds; the kernel's loop looks at the ring every fourth pass.
 
 ## Writing one
 
