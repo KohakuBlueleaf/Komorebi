@@ -19,7 +19,16 @@ kmr = "komorebi.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["komorebi", "komorebi.*"]
+include = ["komorebi", "komorebi.*", "komorebi_native", "komorebi_native.*"]
+
+# The native sources travel as data: headers, kernel sources, CMake helpers, the host
+# module's source; the dispatch kernel image when packaging/build_wheel.py put it there.
+[tool.setuptools.package-data]
+komorebi = ["km-dispatch.bin", "*/*.md"]
+komorebi_native = ["**/*"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["*.so", "*.o", "*.pyc"]
 
 [tool.black]
 target-version = ["py313"]
