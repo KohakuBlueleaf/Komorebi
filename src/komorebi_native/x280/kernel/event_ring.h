@@ -69,15 +69,16 @@ static inline void events_push(
     kmd_store_chunk(ring + (index % k->event_depth) * sizeof(km_event_t), ev);
 }
 
-/* Whether the unread events, one per busy slot and one more fit the ring. The host's
- * read count is loaded from LIM only when the cached one says no. */
+/* Whether the unread events, one per busy slot, one per active stream (its end) and one
+ * more fit the ring. The host's read count is loaded from LIM only when needed. */
 static inline int events_room(kmd_t* k) {
-    if (k->events - k->host_read + k->nbusy < k->event_depth) {
+    const uint32_t held = k->nbusy + k->nstreams;
+    if (k->events - k->host_read + held < k->event_depth) {
         return 1;
     }
     x280_fence_ir();
     k->host_read = *(volatile const uint32_t*)(k->lim + KMD_LIM_READ);
-    return k->events - k->host_read + k->nbusy < k->event_depth;
+    return k->events - k->host_read + held < k->event_depth;
 }
 
 /* Once per loop pass after events were pushed: one fence, then the event count (a

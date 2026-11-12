@@ -38,12 +38,12 @@ static inline uint32_t grid_open(kmd_t* k, uint32_t ctl) {
     return KMD_ERR_NONE;
 }
 
-/* Stores record line k->line into mailbox slot `slot` of every core: one 64-byte
- * vector store per panel, then a fence so the stores leave now. */
-static inline void grid_store_record(kmd_t* k, uint32_t slot) {
+/* Stores the record `line` into mailbox slot `slot` of every core: one 64-byte vector
+ * store per panel, then a fence so the stores leave now. */
+static inline void grid_store_record(kmd_t* k, uint32_t slot, const uint64_t* line) {
     const uint32_t off = KM_CTL_RING + slot * (uint32_t)sizeof(km_record_t);
     for (uint32_t r = 0; r < k->panels; r++) {
-        kmd_store_line(k->ctl[r] + off, k->line);
+        kmd_store_line(k->ctl[r] + off, line);
     }
     x280_fence_ow();
 }

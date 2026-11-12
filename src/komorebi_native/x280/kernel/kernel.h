@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "komorebi/abi/km_abi.h"
+#include "komorebi/abi/km_stream.h"
 #include "km_dispatch.h"
 #include "noc.h"
 #include "rt/x280_hw.h"
@@ -15,6 +16,18 @@
 #define KMD_POLL_EVERY 1024u
 /* The team allocator's answer when no team of the count fits now. */
 #define KMD_NO_FIRST 0xFFFFFFFFu
+
+/* An active micro-op stream; it runs in place in the upload region. */
+typedef struct {
+    uint32_t regs[KM_STREAM_REGS];
+    uint32_t running; /* 1 while active */
+    uint32_t req, pc, steps, max_steps, n_ops, n_records;
+    uint32_t off, bytes; /* its range in the upload region */
+    uint32_t pending;    /* its records in flight and its queued jobs */
+    uint32_t last_result;
+    uint32_t order;    /* activation number; turns go in this order */
+    uint64_t t_record; /* deadline of each record it issues, in ticks */
+} kmd_stream_t;
 
 typedef struct {
     /* run */
@@ -45,11 +58,18 @@ typedef struct {
     uint32_t slot_seq[KM_RING_SLOTS]; /* last sequence: the ack word once free */
     uint32_t slot_req[KM_RING_SLOTS];
     uint32_t slot_team[KM_RING_SLOTS];
-    uint32_t result_busy; /* busy slots whose record has KM_F_RESULT */
+    uint32_t slot_order[KM_RING_SLOTS]; /* the issuing stream's order (0: the host) */
+    uint16_t slot_pc[KM_RING_SLOTS];    /* the issuing micro-op */
+    uint8_t slot_stream[KM_RING_SLOTS]; /* the issuing stream's index */
+    uint32_t result_busy;               /* busy slots whose record has KM_F_RESULT */
     uint32_t last_result; /* the latest KM_F_RESULT record's result (0: none yet) */
     uint32_t results;     /* KM_F_RESULT records completed */
     uint64_t slot_t0[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
+    /* engines */
+    kmd_stream_t streams[KM_STREAM_MAX_ACTIVE];
+    uint32_t nstreams, orders; /* active streams; activations so far */
+    uint32_t stream_events, stream_records;
     /* counters */
     uint32_t records, max_busy, refused, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */
@@ -59,6 +79,7 @@ typedef struct {
     /* the command being taken, as 8 little-endian 64-bit words, on the stack and
      * 64-byte aligned for the vector store */
     uint64_t* line;
+    uint64_t* eline; /* the record an engine is issuing, the same way */
 } kmd_t;
 
 _Static_assert(sizeof(kmd_t) <= KMD_STATE_BYTES, "kmd_t outgrows its DRAM area");

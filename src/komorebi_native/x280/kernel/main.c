@@ -8,6 +8,7 @@
 #include "host_ring.h"
 #include "kernel.h"
 #include "result.h"
+#include "stream.h"
 
 /* Waits until `word` holds `value`, the runtime asks for a stop, or `deadline`. */
 static kmd_wait_t wait_word(
@@ -169,9 +170,9 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
     const uint32_t team = (uint32_t)l[1], a0 = (uint32_t)(l[1] >> 32);
     const uint32_t first = team & 0xFFFFu, count = team >> 16;
     const uint32_t queued = seg != KM_SEG_EXIT && (flags & KM_F_QUEUE);
-    if (seg == KM_SEG_DEADLINE) {
+    if (seg == KM_SEG_DEADLINE && a0 != 0) {
         hring_consumed(k);
-        k->t_record = a0 ? (uint64_t)a0 * 50u : k->args->t_record;
+        k->t_record = (uint64_t)a0 * 50u;
         return KMD_TAKEN;
     }
     if (seg == KM_SEG_STOP) {
@@ -191,6 +192,16 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
         k->t_last_event = now;
         return KMD_TAKEN;
     }
+    if (seg == KM_SEG_RUN || seg == KM_SEG_CANCEL) {
+        hring_consumed(k);
+        if (seg == KM_SEG_RUN) {
+            stream_run(k, req, a0, (uint32_t)(l[2] >> 32));
+        } else {
+            stream_cancel(k, req, a0);
+        }
+        k->t_last_event = now;
+        return KMD_TAKEN;
+    }
 #ifdef KMD_VERIFY_LINES
     if (seg == KMD_SEG_CHECK_UPLOAD) {
         hring_consumed(k);
@@ -200,7 +211,9 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
     }
 #endif
     uint32_t refuse = 0;
-    if (seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) {
+    if (seg == KM_SEG_DEADLINE) {
+        refuse = KMD_REFUSE_DEADLINE;
+    } else if (seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) {
         refuse = KMD_REFUSE_SEG;
     } else if (flags & 1u) {
         refuse = KMD_REFUSE_FLAGS;
@@ -217,8 +230,8 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
         return KMD_TAKEN;
     }
     if (seg == KM_SEG_EXIT) {
-        /* EXIT goes to every core, and only once no record is in flight. */
-        if (k->busy) {
+        /* EXIT goes to every core, once no record is in flight and no stream runs. */
+        if (k->busy || k->nstreams) {
             return KMD_HELD;
         }
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_TEAM_ALL(k->cores);
@@ -234,20 +247,13 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
         return KMD_HELD;
     }
     const uint32_t slot = slot_free(k);
-    /* Skips 0 (an unused slot's ack word) and the slot's last one (its ack word). */
-    uint32_t seq = ++k->seq;
-    while (seq == 0 || seq == k->slot_seq[slot]) {
-        seq = ++k->seq;
+    if (slot == KM_RING_SLOTS) {
+        return KMD_HELD; /* an engine took the last free slot */
     }
-    l[0] = seq | ((uint64_t)((hdr & 0xFFFFu) | (slot << 16)) << 32);
-    for (uint32_t j = 2; j < 8; j += 2) {
-        l[j] = (l[j] & ~(uint64_t)0xFFFFFFFFu) | seq;
-    }
-    grid_store_record(k, slot);
+    l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
+    record_issue(k, l, slot, req, now, k->t_record);
     hring_consumed(k);
-    k->records++;
     k->exited = seg == KM_SEG_EXIT;
-    slot_take(k, slot, seq, req, (uint32_t)l[1], now, k->t_record, flags & KM_F_RESULT);
     return KMD_TAKEN;
 }
 
@@ -295,6 +301,9 @@ static void loop(kmd_t* k) {
                 }
             }
         }
+        if (k->nstreams != 0) {
+            engines_step(k, x280_mtime());
+        }
         events_flush(k);
         if (++spins != KMD_POLL_EVERY) {
             continue;
@@ -307,23 +316,21 @@ static void loop(kmd_t* k) {
         const uint64_t now = x280_mtime();
         const uint32_t late = slots_late(k, now);
         if (late != KM_RING_SLOTS) {
+            const uint32_t took = (uint32_t)(now - k->slot_t0[late]);
             result_error(
-                k,
-                KMD_ERR_DEADLINE,
-                late,
-                k->slot_seq[late],
-                k->slot_req[late],
-                (uint32_t)(now - k->slot_t0[late])
+                k, KMD_ERR_DEADLINE, late, k->slot_seq[late], k->slot_req[late], took
             );
-            events_push(
-                k,
-                k->slot_req[late],
-                KM_EV_TIMEOUT | (late << 8),
-                (uint32_t)(now - k->slot_t0[late])
-            );
+            /* A running stream's record ends the stream; the host's and an orphan's
+             * post the timeout event (an orphan's with its stream's req). */
+            kmd_stream_t* s = slot_owner(k, late);
+            if (s != 0) {
+                stream_fail(k, s, KM_SERR_DEADLINE, k->slot_pc[late]);
+            } else {
+                events_push(k, k->slot_req[late], KM_EV_TIMEOUT | (late << 8), took);
+            }
             return;
         }
-        if (activity != seen_activity || k->busy) {
+        if (activity != seen_activity || k->busy || k->nstreams) {
             seen_activity = activity;
             t_active = now;
         } else if (a->t_idle != 0 && now - t_active > a->t_idle) {
@@ -359,7 +366,7 @@ static void finish(kmd_t* k) {
 
 /* Core 0's kernel; kept out of main so main's prologue touches no FP register. */
 static __attribute__((noinline)) void run(uint64_t hart) {
-    uint64_t line_buf[24];
+    uint64_t line_buf[24], eline_buf[16];
     const uint64_t run_value = x280_hart_control(hart)->run_value;
     const uint64_t t_boot = x280_mtime();
     const volatile kmd_args_t* a = (const volatile kmd_args_t*)x280_hart_args(hart);
@@ -376,6 +383,7 @@ static __attribute__((noinline)) void run(uint64_t hart) {
     }
     k->hart = hart;
     k->line = (uint64_t*)(((uintptr_t)line_buf + 63u) & ~(uintptr_t)63u);
+    k->eline = (uint64_t*)(((uintptr_t)eline_buf + 63u) & ~(uintptr_t)63u);
     k->run = run_value;
     k->t_boot = t_boot;
     k->args = a;

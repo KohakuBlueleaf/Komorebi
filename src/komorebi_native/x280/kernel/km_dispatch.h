@@ -62,19 +62,22 @@
 #define KMD_ERR_STOP_BUSY 9u /* a STOP command arrived with records in flight */
 
 /* Reasons of a KM_EV_REFUSED event (its aux): the command was consumed, not run. */
-#define KMD_REFUSE_SEG 1u    /* segment 240 to 251 */
+#define KMD_REFUSE_SEG 1u    /* segment 240 to 249 */
 #define KMD_REFUSE_FLAGS 2u  /* reserved flag bit 0 set */
 #define KMD_REFUSE_TEAM 3u   /* count 0, or the team does not lie inside the cores */
 #define KMD_REFUSE_EXITED 4u /* a record after EXIT */
 #define KMD_REFUSE_REGION \
     5u /* a range not 64-byte aligned or outside the upload region */
+#define KMD_REFUSE_STREAMS 6u  /* KM_SEG_RUN while KM_STREAM_MAX_ACTIVE streams run */
+#define KMD_REFUSE_UNKNOWN 7u  /* KM_SEG_CANCEL of a req no active stream has */
+#define KMD_REFUSE_DEADLINE 8u /* KM_SEG_DEADLINE of 0: a deadline is never zero */
 
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */
 #define KMD_SEG_CHECK_UPLOAD 249u
 
-/* KMD_TRACE builds: the upload region holds kmd_trace_t, then from its second line
- * 16-byte entries {kind | slot << 8, req, team, pass} as slots are taken and freed. */
+/* KMD_TRACE builds: kmd_trace_t, then 16-byte entries {kind | slot << 8, req, team,
+ * mtime} per slot taken or freed, in the lower half of the upload region. */
 #define KMD_TRACE_ISSUE 1u
 #define KMD_TRACE_FREE 2u
 #define KMD_TRACE_MARK 0x54524345u /* "TRCE" */
@@ -181,7 +184,7 @@ static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
 
 /* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory
  * Port: the host gives it KMD_STATE_BYTES there, 64-byte aligned (LIM is uncached). */
-#define KMD_STATE_BYTES 1024u
+#define KMD_STATE_BYTES 8192u
 
 KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 152, "kmd_args_t is 152 bytes");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, upload_bytes) == 144, "upload_bytes at 144");

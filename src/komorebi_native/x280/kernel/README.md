@@ -12,6 +12,7 @@ every finished command to the host as an event. `km_dispatch.h` holds the exact 
 | `event_ring.h` | the event ring and the state words in host memory |
 | `grid_port.h` | the windows onto every core's control block, the record store, the stop word |
 | `completion.h` | busy slots, acknowledgement sweep, deadlines, team overlap, team allocator |
+| `stream.h` | the upload check and the interpreter of uploaded streams (`km_stream.h`) |
 | `result.h` | the result block in LIM |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
 
@@ -43,11 +44,12 @@ These rules are part of the protocol; a host that relies on anything else is wro
   both reads give its number.
 - **Refused commands.** A bad record is consumed and answered with `KM_EV_REFUSED`, its
   reason (`KMD_REFUSE_*`) in the status's aux; the session goes on. Reasons: 1 a segment
-  from 240 to 251 that this kernel does not serve (`KM_SEG_RUN` and `KM_SEG_CANCEL`
-  included, until the engines exist); 2 flag bit 0 set; 3 a team outside the grid
-  (`count == 0 || first > cores || count > cores - first`, with no sum that could wrap;
-  with `KM_F_QUEUE` only the count is checked); 4 any record after EXIT; 5 a range of the upload
-  region that is not whole lines inside it. A refused command's event has ticks 0.
+  from 240 to 249, which this kernel does not serve; 2 flag bit 0 set; 3 a team outside
+  the grid (`count == 0 || first > cores || count > cores - first`, with no sum that
+  could wrap; with `KM_F_QUEUE` only the count is checked); 4 any record after EXIT; 5 a
+  range of the upload region that is not whole lines inside it; 6 `KM_SEG_RUN` while
+  four streams run; 7 `KM_SEG_CANCEL` of a req no running stream has; 8
+  `KM_SEG_DEADLINE` of 0. A refused command's event has ticks 0.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
   word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
@@ -80,6 +82,17 @@ These rules are part of the protocol; a host that relies on anything else is wro
   until such a team exists. The grid sees the chosen team and no `KM_F_QUEUE`. Until the
   job queue exists, a waiting queued record holds up the commands behind it like any
   other waiting command.
+- **Streams.** `KM_SEG_RUN` (a0 offset, a1 bytes in the upload region) starts the
+  stream there, after the same check as `stream.check`: a range that is not inside the
+  region and line aligned, one that overlaps a running stream's, a req a running stream
+  has, or a failed check ends it at once with `KM_EV_STREAM_ERROR` (reason 1 for the
+  first three). Up to four streams run, each at most `KM_STEP_OPS` micro-ops per pass in
+  turn, and none waits inside a pass. Their records go out like the host's, with the
+  stream's own deadline, and end in no event; `KM_EV_STREAM`, `_END` and `_ERROR` carry
+  the stream's req, the aux `reason | pc << 8` for an error. `KM_SEG_CANCEL` ends a
+  stream with reason 10; its records in flight still free their slots. A record of a
+  stream that misses its deadline ends the stream with reason 8 and the kernel with it.
+  EXIT waits until no stream runs.
 - **Finish.** `KM_SEG_STOP`, the runtime's stop, a missed deadline or a start-up failure
   ends the loop. The stop word goes to the grid only while a slot is busy or before EXIT
   was issued. The state and error words in the host buffer, and the result block in LIM,
