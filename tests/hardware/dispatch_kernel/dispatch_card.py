@@ -54,7 +54,10 @@ SEG_NOP, SEG_EXIT = 0, 255
 SEG_PING, SEG_STOP, SEG_DEADLINE = 254, 253, 252
 F_EXCL = 2
 EV_DONE, EV_TIMEOUT, EV_PONG, EV_REFUSED = 0, 1, 2, 3
-REFUSE_SEG, REFUSE_FLAGS, REFUSE_TEAM, REFUSE_EXITED = 1, 2, 3, 4
+REFUSE_SEG, REFUSE_FLAGS, REFUSE_TEAM, REFUSE_EXITED, REFUSE_REGION = 1, 2, 3, 4, 5
+SEG_CHECK_UPLOAD = 249  # KMD_VERIFY_LINES images only
+LIM_UPLOAD = 0x1800  # KMD_LIM_UPLOAD: the upload region's offset from the layout
+HOST_READY, READY_MARK = 4, 0x594452  # the ready block's first word and its mark
 STATE_READY, STATE_DONE, STATE_FAILED = 2, 3, 4
 ERR_DEADLINE, ERR_STOPPED, ERR_STOP_BUSY = 4, 7, 9
 R_NAMES = {
@@ -144,6 +147,14 @@ def verify_word(i, w):
     x = ((i * 0x9E3779B1) ^ ((w + 1) * 0x85EBCA77)) & M32
     x ^= x >> 15
     return (x * 0x2C1B3C6D) & M32
+
+
+def upload_words(seed, first, n):
+    """kmd_verify_word(seed, w) for w = first .. first + n - 1, as uint32."""
+    w = np.arange(first, first + n, dtype=np.uint64)
+    x = np.uint64((seed * 0x9E3779B1) & M32) ^ (((w + 1) * 0x85EBCA77) & M32)
+    x ^= x >> np.uint64(15)
+    return ((x * 0x2C1B3C6D) & M32).astype(np.uint32)
 
 
 def verify_record(i, cores):
@@ -1062,6 +1073,88 @@ def case_verify(device, args):
     return out
 
 
+def check_upload(offset, size, seed):
+    """KMD_SEG_CHECK_UPLOAD: a0 = offset, a1 = bytes, a2 = seed."""
+    words = command(SEG_CHECK_UPLOAD, offset)
+    words[5], words[6] = size, seed
+    return words
+
+
+def case_upload(device, args):
+    """The upload region (KMD_VERIFY_LINES image): the ready block names it; a pattern
+    of whole lines written through the host window reads back exactly on the kernel
+    side, a changed word is found where it is, ranges outside the region are refused."""
+    if args.image == IMAGE:
+        args.image = VERIFY_IMAGE
+
+    def body(plan):
+        n = plan.upload_bytes
+        ready = [plan.host_word(HOST_READY + w) for w in range(4)]
+        out = {"tag": plan.tag, "ready": ready, "upload_bytes": n}
+        out["ready_ok"] = ready == [
+            READY_MARK,
+            plan.lim_base + LIM_UPLOAD,
+            n,
+            LIM_UPLOAD,
+        ]
+        line = 64 * (n // 128)  # a line in the middle
+
+        def run(name, offset, size, seed, want):
+            t0 = time.perf_counter()
+            i = plan.submit(check_upload(offset, size, seed))
+            ev = [e for e in plan.take(i, 10.0) if e[1] == i]
+            got = [kind(ev[0][2]), ev[0][3]] if ev else None
+            log(f"upload {name}: {got}")
+            checks.append(
+                {
+                    "name": name,
+                    "got": got,
+                    "ok": got == want,
+                    "ms": round((time.perf_counter() - t0) * 1e3, 3),
+                }
+            )
+
+        checks = []
+        uploads = []
+        none = M32
+        for seed in (args.seed, args.seed + 1):
+            data = upload_words(seed, 0, n // 4)
+            t0 = time.perf_counter()
+            plan.upload(0, data.view(np.uint8))
+            uploads.append(round(time.perf_counter() - t0, 6))
+            run(f"whole {seed}", 0, n, seed, [(EV_PONG, 0), none])
+        seed = args.seed + 1
+        run("first line", 0, 64, seed, [(EV_PONG, 0), none])
+        run("last line", n - 64, 64, seed, [(EV_PONG, 0), none])
+        run("middle 4 KiB", line, 4096, seed, [(EV_PONG, 0), none])
+        run("other seed", line, 64, seed + 1, [(EV_PONG, 16), 0])
+        bad = upload_words(seed, line // 4, 16)
+        bad[5] ^= 1
+        plan.upload(line, bad.view(np.uint8))
+        run("one word", 0, n, seed, [(EV_PONG, 1), line // 4 + 5])
+        plan.upload(line, upload_words(seed, line // 4, 16).view(np.uint8))
+        run("restored", 0, n, seed, [(EV_PONG, 0), none])
+        run("past the end", n - 64, 128, seed, [(EV_REFUSED, REFUSE_REGION), 0])
+        run("half line", 32, 64, seed, [(EV_REFUSED, REFUSE_REGION), 0])
+        out["checks"] = checks
+        out["upload_s"] = uploads
+        out["upload_mb_s"] = round(n / min(uploads) / 1e6, 1)
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=args.depth)
+    out["finish"] = fin
+    n_cores = cnt.shape[0]
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and out["ready_ok"]
+        and all(c["ok"] for c in out["checks"])
+        and fin["block"]["refused"] == 2
+    )
+    return out
+
+
 CASES = {
     "limit": case_limit,
     "ping": case_ping,
@@ -1080,6 +1173,7 @@ CASES = {
     "runtime-stop": case_runtime_stop,
     "excl": case_excl,
     "verify": case_verify,
+    "upload": case_upload,
     "store": case_store,
     "memcost": case_memcost,
 }

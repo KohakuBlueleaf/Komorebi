@@ -156,7 +156,9 @@ namespace {
         x280::X280Runtime* rt = nullptr;
         x280::X280Tile* tile = nullptr;
         uint32_t gx = 0, gy = 0, l2x = 0, l2y = 0;
-        uint64_t base = 0;  // LIM address of the layout (the argument block)
+        uint64_t base = 0;     // LIM address of the layout (the argument block)
+        uint64_t lim_end = 0;  // end of the runtime's available LIM
+        uint32_t upload_bytes = 0;
         std::vector<std::array<uint32_t, 2>> panels;  // logical column ranges
         uint64_t run = 0;
         uint32_t tag = 1, depth = 1, host_depth = 16, event_depth = 128;
@@ -198,6 +200,7 @@ namespace {
             p.l2x = static_cast<uint32_t>(l2.x());
             p.l2y = static_cast<uint32_t>(l2.y());
             p.base = p.tile->available_lim().begin;
+            p.lim_end = p.tile->available_lim().end;
             p.hz = tsc_hz();
             if (p.base % 64 != 0) {
                 throw std::runtime_error(
@@ -294,7 +297,8 @@ namespace {
             double t_start_s,
             double t_record_s,
             double t_idle_s,
-            uint64_t state_ddr
+            uint64_t state_ddr,
+            int64_t upload_bytes_
         ) {
             if (session) {
                 throw std::runtime_error("a kernel is running");
@@ -306,8 +310,21 @@ namespace {
                     "depth, host_depth or event_depth out of range"
                 );
             }
+            const uint64_t room =
+                (lim_end > base + KMD_LIM_UPLOAD
+                     ? (lim_end - base - KMD_LIM_UPLOAD) & ~63ull
+                     : 0);
+            if (upload_bytes_ > static_cast<int64_t>(room) ||
+                (upload_bytes_ >= 0 && upload_bytes_ % 64 != 0)) {
+                throw std::runtime_error(
+                    "upload_bytes: a multiple of 64, at most the room"
+                );
+            }
             depth = depth_;
             host_depth = host_depth_;
+            upload_bytes = (
+                static_cast<uint32_t>(upload_bytes_ < 0 ? room : upload_bytes_)
+            );
             event_depth = event_depth_;
             std::random_device rd;
             run = (0x6b6d640000000000ull ^ (static_cast<uint64_t>(rd()) << 16)) + rd();
@@ -344,6 +361,7 @@ namespace {
             a.t_record = static_cast<uint64_t>(t_record_s * kMtimeHz);
             a.t_idle = static_cast<uint64_t>(t_idle_s * kMtimeHz);
             a.state_ddr = state_ddr;
+            a.upload_bytes = upload_bytes;
             std::vector<uint8_t> block(256, 0);  // whole 64-byte lines
             std::memcpy(block.data(), &a, sizeof(a));
             tile->write_available_lim(base + KMD_LIM_ARGS, block);
@@ -366,17 +384,33 @@ namespace {
             session = enq.session;
         }
 
+        // Stores `n` bytes (whole 64-byte lines) at `offset` of the upload region
+        // through the host window, then a fence.
+        void upload(uint64_t offset, const uint8_t* data, size_t n) {
+            if (offset % 64 != 0 || n % 64 != 0 || offset > upload_bytes ||
+                n > upload_bytes - offset) {
+                throw std::runtime_error("upload: whole lines inside the region");
+            }
+            if (KMD_LIM_UPLOAD + offset + n > win->get_size()) {
+                throw std::runtime_error("upload: beyond the host window");
+            }
+            win->write_block(KMD_LIM_UPLOAD + offset, data, n);
+            _mm_sfence();
+            fenced = __rdtsc();
+        }
+
         uint32_t host_word(uint32_t w) const {
             return host[w];
         }
 
-        // Waits until the kernel reports READY or a final state; returns that state, or
-        // 0 after the timeout.
+        // Waits until the kernel reports a final state, or READY and its ready block;
+        // returns that state, or 0 after the timeout.
         uint32_t wait_ready(double timeout_s) const {
             const auto by = after(timeout_s);
             for (;;) {
                 const uint32_t s = host[KMD_HOST_STATE];
-                if (s >= KMD_STATE_READY) {
+                if (s > KMD_STATE_READY ||
+                    (s == KMD_STATE_READY && host[KMD_HOST_READY] == KMD_READY_MARK)) {
                     return s;
                 }
                 if (Clock::now() > by) {
@@ -846,7 +880,22 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("t_start_s") = 30.0,
             nb::arg("t_record_s") = 1.0,
             nb::arg("t_idle_s") = 0.0,
-            nb::arg("state_ddr") = 0
+            nb::arg("state_ddr") = 0,
+            nb::arg("upload_bytes") = -1
+        )
+        .def_ro("upload_bytes", &Plan::upload_bytes)
+        .def_ro("lim_base", &Plan::base)
+        .def(
+            "upload",
+            [](Plan& p,
+               uint64_t offset,
+               nb::ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>
+                   data) {
+                nb::gil_scoped_release release;
+                p.upload(offset, data.data(), data.shape(0));
+            },
+            nb::arg("offset"),
+            nb::arg("data")
         )
         .def("start", &Plan::start, nb::arg("image"))
         .def("host_word", &Plan::host_word, nb::arg("word"))
