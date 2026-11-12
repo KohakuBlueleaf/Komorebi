@@ -47,7 +47,8 @@ static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
 static uint32_t boot(kmd_t* k) {
     const volatile kmd_args_t* a = k->args;
     if (events_open(k) != KMD_ERR_NONE) {
-        return KMD_ERR_WINDOW;
+        result_error(k, KMD_ERR_WINDOW, 0, 0, 0, 0);
+        return k->error;
     }
     events_word(k, KMD_HOST_STATE, KMD_STATE_BOOT);
     const uint64_t by = k->t_boot + a->t_start;
