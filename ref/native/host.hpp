@@ -124,6 +124,36 @@ namespace kr {
             .count();
     }
 
+    // Collects the per-repetition JSON records (kept only for runs of at most 100
+    // repetitions) and marks the start and end of the timed loop on stderr.
+    struct RepLog {
+        std::string body;
+        int reps = 0;
+        bool keep;
+        double start;
+
+        explicit RepLog(int total) : keep(total <= 100) {
+            std::fprintf(stderr, "LOOP_START\n");
+            std::fflush(stderr);
+            start = now_ms();
+        }
+
+        void add(const char* record) {
+            if (keep) {
+                body += (reps ? ", " : "");
+                body += record;
+            }
+            reps++;
+        }
+
+        double finish() {
+            double ms = now_ms() - start;
+            std::fprintf(stderr, "LOOP_END\n");
+            std::fflush(stderr);
+            return ms;
+        }
+    };
+
     // A pool of threads that run one function at a time; thread 0 is the caller.
     class Pool {
     public:

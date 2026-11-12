@@ -182,28 +182,38 @@ int main(int argc, char** argv) {
     b.owner.resize((size_t)WIDTH * HEIGHT);
 
     run(mesh, pool, b);  // warm-up: page faults, thread start
-    std::printf(
-        "{\"impl\": \"cpu\", \"threads\": %d, \"triangles\": %d, \"reps\": [",
-        n_threads,
-        mesh.n_tris
-    );
+    RepLog log(reps);
     for (int rep = 0; rep < reps; rep++) {
         Times t = run(mesh, pool, b);
-        std::printf(
-            "%s{\"setup_ms\": %.4f, \"bin_ms\": %.4f, \"fill_ms\": %.4f, \"total_ms\": "
+        char record[256];
+        std::snprintf(
+            record,
+            sizeof record,
+            "{\"setup_ms\": %.4f, \"bin_ms\": %.4f, \"fill_ms\": %.4f, \"total_ms\": "
             "%.4f}",
-            rep ? ", " : "",
             t.setup,
             t.bin,
             t.fill,
             t.setup + t.bin + t.fill
         );
+        log.add(record);
     }
+    double loop_ms = log.finish();
     int valid = 0;
     for (const Record& r : b.records) {
         valid += r.tri >= 0;
     }
-    std::printf("], \"valid\": %d, \"entries\": %d}\n", valid, b.offsets[n_tiles]);
+    std::printf(
+        "{\"impl\": \"cpu\", \"threads\": %d, \"triangles\": %d, \"reps_n\": %d, "
+        "\"loop_ms\": %.4f, \"valid\": %d, \"entries\": %d, \"reps\": [%s]}\n",
+        n_threads,
+        mesh.n_tris,
+        reps,
+        loop_ms,
+        valid,
+        b.offsets[n_tiles],
+        log.body.c_str()
+    );
     if (!out.empty()) {
         save_f32(out + "/colour.npy", b.colour.data(), {HEIGHT, WIDTH, 3});
         save_f32(out + "/depth.npy", b.depth.data(), {HEIGHT, WIDTH});

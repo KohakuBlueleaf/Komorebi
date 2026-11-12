@@ -1,18 +1,22 @@
 """Pictures of the rasterization: colour, depth, binning load, where outputs differ.
 
     python -m projects.raster.reference.pictures --out DIR [--scenes ...] [--small DIR]
+        [--external DIR ...]
 
---small writes the 256 x 256 colour images of the tiny and 10^4 scenes for the README.
+Every implementation found (also in --external folders, see ref/results.py) gets its
+colour image and a map of where it differs from numpy. --small writes the 256 x 256
+colour images of the tiny and 10^4 scenes for the README.
 """
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import numpy as np
 
-from projects.raster.reference import harness
-from ref import png, raster
+from projects.raster.reference import agree, harness
+from ref import native, png, raster, scenes
 
 SMALL_SCENES = ("tiny", "s10k")
 
@@ -52,26 +56,38 @@ def diff_picture(colour, mask):
     return base
 
 
-def pictures(scene, out):
+def slug(name):
+    """A file-name form of an implementation name."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower().replace("+", "p")).strip("_")
+
+
+def pictures(scene, out, external):
     """Writes the pictures of one scene into out; returns the numbers on them."""
-    harness.run_cpu(scene, harness.threads_all(), reps=1)
-    cpu = harness.load_outputs(harness.out_dir(scene, f"cpu{harness.threads_all()}"))
-    meta = harness.scenes.load_scene(harness.native.data_dir() / f"{scene}.npz")["meta"]
-    info = {"triangles": int(meta[0])}
-    png.write_png(out / f"{scene}_colour.png", png.to_srgb8(cpu["colour"]))
-    rgb, info["depth"] = depth_picture(cpu["depth"])
+    agree.prepare(scene, None)
+    found = harness.collect(scene, external)
+    ref_name = harness.REFERENCE if harness.REFERENCE in found else next(iter(found))
+    ref = found[ref_name][0]
+    meta = scenes.load_scene(native.data_dir() / f"{scene}.npz")["meta"]
+    info = {"triangles": int(meta[0]), "reference": ref_name, "implementations": {}}
+    rgb, info["depth"] = depth_picture(ref["depth"])
     png.write_png(out / f"{scene}_depth.png", rgb)
-    rgb, info["tiles"] = tiles_picture(cpu["tile_counts"])
+    rgb, info["tiles"] = tiles_picture(ref["tile_counts"])
     png.write_png(out / f"{scene}_tiles.png", rgb)
-    others = {"numpy": harness.run_numpy(scene)}
-    if harness.run_gpu(scene, reps=1) is not None:
-        others["gpu"] = harness.load_outputs(harness.out_dir(scene, "gpu"))
-    mask = np.zeros(cpu["tri"].shape, dtype=bool)
-    for other in others.values():
-        mask |= harness.compare(cpu, other)["mask"]
-    png.write_png(out / f"{scene}_diff.png", diff_picture(cpu["colour"], mask))
-    info["differing_pixels"] = {"compared": sorted(others), "count": int(mask.sum())}
-    return info, cpu
+    for name, (arrays, run) in found.items():
+        key = slug(name)
+        png.write_png(out / f"{scene}_{key}_colour.png", png.to_srgb8(arrays["colour"]))
+        stats = harness.compare(ref, arrays)
+        png.write_png(
+            out / f"{scene}_{key}_diff.png", diff_picture(ref["colour"], stats["mask"])
+        )
+        info["implementations"][key] = {
+            "name": name,
+            "differing_pixels": stats["any_differs"],
+            "seconds_per_frame": run.get("seconds_per_frame"),
+            "timings_ms": run.get("timings_ms"),
+            "power": run.get("power"),
+        }
+    return info, ref
 
 
 def main():
@@ -79,11 +95,12 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--scenes", nargs="*", default=harness.SCENES)
     parser.add_argument("--small", type=Path, default=None)
+    parser.add_argument("--external", nargs="*", default=[])
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     index = {}
     for scene in args.scenes:
-        index[scene], cpu = pictures(scene, args.out)
+        index[scene], cpu = pictures(scene, args.out, args.external)
         if args.small and scene in SMALL_SCENES:
             args.small.mkdir(parents=True, exist_ok=True)
             small = png.downscale(png.to_srgb8(cpu["colour"]), 4)

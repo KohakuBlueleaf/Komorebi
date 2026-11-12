@@ -255,29 +255,38 @@ int main(int argc, char** argv) {
     cudaDeviceProp prop;
     CHECK(cudaGetDeviceProperties(&prop, 0));
     run(mesh, d, true);  // warm-up: sizes the tile lists, loads the code
-    std::printf(
-        "{\"impl\": \"gpu\", \"device\": \"%s\", \"triangles\": %d, \"reps\": [",
-        prop.name,
-        mesh.n_tris
-    );
+    RepLog log(reps);
     for (int rep = 0; rep < reps; rep++) {
         Times t = run(mesh, d, false);
-        std::printf(
-            "%s{\"setup_ms\": %.4f, \"bin_ms\": %.4f, \"fill_ms\": %.4f, \"total_ms\": "
+        char record[256];
+        std::snprintf(
+            record,
+            sizeof record,
+            "{\"setup_ms\": %.4f, \"bin_ms\": %.4f, \"fill_ms\": %.4f, \"total_ms\": "
             "%.4f}",
-            rep ? ", " : "",
             t.setup,
             t.bin,
             t.fill,
             t.setup + t.bin + t.fill
         );
+        log.add(record);
     }
+    double loop_ms = log.finish();
     std::vector<int32_t> counts(N_TILES), offsets(N_TILES + 1);
     CHECK(cudaMemcpy(counts.data(), d.counts, N_TILES * 4, cudaMemcpyDeviceToHost));
     CHECK(
         cudaMemcpy(offsets.data(), d.offsets, (N_TILES + 1) * 4, cudaMemcpyDeviceToHost)
     );
-    std::printf("], \"entries\": %d}\n", offsets[N_TILES]);
+    std::printf(
+        "{\"impl\": \"gpu\", \"device\": \"%s\", \"triangles\": %d, \"reps_n\": %d, "
+        "\"loop_ms\": %.4f, \"entries\": %d, \"reps\": [%s]}\n",
+        prop.name,
+        mesh.n_tris,
+        reps,
+        loop_ms,
+        offsets[N_TILES],
+        log.body.c_str()
+    );
     if (!out.empty()) {
         std::vector<float> colour((size_t)WIDTH * HEIGHT * 3),
             depth((size_t)WIDTH * HEIGHT);
