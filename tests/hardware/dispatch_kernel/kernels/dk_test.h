@@ -10,6 +10,7 @@
 #define DK_SEG_STALL 3u /* core a1 waits for the stop word; the others run a NOP */
 #define DK_SEG_RESULT \
     4u /* result dk_result(a0, a1); with KM_F_RESULT the leader sends it */
+#define DK_SEG_SUM 5u /* result a0 + count (the graph references' result word) */
 
 /* Argument word w (2..9) of a record with key a0 and parameter a1. */
 static inline uint32_t dk_arg(uint32_t key, uint32_t param, uint32_t w) {

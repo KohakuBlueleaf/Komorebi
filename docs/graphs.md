@@ -296,4 +296,6 @@ the graph events the kernel would have posted. A graph that does not end within
 status, error, final registers, rounds, the set of records issued and the events). They
 are for another implementation, such as the dispatch kernel's, to replay; the set and
 the registers are binding, the order is not. `graph_reference.py` in that folder
-rewrites them and with `--check` compares both executors with them.
+rewrites them and with `--check` compares both executors with them. On a card,
+`tests/hardware/dispatch_kernel/graph_card.py graphs` replays every one that ends by
+itself in the dispatch kernel against the simulator on the card's grid.

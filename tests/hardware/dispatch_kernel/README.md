@@ -13,6 +13,7 @@ the counters back only after the X280 runtime is closed.
 | Stand-in worker, one data-movement kernel per core | `kernels/worker.cpp` |
 | Its test segments, argument function and counter indices | `kernels/dk_test.h` |
 | Driver, one case or the regression set per run | `dispatch_card.py` |
+| The graph executor's cases on the same harness (`SCRIPT=graph_card.py` for `run.sh`) | `graph_card.py` |
 | Builds the kernel image, the test image (`KMD_VERIFY_LINES` and `KMD_TRACE`), the measuring image of `experiments/dispatch_kernel` and the host module | `build.py` |
 | One run under a hang watcher | `run.sh` |
 
@@ -57,6 +58,15 @@ one for the set, whose `ok` is true when every case's is. It takes about 13 seco
 | `replay` (set) | The test image: every reference stream that issues records and does not rest on the simulator's passes (a deadline or cancel in passes, a record never acknowledged), its segments set to `DK_SEG_RESULT`, each simulated on this grid under several completion models | where all models agree, the stream's events and its teams in issue order equal the simulator's; otherwise its record counts and its last event do; every queued record got the lowest team free at its issue; every core ran exactly the traced teams; a PING answers after each |
 | `stream-deadline` (set) | A stream whose second record has a member waiting for the stop word, header deadline `--deadline-us` | one `KM_EV_STREAM_ERROR` with reason 8 at that `ISSUE`; the kernel ends with the deadline error; every core gave up on the stop word |
 | `compile-error` | The worker is built with `DK_COMPILE_ERROR`, so it fails to compile | the exception is that build failure, and the X280 image was never started (or, with `--image-first`, was stopped) |
+
+`python graph_card.py <case>` runs the graph executor's cases; `set` runs both in one
+device open (about 5 seconds). The worker's `DK_SEG_SUM` answers `a0 + count`, the
+result word the reference graphs assume.
+
+| case | what it does | `ok` when |
+|---|---|---|
+| `graphs` | The test image: two graphs of a long DELAY running, then a third `RUN`, `a2 = 3`, a kept `RUN` of an unknown req, both cancelled; a graph over a running stream's range, an unaligned one; seven kept graphs, `kept_graph`, its drop, an eighth, `kept_table_full`, every drop; every saved reference of `experiments/graph_checks/graphs` that ends by itself, its templates on `DK_SEG_SUM`; the documented loop kept and run again by its req with another binding | every refusal, error and drop is the expected one; every graph's events (rounds, end with registers 0 and 1, error with reason and node) equal the simulator's on this grid; the engine's records in the trace are each graph's simulated teams (a queued record's count); every core ran exactly those; a PING answers after each part |
+| `graph-deadline` | A graph whose second record has member `--core` waiting for the stop word, header deadline `--deadline-us` | one `KM_EV_GRAPH_ERROR` with reason 8 at that node; the kernel ends with the deadline error; every core gave up on the stop word |
 
 The harness always launches the grid before it starts the image, so a compile error is
 raised before any image exists. `--image-first` reverses the order, to test that the

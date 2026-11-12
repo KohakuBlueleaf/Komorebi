@@ -324,6 +324,9 @@ namespace {
                 case DK_SEG_RESULT:
                     result = dk_result(args[0], args[1]);
                     return true;
+                case DK_SEG_SUM:
+                    result = args[0] + (r->team >> 16);
+                    return true;
                 case DK_SEG_STALL:
                     if (args[1] == a.me) {
                         stall();
