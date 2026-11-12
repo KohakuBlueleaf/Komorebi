@@ -68,6 +68,7 @@ typedef struct {
 #define KM_EV_DONE 0u
 #define KM_EV_TIMEOUT 1u /* aux = slot; the cores are named by their state words */
 #define KM_EV_PONG 2u
+#define KM_EV_REFUSED 3u /* consumed, not run; aux = reason (KMD_REFUSE_*) */
 
 typedef struct {
     uint32_t index;  /* event number, starts at 1: the ring slot is index % depth */

@@ -42,7 +42,7 @@ typedef struct {
     uint64_t slot_t0[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* counters */
-    uint32_t records, max_busy;
+    uint32_t records, max_busy, refused;
     uint64_t passes, idle_passes, full_passes;
     uint64_t t_first, t_last_event;
     /* the command being taken, as 8 little-endian 64-bit words, on the stack and

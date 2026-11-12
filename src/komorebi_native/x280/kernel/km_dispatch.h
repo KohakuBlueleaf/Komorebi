@@ -55,8 +55,13 @@
 #define KMD_ERR_START 5u     /* the hello or a READY did not arrive in time */
 #define KMD_ERR_IDLE 6u      /* no command and nothing in flight for t_idle */
 #define KMD_ERR_STOPPED 7u   /* the runtime asked the kernel to stop */
-#define KMD_ERR_COMMAND 8u   /* a command the kernel refuses: see the result block */
 #define KMD_ERR_STOP_BUSY 9u /* a STOP command arrived with records in flight */
+
+/* Reasons of a KM_EV_REFUSED event (its aux): the command was consumed, not run. */
+#define KMD_REFUSE_SEG 1u    /* segment 240 to 251 */
+#define KMD_REFUSE_FLAGS 2u  /* reserved flag bit 0 set */
+#define KMD_REFUSE_TEAM 3u   /* count 0, or the team does not lie inside the cores */
+#define KMD_REFUSE_EXITED 4u /* a record after EXIT */
 
 /* Where codes: the loop the kernel was in. */
 #define KMD_WHERE_ARGS 1u
@@ -72,8 +77,8 @@ enum {
     KMD_R_WHERE = 2,     /* KMD_WHERE_* */
     KMD_R_SLOT = 3,      /* the slot of a missed deadline */
     KMD_R_SEQ = 4,       /* its sequence number */
-    KMD_R_REQ = 5,       /* its host command number, or the refused command's */
-    KMD_R_SEEN = 6,      /* the column that had not reported READY, or a refused word */
+    KMD_R_REQ = 5,       /* its host command number */
+    KMD_R_SEEN = 6,      /* the column that had not reported READY, or a bad word */
     KMD_R_COMMANDS = 7,  /* commands taken from the host ring */
     KMD_R_RECORDS = 8,   /* records issued to the grid */
     KMD_R_EVENTS = 9,    /* events pushed to the host */
@@ -91,6 +96,7 @@ enum {
     KMD_R_BOOT_TICKS = 21, /* ticks from the start to READY */
     KMD_R_LAST_LO = 22,    /* ticks from the first command taken to the last event */
     KMD_R_LAST_HI = 23,
+    KMD_R_REFUSED = 24, /* commands answered with KM_EV_REFUSED */
     KMD_R_WORDS = 32
 };
 

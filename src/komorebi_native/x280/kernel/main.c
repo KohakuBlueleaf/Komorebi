@@ -96,8 +96,8 @@ static uint32_t boot(kmd_t* k) {
     return KMD_ERR_NONE;
 }
 
-/* Takes command k->next from k->line. Kernel commands act here; a record gets the
- * lowest free slot and the next sequence and goes to the grid. Returns 1 to finish. */
+/* Takes command k->next from k->line: kernel commands act here, a bad record is refused
+ * with an event, a record gets a free slot and the next sequence. 1 = finish. */
 static int take(kmd_t* k, uint64_t now) {
     uint64_t* l = k->line;
     const uint32_t req = k->next, hdr = (uint32_t)(l[0] >> 32);
@@ -122,10 +122,22 @@ static int take(kmd_t* k, uint64_t now) {
         }
         return 1;
     }
-    if ((seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) || (flags & 1u) || k->exited ||
-        count == 0 || first + count > k->cores) {
-        result_error(k, KMD_ERR_COMMAND, 0, k->seq + 1u, req, hdr);
-        return 1;
+    uint32_t refuse = 0;
+    if (seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) {
+        refuse = KMD_REFUSE_SEG;
+    } else if (flags & 1u) {
+        refuse = KMD_REFUSE_FLAGS;
+    } else if (k->exited) {
+        refuse = KMD_REFUSE_EXITED;
+    } else if (count == 0 || first + count > k->cores) {
+        refuse = KMD_REFUSE_TEAM;
+    }
+    if (refuse != 0) {
+        hring_consumed(k);
+        events_push(k, req, KM_EV_REFUSED | (refuse << 8), 0);
+        k->t_last_event = now;
+        k->refused++;
+        return 0;
     }
     const uint32_t slot = slot_free(k), seq = ++k->seq;
     l[0] = seq | ((uint64_t)((hdr & 0xFFFFu) | (slot << 16)) << 32);

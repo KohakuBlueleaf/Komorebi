@@ -54,7 +54,8 @@ AICLK_HZ = 1.35e9  # Tensix clock of this card, for the wait limit only
 # km_abi.h and km_dispatch.h
 SEG_NOP, SEG_EXIT = 0, 255
 SEG_PING, SEG_STOP, SEG_DEADLINE = 254, 253, 252
-EV_DONE, EV_TIMEOUT, EV_PONG = 0, 1, 2
+EV_DONE, EV_TIMEOUT, EV_PONG, EV_REFUSED = 0, 1, 2, 3
+REFUSE_SEG, REFUSE_FLAGS, REFUSE_TEAM, REFUSE_EXITED = 1, 2, 3, 4
 STATE_READY, STATE_DONE, STATE_FAILED = 2, 3, 4
 R_NAMES = {
     0: "state",
@@ -71,6 +72,7 @@ R_NAMES = {
     11: "max_busy",
     12: "ctl",
     21: "boot_ticks",
+    24: "refused",
 }
 R_WIDE = {"ticks": 13, "idle_passes": 15, "full_passes": 17, "passes": 19, "last": 22}
 
@@ -216,7 +218,7 @@ def result_block(words):
     out = {name: words[i] for i, name in R_NAMES.items()}
     for name, lo in R_WIDE.items():
         out[name] = words[lo] | (words[lo + 1] << 32)
-    out["spare"] = list(words[24:32])
+    out["spare"] = list(words[25:32])
     return out
 
 
