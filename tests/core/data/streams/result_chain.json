@@ -1,11 +1,8 @@
 {
  "name": "result_chain",
  "description": "RESULT feeds the next team size",
- "notes": "Records and events are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay (delay null: never). A KM_F_RESULT record's result is (a0 + count) mod 2^32. Events are [kind, req, aux, pass].",
- "params": {
-  "n_cores": 119,
-  "delay": 1
- },
+ "notes": "Records, events, status, error, halt and stopped_grid are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay (null: never); delay is an integer, {base, mod} (base + seq % mod) or {by_seq: {seq: delay}, rest: delay}, where seq is the stream's own count of issued records from 1 (the `seq` of each record). A KM_F_RESULT record's result is (a0 + count) mod 2^32. Records list a0 to a9 with trailing zeros left out. Events are [kind, req, aux, pass]. Pass order and the other rules: docs/streams.md.",
+ "params": {"n_cores": 119, "delay": 1, "deadline_passes": null, "default_deadline_passes": 1000000, "cancel_pass": null, "max_passes": 100000, "ticks_per_pass": 1000, "region_size": 1048576},
  "expect": {
   "check": null,
   "status": "ended",
@@ -14,86 +11,15 @@
   "stopped_grid": false,
   "passes": 7,
   "records": [
-   [
-    1,
-    0,
-    3,
-    4,
-    [
-     3,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0
-    ]
-   ],
-   [
-    1,
-    0,
-    6,
-    4,
-    [
-     6,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0
-    ]
-   ],
-   [
-    1,
-    0,
-    12,
-    4,
-    [
-     12,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0,
-     0
-    ]
-   ]
+   {"seq": 1, "slot": 0, "pass": 0, "pc": 2, "queued": false, "seg": 1, "first": 0, "count": 3, "flags": 4, "args": [3]},
+   {"seq": 2, "slot": 0, "pass": 2, "pc": 2, "queued": false, "seg": 1, "first": 0, "count": 6, "flags": 4, "args": [6]},
+   {"seq": 3, "slot": 0, "pass": 4, "pc": 2, "queued": false, "seg": 1, "first": 0, "count": 12, "flags": 4, "args": [12]}
   ],
   "events": [
-   [
-    4,
-    1,
-    6,
-    2
-   ],
-   [
-    4,
-    1,
-    12,
-    4
-   ],
-   [
-    4,
-    1,
-    24,
-    6
-   ],
-   [
-    5,
-    1,
-    24,
-    6
-   ]
+   [4, 1, 6, 2],
+   [4, 1, 12, 4],
+   [4, 1, 24, 6],
+   [5, 1, 24, 6]
   ]
  }
 }

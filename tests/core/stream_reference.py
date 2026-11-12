@@ -13,15 +13,29 @@ from komorebi.engines import stream as st
 from komorebi.engines.stream import Stream
 
 DATA = Path(__file__).resolve().parent / "data" / "streams"
-REGION = 1 << 20
 SEG_A, SEG_B = 1, 7
 
 NOTES = (
-    "Records and events are the binding answer; `passes` is the simulator's own count"
-    " and is advisory. Completion: a record issued in pass p is acknowledged by the"
-    " sweep of pass p + 1 + delay (delay null: never). A KM_F_RESULT record's result"
-    " is (a0 + count) mod 2^32. Events are [kind, req, aux, pass]."
+    "Records, events, status, error, halt and stopped_grid are the binding answer;"
+    " `passes` is the simulator's own count and is advisory. Completion: a record"
+    " issued in pass p is acknowledged by the sweep of pass p + 1 + delay (null:"
+    " never); delay is an integer, {base, mod} (base + seq % mod) or {by_seq: {seq:"
+    " delay}, rest: delay}, where seq is the stream's own count of issued records from"
+    " 1 (the `seq` of each record). A KM_F_RESULT record's result is (a0 + count) mod"
+    " 2^32. Records list a0 to a9 with trailing zeros left out. Events are"
+    " [kind, req, aux, pass]. Pass order and the other rules: docs/streams.md."
 )
+
+DEFAULTS = {
+    "n_cores": 119,
+    "delay": 0,
+    "deadline_passes": None,
+    "default_deadline_passes": 1_000_000,
+    "cancel_pass": None,
+    "max_passes": 100_000,
+    "ticks_per_pass": 1000,
+    "region_size": 1 << 20,
+}
 
 
 def result_of(record):
@@ -29,36 +43,64 @@ def result_of(record):
 
 
 def completion(spec):
-    """The delay function or number of a `completion` entry of a reference."""
-    if isinstance(spec, dict):
-        return lambda r: spec["base"] + r.seq % spec["mod"]
-    return spec
+    """The delay function or number of a `delay` parameter of a reference."""
+    if not isinstance(spec, dict):
+        return spec
+    if "by_seq" in spec:
+        table = {int(k): v for k, v in spec["by_seq"].items()}
+        return lambda r: table.get(r.seq, spec["rest"])
+    return lambda r: spec["base"] + r.seq % spec["mod"]
 
 
-def run(upload, params):
-    """Simulate an upload with the saved parameters."""
-    return st.simulate(
+def run(upload, params, module=st):
+    """Simulate an upload with the saved parameters (`module` holds the simulator)."""
+    p = {**DEFAULTS, **params}
+    return module.simulate(
         upload,
-        n_cores=params.get("n_cores", 119),
-        delay=completion(params.get("delay", 0)),
+        n_cores=p["n_cores"],
+        delay=completion(p["delay"]),
         result=result_of,
-        deadline_passes=params.get("deadline_passes"),
-        cancel_pass=params.get("cancel_pass"),
-        region_size=REGION,
+        deadline_passes=p["deadline_passes"],
+        default_deadline_passes=p["default_deadline_passes"],
+        cancel_pass=p["cancel_pass"],
+        max_passes=p["max_passes"],
+        ticks_per_pass=p["ticks_per_pass"],
+        region_size=p["region_size"],
     )
 
 
-def expected(upload, params):
-    r = run(upload, params)
+def trimmed(args):
+    args = list(args)
+    while args and args[-1] == 0:
+        args.pop()
+    return args
+
+
+def expected(upload, params, module=st):
+    p = {**DEFAULTS, **params}
+    r = run(upload, params, module)
+    bad = module.check(upload, p["region_size"])
     return {
-        "check": list(st.check(upload, REGION) or []) or None,
+        "check": list(bad) if bad else None,
         "status": r.status,
         "error": list(r.error) if r.error else None,
         "halt": r.halt,
         "stopped_grid": r.stopped,
         "passes": r.passes,
         "records": [
-            [x.seg, x.first, x.count, x.flags, list(x.args)] for x in r.records
+            {
+                "seq": x.seq,
+                "slot": x.slot,
+                "pass": x.pass_index,
+                "pc": x.pc,
+                "queued": x.queued,
+                "seg": x.seg,
+                "first": x.first,
+                "count": x.count,
+                "flags": x.flags,
+                "args": trimmed(x.args),
+            }
+            for x in r.records
         ],
         "events": [list(e) for e in r.events],
     }
@@ -495,9 +537,25 @@ def build(name):
 
 def document(name):
     upload, params, text = build(name)
-    doc = {"name": name, "description": text, "notes": NOTES, "params": params}
-    doc["params"] = {"n_cores": 119, "delay": 0, **params}
-    return upload, {**doc, "expect": expected(upload, doc["params"])}
+    full = {**DEFAULTS, **params}
+    doc = {"name": name, "description": text, "notes": NOTES, "params": full}
+    return upload, {**doc, "expect": expected(upload, full)}
+
+
+def dump(doc):
+    """JSON text of a reference, with one record or event per line."""
+    expect = doc["expect"]
+    top = [
+        f" {json.dumps(k)}: {json.dumps(v)}" for k, v in doc.items() if k != "expect"
+    ]
+    rest = [f"  {json.dumps(k)}: {json.dumps(v)}" for k, v in expect.items()]
+    rest = [r for r in rest if not r.startswith(('  "records"', '  "events"'))]
+    for key in ("records", "events"):
+        rows = ",\n".join(f"   {json.dumps(row)}" for row in expect[key])
+        rest.append(f'  "{key}": [\n{rows}\n  ]' if rows else f'  "{key}": []')
+    return (
+        "{\n" + ",\n".join(top) + ',\n "expect": {\n' + ",\n".join(rest) + "\n }\n}\n"
+    )
 
 
 def write():
@@ -505,7 +563,7 @@ def write():
     for name in REFERENCES:
         upload, doc = document(name)
         (DATA / f"{name}.bin").write_bytes(upload)
-        (DATA / f"{name}.json").write_text(json.dumps(doc, indent=1) + "\n")
+        (DATA / f"{name}.json").write_text(dump(doc))
 
 
 if __name__ == "__main__":

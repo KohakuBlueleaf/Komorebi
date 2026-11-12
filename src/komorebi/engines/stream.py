@@ -30,6 +30,7 @@ F_EXCL = 2
 F_RESULT = 4
 F_QUEUE = 8
 MASK = 0xFFFFFFFF
+DEFAULT_DEADLINE_PASSES = 1_000_000
 
 OP_INVALID = 0
 OP_SET, OP_MOV, OP_ADD, OP_ADDI, OP_SUB = 1, 2, 3, 4, 5
@@ -37,6 +38,7 @@ OP_MUL, OP_AND, OP_SHR, OP_MOD, OP_RAND = 6, 7, 8, 9, 10
 OP_JMP, OP_JLT, OP_JEQ, OP_JNZ, OP_HALT = 16, 17, 18, 19, 20
 OP_ISSUE, OP_SUBMIT, OP_WAIT, OP_RESULT, OP_EVENT, OP_TIME = 32, 33, 40, 41, 48, 49
 
+EV_TIMEOUT = 1
 EV_STREAM, EV_STREAM_END, EV_STREAM_ERROR = 4, 5, 6
 
 (
@@ -182,10 +184,22 @@ class Stream:
         self.max_steps = max_steps
         self.seed = seed
         self.req = req
+        self._check_fields()
         self._body = []
         self._templates = []
         self._consts = {}
         self._next_reg = 0
+
+    def _check_fields(self):
+        for name, low in (
+            ("deadline_us", 0),
+            ("max_steps", 1),
+            ("seed", 1),
+            ("req", 0),
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, int) or not low <= value <= MASK:
+                raise ValueError(f"{name} must be an integer from {low} to {MASK}")
 
     def regs(self, n):
         """Allocate n registers (0 to 14; register 15 holds the seed)."""
@@ -271,7 +285,9 @@ class Stream:
         self._add(OP_HALT, _reg(a, "a"))
 
     def wait(self, pending):
-        self._add(OP_WAIT, imm=_u32(pending, "pending"))
+        if not 0 <= pending <= MASK:
+            raise ValueError(f"pending {pending} must be from 0 to {MASK}")
+        self._add(OP_WAIT, imm=pending)
 
     def result(self, a):
         self._add(OP_RESULT, _reg(a, "a"))
@@ -354,7 +370,12 @@ class Stream:
 
     def encode(self):
         """The upload: header, micro-ops, templates, each part padded to a line."""
+        self._check_fields()
         ops = self.uops()
+        if len(ops) > MAX_OPS:
+            raise ValueError(f"{len(ops)} micro-ops, at most {MAX_OPS}")
+        if len(self._templates) > MAX_OPS:
+            raise ValueError(f"{len(self._templates)} templates, at most {MAX_OPS}")
         head = [MAGIC, VERSION, len(ops), len(self._templates), self.max_steps]
         head += [self.deadline_us, self.req, self.seed]
         data = HEADER.pack(*head)
@@ -454,6 +475,27 @@ def check(data, region_size):
     return None
 
 
+def check_run(data, offset, region_size, active=(), active_reqs=()):
+    """What the kernel answers a `KM_SEG_RUN` for `data` at `offset`: (error, req).
+
+    `error` is None to start the stream, else reason 1 for a bad range or a reused `req`
+    or what `check` finds; `req` is the header's, or 0 if it is outside the region.
+    """
+    length = len(data)
+    head_inside = offset <= region_size - HEADER_BYTES
+    req = 0
+    if head_inside and length >= 28:
+        req = _header(data.ljust(HEADER_BYTES, b"\0"))["req"]
+    refused = StreamError(ERR_HEADER, 0)
+    if offset % LINE or offset > region_size or length > region_size - offset:
+        return refused, req
+    if any(offset < o + n and o < offset + length for o, n in active):
+        return refused, req
+    if req in active_reqs:
+        return refused, req
+    return check(data, region_size), req
+
+
 def _bad_template(t):
     if not 1 <= t.seg <= SEG_USER_MAX or t.flags & ~(F_EXCL | F_RESULT):
         return True
@@ -462,6 +504,11 @@ def _bad_template(t):
     if any(t.arg[i] >= ARGS or t.reg[i] >= REGS for i in range(t.n_patch)):
         return True
     return any(r != TPL_NONE and r >= REGS for r in (t.first_reg, t.count_reg))
+
+
+def team_outside(first, count, n_cores):
+    """True if cores [first, first + count) are not in the grid; forms no sum."""
+    return count == 0 or first > n_cores or count > n_cores - first
 
 
 def alloc(busy, count, n_cores):
@@ -496,6 +543,7 @@ def simulate(
     delay=0,
     result=None,
     deadline_passes=None,
+    default_deadline_passes=DEFAULT_DEADLINE_PASSES,
     cancel_pass=None,
     max_passes=100_000,
     ticks_per_pass=1000,
@@ -505,6 +553,12 @@ def simulate(
 
     Pass order, completion model and parameters: docs/streams.md, "The simulator".
     """
+    for name, value in (
+        ("deadline_passes", deadline_passes),
+        ("default_deadline_passes", default_deadline_passes),
+    ):
+        if value is not None and value < 1:
+            raise ValueError(f"{name} must be at least 1, a deadline is never zero")
     bad = check(data, region_size)
     if bad:
         req = struct.unpack_from("<I", data, 24)[0] if len(data) >= 28 else 0
@@ -512,15 +566,24 @@ def simulate(
         return SimResult([], events, "error", 1, bad, None, False)
     h = _header(data)
     ops, templates = _parse(data, h)
+    if deadline_passes is None and h["deadline_us"] == 0:
+        deadline_passes = default_deadline_passes
     sim = _Sim(ops, templates, h, n_cores, delay, result, deadline_passes)
     sim.ticks = ticks_per_pass
     for p in range(max_passes):
         sim.run_pass(p, cancel_pass == p)
         if sim.error is not None or sim.halt is not None:
+            if sim.error is not None and sim.error.reason != ERR_DEADLINE:
+                sim.drain(p + 1, max_passes)
             status = "error" if sim.error else "ended"
-            stopped = sim.error is not None and sim.error.reason == ERR_DEADLINE
             return SimResult(
-                sim.records, sim.events, status, p + 1, sim.error, sim.halt, stopped
+                sim.records,
+                sim.events,
+                status,
+                sim.events[-1].pass_index + 1,
+                sim.error,
+                sim.halt,
+                sim.stopped,
             )
     return SimResult(sim.records, sim.events, "stuck", max_passes, None, None, False)
 
@@ -540,17 +603,30 @@ class _Sim:
         self.error = self.halt = None
         self.ticks = 1000
         self.now = 0
+        self.stopped = False
 
     def run_pass(self, p, cancel):
+        """One pass. Issuers are the streams in activation order, then the queue; in
+        pass p the turns start at issuer p % (streams + 1) and go on cyclically."""
         self.now = p
         self.sweep()
         self.check_deadlines()
         if cancel and self.error is None:
             self.fail(ERR_CANCELLED, self.pc)
-        if self.error is None:
-            self.step_stream()
-        if self.error is None:
-            self.step_queue()
+        turns = [self.step_stream, self.step_queue]
+        start = p % len(turns)
+        for turn in turns[start:] + turns[:start]:
+            if self.error is None:
+                turn()
+
+    def drain(self, start, limit):
+        """After a stream error its records still run; a late one stops the grid."""
+        for p in range(start, limit):
+            self.now = p
+            self.sweep()
+            self.check_deadlines()
+            if self.stopped or not any(self.table):
+                return
 
     def post(self, kind, aux):
         self.events.append(Event(kind, self.h["req"], aux, self.now))
@@ -571,14 +647,19 @@ class _Sim:
                 self.pending -= 1
 
     def check_deadlines(self):
-        """A busy record past its deadline ends the stream and stops the grid."""
-        for busy in self.table:
+        """The lowest-slot late record stops the grid: it ends the stream, or if the
+        stream already ended, posts a timeout event for that slot."""
+        for slot, busy in enumerate(self.table):
             if (
                 busy
                 and busy.deadline_pass is not None
                 and self.now >= busy.deadline_pass
             ):
-                self.fail(ERR_DEADLINE, busy.record.pc)
+                self.stopped = True
+                if self.error is None:
+                    self.fail(ERR_DEADLINE, busy.record.pc)
+                else:
+                    self.post(EV_TIMEOUT, slot)
                 return
 
     def busy_teams(self):
@@ -676,7 +757,7 @@ class _Sim:
         t, regs = self.templates[o.imm], self.regs
         first = t.rec[2] & 0xFFFF if t.first_reg == TPL_NONE else regs[t.first_reg]
         count = t.rec[2] >> 16 if t.count_reg == TPL_NONE else regs[t.count_reg]
-        if count == 0 or first + count > self.n_cores:
+        if team_outside(first, count, self.n_cores):
             return self.fail(ERR_TEAM, self.pc)
         slot = self.free_slot()
         if slot is None:

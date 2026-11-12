@@ -81,6 +81,7 @@ PAIRS = {
     "F_EXCL": "KM_F_EXCL",
     "F_RESULT": "KM_F_RESULT",
     "F_QUEUE": "KM_F_QUEUE",
+    "EV_TIMEOUT": "KM_EV_TIMEOUT",
     "EV_STREAM": "KM_EV_STREAM",
     "EV_STREAM_END": "KM_EV_STREAM_END",
     "EV_STREAM_ERROR": "KM_EV_STREAM_ERROR",
@@ -835,7 +836,7 @@ def test_a_full_queue_makes_submit_wait():
     done = s.simulate(delay=4)
     (progress,) = [e for e in done.events if e.kind == st.EV_STREAM]
     # 64 jobs fit in pass 0; each of the six more waits for one job to leave the queue
-    assert progress.pass_index == 26
+    assert progress.pass_index == 25
     assert [r.args[0] for r in done.records] == list(range(70))
     unlimited = s.simulate(delay=4, n_cores=119)
     assert unlimited.status == "ended"
@@ -1122,6 +1123,148 @@ def test_error_event_status_word_packs_reason_then_pc():
     assert e.kind | e.aux << 8 == 6 | (2 | 2 << 8) << 8
 
 
+# the team rule, RUN, builder validation, orphans
+
+
+@pytest.mark.parametrize(
+    ("first", "count", "outside"),
+    [
+        (0, 1, False),
+        (0, 119, False),
+        (118, 1, False),
+        (118, 2, True),
+        (119, 1, True),
+        (119, 0, True),
+        (0, 0, True),
+        (0, 120, True),
+        (0xFFFFFFFF, 2, True),
+        (0xFFFFFFFE, 3, True),
+        (1, 0xFFFFFFFF, True),
+        (0xFFFFFFFF, 0xFFFFFFFF, True),
+    ],
+)
+def test_a_team_outside_the_grid_is_found_without_a_sum(first, count, outside):
+    assert st.team_outside(first, count, 119) == outside
+
+
+def test_run_answers_what_the_kernel_must_say():
+    data = bytes(tiny(req=9))
+    n = len(data)
+    assert st.check_run(data, 0, 1 << 20) == (None, 9)
+    assert st.check_run(data, 64, 1 << 20) == (None, 9)
+    refused = st.StreamError(st.ERR_HEADER, 0)
+    assert st.check_run(data, 8, 1 << 20) == (refused, 9)  # not a multiple of 64
+    assert st.check_run(data, 0, n - 64) == (refused, 9)  # longer than the region
+    assert st.check_run(data, 64, n + 32) == (refused, 9)  # ends outside
+    assert st.check_run(data, 64, n + 64) == (None, 9)  # ends exactly at the end
+    assert st.check_run(data, 1 << 32, 1 << 20) == (refused, 0)  # no sum is formed
+    assert st.check_run(data, 0xFFFFFFC0, 1 << 20) == (refused, 0)
+    assert st.check_run(data, 1 << 20, 1 << 20) == (refused, 0)  # header outside
+
+
+def test_run_is_refused_over_an_active_stream_or_request():
+    data = bytes(tiny(req=9))
+    n = len(data)
+    refused = st.StreamError(st.ERR_HEADER, 0)
+    big = 1 << 20
+    assert st.check_run(data, 0, big, active=[(0, n)]) == (refused, 9)
+    assert st.check_run(data, n, big, active=[(0, n)]) == (None, 9)  # touching
+    assert st.check_run(data, 64, big, active=[(0, 128)]) == (refused, 9)
+    assert st.check_run(data, 0, big, active=[(n, n)]) == (None, 9)
+    assert st.check_run(data, 0, big, active_reqs=[9]) == (refused, 9)
+    assert st.check_run(data, 0, big, active_reqs=[8]) == (None, 9)
+
+
+def test_run_passes_on_the_checks_of_the_upload():
+    data = bytes(poke(tiny(req=4), op_at(1), "<B", 99))
+    error, req = st.check_run(data, 128, 1 << 20)
+    assert error == (st.ERR_OPCODE, 1) and req == 4
+    assert st.check_run(data[:20], 0, 1 << 20) == (st.StreamError(1, 0), 0)
+
+
+def test_the_builder_names_the_field_it_refuses():
+    for field, value in (
+        ("max_steps", 1 << 32),
+        ("max_steps", 0),
+        ("seed", 0),
+        ("seed", -1),
+        ("req", 1 << 32),
+        ("deadline_us", -1),
+    ):
+        with pytest.raises(ValueError, match=field):
+            Stream(**{field: value})
+    s = Stream()
+    s.max_steps = 1 << 32
+    s.halt(s.const(0))
+    with pytest.raises(ValueError, match="max_steps"):
+        s.encode()
+    with pytest.raises(ValueError, match="pending"):
+        s.wait(-1)
+    with pytest.raises(ValueError, match="pending"):
+        s.wait(1 << 32)
+
+
+def test_the_builder_refuses_too_many_micro_ops():
+    s = Stream()
+    a = s.regs(1)[0]
+    for _ in range(65535):
+        s.mov(a, a)
+    s.halt(a)
+    with pytest.raises(ValueError, match="65536 micro-ops, at most 65535"):
+        s.encode()
+
+
+def test_a_deadline_is_never_zero():
+    data = ref.build("arith_wrap")[0]
+    for options in ({"deadline_passes": 0}, {"default_deadline_passes": 0}):
+        with pytest.raises(ValueError, match="never zero"):
+            simulate(data, **options)
+
+
+def test_the_default_deadline_applies_when_the_header_has_none():
+    s = Stream(deadline_us=0)
+    s.issue(1, team=(0, 1))
+    s.halt(s.const(0))
+    done = s.simulate(delay=None, default_deadline_passes=3)
+    assert done.error == (st.ERR_DEADLINE, pcs(s, st.OP_ISSUE)[0]) and done.passes == 4
+    t = Stream(deadline_us=1)
+    t.issue(1, team=(0, 1))
+    t.halt(t.const(0))
+    assert t.simulate(delay=None, default_deadline_passes=3, max_passes=20).status == (
+        "stuck"
+    )
+
+
+def test_a_late_orphan_posts_a_timeout_for_its_slot_with_the_ended_requests_id():
+    s = Stream(req=33)
+    a = s.regs(1)[0]
+    s.issue(1, team=(0, 1), args=[1])
+    s.issue(1, team=(1, 1), args=[2])
+    s.issue(1, team=(2, 1), args=[3])
+    s.mod(a, a, a)
+    done = s.simulate(delay=lambda r: None if r.args[0] == 2 else 0, deadline_passes=5)
+    assert done.error.reason == st.ERR_MOD_ZERO
+    assert done.events[0].kind == st.EV_STREAM_ERROR
+    assert done.events[1] == st.Event(st.EV_TIMEOUT, 33, 1, 5)
+    assert done.stopped and done.passes == 6
+    quiet = s.simulate(delay=1, deadline_passes=5)
+    assert len(quiet.events) == 1 and not quiet.stopped
+
+
+def test_the_two_issuers_take_turns_on_free_slots():
+    s = Stream()
+    s.set(s.regs(1)[0], 0)
+    for _ in range(16):
+        s.issue(1, team=(0, 1))
+    s.submit(2, 1)
+    s.wait(0)
+    s.halt(s.const(0))
+    done = s.simulate(delay=0)
+    job = next(r for r in done.records if r.queued)
+    assert job.pass_index % 2 == 1  # odd passes give the queue the first call
+    assert all(r.pass_index == job.pass_index or not r.queued for r in done.records)
+
+
 # reference streams
 
 
@@ -1137,28 +1280,15 @@ def test_there_are_at_least_20_reference_streams():
 def test_reference_files_are_what_the_generator_writes(name):
     upload, doc = ref.document(name)
     assert (ref.DATA / f"{name}.bin").read_bytes() == upload
-    assert json.loads((ref.DATA / f"{name}.json").read_text()) == json.loads(
-        json.dumps(doc)
-    )
+    assert (ref.DATA / f"{name}.json").read_text() == ref.dump(doc)
 
 
 @pytest.mark.parametrize("name", NAMES)
 def test_reference_answers_replay_from_the_files_alone(name):
     upload = (ref.DATA / f"{name}.bin").read_bytes()
     doc = json.loads((ref.DATA / f"{name}.json").read_text())
-    want = doc["expect"]
-    done = ref.run(upload, doc["params"])
-    assert [
-        [r.seg, r.first, r.count, r.flags, list(r.args)] for r in done.records
-    ] == want["records"]
-    assert [list(e) for e in done.events] == want["events"]
-    assert (done.status, done.halt, done.passes) == (
-        want["status"],
-        want["halt"],
-        want["passes"],
-    )
-    assert (list(done.error) if done.error else None) == want["error"]
-    assert list(check(upload, ref.REGION) or []) == (want["check"] or [])
+    assert set(doc["params"]) == set(ref.DEFAULTS)
+    assert ref.expected(upload, doc["params"]) == doc["expect"]
 
 
 def test_reference_streams_reach_every_error_reason():
@@ -1174,7 +1304,7 @@ def test_reference_streams_use_every_micro_op():
     seen = set()
     for name in NAMES:
         upload = (ref.DATA / f"{name}.bin").read_bytes()
-        if check(upload, ref.REGION) is None:
+        if check(upload, ref.DEFAULTS["region_size"]) is None:
             seen |= {o.op for o in Stream.decode(upload).uops()}
     assert seen == set(st.OPS)
 
