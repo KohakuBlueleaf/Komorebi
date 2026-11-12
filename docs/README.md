@@ -71,22 +71,24 @@ Mental models: why things are the way they are. Every page carries a status line
 
 ### Pages by part
 
-One page per part of the framework, or the part listed as missing. "Concept" pages
-describe the design; "reference" pages describe what is built.
+One page per part of the framework, or the part listed as missing with the source
+directory whose authors write it. "Concept" pages describe the design; "reference"
+pages describe what is built.
 
-| Part | Page | State |
-|---|---|---|
-| Resident worker on the Tensix cores: records, mailbox slots, teams, completion, trace | [Tensix runtime](concepts/runtime.md) (concept); [device headers](../src/komorebi_native/include/komorebi/device/) | reference page missing |
-| Static breakpoints between cores: `emit`, `wait`, `reduce`, lane broadcast | [Tensix runtime](concepts/runtime.md) (concept) | reference page missing |
-| Dynamic breakpoints: `at`, inbox rings, packets, credits | [Tensix runtime](concepts/runtime.md) (concept) | reference page missing |
-| Dispatch kernel on X280 cluster 0: rings, slots, deadlines, events, upload region | [dispatch kernel](concepts/dispatch.md) (concept); [kernel README](../src/komorebi_native/x280/kernel/README.md) (reference) | written |
-| Deciding on the card: micro-op streams | [micro-op streams](streams.md) | written |
-| Deciding on the card: the job queue | [dispatch kernel](concepts/dispatch.md) (concept) | reference page missing |
-| Graph executor | [graphs](graphs.md); [dispatch kernel](concepts/dispatch.md) (concept) | written (format, executor in C and Python, simulator) |
-| User threads on the X280 work clusters | [dispatch kernel](concepts/dispatch.md) (concept) | reference page missing |
-| Host launcher: `Program`, `Session`, `Run` | [host API](reference/host.md) | written |
-| Python package and C++ headers: install, wheel, builds | [install](install.md), [packaging](../packaging/README.md) | written |
-| The runtime on the CPU (harness for the Tensix runtime) | [development](development.md), [runtime harness](../experiments/runtime_harness/README.md) | written |
+| Part | Page | State | Written with |
+|---|---|---|---|
+| Resident worker on the Tensix cores: records, mailbox slots, teams, completion, trace | [Tensix runtime](concepts/runtime.md) (concept); [reference](reference/runtime.md) | written | `src/komorebi_native/include/komorebi/device/` |
+| Static breakpoints: lane broadcast along a row or a column | [lane broadcast](reference/lanes.md) | written | `src/komorebi_native/include/komorebi/device/km_lane.hpp` |
+| Static breakpoints: `emit`, `arrive`, `take`, reduce by owner and by tree | [ports, emit and reduce](reference/ports.md) | written | `src/komorebi_native/include/komorebi/device/km_port.hpp`, `km_group.hpp` |
+| Dynamic breakpoints: `at`, inbox rings, packets, credits | [Tensix runtime](concepts/runtime.md) (concept) | reference page missing | `src/komorebi_native/include/komorebi/device/` |
+| Dispatch kernel on X280 cluster 0: rings, slots, deadlines, events, upload region | [dispatch kernel](concepts/dispatch.md) (concept); [kernel README](../src/komorebi_native/x280/kernel/README.md) (reference) | written | `src/komorebi_native/x280/kernel/` |
+| Deciding on the card: micro-op streams | [micro-op streams](streams.md) | written | `src/komorebi_native/x280/kernel/`, `src/komorebi/engines/` |
+| Deciding on the card: the job queue | [dispatch kernel](concepts/dispatch.md) (concept); [kernel README](../src/komorebi_native/x280/kernel/README.md) (reference, "Job queue") | written | `src/komorebi_native/x280/kernel/` |
+| Graph executor | [graphs](graphs.md); [dispatch kernel](concepts/dispatch.md) (concept) | written | `src/komorebi_native/x280/engines/`, `src/komorebi/engines/` |
+| User threads on the X280 work clusters | [X280 threads](threads.md); [reference](reference/threads.md) | written | `src/komorebi_native/x280/kmx/`, `src/komorebi/thread.py` |
+| Host launcher: `Program`, `Session`, `Run` | [host API](reference/host.md) | written | `src/komorebi/`, `src/komorebi_native/csrc/host/` |
+| Python package and C++ headers: install, wheel, builds | [install](install.md), [packaging](../packaging/README.md) | written; the generic kernels (`kernels/`) and CMake helpers (`cmake/`) are not written yet | `packaging/` |
+| The runtime on the CPU (harness for the Tensix runtime) | [development](development.md), [runtime harness](../experiments/runtime_harness/README.md) | written | `experiments/runtime_harness/` |
 
 ### Measurements
 
