@@ -14,7 +14,8 @@ that keeps 32 rays in the 32 lanes of the vector unit (SFPU) and a small tree in
    read back by the core;
 5. the speed of a compute RISC-V core on its own, alone and three at once;
 6. one full walk of a 255-node box tree for 32 to 1024 rays, in a ray-first and a
-   node-first form.
+   node-first form;
+7. one 64-byte NoC read issued by a compute RISC-V core from another tile's L1.
 
 Every result value is checked against a CPU reference by the driver.
 
@@ -29,6 +30,7 @@ One program on core (0, 0), launched with `ttnn.generic_op` in slow dispatch:
 | vector-unit probes 0 to 4, run by the pack thread (TRISC2) | `kernels/vec.hpp` |
 | RISC-V loop probe 5, run by the TRISCs selected in a mask | `kernels/rv.hpp` |
 | tree walk probe 6, run by the pack thread | `kernels/walk.hpp` |
+| NoC read probe 7, run by the pack thread | `kernels/nocread.hpp` |
 | writer (RISCV_0): CB 16 to DRAM once compute pushed it | `kernels/writer.cpp` |
 | shared layout of the input and output words | `kernels/probe.hpp` |
 | driver: builds the program, runs it, checks against the CPU reference | `probes.py` |
@@ -63,6 +65,7 @@ export HANGWATCH=<hang watcher> LOCK_DIR=<lock directory> CARD=0
 ./run.sh slab-1 slab --nodes 64 --reps 10 --slab-mode f32 --variant 1
 ./run.sh riscv-1 riscv --mask 7 --n 100000 --n-float 10000
 ./run.sh walk-1 walk --rays 256 --ray-set camera --form b   # --form a --copy scalar
+./run.sh nocread-1 nocread
 ```
 
 Without the hang watcher: `python probes.py <probe> [options]` with tt-metal's Python
@@ -310,10 +313,36 @@ What the numbers say (measured unless marked inferred):
 - **Coherence.** The camera set halves B's cost per ray at 1024 rays (1008 against
   2110 cycles) and helps A much less (2269 against 3412).
 
+### 7. A NoC read from a compute core
+
+The pack core (TRISC2) of core (0, 0) reads 64 bytes from the input page of core
+(1, 0), which that core's reader has filled, on NoC 0 with command buffer 1. The
+program's data-movement kernels issue no NoC 0 reads while it runs. The core saves
+the 8 command-buffer registers it writes, sets target (peer coordinate, address),
+return (its own coordinate from `NOC_ID_LOGICAL`, an L1 buffer), length 64 and the
+read control word, starts the command, polls the NoC's read-response counter
+(`NIU_MST_RD_RESP_RECEIVED`) with a step limit, then restores the registers. A
+"where" word is written before every step so a hang would show how far it got.
+
+One run (the job was allowed once):
+
+| result | value |
+|---|---|
+| this core / peer at NoC 0 | (1, 2) / (2, 2) |
+| response counter | 50551 to 50552 |
+| polls of the counter until it moved | 18 |
+| cycles from starting the command to the counter moving | 209 (155 ns) |
+| 16 words read | all equal to the peer's input |
+
+The kernel finished normally and a smoke run on the same card right after was clean.
+The 209 cycles is one sample, for neighbouring tiles, with an idle NoC; the counter is
+shared by the core's data-movement firmware, so this only works while the
+data-movement kernels issue no reads on that NoC.
+
 ## Limits
 
-- One core, one card, slow dispatch; nothing here measures NoC, DRAM or more than one
-  tile. The walk uses one fixed tree (128 leaves, balanced); deeper or unbalanced
+- One core, one card, slow dispatch; apart from the single read of probe 7 nothing here
+  measures NoC, DRAM or more than one tile. The walk uses one fixed tree (128 leaves, balanced); deeper or unbalanced
   trees, and child ordering by distance in form A, were not tried.
 - The vector-extension variants need `enable_trisc2_rvv` (TRISC2 only).
 - Probe 2 compares the CSR with a `Dst`-window read, not with the packer path.

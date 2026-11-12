@@ -33,6 +33,7 @@ PROBES = {
     "slab": 4,
     "riscv": 5,
     "walk": 6,
+    "nocread": 7,
 }
 # probe.hpp layout
 NONCE, ERROR, NUM_TIMES, DONE0, TIMES, DATA = 0, 1, 2, 4, 16, 2048
@@ -658,6 +659,41 @@ def walk(device, args):
             "leaf_wrong": leaf_bad,
             "leaf_tie_ok": leaf_tie,
             "ref_rays_with_ties": int(sum(len(t) > 1 for t in ties)),
+        },
+        out,
+        nonce,
+    )
+
+
+# ---- probe 7 ------------------------------------------------------------------------
+
+NOC_WHERE = ["", "started", "waited for the peer", "command buffer ready", "issuing",
+             "responded or gave up", "registers restored"]  # fmt: skip
+
+
+def nocread(device, args):
+    rng = np.random.default_rng(args.seed)
+    words = rng.integers(0, 2**32, 64, dtype=np.uint64).astype(np.uint32)
+    peer = (1, 0)
+    phys = device.worker_core_from_logical_core(ttnn.CoreCoord(*peer))
+    coord = int(phys.x) | int(phys.y) << 6
+    log(f"peer {peer} at NoC-0 ({phys.x}, {phys.y})")
+    out, nonce = run_kernel(device, "nocread", words, [coord, 200000], peer=peer)
+    d = out[DATA:]
+    got = d[16:32]
+    return (
+        {
+            "peer_logical": list(peer),
+            "peer_noc0": [int(phys.x), int(phys.y)],
+            "my_noc_id": hex(int(d[4])),
+            "where": NOC_WHERE[int(d[0])] if int(d[0]) < len(NOC_WHERE) else int(d[0]),
+            "code": ["ok", "command buffer busy", "no response"][int(d[1])],
+            "polls": int(d[2]),
+            "cycles": int(d[3]),
+            "counter_before": int(d[5]),
+            "counter_after": int(d[6]),
+            "data_ok": bool((got == words[:16]).all()),
+            "data_first": [hex(int(v)) for v in got[:4]],
         },
         out,
         nonce,

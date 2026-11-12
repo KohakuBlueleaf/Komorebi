@@ -13,6 +13,7 @@
 #include "rv.hpp"
 #ifdef TRISC_PACK
 #include "vec.hpp"
+#include "nocread.hpp"
 #include "walk.hpp"
 #endif
 
@@ -123,6 +124,9 @@ void kernel_main() {
     vec::setup();
     walk::run(in, out, const_cast<uint32_t*>(scratch), p, err);
     vec::finish();
+#elif PROBE == 7
+    // p0 peer NoC-0 coordinate, p1 wait cycles; the peer's input CB is at in_addr.
+    nocread::run(out, scratch, p[0], in_addr, p[1]);
 #endif
     out[probe::kError] = err;
     l1_fence();
