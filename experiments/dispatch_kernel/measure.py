@@ -282,18 +282,21 @@ def case_stream_bench(device, args):
     out["cores"] = dc.core_report(cnt, n_cores, out["tag"])
     blk = fin["block"]
     out["pass_ns"] = round(blk["ticks"] * 20 / max(1, blk["passes"]), 2)
-    # Per issuing stream: its record's issue to the sweep that freed it, and that
-    # sweep to the stream's next issue (timer ticks of the trace, 50 per us).
+    out["engine"] = {k: blk[k] for k in dc.H_NAMES.values()}
+    # Per issuer (records to cores [j * team, (j + 1) * team)): issue to free and free
+    # to next issue, in trace ticks (50 per us).
     freed, busy, reissue, latency = {}, {}, [], []
-    for k_, slot, req, _, _, t in trace["entries"]:
-        if not 9 <= req < 9 + args.issuers:
+    team = args.team or 1
+    for k_, slot, _, first, _, t, src in trace["entries"]:
+        j = first // team
+        if src != dc.SOURCE_ENGINE or j >= args.issuers:
             continue
         if k_ == dc.TRACE_ISSUE:
-            if req in freed:
-                reissue.append((t - freed.pop(req)) & dc.M32)
+            if j in freed:
+                reissue.append((t - freed.pop(j)) & dc.M32)
             busy[slot] = t
         elif k_ == dc.TRACE_FREE and slot in busy:
-            freed[req] = t
+            freed[j] = t
             latency.append((t - busy.pop(slot)) & dc.M32)
     if reissue:
         out["free_to_reissue_us"] = percentiles(np.array(reissue) / 50)

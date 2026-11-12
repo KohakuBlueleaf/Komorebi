@@ -40,8 +40,9 @@ One p150a, AICLK 1,350 MHz, X280 timer at 50 MHz; host load 3 to 13.
 
 | what | result |
 |---|---|
-| `limit` | 126,976 bytes; the kernel image is 8,760 bytes |
-| `bench` host-fed, depth 16, team 1, 100,000 records, batch 64 | 0.669 microseconds per record (kernel only, 63 preloaded: 0.675) |
+| `limit` | 126,976 bytes; the kernel image is 12,016 bytes |
+| `bench` host-fed, depth 16, team 1, 100,000 records, batch 64 | 0.641 microseconds per record (kernel only, 63 preloaded: 0.669); 0.669 and 0.675 while the stream interpreter shared core 0's loop |
 | `memcost`, nanoseconds per operation | uncached local memory load 17.6, store 3.7, store and fence 17.1; cached DRAM load 2.9, store 2.3; `fence ir` or `fence ow` with nothing outstanding 1.1; timer read 10.3 |
 | `store` | a 64-byte store into the window issued less than about 0.5 microseconds after a fence stalls for about 12 microseconds in most bursts; after a longer gap, or a read, a line costs about 0.18 microseconds |
-| `stream-bench`, pass period | 34 ns with no stream; 316 ns with one issuing stream, 525 ns with four; 3.1 microseconds with one looping stream, 11.7 with four. A stream that only computes runs 18 million micro-ops a second |
+| `stream-bench`, pass period of core 0 (streams on core 1) | 32 ns with no stream; 49 ns with one or four looping streams; 89 ns with one issuing stream, 159 ns with four. One issuing stream: 2.3 microseconds per record, free to next issue 1.34 microseconds (median; 12.8 with three looping streams beside it). A stream that only computes runs 18 million micro-ops a second |
+| `stream-bench` before the engine moved to core 1 (one loop) | 34 ns with no stream; 316 ns with one issuing stream, 525 ns with four; 3.1 microseconds with one looping stream, 11.7 with four |
