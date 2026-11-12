@@ -56,6 +56,7 @@ class Run:
         self.h = h or abi.headers()
         self.backend = backend
         self.port = backend.port
+        self._keep = bool(getattr(backend, "trace_cap", 0))  # the trace needs teams
         self.grid = grid
         self.cores = grid[0] * grid[1]
         self.program = program
@@ -225,10 +226,9 @@ class Run:
             self._fail_kernel("the dispatch kernel finished on its own")
 
     def wait(self, tickets, timeout=10.0):
-        """Sends what is queued up to the tickets and waits for their events.
-
-        Returns the events (one, or a list for a list of tickets). Raises
-        RecordRefused, RecordTimeout, KernelFailed or WaitTimeout.
+        """Sends what is queued up to the tickets, waits for their events, returns them
+        (one, or a list) and forgets those tickets. Raises RecordRefused, RecordTimeout,
+        KernelFailed or WaitTimeout.
         """
         single = isinstance(tickets, int)
         wanted = [tickets] if single else list(tickets)
@@ -236,10 +236,31 @@ class Run:
             return []
         if max(wanted) >= self._next or min(wanted) < 1:
             raise ValueError("a ticket that was never issued")
+        gone = [t for t in wanted if not self._known(t)]
+        if gone:
+            raise ValueError(f"ticket {gone[0]}: its event was returned or forgotten")
         self._wait(wanted, timeout)
-        if single:
-            return self.event(wanted[0])
-        return [self.event(t) for t in wanted]
+        events = [self.event(t) for t in wanted]
+        self.forget(wanted)
+        return events[0] if single else events
+
+    def _known(self, ticket):
+        """The ticket's event is filed, or it is in flight or queued."""
+        if ticket in self._events or ticket in self._flight:
+            return True
+        return bool(self._queue) and ticket >= self._queue[0][0]
+
+    def forget(self, tickets):
+        """Releases what the run keeps for tickets whose events arrived (the event,
+        and the team and sequence unless the run is traced): for callers that read
+        events with event() after drain() rather than from wait()."""
+        for t in [tickets] if isinstance(tickets, int) else tickets:
+            if self._events.pop(t, None) is None:
+                continue
+            self._refused.pop(t, None)
+            if not self._keep:
+                self._teams.pop(t, None)
+                self._seqs.pop(t, None)
 
     def _wait(self, wanted, timeout):
         deadline = time.monotonic() + timeout

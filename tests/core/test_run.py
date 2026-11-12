@@ -42,7 +42,8 @@ def test_wait_stores_in_batches_and_returns_the_events():
     assert max(port.batches) <= 8 and sum(port.batches) == 30
     issued = [(req, seg, team) for req, _, _, seg, team in port.issued]
     assert issued == [(t, 5, (i % 120, 1)) for i, t in enumerate(tickets)]
-    assert run.wait(tickets[3]).ticket == tickets[3]
+    with pytest.raises(ValueError, match="returned or forgotten"):
+        run.wait(tickets[3])
 
 
 def test_a_wait_sends_only_up_to_its_ticket():
@@ -117,8 +118,8 @@ def test_the_read_count_lets_the_kernel_go_on_past_a_full_event_ring():
     port = FakePort(depth=4, host_depth=8, event_depth=8)
     run, port, _ = make_run(port)
     tickets = [run.issue(0, (i % 100, 4)) for i in range(200)]
-    run.wait(tickets, timeout=1.0)
-    assert all(run.event(t).kind == "done" for t in tickets)
+    events = run.wait(tickets, timeout=1.0)
+    assert all(ev.kind == "done" for ev in events)
     # the host's own room (unread plus in flight) is the tighter bound
     assert port.held_for_room == 0 and port.published == port.seen
 
@@ -143,7 +144,7 @@ def test_a_host_that_never_publishes_its_read_count_stalls_the_kernel():
 def test_sequences_follow_records_and_skip_kernel_commands():
     run, port, _ = make_run()
     tickets = [run.issue(0, (0, 1)) for _ in range(3)]
-    run.wait(tickets)
+    run.drain()
     assert [run.seq(t) for t in tickets] == [s for _, s, _, _, _ in port.issued]
 
 
@@ -165,7 +166,7 @@ def test_sequences_skip_0_at_the_wrap_as_the_kernel_numbers_them():
     run, port, _ = make_run()
     run._next_seq, port.seq = abi.M32 - 1, abi.M32 - 2
     tickets = [run.issue(0, (0, 1)) for _ in range(3)]
-    run.wait(tickets)
+    run.drain()
     assert [run.seq(t) for t in tickets] == [abi.M32 - 1, abi.M32, 1]
     assert [s for _, s, _, _, _ in port.issued] == [abi.M32 - 1, abi.M32, 1]
 
@@ -258,6 +259,34 @@ def test_an_event_for_a_command_not_in_flight_stops_the_run(req):
     with pytest.raises(KernelFailed, match=f"command {req} .*not in flight"):
         run.wait(run.issue(1, (0, 1)))
     assert backend.calls == ["abort", "read_back"] and run.stopped
+
+
+def test_a_ticket_is_released_once_its_event_was_returned():
+    port = FakePort(host_depth=64, event_depth=128)
+    run, port, _ = make_run(port)
+    for _ in range(200):
+        run.wait([run.issue(0, (i, 1)) for i in range(100)])
+    assert not (run._events or run._teams or run._seqs or run._flight)
+    assert run.event(1) is None and len(port.issued) == 20_000
+
+
+def test_forget_releases_tickets_read_after_a_drain():
+    run, _, _ = make_run()
+    tickets = [run.issue(0, (0, 1)) for _ in range(5)]
+    run.drain()
+    assert run.event(tickets[0]).kind == "done" and run.seq(tickets[4]) == 5
+    run.forget(tickets)
+    assert not (run._events or run._teams or run._seqs)
+    assert run.event(tickets[0]) is None
+
+
+def test_a_traced_run_keeps_teams_and_sequences_for_the_trace():
+    run, _, _ = make_run(trace_cap=8)
+    tickets = [run.issue(1, (i, 2)) for i in range(3)]
+    run.wait(tickets)
+    assert not run._events and len(run._teams) == len(run._seqs) == 3
+    run.stop()
+    assert run.trace().phases(tickets[1])["count"] == 2
 
 
 def test_state_and_trace_only_after_the_stop():
