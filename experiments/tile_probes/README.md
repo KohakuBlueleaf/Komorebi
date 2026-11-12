@@ -12,7 +12,9 @@ that keeps 32 rays in the 32 lanes of the vector unit (SFPU) and a small tree in
    loop, a scheduled scalar loop, and the core's vector extension);
 4. the inverted form: one box node against 32 rays (slab test), with the 32 hit flags
    read back by the core;
-5. the speed of a compute RISC-V core on its own, alone and three at once.
+5. the speed of a compute RISC-V core on its own, alone and three at once;
+6. one full walk of a 255-node box tree for 32 to 1024 rays, in a ray-first and a
+   node-first form.
 
 Every result value is checked against a CPU reference by the driver.
 
@@ -26,6 +28,7 @@ One program on core (0, 0), launched with `ttnn.generic_op` in slow dispatch:
 | compute: one probe per build (define `PROBE`), output into CB 16 | `kernels/probe.cpp` |
 | vector-unit probes 0 to 4, run by the pack thread (TRISC2) | `kernels/vec.hpp` |
 | RISC-V loop probe 5, run by the TRISCs selected in a mask | `kernels/rv.hpp` |
+| tree walk probe 6, run by the pack thread | `kernels/walk.hpp` |
 | writer (RISCV_0): CB 16 to DRAM once compute pushed it | `kernels/writer.cpp` |
 | shared layout of the input and output words | `kernels/probe.hpp` |
 | driver: builds the program, runs it, checks against the CPU reference | `probes.py` |
@@ -59,6 +62,7 @@ export HANGWATCH=<hang watcher> LOCK_DIR=<lock directory> CARD=0
 ./run.sh gather-w4-1 gather --words 4 --reps 64 --variant 1   # 0 plain, 1 scheduled, 2 RVV
 ./run.sh slab-1 slab --nodes 64 --reps 10 --slab-mode f32 --variant 1
 ./run.sh riscv-1 riscv --mask 7 --n 100000 --n-float 10000
+./run.sh walk-1 walk --rays 256 --ray-set camera --form b   # --form a --copy scalar
 ```
 
 Without the hang watcher: `python probes.py <probe> [options]` with tt-metal's Python
@@ -188,9 +192,128 @@ latency, and one software-float multiply plus add costs about 113 ns. The three 
 running at the same time do not slow each other in these loops. All checksums match
 the CPU reference.
 
+### 6. One walk of a box tree: ray-first against node-first
+
+The tree: 128 leaf boxes (corners on a 1/4 grid in [-16, 16]), split at the median of
+the longest centroid axis into a complete binary tree of 255 nodes, numbered breadth
+first (children have larger numbers than their parent). A node record is 8 words in
+L1: box min and max (fp32), child 0, child 1; a leaf carries `0x80000000 | leaf` in
+both child words. Per ray the input gives `1 / direction` and `-origin / direction`
+per axis and a best distance (1e30); the result is the entry distance of the closest
+leaf box hit and that leaf's index. Two ray sets:
+
+- **camera** (coherent): a pinhole at (0.3, 0.2, -24) looking along +z through an
+  8, 16 or 32 wide grid of pixels;
+- **random** (incoherent): origins on the 1/4 grid in [-12, 12], directions with
+  power-of-two components aimed roughly at the centre.
+
+The two forms (`kernels/walk.hpp`):
+
+- **A, ray-first.** One packet of 32 rays in `Dst` at a time. The core keeps one stack
+  per lane in L1 (depth 32) and a bitmask of live lanes. Per step it pops one node per
+  live lane, copies the 32 node records (8 words each) into 8 `Dst` slots through the
+  window (vector extension: one `vluxei32` + `vsse32` per word; or a grouped scalar
+  loop), the vector unit runs the slab test against the lane's own box with `far`
+  starting at the ray's best (so boxes beyond the best are culled), leaf lanes update
+  best and leaf index under their condition, internal hit lanes are read back as a
+  mask (vector extension) and the core pushes child 1 then child 0. The packet ends
+  when no lane is live; the core checks that with `tensix_sync()` and `qstatus` bit 11
+  after enabling exactly the live lanes, and compares it with its own count.
+- **B, node-first.** Up to 16 packets (512 rays) resident in `Dst` at once (1024 rays
+  run as 2 batches). The bins are one 32-bit lane mask per (node, packet) in L1
+  (255 x 16 words). One sweep over the nodes in number order; for each node and each
+  packet with a nonzero bin, the core enables the bin's lanes and pushes the box as
+  12 `SFPLOADI` immediates read from the record in L1; the vector unit tests (leaf:
+  updates best and leaf index under condition; internal: stores `far - near`). After
+  the node's packets, one `tensix_sync()`, the hit masks are read with the vector
+  extension and ORed into both children's bins. Every loop is bounded (stack depth,
+  4096 steps per packet); a breach ends the kernel with error code 2.
+
+Correctness, every run: the best distance of every ray that hits is bit-equal to the
+CPU reference (planes computed in float64 and rounded to float32, which is exact for
+the random set by construction and came out equal for the camera set too); no ray
+disagrees on hit or miss; no leaf index is wrong. Where two leaf boxes give the same
+best distance (boxes sharing a face on the grid, or a ray starting inside two boxes
+so both give 0) either index is accepted; the "ties" column counts those rays. The
+CSR end test never disagreed with the core's count.
+
+Cycles for the whole walk (median of 3 runs; the 3 runs were within 0 to 51 cycles of
+each other). "Node tests" counts ray-node tests (lanes enabled, summed); "steps" are
+32-lane steps in A and (node, packet) tests in B.
+
+| rays, set | form | cycles | per ray | per ray-node test | steps | node tests | ties |
+|---|---|---|---|---|---|---|---|
+| 32 camera | A, vector-ext copy | 82,297 | 2572 | 120.3 | 43 | 684 | 0 |
+| | A, scalar copy | 88,645 | 2770 | 129.6 | 43 | 684 | |
+| | B | 91,621 | 2863 | 99.4 | 227 | 922 | |
+| 32 random | A, vector-ext copy | 99,009 | 3094 | 110.5 | 49 | 896 | 1 |
+| | A, scalar copy | 106,295 | 3322 | 118.6 | 49 | 896 | |
+| | B | 90,138 | 2817 | 72.7 | 221 | 1240 | |
+| 256 camera | A, vector-ext copy | 581,994 | 2273 | 112.2 | 288 | 5188 | 2 |
+| | A, scalar copy | 624,569 | 2440 | 120.4 | 288 | 5188 | |
+| | B | 315,471 | 1232 | 46.7 | 738 | 6762 | |
+| 256 random | A, vector-ext copy | 896,026 | 3500 | 135.2 | 508 | 6630 | 9 |
+| | A, scalar copy | 971,522 | 3795 | 146.5 | 508 | 6630 | |
+| | B | 563,021 | 2199 | 63.9 | 1782 | 8818 | |
+| 1024 camera | A, vector-ext copy | 2,323,116 | 2269 | 111.1 | 1146 | 20908 | 4 |
+| | A, scalar copy | 2,494,004 | 2436 | 119.3 | 1146 | 20908 | |
+| | B | 1,031,760 | 1008 | 37.4 | 2486 | 27616 | |
+| 1024 random | A, vector-ext copy | 3,494,085 | 3412 | 134.0 | 1968 | 26068 | 25 |
+| | A, scalar copy | 3,786,433 | 3698 | 145.3 | 1968 | 26068 | |
+| | B | 2,160,198 | 2110 | 63.1 | 6970 | 34246 | |
+
+Where the cycles go (same runs; A with the vector-extension copy). Setup: rays into
+`Dst`, results out, stacks or bins cleared. Core work: A pops, pushes and lane
+bookkeeping; B scanning bins and ORing hit masks into the children. Copy: A's node
+records into the window. Vector: test pushed, run and waited for (B includes pushing
+the 12 box immediates and the lane mask per test). Readout: hit masks out of `Dst`.
+End test: A's `tensix_sync()` plus `qstatus` per step.
+
+| rays, set | form | setup | core work | copy | vector | readout | end test |
+|---|---|---|---|---|---|---|---|
+| 32 camera | A | 3285 | 32,401 | 36,020 | 3569 | 4429 | 1959 |
+| | B | 9548 | 22,311 | 0 | 43,894 | 15,769 | 0 |
+| 32 random | A | 3284 | 42,716 | 41,040 | 4067 | 5047 | 2220 |
+| | B | 9548 | 22,192 | 0 | 42,781 | 15,517 | 0 |
+| 256 camera | A | 26,245 | 243,240 | 241,255 | 23,904 | 29,664 | 13,175 |
+| | B | 32,612 | 87,354 | 0 | 130,752 | 64,650 | 0 |
+| 256 random | A | 26,252 | 322,394 | 425,424 | 42,164 | 52,324 | 22,970 |
+| | B | 32,614 | 116,388 | 0 | 299,268 | 114,648 | 0 |
+| 1024 camera | A | 105,006 | 974,688 | 960,069 | 95,118 | 118,038 | 52,440 |
+| | B | 117,888 | 281,663 | 0 | 422,945 | 209,096 | 0 |
+| 1024 random | A | 105,022 | 1,268,263 | 1,648,053 | 163,344 | 202,704 | 88,946 |
+| | B | 117,889 | 439,704 | 0 | 1,155,990 | 446,428 | 0 |
+
+What the numbers say (measured unless marked inferred):
+
+- **Which wins.** B is faster from 256 rays on: 1.84x (256) and 2.25x (1024) on the
+  camera set, 1.59x and 1.62x on the random set. At 32 rays they are close: A takes
+  10 % fewer cycles on the camera set, B 9 % fewer on the random set.
+- **A is bound by the core.** Pops, pushes and the record copy are 83 to 85 % of A's
+  cycles; the vector unit is 4 to 5 % (83 cycles per step). A step costs about 2030
+  cycles (camera) or 1780 (random), of which the copy alone is 838 (vector extension,
+  8 words x 32 lanes) or 986 (scalar). The vector-extension copy saves 7 to 8 %
+  of the total.
+- **B is bound by pushing the boxes and reading masks.** The vector category is 41 to
+  54 % of B's cycles at 166 to 193 cycles per (node, packet) test; that is mostly the
+  core pushing 12 box immediates and the mask, since the test itself is about 60
+  vector-unit cycles (inferred from the instruction count and probe 4's 44.4 cycles
+  for a compile-time box). Readouts are 17 to 21 % (probe 4: 99 cycles per mask).
+- **B does 30 to 38 % more ray-node tests,** because the breadth-first sweep reaches
+  every internal node of a ray before any leaf, so no box is culled by a best
+  distance found earlier; A's depth-first stacks cull boxes beyond the best once a
+  leaf is hit. B still wins because its step is about 5 times cheaper: 310 to 430
+  cycles all in per (node, packet) test against 1780 to 2030 per A step. A's steps
+  carry more lanes (13.1 to 18.3 of 32 against 4.1 to 11.1 in B), but not enough to
+  make up for it; per ray-node test B costs 37 to 64 cycles from 256 rays on against
+  111 to 135 for A.
+- **Coherence.** The camera set halves B's cost per ray at 1024 rays (1008 against
+  2110 cycles) and helps A much less (2269 against 3412).
+
 ## Limits
 
 - One core, one card, slow dispatch; nothing here measures NoC, DRAM or more than one
-  tile.
+  tile. The walk uses one fixed tree (128 leaves, balanced); deeper or unbalanced
+  trees, and child ordering by distance in form A, were not tried.
 - The vector-extension variants need `enable_trisc2_rvv` (TRISC2 only).
 - Probe 2 compares the CSR with a `Dst`-window read, not with the packer path.

@@ -13,6 +13,7 @@
 #include "rv.hpp"
 #ifdef TRISC_PACK
 #include "vec.hpp"
+#include "walk.hpp"
 #endif
 
 #ifndef PROBE
@@ -118,6 +119,10 @@ void kernel_main() {
     vec::finish();
 #elif PROBE == 5
     err |= wait_done(out, p[0], nonce);
+#elif PROBE == 6
+    vec::setup();
+    walk::run(in, out, const_cast<uint32_t*>(scratch), p, err);
+    vec::finish();
 #endif
     out[probe::kError] = err;
     l1_fence();

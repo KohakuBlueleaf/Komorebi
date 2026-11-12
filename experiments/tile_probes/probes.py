@@ -25,7 +25,15 @@ import ttnn
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KDIR = os.path.join(HERE, "kernels")
-PROBES = {"smoke": 0, "pred": 1, "anycc": 2, "gather": 3, "slab": 4, "riscv": 5}
+PROBES = {
+    "smoke": 0,
+    "pred": 1,
+    "anycc": 2,
+    "gather": 3,
+    "slab": 4,
+    "riscv": 5,
+    "walk": 6,
+}
 # probe.hpp layout
 NONCE, ERROR, NUM_TIMES, DONE0, TIMES, DATA = 0, 1, 2, 4, 16, 2048
 IN_WORDS = OUT_WORDS = 8192
@@ -54,8 +62,9 @@ def to_dev(device, words):
     )
 
 
-def run_kernel(device, probe, in_words, params, defines=(), rvv=False):
-    """Runs one probe; returns (out words as uint32, nonce)."""
+def run_kernel(device, probe, in_words, params, defines=(), rvv=False, peer=None):
+    """Runs one probe on core (0, 0); returns (out words as uint32, nonce). With peer
+    (x, y), the reader and the CBs also run on that core."""
     in_buf = np.zeros(IN_WORDS, dtype=np.uint32)
     in_buf[: len(in_words)] = in_words
     nonce = secrets.randbits(32) | 1
@@ -64,22 +73,32 @@ def run_kernel(device, probe, in_words, params, defines=(), rvv=False):
     core = ttnn.CoreRangeSet(
         [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
     )
+    both = core
+    if peer is not None:
+        both = ttnn.CoreRangeSet(
+            [
+                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0)),
+                ttnn.CoreRange(ttnn.CoreCoord(*peer), ttnn.CoreCoord(*peer)),
+            ]
+        )
 
     def cb(index, words):
         fmt = ttnn.CBFormatDescriptor(
             buffer_index=index, data_format=ttnn.float32, page_size=words * 4
         )
         return ttnn.CBDescriptor(
-            total_size=words * 4, core_ranges=core, format_descriptors=[fmt]
+            total_size=words * 4, core_ranges=both, format_descriptors=[fmt]
         )
 
-    def kernel(name, config, args, compile_args=(), extra_defines=()):
+    def kernel(name, config, args, compile_args=(), extra_defines=(), ranges=core):
         rt = ttnn.RuntimeArgs()
         rt[0][0] = list(args)
+        if ranges is not core:
+            rt[peer[0]][peer[1]] = list(args)
         return ttnn.KernelDescriptor(
             kernel_source=os.path.join(KDIR, name),
             source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-            core_ranges=core,
+            core_ranges=ranges,
             compile_time_args=list(compile_args),
             defines=list(extra_defines),
             runtime_args=rt,
@@ -102,6 +121,7 @@ def run_kernel(device, probe, in_words, params, defines=(), rvv=False):
                 ),
                 [t_in.buffer_address()],
                 ttnn.TensorAccessorArgs(t_in).get_compile_time_args(),
+                ranges=both,
             ),
             kernel(
                 "writer.cpp",
@@ -517,6 +537,133 @@ def riscv(device, args):
     return rec, out, nonce
 
 
+# ---- probe 6 ------------------------------------------------------------------------
+
+LEAF = 0x80000000
+WALK_STATS = ["total", "setup", "stack", "copy", "vector", "readout", "check", "steps",
+              "lane_tests", "check_mismatch"]  # fmt: skip
+BEST0 = np.float32(1e30)
+
+
+def build_tree(rng):
+    """128 leaf boxes on a 1/4 grid and a median-split box tree over them, nodes in
+    breadth-first order (children after parents): (records [255, 8] uint32, boxes)."""
+    centre = rng.integers(-28, 29, (128, 3)) / 4
+    half = rng.integers(2, 7, (128, 3)) / 4
+    lo, hi = (centre - half).astype(np.float32), (centre + half).astype(np.float32)
+    rec = np.zeros((255, 8), dtype=np.uint32)
+    queue, next_id = [(0, np.arange(128))], 1
+    while queue:
+        node, leaves = queue.pop(0)
+        box = np.concatenate([lo[leaves].min(0), hi[leaves].max(0)]).astype(np.float32)
+        rec[node, :6] = box.view(np.uint32)
+        if len(leaves) == 1:
+            rec[node, 6:] = LEAF | int(leaves[0])
+            continue
+        c = (lo[leaves] + hi[leaves])[:, :]
+        axis = int(np.argmax(c.max(0) - c.min(0)))
+        order = leaves[np.argsort(c[:, axis], kind="stable")]
+        half_n = len(order) // 2
+        rec[node, 6:] = [next_id, next_id + 1]
+        queue += [(next_id, order[:half_n]), (next_id + 1, order[half_n:])]
+        next_id += 2
+    assert next_id == 255
+    return rec, lo, hi
+
+
+def walk_rays(rng, n, kind):
+    """(inv, ob) float32 [n, 3]. random: origins on a 1/4 grid, inverse directions
+    powers of two heading towards the scene (every product exact); camera: a pinhole
+    at z = -24 looking at the boxes (general float values)."""
+    if kind == "random":
+        o = rng.integers(-48, 49, (n, 3)).astype(np.float32) / 4
+        inv = rng.choice(EXACT_INV, (n, 3)).astype(np.float32)
+        inv = np.where(o * inv > 0, -inv, inv).astype(np.float32)
+    else:
+        w = 32 if n >= 1024 else (16 if n >= 256 else 8)
+        h = n // w
+        u = (np.arange(w) + 0.5) / w * 2 - 1
+        v = (np.arange(h) + 0.5) / h * 2 - 1
+        uu, vv = np.meshgrid(u, v)
+        d = np.stack([uu.ravel() * 0.4, vv.ravel() * 0.4, np.ones(n)], 1)
+        o = np.tile([0.3, 0.2, -24.0], (n, 1))
+        inv = (1 / d.astype(np.float32)).astype(np.float32)
+    ob = (-o.astype(np.float32) * inv).astype(np.float32)
+    return inv, ob
+
+
+def walk_ref(inv, ob, lo, hi):
+    """Per ray: closest entry distance over the leaf boxes hit (each plane distance
+    rounded once to float32, as the vector unit's multiply-add), and the leaves at it.
+    """
+    inv64, ob64 = inv.astype(np.float64), ob.astype(np.float64)
+    t0 = (lo[None].astype(np.float64) * inv64[:, None] + ob64[:, None]).astype(
+        np.float32
+    )
+    t1 = (hi[None].astype(np.float64) * inv64[:, None] + ob64[:, None]).astype(
+        np.float32
+    )
+    near = np.maximum(np.minimum(t0, t1).max(2), np.float32(0))
+    far = np.minimum(np.maximum(t0, t1).min(2), BEST0)
+    hit = far >= near
+    dist = np.where(hit, near, np.float32(np.inf))
+    best = dist.min(1)
+    ties = [np.flatnonzero(dist[r] == best[r]) for r in range(len(best))]
+    return best, ties
+
+
+def walk(device, args):
+    rng = np.random.default_rng(args.seed)
+    n = args.rays
+    rec, lo, hi = build_tree(rng)
+    inv, ob = walk_rays(rng, n, args.ray_set)
+    words = np.zeros(8192, dtype=np.uint32)
+    words[: 255 * 8] = rec.reshape(-1)
+    fields = np.concatenate([inv, ob], 1).reshape(n // 32, 32, 6).transpose(0, 2, 1)
+    words[2048 : 2048 + 6 * n] = fields.astype(np.float32).view(np.uint32).reshape(-1)
+    form = {"a": 0, "b": 1}[args.form]
+    copy = {"rvv": 0, "scalar": 1}[args.copy]
+    best0 = int(BEST0.view(np.uint32))
+    out, nonce = run_kernel(device, "walk", words, [n, form, copy, best0], rvv=True)
+    st = dict(zip(WALK_STATS, (int(v) for v in out[TIMES : TIMES + 10])))
+    got_best = out[DATA : DATA + n].view(np.float32)
+    got_leaf = out[DATA + 1024 : DATA + 1024 + n]
+    ref_best, ties = walk_ref(inv, ob, lo, hi)
+    ref_hit = np.isfinite(ref_best)
+    dev_hit = got_leaf != 0xFFFFFFFF
+    both = ref_hit & dev_hit
+    diff = np.abs(got_best[both].astype(np.float64) - ref_best[both])
+    leaf_bad, leaf_tie = 0, 0
+    for r in np.flatnonzero(both):
+        leaf = int(got_leaf[r]) & 0x7FFFFFFF
+        if leaf not in ties[r]:
+            leaf_bad += 1
+        elif len(ties[r]) > 1:
+            leaf_tie += 1
+    total = st["total"]
+    return (
+        {
+            "form": args.form,
+            "copy": args.copy if args.form == "a" else None,
+            "rays": n,
+            "ray_set": args.ray_set,
+            "stats": st,
+            "cycles_per_ray": round(total / n, 2),
+            "cycles_per_lane_test": round(total / max(1, st["lane_tests"]), 2),
+            "cycles_per_step": round(total / max(1, st["steps"]), 2),
+            "ref_hits": int(ref_hit.sum()),
+            "hit_disagree": int((ref_hit != dev_hit).sum()),
+            "best_exact": int((diff == 0).sum()),
+            "best_max_abs_err": float(diff.max()) if diff.size else 0.0,
+            "leaf_wrong": leaf_bad,
+            "leaf_tie_ok": leaf_tie,
+            "ref_rays_with_ties": int(sum(len(t) > 1 for t in ties)),
+        },
+        out,
+        nonce,
+    )
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("probe", choices=list(PROBES))
@@ -537,6 +684,10 @@ def main():
     p.add_argument("--loops", type=int, default=63, help="probe riscv: loops (bit i)")
     p.add_argument("--n", type=int, default=100000)
     p.add_argument("--n-float", type=int, default=10000)
+    p.add_argument("--rays", type=int, default=32, help="walk: multiple of 32, <= 1024")
+    p.add_argument("--ray-set", choices=["camera", "random"], default="random")
+    p.add_argument("--form", choices=["a", "b"], default="a")
+    p.add_argument("--copy", choices=["rvv", "scalar"], default="rvv")
     args = p.parse_args()
     if args.probe == "slab":
         args.nodes = min(args.nodes, 64)

@@ -16,6 +16,9 @@ place to ask a question and to be wrong.
   followed by a sequence word, on a Blackhole p150a with 120 cores. Decision: echo words.
 - [tile_probes](tile_probes/README.md): what one Tensix tile costs for a 32-ray walk:
   predicated vector instructions, the "any lane enabled" register, a per-lane gather
-  through the `Dst` window, one box against 32 rays, and the compute RISC-V cores, on
-  one core of a Blackhole p150a. Predication is free; the gather costs 240 to 2280
-  cycles per 32-lane step depending on how the core copies.
+  through the `Dst` window, one box against 32 rays, the compute RISC-V cores, and one
+  full walk of a 255-node box tree ray-first against node-first, on one core of a
+  Blackhole p150a. Predication is free; the gather costs 240 to 2280 cycles per 32-lane
+  step depending on how the core copies; the node-first walk is 1.6 to 2.3 times faster
+  from 256 rays on, because the ray-first walk is bound by the core's stack and copy
+  work.
