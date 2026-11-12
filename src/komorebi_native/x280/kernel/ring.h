@@ -49,10 +49,10 @@ KMD_HOT void ring_push(kmd_ring_t* r, uint32_t req, uint32_t status, uint32_t ti
     );
 }
 
-/* Whether the unread events, one per busy slot of this source, the events it is owed
- * and one more fit its ring. The read count is loaded only when needed. */
+/* Whether the unread events, one per busy slot or queued job of this source, those it
+ * is owed and one more fit its ring. The read count is loaded only when needed. */
 static inline int ring_room(kmd_ring_t* r) {
-    const uint32_t held = r->nbusy + r->owed;
+    const uint32_t held = r->nbusy + r->nqueued + r->owed;
     if (r->pushed - r->read_n + held < r->event_depth) {
         return 1;
     }

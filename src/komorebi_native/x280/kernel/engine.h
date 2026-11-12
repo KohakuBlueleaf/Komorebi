@@ -14,7 +14,9 @@ typedef struct {
     uint32_t regs[KM_STREAM_REGS];
     uint32_t state; /* KMD_S_* */
     uint32_t req, pc, steps, max_steps, n_ops, n_records, off;
-    uint32_t pending; /* its records sent and not yet answered */
+    uint32_t pending; /* its records and jobs sent and not yet answered */
+    uint32_t jobs;    /* jobs it submitted */
+    uint32_t drop;    /* its queued jobs are to be dropped (KMD_SEG_DROP owed) */
     uint32_t last_result;
     uint32_t order;                   /* activation number; turns go in this order */
     uint32_t post_status, post_ticks; /* KMD_S_ENDING: the event to post */
@@ -31,7 +33,7 @@ typedef struct {
     uint8_t stream, result;
 } kmd_sent_t;
 
-#define KMD_SENT 128u /* a power of two */
+#define KMD_SENT 256u /* a power of two */
 #define KMD_ORPHANS KM_RING_SLOTS
 
 /* Core 1's state, in the state area after core 0's. */
@@ -47,7 +49,10 @@ typedef struct {
     volatile const uint8_t* events;
     volatile uint32_t* read;
     volatile const uint32_t* stop;
-    uint32_t next;     /* number of the next command it writes */
+    volatile const uint32_t* queued; /* the kernel's queue: jobs waiting */
+    volatile const uint32_t* taken;  /* and the engine's jobs it took in */
+    uint32_t jobs;                   /* jobs sent */
+    uint32_t next;                   /* number of the next command it writes */
     uint32_t room_to;  /* the last command it may write: consumed + depth, as loaded */
     uint32_t seen;     /* events read */
     uint32_t told;     /* the read count last stored */
@@ -68,7 +73,9 @@ _Static_assert(
     sizeof(kmd_engine_t) <= KMD_STATE_RING - KMD_STATE_ENGINE,
     "kmd_engine_t outgrows its DRAM area"
 );
-_Static_assert(KMD_SENT >= KMD_ENGINE_DEPTH + KM_RING_SLOTS, "sent table too small");
+_Static_assert(
+    KMD_SENT >= KMD_ENGINE_DEPTH + KM_RING_SLOTS + KM_QUEUE_JOBS, "sent table too small"
+);
 
 /* What a micro-op's fields mean: registers a, b, c in use, imm a jump or a template. */
 #define KMD_UOP_A 1u
@@ -275,16 +282,24 @@ static inline int eng_post(
  * records still in flight become orphans. */
 static inline void stream_fail(kmd_stream_t* s, uint32_t reason, uint32_t pc) {
     s->state = KMD_S_ENDING;
+    s->drop = s->jobs != 0;
     s->post_status = KM_EV_STREAM_ERROR | (reason | pc << 8) << 8;
     s->post_ticks = 0;
 }
 
-/* Posts what is owed: ending streams' end or error events, orphans' timeouts. */
+/* Sends what is owed: ending streams' drops and end or error events, orphans'
+ * timeouts. */
 static void eng_owed(kmd_engine_t* e) {
     for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE; i++) {
         kmd_stream_t* s = &e->streams[i];
-        if (s->state == KMD_S_ENDING &&
-            eng_post(e, s->req, s->post_status, s->post_ticks)) {
+        if (s->state != KMD_S_ENDING) {
+            continue;
+        }
+        if (s->drop && eng_room(e, 1)) {
+            eng_command(e, KMD_SEG_DROP, s->order & 0xFFFFu, 0, 0);
+            s->drop = 0;
+        }
+        if (!s->drop && eng_post(e, s->req, s->post_status, s->post_ticks)) {
             s->state = KMD_S_FREE;
         }
     }
@@ -333,7 +348,7 @@ static void stream_start(kmd_engine_t* e, uint32_t off, uint32_t bytes) {
         s->regs[r] = 0;
     }
     s->regs[KM_STREAM_SEED_REG] = h[7];
-    s->pc = s->steps = s->pending = s->last_result = 0;
+    s->pc = s->steps = s->pending = s->last_result = s->jobs = s->drop = 0;
     s->n_ops = h[2];
     s->n_records = h[3];
     s->max_steps = h[4];
@@ -421,11 +436,15 @@ static void eng_events(kmd_engine_t* e) {
     }
 }
 
-/* ISSUE of template `t` at `pc`: team checked, then the record (after a KM_SEG_DEADLINE
- * if the deadline changed) into the ring if it has room, else the micro-op waits. */
-static kmd_uop_t stream_issue(
-    kmd_engine_t* e, kmd_stream_t* s, uint32_t t, uint32_t pc
+/* ISSUE (`job` 0) or SUBMIT of `job` cores, template `t` at `pc`: checked, then sent
+ * (DEADLINE first if changed) when the ring and the queue have room, else it waits. */
+static kmd_uop_t stream_record(
+    kmd_engine_t* e, kmd_stream_t* s, uint32_t t, uint32_t pc, uint32_t job
 ) {
+    if (job != 0 && job > e->cores) {
+        stream_fail(s, KM_SERR_NEVER_FITS, pc);
+        return KMD_UOP_ENDED;
+    }
     if (t >= s->n_records) {
         stream_fail(s, KM_SERR_TEMPLATE, pc);
         return KMD_UOP_ENDED;
@@ -434,11 +453,16 @@ static kmd_uop_t stream_issue(
     const uint64_t patch = w[8], tail = w[9];
     const uint32_t team = (uint32_t)w[1], fr = (uint32_t)tail & 0xFFu;
     const uint32_t cr = (uint32_t)(tail >> 8) & 0xFFu;
-    const uint32_t first = fr == KM_TPL_NONE ? team & 0xFFFFu : s->regs[fr & 15u];
-    const uint32_t count = cr == KM_TPL_NONE ? team >> 16 : s->regs[cr & 15u];
-    if (count == 0 || first > e->cores || count > e->cores - first) {
-        stream_fail(s, KM_SERR_TEAM, pc);
-        return KMD_UOP_ENDED;
+    uint32_t first = 0, count = job;
+    if (job == 0) {
+        first = fr == KM_TPL_NONE ? team & 0xFFFFu : s->regs[fr & 15u];
+        count = cr == KM_TPL_NONE ? team >> 16 : s->regs[cr & 15u];
+        if (count == 0 || first > e->cores || count > e->cores - first) {
+            stream_fail(s, KM_SERR_TEAM, pc);
+            return KMD_UOP_ENDED;
+        }
+    } else if (*e->queued + (e->jobs - *e->taken) >= KM_QUEUE_JOBS) {
+        return KMD_UOP_WAIT; /* jobs in the queue and on their way to it */
     }
     const uint32_t lines = s->t_record != e->deadline ? 2u : 1u;
     const uint32_t cmd = e->next + lines - 1u;
@@ -456,6 +480,12 @@ static kmd_uop_t stream_issue(
     }
     uint32_t* words = (uint32_t*)l;
     words[2] = first | count << 16;
+    if (job != 0) {
+        /* The kernel's queue: KM_F_QUEUE, and the stream's tag in the slot bits. */
+        words[1] = (words[1] & 0xFFFFu) | KM_F_QUEUE << 8 | (s->order & 0xFFFFu) << 16;
+        e->jobs++;
+        s->jobs++;
+    }
     /* Word of argument a0 to a9 in km_record_t. */
     static const uint8_t arg_word[KM_TPL_ARGS] = {3, 5, 6, 7, 9, 10, 11, 13, 14, 15};
     const uint32_t n = (uint32_t)(tail >> 16) & 0xFFu;
@@ -563,20 +593,19 @@ static kmd_uop_t stream_op(kmd_engine_t* e, kmd_stream_t* s) {
             s->post_status = KM_EV_STREAM_END | (*a & 0xFFFFFFu) << 8;
             s->post_ticks = *a;
             return KMD_UOP_ENDED;
-        case KM_OP_ISSUE: {
-            const kmd_uop_t u = stream_issue(e, s, imm, pc);
+        case KM_OP_ISSUE:
+        case KM_OP_SUBMIT: {
+            if (op == KM_OP_SUBMIT && *a == 0) {
+                stream_fail(s, KM_SERR_NEVER_FITS, pc);
+                return KMD_UOP_ENDED;
+            }
+            const uint32_t job = op == KM_OP_SUBMIT ? *a : 0u;
+            const kmd_uop_t u = stream_record(e, s, imm, pc, job);
             if (u != KMD_UOP_DONE) {
                 return u;
             }
             break;
         }
-        case KM_OP_SUBMIT:
-            /* The job queue is not built yet: the count is checked, then it waits. */
-            if (*a == 0 || *a > e->cores) {
-                stream_fail(s, KM_SERR_NEVER_FITS, pc);
-                return KMD_UOP_ENDED;
-            }
-            return KMD_UOP_WAIT;
         case KM_OP_WAIT:
             if (s->pending > imm) {
                 return KMD_UOP_WAIT;
@@ -714,6 +743,8 @@ static void eng_run(uint64_t hart, const volatile kmd_args_t* a, uint64_t run) {
     e->events = ring + KMD_ERING_EVENTS;
     e->read = (volatile uint32_t*)(ring + KMD_ERING_READ);
     e->stop = (volatile const uint32_t*)(ring + KMD_ERING_STOP);
+    e->queued = (volatile const uint32_t*)(ring + KMD_ERING_QUEUED);
+    e->taken = (volatile const uint32_t*)(ring + KMD_ERING_TAKEN);
     e->next = 1;
     e->room_to = KMD_ENGINE_DEPTH;
     e->line = (uint64_t*)(((uintptr_t)line_buf + 63u) & ~(uintptr_t)63u);

@@ -34,10 +34,10 @@ static inline void engine_go(kmd_t* k, uint32_t go) {
 }
 
 /* Whether the engine has anything the kernel must look at: a stream, a record in
- * flight, a held command. */
+ * flight or queued, a held command. */
 static inline int engine_active(const kmd_t* k) {
     const kmd_ring_t* r = &k->ring[KMD_SRC_ENGINE];
-    return k->nstreams != 0 || r->nbusy != 0 || r->line_state != 0;
+    return k->nstreams != 0 || r->nbusy != 0 || r->nqueued != 0 || r->line_state != 0;
 }
 
 /* KM_SEG_RUN, host command `cmd`: refused, ended with KM_EV_STREAM_ERROR (req from the
@@ -82,6 +82,7 @@ static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
     free_run->off = off;
     free_run->bytes = bytes;
     k->nstreams++;
+    k->engine_on = 1;
     k->ring[KMD_SRC_HOST].owed++;
     return 0;
 }

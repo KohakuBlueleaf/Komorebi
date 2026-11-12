@@ -48,7 +48,7 @@ F_EXCL, F_QUEUE = 2, 8
 EV_DONE, EV_TIMEOUT, EV_PONG, EV_REFUSED = 0, 1, 2, 3
 EV_STREAM, EV_STREAM_END, EV_STREAM_ERROR = 4, 5, 6
 REFUSE_SEG, REFUSE_FLAGS, REFUSE_TEAM, REFUSE_EXITED, REFUSE_REGION = 1, 2, 3, 4, 5
-REFUSE_STREAMS, REFUSE_UNKNOWN, REFUSE_DEADLINE = 6, 7, 8
+REFUSE_STREAMS, REFUSE_UNKNOWN, REFUSE_DEADLINE, REFUSE_QUEUE = 6, 7, 8, 9
 STREAMS = os.path.join(
     HERE, "..", "..", "..", "experiments", "stream_checks", "streams"
 )
@@ -56,6 +56,7 @@ SEG_CHECK_UPLOAD = 249  # KMD_VERIFY_LINES images only
 LIM_UPLOAD = 0x1800  # KMD_LIM_UPLOAD: the upload region's offset from the layout
 HOST_READY, READY_MARK = 4, 0x594452  # the ready block's first word and its mark
 TRACE_ISSUE, TRACE_FREE, TRACE_MARK = 1, 2, 0x54524345  # KMD_TRACE images only
+TRACE_QUEUED = 3  # an issue from the job queue
 STATE_READY, STATE_DONE, STATE_FAILED = 2, 3, 4
 ERR_DEADLINE, ERR_STOPPED, ERR_STOP_BUSY = 4, 7, 9
 R_NAMES = {
@@ -1145,13 +1146,17 @@ def replay_trace(entries, sent, n_cores):
                 faults.append(["free of a slot not busy with it", slot, req, p])
             busy.pop(slot, None)
             continue
-        if kind_ != TRACE_ISSUE or slot in busy or req in teams:
+        if kind_ not in (TRACE_ISSUE, TRACE_QUEUED) or slot in busy or req in teams:
             faults.append(["bad issue", kind_, slot, req, p])
             continue
         what, want_first, want_count = sent.get(req, ("exit", 0, n_cores))
         others = [(f, c) for _, f, c in busy.values()]
         if what == "queue":
-            ok = count == want_count and first == alloc(others, count, n_cores)
+            ok = (
+                kind_ == TRACE_QUEUED
+                and count == want_count
+                and first == alloc(others, count, n_cores)
+            )
         elif what == "excl":
             ok = (first, count) == (want_first, want_count) and all(
                 first + count <= f or f + c <= first for f, c in others
@@ -1220,10 +1225,22 @@ def case_queue(device, args):
         out["check"] = check_events(
             events, reqs, first_event, kinds=(EV_DONE, EV_REFUSED)
         )
-        out["refused_ok"] = sorted(
-            e[1] for e in events if kind(e[2]) == (EV_REFUSED, REFUSE_TEAM)
-        ) == refused and all(
-            kind(e[2])[0] == EV_DONE for e in events if e[1] not in refused
+        # A queued record may find the queue full: refused, not run (the host would
+        # retry it).
+        full = [e[1] for e in events if kind(e[2]) == (EV_REFUSED, REFUSE_QUEUE)]
+        full_ok = all(sent.get(r, ("",))[0] == "queue" for r in full)
+        for r in full:
+            sent.pop(r, None)
+        out["queue_full"] = len(full)
+        out["refused_ok"] = (
+            full_ok
+            and sorted(e[1] for e in events if kind(e[2]) == (EV_REFUSED, REFUSE_TEAM))
+            == refused
+            and all(
+                kind(e[2])[0] == EV_DONE
+                for e in events
+                if e[1] not in refused and e[1] not in full
+            )
         )
         out["keys"] = keys
         out["exit"] = exit_and_stop(plan)
@@ -1256,7 +1273,7 @@ def case_queue(device, args):
         and out["faults"] == 0
         and out["team_mismatch"] == 0
         and most > 1
-        and fin["block"]["refused"] == 2
+        and fin["block"]["refused"] == 2 + out["queue_full"]
     )
     return out
 

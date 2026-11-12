@@ -38,6 +38,7 @@ typedef struct {
     uint32_t read_n;               /* events the source has read, as last loaded */
     uint32_t line_state; /* 0: line is free; 1: it holds command next; 2: held */
     uint32_t nbusy;      /* busy slots whose record came from here */
+    uint32_t nqueued;    /* its jobs waiting in the queue */
     uint32_t owed;       /* events owed besides those (host: one per active stream) */
     uint64_t t_record;   /* deadline of its next record, in ticks */
     uint64_t* line;      /* the command being taken: 8 words, 64-byte aligned */
@@ -47,6 +48,24 @@ typedef struct {
 #define KMD_SRC_HOST 0u
 #define KMD_SRC_ENGINE 1u
 #define KMD_SOURCES 2u
+
+/* A job waiting in the queue: its record, with its source's deadline at the time. */
+typedef struct {
+    uint64_t line[8];
+    uint64_t ticks;
+    uint32_t req, count, passed; /* passed: jobs behind it issued while it waited */
+    uint8_t src, pad;
+    uint16_t tag; /* the engine's stream tag (KMD_SEG_DROP) */
+} kmd_job_t;
+
+/* The job queue (KMD_STATE_QUEUE): jobs in places, their order oldest first. */
+typedef struct {
+    kmd_job_t job[KM_QUEUE_JOBS];
+    uint64_t used;  /* a bit per place */
+    uint32_t n;     /* jobs waiting */
+    uint32_t taken; /* the engine's jobs taken in, ever */
+    uint8_t order[KM_QUEUE_JOBS];
+} kmd_queue_t;
 
 /* A stream the kernel admitted and the engine runs: its range and req. */
 typedef struct {
@@ -71,6 +90,7 @@ typedef struct {
     volatile uint32_t* host; /* the host buffer, through the host window */
     kmd_ring_t ring[KMD_SOURCES];
     volatile uint8_t* ering; /* the engine's ring area in DRAM */
+    kmd_queue_t* queue;      /* the job queue, in the state area */
     /* completion table */
     uint32_t depth, full, busy, nbusy, cores;
     uint32_t seq;                     /* last sequence number issued */
@@ -86,7 +106,9 @@ typedef struct {
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* streams the engine runs */
     kmd_run_t runs[KM_STREAM_MAX_ACTIVE];
-    uint32_t nstreams; /* admitted and not yet ended */
+    uint32_t nstreams;  /* admitted and not yet ended */
+    uint32_t engine_on; /* engine_active() after its last turn; a RUN sets it */
+    uint32_t queued;    /* the queue's length, for the loop */
     /* counters */
     uint32_t records, max_busy, refused, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */
@@ -96,6 +118,11 @@ typedef struct {
 } kmd_t;
 
 _Static_assert(sizeof(kmd_t) <= KMD_STATE_ENGINE, "kmd_t outgrows its DRAM area");
+_Static_assert(
+    KMD_STATE_QUEUE + sizeof(kmd_queue_t) <= KMD_STATE_BYTES,
+    "the queue outgrows the state"
+);
+_Static_assert(KM_QUEUE_JOBS <= 64u, "a 64-bit map of the queue's places");
 
 /* take()'s outcome: the command was consumed, waits in k->line, or ends the loop. */
 typedef enum {

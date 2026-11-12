@@ -13,6 +13,7 @@ is one of those sources. `km_dispatch.h` holds the exact layouts;
 | `event_ring.h` | the host buffer: the host's event ring, the state words, the ready block |
 | `grid_port.h` | the windows onto every core's control block, the record store, the stop word |
 | `completion.h` | busy slots, acknowledgement sweep, deadlines, team overlap, team allocator |
+| `queue.h` | the job queue: jobs from every source until a slot and a team are free |
 | `engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
 | `engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
 | `result.h` | the result block in LIM |
@@ -68,7 +69,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   could wrap; with `KM_F_QUEUE` only the count is checked); 4 any record after EXIT; 5 a
   range of the upload region that is not whole lines inside it; 6 `KM_SEG_RUN` while
   four streams run; 7 `KM_SEG_CANCEL` of a req no running stream has; 8
-  `KM_SEG_DEADLINE` of 0. A refused command's event has ticks 0.
+  `KM_SEG_DEADLINE` of 0; 9 a `KM_F_QUEUE` record while the queue is full (the host
+  may retry it). A refused command's event has ticks 0.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
   word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
@@ -95,12 +97,20 @@ These rules are part of the protocol; a host that relies on anything else is wro
   busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own; the
   check holds only at its own issue, so a later record without the flag may still
   overlap it. A waiting command holds up every command behind it.
-- **Queued records.** A record with `KM_F_QUEUE` takes its count from the team word and
-  ignores `first`: the team allocator gives it the lowest `first` whose cores overlap no
-  busy slot's team, using the same overlap test as `KM_F_EXCL`, and the record waits
-  until such a team exists. The grid sees the chosen team and no `KM_F_QUEUE`. Until the
-  job queue exists, a waiting queued record holds up the commands behind it like any
-  other waiting command.
+- **Job queue.** A record with `KM_F_QUEUE` takes its count from the team word and
+  ignores `first` (and `KM_F_EXCL`). It is taken into the job queue, which holds up to
+  `KM_QUEUE_JOBS` (64) jobs of every source in arrival order, and answered with its
+  `KM_EV_DONE` once it has run; a full queue refuses the host's (reason 9) and holds the
+  engine's. Each pass ends with the queue's turn: of the first `KM_QUEUE_LOOK` (16) jobs
+  as they are at its start, each that finds a free slot and room is issued, the team
+  allocator giving it the lowest `first` whose cores overlap no busy slot's team (the
+  overlap test of `KM_F_EXCL`). A job that does not fit does not hold up the ones
+  behind it, but every job issued past a waiting one counts against it, and once a
+  skipped job has been passed over `KM_QUEUE_PASSES` (1,024) times the turn ends before
+  the next job: no more than 1,024 jobs ever overtake one. A job's deadline starts at
+  its issue. The grid sees the chosen team and no `KM_F_QUEUE`. EXIT waits for an empty
+  queue; a finish drops what is still queued. Each queued job holds a place in its
+  source's event room.
 - **Streams.** `KM_SEG_RUN` (a0 offset, a1 bytes in the upload region) starts the
   stream there: a range that is not inside the region and line aligned, one that
   overlaps a running stream's, or a req a running stream has ends it at once with
@@ -112,13 +122,18 @@ These rules are part of the protocol; a host that relies on anything else is wro
   issues it in the engine's turn like a host record, and its event goes back to the
   engine, not to the host. `KM_EV_STREAM`, `_END` and `_ERROR` carry the stream's req,
   the aux `reason | pc << 8` for an error; the engine sends them to core 0 as
-  `KMD_SEG_POST` commands, which core 0 forwards to the host. `KM_SEG_CANCEL` ends a
+  `KMD_SEG_POST` commands, which core 0 forwards to the host. A SUBMIT sends the record
+  with `KM_F_QUEUE` and the stream's tag in the header's slot bits; it waits while the
+  queue's length (`KMD_ERING_QUEUED`) and the engine's jobs not yet taken in
+  (`KMD_ERING_TAKEN`) fill the queue. At a stream's error or cancel the engine sends
+  `KMD_SEG_DROP` (247) with the tag, and core 0 drops that stream's queued jobs, each
+  answered to the engine with `KM_EV_REFUSED` reason 10. `KM_SEG_CANCEL` ends a
   stream with reason 10; its records in flight still free their slots. A record of a
   stream that misses its deadline ends the stream with reason 8 and the kernel with it.
   EXIT waits until no stream runs.
-- **Commands from the engine.** The engine may send records, `KM_SEG_DEADLINE` and
-  `KMD_SEG_POST` (248); STOP, EXIT, RUN and CANCEL from it are refused with reason 1,
-  and so is `KMD_SEG_POST` from the host.
+- **Commands from the engine.** The engine may send records, `KM_SEG_DEADLINE`,
+  `KMD_SEG_POST` (248) and `KMD_SEG_DROP` (247); STOP, EXIT, RUN and CANCEL from it are
+  refused with reason 1, and so are `KMD_SEG_POST` and `KMD_SEG_DROP` from the host.
 - **What streams cost the sweep.** Measured on a p150a with the harness's
   `stream-bench` case (pass period of core 0 = run time / passes): 32 ns with no
   stream, 49 ns with one or four streams that only loop, 89 ns with one stream issuing

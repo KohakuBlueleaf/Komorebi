@@ -46,7 +46,7 @@ static inline void trace(kmd_t* k, uint32_t kind, uint32_t slot, uint32_t req) {
 #endif
 
 /* Marks `slot` busy with record `seq` of command `req` of source `src` for `team`,
- * issued at `now`; `result`: the record has KM_F_RESULT. */
+ * issued at `now` (trace entry `how`); `result`: the record has KM_F_RESULT. */
 static inline void slot_take(
     kmd_t* k,
     uint32_t slot,
@@ -56,7 +56,8 @@ static inline void slot_take(
     uint32_t team,
     uint64_t now,
     uint64_t ticks,
-    uint32_t result
+    uint32_t result,
+    uint32_t how
 ) {
     k->slot_seq[slot] = seq;
     k->slot_req[slot] = req;
@@ -70,7 +71,8 @@ static inline void slot_take(
     if (++k->nbusy > k->max_busy) {
         k->max_busy = k->nbusy;
     }
-    trace(k, KMD_TRACE_ISSUE, slot, req);
+    trace(k, how, slot, req);
+    (void)how;
 }
 
 /* Whether cores [first, first + count) are not all in the grid; written without a sum,
@@ -149,8 +151,8 @@ static inline uint32_t slots_late(const kmd_t* k, uint64_t now) {
     return KM_RING_SLOTS;
 }
 
-/* Issues `l` into free `slot` for command `req` of source `src`: the next sequence (not
- * 0, not the slot's last) in seq and the landing words, the slot in the header. */
+/* Issues `l` into free `slot` for command `req` of source `src` (trace entry `how`):
+ * the next sequence (not 0, not the slot's last) in seq and the landing words. */
 KMD_HOT void record_issue(
     kmd_t* k,
     uint64_t* l,
@@ -158,7 +160,8 @@ KMD_HOT void record_issue(
     uint32_t req,
     uint32_t src,
     uint64_t now,
-    uint64_t ticks
+    uint64_t ticks,
+    uint32_t how
 ) {
     const uint32_t hdr = (uint32_t)(l[0] >> 32);
     uint32_t seq = ++k->seq;
@@ -172,5 +175,5 @@ KMD_HOT void record_issue(
     grid_store_record(k, slot, l);
     k->records++;
     const uint32_t result = (hdr >> 8) & KM_F_RESULT;
-    slot_take(k, slot, seq, req, src, (uint32_t)l[1], now, ticks, result);
+    slot_take(k, slot, seq, req, src, (uint32_t)l[1], now, ticks, result, how);
 }

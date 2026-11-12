@@ -73,10 +73,14 @@
 #define KMD_REFUSE_STREAMS 6u  /* KM_SEG_RUN while KM_STREAM_MAX_ACTIVE streams run */
 #define KMD_REFUSE_UNKNOWN 7u  /* KM_SEG_CANCEL of a req no active stream has */
 #define KMD_REFUSE_DEADLINE 8u /* KM_SEG_DEADLINE of 0: a deadline is never zero */
+#define KMD_REFUSE_QUEUE 9u    /* a KM_F_QUEUE record while KM_QUEUE_JOBS jobs wait */
+#define KMD_REFUSE_DROPPED 10u /* to the engine: a queued job of its stream dropped */
 
 /* Engine to kernel: POST host event {a0 req, a1 status, a2 ticks}. Kernel to engine
  * events: RUN {req offset, ticks bytes} of an admitted upload, CANCEL {ticks req}. */
 #define KMD_SEG_POST 248u
+/* Engine to kernel: drop its queued jobs of stream tag a0 (the header's slot bits). */
+#define KMD_SEG_DROP 247u
 #define KMD_EV_RUN 0x10u
 #define KMD_EV_CANCEL 0x11u
 
@@ -89,6 +93,7 @@
 #define KMD_TRACE_PART(upload_bytes) ((upload_bytes) / 2u & ~63u)
 #define KMD_TRACE_ISSUE 1u
 #define KMD_TRACE_FREE 2u
+#define KMD_TRACE_QUEUED 3u        /* an issue from the job queue */
 #define KMD_TRACE_MARK 0x54524345u /* "TRCE" */
 
 typedef struct {
@@ -219,6 +224,7 @@ static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
 #define KMD_STATE_KERNEL 0x0000u
 #define KMD_STATE_ENGINE 0x2000u
 #define KMD_STATE_RING 0x4000u
+#define KMD_STATE_QUEUE 0x6000u
 /* The engine's ring, from KMD_STATE_RING: commands, events, then one word per line. */
 #define KMD_ENGINE_DEPTH 64u   /* command lines */
 #define KMD_ENGINE_EVENTS 128u /* events */
@@ -229,7 +235,9 @@ static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
 #define KMD_ERING_READ 0x1880u     /* core 1: events read */
 #define KMD_ERING_STOP 0x18C0u     /* core 0: nonzero, the engine leaves its loop */
 #define KMD_ERING_GO 0x1900u       /* core 0: {run value, 1 run or 2 do not} */
-#define KMD_ERING_BYTES 0x1940u
+#define KMD_ERING_QUEUED 0x1940u   /* core 0: jobs waiting in the queue */
+#define KMD_ERING_TAKEN 0x1980u    /* core 0: the engine's jobs taken into it, ever */
+#define KMD_ERING_BYTES 0x19C0u
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u
 
@@ -256,7 +264,7 @@ KMD_STATIC_ASSERT(
     "engine ring: events"
 );
 KMD_STATIC_ASSERT(
-    KMD_STATE_RING + KMD_ERING_BYTES <= KMD_STATE_BYTES, "state: engine ring"
+    KMD_STATE_RING + KMD_ERING_BYTES <= KMD_STATE_QUEUE, "state: engine ring"
 );
 KMD_STATIC_ASSERT(
     KMD_LIM_ACKS + KM_RING_SLOTS * KM_ACK_STRIDE <= KMD_LIM_HRING, "LIM: ack words"

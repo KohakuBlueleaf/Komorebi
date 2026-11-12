@@ -8,6 +8,7 @@
 #include "event_ring.h"
 #include "grid_port.h"
 #include "kernel.h"
+#include "queue.h"
 #include "result.h"
 #include "ring.h"
 
@@ -193,6 +194,11 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         k->t_last_event = now;
         return KMD_TAKEN;
     }
+    if (seg == KMD_SEG_DROP && src == KMD_SRC_ENGINE) {
+        ring_consumed(r);
+        queue_drop(k, a0);
+        return KMD_TAKEN;
+    }
     /* Every other command ends in one event: it waits until that event has room. */
     if (!ring_room(r)) {
         return KMD_NO_ROOM;
@@ -243,20 +249,29 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         k->refused++;
         return KMD_TAKEN;
     }
+    if (queued) {
+        /* Into the queue; when it is full the host's is refused, the engine's waits. */
+        if (k->queue->n == KM_QUEUE_JOBS) {
+            if (!host) {
+                return KMD_HELD;
+            }
+            ring_consumed(r);
+            ring_push(r, req, KM_EV_REFUSED | (KMD_REFUSE_QUEUE << 8), 0);
+            k->t_last_event = now;
+            k->refused++;
+            return KMD_TAKEN;
+        }
+        queue_put(k, l, src, req, count, host ? 0u : hdr >> 16);
+        ring_consumed(r);
+        return KMD_TAKEN;
+    }
     if (seg == KM_SEG_EXIT) {
-        /* EXIT goes to every core, once no record is in flight and no stream runs. */
-        if (k->busy || k->nstreams) {
+        /* EXIT goes to every core, once no record is in flight or queued and no stream
+         * runs. */
+        if (k->busy || k->nstreams || k->queued) {
             return KMD_HELD;
         }
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_TEAM_ALL(k->cores);
-    } else if (queued) {
-        /* `first` is the allocator's; the grid sees no KM_F_QUEUE. */
-        const uint32_t at = team_alloc(k, count);
-        if (at == KMD_NO_FIRST) {
-            return KMD_HELD;
-        }
-        l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | at | count << 16;
-        hdr &= ~(KM_F_QUEUE << 8);
     } else if ((flags & KM_F_EXCL) && slots_overlap(k, first, count)) {
         return KMD_HELD;
     }
@@ -265,7 +280,7 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         return KMD_HELD; /* another source took the last free slot */
     }
     l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
-    record_issue(k, l, slot, req, src, now, r->t_record);
+    record_issue(k, l, slot, req, src, now, r->t_record, KMD_TRACE_ISSUE);
     ring_consumed(r);
     k->exited = seg == KM_SEG_EXIT;
     return KMD_TAKEN;
@@ -314,8 +329,8 @@ KMD_HOT int source_turn(kmd_t* k, uint32_t src, uint32_t* activity) {
     return 0;
 }
 
-/* The loop: sweep, then one command of each source in turn (host, engine). Returns when
- * a STOP command, the runtime's stop or an error ends it. */
+/* The loop: sweep, one command of each source in turn (host, engine), the queue's turn.
+ * Returns when a STOP command, the runtime's stop or an error ends it. */
 static void loop(kmd_t* k) {
     const volatile kmd_args_t* a = k->args;
     result_where(k, KMD_WHERE_LOOP);
@@ -331,9 +346,13 @@ static void loop(kmd_t* k) {
         if (source_turn(k, KMD_SRC_HOST, &activity)) {
             return;
         }
-        if (engine_active(k)) {
+        if (k->engine_on) {
             source_turn(k, KMD_SRC_ENGINE, &activity);
             ring_flush(engine);
+            k->engine_on = engine_active(k);
+        }
+        if (k->queued != 0) {
+            queue_turn(k, x280_mtime());
         }
         ring_flush(host);
         if (++spins != KMD_POLL_EVERY) {
@@ -361,7 +380,7 @@ static void loop(kmd_t* k) {
             );
             return;
         }
-        if (activity != seen_activity || k->busy || k->nstreams) {
+        if (activity != seen_activity || k->busy || k->nstreams || k->queued) {
             seen_activity = activity;
             t_active = now;
         } else if (a->t_idle != 0 && now - t_active > a->t_idle) {
@@ -430,6 +449,7 @@ static __attribute__((noinline)) void run(uint64_t hart) {
     k->full = (1u << k->depth) - 1u;
     k->cores = (uint32_t)a->cores;
     k->ering = (volatile uint8_t*)k + KMD_STATE_RING;
+    k->queue = (kmd_queue_t*)((uint8_t*)k + KMD_STATE_QUEUE);
     kmd_ring_t* h = &k->ring[KMD_SRC_HOST];
     h->cmds = k->lim + KMD_LIM_HRING;
     h->read = (volatile const uint32_t*)(k->lim + KMD_LIM_READ);
