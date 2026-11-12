@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "kmx.h"
+#include "noc.h"
 #include "rt/x280_hw.h"
 #include "rt/x280_idle.h"
 #include "x280_address_map.h"
@@ -292,6 +293,45 @@ static int args_valid(const volatile kmx_args* a, uint64_t run) {
     return 1;
 }
 
+/* Opens the ring the line names: as it is, or for KMX_RING_REMOTE through a window
+ * onto the commands and the read line. 1, or 0 when the line is out of range. */
+static int ring_open(const volatile kmx_ring_desc* d) {
+    kmx_ring_desc l;
+    l.cmd = d->cmd;
+    l.consumed = d->consumed;
+    l.events = d->events;
+    l.read = d->read;
+    l.cmd_depth = d->cmd_depth;
+    l.event_depth = d->event_depth;
+    l.flags = d->flags;
+    if (l.flags & KMX_RING_REMOTE) {
+        const uint64_t base = l.cmd & ~(NOC_2M_WINDOW_STRIDE - 1u);
+        const uint32_t xy = d->reserved[0], x = xy & 0xFFFFu, y = xy >> 16;
+        if ((l.read & ~(NOC_2M_WINDOW_STRIDE - 1u)) != base || (l.flags & 1u) ||
+            l.read + 64u > base + NOC_2M_WINDOW_STRIDE) {
+            return 0;
+        }
+        noc_tlb_2m_t programmed;
+        volatile uint8_t* win = (
+            (volatile uint8_t*)noc_configure_tlb_2m_checked(
+                KMX_RING_WINDOW, x, y, base, NOC_ORDER_POSTED, &programmed
+            )
+        );
+        if (win == 0 || noc_verify_tlb_2m(KMX_RING_WINDOW, &programmed) != 0) {
+            return 0;
+        }
+        l.cmd = (uint64_t)(uintptr_t)win + (l.cmd - base);
+        l.read = (uint64_t)(uintptr_t)win + (l.read - base);
+    }
+    if (!kmx_ring_open(&g_ring, &l)) {
+        if (l.flags & KMX_RING_REMOTE) {
+            noc_clear_tlb_2m(KMX_RING_WINDOW);
+        }
+        return 0;
+    }
+    return 1;
+}
+
 /* Hart 0: the bank check, kmx_main, the result block. */
 static uint64_t run_main(const volatile kmx_args* a) {
     volatile kmx_result_block* r = result();
@@ -300,7 +340,7 @@ static uint64_t run_main(const volatile kmx_args* a) {
     const volatile kmx_ring_desc* d = (
         (const volatile kmx_ring_desc*)(lim() + KMX_LIM_RING)
     );
-    if (d->cmd != 0 && !kmx_ring_open(&g_ring, d)) {
+    if (d->cmd != 0 && !ring_open(d)) {
         fail(KMX_ERR_ARGS); /* a ring is named but its line is out of range */
     }
     const uint64_t check = X280_LOCAL_DDR_TILE_BASE + a->check;
@@ -315,6 +355,9 @@ static uint64_t run_main(const volatile kmx_args* a) {
         if (g_code == KMX_UNSET) {
             r->code = (uint32_t)code;
         }
+    }
+    if (g_ring.cmd != 0 && (d->flags & KMX_RING_REMOTE)) {
+        noc_clear_tlb_2m(KMX_RING_WINDOW);
     }
     const uint64_t ticks = x280_mtime() - g_start;
     r->ticks = (uint32_t)ticks;

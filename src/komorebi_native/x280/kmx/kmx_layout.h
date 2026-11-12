@@ -67,6 +67,10 @@ typedef struct {
 #define KMX_RING_DEPTH_MAX 1024u
 #define KMX_RING_CACHED \
     1u /* flags: the ring is in cached memory, sweep each hand-over */
+/* flags: cmd and read are NoC addresses in the tile reserved[0] names (x | y << 16),
+ * inside one 2 MiB window the start-up opens; consumed and events are local. */
+#define KMX_RING_REMOTE 2u
+#define KMX_RING_WINDOW 16u /* the window slot it uses */
 
 typedef struct {
     uint64_t cmd;      /* cmd_depth 64-byte slots, 64-byte aligned */
