@@ -1,31 +1,28 @@
 """Running the rasterizers on a scene, saving their results, comparing any two."""
 
-import json
-import os
 import time
 from pathlib import Path
 
 import numpy as np
 
-from ref import native, power, raster, results, scenes
+from ref import native, raster, results, runner, scenes
 
 HERE = Path(__file__).resolve().parent
 SCENES = list(scenes.PRESETS)
 KEYS = ("colour", "depth", "tri", "tile_counts")
+threads_all = runner.threads_all
 REFERENCE = "numpy"
 STAGES = ("setup_ms", "bin_ms", "fill_ms", "total_ms")
 
 
-def results_root():
-    """Folder with one sub-folder of results per implementation."""
-    return native.data_dir() / "results" / "raster"
-
-
 def out_dir(scene, impl):
     """Scratch folder for the raw .npy output of one binary on one scene."""
-    path = native.data_dir() / "tmp" / "raster" / scene / impl
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return runner.out_dir("raster", scene, impl)
+
+
+def attach_power(scene, folder, record):
+    """Adds the power figures and frame time of a sampled run to a stored result."""
+    runner.attach_power("raster", scene, folder, record)
 
 
 def load_outputs(folder):
@@ -33,34 +30,9 @@ def load_outputs(folder):
     return {key: np.load(Path(folder) / f"{key}.npy") for key in KEYS}
 
 
-def threads_all():
-    """The number of logical CPUs the process may use."""
-    return len(os.sched_getaffinity(0))
-
-
-def stage_medians(record):
-    """Median of every timed stage over the repetitions listed in a binary's record."""
-    reps = record.get("reps", [])
-    return {k: float(np.median([r[k] for r in reps])) for k in STAGES} if reps else {}
-
-
 def save(scene, folder, name, arrays, record):
     """Stores an implementation's arrays and timing record in the results layout."""
-    info = {"name": name, "scene": scene, "timings_ms": stage_medians(record)}
-    info["seconds_per_frame"] = record["loop_ms"] / record["reps_n"] / 1000
-    if "power" in record:
-        info["power"] = record["power"]
-    results.save_result(results_root() / folder, scene, "raster", arrays, info)
-
-
-def attach_power(scene, folder, record):
-    """Adds the power figures and frame time of a sampled run to a stored result."""
-    path = results_root() / folder / f"{scene}.json"
-    if path.exists():
-        info = json.loads(path.read_text())
-        info["seconds_per_frame"] = record["power"]["seconds_per_frame"]
-        info["power"] = record["power"]
-        path.write_text(json.dumps(info, indent=1))
+    runner.save_run("raster", STAGES, scene, folder, name, arrays, record)
 
 
 def run_numpy(scene):
@@ -75,14 +47,6 @@ def run_numpy(scene):
     return arrays
 
 
-def run_binary(command, gpu, with_power):
-    """Runs a binary; with power sampling when asked."""
-    command = [str(c) for c in command]
-    if with_power:
-        return power.run_with_power(command, gpu=gpu)
-    return native.run_json(command, gpu=gpu)
-
-
 def run_cpu(scene, threads, reps=3, store=True, with_power=False):
     """Runs the C++ binary; returns its record (None without a compiler)."""
     exe = native.build(str(HERE / "cpu" / "raster_cpu.cpp"), "raster_cpu")
@@ -90,10 +54,10 @@ def run_cpu(scene, threads, reps=3, store=True, with_power=False):
         return None
     cmd = [exe, "--scene", native.ensure_scene(scene), "--threads", threads]
     cmd += ["--reps", reps]
-    folder = "cpu_all" if threads == threads_all() else f"cpu{threads}"
+    folder = "cpu_all" if threads == runner.threads_all() else f"cpu{threads}"
     if store:
         cmd += ["--out", out_dir(scene, folder)]
-    record = run_binary(cmd, None, with_power)
+    record = runner.run_binary(cmd, None, with_power)
     if store:
         label = "C++ all threads" if folder == "cpu_all" else f"C++ {threads} thread(s)"
         save(scene, folder, label, load_outputs(out_dir(scene, folder)), record)
@@ -109,7 +73,7 @@ def run_gpu(scene, reps=3, store=True, with_power=False):
     cmd = [exe, "--scene", native.ensure_scene(scene), "--reps", reps]
     if store:
         cmd += ["--out", out_dir(scene, "v100")]
-    record = run_binary(cmd, gpu, with_power)
+    record = runner.run_binary(cmd, gpu, with_power)
     record["gpu_index"] = gpu
     if store:
         save(scene, "v100", "V100", load_outputs(out_dir(scene, "v100")), record)
@@ -118,17 +82,12 @@ def run_gpu(scene, reps=3, store=True, with_power=False):
 
 def collect(scene, external=()):
     """{name: (arrays, info)} of every implementation found for a scene."""
-    return results.find_results([results_root(), *external], scene, "raster")
+    return results.find_results(
+        [runner.results_root("raster"), *external], scene, "raster"
+    )
 
 
-def edge_mask(tri):
-    """Pixels whose 3 x 3 neighbourhood holds more than one triangle index."""
-    padded = np.pad(tri, 1, mode="edge")
-    edge = np.zeros(tri.shape, dtype=bool)
-    for dy in range(3):
-        for dx in range(3):
-            edge |= padded[dy : dy + tri.shape[0], dx : dx + tri.shape[1]] != tri
-    return edge
+edge_mask = runner.edge_mask
 
 
 def compare(a, b):

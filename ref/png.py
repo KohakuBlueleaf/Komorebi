@@ -1,5 +1,6 @@
 """Writing PNG files and mapping scalar images to colour, with numpy and zlib only."""
 
+import re
 import struct
 import zlib
 from pathlib import Path
@@ -86,3 +87,33 @@ def downscale(image, factor):
     shape = (h // factor, factor, w // factor, factor) + image.shape[2:]
     out = image.reshape(shape).astype(np.float64).mean(axis=(1, 3))
     return np.rint(out).astype(np.uint8) if image.dtype == np.uint8 else out
+
+
+def depth_picture(depth):
+    """Log of the view distance 1/w on the viridis map; empty pixels black."""
+    hit = depth > 0
+    z = np.log(1.0 / np.where(hit, depth, 1.0))
+    rgb = colormap(z, z[hit].min(), z[hit].max())
+    rgb[~hit] = 0
+    return rgb, {
+        "z_min": float(np.exp(z[hit].min())),
+        "z_max": float(np.exp(z[hit].max())),
+    }
+
+
+def diff_picture(colour, mask):
+    """The colour image dimmed, with differing pixels (grown by 2) in red."""
+    base = (to_srgb8(colour) * 0.35).astype(np.uint8)
+    grown = mask.copy()
+    for _ in range(2):
+        grown[1:] |= grown[:-1]
+        grown[:-1] |= grown[1:]
+        grown[:, 1:] |= grown[:, :-1]
+        grown[:, :-1] |= grown[:, 1:]
+    base[grown] = [255, 40, 40]
+    return base
+
+
+def slug(name):
+    """A file-name form of an implementation name."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower().replace("+", "p")).strip("_")

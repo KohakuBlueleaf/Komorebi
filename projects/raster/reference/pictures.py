@@ -10,7 +10,6 @@ colour images of the tiny and 10^4 scenes for the README.
 
 import argparse
 import json
-import re
 from pathlib import Path
 
 import numpy as np
@@ -19,18 +18,6 @@ from projects.raster.reference import agree, harness
 from ref import native, png, raster, scenes
 
 SMALL_SCENES = ("tiny", "s10k")
-
-
-def depth_picture(depth):
-    """Log of the view distance 1/w on the viridis map; empty pixels black."""
-    hit = depth > 0
-    z = np.log(1.0 / np.where(hit, depth, 1.0))
-    rgb = png.colormap(z, z[hit].min(), z[hit].max())
-    rgb[~hit] = 0
-    return rgb, {
-        "z_min": float(np.exp(z[hit].min())),
-        "z_max": float(np.exp(z[hit].max())),
-    }
 
 
 def tiles_picture(counts):
@@ -43,24 +30,6 @@ def tiles_picture(counts):
     }
 
 
-def diff_picture(colour, mask):
-    """The colour image dimmed, with differing pixels (grown by 2) in red."""
-    base = (png.to_srgb8(colour) * 0.35).astype(np.uint8)
-    grown = mask.copy()
-    for _ in range(2):
-        grown[1:] |= grown[:-1]
-        grown[:-1] |= grown[1:]
-        grown[:, 1:] |= grown[:, :-1]
-        grown[:, :-1] |= grown[:, 1:]
-    base[grown] = [255, 40, 40]
-    return base
-
-
-def slug(name):
-    """A file-name form of an implementation name."""
-    return re.sub(r"[^a-z0-9]+", "_", name.lower().replace("+", "p")).strip("_")
-
-
 def pictures(scene, out, external):
     """Writes the pictures of one scene into out; returns the numbers on them."""
     agree.prepare(scene, None)
@@ -69,16 +38,17 @@ def pictures(scene, out, external):
     ref = found[ref_name][0]
     meta = scenes.load_scene(native.data_dir() / f"{scene}.npz")["meta"]
     info = {"triangles": int(meta[0]), "reference": ref_name, "implementations": {}}
-    rgb, info["depth"] = depth_picture(ref["depth"])
+    rgb, info["depth"] = png.depth_picture(ref["depth"])
     png.write_png(out / f"{scene}_depth.png", rgb)
     rgb, info["tiles"] = tiles_picture(ref["tile_counts"])
     png.write_png(out / f"{scene}_tiles.png", rgb)
     for name, (arrays, run) in found.items():
-        key = slug(name)
+        key = png.slug(name)
         png.write_png(out / f"{scene}_{key}_colour.png", png.to_srgb8(arrays["colour"]))
         stats = harness.compare(ref, arrays)
         png.write_png(
-            out / f"{scene}_{key}_diff.png", diff_picture(ref["colour"], stats["mask"])
+            out / f"{scene}_{key}_diff.png",
+            png.diff_picture(ref["colour"], stats["mask"]),
         )
         info["implementations"][key] = {
             "name": name,

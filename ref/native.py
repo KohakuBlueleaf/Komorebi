@@ -13,6 +13,7 @@ NATIVE = ROOT / "ref" / "native"
 CXXFLAGS = ["-std=c++17", "-O3", "-ffp-contract=off", "-pthread"]
 NVCCFLAGS = ["-std=c++17", "-O3", "--fmad=false"]
 IDLE_MIB = 100
+IDLE_UTIL = 10
 
 
 def build_dir():
@@ -66,7 +67,7 @@ def build(source, name, gpu=False, includes=()):
 
 
 def idle_gpu():
-    """Index of a GPU with no process and almost no memory in use, else None."""
+    """Index of a GPU with no process, little memory and low load, else None."""
     smi = shutil.which("nvidia-smi")
     if smi is None:
         return None
@@ -84,7 +85,7 @@ def idle_gpu():
     busy = set(apps.stdout.split())
     for line in gpus.stdout.strip().splitlines():
         index, used, util, uuid = (f.strip() for f in line.split(","))
-        if int(used) < IDLE_MIB and int(util) == 0 and uuid not in busy:
+        if int(used) < IDLE_MIB and int(util) <= IDLE_UTIL and uuid not in busy:
             return int(index)
     return None
 
