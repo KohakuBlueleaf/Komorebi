@@ -70,11 +70,8 @@ namespace km {
         return {index * base + (index < extra ? index : extra), base + (index < extra)};
     }
 
-    // Where core `me` reports record r (`parent`; me == first: the dispatcher) and how
-    // many reports it waits for first (`want`). A team inside one grid row of `row`
-    // cores (or row == 0): one level, every member to the first member. A team that
-    // spans rows: two levels, members to the first team member of their row, row
-    // leaders to the first member.
+    // Where `me` reports record r (`parent`; first member: dispatcher), after `want`
+    // reports. Within one row of `row` cores: one level; across rows: via row leaders.
     struct Report {
         uint32_t parent;
         uint32_t want;
@@ -113,8 +110,7 @@ namespace km {
     };
 
     // One pass over slots [0, depth): newer records not for `me` are consumed; the
-    // newer landed EXIT or own record with the smallest sequence is picked (checked on
-    // a copy).
+    // landed EXIT or own record with the smallest sequence is picked (from a copy).
     template <typename Word>
     inline Pass scan(
         const volatile km_record_t* ring, Word* last, uint32_t depth, uint32_t me

@@ -9,8 +9,7 @@
 namespace km {
 
     // Writer, outputs landed: waits (bounded) for `want` reports in DONE[slot], clears
-    // it, then increments the parent's DONE[slot] (on NoC1) or, as first member, pushes
-    // KM_ACK.
+    // it, then increments the parent's DONE[slot] (NoC1) or, as first member, acks.
     inline bool complete(const Core& c, const km_record_t& r) {
         const Args& a = c.args();
         const uint32_t j = slot(r);

@@ -1,8 +1,7 @@
 """The map/collect example's kernels fed by the test feeder on the last core (no X280);
 every MAP member's tile is checked against numpy. One JSON line.
 
-    python mapcollect_fed.py --jobs 20 --teams fixed --count 8
-"""
+Example: python mapcollect_fed.py --jobs 20 --teams fixed --count 8"""
 
 import argparse
 import json

@@ -1,6 +1,5 @@
-// Test feeder: the dispatcher played by one Tensix core outside every team (records
-// from DRAM, unicast to every worker, acks in its own L1, stop word on a missed
-// deadline).
+// Test feeder: one Tensix core outside every team plays the dispatcher (records from
+// DRAM, unicast to every worker, acks in its own L1, stop word on a missed deadline).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -66,9 +65,8 @@ void kernel_main() {
         noc_async_write_barrier();
     };
 
-    // Start-up: every group's READY (in KM_CTL_BOOT) and the hello {1, ctl} in the
-    // mailbox (KM_CTL_JOB). The ack words are zero from the host and only the grid
-    // writes.
+    // Start-up: every group's READY (KM_CTL_BOOT) and the hello {1, ctl} (KM_CTL_JOB).
+    // The ack words are zero from the host and only the grid writes them.
     const uint32_t groups = arg(kFdGroups);
     volatile tt_l1_ptr uint32_t* ready_words = km::l1(ctl + KM_CTL_BOOT);
     volatile tt_l1_ptr uint32_t* mailbox = km::l1(ctl + KM_CTL_JOB);

@@ -133,9 +133,8 @@ namespace km {
             return true;
         }
 
-        // Once compute and writer took the previous record: the next one into
-        // KM_CTL_JOB and a token to each. nullptr: a wait gave up (they get an EXIT
-        // record).
+        // When compute and writer took the last record: the next one into KM_CTL_JOB
+        // and a token to each. nullptr: a wait gave up (they get an EXIT record).
         const km_record_t* next() {
             const Args& a = args();
             const uint32_t code = poll(
@@ -243,9 +242,8 @@ namespace km {
         Writer() : trace_(args()) {
         }
 
-        // For each record of this core: body(record) returns whether the core reports
-        // it; writes flushed, complete() runs. EXIT is completed, then the writer
-        // leaves.
+        // Per record: body(record) says whether the core reports it; writes flushed,
+        // complete() runs. EXIT is completed, then the writer leaves.
         template <typename Body>
         void run(Body body) {
             const Args& a = args();

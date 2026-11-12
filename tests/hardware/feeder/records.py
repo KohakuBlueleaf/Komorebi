@@ -1,8 +1,7 @@
 """Records, start-up groups and results of the test feeder, as pure functions.
 
 Constants and field orders are read from the C headers, so the host and the kernels
-cannot disagree on them.
-"""
+cannot disagree on them."""
 
 import re
 from pathlib import Path
@@ -85,8 +84,7 @@ def groups(grid, workers):
     """Start-up column groups of cores 0 to workers - 1 of a (gx, gy) grid.
 
     Returns ({core: (leader, rank, members, ready_slot)}, number of groups): the
-    lowest core of each column leads; ready_slot is the column.
-    """
+    lowest core of each column leads; ready_slot is the column."""
     gx = grid[0]
     out = {}
     columns = 0

@@ -1,8 +1,7 @@
 """Runs resident worker kernels on every core but one; the last core runs the feeder.
 
-The host writes inputs and the zeroed control blocks before the launch and reads
-results only after every kernel returned.
-"""
+The host writes inputs and zeroed control blocks before the launch and reads results
+only after every kernel returned."""
 
 import os
 import random
@@ -130,9 +129,8 @@ class Fed:
     ):
         """Runs `records` (lists of 16 words) and returns a Result.
 
-        program_args(core) gives (reader, writer, compute) argument lists that follow
-        the start-up arguments.
-        """
+        program_args(core) gives the (reader, writer, compute) arguments that follow
+        the start-up arguments."""
         dev, mhz = self.device, self.mhz
         n = len(records)
         tag = (random.getrandbits(16) | 1) & 0xFFFF
