@@ -90,6 +90,14 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `batch` | commands stored per batch: every line, then one fence |
 | `settle_us` | the host's pause between a fence and its next store into the card |
 
+Event room. The dispatch kernel takes a command that ends in an event only while the
+unread events, one per busy slot and one more fit the event ring; it counts as read
+what the host last wrote into its read-count line. The host keeps a tighter rule: it
+stores a command only while the events it has not read plus the commands it stored
+without an event fit the event ring. It writes its read count with every batch, and
+while it waits whenever the kernel could be holding a command for it, so the kernel
+waits for room only while that count is on its way.
+
 ## `Run`
 
 | Call | What it does |
@@ -127,6 +135,20 @@ All derive from `km.KomorebiError`.
 | `RecordTimeout` | a team missed its deadline; the kernel stopped the grid, the run is stopped and read back | `ticket`, `slot`, `seq`, `team`, `cores`: each member that did not report, with where its reader and writer gave up |
 | `KernelFailed` | the dispatch kernel finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |
 | `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the device is left open | |
+
+The kernel's reasons for a refusal (`RecordRefused.reason`, from `KMD_REFUSE_*` in
+the kernel's header; `reason_name` is the lower-case suffix):
+
+| `reason` | `reason_name` | The command |
+|---|---|---|
+| 1 | `seg` | has a segment from 240 to 251 |
+| 2 | `flags` | sets the reserved flag bit 0 |
+| 3 | `team` | has a team of 0 cores, or one that does not lie inside the cores |
+| 4 | `exited` | came after EXIT |
+
+`issue` and `issue_many` check segments and teams before anything is queued, the
+host sets no reserved flag, and a stopped run issues nothing, so through this API a
+refusal means that the host and the kernel were built from different headers.
 
 ## Builds
 
