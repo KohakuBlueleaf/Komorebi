@@ -5,6 +5,7 @@
 #include "api/dataflow/dataflow_api.h"
 #include "dk_test.h"
 #include "komorebi/abi/km_abi.h"
+#include "komorebi/device/km_core.hpp"
 
 #ifdef DK_COMPILE_ERROR
 #error "DK_COMPILE_ERROR: the compile-error test of the harness"
@@ -42,17 +43,7 @@ namespace {
         }
 
         static uint64_t now() {
-            const uint32_t lo = (
-                *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                    RISCV_DEBUG_REG_WALL_CLOCK_L
-                )
-            );
-            const uint32_t hi = (
-                *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                    RISCV_DEBUG_REG_WALL_CLOCK_H
-                )
-            );
-            return (static_cast<uint64_t>(hi) << 32) | lo;
+            return km::wall64();
         }
 
         bool stopped() const {

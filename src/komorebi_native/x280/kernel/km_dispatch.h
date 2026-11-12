@@ -87,7 +87,7 @@
 
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */
-#define KMD_SEG_CHECK_UPLOAD 249u
+#define KMD_SEG_CHECK_UPLOAD 246u
 
 /* KMD_TRACE builds, in the region's lower half: kmd_trace_t, then per slot taken or
  * freed {kind | slot << 8 | source << 16, req, team, mtime}. */

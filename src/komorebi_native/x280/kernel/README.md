@@ -36,7 +36,9 @@ through a cache. Each pass of core 0's loop sweeps the busy slots, then takes at
 one command from each source in the order host, engine, work cluster; the engine is
 looked at only while it has a stream, a record in flight or a waiting command, the work
 cluster's ring every fourth pass.
-A record's `KM_EV_DONE` or `KM_EV_TIMEOUT` goes to the source that sent it.
+A record's `KM_EV_DONE` or `KM_EV_TIMEOUT` goes to the source that sent it. The aux of
+`KM_EV_DONE` is the first core of the team that ran the record (for `KM_F_QUEUE`, the one
+the allocator chose); a `KM_EV_TIMEOUT` names the record whose deadline passed first.
 
 Nothing the kernel writes through the cached port stays dirty at exit: core 1 flushes its
 part of the state area before it reports stopped and core 0 flushes the whole area before

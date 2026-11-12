@@ -103,7 +103,7 @@ KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte sl
 
 /* Dispatch kernel -> host: one 16-byte event per finished command, in a ring in host
    memory. */
-#define KM_EV_DONE 0u
+#define KM_EV_DONE 0u    /* aux = first core of the team that ran it */
 #define KM_EV_TIMEOUT 1u /* aux = slot; the cores are named by their state words */
 #define KM_EV_PONG 2u
 #define KM_EV_REFUSED 3u /* consumed, not run; aux = reason (KMD_REFUSE_*) */

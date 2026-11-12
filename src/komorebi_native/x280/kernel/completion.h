@@ -109,7 +109,7 @@ static inline uint32_t team_alloc(const kmd_t* k, uint32_t count) {
 }
 
 /* Sweeps busy slots' ack lines (one 8-byte load each); a slot showing its sequence is
- * freed with KM_EV_DONE to its source, ticks its time or its KM_F_RESULT result. */
+ * freed with KM_EV_DONE {aux first core, ticks time or result} to its source. */
 static inline void slots_sweep(kmd_t* k) {
     x280_fence_ir();
     uint64_t now = 0;
@@ -136,19 +136,24 @@ static inline void slots_sweep(kmd_t* k) {
         trace(k, KMD_TRACE_FREE, j, k->slot_req[j]);
         kmd_ring_t* r = &k->ring[k->slot_src[j]];
         r->nbusy--;
-        ring_push(r, k->slot_req[j], KM_EV_DONE, ticks);
+        ring_push(
+            r, k->slot_req[j], KM_EV_DONE | (k->slot_team[j] & 0xFFFFu) << 8, ticks
+        );
         k->t_last_event = now;
     }
 }
 
-/* The lowest busy slot whose deadline has passed at `now`, or KM_RING_SLOTS. */
+/* The busy slot whose deadline passed first, if any passed at `now`; else
+ * KM_RING_SLOTS. A timeout names the record whose deadline expired first. */
 static inline uint32_t slots_late(const kmd_t* k, uint64_t now) {
+    uint32_t late = KM_RING_SLOTS;
     for (uint32_t j = 0; j < k->depth; j++) {
-        if ((k->busy & (1u << j)) && now > k->slot_deadline[j]) {
-            return j;
+        if ((k->busy & (1u << j)) && now > k->slot_deadline[j] &&
+            (late == KM_RING_SLOTS || k->slot_deadline[j] < k->slot_deadline[late])) {
+            late = j;
         }
     }
-    return KM_RING_SLOTS;
+    return late;
 }
 
 /* Issues `l` into free `slot` for command `req` of source `src` (trace entry `how`):

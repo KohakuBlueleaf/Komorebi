@@ -633,7 +633,7 @@ namespace {
         }
 
         // Streams n DK_SEG_RESULT records with KM_F_RESULT (key = command number, teams
-        // of `count` cores); counts events other than DONE with dk_result(key, param).
+        // of `count` cores); counts events other than DONE {first core, dk_result}.
         std::pair<std::map<std::string, double>, std::vector<Event>> result_run(
             uint32_t n, uint32_t count, uint32_t param, double timeout_s, size_t batch
         ) {
@@ -659,7 +659,9 @@ namespace {
             auto times = stream(recs.data(), n, timeout_s, batch, 0.0, events);
             uint32_t bad = 0;
             for (const auto& e : events) {
-                if (e.status != KM_EV_DONE || e.ticks != dk_result(e.req, param)) {
+                const uint32_t first = e.req % (cores - count + 1);
+                if (e.status != (KM_EV_DONE | first << 8) ||
+                    e.ticks != dk_result(e.req, param)) {
                     if (bad++ < 8) {
                         wrong.push_back(e);
                     }

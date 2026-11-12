@@ -52,7 +52,7 @@ REFUSE_STREAMS, REFUSE_UNKNOWN, REFUSE_DEADLINE, REFUSE_QUEUE = 6, 7, 8, 9
 STREAMS = os.path.join(
     HERE, "..", "..", "..", "experiments", "stream_checks", "streams"
 )
-SEG_CHECK_UPLOAD = 249  # KMD_VERIFY_LINES images only
+SEG_CHECK_UPLOAD = 246  # KMD_VERIFY_LINES images only
 LIM_UPLOAD = 0x1800  # KMD_LIM_UPLOAD: the upload region's offset from the layout
 HOST_READY, READY_MARK = 4, 0x594452  # the ready block's first word and its mark
 TRACE_ISSUE, TRACE_FREE, TRACE_MARK = 1, 2, 0x54524345  # KMD_TRACE images only
@@ -604,6 +604,48 @@ def case_stall(device, args, leader=False):
     return out
 
 
+def case_stall_late(device, args):
+    """Depth 4, in one store batch: two 10-us records on the last core, then on the
+    other cores a record whose member --core waits for the stop word and three behind
+    it, the later two in slots 0 and 1 about 10 us later: KM_EV_TIMEOUT names the
+    stalled record, whose deadline passed first, and its slot 2."""
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out = {"tag": plan.tag}
+        plan.submit(command(SEG_DEADLINE, args.deadline_us))
+        rest = n_cores - 1
+        # 10 us on the last core: slots 0 and 1 stay busy until the next two are issued.
+        cycles = int(10e-6 * AICLK_HZ)
+        recs = [record(SEG_DELAY, rest, 1, 3 + k, cycles) for k in (0, 1)]
+        recs.append(record(SEG_STALL, 0, rest, 9, args.core))
+        recs += [record(SEG_CHECK, 0, rest, 5 + k, k) for k in range(3)]
+        req = plan.next
+        out["before"], out["stall_req"] = [req, req + 1], req + 2
+        out["events"], _ = plan.stream(np.array(recs, dtype=np.uint32), HOST_WAIT_S, 8)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=4)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    blk, ev = fin["block"], out["events"]
+    timeouts = [e for e in ev if kind(e[2])[0] == EV_TIMEOUT]
+    done = sorted(e[1] for e in ev if kind(e[2]) == (EV_DONE, n_cores - 1))
+    out["ok"] = bool(
+        len(timeouts) == 1
+        and timeouts[0][1] == out["stall_req"]
+        and kind(timeouts[0][2]) == (EV_TIMEOUT, 2)
+        and done == out["before"]
+        and blk["error"] == ERR_DEADLINE
+        and blk["req"] == out["stall_req"]
+        and blk["slot"] == 2
+        and out["cores"]["cores_finished"] == n_cores
+    )
+    return out
+
+
 def case_compile_error(device, args):
     """The worker fails to compile: the exception is that build failure, and the X280
     image was never started (or, with --image-first, was stopped)."""
@@ -905,13 +947,14 @@ def case_excl(device, args):
 
 def verify_command(i, cores):
     """Command i of the verify case and the event it must produce, (kind, aux, ticks>0):
-    every 7th a PING, every 11th a record of segment 245 (refused), else a NOP record.
-    """
+    every 7th a PING, every 11th a record of segment 245 (refused), else a NOP record
+    (its DONE names its first core)."""
     if i % 7 == 3:
         return command(SEG_PING), (EV_PONG, 0, False)
     if i % 11 == 5:
         return record(245, 0, cores), (EV_REFUSED, REFUSE_SEG, False)
-    return verify_record(i, cores), (EV_DONE, 0, True)
+    words = verify_record(i, cores)
+    return words, (EV_DONE, words[2] & 0xFFFF, True)
 
 
 def case_verify(device, args):
@@ -1177,8 +1220,9 @@ def replay_trace(entries, sent, n_cores):
 def case_queue(device, args):
     """KM_F_QUEUE records from the host among plain and KM_F_EXCL ones (DELAY of up to
     --delay-us, depth 16, KMD_TRACE image): the allocator gives every queued record the
-    lowest free team, EXCL records overlap no team in flight, the grid ran exactly the
-    traced teams; a queued count of 0 or above the grid is refused."""
+    lowest free team, which its DONE names; EXCL records overlap no team in flight, the
+    grid ran exactly the traced teams; a queued count of 0 or above the grid is refused.
+    """
     if args.image == IMAGE:
         args.image = VERIFY_IMAGE
     rng = np.random.default_rng(args.seed)
@@ -1243,6 +1287,9 @@ def case_queue(device, args):
             )
         )
         out["keys"] = keys
+        out["done_first"] = {
+            e[1]: kind(e[2])[1] for e in events if kind(e[2])[0] == EV_DONE
+        }
         out["exit"] = exit_and_stop(plan)
         return out
 
@@ -1250,7 +1297,7 @@ def case_queue(device, args):
         trace["head"], trace["entries"] = read_trace(plan)
 
     out, fin, cnt = with_kernel(device, args, body, depth=args.depth, after=after)
-    keys = out.pop("keys")
+    keys, done_first = out.pop("keys"), out.pop("done_first")
     out["finish"] = fin
     out["cores"] = core_report(cnt, n_cores, out["tag"])
     head, entries = trace["head"], trace["entries"]
@@ -1259,6 +1306,10 @@ def case_queue(device, args):
     out["faults"], out["first_faults"] = len(faults), faults[:8]
     ran = [(teams[r][0], teams[r][1], keys[r]) for r in sent if r in teams]
     out["team_mismatch"], out["first_mismatch"] = check_teams(cnt, n_cores, ran)
+    # Every DONE names the first core its record ran on (the allocator's, if queued).
+    out["done_first_ok"] = all(
+        done_first.get(r) == teams[r][0] for r in sent if r in teams
+    )
     out["queued_firsts"] = sorted(
         {teams[r][0] for r, v in sent.items() if v[0] == "queue" and r in teams}
     )[:16]
@@ -1272,6 +1323,7 @@ def case_queue(device, args):
         and len(entries) == 2 * (len(sent) + 1)
         and out["faults"] == 0
         and out["team_mismatch"] == 0
+        and out["done_first_ok"]
         and most > 1
         and fin["block"]["refused"] == 2 + out["queue_full"]
     )
@@ -1722,6 +1774,7 @@ CASES = {
     "disjoint": case_disjoint,
     "stall": case_stall,
     "stall-leader": lambda device, args: case_stall(device, args, leader=True),
+    "stall-late": case_stall_late,
     "compile-error": case_compile_error,
     "fill": case_fill,
     "exit-busy": case_exit_busy,
@@ -1746,6 +1799,7 @@ SET = [
     ("teams", {"n": 200}),
     ("disjoint", {"n": 8}),
     ("stall", {}),
+    ("stall-late", {}),
     ("fill", {"n": 50}),
     ("exit-busy", {}),
     ("after-exit", {}),
