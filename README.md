@@ -131,14 +131,17 @@ in this form.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teams-dark.svg">
-  <img src="docs/images/teams-light.svg" width="830" alt="Time runs left to right over cores 0 to 11, the first row of the grid (NoC0 row 2, columns 1 to 6 in panel 0 and 11 to 16 in panel 1). The dispatch kernel issues R1 to cores 0 to 4 and R2 to cores 6 to 11; each record lands on every core, the members work at the same time, report to their leader, and each leader acknowledges its own record, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both teams: cores 3, 4 and 6 to 8 take it only after finishing R1 or R2, core 5, in neither team, takes it at once, and its leader, core 3, acknowledges when the last member has reported.">
+  <img src="docs/images/teams-light.svg" width="830" alt="Time runs left to right over cores 0 to 11, the first row of the grid (NoC0 row 2, columns 1 to 6 in panel 0 and 11 to 16 in panel 1). The dispatch kernel issues R1 to cores 0 to 4 and R2 to cores 6 to 11; each record lands on every core, the members work at the same time, report to their leader, and each leader acknowledges its own record, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both teams. In the drawn case it lands after cores 3, 4 and 6 to 8 have begun R1 or R2, so they take it next, while core 5, in neither team, takes it at once; each member's report ends on the lane of the leader, core 3, which acknowledges after the last report. A note says this order is the drawn case, not a guarantee: a shared core may run two records in flight in either order unless the later one is issued exclusive.">
 </picture>
 
 A record is in flight from the moment the dispatch kernel stores it until its leader's
 acknowledgement arrives; it holds one of up to 16 completion slots (`depth`, 4 by
-default). Each core runs the records of its teams in sequence order, so a record whose
-team overlaps a busy one waits on the shared cores; `run.issue(..., exclusive=True)`
-holds it on the host until no team in flight overlaps it.
+default). Two records in flight together on overlapping teams may be run by a shared
+core in either order: a record of which no chunk has landed yet is invisible to the
+core. The figure draws one case, in which R3 lands after the shared cores have begun R1
+or R2, so they take it next. A record that must run after an earlier one is issued with
+`run.issue(..., exclusive=True)`, which holds it on the host until no team in flight
+overlaps it.
 
 ### One program on the grid
 
@@ -173,16 +176,24 @@ vector unit, and writes its own output tile.
   takes host commands, multicasts records with one vector store per panel, tracks up
   to 16 in flight and checks each against its deadline
   ([x280/kernel](src/komorebi_native/x280/kernel/)).
-- **Failures that say where**: every wait on the card is bounded and observes a stop
-  word; a missed deadline raises `km.RecordTimeout` with the command, slot, sequence,
+- **Failures that say where**: the reader's and the writer's waits are bounded and
+  observe a stop word, and the dispatch kernel checks a deadline per record; a missed
+  deadline raises `km.RecordTimeout` with the command, slot, sequence,
   team and each member that did not report, with where its reader and writer gave up
   ([host API](docs/reference/host.md#errors)).
 - **A per-core trace**: wall-clock stamps per record (taken, outputs written,
   completion sent), read back after the stop (`run.trace()`).
 - **Micro-op streams**: the upload format, a Python builder, the check and a simulator
   for the small programs the dispatch kernel will run to decide which records to
-  issue, with 33 reference streams for the card's interpreter to replay
-  ([streams](docs/streams.md)).
+  issue, in passes in which every issuer (each stream, then the job queue) takes a
+  turn; 89 reference streams for the card's interpreter to replay, and a test that
+  applies about a hundred small patches to the simulator and requires each to change a
+  saved answer ([streams](docs/streams.md)).
+- **Whole-card power beside timings**: `kmr power` prints each card's board power once a
+  second while a benchmark runs, and `komorebi.power.PowerSampler` wraps a section of a
+  program with mean, peak and energy per marked phase. It reads the card's `blackhole`
+  hwmon sensor, which updates every 0.1 s, opens no card and takes no lock
+  ([install](docs/install.md#watching-power)).
 - **Measured hardware facts** behind the design: how a multicast record lands, whether
   record multicasts and in-column broadcasts collide, and what one Tensix tile costs
   for a 32-ray box-tree walk ([experiments](experiments/README.md)).
@@ -365,7 +376,7 @@ be tested against; on the card the dispatch kernel does not run streams yet.
 ## Repository map
 
 ```text
-src/komorebi/                  the Python package: Program, Session, Run, layout, kmr
+src/komorebi/                  the Python package: Program, Session, Run, layout, power, kmr
   engines/stream.py            micro-op streams: builder, encoding, check, simulator
   manifest/  lang/             reserved: records, homes and segments; the thread language
 src/komorebi_native/
@@ -392,7 +403,10 @@ docs/                          concepts, host API, streams, install, development
   is the segment's own NoC code.
 - tt-metal's watcher cannot run while the X280 runtime is open. Debugging is by the
   cores' state words, "where" codes and the per-core trace, all read after the stop.
-- Reading tensors back in slow dispatch runs at about 1 MB/s.
+- A compute body's waits on its buffers are not bounded yet, so a stop while a long
+  record is in flight can leave a core's compute kernel waiting.
+- Reading tensors back in slow dispatch runs at about 1 MB/s
+  ([01_mapcollect](examples/01_mapcollect/README.md)).
 - `kmr build host` and `kmr build pymodule` take their compile flags from two targets
   that the [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch)
   project adds to a tt-metal build
@@ -431,6 +445,7 @@ environment of [install](docs/install.md):
 ```
 python -m pytest tests/core
 python -m komorebi.tools.cxx_format --check
+python -m komorebi.tools.comment_lint --check
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 ```
 

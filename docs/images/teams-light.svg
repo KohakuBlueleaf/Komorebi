@@ -122,19 +122,21 @@
 <text x="508" y="314.5" class="s b m" xml:space="preserve">R3</text>
 <rect x="520" y="326" width="146" height="16" rx="3" class="box"/>
 <text x="526" y="338.5" class="s b m" xml:space="preserve">R3</text>
-<line x1="493" y1="238" x2="688" y2="214" class="thin"/>
-<line x1="347" y1="262" x2="688" y2="214" class="thin"/>
-<line x1="681" y1="286" x2="688" y2="214" class="thin"/>
-<line x1="651" y1="310" x2="688" y2="214" class="thin"/>
-<line x1="667" y1="334" x2="688" y2="214" class="thin"/>
+<line x1="493" y1="238" x2="499" y2="214" class="thin"/>
+<line x1="347" y1="262" x2="353" y2="214" class="thin"/>
+<line x1="681" y1="286" x2="687" y2="214" class="thin"/>
+<line x1="651" y1="310" x2="657" y2="214" class="thin"/>
+<line x1="667" y1="334" x2="673" y2="214" class="thin"/>
 <line x1="694" y1="206" x2="694" y2="116" class="ln" marker-end="url(#hl)"/>
 <line x1="170" y1="34" x2="424" y2="34" class="al"/>
 <line x1="170" y1="29" x2="170" y2="39" class="al"/>
 <line x1="424" y1="29" x2="424" y2="39" class="al"/>
 <text x="180" y="26" class="s b a" xml:space="preserve">R1 and R2 in flight together: disjoint teams</text>
-<text x="546" y="362" class="s" xml:space="preserve">R3 overlaps both teams: each member takes</text>
-<text x="546" y="386" class="s" xml:space="preserve">it after its R1 or R2 (core 5 at once), and</text>
-<text x="546" y="410" class="s" xml:space="preserve">its leader, core 3, waits for the last report</text>
+<text x="546" y="356" class="s" xml:space="preserve">Drawn case: R3 lands after cores 3, 4 and</text>
+<text x="546" y="371" class="s" xml:space="preserve">6 to 8 began R1 or R2, so they take it next;</text>
+<text x="546" y="386" class="s" xml:space="preserve">core 5 takes it at once. Not a guarantee: a</text>
+<text x="546" y="401" class="s" xml:space="preserve">shared core may run two records in flight in</text>
+<text x="546" y="416" class="s" xml:space="preserve">either order, unless the later is exclusive.</text>
 <line x1="132" y1="436" x2="812" y2="436" class="ln" marker-end="url(#hl)"/>
 <text x="812" y="454" class="s m" text-anchor="end" xml:space="preserve">time (schematic)</text>
 <line x1="120" y1="472" x2="140" y2="472" class="thin" stroke-dasharray="3 3"/>
