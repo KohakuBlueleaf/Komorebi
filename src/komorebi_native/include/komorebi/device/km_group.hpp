@@ -75,6 +75,36 @@ namespace km {
         return {false, member(g, g.rank - (1u << r)), r, r};
     }
 
+    // Arrival slots a reduce needs in each member's buffer (owner: size - 1 at the
+    // root; tree: one per round).
+    inline uint32_t reduce_slots(const Group& g, uint32_t form) {
+        if (form == kReduceOwner) {
+            return g.size > 1 ? g.size - 1 : 0;
+        }
+        uint32_t r = 0;
+        while ((1u << r) < g.size && r < 31) {
+            r++;
+        }
+        return r;
+    }
+
+    // The program's arrival buffer: circular buffer `cb` of `pages` pages, `per` (P) to
+    // a slot: slot k is pages k * P to k * P + P - 1, one L1 address on all cores.
+    struct Arrival {
+        uint32_t cb;
+        uint32_t pages;
+        uint32_t per = 1;
+    };
+
+    inline uint32_t arrival_slots(const Arrival& a) {
+        return a.per == 0 ? 0 : a.pages / a.per;
+    }
+
+    // First page of slot k (a part's page i is page slot_page(a, k) + i).
+    inline uint32_t slot_page(const Arrival& a, uint32_t k) {
+        return k * a.per;
+    }
+
     // Arrivals member g waits for on port `port` (by owner: port 0, size - 1 at the
     // root; by tree: 1 in each round it receives before it sends).
     inline uint32_t reduce_wants(const Group& g, uint32_t form, uint32_t port) {

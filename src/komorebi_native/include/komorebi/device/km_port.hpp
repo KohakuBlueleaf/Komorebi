@@ -9,13 +9,6 @@
 
 namespace km {
 
-    // The program's arrival buffer: circular buffer `cb` of `pages` pages (S). Slot k
-    // is page k, at the same L1 address on every core (one program, one layout).
-    struct Arrival {
-        uint32_t cb;
-        uint32_t pages;
-    };
-
     // Bound of a wait that lies behind a port's wait (for a part that needs
     // arrivals), in wait limits: the port's give-up comes first and names the port.
     constexpr uint32_t kBehindPort = 2;
@@ -33,11 +26,11 @@ namespace km {
     // pointers, so any kernel of any core computes the same address.
     inline uint32_t slot_addr(const Arrival& a, uint32_t k) {
         const LocalCBInterface& i = get_local_cb_interface(a.cb);
-        return i.fifo_limit - i.fifo_size + k * i.fifo_page_size;
+        return i.fifo_limit - i.fifo_size + slot_page(a, k) * i.fifo_page_size;
     }
 
-    // Writer: `pages` pages at the front of `cb` into slot k of core `to`, then a bump
-    // of its port (each step bounded), then pop. False: gave up, port in the top byte.
+    // Writer: `pages` pages (at most P) at the front of `cb` into slot k of `to`, a
+    // bump of its port (each step bounded), pop. False: gave up, port in the top byte.
     inline bool emit(
         const Writer& wr,
         const km_record_t& r,
@@ -50,10 +43,8 @@ namespace km {
     ) {
         const uint32_t named = slot(r) | port << 8;
         const uint32_t bytes = pages * get_local_cb_interface(cb).fifo_page_size;
-        const uint32_t room = (
-            (arr.pages - k) * get_local_cb_interface(arr.cb).fifo_page_size
-        );
-        if (port >= KM_PORTS || k >= arr.pages || bytes > room) {
+        const uint32_t room = arr.per * get_local_cb_interface(arr.cb).fifo_page_size;
+        if (port >= KM_PORTS || k >= arrival_slots(arr) || bytes > room) {
             wr.gave_up(kStWriter, kGaveBadItem, kWhereEmit, named, r.seq);
             return false;
         }
@@ -129,7 +120,7 @@ namespace km {
         const Group& g,
         uint32_t form
     ) {
-        if (form == kReduceOwner && g.size > arr.pages + 1) {  // a slot per sender
+        if (reduce_slots(g, form) > arrival_slots(arr)) {  // a slot per sender
             rd.gave_up(kStReader, kGaveBadItem, kWherePort, slot(r), r.seq);
             return false;
         }
@@ -168,8 +159,8 @@ namespace km {
 #else
 namespace km {
 
-    // Compute: waits for the S pages arrive() hands over; pages are then read by slot
-    // index (copy_tile(arr.cb, k, ...)). False: the tile is stopping.
+    // Compute: waits for the S pages arrive() hands over; pages are then read by index
+    // (copy_tile(arr.cb, slot_page(arr, k) + i, ...)). False: the tile is stopping.
     inline bool take(const Compute& cp, const Arrival& arr) {
         return cp.wait_front(arr.cb, arr.pages, kBehindPort);
     }
@@ -179,8 +170,8 @@ namespace km {
         cb_pop_front(arr.cb, arr.pages);
     }
 
-    // Compute side of a reduce: each hand-over in round order; combine(k) for its
-    // slots in rank order (owner: 0 to size - 2; tree: the round's slot).
+    // Compute side of a reduce: each hand-over in round order; combine(k) for its slots
+    // in rank order (owner: 0 to size - 2; tree: the round's), from slot_page(arr, k).
     template <typename Combine>
     inline bool reduce(
         const Compute& cp,

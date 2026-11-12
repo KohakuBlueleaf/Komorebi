@@ -102,3 +102,47 @@ def test_digit_group_is_the_members_of_one_block(tmp_path):
     for t, (base, size, rank, me) in enumerate(rows):
         assert base == 10 + t // 4 * 4 and rank == t % 4 and me == 10 + t
         assert size == (4 if t < 8 else 3)
+
+
+PAGES = r"""
+#include <cstdio>
+#include <cstdlib>
+#include "komorebi/device/km_group.hpp"
+
+int main(int argc, char** argv) {
+    km_record_t r = {};
+    r.team = km::make_team(0, std::atoi(argv[1]));
+    const unsigned form = std::atoi(argv[2]);
+    const km::Arrival arr = {1, 118, 2};
+    const unsigned need = km::reduce_slots(km::team_group(r, 0), form);
+    std::printf("%u %u\n", km::arrival_slots(arr), need);
+    for (unsigned me = 1; me < km::count(r); me++) {
+        const km::ReduceStep s = km::reduce_send(km::team_group(r, me), form);
+        std::printf("%u %u\n", s.to, km::slot_page(arr, s.slot));
+    }
+    return 0;
+}
+"""
+
+
+def test_parts_of_two_pages_land_on_their_own_pages(tmp_path):
+    src, exe = tmp_path / "pages.cpp", tmp_path / "pages"
+    src.write_text(PAGES)
+    cmd = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(INCLUDE)]
+    subprocess.run([*cmd, str(src), "-o", str(exe)], check=True)
+
+    def run(size, form):
+        args = [str(exe), str(size), str(form)]
+        out = subprocess.run(args, capture_output=True, text=True, check=True)
+        rows = [tuple(map(int, line.split())) for line in out.stdout.splitlines()]
+        return rows[0], rows[1:]
+
+    for size, form in [(60, 0), (119, 1)]:
+        (slots, needed), sends = run(size, form)
+        assert slots == 59 and needed <= slots
+        pages = {}  # receiver -> pages its senders fill, 2 per part
+        for to, first in sends:
+            got = pages.setdefault(to, set())
+            assert first % 2 == 0 and first + 2 <= 118 and not {first, first + 1} & got
+            got |= {first, first + 1}
+    assert run(61, 0)[0] == (59, 60)  # by owner, 61 members need 60 slots: too many
