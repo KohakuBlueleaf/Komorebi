@@ -4,7 +4,6 @@ See README.md (`merge_fed.py`: the same jobs under the test feeder).
 """
 
 import argparse
-import contextlib
 import json
 import time
 
@@ -16,7 +15,7 @@ import ttnn
 import komorebi as km
 
 KERNELS = mf.KERNELS
-M, K = mf.M, mf.K
+M = km.abi.constants(KERNELS / "merge.h", known=km.abi.headers().constants)
 TILE, NONE = mf.TILE, mf.NONE
 T0 = time.monotonic()
 
@@ -60,24 +59,6 @@ def parse():
     return args
 
 
-@contextlib.contextmanager
-def fp32_unpack():
-    """Workaround: Program.compute has no unpack_to_dest_mode, and the compute kernel
-    copies float32 tiles into DST unrounded; set here on the session's descriptor."""
-    plain = ttnn.ComputeConfigDescriptor
-
-    def config(**kwargs):
-        c = plain(**kwargs)
-        c.unpack_to_dest_mode = [ttnn.UnpackToDestMode.UnpackToDestFp32] * 64
-        return c
-
-    ttnn.ComputeConfigDescriptor = config
-    try:
-        yield
-    finally:
-        ttnn.ComputeConfigDescriptor = plain
-
-
 def program(args, inp, out):
     page = M["kTileBytes"]
     return km.Program(
@@ -92,37 +73,25 @@ def program(args, inp, out):
             "reader": ttnn.TensorAccessorArgs(inp).get_compile_time_args(),
             "writer": ttnn.TensorAccessorArgs(out).get_compile_time_args(),
         },
-        compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
+        # the compute kernel copies float32 tiles into DST unrounded
+        compute={
+            "math_fidelity": "HiFi4",
+            "fp32_dest_acc_en": True,
+            "unpack_to_dest_mode": "UnpackToDestFp32",
+        },
         depth=args.depth,
         segments=KERNELS / "merge.h",
     )
 
 
-def port_words(run):
-    """[cores, KM_PORTS, 2] (count, wanted) of every port, after the stop. The port
-    words are not in run.state(): read from the control blocks."""
-    rows = ttnn.to_torch(run.backend.ctl).numpy().astype(np.int64) & 0xFFFFFFFF
-    start = run.backend.ctl_offset + K["KM_CTL_PORT"] // 4
-    stride = K["KM_PORT_STRIDE"] // 4
-    words = rows[:, start : start + K["KM_PORTS"] * stride]
-    words = words.reshape(len(words), K["KM_PORTS"], stride)
-    return words[:, :, [K["KM_PORT_COUNT"], K["KM_PORT_WANT"]]]
-
-
-def gave_up(run):
-    """Cores that gave up anywhere but waiting for a record, with the port a reader
-    or writer waited on (the top byte of its word, not decoded by run.state())."""
-    words = run.state_words()
-    keys = {"reader": "kStReader", "writer": "kStWriter", "compute": "kStCompute"}
+def gave_up(states):
+    """Cores that gave up anywhere but waiting for a record (with the port a reader or
+    writer waited on)."""
     out = []
-    for c in run.state():
-        g = {k: dict(c[k]) for k in keys if c[k]}
-        if not any(v["where"] != "next" for v in g.values()):
-            continue
-        for k, v in g.items():
-            if v["where"] in ("port", "emit"):
-                v["port"] = int(words[c["core"], K[keys[k]]]) >> 24
-        out.append({"core": c["core"], **g})
+    for c in states:
+        g = {k: c[k] for k in ("reader", "writer", "compute") if c[k]}
+        if any(v["where"] != "next" for v in g.values()):
+            out.append({"core": c["core"], **g})
     return out
 
 
@@ -130,12 +99,11 @@ def launch(session, args, jobs, inputs, out, stall=-1, stall_member=NONE):
     """One load: the jobs (job j writes output part j % parts), each asking for its
     result word; job `stall` has member `stall_member` stall, under a deadline long
     enough for its receiver's wait to give up first. Then the stop and the state."""
-    with fp32_unpack():
-        run = session.load(
-            program(args, inputs[0], out),
-            deadline=args.deadline if stall < 0 else 4 * args.wait,
-            wait=args.wait,
-        )
+    run = session.load(
+        program(args, inputs[0], out),
+        deadline=args.deadline if stall < 0 else 4 * args.wait,
+        wait=args.wait,
+    )
     log(f"loaded, {len(jobs)} jobs")
     tickets, timed_out = [], None
     t0 = time.perf_counter()
@@ -162,7 +130,6 @@ def launch(session, args, jobs, inputs, out, stall=-1, stall_member=NONE):
         log(f"timeout: {err}")
     events = [run.event(t) for t in tickets]
     states = run.state()
-    ports = port_words(run)
     summary = {
         "kernel": {k: run.result()[k] for k in ("error_name", "records", "events")},
         "done": sum(e is not None and e.kind == "done" for e in events),
@@ -172,11 +139,13 @@ def launch(session, args, jobs, inputs, out, stall=-1, stall_member=NONE):
             for k in ("reader_end", "writer_end", "compute_end")
         },
         "compute_wrong": sum(sum(c["compute_wrong"]) for c in states),
-        "gave_up": gave_up(run)[:8],
+        "gave_up": gave_up(states)[:8],
         "waiting_ports": {
-            c: {p: int(w - n) for p, (n, w) in enumerate(ports[c]) if w}
-            for c in range(len(ports))
-            if ports[c, :, 1].any()
+            c["core"]: {
+                p: s["want"] - s["count"] for p, s in enumerate(c["ports"]) if s["want"]
+            }
+            for c in states
+            if any(s["want"] for s in c["ports"])
         },
     }
     if timed_out is not None:

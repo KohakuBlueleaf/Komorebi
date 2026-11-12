@@ -5,7 +5,6 @@ kernel on X280 cluster 0 (`--feeder`: through the test feeder, no X280). See REA
 
 import argparse
 import json
-import re
 import sys
 import time
 from pathlib import Path
@@ -22,13 +21,13 @@ import torch  # noqa: E402
 import ttnn  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import layout  # noqa: E402
+from komorebi import layout, native, state  # noqa: E402
 
 K = rec.K
 KERNELS = HERE / "kernels"
 LANE_HPP = rec.INCLUDE / "komorebi" / "device" / "km_lane.hpp"
 LANE_FIELDS = rec.struct_fields(LANE_HPP, "LaneArgs")
-EX = rec.constants(KERNELS / "broadcast.h")
+EX = km.abi.constants(KERNELS / "broadcast.h", known=km.abi.headers().constants)
 TILE = 32
 COLUMN, ROW = 0, 1  # lane ids: columns on NoC1 (writer), rows on NoC0 (reader)
 T0 = time.monotonic()
@@ -59,44 +58,24 @@ def parse():
     return p.parse_args()
 
 
-def noc0_x():
-    """NoC0 x of each logical column, from the card's Tensix harvesting mask."""
-    path = ttnn._ttnn.cluster.serialize_cluster_descriptor()
-    masks = re.findall(r"\bharvest_mask:\s*(\d+)", Path(path).read_text())
-    if len(masks) != 1:
-        raise RuntimeError(f"expected one chip's harvest_mask in {path}")
-    return layout.blackhole_noc0_x(int(masks[0]))
-
-
-def noc_words(device, grid):
-    """Each core's NoC address as x | y << 16, in core order."""
-    words = []
-    for x, y in layout.core_order(grid):
-        c = device.worker_core_from_logical_core(ttnn.CoreCoord(x, y))
-        words.append(c.x | c.y << 16)
-    return words
-
-
-def lane_plan(grid, noc, cores, rect, window, pages):
+def lane_plan(nocs, cores, rect, window, pages):
     """Team, per-core program arguments and the rectangle's cores (row, column), for
-    `cores` cores of a grid whose NoC addresses are `noc` (core order)."""
+    `cores` cores of a grid whose NoC coordinates are `nocs` (a layout.Nocs)."""
     x0, y0, nx, ny = rect
-    gx = grid[0]
+    gx = nocs.grid[0]
     first = y0 * gx + x0
     team = layout.Team(first, (y0 + ny - 1) * gx + x0 + nx - first)
     if team.first + team.count > cores:
         raise ValueError(f"{rect} reaches core {cores}")
-    xs = noc0_x()
-    grid_panels = layout.panels(xs)
-    noc_xy = {c: (v & 0xFFFF, v >> 16) for c, v in zip(layout.core_order(grid), noc)}
-    noc0 = {c: (xs[c[0]], xy[1]) for c, xy in noc_xy.items()}
-    common = (grid, grid_panels, team, rect)
+    grid_panels = nocs.panels
+    common = (nocs.grid, grid_panels, team, rect)
+    at = (nocs.noc0, nocs.noc_xy)
     by_lane = {
         COLUMN: layout.lane_args(
-            *common, "column", 1, noc0, noc_xy, (COLUMN, EX["kCbCol"], window, pages)
+            *common, "column", 1, *at, (COLUMN, EX["kCbCol"], window, pages)
         ),
         ROW: layout.lane_args(
-            *common, "row", 0, noc0, noc_xy, (ROW, EX["kCbRow"], window, pages)
+            *common, "row", 0, *at, (ROW, EX["kCbRow"], window, pages)
         ),
     }
     place = {
@@ -120,32 +99,20 @@ def lane_plan(grid, noc, cores, rect, window, pages):
     return team, program_args, place
 
 
-def lane_words(ctl, core, lane):
-    """GAVE and STATS words of one lane area of a core's control block."""
-    base = (K["KM_CTL_LANE"] + lane * K["KM_LANE_BYTES"]) // 4
-    gave = ctl[core, base + K["KM_LANE_GAVE"] // 4 :][:3]
-    stats = ctl[core, base + K["KM_LANE_STATS"] // 4 :][:3]
-    return [int(v) for v in gave], [int(v) for v in stats]
-
-
-def lane_summary(ctl, team, place):
+def lane_summary(lanes, team, place):
     """Blocks every lane handed over, the longest lane wait (cycles), and each lane
-    give-up by core: lane, where, block, sequence number."""
-    wheres = {v: k[6:].lower() for k, v in K.items() if k.startswith("kWhere")}
-    stats = [lane_words(ctl, c, ln)[1] for c in place for ln in (COLUMN, ROW)]
-    gave = []
-    for core in team.members:
-        for lane in (COLUMN, ROW):
-            g, _ = lane_words(ctl, core, lane)
-            if g[0]:
-                where = wheres.get(g[0] & 0xFF, g[0] & 0xFF)
-                gave.append(
-                    {"core": core, "lane": g[0] >> 8, "where": where, "block": g[1]}
-                    | {"seq": g[2]}
-                )
+    give-up by core: lane, where, block, sequence number. `lanes[core]`: the core's
+    lane areas (as run.state() gives them)."""
+    areas = [lanes[c][ln] for c in place for ln in (COLUMN, ROW)]
+    gave = [
+        {"core": core} | lanes[core][lane]["gave_up"]
+        for core in team.members
+        for lane in (COLUMN, ROW)
+        if lanes[core][lane]["gave_up"]
+    ]
     return {
-        "lane_blocks": sum(s[0] for s in stats),
-        "lane_wait_cycles_max": max((s[1] | s[2] << 32 for s in stats), default=0),
+        "lane_blocks": sum(a["blocks"] for a in areas),
+        "lane_wait_cycles_max": max((a["wait_cycles"] for a in areas), default=0),
         "lane_gave_up": gave,
     }
 
@@ -245,12 +212,10 @@ def run_host(session, args, rng, stall_job):
     """One load of the program in the session: the jobs issued through the dispatch
     kernel, then the stop (or the timeout), the state read-out and the check."""
     device = session.device
-    g = device.compute_with_storage_grid_size()
-    grid = (g.x, g.y)
+    nocs = session.nocs()
     rect = tuple(int(v) for v in args.rect.split(","))
     w, p = args.window, args.pages
-    noc = noc_words(device, grid)
-    team, program_args, place = lane_plan(grid, noc, grid[0] * grid[1], rect, w, p)
+    team, program_args, place = lane_plan(nocs, len(nocs.words), rect, w, p)
     sets, inputs, out = make_data(device, rng, team, rect, args)
     program = km.Program(
         "broadcast",
@@ -288,14 +253,12 @@ def run_host(session, args, rng, stall_job):
         log(f"timeout: {err}")
     result = run.result()
     states = run.state()
-    ctl = run.backend.ctl  # the lane areas are not in run.state()
-    rows = ttnn.to_torch(ctl).numpy().astype(np.int64) & 0xFFFFFFFF
     out_json = describe(args, rect, team) | {
         "kernel": {k: result[k] for k in ("error_name", "records", "events")},
         "us_per_job_host": round(host_s * 1e6 / args.jobs, 2),
         "cores_magic_ok": sum(c["magic_ok"] for c in states),
         "cores_ended": kernel_ends(states),
-        **lane_summary(rows[:, run.backend.ctl_offset :], team, place),
+        **lane_summary([c["lanes"] for c in states], team, place),
         "core_gave_up": core_gave_up(states),
     }
     if timed_out is not None:
@@ -314,9 +277,9 @@ def run_fed(device, runner, args, rng, stall_job):
     """The same jobs, issued by the test feeder on the grid's last core."""
     rect = tuple(int(v) for v in args.rect.split(","))
     w, p = args.window, args.pages
-    team, program_args, place = lane_plan(
-        runner.grid, runner.noc, runner.workers, rect, w, p
-    )
+    gx, gy, table, noc0 = native.load_module().core_nocs(device)
+    nocs = layout.nocs((gx, gy), table, noc0)
+    team, program_args, place = lane_plan(nocs, runner.workers, rect, w, p)
     sets, inputs, out = make_data(device, rng, team, rect, args)
     seg = EX["kSegRead"] if args.read else EX["kSegCast"]
     records = [
@@ -361,7 +324,7 @@ def run_fed(device, runner, args, rng, stall_job):
         "feeder": {k: s[k] for k in ("status", "slot", "seq", "index", "done")},
         "us_per_job": round(s["span_cycles"] / res.mhz / max(s["done"], 1), 2),
         "cores_ended": kernel_ends(states),
-        **lane_summary(res.ctl, team, place),
+        **lane_summary([state.lanes(row) for row in res.ctl], team, place),
         "core_gave_up": core_gave_up(states),
     }
     if s["status"] == "done" and not args.no_check:
