@@ -460,3 +460,16 @@ def test_a_queued_record_takes_its_count_and_the_kernel_picks_the_team():
     assert port.issued[-1][4] == (60, 30) and run.team(queued) == (None, 30)
     with pytest.raises(ValueError, match="team"):
         run.issue(1, 121, queued=True)
+
+
+def test_wait_any_returns_the_first_event_of_a_set_and_forgets_only_it():
+    run, port, _ = make_run()
+    port.auto = False
+    a, b = run.issue(1, (0, 8)), run.issue(1, (8, 8))
+    with pytest.raises(WaitTimeout):
+        run.wait_any([b, a], timeout=0.05)
+    port.auto = True
+    assert run.wait_any([b, a]).ticket == a
+    assert run.wait_any([b]).ticket == b
+    with pytest.raises(ValueError, match="returned or forgotten"):
+        run.wait_any([a])

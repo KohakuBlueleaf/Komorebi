@@ -340,6 +340,39 @@ class Run:
         self.forget(wanted)
         return events[0] if single else events
 
+    def wait_any(self, tickets, timeout=10.0):
+        """Sends what is queued and waits for the first event among the tickets;
+        returns it (the lowest ticket if several arrived) and forgets that ticket.
+        Raises as wait() does, for that ticket."""
+        wanted = np.unique(np.asarray(list(tickets), np.int64))
+        if not wanted.size or wanted.max() >= self._next or wanted.min() < 1:
+            raise ValueError("no tickets, or a ticket that was never issued")
+        self._hand()
+        if (
+            (wanted < self._base) | self._gone[np.maximum(wanted - self._base, 0)]
+        ).any():
+            raise ValueError("a ticket whose event was returned or forgotten")
+        t0 = time.perf_counter()
+        try:
+            deadline = time.monotonic() + timeout
+            while not self._arrived(wanted).any():
+                self._check_alive()
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise WaitTimeout(
+                        f"none of {wanted.size} tickets done in {timeout} s",
+                        wanted.tolist(),
+                    )
+                self._step_any(wanted, left)
+        finally:
+            self.wait_s += time.perf_counter() - t0
+        ticket = int(wanted[self._arrived(wanted)][0])
+        ev = self.event(ticket)
+        self.forget([ticket])
+        if ev.kind == "refused":
+            raise RecordRefused(ticket, ev.aux, self._refusals)
+        return ev
+
     def forget(self, tickets):
         """Releases what the run keeps for tickets whose events arrived (the event,
         and the team and sequence unless the run is traced): for callers that read
@@ -399,6 +432,19 @@ class Run:
         rows = self.port.wait(
             (pending & M32).astype(np.uint32), upto & M32, min(left, WAIT_SLICE_S)
         )
+        self.native_s += time.perf_counter() - t
+        if len(rows):
+            self._take(rows)
+        elif self.port.host_word(0) >= self.h["KMD_STATE_DONE"]:
+            self._fail_kernel("the dispatch kernel finished on its own")
+
+    def _step_any(self, wanted, left):
+        """Stores one batch up to the last ticket, then reads events until any arrives
+        (or a slice ends): the native loop returns on the first event."""
+        t = time.perf_counter()
+        rows = self.port.wait(np.zeros(0, np.uint32), int(wanted[-1]) & M32, 0.0)
+        if not len(rows):
+            rows = self.port.wait_events(min(left, WAIT_SLICE_S))
         self.native_s += time.perf_counter() - t
         if len(rows):
             self._take(rows)
