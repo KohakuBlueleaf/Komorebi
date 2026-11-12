@@ -1,5 +1,5 @@
-// Merge-tree writer: member 0 writes the total to output pages a3 on, every other
-// member sends its part to its receiver (owner or tree); member a5 stalls instead.
+// Merge-tree writer: member 0 writes the total to output pages a3 on and returns its
+// checksum as the result word; every other member sends its part (a5 stalls instead).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -31,6 +31,16 @@ void kernel_main() {
         if (!km::reduce_result(wr, kCbOut, r.a7)) {
             return false;
         }
+        // The record's result word: the total's 32-bit words summed (a checksum).
+        const volatile tt_l1_ptr uint32_t*
+            words = (
+                reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(kCbOut))
+            );
+        uint32_t sum = 0;
+        for (uint32_t i = 0; i < r.a7 * kTileBytes / 4; i++) {
+            sum += words[i];
+        }
+        wr.result(sum);
         const auto out = TensorAccessor(out_args, r.a2);
         for (uint32_t d = 0; d < r.a7; d++) {
             noc_async_write_page(r.a3 + d, out, get_read_ptr(kCbOut) + d * kTileBytes);
