@@ -114,7 +114,7 @@ class Session:
         trace=0,
         deadline=1.0,
         wait=2.0,
-        idle=120.0,
+        idle=0.0,
         kernel_idle=0.0,
         start=10.0,
         host_depth=64,
@@ -240,7 +240,7 @@ class _Backend:
             "depth": depth,
             "row": grid[0],
             "wait_limit": abi.limit_units(wait, self.mhz),
-            "idle_limit": abi.limit_units(idle, self.mhz),
+            "idle_limit": abi.limit_units(idle, self.mhz) if idle else 0,  # 0: none
             "trace": self.trace_t.buffer_address() if self.trace_t else 0,
             "trace_cap": self.trace_cap,
         }

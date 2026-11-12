@@ -160,7 +160,9 @@ namespace km {
             );
             volatile tt_l1_ptr uint32_t* last = state() + kStLast;
             const uint64_t t0 = wall64();
-            const uint64_t end = t0 + (static_cast<uint64_t>(a.idle_limit) << 10);
+            const uint64_t end =
+                (a.idle_limit == 0 ? ~0ull
+                                   : t0 + (static_cast<uint64_t>(a.idle_limit) << 10));
             uint32_t passes = 0, gave = kGaveNone, seq = 0;
             for (;;) {
                 invalidate_l1_cache();

@@ -90,7 +90,7 @@ namespace km {
         uint32_t depth;       // ring slots scanned, 1 to KM_RING_SLOTS
         uint32_t row;         // cores per grid row (completion); 0: one level always
         uint32_t wait_limit;  // bound of a wait for another core, 1024-cycle units
-        uint32_t idle_limit;  // bound of a wait for the next record, same units
+        uint32_t idle_limit;  // bound of a wait for the next record; 0: none
         uint32_t trace;       // DRAM address of the trace, a page per core; 0: none
         uint32_t trace_cap;   // sequences traced: 1 to trace_cap
     };
@@ -151,12 +151,13 @@ namespace km {
     }
 
     // Polls ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle
-    // units; kGaveStop `grace` units after *stop is set (0: at once).
+    // units (0: no limit); kGaveStop `grace` units after *stop is set (0: at once).
     template <typename Ready>
     inline uint32_t poll_stop(
         volatile tt_l1_ptr uint32_t* stop, Ready ready, uint32_t limit, uint32_t grace
     ) {
-        uint64_t end = wall64() + (static_cast<uint64_t>(limit) << 10);
+        uint64_t end =
+            (limit == 0 ? ~0ull : wall64() + (static_cast<uint64_t>(limit) << 10));
         bool stopped = false;
         for (uint32_t i = 0;; i++) {
             invalidate_l1_cache();

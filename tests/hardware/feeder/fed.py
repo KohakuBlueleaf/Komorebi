@@ -122,7 +122,7 @@ class Fed:
         depth=4,
         deadline_s=0.05,
         wait_s=2.0,
-        idle_s=10.0,
+        idle_s=0.0,
         trace_cap=0,
         send_exit=True,
         release=0,
@@ -159,7 +159,7 @@ class Fed:
             "depth": depth,
             "row": self.grid[0],
             "wait_limit": rec.limit_units(wait_s, mhz),
-            "idle_limit": rec.limit_units(idle_s, mhz),
+            "idle_limit": rec.limit_units(idle_s, mhz) if idle_s else 0,  # 0: none
             "trace": trace_t.buffer_address() if trace_t is not None else 0,
             "trace_cap": trace_cap,
         }
