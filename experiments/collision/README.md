@@ -208,10 +208,25 @@ an inference from the documentation, not tested beyond the runs above). It costs
 nothing measurable here (block and record times within 1.5% of NoC0's). On NoC1 the
 lane sender is the lane's bottom core and the data-movement kernel on NoC1 issues it.
 
+### Lanes along rows
+
+`--along row` cuts every grid row into lanes of 2, 3 or 6 cores inside each panel (the
+sender at the left end on NoC0, the right end on NoC1); a row lane that gives up does
+not read its peer's state words. Lanes on NoC0 in every row, the record kernel on NoC1:
+
+| lanes | block | records | core-records checked | blocks broadcast | wrong or missing | us/record | us/block |
+|---|---|---|---|---|---|---|---|
+| 2 | 64 B | 10^3 | 120,000 | 1,044,322 | 0 | 0.7730 | 0.728 |
+| 6 | 64 B | 10^5 | 12,000,000 | 1,941,332 | 0 | 0.7761 | 0.853 |
+| 6 | 2 KiB, stream, window 4 (duty 0.56) | 10^5 | 12,000,000 | 3,489,748 (34,430 checked in full) | 0 | 0.7772 | 0.450 |
+
+No give-up, no missing stamp, no hang: row lanes on NoC0 behaved as the column lanes
+did, in these three runs (far fewer than the column runs above).
+
 ## Not tested
 
 - A sender inside multicast plus barrier more than 74% of the time (several blocks in
   flight per barrier); record depth 1; the host-fed dispatch path; lanes of other
   lengths than 2, 5 and 10.
-- Broadcasts that leave one column, or cross a panel boundary.
+- Broadcasts that leave one column or row, or cross a panel boundary; row lanes on NoC1.
 - Other cards, clocks, or harvesting patterns than this one p150a.
