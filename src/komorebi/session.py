@@ -283,7 +283,7 @@ class Session:
         if work is not None:
             try:
                 run.thread = self._start_thread(
-                    dispatch, work, regions, work_image, on_card
+                    dispatch, work, regions, work_image, on_card, run
                 )
             except BaseException:
                 run.abort()
@@ -291,13 +291,14 @@ class Session:
             self.log("thread started" if on_card else "thread on the host")
         return run
 
-    def _start_thread(self, dispatch, work, regions, image, on_card):
-        """Starts the thread on the card, or readies its host fallback."""
-        run = kt.ThreadRun(
-            work, dispatch, regions, image, on_card, regions.base, regions.check
+    def _start_thread(self, dispatch, work, regions, image, on_card, run):
+        """Starts the thread on the card, or readies its host fallback (which
+        issues through `run`)."""
+        thread = kt.ThreadRun(
+            work, dispatch, regions, image, on_card, regions.base, regions.check, run
         )
-        run.start()
-        return run
+        thread.start()
+        return thread
 
 
 def _pages(data, pages):

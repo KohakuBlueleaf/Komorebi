@@ -179,12 +179,13 @@ with km.Session() as session:
 
 **The host fallback.** `session.load(prog, thread="host")` loads the same program
 without the image: `run.thread_result()` then calls
-`host_fallback(regions, words) -> (code, words)` with each region as a `uint32` array
-holding its initial contents (zeros for a region given as a size); `run.thread.read`
-then returns those arrays as the fallback left them. A thread is
-developed this way first, and its card result is checked against it bit for bit. The
-fallback sees no `Run`: a thread that issues records is run host-fed by keeping its
-decision in a plain-C file the host also loads
+`host_fallback(regions, words, run) -> (code, words)` with each region as a `uint32`
+array holding its initial contents (zeros for a region given as a size) and the run's
+`Run`, through which it issues the records the thread would issue through its ring
+(`run.issue(..., result=True)`, `run.wait`); `run.thread.read` then returns those
+arrays as the fallback left them. A thread is developed this way first, and its card
+result is checked against it bit for bit. A thread whose decision is a plain-C file
+can give the fallback the same file through ctypes, so both run one program
 ([07_work_cluster](../examples/07_work_cluster/)).
 
 ## Limits

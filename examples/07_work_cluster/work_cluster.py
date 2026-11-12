@@ -172,52 +172,64 @@ def read_state(state, cores):
     return rows[:cores, 0].astype(np.uint64)
 
 
-def program(state, words, thread):
-    """The grid's kernels; with `thread`, the X280 thread that drives them."""
+def program(state, words, fallback):
+    """The grid's kernels and the X280 thread that drives them, with `fallback` as
+    its host fallback."""
     prog = km.Program(
         "work_cluster",
         kernels=HERE / "kernels",
         buffers=[km.Buffer(index=16, format="uint32", page_bytes=64, pages=1)],
         compile_args={"writer": ttnn.TensorAccessorArgs(state).get_compile_time_args()},
     )
-    if thread:
-        prog.thread(
-            cluster=1,
-            sources=[HERE / "thread" / "driver.c", HERE / "decide.c"],
-            includes=[HERE],
-            regions={"teams": 4 * words[4]},
-            words=words,
-            deadline=10.0,
-        )
+    prog.thread(
+        cluster=1,
+        sources=[HERE / "thread" / "driver.c", HERE / "decide.c"],
+        includes=[HERE],
+        regions={"teams": 4 * words[4]},
+        words=words,
+        host_fallback=fallback,
+        deadline=10.0,
+    )
     return prog
 
 
+def host_fallback(lib, records):
+    """The thread on the host: decide.c's loop issuing through the run, region 0 and
+    the result words as the thread leaves them; the records issued go to `records`."""
+
+    def fallback(regions, words, run):
+        code, rounds, total, trail, teams, issued = hostfed(lib, words, send_run(run))
+        regions["teams"][: len(teams)] = teams
+        records.extend(issued)
+        return code, [rounds, total, trail]
+
+    return fallback
+
+
 def card_paths(args, words, which):
-    """The host-fed path and the thread on the card, each on its own state tensor.
-    Returns {path: (code, rounds, sum, trail, teams, records or None, state)}."""
+    """One program, its thread on the host (`hostfed`) or on the card (`thread`), each
+    run on its own state tensor. Returns {path: (code, rounds, sum, trail, teams,
+    records or None, state)}."""
     lib, got = decision(), {}
     with km.Session(log=log) as session:
         log("device open")
         for path in which:
             state = state_tensor(session.device, args.cores)
             w = [state.buffer_address(), *words[1:]]
-            run = session.load(program(state, w, path == "thread"), deadline=1.0)
-            log(f"{path}: loaded")
-            if path == "hostfed":
-                t = time.monotonic()
-                out = hostfed(lib, w, send_run(run))
-                log(f"{path}: {out[1]} rounds in {time.monotonic() - t:.3f} s")
-            else:
-                r = run.thread_result(timeout=15.0)
-                log(f"{path}: {r.state}, code {r.code}, {r.us:.0f} us")
-                out = None
+            records = []
+            prog = program(state, w, host_fallback(lib, records))
+            where = "host" if path == "hostfed" else "card"
+            run = session.load(prog, deadline=1.0, thread=where)
+            log(f"{path}: loaded, thread on the {where}")
+            t = time.monotonic()
+            r = run.thread_result(timeout=15.0)
+            log(f"{path}: {r.state}, code {r.code}, {time.monotonic() - t:.3f} s")
             run.stop()
             log(f"{path}: stopped")
-            if out is None:
-                teams = run.thread.read("teams").view(np.uint32)
-                rounds = r.words[0] if r.words else 0
-                out = (r.code, *(list(r.words) + [0, 0, 0])[:3])
-                out = (*out, [int(t) for t in teams[:rounds]], None)
+            teams = run.thread.read("teams").view(np.uint32)
+            rounds = r.words[0] if r.words else 0
+            out = (r.code, *(list(r.words) + [0, 0, 0])[:3])
+            out = (*out, [int(t) for t in teams[:rounds]], records or None)
             got[path] = (*out, read_state(state, args.cores))
     return got
 

@@ -35,7 +35,7 @@ class Thread:
     """A program's X280 thread: C `sources` linked with kmx, run on `cluster`;
     `regions`: name -> size in bytes or initial contents (ids in dict order);
     `words`: the program's argument words; `deadline`: seconds for the whole thread;
-    `host_fallback(regions, words) -> (code, words)`: the same function on the host."""
+    `host_fallback(regions, words, run) -> (code, words)`: it on the host, on a Run."""
 
     sources: list
     regions: dict
@@ -199,12 +199,20 @@ def parse_result(raw, ran=True):
 
 class ThreadRun:
     """A program's thread in one run: on the card through `port` (the work_* calls
-    of the native module), or through its host fallback. `regions` reads a region's
-    bytes from the card; `image` is the thread's image, `base` the regions' bank
+    of the native module), or its host fallback issuing through `run`. `regions` reads
+    a region from the card; `image` is the thread's image, `base` the regions' bank
     address, `check_value` what the host wrote into the check line."""
 
     def __init__(
-        self, thread, port, regions, image=None, on_card=True, base=0, check_value=1
+        self,
+        thread,
+        port,
+        regions,
+        image=None,
+        on_card=True,
+        base=0,
+        check_value=1,
+        run=None,
     ):
         self.thread = thread
         self.port = port
@@ -213,6 +221,7 @@ class ThreadRun:
         self.on_card = on_card
         self.base = base
         self.check_value = check_value
+        self.run = run
         self.running = False
         self.result = None
         self.arrays = None  # the host fallback's regions, uint32, once it ran
@@ -286,6 +295,7 @@ class ThreadRun:
             if initial is not None:
                 data[:n] = initial
             self.arrays[name] = data.view(np.uint32)
-        code, words = self.thread.host_fallback(self.arrays, list(self.thread.words))
+        words = list(self.thread.words)
+        code, words = self.thread.host_fallback(self.arrays, words, self.run)
         words = [int(w) & abi.M32 for w in words]
         return ThreadResult(True, "done", "none", int(code), words, 0, 0.0, 0.0)

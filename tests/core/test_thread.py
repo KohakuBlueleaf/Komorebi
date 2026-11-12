@@ -9,8 +9,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from fake_port import FakeBackend
+from fake_port import FakePort as FakeKernel
 
 from komorebi import thread as kt
+from komorebi.run import Run
 
 KMX = kt.native.kmx_dir()
 K = kt.layout()
@@ -74,7 +77,7 @@ def test_result_block_is_read_with_names():
 
 
 def test_host_fallback_gets_the_initial_regions_and_its_writes_are_kept():
-    def double(regions, words):
+    def double(regions, words, run):
         regions["out"][:10] = regions["counts"] * words[0]
         return 3, [int(regions["out"].sum())]
 
@@ -84,6 +87,21 @@ def test_host_fallback_gets_the_initial_regions_and_its_writes_are_kept():
     assert (r.code, r.words, r.state) == (3, [315], "done")
     out = run.read("out").view(np.uint32)
     assert len(out) == 1250 and list(out[:4]) == [0, 7, 14, 21] and out[10:].sum() == 0
+
+
+def test_host_fallback_issues_records_through_the_run_and_gets_result_words():
+    kernel = FakeKernel()
+    run = Run(FakeBackend(kernel), (12, 10))
+
+    def leader_says(regions, words, run):
+        ticket = run.issue(1, (0, 8), result=True)
+        kernel.results[ticket] = 0xBEEF
+        return 0, [run.wait(ticket).result]
+
+    fallback = a_thread(host_fallback=leader_says)
+    thread = kt.ThreadRun(fallback, None, None, on_card=False, run=run)
+    assert thread.wait(1.0).words == [0xBEEF]
+    assert kernel.ring[1][1] >> 8 == kt.abi.headers()["KM_F_RESULT"]
 
 
 class FakePort:

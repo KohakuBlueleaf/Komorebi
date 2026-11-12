@@ -108,7 +108,7 @@ returns a `komorebi.thread.Thread`:
 | `regions` | `{name: size in bytes or an array of initial contents}`, 1 to 16; ids in dict order |
 | `words` | up to 64 unsigned 32-bit words |
 | `cluster` | the work cluster, 1 to 3; only cluster 1 (bank 6) was run on a card |
-| `host_fallback` | `fn(regions, words) -> (code, words)`: the thread in Python, on `uint32` copies of the regions |
+| `host_fallback` | `fn(regions, words, run) -> (code, words)`: the thread on the host, on `uint32` copies of the regions, issuing records through `run` (the session's `Run`) where the thread uses its ring |
 | `deadline` | seconds for the whole thread, at most 60 (default 10) |
 | `includes`, `defines` | extra include directories and `-D` definitions |
 | `prefetch` | `"documented"` (default) or `"keep"` |

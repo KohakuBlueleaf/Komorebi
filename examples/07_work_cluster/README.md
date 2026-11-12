@@ -18,12 +18,14 @@ three ways:
 | Path | Who runs `decide.c` | How records reach the grid |
 |---|---|---|
 | `thread` | an X280 thread on work cluster 1 (`thread/driver.c`) | `kmx_issue` / `kmx_wait` on the thread's command ring |
-| `hostfed` | the host, through ctypes | `Run.issue(..., result=True)` and `Run.wait` |
+| `hostfed` | the thread's host fallback (`session.load(prog, thread="host")`), through ctypes | `Run.issue(..., result=True)` and `Run.wait` on the run the fallback is given |
 | `cpu` | the thread's own files on the CPU (`cpu_ring.c`) | the ring calls of `kmx_ring.h` against a fake kernel that runs STEP and SUM on a model of the grid |
 
 Each must give the same records, rounds, final sum and team sequence as a numpy
 replay written apart from `decide.c`; the card paths must also leave the state tensor
-equal to the replay's.
+equal to the replay's. `thread` and `hostfed` load the same program, with the thread on
+the card or on the host; the fallback (`host_fallback(regions, words, run)`) fills
+region 0 and returns the result words as the thread does.
 
     python work_cluster.py [--paths cpu hostfed thread] [--cores 119] [--count 30]
                            [--limit 1000000] [--max-rounds 1000]
