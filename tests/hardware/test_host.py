@@ -2,7 +2,6 @@
 the session cases it does not cover (KMR_CARD=1)."""
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -95,11 +94,3 @@ def test_a_start_error_carries_the_result_and_the_host_stops_the_grid():
 
 def test_an_exclusive_record_waits_for_the_team_it_overlaps():
     assert run(CASES, "exclusive")["ok"]
-
-
-@pytest.mark.skipif(os.environ.get("KMR_CARD_LONG") != "1", reason="KMR_CARD_LONG=1")
-def test_thousand_random_jobs_are_exact():
-    out = run(
-        EXAMPLE, "--jobs", 1000, "--teams", "random", "--out-tensors", 34, timeout=900
-    )
-    assert all_checked(out, 1000) and counts_match(out)

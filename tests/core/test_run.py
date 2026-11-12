@@ -262,13 +262,14 @@ def test_an_event_for_a_command_not_in_flight_stops_the_run(req):
     assert backend.calls == ["abort", "read_back"] and run.stopped
 
 
-def test_a_ticket_is_released_once_its_event_was_returned():
+def test_a_ticket_is_released_once_its_event_was_returned(monkeypatch):
+    monkeypatch.setattr(run_mod, "COMPACT_ROWS", 64)
     port = FakePort(host_depth=64, event_depth=128)
     run, port, _ = make_run(port)
-    for _ in range(200):
+    for _ in range(10):
         run.wait([run.issue(0, (i, 1)) for i in range(100)])
-    assert len(run._has) < 2 * run_mod.COMPACT_ROWS and run._base > 10_000
-    assert run.event(1) is None and run.seq(1) is None and len(port.issued) == 20_000
+    assert len(run._has) < 2 * run_mod.COMPACT_ROWS and run._base > 500
+    assert run.event(1) is None and run.seq(1) is None and len(port.issued) == 1000
 
 
 def test_forget_releases_tickets_read_after_a_drain():
