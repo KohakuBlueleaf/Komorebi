@@ -46,7 +46,8 @@ writer) and 31 (the trace); a program uses the others.
 
 ## `Session`
 
-`km.Session(card=None, device=None, pll_mhz=1750, tree=None, log=None)`.
+`km.Session(card=None, device=None, pll_mhz=1750, tree=None, log=None,
+grid_timeout=10.0)`.
 
 - `card` selects the card through `TT_VISIBLE_DEVICES` (an error if that variable
   already names another card); `device` uses a mesh device the caller opened and
@@ -56,18 +57,28 @@ writer) and 31 (the trace); a program uses the others.
 - As a context manager it stops a loaded run at the exit: with `run.stop()` on a normal
   exit, through the X280 runtime (no EXIT) on an exception, then it closes the device
   it opened.
+- `grid_timeout` bounds every wait for the grid's kernels to return (seconds). When
+  it passes, `km.GridTimeout` is raised and the device is left open: closing it would
+  wait for the grid without a bound. The card may then need a reset.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_us=1.0,
 image=None)` returns a `Run`:
 
-1. finds or builds the dispatch kernel image and the native module (see below);
+1. finds or builds the dispatch kernel image and the native module (see below), and
+   checks that the image is there and X280 cluster 0 is idle (else `km.StartError`);
 2. opens the X280 runtime and lays out the kernel's memory;
 3. launches the three kernels on every core. Kernels compile here, before any X280
    image exists, so a compile error raises `km.ProgramError` and leaves nothing
    running;
 4. starts the dispatch kernel and waits (bounded by `start` seconds) for every column of
-   the grid to report READY; otherwise `km.StartError`.
+   the grid to report READY; otherwise `km.StartError`, which carries the kernel's
+   result block.
+
+From the launch on, every failure path reads the grid back. When the dispatch kernel
+is not there to stop the grid (it never started, or it ended before it could reach the
+cores), the host writes the stop word into every core's control block itself, through
+the device API, and then waits for the grid within `grid_timeout`.
 
 | Argument | Meaning |
 |---|---|
@@ -84,12 +95,13 @@ image=None)` returns a `Run`:
 | Call | What it does |
 |---|---|
 | `issue(seg, team=None, args=(), exclusive=False)` | queues one record and returns its ticket (1, 2, ...). `seg` is a name or a number (`0` is NOP); `team` is `(first, count)`, default every core; `args` up to ten 32-bit words. Teams and segments are checked here. With `exclusive`, the record is held until no team in flight overlaps it |
-| `wait(tickets, timeout=10.0)` | stores queued commands up to the tickets in batches, reads events until each ticket has one; returns the `Event` (or a list) |
+| `wait(tickets, timeout=10.0)` | stores queued commands up to the tickets in batches, reads events until each ticket has one; returns the `Event` (or a list) and forgets those tickets |
 | `drain(timeout=10.0)` | the same for everything issued; returns how many events it waited for |
 | `event(ticket)` | `Event(ticket, kind, aux, ticks)` or None; `kind` is `done`, `timeout`, `pong` or `refused`; `ticks` is issue to completion in the X280's 50 MHz timer, `us` the same in microseconds |
 | `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index), its team |
-| `stop(timeout=10.0)` | drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block |
-| `abort()` | the failure path: stops the kernel through the runtime, closes it, reads back |
+| `forget(tickets)` | releases what the run keeps for tickets whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps teams and sequences for the trace |
+| `stop(timeout=10.0)` | drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0 |
+| `abort()` | the failure path: stops the kernel through the runtime, closes it, stops the grid from the host, reads back; raises `KernelFailed` if the runtime could not restore cluster 0 |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict, the raw words, the trace |
 
 `run.issue_s` and `run.flush_s` add up the host's time in `issue` and in the batched
@@ -108,11 +120,12 @@ All derive from `km.KomorebiError`.
 | Error | When | Facts it carries |
 |---|---|---|
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
-| `StartError` | the dispatch kernel did not report READY | `result` |
+| `StartError` | the image is missing, cluster 0 is not idle, or the dispatch kernel did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded | `pending` tickets |
 | `RecordRefused` | the kernel consumed the command and issued nothing (a reserved segment or flag, a team outside the grid, a record after EXIT); the run goes on | `ticket`, `reason` (`KMD_REFUSE_*`), `reason_name` |
 | `RecordTimeout` | a team missed its deadline; the kernel stopped the grid, the run is stopped and read back | `ticket`, `slot`, `seq`, `team`, `cores`: each member that did not report, with where its reader and writer gave up |
-| `KernelFailed` | the dispatch kernel finished with any other error | `result` |
+| `KernelFailed` | the dispatch kernel finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |
+| `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the device is left open | |
 
 ## Builds
 
@@ -124,8 +137,9 @@ they are built from the tt-metal tree into a cache directory, `KMR_CACHE` or
 
 ## Rules the host keeps
 
-- The host never reads or writes a core's memory while the program runs. State words
-  and the trace are read after the stop.
+- The host never reads or writes a core's memory while the program runs, with one
+  exception: the stop word, when the dispatch kernel cannot send it. State words and
+  the trace are read after the stop.
 - While the dispatch kernel runs, every host wait is bounded. The X280 runtime is
   closed before any readback, and on every failure path.
 - Host stores into the card go in batches: every line, one fence, then a pause of

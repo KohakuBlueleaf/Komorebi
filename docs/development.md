@@ -110,5 +110,5 @@ Experiments come first; a regression test comes after behaviour settles (see
   and defines that C++ code using the X280 runtime needs. This dependency ends when
   Komorebi has its own build files. `kmr build image` is not affected: it uses the X280
   runtime's compiler, flags, entry objects and linker script directly.
-- The native layer has no sources yet, so there is nothing to build with
-  `komorebi_native/cmake` and no wheel.
+- There is no wheel: the native module and the dispatch kernel image are built from a
+  tt-metal tree on first use.

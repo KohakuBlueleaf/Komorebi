@@ -64,13 +64,14 @@ with where each was waiting. The session is already closed cleanly by then.
 ## What it needs
 
 - this repository installed in the Python environment (`pip install -e .` from its
-  root; see `docs/install.md`);
-- in the same environment: `ttnn` built from a tt-metal source tree at the version in
-  `packaging/tt-metal.pin`, with its X280 runtime, plus `torch` and `numpy`;
-- `TT_METAL_HOME` naming that tree: the dispatch kernel image and the package's native
-  module are built from it on first use (about ten seconds) into `build/komorebi/`;
-- one Blackhole p150a whose X280 memory is prepared for the X280 runtime. The session
-  runs in slow dispatch (it sets `TT_METAL_SLOW_DISPATCH_MODE=1` if unset).
+  root);
+- a tt-metal v0.81.1 tree with the X280 runtime and the tt-x280-dispatch project's
+  targets, `ttnn` and `torch` from it in the same environment, `TT_METAL_HOME` naming
+  it, and a Blackhole p150a whose X280 LIM ECC was primed once: the steps are in
+  [Running on a card](../../docs/install.md#running-on-a-card). The dispatch kernel
+  image and the package's native module are built from the tree on first use (about
+  ten seconds) into `build/komorebi/`. The session runs in slow dispatch (it sets
+  `TT_METAL_SLOW_DISPATCH_MODE=1` if unset).
 
 ```
 python mapcollect.py --jobs 20 --count 8
