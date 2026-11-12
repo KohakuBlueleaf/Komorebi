@@ -84,12 +84,63 @@ def gave_up(word, seq, h=None):
         return None
     wheres = {h[f"kWhere{w}"]: w.lower() for w in WHERES}
     gaves = {h[f"kGave{g}"]: name for g, name in GAVES.items()}
-    return {
+    out = {
         "code": gaves.get(code, code),
         "where": wheres.get((word >> 8) & 0xFF, (word >> 8) & 0xFF),
         "slot": (word >> 16) & 0xFF,
         "seq": int(seq),
     }
+    if out["where"] in ("port", "emit"):
+        out["port"] = word >> 24  # the port a reader or writer waited on
+    return out
+
+
+def ports(block, h=None):
+    """A core's port slots from its control block words: [{count, want}] by port."""
+    h = h or abi.headers()
+    at, stride = h["KM_CTL_PORT"] // 4, h["KM_PORT_STRIDE"] // 4
+    return [
+        {
+            "count": int(block[at + p * stride + h["KM_PORT_COUNT"]]),
+            "want": int(block[at + p * stride + h["KM_PORT_WANT"]]),
+        }
+        for p in range(h["KM_PORTS"])
+    ]
+
+
+def lanes(block, h=None):
+    """A core's lane areas from its control block words, by lane: the VALID word,
+    the first give-up (where, lane, block, seq; None if none), the blocks handed over,
+    the wait cycles and the DONE-BY words of ranks 1 to 15."""
+    h = h or abi.headers()
+    wheres = {h[f"kWhere{w}"]: w.lower() for w in WHERES}
+    out = []
+    for lane in range(h["KM_LANES"]):
+        a = (h["KM_CTL_LANE"] + lane * h["KM_LANE_BYTES"]) // 4
+        gave = [int(v) for v in block[a + h["KM_LANE_GAVE"] // 4 :][:3]]
+        stats = [int(v) for v in block[a + h["KM_LANE_STATS"] // 4 :][:3]]
+        done = a + h["KM_LANE_DONE"] // 4
+        out.append(
+            {
+                "valid": int(block[a + h["KM_LANE_VALID"] // 4]),
+                "gave_up": (
+                    {
+                        "where": wheres.get(gave[0] & 0xFF, gave[0] & 0xFF),
+                        "lane": (gave[0] >> 8) & 0xFF,
+                        "block": gave[1],
+                        "seq": gave[2],
+                    }
+                    if gave[0]
+                    else None
+                ),
+                "blocks": stats[0],
+                "wait_cycles": stats[1] | stats[2] << 32,
+                "done": [
+                    int(block[done + 4 * r]) for r in range(1, h["KM_LANE_RANKS"])
+                ],
+            }
+        )
+    return out
 
 
 def core_state(st, core, h=None):

@@ -122,7 +122,7 @@ def test_the_host_writes_the_stop_word_into_every_core_then_waits_bounded(
     )
     assert {(addr, tuple(w)) for _, _, _, _, addr, w in writes} == {(stop, (1,))}
     assert log[len(writes) :] == ["wait_grid", "synchronize"]
-    assert state.shape == (120, K["kStateWords"]) and trace is None
+    assert state.shape == (120, K["KM_CTL_BYTES"] // 4) and trace is None
 
 
 def test_a_grid_that_does_not_return_raises_and_leaves_the_device_open(

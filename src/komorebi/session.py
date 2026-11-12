@@ -544,10 +544,10 @@ class _Backend:
         return cleaned
 
     def read_back(self, stop_grid=False):
-        """After the X280 runtime is closed: waits (bounded) for every kernel of the
-        grid to return, then reads the state words and the trace. `stop_grid`: the
-        dispatch kernel was not there to stop the grid, so the host writes the stop
-        word into every core first, through the device API."""
+        """After the X280 runtime is closed: waits (bounded) for the grid's kernels,
+        then reads the control blocks ([cores, KM_CTL_BYTES / 4] uint32) and the trace.
+        `stop_grid`: the dispatch kernel was not there to stop the grid, so the host
+        first writes the stop word into every core through the device API."""
         if self.port.is_open:
             raise RuntimeError("close the X280 runtime before reading back")
         h = abi.headers()
@@ -568,11 +568,11 @@ class _Backend:
         ttnn.synchronize_device(self.device)  # returns at once: every core is done
         self.session.log(f"grid returned ({time.monotonic() - t0:.1f} s)")
         rows = _read_uint32(self.ctl)
-        start = self.ctl_offset + h["KM_CTL_STATE"] // 4
-        state = rows[:, start : start + h["kStateWords"]].astype(np.uint32)
+        start = self.ctl_offset
+        blocks = rows[:, start : start + h["KM_CTL_BYTES"] // 4].astype(np.uint32)
         trace = None
         if self.trace_t is not None:
             words = _read_uint32(self.trace_t, self.device, module).astype(np.uint32)
             trace = words.reshape(words.shape[0], self.trace_cap, h["kTraceWords"])
         self.session.log("state and trace read back")
-        return state, trace
+        return blocks, trace

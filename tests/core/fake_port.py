@@ -288,12 +288,15 @@ class FakeBackend:
         return self.cleaned
 
     def read_back(self, stop_grid=False):
-        """State words: every member reported its records' sequences, except the
-        stalled core; trace: seen/done/sent stamps per sequence."""
+        """Control blocks whose state words say every member reported its records'
+        sequences, except the stalled core; trace: seen/done/sent stamps per sequence.
+        """
         self.calls.append("read_back")
         self.grid_stopped = stop_grid
         cores = self.port.cores
-        st = np.zeros((cores, K["kStateWords"]), dtype=np.uint32)
+        blocks = np.zeros((cores, K["KM_CTL_BYTES"] // 4), dtype=np.uint32)
+        at = K["KM_CTL_STATE"] // 4
+        st = blocks[:, at : at + K["kStateWords"]]  # a view: written below
         st[:, K["kStMagic"]] = K["kStateMagic"] | np.arange(cores)
         trace = None
         if self.trace_cap:
@@ -315,4 +318,4 @@ class FakeBackend:
                 if trace is not None and seq <= self.trace_cap:
                     t0 = 1000 * seq
                     trace[core, seq - 1] = [t0 + core, t0 + 500, t0 + 600 + core, 3]
-        return st, trace
+        return blocks, trace

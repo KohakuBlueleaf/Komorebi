@@ -84,6 +84,39 @@ def test_state_words_from_padded_control_blocks():
     assert list(words[:, 0]) == [10, 11, 12] and words[1, 1] == 0xFFFFFFFF
 
 
+def test_port_slots_lane_areas_and_the_port_a_wait_named():
+    block = np.zeros(K["KM_CTL_BYTES"] // 4, np.uint32)
+    port = (K["KM_CTL_PORT"] + 3 * K["KM_PORT_STRIDE"]) // 4
+    block[port + K["KM_PORT_COUNT"]], block[port + K["KM_PORT_WANT"]] = 7, 9
+    lane = (K["KM_CTL_LANE"] + K["KM_LANE_BYTES"]) // 4  # lane 1
+    block[lane + K["KM_LANE_VALID"] // 4] = 5 << 16 | 4
+    gave = lane + K["KM_LANE_GAVE"] // 4
+    block[gave : gave + 3] = [K["kWhereLaneValid"] | 1 << 8, 2, 5]
+    stats = lane + K["KM_LANE_STATS"] // 4
+    block[stats : stats + 3] = [4, 10, 1]
+    block[lane + K["KM_LANE_DONE"] // 4 + 4 * 2] = 5 << 16 | 3  # rank 2
+    ports = st.ports(block)
+    assert len(ports) == K["KM_PORTS"] and ports[3] == {"count": 7, "want": 9}
+    lanes = st.lanes(block)
+    assert lanes[0]["gave_up"] is None and lanes[0]["blocks"] == 0
+    assert lanes[1]["valid"] == 5 << 16 | 4 and lanes[1]["done"][1] == 5 << 16 | 3
+    assert lanes[1]["gave_up"] == {
+        "where": "lanevalid",
+        "lane": 1,
+        "block": 2,
+        "seq": 5,
+    }
+    assert (lanes[1]["blocks"], lanes[1]["wait_cycles"]) == (4, 10 | 1 << 32)
+    word = K["kGaveLimit"] | K["kWherePort"] << 8 | 6 << 16 | 3 << 24
+    assert st.gave_up(word, 11) == {
+        "code": "limit",
+        "where": "port",
+        "slot": 6,
+        "seq": 11,
+        "port": 3,
+    }
+
+
 def test_trace_phases_and_overlap():
     rows = np.zeros((6, 8, 4), dtype=np.uint32)
     # ticket 1: seq 1 on cores 0..2; ticket 2: seq 2 on cores 3..5

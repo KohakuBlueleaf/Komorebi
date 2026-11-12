@@ -53,8 +53,8 @@ def _seq_number(n):
 class Run:
     """Issues records to a loaded program and collects their events.
 
-    backend: `port` (enqueue, queued, wait, host_word, batch; it stores and reads in its
-    own loop), `finish(timeout)`, `abort()`, `read_back()` -> (words, trace), `mhz`.
+    backend: `port` (enqueue, queued, wait, host_word, batch; its own loop), `finish`,
+    `abort()`, `read_back()` -> (control blocks, trace), `mhz`.
     """
 
     def __init__(self, backend, grid, program=None, batch=64, h=None):
@@ -92,6 +92,7 @@ class Run:
         self._stopped = False
         self._result = None
         self._state = None
+        self._blocks = None
         self._trace = None
         self.thread = None  # the program's X280 thread (komorebi.thread.ThreadRun)
         self.issue_s = 0.0  # host time in issue() and issue_many()
@@ -631,10 +632,11 @@ class Run:
         self._read_back(stop_grid)
 
     def _read_back(self, stop_grid=False):
-        state_rows, trace_rows = self.backend.read_back(stop_grid=stop_grid)
+        blocks, trace_rows = self.backend.read_back(stop_grid=stop_grid)
         if self.thread is not None:
             self.thread.grid_stopped()
-        self._state = state_rows
+        self._blocks = blocks
+        self._state = st.state_words(blocks, 0, self.h)
         if trace_rows is not None:
             n = self._handed - self._base
             tickets = np.arange(n) + self._base
@@ -684,9 +686,17 @@ class Run:
         return self._result
 
     def state(self):
-        """Every core's state words, as dicts; valid after the stop."""
+        """Every core's state words, port slots and lane areas, as dicts; valid after
+        the stop."""
         self._require_stopped()
-        return [st.core_state(self._state, c, self.h) for c in range(self.cores)]
+        return [
+            st.core_state(self._state, c, self.h)
+            | {
+                "ports": st.ports(self._blocks[c], self.h),
+                "lanes": st.lanes(self._blocks[c], self.h),
+            }
+            for c in range(self.cores)
+        ]
 
     def state_words(self):
         self._require_stopped()
