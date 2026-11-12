@@ -137,3 +137,20 @@ def test_a_grid_that_does_not_return_raises_and_leaves_the_device_open(
     assert km.GridTimeout is GridTimeout
     sess.close()
     assert "close_device" not in log
+
+
+def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path):
+    session, log, _, module = card
+    FakeDispatch.lim_base = 0x10008
+    try:
+        with pytest.raises(StartError, match=r"multiple of 16.*lim_base 0x10008"):
+            session.Session(device=object()).load(program(tmp_path))
+    finally:
+        FakeDispatch.lim_base = 0x10000
+    assert log == ["prepare", "close"]
+    bases = session.lim_bases(0x10000)
+    assert bases["KMD_LIM_MAILBOX"] == 0x10000 + K["KMD_LIM_MAILBOX"]
+    assert {"KMD_LIM_READY", "KMD_LIM_ACKS", "KM_ACK_STRIDE"} <= set(bases)
+    session.check_bases(bases)
+    with pytest.raises(StartError, match="control block 0x20004"):
+        session.check_bases({"control block": 0x20004})

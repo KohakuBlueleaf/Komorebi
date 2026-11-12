@@ -19,6 +19,7 @@ from komorebi.run import Run
 CTL_ALIGN = 64  # the dispatch kernel stores whole 64-byte lines into the control block
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
+NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 
 
 def aiclk_mhz(card=None):
@@ -41,6 +42,26 @@ def _state_area(device):
     if at <= IPI_ACK_DDR < at + STATE_PAGES * h["KMD_STATE_BYTES"]:
         raise StartError(f"the kernel state at {at:#x} covers the X280 IPI word")
     return rows
+
+
+def lim_bases(lim_base, h=None):
+    """The X280 local-memory addresses the kernels are given or derive from the
+    runtime's base: the base, every KMD_LIM_* offset from it, the ack stride."""
+    h = h or abi.headers()
+    bases = {"lim_base": lim_base, "KM_ACK_STRIDE": h["KM_ACK_STRIDE"]}
+    for name, offset in h.constants.items():
+        if name.startswith("KMD_LIM_"):
+            bases[name] = lim_base + offset
+    return bases
+
+
+def check_bases(bases):
+    """Refuses bases that are not multiples of NOC_ALIGN: the runtime's small writes
+    go slot to slot and rely on them."""
+    bad = {k: v for k, v in bases.items() if v % NOC_ALIGN}
+    if bad:
+        named = ", ".join(f"{k} {v:#x}" for k, v in bad.items())
+        raise StartError(f"not a multiple of {NOC_ALIGN} bytes: {named}")
 
 
 def _int32_tensor(device, rows, memory_config=None):
@@ -165,6 +186,7 @@ class Session:
                 kernel_idle,
                 state_t.buffer_address(),
             )
+            check_bases(lim_bases(dispatch.lim_base))
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_t = state_t  # kept while the kernel may use it
             descriptor = backend.describe(
@@ -227,6 +249,7 @@ class _Backend:
         base = self.ctl.buffer_address()
         self.ctl_addr = (base + CTL_ALIGN - 1) // CTL_ALIGN * CTL_ALIGN
         self.ctl_offset = (self.ctl_addr - base) // 4
+        check_bases({"control block": self.ctl_addr})
         return self.ctl_addr
 
     def describe(self, program, sources, tag, depth, wait, idle, trace):

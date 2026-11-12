@@ -121,7 +121,7 @@ All derive from `km.KomorebiError`.
 | Error | When | Facts it carries |
 |---|---|---|
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
-| `StartError` | the image is missing, cluster 0 is not idle, or the dispatch kernel did not report READY | `result` (the kernel's result block, when it ran) |
+| `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory) is not a multiple of 16 bytes, or the dispatch kernel did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded | `pending` tickets |
 | `RecordRefused` | the kernel consumed the command and issued nothing (a reserved segment or flag, a team outside the grid, a record after EXIT); the run goes on | `ticket`, `reason` (`KMD_REFUSE_*`), `reason_name` |
 | `RecordTimeout` | a team missed its deadline; the kernel stopped the grid, the run is stopped and read back | `ticket`, `slot`, `seq`, `team`, `cores`: each member that did not report, with where its reader and writer gave up |

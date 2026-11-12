@@ -17,6 +17,7 @@ class FakeDispatch(FakePort):
     """The native Dispatch over the fake kernel: prepare, start, wait_ready, close."""
 
     grid_x, grid_y = 12, 10
+    lim_base = 0x10000
     boot_error = None  # a KMD_ERR_* the kernel ends with before READY
 
     def __init__(self, log, device, pll_mhz):
