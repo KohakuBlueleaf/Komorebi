@@ -11,7 +11,7 @@ every finished command to the host as an event. `km_dispatch.h` holds the exact 
 | `host_ring.h` | the host command ring in the cluster's local memory (LIM) |
 | `event_ring.h` | the event ring and the state words in host memory |
 | `grid_port.h` | the windows onto every core's control block, the record store, the stop word |
-| `completion.h` | busy slots, acknowledgement sweep, deadlines, team overlap |
+| `completion.h` | busy slots, acknowledgement sweep, deadlines, team overlap, team allocator |
 | `result.h` | the result block in LIM |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
 
@@ -44,8 +44,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
 - **Refused commands.** A bad record is consumed and answered with `KM_EV_REFUSED`, its
   reason (`KMD_REFUSE_*`) in the status's aux; the session goes on. Reasons: 1 a segment
   from 240 to 251 that this kernel does not serve (`KM_SEG_RUN` and `KM_SEG_CANCEL`
-  included, until the engines exist); 2 flag bit 0 set; 3 a team with count 0 or
-  `first + count` above the cores; 4 any record after EXIT; 5 a range of the upload
+  included, until the engines exist); 2 flag bit 0 set; 3 a team outside the grid
+  (`count == 0 || first > cores || count > cores - first`, with no sum that could wrap;
+  with `KM_F_QUEUE` only the count is checked); 4 any record after EXIT; 5 a range of the upload
   region that is not whole lines inside it. A refused command's event has ticks 0.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
@@ -70,8 +71,15 @@ These rules are part of the protocol; a host that relies on anything else is wro
   `ticks` field of the record's `KM_EV_DONE` event. Such an event has no time; every
   other `KM_EV_DONE` event's ticks are the record's time from issue to acknowledgement.
 - **EXIT** goes to every core whatever its team field says, and only once no slot is
-  busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own. A
-  waiting command holds up every command behind it.
+  busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own; the
+  check holds only at its own issue, so a later record without the flag may still
+  overlap it. A waiting command holds up every command behind it.
+- **Queued records.** A record with `KM_F_QUEUE` takes its count from the team word and
+  ignores `first`: the team allocator gives it the lowest `first` whose cores overlap no
+  busy slot's team, using the same overlap test as `KM_F_EXCL`, and the record waits
+  until such a team exists. The grid sees the chosen team and no `KM_F_QUEUE`. Until the
+  job queue exists, a waiting queued record holds up the commands behind it like any
+  other waiting command.
 - **Finish.** `KM_SEG_STOP`, the runtime's stop, a missed deadline or a start-up failure
   ends the loop. The stop word goes to the grid only while a slot is busy or before EXIT
   was issued. The state and error words in the host buffer, and the result block in LIM,

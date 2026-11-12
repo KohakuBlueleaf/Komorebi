@@ -163,10 +163,12 @@ static void upload_check(
  * with an event, a record gets a free slot and the next sequence, or waits. */
 static kmd_take_t take(kmd_t* k, uint64_t now) {
     uint64_t* l = k->line;
-    const uint32_t req = k->next, hdr = (uint32_t)(l[0] >> 32);
+    const uint32_t req = k->next;
+    uint32_t hdr = (uint32_t)(l[0] >> 32);
     const uint32_t seg = hdr & 0xFFu, flags = (hdr >> 8) & 0xFFu;
     const uint32_t team = (uint32_t)l[1], a0 = (uint32_t)(l[1] >> 32);
     const uint32_t first = team & 0xFFFFu, count = team >> 16;
+    const uint32_t queued = seg != KM_SEG_EXIT && (flags & KM_F_QUEUE);
     if (seg == KM_SEG_DEADLINE) {
         hring_consumed(k);
         k->t_record = a0 ? (uint64_t)a0 * 50u : k->args->t_record;
@@ -204,7 +206,7 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
         refuse = KMD_REFUSE_FLAGS;
     } else if (k->exited) {
         refuse = KMD_REFUSE_EXITED;
-    } else if (seg != KM_SEG_EXIT && (count == 0 || first + count > k->cores)) {
+    } else if (seg != KM_SEG_EXIT && team_outside(k, queued ? 0 : first, count)) {
         refuse = KMD_REFUSE_TEAM;
     }
     if (refuse != 0) {
@@ -220,7 +222,15 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
             return KMD_HELD;
         }
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_TEAM_ALL(k->cores);
-    } else if ((flags & KM_F_EXCL) && slots_overlap(k, team)) {
+    } else if (queued) {
+        /* `first` is the allocator's; the grid sees no KM_F_QUEUE. */
+        const uint32_t at = team_alloc(k, count);
+        if (at == KMD_NO_FIRST) {
+            return KMD_HELD;
+        }
+        l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | at | count << 16;
+        hdr &= ~(KM_F_QUEUE << 8);
+    } else if ((flags & KM_F_EXCL) && slots_overlap(k, first, count)) {
         return KMD_HELD;
     }
     const uint32_t slot = slot_free(k);
@@ -332,6 +342,12 @@ static void finish(kmd_t* k) {
     }
     const uint64_t now = x280_mtime();
     result_finish(k, now);
+#ifdef KMD_TRACE
+    const uint32_t head[4] = {KMD_TRACE_MARK, k->traced, k->untraced, 0};
+    if (k->upload_bytes >= 64u) {
+        kmd_store_chunk((volatile uint8_t*)k->upload, head);
+    }
+#endif
     events_flush(k);
     events_word(k, KMD_HOST_ERROR, k->error);
     events_word(k, KMD_HOST_STATE, k->error ? KMD_STATE_FAILED : KMD_STATE_DONE);

@@ -13,6 +13,8 @@
 
 /* The loop checks stop, deadlines and the idle time every this many passes. */
 #define KMD_POLL_EVERY 1024u
+/* The team allocator's answer when no team of the count fits now. */
+#define KMD_NO_FIRST 0xFFFFFFFFu
 
 typedef struct {
     /* run */
@@ -51,6 +53,7 @@ typedef struct {
     /* counters */
     uint32_t records, max_busy, refused, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */
+    uint32_t traced, untraced;              /* KMD_TRACE builds */
     uint64_t passes, idle_passes, full_passes;
     uint64_t t_first, t_last_event;
     /* the command being taken, as 8 little-endian 64-bit words, on the stack and

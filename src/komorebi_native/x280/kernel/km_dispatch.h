@@ -73,6 +73,19 @@
  * check against kmd_verify_word(a2, word index from the region's start). */
 #define KMD_SEG_CHECK_UPLOAD 249u
 
+/* KMD_TRACE builds: the upload region holds kmd_trace_t, then from its second line
+ * 16-byte entries {kind | slot << 8, req, team, pass} as slots are taken and freed. */
+#define KMD_TRACE_ISSUE 1u
+#define KMD_TRACE_FREE 2u
+#define KMD_TRACE_MARK 0x54524345u /* "TRCE" */
+
+typedef struct {
+    uint32_t mark;
+    uint32_t entries;  /* entries written */
+    uint32_t untraced; /* entries that did not fit */
+    uint32_t pad;
+} kmd_trace_t;
+
 /* Where codes: the loop the kernel was in. */
 #define KMD_WHERE_ARGS 1u
 #define KMD_WHERE_HELLO 2u

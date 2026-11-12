@@ -20,6 +20,24 @@ static inline uint32_t slot_free(const kmd_t* k) {
     return KM_RING_SLOTS;
 }
 
+#ifdef KMD_TRACE
+/* Test builds: entry {kind | slot << 8, req, team, pass} of 16 bytes into the upload
+ * region from its second line on; kmd_trace_t at its start once finished. */
+static inline void trace(kmd_t* k, uint32_t kind, uint32_t slot, uint32_t req) {
+    if (64u + 16u * (k->traced + 1u) > k->upload_bytes) {
+        k->untraced++;
+        return;
+    }
+    const uint32_t e[4] = {
+        kind | slot << 8, req, k->slot_team[slot], (uint32_t)k->passes
+    };
+    kmd_store_chunk((volatile uint8_t*)k->upload + 64u + 16u * k->traced, e);
+    k->traced++;
+}
+#else
+#define trace(k, kind, slot, req) ((void)0)
+#endif
+
 /* Marks `slot` busy with record `seq` of request `req` for `team`, issued at `now`;
  * `result`: the record has KM_F_RESULT. */
 static inline void slot_take(
@@ -42,18 +60,40 @@ static inline void slot_take(
     if (++k->nbusy > k->max_busy) {
         k->max_busy = k->nbusy;
     }
+    trace(k, KMD_TRACE_ISSUE, slot, req);
 }
 
-/* Whether a busy slot's team shares a core with `team` (first | count << 16). */
-static inline int slots_overlap(const kmd_t* k, uint32_t team) {
-    const uint32_t first = team & 0xFFFFu, end = first + (team >> 16);
+/* Whether cores [first, first + count) are not all in the grid; written without a sum,
+ * so no value of either wraps into the grid. */
+static inline int team_outside(const kmd_t* k, uint32_t first, uint32_t count) {
+    return count == 0 || first > k->cores || count > k->cores - first;
+}
+
+/* The end (last core + 1) of a busy slot's team that shares a core with cores [first,
+ * first + count), the furthest if several; 0 if none. Teams lie inside the grid. */
+static inline uint32_t slots_overlap(const kmd_t* k, uint32_t first, uint32_t count) {
+    uint32_t end = 0;
     for (uint32_t j = 0; j < k->depth; j++) {
-        const uint32_t t = k->slot_team[j], f = t & 0xFFFFu;
-        if ((k->busy & (1u << j)) && f < end && first < f + (t >> 16)) {
-            return 1;
+        const uint32_t t = k->slot_team[j], f = t & 0xFFFFu, e = f + (t >> 16);
+        if ((k->busy & (1u << j)) && f < first + count && first < e && e > end) {
+            end = e;
         }
     }
-    return 0;
+    return end;
+}
+
+/* Team allocator: the lowest first such that cores [first, first + count) overlap no
+ * busy slot's team, or KMD_NO_FIRST. Each round jumps past an overlapping team. */
+static inline uint32_t team_alloc(const kmd_t* k, uint32_t count) {
+    uint32_t first = 0;
+    while (count <= k->cores - first) {
+        const uint32_t end = slots_overlap(k, first, count);
+        if (end == 0) {
+            return first;
+        }
+        first = end;
+    }
+    return KMD_NO_FIRST;
 }
 
 /* Sweeps the busy slots' ack lines, one 8-byte load each; a slot showing its sequence
@@ -80,6 +120,7 @@ static inline void slots_sweep(kmd_t* k) {
         }
         k->busy &= ~(1u << j);
         k->nbusy--;
+        trace(k, KMD_TRACE_FREE, j, k->slot_req[j]);
         events_push(k, k->slot_req[j], KM_EV_DONE, ticks);
         k->t_last_event = now;
     }
