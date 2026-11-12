@@ -53,6 +53,12 @@ def test_argument_comment_on_its_own_line_becomes_a_trailing_comment():
     assert cxx_format.format_text(text, BINARY) == expected
 
 
+@needs_clang_format
+def test_a_statement_with_a_block_comment_after_it_stays_its_own():
+    text = "void f(int* a, int* b) {\n    *a = 0; /* note */\n    *b = 1;\n}\n"
+    assert cxx_format.format_text(text, BINARY) == text
+
+
 def run(monkeypatch, *args):
     config = [] if "--config" in args else ["--config", str(STYLE)]
     monkeypatch.setattr(sys, "argv", ["cxx_format", *config, *args])

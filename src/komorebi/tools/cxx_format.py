@@ -79,7 +79,8 @@ def statement_end(lines, start):
     for i in range(start, min(start + 200, len(lines))):
         code, comment = scan(lines[i].rstrip("\n"))
         code = code.rstrip()
-        if comment or code.endswith("\\"):
+        # A /* */ comment too: after a ; it hides that ; from the test below.
+        if comment or "/*" in code or code.endswith("\\"):
             return None
         for c in code:
             if c in "([":
