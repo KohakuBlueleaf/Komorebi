@@ -195,11 +195,11 @@ static void loop(kmd_t* k) {
     }
 }
 
-/* The stop word goes to the grid unless every record completed and EXIT was issued:
- * then the cores have left and their L1 is no longer the program's. */
+/* The stop word goes out only while a slot is busy or before EXIT was issued: after a
+ * completed EXIT the cores have left and their L1 is no longer the program's. */
 static void finish(kmd_t* k) {
     result_where(k, KMD_WHERE_FINISH);
-    if (k->ctl[0] != 0 && (k->busy || !k->exited || k->error)) {
+    if (k->ctl[0] != 0 && (k->busy || !k->exited)) {
         grid_stop(k);
     }
     const uint64_t now = x280_mtime();
