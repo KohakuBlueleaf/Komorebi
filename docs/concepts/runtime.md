@@ -14,7 +14,8 @@ Status: design, not yet implemented.
 Each program has one resident worker on every Tensix core it uses. The worker starts
 once and then serves work: it takes the next record, switches on the segment the record
 names, runs that segment and reports completion. [Dispatch](dispatch.md) is what sends
-the records; the [model](model.md) is what the segments and breakpoints mean.
+the records; the [model](model.md) is what the segments and breakpoints mean. The
+device calls, codes and control block are in the [reference](../reference/runtime.md).
 
 | Part | Contract |
 |---|---|

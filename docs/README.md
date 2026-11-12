@@ -26,7 +26,7 @@ between cores, deciding on the card and the thread language are planned.
 | **Learning the model** | [the programming model](concepts/model.md) |
 | **Running a program on a card** | [host API](reference/host.md) · [01_mapcollect](../examples/01_mapcollect/) |
 | **Writing an X280 thread** | [X280 threads](threads.md) · [reference](reference/threads.md) · [07_work_cluster](../examples/07_work_cluster/) |
-| **Reading the design of the card side** | [dispatch kernel](concepts/dispatch.md) · [Tensix runtime](concepts/runtime.md) |
+| **Reading the design of the card side** | [dispatch kernel](concepts/dispatch.md) · [Tensix runtime](concepts/runtime.md) · [reference](reference/runtime.md) |
 | **Changing the code** | [development](development.md) |
 
 ## Documentation structure
@@ -41,6 +41,9 @@ between cores, deciding on the card and the thread language are planned.
 ### Reference
 
 - [Host API](reference/host.md): `Program`, `Session` and `Run`; errors; builds.
+- [Tensix runtime](reference/runtime.md): the device headers; the three kernels'
+  classes and calls, the record, every bounded wait, the gave-up and where codes, the
+  control block map, and what a program may and may not do.
 - [Ports, emit and reduce](reference/ports.md): the device calls that send a value to
   one core, groups of a team, and reduce by owner and by tree.
 - [Lane broadcast](reference/lanes.md): one sender to a row or a column of a team;
