@@ -29,7 +29,7 @@ def test_start_up_arguments_are_in_header_order():
 
 
 def test_constants_of_all_three_headers():
-    assert H["KM_RING_SLOTS"] == 16 and H["KM_CTL_BYTES"] == 0xC80
+    assert H["KM_RING_SLOTS"] == 16 and H["KM_CTL_BYTES"] == 0xD40
     assert H["KM_READY"] == 0xFFFFFFFF and H["KM_SEG_EXIT"] == 255
     assert H["KMD_LIM_MAILBOX"] == 0x100 and H["KMD_HOST_EVENTS"] == 2
     assert H["KMD_R_WORDS"] == 32 and H["KMD_R_LAST_HI"] == 23

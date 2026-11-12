@@ -66,7 +66,6 @@ KM_STATIC_ASSERT(sizeof(km_record_t) == 64, "a record is one 64-byte line");
    wants (nonzero only while waiting, or after the wait gave up) */
 #define KM_CTL_PORT 0x980u
 #define KM_CTL_LANE 0xA00u /* KM_LANES lane areas, KM_LANE_BYTES each */
-#define KM_CTL_BYTES 0xC80u
 
 /* Ports: the receiving side of a value sent to one core. */
 #define KM_PORTS 8u
@@ -90,8 +89,42 @@ KM_STATIC_ASSERT(KM_CTL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte slots
 
 KM_STATIC_ASSERT(KM_CTL_LANE == KM_CTL_CORES + 4u * KM_CORES_MAX + 0x80u, "ports room");
 KM_STATIC_ASSERT(KM_LANE_DONE + 16u * KM_LANE_RANKS == KM_LANE_BYTES, "lane area");
-KM_STATIC_ASSERT(KM_CTL_LANE + KM_LANES * KM_LANE_BYTES == KM_CTL_BYTES, "lane end");
+KM_STATIC_ASSERT(KM_CTL_LANE + KM_LANES * KM_LANE_BYTES == KM_CTL_DYN, "lane end");
 KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte slots");
+
+#define KM_CTL_DYN 0xC80u /* dynamic crossing: queue counters, idle words, status */
+#define KM_CTL_BYTES 0xD40u
+
+/* Dynamic crossing: offsets inside KM_CTL_DYN, each word in its own 16-byte slot. */
+#define KM_DYN_IN_TAIL 0x00u  /* the only word other cores add to (atomic) */
+#define KM_DYN_IN_HEAD 0x10u  /* reader */
+#define KM_DYN_SENT 0x20u     /* writer: items sent to any queue, spawns included */
+#define KM_DYN_CONSUMED 0x30u /* compute: items of the packets it finished */
+#define KM_DYN_QUOTA 0x40u    /* compute: spawns left */
+#define KM_DYN_FLAGS 0x50u /* idle words of reader, compute, writer, 16 bytes apart */
+#define KM_DYN_OUT 0x80u   /* source slot of the status line */
+#define KM_DYN_GAVE 0x90u  /* first give-up: where, position, run */
+#define KM_DYN_RET 0xA0u   /* writer: the reservation's returned position */
+#define KM_DYN_BYTES 0xC0u
+/* the issuer ends a dynamic run with this record to the run's team; a0 = run's seq */
+#define KM_SEG_DYN_END 249u
+
+/* Status line of a core in a dynamic run, 16 bytes at the issuer, one store. */
+#define KM_DYN_LINE_RUN 0u /* word offsets: the run's seq */
+#define KM_DYN_LINE_STATE 1u
+#define KM_DYN_LINE_SENT 2u
+#define KM_DYN_LINE_CONSUMED 3u
+#define KM_DYN_BUSY 1u /* line states */
+#define KM_DYN_IDLE 2u
+#define KM_DYN_GAVE_UP 3u
+
+KM_STATIC_ASSERT(
+    KM_CTL_DYN == KM_CTL_CORES + 4u * KM_CORES_MAX + 0x300u, "after lanes"
+);
+KM_STATIC_ASSERT(KM_CTL_DYN + KM_DYN_BYTES == KM_CTL_BYTES, "dynamic area ends");
+KM_STATIC_ASSERT(KM_CTL_DYN % 16u == 0 && KM_DYN_RET + 16u <= KM_DYN_BYTES, "slots");
+KM_STATIC_ASSERT(KM_DYN_IN_TAIL % 16u == 0 && KM_DYN_OUT % 16u == 0, "16-byte slots");
+KM_STATIC_ASSERT(KM_SEG_DYN_END > KM_SEG_USER_MAX, "not a program segment");
 
 /* Words the Tensix grid pushes into the X280's local memory. */
 #define KM_ACK_STRIDE 16u /* ack word of slot j at ack_base + j * KM_ACK_STRIDE */
