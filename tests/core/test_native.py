@@ -54,3 +54,38 @@ def test_without_a_tree_the_build_says_so(tmp_path, monkeypatch):
     monkeypatch.setattr(_env, "package_dir", lambda: tmp_path / "pkg")
     with pytest.raises(build.BuildError, match="TT_METAL_HOME"):
         native.module_path()
+
+
+def test_the_key_follows_the_build_inputs(tmp_path, monkeypatch):
+    tree = make_tree(tmp_path / "tree")
+    monkeypatch.setenv(native.CACHE_VARIABLE, str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        build, "build_cxx", lambda k, t, out, *a, **kw: out.write_bytes(b"x")
+    )
+    first = native.module_path(tree)
+    ninja = tree / "build" / "build.ninja"
+    ninja.write_text(ninja.read_text().replace("-O2", "-O3"))  # another flag
+    second = native.module_path(tree)
+    assert first != second and first.is_file() and second.is_file()
+    compiler = _env.sfpi_bin(tree) / "riscv-tt-elf-gcc"
+    monkeypatch.setattr(
+        build, "build_image", lambda t, out, *a, **kw: out.write_bytes(b"x")
+    )
+    image = native.image_path(tree)
+    compiler.write_text("a newer compiler")  # same path, other file
+    assert native.image_path(tree) != image
+
+
+def test_an_interrupted_build_leaves_no_entry(tmp_path, monkeypatch):
+    tree = make_tree(tmp_path / "tree")
+    monkeypatch.setenv(native.CACHE_VARIABLE, str(tmp_path / "cache"))
+
+    def interrupted(kind, tree_, out, source, includes=(), defines=()):
+        out.write_bytes(b"half a module")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(build, "build_cxx", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        native.module_path(tree)
+    left = [p for p in (tmp_path / "cache").rglob("*") if p.is_file()]
+    assert left == []

@@ -9,7 +9,9 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from komorebi import _env, build
@@ -18,6 +20,7 @@ IMAGE = "km-dispatch.bin"
 MODULE = "_km_host"
 MODULE_FILE = f"{MODULE}.abi3.so"
 CACHE_VARIABLE = "KMR_CACHE"
+PLACEHOLDER = Path("/OUT")  # the output directory in the commands that are hashed
 
 
 def native_dir():
@@ -65,6 +68,33 @@ def source_key(paths, tree):
     return digest.hexdigest()[:16]
 
 
+def inputs_key(commands, sources):
+    """A short hash of a build's inputs: its commands (compilers, flags, libraries),
+    the size and time of every file they name, and the sources' contents."""
+    digest = hashlib.sha256()
+    for cmd in commands:
+        for arg in cmd:
+            digest.update(arg.encode() + b"\0")
+            named = shutil.which(arg) if "/" not in arg else arg
+            if named and Path(named).is_file():
+                info = Path(named).stat()
+                digest.update(f"{info.st_size}:{info.st_mtime_ns}".encode())
+    digest.update(source_key(sources, "/").encode())
+    return digest.hexdigest()[:16]
+
+
+def build_whole(out, make):
+    """Builds `out` with make(path) into a temporary directory beside it, then moves
+    it into place: an interrupted or concurrent build never leaves a partial file."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=f".{out.parent.name}-", dir=out.parent.parent))
+    try:
+        make(work / out.name)
+        os.replace(work / out.name, out)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def _require_native():
     found = native_dir()
     if found is None:
@@ -88,17 +118,17 @@ def image_path(tree=None, defines=()):
     if prebuilt.is_file() and not defines:
         return prebuilt
     tree = _tree(tree)
-    key = source_key(includes(), tree)
-    if defines:
-        key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]
-    out = cache_dir() / f"image-{key}" / IMAGE
+    sources, defines = [kernel_dir() / "main.c"], list(defines)
+    commands = build.image_commands(
+        tree, PLACEHOLDER / IMAGE, sources, includes(), defines
+    )
+    out = cache_dir() / f"image-{inputs_key(commands, includes())}" / IMAGE
     if not out.is_file():
-        build.build_image(
-            tree,
+        build_whole(
             out,
-            [kernel_dir() / "main.c"],
-            includes=includes(),
-            defines=list(defines),
+            lambda path: build.build_image(
+                tree, path, sources, includes=includes(), defines=defines
+            ),
         )
     return out
 
@@ -109,15 +139,18 @@ def module_path(tree=None):
     if prebuilt.is_file():
         return prebuilt
     tree = _tree(tree)
-    key = source_key([*includes(), module_source()], tree)
+    paths = [str(p) for p in includes()]
+    commands = build.cxx_commands(
+        "pymodule", tree, PLACEHOLDER / MODULE_FILE, module_source(), paths
+    )
+    key = inputs_key(commands, [*includes(), module_source()])
     out = cache_dir() / f"module-{key}" / MODULE_FILE
     if not out.is_file():
-        build.build_cxx(
-            "pymodule",
-            tree,
+        build_whole(
             out,
-            module_source(),
-            includes=[str(p) for p in includes()],
+            lambda path: build.build_cxx(
+                "pymodule", tree, path, module_source(), includes=paths
+            ),
         )
     return out
 
