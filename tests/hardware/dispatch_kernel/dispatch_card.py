@@ -4,10 +4,12 @@ one JSON line with the results at the end.
 
     python dispatch_card.py limit | ping | issue | teams | disjoint | stall | bench
     python dispatch_card.py compile-error [--image-first]
+    python dispatch_card.py store [--gaps-us ...] [--busy-us ...] [--lines ...]
 """
 
 import argparse
 import gc
+import itertools
 import json
 import os
 import sys
@@ -77,6 +79,7 @@ WHERE = {1: "boot", 2: "next", 3: "done", 4: "stall", 5: "delay", 6: "exit"}
 GAVE = {0: "none", 1: "stop", 2: "limit"}
 
 M32 = 0xFFFFFFFF
+TARGETS = {"lim": 0, "l1": 1}
 
 
 def log(msg):
@@ -503,7 +506,7 @@ def case_bench(device, args):
         if args.preload:
             events, times = plan.take(args.n + 1, 30.0), {}
         else:
-            events, times = plan.stream(recs[0], 30.0, args.batch)
+            events, times = plan.stream(recs[0], 30.0, args.batch, args.settle_us)
         plan.submit(command(SEG_STOP))
         out = {"tag": plan.tag, "times": times}
         out["check"] = check_events(events, list(range(1, args.n + 2)))
@@ -542,6 +545,48 @@ def case_bench(device, args):
     return out
 
 
+def percentiles(us):
+    return {
+        str(q): round(float(np.percentile(us, q)), 3)
+        for q in (0, 1, 10, 25, 50, 75, 90, 99, 100)
+    }
+
+
+def case_store(device, args):
+    """Host store cost, no kernel running: --n bursts of --lines 64-byte stores and a
+    fence, per idle gap (--gaps-us), keep-busy period (--busy-us, 0 = none), burst
+    positions (--spread), a read before each burst (--read); LIM or a Tensix L1."""
+    runtime = dk.Runtime(device, pll_mhz=args.pll)
+    plan = runtime.plan()
+    configs = []
+    try:
+        grid = itertools.product(args.busy_us, args.spread, args.lines, args.gaps_us)
+        for busy, spread, lines, gap in grid:
+            target = TARGETS[args.target]
+            t = np.array(
+                plan.store_probe(args.n, lines, spread, gap, busy, args.read, target)
+            ).reshape(-1, 2)
+            us = t.sum(axis=1) * 1e6
+            log(f"store: busy {busy} lines {lines} gap {gap}: p50 {np.median(us):.2f}")
+            configs.append(
+                {
+                    "busy_us": busy,
+                    "lines": lines,
+                    "spread": spread,
+                    "gap_us": gap,
+                    "pct_us": percentiles(us),
+                    "store_pct_us": percentiles(t[:, 0] * 1e6),
+                    "fence_pct_us": percentiles(t[:, 1] * 1e6),
+                    "over_5us": round(float((us > 5).mean()), 4),
+                    "raw_store_fence_us": np.round(t * 1e6, 2).tolist(),
+                }
+            )
+    finally:
+        del plan, runtime
+        gc.collect()
+    return {"target": args.target, "read": args.read, "configs": configs, "ok": True}
+
+
 def case_compile_error(device, args):
     """The worker fails to compile; the kernel must be stopped (or never started)."""
     try:
@@ -560,6 +605,7 @@ CASES = {
     "stall": case_stall,
     "bench": case_bench,
     "compile-error": case_compile_error,
+    "store": case_store,
 }
 
 
@@ -579,9 +625,16 @@ def main():
     p.add_argument("--pll", type=int, default=1750)
     p.add_argument("--image-first", action="store_true")
     p.add_argument("--batch", type=int, default=1, help="commands per store batch")
+    p.add_argument("--settle-us", type=float, default=0.0, help="bench: fence to store")
     p.add_argument(
         "--preload", action="store_true", help="bench: store every command first"
     )
+    p.add_argument("--gaps-us", type=float, nargs="+", default=[0.0], help="store")
+    p.add_argument("--busy-us", type=float, nargs="+", default=[0.0], help="store")
+    p.add_argument("--lines", type=int, nargs="+", default=[2], help="store")
+    p.add_argument("--spread", type=int, nargs="+", default=[1], help="store")
+    p.add_argument("--read", action="store_true", help="store: read before a burst")
+    p.add_argument("--target", choices=sorted(TARGETS), default="lim", help="store")
     p.add_argument("--image", default=IMAGE, type=os.path.abspath, help="kernel image")
     args = p.parse_args()
     out = {"case": args.case, "argv": sys.argv[1:], "load_start": loadavg()}

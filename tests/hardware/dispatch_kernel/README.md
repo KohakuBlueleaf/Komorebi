@@ -31,6 +31,7 @@ case's checks hold.
 | `stall` | `KM_SEG_DEADLINE` with `--deadline-us`, then a record whose member `--core` waits for the stop word | `KM_EV_TIMEOUT` for that slot and command; the stop word reaches every core; only `--core` is left unreported |
 | `bench` | `--n` NOP records at `--depth` to teams of `--team` cores (0 = all), then EXIT | every event and every core count is right; reports microseconds per command |
 | `compile-error` | The worker is built with `DK_COMPILE_ERROR`, so it fails to compile | the error is raised and the X280 image was never started (or, with `--image-first`, was stopped) |
+| `store` | No kernel: `--n` bursts of `--lines` 64-byte stores into LIM (or, with `--target l1`, a Tensix core's free L1) and one fence each, for every idle gap in `--gaps-us`, keep-busy period in `--busy-us` (a second thread storing one line per period; 0 = none) and number of burst positions in `--spread`; `--read` reads LIM through the runtime before each burst | always (it reports the time in the stores and in the fence of each burst, as percentiles and raw) |
 
 The harness always launches the grid before it starts the image, so a compile error is
 raised before any image exists. `--image-first` reverses the order, to test that the
@@ -42,6 +43,9 @@ error path stops a running image.
   before the kernel starts. `--n` + 1 must fit in `--host-depth` (at most 64).
 - **Host-fed**: the host stores every command that fits in the ring, up to `--batch`
   commands, then fences once.
+  `--settle-us` makes it wait that long after a fence before it stores the next batch.
+  On the host these tests were written on, a store into the card's window issued within
+  about 0.5 microseconds after a fence often stalls for about 12 microseconds.
 
 `us_per_command_kernel` is the kernel's time from the first command it takes to the
 last event, divided by the number of commands. `us_per_command_host` is the host's time

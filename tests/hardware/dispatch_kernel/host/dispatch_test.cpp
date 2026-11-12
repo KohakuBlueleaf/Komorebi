@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -22,11 +23,13 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <immintrin.h>
 #include <x86intrin.h>
 
+#include <tt-metalium/allocator.hpp>
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
@@ -161,6 +164,7 @@ namespace {
         uint32_t tag = 1, depth = 1, host_depth = 16, event_depth = 252;
 
         std::shared_ptr<tt::umd::IoWindow> win;         // host -> LIM, write-combining
+        std::shared_ptr<tt::umd::IoWindow> l1_win;      // store probe only: host -> L1
         std::shared_ptr<tt::umd::SysmemBuffer> buffer;  // kernel -> pinned host memory
         volatile uint32_t* host = nullptr;
         uint64_t host_noc = 0;
@@ -466,14 +470,18 @@ namespace {
         }
 
         // Issues the n records of `recs` (commands next .. next + n - 1) in batches of
-        // up to `batch` (every command that fits, then one fence); collects the events.
+        // up to `batch`, one fence each, a batch no sooner than settle_us after a
+        // fence.
         std::map<std::string, double> stream(
             const uint32_t* recs,
             size_t n,
             double timeout_s,
             size_t batch,
+            double settle_us,
             std::vector<Event>& events
         ) {
+            const auto settle = static_cast<uint64_t>(settle_us * 1e-6 * tsc_hz());
+            uint64_t fenced = 0;
             uint64_t store = 0;
             const uint32_t first_event = seen + 1;
             const auto t0 = Clock::now();
@@ -492,12 +500,16 @@ namespace {
                 ) {
                     k++;
                 }
+                while (__rdtsc() - fenced < settle) {
+                    _mm_pause();
+                }
                 const uint64_t a = __rdtsc();
                 for (size_t j = 0; j < k; j++) {
                     store_command(i0 + static_cast<uint32_t>(j), recs + 16 * (r + j));
                 }
                 _mm_sfence();
-                each.push_back(__rdtsc() - a);
+                fenced = __rdtsc();
+                each.push_back(fenced - a);
                 store += each.back();
                 next = i0 + static_cast<uint32_t>(k);
                 r += k;
@@ -566,6 +578,85 @@ namespace {
             return cleaned.cleaned_up();
         }
 
+        // Host store probe; no kernel may run. n bursts of `lines` 64-byte stores and
+        // one sfence each (burst i at line lines * (i % spread)), to LIM (target 0) or
+        // a Tensix L1 (1); seconds in the stores and in the sfence of each burst, as 2n
+        // values.
+        std::vector<double> store_probe(
+            uint32_t n,
+            uint32_t lines,
+            uint32_t spread,
+            double gap_us,
+            double busy_us,
+            bool read,
+            int target
+        ) {
+            if (session) {
+                throw std::runtime_error("a kernel is running");
+            }
+            if (lines < 1 || spread < 1 || lines * spread > 64 || target < 0 ||
+                target > 1) {
+                throw std::runtime_error("lines * spread is 1 to 64, target 0 or 1");
+            }
+            open_host_side();
+            tt::umd::IoWindow* w = win.get();
+            uint64_t off = KMD_LIM_HRING, busy_off = KMD_LIM_ACKS;
+            if (target == 1) {
+                w = l1_window();
+                off = 0;
+                busy_off = 64u * 64u;
+            }
+            const double hz = tsc_hz();
+            const auto ticks = [hz](double us) {
+                return static_cast<uint64_t>(us * 1e-6 * hz);
+            };
+            // Keep-busy thread: one line and an sfence every busy_us until the end.
+            std::atomic<bool> stop{false};
+            std::thread busy;
+            if (busy_us > 0) {
+                busy = std::thread([&, period = ticks(busy_us)] {
+                    alignas(64) uint32_t line[16] = {};
+                    uint64_t at = __rdtsc();
+                    while (!stop.load(std::memory_order_relaxed)) {
+                        at += period;
+                        while (__rdtsc() < at) {
+                            _mm_pause();
+                        }
+                        line[0]++;
+                        w->write_block(busy_off, line, 64);
+                        _mm_sfence();
+                    }
+                });
+            }
+            alignas(64) uint32_t line[16] = {};
+            std::vector<double> t(2 * n);
+            const uint64_t gap = ticks(gap_us);
+            uint64_t end = __rdtsc();
+            for (uint32_t i = 0; i < n; i++) {
+                while (__rdtsc() - end < gap) {
+                    _mm_pause();
+                }
+                if (read) {
+                    tile->read_available_lim(base + KMD_LIM_RESULT, 64);
+                }
+                const uint64_t a = __rdtsc();
+                for (uint32_t j = 0; j < lines; j++) {
+                    line[0] = i;
+                    w->write_block(off + 64u * (lines * (i % spread) + j), line, 64);
+                }
+                const uint64_t b = __rdtsc();
+                _mm_sfence();
+                end = __rdtsc();
+                t[2 * i] = static_cast<double>(b - a) / hz;
+                t[2 * i + 1] = static_cast<double>(end - b) / hz;
+            }
+            stop = true;
+            if (busy.joinable()) {
+                busy.join();
+            }
+            return t;
+        }
+
     private:
         void open_host_side() {
             if (win) {
@@ -594,6 +685,43 @@ namespace {
             );
             pcie_x = pcie.front().x;
             pcie_y = pcie.front().y;
+        }
+
+        // A window onto logical core (0, 0)'s L1 at the allocator's base: free while no
+        // program runs.
+        tt::umd::IoWindow* l1_window() {
+            if (!l1_win) {
+                const auto chip = mesh->get_devices().front()->id();
+                auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+                const auto c = translated(0, 0);
+                l1_win = cluster.get_driver()->get_tt_device(chip)->create_io_window(
+                    tt::umd::TargetIoWindowConfig{
+                        .core_start = {c[0], c[1]},
+                        .addr = mesh->allocator()->get_base_allocator_addr(
+                            tt::tt_metal::HalMemType::L1
+                        ),
+                        .noc = tt::umd::NocId::NOC0
+                    },
+                    tt::umd::HostIoWindowConfig{
+                        .mapping = tt::umd::HostMemoryCaching::WC
+                    },
+                    tt::umd::IoOrdering::Strict
+                );
+            }
+            return l1_win.get();
+        }
+
+        // rdtsc ticks per second, over 20 ms.
+        static double tsc_hz() {
+            const auto w0 = Clock::now();
+            const uint64_t c0 = __rdtsc();
+            while (Clock::now() - w0 < std::chrono::milliseconds(20)) {
+                ;
+            }
+            return (
+                static_cast<double>(__rdtsc() - c0) /
+                std::chrono::duration<double>(Clock::now() - w0).count()
+            );
         }
     };
 
@@ -689,19 +817,23 @@ NB_MODULE(_km_dispatch_test, m) {
                nb::ndarray<const uint32_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>
                    recs,
                double timeout_s,
-               size_t batch) {
+               size_t batch,
+               double settle_us) {
                 if (recs.shape(1) != 16) {
                     throw std::runtime_error("recs is [n, 16]");
                 }
                 std::vector<Event> events;
                 auto times = (
-                    p.stream(recs.data(), recs.shape(0), timeout_s, batch, events)
+                    p.stream(
+                        recs.data(), recs.shape(0), timeout_s, batch, settle_us, events
+                    )
                 );
                 return nb::make_tuple(events_list(events), times);
             },
             nb::arg("recs"),
             nb::arg("timeout_s") = 10.0,
-            nb::arg("batch") = 1
+            nb::arg("batch") = 1,
+            nb::arg("settle_us") = 0.0
         )
         .def(
             "finish",
@@ -723,6 +855,27 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("timeout_s") = 10.0
         )
         .def("abort", &Plan::abort)
+        .def(
+            "store_probe",
+            [](Plan& p,
+               uint32_t n,
+               uint32_t lines,
+               uint32_t spread,
+               double gap_us,
+               double busy_us,
+               bool read,
+               int target) {
+                nb::gil_scoped_release release;
+                return p.store_probe(n, lines, spread, gap_us, busy_us, read, target);
+            },
+            nb::arg("n"),
+            nb::arg("lines") = 2,
+            nb::arg("spread") = 1,
+            nb::arg("gap_us") = 0.0,
+            nb::arg("busy_us") = 0.0,
+            nb::arg("read") = false,
+            nb::arg("target") = 0
+        )
         .def("running", [](const Plan& p) {
             return p.session.has_value();
         });
