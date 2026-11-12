@@ -1,0 +1,35 @@
+// Shared layout of the tile probes: input and output words, error codes, probe ids.
+// Must match probes.py.
+#pragma once
+
+#include <stdint.h>
+
+namespace probe {
+
+    // Probe ids (define PROBE).
+    constexpr uint32_t kSmoke = 0, kPred = 1, kAnyCC = 2, kGather = 3, kSlab = 4,
+                       kRiscv = 5;
+
+    // Output words. kNonce is written last: the host sees a finished run by it.
+    constexpr uint32_t kNonce = 0, kError = 1, kNumTimes = 2;
+    constexpr uint32_t kDone0 = 4;   // kDone0 + t: done word of TRISC t (probe 5)
+    constexpr uint32_t kTimes = 16;  // timing words (wall-clock cycles)
+    constexpr uint32_t kMaxTimes = 2032;
+    constexpr uint32_t kData = 2048;  // probe data
+    constexpr uint32_t kOutWords = 8192;
+
+    // Input words: probe data from word 0. kInWords is the CB page.
+    constexpr uint32_t kInWords = 8192;
+
+    // Error codes (bit set per failure; 0 is a clean run).
+    constexpr uint32_t kErrSpin = 1;  // a bounded wait gave up
+    constexpr uint32_t kErrLoop = 2;  // a data-dependent loop hit its bound
+
+    // CBs: the input page, the output page, scratch L1 for the RISC-V loops.
+    constexpr uint32_t kCbIn = 0, kCbOut = 16, kCbScratch = 24;
+    constexpr uint32_t kScratchWords = 4096;
+
+    // Spin bound of every wait of this kernel: about 2^24 x 20 cycles, under a second.
+    constexpr uint32_t kSpinLimit = 1u << 24;
+
+}  // namespace probe
