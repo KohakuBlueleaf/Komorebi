@@ -54,12 +54,12 @@ ARG_FIELDS = struct_fields(CORE_HPP, "Args")
 ARG_WORDS = [f"a{i}" for i in range(10)]
 
 
-def record(seg, first, count, args=()):
+def record(seg, first, count, args=(), flags=0):
     """The 16 words of a record; the feeder fills seq, slot and the landing words."""
     if len(args) > len(ARG_WORDS):
         raise ValueError(f"{len(args)} arguments, a record has {len(ARG_WORDS)}")
     words = dict.fromkeys(RECORD_FIELDS, 0)
-    words["hdr"] = seg  # flags: bit 0 reserved, zero; every record completes
+    words["hdr"] = seg | flags << 8  # flag bit 0 is reserved and zero
     words["team"] = first | count << 16
     words.update(zip(ARG_WORDS, args))
     return [words[f] & 0xFFFFFFFF for f in RECORD_FIELDS]
@@ -152,11 +152,12 @@ def feeder_summary(rows):
 
 
 def feeder_records(rows):
-    """Per record (rows 1 to n): seq, slot, status, issue, issued, acked, busy."""
+    """Per record (rows 1 to n): seq, slot, status, issue, issued, acked, busy, held."""
     r = as_uint32(rows)[1:]
     names = ("RecSeq", "RecSlot", "RecStatus", "RecIssue", "RecIssued", "RecAcked")
     out = {n[3:].lower(): r[:, K[f"kFr{n}"]].astype(np.int64) for n in names}
     out["busy"] = r[:, K["kFrRecBusy"]].astype(np.int64)
+    out["held"] = r[:, K["kFrRecHeld"]].astype(np.int64)
     return out
 
 

@@ -47,6 +47,7 @@ constexpr uint32_t kFrRecIssue = 3;   // wall clock before the first write (low 
 constexpr uint32_t kFrRecIssued = 4;  // after the last write left
 constexpr uint32_t kFrRecAcked = 5;   // when the feeder saw the ack word
 constexpr uint32_t kFrRecBusy = 6;    // records in flight after issuing it
+constexpr uint32_t kFrRecHeld = 7;    // 1: KM_F_EXCL held it while a team overlapped
 
 constexpr uint32_t kFeederMagic = 0xFEED0000;
 constexpr uint32_t kFsNone = 0;     // not issued

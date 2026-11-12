@@ -35,7 +35,9 @@ def parse():
     p.add_argument(
         "--release", type=int, default=8000, help="align: cycles after issue"
     )
-    p.add_argument("--teams", choices=["fixed", "random", "pair"], default="fixed")
+    p.add_argument(
+        "--teams", choices=["fixed", "random", "pair", "overlap"], default="fixed"
+    )
     p.add_argument("--count", type=int, default=8, help="team size (fixed)")
     p.add_argument("--first", type=int, default=0, help="first core (fixed)")
     p.add_argument("--tiles", type=int, default=64, help="input tiles T")
@@ -46,6 +48,7 @@ def parse():
     p.add_argument("--stall-member", type=int, default=0)
     p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
     p.add_argument("--trace", action="store_true")
+    p.add_argument("--excl", action="store_true", help="KM_F_EXCL on every MAP record")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--dump", type=Path, help="save records, trace and state (npz)")
     return p.parse_args()
@@ -60,6 +63,9 @@ def make_teams(args, workers, rng):
             (0, half) if j % 2 == 0 else (half, workers - half)
             for j in range(args.jobs)
         ]
+    if args.teams == "overlap":  # two halves that share a quarter, alternating
+        half, quarter = workers // 2, workers // 4
+        return [(0, half) if j % 2 == 0 else (quarter, half) for j in range(args.jobs)]
     return rec.random_teams(rng, args.jobs, workers)
 
 
@@ -156,6 +162,26 @@ def overlaps(res, teams, n):
     }
 
 
+def in_flight_together(res, teams, n, window=K["KM_RING_SLOTS"]):
+    """Pairs of jobs on overlapping teams (at most `window` apart) where a member of
+    the later one took it before the earlier one's leader pushed (from the trace)."""
+    tr = res.trace.astype(np.int64)
+    seqs = res.records["seq"]
+    pairs = together = 0
+    for a in range(n):
+        for b in range(a + 1, min(n, a + 1 + window)):
+            (fa, ca), (fb, cb) = teams[a], teams[b]
+            sa, sb = int(seqs[a]), int(seqs[b])
+            if fa + ca <= fb or fb + cb <= fa or 0 in (sa, sb):
+                continue
+            if max(sa, sb) > tr.shape[1]:
+                continue
+            pairs += 1
+            seen = tr[fb : fb + cb, sb - 1, 0].min()
+            together += 0 < int(rec.wrap(tr[fa, sa - 1, 2] - seen)) < 1 << 31
+    return {"pairs": pairs, "together": together}
+
+
 def summarize_phases(phases):
     keys = [k for k in phases[0] if k != "count"] if phases else []
     return {k: round(float(np.mean([p[k] for p in phases])), 3) for k in keys}
@@ -205,6 +231,7 @@ def run(device, args, rng):
     base = place_outputs(teams, pages, args.out_tensors)
 
     records = []
+    flags = K["KM_F_EXCL"] if args.excl else 0
     for j, (first, count) in enumerate(teams):
         if j == args.stall:
             records.append(rec.record(SEG_STALL, first, count, [args.stall_member]))
@@ -219,7 +246,7 @@ def run(device, args, rng):
                 outs[base[j] // pages].buffer_address(),
                 base[j] % pages,
             ]
-            records.append(rec.record(SEG_MAP, first, count, words))
+            records.append(rec.record(SEG_MAP, first, count, words, flags))
 
     accessor = ttnn.TensorAccessorArgs(inputs[0]).get_compile_time_args()
     kernels = fed.Kernels(
@@ -266,6 +293,8 @@ def run(device, args, rng):
         "count": args.count if args.teams == "fixed" else None,
         "tiles": tiles,
         "depth": args.depth,
+        "excl": args.excl,
+        "held": int(res.records["held"].sum()),
         "aiclk_mhz": res.mhz,
         "feeder": s,
         "us_per_record": round(s["span_cycles"] / res.mhz / max(s["done"], 1), 3),
@@ -328,6 +357,7 @@ def run(device, args, rng):
                 p["push_after_release"] = p["leader_sent"] - args.release / res.mhz
         out["trace_us"] = summarize_phases(phases)
         out["overlap"] = overlaps(res, teams, n)
+        out["overlapping_teams"] = in_flight_together(res, teams, n)
 
     if args.seg == "map" and s["status"] == "done":
         out.update(check(args, teams, base, outs, [x_exact, x_rand]))

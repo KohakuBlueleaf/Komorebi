@@ -91,6 +91,7 @@ void kernel_main() {
 
     int32_t busy[KM_RING_SLOTS];
     uint32_t busy_seq[KM_RING_SLOTS];
+    uint32_t busy_team[KM_RING_SLOTS];
     uint64_t t_issue[KM_RING_SLOTS];
     for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
         busy[j] = -1;
@@ -158,6 +159,19 @@ void kernel_main() {
             if (failed || next >= n) {
                 continue;
             }
+            const uint32_t src = tab + next * 64;
+            volatile tt_l1_ptr uint32_t* r = row(1 + next);
+            volatile tt_l1_ptr uint32_t* w = km::l1(src);
+            if ((w[1] >> 8) & KM_F_EXCL) {  // held while an overlapping team is busy
+                bool held = false;
+                for (uint32_t k = 0; k < depth; k++) {
+                    held |= busy[k] >= 0 && km::teams_overlap(busy_team[k], w[2]);
+                }
+                if (held) {
+                    r[kFrRecHeld] = 1;
+                    continue;
+                }
+            }
             uint32_t j = 0;
             while (j < depth && busy[j] >= 0) {
                 j++;
@@ -165,16 +179,15 @@ void kernel_main() {
             if (j == depth) {
                 continue;
             }
-            const uint32_t src = tab + next * 64;
             const uint64_t t0 = issue(j, src);
             t_first = next == 0 ? t0 : t_first;
-            volatile tt_l1_ptr uint32_t* r = row(1 + next);
             r[kFrRecSeq] = seq;
             r[kFrRecSlot] = j;
             r[kFrRecIssue] = static_cast<uint32_t>(t0);
             r[kFrRecIssued] = km::wall();
             busy[j] = static_cast<int32_t>(next);
             busy_seq[j] = seq;
+            busy_team[j] = w[2];
             t_issue[j] = t0;
             in_flight++;
             max_busy = in_flight > max_busy ? in_flight : max_busy;

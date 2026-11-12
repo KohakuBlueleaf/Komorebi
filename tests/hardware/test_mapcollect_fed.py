@@ -91,3 +91,17 @@ def test_a_stalled_member_across_rows_is_named(member, stalled, complete):
     assert waiting(out, "stall") == [(stalled, seq)]
     assert waiting(out, "complete") == [(c, seq) for c in complete]
     assert sorted(out["not_reported"]) == sorted([stalled, *complete])
+
+
+@pytest.mark.parametrize("excl", [True, False], ids=["excl", "plain"])
+def test_excl_records_on_overlapping_teams_are_never_in_flight_together(excl):
+    out = run(
+        "--jobs", 40, "--teams", "overlap", "--trace", *(["--excl"] if excl else [])
+    )
+    assert out["feeder"]["status"] == "done" and out["jobs_bad"] == 0
+    seen = out["overlapping_teams"]
+    assert seen["pairs"] > 0
+    if excl:  # held by the feeder: no member takes it before the other leader pushed
+        assert seen["together"] == 0 and out["held"] > 0
+    else:  # the check sees overlap when nothing holds the records
+        assert seen["together"] > 0 and out["held"] == 0
