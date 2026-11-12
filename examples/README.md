@@ -8,4 +8,5 @@ checked, and does not depend on another example.
 | Example | What it shows |
 |---|---|
 | [01_mapcollect](01_mapcollect/) | resident workers under the dispatch kernel, teams named per record, per-team completion, a timeout that names the core |
+| [03_broadcast](03_broadcast/) | lane broadcast: blocks along the rows and down the columns of a rectangle team, a stalled receiver that times out with its lane and block named |
 | [07_work_cluster](07_work_cluster/) | an X280 thread on a work cluster: regions, `kmx_par` on four cores, the result block, checked against its host fallback |
