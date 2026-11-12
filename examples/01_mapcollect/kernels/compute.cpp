@@ -48,6 +48,14 @@ void kernel_main() {
         }
         tile_regs_commit();
         tile_regs_wait();
+        if (cp.me() - km::first(r) == r.a5) {  // slow compute (test only)
+            PACK(({
+                const uint64_t t0 = km::wall64();
+                while (km::wall64() - t0 < r.a4) {
+                    ;
+                }
+            }));
+        }
         if (ok && cp.reserve_back(kCbOut, 1)) {  // a give-up: no output tile
             pack_tile(0, kCbOut);
             cb_push_back(kCbOut, 1);

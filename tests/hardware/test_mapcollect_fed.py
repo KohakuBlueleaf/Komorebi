@@ -129,3 +129,28 @@ def test_a_long_record_in_flight_at_the_stop_ends_on_every_tile():
     core0 = busy[0]
     assert core0["reader"]["code"] == "stop" and core0["reader"]["where"] == "data"
     assert core0["compute"] == {"code": "stop", "where": "cinput", "slot": 0, "seq": 2}
+
+
+CYCLES_300MS = 405_000_000  # at 1350 MHz
+
+
+def test_slow_compute_gives_up_and_acknowledges_nothing():
+    # Core 0's compute holds job 0's tile 0.3 s; the writer's wait limit is 0.1 s.
+    slow = ["--slow", 0, "--slow-member", 0, "--slow-cycles", CYCLES_300MS]
+    out = run("--team-list", "0:1,0:1,0:1", *slow, "--wait", 0.1, "--deadline", 1.0)
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 1
+    assert out["feeder"]["done"] == 0 and out["not_reported"] == [0]
+    assert every_kernel_returned(out)
+    writer = {g["core"]: g for g in out["gave_up_busy"]}[0]["writer"]
+    assert (writer["code"], writer["where"]) == ("limit", "data")
+
+
+def test_a_leader_whose_member_is_late_acknowledges_nothing():
+    # Member 1 reports job 0 after 0.3 s; leader 0 waits 0.1 s, gives up, stops.
+    late = ["--late", 0, "--late-member", 1, "--late-cycles", CYCLES_300MS]
+    out = run("--team-list", "0:2,0:2", *late, "--wait", 0.1, "--deadline", 1.0)
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 1
+    assert out["feeder"]["done"] == 0 and out["not_reported"] == [0]
+    assert every_kernel_returned(out)
+    leader = {g["core"]: g for g in out["named"]}[0]["writer"]
+    assert leader == {"code": "limit", "where": "complete", "slot": 0, "seq": 1}

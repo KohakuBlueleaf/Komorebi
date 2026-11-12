@@ -177,21 +177,22 @@ namespace km {
         }
     }
 
-    // Records a give-up in the state word pair `word` (kStReader, kStWriter or
-    // kStCompute); the first one is kept, as it names the cause.
+    // Records a give-up in state word pair `word` (the first one is kept: it names the
+    // cause) and sets the tile's own stop word, so all three kernels leave.
     inline void record_gave_up(
-        volatile tt_l1_ptr uint32_t* state,
+        uint32_t ctl,
         uint32_t word,
         uint32_t code,
         uint32_t where,
         uint32_t slot,
         uint32_t seq
     ) {
-        if (state[word] != 0) {
-            return;
+        volatile tt_l1_ptr uint32_t* state = l1(ctl + KM_CTL_STATE);
+        if (state[word] == 0) {
+            state[word] = code | where << 8 | slot << 16;
+            state[word + 1] = seq;
         }
-        state[word] = code | where << 8 | slot << 16;
-        state[word + 1] = seq;
+        *l1(ctl + KM_CTL_STOP) = 1;
     }
 
 }  // namespace km
@@ -255,11 +256,11 @@ namespace km {
             return poll_stop(ctl(KM_CTL_STOP), ready, limit, grace);
         }
 
-        // Records a give-up in the state word pair `word` (kStReader or kStWriter).
+        // record_gave_up for this tile (kStReader or kStWriter).
         void gave_up(
             uint32_t word, uint32_t code, uint32_t where, uint32_t slot, uint32_t seq
         ) const {
-            record_gave_up(state(), word, code, where, slot, seq);
+            record_gave_up(a_.ctl, word, code, where, slot, seq);
         }
 
     private:

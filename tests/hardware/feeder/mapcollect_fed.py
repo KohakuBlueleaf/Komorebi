@@ -23,7 +23,7 @@ K = rec.K
 KERNELS = HERE.parents[2] / "examples" / "01_mapcollect" / "kernels"
 SEGMENTS = rec.constants(KERNELS / "mapcollect.h")
 SEG_MAP, SEG_STALL = SEGMENTS["kSegMap"], SEGMENTS["kSegStall"]
-SEG_ALIGN = SEGMENTS["kSegAlign"]
+SEG_ALIGN, SEG_LATE = SEGMENTS["kSegAlign"], SEGMENTS["kSegLate"]
 TILE = 32
 
 
@@ -48,6 +48,13 @@ def parse():
     p.add_argument("--out-tensors", type=int, default=1, help="output tensors")
     p.add_argument("--stall", type=int, default=-1, help="job index made a STALL")
     p.add_argument("--stall-member", type=int, default=0)
+    p.add_argument("--late", type=int, default=-1, help="job index made a LATE")
+    p.add_argument("--late-member", type=int, default=0)
+    p.add_argument("--late-cycles", type=int, default=0)
+    p.add_argument("--slow", type=int, default=-1, help="MAP job with slow compute")
+    p.add_argument("--slow-member", type=int, default=0)
+    p.add_argument("--slow-cycles", type=int, default=0)
+    p.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
     p.add_argument(
         "--exit-at", type=int, default=-1, help="job index made an EXIT (team of 1)"
     )
@@ -244,6 +251,9 @@ def run(device, args, rng):
     for j, (first, count) in enumerate(teams):
         if j == args.stall:
             records.append(rec.record(SEG_STALL, first, count, [args.stall_member]))
+        elif j == args.late:
+            late = [args.late_member, args.late_cycles]
+            records.append(rec.record(SEG_LATE, first, count, late))
         elif j == args.exit_at:  # the feeder sets the team to every worker
             records.append(rec.record(K["KM_SEG_EXIT"], first, 1))
         elif args.seg == "align":
@@ -256,6 +266,8 @@ def run(device, args, rng):
                 tiles,
                 outs[base[j] // pages].buffer_address(),
                 base[j] % pages,
+                args.slow_cycles if j == args.slow else 0,
+                args.slow_member if j == args.slow else 0xFFFFFFFF,
             ]
             records.append(rec.record(SEG_MAP, first, count, words, flags))
 
@@ -281,6 +293,7 @@ def run(device, args, rng):
         tensors=[*inputs, *outs],
         depth=args.depth,
         deadline_s=args.deadline,
+        wait_s=args.wait,
         trace_cap=trace_cap,
         release=args.release if args.seg == "align" else 0,
     )
@@ -392,7 +405,11 @@ def check(args, teams, base, outs, xs):
     got = got.reshape(pages, TILE, TILE)
     fed.log("outputs read back")
     last = args.exit_at if args.exit_at >= 0 else len(teams)
-    jobs = [j for j in checked_jobs(teams, base, pages) if j != args.stall and j < last]
+    jobs = [
+        j
+        for j in checked_jobs(teams, base, pages)
+        if j not in (args.stall, args.late) and j < last
+    ]
     refs = {}
     bad, rel_max, exact_jobs = [], 0.0, 0
     for j in jobs:

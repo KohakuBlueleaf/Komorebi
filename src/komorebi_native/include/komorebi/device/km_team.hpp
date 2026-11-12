@@ -29,6 +29,11 @@ namespace km {
             }
             *done = 0;
         }
+        invalidate_l1_cache();
+        if (c.stop()) {  // this tile gave up, or the grid stops: acknowledge nothing
+            c.gave_up(kStWriter, kGaveStop, kWhereComplete, j, r.seq);
+            return false;
+        }
         if (a.me != first(r)) {
             noc_semaphore_inc(c.core_noc(to.parent, a.ctl + counter), 1);
             noc_async_atomic_barrier();  // a write barrier does not cover atomics

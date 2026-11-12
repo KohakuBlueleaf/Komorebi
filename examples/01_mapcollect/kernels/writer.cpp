@@ -14,7 +14,7 @@ void kernel_main() {
         switch (km::seg(r)) {
             case kSegMap: {
                 if (!wr.wait_front(kCbOut, 1)) {
-                    return true;
+                    return false;  // nothing to report: the tile is stopping
                 }
                 const auto out = TensorAccessor(out_args, r.a2);
                 noc_async_write_page(r.a3 + index, out, get_read_ptr(kCbOut));
@@ -25,13 +25,24 @@ void kernel_main() {
             case kSegStall:
                 return index != r.a0;
             case kSegAlign:
-                wr.poll(
-                    [&] {
-                        return static_cast<int32_t>(km::wall() - r.a9) >= 0;
-                    },
-                    wr.args().wait_limit
-                );
-                return true;
+                return wr.poll(
+                           [&] {
+                               return static_cast<int32_t>(km::wall() - r.a9) >= 0;
+                           },
+                           wr.args().wait_limit
+                       ) == km::kGaveNone;
+            case kSegLate: {
+                if (index != r.a0) {
+                    return true;
+                }
+                const uint32_t t0 = km::wall();
+                return wr.poll(
+                           [&] {
+                               return km::wall() - t0 >= r.a1;
+                           },
+                           wr.args().idle_limit
+                       ) == km::kGaveNone;
+            }
             default:
                 return true;
         }

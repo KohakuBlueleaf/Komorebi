@@ -243,8 +243,8 @@ namespace km {
         Writer() : trace_(args()) {
         }
 
-        // Per record: body(record) says whether the core reports it; writes flushed,
-        // complete() runs. EXIT is completed, then the writer leaves.
+        // Per record: body(record) says whether to report (false after a failed wait),
+        // then writes are flushed and complete() runs. EXIT completes, then it leaves.
         template <typename Body>
         void run(Body body) {
             const Args& a = args();
@@ -358,7 +358,7 @@ namespace km {
                 if (ok) {
                     cb_wait_front(cb, pages);
                 } else {
-                    record_gave_up(state(), kStCompute, code, kWhereCInput, 0, seq_);
+                    record_gave_up(ctl_, kStCompute, code, kWhereCInput, 0, seq_);
                 }
                 ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, ok);
                 ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, ok);
@@ -398,7 +398,7 @@ namespace km {
                 if (ok) {
                     cb_reserve_back(cb, pages);
                 } else {
-                    record_gave_up(state(), kStCompute, code, kWhereCOutput, 0, seq_);
+                    record_gave_up(ctl_, kStCompute, code, kWhereCOutput, 0, seq_);
                 }
             }));
             return ok;
@@ -476,7 +476,7 @@ namespace km {
                     cb_wait_front(kCbTokenCompute, 1);
                     seq = l1(ckernel::get_tile_l1_byte_address(kCbTokenCompute, 0))[0];
                 } else {
-                    record_gave_up(state(), kStCompute, code, kWhereCToken, 0, 0);
+                    record_gave_up(ctl_, kStCompute, code, kWhereCToken, 0, 0);
                 }
                 ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, ok);
                 ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, ok);
