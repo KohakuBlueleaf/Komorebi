@@ -17,6 +17,8 @@ from komorebi.errors import ProgramError, StartError
 from komorebi.run import Run
 
 CTL_ALIGN = 64  # the dispatch kernel stores whole 64-byte lines into the control block
+IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
+STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 
 
 def aiclk_mhz(card=None):
@@ -28,6 +30,17 @@ def aiclk_mhz(card=None):
 
 def visible_card():
     return int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
+
+
+def _state_area(device):
+    """A DRAM buffer whose bank address holds the dispatch kernel's state in every
+    bank (KMD_STATE_BYTES at least); refused if it covers the runtime's IPI word."""
+    h = abi.headers()
+    rows = _int32_tensor(device, np.zeros((STATE_PAGES, h["KMD_STATE_BYTES"] // 4)))
+    at = rows.buffer_address()
+    if at <= IPI_ACK_DDR < at + STATE_PAGES * h["KMD_STATE_BYTES"]:
+        raise StartError(f"the kernel state at {at:#x} covers the X280 IPI word")
+    return rows
 
 
 def _int32_tensor(device, rows, memory_config=None):
@@ -125,10 +138,18 @@ class Session:
         dispatch.settle_us = settle_us
         backend, launched = None, False
         try:
+            state_t = _state_area(self.device)
             tag = dispatch.prepare(
-                depth, host_depth, event_depth, start, deadline, kernel_idle
+                depth,
+                host_depth,
+                event_depth,
+                start,
+                deadline,
+                kernel_idle,
+                state_t.buffer_address(),
             )
             backend = _Backend(self, dispatch, mhz, trace)
+            backend.state_t = state_t  # kept while the kernel may use it
             descriptor = backend.describe(
                 program, sources, tag, depth, wait, idle, trace
             )
@@ -170,6 +191,7 @@ class _Backend:
         self.ctl = None
         self.ctl_offset = 0
         self.trace_t = None
+        self.state_t = None
         self.read = False
 
     def _control_blocks(self, cores, grid):

@@ -1,7 +1,7 @@
 """A fake dispatch kernel behind the native port's interface, for the Run tests.
 
-It takes commands in order, gives records the lowest free slot and the next sequence,
-and completes them when the test says so (or at once).
+In order, records get the lowest free slot and the next sequence, only while their
+events fit the ring by the published read count; they complete at once or on request.
 """
 
 import numpy as np
@@ -23,6 +23,8 @@ class FakePort:
         self.next = 1  # next command number the host stores
         self.consumed = 0
         self.seen = 0
+        self.published = 0  # the read count the host stored for the kernel
+        self.held_for_room = 0  # passes the kernel held a command for the read count
         self.ring = {}  # command number -> words
         self.busy = {}  # slot -> (seq, req, team)
         self.seq = 0
@@ -55,6 +57,7 @@ class FakePort:
             words[0] = words[4] = words[8] = words[12] = self.next
             self.ring[self.next] = words
             self.next += 1
+        self.published = self.seen  # every batch carries the read count
         if k:
             self.batches.append(k)
         return k
@@ -67,7 +70,10 @@ class FakePort:
         return np.asarray(out, dtype=np.uint32).reshape(-1, 4)
 
     def wait_events(self, timeout_s):
-        return self.poll()
+        out = self.poll()
+        if self.next - 1 - self.published >= self.event_depth:
+            self.published = self.seen  # the kernel may hold a command for it
+        return out
 
     def host_word(self, word):
         return self.state if word == 0 else 0
@@ -118,6 +124,10 @@ class FakePort:
                 return
             free = [j for j in range(self.depth) if j not in self.busy]
             if not free:
+                return
+            unread = self.pushed_events - self.published
+            if unread + len(self.busy) + 1 > self.event_depth:
+                self.held_for_room += 1
                 return
             self.seq += 1
             self.busy[free[0]] = (self.seq, req, (first, count))

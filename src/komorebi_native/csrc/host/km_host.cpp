@@ -150,15 +150,16 @@ namespace {
             return t;
         }
 
-        // Picks the run value and the tag, zeroes the LIM layout and the host buffer
-        // and writes the argument block. Returns the tag.
+        // Picks the run and the tag, zeroes LIM layout and host buffer, writes the
+        // argument block (state_ddr: the kernel's state in its DRAM bank).
         uint32_t prepare(
             uint32_t depth,
             uint32_t host_depth,
             uint32_t event_depth,
             double t_start_s,
             double t_record_s,
-            double t_idle_s
+            double t_idle_s,
+            uint64_t state_ddr
         ) {
             require_open();
             if (session_) {
@@ -172,6 +173,9 @@ namespace {
                     "two in range"
                 );
             }
+            if (state_ddr == 0 || state_ddr % 64 != 0) {
+                throw std::runtime_error("state_ddr is not a nonzero multiple of 64");
+            }
             depth_ = depth;
             host_depth_ = host_depth;
             event_depth_ = event_depth;
@@ -181,7 +185,7 @@ namespace {
                 tag_ = (rd() & 0xFFFFu) | 1u;
             } while (tag_ == 0xFFFFu);
             next_ = 1;
-            seen_ = 0;
+            seen_ = published_ = 0;
             std::memset(const_cast<uint32_t*>(host_), 0, kHostBufferBytes);
             tile_->write_available_lim(base_, std::vector<uint8_t>(KMD_LIM_BYTES, 0));
 
@@ -207,6 +211,7 @@ namespace {
             a.t_start = static_cast<uint64_t>(t_start_s * kMtimeHz);
             a.t_record = static_cast<uint64_t>(t_record_s * kMtimeHz);
             a.t_idle = static_cast<uint64_t>(t_idle_s * kMtimeHz);
+            a.state_ddr = state_ddr;
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &a, sizeof(a));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
@@ -269,26 +274,45 @@ namespace {
             return static_cast<uint32_t>(std::max<int64_t>(0, std::min(ring, events)));
         }
 
-        // Tells the kernel how many events the host has read. The kernel's header does
-        // not define the place yet, so nothing is written; push() calls it per batch.
-        void publish_read() {
+        // Stores the read count line (KMD_LIM_READ: events the host has read), without
+        // a fence. The kernel takes a command only while its events fit the ring.
+        void store_read() {
+            alignas(64) uint32_t w[16] = {seen_};
+            win_->write_block(KMD_LIM_READ, w, 64);
+            published_ = seen_;
+        }
+
+        // While waiting: the read count and a fence, only when the kernel may hold a
+        // command for it (command i waits only while i - 1 - published reaches depth).
+        void publish_if_held() {
+            if (seen_ != published_ && next_ - 1u - published_ >= event_depth_ &&
+                Clock::now() >= settled()) {
+                store_read();
+                _mm_sfence();
+                fenced_ = Clock::now();
+            }
         }
 
         // Spins until settle_us_ passed since the last fence: a store that follows a
         // fence too closely often stalls about 12 us.
         void settle() const {
-            const auto until =
-                (fenced_ +
-                 std::chrono::duration_cast<Clock::duration>(
-                     std::chrono::duration<double, std::micro>(settle_us_)
-                 ));
+            const auto until = settled();
             while (Clock::now() < until) {
                 _mm_pause();
             }
         }
 
-        // Stores the first k records of recs that fit as commands next .. next + k - 1
-        // (the command number in seq and the landing words), then one fence. Returns k.
+        Clock::time_point settled() const {
+            return (
+                fenced_ +
+                std::chrono::duration_cast<Clock::duration>(
+                    std::chrono::duration<double, std::micro>(settle_us_)
+                )
+            );
+        }
+
+        // Stores the first k records that fit as commands next .. next + k - 1 (number
+        // in seq and the landing words), the read count, one fence. Returns k.
         uint32_t push(const uint32_t* recs, size_t n) {
             const uint32_t k = static_cast<uint32_t>(std::min<size_t>(n, room()));
             if (k == 0) {
@@ -302,7 +326,7 @@ namespace {
                 w[0] = w[4] = w[8] = w[12] = i;
                 win_->write_block(KMD_LIM_HRING + (i % host_depth_) * 64u, w, 64);
             }
-            publish_read();
+            store_read();
             _mm_sfence();
             fenced_ = Clock::now();
             next_ += k;
@@ -343,6 +367,7 @@ namespace {
             const auto by = after(timeout_s);
             for (;;) {
                 auto out = poll();
+                publish_if_held();
                 if (!out.empty() || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
                     Clock::now() > by) {
                     auto rest = poll();
@@ -413,6 +438,7 @@ namespace {
         uint32_t tag_ = 0, depth_ = 1, host_depth_ = 1, event_depth_ = 1;
         uint32_t next_ = 1;       // number of the next command
         uint32_t seen_ = 0;       // events read from the ring
+        uint32_t published_ = 0;  // the read count last stored into LIM
         double settle_us_ = 1.0;  // pause between a fence and the next store
         Clock::time_point fenced_{};
 
@@ -592,7 +618,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("event_depth"),
             nb::arg("t_start_s"),
             nb::arg("t_record_s"),
-            nb::arg("t_idle_s")
+            nb::arg("t_idle_s"),
+            nb::arg("state_ddr")
         )
         .def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))

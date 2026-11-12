@@ -113,6 +113,33 @@ def test_exclusive_records_wait_for_overlapping_teams():
     assert [i[0] for i in port.issued] == [a, b, c, d]
 
 
+def test_the_read_count_lets_the_kernel_go_on_past_a_full_event_ring():
+    port = FakePort(depth=4, host_depth=8, event_depth=8)
+    run, port, _ = make_run(port)
+    tickets = [run.issue(0, (i % 100, 4)) for i in range(200)]
+    run.wait(tickets, timeout=1.0)
+    assert all(run.event(t).kind == "done" for t in tickets)
+    # the host's own room (unread plus in flight) is the tighter bound
+    assert port.held_for_room == 0 and port.published == port.seen
+
+
+def test_a_host_that_never_publishes_its_read_count_stalls_the_kernel():
+    class Silent(FakePort):
+        def push(self, rows):
+            published = self.published
+            k = super().push(rows)
+            self.published = published  # the batch did not carry the read count
+            return k
+
+        def wait_events(self, timeout_s):
+            return self.poll()
+
+    run, port, _ = make_run(Silent(depth=4, host_depth=8, event_depth=8))
+    tickets = [run.issue(0, (0, 4)) for _ in range(20)]
+    with pytest.raises(WaitTimeout):
+        run.wait(tickets, timeout=0.05)
+
+
 def test_sequences_follow_records_and_skip_kernel_commands():
     run, port, _ = make_run()
     tickets = [run.issue(0, (0, 1)) for _ in range(3)]
