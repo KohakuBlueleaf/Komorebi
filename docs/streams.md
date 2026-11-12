@@ -280,13 +280,13 @@ sets of records where it is not.
 
 ## Reference streams
 
-`tests/core/data/streams/` holds about ninety named streams as `.bin` uploads, each with
+`experiments/stream_checks/streams/` holds about ninety named streams as `.bin` uploads, each with
 a `.json` beside it giving the parameters of the simulation and the simulator's answer:
 the check result, every issued record (`seq`, `slot`, issue `pass`, `pc`, `queued`,
 `seg`, `first`, `count`, `flags`, `args`), the events, the status, the error, the halt
 value and whether the grid was stopped. Each file's notes say how completions are
 modelled. They exist so that another implementation, such as the kernel's interpreter,
 can replay them, and they are chosen so that a deliberate slip in the simulator is
-noticed: a test applies about a hundred small patches to it and requires every one to
-change some saved answer. `python tests/core/stream_reference.py` rewrites the files, and
-a test keeps them equal to what the simulator gives.
+noticed: `experiments/stream_checks/mutants.py` applies about a hundred small patches to
+it and requires every one to change some saved answer. `stream_reference.py` in the same
+folder rewrites the files, and with `--check` compares them with what the simulator gives.

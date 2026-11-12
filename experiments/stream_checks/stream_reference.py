@@ -1,7 +1,7 @@
 """Named reference streams, saved as files for the kernel's interpreter to replay.
 
-`python tests/core/stream_reference.py` rewrites tests/core/data/streams/. Each stream
-is a `.bin` upload and a `.json` with the simulator's answer; a test keeps them equal.
+Each stream is a `.bin` upload and a `.json` with the simulator's answer.
+`python stream_reference.py` rewrites streams/; `--check` only compares them.
 """
 
 import json
@@ -14,7 +14,7 @@ from stream_reference_more import MORE
 from komorebi.engines import stream as st
 from komorebi.engines.stream import Stream
 
-DATA = Path(__file__).resolve().parent / "data" / "streams"
+DATA = Path(__file__).resolve().parent / "streams"
 SEG_A, SEG_B = 1, 7
 
 NOTES = (
@@ -571,6 +571,22 @@ def write():
         (DATA / f"{name}.json").write_text(dump(doc))
 
 
+def differing():
+    """The names of the references whose saved files differ from the generator's."""
+    out = []
+    for name in REFERENCES:
+        upload, doc = document(name)
+        same = (DATA / f"{name}.bin").read_bytes() == upload
+        same = same and (DATA / f"{name}.json").read_text() == dump(doc)
+        if not same:
+            out.append(name)
+    return out
+
+
 if __name__ == "__main__":
+    if "--check" in sys.argv:
+        bad = differing()
+        print(f"{len(bad)} of {len(REFERENCES)} streams differ: {bad}")
+        sys.exit(bool(bad))
     write()
     print(f"wrote {len(REFERENCES)} streams to {DATA}", file=sys.stderr)

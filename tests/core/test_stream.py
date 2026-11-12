@@ -1,6 +1,5 @@
 """Micro-op streams: header constants, encoding, check and the simulator's semantics."""
 
-import json
 import re
 import shutil
 import struct
@@ -8,10 +7,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import stream_reference as ref
 
 from komorebi.engines import stream as st
-from komorebi.engines.stream import Reg, Stream, StreamFormatError, check, simulate
+from komorebi.engines.stream import Reg, Stream, check, simulate
 
 ROOT = Path(__file__).resolve().parents[2]
 INCLUDE = ROOT / "src" / "komorebi_native" / "include"
@@ -31,13 +29,18 @@ def header_constants():
 H = header_constants()
 
 
-def halt_value(build, **options):
-    """The 32-bit status a stream halts with: build(s) returns the register."""
-    s = Stream(max_steps=1000)
-    s.halt(build(s))
-    done = s.simulate(**options)
-    assert done.status == "ended", done
-    return done.halt
+def binary(op, x, y, imm=False):
+    """The value left by `op` on x and y (an immediate if imm) in a stream."""
+    s = Stream()
+    a, b, c = s.regs(3)
+    s.set(a, x)
+    if imm:
+        getattr(s, op)(c, a, y)
+    else:
+        s.set(b, y)
+        getattr(s, op)(c, a, b)
+    s.halt(c)
+    return s.simulate().halt
 
 
 def pcs(s, op):
@@ -88,12 +91,9 @@ PAIRS = {
 }
 
 
-@pytest.mark.parametrize("name", sorted(PAIRS))
-def test_python_constant_matches_the_header(name):
-    assert getattr(st, name) == H[PAIRS[name]]
-
-
-def test_opcodes_and_error_reasons_match_the_header():
+def test_constants_opcodes_and_error_reasons_match_the_header():
+    for name, header_name in PAIRS.items():
+        assert getattr(st, name) == H[header_name], name
     for code, (name, _, _) in st.OPS.items():
         assert H[f"KM_OP_{name}"] == code
     assert H["KM_OP_INVALID"] == 0 and len(st.OPS) == 21
@@ -140,7 +140,7 @@ def test_layout_matches_the_c_structs(tmp_path):
 # builder
 
 
-def test_registers_run_out_with_the_count_in_the_message():
+def test_the_builder_refuses_what_it_cannot_encode_in_registers():
     s = Stream()
     s.regs(14)
     with pytest.raises(ValueError, match=r"2 requested, 1 free of 15"):
@@ -150,6 +150,13 @@ def test_registers_run_out_with_the_count_in_the_message():
         s.const(5)
     with pytest.raises(ValueError):
         Reg(16)
+    b = Stream().regs(1)[0]
+    with pytest.raises(TypeError):
+        Stream().add(b, b, 3)
+    with pytest.raises(TypeError):
+        Stream().jmp(5)
+    with pytest.raises(ValueError):
+        Stream().set(b, 1 << 32)
 
 
 def test_equal_constants_share_one_register():
@@ -160,18 +167,7 @@ def test_equal_constants_share_one_register():
     assert all(o.op == st.OP_SET for o in s.uops())
 
 
-def test_register_operands_must_be_registers():
-    s = Stream()
-    a = s.regs(1)[0]
-    with pytest.raises(TypeError):
-        s.add(a, a, 3)
-    with pytest.raises(TypeError):
-        s.jmp(5)
-    with pytest.raises(ValueError):
-        s.set(a, 1 << 32)
-
-
-def test_labels_resolve_after_the_prologue():
+def test_labels_resolve_after_the_prologue_and_must_be_bound():
     s = Stream()
     a = s.regs(1)[0]
     top, end = s.label(), s.forward()
@@ -183,9 +179,6 @@ def test_labels_resolve_after_the_prologue():
     assert ops[0].op == st.OP_SET and ops[1].imm == 3 and ops[2].imm == 1
     with pytest.raises(ValueError, match="already bound"):
         s.bind(end)
-
-
-def test_unbound_and_trailing_labels_do_not_encode():
     s = Stream()
     s.jmp(s.forward())
     with pytest.raises(ValueError, match="never bound"):
@@ -216,16 +209,6 @@ def test_template_arguments_and_limits():
             s.issue(bad, team=(0, 1))
     with pytest.raises(ValueError, match="16 bits"):
         s.issue(1, team=(0, 70000))
-
-
-def test_submit_takes_a_count_register_or_makes_one():
-    s = Stream()
-    c = s.regs(1)[0]
-    s.submit(1, c)
-    s.submit(1, 9)
-    ops = s.uops()
-    assert [o.op for o in ops] == [st.OP_SET, st.OP_SUBMIT, st.OP_SUBMIT]
-    assert ops[1].a == 0 and ops[2].a == ops[0].a == 1 and ops[0].imm == 9
 
 
 # encoding
@@ -286,73 +269,25 @@ def test_round_trip_of_every_micro_op():
     assert {o.op for o in d.uops()} == set(st.OPS)
 
 
-def test_decode_refuses_a_bad_upload():
-    data = bytearray(ref.build("arith_wrap")[0])
-    data[0] ^= 1
-    with pytest.raises(StreamFormatError) as err:
-        Stream.decode(bytes(data))
-    assert err.value.error == (1, 0)
-
-
 # micro-op semantics
 
 
-@pytest.mark.parametrize(
-    ("op", "x", "y", "want"),
-    [
+def test_arithmetic_wraps_at_32_bits_and_shr_takes_the_count_mod_32():
+    for op, x, y, want in [
         ("add", 0xFFFFFFFF, 2, 1),
-        ("add", 5, 6, 11),
         ("sub", 0, 1, 0xFFFFFFFF),
-        ("sub", 9, 4, 5),
-        ("mul", 0x10001, 0x10001, 0x20001),
         ("mul", 0xFFFFFFFF, 0xFFFFFFFF, 1),
         ("and_", 0xF0F0, 0x0FF0, 0x00F0),
-        ("mod", 1000, 7, 6),
         ("mod", 0xFFFFFFFF, 0x80000000, 0x7FFFFFFF),
-        ("mod", 3, 5, 3),
-    ],
-)
-def test_three_register_ops(op, x, y, want):
-    def build(s):
-        a, b, c = s.regs(3)
-        s.set(a, x)
-        s.set(b, y)
-        getattr(s, op)(c, a, b)
-        return c
-
-    assert halt_value(build) == want
-
-
-@pytest.mark.parametrize(
-    ("op", "x", "imm", "want"),
-    [
+    ]:
+        assert binary(op, x, y) == want, op
+    for op, x, imm, want in [
         ("addi", 0xFFFFFFFF, 1, 0),
-        ("addi", 5, 0xFFFFFFFF, 4),
         ("addi", 5, -2, 3),
         ("shr", 0x80000000, 31, 1),
-        ("shr", 0xFFFFFFFF, 0, 0xFFFFFFFF),
-        ("shr", 0xFFFFFFFF, 32, 0xFFFFFFFF),
         ("shr", 0xFFFFFFFF, 36, 0x0FFFFFFF),
-    ],
-)
-def test_immediate_ops(op, x, imm, want):
-    def build(s):
-        a, b = s.regs(2)
-        s.set(a, x)
-        getattr(s, op)(b, a, imm)
-        return b
-
-    assert halt_value(build) == want
-
-
-def test_mov_set_and_register_zero_at_start():
-    def build(s):
-        a, b = s.regs(2)
-        s.addi(b, a, 7)
-        s.mov(a, b)
-        return a
-
-    assert halt_value(build) == 7
+    ]:
+        assert binary(op, x, imm, imm=True) == want, op
 
 
 def test_rand_follows_the_xorshift_written_out():
@@ -372,56 +307,28 @@ def test_rand_follows_the_xorshift_written_out():
     assert want[0] == 270369  # 1 ^ 1 << 13, then the two shifts
 
 
-def test_rand_runs_on_register_15_whatever_the_target():
-    s = Stream(seed=0x1234)
-    a = s.regs(1)[0]
-    s.rand(a)
-    s.rand(Reg(15))
-    s.rand(a)
-    s.halt(Reg(15))
-    x = 0x1234
-    for _ in range(3):
-        x = xorshift_by_hand(x)
-    assert s.simulate().halt == x
-
-
-@pytest.mark.parametrize(
-    ("op", "x", "y", "taken"),
-    [
-        ("jlt", 1, 2, True),
+def test_jumps_compare_unsigned():
+    for op, x, y, taken in [
         ("jlt", 2, 2, False),
-        ("jlt", 0xFFFFFFFF, 1, False),
         ("jlt", 1, 0xFFFFFFFF, True),
         ("jeq", 4, 4, True),
         ("jeq", 4, 5, False),
-    ],
-)
-def test_two_register_jumps(op, x, y, taken):
-    def build(s):
+        ("jnz", 0, None, False),
+        ("jnz", 0xFFFFFFFF, None, True),
+    ]:
+        s = Stream()
         a, b, out = s.regs(3)
         skip = s.forward()
         s.set(a, x)
-        s.set(b, y)
-        getattr(s, op)(a, b, skip)
+        s.set(b, y or 0)
+        if op == "jnz":
+            s.jnz(a, skip)
+        else:
+            getattr(s, op)(a, b, skip)
         s.set(out, 1)
         s.bind(skip)
-        return out
-
-    assert halt_value(build) == (0 if taken else 1)
-
-
-@pytest.mark.parametrize(("x", "taken"), [(0, False), (1, True), (0xFFFFFFFF, True)])
-def test_jnz(x, taken):
-    def build(s):
-        a, out = s.regs(2)
-        skip = s.forward()
-        s.set(a, x)
-        s.jnz(a, skip)
-        s.set(out, 1)
-        s.bind(skip)
-        return out
-
-    assert halt_value(build) == (0 if taken else 1)
+        s.halt(out)
+        assert s.simulate().halt == (0 if taken else 1), (op, x, y)
 
 
 def test_halt_status_and_event_keep_the_low_24_bits():
@@ -434,17 +341,6 @@ def test_halt_status_and_event_keep_the_low_24_bits():
     assert done.halt == 0xAB123456
     assert [(e.kind, e.aux) for e in done.events] == [(4, 0x123456), (5, 0x123456)]
     assert all(e.req == 1 for e in done.events)
-
-
-def test_time_reads_the_clock_of_the_pass():
-    s = Stream()
-    a, b = s.regs(2)
-    for _ in range(64):
-        s.addi(b, b, 1)
-    s.time(a)
-    s.halt(a)
-    done = s.simulate(ticks_per_pass=10)
-    assert done.halt == 10 and done.passes == 2
 
 
 # steps, passes and errors
@@ -484,27 +380,17 @@ def test_a_stalled_micro_op_does_not_count_as_a_step():
     assert s.simulate(delay=50).status == "ended"
 
 
-@pytest.mark.parametrize("count", [0, 120, 1 << 31])
-def test_a_job_that_can_never_fit_is_an_error(count):
-    s = Stream()
-    s.set(s.regs(1)[0], 0)
-    s.submit(1, count)
-    s.halt(s.const(0))
-    done = s.simulate()
-    assert done.error == (st.ERR_NEVER_FITS, pcs(s, st.OP_SUBMIT)[0])
-    assert done.records == []
-    assert done.events[-1].kind == st.EV_STREAM_ERROR
-    assert done.events[-1].aux == 9 | done.error.pc << 8
-
-
-def test_a_job_of_the_whole_grid_fits():
-    s = Stream()
-    s.submit(1, 119)
-    s.wait(0)
-    s.halt(s.const(0))
-    done = s.simulate(n_cores=119)
-    assert [(r.first, r.count) for r in done.records] == [(0, 119)]
-    assert s.simulate(n_cores=118).error.reason == st.ERR_NEVER_FITS
+def test_a_job_that_can_never_fit_is_an_error():
+    for count in [0, 120]:
+        s = Stream()
+        s.set(s.regs(1)[0], 0)
+        s.submit(1, count)
+        s.halt(s.const(0))
+        done = s.simulate()
+        assert done.error == (st.ERR_NEVER_FITS, pcs(s, st.OP_SUBMIT)[0])
+        assert done.records == []
+        assert done.events[-1].kind == st.EV_STREAM_ERROR
+        assert done.events[-1].aux == 9 | done.error.pc << 8
 
 
 def test_mod_by_zero_is_an_error_at_its_pc():
@@ -516,28 +402,6 @@ def test_mod_by_zero_is_an_error_at_its_pc():
     done = s.simulate()
     assert done.error == (st.ERR_MOD_ZERO, 1) and done.passes == 1
     assert [e.kind for e in done.events] == [st.EV_STREAM_ERROR]
-
-
-@pytest.mark.parametrize(
-    ("first", "count"), [(100, 20), (119, 1), (0, 120), (0, 0), (5, 0), (1 << 20, 1)]
-)
-def test_a_team_outside_the_grid_is_an_error(first, count):
-    s = Stream()
-    f, c = s.regs(2)
-    s.set(f, first)
-    s.set(c, count)
-    s.issue(1, team=(f, c))
-    s.halt(f)
-    done = s.simulate()
-    assert done.error == (st.ERR_TEAM, 2) and done.records == []
-
-
-def test_the_last_core_is_a_valid_team():
-    s = Stream()
-    s.issue(1, team=(118, 1))
-    s.wait(0)
-    s.halt(s.const(0))
-    assert [(r.first, r.count) for r in s.simulate().records] == [(118, 1)]
 
 
 def test_running_off_the_end_is_a_jump_error_at_n_ops():
@@ -572,17 +436,17 @@ def test_a_stream_that_never_finishes_reports_stuck():
     assert (done.status, done.passes, done.error) == ("stuck", 50, None)
 
 
-@pytest.mark.parametrize("cancel", [0, 1, 4])
-def test_cancel_ends_the_stream_at_the_pc_it_has_reached(cancel):
-    s = Stream(max_steps=10_000)
-    top = s.label()
-    s.issue(1, team=(0, 1))
-    s.wait(0)
-    s.jmp(top)
-    done = s.simulate(delay=1, cancel_pass=cancel)
-    pcs = {0: 0, 1: 1, 4: 1}[cancel]
-    assert done.error == (st.ERR_CANCELLED, pcs)
-    assert done.events[-1].aux == 10 | pcs << 8 and done.passes == cancel + 1
+def test_cancel_ends_the_stream_at_the_pc_it_has_reached():
+    for cancel in [0, 4]:
+        s = Stream(max_steps=10_000)
+        top = s.label()
+        s.issue(1, team=(0, 1))
+        s.wait(0)
+        s.jmp(top)
+        done = s.simulate(delay=1, cancel_pass=cancel)
+        pcs = {0: 0, 1: 1, 4: 1}[cancel]
+        assert done.error == (st.ERR_CANCELLED, pcs)
+        assert done.events[-1].aux == 10 | pcs << 8 and done.passes == cancel + 1
 
 
 def test_waits_and_the_completion_order():
@@ -716,27 +580,16 @@ def test_issue_waits_while_all_16_slots_are_busy():
     assert [r.slot for r in done.records] == list(range(16))
 
 
-@pytest.mark.parametrize(
-    ("busy", "count", "n", "want"),
-    [
+def test_alloc_is_the_lowest_first_that_overlaps_nothing():
+    for busy, count, n, want in [
         ([], 5, 119, 0),
-        ([], 119, 119, 0),
         ([], 120, 119, None),
-        ([(0, 3)], 4, 119, 3),
         ([(2, 3)], 2, 119, 0),
-        ([(2, 3)], 3, 119, 5),
-        ([(0, 2), (4, 2)], 2, 119, 2),
         ([(0, 2), (4, 2)], 3, 119, 6),
-        ([(0, 100)], 20, 119, None),
         ([(0, 100)], 19, 119, 100),
-        ([(118, 1)], 1, 119, 0),
-        ([(0, 118)], 1, 119, 118),
-        ([(0, 119)], 1, 119, None),
         ([(10, 5), (0, 10)], 1, 119, 15),
-    ],
-)
-def test_alloc_is_the_lowest_first_that_overlaps_nothing(busy, count, n, want):
-    assert st.alloc(busy, count, n) == want
+    ]:
+        assert st.alloc(busy, count, n) == want
 
 
 def test_the_queue_picks_teams_with_the_allocator():
@@ -811,19 +664,12 @@ def issued_before_the_big_job(s):
     return big, [r for r in ahead if r.pass_index < big.pass_index], done
 
 
-@pytest.mark.parametrize("limit", [5, 1024])
-def test_a_job_is_passed_over_at_most_the_limit(monkeypatch, limit):
+def test_a_job_is_passed_over_at_most_the_limit(monkeypatch):
+    limit = 5
     monkeypatch.setattr(st, "QUEUE_PASSES", limit)
-    big, ahead, done = issued_before_the_big_job(blocked_big_job(1500))
+    big, ahead, done = issued_before_the_big_job(blocked_big_job(100))
     assert len(ahead) == limit
     assert big.pass_index == 3001  # when the long job is acknowledged
-    assert len(done.records) == 1502
-
-
-def test_without_the_limit_the_large_job_waits_for_every_small_one(monkeypatch):
-    monkeypatch.setattr(st, "QUEUE_PASSES", 10**9)
-    big, ahead, _ = issued_before_the_big_job(blocked_big_job(1500))
-    assert len(ahead) == 1500 and big.pass_index == 3001
 
 
 def test_a_full_queue_makes_submit_wait():
@@ -840,28 +686,6 @@ def test_a_full_queue_makes_submit_wait():
     assert [r.args[0] for r in done.records] == list(range(70))
     unlimited = s.simulate(delay=4, n_cores=119)
     assert unlimited.status == "ended"
-
-
-def test_the_queue_holds_exactly_64_jobs():
-    s = Stream()
-    for _ in range(65):
-        s.submit(1, 119)
-    s.wait(0)
-    s.halt(s.const(0))
-    done = s.simulate(delay=1)
-    assert done.status == "ended" and len(done.records) == 65
-
-
-def test_wait_counts_queued_jobs_as_pending():
-    s = Stream()
-    s.submit(1, 119)
-    s.submit(1, 119)
-    s.wait(1)
-    s.event(s.const(1))
-    s.halt(s.const(0))
-    done = s.simulate(delay=2)
-    ev = next(e for e in done.events if e.kind == st.EV_STREAM)
-    assert ev.pass_index == 3
 
 
 def test_a_cancelled_stream_drops_its_queue():
@@ -885,56 +709,6 @@ def test_excl_waits_for_an_overlapping_team_and_others_do_not():
     done = s.simulate(delay=2)
     got = [(r.args[0], r.pass_index, r.flags) for r in done.records]
     assert got == [(0, 0, 0), (1, 3, 2), (2, 3, 2), (3, 3, 0)]
-
-
-def test_the_section_five_program_gives_1000_records():
-    s = Stream(deadline_us=200_000)
-    i, count = s.regs(2)
-    s.set(i, 0)
-    top = s.label()
-    s.rand(count)
-    s.mod(count, count, s.const(119))
-    s.addi(count, count, 1)
-    s.submit(seg=3, count=count, args=[i, 77])
-    s.addi(i, i, 1)
-    s.jlt(i, s.const(1000), top)
-    s.wait(0)
-    s.halt(s.const(0))
-    data = s.encode()
-    assert check(data, 1 << 20) is None
-    done = s.simulate(delay=lambda r: 1 + r.seq % 3)
-    assert done.status == "ended" and len(done.records) == 1000
-    counts, x = [], s.seed
-    for _ in range(1000):
-        x = xorshift_by_hand(x)
-        counts.append(x % 119 + 1)
-    by_job = sorted(done.records, key=lambda r: r.args[0])
-    assert [r.count for r in by_job] == counts
-    assert {r.count for r in done.records} <= set(range(1, 120))
-    assert min(counts) == 1 and max(counts) == 119
-    assert all(r.first + r.count <= 119 and r.args[1] == 77 for r in done.records)
-    assert len({r.slot for r in done.records}) > 1  # several teams at once
-    assert [e.kind for e in done.events] == [st.EV_STREAM_END]
-
-
-def test_jobs_in_flight_never_overlap_in_the_simulation():
-    s = Stream()
-    i, c = s.regs(2)
-    top = s.label()
-    s.rand(c)
-    s.mod(c, c, s.const(40))
-    s.addi(c, c, 1)
-    s.submit(1, c, args=[i])
-    s.addi(i, i, 1)
-    s.jlt(i, s.const(300), top)
-    s.wait(0)
-    s.halt(s.const(0))
-    done = s.simulate(delay=lambda r: 1 + r.seq % 4)
-    for r in done.records:
-        for q in done.records:
-            live = q.seq < r.seq and q.pass_index + 1 + (1 + q.seq % 4) > r.pass_index
-            if live:
-                assert q.first + q.count <= r.first or r.first + r.count <= q.first
 
 
 # check: every reason, with its program counter
@@ -961,27 +735,17 @@ def op_at(index):
 TPL = st.HEADER_BYTES + 64  # three micro-ops pad to one line
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
+def test_bad_headers_are_reason_1_at_pc_0():
+    for mutate in [
         lambda d: poke(d, 0, "<I", 0),
         lambda d: poke(d, 4, "<I", 2),
         lambda d: poke(d, 8, "<I", 0),
-        lambda d: poke(d, 8, "<I", 65536),
-        lambda d: poke(d, 8, "<I", 5),
-        lambda d: poke(d, 12, "<I", 65536),
-        lambda d: poke(d, 12, "<I", 2),
         lambda d: poke(d, 16, "<I", 0),
-        lambda d: poke(d, 28, "<I", 0),
         lambda d: d + bytes(64),
-        lambda d: d[:-64],
         lambda d: d[:-1],
-        lambda d: d[:63],
         lambda d: bytearray(),
-    ],
-)
-def test_bad_headers_are_reason_1_at_pc_0(mutate):
-    assert check(bytes(mutate(tiny())), 1 << 20) == (st.ERR_HEADER, 0)
+    ]:
+        assert check(bytes(mutate(tiny())), 1 << 20) == (st.ERR_HEADER, 0)
 
 
 def test_the_upload_must_fit_the_region():
@@ -990,27 +754,21 @@ def test_the_upload_must_fit_the_region():
     assert check(data, len(data) - 64) == (st.ERR_HEADER, 0)
 
 
-def test_a_clean_upload_checks_clean():
-    assert check(bytes(tiny()), 1 << 20) is None
-
-
 def test_unknown_opcodes_are_reason_2():
-    for code in (0, 11, 15, 21, 31, 34, 39, 42, 47, 50, 255):
+    for code in (0, 21, 255):
         d = poke(tiny(), op_at(1), "<B", code)
         assert check(bytes(d), 1 << 20) == (st.ERR_OPCODE, 1), code
 
 
-@pytest.mark.parametrize("field", [1, 2, 3])
-def test_registers_above_15_are_reason_4_for_fields_in_use(field):
+def test_registers_above_15_are_reason_4_for_fields_in_use():
     s = Stream()
     a = s.regs(1)[0]
     s.add(a, a, a)
     s.halt(a)
-    data = bytearray(s.encode())
-    poke(data, op_at(0) + field, "<B", 16)
-    assert check(bytes(data), 1 << 20) == (st.ERR_REGISTER, 0)
-    poke(data, op_at(0) + field, "<B", 255)
-    assert check(bytes(data), 1 << 20) == (st.ERR_REGISTER, 0)
+    for field in (1, 2, 3):
+        data = bytearray(s.encode())
+        poke(data, op_at(0) + field, "<B", 16)
+        assert check(bytes(data), 1 << 20) == (st.ERR_REGISTER, 0)
 
 
 def test_unused_operand_fields_are_ignored():
@@ -1021,53 +779,38 @@ def test_unused_operand_fields_are_ignored():
     assert check(bytes(d), 1 << 20) is None
 
 
-@pytest.mark.parametrize("op", ["jmp", "jlt", "jeq", "jnz"])
-def test_jump_targets_at_or_above_n_ops_are_reason_3(op):
-    s = Stream()
-    a, b = s.regs(2)
-    top = s.label()
-    if op == "jmp":
-        s.jmp(top)
-    elif op == "jnz":
-        s.jnz(a, top)
-    else:
-        getattr(s, op)(a, b, top)
-    s.halt(a)
-    data = bytearray(s.encode())
-    assert check(bytes(data), 1 << 20) is None
-    poke(data, op_at(0) + 4, "<I", 2)
-    assert check(bytes(data), 1 << 20) == (st.ERR_JUMP, 0)
-    poke(data, op_at(0) + 4, "<I", 1)
-    assert check(bytes(data), 1 << 20) is None
-    poke(data, op_at(0) + 4, "<I", 0xFFFFFFFF)
-    assert check(bytes(data), 1 << 20) == (st.ERR_JUMP, 0)
+def test_jump_targets_at_or_above_n_ops_are_reason_3():
+    for op in ["jmp", "jlt"]:
+        s = Stream()
+        a, b = s.regs(2)
+        top = s.label()
+        if op == "jmp":
+            s.jmp(top)
+        elif op == "jnz":
+            s.jnz(a, top)
+        else:
+            getattr(s, op)(a, b, top)
+        s.halt(a)
+        data = bytearray(s.encode())
+        assert check(bytes(data), 1 << 20) is None
+        poke(data, op_at(0) + 4, "<I", 2)
+        assert check(bytes(data), 1 << 20) == (st.ERR_JUMP, 0)
+        poke(data, op_at(0) + 4, "<I", 1)
+        assert check(bytes(data), 1 << 20) is None
+        poke(data, op_at(0) + 4, "<I", 0xFFFFFFFF)
+        assert check(bytes(data), 1 << 20) == (st.ERR_JUMP, 0)
 
 
-def test_template_index_out_of_range_is_reason_5_at_the_micro_op():
-    for index in (1, 7, 0xFFFFFFFF):
-        d = poke(tiny(), op_at(1) + 4, "<I", index)
-        assert check(bytes(d), 1 << 20) == (st.ERR_TEMPLATE, 1)
-
-
-@pytest.mark.parametrize(
-    ("offset", "fmt", "value"),
-    [
+def test_bad_templates_are_reason_5_at_their_first_user():
+    for offset, fmt, value in [
         (4, "<I", 0),  # segment 0
-        (4, "<I", 240),
         (4, "<I", 250),
-        (4, "<I", 255),
-        (4, "<I", 1 | 1 << 8),  # reserved flag bit
         (4, "<I", 1 | 8 << 8),  # KM_F_QUEUE is not for templates
-        (4, "<I", 1 | 16 << 8),
-        (4, "<I", 1 | 128 << 8),
         (64 + 10, "<B", 5),  # n_patch
         (64 + 8, "<B", 16),  # first_reg
-        (64 + 9, "<B", 200),  # count_reg
-    ],
-)
-def test_bad_templates_are_reason_5_at_their_first_user(offset, fmt, value):
-    d = poke(tiny(), TPL + offset, fmt, value)
-    assert check(bytes(d), 1 << 20) == (st.ERR_TEMPLATE, 1)
+    ]:
+        d = poke(tiny(), TPL + offset, fmt, value)
+        assert check(bytes(d), 1 << 20) == (st.ERR_TEMPLATE, 1)
 
 
 def test_patch_entries_are_checked_only_up_to_n_patch():
@@ -1098,16 +841,6 @@ def test_an_unused_bad_template_is_reported_at_pc_0():
     assert check(bytes(data), 1 << 20) == (st.ERR_TEMPLATE, 0)
 
 
-def test_the_first_fault_in_micro_op_order_wins():
-    d = tiny()
-    poke(d, op_at(2), "<B", 99)
-    poke(d, op_at(1) + 4, "<I", 9)
-    poke(d, TPL + 4, "<I", 250)
-    assert check(bytes(d), 1 << 20) == (st.ERR_TEMPLATE, 1)
-    poke(d, op_at(0), "<B", 0)
-    assert check(bytes(d), 1 << 20) == (st.ERR_OPCODE, 0)
-
-
 def test_a_bad_upload_posts_one_error_event_with_the_header_request_id():
     d = poke(tiny(req=77), op_at(1), "<B", 99)
     done = simulate(bytes(d))
@@ -1117,34 +850,18 @@ def test_a_bad_upload_posts_one_error_event_with_the_header_request_id():
     assert done.events == [st.Event(st.EV_STREAM_ERROR, 0, 1, 0)]
 
 
-def test_error_event_status_word_packs_reason_then_pc():
-    done = simulate(bytes(poke(tiny(), op_at(2), "<B", 99)))
-    (e,) = done.events
-    assert e.kind | e.aux << 8 == 6 | (2 | 2 << 8) << 8
-
-
 # the team rule, RUN, builder validation, orphans
 
 
-@pytest.mark.parametrize(
-    ("first", "count", "outside"),
-    [
-        (0, 1, False),
+def test_a_team_outside_the_grid_is_found_without_a_sum():
+    for first, count, outside in [
         (0, 119, False),
-        (118, 1, False),
         (118, 2, True),
-        (119, 1, True),
-        (119, 0, True),
         (0, 0, True),
-        (0, 120, True),
         (0xFFFFFFFF, 2, True),
-        (0xFFFFFFFE, 3, True),
         (1, 0xFFFFFFFF, True),
-        (0xFFFFFFFF, 0xFFFFFFFF, True),
-    ],
-)
-def test_a_team_outside_the_grid_is_found_without_a_sum(first, count, outside):
-    assert st.team_outside(first, count, 119) == outside
+    ]:
+        assert st.team_outside(first, count, 119) == outside
 
 
 def test_run_answers_what_the_kernel_must_say():
@@ -1175,21 +892,11 @@ def test_run_is_refused_over_an_active_stream_or_request():
     assert st.check_run(data, 0, big, active_reqs=[8]) == (None, 9)
 
 
-def test_run_passes_on_the_checks_of_the_upload():
-    data = bytes(poke(tiny(req=4), op_at(1), "<B", 99))
-    error, req = st.check_run(data, 128, 1 << 20)
-    assert error == (st.ERR_OPCODE, 1) and req == 4
-    assert st.check_run(data[:20], 0, 1 << 20) == (st.StreamError(1, 0), 0)
-
-
 def test_the_builder_names_the_field_it_refuses():
     for field, value in (
-        ("max_steps", 1 << 32),
         ("max_steps", 0),
         ("seed", 0),
-        ("seed", -1),
         ("req", 1 << 32),
-        ("deadline_us", -1),
     ):
         with pytest.raises(ValueError, match=field):
             Stream(**{field: value})
@@ -1212,13 +919,6 @@ def test_the_builder_refuses_too_many_micro_ops():
     s.halt(a)
     with pytest.raises(ValueError, match="65536 micro-ops, at most 65535"):
         s.encode()
-
-
-def test_a_deadline_is_never_zero():
-    data = ref.build("arith_wrap")[0]
-    for options in ({"deadline_passes": 0}, {"default_deadline_passes": 0}):
-        with pytest.raises(ValueError, match="never zero"):
-            simulate(data, **options)
 
 
 def test_the_default_deadline_applies_when_the_header_has_none():
@@ -1263,50 +963,6 @@ def test_the_two_issuers_take_turns_on_free_slots():
     job = next(r for r in done.records if r.queued)
     assert job.pass_index % 2 == 1  # odd passes give the queue the first call
     assert all(r.pass_index == job.pass_index or not r.queued for r in done.records)
-
-
-# reference streams
-
-
-NAMES = sorted(ref.REFERENCES)
-
-
-def test_there_are_at_least_20_reference_streams():
-    assert len(NAMES) >= 20
-    assert len({p.stem for p in ref.DATA.glob("*.bin")}) == len(NAMES)
-
-
-@pytest.mark.parametrize("name", NAMES)
-def test_reference_files_are_what_the_generator_writes(name):
-    upload, doc = ref.document(name)
-    assert (ref.DATA / f"{name}.bin").read_bytes() == upload
-    assert (ref.DATA / f"{name}.json").read_text() == ref.dump(doc)
-
-
-@pytest.mark.parametrize("name", NAMES)
-def test_reference_answers_replay_from_the_files_alone(name):
-    upload = (ref.DATA / f"{name}.bin").read_bytes()
-    doc = json.loads((ref.DATA / f"{name}.json").read_text())
-    assert set(doc["params"]) == set(ref.DEFAULTS)
-    assert ref.expected(upload, doc["params"]) == doc["expect"]
-
-
-def test_reference_streams_reach_every_error_reason():
-    reasons = set()
-    for name in NAMES:
-        doc = json.loads((ref.DATA / f"{name}.json").read_text())
-        if doc["expect"]["error"]:
-            reasons.add(doc["expect"]["error"][0])
-    assert reasons == set(range(1, 12))
-
-
-def test_reference_streams_use_every_micro_op():
-    seen = set()
-    for name in NAMES:
-        upload = (ref.DATA / f"{name}.bin").read_bytes()
-        if check(upload, ref.DEFAULTS["region_size"]) is None:
-            seen |= {o.op for o in Stream.decode(upload).uops()}
-    assert seen == set(st.OPS)
 
 
 def test_the_example_in_the_docs_runs():

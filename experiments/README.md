@@ -32,3 +32,6 @@ place to ask a question and to be wrong.
   the destination, carrying the source line's bytes at the destination's offset, and is
   acknowledged as usual: silently wrong. Small writes go from a 16-byte slot to a
   16-byte slot.
+- [stream_checks](stream_checks/README.md): the reference streams of the micro-op
+  simulator and a mutation run over its source. Every one of 104 mutants changes some
+  saved answer.

@@ -28,7 +28,7 @@ src/komorebi/                  the package you import
 src/komorebi_native/           the native layer (README inside)
 examples/  projects/           runnable examples; larger programs (README inside)
 experiments/  ref/             standalone proofs; CPU references (README inside)
-tests/core/                    tests that need no card (reference streams in data/streams)
+tests/core/                    tests that need no card
 docs/                          concepts, install, this page
 packaging/                     tt-metal.pin: the tt-metal version Komorebi is developed against
 ```

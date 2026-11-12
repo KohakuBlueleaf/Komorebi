@@ -1,7 +1,7 @@
-"""Mutation test: every plausible slip in the simulator or the check must be caught.
+"""Mutation run: every plausible slip in the simulator or the check must be caught.
 
-Each mutant is a small text patch of `stream.py`, loaded as its own module and run on
-the saved reference streams; at least one reference must then give another answer.
+Each mutant is a text patch of `stream.py`, run on the saved reference streams; one must
+then give another answer. It lists the survivors and exits non-zero if there is one.
 """
 
 # ruff: noqa: E501
@@ -13,7 +13,6 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
 import stream_reference as ref
 
 from komorebi.engines import stream as st
@@ -504,22 +503,32 @@ def killed_by(module):
     return None
 
 
-@pytest.mark.parametrize("name", sorted(MUTANTS))
-def test_every_mutant_is_killed_by_a_reference(name):
+def survives(name):
+    """True if no reference notices the mutant `name`."""
     module = load(MUTANTS[name], name)
     try:
         if name in BIG_UPLOAD_MUTANTS:
-            assert not too_big_uploads_are_refused(module)
-            return
-        assert killed_by(module) is not None, f"{name} survives all references"
+            return too_big_uploads_are_refused(module)
+        return killed_by(module) is None
     finally:
         del sys.modules[module.__name__]
 
 
-def test_the_unmutated_source_passes_every_reference():
+def main():
     module = load([], "none")
     try:
-        assert killed_by(module) is None
-        assert too_big_uploads_are_refused(module)
+        clean = killed_by(module) is None and too_big_uploads_are_refused(module)
     finally:
         del sys.modules[module.__name__]
+    if not clean:
+        print("the unmutated source does not reproduce every reference")
+        return 1
+    alive = [name for name in sorted(MUTANTS) if survives(name)]
+    print(f"{len(MUTANTS) - len(alive)} of {len(MUTANTS)} mutants killed")
+    for name in alive:
+        print(f"survives: {name}")
+    return bool(alive)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
