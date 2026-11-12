@@ -5,4 +5,5 @@ computes, how to run it, and what it is measured against. A project is where the
 is tried on real work; what it needs from the framework goes back into the framework
 rather than staying in the project.
 
-There are no projects yet.
+- [raster/reference](raster/reference/README.md): rasterization in numpy, threaded C++
+  and CUDA, with the scenes, timings and pictures the card versions are compared with.

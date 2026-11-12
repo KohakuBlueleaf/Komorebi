@@ -5,4 +5,26 @@ computation written plainly, with no card and no framework. Results from the car
 compared against these as statistics (error, bias, correlation), and exactly on inputs
 whose result is exactly representable.
 
-There are no references yet.
+| file | what |
+|---|---|
+| `scenes.py` | deterministic scenes for the rasterization and ray tracing benchmarks |
+| `rng.py` | the per-index hash all implementations use for random numbers |
+| `raster.py` | rasterization, the definition the C++ and CUDA versions match |
+| `png.py` | a PNG writer and colour map for the pictures (numpy and zlib only) |
+| `native.py`, `native/` | building and running the C++ and CUDA references; shared headers |
+
+## Scenes
+
+`python -m ref.scenes <folder>` writes four scenes as `.npz`; `make_scene(n)` makes one in
+memory. A scene is spheres of mixed size (cube spheres, tessellation proportional to
+area, a few large ones near the camera and many small ones far away) over a ground
+grid, with per-vertex colour, one camera and one point light. Names and triangle counts:
+`tiny` 398, `s10k` 11,994, `s100k` 102,308, `s1m` 997,806.
+
+The arrays: `positions` (V, 3) float32, `colors` (V, 3) float32, `indices` (T, 3)
+int32, `camera` (16,) float32 (eye, right, up, forward, focal length in pixels, principal
+point, near distance), `light` (3,) float32, `eps` (1,) float32 (ray offset), `meta`
+(5,) int32. Geometry uses only addition, subtraction, multiplication, division and square
+root in float64, and every random number comes from one 32-bit hash of (index, stream,
+seed), so the files are the same on every host. Nothing is shipped: the scenes are
+generated.
