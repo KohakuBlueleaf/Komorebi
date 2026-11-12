@@ -66,6 +66,21 @@ present, and skipped otherwise. Built binaries and generated data go to `build/`
 
 The continuous-integration workflow runs ruff, black and the CPU tests.
 
+## The runtime on the CPU
+
+[`experiments/runtime_harness`](../experiments/runtime_harness/README.md) compiles the
+Tensix runtime's device headers and the map/collect kernels unchanged against a stub of
+the tt-metal calls they use, runs them as host threads on a simulated grid, and forces
+failure paths on it: stop words, give-ups, lost or late record chunks, mailbox races,
+items past a buffer's end. It is a tool run by hand (`python
+experiments/runtime_harness/run.py`), not part of the test suite;
+`tests/core/test_runtime_harness.py` runs four of its scenarios that pin known
+behaviour.
+
+The rule: a new wait in the runtime comes with a scenario there that makes it give up,
+by the stop word and by its bound, and shows that every kernel of the tile still
+returns; when a defect is fixed, one test pins it.
+
 ## Conventions
 
 Black and ruff at 88 columns; C and C++ through `python -m komorebi.tools.cxx_format`
