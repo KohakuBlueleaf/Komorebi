@@ -26,18 +26,24 @@ static kmd_wait_t wait_word(
     }
 }
 
-/* Checks the argument block against this run. */
+static int pow2(uint64_t n) {
+    return n != 0 && (n & (n - 1u)) == 0;
+}
+
+/* Checks the argument block against this run: ring depths are powers of two, so the
+ * slot numbering survives the wrap of the 32-bit counters. */
 static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
     if (x280_hart_args_bytes() < sizeof(kmd_args_t) || a->run_value != run) {
         return 0;
     }
     const uint64_t host_bytes = KMD_HOST_RING + a->event_depth * sizeof(km_event_t);
     return (
-        a->depth >= 1 && a->depth <= KM_RING_SLOTS && a->host_depth >= 1 &&
-        a->host_depth <= KMD_HOST_DEPTH_MAX && a->event_depth >= 1 && a->columns >= 1 &&
-        a->columns <= KMD_READY_MAX && a->cores >= 1 && a->cores <= KM_CORES_MAX &&
-        a->panels >= 1 && a->panels <= 2 && a->t_record != 0 && a->state_ddr != 0 &&
-        (a->state_ddr & 63u) == 0 &&
+        a->depth >= 1 && a->depth <= KM_RING_SLOTS && pow2(a->host_depth) &&
+        a->host_depth <= KMD_HOST_DEPTH_MAX && pow2(a->event_depth) &&
+        a->columns >= 1 && a->columns <= KMD_READY_MAX && a->cores >= 1 &&
+        a->cores <= KM_CORES_MAX && a->panels >= 1 && a->panels <= 2 &&
+        a->t_start != 0 && a->t_record != 0 && a->state_ddr != 0 &&
+        (a->state_ddr & 63u) == 0 && (a->host_noc_addr & 63u) == 0 &&
         (a->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE
     );

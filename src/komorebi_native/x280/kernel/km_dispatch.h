@@ -3,7 +3,16 @@
  * Plain C; the X280 kernel and the host include it. */
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include "komorebi/abi/km_abi.h"
+
+#if defined(__cplusplus)
+#define KMD_STATIC_ASSERT(c, msg) static_assert(c, msg)
+#else
+#define KMD_STATIC_ASSERT(c, msg) _Static_assert(c, msg)
+#endif
 
 /* LIM layout, in bytes from the argument block (64-byte aligned, written by the host).
  * The host zeroes the whole layout before every run. */
@@ -93,21 +102,38 @@ enum {
 typedef struct {
     uint64_t run_value;     /* the run this block belongs to */
     uint64_t depth;         /* D: mailbox slots in use, 1 to KM_RING_SLOTS */
-    uint64_t host_depth;    /* host command ring slots, 1 to KMD_HOST_DEPTH_MAX */
-    uint64_t event_depth;   /* event ring slots in the host buffer */
+    uint64_t host_depth;    /* host command ring slots: a power of two, at most 64 */
+    uint64_t event_depth;   /* event ring slots in the host buffer: a power of two */
     uint64_t columns;       /* column leaders that report READY, 1 to KMD_READY_MAX */
     uint64_t cores;         /* cores in core order; a team must lie inside */
     uint64_t panels;        /* multicast rectangles, 1 or 2 */
     uint32_t rect[2][4];    /* x_start, y_start, x_end, y_end of each */
-    uint64_t host_noc_addr; /* NoC address of the host buffer */
+    uint64_t host_noc_addr; /* NoC address of the host buffer, 64-byte aligned */
     uint64_t pcie_x;        /* the PCIe tile that reaches it */
     uint64_t pcie_y;
-    uint64_t t_start;   /* deadline for the hello and every READY */
+    uint64_t t_start;   /* deadline for the hello and every READY, nonzero */
     uint64_t t_record;  /* a record's deadline until a KM_SEG_DEADLINE command */
-    uint64_t t_idle;    /* deadline with no command and nothing in flight */
+    uint64_t t_idle;    /* deadline with no command and nothing in flight; 0 = none */
     uint64_t state_ddr; /* offset in this cluster's DRAM bank of KMD_STATE_BYTES */
 } kmd_args_t;
 
 /* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory
  * Port: the host gives it KMD_STATE_BYTES there, 64-byte aligned (LIM is uncached). */
 #define KMD_STATE_BYTES 1024u
+
+KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 144, "kmd_args_t is 144 bytes");
+KMD_STATIC_ASSERT(offsetof(kmd_args_t, rect) == 56, "kmd_args_t.rect at 56");
+KMD_STATIC_ASSERT(offsetof(kmd_args_t, host_noc_addr) == 88, "host_noc_addr at 88");
+KMD_STATIC_ASSERT(offsetof(kmd_args_t, t_start) == 112, "t_start at 112");
+KMD_STATIC_ASSERT(offsetof(kmd_args_t, state_ddr) == 136, "state_ddr at 136");
+KMD_STATIC_ASSERT(KMD_LIM_ARGS + sizeof(kmd_args_t) <= KMD_LIM_MAILBOX, "LIM: args");
+KMD_STATIC_ASSERT(KMD_LIM_MAILBOX + 8u <= KMD_LIM_RESULT, "LIM: mailbox");
+KMD_STATIC_ASSERT(KMD_LIM_RESULT + 4u * KMD_R_WORDS <= KMD_LIM_READY, "LIM: result");
+KMD_STATIC_ASSERT(KMD_LIM_READY + 16u * KMD_READY_MAX <= KMD_LIM_ACKS, "LIM: READY");
+KMD_STATIC_ASSERT(
+    KMD_LIM_ACKS + KM_RING_SLOTS * KM_ACK_STRIDE <= KMD_LIM_HRING, "LIM: ack words"
+);
+KMD_STATIC_ASSERT(
+    KMD_LIM_HRING + KMD_HOST_DEPTH_MAX * 64u <= KMD_LIM_BYTES, "LIM: host ring"
+);
+KMD_STATIC_ASSERT((KMD_HOST_DEPTH_MAX & (KMD_HOST_DEPTH_MAX - 1u)) == 0, "power of 2");

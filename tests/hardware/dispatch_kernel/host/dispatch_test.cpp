@@ -161,7 +161,7 @@ namespace {
         uint64_t base = 0;  // LIM address of the layout (the argument block)
         std::vector<std::array<uint32_t, 2>> panels;  // logical column ranges
         uint64_t run = 0;
-        uint32_t tag = 1, depth = 1, host_depth = 16, event_depth = 252;
+        uint32_t tag = 1, depth = 1, host_depth = 16, event_depth = 128;
 
         std::shared_ptr<tt::umd::IoWindow> win;         // host -> LIM, write-combining
         std::shared_ptr<tt::umd::IoWindow> l1_win;      // store probe only: host -> L1
@@ -800,7 +800,7 @@ NB_MODULE(_km_dispatch_test, m) {
             &Plan::prepare,
             nb::arg("depth"),
             nb::arg("host_depth") = 16,
-            nb::arg("event_depth") = 252,
+            nb::arg("event_depth") = 128,
             nb::arg("t_start_s") = 30.0,
             nb::arg("t_record_s") = 1.0,
             nb::arg("t_idle_s") = 30.0,

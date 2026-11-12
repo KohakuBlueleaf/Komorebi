@@ -667,7 +667,7 @@ def main():
     p.add_argument("--depth", type=int, default=16)
     p.add_argument("--team", type=int, default=0, help="team size, 0 = all cores")
     p.add_argument("--host-depth", type=int, default=16)
-    p.add_argument("--event-depth", type=int, default=252)
+    p.add_argument("--event-depth", type=int, default=128)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--delay-us", type=float, default=2000.0)
     p.add_argument("--core", type=int, default=37, help="the stalling core")
