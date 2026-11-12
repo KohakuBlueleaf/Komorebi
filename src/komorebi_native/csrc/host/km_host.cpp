@@ -17,6 +17,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <immintrin.h>
@@ -24,8 +25,10 @@
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
+#include <tt-metalium/tt_metal.hpp>
 
 #include "impl/context/metal_context.hpp"
+#include <llrt/llrt.hpp>
 #include <llrt/tt_cluster.hpp>
 #include <umd/device/chip_helpers/sysmem_buffer.hpp>
 #include <umd/device/cluster.hpp>
@@ -78,6 +81,70 @@ namespace {
         return std::chrono::milliseconds(static_cast<int64_t>(seconds * 1000.0));
     }
 
+    // The go message's run state of a launched program (RUN_MSG_GO, dev_msgs.h).
+    constexpr int kRunMsgGo = 0x80;
+
+    tt::tt_metal::IDevice* chip(const MeshDevice& mesh) {
+        return mesh.get_devices().front();
+    }
+
+    // Writes words into one Tensix core's L1 from the host, through the device API
+    // (not the X280): the stop word when the dispatch kernel is not there to send it.
+    void write_l1(
+        const MeshDevice& mesh,
+        uint32_t x,
+        uint32_t y,
+        uint32_t address,
+        std::vector<uint32_t> words
+    ) {
+        tt::tt_metal::detail::WriteToDeviceL1(
+            chip(mesh), tt::tt_metal::CoreCoord{x, y}, address, words
+        );
+    }
+
+    // Waits up to timeout_s for the kernels on the gx x gy worker grid to return, in
+    // slices of at most a second with signals checked between them. True: returned.
+    bool wait_grid(const MeshDevice& mesh, uint32_t gx, uint32_t gy, double timeout_s) {
+        auto* dev = chip(mesh);
+        std::unordered_set<tt::tt_metal::CoreCoord> left;
+        for (uint32_t y = 0; y < gy; y++) {
+            for (uint32_t x = 0; x < gx; x++) {
+                left.insert(dev->virtual_core_from_logical_core(
+                    tt::tt_metal::CoreCoord{x, y}, tt::CoreType::WORKER
+                ));
+            }
+        }
+        auto& context = tt::tt_metal::MetalContext::instance();
+        const auto by = after(timeout_s);
+        for (;;) {
+            const auto rest = (
+                std::chrono::duration_cast<std::chrono::milliseconds>(by - Clock::now())
+            );
+            const int slice = (
+                static_cast<int>(std::clamp<int64_t>(rest.count(), 1, 1000))
+            );
+            {
+                nb::gil_scoped_release release;
+                try {
+                    tt::llrt::internal_::wait_until_cores_done(
+                        context, dev->id(), kRunMsgGo, left, slice
+                    );
+                } catch (const std::exception&) {
+                    // the slice ran out; the set holds the cores not done yet
+                }
+            }
+            if (left.empty()) {
+                return true;
+            }
+            if (Clock::now() >= by) {
+                return false;
+            }
+            if (PyErr_CheckSignals() != 0) {
+                throw nb::python_error();
+            }
+        }
+    }
+
     // [n, 4] events (index, req, status, ticks) as a numpy array that owns its words.
     Events as_array(std::vector<uint32_t>&& words) {
         auto* owned = new std::vector<uint32_t>(std::move(words));
@@ -124,6 +191,14 @@ namespace {
 
         bool running() const {
             return session_.has_value();
+        }
+
+        // Whether cluster 0 runs its idle image and no session: an image can start.
+        bool idle() const {
+            return (
+                opened_ && !session_ && tile_ != nullptr &&
+                tile_->inspect().resident_idle_live
+            );
         }
 
         // Stops a running kernel, releases the host buffer and the window, closes the
@@ -587,6 +662,33 @@ namespace {
 NB_MODULE(_km_host, m) {
     m.attr("MTIME_HZ") = kMtimeHz;
     m.attr("EVENT_DEPTH_MAX") = kEventDepthMax;
+    m.def(
+        "write_l1",
+        [](std::shared_ptr<MeshDevice> mesh,
+           uint32_t x,
+           uint32_t y,
+           uint32_t address,
+           std::vector<uint32_t> words) {
+            write_l1(*mesh, x, y, address, std::move(words));
+        },
+        nb::arg("mesh_device"),
+        nb::arg("x"),
+        nb::arg("y"),
+        nb::arg("address"),
+        nb::arg("words")
+    );
+    m.def(
+        "wait_grid",
+        [](
+            std::shared_ptr<MeshDevice> mesh, uint32_t gx, uint32_t gy, double timeout_s
+        ) {
+            return wait_grid(*mesh, gx, gy, timeout_s);
+        },
+        nb::arg("mesh_device"),
+        nb::arg("grid_x"),
+        nb::arg("grid_y"),
+        nb::arg("timeout_s")
+    );
 
     nb::class_<Dispatch>(m, "Dispatch")
         .def(
@@ -609,6 +711,7 @@ NB_MODULE(_km_host, m) {
         .def_rw("settle_us", &Dispatch::settle_us_)
         .def_prop_ro("is_open", &Dispatch::is_open)
         .def_prop_ro("running", &Dispatch::running)
+        .def_prop_ro("idle", &Dispatch::idle)
         .def("core_table", &Dispatch::core_table)
         .def(
             "prepare",

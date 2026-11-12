@@ -354,7 +354,7 @@ class Run:
             return
         self._stopped = True
         cleaned = self.backend.abort()
-        self._read_back()
+        self._read_back(stop_grid=True)
         if not cleaned:
             raise self._remember(
                 KernelFailed(
@@ -367,7 +367,7 @@ class Run:
         """The kernel did not report READY: finishes it, reads back, raises StartError
         with its result block."""
         try:
-            self._finish(timeout)
+            self._finish(timeout, stop_grid=True)
         except BaseException:
             self._stopped = True
             raise
@@ -380,20 +380,20 @@ class Run:
             )
         )
 
-    def _finish(self, timeout):
+    def _finish(self, timeout, stop_grid=False):
         self._stopped = True
         try:
             fin = self.backend.finish(timeout)
         except BaseException:
             self.backend.abort()
-            self._read_back()
+            self._read_back(stop_grid=True)
             raise
         self._result = st.result_block(fin["words"], self.h)
         self._result.update({k: v for k, v in fin.items() if k != "words"})
-        self._read_back()
+        self._read_back(stop_grid)
 
-    def _read_back(self):
-        state_rows, trace_rows = self.backend.read_back()
+    def _read_back(self, stop_grid=False):
+        state_rows, trace_rows = self.backend.read_back(stop_grid=stop_grid)
         self._state = state_rows
         if trace_rows is not None:
             self._trace = st.Trace(

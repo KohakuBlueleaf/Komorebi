@@ -227,7 +227,7 @@ def test_abort_raises_when_the_runtime_could_not_restore_the_tile():
     backend.cleaned = False
     with pytest.raises(KernelFailed, match="reset"):
         run.abort()
-    assert backend.calls == ["abort", "read_back"]
+    assert backend.calls == ["abort", "read_back"] and backend.grid_stopped
 
 
 def test_stop_waits_for_records_in_flight_before_exit():

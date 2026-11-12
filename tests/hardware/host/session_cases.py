@@ -1,7 +1,7 @@
 """Card cases of the host package that the example does not cover. One case per run;
 prints one JSON line with `ok`.
 
-    python session_cases.py compile-error | exclusive
+    python session_cases.py compile-error | exclusive | start-error
 """
 
 import argparse
@@ -86,7 +86,44 @@ def case_exclusive(session):
     return out
 
 
-CASES = {"compile-error": case_compile_error, "exclusive": case_exclusive}
+def case_start_error(session):
+    """A start bound too short for the cores' hello: StartError carrying the kernel's
+    result; the host stops the grid (every reader gave up on the stop word, not its
+    idle limit); then a run loads and works in the same session."""
+    out = {}
+    t0 = time.monotonic()
+    try:
+        session.load(program(EXAMPLE / "kernels"), start=1e-5, idle=60.0)
+        out["raised"] = None
+    except km.StartError as err:
+        out["raised"] = type(err).__name__
+        out["error_name"] = err.result["error_name"] if err.result else None
+    out["start_error_s"] = round(time.monotonic() - t0, 2)
+    failed = session.run
+    readers = {}
+    for c in failed.state():
+        r = c["reader"]
+        key = f"{r['code']} in {r['where']}" if r else "none"
+        readers[key] = readers.get(key, 0) + 1
+    out["readers"] = readers
+    run = session.load(program(EXAMPLE / "kernels"))
+    out["nop_after"] = run.wait(run.issue(0, None)).kind
+    run.stop()
+    out["ok"] = (
+        out["raised"] == "StartError"
+        and out["error_name"] == "start"
+        and readers.get("stop in next", 0) == 120
+        and out["nop_after"] == "done"
+        and run.result()["error"] == 0
+    )
+    return out
+
+
+CASES = {
+    "compile-error": case_compile_error,
+    "exclusive": case_exclusive,
+    "start-error": case_start_error,
+}
 
 
 def main():

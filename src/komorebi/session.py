@@ -13,7 +13,7 @@ import torch
 import ttnn
 
 from komorebi import abi, native
-from komorebi.errors import ProgramError, StartError
+from komorebi.errors import GridTimeout, ProgramError, StartError
 from komorebi.run import Run
 
 CTL_ALIGN = 64  # the dispatch kernel stores whole 64-byte lines into the control block
@@ -60,20 +60,30 @@ def _read_uint32(tensor):
 
 
 class Session:
-    """One card. `card` selects it (TT_VISIBLE_DEVICES); `device` uses an open one.
-
-    As a context manager it stops a run still loaded at the exit (on an exception
-    through the runtime, without EXIT) and closes the device it opened.
+    """One card: `card` selects it, `device` uses an open one; `grid_timeout` bounds
+    every wait for the grid's kernels. As a context manager it stops a loaded run at
+    the exit (through the runtime on an exception) and closes the device it opened.
     """
 
-    def __init__(self, card=None, device=None, pll_mhz=1750, tree=None, log=None):
+    def __init__(
+        self,
+        card=None,
+        device=None,
+        pll_mhz=1750,
+        tree=None,
+        log=None,
+        grid_timeout=10.0,
+    ):
         self.card = card
         self.device = device
         self._own_device = device is None
         self.pll_mhz = pll_mhz
         self.tree = tree
         self.log = log or (lambda msg: None)
+        self.grid_timeout = grid_timeout
         self.run = None
+        self.stuck = False  # the grid did not return: the device stays open
+        self._module = None
 
     def __enter__(self):
         if self.device is None:
@@ -103,6 +113,9 @@ class Session:
         self._own_device = True
 
     def close(self):
+        if self.stuck:
+            self.log("device left open: the grid did not return")
+            return
         if self.device is not None and self._own_device:
             ttnn.close_mesh_device(self.device)
             self.device = None
@@ -130,7 +143,9 @@ class Session:
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         image = Path(image) if image else native.image_path(self.tree)
-        module = native.load_module(self.tree)
+        if not image.is_file() or image.stat().st_size == 0:
+            raise StartError(f"dispatch kernel image {image}: missing or empty")
+        module = self._module = native.load_module(self.tree)
         depth = depth or program.depth
         sources = program.sources()  # before anything opens: a missing file raises
         mhz = aiclk_mhz(self.card)
@@ -138,6 +153,8 @@ class Session:
         dispatch.settle_us = settle_us
         backend, launched = None, False
         try:
+            if not dispatch.idle:
+                raise StartError("X280 cluster 0 is not idle: no image can start")
             state_t = _state_area(self.device)
             tag = dispatch.prepare(
                 depth,
@@ -167,7 +184,7 @@ class Session:
         except BaseException:
             dispatch.close()
             if launched:
-                backend.read_back()  # the cores leave on their own bounded waits
+                backend.read_back(stop_grid=True)  # the kernel never stopped it
             raise
         run = Run(backend, (dispatch.grid_x, dispatch.grid_y), program, batch)
         self.run = run
@@ -188,6 +205,7 @@ class _Backend:
         self.trace_cap = (trace + 3) // 4 * 4 if trace else 0  # whole 64-byte pages
         self.io = []
         self.ctl = None
+        self.ctl_addr = 0
         self.ctl_offset = 0
         self.trace_t = None
         self.state_t = None
@@ -207,9 +225,9 @@ class _Backend:
         )
         self.ctl = _int32_tensor(self.device, np.zeros((cores, words)), config)
         base = self.ctl.buffer_address()
-        addr = (base + CTL_ALIGN - 1) // CTL_ALIGN * CTL_ALIGN
-        self.ctl_offset = (addr - base) // 4
-        return addr
+        self.ctl_addr = (base + CTL_ALIGN - 1) // CTL_ALIGN * CTL_ALIGN
+        self.ctl_offset = (self.ctl_addr - base) // 4
+        return self.ctl_addr
 
     def describe(self, program, sources, tag, depth, wait, idle, trace):
         """The program descriptor for every core, with the start-up arguments."""
@@ -354,15 +372,30 @@ class _Backend:
         self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned})")
         return cleaned
 
-    def read_back(self):
-        """After the X280 runtime is closed: waits for every kernel of the grid to
-        return, then reads the state words and the trace."""
+    def read_back(self, stop_grid=False):
+        """After the X280 runtime is closed: waits (bounded) for every kernel of the
+        grid to return, then reads the state words and the trace. `stop_grid`: the
+        dispatch kernel was not there to stop the grid, so the host writes the stop
+        word into every core first, through the device API."""
         if self.port.is_open:
             raise RuntimeError("close the X280 runtime before reading back")
-        t0 = time.monotonic()
-        ttnn.synchronize_device(self.device)
-        self.session.log(f"grid returned ({time.monotonic() - t0:.1f} s)")
         h = abi.headers()
+        module, gx, gy = self.session._module, self.port.grid_x, self.port.grid_y
+        if stop_grid:
+            for core in range(gx * gy):
+                at = self.ctl_addr + h["KM_CTL_STOP"]
+                module.write_l1(self.device, core % gx, core // gx, at, [1])
+            self.session.log("stop word written by the host")
+        t0 = time.monotonic()
+        bound = self.session.grid_timeout
+        if not module.wait_grid(self.device, gx, gy, bound):
+            self.session.stuck = True
+            raise GridTimeout(
+                f"the grid's kernels did not return within {bound} s after the stop; "
+                "the device is left open and the card may need a reset"
+            )
+        ttnn.synchronize_device(self.device)  # returns at once: every core is done
+        self.session.log(f"grid returned ({time.monotonic() - t0:.1f} s)")
         rows = _read_uint32(self.ctl)
         start = self.ctl_offset + h["KM_CTL_STATE"] // 4
         state = rows[:, start : start + h["kStateWords"]].astype(np.uint32)

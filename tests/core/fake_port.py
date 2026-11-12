@@ -205,10 +205,11 @@ class FakeBackend:
         self.calls.append("abort")
         return self.cleaned
 
-    def read_back(self):
+    def read_back(self, stop_grid=False):
         """State words: every member reported its records' sequences, except the
         stalled core; trace: seen/done/sent stamps per sequence."""
         self.calls.append("read_back")
+        self.grid_stopped = stop_grid
         cores = self.port.cores
         st = np.zeros((cores, K["kStateWords"]), dtype=np.uint32)
         st[:, K["kStMagic"]] = K["kStateMagic"] | np.arange(cores)

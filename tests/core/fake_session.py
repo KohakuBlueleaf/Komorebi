@@ -25,6 +25,7 @@ class FakeDispatch(FakePort):
         self.is_open = True
         self.settle_us = 1.0
         self.ready_state = K["KMD_STATE_READY"]
+        self.idle = True
         self.fail = {}  # call name -> exception it raises
 
     def _call(self, name):
@@ -76,8 +77,8 @@ class SessionBackend(FakeBackend):
         self.log.append("abort")
         return self.port.close()
 
-    def read_back(self):
-        self.log.append("read_back")
+    def read_back(self, stop_grid=False):
+        self.log.append("read_back, grid stopped" if stop_grid else "read_back")
         assert not self.port.is_open, "read back with the X280 runtime open"
         return super().read_back()
 
@@ -96,7 +97,14 @@ def load_session(monkeypatch, tmp_path):
     session = importlib.import_module("komorebi.session")
     monkeypatch.delitem(sys.modules, "komorebi.session")  # undone: removed again
 
-    module = types.SimpleNamespace(dispatch=None)
+    module = types.SimpleNamespace(dispatch=None, grid_returns=True)
+    module.write_l1 = lambda *args: log.append(("write_l1", *args))
+
+    def wait_grid(device, gx, gy, timeout_s):
+        log.append("wait_grid")
+        return module.grid_returns
+
+    module.wait_grid = wait_grid
 
     def make(device, pll_mhz):
         module.dispatch = FakeDispatch(log, device, pll_mhz)
@@ -110,6 +118,7 @@ def load_session(monkeypatch, tmp_path):
     monkeypatch.setattr(session, "aiclk_mhz", lambda card=None: 1350)
     state = types.SimpleNamespace(buffer_address=lambda: 0x40000)
     monkeypatch.setattr(session, "_state_area", lambda device: state)
+    module.card_backend = session._Backend  # the real one, for its own tests
     monkeypatch.setattr(session, "_Backend", SessionBackend)
     return session, log, ttnn, module
 

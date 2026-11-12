@@ -20,6 +20,12 @@ class StartError(KomorebiError):
         self.result = result
 
 
+class GridTimeout(KomorebiError):
+    """The Tensix grid's kernels did not return within the session's bound after the
+    stop word. The device is left open (closing it would wait for the grid); the card
+    may need a reset."""
+
+
 class WaitTimeout(KomorebiError):
     """A host-side wait ran out; the run is still alive. `pending` lists the tickets."""
 

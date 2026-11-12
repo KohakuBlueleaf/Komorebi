@@ -72,6 +72,10 @@ def test_a_compile_error_leaves_no_image_running():
     assert run(CASES, "compile-error")["ok"]
 
 
+def test_a_start_error_carries_the_result_and_the_host_stops_the_grid():
+    assert run(CASES, "start-error")["ok"]
+
+
 def test_an_exclusive_record_waits_for_the_team_it_overlaps():
     assert run(CASES, "exclusive")["ok"]
 
