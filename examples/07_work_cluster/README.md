@@ -17,8 +17,9 @@ then loaded with `thread="host"`, which runs the Python function given as
 Prints one JSON line: the card thread's result block, the fallback's result, and
 whether the offsets and result words are the same (`ok`).
 
-On a Blackhole p150a, 119 x 1,024 counts: the thread took 3.51 ms from its start to
-its return, and the offsets and the sum agreed with the fallback.
+On a Blackhole p150a, 119 x 1,024 counts: the thread took 3.05 ms from its start to
+its return (3.51 ms before the library set the L2 prefetchers), and the offsets and
+the sum agreed with the fallback.
 
 ## The program
 
