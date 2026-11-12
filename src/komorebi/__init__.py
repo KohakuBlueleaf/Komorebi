@@ -7,6 +7,7 @@ it ttnn) is imported on first use.
 import importlib
 
 from komorebi.errors import (
+    GridTimeout,
     KernelFailed,
     KomorebiError,
     ProgramError,
@@ -21,6 +22,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Buffer",
+    "GridTimeout",
     "KernelFailed",
     "KomorebiError",
     "Program",

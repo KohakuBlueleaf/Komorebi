@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from fake_session import FakeDispatch, K, load_session, program
 
+import komorebi as km
 from komorebi.errors import GridTimeout, ProgramError, StartError
 
 
@@ -133,5 +134,6 @@ def test_a_grid_that_does_not_return_raises_and_leaves_the_device_open(
     with pytest.raises(GridTimeout, match="reset"):
         backend.read_back()
     assert log == ["wait_grid"] and sess.stuck
+    assert km.GridTimeout is GridTimeout
     sess.close()
     assert "close_device" not in log
