@@ -17,7 +17,6 @@ namespace km {
         uint32_t cap;         // items per queue: a power of two, at least kDynPageItems
         uint32_t item_bytes;  // a multiple of 64, at most kDynItemMax
         uint32_t lines;       // status lines at the issuer: core me at lines + 16 me
-        uint32_t salt;        // per-process random bits mixed into every mark
         uint32_t idle;        // cycles the idle condition holds before a line says so
         uint32_t bins;        // writer bins, 1 to kDynBinsMax
     };
@@ -45,44 +44,31 @@ namespace km {
     constexpr uint32_t kDynFlagCompute = 0x10;  // waiting in next() | items pushed
     constexpr uint32_t kDynFlagWriter = 0x20;   // every bin sent | items taken
 
-    // Where a dynamic run gave up (KM_DYN_GAVE word 0); word 1 position, word 2 run,
-    // word 3: for a gap the word 0 found there, for a lost answer the destination.
-    constexpr uint32_t kDynGap = 1;       // a reserved item did not land in time
-    constexpr uint32_t kDynOverflow = 2;  // IN_TAIL - IN_HEAD passed the capacity
-    constexpr uint32_t kDynAtomic = 3;    // a reservation was not answered in time
-    constexpr uint32_t kDynFlush = 4;     // the writer's item writes did not leave
-    constexpr uint32_t kDynRead = 5;      // the reader's item reads did not land
-    constexpr uint32_t kDynInPage = 6;    // the reader waited for a free packet page
-    constexpr uint32_t kDynLine = 7;      // the status line write did not leave
-    constexpr uint32_t kDynBadDest = 8;   // hop or spawn to a core outside the team
-    constexpr uint32_t kDynNext = 9;      // compute's wait for a packet
-    constexpr uint32_t kDynOutPage = 10;  // compute's wait for an outgoing page
-    constexpr uint32_t kDynOutbox = 11;   // the writer's wait for an outgoing item
-    constexpr uint32_t kDynStopped = 12;  // the stop word ended the run
-    constexpr uint32_t kDynAlign = 13;    // packet pages or items not 64-byte aligned
-    constexpr uint32_t kDynLost = 14;     // a reservation's answer never landed
+    // Where a dynamic run gave up (KM_DYN_GAVE word 0, after the runtime's codes 0-18);
+    // word 1 position, word 2 run, word 3 the word 0 at a gap or a lost answer's core.
+    constexpr uint32_t kDynGap = 19;       // a reserved item did not land in time
+    constexpr uint32_t kDynOverflow = 20;  // IN_TAIL - IN_HEAD passed the capacity
+    constexpr uint32_t kDynAtomic = 21;    // a reservation was not answered in time
+    constexpr uint32_t kDynFlush = 22;     // the writer's item writes did not leave
+    constexpr uint32_t kDynRead = 23;      // the reader's item reads did not land
+    constexpr uint32_t kDynInPage = 24;    // the reader waited for a free packet page
+    constexpr uint32_t kDynLine = 25;      // the status line write did not leave
+    constexpr uint32_t kDynBadDest = 26;   // hop or spawn to a core outside the team
+    constexpr uint32_t kDynNext = 27;      // compute's wait for a packet
+    constexpr uint32_t kDynOutPage = 28;   // compute's wait for an outgoing page
+    constexpr uint32_t kDynOutbox = 29;    // the writer's wait for an outgoing item
+    constexpr uint32_t kDynStopped = 30;   // the stop word ended the run
+    constexpr uint32_t kDynAlign = 31;     // packet pages or items not 64-byte aligned
+    constexpr uint32_t kDynLost = 32;      // a reservation's answer never landed
+    constexpr uint32_t kDynFill = 33;      // the start-up zero fill of the queue
+    constexpr uint32_t kDynFull = 34;      // positions reached 2^30: reload the program
 
-    // The mark of the item at queue position `pos`. It is word 0 of every 16-byte
-    // chunk of the item: chunks of one write land in no defined order.
-    inline uint32_t dyn_mark(uint32_t pos, uint32_t salt) {
-        return (pos + 1) ^ salt;
-    }
+    // Word 0 of the item at queue position `pos` once valid; 0 is empty. Queues are
+    // zero-filled at start-up and positions never restart, so no stale mark matches.
+    constexpr uint32_t kDynPosMax = 1u << 30;  // positions per core and session
 
-    // Writes the mark into every chunk of the item at `item`.
-    inline void dyn_set_mark(uint32_t item, uint32_t bytes, uint32_t mark) {
-        for (uint32_t c = 0; c < bytes; c += 16) {
-            l1(item + c)[0] = mark;
-        }
-    }
-
-    // True when every chunk of the item at `item` carries the mark.
-    inline bool dyn_landed(uint32_t item, uint32_t bytes, uint32_t mark) {
-        for (uint32_t c = 0; c < bytes; c += 16) {
-            if (l1(item + c)[0] != mark) {
-                return false;
-            }
-        }
-        return true;
+    inline uint32_t dyn_mark(uint32_t pos) {
+        return pos + 1;
     }
 
     // Queue position `pos` of core `core`: DRAM page and byte offset in it.
@@ -134,10 +120,38 @@ namespace km {
         }
     }
 
+    // Start-up, before the first record: zero-fills this core's queue (mark 0 is
+    // empty) from the packet buffer's zeroed first page. False: a write stalled.
+    template <typename Rd>
+    inline bool dyn_zero_fill(Rd& rd) {
+        const DynArgs d = dyn_args(rd);
+        const uint32_t page_bytes = kDynPageItems * d.item_bytes;
+        const InterleavedAddrGen<true> q = {
+            .bank_base_address = d.queue, .page_size = page_bytes
+        };
+        const uint32_t src = get_write_ptr(kCbDynIn) + kDynHeader;
+        for (uint32_t w = 0; w < page_bytes / 4; w++) {
+            l1(src)[w] = 0;
+        }
+        invalidate_l1_cache();  // a fence: the NoC reads the stored zeros
+        const uint32_t pages = d.cap / kDynPageItems;
+        for (uint32_t k = 0; k < pages; k++) {
+            noc_async_write(src, get_noc_addr(rd.args().me * pages + k, q), page_bytes);
+            if ((k & 15) == 15 || k + 1 == pages) {
+                if (!noc_bounded(rd, [] {
+                        return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                    })) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     // Generic reader: this core's queue in order, to compute in packets; idle and busy
     // lines to the issuer; leaves on the run's end record, the stop word or a give-up.
     template <typename Rd>
-    inline void dyn_reader(Rd& rd, const km_record_t& r) {
+    inline void dyn_reader(Rd& rd, const km_record_t& r, bool filled = true) {
         const Args& a = rd.args();
         const DynArgs d = dyn_args(rd);
         const uint32_t run = r.seq;
@@ -156,9 +170,12 @@ namespace km {
         const uint64_t wait = static_cast<uint64_t>(a.wait_limit) << 10;
         rf[1] = 0;
         rf[0] = run;
-        uint32_t head = *head_w, where = 0;
+        uint32_t head = *head_w, where = filled ? 0 : kDynFill;
         if ((get_write_ptr(kCbDynIn) | d.item_bytes) % 64 != 0) {
             where = kDynAlign;  // a DRAM read lands 64-byte aligned or not as asked
+        }
+        if (*tail >= kDynPosMax) {
+            where = kDynFull;  // marks stay unique below 2^31 positions
         }
         bool idle_shown = false, busy = true, armed = false;
         uint32_t key[3] = {0, 0, 0};
@@ -300,13 +317,11 @@ namespace km {
             }
             invalidate_l1_cache();
             uint32_t m = 0;
+            // The prefix of valid marks: an item is valid only after its packet's
+            // first item, whose mark is written once the whole packet has landed.
             while (
                 m < k &&
-                dyn_landed(
-                    page + kDynHeader + m * d.item_bytes,
-                    d.item_bytes,
-                    dyn_mark(head + m, d.salt)
-                )
+                l1(page + kDynHeader + m * d.item_bytes)[0] == dyn_mark(head + m)
             ) {
                 m++;
             }
@@ -409,11 +424,12 @@ namespace km {
                 lost_to = dest[b];
                 return false;
             }
+            // The packet commits: its items go out with the first item's mark 0, and
+            // after their barrier one 16-byte write gives the first item its mark.
             const uint32_t p = ret[0], base = store + b * kDynPacket * d.item_bytes;
-            for (uint32_t i = 0; i < n; i++) {
-                dyn_set_mark(
-                    base + i * d.item_bytes, d.item_bytes, dyn_mark(p + i, d.salt)
-                );
+            l1(base)[0] = 0;
+            for (uint32_t i = 1; i < n; i++) {
+                l1(base + i * d.item_bytes)[0] = dyn_mark(p + i);
             }
             invalidate_l1_cache();  // a fence: the NoC reads the stored marks
             for (uint32_t i = 0; i < n;) {
@@ -430,6 +446,23 @@ namespace km {
                 );
                 i += m;
             }
+            if (!noc_bounded(wr, [] {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                })) {
+                where = kDynFlush;
+                return false;
+            }
+            l1(base)[0] = dyn_mark(p);
+            invalidate_l1_cache();
+            noc_async_write(
+                base,
+                get_noc_addr(
+                    dyn_page(dest[b], p, d.cap),
+                    q,
+                    (p & (d.cap - 1)) % kDynPageItems * d.item_bytes
+                ),
+                16
+            );
             if (!noc_bounded(wr, [] {
                     return ncrisc_noc_nonposted_writes_flushed(noc_index);
                 })) {
@@ -654,7 +687,7 @@ namespace km {
         }
 
         // The item goes on at member `dest` of the run's team. item: item_bytes / 4
-        // words; word 0 of each 16-byte chunk (words 0, 4, 8, ...) is the runtime's.
+        // words; word 0 is the runtime's mark.
         void hop(uint32_t dest, const uint32_t* item) {
             if (dest >= count_) {
                 failed_ = true;

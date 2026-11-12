@@ -5,12 +5,12 @@
 
 constexpr uint32_t kSegHop = 1;  // the dynamic segment
 
-// Item words (64 bytes); words 0, 4, 8 and 12 are the runtime's marks.
+// Item words (64 bytes); word 0 is the runtime's mark.
 constexpr uint32_t kItemWords = 16;
 constexpr uint32_t kItId = 1;
 constexpr uint32_t kItHops = 2;   // hops left
 constexpr uint32_t kItState = 3;  // the generator
-constexpr uint32_t kItSum = 5;    // sum of the states it visited with (mod 2**32)
+constexpr uint32_t kItSum = 4;    // sum of the states it visited with (mod 2**32)
 constexpr uint32_t kNullId = 0xFFFFFFFF;  // quota probe items: retire at once
 
 // RUN record: a0 items, a1 hops per item, a2 mode, a3 target member (mode 1),

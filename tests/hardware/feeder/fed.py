@@ -170,10 +170,7 @@ class Fed:
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
             lines_t = self.l1_blocks(2 * K["KM_CORES_MAX"] * 4)  # lines, first pass
-            salt = random.getrandbits(32)
-            dyn_rw = dynamic.args(
-                queue_t.buffer_address(), lines_t.buffer_address(), salt
-            )
+            dyn_rw = dynamic.args(queue_t.buffer_address(), lines_t.buffer_address())
             dyn_c = dynamic.compute_args(self.workers)
             log(f"dynamic: {dynamic.queue_bytes(self.workers) >> 20} MiB of queues")
         log(f"tensors: ctl at {ctl_addr:#x}, {n} records, tag {tag:#06x}")

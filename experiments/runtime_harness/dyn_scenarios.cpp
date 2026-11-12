@@ -58,9 +58,7 @@ namespace {
         cfg.program_args =
             [=](uint32_t, std::vector<uint32_t>& rw, std::vector<uint32_t>& c) {
                 const uint32_t ctl = rw[0], lines = rw[4] - kDispAck + kDispLines;
-                rw.insert(
-                    rw.end(), {kSegHop, kQueue, cap, 64, lines, 0x1234567, idle, kBins}
-                );
+                rw.insert(rw.end(), {kSegHop, kQueue, cap, 64, lines, idle, kBins});
                 c.insert(c.end(), {64, quota, ctl + kRes});
             };
         Job run;
@@ -248,7 +246,7 @@ namespace {
         finish(s, o);
     }
 
-    // The first item write to DRAM is lost: the reserved position never lands, its
+    // The first packet commit to DRAM is lost: the reserved position never lands, its
     // reader reports a gap, the dispatcher stops the grid; nothing hangs.
     void dyn_gap(Outcome& o) {
         Hop h;
@@ -258,8 +256,8 @@ namespace {
         Config cfg = dyn_config(h);
         bool dropped = false;
         cfg.delay = [&](const Chunk& c) -> int64_t {
-            if (c.dst == kDram && c.off >= kQueue && !dropped) {
-                dropped = c.part + 1 == c.parts;
+            if (c.dst == kDram && c.off >= kQueue && c.parts == 1 && !dropped) {
+                dropped = true;  // the first packet's commit (one 16-byte chunk)
                 return kDrop;
             }
             return 32;

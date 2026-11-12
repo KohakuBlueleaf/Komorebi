@@ -113,7 +113,7 @@ between kernels.
 | `dyn_idle_flapping` | an idle time of 50 cycles and chunk delays up to 3000: lines go idle and busy again many times, the end comes only after the last retire |
 | `dyn_one_core` | every hop of every item to member 0, whose queue holds the whole population |
 | `dyn_quota` | one member spawns until `spawn` returns false |
-| `dyn_gap` | the first item write to DRAM is lost: the reader reports the gap with core and position, the grid stops |
+| `dyn_gap` | the first packet commit to DRAM is lost: the reader reports the gap with core and position, the grid stops |
 | `dyn_overflow` | more items than the queue holds: the overflow is reported |
 | `dyn_stall` | a member stalls in its body: the run stops and names it |
 

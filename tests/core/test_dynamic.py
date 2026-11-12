@@ -55,14 +55,13 @@ def test_packet_pages_keep_items_64_byte_aligned():
 def test_words_follow_the_device_struct():
     _, fields = dyn_header()
     d = Dynamic(seg=7, bins=4, idle_cycles=99)
-    words = dict(zip(fields, d.args(0x1000, 0x2000, 0xDEADBEEF)))
+    words = dict(zip(fields, d.args(0x1000, 0x2000)))
     assert words == {
         "seg": 7,
         "queue": 0x1000,
         "cap": 1 << 16,
         "item_bytes": 64,
         "lines": 0x2000,
-        "salt": 0xDEADBEEF,
         "idle": 99,
         "bins": 4,
     }

@@ -180,7 +180,7 @@ class Dynamic:
         """Spawns each core starts a run with."""
         return self.max_live // cores
 
-    def args(self, queue, lines, salt):
+    def args(self, queue, lines):
         """Reader and writer words of km::DynArgs (they precede the program's)."""
         _, fields = dyn_header()
         values = {
@@ -189,7 +189,6 @@ class Dynamic:
             "cap": self.queue_items,
             "item_bytes": self.item_bytes,
             "lines": lines,
-            "salt": salt,
             "idle": self.idle_cycles,
             "bins": self.bins,
         }
