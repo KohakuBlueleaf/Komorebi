@@ -236,8 +236,9 @@ void kernel_main() {
     row(0)[kFrDone] = done;
     row(0)[kFrFirst] = static_cast<uint32_t>(t_first);
     row(0)[kFrLast] = static_cast<uint32_t>(t_last);
-    row(0)[kFrSpanLo] = static_cast<uint32_t>(t_last - t_first);
-    row(0)[kFrSpanHi] = static_cast<uint32_t>((t_last - t_first) >> 32);
+    const uint64_t span = done != 0 ? t_last - t_first : 0;  // 0: nothing acknowledged
+    row(0)[kFrSpanLo] = static_cast<uint32_t>(span);
+    row(0)[kFrSpanHi] = static_cast<uint32_t>(span >> 32);
     row(0)[kFrIssueCycles] = static_cast<uint32_t>(issue_cycles);
     row(0)[kFrMaxBusy] = max_busy;
     const InterleavedAddrGen<true> res_tab = {
