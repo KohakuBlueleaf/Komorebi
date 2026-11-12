@@ -80,6 +80,7 @@ class Result:
     trace: np.ndarray | None
     mhz: int
     host_s: float
+    ctl: np.ndarray | None = None  # every core's control block, uint32 words
 
 
 class Fed:
@@ -290,7 +291,8 @@ class Fed:
         host_s = time.perf_counter() - t0
         log(f"program done in {host_s:.2f}s")
         rows = read_int32(results_t)
-        state = rec.state_words(read_int32(ctl))
+        ctl_words = read_int32(ctl)
+        state = rec.state_words(ctl_words)
         trace = None
         if trace_t is not None:
             trace = rec.as_uint32(read_int32(trace_t)).reshape(self.workers, -1, 4)
@@ -302,4 +304,5 @@ class Fed:
             trace=trace,
             mhz=mhz,
             host_s=host_s,
+            ctl=rec.as_uint32(ctl_words),
         )
