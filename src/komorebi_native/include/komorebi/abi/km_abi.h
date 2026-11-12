@@ -62,9 +62,21 @@ KM_STATIC_ASSERT(sizeof(km_record_t) == 64, "a record is one 64-byte line");
 #define KM_CTL_JOB 0x700u
 #define KM_CTL_OUT 0x740u   /* scratch for outgoing 4-byte NoC writes */
 #define KM_CTL_CORES 0x780u /* core index -> NoC x | y << 16, KM_CORES_MAX words */
-/* 0x980 to 0xA00: room for the port words of static breakpoints */
+/* KM_PORTS port slots of 16 bytes: count (bumped by senders), then the count a wait
+   wants (nonzero only while waiting, or after the wait gave up) */
+#define KM_CTL_PORT 0x980u
 #define KM_CTL_LANE 0xA00u /* KM_LANES lane areas, KM_LANE_BYTES each */
 #define KM_CTL_BYTES 0xC80u
+
+/* Ports: the receiving side of a value sent to one core. */
+#define KM_PORTS 8u
+#define KM_PORT_STRIDE 16u
+#define KM_PORT_COUNT 0u /* word offsets inside a port slot */
+#define KM_PORT_WANT 1u
+
+KM_STATIC_ASSERT(KM_CTL_PORT == KM_CTL_CORES + 4u * KM_CORES_MAX, "ports after cores");
+KM_STATIC_ASSERT(KM_CTL_PORT + KM_PORTS * KM_PORT_STRIDE == KM_CTL_LANE, "ports end");
+KM_STATIC_ASSERT(KM_CTL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte slots");
 
 /* Lane broadcast: one area per lane, offsets inside it (16-byte slots). */
 #define KM_LANES 2u
