@@ -1,6 +1,6 @@
 ---
 title: Install
-summary: Building Komorebi from a clone against a tt-metal source tree, and checking the host with kmr doctor. Nothing is released yet.
+summary: Installing Komorebi from a clone or from a wheel built locally, against a tt-metal source tree, and checking the host with kmr doctor. Nothing is published yet.
 tags:
   - overview
   - install
@@ -8,8 +8,9 @@ tags:
 
 # Install
 
-Nothing is released. There is no package on PyPI, no wheel and no prebuilt X280 image
-yet: Komorebi is used from a clone of this repository. What works is the Python package
+Nothing is published: there is no package on PyPI. Komorebi is used from a clone of
+this repository, or from a wheel built from one ([from a wheel](#from-a-wheel)). What
+works is the Python package
 (`kmr doctor`, `kmr build`, the layout helpers), the host API that runs a program on a
 card under the dispatch kernel ([host API](reference/host.md)), the example
 `examples/01_mapcollect`, and the tests.
@@ -53,6 +54,29 @@ each new shell).
 tt-metal tree and build directory it found (or that it found none), whether that build
 has the X280 runtime, and the X280 compiler if it can locate one. It opens no device,
 and exits with status 0 whether or not a tree is set.
+
+## From a wheel
+
+`packaging/build_wheel.py` builds a wheel from a commit of a clone. It carries the
+package, the headers, the dispatch kernel's sources and its image, prebuilt against the
+tree it is given (which needs the X280 runtime):
+
+```
+python3.13 packaging/build_wheel.py --tt-metal "$TT_METAL_HOME" --out dist
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install dist/komorebi-*.whl
+kmr doctor
+```
+
+The wheel needs nothing else to install and to run `kmr doctor`. To run on a card it
+needs what a clone needs ([running on a card](#running-on-a-card)): the tt-metal tree
+with the X280 runtime and the tt-x280-dispatch targets in `TT_METAL_HOME`, `ttnn` from
+that tree and `torch` in the same environment, and `clang++-20`. The native host module
+is built from the sources in the wheel on first use, into `KMR_CACHE` (default
+`~/.cache/komorebi`). The examples are not in the wheel; run them from a clone with the
+wheel's environment active. The tt-metal inside the `kohakutt` wheel cannot serve: it
+is built without the X280 runtime. [Packaging](../packaging/README.md) lists what the
+wheel carries.
 
 ## Building against a tt-metal tree
 
