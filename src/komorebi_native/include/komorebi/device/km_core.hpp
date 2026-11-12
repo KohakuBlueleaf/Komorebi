@@ -52,6 +52,7 @@ namespace km {
     constexpr uint32_t kGaveStop = 1;     // the stop word was set
     constexpr uint32_t kGaveLimit = 2;    // the wait's bound passed
     constexpr uint32_t kGaveBadItem = 3;  // a multi-page item would pass the buffer end
+    constexpr uint32_t kGaveBadLane = 4;  // a lane's arguments do not fit the record
     constexpr uint32_t kWhereCheckin = 1;   // leader collecting start-up check-ins
     constexpr uint32_t kWhereToken = 2;     // reader waiting for free token pages
     constexpr uint32_t kWhereNext = 3;      // reader waiting for a record
@@ -69,6 +70,12 @@ namespace km {
     constexpr uint32_t kEndReader = 0;      // bytes of kStEnds; kStWrong: unpack, ...
     constexpr uint32_t kEndWriter = 1;
     constexpr uint32_t kEndCompute = 2;
+
+    // Where codes of lane broadcast (km_lane.hpp).
+    constexpr uint32_t kWhereLaneBegin = 12;  // lane: arguments or buffer at a record
+    constexpr uint32_t kWhereLaneDone = 13;  // lane sender: DONE stamps, its NoC barriers
+    constexpr uint32_t kWhereLaneValid = 14;  // lane receiver waiting for VALID
+    constexpr uint32_t kWhereLaneFree = 15;  // lane: its compute's pops, its last stamps
 
     // Slots of KM_CTL_OUT (16 bytes each), the sources of small NoC writes: check-in,
     // READY, hello (reader); acknowledgement (writer).

@@ -62,7 +62,24 @@ KM_STATIC_ASSERT(sizeof(km_record_t) == 64, "a record is one 64-byte line");
 #define KM_CTL_JOB 0x700u
 #define KM_CTL_OUT 0x740u   /* scratch for outgoing 4-byte NoC writes */
 #define KM_CTL_CORES 0x780u /* core index -> NoC x | y << 16, KM_CORES_MAX words */
-#define KM_CTL_BYTES 0x980u
+/* 0x980 to 0xA00: room for the port words of static breakpoints */
+#define KM_CTL_LANE 0xA00u /* KM_LANES lane areas, KM_LANE_BYTES each */
+#define KM_CTL_BYTES 0xC80u
+
+/* Lane broadcast: one area per lane, offsets inside it (16-byte slots). */
+#define KM_LANES 2u
+#define KM_LANE_RANKS 16u   /* DONE-BY words of ranks 1 to 15; rank 0 is the sender */
+#define KM_LANE_VALID 0x00u /* seq << 16 | blocks valid, from the sender */
+#define KM_LANE_OUT 0x10u   /* source slot of this core's VALID or DONE write */
+#define KM_LANE_GAVE 0x20u  /* first lane give-up: where | lane << 8, block, seq */
+#define KM_LANE_STATS 0x30u /* blocks, wait cycles low and high words */
+#define KM_LANE_DONE 0x40u  /* DONE-BY word of rank r at KM_LANE_DONE + 16 r */
+#define KM_LANE_BYTES 0x140u
+
+KM_STATIC_ASSERT(KM_CTL_LANE == KM_CTL_CORES + 4u * KM_CORES_MAX + 0x80u, "ports room");
+KM_STATIC_ASSERT(KM_LANE_DONE + 16u * KM_LANE_RANKS == KM_LANE_BYTES, "lane area");
+KM_STATIC_ASSERT(KM_CTL_LANE + KM_LANES * KM_LANE_BYTES == KM_CTL_BYTES, "lane end");
+KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte slots");
 
 /* Words the Tensix grid pushes into the X280's local memory. */
 #define KM_ACK_STRIDE 16u /* ack word of slot j at ack_base + j * KM_ACK_STRIDE */

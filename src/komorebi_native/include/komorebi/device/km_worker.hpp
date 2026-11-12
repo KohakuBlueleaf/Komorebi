@@ -87,6 +87,9 @@ namespace km {
                 state()[w] = 0;
             }
             *ctl(KM_CTL_STOP) = 0;
+            for (uint32_t w = 0; w < KM_LANES * KM_LANE_BYTES / 4; w++) {
+                ctl(KM_CTL_LANE)[w] = 0;
+            }
             trace_.clear();
             const InterleavedAddrGen<true> table = {
                 .bank_base_address = a.cores, .page_size = KM_CORES_MAX * 4

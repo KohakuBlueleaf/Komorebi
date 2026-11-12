@@ -6,7 +6,12 @@ import numpy as np
 
 from komorebi import abi
 
-GAVES = {"Stop": "stop", "Limit": "limit", "BadItem": "bad_item"}  # kGave*
+GAVES = {
+    "Stop": "stop",
+    "Limit": "limit",
+    "BadItem": "bad_item",
+    "BadLane": "bad_lane",
+}  # kGave*
 WHERES = (
     "Checkin",
     "Token",
@@ -19,6 +24,10 @@ WHERES = (
     "CInput",
     "COutput",
     "CDone",
+    "LaneBegin",
+    "LaneDone",
+    "LaneValid",
+    "LaneFree",
 )
 KMD_PREFIXES = {"error": "KMD_ERR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 

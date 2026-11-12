@@ -57,6 +57,11 @@ def test_core_state_and_gave_up_words():
     assert st.gave_up(limit, 4)["code"] == "limit"
     bad = K["kGaveBadItem"] | K["kWhereData"] << 8
     assert st.gave_up(bad, 2)["code"] == "bad_item"
+    lane = K["kGaveBadLane"] | K["kWhereLaneBegin"] << 8
+    assert (st.gave_up(lane, 3)["code"], st.gave_up(lane, 3)["where"]) == (
+        "bad_lane",
+        "lanebegin",
+    )
     assert st.gave_up(0, 0) is None
 
 
