@@ -36,6 +36,36 @@ def core_order(grid):
     return [(x, y) for y in range(gy) for x in range(gx)]
 
 
+@dataclass(frozen=True)
+class Nocs:
+    """A grid's NoC coordinates by core (x, y): `noc_xy` the translated address (the
+    dispatch kernel's core table), `noc0` the NoC0 coordinates; `words` the translated
+    addresses as x | y << 16 in core order; `panels` from the NoC0 x of the columns."""
+
+    grid: tuple
+    noc_xy: dict
+    noc0: dict
+    words: tuple
+    panels: list
+
+
+def nocs(grid, table, noc0):
+    """Nocs from the x | y << 16 words of every core in core order: `table` translated,
+    `noc0` NoC0 (what Session.nocs() reads from the device)."""
+    order = core_order(grid)
+    if len(table) != len(order) or len(noc0) != len(order):
+        raise ValueError(f"{len(table)} and {len(noc0)} words for {len(order)} cores")
+
+    def by_core(words):
+        return {c: (int(w) & 0xFFFF, int(w) >> 16) for c, w in zip(order, words)}
+
+    at0 = by_core(noc0)
+    xs = [at0[(x, 0)][0] for x in range(grid[0])]
+    return Nocs(
+        tuple(grid), by_core(table), at0, tuple(int(w) for w in table), panels(xs)
+    )
+
+
 def share(items, index, count):
     """The part of the range `items` that member `index` of `count` members takes.
 

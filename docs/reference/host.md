@@ -103,6 +103,12 @@ without an event fit the event ring. It writes its read count with every batch, 
 while it waits whenever the kernel could be holding a command for it, so the kernel
 waits for room only while that count is on its way.
 
+Cores' NoC coordinates. `session.nocs()` returns a `layout.Nocs` for the open device,
+before any load: `grid`; by core `(x, y)` the translated NoC address `noc_xy` (the one
+the dispatch kernel's core table holds) and the NoC0 coordinates `noc0`; `words`, the
+translated addresses as `x | y << 16` in core order; and the grid's `panels`. These are
+what `layout.lane_args` and program arguments that name other cores take.
+
 Reading tensors. `session.read(*tensors)` returns the raw pages of interleaved DRAM
 tensors (`[pages, page_bytes]` uint8 each) and `session.read_bf16(*tensors)` bfloat16
 tile tensors as float32 arrays. Page p of such a tensor lies in DRAM bank p % banks, so

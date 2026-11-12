@@ -10,6 +10,7 @@ from komorebi.layout import (
     lane_args,
     lane_rect,
     lanes,
+    nocs,
     panels,
     share,
     split_range,
@@ -158,3 +159,15 @@ def test_lane_args_give_ranks_inside_the_rectangle_and_none_outside():
             noc0,
             (1, 3, 2, 4),
         )
+
+
+def test_nocs_by_core_and_the_panels_from_their_noc0_x():
+    grid = (12, 2)
+    order = core_order(grid)
+    noc0 = [NOC0_X[x] | (y + 2) << 16 for x, y in order]
+    table = [(x + 1) | (y + 2) << 16 for x, y in order]
+    n = nocs(grid, table, noc0)
+    assert n.noc0[(6, 1)] == (11, 3) and n.noc_xy[(6, 1)] == (7, 3)
+    assert n.words == tuple(table) and n.panels == PANELS
+    with pytest.raises(ValueError, match="for 24 cores"):
+        nocs(grid, table[:-1], noc0)

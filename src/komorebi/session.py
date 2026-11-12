@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import ttnn
 
-from komorebi import abi, dram, native
+from komorebi import abi, dram, layout, native
 from komorebi import thread as kt
 from komorebi.errors import GridTimeout, ProgramError, StartError
 from komorebi.run import Run
@@ -201,6 +201,13 @@ class Session:
         if self.device is not None and self._own_device:
             ttnn.close_mesh_device(self.device)
             self.device = None
+
+    def nocs(self):
+        """The grid's NoC coordinates by core (a layout.Nocs), from the open device:
+        for program arguments that name other cores, before load()."""
+        self._module = self._module or native.load_module(self.tree)
+        gx, gy, table, noc0 = self._module.core_nocs(self.device)
+        return layout.nocs((gx, gy), table, noc0)
 
     def read(self, *tensors):
         """The raw pages of interleaved DRAM tensors ([pages, page_bytes] uint8 each),

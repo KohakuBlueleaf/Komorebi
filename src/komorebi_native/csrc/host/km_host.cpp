@@ -6,6 +6,7 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -111,6 +113,40 @@ namespace {
         tt::tt_metal::detail::WriteToDeviceL1(
             chip(mesh), tt::tt_metal::CoreCoord{x, y}, address, words
         );
+    }
+
+    // The grid (x, y), then per core in core order its translated NoC address (the
+    // core table's) and its NoC0 coordinates, as x | y << 16 words; no X280 needed.
+    std::tuple<uint32_t, uint32_t, std::vector<uint32_t>, std::vector<uint32_t>>
+    core_nocs(MeshDevice& mesh) {
+        const auto g = mesh.compute_with_storage_grid_size();
+        const auto& soc = (
+            tt::tt_metal::MetalContext::instance().get_cluster().get_soc_desc(
+                chip(mesh)->id()
+            )
+        );
+        std::vector<uint32_t> table, noc0;
+        for (uint32_t y = 0; y < g.y; y++) {
+            for (uint32_t x = 0; x < g.x; x++) {
+                const auto t = x280::X280Runtime::virtual_core_from_logical_core(
+                    mesh,
+                    tt::tt_metal::CoreCoord{x, y},
+                    tt::CoreType::WORKER,
+                    tt::tt_metal::NOC::NOC_0
+                );
+                const auto p = (
+                    soc.translate_coord_to(
+                        tt::umd::CoreCoord(
+                            t.x(), t.y(), tt::CoreType::TENSIX, tt::CoordSystem::TRANSLATED
+                        ),
+                        tt::CoordSystem::NOC0
+                    )
+                );
+                table.push_back(static_cast<uint32_t>(t.x() | t.y() << 16));
+                noc0.push_back(static_cast<uint32_t>(p.x | p.y << 16));
+            }
+        }
+        return {static_cast<uint32_t>(g.x), static_cast<uint32_t>(g.y), table, noc0};
     }
 
     // The number of DRAM banks of interleaved buffers (bank b is DRAM view b).
@@ -1054,6 +1090,13 @@ NB_MODULE(_km_host, m) {
         nb::arg("y"),
         nb::arg("address"),
         nb::arg("words")
+    );
+    m.def(
+        "core_nocs",
+        [](std::shared_ptr<MeshDevice> mesh) {
+            return core_nocs(*mesh);
+        },
+        nb::arg("mesh_device")
     );
     m.def(
         "dram_banks",
