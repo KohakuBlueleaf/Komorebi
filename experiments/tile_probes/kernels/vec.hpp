@@ -738,9 +738,55 @@ namespace vec {
 
     enum SlabMode : uint32_t { kF32 = 0, kBf16 = 1, kConst = 2 };
 
+    // Hit mask (bit l: lane l hit) of the node at Dst address a, read by the core:
+    // plain loop (0), loads grouped by 8 ahead of their use (1), or T2's vector unit
+    // (2: one stride-8 load, a compare to a mask register, a mask store).
+    inline uint32_t hit_mask(uint32_t a, uint32_t variant) {
+        volatile uint32_t* w = win();
+        if (variant == 0) {
+            uint32_t miss = 0;
+            for (uint32_t l = 0; l < 32; ++l) {
+                miss |= (w[lane_word(a, l)] >> 31) << l;
+            }
+            return ~miss;
+        }
+#if defined(__riscv_vector)
+        if (variant == 2) {
+            uint32_t mask = 0;
+            const size_t vl = __riscv_vsetvl_e32m8(32);
+            vint32m8_t v = (
+                __riscv_vlse32_v_i32m8(
+                    reinterpret_cast<const int32_t*>(kDstWindow) + 16 * a, 8, vl
+                )
+            );
+            __riscv_vsm_v_b4(
+                reinterpret_cast<uint8_t*>(&mask),
+                __riscv_vmsge_vx_i32m8_b4(v, 0, vl),
+                vl
+            );
+            asm volatile("" ::: "memory");
+            return mask;
+        }
+#endif
+        uint32_t miss = 0;
+#pragma GCC unroll 4
+        for (uint32_t g = 0; g < 32; g += 8) {
+            uint32_t v[8];
+#pragma GCC unroll 8
+            for (uint32_t j = 0; j < 8; ++j) {
+                v[j] = w[lane_word(a, g + j)];
+            }
+#pragma GCC unroll 8
+            for (uint32_t j = 0; j < 8; ++j) {
+                miss |= (v[j] >> 31) << (g + j);
+            }
+        }
+        return ~miss;
+    }
+
     // Input: ray fields [32 k + l) for k < 7; nodes [512 + 6 n + c) fp32 bits, or bf16
     // in the low half for kBf16. Timing: per rep one sweep over n nodes, then one
-    // readout of all n flag masks. Data: hit mask of node n at n; L6 lane l at
+    // readout of all n hit masks. Data: hit mask of node n at n; L6 lane l at
     // 64 + 32 n + l.
     [[gnu::noinline]] void slab(
         const volatile uint32_t* in,
@@ -748,6 +794,7 @@ namespace vec {
         uint32_t n_nodes,
         uint32_t reps,
         SlabMode mode,
+        uint32_t readout,
         Times& t
     ) {
         for (uint32_t k = 0; k < 7; ++k) {
@@ -756,7 +803,6 @@ namespace vec {
         TTI_SFPLOADI(L7, 0, 0xBF80);
         const volatile uint32_t* nodes = in + 512;
         volatile uint32_t* d = out + probe::kData;
-        volatile uint32_t* w = win();
         for (uint32_t r = 0; r < reps; ++r) {
             tensix_sync();
             const uint32_t t0 = wall();
@@ -772,11 +818,7 @@ namespace vec {
             tensix_sync();
             const uint32_t t1 = wall();
             for (uint32_t n = 0; n < n_nodes; ++n) {
-                uint32_t miss = 0;
-                for (uint32_t l = 0; l < 32; ++l) {
-                    miss |= (w[lane_word(64 + 4 * n, l)] >> 31) << l;
-                }
-                d[n] = ~miss;
+                d[n] = hit_mask(64 + 4 * n, readout);
             }
             const uint32_t t2 = wall();
             t.add(t1 - t0);

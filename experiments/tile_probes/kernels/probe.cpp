@@ -114,7 +114,7 @@ void kernel_main() {
     vec::finish();
 #elif PROBE == 4
     vec::setup();
-    vec::slab(in, out, p[0], p[1], static_cast<vec::SlabMode>(p[2]), t);
+    vec::slab(in, out, p[0], p[1], static_cast<vec::SlabMode>(p[2]), p[3], t);
     vec::finish();
 #elif PROBE == 5
     err |= wait_done(out, p[0], nonce);

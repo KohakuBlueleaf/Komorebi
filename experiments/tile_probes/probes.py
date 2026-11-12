@@ -341,19 +341,22 @@ def bf16_bits(x):
 
 def slab_data(rng, n_nodes, exact):
     """Rays (inv, ob = -o inv, tmax) and boxes; exact: all values multiples of 1/4."""
+    # Rays start in [-6, 6]^3 and head towards the origin on every axis; boxes lie
+    # around the origin, so about a fifth of the ray-box pairs hit.
     if exact:
-        o = rng.integers(-32, 33, (32, 3)).astype(np.float32) / 4
+        o = rng.integers(-24, 25, (32, 3)).astype(np.float32) / 4
         inv = rng.choice(EXACT_INV, (32, 3)).astype(np.float32)
-        tmax = rng.integers(1, 129, 32).astype(np.float32) / 4
-        lo = rng.integers(-32, 25, (n_nodes, 3)).astype(np.float32) / 4
-        hi = lo + rng.integers(1, 17, (n_nodes, 3)).astype(np.float32) / 4
+        tmax = rng.integers(16, 129, 32).astype(np.float32) / 4
+        lo = rng.integers(-16, 9, (n_nodes, 3)).astype(np.float32) / 4
+        hi = lo + rng.integers(4, 25, (n_nodes, 3)).astype(np.float32) / 4
     else:
-        o = rng.uniform(-8, 8, (32, 3)).astype(np.float32)
-        d = rng.normal(size=(32, 3)).astype(np.float32)
+        o = rng.uniform(-6, 6, (32, 3)).astype(np.float32)
+        d = (-o + rng.normal(scale=2.0, size=(32, 3))).astype(np.float32)
         inv = (1 / d).astype(np.float32)
-        tmax = rng.uniform(1, 32, 32).astype(np.float32)
-        lo = rng.uniform(-8, 6, (n_nodes, 3)).astype(np.float32)
-        hi = (lo + rng.uniform(0.1, 4, (n_nodes, 3))).astype(np.float32)
+        tmax = rng.uniform(4, 32, 32).astype(np.float32)
+        lo = rng.uniform(-4, 2, (n_nodes, 3)).astype(np.float32)
+        hi = (lo + rng.uniform(1, 6, (n_nodes, 3))).astype(np.float32)
+    inv = np.where(o * inv > 0, -inv, inv).astype(np.float32)
     ob = (-o * inv).astype(np.float32)
     return inv, ob, tmax, lo, hi
 
@@ -397,9 +400,17 @@ def slab(device, args):
     if mode == 2:
         box = bf16_bits(nodes[0])
         defines = [("SLAB_BOX", ",".join(str(int(v)) for v in box))]
-    out, nonce = run_kernel(device, "slab", words, [n_nodes, args.reps, mode], defines)
+    readout = args.variant
+    out, nonce = run_kernel(
+        device,
+        "slab",
+        words,
+        [n_nodes, args.reps, mode, readout],
+        defines,
+        readout == 2,
+    )
     t = times_of(out)
-    sweep, readout = t[0::2], t[1::2]
+    sweep, read_t = t[0::2], t[1::2]
     got = [int(v) for v in out[DATA : DATA + n_nodes]]
     want, gaps = slab_ref(inv, ob, tmax, lo, hi, fp64=not exact)
     bad_bits = 0
@@ -418,11 +429,12 @@ def slab(device, args):
             "nodes": n_nodes,
             "reps": args.reps,
             "mode": args.slab_mode,
+            "readout": ["plain", "scheduled", "rvv"][readout],
             "exact_data": exact,
             "sweep_cycles": stats(sweep),
             "per_node": stats([c / n_nodes for c in sweep]),
-            "readout_cycles": stats(readout),
-            "readout_per_node": stats([c / n_nodes for c in readout]),
+            "readout_cycles": stats(read_t),
+            "readout_per_node": stats([c / n_nodes for c in read_t]),
             "hit_fraction": float(np.mean([m.bit_count() / 32 for m in want])),
             "flags_bad": bad_bits,
             "flags_bad_near_boundary": near,
@@ -513,7 +525,10 @@ def main():
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--words", type=int, default=4, choices=[1, 2, 4])
     p.add_argument(
-        "--variant", type=int, default=0, help="gather: 0 plain, 1 scheduled, 2 RVV"
+        "--variant",
+        type=int,
+        default=0,
+        help="gather copy / slab readout: 0 plain, 1 scheduled, 2 RVV",
     )
     p.add_argument("--nodes", type=int, default=64)
     p.add_argument("--slab-mode", choices=["f32", "bf16", "const"], default="f32")
