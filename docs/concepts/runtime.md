@@ -27,7 +27,7 @@ segments and breakpoints mean.
 | Worker | One resident kernel set per program. The runtime owns each kernel's loop; the program gives the body. The reader copies each record into the tile's control block and hands a token to the compute and writer kernels, which read the record from that copy. Every wait is bounded and observes a stop word. | [runtime](../reference/runtime.md#the-three-kernels) |
 | Teams | A contiguous range of cores in core order, named in the record. Completion is per team: members report to their row's leader, row leaders to the first member, which acknowledges with one write. Several teams run at once. | [runtime](../reference/runtime.md#the-three-kernels) |
 | Static breakpoints | A value to one core: `emit` writes into a fixed slot, waits for the write, increments the receiver's port; `arrive` is a bounded counted wait. `reduce` by owner and by tree. A block to a row or a column: lane broadcast with a window. | [ports](../reference/ports.md), [lanes](../reference/lanes.md) |
-| Dynamic breakpoints | Planned: a thread moves to the core that holds its data. | - |
+| Dynamic breakpoints | A queue per core in DRAM, positions reserved by an atomic add on the receiver; packets of up to 32 items; bins per destination; a bounded population of live items (a spawn quota); sent and consumed counters in a status line when a core goes idle. Generic reader and writer kernels own these, so a program's segment code lives in the compute kernel. Under the test feeder. | [dynamic](../reference/dynamic.md) |
 | Trace | Per-record wall-clock stamps per core, read back after the run. | [runtime](../reference/runtime.md#trace) |
 
 ## Records and segments
@@ -68,8 +68,15 @@ flight, and each receiver stamps the sender when its compute is done with a bloc
 ([lanes](../reference/lanes.md)). Records that use either carry `KM_F_EXCL`, so two
 records whose teams overlap are never in flight together.
 
-A dynamic breakpoint depends on data: the destination, the number of arrivals and the
-end of the run are decided as it runs. It is planned and not built.
+A dynamic breakpoint depends on data. Each receiver has a queue in DRAM large enough
+for every live item. A sender collects items per destination, reserves positions in
+the receiver's queue with one atomic add and writes the items there; it never waits for
+the receiver, so a full inbox cannot deadlock the grid. The receiver reads its queue in
+order, as packets of up to 32 items. The number of live items is bounded by a spawn
+quota. When a core has been idle for a while it writes its sent and consumed counters
+in a status line at the issuer, and the run is over when every line says idle with the
+same counters on two successive sweeps and the sums match.
+[Dynamic segments](../reference/dynamic.md) is the page for a program's author.
 
 ## Debugging
 

@@ -48,6 +48,8 @@ between cores, deciding on the card and the thread language are planned.
   one core, groups of a team, and reduce by owner and by tree.
 - [Lane broadcast](reference/lanes.md): one sender to a row or a column of a team;
   the device calls, the host layout, the rules and the give-up.
+- [Dynamic segments](reference/dynamic.md): items that move between cores as the data
+  decides, through per-core queues in DRAM; quota; the quiet end; give-up reasons.
 - [Micro-op streams](streams.md): the upload format, the builder, the check, the
   simulator and the error reasons of the programs the dispatch kernel is to run.
 - [Graphs](graphs.md): the graph executor's upload format, builder, check, the

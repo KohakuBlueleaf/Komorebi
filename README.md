@@ -163,7 +163,7 @@ vector unit, and writes its own output tile.
 | Host-fed dispatch: `Session`, `Run`, the dispatch kernel's host ring, slots, deadlines and events | implemented ([host API](docs/reference/host.md), [x280/kernel](src/komorebi_native/x280/kernel/)) |
 | Micro-op streams and the job queue | upload format, builder, check and simulator on the CPU; running them on the card is planned ([streams](docs/streams.md)) |
 | `emit` and `wait` between cores, groups, broadcast in a lane, `reduce` | planned |
-| `at`: threads that move, inboxes and packets of records | planned |
+| `at`: threads that move, inboxes and packets of records | dynamic segments on the test feeder: per-core queues in DRAM, quota, the quiet end ([dynamic segments](docs/reference/dynamic.md), [05_hop](examples/05_hop/)); under the dispatch kernel planned |
 | The graph executor; user threads on X280 clusters 1 to 3 | planned |
 | Homes and segments declared, and the thread language compiled into them | planned ([manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md)) |
 

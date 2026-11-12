@@ -58,10 +58,14 @@ place to ask a question and to be wrong.
 - [runtime_harness](runtime_harness/README.md): the Tensix runtime's kernels as host
   threads on a simulated grid, with failure paths forced on purpose (stop words,
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
-  defects in the runtime and replays a card hang and two card findings; 27 scenarios,
+  defects in the runtime and replays a card hang and two card findings; 35 scenarios,
   run by hand.
 - [x280_threads](x280_threads/README.md): a user image on X280 cluster 1 beside the
   dispatch kernel and a resident grid (100 of 100 cycles clean), DRAM visibility
   between a Tensix core and the X280 (a Flush64 sweep each way is the hand-over), the
   X280's read and write rates (about 1.3 and 1.8 GB/s) and prefix sums over 119 x
   1,024 counters (2.1 ms), and what a thread that ignores its deadline leaves behind.
+- [dyn_probes](dyn_probes/README.md): whether one core can reserve positions in another
+  core's queue with one atomic add (yes: 119 cores, exact cover, 266 to 2596 cycles),
+  the round trip of an item through DRAM (0.93 µs) and the rate between cores (up to
+  1211 M items/s, 120 cores in packets of 32).
