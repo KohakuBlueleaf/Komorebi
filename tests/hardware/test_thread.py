@@ -1,5 +1,5 @@
-"""X280 threads on a card: the work-cluster example against its host fallback, and a
-thread stopped at the host's timeout (KMR_CARD=1)."""
+"""X280 threads on a card: the work-cluster loop host-fed against numpy, and a thread
+stopped at the host's timeout (KMR_CARD=1)."""
 
 import json
 import subprocess
@@ -27,9 +27,9 @@ def run(script, *args, timeout=120):
     return json.loads(lines[-1])
 
 
-def test_prefix_sums_on_the_card_equal_the_host_fallback():
-    out = run(EXAMPLE, "--cores", 8, "--bins", 64)
-    assert out["card"]["state"] == "done" and out["same_offsets"] and out["ok"]
+def test_the_work_cluster_loop_host_fed_ends_on_the_card_sum():
+    out = run(EXAMPLE, "--paths", "cpu", "hostfed", "--limit", 100_000)
+    assert out["hostfed"]["code"] == 0 and out["ok"], out
 
 
 def test_a_thread_past_the_timeout_is_stopped_and_reports_where_it_was():

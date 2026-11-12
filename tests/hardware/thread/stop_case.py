@@ -8,7 +8,7 @@ from pathlib import Path
 import komorebi as km
 
 HERE = Path(__file__).resolve().parent
-KERNELS = HERE.parents[2] / "examples" / "07_work_cluster" / "kernels"
+KERNELS = HERE / "kernels"
 T0 = time.monotonic()
 
 

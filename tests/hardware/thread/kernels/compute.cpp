@@ -1,0 +1,10 @@
+// Thread cases, grid side: no compute.
+#include <stdint.h>
+
+#include "api/compute/compute_kernel_api.h"
+#include "komorebi/device/km_worker.hpp"
+
+void kernel_main() {
+    km::Compute cp;
+    cp.run([&](const km_record_t&) {});
+}
