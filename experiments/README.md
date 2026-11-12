@@ -53,3 +53,8 @@ place to ask a question and to be wrong.
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
   defects in the runtime and replays a card hang and two card findings; 27 scenarios,
   run by hand.
+- [x280_threads](x280_threads/README.md): a user image on X280 cluster 1 beside the
+  dispatch kernel and a resident grid (100 of 100 cycles clean), DRAM visibility
+  between a Tensix core and the X280 (a Flush64 sweep each way is the hand-over), the
+  X280's read and write rates (about 1.3 and 1.8 GB/s) and prefix sums over 119 x
+  1,024 counters (2.1 ms), and what a thread that ignores its deadline leaves behind.
