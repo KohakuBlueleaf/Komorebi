@@ -10,8 +10,13 @@
   .s { font-size: 12px; }
   .box { fill: #f6f8fa; stroke: #d1d9e0; stroke-width: 1; }
   .plan { fill: none; stroke: #818b98; stroke-width: 1; stroke-dasharray: 5 4; }
+  .dram { fill: #d5dde6; stroke: none; }
+  .edge { fill: #f6f8fa; stroke: #d1d9e0; stroke-width: 1; }
+  .off { fill: none; stroke: #d1d9e0; stroke-width: 1; stroke-dasharray: 3 3; }
+  .hot { fill: #bc4c00; stroke: none; }
+  .on { fill: #ffffff; }
   .cell { fill: #eaeef2; stroke: none; }
-  .team { fill: #ffd8b5; stroke: #bc4c00; stroke-width: 1; }
+  .team { fill: #ffc999; stroke: #bc4c00; stroke-width: 1; }
   .abox { fill: #fff1e5; stroke: #bc4c00; stroke-width: 1.5; }
   .ln { stroke: #818b98; stroke-width: 1.5; fill: none; }
   .thin { stroke: #818b98; stroke-width: 1; fill: none; }
@@ -32,33 +37,37 @@
 </defs>
 <rect width="830" height="514" fill="#ffffff"/>
 <text x="16" y="18" class="b s" xml:space="preserve">dispatch kernel</text>
-<text x="104" y="64" class="s m" text-anchor="end" xml:space="preserve">slot 0</text>
-<text x="104" y="86" class="s m" text-anchor="end" xml:space="preserve">slot 1</text>
-<text x="104" y="108" class="s m" text-anchor="end" xml:space="preserve">slot 2</text>
-<text x="104" y="146" class="s m" text-anchor="end" xml:space="preserve">core 0</text>
-<line x1="116" y1="142" x2="812" y2="142" class="grid"/>
-<text x="104" y="170" class="s m" text-anchor="end" xml:space="preserve">core 1</text>
-<line x1="116" y1="166" x2="812" y2="166" class="grid"/>
-<text x="104" y="194" class="s m" text-anchor="end" xml:space="preserve">core 2</text>
-<line x1="116" y1="190" x2="812" y2="190" class="grid"/>
-<text x="104" y="218" class="s m" text-anchor="end" xml:space="preserve">core 3</text>
-<line x1="116" y1="214" x2="812" y2="214" class="grid"/>
-<text x="104" y="242" class="s m" text-anchor="end" xml:space="preserve">core 4</text>
-<line x1="116" y1="238" x2="812" y2="238" class="grid"/>
-<text x="104" y="266" class="s m" text-anchor="end" xml:space="preserve">core 5</text>
-<line x1="116" y1="262" x2="812" y2="262" class="grid"/>
-<text x="104" y="290" class="s m" text-anchor="end" xml:space="preserve">core 6</text>
-<line x1="116" y1="286" x2="812" y2="286" class="grid"/>
-<text x="104" y="314" class="s m" text-anchor="end" xml:space="preserve">core 7</text>
-<line x1="116" y1="310" x2="812" y2="310" class="grid"/>
-<text x="104" y="338" class="s m" text-anchor="end" xml:space="preserve">core 8</text>
-<line x1="116" y1="334" x2="812" y2="334" class="grid"/>
-<text x="104" y="362" class="s m" text-anchor="end" xml:space="preserve">core 9</text>
-<line x1="116" y1="358" x2="812" y2="358" class="grid"/>
-<text x="104" y="386" class="s m" text-anchor="end" xml:space="preserve">core 10</text>
-<line x1="116" y1="382" x2="812" y2="382" class="grid"/>
-<text x="104" y="410" class="s m" text-anchor="end" xml:space="preserve">core 11</text>
-<line x1="116" y1="406" x2="812" y2="406" class="grid"/>
+<text x="124" y="64" class="s m" text-anchor="end" xml:space="preserve">slot 0</text>
+<text x="124" y="86" class="s m" text-anchor="end" xml:space="preserve">slot 1</text>
+<text x="124" y="108" class="s m" text-anchor="end" xml:space="preserve">slot 2</text>
+<text x="124" y="146" class="s m" text-anchor="end" xml:space="preserve">core 0  (1, 2)</text>
+<line x1="132" y1="142" x2="812" y2="142" class="grid"/>
+<text x="124" y="170" class="s m" text-anchor="end" xml:space="preserve">core 1  (2, 2)</text>
+<line x1="132" y1="166" x2="812" y2="166" class="grid"/>
+<text x="124" y="194" class="s m" text-anchor="end" xml:space="preserve">core 2  (3, 2)</text>
+<line x1="132" y1="190" x2="812" y2="190" class="grid"/>
+<text x="124" y="218" class="s m" text-anchor="end" xml:space="preserve">core 3  (4, 2)</text>
+<line x1="132" y1="214" x2="812" y2="214" class="grid"/>
+<text x="124" y="242" class="s m" text-anchor="end" xml:space="preserve">core 4  (5, 2)</text>
+<line x1="132" y1="238" x2="812" y2="238" class="grid"/>
+<text x="124" y="266" class="s m" text-anchor="end" xml:space="preserve">core 5  (6, 2)</text>
+<line x1="132" y1="262" x2="812" y2="262" class="grid"/>
+<text x="124" y="290" class="s m" text-anchor="end" xml:space="preserve">core 6  (11, 2)</text>
+<line x1="132" y1="286" x2="812" y2="286" class="grid"/>
+<text x="124" y="314" class="s m" text-anchor="end" xml:space="preserve">core 7  (12, 2)</text>
+<line x1="132" y1="310" x2="812" y2="310" class="grid"/>
+<text x="124" y="338" class="s m" text-anchor="end" xml:space="preserve">core 8  (13, 2)</text>
+<line x1="132" y1="334" x2="812" y2="334" class="grid"/>
+<text x="124" y="362" class="s m" text-anchor="end" xml:space="preserve">core 9  (14, 2)</text>
+<line x1="132" y1="358" x2="812" y2="358" class="grid"/>
+<text x="124" y="386" class="s m" text-anchor="end" xml:space="preserve">core 10  (15, 2)</text>
+<line x1="132" y1="382" x2="812" y2="382" class="grid"/>
+<text x="124" y="410" class="s m" text-anchor="end" xml:space="preserve">core 11  (16, 2)</text>
+<line x1="132" y1="406" x2="812" y2="406" class="grid"/>
+<text x="124" y="126" class="s b" text-anchor="end" xml:space="preserve">index (NoC0 x, y)</text>
+<line x1="20" y1="274" x2="812" y2="274" class="thin" stroke-dasharray="2 4"/>
+<text x="812" y="270" class="s m" text-anchor="end" xml:space="preserve">panel 0</text>
+<text x="812" y="288" class="s m" text-anchor="end" xml:space="preserve">panel 1</text>
 <line x1="150" y1="48" x2="150" y2="418" class="thin" stroke-dasharray="3 3"/>
 <line x1="170" y1="48" x2="170" y2="418" class="thin" stroke-dasharray="3 3"/>
 <line x1="190" y1="48" x2="190" y2="418" class="thin" stroke-dasharray="3 3"/>
@@ -126,7 +135,7 @@
 <text x="546" y="362" class="s" xml:space="preserve">R3 overlaps both teams: each member takes</text>
 <text x="546" y="386" class="s" xml:space="preserve">it after its R1 or R2 (core 5 at once), and</text>
 <text x="546" y="410" class="s" xml:space="preserve">its leader, core 3, waits for the last report</text>
-<line x1="116" y1="436" x2="812" y2="436" class="ln" marker-end="url(#hl)"/>
+<line x1="132" y1="436" x2="812" y2="436" class="ln" marker-end="url(#hl)"/>
 <text x="812" y="454" class="s m" text-anchor="end" xml:space="preserve">time (schematic)</text>
 <line x1="120" y1="472" x2="140" y2="472" class="thin" stroke-dasharray="3 3"/>
 <text x="148" y="476" class="s" xml:space="preserve">the record lands on every core; cores outside its team skip it</text>

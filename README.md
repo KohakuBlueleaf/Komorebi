@@ -63,8 +63,13 @@ cp.run([&](const km_record_t& r) {
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/card-dark.svg">
-  <img src="docs/images/card-light.svg" width="830" alt="The host's Python Session stores 64-byte commands into the dispatch kernel's host ring on X280 cluster 0 and reads 16-byte events back from host memory. The dispatch kernel gives each record a completion slot and a sequence number and stores it into the ring of all 120 Tensix cores, measured at 0.77 microseconds per record with 4 in flight in the landing experiment. Each core runs three resident kernels: the reader takes the next record whose team holds the core, compute runs the segment, the writer writes outputs and reports. Members report to the team's leader, the leader writes one acknowledgement word to the X280, and the kernel posts an event to the host. Micro-op streams, the job queue, the graph executor and work clusters are drawn dashed as planned.">
+  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM tiles in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. Host commands and events pass through PCIe to X280 0 at (8, 3), which runs the dispatch kernel. Its record goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each. A team of cores 26 to 55 is filled; its leader, core 26 at (3, 4), acknowledges on NoC1. Boxes below list what the dispatch kernel and each Tensix core do, and what is planned.">
 </picture>
+
+The figure is the card's real tile grid in NoC0 coordinates; the numbers in the Tensix
+cores are Komorebi's core index, row by row over the 12 x 10 grid of usable cores, so
+index and position differ where the grid skips the fused-off, X280 and DRAM columns.
+The session finds the two multicast panels from the card at start-up.
 
 A **record** is one 64-byte line: a sequence number, the segment, the team and ten
 32-bit argument words; the sequence number is repeated in each of the four 16-byte
@@ -88,7 +93,9 @@ where it landed. The code between two breakpoints is a **segment**; on the card 
 one case of the switch a record selects. State has a **home**: the core that holds it,
 such as a film tile or a treelet of a box tree. The author names state, never a core;
 `at X[i]:` continues the thread where `X[i]` lives, and is no breakpoint when `X[i]` is
-already here.
+already here. The grid in this figure is a schematic. None of these three breakpoints
+exists between cores yet; what runs today is records, teams and completion
+(figures 1, 3 and 4).
 
 | The author writes | What crosses the network | What the thread does |
 |---|---|---|
@@ -124,7 +131,7 @@ in this form.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teams-dark.svg">
-  <img src="docs/images/teams-light.svg" width="830" alt="Time runs left to right over twelve cores. The dispatch kernel issues R1 to cores 0 to 4 and R2 to cores 6 to 11; each record lands on every core, the members work at the same time, report to their leader, and each leader acknowledges its own record, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both teams: cores 3, 4 and 6 to 8 take it only after finishing R1 or R2, core 5, in neither team, takes it at once, and its leader, core 3, acknowledges when the last member has reported.">
+  <img src="docs/images/teams-light.svg" width="830" alt="Time runs left to right over cores 0 to 11, the first row of the grid (NoC0 row 2, columns 1 to 6 in panel 0 and 11 to 16 in panel 1). The dispatch kernel issues R1 to cores 0 to 4 and R2 to cores 6 to 11; each record lands on every core, the members work at the same time, report to their leader, and each leader acknowledges its own record, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both teams: cores 3, 4 and 6 to 8 take it only after finishing R1 or R2, core 5, in neither team, takes it at once, and its leader, core 3, acknowledges when the last member has reported.">
 </picture>
 
 A record is in flight from the moment the dispatch kernel stores it until its leader's
@@ -137,7 +144,7 @@ holds it on the host until no team in flight overlaps it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/mapcollect-dark.svg">
-  <img src="docs/images/mapcollect-light.svg" width="830" alt="The map/collect example on a team of 8 cores. The input of 64 tiles is in DRAM; member m reads tiles 8m to 8m+7 into circular buffer 0 in its L1, the compute kernel adds them into one tile in the DST registers in fp32 on the vector unit and packs it into circular buffer 16, and the writer stores it to output page a3 + m in DRAM. Between cores only the record (from the X280, to every core) and the completion counts (member to leader, leader to the X280) cross the network.">
+  <img src="docs/images/mapcollect-light.svg" width="830" alt="The map/collect example on the real tile grid: the team of cores 0 to 7 sits at NoC0 (1, 2) to (6, 2), (11, 2) and (12, 2); core 3 at (4, 2) is highlighted. A table lists each member's share: core m reads tiles 8m to 8m+7 and writes output page a3 + m. Members report to core 0, which acknowledges to X280 0. Inside core 3: the reader reads tiles 24 to 31 from DRAM on NoC0 into circular buffer 0 in L1, compute copies each tile to DST and the vector unit adds them in fp32, pack writes the sum to circular buffer 16, the writer writes it to DRAM on NoC1, and the core reports to core 0.">
 </picture>
 
 In the implemented example nothing but the record and the completion travels between
