@@ -1,6 +1,5 @@
-/* The dispatch kernel's state and the helpers every part uses. One translation unit
- * (main.c) includes the parts; the image has no .bss, so the state lives on the stack.
- */
+/* The dispatch kernel's state (in the cluster's DRAM bank; the image has no .bss) and
+ * the helpers every part uses. One translation unit, main.c, includes the parts. */
 #pragma once
 
 #include <stdint.h>

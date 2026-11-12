@@ -1,6 +1,5 @@
-/* The dispatch kernel's interface to the host: the argument block, the layout of the
- * cluster's local memory (LIM) and of the host buffer, the result block and its codes.
- * Plain C; the X280 kernel and the host include it. */
+/* The dispatch kernel's interface to the host, in plain C: the argument block, the
+ * layouts of the cluster's local memory (LIM) and the host buffer, the result block. */
 #pragma once
 
 #include <stddef.h>

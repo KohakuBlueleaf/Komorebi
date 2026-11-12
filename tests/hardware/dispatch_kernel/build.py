@@ -1,9 +1,7 @@
-"""Builds the dispatch kernel image and this harness's host module, out of tree.
+"""Builds the kernel images (also the KMD_VERIFY_LINES one and the measuring image) and
+the host module against a tt-metal tree (--tree, default TT_METAL_HOME):
 
     python build.py [--tree TT_METAL_TREE] [--out DIR] [--image-only] [--define N=V]
-
-The image is linked with the X280 runtime of the tt-metal tree (TT_METAL_HOME by
-default); the module borrows the flags of the tree's X280 Python module target.
 """
 
 import argparse

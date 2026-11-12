@@ -1,10 +1,5 @@
-// Stand-in Tensix worker for the dispatch kernel tests: one data-movement kernel per
-// core that implements only what the kernel needs. Start-up through column groups;
-// next() takes a record by its landing words; members of the team run its segment;
-// completion through the team's leader (atomic counter, then one ack word to the X280);
-// the stop word ends every wait; EXIT ends the kernel. Every wait is bounded by the
-// limit argument (units of 2^20 Tensix cycles). At the end the core writes its counters
-// and state words to page `me` of the output tensor.
+// Stand-in Tensix worker for the dispatch kernel tests (one data-movement kernel per
+// core): only what the kernel needs. Every wait is bounded; counters go to page `me`.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -149,9 +144,8 @@ namespace {
             return a.me >= first && a.me < first + count;
         }
 
-        // Takes the next record for this core into KM_CTL_JOB: the oldest landed record
-        // newer than the slot's last one that is this core's or EXIT; others are
-        // consumed. Returns false when the stop word or the limit ends the wait.
+        // Takes into KM_CTL_JOB the oldest new landed record that is this core's or
+        // EXIT (others are consumed). False if the stop word or limit ends the wait.
         bool next(uint32_t& slot) {
             const uint64_t by = now() + limit;
             uint32_t spins = 0;
@@ -265,9 +259,8 @@ namespace {
             }
         }
 
-        // Reports completion of the record in KM_CTL_JOB: members increment the
-        // leader's counter of the slot; the leader waits for count - 1 of them, then
-        // pushes the ack.
+        // Reports completion: members increment the leader's counter of the slot; the
+        // leader waits for count - 1 of them, then pushes the ack word to the X280.
         bool complete(const volatile tt_l1_ptr km_record_t* r, uint32_t slot) {
             const uint32_t first = r->team & 0xFFFFu, count = r->team >> 16;
             if (a.me != first) {

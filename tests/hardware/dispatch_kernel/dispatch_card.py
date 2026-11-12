@@ -1,10 +1,6 @@
 """Dispatch kernel tests on a card: the kernel on X280 cluster 0, fed from the host,
-with the stand-in worker (kernels/worker.cpp) on every Tensix core. One case per run;
-one JSON line with the results at the end.
-
-    python dispatch_card.py limit | ping | issue | teams | disjoint | stall | bench
-    python dispatch_card.py compile-error [--image-first]
-    python dispatch_card.py store [--gaps-us ...] [--busy-us ...] [--lines ...]
+the stand-in worker (kernels/worker.cpp) on every Tensix core. One case per run, one
+JSON line at the end: python dispatch_card.py <case> [options] (see README.md).
 """
 
 import argparse

@@ -1,7 +1,5 @@
-// _km_dispatch_test: host module of the dispatch kernel test harness. Opens the X280
-// runtime, lays out the kernel's LIM and the pinned host buffer, starts the kernel on
-// cluster 0, feeds the host command ring through a write-combining window and reads the
-// completion events from host memory. Every wait is bounded.
+// _km_dispatch_test, the harness's host module: X280 runtime, the kernel's LIM and
+// host buffer, the host command ring, the events. Every wait is bounded.
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/array.h>
@@ -284,9 +282,8 @@ namespace {
             };
         }
 
-        // Picks the run and tag, zeroes the LIM layout and the host buffer, writes the
-        // argument block. Call before building the worker arguments (they carry the
-        // tag).
+        // Picks the run and tag, zeroes LIM layout and host buffer, writes the argument
+        // block. Call before building the worker arguments (they carry the tag).
         void prepare(
             uint32_t depth_,
             uint32_t host_depth_,
@@ -642,10 +639,8 @@ namespace {
             return cleaned.cleaned_up();
         }
 
-        // Host store probe; no kernel may run. n bursts of `lines` 64-byte stores and
-        // one sfence each (burst i at line lines * (i % spread)), to LIM (target 0) or
-        // a Tensix L1 (1); seconds in the stores and in the sfence of each burst, as 2n
-        // values.
+        // Store probe (no kernel): n bursts of `lines` lines and an sfence into LIM or
+        // a Tensix L1, burst i at line lines * (i % spread); seconds in each part.
         std::vector<double> store_probe(
             uint32_t n,
             uint32_t lines,
