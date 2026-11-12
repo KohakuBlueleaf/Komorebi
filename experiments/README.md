@@ -51,6 +51,10 @@ place to ask a question and to be wrong.
 - [page_index](page_index/README.md): whether the compute kernel can read page k of a
   circular buffer it waited for in full, by index, with nothing popped before it. Yes:
   two runs, exact. Values put into fixed slots are handed over as the whole buffer.
+- [crossing_cost](crossing_cost/README.md): one put by distance and many senders
+  incrementing one word. A put's latency does not depend on the hop count (1 to 16
+  hops); a target in the sender's row costs about 43 cycles more than one in its column.
+  118 increments of one word take 1.1 µs, about 12 cycles each.
 - [runtime_harness](runtime_harness/README.md): the Tensix runtime's kernels as host
   threads on a simulated grid, with failure paths forced on purpose (stop words,
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
