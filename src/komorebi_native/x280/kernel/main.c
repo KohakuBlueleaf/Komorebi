@@ -43,6 +43,8 @@ static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
         a->columns >= 1 && a->columns <= KMD_READY_MAX && a->cores >= 1 &&
         a->cores <= KM_CORES_MAX && a->panels >= 1 && a->panels <= 2 &&
         a->t_start != 0 && a->t_record != 0 && a->state_ddr != 0 &&
+        (a->upload_bytes & 63u) == 0 && a->upload_bytes <= X280_LIM_SIZE &&
+        (uintptr_t)a + KMD_LIM_UPLOAD + a->upload_bytes <= X280_LIM_END &&
         (a->state_ddr & 63u) == 0 && (a->host_noc_addr & 63u) == 0 &&
         (a->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE
@@ -128,6 +130,33 @@ static void verify_line(kmd_t* k) {
         k->bad_first = i;
     }
 }
+
+/* Test build: KMD_SEG_CHECK_UPLOAD. Answers PONG with aux = words that differ (at most
+ * 0xFFFFFF) and ticks = the first one's index from `off` (~0: none). */
+static void upload_check(
+    kmd_t* k, uint32_t req, uint32_t off, uint32_t bytes, uint32_t seed
+) {
+    if (((off | bytes) & 63u) || off > k->upload_bytes ||
+        bytes > k->upload_bytes - off) {
+        events_push(k, req, KM_EV_REFUSED | (KMD_REFUSE_REGION << 8), 0);
+        k->refused++;
+        return;
+    }
+    const volatile uint64_t* p = (const volatile uint64_t*)(k->upload + off);
+    uint32_t bad = 0, first = ~0u;
+    x280_fence_ir();
+    for (uint32_t i = 0; i < bytes / 8u; i++) {
+        const uint64_t v = p[i];
+        const uint32_t j = off / 4u + 2u * i;
+        const uint32_t lo = (uint32_t)v != kmd_verify_word(seed, j);
+        const uint32_t hi = (uint32_t)(v >> 32) != kmd_verify_word(seed, j + 1u);
+        if ((lo | hi) && first == ~0u) {
+            first = 2u * i + (lo ? 0u : 1u);
+        }
+        bad += lo + hi;
+    }
+    events_push(k, req, KM_EV_PONG | ((bad < 0xFFFFFFu ? bad : 0xFFFFFFu) << 8), first);
+}
 #endif
 
 /* Takes command k->next from k->line: kernel commands act here, a bad record is refused
@@ -160,6 +189,14 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
         k->t_last_event = now;
         return KMD_TAKEN;
     }
+#ifdef KMD_VERIFY_LINES
+    if (seg == KMD_SEG_CHECK_UPLOAD) {
+        hring_consumed(k);
+        upload_check(k, req, a0, (uint32_t)(l[2] >> 32), (uint32_t)l[3]);
+        k->t_last_event = now;
+        return KMD_TAKEN;
+    }
+#endif
     uint32_t refuse = 0;
     if (seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) {
         refuse = KMD_REFUSE_SEG;
@@ -328,6 +365,8 @@ static __attribute__((noinline)) void run(uint64_t hart) {
     k->args = a;
     k->lim = (volatile uint8_t*)a;
     k->result = (volatile uint32_t*)(k->lim + KMD_LIM_RESULT);
+    k->upload = k->lim + KMD_LIM_UPLOAD;
+    k->upload_bytes = (uint32_t)a->upload_bytes;
     k->panels = (uint32_t)a->panels;
     k->host_depth = (uint32_t)a->host_depth;
     k->event_depth = (uint32_t)a->event_depth;
@@ -340,6 +379,7 @@ static __attribute__((noinline)) void run(uint64_t hart) {
     if (boot(k) == KMD_ERR_NONE) {
         result_word(k, KMD_R_BOOT_TICKS, (uint32_t)(x280_mtime() - k->t_boot));
         result_word(k, KMD_R_STATE, KMD_STATE_READY);
+        events_ready(k);
         events_word(k, KMD_HOST_STATE, KMD_STATE_READY);
         loop(k);
     }

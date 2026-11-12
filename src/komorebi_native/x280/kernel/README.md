@@ -45,8 +45,17 @@ These rules are part of the protocol; a host that relies on anything else is wro
   reason (`KMD_REFUSE_*`) in the status's aux; the session goes on. Reasons: 1 a segment
   from 240 to 251 that this kernel does not serve (`KM_SEG_RUN` and `KM_SEG_CANCEL`
   included, until the engines exist); 2 flag bit 0 set; 3 a team with count 0 or
-  `first + count` above the cores; 4 any record after EXIT. A refused command's event
-  has ticks 0.
+  `first + count` above the cores; 4 any record after EXIT; 5 a range of the upload
+  region that is not whole lines inside it. A refused command's event has ticks 0.
+- **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
+  into words 4 to 7 of the host buffer as one store: the mark, the upload region's
+  LIM address and size, and `KMD_LIM_BYTES`. The host waits for the mark, not for the
+  state word, since the two are separate stores.
+- **Upload region.** It follows the layout (`KMD_LIM_UPLOAD`) and is `upload_bytes` of
+  the argument block long: a multiple of 64 that ends inside LIM (the reference host
+  gives it the rest of the runtime's available LIM, 707,840 bytes on card 1). The host
+  writes it in whole 64-byte lines through its window and fences before the command
+  that uses them; the kernel neither zeroes nor copies it.
 - **Sequence numbers.** The host's command number is the event's `req`; the record the
   grid sees carries the kernel's own sequence number instead, in `seq` and the landing
   words. It increases by one per record issued, but skips 0 and the value the slot's

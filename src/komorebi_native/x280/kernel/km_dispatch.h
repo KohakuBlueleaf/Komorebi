@@ -24,6 +24,9 @@
 #define KMD_LIM_ACKS 0x400u   /* ack word of slot j at + j * KM_ACK_STRIDE */
 #define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_record_t */
 #define KMD_LIM_BYTES 0x1800u
+#define KMD_LIM_UPLOAD                                            \
+    KMD_LIM_BYTES /* upload region: args upload_bytes, not zeroed \
+                   */
 #define KMD_READY_MAX 16u
 /* A hello's control block lies in [KMD_CTL_FLOOR, KMD_L1_BYTES - KM_CTL_BYTES]. */
 #define KMD_CTL_FLOOR 0x10000u /* below: the Tensix firmware and its mailboxes */
@@ -38,6 +41,7 @@
     2u                    /* word: events pushed (a hint; the event's index decides) \
                            */
 #define KMD_HOST_ERROR 3u /* word: KMD_ERR_* once the state is final */
+#define KMD_HOST_READY 4u /* words 4 to 7: kmd_ready_t, one 16-byte store at READY */
 #define KMD_HOST_RING 64u /* byte offset of the event ring */
 
 /* Kernel states, in the result block and in the host buffer. */
@@ -62,6 +66,12 @@
 #define KMD_REFUSE_FLAGS 2u  /* reserved flag bit 0 set */
 #define KMD_REFUSE_TEAM 3u   /* count 0, or the team does not lie inside the cores */
 #define KMD_REFUSE_EXITED 4u /* a record after EXIT */
+#define KMD_REFUSE_REGION \
+    5u /* a range not 64-byte aligned or outside the upload region */
+
+/* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
+ * check against kmd_verify_word(a2, word index from the region's start). */
+#define KMD_SEG_CHECK_UPLOAD 249u
 
 /* Where codes: the loop the kernel was in. */
 #define KMD_WHERE_ARGS 1u
@@ -126,7 +136,20 @@ typedef struct {
     uint64_t t_record;  /* a record's deadline until a KM_SEG_DEADLINE command */
     uint64_t t_idle;    /* deadline with no command and nothing in flight; 0 = none */
     uint64_t state_ddr; /* offset in this cluster's DRAM bank of KMD_STATE_BYTES */
+    uint64_t
+        upload_bytes; /* upload region at KMD_LIM_UPLOAD: a multiple of 64, may be 0 */
 } kmd_args_t;
+
+/* The ready block: the host waits for `mark` (its buffer is zeroed before the run), as
+ * a separate store's order is not kept (one store per item written for the host). */
+#define KMD_READY_MARK 0x594452u /* "RDY" */
+
+typedef struct {
+    uint32_t mark;
+    uint32_t upload_addr;  /* the upload region's LIM address */
+    uint32_t upload_bytes; /* its size */
+    uint32_t lim_bytes;    /* KMD_LIM_BYTES: the layout before it */
+} kmd_ready_t;
 
 /* Test builds with KMD_VERIFY_LINES check every user record against these: argument
  * word w (0 to 9) of host command i, its team (first | count << 16) and header 0. */
@@ -145,7 +168,11 @@ static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
  * Port: the host gives it KMD_STATE_BYTES there, 64-byte aligned (LIM is uncached). */
 #define KMD_STATE_BYTES 1024u
 
-KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 144, "kmd_args_t is 144 bytes");
+KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 152, "kmd_args_t is 152 bytes");
+KMD_STATIC_ASSERT(offsetof(kmd_args_t, upload_bytes) == 144, "upload_bytes at 144");
+KMD_STATIC_ASSERT(sizeof(kmd_ready_t) == 16, "the ready block is one 16-byte store");
+KMD_STATIC_ASSERT(KMD_HOST_READY * 4u + 16u <= KMD_HOST_RING, "host buffer: ready");
+KMD_STATIC_ASSERT(KMD_LIM_UPLOAD % 64u == 0, "the upload region starts on a line");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, rect) == 56, "kmd_args_t.rect at 56");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, host_noc_addr) == 88, "host_noc_addr at 88");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, t_start) == 112, "t_start at 112");

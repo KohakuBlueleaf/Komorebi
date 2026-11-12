@@ -37,6 +37,20 @@ static inline void events_word(kmd_t* k, uint32_t word, uint32_t value) {
     }
 }
 
+/* Stores the ready block (kmd_ready_t) as one 16-byte store. */
+static inline void events_ready(kmd_t* k) {
+    if (k->host == 0) {
+        return;
+    }
+    uint32_t r[4] __attribute__((aligned(16)));
+    r[0] = KMD_READY_MARK;
+    r[1] = (uint32_t)(uintptr_t)k->upload;
+    r[2] = k->upload_bytes;
+    r[3] = KMD_LIM_BYTES;
+    kmd_store_chunk((volatile uint8_t*)k->host + KMD_HOST_READY * 4u, r);
+    x280_fence_ow();
+}
+
 /* Stores event ++events {req, status, ticks} as one 16-byte store (README.md: one store
  * per event); events_flush makes it known. */
 static inline void events_push(

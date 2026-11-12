@@ -18,10 +18,12 @@ typedef struct {
     /* run */
     uint64_t hart, run;
     const volatile kmd_args_t* args;
-    volatile uint8_t* lim;     /* the layout's base: the argument block */
-    volatile uint32_t* result; /* the result block */
-    uint32_t error, where;     /* KMD_ERR_*, KMD_WHERE_* */
-    uint64_t t_boot;           /* mtime at the start */
+    volatile uint8_t* lim;          /* the layout's base: the argument block */
+    volatile uint32_t* result;      /* the result block */
+    volatile const uint8_t* upload; /* the upload region, upload_bytes long */
+    uint32_t upload_bytes;
+    uint32_t error, where; /* KMD_ERR_*, KMD_WHERE_* */
+    uint64_t t_boot;       /* mtime at the start */
     /* grid port */
     uint32_t panels, opened;  /* windows programmed: bit 0, 1 panels, bit 2 host */
     volatile uint8_t* ctl[2]; /* every core's control block, through each panel */
