@@ -180,7 +180,7 @@ def test_the_kernel_holds_exit_while_a_slot_is_busy_and_refuses_records_after_it
     run.port.poll()
     assert port.held_exit > 0 and not port.exited
     port.auto = True
-    run.wait(busy)
+    run.wait([busy, exit_])
     assert port.exited and port.issued[-1][3:] == (K["KM_SEG_EXIT"], (0, 120))
     late = run._queue_command(1, (0, 4))  # past the host's own stop
     with pytest.raises(RecordRefused, match="exited"):
@@ -228,6 +228,21 @@ def test_abort_raises_when_the_runtime_could_not_restore_the_tile():
     with pytest.raises(KernelFailed, match="reset"):
         run.abort()
     assert backend.calls == ["abort", "read_back"]
+
+
+def test_stop_waits_for_records_in_flight_before_exit():
+    port = FakePort(depth=4)
+    run, port, _ = make_run(port)
+    tickets = [run.issue(1, (10 * i, 10)) for i in range(3)]
+    port.auto = False
+    with pytest.raises(WaitTimeout):
+        run.wait(tickets, timeout=0.05)
+    assert len(port.busy) == 3  # stored and taken, not complete
+    port.auto = True
+    run.stop()
+    assert port.held_exit == 0  # the host drained: the kernel had nothing to hold
+    assert [run.event(t).kind for t in tickets] == ["done"] * 3
+    assert port.issued[-1][3] == K["KM_SEG_EXIT"] and port.issued[-1][4] == (0, 120)
 
 
 def test_state_and_trace_only_after_the_stop():

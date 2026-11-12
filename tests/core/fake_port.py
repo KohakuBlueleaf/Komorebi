@@ -95,9 +95,13 @@ class FakePort:
         self.result = {"error": error, "slot": slot, "seq": seq, "req": req}
 
     def _step(self):
-        if self.state != K["KMD_STATE_READY"]:
-            return
-        self._complete()
+        """Takes the commands that fit, then completes the busy slots: a record in
+        flight is still busy when a command behind it is taken."""
+        self._take()
+        if self.state == K["KMD_STATE_READY"]:
+            self._complete()
+
+    def _take(self):
         while self.consumed + 1 in self.ring and self.state == K["KMD_STATE_READY"]:
             req = self.consumed + 1
             words = self.ring[req]
