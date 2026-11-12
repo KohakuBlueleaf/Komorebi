@@ -1,9 +1,5 @@
-"""Landing experiment: which protocol lands a 64-byte multicast record safely.
-
-The X280 (x280/landing_seq.c) writes records 1..n into every core's control block;
-every core (kernels/worker.cpp) accepts each record under protocol A (echo words) or
-B (body, then a sequence word), verifies all payload words and counts. Each run prints
-one JSON line with the X280's time per record and the summed core counters.
+"""Landing experiment: which protocol lands a 64-byte multicast record safely. One
+JSON line per run: the X280's time per record and the summed core counters.
 
     python landing.py --proto a --depth 1 --records 100 [--stamp]
 """

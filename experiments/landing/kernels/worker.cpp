@@ -1,11 +1,5 @@
-// Landing experiment: the one kernel on every core. For seq = 1..n it waits until
-// record seq is acceptable under the protocol, verifies all of its payload words,
-// counts, and completes seq through the template's column leaders. No work per record.
-//   protocol A (default): accept when the echo words 0, 4, 8, 12 of the slot equal
-//                         tag << 16 | seq
-//   protocol B (PROTO_B): accept when the sequence word at LANDING_SEQ_OFF has the tag
-//                         and is >= seq, then read the slot
-// STAMP: time the successful check with the wall clock (cycles).
+// Landing experiment: the kernel on every core; for seq = 1..n it waits for record
+// seq (protocol A, or B with PROTO_B), verifies its payload, counts and completes it.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

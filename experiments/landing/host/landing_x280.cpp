@@ -1,7 +1,5 @@
-// _landing_x280: host module of the landing experiment. Opens the X280 runtime like
-// tt-x280-dispatch v1's _ttx280 and reuses its DispatchPlan (panels, column groups,
-// worker args, finish), but start() launches this experiment's image
-// (x280/landing_seq.c) with the protocol and depth to test.
+// _landing_x280: host module of the landing experiment; like tt-x280-dispatch v1's
+// _ttx280, but start() launches x280/landing_seq.c with the protocol and depth to test.
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/shared_ptr.h>

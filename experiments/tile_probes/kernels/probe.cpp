@@ -1,8 +1,5 @@
-// Tile probes compute kernel: one probe per build (define PROBE, see probe.hpp).
-// Probes 0 to 4 run on the pack thread (TRISC2), which issues the vector-unit
-// instructions and reads Dst through the window. Probe 5 runs on the TRISCs in its run
-// mask. The pack thread writes the nonce last, then pushes the output page.
-// Runtime args: nonce, then probe parameters p0..p6.
+// Tile probes compute kernel: one probe per build (define PROBE, see probe.hpp); the
+// pack thread (TRISC2) writes the nonce last, then pushes the output page.
 #include <cstdint>
 
 #include "api/compute/cb_api.h"

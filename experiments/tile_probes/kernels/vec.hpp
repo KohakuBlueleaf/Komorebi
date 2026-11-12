@@ -1,8 +1,5 @@
 // Vector-unit probes 0 to 4, issued by the pack thread (TRISC2) with raw Tensix
-// instructions. Dst holds 32-bit data; the RISC-V core reads and writes it through the
-// memory window at 0xFFBD8000 (format 0, uint32 view). SFPLOAD / SFPSTORE use the INT32
-// mode (bit transparent). Lane l of the 4-row group at Dst address a is window word
-// lane_word(a, l).
+// instructions; Dst (32-bit, INT32 mode) is read and written through the window.
 #pragma once
 
 #include <stdint.h>
@@ -256,9 +253,8 @@ namespace vec {
         tensix_sync();
     }
 
-    // Timing words: per variant K runs, in the order empty, all, one, none, nest8,
-    // chain, nest-cost. Data: per data variant (all, one, none, nest8, chain) L0-L3 x
-    // 32 lanes.
+    // Timing: K runs per variant (empty, all, one, none, nest8, chain, nest-cost).
+    // Data: per variant (all, one, none, nest8, chain) L0-L3 x 32 lanes.
     inline void pred(volatile uint32_t* out, uint32_t reps, uint32_t k_runs, Times& t) {
         TTI_REPLAY(0, 32, 0, 1);
         TP_X8(TP_MAD4);
@@ -392,10 +388,7 @@ namespace vec {
     constexpr uint32_t kDelays[] = {0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24};
     constexpr uint32_t kNumDelays = sizeof(kDelays) / sizeof(kDelays[0]);
 
-    // Data: [0, 120): per recording pass (3) and body (40) the qstatus bits;
-    // [128 + K m): trip counts of method m; [160 + m): "any" of a check alone;
-    // [256 + 32 v): L1 per lane per loop (5 methods, then the fixed 32 bodies);
-    // [512 + 40 i + k): bit after body k with a wait of kDelays[i] cycles past a fence.
+    // Data words: see "Output words" in README.md.
     inline void anycc(
         volatile uint32_t* out, uint32_t k_runs, Times& t, uint32_t& err
     ) {
@@ -570,9 +563,8 @@ namespace vec {
     }
 
 #if defined(__riscv_vector)
-    // The same step on T2's vector unit: lane l of Dst address a is window byte
-    // 64 a + 8 l, so the indices are one stride-8 load and each record word one
-    // indexed load (vluxei32) from the table plus one stride-8 store into the window.
+    // The same step on T2's vector unit (lane l of Dst address a is window byte
+    // 64 a + 8 l): indices by one stride-8 load, each record word by vluxei32 + store.
     template <uint32_t W>
     [[gnu::noinline]] void gather_step_rvv(const uint32_t* table, Times& t) {
         auto* w = reinterpret_cast<uint32_t*>(kDstWindow);
@@ -738,9 +730,8 @@ namespace vec {
 
     enum SlabMode : uint32_t { kF32 = 0, kBf16 = 1, kConst = 2 };
 
-    // Hit mask (bit l: lane l hit) of the node at Dst address a, read by the core:
-    // plain loop (0), loads grouped by 8 ahead of their use (1), or T2's vector unit
-    // (2: one stride-8 load, a compare to a mask register, a mask store).
+    // Hit mask (bit l: lane l hit) of the node at Dst address a, read by the core: a
+    // plain loop (0), loads grouped by 8 (1) or T2's vector unit (2: stride-8 load).
     inline uint32_t hit_mask(uint32_t a, uint32_t variant) {
         volatile uint32_t* w = win();
         if (variant == 0) {
@@ -784,10 +775,7 @@ namespace vec {
         return ~miss;
     }
 
-    // Input: ray fields [32 k + l) for k < 7; nodes [512 + 6 n + c) fp32 bits, or bf16
-    // in the low half for kBf16. Timing: per rep one sweep over n nodes, then one
-    // readout of all n hit masks. Data: hit mask of node n at n; L6 lane l at
-    // 64 + 32 n + l.
+    // Words in and out: see "Output words" in README.md.
     [[gnu::noinline]] void slab(
         const volatile uint32_t* in,
         volatile uint32_t* out,

@@ -4,9 +4,8 @@
 
 #include <stdint.h>
 
-/* Control block (the template's CB kCtlCb, 1024 B, same L1 address on every core):
- * bytes 0..255 hold four 64 B record slots; protocol B's sequence word is at
- * LANDING_SEQ_OFF, in a line of its own. */
+/* Control block (CB kCtlCb, 1024 B, same L1 address on every core): bytes 0..255 are
+ * four 64 B record slots; protocol B's sequence word is at LANDING_SEQ_OFF. */
 #define LANDING_SLOT_BYTES 64u
 #define LANDING_SLOTS 4u
 #define LANDING_SEQ_OFF 0x280u

@@ -1,6 +1,5 @@
-// Probe 5: speed of a compute RISC-V core on its own (integer, L1 load / store,
-// software float). Every TRISC compiles it; TRISC t runs it when bit t of the run mask
-// is set. Results: out[kData + 256 t + ...]; done word out[kDone0 + t] = nonce.
+// Probe 5: speed of a compute RISC-V core (integer, L1 load / store, software float);
+// TRISC t runs it if run-mask bit t is set: results out[kData + 256 t], done kDone0+t.
 #pragma once
 
 #include <stdint.h>

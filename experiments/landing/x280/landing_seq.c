@@ -1,11 +1,5 @@
-/* Landing experiment: X280 record issuer (hart 0). For record i = 1..n it writes the
- * 64 B record into slot i % depth (slot 0 at depth 1) of every core's control block
- * with one vector store per multicast panel: protocol 0 (A): words 0, 4, 8, 12 are the
- * echo word tag << 16 | i, the rest payload protocol 1 (B): 16 payload words, then
- * (after a fence) the sequence word tag << 16 | i at LANDING_SEQ_OFF through the same
- * window Pacing: depth 1 waits for every column leader's ack of i before i + 1; depth D
- * > 1 issues i once every ack is >= i - D. Result: mtime ticks from record 1 issued to
- * the last ack, or ~k on error. */
+/* Landing experiment: X280 record issuer (hart 0): writes records 1..n into every
+ * core's control block, paced on the leaders' acks; returns mtime ticks (~k: error). */
 #include <stdint.h>
 
 #include "noc.h"

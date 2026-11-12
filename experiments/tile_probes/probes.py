@@ -1,10 +1,5 @@
-"""Tile probes: small single-core Metalium kernels that measure the vector unit and the
-compute RISC-V cores of one Blackhole Tensix tile (see README.md).
-
-Every run launches one program on core (0, 0) through ttnn's generic operation: a
-reader copies the input page into L1, the compute kernel runs one probe and fills the
-output page, a writer copies it to DRAM. The host checks every value against a CPU
-reference and prints one JSON line with the timings (wall-clock cycles).
+"""Tile probes: single-core Metalium kernels that time the vector unit and the compute
+RISC-V cores of one Blackhole tile (see README.md); prints one JSON line per run.
 
 Usage: python probes.py <probe> [options]   (probe: smoke pred anycc gather slab riscv)
 """

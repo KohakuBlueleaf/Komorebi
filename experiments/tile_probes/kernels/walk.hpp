@@ -1,16 +1,5 @@
 // Probe 6: one full walk of a binary box tree (255 nodes, 128 leaf boxes) for up to
-// 1024 rays, in two forms, on the pack thread with the vector extension.
-//   Form A, ray-first: one packet of 32 rays at a time, each lane at its own node; the
-//   core keeps one stack per lane in L1, copies the 32 node records into Dst, the
-//   lanes test, the core reads the hit mask and pushes children.
-//   Form B, node-first: up to 16 packets resident in Dst; one sweep over the nodes in
-//   index order (children have larger indices); per node, every packet with rays at
-//   it is tested against the node's box (pushed as immediates) under a lane mask; the
-//   hit mask splits the rays into the children's bins; at a leaf the lanes update
-//   their best in the vector unit.
-// Node record (8 words): box min x y z, box max x y z (fp32), child 0, child 1; a leaf
-// has kLeaf | leaf index in both child words. Result per ray: the entry distance of
-// the closest leaf box hit (start: the best given) and that leaf's child word.
+// 1024 rays on the pack thread, ray-first (A) or node-first (B); see README.md, 6.
 #pragma once
 
 #include <stdint.h>

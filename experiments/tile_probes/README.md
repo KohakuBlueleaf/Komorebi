@@ -52,6 +52,18 @@ One program on core (0, 0), launched with `ttnn.generic_op` in slow dispatch:
   ones) and that `LReg[15]` holds `2 x lane`.
 - **Ordering.** Window stores are followed by a load of the last word written (same
   memory region, processed in order) before the vector unit is told to load them.
+- **Runtime arguments.** The nonce, then the probe parameters `p0` to `p6`. The pack
+  thread writes the nonce last, then pushes the output page.
+- **Output words.** Layouts beyond the shared header (`kernels/probe.hpp`):
+  - probe 2 (`anycc`), data: words 0 to 119 hold the `qstatus` bits per recording pass (3)
+    and body (40); `128 + K m` the trip counts of method `m`; `160 + m` the "any" of a
+    check alone; `256 + 32 v` the L1 per lane per loop (the 5 methods, then the fixed 32
+    bodies); `512 + 40 i + k` the bit after body `k` with a wait of `kDelays[i]` cycles
+    past a fence.
+  - probe 4 (`slab`), input: ray fields at `32 k + l` for `k < 7`, nodes at
+    `512 + 6 n + c` as fp32 bits (the low half holds bf16 for `kBf16`). Timing: per
+    repetition one sweep over `n` nodes, then one readout of all `n` hit masks. Data:
+    the hit mask of node `n` at word `n`; L6 of lane `l` at `64 + 32 n + l`.
 
 ## Running
 

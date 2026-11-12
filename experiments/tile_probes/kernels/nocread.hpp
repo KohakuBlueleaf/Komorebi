@@ -1,9 +1,5 @@
-// Probe 7: one 64-byte NoC read issued by a compute RISC-V core (TRISC2) from another
-// tile's L1, on NoC 0 with command buffer 1 (the read buffer the data-movement firmware
-// sets up; this program's data-movement kernels issue no reads on NoC 0). Every
-// register written is saved first and restored after. The response is awaited by a
-// bounded poll of the NoC's read-response counter. A "where" word in the output page
-// is written (and fenced) before each step.
+// Probe 7: one 64-byte NoC read by a compute core (TRISC2) from another tile's L1, on
+// NoC 0, command buffer 1; registers saved and restored, the response polled (bounded).
 #pragma once
 
 #include <stdint.h>
@@ -48,9 +44,8 @@ namespace nocread {
         (void)d[kWhere];
     }
 
-    // Reads 64 bytes at `addr` of the tile at NoC-0 coordinate `coord` (x | y << 6)
-    // into dst, after waiting `wait` cycles (the peer's reader fills that address
-    // first).
+    // Reads 64 bytes at `addr` of the tile at NoC-0 `coord` (x | y << 6) into dst after
+    // `wait` cycles (the peer's reader fills that address first).
     inline uint32_t run(
         volatile uint32_t* out,
         volatile uint32_t* dst,
