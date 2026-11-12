@@ -276,7 +276,7 @@ def run(session, args, rng):
     if trace is not None:
         out.update(trace_summary(trace, tickets, teams))
     if args.seg == "map" and timed_out is None and not args.no_check:
-        out.update(check(args, teams, base, in_page, outs, [x_exact, x_rand]))
+        out.update(check(session, args, teams, base, in_page, outs, [x_exact, x_rand]))
     return out
 
 
@@ -319,15 +319,12 @@ def trace_summary(trace, tickets, teams):
     }
 
 
-def check(args, teams, base, in_page, outs, xs):
+def check(session, args, teams, base, in_page, outs, xs):
     """Every member's tile of every job not overwritten: bit-exact on exact inputs,
     relative RMS of the total on random inputs. Counts the tiles that equal what the
     page held before (zeros or an earlier job's): there a stale tile would pass."""
-    got = []
-    for i, t in enumerate(outs):
-        got.append(ttnn.to_torch(t).float().numpy())
-        log(f"output {i + 1} of {len(outs)} read back")
-    got = np.concatenate(got).reshape(-1, TILE, TILE)
+    got = np.concatenate(session.read_bf16(*outs)).reshape(-1, TILE, TILE)
+    log(f"{len(outs)} outputs read back")
     prefix = []
     for x in xs:
         sums = np.cumsum(x.reshape(-1, TILE, TILE).astype(np.float64), 0)

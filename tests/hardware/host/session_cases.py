@@ -1,7 +1,7 @@
 """Card cases of the host package that the example does not cover. One case per run;
 prints one JSON line with `ok`.
 
-    python session_cases.py compile-error | exclusive | start-error
+    python session_cases.py compile-error | exclusive | read | start-error
 """
 
 import argparse
@@ -11,7 +11,12 @@ import tempfile
 import time
 from pathlib import Path
 
+import numpy as np
+import torch
+import ttnn
+
 import komorebi as km
+from komorebi import session as km_session
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect"
 T0 = time.monotonic()
@@ -86,6 +91,46 @@ def case_exclusive(session):
     return out
 
 
+def bf16_tiles(device, x):
+    return ttnn.from_torch(
+        torch.from_numpy(x), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
+    )
+
+
+def case_read(session):
+    """Tensors read by banks equal what was written and what ttnn reads (an int32
+    row-major one, two bfloat16 tile ones, one barrier), also while a run is loaded;
+    the seconds for 2048 tiles of 2 KB both ways (not asserted)."""
+    rng = np.random.default_rng(3)
+    words = rng.integers(0, 1 << 32, (37, 24), dtype=np.uint64).astype(np.uint32)
+    x = rng.integers(-4, 5, (96, 64)).astype(np.float32)  # exact in bfloat16
+    w = km_session._int32_tensor(session.device, words)
+    a, b = bf16_tiles(session.device, x), bf16_tiles(session.device, 2 * x)
+    raw, got_a, got_b = session.read(w)[0], *session.read_bf16(a, b)
+    out = {
+        "words": bool((raw.reshape(-1).view(np.uint32) == words.reshape(-1)).all()),
+        "tiles": bool((got_a == x).all() and (got_b == 2 * x).all()),
+        "as_ttnn": bool((got_a == ttnn.to_torch(a).float().numpy()).all()),
+    }
+    big = bf16_tiles(session.device, rng.uniform(-1, 1, (2048 * 32, 32)).astype("f4"))
+    t0 = time.monotonic()
+    (fast,) = session.read_bf16(big)
+    out["banks_s"] = round(time.monotonic() - t0, 2)
+    t0 = time.monotonic()
+    slow = ttnn.to_torch(big).float().numpy()
+    out["ttnn_s"] = round(time.monotonic() - t0, 2)
+    out["big_same"] = bool((fast == slow).all())
+    run = session.load(program(EXAMPLE / "kernels"))
+    run.wait(run.issue(0, (0, 8)))
+    log("read while the run is loaded")
+    (during,) = session.read_bf16(a)
+    out["during_run"] = bool((during == x).all())
+    run.stop()
+    out["ok"] = all(out[k] for k in ("words", "tiles", "as_ttnn", "big_same"))
+    out["ok"] = out["ok"] and out["during_run"] and run.result()["error"] == 0
+    return out
+
+
 def case_start_error(session):
     """A record deadline under one timer tick: the kernel refuses its arguments before
     it opens a window. StartError with its result; the host stops the grid (every
@@ -123,6 +168,7 @@ def case_start_error(session):
 CASES = {
     "compile-error": case_compile_error,
     "exclusive": case_exclusive,
+    "read": case_read,
     "start-error": case_start_error,
 }
 

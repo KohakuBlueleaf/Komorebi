@@ -94,3 +94,7 @@ def test_a_start_error_carries_the_result_and_the_host_stops_the_grid():
 
 def test_an_exclusive_record_waits_for_the_team_it_overlaps():
     assert run(CASES, "exclusive")["ok"]
+
+
+def test_tensors_read_by_banks_match_what_was_written_also_during_a_run():
+    assert run(CASES, "read")["ok"]

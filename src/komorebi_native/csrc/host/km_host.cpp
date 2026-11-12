@@ -25,6 +25,7 @@
 
 #include <immintrin.h>
 
+#include <tt-metalium/allocator.hpp>
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
@@ -72,6 +73,7 @@ namespace {
     using Records = nb::
         ndarray<const uint32_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
     using Events = nb::ndarray<nb::numpy, uint32_t, nb::ndim<2>>;
+    using Bytes = nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>;
     using Flags = nb::
         ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
     using Numbers = nb::
@@ -109,6 +111,50 @@ namespace {
         tt::tt_metal::detail::WriteToDeviceL1(
             chip(mesh), tt::tt_metal::CoreCoord{x, y}, address, words
         );
+    }
+
+    // The number of DRAM banks of interleaved buffers (bank b is DRAM view b).
+    uint32_t dram_banks(const MeshDevice& mesh) {
+        return chip(mesh)->allocator()->get_num_banks(tt::tt_metal::BufferType::DRAM);
+    }
+
+    // Reads (bank, address, bytes) spans of DRAM after one DRAM barrier, one read each.
+    // No wait for idle cores: the caller reads only what no kernel is still writing.
+    std::vector<Bytes> read_dram(
+        const MeshDevice& mesh, const std::vector<std::array<uint64_t, 3>>& spans
+    ) {
+        auto* dev = chip(mesh);
+        const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+        std::vector<std::vector<uint8_t>*> data;
+        for (const auto& span : spans) {
+            if (span[0] >= dram_banks(mesh) || span[2] > UINT32_MAX) {
+                throw std::runtime_error("a DRAM span outside the banks or over 4 GB");
+            }
+            data.push_back(new std::vector<uint8_t>(span[2]));
+        }
+        {
+            nb::gil_scoped_release release;
+            cluster.dram_barrier(dev->id());
+            for (size_t i = 0; i < spans.size(); i++) {
+                const auto& [bank, address, bytes] = spans[i];
+                cluster.read_dram_vec(
+                    data[i]->data(),
+                    static_cast<uint32_t>(bytes),
+                    dev->id(),
+                    static_cast<int>(bank),
+                    address
+                );
+            }
+        }
+        std::vector<Bytes> out;
+        for (auto* owned : data) {
+            nb::capsule owner(owned, [](void* p) noexcept {
+                delete static_cast<std::vector<uint8_t>*>(p);
+            });
+            const size_t shape[1] = {owned->size()};
+            out.emplace_back(owned->data(), 1, shape, owner);
+        }
+        return out;
     }
 
     // Waits up to timeout_s for the kernels on the gx x gy worker grid to return, in
@@ -980,6 +1026,22 @@ NB_MODULE(_km_host, m) {
         nb::arg("y"),
         nb::arg("address"),
         nb::arg("words")
+    );
+    m.def(
+        "dram_banks",
+        [](std::shared_ptr<MeshDevice> mesh) {
+            return dram_banks(*mesh);
+        },
+        nb::arg("mesh_device")
+    );
+    m.def(
+        "read_dram",
+        [](std::shared_ptr<MeshDevice> mesh,
+           std::vector<std::array<uint64_t, 3>> spans) {
+            return read_dram(*mesh, spans);
+        },
+        nb::arg("mesh_device"),
+        nb::arg("spans")
     );
     m.def(
         "wait_grid",

@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import ttnn
 
-from komorebi import abi, native
+from komorebi import abi, dram, native
 from komorebi import thread as kt
 from komorebi.errors import GridTimeout, ProgramError, StartError
 from komorebi.run import Run
@@ -78,7 +78,44 @@ def _int32_tensor(device, rows, memory_config=None):
     )
 
 
-def _read_uint32(tensor):
+def _dram_interleaved(tensor):
+    config = tensor.memory_config()
+    return (
+        config.buffer_type == ttnn.BufferType.DRAM
+        and config.memory_layout == ttnn.TensorMemoryLayout.INTERLEAVED
+    )
+
+
+def read_tensors(device, module, tensors):
+    """The raw pages of interleaved DRAM tensors as [pages, page_bytes] uint8 each:
+    one DRAM barrier, one read per bank and tensor, no wait for idle cores."""
+    banks = module.dram_banks(device)
+    spans, layout = [], []
+    for t in tensors:
+        if not _dram_interleaved(t):
+            raise ValueError("only interleaved DRAM tensors are read by banks")
+        page, aligned, pages = (
+            t.buffer_page_size(),
+            t.buffer_aligned_page_size(),
+            t.buffer_num_pages(),
+        )
+        mine = dram.bank_spans(t.buffer_address(), aligned, pages, banks)
+        layout.append((len(spans), len(mine), page, aligned, pages))
+        spans += mine
+    chunks = module.read_dram(device, spans)
+    return [
+        dram.pages_in_order(chunks[at : at + n], page, aligned, pages, banks)
+        for at, n, page, aligned, pages in layout
+    ]
+
+
+def _read_uint32(tensor, device=None, module=None):
+    """A row-major 32-bit tensor's words as int64: by banks when it is in DRAM and a
+    module is given, else through ttnn (which waits for idle cores)."""
+    if module is not None and _dram_interleaved(tensor):
+        (pages,) = read_tensors(device, module, [tensor])
+        words = pages.reshape(-1).view(np.uint32).reshape(tuple(tensor.shape))
+        return words.astype(np.int64)
     return ttnn.to_torch(tensor).numpy().astype(np.int64) & abi.M32
 
 
@@ -143,6 +180,23 @@ class Session:
             ttnn.close_mesh_device(self.device)
             self.device = None
 
+    def read(self, *tensors):
+        """The raw pages of interleaved DRAM tensors ([pages, page_bytes] uint8 each),
+        under one DRAM barrier. It does not wait for idle cores, so it may run while a
+        program runs: read only what no kernel writes any more (after its event)."""
+        self._module = self._module or native.load_module(self.tree)
+        return read_tensors(self.device, self._module, tensors)
+
+    def read_bf16(self, *tensors):
+        """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
+        out = []
+        for t, pages in zip(tensors, self.read(*tensors)):
+            if t.layout != ttnn.TILE_LAYOUT or t.dtype != ttnn.bfloat16:
+                raise ValueError("read_bf16 takes bfloat16 tile tensors")
+            rows, cols = tuple(t.padded_shape)
+            out.append(dram.untilize_bf16(pages, rows, cols))
+        return out
+
     def load(
         self,
         program,
@@ -182,7 +236,7 @@ class Session:
         mhz = aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a resident grid never is
-        regions = _Regions(self.device, work) if work is not None else None
+        regions = _Regions(self, work) if work is not None else None
         dispatch = module.Dispatch(self.device, self.pll_mhz)
         dispatch.settle_us = settle_us
         backend, launched = None, False
@@ -258,7 +312,9 @@ class _Regions:
     hold them (page 0: the check line). Written before the grid starts; read(name)
     only once the grid has stopped (a tensor read waits for idle cores)."""
 
-    def __init__(self, device, work):
+    def __init__(self, session, work):
+        self.session = session
+        device = session.device
         self.check = kt.new_check_value()
         self.bank = kt.BANK_OF_CLUSTER[work.cluster]
         placed, pages = kt.place(work)
@@ -287,7 +343,8 @@ class _Regions:
         if not self.readable:
             raise RuntimeError("regions are read after run.stop()")
         p = self.placed[name]
-        rows = _read_uint32(self.tensor).astype(np.uint32)
+        s = self.session
+        rows = _read_uint32(self.tensor, s.device, s._module).astype(np.uint32)
         mine = rows[self.bank :: DRAM_BANKS][p.page : p.page + p.pages]
         return mine.reshape(-1).view(np.uint8)[: p.bytes].copy()
 
@@ -500,7 +557,7 @@ class _Backend:
         state = rows[:, start : start + h["kStateWords"]].astype(np.uint32)
         trace = None
         if self.trace_t is not None:
-            words = _read_uint32(self.trace_t).astype(np.uint32)
+            words = _read_uint32(self.trace_t, self.device, module).astype(np.uint32)
             trace = words.reshape(words.shape[0], self.trace_cap, h["kTraceWords"])
         self.session.log("state and trace read back")
         return state, trace

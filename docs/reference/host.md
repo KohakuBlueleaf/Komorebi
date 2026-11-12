@@ -103,6 +103,17 @@ without an event fit the event ring. It writes its read count with every batch, 
 while it waits whenever the kernel could be holding a command for it, so the kernel
 waits for room only while that count is on its way.
 
+Reading tensors. `session.read(*tensors)` returns the raw pages of interleaved DRAM
+tensors (`[pages, page_bytes]` uint8 each) and `session.read_bf16(*tensors)` bfloat16
+tile tensors as float32 arrays. Page p of such a tensor lies in DRAM bank p % banks, so
+the native module reads each bank's pages in one go, after one DRAM barrier for all
+the tensors of the call: tt-metal's own read (`ttnn.to_torch`) runs that barrier for
+every page. These reads do not wait for the cores to be idle, so they work while a run
+is loaded; read then only what no kernel writes any more (an output whose record's
+event has arrived). Reads through ttnn wait for every core of the resident grid to
+return, which it does only at the stop. The control blocks live in L1 and are read
+through ttnn after the stop.
+
 ## `Run`
 
 | Call | What it does |
