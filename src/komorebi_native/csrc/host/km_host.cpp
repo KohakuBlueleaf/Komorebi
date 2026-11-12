@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <immintrin.h>
@@ -212,7 +213,11 @@ namespace {
         // Stops a running kernel, releases the host buffer and the window, closes the
         // X280 runtime. Returns whether a running kernel was stopped cleanly.
         bool close() {
-            const bool cleaned = abort();
+            bool cleaned = true;
+            for (uint32_t c = 1; c < work_.size(); c++) {
+                cleaned = work_abort(c) && cleaned;
+            }
+            cleaned = abort() && cleaned;
             win_.reset();
             buffer_.reset();
             host_ = nullptr;
@@ -571,6 +576,138 @@ namespace {
             return done.cleaned_up();
         }
 
+        // Work clusters 1 to 3: one image each, started with an argument block at the
+        // start of that cluster's available LIM. Cluster 0 is the dispatch kernel's.
+        uint32_t clusters() const {
+            return static_cast<uint32_t>(work_.size());
+        }
+
+        // The cluster's hardware index, NoC0 coordinate and available LIM.
+        nb::dict work_info(uint32_t c) const {
+            const Work& w = work(c, false);
+            nb::dict out;
+            out["hw_index"] = w.tile->id().hw_index;
+            out["noc_x"] = w.tile->id().noc_x;
+            out["noc_y"] = w.tile->id().noc_y;
+            out["lim_base"] = w.base;
+            out["lim_bytes"] = w.bytes;
+            return out;
+        }
+
+        // Whole 64-byte lines at `offset` from the cluster's LIM base.
+        void work_write(uint32_t c, uint64_t offset, const nb::bytes& data) {
+            Work& w = work(c, true);
+            if (offset % 64 != 0 || data.size() % 64 != 0 ||
+                offset + data.size() > w.bytes) {
+                throw std::runtime_error("LIM writes are whole lines inside the area");
+            }
+            const auto* p = static_cast<const uint8_t*>(data.data());
+            w.tile->write_available_lim(w.base + offset, {p, data.size()});
+        }
+
+        nb::bytes work_read(uint32_t c, uint64_t offset, uint64_t n) const {
+            const Work& w = work(c, true);
+            if (offset % 4 != 0 || n % 4 != 0 || offset + n > w.bytes) {
+                throw std::runtime_error("LIM reads are whole words inside the area");
+            }
+            const auto got = w.tile->read_available_lim(w.base + offset, n);
+            return nb::bytes(reinterpret_cast<const char*>(got.data()), got.size());
+        }
+
+        // Writes `block` (whole lines; its first 8 bytes become the run value) at the
+        // cluster's LIM base and starts `image` with it. Returns the run value.
+        uint64_t work_start(uint32_t c, const std::string& image, nb::bytes block) {
+            Work& w = work(c, true);
+            if (w.session) {
+                throw std::runtime_error("an image is running on that cluster");
+            }
+            if (block.size() < 64 || block.size() % 64 != 0 || block.size() > w.bytes) {
+                throw std::runtime_error("the argument block is whole 64-byte lines");
+            }
+            std::vector<uint8_t> bytes(
+                static_cast<const uint8_t*>(block.data()),
+                static_cast<const uint8_t*>(block.data()) + block.size()
+            );
+            std::random_device rd;
+            w.run =
+                ((0x6b6d780000000000ull ^ (static_cast<uint64_t>(rd()) << 16)) + rd() +
+                 c);
+            std::memcpy(bytes.data(), &w.run, sizeof(w.run));
+            w.tile->write_available_lim(w.base, bytes);
+            x280::ActiveRunRequest req;
+            req.image_path = image;
+            req.run_value = w.run;
+            req.args_addr = w.base;
+            req.args_bytes = bytes.size();
+            const auto enq = rt().enqueue(*w.tile, req);
+            if (!enq.session) {
+                throw std::runtime_error("X280 enqueue failed: " + x280::describe(enq));
+            }
+            w.session = enq.session;
+            return w.run;
+        }
+
+        bool work_running(uint32_t c) const {
+            return work(c, false).session.has_value();
+        }
+
+        // Waits (bounded) until every hart of the cluster has returned from main:
+        // ready, the four hart results, and the runtime's description otherwise.
+        nb::dict work_wait(uint32_t c, double timeout_s) {
+            Work& w = work(c, true);
+            if (!w.session) {
+                throw std::runtime_error("no image running on that cluster");
+            }
+            x280::WaitResult res;
+            {
+                nb::gil_scoped_release release;
+                res = (
+                    rt().session(*w.session).wait_until_result_ready(millis(timeout_s))
+                );
+            }
+            std::vector<uint64_t> results, stages;
+            for (const auto& h : res.hartstates) {
+                results.push_back(h.state.result);
+                stages.push_back(h.state.stage);
+            }
+            nb::dict out;
+            out["ready"] = res.outcome == x280::WaitOutcome::ResultReady;
+            out["results"] = results;
+            out["stages"] = stages;
+            out["failed"] = res.succeeded() ? std::string() : x280::describe(res);
+            return out;
+        }
+
+        // Stops the cluster's image through the runtime (bounded): cleaned, and the
+        // runtime's description when it did not return to idle.
+        nb::dict work_stop(uint32_t c, double timeout_s) {
+            Work& w = work(c, true);
+            if (!w.session) {
+                throw std::runtime_error("no image running on that cluster");
+            }
+            x280::CleanupResult done;
+            {
+                nb::gil_scoped_release release;
+                done = rt().cleanup(*w.session, millis(timeout_s));
+            }
+            w.session.reset();
+            nb::dict out;
+            out["cleaned"] = done.cleaned_up();
+            out["failed"] = done.cleaned_up() ? std::string() : x280::describe(done);
+            return out;
+        }
+
+        // Stops the cluster's image if one runs (any failure path); whether it
+        // returned to idle.
+        bool work_abort(uint32_t c) {
+            if (c >= work_.size() || !work_[c].session || !opened_) {
+                return true;
+            }
+            const auto done = rt().cleanup(*work_[c].session, std::chrono::seconds(5));
+            work_[c].session.reset();
+            return done.cleaned_up();
+        }
+
         uint32_t batch_ = 64;  // commands per store: every line, then one fence
         uint32_t gx_ = 0, gy_ = 0, l2x_ = 0, l2y_ = 0;
         uint64_t base_ = 0;  // LIM address of the layout (the argument block)
@@ -661,6 +798,27 @@ namespace {
             }
         }
 
+        struct Work {
+            x280::X280Tile* tile = nullptr;
+            uint64_t base = 0, bytes = 0, run = 0;  // available LIM, the run value
+            std::optional<x280::SessionId> session;
+        };
+
+        // Work cluster c (1 to 3); `open` also requires the runtime to be open.
+        const Work& work(uint32_t c, bool open) const {
+            if (open) {
+                require_open();
+            }
+            if (c == 0 || c >= work_.size()) {
+                throw std::runtime_error("work clusters are 1 to clusters() - 1");
+            }
+            return work_[c];
+        }
+
+        Work& work(uint32_t c, bool open) {
+            return const_cast<Work&>(std::as_const(*this).work(c, open));
+        }
+
         // Boots the tiles to their idle image if they are not idle, then sets the
         // clock.
         void boot(uint32_t pll_mhz) {
@@ -697,6 +855,13 @@ namespace {
             auto& r = rt();
             const auto ids = r.tile_ids();
             tile_ = &r.tile(ids.front());
+            work_.resize(ids.size());
+            for (size_t c = 0; c < ids.size(); c++) {
+                work_[c].tile = &r.tile(ids[c]);
+                const auto lim = work_[c].tile->available_lim();
+                work_[c].base = (lim.begin + 63) / 64 * 64;
+                work_[c].bytes = lim.end > work_[c].base ? lim.end - work_[c].base : 0;
+            }
             const auto l2 = (
                 r.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_0)
             );
@@ -793,6 +958,7 @@ namespace {
         size_t head_ = 0;              // the first record not stored
         std::array<uint32_t, kFlight> flight_cmd_{};
         std::array<uint32_t, kFlight> flight_team_{};  // 0: no event pending
+        std::vector<Work> work_;  // every cluster in tile_ids() order; 0 unused here
     };
 
 }  // namespace
@@ -940,5 +1106,36 @@ NB_MODULE(_km_host, m) {
         )
         .def("finish", &Dispatch::finish, nb::arg("timeout_s"))
         .def("abort", &Dispatch::abort)
-        .def("close", &Dispatch::close);
+        .def("close", &Dispatch::close)
+        .def("clusters", &Dispatch::clusters)
+        .def("work_info", &Dispatch::work_info, nb::arg("cluster"))
+        .def(
+            "work_write",
+            &Dispatch::work_write,
+            nb::arg("cluster"),
+            nb::arg("offset"),
+            nb::arg("data")
+        )
+        .def(
+            "work_read",
+            &Dispatch::work_read,
+            nb::arg("cluster"),
+            nb::arg("offset"),
+            nb::arg("n")
+        )
+        .def(
+            "work_start",
+            &Dispatch::work_start,
+            nb::arg("cluster"),
+            nb::arg("image"),
+            nb::arg("block")
+        )
+        .def("work_running", &Dispatch::work_running, nb::arg("cluster"))
+        .def(
+            "work_wait", &Dispatch::work_wait, nb::arg("cluster"), nb::arg("timeout_s")
+        )
+        .def(
+            "work_stop", &Dispatch::work_stop, nb::arg("cluster"), nb::arg("timeout_s")
+        )
+        .def("work_abort", &Dispatch::work_abort, nb::arg("cluster"));
 }
