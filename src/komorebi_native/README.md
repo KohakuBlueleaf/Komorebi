@@ -1,9 +1,9 @@
 # komorebi_native
 
 The native layer: everything that runs on the card or builds against tt-metal. Written
-so far: the Tensix worker headers, the X280 dispatch kernel and the native Python module.
-`include/komorebi/x280/`, `include/komorebi/host/`, `kernels/`, `x280/engines/` and
-`cmake/` are empty.
+so far: the Tensix worker headers, the X280 dispatch kernel, the native Python module
+and, in `x280/engines/`, the graph executor in plain C (also built for the host).
+`include/komorebi/x280/`, `include/komorebi/host/`, `kernels/` and `cmake/` are empty.
 
 | Directory | What it holds |
 |---|---|
