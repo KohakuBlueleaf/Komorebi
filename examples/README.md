@@ -9,4 +9,4 @@ checked, and does not depend on another example.
 |---|---|
 | [01_mapcollect](01_mapcollect/) | resident workers under the dispatch kernel, teams named per record, per-team completion, a timeout that names the core |
 | [03_broadcast](03_broadcast/) | lane broadcast: blocks along the rows and down the columns of a rectangle team, a stalled receiver that times out with its lane and block named |
-| [07_work_cluster](07_work_cluster/) | an X280 thread on a work cluster: regions, `kmx_par` on four cores, the result block, checked against its host fallback |
+| [07_work_cluster](07_work_cluster/) | a control loop that issues records to changing teams until a result word from the card ends it; one C decision run by an X280 thread, host-fed, and on the CPU against a fake ring |

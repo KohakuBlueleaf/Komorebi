@@ -1,54 +1,71 @@
 # 07 work cluster
 
-A thread program with an X280 thread on work cluster 1. In this first form the thread
-does the whole job and the grid only idles: the host fills a region with a cores x
-bins table of counts, and the thread computes, on the cluster's four cores,
+A program whose control loop is decided by a value computed on the card. Each core
+holds one state word (page `p` of a DRAM tensor belongs to core `p`, starting at
+`7 p`). Every round issues two records:
 
-    offsets[c][b] = (counts of every core in bins before b) + (bin b on the cores before c)
+    round k:
+        STEP  on cores [first, first + count):  x[p] += k + 1 + p
+        SUM   on every core, exclusive, with a result word:
+              the leader reads x[0 .. cores) and returns their sum
+        sum >= limit          -> end
+        otherwise             first = sum mod (cores - count + 1), next round
 
-the start of each core's share of each bin in a table ordered by bin, which is the
-decision a renderer makes between its binning and its drawing. The thread writes the
-offsets into a second region and returns the sum of all counts. The same program is
-then loaded with `thread="host"`, which runs the Python function given as
-`host_fallback` instead; the two must agree bit for bit.
+So the team of each round is chosen by the last result, and the number of rounds by
+the card's arithmetic. The loop is written once, in plain C (`decide.c`), and run
+three ways:
 
-    python work_cluster.py [--cores 119] [--bins 1024] [--seed 1]
+| Path | Who runs `decide.c` | How records reach the grid |
+|---|---|---|
+| `thread` | an X280 thread on work cluster 1 (`thread/driver.c`) | `kmx_issue` / `kmx_wait` on the thread's command ring |
+| `hostfed` | the host, through ctypes | `Run.issue(..., result=True)` and `Run.wait` |
+| `cpu` | the thread's own files on the CPU (`cpu_ring.c`) | the ring calls of `kmx_ring.h` against a fake kernel that runs STEP and SUM on a model of the grid |
 
-Prints one JSON line: the card thread's result block, the fallback's result, and
-whether the offsets and result words are the same (`ok`).
+Each must give the same records, rounds, final sum and team sequence as a numpy
+replay written apart from `decide.c`; the card paths must also leave the state tensor
+equal to the replay's.
 
-On a Blackhole p150a, 119 x 1,024 counts: the thread took 2.17 ms from its start to
-its return, and the offsets and the sum agreed with the fallback.
+    python work_cluster.py [--paths cpu hostfed thread] [--cores 119] [--count 30]
+                           [--limit 1000000] [--max-rounds 1000]
 
-## The program
+Prints one JSON line: the replay's code, rounds and sum, and for each path whether it
+matched (`same_as_numpy`, `same_records`, `state_wrong`), and `ok`.
 
-```python
-prog = km.Program("work_cluster", kernels="kernels/")  # NOP records only
-prog.thread(
-    cluster=1,
-    sources=["thread/prefix.c"],
-    regions={"counts": counts, "offsets": counts.nbytes},  # ids 0 and 1
-    words=[cores, bins],
-    host_fallback=prefix_offsets,
-    deadline=5.0,
-)
-with km.Session() as session:
-    run = session.load(prog)  # or thread="host"
-    result = run.thread_result(timeout=10.0)
-    run.stop()
-    offsets = run.thread.read("offsets").view(np.uint32)
-```
+On a Blackhole p150a with the defaults: 204 rounds (408 records), final sum 1,004,917;
+host-fed in 46 ms (about 0.23 ms per round, issue to result), state and records exact;
+the CPU path exact. The thread path needs the dispatch kernel to serve a work
+cluster's ring, which it does not yet: the thread starts, finds no ring and returns
+code 3 at once, without touching the grid.
 
-The thread (`thread/prefix.c`) takes region 0 (`kmx_take`: the host wrote it, so the
-cluster's cached lines go), runs two passes with `kmx_par` (each core totals its
-quarter of the bins over all cores; then each core writes its offsets after the
-totals of the cores before it), gives region 1 back (`kmx_give`) and stamps its
-progress before and after each step. See [X280 threads](../../docs/threads.md).
+## The thread
+
+`thread/driver.c` is the whole thread: it reads the program's words, runs
+`wc_round` / `wc_result` from `decide.c`, issues both records of a round, waits for
+both events, and passes SUM's result word (the event's `ticks`) to `wc_result`. It
+writes each round's STEP team into region 0 (`teams`) and gives it back at the end.
+
+| Words | `state address, cores, count, limit, max rounds` |
+|---|---|
+| Codes | 0 the limit was reached; 1 bad words or region; 2 no end within the rounds allowed; 3 the ring failed (none, late, stopped); 4 a record did not finish |
+| Result words | rounds, last sum, a hash of the STEP teams (`trail`) |
+| Progress | `4 x round + step`: 1 records built, 2 issued, 3 both events in |
+
+`cpu_ring.c` prints `record seg flags first count a0 a1` per record the fake kernel
+ran, then `result code rounds sum trail`, then `teams` and region 0's words.
+
+## The grid
+
+`kernels/writer.cpp` runs both segments (the reader and compute kernels have nothing
+to do): STEP reads and writes its core's page; SUM's leader reads every page and calls
+`wr.result(sum)`, which the dispatch kernel returns as the result word of the SUM
+record's done event.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `work_cluster.py` | the host script: the program, both runs, the comparison |
-| `thread/prefix.c` | the X280 thread |
-| `kernels/` | the grid's kernels: every record is a NOP in this form |
+| `decide.h`, `decide.c` | the decision: the records of a round and what a sum means |
+| `thread/driver.c` | the X280 thread |
+| `cpu_ring.c` | the thread on the CPU against a fake ring |
+| `kernels/` | the grid's kernels |
+| `work_cluster.py` | the host script: the replay, the three paths, the comparison |

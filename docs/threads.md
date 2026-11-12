@@ -113,7 +113,8 @@ vector writes lose 20 to 40 %; `prefetch="keep"` on the host leaves them as they
 checks that the argument block is this run's and every region lies in range, checks
 that the cluster sees the bank the host wrote (a line with a value only this run
 knows), then calls `kmx_main` on hart 0. Harts 1 to 3 wait for `kmx_par` calls until
-`kmx_main` returns. The full interface is `src/komorebi_native/x280/kmx/kmx.h`.
+`kmx_main` returns. Every call is listed in the
+[reference](reference/threads.md).
 
 Rules. The runtime's stop is a word the cores must poll: a core that never polls it
 never returns, its cluster stays stuck, and only a reset of the whole card brings it
@@ -181,7 +182,9 @@ without the image: `run.thread_result()` then calls
 `host_fallback(regions, words) -> (code, words)` with each region as a `uint32` array
 holding its initial contents (zeros for a region given as a size); `run.thread.read`
 then returns those arrays as the fallback left them. A thread is
-developed this way first, and its card result is checked against it bit for bit
+developed this way first, and its card result is checked against it bit for bit. The
+fallback sees no `Run`: a thread that issues records is run host-fed by keeping its
+decision in a plain-C file the host also loads
 ([07_work_cluster](../examples/07_work_cluster/)).
 
 ## Limits
