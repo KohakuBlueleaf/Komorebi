@@ -119,6 +119,51 @@ def checked_jobs(teams, base, pages):
     ]
 
 
+def members(args, teams, res, states):
+    """Cores whose runs, completions, slot refusals or last seen and reported sequence
+    differ from what the teams of the issued and acknowledged records give."""
+    workers, recs, s = len(states), res.records, res.summary
+    runs, done = np.zeros((2, workers), int), np.zeros((2, workers), int)  # low, high
+    refused = np.zeros(workers, int)
+    last = {}  # slot: (seq, cores reporting) of the last record issued there
+    for j, (first, count) in enumerate(teams):
+        seq, slot, acked = (
+            int(recs["seq"][j]),
+            int(recs["slot"][j]),
+            recs["status"][j] == 1,
+        )
+        is_exit = j == args.exit_at
+        team = slice(0, workers) if is_exit else slice(first, first + count)
+        if seq == 0:
+            continue
+        if j == args.raw and args.raw_slot != slot:  # not run by the cores that see it
+            refused[team] += 1
+            continue
+        runs[1, team] += 1
+        runs[0, team] += acked
+        done[1, team] += not is_exit
+        done[0, team] += acked and not is_exit
+        if acked:
+            last[slot] = (seq, team)
+    if s["status"] == "done" and not 0 <= args.exit_at < len(teams):
+        runs[1] += 1  # the feeder's own EXIT, on slot 0
+        runs[0] += bool(s["exit_acked"])
+        last[0] = (s["issued"] + 1, slice(0, workers))
+    bad = []
+    for c in states:
+        k = c["core"]
+        ok = runs[0, k] <= c["runs"] <= runs[1, k]
+        ok &= done[0, k] <= c["completed"] <= done[1, k]
+        ok &= c["slot_wrong"] == refused[k]
+        if s["status"] == "done":
+            for slot, (seq, team) in last.items():
+                member = team.start <= k < team.stop
+                ok &= c["last"][slot] == seq and (c["reported"][slot] == seq) == member
+        if not ok:
+            bad.append(k)
+    return bad
+
+
 def member_sums(x, count):
     """Float64 sum of each member's share of the tiles of x: [count, 32, 32]."""
     tiles = x.reshape(-1, TILE, TILE)
@@ -230,11 +275,11 @@ def run(device, args, rng):
     workers, n, tiles = runner.workers, args.jobs, args.tiles
     fed.log(f"grid {runner.grid}, {workers} workers, aiclk {runner.mhz} MHz")
 
-    # Exact inputs: integers in [-2, 2], so every partial sum (|s| <= 2T) is exact in
-    # bf16 for T <= 64. Random inputs: uniform in [-1, 1], rounded to bf16.
-    x_exact = rng.integers(-2, 3, (tiles * TILE, TILE)).astype(np.float32)
+    # Exact: integers in [-2, 2] (sums exact in bf16 for T <= 64). Random: uniform in
+    # [-1, 1], rounded to bf16. Job j reads tiles j to j + T - 1 (outputs all differ).
+    x_exact = rng.integers(-2, 3, ((tiles + n) * TILE, TILE)).astype(np.float32)
     x_rand = torch.from_numpy(
-        rng.uniform(-1, 1, (tiles * TILE, TILE)).astype(np.float32)
+        rng.uniform(-1, 1, ((tiles + n) * TILE, TILE)).astype(np.float32)
     )
     x_rand = x_rand.bfloat16().float().numpy()
 
@@ -275,6 +320,7 @@ def run(device, args, rng):
                 base[j] % pages,
                 args.slow_cycles if j == args.slow else 0,
                 args.slow_member if j == args.slow else 0xFFFFFFFF,
+                j,  # first input tile
             ]
             records.append(rec.record(SEG_MAP, first, count, words, flags))
         if j == args.raw:  # issued as built: the slot it names and its team kept
@@ -361,6 +407,7 @@ def run(device, args, rng):
         )
         out["exit"]["reported_by"] = sum(c["reported"][slot] == seq for c in states)
     out["slot_wrong"] = {c["core"]: c["slot_wrong"] for c in states if c["slot_wrong"]}
+    out["membership_bad"] = members(args, teams, res, states)[:16]
     out["cores_magic_ok"] = sum(c["magic_ok"] for c in states)
     out["cores_ended"] = {
         k: sum(c[k] != 0 for c in states)
@@ -428,14 +475,11 @@ def check(args, teams, base, outs, xs):
         for j in checked_jobs(teams, base, pages)
         if j not in (args.stall, args.late) and j < last
     ]
-    refs = {}
     bad, rel_max, exact_jobs = [], 0.0, 0
     for j in jobs:
         _, count = teams[j]
-        key = (j % 2, count)
-        if key not in refs:
-            refs[key] = member_sums(xs[j % 2].astype(np.float64), count)
-        ref = refs[key]
+        x = xs[j % 2][j * TILE : (j + args.tiles) * TILE]  # tiles j to j + T - 1
+        ref = member_sums(x.astype(np.float64), count)
         mine = got[base[j] : base[j] + count].astype(np.float64)
         if j % 2 == 0:
             exact_jobs += 1

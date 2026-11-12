@@ -25,7 +25,7 @@ void kernel_main() {
                     const uint32_t dst = get_write_ptr(kCbIn);
                     for (uint32_t k = 0; k < n; k++) {
                         noc_async_read_page(
-                            s.start + done + k, in, dst + k * kTileBytes
+                            r.a6 + s.start + done + k, in, dst + k * kTileBytes
                         );
                     }
                     noc_async_read_barrier();

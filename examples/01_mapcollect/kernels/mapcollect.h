@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-// MAP: a0 input, a1 input tiles T, a2 output, a3 output page of member 0; member a5
-// holds its output tile a4 cycles in compute (a test of slow compute).
+// MAP: a0 input, a1 input tiles T from tile a6, a2 output, a3 output page of member 0;
+// member a5 holds its output tile a4 cycles in compute (a test of slow compute).
 constexpr uint32_t kSegMap = 1;
 // STALL: member a0 waits for the stop word and does not report; the others report.
 constexpr uint32_t kSegStall = 2;
