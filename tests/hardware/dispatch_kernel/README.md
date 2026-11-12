@@ -20,7 +20,7 @@ the counters back only after the X280 runtime is closed.
 ## Cases
 
 The kernel keeps its state in this cluster's DRAM bank (cached); every case that runs
-the kernel gives it 4 KiB of a DRAM buffer the test owns.
+the kernel gives it `KMD_STATE_BYTES` (8 KiB) of a DRAM buffer the test owns.
 
 The kernel takes a command only while its event has room in the event ring
 (`--event-depth`, 128 by default, a power of two like `--host-depth`). For that the host

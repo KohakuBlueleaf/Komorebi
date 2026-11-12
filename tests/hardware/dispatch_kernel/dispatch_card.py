@@ -4,6 +4,7 @@ JSON line at the end: python dispatch_card.py <case> [options] (see README.md).
 """
 
 import argparse
+import contextlib
 import gc
 import itertools
 import json
@@ -19,9 +20,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(HERE, "build")
 sys.path.insert(0, BUILD)
 
+sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "src"))
+
 import _km_dispatch_test as dk  # noqa: E402
 import torch  # noqa: E402
 import ttnn  # noqa: E402
+
+from komorebi.engines import stream as ks  # noqa: E402
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
 INCLUDE = os.path.join(HERE, "..", "..", "..", "src", "komorebi_native", "include")
@@ -44,6 +49,7 @@ MEMCOST_TESTS = [
     "ddr_fence_ir",
 ]
 IPI_ACK_DDR = 0x470020  # the runtime's IPI ack in the cluster's DRAM bank
+STATE_BYTES = 8192  # KMD_STATE_BYTES: the kernel's state in its DRAM bank
 DRAM_KEEP = []  # DRAM tensors a running image may use
 CTL_CB, OUT_CB = 8, 9
 CTL_BYTES = 0xA00  # KM_CTL_BYTES (0x980) rounded up to whole 64-byte lines
@@ -52,9 +58,15 @@ AICLK_HZ = 1.35e9  # Tensix clock of this card, for the wait limit only
 # km_abi.h and km_dispatch.h
 SEG_NOP, SEG_EXIT = 0, 255
 SEG_PING, SEG_STOP, SEG_DEADLINE = 254, 253, 252
+SEG_RUN, SEG_CANCEL = 251, 250
 F_EXCL, F_QUEUE = 2, 8
 EV_DONE, EV_TIMEOUT, EV_PONG, EV_REFUSED = 0, 1, 2, 3
+EV_STREAM, EV_STREAM_END, EV_STREAM_ERROR = 4, 5, 6
 REFUSE_SEG, REFUSE_FLAGS, REFUSE_TEAM, REFUSE_EXITED, REFUSE_REGION = 1, 2, 3, 4, 5
+REFUSE_STREAMS, REFUSE_UNKNOWN, REFUSE_DEADLINE = 6, 7, 8
+STREAMS = os.path.join(
+    HERE, "..", "..", "..", "experiments", "stream_checks", "streams"
+)
 SEG_CHECK_UPLOAD = 249  # KMD_VERIFY_LINES images only
 LIM_UPLOAD = 0x1800  # KMD_LIM_UPLOAD: the upload region's offset from the layout
 HOST_READY, READY_MARK = 4, 0x594452  # the ready block's first word and its mark
@@ -140,6 +152,10 @@ def dk_arg(key, param, w):
     x = (x * 0x2C1B3C6D) & M32
     x ^= x >> 12
     return x
+
+
+def dk_result(key, param):
+    return dk_arg(key, param, 10)
 
 
 def dk_mix(key):
@@ -253,12 +269,12 @@ def int_tensor(device, array):
 
 
 def dram_area(device):
-    """The bank address of 4 KiB that is ours in every DRAM bank (bank offset 0):
-    page rows of a DRAM tensor of 1024 pages, kept alive with the device."""
+    """A bank address with STATE_BYTES that are ours in every DRAM bank: a DRAM tensor
+    of 1024 pages of 4 KiB, interleaved, so each bank holds consecutive pages."""
     pages = int_tensor(device, np.zeros((1024, 1024), dtype=np.uint32))
     DRAM_KEEP.append(pages)
     ddr = pages.buffer_address()
-    if ddr <= IPI_ACK_DDR < ddr + 4096:
+    if ddr <= IPI_ACK_DDR < ddr + STATE_BYTES:
         raise SystemExit("the buffer covers the runtime's IPI ack word")
     return ddr
 
@@ -344,10 +360,13 @@ def with_kernel(
 
 
 def exit_and_stop(plan):
-    """EXIT to the whole grid, then STOP; returns the EXIT event."""
+    """EXIT to the whole grid, then STOP; returns the events up to EXIT's."""
     n = plan.grid_x * plan.grid_y
     i = plan.submit(record(SEG_EXIT, 0, n))
-    events = plan.take(i, 10.0)
+    events, by = [], time.time() + 10.0
+    while not any(e[1] == i for e in events) and time.time() < by:
+        with contextlib.suppress(RuntimeError):
+            events += plan.take(plan.seen + 1, 1.0)
     plan.submit(command(SEG_STOP))
     return events
 
@@ -1235,7 +1254,7 @@ def alloc(busy, count, n_cores):
 
 def read_trace(plan):
     """The KMD_TRACE image's trace from the upload region: (header, entries), each
-    entry (kind, slot, req, first, count, pass)."""
+    entry (kind, slot, req, first, count, low 32 bits of the timer)."""
     head = np.frombuffer(plan.upload_read(0, 64), dtype=np.uint32)
     n = int(head[1]) if head[0] == TRACE_MARK else 0
     raw = np.frombuffer(plan.upload_read(64, 16 * n), dtype=np.uint32).reshape(n, 4)
@@ -1378,6 +1397,404 @@ def case_queue(device, args):
     return out
 
 
+def run_command(offset, size):
+    """KM_SEG_RUN: a0 = offset of the upload in the region, a1 = its bytes."""
+    words = command(SEG_RUN, offset)
+    words[5] = size
+    return words
+
+
+def put_upload(plan, offset, data):
+    """Writes `data` at `offset` as whole lines, cut at the region's end."""
+    room = plan.upload_bytes - offset
+    data = bytes(data)[:room]
+    data += bytes(-len(data) % 64)
+    plan.upload(offset, np.frombuffer(data, dtype=np.uint8))
+
+
+def stream_events(plan, reqs, timeout_s=20.0):
+    """Every event until each stream in `reqs` (one or several) has ended (STREAM_END or
+    _ERROR), the kernel finished or timeout_s passed; a progress line every 5 s."""
+    reqs = {reqs} if isinstance(reqs, int) else set(reqs)
+    out, start = [], time.time()
+    ended, said = set(), start
+    while ended != reqs and time.time() < start + timeout_s:
+        with contextlib.suppress(RuntimeError):
+            out += plan.take(plan.seen + 1, 1.0)
+        ended = {
+            e[1]
+            for e in out
+            if e[1] in reqs and kind(e[2])[0] in (EV_STREAM_END, EV_STREAM_ERROR)
+        }
+        if plan.host_word(0) >= STATE_DONE:
+            break
+        if time.time() - said > 5.0:
+            said = time.time()
+            log(f"waiting for streams {sorted(reqs - ended)}: {len(out)} events")
+    return out
+
+
+def expected_events(sim):
+    """The simulator's events as (kind, req, aux)."""
+    return [(e.kind, e.req, e.aux) for e in sim.events]
+
+
+def got_events(events, req):
+    return [(kind(e[2])[0], e[1], kind(e[2])[1]) for e in events if e[1] == req]
+
+
+def references():
+    """The saved reference streams: [(name, upload bytes, saved json)]."""
+    out = []
+    for name in sorted(os.listdir(STREAMS)):
+        if name.endswith(".json"):
+            stem = name[:-5]
+            with open(os.path.join(STREAMS, stem + ".bin"), "rb") as f:
+                data = f.read()
+            with open(os.path.join(STREAMS, name)) as f:
+                out.append((stem, data, json.load(f)))
+    return out
+
+
+def result_stream(n, n_cores, req, seed):
+    """n records one at a time on random teams (DK_SEG_RESULT with KM_F_RESULT, key i);
+    after each, its result goes out as a KM_EV_STREAM event."""
+    s = ks.Stream(req=req, seed=seed)
+    i, count, first, room, res = s.regs(5)
+    s.set(i, 0)
+    top = s.label()
+    s.rand(count)
+    s.mod(count, count, s.const(n_cores))
+    s.addi(count, count, 1)
+    s.sub(room, s.const(n_cores + 1), count)
+    s.rand(first)
+    s.mod(first, first, room)
+    s.issue(SEG_RESULT, (first, count), args=[i, 77], result=True)
+    s.wait(0)
+    s.result(res)
+    s.event(res)
+    s.addi(i, i, 1)
+    s.jlt(i, s.const(n), top)
+    s.halt(s.const(0xABCDEF12))
+    return s
+
+
+def loop_stream(req):
+    """A stream that never ends by itself: JMP to itself."""
+    s = ks.Stream(req=req, max_steps=0xFFFFFFFF)
+    top = s.label()
+    s.jmp(top)
+    return s
+
+
+def case_streams(device, args):
+    """The upload check and the interpreter (test image): RUN and CANCEL refusals and
+    errors, every saved reference that ends without records (bad uploads included)
+    against the simulator on this grid, then --n records from a stream one at a time
+    against the simulator; a PING answers after each part."""
+    if args.image == IMAGE:
+        args.image = VERIFY_IMAGE
+    n_cores, trace, sims = 0, {}, {}
+
+    def ping(plan, name, out):
+        i = plan.submit(command(SEG_PING))
+        ev = [e for e in plan.take(plan.seen + 1, 5.0) if e[1] == i]
+        out["pings"][name] = bool(ev and kind(ev[0][2])[0] == EV_PONG)
+
+    def one(plan, name, data, sim, out, offset=0):
+        put_upload(plan, offset, data)
+        plan.submit(run_command(offset, len(data)))
+        req = sim.events[0].req if sim.events else 0
+        events = stream_events(plan, req)
+        got = got_events(events, req)
+        want = expected_events(sim)
+        ends = [e[3] for e in events if kind(e[2])[0] == EV_STREAM_END]
+        ok = got == want and (sim.halt is None or ends == [sim.halt])
+        out["streams"][name] = ok
+        if not ok:
+            out["wrong"].append({"name": name, "got": got[:6], "want": want[:6]})
+        log(f"stream {name}: {'ok' if ok else 'WRONG'}")
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        region = plan.upload_bytes
+        base = (region // 2) & ~4095  # the trace grows from the region's start
+        out = {"tag": plan.tag, "pings": {}, "streams": {}, "wrong": [], "run": {}}
+        ping(plan, "start", out)
+
+        # RUN and CANCEL: refusals and range errors, four loops at once.
+        loops = [loop_stream(100 + j).encode() for j in range(5)]
+        size = len(loops[0])
+        for j in range(5):
+            put_upload(plan, base + 4096 * (j + 1), loops[j])
+        checks = []
+
+        def expect(name, words, want):
+            i = plan.submit(words)
+            ev = plan.take(plan.seen + 1, 5.0)
+            got = [(kind(e[2])[0], e[1], kind(e[2])[1]) for e in ev]
+            checks.append({"name": name, "got": got, "ok": got == [want(i)]})
+
+        put_upload(plan, base + 4096 * 6, bytes(64))
+        for j in range(3):
+            plan.submit(run_command(base + 4096 * (j + 1), size))
+        hdr_req = 100  # the header of loops[0] at base + 4096
+        expect(
+            "overlap",
+            run_command(base + 4096, size),
+            lambda i: (EV_STREAM_ERROR, hdr_req, ks.ERR_HEADER),
+        )
+        expect(
+            "unaligned",
+            run_command(base + 4096 * 6 + 32, size),
+            lambda i: (EV_STREAM_ERROR, 0, ks.ERR_HEADER),
+        )
+        expect(
+            "outside",
+            run_command(base + 4096, region),
+            lambda i: (EV_STREAM_ERROR, hdr_req, ks.ERR_HEADER),
+        )
+        put_upload(plan, base + 4096 * 6, loop_stream(101).encode())
+        expect(
+            "active req",
+            run_command(base + 4096 * 6, size),
+            lambda i: (EV_STREAM_ERROR, 101, ks.ERR_HEADER),
+        )
+        plan.submit(run_command(base + 4096 * 4, size))
+        expect(
+            "fifth RUN",
+            run_command(base + 4096 * 5, size),
+            lambda i: (EV_REFUSED, i, REFUSE_STREAMS),
+        )
+        expect(
+            "cancel unknown",
+            command(SEG_CANCEL, 999),
+            lambda i: (EV_REFUSED, i, REFUSE_UNKNOWN),
+        )
+        expect(
+            "deadline 0",
+            command(SEG_DEADLINE, 0),
+            lambda i: (EV_REFUSED, i, REFUSE_DEADLINE),
+        )
+        for j in range(4):
+            expect(
+                f"cancel {100 + j}",
+                command(SEG_CANCEL, 100 + j),
+                lambda i, j=j: (EV_STREAM_ERROR, 100 + j, ks.ERR_CANCELLED),
+            )
+        out["run"] = checks
+        ping(plan, "after run", out)
+
+        # Saved references that issue no record, against the simulator on this grid.
+        for name, data, saved in references():
+            sim = ks.simulate(data, n_cores=n_cores, region_size=region - base)
+            if saved["expect"]["records"] or sim.records:
+                continue
+            sims[name] = sim
+            one(plan, name, data, sim, out, base)
+        ping(plan, "after references", out)
+
+        # Records one at a time from a stream.
+        s = result_stream(args.n, n_cores, 7, args.seed)
+        data = s.encode()
+        sim = s.simulate(
+            n_cores=n_cores,
+            result=lambda r: dk_result(r.args[0], r.args[1]),
+            region_size=region - base,
+        )
+        sims["records"] = sim
+        one(plan, "records", data, sim, out, base)
+        ping(plan, "after records", out)
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    def after(plan, fin):
+        trace["head"], trace["entries"] = read_trace(plan)
+
+    out, fin, cnt = with_kernel(device, args, body, depth=16, after=after)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    issued = [e for e in trace["entries"] if e[0] == TRACE_ISSUE and e[2] == 7]
+    want = [(r.first, r.count) for r in sims["records"].records]
+    out["records_in_order"] = [(e[3], e[4]) for e in issued] == want
+    ran = [(r.first, r.count, r.args[0]) for r in sims["records"].records]
+    out["team_mismatch"], out["first_mismatch"] = check_teams(cnt, n_cores, ran)
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and all(c["ok"] for c in out["run"])
+        and all(out["pings"].values())
+        and all(out["streams"].values())
+        and out["records_in_order"]
+        and out["team_mismatch"] == 0
+        and trace["head"][2] == 0
+    )
+    return out
+
+
+def case_stream_deadline(device, args):
+    """A stream's record whose member --core waits for the stop word, header deadline
+    --deadline-us: the stream ends with KM_SERR_DEADLINE at that ISSUE, the kernel with
+    the deadline error, and every core gives up on the stop word."""
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        s = ks.Stream(req=55, deadline_us=args.deadline_us)
+        check_args = [3, 4] + [dk_arg(3, 4, w) for w in range(2, 10)]
+        s.issue(SEG_CHECK, (0, n_cores), args=check_args)
+        s.wait(0)
+        s.issue(SEG_STALL, (0, n_cores), args=[9, args.core])
+        s.wait(0)
+        s.halt(s.const(0))
+        data = s.encode()
+        put_upload(plan, 0, data)
+        plan.submit(run_command(0, len(data)))
+        issues = [pc for pc, o in enumerate(s.uops()) if o.op == ks.OP_ISSUE]
+        out = {"tag": plan.tag, "stall_pc": issues[1]}
+        log("stream started")
+        out["events"] = stream_events(plan, 55)
+        log("stream ended")
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=4)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    blk = fin["block"]
+    got = [(kind(e[2])[0], e[1], kind(e[2])[1]) for e in out["events"]]
+    out["ok"] = bool(
+        got == [(EV_STREAM_ERROR, 55, ks.ERR_DEADLINE | out["stall_pc"] << 8)]
+        and blk["error"] == ERR_DEADLINE
+        and blk["req"] == 55
+        and out["cores"]["cores_finished"] == n_cores
+        and out["cores"]["gave"] == {"stop": n_cores}
+    )
+    return out
+
+
+def timed_stream(n, first, team, req):
+    """n records one at a time on cores [first, first + team) (DK_SEG_RESULT, key i),
+    timed by the stream itself: its end carries the ticks from the first ISSUE to the
+    last acknowledgement."""
+    s = ks.Stream(req=req)
+    i, t0, t1 = s.regs(3)
+    s.set(i, 0)
+    s.time(t0)
+    top = s.label()
+    s.issue(SEG_RESULT, (first, team), args=[i, 5], result=True)
+    s.wait(0)
+    s.addi(i, i, 1)
+    s.jlt(i, s.const(n), top)
+    s.time(t1)
+    s.sub(t1, t1, t0)
+    s.halt(t1)
+    return s
+
+
+def compute_stream(n, req):
+    """n rounds of ADDI and JLT, no record, timed by the stream (ticks in its end)."""
+    s = ks.Stream(max_steps=2 * n + 16, req=req)
+    i, t0, t1 = s.regs(3)
+    s.set(i, 0)
+    s.time(t0)
+    top = s.label()
+    s.addi(i, i, 1)
+    s.jlt(i, s.const(n), top)
+    s.time(t1)
+    s.sub(t1, t1, t0)
+    s.halt(t1)
+    return s
+
+
+def case_stream_bench(device, args):
+    """The kernel's pass with --streams busy streams (JMP loops): idle for --seconds
+    (--n 0), or --issuers streams each issuing --n records one at a time on its own
+    --team cores; then (--compute) a stream of 2 x --compute micro-ops alone. Pass
+    period from the result block, per record from the streams, reissue from the trace.
+    """
+    if args.image == IMAGE:
+        args.image = VERIFY_IMAGE
+    trace = {}
+
+    def body(plan):
+        region = plan.upload_bytes
+        base = (region // 2) & ~4095
+        out = {"tag": plan.tag, "streams": args.streams}
+        plan.submit(command(SEG_PING))
+        for j in range(args.streams):
+            data = loop_stream(200 + j).encode()
+            put_upload(plan, base + 4096 * (j + 1), data)
+            plan.submit(run_command(base + 4096 * (j + 1), len(data)))
+        if args.n:
+            team = args.team or 1
+            for j in range(args.issuers):
+                data = timed_stream(args.n, j * team, team, 9 + j).encode()
+                put_upload(plan, base + 65536 * (j + 1), data)
+            t = time.perf_counter()
+            for j in range(args.issuers):
+                plan.submit(run_command(base + 65536 * (j + 1), len(data)))
+            log(f"{args.issuers} streams of {args.n} records started")
+            ev = stream_events(plan, range(9, 9 + args.issuers))
+            log("streams ended")
+            out["host_s"] = round(time.perf_counter() - t, 4)
+            ends = [e[3] for e in ev if kind(e[2])[0] == EV_STREAM_END]
+            out["us_per_record"] = [round(e / 50 / args.n, 4) for e in ends]
+            out["stream_events"] = [list(e) for e in ev]
+        else:
+            log(f"idle {args.seconds} s")
+            time.sleep(args.seconds)
+            log("idle done")
+        for j in range(args.streams):
+            plan.submit(command(SEG_CANCEL, 200 + j))
+        if args.compute:
+            s = compute_stream(args.compute, 11)
+            data = s.encode()
+            put_upload(plan, base, data)
+            plan.submit(run_command(base, len(data)))
+            log("compute stream started")
+            ev = stream_events(plan, 11)
+            log("compute stream ended")
+            ends = [e[3] for e in ev if kind(e[2])[0] == EV_STREAM_END]
+            ops = 2 * args.compute
+            out["uops_per_s"] = round(ops * 50e6 / ends[0]) if ends else None
+            out["compute_events"] = [list(e) for e in ev]
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    def after(plan, fin):
+        trace["head"], trace["entries"] = read_trace(plan)
+
+    out, fin, cnt = with_kernel(device, args, body, depth=16, after=after)
+    out["finish"] = fin
+    n_cores = cnt.shape[0]
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    blk = fin["block"]
+    out["pass_ns"] = round(blk["ticks"] * 20 / max(1, blk["passes"]), 2)
+    # Per issuing stream: its record's issue to the sweep that freed it, and that
+    # sweep to the stream's next issue (timer ticks of the trace, 50 per us).
+    freed, busy, reissue, latency = {}, {}, [], []
+    for k_, slot, req, _, _, t in trace["entries"]:
+        if not 9 <= req < 9 + args.issuers:
+            continue
+        if k_ == TRACE_ISSUE:
+            if req in freed:
+                reissue.append((t - freed.pop(req)) & M32)
+            busy[slot] = t
+        elif k_ == TRACE_FREE and slot in busy:
+            freed[req] = t
+            latency.append((t - busy.pop(slot)) & M32)
+    if reissue:
+        out["free_to_reissue_us"] = percentiles(np.array(reissue) / 50)
+        out["issue_to_free_us"] = percentiles(np.array(latency) / 50)
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and (not args.n or len(out["us_per_record"]) == args.issuers)
+        and (not args.compute or out["uops_per_s"])
+    )
+    return out
+
+
 CASES = {
     "limit": case_limit,
     "ping": case_ping,
@@ -1396,6 +1813,9 @@ CASES = {
     "runtime-stop": case_runtime_stop,
     "excl": case_excl,
     "queue": case_queue,
+    "streams": case_streams,
+    "stream-deadline": case_stream_deadline,
+    "stream-bench": case_stream_bench,
     "verify": case_verify,
     "upload": case_upload,
     "result": case_result,
@@ -1433,6 +1853,10 @@ def main():
     p.add_argument("--spread", type=int, nargs="+", default=[1], help="store")
     p.add_argument("--read", action="store_true", help="store: read before a burst")
     p.add_argument("--target", choices=sorted(TARGETS), default="lim", help="store")
+    p.add_argument("--streams", type=int, default=0, help="stream-bench: loops")
+    p.add_argument("--seconds", type=float, default=1.0, help="stream-bench: idle")
+    p.add_argument("--compute", type=int, default=0, help="stream-bench: rounds")
+    p.add_argument("--issuers", type=int, default=1, help="stream-bench: streams")
     p.add_argument("--image", default=IMAGE, type=os.path.abspath, help="kernel image")
     args = p.parse_args()
     out = {"case": args.case, "argv": sys.argv[1:], "load_start": loadavg()}
