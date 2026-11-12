@@ -21,6 +21,7 @@
 #define KMD_LIM_RESULT 0x140u /* result block, KMD_R_WORDS words */
 #define KMD_LIM_READ 0x1C0u   /* line from the host: word 0 = events it has read */
 #define KMD_LIM_READY 0x200u  /* KM_READY of column leader c at + c * 16 */
+#define KMD_LIM_HARTS 0x300u  /* hart block, KMD_H_WORDS words */
 #define KMD_LIM_ACKS 0x400u   /* ack word of slot j at + j * KM_ACK_STRIDE */
 #define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_record_t */
 #define KMD_LIM_BYTES 0x1800u
@@ -60,6 +61,7 @@
 #define KMD_ERR_IDLE 6u      /* no command and nothing in flight for t_idle */
 #define KMD_ERR_STOPPED 7u   /* the runtime asked the kernel to stop */
 #define KMD_ERR_STOP_BUSY 9u /* a STOP command arrived with records in flight */
+#define KMD_ERR_ENGINE 10u   /* core 1 did not stop within KMD_ENGINE_STOP_TICKS */
 
 /* Reasons of a KM_EV_REFUSED event (its aux): the command was consumed, not run. */
 #define KMD_REFUSE_SEG 1u    /* segment 240 to 249 */
@@ -72,12 +74,18 @@
 #define KMD_REFUSE_UNKNOWN 7u  /* KM_SEG_CANCEL of a req no active stream has */
 #define KMD_REFUSE_DEADLINE 8u /* KM_SEG_DEADLINE of 0: a deadline is never zero */
 
+/* Engine to kernel: POST host event {a0 req, a1 status, a2 ticks}. Kernel to engine
+ * events: RUN {req offset, ticks bytes} of an admitted upload, CANCEL {ticks req}. */
+#define KMD_SEG_POST 248u
+#define KMD_EV_RUN 0x10u
+#define KMD_EV_CANCEL 0x11u
+
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */
 #define KMD_SEG_CHECK_UPLOAD 249u
 
-/* KMD_TRACE builds: kmd_trace_t, then 16-byte entries {kind | slot << 8, req, team,
- * mtime} per slot taken or freed, in the trace part: the region's lower half. */
+/* KMD_TRACE builds, in the region's lower half: kmd_trace_t, then per slot taken or
+ * freed {kind | slot << 8 | source << 16, req, team, mtime}. */
 #define KMD_TRACE_PART(upload_bytes) ((upload_bytes) / 2u & ~63u)
 #define KMD_TRACE_ISSUE 1u
 #define KMD_TRACE_FREE 2u
@@ -134,6 +142,27 @@ enum {
     KMD_R_WORDS = 32
 };
 
+/* Hart block in LIM: each word has one writer, the hart it names. */
+enum {
+    KMD_H_STAMP0 = 0,  /* core 0: its loop passes / 1024, every 1024 passes */
+    KMD_H_STAMP1 = 1,  /* core 1: the same for the engine's loop */
+    KMD_H_ENGINE = 2,  /* core 1: KMD_ENGINE_* */
+    KMD_H_PASSES = 3,  /* core 1: engine loop passes, low word, at its end */
+    KMD_H_RECORDS = 4, /* core 1: records it sent */
+    KMD_H_POSTS = 5,   /* core 1: host events it posted */
+    KMD_H_EVENTS = 6,  /* core 1: events it read */
+    KMD_H_RUNS = 7,    /* core 1: streams it started */
+    KMD_H_LOST = 8,    /* core 0: posts dropped at the finish for lack of room */
+    KMD_H_SOURCE = 9,  /* core 0: the source of the error's record (KMD_R_REQ) */
+    KMD_H_WORDS = 16
+};
+
+/* The engine's state (KMD_H_ENGINE). */
+#define KMD_ENGINE_WAITING 1u /* for the kernel's go */
+#define KMD_ENGINE_RUNNING 2u
+#define KMD_ENGINE_STOPPED 3u /* left its loop; the kernel may finish */
+#define KMD_ENGINE_UNUSED 4u  /* the kernel did not start it */
+
 /* Window slots of the kernel (16 to 191 are free for an image). */
 #define KMD_WIN_PANEL0 16u /* panel r uses KMD_WIN_PANEL0 + r */
 #define KMD_WIN_HOST 18u
@@ -185,7 +214,24 @@ static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
 
 /* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory
  * Port: the host gives it KMD_STATE_BYTES there, 64-byte aligned (LIM is uncached). */
-#define KMD_STATE_BYTES 8192u
+#define KMD_STATE_BYTES 0x8000u
+/* Its parts: core 0's state, core 1's state, then the engine's ring (both cores). */
+#define KMD_STATE_KERNEL 0x0000u
+#define KMD_STATE_ENGINE 0x2000u
+#define KMD_STATE_RING 0x4000u
+/* The engine's ring, from KMD_STATE_RING: commands, events, then one word per line. */
+#define KMD_ENGINE_DEPTH 64u   /* command lines */
+#define KMD_ENGINE_EVENTS 128u /* events */
+#define KMD_ERING_CMDS 0x0000u
+#define KMD_ERING_EVENTS 0x1000u
+#define KMD_ERING_CONSUMED 0x1800u /* core 0: commands taken */
+#define KMD_ERING_TOLD 0x1840u     /* core 0: events pushed */
+#define KMD_ERING_READ 0x1880u     /* core 1: events read */
+#define KMD_ERING_STOP 0x18C0u     /* core 0: nonzero, the engine leaves its loop */
+#define KMD_ERING_GO 0x1900u       /* core 0: {run value, 1 run or 2 do not} */
+#define KMD_ERING_BYTES 0x1940u
+/* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
+#define KMD_ENGINE_STOP_TICKS 500000u
 
 KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 152, "kmd_args_t is 152 bytes");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, upload_bytes) == 144, "upload_bytes at 144");
@@ -200,7 +246,18 @@ KMD_STATIC_ASSERT(KMD_LIM_ARGS + sizeof(kmd_args_t) <= KMD_LIM_MAILBOX, "LIM: ar
 KMD_STATIC_ASSERT(KMD_LIM_MAILBOX + 8u <= KMD_LIM_RESULT, "LIM: mailbox");
 KMD_STATIC_ASSERT(KMD_LIM_RESULT + 4u * KMD_R_WORDS <= KMD_LIM_READ, "LIM: result");
 KMD_STATIC_ASSERT(KMD_LIM_READ + 64u <= KMD_LIM_READY, "LIM: read count");
-KMD_STATIC_ASSERT(KMD_LIM_READY + 16u * KMD_READY_MAX <= KMD_LIM_ACKS, "LIM: READY");
+KMD_STATIC_ASSERT(KMD_LIM_READY + 16u * KMD_READY_MAX <= KMD_LIM_HARTS, "LIM: READY");
+KMD_STATIC_ASSERT(KMD_LIM_HARTS + 4u * KMD_H_WORDS <= KMD_LIM_ACKS, "LIM: harts");
+KMD_STATIC_ASSERT(
+    KMD_ERING_CMDS + KMD_ENGINE_DEPTH * 64u <= KMD_ERING_EVENTS, "engine ring: cmds"
+);
+KMD_STATIC_ASSERT(
+    KMD_ERING_EVENTS + KMD_ENGINE_EVENTS * 16u <= KMD_ERING_CONSUMED,
+    "engine ring: events"
+);
+KMD_STATIC_ASSERT(
+    KMD_STATE_RING + KMD_ERING_BYTES <= KMD_STATE_BYTES, "state: engine ring"
+);
 KMD_STATIC_ASSERT(
     KMD_LIM_ACKS + KM_RING_SLOTS * KM_ACK_STRIDE <= KMD_LIM_HRING, "LIM: ack words"
 );

@@ -2,9 +2,9 @@
  * the acknowledgement words the teams' leaders push into LIM, one per slot. */
 #pragma once
 
-#include "event_ring.h"
 #include "grid_port.h"
 #include "kernel.h"
+#include "ring.h"
 
 /* The slot's ack line as one 64-bit word: the ack word, then the result word. */
 static inline volatile const uint64_t* slot_ack(const kmd_t* k, uint32_t slot) {
@@ -22,8 +22,8 @@ static inline uint32_t slot_free(const kmd_t* k) {
 }
 
 #ifdef KMD_TRACE
-/* Test builds: entry {kind | slot << 8, req, team, mtime} into the trace part from its
- * second line on. The first entry that does not fit writes the header at once. */
+/* Test builds: entry {kind | slot << 8 | source << 16, req, team, mtime} into the trace
+ * part from its second line on. The first entry that does not fit writes the header. */
 static inline void trace(kmd_t* k, uint32_t kind, uint32_t slot, uint32_t req) {
     if (64u + 16u * (k->traced + 1u) > KMD_TRACE_PART(k->upload_bytes)) {
         if (k->untraced++ == 0u && k->upload_bytes >= 64u) {
@@ -33,7 +33,10 @@ static inline void trace(kmd_t* k, uint32_t kind, uint32_t slot, uint32_t req) {
         return;
     }
     const uint32_t e[4] = {
-        kind | slot << 8, req, k->slot_team[slot], (uint32_t)x280_mtime()
+        kind | slot << 8 | (uint32_t)k->slot_src[slot] << 16,
+        req,
+        k->slot_team[slot],
+        (uint32_t)x280_mtime()
     };
     kmd_store_chunk((volatile uint8_t*)k->upload + 64u + 16u * k->traced, e);
     k->traced++;
@@ -42,13 +45,14 @@ static inline void trace(kmd_t* k, uint32_t kind, uint32_t slot, uint32_t req) {
 #define trace(k, kind, slot, req) ((void)0)
 #endif
 
-/* Marks `slot` busy with record `seq` of request `req` for `team`, issued at `now`;
- * `result`: the record has KM_F_RESULT. */
+/* Marks `slot` busy with record `seq` of command `req` of source `src` for `team`,
+ * issued at `now`; `result`: the record has KM_F_RESULT. */
 static inline void slot_take(
     kmd_t* k,
     uint32_t slot,
     uint32_t seq,
     uint32_t req,
+    uint32_t src,
     uint32_t team,
     uint64_t now,
     uint64_t ticks,
@@ -57,7 +61,8 @@ static inline void slot_take(
     k->slot_seq[slot] = seq;
     k->slot_req[slot] = req;
     k->slot_team[slot] = team;
-    k->slot_order[slot] = 0;
+    k->slot_src[slot] = (uint8_t)src;
+    k->ring[src].nbusy++;
     k->slot_t0[slot] = now;
     k->slot_deadline[slot] = now + ticks;
     k->busy |= 1u << slot;
@@ -101,18 +106,8 @@ static inline uint32_t team_alloc(const kmd_t* k, uint32_t count) {
     return KMD_NO_FIRST;
 }
 
-/* The active stream that issued busy `slot`'s record, or 0 (the host's, or an orphan
- * of a stream that ended). */
-static inline kmd_stream_t* slot_owner(kmd_t* k, uint32_t slot) {
-    kmd_stream_t* s = &k->streams[k->slot_stream[slot] & (KM_STREAM_MAX_ACTIVE - 1u)];
-    return (
-        k->slot_order[slot] != 0 && s->running && s->order == k->slot_order[slot] ? s
-                                                                                  : 0
-    );
-}
-
-/* Sweeps the busy slots' ack lines, one 8-byte load each; a slot showing its sequence
- * is freed with KM_EV_DONE (ticks: its time, or the result with KM_F_RESULT). */
+/* Sweeps busy slots' ack lines (one 8-byte load each); a slot showing its sequence is
+ * freed with KM_EV_DONE to its source, ticks its time or its KM_F_RESULT result. */
 static inline void slots_sweep(kmd_t* k) {
     x280_fence_ir();
     uint64_t now = 0;
@@ -137,17 +132,10 @@ static inline void slots_sweep(kmd_t* k) {
         k->busy &= ~(1u << j);
         k->nbusy--;
         trace(k, KMD_TRACE_FREE, j, k->slot_req[j]);
-        if (k->slot_order[j] == 0) {
-            events_push(k, k->slot_req[j], KM_EV_DONE, ticks);
-            k->t_last_event = now;
-            continue;
-        }
-        /* A stream's record: no event; an ended stream's (an orphan) only frees. */
-        kmd_stream_t* s = slot_owner(k, j);
-        if (s != 0) {
-            s->pending--;
-            s->last_result = result ? ticks : s->last_result;
-        }
+        kmd_ring_t* r = &k->ring[k->slot_src[j]];
+        r->nbusy--;
+        ring_push(r, k->slot_req[j], KM_EV_DONE, ticks);
+        k->t_last_event = now;
     }
 }
 
@@ -161,10 +149,16 @@ static inline uint32_t slots_late(const kmd_t* k, uint64_t now) {
     return KM_RING_SLOTS;
 }
 
-/* Issues the record in `l` into free `slot` for `req`: the next sequence (skipping 0
- * and the slot's last) in seq and the landing words, the slot in the header. */
-static inline void record_issue(
-    kmd_t* k, uint64_t* l, uint32_t slot, uint32_t req, uint64_t now, uint64_t ticks
+/* Issues `l` into free `slot` for command `req` of source `src`: the next sequence (not
+ * 0, not the slot's last) in seq and the landing words, the slot in the header. */
+KMD_HOT void record_issue(
+    kmd_t* k,
+    uint64_t* l,
+    uint32_t slot,
+    uint32_t req,
+    uint32_t src,
+    uint64_t now,
+    uint64_t ticks
 ) {
     const uint32_t hdr = (uint32_t)(l[0] >> 32);
     uint32_t seq = ++k->seq;
@@ -177,5 +171,6 @@ static inline void record_issue(
     }
     grid_store_record(k, slot, l);
     k->records++;
-    slot_take(k, slot, seq, req, (uint32_t)l[1], now, ticks, (hdr >> 8) & KM_F_RESULT);
+    const uint32_t result = (hdr >> 8) & KM_F_RESULT;
+    slot_take(k, slot, seq, req, src, (uint32_t)l[1], now, ticks, result);
 }

@@ -33,9 +33,9 @@ static inline void result_error(
 
 /* The counters and the final state. */
 static inline void result_finish(kmd_t* k, uint64_t now) {
-    result_word(k, KMD_R_COMMANDS, k->next - 1u);
+    result_word(k, KMD_R_COMMANDS, k->ring[KMD_SRC_HOST].next - 1u);
     result_word(k, KMD_R_RECORDS, k->records);
-    result_word(k, KMD_R_EVENTS, k->events);
+    result_word(k, KMD_R_EVENTS, k->ring[KMD_SRC_HOST].pushed);
     result_word(k, KMD_R_BUSY, k->busy);
     result_word(k, KMD_R_MAX_BUSY, k->max_busy);
     result_word(k, KMD_R_REFUSED, k->refused);

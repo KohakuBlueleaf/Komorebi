@@ -1,14 +1,15 @@
-/* The dispatch kernel on X280 cluster 0, core 0 (cores 1 to 3 return at once): boot,
- * then the loop over ack words and host commands, then finish (stop word, result). */
+/* Dispatch kernel, X280 cluster 0: core 0 boots, loops over acks and the sources'
+ * commands, finishes; core 1 runs the stream engine; cores 2 and 3 return. */
 #include <stdint.h>
 
 #include "completion.h"
+#include "engine.h"
+#include "engine_port.h"
 #include "event_ring.h"
 #include "grid_port.h"
-#include "host_ring.h"
 #include "kernel.h"
 #include "result.h"
-#include "stream.h"
+#include "ring.h"
 
 /* Waits until `word` holds `value`, the runtime asks for a stop, or `deadline`. */
 static kmd_wait_t wait_word(
@@ -100,11 +101,12 @@ static uint32_t boot(kmd_t* k) {
 }
 
 #ifdef KMD_VERIFY_LINES
-/* Test build: checks each word of the user record in k->line against command k->next.
- */
+/* Test build: checks each word of the user record in the host's line against its
+ * command number. */
 static void verify_line(kmd_t* k) {
-    const uint64_t* l = k->line;
-    const uint32_t i = k->next, hdr = (uint32_t)(l[0] >> 32);
+    const kmd_ring_t* r = &k->ring[KMD_SRC_HOST];
+    const uint64_t* l = r->line;
+    const uint32_t i = r->next, hdr = (uint32_t)(l[0] >> 32);
     if ((hdr & 0xFFu) > KM_SEG_USER_MAX) {
         return;
     }
@@ -139,7 +141,7 @@ static void upload_check(
 ) {
     if (((off | bytes) & 63u) || off > k->upload_bytes ||
         bytes > k->upload_bytes - off) {
-        events_push(k, req, KM_EV_REFUSED | (KMD_REFUSE_REGION << 8), 0);
+        host_push(k, req, KM_EV_REFUSED | (KMD_REFUSE_REGION << 8), 0);
         k->refused++;
         return;
     }
@@ -156,55 +158,65 @@ static void upload_check(
         }
         bad += lo + hi;
     }
-    events_push(k, req, KM_EV_PONG | ((bad < 0xFFFFFFu ? bad : 0xFFFFFFu) << 8), first);
+    host_push(k, req, KM_EV_PONG | ((bad < 0xFFFFFFu ? bad : 0xFFFFFFu) << 8), first);
 }
 #endif
 
-/* Takes command k->next from k->line: kernel commands act here, a bad record is refused
- * with an event, a record gets a free slot and the next sequence, or waits. */
-static kmd_take_t take(kmd_t* k, uint64_t now) {
-    uint64_t* l = k->line;
-    const uint32_t req = k->next;
+/* Takes source `src`'s line: kernel commands act, bad records are refused, a record is
+ * issued or waits. STOP, EXIT, RUN, CANCEL: host only; KMD_SEG_POST: engine only. */
+KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
+    kmd_ring_t* r = &k->ring[src];
+    uint64_t* l = r->line;
+    const uint32_t req = r->next, host = src == KMD_SRC_HOST;
     uint32_t hdr = (uint32_t)(l[0] >> 32);
     const uint32_t seg = hdr & 0xFFu, flags = (hdr >> 8) & 0xFFu;
     const uint32_t team = (uint32_t)l[1], a0 = (uint32_t)(l[1] >> 32);
     const uint32_t first = team & 0xFFFFu, count = team >> 16;
     const uint32_t queued = seg != KM_SEG_EXIT && (flags & KM_F_QUEUE);
     if (seg == KM_SEG_DEADLINE && a0 != 0) {
-        hring_consumed(k);
-        k->t_record = (uint64_t)a0 * 50u;
+        ring_consumed(r);
+        r->t_record = (uint64_t)a0 * 50u;
         return KMD_TAKEN;
     }
-    if (seg == KM_SEG_STOP) {
-        hring_consumed(k);
+    if (seg == KM_SEG_STOP && host) {
+        ring_consumed(r);
         if (k->busy) {
             result_error(k, KMD_ERR_STOP_BUSY, 0, k->seq, req, k->busy);
         }
         return KMD_FINISH;
     }
-    /* Every other command ends in one event: it waits until that event has room. */
-    if (!events_room(k)) {
-        return KMD_NO_ROOM;
-    }
-    if (seg == KM_SEG_PING) {
-        hring_consumed(k);
-        events_push(k, req, KM_EV_PONG, 0);
+    if (seg == KMD_SEG_POST && src == KMD_SRC_ENGINE) {
+        if (engine_post(k, l, 0)) {
+            return KMD_NO_ROOM;
+        }
+        ring_consumed(r);
         k->t_last_event = now;
         return KMD_TAKEN;
     }
-    if (seg == KM_SEG_RUN || seg == KM_SEG_CANCEL) {
-        hring_consumed(k);
-        if (seg == KM_SEG_RUN) {
-            stream_run(k, req, a0, (uint32_t)(l[2] >> 32));
-        } else {
-            stream_cancel(k, req, a0);
+    /* Every other command ends in one event: it waits until that event has room. */
+    if (!ring_room(r)) {
+        return KMD_NO_ROOM;
+    }
+    if (seg == KM_SEG_PING) {
+        ring_consumed(r);
+        ring_push(r, req, KM_EV_PONG, 0);
+        k->t_last_event = now;
+        return KMD_TAKEN;
+    }
+    if (host && (seg == KM_SEG_RUN || seg == KM_SEG_CANCEL)) {
+        const int wait =
+            (seg == KM_SEG_RUN ? engine_run(k, req, a0, (uint32_t)(l[2] >> 32))
+                               : engine_cancel(k, req, a0));
+        if (wait) {
+            return KMD_NO_ROOM;
         }
+        ring_consumed(r);
         k->t_last_event = now;
         return KMD_TAKEN;
     }
 #ifdef KMD_VERIFY_LINES
-    if (seg == KMD_SEG_CHECK_UPLOAD) {
-        hring_consumed(k);
+    if (host && seg == KMD_SEG_CHECK_UPLOAD) {
+        ring_consumed(r);
         upload_check(k, req, a0, (uint32_t)(l[2] >> 32), (uint32_t)l[3]);
         k->t_last_event = now;
         return KMD_TAKEN;
@@ -213,7 +225,9 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
     uint32_t refuse = 0;
     if (seg == KM_SEG_DEADLINE) {
         refuse = KMD_REFUSE_DEADLINE;
-    } else if (seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) {
+    } else if (
+        (seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) || (!host && seg == KM_SEG_EXIT)
+    ) {
         refuse = KMD_REFUSE_SEG;
     } else if (flags & 1u) {
         refuse = KMD_REFUSE_FLAGS;
@@ -223,8 +237,8 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
         refuse = KMD_REFUSE_TEAM;
     }
     if (refuse != 0) {
-        hring_consumed(k);
-        events_push(k, req, KM_EV_REFUSED | (refuse << 8), 0);
+        ring_consumed(r);
+        ring_push(r, req, KM_EV_REFUSED | (refuse << 8), 0);
         k->t_last_event = now;
         k->refused++;
         return KMD_TAKEN;
@@ -248,67 +262,85 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
     }
     const uint32_t slot = slot_free(k);
     if (slot == KM_RING_SLOTS) {
-        return KMD_HELD; /* an engine took the last free slot */
+        return KMD_HELD; /* another source took the last free slot */
     }
     l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
-    record_issue(k, l, slot, req, now, k->t_record);
-    hring_consumed(k);
+    record_issue(k, l, slot, req, src, now, r->t_record);
+    ring_consumed(r);
     k->exited = seg == KM_SEG_EXIT;
     return KMD_TAKEN;
 }
 
-/* The loop. Returns when a STOP command, the runtime's stop or an error ends it. */
+/* Source `src`'s turn in a pass: at most one command, taken unless every slot is busy.
+ * Returns 1 when the command ends the loop. */
+KMD_HOT int source_turn(kmd_t* k, uint32_t src, uint32_t* activity) {
+    kmd_ring_t* r = &k->ring[src];
+    const uint32_t host = src == KMD_SRC_HOST;
+    if (r->line_state == 0) {
+        if (k->busy == k->full) {
+            k->full_passes += host;
+            return 0;
+        }
+        if (!ring_take(r)) {
+            k->idle_passes += host;
+            return 0;
+        }
+        r->line_state = 1;
+        ++*activity;
+#ifdef KMD_VERIFY_LINES
+        if (host) {
+            verify_line(k);
+        }
+#endif
+    }
+    const uint64_t now = x280_mtime();
+    if (k->t_first == 0) {
+        k->t_first = now;
+    }
+    const kmd_take_t t = take(k, src, now);
+    if (t == KMD_FINISH) {
+        return 1;
+    }
+    if (t == KMD_TAKEN) {
+        r->line_state = 0;
+    } else if (r->line_state == 1) {
+        r->line_state = 2;
+        if (t == KMD_HELD) {
+            k->held++;
+        } else {
+            k->no_room++;
+        }
+    }
+    return 0;
+}
+
+/* The loop: sweep, then one command of each source in turn (host, engine). Returns when
+ * a STOP command, the runtime's stop or an error ends it. */
 static void loop(kmd_t* k) {
     const volatile kmd_args_t* a = k->args;
     result_where(k, KMD_WHERE_LOOP);
     uint32_t spins = 0, activity = 0, seen_activity = 0;
     uint64_t t_active = x280_mtime();
+    kmd_ring_t* host = &k->ring[KMD_SRC_HOST];
+    kmd_ring_t* engine = &k->ring[KMD_SRC_ENGINE];
     for (;;) {
         k->passes++;
         if (k->busy) {
             slots_sweep(k);
         }
-        if (k->line_state == 0) {
-            if (k->busy == k->full) {
-                k->full_passes++;
-            } else if (!hring_take(k)) {
-                k->idle_passes++;
-            } else {
-                k->line_state = 1;
-                activity++;
-#ifdef KMD_VERIFY_LINES
-                verify_line(k);
-#endif
-            }
+        if (source_turn(k, KMD_SRC_HOST, &activity)) {
+            return;
         }
-        if (k->line_state != 0) {
-            const uint64_t now = x280_mtime();
-            if (k->t_first == 0) {
-                k->t_first = now;
-            }
-            const kmd_take_t t = take(k, now);
-            if (t == KMD_FINISH) {
-                return;
-            }
-            if (t == KMD_TAKEN) {
-                k->line_state = 0;
-            } else if (k->line_state == 1) {
-                k->line_state = 2;
-                if (t == KMD_HELD) {
-                    k->held++;
-                } else {
-                    k->no_room++;
-                }
-            }
+        if (engine_active(k)) {
+            source_turn(k, KMD_SRC_ENGINE, &activity);
+            ring_flush(engine);
         }
-        if (k->nstreams != 0) {
-            engines_step(k, x280_mtime());
-        }
-        events_flush(k);
+        ring_flush(host);
         if (++spins != KMD_POLL_EVERY) {
             continue;
         }
         spins = 0;
+        k->harts[KMD_H_STAMP0] = (uint32_t)(k->passes >> 10);
         if (x280_hart_stop_requested(k->hart, k->run)) {
             result_error(k, KMD_ERR_STOPPED, 0, k->seq, 0, k->busy);
             return;
@@ -316,18 +348,17 @@ static void loop(kmd_t* k) {
         const uint64_t now = x280_mtime();
         const uint32_t late = slots_late(k, now);
         if (late != KM_RING_SLOTS) {
+            /* The record's source gets the timeout event; the engine turns it into its
+             * stream's error, which engine_stop forwards. */
             const uint32_t took = (uint32_t)(now - k->slot_t0[late]);
+            const uint32_t src = k->slot_src[late];
             result_error(
                 k, KMD_ERR_DEADLINE, late, k->slot_seq[late], k->slot_req[late], took
             );
-            /* A running stream's record ends the stream; the host's and an orphan's
-             * post the timeout event (an orphan's with its stream's req). */
-            kmd_stream_t* s = slot_owner(k, late);
-            if (s != 0) {
-                stream_fail(k, s, KM_SERR_DEADLINE, k->slot_pc[late]);
-            } else {
-                events_push(k, k->slot_req[late], KM_EV_TIMEOUT | (late << 8), took);
-            }
+            k->harts[KMD_H_SOURCE] = src;
+            ring_push(
+                &k->ring[src], k->slot_req[late], KM_EV_TIMEOUT | (late << 8), took
+            );
             return;
         }
         if (activity != seen_activity || k->busy || k->nstreams) {
@@ -347,6 +378,7 @@ static void finish(kmd_t* k) {
     if (k->ctl[0] != 0 && (k->busy || !k->exited)) {
         grid_stop(k);
     }
+    engine_stop(k);
     const uint64_t now = x280_mtime();
     result_finish(k, now);
 #ifdef KMD_TRACE
@@ -355,7 +387,7 @@ static void finish(kmd_t* k) {
         kmd_store_chunk((volatile uint8_t*)k->upload, head);
     }
 #endif
-    events_flush(k);
+    ring_flush(&k->ring[KMD_SRC_HOST]);
     events_word(k, KMD_HOST_ERROR, k->error);
     events_word(k, KMD_HOST_STATE, k->error ? KMD_STATE_FAILED : KMD_STATE_DONE);
     grid_close(k);
@@ -366,7 +398,7 @@ static void finish(kmd_t* k) {
 
 /* Core 0's kernel; kept out of main so main's prologue touches no FP register. */
 static __attribute__((noinline)) void run(uint64_t hart) {
-    uint64_t line_buf[24], eline_buf[16];
+    uint64_t host_line[16], engine_line[16];
     const uint64_t run_value = x280_hart_control(hart)->run_value;
     const uint64_t t_boot = x280_mtime();
     const volatile kmd_args_t* a = (const volatile kmd_args_t*)x280_hart_args(hart);
@@ -375,37 +407,45 @@ static __attribute__((noinline)) void run(uint64_t hart) {
         return;
     }
     kmd_t* k = (kmd_t*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + a->state_ddr);
-    /* Zeroed through a volatile pointer: a plain loop may become a memset call, and the
-     * image links without a C library. */
+    /* The whole state area, engine's too, zeroed through a volatile pointer: a plain
+     * loop may become a memset call, and the image has no C library. */
     volatile uint64_t* raw = (volatile uint64_t*)k;
-    for (uint32_t i = 0; i < sizeof(*k) / sizeof(uint64_t); i++) {
+    for (uint32_t i = 0; i < KMD_STATE_BYTES / sizeof(uint64_t); i++) {
         raw[i] = 0;
     }
     k->hart = hart;
-    k->line = (uint64_t*)(((uintptr_t)line_buf + 63u) & ~(uintptr_t)63u);
-    k->eline = (uint64_t*)(((uintptr_t)eline_buf + 63u) & ~(uintptr_t)63u);
     k->run = run_value;
     k->t_boot = t_boot;
     k->args = a;
     k->lim = (volatile uint8_t*)a;
     k->result = (volatile uint32_t*)(k->lim + KMD_LIM_RESULT);
+    k->harts = (volatile uint32_t*)(k->lim + KMD_LIM_HARTS);
     k->upload = k->lim + KMD_LIM_UPLOAD;
     k->upload_bytes = (uint32_t)a->upload_bytes;
     k->panels = (uint32_t)a->panels;
-    k->host_depth = (uint32_t)a->host_depth;
-    k->event_depth = (uint32_t)a->event_depth;
     k->depth = (uint32_t)a->depth;
     k->full = (1u << k->depth) - 1u;
     k->cores = (uint32_t)a->cores;
-    k->t_record = a->t_record;
-    k->next = 1;
+    k->ering = (volatile uint8_t*)k + KMD_STATE_RING;
+    kmd_ring_t* h = &k->ring[KMD_SRC_HOST];
+    h->cmds = k->lim + KMD_LIM_HRING;
+    h->read = (volatile const uint32_t*)(k->lim + KMD_LIM_READ);
+    h->depth = (uint32_t)a->host_depth;
+    h->event_depth = (uint32_t)a->event_depth;
+    h->next = 1;
+    h->t_record = a->t_record;
+    h->line = (uint64_t*)(((uintptr_t)host_line + 63u) & ~(uintptr_t)63u);
     result_word(k, KMD_R_STATE, KMD_STATE_BOOT);
     if (boot(k) == KMD_ERR_NONE) {
+        engine_open(k, (uint64_t*)(((uintptr_t)engine_line + 63u) & ~(uintptr_t)63u));
+        engine_go(k, 1u);
         result_word(k, KMD_R_BOOT_TICKS, (uint32_t)(x280_mtime() - k->t_boot));
         result_word(k, KMD_R_STATE, KMD_STATE_READY);
         events_ready(k);
         events_word(k, KMD_HOST_STATE, KMD_STATE_READY);
         loop(k);
+    } else {
+        engine_go(k, 2u);
     }
     finish(k);
 }
@@ -416,6 +456,14 @@ int main(uint64_t hartid) {
     __asm__ volatile("csrs mstatus, %0" ::"r"((3ul << 9) | (3ul << 13)));
     if (hartid == 0) {
         run(hartid);
+    } else if (hartid == 1) {
+        const uint64_t run_value = x280_hart_control(hartid)->run_value;
+        const volatile kmd_args_t* a = (
+            (const volatile kmd_args_t*) x280_hart_args(hartid)
+        );
+        if (a != 0 && args_valid(a, run_value)) {
+            eng_run(hartid, a, run_value);
+        }
     }
     return 0;
 }

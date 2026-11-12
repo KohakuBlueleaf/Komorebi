@@ -32,7 +32,7 @@ INCLUDE = os.path.join(HERE, "..", "..", "..", "src", "komorebi_native", "includ
 IMAGE = os.path.join(BUILD, "km-dispatch.bin")
 VERIFY_IMAGE = os.path.join(BUILD, "km-dispatch-verify.bin")
 IPI_ACK_DDR = 0x470020  # the runtime's IPI ack in the cluster's DRAM bank
-STATE_BYTES = 8192  # KMD_STATE_BYTES: the kernel's state in its DRAM bank
+STATE_BYTES = 0x8000  # KMD_STATE_BYTES: the kernel's state in its DRAM bank
 # The longest host wait without a log line; run.sh keeps the watcher's stall above it.
 HOST_WAIT_S = 10.0
 DRAM_KEEP = []  # DRAM tensors a running image may use
@@ -83,6 +83,21 @@ R_NAMES = {
     31: "result",
 }
 R_WIDE = {"ticks": 13, "idle_passes": 15, "full_passes": 17, "passes": 19, "last": 22}
+# The hart block after the result block's 32 words (KMD_H_*).
+H_NAMES = {
+    0: "stamp0",
+    1: "stamp1",
+    2: "engine",
+    3: "engine_passes",
+    4: "engine_records",
+    5: "engine_posts",
+    6: "engine_events",
+    7: "engine_runs",
+    8: "lost",
+    9: "source",
+}
+ENGINE_STOPPED = 3  # KMD_ENGINE_STOPPED
+SOURCE_ENGINE = 1  # KMD_SRC_ENGINE: the stream engine on core 1
 
 # kernels/dk_test.h
 SEG_CHECK, SEG_DELAY, SEG_STALL, SEG_RESULT = 1, 2, 3, 4
@@ -265,6 +280,7 @@ def dram_area(device):
 
 def result_block(words):
     out = {name: words[i] for i, name in R_NAMES.items()}
+    out.update({name: words[32 + i] for i, name in H_NAMES.items()})
     for name, lo in R_WIDE.items():
         out[name] = words[lo] | (words[lo + 1] << 32)
     return out
@@ -617,10 +633,12 @@ def case_compile_error(device, args):
 
 
 def finished_clean(fin, n_cores, cores, error=0):
-    """The kernel ended with `error`, every core reached its end, no argument errors."""
+    """The kernel ended with `error` and stopped the engine, every core reached its end,
+    no argument errors."""
     return (
         fin["result_ready"]
         and fin["block"]["error"] == error
+        and fin["block"]["engine"] == ENGINE_STOPPED
         and cores["cores_finished"] == n_cores
         and cores["arg_errors"] == 0
         and cores["hdr_errors"] == 0
@@ -1097,7 +1115,7 @@ def alloc(busy, count, n_cores):
 
 def read_trace(plan):
     """The KMD_TRACE image's trace from the upload region: (header, entries), each
-    entry (kind, slot, req, first, count, low 32 bits of the timer)."""
+    entry (kind, slot, req, first, count, low 32 bits of the timer, source)."""
     head = np.frombuffer(plan.upload_read(0, 64), dtype=np.uint32)
     n = int(head[1]) if head[0] == TRACE_MARK else 0
     raw = np.frombuffer(plan.upload_read(64, 16 * n), dtype=np.uint32).reshape(n, 4)
@@ -1109,6 +1127,7 @@ def read_trace(plan):
             int(t & 0xFFFF),
             int(t >> 16),
             int(p),
+            int(w >> 16 & 0xFF),
         )
         for w, r, t, p in raw
     ]
@@ -1120,7 +1139,7 @@ def replay_trace(entries, sent, n_cores):
     first, count)}, kind "queue", "excl" or "plain"); returns the faults found, the
     teams each record ran on and the most queued records in flight at once."""
     busy, teams, faults, most = {}, {}, [], 0
-    for kind_, slot, req, first, count, p in entries:
+    for kind_, slot, req, first, count, p, _ in entries:
         if kind_ == TRACE_FREE:
             if busy.get(slot, (None,))[0] != req:
                 faults.append(["free of a slot not busy with it", slot, req, p])
@@ -1472,7 +1491,9 @@ def case_streams(device, args):
     out, fin, cnt = with_kernel(device, args, body, depth=16, after=after)
     out["finish"] = fin
     out["cores"] = core_report(cnt, n_cores, out["tag"])
-    issued = [e for e in trace["entries"] if e[0] == TRACE_ISSUE and e[2] == 7]
+    issued = [
+        e for e in trace["entries"] if e[0] == TRACE_ISSUE and e[6] == SOURCE_ENGINE
+    ]
     want = [(r.first, r.count) for r in sims["records"].records]
     out["records_in_order"] = [(e[3], e[4]) for e in issued] == want
     ran = [(r.first, r.count, r.args[0]) for r in sims["records"].records]
@@ -1523,7 +1544,8 @@ def case_stream_deadline(device, args):
     out["ok"] = bool(
         got == [(EV_STREAM_ERROR, 55, ks.ERR_DEADLINE | out["stall_pc"] << 8)]
         and blk["error"] == ERR_DEADLINE
-        and blk["req"] == 55
+        and blk["source"] == SOURCE_ENGINE
+        and blk["engine"] == ENGINE_STOPPED
         and out["cores"]["cores_finished"] == n_cores
         and out["cores"]["gave"] == {"stop": n_cores}
     )

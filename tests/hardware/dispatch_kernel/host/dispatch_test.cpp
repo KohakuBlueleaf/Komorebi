@@ -719,8 +719,12 @@ namespace {
             const auto block = (
                 tile->read_available_lim(base + KMD_LIM_RESULT, 4 * KMD_R_WORDS)
             );
-            f.words.resize(KMD_R_WORDS);
+            const auto harts = (
+                tile->read_available_lim(base + KMD_LIM_HARTS, 4 * KMD_H_WORDS)
+            );
+            f.words.resize(size_t{KMD_R_WORDS} + size_t{KMD_H_WORDS});
             std::memcpy(f.words.data(), block.data(), 4 * KMD_R_WORDS);
+            std::memcpy(f.words.data() + KMD_R_WORDS, harts.data(), 4 * KMD_H_WORDS);
             return f;
         }
 

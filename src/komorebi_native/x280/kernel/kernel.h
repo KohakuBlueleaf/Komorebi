@@ -16,18 +16,39 @@
 #define KMD_POLL_EVERY 1024u
 /* The team allocator's answer when no team of the count fits now. */
 #define KMD_NO_FIRST 0xFFFFFFFFu
+/* The loop's hot path stays inlined: an outlined call saves registers on the stack,
+ * which is uncached LIM (a load costs about 17 ns). */
+#define KMD_HOT static inline __attribute__((always_inline))
 
-/* An active micro-op stream; it runs in place in the upload region. */
+/* A command source: its ring of 64-byte command lines, numbered from 1 in slot i %
+ * depth, and its ring of 16-byte events; each word has one writer (README.md). */
 typedef struct {
-    uint32_t regs[KM_STREAM_REGS];
-    uint32_t running; /* 1 while active */
-    uint32_t req, pc, steps, max_steps, n_ops, n_records;
-    uint32_t off, bytes; /* its range in the upload region */
-    uint32_t pending;    /* its records in flight and its queued jobs */
-    uint32_t last_result;
-    uint32_t order;    /* activation number; turns go in this order */
-    uint64_t t_record; /* deadline of each record it issues, in ticks */
-} kmd_stream_t;
+    volatile const uint8_t* cmds;  /* the source writes the lines */
+    volatile uint32_t* consumed;   /* the kernel writes: commands taken */
+    volatile uint8_t* events;      /* the kernel writes the events */
+    volatile uint32_t* told;       /* the kernel writes: events pushed (a hint) */
+    volatile const uint32_t* read; /* the source writes: events it has read */
+    uint32_t depth, event_depth;   /* powers of two */
+    uint32_t next;                 /* number of the next command */
+    uint32_t pushed;               /* events pushed */
+    uint32_t told_n;               /* events the count word shows */
+    uint32_t read_n;               /* events the source has read, as last loaded */
+    uint32_t line_state; /* 0: line is free; 1: it holds command next; 2: held */
+    uint32_t nbusy;      /* busy slots whose record came from here */
+    uint32_t owed;       /* events owed besides those (host: one per active stream) */
+    uint64_t t_record;   /* deadline of its next record, in ticks */
+    uint64_t* line;      /* the command being taken: 8 words, 64-byte aligned */
+} kmd_ring_t;
+
+/* Sources, served in this order (the numbers are in km_dispatch.h's hart block). */
+#define KMD_SRC_HOST 0u
+#define KMD_SRC_ENGINE 1u
+#define KMD_SOURCES 2u
+
+/* A stream the kernel admitted and the engine runs: its range and req. */
+typedef struct {
+    uint32_t active, req, off, bytes;
+} kmd_run_t;
 
 typedef struct {
     /* run */
@@ -35,6 +56,7 @@ typedef struct {
     const volatile kmd_args_t* args;
     volatile uint8_t* lim;          /* the layout's base: the argument block */
     volatile uint32_t* result;      /* the result block */
+    volatile uint32_t* harts;       /* the hart block */
     volatile const uint8_t* upload; /* the upload region, upload_bytes long */
     uint32_t upload_bytes;
     uint32_t error, where; /* KMD_ERR_*, KMD_WHERE_* */
@@ -42,47 +64,35 @@ typedef struct {
     /* grid port */
     uint32_t panels, opened;  /* windows programmed: bit 0, 1 panels, bit 2 host */
     volatile uint8_t* ctl[2]; /* every core's control block, through each panel */
-    /* host ring and events */
+    /* sources and the host buffer */
     volatile uint32_t* host; /* the host buffer, through the host window */
-    uint32_t host_depth, event_depth;
-    uint32_t next;       /* number of the next host command */
-    uint32_t events;     /* events pushed */
-    uint32_t told;       /* events the host's count word shows */
-    uint32_t host_read;  /* events the host has read, as last loaded from LIM */
-    uint32_t line_state; /* 0: k->line is free; 1: it holds command k->next; 2: held */
+    kmd_ring_t ring[KMD_SOURCES];
+    volatile uint8_t* ering; /* the engine's ring area in DRAM */
     /* completion table */
     uint32_t depth, full, busy, nbusy, cores;
     uint32_t seq;                     /* last sequence number issued */
     uint32_t exited;                  /* an EXIT record was issued */
-    uint64_t t_record;                /* deadline of the next record, in ticks */
     uint32_t slot_seq[KM_RING_SLOTS]; /* last sequence: the ack word once free */
     uint32_t slot_req[KM_RING_SLOTS];
     uint32_t slot_team[KM_RING_SLOTS];
-    uint32_t slot_order[KM_RING_SLOTS]; /* the issuing stream's order (0: the host) */
-    uint16_t slot_pc[KM_RING_SLOTS];    /* the issuing micro-op */
-    uint8_t slot_stream[KM_RING_SLOTS]; /* the issuing stream's index */
-    uint32_t result_busy;               /* busy slots whose record has KM_F_RESULT */
+    uint8_t slot_src[KM_RING_SLOTS]; /* the source the record came from */
+    uint32_t result_busy;            /* busy slots whose record has KM_F_RESULT */
     uint32_t last_result; /* the latest KM_F_RESULT record's result (0: none yet) */
     uint32_t results;     /* KM_F_RESULT records completed */
     uint64_t slot_t0[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
-    /* engines */
-    kmd_stream_t streams[KM_STREAM_MAX_ACTIVE];
-    uint32_t nstreams, orders; /* active streams; activations so far */
-    uint32_t stream_events, stream_records;
+    /* streams the engine runs */
+    kmd_run_t runs[KM_STREAM_MAX_ACTIVE];
+    uint32_t nstreams; /* admitted and not yet ended */
     /* counters */
     uint32_t records, max_busy, refused, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */
     uint32_t traced, untraced;              /* KMD_TRACE builds */
     uint64_t passes, idle_passes, full_passes;
     uint64_t t_first, t_last_event;
-    /* the command being taken, as 8 little-endian 64-bit words, on the stack and
-     * 64-byte aligned for the vector store */
-    uint64_t* line;
-    uint64_t* eline; /* the record an engine is issuing, the same way */
 } kmd_t;
 
-_Static_assert(sizeof(kmd_t) <= KMD_STATE_BYTES, "kmd_t outgrows its DRAM area");
+_Static_assert(sizeof(kmd_t) <= KMD_STATE_ENGINE, "kmd_t outgrows its DRAM area");
 
 /* take()'s outcome: the command was consumed, waits in k->line, or ends the loop. */
 typedef enum {
