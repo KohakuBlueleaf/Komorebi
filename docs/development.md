@@ -56,7 +56,8 @@ marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they 
 (`tests/core/fake_port.py`). The formatter tests are skipped when clang-format is not installed.
 
 The reference tests (`test_ref_*.py`) cover the scene generator, the numpy
-rasterizer, and, where a C++ compiler is found, the C++ versions. The
+rasterizer and ray tracer with the box tree, and, where a C++ compiler is found, the C++
+versions. The
 CUDA versions are built and run only when `nvcc` and a GPU with no process on it are
 present, and skipped otherwise. Built binaries and generated data go to `build/`
 (`KR_BUILD_DIR`, `KR_DATA`).

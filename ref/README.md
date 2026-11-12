@@ -10,6 +10,9 @@ whose result is exactly representable.
 | `scenes.py` | deterministic scenes for the rasterization and ray tracing benchmarks |
 | `rng.py` | the per-index hash all implementations use for random numbers |
 | `raster.py` | rasterization, the definition the C++ and CUDA versions match |
+| `bvh.py` | the binary box tree (8-word nodes), its cut into treelets, saving and loading |
+| `raytrace.py` | ray tracing over that tree, the definition the C++ and CUDA versions match |
+| `runner.py` | running the binaries and storing their results, shared by the project scripts |
 | `results.py` | the result files an implementation hands to the comparison and picture scripts |
 | `power.py` | GPU power from `nvidia-smi` and CPU package energy where readable |
 | `png.py` | a PNG writer and colour map for the pictures (numpy and zlib only) |
