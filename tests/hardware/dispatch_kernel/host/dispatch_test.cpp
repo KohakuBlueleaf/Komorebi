@@ -599,23 +599,26 @@ namespace {
             return finish(timeout_s);
         }
 
-        // Waits for the kernel's hart result, stops the session and reads the result
-        // block.
-        Finish finish(double timeout_s) {
+        // Waits for the kernel's hart result (or, with wait false, asks the runtime to
+        // stop it at once), stops the session and reads the result block.
+        Finish finish(double timeout_s, bool wait = true) {
             if (!session) {
                 throw std::runtime_error("no kernel running");
             }
             Finish f;
-            const auto res = (
-                rt->session(*session).wait_until_result_ready(millis(timeout_s))
-            );
+            std::optional<x280::WaitResult> res;
+            if (wait) {
+                res = rt->session(*session).wait_until_result_ready(millis(timeout_s));
+            }
             const auto cleaned = rt->cleanup(*session, std::chrono::seconds(5));
             session.reset();
-            f.ready = res.succeeded();
+            f.ready = wait ? res->succeeded() : cleaned.cleaned_up();
             if (f.ready) {
-                f.result = res.hartstates[0].state.result;
-            } else {
-                f.wait = x280::describe(res);
+                f.result = (
+                    (wait ? res->hartstates : cleaned.hartstates)[0].state.result
+                );
+            } else if (wait) {
+                f.wait = x280::describe(*res);
             }
             f.cleaned = cleaned.cleaned_up();
             if (!f.cleaned) {
@@ -823,6 +826,7 @@ NB_MODULE(_km_dispatch_test, m) {
         .def_ro("host_depth", &Plan::host_depth)
         .def_ro("event_depth", &Plan::event_depth)
         .def_ro("next", &Plan::next)
+        .def_ro("seen", &Plan::seen)
         .def("core_table", &Plan::core_table)
         .def(
             "worker_args",
@@ -841,7 +845,7 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("event_depth") = 128,
             nb::arg("t_start_s") = 30.0,
             nb::arg("t_record_s") = 1.0,
-            nb::arg("t_idle_s") = 30.0,
+            nb::arg("t_idle_s") = 0.0,
             nb::arg("state_ddr") = 0
         )
         .def("start", &Plan::start, nb::arg("image"))
@@ -899,11 +903,11 @@ NB_MODULE(_km_dispatch_test, m) {
         )
         .def(
             "finish",
-            [](Plan& p, double timeout_s) {
+            [](Plan& p, double timeout_s, bool wait) {
                 Finish f;
                 {
                     nb::gil_scoped_release release;
-                    f = p.finish(timeout_s);
+                    f = p.finish(timeout_s, wait);
                 }
                 nb::dict out;
                 out["result_ready"] = f.ready;
@@ -914,7 +918,8 @@ NB_MODULE(_km_dispatch_test, m) {
                 out["words"] = f.words;
                 return out;
             },
-            nb::arg("timeout_s") = 10.0
+            nb::arg("timeout_s") = 10.0,
+            nb::arg("wait") = true
         )
         .def(
             "run_image",

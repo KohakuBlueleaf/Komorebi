@@ -31,10 +31,19 @@ case's checks hold.
 | `ping` | Sends one `KM_SEG_PING`, then EXIT to the whole grid, then `KM_SEG_STOP` | the PONG carries the PING's command number; every core finished |
 | `issue` | Like `ping`, plus one CHECK record to the whole grid | the event carries the record's command number; no argument errors |
 | `teams` | `--n` CHECK records with random teams at depth 16, fed in batches | every event arrives once; every core's run count, key sum and key mix match |
-| `disjoint` | A DELAY of `--delay-us` on the first half of the grid, then `--n` CHECK records on the second half | the second team's events all arrive before the first's; two slots were busy at once |
-| `stall` | `KM_SEG_DEADLINE` with `--deadline-us`, then a record whose member `--core` waits for the stop word | `KM_EV_TIMEOUT` for that slot and command; the stop word reaches every core; only `--core` is left unreported |
+| `disjoint` | A DELAY of `--delay-us` on the first half of the grid, then `--n` CHECK records on the second half | the second team's events all arrive before the first's; two slots were busy at once; every core's counts match |
+| `stall` | `KM_SEG_DEADLINE` with `--deadline-us`, then a record whose member `--core` waits for the stop word | `KM_EV_TIMEOUT` for that slot and command; every core gave up on the stop word; only `--core` did not report the record |
+| `stall-leader` | Like `stall`, with the team's leader (core 0) as the core that waits | the same, with core 0 the one that did not report |
+| `fill` | 16 DELAY records of `--delay-us` on 16 disjoint teams, then `--n` CHECK records with random teams | all 16 slots were busy at once; every event and every core count is right |
+| `exit-busy` | A DELAY on half the grid, then at once an EXIT whose team names one core | EXIT waited for the DELAY (one held command), then reached every core |
+| `after-exit` | EXIT, then a CHECK record and a PING | the record is refused with reason "after EXIT"; the PING answers; no error |
+| `malformed` | Four bad records (segment 240, flag bit 0, count 0, a team past the last core), then a good one | four `KM_EV_REFUSED` events with their reasons; the good record runs; the session goes on |
+| `stop-busy` | A DELAY on every core, then at once `KM_SEG_STOP` | the kernel ends with `KMD_ERR_STOP_BUSY`; every core gave up on the stop word |
+| `runtime-stop` | A DELAY of 0.5 s on every core; the host asks the X280 runtime to stop the kernel | the kernel ends with `KMD_ERR_STOPPED`; every core gave up on the stop word |
+| `excl` | DELAY A on the first half, DELAY C (twice as long) on the second half but one core, then a `KM_F_EXCL` CHECK B on the two middle cores, which overlaps A only | B is held until A completes and does not wait for C: events in the order A, B, C |
+| `verify` | The test image built with `KMD_VERIFY_LINES`: `--n` NOP records whose header, team and argument words are functions of the command number | the kernel checked `--n` records and found no word wrong |
 | `bench` | `--n` NOP records at `--depth` to teams of `--team` cores (0 = all), then EXIT | every event and every core count is right; reports microseconds per command |
-| `compile-error` | The worker is built with `DK_COMPILE_ERROR`, so it fails to compile | the error is raised and the X280 image was never started (or, with `--image-first`, was stopped) |
+| `compile-error` | The worker is built with `DK_COMPILE_ERROR`, so it fails to compile | the exception is that build failure, and the X280 image was never started (or, with `--image-first`, was stopped) |
 | `store` | No kernel: `--n` bursts of `--lines` 64-byte stores into LIM (or, with `--target l1`, a Tensix core's free L1) and one fence each, for every idle gap in `--gaps-us`, keep-busy period in `--busy-us` (a second thread storing one line per period; 0 = none) and number of burst positions in `--spread`; `--read` reads LIM through the runtime before each burst | always (it reports the time in the stores and in the fence of each burst, as percentiles and raw) |
 | `memcost` | Runs `x280/memcost.c` alone (no grid): nanoseconds per load, store and fence on the stack (cluster local memory, uncached), in cached DRAM of this cluster's bank (through the Memory Port, in a DRAM buffer the test owns), and in registers | the image returned 0 |
 

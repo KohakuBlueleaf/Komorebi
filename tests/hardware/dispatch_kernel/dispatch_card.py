@@ -29,6 +29,7 @@ import ttnn  # noqa: E402
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
 IMAGE = os.path.join(BUILD, "km-dispatch.bin")
+VERIFY_IMAGE = os.path.join(BUILD, "km-dispatch-verify.bin")
 MEMCOST = os.path.join(BUILD, "km-memcost.bin")
 MEMCOST_TESTS = [
     "loop",
@@ -58,6 +59,7 @@ F_EXCL = 2
 EV_DONE, EV_TIMEOUT, EV_PONG, EV_REFUSED = 0, 1, 2, 3
 REFUSE_SEG, REFUSE_FLAGS, REFUSE_TEAM, REFUSE_EXITED = 1, 2, 3, 4
 STATE_READY, STATE_DONE, STATE_FAILED = 2, 3, 4
+ERR_DEADLINE, ERR_STOPPED, ERR_STOP_BUSY = 4, 7, 9
 R_NAMES = {
     0: "state",
     1: "error",
@@ -76,6 +78,9 @@ R_NAMES = {
     24: "refused",
     25: "held",
     26: "no_room",
+    27: "checked",
+    28: "bad_lines",
+    29: "bad_first",
 }
 R_WIDE = {"ticks": 13, "idle_passes": 15, "full_passes": 17, "passes": 19, "last": 22}
 
@@ -125,6 +130,24 @@ def dk_arg(key, param, w):
 
 def dk_mix(key):
     return dk_arg(key, 0x5EED, 0)
+
+
+def verify_word(i, w):
+    """km_dispatch.h kmd_verify_word, on Python ints."""
+    x = ((i * 0x9E3779B1) ^ ((w + 1) * 0x85EBCA77)) & M32
+    x ^= x >> 15
+    return (x * 0x2C1B3C6D) & M32
+
+
+def verify_record(i, cores):
+    """The record of command i that a KMD_VERIFY_LINES kernel expects (a NOP)."""
+    count = 1 + verify_word(i, 10) % cores
+    first = verify_word(i, 11) % (cores - count + 1)
+    words = [0] * 16
+    words[2] = first | (count << 16)
+    for j, at in enumerate([3, 5, 6, 7, 9, 10, 11, 13, 14, 15]):
+        words[at] = verify_word(i, j)
+    return words
 
 
 def record(seg, first, count, key=0, param=0):
@@ -221,14 +244,18 @@ def result_block(words):
     out = {name: words[i] for i, name in R_NAMES.items()}
     for name, lo in R_WIDE.items():
         out[name] = words[lo] | (words[lo + 1] << 32)
-    out["spare"] = list(words[27:32])
+    out["spare"] = list(words[30:32])
     return out
 
 
-def with_kernel(device, args, body, depth=1, t_record_s=1.0, defines=(), preload=None):
-    """Launches the stand-in grid and the kernel (after preload(plan), which may store
-    commands into the host ring), runs body(plan), stops the kernel, closes the X280
-    runtime and reads the counters back. Returns (body, finish, cnt)."""
+def with_kernel(
+    device, args, body, depth=1, defines=(), preload=None, stop=False, info=None
+):
+    """Grid, then kernel (after preload(plan)); body(plan); the kernel's end (with stop,
+    the runtime stops it); X280 runtime closed, counters read. (body, finish, cnt).
+    `info` gets "started" and, if the kernel had to be stopped, "aborted"."""
+    info = {} if info is None else info
+    info["started"] = False
     runtime = dk.Runtime(device, pll_mhz=args.pll)
     plan = runtime.plan()
     gx, gy = plan.grid_x, plan.grid_y
@@ -236,7 +263,7 @@ def with_kernel(device, args, body, depth=1, t_record_s=1.0, defines=(), preload
     table = int_tensor(device, np.array([plan.core_table()], dtype=np.uint32))
     state = dram_area(device)
     plan.prepare(
-        depth, args.host_depth, args.event_depth, 30.0, t_record_s, 30.0, state
+        depth, args.host_depth, args.event_depth, 30.0, 1.0, args.idle_s, state
     )
     out = int_tensor(device, np.zeros((gx * gy, DK_WORDS), dtype=np.uint32))
     prog = program(
@@ -248,20 +275,23 @@ def with_kernel(device, args, body, depth=1, t_record_s=1.0, defines=(), preload
     try:
         if args.image_first:
             plan.start(args.image)
+            info["started"] = True
             log("kernel started")
         ttnn.generic_op([table, out], prog)
         log("grid launched")
         if not args.image_first:
             plan.start(args.image)
+            info["started"] = True
             log("kernel started")
         state = plan.wait_ready(30.0)
         log(f"kernel state {state}")
         body_out = body(plan) if state == STATE_READY else {"ready_state": state}
-        fin = plan.finish(10.0)
+        fin = plan.finish(10.0, wait=not stop)
         log(f"kernel finished: result {fin['result']} cleaned {fin['cleaned']}")
     finally:
         if plan.running():
-            log(f"stopping the kernel: cleaned {plan.abort()}")
+            info["aborted"] = plan.abort()
+            log(f"stopping the kernel: cleaned {info['aborted']}")
         del plan, runtime
         gc.collect()
         log("x280 runtime closed")
@@ -328,12 +358,11 @@ def check_teams(cnt, n_cores, sent):
     return len(bad), bad[:8]
 
 
-def check_events(events, reqs, kinds=(EV_DONE,)):
-    """Events numbered 1.. in order, each request once, status in `kinds`."""
+def check_events(events, reqs, first, kinds=(EV_DONE,)):
+    """Events numbered first, first + 1, .. in order, each request once, status in
+    `kinds`."""
     got = [e[1] for e in events]
-    indices_ok = all(e[0] == events[0][0] + k for k, e in enumerate(events)) and len(
-        events
-    ) == len(reqs)
+    indices_ok = [e[0] for e in events] == list(range(first, first + len(reqs)))
     return {
         "events": len(events),
         "indices_ok": bool(indices_ok),
@@ -406,9 +435,10 @@ def case_teams(device, args):
             recs.append(record(SEG_CHECK, first, count, key, param))
             sent.append((first, count, key))
         reqs = list(range(plan.next, plan.next + args.n))
+        first = plan.seen + 1
         events, times = plan.stream(np.array(recs, dtype=np.uint32), 10.0, 64)
         out = {"tag": plan.tag, "times": times}
-        out["check"] = check_events(events, reqs)
+        out["check"] = check_events(events, reqs, first)
         out["exit"] = exit_and_stop(plan)
         return out
 
@@ -431,7 +461,7 @@ def case_teams(device, args):
 def case_disjoint(device, args):
     """Team A = first half, one DELAY of args.delay_us; team B = second half, then
     args.n CHECK records. B's events must arrive before A's."""
-    n_cores = 0
+    n_cores, sent = 0, []
     cycles = int(args.delay_us * 1e-6 * AICLK_HZ)
 
     def body(plan):
@@ -439,9 +469,11 @@ def case_disjoint(device, args):
         n_cores = plan.grid_x * plan.grid_y
         half = n_cores // 2
         a = plan.submit(record(SEG_DELAY, 0, half, 1, cycles))
+        sent.append((0, half, 1))
         last = 0
         for k in range(args.n):
             last = plan.submit(record(SEG_CHECK, half, half, 2 + k, k))
+            sent.append((half, half, 2 + k))
         events = plan.take(last, 10.0)
         out = {"tag": plan.tag, "events": events, "a_req": a}
         out["exit"] = exit_and_stop(plan)
@@ -453,11 +485,14 @@ def case_disjoint(device, args):
     out["finish"] = fin
     out["cores"] = core_report(cnt, n_cores, out["tag"])
     out["order"] = order
+    out["team_mismatch"], out["first_mismatch"] = check_teams(cnt, n_cores, sent)
     a_req = out["a_req"]
     a_ticks = [e[3] for e in events if e[1] == a_req]
     out["ok"] = bool(
         fin["result_ready"]
         and fin["block"]["error"] == 0
+        and out["team_mismatch"] == 0
+        and out["cores"]["arg_errors"] == 0
         and len(events) == args.n + 1
         and order[-1] == a_req
         and fin["block"]["max_busy"] >= 2
@@ -468,19 +503,20 @@ def case_disjoint(device, args):
     return out
 
 
-def case_stall(device, args):
-    """A team whose member args.core stalls, under a deadline set by KM_SEG_DEADLINE:
-    a KM_EV_TIMEOUT for its slot and sequence, the stop word, every core returns."""
+def case_stall(device, args, leader=False):
+    """A team of every core whose member --core (with leader, the team's leader, core
+    0) waits for the stop word, under KM_SEG_DEADLINE: KM_EV_TIMEOUT, the stop word."""
     n_cores = 0
+    stalled = 0 if leader else args.core
 
     def body(plan):
         nonlocal n_cores
         n_cores = plan.grid_x * plan.grid_y
-        out = {"tag": plan.tag}
+        out = {"tag": plan.tag, "stalled": stalled}
         i = plan.submit(record(SEG_CHECK, 0, n_cores, 3, 4))
         out["before"] = plan.take(i, 5.0)
         plan.submit(command(SEG_DEADLINE, args.deadline_us))
-        out["stall_req"] = plan.submit(record(SEG_STALL, 0, n_cores, 9, args.core))
+        out["stall_req"] = plan.submit(record(SEG_STALL, 0, n_cores, 9, stalled))
         out["timeout"] = plan.take(out["stall_req"], 10.0)
         out["host_state"] = plan.host_word(0)
         return out
@@ -490,8 +526,8 @@ def case_stall(device, args):
     out["cores"] = core_report(cnt, n_cores, out["tag"])
     state = cnt[:n_cores, C["state"] : C["state"] + 19]
     blk = fin["block"]
-    # The cores that did not report: in the team of the timed-out sequence and stopped
-    # somewhere other than the leader's wait.
+    # Cores that did not report the timed-out record: never took it, or stopped other
+    # than waiting for the next record or, as its leader, for the members.
     out["not_reported"] = [
         {
             "core": i,
@@ -500,18 +536,19 @@ def case_stall(device, args):
             "seq": int(state[i, S_SEQ]),
         }
         for i in range(n_cores)
-        if int(state[i, S_SEQ]) == blk["seq"] and int(state[i, S_WHERE]) not in (2, 3)
+        if int(state[i, S_SEQ]) != blk["seq"] or int(state[i, S_WHERE]) not in (2, 3)
     ]
     ev = out["timeout"]
     out["ok"] = bool(
         ev
         and kind(ev[-1][2]) == (EV_TIMEOUT, blk["slot"])
         and ev[-1][1] == out["stall_req"]
-        and blk["error"] == 4
+        and blk["error"] == ERR_DEADLINE
         and blk["req"] == out["stall_req"]
         and ev[-1][3] >= args.deadline_us * 50
         and out["cores"]["cores_finished"] == n_cores
-        and [c["core"] for c in out["not_reported"]] == [args.core]
+        and out["cores"]["gave"] == {"stop": n_cores}
+        and [c["core"] for c in out["not_reported"]] == [stalled]
     )
     return out
 
@@ -546,7 +583,7 @@ def case_bench(device, args):
             events, times = plan.stream(recs[0], 30.0, args.batch, args.settle_us)
         plan.submit(command(SEG_STOP))
         out = {"tag": plan.tag, "times": times}
-        out["check"] = check_events(events, list(range(1, args.n + 2)))
+        out["check"] = check_events(events, list(range(1, args.n + 2)), 1)
         ticks = np.array([e[3] for e in events[:-1]], dtype=np.float64)
         out["latency_us"] = {
             "mean": round(float(ticks.mean()) / 50, 3),
@@ -572,6 +609,7 @@ def case_bench(device, args):
         out["us_store_per_command"] = round(t["store_s"] * 1e6 / (n + 1), 4)
     out["idle_pass_share"] = round(blk["idle_passes"] / max(blk["passes"], 1), 4)
     out["full_pass_share"] = round(blk["full_passes"] / max(blk["passes"], 1), 4)
+    out["no_room"] = blk["no_room"]
     out["ok"] = bool(
         fin["result_ready"]
         and blk["error"] == 0
@@ -643,12 +681,335 @@ def case_memcost(device, args):
 
 
 def case_compile_error(device, args):
-    """The worker fails to compile; the kernel must be stopped (or never started)."""
+    """The worker fails to compile: the exception is that build failure, and the X280
+    image was never started (or, with --image-first, was stopped)."""
+    info = {}
     try:
-        with_kernel(device, args, lambda plan: {}, defines=[("DK_COMPILE_ERROR", "1")])
+        with_kernel(
+            device,
+            args,
+            lambda plan: {},
+            defines=[("DK_COMPILE_ERROR", "1")],
+            info=info,
+        )
     except Exception as err:  # noqa: BLE001
-        return {"raised": type(err).__name__, "message": str(err)[:300], "ok": True}
-    return {"raised": None, "ok": False}
+        message = str(err)
+        compile_error = "build failed" in message and "DK_COMPILE_ERROR" in message
+        if args.image_first:
+            image_ok = info["started"] and info.get("aborted") is True
+        else:
+            image_ok = not info["started"]
+        return {
+            "raised": type(err).__name__,
+            "message": message[:300],
+            "compile_error": compile_error,
+            "image": info,
+            "ok": bool(compile_error and image_ok),
+        }
+    return {"raised": None, "image": info, "ok": False}
+
+
+def finished_clean(fin, n_cores, cores, error=0):
+    """The kernel ended with `error`, every core reached its end, no argument errors."""
+    return (
+        fin["result_ready"]
+        and fin["block"]["error"] == error
+        and cores["cores_finished"] == n_cores
+        and cores["arg_errors"] == 0
+        and cores["hdr_errors"] == 0
+    )
+
+
+def case_fill(device, args):
+    """All 16 slots busy: 16 DELAY records of --delay-us on 16 disjoint teams, then --n
+    CHECK records with random teams that wait for slots; then EXIT."""
+    rng = np.random.default_rng(args.seed)
+    n_cores, sent = 0, []
+    cycles = int(args.delay_us * 1e-6 * AICLK_HZ)
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        width = n_cores // 16
+        s0 = plan.seen
+        reqs = []
+        for j in range(16):
+            reqs.append(plan.submit(record(SEG_DELAY, j * width, width, 1 + j, cycles)))
+            sent.append((j * width, width, 1 + j))
+        for k in range(args.n):
+            count = int(rng.integers(1, n_cores + 1))
+            first = int(rng.integers(0, n_cores - count + 1))
+            reqs.append(plan.submit(record(SEG_CHECK, first, count, 100 + k, k)))
+            sent.append((first, count, 100 + k))
+        events = plan.take(s0 + len(reqs), 10.0)
+        out = {"tag": plan.tag, "check": check_events(events, reqs, s0 + 1)}
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=16)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    out["team_mismatch"], out["first_mismatch"] = check_teams(cnt, n_cores, sent)
+    blk = fin["block"]
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and all(out["check"].values())
+        and out["team_mismatch"] == 0
+        and blk["max_busy"] == 16
+        and blk["full_passes"] > 0
+    )
+    return out
+
+
+def case_exit_busy(device, args):
+    """EXIT sent while a DELAY of --delay-us on half the grid is in flight: the kernel
+    holds EXIT until the DELAY completes, then sends it to every core."""
+    n_cores = 0
+    cycles = int(args.delay_us * 1e-6 * AICLK_HZ)
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out = {"tag": plan.tag}
+        s0 = plan.seen
+        out["delay_req"] = plan.submit(record(SEG_DELAY, 0, n_cores // 2, 1, cycles))
+        out["exit_req"] = plan.submit(record(SEG_EXIT, 0, 1))
+        out["events"] = plan.take(s0 + 2, 10.0)
+        plan.submit(command(SEG_STOP))
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=16)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    out["exit_per_core"] = int((cnt[:n_cores, C["exit"]] != 0).sum())
+    order = [e[1] for e in out["events"]]
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and order == [out["delay_req"], out["exit_req"]]
+        and all(kind(e[2])[0] == EV_DONE for e in out["events"])
+        and fin["block"]["held"] == 1
+        and fin["block"]["max_busy"] == 1
+        and out["exit_per_core"] == n_cores
+        and out["cores"]["where"] == {"exit": n_cores}
+    )
+    return out
+
+
+def case_after_exit(device, args):
+    """A CHECK record after a completed EXIT is refused (KMD_REFUSE_EXITED); a PING
+    still answers; STOP ends the session without an error."""
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out = {"tag": plan.tag}
+        plan.submit(record(SEG_EXIT, 0, n_cores))
+        out["exit"] = plan.take(plan.seen + 1, 10.0)
+        s0 = plan.seen
+        out["late_req"] = plan.submit(record(SEG_CHECK, 0, n_cores, 5, 5))
+        out["ping_req"] = plan.submit(command(SEG_PING))
+        out["events"] = plan.take(s0 + 2, 5.0)
+        plan.submit(command(SEG_STOP))
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    ev = out["events"]
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and [(e[1], kind(e[2])) for e in ev]
+        == [
+            (out["late_req"], (EV_REFUSED, REFUSE_EXITED)),
+            (out["ping_req"], (EV_PONG, 0)),
+        ]
+        and fin["block"]["refused"] == 1
+        and out["cores"]["gave"] == {"none": n_cores}
+        and int(cnt[:n_cores, C["run"]].sum()) == 0
+    )
+    return out
+
+
+def case_malformed(device, args):
+    """Four bad records (segment 240, flag bit 0, count 0, a team past the last core)
+    are refused with their reasons; a good CHECK after them runs; then EXIT."""
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        bad_flag = record(SEG_CHECK, 0, n_cores, 7, 7)
+        bad_flag[1] |= 1 << 8
+        bad = [
+            (record(240, 0, n_cores), REFUSE_SEG),
+            (bad_flag, REFUSE_FLAGS),
+            (record(SEG_CHECK, 0, 0, 7, 7), REFUSE_TEAM),
+            (record(SEG_CHECK, n_cores - 1, 2, 7, 7), REFUSE_TEAM),
+        ]
+        first_event = plan.seen + 1
+        want = [(plan.submit(rec), (EV_REFUSED, why)) for rec, why in bad]
+        good = plan.submit(record(SEG_CHECK, 0, n_cores, 11, 3))
+        want.append((good, (EV_DONE, 0)))
+        events = plan.take(first_event + len(want) - 1, 5.0)
+        out = {"tag": plan.tag, "want": want, "events": events}
+        out["indices_ok"] = [e[0] for e in events] == list(
+            range(first_event, first_event + len(want))
+        )
+        got = sorted((e[1], kind(e[2])) for e in events)
+        out["kinds_ok"] = got == sorted(want)
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    out["team_mismatch"], _ = check_teams(cnt, n_cores, [(0, n_cores, 11)])
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and out["indices_ok"]
+        and out["kinds_ok"]
+        and out["team_mismatch"] == 0
+        and fin["block"]["refused"] == 4
+    )
+    return out
+
+
+def case_stop_busy(device, args):
+    """STOP while a DELAY of --delay-us on every core is in flight: the kernel ends with
+    KMD_ERR_STOP_BUSY and the stop word ends every core's wait."""
+    n_cores = 0
+    cycles = int(args.delay_us * 1e-6 * AICLK_HZ)
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out = {"tag": plan.tag}
+        out["delay_req"] = plan.submit(record(SEG_DELAY, 0, n_cores, 1, cycles))
+        out["stop_req"] = plan.submit(command(SEG_STOP))
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=4)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    blk = fin["block"]
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"], ERR_STOP_BUSY)
+        and blk["req"] == out["stop_req"]
+        and blk["busy"] != 0
+        and out["cores"]["gave"] == {"stop": n_cores}
+    )
+    return out
+
+
+def case_runtime_stop(device, args):
+    """The runtime stops the kernel while a DELAY of 0.5 s on every core is in flight:
+    KMD_ERR_STOPPED, and the stop word ends every core's wait."""
+    n_cores = 0
+    cycles = int(0.5 * AICLK_HZ)
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out = {"tag": plan.tag}
+        out["delay_req"] = plan.submit(record(SEG_DELAY, 0, n_cores, 1, cycles))
+        by = time.monotonic() + 5.0
+        while plan.host_word(1) < out["delay_req"] and time.monotonic() < by:
+            pass
+        out["taken"] = plan.host_word(1)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=4, stop=True)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    blk = fin["block"]
+    out["ok"] = bool(
+        fin["cleaned"]
+        and finished_clean(fin, n_cores, out["cores"], ERR_STOPPED)
+        and blk["state"] == STATE_FAILED
+        and blk["busy"] != 0
+        and out["cores"]["gave"] == {"stop": n_cores}
+    )
+    return out
+
+
+def case_excl(device, args):
+    """A: DELAY of --delay-us on the first half; C: DELAY twice as long on the second
+    half but one core; B: CHECK with KM_F_EXCL on the two cores around the middle,
+    overlapping A only. B waits for A, not for C."""
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        half = n_cores // 2
+        cycles = int(args.delay_us * 1e-6 * AICLK_HZ)
+        b_rec = record(SEG_CHECK, half - 1, 2, 2, 2)
+        b_rec[1] |= F_EXCL << 8
+        out = {"tag": plan.tag}
+        s0 = plan.seen
+        out["a"] = plan.submit(record(SEG_DELAY, 0, half, 1, cycles))
+        out["c"] = plan.submit(record(SEG_DELAY, half + 1, half - 1, 3, 2 * cycles))
+        out["b"] = plan.submit(b_rec)
+        out["events"] = plan.take(s0 + 3, 10.0)
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=16)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    half = n_cores // 2
+    sent = [(0, half, 1), (half - 1, 2, 2), (half + 1, half - 1, 3)]
+    out["team_mismatch"], out["first_mismatch"] = check_teams(cnt, n_cores, sent)
+    order = [e[1] for e in out["events"]]
+    out["order"] = order
+    b_ticks = [e[3] for e in out["events"] if e[1] == out["b"]]
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and order == [out["a"], out["b"], out["c"]]
+        and all(kind(e[2])[0] == EV_DONE for e in out["events"])
+        and fin["block"]["held"] == 1
+        and fin["block"]["max_busy"] >= 2
+        and b_ticks
+        and b_ticks[0] < args.delay_us * 50 / 2
+        and out["team_mismatch"] == 0
+    )
+    return out
+
+
+def case_verify(device, args):
+    """The KMD_VERIFY_LINES kernel image: --n NOP records whose header, team and ten
+    argument words are functions of the command number; the kernel checks each word."""
+    if args.image == IMAGE:
+        args.image = VERIFY_IMAGE
+    n_cores, sent = 0, []
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        first_req, first_event = plan.next, plan.seen + 1
+        reqs = list(range(first_req, first_req + args.n))
+        recs = np.array([verify_record(i, n_cores) for i in reqs], dtype=np.uint32)
+        sent.extend((r[2] & 0xFFFF, r[2] >> 16, r[3]) for r in recs.tolist())
+        events, times = plan.stream(recs, 30.0, args.batch, args.settle_us)
+        out = {"tag": plan.tag, "times": times}
+        out["check"] = check_events(events, reqs, first_event)
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=args.depth)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    out["team_mismatch"], out["first_mismatch"] = check_teams(cnt, n_cores, sent)
+    blk = fin["block"]
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and all(out["check"].values())
+        and out["team_mismatch"] == 0
+        and blk["checked"] == args.n
+        and blk["bad_lines"] == 0
+    )
+    return out
 
 
 CASES = {
@@ -658,8 +1019,17 @@ CASES = {
     "teams": case_teams,
     "disjoint": case_disjoint,
     "stall": case_stall,
+    "stall-leader": lambda device, args: case_stall(device, args, leader=True),
     "bench": case_bench,
     "compile-error": case_compile_error,
+    "fill": case_fill,
+    "exit-busy": case_exit_busy,
+    "after-exit": case_after_exit,
+    "malformed": case_malformed,
+    "stop-busy": case_stop_busy,
+    "runtime-stop": case_runtime_stop,
+    "excl": case_excl,
+    "verify": case_verify,
     "store": case_store,
     "memcost": case_memcost,
 }
@@ -678,6 +1048,9 @@ def main():
     p.add_argument("--core", type=int, default=37, help="the stalling core")
     p.add_argument("--deadline-us", type=int, default=50000)
     p.add_argument("--limit", type=float, default=20.0, help="worker wait limit, s")
+    p.add_argument(
+        "--idle-s", type=float, default=0.0, help="kernel idle limit, 0 = none"
+    )
     p.add_argument("--pll", type=int, default=1750)
     p.add_argument("--image-first", action="store_true")
     p.add_argument("--batch", type=int, default=1, help="commands per store batch")

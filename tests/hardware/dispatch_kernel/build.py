@@ -20,6 +20,7 @@ NATIVE = ROOT / "src" / "komorebi_native"
 KERNEL = NATIVE / "x280" / "kernel"
 INCLUDES = [NATIVE / "include", KERNEL]
 IMAGE = "km-dispatch.bin"
+VERIFY = "km-dispatch-verify.bin"
 MEMCOST = "km-memcost.bin"
 MODULE = "_km_dispatch_test.abi3.so"
 
@@ -39,6 +40,11 @@ def main():
         args.tree, image, [KERNEL / "main.c"], includes=INCLUDES, defines=args.define
     )
     print(f"{image}: {image.stat().st_size} bytes")
+    defines = [*args.define, "KMD_VERIFY_LINES=1"]
+    sources = [KERNEL / "main.c"]
+    build.build_image(
+        args.tree, args.out / VERIFY, sources, includes=INCLUDES, defines=defines
+    )
     build.build_image(args.tree, args.out / MEMCOST, [HERE / "x280" / "memcost.c"])
     if not args.image_only:
         module = args.out / MODULE
