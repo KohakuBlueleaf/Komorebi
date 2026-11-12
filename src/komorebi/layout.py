@@ -21,6 +21,15 @@ def panels(noc0_x):
     return found
 
 
+# NoC0 x of a Blackhole chip's Tensix columns, in the order of its harvesting mask.
+BLACKHOLE_TENSIX_X = (1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16)
+
+
+def blackhole_noc0_x(harvest_mask):
+    """NoC0 x of each logical column: the Tensix columns whose mask bit is clear."""
+    return [x for i, x in enumerate(BLACKHOLE_TENSIX_X) if not harvest_mask >> i & 1]
+
+
 def core_order(grid):
     """Every core of the grid in the fixed core order: row by row, x fastest."""
     gx, gy = grid
@@ -112,3 +121,98 @@ class Team:
             for p0, p1 in grid_panels
             if max(x0, p0) <= min(x1, p1)
         ]
+
+
+LANE_NONE = 0xFF  # rank of a team member outside every lane (km::kLaneNone)
+LANE_CORES_MAX = 16  # a sender and up to 15 receivers (KM_LANE_RANKS)
+LANE_WINDOW_MAX = 8  # km::kLaneWindowMax
+
+
+@dataclass(frozen=True)
+class Lane:
+    """The cores (x, y) of one lane in rank order; rank 0 is the sender."""
+
+    cores: tuple
+
+    @property
+    def sender(self):
+        return self.cores[0]
+
+
+def lanes(grid, grid_panels, rect, along, noc):
+    """The lanes of `rect` = (x0, y0, columns, rows) along "column" or "row".
+
+    One lane per column of the rectangle, or per row and panel. The sender is where
+    the NoC's direction starts: NoC0 top or left, NoC1 bottom or right."""
+    x0, y0, nx, ny = rect
+    if nx < 1 or ny < 1 or x0 < 0 or y0 < 0 or x0 + nx > grid[0] or y0 + ny > grid[1]:
+        raise ValueError(f"rectangle {rect} does not fit a {grid[0]} by {grid[1]} grid")
+    if noc not in (0, 1) or along not in ("column", "row"):
+        raise ValueError(f"lanes along {along!r} on NoC {noc}")
+    xs, ys = range(x0, x0 + nx), range(y0, y0 + ny)
+    if along == "column":
+        runs = [[(x, y) for y in ys] for x in xs]
+    else:
+        runs = [
+            [(x, y) for x in xs if p0 <= x <= p1]
+            for y in ys
+            for p0, p1 in grid_panels
+            if p0 <= xs[-1] and xs[0] <= p1
+        ]
+    out = [Lane(tuple(run if noc == 0 else run[::-1])) for run in runs]
+    if any(len(lane.cores) > LANE_CORES_MAX for lane in out):
+        raise ValueError(f"a lane of {rect} has more than {LANE_CORES_MAX} cores")
+    return out
+
+
+def lane_rect(lane, noc0, noc_xy, noc):
+    """Multicast corners (start, end) of the lane's receivers as x | y << 16 words.
+
+    noc0[core]: NoC0 (x, y); noc_xy[core]: core table address. Receivers follow the
+    sender one NoC0 step at a time in the NoC's direction. None for one core."""
+    if len(lane.cores) < 2:
+        return None
+    step = 1 if noc == 0 else -1
+    sx, sy = noc0[lane.sender]
+    dx, dy = (step, 0) if lane.cores[1][1] == lane.sender[1] else (0, step)
+    for rank, core in enumerate(lane.cores):
+        if noc0[core] != (sx + rank * dx, sy + rank * dy):
+            raise ValueError(f"{core} is not NoC0 step {rank} from the sender")
+    first, last = noc_xy[lane.cores[1]], noc_xy[lane.cores[-1]]
+    return first[0] | first[1] << 16, last[0] | last[1] << 16
+
+
+def lane_args(grid, grid_panels, team, rect, along, noc, noc0, noc_xy, buffer):
+    """Each team member's lane arguments by core index (km::LaneArgs fields).
+
+    buffer = (lane id, circular buffer index, window B, pages P). The rectangle must
+    lie in the team; members outside it get rank LANE_NONE."""
+    lane_id, cb, window, pages = buffer
+    if not 1 <= window <= LANE_WINDOW_MAX or pages < 1:
+        raise ValueError(f"window {window} or pages {pages} out of range")
+    gx = grid[0]
+    members = set(team.members)
+    common = {
+        "lane": lane_id,
+        "team": team.first | team.count << 16,
+        "noc": noc,
+        "cb": cb,
+        "window": window,
+        "pages": pages,
+    }
+    none = common | {"rank": LANE_NONE, "receivers": 0, "sender": 0}
+    out = {i: none | {"mc_start": 0, "mc_end": 0} for i in members}
+    for lane in lanes(grid, grid_panels, rect, along, noc):
+        index = [y * gx + x for x, y in lane.cores]
+        if not members.issuperset(index):
+            raise ValueError(f"rectangle {rect} is not inside {team}")
+        corners = lane_rect(lane, noc0, noc_xy, noc) or (0, 0)
+        for rank, i in enumerate(index):
+            out[i] = common | {
+                "rank": rank,
+                "receivers": len(index) - 1,
+                "sender": index[0],
+                "mc_start": corners[0],
+                "mc_end": corners[1],
+            }
+    return out

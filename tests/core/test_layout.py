@@ -2,7 +2,18 @@
 
 import pytest
 
-from komorebi.layout import Team, core_order, panels, share, split_range
+from komorebi.layout import (
+    LANE_NONE,
+    Team,
+    blackhole_noc0_x,
+    core_order,
+    lane_args,
+    lane_rect,
+    lanes,
+    panels,
+    share,
+    split_range,
+)
 
 GRID = (12, 10)
 # Logical columns 0 to 5 sit at NoC0 x 1 to 6, columns 6 to 11 at NoC0 x 11 to 16.
@@ -14,6 +25,7 @@ def test_panels_split_where_noc0_is_not_consecutive():
     assert panels(NOC0_X) == PANELS
     assert panels([1, 2, 4, 5, 7]) == [(0, 1), (2, 3), (4, 4)]
     assert panels([]) == []
+    assert blackhole_noc0_x(0b11000000) == NOC0_X  # columns 7 and 10 harvested
 
 
 def test_core_order_is_row_by_row():
@@ -91,3 +103,58 @@ def test_rectangles_need_panels_that_tile_the_columns():
     with pytest.raises(ValueError, match="do not tile"):
         Team(0, 5).rectangles(GRID, [(0, 5), (7, 11)])
     assert Team(3, 20).rectangles(GRID, [(0, 11)]) == [(3, 0, 11, 0), (0, 1, 10, 1)]
+
+
+def test_column_lanes_send_from_the_start_of_the_nocs_direction():
+    down = lanes(GRID, PANELS, (2, 1, 2, 3), "column", 0)
+    assert [lane.cores for lane in down] == [
+        ((2, 1), (2, 2), (2, 3)),
+        ((3, 1), (3, 2), (3, 3)),
+    ]
+    up = lanes(GRID, PANELS, (2, 1, 2, 3), "column", 1)
+    assert up[0].sender == (2, 3) and up[0].cores[-1] == (2, 1)
+
+
+def test_row_lanes_are_cut_at_the_panel_boundary():
+    found = lanes(GRID, PANELS, (4, 0, 4, 1), "row", 1)
+    assert [lane.cores for lane in found] == [((5, 0), (4, 0)), ((7, 0), (6, 0))]
+
+
+def test_lane_rect_corners_follow_the_noc_and_need_consecutive_noc0_steps():
+    noc0 = {(x, y): (NOC0_X[x], y + 2) for x, y in core_order(GRID)}
+    table = {(x, y): (x + 1, y + 2) for x, y in core_order(GRID)}  # another space
+    row = lanes(GRID, PANELS, (6, 4, 3, 1), "row", 0)[0]
+    assert lane_rect(row, noc0, table, 0) == (8 | 6 << 16, 9 | 6 << 16)
+    column = lanes(GRID, PANELS, (0, 0, 1, 10), "column", 1)[0]
+    assert lane_rect(column, noc0, table, 1) == (1 | 10 << 16, 1 | 2 << 16)
+    assert (
+        lane_rect(lanes(GRID, PANELS, (0, 0, 1, 1), "row", 0)[0], noc0, table, 0)
+        is None
+    )
+    across = lanes(GRID, [(0, 11)], (5, 0, 2, 1), "row", 0)[0]  # NoC0 x 6 then 11
+    with pytest.raises(ValueError, match="not NoC0 step"):
+        lane_rect(across, noc0, table, 0)
+
+
+def test_lane_args_give_ranks_inside_the_rectangle_and_none_outside():
+    noc0 = {(x, y): (NOC0_X[x], y + 2) for x, y in core_order(GRID)}
+    team = Team(12, 24)
+    args = lane_args(
+        GRID, PANELS, team, (0, 1, 2, 2), "column", 1, noc0, noc0, (1, 3, 2, 4)
+    )
+    assert sorted(args) == list(team.members)
+    assert args[24]["rank"] == 0 and args[12]["rank"] == 1 and args[12]["sender"] == 24
+    assert args[12]["receivers"] == 1 and args[12]["team"] == 12 | 24 << 16
+    assert args[13]["mc_start"] == 2 | 3 << 16 and args[14]["rank"] == LANE_NONE
+    with pytest.raises(ValueError, match="not inside"):
+        lane_args(
+            GRID,
+            PANELS,
+            Team(13, 20),
+            (0, 1, 2, 2),
+            "column",
+            1,
+            noc0,
+            noc0,
+            (1, 3, 2, 4),
+        )
