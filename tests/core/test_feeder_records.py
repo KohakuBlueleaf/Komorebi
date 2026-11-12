@@ -43,11 +43,11 @@ def test_record_fields_follow_the_abi_header():
 
 
 def test_constants_come_from_the_headers():
-    assert K["KM_RING_SLOTS"] == 16 and K["KM_CTL_BYTES"] == 0xC80
+    assert K["KM_RING_SLOTS"] == 16 and K["KM_CTL_BYTES"] == 0xD40
     assert K["KM_READY"] == 0xFFFFFFFF and K["KM_SEG_EXIT"] == 255
     assert K["KM_SEG_USER_MAX"] == 239 and "KM_F_ACK" not in K
     assert K["kStateWords"] * 4 <= K["KM_CTL_JOB"] - K["KM_CTL_STATE"]
-    assert K["kFdArgs"] == 13 and K["kFeederMagic"] == 0xFEED0000
+    assert K["kFdArgs"] == 15 and K["kFeederMagic"] == 0xFEED0000
 
 
 def test_start_up_arguments_are_in_header_order():

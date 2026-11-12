@@ -18,9 +18,12 @@ constexpr uint32_t kFdExit = 10;      // nonzero: EXIT last (if the table has no
 constexpr uint32_t kFdRelease = 11;  // nonzero: a9 = issue time + this (cycles, low word)
 // Nonzero: record kFdRaw - 1 is issued with the slot and team it names (test only).
 constexpr uint32_t kFdRaw = 12;
-constexpr uint32_t kFdArgs = 13;
+constexpr uint32_t kFdDynSeg = 13;  // nonzero: records of this segment are dynamic runs
+constexpr uint32_t kFdLines = 14;   // L1 address of the cores' status lines (16 bytes)
+constexpr uint32_t kFdArgs = 15;
 
-// Buffers on the feeder core: the records plus a spare (n + 1 rows), the results.
+// Buffers on the feeder core: the records plus two spares (EXIT, the end of a dynamic
+// run: n + 2 rows), the results.
 constexpr uint32_t kFdCbTable = 0;
 constexpr uint32_t kFdCbResults = 1;
 
@@ -51,9 +54,17 @@ constexpr uint32_t kFrRecAcked = 5;   // when the feeder saw the ack word
 constexpr uint32_t kFrRecBusy = 6;    // records in flight after issuing it
 constexpr uint32_t kFrRecHeld = 7;    // 1: KM_F_EXCL held it while a team overlapped
 constexpr uint32_t kFrRecResult = 8;  // KM_F_RESULT: the result word acked with it
+// A dynamic run's row, from word 9: the quiet end, the issuer's checks, the sums.
+constexpr uint32_t kFrRecDynEnd = 9;      // wall clock when the quiet end was seen
+constexpr uint32_t kFrRecDynChecks = 10;  // two-pass checks made
+constexpr uint32_t kFrRecDynSent = 11;    // sum of the lines' sent at the end
+constexpr uint32_t kFrRecDynGave = 12;    // 1 + the core whose line said it gave up
+constexpr uint32_t kFrRecDynEndSeq = 13;  // sequence of the end record
+constexpr uint32_t kFrRecDynEndAck = 14;  // wall clock when the end record was acked
 
 constexpr uint32_t kFeederMagic = 0xFEED0000;
 constexpr uint32_t kFsNone = 0;     // not issued
 constexpr uint32_t kFsDone = 1;     // acknowledged
 constexpr uint32_t kFsTimeout = 2;  // deadline missed: stop word written
 constexpr uint32_t kFsBoot = 3;     // start-up wait gave up: stop word written
+constexpr uint32_t kFsDynGave = 4;  // a core's status line said it gave up: stop written

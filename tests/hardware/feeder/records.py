@@ -131,6 +131,7 @@ def feeder_summary(rows):
         K["kFsDone"]: "done",
         K["kFsTimeout"]: "timeout",
         K["kFsBoot"]: "boot",
+        K["kFsDynGave"]: "dyn_gave",
     }
     return {
         "magic_ok": int(r[K["kFrMagic"]]) == K["kFeederMagic"],

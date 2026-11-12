@@ -82,6 +82,8 @@ class Result:
     mhz: int
     host_s: float
     ctl: np.ndarray | None = None  # every core's control block, uint32 words
+    lines: np.ndarray | None = None  # dynamic run: [workers, 4] status lines
+    rows: np.ndarray | None = None  # the feeder's result rows, uint32
 
 
 class Fed:
@@ -104,8 +106,11 @@ class Fed:
 
     def control_blocks(self):
         """Zeroed control blocks, one shard per core: the same L1 address everywhere."""
+        return self.l1_blocks(K["KM_CTL_BYTES"] // 4)
+
+    def l1_blocks(self, words):
+        """A zeroed L1 area of `words` words on every core, at one address."""
         gx, gy = self.grid
-        words = K["KM_CTL_BYTES"] // 4
         config = ttnn.create_sharded_memory_config(
             (1, words),
             ttnn.CoreGrid(y=gy, x=gx),
@@ -130,11 +135,13 @@ class Fed:
         release=0,
         row=None,
         raw=0,
+        dynamic=None,
+        queue_bytes=4 << 30,
     ):
-        """Runs `records` (lists of 16 words) and returns a Result.
-
-        program_args(core) gives the (reader, writer, compute) arguments that follow
-        the start-up arguments."""
+        """Runs `records` (lists of 16 words) and returns a Result. program_args(core):
+        (reader, writer, compute) arguments after the start-up ones. `dynamic`
+        (komorebi.program.Dynamic): its segment runs dynamic, queues in DRAM (at most
+        queue_bytes), status lines on the feeder, its arguments before the program's."""
         dev, mhz = self.device, self.mhz
         n = len(records)
         tag = (random.getrandbits(16) | 1) & 0xFFFF
@@ -144,13 +151,31 @@ class Fed:
         core_table[0, : self.n_cores] = self.noc
         cores_t = int32_tensor(dev, core_table)
         table_t = int32_tensor(dev, np.asarray(records, dtype=np.uint64).reshape(n, 16))
-        results_t = int32_tensor(dev, np.zeros((n + 1, 16)))
+        results_t = int32_tensor(dev, np.zeros((n + 2, 16)))  # + EXIT, end record
         if trace_cap % 4:  # the kernel writes cap * 16 bytes as one page
             raise ValueError(f"trace_cap {trace_cap} is not a multiple of 4")
         trace_t = None
         if trace_cap:
             words = trace_cap * K["kTraceWords"]
             trace_t = int32_tensor(dev, np.zeros((self.workers, words)))
+        dyn_rw, dyn_c, queue_t, lines_t = [], [], None, None
+        if dynamic is not None:
+            dynamic.check(self.workers, queue_bytes, depth)
+            page = 32 * dynamic.item_bytes  # kDynPageItems items a page
+            queue_t = ttnn.empty(
+                (self.workers * dynamic.queue_items // 32, page // 4),
+                dtype=ttnn.int32,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+                device=dev,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            )
+            lines_t = self.l1_blocks(2 * K["KM_CORES_MAX"] * 4)  # lines, first pass
+            salt = random.getrandbits(32)
+            dyn_rw = dynamic.args(
+                queue_t.buffer_address(), lines_t.buffer_address(), salt
+            )
+            dyn_c = dynamic.compute_args(self.workers)
+            log(f"dynamic: {dynamic.queue_bytes(self.workers) >> 20} MiB of queues")
         log(f"tensors: ctl at {ctl_addr:#x}, {n} records, tag {tag:#06x}")
 
         grp, n_groups = rec.groups(self.grid, self.workers)
@@ -194,10 +219,10 @@ class Fed:
                 }
             )
             extra = program_args(core) if program_args else ([], [], [])
-            reader_args[x][y] = start + list(extra[0])
-            writer_args[x][y] = start + list(extra[1])
+            reader_args[x][y] = start + dyn_rw + list(extra[0])
+            writer_args[x][y] = start + dyn_rw + list(extra[1])
             compute = [ctl_addr, core, base["wait_limit"], base["idle_limit"]]
-            compute_args[x][y] = compute + list(extra[2])
+            compute_args[x][y] = compute + dyn_c + list(extra[2])
         feeder_args = ttnn.RuntimeArgs()
         fx, fy = self.logical[feeder]
         fd = {
@@ -214,6 +239,8 @@ class Fed:
             "kFdExit": int(send_exit),
             "kFdRelease": release,
             "kFdRaw": raw,
+            "kFdDynSeg": dynamic.seg if dynamic is not None else 0,
+            "kFdLines": lines_t.buffer_address() if lines_t is not None else 0,
         }
         words = [0] * K["kFdArgs"]
         for name, value in fd.items():
@@ -239,8 +266,8 @@ class Fed:
         cbs += [
             cb(K["kCbTokenCompute"], u32, tok, 1, self.worker_set),
             cb(K["kCbTokenWriter"], u32, tok, 1, self.worker_set),
-            cb(K["kFdCbTable"], u32, 64 * (n + 1), 1, self.feeder_set),
-            cb(K["kFdCbResults"], u32, 64 * (n + 1), 1, self.feeder_set),
+            cb(K["kFdCbTable"], u32, 64 * (n + 2), 1, self.feeder_set),
+            cb(K["kFdCbResults"], u32, 64 * (n + 2), 1, self.feeder_set),
         ]
         if trace_cap:
             page = trace_cap * K["kTraceWords"] * 4
@@ -283,6 +310,8 @@ class Fed:
             cbs=cbs,
         )
         io = [ctl, cores_t, table_t, *tensors, results_t]
+        if dynamic is not None:
+            io[3:3] = [queue_t, lines_t]
         if trace_t is not None:
             io.insert(-1, trace_t)
         log("launch")
@@ -294,17 +323,23 @@ class Fed:
         rows = read_int32(results_t)
         ctl_words = read_int32(ctl)
         state, ports = rec.state_words(ctl_words), rec.port_words(ctl_words)
+        lines = None
+        if lines_t is not None:  # the feeder's shard holds the lines
+            shard = rec.as_uint32(read_int32(lines_t))[feeder]
+            lines = shard[: self.workers * 4].reshape(self.workers, 4)
         trace = None
         if trace_t is not None:
             trace = rec.as_uint32(read_int32(trace_t)).reshape(self.workers, -1, 4)
         log("results read back")
         return Result(
             summary=rec.feeder_summary(rows),
-            records=rec.feeder_records(rows),
+            records=rec.feeder_records(rows[: n + 1]),
             state=state,
             ports=ports,
             trace=trace,
             mhz=mhz,
             host_s=host_s,
             ctl=rec.as_uint32(ctl_words),
+            lines=lines,
+            rows=rec.as_uint32(rows),
         )
