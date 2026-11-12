@@ -181,6 +181,28 @@ def test_check_names_the_node_of_a_slice_with_a_non_compute_opcode():
 
 
 @needs_cc
+def test_a_record_refused_after_its_issue_goes_back_behind_the_others():
+    g = Graph()
+    for i in range(3):
+        g.record(1, team=(i, 1))
+    data = g.encode()
+    for engine in (gr.Executor(), gn.NativeExecutor()):
+        issued = []
+
+        def issue(node, words, issued=issued):
+            issued.append(node)
+            return gr.ISSUED
+
+        engine.start(data)
+        engine.step(issue)
+        assert (engine.retry(0), engine.retry(0)) == (0, 1)
+        engine.step(issue)
+        assert issued == [0, 1, 2, 0]
+        assert [engine.complete(n, 0) for n in range(3)] == [0, 0, 0]
+        assert engine.step(issue) == gr.END
+
+
+@needs_cc
 def test_the_engine_is_freestanding_with_no_data_of_its_own(tmp_path):
     obj = tmp_path / "engine.o"
     cmd = ["cc", "-std=c11", "-O2", "-ffreestanding", "-Wall", "-Wextra", "-Werror"]

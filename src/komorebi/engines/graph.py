@@ -808,6 +808,16 @@ class Executor:
         self._finish(node)
         return 0
 
+    def retry(self, node):
+        """The record of `node` was refused after its issue: back to the ring's tail."""
+        if self.phase != RUNNING or not 0 <= node < self.h["n_nodes"]:
+            return 1
+        if self.status[node] != FLIGHT:
+            return 1
+        self.in_flight -= 1
+        self._push(node)
+        return 0
+
     def stop(self, reason, node):
         if self.phase == RUNNING:
             self._fail(reason, node)

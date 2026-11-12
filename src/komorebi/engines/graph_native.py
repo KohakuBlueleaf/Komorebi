@@ -55,6 +55,7 @@ def load(cc=None):
         lib.kmg_start.restype = u32
         lib.kmg_step.argtypes, lib.kmg_step.restype = [vp, ISSUE_FN, vp], u32
         lib.kmg_complete.argtypes, lib.kmg_complete.restype = [vp, u32, u32], u32
+        lib.kmg_retry.argtypes, lib.kmg_retry.restype = [vp, u32], u32
         lib.kmg_stop.argtypes, lib.kmg_stop.restype = [vp, u32, u32], None
         _loaded[path] = lib
     return _loaded[path]
@@ -69,7 +70,8 @@ def native_check(data, lib=None):
 
 
 class NativeExecutor:
-    """`kmg_start`, `kmg_step`, `kmg_complete` and `kmg_stop` on a state block."""
+    """`kmg_start`, `kmg_step`, `kmg_complete`, `kmg_retry` and `kmg_stop` on a state
+    block."""
 
     def __init__(self, lib=None):
         self.lib = lib or load()
@@ -124,6 +126,9 @@ class NativeExecutor:
 
     def complete(self, node, result):
         return self.lib.kmg_complete(self._state, node, result & gr.MASK)
+
+    def retry(self, node):
+        return self.lib.kmg_retry(self._state, node)
 
     def stop(self, reason, node):
         self.lib.kmg_stop(self._state, reason, node)

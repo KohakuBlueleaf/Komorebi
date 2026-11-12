@@ -519,6 +519,16 @@ uint32_t kmg_complete(kmg_state_t* s, uint32_t node, uint32_t result) {
     return 0;
 }
 
+uint32_t kmg_retry(kmg_state_t* s, uint32_t node) {
+    if (s->phase != KMG_RUNNING || node >= s->hdr->n_nodes ||
+        s->status[node] != KMG_FLIGHT) {
+        return 1u;
+    }
+    s->in_flight--;
+    push(s, node);
+    return 0;
+}
+
 void kmg_stop(kmg_state_t* s, uint32_t reason, uint32_t node) {
     if (s->phase == KMG_RUNNING) {
         fail(s, reason, node);

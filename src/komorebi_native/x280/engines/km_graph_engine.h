@@ -73,6 +73,10 @@ uint32_t kmg_step(kmg_state_t* s, kmg_issue_fn issue, void* ctx);
    running or the node has no record in flight (nothing changes). */
 uint32_t kmg_complete(kmg_state_t* s, uint32_t node, uint32_t result);
 
+/* The record of `node` was issued and then refused for now (no slot, a team busy): the
+   node goes back to the ready ring's tail. Returns 0, or 1 as kmg_complete. */
+uint32_t kmg_retry(kmg_state_t* s, uint32_t node);
+
 /* Ends a running graph with an error from outside: a deadline, a cancel. */
 void kmg_stop(kmg_state_t* s, uint32_t reason, uint32_t node);
 

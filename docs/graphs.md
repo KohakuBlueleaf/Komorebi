@@ -206,6 +206,7 @@ library `komorebi.engines.graph_native` loads with ctypes.
 | `kmg_start(state, upload, bindings, n, n_cores)` | starts a checked upload, which stays in place and unchanged while it runs; 0, or 1 for more than 16 bindings |
 | `kmg_step(state, issue, ctx)` | one step; returns `KMG_RUNNING`, `KMG_ROUND`, `KMG_END` or `KMG_ERROR` |
 | `kmg_complete(state, node, result)` | a record completed; 1 (and nothing changes) if the graph is not running or the node has no record in flight |
+| `kmg_retry(state, node)` | the node's record was issued and then refused for now: the node goes back to the ready ring's tail; 1 as for `kmg_complete` |
 | `kmg_stop(state, reason, node)` | ends a running graph from outside (deadline, cancel) |
 
 `issue(ctx, node, &record)` gets the record with `seq`, the landing words and the slot
