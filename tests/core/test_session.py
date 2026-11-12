@@ -1,5 +1,6 @@
 """Session.load and its failure paths over a stub ttnn and the fake kernel."""
 
+import signal
 import types
 
 import numpy as np
@@ -176,3 +177,28 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
     every = session.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
     assert set(every.unpack_to_dest_mode) == {"fp32"}
     assert not hasattr(session.compute_config({}), "unpack_to_dest_mode")
+
+
+def test_an_exit_without_a_stop_closes_the_runtime_before_the_device(
+    card, tmp_path, monkeypatch
+):
+    session, log, ttnn, module = card
+    ttnn.MeshShape = lambda rows, cols: (rows, cols)
+    ttnn.open_mesh_device = lambda shape: types.SimpleNamespace(
+        disable_and_clear_program_cache=lambda: None
+    )
+    monkeypatch.setattr(session, "_hook_exit", lambda: None)  # not this process's
+    said = []
+    s = session.Session(log=said.append)
+    s.open()
+    s.load(program(tmp_path))
+    module.dispatch.fail["close"] = RuntimeError("cleanup timed out")
+    with pytest.raises(SystemExit) as caught:  # SIGTERM; its clean-up raises
+        session._on_sigterm(signal.SIGTERM, None)
+    assert caught.value.code == 143 and not s.run.stopped and s in session._LIVE
+    assert said[-1] == "SIGTERM: clean-up raised RuntimeError: cleanup timed out"
+    del module.dispatch.fail["close"]
+    log.clear()
+    session._release_all("exit")  # the exit hook tries again, then closes the device
+    assert log == ["abort", "close", "read_back, grid stopped", "close_device"]
+    assert s.run.stopped and s.device is None and s not in session._LIVE

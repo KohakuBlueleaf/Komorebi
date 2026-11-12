@@ -49,7 +49,7 @@ class FakeDispatch(FakePort):
         return self.ready_state
 
     def close(self):
-        self.log.append("close")
+        self._call("close")
         self.is_open = False
         return True
 

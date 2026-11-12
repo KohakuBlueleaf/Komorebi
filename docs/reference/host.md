@@ -66,7 +66,15 @@ grid_timeout=10.0)`.
   one line per step (launch, kernel started, runtime closed, read back).
 - As a context manager it stops a loaded run at the exit: with `run.stop()` on a normal
   exit, through the X280 runtime (no EXIT) on an exception, then it closes the device
-  it opened.
+  it opened. `session.close()` does the same without `with`.
+- The X280 runtime must be closed while the device is still open: a process that ends
+  with it open, or closes the device first, can leave the card needing a reset. So the
+  session also closes itself when the process exits without closing it (`atexit`) and
+  on SIGTERM (a handler is installed if the process has none; it closes the runtime,
+  then exits with status 143 through the `with` blocks). A clean-up that raises leaves
+  the run loaded and the device open, so the next of these paths tries again; each try
+  is bounded (5 s in the runtime). SIGKILL cannot be caught: after one, reset the card.
+  With `device=`, close the session before the device.
 - `grid_timeout` bounds every wait for the grid's kernels to return (seconds). When
   it passes, `km.GridTimeout` is raised and the device is left open: closing it would
   wait for the grid without a bound. The card may then need a reset.
@@ -195,7 +203,8 @@ they are built from the tt-metal tree into a cache directory, `KMR_CACHE` or
   exception: the stop word, when the dispatch kernel cannot send it. State words and
   the trace are read after the stop.
 - While the dispatch kernel runs, every host wait is bounded. The X280 runtime is
-  closed before any readback, and on every failure path.
+  closed before any readback, on every failure path, at the process's exit and on
+  SIGTERM, always before the device.
 - Host stores into the card go in batches: every line, one fence, then a pause of
   `settle_us` before the next store.
 - Unread events plus commands in flight never exceed the event ring.

@@ -589,10 +589,12 @@ class Run:
         for failure paths. Errors while reading back are suppressed."""
         if self._stopped:
             return
-        self._stopped = True
         if self.thread is not None:
             self.thread.running = False  # the runtime's close stops it
+        # if the close raises, the run stays loaded and a later exit path
+        # (Session.close, the exit hooks) closes it again
         cleaned = self.backend.abort()
+        self._stopped = True
         self._read_back(stop_grid=True)
         if not cleaned:
             raise self._remember(
@@ -605,11 +607,9 @@ class Run:
     def _fail_start(self, state, timeout=1.0):
         """The kernel did not report READY: finishes it, reads back, raises StartError
         with its result block."""
-        try:
-            self._finish(timeout, stop_grid=True)
-        except BaseException:
-            self._stopped = True
-            raise
+        # stopped after this, unless the runtime could not be closed: a later exit
+        # path (Session.close, the exit hooks) then closes it
+        self._finish(timeout, stop_grid=True)
         r = self._result
         raise self._remember(
             StartError(
@@ -624,7 +624,11 @@ class Run:
         try:
             fin = self.backend.finish(timeout)
         except BaseException:
-            self.backend.abort()
+            try:
+                self.backend.abort()
+            except BaseException:
+                self._stopped = False  # the runtime is still open: abort() again later
+                raise
             self._read_back(stop_grid=True)
             raise
         self._result = st.result_block(fin["words"], self.h)

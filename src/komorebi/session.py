@@ -4,7 +4,10 @@ Tensix core and the dispatch kernel on X280 cluster 0, and hands out a `Run`.
 Needs ttnn and a tt-metal tree; `import komorebi` alone does not import this module.
 """
 
+import atexit
+import contextlib
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -44,6 +47,36 @@ def compute_config(options):
             modes[cb] = getattr(ttnn.UnpackToDestMode, name)
         config.unpack_to_dest_mode = modes
     return config
+
+
+_LIVE = set()  # sessions holding a device they opened or an X280 runtime
+_HOOKED = []  # [True] once the exit hooks are installed
+
+
+def _release_all(why, close_device=True):
+    """The exit hooks' clean-up: every live session's run is stopped through the X280
+    runtime (bounded), then the device it opened is closed."""
+    for session in list(_LIVE):
+        session._release(why, close_device)
+
+
+def _on_sigterm(signum, frame):
+    """SIGTERM: the runtimes are closed while the devices are open, then the process
+    exits through its `with` blocks and the exit hook, which close the devices."""
+    _release_all("SIGTERM", close_device=False)
+    raise SystemExit(128 + signum)
+
+
+def _hook_exit():
+    """atexit for every session; SIGTERM too when the process has no handler of its
+    own (signals are set from the main thread only)."""
+    if _HOOKED:
+        return
+    _HOOKED.append(True)
+    atexit.register(_release_all, "exit")
+    if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL:
+        with contextlib.suppress(ValueError):  # not the main thread
+            signal.signal(signal.SIGTERM, _on_sigterm)
 
 
 def aiclk_mhz(card=None):
@@ -145,6 +178,7 @@ class Session:
     """One card: `card` selects it, `device` uses an open one; `grid_timeout` bounds
     every wait for the grid's kernels. As a context manager it stops a loaded run at
     the exit (through the runtime on an exception) and closes the device it opened.
+    A session left open is closed the same way at the process's exit and on SIGTERM.
     """
 
     def __init__(
@@ -166,6 +200,7 @@ class Session:
         self.run = None
         self.stuck = False  # the grid did not return: the device stays open
         self._module = None
+        self._starting = None  # the Dispatch of a load before its Run exists
 
     def __enter__(self):
         if self.device is None:
@@ -191,16 +226,45 @@ class Session:
             os.environ["TT_VISIBLE_DEVICES"] = str(self.card)
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
         self.device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
+        _hook_exit()
+        _LIVE.add(self)
         self.device.disable_and_clear_program_cache()
         self._own_device = True
 
     def close(self):
+        """Stops a loaded run through the X280 runtime, then closes the device if the
+        session opened it. A session on a given device is closed before that device."""
+        try:
+            if self.run is not None and not self.run.stopped:
+                self.run.abort()
+        finally:
+            if self.run is None or self.run.stopped:  # else the runtime needs it
+                self._close_device()
+
+    def _close_device(self):
         if self.stuck:
             self.log("device left open: the grid did not return")
             return
         if self.device is not None and self._own_device:
             ttnn.close_mesh_device(self.device)
             self.device = None
+        _LIVE.discard(self)
+
+    def _release(self, why, close_device):
+        """The exit hooks' bounded clean-up of this session: closes the X280 runtime of
+        a load in progress or a loaded run, then (`close_device`) closes the session.
+        Errors are logged, not raised: the process is ending."""
+        try:
+            if self._starting is not None:
+                self.log(f"{why}: closing the X280 runtime of the load in progress")
+                self._starting.close()
+            if self.run is not None and not self.run.stopped:
+                self.log(f"{why}: stopping the loaded run through the X280 runtime")
+                self.run.abort()
+            if close_device:
+                self.close()
+        except Exception as err:  # noqa: BLE001 (the process ends; logged, not raised)
+            self.log(f"{why}: clean-up raised {type(err).__name__}: {err}")
 
     def nocs(self):
         """The grid's NoC coordinates by core (a layout.Nocs), from the open device:
@@ -267,6 +331,9 @@ class Session:
         # for every core to be idle, which a resident grid never is
         regions = _Regions(self, work) if work is not None else None
         dispatch = module.Dispatch(self.device, self.pll_mhz)
+        _hook_exit()
+        _LIVE.add(self)
+        self._starting = dispatch
         dispatch.settle_us = settle_us
         backend, launched = None, False
         try:
@@ -302,12 +369,19 @@ class Session:
             self.log("dispatch kernel started")
             state = dispatch.wait_ready(start + 1.0)
         except BaseException:
-            dispatch.close()
+            try:
+                dispatch.close()
+            except BaseException:
+                if launched:  # the runtime stays open: the exit hooks close it again
+                    backend.stop_grid()
+                raise
+            self._starting = None
             if launched:
                 backend.read_back(stop_grid=True)  # the kernel never stopped it
             raise
         run = Run(backend, (dispatch.grid_x, dispatch.grid_y), program, batch)
         self.run = run
+        self._starting = None
         if state != abi.headers()["KMD_STATE_READY"]:
             run._fail_start(state)
         self.log("ready")
@@ -568,6 +642,15 @@ class _Backend:
         self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned})")
         return cleaned
 
+    def stop_grid(self):
+        """Writes the stop word into every core through the device API."""
+        h = abi.headers()
+        module, gx, gy = self.session._module, self.port.grid_x, self.port.grid_y
+        for core in range(gx * gy):
+            at = self.ctl_addr + h["KM_CTL_STOP"]
+            module.write_l1(self.device, core % gx, core // gx, at, [1])
+        self.session.log("stop word written by the host")
+
     def read_back(self, stop_grid=False):
         """After the X280 runtime is closed: waits (bounded) for the grid's kernels,
         then reads the control blocks ([cores, KM_CTL_BYTES / 4] uint32) and the trace.
@@ -578,10 +661,7 @@ class _Backend:
         h = abi.headers()
         module, gx, gy = self.session._module, self.port.grid_x, self.port.grid_y
         if stop_grid:
-            for core in range(gx * gy):
-                at = self.ctl_addr + h["KM_CTL_STOP"]
-                module.write_l1(self.device, core % gx, core // gx, at, [1])
-            self.session.log("stop word written by the host")
+            self.stop_grid()
         t0 = time.monotonic()
         bound = self.session.grid_timeout
         if not module.wait_grid(self.device, gx, gy, bound):
