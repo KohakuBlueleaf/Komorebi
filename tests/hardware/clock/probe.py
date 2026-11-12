@@ -20,6 +20,9 @@ import records as rec  # noqa: E402
 
 CORES = [(0, 0), (11, 0), (0, 9), (11, 9), (5, 4), (6, 5), (1, 0)]  # master first
 WORDS = 64
+POLLS = (
+    48  # peer words: polls until each ping was seen (1: it came before the peer looked)
+)
 
 
 def run(device, spin, cores):
@@ -74,30 +77,38 @@ def wrap(d):
 
 def peer_table(runs, cores):
     """Per peer over `runs`: offset from the master's clock at the round trip's midpoint
-    (cycles), the round trip, and its ticks per master tick between the two rounds."""
+    (cycles), the round trip, and its ticks per master tick between the two rounds.
+    A round whose ping came before the peer's kernel looked is counted, not used."""
     peers = []
     for p, core in enumerate(cores[1:]):
-        offsets, rtts, ratios = [], [], []
+        offsets, rtts, ratios, early = [], [], [], 0
         for _, rows in runs:
             m = rows[0]
-            mid, arrival = [], []
+            mid, arrival, ok = [], [], True
             for r in range(2):
                 sent, got, reply = (int(v) for v in m[8 + 4 * (p * 2 + r) :][:3])
+                if int(rows[p + 1][POLLS + r]) <= 1:
+                    early += 1
+                    ok = False
+                    continue
                 rtt = wrap(reply - sent)
                 mid.append(sent + rtt / 2)
                 arrival.append(got)
                 rtts.append(rtt)
                 d = wrap(got - sent) - rtt / 2
                 offsets.append(d if d < 1 << 31 else d - (1 << 32))
-            ratios.append(
-                wrap(arrival[1] - arrival[0]) / ((mid[1] - mid[0]) % (1 << 32))
-            )
+            if ok:
+                ratios.append(
+                    wrap(arrival[1] - arrival[0]) / ((mid[1] - mid[0]) % (1 << 32))
+                )
+        rate = round((float(np.mean(ratios)) - 1) * 1e6, 3) if ratios else None
         peers.append(
             {
                 "core": list(core),
                 "offset_cycles": [round(o, 1) for o in offsets],
-                "rtt_cycles": [min(rtts), max(rtts)],
-                "rate_vs_master_ppm": round((float(np.mean(ratios)) - 1) * 1e6, 3),
+                "rtt_cycles": [min(rtts), max(rtts)] if rtts else [],
+                "rate_vs_master_ppm": rate,
+                "early_rounds": early,
             }
         )
     return peers
@@ -114,9 +125,11 @@ def main():
     p.add_argument("--smoke", action="store_true", help="one run of 0.1 s only")
     args = p.parse_args()
     cores = CORES[: args.cores]
-    mhz = fed.aiclk_mhz()
     device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    fed.log("device open")
+    mhz = (
+        fed.aiclk_mhz()
+    )  # after the open: the clock idles lower while no device is open
+    fed.log(f"device open, AICLK {mhz} MHz")
     try:
         first = run(device, mhz * 10**5, cores)  # compile and warm up (0.1 s)
         spins = {0.5: [], 2.0: []}
