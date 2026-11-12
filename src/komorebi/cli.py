@@ -5,7 +5,7 @@ import platform
 import sys
 from pathlib import Path
 
-from komorebi import __version__, _env, build
+from komorebi import __version__, _env, build, power
 
 
 def doctor_report(environ=None):
@@ -81,7 +81,18 @@ def main(argv=None):
     builder.add_argument("-I", dest="includes", action="append", default=[])
     builder.add_argument("-D", dest="defines", action="append", default=[])
 
+    sampler = sub.add_parser(
+        "power", help="print card, GPU or CPU power while you watch"
+    )
+    sampler.add_argument("--card", type=int, help="card index (default: every card)")
+    sampler.add_argument("--gpu", type=int, help="GPU index (through nvidia-smi)")
+    sampler.add_argument("--cpu", action="store_true", help="the CPU package")
+    sampler.add_argument("--seconds", type=float, default=10.0)
+    sampler.add_argument("--period", type=float, default=power.DEFAULT_PERIOD_S)
+
     args = parser.parse_args(argv)
+    if args.command == "power":
+        return power.run_cli(args, sys.stdout)
     if args.command == "doctor":
         print(format_report(doctor_report()))
         return 0
