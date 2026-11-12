@@ -1,6 +1,6 @@
 ---
 title: Komorebi Documentation
-summary: Home for the programming model, the design of the dispatch kernel and the Tensix runtime, installation from a clone, and development conventions.
+summary: Home for the programming model, the design of the dispatch kernel and the Tensix runtime, the host API, micro-op streams, installation from a clone, and development conventions.
 tags:
   - overview
   - docs
@@ -9,15 +9,14 @@ tags:
 # Komorebi Documentation
 
 Komorebi is a programming model and a runtime for the Tensix grid of Tenstorrent
-Blackhole cards. A program is written as straight-line threads; a thread has a program
-counter and a place, stays on its core until it needs state held on another core, then
-moves there or sends a value there. A resident worker on every Tensix core runs the
-threads, and a small kernel on the card's X280 cores decides what to run.
+Blackhole cards. The [repository README](../README.md) draws the model and says what
+exists today and what is planned; this page lists where each part is described.
 
-Nothing here is released. The concept pages describe the design and each says whether
-it is implemented; today none of it is. Everything that exists is the repository
-skeleton: the Python package with its environment check, build and layout helpers, and
-the empty directories of the native layer.
+Nothing here is released. Host-fed runs on one card are implemented: a program's
+resident kernels on every Tensix core, the dispatch kernel on X280 cluster 0, and the
+Python host API that issues records to teams and waits for their completion. Micro-op
+streams exist as a format, a builder, a check and a simulator on the CPU. Breakpoints
+between cores, deciding on the card and the thread language are planned.
 
 ## Pick a path
 
@@ -25,53 +24,43 @@ the empty directories of the native layer.
 |---|---|
 | **Trying to build it** | [install](install.md) |
 | **Learning the model** | [the programming model](concepts/model.md) |
-| **Reading the design of the card side** | [dispatch kernel](concepts/dispatch.md) · [Tensix runtime](concepts/runtime.md) |
 | **Running a program on a card** | [host API](reference/host.md) · [01_mapcollect](../examples/01_mapcollect/) |
+| **Reading the design of the card side** | [dispatch kernel](concepts/dispatch.md) · [Tensix runtime](concepts/runtime.md) |
 | **Changing the code** | [development](development.md) |
 
 ## Documentation structure
 
 ### Start
 
-- [Install](install.md): from a clone, against a tt-metal source tree.
-- [Development](development.md): repository layout, checks, conventions and known limits.
+- [Install](install.md): from a clone, against a tt-metal source tree; running on a
+  card; watching a card's power with `kmr power`.
+- [Development](development.md): repository layout, checks, conventions and known
+  limits.
 
 ### Reference
 
 - [Host API](reference/host.md): `Program`, `Session` and `Run`; errors; builds.
+- [Micro-op streams](streams.md): the upload format, the builder, the check, the
+  simulator and the error reasons of the programs the dispatch kernel is to run.
 
 ### Concepts
 
 Mental models: why things are the way they are. Every page carries a status line.
 
 - [The programming model](concepts/model.md): threads with a program counter and a
-  place, the breakpoints move, emit and wait, homes, and how space and time are both
-  written.
+  place, the breakpoints `at`, `emit` and `wait`, homes, and how space and time are
+  both written.
 - [The dispatch kernel](concepts/dispatch.md): the fixed kernel on one X280 cluster,
   its services and engines, command sources and the work clusters.
 - [The Tensix runtime](concepts/runtime.md): the resident worker, the 64-byte record,
   teams and completion, and static and dynamic breakpoints.
 
-### Reference
+### Measurements
 
-- [Micro-op streams](streams.md): the upload format, the builder, the check, the
-  simulator and the error reasons of the programs the dispatch kernel runs.
+- [Experiments](../experiments/README.md): record landing, record multicasts against
+  in-column broadcasts, and the cost of one Tensix tile for a box-tree walk.
+- [Projects](../projects/README.md): the rasterization and ray tracing references the
+  card versions are compared with.
 
-## Codebase map
-
-```text
-src/komorebi/                  the package you import
-  layout.py                    the grid, its panels and teams of cores
-  build.py                     out-of-tree builds against a tt-metal tree
-  stats.py  power.py           statistics; power sampling
-  cli.py  tools/               the kmr command; the C and C++ formatter
-  manifest/  lang/             reserved: records, homes and segments; the thread language
-src/komorebi_native/           the native layer (README inside)
-examples/  projects/           runnable examples; larger programs
-experiments/  ref/             standalone proofs; CPU references
-tests/                         core/ (CPU only)
-docs/                          this tree
-packaging/                     the tt-metal version Komorebi is developed against
-```
-
-The full layout and the checks: [development](development.md).
+The repository map is in the [README](../README.md#repository-map); the full layout
+and the checks are in [development](development.md).

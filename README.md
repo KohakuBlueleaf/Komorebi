@@ -1,60 +1,433 @@
 # Komorebi
 
-A programming model and runtime for the Tensix grid of Tenstorrent Blackhole cards.
+A programming model and a runtime for the Tensix grid of Tenstorrent Blackhole cards
+(developed on a p150a). A program is written as straight-line threads; a thread has a
+program counter and a place, runs on its core until it needs state held on another
+core, and then moves there or sends a value there. On the card, a program is one set of
+resident kernels on every Tensix core, fed 64-byte records by a dispatch kernel on one
+of the card's X280 clusters. It is for kernel authors whose work does not fit one fixed
+program per shape: jobs whose team of cores changes from one job to the next, and work
+such as rendering, where items need different code and meet state held on other cores.
 
-A program is written as straight-line threads. A thread has a program counter and a
-place: it stays on its core until it needs state held on another core, then it moves
-there or sends a value there. A resident worker on every Tensix core runs the threads;
-a small kernel on the card's X280 cores decides what to run.
+**Status: early development; nothing is released.** On a card today: a program's three
+resident kernels on every Tensix core, run by the dispatch kernel on X280 cluster 0,
+records issued from Python to teams that change from record to record, completion per
+team, and a deadline that stops the run and names the cores that did not report
+([examples/01_mapcollect](examples/01_mapcollect/)). Breakpoints between cores, deciding
+on the card and the thread language are [planned](#roadmap).
 
-## Status
+```python
+import komorebi as km
 
-The repository is being set up. Nothing here is released, and no part of the runtime is
-implemented yet. What exists:
+program = km.Program(
+    "mapcollect",
+    kernels="kernels/",  # reader.cpp, compute.cpp, writer.cpp
+    buffers=[
+        km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16),
+        km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
+    ],
+    compile_args={"reader": reader_args, "writer": writer_args},  # tensor accessors
+    segments="kernels/mapcollect.h",  # kSegMap = 1, kSegStall = 2, ...
+)
 
-- the Python package `komorebi` (version 0.1.0): `kmr doctor` to inspect a host,
-  `kmr build` to build a host program, a Python module or an X280 image against a
-  tt-metal tree, pure layout functions for the core grid, its panels and teams, and
-  statistics helpers;
-- the layout of the native layer, as empty directories with a README;
-- the design, as three concept pages: [the programming model](docs/concepts/model.md),
-  [the dispatch kernel](docs/concepts/dispatch.md) and
-  [the Tensix runtime](docs/concepts/runtime.md).
+with km.Session(card=0) as session:
+    run = session.load(program)  # the grid's kernels first, then the dispatch kernel
+    tickets = [
+        run.issue("map", team=(8 * i, 8), args=[x_addr, 64, out_addr, 8 * i])
+        for i in range(15)  # 15 disjoint teams of 8 cores
+    ]
+    run.wait(tickets, timeout=5.0)
+    run.stop()  # EXIT to every core, stop the kernel, then read back
+```
 
-## Map
+The `MAP` segment of the compute kernel
+([compute.cpp](examples/01_mapcollect/kernels/compute.cpp)); the runtime owns the loop
+and calls the body once for each record whose team holds this core:
+
+```cpp
+km::Compute cp;
+compute_kernel_hw_startup(kCbIn, kCbOut);
+cp.run([&](const km_record_t& r) {
+    if (km::seg(r) != kSegMap) {
+        return;
+    }
+    const km::Share s = km::share(r.a1, cp.me() - km::first(r), km::count(r));
+    tile_regs_acquire();
+    // ... add this member's s.len input tiles into one tile in DST (fp32), pack it
+});
+```
+
+## The programming model
+
+### The card as Komorebi runs it
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/card-dark.svg">
+  <img src="docs/images/card-light.svg" width="830" alt="The host's Python Session stores 64-byte commands into the dispatch kernel's host ring on X280 cluster 0 and reads 16-byte events back from host memory. The dispatch kernel gives each record a completion slot and a sequence number and stores it into the ring of all 120 Tensix cores, measured at 0.77 microseconds per record with 4 in flight in the landing experiment. Each core runs three resident kernels: the reader takes the next record whose team holds the core, compute runs the segment, the writer writes outputs and reports. Members report to the team's leader, the leader writes one acknowledgement word to the X280, and the kernel posts an event to the host. Micro-op streams, the job queue, the graph executor and work clusters are drawn dashed as planned.">
+</picture>
+
+A **record** is one 64-byte line: a sequence number, the segment, the team and ten
+32-bit argument words; the sequence number is repeated in each of the four 16-byte
+chunks, so a core accepts the line only when all of it has landed. A **team** is a
+contiguous range of cores `[first, first + count)` in the grid's core order (row by
+row, x fastest), named in the record; its first member is the team's **leader**. Every
+core sees every record and skips those whose team does not hold it. Members report to
+the leader, and the leader writes one word to the dispatch kernel, so several teams can
+be busy at once and a team's size is free from record to record.
+
+### A thread has a program counter and a place
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/breakpoints-dark.svg">
+  <img src="docs/images/breakpoints-light.svg" width="830" alt="Left: a thread program of two threads. Thread path(pixel) computes a camera ray, loops over the treelets along the ray with 'at treelet[k]:' around the walk, shades the hit, and ends with 'emit film[pixel] += c'. Thread resolve(t) waits for every pixel of film tile t, then writes the tile. The lines with the breakpoints at, emit and wait are marked. Right: a grid of cores on which the path thread starts on one core (lines 1 to 3), moves its live variables to the core holding treelet 2 (line 4), walks it there (line 5), moves to the core holding treelet 5, walks and shades there without crossing the network (lines 5 and 6), and emits the value (pixel, c) to the core holding film tile t (line 7), where the resolve thread waits (line 10).">
+</picture>
+
+A **breakpoint** is a point where a thread must deal with another core. Between two
+breakpoints the thread runs on its core without interruption, and after a move it stays
+where it landed. The code between two breakpoints is a **segment**; on the card it is
+one case of the switch a record selects. State has a **home**: the core that holds it,
+such as a film tile or a treelet of a box tree. The author names state, never a core;
+`at X[i]:` continues the thread where `X[i]` lives, and is no breakpoint when `X[i]` is
+already here.
+
+| The author writes | What crosses the network | What the thread does |
+|---|---|---|
+| `at X[i]: block` | the thread's live variables | continues on the core that holds `X[i]` |
+| `emit X[i] += v`, `emit v -> thread(j)` | the value | keeps running |
+| `v = wait(n)` | nothing | pauses until `n` values have landed |
+
+When the sender, the receiver and the count are known before the run, a breakpoint
+becomes a write into a fixed slot and a counted wait. A matrix product with K split
+across cores, merged by a tree; every thread runs the same program, and only its index
+differs:
 
 ```text
-src/komorebi/            the Python package (kmr, layout, build, stats, tools)
-src/komorebi_native/     the native layer: device and X280 headers, kernels, host module
-examples/  projects/     runnable examples; larger programs built on Komorebi
-experiments/  ref/       standalone proofs; CPU references in numpy
-tests/core/              tests that need no card
-docs/                    install, development and the concept pages
-packaging/               the tt-metal version Komorebi is developed against
+thread mm(j, n):                                 # one per core, pinned
+    part = A[:, K(j)] @ B[K(j), :]               # one segment; no breakpoint
+    for r in 0 .. levels(n) - 1:
+        if j % 2^(r+1) == 0:                     # I merge in this round
+            if j + 2^r < n:
+                part += wait(1)                  # breakpoint: my partner has handed over
+        else:
+            emit part -> thread(j - 2^r)         # breakpoint: hand my partial to my merger
+            return
+    write C = part                               # only thread 0 arrives here
 ```
 
-Start with [docs/README.md](docs/README.md). To build from a clone:
-[docs/install.md](docs/install.md).
+A **lane** is a run of cores in one grid column; a group of threads such as
+`threads(lane, *)` is a slice of the index space, and a broadcast to it is one
+multicast. Space is the thread's index and time is a loop in its body; the
+[model](docs/concepts/model.md) works through ray tracing, attention and matrix product
+in this form.
 
-## Checks
+### Teams and records in time
 
-Python 3.13:
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/teams-dark.svg">
+  <img src="docs/images/teams-light.svg" width="830" alt="Time runs left to right over twelve cores. The dispatch kernel issues R1 to cores 0 to 4 and R2 to cores 6 to 11; each record lands on every core, the members work at the same time, report to their leader, and each leader acknowledges its own record, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both teams: cores 3, 4 and 6 to 8 take it only after finishing R1 or R2, core 5, in neither team, takes it at once, and its leader, core 3, acknowledges when the last member has reported.">
+</picture>
+
+A record is in flight from the moment the dispatch kernel stores it until its leader's
+acknowledgement arrives; it holds one of up to 16 completion slots (`depth`, 4 by
+default). Each core runs the records of its teams in sequence order, so a record whose
+team overlaps a busy one waits on the shared cores; `run.issue(..., exclusive=True)`
+holds it on the host until no team in flight overlaps it.
+
+### One program on the grid
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/mapcollect-dark.svg">
+  <img src="docs/images/mapcollect-light.svg" width="830" alt="The map/collect example on a team of 8 cores. The input of 64 tiles is in DRAM; member m reads tiles 8m to 8m+7 into circular buffer 0 in its L1, the compute kernel adds them into one tile in the DST registers in fp32 on the vector unit and packs it into circular buffer 16, and the writer stores it to output page a3 + m in DRAM. Between cores only the record (from the X280, to every core) and the completion counts (member to leader, leader to the X280) cross the network.">
+</picture>
+
+In the implemented example nothing but the record and the completion travels between
+cores: each member reads its own share of the input from DRAM, works in its own L1 and
+vector unit, and writes its own output tile.
+
+### What exists and what is planned
+
+| Construct | Today |
+|---|---|
+| Records, the ring of 16 mailbox slots on each core, the resident reader, compute and writer | implemented ([km_worker.hpp](src/komorebi_native/include/komorebi/device/km_worker.hpp)) |
+| Teams per record; completion per team, one level or through row leaders | implemented ([km_team.hpp](src/komorebi_native/include/komorebi/device/km_team.hpp), [km_record.hpp](src/komorebi_native/include/komorebi/device/km_record.hpp)) |
+| Host-fed dispatch: `Session`, `Run`, the dispatch kernel's host ring, slots, deadlines and events | implemented ([host API](docs/reference/host.md), [x280/kernel](src/komorebi_native/x280/kernel/)) |
+| Micro-op streams and the job queue | upload format, builder, check and simulator on the CPU; running them on the card is planned ([streams](docs/streams.md)) |
+| `emit` and `wait` between cores, groups, broadcast in a lane, `reduce` | planned |
+| `at`: threads that move, inboxes and packets of records | planned |
+| The graph executor; user threads on X280 clusters 1 to 3 | planned |
+| Homes and segments declared, and the thread language compiled into them | planned ([manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md)) |
+
+## Highlights
+
+- **Resident workers**: `km::Reader`, `km::Compute` and `km::Writer` own each kernel's
+  loop; a program supplies the body, a switch on the segment
+  ([km_worker.hpp](src/komorebi_native/include/komorebi/device/km_worker.hpp)).
+- **A dispatch kernel on the X280**: one bare-metal image on core 0 of cluster 0 that
+  takes host commands, multicasts records with one vector store per panel, tracks up
+  to 16 in flight and checks each against its deadline
+  ([x280/kernel](src/komorebi_native/x280/kernel/)).
+- **Failures that say where**: every wait on the card is bounded and observes a stop
+  word; a missed deadline raises `km.RecordTimeout` with the command, slot, sequence,
+  team and each member that did not report, with where its reader and writer gave up
+  ([host API](docs/reference/host.md#errors)).
+- **A per-core trace**: wall-clock stamps per record (taken, outputs written,
+  completion sent), read back after the stop (`run.trace()`).
+- **Micro-op streams**: the upload format, a Python builder, the check and a simulator
+  for the small programs the dispatch kernel will run to decide which records to
+  issue, with 33 reference streams for the card's interpreter to replay
+  ([streams](docs/streams.md)).
+- **Measured hardware facts** behind the design: how a multicast record lands, whether
+  record multicasts and in-column broadcasts collide, and what one Tensix tile costs
+  for a 32-ray box-tree walk ([experiments](experiments/README.md)).
+- **Render references**: rasterization and ray tracing in numpy, threaded C++ and CUDA,
+  bit for bit equal on four scenes, for the card versions to be compared with
+  ([projects](projects/README.md)).
+
+## Measured
+
+Landing a 64-byte record multicast by one X280 core to every Tensix core: p150a, 120
+Tensix cores (12 x 10) at AICLK 1350 MHz, X280 at 1750 MHz, slow dispatch, two
+multicast panels; the experiment's own X280 image and a Tensix kernel that checks every
+payload word and does no work; microseconds per record by the X280's tick counter over
+10^6 records, issue to the last acknowledgement. Komorebi's records use echo words
+([landing](experiments/landing/README.md)).
+
+| Protocol | Records in flight | µs per record | Torn records / core-records checked | Check on the core, cycles (mean) |
+|---|---|---|---|---|
+| sequence echoed in every 16-byte chunk | 1 | 1.285 | 0 / 733,212,120 | 39.8 |
+| sequence echoed in every 16-byte chunk | 4 | 0.772 | 0 / 733,212,120 | 39.2 |
+| record, fence, then a sequence word | 1 | 1.310 | 0 / 733,212,120 | 29.6 |
+| record, fence, then a sequence word | 4 | 0.728 [^1] | 0 / 733,212,120 | 29.2 |
+
+The same card and clocks, records at 4 in flight while lanes of 2, 5 and 10 cores
+broadcast 64 B to 24 KiB blocks down every grid column: no lost or wrong word and no
+hang in about 7.0 x 10^9 checked core-records; records took 0.7752 µs alone and 0.7719
+to 0.7780 µs with lanes on either NoC ([collision](experiments/collision/README.md)).
+
+One Tensix core, tt-metal v0.81.1, AICLK 1350 MHz, median of three runs: the vector
+unit runs a multiply-add in 1.000 cycle with 32, 1 or no lanes enabled; one walk of a
+255-node box tree, in cycles per ray, every best distance bit-equal to the CPU
+reference ([tile probes](experiments/tile_probes/README.md)):
+
+| Rays, ray set | Ray-first (each lane at its own node) | Node-first (rays binned by node) |
+|---|---|---|
+| 256, camera | 2273 | 1232 |
+| 1024, camera | 2269 | 1008 |
+| 256, random | 3500 | 2199 |
+| 1024, random | 3412 | 2110 |
+
+The render references, 1024 x 1024: numpy, C++ and CUDA give the same arrays bit for
+bit on all four scenes. Milliseconds per frame (wall time of a frame loop of at least
+3 s) on a shared 96-thread AMD EPYC 7K62 (load average 5 to 18) and one Tesla V100
+32 GB; no card version is landed yet
+([raster](projects/raster/reference/README.md),
+[ray tracing](projects/raytrace/reference/README.md)).
+
+| Scene | Triangles | Raster, C++ 1 thread | C++ 96 threads | V100 | Ray tracing, C++ 1 thread | C++ 96 threads | V100 |
+|---|---|---|---|---|---|---|---|
+| tiny | 398 | 11.21 | 2.66 | 0.29 | 726.4 | 23.1 | 2.3 |
+| 10^4 | 11,994 | 16.79 | 3.32 | 0.25 | 1078.4 | 34.9 | 3.7 |
+| 10^5 | 102,308 | 39.90 | 4.08 | 0.79 | 1452.1 | 37.7 | 6.1 |
+| 10^6 | 997,806 | 152.78 | 17.87 [^2] | 4.42 | 2088.9 | 54.3 | 11.3 |
+
+<img src="projects/raster/reference/images/s10k_colour_256.png" width="256" alt="Rasterized 10^4 scene: spheres of mixed size over a ground grid"> <img src="projects/raytrace/reference/images/s10k_image_256.png" width="256" alt="Ray-traced 10^4 scene with shadows and one diffuse bounce">
+
+*The 10^4 scene, rasterized and ray traced (256 x 256 downscales of 1024 x 1024).*
+
+[^1]: To be revisited: at 4 in flight the record-then-sequence-word protocol is
+    0.044 µs faster end to end than echo words, against 0.025 µs slower at 1; the cause
+    was not separated.
+[^2]: To be revisited: the timed stages add up to 12.99 ms (median; 11.99 to 18.25)
+    against 17.87 ms for the frame loop; the 96-thread rows have the widest spread on
+    the shared host, not investigated.
+
+## Install
+
+Nothing is released: no wheel, no package on PyPI, no prebuilt X280 image. Komorebi is
+used from a clone, on Linux x86-64 with Python 3.13:
 
 ```
+git clone <this repository> komorebi && cd komorebi
 uv venv -p 3.13 && source .venv/bin/activate && uv pip install -e ".[dev]"
-# or, without uv:
-python3.13 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
-
-python -m pytest tests/core
-ruff check . && black --check .
-python -m komorebi.tools.cxx_format --check
+kmr doctor                      # the Python, the tt-metal tree and its X280 runtime
 ```
 
-The formatter tests need clang-format (the `dev` extra installs it) and are skipped
-without it.
+The CPU tests and the stream tools need nothing else. To run on a card: a Blackhole
+p150a whose X280 memory is prepared for the X280 runtime, a tt-metal source tree at the
+version in [packaging/tt-metal.pin](packaging/tt-metal.pin) (v0.81.1) built with its
+X280 runtime, `ttnn` and `torch` from it in the same environment, and `TT_METAL_HOME`
+naming that tree. The dispatch kernel image and the native module are built from the
+tree on first use (`python -m komorebi.native` builds them ahead). Details:
+[install](docs/install.md).
 
-`kmr doctor` reports what the host offers (Python, the tt-metal tree from
-`TT_METAL_HOME`, its build and X280 runtime) without opening a device.
+## Usage
+
+### Running the example on a card
+
+```
+cd examples/01_mapcollect
+python mapcollect.py --jobs 20 --count 8
+python mapcollect.py --jobs 1000 --teams random --out-tensors 32
+python mapcollect.py --jobs 10 --count 8 --first 4 --stall 3 --stall-member 2 --deadline 0.02
+```
+
+Each run checks every member's output tile against numpy (bit-exact on integer inputs)
+and prints one JSON line: microseconds per job by the dispatch kernel's clock and the
+host's, the issue-to-completion latency and every core's end state. The third command
+makes member 2 of job 3 never report, which ends in `km.RecordTimeout` naming that core
+([01_mapcollect](examples/01_mapcollect/README.md)).
+
+### Writing a segment
+
+A program is three kernels with a switch on the segment inside the runtime's loops.
+Segment numbers (1 to 239) are `constexpr uint32_t kSegName = n;` lines of a header the
+host reads; the record's ten argument words are `r.a0` to `r.a9`. The writer's body
+returns whether this member reports the record
+([writer.cpp](examples/01_mapcollect/kernels/writer.cpp), without its test segment):
+
+```cpp
+km::Writer wr;
+wr.run([&](const km_record_t& r) {
+    const uint32_t index = wr.me() - km::first(r);
+    switch (km::seg(r)) {
+        case kSegMap: {
+            if (!wr.wait_front(kCbOut, 1)) {
+                return true;
+            }
+            const auto out = TensorAccessor(out_args, r.a2);
+            noc_async_write_page(r.a3 + index, out, get_read_ptr(kCbOut));
+            noc_async_writes_flushed();
+            cb_pop_front(kCbOut, 1);
+            return true;
+        }
+        case kSegStall:
+            return index != r.a0;
+        default:
+            return true;
+    }
+});
+```
+
+After the body the runtime flushes the writes and reports: one increment on the
+leader's counter, or, on the leader, one acknowledgement word to the dispatch kernel
+once all members have reported.
+
+### A micro-op stream, simulated without a card
+
+A stream is a small program for the dispatch kernel that decides which records to
+issue. Eight jobs of 30 cores through the job queue, which picks each job's first core
+([docs/streams.md](docs/streams.md)):
+
+```python
+from komorebi.engines.stream import Stream
+
+SEG_MAP = 1  # the program's segment number
+
+s = Stream(deadline_us=200_000, seed=1)
+(j,) = s.regs(1)
+top = s.label()
+s.submit(SEG_MAP, count=30, args=[j])  # a job of 30 cores; the queue picks `first`
+s.addi(j, j, 1)
+s.jlt(j, s.const(8), top)
+s.wait(0)  # until every record of the stream has completed
+s.halt(s.const(0))
+upload = s.encode()  # the bytes the host would upload
+
+done = s.simulate(n_cores=120, delay=2)  # a record completes 2 passes after issue
+print(len(upload), done.status, done.halt)
+for r in done.records:
+    print(r.seq, r.args[0], (r.first, r.count), r.pass_index)
+```
+
+```text
+320 ended 0
+1 0 (0, 30) 0
+2 1 (30, 30) 0
+3 2 (60, 30) 0
+4 3 (90, 30) 0
+5 4 (0, 30) 3
+6 5 (30, 30) 3
+7 6 (60, 30) 3
+8 7 (90, 30) 3
+```
+
+Four disjoint teams fill the 120 cores in the first pass; the next four are issued when
+the first ones complete. The simulator is the definition the card's interpreter will
+be tested against; on the card the dispatch kernel does not run streams yet.
+
+## Repository map
+
+```text
+src/komorebi/                  the Python package: Program, Session, Run, layout, kmr
+  engines/stream.py            micro-op streams: builder, encoding, check, simulator
+  manifest/  lang/             reserved: records, homes and segments; the thread language
+src/komorebi_native/
+  include/komorebi/abi/        the record, the event and the stream format, shared by all
+  include/komorebi/device/     the resident worker, teams, the trace (Tensix kernels)
+  x280/kernel/                 the dispatch kernel for X280 cluster 0
+  csrc/host/                   the native module: X280 runtime, commands, events
+examples/                      01_mapcollect
+experiments/                   landing, collision, tile_probes
+projects/  ref/                render references; CPU references in numpy
+tests/core/  tests/hardware/   tests with no card; card tests (KMR_CARD=1)
+docs/                          concepts, host API, streams, install, development
+```
+
+## Limitations
+
+- One Blackhole p150a, in slow dispatch. Grids of up to 128 cores in at most two
+  multicast panels; one harvesting pattern has been run.
+- Every record is a host command: the card does not decide what to run next yet, and
+  each record is one Python call to `run.issue`.
+- At most 16 records in flight, ten 32-bit argument words per record, segments 1 to
+  239.
+- No core-to-core breakpoint in the runtime yet: data a segment needs from another core
+  is the segment's own NoC code.
+- tt-metal's watcher cannot run while the X280 runtime is open. Debugging is by the
+  cores' state words, "where" codes and the per-core trace, all read after the stop.
+- Reading tensors back in slow dispatch runs at about 1 MB/s.
+- `kmr build host` and `kmr build pymodule` take their compile flags from two targets
+  that the [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch)
+  project adds to a tt-metal build
+  ([development](docs/development.md#known-limitations)).
+
+## Roadmap
+
+1. Static breakpoints: `emit` and `wait` into fixed slots, groups and broadcast inside a
+   lane, `reduce` by owner and by tree.
+2. Deciding on the card: the micro-op interpreter and the job queue in the dispatch
+   kernel, so the same program runs host-fed or from an uploaded stream.
+3. Dynamic breakpoints: inboxes, packets of records with credits, the end of a run
+   detected from counts; threads that move.
+4. The graph executor, and user threads on X280 clusters 1 to 3.
+5. Programs on the card against the references: matrix product, attention, SwiGLU,
+   rasterization, ray tracing.
+6. A wheel with a prebuilt dispatch image; then the manifest and the thread language.
+
+## Documentation
+
+| Page | Read it for |
+|---|---|
+| [docs index](docs/README.md) | every concept and reference page |
+| [programming model](docs/concepts/model.md) | threads, breakpoints, homes, space and time |
+| [dispatch kernel](docs/concepts/dispatch.md) | the kernel on X280 cluster 0 and the work clusters |
+| [Tensix runtime](docs/concepts/runtime.md) | the resident worker, records, teams, breakpoints |
+| [host API](docs/reference/host.md) | `Program`, `Session`, `Run`, errors, builds |
+| [micro-op streams](docs/streams.md) | the upload format, builder, check and simulator |
+| [install](docs/install.md), [development](docs/development.md) | building from a clone; layout, checks, conventions |
+
+## Contributing
+
+Open an issue first for a feature. Before a pull request, from the repository in the
+environment of [install](docs/install.md):
+
+```
+python -m pytest tests/core
+python -m komorebi.tools.cxx_format --check
+ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
+```
+
+Conventions: [development](docs/development.md).
 
 ## Licence
 
