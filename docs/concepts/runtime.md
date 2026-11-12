@@ -9,30 +9,32 @@ tags:
 
 # The Tensix runtime
 
-Status: design, not yet implemented.
+Status: implemented and run on one Blackhole card: the resident worker, records,
+teams and completion, static breakpoints (ports and reduce, lane broadcast) and the
+trace. Dynamic breakpoints are planned.
 
 Each program has one resident worker on every Tensix core it uses. The worker starts
 once and then serves work: it takes the next record, switches on the segment the record
 names, runs that segment and reports completion. [Dispatch](dispatch.md) is what sends
-the records; the [model](model.md) is what the segments and breakpoints mean. The
-device calls, codes and control block are in the [reference](../reference/runtime.md).
+the records, from the host, from its own engines or from an X280 thread
+([threads reference](../reference/threads.md)). The [model](model.md) is what the
+segments and breakpoints mean.
 
-| Part | Contract |
-|---|---|
-| Record | One 64-byte line: `seq`, `seg`, team or target, a run tag, then the segment's arguments. The dispatch kernel treats it as eight opaque words. |
-| Landing | A record must be seen whole. Two ways are compared: an echo word in every 16-byte chunk, so a core can tell when the whole line has landed, or the record first and a sequence word after it. The choice is not made yet. |
-| Worker | One resident kernel set per program. Take the next record, switch on `seg`, run, complete. Every wait is the runtime's own, bounded, and observes a stop word. The reader copies each record into the tile's control block and hands a token to the compute and writer kernels through two small buffers; both read the record from that copy. |
-| Teams | A team is named in the record. Completion is per team: members report to the team's leader, and the leader pushes one word. Several teams run at once. |
-| Static breakpoints | `emit`: write into a fixed slot, wait for landing, increment the receiver's counter. `wait(n)`: a bounded counted wait. Groups are index slices; a rectangle group uses one multicast. `reduce` by owner and by tree ([implemented](../reference/ports.md)). |
-| Dynamic breakpoints | An inbox ring per core; packets of up to 32 records; an outbox per destination; free-slot credit; a bounded population of live threads; sent and consumed counters pushed when a core goes idle. Generic reader and writer kernels own these, so a program's segment code lives in the compute kernel. |
-| Trace | Per-core phase stamps, read back after the run. |
+| Part | As built | Reference |
+|---|---|---|
+| Record | One 64-byte line: sequence number, segment, flags and ring slot, team, ten argument words. The dispatch kernel forwards it whole. | [runtime](../reference/runtime.md#the-record) |
+| Landing | Word 0 of each of the four 16-byte chunks carries the sequence number; a core runs a record only when all four agree. | [runtime](../reference/runtime.md#the-record) |
+| Worker | One resident kernel set per program. The runtime owns each kernel's loop; the program gives the body. The reader copies each record into the tile's control block and hands a token to the compute and writer kernels, which read the record from that copy. Every wait is bounded and observes a stop word. | [runtime](../reference/runtime.md#the-three-kernels) |
+| Teams | A contiguous range of cores in core order, named in the record. Completion is per team: members report to their row's leader, row leaders to the first member, which acknowledges with one write. Several teams run at once. | [runtime](../reference/runtime.md#the-three-kernels) |
+| Static breakpoints | A value to one core: `emit` writes into a fixed slot, waits for the write, increments the receiver's port; `arrive` is a bounded counted wait. `reduce` by owner and by tree. A block to a row or a column: lane broadcast with a window. | [ports](../reference/ports.md), [lanes](../reference/lanes.md) |
+| Dynamic breakpoints | Planned: a thread moves to the core that holds its data. | - |
+| Trace | Per-record wall-clock stamps per core, read back after the run. | [runtime](../reference/runtime.md#trace) |
 
 ## Records and segments
 
-A record is the unit that travels, both from the dispatch kernel to a core and, for a
-dynamic breakpoint, from core to core. Its first words say which segment to run and for
-which team; the rest are that segment's arguments. A thread that moves carries its live
-variables in the same 64 bytes.
+A record is the unit that travels from the dispatch kernel to the cores. Its first
+words say which segment to run, for which team and in which ring slot; the rest are
+that segment's arguments. Segments 1 to 239 are the program's; EXIT ends the worker.
 
 ## Teams and completion
 
@@ -57,18 +59,17 @@ the flag is acknowledged with the ack word alone.
 ## Breakpoints
 
 A static breakpoint is known before the run: who sends, who receives and how many
-arrive. It is a write into a slot at a fixed address on the receiver, a wait until that
-write has landed, and an increment of a counter the receiver waits on. There is no
-header and no queue.
+arrive, all from the record and the member's rank. A value to one core is a write into
+a slot at a fixed address on the receiver, a wait until that write has landed, and an
+increment of a port the receiver waits on; there is no header and no queue
+([ports](../reference/ports.md)). A block to many cores is a lane: one sender
+multicasts it along a row or down a column of the team, with a window of blocks in
+flight, and each receiver stamps the sender when its compute is done with a block
+([lanes](../reference/lanes.md)). Records that use either carry `KM_F_EXCL`, so two
+records whose teams overlap are never in flight together.
 
-A dynamic breakpoint depends on data. The receiver has an inbox ring of records. A
-sender fills an outbox per destination and sends packets of up to 32 records, within
-the credit of free slots the receiver has granted. The number of live threads is
-bounded, which limits how much can be in flight at once. When a core goes
-idle it pushes its sent and consumed counters, and the run is over when the sums match
-on two successive sweeps.
-
-Both kinds are written the same way by the author; the lowering differs.
+A dynamic breakpoint depends on data: the destination, the number of arrivals and the
+end of the run are decided as it runs. It is planned and not built.
 
 ## Debugging
 
