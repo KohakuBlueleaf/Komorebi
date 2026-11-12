@@ -61,6 +61,7 @@ def main():
     p.add_argument("--mode", choices=["pair", "random"], required=True)
     p.add_argument("--n", type=int, required=True)
     p.add_argument("--packets", type=int, required=True)
+    p.add_argument("--commit", action="store_true", help="first mark after a barrier")
     a = p.parse_args()
     assert 1 <= a.n <= 32
     device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
@@ -105,7 +106,7 @@ def main():
         log(f"cores {cores} cap {cap} queue MB {cores * cap * 64 / 2**20:.1f}")
         sh, qb = shard.buffer_address(), queue.buffer_address()
         sargs, rargs = ttnn.RuntimeArgs(), ttnn.RuntimeArgs()
-        mode = 0 if a.mode == "pair" else 1
+        mode = (0 if a.mode == "pair" else 1) | (256 if a.commit else 0)
         for c, (x, y) in enumerate(logical):
             sargs[x][y] = [sh, qb, cap, c, cores, mode, a.packets, a.n, salt, *table]
             rargs[x][y] = [sh, qb, cap, c, count[c], salt]
@@ -132,15 +133,15 @@ def main():
             semaphores=[],
             cbs=[],
         )
+        clock = Path("/sys/class/tenstorrent/tenstorrent!0/tt_aiclk")
+        aiclk_before = clock.read_text().strip()
         log("launch")
         ttnn.generic_op([queue, shard], desc)
         ttnn.synchronize_device(device)
         log("kernel done")
         rows = ttnn.to_torch(shard).numpy().astype(np.int64) & M32
         log("read back")
-        aiclk = (
-            Path("/sys/class/tenstorrent/tenstorrent!0/tt_aiclk").read_text().strip()
-        )
+        aiclk = clock.read_text().strip()
     finally:
         ttnn.close_mesh_device(device)
     s, r = rows[:cores, SSTAT : SSTAT + 16], rows[:cores, RSTAT : RSTAT + 16]
@@ -152,6 +153,7 @@ def main():
     sums = [(int(r[c, 3]) | int(r[c, 4]) << 32) for c in range(cores)]
     out = {
         "mode": a.mode,
+        "commit": a.commit,
         "n": a.n,
         "packets": a.packets,
         "cores": cores,
@@ -173,6 +175,7 @@ def main():
         "items_per_mcycle": items / span * 1e6 if span else None,
         "atomic_cycles_mean": float(s[senders, 6].sum() / (a.packets * len(senders))),
         "atomic_cycles_max": int(s[senders, 5].max()),
+        "aiclk_before": aiclk_before,
         "aiclk_after": aiclk,
     }
     if a.mode == "pair":

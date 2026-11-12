@@ -46,8 +46,8 @@ namespace {
 
 }  // namespace
 
-// Args: shard, queue base, cap, me, cores, mode (0 pair: core 0 to core 1, 1 random),
-// packets, n, salt, then the NoC x | y << 16 of every core.
+// Args: shard, queue base, cap, me, cores, mode (0 pair: core 0 to core 1, 1 random;
+// + 256: commit each packet), packets, n, salt, then every core's NoC x | y << 16.
 void kernel_main() {
     const uint32_t sh = get_arg_val<uint32_t>(0), qbase = get_arg_val<uint32_t>(1);
     const uint32_t cap = get_arg_val<uint32_t>(2), me = get_arg_val<uint32_t>(3);
@@ -68,7 +68,7 @@ void kernel_main() {
         const uint32_t xy = get_arg_val<uint32_t>(kTable + core);
         return get_noc_addr(xy & 0xFFFF, xy >> 16, addr);
     };
-    const bool active = mode == 1 || me == 0;
+    const bool active = (mode & 0xFF) == 1 || me == 0;
 
     // Start barrier on core 0 (every core's sender counts in).
     atomic_add(noc_of(0, sh + kReady), 1, sh + kRet);
@@ -110,7 +110,7 @@ void kernel_main() {
     uint32_t x = me * 7919u + 1u, items = 0, amax = 0, asum = 0, fail = kOk;
     for (uint32_t k = 0; active && k < packets; k++) {
         x = lcg(x);
-        const uint32_t dest = mode == 0 ? 1 : (x >> 8) % cores;
+        const uint32_t dest = (mode & 0xFF) == 0 ? 1 : (x >> 8) % cores;
         const uint64_t a0 = wall64();
         ret[0] = 0xDEADBEEFu;
         atomic_add(noc_of(dest, sh + kTail), n, sh + kRet);
@@ -142,6 +142,9 @@ void kernel_main() {
             volatile uint32_t* it = buf + i * kItemWords;
             const uint32_t mark = (p + i + 1) ^ salt;
             it[0] = it[4] = it[8] = it[12] = mark;
+            if (i == 0 && (mode >> 8)) {
+                it[0] = 0;  // committed after the packet's writes
+            }
             it[kWSrc] = me;
             it[kWPacket] = k;
             it[kWIndex] = i;
@@ -160,6 +163,29 @@ void kernel_main() {
                 run * kItemBytes
             );
             i += run;
+        }
+        if (mode >> 8) {  // commit: the first item's mark goes after the packet
+            if (!wait_bounded(
+                    [] {
+                        return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                    },
+                    kLimit
+                )) {
+                fail = kFailFlush;
+                break;
+            }
+            buf[0] = (p + 1) ^ salt;
+            invalidate_l1_cache();
+            const uint32_t pos = p & (cap - 1);
+            noc_async_write(
+                sh + kSend,
+                get_noc_addr(
+                    dest * (cap / kChunkItems) + pos / kChunkItems,
+                    q,
+                    pos % kChunkItems * kItemBytes
+                ),
+                16
+            );
         }
         items += n;
     }
