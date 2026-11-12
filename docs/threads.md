@@ -18,8 +18,10 @@ on the cluster's four coherent 64-bit cores. It does not compute on tiles.
 
 Status: a thread can be declared, built, loaded beside the dispatch kernel, read and
 write its regions, run on all four cores, return a result, and be replaced by its host
-fallback. The command ring to the dispatch kernel (`kmx_issue`, `kmx_wait`,
-`kmx_poll`) is not there yet: those calls return `KMX_STOPPED`.
+fallback. The library's side of the command ring to the dispatch kernel
+(`kmx_issue`, `kmx_wait`, `kmx_poll`) is written and checked against a fake kernel on
+the CPU; the kernel does not serve a work cluster's ring yet, so the host gives the
+thread no ring and those calls return `KMX_STOPPED`.
 
 ## What a thread can touch
 
@@ -43,6 +45,43 @@ changes hands explicitly:
 
 Both are a sweep of the cache controller's flush register over the region's lines
 (`experiments/x280_threads/` measures what happens without them and what they cost).
+
+**Decisions travel as result words and events; bulk data after the stop.** A value
+that steers the program while it runs (the one that ends a loop, a count that sizes
+the next segment) comes back as a record's result word: a record issued with
+`KM_F_RESULT` is acknowledged by its team's leader with a 32-bit result, which arrives
+in the `ticks` field of its `KM_EV_DONE` event, to the thread through its ring and to
+a host-fed program through the host ring, by the same path. The host reads a region of
+DRAM only after the run has stopped; while the grid is resident it does not read DRAM
+at all.
+
+## The command ring
+
+```c
+km_record_t r = {0};
+r.hdr = SEG_MAP | KM_F_RESULT << 8;      /* a segment of the program, with a result */
+r.team = first | count << 16;
+uint32_t ticket;
+if (kmx_issue(&r, &ticket) != KMX_OK) { /* KMX_FULL: no free slot yet */ }
+kmx_event ev;
+if (kmx_wait(ticket, kmx_time() + KMX_TICKS_PER_SECOND, &ev) == KMX_OK &&
+    ev.kind == KM_EV_DONE) {
+    uint32_t value = ev.ticks;           /* the team leader's result word */
+}
+```
+
+The ring follows the host ring's protocol (the dispatch kernel's README, "Protocol with
+the host"): command `i`, numbered from 1, is one 64-byte line in slot `i % depth`,
+written words first and then its number in `seq` and the three landing words; a slot
+is reused once the kernel's consumed count allows it; each finished command comes back
+as one 16-byte event whose index is read before and after its fields; the thread
+writes the number of events it took into a line the kernel reads. The ticket is the
+command's number. `kmx_wait` keeps the events of other tickets for `kmx_poll`, up to
+32. Where the ring lives is data: the host writes its addresses, depths and whether it
+is cached into the thread's ring line before the start (`kmx_ring_desc` in
+`kmx_layout.h`); in cached memory every hand-over is a sweep, as for regions. Only
+hart 0 issues and waits. A missed deadline or a stop while waiting ends the thread's
+run as `late` or `stopped`.
 
 ## Writing one
 
