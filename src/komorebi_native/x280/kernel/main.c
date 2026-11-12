@@ -6,6 +6,7 @@
 #include "engine.h"
 #include "engine_port.h"
 #include "event_ring.h"
+#include "graph_port.h"
 #include "grid_port.h"
 #include "kernel.h"
 #include "queue.h"
@@ -212,9 +213,15 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         return KMD_TAKEN;
     }
     if (host && (seg == KM_SEG_RUN || seg == KM_SEG_CANCEL)) {
-        const int wait =
-            (seg == KM_SEG_RUN ? engine_run(k, req, a0, (uint32_t)(l[2] >> 32))
-                               : engine_cancel(k, req, a0));
+        /* a2 != 0: a graph's RUN; a CANCEL goes to the graph or stream with its req. */
+        int wait = seg == KM_SEG_RUN ? -1 : graph_cancel(k, req, a0);
+        if (seg == KM_SEG_RUN && (uint32_t)l[3] != 0) {
+            wait = graph_run(k, req, l);
+        } else if (wait < 0) {
+            wait =
+                (seg == KM_SEG_RUN ? engine_run(k, req, a0, (uint32_t)(l[2] >> 32))
+                                   : engine_cancel(k, req, a0));
+        }
         if (wait) {
             return KMD_NO_ROOM;
         }
@@ -270,7 +277,7 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     if (seg == KM_SEG_EXIT) {
         /* EXIT goes to every core, once no record is in flight or queued and no stream
          * runs. */
-        if (k->busy || k->nstreams || k->queued) {
+        if (k->busy || k->nstreams || k->queued || graph_running(k)) {
             return KMD_HELD;
         }
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_TEAM_ALL(k->cores);
@@ -391,7 +398,8 @@ static void loop(kmd_t* k) {
             );
             return;
         }
-        if (activity != seen_activity || k->busy || k->nstreams || k->queued) {
+        if (activity != seen_activity || k->busy || k->nstreams || k->queued ||
+            graph_running(k)) {
             seen_activity = activity;
             t_active = now;
         } else if (a->t_idle != 0 && now - t_active > a->t_idle) {

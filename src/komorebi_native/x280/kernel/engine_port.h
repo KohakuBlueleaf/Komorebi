@@ -3,6 +3,7 @@
 #pragma once
 
 #include "event_ring.h"
+#include "graph_port.h"
 #include "kernel.h"
 #include "result.h"
 #include "ring.h"
@@ -37,7 +38,10 @@ static inline void engine_go(kmd_t* k, uint32_t go) {
  * flight or queued, a held command. */
 static inline int engine_active(const kmd_t* k) {
     const kmd_ring_t* r = &k->ring[KMD_SRC_ENGINE];
-    return k->nstreams != 0 || r->nbusy != 0 || r->nqueued != 0 || r->line_state != 0;
+    return (
+        k->nstreams != 0 || r->nbusy != 0 || r->nqueued != 0 || r->line_state != 0 ||
+        graph_running(k)
+    );
 }
 
 /* KM_SEG_RUN, host command `cmd`: refused, ended with KM_EV_STREAM_ERROR (req from the
@@ -68,6 +72,7 @@ static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
             bad = 1;
         }
     }
+    bad |= graph_claims(k, off, bytes, req);
     if (bad) {
         host_push(k, req, KM_EV_STREAM_ERROR | (KM_SERR_HEADER << 8), 0);
         return 0;
@@ -111,6 +116,9 @@ static int engine_post(kmd_t* k, const uint64_t* l, int finishing) {
     const uint32_t req = (uint32_t)(l[1] >> 32), status = (uint32_t)(l[2] >> 32);
     const uint32_t ticks = (uint32_t)l[3], kind = status & 0xFFu;
     kmd_ring_t* h = &k->ring[KMD_SRC_HOST];
+    if (graph_post(k, l)) {
+        return 0;
+    }
     if (kind == KM_EV_STREAM_END || kind == KM_EV_STREAM_ERROR) {
         for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE; i++) {
             kmd_run_t* s = &k->runs[i];

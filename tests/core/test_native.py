@@ -40,7 +40,8 @@ def test_image_and_module_are_built_once_into_the_cache(tmp_path, monkeypatch):
     assert (
         image == native.image_path(tree) and image.parent.parent == tmp_path / "cache"
     )
-    assert built[0][1] == [native.kernel_dir() / "main.c"]
+    engine = native.engines_dir() / "km_graph_engine.c"
+    assert built[0][1] == [native.kernel_dir() / "main.c", engine]
     module = native.module_path(tree)
     assert module.name == native.MODULE_FILE and module == native.module_path(tree)
     assert [b[0] for b in built] == ["image", "pymodule"]

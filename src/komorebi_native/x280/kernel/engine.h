@@ -322,6 +322,9 @@ static inline int eng_owes(const kmd_engine_t* e) {
     return e->orphans != 0;
 }
 
+/* The graph executor beside the streams; it writes the ring with the code above. */
+#include "graph.h"
+
 /* RUN from the kernel: the upload of `bytes` at `off`, which the kernel admitted (in
  * the region, line aligned, no overlap, a new req). Starts it, or ends it at once. */
 static void stream_start(kmd_engine_t* e, uint32_t off, uint32_t bytes) {
@@ -361,6 +364,9 @@ static void stream_start(kmd_engine_t* e, uint32_t off, uint32_t bytes) {
 /* One event from the kernel: RUN, CANCEL, or the answer to a command of the engine. */
 static void eng_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t ticks) {
     const uint32_t kind = status & 0xFFu;
+    if (graph_event(e, req, status, ticks)) {
+        return;
+    }
     if (kind == KMD_EV_RUN) {
         stream_start(e, req, ticks);
         return;
@@ -671,6 +677,7 @@ static void eng_loop(kmd_engine_t* e) {
         eng_events(e);
         eng_owed(e);
         eng_step(e);
+        graph_step(e);
         eng_owed(e);
         if (e->wrote) {
             x280_fence_ow();
@@ -692,8 +699,9 @@ static void eng_loop(kmd_engine_t* e) {
     do {
         eng_events(e);
         eng_owed(e);
+        graph_owed(e);
         x280_fence_ow();
-    } while (eng_owes(e) && x280_mtime() < by);
+    } while ((eng_owes(e) || graph_owes(e)) && x280_mtime() < by);
 }
 
 /* Core 1: waits for the kernel's go (bounded by twice t_start and the runtime's stop),

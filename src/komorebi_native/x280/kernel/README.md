@@ -17,6 +17,8 @@ is one of those sources. `km_dispatch.h` holds the exact layouts;
 | `engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
 | `work_port.h` | core 0's side of a work cluster's ring: its window, the refusal of a record that would wait |
 | `engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
+| `graph_port.h` | core 0's side of the graphs: the graph table, admitting `RUN`, `CANCEL`, their ends |
+| `graph.h` | core 1: up to two graphs on the plain-C executor (`../engines/km_graph_engine.c`) |
 | `result.h` | the result block in LIM |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
 
@@ -141,6 +143,16 @@ These rules are part of the protocol; a host that relies on anything else is wro
   stream with reason 10; its records in flight still free their slots. A record of a
   stream that misses its deadline ends the stream with reason 8 and the kernel with it.
   EXIT waits until no stream runs.
+- **Graphs.** `KM_SEG_RUN` with a2 = 1 (a0 offset, a1 bytes, a3 and a4 the binding
+  block) or a2 = 2 (a0 the req of a kept graph) runs a graph on core 1 beside the
+  streams (`docs/graphs.md`, "In the dispatch kernel"): up to two at once, eight kept.
+  Core 0 refuses a2 above 2 with reason 1, a third graph with 6, a2 = 2 of a req no
+  kept graph has with 7, and ends a bad range at once with `KM_EV_GRAPH_ERROR` reason
+  1; core 1 checks the rest. `KM_SEG_CANCEL` of a running graph's req ends it with
+  reason 10, of a kept one that is not running drops it (the same event). A graph's
+  records go back to the engine like a stream's; `KM_EV_GRAPH`, `_END` and `_ERROR`
+  go to the host as `KMD_SEG_POST` commands, an end carrying in a3 whether the graph is
+  kept. EXIT waits until no graph runs.
 - **Commands from the engine.** The engine may send records, `KM_SEG_DEADLINE`,
   `KMD_SEG_POST` (248) and `KMD_SEG_DROP` (247); STOP, EXIT, RUN and CANCEL from it are
   refused with reason 1, and so are `KMD_SEG_POST` and `KMD_SEG_DROP` from the host.

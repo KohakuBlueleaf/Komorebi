@@ -39,14 +39,20 @@ def module_source():
     return _require_native() / "csrc" / "host" / "km_host.cpp"
 
 
+def engines_dir():
+    """The engines' plain-C sources, compiled into the dispatch kernel image."""
+    return _require_native() / "x280" / "engines"
+
+
 def kmx_dir():
     """The kmx library: start-up, kmx.h and the layout it shares with the host."""
     return _require_native() / "x280" / "kmx"
 
 
 def includes():
-    """The include directories of the image and the module: the ABI, the kernel."""
-    return [_require_native() / "include", kernel_dir()]
+    """The include directories of the image and the module: the ABI, the kernel, the
+    engines."""
+    return [_require_native() / "include", kernel_dir(), engines_dir()]
 
 
 def cache_dir(environ=None):
@@ -123,7 +129,8 @@ def image_path(tree=None, defines=()):
     if prebuilt.is_file() and not defines:
         return prebuilt
     tree = _tree(tree)
-    sources, defines = [kernel_dir() / "main.c"], list(defines)
+    sources = [kernel_dir() / "main.c", engines_dir() / "km_graph_engine.c"]
+    defines = list(defines)
     commands = build.image_commands(
         tree, PLACEHOLDER / IMAGE, sources, includes(), defines
     )

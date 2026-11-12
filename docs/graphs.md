@@ -125,7 +125,8 @@ templates, `step_limit` 4,096, 16 bindings.
 The host writes the upload as whole lines into the kernel's upload region and sends
 `KM_SEG_RUN` with `a2 = KM_GRUN_UPLOAD` (`a0` offset, `a1` bytes, `a3` offset of the
 binding block, `a4` its count of values); a kept graph is run again with
-`a2 = KM_GRUN_KEPT` and `a0` its `req`.
+`a2 = KM_GRUN_KEPT` and `a0` its `req`. The binding block is `a4` 32-bit values at a
+64-byte aligned offset of the region, read once when the run starts.
 
 **Kept graphs.** A graph whose header has `KM_GRAPH_KEEP` stays kept after it ends,
 whether it ended or failed. The kernel runs uploads in place and copies nothing, so a
@@ -134,7 +135,9 @@ upload region to another upload while the graph is kept. At most eight graphs ar
 a ninth upload with the bit is refused with reason 15, and nothing is evicted by
 itself. `KM_SEG_CANCEL` with the `req` of a kept graph that is running cancels the run
 (reason 10) and keeps the graph; for one that is not running it drops the graph and
-frees its range.
+frees its range, and its `KM_EV_GRAPH_ERROR` with reason 10 (node 0xFFFF) says so. A
+graph with the bit counts as kept from its `RUN`: two uploads with the bit running at
+once both count, even if one of them then fails its check.
 
 ## The check
 
@@ -213,6 +216,31 @@ library `komorebi.engines.graph_native` loads with ctypes.
 bits 0, its team resolved (a queued record keeps `KM_F_QUEUE` and `first` 0), and
 returns `KMG_ISSUED` or `KMG_BUSY`. The first 20 words of the state are the registers,
 the round, the phase, the error reason and the error node.
+
+## In the dispatch kernel
+
+Core 1 of cluster 0 runs up to two graphs beside the streams, one bounded `kmg_step`
+each per pass of its loop, and sends their records into the engine's ring like a
+stream's; core 0 issues them in the engine's turn and answers each with its `KM_EV_DONE`
+(the result word in its ticks) or `KM_EV_TIMEOUT`. A queued record goes into the
+kernel's job queue with the graph's tag; a graph that ends with an error drops its jobs
+still waiting there. Before it hands a `RUN` to core 1,
+core 0 answers at once:
+
+| Case | Event |
+|---|---|
+| `a2` above 2 | `KM_EV_REFUSED`, reason 1 |
+| any record after EXIT | `KM_EV_REFUSED`, reason 4 |
+| two graphs running | `KM_EV_REFUSED`, reason 6 |
+| `a2 = 2` and no kept graph that is not running has `req` | `KM_EV_REFUSED`, reason 7 |
+| `a2 = 1`: a range that is not whole lines inside the region, or that overlaps a running stream or a running or kept graph; a `req` one of those has | `KM_EV_GRAPH_ERROR` reason 1, node 0xFFFF, with the header's `req` (0 if the header is outside the region) |
+
+Core 1 then runs the check, the kept table, the bindings (a block outside the region is
+reason 1), in that order; the first fault ends the graph with its error event. A
+stream's `RUN` whose range or `req` a running or kept graph has ends with
+`KM_EV_STREAM_ERROR` reason 1. EXIT waits until no graph runs. A record of a graph that
+passes its deadline ends the graph with reason 8 and the kernel with
+`KMD_ERR_DEADLINE`, as for a stream.
 
 ## The simulator
 
