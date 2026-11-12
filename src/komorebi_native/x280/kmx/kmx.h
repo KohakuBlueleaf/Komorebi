@@ -23,8 +23,8 @@ const kmx_args* kmx_args_get(void);
 /* Region `id` of the DRAM bank, as memory, and its size; 0 for an unknown id. */
 void* kmx_region(int id, uint64_t* bytes);
 
-/* Hand-over with the grid: take before reading what the grid wrote (drops the cached
- * lines), give after writing what the grid will read (writes them back). */
+/* Hand-over with the grid: take before reading what the grid wrote, give after
+ * writing what it will read; on hart 0 the sweep is spread over the four harts. */
 void kmx_take(int id);
 void kmx_give(int id);
 
@@ -39,7 +39,7 @@ int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev);
 /* One event if any (a kept one first): KMX_OK, or KMX_NONE. Never waits. */
 int kmx_poll(kmx_event* ev);
 
-/* Hart 0 only: runs fn(hart, arg) on all four harts and returns when all are done:
+/* Hart 0, not nested: runs fn(hart, arg) on all four harts until all are done:
  * KMX_OK, or KMX_LATE / KMX_STOPPED if the deadline passed or a stop came meanwhile. */
 int kmx_par(void (*fn)(int hart, void* arg), void* arg);
 

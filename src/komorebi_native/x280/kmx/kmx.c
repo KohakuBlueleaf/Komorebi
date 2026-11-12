@@ -38,6 +38,7 @@ static kmx_ring_t g_ring __attribute__((section(".data"))) = {.next = 1};
 /* Image globals live in .data (the image has no .bss): non-zero initialisers. */
 static uint64_t g_start __attribute__((section(".data"))) = 1;
 static uint32_t g_code __attribute__((section(".data"))) = KMX_UNSET;
+static uint32_t g_in_par __attribute__((section(".data"))) = 0; /* hart 0 in kmx_par */
 
 /* hart 0's kmx_par mailbox */
 enum { PAR_GEN = 0, PAR_FN = 1, PAR_ARG = 2, PAR_EXIT = 3 };
@@ -115,11 +116,35 @@ void* kmx_region(int id, uint64_t* bytes) {
     return (void*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + a->region[id].offset);
 }
 
+/* A hand-over sweep split by lines over the four harts: hart h takes its quarter. */
+typedef struct {
+    uint64_t addr, lines;
+} sweep_t;
+
+static void sweep_part(int hart, void* arg) {
+    const sweep_t* s = (const sweep_t*)arg;
+    const uint64_t per = (s->lines + 3) / 4, first = (uint64_t)hart * per;
+    if (first < s->lines) {
+        const uint64_t n = s->lines - first < per ? s->lines - first : per;
+        flush(s->addr + first * 64, n * 64);
+    }
+}
+
 void kmx_take(int id) {
     uint64_t bytes;
     void* p = kmx_region(id, &bytes);
-    if (p) {
-        flush((uint64_t)(uintptr_t)p, bytes);
+    if (!p) {
+        return;
+    }
+    const uint64_t addr = (uint64_t)(uintptr_t)p;
+    if (hart_id() != 0 || g_in_par) {
+        flush(addr, bytes); /* inside a kmx_par call: this hart alone */
+        return;
+    }
+    const uint64_t lo = addr & ~63ull, hi = (addr + bytes + 63) & ~63ull;
+    sweep_t s = {lo, (hi - lo) / 64};
+    if (kmx_par(sweep_part, &s) != KMX_OK) {
+        flush(addr, bytes); /* late or stopped: the hand-over is still whole */
     }
 }
 
@@ -158,10 +183,11 @@ int kmx_poll(kmx_event* ev) {
 }
 
 int kmx_par(void (*fn)(int hart, void* arg), void* arg) {
-    if (hart_id() != 0) {
-        fail(KMX_ERR_PAR);
+    if (hart_id() != 0 || g_in_par) {
+        fail(KMX_ERR_PAR); /* another hart, or a kmx_par inside one */
         return KMX_STOPPED;
     }
+    g_in_par = 1;
     volatile uint64_t* box = par_box();
     volatile uint64_t* done = par_done();
     const uint64_t gen = box[PAR_GEN] + 1;
@@ -175,12 +201,14 @@ int kmx_par(void (*fn)(int hart, void* arg), void* arg) {
         x280_fence_ir();
         if (done[1] >= gen && done[2] >= gen && done[3] >= gen) {
             x280_fence_iorw();
+            g_in_par = 0;
             return KMX_OK;
         }
         if (spins % KMX_POLL_EVERY == 0) {
             const int end = must_end(0);
             if (end != KMX_OK) {
                 fail(end == KMX_LATE ? KMX_ERR_LATE : KMX_ERR_STOPPED);
+                g_in_par = 0;
                 return end;
             }
         }
