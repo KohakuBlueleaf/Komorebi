@@ -42,6 +42,8 @@ between cores, deciding on the card and the thread language are planned.
 - [Host API](reference/host.md): `Program`, `Session` and `Run`; errors; builds.
 - [Micro-op streams](streams.md): the upload format, the builder, the check, the
   simulator and the error reasons of the programs the dispatch kernel is to run.
+- [Graphs](graphs.md): the graph executor's upload format, builder, check, the
+  executor in plain C and in Python, and the simulator.
 
 ### Concepts
 
