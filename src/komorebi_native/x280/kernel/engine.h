@@ -15,8 +15,12 @@ typedef struct {
     uint32_t state; /* KMD_S_* */
     uint32_t req, pc, steps, max_steps, n_ops, n_records, off;
     uint32_t pending; /* its records and jobs sent and not yet answered */
-    uint32_t jobs;    /* jobs it submitted */
-    uint32_t drop;    /* its queued jobs are to be dropped (KMD_SEG_DROP owed) */
+    uint32_t sent;    /* command of the ISSUE or SUBMIT at pc, not yet known taken */
+    uint32_t seen;    /* sent: core 0 consumed it in an earlier pass */
+    uint32_t waking;  /* refused busy: it sends again after wake number wake_at */
+    uint32_t wake_at;
+    uint32_t jobs; /* jobs it submitted */
+    uint32_t drop; /* its queued jobs are to be dropped (KMD_SEG_DROP owed) */
     uint32_t last_result;
     uint32_t order;                   /* activation number; turns go in this order */
     uint32_t post_status, post_ticks; /* KMD_S_ENDING: the event to post */
@@ -55,6 +59,7 @@ typedef struct {
     uint32_t next;                   /* number of the next command it writes */
     uint32_t room_to;  /* the last command it may write: consumed + depth, as loaded */
     uint32_t seen;     /* events read */
+    uint32_t wakes;    /* KMD_EV_WAKE events read */
     uint32_t told;     /* the read count last stored */
     uint32_t wrote;    /* commands written since the last fence */
     uint64_t deadline; /* ticks of the last KM_SEG_DEADLINE it sent (0: none) */
@@ -352,6 +357,7 @@ static void stream_start(kmd_engine_t* e, uint32_t off, uint32_t bytes) {
     }
     s->regs[KM_STREAM_SEED_REG] = h[7];
     s->pc = s->steps = s->pending = s->last_result = s->jobs = s->drop = 0;
+    s->sent = s->seen = s->waking = 0;
     s->n_ops = h[2];
     s->n_records = h[3];
     s->max_steps = h[4];
@@ -369,6 +375,10 @@ static void eng_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t t
     }
     if (kind == KMD_EV_RUN) {
         stream_start(e, req, ticks);
+        return;
+    }
+    if (kind == KMD_EV_WAKE) {
+        e->wakes++;
         return;
     }
     if (kind == KMD_EV_CANCEL) {
@@ -391,6 +401,14 @@ static void eng_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t t
         if (live) {
             s->pending--;
             s->last_result = x->result ? ticks : s->last_result;
+        }
+    } else if (kind == KM_EV_REFUSED && status >> 8 == KMD_REFUSE_BUSY) {
+        /* Not taken: the stream sends it again after the next wake. */
+        if (live) {
+            s->pending--;
+            s->sent = s->seen = 0;
+            s->waking = 1;
+            s->wake_at = e->wakes;
         }
     } else if (kind == KM_EV_TIMEOUT) {
         if (live) {
@@ -443,7 +461,7 @@ static void eng_events(kmd_engine_t* e) {
 }
 
 /* ISSUE (`job` 0) or SUBMIT of `job` cores, template `t` at `pc`: checked, then sent
- * (DEADLINE first if changed) when the ring and the queue have room, else it waits. */
+ * (DEADLINE first if changed) if the ring and the queue have room; waits either way. */
 static kmd_uop_t stream_record(
     kmd_engine_t* e, kmd_stream_t* s, uint32_t t, uint32_t pc, uint32_t job
 ) {
@@ -512,6 +530,41 @@ static kmd_uop_t stream_record(
     x->result = ((words[1] >> 8) & KM_F_RESULT) != 0;
     e->records++;
     s->pending++;
+    s->sent = cmd;
+    return KMD_UOP_WAIT;
+}
+
+/* Whether an event waits to be read. */
+static inline int eng_unread(const kmd_engine_t* e) {
+    const uint32_t i = e->seen + 1u;
+    x280_fence_ir();
+    return *(volatile const uint32_t*)(e->events + (i % KMD_ENGINE_EVENTS) * 16u) == i;
+}
+
+/* ISSUE or SUBMIT at pc: sent, then done once core 0 took it. Core 0 pushes a busy
+ * refusal before it counts the command consumed, so no unread event means taken. */
+static kmd_uop_t stream_send(
+    kmd_engine_t* e, kmd_stream_t* s, uint32_t t, uint32_t pc, uint32_t job
+) {
+    if (s->sent == 0) {
+        if (s->waking && e->wakes == s->wake_at) {
+            return KMD_UOP_WAIT;
+        }
+        s->waking = 0;
+        return stream_record(e, s, t, pc, job);
+    }
+    if (!s->seen) {
+        x280_fence_ir();
+        if ((int32_t)(*e->consumed - s->sent) < 0) {
+            return KMD_UOP_WAIT;
+        }
+        if (eng_unread(e)) {
+            /* The next pass reads those events first. */
+            s->seen = 1;
+            return KMD_UOP_WAIT;
+        }
+    }
+    s->sent = s->seen = 0;
     return KMD_UOP_DONE;
 }
 
@@ -606,7 +659,7 @@ static kmd_uop_t stream_op(kmd_engine_t* e, kmd_stream_t* s) {
                 return KMD_UOP_ENDED;
             }
             const uint32_t job = op == KM_OP_SUBMIT ? *a : 0u;
-            const kmd_uop_t u = stream_record(e, s, imm, pc, job);
+            const kmd_uop_t u = stream_send(e, s, imm, pc, job);
             if (u != KMD_UOP_DONE) {
                 return u;
             }

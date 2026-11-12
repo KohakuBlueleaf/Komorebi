@@ -90,6 +90,9 @@ static __attribute__((noinline)) void queue_turn(kmd_t* k, uint64_t now) {
     }
     if (issued) {
         queue_tell(k);
+        if (k->engine_waits) {
+            engine_wake(k);
+        }
     }
 }
 

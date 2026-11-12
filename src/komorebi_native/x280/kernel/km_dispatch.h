@@ -75,7 +75,7 @@
 #define KMD_REFUSE_DEADLINE 8u /* KM_SEG_DEADLINE of 0: a deadline is never zero */
 #define KMD_REFUSE_QUEUE 9u    /* a KM_F_QUEUE record while KM_QUEUE_JOBS jobs wait */
 #define KMD_REFUSE_DROPPED 10u /* to the engine: a queued job of its stream dropped */
-#define KMD_REFUSE_BUSY 11u    /* work cluster: the record cannot be issued now */
+#define KMD_REFUSE_BUSY 11u    /* engine, work cluster: the record cannot go now */
 
 /* Engine to kernel: POST host event {a0 req, a1 status, a2 ticks}. Kernel to engine
  * events: RUN {req offset, ticks bytes} of an admitted upload, CANCEL {ticks req}. */
@@ -84,6 +84,8 @@
 #define KMD_SEG_DROP 247u
 #define KMD_EV_RUN 0x10u
 #define KMD_EV_CANCEL 0x11u
+/* Kernel to engine, once after a KMD_REFUSE_BUSY: a slot or the queue has room. */
+#define KMD_EV_WAKE 0x12u
 
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */

@@ -259,7 +259,7 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         return KMD_TAKEN;
     }
     if (queued) {
-        /* Into the queue; when it is full the host's is refused, the engine's waits. */
+        /* Into the queue; when full, the host's is refused, others' refused busy. */
         if (k->queue->n == KM_QUEUE_JOBS) {
             if (!host) {
                 return KMD_HELD;
@@ -295,13 +295,13 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     return KMD_TAKEN;
 }
 
-/* Source `src`'s turn in a pass: at most one command, taken unless every slot is busy.
- * Returns 1 when the command ends the loop. */
+/* Source `src`'s turn in a pass: at most one command, taken unless every slot is busy
+ * (the engine's always). Returns 1 when the command ends the loop. */
 KMD_HOT int source_turn(kmd_t* k, uint32_t src, uint32_t* activity) {
     kmd_ring_t* r = &k->ring[src];
     const uint32_t host = src == KMD_SRC_HOST;
     if (r->line_state == 0) {
-        if (k->busy == k->full) {
+        if (k->busy == k->full && src != KMD_SRC_ENGINE) {
             k->full_passes += host;
             return 0;
         }
@@ -330,6 +330,8 @@ KMD_HOT int source_turn(kmd_t* k, uint32_t src, uint32_t* activity) {
     } else if (t == KMD_HELD && src == KMD_SRC_WORK) {
         work_busy(k, now); /* a thread's record never waits */
         r->line_state = 0;
+    } else if (t == KMD_HELD && src == KMD_SRC_ENGINE && engine_busy(k, now)) {
+        r->line_state = 0; /* nor does the engine's */
     } else if (r->line_state == 1) {
         r->line_state = 2;
         if (t == KMD_HELD) {

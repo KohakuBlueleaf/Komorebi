@@ -44,6 +44,30 @@ static inline int engine_active(const kmd_t* k) {
     );
 }
 
+/* The engine's record that cannot go now (no free slot, an overlapping exclusive team,
+ * a full queue): refused at once, KMD_EV_WAKE owed. 0 when its ring lacks room. */
+static inline int engine_busy(kmd_t* k, uint64_t now) {
+    kmd_ring_t* r = &k->ring[KMD_SRC_ENGINE];
+    if (!k->engine_waits) {
+        r->owed++;
+        if (!ring_room(r)) {
+            r->owed--;
+            return 0;
+        }
+        k->engine_waits = 1;
+    }
+    const uint32_t hdr = (uint32_t)(r->line[0] >> 32);
+    if ((hdr & 0xFFu) != KM_SEG_EXIT && ((hdr >> 8) & KM_F_QUEUE)) {
+        /* A refused job counts as taken in, as the engine counts every job it sends. */
+        *(volatile uint32_t*)(k->ering + KMD_ERING_TAKEN) = ++k->queue->taken;
+    }
+    ring_push(r, r->next, KM_EV_REFUSED | (KMD_REFUSE_BUSY << 8), 0);
+    x280_fence_ow(); /* the refusal lands before the consumed count passes it */
+    ring_consumed(r);
+    k->t_last_event = now;
+    return 1;
+}
+
 /* KM_SEG_RUN, host command `cmd`: refused, ended with KM_EV_STREAM_ERROR (req from the
  * header if in the region, else 0) or forwarded. Returns 1 to wait for room. */
 static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {

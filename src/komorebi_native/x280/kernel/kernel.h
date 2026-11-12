@@ -107,9 +107,10 @@ typedef struct {
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* streams the engine runs */
     kmd_run_t runs[KM_STREAM_MAX_ACTIVE];
-    uint32_t nstreams;  /* admitted and not yet ended */
-    uint32_t engine_on; /* engine_active() after its last turn; a RUN sets it */
-    uint32_t queued;    /* the queue's length, for the loop */
+    uint32_t nstreams;     /* admitted and not yet ended */
+    uint32_t engine_on;    /* engine_active() after its last turn; a RUN sets it */
+    uint32_t queued;       /* the queue's length, for the loop */
+    uint32_t engine_waits; /* the engine had a busy refusal: KMD_EV_WAKE owed */
     /* counters */
     uint32_t records, max_busy, refused, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */

@@ -1767,6 +1767,64 @@ def case_stream_deadline(device, args):
     return out
 
 
+def case_engine_busy(device, args):
+    """A host DELAY of --delay-us on the grid's first half, then stream 61 with one
+    KM_F_EXCL record on that half and stream 62 with --n records one at a time on the
+    other half: 61's record is refused busy and sent again after the wake, so 62 ends
+    before the DELAY's DONE and 61 after it."""
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        half, base = n_cores // 2, stream_base(plan)
+        cycles = int(args.delay_us * 1e-6 * AICLK_HZ)
+        blocked = ks.Stream(req=61)
+        blocked.issue(SEG_DELAY, (0, half), args=[2, 0], exclusive=True)
+        blocked.wait(0)
+        blocked.halt(blocked.const(7))
+        flowing = ks.Stream(req=62)
+        i = flowing.regs(1)[0]
+        flowing.set(i, 0)
+        top = flowing.label()
+        flowing.issue(SEG_DELAY, (half, n_cores - half), args=[i, 0])
+        flowing.wait(0)
+        flowing.addi(i, i, 1)
+        flowing.jlt(i, flowing.const(args.n), top)
+        flowing.halt(i)
+        out = {"tag": plan.tag}
+        out["delay_req"] = plan.submit(record(SEG_DELAY, 0, half, 1, cycles))
+        for j, st in enumerate((blocked, flowing)):
+            data = st.encode()
+            put_upload(plan, base + 4096 * j, data)
+            plan.submit(run_command(base + 4096 * j, len(data)))
+        out["events"] = stream_events(plan, {61, 62})
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=4)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    ev, blk = out.pop("events"), fin["block"]
+    at = {}
+    for j, e in enumerate(ev):
+        what = kind(e[2])
+        if e[1] == out["delay_req"] and what[0] == EV_DONE:
+            at["delay"] = j
+        elif e[1] in (61, 62) and what[0] in (EV_STREAM_END, EV_STREAM_ERROR):
+            at[e[1]] = j
+            out[f"end_{e[1]}"] = [what[0], what[1], e[3]]
+    out["order"] = sorted(at, key=at.get)
+    out["ok"] = bool(
+        out["order"] == [62, "delay", 61]
+        and out.get("end_61") == [EV_STREAM_END, 7, 7]
+        and out.get("end_62") == [EV_STREAM_END, args.n, args.n]
+        and blk["engine_records"] >= args.n + 2
+        and finished_clean(fin, n_cores, out["cores"])
+    )
+    return out
+
+
 CASES = {
     "ping": case_ping,
     "issue": lambda device, args: case_ping(device, args, issue_one=True),
@@ -1787,6 +1845,7 @@ CASES = {
     "streams": case_streams,
     "replay": case_replay,
     "stream-deadline": case_stream_deadline,
+    "engine-busy": case_engine_busy,
     "verify": case_verify,
     "upload": case_upload,
     "result": case_result,
@@ -1813,6 +1872,7 @@ SET = [
     ("streams", {"n": 100}),
     ("replay", {}),
     ("stream-deadline", {}),
+    ("engine-busy", {"n": 20, "delay_us": 2000.0}),
 ]
 
 

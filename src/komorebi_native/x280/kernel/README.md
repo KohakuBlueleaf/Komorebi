@@ -108,12 +108,12 @@ These rules are part of the protocol; a host that relies on anything else is wro
 - **EXIT** goes to every core whatever its team field says, and only once no slot is
   busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own; the
   check holds only at its own issue, so a later record without the flag may still
-  overlap it. A waiting command holds up every command behind it.
+  overlap it. A waiting host command holds up every host command behind it.
 - **Job queue.** A record with `KM_F_QUEUE` takes its count from the team word and
   ignores `first` (and `KM_F_EXCL`). It is taken into the job queue, which holds up to
   `KM_QUEUE_JOBS` (64) jobs of every source in arrival order, and answered with its
-  `KM_EV_DONE` once it has run; a full queue refuses the host's (reason 9) and holds the
-  engine's. Each pass ends with the queue's turn: of the first `KM_QUEUE_LOOK` (16) jobs
+  `KM_EV_DONE` once it has run; a full queue refuses the host's (reason 9) and the
+  engine's (reason 11, below). Each pass ends with the queue's turn: of the first `KM_QUEUE_LOOK` (16) jobs
   as they are at its start, each that finds a free slot and room is issued, the team
   allocator giving it the lowest `first` whose cores overlap no busy slot's team (the
   overlap test of `KM_F_EXCL`). A job that does not fit does not hold up the ones
@@ -132,7 +132,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   pass in turn, and none waits inside a pass. An ISSUE puts the record into the engine's
   command ring (after a `KM_SEG_DEADLINE` when the stream's deadline changed); core 0
   issues it in the engine's turn like a host record, and its event goes back to the
-  engine, not to the host. `KM_EV_STREAM`, `_END` and `_ERROR` carry the stream's req,
+  engine, not to the host. The stream stays at the ISSUE until core 0 has taken the
+  record (in a later engine pass), so its records reach core 0 in its own order. `KM_EV_STREAM`, `_END` and `_ERROR` carry the stream's req,
   the aux `reason | pc << 8` for an error; the engine sends them to core 0 as
   `KMD_SEG_POST` commands, which core 0 forwards to the host. A SUBMIT sends the record
   with `KM_F_QUEUE` and the stream's tag in the header's slot bits; it waits while the
@@ -156,6 +157,14 @@ These rules are part of the protocol; a host that relies on anything else is wro
 - **Commands from the engine.** The engine may send records, `KM_SEG_DEADLINE`,
   `KMD_SEG_POST` (248) and `KMD_SEG_DROP` (247); STOP, EXIT, RUN and CANCEL from it are
   refused with reason 1, and so are `KMD_SEG_POST` and `KMD_SEG_DROP` from the host.
+  Core 0 never holds an engine command: a record that cannot be issued now (no free
+  slot, a busy overlapping team under `KM_F_EXCL`, a full queue) is consumed and
+  answered `KM_EV_REFUSED` reason 11 (`KMD_REFUSE_BUSY`) at once, the refusal stored
+  before the consumed count. After a busy refusal core 0 owes the engine one
+  `KMD_EV_WAKE` (0x12), which it pushes when a slot next frees (any source's record) or
+  the queue issues a job; its room in the engine's event ring is kept from the refusal
+  on. Core 1 does the waiting: a refused stream sends the same ISSUE or SUBMIT again
+  after the next wake, the other streams go on meanwhile.
 - **Commands from a work cluster.** The argument block's `work_*` words name the ring
   (`work_cmds` 0: none); the host zeroes its command lines before the start and the
   thread's event area before the thread starts. The thread may send records,
