@@ -32,7 +32,8 @@ namespace {
     struct Worker {
         Args a;
         uint32_t ctl;
-        uint64_t limit;  // cycles
+        uint32_t result;  // of the record just run
+        uint64_t limit;   // cycles
         volatile tt_l1_ptr uint32_t* state;
         uint32_t cnt[DK_WORDS];
 
@@ -147,6 +148,15 @@ namespace {
         bool send_word(uint64_t dst, uint32_t v) {
             *at(KM_CTL_OUT) = v;
             noc_async_write(ctl + KM_CTL_OUT, dst, 4);
+            return writes_done();
+        }
+
+        // Writes {v, w} as one 8-byte write to NoC address `dst` (16-byte aligned) and
+        // waits for it, at most `limit` cycles.
+        bool send_pair(uint64_t dst, uint32_t v, uint32_t w) {
+            *at(KM_CTL_OUT) = v;
+            *at(KM_CTL_OUT + 4) = w;
+            noc_async_write(ctl + KM_CTL_OUT, dst, 8);
             return writes_done();
         }
 
@@ -301,9 +311,10 @@ namespace {
             cnt[DK_C_RUN]++;
             cnt[DK_C_KEY_SUM] += r->a0;
             cnt[DK_C_KEY_MIX] ^= dk_mix(r->a0);
-            if (seg < 4) {
+            if (seg < 5) {
                 cnt[DK_C_SEG + seg]++;
             }
+            result = 0;
             const uint32_t args[10] = {
                 r->a0, r->a1, r->a2, r->a3, r->a4, r->a5, r->a6, r->a7, r->a8, r->a9
             };
@@ -319,6 +330,9 @@ namespace {
                     return true;
                 case DK_SEG_DELAY:
                     return delay(args[1]);
+                case DK_SEG_RESULT:
+                    result = dk_result(args[0], args[1]);
+                    return true;
                 case DK_SEG_STALL:
                     if (args[1] == a.me) {
                         stall();
@@ -331,8 +345,8 @@ namespace {
             }
         }
 
-        // Reports completion: members increment the leader's counter of the slot; the
-        // leader waits for count - 1 of them, then pushes the ack word to the X280.
+        // Reports completion: members increment the leader's slot counter; the leader
+        // waits for count - 1, then sends the ack ({ack, result} with KM_F_RESULT).
         bool complete(const volatile tt_l1_ptr km_record_t* r, uint32_t slot) {
             const uint32_t first = r->team & 0xFFFFu, count = r->team >> 16;
             if (a.me != first) {
@@ -364,10 +378,13 @@ namespace {
                 }
             }
             *done = 0;
-            if (!send_word(
-                    get_noc_addr(a.l2_x, a.l2_y, a.ack_base + slot * KM_ACK_STRIDE),
-                    KM_ACK(r->seq)
-                )) {
+            const uint64_t ack = (
+                get_noc_addr(a.l2_x, a.l2_y, a.ack_base + slot * KM_ACK_STRIDE)
+            );
+            const bool sent =
+                (((r->hdr >> 8) & KM_F_RESULT) ? send_pair(ack, KM_ACK(r->seq), result)
+                                               : send_word(ack, KM_ACK(r->seq)));
+            if (!sent) {
                 return false;
             }
             cnt[DK_C_ACKS]++;

@@ -45,6 +45,7 @@
 
 #include "komorebi/abi/km_abi.h"
 #include "km_dispatch.h"
+#include "../kernels/dk_test.h"
 
 namespace nb = nanobind;
 using tt::tt_metal::distributed::MeshDevice;
@@ -177,6 +178,8 @@ namespace {
         uint64_t fenced = 0;     // rdtsc at the last host-window fence
         double hz = 0;           // rdtsc ticks per second
         std::vector<Event> pending;
+        // result_run: each core's expected run count, key sum and key mix
+        std::vector<uint32_t> exp_runs, exp_sums, exp_mixes;
 
         std::array<uint32_t, 2> translated(uint32_t x, uint32_t y) const {
             const auto t = x280::X280Runtime::virtual_core_from_logical_core(
@@ -333,6 +336,9 @@ namespace {
             } while (tag == 0xFFFFu);
             next = 1;
             seen = published = 0;
+            exp_runs.assign(KM_CORES_MAX, 0);
+            exp_sums.assign(KM_CORES_MAX, 0);
+            exp_mixes.assign(KM_CORES_MAX, 0);
             pending.clear();
             open_host_side();
             std::memset(const_cast<uint32_t*>(host), 0, kHostBufferBytes);
@@ -612,6 +618,44 @@ namespace {
                 {"batch_p50_s", static_cast<double>(each[each.size() / 2]) / tsc_hz},
                 {"batch_max_s", static_cast<double>(each.back()) / tsc_hz},
             };
+        }
+
+        // Streams n DK_SEG_RESULT records with KM_F_RESULT (key = command number, teams
+        // of `count` cores); counts events other than DONE with dk_result(key, param).
+        std::pair<std::map<std::string, double>, std::vector<Event>> result_run(
+            uint32_t n, uint32_t count, uint32_t param, double timeout_s, size_t batch
+        ) {
+            const uint32_t cores = gx * gy;
+            if (count < 1 || count > cores) {
+                throw std::runtime_error("result_run: count 1 to the cores");
+            }
+            std::vector<uint32_t> recs(16 * static_cast<size_t>(n), 0);
+            for (uint32_t j = 0; j < n; j++) {
+                const uint32_t key = next + j, first = key % (cores - count + 1);
+                uint32_t* w = recs.data() + 16 * static_cast<size_t>(j);
+                w[1] = DK_SEG_RESULT | (KM_F_RESULT << 8);
+                w[2] = first | (count << 16);
+                w[3] = key;
+                w[5] = param;
+                for (uint32_t c = first; c < first + count; c++) {
+                    exp_runs[c]++;
+                    exp_sums[c] += key;
+                    exp_mixes[c] ^= dk_mix(key);
+                }
+            }
+            std::vector<Event> events, wrong;
+            auto times = stream(recs.data(), n, timeout_s, batch, 0.0, events);
+            uint32_t bad = 0;
+            for (const auto& e : events) {
+                if (e.status != KM_EV_DONE || e.ticks != dk_result(e.req, param)) {
+                    if (bad++ < 8) {
+                        wrong.push_back(e);
+                    }
+                }
+            }
+            times["events"] = static_cast<double>(events.size());
+            times["wrong"] = bad;
+            return {times, wrong};
         }
 
         // Runs a measuring image on cluster 0: argument block {run, words...}, a zeroed
@@ -1013,6 +1057,33 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("busy_us") = 0.0,
             nb::arg("read") = false,
             nb::arg("target") = 0
+        )
+        .def(
+            "result_run",
+            [](Plan& p,
+               uint32_t n,
+               uint32_t count,
+               uint32_t param,
+               double timeout_s,
+               size_t batch) {
+                std::pair<std::map<std::string, double>, std::vector<Event>> r;
+                {
+                    nb::gil_scoped_release release;
+                    r = p.result_run(n, count, param, timeout_s, batch);
+                }
+                return nb::make_tuple(r.first, events_list(r.second));
+            },
+            nb::arg("n"),
+            nb::arg("count") = 1,
+            nb::arg("param") = 0,
+            nb::arg("timeout_s") = 30.0,
+            nb::arg("batch") = 64
+        )
+        .def(
+            "expected",
+            [](const Plan& p) {
+                return nb::make_tuple(p.exp_runs, p.exp_sums, p.exp_mixes);
+            }
         )
         .def("running", [](const Plan& p) {
             return p.session.has_value();

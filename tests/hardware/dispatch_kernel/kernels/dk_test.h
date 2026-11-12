@@ -8,6 +8,8 @@
 #define DK_SEG_CHECK 1u /* check a2..a9 against a0 (key) and a1 (parameter) */
 #define DK_SEG_DELAY 2u /* wait a1 Tensix clock cycles */
 #define DK_SEG_STALL 3u /* core a1 waits for the stop word; the others run a NOP */
+#define DK_SEG_RESULT \
+    4u /* result dk_result(a0, a1); with KM_F_RESULT the leader sends it */
 
 /* Argument word w (2..9) of a record with key a0 and parameter a1. */
 static inline uint32_t dk_arg(uint32_t key, uint32_t param, uint32_t w) {
@@ -16,6 +18,11 @@ static inline uint32_t dk_arg(uint32_t key, uint32_t param, uint32_t w) {
     x *= 0x2C1B3C6Du;
     x ^= x >> 12;
     return x;
+}
+
+/* The result of a DK_SEG_RESULT record with key a0 and parameter a1. */
+static inline uint32_t dk_result(uint32_t key, uint32_t param) {
+    return dk_arg(key, param, 10u);
 }
 
 /* A key's contribution to a core's key mix (XOR over the records it ran). */
@@ -56,7 +63,7 @@ enum {
     DK_C_EXIT = 8,       /* sequence of the EXIT record, 0 if none */
     DK_C_ACKS = 9,       /* acknowledgements pushed as a team leader */
     DK_C_INCS = 10,      /* completions reported to a leader */
-    DK_C_SEG = 11,       /* records run per segment: NOP, CHECK, DELAY, STALL */
+    DK_C_SEG = 11,       /* records run per segment: NOP, CHECK, DELAY, STALL, RESULT */
     DK_C_STATE = 16,     /* copy of the 19 state words */
     DK_WORDS = 64
 };

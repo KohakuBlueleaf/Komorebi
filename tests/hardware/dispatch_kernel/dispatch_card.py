@@ -81,11 +81,14 @@ R_NAMES = {
     27: "checked",
     28: "bad_lines",
     29: "bad_first",
+    30: "results",
+    31: "result",
 }
 R_WIDE = {"ticks": 13, "idle_passes": 15, "full_passes": 17, "passes": 19, "last": 22}
 
 # kernels/dk_test.h
-SEG_CHECK, SEG_DELAY, SEG_STALL = 1, 2, 3
+SEG_CHECK, SEG_DELAY, SEG_STALL, SEG_RESULT = 1, 2, 3, 4
+F_RESULT = 4  # KM_F_RESULT
 DK_WORDS, DK_MAGIC = 64, 0xD15C0000
 C = {
     "magic": 0,
@@ -263,7 +266,6 @@ def result_block(words):
     out = {name: words[i] for i, name in R_NAMES.items()}
     for name, lo in R_WIDE.items():
         out[name] = words[lo] | (words[lo + 1] << 32)
-    out["spare"] = list(words[30:32])
     return out
 
 
@@ -1073,6 +1075,59 @@ def case_verify(device, args):
     return out
 
 
+def case_result(device, args):
+    """KM_F_RESULT under load: --n DK_SEG_RESULT records (teams of --team cores, 1 if
+    0), a million at a time; every event must carry dk_result of its command, every
+    core must have run exactly its records."""
+    count = args.team or 1
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out = {"tag": plan.tag, "events": 0, "wrong": 0, "first_wrong": []}
+        total_s, done = 0.0, 0
+        while done < args.n:
+            k = min(args.n - done, 1_000_000)
+            times, wrong = plan.result_run(k, count, args.seed, 30.0, args.batch)
+            out["events"] += int(times["events"])
+            out["wrong"] += int(times["wrong"])
+            out["first_wrong"] += [list(e) for e in wrong][
+                : 8 - len(out["first_wrong"])
+            ]
+            total_s += times["total_s"]
+            done += k
+            log(f"result: {done} of {args.n}, wrong {out['wrong']}")
+        out["us_per_record"] = round(total_s / args.n * 1e6, 4)
+        runs, sums, mixes = plan.expected()
+        out["expect"] = [
+            np.array(v[:n_cores], dtype=np.int64) for v in (runs, sums, mixes)
+        ]
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=args.depth)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    runs, sums, mixes = out.pop("expect")
+    got = cnt[:n_cores]
+    differ = (
+        (got[:, C["run"]] != runs)
+        | (got[:, C["key_sum"]] != sums)
+        | (got[:, C["key_mix"]] != mixes)
+    )
+    out["cores_differ"] = int(differ.sum())
+    blk = fin["block"]
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and out["events"] == args.n
+        and out["wrong"] == 0
+        and out["cores_differ"] == 0
+        and blk["results"] == args.n
+    )
+    return out
+
+
 def check_upload(offset, size, seed):
     """KMD_SEG_CHECK_UPLOAD: a0 = offset, a1 = bytes, a2 = seed."""
     words = command(SEG_CHECK_UPLOAD, offset)
@@ -1174,6 +1229,7 @@ CASES = {
     "excl": case_excl,
     "verify": case_verify,
     "upload": case_upload,
+    "result": case_result,
     "store": case_store,
     "memcost": case_memcost,
 }
