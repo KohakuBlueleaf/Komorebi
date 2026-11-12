@@ -41,6 +41,8 @@ between cores, deciding on the card and the thread language are planned.
 ### Reference
 
 - [Host API](reference/host.md): `Program`, `Session` and `Run`; errors; builds.
+- [Lane broadcast](reference/lanes.md): one sender to a row or a column of a team;
+  the device calls, the host layout, the rules and the give-up.
 - [Micro-op streams](streams.md): the upload format, the builder, the check, the
   simulator and the error reasons of the programs the dispatch kernel is to run.
 - [Graphs](graphs.md): the graph executor's upload format, builder, check, the
