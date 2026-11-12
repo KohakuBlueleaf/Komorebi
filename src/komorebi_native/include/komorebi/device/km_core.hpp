@@ -77,6 +77,11 @@ namespace km {
     constexpr uint32_t kWhereLaneValid = 14;  // lane receiver waiting for VALID
     constexpr uint32_t kWhereLaneFree = 15;  // lane: its compute's pops, its last stamps
 
+    // Where codes of a port's wait (reader) and of an emit (writer): the gave-up word's
+    // top byte is the port; the port keeps the count it wanted (KM_PORT_WANT).
+    constexpr uint32_t kWherePort = 17;
+    constexpr uint32_t kWhereEmit = 18;
+
     // Slots of KM_CTL_OUT (16 bytes each), the sources of small NoC writes: check-in,
     // READY, hello (reader); acknowledgement (writer).
     constexpr uint32_t kOutCheckin = 0;

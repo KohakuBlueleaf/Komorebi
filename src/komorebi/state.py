@@ -28,6 +28,8 @@ WHERES = (
     "LaneDone",
     "LaneValid",
     "LaneFree",
+    "Port",
+    "Emit",
 )
 KMD_PREFIXES = {"error": "KMD_ERR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 

@@ -90,6 +90,9 @@ namespace km {
             for (uint32_t w = 0; w < KM_LANES * KM_LANE_BYTES / 4; w++) {
                 ctl(KM_CTL_LANE)[w] = 0;
             }
+            for (uint32_t w = 0; w < KM_PORTS * KM_PORT_STRIDE / 4; w++) {
+                ctl(KM_CTL_PORT)[w] = 0;
+            }
             trace_.clear();
             const InterleavedAddrGen<true> table = {
                 .bank_base_address = a.cores, .page_size = KM_CORES_MAX * 4
@@ -314,9 +317,9 @@ namespace km {
             result_ = value;
         }
 
-        // Bounded cb_wait_front of a contiguous item: the buffer, every push and every
-        // pop on it must be multiples of the item. False: gave up (recorded).
-        bool wait_front(uint32_t cb, uint32_t pages) const {
+        // Bounded (`times` wait limits) cb_wait_front of a contiguous item: buffer,
+        // pushes and pops are multiples of it. False: gave up (recorded).
+        bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
             if (!item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)) {
                 gave_up(kStWriter, kGaveBadItem, kWhereData, 0, 0);
                 return false;
@@ -325,7 +328,7 @@ namespace km {
                 [&] {
                     return cb_pages_available_at_front(cb, pages);
                 },
-                args().wait_limit
+                args().wait_limit * times
             );
             if (code != kGaveNone) {
                 gave_up(kStWriter, code, kWhereData, 0, 0);
@@ -385,8 +388,8 @@ namespace km {
         }
 
         // Bounded cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
-        // of it). Unpack decides; math and pack get its answer. False: gave up.
-        bool wait_front(uint32_t cb, uint32_t pages) const {
+        // of it), `times` wait limits. Unpack decides, math and pack get its answer.
+        bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
             uint32_t ok = 0;
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* got = get_cb_tiles_received_ptr(cb);
@@ -410,7 +413,7 @@ namespace km {
                               );
                               return n >= pages;
                           },
-                          wait_,
+                          wait_ * times,
                           0
                       );
                 ok = code == kGaveNone;
