@@ -1,11 +1,13 @@
 # komorebi_native
 
-The native layer: everything that runs on the card or builds against tt-metal. The
-directories exist; their contents are being written and are not yet complete.
+The native layer: everything that runs on the card or builds against tt-metal. Written
+so far: the Tensix worker headers, the X280 dispatch kernel and the native Python module.
+`include/komorebi/x280/`, `include/komorebi/host/`, `kernels/`, `x280/engines/` and
+`cmake/` are empty.
 
 | Directory | What it holds |
 |---|---|
-| `include/komorebi/device/` | Headers for kernels that run on the Tensix cores: the 64-byte record, the resident worker, teams, static breakpoints (`emit`, `wait`, `reduce`), the inbox ring of dynamic breakpoints, and the per-core trace. |
+| `include/komorebi/device/` | Headers for kernels that run on the Tensix cores: the 64-byte record (`km_record.hpp`), the resident reader, compute and writer (`km_worker.hpp`), team completion (`km_team.hpp`), state words and bounded waits (`km_core.hpp`), the per-core trace (`km_trace.hpp`). Static breakpoints (`emit`, `wait`, `reduce`) and the inbox ring of dynamic breakpoints are not written yet. |
 | `include/komorebi/x280/` | The header a user's X280 thread includes (`kmx.h`): its entry point, arguments, and the ring to the dispatch kernel. |
 | `include/komorebi/host/` | The C++ host API, for programs that do not use Python. |
 | `kernels/` | The generic reader and writer kernels that own inbox and outbox traffic, shipped as source and compiled by tt-metal when a program runs. |
