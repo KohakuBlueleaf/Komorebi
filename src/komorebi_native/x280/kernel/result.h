@@ -41,6 +41,9 @@ static inline void result_finish(kmd_t* k, uint64_t now) {
     result_word(k, KMD_R_REFUSED, k->refused);
     result_word(k, KMD_R_HELD, k->held);
     result_word(k, KMD_R_NO_ROOM, k->no_room);
+    result_word(k, KMD_R_CHECKED, k->checked);
+    result_word(k, KMD_R_BAD_LINES, k->bad_lines);
+    result_word(k, KMD_R_BAD_FIRST, k->bad_first);
     result_wide(k, KMD_R_TICKS_LO, k->t_first ? now - k->t_first : 0);
     result_wide(k, KMD_R_IDLE_LO, k->idle_passes);
     result_wide(k, KMD_R_FULL_LO, k->full_passes);

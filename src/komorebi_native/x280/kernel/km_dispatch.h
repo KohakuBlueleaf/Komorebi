@@ -105,6 +105,9 @@ enum {
     KMD_R_REFUSED = 24, /* commands answered with KM_EV_REFUSED */
     KMD_R_HELD = 25,    /* commands that waited at least one pass (EXIT, KM_F_EXCL) */
     KMD_R_NO_ROOM = 26, /* commands that waited for room in the event ring */
+    KMD_R_CHECKED = 27, /* KMD_VERIFY_LINES builds: records whose words were checked */
+    KMD_R_BAD_LINES = 28, /* of those, records with a word that did not match */
+    KMD_R_BAD_FIRST = 29, /* the first such command's number */
     KMD_R_WORDS = 32
 };
 
@@ -130,6 +133,19 @@ typedef struct {
     uint64_t t_idle;    /* deadline with no command and nothing in flight; 0 = none */
     uint64_t state_ddr; /* offset in this cluster's DRAM bank of KMD_STATE_BYTES */
 } kmd_args_t;
+
+/* Test builds with KMD_VERIFY_LINES check every user record against these: argument
+ * word w (0 to 9) of host command i, its team (first | count << 16) and header 0. */
+static inline uint32_t kmd_verify_word(uint32_t i, uint32_t w) {
+    uint32_t x = i * 0x9E3779B1u ^ (w + 1u) * 0x85EBCA77u;
+    x ^= x >> 15;
+    return x * 0x2C1B3C6Du;
+}
+
+static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
+    const uint32_t count = 1u + kmd_verify_word(i, 10u) % cores;
+    return kmd_verify_word(i, 11u) % (cores - count + 1u) | count << 16;
+}
 
 /* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory
  * Port: the host gives it KMD_STATE_BYTES there, 64-byte aligned (LIM is uncached). */

@@ -96,6 +96,40 @@ static uint32_t boot(kmd_t* k) {
     return KMD_ERR_NONE;
 }
 
+#ifdef KMD_VERIFY_LINES
+/* Test build: checks each word of the user record in k->line against command k->next.
+ */
+static void verify_line(kmd_t* k) {
+    const uint64_t* l = k->line;
+    const uint32_t i = k->next, hdr = (uint32_t)(l[0] >> 32);
+    if ((hdr & 0xFFu) > KM_SEG_USER_MAX) {
+        return;
+    }
+    const uint32_t w[12] = {
+        hdr & 0xFFFFu,
+        (uint32_t)l[1],
+        (uint32_t)(l[1] >> 32),
+        (uint32_t)(l[2] >> 32),
+        (uint32_t)l[3],
+        (uint32_t)(l[3] >> 32),
+        (uint32_t)(l[4] >> 32),
+        (uint32_t)l[5],
+        (uint32_t)(l[5] >> 32),
+        (uint32_t)(l[6] >> 32),
+        (uint32_t)l[7],
+        (uint32_t)(l[7] >> 32)
+    };
+    uint32_t bad = w[0] != 0 || w[1] != kmd_verify_team(i, k->cores);
+    for (uint32_t j = 0; j < 10; j++) {
+        bad |= w[2 + j] != kmd_verify_word(i, j);
+    }
+    k->checked++;
+    if (bad && k->bad_lines++ == 0) {
+        k->bad_first = i;
+    }
+}
+#endif
+
 /* Takes command k->next from k->line: kernel commands act here, a bad record is refused
  * with an event, a record gets a free slot and the next sequence, or waits. */
 static kmd_take_t take(kmd_t* k, uint64_t now) {
@@ -189,6 +223,9 @@ static void loop(kmd_t* k) {
             } else {
                 k->line_state = 1;
                 activity++;
+#ifdef KMD_VERIFY_LINES
+                verify_line(k);
+#endif
             }
         }
         if (k->line_state != 0) {
