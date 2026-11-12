@@ -35,12 +35,8 @@ static inline void slot_take(
     k->slot_t0[slot] = now;
     k->slot_deadline[slot] = now + ticks;
     k->busy |= 1u << slot;
-    uint32_t n = 0;
-    for (uint32_t m = k->busy; m != 0; m &= m - 1u) {
-        n++;
-    }
-    if (n > k->max_busy) {
-        k->max_busy = n;
+    if (++k->nbusy > k->max_busy) {
+        k->max_busy = k->nbusy;
     }
 }
 
@@ -69,6 +65,7 @@ static inline void slots_sweep(kmd_t* k) {
             now = x280_mtime();
         }
         k->busy &= ~(1u << j);
+        k->nbusy--;
         events_push(k, k->slot_req[j], KM_EV_DONE, (uint32_t)(now - k->slot_t0[j]));
         k->t_last_event = now;
     }

@@ -32,9 +32,10 @@ typedef struct {
     uint32_t next;       /* number of the next host command */
     uint32_t events;     /* events pushed */
     uint32_t told;       /* events the host's count word shows */
+    uint32_t host_read;  /* events the host has read, as last loaded from LIM */
     uint32_t line_state; /* 0: k->line is free; 1: it holds command k->next; 2: held */
     /* completion table */
-    uint32_t depth, full, busy, cores;
+    uint32_t depth, full, busy, nbusy, cores;
     uint32_t seq;      /* last sequence number issued */
     uint32_t exited;   /* an EXIT record was issued */
     uint64_t t_record; /* deadline of the next record, in ticks */
@@ -44,7 +45,7 @@ typedef struct {
     uint64_t slot_t0[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* counters */
-    uint32_t records, max_busy, refused, held;
+    uint32_t records, max_busy, refused, held, no_room;
     uint64_t passes, idle_passes, full_passes;
     uint64_t t_first, t_last_event;
     /* the command being taken, as 8 little-endian 64-bit words, on the stack and
@@ -55,7 +56,12 @@ typedef struct {
 _Static_assert(sizeof(kmd_t) <= KMD_STATE_BYTES, "kmd_t outgrows its DRAM area");
 
 /* take()'s outcome: the command was consumed, waits in k->line, or ends the loop. */
-typedef enum { KMD_TAKEN = 0, KMD_HELD = 1, KMD_FINISH = 2 } kmd_take_t;
+typedef enum {
+    KMD_TAKEN = 0,
+    KMD_HELD = 1,
+    KMD_NO_ROOM = 2,
+    KMD_FINISH = 3
+} kmd_take_t;
 
 /* A wait's outcome. */
 typedef enum { KMD_OK = 0, KMD_STOP = 1, KMD_LATE = 2 } kmd_wait_t;

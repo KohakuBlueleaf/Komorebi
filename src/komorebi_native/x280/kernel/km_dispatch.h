@@ -25,6 +25,7 @@
 #define KMD_LIM_MAILBOX \
     0x100u /* hello from core 0: word 0 = 1, word 1 = control block */
 #define KMD_LIM_RESULT 0x140u /* result block, KMD_R_WORDS words */
+#define KMD_LIM_READ 0x1C0u   /* line from the host: word 0 = events it has read */
 #define KMD_LIM_READY 0x200u  /* KM_READY of column leader c at + c * 16 */
 #define KMD_LIM_ACKS 0x400u   /* ack word of slot j at + j * KM_ACK_STRIDE */
 #define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_record_t */
@@ -103,6 +104,7 @@ enum {
     KMD_R_LAST_HI = 23,
     KMD_R_REFUSED = 24, /* commands answered with KM_EV_REFUSED */
     KMD_R_HELD = 25,    /* commands that waited at least one pass (EXIT, KM_F_EXCL) */
+    KMD_R_NO_ROOM = 26, /* commands that waited for room in the event ring */
     KMD_R_WORDS = 32
 };
 
@@ -140,7 +142,8 @@ KMD_STATIC_ASSERT(offsetof(kmd_args_t, t_start) == 112, "t_start at 112");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, state_ddr) == 136, "state_ddr at 136");
 KMD_STATIC_ASSERT(KMD_LIM_ARGS + sizeof(kmd_args_t) <= KMD_LIM_MAILBOX, "LIM: args");
 KMD_STATIC_ASSERT(KMD_LIM_MAILBOX + 8u <= KMD_LIM_RESULT, "LIM: mailbox");
-KMD_STATIC_ASSERT(KMD_LIM_RESULT + 4u * KMD_R_WORDS <= KMD_LIM_READY, "LIM: result");
+KMD_STATIC_ASSERT(KMD_LIM_RESULT + 4u * KMD_R_WORDS <= KMD_LIM_READ, "LIM: result");
+KMD_STATIC_ASSERT(KMD_LIM_READ + 64u <= KMD_LIM_READY, "LIM: read count");
 KMD_STATIC_ASSERT(KMD_LIM_READY + 16u * KMD_READY_MAX <= KMD_LIM_ACKS, "LIM: READY");
 KMD_STATIC_ASSERT(
     KMD_LIM_ACKS + KM_RING_SLOTS * KM_ACK_STRIDE <= KMD_LIM_HRING, "LIM: ack words"

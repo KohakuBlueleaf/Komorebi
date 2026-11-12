@@ -171,8 +171,11 @@ namespace {
         uint32_t pcie_x = 0, pcie_y = 0;
 
         std::optional<x280::SessionId> session;
-        uint32_t next = 1;  // number of the next command
-        uint32_t seen = 0;  // events read from the ring
+        uint32_t next = 1;       // number of the next command
+        uint32_t seen = 0;       // events read from the ring
+        uint32_t published = 0;  // the read count last stored into LIM
+        uint64_t fenced = 0;     // rdtsc at the last host-window fence
+        double hz = 0;           // rdtsc ticks per second
         std::vector<Event> pending;
 
         std::array<uint32_t, 2> translated(uint32_t x, uint32_t y) const {
@@ -197,6 +200,7 @@ namespace {
             p.l2x = static_cast<uint32_t>(l2.x());
             p.l2y = static_cast<uint32_t>(l2.y());
             p.base = p.tile->available_lim().begin;
+            p.hz = tsc_hz();
             if (p.base % 64 != 0) {
                 throw std::runtime_error(
                     "available LIM does not start on a 64-byte line"
@@ -311,7 +315,7 @@ namespace {
                 tag = (rd() & 0xFFFFu) | 1u;
             } while (tag == 0xFFFFu);
             next = 1;
-            seen = 0;
+            seen = published = 0;
             pending.clear();
             open_host_side();
             std::memset(const_cast<uint32_t*>(host), 0, kHostBufferBytes);
@@ -381,7 +385,8 @@ namespace {
             }
         }
 
-        // Moves the events that have arrived into `pending`; returns how many.
+        // Moves the events that have arrived into `pending`, each read as a sequence
+        // lock (index, fields, index again); returns how many. Throws on a lost event.
         uint32_t poll() {
             const auto* ring = (
                 reinterpret_cast<const volatile uint32_t*>(
@@ -392,25 +397,57 @@ namespace {
             for (;;) {
                 const uint32_t i = seen + 1;
                 const volatile uint32_t* e = ring + (i % event_depth) * 4;
-                if (e[0] != i) {
+                const uint32_t index = e[0];
+                if (index != i) {
+                    if (static_cast<int32_t>(index - i) > 0) {
+                        throw std::runtime_error(
+                            "event " + std::to_string(i) + " overwritten by " +
+                            std::to_string(index)
+                        );
+                    }
                     return n;
                 }
                 _mm_lfence();
-                pending.push_back({i, e[1], e[2], e[3]});
+                const Event ev{i, e[1], e[2], e[3]};
+                _mm_lfence();
+                if (e[0] != i) {
+                    throw std::runtime_error(
+                        "event " + std::to_string(i) + " changed while read"
+                    );
+                }
+                pending.push_back(ev);
                 seen = i;
                 n++;
             }
         }
 
+        // Stores the read count line into LIM (KMD_LIM_READ), without a fence.
+        void store_read() {
+            alignas(64) uint32_t w[16] = {seen};
+            win->write_block(KMD_LIM_READ, w, 64);
+            published = seen;
+        }
+
+        // While waiting: stores the read count and a fence if it changed, at most once
+        // a microsecond (a store soon after a fence stalls).
+        void publish() {
+            if (seen != published &&
+                __rdtsc() - fenced >= static_cast<uint64_t>(hz * 1e-6)) {
+                store_read();
+                _mm_sfence();
+                fenced = __rdtsc();
+            }
+        }
+
         // Waits until command `i` fits: its ring slot is free (command i - host_depth
-        // taken) and the event ring has room. Throws after `by` or if the kernel ended.
+        // taken). Throws after `by` or if the kernel ended.
         void wait_room(uint32_t i, Clock::time_point by) {
             while (
                 static_cast<int32_t>(i - host[KMD_HOST_CONSUMED]) >
-                    static_cast<int32_t>(host_depth) ||
-                i - seen > event_depth
+                static_cast<int32_t>(host_depth)
             ) {
                 poll();
+                publish();
                 if (host[KMD_HOST_STATE] >= KMD_STATE_DONE) {
                     throw std::runtime_error(
                         "kernel finished with error " +
@@ -441,7 +478,9 @@ namespace {
             const uint32_t i = next;
             wait_room(i, after(timeout_s));
             store_command(i, rec);
+            store_read();
             _mm_sfence();
+            fenced = __rdtsc();
             next = i + 1;
             return i;
         }
@@ -452,6 +491,7 @@ namespace {
             const auto by = after(timeout_s);
             while (static_cast<int32_t>(seen - count) < 0) {
                 poll();
+                publish();
                 if (static_cast<int32_t>(seen - count) >= 0) {
                     break;
                 }
@@ -471,9 +511,8 @@ namespace {
             return out;
         }
 
-        // Issues the n records of `recs` (commands next .. next + n - 1) in batches of
-        // up to `batch`, one fence each, a batch no sooner than settle_us after a
-        // fence.
+        // Issues `recs` as commands next.. in batches of up to `batch` plus the read
+        // count, one fence each, a batch no sooner than settle_us after a fence.
         std::map<std::string, double> stream(
             const uint32_t* recs,
             size_t n,
@@ -482,8 +521,7 @@ namespace {
             double settle_us,
             std::vector<Event>& events
         ) {
-            const auto settle = static_cast<uint64_t>(settle_us * 1e-6 * tsc_hz());
-            uint64_t fenced = 0;
+            const auto settle = static_cast<uint64_t>(settle_us * 1e-6 * hz);
             uint64_t store = 0;
             const uint32_t first_event = seen + 1;
             const auto t0 = Clock::now();
@@ -497,8 +535,7 @@ namespace {
                 while (
                     r + k < n && k < batch &&
                     static_cast<int32_t>(i0 + k - host[KMD_HOST_CONSUMED]) <=
-                        static_cast<int32_t>(host_depth) &&
-                    i0 + k - seen <= event_depth
+                        static_cast<int32_t>(host_depth)
                 ) {
                     k++;
                 }
@@ -509,6 +546,7 @@ namespace {
                 for (size_t j = 0; j < k; j++) {
                     store_command(i0 + static_cast<uint32_t>(j), recs + 16 * (r + j));
                 }
+                store_read();
                 _mm_sfence();
                 fenced = __rdtsc();
                 each.push_back(fenced - a);

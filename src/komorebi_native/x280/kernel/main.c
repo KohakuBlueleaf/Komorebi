@@ -104,12 +104,6 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
     const uint32_t seg = hdr & 0xFFu, flags = (hdr >> 8) & 0xFFu;
     const uint32_t team = (uint32_t)l[1], a0 = (uint32_t)(l[1] >> 32);
     const uint32_t first = team & 0xFFFFu, count = team >> 16;
-    if (seg == KM_SEG_PING) {
-        hring_consumed(k);
-        events_push(k, req, KM_EV_PONG, 0);
-        k->t_last_event = now;
-        return KMD_TAKEN;
-    }
     if (seg == KM_SEG_DEADLINE) {
         hring_consumed(k);
         k->t_record = a0 ? (uint64_t)a0 * 50u : k->args->t_record;
@@ -121,6 +115,16 @@ static kmd_take_t take(kmd_t* k, uint64_t now) {
             result_error(k, KMD_ERR_STOP_BUSY, 0, k->seq, req, k->busy);
         }
         return KMD_FINISH;
+    }
+    /* Every other command ends in one event: it waits until that event has room. */
+    if (!events_room(k)) {
+        return KMD_NO_ROOM;
+    }
+    if (seg == KM_SEG_PING) {
+        hring_consumed(k);
+        events_push(k, req, KM_EV_PONG, 0);
+        k->t_last_event = now;
+        return KMD_TAKEN;
     }
     uint32_t refuse = 0;
     if (seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) {
@@ -195,7 +199,11 @@ static void loop(kmd_t* k) {
                 k->line_state = 0;
             } else if (k->line_state == 1) {
                 k->line_state = 2;
-                k->held++;
+                if (t == KMD_HELD) {
+                    k->held++;
+                } else {
+                    k->no_room++;
+                }
             }
         }
         events_flush(k);
