@@ -15,16 +15,6 @@
 #endif
 #endif
 
-/* Record flags used by streams (bit 3 is KM_F_QUEUE in km_abi.h). */
-#ifndef KM_F_EXCL
-/* issued only when no in-flight team overlaps the team of this record */
-#define KM_F_EXCL 2u
-#endif
-#ifndef KM_F_RESULT
-/* the team's leader stores {ack, result} as one 8-byte word */
-#define KM_F_RESULT 4u
-#endif
-
 #define KM_STREAM_MAGIC 0x4B4D5354u /* "KMST" */
 #define KM_STREAM_VERSION 1u
 #define KM_STREAM_REGS 16u     /* registers, unsigned 32-bit, wrapping */
