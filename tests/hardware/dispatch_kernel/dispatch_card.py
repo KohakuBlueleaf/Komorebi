@@ -52,12 +52,13 @@ AICLK_HZ = 1.35e9  # Tensix clock of this card, for the wait limit only
 # km_abi.h and km_dispatch.h
 SEG_NOP, SEG_EXIT = 0, 255
 SEG_PING, SEG_STOP, SEG_DEADLINE = 254, 253, 252
-F_EXCL = 2
+F_EXCL, F_QUEUE = 2, 8
 EV_DONE, EV_TIMEOUT, EV_PONG, EV_REFUSED = 0, 1, 2, 3
 REFUSE_SEG, REFUSE_FLAGS, REFUSE_TEAM, REFUSE_EXITED, REFUSE_REGION = 1, 2, 3, 4, 5
 SEG_CHECK_UPLOAD = 249  # KMD_VERIFY_LINES images only
 LIM_UPLOAD = 0x1800  # KMD_LIM_UPLOAD: the upload region's offset from the layout
 HOST_READY, READY_MARK = 4, 0x594452  # the ready block's first word and its mark
+TRACE_ISSUE, TRACE_FREE, TRACE_MARK = 1, 2, 0x54524345  # KMD_TRACE images only
 STATE_READY, STATE_DONE, STATE_FAILED = 2, 3, 4
 ERR_DEADLINE, ERR_STOPPED, ERR_STOP_BUSY = 4, 7, 9
 R_NAMES = {
@@ -270,11 +271,20 @@ def result_block(words):
 
 
 def with_kernel(
-    device, args, body, depth=1, defines=(), preload=None, stop=False, info=None
+    device,
+    args,
+    body,
+    depth=1,
+    defines=(),
+    preload=None,
+    stop=False,
+    info=None,
+    after=None,
 ):
     """Grid, then kernel (after preload(plan)); body(plan); the kernel's end (with stop,
-    the runtime stops it); X280 runtime closed, counters read. (body, finish, cnt).
-    `info` gets "started" and, if the kernel had to be stopped, "aborted"."""
+    the runtime stops it), then after(plan, fin); X280 runtime closed, counters read.
+    (body, finish, cnt). `info` gets "started" and "aborted" if the kernel was stopped.
+    """
     info = {} if info is None else info
     info["started"] = False
     runtime = dk.Runtime(device, pll_mhz=args.pll)
@@ -314,6 +324,10 @@ def with_kernel(
         log("finishing the kernel")
         fin = plan.finish(10.0, wait=not stop)
         log(f"kernel finished: result {fin['result']} cleaned {fin['cleaned']}")
+        if after is not None:
+            log("reading after the kernel")
+            after(plan, fin)
+            log("read after the kernel")
     finally:
         if plan.running():
             log("stopping the kernel")
@@ -1210,6 +1224,160 @@ def case_upload(device, args):
     return out
 
 
+def alloc(busy, count, n_cores):
+    """The lowest first whose cores [first, first + count) overlap no busy team
+    ((first, count) pairs), or None: the kernel's team allocator."""
+    for first in range(n_cores - count + 1):
+        if all(first + count <= f or f + c <= first for f, c in busy):
+            return first
+    return None
+
+
+def read_trace(plan):
+    """The KMD_TRACE image's trace from the upload region: (header, entries), each
+    entry (kind, slot, req, first, count, pass)."""
+    head = np.frombuffer(plan.upload_read(0, 64), dtype=np.uint32)
+    n = int(head[1]) if head[0] == TRACE_MARK else 0
+    raw = np.frombuffer(plan.upload_read(64, 16 * n), dtype=np.uint32).reshape(n, 4)
+    entries = [
+        (
+            int(w & 0xFF),
+            int(w >> 8 & 0xFF),
+            int(r),
+            int(t & 0xFFFF),
+            int(t >> 16),
+            int(p),
+        )
+        for w, r, t, p in raw
+    ]
+    return [int(v) for v in head[:3]], entries
+
+
+def replay_trace(entries, sent, n_cores):
+    """Replays the slots' issues and frees against the records sent ({req: (kind,
+    first, count)}, kind "queue", "excl" or "plain"); returns the faults found, the
+    teams each record ran on and the most queued records in flight at once."""
+    busy, teams, faults, most = {}, {}, [], 0
+    for kind_, slot, req, first, count, p in entries:
+        if kind_ == TRACE_FREE:
+            if busy.get(slot, (None,))[0] != req:
+                faults.append(["free of a slot not busy with it", slot, req, p])
+            busy.pop(slot, None)
+            continue
+        if kind_ != TRACE_ISSUE or slot in busy or req in teams:
+            faults.append(["bad issue", kind_, slot, req, p])
+            continue
+        what, want_first, want_count = sent.get(req, ("exit", 0, n_cores))
+        others = [(f, c) for _, f, c in busy.values()]
+        if what == "queue":
+            ok = count == want_count and first == alloc(others, count, n_cores)
+        elif what == "excl":
+            ok = (first, count) == (want_first, want_count) and all(
+                first + count <= f or f + c <= first for f, c in others
+            )
+        else:
+            ok = (first, count) == (want_first, want_count)
+        if not ok:
+            faults.append([what, req, first, count, others, p])
+        busy[slot] = (req, first, count)
+        teams[req] = (first, count)
+        queued = [r for r, _, _ in busy.values() if sent.get(r, ("",))[0] == "queue"]
+        most = max(most, len(queued))
+    if busy:
+        faults.append(["still busy", sorted(busy.items())])
+    return faults, teams, most
+
+
+def case_queue(device, args):
+    """KM_F_QUEUE records from the host among plain and KM_F_EXCL ones (DELAY of up to
+    --delay-us, depth 16, KMD_TRACE image): the allocator gives every queued record the
+    lowest free team, EXCL records overlap no team in flight, the grid ran exactly the
+    traced teams; a queued count of 0 or above the grid is refused."""
+    if args.image == IMAGE:
+        args.image = VERIFY_IMAGE
+    rng = np.random.default_rng(args.seed)
+    n_cores, sent, trace = 0, {}, {}
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out = {"tag": plan.tag}
+        cycles = int(args.delay_us * 1e-6 * AICLK_HZ)
+        recs, refused = [], []
+        req = plan.next
+        for i in range(args.n + 2):
+            key = int(rng.integers(1, 1 << 32))
+            delay = int(rng.integers(0, cycles + 1))
+            pick = rng.random()
+            if i < 2:
+                count = 0 if i == 0 else n_cores + 1
+                rec = record(SEG_DELAY, 0, 0, key, delay)
+                rec[2] = int(rng.integers(0, 1 << 16)) | count << 16
+                rec[1] |= F_QUEUE << 8
+                refused.append(req + i)
+            elif pick < 0.7:
+                count = int(rng.choice([1, 2, 3, 4, 6, 8, 12, 20, 40, 60, n_cores]))
+                rec = record(SEG_DELAY, 0, count, key, delay)
+                rec[2] = int(rng.integers(0, 1 << 16)) | count << 16
+                rec[1] |= F_QUEUE << 8
+                sent[req + i] = ("queue", None, count)
+            else:
+                count = int(rng.integers(1, 17))
+                first = int(rng.integers(0, n_cores - count + 1))
+                rec = record(SEG_DELAY, first, count, key, delay)
+                what = "excl" if pick < 0.85 else "plain"
+                rec[1] |= (F_EXCL << 8) if what == "excl" else 0
+                sent[req + i] = (what, first, count)
+            recs.append(rec)
+        keys = {req + i: r[3] for i, r in enumerate(recs)}
+        first_event = plan.seen + 1
+        reqs = list(range(req, req + len(recs)))
+        events, times = plan.stream(np.array(recs, dtype=np.uint32), 30.0, args.batch)
+        out["times"] = times
+        out["check"] = check_events(
+            events, reqs, first_event, kinds=(EV_DONE, EV_REFUSED)
+        )
+        out["refused_ok"] = sorted(
+            e[1] for e in events if kind(e[2]) == (EV_REFUSED, REFUSE_TEAM)
+        ) == refused and all(
+            kind(e[2])[0] == EV_DONE for e in events if e[1] not in refused
+        )
+        out["keys"] = keys
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    def after(plan, fin):
+        trace["head"], trace["entries"] = read_trace(plan)
+
+    out, fin, cnt = with_kernel(device, args, body, depth=args.depth, after=after)
+    keys = out.pop("keys")
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    head, entries = trace["head"], trace["entries"]
+    faults, teams, most = replay_trace(entries, sent, n_cores)
+    out["trace"] = {"head": head, "entries": len(entries), "most_in_flight": most}
+    out["faults"], out["first_faults"] = len(faults), faults[:8]
+    ran = [(teams[r][0], teams[r][1], keys[r]) for r in sent if r in teams]
+    out["team_mismatch"], out["first_mismatch"] = check_teams(cnt, n_cores, ran)
+    out["queued_firsts"] = sorted(
+        {teams[r][0] for r, v in sent.items() if v[0] == "queue" and r in teams}
+    )[:16]
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and all(out["check"].values())
+        and out["refused_ok"]
+        and head[0] == TRACE_MARK
+        and head[2] == 0
+        and len(ran) == len(sent)
+        and len(entries) == 2 * (len(sent) + 1)
+        and out["faults"] == 0
+        and out["team_mismatch"] == 0
+        and most > 1
+        and fin["block"]["refused"] == 2
+    )
+    return out
+
+
 CASES = {
     "limit": case_limit,
     "ping": case_ping,
@@ -1227,6 +1395,7 @@ CASES = {
     "stop-busy": case_stop_busy,
     "runtime-stop": case_runtime_stop,
     "excl": case_excl,
+    "queue": case_queue,
     "verify": case_verify,
     "upload": case_upload,
     "result": case_result,

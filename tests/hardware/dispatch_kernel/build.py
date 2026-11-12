@@ -38,7 +38,7 @@ def main():
         args.tree, image, [KERNEL / "main.c"], includes=INCLUDES, defines=args.define
     )
     print(f"{image}: {image.stat().st_size} bytes")
-    defines = [*args.define, "KMD_VERIFY_LINES=1"]
+    defines = [*args.define, "KMD_VERIFY_LINES=1", "KMD_TRACE=1"]
     sources = [KERNEL / "main.c"]
     build.build_image(
         args.tree, args.out / VERIFY, sources, includes=INCLUDES, defines=defines

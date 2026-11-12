@@ -14,7 +14,7 @@ the counters back only after the X280 runtime is closed.
 | Its test segments, argument function and counter indices | `kernels/dk_test.h` |
 | Driver, one case per run | `dispatch_card.py` |
 | Measuring image: cost of loads, stores and fences per memory | `x280/memcost.c` |
-| Builds the kernel image, the measuring image and the host module | `build.py` |
+| Builds the kernel image, the test image (`KMD_VERIFY_LINES` and `KMD_TRACE`), the measuring image and the host module | `build.py` |
 | One run under a hang watcher | `run.sh` |
 
 ## Cases
@@ -48,6 +48,7 @@ case's checks hold.
 | `stop-busy` | A DELAY on every core, then at once `KM_SEG_STOP` | the kernel ends with `KMD_ERR_STOP_BUSY`; every core gave up on the stop word |
 | `runtime-stop` | A DELAY of 0.5 s on every core; the host asks the X280 runtime to stop the kernel | the kernel ends with `KMD_ERR_STOPPED`; every core gave up on the stop word |
 | `excl` | DELAY A on the first half, DELAY C (twice as long) on the second half but one core, then a `KM_F_EXCL` CHECK B on the two middle cores, which overlaps A only | B is held until A completes and does not wait for C: events in the order A, B, C |
+| `queue` | The test image: `--n` DELAY records of up to `--delay-us`, 70% with `KM_F_QUEUE` (counts from 1 to the whole grid, `first` random), the rest with a given team of 1 to 16 cores, half of them with `KM_F_EXCL`; first two queued records with count 0 and one above the grid | the two are refused with reason 3; replaying the kernel's trace, every queued record got the lowest team free at its issue, no `KM_F_EXCL` record overlapped a team in flight, more than one queued record was in flight at once; every core ran exactly the traced teams |
 | `verify` | The test image built with `KMD_VERIFY_LINES`, under load: `--n` commands, mostly NOP records whose header, team and argument words are functions of the command number, with a PING every 7th and a refused record (segment 245) every 11th | the kernel checked every record and found no word wrong; every event's kind, reason and ticks are what its command must produce |
 | `result` | `--n` records of the worker's result segment with `KM_F_RESULT`, teams of `--team` cores (1 if 0) rotating over the grid, streamed a million at a time | every `KM_EV_DONE` event carries the result of its own command (`dk_result` of its key), the kernel counted `--n` results, every core ran exactly its records |
 | `upload` | The `KMD_VERIFY_LINES` image: the whole upload region written twice through the host window with a pattern of whole lines, then `KMD_SEG_CHECK_UPLOAD` over the region, single lines, a middle range, a wrong seed, one changed word, and two ranges outside the region | the ready block names the region after the layout; every check finds exactly the differing words (none, 16, or the one changed word at its index); the two outside ranges are refused with reason 5 |
@@ -98,6 +99,7 @@ python dispatch_card.py disjoint --n 8 --delay-us 2000
 python dispatch_card.py stall --core 37 --deadline-us 50000
 python dispatch_card.py fill --n 200
 python dispatch_card.py verify --n 100000 --host-depth 64 --batch 64 --settle-us 1
+python dispatch_card.py queue --n 1000 --delay-us 20 --host-depth 64 --batch 64
 python dispatch_card.py bench --preload --depth 16 --n 63 --host-depth 64
 python dispatch_card.py bench --depth 16 --n 100000 --host-depth 64 --batch 64
 ```

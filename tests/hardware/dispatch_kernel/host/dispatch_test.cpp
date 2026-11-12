@@ -405,6 +405,18 @@ namespace {
             fenced = __rdtsc();
         }
 
+        // Reads `n` bytes of the upload region through the X280 runtime, once the
+        // kernel has finished (a KMD_TRACE image's trace).
+        std::vector<uint8_t> upload_read(uint64_t offset, size_t n) {
+            if (session) {
+                throw std::runtime_error("upload_read: the kernel is running");
+            }
+            if (offset > upload_bytes || n > upload_bytes - offset) {
+                throw std::runtime_error("upload_read: inside the region");
+            }
+            return tile->read_available_lim(base + KMD_LIM_UPLOAD + offset, n);
+        }
+
         uint32_t host_word(uint32_t w) const {
             return host[w];
         }
@@ -940,6 +952,21 @@ NB_MODULE(_km_dispatch_test, m) {
             },
             nb::arg("offset"),
             nb::arg("data")
+        )
+        .def(
+            "upload_read",
+            [](Plan& p, uint64_t offset, size_t n) {
+                std::vector<uint8_t> data;
+                {
+                    nb::gil_scoped_release release;
+                    data = p.upload_read(offset, n);
+                }
+                return (
+                    nb::bytes(reinterpret_cast<const char*>(data.data()), data.size())
+                );
+            },
+            nb::arg("offset"),
+            nb::arg("n")
         )
         .def("start", &Plan::start, nb::arg("image"))
         .def("host_word", &Plan::host_word, nb::arg("word"))
