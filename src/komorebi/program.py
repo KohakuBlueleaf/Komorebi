@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from komorebi import abi
+from komorebi.thread import Thread
 
 KERNELS = ("reader", "compute", "writer")
 SEGMENT = re.compile(r"constexpr\s+uint32_t\s+kSeg(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;")
@@ -48,6 +49,7 @@ class Program:
     defines: dict = field(default_factory=dict)
     depth: int = 4
     segments: object = field(default_factory=dict)
+    threads: dict = field(default_factory=dict)  # work cluster -> Thread
 
     def __post_init__(self):
         if isinstance(self.segments, str | Path):
@@ -61,6 +63,14 @@ class Program:
         unknown = set(self.compile_args) - set(KERNELS)
         if unknown:
             raise ValueError(f"compile_args for unknown kernels {sorted(unknown)}")
+
+    def thread(self, cluster=1, **kwargs):
+        """Declares the program's X280 thread on work cluster `cluster` (the
+        arguments of komorebi.thread.Thread) and returns it. One per program."""
+        if self.threads:
+            raise ValueError(f"{self.name} already has a thread (one per program)")
+        self.threads[cluster] = Thread(cluster=cluster, **kwargs)
+        return self.threads[cluster]
 
     def sources(self):
         """{"reader": path, "compute": path, "writer": path}, each an existing file."""

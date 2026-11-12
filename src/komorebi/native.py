@@ -39,6 +39,11 @@ def module_source():
     return _require_native() / "csrc" / "host" / "km_host.cpp"
 
 
+def kmx_dir():
+    """The kmx library: start-up, kmx.h and the layout it shares with the host."""
+    return _require_native() / "x280" / "kmx"
+
+
 def includes():
     """The include directories of the image and the module: the ABI, the kernel."""
     return [_require_native() / "include", kernel_dir()]
@@ -129,6 +134,27 @@ def image_path(tree=None, defines=()):
             lambda path: build.build_image(
                 tree, path, sources, includes=includes(), defines=defines
             ),
+        )
+    return out
+
+
+def thread_image(thread, tree=None):
+    """The image of a program's X280 thread (`komorebi.thread.Thread`): its sources
+    linked with the kmx library, built once into the cache."""
+    tree = _tree(tree)
+    sources = [*thread.source_paths(), kmx_dir() / "kmx.c"]
+    extra = [Path(i) for i in thread.includes]
+    defines = [f"{k}={v}" for k, v in sorted(thread.defines.items())]
+    key = source_key([*sources, kmx_dir(), *includes(), *extra], tree)
+    key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]
+    out = cache_dir() / f"thread-{key}" / "thread.bin"
+    if not out.is_file():
+        build.build_image(
+            tree,
+            out,
+            sources,
+            includes=[kmx_dir(), *includes(), *extra],
+            defines=defines,
         )
     return out
 

@@ -16,7 +16,7 @@ LEXEME = re.compile(
     r"//[^\n]*|/\*.*?\*/|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S
 )
 DIRECTIVE = re.compile(r"^\s*#\s*(\w+)\s*(.*?)\s*$")
-DEFINE = re.compile(r"^\s*#\s*define\s+(KMD?_\w+)(\(?)(.*)$", re.M)
+DEFINE = re.compile(r"^\s*#\s*define\s+(KM[DX]?_\w+)(\(?)(.*)$", re.M)
 CONSTEXPR = re.compile(r"\bconstexpr\s+uint32_t\s+(k\w+)\s*=\s*([^;]*);")
 ANY_CONSTEXPR = re.compile(r"\bconstexpr\b[^;{]*")
 ENUM = re.compile(r"\benum\s*\{([^{}]*)\}\s*;")
@@ -200,8 +200,8 @@ def _clean(text, where="", known=()):
 
 def constants(*paths, sizes=None):
     """The named integer constants of the given headers, as a dict: every object-like
-    `#define KM_*` / `KMD_*`, `constexpr uint32_t k*` and enum value. A definition that
-    cannot be read, or a name defined twice with different values, raises HeaderError.
+    `#define KM_*` / `KMD_*` / `KMX_*`, `constexpr uint32_t k*` and enum value. A
+    definition that cannot be read, or a name defined twice differently, raises.
     """
     found = {}
     for path in paths:

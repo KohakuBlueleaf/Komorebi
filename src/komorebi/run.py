@@ -87,6 +87,7 @@ class Run:
         self._result = None
         self._state = None
         self._trace = None
+        self.thread = None  # the program's X280 thread (komorebi.thread.ThreadRun)
         self.issue_s = 0.0  # host time in issue() and issue_many()
         self.wait_s = 0.0  # host time in wait() and drain(), native loop included
         self.native_s = 0.0  # of which in the native loop (stores, reading events)
@@ -394,6 +395,13 @@ class Run:
                 self._wait(wanted, timeout)
         return int(wanted.size)
 
+    def thread_result(self, timeout=10.0):
+        """Waits (bounded) for the program's X280 thread, stops it and returns its
+        result block (komorebi.thread.ThreadResult). Events go on as before."""
+        if self.thread is None:
+            raise KomorebiError("the program has no thread")
+        return self.thread.wait(timeout)
+
     def event(self, ticket):
         """The event of a ticket, or None if it has not arrived (or was released)."""
         i = ticket - self._base
@@ -445,6 +453,8 @@ class Run:
         if self._stopped:
             return self._result
         try:
+            if self.thread is not None:
+                self.thread.stop()
             self.drain(timeout)
             exit_ticket = self._queue_command(self.h["KM_SEG_EXIT"], (0, self.cores))
             self.wait(exit_ticket, timeout)
@@ -500,6 +510,8 @@ class Run:
         if self._stopped:
             return
         self._stopped = True
+        if self.thread is not None:
+            self.thread.running = False  # the runtime's close stops it
         cleaned = self.backend.abort()
         self._read_back(stop_grid=True)
         if not cleaned:
@@ -541,6 +553,8 @@ class Run:
 
     def _read_back(self, stop_grid=False):
         state_rows, trace_rows = self.backend.read_back(stop_grid=stop_grid)
+        if self.thread is not None:
+            self.thread.grid_stopped()
         self._state = state_rows
         if trace_rows is not None:
             n = self._handed - self._base

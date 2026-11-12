@@ -13,6 +13,7 @@ import torch
 import ttnn
 
 from komorebi import abi, native
+from komorebi import thread as kt
 from komorebi.errors import GridTimeout, ProgramError, StartError
 from komorebi.run import Run
 
@@ -20,6 +21,7 @@ CTL_ALIGN = 64  # the dispatch kernel stores whole 64-byte lines into the contro
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
+DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
 
 
 def aiclk_mhz(card=None):
@@ -156,20 +158,31 @@ class Session:
         batch=64,
         settle_us=1.0,
         image=None,
+        thread="card",
     ):
-        """Launches `program` on every core, then the dispatch kernel; returns a Run.
-        The arguments are described in docs/reference/host.md (trace capacity, record
-        deadline, the cores' wait bounds, ring depths, batch, settle pause).
+        """Launches `program` on every core, then the dispatch kernel, then the
+        program's X280 thread (`thread="card"`, or "host" for its host fallback);
+        returns a Run. The arguments are described in docs/reference/host.md.
         """
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
+        if thread not in ("card", "host"):
+            raise ValueError(f"thread={thread!r}: 'card' or 'host'")
+        work = next(iter(program.threads.values()), None)
+        if work is not None and thread == "host" and work.host_fallback is None:
+            raise ValueError(f"{program.name}: the thread has no host_fallback")
         image = Path(image) if image else native.image_path(self.tree)
         if not image.is_file() or image.stat().st_size == 0:
             raise StartError(f"dispatch kernel image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
+        on_card = work is not None and thread == "card"
+        work_image = native.thread_image(work, self.tree) if on_card else None
         depth = depth or program.depth
         sources = program.sources()  # before anything opens: a missing file raises
         mhz = aiclk_mhz(self.card)
+        # the regions go to the card before the grid starts: a tensor write waits
+        # for every core to be idle, which a resident grid never is
+        regions = _Regions(self.device, work) if work is not None else None
         dispatch = module.Dispatch(self.device, self.pll_mhz)
         dispatch.settle_us = settle_us
         backend, launched = None, False
@@ -213,7 +226,70 @@ class Session:
         if state != abi.headers()["KMD_STATE_READY"]:
             run._fail_start(state)
         self.log("ready")
+        if work is not None:
+            try:
+                run.thread = self._start_thread(
+                    dispatch, work, regions, work_image, on_card
+                )
+            except BaseException:
+                run.abort()
+                raise
+            self.log("thread started" if on_card else "thread on the host")
         return run
+
+    def _start_thread(self, dispatch, work, regions, image, on_card):
+        """Starts the thread on the card, or readies its host fallback."""
+        run = kt.ThreadRun(
+            work, dispatch, regions, image, on_card, regions.base, regions.check
+        )
+        run.start()
+        return run
+
+
+def _pages(data, pages):
+    """`data` (uint8) zero-padded to `pages` region pages, as [pages, words] uint32."""
+    out = np.zeros(pages * kt.PAGE, dtype=np.uint8)
+    out[: data.size] = data
+    return out.view(np.uint32).reshape(pages, -1)
+
+
+class _Regions:
+    """A thread's regions in one DRAM tensor whose pages of the work cluster's bank
+    hold them (page 0: the check line). Written before the grid starts; read(name)
+    only once the grid has stopped (a tensor read waits for idle cores)."""
+
+    def __init__(self, device, work):
+        self.check = kt.new_check_value()
+        self.bank = kt.BANK_OF_CLUSTER[work.cluster]
+        placed, pages = kt.place(work)
+        self.placed = {p.name: p for p in placed}
+        self.readable = False  # set by the run once the grid has stopped
+        rows = np.zeros((DRAM_BANKS * pages, kt.PAGE // 4), dtype=np.uint32)
+        mine = rows[self.bank :: DRAM_BANKS]
+        mine[0, :2] = [self.check & abi.M32, self.check >> 32]
+        for name, p in self.placed.items():
+            data = work.initial(name)
+            if data is not None:
+                mine[p.page : p.page + p.pages] = _pages(data, p.pages)
+        self.tensor = _int32_tensor(device, rows)
+        self.base = self.tensor.buffer_address()
+        if self.base <= kt.IPI_ACK_DDR < self.base + pages * kt.PAGE:
+            raise StartError(
+                f"the thread's regions at {self.base:#x} cover the IPI word"
+            )
+
+    def address(self, name):
+        """(bank, bank address) of a region, for Tensix kernels."""
+        return self.bank, self.base + self.placed[name].page * kt.PAGE
+
+    def read(self, name):
+        """The region's bytes, as uint8."""
+        if not self.readable:
+            raise RuntimeError("regions are read after run.stop()")
+        p = self.placed[name]
+        rows = _read_uint32(self.tensor).astype(np.uint32)
+        mine = rows[self.bank :: DRAM_BANKS][p.page : p.page + p.pages]
+        return mine.reshape(-1).view(np.uint8)[: p.bytes].copy()
 
 
 class _Backend:
