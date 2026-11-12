@@ -136,6 +136,23 @@ def test_image_commands_compile_link_and_convert(tmp_path):
     assert commands[3][0].endswith("riscv-tt-elf-objcopy")
 
 
+def test_image_commands_pass_includes_and_defines_to_every_compile(tmp_path):
+    tree = make_tree(tmp_path / "tree")
+    out = tmp_path / "image.bin"
+    commands = build.image_commands(
+        tree, out, ["a.c", "b.c"], includes=["inc/one", "inc/two"], defines=["N=4", "V"]
+    )
+    runtime = f"-I{_env.x280_source_dir(tree) / 'include'}"
+    for compile_cmd in commands[:2]:
+        flags = compile_cmd[: compile_cmd.index("-c")]
+        assert "-DN=4" in flags and "-DV" in flags
+        mine = [flags.index("-Iinc/one"), flags.index("-Iinc/two")]
+        assert mine == sorted(mine) and mine[-1] < flags.index(runtime)
+    link, objcopy = commands[2], commands[3]
+    assert not any(t.startswith(("-I", "-D")) for t in link + objcopy)
+    assert commands[2:] == build.image_commands(tree, out, ["a.c", "b.c"])[2:]
+
+
 def test_a_failing_step_is_a_build_error(tmp_path):
     with pytest.raises(build.BuildError):
         build.run([["false"]])

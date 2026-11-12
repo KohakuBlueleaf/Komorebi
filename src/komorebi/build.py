@@ -89,15 +89,21 @@ def cxx_commands(kind, tree, out, source, includes=(), defines=()):
     return compile_cmd, link_cmd
 
 
-def image_commands(tree, out, sources):
-    """The commands that build one X280 image: compile each source, link, objcopy."""
+def image_commands(tree, out, sources, includes=(), defines=()):
+    """The commands that build one X280 image: compile each source, link, objcopy.
+
+    `includes` and `defines` go to every compile, ahead of the runtime's include
+    directory.
+    """
     gcc = _env.sfpi_bin(tree) / "riscv-tt-elf-gcc"
     objcopy = _env.sfpi_bin(tree) / "riscv-tt-elf-objcopy"
     include = _env.x280_source_dir(tree) / "include"
     cflags = _X280_TARGET + [
         "-nostdlib", "-nostartfiles", "-ffreestanding", "-O2", "-g", "-Wall",
-        "-Werror", "-mcmodel=medany", f"-I{include}",
+        "-Werror", "-mcmodel=medany",
     ]  # fmt: skip
+    cflags += [f"-D{d}" for d in defines] + [f"-I{i}" for i in includes]
+    cflags.append(f"-I{include}")
     out = Path(out)
     commands, objects = [], []
     for src in sources:
@@ -139,7 +145,7 @@ def build_cxx(kind, tree, out, source, includes=(), defines=()):
     run(cxx_commands(kind, tree, out, source, includes, defines))
 
 
-def build_image(tree, out, sources):
+def build_image(tree, out, sources, includes=(), defines=()):
     """Compiles and links one X280 image into `out` (a .bin; the .elf is beside it)."""
     Path(out).parent.mkdir(parents=True, exist_ok=True)
-    run(image_commands(tree, out, sources))
+    run(image_commands(tree, out, sources, includes, defines))
