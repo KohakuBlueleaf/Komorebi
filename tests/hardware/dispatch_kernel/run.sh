@@ -29,6 +29,10 @@ if ((stall * 3 > limit)); then
     echo "STALL must be at most a third of LIMIT"
     exit 2
 fi
+if ((stall < 15)); then
+    echo "STALL must be at least 15: the cases wait up to 10 s without a log line"
+    exit 2
+fi
 export TT_METAL_OPERATION_TIMEOUT_SECONDS=${OP_TIMEOUT:-30}
 echo "load $(cut -d' ' -f1-3 /proc/loadavg)"
 cd "$logs"

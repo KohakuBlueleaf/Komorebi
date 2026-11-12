@@ -50,6 +50,8 @@ MEMCOST_TESTS = [
 ]
 IPI_ACK_DDR = 0x470020  # the runtime's IPI ack in the cluster's DRAM bank
 STATE_BYTES = 8192  # KMD_STATE_BYTES: the kernel's state in its DRAM bank
+# The longest host wait without a log line; run.sh keeps the watcher's stall above it.
+HOST_WAIT_S = 10.0
 DRAM_KEEP = []  # DRAM tensors a running image may use
 CTL_CB, OUT_CB = 8, 9
 CTL_BYTES = 0xA00  # KM_CTL_BYTES (0x980) rounded up to whole 64-byte lines
@@ -334,11 +336,11 @@ def with_kernel(
             info["started"] = True
             log("kernel started")
         log("waiting for READY")
-        state = plan.wait_ready(30.0)
+        state = plan.wait_ready(HOST_WAIT_S)
         log(f"kernel state {state}")
         body_out = body(plan) if state == STATE_READY else {"ready_state": state}
         log("finishing the kernel")
-        fin = plan.finish(10.0, wait=not stop)
+        fin = plan.finish(HOST_WAIT_S, wait=not stop)
         log(f"kernel finished: result {fin['result']} cleaned {fin['cleaned']}")
         if after is not None:
             log("reading after the kernel")
@@ -639,9 +641,11 @@ def case_bench(device, args):
 
     def body(plan):
         if args.preload:
-            events, times = plan.take(args.n + 1, 30.0), {}
+            events, times = plan.take(args.n + 1, HOST_WAIT_S), {}
         else:
-            events, times = plan.stream(recs[0], 30.0, args.batch, args.settle_us)
+            events, times = plan.stream(
+                recs[0], HOST_WAIT_S, args.batch, args.settle_us
+            )
         plan.submit(command(SEG_STOP))
         out = {"tag": plan.tag, "times": times}
         out["check"] = check_events(events, list(range(1, args.n + 2)), 1)
@@ -1073,7 +1077,7 @@ def case_verify(device, args):
                 sent.append((r[2] & 0xFFFF, r[2] >> 16, r[3]))
         n_records = len(sent)
         n_refused = sum(1 for i in reqs if made[i][1][0] == EV_REFUSED)
-        events, times = plan.stream(recs, 30.0, args.batch, args.settle_us)
+        events, times = plan.stream(recs, HOST_WAIT_S, args.batch, args.settle_us)
         out = {"tag": plan.tag, "times": times, "records": n_records}
         out["check"] = check_events(
             events, reqs, first_event, kinds=(EV_DONE, EV_PONG, EV_REFUSED)
@@ -1351,7 +1355,9 @@ def case_queue(device, args):
         keys = {req + i: r[3] for i, r in enumerate(recs)}
         first_event = plan.seen + 1
         reqs = list(range(req, req + len(recs)))
-        events, times = plan.stream(np.array(recs, dtype=np.uint32), 30.0, args.batch)
+        events, times = plan.stream(
+            np.array(recs, dtype=np.uint32), HOST_WAIT_S, args.batch
+        )
         out["times"] = times
         out["check"] = check_events(
             events, reqs, first_event, kinds=(EV_DONE, EV_REFUSED)
@@ -1422,13 +1428,17 @@ def put_upload(plan, offset, data):
 
 def stream_events(plan, reqs, timeout_s=20.0):
     """Every event until each stream in `reqs` (one or several) has ended (STREAM_END or
-    _ERROR), the kernel finished or timeout_s passed; a progress line every 5 s."""
+    _ERROR), the kernel finished or timeout_s passed; a line per batch and every 5 s."""
     reqs = {reqs} if isinstance(reqs, int) else set(reqs)
     out, start = [], time.time()
     ended, said = set(), start
     while ended != reqs and time.time() < start + timeout_s:
+        batch = []
         with contextlib.suppress(RuntimeError):
-            out += plan.take(plan.seen + 1, 1.0)
+            batch = plan.take(plan.seen + 1, 1.0)
+        out += batch
+        if batch:
+            log(f"{len(batch)} events, {len(out)} in all")
         ended = {
             e[1]
             for e in out
@@ -1749,8 +1759,8 @@ def case_stream_bench(device, args):
             out["us_per_record"] = [round(e / 50 / args.n, 4) for e in ends]
             out["stream_events"] = [list(e) for e in ev]
         else:
-            log(f"idle {args.seconds} s")
-            time.sleep(args.seconds)
+            log(f"idle {min(args.seconds, HOST_WAIT_S)} s")
+            time.sleep(min(args.seconds, HOST_WAIT_S))
             log("idle done")
         for j in range(args.streams):
             plan.submit(command(SEG_CANCEL, 200 + j))
