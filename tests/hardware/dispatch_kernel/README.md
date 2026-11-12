@@ -22,11 +22,12 @@ the counters back only after the X280 runtime is closed.
 The kernel keeps its state in this cluster's DRAM bank (cached); every case that runs
 the kernel gives it 4 KiB of a DRAM buffer the test owns.
 
-The host module stores the number of events it has read into the kernel's local memory
-with every batch of commands, and at most once a microsecond while it waits; the kernel
-takes a command only while its event has room in the event ring (`--event-depth`, 128
-by default, a power of two like `--host-depth`). The kernel's idle limit is off unless
-`--idle-s` sets one.
+The kernel takes a command only while its event has room in the event ring
+(`--event-depth`, 128 by default, a power of two like `--host-depth`). For that the host
+module stores the number of events it has read into the kernel's local memory with every
+batch of commands, and while it waits whenever the kernel could be holding a command for
+it (command i can wait only while i minus that number exceeds the ring). The kernel's
+idle limit is off unless `--idle-s` sets one.
 
 `python dispatch_card.py <case> [options]` prints one JSON line. `ok` is true when the
 case's checks hold.

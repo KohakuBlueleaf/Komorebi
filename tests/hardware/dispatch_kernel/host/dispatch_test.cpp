@@ -425,10 +425,10 @@ namespace {
             published = seen;
         }
 
-        // While waiting: stores the read count and a fence if it changed, at most once
-        // a microsecond (a store soon after a fence stalls).
+        // While waiting: the read count and a fence, only if the kernel could hold a
+        // command for it (command i can wait only if i - 1 - published >= depth).
         void publish() {
-            if (seen != published &&
+            if (seen != published && next - 1u - published >= event_depth &&
                 __rdtsc() - fenced >= static_cast<uint64_t>(hz * 1e-6)) {
                 store_read();
                 _mm_sfence();
@@ -474,6 +474,7 @@ namespace {
         uint32_t submit(const uint32_t* rec, double timeout_s) {
             const uint32_t i = next;
             wait_room(i, after(timeout_s));
+            poll();
             store_command(i, rec);
             store_read();
             _mm_sfence();
@@ -528,6 +529,7 @@ namespace {
             while (r < n) {
                 const uint32_t i0 = next;
                 wait_room(i0, after(timeout_s));
+                poll();  // the batch carries a fresh read count
                 size_t k = 1;
                 while (
                     r + k < n && k < batch &&
