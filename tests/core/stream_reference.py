@@ -9,6 +9,8 @@ import struct
 import sys
 from pathlib import Path
 
+from stream_reference_more import MORE
+
 from komorebi.engines import stream as st
 from komorebi.engines.stream import Stream
 
@@ -526,6 +528,9 @@ REFERENCES = {
     "err_team_outside": (err_team_outside, {}, "reason 11: cores 100 to 119"),
     "err_run_off_end": (err_run_off_end, {}, "reason 3 at pc 2 = n_ops"),
 }
+
+
+REFERENCES.update(MORE)
 
 
 def build(name):
