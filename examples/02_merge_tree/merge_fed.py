@@ -1,0 +1,263 @@
+"""The merge-tree example's kernels fed by the test feeder on the last core (no X280);
+every job's total is checked against numpy. One JSON line.
+
+Example: python merge_fed.py --jobs 20 --count 8 --form both"""
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+FEEDER = HERE.parents[1] / "tests" / "hardware" / "feeder"
+sys.path.insert(0, str(FEEDER))
+
+import fed  # noqa: E402
+import records as rec  # noqa: E402
+import torch  # noqa: E402
+import ttnn  # noqa: E402
+
+K = rec.K
+KERNELS = HERE / "kernels"
+M = rec.constants(KERNELS / "merge.h")
+TILE = 32
+NONE = 0xFFFFFFFF
+FORMS = {"owner": 0, "tree": 1}
+
+
+def parse():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--jobs", type=int, default=20)
+    p.add_argument("--teams", choices=["fixed", "random"], default="fixed")
+    p.add_argument("--count", type=int, default=8, help="team size (fixed)")
+    p.add_argument("--first", type=int, default=0, help="first core (fixed)")
+    p.add_argument(
+        "--team-list", help="first:count per job, comma-separated (overrides --teams)"
+    )
+    p.add_argument(
+        "--form",
+        choices=["owner", "tree", "both", "random"],
+        default="both",
+        help="both: owner and tree alternate in pairs (each team runs both)",
+    )
+    p.add_argument("--tiles", type=int, default=64, help="input tiles T")
+    p.add_argument("--depth", type=int, default=4, help="ring slots used")
+    p.add_argument("--out-pages", type=int, default=256, help="output tiles")
+    p.add_argument("--wait", type=float, default=0.5, help="wait limit, seconds")
+    p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
+    p.add_argument(
+        "--stall-member",
+        type=int,
+        default=-1,
+        help="then a launch of one job whose member M stalls, and a clean launch",
+    )
+    p.add_argument("--seed", type=int, default=1)
+    return p.parse_args()
+
+
+def make_jobs(args, workers, rng):
+    """[(first, count, form, source)] per job: the job reads input tiles source to
+    source + T - 1 of input source % 2 (0 exact, 1 random)."""
+    if args.team_list:
+        teams = [tuple(map(int, t.split(":"))) for t in args.team_list.split(",")]
+    elif args.teams == "fixed":
+        teams = [(args.first, args.count)] * args.jobs
+    else:
+        teams = rec.random_teams(rng, args.jobs, workers)
+    sources = list(range(len(teams)))
+    if args.form == "both":  # each job twice in a row, on the same input: owner, tree
+        teams = [t for t in teams for _ in range(2)]
+        sources = [s for s in sources for _ in range(2)]
+        forms = [j % 2 for j in range(len(teams))]
+    elif args.form == "random":
+        forms = [int(f) for f in rng.integers(0, 2, len(teams))]
+    else:
+        forms = [FORMS[args.form]] * len(teams)
+    return [(f, c, form, s) for (f, c), form, s in zip(teams, forms, sources)]
+
+
+def kernels(inp, out):
+    """The three kernels, their buffers and a float32 compute path end to end."""
+    config = ttnn.ComputeConfigDescriptor(
+        math_fidelity=ttnn.MathFidelity.HiFi4, fp32_dest_acc_en=True
+    )
+    config.unpack_to_dest_mode = [ttnn.UnpackToDestMode.UnpackToDestFp32] * 64
+    page = M["kTileBytes"]
+    return fed.Kernels(
+        reader=KERNELS / "reader.cpp",
+        compute=KERNELS / "compute.cpp",
+        writer=KERNELS / "writer.cpp",
+        reader_ct=ttnn.TensorAccessorArgs(inp).get_compile_time_args(),
+        writer_ct=ttnn.TensorAccessorArgs(out).get_compile_time_args(),
+        compute_config=config,
+        cbs=[
+            (M["kCbIn"], ttnn.float32, page, M["kInPages"]),
+            (M["kCbArrive"], ttnn.float32, page, M["kArrivePages"]),
+            (M["kCbOut"], ttnn.float32, page, 2),
+        ],
+    )
+
+
+def launch(runner, args, jobs, inputs, out, stall=-1, stall_member=NONE):
+    """Runs the jobs (job j writes output page j % out_pages); job `stall` has member
+    `stall_member` stall, under a deadline long enough for its receiver's wait to
+    give up first."""
+    records = []
+    for j, (first, count, form, src) in enumerate(jobs):
+        words = [
+            inputs[src % 2].buffer_address(),
+            args.tiles,
+            out.buffer_address(),
+            j % args.out_pages,
+            form,
+            stall_member if j == stall else NONE,
+            src,
+        ]
+        records.append(rec.record(M["kSegMerge"], first, count, words, K["KM_F_EXCL"]))
+    return runner.run(
+        kernels(inputs[0], out),
+        records,
+        tensors=[*inputs, out],
+        depth=args.depth,
+        deadline_s=args.deadline if stall < 0 else 4 * args.wait,
+        wait_s=args.wait,
+    )
+
+
+def summary(res, jobs):
+    """Feeder state, the cores that gave up and the ports still waiting."""
+    s = res.summary
+    states = [rec.core_state(res.state, c) for c in range(len(res.state))]
+    parts = ("reader", "writer", "compute")
+    gave = []  # cores that gave up anywhere but waiting for a record
+    for c in states:
+        g = {k: c[k] for k in parts if c[k]}
+        if any(v["where"] != "next" for v in g.values()):
+            gave.append({"core": c["core"], **g})
+    out = {
+        "status": s["status"],
+        "issued": s["issued"],
+        "done": s["done"],
+        "exit_acked": s["exit_acked"],
+        "cores_ended": {
+            k: sum(c[k] != 0 for c in states)
+            for k in ("reader_end", "writer_end", "compute_end")
+        },
+        "compute_wrong": sum(sum(c["compute_wrong"]) for c in states),
+        "gave_up": gave[:8],
+        "waiting_ports": {
+            c: w for c in range(len(states)) if (w := rec.waiting_ports(res.ports, c))
+        },
+    }
+    if s["status"] == "timeout":
+        first, count, form, _ = jobs[s["index"]]
+        out["timed_out"] = {"job": s["index"], "team": [first, count], "form": form}
+    return out
+
+
+def check(args, jobs, res, out, xs):
+    """Exact jobs bit-equal to numpy, random jobs by relative RMS; with both forms,
+    the two jobs of an exact pair bit-equal to each other."""
+    got = ttnn.to_torch(out).float().numpy().reshape(-1, TILE, TILE)
+    fed.log("outputs read back")
+    n = len(jobs)
+    done = res.records["status"] == 1
+    last = {j % args.out_pages: j for j in range(n)}  # jobs whose page is not reused
+    bad, rel_max, exact, pairs = [], 0.0, {0: 0, 1: 0}, [0, 0]
+    kept = {j: page for page, j in last.items() if done[j]}
+    for j, page in sorted(kept.items()):
+        first, count, form, src = jobs[j]
+        x = xs[src % 2][src * TILE : (src + args.tiles) * TILE].astype(np.float64)
+        ref = x.reshape(-1, TILE, TILE).sum(0)
+        mine = got[page].astype(np.float64)
+        if args.form == "both" and j % 2 == 1 and j - 1 in kept and src % 2 == 0:
+            pairs[0] += 1
+            pairs[1] += np.array_equal(got[page], got[kept[j - 1]])
+        if src % 2 == 0:
+            exact[form] += 1
+            if not np.array_equal(mine, ref):
+                wrong = int((mine != ref).sum())
+                bad.append(
+                    {"job": j, "team": [first, count], "form": form, "wrong": wrong}
+                )
+        else:
+            rel = float(np.sqrt(((mine - ref) ** 2).mean() / (ref**2).mean()))
+            rel_max = max(rel_max, rel)
+            if rel > 1e-5:
+                bad.append({"job": j, "team": [first, count], "rel_rms": rel})
+    return {
+        "jobs_checked": len(kept),
+        "exact_checked": {"owner": exact[0], "tree": exact[1]},
+        "pairs_checked": pairs[0],
+        "pairs_bit_equal": int(pairs[1]),
+        "jobs_bad": len(bad),
+        "first_bad": bad[:5],
+        "random_rel_rms_max": float(f"{rel_max:.3e}"),
+    }
+
+
+def main():
+    args = parse()
+    rng = np.random.default_rng(args.seed)
+    t_start = time.time()
+    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
+    device.disable_and_clear_program_cache()
+    fed.log(f"device open {time.time() - t_start:.1f}s")
+    try:
+        result = run(device, args, rng)
+    finally:
+        ttnn.close_mesh_device(device)
+    result["wall_s"] = round(time.time() - t_start, 1)
+    print(json.dumps(result), flush=True)
+
+
+def run(device, args, rng):
+    runner = fed.Fed(device)
+    jobs = make_jobs(args, runner.workers, rng)
+    n = len(jobs)
+    fed.log(f"grid {runner.grid}, {runner.workers} workers, aiclk {runner.mhz} MHz")
+
+    # Exact: integers in [-2, 2] (every partial sum exact in float32). Random: uniform
+    # in [-1, 1]. Sources differ, so the totals do.
+    rows = (args.tiles + max(job[3] for job in jobs) + 1) * TILE
+    xs = [
+        rng.integers(-2, 3, (rows, TILE)).astype(np.float32),
+        rng.uniform(-1, 1, (rows, TILE)).astype(np.float32),
+    ]
+
+    def tiles(a):
+        return ttnn.from_torch(
+            torch.from_numpy(a),
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+        )
+
+    inputs = [tiles(x) for x in xs]
+    out = tiles(np.zeros((args.out_pages * TILE, TILE), dtype=np.float32))
+    res = launch(runner, args, jobs, inputs, out)
+    result = {
+        "jobs": n,
+        "tiles": args.tiles,
+        "form": args.form,
+        "aiclk_mhz": res.mhz,
+        "us_per_job": round(
+            res.summary["span_cycles"] / res.mhz / max(res.summary["done"], 1), 3
+        ),
+        **summary(res, jobs),
+        **check(args, jobs, res, out, xs),
+    }
+    if args.stall_member >= 0:  # a member stalls in job 1; then a clean launch
+        few = jobs[:4]
+        stalled = launch(runner, args, few, inputs, out, 1, args.stall_member)
+        result["stall"] = summary(stalled, few)
+        after = launch(runner, args, few, inputs, out)
+        result["after"] = {**summary(after, few), **check(args, few, after, out, xs)}
+    return result
+
+
+if __name__ == "__main__":
+    main()
