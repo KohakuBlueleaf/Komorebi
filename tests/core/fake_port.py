@@ -50,6 +50,7 @@ class FakePort:
         self.flight = {}  # command number -> team word, stored without an event
         self.waits = 0  # calls of wait()
         self.results = {}  # command number -> the leader's result word (KM_F_RESULT)
+        self.handlers = {}  # segment -> handler(req, words): commands a test serves
 
     # The native port's interface ---------------------------------------------
 
@@ -184,6 +185,10 @@ class FakePort:
             if seg == K["KM_SEG_PING"]:
                 self.consumed = req
                 self._event(req, K["KM_EV_PONG"])
+                continue
+            if seg in self.handlers:
+                self.consumed = req
+                self.handlers[seg](req, words)
                 continue
             reason = self._refusal(seg, flags, first, count)
             if reason:
