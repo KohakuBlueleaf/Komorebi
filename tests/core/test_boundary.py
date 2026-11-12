@@ -41,21 +41,11 @@ def imported_modules(env):
     return json.loads(done.stdout)
 
 
-def test_import_pulls_in_no_tt_module():
-    env = child_environment(TT_METAL_HOME="/nonexistent/tt-metal")
-    modules = imported_modules(env)
-    assert "komorebi.layout" in modules
+def test_import_pulls_in_no_tt_module_and_loads_the_session_only_on_use():
+    modules = imported_modules(child_environment(TT_METAL_HOME="/nonexistent/tt-metal"))
+    assert "komorebi.layout" in modules and "komorebi.cli" in modules
     assert [m for m in modules if m.split(".")[0] in FORBIDDEN] == []
-
-
-def test_session_is_imported_only_on_use():
-    modules = imported_modules(child_environment())
     assert "komorebi.session" not in modules and "komorebi.run" in modules
-
-
-def test_import_works_without_tt_metal_home():
-    env = child_environment()
-    assert "komorebi.cli" in imported_modules(env)
 
 
 def test_version_matches_pyproject_and_the_installed_distribution():
