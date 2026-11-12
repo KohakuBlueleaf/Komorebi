@@ -66,6 +66,7 @@ def parse():
         "--row", type=int, help="cores per row for completion (0: one level)"
     )
     p.add_argument("--trace", action="store_true")
+    p.add_argument("--trace-cap", type=int, help="records traced (default: all)")
     p.add_argument("--excl", action="store_true", help="KM_F_EXCL on every MAP record")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--dump", type=Path, help="save records, trace and state (npz)")
@@ -342,6 +343,7 @@ def run(device, args, rng):
         ],
     )
     trace_cap = (n + 4) // 4 * 4 if args.trace else 0  # 64-byte pages
+    trace_cap = args.trace_cap if args.trace and args.trace_cap else trace_cap
     res = runner.run(
         kernels,
         records,
@@ -407,6 +409,9 @@ def run(device, args, rng):
         )
         out["exit"]["reported_by"] = sum(c["reported"][slot] == seq for c in states)
     out["slot_wrong"] = {c["core"]: c["slot_wrong"] for c in states if c["slot_wrong"]}
+    out["trace_dropped"] = {
+        c["core"]: c["trace_dropped"] for c in states if c["trace_dropped"]
+    }
     out["membership_bad"] = members(args, teams, res, states)[:16]
     out["cores_magic_ok"] = sum(c["magic_ok"] for c in states)
     out["cores_ended"] = {

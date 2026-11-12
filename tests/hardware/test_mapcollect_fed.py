@@ -44,6 +44,13 @@ def test_fixed_team_is_exact(count):
     assert ran_as_members(out)
 
 
+def test_records_past_the_trace_capacity_are_counted():
+    out = run("--jobs", 20, "--count", 8, "--trace", "--trace-cap", 8)
+    assert out["feeder"]["status"] == "done" and out["jobs_checked"] == 20
+    assert out["trace_dropped"] == {str(c): 12 for c in range(8)}  # seq 9 to 20
+    assert every_kernel_returned(out) and ran_as_members(out)
+
+
 def test_random_teams_with_four_in_flight():
     out = run("--jobs", 100, "--teams", "random", "--depth", 4, "--out-tensors", 4)
     assert out["jobs_checked"] == 100 and out["jobs_bad"] == 0

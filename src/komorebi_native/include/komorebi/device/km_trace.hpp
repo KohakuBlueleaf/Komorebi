@@ -13,7 +13,8 @@ namespace km {
         explicit Trace(const Args& a)
             : dram_(a.trace),
               cap_(a.trace_cap),
-              base_(a.trace ? get_write_ptr(kCbTrace) : 0) {
+              base_(a.trace ? get_write_ptr(kCbTrace) : 0),
+              state_(a.ctl + KM_CTL_STATE) {
         }
 
         bool on() const {
@@ -30,9 +31,13 @@ namespace km {
             }
         }
 
+        // A sequence past the capacity is dropped; kStTraceDropped counts the records
+        // (the writer's kTraceDone stamp, so one kernel alone writes the count).
         void put(uint32_t seq, uint32_t field, uint32_t value) const {
             if (on() && seq - 1 < cap_) {
                 l1(base_)[(seq - 1) * kTraceWords + field] = value;
+            } else if (on() && field == kTraceDone) {
+                add_sat(l1(state_) + kStTraceDropped, 1);
             }
         }
 
@@ -58,6 +63,7 @@ namespace km {
         uint32_t dram_;
         uint32_t cap_;
         uint32_t base_;
+        uint32_t state_;
     };
 
 }  // namespace km

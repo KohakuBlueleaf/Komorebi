@@ -40,7 +40,7 @@ namespace km {
     constexpr uint32_t kStEnds = 44;        // bytes reader, writer, compute: kEnd*
     constexpr uint32_t kStMagic = 45;       // kStateMagic | tag << 8 | me
     constexpr uint32_t kStSlotWrong = 46;   // records not run: header slot not theirs
-    constexpr uint32_t kStTraceDropped = 47;  // trace stamps beyond its capacity
+    constexpr uint32_t kStTraceDropped = 47;  // records beyond the trace's capacity
     constexpr uint32_t kStateWords = 48;
     constexpr uint32_t kStateMagic = 0x4B000000;
 

@@ -143,6 +143,8 @@ class Fed:
         cores_t = int32_tensor(dev, core_table)
         table_t = int32_tensor(dev, np.asarray(records, dtype=np.uint64).reshape(n, 16))
         results_t = int32_tensor(dev, np.zeros((n + 1, 16)))
+        if trace_cap % 4:  # the kernel writes cap * 16 bytes as one page
+            raise ValueError(f"trace_cap {trace_cap} is not a multiple of 4")
         trace_t = None
         if trace_cap:
             words = trace_cap * K["kTraceWords"]
