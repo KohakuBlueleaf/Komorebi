@@ -154,11 +154,13 @@ class Session:
                 program, sources, tag, depth, wait, idle, trace
             )
             self.log("launch")
+            # From here the grid may run: an interrupt is delivered when the launch
+            # call returns, after the kernels started.
+            launched = True
             try:
                 ttnn.generic_op(backend.io, descriptor)
             except Exception as err:
                 raise ProgramError(f"{program.name}: launch failed: {err}") from err
-            launched = True
             dispatch.start(str(image))
             self.log("dispatch kernel started")
             state = dispatch.wait_ready(start + 1.0)
