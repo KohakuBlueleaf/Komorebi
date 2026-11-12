@@ -5,6 +5,12 @@
 
 #include <stdint.h>
 
+#if defined(__cplusplus)
+#define KM_STATIC_ASSERT(c, msg) static_assert(c, msg)
+#else
+#define KM_STATIC_ASSERT(c, msg) _Static_assert(c, msg)
+#endif
+
 #define KM_RING_SLOTS 16u /* D: mailbox slots, 64 bytes each */
 #define KM_CORES_MAX 128u
 #define KM_SEG_NOP 0u
@@ -18,7 +24,7 @@
 #define KM_SEG_RUN 251u
 /* host -> dispatch kernel only: a0 = request id of the stream to cancel */
 #define KM_SEG_CANCEL 250u
-/* Flags: bit 0 is reserved and zero. Every record reports completion (revision 2). */
+/* Flags: bit 0 is reserved and zero. Every record reports completion. */
 /* issued only when no in-flight team overlaps the team of this record */
 #define KM_F_EXCL 2u
 /* a queued job: `first` is ignored, the team allocator chooses it */
@@ -40,6 +46,8 @@ typedef struct {
     uint32_t land3, a7, a8, a9; /* chunk 3 */
 } km_record_t;                  /* sizeof == 64; ten argument words */
 
+KM_STATIC_ASSERT(sizeof(km_record_t) == 64, "a record is one 64-byte line");
+
 /* Control block in L1: the same address on every core. Offsets in bytes. */
 #define KM_CTL_RING 0x000u /* KM_RING_SLOTS records */
 #define KM_CTL_RSVD 0x400u /* reserved, 16 bytes; not written in this version */
@@ -56,7 +64,7 @@ typedef struct {
 
 /* Words the Tensix grid pushes into the X280's local memory. */
 #define KM_ACK_STRIDE 16u /* ack word of slot j at ack_base + j * KM_ACK_STRIDE */
-#define KM_ACK(seq) ((uint32_t)(seq)) /* the whole sequence number (revision 2) */
+#define KM_ACK(seq) ((uint32_t)(seq)) /* the whole sequence number */
 #define KM_READY 0xFFFFFFFFu          /* READY words are not in the ack area */
 
 /* Host -> dispatch kernel: one command is one record, its number in `seq` and the
@@ -75,5 +83,7 @@ typedef struct {
     uint32_t status; /* KM_EV_* | aux << 8 */
     uint32_t ticks;  /* issue to completion, in the X280's timer ticks */
 } km_event_t;        /* sizeof == 16: one chunk, lands whole */
+
+KM_STATIC_ASSERT(sizeof(km_event_t) == 16, "an event is one 16-byte chunk");
 
 #endif /* KOMOREBI_ABI_KM_ABI_H */

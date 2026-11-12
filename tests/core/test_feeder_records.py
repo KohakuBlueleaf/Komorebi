@@ -337,3 +337,18 @@ def test_excl_overlap_is_a_shared_core(tmp_path):
         for nb in range(6)
     )
     assert got == want and last == "1"
+
+
+@pytest.mark.parametrize(
+    "compiler, std, suffix", [("cc", "c11", "c"), ("c++", "c++17", "cpp")]
+)
+def test_abi_header_compiles_as_c_and_cpp_with_its_size_checks(
+    tmp_path, compiler, std, suffix
+):
+    if shutil.which(compiler) is None:
+        pytest.skip(f"needs {compiler}")
+    src = tmp_path / f"abi.{suffix}"
+    src.write_text('#include "komorebi/abi/km_abi.h"\nint main(void) { return 0; }\n')
+    flags = [f"-std={std}", "-Wall", "-Wextra", "-pedantic", "-Werror", "-fsyntax-only"]
+    subprocess.run([compiler, *flags, "-I", str(rec.INCLUDE), str(src)], check=True)
+    assert "KM_STATIC_ASSERT(sizeof(km_record_t) == 64" in rec.ABI_H.read_text()
