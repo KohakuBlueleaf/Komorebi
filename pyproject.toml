@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "komorebi"
+version = "0.1.0"
+description = "A programming model and runtime for the Tensix grid of Tenstorrent Blackhole cards"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.13"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "black", "blacken-docs", "clang-format>=22"]
+
+[project.scripts]
+kmr = "komorebi.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["komorebi", "komorebi.*"]
+
+[tool.black]
+target-version = ["py313"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "BLE", "UP", "SIM", "PERF", "RUF100", "PLC0415"]
+ignore = ["B905", "PERF203"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["komorebi"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 88
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "card: needs a Tenstorrent card (KMR_CARD=1)",
+]
