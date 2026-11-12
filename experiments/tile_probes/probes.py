@@ -293,7 +293,9 @@ def gather(device, args):
     )
     words = np.concatenate([table.reshape(-1), sets.reshape(-1)])
     w, reps = args.words, args.reps
-    out, nonce = run_kernel(device, "gather", words, [w, reps, n_sets, int(args.fast)])
+    out, nonce = run_kernel(
+        device, "gather", words, [w, reps, n_sets, args.variant], rvv=args.variant == 2
+    )
     t = times_of(out)
     idx_out, copy, load = t[0::3], t[1::3], t[2::3]
     total = [a + b + c for a, b, c in zip(idx_out, copy, load)]
@@ -313,6 +315,7 @@ def gather(device, args):
         {
             "words": w,
             "reps": reps,
+            "variant": ["plain", "scheduled", "rvv"][args.variant],
             "indices_out": stats(idx_out),
             "copy": stats(copy),
             "sfpload_sync": stats(load),
@@ -509,7 +512,9 @@ def main():
     p.add_argument("--reps", type=int, default=1000)
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--words", type=int, default=4, choices=[1, 2, 4])
-    p.add_argument("--fast", action="store_true", help="gather: scheduled copy")
+    p.add_argument(
+        "--variant", type=int, default=0, help="gather: 0 plain, 1 scheduled, 2 RVV"
+    )
     p.add_argument("--nodes", type=int, default=64)
     p.add_argument("--slab-mode", choices=["f32", "bf16", "const"], default="f32")
     p.add_argument("--random-data", action="store_true")

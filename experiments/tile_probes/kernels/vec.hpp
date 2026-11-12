@@ -13,6 +13,10 @@
 #include "ckernel_ops.h"
 #include "probe.hpp"
 
+#if defined(__riscv_vector)
+#include <riscv_vector.h>
+#endif
+
 namespace vec {
 
     using namespace ckernel;
@@ -565,6 +569,47 @@ namespace vec {
         t.add(t3 - t2);
     }
 
+#if defined(__riscv_vector)
+    // The same step on T2's vector unit: lane l of Dst address a is window byte
+    // 64 a + 8 l, so the indices are one stride-8 load and each record word one
+    // indexed load (vluxei32) from the table plus one stride-8 store into the window.
+    template <uint32_t W>
+    [[gnu::noinline]] void gather_step_rvv(const uint32_t* table, Times& t) {
+        auto* w = reinterpret_cast<uint32_t*>(kDstWindow);
+        const uint32_t t0 = wall();
+        TTI_SFPSTORE(L7, kInt32, kAm, 132);
+        tensix_sync();
+        const size_t vl = __riscv_vsetvl_e32m8(32);
+        vuint32m8_t idx = __riscv_vlse32_v_u32m8(w + 16 * 132, 8, vl);
+        vuint32m8_t off = (
+            __riscv_vsll_vx_u32m8(__riscv_vand_vx_u32m8(idx, 255, vl), 4, vl)
+        );
+        asm volatile("" ::: "memory");
+        const uint32_t t1 = wall();
+#pragma GCC unroll 4
+        for (uint32_t k = 0; k < W; ++k) {
+            vuint32m8_t v = __riscv_vluxei32_v_u32m8(table + k, off, vl);
+            __riscv_vsse32_v_u32m8(w + 16 * 4 * k, 8, v, vl);
+        }
+        asm volatile("" ::: "memory");
+        order(lane_word(4 * (W - 1), 31));
+        const uint32_t t2 = wall();
+        TTI_SFPLOAD(L0, kInt32, kAm, 0);
+        if constexpr (W > 1) {
+            TTI_SFPLOAD(L1, kInt32, kAm, 4);
+        }
+        if constexpr (W > 2) {
+            TTI_SFPLOAD(L2, kInt32, kAm, 8);
+            TTI_SFPLOAD(L3, kInt32, kAm, 12);
+        }
+        tensix_sync();
+        const uint32_t t3 = wall();
+        t.add(t1 - t0);
+        t.add(t2 - t1);
+        t.add(t3 - t2);
+    }
+#endif
+
     // Input: table [0, 1024) (256 records x 4 words), index sets [1024 + 32 s + l).
     // Data: for the last n_sets reps, set s: L_w lane l at 128 s + 32 w + l.
     template <uint32_t W>
@@ -573,7 +618,7 @@ namespace vec {
         volatile uint32_t* out,
         uint32_t reps,
         uint32_t n_sets,
-        bool fast,
+        uint32_t variant,
         Times& t
     ) {
         uint32_t idx[32];
@@ -583,8 +628,12 @@ namespace vec {
             write_lanes(128, in + 1024 + 32 * s);
             TTI_SFPLOAD(L7, kInt32, kAm, 128);
             tensix_sync();
-            if (fast) {
+            if (variant == 1) {
                 gather_step_fast<W>(const_cast<const uint32_t*>(in), t);
+            } else if (variant == 2) {
+#if defined(__riscv_vector)
+                gather_step_rvv<W>(const_cast<const uint32_t*>(in), t);
+#endif
             } else {
                 gather_step<W>(in, idx, t);
             }

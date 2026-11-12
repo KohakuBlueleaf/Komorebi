@@ -104,12 +104,12 @@ void kernel_main() {
     vec::finish();
 #elif PROBE == 3
     vec::setup();
-    if (p[0] == 1) {  // W, reps, sets, fast
-        vec::gather<1>(in, out, p[1], p[2], p[3] != 0, t);
+    if (p[0] == 1) {  // W, reps, sets, variant (0 plain, 1 scheduled, 2 RVV)
+        vec::gather<1>(in, out, p[1], p[2], p[3], t);
     } else if (p[0] == 2) {
-        vec::gather<2>(in, out, p[1], p[2], p[3] != 0, t);
+        vec::gather<2>(in, out, p[1], p[2], p[3], t);
     } else {
-        vec::gather<4>(in, out, p[1], p[2], p[3] != 0, t);
+        vec::gather<4>(in, out, p[1], p[2], p[3], t);
     }
     vec::finish();
 #elif PROBE == 4
