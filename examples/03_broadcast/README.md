@@ -68,6 +68,28 @@ open.
 The JSON line reports, per run, the feeder's status, microseconds per job, the blocks
 every lane handed over, every core's end state, and `members_bad`.
 
+## Measured: lanes against every member reading DRAM itself
+
+One p150a, AICLK 1350 MHz, the 12 x 9 rectangle (108 members; 9 column lanes of 9 cores
+and 18 row lanes of 6), 64 blocks per lane and job, 4 jobs, every member checked
+(0 wrong), the feeder's clock per job. "Delivered" counts both blocks into every member;
+in `READ` each member reads them from DRAM, in `CAST` only the 27 senders do.
+
+| block | window | `CAST` us/job | per lane | delivered | DRAM read | `READ` us/job | delivered (= DRAM read) |
+|---|---|---|---|---|---|---|---|
+| 2 KiB | 1 | 78.8 | 1.66 GB/s | 359 GB/s | 45 GB/s | 74.1 | 382 GB/s |
+| 2 KiB | 4 | 71.4 | 1.84 GB/s | 397 GB/s | 50 GB/s | 69.5 | 407 GB/s |
+| 24 KiB | 1 | 289.3 | 5.44 GB/s | 1,174 GB/s | 147 GB/s | 738.8 | 460 GB/s |
+| 24 KiB | 4 | 250.8 | 6.27 GB/s | 1,355 GB/s | 169 GB/s | 744.0 | 457 GB/s |
+
+At 24 KiB blocks the lanes deliver 2.5 to 3 times what the members get by reading DRAM
+themselves, which stays near 460 GB/s whatever the window. At 2 KiB both take the same
+time within 6% (`READ` slightly ahead): the job is then bound by something both modes
+share, the per-block steps and this example's compute (two tile adds per page), not by
+DRAM (an inference; not separated here). A window of 4 gains 9 to 15% over 1 in `CAST`.
+So a program broadcasts when blocks are large and shared by many cores; with blocks of
+one tile, reading DRAM directly costs no more.
+
 ## Files
 
 | File | What it is |
