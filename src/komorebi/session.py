@@ -244,6 +244,7 @@ class Session:
             if not dispatch.idle:
                 raise StartError("X280 cluster 0 is not idle: no image can start")
             state_t = _state_area(self.device)
+            ring, work_args = _work_ring(dispatch, work) if on_card else (None, ())
             tag = dispatch.prepare(
                 depth,
                 host_depth,
@@ -252,6 +253,7 @@ class Session:
                 deadline,
                 kernel_idle,
                 state_t.buffer_address(),
+                *work_args,
             )
             check_bases(lim_bases(dispatch.lim_base))
             backend = _Backend(self, dispatch, mhz, trace)
@@ -283,7 +285,7 @@ class Session:
         if work is not None:
             try:
                 run.thread = self._start_thread(
-                    dispatch, work, regions, work_image, on_card, run
+                    dispatch, work, regions, work_image, on_card, run, ring
                 )
             except BaseException:
                 run.abort()
@@ -291,14 +293,26 @@ class Session:
             self.log("thread started" if on_card else "thread on the host")
         return run
 
-    def _start_thread(self, dispatch, work, regions, image, on_card, run):
-        """Starts the thread on the card, or readies its host fallback (which
-        issues through `run`)."""
+    def _start_thread(self, dispatch, work, regions, image, on_card, run, ring):
+        """Starts the thread on the card with its command ring, or readies its host
+        fallback (which issues through `run`)."""
         thread = kt.ThreadRun(
             work, dispatch, regions, image, on_card, regions.base, regions.check, run
         )
+        thread.ring = ring
         thread.start()
         return thread
+
+
+def _work_ring(dispatch, work):
+    """The thread's ring (RingPlacement) and the kernel's work_* arguments."""
+    info = dispatch.work_info(work.cluster)
+    return kt.work_ring(
+        dispatch.lim_base,
+        (dispatch.l2_x, dispatch.l2_y),
+        info["lim_base"],
+        (info["virtual_x"], info["virtual_y"]),
+    )
 
 
 def _pages(data, pages):

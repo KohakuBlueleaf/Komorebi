@@ -293,7 +293,12 @@ namespace {
             double t_start_s,
             double t_record_s,
             double t_idle_s,
-            uint64_t state_ddr
+            uint64_t state_ddr,
+            uint64_t work_cmds,
+            uint64_t work_depth,
+            uint64_t work_event_depth,
+            uint64_t work_noc,
+            uint64_t work_noc_addr
         ) {
             require_open();
             if (session_) {
@@ -309,6 +314,13 @@ namespace {
             }
             if (state_ddr == 0 || state_ddr % 64 != 0) {
                 throw std::runtime_error("state_ddr is not a nonzero multiple of 64");
+            }
+            // A work cluster's ring: its command lines and read line after the layout.
+            const uint64_t work_bytes = work_cmds ? work_depth * 64 + 64 : 0;
+            if (work_cmds &&
+                (work_cmds % 64 != 0 || work_cmds < KMD_LIM_BYTES ||
+                 base_ + work_cmds + work_bytes > tile_->available_lim().end)) {
+                throw std::runtime_error("the work ring's lines are not inside LIM");
             }
             depth_ = depth;
             host_depth_ = host_depth;
@@ -326,6 +338,11 @@ namespace {
             flight_team_.fill(0);
             std::memset(const_cast<uint32_t*>(host_), 0, kHostBufferBytes);
             tile_->write_available_lim(base_, std::vector<uint8_t>(KMD_LIM_BYTES, 0));
+            if (work_cmds) {
+                tile_->write_available_lim(
+                    base_ + work_cmds, std::vector<uint8_t>(work_bytes, 0)
+                );
+            }
 
             kmd_args_t a{};
             a.run_value = run_;
@@ -350,6 +367,11 @@ namespace {
             a.t_record = static_cast<uint64_t>(t_record_s * kMtimeHz);
             a.t_idle = static_cast<uint64_t>(t_idle_s * kMtimeHz);
             a.state_ddr = state_ddr;
+            a.work_cmds = work_cmds;
+            a.work_depth = work_depth;
+            a.work_event_depth = work_event_depth;
+            a.work_noc = work_noc;
+            a.work_noc_addr = work_noc_addr;
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &a, sizeof(a));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
@@ -635,6 +657,12 @@ namespace {
             out["hw_index"] = w.tile->id().hw_index;
             out["noc_x"] = w.tile->id().noc_x;
             out["noc_y"] = w.tile->id().noc_y;
+            // The coordinate another cluster's window aims at (as for cluster 0's).
+            const auto v = (
+                rt().virtual_core_from_tile(w.tile->id(), tt::tt_metal::NOC::NOC_0)
+            );
+            out["virtual_x"] = static_cast<uint32_t>(v.x());
+            out["virtual_y"] = static_cast<uint32_t>(v.y());
             out["lim_base"] = w.base;
             out["lim_bytes"] = w.bytes;
             return out;
@@ -1090,7 +1118,12 @@ NB_MODULE(_km_host, m) {
             nb::arg("t_start_s"),
             nb::arg("t_record_s"),
             nb::arg("t_idle_s"),
-            nb::arg("state_ddr")
+            nb::arg("state_ddr"),
+            nb::arg("work_cmds") = 0,
+            nb::arg("work_depth") = 0,
+            nb::arg("work_event_depth") = 0,
+            nb::arg("work_noc") = 0,
+            nb::arg("work_noc_addr") = 0
         )
         .def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))

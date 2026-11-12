@@ -41,6 +41,26 @@ def test_ring_line_names_the_placement():
     assert line == (0x1000, 0x2040, 0x3000, 0x4000, 16, 64, K["KMX_RING_CACHED"])
 
 
+def test_a_work_ring_has_commands_in_the_kernels_lim_and_events_in_the_threads():
+    ring, kernel = kt.work_ring(0x8100000, (8, 3), 0x8120000, (8, 9))
+    d = kt.abi.headers()
+    assert ring.cmd == 0x8100000 + d["KMD_LIM_BYTES"] and ring.remote == 8 | 3 << 16
+    assert ring.read == ring.cmd + 64 * kt.RING_DEPTH
+    area = 0x8120000 + K["KMX_LIM_BYTES"]
+    assert (ring.consumed, ring.events) == (area, area + d["KMD_WORK_EVENTS"])
+    assert kernel == (
+        d["KMD_LIM_BYTES"],
+        kt.RING_DEPTH,
+        kt.RING_EVENTS,
+        8 | 9 << 16,
+        area,
+    )
+    block = kt.args_block(a_thread(), base=0, check_value=1, ring=ring)
+    assert len(block) == K["KMX_LIM_BYTES"] + kt.ring_area_bytes(ring)
+    flags, tile = struct.unpack_from("<2I", block, K["KMX_LIM_RING"] + 40)
+    assert (flags, tile) == (K["KMX_RING_REMOTE"], 8 | 3 << 16)
+
+
 def test_argument_block_holds_the_region_table_and_words():
     block = kt.args_block(a_thread(deadline=2.0), base=0x100000, check_value=0xABC)
     assert len(block) == K["KMX_LIM_BYTES"]

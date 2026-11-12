@@ -22,6 +22,8 @@ PAGE = 4096  # region granularity, bytes; regions are whole pages of one bank
 # measured on a p150a; the thread's start-up checks it (KMX_ERR_BANK otherwise).
 BANK_OF_CLUSTER = {1: 6, 2: 7, 3: 7}
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI word, at this address in every bank
+RING_DEPTH = 16  # the thread's command lines, in the dispatch kernel's LIM
+RING_EVENTS = 64  # its events, in its own LIM after the kmx block
 
 
 @functools.cache
@@ -107,7 +109,8 @@ def place(thread):
 
 class RingPlacement(NamedTuple):
     """Where the thread's command ring lives, as its cluster addresses it: command
-    slots, the kernel's consumed word, the events, the read-count line."""
+    slots, the kernel's consumed word, the events, the read-count line. `remote`
+    (x | y << 16): cmd and read are NoC addresses in that tile."""
 
     cmd: int
     consumed: int
@@ -116,12 +119,40 @@ class RingPlacement(NamedTuple):
     cmd_depth: int
     event_depth: int
     cached: bool = False
+    remote: int | None = None
+
+
+def work_ring(kernel_lim, kernel_xy, work_lim, work_xy):
+    """The ring between a work cluster and the dispatch kernel: commands and the read
+    line in the kernel's LIM after its layout (each side writes the other's LIM and
+    reads its own). Returns the thread's RingPlacement and the kernel's work_*
+    arguments (cmds offset, depth, event depth, tile, NoC address of the area)."""
+    d, k = abi.headers(), layout()
+    cmds = d["KMD_LIM_BYTES"]  # after the layout: the host gives no upload region
+    area = work_lim + k["KMX_LIM_BYTES"]
+    x0, y0 = kernel_xy
+    ring = RingPlacement(
+        kernel_lim + cmds,
+        area + d["KMD_WORK_CONSUMED"],
+        area + d["KMD_WORK_EVENTS"],
+        kernel_lim + cmds + RING_DEPTH * 64,
+        RING_DEPTH,
+        RING_EVENTS,
+        remote=x0 | y0 << 16,
+    )
+    x1, y1 = work_xy
+    return ring, (cmds, RING_DEPTH, RING_EVENTS, x1 | y1 << 16, area)
+
+
+def ring_area_bytes(ring):
+    """Bytes of the thread's LIM after the kmx block that the ring's events use."""
+    return abi.headers()["KMD_WORK_EVENTS"] + ring.event_depth * 16
 
 
 def args_block(thread, base, check_value, run_value=0, ring=None):
-    """The thread's whole LIM block (KMX_LIM_BYTES): the argument block with the
-    region table at bank address `base` (page 0 the check line), the ring's line
-    (zero without a `ring`, a RingPlacement), the rest zeroed."""
+    """The thread's whole LIM block (KMX_LIM_BYTES, and a remote ring's event area
+    zeroed): the argument block with the region table at bank address `base` (page 0
+    the check line), the ring's line (zero without a `ring`, a RingPlacement)."""
     k = layout()
     placed, _ = place(thread)
     block = bytearray(k["KMX_LIM_BYTES"])
@@ -147,10 +178,20 @@ def args_block(thread, base, check_value, run_value=0, ring=None):
     block[at : at + len(words)] = words
     if ring is not None:
         flags = k["KMX_RING_CACHED"] if ring.cached else 0
+        flags |= k["KMX_RING_REMOTE"] if ring.remote is not None else 0
+        tile = ring.remote or 0
         line = struct.pack(
-            "<4Q3I5I", *ring[:4], ring.cmd_depth, ring.event_depth, flags, *[0] * 5
+            "<4Q3I5I",
+            *ring[:4],
+            ring.cmd_depth,
+            ring.event_depth,
+            flags,
+            tile,
+            *[0] * 4,
         )
         block[k["KMX_LIM_RING"] : k["KMX_LIM_RING"] + 64] = line
+        if ring.remote is not None:
+            block += bytes(ring_area_bytes(ring))  # its events start zeroed
     return bytes(block)
 
 
