@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from projects.raster.reference import agree, harness
+from projects.raster.reference import harness
 from ref import native, png, raster, scenes
 
 SMALL_SCENES = ("tiny", "s10k")
@@ -32,7 +32,7 @@ def tiles_picture(counts):
 
 def pictures(scene, out, external):
     """Writes the pictures of one scene into out; returns the numbers on them."""
-    agree.prepare(scene, None)
+    harness.ensure_results(scene)
     found = harness.collect(scene, external)
     ref_name = harness.REFERENCE if harness.REFERENCE in found else next(iter(found))
     ref = found[ref_name][0]

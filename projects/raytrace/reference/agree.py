@@ -6,6 +6,10 @@ numpy is too slow for the whole image (scenes above --numpy-max triangles) it tr
 every STRIDE-th pixel in both directions and the comparison covers those pixels.
 
     python -m projects.raytrace.reference.agree [--scenes ...] [--external DIR ...]
+        [--numpy-max N] [--fresh]
+
+Results already stored in the data folder are reused (with their timings and power);
+--fresh runs everything again.
 """
 
 import argparse
@@ -28,22 +32,19 @@ def restrict(arrays, pixels):
     return out
 
 
-def prepare(scene, numpy_max):
+def prepare(scene, numpy_max, fresh=False):
     """Runs the implementations of this repository; returns numpy's subset or None."""
     subset = None
-    if numpy_max is None or scenes.PRESETS[scene] <= numpy_max:
-        harness.run_numpy(scene)
-    else:
+    harness.ensure_results(scene, numpy_max, fresh)
+    if numpy_max is not None and scenes.PRESETS[scene] > numpy_max:
         pixels = harness.lattice(STRIDE)
         subset = (pixels, harness.run_numpy(scene, pixels))
-    harness.run_cpu(scene, harness.threads_all(), reps=1)
-    harness.run_gpu(scene, reps=1)
     return subset
 
 
-def agree(scene, external=(), numpy_max=None):
+def agree(scene, external=(), numpy_max=None, fresh=False):
     """{"A vs B": statistics} for a scene over every implementation found."""
-    subset = prepare(scene, numpy_max)
+    subset = prepare(scene, numpy_max, fresh)
     found = harness.collect(scene, external)
     names = list(found)
     pairs, stats = [], {}
@@ -72,9 +73,12 @@ def main():
     parser.add_argument("--scenes", nargs="*", default=harness.SCENES)
     parser.add_argument("--external", nargs="*", default=[])
     parser.add_argument("--numpy-max", type=int, default=None, help="largest scene")
+    parser.add_argument("--fresh", action="store_true", help="run everything again")
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
-    report = {s: agree(s, args.external, args.numpy_max) for s in args.scenes}
+    report = {
+        s: agree(s, args.external, args.numpy_max, args.fresh) for s in args.scenes
+    }
     for scene, pairs in report.items():
         for pair, s in pairs.items():
             print(f"{scene:6s} {pair}")

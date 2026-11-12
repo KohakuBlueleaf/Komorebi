@@ -54,7 +54,7 @@ they cannot drift apart; numpy is written separately.
 python -m pip install -e ".[dev]"          # numpy, pytest, ruff, black
 export KR_DATA=<folder for scenes and outputs>    # default: build/data
 python -m ref.scenes $KR_DATA                      # the four scenes as .npz
-python -m projects.raster.reference.agree          # numpy vs C++ vs CUDA
+python -m projects.raster.reference.agree          # numpy vs C++ vs CUDA (--fresh: rerun)
 python -m projects.raster.reference.bench          # timings and power
 python -m projects.raster.reference.pictures --out <folder>
 ```

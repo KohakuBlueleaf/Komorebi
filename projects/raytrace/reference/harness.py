@@ -116,14 +116,23 @@ def run_gpu(scene, reps=3, store=True, with_power=False):
     return record
 
 
-def ensure_results(scene, numpy_max=None):
-    """Makes sure numpy (if the scene is small enough), C++ and CUDA results exist."""
+def ensure_results(scene, numpy_max=None, fresh=False):
+    """Makes sure numpy (if the scene is small enough), C++ and CUDA results exist.
+
+    Results already stored are kept, with their timings and power figures, unless
+    fresh is set.
+    """
     root = runner.results_root("raytrace")
-    missing = not (root / "numpy" / f"{scene}.npz").exists()
-    if missing and (numpy_max is None or scenes.PRESETS[scene] <= numpy_max):
+
+    def todo(folder):
+        return fresh or not (root / folder / f"{scene}.npz").exists()
+
+    if todo("numpy") and (numpy_max is None or scenes.PRESETS[scene] <= numpy_max):
         run_numpy(scene)
-    run_cpu(scene, threads_all(), reps=1)
-    run_gpu(scene, reps=1)
+    if todo("cpu_all"):
+        run_cpu(scene, threads_all(), reps=1)
+    if todo("v100"):
+        run_gpu(scene, reps=1)
 
 
 def collect(scene, external=()):

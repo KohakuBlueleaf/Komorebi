@@ -4,6 +4,10 @@ Runs numpy, C++ and CUDA on each scene and compares every implementation found (
 those in --external folders, see ref/results.py) with numpy, and C++ with CUDA.
 
     python -m projects.raster.reference.agree [--scenes ...] [--external DIR ...]
+        [--numpy-max N] [--fresh]
+
+Results already stored in the data folder are reused (with their timings and power);
+--fresh runs everything again.
 """
 
 import argparse
@@ -12,17 +16,9 @@ import json
 from projects.raster.reference import harness
 
 
-def prepare(scene, numpy_max):
-    """Runs the implementations of this repository that are available."""
-    if numpy_max is None or harness.scenes.PRESETS[scene] <= numpy_max:
-        harness.run_numpy(scene)
-    harness.run_cpu(scene, harness.threads_all(), reps=1)
-    harness.run_gpu(scene, reps=1)
-
-
-def agree(scene, external=(), numpy_max=None):
+def agree(scene, external=(), numpy_max=None, fresh=False):
     """{"A vs B": statistics} for a scene over every implementation found."""
-    prepare(scene, numpy_max)
+    harness.ensure_results(scene, numpy_max, fresh)
     found = harness.collect(scene, external)
     names = list(found)
     ref = harness.REFERENCE if harness.REFERENCE in found else names[0]
@@ -43,9 +39,12 @@ def main():
     parser.add_argument("--scenes", nargs="*", default=harness.SCENES)
     parser.add_argument("--external", nargs="*", default=[])
     parser.add_argument("--numpy-max", type=int, default=None, help="largest scene")
+    parser.add_argument("--fresh", action="store_true", help="run everything again")
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
-    report = {s: agree(s, args.external, args.numpy_max) for s in args.scenes}
+    report = {
+        s: agree(s, args.external, args.numpy_max, args.fresh) for s in args.scenes
+    }
     for scene, pairs in report.items():
         for pair, s in pairs.items():
             print(

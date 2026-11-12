@@ -47,6 +47,25 @@ def run_numpy(scene):
     return arrays
 
 
+def ensure_results(scene, numpy_max=None, fresh=False):
+    """Makes sure numpy (if the scene is small enough), C++ and CUDA results exist.
+
+    Results already stored are kept, with their timings and power figures, unless
+    fresh is set.
+    """
+    root = runner.results_root("raster")
+
+    def todo(folder):
+        return fresh or not (root / folder / f"{scene}.npz").exists()
+
+    if todo("numpy") and (numpy_max is None or scenes.PRESETS[scene] <= numpy_max):
+        run_numpy(scene)
+    if todo("cpu_all"):
+        run_cpu(scene, runner.threads_all(), reps=1)
+    if todo("v100"):
+        run_gpu(scene, reps=1)
+
+
 def run_cpu(scene, threads, reps=3, store=True, with_power=False):
     """Runs the C++ binary; returns its record (None without a compiler)."""
     exe = native.build(str(HERE / "cpu" / "raster_cpu.cpp"), "raster_cpu")
