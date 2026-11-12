@@ -32,8 +32,9 @@ def every_kernel_returned(out):
 
 @pytest.mark.parametrize("count", [1, 8, 119])
 def test_fixed_team_is_exact(count):
-    out = run("--jobs", 20, "--count", count)
+    out = run("--jobs", 20, "--count", count, "--out-tensors", 2)
     assert out["feeder"]["status"] == "done" and out["feeder"]["done"] == 20
+    assert out["feeder"]["exit_acked"]
     assert out["jobs_checked"] == 20 and out["jobs_bad"] == 0
     assert out["compute_wrong"] == 0 and every_kernel_returned(out)
 
@@ -43,6 +44,13 @@ def test_random_teams_with_four_in_flight():
     assert out["jobs_checked"] == 100 and out["jobs_bad"] == 0
     assert out["random_total_rel_rms_max"] < 1e-2
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
+
+
+@pytest.mark.parametrize("count", [60, 119])
+def test_row_leader_completion(count):
+    out = run("--jobs", 20, "--count", count, "--rows", "--out-tensors", 2)
+    assert out["completion"] == "row leaders" and out["feeder"]["exit_acked"]
+    assert out["jobs_checked"] == 20 and out["jobs_bad"] == 0
 
 
 def test_disjoint_teams_run_at_once():
