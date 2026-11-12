@@ -73,6 +73,7 @@ R_NAMES = {
     12: "ctl",
     21: "boot_ticks",
     24: "refused",
+    25: "held",
 }
 R_WIDE = {"ticks": 13, "idle_passes": 15, "full_passes": 17, "passes": 19, "last": 22}
 
@@ -218,7 +219,7 @@ def result_block(words):
     out = {name: words[i] for i, name in R_NAMES.items()}
     for name, lo in R_WIDE.items():
         out[name] = words[lo] | (words[lo + 1] << 32)
-    out["spare"] = list(words[25:32])
+    out["spare"] = list(words[26:32])
     return out
 
 

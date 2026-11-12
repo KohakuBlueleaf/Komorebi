@@ -97,6 +97,7 @@ enum {
     KMD_R_LAST_LO = 22,    /* ticks from the first command taken to the last event */
     KMD_R_LAST_HI = 23,
     KMD_R_REFUSED = 24, /* commands answered with KM_EV_REFUSED */
+    KMD_R_HELD = 25,    /* commands that waited at least one pass (EXIT, KM_F_EXCL) */
     KMD_R_WORDS = 32
 };
 

@@ -97,8 +97,8 @@ static uint32_t boot(kmd_t* k) {
 }
 
 /* Takes command k->next from k->line: kernel commands act here, a bad record is refused
- * with an event, a record gets a free slot and the next sequence. 1 = finish. */
-static int take(kmd_t* k, uint64_t now) {
+ * with an event, a record gets a free slot and the next sequence, or waits. */
+static kmd_take_t take(kmd_t* k, uint64_t now) {
     uint64_t* l = k->line;
     const uint32_t req = k->next, hdr = (uint32_t)(l[0] >> 32);
     const uint32_t seg = hdr & 0xFFu, flags = (hdr >> 8) & 0xFFu;
@@ -108,19 +108,19 @@ static int take(kmd_t* k, uint64_t now) {
         hring_consumed(k);
         events_push(k, req, KM_EV_PONG, 0);
         k->t_last_event = now;
-        return 0;
+        return KMD_TAKEN;
     }
     if (seg == KM_SEG_DEADLINE) {
         hring_consumed(k);
         k->t_record = a0 ? (uint64_t)a0 * 50u : k->args->t_record;
-        return 0;
+        return KMD_TAKEN;
     }
     if (seg == KM_SEG_STOP) {
         hring_consumed(k);
         if (k->busy) {
             result_error(k, KMD_ERR_STOP_BUSY, 0, k->seq, req, k->busy);
         }
-        return 1;
+        return KMD_FINISH;
     }
     uint32_t refuse = 0;
     if (seg > KM_SEG_USER_MAX && seg != KM_SEG_EXIT) {
@@ -129,7 +129,7 @@ static int take(kmd_t* k, uint64_t now) {
         refuse = KMD_REFUSE_FLAGS;
     } else if (k->exited) {
         refuse = KMD_REFUSE_EXITED;
-    } else if (count == 0 || first + count > k->cores) {
+    } else if (seg != KM_SEG_EXIT && (count == 0 || first + count > k->cores)) {
         refuse = KMD_REFUSE_TEAM;
     }
     if (refuse != 0) {
@@ -137,7 +137,14 @@ static int take(kmd_t* k, uint64_t now) {
         events_push(k, req, KM_EV_REFUSED | (refuse << 8), 0);
         k->t_last_event = now;
         k->refused++;
-        return 0;
+        return KMD_TAKEN;
+    }
+    if (seg == KM_SEG_EXIT) {
+        /* EXIT goes to every core, and only once no record is in flight. */
+        if (k->busy) {
+            return KMD_HELD;
+        }
+        l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_TEAM_ALL(k->cores);
     }
     const uint32_t slot = slot_free(k), seq = ++k->seq;
     l[0] = seq | ((uint64_t)((hdr & 0xFFFFu) | (slot << 16)) << 32);
@@ -149,7 +156,7 @@ static int take(kmd_t* k, uint64_t now) {
     k->records++;
     k->exited = seg == KM_SEG_EXIT;
     slot_take(k, slot, seq, req, now, k->t_record);
-    return 0;
+    return KMD_TAKEN;
 }
 
 /* The loop. Returns when a STOP command, the runtime's stop or an error ends it. */
@@ -163,18 +170,30 @@ static void loop(kmd_t* k) {
         if (k->busy) {
             slots_sweep(k);
         }
-        if (k->busy == k->full) {
-            k->full_passes++;
-        } else if (!hring_take(k)) {
-            k->idle_passes++;
-        } else {
-            activity++;
+        if (k->line_state == 0) {
+            if (k->busy == k->full) {
+                k->full_passes++;
+            } else if (!hring_take(k)) {
+                k->idle_passes++;
+            } else {
+                k->line_state = 1;
+                activity++;
+            }
+        }
+        if (k->line_state != 0) {
             const uint64_t now = x280_mtime();
             if (k->t_first == 0) {
                 k->t_first = now;
             }
-            if (take(k, now)) {
+            const kmd_take_t t = take(k, now);
+            if (t == KMD_FINISH) {
                 return;
+            }
+            if (t == KMD_TAKEN) {
+                k->line_state = 0;
+            } else if (k->line_state == 1) {
+                k->line_state = 2;
+                k->held++;
             }
         }
         events_flush(k);
