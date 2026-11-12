@@ -32,7 +32,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `void kmx_give(int id)` | any | writes the region's cached lines back to DRAM: after writing what the grid or the host will read | - |
 | `int kmx_par(void (*fn)(int, void*), void* arg)` | 0, not nested | runs `fn(h, arg)` on harts 0 to 3 and waits for all | `KMX_OK`; `KMX_LATE` or `KMX_STOPPED` (library error `late` / `stopped`); `KMX_STOPPED` with error `par` from another hart or inside a `kmx_par` |
 | `int kmx_issue(const km_record_t* r, uint32_t* ticket)` | 0 | stores record `r` as the next command of the ring | `KMX_OK` and the ticket (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
-| `int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev)` | 0 | waits for the ticket's event until `kmx_time()` passes `deadline`; other tickets' events are kept for `kmx_poll` | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
+| `int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev)` | 0 | waits for the ticket's event until `kmx_time()` passes `deadline`; other tickets' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_poll(kmx_event* ev)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
 | `uint64_t kmx_time(void)` | any | the 50 MHz timer (`KMX_TICKS_PER_SECOND`) | ticks |
 | `int kmx_stop_requested(void)` | any | true once the host asked for a stop or the thread's deadline passed | 0 or 1 |
@@ -45,11 +45,12 @@ Ring calls from harts 1 to 3 record the library error `par` and return
 library writes `seq` and the landing words. Flags: `KM_F_EXCL` (issued only when no
 team in flight overlaps it), `KM_F_RESULT` (the team leader's `wr.result(value)`
 comes back in the event's `ticks`), `KM_F_QUEUE` (the kernel chooses `first`). A
-record that cannot be issued now is refused at once (`KM_EV_REFUSED`, aux 11); the
-kernel's other refusals are its README's ("Refused commands"), and STOP, EXIT, RUN and
+record that cannot be issued now is refused at once (`KM_EV_REFUSED`, aux 11) and the
+kernel then sends one `KMX_EV_WAKE` (ticket 0) when a slot frees or the queue issues a
+job: the record may be issued again after it. The kernel's other refusals are its README's ("Refused commands"), and STOP, EXIT, RUN and
 CANCEL from a thread are refused with aux 1.
 
-`kmx_event`: `ticket`, `kind` (`KM_EV_DONE`, `KM_EV_TIMEOUT`, `KM_EV_REFUSED`),
+`kmx_event`: `ticket`, `kind` (`KM_EV_DONE`, `KM_EV_TIMEOUT`, `KM_EV_REFUSED`, `KMX_EV_WAKE` from `kmx_poll` only),
 `aux` (the slot of a timeout, the reason of a refusal), `ticks` (issue to completion
 in timer ticks, or the result word of a `KM_F_RESULT` record).
 

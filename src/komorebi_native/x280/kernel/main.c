@@ -295,13 +295,38 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     return KMD_TAKEN;
 }
 
-/* Source `src`'s turn in a pass: at most one command, taken unless every slot is busy
- * (the engine's always). Returns 1 when the command ends the loop. */
+/* A record of the engine or a work cluster that cannot go now (no free slot, an
+ * overlapping exclusive team, a full queue): refused at once, KMD_EV_WAKE owed. */
+static int source_busy(kmd_t* k, uint32_t src, uint64_t now) {
+    kmd_ring_t* r = &k->ring[src];
+    if (!(k->waits & (1u << src))) {
+        r->owed++;
+        if (!ring_room(r)) {
+            r->owed--;
+            return 0; /* no room for the refusal and the wake: it waits for room */
+        }
+        k->waits |= 1u << src;
+    }
+    const uint32_t hdr = (uint32_t)(r->line[0] >> 32);
+    if (src == KMD_SRC_ENGINE && ((hdr >> 8) & KM_F_QUEUE)) {
+        /* A refused job counts as taken in, as the engine counts every job it sends. */
+        *(volatile uint32_t*)(k->ering + KMD_ERING_TAKEN) = ++k->queue->taken;
+    }
+    ring_push(r, r->next, KM_EV_REFUSED | (KMD_REFUSE_BUSY << 8), 0);
+    x280_fence_ow(); /* the refusal lands before the consumed count passes it */
+    ring_consumed(r);
+    k->t_last_event = now;
+    k->refused++;
+    return 1;
+}
+
+/* Source `src`'s turn in a pass: at most one command, the host's only while a slot is
+ * free. Returns 1 when the command ends the loop. */
 KMD_HOT int source_turn(kmd_t* k, uint32_t src, uint32_t* activity) {
     kmd_ring_t* r = &k->ring[src];
     const uint32_t host = src == KMD_SRC_HOST;
     if (r->line_state == 0) {
-        if (k->busy == k->full && src != KMD_SRC_ENGINE) {
+        if (k->busy == k->full && host) {
             k->full_passes += host;
             return 0;
         }
@@ -327,11 +352,8 @@ KMD_HOT int source_turn(kmd_t* k, uint32_t src, uint32_t* activity) {
     }
     if (t == KMD_TAKEN) {
         r->line_state = 0;
-    } else if (t == KMD_HELD && src == KMD_SRC_WORK) {
-        work_busy(k, now); /* a thread's record never waits */
-        r->line_state = 0;
-    } else if (t == KMD_HELD && src == KMD_SRC_ENGINE && engine_busy(k, now)) {
-        r->line_state = 0; /* nor does the engine's */
+    } else if (t == KMD_HELD && !host && source_busy(k, src, now)) {
+        r->line_state = 0; /* only the host's records wait */
     } else if (r->line_state == 1) {
         r->line_state = 2;
         if (t == KMD_HELD) {

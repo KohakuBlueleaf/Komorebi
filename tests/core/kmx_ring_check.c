@@ -71,8 +71,15 @@ int main(void) {
     CHECK(read_line[0] == 2);
     CHECK(kmx_ring_poll(&r, &ev) == KMX_OK && ev.ticket == 1 && ev.ticks == 7);
     CHECK(kmx_ring_poll(&r, &ev) == KMX_NONE);
+    /* a wake: wait passes it over without keeping it, poll returns it */
+    send_event(0, KMX_EV_WAKE, 0);
+    send_event(3, KM_EV_DONE, 4);
+    CHECK(kmx_ring_wait(&r, 3, ~0ull, &ev) == KMX_OK && ev.ticket == 3);
+    CHECK(r.stashed == 0);
+    send_event(0, KMX_EV_WAKE, 0);
+    CHECK(kmx_ring_poll(&r, &ev) == KMX_OK && ev.kind == KMX_EV_WAKE && ev.ticket == 0);
     /* a torn event (index not yet written) is not taken */
-    memcpy(events + 3 * 16 + 4, (uint32_t[]){3, 0, 9}, 12);
+    memcpy(events + 6 * 16 + 4, (uint32_t[]){3, 0, 9}, 12);
     CHECK(kmx_ring_poll(&r, &ev) == KMX_NONE);
     /* no event by the deadline, then a stop */
     CHECK(kmx_ring_wait(&r, 3, now + 5000, &ev) == KMX_LATE);

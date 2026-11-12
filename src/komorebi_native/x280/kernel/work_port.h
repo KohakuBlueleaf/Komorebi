@@ -68,17 +68,6 @@ static inline uint32_t work_open(kmd_t* k, uint64_t* line) {
     return KMD_ERR_NONE;
 }
 
-/* A thread's record that would wait (an overlapping exclusive team, no team for a
- * queued one, no free slot) is consumed and refused now instead. */
-static inline void work_busy(kmd_t* k, uint64_t now) {
-    kmd_ring_t* r = &k->ring[KMD_SRC_WORK];
-    const uint32_t req = r->next;
-    ring_consumed(r);
-    ring_push(r, req, KM_EV_REFUSED | (KMD_REFUSE_BUSY << 8), 0);
-    k->t_last_event = now;
-    k->refused++;
-}
-
 /* Finish: the last event count goes out, then the window is cleared. */
 static inline void work_close(kmd_t* k) {
     if (k->opened & (1u << 3)) {

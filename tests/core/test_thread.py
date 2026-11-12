@@ -34,6 +34,10 @@ def test_ring_calls_against_a_fake_kernel(tmp_path):
     assert subprocess.run([exe], capture_output=True, text=True).stdout == "ok\n"
 
 
+def test_the_threads_wake_is_the_kernels():
+    assert K["KMX_EV_WAKE"] == kt.abi.headers()["KMD_EV_WAKE"]
+
+
 def test_ring_line_names_the_placement():
     ring = kt.RingPlacement(0x1000, 0x2040, 0x3000, 0x4000, 16, 64, cached=True)
     block = kt.args_block(a_thread(), base=0, check_value=1, ring=ring)

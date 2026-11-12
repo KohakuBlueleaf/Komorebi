@@ -96,6 +96,10 @@ typedef struct {
     uint32_t ticket, kind, aux, ticks;
 } kmx_event;
 
+/* The kernel's wake (ticket 0): room again after a refusal with aux 11. kmx_wait passes
+ * it over; kmx_poll returns it. */
+#define KMX_EV_WAKE 0x12u
+
 /* States, in the result block. */
 #define KMX_STATE_BOOT 1u    /* start-up, before kmx_main */
 #define KMX_STATE_RUNNING 2u /* in kmx_main */

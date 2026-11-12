@@ -172,7 +172,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
   from it are refused with reason 1 (the run belongs to the host, which stops the
   thread before the kernel). A record of the thread that cannot be issued now (a busy
   overlapping team under `KM_F_EXCL`, a full queue, no free slot) is consumed and
-  refused with reason 11 at once, so a thread never holds core 0; a thread that stops
+  refused with reason 11 at once, with the same `KMD_EV_WAKE` (ticket 0) owed as to the
+  engine, so a thread never holds core 0 (`kmx_wait` passes wakes over, `kmx_poll`
+  returns them); a thread that stops
   reading its events stops having its commands taken once its event ring is full, and
   nothing else waits for it. Looking at the ring every fourth pass costs core 0's idle
   pass 32 to 41 ns (the experiment `x280_threads/ring_cost.py`); a STEP and SUM round of

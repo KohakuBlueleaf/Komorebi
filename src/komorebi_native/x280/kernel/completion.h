@@ -108,11 +108,15 @@ static inline uint32_t team_alloc(const kmd_t* k, uint32_t count) {
     return KMD_NO_FIRST;
 }
 
-/* The engine's wake after a busy refusal: a slot freed or the queue has room. */
-static inline void engine_wake(kmd_t* k) {
-    k->engine_waits = 0;
-    k->ring[KMD_SRC_ENGINE].owed--;
-    ring_push(&k->ring[KMD_SRC_ENGINE], 0, KMD_EV_WAKE, 0);
+/* The wake owed to each source refused busy: a slot freed or the queue has room. */
+static inline void sources_wake(kmd_t* k) {
+    for (uint32_t src = 0; src < KMD_SOURCES; src++) {
+        if (k->waits & (1u << src)) {
+            k->ring[src].owed--;
+            ring_push(&k->ring[src], 0, KMD_EV_WAKE, 0);
+        }
+    }
+    k->waits = 0;
 }
 
 /* Sweeps busy slots' ack lines (one 8-byte load each); a slot showing its sequence is
@@ -147,8 +151,8 @@ static inline void slots_sweep(kmd_t* k) {
             r, k->slot_req[j], KM_EV_DONE | (k->slot_team[j] & 0xFFFFu) << 8, ticks
         );
         k->t_last_event = now;
-        if (k->engine_waits) {
-            engine_wake(k);
+        if (k->waits) {
+            sources_wake(k);
         }
     }
 }

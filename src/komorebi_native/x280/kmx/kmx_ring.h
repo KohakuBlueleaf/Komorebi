@@ -164,6 +164,9 @@ static inline int kmx_ring_wait(
             return KMX_FULL; /* nothing is taken that could not be kept */
         }
         if (kmx_ring_take(r, &got)) {
+            if (got.kind == KMX_EV_WAKE) {
+                continue;
+            }
             if (got.ticket == ticket) {
                 *ev = got;
                 return KMX_OK;
