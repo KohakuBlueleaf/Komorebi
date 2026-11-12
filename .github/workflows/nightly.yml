@@ -1,0 +1,65 @@
+name: Nightly
+
+# Decides whether a nightly build is due and names its version. The step that would
+# start release.yml for it is off, so nothing is built or released from here.
+# Started by hand only; the schedule is added at release time.
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even when the gate says there is nothing new"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Decide whether a nightly is due
+        id: gate
+        shell: bash
+        run: |
+          head=$(git rev-parse HEAD)
+          released=$(git tag --points-at HEAD --list 'v*' | head -n1)
+          if [ "${{ inputs.force }}" = "true" ]; then
+            reason="forced"; build=true
+          elif [ -n "${released}" ]; then
+            reason="${head} is already released as ${released}"; build=false
+          else
+            reason="main is at ${head}, unreleased"; build=true
+          fi
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+          echo "${reason}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Compute the nightly version
+        id: compute
+        if: steps.gate.outputs.build == 'true'
+        run: |
+          version=$(python packaging/version.py nightly)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "nightly ${version}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Start the release workflow (off)
+        if: false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release.yml -f ref=main \
+            -f version="${{ steps.compute.outputs.version }}"

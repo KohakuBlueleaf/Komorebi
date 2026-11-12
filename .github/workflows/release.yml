@@ -1,0 +1,75 @@
+name: Release
+
+# Publishing is off: the publish jobs below never run, nothing is uploaded, pushed or
+# tagged. The build job makes the wheel and tests it in a fresh environment.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag, branch or sha to build"
+        required: false
+        default: ""
+      version:
+        description: "Stamp this version before building (nightlies pass X.Y.Z.devN)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  # On a build machine that holds a tt-metal tree at packaging/tt-metal.pin built with
+  # the X280 runtime; the runner's environment names it in KMR_TT_METAL.
+  build:
+    name: Build and smoke-test the wheel
+    runs-on: [self-hosted, linux, x64, komorebi-build]
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            python3.13 packaging/version.py write "${{ inputs.version }}"
+            git -c user.name=ci -c user.email=ci@localhost commit -qam "version ${{ inputs.version }}"
+          fi
+          echo "version=$(python3.13 packaging/version.py read)" >> "$GITHUB_OUTPUT"
+
+      - name: Tag must match the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          test "${tag}" = "${{ steps.version.outputs.version }}" \
+            || { echo "tag ${tag} != version ${{ steps.version.outputs.version }}"; exit 1; }
+
+      - name: Build the wheel
+        run: python3.13 packaging/build_wheel.py --tt-metal "$KMR_TT_METAL" --out dist --isolated
+
+      - name: Smoke test in a fresh environment
+        run: bash packaging/smoke.sh dist/*.whl "$RUNNER_TEMP/smoke"
+
+  publish-pypi:
+    name: Publish to PyPI (off)
+    needs: [build]
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "publishing is off"
+
+  publish-github:
+    name: Publish the GitHub release (off)
+    needs: [build]
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "publishing is off"

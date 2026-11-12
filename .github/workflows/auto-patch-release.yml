@@ -1,0 +1,47 @@
+name: Auto Patch Release
+
+# Reports whether a patch release is due and which version it would be. Tagging and
+# pushing are off: the step that would do them never runs.
+# Started by hand only; the schedule is added at release time.
+on:
+  workflow_dispatch:
+    inputs:
+      min_commits:
+        description: "Commits on main since the last stable tag before a patch is due"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Decide whether a patch is due
+        id: decide
+        shell: bash
+        run: |
+          current=$(python packaging/version.py read)
+          last=$(git describe --tags --abbrev=0 --match 'v*' --exclude '*dev*' 2>/dev/null || echo "")
+          span=${last:+${last}..HEAD}
+          count=$(git rev-list --count --no-merges ${span:-HEAD})
+          min="${{ inputs.min_commits || 3 }}"
+          due=false
+          if [ "${count}" -ge "${min}" ] && [ "v${current}" = "${last:-}" ]; then
+            due=true
+          fi
+          echo "current=${current} last=${last:-none} commits=${count} min=${min} due=${due}"
+          echo "would cut $(python packaging/version.py bump patch)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Stamp, tag and push (off)
+        if: false
+        run: echo "tagging and pushing are off"
