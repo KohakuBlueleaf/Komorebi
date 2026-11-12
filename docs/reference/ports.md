@@ -54,7 +54,9 @@ if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
 - **Ports.** Every core has `KM_PORTS` (8) port slots of 16 bytes in its control block
   at `KM_CTL_PORT`: the count senders increment, and the count a wait wants. Ports are
   cleared at start-up and by the wait that consumed them.
-- **The arrival buffer** is one circular buffer of S pages; slot k is page k. Every core
+- **The arrival buffer** is one circular buffer of S pages, P to a slot
+  (`km::Arrival {cb, S, P}`, P = 1 by default): slot k is pages k * P to k * P + P - 1,
+  and a part sent with `emit` is at most P pages. Every core
   runs the same program, so slot k has the same L1 address everywhere (taken from the
   buffer's configuration). It is always handed over whole, S pages pushed and S popped,
   so its addresses never drift.
@@ -73,15 +75,16 @@ if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
 
 ## Reduce
 
-| Form | Sender | Receiver | Port, slot | S |
+| Form | Sender | Receiver | Port, slot | Slots (S / P) |
 |---|---|---|---|---|
 | `km::kReduceOwner` | every member but rank 0 | rank 0 waits for size - 1 on port 0, combines slots 0 to size - 2 in rank order | port 0, slot rank - 1 | at least size - 1 |
-| `km::kReduceTree` | in round r, a rank that is an odd multiple of 2^r sends to rank - 2^r and is done | a multiple of 2^(r+1) waits for 1 on port r if rank + 2^r < size | port r, slot r | 7 (up to 128 members) |
+| `km::kReduceTree` | in round r, a rank that is an odd multiple of 2^r sends to rank - 2^r and is done | a multiple of 2^(r+1) waits for 1 on port r if rank + 2^r < size | port r, slot r | one per round, ceil(log2 size), at most 7 |
 
 The combine order is fixed by rank in both forms, so a result does not depend on
 arrival order; on exact-valued inputs both forms give the same bits.
-`km::reduce_send(g, form)` and `km::reduce_wants(g, form, port)` give the schedule
-itself (`komorebi/device/km_group.hpp`, free of tt-metal headers).
+`km::reduce_send(g, form)`, `km::reduce_wants(g, form, port)` and
+`km::reduce_slots(g, form)` give the schedule itself (`komorebi/device/km_group.hpp`,
+free of tt-metal headers). A buffer with too few slots gives up with `bad_item`.
 
 ## When a member does not send
 
