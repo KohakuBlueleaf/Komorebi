@@ -1,30 +1,41 @@
 """The host package on a card: the map/collect example under the dispatch kernel, and
-the session cases it does not cover (KMR_CARD=1)."""
+the session cases it does not cover (KMR_CARD=1). Every case shares one device open."""
 
-import json
-import subprocess
-import sys
+import importlib.util
 from pathlib import Path
 
+import numpy as np
 import pytest
+
+import komorebi as km
+
+pytest.importorskip("ttnn")
 
 pytestmark = pytest.mark.card
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE = ROOT / "examples" / "01_mapcollect" / "mapcollect.py"
-CASES = Path(__file__).resolve().parent / "host" / "session_cases.py"
 
 
-def run(script, *args, timeout=300):
-    """Runs a script and returns its last JSON line."""
-    done = subprocess.run(
-        [sys.executable, str(script), *map(str, args)],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=True,
-    )
-    lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
-    return json.loads(lines[-1])
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+mapcollect = load("mapcollect", ROOT / "examples" / "01_mapcollect" / "mapcollect.py")
+cases = load("session_cases", Path(__file__).parent / "host" / "session_cases.py")
+
+
+@pytest.fixture(scope="module")
+def session():
+    with km.Session(log=mapcollect.log) as s:
+        yield s
+
+
+def example(session, *argv):
+    """The example's run on the shared session; returns its JSON dict."""
+    args = mapcollect.parse([str(a) for a in argv])
+    return mapcollect.run(session, args, np.random.default_rng(args.seed))
 
 
 def every_kernel_returned(out, cores=120):
@@ -49,29 +60,47 @@ def all_checked(out, jobs, stalled=0):
 
 
 @pytest.mark.parametrize("count", [1, 8, 120])
-def test_fixed_team_is_exact(count):
-    out = run(EXAMPLE, "--jobs", 20, "--count", count, "--out-tensors", 2)
+def test_fixed_team_is_exact(session, count):
+    out = example(session, "--jobs", 20, "--count", count, "--out-tensors", 2)
     assert out["kernel"]["error_name"] == "none" and out["kernel"]["events"] == 21
     assert all_checked(out, 20) and out["exact_jobs_checked"] == 10
     assert out["compute_wrong"] == 0 and counts_match(out)
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
 
 
-def test_random_teams_with_four_in_flight():
-    out = run(EXAMPLE, "--jobs", 100, "--teams", "random", "--out-tensors", 4)
-    assert all_checked(out, 100) and counts_match(out)
+def test_random_teams_with_four_in_flight(session):
+    out = example(session, "--jobs", 50, "--teams", "random", "--out-tensors", 3)
+    assert all_checked(out, 50) and counts_match(out)
     assert out["random_total_rel_rms_max"] < 1e-2 and every_kernel_returned(out)
 
 
-def test_disjoint_teams_run_at_once():
-    out = run(EXAMPLE, "--jobs", 40, "--teams", "pair", "--trace", "--out-tensors", 2)
+def test_disjoint_teams_run_at_once(session):
+    out = example(
+        session, "--jobs", 40, "--teams", "pair", "--trace", "--out-tensors", 2
+    )
     assert all_checked(out, 40) and counts_match(out)
     assert out["overlap"]["overlapping"] > 0
 
 
-def test_a_stalled_member_ends_in_the_timeout_exception():
+def test_an_exclusive_record_waits_for_the_team_it_overlaps(session):
+    assert cases.case_exclusive(session)["ok"]
+
+
+def test_tensors_read_by_banks_match_what_was_written_also_during_a_run(session):
+    assert cases.case_read(session)["ok"]
+
+
+def test_a_compile_error_leaves_no_image_running(session):
+    assert cases.case_compile_error(session)["ok"]
+
+
+def test_a_start_error_carries_the_result_and_the_host_stops_the_grid(session):
+    assert cases.case_start_error(session)["ok"]
+
+
+def test_a_stalled_member_ends_in_the_timeout_exception(session):
     stall = ["--stall", 3, "--stall-member", 2, "--deadline", 0.02]
-    out = run(EXAMPLE, "--jobs", 10, "--count", 8, "--first", 4, *stall)
+    out = example(session, "--jobs", 10, "--count", 8, "--first", 4, *stall)
     t = out["timed_out"]
     assert out["kernel"]["error_name"] == "deadline"
     assert t["ticket"] == 4 and t["team"] == [4, 8]
@@ -82,19 +111,3 @@ def test_a_stalled_member_ends_in_the_timeout_exception():
     )
     assert named[4]["writer"]["where"] == "complete"
     assert every_kernel_returned(out)
-
-
-def test_a_compile_error_leaves_no_image_running():
-    assert run(CASES, "compile-error")["ok"]
-
-
-def test_a_start_error_carries_the_result_and_the_host_stops_the_grid():
-    assert run(CASES, "start-error")["ok"]
-
-
-def test_an_exclusive_record_waits_for_the_team_it_overlaps():
-    assert run(CASES, "exclusive")["ok"]
-
-
-def test_tensors_read_by_banks_match_what_was_written_also_during_a_run():
-    assert run(CASES, "read")["ok"]

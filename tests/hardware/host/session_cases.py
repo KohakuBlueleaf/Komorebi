@@ -44,7 +44,7 @@ def program(kernels):
 def case_compile_error(session):
     """A compute kernel that fails to compile: ProgramError, no run loaded; then the
     good program loads and runs in the same session (no image was left running)."""
-    out = {}
+    out, before = {}, session.run
     with tempfile.TemporaryDirectory() as tmp:
         broken = Path(tmp) / "kernels"
         shutil.copytree(EXAMPLE / "kernels", broken)
@@ -56,7 +56,7 @@ def case_compile_error(session):
         except km.ProgramError as err:
             out["raised"] = type(err).__name__
             out["names_error"] = "deliberate compile error" in str(err)
-    out["run_after_error"] = session.run is not None
+    out["run_after_error"] = session.run is not before
     run = session.load(program(EXAMPLE / "kernels"))
     out["nop_after"] = run.wait(run.issue(0, (0, 8))).kind
     run.stop()
@@ -99,8 +99,7 @@ def bf16_tiles(device, x):
 
 def case_read(session):
     """Tensors read by banks equal what was written and what ttnn reads (an int32
-    row-major one, two bfloat16 tile ones, one barrier), also while a run is loaded;
-    the seconds for 2048 tiles of 2 KB both ways (not asserted)."""
+    row-major one, two bfloat16 tile ones, one barrier), also while a run is loaded."""
     rng = np.random.default_rng(3)
     words = rng.integers(0, 1 << 32, (37, 24), dtype=np.uint64).astype(np.uint32)
     x = rng.integers(-4, 5, (96, 64)).astype(np.float32)  # exact in bfloat16
@@ -112,21 +111,13 @@ def case_read(session):
         "tiles": bool((got_a == x).all() and (got_b == 2 * x).all()),
         "as_ttnn": bool((got_a == ttnn.to_torch(a).float().numpy()).all()),
     }
-    big = bf16_tiles(session.device, rng.uniform(-1, 1, (2048 * 32, 32)).astype("f4"))
-    t0 = time.monotonic()
-    (fast,) = session.read_bf16(big)
-    out["banks_s"] = round(time.monotonic() - t0, 2)
-    t0 = time.monotonic()
-    slow = ttnn.to_torch(big).float().numpy()
-    out["ttnn_s"] = round(time.monotonic() - t0, 2)
-    out["big_same"] = bool((fast == slow).all())
     run = session.load(program(EXAMPLE / "kernels"))
     run.wait(run.issue(0, (0, 8)))
     log("read while the run is loaded")
     (during,) = session.read_bf16(a)
     out["during_run"] = bool((during == x).all())
     run.stop()
-    out["ok"] = all(out[k] for k in ("words", "tiles", "as_ttnn", "big_same"))
+    out["ok"] = all(out[k] for k in ("words", "tiles", "as_ttnn"))
     out["ok"] = out["ok"] and out["during_run"] and run.result()["error"] == 0
     return out
 

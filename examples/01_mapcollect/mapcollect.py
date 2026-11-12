@@ -26,7 +26,7 @@ def log(msg):
     print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
 
 
-def parse():
+def parse(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--jobs", type=int, default=20)
     p.add_argument("--seg", choices=["map", "nop"], default="map")
@@ -51,7 +51,7 @@ def parse():
     p.add_argument("--settle-us", type=float, default=1.0, help="pause after a fence")
     p.add_argument("--no-check", action="store_true", help="skip reading outputs")
     p.add_argument("--seed", type=int, default=1)
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def make_teams(args, cores, rng):
