@@ -200,10 +200,14 @@ namespace km {
             }
         }
 
-        // Records a give-up in the state word pair `word` (kStReader or kStWriter).
+        // Records a give-up in the state word pair `word` (kStReader or kStWriter); the
+        // first one is kept, as it names the cause.
         void gave_up(
             uint32_t word, uint32_t code, uint32_t where, uint32_t slot, uint32_t seq
         ) const {
+            if (state()[word] != 0) {
+                return;
+            }
             state()[word] = code | where << 8 | slot << 16;
             state()[word + 1] = seq;
         }
