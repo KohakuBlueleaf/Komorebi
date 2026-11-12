@@ -74,22 +74,34 @@ it in its three kernels.
 
 ## Running it
 
-`merge_fed.py` runs the kernels on cores 0 to 118 with the test feeder on core 119
-(no X280) and checks every job against numpy: bit-equal on integer inputs, by
-relative RMS on uniform random ones. One JSON line.
+`merge.py` loads the program with `komorebi.Session` and issues one `MERGE` record per
+job with `Run.issue(..., exclusive=True, result=True)`: the records reach the grid
+through the dispatch kernel on X280 cluster 0. Member 0 returns the total's checksum
+(its float32 words summed in 32 bits) as the record's result word, which arrives as
+`Event.result`. The driver checks every total against numpy (bit-equal on integer
+inputs, by relative RMS on uniform random ones) and every result word against the
+checksum of numpy's total (integer inputs) or of the total read back (random ones).
+One JSON line. Setup is that of [01_mapcollect](../01_mapcollect/README.md#what-it-needs).
 
 ```
-python merge_fed.py --jobs 20 --count 8 --form both
-python merge_fed.py --jobs 1000 --teams random --form random --out-pages 1024
-python merge_fed.py --team-list 0:8,0:119 --form both --stall-member 3
-python merge_fed.py --team-list 0:8,0:60,3:60,40:2,0:33 --form both --part 2
+python merge.py --jobs 20 --count 8 --form both
+python merge.py --jobs 1000 --teams random --form random --out-pages 1024
+python merge.py --team-list 0:8,0:119 --form both --stall-member 3
+python merge.py --team-list 0:8,0:60,3:60,40:2,0:33 --form both --part 2
 ```
 
 `--form both` runs every job twice, by owner and then by tree, on the same input, and
-compares the two (`pairs_bit_equal`). `--stall-member M` adds two launches: one in
-which member M of job 1 stalls instead of sending (it reports the timeout, the cores
-that gave up and the ports still waiting with their missing counts), and a clean one
-after it.
+compares the two (`pairs_bit_equal`). `--stall-member M` adds two loads of the
+program in the same session, of the first four jobs: in the first, member M of job 1
+stalls instead of sending; the host raises `RecordTimeout` naming the ticket and the
+members that did not report, and the driver reads the cores that gave up (a reader
+waiting on a port names it) and the ports still waiting with their missing counts.
+The second load runs the same jobs clean.
+
+A team is at most 119 cores by owner (one arrival slot per other member); by tree it
+may cover the whole grid. `merge_fed.py` takes the same options and runs the jobs
+under the test feeder on core 119 instead (no X280; cores 0 to 118). The timings
+below were taken that way.
 
 Measured on a Blackhole p150a at 1350 MHz, T = 64, records issued four at a time:
 
@@ -111,7 +123,8 @@ and bit-equal pairs, 16.2 µs per job.
 |---|---|
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | the program's three kernels |
 | `kernels/merge.h` | segment, buffers and record words shared by the kernels |
-| `merge_fed.py` | builds the records, runs them under the test feeder, checks the outputs |
+| `merge.py` | builds the records, runs them through a session, checks the outputs and result words |
+| `merge_fed.py` | the same jobs under the test feeder |
 
 The calls are in `komorebi/device/km_port.hpp` (emit, arrive, take, reduce) and
 `komorebi/device/km_group.hpp` (groups of a team, the two schedules).
