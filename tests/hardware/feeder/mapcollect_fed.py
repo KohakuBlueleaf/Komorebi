@@ -28,7 +28,7 @@ SEG_BAD_ITEM = SEGMENTS["kSegBadItem"]
 TILE = 32
 
 
-def parse():
+def parse(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--jobs", type=int, default=20)
     p.add_argument("--seg", choices=["map", "nop", "align"], default="map")
@@ -73,7 +73,7 @@ def parse():
     p.add_argument("--excl", action="store_true", help="KM_F_EXCL on every MAP record")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--dump", type=Path, help="save records, trace and state (npz)")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def make_teams(args, workers, rng):

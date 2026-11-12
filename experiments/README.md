@@ -35,6 +35,9 @@ place to ask a question and to be wrong.
 - [wall_clock](wall_clock/README.md): whether the Tensix wall clock is one count for
   the whole chip. It is: every core within 90 cycles of core (0, 0), no measurable
   drift, 1343 to 1347 MHz against host time with the driver reporting 1350.
+- [feeder_runs](feeder_runs/README.md): the longer runs of the map/collect example
+  under the test feeder (a thousand jobs, every team size, teams in flight at once),
+  run by hand.
 - [stream_checks](stream_checks/README.md): the reference streams of the micro-op
   simulator and a mutation run over its source. Every one of 104 mutants changes some
   saved answer.
