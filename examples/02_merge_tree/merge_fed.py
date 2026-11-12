@@ -163,22 +163,27 @@ def summary(res, jobs):
     return out
 
 
-def check(args, jobs, res, out, xs):
+def reference(args, src, xs):
+    """The P total tiles of a job reading from input tile `src` (float64): sum d
+    holds the input tiles d mod P."""
+    x = xs[src % 2][src * TILE : (src + args.tiles) * TILE].astype(np.float64)
+    tiles = x.reshape(-1, TILE, TILE)
+    return np.stack([tiles[d :: args.part].sum(0) for d in range(args.part)])
+
+
+def check(args, jobs, done, out, xs):
     """Exact jobs bit-equal to numpy, random jobs by relative RMS; with both forms,
-    the two jobs of an exact pair bit-equal to each other."""
+    the two jobs of an exact pair bit-equal to each other. `done[j]`: job j ended."""
     got = ttnn.to_torch(out).float().numpy().reshape(-1, TILE, TILE)
     fed.log("outputs read back")
     n = len(jobs)
-    done = res.records["status"] == 1
     P = args.part
     last = {j % (args.out_pages // P): j for j in range(n)}  # parts not reused
     bad, rel_max, exact, pairs = [], 0.0, {0: 0, 1: 0}, [0, 0]
     kept = {j: page for page, j in last.items() if done[j]}
     for j, page in sorted(kept.items()):
         first, count, form, src = jobs[j]
-        x = xs[src % 2][src * TILE : (src + args.tiles) * TILE].astype(np.float64)
-        tiles = x.reshape(-1, TILE, TILE)
-        ref = np.stack([tiles[d::P].sum(0) for d in range(P)])  # sum d: tiles d mod P
+        ref = reference(args, src, xs)
         mine = got[page * P : page * P + P].astype(np.float64)
         if args.form == "both" and j % 2 == 1 and j - 1 in kept and src % 2 == 0:
             other = kept[j - 1] * P
@@ -259,14 +264,15 @@ def run(device, args, rng):
             res.summary["span_cycles"] / res.mhz / max(res.summary["done"], 1), 3
         ),
         **summary(res, jobs),
-        **check(args, jobs, res, out, xs),
+        **check(args, jobs, res.records["status"] == 1, out, xs),
     }
     if args.stall_member >= 0:  # a member stalls in job 1; then a clean launch
         few = jobs[:4]
         stalled = launch(runner, args, few, inputs, out, 1, args.stall_member)
         result["stall"] = summary(stalled, few)
         after = launch(runner, args, few, inputs, out)
-        result["after"] = {**summary(after, few), **check(args, few, after, out, xs)}
+        done = after.records["status"] == 1
+        result["after"] = {**summary(after, few), **check(args, few, done, out, xs)}
     return result
 
 
