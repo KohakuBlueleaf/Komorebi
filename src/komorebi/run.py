@@ -24,16 +24,19 @@ from komorebi.errors import (
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
 COMPACT_ROWS = 4096  # released tickets kept before the columns are shifted
+COLUMNS = ("_first", "_count", "_flags", "_seq", "_status", "_ticks", "_has", "_gone")
 
 
 class Event(NamedTuple):
     """A finished command: its ticket, kind (done, timeout, pong, refused), the aux
-    byte (slot or reason) and issue-to-completion time in X280 timer ticks."""
+    byte (slot or reason), issue-to-completion time in X280 timer ticks, and for a
+    record issued with `result=True` the leader's result word (sent as the ticks)."""
 
     ticket: int
     kind: str
     aux: int
     ticks: int
+    result: int | None = None
 
     @property
     def us(self):
@@ -71,6 +74,7 @@ class Run:
             k.get("KM_EV_REFUSED", 3): "refused",
         }
         self._done = k["KM_EV_DONE"]
+        self._f_result = k["KM_F_RESULT"]
         self._refusals = {
             v: n[len("KMD_REFUSE_") :].lower()
             for n, v in k.items()
@@ -99,6 +103,7 @@ class Run:
         self._oldest = base  # the oldest ticket without an event
         self._first = np.zeros(0, np.int32)
         self._count = np.zeros(0, np.int32)  # 0: a command to the kernel itself
+        self._flags = np.zeros(0, np.uint8)  # the record's KM_F_* flags
         self._seq = np.zeros(0, np.int64)  # 0: no sequence
         self._status = np.zeros(0, np.uint32)
         self._ticks = np.zeros(0, np.uint32)
@@ -109,14 +114,14 @@ class Run:
     def _unsent(self):
         # issue() appends here; new objects, since numpy may still view the old ones
         self._words, self._firsts, self._counts = array("I"), array("i"), array("i")
-        self._excl = array("B")
+        self._excl, self._fl = array("B"), array("B")
 
     # Issuing --------------------------------------------------------------------
 
-    def issue(self, seg, team=None, args=(), exclusive=False):
+    def issue(self, seg, team=None, args=(), exclusive=False, result=False):
         """Queues a record for segment `seg` (name or number) on cores [first, first +
         count) (default every core); returns its ticket. Nothing is sent until a wait.
-        """
+        `result`: the event carries the leader's result word."""
         t0 = time.perf_counter()
         if seg.__class__ is not int:
             seg = self.program.seg(seg) if self.program is not None else int(seg)
@@ -127,7 +132,8 @@ class Run:
             raise ValueError(f"{len(args)} arguments; a record has 10")
         if any(not 0 <= int(a) <= M32 for a in args):
             raise ValueError("arguments are 32-bit unsigned words")
-        ticket = self._queue_command(seg, team, args, exclusive)
+        flags = self._f_result if result else 0
+        ticket = self._queue_command(seg, team, args, exclusive, flags)
         self.issue_s += time.perf_counter() - t0
         return ticket
 
@@ -179,7 +185,7 @@ class Run:
         start = self._next
         self._next += n[0]
         excl = np.ones(n[0], np.uint8) if exclusive else None
-        self._send_block(words, first, count, excl)
+        self._send_block(words, first, count, excl, np.zeros(n[0], np.uint8))
         self.issue_s += time.perf_counter() - t0
         return range(start, self._next)
 
@@ -193,11 +199,11 @@ class Run:
             )
         return (first, count)
 
-    def _queue_command(self, seg, team, args=(), exclusive=False):
+    def _queue_command(self, seg, team, args=(), exclusive=False, flags=0):
         self._check_alive()
         first, count = team if team else (0, 0)
         w = [0] * 16
-        w[self._hdr] = seg & 0xFF
+        w[self._hdr] = seg & 0xFF | flags << 8
         w[self._team_at] = first | count << 16
         for at, value in zip(self._arg_at, args):
             w[at] = int(value) & M32
@@ -205,6 +211,7 @@ class Run:
         self._firsts.append(first)
         self._counts.append(count)
         self._excl.append(1 if exclusive else 0)
+        self._fl.append(flags)
         ticket = self._next
         self._next += 1
         return ticket
@@ -218,18 +225,20 @@ class Run:
         first = np.frombuffer(self._firsts, np.int32)
         count = np.frombuffer(self._counts, np.int32)
         excl = np.frombuffer(self._excl, np.uint8)
-        self._send_block(words, first, count, excl if excl.any() else None)
+        flags = np.frombuffer(self._fl, np.uint8)
+        self._send_block(words, first, count, excl if excl.any() else None, flags)
         self._unsent()
 
-    def _send_block(self, words, first, count, excl):
-        """Notes tickets handed .. handed + n - 1 (teams, sequences) and queues their
-        records in the port."""
+    def _send_block(self, words, first, count, excl, flags):
+        """Notes tickets handed .. handed + n - 1 (teams, flags, sequences) and queues
+        their records in the port."""
         n = len(words)
         lo = self._handed - self._base
         self._grow(lo + n)
         rec = count > 0
         self._first[lo : lo + n] = first
         self._count[lo : lo + n] = count
+        self._flags[lo : lo + n] = flags
         self._seq[lo : lo + n] = np.where(rec, self._next_seq + np.cumsum(rec) - 1, 0)
         self._next_seq += int(rec.sum())
         self.port.enqueue(np.ascontiguousarray(words), excl)
@@ -240,7 +249,7 @@ class Run:
         if rows <= have:
             return
         size = max(rows, 2 * have, 1024)
-        for name in ("_first", "_count", "_seq", "_status", "_ticks", "_has", "_gone"):
+        for name in COLUMNS:
             old = getattr(self, name)
             new = np.zeros(size, old.dtype)
             new[:have] = old
@@ -340,7 +349,7 @@ class Run:
         done = int(np.argmin(self._gone[:n])) if not self._gone[:n].all() else n
         if done < COMPACT_ROWS or 2 * done < len(self._has):
             return
-        for name in ("_first", "_count", "_seq", "_status", "_ticks", "_has", "_gone"):
+        for name in COLUMNS:
             setattr(self, name, getattr(self, name)[done:].copy())
         self._base += done
 
@@ -409,7 +418,8 @@ class Run:
             return None
         status, ticks = int(self._status[i]), int(self._ticks[i])
         kind = self._kinds.get(status & 0xFF, str(status & 0xFF))
-        return Event(ticket, kind, status >> 8, ticks)
+        wanted = self._flags[i] & self._f_result and kind == "done"
+        return Event(ticket, kind, status >> 8, ticks, ticks if wanted else None)
 
     def seq(self, ticket):
         """The sequence number the kernel gave a record (the trace's index)."""

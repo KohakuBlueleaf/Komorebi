@@ -49,6 +49,7 @@ class FakePort:
         self.queue = []  # (words, exclusive) not stored yet
         self.flight = {}  # command number -> team word, stored without an event
         self.waits = 0  # calls of wait()
+        self.results = {}  # command number -> the leader's result word (KM_F_RESULT)
 
     # The native port's interface ---------------------------------------------
 
@@ -233,7 +234,7 @@ class FakePort:
                 return
             if self.auto:
                 del self.busy[slot]
-                self._event(req, K["KM_EV_DONE"])
+                self._event(req, K["KM_EV_DONE"], ticks=self.results.get(req, 100))
 
 
 class FakeBackend:

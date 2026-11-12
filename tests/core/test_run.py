@@ -439,3 +439,12 @@ def test_exclusive_records_from_issue_many_wait_for_overlapping_teams():
     port.auto = True
     run.wait(held)
     assert [i[0] for i in port.issued] == [a, *held]
+
+
+def test_a_result_record_returns_the_leaders_word_on_its_done_event():
+    run, port, _ = make_run()
+    with_result, plain = run.issue(1, (0, 8), result=True), run.issue(1, (8, 8))
+    port.results[with_result] = 0xBEEF
+    one, other = run.wait([with_result, plain])
+    assert one.result == 0xBEEF and other.result is None
+    assert port.ring[with_result][1] >> 8 == K["KM_F_RESULT"]
