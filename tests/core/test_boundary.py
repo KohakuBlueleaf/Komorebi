@@ -17,7 +17,8 @@ PROBE = f"""
 import json, sys
 sys.path.insert(0, {str(ROOT / "src")!r})
 import komorebi, komorebi.build, komorebi.cli, komorebi.layout, komorebi.stats
-import komorebi.tools.cxx_format
+import komorebi.tools.cxx_format, komorebi.abi, komorebi.errors, komorebi.native
+import komorebi.program, komorebi.run, komorebi.state
 print(json.dumps(sorted(sys.modules)))
 """
 
@@ -45,6 +46,11 @@ def test_import_pulls_in_no_tt_module():
     modules = imported_modules(env)
     assert "komorebi.layout" in modules
     assert [m for m in modules if m.split(".")[0] in FORBIDDEN] == []
+
+
+def test_session_is_imported_only_on_use():
+    modules = imported_modules(child_environment())
+    assert "komorebi.session" not in modules and "komorebi.run" in modules
 
 
 def test_import_works_without_tt_metal_home():
