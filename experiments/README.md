@@ -9,4 +9,8 @@ The rule is: experiments first; a regression test comes after behaviour settles.
 A test pins down behaviour that is understood. Until then, an experiment is the right
 place to ask a question and to be wrong.
 
-There are no experiments yet.
+## Experiments
+
+- [landing](landing/README.md): how a core knows that a 64-byte record written by
+  multicast has landed completely. Echo words in every 16-byte chunk against a record
+  followed by a sequence word, on a Blackhole p150a with 120 cores. Decision: echo words.
