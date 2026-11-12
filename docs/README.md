@@ -25,6 +25,7 @@ between cores, deciding on the card and the thread language are planned.
 | **Trying to build it** | [install](install.md) |
 | **Learning the model** | [the programming model](concepts/model.md) |
 | **Running a program on a card** | [host API](reference/host.md) · [01_mapcollect](../examples/01_mapcollect/) |
+| **Writing an X280 thread** | [X280 threads](threads.md) · [07_work_cluster](../examples/07_work_cluster/) |
 | **Reading the design of the card side** | [dispatch kernel](concepts/dispatch.md) · [Tensix runtime](concepts/runtime.md) |
 | **Changing the code** | [development](development.md) |
 
@@ -44,6 +45,8 @@ between cores, deciding on the card and the thread language are planned.
   simulator and the error reasons of the programs the dispatch kernel is to run.
 - [Graphs](graphs.md): the graph executor's upload format, builder, check, the
   executor in plain C and in Python, and the simulator.
+- [X280 threads](threads.md): the irregular part of a program as C on a work cluster,
+  with the kmx library; its regions, its host declaration and its host fallback.
 
 ### Concepts
 

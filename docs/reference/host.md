@@ -41,6 +41,9 @@ nothing.
 | `depth` | mailbox slots the cores scan and the dispatch kernel uses, 1 to 16 |
 | `segments` | `{name: number}`, or a header whose `constexpr uint32_t kSegName = n;` lines give them (`kSegBigStep` becomes `"big_step"`); numbers 1 to 239 |
 
+`program.thread(cluster=1, sources, regions, words, host_fallback, deadline)` adds an
+X280 thread on a work cluster (one per program); see [X280 threads](../threads.md).
+
 The runtime owns circular buffers 29 and 30 (the record's token for compute and
 writer) and 31 (the trace); a program uses the others.
 
@@ -63,7 +66,7 @@ grid_timeout=10.0)`.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_us=1.0,
-image=None)` returns a `Run`:
+image=None, thread="card")` returns a `Run`:
 
 1. finds or builds the dispatch kernel image and the native module (see below), and
    checks that the image is there and X280 cluster 0 is idle (else `km.StartError`);
@@ -89,6 +92,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `host_depth`, `event_depth` | the command ring in the X280's memory and the event ring in host memory; powers of two, at most 64 and 128 |
 | `batch` | commands stored per batch: every line, then one fence |
 | `settle_us` | the host's pause between a fence and its next store into the card |
+| `thread` | for a program with an X280 thread: `"card"` builds and starts it after READY, `"host"` runs its `host_fallback` instead |
 
 Event room. The dispatch kernel takes a command that ends in an event only while the
 unread events, one per busy slot and one more fit the event ring; it counts as read
@@ -110,6 +114,7 @@ waits for room only while that count is on its way.
 | `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index), its team |
 | `forget(tickets)` | releases what the run keeps for tickets whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps teams and sequences for the trace |
 | `stop(timeout=10.0)` | drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0 |
+| `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
 | `abort()` | the failure path: stops the kernel through the runtime, closes it, stops the grid from the host, reads back; raises `KernelFailed` if the runtime could not restore cluster 0 |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict, the raw words, the trace |
 
