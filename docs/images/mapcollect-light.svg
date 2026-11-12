@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="830" height="576" viewBox="0 0 830 576" role="img">
+<title>One program on the grid: map/collect</title>
+<style>
+  text { font-family: -apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; font-size: 13px; fill: #1f2328; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace; }
+  .b { font-weight: 600; }
+  .h { font-size: 14px; font-weight: 600; }
+  .m { fill: #59636e; }
+  .a { fill: #bc4c00; }
+  .s { font-size: 12px; }
+  .box { fill: #f6f8fa; stroke: #d1d9e0; stroke-width: 1; }
+  .plan { fill: none; stroke: #818b98; stroke-width: 1; stroke-dasharray: 5 4; }
+  .cell { fill: #eaeef2; stroke: none; }
+  .team { fill: #ffd8b5; stroke: #bc4c00; stroke-width: 1; }
+  .abox { fill: #fff1e5; stroke: #bc4c00; stroke-width: 1.5; }
+  .ln { stroke: #818b98; stroke-width: 1.5; fill: none; }
+  .thin { stroke: #818b98; stroke-width: 1; fill: none; }
+  .grid { stroke: #d1d9e0; stroke-width: 1; fill: none; }
+  .al { stroke: #bc4c00; stroke-width: 2.5; fill: none; }
+  .ad { stroke: #bc4c00; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+  .athin { stroke: #bc4c00; stroke-width: 1.2; fill: none; }
+</style>
+<defs>
+  <marker id="ha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5"
+      markerHeight="5" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#bc4c00"/>
+  </marker>
+  <marker id="hl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5"
+      markerHeight="5" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#818b98"/>
+  </marker>
+</defs>
+<rect width="830" height="576" fill="#ffffff"/>
+<rect x="300" y="12" width="240" height="44" rx="4" class="box"/>
+<text x="420" y="39" class="b" text-anchor="middle" xml:space="preserve">X280 cluster 0: dispatch kernel</text>
+<line x1="340" y1="58" x2="340" y2="100" class="ln" marker-end="url(#hl)"/>
+<text x="330" y="76" class="s" text-anchor="end" xml:space="preserve">the record, to every core:</text>
+<text x="330" y="94" class="mono s" text-anchor="end" xml:space="preserve">MAP, team (0, 8), x, 64, out, page</text>
+<line x1="470" y1="100" x2="470" y2="58" class="ln" marker-end="url(#hl)"/>
+<text x="480" y="76" class="s" xml:space="preserve">one word from core 0</text>
+<text x="480" y="94" class="s" xml:space="preserve">when all 8 have reported</text>
+<text x="20" y="116" class="b" xml:space="preserve">DRAM: input x, 64 tiles</text>
+<text x="255" y="116" class="s m" text-anchor="middle" xml:space="preserve">NoC reads</text>
+<text x="320" y="116" class="b" xml:space="preserve">team: cores 0 to 7</text>
+<text x="580" y="116" class="s m" text-anchor="middle" xml:space="preserve">NoC write</text>
+<text x="640" y="116" class="b" xml:space="preserve">DRAM: output</text>
+<rect x="20" y="126" width="170" height="26" rx="4" class="cell"/>
+<text x="105" y="143.5" class="s" text-anchor="middle" xml:space="preserve">tiles 0 to 7</text>
+<rect x="320" y="126" width="180" height="26" rx="4" class="cell"/>
+<text x="330" y="143.5" class="s b" xml:space="preserve">core 0, leader</text>
+<text x="490" y="143.5" class="s m" text-anchor="end" xml:space="preserve">8 tiles into 1</text>
+<rect x="640" y="126" width="170" height="26" rx="4" class="cell"/>
+<text x="725" y="143.5" class="s" text-anchor="middle" xml:space="preserve">page a3 + 0</text>
+<line x1="192" y1="139" x2="316" y2="139" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="139" x2="636" y2="139" class="ln" marker-end="url(#hl)"/>
+<rect x="20" y="160" width="170" height="26" rx="4" class="cell"/>
+<text x="105" y="177.5" class="s" text-anchor="middle" xml:space="preserve">tiles 8 to 15</text>
+<rect x="320" y="160" width="180" height="26" rx="4" class="cell"/>
+<text x="330" y="177.5" class="s b" xml:space="preserve">core 1</text>
+<text x="490" y="177.5" class="s m" text-anchor="end" xml:space="preserve">8 tiles into 1</text>
+<rect x="640" y="160" width="170" height="26" rx="4" class="cell"/>
+<text x="725" y="177.5" class="s" text-anchor="middle" xml:space="preserve">page a3 + 1</text>
+<line x1="192" y1="173" x2="316" y2="173" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="173" x2="636" y2="173" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="167" x2="540" y2="167" class="thin" stroke-dasharray="3 3"/>
+<rect x="20" y="194" width="170" height="26" rx="4" class="cell"/>
+<text x="105" y="211.5" class="s" text-anchor="middle" xml:space="preserve">tiles 16 to 23</text>
+<rect x="320" y="194" width="180" height="26" rx="4" class="cell"/>
+<text x="330" y="211.5" class="s b" xml:space="preserve">core 2</text>
+<text x="490" y="211.5" class="s m" text-anchor="end" xml:space="preserve">8 tiles into 1</text>
+<rect x="640" y="194" width="170" height="26" rx="4" class="cell"/>
+<text x="725" y="211.5" class="s" text-anchor="middle" xml:space="preserve">page a3 + 2</text>
+<line x1="192" y1="207" x2="316" y2="207" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="207" x2="636" y2="207" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="201" x2="540" y2="201" class="thin" stroke-dasharray="3 3"/>
+<rect x="20" y="228" width="170" height="26" rx="4" class="abox"/>
+<text x="105" y="245.5" class="s" text-anchor="middle" xml:space="preserve">tiles 24 to 31</text>
+<rect x="320" y="228" width="180" height="26" rx="4" class="abox"/>
+<text x="330" y="245.5" class="s b" xml:space="preserve">core 3</text>
+<text x="490" y="245.5" class="s m" text-anchor="end" xml:space="preserve">8 tiles into 1</text>
+<rect x="640" y="228" width="170" height="26" rx="4" class="abox"/>
+<text x="725" y="245.5" class="s" text-anchor="middle" xml:space="preserve">page a3 + 3</text>
+<line x1="192" y1="241" x2="316" y2="241" class="al" marker-end="url(#ha)"/>
+<line x1="502" y1="241" x2="636" y2="241" class="al" marker-end="url(#ha)"/>
+<line x1="502" y1="235" x2="540" y2="235" class="thin" stroke-dasharray="3 3"/>
+<rect x="20" y="262" width="170" height="26" rx="4" class="cell"/>
+<text x="105" y="279.5" class="s" text-anchor="middle" xml:space="preserve">tiles 32 to 39</text>
+<rect x="320" y="262" width="180" height="26" rx="4" class="cell"/>
+<text x="330" y="279.5" class="s b" xml:space="preserve">core 4</text>
+<text x="490" y="279.5" class="s m" text-anchor="end" xml:space="preserve">8 tiles into 1</text>
+<rect x="640" y="262" width="170" height="26" rx="4" class="cell"/>
+<text x="725" y="279.5" class="s" text-anchor="middle" xml:space="preserve">page a3 + 4</text>
+<line x1="192" y1="275" x2="316" y2="275" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="275" x2="636" y2="275" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="269" x2="540" y2="269" class="thin" stroke-dasharray="3 3"/>
+<rect x="20" y="296" width="170" height="26" rx="4" class="cell"/>
+<text x="105" y="313.5" class="s" text-anchor="middle" xml:space="preserve">tiles 40 to 47</text>
+<rect x="320" y="296" width="180" height="26" rx="4" class="cell"/>
+<text x="330" y="313.5" class="s b" xml:space="preserve">core 5</text>
+<text x="490" y="313.5" class="s m" text-anchor="end" xml:space="preserve">8 tiles into 1</text>
+<rect x="640" y="296" width="170" height="26" rx="4" class="cell"/>
+<text x="725" y="313.5" class="s" text-anchor="middle" xml:space="preserve">page a3 + 5</text>
+<line x1="192" y1="309" x2="316" y2="309" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="309" x2="636" y2="309" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="303" x2="540" y2="303" class="thin" stroke-dasharray="3 3"/>
+<rect x="20" y="330" width="170" height="26" rx="4" class="cell"/>
+<text x="105" y="347.5" class="s" text-anchor="middle" xml:space="preserve">tiles 48 to 55</text>
+<rect x="320" y="330" width="180" height="26" rx="4" class="cell"/>
+<text x="330" y="347.5" class="s b" xml:space="preserve">core 6</text>
+<text x="490" y="347.5" class="s m" text-anchor="end" xml:space="preserve">8 tiles into 1</text>
+<rect x="640" y="330" width="170" height="26" rx="4" class="cell"/>
+<text x="725" y="347.5" class="s" text-anchor="middle" xml:space="preserve">page a3 + 6</text>
+<line x1="192" y1="343" x2="316" y2="343" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="343" x2="636" y2="343" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="337" x2="540" y2="337" class="thin" stroke-dasharray="3 3"/>
+<rect x="20" y="364" width="170" height="26" rx="4" class="cell"/>
+<text x="105" y="381.5" class="s" text-anchor="middle" xml:space="preserve">tiles 56 to 63</text>
+<rect x="320" y="364" width="180" height="26" rx="4" class="cell"/>
+<text x="330" y="381.5" class="s b" xml:space="preserve">core 7</text>
+<text x="490" y="381.5" class="s m" text-anchor="end" xml:space="preserve">8 tiles into 1</text>
+<rect x="640" y="364" width="170" height="26" rx="4" class="cell"/>
+<text x="725" y="381.5" class="s" text-anchor="middle" xml:space="preserve">page a3 + 7</text>
+<line x1="192" y1="377" x2="316" y2="377" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="377" x2="636" y2="377" class="ln" marker-end="url(#hl)"/>
+<line x1="502" y1="371" x2="540" y2="371" class="thin" stroke-dasharray="3 3"/>
+<line x1="540" y1="371" x2="540" y2="133" class="thin" stroke-dasharray="3 3"/>
+<line x1="540" y1="133" x2="504" y2="133" class="thin" marker-end="url(#hl)"/>
+<text x="20" y="414" class="s m" xml:space="preserve">Dashed: each member reports to core 0, the leader. Nothing else crosses between cores.</text>
+<rect x="16" y="434" width="798" height="128" rx="4" class="box"/>
+<text x="30" y="456" class="b" xml:space="preserve">inside core 3: where its data lives</text>
+<rect x="30" y="468" width="116" height="82" rx="4" class="cell"/>
+<text x="39" y="488" class="b s" xml:space="preserve">reader</text>
+<text x="39" y="506" class="s m" xml:space="preserve">NoC reads of</text>
+<text x="39" y="521" class="s m" xml:space="preserve">tiles 24 to 31</text>
+<rect x="160" y="468" width="116" height="82" rx="4" class="cell"/>
+<text x="169" y="488" class="b s" xml:space="preserve">CB 0, in L1</text>
+<text x="169" y="506" class="s m" xml:space="preserve">16 pages</text>
+<text x="169" y="521" class="s m" xml:space="preserve">of 2 KiB</text>
+<line x1="147" y1="509" x2="158" y2="509" class="al" marker-end="url(#ha)"/>
+<rect x="290" y="468" width="116" height="82" rx="4" class="cell"/>
+<text x="299" y="488" class="b s" xml:space="preserve">compute</text>
+<text x="299" y="506" class="s m" xml:space="preserve">copies a tile to</text>
+<text x="299" y="521" class="s m" xml:space="preserve">DST; the vector</text>
+<text x="299" y="536" class="s m" xml:space="preserve">unit adds, fp32</text>
+<line x1="277" y1="509" x2="288" y2="509" class="al" marker-end="url(#ha)"/>
+<rect x="420" y="468" width="116" height="82" rx="4" class="cell"/>
+<text x="429" y="488" class="b s" xml:space="preserve">pack</text>
+<text x="429" y="506" class="s m" xml:space="preserve">DST into</text>
+<text x="429" y="521" class="s m" xml:space="preserve">CB 16, in L1</text>
+<line x1="407" y1="509" x2="418" y2="509" class="al" marker-end="url(#ha)"/>
+<rect x="550" y="468" width="116" height="82" rx="4" class="cell"/>
+<text x="559" y="488" class="b s" xml:space="preserve">writer</text>
+<text x="559" y="506" class="s m" xml:space="preserve">NoC write to</text>
+<text x="559" y="521" class="s m" xml:space="preserve">page a3 + 3</text>
+<line x1="537" y1="509" x2="548" y2="509" class="al" marker-end="url(#ha)"/>
+<rect x="680" y="468" width="116" height="82" rx="4" class="cell"/>
+<text x="689" y="488" class="b s" xml:space="preserve">report</text>
+<text x="689" y="506" class="s m" xml:space="preserve">+1 on core 0's</text>
+<text x="689" y="521" class="s m" xml:space="preserve">counter</text>
+<line x1="667" y1="509" x2="678" y2="509" class="al" marker-end="url(#ha)"/>
+</svg>
