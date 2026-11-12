@@ -31,10 +31,14 @@ class WaitTimeout(KomorebiError):
 class RecordRefused(KomorebiError):
     """The dispatch kernel consumed the command and issued nothing; the run goes on."""
 
-    def __init__(self, ticket, reason):
-        super().__init__(f"command {ticket} refused by the dispatch kernel ({reason})")
+    def __init__(self, ticket, reason, names=None):
+        name = (names or {}).get(reason, "unknown")
+        super().__init__(
+            f"command {ticket} refused by the dispatch kernel (reason {reason}: {name})"
+        )
         self.ticket = ticket
         self.reason = reason
+        self.reason_name = name
 
 
 class KernelFailed(KomorebiError):

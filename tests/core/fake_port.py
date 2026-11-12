@@ -35,7 +35,9 @@ class FakePort:
         self.result = {}
         self.auto = True  # complete every busy record at each poll
         self.stall_req = None  # this command times out instead of completing
-        self.refuse_bad = False  # refuse malformed records with an event
+        self.exited = False  # EXIT was issued: later records are refused
+        self.held_exit = 0  # passes EXIT waited for busy slots
+        self.slot_seq = {}  # slot -> the last sequence it carried
         self.issued = []  # (req, seq, slot, seg, team) in issue order
         self.batches = []  # number of records per push
         self.max_busy = 0
@@ -109,19 +111,17 @@ class FakePort:
                 self.consumed = req
                 self._event(req, K["KM_EV_PONG"])
                 continue
-            bad = (
-                (seg > K["KM_SEG_USER_MAX"] and seg != K["KM_SEG_EXIT"])
-                or flags & 1
-                or count == 0
-                or first + count > self.cores
-            )
-            if bad:
+            reason = self._refusal(seg, flags, first, count)
+            if reason:
                 self.consumed = req
-                if self.refuse_bad:
-                    self._event(req, 3, aux=1)
-                    continue
-                self._finish(K["KMD_ERR_COMMAND"], 0, self.seq + 1, req)
-                return
+                self._event(req, K["KM_EV_REFUSED"], aux=reason)
+                continue
+            if seg == K["KM_SEG_EXIT"]:
+                if self.busy:  # held until no slot is busy
+                    self.held_exit += 1
+                    return
+                first, count = 0, self.cores  # to every core
+                self.exited = True
             free = [j for j in range(self.depth) if j not in self.busy]
             if not free:
                 return
@@ -129,11 +129,26 @@ class FakePort:
             if unread + len(self.busy) + 1 > self.event_depth:
                 self.held_for_room += 1
                 return
-            self.seq += 1
+            self.seq = (self.seq + 1) & abi.M32
+            while self.seq == 0 or self.seq == self.slot_seq.get(free[0]):
+                self.seq = (self.seq + 1) & abi.M32
+            self.slot_seq[free[0]] = self.seq
             self.busy[free[0]] = (self.seq, req, (first, count))
             self.max_busy = max(self.max_busy, len(self.busy))
             self.issued.append((req, self.seq, free[0], seg, (first, count)))
             self.consumed = req
+
+    def _refusal(self, seg, flags, first, count):
+        """The README's reasons a command is consumed with KM_EV_REFUSED, or 0."""
+        if self.exited:
+            return K["KMD_REFUSE_EXITED"]
+        if K["KM_SEG_USER_MAX"] < seg < K["KM_SEG_DEADLINE"]:
+            return K["KMD_REFUSE_SEG"]
+        if flags & 1:
+            return K["KMD_REFUSE_FLAGS"]
+        if seg != K["KM_SEG_EXIT"] and (count == 0 or first + count > self.cores):
+            return K["KMD_REFUSE_TEAM"]
+        return 0
 
     def _complete(self):
         for slot in sorted(self.busy):

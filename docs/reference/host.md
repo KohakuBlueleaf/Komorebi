@@ -110,7 +110,7 @@ All derive from `km.KomorebiError`.
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
 | `StartError` | the dispatch kernel did not report READY | `result` |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded | `pending` tickets |
-| `RecordRefused` | the kernel consumed the command and issued nothing; the run goes on | `ticket`, `reason` |
+| `RecordRefused` | the kernel consumed the command and issued nothing (a reserved segment or flag, a team outside the grid, a record after EXIT); the run goes on | `ticket`, `reason` (`KMD_REFUSE_*`), `reason_name` |
 | `RecordTimeout` | a team missed its deadline; the kernel stopped the grid, the run is stopped and read back | `ticket`, `slot`, `seq`, `team`, `cores`: each member that did not report, with where its reader and writer gave up |
 | `KernelFailed` | the dispatch kernel finished with any other error | `result` |
 

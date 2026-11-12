@@ -38,6 +38,12 @@ class Event(NamedTuple):
         return self.ticks / 50.0  # the X280 timer runs at 50 MHz
 
 
+def _seq_number(n):
+    """The kernel's sequence number of the n-th record: it counts in 32 bits and skips
+    0 (it also skips a slot's last value, which only a wrap can repeat)."""
+    return (n - 1) % M32 + 1
+
+
 class Run:
     """Issues records to a loaded program and collects their events.
 
@@ -61,12 +67,17 @@ class Run:
             k.get("KM_EV_REFUSED", 3): "refused",
         }
         self._done = k["KM_EV_DONE"]
+        self._refusals = {
+            v: n[len("KMD_REFUSE_") :].lower()
+            for n, v in k.items()
+            if n.startswith("KMD_REFUSE_")
+        }
         self._next = 1  # the next ticket; command number = ticket mod 2**32
         self._next_seq = 1  # the kernel's sequence of the next record
         self._queue = collections.deque()  # (ticket, words, team, exclusive)
         self._flight = {}  # ticket -> team (None: a command to the kernel itself)
         self._teams = {}  # ticket -> team, every record issued
-        self._seqs = {}  # ticket -> sequence number
+        self._seqs = {}  # ticket -> records issued up to it (see _seq_number)
         self._events = {}
         self._arrived = []  # tickets whose events arrived since the last look
         self._refused = {}
@@ -240,7 +251,7 @@ class Run:
             self._pump(upto, left)
         for t in wanted:
             if t in self._refused:
-                raise RecordRefused(t, self._refused[t])
+                raise RecordRefused(t, self._refused[t], self._refusals)
 
     def drain(self, timeout=10.0):
         """Sends everything queued and waits for every event (refusals do not raise
@@ -263,7 +274,8 @@ class Run:
 
     def seq(self, ticket):
         """The sequence number the kernel gave a record (the trace's index)."""
-        return self._seqs.get(ticket)
+        n = self._seqs.get(ticket)
+        return None if n is None else _seq_number(n)
 
     def team(self, ticket):
         return self._teams.get(ticket)
@@ -335,7 +347,7 @@ class Run:
         if trace_rows is not None:
             self._trace = st.Trace(
                 trace_rows,
-                dict(self._seqs),
+                {t: _seq_number(n) for t, n in self._seqs.items()},
                 dict(self._teams),
                 self.backend.mhz,
                 self.h,
@@ -350,7 +362,7 @@ class Run:
         r = self._result
         team = self._teams.get(ev.ticket)
         seq = r["seq"] if r["error"] == self.h["KMD_ERR_DEADLINE"] else None
-        seq = seq if seq is not None else self._seqs.get(ev.ticket)
+        seq = seq if seq is not None else self.seq(ev.ticket)
         cores = st.not_reported(self._state, team, ev.aux, seq, self.h) if team else []
         raise self._remember(RecordTimeout(ev.ticket, ev.aux, seq, team, cores, r))
 

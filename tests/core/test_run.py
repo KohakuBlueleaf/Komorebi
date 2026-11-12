@@ -149,16 +149,42 @@ def test_sequences_follow_records_and_skip_kernel_commands():
 
 def test_a_refused_record_raises_for_its_ticket_and_the_run_goes_on():
     run, port, _ = make_run()
-    port.refuse_bad = True
     good = run.issue(1, (0, 4))
     bad = run._queue_command(1, (110, 20))  # bypasses the host's own check
     after = run.issue(1, (0, 4))
-    with pytest.raises(RecordRefused) as caught:
+    with pytest.raises(RecordRefused, match="reason 3: team") as caught:
         run.wait([good, bad, after])
-    assert caught.value.ticket == bad and caught.value.reason == 1
+    assert caught.value.ticket == bad
+    assert caught.value.reason == K["KMD_REFUSE_TEAM"]
     assert run.event(after).kind == "done"
     assert run.seq(after) == 2 and run.seq(bad) is None
     assert run.wait(run.issue(1, (0, 4))).kind == "done"
+
+
+def test_sequences_skip_0_at_the_wrap_as_the_kernel_numbers_them():
+    run, port, _ = make_run()
+    run._next_seq, port.seq = abi.M32 - 1, abi.M32 - 2
+    tickets = [run.issue(0, (0, 1)) for _ in range(3)]
+    run.wait(tickets)
+    assert [run.seq(t) for t in tickets] == [abi.M32 - 1, abi.M32, 1]
+    assert [s for _, s, _, _, _ in port.issued] == [abi.M32 - 1, abi.M32, 1]
+
+
+def test_the_kernel_holds_exit_while_a_slot_is_busy_and_refuses_records_after_it():
+    run, port, _ = make_run()
+    port.auto = False
+    busy = run.issue(1, (0, 4))
+    run._flush(busy)
+    exit_ = run._queue_command(K["KM_SEG_EXIT"], None)
+    run._flush(exit_)
+    run.port.poll()
+    assert port.held_exit > 0 and not port.exited
+    port.auto = True
+    run.wait(busy)
+    assert port.exited and port.issued[-1][3:] == (K["KM_SEG_EXIT"], (0, 120))
+    late = run._queue_command(1, (0, 4))  # past the host's own stop
+    with pytest.raises(RecordRefused, match="exited"):
+        run.wait(late)
 
 
 def test_stop_drains_sends_exit_to_every_core_then_stop():
