@@ -168,6 +168,10 @@ class Fed:
             "trace": trace_t.buffer_address() if trace_t is not None else 0,
             "trace_cap": trace_cap,
         }
+        mailbox = ctl_addr + K["KM_CTL_JOB"]
+        aligned = [ctl_addr, base["ack_base"], base["ready_base"], mailbox]
+        if any(addr % 16 for addr in aligned):  # small writes go slot to slot
+            raise ValueError(f"bases not 16-byte aligned: {[hex(a) for a in aligned]}")
         reader_args, writer_args, compute_args = (
             ttnn.RuntimeArgs(),
             ttnn.RuntimeArgs(),
@@ -180,7 +184,7 @@ class Fed:
                 base
                 | {
                     "me": core,
-                    "mailbox": ctl_addr + K["KM_CTL_JOB"] if core == 0 else 0,
+                    "mailbox": mailbox if core == 0 else 0,
                     "leader": leader,
                     "rank": rank,
                     "members": members,
