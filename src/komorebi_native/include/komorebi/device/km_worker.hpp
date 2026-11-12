@@ -472,6 +472,7 @@ namespace km {
                 body(r);
             }
             PACK((put_byte(st, kStEnds, kEndCompute, end)));
+            (void)end;  // only pack writes the end byte
         }
 
     private:
