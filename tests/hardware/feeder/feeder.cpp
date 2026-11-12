@@ -111,6 +111,9 @@ void kernel_main() {
         st->seq = st->land1 = st->land2 = st->land3 = seq;
         st->hdr = (st->hdr & 0xFFFFu) | j << 16;
         const uint64_t t0 = km::wall64();
+        if (arg(kFdRelease) != 0) {  // one release time for every core (test only)
+            st->a9 = static_cast<uint32_t>(t0) + arg(kFdRelease);
+        }
         for (uint32_t w = 0; w < workers; w++) {
             noc_async_write(
                 ctl + KM_CTL_RING + j * 64, core(w, ctl + KM_CTL_RING + j * 64), 64

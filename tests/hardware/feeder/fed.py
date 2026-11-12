@@ -126,6 +126,7 @@ class Fed:
         idle_s=10.0,
         trace_cap=0,
         send_exit=True,
+        release=0,
     ):
         """Runs `records` (lists of 16 words) and returns a Result.
 
@@ -200,6 +201,7 @@ class Fed:
             "kFdGroups": n_groups,
             "kFdBootLimit": rec.limit_units(wait_s, mhz),
             "kFdExit": int(send_exit),
+            "kFdRelease": release,
         }
         words = [0] * K["kFdArgs"]
         for name, value in fd.items():
