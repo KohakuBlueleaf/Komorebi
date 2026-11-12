@@ -23,7 +23,7 @@ FORMS = {
     "tsan": ["-O1", "-g", "-fsanitize=thread"],
     "pinned": ["-O0"],
 }
-HARNESS = ["sim", "stub_calls", "dispatcher", "checks", "pinned"]
+HARNESS = ["sim", "stub_calls", "dispatcher", "dyn_dispatch", "checks", "pinned"]
 ROWS = ["smoke", "exit_partial_team", "completion_every_team"]
 PARTS = ("unpack", "math", "pack")
 
@@ -67,6 +67,41 @@ def units(tree, main):
             for p in PARTS
         ],
         *[(u, HERE / f"{u}.cpp", ["-std=c++17", "-Werror"]) for u in [*HARNESS, main]],
+        *dyn_units(tree),
+    ]
+
+
+def dyn_units(tree):
+    """The dynamic segment's generic reader and writer, the hop example's compute
+    (per thread), and the scenarios that run them."""
+    kernels = tree / "src" / "komorebi_native" / "kernels"
+    hop = tree / "examples" / "05_hop" / "kernels" / "compute.cpp"
+    trisc = ["-std=c++17", "-DCOMPILE_FOR_TRISC"]
+    return [
+        (
+            "dyn_reader",
+            kernels / "dyn_reader.cpp",
+            ["-std=c++17", "-Dkernel_main=kmsim_dyn_reader_main"],
+        ),
+        (
+            "dyn_writer",
+            kernels / "dyn_writer.cpp",
+            ["-std=c++17", "-Dkernel_main=kmsim_dyn_writer_main"],
+        ),
+        *[
+            (
+                f"hop_{p}",
+                hop,
+                [
+                    *trisc,
+                    f"-DTRISC_{p.upper()}",
+                    f"-Dkm=km_{p}",
+                    f"-Dkernel_main=kmsim_hop_{p}_main",
+                ],
+            )
+            for p in PARTS
+        ],
+        ("dyn_scenarios", HERE / "dyn_scenarios.cpp", ["-std=c++17", "-Werror"]),
     ]
 
 
@@ -77,6 +112,7 @@ def build(out, tree=ROOT, form="one"):
         f"-I{HERE / 'stub'}",
         f"-I{HERE}",
         f"-I{tree / 'src' / 'komorebi_native' / 'include'}",
+        f"-I{tree / 'examples' / '05_hop' / 'kernels'}",
     ]
     common = [cxx, "-Wall", *include, *FORMS[form]]
     todo = units(tree, "pinned_main" if form == "pinned" else "scenarios")
@@ -84,6 +120,7 @@ def build(out, tree=ROOT, form="one"):
         {
             *HERE.rglob("*.[ch]*"),
             *(tree / "src" / "komorebi_native" / "include").rglob("*.h*"),
+            *(tree / "examples" / "05_hop" / "kernels").glob("*.h"),
         }
     )
     sources += sorted({src for _, src, _ in todo})

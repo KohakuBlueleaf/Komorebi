@@ -35,6 +35,7 @@ namespace kmsim {
     constexpr uint32_t kDispAck = 0x100;
     constexpr uint32_t kDispReady = 0x300;
     constexpr uint32_t kDispMailbox = 0x500;
+    constexpr uint32_t kDispLines = 0x600;  // status lines of a dynamic run, 16 bytes
 
     // DRAM: core table, the input tiles and the output pages of each ring slot.
     constexpr uint32_t kDramBytes = 4u << 20;
@@ -146,6 +147,19 @@ namespace kmsim {
         std::function<int64_t(const Chunk&)> delay;  // default: 32 to 95 cycles
         std::vector<std::function<void(const Probe&)>> triggers;
         std::function<void(uint32_t job, uint32_t seq, uint32_t slot)> on_issue;
+        // Program arguments after the start-up ones: reader and writer, compute.
+        std::function<
+            void(uint32_t core, std::vector<uint32_t>&, std::vector<uint32_t>&)>
+            program_args;
+        uint32_t dyn_seg = 0;  // records of this segment are dynamic runs (quiet end)
+    };
+
+    // What the dispatcher saw of a dynamic run.
+    struct DynResult {
+        uint64_t quiet_at = 0;  // the two passes agreed: the end record is issued
+        uint32_t checks = 0;    // two-pass checks made
+        uint32_t gave = 0;      // 1 + the core whose line said it gave up
+        uint64_t sent = 0;      // sum of the lines' sent at the end
     };
 
     class Sim {
@@ -173,6 +187,7 @@ namespace kmsim {
         std::vector<Event> events;
         std::vector<JobResult> jobs;
         JobResult exit_job;
+        DynResult dyn;
         bool booted = false;
         bool timed_out = false;
         uint64_t end_cycles = 0;

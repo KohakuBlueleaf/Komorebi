@@ -105,6 +105,7 @@ namespace kmsim {
             Thread* from;
             uint32_t kind;  // 0 plain, 1 report, 2 ack, 3 stop
             uint32_t seq;
+            uint32_t ret = ~0u;  // atomic: image offset of the value before the add
 
             bool operator>(const Pending& o) const {
                 return due != o.due ? due > o.due : ord > o.ord;
@@ -335,7 +336,8 @@ namespace kmsim {
                 return (
                     !q.atomic &&
                     (in(kDispAck, KM_RING_SLOTS, 8) || in(kDispReady, 16, 4) ||
-                     (q.off == kDispMailbox && q.bytes <= 8))
+                     (q.off == kDispMailbox && q.bytes <= 8) ||
+                     (in(kDispLines, n, 16) && q.bytes == 16))
                 );
             }
             if (q.off < kCtlOff) {
@@ -343,8 +345,10 @@ namespace kmsim {
             }
             if (q.atomic) {
                 return (
-                    q.src < n && at >= KM_CTL_DONE && at < KM_CTL_DONE + 16 * 16 &&
-                    (at - KM_CTL_DONE) % 16 == 0
+                    q.src < n &&
+                    ((at >= KM_CTL_DONE && at < KM_CTL_DONE + 16 * 16 &&
+                      (at - KM_CTL_DONE) % 16 == 0) ||
+                     at == KM_CTL_DYN + KM_DYN_IN_TAIL)
                 );
             }
             if (q.src == n) {
@@ -382,6 +386,9 @@ namespace kmsim {
                 if (q.atomic) {
                     uint32_t v;
                     std::memcpy(&v, to, 4);
+                    if (q.ret != ~0u) {  // the response carries the old value
+                        std::memcpy(cores[q.src].mem + q.ret, &v, 4);
+                    }
                     v += q.value;
                     std::memcpy(to, &v, 4);
                     q.from->atomics--;
@@ -457,6 +464,14 @@ namespace kmsim {
         bool held(
             const std::vector<Job>& jobs, size_t k, const int32_t* busy, uint32_t d
         );
+
+        // A dynamic run in flight (dyn_dispatch.cpp): job k was issued with sequence
+        // seq; the end record is appended to `jobs` once the status lines are quiet.
+        int32_t dyn_k = -1;
+        uint32_t dyn_seq = 0;
+        bool dyn_ended = true;
+        void dyn_issued(const Job& job, size_t k, uint32_t seq);
+        void dyn_watch(std::vector<Job>& jobs);
 
         void dispatcher();
 

@@ -8,6 +8,9 @@
 
 using LocalCBInterface = kmsim::CbView;
 
+// Pointers are byte addresses in the stub on every side (the card's compute: 4).
+constexpr uint32_t cb_addr_shift = 0;
+
 // Page count and size, this side's pointers and the limit, and this thread's counts
 // of pages pushed (producer) and popped (consumer). Read-only; the stub keeps them.
 inline kmsim::CbView get_local_cb_interface(uint32_t cb) {

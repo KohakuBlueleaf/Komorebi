@@ -64,6 +64,7 @@ namespace scen {
 
     // The scenarios that pin known behaviour (pinned.cpp), and the runner of a table.
     const std::vector<Case>& pinned();
+    const std::vector<Case>& dyn_cases();  // dyn_scenarios.cpp
     int run_cases(const std::vector<Case>& cases, int argc, char** argv);
 
 }  // namespace scen

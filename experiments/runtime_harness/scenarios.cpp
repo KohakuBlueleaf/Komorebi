@@ -676,5 +676,6 @@ int main(int argc, char** argv) {
             {"random_jobs", random_jobs},
         }
     );
+    cases.insert(cases.end(), dyn_cases().begin(), dyn_cases().end());
     return run_cases(cases, argc, argv);
 }

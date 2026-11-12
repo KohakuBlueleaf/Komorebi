@@ -31,6 +31,13 @@ inline uint64_t get_noc_addr(uint32_t page, const InterleavedAddrGen<DRAM>& g) {
     return kmsim::noc_dram(g.bank_base_address + page * g.page_size);
 }
 
+template <bool DRAM>
+inline uint64_t get_noc_addr(
+    uint32_t page, const InterleavedAddrGen<DRAM>& g, uint32_t offset
+) {
+    return kmsim::noc_dram(g.bank_base_address + page * g.page_size + offset);
+}
+
 // Tensor accessor: compile-time argument Index holds the page size; flat DRAM as above.
 template <uint32_t Index>
 struct TensorAccessorArgs {
@@ -155,4 +162,45 @@ inline uint32_t get_write_ptr(uint32_t cb) {
 
 inline uint32_t get_read_ptr(uint32_t cb) {
     return kmsim::cb_read_ptr(cb);
+}
+
+// The NoC and command buffer of the calling kernel: one NoC per kernel in the model.
+constexpr uint8_t noc_index = 0;
+constexpr uint8_t noc_mode = 0;
+constexpr uint32_t write_at_cmd_buf = 0;
+constexpr uint32_t NOC_UNICAST_WRITE_VC = 0;
+
+// A non-posted atomic add delivered like an increment; with ret_addr programmed, the
+// value before the add is written to this core's ret_addr when it is acknowledged.
+template <uint8_t NocMode, bool ProgramRet>
+inline void noc_fast_atomic_increment(
+    uint32_t,
+    uint32_t,
+    uint64_t addr,
+    uint32_t,
+    uint32_t incr,
+    uint32_t,
+    bool,
+    bool,
+    uint32_t ret_addr
+) {
+    kmsim::point("noc_fast_atomic_increment");
+    kmsim::noc_fetch_add(addr, incr, ProgramRet ? ret_addr : ~0u);
+}
+
+// The counters the barriers poll: true once every atomic (write) of this kernel was
+// acknowledged (landed); reads land at the call.
+inline bool ncrisc_noc_nonposted_atomics_flushed(uint32_t) {
+    kmsim::point("ncrisc_noc_nonposted_atomics_flushed");
+    return kmsim::noc_atomics_done();
+}
+
+inline bool ncrisc_noc_nonposted_writes_flushed(uint32_t) {
+    kmsim::point("ncrisc_noc_nonposted_writes_flushed");
+    return kmsim::noc_writes_done();
+}
+
+inline bool ncrisc_noc_reads_flushed(uint32_t) {
+    kmsim::point("ncrisc_noc_reads_flushed");
+    return true;
 }

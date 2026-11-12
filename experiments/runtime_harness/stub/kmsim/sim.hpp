@@ -68,6 +68,9 @@ namespace kmsim {
     void noc_write_barrier();
     void noc_writes_flushed();
     void noc_atomic_barrier();
+    void noc_fetch_add(uint64_t dst, uint32_t value, uint32_t ret_addr);
+    bool noc_atomics_done();
+    bool noc_writes_done();
 
     // Compute: mailboxes between the three threads, the destination registers and the
     // tile moves of the unpacker, the math engine and the packer.

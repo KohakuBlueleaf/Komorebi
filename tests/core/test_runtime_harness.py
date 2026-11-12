@@ -61,3 +61,23 @@ def test_exit_reaches_every_worker(scenario):
 def test_an_excl_record_waits_for_an_overlapping_team(scenario):
     got = scenario("excl_waits_for_overlapping_team")
     assert got["ok"], got
+
+
+def test_a_dynamic_run_ends_quiet_with_every_item_retired(scenario):
+    got = scenario("dyn_smoke")
+    assert got["ok"], got
+
+
+def test_a_missing_queue_item_is_a_gap_give_up(scenario):
+    got = scenario("dyn_gap")
+    assert got["ok"], got
+
+
+def test_a_queue_past_its_capacity_is_an_overflow_give_up(scenario):
+    got = scenario("dyn_overflow")
+    assert got["ok"], got
+
+
+def test_idle_lines_that_flap_never_end_a_run_early(scenario):
+    got = scenario("dyn_idle_flapping")
+    assert got["ok"], got

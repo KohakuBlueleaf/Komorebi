@@ -292,6 +292,9 @@ namespace kmsim {
         if (!target(src, bytes, core, off) || !own(dst, bytes)) {
             return;
         }
+        if (core == kDram && (off ^ g->image_off(dst)) % 64 != 0) {
+            g->violation("a DRAM read whose source and destination differ in bits 5:0");
+        }
         const uint8_t* from = (
             core == kDram ? g->dram.data() + off : g->cores[core].mem + off
         );
@@ -342,6 +345,41 @@ namespace kmsim {
         q.seq = seq;
         self->atomics++;
         g->pending.push(q);
+    }
+
+    void noc_fetch_add(uint64_t dst, uint32_t value, uint32_t ret_addr) {
+        uint32_t core, off;
+        if (!target(dst, 4, core, off) || (ret_addr != ~0u && !own(ret_addr, 4))) {
+            return;
+        }
+        const Chunk c = {self->core, core, off, 4, 0, 1, true, -1};
+        const int64_t d = g->cfg.delay ? g->cfg.delay(c) : 32 + (g->rng() & 63);
+        if (d < 0) {
+            return;
+        }
+        Pending q = {};
+        q.due = g->clock + static_cast<uint64_t>(d);
+        q.ord = g->ord++;
+        q.src = self->core;
+        q.dst = core;
+        q.off = off;
+        q.bytes = 4;
+        q.atomic = true;
+        q.value = value;
+        q.from = self;
+        q.ret = ret_addr == ~0u ? ~0u : g->image_off(ret_addr);
+        self->atomics++;
+        g->pending.push(q);
+    }
+
+    bool noc_atomics_done() {
+        g->yield();
+        return self->atomics == 0;
+    }
+
+    bool noc_writes_done() {
+        g->yield();
+        return self->writes == 0;
     }
 
     void noc_read_barrier() {

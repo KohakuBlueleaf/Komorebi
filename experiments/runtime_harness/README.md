@@ -16,8 +16,9 @@ hand. Seven of its scenarios pin known behaviour in
 | `stub_calls.cpp` | the calls behind the stub headers |
 | `dispatcher.cpp` | the dispatcher model and the grid's set-up |
 | `checks.hpp`, `checks.cpp` | the checks every scenario ends with, and the runner |
-| `pinned.cpp` | the seven scenarios the tests run |
+| `pinned.cpp`, `pinned_main.cpp` | the scenarios the tests run: seven here, four of the dynamic ones |
 | `scenarios.cpp`, `item_kernels.cpp` | the other scenarios, and a scenario's own compute kernels |
+| `dyn_dispatch.cpp`, `dyn_scenarios.cpp` | the issuer's two-pass end of a dynamic run, and the scenarios that run the generic dynamic kernels with the hop example |
 | `run.py` | builds the programs and runs the scenarios |
 
 ## Running it
@@ -28,7 +29,7 @@ hand. Seven of its scenarios pin known behaviour in
     python experiments/runtime_harness/run.py --tree <other checkout>
 
 The program is built into `build/runtime_harness/` and reused while the sources are
-unchanged. `--build-only --pinned` builds the tests' program instead: the seven pinned
+unchanged. `--build-only --pinned` builds the tests' program instead: the eleven pinned
 scenarios, at `-O0`.
 
 Each compute thread is compiled as its own object, as it is its own program on the
@@ -107,6 +108,14 @@ between kernels.
 | `excl_waits_for_overlapping_team` | `KM_F_EXCL` records on a disjoint and an overlapping team |
 | `completion_every_team` | every team of an 8-core grid, rows of 3, random chunk delays |
 | `random_jobs` | 10^4 records with random teams, sizes and delays on 6 cores |
+| `dyn_smoke` | one item hops once between two cores; the run ends quiet |
+| `dyn_random` | 60 items of 12 hops on 4 cores with two bins: bins evicted, packets filled and split; against the replay |
+| `dyn_idle_flapping` | an idle time of 50 cycles and chunk delays up to 3000: lines go idle and busy again many times, the end comes only after the last retire |
+| `dyn_one_core` | every hop of every item to member 0, whose queue holds the whole population |
+| `dyn_quota` | one member spawns until `spawn` returns false |
+| `dyn_gap` | the first item write to DRAM is lost: the reader reports the gap with core and position, the grid stops |
+| `dyn_overflow` | more items than the queue holds: the overflow is reported |
+| `dyn_stall` | a member stalls in its body: the run stops and names it |
 
 The `mb_` scenarios run at mailbox depths 1 and 4.
 
@@ -146,9 +155,9 @@ subject on the main branch.
 ## Result
 
 At the last change to this folder:
-- all 27 scenarios pass in the one-level form;
+- all 35 scenarios pass in the one-level form;
 - 3 scenarios pass in the row-leader form;
-- all 27 pass under the thread sanitizer.
+- all 35 pass under the thread sanitizer.
 
 Times on the shared development host, from a cold build:
 - one form: about 17 s, of which 13 s is `random_jobs`;

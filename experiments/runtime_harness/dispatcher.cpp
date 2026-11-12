@@ -152,6 +152,10 @@ namespace kmsim {
                     return;
                 }
             }
+            dyn_watch(jobs);
+            if (sim.dyn.gave != 0) {
+                return;
+            }
             const uint64_t last = next ? sim.jobs[next - 1].issued : 0;
             if (next < jobs.size() && clock >= last + jobs[next].gap) {
                 uint32_t j = 0;
@@ -171,6 +175,7 @@ namespace kmsim {
                     r.issued = clock;
                     r.status = kIssued;
                     r.seq = issue(job, static_cast<int32_t>(next), j);
+                    dyn_issued(job, next, r.seq);
                     busy[j] = static_cast<int32_t>(next);
                     next++;
                 }
@@ -279,6 +284,9 @@ namespace kmsim {
             const uint32_t* f = &a.ctl;
             s.args.assign(f, f + km::kArgs);
             s.compute_args = {a.ctl, a.me, a.wait_limit, a.idle_limit};
+            if (cfg.program_args) {
+                cfg.program_args(c, s.args, s.compute_args);
+            }
         }
     }
 
