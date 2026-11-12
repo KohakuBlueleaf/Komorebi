@@ -2,6 +2,7 @@
 // their own, by tests/core/test_runtime_harness.py.
 #include <stdint.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,36 @@ namespace scen {
                     fmt("core %u's writer did not give up", core)
                 );
             }
+            finish(s, o);
+        }
+
+        // A record with no output on two cores; core 1's pack is held as it takes it:
+        // the record is acknowledged only after core 1's compute is released.
+        void no_output_waits_for_compute(Outcome& o) {
+            constexpr uint64_t kHold = 4000;
+            Config cfg = fault_config(2);
+            cfg.jobs = {nop_job(0, 2)};
+            Sim* sp = nullptr;
+            uint64_t released = 0;
+            cfg.triggers.push_back([&](const Probe& p) {
+                if (released == 0 && p.core == 1 && p.role == kPack &&
+                    !std::strcmp(p.name, "mailbox_write")) {
+                    released = p.t + kHold;
+                    sp->freeze(1, kPack, kHold);
+                }
+            });
+            Sim s(cfg);
+            sp = &s;
+            s.run();
+            common(s, o.check);
+            o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+            o.check.expect(released != 0, "core 1's pack was held");
+            o.check.expect(
+                s.jobs[0].acked >= released,
+                fmt("acknowledged at %u, before compute was released at %u",
+                    static_cast<unsigned>(s.jobs[0].acked),
+                    static_cast<unsigned>(released))
+            );
             finish(s, o);
         }
 
@@ -163,6 +194,7 @@ namespace scen {
         static const std::vector<Case> cases = {
             {"smoke", smoke},
             {"exit_partial_team", exit_partial_team},
+            {"no_output_waits_for_compute", no_output_waits_for_compute},
             {"wrappers_refuse_straddling_items", wrappers_refuse_straddling_items},
             {"excl_waits_for_overlapping_team", excl_waits_for_overlapping_team},
         };

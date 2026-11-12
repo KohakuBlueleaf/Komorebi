@@ -18,6 +18,7 @@ WHERES = (
     "CToken",
     "CInput",
     "COutput",
+    "CDone",
 )
 KMD_PREFIXES = {"error": "KMD_ERR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 

@@ -81,6 +81,7 @@ namespace km {
             }
             for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
                 ctl(KM_CTL_DONE)[j * 4] = 0;
+                ctl(KM_CTL_DONE)[j * 4 + kDoneCompute] = 0;
             }
             for (uint32_t w = 0; w < kStateWords; w++) {
                 state()[w] = 0;
@@ -259,8 +260,8 @@ namespace km {
         Writer() : trace_(args()) {
         }
 
-        // Per record: body(record) says whether to report (false after a failed wait),
-        // then writes are flushed and complete() runs. EXIT completes, then it leaves.
+        // Per record: body(record) says whether to report, writes are flushed, compute
+        // ends its body, complete() runs. EXIT completes, then it leaves.
         template <typename Body>
         void run(Body body) {
             const Args& a = args();
@@ -293,7 +294,7 @@ namespace km {
                 const bool report = body(r);
                 noc_async_write_barrier();
                 trace_.stamp(r.seq, kTraceDone);
-                if (report && complete(*this, r)) {
+                if (report && compute_done(r) && complete(*this, r)) {
                     trace_.stamp(r.seq, kTraceSent);
                 }
                 add_sat(state() + kStCompleted, 1);
@@ -325,6 +326,26 @@ namespace km {
         }
 
     private:
+        // Bounded wait until compute marked record r's sequence in its slot (its body
+        // returned on all three threads). False: gave up (recorded).
+        bool compute_done(const km_record_t& r) const {
+            const uint32_t j = slot(r);
+            volatile tt_l1_ptr uint32_t* mark = (
+                ctl(KM_CTL_DONE + j * 16 + kDoneCompute * 4)
+            );
+            const uint32_t code = poll(
+                [&] {
+                    return *mark == r.seq;
+                },
+                args().wait_limit
+            );
+            if (code != kGaveNone) {
+                gave_up(kStWriter, code, kWhereCDone, j, r.seq);
+                return false;
+            }
+            return true;
+        }
+
         Trace trace_;
     };
 
@@ -466,6 +487,14 @@ namespace km {
                     break;
                 }
                 body(r);
+                // Math and pack tell unpack they left the body; unpack marks it.
+                MATH((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, seq)));
+                PACK((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, seq)));
+                UNPACK(({
+                    (void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId);
+                    (void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId);
+                    l1(ctl_ + KM_CTL_DONE + slot(r) * 16)[kDoneCompute] = seq;
+                }));
             }
             PACK((put_byte(st, kStEnds, kEndCompute, end)));
             (void)end;  // only pack writes the end byte

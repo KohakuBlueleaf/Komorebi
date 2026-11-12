@@ -37,7 +37,9 @@ variables in the same 64 bytes.
 
 A team is a contiguous range of cores in a fixed core order, and is named in the record
 that starts it. Members report completion to the team's leader; the leader pushes one
-word to the dispatch kernel. Because completion is per team, several teams can be busy
+word to the dispatch kernel. A member reports only after its writer's outputs have
+landed and its compute body has returned, so a record with no output is not complete
+while compute still runs it. Because completion is per team, several teams can be busy
 at once, and a team's size is not tied to a column of the grid. Where a team is
 addressed by multicast, each rectangle must be a physically contiguous, Tensix-only
 span in NoC0 coordinates, so a team is cut at panel boundaries. The layout module of

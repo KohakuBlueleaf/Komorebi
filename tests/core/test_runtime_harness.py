@@ -33,6 +33,11 @@ def test_a_record_completes(scenario):
     assert got["ok"] and got["done"] == got["jobs"], got
 
 
+def test_a_record_without_output_is_acked_after_its_compute(scenario):
+    got = scenario("no_output_waits_for_compute")
+    assert got["ok"], got
+
+
 def test_an_item_past_the_buffer_end_gives_up_with_its_word(scenario):
     got = scenario("wrappers_refuse_straddling_items")
     assert got["ok"], got
