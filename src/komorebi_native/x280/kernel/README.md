@@ -15,20 +15,27 @@ is one of those sources. `km_dispatch.h` holds the exact layouts;
 | `completion.h` | busy slots, acknowledgement sweep, deadlines, team overlap, team allocator |
 | `queue.h` | the job queue: jobs from every source until a slot and a team are free |
 | `engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
+| `work_port.h` | core 0's side of a work cluster's ring: its window, the refusal of a record that would wait |
 | `engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
 | `result.h` | the result block in LIM |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
 
 ## Sources
 
-A source is anything that sends core 0 commands: the host (source 0) and the stream
-engine on core 1 (source 1). Each has a command ring and an event ring, served by the
+A source is anything that sends core 0 commands: the host (source 0), the stream
+engine on core 1 (source 1) and the thread on a work cluster (source 2). Each has a command ring and an event ring, served by the
 same code (`ring.h`) under the protocol below; only their memory differs. The host's
 command ring is in LIM and its event ring in host memory; the engine's two rings are in
 the state area in the cluster's DRAM bank (`KMD_STATE_RING`, `KMD_ERING_*`), cached
-and coherent between the cluster's cores. Each pass of core 0's loop sweeps the busy
-slots, then takes at most one command from each source in the order host, engine; the
-engine is looked at only while it has a stream, a record in flight or a waiting command.
+and coherent between the cluster's cores. A work cluster's ring is split so that each
+side reads only its own LIM: the thread writes its command lines and its read line into
+this cluster's LIM after the layout (`work_cmds`), through a window of its own; core 0
+writes the consumed count, the event count and the events into the work cluster's LIM
+(`work_noc_addr`, `KMD_WORK_*`) through window `KMD_WIN_WORK`. Neither part passes
+through a cache. Each pass of core 0's loop sweeps the busy slots, then takes at most
+one command from each source in the order host, engine, work cluster; the engine is
+looked at only while it has a stream, a record in flight or a waiting command, the work
+cluster's ring every fourth pass.
 A record's `KM_EV_DONE` or `KM_EV_TIMEOUT` goes to the source that sent it.
 
 Nothing the kernel writes through the cached port stays dirty at exit: core 1 flushes its
@@ -70,7 +77,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   range of the upload region that is not whole lines inside it; 6 `KM_SEG_RUN` while
   four streams run; 7 `KM_SEG_CANCEL` of a req no running stream has; 8
   `KM_SEG_DEADLINE` of 0; 9 a `KM_F_QUEUE` record while the queue is full (the host
-  may retry it). A refused command's event has ticks 0.
+  may retry it); 11 a work cluster's record that would wait. A refused command's event
+  has ticks 0.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
   word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
@@ -134,6 +142,19 @@ These rules are part of the protocol; a host that relies on anything else is wro
 - **Commands from the engine.** The engine may send records, `KM_SEG_DEADLINE`,
   `KMD_SEG_POST` (248) and `KMD_SEG_DROP` (247); STOP, EXIT, RUN and CANCEL from it are
   refused with reason 1, and so are `KMD_SEG_POST` and `KMD_SEG_DROP` from the host.
+- **Commands from a work cluster.** The argument block's `work_*` words name the ring
+  (`work_cmds` 0: none); the host zeroes its command lines before the start and the
+  thread's event area before the thread starts. The thread may send records,
+  `KM_SEG_DEADLINE` and `KM_SEG_PING`; STOP, EXIT, RUN, CANCEL and the engine's commands
+  from it are refused with reason 1 (the run belongs to the host, which stops the
+  thread before the kernel). A record of the thread that cannot be issued now (a busy
+  overlapping team under `KM_F_EXCL`, a full queue, no free slot) is consumed and
+  refused with reason 11 at once, so a thread never holds core 0; a thread that stops
+  reading its events stops having its commands taken once its event ring is full, and
+  nothing else waits for it. Looking at the ring every fourth pass costs core 0's idle
+  pass 32 to 41 ns (the experiment `x280_threads/ring_cost.py`); a STEP and SUM round of
+  `examples/07_work_cluster`, two records issued and waited for in turn, takes about
+  50 microseconds from the thread.
 - **What streams cost the sweep.** Measured on a p150a with the harness's
   `stream-bench` case (pass period of core 0 = run time / passes): 32 ns with no
   stream, 49 ns with one or four streams that only loop, 89 ns with one stream issuing

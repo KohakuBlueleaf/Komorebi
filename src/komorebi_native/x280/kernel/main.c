@@ -11,6 +11,7 @@
 #include "queue.h"
 #include "result.h"
 #include "ring.h"
+#include "work_port.h"
 
 /* Waits until `word` holds `value`, the runtime asks for a stop, or `deadline`. */
 static kmd_wait_t wait_word(
@@ -50,7 +51,8 @@ static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
         (uintptr_t)a + KMD_LIM_UPLOAD + a->upload_bytes <= X280_LIM_END &&
         (a->state_ddr & 63u) == 0 && (a->host_noc_addr & 63u) == 0 &&
         (a->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
-            NOC_2M_WINDOW_STRIDE
+            NOC_2M_WINDOW_STRIDE &&
+        work_args_valid(a)
     );
 }
 
@@ -318,6 +320,9 @@ KMD_HOT int source_turn(kmd_t* k, uint32_t src, uint32_t* activity) {
     }
     if (t == KMD_TAKEN) {
         r->line_state = 0;
+    } else if (t == KMD_HELD && src == KMD_SRC_WORK) {
+        work_busy(k, now); /* a thread's record never waits */
+        r->line_state = 0;
     } else if (r->line_state == 1) {
         r->line_state = 2;
         if (t == KMD_HELD) {
@@ -338,6 +343,7 @@ static void loop(kmd_t* k) {
     uint64_t t_active = x280_mtime();
     kmd_ring_t* host = &k->ring[KMD_SRC_HOST];
     kmd_ring_t* engine = &k->ring[KMD_SRC_ENGINE];
+    kmd_ring_t* work = &k->ring[KMD_SRC_WORK];
     for (;;) {
         k->passes++;
         if (k->busy) {
@@ -353,6 +359,11 @@ static void loop(kmd_t* k) {
         }
         if (k->queued != 0) {
             queue_turn(k, x280_mtime());
+        }
+        /* Every fourth pass: one look at the work ring costs the idle pass 31 ns. */
+        if (work->cmds != 0 && (k->passes & 3u) == 0) {
+            source_turn(k, KMD_SRC_WORK, &activity);
+            ring_flush(work);
         }
         ring_flush(host);
         if (++spins != KMD_POLL_EVERY) {
@@ -398,6 +409,7 @@ static void finish(kmd_t* k) {
         grid_stop(k);
     }
     engine_stop(k);
+    work_close(k);
     const uint64_t now = x280_mtime();
     result_finish(k, now);
 #ifdef KMD_TRACE
@@ -420,7 +432,7 @@ static void finish(kmd_t* k) {
 
 /* Core 0's kernel; kept out of main so main's prologue touches no FP register. */
 static __attribute__((noinline)) void run(uint64_t hart) {
-    uint64_t host_line[16], engine_line[16];
+    uint64_t host_line[16], engine_line[16], work_line[16];
     const uint64_t run_value = x280_hart_control(hart)->run_value;
     const uint64_t t_boot = x280_mtime();
     const volatile kmd_args_t* a = (const volatile kmd_args_t*)x280_hart_args(hart);
@@ -459,7 +471,11 @@ static __attribute__((noinline)) void run(uint64_t hart) {
     h->t_record = a->t_record;
     h->line = (uint64_t*)(((uintptr_t)host_line + 63u) & ~(uintptr_t)63u);
     result_word(k, KMD_R_STATE, KMD_STATE_BOOT);
-    if (boot(k) == KMD_ERR_NONE) {
+    uint64_t* wl = (uint64_t*)(((uintptr_t)work_line + 63u) & ~(uintptr_t)63u);
+    if (boot(k) == KMD_ERR_NONE && work_open(k, wl) != KMD_ERR_NONE) {
+        result_error(k, KMD_ERR_WINDOW, 0, 0, 0, 0);
+    }
+    if (k->error == KMD_ERR_NONE) {
         engine_open(k, (uint64_t*)(((uintptr_t)engine_line + 63u) & ~(uintptr_t)63u));
         engine_go(k, 1u);
         result_word(k, KMD_R_BOOT_TICKS, (uint32_t)(x280_mtime() - k->t_boot));

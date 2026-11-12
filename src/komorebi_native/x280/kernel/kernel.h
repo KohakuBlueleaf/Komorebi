@@ -47,7 +47,8 @@ typedef struct {
 /* Sources, served in this order (the numbers are in km_dispatch.h's hart block). */
 #define KMD_SRC_HOST 0u
 #define KMD_SRC_ENGINE 1u
-#define KMD_SOURCES 2u
+#define KMD_SRC_WORK 2u /* a work cluster's thread (work_port.h) */
+#define KMD_SOURCES 3u
 
 /* A job waiting in the queue: its record, with its source's deadline at the time. */
 typedef struct {
