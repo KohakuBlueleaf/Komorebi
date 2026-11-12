@@ -1,0 +1,99 @@
+{
+ "name": "result_chain",
+ "description": "RESULT feeds the next team size",
+ "notes": "Records and events are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay (delay null: never). A KM_F_RESULT record's result is (a0 + count) mod 2^32. Events are [kind, req, aux, pass].",
+ "params": {
+  "n_cores": 119,
+  "delay": 1
+ },
+ "expect": {
+  "check": null,
+  "status": "ended",
+  "error": null,
+  "halt": 24,
+  "stopped_grid": false,
+  "passes": 7,
+  "records": [
+   [
+    1,
+    0,
+    3,
+    4,
+    [
+     3,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   ],
+   [
+    1,
+    0,
+    6,
+    4,
+    [
+     6,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   ],
+   [
+    1,
+    0,
+    12,
+    4,
+    [
+     12,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   ]
+  ],
+  "events": [
+   [
+    4,
+    1,
+    6,
+    2
+   ],
+   [
+    4,
+    1,
+    12,
+    4
+   ],
+   [
+    4,
+    1,
+    24,
+    6
+   ],
+   [
+    5,
+    1,
+    24,
+    6
+   ]
+  ]
+ }
+}

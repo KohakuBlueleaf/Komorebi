@@ -1,0 +1,26 @@
+{
+ "name": "step_pass_limit",
+ "description": "64 micro-ops per pass",
+ "notes": "Records and events are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay (delay null: never). A KM_F_RESULT record's result is (a0 + count) mod 2^32. Events are [kind, req, aux, pass].",
+ "params": {
+  "n_cores": 119,
+  "delay": 0
+ },
+ "expect": {
+  "check": null,
+  "status": "ended",
+  "error": null,
+  "halt": 130,
+  "stopped_grid": false,
+  "passes": 3,
+  "records": [],
+  "events": [
+   [
+    5,
+    1,
+    130,
+    2
+   ]
+  ]
+ }
+}

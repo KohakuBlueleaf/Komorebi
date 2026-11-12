@@ -1,0 +1,29 @@
+{
+ "name": "err_team_outside",
+ "description": "reason 11: cores 100 to 119",
+ "notes": "Records and events are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay (delay null: never). A KM_F_RESULT record's result is (a0 + count) mod 2^32. Events are [kind, req, aux, pass].",
+ "params": {
+  "n_cores": 119,
+  "delay": 0
+ },
+ "expect": {
+  "check": null,
+  "status": "error",
+  "error": [
+   11,
+   1
+  ],
+  "halt": null,
+  "stopped_grid": false,
+  "passes": 1,
+  "records": [],
+  "events": [
+   [
+    6,
+    1,
+    267,
+    0
+   ]
+  ]
+ }
+}

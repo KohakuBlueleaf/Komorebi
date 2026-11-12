@@ -1,0 +1,49 @@
+{
+ "name": "err_deadline",
+ "description": "reason 8 at the ISSUE, grid stopped",
+ "notes": "Records and events are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay (delay null: never). A KM_F_RESULT record's result is (a0 + count) mod 2^32. Events are [kind, req, aux, pass].",
+ "params": {
+  "n_cores": 119,
+  "delay": null,
+  "deadline_passes": 5
+ },
+ "expect": {
+  "check": null,
+  "status": "error",
+  "error": [
+   8,
+   1
+  ],
+  "halt": null,
+  "stopped_grid": true,
+  "passes": 6,
+  "records": [
+   [
+    1,
+    0,
+    4,
+    0,
+    [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   ]
+  ],
+  "events": [
+   [
+    6,
+    1,
+    264,
+    5
+   ]
+  ]
+ }
+}
