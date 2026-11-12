@@ -26,6 +26,7 @@ the empty directories of the native layer.
 | **Trying to build it** | [install](install.md) |
 | **Learning the model** | [the programming model](concepts/model.md) |
 | **Reading the design of the card side** | [dispatch kernel](concepts/dispatch.md) · [Tensix runtime](concepts/runtime.md) |
+| **Running a program on a card** | [host API](reference/host.md) · [01_mapcollect](../examples/01_mapcollect/) |
 | **Changing the code** | [development](development.md) |
 
 ## Documentation structure
@@ -34,6 +35,10 @@ the empty directories of the native layer.
 
 - [Install](install.md): from a clone, against a tt-metal source tree.
 - [Development](development.md): repository layout, checks, conventions and known limits.
+
+### Reference
+
+- [Host API](reference/host.md): `Program`, `Session` and `Run`; errors; builds.
 
 ### Concepts
 

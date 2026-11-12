@@ -9,9 +9,10 @@ tags:
 # Install
 
 Nothing is released. There is no package on PyPI, no wheel and no prebuilt X280 image
-yet: Komorebi can only be used from a clone of this repository, and most of it is not
-written. What works today is the Python package with `kmr doctor`, `kmr build`, the
-layout helpers and the tests.
+yet: Komorebi is used from a clone of this repository. What works is the Python package
+(`kmr doctor`, `kmr build`, the layout helpers), the host API that runs a program on a
+card under the dispatch kernel ([host API](reference/host.md)), the example
+`examples/01_mapcollect`, and the tests.
 
 ## Requirements
 
@@ -67,6 +68,35 @@ kmr build pymodule out/mod.so module.cpp              # a Python module
 builds copy their compile and link flags from two targets that the tt-x280-dispatch
 project adds to a tt-metal build, so they need a tree built with them; see the
 limitation in [development](development.md#known-limitations). Building an X280 image does not.
+
+## Running on a card
+
+The host API needs, in the same Python environment as the package:
+
+- `ttnn`, built from the tt-metal tree above (the X280 runtime included), and `torch`;
+- `TT_METAL_HOME` naming that tree.
+
+On first use the session builds the dispatch kernel image and the package's native
+module from the tree into `build/komorebi/` of the clone (or `KMR_CACHE`); about ten
+seconds. To build them ahead:
+
+```
+python -m komorebi.native        # prints the image and the module it built or found
+```
+
+The card must be a Blackhole p150a whose X280 memory is prepared for the X280 runtime.
+The session opens it in slow dispatch. Then:
+
+```
+cd examples/01_mapcollect
+python mapcollect.py --jobs 20 --count 8
+```
+
+The card tests (`tests/hardware`) run only with `KMR_CARD=1`:
+
+```
+KMR_CARD=1 python -m pytest tests/hardware
+```
 
 ## Checks
 
