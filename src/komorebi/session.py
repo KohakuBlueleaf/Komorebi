@@ -22,6 +22,28 @@ IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM 
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
+CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
+
+
+def compute_config(options):
+    """The compute kernel's ttnn.ComputeConfigDescriptor from Program.compute: field
+    values as given, except `math_fidelity` (a ttnn.MathFidelity name) and
+    `unpack_to_dest_mode` (a ttnn.UnpackToDestMode name for every circular buffer, or
+    {cb: name} with the others Default)."""
+    options = dict(options)
+    unpack = options.pop("unpack_to_dest_mode", None)
+    if "math_fidelity" in options:
+        options["math_fidelity"] = getattr(ttnn.MathFidelity, options["math_fidelity"])
+    config = ttnn.ComputeConfigDescriptor(**options)
+    if unpack is not None:
+        by_cb = (
+            unpack if isinstance(unpack, dict) else dict.fromkeys(range(CBS), unpack)
+        )
+        modes = [ttnn.UnpackToDestMode.Default] * CBS
+        for cb, name in by_cb.items():
+            modes[cb] = getattr(ttnn.UnpackToDestMode, name)
+        config.unpack_to_dest_mode = modes
+    return config
 
 
 def aiclk_mhz(card=None):
@@ -507,10 +529,6 @@ class _Backend:
                 compiler_include_paths=include,
             )
 
-        compute_config = {
-            k: getattr(ttnn.MathFidelity, v) if k == "math_fidelity" else v
-            for k, v in program.compute.items()
-        }
         return ttnn.ProgramDescriptor(
             kernels=[
                 dm("reader", reader_args, 0),
@@ -522,7 +540,7 @@ class _Backend:
                     compile_time_args=list(program.compile_args.get("compute", [])),
                     defines=defines,
                     runtime_args=compute_args,
-                    config=ttnn.ComputeConfigDescriptor(**compute_config),
+                    config=compute_config(program.compute),
                     compiler_include_paths=include,
                 ),
             ],

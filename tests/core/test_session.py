@@ -1,5 +1,7 @@
 """Session.load and its failure paths over a stub ttnn and the fake kernel."""
 
+import types
+
 import numpy as np
 import pytest
 from fake_session import FakeDispatch, K, load_session, program
@@ -154,3 +156,23 @@ def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path
     session.check_bases(bases)
     with pytest.raises(StartError, match="control block 0x20004"):
         session.check_bases({"control block": 0x20004})
+
+
+def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
+    session, _, ttnn, _ = card
+    ttnn.ComputeConfigDescriptor = types.SimpleNamespace
+    ttnn.MathFidelity = types.SimpleNamespace(HiFi4="hifi4")
+    ttnn.UnpackToDestMode = types.SimpleNamespace(UnpackToDestFp32="fp32", Default="-")
+    c = session.compute_config(
+        {
+            "math_fidelity": "HiFi4",
+            "fp32_dest_acc_en": True,
+            "unpack_to_dest_mode": {3: "UnpackToDestFp32"},
+        }
+    )
+    assert c.math_fidelity == "hifi4" and c.fp32_dest_acc_en
+    assert len(c.unpack_to_dest_mode) == 64 and c.unpack_to_dest_mode[3] == "fp32"
+    assert set(c.unpack_to_dest_mode[:3] + c.unpack_to_dest_mode[4:]) == {"-"}
+    every = session.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
+    assert set(every.unpack_to_dest_mode) == {"fp32"}
+    assert not hasattr(session.compute_config({}), "unpack_to_dest_mode")
