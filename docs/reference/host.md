@@ -161,6 +161,80 @@ wall-clock words (taken, outputs written, completion sent, ring passes);
 how long before ticket `a`'s completion a member of `b` took its record (positive: both
 were in flight at once).
 
+## Engines: uploads, `start`, events
+
+The dispatch kernel runs [streams](../streams.md) and [graphs](../graphs.md) from an
+upload in its upload region, with no host step between the start and the end event.
+These `Run` calls write the upload, start it, and turn its events into values.
+
+```python
+from komorebi.engines.graph import Graph
+
+step, left, right, norm = (program.seg(n) for n in ("step", "left", "right", "norm"))
+g = Graph(deadline_us=200_000, max_runs=50, req=6, keep=True)
+state, it, limit = g.bindings("state", "it", "limit")
+err = g.reg()
+a = g.record(step, team=(0, 60), args=[state, it])
+b = g.record(left, team=(0, 30), args=[state], after=[a])
+c = g.record(right, team=(30, 30), args=[state], after=[a])  # in flight with b
+d = g.record(norm, team=(0, 60), args=[state, 60], after=[b, c], result=err)
+e = g.cpu(after=[d])
+e.addi(it, it, 1)
+e.lt(g.again, err, limit)  # go round again while err < limit
+
+up = run.upload(g)
+ev = run.wait_engine(run.start(up, {"state": x, "it": 0, "limit": 10**6}), 10.0)
+ev = run.wait_engine(run.restart(6, {"state": y, "it": 3, "limit": 10**7}), 10.0)
+r0, r1 = ev.regs  # register 0 (its low 24 bits) and register 1 at the end
+run.release(up)  # the kept graph is dropped, its lines are free again
+```
+
+This is the graph of `examples/06_graph` (the same segments; `x` and `y` are the
+addresses of two state tensors): a kept graph, run, then run again with other bindings
+and no new upload.
+
+| Call | What it does |
+|---|---|
+| `upload(obj, kind=None)` | encodes a `Stream` or a `Graph` (or takes its encoded bytes, with `kind` `"stream"` or `"graph"`) and writes it into the upload region as whole lines, at the first free place; returns an `Upload` (`offset`, `bytes`, `kind`, `req`, `keep`, `state`). Several uploads live side by side. An upload that does not fit raises `ValueError` before anything is written. The host checks nothing else: a bad upload is the kernel's to refuse, with its error event |
+| `release(upload, timeout=10.0)` | frees an upload's lines. A running one is refused; a kept graph is first dropped (`CANCEL`, then its cancelled event) |
+| `start(upload, bindings=(), kept=None, timeout=10.0)` | sends `KM_SEG_RUN` and returns an `EngineTicket`. A graph takes `bindings`: a dict by name for a graph uploaded from a `Graph` (its constants are added, as `binding_values` does), or a list of up to 16 words; they go to one line of the region, freed at the end. `kept=True` or `False` rewrites the header's keep bit first; None leaves it. Another running or kept engine with the same `req` raises `ValueError` |
+| `restart(req, bindings=(), timeout=10.0)` | runs the kept graph with `req` again with new bindings (`KM_SEG_RUN`, `a2 = 2`) |
+| `cancel(ticket, timeout=10.0)` | sends `KM_SEG_CANCEL`; the engine then ends with its error event, reason `cancelled`. Nothing is sent for an engine that has ended |
+| `wait_engine(ticket, timeout=10.0)` | waits for the engine's end and returns its `EngineEvent`; raises `EngineError` for an error event, `EngineTimeout` when `timeout` passes (the engine may still run), `KernelFailed` if the kernel finished |
+| `run_hostfed(obj, bindings=None, timeout=10.0)` | runs a graph or a stream on the host instead, its records through the host ring: the same records and registers as in the kernel ([graphs](../graphs.md#host-fed)); for a stream, the simulator's interpreter, `records[i].node` the program counter of the `ISSUE` or `SUBMIT`, `runs` 1 |
+
+`start`, `restart` and `cancel` send the command and a `PING` behind it and return
+when the `PING` is answered: the kernel answers a `RUN` or `CANCEL` with an event only
+when it refuses it, and that event comes first. A refusal raises `EngineRefused` (a
+`RecordRefused`: `reason`, `reason_name`); the host does not retry.
+
+An `EngineTicket` has `kind`, `req`, `upload`, `events` (every event so far) and `end`.
+An `EngineEvent(ticket, kind, value, regs, reason, reason_name, pc, node)` is one of:
+
+| `kind` | From | Fields |
+|---|---|---|
+| `event` | a stream's `EVENT a` | `value`: register `a`, 32 bits |
+| `round` | a graph's round ended and another starts | `value`: rounds done |
+| `end` | `HALT`, or a graph's last node | a stream's `value`: the halt register, 32 bits; a graph's `regs`: register 0's low 24 bits, register 1 |
+| `error` | any error | `reason`, `reason_name` (the `KM_SERR_*` name in lower case, read from the headers), the stream's `pc` or the graph's `node` (None when the error has no node) |
+
+The engines' events carry the upload's `req`, not a command number: they go to their
+tickets, so `wait` and `wait_any` of the host's own records see none of them, and
+`wait_engine` none of the records' events. The records an engine issues are answered
+to the engine, never to the host. While it
+waits, `wait_engine` also writes the host's read count into the kernel, since an
+engine's posts wait for event room.
+
+The region is the one the kernel's ready block names: what is left of X280 cluster 0's
+local memory after the kernel's layout (707,840 bytes on a p150a), none for a program
+with an X280 thread, whose ring lies there. The host never writes into the range of a
+running stream or graph, or of a kept graph. `stop` sends EXIT, which waits until no
+engine runs: wait for or cancel every engine before it.
+
+The kernel numbers the records an engine issues in the same sequence as the host's,
+which the host does not see: after an engine has issued records, `seq(ticket)` and the
+trace's mapping of later host records are not valid.
+
 ## Errors
 
 All derive from `km.KomorebiError`.
@@ -173,6 +247,9 @@ All derive from `km.KomorebiError`.
 | `RecordRefused` | the kernel consumed the command and issued nothing (a reserved segment or flag, a team outside the grid, a record after EXIT); the run goes on | `ticket`, `reason` (`KMD_REFUSE_*`), `reason_name` |
 | `RecordTimeout` | a team missed its deadline; the kernel stopped the grid, the run is stopped and read back | `ticket`, `slot`, `seq`, `team`, `cores`: each member that did not report, with where its reader and writer gave up |
 | `KernelFailed` | the dispatch kernel finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |
+| `EngineRefused` | the kernel refused a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `RecordRefused` |
+| `EngineError` | a stream or graph ended with an error event | `event`, `ticket`, `reason`, `reason_name`, `pc`, `node` |
+| `EngineTimeout` | `wait_engine` ran out; a `WaitTimeout` | `ticket` |
 | `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the device is left open | |
 
 The kernel's reasons for a refusal (`RecordRefused.reason`, from `KMD_REFUSE_*` in
