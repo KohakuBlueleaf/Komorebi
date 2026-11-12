@@ -54,7 +54,7 @@ STREAMS = os.path.join(
     HERE, "..", "..", "..", "experiments", "stream_checks", "streams"
 )
 SEG_CHECK_UPLOAD = 246  # KMD_VERIFY_LINES images only
-LIM_UPLOAD = 0x1800  # KMD_LIM_UPLOAD: the upload region's offset from the layout
+LIM_UPLOAD = 0x2000  # KMD_LIM_UPLOAD: the upload region's offset from the layout
 HOST_READY, READY_MARK = 4, 0x594452  # the ready block's first word and its mark
 TRACE_ISSUE, TRACE_FREE, TRACE_MARK = 1, 2, 0x54524345  # KMD_TRACE images only
 TRACE_QUEUED = 3  # an issue from the job queue

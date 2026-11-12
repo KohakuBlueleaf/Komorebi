@@ -147,9 +147,13 @@ static inline void slots_sweep(kmd_t* k) {
         trace(k, KMD_TRACE_FREE, j, k->slot_req[j]);
         kmd_ring_t* r = &k->ring[k->slot_src[j]];
         r->nbusy--;
-        ring_push(
-            r, k->slot_req[j], KM_EV_DONE | (k->slot_team[j] & 0xFFFFu) << 8, ticks
-        );
+        if (k->dyn.end == j + 1u) { /* a dynamic run's end record: no event */
+            k->dyn.end = 0;
+        } else {
+            ring_push(
+                r, k->slot_req[j], KM_EV_DONE | (k->slot_team[j] & 0xFFFFu) << 8, ticks
+            );
+        }
         k->t_last_event = now;
         if (k->waits) {
             sources_wake(k);

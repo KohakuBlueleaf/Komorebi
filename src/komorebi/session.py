@@ -22,6 +22,7 @@ from komorebi.run import Run
 
 CTL_ALIGN = 64  # the dispatch kernel stores whole 64-byte lines into the control block
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
+DYN_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic segment's queues may take
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
@@ -393,6 +394,7 @@ class Session:
                 kernel_idle,
                 state_t.buffer_address(),
                 *work_args,
+                dyn_seg=program.dyn.seg if program.dyn is not None else 0,
             )
             check_bases(lim_bases(dispatch.lim_base))
             backend = _Backend(self, dispatch, mhz, trace)
@@ -546,6 +548,26 @@ class _Backend:
         check_bases({"control block": self.ctl_addr})
         return self.ctl_addr
 
+    def _dynamic(self, program, cores, depth, base):
+        """A dynamic segment's queues in DRAM (zero-filled by the cores) and its
+        reader / writer and compute words; status lines in the kernel's LIM."""
+        dyn = program.dyn
+        if dyn is None:
+            return [], []
+        h = abi.headers()
+        dyn.check(cores, DYN_DRAM_BYTES, depth)
+        page = 32 * dyn.item_bytes  # kDynPageItems items a page
+        queue = ttnn.empty(
+            (cores * dyn.queue_items // 32, page // 4),
+            dtype=ttnn.int32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        self.io.append(queue)
+        lines = base + h["KMD_LIM_DYN"]
+        return dyn.args(queue.buffer_address(), lines), dyn.compute_args(cores)
+
     def describe(self, program, sources, tag, depth, wait, idle, trace):
         """The program descriptor for every core, with the start-up arguments."""
         h = abi.headers()
@@ -579,6 +601,7 @@ class _Backend:
             "trace": self.trace_t.buffer_address() if self.trace_t else 0,
             "trace_cap": self.trace_cap,
         }
+        dyn_rw, dyn_c = self._dynamic(program, cores, depth, base)
         reader_args, writer_args, compute_args = (
             ttnn.RuntimeArgs(),
             ttnn.RuntimeArgs(),
@@ -599,10 +622,10 @@ class _Backend:
                 }
             )
             reader, writer, compute = program.core_args(core)
-            reader_args[x][y] = start + reader
-            writer_args[x][y] = start + writer
+            reader_args[x][y] = start + dyn_rw + reader
+            writer_args[x][y] = start + dyn_rw + writer
             limits = [common["wait_limit"], common["idle_limit"]]
-            compute_args[x][y] = [ctl, core, *limits, *compute]
+            compute_args[x][y] = [ctl, core, *limits, *dyn_c, *compute]
         all_cores = ttnn.CoreRangeSet(
             [
                 ttnn.CoreRange(

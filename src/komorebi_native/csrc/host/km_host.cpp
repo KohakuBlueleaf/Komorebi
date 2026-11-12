@@ -335,7 +335,8 @@ namespace {
             uint64_t work_event_depth,
             uint64_t work_noc,
             uint64_t work_noc_addr,
-            int64_t upload_bytes
+            int64_t upload_bytes,
+            uint64_t dyn_seg
         ) {
             require_open();
             if (session_) {
@@ -428,6 +429,7 @@ namespace {
             a.work_noc = work_noc;
             a.work_noc_addr = work_noc_addr;
             a.upload_bytes = upload_bytes_;
+            a.dyn_seg = dyn_seg;
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &a, sizeof(a));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
@@ -672,7 +674,7 @@ namespace {
         }
 
         // Waits (bounded) for the kernel's hart result, stops the session, reads the
-        // result block: result ready, hart result, cleaned, what failed, words.
+        // result block: result ready, hart result, cleaned, what failed, words, harts.
         nb::dict finish(double timeout_s) {
             require_open();
             if (!session_) {
@@ -704,12 +706,18 @@ namespace {
             );
             std::vector<uint32_t> words(KMD_R_WORDS);
             std::memcpy(words.data(), block.data(), 4 * KMD_R_WORDS);
+            const auto hb = (
+                tile_->read_available_lim(base_ + KMD_LIM_HARTS, 4 * KMD_H_WORDS)
+            );
+            std::vector<uint32_t> harts(KMD_H_WORDS);
+            std::memcpy(harts.data(), hb.data(), 4 * KMD_H_WORDS);
             nb::dict out;
             out["result_ready"] = ready;
             out["result"] = ready ? nb::object(nb::int_(result)) : nb::none();
             out["cleaned"] = cleaned;
             out["failed"] = failed;
             out["words"] = words;
+            out["harts"] = harts;  // the hart block (KMD_H_*)
             return out;
         }
 
@@ -1213,7 +1221,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("work_event_depth") = 0,
             nb::arg("work_noc") = 0,
             nb::arg("work_noc_addr") = 0,
-            nb::arg("upload_bytes") = -1
+            nb::arg("upload_bytes") = -1,
+            nb::arg("dyn_seg") = 0
         )
         .def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))

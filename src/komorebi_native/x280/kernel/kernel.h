@@ -68,6 +68,16 @@ typedef struct {
     uint8_t order[KM_QUEUE_JOBS];
 } kmd_queue_t;
 
+/* The dynamic run in flight (dynamic.h): its RUN record, and its end record's slot. */
+typedef struct {
+    uint32_t seg;                       /* the program's dynamic segment; 0: none */
+    uint32_t active;                    /* a RUN is in flight and not yet quiet */
+    uint32_t slot, seq, team, req, src; /* the RUN record */
+    uint32_t end;                       /* 1 + the end record's slot while busy; 0 */
+    uint32_t checks;
+    uint32_t first[2u * KM_CORES_MAX]; /* the first pass: sent, consumed per core */
+} kmd_dyn_t;
+
 /* A stream the kernel admitted and the engine runs: its range and req. */
 typedef struct {
     uint32_t active, req, off, bytes;
@@ -111,6 +121,7 @@ typedef struct {
     uint32_t engine_on; /* engine_active() after its last turn; a RUN sets it */
     uint32_t queued;    /* the queue's length, for the loop */
     uint32_t waits;     /* bit src: a busy refusal to it, KMD_EV_WAKE owed */
+    kmd_dyn_t dyn;
     /* counters */
     uint32_t records, max_busy, refused, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */

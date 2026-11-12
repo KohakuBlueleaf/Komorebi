@@ -34,7 +34,7 @@ class FakeDispatch(FakePort):
         if name in self.fail:
             raise self.fail[name]
 
-    def prepare(self, *args):
+    def prepare(self, *args, **kwargs):
         self._call("prepare")
         return 5
 

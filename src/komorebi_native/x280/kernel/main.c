@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "completion.h"
+#include "dynamic.h"
 #include "engine.h"
 #include "engine_port.h"
 #include "event_ring.h"
@@ -53,7 +54,7 @@ static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
         (a->state_ddr & 63u) == 0 && (a->host_noc_addr & 63u) == 0 &&
         (a->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE &&
-        work_args_valid(a)
+        work_args_valid(a) && a->dyn_seg <= KM_SEG_USER_MAX
     );
 }
 
@@ -250,6 +251,8 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         refuse = KMD_REFUSE_EXITED;
     } else if (seg != KM_SEG_EXIT && team_outside(k, queued ? 0 : first, count)) {
         refuse = KMD_REFUSE_TEAM;
+    } else if (queued && k->dyn.seg != 0 && seg == k->dyn.seg) {
+        refuse = KMD_REFUSE_DYN;
     }
     if (refuse != 0) {
         ring_consumed(r);
@@ -281,7 +284,9 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
             return KMD_HELD;
         }
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_TEAM_ALL(k->cores);
-    } else if ((flags & KM_F_EXCL) && slots_overlap(k, first, count)) {
+    } else if (
+        ((flags & KM_F_EXCL) && slots_overlap(k, first, count)) || dyn_held(k, seg)
+    ) {
         return KMD_HELD;
     }
     const uint32_t slot = slot_free(k);
@@ -290,6 +295,7 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     }
     l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
     record_issue(k, l, slot, req, src, now, r->t_record, KMD_TRACE_ISSUE);
+    dyn_issued(k, l, slot, req, src);
     ring_consumed(r);
     k->exited = seg == KM_SEG_EXIT;
     return KMD_TAKEN;
@@ -379,6 +385,9 @@ static void loop(kmd_t* k) {
         k->passes++;
         if (k->busy) {
             slots_sweep(k);
+        }
+        if (k->dyn.active) {
+            dyn_turn(k);
         }
         if (source_turn(k, KMD_SRC_HOST, &activity)) {
             return;
@@ -492,6 +501,7 @@ static __attribute__((noinline)) void run(uint64_t hart) {
     k->depth = (uint32_t)a->depth;
     k->full = (1u << k->depth) - 1u;
     k->cores = (uint32_t)a->cores;
+    k->dyn.seg = (uint32_t)a->dyn_seg;
     k->ering = (volatile uint8_t*)k + KMD_STATE_RING;
     k->queue = (kmd_queue_t*)((uint8_t*)k + KMD_STATE_QUEUE);
     kmd_ring_t* h = &k->ring[KMD_SRC_HOST];

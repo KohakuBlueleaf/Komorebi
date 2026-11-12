@@ -24,7 +24,8 @@
 #define KMD_LIM_HARTS 0x300u  /* hart block, KMD_H_WORDS words */
 #define KMD_LIM_ACKS 0x400u   /* ack word of slot j at + j * KM_ACK_STRIDE */
 #define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_record_t */
-#define KMD_LIM_BYTES 0x1800u
+#define KMD_LIM_DYN 0x1800u   /* status line of core c in a dynamic run at + c * 16 */
+#define KMD_LIM_BYTES 0x2000u
 #define KMD_LIM_UPLOAD                                            \
     KMD_LIM_BYTES /* upload region: args upload_bytes, not zeroed \
                    */
@@ -76,6 +77,7 @@
 #define KMD_REFUSE_QUEUE 9u    /* a KM_F_QUEUE record while KM_QUEUE_JOBS jobs wait */
 #define KMD_REFUSE_DROPPED 10u /* to the engine: a queued job of its stream dropped */
 #define KMD_REFUSE_BUSY 11u    /* engine, work cluster: the record cannot go now */
+#define KMD_REFUSE_DYN 12u     /* a dynamic run with KM_F_QUEUE */
 
 /* Engine to kernel: POST host event {a0 req, a1 status, a2 ticks}. Kernel to engine
  * events: RUN {req offset, ticks bytes} of an admitted upload, CANCEL {ticks req}. */
@@ -152,16 +154,19 @@ enum {
 
 /* Hart block in LIM: each word has one writer, the hart it names. */
 enum {
-    KMD_H_STAMP0 = 0,  /* core 0: its loop passes / 1024, every 1024 passes */
-    KMD_H_STAMP1 = 1,  /* core 1: the same for the engine's loop */
-    KMD_H_ENGINE = 2,  /* core 1: KMD_ENGINE_* */
-    KMD_H_PASSES = 3,  /* core 1: engine loop passes, low word, at its end */
-    KMD_H_RECORDS = 4, /* core 1: records it sent */
-    KMD_H_POSTS = 5,   /* core 1: host events it posted */
-    KMD_H_EVENTS = 6,  /* core 1: events it read */
-    KMD_H_RUNS = 7,    /* core 1: streams it started */
-    KMD_H_LOST = 8,    /* core 0: posts dropped at the finish for lack of room */
-    KMD_H_SOURCE = 9,  /* core 0: the source of the error's record (KMD_R_REQ) */
+    KMD_H_STAMP0 = 0,      /* core 0: its loop passes / 1024, every 1024 passes */
+    KMD_H_STAMP1 = 1,      /* core 1: the same for the engine's loop */
+    KMD_H_ENGINE = 2,      /* core 1: KMD_ENGINE_* */
+    KMD_H_PASSES = 3,      /* core 1: engine loop passes, low word, at its end */
+    KMD_H_RECORDS = 4,     /* core 1: records it sent */
+    KMD_H_POSTS = 5,       /* core 1: host events it posted */
+    KMD_H_EVENTS = 6,      /* core 1: events it read */
+    KMD_H_RUNS = 7,        /* core 1: streams it started */
+    KMD_H_LOST = 8,        /* core 0: posts dropped at the finish for lack of room */
+    KMD_H_SOURCE = 9,      /* core 0: the source of the error's record (KMD_R_REQ) */
+    KMD_H_DYN_GAVE = 10,   /* core 0: 1 + the core whose status line said gave up */
+    KMD_H_DYN_CHECKS = 11, /* core 0: two-pass checks of dynamic runs */
+    KMD_H_DYN_QUIET = 12,  /* core 0: mtime, low word, of the last quiet end */
     KMD_H_WORDS = 16
 };
 
@@ -201,6 +206,7 @@ typedef struct {
     uint64_t work_event_depth; /* events, a power of two, at most 1024 */
     uint64_t work_noc;         /* the work cluster's tile: x | y << 16 */
     uint64_t work_noc_addr;    /* NoC address there of KMD_WORK_* (64-byte aligned) */
+    uint64_t dyn_seg;          /* the program's dynamic segment (dynamic.h); 0: none */
 } kmd_args_t;
 
 /* The ready block: the host waits for `mark` (its buffer is zeroed before the run), as
@@ -259,7 +265,7 @@ static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u
 
-KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 192, "kmd_args_t is 192 bytes");
+KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 200, "kmd_args_t is 200 bytes");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, work_cmds) == 152, "work_cmds at 152");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, upload_bytes) == 144, "upload_bytes at 144");
 KMD_STATIC_ASSERT(sizeof(kmd_ready_t) == 16, "the ready block is one 16-byte store");
@@ -289,6 +295,7 @@ KMD_STATIC_ASSERT(
     KMD_LIM_ACKS + KM_RING_SLOTS * KM_ACK_STRIDE <= KMD_LIM_HRING, "LIM: ack words"
 );
 KMD_STATIC_ASSERT(
-    KMD_LIM_HRING + KMD_HOST_DEPTH_MAX * 64u <= KMD_LIM_BYTES, "LIM: host ring"
+    KMD_LIM_HRING + KMD_HOST_DEPTH_MAX * 64u <= KMD_LIM_DYN, "LIM: host ring"
 );
+KMD_STATIC_ASSERT(KMD_LIM_DYN + 16u * KM_CORES_MAX <= KMD_LIM_BYTES, "LIM: lines");
 KMD_STATIC_ASSERT((KMD_HOST_DEPTH_MAX & (KMD_HOST_DEPTH_MAX - 1u)) == 0, "power of 2");
