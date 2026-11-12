@@ -36,6 +36,7 @@ DEFAULTS = {
     "deadline_passes": None,
     "cancel_pass": None,
     "max_passes": 100_000,
+    "kept": 0,
 }
 
 
@@ -60,6 +61,7 @@ def run(upload, bindings, params, engine=None):
         deadline_passes=p["deadline_passes"],
         cancel_pass=p["cancel_pass"],
         max_passes=p["max_passes"],
+        kept=p["kept"],
         engine=engine,
     )
 
@@ -82,6 +84,7 @@ def expected(upload, bindings, params, engine=None):
         "regs": r.regs,
         "runs": r.runs,
         "stopped_grid": r.stopped,
+        "kept": r.kept,
         "issued": [
             {
                 "run": x.run,
@@ -285,6 +288,19 @@ def cancelled():
     return g, [], {"delay": None, "cancel_pass": 3}
 
 
+def kept_graph():
+    """The keep bit: the graph runs as any other and stays kept after its end."""
+    g = Graph(keep=True)
+    g.record(SEG_A, team=(0, 1), args=[5])
+    return g, [], {"kept": 7}
+
+
+def kept_table_full():
+    """The keep bit while eight graphs are kept: refused, reason 15."""
+    g, bindings, params = kept_graph()
+    return g, bindings, {**params, "kept": 8}
+
+
 def too_many_bindings():
     g = Graph()
     g.join()
@@ -326,6 +342,7 @@ BAD = {
     "bad_magic": lambda d: _patch_word(d, 0, "<I", 0x4B4D5354),
     "bad_step_limit": lambda d: _patch_word(d, 40, "<I", gr.MAX_STEPS + 1),
     "bad_size": lambda d: d + bytes(64),
+    "bad_header_flags": lambda d: _patch_word(d, 44, "<I", 2),
     "bad_kind": lambda d: _patch_node(d, 2, kind=0),
     "bad_flags": lambda d: _patch_node(d, 2, flags=1),
     "bad_skip_reg": lambda d: _patch_node(d, 1, skip_reg=16),
@@ -364,6 +381,8 @@ GOOD = [
     deadline,
     cancelled,
     too_many_bindings,
+    kept_graph,
+    kept_table_full,
 ]
 
 
@@ -411,6 +430,13 @@ def main(argv):
         else:
             (DATA / f"{name}.bin").write_bytes(upload)
             (DATA / f"{name}.json").write_text(text)
+    owned = {f"{name}{ext}" for name, *_ in references() for ext in (".bin", ".json")}
+    for stale in sorted(p for p in DATA.iterdir() if p.name not in owned):
+        if check_only:
+            print(f"{stale.name}: not a reference")
+            differ += 1
+        else:
+            stale.unlink()
     print(f"{len(references())} references, {differ} differences")
     return 1 if differ else 0
 

@@ -20,6 +20,9 @@
 #define KM_GRAPH_STEP_OPS 64u /* a step ends after a CPU node once it ran this many */
 #define KM_GRAPH_MAX_ACTIVE 2u
 #define KM_GRAPH_MAX_KEPT 8u
+/* Header flag: the graph is kept after it ends. It runs in place, so the host does not
+   reuse its range of the upload region while it is kept; nothing is evicted. */
+#define KM_GRAPH_KEEP 1u
 #define KM_GRAPH_NONE 0xFFu      /* no register: skip_reg, result_reg, again_reg */
 #define KM_GRAPH_NO_NODE 0xFFFFu /* error not tied to a node */
 
@@ -40,9 +43,13 @@
 #define KM_EV_GRAPH_ERROR 9u /* aux = reason | node << 8 */
 
 /* Error reasons beyond the stream's KM_SERR_* (1 to 11, same meaning). */
-#define KM_SERR_NODE 12u /* bad kind, flags, unused field or slice */
-#define KM_SERR_EDGE 13u /* bad successor list or predecessor count */
-#define KM_SERR_RUNS 14u /* `again` still set after max_runs rounds */
+#define KM_SERR_NODE 12u      /* bad kind, flags, unused field or slice */
+#define KM_SERR_EDGE 13u      /* bad successor list or predecessor count */
+#define KM_SERR_RUNS 14u      /* `again` still set after max_runs rounds */
+#define KM_SERR_KEPT_FULL 15u /* the keep bit while 8 graphs are kept */
+
+/* KM_SEG_CANCEL with the req of a kept graph: a running one is cancelled (reason 10)
+   and stays kept; one not running is dropped and its range freed. */
 
 typedef struct {
     uint32_t magic, version;
@@ -52,7 +59,8 @@ typedef struct {
     uint32_t max_runs;    /* rounds at most, the first included */
     uint32_t deadline_us; /* for each record; 0 is the kernel's default */
     uint32_t step_limit;  /* micro-ops one CPU node may run, 1 to KM_GRAPH_MAX_STEPS */
-    uint32_t pad[5];
+    uint32_t flags;       /* KM_GRAPH_KEEP; the other bits are 0 */
+    uint32_t pad[4];
 } km_graph_t;
 
 typedef struct {
@@ -68,6 +76,7 @@ KM_STATIC_ASSERT(sizeof(km_graph_t) == 64, "the header is one 64-byte line");
 KM_STATIC_ASSERT(sizeof(km_node_t) == 16, "a node is 16 bytes");
 KM_STATIC_ASSERT(offsetof(km_graph_t, req) == 24, "req is header word 6");
 KM_STATIC_ASSERT(offsetof(km_graph_t, step_limit) == 40, "header words");
+KM_STATIC_ASSERT(offsetof(km_graph_t, flags) == 44, "header words");
 KM_STATIC_ASSERT(offsetof(km_node_t, result_reg) == 8, "node fields");
 KM_STATIC_ASSERT(offsetof(km_node_t, succ_off) == 10, "node fields");
 KM_STATIC_ASSERT(KM_GRAPH_MAX_NODES <= KM_GRAPH_NO_NODE, "node numbers fit 16 bits");

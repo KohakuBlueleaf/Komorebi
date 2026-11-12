@@ -26,7 +26,8 @@
   "delay": 0,
   "deadline_passes": null,
   "cancel_pass": null,
-  "max_passes": 100000
+  "max_passes": 100000,
+  "kept": 0
  },
  "expect": {
   "check": null,
@@ -55,6 +56,7 @@
   ],
   "runs": 0,
   "stopped_grid": false,
+  "kept": false,
   "issued": [],
   "events": [
    [

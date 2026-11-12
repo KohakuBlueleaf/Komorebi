@@ -24,6 +24,7 @@ STEP = 16
 STEP_OPS = 64
 MAX_ACTIVE = 2
 MAX_KEPT = 8
+KEEP = 1
 NONE = 0xFF
 NO_NODE = 0xFFFF
 LINE = st.LINE
@@ -33,14 +34,14 @@ REGS = st.REGS
 NODE_RECORD, NODE_CPU, NODE_JOIN = 1, 2, 3
 GRUN_UPLOAD, GRUN_KEPT = 1, 2
 EV_GRAPH, EV_GRAPH_END, EV_GRAPH_ERROR = 7, 8, 9
-ERR_NODE, ERR_EDGE, ERR_RUNS = 12, 13, 14
+ERR_NODE, ERR_EDGE, ERR_RUNS, ERR_KEPT_FULL = 12, 13, 14, 15
 
 # kmg_step's answers (RUNNING, END and ERROR are also the phase) and the node states
 RUNNING, ROUND, END, ERROR = 0, 1, 2, 3
 WAITING, READY, FLIGHT, DONE = 0, 1, 2, 3
 ISSUED, BUSY = 0, 1
 
-HEADER = struct.Struct("<11I20x")
+HEADER = struct.Struct("<12I16x")
 HEADER_FIELDS = (
     "magic",
     "version",
@@ -53,6 +54,7 @@ HEADER_FIELDS = (
     "max_runs",
     "deadline_us",
     "step_limit",
+    "flags",
 )
 NODE = struct.Struct("<4B2H2B3H")
 NODE_BYTES = 16
@@ -85,7 +87,7 @@ GraphRecord = namedtuple(
     "GraphRecord", "node run seq slot seg first count flags args pass_index queued"
 )
 GraphSimResult = namedtuple(
-    "GraphSimResult", "records events status error regs runs passes stopped"
+    "GraphSimResult", "records events status error regs runs passes stopped kept"
 )
 
 
@@ -214,9 +216,11 @@ class CpuNode(Node):
 class Graph:
     """A graph under construction, or one decoded from an upload."""
 
-    def __init__(self, deadline_us=0, max_runs=1, step_limit=MAX_STEPS, req=1):
+    def __init__(
+        self, deadline_us=0, max_runs=1, step_limit=MAX_STEPS, req=1, keep=False
+    ):
         self.deadline_us, self.max_runs = deadline_us, max_runs
-        self.step_limit, self.req = step_limit, req
+        self.step_limit, self.req, self.keep = step_limit, req, bool(keep)
         self._check_fields()
         self.nodes = []
         self._templates = []
@@ -421,6 +425,7 @@ class Graph:
         again = NONE if self._again is None else self._again.index
         head = [MAGIC, VERSION, len(rows), len(edges), len(ops), len(self._templates)]
         head += [self.req, again, self.max_runs, self.deadline_us, self.step_limit]
+        head += [KEEP if self.keep else 0]
         data = HEADER.pack(*head)
         data += b"".join(NODE.pack(*r[:7], 0, r.succ_off, r.succ_n, 0) for r in rows)
         data += bytes(-len(rows) * NODE_BYTES % LINE)
@@ -446,6 +451,7 @@ class Graph:
             raise GraphFormatError(error)
         h, rows, edges, ops, templates = _parse(data)
         g = cls(h["deadline_us"], h["max_runs"], h["step_limit"], h["req"])
+        g.keep = bool(h["flags"] & KEEP)
         g._next_reg = REGS
         if h["again_reg"] != NONE:
             g._again = Reg(h["again_reg"])
@@ -589,7 +595,9 @@ def check(data):
         return header
     if _bad_reg(h["again_reg"]) or h["max_runs"] == 0:
         return header
-    if not 1 <= h["step_limit"] <= MAX_STEPS or len(data) != _layout(h)[3]:
+    if not 1 <= h["step_limit"] <= MAX_STEPS or h["flags"] & ~KEEP:
+        return header
+    if len(data) != _layout(h)[3]:
         return header
     h, rows, edges, ops, templates = _parse(data)
     seen = [0] * h["n_nodes"]
@@ -826,23 +834,24 @@ def simulate(
     deadline_passes=None,
     cancel_pass=None,
     max_passes=100_000,
+    kept=0,
     engine=None,
 ):
-    """Run an upload as the kernel would and return a `GraphSimResult`.
-
-    Pass order, completion model and parameters: docs/graphs.md, "The simulator".
-    `engine` is the executor to drive (default `Executor()`).
+    """Run an upload as the kernel would and return a `GraphSimResult`. `kept`: graphs
+    the kernel keeps already; `engine`: the executor (default `Executor()`). Pass
+    order, completion model, parameters: docs/graphs.md, "The simulator".
     """
     bad = check(data)
     req = struct.unpack_from("<I", data, 24)[0] if len(data) >= 28 else 0
+    keep = not bad and bool(HEADER.unpack_from(data)[11] & KEEP)
+    if not bad and keep and kept >= MAX_KEPT:
+        bad = GraphError(ERR_KEPT_FULL, NO_NODE)
+    eng = engine if engine is not None else Executor()
+    if not bad and eng.start(data, list(bindings), n_cores):
+        bad = GraphError(st.ERR_HEADER, NO_NODE)
     if bad:
         events = [Event(EV_GRAPH_ERROR, req, bad.reason | bad.node << 8, 0, 0)]
-        return GraphSimResult([], events, "error", bad, [0] * REGS, 0, 1, False)
-    eng = engine if engine is not None else Executor()
-    if eng.start(data, list(bindings), n_cores):
-        bad = GraphError(st.ERR_HEADER, NO_NODE)
-        events = [Event(EV_GRAPH_ERROR, req, bad.reason | bad.node << 8, 0, 0)]
-        return GraphSimResult([], events, "error", bad, [0] * REGS, 0, 1, False)
+        return GraphSimResult([], events, "error", bad, [0] * REGS, 0, 1, False, False)
     sim = _Sim(eng, n_cores, delay, result, deadline_passes, req)
     for p in range(max_passes):
         status = sim.run_pass(p, cancel_pass == p)
@@ -850,11 +859,11 @@ def simulate(
             err = GraphError(*eng.error) if status == "error" else None
             return GraphSimResult(
                 sim.records, sim.events, status, err, list(eng.regs), eng.runs, p + 1,
-                sim.stopped,
+                sim.stopped, keep,
             )  # fmt: skip
     regs = list(eng.regs)
     return GraphSimResult(
-        sim.records, sim.events, "stuck", None, regs, eng.runs, max_passes, False
+        sim.records, sim.events, "stuck", None, regs, eng.runs, max_passes, False, keep
     )
 
 

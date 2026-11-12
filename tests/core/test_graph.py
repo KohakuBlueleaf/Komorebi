@@ -87,6 +87,8 @@ def test_constants_match_the_header():
         "ERR_NODE": "KM_SERR_NODE",
         "ERR_EDGE": "KM_SERR_EDGE",
         "ERR_RUNS": "KM_SERR_RUNS",
+        "ERR_KEPT_FULL": "KM_SERR_KEPT_FULL",
+        "KEEP": "KM_GRAPH_KEEP",
     }
     for name, header_name in pairs.items():
         assert getattr(gr, name) == H[header_name], name
@@ -209,6 +211,7 @@ def test_both_executors_give_every_saved_reference_answer():
                 deadline_passes=p["deadline_passes"],
                 cancel_pass=p["cancel_pass"],
                 max_passes=p["max_passes"],
+                kept=p["kept"],
                 engine=engine,
             )
             issued = [
@@ -218,8 +221,9 @@ def test_both_executors_give_every_saved_reference_answer():
             ]
             assert issued == want["issued"], path.name
             assert [list(e[:4]) for e in r.events] == want["events"], path.name
-            assert [r.status, r.regs, r.runs] == [
+            assert [r.status, r.regs, r.runs, r.kept] == [
                 want["status"],
                 want["regs"],
                 want["runs"],
+                want["kept"],
             ], path.name

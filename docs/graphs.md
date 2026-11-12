@@ -43,10 +43,10 @@ upload = g.encode()
 bindings = g.binding_values(it=0)
 ```
 
-- `Graph(deadline_us=0, max_runs=1, step_limit=4096, req=1)`: the deadline applies to
-  every record (0 is the kernel's default); `max_runs` bounds the rounds; `step_limit`
-  bounds the micro-ops one CPU node may run (1 to 4,096); `req` is the request id of
-  the graph's events.
+- `Graph(deadline_us=0, max_runs=1, step_limit=4096, req=1, keep=False)`: the
+  deadline applies to every record (0 is the kernel's default); `max_runs` bounds the
+  rounds; `step_limit` bounds the micro-ops one CPU node may run (1 to 4,096); `req` is
+  the request id of the graph's events; `keep` makes it a kept graph (below).
 - Nodes are numbered in the order they are made, and `after` names earlier nodes only,
   so the upload's order is always one in which predecessors come first. A node has at
   most four predecessors.
@@ -109,7 +109,7 @@ All fields are little-endian; each part is padded with zeros to a 64-byte line.
 
 | Part | Layout |
 |---|---|
-| Header | 64 bytes, eleven words: `magic` 0x4B4D4752 ("KMGR"), `version` 1, `n_nodes`, `n_edges`, `n_ops`, `n_records`, `req`, `again_reg` (0xFF: one round), `max_runs`, `deadline_us`, `step_limit`; then 20 bytes ignored |
+| Header | 64 bytes, twelve words: `magic` 0x4B4D4752 ("KMGR"), `version` 1, `n_nodes`, `n_edges`, `n_ops`, `n_records`, `req`, `again_reg` (0xFF: one round), `max_runs`, `deadline_us`, `step_limit`, `flags` (`KM_GRAPH_KEEP` 1, other bits 0); then 16 bytes ignored |
 | Nodes | `n_nodes` times 16 bytes: `kind`, `flags`, `n_pred`, `skip_reg` (one byte each), `arg` (16 bits: the template of a `RECORD`, the first micro-op of a `CPU`), `n_ops` (16 bits: a `CPU`'s slice length), `result_reg`, a pad byte, `succ_off`, `succ_n` (16 bits each), 2 pad bytes |
 | Edges | `n_edges` 16-bit node numbers: the successor lists, node after node |
 | Micro-ops | `n_ops` times 16 bytes, the stream's encoding; the `CPU` slices, node after node |
@@ -127,6 +127,15 @@ The host writes the upload as whole lines into the kernel's upload region and se
 binding block, `a4` its count of values); a kept graph is run again with
 `a2 = KM_GRUN_KEPT` and `a0` its `req`.
 
+**Kept graphs.** A graph whose header has `KM_GRAPH_KEEP` stays kept after it ends,
+whether it ended or failed. The kernel runs uploads in place and copies nothing, so a
+kept graph stays where the host wrote it, and the host does not give that range of the
+upload region to another upload while the graph is kept. At most eight graphs are kept;
+a ninth upload with the bit is refused with reason 15, and nothing is evicted by
+itself. `KM_SEG_CANCEL` with the `req` of a kept graph that is running cancels the run
+(reason 10) and keeps the graph; for one that is not running it drops the graph and
+frees its range.
+
 ## The check
 
 `check(upload)` (Python) and `kmg_check(upload, bytes)` (C) return `None` / 0 or the
@@ -134,8 +143,8 @@ reason and node of the error event; the first fault in this order wins.
 
 1. Header (reason 1, node 0xFFFF): at least 64 bytes and a multiple of 64; magic and
    version; `n_nodes` 1 to 256; `n_edges`, `n_ops`, `n_records` within their limits;
-   `again_reg` 0xFF or below 16; `max_runs` not 0; `step_limit` 1 to 4,096; the size
-   equals the layout's exactly.
+   `again_reg` 0xFF or below 16; `max_runs` not 0; `step_limit` 1 to 4,096; `flags`
+   within `KM_GRAPH_KEEP`; the size equals the layout's exactly.
 2. Each node in order, at that node: `kind` 1 to 3 and `flags` 0 (reason 12);
    `n_pred` at most 4 (13); `skip_reg` and `result_reg` 0xFF or below 16 (4). A
    `RECORD`: template index below `n_records` and the template valid (5); `n_ops` 0,
@@ -182,6 +191,7 @@ the slice's end finishes the node.
 | 12 | bad node: kind, flags, a field its kind does not use, a slice | the node, or 0xFFFF |
 | 13 | bad successor list or predecessor count | the node, or 0xFFFF |
 | 14 | `again` still set after `max_runs` rounds | 0xFFFF |
+| 15 | `KM_GRAPH_KEEP` while eight graphs are kept | 0xFFFF |
 
 ## The C engine
 
@@ -214,8 +224,9 @@ same = simulate(upload, bindings=bindings, delay=2, engine=NativeExecutor())
 ```
 
 `simulate(upload, bindings=(), n_cores=119, delay=0, result=None,
-deadline_passes=None, cancel_pass=None, max_passes=100_000, engine=None)` runs the
-check, then the graph against a model of the kernel. Each pass: completions due are
+deadline_passes=None, cancel_pass=None, max_passes=100_000, kept=0, engine=None)` runs
+the check, refuses a kept graph when `kept` graphs are kept already and that is eight,
+then runs the graph against a model of the kernel. Each pass: completions due are
 swept in slot order; a record still busy `deadline_passes` passes after its issue ends
 the graph (the lowest slot's); a cancel in `cancel_pass`; one executor step. Records
 take the lowest free of 16 slots; an exclusive record waits while a busy team overlaps
@@ -225,13 +236,13 @@ and `result` are as for streams. `engine` is the executor to drive: `Executor()`
 Python by default, or `NativeExecutor()` for the C engine.
 
 It returns `GraphSimResult(records, events, status, error, regs, runs, passes,
-stopped)`: every record as `GraphRecord(node, run, seq, slot, seg, first, count, flags,
+stopped, kept)` (`kept`: the graph stays kept after this run): every record as `GraphRecord(node, run, seq, slot, seg, first, count, flags,
 args, pass_index, queued)`; events as `Event(kind, req, aux, extra, pass_index)`;
 `status` `"ended"`, `"error"` or `"stuck"`.
 
 ## Reference graphs
 
-`experiments/graph_checks/graphs/` holds 36 named graphs as `.bin` uploads with a
+`experiments/graph_checks/graphs/` holds 39 named graphs as `.bin` uploads with a
 `.json` beside each: the bindings, the simulation parameters and the answer (the check,
 status, error, final registers, rounds, the set of records issued and the events). They
 are for another implementation, such as the dispatch kernel's, to replay; the set and

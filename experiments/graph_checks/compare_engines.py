@@ -67,7 +67,7 @@ def random_graph(rng):
 
 
 def outcome(r):
-    return (r.status, r.error, r.records, r.events, r.regs, r.runs, r.stopped)
+    return (r.status, r.error, r.records, r.events, r.regs, r.runs, r.stopped, r.kept)
 
 
 def compare_runs(rng, lib, n):

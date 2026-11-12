@@ -139,7 +139,7 @@ uint32_t kmg_check(const void* upload, uint32_t bytes) {
         return FAULT(KM_SERR_HEADER, none);
     }
     if (bad_reg(h->again_reg) || h->max_runs == 0 || h->step_limit == 0 ||
-        h->step_limit > KM_GRAPH_MAX_STEPS) {
+        h->step_limit > KM_GRAPH_MAX_STEPS || (h->flags & ~KM_GRAPH_KEEP) != 0) {
         return FAULT(KM_SERR_HEADER, none);
     }
     uint32_t at_edges = sizeof(km_graph_t) + line_up(h->n_nodes * sizeof(km_node_t));
