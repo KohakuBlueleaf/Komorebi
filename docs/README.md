@@ -41,6 +41,8 @@ between cores, deciding on the card and the thread language are planned.
 ### Reference
 
 - [Host API](reference/host.md): `Program`, `Session` and `Run`; errors; builds.
+- [Ports, emit and reduce](reference/ports.md): the device calls that send a value to
+  one core, groups of a team, and reduce by owner and by tree.
 - [Lane broadcast](reference/lanes.md): one sender to a row or a column of a team;
   the device calls, the host layout, the rules and the give-up.
 - [Micro-op streams](streams.md): the upload format, the builder, the check, the
