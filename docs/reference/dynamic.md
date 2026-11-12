@@ -64,9 +64,8 @@ cp.run([&](const km_record_t& r) {
 | `quota()`, `count()` | spawns left on this core; members in the team |
 | `wait_stop()` | waits for the stop word (a test of the run's timeout) |
 
-An item is `item_bytes / 4` words. Word 0 of each 16-byte chunk (words 0, 4, 8 and 12 of
-a 64-byte item) belongs to the runtime: it holds the item's landing mark. The program's
-fields go in the other words; the hop example uses words 1, 2, 3 and 5.
+An item is `item_bytes / 4` words. Word 0 belongs to the runtime: it holds the item's
+mark. The program's fields go in the other words; the hop example uses words 1 to 4.
 
 ## The host side
 
@@ -104,10 +103,29 @@ Every core has a queue of `queue_items` items in DRAM. A sender never waits for 
 receiver: the writer collects outgoing items in bins (one destination each, up to 32
 items), reserves positions in the receiver's queue with one atomic add on the
 receiver's tail word, writes the items to DRAM and counts them as sent. The receiver's
-reader takes items from the head of its queue in order, as packets of up to 32, and
-accepts an item only once its marks show that it has landed whole. A bin is sent when
+reader takes items from the head of its queue in order, as packets of up to 32. A bin is sent when
 it is full, when its slot is needed for another destination, and when the core runs
 out of input, so nothing waits in a bin while the core is idle.
+
+**Marks.** Word 0 of the item at queue position `p` is `p + 1` once it is valid; 0 is
+empty. Every core zero-fills its own queue at start-up, before it reports ready, and
+positions never restart while the program stays loaded, so an address never holds the
+mark of the position the reader is waiting for unless that item was written for it. A
+core refuses a run once its positions have reached 2^30 (reason `full`); reload the
+program then.
+
+**Commit.** Only a 16-byte chunk is known to land whole, so a packet commits
+explicitly: the writer sends the packet's items with the first item's mark 0, waits
+for those writes, then rewrites the first item's first 16 bytes with its mark. The
+reader takes the prefix of valid marks from its head; it cannot pass an uncommitted
+first item, and once that item is valid the whole packet had landed.
+
+**Reservation.** The atomic add's answer goes to a return address programmed on every
+call, to a 16-byte slot of the sender's own control block (the firmware's default
+return slot is shared). A sender waits for the answer to replace a sentinel, not only
+for the atomic's count. A program that adds its own barrier between cores at start-up
+must allow more than the launch skew: under slow dispatch a bound of 7 ms let 47 of
+119 cores give up; the reservation probe allows one second.
 
 So a full inbox cannot deadlock the grid, and while `max_live <= queue_items` holds no
 queue can overflow. The cost is that every hop crosses DRAM twice.
@@ -141,17 +159,19 @@ the same loaded program.
 
 | Code | Reason | Meaning |
 |---|---|---|
-| 1 | gap | a reserved position was not written within the wait limit |
-| 2 | overflow | more items than `queue_items` were in one core's queue |
-| 3, 4, 5, 7 | atomic, flush, read, line | a reservation, the item writes, the item reads or the status line did not finish within the wait limit |
-| 6 | in page | the compute kernel did not free a packet page within the wait limit (a body that stalls) |
-| 8 | bad dest | `hop` or `spawn` named a member outside the team |
-| 9, 10, 11 | next, out page, outbox | a wait between the compute kernel and the reader or writer ran out |
-| 12 | stopped | the stop word was set |
-| 13 | align | the packet buffer or the item size is not a multiple of 64 bytes |
-| 14 | lost | a reservation was answered but its returned position never landed; word 3 names the destination |
+| 19 | gap | a reserved position was not written within the wait limit; word 3 is the word 0 found there |
+| 20 | overflow | more items than `queue_items` were in one core's queue |
+| 21, 22, 23, 25 | atomic, flush, read, line | a reservation, the item writes, the item reads or the status line did not finish within the wait limit |
+| 24 | in page | the compute kernel did not free a packet page within the wait limit (a body that stalls) |
+| 26 | bad dest | `hop` or `spawn` named a member outside the team |
+| 27, 28, 29 | next, out page, outbox | a wait between the compute kernel and the reader or writer ran out |
+| 30 | stopped | the stop word was set |
+| 31 | align | the packet buffer or the item size is not a multiple of 64 bytes |
+| 32 | lost | a reservation was answered but its returned position never landed; word 3 names the destination |
+| 33 | fill | the start-up zero fill of the queue did not finish |
+| 34 | full | this core's queue positions reached 2^30 in this load |
 
-The codes are `kDyn*` in `km_dyn.hpp`.
+The codes follow the runtime's where codes (0 to 18) and are `kDyn*` in `km_dyn.hpp`.
 
 ## Not in this version
 

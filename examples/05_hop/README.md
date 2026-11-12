@@ -1,8 +1,8 @@
 # 05 hop
 
 A dynamic segment: items move between cores as their data decides, and the run ends by
-itself. An item is `{id, hops left, state, sum}` (words 1, 2, 3 and 5 of 16; the
-runtime owns words 0, 4, 8 and 12). Each visit advances a small generator in `state`
+itself. An item is `{id, hops left, state, sum}` (words 1 to 4 of 16; the
+runtime owns word 0). Each visit advances a small generator in `state`
 and adds it to `sum`; while hops are left the item hops to member `state mod count` of
 the team, and when none are left it retires into the core's totals. The host replays
 every item in numpy and checks each core's count, total and visits.
@@ -45,14 +45,13 @@ items, queues of 16384 items, `max_live` 16384 (quota 137 per core).
 
 | Case | Result |
 |---|---|
-| 10000 items, 100 hops each (10^6 hops) | exact; 1010000 items sent and consumed; issue to quiet end 7.70 ms; last retire to quiet end 33.9 µs; quiet end to the end record's completion 5.6 µs |
-| 10000 items, 10 hops each, every hop to member 0 | exact; issue to quiet end 23.5 ms |
+| 10000 items, 100 hops each (10^6 hops) | exact in 17 of 18 runs; 1010000 items sent and consumed; issue to quiet end 11.4 ms; last retire to quiet end 28 to 33 µs; quiet end to the end record's completion 5.7 µs |
+| 10000 items, 10 hops each, every hop to member 0 | exact; issue to quiet end 22.9 ms |
 | member 3 spawns until its quota is gone (8 cores) | 2 seeded items and 135 spawns, then `spawn` returned false; exact |
 | member 2 stalls in its body (8 cores) | the run stopped; core 2 named, its reader gave up waiting for a free packet page; the next run on the card exact, no reset |
 | `max_live` 1000000 with queues of 65536 | refused before any device opened |
 
-Not every run passes yet: about one run of 10^6 hops in four stops with reason 14
-(`lost`). A writer's atomic add is counted as answered and the destination's tail has
+Not every run passes yet: one run of 10^6 hops in 18 stopped with reason 32 (`lost`). A writer's atomic add is counted as answered and the destination's tail has
 moved, but the returned position never lands in the writer's L1, so the reserved
 positions are never written and the destination reports the gap. The cause is open.
 
