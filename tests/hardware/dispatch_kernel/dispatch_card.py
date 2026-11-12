@@ -1527,6 +1527,152 @@ def case_streams(device, args):
     return out
 
 
+def replay_upload(data):
+    """A reference upload with every template's segment set to the stand-in worker's
+    DK_SEG_RESULT, which runs on any team and answers dk_result(a0, a1)."""
+    b = bytearray(data)
+    if len(b) < 64:
+        return bytes(b)
+    n_ops, n_records = (int(v) for v in np.frombuffer(bytes(b[8:16]), dtype=np.uint32))
+    templates = 64 + -(-n_ops * 16 // 64) * 64
+    for t in range(n_records):
+        at = templates + 80 * t + 4
+        if at < len(b) and 1 <= b[at] <= 239:
+            b[at] = SEG_RESULT
+    return bytes(b)
+
+
+def pass_timed(params):
+    """Whether a reference's answer rests on the simulator's passes (a deadline or a
+    cancel in passes, a record never acknowledged, a pass limit)."""
+    d = params["delay"]
+    never = d is None or (isinstance(d, dict) and None in d.get("by_seq", {}).values())
+    return bool(
+        params["deadline_passes"] is not None
+        or params["cancel_pass"] is not None
+        or never
+        or params["default_deadline_passes"] != 1_000_000
+        or params["max_passes"] < 100_000
+    )
+
+
+# Completion models the replay simulates a reference under: the card's own timing is
+# none of them, so only what all of them agree on is compared exactly.
+REPLAY_DELAYS = [0, 1, 4, 16, lambda r: r.seq % 5, lambda r: 7 * (r.seq % 3)]
+
+
+def replay_sims(data, n_cores, region):
+    """The reference simulated on this grid under every model of REPLAY_DELAYS."""
+    return [
+        ks.simulate(
+            data,
+            n_cores=n_cores,
+            delay=d,
+            result=lambda r: dk_result(*(list(r.args) + [0, 0])[:2]),
+            region_size=region,
+            ticks_per_pass=tpp,
+        )
+        for d in REPLAY_DELAYS
+        for tpp in (1000, 37)
+    ]
+
+
+def queue_faults(entries, n_cores):
+    """Replays the trace's slots: every queued issue must take the lowest team that
+    overlaps no busy one. Returns the faults and the most queued records in flight."""
+    busy, faults, most = {}, [], 0
+    for kind_, slot, req, first, count, p, src in entries:
+        if kind_ == TRACE_FREE:
+            busy.pop(slot, None)
+            continue
+        others = [(f, c) for f, c, _ in busy.values()]
+        if kind_ == TRACE_QUEUED and first != alloc(others, count, n_cores):
+            faults.append([src, req, first, count, others, p])
+        busy[slot] = (first, count, kind_ == TRACE_QUEUED)
+        most = max(most, sum(q for _, _, q in busy.values()))
+    return faults, most
+
+
+def case_replay(device, args):
+    """Saved references with records that do not rest on the simulator's passes, as
+    DK_SEG_RESULT (test image): events and teams in order where every completion model
+    agrees, else counts and the last event; queued records take the lowest free team;
+    the grid ran the traced teams."""
+    if args.image == IMAGE:
+        args.image = VERIFY_IMAGE
+    n_cores, trace, plans = 0, {}, []
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        base = stream_base(plan)
+        out = {"tag": plan.tag, "timed": 0, "exact": 0, "sets": 0}
+        for name, data, saved in references():
+            if pass_timed(saved["params"]):
+                out["timed"] += 1
+                continue
+            data = replay_upload(data)
+            sims = replay_sims(data, n_cores, plan.upload_bytes - base)
+            if not sims[0].records:
+                continue
+            records = {tuple((r.first, r.count) for r in s.records) for s in sims}
+            events = {tuple((e.kind, e.req, e.aux) for e in s.events) for s in sims}
+            exact = len(records) == 1 and len(events) == 1
+            out["exact" if exact else "sets"] += 1
+            req = sims[0].events[0].req if sims[0].events else 0
+            put_upload(plan, base, data)
+            plan.submit(run_command(base, len(data)))
+            got = got_events(stream_events(plan, req), req)
+            # An ended stream's records may still run: a ping after a short wait.
+            time.sleep(0.005)
+            i = plan.submit(command(SEG_PING))
+            pong = [e for e in plan.take(plan.seen + 1, 5.0) if e[1] == i]
+            plans.append((name, exact, sims[0], got, len(events) == 1, bool(pong)))
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    def after(plan, fin):
+        trace["head"], trace["entries"] = read_trace(plan)
+
+    out, fin, cnt = with_kernel(device, args, body, depth=16, after=after)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    issues = [e for e in trace["entries"] if e[0] in (TRACE_ISSUE, TRACE_QUEUED)]
+    engine = [e for e in issues if e[6] == SOURCE_ENGINE]
+    wrong, at = [], 0
+    for name, exact, sim, got, events_fixed, pong in plans:
+        mine = engine[at : at + len(sim.records)]
+        at += len(sim.records)
+        want_events = [(e.kind, e.req, e.aux) for e in sim.events]
+        teams = [(e[3], e[4]) for e in mine]
+        if exact:
+            ok = teams == [(r.first, r.count) for r in sim.records]
+            ok = ok and got == want_events
+        else:
+            ok = sorted(c for _, c in teams) == sorted(r.count for r in sim.records)
+            ok = ok and got[-1:] == want_events[-1:]
+            ok = ok and (got == want_events or not events_fixed)
+        ok = ok and pong
+        if not ok:
+            wrong.append({"name": name, "got": got[-3:], "want": want_events[-3:]})
+    faults, most = queue_faults(trace["entries"], n_cores)
+    runs = np.zeros(n_cores, dtype=np.int64)  # EXIT, the host's one record, is no run
+    for e in engine:
+        runs[e[3] : e[3] + e[4]] += 1
+    out["wrong"], out["faults"] = wrong, faults[:8]
+    out["most_queued_in_flight"] = most
+    out["runs_ok"] = bool((cnt[:n_cores, C["run"]] == runs).all())
+    out["ok"] = bool(
+        finished_clean(fin, n_cores, out["cores"])
+        and not wrong
+        and not faults
+        and at == len(engine)
+        and out["runs_ok"]
+        and trace["head"][2] == 0
+    )
+    return out
+
+
 def case_stream_deadline(device, args):
     """A stream's record whose member --core waits for the stop word, header deadline
     --deadline-us: the stream ends with KM_SERR_DEADLINE at that ISSUE, the kernel with
@@ -1586,6 +1732,7 @@ CASES = {
     "excl": case_excl,
     "queue": case_queue,
     "streams": case_streams,
+    "replay": case_replay,
     "stream-deadline": case_stream_deadline,
     "verify": case_verify,
     "upload": case_upload,
@@ -1610,6 +1757,7 @@ SET = [
     ("result", {"n": 1000, **FED}),
     ("upload", {}),
     ("streams", {"n": 100}),
+    ("replay", {}),
     ("stream-deadline", {}),
 ]
 
