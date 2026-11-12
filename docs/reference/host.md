@@ -95,7 +95,8 @@ the device API, and then waits for the grid within `grid_timeout`.
 | Call | What it does |
 |---|---|
 | `issue(seg, team=None, args=(), exclusive=False)` | queues one record and returns its ticket (1, 2, ...). `seg` is a name or a number (`0` is NOP); `team` is `(first, count)`, default every core; `args` up to ten 32-bit words. Teams and segments are checked here. With `exclusive`, the record is held until no team in flight overlaps it |
-| `wait(tickets, timeout=10.0)` | stores queued commands up to the tickets in batches, reads events until each ticket has one; returns the `Event` (or a list) and forgets those tickets |
+| `issue_many(seg, firsts, counts, args=None, exclusive=False)` | queues n records at once and returns their tickets as a `range`. `seg`, `firsts` and `counts` are one value or n each; `args` is an `[n, m]` integer matrix (m at most 10) or None. Checked as `issue` checks, all before any is queued |
+| `wait(tickets, timeout=10.0)` | stores queued commands up to the tickets in batches, reads events until each ticket has one; returns the `Event` (or a list) and forgets those tickets. The stores and the event reads run in the native module with the GIL released |
 | `drain(timeout=10.0)` | the same for everything issued; returns how many events it waited for |
 | `event(ticket)` | `Event(ticket, kind, aux, ticks)` or None; `kind` is `done`, `timeout`, `pong` or `refused`; `ticks` is issue to completion in the X280's 50 MHz timer, `us` the same in microseconds |
 | `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index), its team |
@@ -104,8 +105,8 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `abort()` | the failure path: stops the kernel through the runtime, closes it, stops the grid from the host, reads back; raises `KernelFailed` if the runtime could not restore cluster 0 |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict, the raw words, the trace |
 
-`run.issue_s` and `run.flush_s` add up the host's time in `issue` and in the batched
-stores.
+`run.issue_s` adds up the host's time in `issue` and `issue_many`; `run.wait_s` the
+time in `wait` and `drain`, of which `run.native_s` was in the native loop.
 
 `trace()` returns a `komorebi.state.Trace`: `record(ticket)` gives each member's
 wall-clock words (taken, outputs written, completion sent, ring passes);

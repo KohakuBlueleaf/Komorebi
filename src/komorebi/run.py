@@ -3,9 +3,9 @@ read back state words and trace. The card is reached only through `backend`, so 
 bookkeeping is the same against a fake transport.
 """
 
-import collections
 import contextlib
 import time
+from array import array
 from typing import NamedTuple
 
 import numpy as np
@@ -23,6 +23,7 @@ from komorebi.errors import (
 
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
+COMPACT_ROWS = 4096  # released tickets kept before the columns are shifted
 
 
 class Event(NamedTuple):
@@ -48,14 +49,15 @@ def _seq_number(n):
 class Run:
     """Issues records to a loaded program and collects their events.
 
-    backend: `port` (push, poll, wait_events, host_word), `finish(timeout)` -> result
-    words and status, `abort()`, `read_back()` -> (state words, trace rows), `mhz`.
+    backend: `port` (enqueue, queued, wait, host_word, batch; it stores and reads in its
+    own loop), `finish(timeout)`, `abort()`, `read_back()` -> (words, trace), `mhz`.
     """
 
     def __init__(self, backend, grid, program=None, batch=64, h=None):
         self.h = h or abi.headers()
         self.backend = backend
         self.port = backend.port
+        self.port.batch = batch
         self._keep = bool(getattr(backend, "trace_cap", 0))  # the trace needs teams
         self.grid = grid
         self.cores = grid[0] * grid[1]
@@ -74,23 +76,39 @@ class Run:
             for n, v in k.items()
             if n.startswith("KMD_REFUSE_")
         }
+        self._nop, self._user_max = self.h["KM_SEG_NOP"], self.h["KM_SEG_USER_MAX"]
+        self._hdr, self._team_at, self._arg_at = self.h.positions
         self._next = 1  # the next ticket; command number = ticket mod 2**32
         self._next_seq = 1  # the kernel's sequence of the next record
-        self._queue = collections.deque()  # (ticket, words, team, exclusive)
-        self._flight = {}  # ticket -> team (None: a command to the kernel itself)
-        self._teams = {}  # ticket -> team, every record issued
-        self._seqs = {}  # ticket -> records issued up to it (see _seq_number)
-        self._events = {}
-        self._arrived = []  # tickets whose events arrived since the last look
+        self._new_tickets(1)
         self._refused = {}
         self._failure = None
         self._stopped = False
         self._result = None
         self._state = None
         self._trace = None
-        self.issue_s = 0.0  # host time in issue()
-        self.flush_s = 0.0  # host time storing batches
-        self.stored = 0
+        self.issue_s = 0.0  # host time in issue() and issue_many()
+        self.wait_s = 0.0  # host time in wait() and drain(), native loop included
+        self.native_s = 0.0  # of which in the native loop (stores, reading events)
+
+    def _new_tickets(self, base):
+        """Empty ticket columns from ticket `base` on, and an empty unsent block."""
+        self._base = base  # ticket of row 0 of the columns
+        self._handed = base  # tickets below this are with the port
+        self._oldest = base  # the oldest ticket without an event
+        self._first = np.zeros(0, np.int32)
+        self._count = np.zeros(0, np.int32)  # 0: a command to the kernel itself
+        self._seq = np.zeros(0, np.int64)  # 0: no sequence
+        self._status = np.zeros(0, np.uint32)
+        self._ticks = np.zeros(0, np.uint32)
+        self._has = np.zeros(0, bool)  # the event arrived
+        self._gone = np.zeros(0, bool)  # returned by wait() or forgotten
+        self._unsent()
+
+    def _unsent(self):
+        # issue() appends here; new objects, since numpy may still view the old ones
+        self._words, self._firsts, self._counts = array("I"), array("i"), array("i")
+        self._excl = array("B")
 
     # Issuing --------------------------------------------------------------------
 
@@ -99,17 +117,70 @@ class Run:
         count) (default every core); returns its ticket. Nothing is sent until a wait.
         """
         t0 = time.perf_counter()
-        seg = self.program.seg(seg) if self.program is not None else int(seg)
-        if not (seg == self.h["KM_SEG_NOP"] or 1 <= seg <= self.h["KM_SEG_USER_MAX"]):
+        if seg.__class__ is not int:
+            seg = self.program.seg(seg) if self.program is not None else int(seg)
+        if not (seg == self._nop or 1 <= seg <= self._user_max):
             raise ValueError(f"segment {seg}: not NOP and not in 1..KM_SEG_USER_MAX")
         team = self._team(team)
-        if len(args) > len(abi.ARG_WORDS):
+        if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a record has 10")
         if any(not 0 <= int(a) <= M32 for a in args):
             raise ValueError("arguments are 32-bit unsigned words")
         ticket = self._queue_command(seg, team, args, exclusive)
         self.issue_s += time.perf_counter() - t0
         return ticket
+
+    def issue_many(self, seg, firsts, counts, args=None, exclusive=False):
+        """Queues n records at once: `seg` a name, a number or n numbers, `firsts` and
+        `counts` the teams (n each, or one for all), `args` an [n, m] matrix of
+        32-bit words (m <= 10) or None. Returns the tickets as a range."""
+        t0 = time.perf_counter()
+        self._check_alive()
+        if isinstance(seg, str):
+            seg = self.program.seg(seg)
+        cols = [np.asarray(seg), np.asarray(firsts), np.asarray(counts)]
+        if args is not None:
+            args = np.asarray(args)
+            if args.ndim != 2 or args.shape[1] > len(self._arg_at):
+                raise ValueError("arguments are an [n, m] matrix with m <= 10")
+            if args.dtype.kind not in "iu":
+                raise ValueError("arguments are 32-bit unsigned words")
+            cols.append(np.zeros(args.shape[0], np.int64))  # its row count
+        if any(c.dtype.kind not in "iu" for c in cols[:3]):
+            raise ValueError("segments, firsts and counts are integers")
+        try:
+            n = np.broadcast_shapes(*(c.shape for c in cols))
+        except ValueError:
+            n = ()
+        if len(n) != 1:
+            raise ValueError("segments, firsts, counts and arguments: one row each")
+        segs, first, count = (np.broadcast_to(c, n).astype(np.int64) for c in cols[:3])
+        bad = ~((segs == self._nop) | ((segs >= 1) & (segs <= self._user_max)))
+        if bad.any():
+            raise ValueError(
+                f"segment {int(segs[bad][0])}: not NOP and not in 1..KM_SEG_USER_MAX"
+            )
+        bad = (count < 1) | (first < 0) | (first + count > self.cores)
+        if bad.any():
+            i = int(np.argmax(bad))
+            raise ValueError(
+                f"team ({int(first[i])}, {int(count[i])}) is not inside {self.cores} "
+                "cores"
+            )
+        words = np.zeros((n[0], 16), np.uint32)
+        words[:, self._hdr] = segs & 0xFF
+        words[:, self._team_at] = first | count << 16
+        if args is not None and args.size:
+            if args.min() < 0 or args.max() > M32:
+                raise ValueError("arguments are 32-bit unsigned words")
+            words[:, self._arg_at[: args.shape[1]]] = args
+        self._hand()
+        start = self._next
+        self._next += n[0]
+        excl = np.ones(n[0], np.uint8) if exclusive else None
+        self._send_block(words, first, count, excl)
+        self.issue_s += time.perf_counter() - t0
+        return range(start, self._next)
 
     def _team(self, team):
         if team is None:
@@ -124,194 +195,237 @@ class Run:
     def _queue_command(self, seg, team, args=(), exclusive=False):
         self._check_alive()
         first, count = team if team else (0, 0)
-        words = abi.record(seg, first, count, args, h=self.h)
+        w = [0] * 16
+        w[self._hdr] = seg & 0xFF
+        w[self._team_at] = first | count << 16
+        for at, value in zip(self._arg_at, args):
+            w[at] = int(value) & M32
+        self._words.extend(w)
+        self._firsts.append(first)
+        self._counts.append(count)
+        self._excl.append(1 if exclusive else 0)
         ticket = self._next
         self._next += 1
-        if team is not None:
-            self._teams[ticket] = team
-            self._seqs[ticket] = self._next_seq
-            self._next_seq += 1
-        self._queue.append((ticket, words, team, exclusive))
         return ticket
 
-    def _overlaps(self, team):
-        a0, a1 = team[0], team[0] + team[1]
-        for other in self._flight.values():
-            if other is not None and other[0] < a1 and a0 < other[0] + other[1]:
-                return True
-        return False
+    def _hand(self):
+        """Gives the records issued one by one to the port, as one block."""
+        if not self._counts:
+            return
+        n = len(self._counts)
+        words = np.frombuffer(self._words, np.uint32).reshape(n, 16)
+        first = np.frombuffer(self._firsts, np.int32)
+        count = np.frombuffer(self._counts, np.int32)
+        excl = np.frombuffer(self._excl, np.uint8)
+        self._send_block(words, first, count, excl if excl.any() else None)
+        self._unsent()
 
-    def _flush(self, upto):
-        """Stores queued commands up to ticket `upto` that fit, in batches of at most
-        `batch` (all lines, then one fence). Returns how many were stored."""
-        rows, tickets = [], []
-        for ticket, words, team, exclusive in self._queue:
-            if ticket > upto or len(rows) == self.batch:
-                break
-            if exclusive and (rows or self._overlaps(team)):
-                break  # held until no team in flight overlaps it
-            rows.append(words)
-            tickets.append((ticket, team))
-            if exclusive:
-                break
-        if not rows:
-            return 0
-        t0 = time.perf_counter()
-        n = self.port.push(np.asarray(rows, dtype=np.uint32))
-        self.flush_s += time.perf_counter() - t0
-        for ticket, team in tickets[:n]:
-            self._queue.popleft()
-            self._flight[ticket] = team
-        self.stored += n
-        return n
+    def _send_block(self, words, first, count, excl):
+        """Notes tickets handed .. handed + n - 1 (teams, sequences) and queues their
+        records in the port."""
+        n = len(words)
+        lo = self._handed - self._base
+        self._grow(lo + n)
+        rec = count > 0
+        self._first[lo : lo + n] = first
+        self._count[lo : lo + n] = count
+        self._seq[lo : lo + n] = np.where(rec, self._next_seq + np.cumsum(rec) - 1, 0)
+        self._next_seq += int(rec.sum())
+        self.port.enqueue(np.ascontiguousarray(words), excl)
+        self._handed += n
+
+    def _grow(self, rows):
+        have = len(self._has)
+        if rows <= have:
+            return
+        size = max(rows, 2 * have, 1024)
+        for name in ("_first", "_count", "_seq", "_status", "_ticks", "_has", "_gone"):
+            old = getattr(self, name)
+            new = np.zeros(size, old.dtype)
+            new[:have] = old
+            setattr(self, name, new)
 
     # Events -----------------------------------------------------------------------
 
     def _take(self, rows):
-        """Files a block of events (index, req, status, ticks). The command number
-        of an event is a ticket in flight, so its low 32 bits name it."""
+        """Files a block of events (index, req, status, ticks). Every event is of a
+        ticket from the oldest without one on, so its low 32 bits name it."""
         rows = np.asarray(rows).reshape(-1, 4)
-        base = next(iter(self._flight)) if self._flight else self._next
-        reqs = rows[:, 1].astype(np.int64)
-        tickets = (base + ((reqs - base) & M32)).tolist()
-        statuses, ticks = rows[:, 2].tolist(), rows[:, 3].tolist()
-        flight, events, done = self._flight, self._events, self._done
-        timeout, stray = None, None
-        for ticket, status, tick in zip(tickets, statuses, ticks):
-            if ticket not in flight:
-                stray = stray or ticket  # never stored, or its event already filed
-                continue
-            team = flight.pop(ticket)
-            events[ticket] = (status, tick)
-            if status & 0xFF == done:
-                continue
-            ev = self.event(ticket)
-            if ev.kind == "refused":
-                self._refused[ticket] = ev.aux
-                if team is not None:
-                    self._unsequence(ticket)
-            elif ev.kind == "timeout":
-                timeout = ev
-        self._arrived.extend(t for t in tickets if t in events)
-        if stray is not None:
+        base = self._oldest
+        tickets = base + ((rows[:, 1].astype(np.int64) - base) & M32)
+        i = tickets - self._base
+        stored = self._handed - self._base - self.port.queued
+        stray = (i >= stored) | self._has[np.minimum(i, len(self._has) - 1)]
+        if stray.any() or len(np.unique(i)) != len(i):
+            t = int(tickets[np.argmax(stray)]) if stray.any() else int(tickets[0])
             self.abort()
             raise self._remember(
                 KernelFailed(
-                    f"an event for command {stray & M32} (ticket {stray}), which is "
-                    "not in flight: the run is stopped"
+                    f"an event for command {t & M32} (ticket {t}), which is not in "
+                    "flight: the run is stopped"
                 )
             )
+        self._status[i] = rows[:, 2]
+        self._ticks[i] = rows[:, 3]
+        self._has[i] = True
+        at, end = self._oldest - self._base, self._handed - self._base
+        waiting = ~self._has[at:end]
+        self._oldest += int(np.argmax(waiting)) if waiting.any() else end - at
+        timeout = None
+        for ticket in tickets[(rows[:, 2] & 0xFF) != self._done].tolist():
+            ev = self.event(ticket)
+            if ev.kind == "refused":
+                self._refused[ticket] = ev.aux
+                if self.team(ticket) is not None:
+                    self._unsequence(ticket)
+            elif ev.kind == "timeout":
+                timeout = ev
         if timeout is not None:
             self._fail_timeout(timeout)
 
     def _unsequence(self, ticket):
         """A refused record took no sequence number: later records move down one."""
-        self._seqs.pop(ticket, None)
-        for t in self._seqs:
-            if t > ticket:
-                self._seqs[t] -= 1
+        i = ticket - self._base
+        self._seq[i] = 0
+        later = self._seq[i + 1 : self._handed - self._base]
+        later[later > 0] -= 1
         self._next_seq -= 1
 
-    def _pump(self, upto, timeout_s):
-        """One round: store what fits, read events (waiting at most timeout_s if
-        nothing was stored). Ends the run if the kernel finished on its own."""
-        stored = self._flush(upto)
-        if stored:
-            rows = self.port.poll()
-        else:
-            rows = self.port.wait_events(max(0.0, min(timeout_s, WAIT_SLICE_S)))
-        if len(rows):
-            self._take(rows)
-        elif not stored and self.port.host_word(0) >= self.h["KMD_STATE_DONE"]:
-            self._fail_kernel("the dispatch kernel finished on its own")
+    def _arrived(self, tickets):
+        return self._has[tickets - self._base]
 
     def wait(self, tickets, timeout=10.0):
-        """Sends what is queued up to the tickets, waits for their events, returns them
-        (one, or a list) and forgets those tickets. Raises RecordRefused, RecordTimeout,
-        KernelFailed or WaitTimeout.
+        """Sends what is queued up to the tickets and waits for their events.
+
+        Returns the events (one, or a list for a list of tickets). Raises
+        RecordRefused, RecordTimeout, KernelFailed or WaitTimeout.
         """
-        single = isinstance(tickets, int)
-        wanted = [tickets] if single else list(tickets)
-        if not wanted:
+        single = isinstance(tickets, int | np.integer)
+        wanted = np.asarray([tickets] if single else list(tickets), np.int64)
+        if not wanted.size:
             return []
-        if max(wanted) >= self._next or min(wanted) < 1:
+        if wanted.max() >= self._next or wanted.min() < 1:
             raise ValueError("a ticket that was never issued")
-        gone = [t for t in wanted if not self._known(t)]
-        if gone:
+        self._hand()
+        gone = wanted[
+            (wanted < self._base) | self._gone[np.maximum(wanted - self._base, 0)]
+        ]
+        if gone.size:
             raise ValueError(f"ticket {gone[0]}: its event was returned or forgotten")
-        self._wait(wanted, timeout)
-        events = [self.event(t) for t in wanted]
+        self._wait(np.unique(wanted), timeout)
+        events = [self.event(t) for t in wanted.tolist()]
         self.forget(wanted)
         return events[0] if single else events
-
-    def _known(self, ticket):
-        """The ticket's event is filed, or it is in flight or queued."""
-        if ticket in self._events or ticket in self._flight:
-            return True
-        return bool(self._queue) and ticket >= self._queue[0][0]
 
     def forget(self, tickets):
         """Releases what the run keeps for tickets whose events arrived (the event,
         and the team and sequence unless the run is traced): for callers that read
         events with event() after drain() rather than from wait()."""
-        for t in [tickets] if isinstance(tickets, int) else tickets:
-            if self._events.pop(t, None) is None:
-                continue
-            self._refused.pop(t, None)
-            if not self._keep:
-                self._teams.pop(t, None)
-                self._seqs.pop(t, None)
+        t = np.asarray(
+            [tickets] if isinstance(tickets, int) else list(tickets), np.int64
+        )
+        t = t[(t >= self._base) & (t < self._handed)] - self._base
+        t = t[self._has[t]]
+        self._gone[t] = True
+        for ticket in (t + self._base).tolist():
+            self._refused.pop(ticket, None)
+        self._compact()
+
+    def _compact(self):
+        """Drops the leading rows of released tickets once there are many."""
+        if self._keep:
+            return
+        n = min(self._oldest, self._handed) - self._base
+        done = int(np.argmin(self._gone[:n])) if not self._gone[:n].all() else n
+        if done < COMPACT_ROWS or 2 * done < len(self._has):
+            return
+        for name in ("_first", "_count", "_seq", "_status", "_ticks", "_has", "_gone"):
+            setattr(self, name, getattr(self, name)[done:].copy())
+        self._base += done
 
     def _wait(self, wanted, timeout):
-        deadline = time.monotonic() + timeout
-        upto = max(wanted)
-        pending = {t for t in wanted if t not in self._events}
-        while True:
-            self._check_alive()
-            pending.difference_update(self._arrived)
-            self._arrived.clear()
-            if not pending:
-                break
-            left = deadline - time.monotonic()
-            if left <= 0:
-                pending = sorted(pending)
-                raise WaitTimeout(
-                    f"{len(pending)} of {len(wanted)} tickets not done in {timeout} s "
-                    f"(first {pending[0]}; {len(self._flight)} in flight, "
-                    f"{len(self._queue)} queued)",
-                    pending,
-                )
-            self._pump(upto, left)
-        for t in wanted:
-            if t in self._refused:
-                raise RecordRefused(t, self._refused[t], self._refusals)
+        """Waits for the events of `wanted` (sorted tickets)."""
+        t0 = time.perf_counter()
+        try:
+            self._hand()
+            deadline = time.monotonic() + timeout
+            pending = wanted[~self._arrived(wanted)]
+            while pending.size:
+                self._check_alive()
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise WaitTimeout(
+                        f"{pending.size} of {wanted.size} tickets not done in "
+                        f"{timeout} s (first {int(pending[0])}; "
+                        f"{self.port.queued} not stored)",
+                        pending.tolist(),
+                    )
+                self._step(pending, int(pending[-1]), left)
+                pending = pending[~self._arrived(pending)]
+            if self._refused:
+                for t in sorted(self._refused):
+                    if np.isin(t, wanted):
+                        raise RecordRefused(t, self._refused[t], self._refusals)
+        finally:
+            self.wait_s += time.perf_counter() - t0
+
+    def _step(self, pending, upto, left):
+        """One native round: store up to ticket `upto`, read events until those of
+        `pending` arrived (or a slice ends). Ends the run if the kernel finished."""
+        t = time.perf_counter()
+        rows = self.port.wait(
+            (pending & M32).astype(np.uint32), upto & M32, min(left, WAIT_SLICE_S)
+        )
+        self.native_s += time.perf_counter() - t
+        if len(rows):
+            self._take(rows)
+        elif self.port.host_word(0) >= self.h["KMD_STATE_DONE"]:
+            self._fail_kernel("the dispatch kernel finished on its own")
 
     def drain(self, timeout=10.0):
-        """Sends everything queued and waits for every event (refusals do not raise
-        here); returns how many events it waited for."""
-        wanted = [t for t, team in self._flight.items() if team is not None]
-        wanted += [q[0] for q in self._queue]
-        if wanted:
+        """Sends everything queued and waits for every record's event (refusals do not
+        raise here); returns how many events it waited for."""
+        self._hand()
+        at, end = self._oldest - self._base, self._handed - self._base
+        open_ = (self._count[at:end] > 0) & ~self._has[at:end]
+        wanted = np.flatnonzero(open_) + self._oldest
+        if wanted.size:
             with contextlib.suppress(RecordRefused):
                 self._wait(wanted, timeout)
-        return len(wanted)
+        return int(wanted.size)
 
     def event(self, ticket):
-        """The event of a ticket, or None if it has not arrived."""
-        found = self._events.get(ticket)
-        if found is None:
+        """The event of a ticket, or None if it has not arrived (or was released)."""
+        i = ticket - self._base
+        if not 0 <= i < self._handed - self._base or not self._has[i] or self._gone[i]:
             return None
-        status, ticks = found
+        status, ticks = int(self._status[i]), int(self._ticks[i])
         kind = self._kinds.get(status & 0xFF, str(status & 0xFF))
         return Event(ticket, kind, status >> 8, ticks)
 
     def seq(self, ticket):
         """The sequence number the kernel gave a record (the trace's index)."""
-        n = self._seqs.get(ticket)
-        return None if n is None else _seq_number(n)
+        self._hand()
+        i = ticket - self._base
+        if not 0 <= i < self._handed - self._base or self._seq[i] == 0:
+            return None
+        if self._gone[i] and not self._keep:
+            return None
+        return _seq_number(int(self._seq[i]))
 
     def team(self, ticket):
-        return self._teams.get(ticket)
+        self._hand()
+        i = ticket - self._base
+        if not 0 <= i < self._handed - self._base or self._count[i] == 0:
+            return None
+        if self._gone[i] and not self._keep:
+            return None
+        return (int(self._first[i]), int(self._count[i]))
+
+    @property
+    def stored(self):
+        """Commands stored into the card so far."""
+        return self._handed - self._base - self.port.queued
 
     # Stopping ---------------------------------------------------------------------
 
@@ -334,8 +448,8 @@ class Run:
             self.drain(timeout)
             exit_ticket = self._queue_command(self.h["KM_SEG_EXIT"], (0, self.cores))
             self.wait(exit_ticket, timeout)
-            self._queue_command(self.h["KM_SEG_STOP"], None)
-            self._flush(self._next)
+            stop_ticket = self._queue_command(self.h["KM_SEG_STOP"], None)
+            self._send(stop_ticket, timeout)
         except KernelFailed:
             raise
         except BaseException:
@@ -367,6 +481,18 @@ class Run:
         if r.get("failed"):
             wrong.append(r["failed"])
         return "; ".join(wrong)
+
+    def _send(self, ticket, timeout):
+        """Stores queued commands up to `ticket` without waiting for events."""
+        self._hand()
+        deadline = time.monotonic() + timeout
+        none = np.zeros(0, np.uint32)
+        while self.stored < ticket - self._base + 1:
+            if time.monotonic() > deadline:
+                raise WaitTimeout(f"command {ticket} not stored in {timeout} s", [])
+            rows = self.port.wait(none, ticket & M32, 0.0)
+            if len(rows):
+                self._take(rows)
 
     def abort(self):
         """Stops the kernel through the runtime and reads back what the cores left;
@@ -417,13 +543,20 @@ class Run:
         state_rows, trace_rows = self.backend.read_back(stop_grid=stop_grid)
         self._state = state_rows
         if trace_rows is not None:
-            self._trace = st.Trace(
-                trace_rows,
-                {t: _seq_number(n) for t, n in self._seqs.items()},
-                dict(self._teams),
-                self.backend.mhz,
-                self.h,
-            )
+            n = self._handed - self._base
+            tickets = np.arange(n) + self._base
+            rec = self._seq[:n] > 0
+            numbers = (self._seq[:n][rec] - 1) % M32 + 1  # skips 0, as the kernel
+            seqs = dict(zip(tickets[rec].tolist(), numbers.tolist()))
+            teams = {
+                t: (f, c)
+                for t, f, c in zip(
+                    tickets[rec].tolist(),
+                    self._first[:n][rec].tolist(),
+                    self._count[:n][rec].tolist(),
+                )
+            }
+            self._trace = st.Trace(trace_rows, seqs, teams, self.backend.mhz, self.h)
 
     def _remember(self, error):
         self._failure = error
@@ -432,7 +565,7 @@ class Run:
     def _fail_timeout(self, ev):
         self._finish(10.0)
         r = self._result
-        team = self._teams.get(ev.ticket)
+        team = self.team(ev.ticket)
         seq = r["seq"] if r["error"] == self.h["KMD_ERR_DEADLINE"] else None
         seq = seq if seq is not None else self.seq(ev.ticket)
         cores = st.not_reported(self._state, team, ev.aux, seq, self.h) if team else []

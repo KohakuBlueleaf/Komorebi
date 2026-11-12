@@ -4,6 +4,8 @@ In order, records get the lowest free slot and the next sequence, only while the
 events fit the ring by the published read count; they complete at once or on request.
 """
 
+import time
+
 import numpy as np
 
 from komorebi import abi
@@ -13,7 +15,8 @@ K = H.constants
 
 
 class FakePort:
-    """The port: push, room, poll, wait_events, host_word, plus test controls."""
+    """The port: enqueue, queued, wait, push, room, poll, wait_events, host_word, plus
+    test controls."""
 
     def __init__(self, cores=120, depth=4, host_depth=8, event_depth=16):
         self.cores = cores
@@ -42,6 +45,10 @@ class FakePort:
         self.batches = []  # number of records per push
         self.max_busy = 0
         self.max_unread = 0
+        self.batch = 64
+        self.queue = []  # (words, exclusive) not stored yet
+        self.flight = {}  # command number -> team word, stored without an event
+        self.waits = 0  # calls of wait()
 
     # The native port's interface ---------------------------------------------
 
@@ -56,13 +63,70 @@ class FakePort:
         k = min(len(rows), self.room())
         for j in range(k):
             words = [int(w) for w in rows[j]]
-            words[0] = words[4] = words[8] = words[12] = self.next
+            words[0] = words[4] = words[8] = words[12] = self.next & abi.M32
             self.ring[self.next] = words
+            self.flight[self.next & abi.M32] = words[2]
             self.next += 1
         self.published = self.seen  # every batch carries the read count
         if k:
             self.batches.append(k)
         return k
+
+    def enqueue(self, records, exclusive=None):
+        rows = np.asarray(records, dtype=np.uint32)
+        assert rows.ndim == 2 and rows.shape[1] == 16
+        flags = [0] * len(rows) if exclusive is None else list(exclusive)
+        assert len(flags) == len(rows)
+        self.queue += [([int(w) for w in r], f) for r, f in zip(rows, flags)]
+        return self.queued
+
+    @property
+    def queued(self):
+        return len(self.queue)
+
+    def wait(self, wanted, upto, timeout_s):
+        """As the native loop: store a batch up to `upto`, read events, until every
+        command in `wanted` has one, another kind arrives, the kernel ended, or time
+        is up; with nothing wanted, once."""
+        self.waits += 1
+        need = {int(w) for w in wanted}
+        by = time.monotonic() + timeout_s
+        out = []
+        while True:
+            self._store_queued(int(upto))
+            rows = self.poll()
+            self._publish_if_held()
+            other = False
+            for row in rows.tolist():
+                need.discard(row[1])
+                other = other or (row[2] & 0xFF) != K["KM_EV_DONE"]
+            out += rows.tolist()
+            ended = self.state != K["KMD_STATE_READY"]
+            if not need or other or ended or time.monotonic() > by:
+                return np.asarray(out, dtype=np.uint32).reshape(-1, 4)
+
+    def _store_queued(self, upto):
+        due = (upto - self.next) & abi.M32
+        due = (due - (1 << 32) if due >= 1 << 31 else due) + 1
+        k = max(0, min(len(self.queue), self.batch, self.room(), due))
+        n = 0
+        while n < k:
+            words, exclusive = self.queue[n]
+            if exclusive:
+                n += n == 0 and not self._overlaps(words[2])
+                break
+            n += 1
+        if n:
+            self.push([w for w, _ in self.queue[:n]])
+            del self.queue[:n]
+
+    def _overlaps(self, team):
+        a0, a1 = team & 0xFFFF, (team & 0xFFFF) + (team >> 16)
+        for t in self.flight.values():
+            b0, b1 = t & 0xFFFF, (t & 0xFFFF) + (t >> 16)
+            if t and b0 < a1 and a0 < b1:
+                return True
+        return False
 
     def poll(self):
         self._step()
@@ -73,9 +137,12 @@ class FakePort:
 
     def wait_events(self, timeout_s):
         out = self.poll()
+        self._publish_if_held()
+        return out
+
+    def _publish_if_held(self):
         if self.next - 1 - self.published >= self.event_depth:
             self.published = self.seen  # the kernel may hold a command for it
-        return out
 
     def host_word(self, word):
         return self.state if word == 0 else 0
@@ -87,7 +154,9 @@ class FakePort:
         unread = self.pushed_events - self.seen
         self.max_unread = max(self.max_unread, unread)
         assert unread <= self.event_depth, "event ring overrun"
-        self.events.append([self.pushed_events, req, kind | aux << 8, ticks])
+        self.flight.pop(req & abi.M32, None)
+        index = self.pushed_events & abi.M32
+        self.events.append([index, req & abi.M32, kind | aux << 8, ticks])
 
     def _finish(self, error, slot=0, seq=0, req=0):
         self.error = error

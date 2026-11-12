@@ -5,6 +5,7 @@ import pytest
 from fake_port import FakeBackend, FakePort
 
 from komorebi import abi
+from komorebi import run as run_mod
 from komorebi.errors import (
     KernelFailed,
     KomorebiError,
@@ -121,7 +122,7 @@ def test_the_read_count_lets_the_kernel_go_on_past_a_full_event_ring():
     events = run.wait(tickets, timeout=1.0)
     assert all(ev.kind == "done" for ev in events)
     # the host's own room (unread plus in flight) is the tighter bound
-    assert port.held_for_room == 0 and port.published == port.seen
+    assert port.held_for_room == 0 and 0 < port.published <= port.seen
 
 
 def test_a_host_that_never_publishes_its_read_count_stalls_the_kernel():
@@ -132,8 +133,8 @@ def test_a_host_that_never_publishes_its_read_count_stalls_the_kernel():
             self.published = published  # the batch did not carry the read count
             return k
 
-        def wait_events(self, timeout_s):
-            return self.poll()
+        def _publish_if_held(self):
+            pass  # waits without storing the read count
 
     run, port, _ = make_run(Silent(depth=4, host_depth=8, event_depth=8))
     tickets = [run.issue(0, (0, 4)) for _ in range(20)]
@@ -175,9 +176,9 @@ def test_the_kernel_holds_exit_while_a_slot_is_busy_and_refuses_records_after_it
     run, port, _ = make_run()
     port.auto = False
     busy = run.issue(1, (0, 4))
-    run._flush(busy)
+    run._send(busy, 1.0)
     exit_ = run._queue_command(K["KM_SEG_EXIT"], None)
-    run._flush(exit_)
+    run._send(exit_, 1.0)
     run.port.poll()
     assert port.held_exit > 0 and not port.exited
     port.auto = True
@@ -266,8 +267,8 @@ def test_a_ticket_is_released_once_its_event_was_returned():
     run, port, _ = make_run(port)
     for _ in range(200):
         run.wait([run.issue(0, (i, 1)) for i in range(100)])
-    assert not (run._events or run._teams or run._seqs or run._flight)
-    assert run.event(1) is None and len(port.issued) == 20_000
+    assert len(run._has) < 2 * run_mod.COMPACT_ROWS and run._base > 10_000
+    assert run.event(1) is None and run.seq(1) is None and len(port.issued) == 20_000
 
 
 def test_forget_releases_tickets_read_after_a_drain():
@@ -276,15 +277,16 @@ def test_forget_releases_tickets_read_after_a_drain():
     run.drain()
     assert run.event(tickets[0]).kind == "done" and run.seq(tickets[4]) == 5
     run.forget(tickets)
-    assert not (run._events or run._teams or run._seqs)
-    assert run.event(tickets[0]) is None
+    assert run.event(tickets[0]) is None and run.seq(tickets[4]) is None
+    assert run._gone[:5].all()
 
 
 def test_a_traced_run_keeps_teams_and_sequences_for_the_trace():
     run, _, _ = make_run(trace_cap=8)
     tickets = [run.issue(1, (i, 2)) for i in range(3)]
     run.wait(tickets)
-    assert not run._events and len(run._teams) == len(run._seqs) == 3
+    assert run.event(tickets[0]) is None and run.seq(tickets[2]) == 3
+    assert run.team(tickets[1]) == (1, 2)
     run.stop()
     assert run.trace().phases(tickets[1])["count"] == 2
 
@@ -340,18 +342,99 @@ def test_an_error_while_stopping_aborts_through_the_runtime():
 
 
 def test_tickets_map_onto_command_numbers_across_the_32_bit_wrap():
-    run, _, _ = make_run()
-    run._next = (1 << 32) - 2  # as after 2**32 - 3 commands
-    tickets = [run.issue(0, (0, 1)) for _ in range(5)]
-    assert tickets[-1] > abi.M32
-    run._flight = {t: (0, 1) for t in tickets}
-    run._queue.clear()
-    rows = [[1, t & abi.M32, K["KM_EV_DONE"], 9] for t in reversed(tickets)]
-    run._take(np.asarray(rows, dtype=np.uint32))
+    run, port, _ = make_run(FakePort(depth=4, host_depth=8, event_depth=16))
+    start = (1 << 32) - 3  # as after 2**32 - 4 commands
+    run._next = start
+    run._new_tickets(start)
+    port.next = start
+    port.consumed = port.seen = port.pushed_events = start - 1
+    tickets = [run.issue(0, (i, 1)) for i in range(5)]
+    tickets += list(run.issue_many(0, np.arange(5, 25), 1))
+    assert tickets == list(range(start, start + 25)) and tickets[-1] > abi.M32
+    assert run.drain() == 25
     assert [run.event(t).ticket for t in tickets] == tickets
+    assert [r for r, _, _, _, _ in port.issued] == tickets
+    assert [run.seq(t) for t in tickets] == list(range(1, 26))
 
 
 def test_python_cost_counters_add_up():
     run, _, _ = make_run()
     run.wait([run.issue(0, (0, 1)) for _ in range(10)])
-    assert run.issue_s > 0 and run.flush_s > 0 and run.stored == 10
+    assert run.issue_s > 0 and run.wait_s >= run.native_s > 0 and run.stored == 10
+
+
+def test_issue_many_encodes_as_issue_does():
+    one, port_one, _ = make_run()
+    many, port_many, _ = make_run()
+    firsts, counts = np.array([0, 5, 119]), np.array([4, 10, 1])
+    args = np.array([[1, 2, 3], [4, 5, 6], [7, 8, abi.M32]], np.uint64)
+    singles = [one.issue(7, (f, c), a) for f, c, a in zip(firsts, counts, args)]
+    tickets = many.issue_many(7, firsts, counts, args)
+    assert tickets == range(1, 4) and singles == list(tickets)
+    one.drain()
+    many.drain()
+    assert port_one.ring == port_many.ring
+    assert [many.team(t) for t in tickets] == [(0, 4), (5, 10), (119, 1)]
+
+
+def test_issue_many_broadcasts_and_takes_a_segment_per_record():
+    run, port, _ = make_run()
+    tickets = run.issue_many(np.array([0, 3, 0, 3]), 0, 120)
+    run.wait(tickets)
+    assert [i[3] for i in port.issued] == [0, 3, 0, 3]
+    assert {i[4] for i in port.issued} == {(0, 120)}
+
+
+def test_issue_many_checks_every_record_before_queueing_any():
+    run, port, _ = make_run()
+    for firsts, counts in [([0, 119], [1, 2]), ([0, -1], 1), ([0, 1], [1, 0])]:
+        with pytest.raises(ValueError, match="team"):
+            run.issue_many(1, np.array(firsts), np.array(counts))
+    with pytest.raises(ValueError, match="segment"):
+        run.issue_many(np.array([1, 240]), 0, 1)
+    with pytest.raises(ValueError, match="32-bit"):
+        run.issue_many(1, [0, 1], 1, np.array([[1], [1 << 32]]))
+    with pytest.raises(ValueError, match="32-bit"):
+        run.issue_many(1, [0, 1], 1, np.array([[1], [-1]]))
+    with pytest.raises(ValueError, match="m <= 10"):
+        run.issue_many(1, [0], 1, np.zeros((1, 11), np.uint32))
+    with pytest.raises(ValueError, match="one row each"):
+        run.issue_many(1, [0, 1], [1, 1, 1])
+    with pytest.raises(ValueError, match="integers"):
+        run.issue_many(1, [0.0], 1)
+    assert run._next == 1 and port.queued == 0
+
+
+def test_issue_many_and_issue_keep_one_order():
+    run, port, _ = make_run()
+    a = run.issue(0, (0, 1))
+    b = run.issue_many(0, [1, 2], 1)
+    c = run.issue(0, (3, 1))
+    run.drain()
+    assert [i[0] for i in port.issued] == [a, *b, c]
+    assert [i[4][0] for i in port.issued] == [0, 1, 2, 3]
+    assert [run.seq(t) for t in [a, *b, c]] == [1, 2, 3, 4]
+
+
+def test_a_drain_of_many_records_is_one_native_loop_per_slice():
+    port = FakePort(depth=4, host_depth=64, event_depth=128)
+    run, port, _ = make_run(port)
+    tickets = run.issue_many(0, np.arange(1000) % 120, 1)
+    assert run.drain() == 1000
+    assert all(run._has[: len(tickets)]) and len(port.issued) == 1000
+    assert port.waits < 5 and max(port.batches) == 64
+    assert run.event(tickets[-1]).kind == "done"
+
+
+def test_exclusive_records_from_issue_many_wait_for_overlapping_teams():
+    port = FakePort(depth=4)
+    port.auto = False
+    run, port, _ = make_run(port)
+    a = run.issue(1, (0, 10))
+    held = run.issue_many(1, [5, 50], 10, exclusive=True)
+    with pytest.raises(WaitTimeout):
+        run.wait(held[0], timeout=0.05)
+    assert [i[0] for i in port.issued] == [a]
+    port.auto = True
+    run.wait(held)
+    assert [i[0] for i in port.issued] == [a, *held]

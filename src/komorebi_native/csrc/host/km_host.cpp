@@ -3,6 +3,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/array.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -55,6 +57,8 @@ namespace {
     // Ring depths are powers of two, so slot = number % depth holds across the wrap.
     constexpr uint32_t kEventDepthMax = 128;
     static_assert(KMD_HOST_RING + kEventDepthMax * 16 <= kHostBufferBytes);
+    // Teams of commands in flight, by command number: at most event_depth are.
+    constexpr uint32_t kFlight = 2 * kEventDepthMax;
 
     bool power_of_two(uint32_t n) {
         return n != 0 && (n & (n - 1)) == 0;
@@ -67,6 +71,10 @@ namespace {
     using Records = nb::
         ndarray<const uint32_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
     using Events = nb::ndarray<nb::numpy, uint32_t, nb::ndim<2>>;
+    using Flags = nb::
+        ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+    using Numbers = nb::
+        ndarray<const uint32_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 
     Clock::time_point after(double seconds) {
         return (
@@ -261,6 +269,10 @@ namespace {
             } while (tag_ == 0xFFFFu);
             next_ = 1;
             seen_ = published_ = 0;
+            queue_.clear();
+            excl_.clear();
+            head_ = 0;
+            flight_team_.fill(0);
             std::memset(const_cast<uint32_t*>(host_), 0, kHostBufferBytes);
             tile_->write_available_lim(base_, std::vector<uint8_t>(KMD_LIM_BYTES, 0));
 
@@ -390,40 +402,89 @@ namespace {
         // in seq and the landing words), the read count, one fence. Returns k.
         uint32_t push(const uint32_t* recs, size_t n) {
             const uint32_t k = static_cast<uint32_t>(std::min<size_t>(n, room()));
-            if (k == 0) {
-                return 0;
-            }
-            settle();
-            alignas(64) uint32_t w[16];
-            for (uint32_t j = 0; j < k; j++) {
-                const uint32_t i = next_ + j;
-                std::memcpy(w, recs + 16 * j, sizeof(w));
-                w[0] = w[4] = w[8] = w[12] = i;
-                win_->write_block(KMD_LIM_HRING + (i % host_depth_) * 64u, w, 64);
-            }
-            store_read();
-            _mm_sfence();
-            fenced_ = Clock::now();
-            next_ += k;
+            store(recs, k);
             return k;
+        }
+
+        // Queues n records for wait(); an exclusive flag holds its record until no
+        // team in flight overlaps it. Returns the number queued.
+        size_t enqueue(const uint32_t* recs, size_t n, const uint8_t* exclusive) {
+            require_open();
+            queue_.insert(queue_.end(), recs, recs + 16 * n);
+            if (exclusive != nullptr) {
+                excl_.insert(excl_.end(), exclusive, exclusive + n);
+            } else {
+                excl_.resize(excl_.size() + n, 0);
+            }
+            return queued();
+        }
+
+        size_t queued() const {
+            return excl_.size() - head_;
+        }
+
+        // Stores queued commands up to `upto` and reads events until all `wanted` have
+        // one, a non-DONE event or a final kernel state arrives, or timeout_s passes.
+        std::vector<uint32_t> wait(
+            const std::vector<uint32_t>& wanted, uint32_t upto, double timeout_s
+        ) {
+            require_open();
+            // wanted is in command order: offsets from its first fit one table.
+            const uint32_t lo = wanted.empty() ? 0 : wanted.front();
+            std::vector<uint8_t> need(wanted.empty() ? 0 : wanted.back() - lo + 1u, 0);
+            size_t left = 0;
+            for (const uint32_t c : wanted) {
+                left += need[c - lo] == 0;
+                need[c - lo] = 1;
+            }
+            const auto by = after(timeout_s);
+            std::vector<uint32_t> out;
+            for (;;) {
+                store_queued(upto);
+                const size_t had = out.size();
+                read_events(out);
+                publish_if_held();
+                bool other = false;
+                for (size_t e = had; e < out.size(); e += 4) {
+                    const uint32_t off = out[e + 1] - lo;
+                    if (off < need.size() && need[off] != 0) {
+                        need[off] = 0;
+                        left--;
+                    }
+                    other = other || (out[e + 2] & 0xFFu) != KM_EV_DONE;
+                }
+                if (left == 0 || other || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
+                    Clock::now() > by) {
+                    return out;
+                }
+                if (out.size() == had) {
+                    _mm_pause();
+                }
+            }
         }
 
         // The events that have arrived since the last call, in order.
         std::vector<uint32_t> poll() {
             require_open();
+            std::vector<uint32_t> out;
+            read_events(out);
+            return out;
+        }
+
+        // Appends the events that have arrived to out, in order.
+        void read_events(std::vector<uint32_t>& out) {
             const auto* ring = (
                 reinterpret_cast<const volatile uint32_t*>(
                     reinterpret_cast<const volatile uint8_t*>(host_) + KMD_HOST_RING
                 )
             );
-            std::vector<uint32_t> out;
             for (;;) {
                 // A sequence lock: index, fields, index again; a change means the
                 // event was being written, so it is read again.
                 const uint32_t i = seen_ + 1;
                 const volatile uint32_t* e = ring + (i % event_depth_) * 4;
                 if (e[0] != i) {
-                    return out;
+                    return;
                 }
                 _mm_lfence();
                 const uint32_t req = e[1], status = e[2], ticks = e[3];
@@ -433,6 +494,9 @@ namespace {
                 }
                 out.insert(out.end(), {i, req, status, ticks});
                 seen_ = i;
+                if (flight_cmd_[req % kFlight] == req) {
+                    flight_team_[req % kFlight] = 0;
+                }
             }
         }
 
@@ -507,6 +571,7 @@ namespace {
             return done.cleaned_up();
         }
 
+        uint32_t batch_ = 64;  // commands per store: every line, then one fence
         uint32_t gx_ = 0, gy_ = 0, l2x_ = 0, l2y_ = 0;
         uint64_t base_ = 0;  // LIM address of the layout (the argument block)
         std::vector<std::array<uint32_t, 2>> panels_;  // logical column ranges
@@ -525,6 +590,74 @@ namespace {
         void require_open() const {
             if (!opened_) {
                 throw std::runtime_error("the X280 runtime is closed");
+            }
+        }
+
+        // Stores k records as the next commands, every line then one fence, and notes
+        // their teams as in flight.
+        void store(const uint32_t* recs, uint32_t k) {
+            if (k == 0) {
+                return;
+            }
+            settle();
+            alignas(64) uint32_t w[16];
+            for (uint32_t j = 0; j < k; j++) {
+                const uint32_t i = next_ + j;
+                std::memcpy(w, recs + 16 * j, sizeof(w));
+                w[0] = w[4] = w[8] = w[12] = i;
+                win_->write_block(KMD_LIM_HRING + (i % host_depth_) * 64u, w, 64);
+                flight_cmd_[i % kFlight] = i;
+                flight_team_[i % kFlight] = w[offsetof(km_record_t, team) / 4];
+            }
+            store_read();
+            _mm_sfence();
+            fenced_ = Clock::now();
+            next_ += k;
+        }
+
+        // Whether a team (first | count << 16) overlaps a team in flight.
+        bool overlaps_flight(uint32_t team) const {
+            const uint32_t a0 = team & 0xFFFFu, a1 = a0 + (team >> 16);
+            for (uint32_t s = 0; s < kFlight; s++) {
+                const uint32_t t = flight_team_[s];
+                const uint32_t b0 = t & 0xFFFFu, b1 = b0 + (t >> 16);
+                if (t != 0 && b0 < a1 && a0 < b1) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // One batch from the queue: commands up to upto that fit, ending before an
+        // exclusive record unless it comes first and overlaps nothing in flight.
+        void store_queued(uint32_t upto) {
+            const int64_t due = static_cast<int32_t>(upto - next_) + int64_t{1};
+            size_t k = std::min<size_t>({queued(), batch_, room()});
+            k = std::min<int64_t>(static_cast<int64_t>(k), std::max<int64_t>(0, due));
+            const uint32_t* recs = queue_.data() + 16 * head_;
+            const uint8_t* ex = excl_.data() + head_;
+            size_t n = 0;
+            for (; n < k; n++) {
+                if (ex[n] != 0) {
+                    const uint32_t team = (
+                        recs[16 * n + offsetof(km_record_t, team) / 4]
+                    );
+                    if (n == 0 && !overlaps_flight(team)) {
+                        n = 1;
+                    }
+                    break;
+                }
+            }
+            store(recs, static_cast<uint32_t>(n));
+            head_ += n;
+            if (head_ == excl_.size()) {
+                queue_.clear();
+                excl_.clear();
+                head_ = 0;
+            } else if (head_ > 4096 && 2 * head_ > excl_.size()) {
+                queue_.erase(queue_.begin(), queue_.begin() + 16 * head_);
+                excl_.erase(excl_.begin(), excl_.begin() + head_);
+                head_ = 0;
             }
         }
 
@@ -655,6 +788,11 @@ namespace {
         uint64_t host_noc_ = 0;
         uint32_t pcie_x_ = 0, pcie_y_ = 0;
         std::optional<x280::SessionId> session_;
+        std::vector<uint32_t> queue_;  // records not stored yet, 16 words each
+        std::vector<uint8_t> excl_;    // their exclusive flags
+        size_t head_ = 0;              // the first record not stored
+        std::array<uint32_t, kFlight> flight_cmd_{};
+        std::array<uint32_t, kFlight> flight_team_{};  // 0: no event pending
     };
 
 }  // namespace
@@ -709,6 +847,8 @@ NB_MODULE(_km_host, m) {
         .def_ro("next", &Dispatch::next_)
         .def_ro("seen", &Dispatch::seen_)
         .def_rw("settle_us", &Dispatch::settle_us_)
+        .def_rw("batch", &Dispatch::batch_)
+        .def_prop_ro("queued", &Dispatch::queued)
         .def_prop_ro("is_open", &Dispatch::is_open)
         .def_prop_ro("running", &Dispatch::running)
         .def_prop_ro("idle", &Dispatch::idle)
@@ -744,6 +884,41 @@ NB_MODULE(_km_host, m) {
                 return d.push(recs.data(), recs.shape(0));
             },
             nb::arg("records")
+        )
+        .def(
+            "enqueue",
+            [](Dispatch& d, Records recs, std::optional<Flags> exclusive) {
+                if (recs.shape(1) != 16) {
+                    throw std::runtime_error("records are [n, 16] words");
+                }
+                if (exclusive && exclusive->shape(0) != recs.shape(0)) {
+                    throw std::runtime_error("one exclusive flag per record");
+                }
+                return (
+                    d.enqueue(
+                        recs.data(), recs.shape(0), exclusive ? exclusive->data() : nullptr
+                    )
+                );
+            },
+            nb::arg("records"),
+            nb::arg("exclusive") = nb::none()
+        )
+        .def(
+            "wait",
+            [](Dispatch& d, Numbers wanted, uint32_t upto, double timeout_s) {
+                std::vector<uint32_t> want(
+                    wanted.data(), wanted.data() + wanted.shape(0)
+                );
+                std::vector<uint32_t> out;
+                {
+                    nb::gil_scoped_release release;
+                    out = d.wait(want, upto, timeout_s);
+                }
+                return as_array(std::move(out));
+            },
+            nb::arg("wanted"),
+            nb::arg("upto"),
+            nb::arg("timeout_s")
         )
         .def(
             "poll",
