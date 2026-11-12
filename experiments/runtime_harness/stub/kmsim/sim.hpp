@@ -85,8 +85,8 @@ namespace kmsim {
 
 }  // namespace kmsim
 
-// The wall-clock registers read by km::wall64() and km::wall().
+// The wall-clock registers read by km::wall64() and km::wall(): low and live high.
 #define RISCV_DEBUG_REG_WALL_CLOCK_L \
     (reinterpret_cast<uintptr_t>(&kmsim::wall_clock[0]))
-#define RISCV_DEBUG_REG_WALL_CLOCK_H \
+#define RISCV_DEBUG_REG_WALL_CLOCK_1 \
     (reinterpret_cast<uintptr_t>(&kmsim::wall_clock[1]))

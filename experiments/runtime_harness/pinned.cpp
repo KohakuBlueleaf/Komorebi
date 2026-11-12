@@ -79,6 +79,31 @@ namespace scen {
             finish(s, o);
         }
 
+        // A clock that moves on every register read, started so that the carry of the
+        // low word falls before, between or after the reads: no reading leaves them.
+        void wall_clock_across_a_carry(Outcome& o) {
+            for (uint64_t start = (1ull << 32) - 8; start < (1ull << 32) + 4; start++) {
+                uint64_t t = start;
+                const auto read = [&](bool high) {
+                    t += 3;
+                    return static_cast<uint32_t>(high ? t >> 32 : t);
+                };
+                const uint64_t got = km::wall64_of(
+                    [&] {
+                        return read(true);
+                    },
+                    [&] {
+                        return read(false);
+                    }
+                );
+                o.check.expect(
+                    got > start && got <= t,
+                    fmt("start 2^32 - 8 + %u: a reading outside the reads",
+                        static_cast<unsigned>(start - ((1ull << 32) - 8)))
+                );
+            }
+        }
+
         // ---- the bounded buffer wrappers against an item past the end ----
 
         void item_feed() {  // one page for the compute input buffer
@@ -195,6 +220,7 @@ namespace scen {
             {"smoke", smoke},
             {"exit_partial_team", exit_partial_team},
             {"no_output_waits_for_compute", no_output_waits_for_compute},
+            {"wall_clock_across_a_carry", wall_clock_across_a_carry},
             {"wrappers_refuse_straddling_items", wrappers_refuse_straddling_items},
             {"excl_waits_for_overlapping_team", excl_waits_for_overlapping_team},
         };

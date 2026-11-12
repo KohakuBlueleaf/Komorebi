@@ -5,7 +5,7 @@ A tool for hunting defects in the Tensix runtime without a card. The headers in
 `examples/01_mapcollect` are compiled unchanged against `stub/`, a stand-in for the
 tt-metal calls they use, and run as host threads on a simulated grid. The scenarios
 force failure paths on that grid and check what the kernels do. The harness is run by
-hand. Five of its scenarios pin known behaviour in
+hand. Six of its scenarios pin known behaviour in
 `tests/core/test_runtime_harness.py`.
 
 | file | what it holds |
@@ -16,7 +16,7 @@ hand. Five of its scenarios pin known behaviour in
 | `stub_calls.cpp` | the calls behind the stub headers |
 | `dispatcher.cpp` | the dispatcher model and the grid's set-up |
 | `checks.hpp`, `checks.cpp` | the checks every scenario ends with, and the runner |
-| `pinned.cpp` | the five scenarios the tests run |
+| `pinned.cpp` | the six scenarios the tests run |
 | `scenarios.cpp`, `item_kernels.cpp` | the other scenarios, and a scenario's own compute kernels |
 | `run.py` | builds the programs and runs the scenarios |
 
@@ -28,7 +28,7 @@ hand. Five of its scenarios pin known behaviour in
     python experiments/runtime_harness/run.py --tree <other checkout>
 
 The program is built into `build/runtime_harness/` and reused while the sources are
-unchanged. `--build-only --pinned` builds the tests' program instead: the five pinned
+unchanged. `--build-only --pinned` builds the tests' program instead: the six pinned
 scenarios, at `-O0`.
 
 Each compute thread is compiled as its own object, as it is its own program on the
@@ -87,6 +87,7 @@ between kernels.
 | `reader_gives_up` | unpack is held: the reader's wait for input room gives up |
 | `token_wait_after_stop` | the stop word is set while the reader waits for a token page |
 | `no_output_waits_for_compute` | pack held as it takes a record with no output |
+| `wall_clock_across_a_carry` | a clock that moves at every register read, across the low word's carry |
 | `slot_out_of_range` | a record's header names slot 20 |
 | `slot_not_ring_slot` | a record in ring slot 0 whose header names slot 3 |
 | `exit_partial_team` | an EXIT naming two of four cores, with late increments |
@@ -136,13 +137,17 @@ subject on the main branch.
 - Replay of a card finding. A record with no output was acknowledged while compute
   was still in its body: the writer waited only for its own body. Fixed by "Device: a
   member completes only after its compute body returned".
+- A card finding: a feeder deadline passed long before its time. The 64-bit wall clock
+  was read through the high word that every core of a tile latches, so a read at the
+  low word's carry could come out 2^32 cycles ahead. Fixed by "Device: the wall clock
+  reads the live high word on both sides of the low word".
 
 ## Result
 
 At the last change to this folder:
-- all 25 scenarios pass in the one-level form;
+- all 26 scenarios pass in the one-level form;
 - 3 scenarios pass in the row-leader form;
-- all 25 pass under the thread sanitizer.
+- all 26 pass under the thread sanitizer.
 
 Times on the shared development host, from a cold build:
 - one form: about 17 s, of which 13 s is `random_jobs`;

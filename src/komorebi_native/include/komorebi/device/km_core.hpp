@@ -119,19 +119,39 @@ namespace km {
                                          // in a9: cycles from the stamp to taking it
     constexpr uint32_t kTraceWords = 4;
 
-    // Wall clock: reading the low word latches the high word.
+    // A 64-bit count from a live high word read before and after the low word; a carry
+    // between them retries, and a second one returns the carry's own instant.
+    template <typename High, typename Low>
+    inline uint64_t wall64_of(High high, Low low) {
+        for (uint32_t i = 0; i < 2; i++) {
+            const uint32_t hi = high();
+            const uint32_t lo = low();
+            if (high() == hi) {
+                return static_cast<uint64_t>(hi) << 32 | lo;
+            }
+        }
+        return static_cast<uint64_t>(high()) << 32;
+    }
+
+    // Wall clock. Not the latched high word: every core of the tile latches it with
+    // its own low-word reads, so it can be torn by 2^32 cycles at a carry.
     inline uint64_t wall64() {
-        const uint32_t lo = (
-            *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                RISCV_DEBUG_REG_WALL_CLOCK_L
-            )
+        return wall64_of(
+            [] {
+                return (
+                    *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
+                        RISCV_DEBUG_REG_WALL_CLOCK_1
+                    )
+                );
+            },
+            [] {
+                return (
+                    *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
+                        RISCV_DEBUG_REG_WALL_CLOCK_L
+                    )
+                );
+            }
         );
-        const uint32_t hi = (
-            *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                RISCV_DEBUG_REG_WALL_CLOCK_H
-            )
-        );
-        return static_cast<uint64_t>(hi) << 32 | lo;
     }
 
     inline uint32_t wall() {
