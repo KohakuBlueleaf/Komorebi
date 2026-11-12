@@ -60,6 +60,9 @@ place to ask a question and to be wrong.
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
   defects in the runtime and replays a card hang and two card findings; 35 scenarios,
   run by hand.
+- [dram_read](dram_read/README.md): reading a 4 MB bfloat16 tile tensor back to the
+  host bank by bank under one barrier against `ttnn.to_torch`: about 2 s against 3 s on
+  one p150a at host load 8, the same array both ways.
 - [x280_threads](x280_threads/README.md): a user image on X280 cluster 1 beside the
   dispatch kernel and a resident grid (100 of 100 cycles clean), DRAM visibility
   between a Tensix core and the X280 (a Flush64 sweep each way is the hand-over), the
