@@ -13,7 +13,7 @@ writes it, and what the host can do about a thread that does not return.
 | Does a Tensix core's NoC write into the cluster's DRAM bank reach the X280, and the reverse? | Only with a hand-over in each direction. A Flush64 sweep of the cluster's cache controller over the region's lines is enough both ways (30 ns per line) |
 | What address does each side use? | The X280: `0x400030000000` + the bank address. A Tensix core: `get_noc_addr_from_bank_id<true>(6, bank address)`. Cluster 1 reaches bank 6 |
 | How fast does the X280 read and write its bank? | About 1.3 GB/s read and 1.8 GB/s write with four cores, the same for 1 MB and 64 MB; Flush64 sweeps run at 5 to 8 GB/s of region |
-| What does a decision over every core's data cost? | Prefix sums over 119 x 1,024 counters: 2.13 ms on four cores, take and give included, exact |
+| What does a decision over every core's data cost? | Prefix sums over 119 x 1,024 counters: 2.13 ms on four cores, take and give included, exact; 1.70 ms with the L2 prefetchers set as documented |
 | A thread that ignores its deadline? | The host asks it to stop; if it polls nothing, the cluster stays stuck until a card reset (from the runtime's sources, not run) |
 
 All card numbers: one Blackhole p150a, slow dispatch, the X280 at the runtime's
@@ -100,6 +100,13 @@ The second read of 1 MB is no faster than the first: the region does not stay in
 cache in a way that helps a streaming pass, so a thread's cost is its bytes over
 about 1.3 GB/s.
 
+These rates go through the cached port (the bank's cached alias at `0x400030000000`,
+the cluster's direct connection to bank 6). What bounds them, as we read it (not
+measured apart): each hart's L1 data cache resolves one line fill at a time, so a hart
+streams one 64-byte line per miss, about 190 ns at 0.33 GB/s per hart; and the cache in
+front of the bank is small, one 128 KiB way of L3 (`CCACHE0_WAYENABLE` reads 0) and
+each hart's 128 KiB L2, so 1 MB does not stay.
+
 | Prefix-sum job, 119 x 1,024 counters (476 KB in, 476 KB out) | |
 |---|---|
 | take, give and compute, three runs | 2,137.0 µs, 2,130.8 µs, 2,138.7 µs |
@@ -108,6 +115,34 @@ about 1.3 GB/s.
 
 A per-frame decision over every core's counts costs about 2 ms of the cluster: the
 order of a frame, not of a segment.
+
+### The L2 prefetchers (`probe.py rates --prefetch`)
+
+The same run once more after each hart wrote the values the chip's documentation
+recommends after reset into its own L2 prefetcher registers (`L2PF1_BASIC_CONTROL`
+= `0x15811`, `L2PF1_USER_CONTROL` = `0x38c84e`, at `0x02030000 + hart * 0x2000`) and
+zero into CSR `0x7c1`. Before the write every hart read `0x14a0c` and `0xc45e`, and CSR
+`0x7c1` already read 0 (the runtime's start-up clears it); the writes read back as
+written, without a fault. The L3 was left as the runtime set it (one cache way).
+
+    python probe.py rates --small 1048576 --large 67108864 --cores 119 --bins 1024 --reps 3 --prefetch
+
+| Four harts | before, 1 MB | after, 1 MB | before, 64 MB | after, 64 MB |
+|---|---|---|---|---|
+| vector read, after the sweep | 1.32 GB/s | 1.18 GB/s | 1.36 GB/s | 1.33 GB/s |
+| vector write | 1.96 GB/s | 1.16 GB/s | 1.70 GB/s | 1.34 GB/s |
+| 8-byte scalar read | 1.26 GB/s | 1.34 GB/s | 1.26 GB/s | 1.37 GB/s |
+| Flush64 sweeps | 5.0 to 6.2 GB/s | 5.0 to 8.0 GB/s | 7.9 GB/s | 7.9 GB/s |
+
+| Prefix-sum job, 119 x 1,024 | before | after |
+|---|---|---|
+| three runs | 2,138.6, 2,133.7, 2,139.1 µs | 1,699.3, 1,707.0, 1,703.9 µs |
+| output against numpy | | exact |
+
+Scalar code that walks memory (the job) is 20 % faster with the prefetchers set as
+documented; vector streams are not faster, and vector writes are 20 to 40 % slower.
+The registers keep their values until a card reset, so every later image on the
+cluster runs with them.
 
 ## A thread that ignores its deadline (from the sources, not run)
 

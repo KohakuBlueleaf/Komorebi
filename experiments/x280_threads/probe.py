@@ -480,6 +480,7 @@ def rates(args):
                 bins,
                 args.reps,
                 int(20 * 50e6),
+                int(args.prefetch),
             )
             out["aiclk_mhz"] = [aiclk()]
             log("image start")
@@ -487,7 +488,7 @@ def rates(args):
             res = port.work_wait(CLUSTER, 25.0)
             log(f"image returned: {res['ready']}")
             out["aiclk_mhz"].append(aiclk())
-            got = struct.unpack("<64I", port.work_read(CLUSTER, PR_RESULT, 256))
+            got = struct.unpack("<192I", port.work_read(CLUSTER, PR_RESULT, 768))
             done = port.work_stop(CLUSTER, 2.0)
             log(f"image stopped: {done['cleaned']}")
         finally:
@@ -500,17 +501,30 @@ def rates(args):
     out["status"] = got[0]
     names = ["flush_clean", "read_cold", "read_again", "write", "flush_dirty",
              "read_scalar"]  # fmt: skip
-    for i, size in enumerate(sizes):
-        if size == 0:
-            continue
-        ticks = got[8 + 6 * i : 14 + 6 * i]
-        out[f"pass_{size >> 20}MB"] = {
-            n: {"us": round(t / 50, 1), "GBps": round(size / (t / 50e6) / 1e9, 2)}
-            for n, t in zip(names, ticks)
-            if t
-        }
-    out["job_us"] = [round(t / 50, 1) for t in got[32 : 32 + args.reps]]
-    out["job_take_us"] = [round(t / 50, 1) for t in got[40 : 40 + args.reps]]
+    for r in range(1 + args.prefetch):
+        w = got[64 * r : 64 * r + 64]
+        tag = "_prefetch" if r else ""
+        for i, size in enumerate(sizes):
+            if size == 0:
+                continue
+            ticks = w[8 + 6 * i : 14 + 6 * i]
+            out[f"pass_{size >> 20}MB{tag}"] = {
+                n: {"us": round(t / 50, 1), "GBps": round(size / (t / 50e6) / 1e9, 2)}
+                for n, t in zip(names, ticks)
+                if t
+            }
+        out[f"job_us{tag}"] = [round(t / 50, 1) for t in w[32 : 32 + args.reps]]
+        out[f"job_take_us{tag}"] = [round(t / 50, 1) for t in w[40 : 40 + args.reps]]
+    out["wayenable"] = hex(got[160])
+    if args.prefetch:
+        keys = ["basic", "user", "csr_7c1", "fault"]
+        out["prefetcher"] = [
+            {
+                "before": {k: hex(v) for k, v in zip(keys, got[128 + 8 * h :][:4])},
+                "after": {k: hex(v) for k, v in zip(keys, got[132 + 8 * h :][:4])},
+            }
+            for h in range(4)
+        ]
     want = prefix_reference(counts[bank::BANKS][:cores])
     out["job_exact"] = bool(np.array_equal(result, want))
     out["job_wrong_words"] = int((result != want).sum())
@@ -535,6 +549,9 @@ def main():
     p.add_argument("--bins", type=int, default=1024)
     p.add_argument("--reps", type=int, default=3)
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument(
+        "--prefetch", action="store_true", help="again after the prefetcher setup"
+    )
     args = parser.parse_args()
     probes = {"two": two, "dram": dram, "rates": rates}
     out = probes[args.probe](args)
