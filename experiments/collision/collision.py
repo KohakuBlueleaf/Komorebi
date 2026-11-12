@@ -119,11 +119,13 @@ def cb(index, size, cores):
 
 
 def lane_roles(plan, args):
-    """Per logical core (x, y): role, rank, sender (x, y) and multicast rectangle."""
+    """Per logical core (x, y): role, rank, sender core and multicast rectangle."""
     gx, gy, L = plan.grid_x, plan.grid_y, args.lane
     roles = {}
     if L == 0:
         return roles
+    if args.along == "row":
+        return row_roles(plan, args)
     assert gy % L == 0, (gy, L)
     cols = (
         range(gx)
@@ -146,11 +148,40 @@ def lane_roles(plan, args):
                 roles[(x, snd + step * r)] = {
                     "role": 1 if r == 0 else 2,
                     "rank": r,
-                    "sender": snd,
+                    "sender": snd * gx + x,
                     "snd": t[snd],
-                    "down": 1 if step == 1 else 0,
+                    "step": 1 if step == 1 else 0,
                     "rect": rect,
                 }
+    return roles
+
+
+def row_roles(plan, args):
+    """Lanes of --lane cores along every grid row, inside each panel (as lane_roles)."""
+    L, roles = args.lane, {}
+    for y in range(plan.grid_y):
+        for x0, x1 in plan.panels:
+            t = [plan.translated(x, y) for x in range(x0, x1 + 1)]
+            # A panel's columns are consecutive in NoC0 (its translated x may skip).
+            assert all(c[1] == t[0][1] for c in t)
+            assert len(t) % L == 0, (len(t), L)
+            for i in range(len(t) // L):
+                first, last = i * L, i * L + L - 1
+                if args.lane_noc == 0:  # NoC0 runs +x: sender at the left
+                    snd, step = first, 1
+                    rect = (*t[first + 1], *t[last])
+                else:  # NoC1 runs -x: sender at the right, rectangle start is high x
+                    snd, step = last, -1
+                    rect = (*t[last - 1], *t[first])
+                for r in range(L):
+                    roles[(x0 + snd + step * r, y)] = {
+                        "role": 1 if r == 0 else 2,
+                        "rank": r,
+                        "sender": y * plan.grid_x + x0 + snd,
+                        "snd": t[snd],
+                        "step": 3 if step == 1 else 2,
+                        "rect": rect,
+                    }
     return roles
 
 
@@ -170,7 +201,7 @@ def program(plan, rec_cnt, lane_cnt, args, roles, wait_cycles):
             if r is None:
                 lane += [0] * 10
             else:
-                lane += [r["role"], r["rank"], args.lane - 1, *r["snd"], r["down"]]
+                lane += [r["role"], r["rank"], args.lane - 1, *r["snd"], r["step"]]
                 lane += list(r["rect"])
             lane_args[x][y] = lane + [wait_cycles, args.window, args.check_every]
     # The two kernels of a core use different NoCs; the lane kernel takes --lane-noc.
@@ -291,7 +322,7 @@ def summarize_lanes(cnt, roles, gx, mhz):
     for (x, y), r in roles.items():
         if r["role"] != 2:
             continue
-        i, s = y * gx + x, r["sender"] * gx + x
+        i, s = y * gx + x, r["sender"]
         if int(c["blocks"][i]) != int(c["blocks"][s]):
             mismatch.append({"core": i, "blocks": int(c["blocks"][i]), "sender": s})
     out["block_count_mismatch"] = len(mismatch)
@@ -338,6 +369,7 @@ def main():
     p.add_argument("--until", action="store_true", help="stop when records are done")
     p.add_argument("--lane-noc", type=int, choices=[0, 1], default=0)
     p.add_argument("--columns", default="all", help="all or a list like 3,7")
+    p.add_argument("--along", choices=["column", "row"], default="column")
     p.add_argument("--wait-ms", type=float, default=1000.0, help="bounded wait")
     p.add_argument("--stream", action="store_true", help="fixed body, back to back")
     p.add_argument("--window", type=int, default=4, help="stream: blocks ahead")
@@ -346,7 +378,7 @@ def main():
     p.add_argument("--timeout", type=float, default=30.0)
     args = p.parse_args()
     assert args.bytes % 64 == 0 and args.bytes > 0
-    assert args.lane in (0, 2, 5, 10)
+    assert args.lane in ((0, 2, 5, 10) if args.along == "column" else (0, 2, 3, 6))
     if args.stream:
         assert args.bytes >= 128 and 1 <= args.window <= 8 and args.check_every >= 1
         assert args.window * args.bytes <= 256 * 1024

@@ -77,7 +77,8 @@ void kernel_main() {
     const uint32_t receivers = get_arg_val<uint32_t>(a++);
     const uint32_t snd_x = get_arg_val<uint32_t>(a++);
     const uint32_t snd_y = get_arg_val<uint32_t>(a++);
-    const bool down = get_arg_val<uint32_t>(a++) != 0;  // rank r at snd_y + r
+    // 1: rank r at snd_y + r, 0: at snd_y - r; 3, 2: a row lane (peers not read).
+    const uint32_t step = get_arg_val<uint32_t>(a++);
     const uint32_t mx0 = get_arg_val<uint32_t>(a++), my0 = get_arg_val<uint32_t>(a++);
     const uint32_t mx1 = get_arg_val<uint32_t>(a++), my1 = get_arg_val<uint32_t>(a++);
     const uint32_t wait_cycles = get_arg_val<uint32_t>(a++);
@@ -172,8 +173,8 @@ void kernel_main() {
         if (!ok) {
             where_k = where == LW_READY ? 0 : k;
             lane.state(LP_GAVE_UP, where_k);
-            const uint32_t py = down ? snd_y + peer : snd_y - peer;
-            if (lane.read_peer(snd_x, py)) {
+            const uint32_t py = step & 1 ? snd_y + peer : snd_y - peer;
+            if ((step & 2) == 0 && lane.read_peer(snd_x, py)) {
                 peer_phase = lane.at(LANE_PEER);
                 peer_k = lane.at(LANE_PEER + 4);
             } else {
