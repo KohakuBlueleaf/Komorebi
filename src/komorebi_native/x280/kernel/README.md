@@ -1,20 +1,34 @@
 # Dispatch kernel
 
-The dispatch kernel runs on core 0 of X280 cluster 0. It takes commands from the host,
+The dispatch kernel runs on X280 cluster 0. Core 0 takes commands from its sources,
 issues records to the Tensix grid, sweeps the grid's acknowledgement words and reports
-every finished command to the host as an event. `km_dispatch.h` holds the exact layouts;
+every finished command to its source as an event. Core 1 runs the stream engine, which
+is one of those sources. `km_dispatch.h` holds the exact layouts;
 `komorebi/abi/km_abi.h` holds the records, the events and the segment numbers.
 
 | file | part |
 |---|---|
-| `main.c` | start-up, the loop, taking a command, the finish |
-| `host_ring.h` | the host command ring in the cluster's local memory (LIM) |
-| `event_ring.h` | the event ring and the state words in host memory |
+| `main.c` | start-up, the loop, taking a command, the finish; core 1's entry |
+| `ring.h` | a source's command ring and event ring, the same code for every source |
+| `event_ring.h` | the host buffer: the host's event ring, the state words, the ready block |
 | `grid_port.h` | the windows onto every core's control block, the record store, the stop word |
 | `completion.h` | busy slots, acknowledgement sweep, deadlines, team overlap, team allocator |
-| `stream.h` | the upload check and the interpreter of uploaded streams (`km_stream.h`) |
+| `engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
+| `engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
 | `result.h` | the result block in LIM |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
+
+## Sources
+
+A source is anything that sends core 0 commands: the host (source 0) and the stream
+engine on core 1 (source 1). Each has a command ring and an event ring, served by the
+same code (`ring.h`) under the protocol below; only their memory differs. The host's
+command ring is in LIM and its event ring in host memory; the engine's two rings are in
+the state area in the cluster's DRAM bank (`KMD_STATE_RING`, `KMD_ERING_*`), cached
+and coherent between the cluster's cores. Each pass of core 0's loop sweeps the busy
+slots, then takes at most one command from each source in the order host, engine; the
+engine is looked at only while it has a stream, a record in flight or a waiting command.
+A record's `KM_EV_DONE` or `KM_EV_TIMEOUT` goes to the source that sent it.
 
 ## Protocol with the host
 
@@ -31,7 +45,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   64-byte line at `KMD_LIM_READ` (the rest of the line is zero), as a whole line; the
   reference host stores it after each batch of commands, under the same fence. The
   kernel takes a command that ends in an event only while the unread events, one per
-  busy slot and one more fit the event ring, so it never overwrites an event the host
+  busy slot holding a host record, one per running stream and one more fit the event
+  ring, so it never overwrites an event the host
   has not read. Command `i` can wait for this only while
   `i - 1 - (count the host wrote)` reaches `event_depth`.
 - **One store per event.** The kernel writes each 16-byte event with a single vector
@@ -83,24 +98,35 @@ These rules are part of the protocol; a host that relies on anything else is wro
   job queue exists, a waiting queued record holds up the commands behind it like any
   other waiting command.
 - **Streams.** `KM_SEG_RUN` (a0 offset, a1 bytes in the upload region) starts the
-  stream there, after the same check as `stream.check`: a range that is not inside the
-  region and line aligned, one that overlaps a running stream's, a req a running stream
-  has, or a failed check ends it at once with `KM_EV_STREAM_ERROR` (reason 1 for the
-  first three). Up to four streams run, each at most `KM_STEP_OPS` micro-ops per pass in
-  turn, and none waits inside a pass. Their records go out like the host's, with the
-  stream's own deadline, and end in no event; `KM_EV_STREAM`, `_END` and `_ERROR` carry
-  the stream's req, the aux `reason | pc << 8` for an error. `KM_SEG_CANCEL` ends a
+  stream there: a range that is not inside the region and line aligned, one that
+  overlaps a running stream's, or a req a running stream has ends it at once with
+  `KM_EV_STREAM_ERROR` reason 1 (core 0 checks these); otherwise core 0 hands it to the
+  engine, which runs the same check as `stream.check` and ends a failing stream the same
+  way. Up to four streams run on core 1, each at most `KM_STEP_OPS` micro-ops per engine
+  pass in turn, and none waits inside a pass. An ISSUE puts the record into the engine's
+  command ring (after a `KM_SEG_DEADLINE` when the stream's deadline changed); core 0
+  issues it in the engine's turn like a host record, and its event goes back to the
+  engine, not to the host. `KM_EV_STREAM`, `_END` and `_ERROR` carry the stream's req,
+  the aux `reason | pc << 8` for an error; the engine sends them to core 0 as
+  `KMD_SEG_POST` commands, which core 0 forwards to the host. `KM_SEG_CANCEL` ends a
   stream with reason 10; its records in flight still free their slots. A record of a
   stream that misses its deadline ends the stream with reason 8 and the kernel with it.
   EXIT waits until no stream runs.
-- **What streams cost the sweep.** The interpreter runs in the same loop as the
-  acknowledgement sweep, so a pass that steps streams delays every acknowledgement.
-  Measured on a p150a with the harness's `stream-bench` case (pass period = run time /
-  passes): 34 ns with no stream; 316 ns with one stream issuing one record at a time,
-  525 ns with four; 3.1 microseconds with one stream that only loops (64 micro-ops of
-  about 49 ns each per pass), 11.7 microseconds with four. A host record at depth 16 to
-  one core costs 0.673 microseconds with the interpreter built in, against 0.640 without.
+- **Commands from the engine.** The engine may send records, `KM_SEG_DEADLINE` and
+  `KMD_SEG_POST` (248); STOP, EXIT, RUN and CANCEL from it are refused with reason 1,
+  and so is `KMD_SEG_POST` from the host.
+- **What streams cost the sweep.** Measured on a p150a with the harness's
+  `stream-bench` case (pass period of core 0 = run time / passes): 32 ns with no
+  stream, 49 ns with one or four streams that only loop, 89 ns with one stream issuing
+  one record at a time, 159 ns with four. One issuing stream takes 2.3 microseconds per
+  record, 1.34 microseconds (median) from a record's free to the stream's next issue
+  over the ring; with three looping streams beside it, 12.8. A host record at depth 16
+  to one core costs 0.641 microseconds (host-fed; 0.669 with all 64 commands preloaded).
 - **Finish.** `KM_SEG_STOP`, the runtime's stop, a missed deadline or a start-up failure
-  ends the loop. The stop word goes to the grid only while a slot is busy or before EXIT
-  was issued. The state and error words in the host buffer, and the result block in LIM,
-  then hold the outcome.
+  ends the loop. Core 0 then sets the engine's stop word and waits for core 1 to leave
+  its loop (`KMD_ENGINE_STOP_TICKS`, 10 ms), forwarding its last posts; if it does not,
+  the kernel ends with `KMD_ERR_ENGINE`. Core 1 returns before core 0 does. The stop
+  word goes to the grid only while a slot is busy or before EXIT was issued. The state
+  and error words in the host buffer, the result block and the hart block in LIM
+  (`KMD_LIM_HARTS`: each core's progress stamp, the engine's state and counts) then
+  hold the outcome.
