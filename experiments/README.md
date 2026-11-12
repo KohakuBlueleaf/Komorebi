@@ -27,3 +27,8 @@ place to ask a question and to be wrong.
   word and long multicasts back to back) can run at the same time. No lost or wrong
   word and no hang in any arrangement measured; NoC1 recommended for lanes while the
   X280 dispatches.
+- [noc_alignment](noc_alignment/README.md): what a NoC write shorter than 16 bytes does
+  when its source and destination differ in their low four address bits. It lands at
+  the destination, carrying the source line's bytes at the destination's offset, and is
+  acknowledged as usual: silently wrong. Small writes go from a 16-byte slot to a
+  16-byte slot.
