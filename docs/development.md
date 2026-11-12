@@ -14,12 +14,13 @@ Building from a clone: [install](install.md#from-a-clone).
 ```text
 src/komorebi/                  the package you import
   _env.py                      finds the tt-metal tree, its build and the X280 toolchain
-  cli.py                       the `kmr` command: doctor, build
+  cli.py                       the `kmr` command: doctor, build, power
   layout.py                    the grid, its panels and teams of cores (pure functions)
   stats.py                     timing statistics and error against a reference
   program.py  session.py       Program; Session (loads a program under the dispatch kernel)
   run.py  errors.py  state.py  Run (issue, wait, stop); errors; result, state and trace decoding
   abi.py  native.py            constants read from the C headers; the image and native module
+  power.py                     power sampling: cards, a GPU, the CPU package
   build.py                     out-of-tree builds: host program, Python module, X280 image
   engines/stream.py            micro-op streams: builder, upload encoding, check, simulator
   tools/cxx_format.py          clang-format with the rules it cannot express
@@ -50,7 +51,8 @@ repository, in the environment of [install](install.md#from-a-clone).
 
 `tests/core` covers the layout functions (panels, teams, shares), statistics, the
 package boundary, `kmr doctor` with and without a tree, the parsing and command
-assembly of `build.py` against a small fake `build.ninja`, and the formatter. Tests
+assembly of `build.py` against a small fake `build.ninja`, the power sampler against
+fake sensors and a fake sysfs tree, and the formatter. Tests
 marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they live in
 `tests/hardware`). The host package's CPU tests run `Run` against a fake dispatch kernel
 (`tests/core/fake_port.py`). The formatter tests are skipped when clang-format is not installed.

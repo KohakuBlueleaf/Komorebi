@@ -63,7 +63,8 @@ Mental models: why things are the way they are. Every page carries a status line
 src/komorebi/                  the package you import
   layout.py                    the grid, its panels and teams of cores
   build.py                     out-of-tree builds against a tt-metal tree
-  stats.py  cli.py  tools/     statistics; the kmr command; the C and C++ formatter
+  stats.py  power.py           statistics; power sampling
+  cli.py  tools/               the kmr command; the C and C++ formatter
   manifest/  lang/             reserved: records, homes and segments; the thread language
 src/komorebi_native/           the native layer (README inside)
 examples/  projects/           runnable examples; larger programs

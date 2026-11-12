@@ -105,3 +105,39 @@ python -m pytest tests/core
 ```
 
 See [development](development.md#checks) for the full list.
+
+## Watching power
+
+`kmr power` prints the board power of every card once a second, then a summary of the
+run, so you can watch a benchmark from a second shell. It reads sensors only: it opens
+no card and takes no lock, and needs no root.
+
+```
+kmr power                          # every card, 10 seconds
+kmr power --card 1 --seconds 60    # one card (the N of /dev/tenstorrent/N)
+kmr power --gpu 0 --cpu            # a GPU through nvidia-smi; the CPU package
+```
+
+A card's power comes from its `blackhole` hwmon device, found through the card's PCI
+device link. The CPU package comes from the powercap energy counter when this user may
+read it; otherwise, like a missing `nvidia-smi`, it is reported as not available.
+
+The same sampler wraps a section of a program:
+
+```python
+from komorebi.power import PowerSampler
+
+with PowerSampler(1) as sampler:  # card index 1; one second of idle samples first
+    sampler.mark("fill")
+    ...
+    sampler.mark("compute")
+    ...
+print(sampler.result.format())
+print(sampler.result.phases["compute"].mean_w)
+```
+
+The result has seconds, samples, mean, peak and energy (trapezoid), the mean
+temperature, the card's power limit and the idle mean from before the block. The
+sensor of a card updates every 0.1 s, so the default period is 0.05 s, and a section
+shorter than five updates (0.5 s) says so and reports no mean. A sensor that disappears
+ends the sampling; the result covers the time before it and says it was lost.
