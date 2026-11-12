@@ -12,7 +12,7 @@ import numpy as np
 
 from komorebi import abi
 from komorebi import state as st
-from komorebi.engines import graph_hostfed
+from komorebi.engines import control, graph_hostfed
 from komorebi.errors import (
     KernelFailed,
     KomorebiError,
@@ -276,6 +276,8 @@ class Run:
         """Files a block of events (index, req, status, ticks). Every event is of a
         ticket from the oldest without one on, so its low 32 bits name it."""
         rows = np.asarray(rows).reshape(-1, 4)
+        if self._engine_state is not None:  # the engines' events go to their tickets
+            rows = self._engine_state.take(rows)
         base = self._oldest
         tickets = base + ((rows[:, 1].astype(np.int64) - base) & M32)
         i = tickets - self._base
@@ -514,6 +516,55 @@ class Run:
         run's host ring. Returns a HostfedResult (status, error, regs, runs, records,
         events); see `komorebi.engines.graph_hostfed`."""
         return graph_hostfed.run_hostfed(self, graph, bindings, timeout, engine)
+
+    # Engines ----------------------------------------------------------------------
+
+    _engine_state = None  # komorebi.engines.control.Engines, from the first engine call
+
+    def _engines(self):
+        if self._engine_state is None:
+            self._engine_state = control.Engines(self)
+        return self._engine_state
+
+    def upload(self, obj, kind=None):
+        """Writes a Stream's or a Graph's upload (or encoded bytes of `kind` "stream"
+        or "graph") into the dispatch kernel's upload region, first fit beside the
+        others; returns its Upload. ValueError, before any write, if it does not fit."""
+        return self._engines().upload(obj, kind)
+
+    def release(self, upload, timeout=10.0):
+        """Frees an upload's lines; a kept graph is dropped first (CANCEL)."""
+        self._engines().release(upload, timeout)
+
+    def start(self, upload, bindings=(), kept=None, timeout=10.0):
+        """Runs an upload (KM_SEG_RUN) and returns its EngineTicket. A graph takes
+        `bindings` (a dict by name, or a list of words); `kept` sets its keep bit.
+        Raises EngineRefused if the kernel refuses the command."""
+        return self._engines().start(upload, bindings, kept, timeout)
+
+    def restart(self, req, bindings=(), timeout=10.0):
+        """Runs the kept graph with `req` again with new bindings; an EngineTicket."""
+        return self._engines().restart(req, bindings, timeout)
+
+    def cancel(self, ticket, timeout=10.0):
+        """Cancels a running engine (KM_SEG_CANCEL); its error event ends the ticket."""
+        self._engines().cancel(ticket, timeout)
+
+    def wait_engine(self, ticket, timeout=10.0):
+        """Waits for an engine's end and returns its EngineEvent. Raises EngineError
+        (its error event), EngineTimeout or KernelFailed."""
+        return self._engines().wait(ticket, timeout)
+
+    def _settle(self, ticket):
+        """Marks a command that has an event only when refused (RUN, CANCEL) as
+        answered, once an event of a later command arrived."""
+        i = ticket - self._base
+        if self._has[i]:
+            return
+        self._has[i] = True
+        at, end = self._oldest - self._base, self._handed - self._base
+        waiting = ~self._has[at:end]
+        self._oldest += int(np.argmax(waiting)) if waiting.any() else end - at
 
     # Stopping ---------------------------------------------------------------------
 

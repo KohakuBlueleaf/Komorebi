@@ -88,3 +88,36 @@ def describe_core(core):
     if len(parts) == 1:
         parts.append("no give-up recorded")
     return " ".join(parts)
+
+
+class EngineRefused(RecordRefused):
+    """The dispatch kernel refused a RUN or CANCEL: nothing was started or cancelled,
+    the run goes on. `reason` and `reason_name` as for RecordRefused."""
+
+
+class EngineError(KomorebiError):
+    """An engine ended with an error event: its `reason` and `reason_name`, the
+    stream's program counter `pc` or the graph's `node` (None when the error is not
+    tied to one), and the `event`. The run goes on unless the kernel stopped too."""
+
+    def __init__(self, event):
+        t = event.ticket
+        where = f"pc {event.pc}" if event.pc is not None else f"node {event.node}"
+        super().__init__(
+            f"{t.kind} {t.req} ended with error {event.reason} ({event.reason_name}) "
+            f"at {where}"
+        )
+        self.event = event
+        self.ticket = t
+        self.reason = event.reason
+        self.reason_name = event.reason_name
+        self.pc = event.pc
+        self.node = event.node
+
+
+class EngineTimeout(WaitTimeout):
+    """An engine's end event did not arrive in time; the engine may still run."""
+
+    def __init__(self, message, ticket):
+        super().__init__(message)
+        self.ticket = ticket
