@@ -57,11 +57,8 @@ typedef struct {
 #define KM_ACK(seq) ((uint32_t)(seq)) /* the whole sequence number (revision 2) */
 #define KM_READY 0xFFFFFFFFu          /* READY words are not in the ack area */
 
-/* Host -> dispatch kernel: one command is one 64-byte record in the host ring (revision
-   2). The host puts the command's number (from 1) in `seq` and in the three landing
-   words; the kernel replaces them with its own sequence, fills the slot, and stores the
-   record to the grid. Segments 252..254 are commands to the kernel itself and are not
-   forwarded. */
+/* Host -> dispatch kernel: one command is one record, its number in `seq` and the
+   landing words. Segments 252..254 are commands to the kernel and are not forwarded. */
 
 /* Dispatch kernel -> host: one 16-byte event per finished command, in a ring in host
    memory. */
