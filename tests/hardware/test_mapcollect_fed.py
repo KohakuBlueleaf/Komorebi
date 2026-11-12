@@ -234,3 +234,16 @@ def test_a_reader_stopped_in_its_token_wait_hands_off_and_every_kernel_returns()
     core0 = {g["core"]: g for g in out["gave_up_busy"]}[0]
     assert (core0["reader"]["code"], core0["reader"]["where"]) == ("stop", "token")
     assert ran_as_members(out)
+
+
+@pytest.mark.parametrize("side", ["writer", "reader"])
+def test_an_item_past_the_buffer_end_gives_up_before_any_access(side):
+    # Job 0 (65 tiles, one output page) leaves both buffers' pointers at page 1; job 1
+    # asks member 0 for 2 output pages (writer) or 16 input pages (reader) from there.
+    bad = ["--bad-item", 1, "--bad-side", side, "--tiles", 65, "--deadline", 0.05]
+    out = run("--team-list", "0:1,0:1,0:1", "--depth", 1, *bad)  # job 0 acked first
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 2
+    assert out["feeder"]["done"] == 1 and out["not_reported"] == [0]
+    assert every_kernel_returned(out) and ran_as_members(out)
+    core0 = {g["core"]: g for g in out["gave_up_busy"]}[0]
+    assert core0[side] == {"code": "bad_item", "where": "data", "slot": 0, "seq": 0}

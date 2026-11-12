@@ -35,6 +35,11 @@ void kernel_main() {
                 }
                 break;
             }
+            case kSegBadItem:  // from page `at`: past the end unless at == 0
+                if (index == r.a0 && r.a1 == 1 && !rd.reserve(kCbIn, kInPages)) {
+                    return;
+                }
+                break;
             case kSegStall:
                 if (index == r.a0) {
                     rd.wait_stop(r);

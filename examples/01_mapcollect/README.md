@@ -11,6 +11,7 @@ has finished, the team's first member tells the dispatch kernel, which tells the
 | `MAP` | a0 input, a1 tiles T, a2 output, a3 output page of member 0, a6 first input tile | reads its share of input tiles a6 to a6 + T - 1, adds them into one tile (fp32), stores it at page a3 + member, reports |
 | `STALL` | a0 member | member a0 waits for the stop word and does not report; the others report |
 | `NOP` | none | reports |
+| `BAD_ITEM` (a test) | a0 member, a1 side (0 writer, 1 reader) | member a0 asks for an item that passes the end of its buffer and gives up with `bad_item`; the others report |
 
 The host checks every member's tile against numpy: bit-exact on integer inputs (even
 jobs), and the relative RMS error of the total on uniform random inputs (odd jobs).

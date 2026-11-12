@@ -64,3 +64,20 @@ Both kinds are written the same way by the author; the lowering differs.
 The watcher cannot run while the X280 runtime is open, so the runtime is built to be
 debugged without it: every wait is bounded, each core has a "gave up" word, "where"
 codes show where a core stopped, and the trace stamps phases per core.
+
+A program takes and releases pages of its circular buffers only through the runtime's
+wrappers (`Reader::reserve`, `Writer::wait_front`, `Compute::wait_front`,
+`Compute::reserve_back`), never through the raw `cb_*` calls. A wrapper's wait is
+bounded and sees the stop word, and it checks that the item it hands out stays inside
+the buffer. An item of several pages is one contiguous region: tt-metal's compute side
+wraps its pointer when it reaches or passes the buffer's end, the data-movement side
+only when it lands exactly on it, so a straddling item would send the data-movement
+pointer out of the buffer for good. The buffer must therefore be a multiple of the
+item, and every push and pop on it a multiple of the item; a wrapper that sees an item
+pass the end gives up with the code `bad_item` before any access.
+
+The one kind of wait that is not bounded is the wait on the NoC itself
+(`noc_async_read_barrier`, `noc_async_write_barrier`, `noc_async_writes_flushed`). It
+ends once the transactions to valid addresses complete; bounding it would let a kernel
+leave with a transaction still in flight. The wrappers' checks are what keep those
+addresses valid.

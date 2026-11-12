@@ -6,6 +6,7 @@ import numpy as np
 
 from komorebi import abi
 
+GAVES = {"Stop": "stop", "Limit": "limit", "BadItem": "bad_item"}  # kGave*
 WHERES = (
     "Checkin",
     "Token",
@@ -70,8 +71,9 @@ def gave_up(word, seq, h=None):
     if code == h["kGaveNone"]:
         return None
     wheres = {h[f"kWhere{w}"]: w.lower() for w in WHERES}
+    gaves = {h[f"kGave{g}"]: name for g, name in GAVES.items()}
     return {
-        "code": "stop" if code == h["kGaveStop"] else "limit",
+        "code": gaves.get(code, code),
         "where": wheres.get((word >> 8) & 0xFF, (word >> 8) & 0xFF),
         "slot": (word >> 16) & 0xFF,
         "seq": int(seq),

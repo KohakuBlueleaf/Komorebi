@@ -165,6 +165,13 @@ def state_words(ctl_rows):
     return as_uint32(ctl_rows)[:, start : start + K["kStateWords"]]
 
 
+GAVES = {
+    K["kGaveStop"]: "stop",
+    K["kGaveLimit"]: "limit",
+    K["kGaveBadItem"]: "bad_item",
+}
+
+
 def gave_up(word, seq):
     """A gave-up word pair as a dict, or None when the kernel did not give up."""
     code = word & 0xFF
@@ -172,7 +179,7 @@ def gave_up(word, seq):
         return None
     wheres = {v: k[6:].lower() for k, v in K.items() if k.startswith("kWhere")}
     return {
-        "code": "stop" if code == K["kGaveStop"] else "limit",
+        "code": GAVES.get(code, code),
         "where": wheres.get((word >> 8) & 0xFF, (word >> 8) & 0xFF),
         "slot": (word >> 16) & 0xFF,
         "seq": int(seq),

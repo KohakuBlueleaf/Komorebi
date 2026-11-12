@@ -24,6 +24,7 @@ KERNELS = HERE.parents[2] / "examples" / "01_mapcollect" / "kernels"
 SEGMENTS = rec.constants(KERNELS / "mapcollect.h")
 SEG_MAP, SEG_STALL = SEGMENTS["kSegMap"], SEGMENTS["kSegStall"]
 SEG_ALIGN, SEG_LATE = SEGMENTS["kSegAlign"], SEGMENTS["kSegLate"]
+SEG_BAD_ITEM = SEGMENTS["kSegBadItem"]
 TILE = 32
 
 
@@ -52,6 +53,8 @@ def parse():
     p.add_argument("--late-member", type=int, default=0)
     p.add_argument("--late-cycles", type=int, default=0)
     p.add_argument("--slow", type=int, default=-1, help="MAP job with slow compute")
+    p.add_argument("--bad-item", type=int, default=-1, help="job index made a BAD_ITEM")
+    p.add_argument("--bad-side", choices=["writer", "reader"], default="writer")
     p.add_argument("--slow-member", type=int, default=0)
     p.add_argument("--slow-cycles", type=int, default=0)
     p.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
@@ -303,6 +306,9 @@ def run(device, args, rng):
     for j, (first, count) in enumerate(teams):
         if j == args.stall:
             records.append(rec.record(SEG_STALL, first, count, [args.stall_member]))
+        elif j == args.bad_item:
+            side = [0, int(args.bad_side == "reader")]
+            records.append(rec.record(SEG_BAD_ITEM, first, count, side))
         elif j == args.late:
             late = [args.late_member, args.late_cycles]
             records.append(rec.record(SEG_LATE, first, count, late))
@@ -478,7 +484,7 @@ def check(args, teams, base, outs, xs):
     jobs = [
         j
         for j in checked_jobs(teams, base, pages)
-        if j not in (args.stall, args.late) and j < last
+        if j not in (args.stall, args.late, args.bad_item) and j < last
     ]
     bad, rel_max, exact_jobs = [], 0.0, 0
     for j in jobs:

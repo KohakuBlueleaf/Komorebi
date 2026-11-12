@@ -50,8 +50,13 @@ namespace km {
             return code == kGaveStop;
         }
 
-        // Bounded cb_reserve_back for a segment's data. False: gave up (recorded).
+        // Bounded cb_reserve_back of a contiguous item: the buffer, every push and
+        // every pop on it must be multiples of the item. False: gave up (recorded).
         bool reserve(uint32_t cb, uint32_t pages) const {
+            if (!item_fits(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages)) {
+                gave_up(kStReader, kGaveBadItem, kWhereData, 0, 0);
+                return false;
+            }
             const uint32_t code = poll(
                 [&] {
                     return cb_pages_reservable_at_back(cb, pages);
@@ -302,8 +307,13 @@ namespace km {
             put_byte(state(), kStEnds, kEndWriter, end);
         }
 
-        // Bounded cb_wait_front for a segment's data. False: gave up (recorded).
+        // Bounded cb_wait_front of a contiguous item: the buffer, every push and every
+        // pop on it must be multiples of the item. False: gave up (recorded).
         bool wait_front(uint32_t cb, uint32_t pages) const {
+            if (!item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)) {
+                gave_up(kStWriter, kGaveBadItem, kWhereData, 0, 0);
+                return false;
+            }
             const uint32_t code = poll(
                 [&] {
                     return cb_pages_available_at_front(cb, pages);
@@ -346,30 +356,35 @@ namespace km {
             return get_arg_val<uint32_t>(kComputeArgs + i);
         }
 
-        // Bounded cb_wait_front: unpack polls, math and pack get its answer. False on
-        // every thread: gave up (recorded); the body returns without using the pages.
+        // Bounded cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
+        // of it). Unpack decides; math and pack get its answer. False: gave up.
         bool wait_front(uint32_t cb, uint32_t pages) const {
             uint32_t ok = 0;
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* got = get_cb_tiles_received_ptr(cb);
-                const uint32_t code = poll_stop(
-                    stop(),
-                    [&] {
-                        const uint16_t n = (
-                            static_cast<uint16_t>(
-                                ckernel::reg_read(
-                                    static_cast<uint32_t>(
-                                        reinterpret_cast<uintptr_t>(got)
-                                    )
-                                ) -
-                                get_local_cb_interface(cb).tiles_acked
-                            )
-                        );
-                        return n >= pages;
-                    },
-                    wait_,
-                    0
+                const bool fits = (
+                    item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)
                 );
+                const uint32_t code = !fits
+                    ? kGaveBadItem
+                    : poll_stop(
+                          stop(),
+                          [&] {
+                              const uint16_t n = (
+                                  static_cast<uint16_t>(
+                                      ckernel::reg_read(
+                                          static_cast<uint32_t>(
+                                              reinterpret_cast<uintptr_t>(got)
+                                          )
+                                      ) -
+                                      get_local_cb_interface(cb).tiles_acked
+                                  )
+                              );
+                              return n >= pages;
+                          },
+                          wait_,
+                          0
+                      );
                 ok = code == kGaveNone;
                 if (ok) {
                     cb_wait_front(cb, pages);
@@ -384,32 +399,38 @@ namespace km {
             return ok != 0;
         }
 
-        // Bounded cb_reserve_back, decided by pack alone (only pack writes the
-        // buffer). False on pack: gave up (recorded); true on unpack and math.
+        // Bounded cb_reserve_back of a contiguous item (buffer, pushes, pops: multiples
+        // of it), decided by pack. False on pack: gave up (recorded); true elsewhere.
         bool reserve_back(uint32_t cb, uint32_t pages) const {
             bool ok = true;
             PACK(({
                 volatile tt_reg_ptr uint32_t* acked = get_cb_tiles_acked_ptr(cb);
-                const uint32_t code = poll_stop(
-                    stop(),
-                    [&] {
-                        const uint16_t used = (
-                            static_cast<uint16_t>(
-                                get_local_cb_interface(cb).tiles_received -
-                                ckernel::reg_read(
-                                    static_cast<uint32_t>(
-                                        reinterpret_cast<uintptr_t>(acked)
-                                    )
-                                )
-                            )
-                        );
-                        return (
-                            get_local_cb_interface(cb).fifo_num_pages - used >= pages
-                        );
-                    },
-                    wait_,
-                    0
+                const bool fits = (
+                    item_fits(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages)
                 );
+                const uint32_t code = !fits
+                    ? kGaveBadItem
+                    : poll_stop(
+                          stop(),
+                          [&] {
+                              const uint16_t used = (
+                                  static_cast<uint16_t>(
+                                      get_local_cb_interface(cb).tiles_received -
+                                      ckernel::reg_read(
+                                          static_cast<uint32_t>(
+                                              reinterpret_cast<uintptr_t>(acked)
+                                          )
+                                      )
+                                  )
+                              );
+                              return (
+                                  get_local_cb_interface(cb).fifo_num_pages - used >=
+                                  pages
+                              );
+                          },
+                          wait_,
+                          0
+                      );
                 ok = code == kGaveNone;
                 if (ok) {
                     cb_reserve_back(cb, pages);

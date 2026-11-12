@@ -43,6 +43,8 @@ void kernel_main() {
                            wr.args().idle_limit
                        ) == km::kGaveNone;
             }
+            case kSegBadItem:
+                return index != r.a0 || r.a1 != 0 || wr.wait_front(kCbOut, 2);
             default:
                 return true;
         }

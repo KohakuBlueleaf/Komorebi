@@ -36,6 +36,7 @@ drives it through `mapcollect_fed.py` (set `KMR_CARD=1` to run the card tests).
 | `--wait S`, `--deadline S` | A core's bound on a wait for another core; the feeder's per-record deadline. |
 | `--stall J --stall-member M` | Job J: member M waits for the stop word. |
 | `--late J --late-member M --late-cycles C` | Job J: member M reports C cycles late. |
+| `--bad-item J --bad-side writer\|reader` | Job J: member 0 asks for an item past the end of its buffer. |
 | `--slow J --slow-member M --slow-cycles C` | MAP job J: member M's compute holds its tile C cycles. |
 | `--exit-at J`, `--exit-team f:c` | Job J is an EXIT (with that team in the table). |
 | `--raw J`, `--raw-slot S` | Job J is issued as built: the header names slot S and the team is kept (tests of records that name the wrong slot, or an EXIT with a partial team). |

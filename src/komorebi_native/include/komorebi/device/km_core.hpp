@@ -46,8 +46,9 @@ namespace km {
 
     // Gave-up codes, where codes and how a kernel left.
     constexpr uint32_t kGaveNone = 0;
-    constexpr uint32_t kGaveStop = 1;       // the stop word was set
-    constexpr uint32_t kGaveLimit = 2;      // the wait's bound passed
+    constexpr uint32_t kGaveStop = 1;     // the stop word was set
+    constexpr uint32_t kGaveLimit = 2;    // the wait's bound passed
+    constexpr uint32_t kGaveBadItem = 3;  // a multi-page item would pass the buffer end
     constexpr uint32_t kWhereCheckin = 1;   // leader collecting start-up check-ins
     constexpr uint32_t kWhereToken = 2;     // reader waiting for free token pages
     constexpr uint32_t kWhereNext = 3;      // reader waiting for a record
@@ -149,6 +150,13 @@ namespace km {
         volatile tt_l1_ptr uint32_t* state, uint32_t word, uint32_t b, uint32_t v
     ) {
         reinterpret_cast<volatile tt_l1_ptr uint8_t*>(state + word)[b] = v;
+    }
+
+    // True if `pages` pages from `ptr` (this side's fifo_rd_ptr or fifo_wr_ptr, in its
+    // units) end at or before the limit of buffer cb: an item is one contiguous region.
+    inline bool item_fits(uint32_t cb, uint32_t ptr, uint32_t pages) {
+        const LocalCBInterface& i = get_local_cb_interface(cb);
+        return ptr + pages * i.fifo_page_size <= i.fifo_limit;
     }
 
     // Polls ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle

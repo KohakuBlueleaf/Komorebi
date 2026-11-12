@@ -13,6 +13,9 @@ constexpr uint32_t kSegStall = 2;
 constexpr uint32_t kSegAlign = 3;
 // LATE: member a0 reports a1 cycles after it took the record (wall clock).
 constexpr uint32_t kSegLate = 4;
+// BAD_ITEM (a test): member a0 asks for an item past the buffer end; a1 = 0: writer,
+// 2 pages of kCbOut (after an odd number of pages); 1: reader, kInPages of kCbIn.
+constexpr uint32_t kSegBadItem = 5;
 
 constexpr uint32_t kCbIn = 0;
 constexpr uint32_t kCbOut = 16;
