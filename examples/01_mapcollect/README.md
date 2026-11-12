@@ -9,6 +9,7 @@ of the core order; cores outside the team ignore it.
 | `MAP` | a0 input, a1 tiles T, a2 output, a3 output page of member 0 | reads its share of the T input tiles, adds them into one tile (fp32 in DST), stores it at page a3 + member, reports |
 | `STALL` | a0 member | member a0 waits for the stop word and does not report; the others report |
 | `NOP` | none | reports |
+| `ALIGN` | a9 release time (set by the feeder, `--release`) | waits for the wall clock to reach a9, then reports: every member reports at once (a completion measurement) |
 | `EXIT` | none | the feeder sends it last to every core; it completes like any record, then every kernel leaves |
 
 The host sums the members' tiles and compares them with numpy: every member's tile is

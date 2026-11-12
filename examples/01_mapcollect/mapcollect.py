@@ -27,13 +27,17 @@ K = rec.K
 KERNELS = HERE / "kernels"
 SEGMENTS = rec.constants(KERNELS / "mapcollect.h")
 SEG_MAP, SEG_STALL = SEGMENTS["kSegMap"], SEGMENTS["kSegStall"]
+SEG_ALIGN = SEGMENTS["kSegAlign"]
 TILE = 32
 
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--jobs", type=int, default=20)
-    p.add_argument("--seg", choices=["map", "nop"], default="map")
+    p.add_argument("--seg", choices=["map", "nop", "align"], default="map")
+    p.add_argument(
+        "--release", type=int, default=8000, help="align: cycles after issue"
+    )
     p.add_argument("--teams", choices=["fixed", "random", "pair"], default="fixed")
     p.add_argument("--count", type=int, default=8, help="team size (fixed)")
     p.add_argument("--first", type=int, default=0, help="first core (fixed)")
@@ -210,6 +214,8 @@ def run(device, args, rng):
     for j, (first, count) in enumerate(teams):
         if j == args.stall:
             records.append(rec.record(SEG_STALL, first, count, [args.stall_member]))
+        elif args.seg == "align":
+            records.append(rec.record(SEG_ALIGN, first, count))
         elif args.seg == "nop":
             records.append(rec.record(K["KM_SEG_NOP"], first, count))
         else:
@@ -245,6 +251,7 @@ def run(device, args, rng):
         depth=args.depth,
         deadline_s=args.deadline,
         trace_cap=trace_cap,
+        release=args.release if args.seg == "align" else 0,
     )
     if args.dump:
         np.savez(
@@ -324,6 +331,9 @@ def run(device, args, rng):
         ]
     if args.trace and res.trace is not None:
         phases = trace_phases(res, teams, n)
+        if args.seg == "align":  # release at issue + args.release cycles
+            for p in phases:
+                p["push_after_release"] = p["leader_sent"] - args.release / res.mhz
         out["trace_us"] = summarize_phases(phases)
         out["overlap"] = overlaps(res, teams, n)
 

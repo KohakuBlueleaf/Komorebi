@@ -24,6 +24,14 @@ void kernel_main() {
             }
             case kSegStall:
                 return index != r.a0;
+            case kSegAlign:
+                wr.poll(
+                    [&] {
+                        return static_cast<int32_t>(km::wall() - r.a9) >= 0;
+                    },
+                    wr.args().wait_limit
+                );
+                return true;
             default:
                 return true;
         }

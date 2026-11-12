@@ -8,6 +8,9 @@
 constexpr uint32_t kSegMap = 1;
 // STALL: member a0 waits for the stop word and does not report; the others report.
 constexpr uint32_t kSegStall = 2;
+// ALIGN: every member reports at wall-clock time a9 (low word; the test feeder sets
+// it).
+constexpr uint32_t kSegAlign = 3;
 
 constexpr uint32_t kCbIn = 0;
 constexpr uint32_t kCbOut = 16;
