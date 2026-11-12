@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# run.sh <tag> <dispatch_card.py args...>: one card job under the hang watcher.
+# run.sh <tag> <dispatch_card.py args...>: one card job under a hang watcher, an external
+# tool of the machine these tests were written on (not part of this repository).
 #   KMR_CARD_ENV  script to source for the tt-metal environment; it must set $PY
 #   HANGWATCH     the hang watcher (takes the card lock, kills on limit or stall)
 #   LOCK_DIR      directory of the lab's stop / reset lock files

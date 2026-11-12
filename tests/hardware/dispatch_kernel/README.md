@@ -22,6 +22,12 @@ the counters back only after the X280 runtime is closed.
 The kernel keeps its state in this cluster's DRAM bank (cached); every case that runs
 the kernel gives it 4 KiB of a DRAM buffer the test owns.
 
+The host module stores the number of events it has read into the kernel's local memory
+with every batch of commands, and at most once a microsecond while it waits; the kernel
+takes a command only while its event has room in the event ring (`--event-depth`, 128
+by default, a power of two like `--host-depth`). The kernel's idle limit is off unless
+`--idle-s` sets one.
+
 `python dispatch_card.py <case> [options]` prints one JSON line. `ok` is true when the
 case's checks hold.
 
@@ -58,8 +64,10 @@ error path stops a running image.
 - **Host-fed**: the host stores every command that fits in the ring, up to `--batch`
   commands, then fences once.
   `--settle-us` makes it wait that long after a fence before it stores the next batch.
-  On the host these tests were written on, a store into the card's window issued within
-  about 0.5 microseconds after a fence often stalls for about 12 microseconds.
+  It exists because, on the host these tests were written on, a store into the card's
+  window issued within about 0.5 microseconds after a fence often stalls for about 12
+  microseconds; with `--settle-us 1` the stores cost about a fifth as much. It is off by
+  default so that the plain numbers stay comparable with earlier runs.
 
 `us_per_command_kernel` is the kernel's time from the first command it takes to the
 last event, divided by the number of commands. `us_per_command_host` is the host's time
@@ -71,12 +79,22 @@ from the first store to the last event read, divided the same way.
 You need:
 
 - this repository installed (`pip install -e .`);
-- a configured tt-metal source tree with the X280 runtime built;
-- one Blackhole p150a.
+- a tt-metal source tree configured with `TT_METAL_BUILD_X280=ON` (which needs
+  `TT_METAL_BUILD_TESTS=ON`) and built, for `build.py`;
+- a Python environment with that tree's `ttnn`, and `torch` and `numpy`, which
+  `dispatch_card.py` imports;
+- one Blackhole p150a whose X280 local memory has been primed by the X280 runtime's
+  preparation step: the harness opens the runtime with `RequirePrepared` and does not
+  prime it.
 
 ```
 python build.py --tree <tt-metal>
 python dispatch_card.py ping
+python dispatch_card.py teams --n 1000 --seed 1
+python dispatch_card.py disjoint --n 8 --delay-us 2000
+python dispatch_card.py stall --core 37 --deadline-us 50000
+python dispatch_card.py fill --n 200
+python dispatch_card.py verify --n 100000 --host-depth 64 --batch 64 --settle-us 1
 python dispatch_card.py bench --preload --depth 16 --n 63 --host-depth 64
 python dispatch_card.py bench --depth 16 --n 100000 --host-depth 64 --batch 64
 ```
@@ -84,6 +102,7 @@ python dispatch_card.py bench --depth 16 --n 100000 --host-depth 64 --batch 64
 - `--tree` defaults to `TT_METAL_HOME`.
 - `--define NAME=VALUE` passes a define to the image build.
 - `--image <path>` runs another image.
+- `--host-depth` is 16 by default; the bench examples use 64, the most the kernel takes.
 
 On a shared machine, `run.sh <tag> <dispatch_card.py args>` runs one case under a hang
 watcher. The watcher is a tool of the host these tests were written on, not part of this
@@ -94,4 +113,4 @@ repository. It holds the card lock and kills the job on a time limit. Set:
 - `LOCK_DIR`: the directory of its stop and reset lock files;
 - optionally `CARD` and `LIMIT`.
 
-Logs go to `../../../.logs/`, which git ignores.
+Logs go to `<repo>/.logs/`, which git ignores.
