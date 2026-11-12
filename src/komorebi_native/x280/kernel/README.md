@@ -26,10 +26,12 @@ These rules are part of the protocol; a host that relies on anything else is wro
   `i - host_depth`.
 - **Ring depths** (`host_depth`, `event_depth`) are powers of two, so the slot numbering
   survives the wrap of the 32-bit counters. The kernel refuses other values at start.
-- **Event room.** The host writes the number of events it has read into the line at
-  `KMD_LIM_READ`. The kernel takes a command that ends in an event only while the unread
-  events, one per busy slot and one more fit the event ring, so it never overwrites an
-  event the host has not read. Command `i` can wait for this only while
+- **Event room.** The host writes the number of events it has read into word 0 of the
+  64-byte line at `KMD_LIM_READ` (the rest of the line is zero), as a whole line; the
+  reference host stores it after each batch of commands, under the same fence. The
+  kernel takes a command that ends in an event only while the unread events, one per
+  busy slot and one more fit the event ring, so it never overwrites an event the host
+  has not read. Command `i` can wait for this only while
   `i - 1 - (count the host wrote)` reaches `event_depth`.
 - **One store per event.** The kernel writes each 16-byte event with a single vector
   store. Separate stores from the X280 to host memory may be seen by the host in a
@@ -39,9 +41,18 @@ These rules are part of the protocol; a host that relies on anything else is wro
   (the harness's `verify` case under load, four runs of 100,000 commands each). The host
   reads `index`, the other fields, then `index` again, and keeps the event only when
   both reads give its number.
-- **Refused commands.** A bad record (segment 240 to 251, flag bit 0, a team outside the
-  grid, any record after EXIT) is consumed and answered with `KM_EV_REFUSED`, its reason
-  (`KMD_REFUSE_*`) in the status's aux. The session goes on.
+- **Refused commands.** A bad record is consumed and answered with `KM_EV_REFUSED`, its
+  reason (`KMD_REFUSE_*`) in the status's aux; the session goes on. Reasons: 1 a segment
+  from 240 to 251 that this kernel does not serve (`KM_SEG_RUN` and `KM_SEG_CANCEL`
+  included, until the engines exist); 2 flag bit 0 set; 3 a team with count 0 or
+  `first + count` above the cores; 4 any record after EXIT. A refused command's event
+  has ticks 0.
+- **Sequence numbers.** The host's command number is the event's `req`; the record the
+  grid sees carries the kernel's own sequence number instead, in `seq` and the landing
+  words. It increases by one per record issued, but skips 0 and the value the slot's
+  acknowledgement word still holds from the slot's previous record, so a stale
+  acknowledgement can never match. The host needs none of this; only a worker reads
+  `seq`.
 - **EXIT** goes to every core whatever its team field says, and only once no slot is
   busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own. A
   waiting command holds up every command behind it.
