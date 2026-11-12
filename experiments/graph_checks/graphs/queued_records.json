@@ -1,0 +1,102 @@
+{
+ "name": "queued_records",
+ "description": "queued records",
+ "notes": "Binding: check, status, error, regs, runs, stopped_grid, the issue set and the events without their pass. The issue set lists every record issued, sorted by (run, node): seg, first (null for a queued record, the allocator places it), count, flags as the grid sees them, a0 to a9 with trailing zeros left out. `order` (seq, slot, pass per record) and the event passes are the simulator's and are advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m} (seq % m, seq counted from 1 over the whole graph). A record's result word is (a0 + count) mod 2^32. Events are [kind, req, aux, extra]: extra is register 1 for KM_EV_GRAPH_END, else 0. Rules: docs/graphs.md.",
+ "bindings": [
+  60
+ ],
+ "params": {
+  "n_cores": 119,
+  "delay": 1,
+  "deadline_passes": null,
+  "cancel_pass": null,
+  "max_passes": 100000
+ },
+ "expect": {
+  "check": null,
+  "status": "ended",
+  "error": null,
+  "regs": [
+   60,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "runs": 1,
+  "stopped_grid": false,
+  "issued": [
+   {
+    "run": 1,
+    "node": 0,
+    "seg": 1,
+    "first": null,
+    "count": 50,
+    "flags": 0,
+    "args": [
+     1
+    ]
+   },
+   {
+    "run": 1,
+    "node": 1,
+    "seg": 2,
+    "first": null,
+    "count": 60,
+    "flags": 0,
+    "args": [
+     2
+    ]
+   },
+   {
+    "run": 1,
+    "node": 2,
+    "seg": 3,
+    "first": null,
+    "count": 119,
+    "flags": 0,
+    "args": []
+   }
+  ],
+  "events": [
+   [
+    8,
+    1,
+    60,
+    0
+   ]
+  ],
+  "order": [
+   [
+    1,
+    0,
+    0
+   ],
+   [
+    2,
+    1,
+    0
+   ],
+   [
+    3,
+    0,
+    2
+   ]
+  ],
+  "event_passes": [
+   4
+  ],
+  "passes": 5
+ }
+}

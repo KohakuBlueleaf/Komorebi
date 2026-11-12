@@ -45,6 +45,9 @@ place to ask a question and to be wrong.
   card: microseconds per command, the host's stores into the card (a store right after
   a fence stalls for about 12 microseconds), loads, stores and fences per X280 memory,
   and the stream engine's share of the kernel's loop.
+- [graph_checks](graph_checks/README.md): the reference graphs of the graph executor
+  and a comparison of its two implementations (Python and the plain-C engine built for
+  the host) on random graphs and mutated uploads. No difference found.
 - [runtime_harness](runtime_harness/README.md): the Tensix runtime's kernels as host
   threads on a simulated grid, with failure paths forced on purpose (stop words,
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
