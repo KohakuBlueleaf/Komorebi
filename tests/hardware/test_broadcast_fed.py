@@ -16,7 +16,7 @@ SCRIPT = (
 def test_a_stalled_receiver_times_out_then_rows_and_columns_are_exact():
     args = ["--rect", "4,0,4,3", "--blocks", 6, "--pages", 2, "--window", 2]
     args += ["--jobs", 2, "--stall-job", 0, "--stall-member", 13, "--stall-block", 2]
-    args += ["--wait", 0.05, "--deadline", 0.5, "--again"]
+    args += ["--wait", 0.05, "--deadline", 0.5, "--again", "--feeder"]
     done = subprocess.run(
         [sys.executable, str(SCRIPT), *map(str, args)],
         capture_output=True,
