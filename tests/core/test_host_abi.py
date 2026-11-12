@@ -134,3 +134,77 @@ def test_a_struct_member_that_cannot_be_read_is_an_error(tmp_path, member):
     path = write(tmp_path, f"struct Args {{\n uint32_t a;\n {member}\n}};\n")
     with pytest.raises(abi.HeaderError, match="cannot read member"):
         abi.struct_fields(path, "Args")
+
+
+def read(tmp_path, text):
+    path = tmp_path / "h.h"
+    path.write_text(text)
+    return abi.constants(path)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "enum Mode { KM_A = 1 };",
+        "typedef enum { KM_A = 1 } mode_t;",
+        "enum class Mode : uint32_t { A = 1 };",
+        "constexpr int kA = 1;",
+        "constexpr std::uint32_t kA = 1;",
+        "constexpr uint32_t kA{1};",
+        "#define KM_A (0u - 1u)",
+        "#define KM_A (0xFFFFFFFFu + 1u)",
+        "#define KM_A (1u << 32)",
+        "#define KM_A (1 << 100000)",
+        "#define KM_A (1 / 0)",
+        "#define KM_A 0b101",
+        "#define KM_A 0o17",
+        "#define KM_A 1_000",
+        "#define KM_A 0x1FFFFFFFF",
+        "#if defined(SOME_BUILD_FLAG)\n#define KM_A 1\n#endif",
+        "#ifdef SOME_BUILD_FLAG\nconstexpr uint32_t kA = 1;\n#else\n#endif",
+        "#if 1\n#define KM_A 1\n#else\n#define KM_A 2\n",
+    ],
+)
+def test_what_the_reader_cannot_evaluate_as_c_would_is_an_error(tmp_path, text):
+    with pytest.raises(abi.HeaderError):
+        read(tmp_path, text)
+
+
+def test_comments_and_disabled_blocks_are_removed_before_reading(tmp_path):
+    found = read(
+        tmp_path,
+        "#ifndef GUARD_H\n#define GUARD_H\n"
+        'static const char* s = "/*";\n#define KM_A 1\n'
+        "/* #define KM_B 2 */\n// #define KM_C 3\n"
+        "#if 0\n#define KM_A 99\n#define KM_D 4\n#else\n#define KM_E 5\n#endif\n"
+        "#define KM_F 6\n#undef KM_F\n#define KM_F 7\n"
+        "#if !defined(SOME_BUILD_FLAG)\nvoid f();\n#endif\n#endif\n",
+    )
+    assert found == {"KM_A": 1, "KM_E": 5, "KM_F": 7}
+
+
+def test_a_name_an_earlier_header_defined_decides_a_conditional(tmp_path):
+    one = write(tmp_path, "#define KM_A 2u\n", "one.h")
+    two = write(
+        tmp_path,
+        "#ifndef KM_A\n#define KM_X 9u\n#endif\n#ifdef KM_A\n#define KM_B 3u\n#endif\n"
+        "#if defined(__cplusplus)\n#define KM_M(c) f(c)\n#else\n#define KM_M(c) g(c)\n"
+        "#endif\n",
+        "two.h",
+    )
+    assert abi.constants(one, two) == {"KM_A": 2, "KM_B": 3}
+    with pytest.raises(abi.HeaderError, match="cannot decide"):
+        abi.constants(two)
+
+
+def test_a_struct_must_be_defined_once_with_distinct_members(tmp_path):
+    path = tmp_path / "s.h"
+    path.write_text("typedef struct { uint32_t a, a; } two_t;")
+    with pytest.raises(abi.HeaderError, match="twice"):
+        abi.struct_fields(path, "two_t")
+    path.write_text("struct S {\n#if X\n uint32_t a;\n#endif\n uint32_t b; };")
+    with pytest.raises(abi.HeaderError, match="undecided"):
+        abi.struct_fields(path, "S")
+    path.write_text("struct S { uint32_t a; };\nstruct S { uint32_t b; };")
+    with pytest.raises(abi.HeaderError, match="2 times"):
+        abi.struct_fields(path, "S")

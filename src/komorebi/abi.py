@@ -11,10 +11,18 @@ from pathlib import Path
 
 from komorebi import _env
 
-COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+# a comment, or a string or character literal (kept, so that "/*" in one is not one)
+LEXEME = re.compile(
+    r"//[^\n]*|/\*.*?\*/|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S
+)
+DIRECTIVE = re.compile(r"^\s*#\s*(\w+)\s*(.*?)\s*$")
 DEFINE = re.compile(r"^\s*#\s*define\s+(KMD?_\w+)(\(?)(.*)$", re.M)
 CONSTEXPR = re.compile(r"\bconstexpr\s+uint32_t\s+(k\w+)\s*=\s*([^;]*);")
+ANY_CONSTEXPR = re.compile(r"\bconstexpr\b[^;{]*")
 ENUM = re.compile(r"\benum\s*\{([^{}]*)\}\s*;")
+ANY_ENUM = re.compile(r"\benum\b")
+NUMBER = re.compile(r"\b\d\w*")
+C_NUMBER = re.compile(r"(0[xX][0-9A-Fa-f]+|0|[1-9][0-9]*)")
 SUFFIX = re.compile(
     r"\b(0[xX][0-9A-Fa-f]+|\d+)(?:[uU](?:ll|LL|l|L)?|(?:ll|LL|l|L)[uU]?)\b"
 )
@@ -79,25 +87,39 @@ class Headers:
 
 
 def evaluate(expr, known, sizes=None, where=""):
-    """The value of a C integer expression of numbers, known names, sizeof(struct)
-    and + - * / << >> | &; anything else raises HeaderError."""
+    """The value of a C integer expression of C literals, known names, sizeof(struct)
+    and + - * / << >> | &, where every value stays in 0..2**32 - 1 (so C's unsigned
+    arithmetic gives the same); anything else raises HeaderError."""
+    what = f"{where}: cannot read {expr.strip()!r}"
     text = SIZEOF.sub(
         lambda m: str((sizes or {}).get(m[1], f"sizeof_{m[1]}")), expr.strip()
     )
-    text = SUFFIX.sub(r"\1", text).replace("/", "//")
+    text = SUFFIX.sub(r"\1", text)
+    if any(not C_NUMBER.fullmatch(n) for n in NUMBER.findall(text)):
+        raise HeaderError(f"{what}: not a C integer literal")
     try:
-        tree = ast.parse(text, mode="eval")
+        tree = ast.parse(text.replace("/", "//"), mode="eval")
     except SyntaxError as err:
-        raise HeaderError(f"{where}: cannot read {expr.strip()!r}") from err
+        raise HeaderError(what) from err
+
+    def checked(v):
+        if not 0 <= v <= M32:
+            raise HeaderError(f"{what}: {v} is outside 0..2**32 - 1")
+        return v
 
     def value(node):
         if isinstance(node, ast.Constant) and type(node.value) is int:
-            return node.value
+            return checked(node.value)
         if isinstance(node, ast.Name) and node.id in known:
-            return known[node.id]
+            return checked(known[node.id])
         if isinstance(node, ast.BinOp) and type(node.op) in OPERATORS:
-            return OPERATORS[type(node.op)](value(node.left), value(node.right))
-        raise HeaderError(f"{where}: cannot read {expr.strip()!r}")
+            a, b = value(node.left), value(node.right)
+            if type(node.op) in (ast.LShift, ast.RShift) and b > 31:
+                raise HeaderError(f"{what}: shift by {b}")
+            if type(node.op) is ast.FloorDiv and b == 0:
+                raise HeaderError(f"{what}: division by zero")
+            return checked(OPERATORS[type(node.op)](a, b))
+        raise HeaderError(what)
 
     return value(tree.body)
 
@@ -108,9 +130,72 @@ def _add(found, name, value, where):
     found[name] = value
 
 
-def _clean(text):
-    """The text with comments removed and continued lines joined."""
-    return COMMENT.sub(" ", text.replace("\\\n", " "))
+def _strip(text):
+    """The text with comments removed (string literals kept) and continued lines
+    joined."""
+
+    def keep(m):
+        return m[0] if m[0][0] in "\"'" else " " * m[0].count("\n") or " "
+
+    return LEXEME.sub(keep, text.replace("\\\n", " "))
+
+
+def _condition(kind, rest, defined, after):
+    """True or False for a conditional the reader can decide, else None: 0, 1, a
+    name defined above, and an include guard (#ifndef X followed by #define X)."""
+    name = re.fullmatch(r"!?\s*defined\s*\(?\s*(\w+)\s*\)?", rest)
+    if kind in ("ifdef", "ifndef"):
+        name, negate = re.fullmatch(r"(\w+)", rest), kind == "ifndef"
+    else:
+        negate = rest.startswith("!")
+    if kind == "if" and rest in ("0", "1"):
+        return rest == "1"
+    if name is None:
+        return None
+    if name[1] in defined:
+        return not negate
+    if negate and re.match(rf"\s*#\s*define\s+{name[1]}\b", after):
+        return True  # an include guard
+    return None
+
+
+def _clean(text, where="", known=()):
+    """The active text of a header (`known`: names an earlier header defined), and
+    the text of blocks whose condition it cannot decide (a constant there raises)."""
+    lines = _strip(text).split("\n")
+    active, unsure, stack, defined = [], [], [], set(known)
+    for i, line in enumerate(lines):
+        d = DIRECTIVE.match(line)
+        kind, rest = (d[1], d[2]) if d else ("", "")
+        if kind in ("if", "ifdef", "ifndef"):
+            after = "\n".join(lines[i + 1 : i + 2])
+            cond = _condition(kind, rest, defined, after)
+            stack.append([cond, False])
+            continue
+        if kind in ("else", "elif", "endif"):
+            if not stack:
+                raise HeaderError(f"{where}: #{kind} without #if")
+            if kind == "endif":
+                stack.pop()
+            elif kind == "else":
+                cond = stack[-1][0]
+                stack[-1][0] = None if cond is None else not cond
+            else:
+                stack[-1][0] = None  # #elif: not decided here
+            continue
+        if any(c is False for c, _ in stack):
+            continue  # a disabled block
+        target = unsure if any(c is None for c, _ in stack) else active
+        target.append(line)
+        if target is unsure and line.strip():
+            active.append("@undecided;")  # a struct around it cannot be read
+        if kind == "define" and target is active:
+            defined.add(rest.split("(")[0].split()[0] if rest else "")
+        elif kind == "undef" and target is active:
+            defined.discard(rest)
+    if stack:
+        raise HeaderError(f"{where}: #if without #endif")
+    return "\n".join(active), "\n".join(unsure)
 
 
 def constants(*paths, sizes=None):
@@ -120,13 +205,32 @@ def constants(*paths, sizes=None):
     """
     found = {}
     for path in paths:
-        text = _clean(Path(path).read_text())
-        for name, paren, rest in DEFINE.findall(text):
-            if paren:
-                continue  # a function-like macro: not a constant
-            _add(found, name, evaluate(rest, found, sizes, f"{path}"), path)
-        for name, expr in CONSTEXPR.findall(text):
+        text, unsure = _clean(Path(path).read_text(), path, found)
+        objects = [m for m in DEFINE.finditer(unsure) if not m[2]]
+        if objects or ANY_CONSTEXPR.search(unsure) or "enum" in unsure:
+            raise HeaderError(
+                f"{path}: a constant inside an #if the host cannot decide"
+            )
+        for line in text.split("\n"):
+            d = DIRECTIVE.match(line)
+            if d and d[1] == "undef":
+                found.pop(d[2], None)
+            elif d and d[1] == "define":
+                m = DEFINE.match(line)
+                if m and not m[2]:  # function-like macros are not constants
+                    _add(found, m[1], evaluate(m[3], found, sizes, f"{path}"), path)
+        typed = CONSTEXPR.findall(text)
+        if len(ANY_CONSTEXPR.findall(text)) != len(typed):
+            other = [
+                c for c in ANY_CONSTEXPR.findall(text) if not CONSTEXPR.match(c + ";")
+            ]
+            raise HeaderError(
+                f"{path}: a constexpr that is not uint32_t k*: {other[:1]}"
+            )
+        for name, expr in typed:
             _add(found, name, evaluate(expr, found, sizes, f"{path}"), path)
+        if len(ANY_ENUM.findall(text)) != len(ENUM.findall(text)):
+            raise HeaderError(f"{path}: an enum other than `enum {{...}};`")
         for body in ENUM.findall(text):
             at = 0
             for item in filter(None, (i.strip() for i in body.split(","))):
@@ -143,18 +247,23 @@ def struct_fields(path, name):
 
     Every member must be a list of plain `uint32_t` names; anything else raises.
     """
-    text = _clean(Path(path).read_text())
-    body = re.search(
+    text, _ = _clean(Path(path).read_text(), path)
+    found = re.findall(
         rf"typedef\s+struct\s*\{{([^{{}}]*)\}}\s*{name}\s*;", text
-    ) or re.search(rf"\bstruct\s+{name}\s*\{{([^{{}}]*)\}}\s*;", text)
-    if body is None:
+    ) + re.findall(rf"\bstruct\s+{name}\s*\{{([^{{}}]*)\}}\s*;", text)
+    if not found:
         raise HeaderError(f"no struct {name} in {path}")
+    if len(found) > 1:
+        raise HeaderError(f"{path}: struct {name} defined {len(found)} times")
+    body = [None, found[0]]
     fields = []
     for decl in filter(None, (d.strip() for d in body[1].split(";"))):
         member = FIELD.match(" ".join(decl.split()))
         if member is None:
             raise HeaderError(f"{path}: struct {name}: cannot read member {decl!r}")
         fields += [f.strip() for f in member[1].split(",")]
+    if len(set(fields)) != len(fields):
+        raise HeaderError(f"{path}: struct {name}: a member name is used twice")
     return fields
 
 
