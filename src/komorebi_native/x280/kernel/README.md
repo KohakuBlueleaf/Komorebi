@@ -93,6 +93,13 @@ These rules are part of the protocol; a host that relies on anything else is wro
   stream with reason 10; its records in flight still free their slots. A record of a
   stream that misses its deadline ends the stream with reason 8 and the kernel with it.
   EXIT waits until no stream runs.
+- **What streams cost the sweep.** The interpreter runs in the same loop as the
+  acknowledgement sweep, so a pass that steps streams delays every acknowledgement.
+  Measured on a p150a with the harness's `stream-bench` case (pass period = run time /
+  passes): 34 ns with no stream; 316 ns with one stream issuing one record at a time,
+  525 ns with four; 3.1 microseconds with one stream that only loops (64 micro-ops of
+  about 49 ns each per pass), 11.7 microseconds with four. A host record at depth 16 to
+  one core costs 0.673 microseconds with the interpreter built in, against 0.640 without.
 - **Finish.** `KM_SEG_STOP`, the runtime's stop, a missed deadline or a start-up failure
   ends the loop. The stop word goes to the grid only while a slot is busy or before EXIT
   was issued. The state and error words in the host buffer, and the result block in LIM,
