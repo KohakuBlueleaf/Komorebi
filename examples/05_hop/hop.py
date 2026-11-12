@@ -1,0 +1,209 @@
+"""The hop example on a card through the dispatch kernel on X280 cluster 0: one dynamic
+run, items hop between the team's cores until their hops are used up, the kernel ends
+the run at the quiet end; every core's totals against the numpy replay. See README.md.
+"""
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+sys.path[:0] = [
+    str(HERE),
+    str(ROOT / "tests" / "hardware" / "feeder"),
+    str(ROOT / "src"),
+]
+
+import records as rec  # noqa: E402
+import replay  # noqa: E402
+import torch  # noqa: E402
+import ttnn  # noqa: E402
+
+import komorebi as km  # noqa: E402
+from komorebi import abi  # noqa: E402
+from komorebi.program import Dynamic  # noqa: E402
+
+K = rec.K
+HOP = rec.constants(HERE / "kernels" / "hop.h")
+RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
+T0 = time.monotonic()
+
+
+def log(msg):
+    """A progress line with seconds since start, flushed."""
+    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+
+
+def parse():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--count", type=int, default=0, help="team: cores 0 to count - 1")
+    p.add_argument("--items", type=int, default=1)
+    p.add_argument("--hops", type=int, default=1, help="hops per item")
+    p.add_argument("--one-core", type=int, default=-1, help="every hop to this member")
+    p.add_argument("--stall", type=int, default=-1, help="member that stalls")
+    p.add_argument("--again", action="store_true", help="then one more run, no stall")
+    p.add_argument("--probe", type=int, default=-1, help="member that spends its quota")
+    p.add_argument("--max-live", type=int, default=1 << 14)
+    p.add_argument("--queue-items", type=int, default=1 << 14)
+    p.add_argument("--bins", type=int, default=16)
+    p.add_argument("--idle-cycles", type=int, default=20000)
+    p.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
+    p.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
+    return p.parse_args()
+
+
+def options(a):
+    return {
+        "max_live": a.max_live,
+        "queue_items": a.queue_items,
+        "bins": a.bins,
+        "idle_cycles": a.idle_cycles,
+    }
+
+
+def main():
+    a = parse()
+    try:  # the launcher's refusals, before any device opens
+        Dynamic(seg=HOP["kSegHop"], **options(a)).check(max(a.count, 1), 4 << 30, 4)
+    except ValueError as err:
+        print(json.dumps({"refused": str(err)}), flush=True)
+        return
+    stalls = [a.stall] + ([-1] if a.again else [])
+    runs = []
+    with km.Session(log=log) as session:
+        log("device open")
+        for i, stall in enumerate(stalls):
+            runs.append(run_once(session, a, stall))
+            log(f"run {i + 1} done")
+    print(json.dumps({"runs": runs, "wall_s": round(time.monotonic() - T0, 1)}))
+
+
+def l1_blocks(device, grid, words):
+    """A zeroed L1 area of `words` words on every core, at one address."""
+    config = ttnn.create_sharded_memory_config(
+        (1, words),
+        ttnn.CoreGrid(y=grid[1], x=grid[0]),
+        ttnn.ShardStrategy.HEIGHT,
+        ttnn.ShardOrientation.ROW_MAJOR,
+        use_height_and_width_as_shard_shape=True,
+    )
+    return ttnn.from_torch(
+        torch.zeros((grid[0] * grid[1], words), dtype=torch.int32),
+        dtype=ttnn.int32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=device,
+        memory_config=config,
+    )
+
+
+def run_once(session, a, stall):
+    """One load of the program: the RUN record, its end (or the timeout), the check."""
+    device = session.device
+    g = device.compute_with_storage_grid_size()
+    grid = (g.x, g.y)
+    cores = grid[0] * grid[1]
+    count = a.count or cores
+    res_t = l1_blocks(device, grid, HOP["kResWords"])  # before the grid starts
+    program = km.Program(
+        "hop",
+        kernels={
+            "reader": RUNTIME / "dyn_reader.cpp",
+            "compute": HERE / "kernels" / "compute.cpp",
+            "writer": RUNTIME / "dyn_writer.cpp",
+        },
+        args=lambda core: ([], [], [res_t.buffer_address()]),
+        segments={"hop": HOP["kSegHop"]},
+    ).dynamic("hop", **options(a))
+    run = session.load(program, deadline=a.deadline, wait=a.wait)
+    log(f"loaded: team of {count} of {cores} cores")
+    words = [
+        a.items,
+        a.hops,
+        HOP["kModeOneCore"] if a.one_core >= 0 else HOP["kModeRandom"],
+        max(a.one_core, 0),
+        stall + 1,
+        a.probe + 1,
+    ]
+    timed_out = None
+    t0 = time.perf_counter()
+    ticket = run.issue("hop", (0, count), words, exclusive=True)
+    try:
+        run.drain(timeout=a.deadline + 5.0)
+        host_s = time.perf_counter() - t0
+        run.stop()
+    except km.RecordTimeout as err:
+        host_s = time.perf_counter() - t0
+        timed_out = err
+        log(f"timeout: {err}")
+    ev, seq = run.event(ticket), run.seq(ticket)
+    out = report(
+        a, run, (ev, seq), program.dyn, (count, cores), stall, res_t, timed_out
+    )
+    out["host_s"] = round(host_s, 4)
+    return out
+
+
+def report(a, run, event, dyn, team, stall, res_t, timed_out):
+    """The checks and numbers of one run as a dict: `event` (the RUN's event, its
+    sequence), `team` (count, cores in the grid)."""
+    (ev, seq), (count, cores) = event, team
+    h = abi.headers()
+    result = run.result()
+    harts = result.get("harts") or [0] * h["KMD_H_WORDS"]
+    res = (ttnn.to_torch(res_t).numpy().astype(np.int64) & 0xFFFFFFFF)[:count]
+    rows = ttnn.to_torch(run.backend.ctl).numpy().astype(np.int64) & 0xFFFFFFFF
+    at = run.backend.ctl_offset + (K["KM_CTL_DYN"] + K["KM_DYN_GAVE"]) // 4
+    gave = {
+        c: [int(v) for v in rows[c, at : at + 4]] for c in range(count) if rows[c, at]
+    }
+    one = a.one_core if a.one_core >= 0 else None
+    retired, total, visits = replay.replay(a.items, a.hops, count, one)
+    if a.probe >= 0:  # the probe's items visit their own core once
+        visits[a.probe] += res[a.probe, HOP["kResSpawned"]]
+    totals = res[:, HOP["kResTotalLo"]] | (res[:, HOP["kResTotalHi"]] << 32)
+    out = {
+        "count": count,
+        "items": a.items,
+        "hops_per_item": a.hops,
+        "stall": stall,
+        "kernel": {k: result[k] for k in ("error_name", "records", "events")},
+        "event": ev.kind if ev else None,
+        "run_us": round(ev.us, 1) if ev and ev.kind == "done" else None,
+        "exact": bool((res[:, HOP["kResRun"]] == seq).all())
+        and bool((res[:, HOP["kResRetired"]] == retired).all())
+        and bool((totals.astype(np.uint64) == total).all())
+        and bool((res[:, HOP["kResVisits"]] == visits).all()),
+        "retired": int(res[:, HOP["kResRetired"]].sum()),
+        "expected_retired": int(retired.sum()),
+        "hops": int(res[:, HOP["kResVisits"]].sum()) - a.items,
+        "probe_spawned": int(res[:, HOP["kResSpawned"]].sum()),
+        "refused": int(res[:, HOP["kResRefused"]].sum()),
+        "quota_start": dyn.quota(cores),
+        "quota_left_min": int(res[:, HOP["kResQuota"]].min()),
+        "checks": int(harts[h["KMD_H_DYN_CHECKS"]]),
+        "gave_core": int(harts[h["KMD_H_DYN_GAVE"]]) - 1,
+        "dyn_gave": gave,
+    }
+    if timed_out is not None:
+        out["timed_out"] = {
+            "ticket": timed_out.ticket,
+            "seq": timed_out.seq,
+            "team": list(timed_out.team),
+            "not_reported": timed_out.cores[:16],
+        }
+        states = run.state()
+        out["core_gave_up"] = [
+            {"core": c["core"], **{k: c[k] for k in ("reader", "writer", "compute")}}
+            for c in states
+            if c["reader"] or c["writer"] or c["compute"]
+        ][:16]
+    return out
+
+
+if __name__ == "__main__":
+    main()
