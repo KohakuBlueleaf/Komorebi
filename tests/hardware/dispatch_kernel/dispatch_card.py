@@ -25,6 +25,7 @@ import _km_dispatch_test as dk  # noqa: E402
 import torch  # noqa: E402
 import ttnn  # noqa: E402
 
+from komorebi import abi  # noqa: E402
 from komorebi.engines import stream as ks  # noqa: E402
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
@@ -37,7 +38,7 @@ STATE_BYTES = 0x8000  # KMD_STATE_BYTES: the kernel's state in its DRAM bank
 HOST_WAIT_S = 10.0
 DRAM_KEEP = []  # DRAM tensors a running image may use
 CTL_CB, OUT_CB = 8, 9
-CTL_BYTES = 0xA00  # KM_CTL_BYTES (0x980) rounded up to whole 64-byte lines
+CTL_BYTES = -(-abi.headers()["KM_CTL_BYTES"] // 64) * 64  # whole 64-byte lines
 AICLK_HZ = 1.35e9  # Tensix clock of this card, for the wait limit only
 
 # km_abi.h and km_dispatch.h

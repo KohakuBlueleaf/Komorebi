@@ -182,12 +182,6 @@ static uint32_t graph_issue(void* ctx, uint32_t node, const km_record_t* rec) {
     return KMG_ISSUED;
 }
 
-#ifdef KMD_REFUSE_BUSY
-#define graph_refused_busy(why) ((why) == KMD_REFUSE_BUSY)
-#else
-#define graph_refused_busy(why) 0
-#endif
-
 /* An event from the kernel, if it is the graphs': KMD_EV_GRUN, KMD_EV_CANCEL of a
  * graph's req, or the answer to a graph's record. Returns 1 when it was. */
 static int graph_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t ticks) {
@@ -207,14 +201,12 @@ static int graph_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t 
         }
         return 0;
     }
-#ifdef KMD_EV_WAKE
     if (kind == KMD_EV_WAKE) {
         for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE; j++) {
             gs->run[j].wait = 0;
         }
         return 0; /* the streams may want it too */
     }
-#endif
     kmd_sent_t* x = &e->sent[req % KMD_SENT];
     if (x->cmd != req || !(x->stream & KMD_SENT_GRAPH)) {
         return 0;
@@ -239,7 +231,7 @@ static int graph_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t 
             e->orphan_ticks[e->orphans] = ticks;
             e->orphans++;
         }
-    } else if (kind == KM_EV_REFUSED && graph_refused_busy(why)) {
+    } else if (kind == KM_EV_REFUSED && why == KMD_REFUSE_BUSY) {
         if (live) {
             kmg_retry(&r->g, x->pc);
             r->wait = 1;
