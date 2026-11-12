@@ -374,8 +374,8 @@ class Run:
         r = self._result
         raise self._remember(
             StartError(
-                f"the dispatch kernel did not report READY (state {state}): "
-                f"{self._finish_problems(r) or 'no error recorded'}",
+                f"the dispatch kernel did not report READY (state {state}, hart "
+                f"result {r.get('result')}): {self._finish_problems(r)}",
                 result=r,
             )
         )
