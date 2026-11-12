@@ -93,6 +93,15 @@ def split_range(total, cores):
     }
 
 
+def queue_pages(core, queue_items, page_items=32):
+    """The DRAM pages of core `core`'s queue of a dynamic segment (`page_items` items
+    a page, the queues of all cores in core order): a range of page indices."""
+    if queue_items % page_items:
+        raise ValueError(f"queue_items {queue_items} is not whole pages")
+    per = queue_items // page_items
+    return range(core * per, (core + 1) * per)
+
+
 @dataclass(frozen=True)
 class Team:
     """The cores `first` to `first + count - 1` of the grid's core order."""

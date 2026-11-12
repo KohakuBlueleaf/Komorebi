@@ -1,0 +1,69 @@
+"""The launcher's side of a dynamic segment: options, refusals, buffers, words."""
+
+import pytest
+
+from komorebi.layout import queue_pages
+from komorebi.program import Dynamic, dyn_header
+
+
+def test_queue_pages_are_consecutive_per_core():
+    assert queue_pages(0, 64) == range(0, 2)
+    assert queue_pages(3, 64) == range(6, 8)
+    with pytest.raises(ValueError):
+        queue_pages(0, 48)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"item_bytes": 48},
+        {"item_bytes": 512},
+        {"queue_items": 1000},
+        {"queue_items": 16},
+        {"bins": 0},
+        {"max_live": 0},
+    ],
+)
+def test_bad_options_are_refused(options):
+    with pytest.raises(ValueError):
+        Dynamic(seg=1, **options)
+
+
+def test_max_live_above_the_queue_capacity_is_refused():
+    with pytest.raises(ValueError, match="max_live"):
+        Dynamic(seg=1, max_live=1 << 17, queue_items=1 << 16).check(119, 4 << 30, 4)
+    Dynamic(seg=1, max_live=1 << 16, queue_items=1 << 16).check(119, 4 << 30, 4)
+
+
+def test_queues_beyond_the_dram_given_and_a_shallow_ring_are_refused():
+    d = Dynamic(seg=1, queue_items=1 << 16)
+    with pytest.raises(ValueError, match="queues"):
+        d.check(119, d.queue_bytes(119) - 1, 4)
+    with pytest.raises(ValueError, match="depth"):
+        d.check(119, 4 << 30, 1)
+    with pytest.raises(ValueError, match="quota"):
+        Dynamic(seg=1, max_live=100).check(119, 4 << 30, 4)
+
+
+def test_packet_pages_keep_items_64_byte_aligned():
+    k, _ = dyn_header()
+    for b in Dynamic(seg=1, item_bytes=128).buffers():
+        assert b.page_bytes % 64 == 0, b
+    assert k["kDynHeader"] % 64 == 0
+
+
+def test_words_follow_the_device_struct():
+    _, fields = dyn_header()
+    d = Dynamic(seg=7, bins=4, idle_cycles=99)
+    words = dict(zip(fields, d.args(0x1000, 0x2000, 0xDEADBEEF)))
+    assert words == {
+        "seg": 7,
+        "queue": 0x1000,
+        "cap": 1 << 16,
+        "item_bytes": 64,
+        "lines": 0x2000,
+        "salt": 0xDEADBEEF,
+        "idle": 99,
+        "bins": 4,
+    }
+    assert d.compute_args(119) == [64, (1 << 16) // 119]

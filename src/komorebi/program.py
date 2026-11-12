@@ -2,12 +2,13 @@
 segment numbers. A plain description; nothing here needs a device.
 """
 
+import functools
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from komorebi import abi
+from komorebi import _env, abi
 from komorebi.thread import Thread
 
 KERNELS = ("reader", "compute", "writer")
@@ -50,6 +51,7 @@ class Program:
     depth: int = 4
     segments: object = field(default_factory=dict)
     threads: dict = field(default_factory=dict)  # work cluster -> Thread
+    dyn: "Dynamic | None" = None
 
     def __post_init__(self):
         if isinstance(self.segments, str | Path):
@@ -91,9 +93,108 @@ class Program:
             return self.segments[segment]
         return int(segment)
 
+    def dynamic(self, seg, **options):
+        """Makes segment `seg` a dynamic segment (options: those of Dynamic) and adds
+        its buffers. Returns the program."""
+        if self.dyn is not None:
+            raise ValueError(f"{self.name} already has a dynamic segment")
+        self.dyn = Dynamic(seg=self.seg(seg), **options)
+        self.buffers = [*self.buffers, *self.dyn.buffers()]
+        return self
+
     def core_args(self, core):
         """(reader, writer, compute) program arguments of `core`."""
         if self.args is None:
             return [], [], []
         reader, writer, compute = self.args(core)
         return list(reader), list(writer), list(compute)
+
+
+@functools.cache
+def dyn_header():
+    """The constants and the argument order of km_dyn.hpp beside the package."""
+    path = _env.include_dir() / "komorebi" / "device" / "km_dyn.hpp"
+    fields = abi.struct_fields(path, "DynArgs")
+    return abi.constants(path, sizes={"DynArgs": 4 * len(fields)}), fields
+
+
+@dataclass(frozen=True)
+class Dynamic:
+    """A dynamic segment: items of `item_bytes` move between the queues of the
+    team's cores (`queue_items` each), at most `max_live` alive at once; `bins`
+    open bins per writer; a line says idle after `idle_cycles` of idle."""
+
+    seg: int
+    item_bytes: int = 64
+    max_live: int = 1 << 16
+    queue_items: int = 1 << 16
+    bins: int = 16
+    idle_cycles: int = 20000
+
+    def __post_init__(self):
+        k, _ = dyn_header()
+        page = k["kDynPageItems"]
+        if self.item_bytes % 64 or not 64 <= self.item_bytes <= k["kDynItemMax"]:
+            raise ValueError(f"item_bytes {self.item_bytes}: a multiple of 64 to 256")
+        q = self.queue_items
+        if q < page or q & (q - 1) or q > 1 << 31:
+            raise ValueError(f"queue_items {q}: a power of two from {page} to 2**31")
+        if not 1 <= self.bins <= k["kDynBinsMax"]:
+            raise ValueError(f"bins {self.bins}: not in 1..{k['kDynBinsMax']}")
+        if self.max_live < 1 or self.idle_cycles < 1:
+            raise ValueError("max_live and idle_cycles must be at least 1")
+
+    def buffers(self):
+        """The runtime's buffers of a dynamic segment: packets, outgoing items, bins."""
+        k, _ = dyn_header()
+        n = k["kDynPacket"]
+        return [
+            Buffer(k["kCbDynIn"], "uint32", k["kDynHeader"] + n * self.item_bytes, 2),
+            Buffer(k["kCbDynOut"], "uint32", self.item_bytes, 2 * n),
+            Buffer(k["kCbDynBins"], "uint32", self.bins * n * self.item_bytes, 1),
+        ]
+
+    def queue_bytes(self, cores):
+        """DRAM bytes of the queues of `cores` cores."""
+        return cores * self.queue_items * self.item_bytes
+
+    def check(self, cores, dram_bytes, depth):
+        """The launcher's refusals for a team of `cores` cores, `dram_bytes` of DRAM
+        given to the queues and a ring depth `depth`; raises ValueError."""
+        if self.max_live > self.queue_items:
+            raise ValueError(
+                f"max_live {self.max_live} > queue_items {self.queue_items}: "
+                "every item aimed at one core would not fit its queue"
+            )
+        if self.queue_bytes(cores) > dram_bytes:
+            raise ValueError(
+                f"queues of {cores} cores need {self.queue_bytes(cores)} bytes, "
+                f"{dram_bytes} given"
+            )
+        if self.max_live < cores:
+            raise ValueError(f"max_live {self.max_live} < {cores} cores: no quota")
+        if depth < 2:
+            raise ValueError("a dynamic run needs ring depth 2 for its end record")
+
+    def quota(self, cores):
+        """Spawns each core starts a run with."""
+        return self.max_live // cores
+
+    def args(self, queue, lines, salt):
+        """Reader and writer words of km::DynArgs (they precede the program's)."""
+        _, fields = dyn_header()
+        values = {
+            "seg": self.seg,
+            "queue": queue,
+            "cap": self.queue_items,
+            "item_bytes": self.item_bytes,
+            "lines": lines,
+            "salt": salt,
+            "idle": self.idle_cycles,
+            "bins": self.bins,
+        }
+        return [int(values[f]) & abi.M32 for f in fields]
+
+    def compute_args(self, cores):
+        """Compute's words (item bytes, quota), before the program's own."""
+        return [self.item_bytes, self.quota(cores)]
