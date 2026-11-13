@@ -7,6 +7,7 @@ X280 (the executor in the dispatch kernel). Prints one JSON line; exits 1 unless
 import argparse
 import contextlib
 import json
+import struct
 import sys
 import time
 from pathlib import Path
@@ -17,11 +18,11 @@ import ttnn
 
 import komorebi as km
 from komorebi.engines import graph as gr
+from komorebi.engines import stream as st
 from komorebi.engines.graph import Graph
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
-REFERENCES = HERE.parents[1] / "experiments" / "graph_checks" / "graphs"
 PAGES, WORDS = 64, 16  # state tensor: one 64-byte page per core, word 0 used
 M32 = 0xFFFFFFFF
 T0 = time.monotonic()
@@ -95,13 +96,9 @@ def build(n, max_runs, deadline):
 def main():
     args = parse()
     out = {"cores": args.cores}
-    bad = sorted(REFERENCES.glob("bad_*.bin"))
-    refused = [gr.check(path.read_bytes()) is not None for path in bad]
-    out["bad_uploads_refused"] = f"{sum(refused)}/{len(bad)}"
     with km.Session(log=log) as session:
         log("device open")
         out.update(run(session, args))
-    out["ok"] = bool(sum(refused) == len(bad) and out["ok"])
     out["wall_s"] = round(time.monotonic() - T0, 1)
     print(json.dumps(out), flush=True)
     sys.exit(0 if out["ok"] else 1)
@@ -146,12 +143,18 @@ def run(session, args):
         out["stall"] = stall(load, args.deadline, modes[-1] == "x280")
         ok &= out["stall"].get("error") == [8, 0]
     out["paths"] = {}
+    if "x280" not in modes:  # a run of its own: a host-fed trace refuses engine runs
+        load = session.load(program, deadline=args.deadline)
+        out["bad_uploads"] = refusals(load)
+        load.stop()
     for mode in modes:
         load = session.load(
             program, trace=8 * args.max_runs + 8, deadline=args.deadline
         )
         log(f"{mode}: loaded")
         cores = load.cores
+        if mode == "x280":  # engines run on this load anyway; not on the host's
+            out["bad_uploads"] = refusals(load)
         out["paths"][mode] = path = one_path(
             load, mode, g, (it_reg, err_reg), states, cases
         )
@@ -159,6 +162,9 @@ def run(session, args):
         if mode == "host" and "first" in path:
             path["branches_overlapping_rounds"] = overlap(load.trace(), path.pop("got"))
         path.pop("got", None)
+    refused = sum(got == want for got, want in out["bad_uploads"].values())
+    out["bad_uploads_refused"] = f"{refused}/{len(out['bad_uploads'])}"
+    ok &= refused == len(out["bad_uploads"])
     want = simulated(g, n, cases, args.max_runs, cores)
     for mode, path in out["paths"].items():
         ok &= "failed" not in path and path.get("max_busy", 0) >= 2
@@ -295,6 +301,51 @@ def stall(load, deadline, x280):
     if not load.stopped:
         with contextlib.suppress(km.KomorebiError):
             load.abort()
+    return out
+
+
+def bad_uploads():
+    """One upload per class the kernel refuses, each a fault put into a good graph (a
+    record, then a CPU node): {class: (bytes, [reason, node] of its error event)}."""
+    g = Graph(req=8)
+    r = g.reg()
+    g.cpu(after=[g.record(1, team=(0, 4), args=[0])]).addi(r, r, 1)
+    good = g.encode()
+    assert gr.check(good) is None
+    h = dict(zip(gr.HEADER_FIELDS, gr.HEADER.unpack_from(good)))
+    edges = gr.HEADER.size + -(-h["n_nodes"] * gr.NODE_BYTES // gr.LINE) * gr.LINE
+    ops = edges + -(-h["n_edges"] * 2 // gr.LINE) * gr.LINE
+    faults = {
+        "header_size": [st.ERR_HEADER, None],  # one line more than the header says
+        "edge_order": [gr.ERR_EDGE, 0],  # node 0's successor is node 0
+        "index_range": [st.ERR_TEMPLATE, 0],  # node 0's template is past the last
+        "cpu_opcode": [st.ERR_OPCODE, 1],  # the CPU node's micro-op is an ISSUE
+    }
+    data = {name: bytearray(good) for name in faults}
+    data["header_size"] += bytes(gr.LINE)
+    struct.pack_into("<H", data["edge_order"], edges, 0)
+    struct.pack_into("<H", data["index_range"], gr.HEADER.size + 4, h["n_records"])
+    struct.pack_into("<B", data["cpu_opcode"], ops, st.OP_ISSUE)
+    return {name: (bytes(data[name]), want) for name, want in faults.items()}
+
+
+def refusals(load):
+    """Each bad upload run by the kernel: {class: [got, want]}, `got` the [reason,
+    node] of its error event, else how it ended; the host check must agree too."""
+    out = {}
+    for name, (data, want) in bad_uploads().items():
+        error = gr.check(data)
+        node = None if error is None or error.node == gr.NO_NODE else error.node
+        up = load.upload(data, kind="graph")
+        try:
+            got = [load.wait_engine(load.start(up), timeout=5.0).kind]
+        except km.EngineError as err:
+            got = [err.reason, err.node]
+        load.release(up)
+        if error is None or [error.reason, node] != want:
+            got = ["host check", error]
+        log(f"bad upload {name}: {got}, want {want}")
+        out[name] = [got, want]
     return out
 
 

@@ -87,9 +87,6 @@ same environment, a copy of `examples/` outside any checkout:
 | `python work_cluster.py --paths thread` in `07_work_cluster` | 204 rounds, sum 1,004,917, same as the numpy replay, the thread 10.2 ms on the card | 6.9 s |
 | `python graph.py` in `06_graph` | both paths ended after 5 and 7 rounds, state exact, paths agree | 7.9 s |
 
-Outside a checkout `graph.py` finds none of the bad graphs it refuses (they are under
-`experiments/`), so it reports `bad_uploads_refused` as `0/0`.
-
 ## Workflows
 
 | Workflow | Runs on | What it does |

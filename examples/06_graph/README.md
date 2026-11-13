@@ -55,6 +55,14 @@ also agree on what the card saw: the kernel's record count and every core's coun
 records taken, against each other and against the records `Graph.simulate` issues (plus
 the EXIT each run ends with).
 
+The X280 run first gets four bad uploads (with `--decide host`, a run of their own:
+a host-fed trace refuses a run with an engine in it), built in `graph.py` from a good
+two-node graph with one fault each: a size other than the header's, a successor that is
+not after its node, a template index past the last, and an ISSUE in a CPU node's slice.
+Each must end in its error event (`header`, `edge`, `template`, `opcode`, at the node
+of the fault), the host's `check` naming the same; a class that ends otherwise counts as
+a failure (`bad_uploads_refused` below 4/4).
+
     python graph.py [--first IT LIMIT] [--again IT LIMIT] [--max-runs N]
                     [--decide host|x280|both] [--deadline S] [--stall]
 
