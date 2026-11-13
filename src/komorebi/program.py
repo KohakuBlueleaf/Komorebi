@@ -20,6 +20,16 @@ SEGMENT = re.compile(r"constexpr\s+uint32_t\s+kSeg(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d
 
 
 @dataclass(frozen=True)
+class KernelSizes:
+    """A program's build against the kernel buffer: packed text per thread (bytes),
+    the kernel config's total (text, arguments, buffer configs) and the buffer."""
+
+    text: dict
+    total: int | None
+    limit: int
+
+
+@dataclass(frozen=True)
 class Buffer:
     """A circular buffer on every core: index, data format name, page size, pages."""
 
@@ -57,6 +67,7 @@ class Program:
     threads: dict = field(default_factory=dict)  # work cluster -> Thread
     dyn: "Dynamic | None" = None
     opt: dict = field(default_factory=dict)  # kernel -> optimisation level
+    sizes: KernelSizes | None = field(default=None, init=False, compare=False)
 
     def __post_init__(self):
         if isinstance(self.segments, str | Path):

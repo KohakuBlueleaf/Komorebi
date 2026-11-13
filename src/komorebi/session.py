@@ -7,6 +7,7 @@ Needs ttnn and a tt-metal tree; `import komorebi` alone does not import this mod
 import atexit
 import contextlib
 import os
+import re
 import signal
 import time
 import weakref
@@ -19,7 +20,14 @@ import ttnn
 from komorebi import abi, dram, insn_check, layout, native
 from komorebi import state as st
 from komorebi import thread as kt
-from komorebi.errors import CardBusy, GridTimeout, ProgramError, StartError
+from komorebi.errors import (
+    CardBusy,
+    GridTimeout,
+    KernelSizeError,
+    ProgramError,
+    StartError,
+)
+from komorebi.program import KernelSizes
 from komorebi.run import Run
 
 CTL_ALIGN = 64  # the dispatch kernel stores whole 64-byte lines into the control block
@@ -43,6 +51,14 @@ REGION_CHUNK = 2 << 20  # of this size, with a log line each
 # unset, it is 0, which means no bound. Read when the process first opens a device.
 OP_TIMEOUT = "TT_METAL_OPERATION_TIMEOUT_SECONDS"
 OP_TIMEOUT_DEFAULT = 30.0  # the runtime's own example value
+# A Blackhole Tensix core's L1 and where the runtime's kernel buffer starts in it
+# (MEM_L1_SIZE, MEM_MAP_END); the buffer ends where the allocator's L1 base begins.
+L1_BYTES = 1536 * 1024
+KERNEL_BUFFER_BASE = 41088
+KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B)
+KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
+KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
+TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
 
 
@@ -143,6 +159,34 @@ def exit_wait(environ=None):
     except ValueError:
         seconds = 0.0
     return f"up to {seconds:g} s" if seconds > 0 else "without a bound"
+
+
+def worker_l1_size(kernel_bytes):
+    """The runtime's worker_l1_size for a kernel buffer of `kernel_bytes` (None: the
+    default, nothing passed); a size the runtime would not give exactly is refused."""
+    if kernel_bytes is None:
+        return None
+    if (
+        not isinstance(kernel_bytes, int)
+        or kernel_bytes % KERNEL_BUFFER_ALIGN
+        or not KERNEL_BUFFER_ALIGN <= kernel_bytes <= KERNEL_BUFFER_MAX
+    ):
+        raise ValueError(
+            f"kernel_bytes={kernel_bytes!r}: a multiple of {KERNEL_BUFFER_ALIGN} from "
+            f"{KERNEL_BUFFER_ALIGN} to {KERNEL_BUFFER_MAX} (default "
+            f"{KERNEL_BUFFER_DEFAULT})"
+        )
+    return L1_BYTES - KERNEL_BUFFER_BASE - kernel_bytes
+
+
+def kernel_sizes(build):
+    """A KernelSizes from the native kernel_build's (config bytes, buffer, text per
+    thread, the runtime's message); the total from that message when it does not fit."""
+    total, limit, text, error = build
+    if error:
+        said = re.search(r"Program size \((\d+)\) too large", error)
+        total = int(said.group(1)) if said else None
+    return KernelSizes(dict(zip(TENSIX_THREADS, text, strict=False)), total, limit)
 
 
 def kernel_build(program, kernel, defines):
@@ -286,6 +330,7 @@ class Session:
         tree=None,
         log=None,
         grid_timeout=10.0,
+        kernel_bytes=None,
     ):
         self.card = card
         self.device = device
@@ -294,6 +339,10 @@ class Session:
         self.tree = tree
         self.log = log or (lambda msg: None)
         self.grid_timeout = grid_timeout
+        self.kernel_bytes = kernel_bytes  # None: the runtime's default buffer
+        self._worker_l1 = worker_l1_size(kernel_bytes)
+        if device is not None and kernel_bytes is not None:
+            raise ValueError("kernel_bytes is set when the session opens the device")
         self.run = None
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
@@ -332,7 +381,8 @@ class Session:
                 "an open would wait until that process exits",
                 pid=holder,
             )
-        self.device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
+        sized = {} if self._worker_l1 is None else {"worker_l1_size": self._worker_l1}
+        self.device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1), **sized)
         _hook_exit()
         _LIVE.add(self)
         self.device.disable_and_clear_program_cache()
@@ -383,6 +433,13 @@ class Session:
                     self.close()
                 except Exception as err:  # noqa: BLE001 (as above)
                     self.log(f"{why}: close raised {type(err).__name__}: {err}")
+
+    def l1(self):
+        """(kernel buffer, L1 left for buffers) of each core in bytes, from the
+        runtime's layout of the open device: what a larger buffer costs the buffers."""
+        self._module = self._module or native.load_module(self.tree)
+        kernel, free, _ = self._module.kernel_buffer(self.device)
+        return int(kernel), int(free)
 
     def nocs(self):
         """The grid's NoC coordinates by core (a layout.Nocs), from the open device:
@@ -500,12 +557,20 @@ class Session:
             descriptor = backend.describe(
                 program, sources, tag, depth, wait, idle, trace
             )
+            t0 = time.perf_counter()
+            try:
+                elves, *build = module.kernel_build(self.device, descriptor)
+            except Exception as err:
+                raise ProgramError(f"{program.name}: build failed: {err}") from err
+            program.sizes = kernel_sizes(build)
+            text = ", ".join(f"{k} {v}" for k, v in program.sizes.text.items())
+            self.log(
+                f"kernel buffer: {program.sizes.total} of {program.sizes.limit} B "
+                f"(text: {text})"
+            )
+            if build[-1]:
+                raise KernelSizeError(program.name, program.sizes, KERNEL_BUFFER_MAX)
             if insn_check.enabled():
-                t0 = time.perf_counter()
-                try:
-                    elves = module.kernel_elves(self.device, descriptor)
-                except Exception as err:
-                    raise ProgramError(f"{program.name}: build failed: {err}") from err
                 insn_check.check_kernels(
                     program.name,
                     elves,

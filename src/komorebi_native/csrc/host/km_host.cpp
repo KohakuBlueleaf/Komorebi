@@ -156,9 +156,36 @@ namespace {
         return chip(mesh)->allocator()->get_num_banks(tt::tt_metal::BufferType::DRAM);
     }
 
+    // [kernel buffer bytes, L1 bytes left for buffers, L1 size] of a Tensix core, from
+    // the runtime's layout and the allocator's base.
+    std::array<uint64_t, 3> kernel_buffer(const MeshDevice& mesh) {
+        auto* dev = chip(mesh);
+        const auto& hal = tt::tt_metal::MetalContext::instance().hal();
+        const auto tensix = tt::tt_metal::HalProgrammableCoreType::TENSIX;
+        const uint64_t config = (
+            hal.get_dev_addr(tensix, tt::tt_metal::HalL1MemAddrType::KERNEL_CONFIG)
+        );
+        const uint64_t l1 =
+            (hal.get_dev_addr(tensix, tt::tt_metal::HalL1MemAddrType::BASE) +
+             hal.get_dev_size(tensix, tt::tt_metal::HalL1MemAddrType::BASE));
+        const uint64_t base = (
+            dev->allocator()->get_base_allocator_addr(tt::tt_metal::HalMemType::L1)
+        );
+        return {base - config, l1 - base, l1};
+    }
+
+    // A build: per kernel its source and ELFs; config bytes (0: it does not fit), the
+    // buffer, packed text per Tensix processor, the runtime's message.
+    using KernelBuild = std::tuple<
+        std::vector<std::tuple<std::string, std::vector<std::string>>>,
+        uint32_t,
+        uint32_t,
+        std::vector<uint32_t>,
+        std::string>;
+
     // Builds `desc`'s kernels for this device as generic_op does (its own build then
-    // hits the JIT cache); per kernel, its source and its ELF paths.
-    std::vector<std::tuple<std::string, std::vector<std::string>>> kernel_elves(
+    // hits the JIT cache) and lays out its kernel config, which checks its size.
+    KernelBuild kernel_build(
         const MeshDevice& mesh, const tt::tt_metal::ProgramDescriptor& desc
     ) {
         tt::tt_metal::IDevice* dev = chip(mesh);
@@ -171,22 +198,39 @@ namespace {
                 .get_device_build_env(dev->build_id())
         );
         const std::string root = env.build_env.get_out_kernel_root_path();
-        const uint32_t types = (
-            tt::tt_metal::MetalContext::instance()
-                .hal()
-                .get_programmable_core_type_count()
-        );
-        std::vector<std::tuple<std::string, std::vector<std::string>>> out;
+        const auto& hal = tt::tt_metal::MetalContext::instance().hal();
+        const uint32_t types = hal.get_programmable_core_type_count();
+        std::vector<std::tuple<std::string, std::vector<std::string>>> kernels;
         for (uint32_t t = 0; t < types; t++) {
             for (const auto& [id, kernel] : program.impl().get_kernels(t)) {
                 const auto& src = kernel->kernel_source();
-                out.emplace_back(
+                kernels.emplace_back(
                     src.path_.empty() ? kernel->name() : src.path_.string(),
                     kernel->elf_paths_by_processor_index(*dev, root)
                 );
             }
         }
-        return out;
+        const auto tensix = tt::tt_metal::HalProgrammableCoreType::TENSIX;
+        const uint32_t index = hal.get_programmable_core_type_index(tensix);
+        uint32_t config_bytes = 0;
+        std::string error;
+        try {
+            program.impl().finalize_offsets(dev);
+            config_bytes = program.impl().get_program_config_sizes()[index];
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        // The text sizes are set before the size check, so they are there either way.
+        std::vector<uint32_t> text(hal.get_num_risc_processors(tensix), 0);
+        for (const auto& group : program.impl().get_kernel_groups(index)) {
+            const auto sizes = (
+                group->launch_msg.view().kernel_config().kernel_text_size()
+            );
+            for (size_t p = 0; p < text.size(); p++) {
+                text[p] = std::max(text[p], static_cast<uint32_t>(sizes[p]));
+            }
+        }
+        return {kernels, config_bytes, kernel_buffer(mesh)[0], text, error};
     }
 
     // Reads (bank, address, bytes) spans of DRAM after one DRAM barrier, one read each.
@@ -1238,13 +1282,20 @@ NB_MODULE(_km_host, m) {
         nb::arg("mesh_device")
     );
     m.def(
-        "kernel_elves",
+        "kernel_build",
         [](std::shared_ptr<MeshDevice> mesh,
            const tt::tt_metal::ProgramDescriptor& desc) {
-            return kernel_elves(*mesh, desc);
+            return kernel_build(*mesh, desc);
         },
         nb::arg("mesh_device"),
         nb::arg("program_descriptor")
+    );
+    m.def(
+        "kernel_buffer",
+        [](std::shared_ptr<MeshDevice> mesh) {
+            return kernel_buffer(*mesh);
+        },
+        nb::arg("mesh_device")
     );
     m.def(
         "read_dram",

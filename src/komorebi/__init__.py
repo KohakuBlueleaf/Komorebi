@@ -14,6 +14,7 @@ from komorebi.errors import (
     GridTimeout,
     KernelFailed,
     KernelInstructionError,
+    KernelSizeError,
     KomorebiError,
     ProgramError,
     RecordRefused,
@@ -21,7 +22,7 @@ from komorebi.errors import (
     StartError,
     WaitTimeout,
 )
-from komorebi.program import Buffer, Program
+from komorebi.program import Buffer, KernelSizes, Program
 
 __version__ = "0.1.0"
 
@@ -34,6 +35,8 @@ __all__ = [
     "GridTimeout",
     "KernelFailed",
     "KernelInstructionError",
+    "KernelSizeError",
+    "KernelSizes",
     "KomorebiError",
     "Program",
     "ProgramError",

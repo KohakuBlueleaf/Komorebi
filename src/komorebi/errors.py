@@ -28,6 +28,22 @@ class KernelInstructionError(ProgramError):
         self.findings = findings
 
 
+class KernelSizeError(ProgramError):
+    """A program's kernels do not fit the session's kernel buffer; nothing was loaded.
+    `sizes` is the build's `KernelSizes` (total None when the runtime did not say)."""
+
+    def __init__(self, program, sizes, most):
+        thread = max(sizes.text, key=sizes.text.get)
+        total = f"{sizes.total} B" if sizes.total else "more"
+        super().__init__(
+            f"{program}: its kernels take {total} of the {sizes.limit} B kernel buffer "
+            f"(largest: {thread}, {sizes.text[thread]} B of text). Give the session "
+            f"more (Session(kernel_bytes=...), up to {most}) or build a kernel for "
+            "size (Program(opt={'reader': 'Os', 'writer': 'Os'}))."
+        )
+        self.sizes = sizes
+
+
 class CardBusy(KomorebiError):
     """Another live process holds the card's chip lock; opening it would wait for that
     process to exit. `pid` is the holder."""
