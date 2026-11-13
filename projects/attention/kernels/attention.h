@@ -6,9 +6,8 @@
 
 #include "komorebi/device/km_broadcast.hpp"
 
-// ATTEND: a0 q_address, a1 k_address, a2 v_address, a3 o_address (Q, K, V, O: bf16
-// tiles, [B, H, S, D]), a4 job_tables (a page per core), a5 mode, a6 requested_passes
-// (0: one), a7 first_job, a8 job_count (jobs from the first, 0: to the end).
+// ATTEND: a0 q_address, a1 k_address, a2 v_address, a3 o_address (bf16 tiles), a4
+// job_tables, a5 mode, a6 requested_passes (0: one), a7 first_job, a8 job_count.
 constexpr uint32_t kHandlerAttend = 1;
 // PROF: a0 profile_address (the profile tensor); the writer stores this core's profile
 // page at its rank's page, then (zero_profile, a1 != 0) zeroes it.
@@ -20,9 +19,8 @@ constexpr uint32_t kModeFull = 0;
 constexpr uint32_t kModeBroadcastOnly = 1;
 constexpr uint32_t kModeComputeOnly = 2;
 
-// Buffers: a job's Q rows; the broadcast buffer, B blocks of K [DT][KB] then V
-// [KB][DV]; the compute's own as ktt_flash's (ones, P, row state, O, tokens, causal
-// mask).
+// Buffers: a job's Q rows; the broadcast buffer, B blocks of K [DT][KB], V [KB][DV];
+// the compute's own as ktt_flash's (ones, P, row state, O, tokens, causal mask).
 constexpr uint32_t kCbQ = 0;
 constexpr uint32_t kCbKv = 1;
 constexpr uint32_t kCbOnes = 3;
@@ -62,8 +60,7 @@ constexpr uint32_t kCbProf = 19;
 constexpr uint32_t kProfBytes = 1024;
 constexpr uint32_t kProfWords = 32;
 // Reader: body, waits for Q space, Q reads, the sender's slot waits, K / V read submit,
-// multicasts (read barrier, receivers' markers, multicast), a receiver's arrivals,
-// finish.
+// multicasts (read barrier, receivers' markers, multicast), arrivals, finish.
 constexpr uint32_t kPrRdBody = 0;
 constexpr uint32_t kPrRdQWait = 1;
 constexpr uint32_t kPrRdQRead = 2;
@@ -104,8 +101,7 @@ inline uint32_t jobs_end(const km_command_t& command, uint32_t jobs) {
 }
 
 // Program arguments. The kernel that runs the broadcast (the reader on NoC0, the writer
-// with BROADCAST_ON_WRITER on NoC1): the broadcast's words. Compute: the broadcast
-// window B.
+// with BROADCAST_ON_WRITER on NoC1): the broadcast's words. Compute: the window B.
 constexpr uint32_t kArgBroadcast = 0;
 constexpr uint32_t kArgWindow = 0;
 
@@ -188,9 +184,8 @@ void read_kv(
     }
 }
 
-// One job's K / V blocks through the broadcast (`job_words` of the job; `blocks` counts
-// the command's, `counters` the profile): the sender reads and multicasts each, a
-// receiver waits. False: gave up.
+// One job's K / V blocks through the broadcast (`job_words`; `blocks`, `counters`):
+// the sender reads and multicasts, a receiver waits. False: gave up.
 template <
     uint32_t HEAD_TILES,
     uint32_t VALUE_TILES,

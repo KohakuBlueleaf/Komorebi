@@ -47,7 +47,7 @@ except by code that is asked to.
 python -m pytest tests/core                     # CPU tests
 python -m pytest tests/projects                 # the programs' CPU tests
 python -m komorebi.tools.cxx_format --check
-python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial
+python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 mkdocs build --strict -d /tmp/komorebi-site     # the documentation site, tutorial included
 ```
@@ -58,8 +58,8 @@ included from the programs in `tutorial/` when it is built, so a listing cannot 
 from the program that ran, and `.github/workflows/docs.yml` deploys it to GitHub Pages
 when started by hand.
 
-The comment check leaves out `reference/` and `projects/`, whose reference code keeps its
-longer docstrings. The `dev` extra installs the tools, including clang-format 22 or later (the style file
+The comment check leaves out `reference/`, whose code keeps its longer docstrings. The
+`dev` extra installs the tools, including clang-format 22 or later (the style file
 `.clang-format` uses options older versions reject). Run the commands from the
 repository, in the environment of [install](install.md#from-a-clone).
 

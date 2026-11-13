@@ -198,8 +198,7 @@ namespace kr {
     }
 
     // Fills `first` (and `second`) with the pieces of `triangle`, whole or clipped at
-    // z = near. Returns bit 0 when `first` holds a piece, bit 1 when `second` holds
-    // one.
+    // z = near. Returns bit 0 when `first` holds a piece, bit 1 for `second`.
     KR_HD inline int setup_triangle(
         const Mesh& mesh, int triangle, Record& first, Record& second
     ) {

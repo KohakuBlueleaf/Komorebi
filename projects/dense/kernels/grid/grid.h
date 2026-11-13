@@ -1,6 +1,5 @@
-// Matrix product over a rectangle of cores: A blocks along the rows on the row
-// broadcast, W blocks down the columns on the column broadcast. Handlers, buffers,
-// arguments, profile.
+// Matrix product over a rectangle of cores: A blocks on the row broadcast, W blocks on
+// the column broadcast. Handlers, buffers, arguments, profile follow.
 #pragma once
 
 #include <stdint.h>
@@ -15,8 +14,7 @@ constexpr uint32_t kHandlerGrid = 1;
 constexpr uint32_t kHandlerGridProf = 2;
 
 // GRID modes: full; broadcasts only (blocks delivered and taken, no product, no
-// writes); product only (no reads, no broadcasts: blocks from L1 as they are, packed,
-// not written).
+// writes); product only (no reads or broadcasts, blocks packed from L1, not written).
 constexpr uint32_t kGridFull = 0;
 constexpr uint32_t kGridBroadcasts = 1;
 constexpr uint32_t kGridProduct = 2;
@@ -31,8 +29,7 @@ constexpr uint32_t kBroadcastRow = 0;  // broadcast ids: rows on NoC0 (reader), 
 constexpr uint32_t kBroadcastCol = 1;
 
 // Arguments: reader, writer: broadcast words, then core words; compute: core words.
-// Core: included (1 in the rectangle), first row and column tile of its output, the
-// plan.
+// Core: included (1 in the rectangle), first row and column tile of its output, plan.
 constexpr uint32_t kArgBroadcast = 0;
 constexpr uint32_t kArgCore = km::kBroadcastArgs;
 constexpr uint32_t kCoreRank = 0;
@@ -59,8 +56,7 @@ constexpr uint32_t kPlanWords = 14;
 constexpr uint32_t kCoreWords = kCorePlan + kPlanWords;
 
 // Profile page (32-bit words, wall-clock cycles summed over commands). Reader: DRAM
-// reads of A blocks (submit), row broadcast calls (reserve and cast, or arrive),
-// bodies.
+// reads of A blocks (submit), row broadcast calls (reserve and cast, or arrive), body.
 constexpr uint32_t kGpRdRead = 0;
 constexpr uint32_t kGpRdBroadcast = 1;
 constexpr uint32_t kGpRdBody = 2;

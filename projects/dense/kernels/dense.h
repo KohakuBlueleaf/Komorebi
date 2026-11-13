@@ -6,21 +6,17 @@
 
 #include "komorebi/device/km_broadcast.hpp"
 
-// LOAD: a0 w_address (W in DRAM, [K, N] tiles row-major), a1 w_buffer (the W buffer),
-// a3 k_tiles, a4 n_tiles. Every core reads all of W into that buffer and keeps it for
-// the commands that follow.
+// LOAD: a0 w_address (W in DRAM, [K, N] tiles row-major), a1 w_buffer, a3 k_tiles, a4
+// n_tiles. Every core reads all of W into that buffer and keeps it for later commands.
 constexpr uint32_t kHandlerLoad = 1;
-// PRODUCT: a0 a_address (A, [M, K]), a1 y_address (Y, [M, N]), a2 m_tiles, a3 k_tiles,
-// a4 n_tiles, a5 chunk_tiles (K chunk), a6 block_width (column block), a7 mode,
-// a8 form, a9 w_address (W, form kFormStream). Rank i: owned rows
-// partition(m_tiles).
+// PRODUCT: a0 a_address, a1 y_address (A [M, K], Y [M, N]), a2 m_tiles, a3 k_tiles, a4
+// n_tiles, a5 chunk_tiles, a6 block_width, a7 mode, a8 form, a9 w_address (streamed).
 constexpr uint32_t kHandlerProduct = 2;
 // PROF: a0 profile_address (the profile tensor); the writer stores this core's profile
 // page at page `me`.
 constexpr uint32_t kHandlerProf = 3;
-// LAYER: a0 a_address (A), a1 y_address (Y), a2 m_tiles, a3 k_tiles (one chunk),
-// a4 n_tiles, a5 block_width, a6 w_buffer (0: the gate pass), a7 epilogue,
-// a8 held_buffers: A | B << 8 | Y << 16, each a held buffer, or kDram for A, Y.
+// LAYER: a0 a_address, a1 y_address, a2 m_tiles, a3 k_tiles (one chunk), a4 n_tiles, a5
+// block_width, a6 w_buffer (0: gate pass), a7 epilogue, a8 held_buffers (SWIGLU.md).
 constexpr uint32_t kHandlerLayer = 4;
 // Epilogues: none; silu; times B; the gate pass silu(A) * B (no product, k_tiles ==
 // n_tiles).

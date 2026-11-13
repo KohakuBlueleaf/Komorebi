@@ -264,9 +264,8 @@ void kernel_main() {
                         wait_for_w += km::wall() - asked;
                     }
                     if (ok && math) {
-                        // A: the chunk's tiles (or the row's from `chunk`); W:
-                        // chunk_tiles rows of n_tiles (resident) or of block_width (a
-                        // streamed chunk).
+                        // A: the chunk's tiles (or the row's); W: chunk_tiles rows of
+                        // n_tiles (resident) or block_width (a streamed chunk).
                         const uint32_t a_first = row_item ? chunk : 0;
                         for (uint32_t k_tile = 0; k_tile < chunk_tiles; ++k_tile) {
                             const uint32_t w_tile = (

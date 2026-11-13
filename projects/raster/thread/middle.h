@@ -1,6 +1,5 @@
 /* The middle pass between COUNT and SETUP in plain C (X280 thread, host check), as
- * passes.py: costs, bands, items to cores, list layout and directory, each core's next
- * slots. */
+ * passes.py: costs, bands, items to cores, list layout and directory, next slots. */
 #pragma once
 
 #include <stdint.h>
@@ -69,9 +68,8 @@ typedef struct {
         item_counts[RM_MAX_CORES]; /* rm_compact's, per core */
 } rm_scratch;
 
-/* The middle pass in parts for the four cores, ranges side by side: rm_costs (all
- * tiles), rm_pick, rm_clear (all fill cores), rm_hist, rm_layout, rm_next (all items).
- */
+/* The middle pass in parts for the four cores, ranges side by side: rm_costs (tiles),
+ * rm_pick, rm_clear (fill cores), rm_hist, rm_layout, rm_next (items). */
 
 /* Entries, rows and cost of tiles [first_tile, end_tile) over the cores. */
 void rm_costs(
@@ -113,8 +111,7 @@ uint32_t rm_items(
 );
 uint32_t rm_assign(uint32_t fill_cores, rm_scratch* scratch, uint32_t items_found);
 /* rm_assign in parts: items [first, end) by falling cost (stable), two sorted
- * neighbours into one (the first's ties first), then each in that order to the lightest
- * core. */
+ * neighbours into one (the first's ties first), then each to the lightest core. */
 void rm_sort(rm_scratch* scratch, uint32_t first, uint32_t end);
 void rm_merge(rm_scratch* scratch, uint32_t first, uint32_t middle, uint32_t end);
 uint32_t rm_owners(uint32_t fill_cores, rm_scratch* scratch, uint32_t items_found);
@@ -131,8 +128,7 @@ uint32_t rm_compact(
 );
 
 /* The lists' slots, or 0 when the counts do not fit (a core over RM_DIR_MAX_ITEMS
- * items, RM_MAX_ITEMS items, too many cores or heavy tiles); counts in
- * scratch->histograms. */
+ * items, RM_MAX_ITEMS items, cores or heavy tiles); counts: scratch->histograms. */
 uint32_t rm_layout(
     uint32_t fill_cores,
     const uint32_t* heavy,

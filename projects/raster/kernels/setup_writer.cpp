@@ -359,8 +359,7 @@ bool setup_writer_pass(
         const uint32_t counters_address = command.a1, prefixes_address = command.a2;
         const uint32_t totals_address = command.a3, counting_cores = command.a6;
         // counters_address counters, prefixes_address slots pages, totals_address
-        // totals, counting_cores counting cores; 32 cores at a time through one out
-        // page: their entries, then their rows
+        // totals, counting_cores cores; 32 cores at a time through one out page.
         constexpr uint32_t kBatch = 32;
         const uint32_t staging = get_write_ptr(kCbOut);
         for (uint32_t slice = writer.me(); slice < kTiles / 16; slice += cores) {

@@ -1,6 +1,5 @@
 // Grid compute: A blocks from the row broadcast, W blocks from the column broadcast,
-// summed into fp32 partials (kCbPart) by packer accumulation; the last K block packs
-// bf16 output.
+// summed into fp32 partials (kCbPart) by the packer; the last K block packs bf16.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"

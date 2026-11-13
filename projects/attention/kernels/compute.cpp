@@ -1,6 +1,5 @@
 // Attention compute, the body of Kohaku-TT's ktt_flash compute (Apache-2.0): per job,
-// up to MAX_ROWS query tile rows against the job's key blocks taken from the broadcast
-// buffer.
+// up to MAX_ROWS query tile rows against the job's key blocks from the broadcast.
 #include <cstdint>
 
 #include "api/compute/cb_api.h"
@@ -444,8 +443,7 @@ namespace {
     }
 
     // One job: its rows against key tiles [0, key_tiles) in BLOCK_KEYS blocks from the
-    // broadcast, paired in steps, then finalized (`work` false: blocks popped only).
-    // False: gave up.
+    // broadcast, then finalized (`work` false: blocks popped only). False: gave up.
     bool job(
         const km::Compute& compute,
         uint32_t rows,

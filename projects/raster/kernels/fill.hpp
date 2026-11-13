@@ -220,8 +220,7 @@ namespace fill {
     }
 
     // Edge `edge` of `record_words`: a px into constants[kConstA + edge] (through LReg
-    // `lreg`), b, c and T broadcast.
-    // The box columns are float16 immediates, masked to the 16-bit field.
+    // `lreg`), b, c and T broadcast. The box columns are masked float16 immediates.
 #define FILL_TRI_EDGE(edge, lreg)                                               \
     immediate(lreg, record_words[kRecA + edge]);                                \
     TTI_SFPMAD(lreg, L5, NZ, lreg, 0);                                          \
@@ -251,8 +250,7 @@ namespace fill {
     TTI_SFPSTORE(lreg, kInt32, kAddressMode, constant_address(kConstColourA + colour))
 
     // The broadcast constants of one triangle record (local copy `record_words`) into
-    // Dst, its thresholds and number into L2 to L5. Edge 0's a px is -inf outside the
-    // box.
+    // Dst, its thresholds and number into L2 to L5. Edge 0's a px is -inf off the box.
     inline void load_triangle(const uint32_t* record_words) {
         TTI_SFPLOAD(L5, kInt32, kAddressMode, constant_address(kConstPx));
         FILL_TRI_EDGE(0, L1);
@@ -307,8 +305,7 @@ namespace fill {
     }
 
     // Row `pixel_row` (masked to its field) against the triangle in the constant
-    // vectors: the inside lanes nearer than the depth take its depth, number and
-    // colour.
+    // vectors: the inside lanes nearer than the depth take its depth, number, colour.
     inline void row(uint32_t pixel_row) {
         pixel_row &= 31;
         TT_SFPLOAD(PY, kInt32, kAddressMode, dst_address(kVecPy + pixel_row));

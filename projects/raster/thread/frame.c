@@ -1,6 +1,5 @@
 /* The frame on the work cluster: COUNT, SUM, HIST, HSUM, the middle pass (middle.c),
- * PLACE, SETUP, FILL, each command submitted and waited for. Words, regions, codes:
- * frame.h */
+ * PLACE, SETUP, FILL, each submitted and waited for (words, regions: frame.h). */
 #include <stdint.h>
 
 #include "frame.h"
@@ -116,8 +115,7 @@ static uint32_t elapsed(uint64_t* mark) {
 }
 
 /* Each core's blocks for COUNT and SETUP, into the camera's region: equal partitions,
- * then equal parts of the last frame's ticks (spread evenly over each core's blocks).
- */
+ * then equal parts of the last frame's ticks (spread evenly over its blocks). */
 static void set_ranges(frame_t* frame, work_t* work, void* const* regions) {
     const uint32_t cores = frame->words[RF_W_CORES], blocks = frame->words[RF_W_BLOCKS];
     uint32_t* block_ranges = work->ranges;

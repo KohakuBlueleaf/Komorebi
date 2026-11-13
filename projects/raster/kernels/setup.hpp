@@ -94,8 +94,7 @@ namespace setup_pass {
     }
 
     // The 32 record slots to 32 records of 128 bytes (word w of record l: slot
-    // kSlotRecords + w, lane l), two slots per handler load of 16 lanes (the register
-    // group's size).
+    // kSlotRecords + w, lane l), two slots per handler load of 16 lanes.
     inline void records_out(uint32_t* records) {
 #if defined(__riscv_vector)
         const size_t vector_length = __riscv_vsetvl_e32m4(16);
@@ -370,9 +369,8 @@ namespace setup_pass {
         }
     }
 
-    // The plane of per-corner values in slots first_slot, first_slot + step, first_slot
-    // + 2 step: for each of the a, b, c coefficients, ((c0 v0 + c1 v1) + c2 v2) / area,
-    // to record words first_word + coefficient.
+    // Per-corner values in slots first_slot + {0, 1, 2} x step: for each of a, b, c,
+    // ((c0 v0 + c1 v1) + c2 v2) / area to record word first_word + coefficient.
     inline void plane(uint32_t first_slot, uint32_t step, uint32_t first_word) {
         for (uint32_t coefficient = 0; coefficient < 3; ++coefficient) {
             load(L0, kSlotRecords + 3 * coefficient);

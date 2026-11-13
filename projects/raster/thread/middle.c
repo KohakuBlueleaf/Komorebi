@@ -1,6 +1,5 @@
 /* The middle pass between COUNT and SETUP (middle.h), as passes.py: tiles over RM_SPLIT
- * of the mean cut; items by falling cost to the least loaded core (ties: lower first).
- */
+ * of the mean cut; items by falling cost to the least loaded core (ties: lower). */
 #include "middle.h"
 
 /* Stable merge sort of order by falling key, through spare. */

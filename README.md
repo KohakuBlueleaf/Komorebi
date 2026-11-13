@@ -574,7 +574,7 @@ environment of [install](docs/install.md):
 python -m pytest tests/core
 python -m pytest tests/projects
 python -m komorebi.tools.cxx_format --check
-python -m komorebi.tools.comment_lint --check src tests examples experiments packaging
+python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 ```
 

@@ -1,6 +1,5 @@
 // Attention reader (NoC0): the core's job table to compute, then per job its Q rows
-// and, unless BROADCAST_ON_WRITER, the job's K / V blocks (the broadcast's sender
-// multicasts them).
+// and, unless BROADCAST_ON_WRITER, the job's K / V blocks (the sender multicasts them).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -19,8 +18,7 @@ namespace {
         BLOCK_KEYS * VALUE_TILES;  // pages of a K / V block
 
     // Rows `rows` of a job's Q (HEAD_TILES tiles each, `stride` tile rows apart) into
-    // the Q buffer, pushed as one item of MAX_ROWS x HEAD_TILES pages. False: gave up
-    // (recorded).
+    // the Q buffer, as one item of MAX_ROWS x HEAD_TILES pages. False: gave up.
     template <typename Accessor>
     bool read_q(
         const km::Reader& reader,
@@ -64,9 +62,8 @@ namespace {
         return true;
     }
 
-    // The command's jobs, `passes` times: Q rows, then the K / V blocks through the
-    // broadcast `broadcast` (null: not this kernel's), or pushed as they are (compute
-    // only).
+    // The command's jobs, `passes` times: Q rows, then K / V blocks through `broadcast`
+    // (null: not this kernel's), or pushed as they are (compute only).
     template <typename Accessor>
     void run_jobs(
         const km::Reader& reader,

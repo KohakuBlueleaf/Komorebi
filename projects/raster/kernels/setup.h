@@ -29,8 +29,7 @@ constexpr uint32_t kHandlerHsum = 17;
 // small arrays are then bank addresses (pages contiguous); mesh and lists stay tensors.
 
 // blocks_word (a2) with kRanges (COUNT, SETUP; bank): blocks [first_block, end_block)
-// at kRangesAt + 64 x core of the camera's region; the writer leaves the pass's ticks
-// at kCostsAt + 128 x core.
+// at kRangesAt + 64 x core of the camera's region; ticks go to kCostsAt + 128 x core.
 constexpr uint32_t kRanges = 0x80000000;
 constexpr uint32_t kRangesAt = 64;
 constexpr uint32_t kCostsAt = 16384;
@@ -50,9 +49,8 @@ constexpr uint32_t kRecPages = 2;
 constexpr uint32_t kSlotsBytes = 8192;  // at most 2,048 items
 constexpr uint32_t kItemsBytes = 8192;
 constexpr uint32_t kItemRows = 4096;
-// SETUP with kSetupPrefix in list_slots (a6): each core's slots page from SUM's and
-// HSUM's prefixes and the items' base words (first slot | 1 + heavy index <<
-// kBaseSlotBits): README.md.
+// SETUP with kSetupPrefix in list_slots (a6): each core's slots page from the prefixes
+// and the items' base words (first slot | 1 + heavy index << kBaseSlotBits).
 constexpr uint32_t kSetupPrefix = 0x80000000;
 constexpr uint32_t kBaseAt = 8192;
 constexpr uint32_t kBaseSlotBits = 23;
@@ -128,8 +126,7 @@ constexpr uint32_t kGaveBadHeavy = 9;
 constexpr uint32_t kGaveBadPlace = 10;  // PLACE, SUM or HSUM without a bank (where: 0, the handler)
 
 // Profile (profile_address, a9, not 0): 32 words per pass per core, at 128 x (handler -
-// kHandlerCount) of its page; the threads leave wall-clock counters in kCbSProf and the
-// writer sends them.
+// kHandlerCount) of its page; the threads leave wall-clock counters, the writer sends.
 constexpr uint32_t kCbSProf = 9;
 constexpr uint32_t kSProfBytes = 256;
 constexpr uint32_t kSProfPageBytes = 4096;

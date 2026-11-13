@@ -1,6 +1,5 @@
 // Attention writer (NoC1): its copy of the job table, each job's rows to O, and with
-// BROADCAST_ON_WRITER first the job's K / V blocks (broadcast). PROF: the profile page
-// out.
+// BROADCAST_ON_WRITER first the job's K / V blocks (broadcast). PROF: the profile page.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -15,8 +14,7 @@ namespace {
     constexpr uint32_t BLOCK_KEYS = get_compile_time_arg_val(3);
 
     // The command's jobs, `passes` times: each job's blocks through `broadcast` (null:
-    // none), then its rows written (full), popped (compute only) or none. False: gave
-    // up.
+    // none), its rows written (full), popped (compute only) or none. False: gave up.
     template <typename Accessor>
     bool run_jobs(
         const km::Writer& writer,

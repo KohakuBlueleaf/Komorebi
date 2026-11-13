@@ -7,8 +7,7 @@
 #include "../dense.h"
 
 // SPLIT: a0 a_address (A, [M, K] tiles), a1 w_address (W, [K, N]), a2 y_address (Y,
-// [M, N]), a3 reduce_form (0 owner, 1 tree), a4 mode. One call; the group is the
-// groups' cores in order, S to a group.
+// [M, N]), a3 reduce_form (0 owner, 1 tree), a4 mode. One call; groups of S cores.
 constexpr uint32_t kHandlerSplit = 1;
 
 // SPLIT modes: the full call; the parts only (no reduce: each core packs its part and
