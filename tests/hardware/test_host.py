@@ -2,12 +2,14 @@
 the session cases it does not cover (KMR_CARD=1). Every case shares one device open."""
 
 import importlib.util
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 import komorebi as km
+from komorebi import dram
 
 pytest.importorskip("ttnn")
 
@@ -89,6 +91,27 @@ def test_an_exclusive_record_waits_for_the_team_it_overlaps(session):
 
 def test_tensors_read_by_banks_match_what_was_written_also_during_a_run(session):
     assert cases.case_read(session)["ok"]
+
+
+def test_a_page_range_and_the_chunks_equal_slices_of_the_whole_read(session):
+    """A bfloat16 tile tensor of 300 pages: a range from the middle, the chunks of
+    64 KB and two tiles equal the whole read; the read times go to the log."""
+    x = np.random.default_rng(5).integers(-8, 9, (640, 480)).astype(np.float32)
+    t = cases.bf16_tiles(session.device, x)
+    t0 = time.monotonic()
+    (whole,) = session.read(t)
+    mapcollect.log(f"{whole.nbytes} bytes read whole in {time.monotonic() - t0:.2f} s")
+    assert (dram.untilize_bf16(whole, 640, 480) == x).all()
+    (middle,) = session.read(t, first=117, pages=45)
+    assert (middle == whole[117:162]).all()
+    chunks, t0 = [], time.monotonic()
+    for first, pages in session.read_chunks(t, chunk_bytes=64 << 10):
+        mapcollect.log(f"chunk at page {first}: {len(pages)} pages")
+        chunks.append(pages)
+    mapcollect.log(f"10 chunks read in {time.monotonic() - t0:.2f} s")
+    assert len(chunks) == 10 and (np.concatenate(chunks) == whole).all()
+    tiles = session.read_tiles_bf16(t, 16, 2)  # tiles (1, 1) and (1, 2)
+    assert (tiles[0] == x[32:64, 32:64]).all() and (tiles[1] == x[32:64, 64:96]).all()
 
 
 def test_a_compile_error_leaves_no_image_running(session):
