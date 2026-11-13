@@ -21,9 +21,10 @@ card under the dispatch kernel ([host API](reference/host.md)), the example
 - To check out and test the code: `git`, and either [uv](https://docs.astral.sh/uv/) or
   plain `python3.13` with `venv`.
 - To build for a card: a tt-metal source tree at the version in
-  `packaging/tt-metal.pin`, built in `<tree>/build`, and `clang++-20` for C++ hosts.
+  `runtime/tt-metal.pin`, built in `<tree>/build`, and `clang++-20` for C++ hosts.
 - For X280 images: that tree built with its X280 runtime, which also provides the
-  RISC-V compiler under `<tree>/runtime/sfpi`.
+  RISC-V compiler under `<tree>/runtime/sfpi`; or, without a tree, the
+  `komorebi-runtime` wheel ([the runtime package](#the-runtime-package)).
 - A Blackhole card with its kernel driver and firmware, to run anything on hardware.
 
 None of this is needed to import the package or run the CPU tests.
@@ -80,6 +81,28 @@ library and the image in the install ([a run on a card](../packaging/README.md#a
 The tt-metal inside the `kohakutt` wheel cannot serve: it is built without the X280
 runtime. [Packaging](../packaging/README.md) lists what the wheel carries.
 
+## The runtime package
+
+`komorebi-runtime` (`runtime/` in this repository) is the pinned tt-metal build as a
+platform wheel: the libraries, the kernel runtime tree, the X280 runtime objects,
+linker script and headers, and a locator. It is built locally
+([runtime](../runtime/README.md)):
+
+```
+runtime/build_tt_metal.sh /path/to/tt-metal
+python3.13 runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
+pip install dist/komorebi_runtime-*.whl
+python -m komorebi_runtime sfpi                # the RISC-V compiler, into KMR_CACHE
+python -m komorebi_runtime doctor
+kmr doctor                                     # "from komorebi-runtime 0.81.1.1"
+```
+
+When `TT_METAL_HOME` is unset and the package is installed, Komorebi takes its tree from
+it: `kmr doctor`, `kmr build image` and the dispatch kernel image and thread images use
+the runtime's X280 pieces and compiler. `TT_METAL_HOME` set always means that tree. The
+native host module is not yet built against the runtime: a session still needs the
+tree of [running on a card](#running-on-a-card).
+
 ## Building against a tt-metal tree
 
 `kmr build` compiles outside the tree; nothing is written inside it.
@@ -90,7 +113,7 @@ kmr build host out/prog main.cpp -I include -D NAME=1 # a C++ host
 kmr build pymodule out/mod.so module.cpp              # a Python module
 ```
 
-`--tree` names the tree; the default is `TT_METAL_HOME`. The `host` and `pymodule`
+`--tree` names the tree; the default is `TT_METAL_HOME`, else the runtime package. The `host` and `pymodule`
 builds copy their compile and link flags from two targets that the tt-x280-dispatch
 project adds to a tt-metal build, so they need a tree built with them; see the
 limitation in [development](development.md#known-limitations). Building an X280 image does not.
@@ -101,7 +124,7 @@ Running the host API on a card needs a tt-metal tree with the X280 runtime, the
 [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project hooked
 into it, and a card whose X280 memory is prepared once. Step by step:
 
-1. **tt-metal v0.81.1 with the X280 runtime** (the version in `packaging/tt-metal.pin`):
+1. **tt-metal v0.81.1 with the X280 runtime** (the version in `runtime/tt-metal.pin`):
 
    ```
    git clone --branch v0.81.1 https://github.com/tenstorrent/tt-metal && cd tt-metal

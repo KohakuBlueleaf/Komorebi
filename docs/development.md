@@ -32,7 +32,8 @@ tests/core/                    tests that need no card
 tests/projects/                CPU tests of the programs under projects/
 tests/ref/                     reference renderers compared (README inside)
 docs/                          concepts, install, this page
-packaging/                     tt-metal.pin: the tt-metal version Komorebi is developed against
+packaging/                     the komorebi wheel: build, smoke test, version tools
+runtime/                       komorebi-runtime: the tt-metal pin, its patches and build (README inside)
 ```
 
 `import komorebi` needs no tt-metal tree and imports no tt-metal or TT-NN module; the
@@ -45,7 +46,7 @@ except by code that is asked to.
 python -m pytest tests/core                     # CPU tests
 python -m pytest tests/projects                 # the programs' CPU tests
 python -m komorebi.tools.cxx_format --check
-python -m komorebi.tools.comment_lint --check src tests examples experiments packaging
+python -m komorebi.tools.comment_lint --check src tests examples experiments packaging runtime
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 ```
 
@@ -55,7 +56,8 @@ longer docstrings. The `dev` extra installs the tools, including clang-format 22
 repository, in the environment of [install](install.md#from-a-clone).
 
 `tests/core` covers the layout functions (panels, teams, shares), statistics, the
-package boundary, `kmr doctor` with and without a tree, the parsing and command
+package boundary, `kmr doctor` with and without a tree, the runtime package's locator
+on a fake layout and the order in which the tree is chosen, the parsing and command
 assembly of `build.py` against a small fake `build.ninja`, the power sampler against
 fake sensors and a fake sysfs tree, and the formatter. Tests
 marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they live in

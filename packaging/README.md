@@ -5,10 +5,14 @@ workflows build and test a wheel; their publish steps are off.
 
 | File | What it does |
 |---|---|
-| `tt-metal.pin` | The tt-metal release Komorebi is developed and built against. |
+| `tt-metal.pin` | A link to `runtime/tt-metal.pin`, the tt-metal release Komorebi is developed and built against. |
 | `build_wheel.py` | Builds the wheel from a commit (`--ref`, default `HEAD`), exported with `git archive` so nothing untracked comes along. It builds the dispatch kernel image against a tt-metal tree with the X280 runtime, puts it beside the package, and refuses a wheel that misses a header or a source. |
 | `smoke.sh` | Installs a wheel alone into a fresh environment, runs `kmr doctor` outside the checkout, and checks that the headers and the prebuilt image are found inside the install; with `KMR_CARD=1` it also runs `examples/01_mapcollect`. |
 | `version.py` | Reads, stamps and bumps the version in `pyproject.toml` and `komorebi.__version__`. |
+
+The tt-metal build itself is a second package of this repository, `komorebi-runtime`
+([runtime](../runtime/README.md)): a platform wheel with the pinned tt-metal libraries,
+the kernel runtime tree, the X280 runtime pieces and a locator.
 
 ## What the wheel carries
 
@@ -31,7 +35,9 @@ needs, as for a clone ([install](../docs/install.md#running-on-a-card)):
 1. a tt-metal tree at the pinned version, built with the X280 runtime
    (`-DTT_METAL_BUILD_X280=ON`), with the tt-x280-dispatch targets hooked in, named by
    `TT_METAL_HOME`. The tt-metal inside the `kohakutt` wheel does not do: it is built
-   without the X280 runtime;
+   without the X280 runtime. With `TT_METAL_HOME` unset, an installed `komorebi-runtime`
+   serves for `kmr doctor` and for building X280 images (the dispatch kernel image and
+   threads); the native host module still needs the tree;
 2. `ttnn` from that tree and `torch` in the environment the wheel is installed in;
 3. `clang++-20`: the native host module is built once into `KMR_CACHE` (default
    `~/.cache/komorebi`) the first time a session loads, about ten seconds;
