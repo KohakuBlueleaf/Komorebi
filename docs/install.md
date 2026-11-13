@@ -85,23 +85,29 @@ runtime. [Packaging](../packaging/README.md) lists what the wheel carries.
 
 `komorebi-runtime` (`runtime/` in this repository) is the pinned tt-metal build as a
 platform wheel: the libraries, the kernel runtime tree, the X280 runtime objects,
-linker script and headers, and a locator. It is built locally
-([runtime](../runtime/README.md)):
+linker script, headers and idle image, and a locator. With it and a `komorebi` wheel
+that carries the prebuilt native module, a program runs on a card with no tt-metal tree.
+Both are built locally ([runtime](../runtime/README.md),
+[packaging](../packaging/README.md#a-run-from-the-two-wheels)):
 
 ```
 runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
-pip install dist/komorebi_runtime-*.whl
+python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
+pip install "dist/komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl[ttnn]" \
+    dist/komorebi-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl torch
 python -m komorebi_runtime sfpi                # the RISC-V compiler, into KMR_CACHE
 python -m komorebi_runtime doctor
 kmr doctor                                     # "from komorebi-runtime 0.81.1.1"
+eval "$(python -m komorebi_runtime env)"       # for programs that import ttnn first
 ```
 
 When `TT_METAL_HOME` is unset and the package is installed, Komorebi takes its tree from
-it: `kmr doctor`, `kmr build image` and the dispatch kernel image and thread images use
-the runtime's X280 pieces and compiler. `TT_METAL_HOME` set always means that tree. The
-native host module is not yet built against the runtime: a session still needs the
-tree of [running on a card](#running-on-a-card).
+it: `kmr doctor`, `kmr build image`, the dispatcher's image and thread images use the
+runtime's X280 pieces and compiler, a session loads the prebuilt native module and
+activates the runtime (`TT_METAL_RUNTIME_ROOT`) before it imports `ttnn`.
+`TT_METAL_HOME` set always means that tree, and the module is built against it. The
+card is prepared once as in [running on a card](#running-on-a-card), step 3.
 
 ## Building against a tt-metal tree
 
