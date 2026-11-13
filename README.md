@@ -12,7 +12,7 @@ the X280 cores of a Tenstorrent Blackhole card.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
-  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code: a command runs a handler (reader.run and km::handler), broadcast to a row or column (km::Broadcast with cast and arrive), a message finds its core (km::Messages with send, forward and consume), a core asks an X280 core (km::X280Port and next), and an X280 thread decides (kmx_submit, kmx_parallel and kmx_pull_run in C). Centre, under the heading the card runs it by itself: two panels of 6 by 10 Tensix cores with persistent kernels, X280 cluster 0 submitting commands to both panels, X280 clusters 1 to 3 running the program's threads, a broadcast along a row and down a column, routed messages between cores and ports between X280 cores and Tensix cores; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.80 ms of sort and merge on 4 cores between passes, seven commands, the Tensix passes COUNT 3.8, SETUP 5.1 and FILL 2.1 ms, 12.1 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (7.2 and 15.4 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.3 us (7.7 times) and 7.99 ms (1.5 times), SwiGLU 42.6 us (6.2 times), attention 163 us (1.3 times).">
+  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code: a command runs a handler (reader.run and km::handler), broadcast to a row or column (km::Broadcast with cast and arrive), a message finds its core (km::Messages with send, forward and consume), a core asks an X280 core (km::X280Port and next), and an X280 thread decides (kmx_submit, kmx_parallel and kmx_pull_run in C). Centre, under the heading the card runs it by itself: two panels of 6 by 10 Tensix cores with persistent kernels, X280 cluster 0 submitting commands to both panels, X280 clusters 1 to 3 running the program's threads, a broadcast along a row and down a column, routed messages between cores and ports between X280 cores and Tensix cores; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.82 ms of sort and merge on 4 cores between passes, seven commands, the Tensix passes COUNT 1.1, SETUP 1.9 and FILL 2.1 ms, 6.3 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (3.8 and 6.5 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.3 us (7.7 times) and 7.99 ms (1.5 times), SwiGLU 42.6 us (6.2 times), attention 163 us (1.3 times).">
 </picture>
 
 Komorebi explores how to program a network of independently programmable processors,
@@ -67,8 +67,8 @@ program's page and its committed results.
 
 Above 1, Komorebi takes less time. The neural workloads are on parallel with or ahead of
 Kohaku-TT on most shapes; the rasterizer and the ray tracer run whole frames on the
-card, bit-exact against numpy, today at a third of the V100's speed (the rasterizer)
-and a third or less (the ray tracer).
+card, bit-exact against numpy, today at 0.4 to 0.9 of the V100's speed from 10^5
+triangles up (the rasterizer) and a third or less (the ray tracer).
 
 ## A kernel
 
@@ -328,24 +328,25 @@ against numpy. Median of 5 loads, each about 1 s of frames; card 1
 
 | Scene | Triangles | Frame | Card frame, ms | of which the X280 step | Card W | C++ 96 threads, ms | V100, ms | V100 / card |
 |---|---|---|---|---|---|---|---|---|
-| tiny | 398 | cold | 1.051 | 0.436 | 64.0 | 2.66 | 0.29 | 0.28 |
-| tiny | 398 | warm | 1.051 | 0.436 | 61.8 | 2.66 | 0.29 | 0.28 |
-| 10^4 | 11,994 | cold | 1.091 | 0.440 | 65.8 | 3.32 | 0.25 | 0.23 |
-| 10^4 | 11,994 | warm | 1.041 | 0.453 | 65.4 | 3.32 | 0.25 | 0.24 |
-| 10^5 | 102,308 | cold | 2.555 | 0.751 | 67.2 | 4.08 | 0.79 | 0.31 |
-| 10^5 | 102,308 | warm | 2.454 | 0.771 | 65.9 | 4.08 | 0.79 | 0.32 |
-| 10^6 | 997,806 | cold | 12.125 | 0.804 | 67.7 | 17.87 | 4.42 | 0.36 |
-| 10^6 | 997,806 | warm | 10.575 | 0.823 | 67.3 | 17.87 | 4.42 | 0.42 |
-| Sponza, overview | 262,266 | cold | 7.223 | 0.456 | 65.7 | 7.88 | 2.31 | 0.32 |
-| Sponza, overview | 262,266 | warm | 5.285 | 0.466 | 66.1 | 7.88 | 2.31 | 0.44 |
-| Bistro interior, overview | 1,020,903 | cold | 15.373 | 0.733 | 65.3 | 14.10 | 5.99 | 0.39 |
-| Bistro interior, overview | 1,020,903 | warm | 10.974 | 0.752 | 65.2 | 14.10 | 5.99 | 0.55 |
+| tiny | 398 | first | 0.987 | 0.436 | 61.9 | 2.66 | 0.29 | 0.29 |
+| tiny | 398 | settled | 0.987 | 0.436 | 63.4 | 2.66 | 0.29 | 0.29 |
+| 10^4 | 11,994 | first | 0.982 | 0.440 | 67.0 | 3.32 | 0.25 | 0.25 |
+| 10^4 | 11,994 | settled | 0.952 | 0.453 | 65.8 | 3.32 | 0.25 | 0.26 |
+| 10^5 | 102,308 | first | 2.050 | 0.753 | 68.0 | 4.08 | 0.79 | 0.39 |
+| 10^5 | 102,308 | settled | 1.967 | 0.772 | 68.2 | 4.08 | 0.79 | 0.40 |
+| 10^6 | 997,806 | first | 6.894 | 0.807 | 68.9 | 17.87 | 4.42 | 0.64 |
+| 10^6 | 997,806 | settled | 6.339 | 0.823 | 70.2 | 17.87 | 4.42 | 0.70 |
+| Sponza, overview | 262,266 | first | 5.770 | 0.457 | 68.8 | 7.88 | 2.31 | 0.40 |
+| Sponza, overview | 262,266 | settled | 3.795 | 0.466 | 71.6 | 7.88 | 2.31 | 0.61 |
+| Bistro interior, overview | 1,020,903 | first | 8.762 | 0.736 | 66.9 | 14.10 | 5.99 | 0.68 |
+| Bistro interior, overview | 1,020,903 | settled | 6.503 | 0.753 | 69.4 | 14.10 | 5.99 | 0.92 |
 
-Where the time goes: SETUP, the scatter of each triangle's record into its tiles' lists,
-is the largest part of every frame from 10^5 up (cold frame: 10^6 5.1 ms, Bistro 7.5
-ms), then COUNT (3.8 and 4.8 ms) and the fill (2.1 ms). "Cold" is a frame without
-history; "warm" is a later frame of the same camera, whose COUNT and SETUP ranges are
-cut by the frame before's costs (10^6 3.9 and 3.4 ms, Bistro 4.3 and 3.6 ms).
+"First" is a scene's first frame, with COUNT's and SETUP's ranges cut into equal
+parts: what a single image costs. "Settled" is a later frame of the same camera, whose
+ranges are cut by the frame before's predicted costs. Where the time goes (settled
+frame): at 10^6 FILL 2.1 ms, SETUP 1.9 ms, COUNT 1.1 ms and the X280 step 0.8 ms; on
+Bistro SETUP and FILL 2.1 ms each and COUNT 1.3 ms. The fill alone is ahead of the
+V100's fill stage (10^6: 2.1 against 3.3 ms; Bistro: 2.1 against 5.6 ms).
 
 The **ray tracer**: ray generation, four traces and shading are eight commands on the
 120 cores; trees larger than L1 are read from DRAM as treelets. Card 1. A cold frame
@@ -386,8 +387,8 @@ to 8 commands, and the cores read more treelets.
 <img src="docs/images/raytrace-sponza.jpg" width="256" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. Top: rasterized,
-both bit-exact against numpy, Sponza overview (7.22 ms a cold frame above) and Bistro
-interior overview (15.37 ms). Bottom: ray traced, Sponza close (359.86 ms a frame
+both bit-exact against numpy, Sponza overview (3.80 ms a settled frame above) and Bistro
+interior overview (6.50 ms). Bottom: ray traced, Sponza close (359.86 ms a frame
 above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*

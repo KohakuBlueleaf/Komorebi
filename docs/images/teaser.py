@@ -4,12 +4,12 @@ description: what a user writes, the card running one rasterizer frame, what com
 usage: python docs/images/teaser.py    (needs Pillow, for the four thumbnails)
 
 The numbers are copied from committed results: the frame's passes and the pictures'
-frame times from projects/raster/README.md and projects/raytrace/README.md (cold
-frames), the neural rows from projects/dense and projects/attention against the TT-NN
-result files beside them. The code cards are shortened from lines of
-examples/01_mapcollect, projects/attention, examples/05_forward, examples/10_x280_ports
-and projects/raster/thread: one card for each thing a program says, and the grid draws
-each card's traffic in the card's colour.
+frame times from projects/raster/README.md (settled frames) and
+projects/raytrace/README.md (cold frames), the neural rows from projects/dense and
+projects/attention against the TT-NN result files beside them. The code cards are
+shortened from lines of examples/01_mapcollect, projects/attention, examples/05_forward,
+examples/10_x280_ports and projects/raster/thread: one card for each thing a program
+says, and the grid draws each card's traffic in the card's colour.
 """
 
 import base64
@@ -134,23 +134,23 @@ CARDS = [
 SOFT = {"a": "asoft", "b": "bsoft", "m": "msoft", "w": "wsoft"}
 HEAD = {"a": "ha", "b": "hb", "m": "hp", "w": "hw"}
 
-# One cold frame of 10^6 triangles, microseconds: (name, time, on the Tensix cores,
+# One settled frame of 10^6 triangles, microseconds: (name, time, on the Tensix cores,
 # commands it takes). The step is the X280 thread's own work. The V100's whole frame.
 PASSES = [
-    ("COUNT", 3825, True, 1),
+    ("COUNT", 1146, True, 1),
     ("SUM", 59, True, 1),
     ("HIST", 160, True, 2),
-    ("step", 804, False, 0),
-    ("PLACE", 108, True, 1),
-    ("SETUP", 5060, True, 1),
-    ("FILL", 2108, True, 1),
+    ("step", 823, False, 0),
+    ("PLACE", 102, True, 1),
+    ("SETUP", 1942, True, 1),
+    ("FILL", 2107, True, 1),
 ]
-FRAME_MICROSECONDS = 12125
+FRAME_MICROSECONDS = 6339
 V100_MICROSECONDS = 4420
 
 PICTURES = [
-    ("raster-sponza", "Sponza, rasterized", "7.2 ms · 0.32× V100"),
-    ("raster-bistro", "Bistro, rasterized", "15.4 ms · 0.39× V100"),
+    ("raster-sponza", "Sponza, rasterized", "3.8 ms · 0.61× V100"),
+    ("raster-bistro", "Bistro, rasterized", "6.5 ms · 0.92× V100"),
     ("raytrace-sponza", "Sponza, ray traced", "360 ms · 0.28× V100"),
     ("raytrace-bistro", "Bistro, ray traced", "597 ms · 0.35× V100"),
 ]
