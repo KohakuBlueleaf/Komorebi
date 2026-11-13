@@ -40,6 +40,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `Graph`, `run_hostfed` | a chain of commands that the card runs by itself | [[streams-and-graphs]] |
 | `program.thread(...)`, `program.ports(...)` | a thread on an X280 cluster, and its ports | [[hello-thread]], [[core-asks-x280]] |
 | `run.thread_result(timeout)`, `run.thread.read(name)` | the thread's result, and a region after the run | [[hello-thread]], [[sharing-memory]] |
+| `program.overlay(name, folder)`, `program.slots(count=n)` | an overlay's parts, and the slots that hold them | [[overlays]] |
 
 ## Kernels, on the Tensix cores
 
@@ -61,6 +62,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `km::Broadcast` | one core's tile to many cores | [[broadcast]] |
 | `km::Messages`: `send`, `next`, `forward`, `consume`, `done`, `quota` | messages to any core | [[routed-message]], [[forward-and-consume]], [[full-buffers]] |
 | `km::X280Port`: `call`, `tell` | ask and tell an X280 core | [[core-asks-x280]] |
+| `km::Overlay`: `load`, `call`, `held`; `km_overlay(kernel, argument)` | load an overlay into a slot and call it; a part's function | [[overlays]] |
 
 ## Threads, on the X280 cores
 
@@ -79,4 +81,4 @@ The reference pages of this site list every call with all its options, and the e
 combine them into larger programs. [[a-whole-program]] and [[your-own-kernel]] are the way
 in: start from a program that works, and change one thing.
 
-Previous: [[your-own-kernel]].
+Previous: [[overlays]].

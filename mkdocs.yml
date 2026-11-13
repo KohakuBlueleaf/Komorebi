@@ -110,6 +110,7 @@ nav:
       - reference/movement.md
       - reference/dynamic.md
       - reference/threads.md
+      - reference/overlays.md
   - Examples:
       - examples/README.md
       - examples/01_mapcollect/README.md
@@ -122,6 +123,7 @@ nav:
       - examples/08_parallel_thread/README.md
       - examples/10_x280_ports/README.md
       - examples/11_movement/README.md
+      - examples/12_overlays/README.md
       - examples/13_thread_commands/README.md
   - Releases:
       - releases/0.1.0.md

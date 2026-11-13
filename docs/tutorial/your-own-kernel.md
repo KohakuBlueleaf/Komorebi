@@ -128,4 +128,4 @@ in a few numbers points more often at the places where the cores meet.
 - Keeping the old handler name for new work. `sum_tiles` that sums squares misleads the next
   person who reads it, and you.
 
-Next: [[every-primitive]] lists every call that this tutorial used, with its lesson.
+Next: [[overlays]] loads work that is not in the kernels while they run.

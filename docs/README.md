@@ -31,8 +31,8 @@ Komorebi 0.1.0 is on PyPI (`pip install "komorebi-tt[runtime]"`), a first releas
 - **Reference**: exact descriptions of what is built: the [host API](reference/host.md), the
   [Tensix runtime](reference/runtime.md), [ports, emit and reduce](reference/ports.md),
   [broadcast](reference/broadcast.md), [Movement](reference/movement.md),
-  [dynamic handlers](reference/dynamic.md) and the
-  [X280 threads](reference/threads.md).
+  [dynamic handlers](reference/dynamic.md), the
+  [X280 threads](reference/threads.md) and [overlays](reference/overlays.md).
 - **Examples**: ten programs of the repository, each with its own page, from the
   [first one](../examples/01_mapcollect/README.md) on.
 

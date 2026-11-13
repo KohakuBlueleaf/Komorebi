@@ -1,0 +1,3 @@
+6 add      7 = 13 (overlay 1)
+6 multiply 7 = 42 (overlay 2)
+6 add      7 = 13 (overlay 1)
