@@ -27,7 +27,7 @@ native module on first use.
 ## `Program`
 
 `km.Program(name, kernels, buffers=[], args=None, compile_args={}, compute={},
-defines={}, depth=4, segments={})` describes what the resident worker runs. It opens
+defines={}, depth=4, segments={}, opt={})` describes what the resident worker runs. It opens
 nothing.
 
 | Field | Meaning |
@@ -40,10 +40,16 @@ nothing.
 | `defines` | `{name: value}` for all three kernels |
 | `depth` | mailbox slots the cores scan and the dispatch kernel uses, 1 to 16 |
 | `segments` | `{name: number}`, or a header whose `constexpr uint32_t kSegName = n;` lines give them (`kSegBigStep` becomes `"big_step"`); numbers 1 to 239 |
+| `opt` | `{"reader": "Os", "writer": "Os"}`: an optimisation level per kernel, one of the runtime's `O0`, `O1`, `O2`, `O3`, `Os`, `Ofast`, `Oz` (anything else raises `ProgramError`); a kernel without one keeps the runtime's default, `O2` for the reader and writer and `O3` for the compute kernel (its three threads together). A set level also defines `KM_OPT_LEVEL` for that kernel, so that it is cached apart |
 
 `program.thread(cluster=1, sources, regions, words, host_fallback, deadline,
 prefetch="documented")` adds an
 X280 thread on a work cluster (one per program); see [X280 threads](../threads.md).
+
+A program's three kernels share the runtime's kernel config buffer, 69 KiB (70,656
+bytes) on Blackhole, which holds their binaries; a program at that limit fails to
+launch. Lower the reader and writer to `"Os"` first, and the compute kernel only when
+that is not enough, since its hot loops are what `O3` is for.
 
 A program's own header (its segments, buffers and argument indices, shared by its
 kernels and its driver) is read with `km.abi.constants(path,
