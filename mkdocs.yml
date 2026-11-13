@@ -122,5 +122,6 @@ nav:
       - examples/08_parallel_thread/README.md
       - examples/10_x280_ports/README.md
       - examples/11_movement/README.md
+      - examples/13_thread_commands/README.md
   - Releases:
       - releases/0.1.0.md
