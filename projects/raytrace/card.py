@@ -1,6 +1,6 @@
 """Running the ray tracer's kernels on a card through the host package: one
-`komorebi.Session`, a program load per segment run, records to every core under the
-dispatch kernel; DRAM tensors in, hit pages and per-core profiles out.
+`komorebi.Session`, a program load per handler run, records to every core under the
+dispatcher; DRAM tensors in, hit pages and per-core profiles out.
 """
 
 import os
@@ -108,7 +108,7 @@ def open_session():
 
 
 def workers(session):
-    """Cores of the grid: every one is a worker under the dispatch kernel."""
+    """Cores of the grid: every one is a worker under the dispatcher."""
     x, y = session.nocs().grid
     return x * y
 
@@ -150,13 +150,13 @@ def program(tree_pages=1, sizes=None):
             "dst_full_sync_en": True,
             "unpack_to_dest_mode": {K["kCbState"]: "UnpackToDestFp32"},
         },
-        segments=packets.HEADER,
+        handlers=packets.HEADER,
         depth=1,
     )
 
 
 class Ran:
-    """What a segment run left: each record's event, the kernel's result block and
+    """What a handler run left: each record's event, the kernel's result block and
     every core's state words (read after the stop)."""
 
     def __init__(self, events, result, state, host_s):
@@ -171,7 +171,7 @@ def check_run(res, n_workers):
     states = res.state[:n_workers]
     return {
         "done": sum(ev.kind == "done" for ev in res.events),
-        "records": len(res.events),
+        "commands": len(res.events),
         "kernel_error": res.result["error"],
         "cores_ended": {
             k: sum(c[k] != 0 for c in states)
@@ -191,7 +191,7 @@ def ran_cleanly(run, n_workers):
     up (a check_run dict)."""
     ended = set(run["cores_ended"].values())
     return (
-        run["done"] == run["records"]
+        run["done"] == run["commands"]
         and run["kernel_error"] == 0
         and ended == {n_workers}
         and run["compute_wrong"] == 0
@@ -199,14 +199,14 @@ def ran_cleanly(run, n_workers):
     )
 
 
-def record_us(res):
-    """Issue to completion of each record, in microseconds (the X280's timer)."""
+def command_us(res):
+    """Submit to completion of each record, in microseconds (the X280's timer)."""
     return np.array([ev.us for ev in res.events], dtype=np.float64)
 
 
-def run_segment(
+def run_handler(
     session,
-    seg,
+    handler,
     directory,
     inputs,
     out_rows,
@@ -219,7 +219,7 @@ def run_segment(
     extra=(),
     sizes=None,
 ):
-    """Runs `reps` rounds of a segment (after a LOAD of `tree`) over a directory
+    """Runs `reps` rounds of a handler (after a LOAD of `tree`) over a directory
     (workers, 16) or a list of them (a record each per round) and input pages, into
     out_rows pages of out_words; args[0] is a3, extra tensors and args[1:] follow a4.
     Returns (outputs, profiles summed over directories, Ran, times, power)."""
@@ -236,7 +236,7 @@ def run_segment(
     prof_rows = np.zeros((n, K["kOutPageBytes"] // 4), dtype=np.uint32)
     prof_ts = [tensor(session, prof_rows) for _ in chunks]
     extra_t = [tensor(session, rows) for rows in extra]
-    records = []
+    commands = []
     tree_pages = 0
     tree_t = None
     if tree is not None:
@@ -245,7 +245,7 @@ def run_segment(
             raise ValueError(f"tree image {tree.shape} is not whole tree pages")
         tree_t = tensor(session, tree)
         tree_pages = len(tree)
-        records.append((K["kSegLoad"], [tree_t.address, tree.nbytes]))
+        commands.append((K["kHandlerLoad"], [tree_t.address, tree.nbytes]))
     times["upload_s"] = time.perf_counter() - t0
     a3 = list(args)[:1] or [0]
     tail = [t.address for t in extra_t] + list(args)[1:]
@@ -253,8 +253,8 @@ def run_segment(
         for dir_t, prof_t in zip(dir_ts, prof_ts):
             words = [dir_t.address, in_t.address]
             words += [out_t.address, *a3, prof_t.address, *tail]
-            records.append((seg, words))
-    log(f"run: segment {seg}, {len(records)} records, {out_rows} output pages")
+            commands.append((handler, words))
+    log(f"run: handler {handler}, {len(commands)} commands, {out_rows} output pages")
     meter = power if power is not None else Power()
     with meter:
         run = session.load(program(tree_pages, sizes), deadline=deadline_s)
@@ -262,8 +262,8 @@ def run_segment(
         t0 = time.perf_counter()
         if mark is not None:
             mark("program")
-        tickets = [run.issue(s, args=w) for s, w in records]
-        events = run.wait(tickets, timeout=10.0 + deadline_s * len(records))
+        handles = [run.submit(s, args=w) for s, w in commands]
+        events = run.wait(handles, timeout=10.0 + deadline_s * len(commands))
         host_s = time.perf_counter() - t0
         if mark is not None:
             mark("after")
@@ -275,7 +275,7 @@ def run_segment(
         run.state(),
         host_s,
     )
-    log(f"ran: {len(res.events)} records, error {res.result['error']}; reading back")
+    log(f"ran: {len(res.events)} commands, error {res.result['error']}; reading back")
     t0 = time.perf_counter()
     out = read_rows(session, out_t, "hits")
     profs = read(session, *prof_ts)
@@ -313,22 +313,26 @@ def read_each(session, tensors, names):
     return [read_rows(session, t, name) for t, name in zip(tensors, names)]
 
 
-def run_records(session, records, tree_pages, deadline_s=5.0, power=None, sizes=None):
-    """One program load: the records (segment, words) issued in order, one at a time,
-    each waited for; returns the Ran and the host seconds from issue to the last."""
+def run_commands(session, commands, tree_pages, deadline_s=5.0, power=None, sizes=None):
+    """One program load: the records (handler, words) submitted in order, one at a time,
+    each waited for; returns the Ran and the host seconds from submit to the last."""
     meter = power if power is not None else Power()
     with meter:
         run = session.load(program(tree_pages, sizes), deadline=deadline_s)
         t0 = time.perf_counter()
-        tickets = [run.issue(seg, args=words) for seg, words in records]
-        events = run.wait(tickets, timeout=10.0 + deadline_s * len(records))
+        handles = [run.submit(handler, args=words) for handler, words in commands]
+        events = run.wait(handles, timeout=10.0 + deadline_s * len(commands))
         host_s = time.perf_counter() - t0
         run.stop()
     events = events if isinstance(events, list) else [events]
     ran = Ran(events, run.result(), run.state(), host_s)
     # The host's side of the records: one 64-byte command and one event each.
-    ran.host = {"records": len(records), "issue_s": run.issue_s, "wait_s": run.wait_s}
-    ran.host.update(native_s=run.native_s, command_bytes=64 * len(records))
+    ran.host = {
+        "commands": len(commands),
+        "submit_s": run.submit_s,
+        "wait_s": run.wait_s,
+    }
+    ran.host.update(native_s=run.native_s, command_bytes=64 * len(commands))
     return ran, meter.samples
 
 

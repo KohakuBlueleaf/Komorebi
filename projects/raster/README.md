@@ -1,12 +1,11 @@
 # Rasterization on the card
 
-The rasterizer of `ref/raster.py` on a Blackhole card's Tensix cores, on the resident
-worker runtime (`komorebi/device/km_worker.hpp`), loaded and driven through the host
-package (`komorebi.Session` and `Run`, the dispatch kernel issuing the records).
+The rasterizer of `ref/raster.py` on a Blackhole card's Tensix cores, on the persistent kernel runtime (`komorebi/device/km_worker.hpp`), loaded and driven through the host
+package (`komorebi.Session` and `Run`, the dispatcher submitting the records).
 Three ways in: host-binned (the host does setup and binning with the reference's own
 functions; the cores fill tiles); the per-triangle stages on the cores too (COUNT and
 SETUP, below; the host takes the step between them); and the whole frame on the card,
-conducted by a thread on the X280 cores beside the dispatch kernel, which takes that
+conducted by a thread on the X280 cores beside the dispatcher, which takes that
 step itself (below). Every scene's image is bit-exact against the reference.
 
 ## The thread program
@@ -16,7 +15,7 @@ host:    records = setup(scene); lists = bin(records)        # the reference's o
          assign tiles to cores; write per core, to DRAM: its tile list (tile id, count, then the
          triangle records in triangle order, 128 bytes each: a, b, c of three edges, top-left bits,
          the 1/z plane, three colour planes, the pixel box, the triangle number)
-card:    one record FILL(frame) to the team of all worker cores
+card:    one record FILL(frame) to the group of all worker cores
 core:    for each of my tiles:
              depth = 0; colour = background                  # four planes of 32 x 32 float32
              for each triangle record, in order:             # reader streams the list from DRAM
@@ -37,14 +36,14 @@ frame carries the same `tri` image as the reference.
 |---|---|---|
 | `reader.cpp` | data mover 0 | reads the core's directory page (first list page, page count, tile ids), streams the list pages (2 KB, 16 slots) into the input buffer |
 | `compute.cpp` | unpack | waits for each list page (only this thread can wait on a buffer) and passes its address to the pack thread through the mailbox; frees it when the pack thread answers |
-| `compute.cpp` + `fill.hpp` | pack | issues every vector-unit instruction: tile init, per triangle the broadcast constants, per row the edge tests and the plane updates; then copies the five planes from the destination register to five output pages |
+| `compute.cpp` + `fill.hpp` | pack | submits every vector-unit instruction: tile init, per triangle the broadcast constants, per row the edge tests and the plane updates; then copies the five planes from the destination register to five output pages |
 | `compute.cpp` | math | idle |
 | `writer.cpp` | data mover 1 | sends each tile's five pages to the frame; writes tiles without triangles itself from a constant buffer; at the end writes the profile page |
 
 `raster.h` holds the layouts shared by the host and the kernels: the 128-byte record,
 the tile header and end slot, the directory page, the frame (per tile five 4 KB planes
 in the destination register's window order). `lists.py` builds them; `card.py` loads the
-program and runs a segment's records through the host package; `run.py` runs and checks one scene; `bench.py` times a loop
+program and runs a handler's records through the host package; `run.py` runs and checks one scene; `bench.py` times a loop
 of frames and samples the card's power; `arith.py` is the arithmetic check;
 `pictures.py` draws the card's image, its difference from the reference and the busy
 map. `--out` writes the card's result in the layout of `reference/README.md`, so the
@@ -63,9 +62,8 @@ python -m projects.raster.reference.agree --scenes s1m --external results
 ## Decisions, each with its measurement
 
 Cycles are the pack thread's wall clock (1.35 GHz), summed over cores by the kernels'
-own counters; frame times are a record's issue-to-acknowledge time, from the dispatch
-kernel's event (its 50 MHz timer). The tables below were measured with an earlier
-driver, a test fixture on a 120th core issuing the records to 119 workers; the same
+own counters; frame times are a record's submit-to-acknowledge time, from the dispatcher's event (its 50 MHz timer). The tables below were measured with an earlier
+driver, a test fixture on a 120th core submitting the records to 119 workers; the same
 kernels under the host package give the same frames (see "The driver").
 
 **Exactness.** The vector unit's multiply-add rounds once; a product is taken as
@@ -101,7 +99,7 @@ committed kernel):
 | record copied by one vector load and store | 282 | 161.2 |
 | box columns as float16 immediates (one load each), edge thresholds and triangle number kept in registers over the rows | 261 | 158.3 |
 
-What is left is the core's issue of the immediates: 44 data-dependent load
+What is left is the core's submit of the immediates: 44 data-dependent load
 instructions at 3 core instructions each (shift or mask, add the opcode, store to the
 instruction buffer), plus about 35 fixed instructions; the vector unit itself runs about
 80 instructions per triangle.
@@ -130,10 +128,10 @@ the cores read from DRAM. At an assumed 0.5 TB/s that is about 5 ms, more than t
 2.0 ms frame (an estimate, not measured). It pays only if the card itself expands a
 record into its tile, which was not tried.
 
-**Skipping outside the box.** Rows outside the triangle's box are not issued (the
+**Skipping outside the box.** Rows outside the triangle's box are not submitted (the
 core clips the box to the tile: a few instructions per triangle). Columns outside the
 box fail edge 0, whose `a * px` is set to -inf there once per triangle, so a row costs
-nothing extra for the box. Rows issued per (triangle, tile): 23.6 (tiny), 10.1 (10^4),
+nothing extra for the box. Rows submitted per (triangle, tile): 23.6 (tiny), 10.1 (10^4),
 4.8 (10^5), 2.65 (10^6), against 32 without the skip. A row is 54 vector instructions
 and costs 59.5 cycles (64.6 at 10^6, where most triangles have one or two rows).
 
@@ -211,7 +209,7 @@ a contiguous range and lower cores' records come first.
 Exact on every scene of the package's list, with the fill unchanged (2026-11-13,
 card 1, 120 cores, host load 5 to 11, card clock not sampled in these check runs;
 `python -m projects.raster.card_passes --scene <s> --frame [--lists 400]`). Times are
-one record's event, issue to the last core's acknowledgement. This table is the
+one record's event, submit to the last core's acknowledgement. This table is the
 host-stepped kernels, without bands, with the X280 at 1,750 MHz (the session's default then):
 
 | scene | mesh blocks | list pages | COUNT us | SETUP us | FILL us | image differs | list pages differ |
@@ -257,25 +255,25 @@ differ, the Tensix cores' do not).
 One program holds both the passes and the fill (`kernels/frame_reader.cpp`,
 `frame_compute.cpp`, `frame_writer.cpp`: each includes the fill's and the passes' kernel
 file, each in a namespace of its own and without its entry, and calls one or the other
-by the record's segment). A thread on work cluster 1 (`thread/frame.c`, the step in
+by the record's handler). A thread on work cluster 1 (`thread/frame.c`, the step in
 `thread/middle.c`, plain C) conducts the frame; the host uploads the mesh once per scene,
 gives the camera with the load, waits for the thread's result and reads the image back
 (`card_thread.py`):
 
 ```
 thread frame(camera):                                    # X280, work cluster 1
-    issue COUNT; wait                                    # counters to a tensor
-    issue SUM; wait              # cores: totals per tile, entries before each core
+    submit COUNT; wait                                    # counters to a tensor
+    submit SUM; wait              # cores: totals per tile, entries before each core
     take totals                                          # drop the cache's lines of them
-    tile costs (four harts), tiles to cut
-    if any: write their list; issue HIST; wait; issue HSUM; wait; take their totals
-    bands and items; items by falling cost (four harts sort quarters, merged);
+    tile costs (four cores), tiles to cut
+    if any: write their list; submit HIST; wait; submit HSUM; wait; take their totals
+    bands and items; items by falling cost (four cores sort quarters, merged);
     each to the least loaded core (a heap); list layout and base slots as words
     give the items region                                # 37 KB written back
-    issue PLACE; wait            # cores: directory pages, list headers, end slots
-    issue SETUP; wait            # each core its next slots from the prefixes, then
+    submit PLACE; wait            # cores: directory pages, list headers, end slots
+    submit SETUP; wait            # each core its next slots from the prefixes, then
                                  # each record to its slot
-    issue FILL; wait
+    submit FILL; wait
     result: what it found, each part's time
 ```
 
@@ -303,11 +301,11 @@ counts, and the image the reference's (`python -m projects.raster.card_thread --
 Frames in a row (2026-11-13, card 1, 120 cores, X280 at 1,000 MHz, AICLK 1,350 MHz
 (samples at 1,343 on some scenes); `python -m projects.raster.bench_thread --scene <s>
 --runs 5 --frames 0 [--no-balance]`, results in `results/frame/` and
-`results/frame/repeated/`): 5 loads of the program, each running as many frames as fill
+`results/frame/warm/`): 5 loads of the program, each running as many frames as fill
 about 1 s (64 to 906), median per frame, us. Two rows per scene: "first" is a frame
 without history (COUNT and SETUP on equal block shares: what a single image costs);
 "repeated" is a frame from the second on, same camera, with COUNT's and SETUP's ranges
-cut by the frame before's costs (below; the first frame of each load counts in its
+cut by the frame before's costs (below; the cold frame of each load counts in its
 mean). Inside a frame the host does nothing: 0 round trips, 0 bytes. Power is the card's
 mean over the threads' runs; it draws 60.2 to 63.0 W with the program resident and idle. The V100 column is the
 whole frame of `reference/bench.py` on one idle V100 (its "ms per frame";
@@ -328,9 +326,9 @@ whole frame of `reference/bench.py` on one idle V100 (its "ms per frame";
 | Bistro interior (1,020,903) | first | 82 | 4,808 | 59 | 92 | 733 | 107 | 7,475 | 2,095 | 15,373 | 5,990 | 0.39 | 65.3 |
 | Bistro interior (1,020,903) | repeated | 82 | 3,594 | 59 | 92 | 752 | 107 | 4,273 | 2,096 | 10,974 | 5,990 | 0.55 | 65.2 |
 
-Each column is the thread's time from issuing a record to its event (the step: from
-SUM's event to PLACE's issue, HIST and HSUM apart), so the frame is the sum plus the
-thread's own bookkeeping. The step's parts (10^6, us, harts): taking the totals 73 (1),
+Each column is the thread's time from submitting a record to its event (the step: from
+SUM's event to PLACE's submit, HIST and HSUM apart), so the frame is the sum plus the
+thread's own bookkeeping. The step's parts (10^6, us, cores): taking the totals 73 (1),
 tile costs and the tiles to cut 88 (4, then 1), bands and items 202 (1), the sort 118 (4
 then 2 then 1), each item to the least loaded core 186 (1: each choice needs every
 earlier one), the layout's words and base slots 76 (1), the items page 18 (1), the
@@ -359,9 +357,9 @@ Scenes of the reference (`ref/scenes.py`): tiny, 10^4, 10^5 and 10^6 triangles,
 1024 x 1024 pixels, 32 x 32 tiles; 119 worker cores; balanced assignment unless named.
 
 The runs behind the tables of this section: 2026-11-13, card 1 (a p150a), AICLK 1,350
-MHz unless marked, host load 5.9 to 10 (`/proc/loadavg`), the same kernels issued by the
-earlier driver (a test fixture on a 120th core in place of the dispatch kernel; its
-issue-to-acknowledgement time in place of the event's). Commands, in this folder's
+MHz unless marked, host load 5.9 to 10 (`/proc/loadavg`), the same kernels submitted by the
+earlier driver (a test fixture on a 120th core in place of the dispatcher; its
+submit-to-acknowledgement time in place of the event's). Commands, in this folder's
 terms: `python -m projects.raster.bench --scene <s> --seconds 5` for frame time and
 power, `python -m projects.raster.run --scene <s> --json <f>` for the profile and the
 tile assignment (`--assign round-robin` for that column). The C++ and V100 columns are
@@ -388,7 +386,7 @@ hardware rasterizer; the card's numbers sit beside it stage for stage.
 
 **Time, milliseconds.** The card runs the fill; setup, binning and the lists run on the
 host (numpy and Python) and are listed as host stages, not compared. Card: the frame
-from a FILL record's issue to its acknowledgement, which comes after the record's
+from a FILL record's submit to its acknowledgement, which comes after the record's
 output (the frame's tiles) is written; over a loop of FILL records back to back
 (`bench.py`: 48,000 / 40,000 / 16,000 / 2,462 frames; median, min and max; host load
 5.9 to 8.7). Cycles are converted at the clock read when the device opens (1,350 MHz);
@@ -431,17 +429,17 @@ V100 columns are from the committed reference table.
 | 10^6 | 20.6 / 63.0 | 75.1 | 78 | 50 % | 0.1526 | 0.1107 | 1350 / 1350 | 55 / 110 / 115, 0.484 |
 
 At every size the card draws about half its limit and only 12 to 18 W above the open
-card at rest: the cores are underused, waiting on their own instruction issue (setup)
+card at rest: the cores are underused, waiting on their own instruction submit (setup)
 or on each other (the slowest core), not drawing near the limit.
 
 Calibration points on the same sensor (a loop that is not in the repository, 5 to 7 s, 119 cores): the closed
-card 21.1 W; the open card at rest 62.6 to 63.0 W; a spin-only segment, every compute
+card 21.1 W; the open card at rest 62.6 to 63.0 W; a spin-only handler, every compute
 core spinning on the clock, 63.4 W; the arithmetic check, 1,000,448 inputs per record
 at 286.6 us, 70.5 W mean and 72 W peak. Neither loop loads the vector unit fully (the
 check moves its data through the register window by the cores), nor the matrix unit or
-the NoC; the fill draws more than both. The spin segment writes no output, and its
-records are acknowledged about 5 us after issue although compute spins for 1 ms; its
-power counts the stretch from the first issue to the last, and no time in this README
+the NoC; the fill draws more than both. The spin handler writes no output, and its
+records are acknowledged about 5 us after submit although compute spins for 1 ms; its
+power counts the stretch from the first submit to the last, and no time in this README
 comes from the acknowledgement of a record without output.
 
 The read-back runs at about 1 MB/s through slow dispatch. The frame is 20 MiB: five
@@ -499,7 +497,7 @@ the busy time, and the mean core's busy time over the slowest core's.
 - 10^5 (1.34): setup and rows on the vector unit, evenly spread. With the heavy tiles
   in bands the cores are within 4 % (560 k against 536 k); setup is 42 % and rows 43 %
   of busy time. Without bands it was the largest tile (609 k measured).
-- 10^6 (1.64): triangle setup, bound by the core issuing immediates: 55 % of all busy
+- 10^6 (1.64): triangle setup, bound by the core submitting immediates: 55 % of all busy
   time, cores within 2 % (2.69 M against 2.64 M). Without bands it was one tile of
   8,780 triangles on one core (3.82 M cycles, 2.83 ms).
 
@@ -561,13 +559,12 @@ runs at about 1 MB/s.
   compute's push wraps its pointer when it reaches or passes the end, the writer's pop
   only when it lands exactly on it, so after one straddling item the writer's read
   pointer walked on through L1 and a 4,000-record run did not return. The kernels now
-  check every item against the buffer's end before touching it (give-up word and stop
-  word on failure).
+  check every item against the buffer's end before touching it (give-up word and stop flag on failure).
 - **The destination register in 32-bit mode has its own lane order** in the memory
   window: vector v, lane l at word 64 (v / 2) + 16 (l / 8) + 2 (l mod 8) + v mod 2. The
   frame goes out in that order and the host permutes it.
 - **Waits in the compute kernel are unbounded** in the runtime's calls, and a run that
-  goes wrong this way did not end through the stop word: the feeder's deadline set it,
+  goes wrong this way did not end through the stop flag: the feeder's deadline set it,
   but no thread blocked inside a record looks at it. The kernels now poll every wait of
   their own with a wall-clock bound (0.8 s) and set a give-up word: list pages, the
   hand-over between the compute threads, output space, the NoC barriers. Masking the
@@ -576,7 +573,7 @@ runs at about 1 MB/s.
 - **Waits software cannot bound.** The vector unit's drain (`tensix_sync`), the
   hardware semaphore waits inside the destination-register hand-over
   (`tile_regs_acquire`, `copy_tile`) and a `SEMWAIT` block the thread in hardware; no
-  wall clock is looked at. An instruction word the core should never have issued
+  wall clock is looked at. An instruction word the core should never have submitted
   (a data value spilled into the opcode) can wedge a compute thread there for good. The
   only defences are before the push: every record field masked to its width where it
   becomes part of an instruction, host checks of every word written ahead of time, and
@@ -609,6 +606,6 @@ runs at about 1 MB/s.
     4 cycles per triangle).
 - **What I would have asked of the runtime (not changed here)**:
   - a bounded wait for compute;
-  - a contiguous-reserve call on a circular buffer that refuses a wrapping item;
+  - a contiguous-reserve call on a circular buffer that rejects a wrapping item;
   - a per-record cycle counter that compute can write, so kernels need no profile page
     of their own.

@@ -5,9 +5,9 @@
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
 
-constexpr uint32_t kSegPut = 1;
-constexpr uint32_t kSegSum = 2;
-constexpr uint32_t kSegBusy = 3;
+constexpr uint32_t kHandlerPut = 1;
+constexpr uint32_t kHandlerSum = 2;
+constexpr uint32_t kHandlerBusy = 3;
 constexpr uint32_t kCbScratch = 16;
 
 void kernel_main() {
@@ -34,20 +34,21 @@ void kernel_main() {
                    wr.args().wait_limit
                ) == km::kGaveNone;
     };
-    wr.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg < kSegPut || seg > kSegBusy || wr.me() != km::first(r)) {
+    wr.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
+        if (handler < kHandlerPut || handler > kHandlerBusy ||
+            wr.me() != km::first(r)) {
             return true;
         }
         const auto x = TensorAccessor(pages_args, r.a0);
-        if (seg == kSegPut) {
+        if (handler == kHandlerPut) {
             word[0] = r.a2;
             noc_async_write_page(r.a1, x, scratch);
             return writes_done();
         }
         uint32_t same = 0;
         for (uint32_t p = 0; p < r.a1; p++) {
-            noc_async_read_page(seg == kSegSum ? p : 0, x, scratch);
+            noc_async_read_page(handler == kHandlerSum ? p : 0, x, scratch);
             if (!reads_done()) {
                 return false;
             }

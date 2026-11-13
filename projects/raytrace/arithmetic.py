@@ -209,7 +209,7 @@ def input_pages(rows):
     return a.reshape(n // VEC, VEC, -1).transpose(0, 2, 1).reshape(n // VEC, -1)
 
 
-def share(n, index, count):
+def partition(n, index, count):
     """(start, length) of member `index` of `count` in n items, as the runtime's."""
     base, extra = divmod(n, count)
     return index * base + min(index, extra), base + (index < extra)
@@ -219,7 +219,7 @@ def contiguous(pages, cores):
     """Directory (cores, 16): a contiguous share of the pages for each core."""
     directory = np.zeros((cores, K["kDirBytes"] // 4), dtype=np.uint32)
     for c in range(cores):
-        start, count = share(pages, c, cores)
+        start, count = partition(pages, c, cores)
         directory[c, K["kDirFirst"]] = start
         directory[c, K["kDirCount"]] = count
     return directory

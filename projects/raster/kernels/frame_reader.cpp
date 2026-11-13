@@ -1,5 +1,5 @@
-// The frame program's reader: the passes' (segments from 11) and the fill's, each
-// file included in a namespace of its own without its entry, chosen by segment.
+// The frame program's reader: the passes' (handlers from 11) and the fill's, each
+// file included in a namespace of its own without its entry, chosen by handler.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -17,11 +17,11 @@ namespace pass_k {
 
 void kernel_main() {
     km::Reader rd;
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) >= pass_k::kSegLanes) {
-            pass_k::setup_reader_record(rd, r);
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) >= pass_k::kHandlerLanes) {
+            pass_k::setup_reader_command(rd, r);
         } else {
-            fill_k::fill_reader_record(rd, r);
+            fill_k::fill_reader_command(rd, r);
         }
     });
 }

@@ -86,18 +86,18 @@ def as_item(x):
     return (int(x), 0, 32)
 
 
-def band_members(cards, members_t, tile, row0, row1):
+def band_ranks(cards, ranks_t, tile, row0, row1):
     """The members of a tile whose rows reach into its rows [row0, row1)."""
     top = 32 * (tile // raster.TILES_X)
-    y0 = cards[members_t, K["kRecY0"]].astype(np.int64)
-    y1 = cards[members_t, K["kRecY1"]].astype(np.int64)
-    return members_t[(y0 <= top + row1 - 1) & (y1 >= top + row0)]
+    y0 = cards[ranks_t, K["kRecY0"]].astype(np.int64)
+    y1 = cards[ranks_t, K["kRecY1"]].astype(np.int64)
+    return ranks_t[(y0 <= top + row1 - 1) & (y1 >= top + row0)]
 
 
-def band_cost(cards, members_t, tile, row0, row1, cost=COST):
+def band_cost(cards, ranks_t, tile, row0, row1, cost=COST):
     """Estimated cycles of a band of a tile, as `tile_cost` counts a tile."""
     top = 32 * (tile // raster.TILES_X)
-    m = band_members(cards, members_t, tile, row0, row1)
+    m = band_ranks(cards, ranks_t, tile, row0, row1)
     if len(m) == 0:
         return cost["empty"]
     y0 = cards[m, K["kRecY0"]].astype(np.int64)
@@ -163,22 +163,22 @@ def build_lists(cards, offsets, members, tiles_of):
         parts, ids = [], []
         for item in tiles:
             t, row0, row1 = as_item(item)
-            members_t = members[offsets[t] : offsets[t + 1]]
+            ranks_t = members[offsets[t] : offsets[t + 1]]
             band = (row0, row1) != (0, 32)
             if band:
-                members_t = band_members(cards, members_t, t, row0, row1)
+                ranks_t = band_ranks(cards, ranks_t, t, row0, row1)
             rows = row0 << K["kItemRow0Shift"] | row1 << K["kItemRow1Shift"]
             ids.append(t | (rows if band else 0))
-            if len(members_t) == 0:
+            if len(ranks_t) == 0:
                 ids[-1] |= K["kItemEmpty"]
                 continue  # the writer stores empty tiles by itself
             header = np.zeros((1, SLOT), dtype=np.uint32)
             header[0, 0] = K["kMarkTile"]
             header[0, K["kHdrTile"]] = t
-            header[0, K["kHdrCount"]] = len(members_t)
+            header[0, K["kHdrCount"]] = len(ranks_t)
             header[0, K["kHdrRow0"]] = row0
             header[0, K["kHdrRow1"]] = row1
-            parts += [header, cards[members_t]]
+            parts += [header, cards[ranks_t]]
         end = np.zeros((1, SLOT), dtype=np.uint32)
         end[0, 0] = K["kMarkEnd"]
         parts.append(end)

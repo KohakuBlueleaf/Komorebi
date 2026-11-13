@@ -161,7 +161,7 @@ def test_wheel_info_reads_the_names_and_checks_the_versions(tmp_path):
     assert [str(r) for r in info.requirements(main, ["dev"])] == ["numpy", "other"]
 
 
-def test_wheel_info_refuses_a_runtime_wheel_outside_the_range(tmp_path):
+def test_wheel_info_rejects_a_runtime_wheel_outside_the_range(tmp_path):
     info = load("wheel_info")
     two_wheels(tmp_path, ">=0.81.1.1,<0.81.2", runtime_version="0.81.2")
     assert "requires made-up-runtime" in info.check_versions(tmp_path)[1][0]

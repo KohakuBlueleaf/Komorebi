@@ -1,10 +1,10 @@
-// Broadcast writer: the column lane, on NoC1 (W blocks down each column), then the
+// Broadcast writer: the column broadcast, on NoC1 (W blocks down each column), then the
 // member's checksum tile at output page a6 + member.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
 #include "broadcast.h"
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
@@ -13,23 +13,23 @@ void kernel_main() {
         TensorAccessorArgs<w_args.next_compile_time_args_offset()>()
     );
     km::Writer wr;
-    wr.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg != kSegCast && seg != kSegRead) {
+    wr.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
+        if (handler != kHandlerBroadcast && handler != kHandlerRead) {
             return true;
         }
-        km::Lane ln(wr, r, kArgLane);
+        km::Broadcast ln(wr, r, kArgBroadcast);
         if (!ln.ok()) {
             return false;
         }
-        if (!ln.member()) {
+        if (!ln.included()) {
             return true;
         }
         const auto w = TensorAccessor(w_args, r.a1);
         const uint32_t first = wr.arg(kArgIndex) * r.a7 * ln.pages();
-        const bool got = seg == kSegRead
+        const bool got = handler == kHandlerRead
             ? read_blocks(wr, km::kStWriter, r, ln, kCbCol, w, first, r.a3, r.a7)
-            : cast_blocks(ln, w, first, r.a3, r.a7, [](uint32_t) {
+            : broadcast_blocks(ln, w, first, r.a3, r.a7, [](uint32_t) {
                   return false;
               });
         if (!got || !wr.wait_front(kCbOut, 1)) {

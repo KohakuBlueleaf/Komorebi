@@ -1,9 +1,9 @@
-// Lane side, stream mode (README "Stream mode"): a fixed body multicast back to back
-// with a window; bounded waits, state words stored before each library barrier.
+// Broadcast side, stream mode (README "Stream mode"): a fixed body multicast back to
+// back with a window; bounded waits, state words stored before each library barrier.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "lane.h"
+#include "broadcast.h"
 
 namespace {
 
@@ -34,7 +34,7 @@ namespace {
         );
     }
 
-    struct Lane {
+    struct Broadcast {
         uint32_t base;
         uint64_t limit;
         uint64_t wait_max = 0;
@@ -44,14 +44,16 @@ namespace {
         }
 
         void state(uint32_t phase, uint32_t k) const {
-            at(LANE_STATE) = phase;
-            at(LANE_STATE + 4) = k;
+            at(BROADCAST_STATE) = phase;
+            at(BROADCAST_STATE + 4) = k;
         }
 
         bool read_peer(uint32_t x, uint32_t y) {
-            at(LANE_PEER) = 0xFFFFFFFFu;
-            at(LANE_PEER + 4) = 0xFFFFFFFFu;
-            noc_async_read(get_noc_addr(x, y, base + LANE_STATE), base + LANE_PEER, 16);
+            at(BROADCAST_PEER) = 0xFFFFFFFFu;
+            at(BROADCAST_PEER + 4) = 0xFFFFFFFFu;
+            noc_async_read(
+                get_noc_addr(x, y, base + BROADCAST_STATE), base + BROADCAST_PEER, 16
+            );
             const uint64_t t0 = wall();
             while (!ncrisc_noc_reads_flushed(noc_index)) {
                 if (wall() - t0 > limit) {
@@ -83,7 +85,7 @@ void kernel_main() {
     const uint32_t receivers = get_arg_val<uint32_t>(a++);
     const uint32_t snd_x = get_arg_val<uint32_t>(a++);
     const uint32_t snd_y = get_arg_val<uint32_t>(a++);
-    // 1: rank r at snd_y + r, 0: at snd_y - r; 3, 2: a row lane (peers not read).
+    // 1: rank r at snd_y + r, 0: at snd_y - r; 3, 2: a row broadcast (peers not read).
     const uint32_t step = get_arg_val<uint32_t>(a++);
     const uint32_t mx0 = get_arg_val<uint32_t>(a++), my0 = get_arg_val<uint32_t>(a++);
     const uint32_t mx1 = get_arg_val<uint32_t>(a++), my1 = get_arg_val<uint32_t>(a++);
@@ -91,11 +93,11 @@ void kernel_main() {
     const uint32_t window = get_arg_val<uint32_t>(a++);
     const uint32_t every = get_arg_val<uint32_t>(a++);  // full check every N blocks
 
-    Lane lane{get_write_ptr(kLaneCb), wait_cycles};
+    Broadcast broadcast{get_write_ptr(kBroadcastCb), wait_cycles};
     volatile tt_l1_ptr uint32_t* done = words(get_write_ptr(kShareCb));
     const uint32_t body_words = (block_bytes - STREAM_HEADER) / 4;
     auto slot = [&](uint32_t k) {
-        return lane.base + LANE_BLOCK + (k % window) * block_bytes;
+        return broadcast.base + BROADCAST_BLOCK + (k % window) * block_bytes;
     };
 
     uint32_t n_ok = 0, bad_blocks = 0, bad_words = 0, bad_k = 0, bad_w = 0, bad_v = 0;
@@ -103,25 +105,30 @@ void kernel_main() {
     uint32_t stopped = 0, full = 0;
     uint64_t t_begin = 0, t_end = 0, busy = 0, check = 0;
 
-    lane.state(LP_START, 0);
+    broadcast.state(LP_START, 0);
     if (role == 1) {
         // Sender. All stamps at least k: true, or false after the limit.
-        auto wait_stamps = [&](uint32_t k) -> bool {
+        auto wait_markers = [&](uint32_t k) -> bool {
             const uint64_t t0 = wall();
             uint32_t r = 1;
             for (;;) {
                 invalidate_l1_cache();
-                while (r <= receivers && reached(lane.at(LANE_DONE + 16 * r), k, tag)) {
+                while (
+                    r <= receivers &&
+                    reached(broadcast.at(BROADCAST_DONE + 16 * r), k, tag)
+                ) {
                     r++;
                 }
                 if (r > receivers) {
-                    lane.note_wait(t0);
+                    broadcast.note_wait(t0);
                     return true;
                 }
-                if (wall() - t0 > lane.limit) {
+                if (wall() - t0 > broadcast.limit) {
                     missing = 0;
                     for (uint32_t q = 1; q <= receivers; q++) {
-                        missing += !reached(lane.at(LANE_DONE + 16 * q), k, tag);
+                        missing += (
+                            !reached(broadcast.at(BROADCAST_DONE + 16 * q), k, tag)
+                        );
                     }
                     peer = r;
                     return false;
@@ -129,7 +136,7 @@ void kernel_main() {
             }
         };
         const uint64_t mvalid = (
-            get_noc_multicast_addr(mx0, my0, mx1, my1, lane.base + LANE_VALID)
+            get_noc_multicast_addr(mx0, my0, mx1, my1, broadcast.base + BROADCAST_VALID)
         );
         for (uint32_t s = 0; s < window; s++) {
             volatile tt_l1_ptr uint32_t* body = words(slot(s) + STREAM_HEADER);
@@ -137,8 +144,8 @@ void kernel_main() {
                 body[w] = stream_body(w, tag);
             }
         }
-        lane.state(LP_WAIT_STAMPS, 0);
-        bool ok = wait_stamps(0);
+        broadcast.state(LP_WAIT_MARKERS, 0);
+        bool ok = wait_markers(0);
         if (!ok) {
             where = LW_READY;
         }
@@ -146,24 +153,24 @@ void kernel_main() {
         uint32_t k = 1;
         for (; ok && k <= blocks; k++) {
             if (k > window) {
-                lane.state(LP_WAIT_STAMPS, k - window);
-                ok = wait_stamps(k - window);
+                broadcast.state(LP_WAIT_MARKERS, k - window);
+                ok = wait_markers(k - window);
                 if (!ok) {
-                    where = LW_STAMP;
+                    where = LW_MARKER;
                     break;
                 }
             }
             if (until) {
                 invalidate_l1_cache();
-                if (*done == lane_records_done(tag)) {
+                if (*done == broadcast_commands_done(tag)) {
                     stopped = 1;
                     break;
                 }
             }
             const uint32_t src = slot(k);
-            words(src)[0] = lane_stamp(k, tag);
+            words(src)[0] = broadcast_marker(k, tag);
             words(src)[1] = k;
-            lane.state(LP_BARRIER_BLOCK, k);
+            broadcast.state(LP_BARRIER_BLOCK, k);
             const uint64_t t0 = wall();
             noc_async_write_multicast(
                 src,
@@ -173,33 +180,37 @@ void kernel_main() {
             );
             noc_async_write_barrier();
             busy += wall() - t0;
-            lane.at(LANE_VALID) = lane_stamp(k, tag);
-            noc_semaphore_set_multicast(lane.base + LANE_VALID, mvalid, receivers);
+            broadcast.at(BROADCAST_VALID) = broadcast_marker(k, tag);
+            noc_semaphore_set_multicast(
+                broadcast.base + BROADCAST_VALID, mvalid, receivers
+            );
         }
         const uint32_t last = k - 1;  // blocks sent
-        lane.state(LP_BARRIER_VALID, last);
+        broadcast.state(LP_BARRIER_VALID, last);
         noc_async_write_barrier();
         if (ok && stopped) {
-            lane.at(LANE_VALID) = lane_stop(last, tag);
-            noc_semaphore_set_multicast(lane.base + LANE_VALID, mvalid, receivers);
+            broadcast.at(BROADCAST_VALID) = broadcast_stop(last, tag);
+            noc_semaphore_set_multicast(
+                broadcast.base + BROADCAST_VALID, mvalid, receivers
+            );
             noc_async_write_barrier();
         }
         if (ok) {
-            lane.state(LP_WAIT_STAMPS, last);
-            ok = wait_stamps(last);
+            broadcast.state(LP_WAIT_MARKERS, last);
+            ok = wait_markers(last);
             if (!ok) {
-                where = LW_STAMP;
+                where = LW_MARKER;
             }
         }
         t_end = wall();
         n_ok = ok ? last : 0;
         if (!ok) {
             where_k = where == LW_READY ? 0 : k;
-            lane.state(LP_GAVE_UP, where_k);
+            broadcast.state(LP_GAVE_UP, where_k);
             const uint32_t py = step & 1 ? snd_y + peer : snd_y - peer;
-            if ((step & 2) == 0 && lane.read_peer(snd_x, py)) {
-                peer_phase = lane.at(LANE_PEER);
-                peer_k = lane.at(LANE_PEER + 4);
+            if ((step & 2) == 0 && broadcast.read_peer(snd_x, py)) {
+                peer_phase = broadcast.at(BROADCAST_PEER);
+                peer_k = broadcast.at(BROADCAST_PEER + 4);
             } else {
                 peer_phase = 0xFFFFFFFFu;  // the read did not complete
                 peer_k = 0xFFFFFFFFu;
@@ -213,60 +224,60 @@ void kernel_main() {
                 body[w] = ~stream_body(w, tag);
             }
         };
-        lane.at(LANE_VALID) = 0;
+        broadcast.at(BROADCAST_VALID) = 0;
         for (uint32_t s = 0; s < window; s++) {
             poison(s);
         }
         const uint64_t my_slot = (
-            get_noc_addr(snd_x, snd_y, lane.base + LANE_DONE + 16 * rank)
+            get_noc_addr(snd_x, snd_y, broadcast.base + BROADCAST_DONE + 16 * rank)
         );
         auto stamp = [&](uint32_t k) {
-            lane.at(LANE_SRC) = lane_stamp(k, tag);
-            lane.state(LP_BARRIER_STAMP, k);
-            noc_async_write(lane.base + LANE_SRC, my_slot, 4);
+            broadcast.at(BROADCAST_SRC) = broadcast_marker(k, tag);
+            broadcast.state(LP_BARRIER_MARKER, k);
+            noc_async_write(broadcast.base + BROADCAST_SRC, my_slot, 4);
             noc_async_write_barrier();
         };
         stamp(0);
         t_begin = wall();
         for (uint32_t k = 1; k <= blocks; k++) {
-            lane.state(LP_WAIT_VALID, k);
+            broadcast.state(LP_WAIT_VALID, k);
             const uint64_t t0 = wall();
             uint32_t v = 0;
             bool have = false;
             for (;;) {
                 invalidate_l1_cache();
-                v = lane.at(LANE_VALID);
+                v = broadcast.at(BROADCAST_VALID);
                 have = reached(v, k, tag);
-                if (have || (v & (1u << 16)) != 0 || wall() - t0 > lane.limit) {
+                if (have || (v & (1u << 16)) != 0 || wall() - t0 > broadcast.limit) {
                     break;
                 }
             }
             if (!have && (v >> 17) == (tag & 0x7FFFu) && (v & (1u << 16)) != 0) {
-                stopped = 1;  // the stop word: block k was never sent
+                stopped = 1;  // the stop flag: block k was never sent
                 break;
             }
             if (!have) {
                 where = LW_VALID;
                 where_k = k;
-                lane.state(LP_GAVE_UP, k);
+                broadcast.state(LP_GAVE_UP, k);
                 peer = 0;
-                if (lane.read_peer(snd_x, snd_y)) {
-                    peer_phase = lane.at(LANE_PEER);
-                    peer_k = lane.at(LANE_PEER + 4);
+                if (broadcast.read_peer(snd_x, snd_y)) {
+                    peer_phase = broadcast.at(BROADCAST_PEER);
+                    peer_k = broadcast.at(BROADCAST_PEER + 4);
                 } else {
                     peer_phase = 0xFFFFFFFFu;  // the read did not complete
                     peer_k = 0xFFFFFFFFu;
                 }
                 break;
             }
-            lane.note_wait(t0);
-            lane.state(LP_VERIFY, k);
+            broadcast.note_wait(t0);
+            broadcast.state(LP_VERIFY, k);
             volatile tt_l1_ptr uint32_t* blk = words(slot(k));
             uint32_t bad = 0;
-            if (blk[0] != lane_stamp(k, tag) || blk[1] != k) {
+            if (blk[0] != broadcast_marker(k, tag) || blk[1] != k) {
                 if (bad_words == 0) {
                     bad_k = k;
-                    bad_w = blk[0] != lane_stamp(k, tag) ? 0 : 1;
+                    bad_w = blk[0] != broadcast_marker(k, tag) ? 0 : 1;
                     bad_v = blk[bad_w];
                 }
                 bad++;
@@ -302,9 +313,9 @@ void kernel_main() {
         }
         t_end = wall();
     }
-    lane.state(where ? LP_GAVE_UP : LP_END, where_k);
+    broadcast.state(where ? LP_GAVE_UP : LP_END, where_k);
 
-    volatile tt_l1_ptr uint32_t* c = words(get_write_ptr(kLaneCnt));
+    volatile tt_l1_ptr uint32_t* c = words(get_write_ptr(kBroadcastCnt));
     for (uint32_t w = 0; w < LN_WORDS; w++) {
         c[w] = 0;
     }
@@ -326,16 +337,16 @@ void kernel_main() {
     c[LN_T_HI] = static_cast<uint32_t>(span >> 32);
     c[LN_STOPPED] = stopped;
     c[LN_TAG] = tag;
-    c[LN_WAIT_MAX] = static_cast<uint32_t>(lane.wait_max);
+    c[LN_WAIT_MAX] = static_cast<uint32_t>(broadcast.wait_max);
     c[LN_BUSY_LO] = static_cast<uint32_t>(busy);
     c[LN_BUSY_HI] = static_cast<uint32_t>(busy >> 32);
     c[LN_CHECK_LO] = static_cast<uint32_t>(check);
     c[LN_CHECK_HI] = static_cast<uint32_t>(check >> 32);
     c[LN_FULL] = full;
-    c[LN_MAGIC] = LANE_MAGIC | me;
+    c[LN_MAGIC] = BROADCAST_MAGIC | me;
     const InterleavedAddrGen<true> dst = {
         .bank_base_address = cnt_dram, .page_size = LN_WORDS * 4
     };
-    noc_async_write(get_write_ptr(kLaneCnt), get_noc_addr(me, dst), LN_WORDS * 4);
+    noc_async_write(get_write_ptr(kBroadcastCnt), get_noc_addr(me, dst), LN_WORDS * 4);
     noc_async_write_barrier();
 }

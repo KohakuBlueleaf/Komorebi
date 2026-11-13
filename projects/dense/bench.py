@@ -65,11 +65,11 @@ SHARES = {  # profile words whose share of the slowest core's time is reported
     "writer_waits_for_output": "kPrWrWait",
 }
 BODIES = ("kPrRdBody", "kPrUnBody", "kPrPkBody", "kPrWrBody")
-GRID_SHARES = {
+GRID_PARTITIONS = {
     "read_A_dram": "kGpRdRead",
-    "row_lane": "kGpRdLane",
+    "row_broadcast": "kGpRdBroadcast",
     "read_W_dram": "kGpWrRead",
-    "column_lane": "kGpWrLane",
+    "column_broadcast": "kGpWrBroadcast",
     "writer_waits_for_output": "kGpWrWait",
     "write": "kGpWrWrite",
     "unpack_waits_for_A": "kGpUnWaitA",
@@ -86,7 +86,7 @@ CUTS = {  # cut-down runs: (name, mode) per form
         ("compute_only", K["kModeComputeOnly"]),
     ),
     "grid": (
-        ("lanes_only", pl.G["kGridLanes"]),
+        ("broadcasts_only", pl.G["kGridBroadcasts"]),
         ("product_only", pl.G["kGridProduct"]),
     ),
     "split": (("parts_only", pl.S["kSplitParts"]),),
@@ -96,7 +96,7 @@ CUTS = {  # cut-down runs: (name, mode) per form
 def profile_summary(prof, mhz, grid):
     """Shares of the slowest core's time per unit, and the balance across cores."""
     words, shares, bodies = (
-        (pl.G, GRID_SHARES, GRID_BODIES) if grid else (K, SHARES, BODIES)
+        (pl.G, GRID_PARTITIONS, GRID_BODIES) if grid else (K, SHARES, BODIES)
     )
     pr = prof.astype(np.float64)
     busy = np.maximum.reduce([pr[:, words[k]] for k in bodies])
@@ -106,7 +106,7 @@ def profile_summary(prof, mhz, grid):
         "slowest_core": slow,
         "slowest_us": round(total / mhz, 3),
         "mean_busy_over_slowest": round(float(busy.mean() / total), 3),
-        "shares_of_slowest": {
+        "partitions_of_slowest": {
             name: round(float(pr[slow, words[key]] / total), 3)
             for name, key in shares.items()
         },
@@ -114,7 +114,7 @@ def profile_summary(prof, mhz, grid):
 
 
 def loop(product, reps, index, one_us, batch):
-    """`reps` records in runs of at most `batch` back to back (each waited for), with
+    """`reps` commands in runs of at most `batch` back to back (each waited for), with
     power and clock sampled; each wait bounded by 3 x their single-call time + 5 s."""
     meter = power.PowerSampler(index)
     host_s, us, t0 = 0.0, [], time.perf_counter()
@@ -136,7 +136,7 @@ def loop(product, reps, index, one_us, batch):
         "seconds": round(host_s, 3),
         "wall_seconds": round(wall_s, 3),
         "us_per_call": round(host_s * 1e6 / reps, 3),
-        "record_us_median": float(np.median(us)),
+        "command_us_median": float(np.median(us)),
         "mean_w": phase.mean_w,
         "peak_w": phase.peak_w,
         "open_w": meter.result.phases["open"].mean_w,
@@ -155,7 +155,7 @@ def main():
     a.add_argument("--seconds", type=float, default=4.0)
     a.add_argument("--cut-seconds", type=float, default=1.0)
     a.add_argument("--max-reps", type=int, default=1_000_000)
-    a.add_argument("--batch", type=int, default=0, help="records per run; 0: one run")
+    a.add_argument("--batch", type=int, default=0, help="commands per run; 0: one run")
     a.add_argument(
         "--deadline", type=float, default=None, help="s; default: deadline()"
     )
@@ -220,7 +220,7 @@ def main():
 
 
 def deadline(p):
-    """A record's deadline (s): three times the call at 20 TFLOP/s, plus 50 ms."""
+    """A command's deadline (s): three times the call at 20 TFLOP/s, plus 50 ms."""
     return round(3 * pl.flops(p) / 20e12 + 0.05, 3)
 
 

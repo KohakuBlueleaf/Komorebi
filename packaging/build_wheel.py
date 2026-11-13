@@ -57,7 +57,7 @@ def export(ref, stage):
 
 
 def build_image(stage, tree, cache):
-    """The dispatch kernel image built from the stage's sources against `tree`."""
+    """The dispatcher image built from the stage's sources against `tree`."""
     env = dict(os.environ, PYTHONPATH=str(stage / "src"), KMR_CACHE=str(cache))
     code = (
         "import sys; from komorebi import native; print(native.image_path(sys.argv[1]))"
@@ -142,7 +142,7 @@ def build_wheel(stage, out, isolated):
 
 
 def check(wheel, stage, required):
-    """Refuses a wheel missing a required member or a file of a carried folder."""
+    """Rejects a wheel missing a required member or a file of a carried folder."""
     names = set(zipfile.ZipFile(wheel).namelist())
     missing = [n for n in required if n not in names]
     for folder in CARRIED:

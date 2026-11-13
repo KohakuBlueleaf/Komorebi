@@ -1,5 +1,5 @@
-// Test feeder: one Tensix core outside every team plays the dispatcher (records from
-// DRAM, unicast to every worker, acks in its own L1, stop word on a missed deadline).
+// Test feeder: one Tensix core outside every group plays the dispatcher (commands from
+// DRAM, unicast to every worker, acks in its own L1, stop flag on a missed deadline).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -16,7 +16,7 @@ namespace {
 
 void kernel_main() {
     const uint32_t ctl = arg(kFdCtl);
-    const uint32_t workers = arg(kFdWorkers), n = arg(kFdRecords);
+    const uint32_t workers = arg(kFdWorkers), n = arg(kFdCommands);
     uint32_t depth = arg(kFdDepth);
     depth = depth == 0 || depth > KM_RING_SLOTS ? KM_RING_SLOTS : depth;
     const uint64_t deadline = static_cast<uint64_t>(arg(kFdDeadline)) << 10;
@@ -34,7 +34,7 @@ void kernel_main() {
         return get_noc_addr(cores[w] & 0xFFFFu, cores[w] >> 16, addr);
     };
 
-    // Core table and records into L1; results cleared.
+    // Core table and commands into L1; results cleared.
     const InterleavedAddrGen<true> core_tab = {
         .bank_base_address = arg(kFdCores), .page_size = KM_CORES_MAX * 4
     };
@@ -55,7 +55,7 @@ void kernel_main() {
     }
     row(0)[kFrMagic] = kFeederMagic;
 
-    // Ends the run: records `status` and writes 1 to the stop word of every worker.
+    // Ends the run: commands `status` and writes 1 to the stop flag of every worker.
     auto stop_all = [&](uint32_t status) {
         row(0)[kFrStatus] = status;
         *km::out_slot(ctl, 0) = 1;
@@ -89,18 +89,18 @@ void kernel_main() {
 
     int32_t busy[KM_RING_SLOTS];
     uint32_t busy_seq[KM_RING_SLOTS];
-    uint32_t busy_team[KM_RING_SLOTS];
+    uint32_t busy_group[KM_RING_SLOTS];
     bool busy_result[KM_RING_SLOTS];
-    uint64_t t_issue[KM_RING_SLOTS];
+    uint64_t t_submit[KM_RING_SLOTS];
     for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
         busy[j] = -1;
     }
     uint32_t seq = 0, next = 0, done = 0, in_flight = 0, max_busy = 0;
-    bool exited = false;  // an EXIT record of the table was issued: nothing after it
-    // The dynamic run in flight (one at a time): its table index, sequence and team.
-    const uint32_t dyn_seg = arg(kFdDynSeg);
+    bool exited = false;  // an EXIT command of the table was submitted: nothing after it
+    // The dynamic run in flight (one at a time): its table index, sequence and group.
+    const uint32_t dyn_handler = arg(kFdDynHandler);
     int32_t dyn_index = -1;
-    uint32_t dyn_seq = 0, dyn_team = 0;
+    uint32_t dyn_seq = 0, dyn_group = 0;
     bool dyn_ended = true;
     auto busy_slot_of = [&](int32_t index) {
         uint32_t j = 0;
@@ -109,13 +109,13 @@ void kernel_main() {
         }
         return j;
     };
-    // The two-pass check of the team's status lines: 1 quiet (every line idle and
+    // The two-pass check of the group's status lines: 1 quiet (every line idle and
     // the same in both passes, sent equal to consumed), 0 not, -(1 + core) gave up.
     volatile tt_l1_ptr uint32_t* lines = km::l1(arg(kFdLines));
     volatile tt_l1_ptr uint32_t* first_pass = lines + KM_CORES_MAX * 4;
     auto quiet = [&](volatile tt_l1_ptr uint32_t* dr) -> int32_t {
         dr[kFrRecDynChecks] = dr[kFrRecDynChecks] + 1;
-        const uint32_t f = dyn_team & 0xFFFFu, end = f + (dyn_team >> 16);
+        const uint32_t f = dyn_group & 0xFFFFu, end = f + (dyn_group >> 16);
         invalidate_l1_cache();
         bool idle = true;
         for (uint32_t k = f; k < end; k++) {
@@ -148,20 +148,20 @@ void kernel_main() {
         dr[kFrRecDynSent] = static_cast<uint32_t>(sent);
         return sent == consumed ? 1 : 0;
     };
-    uint64_t t_first = 0, t_last = 0, issue_cycles = 0;
+    uint64_t t_first = 0, t_last = 0, submit_cycles = 0;
 
-    // Issues record `src` (64 bytes in L1) to slot j of every worker.
-    auto issue = [&](uint32_t j, uint32_t src, bool raw) {
-        volatile tt_l1_ptr km_record_t*
+    // Submits command `src` (64 bytes in L1) to slot j of every worker.
+    auto submit = [&](uint32_t j, uint32_t src, bool raw) {
+        volatile tt_l1_ptr km_command_t*
             st = (
-                reinterpret_cast<volatile tt_l1_ptr km_record_t*>(
+                reinterpret_cast<volatile tt_l1_ptr km_command_t*>(
                     ctl + KM_CTL_RING + j * 64
                 )
             );
-        km::copy_record(reinterpret_cast<volatile tt_l1_ptr km_record_t*>(src), st);
+        km::copy_command(reinterpret_cast<volatile tt_l1_ptr km_command_t*>(src), st);
         seq++;
         st->seq = st->land1 = st->land2 = st->land3 = seq;
-        if (!raw) {  // a raw record keeps the slot it names (test only)
+        if (!raw) {  // a raw command keeps the slot it names (test only)
             st->hdr = (st->hdr & 0xFFFFu) | j << 16;
         }
         const uint64_t t0 = km::wall64();
@@ -175,7 +175,7 @@ void kernel_main() {
         }
         noc_async_writes_flushed();
         const uint64_t t1 = km::wall64();
-        issue_cycles += t1 - t0;
+        submit_cycles += t1 - t0;
         return t0;
     };
 
@@ -209,7 +209,7 @@ void kernel_main() {
                     busy[j] = -1;
                     in_flight--;
                     done++;
-                } else if (now - t_issue[j] > deadline) {
+                } else if (now - t_submit[j] > deadline) {
                     r[kFrRecStatus] = kFsTimeout;
                     row(0)[kFrSlot] = j;
                     row(0)[kFrSeq] = busy_seq[j];
@@ -219,7 +219,7 @@ void kernel_main() {
                     break;
                 }
             }
-            // A dynamic run in flight: its end record goes out once the lines are
+            // A dynamic run in flight: its end command goes out once the lines are
             // quiet.
             if (!failed && dyn_index >= 0 && !dyn_ended) {
                 volatile tt_l1_ptr uint32_t* dr = row(1 + dyn_index);
@@ -243,13 +243,13 @@ void kernel_main() {
                     for (uint32_t w = 0; w < 16; w++) {
                         e[w] = 0;
                     }
-                    e[1] = km::make_hdr(KM_SEG_DYN_END, 0, 0);
-                    e[2] = dyn_team;
+                    e[1] = km::make_hdr(KM_HANDLER_DYN_END, 0, 0);
+                    e[2] = dyn_group;
                     e[3] = dyn_seq;  // a0: the run it ends
-                    t_issue[j] = issue(j, tab + (n + 1) * 64, false);
+                    t_submit[j] = submit(j, tab + (n + 1) * 64, false);
                     busy[j] = static_cast<int32_t>(n);
                     busy_seq[j] = seq;
-                    busy_team[j] = dyn_team;
+                    busy_group[j] = dyn_group;
                     in_flight++;
                     dr[kFrRecDynEndSeq] = seq;
                     dyn_ended = true;
@@ -261,19 +261,19 @@ void kernel_main() {
             const uint32_t src = tab + next * 64;
             volatile tt_l1_ptr uint32_t* r = row(1 + next);
             volatile tt_l1_ptr uint32_t* w = km::l1(src);
-            const bool is_exit = (w[1] & 0xFFu) == KM_SEG_EXIT;
+            const bool is_exit = (w[1] & 0xFFu) == KM_HANDLER_EXIT;
             const bool raw = arg(kFdRaw) == next + 1;
             if (is_exit) {  // to every worker, and only when no slot is busy
-                w[2] = raw ? w[2] : KM_TEAM_ALL(workers);
+                w[2] = raw ? w[2] : KM_GROUP_ALL(workers);
                 if (in_flight != 0) {
                     r[kFrRecHeld] = 1;
                     continue;
                 }
             }
-            if ((w[1] >> 8) & KM_F_EXCL) {  // held while an overlapping team is busy
+            if ((w[1] >> 8) & KM_F_EXCL) {  // held while an overlapping group is busy
                 bool held = false;
                 for (uint32_t k = 0; k < depth; k++) {
-                    held |= busy[k] >= 0 && km::teams_overlap(busy_team[k], w[2]);
+                    held |= busy[k] >= 0 && km::groups_overlap(busy_group[k], w[2]);
                 }
                 if (held) {
                     r[kFrRecHeld] = 1;
@@ -287,24 +287,25 @@ void kernel_main() {
             if (j == depth) {
                 continue;
             }
-            const uint64_t t0 = issue(j, src, raw);
+            const uint64_t t0 = submit(j, src, raw);
             t_first = next == 0 ? t0 : t_first;
             r[kFrRecSeq] = seq;
             r[kFrRecSlot] = j;
-            r[kFrRecIssue] = static_cast<uint32_t>(t0);
-            r[kFrRecIssued] = km::wall();
+            r[kFrCmdSubmit] = static_cast<uint32_t>(t0);
+            r[kFrCmdSubmitted] = km::wall();
             busy[j] = static_cast<int32_t>(next);
             busy_seq[j] = seq;
-            busy_team[j] = w[2];
+            busy_group[j] = w[2];
             busy_result[j] = (w[1] >> 8) & KM_F_RESULT;
-            t_issue[j] = t0;
+            t_submit[j] = t0;
             in_flight++;
             max_busy = in_flight > max_busy ? in_flight : max_busy;
             r[kFrRecBusy] = in_flight;
-            if (dyn_seg != 0 && (w[1] & 0xFFu) == dyn_seg) {  // a dynamic run starts
+            if (dyn_handler != 0 &&
+                (w[1] & 0xFFu) == dyn_handler) {  // a dynamic run starts
                 dyn_index = static_cast<int32_t>(next);
                 dyn_seq = seq;
-                dyn_team = w[2];
+                dyn_group = w[2];
                 dyn_ended = false;
             }
             next++;
@@ -313,14 +314,14 @@ void kernel_main() {
         if (exited && !failed) {
             row(0)[kFrExitAcked] = row(next)[kFrRecStatus] == kFsDone;
         } else if (!failed && arg(kFdExit) != 0) {
-            volatile tt_l1_ptr uint32_t* x = km::l1(tab + n * 64);  // spare record
+            volatile tt_l1_ptr uint32_t* x = km::l1(tab + n * 64);  // spare command
             for (uint32_t w = 0; w < 16; w++) {
                 x[w] = 0;
             }
-            x[1] = km::make_hdr(KM_SEG_EXIT, 0, 0);
-            x[2] = KM_TEAM_ALL(workers);
-            const uint64_t t0 = issue(0, tab + n * 64, false);  // every slot is free
-            for (;;) {  // EXIT completes like any record
+            x[1] = km::make_hdr(KM_HANDLER_EXIT, 0, 0);
+            x[2] = KM_GROUP_ALL(workers);
+            const uint64_t t0 = submit(0, tab + n * 64, false);  // every slot is free
+            for (;;) {  // EXIT completes like any command
                 invalidate_l1_cache();
                 if (ack[0] == KM_ACK(seq)) {
                     row(0)[kFrExitAcked] = 1;
@@ -337,14 +338,14 @@ void kernel_main() {
         }
     }
 
-    row(0)[kFrIssued] = next;
+    row(0)[kFrSubmitted] = next;
     row(0)[kFrDone] = done;
     row(0)[kFrFirst] = static_cast<uint32_t>(t_first);
     row(0)[kFrLast] = static_cast<uint32_t>(t_last);
     const uint64_t span = done != 0 ? t_last - t_first : 0;  // 0: nothing acknowledged
     row(0)[kFrSpanLo] = static_cast<uint32_t>(span);
     row(0)[kFrSpanHi] = static_cast<uint32_t>(span >> 32);
-    row(0)[kFrIssueCycles] = static_cast<uint32_t>(issue_cycles);
+    row(0)[kFrSubmitCycles] = static_cast<uint32_t>(submit_cycles);
     row(0)[kFrMaxBusy] = max_busy;
     const InterleavedAddrGen<true> res_tab = {
         .bank_base_address = arg(kFdResults), .page_size = 64

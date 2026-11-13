@@ -10,7 +10,7 @@
   "dt": 12,
   "ht": 12,
   "gate_pass": true,
-  "team": 120,
+  "group": 120,
   "l1": 1320000,
   "rows": 5
  },
@@ -22,7 +22,7 @@
  ],
  "first_calls_us": 371.804,
  "profile_single": {
-  "slowest_member": 0,
+  "slowest_rank": 0,
   "mean_busy_over_slowest": 0.839,
   "us": {
    "read_x": 36.537,
@@ -58,7 +58,7 @@
   "calls": 14495,
   "seconds": 3.274,
   "us_per_call": 225.887,
-  "record_us_median": [
+  "command_us_median": [
    221.26,
    221.28,
    221.28,
@@ -66,7 +66,7 @@
   ]
  },
  "profile_host": {
-  "slowest_member": 12,
+  "slowest_rank": 12,
   "mean_busy_over_slowest": 0.881,
   "us": {
    "read_x": 17.318,

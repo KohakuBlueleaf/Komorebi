@@ -1,5 +1,5 @@
 // Attention compute, the body of Kohaku-TT's ktt_flash compute (Apache-2.0): per job,
-// up to R query tile rows against the job's key blocks taken from the lane buffer.
+// up to R query tile rows against the job's key blocks taken from the broadcast buffer.
 #include <cstdint>
 
 #include "api/compute/cb_api.h"
@@ -11,7 +11,7 @@
 #include "api/compute/reconfig_data_format.h"
 #include "api/compute/tile_move_copy.h"
 #include "attention.h"
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 #if defined(TRISC_MATH) || defined(TRISC_PACK)
 #include "llk_math_eltwise_unary_sfpu_init.h"
@@ -38,7 +38,7 @@ namespace {
     constexpr uint32_t cb_m = kCbCausal, cb_out = kCbOut;
 
     // This thread's profile counters for the record (attention.h, kPr*): wall-clock
-    // cycles at its own issue, added to the profile page at the record's end.
+    // cycles at its own submit, added to the profile page at the command's end.
     uint32_t pc[kProfWords];
 
     void flush(volatile tt_l1_ptr uint32_t* prof, uint32_t first, uint32_t n) {
@@ -62,7 +62,7 @@ namespace {
         return 2 * r + (c & 1);
     }
 
-    // Math thread: lane-wise row maxima of the section.
+    // Math thread: broadcast-wise row maxima of the section.
     void state_vector(uint32_t nt) {
 #ifdef TRISC_MATH
         if (nt == 3) {
@@ -283,7 +283,7 @@ namespace {
     }
 
     // Output row r = O_r / l_r (bf16), to the writer. Pack waits (bounded) for room;
-    // without it the row is not packed and the record ends in a give-up.
+    // without it the row is not packed and the command ends in a give-up.
     void finalize(const km::Compute& cp, uint32_t r) {
         const uint32_t t0 = km::wall();
         cb_wait_front(cb_otok, 1);
@@ -323,7 +323,7 @@ namespace {
         tile_regs_acquire_math_clear();
         math_vector_begin();
         MATH((math::clear_dst_reg_addr()));
-        MATH((flash::const_lanes()));
+        MATH((flash::const_broadcasts()));
         MATH((flash::const_tile(flash::Const::Ones, 0, 0)));
 #ifdef FLASH_CAUSAL
         MATH((flash::const_tile(flash::Const::Causal, 1, 0)));
@@ -349,8 +349,9 @@ namespace {
 #endif
     }
 
-    // One job: its rows against key tiles [0, nkj) in KB blocks from the lane, paired
-    // in steps, then finalized (`work` false: blocks popped only). False: gave up.
+    // One job: its rows against key tiles [0, nkj) in KB blocks from the broadcast,
+    // paired in steps, then finalized (`work` false: blocks popped only). False: gave
+    // up.
     bool job(
         const km::Compute& cp,
         uint32_t rows,
@@ -373,7 +374,7 @@ namespace {
             const uint32_t kb = nkj - k_start < KB ? nkj - k_start : KB;
             const uint32_t nsub = (kb + SC - 1) / SC;
             t0 = km::wall();
-            if (!km::lane_take(cp, cb_kv, P)) {
+            if (!km::broadcast_receive(cp, cb_kv, P)) {
                 return false;
             }
             UNPACK((pc[kPrUnWaitKv] += km::wall() - t0));
@@ -423,7 +424,7 @@ namespace {
                 score(pending);
                 output(pending);
             }
-            km::lane_done(cb_kv, P);
+            km::broadcast_done(cb_kv, P);
             ++blocks;
             c_base += nsub;
         }
@@ -448,8 +449,8 @@ void kernel_main() {
     // Row state and O are slots written in place, reserved once and never pushed.
     cb_reserve_back(cb_st, 2 * R);
     cb_reserve_back(cb_o, R * W);
-    cp.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegAttend) {
+    cp.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerAttend) {
             return;
         }
         const uint32_t t0 = km::wall();
@@ -463,7 +464,7 @@ void kernel_main() {
         invalidate_l1_cache();
         const uint32_t jobs = km::l1(table)[kTabJobs];
         const uint32_t passes = r.a6 == 0 ? 1 : r.a6;
-        const bool work = r.a5 != kModeCastOnly;
+        const bool work = r.a5 != kModeBroadcastOnly;
         uint32_t blocks = 0;
         bool ok = jobs <= kJobsMax;
         for (uint32_t pass = 0; ok && pass < passes; ++pass) {
@@ -483,7 +484,7 @@ void kernel_main() {
             }
         }
         if (ok) {
-            km::lane_end(cp, cb_kv, P, window, blocks);
+            km::broadcast_end(cp, cb_kv, P, window, blocks);
         }
         cb_pop_front(kCbJobs, 1);
         // Each thread adds its own words (the writer may have zeroed the page).

@@ -22,8 +22,8 @@ bool read_done(const km::Reader& rd, uint32_t seq) {
 }
 
 // FILL and ARITH of one record; the frame program's reader calls it as well.
-void fill_reader_record(const km::Reader& rd, const km_record_t& r) {
-    if (km::seg(r) != kSegFill && km::seg(r) != kSegArith) {
+void fill_reader_command(const km::Reader& rd, const km_command_t& r) {
+    if (km::handler(r) != kHandlerFill && km::handler(r) != kHandlerArith) {
         return;
     }
     const uint32_t t0 = km::wall();
@@ -67,8 +67,8 @@ void fill_reader_record(const km::Reader& rd, const km_record_t& r) {
 #ifndef RASTER_NO_ENTRY
 void kernel_main() {
     km::Reader rd;
-    rd.run([&](const km_record_t& r) {
-        fill_reader_record(rd, r);
+    rd.run([&](const km_command_t& r) {
+        fill_reader_command(rd, r);
     });
 }
 #endif

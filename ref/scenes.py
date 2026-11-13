@@ -107,13 +107,13 @@ def build_arrays(n_triangles, spheres, seed):
     cells = max(2, int(np.floor(np.sqrt(0.3 * n_triangles / 2) + 0.5)))
     centre, radius, base = sphere_params(spheres, half, seed)
     share = radius * radius / (radius * radius).sum()
-    segs = np.maximum(2, np.floor(np.sqrt(0.7 * n_triangles * share / 12) + 0.5))
+    handlers = np.maximum(2, np.floor(np.sqrt(0.7 * n_triangles * share / 12) + 0.5))
     gv, gt, tint = ground_grid(cells, 1.5 * half)
     p = tint[:, None]
     gc = np.hstack([0.30 + 0.15 * p, 0.38 + 0.12 * p, 0.25 + 0.05 * p])
     pos, col, idx, offset = [gv], [gc], [gt], len(gv)
     for s in range(spheres):
-        unit, tris = cube_sphere(int(segs[s]))
+        unit, tris = cube_sphere(int(handlers[s]))
         pos.append(centre[s] + radius[s] * unit)
         shade = 0.6 + 0.4 * (0.5 + 0.5 * unit[:, 1:2])
         col.append(base[s] * shade)

@@ -13,7 +13,7 @@ namespace {
     // row1 less ends before row0 (README.md); in place, tiles from the last.
     template <typename Arrived>
     bool slots_from_prefixes(
-        const km::Reader& rd, const km_record_t& r, Arrived arrived
+        const km::Reader& rd, const km_command_t& r, Arrived arrived
     ) {
         const uint32_t space = get_write_ptr(kCbHist);
         constexpr uint32_t kRead = kHprefixAddrAt - kBaseAt +
@@ -80,10 +80,11 @@ namespace {
 }  // namespace
 
 // The passes' reading for one record; the frame program's reader calls it as well.
-void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
-    const uint32_t seg = km::seg(r);
-    if ((seg != kSegLanes && seg != kSegCount && seg != kSegSetup) || r.a5 == 0 ||
-        rd.me() >= r.a5) {
+void setup_reader_command(const km::Reader& rd, const km_command_t& r) {
+    const uint32_t handler = km::handler(r);
+    if ((handler != kHandlerLanes && handler != kHandlerCount &&
+         handler != kHandlerSetup) ||
+        r.a5 == 0 || rd.me() >= r.a5) {
         return;
     }
     const uint32_t t0 = km::wall();
@@ -102,7 +103,7 @@ void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
                    rd.args().wait_limit
                ) == km::kGaveNone;
     };
-    if (seg == kSegSetup) {
+    if (handler == kHandlerSetup) {
         if (!reserve(kCbSlots) || !reserve(kCbItems)) {
             return;
         }
@@ -174,8 +175,8 @@ void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
 #ifndef RASTER_NO_ENTRY
 void kernel_main() {
     km::Reader rd;
-    rd.run([&](const km_record_t& r) {
-        setup_reader_record(rd, r);
+    rd.run([&](const km_command_t& r) {
+        setup_reader_command(rd, r);
     });
 }
 #endif

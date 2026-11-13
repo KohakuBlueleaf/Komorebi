@@ -38,7 +38,7 @@ SECTIONS
 
 
 class OverlayError(ValueError):
-    """An overlay that would not run as built: refused before it is loaded."""
+    """An overlay that would not run as built: rejected before it is loaded."""
 
 
 @dataclass
@@ -113,7 +113,7 @@ def tool(commands, name):
 
 
 def check_slot(slot, size, reserved):
-    """Refuses a slot [slot, slot + size) that overlaps a reserved (name, lo, hi)
+    """Rejects a slot [slot, slot + size) that overlaps a reserved (name, lo, hi)
     range, is not 64-byte aligned, or lies in a core's local data memory."""
     if slot % ALIGN or size % ALIGN or size <= 0:
         raise OverlayError(f"slot {slot:#x} + {size:#x}: not {ALIGN}-byte aligned")

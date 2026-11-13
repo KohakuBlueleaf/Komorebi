@@ -7,7 +7,7 @@
 #define RM_TILES 1024u
 #define RM_GROUPS 16u /* 2-row groups of a tile */
 #define RM_MAX_BANDS 16u
-#define RM_MAX_HEAVY 256u /* tiles cut into bands; more: rm_middle refuses */
+#define RM_MAX_HEAVY 256u /* tiles cut into bands; more: rm_middle rejects */
 /* All bands number at most about 2 * fill cores / RM_SPLIT (1,503 at 248 cores)
  * besides the whole tiles. */
 #define RM_MAX_ITEMS 2048u

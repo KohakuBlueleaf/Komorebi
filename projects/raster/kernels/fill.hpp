@@ -1,4 +1,4 @@
-// The pack thread's part of the rasterizer: it issues the vector-unit instructions and
+// The pack thread's part of the rasterizer: it submits the vector-unit instructions and
 // moves data between L1 and Dst through the Dst window. All raw Tensix instructions.
 #pragma once
 

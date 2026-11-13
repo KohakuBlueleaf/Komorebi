@@ -1,5 +1,5 @@
-// Generic reader of a dynamic program: the dynamic segment takes this core's queue;
-// every other record (the run's end record among them) is a NOP here.
+// Generic reader of a dynamic program: the dynamic handler takes this core's queue;
+// every other command (the run's end command among them) is a NOP here.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -8,10 +8,10 @@
 
 void kernel_main() {
     km::Reader rd;
-    const uint32_t dyn_seg = rd.arg(0);
+    const uint32_t dyn_handler = rd.arg(0);
     const bool filled = km::dyn_zero_fill(rd);  // before READY: nobody sends yet
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) == dyn_seg) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) == dyn_handler) {
             km::dyn_reader(rd, r, filled);
         }
     });

@@ -6,7 +6,7 @@
  "packets": 32768,
  "treelets": {
   "count": 1024,
-  "packets_per_record": 82,
+  "packets_per_command": 82,
   "state": 339968,
   "lists": 27856,
   "slots": 638976,
@@ -20,7 +20,7 @@
  "load_avg": 10.1591796875,
  "run": {
   "done": 25,
-  "records": 25,
+  "commands": 25,
   "kernel_error": 0,
   "cores_ended": {
    "reader_end": 120,
@@ -31,8 +31,8 @@
   "gave_up": []
  },
  "host": {
-  "records": 25,
-  "issue_s": 0.00014593021478503942,
+  "commands": 25,
+  "submit_s": 0.00014593021478503942,
   "wait_s": 0.1544508640654385,
   "native_s": 0.15397591015789658,
   "command_bytes": 1600,
@@ -187,7 +187,7 @@
    "total_per_packet": 2443.0
   }
  ],
- "record_ms": {
+ "command_ms": {
   "gen": 0.5498999999999999,
   "primary": 17.41552,
   "shade1": 2.2254,

@@ -1,5 +1,5 @@
-"""Bucket sort, first pass: COUNT on the Tensix team, PLAN on 1, 4 or 12 X280 harts,
-PLACE on the Tensix team, conducted by an X280 thread. The host loads, starts and
+"""Bucket sort, first pass: COUNT on the Tensix group, PLAN on 1, 4 or 12 X280 cores,
+PLACE on the Tensix group, conducted by an X280 thread. The host loads, starts and
 checks against numpy (reference.py). Prints one JSON line; see README.md."""
 
 import argparse
@@ -17,12 +17,12 @@ from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
 HERE = Path(__file__).resolve().parent
 T0 = time.monotonic()
 # bucket_sort.h: the words' order, the kernels' sizes
-WORDS = ("keys_n", "log2_b", "cores", "keys", "out", "harts", "repeats", "banks")
+WORDS = ("keys_n", "log2_b", "cores", "keys", "out", "x280_cores", "repeats", "banks")
 TIMES = ("count", "plan", "place", "whole")
 CHUNK, BUCKETS_MAX, KEYS_PER_PAGE, SLOTS = 16, 16384, 1024, 64
 WAY = 128 << 10  # an X280 cluster's L3: one cache way of 128 KiB
 CODES = {0: "ok", 1: "bad words or regions", 2: "a kmx_par call failed"}
-CODES.update({3: "a push failed", 4: "the ring failed", 5: "a record did not finish"})
+CODES.update({3: "a push failed", 4: "the ring failed", 5: "a command did not finish"})
 
 
 def log(msg):
@@ -39,9 +39,9 @@ def keys_tensor(session, values):
     return session.tensor(rows, "uint32")
 
 
-def program(keys, out, words, harts):
+def program(keys, out, words, x280_cores):
     """The Tensix side (kernels/, its two circular buffers) and the X280 thread
-    (thread/plan.c) on cluster 1, or on clusters 1 to 3 for twelve harts."""
+    (thread/plan.c) on cluster 1, or on clusters 1 to 3 for twelve cores."""
     prog = km.Program(
         "bucket_sort",
         kernels=HERE / "kernels",
@@ -61,12 +61,12 @@ def program(keys, out, words, harts):
     )
     table = words[2] * 4 << words[1]  # cores x B counters of 4 bytes
     # The counts region is whole cache ways plus half a way, so that the plan, after
-    # it, never sits a whole number of ways from the counts the harts read beside it.
+    # it, never sits a whole number of ways from the counts the cores read beside it.
     padded = -(-table // WAY) * WAY + WAY // 2
     # B totals, room for two rows: the thread starts them half a row off (thread/plan.c)
     regions = {"counts": padded, "plan": table, "totals": 8 << words[1], "peers": 256}
     prog.thread(
-        clusters=(1, 2, 3) if harts == 12 else (1,),
+        clusters=(1, 2, 3) if x280_cores == 12 else (1,),
         sources=[HERE / "thread" / "plan.c"],
         includes=[HERE],
         regions=regions,
@@ -88,9 +88,12 @@ def run_card(args, values, log2_b):
         log("keys and output tensors in DRAM")
         banks = sum(BANK_OF_CLUSTER[c] << 8 * (c - 1) for c in (1, 2, 3))
         words = [values.size, log2_b, cores, keys.address]
-        words += [out.address, args.harts, args.repeats, banks]
-        run = session.load(program(keys, out, words, args.harts), deadline=2.0)
-        log(f"loaded: the grid, the dispatch kernel, the thread ({args.harts} harts)")
+        words += [out.address, args.x280_cores, args.repeats, banks]
+        run = session.load(program(keys, out, words, args.x280_cores), deadline=2.0)
+        log(
+            "loaded: the grid, the dispatcher, the thread"
+            f" ({args.x280_cores} X280 cores)"
+        )
         try:
             results = run.thread_results(timeout=30.0)
         except km.ThreadFailed as e:
@@ -110,7 +113,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--keys", type=int, default=1 << 22, help="N, the keys to sort")
     p.add_argument("--buckets", type=int, default=4096, help="B, a power of 2, 16+")
-    p.add_argument("--harts", type=int, choices=(1, 4, 12), default=12)
+    p.add_argument("--x280-cores", type=int, choices=(1, 4, 12), default=12)
     p.add_argument("--cores", type=int, default=0, help="Tensix cores (0: all)")
     p.add_argument("--repeats", type=int, default=1, help="rounds; the best is kept")
     p.add_argument("--one-bucket", action="store_true", help="every key in bucket 0")
@@ -125,7 +128,7 @@ def main():
     results, cores, got = run_card(args, values, log2_b)
     lead = results[1]
     w = list(lead.words) + [0] * len(TIMES) * 2
-    out = {"keys": args.keys, "buckets": args.buckets, "harts": args.harts}
+    out = {"keys": args.keys, "buckets": args.buckets, "x280_cores": args.x280_cores}
     out["cores"], out["one_bucket"] = cores, args.one_bucket
     out["codes"] = {c: CODES.get(r.code, r.code) for c, r in results.items()}
     out["ms"] = {k: round(w[i] * 1e3 / TIMER_HZ, 3) for i, k in enumerate(TIMES)}

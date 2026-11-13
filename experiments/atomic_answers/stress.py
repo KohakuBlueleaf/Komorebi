@@ -27,7 +27,7 @@ def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--cores", type=int, default=119, help="asking cores 0 to cores - 1")
     p.add_argument("--k", type=int, default=20000, help="reservations per core")
-    p.add_argument("--bound", type=int, default=3000000, help="answer wait, cycles")
+    p.add_argument("--timeout", type=int, default=3000000, help="answer wait, cycles")
     p.add_argument("--seed", type=int, default=12345)
     p.add_argument(
         "--counters", type=int, default=0, help="tiles after the askers holding tails"
@@ -59,7 +59,7 @@ def main():
             x, y = c % gx, c // gx
             seed = int(rng.integers(1, 1 << 31))
             ctr = [n, a.counters, int(a.fixed_return)]
-            args.append((x, y, [blk.address, n, a.k, c, seed, a.bound, *ctr]))
+            args.append((x, y, [blk.address, n, a.k, c, seed, a.timeout, *ctr]))
             cores.append((x, y, x, y))
         launch = session.launch()
         launch.kernel(str(HERE / "writer.cpp"), cores, 1, [], [], [str(HERE)], args)

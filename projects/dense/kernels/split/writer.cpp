@@ -12,8 +12,8 @@ void kernel_main() {
     const auto plan = [&](uint32_t i) {
         return wr.arg(i);
     };
-    wr.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegSplit || r.a4 != kSplitFull) {
+    wr.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerSplit || r.a4 != kSplitFull) {
             return true;
         }
         const uint32_t mt = plan(kSpMt), nt = plan(kSpNt);

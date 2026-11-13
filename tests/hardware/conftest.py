@@ -19,7 +19,7 @@ def mixed_card_kinds(items):
 
 
 def pytest_collection_modifyitems(config, items):
-    """With KMR_CARD=1, refuses a run mixing the two kinds, before any card access."""
+    """With KMR_CARD=1, rejects a run mixing the two kinds, before any card access."""
     if os.environ.get("KMR_CARD") == "1" and mixed_card_kinds(items):
         raise pytest.UsageError(
             "card tests that open the card in this process and card tests that run a "

@@ -26,7 +26,7 @@ CLUSTER = 1
 T0 = time.monotonic()
 
 # LIM layout of the probe images (x280/probe.h).
-PR_STAMP, PR_GO, PR_RESULT = 0x100, 0x140, 0x200
+PR_MARKER, PR_GO, PR_RESULT = 0x100, 0x140, 0x200
 AICLK = Path("/sys/class/tenstorrent/tenstorrent!0/tt_aiclk")
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI word in each cluster's DRAM bank
 BANKS = 8
@@ -46,7 +46,7 @@ def block(*words):
     """An argument block: 64-bit words (word 0 is the run value), padded with zeros up
     to the result words, so the stamp and go lines of an earlier run are cleared."""
     raw = struct.pack(f"<{len(words) + 1}Q", 0, *words)
-    if len(raw) > PR_STAMP:
+    if len(raw) > PR_MARKER:
         raise ValueError("the argument block runs into the stamp line")
     return raw + bytes(PR_RESULT - len(raw))
 
@@ -56,19 +56,19 @@ def read_u64(port, offset, n):
 
 
 def stamps(port):
-    """Each hart's last progress stamp."""
-    return list(struct.unpack("<4I", port.work_read(CLUSTER, PR_STAMP, 16)))
+    """Each core's last progress marker."""
+    return list(struct.unpack("<4I", port.work_read(CLUSTER, PR_MARKER, 16)))
 
 
-def wait_stamp(port, where, timeout=10.0):
-    """Polls hart 0's progress stamp until it reaches `where`; raises past timeout."""
+def wait_marker(port, where, timeout=10.0):
+    """Polls core 0's progress marker until it reaches `where`; raises past timeout."""
     by = time.monotonic() + timeout
     while True:
         got = stamps(port)[0]
         if got >= where:
             return got
         if time.monotonic() > by:
-            raise TimeoutError(f"hart 0 at stamp {got}, waited for {where}")
+            raise TimeoutError(f"core 0 at stamp {got}, waited for {where}")
         time.sleep(0.005)
 
 
@@ -140,7 +140,7 @@ def report_done(tensor, row, timeout=5.0):
 
 
 def mapcollect_program(session):
-    """The map/collect example's program, for a resident grid to run NOP records."""
+    """The map/collect example's program, for a resident grid to run NOP commands."""
     x = session.tensor(np.zeros((32, 32), np.float32), "bfloat16", "tile")
     return km.Program(
         "mapcollect",
@@ -154,12 +154,12 @@ def mapcollect_program(session):
             "writer": x.accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
-        segments=MAPCOLLECT / "mapcollect.h",
+        handlers=MAPCOLLECT / "mapcollect.h",
     )
 
 
 def two(args):
-    """The dispatch kernel on cluster 0 under a resident grid, and the beat image
+    """The dispatcher on cluster 0 under a resident grid, and the beat image
     started, run and stopped on cluster 1 `cycles` times with NOP jobs between."""
     rng = np.random.default_rng(args.seed)
     image = str(BUILD / "beat.bin")
@@ -182,7 +182,7 @@ def two(args):
             start_s.append(time.perf_counter() - t)
             for _ in range(args.jobs):
                 count = int(rng.integers(1, cores + 1))
-                run.issue(0, (int(rng.integers(0, cores - count + 1)), count))
+                run.submit(0, (int(rng.integers(0, cores - count + 1)), count))
             run.drain(timeout=10.0)
             t = time.perf_counter()
             res = port.work_wait(CLUSTER, args.ticks / 50e6 + 2.0)
@@ -210,7 +210,7 @@ def two(args):
         states = run.state()
     out["cycles_ok"] = len(passes) - len(bad)
     out["bad"] = bad[:3]
-    out["kernel"] = {k: result[k] for k in ("error_name", "records", "events")}
+    out["kernel"] = {k: result[k] for k in ("error_name", "commands", "events")}
     out["cores_magic_ok"] = sum(c["magic_ok"] for c in states)
     out["gave_up_cores"] = sum(1 for c in states if c["reader"] or c["writer"])
     out["passes_min"] = int(np.min(passes)) if passes else 0
@@ -321,7 +321,7 @@ def dram(args):
             ]
             for i, (where, targs, dst) in enumerate(steps):
                 log(f"waiting for stamp {where}")
-                wait_stamp(port, where)
+                wait_marker(port, where)
                 log(f"tensix step {i + 1} launch")
                 tensix(session, targs, page)
                 at = (na if i == 0 else nb) * BANKS + bank
@@ -386,7 +386,7 @@ def aiclk():
 
 
 def check_ipi(tensors_and_bytes):
-    """Refuses buffers whose bank range covers the X280 runtime's IPI word."""
+    """Rejects buffers whose bank range covers the X280 runtime's IPI word."""
     for t, n in tensors_and_bytes:
         at = t.address
         if at <= IPI_ACK_DDR < at + n:
@@ -402,7 +402,7 @@ def prefix_reference(counts):
 
 
 def rates(args):
-    """Read, write and Flush64 rates over two region sizes, four harts, then the
+    """Read, write and Flush64 rates over two region sizes, four cores, then the
     prefix-sum job over cores x bins counters, checked against numpy."""
     rng = np.random.default_rng(args.seed)
     sizes = [args.small, args.large]
@@ -490,7 +490,7 @@ def main():
     sub = parser.add_subparsers(dest="probe", required=True)
     p = sub.add_parser("two", help="kernel and grid, an image on cluster 1")
     p.add_argument("--cycles", type=int, default=1)
-    p.add_argument("--ticks", type=int, default=0, help="mtime ticks each hart counts")
+    p.add_argument("--ticks", type=int, default=0, help="mtime ticks each core counts")
     p.add_argument("--jobs", type=int, default=1, help="NOP jobs per cycle")
     p.add_argument("--seed", type=int, default=1)
     p = sub.add_parser("dram", help="DRAM visibility between Tensix and cluster 1")

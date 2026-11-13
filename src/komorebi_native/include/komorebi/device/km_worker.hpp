@@ -1,20 +1,20 @@
-// The resident worker: the runtime owns each kernel's loop, a program supplies the body
-// (a switch on the segment). EXIT, or a wait that gave up, ends all three kernels.
+// The persistent kernel: the runtime owns each kernel's loop, a program supplies the
+// body (a switch on the handler). EXIT, or a wait that gave up, ends all three kernels.
 #pragma once
 
 #include <stdint.h>
 
 #include "km_core.hpp"
-#include "km_record.hpp"
+#include "km_command.hpp"
 
 #if !defined(COMPILE_FOR_TRISC)
-#include "km_team.hpp"
+#include "km_completion.hpp"
 #include "km_trace.hpp"
 
 namespace km {
 
     // Word of each DONE slot: the last sequence whose reader body returned in that
-    // slot (a lane's finish() included), read by the writer before it reports.
+    // slot (a broadcast's finish() included), read by the writer before it reports.
     constexpr uint32_t kDoneReader = 2;
 
     class Reader : public Core {
@@ -22,8 +22,8 @@ namespace km {
         Reader() : trace_(args()) {
         }
 
-        // Start-up, then body(record) for each record of this core until EXIT or a wait
-        // gives up. body may call wait_stop() and the bounded buffer waits below.
+        // Start-up, then body(command) for each command of this core until EXIT or a
+        // wait gives up. body may call wait_stop() and the bounded buffer waits below.
         template <typename Body>
         void run(Body body) {
             if (!start()) {
@@ -31,8 +31,8 @@ namespace km {
                 put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
                 return;
             }
-            while (const km_record_t* r = next()) {
-                if (seg(*r) == KM_SEG_EXIT) {
+            while (const km_command_t* r = next()) {
+                if (handler(*r) == KM_HANDLER_EXIT) {
                     put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
@@ -42,9 +42,9 @@ namespace km {
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
-        // A wait only the stop word ends (bounded by the idle limit). Returns true on
+        // A wait only the stop flag ends (bounded by the idle limit). Returns true on
         // stop.
-        bool wait_stop(const km_record_t& r) const {
+        bool wait_stop(const km_command_t& r) const {
             const uint32_t code = poll(
                 [] {
                     return false;
@@ -77,11 +77,11 @@ namespace km {
         }
 
     private:
-        // Clears ring, counters, state and stop words, loads the core table, checks in
+        // Clears ring, counters, state and stop flags, loads the core table, checks in
         // (leaders report READY, one core sends the hello). False: a leader gave up.
         bool start() {
             const Args& a = args();
-            for (uint32_t w = 0; w < KM_RING_SLOTS * kRecordWords; w++) {
+            for (uint32_t w = 0; w < KM_RING_SLOTS * kCommandWords; w++) {
                 ctl(KM_CTL_RING)[w] = 0;
             }
             for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
@@ -93,8 +93,8 @@ namespace km {
                 state()[w] = 0;
             }
             *ctl(KM_CTL_STOP) = 0;
-            for (uint32_t w = 0; w < KM_LANES * KM_LANE_BYTES / 4; w++) {
-                ctl(KM_CTL_LANE)[w] = 0;
+            for (uint32_t w = 0; w < KM_BROADCASTS * KM_BROADCAST_BYTES / 4; w++) {
+                ctl(KM_CTL_BROADCAST)[w] = 0;
             }
             for (uint32_t w = 0; w < KM_PORTS * KM_PORT_STRIDE / 4; w++) {
                 ctl(KM_CTL_PORT)[w] = 0;
@@ -120,7 +120,7 @@ namespace km {
                 volatile tt_l1_ptr uint32_t* boot = ctl(KM_CTL_BOOT);
                 const uint32_t code = poll(
                     [&] {
-                        for (uint32_t k = 0; k < a.members; k++) {
+                        for (uint32_t k = 0; k < a.peers; k++) {
                             if ((boot[k * 4] >> 16) != a.tag) {
                                 return false;
                             }
@@ -146,9 +146,9 @@ namespace km {
             return true;
         }
 
-        // When compute and writer took the last record: the next one into KM_CTL_JOB
-        // and a token to each. nullptr: a wait gave up (they get an EXIT record).
-        const km_record_t* next() {
+        // When compute and writer took the last command: the next one into KM_CTL_JOB
+        // and a token to each. nullptr: a wait gave up (they get an EXIT command).
+        const km_command_t* next() {
             const Args& a = args();
             const uint32_t code = poll(
                 [] {
@@ -168,10 +168,10 @@ namespace km {
             cb_reserve_back(kCbTokenCompute, 1);
             cb_reserve_back(kCbTokenWriter, 1);
 
-            const volatile km_record_t*
-                ring = reinterpret_cast<const volatile km_record_t*>(ctl(KM_CTL_RING));
-            volatile km_record_t* job = (
-                reinterpret_cast<volatile km_record_t*>(ctl(KM_CTL_JOB))
+            const volatile km_command_t*
+                ring = reinterpret_cast<const volatile km_command_t*>(ctl(KM_CTL_RING));
+            volatile km_command_t* job = (
+                reinterpret_cast<volatile km_command_t*>(ctl(KM_CTL_JOB))
             );
             volatile tt_l1_ptr uint32_t* last = state() + kStLast;
             const uint64_t t0 = wall64();
@@ -188,18 +188,18 @@ namespace km {
                 const Pass p = scan(ring, last, a.depth, a.me);
                 passes++;
                 if (p.pick >= 0 && !p.partial) {
-                    copy_record(&ring[p.pick], job);
+                    copy_command(&ring[p.pick], job);
                     if (job->seq == p.pick_seq && KM_LANDED(job)) {
                         last[p.pick] = p.pick_seq;
-                        const km_record_t& got = *const_cast<const km_record_t*>(job);
-                        // A record names its own slot; one found elsewhere is not run.
+                        const km_command_t& got = *const_cast<const km_command_t*>(job);
+                        // A command names its own slot; one found elsewhere is not run.
                         if (slot(got) != static_cast<uint32_t>(p.pick)) {
                             add_sat(state() + kStSlotWrong, 1);
                             continue;
                         }
-                        // EXIT completes as a team of every worker, whatever it names.
-                        if (seg(got) == KM_SEG_EXIT) {
-                            job->team = make_team(0, a.workers);
+                        // EXIT completes as a group of every worker, whatever it names.
+                        if (handler(got) == KM_HANDLER_EXIT) {
+                            job->group = make_group(0, a.workers);
                         }
                         seq = p.pick_seq;
                         break;
@@ -224,16 +224,16 @@ namespace km {
             trace_.put(seq, kTraceExtra, passes);
             add_sat(state() + kStRuns, 1);
             hand_off(seq);
-            return const_cast<const km_record_t*>(job);
+            return const_cast<const km_command_t*>(job);
         }
 
-        // An EXIT record with sequence 0 in KM_CTL_JOB, handed to compute and writer.
+        // An EXIT command with sequence 0 in KM_CTL_JOB, handed to compute and writer.
         void hand_off_exit() {
-            volatile km_record_t* job = (
-                reinterpret_cast<volatile km_record_t*>(ctl(KM_CTL_JOB))
+            volatile km_command_t* job = (
+                reinterpret_cast<volatile km_command_t*>(ctl(KM_CTL_JOB))
             );
             job->seq = job->land1 = job->land2 = job->land3 = 0;
-            job->hdr = make_hdr(KM_SEG_EXIT, 0, 0);
+            job->hdr = make_hdr(KM_HANDLER_EXIT, 0, 0);
             hand_off(0);
         }
 
@@ -244,7 +244,7 @@ namespace km {
             cb_push_back(kCbTokenWriter, 1);
         }
 
-        // After a give-up: compute and writer get an EXIT record if its token pages
+        // After a give-up: compute and writer get an EXIT command if its token pages
         // free up within the grace of a stop.
         void leave_others() {
             const uint32_t code = poll(
@@ -272,8 +272,8 @@ namespace km {
         Writer() : trace_(args()) {
         }
 
-        // Per record: body(record) says whether to report, writes are flushed, compute
-        // and reader end their bodies, complete() runs. EXIT completes, then it leaves.
+        // Per command: body(command) says whether to report, writes are flushed,
+        // compute and reader end their bodies, complete() runs; EXIT completes, leaves.
         template <typename Body>
         void run(Body body) {
             const Args& a = args();
@@ -292,10 +292,10 @@ namespace km {
                     break;
                 }
                 invalidate_l1_cache();
-                km_record_t r;
-                copy_record(ctl(KM_CTL_JOB), &r);
+                km_command_t r;
+                copy_command(ctl(KM_CTL_JOB), &r);
                 cb_pop_front(kCbTokenWriter, 1);
-                if (seg(r) == KM_SEG_EXIT) {
+                if (handler(r) == KM_HANDLER_EXIT) {
                     if (r.seq == 0) {  // the reader gave up
                         end = kEndAbort;
                     } else if (complete(*this, r)) {
@@ -317,7 +317,7 @@ namespace km {
             put_byte(state(), kStEnds, kEndWriter, end);
         }
 
-        // The record's result word, sent with the leader's ack when the record has
+        // The command's result word, sent with the leader's ack when the command has
         // KM_F_RESULT (0 if never called). Elsewhere it is not sent.
         void result(uint32_t value) {
             result_ = value;
@@ -346,8 +346,8 @@ namespace km {
 
     private:
         // Bounded wait until compute (its body returned on all three threads) and the
-        // reader marked record r's sequence in its slot. False: gave up (recorded).
-        bool bodies_done(const km_record_t& r) const {
+        // reader marked command r's sequence in its slot. False: gave up (recorded).
+        bool bodies_done(const km_command_t& r) const {
             const uint32_t j = slot(r);
             volatile tt_l1_ptr uint32_t* mark = ctl(KM_CTL_DONE + j * 16);
             const uint32_t code = poll(
@@ -424,7 +424,7 @@ namespace km {
                 if (ok) {
                     cb_wait_front(cb, pages);
                 } else {
-                    record_gave_up(ctl_, kStCompute, code, kWhereCInput, 0, seq_);
+                    command_gave_up(ctl_, kStCompute, code, kWhereCInput, 0, seq_);
                 }
                 ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, ok);
                 ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, ok);
@@ -470,7 +470,7 @@ namespace km {
                 if (ok) {
                     cb_reserve_back(cb, pages);
                 } else {
-                    record_gave_up(ctl_, kStCompute, code, kWhereCOutput, 0, seq_);
+                    command_gave_up(ctl_, kStCompute, code, kWhereCOutput, 0, seq_);
                 }
             }));
             return ok;
@@ -488,8 +488,8 @@ namespace km {
                 }
                 seq_ = seq;
                 invalidate_l1_cache();
-                km_record_t r;
-                copy_record(l1(ctl_ + KM_CTL_JOB), &r);
+                km_command_t r;
+                copy_command(l1(ctl_ + KM_CTL_JOB), &r);
                 wrong += (r.seq != seq || !KM_LANDED(&r)) && wrong < 255;
                 MATH((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, seq)));
                 PACK((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, seq)));
@@ -500,7 +500,7 @@ namespace km {
                 UNPACK((put_byte(st, kStWrong, 0, wrong)));
                 MATH((put_byte(st, kStWrong, 1, wrong)));
                 PACK((put_byte(st, kStWrong, 2, wrong)));
-                if (seg(r) == KM_SEG_EXIT) {
+                if (handler(r) == KM_HANDLER_EXIT) {
                     end = r.seq == 0 ? kEndAbort : kEndExit;
                     break;
                 }
@@ -527,7 +527,7 @@ namespace km {
             return l1(ctl_ + KM_CTL_STOP);
         }
 
-        // The next token (bounded like the reader's wait for a record): unpack polls
+        // The next token (bounded like the reader's wait for a command): unpack polls
         // and sends ok, then the sequence, to math and pack. False: gave up (recorded).
         bool take(uint32_t& seq) const {
             uint32_t ok = 0;
@@ -557,7 +557,7 @@ namespace km {
                     cb_wait_front(kCbTokenCompute, 1);
                     seq = l1(ckernel::get_tile_l1_byte_address(kCbTokenCompute, 0))[0];
                 } else {
-                    record_gave_up(ctl_, kStCompute, code, kWhereCToken, 0, 0);
+                    command_gave_up(ctl_, kStCompute, code, kWhereCToken, 0, 0);
                 }
                 ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, ok);
                 ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, ok);
@@ -581,7 +581,7 @@ namespace km {
         uint32_t me_;
         uint32_t wait_;
         uint32_t idle_;
-        uint32_t seq_ = 0;  // the record being run, for give-up words
+        uint32_t seq_ = 0;  // the command being run, for give-up words
     };
 
 }  // namespace km

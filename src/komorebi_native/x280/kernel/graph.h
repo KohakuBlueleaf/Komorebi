@@ -1,5 +1,5 @@
-/* Core 1's graphs beside the streams (included by engine.h): the plain-C executor of
- * x280/engines/ runs them; this part feeds it answers and writes records and events. */
+/* Core 1's graphs beside the streams (included by engine.h): x280/engines/' plain-C
+ * executor runs them; this part feeds it answers and writes commands and events. */
 #pragma once
 
 #include "graph_port.h"
@@ -10,19 +10,20 @@
 #define KMD_GR_RUNNING 1u
 #define KMD_GR_ENDING 2u /* its end or error event waits for room in the ring */
 
-/* In kmd_sent_t.stream: the record is graph run (stream & 1)'s; pc is its node. */
+/* In kmd_sent_t.stream: the command is graph run (stream & 1)'s; pc is its node. */
 #define KMD_SENT_GRAPH 0x80u
 
 typedef struct {
     uint32_t state; /* KMD_GR_* */
     uint32_t req, order;
     uint32_t kept;        /* a3 of its end: the graph is kept from now on */
-    uint32_t wait;        /* a record was refused: no step before the next answer */
+    uint32_t wait;        /* a command was rejected: no step before the next answer */
     uint32_t round_owed;  /* a KM_EV_GRAPH event waits for room */
     uint32_t post_status; /* KMD_GR_ENDING: the event to post */
     uint32_t post_ticks;
-    uint32_t jobs; /* queued records it sent: its end drops those left (KMD_SEG_DROP) */
-    uint64_t t_record; /* deadline of each record it issues, in ticks */
+    uint32_t
+        jobs; /* queued commands it sent: its end drops those left (KMD_HANDLER_DROP) */
+    uint64_t t_command; /* deadline of each command it submits, in ticks */
     kmg_state_t g;
 } kmd_grun_t;
 
@@ -64,7 +65,7 @@ static int graph_post_event(
         return 0;
     }
     uint64_t* l = e->line;
-    l[0] = (uint64_t)KMD_SEG_POST << 32;
+    l[0] = (uint64_t)KMD_HANDLER_POST << 32;
     l[1] = (uint64_t)req << 32;
     l[2] = (uint64_t)status << 32;
     l[3] = ticks | (uint64_t)a3 << 32;
@@ -127,25 +128,25 @@ static void graph_start(kmd_engine_t* e, uint32_t i) {
         return;
     }
     const uint32_t us = r->g.hdr->deadline_us;
-    r->t_record = us ? (uint64_t)us * 50u : e->kernel->ring[KMD_SRC_HOST].t_record;
+    r->t_command = us ? (uint64_t)us * 50u : e->kernel->ring[KMD_SRC_HOST].t_command;
     r->kept = keep != 0;
     r->state = KMD_GR_RUNNING;
 }
 
-/* The issue function's context: the engine and the run. */
+/* The submit function's context: the engine and the run. */
 typedef struct {
     kmd_engine_t* e;
     kmd_grun_t* r;
     uint32_t index;
 } kmd_gctx_t;
 
-/* kmg_issue_fn: the record into the ring (after a KM_SEG_DEADLINE if the deadline
+/* kmg_submit_fn: the command into the ring (after a KM_HANDLER_DEADLINE if the deadline
  * changed), or KMG_BUSY when the ring or the sent table has no room. */
-static uint32_t graph_issue(void* ctx, uint32_t node, const km_record_t* rec) {
+static uint32_t graph_submit(void* ctx, uint32_t node, const km_command_t* rec) {
     kmd_gctx_t* c = (kmd_gctx_t*)ctx;
     kmd_engine_t* e = c->e;
     kmd_grun_t* r = c->r;
-    const uint32_t lines = r->t_record != e->deadline ? 2u : 1u;
+    const uint32_t lines = r->t_command != e->deadline ? 2u : 1u;
     const uint32_t cmd = e->next + lines - 1u, job = (rec->hdr >> 8) & KM_F_QUEUE;
     if (!eng_room(e, lines) || e->sent[cmd % KMD_SENT].cmd != 0) {
         return KMG_BUSY;
@@ -154,14 +155,14 @@ static uint32_t graph_issue(void* ctx, uint32_t node, const km_record_t* rec) {
         return KMG_BUSY; /* jobs in the queue and on their way to it */
     }
     if (lines == 2u) {
-        const uint64_t us = r->t_record / 50u;
-        eng_command(e, KM_SEG_DEADLINE, us == 0 ? 1u : (uint32_t)us, 0, 0);
-        e->deadline = r->t_record;
+        const uint64_t us = r->t_command / 50u;
+        eng_command(e, KM_HANDLER_DEADLINE, us == 0 ? 1u : (uint32_t)us, 0, 0);
+        e->deadline = r->t_command;
     }
     /* Through a volatile pointer: a plain copy loop may become a memcpy call. */
     const volatile uint32_t* from = (const volatile uint32_t*)rec;
     uint32_t* to = (uint32_t*)e->line;
-    for (uint32_t j = 0; j < sizeof(km_record_t) / 4u; j++) {
+    for (uint32_t j = 0; j < sizeof(km_command_t) / 4u; j++) {
         to[j] = from[j];
     }
     if (job) {
@@ -178,12 +179,12 @@ static uint32_t graph_issue(void* ctx, uint32_t node, const km_record_t* rec) {
     x->pc = (uint16_t)node;
     x->stream = (uint8_t)(KMD_SENT_GRAPH | c->index);
     x->result = ((rec->hdr >> 8) & KM_F_RESULT) != 0;
-    e->records++;
-    return KMG_ISSUED;
+    e->commands++;
+    return KMG_SUBMITTED;
 }
 
 /* An event from the kernel, if it is the graphs': KMD_EV_GRUN, KMD_EV_CANCEL of a
- * graph's req, or the answer to a graph's record. Returns 1 when it was. */
+ * graph's req, or the answer to a graph's command. Returns 1 when it was. */
 static int graph_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t ticks) {
     const uint32_t kind = status & 0xFFu, why = status >> 8;
     kmd_graphs_t* gs = graphs(e);
@@ -231,14 +232,14 @@ static int graph_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t 
             e->orphan_ticks[e->orphans] = ticks;
             e->orphans++;
         }
-    } else if (kind == KM_EV_REFUSED && why == KMD_REFUSE_BUSY) {
+    } else if (kind == KM_EV_REJECTED && why == KMD_REJECT_BUSY) {
         if (live) {
             kmg_retry(&r->g, x->pc);
             r->wait = 1;
         }
     } else if (live) {
         kmg_stop(
-            &r->g, why == KMD_REFUSE_TEAM ? KM_SERR_TEAM : KM_SERR_TEMPLATE, x->pc
+            &r->g, why == KMD_REJECT_GROUP ? KM_SERR_GROUP : KM_SERR_TEMPLATE, x->pc
         );
     }
     return 1;
@@ -262,7 +263,7 @@ static void graph_owed(kmd_engine_t* e) {
             continue;
         }
         if (r->jobs && eng_room(e, 1)) {
-            eng_command(e, KMD_SEG_DROP, r->order & 0xFFFFu, 0, 0);
+            eng_command(e, KMD_HANDLER_DROP, r->order & 0xFFFFu, 0, 0);
             r->jobs = 0;
         }
         if (!r->jobs &&
@@ -287,7 +288,7 @@ static int graph_owes(kmd_engine_t* e) {
 }
 
 /* The graphs' share of a pass: what they owe, then one bounded kmg_step per running
- * graph (none while its round event or a refused record waits). */
+ * graph (none while its round event or a rejected command waits). */
 static void graph_step(kmd_engine_t* e) {
     kmd_graphs_t* gs = graphs(e);
     graph_owed(e);
@@ -298,12 +299,12 @@ static void graph_step(kmd_engine_t* e) {
             continue;
         }
         kmd_gctx_t c = {e, r, j};
-        const uint32_t got = kmg_step(&r->g, graph_issue, &c);
+        const uint32_t got = kmg_step(&r->g, graph_submit, &c);
         if (got == KMG_ROUND) {
             r->round_owed = 1;
         } else if (got == KMG_END) {
             const uint32_t r0 = r->g.regs[0] & 0xFFFFFFu;
-            /* Every record completed: no job is left to drop. */
+            /* Every command completed: no job is left to drop. */
             r->jobs = 0;
             graph_end(r, KM_EV_GRAPH_END | r0 << 8, r->g.regs[1]);
         } else if (got == KMG_ERROR) {

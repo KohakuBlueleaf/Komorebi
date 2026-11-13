@@ -56,22 +56,22 @@ class FakeDispatch(FakePort):
         self._call("close")
         self.is_open = False
         if not self.cleaned:
-            self.close_failed = "cluster 0: hart 0 phase=0x2 stage=4"
+            self.close_failed = "cluster 0: core 0 phase=0x2 stage=4"
         return self.cleaned
 
     def aborted(self):
-        harts = [0] * 16
-        harts[K["KMD_H_ABANDONED"]] = 2
-        return {"words": [0] * K["KMD_R_WORDS"], "harts": harts}
+        x280_cores = [0] * 16
+        x280_cores[K["KMD_H_ABANDONED"]] = 2
+        return {"words": [0] * K["KMD_R_WORDS"], "x280_cores": x280_cores}
 
     def probe(self, gap_s):
         words = [0] * K["KMD_R_WORDS"]
         words[K["KMD_R_STATE"]] = K["KMD_STATE_READY"]
         words[K["KMD_R_WHERE"]] = K["KMD_WHERE_LOOP"]
         before, after = self.stamps
-        harts = "hart 0 phase=0x2 trap(mcause=0x7)"
-        out = {"running": True, "failed": "", "harts": harts, "words": words}
-        return out | {"stamp_before": before, "stamp_after": after}
+        x280_cores = "core 0 phase=0x2 trap(mcause=0x7)"
+        out = {"running": True, "failed": "", "x280_cores": x280_cores, "words": words}
+        return out | {"marker_before": before, "marker_after": after}
 
 
 class SessionBackend(FakeBackend):

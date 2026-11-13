@@ -612,7 +612,7 @@ def walk(session, args):
 
 # ---- probe 7 ------------------------------------------------------------------------
 
-NOC_WHERE = ["", "started", "waited for the peer", "command buffer ready", "issuing",
+NOC_WHERE = ["", "started", "waited for the peer", "command buffer ready", "submitting",
              "responded or gave up", "registers restored"]  # fmt: skip
 
 

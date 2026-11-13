@@ -10,8 +10,8 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "feeder"))
 
+import commands as rec  # noqa: E402
 import fed  # noqa: E402
-import records as rec  # noqa: E402
 
 import komorebi as km  # noqa: E402
 

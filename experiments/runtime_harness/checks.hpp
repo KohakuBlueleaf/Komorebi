@@ -1,4 +1,4 @@
-// Shared by the scenario programs: segment numbers, the checks every scenario ends
+// Shared by the scenario programs: handler numbers, the checks every scenario ends
 // with, job and grid helpers, and the runner that prints one JSON line per scenario.
 #pragma once
 
@@ -21,11 +21,11 @@ namespace scen {
 
     using namespace kmsim;
 
-    constexpr uint32_t kSegMap = 1;  // the example's segments
-    constexpr uint32_t kSegStall = 2;
-    constexpr uint32_t kSegBadItem = 5;  // a0: the member; a1 = 0: writer, 1: reader
-    constexpr uint32_t kSegResult = 6;   // each member's result: a0 + its index
-    constexpr uint32_t kSegNop = 9;      // unknown to the example: every body returns
+    constexpr uint32_t kHandlerMap = 1;  // the example's handlers
+    constexpr uint32_t kHandlerStall = 2;
+    constexpr uint32_t kHandlerBadItem = 5;                // a0: the member; a1 = 0: writer, 1: reader
+    constexpr uint32_t kHandlerResult = 6;  // each member's result: a0 + its index
+    constexpr uint32_t kHandlerNop = 9;  // unknown to the example: every body returns
     constexpr uint32_t kCbIn = 0;
 
     struct Check {

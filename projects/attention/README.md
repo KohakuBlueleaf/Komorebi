@@ -3,18 +3,17 @@
 `out = softmax(q k^T scale) v` (forward), q `[B, H, S, D]`, k and v `[B, Hk, S, D]`
 with H a multiple of Hk (grouped heads), scale 1 / sqrt(D), optionally causal (query
 row i sees keys up to i), bf16 operands, fp32 accumulation, bf16 output, HiFi2, on the
-resident workers of one Blackhole p150a. Records reach the grid through the dispatch
-kernel on X280 cluster 0 (`komorebi.Session`, `Run.issue`). The compute body is
+persistent kernels of one Blackhole p150a. Commands reach the grid through the dispatcher on X280 cluster 0 (`komorebi.Session`, `Run.submit`). The compute body is
 Kohaku-TT's `ktt_flash` kernel's.
 
 ## The thread program
 
 ```
-thread attend(lane, i):                        # one thread per core: lane, place in lane
-    for job in jobs(lane):                     # time: (batch, head, row range)
-        rows = share(job.rows, i)              # space: query rows over the lane's cores
+thread attend(broadcast, i):                        # one thread per core: broadcast, place in broadcast
+    for job in jobs(broadcast):                     # time: (batch, head, row range)
+        rows = partition(job.rows, i)              # space: query rows over the broadcast's cores
         for kb in key_blocks(job.head, KB):    # time: keys, KB tiles per block
-            if i == 0:  kv = read_dram(kb);  emit kv -> threads(lane, *)    # breakpoint
+            if i == 0:  kv = read_dram(kb);  emit kv -> threads(broadcast, *)    # breakpoint
             else:       kv = wait(1)                                        # breakpoint
             for sub in chunks(kv, 3):          # time: 3 key tiles per step
                 for r in rows:                 # time: my rows, paired
@@ -22,51 +21,51 @@ thread attend(lane, i):                        # one thread per core: lane, plac
         write out[rows]
 ```
 
-A lane is L cores down one grid column; the core on top (i == 0) reads each K / V
+A broadcast is L cores down one grid column; the core on top (i == 0) reads each K / V
 block from DRAM once and casts it to the others. `merge` is the running softmax: the
 row's reference, P = exp(scale s - reference), O += P V and the row sum, both scaled
 when the reference moves. Nothing is merged across cores: each core finishes its own
 output rows. Rows are shared contiguously, or for a causal call L rows apart, so that
-the triangle's work spreads over the lane.
+the triangle's work spreads over the broadcast.
 
 ## How it maps onto the runtime
 
 | Thread program | Kernel | What it does |
 |---|---|---|
-| `jobs(lane)` | all three | the member's job table: one DRAM page per core named by the record (a4), read by the reader (handed to compute) and by the writer |
-| `emit kv -> threads(lane, *)`, `wait(1)` | `kernels/reader.cpp` (NoC0) | `km::Lane`: the sender `reserve`, reads K and V of block k into the slot, `cast`; a receiver `arrive`; `finish` |
+| `jobs(broadcast)` | all three | the member's job table: one DRAM page per core named by the command (a4), read by the reader (handed to compute) and by the writer |
+| `emit kv -> threads(broadcast, *)`, `wait(1)` | `kernels/reader.cpp` (NoC0) | `km::Broadcast`: the sender `reserve`, reads K and V of block k into the slot, `cast`; a receiver `arrive`; `finish` |
 | `Q[r]` | `kernels/reader.cpp` | the job's query rows into the Q buffer |
-| `score`, `merge` | `kernels/compute.cpp`, `kernels/sfpu.hpp` | Kohaku-TT's `ktt_flash` compute body: S = Q K^T into Dst with the row state, the row reference and the exponential on the vector unit, P V and the row sum in column groups accumulated in L1 (fp32), steps in pairs of rows; `km::lane_take` / `lane_done` / `lane_end` around each block |
+| `score`, `merge` | `kernels/compute.cpp`, `kernels/sfpu.hpp` | Kohaku-TT's `ktt_flash` compute body: S = Q K^T into Dst with the row state, the row reference and the exponential on the vector unit, P V and the row sum in column groups accumulated in L1 (fp32), steps in pairs of rows; `km::broadcast_receive` / `broadcast_done` / `broadcast_end` around each block |
 | `write out[rows]` | `kernels/writer.cpp` (NoC1) | each finished row's DV tiles to O |
 
-One call is one `ATTEND` record on the team of every core, with `KM_F_EXCL` (a record
-with lanes is never in flight beside an overlapping team). A K / V block is one lane
+One call is one `ATTEND` command on the group of every core, with `KM_F_EXCL` (a command
+with broadcasts is never in flight beside an overlapping group). A K / V block is one broadcast
 block: K's tiles head-dim-major `[DT][KB]`, then V's key-major `[KB][DV]`, two blocks
-in flight per lane. The lanes and their senders come from `komorebi.layout.lane_args`
+in flight per broadcast. The broadcasts and their senders come from `komorebi.layout.broadcast_args`
 (one band of L rows of the grid after the other).
 
-| Segment | Arguments |
+| Handler | Arguments |
 |---|---|
 | `ATTEND` | a0 Q, a1 K, a2 V, a3 O, a4 the job tables, a5 mode (0: the full call, 1: cast only, 2: compute only), a6 passes over the jobs (0: one), a7 the first job, a8 jobs from it (0: to the end) |
 | `PROF` | a0 the profile tensor, a1 nonzero: zero the pages after storing them |
 
 The cut-down modes are for the benchmark: cast only reads Q and casts every K / V block
 but compute only takes and pops the blocks, and no row is written; compute only works on
-Q, K and V as they are in L1 (no reads, no lane, no writes). Passes repeat the record's
-jobs, so that a loop of records lasts seconds.
+Q, K and V as they are in L1 (no reads, no broadcast, no writes). Passes repeat the command's
+jobs, so that a loop of commands lasts seconds.
 
 `plan.py` is the plan as pure functions, with Kohaku-TT's rules: R query tile rows per
-job and KB key tiles per block fitted to the L1 budget (from 13 and 12 down), the lane
-length L with the fewest score tiles on the busiest core (then the longest lane), lanes
+job and KB key tiles per block fitted to the L1 budget (from 13 and 12 down), the broadcast
+length L with the fewest score tiles on the busiest core (then the longest broadcast), broadcasts
 taking even ranges of the (batch, head, row) order (causal: chunks largest work first
-onto the least loaded lane), at most 46 jobs per core. `card.py` loads the program and
-issues the records; `run.py` runs one shape and checks it. The references in
+onto the least loaded broadcast), at most 46 jobs per core. `card.py` loads the program and
+submits the commands; `run.py` runs one shape and checks it. The references in
 `reference/` are the float64 attention (`sdpa.py`) and Kohaku-TT's own kernel on the
 same inputs (`ktt_bench.py`, by hand, not a test).
 
 `kernels/sfpu.hpp` is an unchanged copy of `ktt_flash`'s `sfpu.hpp` (Kohaku-TT, Apache
 2.0, at ac81ff2); `kernels/compute.cpp` is its `compute.cpp` with K and V taken from the
-lane buffer, the jobs from the table, its waits on the other kernels bounded (see
+broadcast buffer, the jobs from the table, its waits on the other kernels bounded (see
 Limits), and the parts this program does not use left out (masks, packed variable
 lengths, statistics for the backward, ragged lengths).
 
@@ -76,9 +75,9 @@ lengths, statistics for the backward, ragged lengths).
 python projects/attention/run.py --shape t1
 python projects/attention/run.py --shape long64 --calls 4
 python projects/attention/bench.py --shape long64 --cuts            # time, power, profile
-python projects/attention/bench.py --shape wide128 --noc 1 --lane 5  # the lane's NoC, length
-python projects/attention/graph.py --shape short64 --rounds 40       # records and graphs
-python projects/attention/bench.py --shape causal64 --lane 5 --chunks 6 --cuts
+python projects/attention/bench.py --shape wide128 --noc 1 --broadcast 5  # the broadcast's NoC, length
+python projects/attention/graph.py --shape short64 --rounds 40       # commands and graphs
+python projects/attention/bench.py --shape causal64 --broadcast 5 --chunks 6 --cuts
 KMR_CARD=1 python -m pytest tests/hardware/test_attention_host.py
 python projects/attention/reference/ktt_bench.py --shape long64   # Kohaku-TT's env
 ```
@@ -135,9 +134,9 @@ each row's output committed in `results/` (`ours-<preset>[-approx].json` from `b
 --json`, `ktt-<preset>[-approx].json` from `reference/ktt_bench.py --json`),
 ours (`bench.py --shape <preset> [--approx] --cuts`) and Kohaku-TT's `ktt_flash` at
 ac81ff2 (`reference/ktt_bench.py`) one after the other in the same session, 15 s apart;
-host load (1 min) 3 to 9. Per call: ours, single-pass records back to back (the time of
-10 to 60 records less that of 5, divided); ours per pass, the power loop of multi-pass
-records (no record boundary); Kohaku-TT, its calls back to back for about 4 s. Clock
+host load (1 min) 3 to 9. Per call: ours, single-pass commands back to back (the time of
+10 to 60 commands less that of 5, divided); ours per pass, the power loop of multi-pass
+commands (no command boundary); Kohaku-TT, its calls back to back for about 4 s. Clock
 (AICLK mean), power (whole card, mean of the loop) and temperature are the power
 loops', ours / Kohaku-TT's. RMS: relative RMS error of the sampled rows, the same for
 both kernels on every row.
@@ -158,8 +157,8 @@ own clock control under load), both kernels alike. With the approximate exponent
 check's relative RMS bound is 3e-2 (Kohaku-TT documents about 1.9e-2).
 
 **What bounds each row.** Each core keeps a profile page (`PROF`): wall-clock cycles of
-its five threads' parts, summed over the records, read after 15 to 65 single-pass
-records. The shares below are of the slowest core's longest thread; threads run side by
+its five threads' parts, summed over the commands, read after 15 to 65 single-pass
+commands. The shares below are of the slowest core's longest thread; threads run side by
 side, so they add up to more than 1. Cut-down runs: cast only and compute only, us per
 pass.
 
@@ -167,27 +166,27 @@ pass.
 |---|---|---|---|
 | 1x32x4096x64 | score 0.48, P V 0.45 (math); exp 0.55, pack P 0.26 (pack) | 310 / 2639 | compute, both threads |
 | 1x24x4096x128 | score 0.45, P V 0.45; exp 0.52, pack P 0.22 | 323 / 2453 | compute |
-| 8x16x256x64 | score 0.29, P V 0.28, exp 0.32; Q reads 0.15, compute waiting for Q 0.16 and for K / V 0.16 | 59 / 67 | the record: 10.8 us of each record's 75.8 is outside the passes (table, lane start and end, the first Q and K / V reads), and back-to-back records add 15.9 us each |
-| 1x8x1024x64 causal | score 0.35, P V 0.39, exp 0.43; waiting for the lane 0.58 | 34 / 62 | the record as above (57.1 us a record, 16.5 us between records), and balance: the mean core is busy 0.56 of the slowest |
+| 8x16x256x64 | score 0.29, P V 0.28, exp 0.32; Q reads 0.15, compute waiting for Q 0.16 and for K / V 0.16 | 59 / 67 | the command: 10.8 us of each command's 75.8 is outside the passes (table, broadcast start and end, the first Q and K / V reads), and back-to-back commands add 15.9 us each |
+| 1x8x1024x64 causal | score 0.35, P V 0.39, exp 0.43; waiting for the broadcast 0.58 | 34 / 62 | the command as above (57.1 us a command, 16.5 us between commands), and balance: the mean core is busy 0.56 of the slowest |
 | 2x8x1024x128, Hk 2 | compute waiting for K / V 0.67; score 0.14, P V 0.14 | 83 / 133 | compute (compute only = per pass) |
-| 8x16x256x64, approx | score 0.24, P V 0.23, exp 0.24; Q reads 0.19, compute waiting for Q 0.20 and for K / V 0.20 | 63 / 58 | the record: 10.5 us of each record's 65.2 is outside the passes, and back-to-back records add 16.5 us each |
-| 1x8x1024x64 causal, approx | score 0.33, P V 0.33, exp 0.34; waiting for the lane 0.60 | 36 / 49 | the record (45.8 us a record, 7.0 outside the passes, 14.9 us between records), and balance: the mean core is busy 0.57 of the slowest |
+| 8x16x256x64, approx | score 0.24, P V 0.23, exp 0.24; Q reads 0.19, compute waiting for Q 0.20 and for K / V 0.20 | 63 / 58 | the command: 10.5 us of each command's 65.2 is outside the passes, and back-to-back commands add 16.5 us each |
+| 1x8x1024x64 causal, approx | score 0.33, P V 0.33, exp 0.34; waiting for the broadcast 0.60 | 36 / 49 | the command (45.8 us a command, 7.0 outside the passes, 14.9 us between commands), and balance: the mean core is busy 0.57 of the slowest |
 
 Compute only runs on whatever Q, K and V are left in L1, which takes the rescaling
 branch more often than real inputs do; it is an upper bound on the compute. The four
 short rows (both exponentials) are ahead of Kohaku-TT per pass and behind per call: what
-is behind is the cost of a record, not the kernel.
+is behind is the cost of a command, not the kernel.
 
-### The broadcast's NoC, the lane length, records and graphs
+### The broadcast's NoC, the broadcast length, commands and graphs
 
 Measured on 2026-11-13 as above (X280 at 1,000 MHz), `wide128` (1 x 24 x 4096 x 128);
-the JSON in `results/`: `noc0-wide128.json`, `noc1-wide128.json`, `lane-wide128-L<L>.json`
+the JSON in `results/`: `noc0-wide128.json`, `noc1-wide128.json`, `broadcast-wide128-L<L>.json`
 (`bench.py --json`) and `graph-<preset>.json` (`graph.py --json`).
-NoC1: `--noc 1` builds the program with `LANE_ON_WRITER`, so that the writer runs the
-lane (K / V reads and casts before each job's rows) and the reader reads only Q. The
-lane length is `--lane L` (L = 1: every core reads its own K / V).
+NoC1: `--noc 1` builds the program with `BROADCAST_ON_WRITER`, so that the writer runs the
+broadcast (K / V reads and casts before each job's rows) and the reader reads only Q. The
+broadcast length is `--broadcast L` (L = 1: every core reads its own K / V).
 
-| `wide128` | Single record (us) | Per call (us) | Per pass (us) | Cast only / compute only (us) | MHz | W |
+| `wide128` | Single command (us) | Per call (us) | Per pass (us) | Cast only / compute only (us) | MHz | W |
 |---|---|---|---|---|---|---|
 | NoC0, L 10 | 2312.3 | 2330.3 | 2337.3 | 310 / 2393 | 1321 | 152 |
 | NoC1, L 10 | 2276.5 | 2358.0 | 2309.6 | 597 / 2447 | 1315 | 153 |
@@ -196,40 +195,40 @@ lane length is `--lane L` (L = 1: every core reads its own K / V).
 | NoC0, L 1 | 2404.8 | 2418.0 | 2381.8 | 1533 / 2642 | 1289 | 153 |
 
 The broadcast alone takes twice as long from the writer on NoC1 as from the reader on
-NoC0, and five times as long with no lane (L 1) as with lanes of 10; the call, bound by
+NoC0, and five times as long with no broadcast (L 1) as with broadcasts of 10; the call, bound by
 compute, moves by at most 4 %.
 
-`graph.py` issues the same call, rounds back to back: one record walking the job table,
-or one record per job index (a7, a8: each core's job j in record j); each from the host
-(records back to back, the time from the first issue to the last event over the rounds)
-and from a kept graph (the call's records in a chain, then a CPU node that goes round
-again; the engine on the X280 issues each next record; the time of a restart over its
+`graph.py` submits the same call, rounds back to back: one command walking the job table,
+or one command per job index (a7, a8: each core's job j in command j); each from the host
+(commands back to back, the time from the first submit to the last event over the rounds)
+and from a kept graph (the call's commands in a chain, then a CPU node that goes round
+again; the engine on the X280 submits each next command; the time of a restart over its
 rounds, the median of three).
 
-| Shape | Rounds | Records per call | Host, table | Graph, table | Host, per job | Graph, per job |
+| Shape | Rounds | Commands per call | Host, table | Graph, table | Host, per job | Graph, per job |
 |---|---|---|---|---|---|---|
 | 8x16x256x64 | 40 | 3 | 97.4 | 85.1 | 210.2 | 134.5 |
 | 1x8x1024x64 causal | 40 | 1 | 79.5 | 66.4 | 90.6 | 65.7 |
 | 1x32x4096x64 | 8 | 4 | 2701.5 | 2685.4 | 3430.5 | 3331.2 |
 
 Times are us per call. From the kept graph a call comes 12 to 13 us sooner than from
-the host (part of that is the host's first issue, spread over the rounds). A record per
-job costs 25 us per extra record on the short shape and 215 us on the long one: each
-record starts its lanes with no block in flight and ends them with every core drained,
-which the job table inside one record overlaps.
+the host (part of that is the host's first submit, spread over the rounds). A command per
+job costs 25 us per extra command on the short shape and 215 us on the long one: each
+command starts its broadcasts with no block in flight and ends them with every core drained,
+which the job table inside one command overlaps.
 
 ### The causal row's balance
 
 In the default plan of `causal64` (1 x 8 x 1024 x 64 causal) each of the 8 heads is one
-chunk of 32 query tile rows, so 4 of the 12 lanes of 10 have nothing to do and a lane's
+chunk of 32 query tile rows, so 4 of the 12 broadcasts of 10 have nothing to do and a broadcast's
 cores take 3 or 4 rows: the mean core is busy 0.56 of the slowest. `--chunks n` cuts
 each head into n chunks of about equal area of the triangle (`plan.causal_cuts`) and
-places them largest first by the busiest core's work; with `--lane` it gives the
-candidates below (`bench.py --shape causal64 --lane L --chunks n --cuts --seconds 2`,
+places them largest first by the busiest core's work; with `--broadcast` it gives the
+candidates below (`bench.py --shape causal64 --broadcast L --chunks n --cuts --seconds 2`,
 the JSON in `results/causal64-L<L>-c<n>.json`; 2026-11-13, X280 at 1,000 MHz, AICLK
 1,349 to 1,350 MHz).
 
-| Lane length, chunks per head | Score tiles, busiest core | Jobs per core | Balance | Single record (us) | Per call (us) | Per pass (us) | Cast only / compute only (us) | W |
+| Broadcast length, chunks per head | Score tiles, busiest core | Jobs per core | Balance | Single command (us) | Per call (us) | Per pass (us) | Cast only / compute only (us) | W |
 |---|---|---|---|---|---|---|---|---|
 | 10, 1 (the default) | 68 | 1 | 0.56 | 56.9 | 72.3 | 48.4 | 36 / 63 | 104 |
 | 10, 3 | 56 | 2 | 0.88 | 59.9 | 76.5 | 51.9 | 45 / 61 | 101 |
@@ -239,8 +238,8 @@ the JSON in `results/causal64-L<L>-c<n>.json`; 2026-11-13, X280 at 1,000 MHz, AI
 
 The chunks even the cores (0.56 to 0.91) and cut the busiest core's score tiles by up to
 41 %, but the call does not get faster: a second job per core adds its own start (Q
-rows, the first K / V block, the rows' normalization), more lanes read K / V (the cast
-only time rises from 36 to 47 us), and without a lane (L 1) the reads bound it. The best
+rows, the first K / V block, the rows' normalization), more broadcasts read K / V (the cast
+only time rises from 36 to 47 us), and without a broadcast (L 1) the reads bound it. The best
 candidate gains 3 % per pass and loses 5 % per call, so the default stays; `--chunks`
 remains for shapes where a head's work is large against those costs.
 
@@ -248,9 +247,9 @@ remains for shapes where a head's work is large against those costs.
 
 Bounded waits (a give-up is recorded with its code and place, stops the core's three
 kernels and is reported by the run):
-- the reader: room in the job table, Q and lane buffers (`rd.reserve`); its NoC reads
-  (`flushed`); every `km::Lane` wait (a free slot, the receivers' stamps, VALID, the
-  end of the record);
+- the reader: room in the job table, Q and broadcast buffers (`rd.reserve`); its NoC reads
+  (`flushed`); every `km::Broadcast` wait (a free slot, the receivers' stamps, VALID, the
+  end of the command);
 - the writer: each finished output row (`wr.wait_front`); its NoC writes (`flushed`);
 - the compute kernel's waits on the data-movement kernels: the job table, Q rows and K /
   V blocks (`cp.wait_front`, decided by the unpacker and passed to the other two) and
@@ -265,21 +264,21 @@ same kernel has already started.
 ## Future work
 
 Not in this program: decode against a kept K / V cache (one query row against the
-cache: a reduce over a team and the dynamic crossing), the backward, packed
+cache: a reduce over a group and the dynamic crossing), the backward, packed
 variable-length batches, masks, ragged lengths.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `kernels/attention.h` | segment, record words, buffers, the job table, the bounded NoC barrier |
+| `kernels/attention.h` | handler, command words, buffers, the job table, the bounded NoC barrier |
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | the three kernels |
 | `kernels/sfpu.hpp` | Kohaku-TT's vector-unit steps, unchanged |
 | `plan.py` | the plan as pure functions |
-| `card.py` | the program, its lane words and its records on a session |
+| `card.py` | the program, its broadcast words and its commands on a session |
 | `run.py` | one shape run and checked |
 | `bench.py` | time, power, clock, the profile and the cut-down runs of one shape |
-| `graph.py` | the same call as one record or one record per job, from the host and from a kept graph |
+| `graph.py` | the same call as one command or one command per job, from the host and from a kept graph |
 | `results/` | the JSON behind the tables of results |
 | `reference/sdpa.py` | the float64 attention, inputs, sampled rows |
 | `reference/ktt_bench.py` | Kohaku-TT's kernel on the same inputs, checked the same way |

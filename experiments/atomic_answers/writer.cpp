@@ -39,7 +39,7 @@ namespace {
     }
 
     template <typename F>
-    bool bounded(uint64_t cycles, F done) {
+    bool timed(uint64_t cycles, F done) {
         const uint64_t end = wall64() + cycles;
         for (uint32_t i = 0;; i++) {
             if (done()) {
@@ -58,7 +58,7 @@ void kernel_main() {
     const uint32_t blk = get_arg_val<uint32_t>(0), cores = get_arg_val<uint32_t>(1);
     const uint32_t K = get_arg_val<uint32_t>(2), me = get_arg_val<uint32_t>(3);
     uint32_t rnd = get_arg_val<uint32_t>(4);
-    const uint32_t bound = get_arg_val<uint32_t>(5);
+    const uint32_t timeout = get_arg_val<uint32_t>(5);
     const uint32_t cbase = get_arg_val<uint32_t>(6), ccount = get_arg_val<uint32_t>(7);
     const uint32_t fixed = get_arg_val<uint32_t>(8);
     volatile tt_l1_ptr uint32_t* w = (
@@ -76,7 +76,7 @@ void kernel_main() {
     // Start barrier on core 0: one second for the launch skew.
     constexpr uint64_t kSecond = 1350000000ull;
     atomic_add(noc_of(0, hs::kBar), 1, blk + 4 * hs::kBarRet);
-    if (!bounded(kSecond, [] {
+    if (!timed(kSecond, [] {
             return ncrisc_noc_nonposted_atomics_flushed(noc_index);
         })) {
         st[hs::sFail] = 1;
@@ -86,7 +86,7 @@ void kernel_main() {
     const uint64_t b0 = wall64();
     for (;;) {
         noc_async_read(noc_of(0, hs::kBar), blk + 4 * hs::kPeek, 4);
-        if (!bounded(kSecond, [] {
+        if (!timed(kSecond, [] {
                 return ncrisc_noc_reads_flushed(noc_index);
             })) {
             st[hs::sFail] = 2;
@@ -130,13 +130,13 @@ void kernel_main() {
             n,
             blk + 4 * (hs::kRing + 4 * slot)
         );
-        if (!bounded(bound, [] {
+        if (!timed(timeout, [] {
                 return ncrisc_noc_nonposted_atomics_flushed(noc_index);
             })) {
             st[hs::sFail] = 3;
             break;
         }
-        const bool got = bounded(bound, [&] {
+        const bool got = timed(timeout, [&] {
             invalidate_l1_cache();
             return ret[0] != hs::kSentinel;
         });

@@ -1,5 +1,5 @@
-// What every resident kernel of a tile shares: runtime-owned buffers, the state words,
-// the start-up arguments, the clock, and the bounded wait that observes the stop word.
+// What every persistent kernel of a tile uses: runtime-owned buffers, the state words,
+// the start-up arguments, the clock, and the wait (timeout, stop flag).
 #pragma once
 
 #include <stdint.h>
@@ -10,12 +10,12 @@
 #else
 #include "api/dataflow/dataflow_api.h"
 #endif
-#include "km_record.hpp"
+#include "km_command.hpp"
 
 namespace km {
 
     // Runtime-owned circular buffers: the tokens the reader hands to compute and
-    // writer, and the per-record trace (only when tracing).
+    // writer, and the per-command trace (only when tracing).
     constexpr uint32_t kCbTokenCompute = 29;
     constexpr uint32_t kCbTokenWriter = 30;
     constexpr uint32_t kCbTrace = 31;
@@ -34,48 +34,48 @@ namespace km {
     constexpr uint32_t kStWriterSeq = 35;  // its sequence number
     constexpr uint32_t kStCompute = 36;    // compute gave-up word
     constexpr uint32_t kStComputeSeq = 37;  // its sequence number
-    constexpr uint32_t kStRuns = 38;        // records the reader took
+    constexpr uint32_t kStRuns = 38;        // commands the reader took
     constexpr uint32_t kStPasses = 39;      // ring passes in next(), all calls
     constexpr uint32_t kStNextCycles = 40;  // cycles in next(), all calls, / 16
-    constexpr uint32_t kStCompleted = 41;   // records the writer finished
-    constexpr uint32_t kStSeen = 42;        // records compute took
+    constexpr uint32_t kStCompleted = 41;   // commands the writer finished
+    constexpr uint32_t kStSeen = 42;        // commands compute took
     constexpr uint32_t kStWrong = 43;       // bytes unpack, math, pack: bad job copies
     constexpr uint32_t kStEnds = 44;        // bytes reader, writer, compute: kEnd*
     constexpr uint32_t kStMagic = 45;       // kStateMagic | tag << 8 | me
-    constexpr uint32_t kStSlotWrong = 46;   // records not run: header slot not theirs
-    constexpr uint32_t kStTraceDropped = 47;  // records beyond the trace's capacity
+    constexpr uint32_t kStSlotWrong = 46;   // commands not run: header slot not theirs
+    constexpr uint32_t kStTraceDropped = 47;  // commands beyond the trace's capacity
     constexpr uint32_t kStateWords = 48;
     constexpr uint32_t kStateMagic = 0x4B000000;
 
     // Gave-up codes, where codes and how a kernel left.
     constexpr uint32_t kGaveNone = 0;
-    constexpr uint32_t kGaveStop = 1;     // the stop word was set
+    constexpr uint32_t kGaveStop = 1;     // the stop flag was set
     constexpr uint32_t kGaveLimit = 2;    // the wait's bound passed
     constexpr uint32_t kGaveBadItem = 3;  // a multi-page item would pass the buffer end
-    constexpr uint32_t kGaveBadLane = 4;  // a lane's arguments do not fit the record
+    constexpr uint32_t kGaveBadBroadcast = 4;  // a broadcast's arguments do not fit the command
     constexpr uint32_t kWhereCheckin = 1;   // leader collecting start-up check-ins
     constexpr uint32_t kWhereToken = 2;     // reader waiting for free token pages
-    constexpr uint32_t kWhereNext = 3;      // reader waiting for a record
-    constexpr uint32_t kWhereStall = 4;     // a segment waiting for the stop word
+    constexpr uint32_t kWhereNext = 3;      // reader waiting for a command
+    constexpr uint32_t kWhereStall = 4;     // a handler waiting for the stop flag
     constexpr uint32_t kWhereComplete = 5;  // leader waiting for its members
     constexpr uint32_t kWhereWriter = 6;    // writer waiting for a token
-    constexpr uint32_t kWhereData = 7;      // a segment's bounded buffer wait
+    constexpr uint32_t kWhereData = 7;      // a handler's bounded buffer wait
     constexpr uint32_t kWhereCToken = 8;    // compute (unpack) waiting for a token
     constexpr uint32_t kWhereCInput = 9;    // compute (unpack) waiting for input pages
     constexpr uint32_t kWhereCOutput = 10;  // compute (pack) waiting for output space
     constexpr uint32_t kWhereCDone = 11;    // writer: compute's and reader's bodies
-    constexpr uint32_t kEndExit = 1;        // left on an EXIT record
+    constexpr uint32_t kEndExit = 1;        // left on an EXIT command
     constexpr uint32_t kEndGaveUp = 2;      // left after its own wait gave up
     constexpr uint32_t kEndAbort = 3;       // left on the EXIT handed after a give-up
     constexpr uint32_t kEndReader = 0;      // bytes of kStEnds; kStWrong: unpack, ...
     constexpr uint32_t kEndWriter = 1;
     constexpr uint32_t kEndCompute = 2;
 
-    // Where codes of lane broadcast (km_lane.hpp).
-    constexpr uint32_t kWhereLaneBegin = 12;  // lane: arguments or buffer at a record
-    constexpr uint32_t kWhereLaneDone = 13;  // lane sender: DONE stamps, its NoC barriers
-    constexpr uint32_t kWhereLaneValid = 14;  // lane receiver waiting for VALID
-    constexpr uint32_t kWhereLaneFree = 15;  // lane: its compute's pops, its last stamps
+    // Where codes of broadcast broadcast (km_broadcast.hpp).
+    constexpr uint32_t kWhereBroadcastBegin = 12;  // broadcast: arguments or buffer at a command
+    constexpr uint32_t kWhereBroadcastDone = 13;  // broadcast sender: DONE stamps, its NoC barriers
+    constexpr uint32_t kWhereBroadcastValid = 14;  // broadcast receiver waiting for VALID
+    constexpr uint32_t kWhereBroadcastFree = 15;  // broadcast: its compute's pops, its last stamps
 
     // Where codes of a port's wait (reader) and of an emit (writer): the gave-up word's
     // top byte is the port; the port keeps the count it wanted (KM_PORT_WANT).
@@ -91,11 +91,11 @@ namespace km {
     constexpr uint32_t kWhereDynRead = 23;     // the reader's item reads did not land
     constexpr uint32_t kWhereDynInPage = 24;   // reader: no free packet page
     constexpr uint32_t kWhereDynLine = 25;     // the status line write did not leave
-    constexpr uint32_t kWhereDynBadDest = 26;  // hop or spawn outside the team
+    constexpr uint32_t kWhereDynBadDest = 26;  // hop or spawn outside the group
     constexpr uint32_t kWhereDynNext = 27;     // compute's wait for a packet
     constexpr uint32_t kWhereDynOutPage = 28;  // compute's wait for an outgoing page
     constexpr uint32_t kWhereDynOutbox = 29;   // the writer's wait for an outgoing item
-    constexpr uint32_t kWhereDynStopped = 30;  // the stop word ended the run
+    constexpr uint32_t kWhereDynStopped = 30;  // the stop flag ended the run
     constexpr uint32_t kWhereDynAlign = 31;    // pages or items not 64-B aligned
     constexpr uint32_t kWhereDynLost = 32;     // a reservation's answer never landed
     constexpr uint32_t kWhereDynFill = 33;     // the start-up zero fill of the queue
@@ -128,15 +128,15 @@ namespace km {
         uint32_t mailbox;     // hello address at the dispatcher; 0: send none
         uint32_t leader;      // start-up group: the leader's core index
         uint32_t rank;        // this core's check-in slot at the leader
-        uint32_t members;     // leader: members that check in
+        uint32_t peers;       // leader: members that check in
         uint32_t ready_slot;  // leader: its READY word, at ready_base + slot * 16
         uint32_t ready_base;  // the dispatcher's READY words (not the ack words)
         uint32_t tag;         // per-process random tag, 16 bits
-        uint32_t workers;     // cores 0 to workers - 1 run records (an EXIT's team)
+        uint32_t workers;     // cores 0 to workers - 1 run commands (an EXIT's group)
         uint32_t depth;       // ring slots scanned, 1 to KM_RING_SLOTS
         uint32_t row;         // cores per grid row (completion); 0: one level always
         uint32_t wait_limit;  // bound of a wait for another core, 1024-cycle units
-        uint32_t idle_limit;  // bound of a wait for the next record; 0: none
+        uint32_t idle_limit;  // bound of a wait for the next command; 0: none
         uint32_t trace;       // DRAM address of the trace, a page per core; 0: none
         uint32_t trace_cap;   // sequences traced: 1 to trace_cap
     };
@@ -148,8 +148,8 @@ namespace km {
     constexpr uint32_t kCArgIdle = 3;  // idle_limit
     constexpr uint32_t kComputeArgs = 4;
 
-    // Trace record per sequence number: 4 words of wall-clock cycles (low 32 bits).
-    constexpr uint32_t kTraceSeen = 0;   // reader took the record
+    // Trace command per sequence number: 4 words of wall-clock cycles (low 32 bits).
+    constexpr uint32_t kTraceSeen = 0;   // reader took the command
     constexpr uint32_t kTraceDone = 1;   // writer: outputs written
     constexpr uint32_t kTraceSent = 2;   // writer: completion sent (leader: pushed)
     constexpr uint32_t kTraceExtra = 3;  // reader: ring passes it took; with a stamp
@@ -251,9 +251,9 @@ namespace km {
         }
     }
 
-    // Records a give-up in state word pair `word` (the first one is kept: it names the
-    // cause) and sets the tile's own stop word, so all three kernels leave.
-    inline void record_gave_up(
+    // Commands a give-up in state word pair `word` (the first one is kept: it names the
+    // cause) and sets the tile's own stop flag, so all three kernels leave.
+    inline void command_gave_up(
         uint32_t ctl,
         uint32_t word,
         uint32_t code,
@@ -322,7 +322,7 @@ namespace km {
             return ctl(KM_CTL_STATE);
         }
 
-        // Nonzero stop word; the caller has invalidated the L1 cache.
+        // Nonzero stop flag; the caller has invalidated the L1 cache.
         bool stop() const {
             return *ctl(KM_CTL_STOP) != 0;
         }
@@ -337,17 +337,17 @@ namespace km {
             return get_noc_addr(a_.disp_xy & 0xFFFFu, a_.disp_xy >> 16, addr);
         }
 
-        // poll_stop on this tile's stop word.
+        // poll_stop on this tile's stop flag.
         template <typename Ready>
         uint32_t poll(Ready ready, uint32_t limit, uint32_t grace = 0) const {
             return poll_stop(ctl(KM_CTL_STOP), ready, limit, grace);
         }
 
-        // record_gave_up for this tile (kStReader or kStWriter).
+        // command_gave_up for this tile (kStReader or kStWriter).
         void gave_up(
             uint32_t word, uint32_t code, uint32_t where, uint32_t slot, uint32_t seq
         ) const {
-            record_gave_up(a_.ctl, word, code, where, slot, seq);
+            command_gave_up(a_.ctl, word, code, where, slot, seq);
         }
 
     private:

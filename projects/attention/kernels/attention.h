@@ -1,26 +1,27 @@
-// Attention on resident workers: segments, record words, buffers and the job table that
-// the host and the three kernels share. Sizes are in 32 x 32 tiles.
+// Attention on persistent kernels: handlers, command words, buffers and the job table
+// that the host and the three kernels share. Sizes are in 32 x 32 tiles.
 #pragma once
 
 #include <stdint.h>
 
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 
 // ATTEND: a0 Q, a1 K, a2 V, a3 O (bf16 tiles, [B, H, S, D]), a4 job tables (a page per
 // member), a5 mode, a6 passes (0: one), a7 first job, a8 jobs from it (0: to the end).
-constexpr uint32_t kSegAttend = 1;
+constexpr uint32_t kHandlerAttend = 1;
 // PROF: a0 profile tensor; the writer stores this core's profile page at the member's
 // page, then (a1 != 0) zeroes it.
-constexpr uint32_t kSegProf = 2;
+constexpr uint32_t kHandlerProf = 2;
 
 // ATTEND modes: the full call; cast only (Q reads and the K / V broadcast, compute pops
-// the blocks); compute only (Q, K, V as they are in L1: no reads, lane or writes).
+// the blocks); compute only (Q, K, V as they are in L1: no reads, broadcast or writes).
 constexpr uint32_t kModeFull = 0;
-constexpr uint32_t kModeCastOnly = 1;
+constexpr uint32_t kModeBroadcastOnly = 1;
 constexpr uint32_t kModeComputeOnly = 2;
 
-// Buffers: a job's Q rows; the lane buffer, B blocks of K [DT][KB] then V [KB][DV];
-// the compute's own as ktt_flash's (ones, P, row state, O, tokens, causal mask).
+// Buffers: a job's Q rows; the broadcast buffer, B blocks of K [DT][KB] then V
+// [KB][DV]; the compute's own as ktt_flash's (ones, P, row state, O, tokens, causal
+// mask).
 constexpr uint32_t kCbQ = 0;
 constexpr uint32_t kCbKv = 1;
 constexpr uint32_t kCbOnes = 3;
@@ -54,19 +55,19 @@ constexpr uint32_t kJobKeys = 6;
 constexpr uint32_t kJobStride = 7;
 constexpr uint32_t kJobsMax = (kTableBytes / 4 - kTabFirst) / kJobWords;
 
-// Profile page: 32-bit words of wall-clock cycles summed over the records, each word
+// Profile page: 32-bit words of wall-clock cycles summed over the commands, each word
 // written by one thread.
 constexpr uint32_t kCbProf = 19;
 constexpr uint32_t kProfBytes = 1024;
 constexpr uint32_t kProfWords = 32;
-// Reader: body, waits for Q space, Q reads, the sender's slot waits, K / V read issue,
+// Reader: body, waits for Q space, Q reads, the sender's slot waits, K / V read submit,
 // casts (read barrier, receivers' stamps, multicast), a receiver's arrivals, finish.
 constexpr uint32_t kPrRdBody = 0;
 constexpr uint32_t kPrRdQWait = 1;
 constexpr uint32_t kPrRdQRead = 2;
 constexpr uint32_t kPrRdKvFree = 3;
 constexpr uint32_t kPrRdKvRead = 4;
-constexpr uint32_t kPrRdCast = 5;
+constexpr uint32_t kPrRdBroadcast = 5;
 constexpr uint32_t kPrRdArrive = 6;
 constexpr uint32_t kPrRdFinish = 7;
 // Unpack: body, waits for Q, for K / V blocks. Math: body, the score sections (matmul
@@ -92,14 +93,15 @@ constexpr uint32_t kPrWrBody = 24;
 constexpr uint32_t kPrWrWait = 25;
 constexpr uint32_t kPrWrWrite = 26;
 
-// The record's end in the member's `jobs` jobs (it starts at job a7).
-inline uint32_t jobs_end(const km_record_t& r, uint32_t jobs) {
+// The command's end in the member's `jobs` jobs (it starts at job a7).
+inline uint32_t jobs_end(const km_command_t& r, uint32_t jobs) {
     return r.a8 == 0 || r.a7 + r.a8 > jobs ? jobs : r.a7 + r.a8;
 }
 
-// Program arguments. The kernel that runs the lane (the reader on NoC0, the writer with
-// LANE_ON_WRITER on NoC1): the lane's words. Compute: the lane window B.
-constexpr uint32_t kArgLane = 0;
+// Program arguments. The kernel that runs the broadcast (the reader on NoC0, the writer
+// with BROADCAST_ON_WRITER on NoC1): the broadcast's words. Compute: the broadcast
+// window B.
+constexpr uint32_t kArgBroadcast = 0;
 constexpr uint32_t kArgWindow = 0;
 
 #if !defined(COMPILE_FOR_TRISC)
@@ -135,12 +137,12 @@ inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
 // Reads this member's job table page (page `member` of the tables at `base`) to L1
 // `dst`. False: the read gave up (recorded).
 inline bool read_table(
-    const km::Core& c, uint32_t word, uint32_t base, uint32_t member, uint32_t dst
+    const km::Core& c, uint32_t word, uint32_t base, uint32_t rank, uint32_t dst
 ) {
     const InterleavedAddrGen<true> pages = {
         .bank_base_address = base, .page_size = kTableBytes
     };
-    noc_async_read(get_noc_addr(member, pages), dst, kTableBytes);
+    noc_async_read(get_noc_addr(rank, pages), dst, kTableBytes);
     return flushed(c, word, km::kFlushReads);
 }
 
@@ -174,11 +176,12 @@ void read_kv(
     }
 }
 
-// One job's K / V blocks through the lane (job words `w`; `n` counts the record's, `c`
-// the profile): the sender reads and casts each, a receiver waits. False: gave up.
+// One job's K / V blocks through the broadcast (job words `w`; `n` counts the
+// command's, `c` the profile): the sender reads and casts each, a receiver waits.
+// False: gave up.
 template <uint32_t DT, uint32_t DV, uint32_t KB, typename Accessor>
-bool lane_job(
-    km::Lane& ln,
+bool broadcast_job(
+    km::Broadcast& ln,
     const Accessor& k,
     const Accessor& v,
     const volatile tt_l1_ptr uint32_t* w,
@@ -208,7 +211,7 @@ bool lane_job(
         }
         c[kPrRdKvFree] += t2 - t1;
         c[kPrRdKvRead] += t3 - t2;
-        c[kPrRdCast] += km::wall() - t3;
+        c[kPrRdBroadcast] += km::wall() - t3;
     }
     return true;
 }

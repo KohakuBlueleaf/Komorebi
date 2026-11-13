@@ -1,14 +1,14 @@
 # 02 merge tree
 
-A team of threads adds up T input tiles: each thread adds its own share, then the
-team merges the parts into one tile, either at one owner or along a tree. Each part
+A group of threads adds up T input tiles: each thread adds its own share, then the
+group merges the parts into one tile, either at one owner or along a tree. Each part
 crosses from one core to one other core: a value emitted to one receiver.
 
 ## The thread program
 
 ```
-thread merge(j, n, T, form):                  # one per core of the team
-    part = sum(x[tile] for tile in share(T, j, n))
+thread merge(j, n, T, form):                  # one per core of the group
+    part = sum(x[tile] for tile in partition(T, j, n))
     if form == owner:
         if j == 0:
             parts = wait(n - 1)                  # one slot per sender
@@ -41,7 +41,7 @@ give the same bits as each other.
 
 ## On the card
 
-A job is one record, `MERGE`, sent to the team's cores; every core of the team runs
+A job is one command, `MERGE`, sent to the group's cores; every core of the group runs
 it in its three kernels.
 
 | Kernel | What it does |
@@ -50,7 +50,7 @@ it in its three kernels.
 | `compute.cpp` | adds its tiles into P float32 tiles in DST; `km::reduce` takes each hand-over and calls the program's combine step for its slots (here: copy the page, add it); packs the result |
 | `writer.cpp` | member 0 writes the result to `out[a3]` to `out[a3 + P - 1]`; every other member emits its part: put into the receiver's arrival slot, write flush, bump the receiver's port, atomic flush (`km::reduce_emit`) |
 
-| Record word | Meaning |
+| Command word | Meaning |
 |---|---|
 | a0, a1, a6 | input tensor, tiles T, first input tile |
 | a2, a3 | output tensor, output page |
@@ -61,12 +61,12 @@ it in its three kernels.
 - **Ports and slots.** By owner, member k sends into slot k - 1 of member 0 and bumps
   its port 0, and member 0 waits for n - 1. By tree, the member of round r sends into
   slot r and bumps port r, and its receiver waits for 1. Who sends where is computed
-  from the record and the rank: nothing is queued and nothing is addressed by content.
+  from the command and the rank: nothing is queued and nothing is addressed by content.
 - **The arrival buffer** (`kCbArrive`, 118 float32 tiles, P to a slot: by owner, a slot
-  for every other member of a team of 118 / P + 1) is handed over whole, so its slot addresses are the same on every
+  for every other member of a group of 118 / P + 1) is handed over whole, so its slot addresses are the same on every
   core and never drift. Compute reads the pages it needs by index.
-- **Records carry `KM_F_EXCL`**: two records whose teams overlap are never in flight
-  together, so nothing of one record can land in the next one's slots or ports.
+- **Commands carry `KM_F_EXCL`**: two commands whose groups overlap are never in flight
+  together, so nothing of one command can land in the next one's slots or ports.
 - **A member that does not send.** Every wait is bounded. The receiver's wait on the
   port gives up first and its state names the port; the port keeps the count it
   wanted, so the host reads the missing count. The feeder's deadline then stops the
@@ -74,41 +74,41 @@ it in its three kernels.
 
 ## Running it
 
-`merge.py` loads the program with `komorebi.Session` and issues one `MERGE` record per
-job with `Run.issue(..., exclusive=True, result=True)`: the records reach the grid
-through the dispatch kernel on X280 cluster 0. Member 0 returns the total's checksum
-(its float32 words summed in 32 bits) as the record's result word, which arrives as
-`Event.result`; it sums only when the record asks for a result (`KM_F_RESULT`), since
+`merge.py` loads the program with `komorebi.Session` and submits one `MERGE` command per
+job with `Run.submit(..., exclusive=True, result=True)`: the commands reach the grid
+through the dispatcher on X280 cluster 0. Member 0 returns the total's checksum
+(its float32 words summed in 32 bits) as the command's result word, which arrives as
+`Event.result`; it sums only when the command asks for a result (`KM_F_RESULT`), since
 the pass over the total costs about 7.6 µs per output tile. The driver checks every total against numpy (bit-equal on integer
 inputs, by relative RMS on uniform random ones) and every result word against the
 checksum of numpy's total (integer inputs) or of the total read back (random ones).
 One JSON line, with `ok`: every job and result word right, no core given up, no port
-left waiting and every core ended (with `--stall-member`: the stalled load ends in the
+left waiting and every core ended (with `--stall-rank`: the stalled load ends in the
 deadline on job 1 and the load after it is clean); `merge.py` and `merge_fed.py` exit
 non-zero without it. Setup is that of
 [01_mapcollect](../01_mapcollect/README.md#what-it-needs).
 
 ```
 python merge.py --jobs 20 --count 8 --form both
-python merge.py --jobs 1000 --teams random --form random --out-pages 1024
-python merge.py --team-list 0:8,0:119 --form both --stall-member 3
-python merge.py --team-list 0:8,0:60,3:60,40:2,0:33 --form both --part 2
+python merge.py --jobs 1000 --groups random --form random --out-pages 1024
+python merge.py --group-list 0:8,0:119 --form both --stall-rank 3
+python merge.py --group-list 0:8,0:60,3:60,40:2,0:33 --form both --part 2
 ```
 
 `--form both` runs every job twice, by owner and then by tree, on the same input, and
-compares the two (`pairs_bit_equal`). `--stall-member M` adds two loads of the
+compares the two (`pairs_bit_equal`). `--stall-rank M` adds two loads of the
 program in the same session, of the first four jobs: in the first, member M of job 1
-stalls instead of sending; the host raises `RecordTimeout` naming the ticket and the
+stalls instead of sending; the host raises `CommandTimeout` naming the handle and the
 members that did not report, and the driver reads the cores that gave up (a reader
 waiting on a port names it) and the ports still waiting with their missing counts.
 The second load runs the same jobs clean.
 
-A team is at most 119 cores by owner (one arrival slot per other member); by tree it
+A group is at most 119 cores by owner (one arrival slot per other member); by tree it
 may cover the whole grid. `merge_fed.py` takes the same options and runs the jobs
-under the test feeder on core 119 instead (no X280; cores 0 to 118); its records ask
+under the test feeder on core 119 instead (no X280; cores 0 to 118); its commands ask
 for no result word, so member 0 computes no checksum.
 
-Measured on a Blackhole p150a (card 1, 2026-11-13) at 1350 MHz, T = 64, records issued
+Measured on a Blackhole p150a (card 1, 2026-11-13) at 1350 MHz, T = 64, commands submitted
 four at a time, `--form both`, 100 jobs each run by both forms:
 
 ```
@@ -123,13 +123,13 @@ python merge.py --jobs 100 --count N            # through a session
 | 60 | 14.5 | |
 | 119 | 24.0 | 51.8 |
 
-The session's times are the host's, from the first issue to the last event, through
-the dispatch kernel (X280 at 1000 MHz), and every record asks for its result word: the checksum is about 7.6 µs of every
-job (the test feeder's 8 members took 15.0 µs per job while its records summed too).
+The session's times are the host's, from the first submit to the last event, through
+the dispatcher (X280 at 1000 MHz), and every command asks for its result word: the checksum is about 7.6 µs of every
+job (the test feeder's 8 members took 15.0 µs per job while its commands summed too).
 
-1,000 jobs on random teams with random forms: 1,000 checked, 0 wrong. 500 random
-teams, each by both forms: 250 integer-input pairs, all bit-equal. Parts of 2 tiles
-(`--part 2`, by owner up to 60 members): the five teams above by both forms, all exact
+1,000 jobs on random groups with random forms: 1,000 checked, 0 wrong. 500 random
+groups, each by both forms: 250 integer-input pairs, all bit-equal. Parts of 2 tiles
+(`--part 2`, by owner up to 60 members): the five groups above by both forms, all exact
 and bit-equal pairs, 16.2 µs per job.
 
 ## Files
@@ -137,9 +137,9 @@ and bit-equal pairs, 16.2 µs per job.
 | File | What it is |
 |---|---|
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | the program's three kernels |
-| `kernels/merge.h` | segment, buffers and record words shared by the kernels |
-| `merge.py` | builds the records, runs them through a session, checks the outputs and result words |
+| `kernels/merge.h` | handler, buffers and command words shared by the kernels |
+| `merge.py` | builds the commands, runs them through a session, checks the outputs and result words |
 | `merge_fed.py` | the same jobs under the test feeder |
 
 The calls are in `komorebi/device/km_port.hpp` (emit, arrive, take, reduce) and
-`komorebi/device/km_group.hpp` (groups of a team, the two schedules).
+`komorebi/device/km_group.hpp` (groups of a group, the two schedules).

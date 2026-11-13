@@ -1,4 +1,4 @@
-"""The ray tracer on a card through the dispatch kernel (KMR_CARD=1): the vector unit's
+"""The ray tracer on a card through the dispatcher (KMR_CARD=1): the vector unit's
 arithmetic bit for bit; on tiles, the four passes and the frame's stages (tree in L1,
 treelets from DRAM, rays sorted on each core), and the frame as a graph in the kernel
 and host-fed, against numpy."""
@@ -46,6 +46,6 @@ def test_frame_stages_on_the_card_agree_on_tiles(scene):
 
 def test_frame_graph_gives_the_same_image_in_the_kernel_and_host_fed():
     out = run_json(HERE / "framegraph.py", *TILES, "--cameras", "2", timeout=300.0)
-    assert out["ok"] and out["hostfed_records"] == [8, 8]
+    assert out["ok"] and out["hostfed_commands"] == [8, 8]
     for row in out["image_checks"]:
         assert row["graph"] == row["hostfed"] == row["graph_vs_hostfed"] == 0

@@ -1,5 +1,5 @@
 // Graph writer: each member reads its state word, changes it and writes it back; NORM's
-// leader reads every word and gives their sum as the record's result word.
+// leader reads every word and gives their sum as the command's result word.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -30,15 +30,15 @@ void kernel_main() {
                    wr.args().wait_limit
                ) == km::kGaveNone;
     };
-    wr.run([&](const km_record_t& r) {
+    wr.run([&](const km_command_t& r) {
         const uint32_t index = wr.me() - km::first(r);
         const uint32_t page = wr.me();
         const auto x = TensorAccessor(state_args, r.a0);
-        const uint32_t seg = km::seg(r);
-        if (seg == kSegStall) {
+        const uint32_t handler = km::handler(r);
+        if (handler == kHandlerStall) {
             return index != r.a0;
         }
-        if (seg == kSegNorm) {
+        if (handler == kHandlerNorm) {
             if (index != 0) {
                 return true;
             }
@@ -53,7 +53,8 @@ void kernel_main() {
             wr.result(sum);
             return true;
         }
-        if (seg != kSegStep && seg != kSegLeft && seg != kSegRight) {
+        if (handler != kHandlerStep && handler != kHandlerLeft &&
+            handler != kHandlerRight) {
             return true;
         }
         noc_async_read_page(page, x, scratch);
@@ -61,7 +62,10 @@ void kernel_main() {
             return false;
         }
         const uint32_t v = word[0];
-        word[0] = seg == kSegStep ? v + r.a1 + page : seg == kSegLeft ? v >> 1 : v * 3u;
+        word[0] =
+            (handler == kHandlerStep       ? v + r.a1 + page
+                 : handler == kHandlerLeft ? v >> 1
+                                           : v * 3u);
         noc_async_write_page(page, x, scratch);
         return writes_done();
     });

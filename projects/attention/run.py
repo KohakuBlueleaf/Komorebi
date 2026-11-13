@@ -36,10 +36,12 @@ def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--shape", choices=pl.SHAPES, default="t1")
     p.add_argument("--calls", type=int, default=1)
-    p.add_argument("--lane", type=int, default=None, help="lane length (default: plan)")
+    p.add_argument(
+        "--broadcast", type=int, default=None, help="broadcast length (default: plan)"
+    )
     p.add_argument("--chunks", type=int, default=None, help="causal chunks per head")
     p.add_argument("--approx", action="store_true", help="approximate exponential")
-    p.add_argument("--noc", type=int, choices=[0, 1], default=0, help="lane's NoC")
+    p.add_argument("--noc", type=int, choices=[0, 1], default=0, help="broadcast's NoC")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--json", default=None)
     return p.parse_args()
@@ -78,7 +80,7 @@ def main():
     out["causal"], out["approx"], out["noc"] = causal, args.approx, args.noc
     with km.Session(log=log) as session:
         nocs = session.nocs()
-        p = pl.make(s, nocs.grid, length=args.lane, chunks=args.chunks)
+        p = pl.make(s, nocs.grid, length=args.broadcast, chunks=args.chunks)
         out["plan"] = p.summary()
         t0 = time.perf_counter()
         tensors = {

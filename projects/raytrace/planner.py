@@ -1,4 +1,4 @@
-"""The frame conducted by a thread on X280 work cluster 1 (`thread/plan.c`): it issues
+"""The frame conducted by a thread on X280 work cluster 1 (`thread/plan.c`): it submits
 the records and, before each trace, cuts the trace's packets into chunk records of equal
 predicted cost on its four X280 cores (frame.py --plan MODE)."""
 
@@ -20,7 +20,7 @@ P = {
         r"^#define (RP_\w+)\s+(\d+u?)\b", PLAN_H.read_text(), re.M
     )
 }
-P["RP_T_BASE"] = P["RP_RECORDS_MAX"] * P["RP_REC_WORDS"]
+P["RP_T_BASE"] = P["RP_COMMANDS_MAX"] * P["RP_REC_WORDS"]
 P["RP_T_PROF"] = P["RP_T_BASE"] + 2 * P["RP_CORES_MAX"]
 P["RP_TABLE_WORDS"] = P["RP_T_PROF"] + P["RP_TRACES"] * P["RP_CHUNKS"]
 _BLOCKS = P["RP_TRACES"] * P["RP_CHUNKS"] * P["RP_CORES_MAX"]
@@ -30,14 +30,14 @@ P["RP_LOG_BYTES"] = P["RP_FRAMES_MAX"] * P["RP_LOG_WORDS"] * 4
 CLUSTER = 1
 MODES = {"host": 0, "equal": 1, "counts": 2, "trace": 3, "frame": 4}
 TRACES = ("primary", "shadow", "bounce", "shadow2")
-CODES = {0: "ok", 1: "bad arguments", 2: "ring", 3: "record", 4: "plan"}
+CODES = {0: "ok", 1: "bad arguments", 2: "ring", 3: "command", 4: "plan"}
 WORK_BYTES = 2 << 20  # plan.c work_t: cycles and hits per trace, prediction, prefix
 
 
 def same_numbers():
     """The numbers plan.h takes from the kernels' header, as pairs that differ."""
     pairs = {
-        "RP_SEG_TREELETS": K["kSegTreelets"],
+        "RP_HANDLER_TREELETS": K["kHandlerTreelets"],
         "RP_BANK_SHIFT": K["kBankShift"],
         "RP_DIR_BYTES": K["kDirBytes"],
         "RP_DIR_FIRST": K["kDirFirst"],
@@ -51,17 +51,17 @@ def same_numbers():
 
 
 def table(entries, directory, prof_ts, workers):
-    """The thread's table: entries (kind, segment, ten words) in issue order on every
+    """The thread's table: entries (kind, handler, ten words) in submit order on every
     core, kind 1 + t for trace t; the owners' directory; the profile tensors per trace
     and chunk."""
-    if len(entries) > P["RP_RECORDS_MAX"]:
+    if len(entries) > P["RP_COMMANDS_MAX"]:
         raise ValueError(
-            f"{len(entries)} records; the table holds {P['RP_RECORDS_MAX']}"
+            f"{len(entries)} commands; the table holds {P['RP_COMMANDS_MAX']}"
         )
     t = np.zeros(P["RP_TABLE_WORDS"], dtype=np.uint32)
-    for i, (kind, seg, words) in enumerate(entries):
+    for i, (kind, handler, words) in enumerate(entries):
         at = i * P["RP_REC_WORDS"]
-        t[at : at + 3] = [kind, seg, workers << 16]
+        t[at : at + 3] = [kind, handler, workers << 16]
         t[at + 3 : at + 3 + len(words)] = words
     base = directory[:, [K["kDirFirst"], K["kDirCount"]]].reshape(-1)
     t[P["RP_T_BASE"] : P["RP_T_BASE"] + len(base)] = base
@@ -71,7 +71,7 @@ def table(entries, directory, prof_ts, workers):
     return t
 
 
-def program(prog, tab, mode, frames, workers, packets_, cap, records):
+def program(prog, tab, mode, frames, workers, packets_, cap, commands):
     """prog with the planning thread on work cluster 1."""
     words = [0] * P["RP_WORDS"]
     words[P["RP_W_MODE"]] = MODES[mode]
@@ -80,7 +80,7 @@ def program(prog, tab, mode, frames, workers, packets_, cap, records):
     words[P["RP_W_BANK"]] = BANK_OF_CLUSTER[CLUSTER]
     words[P["RP_W_PACKETS"]] = packets_
     words[P["RP_W_CAP"]] = cap
-    words[P["RP_W_RECORDS"]] = records
+    words[P["RP_W_COMMANDS"]] = commands
     prog.thread(
         cluster=CLUSTER,
         sources=[THREAD / "plan.c"],
@@ -113,14 +113,16 @@ def run(session, prog, frames, meter, log, deadline_s=5.0):
     us = 1e6 / TIMER_HZ
     out = []
     for f in rows[: res.words[0] if res.words else 0]:
-        n = int(f[P["RP_L_ISSUED"]])
+        n = int(f[P["RP_L_SUBMITTED"]])
         out.append(
             {
                 "wall_us": float(f[P["RP_L_FRAME"]]) * us,
                 "plan_us": [float(x) * us for x in f[1:5]],
                 "chunks": [int(x) for x in f[5:9]],
                 "plan_parts_us": [float(x) * us for x in f[10:14]],
-                "record_us": (f[P["RP_L_RECORD"] : P["RP_L_RECORD"] + n] * us).tolist(),
+                "command_us": (
+                    f[P["RP_L_COMMAND"] : P["RP_L_COMMAND"] + n] * us
+                ).tolist(),
             }
         )
     status = {
@@ -136,13 +138,13 @@ def run(session, prog, frames, meter, log, deadline_s=5.0):
 
 
 def entries_of(recs, steps, per_step, treelets):
-    """Table entries from frame.records' (segment, words) list (LOAD first): a trace's
+    """Table entries from frame.records' (handler, words) list (LOAD first): a trace's
     chunk records become one entry of kind 1 + its index; the rest stay as they are."""
     out = [(P["RP_KIND_FIRST"], *recs[0])]
     at = 1
     for step, k in zip(steps, per_step):
-        name, seg = step[0], step[1]
-        if seg == "kSegTrace" and treelets:
+        name, handler = step[0], step[1]
+        if handler == "kHandlerTrace" and treelets:
             s, words = recs[at]
             words = list(words)
             words[0] = words[4] = 0

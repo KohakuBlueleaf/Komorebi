@@ -1,4 +1,4 @@
-// The grid side: every record reports at once.
+// The grid side: every command reports at once.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -6,7 +6,7 @@
 
 void kernel_main() {
     km::Writer wr;
-    wr.run([&](const km_record_t&) {
+    wr.run([&](const km_command_t&) {
         return true;
     });
 }

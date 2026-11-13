@@ -374,7 +374,7 @@ def fixed_bytes(tree_pages):
     return total + tree_pages * K["kTreePageBytes"]
 
 
-def plan_records(
+def plan_commands(
     most,
     n_treelets,
     slot_bytes,
@@ -414,16 +414,16 @@ def plan_records(
     )
 
 
-def chunks(directory, per_record):
-    """The directory (cores, 16) split into records of at most per_record packets per
+def chunks(directory, per_command):
+    """The directory (cores, 16) split into records of at most per_command packets per
     core: a list of directories, the j-th giving each core its j-th chunk."""
     first = directory[:, K["kDirFirst"]].astype(np.int64)
     count = directory[:, K["kDirCount"]].astype(np.int64)
     out = []
-    for j in range(max(1, -(-int(count.max()) // per_record))):
+    for j in range(max(1, -(-int(count.max()) // per_command))):
         d = directory.copy()
-        d[:, K["kDirFirst"]] = first + j * per_record
-        d[:, K["kDirCount"]] = np.clip(count - j * per_record, 0, per_record)
+        d[:, K["kDirFirst"]] = first + j * per_command
+        d[:, K["kDirCount"]] = np.clip(count - j * per_command, 0, per_command)
         out.append(d)
     return out
 
@@ -442,7 +442,7 @@ def det_bound(tris, d):
 
 
 def check_det_range(tris, d):
-    """Refuses rays and triangles whose determinant could leave the reciprocal's
+    """Rejects rays and triangles whose determinant could leave the reciprocal's
     exact range."""
     bound = det_bound(tris, d)
     if not bound < DET_LIMIT:

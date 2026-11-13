@@ -95,7 +95,7 @@ namespace walk {
         read_slot(base + kLeafWord, d + kOutLeaf + 32 * p);
     }
 
-    // Lane flags = bit `lane` of mask m (every lane enabled first); uses L5, L6.
+    // Broadcast flags = bit `lane` of mask m (every lane enabled first); uses L5, L6.
     inline void lanes_from_mask(uint32_t m) {
         TTI_SFPENCC(3, 0, 0, 10);
         TTI_SFPSHFT(0xfff, LANE, L6, 5);  // L6 = lane

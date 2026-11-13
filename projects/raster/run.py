@@ -105,7 +105,7 @@ def prepare(scene, workers, mode="balanced", tiles=None, cores=0, split=SPLIT):
 
 
 def frame_stats(us):
-    """Issue-to-acknowledgement time of the records in microseconds."""
+    """Submit-to-acknowledgement time of the records in microseconds."""
     us = np.asarray(us, dtype=np.float64)
     return {
         "first": float(us[0]),
@@ -149,7 +149,7 @@ def main():
         out["list_bytes"] = int(h["pages"].nbytes)
         frame, prof, out["run"], us, out["times"] = card.run_lists(
             session,
-            K["kSegFill"],
+            K["kHandlerFill"],
             h["pages"],
             h["directory"],
             len(tiles) * K["kPlanes"],

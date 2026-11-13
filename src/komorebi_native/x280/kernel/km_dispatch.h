@@ -1,4 +1,4 @@
-/* The dispatch kernel's interface to the host, in plain C: the argument block, the
+/* The dispatcher's interface to the host, in plain C: the argument block, the
  * layouts of the cluster's local memory (LIM) and the host buffer, the result block. */
 #pragma once
 
@@ -21,9 +21,9 @@
 #define KMD_LIM_RESULT 0x140u /* result block, KMD_R_WORDS words */
 #define KMD_LIM_READ 0x1C0u   /* line from the host: word 0 = events it has read */
 #define KMD_LIM_READY 0x200u  /* KM_READY of column leader c at + c * 16 */
-#define KMD_LIM_HARTS 0x300u  /* hart block, KMD_H_WORDS words */
+#define KMD_LIM_CORES 0x300u  /* core block, KMD_H_WORDS words */
 #define KMD_LIM_ACKS 0x400u   /* ack word of slot j at + j * KM_ACK_STRIDE */
-#define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_record_t */
+#define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_command_t */
 #define KMD_LIM_DYN 0x1800u   /* status line of core c in a dynamic run at + c * 16 */
 #define KMD_LIM_BYTES 0x2000u
 #define KMD_LIM_UPLOAD                                            \
@@ -52,58 +52,58 @@
 #define KMD_STATE_DONE 3u   /* finished without error */
 #define KMD_STATE_FAILED 4u /* finished with an error: see the result block */
 
-/* Error codes. The hart result is the ticks of the run, or ~code. */
+/* Error codes. The core result is the ticks of the run, or ~code. */
 #define KMD_ERR_NONE 0u
 #define KMD_ERR_ARGS 1u      /* the argument block is not this run's or out of range */
 #define KMD_ERR_WINDOW 2u    /* a window did not read back as programmed */
 #define KMD_ERR_ALIGN 3u     /* control block address unaligned or outside L1 */
-#define KMD_ERR_DEADLINE 4u  /* a record's team missed its deadline */
+#define KMD_ERR_DEADLINE 4u  /* a command's group missed its deadline */
 #define KMD_ERR_START 5u     /* the hello or a READY did not arrive in time */
 #define KMD_ERR_IDLE 6u      /* no command and nothing in flight for t_idle */
 #define KMD_ERR_STOPPED 7u   /* the runtime asked the kernel to stop */
-#define KMD_ERR_STOP_BUSY 9u /* a STOP command arrived with records in flight */
+#define KMD_ERR_STOP_BUSY 9u /* a STOP command arrived with commands in flight */
 #define KMD_ERR_ENGINE 10u   /* core 1 did not stop within KMD_ENGINE_STOP_TICKS */
 /* An exception on core `req` (0 or 1): slot = mcause, seq = mepc, seen = mtval (low
  * words). The kernel finished without its state's pointers; the cluster restores. */
 #define KMD_ERR_TRAP 11u
 
-/* Reasons of a KM_EV_REFUSED event (its aux): the command was consumed, not run. */
-#define KMD_REFUSE_SEG 1u    /* segment 240 to 249 */
-#define KMD_REFUSE_FLAGS 2u  /* reserved flag bit 0 set */
-#define KMD_REFUSE_TEAM 3u   /* count 0, or the team does not lie inside the cores */
-#define KMD_REFUSE_EXITED 4u /* a record after EXIT */
-#define KMD_REFUSE_REGION \
+/* Reasons of a KM_EV_REJECTED event (its aux): the command was consumed, not run. */
+#define KMD_REJECT_HANDLER 1u /* handler 240 to 249 */
+#define KMD_REJECT_FLAGS 2u   /* reserved flag bit 0 set */
+#define KMD_REJECT_GROUP 3u   /* count 0, or the group does not lie inside the cores */
+#define KMD_REJECT_EXITED 4u  /* a command after EXIT */
+#define KMD_REJECT_REGION \
     5u /* a range not 64-byte aligned or outside the upload region */
-#define KMD_REFUSE_STREAMS 6u  /* KM_SEG_RUN while KM_STREAM_MAX_ACTIVE streams run */
-#define KMD_REFUSE_UNKNOWN 7u  /* KM_SEG_CANCEL of a req no active stream has */
-#define KMD_REFUSE_DEADLINE 8u /* KM_SEG_DEADLINE of 0: a deadline is never zero */
-#define KMD_REFUSE_QUEUE 9u    /* a KM_F_QUEUE record while KM_QUEUE_JOBS jobs wait */
-#define KMD_REFUSE_DROPPED 10u /* to the engine: a queued job of its stream dropped */
-#define KMD_REFUSE_BUSY 11u    /* engine, work cluster: the record cannot go now */
-#define KMD_REFUSE_DYN 12u     /* a dynamic run with KM_F_QUEUE */
+#define KMD_REJECT_STREAMS 6u  /* KM_HANDLER_RUN beyond KM_STREAM_MAX_ACTIVE streams */
+#define KMD_REJECT_UNKNOWN 7u  /* KM_HANDLER_CANCEL of a req no active stream has */
+#define KMD_REJECT_DEADLINE 8u /* KM_HANDLER_DEADLINE of 0 (a deadline is never 0) */
+#define KMD_REJECT_QUEUE 9u    /* a KM_F_QUEUE command while KM_QUEUE_JOBS jobs wait */
+#define KMD_REJECT_DROPPED 10u /* to the engine: a queued job of its stream dropped */
+#define KMD_REJECT_BUSY 11u    /* engine, work cluster: the command cannot go now */
+#define KMD_REJECT_DYN 12u     /* a dynamic run with KM_F_QUEUE */
 
 /* Engine to kernel: POST host event {a0 req, a1 status, a2 ticks}. Kernel to engine
  * events: RUN {req offset, ticks bytes} of an admitted upload, CANCEL {ticks req}. */
-#define KMD_SEG_POST 248u
+#define KMD_HANDLER_POST 248u
 /* Engine to kernel: drop its queued jobs of stream tag a0 (the header's slot bits). */
-#define KMD_SEG_DROP 247u
+#define KMD_HANDLER_DROP 247u
 #define KMD_EV_RUN 0x10u
 #define KMD_EV_CANCEL 0x11u
-/* Kernel to engine, once after a KMD_REFUSE_BUSY: a slot or the queue has room. */
+/* Kernel to engine, once after a KMD_REJECT_BUSY: a slot or the queue has room. */
 #define KMD_EV_WAKE 0x12u
 
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */
-#define KMD_SEG_CHECK_UPLOAD 246u
+#define KMD_HANDLER_CHECK_UPLOAD 246u
 /* Test builds with KMD_VERIFY_LINES: core 0 loads 8 bytes from address a0 (a trap). */
-#define KMD_SEG_TRAP 244u
+#define KMD_HANDLER_TRAP 244u
 
 /* KMD_TRACE builds, in the region's lower half: kmd_trace_t, then per slot taken or
- * freed {kind | slot << 8 | source << 16, req, team, mtime}. */
+ * freed {kind | slot << 8 | source << 16, req, group, mtime}. */
 #define KMD_TRACE_PART(upload_bytes) ((upload_bytes) / 2u & ~63u)
-#define KMD_TRACE_ISSUE 1u
+#define KMD_TRACE_SUBMIT 1u
 #define KMD_TRACE_FREE 2u
-#define KMD_TRACE_QUEUED 3u        /* an issue from the job queue */
+#define KMD_TRACE_QUEUED 3u        /* a submit from the job queue */
 #define KMD_TRACE_MARK 0x54524345u /* "TRCE" */
 
 typedef struct {
@@ -122,20 +122,20 @@ typedef struct {
 
 /* Result block words. Pairs named _LO / _HI hold a 64-bit count. */
 enum {
-    KMD_R_STATE = 0,     /* KMD_STATE_* */
-    KMD_R_ERROR = 1,     /* KMD_ERR_* */
-    KMD_R_WHERE = 2,     /* KMD_WHERE_* */
-    KMD_R_SLOT = 3,      /* the slot of a missed deadline */
-    KMD_R_SEQ = 4,       /* its sequence number */
-    KMD_R_REQ = 5,       /* its host command number */
-    KMD_R_SEEN = 6,      /* the column that had not reported READY, or a bad word */
-    KMD_R_COMMANDS = 7,  /* commands taken from the host ring */
-    KMD_R_RECORDS = 8,   /* records issued to the grid */
-    KMD_R_EVENTS = 9,    /* events pushed to the host */
-    KMD_R_BUSY = 10,     /* busy slots when the kernel finished (bit j = slot j) */
-    KMD_R_MAX_BUSY = 11, /* most slots busy at once */
-    KMD_R_CTL = 12,      /* control block address from the hello */
-    KMD_R_TICKS_LO = 13, /* ticks from the first command taken to the finish */
+    KMD_R_STATE = 0,         /* KMD_STATE_* */
+    KMD_R_ERROR = 1,         /* KMD_ERR_* */
+    KMD_R_WHERE = 2,         /* KMD_WHERE_* */
+    KMD_R_SLOT = 3,          /* the slot of a missed deadline */
+    KMD_R_SEQ = 4,           /* its sequence number */
+    KMD_R_REQ = 5,           /* its host command number */
+    KMD_R_SEEN = 6,          /* the column that had not reported READY, or a bad word */
+    KMD_R_HOST_COMMANDS = 7, /* commands taken from the host ring */
+    KMD_R_COMMANDS = 8,      /* commands submitted to the grid */
+    KMD_R_EVENTS = 9,        /* events pushed to the host */
+    KMD_R_BUSY = 10,         /* busy slots when the kernel finished (bit j = slot j) */
+    KMD_R_MAX_BUSY = 11,     /* most slots busy at once */
+    KMD_R_CTL = 12,          /* control block address from the hello */
+    KMD_R_TICKS_LO = 13,     /* ticks from the first command taken to the finish */
     KMD_R_TICKS_HI = 14,
     KMD_R_IDLE_LO = 15, /* loop passes with a free slot and no command */
     KMD_R_IDLE_HI = 16,
@@ -146,33 +146,33 @@ enum {
     KMD_R_BOOT_TICKS = 21, /* ticks from the start to READY */
     KMD_R_LAST_LO = 22,    /* ticks from the first command taken to the last event */
     KMD_R_LAST_HI = 23,
-    KMD_R_REFUSED = 24, /* commands answered with KM_EV_REFUSED */
-    KMD_R_HELD = 25,    /* commands that waited at least one pass (EXIT, KM_F_EXCL) */
-    KMD_R_NO_ROOM = 26, /* commands that waited for room in the event ring */
-    KMD_R_CHECKED = 27, /* KMD_VERIFY_LINES builds: records whose words were checked */
-    KMD_R_BAD_LINES = 28, /* of those, records with a word that did not match */
+    KMD_R_REJECTED = 24, /* commands answered with KM_EV_REJECTED */
+    KMD_R_HELD = 25,     /* commands that waited at least one pass (EXIT, KM_F_EXCL) */
+    KMD_R_NO_ROOM = 26,  /* commands that waited for room in the event ring */
+    KMD_R_CHECKED = 27, /* KMD_VERIFY_LINES builds: commands whose words were checked */
+    KMD_R_BAD_LINES = 28, /* of those, commands with a word that did not match */
     KMD_R_BAD_FIRST = 29, /* the first such command's number */
-    KMD_R_RESULTS = 30,   /* KM_F_RESULT records completed */
+    KMD_R_RESULTS = 30,   /* KM_F_RESULT commands completed */
     KMD_R_RESULT = 31,    /* the latest one's result */
     KMD_R_WORDS = 32
 };
 
-/* Hart block in LIM: each word has one writer, the hart it names. */
+/* Core block in LIM: each word has one writer, the core it names. */
 enum {
-    KMD_H_STAMP0 = 0,      /* core 0: its loop passes / 1024, every 1024 passes */
-    KMD_H_STAMP1 = 1,      /* core 1: the same for the engine's loop */
+    KMD_H_MARKER0 = 0,     /* core 0: its loop passes / 1024, every 1024 passes */
+    KMD_H_MARKER1 = 1,     /* core 1: the same for the engine's loop */
     KMD_H_ENGINE = 2,      /* core 1: KMD_ENGINE_* */
     KMD_H_PASSES = 3,      /* core 1: engine loop passes, low word, at its end */
-    KMD_H_RECORDS = 4,     /* core 1: records it sent */
+    KMD_H_COMMANDS = 4,    /* core 1: commands it sent */
     KMD_H_POSTS = 5,       /* core 1: host events it posted */
     KMD_H_EVENTS = 6,      /* core 1: events it read */
     KMD_H_RUNS = 7,        /* core 1: streams it started */
     KMD_H_LOST = 8,        /* core 0: posts dropped at the finish for lack of room */
-    KMD_H_SOURCE = 9,      /* core 0: the source of the error's record (KMD_R_REQ) */
+    KMD_H_SOURCE = 9,      /* core 0: the source of the error's command (KMD_R_REQ) */
     KMD_H_DYN_GAVE = 10,   /* core 0: 1 + the core whose status line said gave up */
     KMD_H_DYN_CHECKS = 11, /* core 0: two-pass checks of dynamic runs */
     KMD_H_DYN_QUIET = 12,  /* core 0: mtime, low word, of the last quiet end */
-    KMD_H_ABANDONED = 13,  /* core 0: records in flight or queued at the finish */
+    KMD_H_ABANDONED = 13,  /* core 0: commands in flight or queued at the finish */
     KMD_H_TRAP_CAUSE = 14, /* core 1, after a trap: mcause */
     KMD_H_TRAP_PC = 15,    /* core 1, after a trap: mepc, low word */
     KMD_H_WORDS = 16
@@ -190,7 +190,7 @@ enum {
 #define KMD_WIN_HOST 18u
 #define KMD_WIN_WORK 19u /* work cluster c's ring area: KMD_WIN_WORK + c - 1 */
 
-/* The argument block's layout; the kernel refuses a block of another version. */
+/* The argument block's layout; the kernel rejects a block of another version. */
 #define KMD_ARGS_VERSION 2u
 /* Work clusters with a ring to the kernel (clusters 1 to 3). */
 #define KMD_WORK_CLUSTERS 3u
@@ -202,14 +202,14 @@ typedef struct {
     uint64_t host_depth;    /* host command ring slots: a power of two, at most 64 */
     uint64_t event_depth;   /* event ring slots in the host buffer: a power of two */
     uint64_t columns;       /* column leaders that report READY, 1 to KMD_READY_MAX */
-    uint64_t cores;         /* cores in core order; a team must lie inside */
+    uint64_t cores;         /* cores in core order; a group must lie inside */
     uint64_t panels;        /* multicast rectangles, 1 or 2 */
     uint32_t rect[2][4];    /* x_start, y_start, x_end, y_end of each */
     uint64_t host_noc_addr; /* NoC address of the host buffer, 64-byte aligned */
     uint64_t pcie_x;        /* the PCIe tile that reaches it */
     uint64_t pcie_y;
     uint64_t t_start;   /* deadline for the hello and every READY, nonzero */
-    uint64_t t_record;  /* a record's deadline until a KM_SEG_DEADLINE command */
+    uint64_t t_command; /* a command's deadline until a KM_HANDLER_DEADLINE command */
     uint64_t t_idle;    /* deadline with no command and nothing in flight; 0 = none */
     uint64_t state_ddr; /* offset in this cluster's DRAM bank of KMD_STATE_BYTES */
     uint64_t
@@ -221,8 +221,8 @@ typedef struct {
     uint64_t work_event_depth; /* events per ring, a power of two, at most 1024 */
     uint64_t work_noc[KMD_WORK_CLUSTERS];      /* each cluster's tile: x | y << 16 */
     uint64_t work_noc_addr[KMD_WORK_CLUSTERS]; /* NoC address there of KMD_WORK_* */
-    uint64_t dyn_seg; /* the program's dynamic segment (dynamic.h); 0: none */
-    uint64_t version; /* KMD_ARGS_VERSION */
+    uint64_t dyn_handler; /* the program's dynamic handler (dynamic.h); 0: none */
+    uint64_t version;     /* KMD_ARGS_VERSION */
 } kmd_args_t;
 
 /* The ready block: the host waits for `mark` (its buffer is zeroed before the run), as
@@ -236,15 +236,15 @@ typedef struct {
     uint32_t lim_bytes;    /* KMD_LIM_BYTES: the layout before it */
 } kmd_ready_t;
 
-/* Test builds with KMD_VERIFY_LINES check every user record against these: argument
- * word w (0 to 9) of host command i, its team (first | count << 16) and header 0. */
+/* Test builds with KMD_VERIFY_LINES check every user command against these: argument
+ * word w (0 to 9) of host command i, its group (first | count << 16) and header 0. */
 static inline uint32_t kmd_verify_word(uint32_t i, uint32_t w) {
     uint32_t x = i * 0x9E3779B1u ^ (w + 1u) * 0x85EBCA77u;
     x ^= x >> 15;
     return x * 0x2C1B3C6Du;
 }
 
-static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
+static inline uint32_t kmd_verify_group(uint32_t i, uint32_t cores) {
     const uint32_t count = 1u + kmd_verify_word(i, 10u) % cores;
     return kmd_verify_word(i, 11u) % (cores - count + 1u) | count << 16;
 }
@@ -297,8 +297,8 @@ KMD_STATIC_ASSERT(KMD_LIM_ARGS + sizeof(kmd_args_t) <= KMD_LIM_MAILBOX, "LIM: ar
 KMD_STATIC_ASSERT(KMD_LIM_MAILBOX + 8u <= KMD_LIM_RESULT, "LIM: mailbox");
 KMD_STATIC_ASSERT(KMD_LIM_RESULT + 4u * KMD_R_WORDS <= KMD_LIM_READ, "LIM: result");
 KMD_STATIC_ASSERT(KMD_LIM_READ + 64u <= KMD_LIM_READY, "LIM: read count");
-KMD_STATIC_ASSERT(KMD_LIM_READY + 16u * KMD_READY_MAX <= KMD_LIM_HARTS, "LIM: READY");
-KMD_STATIC_ASSERT(KMD_LIM_HARTS + 4u * KMD_H_WORDS <= KMD_LIM_ACKS, "LIM: harts");
+KMD_STATIC_ASSERT(KMD_LIM_READY + 16u * KMD_READY_MAX <= KMD_LIM_CORES, "LIM: READY");
+KMD_STATIC_ASSERT(KMD_LIM_CORES + 4u * KMD_H_WORDS <= KMD_LIM_ACKS, "LIM: X280 cores");
 KMD_STATIC_ASSERT(
     KMD_ERING_CMDS + KMD_ENGINE_DEPTH * 64u <= KMD_ERING_EVENTS, "engine ring: cmds"
 );

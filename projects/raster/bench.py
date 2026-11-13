@@ -116,15 +116,15 @@ def plan_loop(seconds, first_us, max_reps, budget_s):
     return reps
 
 
-def power_loop(index, run_, seg, args, reps, batch=512):
-    """`reps` records of `seg` on every core in batches under the samplers; (meter,
+def power_loop(index, run_, handler, args, reps, batch=512):
+    """`reps` records of `handler` on every core in batches under the samplers; (meter,
     clock, the window in which records ran, microseconds per record)."""
     lat = []
     with power.PowerSampler(index) as meter, ClockSampler(index) as clock:
         start = time.perf_counter()
         while sum(map(len, lat)) < reps:
             n = min(batch, reps - sum(map(len, lat)))
-            lat.append(card.loop(run_, seg, args, n, batch))
+            lat.append(card.loop(run_, handler, args, n, batch))
             if len(lat[-1]) < n:
                 break
         # one record in flight at a time; the host's gaps between batches count too
@@ -143,7 +143,7 @@ def loop_stats(windows, lat):
         "frame_us_max": float(lat.max()),
         "frames_per_s": len(lat) / card_s,
         "card_s": card_s,
-        "records_s": float(lat.sum()) * 1e-6,
+        "commands_s": float(lat.sum()) * 1e-6,
     }
 
 
@@ -175,9 +175,11 @@ def main():
         up = card.upload(session, h["pages"], h["directory"], n_out)
         words = card.words(up, K["kPlanes"])
         run_ = session.load(card.program(), deadline=1.0)
-        first = card.loop(run_, K["kSegFill"], words, 1)
+        first = card.loop(run_, K["kHandlerFill"], words, 1)
         reps = plan_loop(args.seconds, float(first[0]), args.max_reps, args.budget)
-        meter, clock, windows, lat = power_loop(index, run_, K["kSegFill"], words, reps)
+        meter, clock, windows, lat = power_loop(
+            index, run_, K["kHandlerFill"], words, reps
+        )
         run_.stop()
         out["run"] = card.check_run(run_, workers, reps, np.concatenate(lat))
         t0 = time.perf_counter()

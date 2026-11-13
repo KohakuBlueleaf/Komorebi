@@ -71,22 +71,22 @@ def test_a_compile_error_in_the_checked_build_raises_program_error(card, tmp_pat
     assert "launch" not in log and log[-1] == "close"
 
 
-def test_the_exit_bound_is_set_only_when_the_environment_has_none(card):
+def test_the_exit_timeout_is_set_only_when_the_environment_has_none(card):
     session, _, _ = card
     name, log = session.OP_TIMEOUT, []
     unset = {}
-    assert session.bound_exit(unset, log.append) == 30.0
+    assert session.exit_timeout(unset, log.append) == 30.0
     assert (
         unset[name] == "30"
         and len(log) == 1
         and session.exit_wait(unset) == "up to 30 s"
     )
-    for given, bound, phrase in (
+    for given, timeout, phrase in (
         ("12.5", 12.5, "up to 12.5 s"),
-        ("0", 0.0, "without a bound"),
+        ("0", 0.0, "without a timeout"),
     ):
         env = {name: given}
-        assert session.bound_exit(env, log.append) == bound
+        assert session.exit_timeout(env, log.append) == timeout
         assert env[name] == given and session.exit_wait(env) == phrase
     assert len(log) == 1  # a user's value, 0 included, is kept without a line
 
@@ -105,7 +105,7 @@ def test_a_kernel_instruction_finding_stops_the_load_before_the_launch(
     assert "launch" not in log and "start" not in log and log[-1] == "close"
 
 
-def test_a_program_over_the_kernel_buffer_is_refused_before_the_launch(card, tmp_path):
+def test_a_program_over_the_kernel_buffer_is_rejected_before_the_launch(card, tmp_path):
     session, log, module = card
     said = "Program size (70688) too large for kernel config buffer (70656) on TENSIX"
     module.kernel_build = lambda launch: built([], total=0, error=said)
@@ -197,7 +197,7 @@ def backend_over(session, log, tmp_path, monkeypatch):
     return sess, backend
 
 
-def test_the_host_writes_the_stop_word_into_every_core_then_waits_bounded(
+def test_the_host_writes_the_stop_flag_into_every_core_then_waits_with_a_timeout(
     card, tmp_path, monkeypatch
 ):
     session, log, _ = card
@@ -227,13 +227,13 @@ def test_a_grid_that_does_not_return_raises_and_leaves_the_device_open(
     assert "close_device" not in log
 
 
-def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_account(
+def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_error(
     card, tmp_path, monkeypatch
 ):
     session, log, _ = card
     sess, backend = backend_over(session, log, tmp_path, monkeypatch)
     report = backend.kernel_report()
-    assert report.startswith("the dispatch kernel's core 0 is not running its loop")
+    assert report.startswith("the dispatcher's core 0 is not running its loop")
     assert "state ready, in loop" in report and "mcause=0x7" in report
     backend.port.stamps = (7, 9)
     assert "core 0 is running its loop" in backend.kernel_report()
@@ -241,7 +241,9 @@ def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_account(
     log.clear()
     assert not backend.abort() and "stage=4" in backend.close_failed
     assert [e[0] for e in log[:120]] == ["write_l1"] * 120  # the grid first
-    assert log[120:] == ["wait_grid", "close"] and backend.aborted["harts"][13] == 2
+    assert (
+        log[120:] == ["wait_grid", "close"] and backend.aborted["x280_cores"][13] == 2
+    )
 
 
 def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
@@ -274,7 +276,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     assert lines[-1].startswith("kernel state not read (TypeError")
 
 
-def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path):
+def test_a_base_off_the_16_byte_grid_is_rejected_before_the_launch(card, tmp_path):
     session, log, module = card
     FakeDispatch.lim_base = 0x10008
     try:
@@ -309,7 +311,7 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
     every = session.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
     assert set(every["unpack_to_dest_mode"]) == {"UnpackToDestFp32"}
     assert "unpack_to_dest_mode" not in session.compute_config({})
-    with pytest.raises(ProgramError, match="'fp32_dest_acc'"):  # a typo is refused
+    with pytest.raises(ProgramError, match="'fp32_dest_acc'"):  # a typo is rejected
         session.compute_config({"fp32_dest_acc": True})
 
 

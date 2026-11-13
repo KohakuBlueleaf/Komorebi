@@ -38,14 +38,16 @@ namespace {
     template <typename Accessor>
     void layer(
         const km::Reader& rd,
-        const km_record_t& r,
+        const km_command_t& r,
         const Accessor& a,
         volatile tt_l1_ptr uint32_t* prof
     ) {
         if ((r.a8 & 0xFF) != kDram) {
             return;
         }
-        const km::Share s = km::share(r.a2, rd.me() - km::first(r), km::count(r));
+        const km::Partition s = (
+            km::partition(r.a2, rd.me() - km::first(r), km::count(r))
+        );
         const uint32_t kt = r.a3;
         uint32_t wait = 0, read = 0, n = 0;
         for (uint32_t m = s.start; m < s.start + s.len; ++m) {
@@ -75,10 +77,10 @@ void kernel_main() {
     for (uint32_t w = 0; w < kProfWords; ++w) {
         prof[w] = 0;
     }
-    rd.run([&](const km_record_t& r) {
+    rd.run([&](const km_command_t& r) {
         const uint32_t t0 = km::wall();
         const uint32_t kt = r.a3, nt = r.a4;
-        if (km::seg(r) == kSegLoad) {
+        if (km::handler(r) == kHandlerLoad) {
             if (!rd.reserve(r.a1, kt * nt)) {
                 return;
             }
@@ -88,15 +90,17 @@ void kernel_main() {
             }
             return;
         }
-        if (km::seg(r) == kSegLayer) {
+        if (km::handler(r) == kHandlerLayer) {
             layer(rd, r, TensorAccessor(tiles, r.a0), prof);
             km::add_sat(prof + kPrRdBody, km::wall() - t0);
             return;
         }
-        if (km::seg(r) != kSegProduct || r.a7 == kModeComputeOnly) {
+        if (km::handler(r) != kHandlerProduct || r.a7 == kModeComputeOnly) {
             return;
         }
-        const km::Share s = km::share(r.a2, rd.me() - km::first(r), km::count(r));
+        const km::Partition s = (
+            km::partition(r.a2, rd.me() - km::first(r), km::count(r))
+        );
         const uint32_t kc = r.a5, ct = r.a6;
         const auto a = TensorAccessor(tiles, r.a0);
         const auto w = TensorAccessor(tiles, r.a9);

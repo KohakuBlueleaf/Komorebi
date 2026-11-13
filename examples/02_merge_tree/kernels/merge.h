@@ -1,11 +1,11 @@
-// Merge-tree example: the segment, buffers and record arguments its kernels share.
+// Merge-tree example: the handler, buffers and command arguments its kernels share.
 #pragma once
 
 #include <stdint.h>
 
 // MERGE: a0 input, a1 tiles T from tile a6, a2 output, a3 first output page, a4 form
 // (0 owner, 1 tree), a5 member that stalls (a test; none: 0xFFFFFFFF), a7 part tiles P.
-constexpr uint32_t kSegMerge = 1;
+constexpr uint32_t kHandlerMerge = 1;
 
 constexpr uint32_t kCbIn = 0;
 constexpr uint32_t kCbArrive = 1;  // the arrival buffer: slot k is pages k * P on

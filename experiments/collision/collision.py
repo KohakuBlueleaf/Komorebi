@@ -1,7 +1,7 @@
-"""Collision experiment: X280 record multicast against lane broadcasts in the grid.
+"""Collision experiment: X280 command multicast against broadcasts in the grid.
 
-Runs the record and lane kernels on every core and prints one JSON line with both
-sides' counts (see README.md). Example: python collision.py --records 100000 --lane 5
+Runs the command and broadcast kernels on every core and prints one JSON line with both
+sides' counts (README.md). Example: python collision.py --commands 100000 --broadcast 5
 """
 
 import argparse
@@ -25,19 +25,19 @@ import numpy as np  # noqa: E402
 
 import komorebi as km  # noqa: E402
 
-RECORDS_KERNEL = os.path.join(HERE, "kernels", "records.cpp")
-LANE_KERNEL = os.path.join(HERE, "kernels", "lane.cpp")
+COMMANDS_KERNEL = os.path.join(HERE, "kernels", "commands.cpp")
+BROADCAST_KERNEL = os.path.join(HERE, "kernels", "broadcast.cpp")
 STREAM_KERNEL = os.path.join(HERE, "kernels", "stream.cpp")
-IMAGE = os.path.join(BUILD, "record-seq.bin")
+IMAGE = os.path.join(BUILD, "command-seq.bin")
 N_CORES = 120
 WORDS = 32  # counter words per core, both kernels
 
-# CB indices (kernels/lane.h; the template's control block is 8).
+# CB indices (kernels/broadcast.h; the template's control block is 8).
 CTL_CB, CTL_BYTES = 8, 1024
-REC_CNT_CB, SHARE_CB, LANE_CNT_CB, LANE_CB = 9, 11, 12, 13
-LANE_HEAD = 512  # lane buffer bytes before the block
+REC_CNT_CB, SHARE_CB, BROADCAST_CNT_CB, BROADCAST_CB = 9, 11, 12, 13
+BROADCAST_HEAD = 512  # broadcast buffer bytes before the block
 
-# Record counter word indices (kernels/landing.h LC_*), only those this kernel writes.
+# Command counter word indices (kernels/landing.h LC_*), only those this kernel writes.
 LC = {
     "magic": 0,
     "accepted": 1,
@@ -57,7 +57,7 @@ LC = {
 }
 LANDING_MAGIC = 0x1A4D0000
 
-# Lane counter word indices (kernels/lane.h LN_*).
+# Broadcast counter word indices (kernels/broadcast.h LN_*).
 LN_NAMES = [
     "magic",
     "role",
@@ -85,17 +85,17 @@ LN_NAMES = [
     "full",
 ]
 LN = {name: i for i, name in enumerate(LN_NAMES)}
-LANE_MAGIC = 0x1A9E0000
+BROADCAST_MAGIC = 0x1A9E0000
 WHERE = {1: "ready", 2: "stamp", 3: "valid"}
 PHASES = {
     1: "start",
-    2: "wait_stamps",
+    2: "wait_markers",
     3: "fill",
     4: "barrier_block",
     5: "barrier_valid",
     6: "wait_valid",
     7: "verify",
-    8: "barrier_stamp",
+    8: "barrier_marker",
     9: "end",
     10: "gave_up",
     0xFFFFFFFF: "unreadable",
@@ -111,9 +111,9 @@ def loadavg():
         return f.read().split()[0]
 
 
-def lane_roles(plan, args):
+def broadcast_roles(plan, args):
     """Per logical core (x, y): role, rank, sender core and multicast rectangle."""
-    gx, gy, L = plan.grid_x, plan.grid_y, args.lane
+    gx, gy, L = plan.grid_x, plan.grid_y, args.broadcast
     roles = {}
     if L == 0:
         return roles
@@ -127,11 +127,11 @@ def lane_roles(plan, args):
     )
     for x in cols:
         t = [plan.translated(x, y) for y in range(gy)]
-        # Lanes need one translated x and consecutive y down the column.
+        # Broadcasts need one translated x and consecutive y down the column.
         assert all(c[0] == t[0][0] and c[1] == t[0][1] + y for y, c in enumerate(t)), t
         for i in range(gy // L):
             first, last = i * L, i * L + L - 1
-            if args.lane_noc == 0:  # NoC0 runs +y: sender on top
+            if args.broadcast_noc == 0:  # NoC0 runs +y: sender on top
                 snd, step = first, 1
                 rect = (t[first + 1][0], t[first + 1][1], t[last][0], t[last][1])
             else:  # NoC1 runs -y: sender at the bottom, rectangle start is the high y
@@ -150,8 +150,9 @@ def lane_roles(plan, args):
 
 
 def row_roles(plan, args):
-    """Lanes of --lane cores along every grid row, inside each panel (as lane_roles)."""
-    L, roles = args.lane, {}
+    """Broadcasts of --broadcast cores along every grid row, inside each panel (as
+    broadcast_roles)."""
+    L, roles = args.broadcast, {}
     for y in range(plan.grid_y):
         for x0, x1 in plan.panels:
             t = [plan.translated(x, y) for x in range(x0, x1 + 1)]
@@ -160,7 +161,7 @@ def row_roles(plan, args):
             assert len(t) % L == 0, (len(t), L)
             for i in range(len(t) // L):
                 first, last = i * L, i * L + L - 1
-                if args.lane_noc == 0:  # NoC0 runs +x: sender at the left
+                if args.broadcast_noc == 0:  # NoC0 runs +x: sender at the left
                     snd, step = first, 1
                     rect = (*t[first + 1], *t[last])
                 else:  # NoC1 runs -x: sender at the right, rectangle start is high x
@@ -178,51 +179,64 @@ def row_roles(plan, args):
     return roles
 
 
-def program(card, plan, rec_cnt, lane_cnt, args, roles, wait_cycles):
+def program(card, plan, rec_cnt, broadcast_cnt, args, roles, wait_cycles):
     slots = args.window if args.stream else 1
     gx, gy = plan.grid_x, plan.grid_y
     cores = [(0, 0, gx - 1, gy - 1)]
-    rec_args, lane_args = [], []
+    rec_args, broadcast_args = [], []
     for y in range(gy):
         for x in range(gx):
             me = y * gx + x
-            words = [rec_cnt, args.records, me] + list(plan.worker_args(x, y))
+            words = [rec_cnt, args.commands, me] + list(plan.worker_args(x, y))
             rec_args.append((x, y, words))
             r = roles.get((x, y))
-            lane = [lane_cnt, me, plan.tag, args.blocks, args.bytes, int(args.until)]
+            broadcast = [
+                broadcast_cnt,
+                me,
+                plan.tag,
+                args.blocks,
+                args.bytes,
+                int(args.until),
+            ]
             if r is None:
-                lane += [0] * 10
+                broadcast += [0] * 10
             else:
-                lane += [r["role"], r["rank"], args.lane - 1, *r["snd"], r["step"]]
-                lane += list(r["rect"])
-            lane_args.append(
-                (x, y, lane + [wait_cycles, args.window, args.check_every])
+                broadcast += [
+                    r["role"],
+                    r["rank"],
+                    args.broadcast - 1,
+                    *r["snd"],
+                    r["step"],
+                ]
+                broadcast += list(r["rect"])
+            broadcast_args.append(
+                (x, y, broadcast + [wait_cycles, args.window, args.check_every])
             )
-    # The two kernels of a core use different NoCs; the lane kernel takes --lane-noc.
-    # (RISC-V, NoC) of the record kernel and of the lane kernel:
-    if args.lane_noc == 0:
-        rec_cfg, lane_cfg = (0, 1), (1, 0)
+    # The kernels of a core use different NoCs, the broadcast kernel --broadcast-noc.
+    # (RISC-V, NoC) of the command kernel and of the broadcast kernel:
+    if args.broadcast_noc == 0:
+        rec_cfg, broadcast_cfg = (0, 1), (1, 0)
     else:
-        rec_cfg, lane_cfg = (1, 0), (0, 1)
+        rec_cfg, broadcast_cfg = (1, 0), (0, 1)
     launch = card.launch()
-    lane_kernel = STREAM_KERNEL if args.stream else LANE_KERNEL
+    broadcast_kernel = STREAM_KERNEL if args.stream else BROADCAST_KERNEL
     for source, rt_args, (riscv, noc) in (
-        (RECORDS_KERNEL, rec_args, rec_cfg),
-        (lane_kernel, lane_args, lane_cfg),
+        (COMMANDS_KERNEL, rec_args, rec_cfg),
+        (broadcast_kernel, broadcast_args, broadcast_cfg),
     ):
         launch.kernel(source, cores, riscv, [], [], [], rt_args, noc=noc)
     for index, size in (
         (CTL_CB, CTL_BYTES),
         (REC_CNT_CB, WORDS * 4),
         (SHARE_CB, 64),
-        (LANE_CNT_CB, WORDS * 4),
-        (LANE_CB, LANE_HEAD + slots * max(args.bytes, 64)),
+        (BROADCAST_CNT_CB, WORDS * 4),
+        (BROADCAST_CB, BROADCAST_HEAD + slots * max(args.bytes, 64)),
     ):
         launch.cb(cores, index, "uint32", size, size)
     return launch
 
 
-def summarize_records(cnt, n):
+def summarize_commands(cnt, n):
     c = {k: cnt[:, i] for k, i in LC.items()}
     idle = c["idle_lo"] + (c["idle_hi"] << 32)
     out = {
@@ -260,13 +274,13 @@ def summarize_records(cnt, n):
     return out
 
 
-def summarize_lanes(cnt, roles, gx, mhz):
+def summarize_broadcasts(cnt, roles, gx, mhz):
     c = {k: cnt[:, i] for k, i in LN.items()}
     span = c["t_lo"] + (c["t_hi"] << 32)
     senders = [i for i in range(N_CORES) if int(c["role"][i]) == 1]
     out = {
-        "lane_cores_finished": int(
-            sum(int(c["magic"][i]) == (LANE_MAGIC | i) for i in range(N_CORES))
+        "broadcast_cores_finished": int(
+            sum(int(c["magic"][i]) == (BROADCAST_MAGIC | i) for i in range(N_CORES))
         ),
         "senders": len(senders),
         "receivers": int((c["role"] == 2).sum()),
@@ -275,7 +289,7 @@ def summarize_lanes(cnt, roles, gx, mhz):
         ),
         "bad_blocks": int(c["bad_blocks"].sum()),
         "bad_words": int(c["bad_words"].sum()),
-        "stamps_missing": int(c["missing"].sum()),
+        "markers_missing": int(c["missing"].sum()),
         "gave_up": int((c["where"] != 0).sum()),
         "stopped": int(c["stopped"].sum()),
         "wait_max_us": round(int(c["wait_max"].max()) / mhz, 2),
@@ -287,7 +301,7 @@ def summarize_lanes(cnt, roles, gx, mhz):
         per = [int(span[i]) / max(int(c["blocks"][i]), 1) / mhz for i in senders]
         out["us_per_block_mean"] = round(sum(per) / len(per), 4)
         out["us_per_block_max"] = round(max(per), 4)
-        out["lane_span_ms_max"] = round(
+        out["broadcast_span_ms_max"] = round(
             max(int(span[i]) for i in senders) / mhz / 1e3, 3
         )
         busy = c["busy_lo"] + (c["busy_hi"] << 32)
@@ -344,13 +358,15 @@ def summarize_lanes(cnt, roles, gx, mhz):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--records", type=int, required=True, help="0: X280 idle")
+    p.add_argument("--commands", type=int, required=True, help="0: X280 idle")
     p.add_argument("--depth", type=int, choices=[1, 4], default=4)
-    p.add_argument("--lane", type=int, default=0, help="lane length, 0: no lanes")
+    p.add_argument(
+        "--broadcast", type=int, default=0, help="broadcast length, 0: no broadcasts"
+    )
     p.add_argument("--bytes", type=int, default=64, help="block bytes")
     p.add_argument("--blocks", type=int, default=1000, help="blocks (most, --until)")
-    p.add_argument("--until", action="store_true", help="stop when records are done")
-    p.add_argument("--lane-noc", type=int, choices=[0, 1], default=0)
+    p.add_argument("--until", action="store_true", help="stop when commands are done")
+    p.add_argument("--broadcast-noc", type=int, choices=[0, 1], default=0)
     p.add_argument("--columns", default="all", help="all or a list like 3,7")
     p.add_argument("--along", choices=["column", "row"], default="column")
     p.add_argument("--wait-ms", type=float, default=1000.0, help="bounded wait")
@@ -361,37 +377,39 @@ def main():
     p.add_argument("--timeout", type=float, default=30.0)
     args = p.parse_args()
     assert args.bytes % 64 == 0 and args.bytes > 0
-    assert args.lane in ((0, 2, 5, 10) if args.along == "column" else (0, 2, 3, 6))
+    assert args.broadcast in ((0, 2, 5, 10) if args.along == "column" else (0, 2, 3, 6))
     if args.stream:
         assert args.bytes >= 128 and 1 <= args.window <= 8 and args.check_every >= 1
         assert args.window * args.bytes <= 256 * 1024
-    if args.records == 0:
-        args.depth = 1  # the image's final depth-4 wait needs at least one record
-    record = {k: v for k, v in vars(args).items() if k not in ("pll", "timeout")}
-    record["load_start"] = loadavg()
+    if args.commands == 0:
+        args.depth = 1  # the image's final depth-4 wait needs at least one command
+    command = {k: v for k, v in vars(args).items() if k not in ("pll", "timeout")}
+    command["load_start"] = loadavg()
     t_start = time.time()
 
     rc = 0
     with km.Session() as card:
         log(f"device open {time.time() - t_start:.1f}s")
         try:
-            record.update(run(card, args))
+            command.update(run(card, args))
         except RuntimeError as e:  # reported in the JSON line; a core timeout is rc 7
             msg = str(e)
-            record["error"] = msg[-3000:]
+            command["error"] = msg[-3000:]
             rc = 7 if "Timeout" in msg else 1
         finally:
-            record["load_end"] = loadavg()
-            record["wall_s"] = round(time.time() - t_start, 1)
-            print(json.dumps(record), flush=True)
+            command["load_end"] = loadavg()
+            command["wall_s"] = round(time.time() - t_start, 1)
+            print(json.dumps(command), flush=True)
     sys.exit(rc)
 
 
 def run(card, args):
-    n = args.records
+    n = args.commands
     runtime = x280mod.Runtime(card.device.mesh_capsule(), pll_mhz=args.pll)
     try:
-        ticks, wall, rec_cnt, lane_cnt, roles, gx, mhz = x280_phase(card, args, runtime)
+        ticks, wall, rec_cnt, broadcast_cnt, roles, gx, mhz = x280_phase(
+            card, args, runtime
+        )
     except BaseException as e:  # the frames must not keep the runtime open
         traceback.clear_frames(e.__traceback__)
         raise
@@ -402,18 +420,18 @@ def run(card, args):
         log("x280 runtime closed")
 
     rc = rec_cnt.read().astype(np.int64)
-    lc = lane_cnt.read().astype(np.int64)
+    lc = broadcast_cnt.read().astype(np.int64)
     log("counters read back")
     out = {
         "ticks": ticks,
-        "us_per_record": (
+        "us_per_command": (
             round(ticks / x280mod.MTIME_HZ * 1e6 / n, 4) if ticks and n else None
         ),
         "host_wall_s": round(wall, 2),
         "aiclk_mhz": mhz,
     }
-    out.update(summarize_records(rc, n))
-    out.update(summarize_lanes(lc, roles, gx, mhz))
+    out.update(summarize_commands(rc, n))
+    out.update(summarize_broadcasts(lc, roles, gx, mhz))
     rec_ok = (
         (bool(ticks) or n == 0)
         and out["rec_cores_finished"] == N_CORES
@@ -421,21 +439,21 @@ def run(card, args):
         and out["lost"] == 0
         and out["torn"] == 0
     )
-    lane_ok = (
-        out["lane_cores_finished"] == N_CORES
+    broadcast_ok = (
+        out["broadcast_cores_finished"] == N_CORES
         and out["roles_ok"]
         and out["bad_words"] == 0
         and out["gave_up"] == 0
-        and out["stamps_missing"] == 0
+        and out["markers_missing"] == 0
         and out["block_count_mismatch"] == 0
     )
-    out["ok"] = bool(rec_ok and lane_ok)
+    out["ok"] = bool(rec_ok and broadcast_ok)
     return out
 
 
 def x280_phase(card, args, runtime):
     """Starts the X280 image and the kernels, waits; returns what run() reads."""
-    n = args.records
+    n = args.commands
     plan = runtime.plan(IMAGE, args.depth, 0)
     gx, gy = plan.grid_x, plan.grid_y
     assert gx * gy == N_CORES, (gx, gy)
@@ -445,20 +463,20 @@ def x280_phase(card, args, runtime):
     def zeros(rows):
         return card.tensor(np.zeros((rows, WORDS), np.uint32), "uint32")
 
-    rec_cnt, lane_cnt = zeros(N_CORES), zeros(N_CORES)
+    rec_cnt, broadcast_cnt = zeros(N_CORES), zeros(N_CORES)
     wait_cycles = int(args.wait_ms * 1e3 * mhz)
     assert wait_cycles < 1 << 32
 
-    roles = lane_roles(plan, args)
+    roles = broadcast_roles(plan, args)
     # The X280 starts first: it picks the tag the kernel args carry.
     session = plan.start(n)
     finished = False
     t0 = time.perf_counter()
     try:  # from here an error stops the X280 image first
         prog = program(
-            card, plan, rec_cnt.address, lane_cnt.address, args, roles, wait_cycles
+            card, plan, rec_cnt.address, broadcast_cnt.address, args, roles, wait_cycles
         )
-        log(f"launch: {len(roles)} lane cores")
+        log(f"launch: {len(roles)} broadcast cores")
         prog.run()
         log("program enqueued")
         ticks = plan.finish(session, args.timeout)
@@ -468,7 +486,7 @@ def x280_phase(card, args, runtime):
             plan.finish(session, 5.0)
     wall = time.perf_counter() - t0
     log(f"x280 done: {ticks} ticks, host wall {wall:.2f}s")
-    return ticks, wall, rec_cnt, lane_cnt, roles, gx, mhz
+    return ticks, wall, rec_cnt, broadcast_cnt, roles, gx, mhz
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ namespace {
 
     // Polls ready() for at most kWaitCycles. False: gave up (recorded at `where`).
     template <typename Ready>
-    bool bounded(Ready ready, uint32_t where) {
+    bool timed(Ready ready, uint32_t where) {
         const uint32_t t0 = km::wall();
         while (!ready()) {
             if (km::wall() - t0 > kWaitCycles) {
@@ -41,7 +41,7 @@ namespace {
     }
 
     bool mail_from(ckernel::ThreadId thread, uint32_t where) {
-        return bounded(
+        return timed(
             [&] {
                 return ckernel::mailbox_not_empty(thread);
             },
@@ -93,7 +93,7 @@ namespace {
     }
 
     // An item of `pages` at dst must end inside the output buffer; otherwise the
-    // give-up goes to the writer's gave-up word and the stop word is set.
+    // give-up goes to the writer's gave-up word and the stop flag is set.
     bool item_fits(uint32_t dst, uint32_t pages) {
         if (dst + pages * kOutPageBytes <=
             (get_local_cb_interface(kCbOut).fifo_limit << 4)) {
@@ -105,7 +105,7 @@ namespace {
 
     // Bounded cb_reserve_back on the output buffer.
     bool reserve_out(uint32_t pages) {
-        const bool ok = bounded(
+        const bool ok = timed(
             [&] {
                 const uint16_t acked = (
                     reg_read(reinterpret_cast<uint32_t>(get_cb_tiles_acked_ptr(kCbOut)))
@@ -316,22 +316,22 @@ namespace {
 
 // FILL, ARITH and SPIN of one record; the frame program's compute kernel calls it as
 // well.
-void fill_compute_record(const km_record_t& r) {
-    const uint32_t seg = km::seg(r);
-    if (seg == kSegSpin) {
+void fill_compute_command(const km_command_t& r) {
+    const uint32_t handler = km::handler(r);
+    if (handler == kHandlerSpin) {
         const uint32_t t0 = km::wall();
         while (km::wall() - t0 < r.a0) {
             ;
         }
         return;
     }
-    if (seg != kSegFill && seg != kSegArith) {
+    if (handler != kHandlerFill && handler != kHandlerArith) {
         return;
     }
 #ifdef TRISC_UNPACK
     // Hands each page to the pack thread; frees it when the pack thread is done.
     for (;;) {
-        const bool page = bounded(
+        const bool page = timed(
             [] {
                 const uint16_t received = (
                     reg_read(
@@ -364,7 +364,7 @@ void fill_compute_record(const km_record_t& r) {
     fill::Prof pf;
     fill::setup();
     bool ok;
-    if (seg == kSegFill) {
+    if (handler == kHandlerFill) {
         fill::edges(true);
         ok = fill_list(pf);
     } else {
@@ -372,7 +372,7 @@ void fill_compute_record(const km_record_t& r) {
     }
     fill::finish();
     if (ok) {
-        profile(pf, seg == kSegFill ? kPlanes : kArithOut);
+        profile(pf, handler == kHandlerFill ? kPlanes : kArithOut);
     }
 #endif
 }
@@ -381,8 +381,8 @@ void fill_compute_record(const km_record_t& r) {
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbIn, kCbOut);
-    cp.run([&](const km_record_t& r) {
-        fill_compute_record(r);
+    cp.run([&](const km_command_t& r) {
+        fill_compute_command(r);
     });
 }
 #endif

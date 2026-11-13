@@ -69,7 +69,7 @@ static inline uint32_t work_open_one(kmd_t* k, uint32_t w, uint64_t* line) {
     r->told = (volatile uint32_t*)(win + KMD_WORK_TOLD);
     r->events = win + KMD_WORK_EVENTS;
     r->next = 1;
-    r->t_record = k->ring[KMD_SRC_HOST].t_record;
+    r->t_command = k->ring[KMD_SRC_HOST].t_command;
     r->line = line;
     return KMD_ERR_NONE;
 }

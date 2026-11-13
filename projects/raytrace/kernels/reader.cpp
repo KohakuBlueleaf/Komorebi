@@ -1,9 +1,9 @@
 // Ray tracing reader: LOAD copies the tree image into the tree buffer; the other
-// segments send a header page (first page, count), then stream this core's pages.
+// handlers send a header page (first page, count), then stream this core's pages.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "bounded.hpp"
+#include "timed.hpp"
 #include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "raytrace.h"
@@ -11,7 +11,7 @@
 namespace {
 
     constexpr uint32_t kMaxSlots = 8;
-    constexpr uint16_t kDone = 0x8000;  // a treelet's group of this round is issued
+    constexpr uint16_t kDone = 0x8000;  // a treelet's group of this round is submitted
 
     uint32_t g_tree = 0;  // L1 address of the tree (or top tree) image, after LOAD
 
@@ -21,17 +21,20 @@ namespace {
         asm volatile("and x0, x0, %0" : : "r"(v) : "memory");
     }
 
-    uint32_t in_page_bytes(uint32_t seg) {
-        if (seg == kSegMath) {
+    uint32_t in_page_bytes(uint32_t handler) {
+        if (handler == kHandlerMath) {
             return kMaInVectors * kVec * 4;
         }
-        return seg == kSegArith ? kArInVectors * kVec * 4 : kPacketBytes;
+        return handler == kHandlerArith ? kArInVectors * kVec * 4 : kPacketBytes;
     }
 
     // Packet pages go kPagePackets to a DRAM page; the check pages one to a page.
-    uint32_t per_page(uint32_t seg) {
+    uint32_t per_page(uint32_t handler) {
         return (
-            seg == kSegArith || seg == kSegMath || seg == kSegRecip ? 1 : kPagePackets
+            handler == kHandlerArith || handler == kHandlerMath ||
+                    handler == kHandlerRecip
+                ? 1
+                : kPagePackets
         );
     }
 
@@ -56,7 +59,7 @@ namespace {
         noc_async_read(
             get_noc_addr(g / per, pages, (g % per) * bytes), get_write_ptr(kCbIn), bytes
         );
-        if (!bounded::reads_done(rd, km::kStReader)) {
+        if (!timed::reads_done(rd, km::kStReader)) {
             return false;
         }
         cb_push_back(kCbIn, 1);
@@ -68,7 +71,7 @@ namespace {
     struct Slots {
         uint32_t base, bytes, n;
         uint32_t treelet[kMaxSlots];
-        uint32_t last[kMaxSlots];  // work pages issued when it was last named
+        uint32_t last[kMaxSlots];  // work pages submitted when it was last named
         uint32_t used[kMaxSlots];  // use stamp
         uint32_t clock = 0;
 
@@ -96,7 +99,7 @@ namespace {
     public:
         Schedule(
             km::Reader& rd,
-            const km_record_t& r,
+            const km_command_t& r,
             uint32_t count,
             volatile tt_l1_ptr uint32_t* d
         )
@@ -120,7 +123,7 @@ namespace {
             order_ = present_ + n_treelets;
             const uint32_t most = r_.a6 > count_ ? r_.a6 : count_;
             const uint32_t end = reinterpret_cast<uint32_t>(order_ + most);
-            if (!bounded::fits(kCbLists, end - get_write_ptr(kCbLists))) {
+            if (!timed::fits(kCbLists, end - get_write_ptr(kCbLists))) {
                 rd_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 3, end);
                 return false;
             }
@@ -286,7 +289,7 @@ namespace {
             const uint32_t first = table_[2 * t], pages = table_[2 * t + 1];
             const uint32_t dst = slots_.base + k * slots_.bytes;
             if (pages * kTreePageBytes > slots_.bytes ||
-                !bounded::fits(kCbSlots, (k + 1) * slots_.bytes)) {
+                !timed::fits(kCbSlots, (k + 1) * slots_.bytes)) {
                 rd_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 1, t);
                 return false;
             }
@@ -297,7 +300,7 @@ namespace {
                     kTreePageBytes
                 );
             }
-            if (!bounded::reads_done(rd_, km::kStReader)) {
+            if (!timed::reads_done(rd_, km::kStReader)) {
                 return false;
             }
             slots_.treelet[k] = t;
@@ -308,7 +311,7 @@ namespace {
         }
 
         km::Reader& rd_;
-        const km_record_t& r_;
+        const km_command_t& r_;
         const uint32_t count_;
         volatile tt_l1_ptr uint32_t* d_;
         volatile tt_l1_ptr uint32_t* ls_ = nullptr;
@@ -327,7 +330,7 @@ namespace {
     public:
         Sorter(
             km::Reader& rd,
-            const km_record_t& r,
+            const km_command_t& r,
             uint32_t first,
             uint32_t count,
             volatile tt_l1_ptr uint32_t* d
@@ -446,7 +449,7 @@ namespace {
             for (uint32_t q = 0; q < count_; ++q) {
                 read_lanes(r_.a3, kVec * 4, q, 0, l1(order_ + q * kVec));
             }
-            if (!bounded::reads_done(rd_, km::kStReader)) {
+            if (!timed::reads_done(rd_, km::kStReader)) {
                 return false;
             }
             for (uint32_t i = 0; i < n_; ++i) {
@@ -477,7 +480,7 @@ namespace {
         }
 
         bool layout() {
-            if (!bounded::fits(kCbSlots, bytes(count_))) {
+            if (!timed::fits(kCbSlots, bytes(count_))) {
                 rd_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 3, count_);
                 return false;
             }
@@ -652,7 +655,7 @@ namespace {
             for (uint32_t q = 0; q < count_; ++q) {
                 read_lanes(base, bytes, q, v, l1(src_ + q * kVec));
             }
-            const bool ok = bounded::reads_done(rd_, km::kStReader);
+            const bool ok = timed::reads_done(rd_, km::kStReader);
             d_[kRdWords + 0] += km::wall() - a;
             return ok;
         }
@@ -663,13 +666,13 @@ namespace {
             for (uint32_t q = 0; q < count_; ++q) {
                 write_lanes(base, bytes, q, v, l1(dst_ + q * kVec));
             }
-            const bool ok = bounded::writes_sent(rd_, km::kStReader);
+            const bool ok = timed::writes_sent(rd_, km::kStReader);
             d_[kRdWords + 4] += km::wall() - a;
             return ok;
         }
 
         km::Reader& rd_;
-        const km_record_t& r_;
+        const km_command_t& r_;
         const uint32_t first_, count_, n_;
         volatile tt_l1_ptr uint32_t* d_;
         uint32_t *key_ = nullptr, *idx_ = nullptr, *order_ = nullptr;
@@ -682,9 +685,9 @@ namespace {
 
 void kernel_main() {
     km::Reader rd;
-    rd.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg == kSegLoad) {
+    rd.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
+        if (handler == kHandlerLoad) {
             const uint32_t pages = (r.a1 + kTreePageBytes - 1) / kTreePageBytes;
             if (!rd.reserve(kCbTree, pages)) {
                 return;
@@ -693,7 +696,7 @@ void kernel_main() {
                 .bank_base_address = r.a0, .page_size = kTreePageBytes
             };
             const uint32_t base = get_write_ptr(kCbTree);
-            if (!bounded::fits(kCbTree, pages * kTreePageBytes)) {
+            if (!timed::fits(kCbTree, pages * kTreePageBytes)) {
                 rd.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 2, pages);
                 return;
             }
@@ -702,21 +705,21 @@ void kernel_main() {
                     get_noc_addr(p, tree), base + p * kTreePageBytes, kTreePageBytes
                 );
             }
-            if (!bounded::reads_done(rd, km::kStReader)) {
+            if (!timed::reads_done(rd, km::kStReader)) {
                 return;
             }
             g_tree = base;
             cb_push_back(kCbTree, pages);
             return;
         }
-        if (seg == kSegSort) {
+        if (handler == kHandlerSort) {
             const uint32_t dir = get_write_ptr(kCbDirReader);
             volatile tt_l1_ptr uint32_t* d = km::l1(dir);
             const InterleavedAddrGen<true> dirs = {
                 .bank_base_address = r.a0, .page_size = kDirBytes
             };
             noc_async_read(get_noc_addr(rd.me(), dirs), dir, kDirBytes);
-            if (!bounded::reads_done(rd, km::kStReader)) {
+            if (!timed::reads_done(rd, km::kStReader)) {
                 return;
             }
             for (uint32_t k = 0; k < kRdCounters; ++k) {
@@ -738,19 +741,19 @@ void kernel_main() {
             );
             // The reader marks the record done without a barrier: the streams land
             // first.
-            bounded::writes_landed(rd, km::kStReader);
+            timed::writes_landed(rd, km::kStReader);
             return;
         }
-        if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath &&
-            !is_stage(seg)) {
+        if (handler != kHandlerTrace && handler != kHandlerArith &&
+            handler != kHandlerRecip && handler != kHandlerTreelets &&
+            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)) {
             return;
         }
         const uint32_t t0 = km::wall();
         const uint32_t dir = get_write_ptr(kCbDirReader);
         volatile tt_l1_ptr uint32_t* d = km::l1(dir);
-        noc_async_read(dir_addr(r, seg, rd.me()), dir, kDirBytes);
-        if (!bounded::reads_done(rd, km::kStReader)) {
+        noc_async_read(dir_addr(r, handler, rd.me()), dir, kDirBytes);
+        if (!timed::reads_done(rd, km::kStReader)) {
             return;
         }
         for (uint32_t k = 0; k < kRdCounters; ++k) {
@@ -765,9 +768,9 @@ void kernel_main() {
         h[kDirCount] = count;
         cb_push_back(kCbIn, 1);
         uint32_t wait = 0, read = 0;
-        if (is_stage(seg)) {
+        if (is_stage(handler)) {
             // The constant page, then each packet's page of every input stream.
-            const Stage st = stage_of(seg);
+            const Stage st = stage_of(handler);
             if (!read_page(rd, r.a3, kCnVectors * kVec * 4, 1, 0, wait)) {
                 return;
             }
@@ -789,8 +792,8 @@ void kernel_main() {
             d[kRdWords + 2] = km::wall() - t0;
             return;
         }
-        const uint32_t bytes = in_page_bytes(seg), per = per_page(seg);
-        const uint32_t n = seg == kSegRecip ? 0 : count;
+        const uint32_t bytes = in_page_bytes(handler), per = per_page(handler);
+        const uint32_t n = handler == kHandlerRecip ? 0 : count;
         for (uint32_t p = 0; p < n; ++p) {
             const uint32_t a = km::wall();
             if (!read_page(rd, r.a1, bytes, per, first + p, wait)) {
@@ -802,7 +805,7 @@ void kernel_main() {
         d[kRdWords + 0] = wait;
         d[kRdWords + 1] = read;
         d[kRdWords + 3] = n;
-        if (seg == kSegTreelets) {
+        if (handler == kHandlerTreelets) {
             // Per batch: the top walks' end, the schedule, the batch's end page. At
             // most count + 1 batches: each one admits a packet (compute sees to it).
             Schedule s(rd, r, count, d);

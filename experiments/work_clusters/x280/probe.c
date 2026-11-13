@@ -14,7 +14,7 @@ enum { W_MODE = 0, W_GO = 1 };
 
 /* A go line the host writes after every cluster started (word 0 = words[W_GO]). */
 #define GO_LIM 0x480u
-#define WIN0 40u /* hart h pushes through window WIN0 + h; WIN0 + 4 the ping window */
+#define WIN0 40u /* core h pushes through window WIN0 + h; WIN0 + 4 the ping window */
 #define SPINS 256u
 #define CODE_STOPPED 9u
 
@@ -42,7 +42,7 @@ static uint32_t wait_go(void) {
     }
 }
 
-/* Hart h's quarter of [addr, addr + bytes) in 512-byte units. */
+/* Core h's quarter of [addr, addr + bytes) in 512-byte units. */
 static void quarter(const job_t* j, int h, uint64_t* p, uint64_t* n) {
     const uint64_t units = j->bytes / 512, per = (units + 3) / 4;
     const uint64_t first = (uint64_t)h * per;
@@ -137,7 +137,7 @@ static void par_none(int h, void* arg) {
     (void)arg;
 }
 
-/* Hart h pushes its quarter of the pattern to [dest, dest + bytes) of tile `noc`
+/* Core h pushes its quarter of the pattern to [dest, dest + bytes) of tile `noc`
  * through its own window, re-aimed at each 2 MiB; out[h] = 1 if a window failed. */
 static void par_push(int h, void* arg) {
     job_t* j = (job_t*)arg;
@@ -167,7 +167,7 @@ static void par_push(int h, void* arg) {
     noc_clear_tlb_2m(WIN0 + (uint32_t)h);
 }
 
-/* Hart 0 alone: 8-byte loads of [dest, dest + bytes) of tile `noc` (System Port). */
+/* Core 0 alone: 8-byte loads of [dest, dest + bytes) of tile `noc` (System Port). */
 static uint64_t pull_sum(const job_t* j, uint32_t* bad) {
     const uint32_t x = (uint32_t)(j->noc & 0xFFFFu), y = (uint32_t)(j->noc >> 16);
     uint64_t s = 0, p = j->dest, n = j->bytes;
@@ -350,8 +350,8 @@ static uint32_t ping(const kmx_args* a, uint32_t* r) {
 
 static uint32_t r[48] __attribute__((section(".data"))) = {1};
 
-int kmx_main(int hart) {
-    (void)hart;
+int kmx_main(int core) {
+    (void)core;
     const kmx_args* a = kmx_args_get();
     uint32_t code = 0, n = 0;
     uint64_t bytes;
@@ -360,7 +360,7 @@ int kmx_main(int hart) {
     if (mode == M_SUM) {
         job_t j = {.addr = (uint64_t)(uintptr_t)data, .bytes = bytes & ~511ull};
         const uint64_t t0 = kmx_time();
-        kmx_take(0);
+        kmx_invalidate(0);
         code = kmx_par(par_sum, &j) == KMX_OK ? 0 : CODE_STOPPED;
         const uint64_t s = j.out[0] + j.out[1] + j.out[2] + j.out[3];
         r[0] = (uint32_t)s;
@@ -376,7 +376,7 @@ int kmx_main(int hart) {
         code = wait_go();
         for (uint32_t i = 0; code == 0 && i < reps; i++) {
             uint64_t t = kmx_time();
-            kmx_take(0);
+            kmx_invalidate(0);
             r[4 * i] = (uint32_t)(kmx_time() - t);
             t = kmx_time();
             code = kmx_par(par_sum, &j) == KMX_OK ? 0 : CODE_STOPPED;
@@ -385,7 +385,7 @@ int kmx_main(int hart) {
             code = code ? code : (kmx_par(par_fill, &j) == KMX_OK ? 0 : CODE_STOPPED);
             r[4 * i + 2] = (uint32_t)(kmx_time() - t);
             t = kmx_time();
-            kmx_give(0);
+            kmx_flush(0);
             r[4 * i + 3] = (uint32_t)(kmx_time() - t);
         }
         const uint64_t s = j.out[0] + j.out[1] + j.out[2] + j.out[3];

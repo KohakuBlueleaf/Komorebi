@@ -1,4 +1,4 @@
-"""A loaded program under the dispatch kernel: issue records, wait for them, stop,
+"""A loaded program under the dispatcher: submit commands, wait for them, stop,
 read back state words and trace. The card is reached only through `backend`, so the
 bookkeeping is the same against a fake transport.
 """
@@ -17,10 +17,10 @@ from komorebi import abi
 from komorebi import state as st
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.errors import (
+    CommandRejected,
+    CommandTimeout,
     KernelFailed,
     KomorebiError,
-    RecordRefused,
-    RecordTimeout,
     StartError,
     ThreadFailed,
     WaitTimeout,
@@ -29,21 +29,23 @@ from komorebi.errors import (
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
 THREAD_POLL_S = 0.002  # one look at a thread while several are waited for
-COMPACT_ROWS = 4096  # released tickets kept before the columns are shifted
+COMPACT_ROWS = 4096  # released handles kept before the columns are shifted
 COLUMNS = (
     "_first", "_count", "_flags", "_seq", "_kseq", "_status", "_ticks", "_has", "_gone"
 )  # fmt: skip
-SEQ_LOW = 1 << 16  # a DONE or TIMEOUT event carries the low 16 bits of the record's seq
-SEQ_BACK = 2048  # how far a queued record's seq may fall behind the host's order
+SEQ_LOW = (
+    1 << 16
+)  # a DONE or TIMEOUT event carries the low 16 bits of the command's seq
+SEQ_BACK = 2048  # how far a queued command's seq may fall behind the host's order
 
 
 class Event(NamedTuple):
-    """A finished command: its ticket, kind (done, timeout, pong, refused), the aux
-    (done: the team's first core; timeout: the slot; refused: the reason),
-    issue-to-completion time in X280 timer ticks, and for a record issued with
+    """A finished command: its handle, kind (done, timeout, pong, rejected), the aux
+    (done: the group's first core; timeout: the slot; rejected: the reason),
+    submit-to-completion time in X280 timer ticks, and for a command submitted with
     `result=True` the leader's result word (sent as the ticks)."""
 
-    ticket: int
+    handle: int
     kind: str
     aux: int
     ticks: int
@@ -62,9 +64,9 @@ def stuck_message(cluster, r):
         else "the runtime stopped the cluster"
     )
     return (
-        f"the thread on cluster {cluster} did not return, nor after the stop word: a"
-        " hart is stuck outside the library (which alone sees the stop word and the"
-        f" deadline) or stopped by a trap; its last progress stamp {r.where}; {stop}"
+        f"the thread on cluster {cluster} did not return, nor after the stop flag: a"
+        " core is stuck outside the library (which alone sees the stop flag and the"
+        f" deadline) or stopped by a trap; its last progress marker {r.where}; {stop}"
     )
 
 
@@ -74,13 +76,13 @@ def _left(by):
 
 
 def _seq_number(n):
-    """The kernel's sequence number of the n-th record: it counts in 32 bits and skips
+    """The kernel's sequence number of the n-th command: it counts in 32 bits and skips
     0 (it also skips a slot's last value, which only a wrap can repeat)."""
     return (n - 1) % M32 + 1
 
 
 class Run:
-    """Issues records to a loaded program and collects their events.
+    """Submits commands to a loaded program and collects their events.
 
     backend: `port` (enqueue, queued, wait, host_word, batch; its own loop), `finish`,
     `abort()`, `read_back()` -> (control blocks, trace), `mhz`.
@@ -91,7 +93,7 @@ class Run:
         self.backend = backend
         self.port = backend.port
         self.port.batch = batch
-        self._keep = bool(getattr(backend, "trace_cap", 0))  # the trace needs teams
+        self._keep = bool(getattr(backend, "trace_cap", 0))  # the trace needs groups
         self.grid = grid
         self.cores = grid[0] * grid[1]
         self.program = program
@@ -101,24 +103,27 @@ class Run:
             k["KM_EV_DONE"]: "done",
             k["KM_EV_TIMEOUT"]: "timeout",
             k["KM_EV_PONG"]: "pong",
-            k.get("KM_EV_REFUSED", 3): "refused",
+            k.get("KM_EV_REJECTED", 3): "rejected",
         }
         self._done = k["KM_EV_DONE"]
         self._numbered = (k["KM_EV_DONE"], k["KM_EV_TIMEOUT"])  # aux holds seq bits
         self._aux_low, self._seq_shift = k["KM_EV_AUX_LOW"], k["KM_EV_SEQ_SHIFT"]
         self._f_result, self._f_queue = k["KM_F_RESULT"], k["KM_F_QUEUE"]
         self._f_excl = k["KM_F_EXCL"]
-        self._refusals = {
-            v: n[len("KMD_REFUSE_") :].lower()
+        self._rejections = {
+            v: n[len("KMD_REJECT_") :].lower()
             for n, v in k.items()
-            if n.startswith("KMD_REFUSE_")
+            if n.startswith("KMD_REJECT_")
         }
-        self._nop, self._user_max = self.h["KM_SEG_NOP"], self.h["KM_SEG_USER_MAX"]
-        self._hdr, self._team_at, self._arg_at = self.h.positions
-        self._next = 1  # the next ticket; command number = ticket mod 2**32
-        self._next_seq = 1  # the kernel's sequence of the next record
-        self._new_tickets(1)
-        self._refused = {}
+        self._nop, self._user_max = (
+            self.h["KM_HANDLER_NOP"],
+            self.h["KM_HANDLER_USER_MAX"],
+        )
+        self._hdr, self._group_at, self._arg_at = self.h.positions
+        self._next = 1  # the next handle; command number = handle mod 2**32
+        self._next_seq = 1  # the kernel's sequence of the next command
+        self._new_handles(1)
+        self._rejected = {}
         self._failure = None
         self._stopped = False
         self._result = None
@@ -127,19 +132,19 @@ class Run:
         self._trace = None
         self.thread = None  # the program's first X280 thread (thread.ThreadRun)
         self.threads = {}  # every X280 thread by work cluster
-        self.issue_s = 0.0  # host time in issue() and issue_many()
+        self.submit_s = 0.0  # host time in submit() and submit_many()
         self.wait_s = 0.0  # host time in wait() and drain(), native loop included
         self.native_s = 0.0  # of which in the native loop (stores, reading events)
 
-    def _new_tickets(self, base):
-        """Empty ticket columns from ticket `base` on, and an empty unsent block."""
-        self._base = base  # ticket of row 0 of the columns
-        self._handed = base  # tickets below this are with the port
-        self._oldest = base  # the oldest ticket without an event
+    def _new_handles(self, base):
+        """Empty handle columns from handle `base` on, and an empty unsent block."""
+        self._base = base  # handle of row 0 of the columns
+        self._handed = base  # handles below this are with the port
+        self._oldest = base  # the oldest handle without an event
         self._first = np.zeros(0, np.int32)
         self._count = np.zeros(0, np.int32)  # 0: a command to the kernel itself
-        self._flags = np.zeros(0, np.uint8)  # the record's KM_F_* flags
-        self._seq = np.zeros(0, np.int64)  # host records up to this one; 0: no record
+        self._flags = np.zeros(0, np.uint8)  # the command's KM_F_* flags
+        self._seq = np.zeros(0, np.int64)  # host commands up to this one; 0: no command
         self._kseq = np.zeros(
             0, np.int64
         )  # the kernel's count, from the event; 0: not yet
@@ -151,48 +156,54 @@ class Run:
         self._unsent()
 
     def _unsent(self):
-        # issue() appends here; new objects, since numpy may still view the old ones
+        # submit() appends here; new objects, since numpy may still view the old ones
         self._words, self._firsts, self._counts = array("I"), array("i"), array("i")
         self._fl = array("B")
 
-    # Issuing --------------------------------------------------------------------
+    # Submitting --------------------------------------------------------------------
 
-    def issue(
-        self, seg, team=None, args=(), exclusive=False, result=False, queued=False
+    def submit(
+        self, handler, group=None, args=(), exclusive=False, result=False, queued=False
     ):
-        """Queues a record for segment `seg` (name or number) on cores [first, first +
-        count) (default every core); returns its ticket. Nothing is sent until a wait.
-        `result`: the event carries the leader's result word. `queued`: `team` is a
-        count and the kernel picks the first core (team() then has first None)."""
+        """Queues a command for handler `handler` (name or number) on cores [first,
+        first + count) (default every core); returns its handle. Nothing is sent until a
+        wait. `result`: the event carries the leader's result word. `queued`: `group` is
+        a count and the kernel picks the first core (group() then has first None)."""
         t0 = time.perf_counter()
-        if seg.__class__ is not int:
-            seg = self.program.seg(seg) if self.program is not None else int(seg)
-        if not (seg == self._nop or 1 <= seg <= self._user_max):
-            raise ValueError(f"segment {seg}: not NOP and not in 1..KM_SEG_USER_MAX")
+        if handler.__class__ is not int:
+            handler = (
+                self.program.handler(handler)
+                if self.program is not None
+                else int(handler)
+            )
+        if not (handler == self._nop or 1 <= handler <= self._user_max):
+            raise ValueError(
+                f"handler {handler}: not NOP and not in 1..KM_HANDLER_USER_MAX"
+            )
         if queued:
             if exclusive:
-                raise ValueError("a queued record cannot be exclusive")
-            team = self._team((0, team))
+                raise ValueError("a queued command cannot be exclusive")
+            group = self._group((0, group))
         else:
-            team = self._team(team)
+            group = self._group(group)
         if len(args) > len(self._arg_at):
-            raise ValueError(f"{len(args)} arguments; a record has 10")
+            raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(a) <= M32 for a in args):
             raise ValueError("arguments are 32-bit unsigned words")
         flags = (self._f_result if result else 0) | (self._f_queue if queued else 0)
-        ticket = self._queue_command(seg, team, args, exclusive, flags)
-        self.issue_s += time.perf_counter() - t0
-        return ticket
+        handle = self._queue_command(handler, group, args, exclusive, flags)
+        self.submit_s += time.perf_counter() - t0
+        return handle
 
-    def issue_many(self, seg, firsts, counts, args=None, exclusive=False):
-        """Queues n records at once: `seg` a name, a number or n numbers, `firsts` and
-        `counts` the teams (n each, or one for all), `args` an [n, m] matrix of
-        32-bit words (m <= 10) or None. Returns the tickets as a range."""
+    def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
+        """Queues n commands at once: `handler` a name, a number or n numbers, `firsts`
+        and `counts` the groups (n each, or one for all), `args` an [n, m] matrix of
+        32-bit words (m <= 10) or None. Returns the handles as a range."""
         t0 = time.perf_counter()
         self._check_alive()
-        if isinstance(seg, str):
-            seg = self.program.seg(seg)
-        cols = [np.asarray(seg), np.asarray(firsts), np.asarray(counts)]
+        if isinstance(handler, str):
+            handler = self.program.handler(handler)
+        cols = [np.asarray(handler), np.asarray(firsts), np.asarray(counts)]
         if args is not None:
             args = np.asarray(args)
             if args.ndim != 2 or args.shape[1] > len(self._arg_at):
@@ -201,29 +212,34 @@ class Run:
                 raise ValueError("arguments are 32-bit unsigned words")
             cols.append(np.zeros(args.shape[0], np.int64))  # its row count
         if any(c.dtype.kind not in "iu" for c in cols[:3]):
-            raise ValueError("segments, firsts and counts are integers")
+            raise ValueError("handlers, firsts and counts are integers")
         try:
             n = np.broadcast_shapes(*(c.shape for c in cols))
         except ValueError:
             n = ()
         if len(n) != 1:
-            raise ValueError("segments, firsts, counts and arguments: one row each")
-        segs, first, count = (np.broadcast_to(c, n).astype(np.int64) for c in cols[:3])
-        bad = ~((segs == self._nop) | ((segs >= 1) & (segs <= self._user_max)))
+            raise ValueError("handlers, firsts, counts and arguments: one row each")
+        handlers, first, count = (
+            np.broadcast_to(c, n).astype(np.int64) for c in cols[:3]
+        )
+        bad = ~(
+            (handlers == self._nop) | ((handlers >= 1) & (handlers <= self._user_max))
+        )
         if bad.any():
             raise ValueError(
-                f"segment {int(segs[bad][0])}: not NOP and not in 1..KM_SEG_USER_MAX"
+                f"handler {int(handlers[bad][0])}: not NOP and not in"
+                " 1..KM_HANDLER_USER_MAX"
             )
         bad = (count < 1) | (first < 0) | (first + count > self.cores)
         if bad.any():
             i = int(np.argmax(bad))
             raise ValueError(
-                f"team ({int(first[i])}, {int(count[i])}) is not inside {self.cores} "
+                f"group ({int(first[i])}, {int(count[i])}) is not inside {self.cores} "
                 "cores"
             )
         words = np.zeros((n[0], 16), np.uint32)
-        words[:, self._hdr] = segs & 0xFF
-        words[:, self._team_at] = first | count << 16
+        words[:, self._hdr] = handlers & 0xFF
+        words[:, self._group_at] = first | count << 16
         if args is not None and args.size:
             if args.min() < 0 or args.max() > M32:
                 raise ValueError("arguments are 32-bit unsigned words")
@@ -234,38 +250,38 @@ class Run:
         if exclusive:
             words[:, self._hdr] |= self._f_excl << 8
         self._send_block(words, first, count, np.zeros(n[0], np.uint8))
-        self.issue_s += time.perf_counter() - t0
+        self.submit_s += time.perf_counter() - t0
         return range(start, self._next)
 
-    def _team(self, team):
-        if team is None:
+    def _group(self, group):
+        if group is None:
             return (0, self.cores)
-        first, count = int(team[0]), int(team[1])
+        first, count = int(group[0]), int(group[1])
         if count < 1 or first < 0 or first + count > self.cores:
             raise ValueError(
-                f"team ({first}, {count}) is not inside {self.cores} cores"
+                f"group ({first}, {count}) is not inside {self.cores} cores"
             )
         return (first, count)
 
-    def _queue_command(self, seg, team, args=(), exclusive=False, flags=0):
+    def _queue_command(self, handler, group, args=(), exclusive=False, flags=0):
         self._check_alive()
-        first, count = team if team else (0, 0)
+        first, count = group if group else (0, 0)
         flags |= self._f_excl if exclusive else 0  # the kernel orders it
         w = [0] * 16
-        w[self._hdr] = seg & 0xFF | flags << 8
-        w[self._team_at] = first | count << 16
+        w[self._hdr] = handler & 0xFF | flags << 8
+        w[self._group_at] = first | count << 16
         for at, value in zip(self._arg_at, args):
             w[at] = int(value) & M32
         self._words.extend(w)
         self._firsts.append(-1 if flags & self._f_queue else first)
         self._counts.append(count)
         self._fl.append(flags)
-        ticket = self._next
+        handle = self._next
         self._next += 1
-        return ticket
+        return handle
 
     def _hand(self):
-        """Gives the records issued one by one to the port, as one block."""
+        """Gives the commands submitted one by one to the port, as one block."""
         if not self._counts:
             return
         n = len(self._counts)
@@ -277,8 +293,8 @@ class Run:
         self._unsent()
 
     def _send_block(self, words, first, count, flags):
-        """Notes tickets handed .. handed + n - 1 (teams, flags, sequences) and queues
-        their records in the port. A queued record's first is -1 (the kernel's)."""
+        """Notes handles handed .. handed + n - 1 (groups, flags, sequences) and queues
+        their commands in the port. A queued command's first is -1 (the kernel's)."""
         n = len(words)
         lo = self._handed - self._base
         self._grow(lo + n)
@@ -306,21 +322,21 @@ class Run:
 
     def _take(self, rows):
         """Files a block of events (index, req, status, ticks). Every event is of a
-        ticket from the oldest without one on, so its low 32 bits name it."""
+        handle from the oldest without one on, so its low 32 bits name it."""
         rows = np.asarray(rows).reshape(-1, 4)
-        if self._engine_state is not None:  # the engines' events go to their tickets
+        if self._engine_state is not None:  # the engines' events go to their handles
             rows = self._engine_state.take(rows)
         base = self._oldest
-        tickets = base + ((rows[:, 1].astype(np.int64) - base) & M32)
-        i = tickets - self._base
+        handles = base + ((rows[:, 1].astype(np.int64) - base) & M32)
+        i = handles - self._base
         stored = self._handed - self._base - self.port.queued
         stray = (i >= stored) | self._has[np.minimum(i, len(self._has) - 1)]
         if stray.any() or len(np.unique(i)) != len(i):
-            t = int(tickets[np.argmax(stray)]) if stray.any() else int(tickets[0])
+            t = int(handles[np.argmax(stray)]) if stray.any() else int(handles[0])
             self.abort()
             raise self._remember(
                 KernelFailed(
-                    f"an event for command {t & M32} (ticket {t}), which is not in "
+                    f"an event for command {t & M32} (handle {t}), which is not in "
                     "flight: the run is stopped"
                 )
             )
@@ -331,63 +347,63 @@ class Run:
         waiting = ~self._has[at:end]
         self._oldest += int(np.argmax(waiting)) if waiting.any() else end - at
         timeout = None
-        for ticket in tickets[(rows[:, 2] & 0xFF) != self._done].tolist():
-            ev = self.event(ticket)
-            if ev.kind == "refused":
-                self._refused[ticket] = ev.aux
-                if self.team(ticket) is not None:
-                    self._unsequence(ticket)
+        for handle in handles[(rows[:, 2] & 0xFF) != self._done].tolist():
+            ev = self.event(handle)
+            if ev.kind == "rejected":
+                self._rejected[handle] = ev.aux
+                if self.group(handle) is not None:
+                    self._unsequence(handle)
             elif ev.kind == "timeout":
                 timeout = ev
         if timeout is not None:
             self._fail_timeout(timeout)
 
-    def _unsequence(self, ticket):
-        """A refused record took no sequence number: later records move down one."""
-        i = ticket - self._base
+    def _unsequence(self, handle):
+        """A rejected command took no sequence number: later commands move down one."""
+        i = handle - self._base
         self._seq[i] = 0
         later = self._seq[i + 1 : self._handed - self._base]
         later[later > 0] -= 1
         self._next_seq -= 1
 
-    def _arrived(self, tickets):
-        return self._has[tickets - self._base]
+    def _arrived(self, handles):
+        return self._has[handles - self._base]
 
-    def wait(self, tickets, timeout=10.0):
-        """Sends what is queued up to the tickets and waits for their events.
+    def wait(self, handles, timeout=10.0):
+        """Sends what is queued up to the handles and waits for their events.
 
-        Returns the events (one, or a list for a list of tickets). Raises
-        RecordRefused, RecordTimeout, KernelFailed or WaitTimeout.
+        Returns the events (one, or a list for a list of handles). Raises
+        CommandRejected, CommandTimeout, KernelFailed or WaitTimeout.
         """
-        single = isinstance(tickets, int | np.integer)
-        wanted = np.asarray([tickets] if single else list(tickets), np.int64)
+        single = isinstance(handles, int | np.integer)
+        wanted = np.asarray([handles] if single else list(handles), np.int64)
         if not wanted.size:
             return []
         if wanted.max() >= self._next or wanted.min() < 1:
-            raise ValueError("a ticket that was never issued")
+            raise ValueError("a handle that was never submitted")
         self._hand()
         gone = wanted[
             (wanted < self._base) | self._gone[np.maximum(wanted - self._base, 0)]
         ]
         if gone.size:
-            raise ValueError(f"ticket {gone[0]}: its event was returned or forgotten")
+            raise ValueError(f"handle {gone[0]}: its event was returned or forgotten")
         self._wait(np.unique(wanted), timeout)
         events = [self.event(t) for t in wanted.tolist()]
         self.forget(wanted)
         return events[0] if single else events
 
-    def wait_any(self, tickets, timeout=10.0):
-        """Sends what is queued and waits for the first event among the tickets;
-        returns it (the lowest ticket if several arrived) and forgets that ticket.
-        Raises as wait() does, for that ticket."""
-        wanted = np.unique(np.asarray(list(tickets), np.int64))
+    def wait_any(self, handles, timeout=10.0):
+        """Sends what is queued and waits for the first event among the handles;
+        returns it (the lowest handle if several arrived) and forgets that handle.
+        Raises as wait() does, for that handle."""
+        wanted = np.unique(np.asarray(list(handles), np.int64))
         if not wanted.size or wanted.max() >= self._next or wanted.min() < 1:
-            raise ValueError("no tickets, or a ticket that was never issued")
+            raise ValueError("no handles, or a handle that was never submitted")
         self._hand()
         if (
             (wanted < self._base) | self._gone[np.maximum(wanted - self._base, 0)]
         ).any():
-            raise ValueError("a ticket whose event was returned or forgotten")
+            raise ValueError("a handle whose event was returned or forgotten")
         t0 = time.perf_counter()
         try:
             deadline = time.monotonic() + timeout
@@ -396,36 +412,36 @@ class Run:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise WaitTimeout(
-                        f"none of {wanted.size} tickets done in {timeout} s; "
+                        f"none of {wanted.size} handles done in {timeout} s; "
                         f"{self._kernel_report()}",
                         wanted.tolist(),
                     )
                 self._step_any(wanted, left)
         finally:
             self.wait_s += time.perf_counter() - t0
-        ticket = int(wanted[self._arrived(wanted)][0])
-        ev = self.event(ticket)
-        self.forget([ticket])
-        if ev.kind == "refused":
-            raise RecordRefused(ticket, ev.aux, self._refusals)
+        handle = int(wanted[self._arrived(wanted)][0])
+        ev = self.event(handle)
+        self.forget([handle])
+        if ev.kind == "rejected":
+            raise CommandRejected(handle, ev.aux, self._rejections)
         return ev
 
-    def forget(self, tickets):
-        """Releases what the run keeps for tickets whose events arrived (the event,
-        and the team and sequence unless the run is traced): for callers that read
+    def forget(self, handles):
+        """Releases what the run keeps for handles whose events arrived (the event,
+        and the group and sequence unless the run is traced): for callers that read
         events with event() after drain() rather than from wait()."""
         t = np.asarray(
-            [tickets] if isinstance(tickets, int) else list(tickets), np.int64
+            [handles] if isinstance(handles, int) else list(handles), np.int64
         )
         t = t[(t >= self._base) & (t < self._handed)] - self._base
         t = t[self._has[t]]
         self._gone[t] = True
-        for ticket in (t + self._base).tolist():
-            self._refused.pop(ticket, None)
+        for handle in (t + self._base).tolist():
+            self._rejected.pop(handle, None)
         self._compact()
 
     def _compact(self):
-        """Drops the leading rows of released tickets once there are many."""
+        """Drops the leading rows of released handles once there are many."""
         if self._keep:
             return
         n = min(self._oldest, self._handed) - self._base
@@ -458,7 +474,7 @@ class Run:
         return (ref[0] + int((np.diff(host) + gap).sum()), int(host[-1]))
 
     def _wait(self, wanted, timeout):
-        """Waits for the events of `wanted` (sorted tickets)."""
+        """Waits for the events of `wanted` (sorted handles)."""
         t0 = time.perf_counter()
         try:
             self._hand()
@@ -469,17 +485,17 @@ class Run:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise WaitTimeout(
-                        f"{pending.size} of {wanted.size} tickets not done in "
+                        f"{pending.size} of {wanted.size} handles not done in "
                         f"{timeout} s (first {int(pending[0])}; "
                         f"{self.port.queued} not stored); {self._kernel_report()}",
                         pending.tolist(),
                     )
                 self._step(pending, int(pending[-1]), left)
                 pending = pending[~self._arrived(pending)]
-            if self._refused:
-                for t in sorted(self._refused):
+            if self._rejected:
+                for t in sorted(self._rejected):
                     if np.isin(t, wanted):
-                        raise RecordRefused(t, self._refused[t], self._refusals)
+                        raise CommandRejected(t, self._rejected[t], self._rejections)
         finally:
             self.wait_s += time.perf_counter() - t0
 
@@ -491,7 +507,7 @@ class Run:
             return f"the kernel could not be probed ({type(err).__name__}: {err})"
 
     def _step(self, pending, upto, left):
-        """One native round: store up to ticket `upto`, read events until those of
+        """One native round: store up to handle `upto`, read events until those of
         `pending` arrived (or a slice ends). Ends the run if the kernel finished."""
         t = time.perf_counter()
         rows = self.port.wait(
@@ -501,10 +517,10 @@ class Run:
         if len(rows):
             self._take(rows)
         elif self.port.host_word(0) >= self.h["KMD_STATE_DONE"]:
-            self._fail_kernel("the dispatch kernel finished on its own")
+            self._fail_kernel("the dispatcher finished on its own")
 
     def _step_any(self, wanted, left):
-        """Stores one batch up to the last ticket, then reads events until any arrives
+        """Stores one batch up to the last handle, then reads events until any arrives
         (or a slice ends): the native loop returns on the first event."""
         t = time.perf_counter()
         rows = self.port.wait(np.zeros(0, np.uint32), int(wanted[-1]) & M32, 0.0)
@@ -514,17 +530,17 @@ class Run:
         if len(rows):
             self._take(rows)
         elif self.port.host_word(0) >= self.h["KMD_STATE_DONE"]:
-            self._fail_kernel("the dispatch kernel finished on its own")
+            self._fail_kernel("the dispatcher finished on its own")
 
     def drain(self, timeout=10.0):
-        """Sends everything queued and waits for every record's event (refusals do not
-        raise here); returns how many events it waited for."""
+        """Sends everything queued and waits for every command's event (rejections do
+        not raise here); returns how many events it waited for."""
         self._hand()
         at, end = self._oldest - self._base, self._handed - self._base
         open_ = (self._count[at:end] > 0) & ~self._has[at:end]
         wanted = np.flatnonzero(open_) + self._oldest
         if wanted.size:
-            with contextlib.suppress(RecordRefused):
+            with contextlib.suppress(CommandRejected):
                 self._wait(wanted, timeout)
         return int(wanted.size)
 
@@ -586,9 +602,9 @@ class Run:
             return self.threads
         return {} if self.thread is None else {0: self.thread}
 
-    def event(self, ticket):
-        """The event of a ticket, or None if it has not arrived (or was released)."""
-        i = ticket - self._base
+    def event(self, handle):
+        """The event of a handle, or None if it has not arrived (or was released)."""
+        i = handle - self._base
         if not 0 <= i < self._handed - self._base or not self._has[i] or self._gone[i]:
             return None
         status, ticks = int(self._status[i]), int(self._ticks[i])
@@ -597,13 +613,13 @@ class Run:
         aux = status >> 8
         if status & 0xFF in self._numbered:
             aux &= self._aux_low
-        return Event(ticket, kind, aux, ticks, ticks if wanted else None)
+        return Event(handle, kind, aux, ticks, ticks if wanted else None)
 
-    def seq(self, ticket):
-        """The sequence number the kernel gave a record (the trace's index), from its
-        done or timeout event; None before that event or for a refused record."""
+    def seq(self, handle):
+        """The sequence number the kernel gave a command (the trace's index), from its
+        done or timeout event; None before that event or for a rejected command."""
         self._hand()
-        i = ticket - self._base
+        i = handle - self._base
         if not 0 <= i < self._handed - self._base or self._seq[i] == 0:
             return None
         if self._gone[i] and not self._keep:
@@ -612,9 +628,9 @@ class Run:
         return None if n is None else _seq_number(n)
 
     def _kernel_count(self, i, ref=None):
-        """Row i's place in the kernel's count of records (every source), from the low
+        """Row i's place in the kernel's count of commands (every source), from the low
         16 bits in its event and the nearest earlier known row (or `ref`); None
-        before the event. Raises if other sources issued too many in between."""
+        before the event. Raises if other sources submitted too many in between."""
         if self._kseq[i]:
             return int(self._kseq[i])
         status = int(self._status[i])
@@ -626,17 +642,17 @@ class Run:
             ref = self._ref if j is None else (int(self._kseq[j]), int(self._seq[j]))
         if ref is None:
             raise KomorebiError(
-                f"ticket {i + self._base}: its sequence number is not known (an "
-                f"earlier gap of other sources' records was too long to tell)"
+                f"handle {i + self._base}: its sequence number is not known (an "
+                f"earlier gap of other sources' commands was too long to tell)"
             )
-        near = ref[0] + int(self._seq[i]) - ref[1]  # as if no other source issued
+        near = ref[0] + int(self._seq[i]) - ref[1]  # as if no other source submitted
         low = status >> (8 + self._seq_shift) & (SEQ_LOW - 1)
         gap = (low - _seq_number(near)) % SEQ_LOW
         gap -= SEQ_LOW if gap >= SEQ_LOW - SEQ_BACK else 0
         if gap >= SEQ_LOW // 2:
             raise KomorebiError(
-                f"ticket {i + self._base}: {gap} or more records of other sources "
-                f"since the host's previous record; its sequence number is not known "
+                f"handle {i + self._base}: {gap} or more commands of other sources "
+                f"since the host's previous command; its sequence number is not known "
                 f"(an event carries its low 16 bits)"
             )
         n = near + gap
@@ -644,9 +660,9 @@ class Run:
         self._kseq[i] = n
         return n
 
-    def team(self, ticket):
+    def group(self, handle):
         self._hand()
-        i = ticket - self._base
+        i = handle - self._base
         if not 0 <= i < self._handed - self._base or self._count[i] == 0:
             return None
         if self._gone[i] and not self._keep:
@@ -664,9 +680,9 @@ class Run:
     # Graphs -----------------------------------------------------------------------
 
     def run_hostfed(self, graph, bindings=None, timeout=10.0, engine=None):
-        """Runs a graph or a stream host-fed: its executor on the host, its records
+        """Runs a graph or a stream host-fed: its executor on the host, its commands
         through this run's host ring. Returns a HostfedResult (status, error, regs,
-        runs, records, events); see `komorebi.engines.graph_hostfed`."""
+        runs, commands, events); see `komorebi.engines.graph_hostfed`."""
         if stream_hostfed.is_stream(graph):
             return stream_hostfed.run_hostfed(self, graph, bindings, timeout)
         return graph_hostfed.run_hostfed(self, graph, bindings, timeout, engine)
@@ -682,7 +698,7 @@ class Run:
 
     def upload(self, obj, kind=None):
         """Writes a Stream's or a Graph's upload (or encoded bytes of `kind` "stream"
-        or "graph") into the dispatch kernel's upload region, first fit beside the
+        or "graph") into the dispatcher's upload region, first fit beside the
         others; returns its Upload. ValueError, before any write, if it does not fit."""
         return self._engines().upload(obj, kind)
 
@@ -691,28 +707,29 @@ class Run:
         self._engines().release(upload, timeout)
 
     def start(self, upload, bindings=(), kept=None, timeout=10.0):
-        """Runs an upload (KM_SEG_RUN) and returns its EngineTicket. A graph takes
+        """Runs an upload (KM_HANDLER_RUN) and returns its EngineHandle. A graph takes
         `bindings` (a dict by name, or a list of words); `kept` sets its keep bit.
-        Raises EngineRefused if the kernel refuses the command."""
+        Raises EngineRejected if the kernel rejects the command."""
         return self._engines().start(upload, bindings, kept, timeout)
 
     def restart(self, req, bindings=(), timeout=10.0):
-        """Runs the kept graph with `req` again with new bindings; an EngineTicket."""
+        """Runs the kept graph with `req` again with new bindings; an EngineHandle."""
         return self._engines().restart(req, bindings, timeout)
 
-    def cancel(self, ticket, timeout=10.0):
-        """Cancels a running engine (KM_SEG_CANCEL); its error event ends the ticket."""
-        self._engines().cancel(ticket, timeout)
+    def cancel(self, handle, timeout=10.0):
+        """Cancels a running engine (KM_HANDLER_CANCEL); its error event ends the
+        handle."""
+        self._engines().cancel(handle, timeout)
 
-    def wait_engine(self, ticket, timeout=10.0):
+    def wait_engine(self, handle, timeout=10.0):
         """Waits for an engine's end and returns its EngineEvent. Raises EngineError
         (its error event), EngineTimeout or KernelFailed."""
-        return self._engines().wait(ticket, timeout)
+        return self._engines().wait(handle, timeout)
 
-    def _settle(self, ticket):
-        """Marks a command that has an event only when refused (RUN, CANCEL) as
+    def _settle(self, handle):
+        """Marks a command that has an event only when rejected (RUN, CANCEL) as
         answered, once an event of a later command arrived."""
-        i = ticket - self._base
+        i = handle - self._base
         if self._has[i]:
             return
         self._has[i] = True
@@ -746,10 +763,12 @@ class Run:
             if self._engine_state is not None:
                 self._engine_state.stop(_left(by))  # EXIT waits for running engines
             self.drain(_left(by))
-            exit_ticket = self._queue_command(self.h["KM_SEG_EXIT"], (0, self.cores))
-            self.wait(exit_ticket, _left(by))
-            stop_ticket = self._queue_command(self.h["KM_SEG_STOP"], None)
-            self._send(stop_ticket, _left(by))
+            exit_handle = self._queue_command(
+                self.h["KM_HANDLER_EXIT"], (0, self.cores)
+            )
+            self.wait(exit_handle, _left(by))
+            stop_handle = self._queue_command(self.h["KM_HANDLER_STOP"], None)
+            self._send(stop_handle, _left(by))
         except KernelFailed:
             raise
         except BaseException:
@@ -782,22 +801,22 @@ class Run:
             wrong.append(r["failed"])
         return "; ".join(wrong)
 
-    def _send(self, ticket, timeout):
-        """Stores queued commands up to `ticket` without waiting for events."""
+    def _send(self, handle, timeout):
+        """Stores queued commands up to `handle` without waiting for events."""
         self._hand()
         deadline = time.monotonic() + timeout
         none = np.zeros(0, np.uint32)
-        while self.stored < ticket - self._base + 1:
+        while self.stored < handle - self._base + 1:
             if time.monotonic() > deadline:
-                raise WaitTimeout(f"command {ticket} not stored in {timeout} s", [])
-            rows = self.port.wait(none, ticket & M32, 0.0)
+                raise WaitTimeout(f"command {handle} not stored in {timeout} s", [])
+            rows = self.port.wait(none, handle & M32, 0.0)
             if len(rows):
                 self._take(rows)
 
     def abort(self):
         """Stops the grid, then the kernel through the runtime, and reads back what the
         cores left; for failure paths. result() then holds the kernel's result block
-        with `abandoned`, the records left without their DONE event."""
+        with `abandoned`, the commands left without their DONE event."""
         if self._stopped:
             return
         for t in self._thread_runs().values():
@@ -808,16 +827,16 @@ class Run:
         self._stopped = True
         left = self.backend.aborted
         if left is not None:
-            harts = [int(w) for w in left["harts"]]
+            x280_cores = [int(w) for w in left["x280_cores"]]
             self._result = st.result_block(left["words"], self.h) | {
-                "harts": harts,
-                "abandoned": harts[self.h["KMD_H_ABANDONED"]],
+                "x280_cores": x280_cores,
+                "abandoned": x280_cores[self.h["KMD_H_ABANDONED"]],
             }
         self._read_back(stop_grid=True)
         if not cleaned:
             r = self._result
             kernel = (
-                f"; the kernel left state {r['state_name']}, {r['abandoned']} records "
+                f"; the kernel left state {r['state_name']}, {r['abandoned']} commands "
                 "abandoned"
                 if r is not None
                 else ""
@@ -839,7 +858,7 @@ class Run:
         r = self._result
         raise self._remember(
             StartError(
-                f"the dispatch kernel did not report READY (state {state}, hart "
+                f"the dispatcher did not report READY (state {state}, core "
                 f"result {r.get('result')}): {self._finish_problems(r)}",
                 result=r,
             )
@@ -868,7 +887,7 @@ class Run:
         self._blocks = blocks
         self._state = st.state_words(blocks, 0, self.h)
         if trace_rows is not None:
-            seqs, teams = {}, {}
+            seqs, groups = {}, {}
             ref = self._ref
             for i in range(self._handed - self._base):  # in order: one pass
                 try:
@@ -878,11 +897,11 @@ class Run:
                 if n is None:
                     continue
                 ref = (n, int(self._seq[i]))
-                ticket = i + self._base
-                team = self.team(ticket)
-                if team is not None and team[0] is not None:
-                    seqs[ticket], teams[ticket] = _seq_number(n), team
-            self._trace = st.Trace(trace_rows, seqs, teams, self.backend.mhz, self.h)
+                handle = i + self._base
+                group = self.group(handle)
+                if group is not None and group[0] is not None:
+                    seqs[handle], groups[handle] = _seq_number(n), group
+            self._trace = st.Trace(trace_rows, seqs, groups, self.backend.mhz, self.h)
 
     def _remember(self, error):
         self._failure = error
@@ -891,13 +910,15 @@ class Run:
     def _fail_timeout(self, ev):
         self._finish(10.0)
         r = self._result
-        team = self.team(ev.ticket)
+        group = self.group(ev.handle)
         seq = r["seq"] if r["error"] == self.h["KMD_ERR_DEADLINE"] else None
         if seq is None:
-            seq = self.seq(ev.ticket)
-        known = team and team[0] is not None
-        cores = st.not_reported(self._state, team, ev.aux, seq, self.h) if known else []
-        raise self._remember(RecordTimeout(ev.ticket, ev.aux, seq, team, cores, r))
+            seq = self.seq(ev.handle)
+        known = group and group[0] is not None
+        cores = (
+            st.not_reported(self._state, group, ev.aux, seq, self.h) if known else []
+        )
+        raise self._remember(CommandTimeout(ev.handle, ev.aux, seq, group, cores, r))
 
     def _fail_kernel(self, why):
         self._finish(10.0)
@@ -919,19 +940,19 @@ class Run:
     # After the stop ---------------------------------------------------------------
 
     def result(self):
-        """The dispatch kernel's result block (decoded); valid after the stop."""
+        """The dispatcher's result block (decoded); valid after the stop."""
         self._require_stopped()
         return self._result
 
     def state(self):
-        """Every core's state words, port slots, lane areas and dynamic-run words, as
-        dicts; valid after the stop."""
+        """Every core's state words, port slots, broadcast areas and dynamic-run words,
+        as dicts; valid after the stop."""
         self._require_stopped()
         return [
             st.core_state(self._state, c, self.h)
             | {
                 "ports": st.ports(self._blocks[c], self.h),
-                "lanes": st.lanes(self._blocks[c], self.h),
+                "broadcasts": st.broadcasts(self._blocks[c], self.h),
                 "dynamic": st.dynamic(self._blocks[c], self.h),
             }
             for c in range(self.cores)
@@ -942,7 +963,7 @@ class Run:
         return self._state
 
     def trace(self):
-        """The per-record trace (a state.Trace), or None if the run was not traced."""
+        """The per-command trace (a state.Trace), or None if the run was not traced."""
         self._require_stopped()
         return self._trace
 

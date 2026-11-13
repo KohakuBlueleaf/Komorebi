@@ -10,8 +10,8 @@ void kernel_main() {
     constexpr auto tiles = TensorAccessorArgs<0>();
     km::Writer wr;
     volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbProf));
-    wr.run([&](const km_record_t& r) {
-        if (km::seg(r) == kSegProf) {
+    wr.run([&](const km_command_t& r) {
+        if (km::handler(r) == kHandlerProf) {
             const InterleavedAddrGen<true> pages = {
                 .bank_base_address = r.a0, .page_size = kProfBytes
             };
@@ -20,22 +20,24 @@ void kernel_main() {
             );
             return flushed(wr, km::kStWriter, km::kFlushSent);
         }
-        if (km::seg(r) == kSegLoad) {  // completes once W is in L1
+        if (km::handler(r) == kHandlerLoad) {  // completes once W is in L1
             if (!wr.wait_front(kCbLoaded, 1)) {
                 return false;
             }
             cb_pop_front(kCbLoaded, 1);
             return true;
         }
-        const bool layer = km::seg(r) == kSegLayer;
+        const bool layer = km::handler(r) == kHandlerLayer;
         if (layer && ((r.a8 >> 16) & 0xFF) != kDram) {
             return true;  // Y stays in a held buffer
         }
-        if (!layer && (km::seg(r) != kSegProduct || r.a7 == kModeReadOnly)) {
+        if (!layer && (km::handler(r) != kHandlerProduct || r.a7 == kModeReadOnly)) {
             return true;
         }
         const uint32_t t0 = km::wall();
-        const km::Share s = km::share(r.a2, wr.me() - km::first(r), km::count(r));
+        const km::Partition s = (
+            km::partition(r.a2, wr.me() - km::first(r), km::count(r))
+        );
         // LAYER: a5 is the column block and every block is stored.
         const uint32_t nt = r.a4, ct = layer ? r.a5 : r.a6;
         const bool store = layer || r.a7 == kModeFull;

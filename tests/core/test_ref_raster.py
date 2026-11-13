@@ -200,7 +200,7 @@ def test_tile_counts_follow_the_pixel_box():
 
 def test_tiny_scene_checksums():
     out = raster.rasterize(scenes.make_preset("tiny"))
-    covered_share = float((out["tri"] >= 0).mean())
-    assert 0.3 < covered_share < 0.9
+    covered_partition = float((out["tri"] >= 0).mean())
+    assert 0.3 < covered_partition < 0.9
     assert out["tile_counts"].sum() > 300
     assert {k: sha(out[k]) for k in TINY_SHA} == TINY_SHA

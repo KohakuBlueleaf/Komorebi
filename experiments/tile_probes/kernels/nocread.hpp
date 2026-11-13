@@ -23,7 +23,7 @@ namespace nocread {
                        kCounterBefore = 5, kCounterAfter = 6, kGot = 16;
 
     // Where codes.
-    constexpr uint32_t kStarted = 1, kWaitedPeer = 2, kBufReady = 3, kIssuing = 4,
+    constexpr uint32_t kStarted = 1, kWaitedPeer = 2, kBufReady = 3, kSubmitting = 4,
                        kResponded = 5, kRestored = 6;
     // Result codes.
     constexpr uint32_t kOk = 0, kBufBusy = 1, kNoResponse = 2;
@@ -92,7 +92,7 @@ namespace nocread {
         reg(kCmdBuf, kTargMid) = 0;
         reg(kCmdBuf, kTargHi) = coord;
         reg(kCmdBuf, kLenBe) = 64;
-        mark(d, kIssuing);
+        mark(d, kSubmitting);
         const uint32_t t0 = wall();
         reg(kCmdBuf, kCmdCtrl) = 1;
         uint32_t polls = 0, code = kOk;

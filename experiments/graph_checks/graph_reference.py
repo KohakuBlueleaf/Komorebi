@@ -15,17 +15,17 @@ from komorebi.engines.graph import Graph
 from komorebi.engines.graph_native import NativeExecutor, native_check
 
 DATA = Path(__file__).resolve().parent / "graphs"
-SEG_A, SEG_B, SEG_C, SEG_D = 1, 2, 3, 4
+HANDLER_A, HANDLER_B, HANDLER_C, HANDLER_D = 1, 2, 3, 4
 
 NOTES = (
-    "Binding: check, status, error, regs, runs, stopped_grid, the issue set and the"
-    " events without their pass. The issue set lists every record issued, sorted by"
-    " (run, node): seg, first (null for a queued record, the allocator places it),"
-    " count, flags as the grid sees them, a0 to a9 with trailing zeros left out."
-    " `order` (seq, slot, pass per record) and the event passes are the simulator's"
-    " and are advisory. Completion: a record issued in pass p is acknowledged by the"
-    " sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m}"
-    " (seq % m, seq counted from 1 over the whole graph). A record's result word is"
+    "Binding: check, status, error, regs, runs, stopped_grid, the submit set and the"
+    " events without their pass. The submit set lists every command submitted, sorted"
+    " by (run, node): handler, first (null for a queued command, the allocator places"
+    " it), count, flags as the grid sees them, a0 to a9 with trailing zeros left out."
+    " `order` (seq, slot, pass per command) and the event passes are the simulator's"
+    " and are advisory. Completion: a command submitted in pass p is acknowledged by"
+    " the sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m}"
+    " (seq % m, seq counted from 1 over the whole graph). A command's result word is"
     " (a0 + count) mod 2^32. Events are [kind, req, aux, extra]: extra is register 1"
     " for KM_EV_GRAPH_END, else 0. Rules: docs/graphs.md."
 )
@@ -40,8 +40,8 @@ DEFAULTS = {
 }
 
 
-def result_of(record):
-    return record.args[0] + record.count & st.MASK
+def result_of(command):
+    return command.args[0] + command.count & st.MASK
 
 
 def completion(spec):
@@ -76,7 +76,7 @@ def trimmed(args):
 def expected(upload, bindings, params, engine=None):
     r = run(upload, bindings, params, engine)
     bad = gr.check(upload)
-    records = sorted(r.records, key=lambda x: (x.run, x.node))
+    commands = sorted(r.commands, key=lambda x: (x.run, x.node))
     return {
         "check": list(bad) if bad else None,
         "status": r.status,
@@ -85,20 +85,20 @@ def expected(upload, bindings, params, engine=None):
         "runs": r.runs,
         "stopped_grid": r.stopped,
         "kept": r.kept,
-        "issued": [
+        "submitted": [
             {
                 "run": x.run,
                 "node": x.node,
-                "seg": x.seg,
+                "handler": x.handler,
                 "first": None if x.queued else x.first,
                 "count": x.count,
                 "flags": x.flags,
                 "args": trimmed(x.args),
             }
-            for x in records
+            for x in commands
         ],
         "events": [list(e[:4]) for e in r.events],
-        "order": [[x.seq, x.slot, x.pass_index] for x in records],
+        "order": [[x.seq, x.slot, x.pass_index] for x in commands],
         "event_passes": [e.pass_index for e in r.events],
         "passes": r.passes,
     }
@@ -109,19 +109,19 @@ def expected(upload, bindings, params, engine=None):
 
 def chain():
     g = Graph()
-    a = g.record(SEG_A, team=(0, 4), args=[1, 2])
-    b = g.record(SEG_B, team=(4, 4), args=[3], after=[a])
-    g.record(SEG_C, team=(0, 119), after=[b])
+    a = g.command(HANDLER_A, group=(0, 4), args=[1, 2])
+    b = g.command(HANDLER_B, group=(4, 4), args=[3], after=[a])
+    g.command(HANDLER_C, group=(0, 119), after=[b])
     return g, [], {}
 
 
 def branches():
     """a, then b and c on disjoint halves in flight together, then d."""
     g = Graph()
-    a = g.record(SEG_A, team=(0, 60))
-    b = g.record(SEG_B, team=(0, 30), after=[a])
-    c = g.record(SEG_C, team=(30, 30), after=[a])
-    g.record(SEG_D, team=(0, 60), after=[b, c])
+    a = g.command(HANDLER_A, group=(0, 60))
+    b = g.command(HANDLER_B, group=(0, 30), after=[a])
+    c = g.command(HANDLER_C, group=(30, 30), after=[a])
+    g.command(HANDLER_D, group=(0, 60), after=[b, c])
     return g, [], {"delay": 2}
 
 
@@ -129,10 +129,10 @@ def example_loop(it=0):
     """The documented example: the loop ends on a result word computed per round."""
     g = Graph(max_runs=100)
     i, err = g.bindings("it"), g.reg()
-    a = g.record(SEG_A, team=(0, 60), args=[i])
-    b = g.record(SEG_B, team=(0, 30), args=[i], after=[a])
-    c = g.record(SEG_C, team=(30, 30), args=[i], after=[a])
-    d = g.record(SEG_D, team=(0, 60), args=[i], after=[b, c], result=err)
+    a = g.command(HANDLER_A, group=(0, 60), args=[i])
+    b = g.command(HANDLER_B, group=(0, 30), args=[i], after=[a])
+    c = g.command(HANDLER_C, group=(30, 30), args=[i], after=[a])
+    d = g.command(HANDLER_D, group=(0, 60), args=[i], after=[b, c], result=err)
     e = g.cpu(after=[d])
     e.addi(i, i, 1)
     e.lt(g.again, err, g.const(65))
@@ -147,10 +147,10 @@ def example_loop_kept():
 def skip_if_zero():
     g = Graph()
     off, on = g.bindings("off", "on")
-    g.record(SEG_A, team=(0, 1), skip_if_zero=off)
-    g.record(SEG_B, team=(1, 1), skip_if_zero=on)
+    g.command(HANDLER_A, group=(0, 1), skip_if_zero=off)
+    g.command(HANDLER_B, group=(1, 1), skip_if_zero=on)
     j = g.join(skip_if_zero=off)
-    g.record(SEG_C, team=(2, 1), after=[j])
+    g.command(HANDLER_C, group=(2, 1), after=[j])
     return g, g.binding_values(off=0, on=1), {}
 
 
@@ -177,45 +177,45 @@ def cpu_arith():
     f.set(r[6], 99)
     f.bind(out)
     f.mov(r[6], r[5])
-    g.record(SEG_A, team=(0, 1), args=r[2:6], after=[f])
+    g.command(HANDLER_A, group=(0, 1), args=r[2:6], after=[f])
     return g, [0] * 15 + [7], {}
 
 
-def args_and_team_from_registers():
+def args_and_group_from_registers():
     g = Graph()
     first, count, x = g.bindings("first", "count", "x")
-    g.record(SEG_A, team=(first, count), args=[9, x, 8, x, 7])
+    g.command(HANDLER_A, group=(first, count), args=[9, x, 8, x, 7])
     return g, g.binding_values(first=110, count=9, x=0xDEADBEEF), {}
 
 
-def result_feeds_record():
+def result_feeds_command():
     g = Graph()
     v = g.reg()
-    a = g.record(SEG_A, team=(0, 2), args=[40], result=v)
-    g.record(SEG_B, team=(0, 2), args=[v], after=[a])
+    a = g.command(HANDLER_A, group=(0, 2), args=[40], result=v)
+    g.command(HANDLER_B, group=(0, 2), args=[v], after=[a])
     return g, [], {}
 
 
-def queued_records():
+def queued_commands():
     g = Graph()
     n = g.bindings("n")
-    a = g.record(SEG_A, count=50, args=[1])
-    b = g.record(SEG_B, count=n, args=[2])
-    g.record(SEG_C, count=119, after=[a, b])
+    a = g.command(HANDLER_A, count=50, args=[1])
+    b = g.command(HANDLER_B, count=n, args=[2])
+    g.command(HANDLER_C, count=119, after=[a, b])
     return g, g.binding_values(n=60), {"delay": 1}
 
 
 def exclusive_overlap():
     g = Graph()
-    g.record(SEG_A, team=(0, 10), exclusive=True)
-    g.record(SEG_B, team=(5, 10), exclusive=True)
-    g.record(SEG_C, team=(20, 10), exclusive=True)
+    g.command(HANDLER_A, group=(0, 10), exclusive=True)
+    g.command(HANDLER_B, group=(5, 10), exclusive=True)
+    g.command(HANDLER_C, group=(20, 10), exclusive=True)
     return g, [], {"delay": 2}
 
 
 def more_ready_than_slots():
     g = Graph()
-    nodes = [g.record(SEG_A, team=(i, 1), args=[i]) for i in range(20)]
+    nodes = [g.command(HANDLER_A, group=(i, 1), args=[i]) for i in range(20)]
     j1 = g.join(after=nodes[:4])
     j2 = g.join(after=nodes[4:8])
     g.join(after=[j1, j2])
@@ -235,17 +235,17 @@ def round_events():
 # Graphs that end in an error at run time ----------------------------------------
 
 
-def team_outside_grid():
+def group_outside_grid():
     g = Graph()
     first = g.bindings("first")
-    g.record(SEG_A, team=(first, 2))
+    g.command(HANDLER_A, group=(first, 2))
     return g, g.binding_values(first=118), {}
 
 
 def never_fits():
     g = Graph()
     n = g.bindings("n")
-    g.record(SEG_A, count=n)
+    g.command(HANDLER_A, count=n)
     return g, g.binding_values(n=120), {}
 
 
@@ -276,27 +276,27 @@ def max_runs():
 
 def deadline():
     g = Graph()
-    a = g.record(SEG_A, team=(0, 1))
-    g.record(SEG_B, team=(1, 1))
+    a = g.command(HANDLER_A, group=(0, 1))
+    g.command(HANDLER_B, group=(1, 1))
     g.join(after=[a])
     return g, [], {"delay": None, "deadline_passes": 5}
 
 
 def cancelled():
     g = Graph()
-    g.record(SEG_A, team=(0, 1))
+    g.command(HANDLER_A, group=(0, 1))
     return g, [], {"delay": None, "cancel_pass": 3}
 
 
 def kept_graph():
     """The keep bit: the graph runs as any other and stays kept after its end."""
     g = Graph(keep=True)
-    g.record(SEG_A, team=(0, 1), args=[5])
+    g.command(HANDLER_A, group=(0, 1), args=[5])
     return g, [], {"kept": 7}
 
 
 def kept_table_full():
-    """The keep bit while eight graphs are kept: refused, reason 15."""
+    """The keep bit while eight graphs are kept: rejected, reason 15."""
     g, bindings, params = kept_graph()
     return g, bindings, {**params, "kept": 8}
 
@@ -307,13 +307,13 @@ def too_many_bindings():
     return g, [0] * 17, {}
 
 
-# Uploads the check refuses: each patches one field of a good upload ------------
+# Uploads the check rejects: each patches one field of a good upload ------------
 
 
 def _base():
     g = Graph()
     r = g.reg()
-    a = g.record(SEG_A, team=(0, 1), result=r)
+    a = g.command(HANDLER_A, group=(0, 1), result=r)
     e = g.cpu(after=[a])
     e.addi(r, r, 1)
     g.join(after=[a, e])
@@ -348,7 +348,7 @@ BAD = {
     "bad_skip_reg": lambda d: _patch_node(d, 1, skip_reg=16),
     "bad_result_on_cpu": lambda d: _patch_node(d, 1, result_reg=0),
     "bad_template_index": lambda d: _patch_node(d, 0, arg=1),
-    "bad_template_segment": lambda d: _patch_word(d, _layout(d)[2] + 4, "<I", 240),
+    "bad_template_handler": lambda d: _patch_word(d, _layout(d)[2] + 4, "<I", 240),
     "bad_opcode": lambda d: _patch_word(d, _layout(d)[1], "<B", st.OP_HALT),
     "bad_jump": lambda d: _patch_word(
         _patch_word(d, _layout(d)[1], "<B", st.OP_JMP), _layout(d)[1] + 4, "<I", 2
@@ -367,13 +367,13 @@ GOOD = [
     example_loop_kept,
     skip_if_zero,
     cpu_arith,
-    args_and_team_from_registers,
-    result_feeds_record,
-    queued_records,
+    args_and_group_from_registers,
+    result_feeds_command,
+    queued_commands,
     exclusive_overlap,
     more_ready_than_slots,
     round_events,
-    team_outside_grid,
+    group_outside_grid,
     never_fits,
     mod_zero,
     step_limit,

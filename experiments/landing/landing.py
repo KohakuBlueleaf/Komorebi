@@ -1,7 +1,7 @@
-"""Landing experiment: which protocol lands a 64-byte multicast record safely. One
-JSON line per run: the X280's time per record and the summed core counters.
+"""Landing experiment: which protocol lands a 64-byte multicast command safely. One
+JSON line per run: the X280's time per command and the summed core counters.
 
-    python landing.py --proto a --depth 1 --records 100 [--stamp]
+    python landing.py --proto a --depth 1 --commands 100 [--stamp]
 """
 
 import argparse
@@ -47,7 +47,7 @@ LC_NAMES = [
     "heal_polls",
     "lost",
     "lost_seq",
-    "stamp_cost",
+    "marker_cost",
     "tag",
     "last_seq",
 ]
@@ -82,7 +82,7 @@ def program(card, plan, cnt_addr, n, defines):
 
 
 def summarize(cnt, n, mhz):
-    """Sum the per-core counters ([cores, 32] uint32) into one record."""
+    """Sum the per-core counters ([cores, 32] uint32) into one command."""
     c = {k: cnt[:, i] for k, i in LC.items()}
     idle = c["idle_lo"] + (c["idle_hi"] << 32)
     check_sum = c["check_lo"] + (c["check_hi"] << 32)
@@ -118,7 +118,7 @@ def summarize(cnt, n, mhz):
         "idle_polls": int(idle.sum()),
         "lost": int(c["lost"].sum()),
         "tag_ok": bool((c["tag"] == c["tag"][0]).all()),
-        "stamp_cost_cycles": int(c["stamp_cost"].max()),
+        "marker_cost_cycles": int(c["marker_cost"].max()),
     }
     if checks:
         out["check_cycles_mean"] = round(float(check_sum.sum()) / checks, 2)
@@ -137,23 +137,23 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--proto", choices=["a", "b"], required=True)
     p.add_argument("--depth", type=int, choices=[1, 4], required=True)
-    p.add_argument("--records", type=int, required=True)
+    p.add_argument("--commands", type=int, required=True)
     p.add_argument("--stamp", action="store_true", help="time the acceptance check")
     p.add_argument("--pll", type=int, default=1750)
     p.add_argument("--timeout", type=float, default=30.0)
     args = p.parse_args()
-    n = args.records
-    record = {"proto": args.proto, "depth": args.depth, "records": n}
-    record["stamp"] = args.stamp
-    record["load_start"] = loadavg()
+    n = args.commands
+    command = {"proto": args.proto, "depth": args.depth, "commands": n}
+    command["stamp"] = args.stamp
+    command["load_start"] = loadavg()
     t_start = time.time()
 
     with km.Session() as card:
         log(f"device open {time.time() - t_start:.1f}s")
-        record.update(run(card, args, n))
-    record["load_end"] = loadavg()
-    record["wall_s"] = round(time.time() - t_start, 1)
-    print(json.dumps(record), flush=True)
+        command.update(run(card, args, n))
+    command["load_end"] = loadavg()
+    command["wall_s"] = round(time.time() - t_start, 1)
+    print(json.dumps(command), flush=True)
 
 
 def run(card, args, n):
@@ -193,7 +193,7 @@ def run(card, args, n):
     log("counters read back")
     out = {
         "ticks": ticks,
-        "us_per_record": (
+        "us_per_command": (
             round(ticks / x280mod.MTIME_HZ * 1e6 / n, 4) if ticks else None
         ),
         "host_wall_s": round(wall, 2),

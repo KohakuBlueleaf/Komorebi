@@ -1,31 +1,31 @@
 // The per-triangle passes: COUNT and SETUP over each core's share of the mesh, 32
-// triangles a block; segments from 11, apart from the fill's (raster.h): one program.
+// triangles a block; handlers from 11, apart from the fill's (raster.h): one program.
 #pragma once
 
 #include <stdint.h>
 
 // LANES: every block's records as the vector unit leaves them, for the exactness check.
-// Each segment's record words: kernels/README.md.
-constexpr uint32_t kSegLanes = 11;
+// Each handler's record words: kernels/README.md.
+constexpr uint32_t kHandlerLanes = 11;
 // COUNT: per core, over its share, the records of every tile and their rows in it (two
 // arrays of 1,024 words), and the histograms kept for HIST.
-constexpr uint32_t kSegCount = 12;
+constexpr uint32_t kHandlerCount = 12;
 // SETUP: each kept record goes once to every item (a tile, or a band of its rows) it
 // reaches, at that item's next slot.
-constexpr uint32_t kSegSetup = 13;
+constexpr uint32_t kHandlerSetup = 13;
 // HIST (writer only): each core writes, per heavy tile, the 32 counts COUNT kept for it
 // (kCbHist).
-constexpr uint32_t kSegHist = 14;
+constexpr uint32_t kHandlerHist = 14;
 // PLACE (writer only, a8 required): directory pages, end slots and list headers from
 // the step's words in the items region.
-constexpr uint32_t kSegPlace = 15;
+constexpr uint32_t kHandlerPlace = 15;
 // SUM (writer only): the counters' sums over the cores, 16 tiles a slice: each core's
 // entries before it per tile into its slots page, the totals for the X280 thread.
-constexpr uint32_t kSegSum = 16;
+constexpr uint32_t kHandlerSum = 16;
 // HSUM (writer only): the same for HIST's histograms, one heavy tile at a time: each
 // core's counts before it, summed over the groups, into its page at a2.
-constexpr uint32_t kSegHsum = 17;
-// a8, every segment: 0, or 1 + the DRAM bank of the X280 thread's regions, whose small
+constexpr uint32_t kHandlerHsum = 17;
+// a8, every handler: 0, or 1 + the DRAM bank of the X280 thread's regions, whose small
 // arrays are then bank addresses (pages contiguous); mesh and lists stay tensors.
 
 // a2 with kRanges (COUNT, SETUP; a8): blocks [b0, b1) at kRangesAt + 64 x core of the
@@ -123,10 +123,11 @@ constexpr uint32_t kGaveBadClip = 7;
 // out stride (HSUM: past its pages); PLACE without the thread's bank.
 constexpr uint32_t kGaveBadHist = 8;
 constexpr uint32_t kGaveBadHeavy = 9;
-constexpr uint32_t kGaveBadPlace = 10;  // PLACE, SUM or HSUM without a8 (where: 0, the segment)
+constexpr uint32_t kGaveBadPlace = 10;  // PLACE, SUM or HSUM without a8 (where: 0, the handler)
 
-// Profile (a9 not 0): 32 words per pass per core, at 128 x (segment - kSegCount) of its
-// page; the threads leave wall-clock counters in kCbSProf and the writer sends them.
+// Profile (a9 not 0): 32 words per pass per core, at 128 x (handler - kHandlerCount) of
+// its page; the threads leave wall-clock counters in kCbSProf and the writer sends
+// them.
 constexpr uint32_t kCbSProf = 9;
 constexpr uint32_t kSProfBytes = 256;
 constexpr uint32_t kSProfPageBytes = 4096;

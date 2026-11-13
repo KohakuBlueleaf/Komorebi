@@ -6,10 +6,10 @@
 
 /* Step 1, COUNT: every core counts its share of the keys per bucket and writes its row
  * of the counts table. Step 3, PLACE: every core writes each key to its place. */
-#define BS_SEG_COUNT 1u
-#define BS_SEG_PLACE 2u
+#define BS_HANDLER_COUNT 1u
+#define BS_HANDLER_PLACE 2u
 
-/* The words of both records: a0 keys, a1 N, a2 log2(B) | blocks << 8, a3 the blocks'
+/* The words of both commands: a0 keys, a1 N, a2 log2(B) | blocks << 8, a3 the blocks'
  * banks (8 bits each), a4 to a6 the blocks' tables, a7 the output (README.md). */
 
 /* A bucket is the key's top log2(B) bits; buckets go in chunks of 16, one 64-byte line
@@ -22,14 +22,14 @@
 
 /* The thread's words, in this order (the host script writes them). */
 enum {
-    BS_W_KEYS_N,  /* N */
-    BS_W_LOG2_B,  /* log2(B), 4 to 14 */
-    BS_W_CORES,   /* the Tensix team: cores 0 to cores - 1, one table row each */
-    BS_W_KEYS,    /* the keys tensor's DRAM address */
-    BS_W_OUT,     /* the output tensor's DRAM address */
-    BS_W_HARTS,   /* 1, 4 or 12 */
-    BS_W_REPEATS, /* rounds of count, plan, place (the best time is kept) */
-    BS_W_BANKS,   /* the DRAM bank of work cluster c in bits 8 (c - 1) */
+    BS_W_KEYS_N,     /* N */
+    BS_W_LOG2_B,     /* log2(B), 4 to 14 */
+    BS_W_CORES,      /* the Tensix group: cores 0 to cores - 1, one table row each */
+    BS_W_KEYS,       /* the keys tensor's DRAM address */
+    BS_W_OUT,        /* the output tensor's DRAM address */
+    BS_W_X280_CORES, /* 1, 4 or 12 */
+    BS_W_REPEATS,    /* rounds of count, plan, place (the best time is kept) */
+    BS_W_BANKS,      /* the DRAM bank of work cluster c in bits 8 (c - 1) */
     BS_WORDS
 };
 

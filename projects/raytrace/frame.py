@@ -24,26 +24,26 @@ from ref import bvh, native, png, raytrace, scenes  # noqa: E402
 K = packets.K
 VEC = packets.VEC
 F = np.float32
-# Each step: name, segment, input streams, output streams (in the kernels' order).
+# Each step: name, handler, input streams, output streams (in the kernels' order).
 STEPS = (
-    ("gen", "kSegGen", ("desc",), ("primary_pk",)),
-    ("primary", "kSegTrace", ("primary_pk",), ("primary_hit",)),
+    ("gen", "kHandlerGen", ("desc",), ("primary_pk",)),
+    ("primary", "kHandlerTrace", ("primary_pk",), ("primary_hit",)),
     (
         "shade1",
-        "kSegShade1",
+        "kHandlerShade1",
         ("primary_pk", "primary_hit"),
         ("shadow_pk", "bounce_pk", "state1"),
     ),
-    ("shadow", "kSegTrace", ("shadow_pk",), ("shadow_hit",)),
-    ("bounce", "kSegTrace", ("bounce_pk",), ("bounce_hit",)),
+    ("shadow", "kHandlerTrace", ("shadow_pk",), ("shadow_hit",)),
+    ("bounce", "kHandlerTrace", ("bounce_pk",), ("bounce_hit",)),
     (
         "shade2",
-        "kSegShade2",
+        "kHandlerShade2",
         ("state1", "shadow_hit", "bounce_pk", "bounce_hit"),
         ("shadow2_pk", "state2"),
     ),
-    ("shadow2", "kSegTrace", ("shadow2_pk",), ("shadow2_hit",)),
-    ("image", "kSegImage", ("state2", "shadow2_hit"), ("colour",)),
+    ("shadow2", "kHandlerTrace", ("shadow2_pk",), ("shadow2_hit",)),
+    ("image", "kHandlerImage", ("state2", "shadow2_hit"), ("colour",)),
 )
 ANY_HIT = ("shadow", "shadow2")
 SORTED = ("bounce", "shadow2")  # traces whose rays --sort orders on each core first
@@ -53,14 +53,14 @@ def sorted_steps():
     """STEPS with each SORTED trace on its rays in the core's order (SORT before it,
     UNSORT of its hits after it)."""
     out = []
-    for name, seg, ins, outs in STEPS:
+    for name, handler, ins, outs in STEPS:
         if name not in SORTED:
-            out.append((name, seg, ins, outs))
+            out.append((name, handler, ins, outs))
             continue
         pk, hit, order = f"{name}_s_pk", f"{name}_s_hit", f"order_{name}"
-        out.append((f"sort_{name}", "kSegSort", ins, (pk, order)))
-        out.append((name, seg, (pk,), (hit,)))
-        out.append((f"unsort_{name}", "kSegSort", (hit, order), outs))
+        out.append((f"sort_{name}", "kHandlerSort", ins, (pk, order)))
+        out.append((name, handler, (pk,), (hit,)))
+        out.append((f"unsort_{name}", "kHandlerSort", (hit, order), outs))
     return tuple(out)
 
 
@@ -94,13 +94,13 @@ def vectors(stream):
 def step_words(step, addr, directory, const, prof):
     """A step's ten record words; `addr` maps a stream to its address (or a graph's
     register)."""
-    name, seg, ins, outs = step
+    name, handler, ins, outs = step
     words = [0] * 10
     words[0], words[4] = directory, prof
-    if seg == "kSegTrace":
+    if handler == "kHandlerTrace":
         words[1], words[2] = addr[ins[0]], addr[outs[0]]
         words[3] = K["kModeAny"] if name in ANY_HIT else K["kModeNearest"]
-    elif seg == "kSegSort":
+    elif handler == "kHandlerSort":
         streams = ins + outs
         order = next(s for s in streams if s.startswith("order_"))
         src, dst = (s for s in streams if s != order)
@@ -113,24 +113,24 @@ def step_words(step, addr, directory, const, prof):
     return words
 
 
-def records(tensors, dir_ts, const_t, profs, treelets=None, steps=STEPS, key=()):
-    """Every step's records (segment, ten words), in issue order. With treelets (the
+def commands(tensors, dir_ts, const_t, profs, treelets=None, steps=STEPS, key=()):
+    """Every step's records (handler, ten words), in submit order. With treelets (the
     tensor and four words) a trace has a record per chunk dir_ts[1:], others dir_ts[0].
     """
     addr = {s: t.address for s, t in tensors.items()}
     c = const_t.address
     out = []
     for step, step_profs in zip(steps, profs):
-        chunks = dir_ts[1:] if treelets and step[1] == "kSegTrace" else dir_ts[:1]
+        chunks = dir_ts[1:] if treelets and step[1] == "kHandlerTrace" else dir_ts[:1]
         for d, prof in zip(chunks, step_profs):
             words = step_words(step, addr, d.address, c, prof.address)
-            seg = K[step[1]]
-            if treelets and step[1] == "kSegTrace":
-                seg = K["kSegTreelets"]
+            handler = K[step[1]]
+            if treelets and step[1] == "kHandlerTrace":
+                handler = K["kHandlerTreelets"]
                 words[5:10] = [treelets[0].address, *treelets[1]]
-            if step[1] == "kSegSort":
+            if step[1] == "kHandlerSort":
                 words[6:10] = key
-            out.append((seg, words))
+            out.append((handler, words))
     return out
 
 
@@ -200,15 +200,15 @@ def pictures(out, scene, flat, colour, want, report):
 SAMPLE_CORES = (0, 40, 80, 119)  # cores whose trace hit pages --profile keeps
 
 
-def save_profile(path, session, raw, record_us, directory, tensors, steps=STEPS):
+def save_profile(path, session, raw, command_us, directory, tensors, steps=STEPS):
     """Every record's counters per core, the record times, the directory and the hit
     pages of SAMPLE_CORES' packets for each trace (first kHitAnyVectors vectors)."""
-    out = {"record_us": record_us, "directory": directory}
+    out = {"command_us": command_us, "directory": directory}
     for (name, *_), rows in zip(steps, raw):
         out[f"prof_{name}"] = np.stack(rows)
     per = K["kPagePackets"]
-    for name, seg, _, outs in steps:
-        if seg != "kSegTrace":
+    for name, handler, _, outs in steps:
+        if handler != "kHandlerTrace":
             continue
         v = vectors(outs[0])
         parts = []
@@ -263,7 +263,7 @@ def planned(
     tab = planner.table(
         entries,
         directory,
-        [ps for s, ps in zip(steps, profs) if s[1] == "kSegTrace"],
+        [ps for s, ps in zip(steps, profs) if s[1] == "kHandlerTrace"],
         workers,
     )
     prog = planner.program(
@@ -286,8 +286,8 @@ def planned(
     us, last = [], None
     for i, f in enumerate(frames):
         chunks = [f["chunks"][k - 1] if k else 1 for k in kinds]
-        chunks[0] = 1 if i == 0 else 0  # LOAD: the first frame only
-        rec = np.asarray(f["record_us"], dtype=np.float64)
+        chunks[0] = 1 if i == 0 else 0  # LOAD: the cold frame only
+        rec = np.asarray(f["command_us"], dtype=np.float64)
         if len(rec) != sum(chunks):
             break
         step_us = np.bincount(np.repeat(np.arange(len(kinds)), chunks), rec)[1:]
@@ -297,7 +297,7 @@ def planned(
         {
             "frame_ms": float(u.sum()) / 1000,
             "step_ms": (u / 1000).tolist(),
-            "wall_ms": (f["wall_us"] - (f["record_us"][0] if i == 0 else 0)) / 1000,
+            "wall_ms": (f["wall_us"] - (f["command_us"][0] if i == 0 else 0)) / 1000,
             "plan_ms": [x / 1000 for x in f["plan_us"]],
             "chunks": f["chunks"],
             "plan_parts_ms": [x / 1000 for x in f["plan_parts_us"]],
@@ -309,14 +309,14 @@ def planned(
     done = len(frames) == args.reps and len(us) == args.reps and status["code"] == "ok"
     ran = card.Ran([], status["kernel"], state, status["host_s"])
     report["run"] = card.check_run(ran, workers)
-    report["run"].update(done=int(done), records=1)
-    report["host"] = {"records": 0, "command_bytes": 0, "wall_s": status["host_s"]}
+    report["run"].update(done=int(done), commands=1)
+    report["host"] = {"commands": 0, "command_bytes": 0, "wall_s": status["host_s"]}
     kind_of = iter(k for k in kinds[1:] if k)
     read = []
     for s, ps in zip(steps, profs):
-        read.append(ps[: last[next(kind_of) - 1]] if s[1] == "kSegTrace" else ps)
+        read.append(ps[: last[next(kind_of) - 1]] if s[1] == "kHandlerTrace" else ps)
     us = np.stack(us) if us else np.zeros((1, len(steps)))
-    last_us = np.asarray(frames[-1]["record_us"]) if frames else np.zeros(0)
+    last_us = np.asarray(frames[-1]["command_us"]) if frames else np.zeros(0)
     return us, read, status["host_s"], samples, last_us
 
 
@@ -370,7 +370,7 @@ def main():
             # SORT works in the slot buffer (free between treelet records).
             sort_bytes, short = packets.sort_bytes(most) if args.sort else 0, 0
             for _ in range(4):
-                per, slots, sizes = packets.plan_records(
+                per, slots, sizes = packets.plan_commands(
                     most,
                     len(table),
                     slot_bytes,
@@ -386,7 +386,7 @@ def main():
             tl_t = card.tensor(session, treelet_pages)
             tl_words = [sizes["entries"], slot_bytes, slots, K["kPolicyOnce"]]
             treelets = (tl_t, tl_words)
-            report["treelets"] = {"count": len(table), "packets_per_record": per}
+            report["treelets"] = {"count": len(table), "packets_per_command": per}
             report["treelets"].update(sizes, slot_count=slots, chunks=len(dirs))
         dir_ts = [
             card.tensor(session, d)
@@ -396,21 +396,22 @@ def main():
         tree_t = card.tensor(session, image)
         prof_rows = np.zeros((workers, K["kOutPageBytes"] // 4), dtype=np.uint32)
         per_step = [
-            len(dirs) if cut is not None and s[1] == "kSegTrace" else 1 for s in steps
+            len(dirs) if cut is not None and s[1] == "kHandlerTrace" else 1
+            for s in steps
         ]
         most = [planner.P["RP_CHUNKS"] if args.plan else k for k in per_step]
-        most = [m if s[1] == "kSegTrace" else 1 for m, s in zip(most, steps)]
+        most = [m if s[1] == "kHandlerTrace" else 1 for m, s in zip(most, steps)]
         profs = [[card.tensor(session, prof_rows) for _ in range(k)] for k in most]
-        recs = [(K["kSegLoad"], [tree_t.address, image.nbytes])]
+        recs = [(K["kHandlerLoad"], [tree_t.address, image.nbytes])]
         key = sort_key(tree) if args.sort else ()
-        one = records(tensors, dir_ts, const_t, profs, treelets, steps, key)
+        one = commands(tensors, dir_ts, const_t, profs, treelets, steps, key)
         meter = card.Power()
         report["power_idle_w"] = meter.idle()
         report["aiclk_mhz"] = card.aiclk_mhz()
         report["x280_mhz"] = km_session.X280_MHZ
         report["load_avg"] = os.getloadavg()[0]
         if args.plan:
-            us, read_profs, host_s, samples, record_us = planned(
+            us, read_profs, host_s, samples, command_us = planned(
                 args,
                 session,
                 recs + one,
@@ -425,17 +426,17 @@ def main():
         else:
             recs += one * args.reps
             card.log(f"frame: {n} packets, {len(recs)} records")
-            res, samples = card.run_records(
+            res, samples = card.run_commands(
                 session, recs, len(image), power=meter, sizes=sizes
             )
             report["run"] = card.check_run(res, workers)
             # A step's time is its records' (one per directory chunk) summed.
             step_of = np.repeat(np.arange(len(steps)), per_step)
-            per_rep = card.record_us(res)[1:].reshape(args.reps, len(step_of))
+            per_rep = card.command_us(res)[1:].reshape(args.reps, len(step_of))
             us = np.stack([np.bincount(step_of, r, len(steps)) for r in per_rep])
             report["host"] = {**res.host, "wall_s": res.host_s}
             host_s, read_profs = res.host_s, profs
-            record_us = card.record_us(res)
+            command_us = card.command_us(res)
         run = report["run"]
         report["frame_us_median"] = float(np.median(us.sum(axis=1)))
         report["frame_ms"] = report["frame_us_median"] / 1000
@@ -454,7 +455,7 @@ def main():
                 args.profile,
                 session,
                 raw,
-                record_us,
+                command_us,
                 directory,
                 tensors,
                 steps,
@@ -469,7 +470,7 @@ def main():
                 per = pr[key][used].sum() / max(pr["packets"][used].sum(), 1)
                 step[f"{key}_per_packet"] = round(float(per), 1)
             report["steps"].append(step)
-        report["record_ms"] = {s["step"]: s["us"] / 1000 for s in report["steps"]}
+        report["command_ms"] = {s["step"]: s["us"] / 1000 for s in report["steps"]}
         wanted = sorted(names) if args.stages else ["colour"]
         got = card.read_each(session, [tensors[s] for s in wanted], wanted)
         got = {s: packets.ungroup(g, vectors(s), n) for s, g in zip(wanted, got)}

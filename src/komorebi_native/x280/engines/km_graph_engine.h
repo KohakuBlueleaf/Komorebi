@@ -1,5 +1,5 @@
 /* The graph executor: plain C with no kernel internals. The same file runs in the
-   dispatch kernel and on the host (CPU tests, the host-fed executor). */
+   dispatcher and on the host (CPU tests, the host-fed executor). */
 #ifndef KOMOREBI_X280_KM_GRAPH_ENGINE_H
 #define KOMOREBI_X280_KM_GRAPH_ENGINE_H
 
@@ -11,9 +11,9 @@
 extern "C" {
 #endif
 
-/* What an issue function returns. */
-#define KMG_ISSUED 0u
-#define KMG_BUSY 1u /* no slot, an overlapping exclusive team, or the queue is full */
+/* What a submit function returns. */
+#define KMG_SUBMITTED 0u
+#define KMG_BUSY 1u /* no slot, an overlapping exclusive group, or a full queue */
 
 /* What kmg_step returns; KMG_RUNNING, KMG_END and KMG_ERROR are also the phase. */
 #define KMG_RUNNING 0u
@@ -24,12 +24,12 @@ extern "C" {
 /* Node states. */
 #define KMG_WAITING 0u /* predecessors not done */
 #define KMG_READY 1u   /* in the ready ring */
-#define KMG_FLIGHT 2u  /* a record issued, its completion not seen */
+#define KMG_FLIGHT 2u  /* a command submitted, its completion not seen */
 #define KMG_DONE 3u
 
-/* Issues `rec` for `node` (seq, landing and slot bits are 0; a queued record keeps
-   KM_F_QUEUE and first 0). Returns KMG_ISSUED or KMG_BUSY. */
-typedef uint32_t (*kmg_issue_fn)(void* ctx, uint32_t node, const km_record_t* rec);
+/* Submits `rec` for `node` (seq, landing and slot bits are 0; a queued command keeps
+   KM_F_QUEUE and first 0). Returns KMG_SUBMITTED or KMG_BUSY. */
+typedef uint32_t (*kmg_submit_fn)(void* ctx, uint32_t node, const km_command_t* rec);
 
 /* All engine state, in a block the caller gives. The first 20 words are fixed: the
    registers, then runs, phase, error reason and error node. */
@@ -67,14 +67,14 @@ uint32_t kmg_start(
 );
 
 /* One bounded step: at most KM_GRAPH_STEP ready nodes. */
-uint32_t kmg_step(kmg_state_t* s, kmg_issue_fn issue, void* ctx);
+uint32_t kmg_step(kmg_state_t* s, kmg_submit_fn submit, void* ctx);
 
-/* The record of `node` completed with `result`. Returns 0, or 1 if the graph is not
-   running or the node has no record in flight (nothing changes). */
+/* The command of `node` completed with `result`. Returns 0, or 1 if the graph is not
+   running or the node has no command in flight (nothing changes). */
 uint32_t kmg_complete(kmg_state_t* s, uint32_t node, uint32_t result);
 
-/* The record of `node` was issued and then refused for now (no slot, a team busy): the
-   node goes back to the ready ring's tail. Returns 0, or 1 as kmg_complete. */
+/* The command of `node` was submitted, then rejected for now (no slot, a group busy):
+   the node goes back to the ready ring's tail. Returns 0, or 1 as kmg_complete. */
 uint32_t kmg_retry(kmg_state_t* s, uint32_t node);
 
 /* Ends a running graph with an error from outside: a deadline, a cancel. */

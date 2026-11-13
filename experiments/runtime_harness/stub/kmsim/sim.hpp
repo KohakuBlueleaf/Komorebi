@@ -16,7 +16,7 @@ namespace kmsim {
     // The kernels of one core, in the order the simulator starts them.
     enum Role : uint32_t { kReader, kWriter, kUnpack, kMath, kPack, kRoles };
 
-    // Names a stub call for the probes: records it, runs the case's triggers, holds a
+    // Names a stub call for the probes: commands it, runs the case's triggers, holds a
     // frozen kernel there. Ends the thread when the case is aborted.
     void point(const char* name, uint32_t cb = ~0u);
 
@@ -38,9 +38,9 @@ namespace kmsim {
     uint32_t cb_read_ptr(uint32_t cb);
     uint32_t cb_page(uint32_t cb);
 
-    // The record the calling kernel works on, for violation reports (the stub also
+    // The command the calling kernel works on, for violation reports (the stub also
     // takes it from the tokens; only a case's own kernels need to say it).
-    void note_record(uint32_t seq);
+    void note_command(uint32_t seq);
 
     // The buffer as the kernel APIs' local interface shows it, and the two counter
     // registers (pages pushed, pages popped) as words in the core's L1 image.

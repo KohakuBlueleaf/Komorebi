@@ -1,6 +1,6 @@
 """The frame as one kept graph: uploaded once, run for each camera with the camera's
 constant page and the colour as bindings and no host step inside a frame, in the
-dispatch kernel and host-fed. Each camera's image is checked against numpy's and the
+dispatcher and host-fed. Each camera's image is checked against numpy's and the
 two runs against each other. Prints one JSON line with `ok`; exits 1 without it.
 """
 
@@ -41,7 +41,7 @@ def build(addr, directory, profs, workers, deadline_s):
         for s in step[2]:
             if s in made and made[s] not in after:
                 after.append(made[s])
-        node = g.record(K[step[1]], team=(0, workers), args=words, after=after)
+        node = g.command(K[step[1]], group=(0, workers), args=words, after=after)
         for s in step[3]:
             made[s] = node
     return g
@@ -63,9 +63,9 @@ def run_modes(session, g, image, tree_t, cases, modes, deadline_s):
     seconds]}, the kernel check, the host-fed records per frame)."""
     run = session.load(card.program(len(image)), deadline=deadline_s)
     try:
-        ticket = run.issue(K["kSegLoad"], args=[tree_t.address, image.nbytes])
-        run.wait([ticket], timeout=10.0 + deadline_s)
-        seconds, issued = {m: [] for m in modes}, []
+        handle = run.submit(K["kHandlerLoad"], args=[tree_t.address, image.nbytes])
+        run.wait([handle], timeout=10.0 + deadline_s)
+        seconds, submitted = {m: [] for m in modes}, []
         if "graph" in modes:
             up = run.upload(g)
             for k, b in enumerate(cases["graph"]):
@@ -79,14 +79,14 @@ def run_modes(session, g, image, tree_t, cases, modes, deadline_s):
             t0 = time.perf_counter()
             res = run.run_hostfed(g, b, timeout=10.0 + 8 * deadline_s)
             seconds["hostfed"].append(time.perf_counter() - t0)
-            issued.append(len(res.records))
-            card.log(f"hostfed camera {k}: {res.status}, {len(res.records)} records")
+            submitted.append(len(res.commands))
+            card.log(f"hostfed camera {k}: {res.status}, {len(res.commands)} records")
             if res.status != "ended":
                 raise RuntimeError(f"host-fed graph: {res.status} {res.error}")
     finally:
         run.stop()
     ran = card.Ran([], run.result(), run.state(), 0.0)
-    return seconds, card.check_run(ran, card.workers(session)), issued
+    return seconds, card.check_run(ran, card.workers(session)), submitted
 
 
 def main():
@@ -142,10 +142,10 @@ def main():
             packets=n, aiclk_mhz=card.aiclk_mhz(), load_avg=os.getloadavg()[0]
         )
         report["upload_bytes"] = len(g.encode())
-        seconds, run, issued = run_modes(
+        seconds, run, submitted = run_modes(
             session, g, image, tree_t, cases, args.modes, args.deadline
         )
-        report["run"], report["hostfed_records"] = run, issued
+        report["run"], report["hostfed_commands"] = run, submitted
         report["frame_ms"] = {
             m: [round(s * 1e3, 3) for s in v] for m, v in seconds.items()
         }
@@ -175,7 +175,7 @@ def main():
     report["cameras_differ"] = int(moved)
     ok = run["kernel_error"] == 0 and set(run["cores_ended"].values()) == {workers}
     ok &= all(v == 0 for row in checks for key, v in row.items() if key != "camera")
-    ok &= bool(moved) and all(i == len(frame.STEPS) for i in issued)
+    ok &= bool(moved) and all(i == len(frame.STEPS) for i in submitted)
     report["ok"] = bool(ok)
     print(json.dumps(report), flush=True)
     if args.json:

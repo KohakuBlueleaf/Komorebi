@@ -32,10 +32,10 @@ void kernel_main() {
                    wr.args().wait_limit
                ) == km::kGaveNone;
     };
-    wr.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
+    wr.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
         const auto x = TensorAccessor(state_args, r.a0);
-        if (seg == WC_SEG_SUM) {
+        if (handler == WC_HANDLER_SUM) {
             if (wr.me() != km::first(r)) {
                 return true;
             }
@@ -50,7 +50,7 @@ void kernel_main() {
             wr.result(sum);
             return true;
         }
-        if (seg != WC_SEG_STEP) {
+        if (handler != WC_HANDLER_STEP) {
             return true;
         }
         const uint32_t page = wr.me();

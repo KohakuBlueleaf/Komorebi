@@ -190,7 +190,7 @@ namespace walk {
         copy_words(img, win(), kStImageWords);
     }
 
-    // Lane l of slot s in a state image.
+    // Broadcast l of slot s in a state image.
     inline uint32_t image_lane(const uint32_t* img, uint32_t s, uint32_t l) {
         return img[word(s) + 2 * l];
     }

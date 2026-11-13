@@ -1,5 +1,5 @@
-/* Grid port: the panel windows onto every core's control block, the record store and
- * the stop word. The kernel only writes to the grid; it never reads it. */
+/* Grid port: the panel windows onto every core's control block, the command store and
+ * the stop flag. The kernel only writes to the grid; it never reads it. */
 #pragma once
 
 #include "kernel.h"
@@ -38,17 +38,17 @@ static inline uint32_t grid_open(kmd_t* k, uint32_t ctl) {
     return KMD_ERR_NONE;
 }
 
-/* Stores the record `line` into mailbox slot `slot` of every core: one 64-byte vector
+/* Stores the command `line` into mailbox slot `slot` of every core: one 64-byte vector
  * store per panel, then a fence so the stores leave now. */
-KMD_HOT void grid_store_record(kmd_t* k, uint32_t slot, const uint64_t* line) {
-    const uint32_t off = KM_CTL_RING + slot * (uint32_t)sizeof(km_record_t);
+KMD_HOT void grid_store_command(kmd_t* k, uint32_t slot, const uint64_t* line) {
+    const uint32_t off = KM_CTL_RING + slot * (uint32_t)sizeof(km_command_t);
     for (uint32_t r = 0; r < k->panels; r++) {
         kmd_store_line(k->ctl[r] + off, line);
     }
     x280_fence_ow();
 }
 
-/* Stores a nonzero stop word into every core's control block through each panel that
+/* Stores a nonzero stop flag into every core's control block through each panel that
  * opened: every wait on the grid gives up. */
 static inline void grid_stop(kmd_t* k) {
     for (uint32_t r = 0; r < k->panels; r++) {

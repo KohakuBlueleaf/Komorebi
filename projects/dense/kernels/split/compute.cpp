@@ -37,12 +37,12 @@ void kernel_main() {
     const uint32_t kc = plan(kSpKc), sh = plan(kSpSh), sw = plan(kSpSw), s = plan(kSpS);
     const uint32_t p = oh * ow;
     compute_kernel_hw_startup<SrcOrder::Reverse>(kCbSa, kCbSw, kCbSum);
-    cp.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegSplit) {
+    cp.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerSplit) {
             return;
         }
         const km::Group g = km::digit_group(r, cp.me(), 1, s);
-        const km::Share part = km::share(kt, g.rank, g.size);
+        const km::Partition part = km::partition(kt, g.rank, g.size);
         const km::Arrival arrival = {kCbArrive, plan(kSpArrive), p};
         const bool full = r.a4 == kSplitFull;
         const bool room = cp.reserve_back(kCbSum, p);

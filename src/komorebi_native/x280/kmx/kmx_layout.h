@@ -23,7 +23,7 @@
 #define KMX_LIM_ARGS 0x000u   /* kmx_args (host, before the start) */
 #define KMX_LIM_STOP 0x240u   /* line from the host: word 0 = KMX_STOP_WORD */
 #define KMX_LIM_RESULT 0x280u /* kmx_result_block (the thread) */
-#define KMX_LIM_HARTS 0x380u  /* hart h's spawn line at + 64 * h (KMX_SPAWN_*) */
+#define KMX_LIM_CORES 0x380u  /* core h's spawn line at + 64 * h (KMX_SPAWN_*) */
 #define KMX_LIM_RING                                                                  \
     0x480u                   /* kmx_ring_desc (host, before the start); zero: no ring \
                               */
@@ -32,8 +32,8 @@
 #define KMX_LIM_BYTES 0x540u
 #define KMX_STOP_WORD 0x53544F50u /* "STOP" */
 
-/* A spawn line's 64-bit words: the call's number, fn and arg (hart 0 writes them), the
- * last number hart h finished (hart h). Hart 0's own line: word 0 ends the service. */
+/* A spawn line's 64-bit words: the call's number, fn and arg (core 0 writes them), the
+ * last number core h finished (core h). Core 0's own line: word 0 ends the service. */
 #define KMX_SPAWN_GEN 0u
 #define KMX_SPAWN_FN 1u
 #define KMX_SPAWN_ARG 2u
@@ -97,7 +97,7 @@ typedef struct {
 #define KMX_PEER_WINDOW                                                               \
     17u                     /* cluster c's LIM through window KMX_PEER_WINDOW + c - 1 \
                              */
-#define KMX_PUSH_WINDOW 20u /* hart h pushes through window KMX_PUSH_WINDOW + h */
+#define KMX_PUSH_WINDOW 20u /* core h pushes through window KMX_PUSH_WINDOW + h */
 
 /* X280 ports (at 0: none). The host writes the line, and before any start the area
  * at `at`: each core's tile, X280 core and mailbox line (KM_BOX_*, the core's). */
@@ -150,16 +150,16 @@ typedef struct {
 #define KMX_STOPPED 2 /* a stop was asked for, or the thread has no ring */
 #define KMX_LATE 3    /* the deadline passed */
 #define KMX_NONE 4    /* kmx_poll: no event yet; kmx_serve: this cluster leads */
-#define KMX_BAD 5     /* an argument out of range: a hart, cluster, region or size */
+#define KMX_BAD 5     /* an argument out of range: a core, cluster, region or size */
 
-/* An event of a command the thread issued: its ticket, kind (KM_EV_*), aux and ticks
- * (for KM_F_RESULT records: the team leader's result word). */
+/* An event of a command the thread submitted: its handle, kind (KM_EV_*), aux and ticks
+ * (for KM_F_RESULT commands: the group leader's result word). */
 typedef struct {
-    uint32_t ticket, kind, aux, ticks;
+    uint32_t handle, kind, aux, ticks;
 } kmx_event;
 
-/* The kernel's wake (ticket 0): room again after a refusal with aux 11. kmx_wait passes
- * it over; kmx_poll returns it. */
+/* The kernel's wake (handle 0): room again after a rejection with aux 11. kmx_wait
+ * passes it over; kmx_poll returns it. */
 #define KMX_EV_WAKE 0x12u
 
 /* States, in the result block. */
@@ -174,7 +174,7 @@ typedef struct {
 #define KMX_ERR_BANK 2u    /* the check line does not hold check_value: wrong bank */
 #define KMX_ERR_LATE 3u    /* a wait reached the run's deadline */
 #define KMX_ERR_STOPPED 4u /* the host or the runtime asked for a stop */
-#define KMX_ERR_PAR 5u     /* kmx_par called from a hart other than 0 */
+#define KMX_ERR_PAR 5u     /* kmx_par called from a core other than 0 */
 #define KMX_ERR_RESULT 6u  /* kmx_result with more than KMX_RESULT_WORDS_MAX words */
 
 typedef struct {
@@ -199,8 +199,8 @@ KMX_STATIC_ASSERT(offsetof(kmx_args, words) == KMX_ARGS_WORDS, "argument words")
 KMX_STATIC_ASSERT(sizeof(kmx_args) == KMX_ARGS_BYTES, "kmx_args size");
 KMX_STATIC_ASSERT(KMX_LIM_ARGS + KMX_ARGS_BYTES <= KMX_LIM_STOP, "LIM: args");
 KMX_STATIC_ASSERT(sizeof(kmx_result_block) == 256, "kmx_result_block size");
-KMX_STATIC_ASSERT(KMX_LIM_RESULT + 256 <= KMX_LIM_HARTS, "LIM: result");
-KMX_STATIC_ASSERT(KMX_LIM_HARTS + 4 * 64 <= KMX_LIM_RING, "LIM: spawn lines");
+KMX_STATIC_ASSERT(KMX_LIM_RESULT + 256 <= KMX_LIM_CORES, "LIM: result");
+KMX_STATIC_ASSERT(KMX_LIM_CORES + 4 * 64 <= KMX_LIM_RING, "LIM: spawn lines");
 KMX_STATIC_ASSERT(sizeof(kmx_peers) == 64, "kmx_peers is one line");
 KMX_STATIC_ASSERT(KMX_LIM_PEERS + 64 <= KMX_LIM_BYTES, "LIM: peers");
 KMX_STATIC_ASSERT(sizeof(kmx_ring_desc) == 64, "kmx_ring_desc is one line");

@@ -3,7 +3,7 @@
 One rectangle of cores shares two kinds of blocks without every core reading them from
 DRAM: A blocks travel along the rectangle's rows, W blocks down its columns. The first
 core of each row (and the last core of each column) reads its blocks from DRAM and
-casts them to the rest of its lane; every core combines the two blocks it holds. This
+casts them to the rest of its broadcast; every core combines the two blocks it holds. This
 is the data movement of a matrix product that keeps every byte crossing DRAM once.
 
 ## The thread program
@@ -11,7 +11,7 @@ is the data movement of a matrix product that keeps every byte crossing DRAM onc
 ```
 thread combine(row, col):                     # one thread per core of an R x C rectangle
     sum = 0
-    for k in blocks(n):                        # time: n blocks per lane
+    for k in blocks(n):                        # time: n blocks per broadcast
         if col == first:  a = read_dram(A[row, k]);  emit a -> threads(row, *)  # breakpoint
         else:             a = wait(1)                                           # breakpoint
         if row == last:   w = read_dram(W[col, k]);  emit w -> threads(*, col)  # breakpoint
@@ -20,87 +20,87 @@ thread combine(row, col):                     # one thread per core of an R x C 
     write out[row, col] = sum
 ```
 
-Each `emit ... -> threads(row, *)` is one lane broadcast: one multicast of the block
-into a slot of the receivers' lane buffer, then a VALID stamp; each receiver stamps the
+Each `emit ... -> threads(row, *)` is one broadcast broadcast: one multicast of the block
+into a slot of the receivers' broadcast buffer, then a VALID stamp; each receiver stamps the
 sender when its compute kernel has finished with the block, and the sender reuses a
-slot only after every receiver has stamped it. A lane holds B blocks in flight.
+slot only after every receiver has stamped it. A broadcast holds B blocks in flight.
 
 ## How it maps onto the runtime
 
-| Thread program | Kernel | Call (`komorebi/device/km_lane.hpp`) |
+| Thread program | Kernel | Call (`komorebi/device/km_broadcast.hpp`) |
 |---|---|---|
 | rows: `emit a`, `wait(1)` | reader, NoC0 (runs +x: the sender is the row's left end) | `ln.reserve(k)`, DRAM reads into the slot, `ln.cast(k)`; `ln.arrive(k)`; `ln.finish()` |
-| columns: `emit w`, `wait(1)` | writer, NoC1 (runs -y: the sender is the column's bottom end) | the same calls on the column lane |
-| `sum += ...` | compute | `km::lane_take`, tiles by index, `km::lane_done`; `km::lane_end` after the last block |
+| columns: `emit w`, `wait(1)` | writer, NoC1 (runs -y: the sender is the column's bottom end) | the same calls on the column broadcast |
+| `sum += ...` | compute | `km::broadcast_receive`, tiles by index, `km::broadcast_done`; `km::broadcast_end` after the last block |
 
-A row lane never crosses a panel boundary (a run of columns with consecutive NoC0 x):
-on this card a row of 12 columns is two lanes of 6, each with its own sender. The host
-computes the lanes, their senders and multicast rectangles (`komorebi.layout.lane_args`)
-and passes each core its lane words as program arguments.
+A row broadcast never crosses a panel boundary (a run of columns with consecutive NoC0 x):
+on this card a row of 12 columns is two broadcasts of 6, each with its own sender. The host
+computes the broadcasts, their senders and multicast rectangles (`komorebi.layout.broadcast_args`)
+and passes each core its broadcast words as program arguments.
 
-| Segment | Arguments | What a member does |
+| Handler | Arguments | What a member does |
 |---|---|---|
-| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 member that stalls (a test), a5 its block, a6 output page of member 0, a7 blocks of data per lane (block k reads data block k mod a7) | as the thread program; members outside the rectangle only report |
+| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 member that stalls (a test), a5 its block, a6 output page of member 0, a7 blocks of data per broadcast (block k reads data block k mod a7) | as the thread program; members outside the rectangle only report |
 | `READ` | the same | every member reads its own blocks from DRAM (the comparison) |
 
 ## Run
 
-The driver loads the program with `komorebi.Session` and issues one `CAST` (or `READ`)
-record per job with `Run.issue(..., exclusive=True)`: the records reach the grid
-through the dispatch kernel on X280 cluster 0. A record that uses lanes is exclusive,
-so the kernel never starts it while another record on an overlapping team runs (the
-two would share the lane buffers). Setup is that of
+The driver loads the program with `komorebi.Session` and submits one `CAST` (or `READ`)
+command per job with `Run.submit(..., exclusive=True)`: the commands reach the grid
+through the dispatcher on X280 cluster 0. A command that uses broadcasts is exclusive,
+so the kernel never starts it while another command on an overlapping group runs (the
+two would share the broadcast buffers). Setup is that of
 [01_mapcollect](../01_mapcollect/README.md#what-it-needs).
 
 ```
 python broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --jobs 8
 python broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --read
 python broadcast.py --rect 4,0,4,3 --blocks 6 --pages 2 --jobs 2 --stall-job 0 \
-    --stall-member 13 --stall-block 2 --wait 0.05 --deadline 0.5 --again
+    --stall-rank 13 --stall-block 2 --wait 0.05 --deadline 0.5 --again
 python broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --jobs 3 --empty-job 1
 python broadcast.py --rect 4,0,2,2 --blocks 4 --pages 16 --jobs 2 --first-blocks 4100
 ```
 
-`--rect x0,y0,columns,rows` places the rectangle; its team is the smallest range of the
+`--rect x0,y0,columns,rows` places the rectangle; its group is the smallest range of the
 core order that covers it. Inputs are integers in [-2, 2], so every checksum is exact
 and the driver compares each member's tile with numpy bit for bit. With
-`--stall-job`, that job's member (team index) stops taking row blocks at the given block
-and waits for the stop word: the lane's sender gives up waiting for its stamp, the
-other cores of the lane give up waiting for the next block, the dispatch kernel reports
-the record's deadline and the host raises `RecordTimeout`, which names the ticket and
-the members that did not report. Every kernel returns; `lane_gave_up` names, per core,
-the lane, where it waited and the block. `--again` then loads the program again in the
+`--stall-job`, that job's member (group index) stops taking row blocks at the given block
+and waits for the stop flag: the broadcast's sender gives up waiting for its stamp, the
+other cores of the broadcast give up waiting for the next block, the dispatcher reports
+the command's deadline and the host raises `CommandTimeout`, which names the handle and
+the members that did not report. Every kernel returns; `broadcast_gave_up` names, per core,
+the broadcast, where it waited and the block. `--again` then loads the program again in the
 same session and runs the clean case. With `--empty-job`, that job casts zero blocks on
-every lane (every checksum is zero) between jobs that cast the full count;
+every broadcast (every checksum is zero) between jobs that cast the full count;
 `--empty-every n` does that for every nth job. With
-`--first-blocks N`, job 0 casts N blocks per lane, block k being data block k mod
-`--blocks`: a record that moves many pages through a lane from little host data.
+`--first-blocks N`, job 0 casts N blocks per broadcast, block k being data block k mod
+`--blocks`: a command that moves many pages through a broadcast from little host data.
 
-The JSON line reports, per run, the dispatch kernel's error and record count, the
-host's microseconds per job, the blocks every lane handed over, every core's end
-state, `members_bad`, and `ok` per run and for all of them: every core ended, a run
-with a stalled job ended in the deadline, a clean one with no core and no lane given up
+The JSON line reports, per run, the dispatcher's error and command count, the
+host's microseconds per job, the blocks every broadcast handed over, every core's end
+state, `ranks_bad`, and `ok` per run and for all of them: every core ended, a run
+with a stalled job ended in the deadline, a clean one with no core and no broadcast given up
 and every member right. The script exits non-zero without it.
 
-`--feeder` runs the same records on the test feeder (`tests/hardware/feeder/`): the
-last core of the grid issues them and no X280 is involved, so the rectangle must leave
+`--feeder` runs the same commands on the test feeder (`tests/hardware/feeder/`): the
+last core of the grid submits them and no X280 is involved, so the rectangle must leave
 that core out (12 x 9 at most). The measurements below were taken that way.
 
-## Measured: lanes against every member reading DRAM itself
+## Measured: broadcasts against every member reading DRAM itself
 
-One p150a, AICLK 1350 MHz, the 12 x 9 rectangle (108 members; 9 column lanes of 9 cores
-and 18 row lanes of 6), 64 blocks per lane and job, 4 jobs, every member checked
+One p150a, AICLK 1350 MHz, the 12 x 9 rectangle (108 members; 9 column broadcasts of 9 cores
+and 18 row broadcasts of 6), 64 blocks per broadcast and job, 4 jobs, every member checked
 (0 wrong), the feeder's clock per job. "Delivered" counts both blocks into every member;
 in `READ` each member reads them from DRAM, in `CAST` only the 27 senders do.
 
-| block | window | `CAST` us/job | per lane | delivered | DRAM read | `READ` us/job | delivered (= DRAM read) |
+| block | window | `CAST` us/job | per broadcast | delivered | DRAM read | `READ` us/job | delivered (= DRAM read) |
 |---|---|---|---|---|---|---|---|
 | 2 KiB | 1 | 78.8 | 1.66 GB/s | 359 GB/s | 45 GB/s | 74.1 | 382 GB/s |
 | 2 KiB | 4 | 71.4 | 1.84 GB/s | 397 GB/s | 50 GB/s | 69.5 | 407 GB/s |
 | 24 KiB | 1 | 289.3 | 5.44 GB/s | 1,174 GB/s | 147 GB/s | 738.8 | 460 GB/s |
 | 24 KiB | 4 | 250.8 | 6.27 GB/s | 1,355 GB/s | 169 GB/s | 744.0 | 457 GB/s |
 
-At 24 KiB blocks the lanes deliver 2.5 to 3 times what the members get by reading DRAM
+At 24 KiB blocks the broadcasts deliver 2.5 to 3 times what the members get by reading DRAM
 themselves, which stays near 460 GB/s whatever the window. At 2 KiB both take the same
 time within 6% (`READ` slightly ahead): the job is then bound by something both modes
 share, the per-block steps and this example's compute (two tile adds per page), not by
@@ -112,6 +112,6 @@ one tile, reading DRAM directly costs no more.
 
 | File | What it is |
 |---|---|
-| `kernels/reader.cpp`, `writer.cpp`, `compute.cpp` | the three kernels: the row lane, the column lane and the output, the checksum |
-| `kernels/broadcast.h` | segments, buffers, arguments, and the two block loops (cast, read) shared by reader and writer |
-| `broadcast.py` | builds the lanes and records, runs them through a session (or the feeder), checks every member |
+| `kernels/reader.cpp`, `writer.cpp`, `compute.cpp` | the three kernels: the row broadcast, the column broadcast and the output, the checksum |
+| `kernels/broadcast.h` | handlers, buffers, arguments, and the two block loops (cast, read) shared by reader and writer |
+| `broadcast.py` | builds the broadcasts and commands, runs them through a session (or the feeder), checks every member |

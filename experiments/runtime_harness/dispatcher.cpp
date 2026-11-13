@@ -1,4 +1,4 @@
-// The dispatcher model and the grid's set-up: records issued as the dispatch kernel
+// The dispatcher model and the grid's set-up: commands submitted as the dispatcher
 // does, MAP inputs prepared and outputs checked, every core's buffers and arguments.
 #include <stdint.h>
 
@@ -27,7 +27,7 @@ namespace kmsim {
     uint32_t Sim::Impl::check_map(const Job& job, uint32_t k) {
         uint32_t bad = 0;
         for (uint32_t m = 0; m < job.count && m < kOutPages; m++) {
-            const km::Share s = km::share(job.a[1], m, job.count);
+            const km::Partition s = km::partition(job.a[1], m, job.count);
             const uint16_t* t = (
                 reinterpret_cast<const uint16_t*>(
                     dram.data() + job.a[2] + (job.a[3] + m) * kTileBytes
@@ -44,12 +44,14 @@ namespace kmsim {
         return bad;
     }
 
-    uint32_t Sim::Impl::issue(const Job& job, int32_t k, uint32_t j) {
+    uint32_t Sim::Impl::submit(const Job& job, int32_t k, uint32_t j) {
         const uint32_t s = next_seq();
         uint32_t w[16] = {};
         w[0] = w[4] = w[8] = w[12] = s;
-        w[1] = (km::make_hdr(job.seg, job.flags, job.hdr_slot >= 0 ? job.hdr_slot : j));
-        w[2] = km::make_team(job.first, job.count);
+        w[1] = (
+            km::make_hdr(job.handler, job.flags, job.hdr_slot >= 0 ? job.hdr_slot : j)
+        );
+        w[2] = km::make_group(job.first, job.count);
         const uint32_t at[10] = {3, 5, 6, 7, 9, 10, 11, 13, 14, 15};
         for (uint32_t i = 0; i < 10; i++) {
             w[at[i]] = job.a[i];
@@ -67,8 +69,8 @@ namespace kmsim {
                 s
             );
         }
-        if (cfg.on_issue && k >= 0) {
-            cfg.on_issue(static_cast<uint32_t>(k), s, j);
+        if (cfg.on_submit && k >= 0) {
+            cfg.on_submit(static_cast<uint32_t>(k), s, j);
         }
         return s;
     }
@@ -97,11 +99,11 @@ namespace kmsim {
         if ((jobs[k].flags & KM_F_EXCL) == 0) {
             return false;
         }
-        const uint32_t team = km::make_team(jobs[k].first, jobs[k].count);
+        const uint32_t group = km::make_group(jobs[k].first, jobs[k].count);
         for (uint32_t j = 0; j < d; j++) {
             if (busy[j] >= 0 &&
-                km::teams_overlap(
-                    team, km::make_team(jobs[busy[j]].first, jobs[busy[j]].count)
+                km::groups_overlap(
+                    group, km::make_group(jobs[busy[j]].first, jobs[busy[j]].count)
                 )) {
                 return true;
             }
@@ -145,7 +147,7 @@ namespace kmsim {
                     }
                     busy[j] = -1;
                     done++;
-                } else if (clock - r.issued > cfg.deadline) {
+                } else if (clock - r.submitted > cfg.deadline) {
                     r.status = kTimedOut;
                     sim.timed_out = true;
                     stop_all();
@@ -156,7 +158,7 @@ namespace kmsim {
             if (sim.dyn.gave != 0) {
                 return;
             }
-            const uint64_t last = next ? sim.jobs[next - 1].issued : 0;
+            const uint64_t last = next ? sim.jobs[next - 1].submitted : 0;
             if (next < jobs.size() && clock >= last + jobs[next].gap) {
                 uint32_t j = 0;
                 while (j < depth && busy[j] >= 0) {
@@ -172,10 +174,10 @@ namespace kmsim {
                     }
                     JobResult& r = sim.jobs[next];
                     r.slot = j;
-                    r.issued = clock;
-                    r.status = kIssued;
-                    r.seq = issue(job, static_cast<int32_t>(next), j);
-                    dyn_issued(job, next, r.seq);
+                    r.submitted = clock;
+                    r.status = kSubmitted;
+                    r.seq = submit(job, static_cast<int32_t>(next), j);
+                    dyn_submitted(job, next, r.seq);
                     busy[j] = static_cast<int32_t>(next);
                     next++;
                 }
@@ -186,21 +188,21 @@ namespace kmsim {
             return;
         }
         Job x;
-        x.seg = KM_SEG_EXIT;
-        x.first = cfg.exit_team & 0xFFFFu;
-        x.count = cfg.exit_team ? cfg.exit_team >> 16 : n;
+        x.handler = KM_HANDLER_EXIT;
+        x.first = cfg.exit_group & 0xFFFFu;
+        x.count = cfg.exit_group ? cfg.exit_group >> 16 : n;
         JobResult& r = sim.exit_job;
         r.slot = 0;
-        r.issued = clock;
-        r.status = kIssued;
-        r.seq = issue(x, -1, 0);
+        r.submitted = clock;
+        r.status = kSubmitted;
+        r.seq = submit(x, -1, 0);
         for (;;) {
             if (disp_word(kDispAck) == KM_ACK(r.seq)) {
                 r.acked = clock;
                 r.status = kDone;
                 return;
             }
-            if (clock - r.issued > cfg.deadline) {
+            if (clock - r.submitted > cfg.deadline) {
                 r.status = kTimedOut;
                 sim.timed_out = true;
                 stop_all();
@@ -272,7 +274,7 @@ namespace kmsim {
             a.mailbox = c == 0 ? d.base + kDispMailbox : 0;
             a.leader = leader;
             a.rank = c == leader ? 0 : c - leader - 1;
-            a.members = row_end - leader - 1;
+            a.peers = row_end - leader - 1;
             a.ready_slot = leader / cfg.row;
             a.ready_base = d.base + kDispReady;
             a.tag = 0x5A5A;

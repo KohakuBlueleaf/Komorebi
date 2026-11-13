@@ -25,7 +25,7 @@ QUEUE_JOBS = 64
 QUEUE_LOOK = 16
 QUEUE_PASSES = 1024
 RING_SLOTS = 16
-SEG_USER_MAX = 239
+HANDLER_USER_MAX = 239
 F_EXCL = 2
 F_RESULT = 4
 F_QUEUE = 8
@@ -36,7 +36,7 @@ OP_INVALID = 0
 OP_SET, OP_MOV, OP_ADD, OP_ADDI, OP_SUB = 1, 2, 3, 4, 5
 OP_MUL, OP_AND, OP_SHR, OP_MOD, OP_RAND = 6, 7, 8, 9, 10
 OP_JMP, OP_JLT, OP_JEQ, OP_JNZ, OP_HALT = 16, 17, 18, 19, 20
-OP_ISSUE, OP_SUBMIT, OP_WAIT, OP_RESULT, OP_EVENT, OP_TIME = 32, 33, 40, 41, 48, 49
+OP_SUBMIT, OP_ENQUEUE, OP_WAIT, OP_RESULT, OP_EVENT, OP_TIME = 32, 33, 40, 41, 48, 49
 
 EV_TIMEOUT = 1
 EV_STREAM, EV_STREAM_END, EV_STREAM_ERROR = 4, 5, 6
@@ -52,7 +52,7 @@ EV_STREAM, EV_STREAM_END, EV_STREAM_ERROR = 4, 5, 6
     ERR_DEADLINE,
     ERR_NEVER_FITS,
     ERR_CANCELLED,
-    ERR_TEAM,
+    ERR_GROUP,
 ) = range(1, 12)
 
 # opcode -> (name, register fields in use, kind of imm: None, "imm", "jump", "template")
@@ -72,23 +72,23 @@ OPS = {
     OP_JEQ: ("JEQ", "ab", "jump"),
     OP_JNZ: ("JNZ", "a", "jump"),
     OP_HALT: ("HALT", "a", None),
-    OP_ISSUE: ("ISSUE", "", "template"),
-    OP_SUBMIT: ("SUBMIT", "a", "template"),
+    OP_SUBMIT: ("SUBMIT", "", "template"),
+    OP_ENQUEUE: ("ENQUEUE", "a", "template"),
     OP_WAIT: ("WAIT", "", "imm"),
     OP_RESULT: ("RESULT", "a", None),
     OP_EVENT: ("EVENT", "a", None),
     OP_TIME: ("TIME", "a", None),
 }
 
-RECORD_WORDS = 16
-# word index of a0 to a9 inside a record
+COMMAND_WORDS = 16
+# word index of a0 to a9 inside a command
 ARG_WORD = (3, 5, 6, 7, 9, 10, 11, 13, 14, 15)
 HEADER = struct.Struct("<8I32x")
 HEADER_FIELDS = (
     "magic",
     "version",
     "n_ops",
-    "n_records",
+    "n_commands",
     "max_steps",
     "deadline_us",
     "req",
@@ -100,14 +100,14 @@ TAIL = struct.Struct("<4B4B3B5B")
 StreamError = namedtuple("StreamError", "reason pc")
 Uop = namedtuple("Uop", "op a b c imm imm2", defaults=(0, 0, 0, 0, 0))
 Event = namedtuple("Event", "kind req aux pass_index")
-IssuedRecord = namedtuple(
-    "IssuedRecord", "seq slot seg first count flags args pass_index pc queued"
+SubmittedCommand = namedtuple(
+    "SubmittedCommand", "seq slot handler first count flags args pass_index pc queued"
 )
-SimResult = namedtuple("SimResult", "records events status passes error halt stopped")
+SimResult = namedtuple("SimResult", "commands events status passes error halt stopped")
 
 
 class StreamFormatError(ValueError):
-    """An upload that `check` refuses; carries the reason and program counter."""
+    """An upload that `check` rejects; carries the reason and program counter."""
 
     def __init__(self, error):
         super().__init__(f"bad stream: reason {error.reason} at pc {error.pc}")
@@ -134,7 +134,7 @@ class Label:
 
 @dataclass(frozen=True)
 class Template:
-    """A record template: its 16 words and the register patch list."""
+    """A command template: its 16 words and the register patch list."""
 
     rec: tuple
     arg: tuple = (0, 0, 0, 0)
@@ -144,7 +144,7 @@ class Template:
     n_patch: int = 0
 
     @property
-    def seg(self):
+    def handler(self):
         return self.rec[1] & 0xFF
 
     @property
@@ -304,14 +304,16 @@ class Stream:
             raise TypeError(f"a jump needs a label, got {target!r}")
         return target
 
-    def _template(self, seg, team, args, exclusive, result):
-        if not 1 <= seg <= SEG_USER_MAX:
-            raise ValueError(f"segment {seg} is not a program segment (1 to 239)")
+    def _template(self, handler, group, args, exclusive, result):
+        if not 1 <= handler <= HANDLER_USER_MAX:
+            raise ValueError(f"handler {handler} is not a program handler (1 to 239)")
         if len(args) > ARGS:
-            raise ValueError(f"{len(args)} arguments, a record has {ARGS}")
-        words = [0] * RECORD_WORDS
+            raise ValueError(f"{len(args)} arguments, a command has {ARGS}")
+        words = [0] * COMMAND_WORDS
         words[1] = (
-            seg | (F_EXCL if exclusive else 0) << 8 | (F_RESULT if result else 0) << 8
+            handler
+            | (F_EXCL if exclusive else 0) << 8
+            | (F_RESULT if result else 0) << 8
         )
         patch = []
         for i, value in enumerate(args):
@@ -322,15 +324,15 @@ class Stream:
         if len(patch) > PATCHES:
             raise ValueError(f"{len(patch)} register arguments, at most {PATCHES}")
         first_reg = count_reg = TPL_NONE
-        first, cnt = team
+        first, cnt = group
         if isinstance(first, Reg):
             first_reg = first.index
         else:
-            words[2] |= _team_field(first, "first")
+            words[2] |= _group_field(first, "first")
         if isinstance(cnt, Reg):
             count_reg = cnt.index
         else:
-            words[2] |= _team_field(cnt, "count") << 16
+            words[2] |= _group_field(cnt, "count") << 16
         arg = [p[0] for p in patch] + [0] * (PATCHES - len(patch))
         reg = [p[1] for p in patch] + [0] * (PATCHES - len(patch))
         self._templates.append(
@@ -340,16 +342,16 @@ class Stream:
         )
         return len(self._templates) - 1
 
-    def issue(self, seg, team, args=(), exclusive=False, result=False):
-        """ISSUE: a record on `team` = (first, count), each an int or a register."""
-        index = self._template(seg, team, list(args), exclusive, result)
-        self._add(OP_ISSUE, imm=index)
+    def submit(self, handler, group, args=(), exclusive=False, result=False):
+        """SUBMIT: a command on `group` = (first, count), each an int or a register."""
+        index = self._template(handler, group, list(args), exclusive, result)
+        self._add(OP_SUBMIT, imm=index)
 
-    def submit(self, seg, count, args=(), exclusive=False, result=False):
-        """SUBMIT: a job of `count` cores (int or register); first is chosen."""
+    def enqueue(self, handler, count, args=(), exclusive=False, result=False):
+        """ENQUEUE: a job of `count` cores (int or register); first is chosen."""
         reg = count if isinstance(count, Reg) else self.const(count)
-        index = self._template(seg, (0, 0), list(args), exclusive, result)
-        self._add(OP_SUBMIT, _reg(reg, "count"), imm=index)
+        index = self._template(handler, (0, 0), list(args), exclusive, result)
+        self._add(OP_ENQUEUE, _reg(reg, "count"), imm=index)
 
     def uops(self):
         """The micro-ops as encoded: constant prologue, body, labels resolved."""
@@ -390,7 +392,7 @@ class Stream:
 
     @classmethod
     def decode(cls, data):
-        """The stream an upload describes; StreamFormatError if `check` refuses it."""
+        """The stream an upload describes; StreamFormatError if `check` rejects it."""
         error = check(data, len(data))
         if error:
             raise StreamFormatError(error)
@@ -404,9 +406,9 @@ class Stream:
         return simulate(self.encode(), **options)
 
 
-def _team_field(value, what):
+def _group_field(value, what):
     if not 0 <= value <= 0xFFFF:
-        raise ValueError(f"team {what} {value} does not fit 16 bits")
+        raise ValueError(f"group {what} {value} does not fit 16 bits")
     return value
 
 
@@ -417,7 +419,7 @@ def _header(data):
 
 def _size(h):
     ops = h["n_ops"] * UOP_BYTES
-    tpl = h["n_records"] * TEMPLATE_BYTES
+    tpl = h["n_commands"] * TEMPLATE_BYTES
     return HEADER_BYTES + ops + _lines(ops) + tpl + _lines(tpl)
 
 
@@ -429,7 +431,7 @@ def _parse(data, h):
     base = HEADER_BYTES + h["n_ops"] * UOP_BYTES
     base += _lines(h["n_ops"] * UOP_BYTES)
     templates = []
-    for i in range(h["n_records"]):
+    for i in range(h["n_commands"]):
         at = base + i * TEMPLATE_BYTES
         rec = struct.unpack_from("<16I", data, at)
         *tail, _p0, _p1, _p2, _p3, _p4 = TAIL.unpack_from(data, at + 64)
@@ -451,7 +453,7 @@ def check(data, region_size):
     h = _header(data)
     if h["magic"] != MAGIC or h["version"] != VERSION or h["seed"] == 0:
         return StreamError(ERR_HEADER, 0)
-    if not 1 <= h["n_ops"] <= MAX_OPS or h["n_records"] > MAX_OPS:
+    if not 1 <= h["n_ops"] <= MAX_OPS or h["n_commands"] > MAX_OPS:
         return StreamError(ERR_HEADER, 0)
     if h["max_steps"] == 0 or len(data) != _size(h):
         return StreamError(ERR_HEADER, 0)
@@ -466,7 +468,7 @@ def check(data, region_size):
         if kind == "jump" and o.imm >= h["n_ops"]:
             return StreamError(ERR_JUMP, pc)
         if kind == "template":
-            if o.imm >= h["n_records"]:
+            if o.imm >= h["n_commands"]:
                 return StreamError(ERR_TEMPLATE, pc)
             first_use.setdefault(o.imm, pc)
     for index, t in enumerate(templates):
@@ -476,7 +478,7 @@ def check(data, region_size):
 
 
 def check_run(data, offset, region_size, active=(), active_reqs=()):
-    """What the kernel answers a `KM_SEG_RUN` for `data` at `offset`: (error, req).
+    """What the kernel answers a `KM_HANDLER_RUN` for `data` at `offset`: (error, req).
 
     `error` is None to start the stream, else reason 1 for a bad range or a reused `req`
     or what `check` finds; `req` is the header's, or 0 if it is outside the region.
@@ -486,18 +488,18 @@ def check_run(data, offset, region_size, active=(), active_reqs=()):
     req = 0
     if head_inside and length >= 28:
         req = _header(data.ljust(HEADER_BYTES, b"\0"))["req"]
-    refused = StreamError(ERR_HEADER, 0)
+    rejected = StreamError(ERR_HEADER, 0)
     if offset % LINE or offset > region_size or length > region_size - offset:
-        return refused, req
+        return rejected, req
     if any(offset < o + n and o < offset + length for o, n in active):
-        return refused, req
+        return rejected, req
     if req in active_reqs:
-        return refused, req
+        return rejected, req
     return check(data, region_size), req
 
 
 def _bad_template(t):
-    if not 1 <= t.seg <= SEG_USER_MAX or t.flags & ~(F_EXCL | F_RESULT):
+    if not 1 <= t.handler <= HANDLER_USER_MAX or t.flags & ~(F_EXCL | F_RESULT):
         return True
     if t.n_patch > PATCHES:
         return True
@@ -506,7 +508,7 @@ def _bad_template(t):
     return any(r != TPL_NONE and r >= REGS for r in (t.first_reg, t.count_reg))
 
 
-def team_outside(first, count, n_cores):
+def group_outside(first, count, n_cores):
     """True if cores [first, first + count) are not in the grid; forms no sum."""
     return count == 0 or first > n_cores or count > n_cores - first
 
@@ -522,7 +524,7 @@ def alloc(busy, count, n_cores):
 
 @dataclass
 class _Busy:
-    record: IssuedRecord
+    command: SubmittedCommand
     done_pass: int | None
     result: int
     deadline_pass: int | None
@@ -577,7 +579,7 @@ def simulate(
                 sim.drain(p + 1, max_passes)
             status = "error" if sim.error else "ended"
             return SimResult(
-                sim.records,
+                sim.commands,
                 sim.events,
                 status,
                 sim.events[-1].pass_index + 1,
@@ -585,7 +587,7 @@ def simulate(
                 sim.halt,
                 sim.stopped,
             )
-    return SimResult(sim.records, sim.events, "stuck", max_passes, None, None, False)
+    return SimResult(sim.commands, sim.events, "stuck", max_passes, None, None, False)
 
 
 class _Sim:
@@ -598,7 +600,7 @@ class _Sim:
         self.regs = [0] * REGS
         self.regs[SEED_REG] = h["seed"]
         self.table = [None] * RING_SLOTS
-        self.queue, self.records, self.events = [], [], []
+        self.queue, self.commands, self.events = [], [], []
         self.pc = self.steps = self.seq = self.pending = self.last_result = 0
         self.error = self.halt = None
         self.ticks = 1000
@@ -606,8 +608,8 @@ class _Sim:
         self.stopped = False
 
     def run_pass(self, p, cancel):
-        """One pass. Issuers are the streams in activation order, then the queue; in
-        pass p the turns start at issuer p % (streams + 1) and go on cyclically."""
+        """One pass. Submitters are the streams in activation order, then the queue; in
+        pass p the turns start at submitter p % (streams + 1) and go on cyclically."""
         self.now = p
         self.sweep()
         self.check_deadlines()
@@ -620,7 +622,7 @@ class _Sim:
                 turn()
 
     def drain(self, start, limit):
-        """After a stream error its records still run; a late one stops the grid."""
+        """After a stream error its commands still run; a late one stops the grid."""
         for p in range(start, limit):
             self.now = p
             self.sweep()
@@ -641,13 +643,13 @@ class _Sim:
         """Free the slots whose acknowledgement is due, in slot order."""
         for slot, busy in enumerate(self.table):
             if busy and busy.done_pass is not None and busy.done_pass <= self.now:
-                if busy.record.flags & F_RESULT:
+                if busy.command.flags & F_RESULT:
                     self.last_result = busy.result
                 self.table[slot] = None
                 self.pending -= 1
 
     def check_deadlines(self):
-        """The lowest-slot late record stops the grid: it ends the stream, or if the
+        """The lowest-slot late command stops the grid: it ends the stream, or if the
         stream already ended, posts a timeout event for that slot."""
         for slot, busy in enumerate(self.table):
             if (
@@ -657,13 +659,13 @@ class _Sim:
             ):
                 self.stopped = True
                 if self.error is None:
-                    self.fail(ERR_DEADLINE, busy.record.pc)
+                    self.fail(ERR_DEADLINE, busy.command.pc)
                 else:
                     self.post(EV_TIMEOUT, slot)
                 return
 
-    def busy_teams(self):
-        return [(b.record.first, b.record.count) for b in self.table if b]
+    def busy_groups(self):
+        return [(b.command.first, b.command.count) for b in self.table if b]
 
     def free_slot(self):
         return next((i for i, b in enumerate(self.table) if b is None), None)
@@ -672,11 +674,11 @@ class _Sim:
         self.seq += 1
         args = tuple(words[i] for i in ARG_WORD)
         flags = words[1] >> 8 & 0xFF & ~F_QUEUE
-        seg = words[1] & 0xFF
-        rec = IssuedRecord(
-            self.seq, slot, seg, first, count, flags, args, self.now, pc, queued
+        handler = words[1] & 0xFF
+        rec = SubmittedCommand(
+            self.seq, slot, handler, first, count, flags, args, self.now, pc, queued
         )
-        self.records.append(rec)
+        self.commands.append(rec)
         delay = self.delay(rec) if callable(self.delay) else self.delay
         done = None if delay is None else self.now + 1 + delay
         value = self.result_fn(rec) & MASK if self.result_fn else 0
@@ -696,7 +698,7 @@ class _Sim:
                 return self.fail(ERR_STEPS, self.pc)
             o = self.ops[self.pc]
             nxt = self.pc + 1
-            if o.op in (OP_ISSUE, OP_SUBMIT, OP_WAIT, OP_HALT):
+            if o.op in (OP_SUBMIT, OP_ENQUEUE, OP_WAIT, OP_HALT):
                 state = self.work(o)
                 if state != "ok":
                     return state
@@ -742,7 +744,7 @@ class _Sim:
         return "ok"
 
     def work(self, o):
-        """ISSUE, SUBMIT, WAIT and HALT: "ok" (done), "stall", "error" or "end"."""
+        """SUBMIT, ENQUEUE, WAIT and HALT: "ok" (done), "stall", "error" or "end"."""
         if o.op == OP_WAIT:
             return "stall" if self.pending > o.imm else "ok"
         if o.op == OP_HALT:
@@ -751,26 +753,26 @@ class _Sim:
             self.halt = self.regs[o.a]
             self.post(EV_STREAM_END, self.halt & 0xFFFFFF)
             return "end"
-        return self.do_issue(o) if o.op == OP_ISSUE else self.do_submit(o)
+        return self.do_submit(o) if o.op == OP_SUBMIT else self.do_enqueue(o)
 
-    def do_issue(self, o):
+    def do_submit(self, o):
         t, regs = self.templates[o.imm], self.regs
         first = t.rec[2] & 0xFFFF if t.first_reg == TPL_NONE else regs[t.first_reg]
         count = t.rec[2] >> 16 if t.count_reg == TPL_NONE else regs[t.count_reg]
-        if team_outside(first, count, self.n_cores):
-            return self.fail(ERR_TEAM, self.pc)
+        if group_outside(first, count, self.n_cores):
+            return self.fail(ERR_GROUP, self.pc)
         slot = self.free_slot()
         if slot is None:
             return "stall"
         if t.flags & F_EXCL and (
             self.queue  # a job queued before it is not placed yet
-            or any(first < f + c and f < first + count for f, c in self.busy_teams())
+            or any(first < f + c and f < first + count for f, c in self.busy_groups())
         ):
             return "stall"
         self.put(slot, self.patched(t), first, count, self.pc, False)
         return "ok"
 
-    def do_submit(self, o):
+    def do_enqueue(self, o):
         count = self.regs[o.a]
         if count == 0 or count > self.n_cores:
             return self.fail(ERR_NEVER_FITS, self.pc)
@@ -788,7 +790,7 @@ class _Sim:
         return words
 
     def step_queue(self):
-        """Issue what fits among the first 16 jobs; 1,024 jobs may overtake one."""
+        """Submit what fits among the first 16 jobs; 1,024 jobs may overtake one."""
         skipped = []
         for job in list(self.queue[:QUEUE_LOOK]):
             if any(j.passed >= QUEUE_PASSES for j in skipped):
@@ -796,7 +798,7 @@ class _Sim:
             slot = self.free_slot()
             first = None
             if slot is not None:
-                first = alloc(self.busy_teams(), job.count, self.n_cores)
+                first = alloc(self.busy_groups(), job.count, self.n_cores)
             if first is None:
                 skipped.append(job)
                 continue

@@ -1,4 +1,4 @@
-"""Probes of X280 work clusters 1 to 3 beside the dispatch kernel: one probe image
+"""Probes of X280 work clusters 1 to 3 beside the dispatcher: one probe image
 (x280/probe.c) on several clusters at once, in modes sum, rates, push, ping and par.
 One JSON line per run; README.md gives the commands."""
 
@@ -62,7 +62,7 @@ def dram_xy(device, bank):
 
 
 class Clusters:
-    """A session with a resident grid and the dispatch kernel; probe threads started
+    """A session with a resident grid and the dispatcher; probe threads started
     on their clusters through the port, released together by a go line."""
 
     def __init__(self, session):
@@ -81,11 +81,11 @@ class Clusters:
         prog = km.Program("clusters", kernels=KERNELS)
         self.run = s.load(prog)
         self.port = self.run.backend.port
-        log("grid and dispatch kernel ready")
+        log("grid and dispatcher ready")
 
     def go_all(self, timeout):
         """Starts every image, writes the go lines, waits; returns per cluster the
-        result block (parsed) and the hart results."""
+        result block (parsed) and the core results."""
         image = str(native.thread_image(next(iter(self.threads.values()))))
         for c, t in self.threads.items():
             r = self.regions[c]

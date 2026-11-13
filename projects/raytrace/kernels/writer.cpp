@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "bounded.hpp"
+#include "timed.hpp"
 #include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "raytrace.h"
@@ -11,21 +11,23 @@
 namespace {
 
     // Hit pages: a nearest hit's with the attributes; the probe's as any hit's.
-    uint32_t out_page_bytes(const km_record_t& r, uint32_t seg) {
-        if (seg == kSegTrace || seg == kSegTreelets) {
+    uint32_t out_page_bytes(const km_command_t& r, uint32_t handler) {
+        if (handler == kHandlerTrace || handler == kHandlerTreelets) {
             return r.a3 == kModeAny ? kHitAnyBytes : kHitBytes;
         }
-        if (seg == kSegProbe) {
+        if (handler == kHandlerProbe) {
             return kHitAnyBytes;
         }
-        if (seg == kSegMath) {
+        if (handler == kHandlerMath) {
             return kMaOutVectors * kVec * 4;
         }
-        return seg == kSegArith ? kArOutVectors * kVec * 4 : kRecipPerPage * 4;
+        return handler == kHandlerArith ? kArOutVectors * kVec * 4 : kRecipPerPage * 4;
     }
 
-    uint32_t out_per_page(uint32_t seg) {
-        const bool hits = seg == kSegTrace || seg == kSegTreelets || seg == kSegProbe;
+    uint32_t out_per_page(uint32_t handler) {
+        const bool hits =
+            (handler == kHandlerTrace || handler == kHandlerTreelets ||
+             handler == kHandlerProbe);
         return hits ? kPagePackets : 1;
     }
 
@@ -50,7 +52,7 @@ namespace {
         noc_async_write(
             get_read_ptr(kCbOut), get_noc_addr(g / per, out, (g % per) * bytes), bytes
         );
-        if (!bounded::writes_sent(wr, km::kStWriter)) {
+        if (!timed::writes_sent(wr, km::kStWriter)) {
             return false;
         }
         cb_pop_front(kCbOut, 1);
@@ -61,25 +63,25 @@ namespace {
 
 void kernel_main() {
     km::Writer wr;
-    wr.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath &&
-            !is_stage(seg)) {
+    wr.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
+        if (handler != kHandlerTrace && handler != kHandlerArith &&
+            handler != kHandlerRecip && handler != kHandlerTreelets &&
+            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)) {
             return true;
         }
         const uint32_t t0 = km::wall();
         const uint32_t dir = get_write_ptr(kCbDirWriter);
         volatile tt_l1_ptr uint32_t* d = km::l1(dir);
-        noc_async_read(dir_addr(r, seg, wr.me()), dir, kDirBytes);
-        if (!bounded::reads_done(wr, km::kStWriter)) {
+        noc_async_read(dir_addr(r, handler, wr.me()), dir, kDirBytes);
+        if (!timed::reads_done(wr, km::kStWriter)) {
             return true;
         }
         const uint32_t first = d[kDirFirst], count = d[kDirCount];
         uint32_t wait = 0, write = 0;
-        if (is_stage(seg)) {
+        if (is_stage(handler)) {
             // Each packet's page of every output stream, in stream order.
-            const Stage st = stage_of(seg);
+            const Stage st = stage_of(handler);
             for (uint32_t p = 0; p < count; ++p) {
                 for (uint32_t s = st.inputs; s < st.inputs + st.outputs; ++s) {
                     const uint32_t a = km::wall();
@@ -93,7 +95,8 @@ void kernel_main() {
                 }
             }
         } else {
-            const uint32_t bytes = out_page_bytes(r, seg), per = out_per_page(seg);
+            const uint32_t bytes = out_page_bytes(r, handler),
+                           per = out_per_page(handler);
             for (uint32_t p = 0; p < count; ++p) {
                 const uint32_t a = km::wall();
                 if (!write_page(wr, r.a2, bytes, per, first + p, wait)) {
@@ -123,7 +126,7 @@ void kernel_main() {
         noc_async_write(
             get_read_ptr(kCbOut), get_noc_addr(wr.me(), profs), kOutPageBytes
         );
-        const uint32_t bank = seg == kSegTreelets ? r.a9 >> kBankShift : 0;
+        const uint32_t bank = handler == kHandlerTreelets ? r.a9 >> kBankShift : 0;
         if (bank != 0 && d[kDirCost] != 0) {
             noc_async_write(
                 get_read_ptr(kCbOut) + 4 * kProfCost,
@@ -131,7 +134,7 @@ void kernel_main() {
                 kCostBytes
             );
         }
-        if (!bounded::writes_sent(wr, km::kStWriter)) {
+        if (!timed::writes_sent(wr, km::kStWriter)) {
             return true;
         }
         cb_pop_front(kCbOut, 1);

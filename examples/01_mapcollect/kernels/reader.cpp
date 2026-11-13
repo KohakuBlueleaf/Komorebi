@@ -1,5 +1,5 @@
 // Map/collect reader: MAP reads the member's share of the T input tiles in blocks;
-// STALL makes member a0 wait for the stop word.
+// STALL makes member a0 wait for the stop flag.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -10,11 +10,11 @@ void kernel_main() {
     constexpr auto in_args = TensorAccessorArgs<0>();
     km::Reader rd;
     uint32_t at = 0;  // write position in kCbIn, in pages: a block never wraps
-    rd.run([&](const km_record_t& r) {
+    rd.run([&](const km_command_t& r) {
         const uint32_t index = rd.me() - km::first(r);
-        switch (km::seg(r)) {
-            case kSegMap: {
-                const km::Share s = km::share(r.a1, index, km::count(r));
+        switch (km::handler(r)) {
+            case kHandlerMap: {
+                const km::Partition s = km::partition(r.a1, index, km::count(r));
                 const auto in = TensorAccessor(in_args, r.a0);
                 for (uint32_t done = 0; done < s.len;) {
                     uint32_t n = s.len - done < kBlock ? s.len - done : kBlock;
@@ -35,12 +35,12 @@ void kernel_main() {
                 }
                 break;
             }
-            case kSegBadItem:  // from page `at`: past the end unless at == 0
+            case kHandlerBadItem:  // from page `at`: past the end unless at == 0
                 if (index == r.a0 && r.a1 == 1 && !rd.reserve(kCbIn, kInPages)) {
                     return;
                 }
                 break;
-            case kSegStall:
+            case kHandlerStall:
                 if (index == r.a0) {
                     rd.wait_stop(r);
                 }

@@ -12,7 +12,7 @@ Nothing is published: there is no package on PyPI. Komorebi is used from a clone
 this repository, or from a wheel built from one ([from a wheel](#from-a-wheel)). What
 works is the Python package
 (`kmr doctor`, `kmr build`, the layout helpers), the host API that runs a program on a
-card under the dispatch kernel ([host API](reference/host.md)), the example
+card under the dispatcher ([host API](reference/host.md)), the example
 `examples/01_mapcollect`, and the tests.
 
 ## Requirements
@@ -59,7 +59,7 @@ and exits with status 0 whether or not a tree is set.
 ## From a wheel
 
 `packaging/build_wheel.py` builds a wheel from a commit of a clone. It carries the
-package, the headers, the dispatch kernel's sources and its image, prebuilt against the
+package, the headers, the dispatcher's sources and its image, prebuilt against the
 tree it is given (which needs the X280 runtime):
 
 ```
@@ -165,7 +165,7 @@ into it, and a card whose X280 memory is prepared once. Step by step:
    export TT_METAL_HOME=$PWD TT_METAL_RUNTIME_ROOT=$PWD
    ```
 
-5. **Build ahead (optional).** On first use the session builds the dispatch kernel image
+5. **Build ahead (optional).** On first use the session builds the dispatcher image
    and the package's native module from the tree into `build/komorebi/` of the clone (or
    `KMR_CACHE`), about ten seconds:
 
@@ -188,7 +188,7 @@ into it, and a card whose X280 memory is prepared once. Step by step:
 
 What does not work without the companion project: the package's native module is
 built with the flags of its `_ttx280` target, so without step 2 `python -m
-komorebi.native` builds the dispatch kernel image but stops at the module, and no
+komorebi.native` builds the dispatcher image but stops at the module, and no
 session can run. `kmr build image` and everything on the CPU work without it. This
 dependency ends when Komorebi has its own build files
 ([known limitations](development.md#known-limitations)).

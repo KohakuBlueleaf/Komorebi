@@ -20,7 +20,7 @@ from komorebi.engines import stream as st
 SOURCE = Path(st.__file__).read_text()
 SLOT_LOOP = "        for slot, busy in enumerate(self.table):\n"
 LATE = "                and self.now >= busy.deadline_pass\n"
-TEAM = "        if team_outside(first, count, self.n_cores):\n"
+GROUP = "        if group_outside(first, count, self.n_cores):\n"
 SUBMIT_COUNT = "        if count == 0 or count > self.n_cores:\n"
 QUEUE_FULL = '        if len(self.queue) >= QUEUE_JOBS:\n            return "stall"\n'
 
@@ -82,7 +82,7 @@ MUTANTS = {
     "alloc_ignores_touching": [
         ("first + count <= f or f + c <= first", "first + count < f or f + c < first")
     ],
-    # issuer turns
+    # submitter turns
     "turns_stream_first": [("start = p % len(turns)", "start = 0")],
     "turns_queue_first": [("start = p % len(turns)", "start = 1")],
     "turns_offset_by_one": [("start = p % len(turns)", "start = (p + 1) % len(turns)")],
@@ -153,7 +153,7 @@ MUTANTS = {
         )
     ],
     "orphan_timeout_names_pc": [
-        ("self.post(EV_TIMEOUT, slot)", "self.post(EV_TIMEOUT, busy.record.pc)")
+        ("self.post(EV_TIMEOUT, slot)", "self.post(EV_TIMEOUT, busy.command.pc)")
     ],
     "orphan_event_has_no_req": [
         (
@@ -175,15 +175,15 @@ MUTANTS = {
         )
     ],
     # failure checks: which first
-    "team_check_after_slot_wait": [
+    "group_check_after_slot_wait": [
         (
-            TEAM + "            return self.fail(ERR_TEAM, self.pc)\n"
+            GROUP + "            return self.fail(ERR_GROUP, self.pc)\n"
             "        slot = self.free_slot()\n"
             '        if slot is None:\n            return "stall"\n',
             "        slot = self.free_slot()\n"
             '        if slot is None:\n            return "stall"\n'
-            + TEAM
-            + "            return self.fail(ERR_TEAM, self.pc)\n",
+            + GROUP
+            + "            return self.fail(ERR_GROUP, self.pc)\n",
         )
     ],
     "count_check_after_queue_full": [
@@ -196,16 +196,16 @@ MUTANTS = {
             + "            return self.fail(ERR_NEVER_FITS, self.pc)\n",
         )
     ],
-    "team_sum_wraps": [
+    "group_sum_wraps": [
         (
             "    return count == 0 or first > n_cores or count > n_cores - first",
             "    return count == 0 or (first + count) & MASK > n_cores",
         )
     ],
-    "team_off_by_one_count": [("count > n_cores - first", "count >= n_cores - first")],
-    "team_empty_allowed": [("return count == 0 or first", "return first")],
+    "group_off_by_one_count": [("count > n_cores - first", "count >= n_cores - first")],
+    "group_empty_allowed": [("return count == 0 or first", "return first")],
     "job_of_zero_allowed": [(SUBMIT_COUNT, "        if count > self.n_cores:\n")],
-    "job_of_whole_grid_refused": [
+    "job_of_whole_grid_rejected": [
         (SUBMIT_COUNT, "        if count == 0 or count >= self.n_cores:\n")
     ],
     # micro-op semantics
@@ -323,19 +323,19 @@ MUTANTS = {
             "self.pc = self.steps = self.seq = self.pending = 0\n        self.last_result = 7",
         )
     ],
-    "result_of_unflagged_records": [
+    "result_of_unflagged_commands": [
         (
-            "                if busy.record.flags & F_RESULT:\n                    self.last_result = busy.result\n",
+            "                if busy.command.flags & F_RESULT:\n                    self.last_result = busy.result\n",
             "                self.last_result = busy.result\n",
         )
     ],
     "excl_ignored": [
         ("        if t.flags & F_EXCL and any(", "        if False and any(")
     ],
-    "excl_touching_teams_wait": [
+    "excl_touching_groups_wait": [
         (
-            "first < f + c and f < first + count for f, c in self.busy_teams()",
-            "first <= f + c and f <= first + count for f, c in self.busy_teams()",
+            "first < f + c and f < first + count for f, c in self.busy_groups()",
+            "first <= f + c and f <= first + count for f, c in self.busy_groups()",
         )
     ],
     "queue_flag_kept": [
@@ -356,7 +356,7 @@ MUTANTS = {
             "        for i in range(PATCHES):\n            words[ARG_WORD[t.arg[i]]]",
         )
     ],
-    "queued_job_reads_registers_at_issue": [
+    "queued_job_reads_registers_at_submit": [
         (
             "job = _Job(self.patched(self.templates[o.imm]), count, self.pc)",
             "job = _Job(self.templates[o.imm], count, self.pc)",
@@ -374,7 +374,7 @@ MUTANTS = {
         ('1 <= h["n_ops"] <= MAX_OPS', 'h["n_ops"] <= MAX_OPS')
     ],
     "check_ignores_n_ops_limit": [('1 <= h["n_ops"] <= MAX_OPS', '1 <= h["n_ops"]')],
-    "check_ignores_n_records_limit": [(' or h["n_records"] > MAX_OPS', "")],
+    "check_ignores_n_commands_limit": [(' or h["n_commands"] > MAX_OPS', "")],
     "check_accepts_zero_max_steps": [('h["max_steps"] == 0 or ', "")],
     "check_accepts_longer_uploads": [
         (" or len(data) != _size(h)", " or len(data) < _size(h)")
@@ -400,7 +400,7 @@ MUTANTS = {
     ],
     "check_jump_target_equal_allowed": [('o.imm >= h["n_ops"]', 'o.imm > h["n_ops"]')],
     "check_template_index_equal_allowed": [
-        ('o.imm >= h["n_records"]', 'o.imm > h["n_records"]')
+        ('o.imm >= h["n_commands"]', 'o.imm > h["n_commands"]')
     ],
     "check_templates_before_micro_ops": [
         (
@@ -414,11 +414,11 @@ MUTANTS = {
     "check_template_pc_is_last_user": [
         ("first_use.setdefault(o.imm, pc)", "first_use[o.imm] = pc")
     ],
-    "check_ignores_segment_zero": [
-        ("not 1 <= t.seg <= SEG_USER_MAX", "t.seg > SEG_USER_MAX")
+    "check_ignores_handler_zero": [
+        ("not 1 <= t.handler <= HANDLER_USER_MAX", "t.handler > HANDLER_USER_MAX")
     ],
-    "check_allows_host_segments": [
-        ("not 1 <= t.seg <= SEG_USER_MAX", "not 1 <= t.seg <= 255")
+    "check_allows_host_handlers": [
+        ("not 1 <= t.handler <= HANDLER_USER_MAX", "not 1 <= t.handler <= 255")
     ],
     "check_ignores_flag_bits": [(" or t.flags & ~(F_EXCL | F_RESULT)", "")],
     "check_allows_queue_flag": [
@@ -469,24 +469,26 @@ def load(patches, name):
     return module
 
 
-def too_big_uploads_are_refused(module):
-    """True if the check refuses 65,536 micro-ops and 65,536 templates.
+def too_big_uploads_are_rejected(module):
+    """True if the check rejects 65,536 micro-ops and 65,536 templates.
 
     Uploads that size are too big to save as files, so these two limits are probed here.
     """
     big = 1 << 23
-    for n_ops, n_records in ((65536, 0), (1, 65536)):
-        head = struct.pack("<8I32x", st.MAGIC, st.VERSION, n_ops, n_records, 9, 0, 1, 1)
+    for n_ops, n_commands in ((65536, 0), (1, 65536)):
+        head = struct.pack(
+            "<8I32x", st.MAGIC, st.VERSION, n_ops, n_commands, 9, 0, 1, 1
+        )
         ops = struct.pack("<4B3I", st.OP_JMP, 0, 0, 0, 0, 0, 0) * n_ops
         tpl = struct.pack("<16I", 0, 1, 0, *[0] * 13) + bytes(16)
-        data = head + ops + bytes(-len(ops) % 64) + tpl * n_records
+        data = head + ops + bytes(-len(ops) % 64) + tpl * n_commands
         data += bytes(-len(data) % 64)
         if module.check(data, big) != (st.ERR_HEADER, 0):
             return False
     return True
 
 
-BIG_UPLOAD_MUTANTS = {"check_ignores_n_ops_limit", "check_ignores_n_records_limit"}
+BIG_UPLOAD_MUTANTS = {"check_ignores_n_ops_limit", "check_ignores_n_commands_limit"}
 
 
 def killed_by(module):
@@ -508,7 +510,7 @@ def survives(name):
     module = load(MUTANTS[name], name)
     try:
         if name in BIG_UPLOAD_MUTANTS:
-            return too_big_uploads_are_refused(module)
+            return too_big_uploads_are_rejected(module)
         return killed_by(module) is None
     finally:
         del sys.modules[module.__name__]
@@ -517,7 +519,7 @@ def survives(name):
 def main():
     module = load([], "none")
     try:
-        clean = killed_by(module) is None and too_big_uploads_are_refused(module)
+        clean = killed_by(module) is None and too_big_uploads_are_rejected(module)
     finally:
         del sys.modules[module.__name__]
     if not clean:

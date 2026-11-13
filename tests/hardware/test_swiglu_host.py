@@ -1,5 +1,5 @@
-"""SwiGLU on a card through the dispatch kernel (KMR_CARD=1): a short call with the
-gate fused into the second product, and with the gate a record of its own, is within
+"""SwiGLU on a card through the dispatcher (KMR_CARD=1): a short call with the
+gate fused into the second product, and with the gate a command of its own, is within
 the check's bound of float64 and every core's kernels end."""
 
 from pathlib import Path

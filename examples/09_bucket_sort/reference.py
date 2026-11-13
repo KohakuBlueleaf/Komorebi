@@ -6,7 +6,7 @@ import numpy as np
 
 
 def shares(n, cores):
-    """(start, length) of each core's run of keys: km::share's split, the first
+    """(start, length) of each core's run of keys: km::partition's split, the first
     n % cores cores one key more."""
     lengths = np.full(cores, n // cores, np.int64)
     lengths[: n % cores] += 1

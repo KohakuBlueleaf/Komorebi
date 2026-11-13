@@ -1,5 +1,6 @@
-// Matrix product over a rectangle of cores: A blocks along the rows on the row lane,
-// W blocks down the columns on the column lane. Segments, buffers, arguments, profile.
+// Matrix product over a rectangle of cores: A blocks along the rows on the row
+// broadcast, W blocks down the columns on the column broadcast. Handlers, buffers,
+// arguments, profile.
 #pragma once
 
 #include <stdint.h>
@@ -7,30 +8,31 @@
 #include "../dense.h"
 
 // GRID: a0 A ([M, K] tiles), a1 W ([K, N]), a2 Y ([M, N]), a3 mode. One call.
-constexpr uint32_t kSegGrid = 1;
+constexpr uint32_t kHandlerGrid = 1;
 // PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
-constexpr uint32_t kSegGridProf = 2;
+constexpr uint32_t kHandlerGridProf = 2;
 
-// GRID modes: full; lanes only (blocks handed over and taken, no product, no writes);
-// product only (no reads, no lanes: blocks from L1 as they are, packed, not written).
+// GRID modes: full; broadcasts only (blocks handed over and taken, no product, no
+// writes); product only (no reads, no broadcasts: blocks from L1 as they are, packed,
+// not written).
 constexpr uint32_t kGridFull = 0;
-constexpr uint32_t kGridLanes = 1;
+constexpr uint32_t kGridBroadcasts = 1;
 constexpr uint32_t kGridProduct = 2;
 
-constexpr uint32_t kCbRow = 0;       // row lane: B_A blocks of bm x kb tiles of A
-constexpr uint32_t kCbCol = 1;       // column lane: B_W blocks of kb x bn tiles of W
+constexpr uint32_t kCbRow = 0;  // row broadcast: B_A blocks of bm x kb tiles of A
+constexpr uint32_t kCbCol = 1;  // column broadcast: B_W blocks of kb x bn tiles of W
 constexpr uint32_t kCbGridOut = 16;  // output subblocks, bf16: two of sh x sw tiles
 constexpr uint32_t kCbPart = 24;     // partial sums of one output block, fp32: bm x bn
 constexpr uint32_t kCbGridProf = 3;
 constexpr uint32_t kPartBytes = 4096;
-constexpr uint32_t kLaneRow = 0;  // lane ids: rows on NoC0 (reader), columns on NoC1
-constexpr uint32_t kLaneCol = 1;
+constexpr uint32_t kBroadcastRow = 0;  // broadcast ids: rows on NoC0 (reader), columns on NoC1
+constexpr uint32_t kBroadcastCol = 1;
 
-// Arguments: reader, writer: lane words, then core words; compute: core words. Core:
-// member (1 in the rectangle), first row and column tile of its output, the plan.
-constexpr uint32_t kArgLane = 0;
-constexpr uint32_t kArgCore = km::kLaneArgs;
-constexpr uint32_t kCoreMember = 0;
+// Arguments: reader, writer: broadcast words, then core words; compute: core words.
+// Core: member (1 in the rectangle), first row and column tile of its output, the plan.
+constexpr uint32_t kArgBroadcast = 0;
+constexpr uint32_t kArgCore = km::kBroadcastArgs;
+constexpr uint32_t kCoreRank = 0;
 constexpr uint32_t kCoreM0 = 1;
 constexpr uint32_t kCoreN0 = 2;
 constexpr uint32_t kCorePlan = 3;
@@ -53,14 +55,16 @@ constexpr uint32_t kPlSw = 13;
 constexpr uint32_t kPlanWords = 14;
 constexpr uint32_t kCoreWords = kCorePlan + kPlanWords;
 
-// Profile page (32-bit words, wall-clock cycles summed over records). Reader: DRAM
-// reads of A blocks (issue), row lane calls (reserve and cast, or arrive), bodies.
+// Profile page (32-bit words, wall-clock cycles summed over commands). Reader: DRAM
+// reads of A blocks (submit), row broadcast calls (reserve and cast, or arrive),
+// bodies.
 constexpr uint32_t kGpRdRead = 0;
-constexpr uint32_t kGpRdLane = 1;
+constexpr uint32_t kGpRdBroadcast = 1;
 constexpr uint32_t kGpRdBody = 2;
-// Writer: DRAM reads of W blocks, column lane calls, waits for output, output writes.
+// Writer: DRAM reads of W blocks, column broadcast calls, waits for output, output
+// writes.
 constexpr uint32_t kGpWrRead = 4;
-constexpr uint32_t kGpWrLane = 5;
+constexpr uint32_t kGpWrBroadcast = 5;
 constexpr uint32_t kGpWrWait = 6;
 constexpr uint32_t kGpWrWrite = 7;
 constexpr uint32_t kGpWrBody = 8;

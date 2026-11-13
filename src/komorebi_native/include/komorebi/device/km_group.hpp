@@ -1,14 +1,14 @@
-// Groups of a team and the reduce schedules over them: who sends to whom, on which
+// Groups of a group and the reduce schedules over them: who sends to whom, on which
 // port and into which arrival slot. Free of tt-metal headers.
 #pragma once
 
 #include <stdint.h>
 
-#include "km_record.hpp"
+#include "km_command.hpp"
 
 namespace km {
 
-    // A slice of the team: member j (0 <= j < size) is core base + j * stride; this
+    // A slice of the group: member j (0 <= j < size) is core base + j * stride; this
     // core is member `rank`.
     struct Group {
         uint32_t base;
@@ -17,19 +17,19 @@ namespace km {
         uint32_t rank;
     };
 
-    inline uint32_t member(const Group& g, uint32_t j) {
+    inline uint32_t core_of(const Group& g, uint32_t j) {
         return g.base + j * g.stride;
     }
 
-    // The whole team, in core order. `me` is a member.
-    inline Group team_group(const km_record_t& r, uint32_t me) {
+    // The whole group, in core order. `me` is a member.
+    inline Group group_of(const km_command_t& r, uint32_t me) {
         return {first(r), 1, count(r), me - first(r)};
     }
 
-    // The members whose team index differs from this core's only in the digit of
+    // The members whose group index differs from this core's only in the digit of
     // weight `stride` and base `radix` (index = hi * stride * radix + d * stride + lo).
     inline Group digit_group(
-        const km_record_t& r, uint32_t me, uint32_t stride, uint32_t radix
+        const km_command_t& r, uint32_t me, uint32_t stride, uint32_t radix
     ) {
         const uint32_t t = me - first(r), d = t / stride % radix, lo = t - d * stride;
         const uint32_t fit = (count(r) - lo + stride - 1) / stride;
@@ -69,10 +69,10 @@ namespace km {
             return {true, 0, 0, 0};
         }
         if (form == kReduceOwner) {
-            return {false, member(g, 0), 0, g.rank - 1};
+            return {false, core_of(g, 0), 0, g.rank - 1};
         }
         const uint32_t r = tree_send_round(g.rank);
-        return {false, member(g, g.rank - (1u << r)), r, r};
+        return {false, core_of(g, g.rank - (1u << r)), r, r};
     }
 
     // Arrival slots a reduce needs in each member's buffer (owner: size - 1 at the

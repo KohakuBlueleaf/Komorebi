@@ -1,5 +1,5 @@
 /* The frame on the work cluster: COUNT, SUM, HIST, HSUM, the step (middle.c), PLACE,
- * SETUP, FILL, each record issued and waited for. Words, regions, codes: frame.h */
+ * SETUP, FILL, each record submitted and waited for. Words, regions, codes: frame.h */
 #include <stdint.h>
 
 #include "frame.h"
@@ -25,31 +25,31 @@ typedef struct {
     uint32_t ranged; /* frames run with ranges: the costs of the last are in */
 } frame_t;
 
-/* The step's parts on the four harts: each a quarter of the tiles or items. */
+/* The step's parts on the four cores: each a quarter of the tiles or items. */
 typedef struct {
     const uint32_t* counters;
     uint32_t cores, workers, ni;
     work_t* wk;
 } part_t;
 
-static void costs_part(int hart, void* arg) {
+static void costs_part(int core, void* arg) {
     const part_t* p = (const part_t*)arg;
-    const uint32_t h = (uint32_t)hart;
+    const uint32_t h = (uint32_t)core;
     rm_costs(
         p->counters, p->cores, &p->wk->s, RM_TILES * h / 4, RM_TILES * (h + 1) / 4
     );
 }
 
-static void sort_part(int hart, void* arg) {
+static void sort_part(int core, void* arg) {
     const part_t* p = (const part_t*)arg;
-    const uint32_t h = (uint32_t)hart;
+    const uint32_t h = (uint32_t)core;
     rm_sort(&p->wk->s, p->ni * h / 4, p->ni * (h + 1) / 4);
 }
 
-/* the quarters in halves on harts 0 and 1 */
-static void merge_part(int hart, void* arg) {
+/* the quarters in halves on cores 0 and 1 */
+static void merge_part(int core, void* arg) {
     const part_t* p = (const part_t*)arg;
-    const uint32_t h = (uint32_t)hart;
+    const uint32_t h = (uint32_t)core;
     if (h < 2) {
         rm_merge(
             &p->wk->s,
@@ -61,32 +61,32 @@ static void merge_part(int hart, void* arg) {
 }
 
 /* Fills r field by field (a struct assignment may call memset, which does not link). */
-static void record(km_record_t* r, uint32_t seg, const frame_t* f) {
+static void command(km_command_t* r, uint32_t handler, const frame_t* f) {
     r->seq = r->land1 = r->land2 = r->land3 = 0;
-    r->hdr = seg;
-    r->team = f->w[RF_W_WORKERS] << 16;
+    r->hdr = handler;
+    r->group = f->w[RF_W_WORKERS] << 16;
     r->a0 = r->a1 = r->a2 = r->a3 = r->a4 = r->a6 = r->a7 = 0;
     r->a9 = f->w[RF_W_SPROF];
     r->a5 = f->w[RF_W_CORES];
     r->a8 = f->bank1;
 }
 
-/* Issues r and waits for its event: 0, or the code to report. */
-static uint32_t run(const km_record_t* r) {
+/* Submits r and waits for its event: 0, or the code to report. */
+static uint32_t run(const km_command_t* r) {
     const uint64_t until = kmx_time() + WAIT_TICKS;
-    uint32_t ticket;
-    int e = kmx_issue(r, &ticket);
+    uint32_t handle;
+    int e = kmx_submit(r, &handle);
     while (e == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
-        e = kmx_issue(r, &ticket);
+        e = kmx_submit(r, &handle);
     }
     if (e != KMX_OK) {
         return RF_RING;
     }
     kmx_event ev;
-    if (kmx_wait(ticket, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
+    if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
         return RF_RING;
     }
-    return ev.kind == KM_EV_DONE ? 0u : RF_RECORD;
+    return ev.kind == KM_EV_DONE ? 0u : RF_COMMAND;
 }
 
 static int finish(uint32_t code, frame_t* f) {
@@ -109,7 +109,7 @@ static void set_ranges(frame_t* f, work_t* wk, void* const* reg) {
     volatile uint32_t* cam = (volatile uint32_t*)reg[RF_R_CAMERA];
     uint64_t total = 0;
     if (f->ranged) {
-        kmx_take_at(RF_R_CAMERA, RF_COSTS_AT, 128u * cores);
+        kmx_invalidate_at(RF_R_CAMERA, RF_COSTS_AT, 128u * cores);
         for (uint32_t c = 0; c < cores; c++) {
             const uint32_t at = (RF_COSTS_AT + 128u * c) / 4;
             wk->costs[c] = cam[at] + cam[at + 16];
@@ -147,7 +147,7 @@ static void set_ranges(frame_t* f, work_t* wk, void* const* reg) {
         cam[(RF_RANGES_AT + 64u * c) / 4] = r[c];
         cam[(RF_RANGES_AT + 64u * c) / 4 + 1] = r[c + 1];
     }
-    kmx_give_at(RF_R_CAMERA, RF_RANGES_AT, 64u * cores);
+    kmx_flush_at(RF_R_CAMERA, RF_RANGES_AT, 64u * cores);
     f->ranged++;
 }
 
@@ -158,7 +158,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     uint64_t t = kmx_time();
 
     /* COUNT */
-    km_record_t r;
+    km_command_t r;
     kmx_progress(1);
     /* fewer blocks than cores: a block each at most, nothing to balance */
     const uint32_t ranges =
@@ -168,7 +168,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     if (ranges) {
         set_ranges(f, wk, reg);
     }
-    record(&r, RF_SEG_COUNT, f);
+    command(&r, RF_HANDLER_COUNT, f);
     r.a0 = f->w[RF_W_MESH];
     r.a1 = f->w[RF_W_COUNTERS];
     r.a2 = f->w[RF_W_BLOCKS] | ranges;
@@ -181,7 +181,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
 
     /* SUM: the counters' totals, and each core's entries before it per tile */
     kmx_progress(2);
-    record(&r, RF_SEG_SUM, f);
+    command(&r, RF_HANDLER_SUM, f);
     r.a1 = f->w[RF_W_COUNTERS];
     r.a2 = f->w[RF_W_SLOTS];
     r.a3 = f->addr[RF_R_SUMS];
@@ -193,7 +193,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     }
 
     /* the tiles to cut, and their histograms' sums */
-    kmx_take(RF_R_SUMS);
+    kmx_invalidate(RF_R_SUMS);
     f->out[RF_O_TAKE] += elapsed(&t);
     const uint32_t* sums = (const uint32_t*)reg[RF_R_SUMS];
     part_t p;
@@ -216,8 +216,8 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
         for (uint32_t h = 0; h < nh; h++) {
             hv[1 + h] = wk->heavy[h];
         }
-        kmx_give(RF_R_HEAVY);
-        record(&r, RF_SEG_HIST, f);
+        kmx_flush(RF_R_HEAVY);
+        command(&r, RF_HANDLER_HIST, f);
         r.a0 = f->addr[RF_R_HEAVY];
         r.a1 = f->w[RF_W_HIST];
         r.a4 = RF_HIST_BYTES;
@@ -227,7 +227,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
         if (code) {
             return code;
         }
-        record(&r, RF_SEG_HSUM, f);
+        command(&r, RF_HANDLER_HSUM, f);
         r.a0 = nh;
         r.a1 = f->w[RF_W_HIST];
         r.a2 = f->w[RF_W_HPREFIX];
@@ -239,7 +239,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
         if (code) {
             return code;
         }
-        kmx_take(RF_R_SUMS);
+        kmx_invalidate(RF_R_SUMS);
         const uint32_t* hs = sums + RF_SUMS_HEAVY_AT / 4;
         for (uint32_t h = 0; h < nh; h++) {
             for (uint32_t g = 0; g < 2 * RM_GROUPS; g++) {
@@ -307,7 +307,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
         fw[1 + k] = k < f->w[RF_W_FRAMES] ? f->w[RF_W_FRAME + k] : 0;
     }
     f->out[RF_O_PAGES] += elapsed(&t);
-    kmx_give(RF_R_ITEMS);
+    kmx_flush(RF_R_ITEMS);
     f->out[RF_O_GIVE] += elapsed(&t);
     f->out[RF_O_MIDDLE] =
         (f->out[RF_O_TAKE] + f->out[RF_O_HEAVY_US] + f->out[RF_O_CUT] +
@@ -319,7 +319,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
 
     /* PLACE, then SETUP */
     kmx_progress(5);
-    record(&r, RF_SEG_PLACE, f);
+    command(&r, RF_HANDLER_PLACE, f);
     r.a0 = f->addr[RF_R_ITEMS];
     r.a1 = f->w[RF_W_DIR];
     r.a6 = workers;
@@ -330,7 +330,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
         return code;
     }
     kmx_progress(6);
-    record(&r, RF_SEG_SETUP, f);
+    command(&r, RF_HANDLER_SETUP, f);
     r.a0 = f->w[RF_W_MESH];
     r.a1 = f->w[RF_W_LISTS];
     r.a2 = f->w[RF_W_BLOCKS] | ranges;
@@ -346,7 +346,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
 
     /* FILL */
     kmx_progress(7);
-    record(&r, RF_SEG_FILL, f);
+    command(&r, RF_HANDLER_FILL, f);
     r.a0 = f->w[RF_W_DIR];
     r.a1 = f->w[RF_W_LISTS];
     r.a3 = RF_PAGES_PER_ITEM;
@@ -357,8 +357,8 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     return code;
 }
 
-int kmx_main(int hart) {
-    (void)hart;
+int kmx_main(int core) {
+    (void)core;
     const kmx_args* a = kmx_args_get();
     frame_t f;
     for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
@@ -393,8 +393,8 @@ int kmx_main(int hart) {
     }
     work_t* wk = (work_t*)reg[RF_R_WORK];
     /* lines an earlier image left dirty would be written over what the cores write */
-    kmx_give(RF_R_SUMS);
-    kmx_give(RF_R_CAMERA);
+    kmx_flush(RF_R_SUMS);
+    kmx_flush(RF_R_CAMERA);
     const uint32_t frames = f.w[RF_W_REPEAT] ? f.w[RF_W_REPEAT] : 1;
     for (uint32_t k = 0; k < frames; k++) {
         const uint32_t code = frame_once(&f, wk, reg);

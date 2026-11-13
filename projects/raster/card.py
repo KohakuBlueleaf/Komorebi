@@ -1,6 +1,6 @@
 """Running the host-binned rasterizer on a card through the host package: the lists,
 directory, frame and profile tensors are written before the load, then FILL records go
-to every core under the dispatch kernel, one in flight at a time."""
+to every core under the dispatcher, one in flight at a time."""
 
 import time
 
@@ -21,7 +21,7 @@ def log(msg):
 
 def program():
     """The rasterizer's three kernels on every core; one record in flight per core, so
-    a record's event time is its own, issue to the last core's acknowledgement."""
+    a record's event time is its own, submit to the last core's acknowledgement."""
     return km.Program(
         "raster",
         kernels=KERNELS,
@@ -38,7 +38,7 @@ def program():
             "enable_trisc2_rvv": True,
         },
         depth=1,
-        segments=lists.RASTER_H,
+        handlers=lists.RASTER_H,
     )
 
 
@@ -107,9 +107,17 @@ def words(up, per_item):
 
 
 def run_lists(
-    session, seg, pages, directory, out_pages, per_item, reps=1, frame=True, args=None
+    session,
+    handler,
+    pages,
+    directory,
+    out_pages,
+    per_item,
+    reps=1,
+    frame=True,
+    args=None,
 ):
-    """Loads the program, runs `reps` records of `seg` over the lists and directory
+    """Loads the program, runs `reps` records of `handler` over the lists and directory
     (`args` in place of the tensors' addresses), stops, reads back. Returns (output
     pages or None, profile pages, status, record microseconds, host seconds)."""
     if K["kOutPages"] % per_item:
@@ -124,8 +132,8 @@ def run_lists(
     run = session.load(program(), deadline=1.0)
     times["load_s"] = time.perf_counter() - t0
     log(f"loaded; {reps} records over {len(pages)} list pages")
-    us = loop(run, seg, args or words(up, per_item), reps)
-    times["records_s"] = time.perf_counter() - t0 - times["load_s"]
+    us = loop(run, handler, args or words(up, per_item), reps)
+    times["commands_s"] = time.perf_counter() - t0 - times["load_s"]
     run.stop()
     log("stopped")
     t0 = time.perf_counter()
@@ -137,14 +145,14 @@ def run_lists(
     return out, prof, status, us, times
 
 
-def loop(run, seg, args, reps, batch=512):
-    """Issues `reps` records of `seg` on every core in batches and waits for them;
-    returns each record's microseconds from issue to acknowledgement."""
+def loop(run, handler, args, reps, batch=512):
+    """Submits `reps` records of `handler` on every core in batches and waits for them;
+    returns each record's microseconds from submit to acknowledgement."""
     us = []
     while len(us) < reps:
         n = min(batch, reps - len(us))
-        tickets = run.issue_many(seg, 0, run.cores, np.tile(args, (n, 1)))
-        events = run.wait(list(tickets), timeout=10.0 + n * 0.01)
+        handles = run.submit_many(handler, 0, run.cores, np.tile(args, (n, 1)))
+        events = run.wait(list(handles), timeout=10.0 + n * 0.01)
         us += [e.us for e in events]
         if any(e.kind != "done" for e in events):
             break
@@ -169,7 +177,7 @@ def check_run(run, cores, reps, us):
     ]
     out = {
         "kernel": run.result()["error_name"],
-        "records": int(len(us)),
+        "commands": int(len(us)),
         "cores_ended": ended,
         "compute_wrong": sum(sum(c["compute_wrong"]) for c in states[:cores]),
         "bad_items": [{"core": int(c), "where": int(word[c] >> 8 & 0xFF)} for c in bad],

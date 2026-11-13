@@ -15,8 +15,8 @@ HERE = Path(__file__).resolve().parent
 FEEDER = HERE.parents[1] / "tests" / "hardware" / "feeder"
 sys.path.insert(0, str(FEEDER))
 
+import commands as rec  # noqa: E402
 import fed  # noqa: E402
-import records as rec  # noqa: E402
 
 import komorebi as km  # noqa: E402
 
@@ -31,26 +31,26 @@ FORMS = {"owner": 0, "tree": 1}
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--jobs", type=int, default=20)
-    p.add_argument("--teams", choices=["fixed", "random"], default="fixed")
-    p.add_argument("--count", type=int, default=8, help="team size (fixed)")
+    p.add_argument("--groups", choices=["fixed", "random"], default="fixed")
+    p.add_argument("--count", type=int, default=8, help="group size (fixed)")
     p.add_argument("--first", type=int, default=0, help="first core (fixed)")
     p.add_argument(
-        "--team-list", help="first:count per job, comma-separated (overrides --teams)"
+        "--group-list", help="first:count per job, comma-separated (overrides --groups)"
     )
     p.add_argument(
         "--form",
         choices=["owner", "tree", "both", "random"],
         default="both",
-        help="both: owner and tree alternate in pairs (each team runs both)",
+        help="both: owner and tree alternate in pairs (each group runs both)",
     )
     p.add_argument("--tiles", type=int, default=64, help="input tiles T")
     p.add_argument("--depth", type=int, default=4, help="ring slots used")
     p.add_argument("--out-pages", type=int, default=256, help="output tiles")
     p.add_argument("--part", type=int, default=1, help="tiles per part P (1 to 3)")
     p.add_argument("--wait", type=float, default=0.5, help="wait limit, seconds")
-    p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
+    p.add_argument("--deadline", type=float, default=0.05, help="per command, seconds")
     p.add_argument(
-        "--stall-member",
+        "--stall-rank",
         type=int,
         default=-1,
         help="then a launch of one job whose member M stalls, and a clean launch",
@@ -65,22 +65,22 @@ def parse():
 def make_jobs(args, workers, rng):
     """[(first, count, form, source)] per job: the job reads input tiles source to
     source + T - 1 of input source % 2 (0 exact, 1 random)."""
-    if args.team_list:
-        teams = [tuple(map(int, t.split(":"))) for t in args.team_list.split(",")]
-    elif args.teams == "fixed":
-        teams = [(args.first, args.count)] * args.jobs
+    if args.group_list:
+        groups = [tuple(map(int, t.split(":"))) for t in args.group_list.split(",")]
+    elif args.groups == "fixed":
+        groups = [(args.first, args.count)] * args.jobs
     else:
-        teams = rec.random_teams(rng, args.jobs, workers)
-    sources = list(range(len(teams)))
+        groups = rec.random_groups(rng, args.jobs, workers)
+    sources = list(range(len(groups)))
     if args.form == "both":  # each job twice in a row, on the same input: owner, tree
-        teams = [t for t in teams for _ in range(2)]
+        groups = [t for t in groups for _ in range(2)]
         sources = [s for s in sources for _ in range(2)]
-        forms = [j % 2 for j in range(len(teams))]
+        forms = [j % 2 for j in range(len(groups))]
     elif args.form == "random":
-        forms = [int(f) for f in rng.integers(0, 2, len(teams))]
+        forms = [int(f) for f in rng.integers(0, 2, len(groups))]
     else:
-        forms = [FORMS[args.form]] * len(teams)
-    return [(f, c, form, s) for (f, c), form, s in zip(teams, forms, sources)]
+        forms = [FORMS[args.form]] * len(groups)
+    return [(f, c, form, s) for (f, c), form, s in zip(groups, forms, sources)]
 
 
 def kernels(inp, out):
@@ -106,11 +106,11 @@ def kernels(inp, out):
     )
 
 
-def launch(runner, args, jobs, inputs, out, stall=-1, stall_member=NONE):
+def launch(runner, args, jobs, inputs, out, stall=-1, stall_rank=NONE):
     """Runs the jobs (job j writes output part j % parts); job `stall` has member
-    `stall_member` stall, under a deadline long enough for its receiver's wait to
+    `stall_rank` stall, under a deadline long enough for its receiver's wait to
     give up first."""
-    records = []
+    commands = []
     for j, (first, count, form, src) in enumerate(jobs):
         words = [
             inputs[src % 2].address,
@@ -118,14 +118,16 @@ def launch(runner, args, jobs, inputs, out, stall=-1, stall_member=NONE):
             out.address,
             j % (args.out_pages // args.part) * args.part,
             form,
-            stall_member if j == stall else NONE,
+            stall_rank if j == stall else NONE,
             src,
             args.part,
         ]
-        records.append(rec.record(M["kSegMerge"], first, count, words, K["KM_F_EXCL"]))
+        commands.append(
+            rec.command(M["kHandlerMerge"], first, count, words, K["KM_F_EXCL"])
+        )
     return runner.run(
         kernels(inputs[0], out),
-        records,
+        commands,
         tensors=[*inputs, out],
         depth=args.depth,
         deadline_s=args.deadline if stall < 0 else 4 * args.wait,
@@ -138,14 +140,14 @@ def summary(res, jobs):
     s = res.summary
     states = [rec.core_state(res.state, c) for c in range(len(res.state))]
     parts = ("reader", "writer", "compute")
-    gave = []  # cores that gave up anywhere but waiting for a record
+    gave = []  # cores that gave up anywhere but waiting for a command
     for c in states:
         g = {k: c[k] for k in parts if c[k]}
         if any(v["where"] != "next" for v in g.values()):
             gave.append({"core": c["core"], **g})
     out = {
         "status": s["status"],
-        "issued": s["issued"],
+        "submitted": s["submitted"],
         "done": s["done"],
         "exit_acked": s["exit_acked"],
         "cores_ended": {
@@ -160,7 +162,7 @@ def summary(res, jobs):
     }
     if s["status"] == "timeout":
         first, count, form, _ = jobs[s["index"]]
-        out["timed_out"] = {"job": s["index"], "team": [first, count], "form": form}
+        out["timed_out"] = {"job": s["index"], "group": [first, count], "form": form}
     return out
 
 
@@ -197,13 +199,13 @@ def check(args, jobs, done, out, xs):
             if not np.array_equal(mine, ref):
                 wrong = int((mine != ref).sum())
                 bad.append(
-                    {"job": j, "team": [first, count], "form": form, "wrong": wrong}
+                    {"job": j, "group": [first, count], "form": form, "wrong": wrong}
                 )
         else:
             rel = float(np.sqrt(((mine - ref) ** 2).mean() / (ref**2).mean()))
             rel_max = max(rel_max, rel)
             if rel > 1e-5:
-                bad.append({"job": j, "team": [first, count], "rel_rms": rel})
+                bad.append({"job": j, "group": [first, count], "rel_rms": rel})
     return {
         "jobs_checked": len(kept),
         "exact_checked": {"owner": exact[0], "tree": exact[1]},
@@ -257,14 +259,14 @@ def run(session, args, rng):
             res.summary["span_cycles"] / res.mhz / max(res.summary["done"], 1), 3
         ),
         **summary(res, jobs),
-        **check(args, jobs, res.records["status"] == 1, out, xs),
+        **check(args, jobs, res.commands["status"] == 1, out, xs),
     }
-    if args.stall_member >= 0:  # a member stalls in job 1; then a clean launch
+    if args.stall_rank >= 0:  # a member stalls in job 1; then a clean launch
         few = jobs[:4]
-        stalled = launch(runner, args, few, inputs, out, 1, args.stall_member)
+        stalled = launch(runner, args, few, inputs, out, 1, args.stall_rank)
         result["stall"] = summary(stalled, few)
         after = launch(runner, args, few, inputs, out)
-        done = after.records["status"] == 1
+        done = after.commands["status"] == 1
         result["after"] = {**summary(after, few), **check(args, few, done, out, xs)}
     result["ok"] = verdict(result, n, runner.workers)
     return result
@@ -291,7 +293,7 @@ def clean(launch, jobs, cores):
 
 
 def verdict(result, jobs, cores):
-    """The jobs clean; with --stall-member, the stalled launch timed out on job 1 with
+    """The jobs clean; with --stall-rank, the stalled launch timed out on job 1 with
     every core ended, and the launch after it clean."""
     ok = clean(result, jobs, cores)
     if "stall" in result:

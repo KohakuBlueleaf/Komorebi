@@ -2,14 +2,13 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
-  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write: a compute kernel that runs on every Tensix core and picks a segment per record, a C thread on the X280 that issues the passes and calls kmx_par, and the Python lines that declare the program and its thread. Centre, the card runs it by itself: two panels of 6 by 10 Tensix cores with resident kernels, X280 cluster 0 issuing records to both panels, X280 clusters 1 to 3 running the program's threads, values crossing core to core; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.80 ms step between passes, seven records, the Tensix passes COUNT 3.8, SETUP 5.1 and FILL 2.1 ms, 12.1 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (7.2 and 15.4 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.3 us (7.7 times) and 7.99 ms (1.5 times), SwiGLU 42.6 us (6.2 times), attention 163 us (1.3 times).">
+  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write: a compute kernel that runs on every Tensix core and picks a handler per command, a C thread on the X280 that submits the passes and calls kmx_par, and the Python lines that declare the program and its thread. Centre, the card runs it by itself: two panels of 6 by 10 Tensix cores with persistent kernels, X280 cluster 0 submitting commands to both panels, X280 clusters 1 to 3 running the program's threads, values crossing core to core; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.80 ms step between passes, seven commands, the Tensix passes COUNT 3.8, SETUP 5.1 and FILL 2.1 ms, 12.1 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (7.2 and 15.4 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.3 us (7.7 times) and 7.99 ms (1.5 times), SwiGLU 42.6 us (6.2 times), attention 163 us (1.3 times).">
 </picture>
 
 A programming model and framework for the Tensix grid and the X280 cores of a
-Tenstorrent Blackhole card (developed on a P150A). A program is a set of resident
-kernels on every Tensix core; each record they receive names a segment of code and a
-team of cores, and every member works on its share. Values cross between cores, a
-dispatch kernel on one X280 cluster issues the records and runs streams and graphs of
+Tenstorrent Blackhole card (developed on a P150A). A program is a set of persistent kernels on every Tensix core; each command they receive names a handler of code and a
+core group, and every member works on its share. Values cross between cores, a
+dispatcher on one X280 cluster submits the commands and runs streams and graphs of
 them on the card, and C threads on the other three X280 clusters run the irregular part
 of a program.
 
@@ -40,7 +39,7 @@ and a third or less (the ray tracer).
 
 ## A kernel
 
-The merge-tree example adds up a job's input tiles over a team of cores. Each member
+The merge-tree example adds up a job's input tiles over a core group. Each member
 runs three kernels: the reader brings the member's share of the tiles from DRAM into
 L1 and waits for the parts other members send it; the compute kernel below adds them;
 the writer sends the member's part to its receiver, or, on member 0, writes the total.
@@ -53,17 +52,17 @@ of a buffer into a sum in DST, `clear_sums` sets the sums to zero):
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbIn, kCbOut);
-    // The runtime's loop: the body runs once per record whose team holds this core.
-    cp.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegMerge) {  // this program answers MERGE records only
+    // The runtime's loop: the body runs once per command whose group holds this core.
+    cp.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerMerge) {  // this program answers MERGE commands only
             return;
         }
         const uint32_t tiles = r.a1;  // input tiles T of the job
         const uint32_t form = r.a4;   // 0: merge at one owner, 1: along a tree
         const uint32_t part = r.a7;   // tiles per part P (1 to 3), one sum each in DST
-        // The team is the record's range of cores; my rank in it gives my share of T.
-        const km::Group g = km::team_group(r, cp.me());
-        const km::Share s = km::share(tiles, g.rank, g.size);
+        // The group is the command's range of cores; my rank in it gives my share of T.
+        const km::Group g = km::group_of(r, cp.me());
+        const km::Partition s = km::partition(tiles, g.rank, g.size);
         const km::Arrival arrival = {kCbArrive, kArrivePages, part};
         tile_regs_acquire();  // DST, the vector unit's registers, until the release
         clear_sums(part);     // the P sums start at zero
@@ -100,7 +99,7 @@ void kernel_main() {
 
 The host declares the program (`program()` in
 [merge.py](examples/02_merge_tree/merge.py): the three kernels, three circular buffers,
-the segment header) and issues one `MERGE` record per job to its team (`launch()`,
+the handler header) and submits one `MERGE` command per job to its group (`launch()`,
 lines 103 to 107 and 123 to 127):
 
 ```python
@@ -109,32 +108,32 @@ run = session.load(
     deadline=args.deadline if stall < 0 else 4 * args.wait,
     wait=args.wait,
 )
-# ... the record words of job j (lines 108 to 122)
-team = (first, count)
-tickets.append(run.issue("merge", team, words, exclusive=True, result=True))
+# ... the command words of job j (lines 108 to 122)
+group = (first, count)
+handles.append(run.submit("merge", group, words, exclusive=True, result=True))
 log(f"{run.drain(timeout=30.0)} events")
 host_s = time.perf_counter() - t0
 run.stop()
 ```
 
 It checks every total against numpy and prints one JSON line with `ok`: 1,000 jobs on
-random teams, 0 wrong; 36.7 µs a job on 8 cores and 51.8 µs on 119, each record
+random groups, 0 wrong; 36.7 µs a job on 8 cores and 51.8 µs on 119, each command
 returning a checksum of its total
 ([02_merge_tree](examples/02_merge_tree/README.md)).
 
 The irregular part of a program is C on an X280 work cluster, where `kmx_par` runs a
-function on the cluster's four cores (harts). A two-pass prefix sum over chunks of the
-input, 2.48 ms for 262,144 words on four harts, exact against numpy
+function on the cluster's four cores (cores). A two-pass prefix sum over chunks of the
+input, 2.48 ms for 262,144 words on four cores, exact against numpy
 ([08_parallel_thread/thread/parallel.c](examples/08_parallel_thread/thread/parallel.c),
 lines 148 to 198 without `nothing`, an empty function for timing `kmx_par`; the job
 struct and the chunk helpers are above them):
 
 ```c
 /* (c) prefix, pass 1: each chunk's sum. */
-static void chunk_sums(int hart, void* arg) {
+static void chunk_sums(int core, void* arg) {
     const job_t* j = (const job_t*)arg;
-    /* my chunks of CHUNK words: hart, hart + parts, ... (parts: the harts in use) */
-    for (uint64_t c = first(j, hart); c < chunks(j); c += j->parts) {
+    /* my chunks of CHUNK words: core, core + parts, ... (parts: the cores in use) */
+    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
         uint32_t s = 0;
         for (uint64_t i = c * CHUNK; i < end(j, c); i++) {
             s += j->in[i];
@@ -144,9 +143,9 @@ static void chunk_sums(int hart, void* arg) {
 }
 
 /* Pass 2: out[i] = the chunk's base + the chunk's words before i. */
-static void chunk_prefix(int hart, void* arg) {
+static void chunk_prefix(int core, void* arg) {
     const job_t* j = (const job_t*)arg;
-    for (uint64_t c = first(j, hart); c < chunks(j); c += j->parts) {
+    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
         uint32_t run = g_chunk[c];
         for (uint64_t i = c * CHUNK; i < end(j, c); i++) {
             j->out[i] = run;
@@ -155,7 +154,7 @@ static void chunk_prefix(int hart, void* arg) {
     }
 }
 
-/* Runs fn on hart 0 alone or on all four; KMX_OK, or kmx_par's error. */
+/* Runs fn on core 0 alone or on all four; KMX_OK, or kmx_par's error. */
 static int on(void (*fn)(int, void*), job_t* j) {
     if (j->parts == 1) {
         fn(0, j);
@@ -164,7 +163,7 @@ static int on(void (*fn)(int, void*), job_t* j) {
     return kmx_par(fn, j);
 }
 
-/* The two-pass exclusive prefix sum (mod 2^32); between the passes hart 0 turns the
+/* The two-pass exclusive prefix sum (mod 2^32); between the passes core 0 turns the
  * chunk sums into bases. */
 static int prefix(job_t* j) {
     const int e = on(chunk_sums, j);
@@ -184,64 +183,64 @@ static int prefix(job_t* j) {
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/card-dark.svg">
-  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM tiles in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. The host declares the program and its thread and issues records; commands and events pass through PCIe to X280 0 at (8, 3), which runs the dispatch kernel. Its record goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each. A team of cores 26 to 55 is filled; its leader, core 26 at (3, 4), acknowledges on NoC1. X280 1 at (8, 9), X280 2 at (8, 5) and X280 3 at (8, 7), drawn in their own colour, each run a C thread of the program on four harts (kmx_main, kmx_par); a ring joins each to X280 0, records going to the dispatch kernel and events with result words coming back, so records have up to four sources. Each cluster's regions lie in the DRAM bank beside it, D6 for X280 1 and D7 for X280 2 and 3, which Tensix cores reach over the NoC; kmx_take and kmx_give hand them over. Boxes below list what the dispatch kernel, each Tensix core and the work clusters do.">
+  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM tiles in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. The host declares the program and its thread and submits commands; commands and events pass through PCIe to X280 0 at (8, 3), which runs the dispatcher. Its command goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each. A core group 26 to 55 is filled; its leader, core 26 at (3, 4), acknowledges on NoC1. X280 1 at (8, 9), X280 2 at (8, 5) and X280 3 at (8, 7), drawn in their own colour, each run a C thread of the program on four cores (kmx_main, kmx_par); a ring joins each to X280 0, commands going to the dispatcher and events with result words coming back, so commands have up to four sources. Each cluster's regions lie in the DRAM bank beside it, D6 for X280 1 and D7 for X280 2 and 3, which Tensix cores reach over the NoC; kmx_invalidate and kmx_flush hand them over. Boxes below list what the dispatcher, each Tensix core and the work clusters do.">
 </picture>
 
 The grid is the card's real one in NoC0 coordinates; the numbers in the Tensix cores
-are Komorebi's core index. A **record** is one 64-byte line: the segment, the team
+are Komorebi's core index. A **command** is one 64-byte line: the handler, the group
 (a contiguous range of cores, whose first member is its **leader**) and ten 32-bit
-argument words. Every core sees every record and skips those whose team does not hold
-it; members report to the leader, which acknowledges to the dispatch kernel, with a
-result word when the record asks for one.
+argument words. Every core sees every command and skips those whose group does not hold
+it; members report to the leader, which acknowledges to the dispatcher, with a
+result word when the command asks for one.
 
 ### A thread has a program counter and a place
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/breakpoints-dark.svg">
-  <img src="docs/images/breakpoints-light.svg" width="830" alt="Two listings of real code with line numbers. First, a dynamic segment from examples/05_hop/kernels/compute.cpp: while (km::Packet pk = dy.next()) takes the items that landed on this core; for each item the generator advances and is added to the sum; when no hops are left dy.retire() ends the item there; otherwise dy.hop(...) sends its 64 bytes to the member its state names; dy.done(pk) frees the packet. The next, retire and hop lines are marked. Second, the merge tree from examples/02_merge_tree/kernels: the writer's km::reduce_emit sends a member's part into a fixed slot (marked emit), the reader's km::reduce_arrive waits for the senders' parts (marked wait), and the compute kernel's km::reduce adds them in rank order. Below, on a schematic grid of cores, two programs run one at a time: one item starts on a core, hops twice to the core its state names and retires there; and in a team of four merging by owner, ranks 1 to 3 emit their parts to rank 0, which waits for them and adds them.">
+  <img src="docs/images/breakpoints-light.svg" width="830" alt="Two listings of real code with line numbers. First, a dynamic handler from examples/05_forward/kernels/compute.cpp: while (km::Packet pk = dy.next()) takes the items that landed on this core; for each item the generator advances and is added to the sum; when no hops are left dy.retire() ends the item there; otherwise dy.hop(...) sends its 64 bytes to the member its state names; dy.done(pk) frees the packet. The next, retire and hop lines are marked. Second, the merge tree from examples/02_merge_tree/kernels: the writer's km::reduce_emit sends a member's part into a fixed slot (marked emit), the reader's km::reduce_arrive waits for the senders' parts (marked wait), and the compute kernel's km::reduce adds them in rank order. Below, on a schematic grid of cores, two programs run one at a time: one item starts on a core, hops twice to the core its state names and retires there; and in a group of four merging by owner, ranks 1 to 3 emit their parts to rank 0, which waits for them and adds them.">
 </picture>
 
 A **breakpoint** is a point where a thread must deal with another core; between two
-breakpoints it runs on its core. Today a program is written as the segment bodies of
+breakpoints it runs on its core. Today a program is written as the handler bodies of
 its kernels, as above; the thread language in the first column is planned:
 
 | Planned thread language | What crosses | On the card today |
 |---|---|---|
-| `at X[i]: block` | the thread's state | a dynamic segment: the state as a 64-byte item, `dy.hop` ([dynamic segments](docs/reference/dynamic.md), [05_hop](examples/05_hop/)) |
+| `at X[i]: block` | the thread's state | a dynamic handler: the state as a 64-byte item, `dy.hop` ([dynamic handlers](docs/reference/dynamic.md), [05_forward](examples/05_forward/)) |
 | `emit v -> thread(j)` | the value | `km::emit` into a fixed slot, reduce by owner or by tree ([ports](docs/reference/ports.md), [02_merge_tree](examples/02_merge_tree/)) |
 | `v = wait(n)` | nothing | `km::arrive`: a bounded wait until `n` values have landed |
-| a block to a row or a column | the block, once per lane | lane broadcast ([lanes](docs/reference/lanes.md), [03_broadcast](examples/03_broadcast/)) |
+| a block to a row or a column | the block, once per broadcast | broadcast broadcast ([broadcasts](docs/reference/broadcast.md), [03_broadcast](examples/03_broadcast/)) |
 
-### Teams and records in time
+### Groups and commands in time
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/teams-dark.svg">
-  <img src="docs/images/teams-light.svg" width="830" alt="Time runs left to right over cores 0 to 11, the first row of the grid (NoC0 row 2, columns 1 to 6 in panel 0 and 11 to 16 in panel 1). The dispatch kernel issues R1 to cores 0 to 4 and R2 to cores 6 to 11; each record lands on every core, the members work at the same time, report to their leader, and each leader acknowledges its own record, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both teams. In the drawn case it lands after cores 3, 4 and 6 to 8 have begun R1 or R2, so they take it next, while core 5, in neither team, takes it at once; each member's report ends on the lane of the leader, core 3, which acknowledges after the last report. A note says this order is the drawn case, not a guarantee: a shared core may run two records in flight in either order unless the later one is issued exclusive.">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/groups-dark.svg">
+  <img src="docs/images/groups-light.svg" width="830" alt="Time runs left to right over cores 0 to 11, the first row of the grid (NoC0 row 2, columns 1 to 6 in panel 0 and 11 to 16 in panel 1). The dispatcher submits R1 to cores 0 to 4 and R2 to cores 6 to 11; each command lands on every core, the members work at the same time, report to their leader, and each leader acknowledges its own command, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both groups. In the drawn case it lands after cores 3, 4 and 6 to 8 have begun R1 or R2, so they take it next, while core 5, in neither group, takes it at once; each member's report ends on the broadcast of the leader, core 3, which acknowledges after the last report. A note says this order is the drawn case, not a guarantee: a shared core may run two commands in flight in either order unless the later one is submitted exclusive.">
 </picture>
 
-Up to 16 records are in flight at once. A record that must run after an earlier one
-on overlapping cores is issued with `run.issue(..., exclusive=True)`.
+Up to 16 commands are in flight at once. A command that must run after an earlier one
+on overlapping cores is submitted with `run.submit(..., exclusive=True)`.
 
 ### One program on the grid
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/mapcollect-dark.svg">
-  <img src="docs/images/mapcollect-light.svg" width="830" alt="The map/collect example on the real tile grid: the team of cores 0 to 7 sits at NoC0 (1, 2) to (6, 2), (11, 2) and (12, 2); core 3 at (4, 2) is highlighted. A table lists each member's share: core m reads tiles 8m to 8m+7 and writes output page a3 + m. Members report to core 0, which acknowledges to X280 0. Inside core 3: the reader reads tiles 24 to 31 from DRAM on NoC0 into circular buffer 0 in L1, compute copies each tile to DST and the vector unit adds them in fp32, pack writes the sum to circular buffer 16, the writer writes it to DRAM on NoC1, and the core reports to core 0.">
+  <img src="docs/images/mapcollect-light.svg" width="830" alt="The map/collect example on the real tile grid: the core group 0 to 7 sits at NoC0 (1, 2) to (6, 2), (11, 2) and (12, 2); core 3 at (4, 2) is highlighted. A table lists each member's share: core m reads tiles 8m to 8m+7 and writes output page a3 + m. Members report to core 0, which acknowledges to X280 0. Inside core 3: the reader reads tiles 24 to 31 from DRAM on NoC0 into circular buffer 0 in L1, compute copies each tile to DST and the vector unit adds them in fp32, pack writes the sum to circular buffer 16, the writer writes it to DRAM on NoC1, and the core reports to core 0.">
 </picture>
 
 ## What exists
 
 | Part | On main | Page | Example |
 |---|---|---|---|
-| Resident worker: records, 16 mailbox slots per core, the reader, compute and writer loops, every wait bounded, the trace | implemented | [Tensix runtime](docs/reference/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
-| Teams per record, several in flight, completion per team, a result word per record | implemented | [Tensix runtime](docs/concepts/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
+| Persistent kernel: commands, 16 mailbox slots per core, the reader, compute and writer loops, every wait bounded, the trace | implemented | [Tensix runtime](docs/reference/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
+| Groups per command, several in flight, completion per group, a result word per command | implemented | [Tensix runtime](docs/concepts/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
 | Static crossings: `emit`, `arrive`, `take`, groups, reduce by owner and by tree | implemented | [ports](docs/reference/ports.md) | [02_merge_tree](examples/02_merge_tree/) |
-| Static crossings: lane broadcast along a row or a column, two lanes at once | implemented | [lanes](docs/reference/lanes.md) | [03_broadcast](examples/03_broadcast/) |
-| Dynamic crossings: items through per-core queues in DRAM, a spawn quota, the quiet end found by the dispatch kernel | implemented; one dynamic run at a time | [dynamic segments](docs/reference/dynamic.md) | [05_hop](examples/05_hop/) |
-| The dispatch kernel on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatch kernel](src/komorebi_native/x280/kernel/README.md) | all |
-| Micro-op streams and the job queue in the dispatch kernel | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
-| Graphs in the dispatch kernel: record nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
-| X280 threads: `kmx_par`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_par_all` over twelve harts and `kmx_push` across banks | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
+| Static crossings: broadcast broadcast along a row or a column, two broadcasts at once | implemented | [broadcasts](docs/reference/broadcast.md) | [03_broadcast](examples/03_broadcast/) |
+| Dynamic crossings: items through per-core queues in DRAM, a spawn quota, the quiet end found by the dispatcher | implemented; one dynamic run at a time | [dynamic handlers](docs/reference/dynamic.md) | [05_forward](examples/05_forward/) |
+| The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
+| Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
+| Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
+| X280 threads: `kmx_par`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_par_all` over twelve cores and `kmx_push` across banks | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, a bounded exit | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
 | The thread language; homes declared | planned | [manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md) | |
@@ -284,12 +283,12 @@ against numpy. Median of 5 loads, each about 1 s of frames; card 1
 | Bistro interior, overview | 1,020,903 | repeated | 10.974 | 0.752 | 65.2 | 14.10 | 5.99 | 0.55 |
 
 Where the time goes: SETUP, the scatter of each triangle's record into its tiles' lists,
-is the largest part of every frame from 10^5 up (first frame: 10^6 5.1 ms, Bistro 7.5
+is the largest part of every frame from 10^5 up (cold frame: 10^6 5.1 ms, Bistro 7.5
 ms), then COUNT (3.8 and 4.8 ms) and the fill (2.1 ms). "First" is a frame without
 history; "repeated" is a later frame of the same camera, whose COUNT and SETUP ranges are
 cut by the frame before's costs (10^6 3.9 and 3.4 ms, Bistro 4.3 and 3.6 ms).
 
-The **ray tracer**: ray generation, four traces and shading are eight records on the
+The **ray tracer**: ray generation, four traces and shading are eight commands on the
 120 cores; trees larger than L1 are read from DRAM as treelets. Card 1. A cold frame
 has no history and is submitted by the host. A warm frame is the second or third of the
 same camera, submitted by a thread on the X280. Before each trace the thread cuts the
@@ -317,8 +316,8 @@ rays into the cores' ranges by the frame before's costs; its plan time counts in
 Where the time goes: the four traces take 67 % (10^4) to 97 % (Bistro) of the frame,
 the bounce trace alone 36 to 59 %; each core sorts its bounce and second-shadow rays
 (about 15 ms a frame) and reads the treelets its rays need from DRAM. In the traces,
-box tests on packets with few live lanes come first (61 % on Sponza's overview), then
-the wait for each record's slowest core. The differing pixels are ties between two
+box tests on packets with few live broadcasts come first (61 % on Sponza's overview), then
+the wait for each command's slowest core. The differing pixels are ties between two
 triangles at the same float32 distance, but for one or two on each Bistro view. The
 plan by the frame before takes 35 to 46 ms off Sponza and Bistro's overview, nothing off
 Bistro's close view, and costs 12 to 38 ms on 10^4 to 10^6: it cuts the traces into up
@@ -328,7 +327,7 @@ to 8 commands, and the cores read more treelets.
 <img src="docs/images/raytrace-sponza.jpg" width="256" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. Top: rasterized,
-both bit-exact against numpy, Sponza overview (7.22 ms a first frame above) and Bistro
+both bit-exact against numpy, Sponza overview (7.22 ms a cold frame above) and Bistro
 interior overview (15.37 ms). Bottom: ray traced, Sponza close (359.86 ms a frame
 above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
@@ -356,7 +355,7 @@ three routes (`results/<preset>-ours.json`, `-ktt-<route>.json`):
 From 4096 cubed up both sides are bound by the card's power limit in a loop; the last
 row is bound by reading W from DRAM on 72 cores.
 
-[Attention](projects/attention/README.md#time-and-power), K and V cast down lanes of
+[Attention](projects/attention/README.md#time-and-power), K and V cast down broadcasts of
 cores, the same compute body as Kohaku-TT's flash kernel
 (`results/ours-<preset>.json`, `ktt-<preset>.json`):
 
@@ -368,7 +367,7 @@ cores, the same compute body as Kohaku-TT's flash kernel
 | 1 x 8 x 1024 x 64, causal | 73.6 | 102 | 53.7 | 99 | 0.73 |
 | 2 x 8 x 1024 x 128, 2 K / V heads | 163.3 | 143 | 261.8 | 105 | 1.60 |
 
-The rows behind are behind per call and ahead per pass: the cost of a record.
+The rows behind are behind per call and ahead per pass: the cost of a command.
 
 [SwiGLU](projects/dense/SWIGLU.md#results), `silu(x W1) * (x W3)` then `W2`, HiFi2,
 ours in its faster form (`results/swiglu-<preset>-<form>-hifi2.json`, `-ktt-<route>.json`):
@@ -380,7 +379,7 @@ ours in its faster form (`results/swiglu-<preset>-<form>-hifi2.json`, `-ktt-<rou
 | 16,384 x 256 x 512 | 180.2 | 137 | 542.1 | 109 | 3.01 |
 | 16,384 x 384 x 384 | 161.7 | 142 | 458.1 | 108 | 2.83 |
 
-The examples' own timings (records per microsecond, lanes, hops, streams, graphs and
+The examples' own timings (commands per microsecond, broadcasts, hops, streams, graphs and
 threads) are in each [example's README](examples/README.md).
 
 ## Install
@@ -400,7 +399,7 @@ The CPU tests and the stream and graph tools need nothing else. To run on a card
 Blackhole P150A whose X280 memory is prepared for the X280 runtime, a tt-metal source
 tree at the version in [runtime/tt-metal.pin](runtime/tt-metal.pin) (v0.81.1) built
 with its X280 runtime, and `TT_METAL_HOME` naming that tree (neither `ttnn` nor
-`torch` is needed). The dispatch kernel image and the native module are
+`torch` is needed). The dispatcher image and the native module are
 built from the tree on first use (`python -m komorebi.native` builds them ahead).
 Details: [install](docs/install.md).
 
@@ -416,13 +415,13 @@ commands ([projects](projects/README.md)):
 ```
 cd examples/02_merge_tree
 python merge.py --jobs 20 --count 8 --form both
-python merge.py --team-list 0:8,0:119 --form both --stall-member 3
+python merge.py --group-list 0:8,0:119 --form both --stall-rank 3
 cd ../..
 python -m projects.raytrace.frame --scene tiny --reps 16
 ```
 
 The second command adds a load in which member 3 of job 1 never sends: the host raises
-`km.RecordTimeout` naming the ticket and the members that did not report, and the next
+`km.CommandTimeout` naming the handle and the members that did not report, and the next
 load in the same session runs exact.
 
 ## Repository map
@@ -432,13 +431,13 @@ src/komorebi/                  the Python package: Program, Session, Run, layout
   engines/                     micro-op streams and graphs: builders, encodings, checks,
                                simulators; the host-fed executor
   thread.py                    X280 threads: declaration, regions, results, host fallback
-  manifest/  lang/             reserved: homes and segments declared; the thread language
+  manifest/  lang/             reserved: homes and handlers declared; the thread language
 src/komorebi_native/
-  include/komorebi/abi/        the record, the event and the stream format, shared by all
-  include/komorebi/device/     the resident worker, teams, ports, groups, lanes, dynamic
-                               segments, the trace
-  kernels/                     the generic reader and writer of dynamic segments
-  x280/kernel/                 the dispatch kernel for X280 cluster 0
+  include/komorebi/abi/        the command, the event and the stream format, shared by all
+  include/komorebi/device/     the persistent kernel, groups, ports, groups, broadcasts, dynamic
+                               handlers, the trace
+  kernels/                     the generic reader and writer of dynamic handlers
+  x280/kernel/                 the dispatcher for X280 cluster 0
   x280/engines/  x280/kmx/     the plain-C graph engine; the X280 thread library
   csrc/host/                   the native module: X280 runtime, commands, events
 examples/                      01_mapcollect to 08_parallel_thread
@@ -456,22 +455,22 @@ docs/                          concepts, references, install, development
   multicast panels; one harvesting pattern has been run.
 - One thread per X280 work cluster, three at most. A cluster reads only its own DRAM
   bank (6 for cluster 1, 7 for clusters 2 and 3); data for the other bank is pushed
-  (`kmx_push`), so twelve harts gain over four only where the work computes more than
+  (`kmx_push`), so twelve cores gain over four only where the work computes more than
   it moves.
-- Dynamic segments: one dynamic run at a time; items travel through queues in DRAM,
+- Dynamic handlers: one dynamic run at a time; items travel through queues in DRAM,
   also to a core's own queue; an item cannot ask for a DRAM fetch; no order between
-  items ([dynamic segments](docs/reference/dynamic.md#not-in-this-version)).
-- At most 16 records in flight, ten 32-bit argument words per record, segments 1 to
+  items ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
+- At most 16 commands in flight, ten 32-bit argument words per command, handlers 1 to
   239.
 - Reading back from the card runs at about 1 to 2 MB per second
   (`Session.read_chunks` reads in 2 MB chunks with a line per chunk); a rendered frame
   of 20 MB takes 10 to 18 s to read back.
-- The X280 runs at 1,000 MHz by default: at the 1,750 MHz opt-in the dispatch kernel
+- The X280 runs at 1,000 MHz by default: at the 1,750 MHz opt-in the dispatcher
   trapped in 9 of 18 runs under full matrix load (the card lowers its core voltage),
   and in 0 of 23 at 1,000 MHz. One PLL clocks all four clusters.
 - A stuck RISC thread is recovered by the next device open. A kernel that leaves a
   compute unit running, a packer that writes past its buffer, an X280 thread that never
-  returns and polls nothing, or a dispatch kernel whose loop has stopped costs a card
+  returns and polls nothing, or a dispatcher whose loop has stopped costs a card
   reset. The compute kernel's waits between its own three threads and the NoC barriers
   are not bounded.
 - tt-metal's watcher cannot run while the X280 runtime is open; debugging is by the
@@ -496,9 +495,9 @@ Planned, in order:
 |---|---|
 | [docs index](docs/README.md) | every concept and reference page |
 | [programming model](docs/concepts/model.md) | threads, breakpoints, homes, space and time |
-| [Tensix runtime](docs/reference/runtime.md) | the device headers, the record, bounded waits, the control block |
-| [ports](docs/reference/ports.md), [lanes](docs/reference/lanes.md), [dynamic segments](docs/reference/dynamic.md) | crossings between cores |
-| [streams](docs/streams.md), [graphs](docs/graphs.md) | deciding on the card in the dispatch kernel |
+| [Tensix runtime](docs/reference/runtime.md) | the device headers, the command, bounded waits, the control block |
+| [ports](docs/reference/ports.md), [broadcasts](docs/reference/broadcast.md), [dynamic handlers](docs/reference/dynamic.md) | crossings between cores |
+| [streams](docs/streams.md), [graphs](docs/graphs.md) | deciding on the card in the dispatcher |
 | [X280 threads](docs/threads.md) | C on a work cluster with kmx |
 | [host API](docs/reference/host.md) | `Program`, `Session`, `Run`, errors, builds |
 | [examples](examples/README.md), [projects](projects/README.md) | runnable examples; the five programs and their results |

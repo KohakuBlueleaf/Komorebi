@@ -17,11 +17,11 @@ static uint32_t* lines(void) {
 }
 
 /* Fills c field by field (a struct assignment may call memset, which does not link). */
-static void command(km_record_t* c, uint32_t handler, uint32_t a0, uint32_t a1) {
+static void command(km_command_t* c, uint32_t handler, uint32_t a0, uint32_t a1) {
     const uint32_t* w = kmx_args_get()->words;
     c->seq = c->land1 = c->land2 = c->land3 = 0;
     c->hdr = handler;
-    c->team = 0 | (uint32_t)kmx_port_cores() << 16;
+    c->group = 0 | (uint32_t)kmx_port_cores() << 16;
     c->a0 = a0;
     c->a1 = a1;
     c->a2 = w[HP_W_BASE];
@@ -91,15 +91,15 @@ static void flush_out(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
-        kmx_give(0);
-        kmx_give(1);
+        kmx_flush(0);
+        kmx_flush(1);
     }
 }
 
 /* Runs c (served by fn, or pulled when p is set) until its event, retrying a full ring;
  * its ticks into *dt. A KMX_ code, or KMX_LATE when the command did not complete. */
 static int run(
-    const km_record_t* c,
+    const km_command_t* c,
     const kmx_pull* p,
     void (*fn)(int, int, uint64_t),
     uint64_t arg,
@@ -141,7 +141,7 @@ int kmx_main(int cpu) {
         const kmx_pull p = {
             w[HP_W_UNITS], w[HP_W_PER], modes[k], 1u, k == HP_PICK ? pick : 0, ranges
         };
-        km_record_t c;
+        km_command_t c;
         command(&c, HX_HANDLER_PASS, w[HP_W_UNITS], k != HP_EQUAL);
         int e = run(&c, k == HP_EQUAL ? 0 : &p, idle, 0, &ticks[k]);
         for (uint32_t page = 0; page < 2 && e == KMX_OK; page++) {

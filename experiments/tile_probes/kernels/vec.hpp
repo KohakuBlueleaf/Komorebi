@@ -1,4 +1,4 @@
-// Vector-unit probes 0 to 4, issued by the pack thread (TRISC2) with raw Tensix
+// Vector-unit probes 0 to 4, submitted by the pack thread (TRISC2) with raw Tensix
 // instructions; Dst (32-bit, INT32 mode) is read and written through the window.
 #pragma once
 
@@ -288,7 +288,7 @@ namespace vec {
         TTI_SFPNOP;
     }
 
-    // One body: L1 += 1; L0 -= 2, lane stays enabled while L0 >= 0. Lane i is
+    // One body: L1 += 1; L0 -= 2, lane stays enabled while L0 >= 0. Broadcast i is
     // disabled by body i + 1.
     inline void cnt_body() {
         TTI_SFPIADD(1, L1, L1, 1 | 4);

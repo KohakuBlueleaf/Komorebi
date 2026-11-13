@@ -1,4 +1,4 @@
-/* X280 ports example, the thread: per round one record to cores [0, cores), served by
+/* X280 ports example, the thread: per round one command to cores [0, cores), served by
  * every X280 core of every cluster through kmx_port_run until its event (README.md). */
 #include <stdint.h>
 
@@ -12,7 +12,7 @@
 /* Result words. */
 enum { R_DONE, R_TIMEOUTS, R_TICKS_LO, R_TICKS_HI, R_BEST, R_WORST, R_COUNT };
 
-/* The record's cores: the word, or 0 for every core of the port tables. */
+/* The command's cores: the word, or 0 for every core of the port tables. */
 static uint32_t cores(void) {
     const uint32_t n = kmx_args_get()->words[HX_W_CORES];
     return n != 0 ? n : (uint32_t)kmx_port_cores();
@@ -24,10 +24,10 @@ static uint32_t* lines(void) {
 }
 
 /* Fills r field by field (a struct assignment may call memset, which does not link). */
-static void record(km_record_t* r, uint32_t n, uint32_t asks) {
+static void command(km_command_t* r, uint32_t n, uint32_t asks) {
     r->seq = r->land1 = r->land2 = r->land3 = 0;
-    r->hdr = HX_SEG_WORK;
-    r->team = 0 | n << 16;
+    r->hdr = HX_HANDLER_WORK;
+    r->group = 0 | n << 16;
     r->a0 = asks;
     r->a1 = r->a2 = r->a3 = r->a4 = r->a5 = r->a6 = r->a7 = r->a8 = r->a9 = 0;
 }
@@ -43,7 +43,7 @@ static void clear(int cluster, int cpu, uint64_t arg) {
 }
 
 /* One X280 core in round `round`: its cores' salts, then their asks answered until each
- * told its hash or the record ended; each hash and its times into the core's line. */
+ * told its hash or the command ended; each hash and its times into the core's line. */
 static void serve(int cluster, int cpu, uint64_t round) {
     const uint32_t asks = kmx_args_get()->words[HX_W_ASKS];
     uint32_t* out = lines();
@@ -91,7 +91,7 @@ static void give(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
-        kmx_give(0);
+        kmx_flush(0);
     }
 }
 
@@ -113,8 +113,8 @@ int kmx_main(int cpu) {
         return CODE_LATE;
     }
     for (uint32_t k = 1; k <= a->words[HX_W_ROUNDS]; k++) {
-        km_record_t r;
-        record(&r, cores(), a->words[HX_W_ASKS]);
+        km_command_t r;
+        command(&r, cores(), a->words[HX_W_ASKS]);
         kmx_event ev;
         const uint64_t t0 = kmx_time(), until = t0 + FULL_TICKS;
         int e = kmx_port_run(&r, serve, k, &ev);

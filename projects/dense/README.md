@@ -1,15 +1,14 @@
 # Dense: the matrix product
 
 `Y = A @ W` with A `[M, K]` and W `[K, N]` in bf16, fp32 accumulation, bf16 output,
-HiFi2 (the fidelity Kohaku-TT uses by default for bf16 operands), on the resident
-workers of one Blackhole p150a. Records reach the grid through the dispatch kernel on
-X280 cluster 0 (`komorebi.Session`, `Run.issue`).
+HiFi2 (the fidelity Kohaku-TT uses by default for bf16 operands), on the persistent kernels of one Blackhole p150a. Commands reach the grid through the dispatcher on
+X280 cluster 0 (`komorebi.Session`, `Run.submit`).
 
 ## The thread program
 
 ```
-thread product(i):                             # one thread per core of the team
-    rows = share(M tiles, team, i)             # space: the output rows this core owns
+thread product(i):                             # one thread per core of the group
+    rows = partition(M tiles, group, i)             # space: the output rows this core owns
     for m in rows:                             # time: row tiles
         a = read_dram(A[m, :])                 # the whole row of A, one item
         for j in blocks(N tiles, ct):          # time: column blocks of ct tiles
@@ -22,7 +21,7 @@ thread product(i):                             # one thread per core of the team
 ```
 
 There are no breakpoints: no thread waits for another. The resident form keeps W in
-every core's L1 from one `LOAD` record on; it is chosen when W and the other buffers
+every core's L1 from one `LOAD` command on; it is chosen when W and the other buffers
 fit L1. Otherwise W is streamed: every core reads every chunk of W it needs from DRAM,
 once per row tile it owns, which costs DRAM bandwidth whenever W is large.
 
@@ -34,23 +33,23 @@ once per row tile it owns, which costs DRAM bandwidth whenever W is large.
 | `acc += a[k] @ w` | `kernels/compute.cpp` | `matmul_block` over the chunk's K tiles, ct output tiles in DST |
 | `write Y[m, j]` | `kernels/writer.cpp` (NoC1) | the packed column block to Y's pages |
 
-| Segment | Arguments |
+| Handler | Arguments |
 |---|---|
 | `LOAD` | a0 W, a1 the W buffer, a3 K tiles, a4 N tiles |
 | `PRODUCT` | a0 A, a1 Y, a2 to a4 M, K, N tiles, a5 K chunk, a6 column block, a7 mode, a8 form, a9 W (streamed form) |
-| `PROF` | a0 the profile tensor: each core's profile page (cycles per unit, summed over the records) |
+| `PROF` | a0 the profile tensor: each core's profile page (cycles per unit, summed over the commands) |
 
 `PRODUCT` modes 1 and 2 are the cut-down runs: reads only (A read and popped, no
 product, no writes), and compute only (A taken from L1 as it is, no reads, packed but
 not written).
 
 `plan.py` is the plan as pure functions (form, K chunk, column block, buffer pages, the
-L1 budget). `card.py` loads the program and issues the records; `run.py` runs one shape
+L1 budget). `card.py` loads the program and submits the commands; `run.py` runs one shape
 and checks it; `bench.py` measures one shape. The references in `reference/` run the
 same product with Kohaku-TT on the card and with cuBLAS on an idle GPU (by hand, not
 tests).
 
-## The lane form
+## The broadcast form
 
 When neither W nor A fits one core, the product runs on a rectangle of cores, and
 the operands travel between cores instead of each core reading them from DRAM:
@@ -61,41 +60,41 @@ thread product(y, x):                          # one thread per core of the rect
     for (r, c) in blocks(band, bm x bn):       # time: output blocks
         acc = 0                                # fp32 partial sums in L1 (kCbPart)
         for k in blocks(K tiles, kb):          # time: K blocks
-            a = lane_row(y).take(A[r, k])      # the row's first core reads it from
+            a = broadcast_row(y).take(A[r, k])      # the row's first core reads it from
                                                #   DRAM and hands it along the row
-            w = lane_col(x).take(W[k, c])      # the column's bottom core reads it and
+            w = broadcast_col(x).take(W[k, c])      # the column's bottom core reads it and
                                                #   hands it up the column
             acc += a @ w                       # breakpoint: a block waits until every
                                                #   taker freed the slot it reuses
         write Y[r, c] = acc
 ```
 
-The breakpoints are the lanes' (`km::Lane`, `komorebi/device/km_lane.hpp`): the
+The breakpoints are the broadcasts' (`km::Broadcast`, `komorebi/device/km_broadcast.hpp`): the
 sender of block k waits until every receiver's compute has freed block k minus the window
 (two blocks here), and a receiver waits for block k's VALID word. Every wait between
 cores is bounded; compute's waits on its own threads' registers (`tile_regs_wait`) are not.
-The records carry `KM_F_EXCL` (no two records with lanes in flight together).
+The commands carry `KM_F_EXCL` (no two commands with broadcasts in flight together).
 
 | Layout | Cores | A | W | Chosen when (`plan.layout_of`) |
 |---|---|---|---|---|
-| `2d` | bands of rows down the grid, bands of columns across it | along each row (row lane, NoC0, in the reader) | up each column (column lane, NoC1, in the writer) | otherwise |
+| `2d` | bands of rows down the grid, bands of columns across it | along each row (row broadcast, NoC0, in the reader) | up each column (column broadcast, NoC1, in the writer) | otherwise |
 | `rows` | one band of row tiles per core, whole columns of cores | each core reads its own | up each column | at least 3 row tiles per core, more than 2d reuses |
 | `cols` | one band of column tiles per core, whole rows of cores | along each row | each core reads its own | fewer row tiles than grid rows |
 
-A core that reads its own operand runs a lane of one core (no receivers), so the three
+A core that reads its own operand runs a broadcast of one core (no receivers), so the three
 layouts share one set of kernels (`kernels/grid/`). Blocks are the largest that fit L1
 (the rule halves rows first, columns first for `rows`); K blocks of 1 to 8 tiles;
 the compute is that of Kohaku-TT's gemm (packer accumulation into fp32 partial sums,
 reloaded for the last K block; subblocks of up to 4 tiles).
 
-| Segment | Arguments |
+| Handler | Arguments |
 |---|---|
-| `GRID` | a0 A, a1 W, a2 Y, a3 mode: 0 full, 1 lanes only (blocks handed over and taken, no product, no writes), 2 product only (blocks from L1 as they are, no reads, no lanes, packed but not written) |
+| `GRID` | a0 A, a1 W, a2 Y, a3 mode: 0 full, 1 broadcasts only (blocks handed over and taken, no product, no writes), 2 product only (blocks from L1 as they are, no reads, no broadcasts, packed but not written) |
 | `GRID_PROF` | a0 the profile tensor |
 
 ## The K split
 
-When the output has few tiles (M of one or a few row tiles), the lane form leaves
+When the output has few tiles (M of one or a few row tiles), the broadcast form leaves
 most cores idle or each reading a long column of W. The K split puts a group of S
 cores on each output block and gives each core 1/S of K:
 
@@ -103,7 +102,7 @@ cores on each output block and gives each core 1/S of K:
 thread part(g, d):                             # core d of group g, S cores to a group
     block = output tiles of group g (oh x ow)
     acc = 0                                    # fp32 in L1 (kCbSum)
-    for k in chunks(share(K tiles, d, S), kc): # time: K chunks of this core's share
+    for k in chunks(partition(K tiles, d, S), kc): # time: K chunks of this core's share
         acc += read_dram(A[block rows, k]) @ read_dram(W[k, block columns])
     acc = reduce(acc, group g)                 # owner: every core sends its part to
                                                #   core 0; tree: halves in log2 S rounds
@@ -114,11 +113,11 @@ thread part(g, d):                             # core d of group g, S cores to a
 The parts travel over the cores' ports (`km::reduce`, `komorebi/device/km_port.hpp`):
 the reader takes arrivals into `kCbArrive` (fp32, a slot per sender), compute adds them
 in rank order into `kCbSum` by packer accumulation, the writer sends a member's part
-to its receiver or writes the root's sum to Y. Records carry `KM_F_EXCL` (the ports).
+to its receiver or writes the root's sum to Y. Commands carry `KM_F_EXCL` (the ports).
 Plans are named by hand: `--split s,oh,ow[,kc]` (`plan.split_plan`; K chunk default:
 the whole share, at most 32 tiles) and `--reduce owner|tree`.
 
-| Segment | Arguments |
+| Handler | Arguments |
 |---|---|
 | `SPLIT` | a0 A, a1 W, a2 Y, a3 reduce (0 owner, 1 tree), a4 mode: 0 full, 1 parts only (each core's part packed and dropped: no reduce, no writes) |
 
@@ -126,13 +125,13 @@ Measured on 2026-11-13 at 13:00 to 13:06 (X280 at 1,000 MHz, card clock 1,350 MH
 throughout), each against Kohaku-TT's best route in the same session, every check
 passed (`results/<preset>-split-*.json`, Kohaku-TT's as `-split-ktt-<route>`):
 
-| Preset | Ours: K split, us per call (single call) | Parts only | Kohaku-TT best, us | Lane or resident form, us |
+| Preset | Ours: K split, us per call (single call) | Parts only | Kohaku-TT best, us | Broadcast or resident form, us |
 |---|---|---|---|---|
 | `kvproj` | 7,1,4 tree: 25.5 (9.3) | 20.1 | auto, 28.6 | resident, 6.3 |
 | `dec4096` | 14,1,16,5 tree: 121.7 (101.9); owner 131.2 | 107.0 | own, 81.0 (gemm 81.0, auto 81.0) | `cols`, 197.8 |
 
-Bounds: each record costs about 16 us more back to back when exclusive. A probe of
-parts-only records (no ports, so allowed without the flag) on the 7,1,8 plan:
+Bounds: each command costs about 16 us more back to back when exclusive. A probe of
+parts-only commands (no ports, so allowed without the flag) on the 7,1,8 plan:
 98.8 us single either way, back to back 115 to 116 us exclusive against 95.4 us not;
 on `kvproj` 21 to 23 us against 5.0 to 5.1 us. Without that cost `dec4096` is bound by
 W read from DRAM: 32 MiB in 95.4 us is 352 GB/s, against Kohaku-TT's 414 GB/s; each
@@ -157,20 +156,20 @@ python -m projects.dense.reference.gpu_bench --shape lin384
 [01_mapcollect](../../examples/01_mapcollect/README.md#what-it-needs). Inputs are
 uniform in [-1, 1) rounded to bf16, from a seed (`ref/dense.py`, `inputs`).
 
-`--form grid` takes the lane form with the rule's plan; `--grid` names a layout or a
+`--form grid` takes the broadcast form with the rule's plan; `--grid` names a layout or a
 whole plan (`[layout:]rows,cols,pcm,pcn,bm,bn,kb`). M, K and N are whole tiles of 32.
 
 `run.py` and `bench.py` compare Y with the float64 product of the same bf16 operands
 on 256 sampled rows: all rows when there are at most 256, else 8 whole row tiles drawn
 from a seed (`ref.sampled_rows`). They read only those row tiles, one at a time (at
 most 1 MB each, a progress line each). They exit 1 when the check fails.
-`bench.py` times one run of records back to back (or runs of `--batch` records, each
-waited for): the time per call is the runs' time (first issue to last event) per call.
+`bench.py` times one run of commands back to back (or runs of `--batch` commands, each
+waited for): the time per call is the runs' time (first submit to last event) per call.
 `reference/ktt_bench.py` runs Kohaku-TT's product on the same inputs in Kohaku-TT's
 own environment (fast dispatch), with the route its caller selects (`KTT_GEMM=1`: its
 gemm; unset: its automatic choice), and checks the same rows the same way. Kohaku-TT
 is the public repository https://github.com/KohakuBlueleaf/Kohaku-TT; the bench runs
-in a Python environment where it is installed, and records which version it ran.
+in a Python environment where it is installed, and commands which version it ran.
 
 **The check's bound.** Relative RMS error at most 1e-2 and largest error at most 2e-2 of
 the largest output. The output's rounding to bf16 alone is up to 2^-9 relative per
@@ -188,8 +187,8 @@ routes, one after the other in the same session. Host load average (1 min) 3.0 t
 on a shared 96-thread host. HiFi2 on bf16 with fp32 accumulation; every row's check
 passed (relative RMS 3.96e-3 to 3.98e-3, the same on both sides).
 
-- Ours: `python projects/dense/bench.py --shape <preset> [--form grid]`: records back
-  to back for about four seconds in one run, time per call from the first issue to
+- Ours: `python projects/dense/bench.py --shape <preset> [--form grid]`: commands back
+  to back for about four seconds in one run, time per call from the first submit to
   the last event.
 - Kohaku-TT: `reference/ktt_bench.py --shape <preset>` with `KTT_GEMM=1` (gemm),
   unset (auto) and `KTT_GEMM=0 KTT_OWN_MATMUL_MIN_ROWS=1` (own); calls back to back for
@@ -230,46 +229,46 @@ Bounds of our rows, from the cut-down runs (`cut_us_per_call` in each JSON) and 
 profile of one call (`profile`: shares of the slowest core's cycles; cycles per tile
 product from its matrix-unit share, at the 1,350 MHz read at load). Cut-down runs that
 follow a long loop run at a throttled clock.
-- `kvproj` (resident): record issue. A call issues every 6.3 us; the slowest core's
+- `kvproj` (resident): command submit. A call submits every 6.3 us; the slowest core's
   body takes 4.6 us; reads only 5.2 us, compute only 5.5 us; a single call, waited
   for, takes 6.56 us.
 - `lin384` (resident): DRAM writes. A in and Y out are 25 MB per call (410 GB/s);
   the slowest core spends 82% of its cycles writing Y and its packer waits for space
   77%; reads only 32.9 us, compute only 21.4 us.
-- `lin1024` (`rows`, on par): the W lane. W is handed along to all 110 cores: lanes only
-  284.9 us, product only 173.4 us; the slowest core spends 77% on the lane and its
+- `lin1024` (`rows`, on par): the W broadcast. W is handed along to all 110 cores: broadcasts only
+  284.9 us, product only 173.4 us; the slowest core spends 77% on the broadcast and its
   unpacker waits for W 45%; the matrix unit takes 46.2 cycles per tile product
   against the probe's 34.4. A single call takes 355.7 us at 1,350 MHz, 382.6 at the
-  loop's mean 1,255 MHz; the other 11 us of the loop's 393.5 are between records.
+  loop's mean 1,255 MHz; the other 11 us of the loop's 393.5 are between commands.
 - `sq4096` (`2d`, on par): the matrix unit, then power. The matrix unit is 81% of the
   slowest core at 36.2 cycles per tile product (19,968 on that core, 4.7% above an
   even share of 110 cores); a single call takes 660.0 us at 1,350 MHz. In the loop the
   clock falls to a mean of 1,008 MHz (884 us at that clock); both sides end at 957
   to 958 us.
-- `sq8192` (`2d`, ahead): the row lane in a single call (98.5% of the slowest core;
+- `sq8192` (`2d`, ahead): the row broadcast in a single call (98.5% of the slowest core;
   W read from DRAM 70.9%, four times per call since blocks of 7 of 26 rows), the
   matrix unit 75% at 36.4 cycles per tile product; in the loop, power.
-- `sq16384` (`2d`, behind): the lanes with the rule's blocks. Each core's 52 x 44
+- `sq16384` (`2d`, behind): the broadcasts with the rule's blocks. Each core's 52 x 44
   tiles are blocks of 4 x 44 with K blocks of 2, so W passes each column 13 times:
-  the row lane is 99.8% of the slowest core, its unpacker waits for W 52%, the matrix
+  the row broadcast is 99.8% of the slowest core, its unpacker waits for W 52%, the matrix
   unit 35%. Blocks of 13 x 12 with K blocks of 4 (`--grid 2d:10,12,52,44,13,12,4`)
   take a single call to 36.3 ms (matrix unit 87%, 35.8 cycles per tile product) but
   the loop to 99.2 ms at 143 W (`sq16384-ours-blocks-13x12.json`): the denser call
   is throttled harder.
 - `dec4096` (`cols`, behind): W from DRAM. 32 MB of W are read by 72 cores, 512 KB
-  each with one block in flight per lane sender: the slowest core spends 97% reading
-  W, 2.9 GB/s per core, 170 GB/s in all against Kohaku-TT's 414 GB/s; lanes only
+  each with one block in flight per broadcast sender: the slowest core spends 97% reading
+  W, 2.9 GB/s per core, 170 GB/s in all against Kohaku-TT's 414 GB/s; broadcasts only
   195.8 us, product only 26.1 us. The K split (above) takes it to 121.7 us.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `kernels/dense.h` | segments, record words, buffers, profile words, the bounded NoC barrier |
+| `kernels/dense.h` | handlers, command words, buffers, profile words, the bounded NoC barrier |
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | the three kernels |
 | `plan.py` | the plan as pure functions |
-| `card.py` | the program and its records on a session |
-| `kernels/grid/grid.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the lane form: arguments, row lane and A, the product, column lane and Y |
+| `card.py` | the program and its commands on a session |
+| `kernels/grid/grid.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the broadcast form: arguments, row broadcast and A, the product, column broadcast and Y |
 | `kernels/split/split.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the K split: arguments, A and W and arrivals, the part and the sum, sending and Y |
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `results/` | the runs behind the results table |

@@ -46,7 +46,7 @@
   "seconds": 4.453,
   "wall_seconds": 4.453,
   "us_per_call": 84018.004,
-  "record_us_median": 87289.7,
+  "command_us_median": 87289.7,
   "mean_w": 132.89478703098348,
   "peak_w": 174.0,
   "open_w": 62.80002006551289,
@@ -59,7 +59,7 @@
  },
  "tflops": 104.69295393173111,
  "cut_us_per_call": {
-  "lanes_only": 86680.278,
+  "broadcasts_only": 86680.278,
   "product_only": 32900.052
  },
  "run": {
@@ -71,22 +71,22 @@
    "compute_end": 120
   },
   "gave_up": [],
-  "lane_wait_cycles_max": [
+  "broadcast_wait_cycles_max": [
    8810251233,
    8744492571
   ],
-  "lane_gave_up": []
+  "broadcast_gave_up": []
  },
  "readback_s": 3.601,
  "profile": {
   "slowest_core": 117,
   "slowest_us": 74111.836,
   "mean_busy_over_slowest": 0.997,
-  "shares_of_slowest": {
+  "partitions_of_slowest": {
    "read_A_dram": 0.0,
-   "row_lane": 0.998,
+   "row_broadcast": 0.998,
    "read_W_dram": 0.794,
-   "column_lane": 0.196,
+   "column_broadcast": 0.196,
    "writer_waits_for_output": 0.001,
    "write": 0.007,
    "unpack_waits_for_A": 0.037,

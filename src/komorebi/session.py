@@ -1,5 +1,5 @@
-"""A card session: opens the device, loads a program as resident workers on every
-Tensix core and the dispatch kernel on X280 cluster 0, and hands out a `Run`.
+"""A card session: opens the device, loads a program as persistent kernels on every
+Tensix core and the dispatcher on X280 cluster 0, and hands out a `Run`.
 
 Needs a tt-metal tree or the runtime package; `import komorebi` does not import it.
 """
@@ -30,9 +30,9 @@ from komorebi.errors import (
 from komorebi.program import KernelSizes
 from komorebi.run import Run
 
-CTL_ALIGN = 64  # the dispatch kernel stores whole 64-byte lines into the control block
+CTL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
-DYN_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic segment's queues may take
+DYN_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may take
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
@@ -44,7 +44,7 @@ CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per car
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 PROBE_GAP_S = 0.02  # core 0's pass stamp moves every 1,024 passes (about 33 us)
-ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop word, before the close
+ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop flag, before the close
 REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
 REGION_CHUNK = 2 << 20  # of this size, with a log line each
 # The runtime's bound on its waits for the cores, the one at device close included;
@@ -148,7 +148,7 @@ def aiclk_mhz(card=None):
     return int(path.read_text().split()[0])
 
 
-def bound_exit(environ, log):
+def exit_timeout(environ, log):
     """Sets OP_TIMEOUT to its default in `environ` when unset or empty and logs it; a
     value already there is kept. The bound in seconds (0: none; None: not a number)."""
     value = environ.get(OP_TIMEOUT, "")
@@ -156,7 +156,7 @@ def bound_exit(environ, log):
         try:
             return max(float(value), 0.0)
         except ValueError:
-            return None  # the runtime refuses it at the open
+            return None  # the runtime rejects it at the open
     environ[OP_TIMEOUT] = f"{OP_TIMEOUT_DEFAULT:g}"
     log(f"{OP_TIMEOUT} unset: set to {OP_TIMEOUT_DEFAULT:g} s (bounds the exit)")
     return OP_TIMEOUT_DEFAULT
@@ -169,12 +169,12 @@ def exit_wait(environ=None):
         seconds = float(value)
     except ValueError:
         seconds = 0.0
-    return f"up to {seconds:g} s" if seconds > 0 else "without a bound"
+    return f"up to {seconds:g} s" if seconds > 0 else "without a timeout"
 
 
 def worker_l1_size(kernel_bytes):
     """The runtime's worker_l1_size for a kernel buffer of `kernel_bytes` (None: the
-    default, nothing passed); a size the runtime would not give exactly is refused."""
+    default, nothing passed); a size the runtime would not give exactly is rejected."""
     if kernel_bytes is None:
         return None
     if (
@@ -241,8 +241,8 @@ def chip_holder(card, path=None):
 
 
 def _state_area(session):
-    """A DRAM buffer whose bank address holds the dispatch kernel's state in every
-    bank (KMD_STATE_BYTES at least); refused if it covers the runtime's IPI word."""
+    """A DRAM buffer whose bank address holds the dispatcher's state in every
+    bank (KMD_STATE_BYTES at least); rejected if it covers the runtime's IPI word."""
     h = abi.headers()
     rows = _words(session, np.zeros((STATE_PAGES, h["KMD_STATE_BYTES"] // 4)))
     at = rows.address
@@ -263,7 +263,7 @@ def lim_bases(lim_base, h=None):
 
 
 def check_bases(bases):
-    """Refuses bases that are not multiples of NOC_ALIGN: the runtime's small writes
+    """Rejects bases that are not multiples of NOC_ALIGN: the runtime's small writes
     go slot to slot and rely on them."""
     bad = {k: v for k, v in bases.items() if v % NOC_ALIGN}
     if bad:
@@ -365,7 +365,7 @@ class Session:
                 raise ValueError(f"card {self.card} is not visible ({visible})")
             os.environ["TT_VISIBLE_DEVICES"] = str(self.card)
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
-        if bound_exit(os.environ, self.log) == 0:
+        if exit_timeout(os.environ, self.log) == 0:
             self.log(f"{OP_TIMEOUT}=0: an exit after a grid that did not return hangs")
         card = self.card if self.card is not None else visible_card()
         holder = chip_holder(card)
@@ -524,7 +524,7 @@ class Session:
         image=None,
         thread="card",
     ):
-        """Launches `program` on every core, then the dispatch kernel, then the
+        """Launches `program` on every core, then the dispatcher, then the
         program's X280 thread (`thread="card"`, or "host" for its host fallback);
         returns a Run. The arguments are described in docs/reference/host.md.
         """
@@ -546,7 +546,7 @@ class Session:
                 )
         image = Path(image) if image else native.image_path(self.tree)
         if not image.is_file() or image.stat().st_size == 0:
-            raise StartError(f"dispatch kernel image {image}: missing or empty")
+            raise StartError(f"dispatcher image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
         on_card = bool(works) and thread == "card"
         images = (
@@ -582,7 +582,7 @@ class Session:
                 kernel_idle,
                 state_t.address,
                 **kt.kernel_work_args(ends),
-                dyn_seg=program.dyn.seg if program.dyn is not None else 0,
+                dyn_handler=program.dyn.handler if program.dyn is not None else 0,
             )
             check_bases(lim_bases(dispatch.lim_base))
             plan, port_lines = _port_lines(program, dispatch, rings)
@@ -623,7 +623,7 @@ class Session:
             except Exception as err:
                 raise ProgramError(f"{program.name}: launch failed: {err}") from err
             dispatch.start(str(image))
-            self.log("dispatch kernel started")
+            self.log("dispatcher started")
             state = dispatch.wait_ready(start + 1.0)
         except BaseException:
             try:
@@ -877,7 +877,7 @@ class _Backend:
         self.state_t = None
         self.read = False
         self.close_failed = ""  # the runtime's account when an abort did not restore
-        self.aborted = None  # {words, harts}: what the kernel left at an abort
+        self.aborted = None  # {words, cores}: what the kernel left at an abort
 
     def _control_blocks(self, cores, grid, port_lines=None):
         """Zeroed control blocks, one shard per core, padded so that the block can
@@ -900,15 +900,17 @@ class _Backend:
         return self.ctl_addr
 
     def _dynamic(self, program, cores, depth, base):
-        """A dynamic segment's queues in DRAM (zero-filled by the cores) and its
+        """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
         reader / writer and compute words; status lines in the kernel's LIM."""
         dyn = program.dyn
         if dyn is None:
             return [], []
         h = abi.headers()
         dyn.check(cores, DYN_DRAM_BYTES, depth)
-        page = 32 * dyn.item_bytes  # kDynPageItems items a page
-        queue = self.session.empty((cores * dyn.queue_items // 32, page // 4), "int32")
+        page = 32 * dyn.message_bytes  # kDynPageMessages items a page
+        queue = self.session.empty(
+            (cores * dyn.queue_messages // 32, page // 4), "int32"
+        )
         self.io.append(queue)
         lines = base + h["KMD_LIM_DYN"]
         return dyn.args(queue.address, lines), dyn.compute_args(cores)
@@ -952,7 +954,7 @@ class _Backend:
         reader_args, writer_args, compute_args = [], [], []
         for core in range(cores):
             x, y = core % grid[0], core // grid[0]
-            leader, rank, members, slot = groups[core]
+            leader, rank, peers, slot = groups[core]
             start = abi.start_args(
                 common
                 | {
@@ -960,7 +962,7 @@ class _Backend:
                     "mailbox": base + h["KMD_LIM_MAILBOX"] if core == 0 else 0,
                     "leader": leader,
                     "rank": rank,
-                    "members": members,
+                    "peers": peers,
                     "ready_slot": slot,
                 }
             )
@@ -1007,7 +1009,7 @@ class _Backend:
             self.session.log("x280 runtime closed")
 
     def abort(self):
-        """The failure path: the stop word to every core, a bounded wait for the grid,
+        """The failure path: the stop flag to every core, a bounded wait for the grid,
         then the runtime's close, so core 0 is not held behind a grid that runs on.
         Returns whether cluster 0 was restored; `aborted` holds what the kernel left."""
         gx, gy = self.port.grid_x, self.port.grid_y
@@ -1022,8 +1024,8 @@ class _Backend:
         self.aborted = self.port.aborted()
         why = f": {self.close_failed}" if self.close_failed else ""
         if self.aborted is not None:
-            n = self.aborted["harts"][abi.headers()["KMD_H_ABANDONED"]]
-            why += f"; {n} records abandoned"
+            n = self.aborted["x280_cores"][abi.headers()["KMD_H_ABANDONED"]]
+            why += f"; {n} commands abandoned"
         self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned}){why}")
         self.log_state()
         return cleaned
@@ -1056,37 +1058,37 @@ class _Backend:
 
     def kernel_report(self):
         """While the kernel runs: whether core 0 still runs its loop (its pass stamp
-        over PROBE_GAP_S), its state and where, and the runtime's view of each hart."""
+        over PROBE_GAP_S), its state and where, and the runtime's view of each core."""
         p = self.port.probe(PROBE_GAP_S)
         if not p["running"]:
-            return "no dispatch kernel is running"
+            return "no dispatcher is running"
         if p["failed"]:
-            return f"the dispatch kernel's {p['failed']}; harts: {p['harts']}"
+            return f"the dispatcher's {p['failed']}; X280 cores: {p['x280_cores']}"
         r = st.result_block(p["words"])
-        before, after = p["stamp_before"], p["stamp_after"]
+        before, after = p["marker_before"], p["marker_after"]
         doing = "is running its loop" if after != before else "is not running its loop"
         report = (
-            f"the dispatch kernel's core 0 {doing} (pass stamp {before} -> {after} "
+            f"the dispatcher's core 0 {doing} (pass stamp {before} -> {after} "
             f"in {PROBE_GAP_S} s; state {r['state_name']}, in {r['where_name']}); "
-            f"harts: {p['harts']}"
+            f"X280 cores: {p['x280_cores']}"
         )
         self.session.log(report)
         return report
 
     def stop_grid(self):
-        """Writes the stop word into every core through the device API."""
+        """Writes the stop flag into every core through the device API."""
         h = abi.headers()
         module, gx, gy = self.session._module, self.port.grid_x, self.port.grid_y
         for core in range(gx * gy):
             at = self.ctl_addr + h["KM_CTL_STOP"]
             module.write_l1(self.device, core % gx, core // gx, at, [1])
-        self.session.log("stop word written by the host")
+        self.session.log("stop flag written by the host")
 
     def read_back(self, stop_grid=False):
         """After the X280 runtime is closed: waits (bounded) for the grid's kernels,
         then reads the control blocks ([cores, KM_CTL_BYTES / 4] uint32) and the trace.
-        `stop_grid`: the dispatch kernel was not there to stop the grid, so the host
-        first writes the stop word into every core through the device API."""
+        `stop_grid`: the dispatcher was not there to stop the grid, so the host
+        first writes the stop flag into every core through the device API."""
         if self.port.is_open:
             raise RuntimeError("close the X280 runtime before reading back")
         h = abi.headers()
@@ -1094,11 +1096,11 @@ class _Backend:
         if stop_grid:
             self.stop_grid()
         t0 = time.monotonic()
-        bound = self.session.grid_timeout
-        if not module.wait_grid(self.device, gx, gy, bound):
+        timeout = self.session.grid_timeout
+        if not module.wait_grid(self.device, gx, gy, timeout):
             self.session.stuck = True
             raise GridTimeout(
-                f"the grid's kernels did not return within {bound} s after the stop. "
+                f"the grid's kernels did not return within {timeout} s after the stop. "
                 "The session does not close the device; at the process's exit the "
                 f"runtime waits {exit_wait()} for the cores, then puts them in reset. "
                 "A thread that is only stuck is recovered by the next open; a kernel "

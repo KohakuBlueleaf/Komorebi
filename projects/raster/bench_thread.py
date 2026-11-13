@@ -87,7 +87,7 @@ def main():
             first = prog.thread_result(timeout=15.0)
             prog.stop()
             if first.code:
-                raise SystemExit(f"the first frame ended with code {first.code}")
+                raise SystemExit(f"the cold frame ended with code {first.code}")
             args.frames = max(1, round(args.seconds * 1e6 / first.us))
             out["frames_per_run"] = args.frames
             card.log(f"{args.frames} frames a run of about {args.seconds} s")

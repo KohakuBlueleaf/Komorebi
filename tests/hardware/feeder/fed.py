@@ -1,4 +1,4 @@
-"""Runs resident worker kernels on every core but one; the last core runs the feeder.
+"""Runs persistent kernel kernels on every core but one; the last core runs the feeder.
 
 The host writes inputs and zeroed control blocks before the launch and reads results
 only after every kernel returned."""
@@ -9,8 +9,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import commands as rec
 import numpy as np
-import records as rec
 
 from komorebi.session import compute_config
 
@@ -64,10 +64,10 @@ class Kernels:
 
 @dataclass
 class Result:
-    """What a run left: feeder summary and per-record rows, state words, trace."""
+    """What a run left: feeder summary and per-command rows, state words, trace."""
 
     summary: dict
-    records: dict
+    commands: dict
     state: np.ndarray
     ports: np.ndarray  # [cores, KM_PORTS, 2]: count, wanted
     trace: np.ndarray | None
@@ -108,7 +108,7 @@ class Fed:
     def run(
         self,
         kernels,
-        records,
+        commands,
         program_args=None,
         tensors=(),
         depth=4,
@@ -123,12 +123,12 @@ class Fed:
         dynamic=None,
         queue_bytes=4 << 30,
     ):
-        """Runs `records` (lists of 16 words) and returns a Result. program_args(core):
+        """Runs `commands` (lists of 16 words) and returns a Result. program_args(core):
         (reader, writer, compute) arguments after the start-up ones. `dynamic`
-        (komorebi.program.Dynamic): its segment runs dynamic, queues in DRAM (at most
+        (komorebi.program.Dynamic): its handler runs dynamic, queues in DRAM (at most
         queue_bytes), status lines on the feeder, its arguments before the program's."""
         session, mhz = self.session, self.mhz
-        n = len(records)
+        n = len(commands)
         tag = (random.getrandbits(16) | 1) & 0xFFFF
         ctl = self.control_blocks()
         ctl_addr = ctl.address
@@ -136,9 +136,9 @@ class Fed:
         core_table[0, : self.n_cores] = self.noc
         cores_t = int32_tensor(session, core_table)
         table_t = int32_tensor(
-            session, np.asarray(records, dtype=np.uint64).reshape(n, 16)
+            session, np.asarray(commands, dtype=np.uint64).reshape(n, 16)
         )
-        results_t = int32_tensor(session, np.zeros((n + 2, 16)))  # + EXIT, end record
+        results_t = int32_tensor(session, np.zeros((n + 2, 16)))  # + EXIT, end command
         if trace_cap % 4:  # the kernel writes cap * 16 bytes as one page
             raise ValueError(f"trace_cap {trace_cap} is not a multiple of 4")
         trace_t = None
@@ -148,14 +148,14 @@ class Fed:
         dyn_rw, dyn_c, queue_t, lines_t = [], [], None, None
         if dynamic is not None:
             dynamic.check(self.workers, queue_bytes, depth)
-            page = 32 * dynamic.item_bytes  # kDynPageItems items a page
-            shape = (self.workers * dynamic.queue_items // 32, page // 4)
+            page = 32 * dynamic.message_bytes  # kDynPageMessages items a page
+            shape = (self.workers * dynamic.queue_messages // 32, page // 4)
             queue_t = session.empty(shape, "int32")
             lines_t = self.l1_blocks(2 * K["KM_CORES_MAX"] * 4)  # lines, first pass
             dyn_rw = dynamic.args(queue_t.address, lines_t.address)
             dyn_c = dynamic.compute_args(self.workers)
             log(f"dynamic: {dynamic.queue_bytes(self.workers) >> 20} MiB of queues")
-        log(f"tensors: ctl at {ctl_addr:#x}, {n} records, tag {tag:#06x}")
+        log(f"tensors: ctl at {ctl_addr:#x}, {n} commands, tag {tag:#06x}")
 
         grp, n_groups = rec.groups(self.grid, self.workers)
         feeder = self.workers
@@ -181,7 +181,7 @@ class Fed:
         reader_args, writer_args, compute_args = [], [], []
         for core in range(self.workers):
             x, y = self.logical[core]
-            leader, rank, members, ready_slot = grp[core]
+            leader, rank, peers, ready_slot = grp[core]
             start = rec.start_args(
                 base
                 | {
@@ -189,7 +189,7 @@ class Fed:
                     "mailbox": mailbox if core == 0 else 0,
                     "leader": leader,
                     "rank": rank,
-                    "members": members,
+                    "peers": peers,
                     "ready_slot": ready_slot,
                 }
             )
@@ -204,7 +204,7 @@ class Fed:
             "kFdWorkers": self.workers,
             "kFdCores": cores_t.address,
             "kFdTable": table_t.address,
-            "kFdRecords": n,
+            "kFdCommands": n,
             "kFdDepth": depth,
             "kFdDeadline": rec.limit_units(deadline_s, mhz),
             "kFdResults": results_t.address,
@@ -213,7 +213,7 @@ class Fed:
             "kFdExit": int(send_exit),
             "kFdRelease": release,
             "kFdRaw": raw,
-            "kFdDynSeg": dynamic.seg if dynamic is not None else 0,
+            "kFdDynHandler": dynamic.handler if dynamic is not None else 0,
             "kFdLines": lines_t.address if lines_t is not None else 0,
         }
         words = [0] * K["kFdArgs"]
@@ -275,7 +275,7 @@ class Fed:
         log("results read back")
         return Result(
             summary=rec.feeder_summary(rows),
-            records=rec.feeder_records(rows[: n + 1]),
+            commands=rec.feeder_commands(rows[: n + 1]),
             state=state,
             ports=ports,
             trace=trace,

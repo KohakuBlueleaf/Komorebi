@@ -1,5 +1,5 @@
 // The frame program's compute kernel: the passes' and the fill's file, each in a
-// namespace without its entry, chosen by segment; uint32 buffers both, one start-up.
+// namespace without its entry, chosen by handler; uint32 buffers both, one start-up.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -30,11 +30,11 @@ namespace pass_k {
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(fill_k::kCbIn, fill_k::kCbOut);
-    cp.run([&](const km_record_t& r) {
-        if (km::seg(r) >= pass_k::kSegLanes) {
-            pass_k::setup_compute_record(cp, r);
+    cp.run([&](const km_command_t& r) {
+        if (km::handler(r) >= pass_k::kHandlerLanes) {
+            pass_k::setup_compute_command(cp, r);
         } else {
-            fill_k::fill_compute_record(r);
+            fill_k::fill_compute_command(r);
         }
     });
 }

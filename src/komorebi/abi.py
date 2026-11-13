@@ -1,5 +1,5 @@
-"""The definitions the host shares with the kernels, read from their C headers: record
-and event layout, start-up argument order, state words, the dispatch kernel's layout
+"""The definitions the host shares with the kernels, read from their C headers: command
+and event layout, start-up argument order, state words, the dispatcher's layout
 and codes. Pure functions; reading happens on first use.
 """
 
@@ -51,7 +51,7 @@ M32 = 0xFFFFFFFF
 
 
 class Headers:
-    """The headers of one native tree: include/ and the dispatch kernel's directory."""
+    """The headers of one native tree: include/ and the dispatcher's directory."""
 
     def __init__(self, include, kernel):
         self.abi = Path(include) / "komorebi" / "abi" / "km_abi.h"
@@ -59,24 +59,24 @@ class Headers:
         self.core = device / "km_core.hpp"
         # the device headers whose constants a program's header may use (km::name)
         self.device = [
-            device / f"km_{n}.hpp" for n in ("record", "group", "port", "lane")
+            device / f"km_{n}.hpp" for n in ("command", "group", "port", "broadcast")
         ]
         self.dispatch = Path(kernel) / "km_dispatch.h"
 
     @functools.cached_property
     def constants(self):
         """Every KM_* and KMD_* define, constexpr k*, and enum value of the ABI header,
-        the device headers and the dispatch kernel's header."""
+        the device headers and the dispatcher's header."""
         sizes = {
             "Args": 4 * len(self.arg_fields),
-            "LaneArgs": 4 * len(struct_fields(self.device[-1], "LaneArgs")),
+            "BroadcastArgs": 4 * len(struct_fields(self.device[-1], "BroadcastArgs")),
         }
         return constants(self.abi, self.core, *self.device, self.dispatch, sizes=sizes)
 
     @functools.cached_property
-    def record_fields(self):
-        """The 16 words of km_record_t, in order."""
-        return struct_fields(self.abi, "km_record_t")
+    def command_fields(self):
+        """The 16 words of km_command_t, in order."""
+        return struct_fields(self.abi, "km_command_t")
 
     @functools.cached_property
     def event_fields(self):
@@ -89,9 +89,9 @@ class Headers:
 
     @functools.cached_property
     def positions(self):
-        """Word index in a record of hdr, team and a0 to a9."""
-        index = {name: i for i, name in enumerate(self.record_fields)}
-        return index["hdr"], index["team"], [index[a] for a in ARG_WORDS]
+        """Word index in a command of hdr, group and a0 to a9."""
+        index = {name: i for i, name in enumerate(self.command_fields)}
+        return index["hdr"], index["group"], [index[a] for a in ARG_WORDS]
 
     def __getitem__(self, name):
         return self.constants[name]
@@ -289,15 +289,15 @@ def headers():
     return Headers(include, kernel)
 
 
-def record(seg, first, count, args=(), flags=0, h=None):
-    """The 16 words of a record; the dispatcher fills seq, slot and landing words."""
+def command(handler, first, count, args=(), flags=0, h=None):
+    """The 16 words of a command; the dispatcher fills seq, slot and landing words."""
     h = h or headers()
-    hdr, team, arg_at = h.positions
+    hdr, group, arg_at = h.positions
     if len(args) > len(arg_at):
-        raise ValueError(f"{len(args)} arguments; a record has {len(arg_at)}")
+        raise ValueError(f"{len(args)} arguments; a command has {len(arg_at)}")
     words = [0] * 16
-    words[hdr] = (seg & 0xFF) | (flags & 0xFF) << 8
-    words[team] = (first & 0xFFFF) | (count & 0xFFFF) << 16
+    words[hdr] = (handler & 0xFF) | (flags & 0xFF) << 8
+    words[group] = (first & 0xFFFF) | (count & 0xFFFF) << 16
     for at, value in zip(arg_at, args):
         words[at] = int(value) & M32
     return words

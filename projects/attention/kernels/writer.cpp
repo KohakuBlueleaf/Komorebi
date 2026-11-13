@@ -1,10 +1,11 @@
 // Attention writer (NoC1): its copy of the job table, each job's rows to O, and with
-// LANE_ON_WRITER first the job's K / V blocks (lane). PROF: the profile page out.
+// BROADCAST_ON_WRITER first the job's K / V blocks (broadcast). PROF: the profile page
+// out.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
 #include "attention.h"
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 namespace {
@@ -13,17 +14,17 @@ namespace {
     constexpr uint32_t DV = get_compile_time_arg_val(1);
     constexpr uint32_t KB = get_compile_time_arg_val(3);
 
-    // The record's jobs, `passes` times: each job's blocks through `ln` (null: none),
+    // The command's jobs, `passes` times: each job's blocks through `ln` (null: none),
     // then its rows written (full), popped (compute only) or none. False: gave up.
     template <typename Accessor>
     bool run_jobs(
         const km::Writer& wr,
-        const km_record_t& r,
+        const km_command_t& r,
         uint32_t table,
         const Accessor& o,
         const Accessor& k,
         const Accessor& v,
-        km::Lane* ln,
+        km::Broadcast* ln,
         volatile tt_l1_ptr uint32_t* prof,
         uint32_t t0
     ) {
@@ -32,16 +33,16 @@ namespace {
         if (jobs > kJobsMax) {
             return false;
         }
-        const uint32_t each = r.a5 == kModeCastOnly ? 0 : 1;
+        const uint32_t each = r.a5 == kModeBroadcastOnly ? 0 : 1;
         const bool writes = r.a5 == kModeFull;
         uint32_t c[kProfWords] = {};
-        uint32_t n = 0;  // lane blocks of this record so far
+        uint32_t n = 0;  // broadcast blocks of this command so far
         for (uint32_t pass = 0; pass < passes; ++pass) {
             for (uint32_t j = r.a7; j < jobs_end(r, jobs); ++j) {
                 const volatile tt_l1_ptr uint32_t* w = (
                     km::l1(table + 4 * (kTabFirst + kJobWords * j))
                 );
-                if (ln != nullptr && !lane_job<DT, DV, KB>(*ln, k, v, w, n, c)) {
+                if (ln != nullptr && !broadcast_job<DT, DV, KB>(*ln, k, v, w, n, c)) {
                     return false;
                 }
                 const uint32_t o0 = w[kJobO], rows = w[kJobRows] * each;
@@ -74,7 +75,7 @@ namespace {
             for (uint32_t i = kPrRdKvFree; i <= kPrRdFinish; ++i) {
                 km::add_sat(
                     prof + i, c[i]
-                );  // the lane's words, the reader's otherwise
+                );  // the broadcast's words, the reader's otherwise
             }
         }
         km::add_sat(prof + kPrWrWait, c[kPrWrWait]);
@@ -92,14 +93,14 @@ void kernel_main() {
     cb_reserve_back(kCbWriterJobs, 1);
     const uint32_t table = get_write_ptr(kCbWriterJobs);
     volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbProf));
-    wr.run([&](const km_record_t& r) {
-        if (km::seg(r) == kSegProf) {
+    wr.run([&](const km_command_t& r) {
+        if (km::handler(r) == kHandlerProf) {
             const InterleavedAddrGen<true> pages = {
                 .bank_base_address = r.a0, .page_size = kProfBytes
             };
-            const uint32_t member = wr.me() - km::first(r);
+            const uint32_t rank = wr.me() - km::first(r);
             noc_async_write(
-                get_write_ptr(kCbProf), get_noc_addr(member, pages), kProfBytes
+                get_write_ptr(kCbProf), get_noc_addr(rank, pages), kProfBytes
             );
             if (!flushed(wr, km::kStWriter, km::kFlushSent)) {
                 return false;
@@ -109,7 +110,7 @@ void kernel_main() {
             }
             return true;
         }
-        if (km::seg(r) != kSegAttend) {
+        if (km::handler(r) != kHandlerAttend) {
             return true;
         }
         const uint32_t t0 = km::wall();
@@ -119,11 +120,12 @@ void kernel_main() {
         const auto k = TensorAccessor(tiles, r.a1);
         const auto v = TensorAccessor(tiles, r.a2);
         const auto o = TensorAccessor(tiles, r.a3);
-#ifdef LANE_ON_WRITER
+#ifdef BROADCAST_ON_WRITER
         if (r.a5 != kModeComputeOnly) {
-            km::Lane ln(wr, r, kArgLane);
+            km::Broadcast ln(wr, r, kArgBroadcast);
             return (
-                ln.ok() && ln.member() && run_jobs(wr, r, table, o, k, v, &ln, prof, t0)
+                ln.ok() && ln.included() &&
+                run_jobs(wr, r, table, o, k, v, &ln, prof, t0)
             );
         }
 #endif

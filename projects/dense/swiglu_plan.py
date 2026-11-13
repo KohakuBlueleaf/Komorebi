@@ -1,6 +1,6 @@
-"""The plan of SwiGLU, y = (silu(x W1) * (x W3)) W2, on the dense resident kernels as
-LAYER records, as pure functions: the shapes, the buffers per core and the L1 fit, and
-the records of a call. Sizes are in 32 x 32 tiles (M rows, D model, H hidden)."""
+"""The plan of SwiGLU, y = (silu(x W1) * (x W3)) W2, on the dense persistent kernels as
+LAYER commands, as pure functions: the shapes, the buffers per core and the L1 fit, and
+the commands of a call. Sizes are in 32 x 32 tiles (M rows, D model, H hidden)."""
 
 from dataclasses import dataclass
 
@@ -20,17 +20,17 @@ DRAM = K["kDram"]
 @dataclass(frozen=True)
 class Swiglu:
     """[mt, dt] rows of x through W1, W3 [dt, ht] and W2 [ht, dt], all resident; a
-    member's rows held in L1 between records; the gate fused or a pass of its own."""
+    member's rows held in L1 between commands; the gate fused or a pass of its own."""
 
     mt: int
     dt: int
     ht: int
     gate_pass: bool
-    team: int
+    group: int
 
     def rows(self):
         """Most row tiles any member owns."""
-        return -(-self.mt // self.team)
+        return -(-self.mt // self.group)
 
     def buffers(self):
         """(index, pages) of the program's buffers."""
@@ -59,7 +59,7 @@ def where(a=DRAM, b=DRAM, y=DRAM):
 
 
 def layer_args(s, a, y, kt, nt, w_cb, ep, at):
-    """Record words a0..a9 of LAYER."""
+    """Command words a0..a9 of LAYER."""
     return [a, y, s.mt, kt, nt, block(nt), w_cb, ep, at, 0]
 
 
@@ -69,8 +69,8 @@ def loads(s, w1, w3, w2):
     return [[w, cb, 0, *kn] for w, cb, kn in zip((w1, w3, w2), W_CBS, dims)]
 
 
-def records(s, x, y):
-    """The LAYER words of one call, x and y the DRAM input and output: three records
+def commands(s, x, y):
+    """The LAYER words of one call, x and y the DRAM input and output: three commands
     (the gate fused into the second product) or four (a gate pass of its own)."""
     d, h, (w1, w3, w2), (h0, h1, h2) = s.dt, s.ht, W_CBS, HOLDS
     if not s.gate_pass:

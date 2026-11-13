@@ -15,7 +15,7 @@ that keeps 32 rays in the 32 lanes of the vector unit (SFPU) and a small tree in
 5. the speed of a compute RISC-V core on its own, alone and three at once;
 6. one full walk of a 255-node box tree for 32 to 1024 rays, in a ray-first and a
    node-first form;
-7. one 64-byte NoC read issued by a compute RISC-V core from another tile's L1.
+7. one 64-byte NoC read submitted by a compute RISC-V core from another tile's L1.
 
 Every result value is checked against a CPU reference by the driver.
 
@@ -48,7 +48,7 @@ dispatch:
   replay buffer.
 - **Dst window.** `Dst` is set to 32-bit mode; the pack core sees it at `0xFFBD8000`
   with format 0 (uint32), and the vector unit loads and stores it in the INT32 mode.
-  Lane `l` of the 4-row group at `Dst` address `a` is window byte `64 a + 8 l`. The
+  Broadcast `l` of the 4-row group at `Dst` address `a` is window byte `64 a + 8 l`. The
   smoke probe checks the round trip bit for bit (denormals, -0, infinities, NaN, all
   ones) and that `LReg[15]` holds `2 x lane`.
 - **Ordering.** Window stores are followed by a load of the last word written (same
@@ -111,7 +111,7 @@ keep their values and enabled lanes have the exact count in every run.
 
 ### 2. "Any lane still enabled"
 
-Lane i's counter starts at 2i and the body subtracts 2 with a condition, so lane i
+Broadcast i's counter starts at 2i and the body subtracts 2 with a condition, so lane i
 leaves after body i + 1; the loop must end after exactly 32 bodies.
 
 | check after each body | bodies run | cycles per check (loop minus 32 unchecked bodies) |
@@ -157,7 +157,7 @@ copies each lane's record words from the L1 table into the lane's window slots, 
 
 - The plain loop is what the compiler makes of a straightforward loop: each window
   load or table load is used by the very next store, so every load's latency is
-  exposed (about 17 cycles per window load). The scheduled loop issues 8 loads
+  exposed (about 17 cycles per window load). The scheduled loop submits 8 loads
   before using them.
 - The vector variant: one stride-8 load (`vlse32`) for the 32 indices, then per word
   one indexed load (`vluxei32`) from the table and one stride-8 store (`vsse32`) into
@@ -330,7 +330,7 @@ What the numbers say (measured unless marked inferred):
 
 The pack core (TRISC2) of core (0, 0) reads 64 bytes from the input page of core
 (1, 0), which that core's reader has filled, on NoC 0 with command buffer 1. The
-program's data-movement kernels issue no NoC 0 reads while it runs. The core saves
+program's data-movement kernels submit no NoC 0 reads while it runs. The core saves
 the 8 command-buffer registers it writes, sets target (peer coordinate, address),
 return (its own coordinate from `NOC_ID_LOGICAL`, an L1 buffer), length 64 and the
 read control word, starts the command, polls the NoC's read-response counter
@@ -350,7 +350,7 @@ One run (the job was allowed once):
 The kernel finished normally and a smoke run on the same card right after was clean.
 The 209 cycles is one sample, for neighbouring tiles, with an idle NoC; the counter is
 shared by the core's data-movement firmware, so this only works while the
-data-movement kernels issue no reads on that NoC.
+data-movement kernels submit no reads on that NoC.
 
 ## Limits
 

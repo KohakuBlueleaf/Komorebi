@@ -3,16 +3,16 @@
 
 #include <stdint.h>
 
-/* Segments. */
-#define XP_SEG_TELL \
+/* Handlers. */
+#define XP_HANDLER_TELL \
     1u /* an X280 core's tell: the core gives its word 0 as the result */
-#define XP_SEG_SEND \
-    2u                /* the core tells its X280 core a0 + its index, a1 the record's */
-#define XP_SEG_ASK 3u /* a0 asks per core, each answered; a2 XP_F_*; stats page */
-#define XP_SEG_BLOCK 4u /* a0 4 KiB blocks: a1 XP_BLOCK_L1 or _DRAM; a2 stats */
-#define XP_SEG_RATE 5u  /* a0 1024-cycle units of tells both ways and timed asks */
+#define XP_HANDLER_SEND \
+    2u /* the core tells its X280 core a0 + its index, a1 the command's */
+#define XP_HANDLER_ASK 3u   /* a0 asks per core, each answered; a2 XP_F_*; stats page */
+#define XP_HANDLER_BLOCK 4u /* a0 4 KiB blocks: a1 XP_BLOCK_L1 or _DRAM; a2 stats */
+#define XP_HANDLER_RATE 5u  /* a0 1024-cycle units of tells both ways and timed asks */
 
-/* Record words: a7 the round (the thread's), the asks' done tell carries it. */
+/* Command words: a7 the round (the thread's), the asks' done tell carries it. */
 #define XP_F_DONE 1u  /* the core tells its X280 core XP_DONE when its asks are done */
 #define XP_F_READS 2u /* the writer reads DRAM pages while the reader asks */
 #define XP_BLOCK_L1 1u
@@ -39,7 +39,7 @@
 #define XP_ST_SENT 6u  /* rate: tells the core sent */
 #define XP_ST_SEEN 7u  /* rate: new X280 core tells the core saw */
 #define XP_ST_READS 8u /* pages the writer read meanwhile */
-#define XP_ST_ROUND 9u /* the record's a7 */
+#define XP_ST_ROUND 9u /* the command's a7 */
 #define XP_ST_GAVE 10u /* nonzero: a wait gave up */
 /* Bins: below 16 cycles one per cycle, then 8 per power of two (about 9 % wide) up to
  * 2^26 cycles, the last one open. */

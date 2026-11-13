@@ -1,4 +1,4 @@
-// Graph reader: STALL makes member a0 wait for the stop word; other segments need no
+// Graph reader: STALL makes member a0 wait for the stop flag; other handlers need no
 // input through the reader.
 #include <stdint.h>
 
@@ -8,8 +8,8 @@
 
 void kernel_main() {
     km::Reader rd;
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) == kSegStall && rd.me() - km::first(r) == r.a0) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) == kHandlerStall && rd.me() - km::first(r) == r.a0) {
             rd.wait_stop(r);
         }
     });

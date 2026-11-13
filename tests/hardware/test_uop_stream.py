@@ -1,4 +1,4 @@
-"""Example 04 on a card through the dispatch kernel (KMR_CARD=1), in one device open:
+"""Example 04 on a card through the dispatcher (KMR_CARD=1), in one device open:
 30 jobs each way, then the three error streams and a clean run after them."""
 
 from pathlib import Path
@@ -15,5 +15,5 @@ SCRIPT = (
 def test_every_way_is_exact_and_each_error_stream_ends_in_its_error():
     out = run_json(SCRIPT, "--jobs", 30)
     assert out["ok"]
-    assert out["ways"]["submit"]["most_in_flight"] > 1
+    assert out["ways"]["enqueue"]["most_in_flight"] > 1
     assert out["errors"]["never_fits"]["reason"] == "never_fits"

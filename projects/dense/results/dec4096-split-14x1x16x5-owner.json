@@ -33,7 +33,7 @@
   "seconds": 4.566,
   "wall_seconds": 4.574,
   "us_per_call": 131.21,
-  "record_us_median": 115.14,
+  "command_us_median": 115.14,
   "mean_w": 78.05123170000576,
   "peak_w": 82.0,
   "open_w": 61.99989088312181,
@@ -57,11 +57,11 @@
    "compute_end": 120
   },
   "gave_up": [],
-  "lane_wait_cycles_max": [
+  "broadcast_wait_cycles_max": [
    0,
    0
   ],
-  "lane_gave_up": []
+  "broadcast_gave_up": []
  },
  "readback_s": 0.103,
  "check": {

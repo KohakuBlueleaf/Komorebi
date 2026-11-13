@@ -1,4 +1,4 @@
-// The vector-unit side of the ray walk, issued by the pack thread as raw Tensix
+// The vector-unit side of the ray walk, submitted by the pack thread as raw Tensix
 // instructions: the reference's slab test and triangle test for 32 rays, bit for bit.
 #pragma once
 

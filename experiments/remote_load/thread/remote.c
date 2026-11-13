@@ -8,7 +8,7 @@
 #include "rt/x280_hw.h"
 
 #define CODE_BAD 1u  /* words or regions out of range */
-#define CODE_LATE 2u /* the record was late or stopped, or the ring stayed full */
+#define CODE_LATE 2u /* the command was late or stopped, or the ring stayed full */
 #define CODE_FAIL 3u /* a core replied with an error, or a store's window failed */
 #define FULL_TICKS KMX_TICKS_PER_SECOND
 /* The window an X280 core stores through: after the ports' windows, one per core. */
@@ -114,7 +114,7 @@ static int patch(uint32_t win, uint32_t xy, uint32_t at, uint32_t rd, uint32_t v
 
 /* Swap k of core c: the body from the X280 core's schedule, the bytes moved by mode,
  * the message; body, argument, store ticks into its line. 0, or 1: a store failed. */
-static int issue(int cluster, int cpu, int c, uint32_t k, uint32_t* line) {
+static int submit(int cluster, int cpu, int c, uint32_t k, uint32_t* line) {
     const uint32_t* cfg = region(REG_CFG);
     const uint32_t mode = word(RL_W_MODE), slot = word(RL_W_SLOT);
     const uint32_t b =
@@ -169,7 +169,7 @@ static void serve(int cluster, int cpu, uint64_t arg) {
     for (int i = 0; i < n; i++) {
         k[i] = 0;
         t0[i] = kmx_time();
-        if (issue(cluster, cpu, mine[i], 0, out + RL_LINE * swaps * mine[i])) {
+        if (submit(cluster, cpu, mine[i], 0, out + RL_LINE * swaps * mine[i])) {
             __atomic_fetch_add(&g_fails, 1u, __ATOMIC_RELAXED);
             kmx_port_tell(mine[i], 0, RL_END, 0);
             k[i] = swaps;
@@ -197,7 +197,7 @@ static void serve(int cluster, int cpu, uint64_t arg) {
             }
             if (k[i] < swaps) {
                 t0[i] = kmx_time();
-                if (issue(cluster, cpu, c, k[i], out + RL_LINE * (swaps * c + k[i]))) {
+                if (submit(cluster, cpu, c, k[i], out + RL_LINE * (swaps * c + k[i]))) {
                     __atomic_fetch_add(&g_fails, 1u, __ATOMIC_RELAXED);
                     k[i] = swaps;
                 }
@@ -215,7 +215,7 @@ static void give(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
-        kmx_give(REG_OUT);
+        kmx_flush(REG_OUT);
     }
 }
 
@@ -224,8 +224,8 @@ static void take(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
-        kmx_take(REG_CFG);
-        kmx_take(REG_BODIES);
+        kmx_invalidate(REG_CFG);
+        kmx_invalidate(REG_BODIES);
     }
 }
 
@@ -248,10 +248,10 @@ int kmx_main(int cpu) {
     if (kmx_par_all(take, 0) != KMX_OK) {
         return CODE_LATE;
     }
-    km_record_t r;
+    km_command_t r;
     r.seq = r.land1 = r.land2 = r.land3 = 0;
     r.hdr = RL_HANDLER_SWAP;
-    r.team = 0 | cores << 16;
+    r.group = 0 | cores << 16;
     r.a0 = r.a1 = r.a2 = r.a3 = r.a4 = r.a5 = r.a6 = r.a7 = r.a8 = r.a9 = 0;
     kmx_event ev = {0, 0, 0, 0};
     const uint64_t t0 = kmx_time(), until = t0 + FULL_TICKS;

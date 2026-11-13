@@ -29,7 +29,7 @@ namespace {
 
     // Polls ready() for at most kWaitCycles. False: gave up (recorded at `where`).
     template <typename Ready>
-    bool bounded(Ready ready, uint32_t where) {
+    bool timed(Ready ready, uint32_t where) {
         const uint32_t t0 = km::wall();
         while (!ready()) {
             if (km::wall() - t0 > kWaitCycles) {
@@ -41,7 +41,7 @@ namespace {
     }
 
     bool mail_from(ckernel::ThreadId thread, uint32_t where) {
-        return bounded(
+        return timed(
             [&] {
                 return ckernel::mailbox_not_empty(thread);
             },
@@ -52,7 +52,7 @@ namespace {
 #ifdef TRISC_UNPACK
     // Waits for a page of `cb` and gives its address to the pack thread.
     bool hand(uint32_t cb, uint32_t where) {
-        const bool page = bounded(
+        const bool page = timed(
             [&] {
                 const uint16_t received = (
                     reg_read(reinterpret_cast<uint32_t>(get_cb_tiles_received_ptr(cb)))
@@ -332,7 +332,7 @@ namespace {
     // the out pages (SETUP).
     struct Pass {
         const km::Compute& cp;
-        uint32_t seg;
+        uint32_t handler;
         uint32_t* cnt = nullptr;   // COUNT: entries of tile t at t, rows at kTiles + t
         uint16_t* hist = nullptr;  // COUNT: tile t's start and end counts at 32 t
         uint32_t* slot = nullptr;  // SETUP: item i's next slot
@@ -356,7 +356,7 @@ namespace {
                 const int32_t r1 = b.y1 < top + 31 ? b.y1 : top + 31;
                 for (int32_t tx = b.x0 >> 5; tx <= (b.x1 >> 5); ++tx) {
                     const uint32_t t = kTilesX * ty + tx;
-                    if (seg == kSegCount) {
+                    if (handler == kHandlerCount) {
                         cnt[t] += 1;
                         cnt[kTiles + t] += r1 - r0 + 1;
                         uint16_t* h = hist + 32 * t;
@@ -423,7 +423,7 @@ namespace {
                 }
             }
             su::order(su::word(su::kSCol + 8) + 2 * (m - 1));
-            su::triangles(seg == kSegSetup);
+            su::triangles(handler == kHandlerSetup);
             ckernel::tensix_sync();
             su::records_out(rec);
             for (uint32_t j = 0; j < m && ok; ++j) {
@@ -485,10 +485,11 @@ namespace {
 
 // The passes' work for one record; the frame program's compute kernel calls it as
 // well.
-void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
-    const uint32_t seg = km::seg(r);
-    if ((seg != kSegLanes && seg != kSegCount && seg != kSegSetup) || r.a5 == 0 ||
-        cp.me() >= r.a5) {
+void setup_compute_command(const km::Compute& cp, const km_command_t& r) {
+    const uint32_t handler = km::handler(r);
+    if ((handler != kHandlerLanes && handler != kHandlerCount &&
+         handler != kHandlerSetup) ||
+        r.a5 == 0 || cp.me() >= r.a5) {
         return;
     }
     // with kRanges the camera's page brings the core's range (setup_reader.cpp)
@@ -498,7 +499,9 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
     uint32_t pages = 1 + ((cp.me() + 1) * blocks / r.a5 - b0);
 #ifdef TRISC_UNPACK
     // SETUP: the slots and items pages first, held until the pass ends.
-    const bool slots = seg != kSegSetup || (hand(kCbSlots, 4) && hand(kCbItems, 4));
+    const bool slots = (
+        handler != kHandlerSetup || (hand(kCbSlots, 4) && hand(kCbItems, 4))
+    );
     // Hands each page to the pack thread; frees it when the pack thread is done.
     for (uint32_t p = 0; slots && p < pages; ++p) {
         if (!hand(kCbMesh, 1)) {
@@ -519,7 +522,7 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
         (void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId);
         cb_pop_front(kCbMesh, 1);
     }
-    if (seg == kSegSetup && slots) {
+    if (handler == kHandlerSetup && slots) {
         cb_pop_front(kCbSlots, 1);
         cb_pop_front(kCbItems, 1);
     }
@@ -528,8 +531,8 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
     const uint32_t t0 = km::wall();
     uint32_t mail = 0, vec = 0, scalar = 0;
     su::setup();
-    Pass pass{cp, seg};
-    if (seg == kSegSetup) {
+    Pass pass{cp, handler};
+    if (handler == kHandlerSetup) {
         if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
             return;
         }
@@ -548,7 +551,7 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
         );
         pass.slots = r.a6 & ~kSetupPrefix;
     }
-    if (seg == kSegCount) {
+    if (handler == kHandlerCount) {
         if (!cp.reserve_back(kCbCount, 1)) {
             return;
         }
@@ -589,9 +592,9 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
         const uint32_t v0 = km::wall();
         su::block_in(in);
         su::camera_space();
-        su::triangles(seg != kSegCount);
+        su::triangles(handler != kHandlerCount);
         ckernel::tensix_sync();
-        if (seg == kSegLanes) {
+        if (handler == kHandlerLanes) {
             ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
             if (!cp.reserve_back(kCbRec, 1)) {
                 break;
@@ -626,7 +629,7 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
         pf[kSProfPack + 7] = pass.out.wait;
         asm volatile("fence" ::: "memory");
     }
-    if (seg == kSegCount && pass.cnt != nullptr) {
+    if (handler == kHandlerCount && pass.cnt != nullptr) {
         asm volatile("fence" ::: "memory");
         const uint32_t v = (
             reinterpret_cast<volatile uint32_t*>(pass.cnt)[2 * kTiles - 1]
@@ -638,7 +641,7 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
         asm volatile("and x0, x0, %0" : : "r"(u) : "memory");
         cb_push_back(kCbCount, 1);
     }
-    if (seg == kSegSetup && pass.ok) {
+    if (handler == kHandlerSetup && pass.ok) {
         pass.out.end(cp);
     }
     su::finish();
@@ -649,8 +652,8 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbMesh, kCbRec);
-    cp.run([&](const km_record_t& r) {
-        setup_compute_record(cp, r);
+    cp.run([&](const km_command_t& r) {
+        setup_compute_command(cp, r);
     });
 }
 #endif

@@ -1,5 +1,5 @@
-/* Komorebi ABI: the graph a host uploads to the dispatch kernel. Plain C, usable from C
-   and C++; builds on km_stream.h (micro-ops, record templates, error reasons). */
+/* Komorebi ABI: the graph a host uploads to the dispatcher. Plain C, usable from C
+   and C++; builds on km_stream.h (micro-ops, command templates, error reasons). */
 #ifndef KOMOREBI_ABI_KM_GRAPH_H
 #define KOMOREBI_ABI_KM_GRAPH_H
 
@@ -27,11 +27,11 @@
 #define KM_GRAPH_NO_NODE 0xFFFFu /* error not tied to a node */
 
 /* Node kinds. */
-#define KM_NODE_RECORD 1u /* issue one record template */
-#define KM_NODE_CPU 2u    /* run a slice of compute micro-ops in the engine */
-#define KM_NODE_JOIN 3u   /* no work */
+#define KM_NODE_COMMAND 1u /* submit one command template */
+#define KM_NODE_CPU 2u     /* run a slice of compute micro-ops in the engine */
+#define KM_NODE_JOIN 3u    /* no work */
 
-/* KM_SEG_RUN for a graph: a2 = KM_GRUN_UPLOAD (a0 offset, a1 bytes) or KM_GRUN_KEPT
+/* KM_HANDLER_RUN for a graph: a2 = KM_GRUN_UPLOAD (a0 offset, a1 bytes) or KM_GRUN_KEPT
    (a0 = req of a kept graph); a3 = binding block offset, a4 = its value count. */
 #define KM_GRUN_UPLOAD 1u
 #define KM_GRUN_KEPT 2u
@@ -48,16 +48,16 @@
 #define KM_SERR_RUNS 14u      /* `again` still set after max_runs rounds */
 #define KM_SERR_KEPT_FULL 15u /* the keep bit while 8 graphs are kept */
 
-/* KM_SEG_CANCEL with the req of a kept graph: a running one is cancelled (reason 10)
-   and stays kept; one not running is dropped and its range freed. */
+/* KM_HANDLER_CANCEL with the req of a kept graph: a running one is cancelled (reason
+   10) and stays kept; one not running is dropped and its range freed. */
 
 typedef struct {
     uint32_t magic, version;
-    uint32_t n_nodes, n_edges, n_ops, n_records;
+    uint32_t n_nodes, n_edges, n_ops, n_commands;
     uint32_t req;         /* request id of the graph's events (word 6, as a stream's) */
     uint32_t again_reg;   /* KM_GRAPH_NONE: one round */
     uint32_t max_runs;    /* rounds at most, the first included */
-    uint32_t deadline_us; /* for each record; 0 is the kernel's default */
+    uint32_t deadline_us; /* for each command; 0 is the kernel's default */
     uint32_t step_limit;  /* micro-ops one CPU node may run, 1 to KM_GRAPH_MAX_STEPS */
     uint32_t flags;       /* KM_GRAPH_KEEP; the other bits are 0 */
     uint32_t pad[4];
@@ -65,9 +65,9 @@ typedef struct {
 
 typedef struct {
     uint8_t kind, flags, n_pred, skip_reg; /* flags are 0 */
-    uint16_t arg;                          /* RECORD: template; CPU: first micro-op */
+    uint16_t arg;                          /* COMMAND: template; CPU: first micro-op */
     uint16_t n_ops;                        /* CPU: micro-ops in the slice */
-    uint8_t result_reg, pad0;              /* RECORD: register for its result word */
+    uint8_t result_reg, pad0;              /* COMMAND: register for its result word */
     uint16_t succ_off, succ_n;             /* successor list in the edge table */
     uint16_t pad1;
 } km_node_t;

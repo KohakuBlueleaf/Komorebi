@@ -1,6 +1,6 @@
-"""A fake dispatch kernel behind the native port's interface, for the Run tests. In
-order, records get the lowest free slot and the next sequence while their events fit
-the ring by the read count (KM_F_EXCL: while no busy team overlaps); they complete at
+"""A fake dispatcher behind the native port's interface, for the Run tests. In
+order, commands get the lowest free slot and the next sequence while their events fit
+the ring by the read count (KM_F_EXCL: while no busy group overlaps); they complete at
 once or on request."""
 
 import time
@@ -28,27 +28,27 @@ class FakePort:
         self.published = 0  # the read count the host stored for the kernel
         self.held_for_room = 0  # passes the kernel held a command for the read count
         self.ring = {}  # command number -> words
-        self.busy = {}  # slot -> (seq, req, team)
+        self.busy = {}  # slot -> (seq, req, group)
         self.seq = 0
         self.events = []  # pushed, not yet read: [index, req, status, ticks]
         self.pushed_events = 0
         self.state = K["KMD_STATE_READY"]
         self.error = 0
         self.result = {}
-        self.auto = True  # complete every busy record at each poll
+        self.auto = True  # complete every busy command at each poll
         self.stall_req = None  # this command times out instead of completing
-        self.exited = False  # EXIT was issued: later records are refused
+        self.exited = False  # EXIT was submitted: later commands are rejected
         self.held_exit = 0  # passes EXIT waited for busy slots
         self.slot_seq = {}  # slot -> the last sequence it carried
-        self.issued = []  # (req, seq, slot, seg, team) in issue order
-        self.batches = []  # number of records per push
+        self.submitted = []  # (req, seq, slot, handler, group) in submit order
+        self.batches = []  # number of commands per push
         self.max_busy = 0
         self.max_unread = 0
         self.batch = 64
         self.queue = []  # words not stored yet
         self.waits = 0  # calls of wait()
         self.results = {}  # command number -> the leader's result word (KM_F_RESULT)
-        self.handlers = {}  # segment -> handler(req, words): commands a test serves
+        self.handlers = {}  # handler -> handler(req, words): commands a test serves
 
     # The native port's interface ---------------------------------------------
 
@@ -71,8 +71,8 @@ class FakePort:
             self.batches.append(k)
         return k
 
-    def enqueue(self, records):
-        rows = np.asarray(records, dtype=np.uint32)
+    def enqueue(self, commands):
+        rows = np.asarray(commands, dtype=np.uint32)
         assert rows.ndim == 2 and rows.shape[1] == 16
         self.queue += [[int(w) for w in r] for r in rows]
         return self.queued
@@ -145,7 +145,7 @@ class FakePort:
         self.result = {"error": error, "slot": slot, "seq": seq, "req": req}
 
     def _step(self):
-        """Takes the commands that fit, then completes the busy slots: a record in
+        """Takes the commands that fit, then completes the busy slots: a command in
         flight is still busy when a command behind it is taken."""
         self._take()
         if self.state == K["KMD_STATE_READY"]:
@@ -155,32 +155,32 @@ class FakePort:
         while self.consumed + 1 in self.ring and self.state == K["KMD_STATE_READY"]:
             req = self.consumed + 1
             words = self.ring[req]
-            seg, flags = words[1] & 0xFF, (words[1] >> 8) & 0xFF
+            handler, flags = words[1] & 0xFF, (words[1] >> 8) & 0xFF
             first, count = words[2] & 0xFFFF, words[2] >> 16
-            if seg == K["KM_SEG_STOP"]:
+            if handler == K["KM_HANDLER_STOP"]:
                 self.consumed = req
                 self._finish(K["KMD_ERR_STOP_BUSY"] if self.busy else 0)
                 return
-            if seg == K["KM_SEG_PING"]:
+            if handler == K["KM_HANDLER_PING"]:
                 self.consumed = req
                 self._event(req, K["KM_EV_PONG"])
                 continue
-            if seg in self.handlers:
+            if handler in self.handlers:
                 self.consumed = req
-                self.handlers[seg](req, words)
+                self.handlers[handler](req, words)
                 continue
-            reason = self._refusal(seg, flags, first, count)
+            reason = self._rejection(handler, flags, first, count)
             if reason:
                 self.consumed = req
-                self._event(req, K["KM_EV_REFUSED"], aux=reason)
+                self._event(req, K["KM_EV_REJECTED"], aux=reason)
                 continue
-            if seg == K["KM_SEG_EXIT"]:
+            if handler == K["KM_HANDLER_EXIT"]:
                 if self._exit_waits():  # held until no slot is busy
                     self.held_exit += 1
                     return
                 first, count = 0, self.cores  # to every core
                 self.exited = True
-            elif flags & K["KM_F_QUEUE"]:  # the lowest first overlapping no busy team
+            elif flags & K["KM_F_QUEUE"]:  # the lowest first overlapping no busy group
                 taken = [t for _, _, t in self.busy.values()]
                 fits = [
                     f
@@ -205,7 +205,7 @@ class FakePort:
             self.slot_seq[free[0]] = self.seq
             self.busy[free[0]] = (self.seq, req, (first, count))
             self.max_busy = max(self.max_busy, len(self.busy))
-            self.issued.append((req, self.seq, free[0], seg, (first, count)))
+            self.submitted.append((req, self.seq, free[0], handler, (first, count)))
             self.consumed = req
 
     def _overlaps_busy(self, first, count):
@@ -215,18 +215,20 @@ class FakePort:
     def _exit_waits(self):
         return bool(self.busy)
 
-    def _refusal(self, seg, flags, first, count):
-        """The README's reasons a command is consumed with KM_EV_REFUSED, or 0."""
+    def _rejection(self, handler, flags, first, count):
+        """The README's reasons a command is consumed with KM_EV_REJECTED, or 0."""
         if self.exited:
-            return K["KMD_REFUSE_EXITED"]
-        if K["KM_SEG_USER_MAX"] < seg < K["KM_SEG_DEADLINE"]:
-            return K["KMD_REFUSE_SEG"]
+            return K["KMD_REJECT_EXITED"]
+        if K["KM_HANDLER_USER_MAX"] < handler < K["KM_HANDLER_DEADLINE"]:
+            return K["KMD_REJECT_HANDLER"]
         if flags & 1:
-            return K["KMD_REFUSE_FLAGS"]
+            return K["KMD_REJECT_FLAGS"]
         if flags & K["KM_F_QUEUE"]:
             first = 0  # only the count is checked
-        if seg != K["KM_SEG_EXIT"] and (count == 0 or first + count > self.cores):
-            return K["KMD_REFUSE_TEAM"]
+        if handler != K["KM_HANDLER_EXIT"] and (
+            count == 0 or first + count > self.cores
+        ):
+            return K["KMD_REJECT_GROUP"]
         return 0
 
     def _complete(self):
@@ -256,7 +258,7 @@ class FakeBackend:
         self.answer = {}  # finish() fields to answer instead (result_ready, ...)
         self.cleaned = True  # what abort() answers
         self.close_failed = ""  # the runtime's account when not cleaned
-        self.aborted = None  # {words, harts} the kernel left at abort()
+        self.aborted = None  # {words, cores} the kernel left at abort()
         self.report = "the fake kernel's report"  # what kernel_report() answers
 
     def finish(self, timeout):
@@ -268,7 +270,7 @@ class FakeBackend:
         words[K["KMD_R_STATE"]] = self.port.state
         for name, value in self.port.result.items():
             words[K[f"KMD_R_{name.upper()}"]] = value
-        words[K["KMD_R_RECORDS"]] = len(self.port.issued)
+        words[K["KMD_R_COMMANDS"]] = len(self.port.submitted)
         if "state" in self.answer:
             words[K["KMD_R_STATE"]] = self.answer["state"]
         out = {
@@ -293,7 +295,7 @@ class FakeBackend:
         pass
 
     def read_back(self, stop_grid=False):
-        """Control blocks whose state words say every member reported its records'
+        """Control blocks whose state words say every member reported its commands'
         sequences, except the stalled core; trace: seen/done/sent stamps per sequence.
         """
         self.calls.append("read_back")
@@ -307,7 +309,7 @@ class FakeBackend:
         if self.trace_cap:
             trace = np.zeros((cores, self.trace_cap, 4), dtype=np.uint32)
         stalled = self.port.stall_req
-        for req, seq, slot, _, (first, count) in self.port.issued:
+        for req, seq, slot, _, (first, count) in self.port.submitted:
             for core in range(first, first + count):
                 if req == stalled and core == self.stalled_core:
                     word = K["kGaveStop"] | K["kWhereStall"] << 8 | slot << 16

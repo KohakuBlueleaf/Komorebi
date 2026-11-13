@@ -84,10 +84,10 @@ namespace {
         std::string image;
         uint32_t proto = 0;
 
-        x280::SessionId start(uint64_t n_records) {
+        x280::SessionId start(uint64_t n_commands) {
             run = (0x6c616e6400000000ull ^
                    (static_cast<uint64_t>(std::random_device{}()) << 8)) +
-                n_records;
+                n_commands;
             tag = ((std::random_device{}() ^ static_cast<uint32_t>(run)) & 0xFFFFu) |
                 1u;
             tile->write_available_lim(mailbox, std::vector<uint8_t>(64, 0));
@@ -96,7 +96,7 @@ namespace {
             a.run_value = run;
             a.mailbox = mailbox;
             a.acks = acks;
-            a.n = n_records;
+            a.n = n_commands;
             a.k = gx;
             a.nrect = panels.size();
             for (size_t r = 0; r < panels.size(); r++) {
@@ -177,7 +177,7 @@ NB_MODULE(_landing_x280, m) {
         .def_ro("proto", &Plan::proto)
         .def("aiclk_mhz", &Plan::aiclk_mhz)
         .def("worker_args", &Plan::worker_args, nb::arg("x"), nb::arg("y"))
-        .def("start", &Plan::start, nb::arg("n_records"))
+        .def("start", &Plan::start, nb::arg("n_commands"))
         .def(
             "finish",
             [](Plan& p, const x280::SessionId& session, double timeout_s) {

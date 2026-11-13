@@ -1,52 +1,52 @@
-// Dynamic crossing: an item moves to the queue of another core in DRAM, reserved by
+// Dynamic crossing: a message moves to the queue of another core in DRAM, reserved by
 // one atomic add on a counter tile; the generic reader and writer, and compute's calls.
 #pragma once
 
 #include <stdint.h>
 
 #include "km_core.hpp"
-#include "km_record.hpp"
+#include "km_command.hpp"
 
 namespace km {
 
     // Arguments of a dynamic program: reader and writer program arguments 0 to
     // kDynArgs - 1 (the program's own follow), compute program arguments 0 and 1.
     struct DynArgs {
-        uint32_t seg;         // the dynamic segment
-        uint32_t queue;       // DRAM address of the queues, kDynPageItems items a page
-        uint32_t cap;         // items per queue: a power of two, at least kDynPageItems
-        uint32_t item_bytes;  // a multiple of 64, at most kDynItemMax
-        uint32_t lines;       // status lines at the issuer: core me at lines + 16 me
-        uint32_t idle;        // cycles the idle condition holds before a line says so
-        uint32_t bins;        // writer bins, 1 to kDynBinsMax
-        uint32_t counters;    // K: the team's last K cores are counter tiles
+        uint32_t handler;  // the dynamic handler
+        uint32_t queue;  // DRAM address of the queues, kDynPageMessages messages a page
+        uint32_t cap;  // messages per queue: a power of two, at least kDynPageMessages
+        uint32_t message_bytes;  // a multiple of 64, at most kDynMessageMax
+        uint32_t lines;     // status lines at the submitter: core me at lines + 16 me
+        uint32_t idle;      // cycles the idle condition holds before a line says so
+        uint32_t bins;      // writer bins, 1 to kDynBinsMax
+        uint32_t counters;  // K: the group's last K cores are counter tiles
     };
 
     constexpr uint32_t kDynArgs = sizeof(DynArgs) / 4;
-    constexpr uint32_t kDynCArgItem = 0;      // compute: item bytes
-    constexpr uint32_t kDynCArgQuota = 1;     // compute: spawns at the start of a run
+    constexpr uint32_t kDynCArgMessage = 0;   // compute: message bytes
+    constexpr uint32_t kDynCArgQuota = 1;     // compute: sends at the start of a run
     constexpr uint32_t kDynCArgCounters = 2;  // compute: K, as DynArgs::counters
     constexpr uint32_t kDynCArgs = 3;
 
-    // Buffers: packets reader -> compute, outgoing items compute -> writer, bins.
+    // Buffers: packets reader -> compute, outgoing messages compute -> writer, bins.
     constexpr uint32_t kCbDynIn = 26;
     constexpr uint32_t kCbDynOut = 27;
     constexpr uint32_t kCbDynBins = 28;
-    constexpr uint32_t kDynPacket = 32;     // items of a packet and of a bin
-    constexpr uint32_t kDynPageItems = 32;  // items of a DRAM page of a queue
-    constexpr uint32_t kDynHeader = 64;     // packet header (n, first position): DRAM
-                                            // reads land 64-byte aligned
-    constexpr uint32_t kDynItemMax = 256;   // bytes
+    constexpr uint32_t kDynPacket = 32;        // messages of a packet and of a bin
+    constexpr uint32_t kDynPageMessages = 32;  // messages of a DRAM page of a queue
+    constexpr uint32_t kDynHeader = 64;       // packet header (n, first position): DRAM
+                                              // reads land 64-byte aligned
+    constexpr uint32_t kDynMessageMax = 256;  // bytes
     constexpr uint32_t kDynBinsMax = 16;
     constexpr uint32_t kDynEnd = 0xFFFFFFFF;  // packet n / outgoing dest: the run ended
     constexpr uint32_t kDynWaiting = 1u << 31;  // idle word bit (compute, writer)
 
     // Idle words (KM_DYN_FLAGS): word 0 the run, word 1 the state.
     constexpr uint32_t kDynFlagReader = 0x00;
-    constexpr uint32_t kDynFlagCompute = 0x10;  // waiting in next() | items pushed
-    constexpr uint32_t kDynFlagWriter = 0x20;   // every bin sent | items taken
+    constexpr uint32_t kDynFlagCompute = 0x10;  // waiting in next() | messages pushed
+    constexpr uint32_t kDynFlagWriter = 0x20;   // every bin sent | messages taken
 
-    // Word 0 of the item at queue position `pos` once valid; 0 is empty. Queues are
+    // Word 0 of the message at queue position `pos` once valid; 0 is empty. Queues are
     // zero-filled at start-up and positions never restart, so no stale mark matches.
     constexpr uint32_t kDynPosMax = 1u << 30;  // positions per core and session
 
@@ -56,21 +56,21 @@ namespace km {
 
     // Queue position `pos` of core `core`: DRAM page and byte offset in it.
     inline uint32_t dyn_page(uint32_t core, uint32_t pos, uint32_t cap) {
-        return core * (cap / kDynPageItems) + (pos & (cap - 1)) / kDynPageItems;
+        return core * (cap / kDynPageMessages) + (pos & (cap - 1)) / kDynPageMessages;
     }
 
-    // A run's members: its team's cores before the last `k`, the counter tiles (an
-    // asked tile that issues atomics can lose an answer; a counter tile issues none).
-    inline uint32_t dyn_members(const km_record_t& r, uint32_t k) {
+    // A run's members: its group's cores before the last `k`, the counter tiles (an
+    // asked tile that submits atomics can lose an answer; a counter tile submits none).
+    inline uint32_t dyn_ranks(const km_command_t& r, uint32_t k) {
         return count(r) > k ? count(r) - k : 0;
     }
 
     // The counter tile that holds the tail of member core `core`.
-    inline uint32_t dyn_counter(const km_record_t& r, uint32_t k, uint32_t core) {
-        return first(r) + dyn_members(r, k) + (core - first(r)) % k;
+    inline uint32_t dyn_counter(const km_command_t& r, uint32_t k, uint32_t core) {
+        return first(r) + dyn_ranks(r, k) + (core - first(r)) % k;
     }
 
-    // Records the first give-up of a dynamic run (where, position, run).
+    // Commands the first give-up of a dynamic run (where, position, run).
     inline void dyn_gave_up(
         uint32_t ctl, uint32_t where, uint32_t pos, uint32_t run, uint32_t seen = 0
     ) {
@@ -91,7 +91,7 @@ namespace km {
     // Reads the dynamic arguments that follow the start-up arguments.
     inline DynArgs dyn_args(const Core& c) {
         DynArgs d;
-        uint32_t* f = &d.seg;
+        uint32_t* f = &d.handler;
         for (uint32_t k = 0; k < kDynArgs; k++) {
             f[k] = c.arg(k);
         }
@@ -100,7 +100,7 @@ namespace km {
 
     // Polls a NoC counter `done()` for at most the wait limit. False: it did not.
     template <typename Done>
-    inline bool noc_bounded(const Core& c, Done done) {
+    inline bool noc_timeout(const Core& c, Done done) {
         const uint64_t end = (
             wall64() + (static_cast<uint64_t>(c.args().wait_limit) << 10)
         );
@@ -131,7 +131,7 @@ namespace km {
                 ctl + KM_CTL_TAILS + scratch,
                 16
             );
-            if (!noc_bounded(c, [] {
+            if (!noc_timeout(c, [] {
                     return ncrisc_noc_reads_flushed(noc_index);
                 })) {
                 return false;
@@ -146,12 +146,12 @@ namespace km {
         }
     }
 
-    // Start-up, before the first record: zero-fills this core's queue (mark 0 is
+    // Start-up, before the first command: zero-fills this core's queue (mark 0 is
     // empty) from the packet buffer's zeroed first page. False: a write stalled.
     template <typename Rd>
     inline bool dyn_zero_fill(Rd& rd) {
         const DynArgs d = dyn_args(rd);
-        const uint32_t page_bytes = kDynPageItems * d.item_bytes;
+        const uint32_t page_bytes = kDynPageMessages * d.message_bytes;
         const InterleavedAddrGen<true> q = {
             .bank_base_address = d.queue, .page_size = page_bytes
         };
@@ -160,11 +160,11 @@ namespace km {
             l1(src)[w] = 0;
         }
         invalidate_l1_cache();  // a fence: the NoC reads the stored zeros
-        const uint32_t pages = d.cap / kDynPageItems;
+        const uint32_t pages = d.cap / kDynPageMessages;
         for (uint32_t k = 0; k < pages; k++) {
             noc_async_write(src, get_noc_addr(rd.args().me * pages + k, q), page_bytes);
             if ((k & 15) == 15 || k + 1 == pages) {
-                if (!noc_bounded(rd, [] {
+                if (!noc_timeout(rd, [] {
                         return ncrisc_noc_nonposted_writes_flushed(noc_index);
                     })) {
                     return false;
@@ -175,9 +175,9 @@ namespace km {
     }
 
     // Generic reader: this core's queue in order, to compute in packets; idle and busy
-    // lines to the issuer; leaves on the run's end record, the stop word or a give-up.
+    // lines to the submitter; leaves on the run's end, the stop flag or an error.
     template <typename Rd>
-    inline void dyn_reader(Rd& rd, const km_record_t& r, bool filled = true) {
+    inline void dyn_reader(Rd& rd, const km_command_t& r, bool filled = true) {
         const Args& a = rd.args();
         const DynArgs d = dyn_args(rd);
         const uint32_t run = r.seq;
@@ -189,7 +189,8 @@ namespace km {
         volatile tt_l1_ptr uint32_t* rf = dyn + (KM_DYN_FLAGS + kDynFlagReader) / 4;
         volatile tt_l1_ptr uint32_t* out = dyn + KM_DYN_OUT / 4;
         const InterleavedAddrGen<true> q = {
-            .bank_base_address = d.queue, .page_size = kDynPageItems * d.item_bytes
+            .bank_base_address = d.queue,
+            .page_size = kDynPageMessages * d.message_bytes
         };
         const uint32_t in_pages = get_local_cb_interface(kCbDynIn).fifo_num_pages;
         const uint64_t line = rd.disp_noc(d.lines + 16 * a.me);
@@ -197,7 +198,7 @@ namespace km {
         rf[1] = 0;
         rf[0] = run;
         uint32_t head = *head_w, where = filled ? 0 : kWhereDynFill;
-        if ((get_write_ptr(kCbDynIn) | d.item_bytes) % 64 != 0) {
+        if ((get_write_ptr(kCbDynIn) | d.message_bytes) % 64 != 0) {
             where = kWhereDynAlign;  // a DRAM read lands 64-byte aligned or not as
                                      // asked
         }
@@ -206,14 +207,14 @@ namespace km {
         }
         // A counter tile sets its members' tails to their heads, then shows READY; a
         // member waits for its counter tile's READY before it reads its tail there.
-        const uint32_t ctrs = d.counters, members = dyn_members(r, ctrs);
-        const bool counter = a.me - first(r) >= members;
-        if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || members == 0) {
+        const uint32_t ctrs = d.counters, ranks = dyn_ranks(r, ctrs);
+        const bool counter = a.me - first(r) >= ranks;
+        if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || ranks == 0) {
             where = where != 0 ? where : kWhereDynCounter;
         } else if (where == 0 && counter) {
             *tail = head;  // nobody sends here: the loop sees an empty queue
             uint32_t served = 0;
-            for (uint32_t m = a.me - first(r) - members; m < members; m += ctrs) {
+            for (uint32_t m = a.me - first(r) - ranks; m < ranks; m += ctrs) {
                 const uint32_t core = first(r) + m;
                 noc_async_read(
                     rd.core_noc(core, a.ctl + KM_CTL_DYN + KM_DYN_IN_HEAD),
@@ -222,7 +223,7 @@ namespace km {
                 );
                 served++;
             }
-            if (!noc_bounded(rd, [] {
+            if (!noc_timeout(rd, [] {
                     return ncrisc_noc_reads_flushed(noc_index);
                 })) {
                 where = kWhereDynRead;
@@ -253,7 +254,7 @@ namespace km {
                 return true;  // nobody sends to a counter tile: its tail stays its head
             }
             noc_async_read(tail_line, a.ctl + KM_CTL_DYN + KM_DYN_IN_TAIL, 16);
-            const bool ok = noc_bounded(rd, [] {
+            const bool ok = noc_timeout(rd, [] {
                 return ncrisc_noc_reads_flushed(noc_index);
             });
             invalidate_l1_cache();
@@ -263,7 +264,7 @@ namespace km {
         uint32_t key[3] = {0, 0, 0};
         uint64_t since = 0, waiting_from = 0;
 
-        // One 16-byte store of {run, state, sent, consumed} at the issuer.
+        // One 16-byte store of {run, state, sent, consumed} at the submitter.
         auto status = [&](uint32_t state, uint32_t sent, uint32_t consumed) {
             out[0] = run;
             out[1] = state;
@@ -271,7 +272,7 @@ namespace km {
             out[3] = consumed;
             invalidate_l1_cache();  // a fence: the NoC reads the stored line
             noc_async_write(a.ctl + KM_CTL_DYN + KM_DYN_OUT, line, 16);
-            return noc_bounded(rd, [] {
+            return noc_timeout(rd, [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             });
         };
@@ -286,11 +287,11 @@ namespace km {
                 cb_pages_reservable_at_back(kCbDynIn, in_pages)
             );
         };
-        // True when the next record of this core in the ring is this run's end.
-        auto end_record = [&] {
-            const volatile km_record_t*
+        // True when the next command of this core in the ring is this run's end.
+        auto end_command = [&] {
+            const volatile km_command_t*
                 ring = (
-                    reinterpret_cast<const volatile km_record_t*>(rd.ctl(KM_CTL_RING))
+                    reinterpret_cast<const volatile km_command_t*>(rd.ctl(KM_CTL_RING))
                 );
             volatile tt_l1_ptr uint32_t* last = rd.state() + kStLast;
             for (uint32_t j = 0; j < a.depth; j++) {
@@ -298,10 +299,10 @@ namespace km {
                 if (!newer(s, last[j])) {
                     continue;
                 }
-                km_record_t e;
-                copy_record(&ring[j], &e);
-                if (e.seq == s && KM_LANDED(&e) && seg(e) == KM_SEG_DYN_END &&
-                    e.a0 == run && in_team(e, a.me)) {
+                km_command_t e;
+                copy_command(&ring[j], &e);
+                if (e.seq == s && KM_LANDED(&e) && handler(e) == KM_HANDLER_DYN_END &&
+                    e.a0 == run && in_group(e, a.me)) {
                     return true;
                 }
             }
@@ -324,7 +325,7 @@ namespace km {
                 break;
             }
             if (t == head) {
-                if (end_record()) {
+                if (end_command()) {
                     break;
                 }
                 uint32_t k[3];
@@ -362,12 +363,12 @@ namespace km {
                 }
                 rf[1] = 1;
                 idle_shown = true;
-                busy = false;  // until the next item is taken
+                busy = false;  // until the next message is taken
                 continue;
             }
             busy = true;
             armed = false;
-            if (idle_shown) {  // busy has landed before the first item is taken
+            if (idle_shown) {  // busy has landed before the first message is taken
                 if (!status(KM_DYN_BUSY, 0, 0)) {
                     where = kWhereDynLine;
                     break;
@@ -389,17 +390,19 @@ namespace km {
             uint32_t k = t - head < kDynPacket ? t - head : kDynPacket;
             for (uint32_t i = 0; i < k;) {
                 const uint32_t pos = (head + i) & (d.cap - 1);
-                const uint32_t in_page = pos % kDynPageItems;
-                uint32_t n = kDynPageItems - in_page;
+                const uint32_t in_page = pos % kDynPageMessages;
+                uint32_t n = kDynPageMessages - in_page;
                 n = n < k - i ? n : k - i;
                 noc_async_read(
-                    get_noc_addr(dyn_page(a.me, pos, d.cap), q, in_page * d.item_bytes),
-                    page + kDynHeader + i * d.item_bytes,
-                    n * d.item_bytes
+                    get_noc_addr(
+                        dyn_page(a.me, pos, d.cap), q, in_page * d.message_bytes
+                    ),
+                    page + kDynHeader + i * d.message_bytes,
+                    n * d.message_bytes
                 );
                 i += n;
             }
-            if (!noc_bounded(rd, [] {
+            if (!noc_timeout(rd, [] {
                     return ncrisc_noc_reads_flushed(noc_index);
                 })) {
                 where = kWhereDynRead;
@@ -407,15 +410,15 @@ namespace km {
             }
             invalidate_l1_cache();
             uint32_t m = 0;
-            // The prefix of valid marks: an item is valid only after its packet's
-            // first item, whose mark is written once the whole packet has landed.
+            // The prefix of valid marks: a message is valid only after its packet's
+            // first message, whose mark is written once the whole packet has landed.
             while (
                 m < k &&
-                l1(page + kDynHeader + m * d.item_bytes)[0] == dyn_mark(head + m)
+                l1(page + kDynHeader + m * d.message_bytes)[0] == dyn_mark(head + m)
             ) {
                 m++;
             }
-            if (m == 0) {  // the item at head has not landed yet
+            if (m == 0) {  // the message at head has not landed yet
                 const uint64_t now = wall64();
                 if (waiting_from == 0) {
                     waiting_from = now;
@@ -433,14 +436,14 @@ namespace km {
             *head_w = head;
         }
         if (where != 0) {
-            // a gap: word 0 of the item found at the head, for the report
+            // a gap: word 0 of the message found at the head, for the report
             dyn_gave_up(
                 a.ctl, where, head, run, l1(get_write_ptr(kCbDynIn))[kDynHeader / 4]
             );
             status(KM_DYN_GAVE_UP, head, where);
             rd.gave_up(kStReader, kGaveStop, kWhereData, slot(r), run);
         }
-        // Compute leaves its loop on the end packet (or on the stop word).
+        // Compute leaves its loop on the end packet (or on the stop flag).
         if (rd.poll(
                 [] {
                     return cb_pages_reservable_at_back(kCbDynIn, 1);
@@ -454,13 +457,13 @@ namespace km {
         }
     }
 
-    // Generic writer: outgoing items in bins by destination; one atomic add per bin
-    // reserves positions, then the items go to that queue. True: the run ended.
+    // Generic writer: outgoing messages in bins by destination; one atomic add per bin
+    // reserves positions, then the messages go to that queue. True: the run ended.
     template <typename Wr>
-    inline bool dyn_writer(Wr& wr, const km_record_t& r) {
+    inline bool dyn_writer(Wr& wr, const km_command_t& r) {
         const Args& a = wr.args();
         const DynArgs d = dyn_args(wr);
-        const uint32_t run = r.seq, words = d.item_bytes / 4;
+        const uint32_t run = r.seq, words = d.message_bytes / 4;
         const uint32_t bins = (
             d.bins == 0 || d.bins > kDynBinsMax ? kDynBinsMax : d.bins
         );
@@ -470,7 +473,8 @@ namespace km {
         volatile tt_l1_ptr uint32_t* ret = dyn + KM_DYN_RET / 4;
         const uint32_t ret_addr = a.ctl + KM_CTL_DYN + KM_DYN_RET;
         const InterleavedAddrGen<true> q = {
-            .bank_base_address = d.queue, .page_size = kDynPageItems * d.item_bytes
+            .bank_base_address = d.queue,
+            .page_size = kDynPageMessages * d.message_bytes
         };
         const uint32_t store = get_write_ptr(kCbDynBins);
         uint32_t dest[kDynBinsMax], fill[kDynBinsMax];
@@ -483,12 +487,12 @@ namespace km {
         wf[1] = 0;
         wf[0] = run;
         // A member reserves on the counter tiles: it waits until each shows READY.
-        const uint32_t ctrs = d.counters, members = dyn_members(r, ctrs);
-        if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || members == 0) {
+        const uint32_t ctrs = d.counters, ranks = dyn_ranks(r, ctrs);
+        if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || ranks == 0) {
             where = kWhereDynCounter;
-        } else if (a.me - first(r) < members) {
+        } else if (a.me - first(r) < ranks) {
             for (uint32_t j = 0; j < ctrs && where == 0; j++) {
-                if (!dyn_ready(wr, first(r) + members + j, KM_TAILS_WRITER, run)) {
+                if (!dyn_ready(wr, first(r) + ranks + j, KM_TAILS_WRITER, run)) {
                     where = kWhereDynCounter;
                 }
             }
@@ -513,14 +517,14 @@ namespace km {
                 false,
                 ret_addr
             );
-            if (!noc_bounded(wr, [] {
+            if (!noc_timeout(wr, [] {
                     return ncrisc_noc_nonposted_atomics_flushed(noc_index);
                 })) {
                 where = kWhereDynAtomic;
                 return false;
             }
             // On the card the answer can stay away although its count moved.
-            if (!noc_bounded(wr, [&] {
+            if (!noc_timeout(wr, [&] {
                     invalidate_l1_cache();
                     return ret[0] != kDynEnd;
                 })) {
@@ -528,29 +532,29 @@ namespace km {
                 lost_to = dest[b];
                 return false;
             }
-            // The packet commits: its items go out with the first item's mark 0, and
-            // after their barrier one 16-byte write gives the first item its mark.
-            const uint32_t p = ret[0], base = store + b * kDynPacket * d.item_bytes;
+            // Commit: the messages go out with the first one's mark 0, then after their
+            // barrier one 16-byte write sets that mark.
+            const uint32_t p = ret[0], base = store + b * kDynPacket * d.message_bytes;
             l1(base)[0] = 0;
             for (uint32_t i = 1; i < n; i++) {
-                l1(base + i * d.item_bytes)[0] = dyn_mark(p + i);
+                l1(base + i * d.message_bytes)[0] = dyn_mark(p + i);
             }
             invalidate_l1_cache();  // a fence: the NoC reads the stored marks
             for (uint32_t i = 0; i < n;) {
                 const uint32_t pos = (p + i) & (d.cap - 1);
-                const uint32_t in_page = pos % kDynPageItems;
-                uint32_t m = kDynPageItems - in_page;
+                const uint32_t in_page = pos % kDynPageMessages;
+                uint32_t m = kDynPageMessages - in_page;
                 m = m < n - i ? m : n - i;
                 noc_async_write(
-                    base + i * d.item_bytes,
+                    base + i * d.message_bytes,
                     get_noc_addr(
-                        dyn_page(dest[b], pos, d.cap), q, in_page * d.item_bytes
+                        dyn_page(dest[b], pos, d.cap), q, in_page * d.message_bytes
                     ),
-                    m * d.item_bytes
+                    m * d.message_bytes
                 );
                 i += m;
             }
-            if (!noc_bounded(wr, [] {
+            if (!noc_timeout(wr, [] {
                     return ncrisc_noc_nonposted_writes_flushed(noc_index);
                 })) {
                 where = kWhereDynFlush;
@@ -563,11 +567,11 @@ namespace km {
                 get_noc_addr(
                     dyn_page(dest[b], p, d.cap),
                     q,
-                    (p & (d.cap - 1)) % kDynPageItems * d.item_bytes
+                    (p & (d.cap - 1)) % kDynPageMessages * d.message_bytes
                 ),
                 16
             );
-            if (!noc_bounded(wr, [] {
+            if (!noc_timeout(wr, [] {
                     return ncrisc_noc_nonposted_writes_flushed(noc_index);
                 })) {
                 where = kWhereDynFlush;
@@ -632,7 +636,7 @@ namespace km {
                 held++;
             }
             volatile tt_l1_ptr uint32_t* slot_w = (
-                l1(store + (b * kDynPacket + fill[b]) * d.item_bytes)
+                l1(store + (b * kDynPacket + fill[b]) * d.message_bytes)
             );
             for (uint32_t w = 1; w < words; w++) {
                 slot_w[w] = it[w];
@@ -659,37 +663,37 @@ namespace km {
 #else
 namespace km {
 
-    // A packet of items in L1 (the input buffer's page), valid until done().
+    // A packet of messages in L1 (the input buffer's page), valid until done().
     struct Packet {
         uint32_t n;
-        uint32_t base;  // byte address of item 0
-        uint32_t item_bytes;
+        uint32_t base;  // byte address of message 0
+        uint32_t message_bytes;
 
         explicit operator bool() const {
             return n != 0;
         }
 
         const volatile tt_l1_ptr uint32_t* operator[](uint32_t i) const {
-            return l1(base + i * item_bytes);
+            return l1(base + i * message_bytes);
         }
     };
 
     // Compute's side of a dynamic run. The body runs on all three threads alike; pack
-    // writes the outgoing items, unpack takes and frees the packets.
+    // writes the outgoing messages, unpack takes and frees the packets.
     class Dyn {
     public:
         template <typename Cp>
-        Dyn(const Cp& cp, const km_record_t& r)
+        Dyn(const Cp& cp, const km_command_t& r)
             : ctl_(get_arg_val<uint32_t>(kCArgCtl)),
               idle_(get_arg_val<uint32_t>(kCArgIdle)),
               wait_(get_arg_val<uint32_t>(kCArgWait)),
               run_(r.seq),
               first_(km::first(r)),
-              count_(dyn_members(r, cp.arg(kDynCArgCounters))),
-              member_(cp.me() - km::first(r)),
-              item_bytes_(cp.arg(kDynCArgItem)),
+              count_(dyn_ranks(r, cp.arg(kDynCArgCounters))),
+              rank_(cp.me() - km::first(r)),
+              message_bytes_(cp.arg(kDynCArgMessage)),
               quota_(cp.arg(kDynCArgQuota)),
-              seeded_(member_ >= count_) {
+              seeded_(rank_ >= count_) {
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* dyn = l1(ctl_ + KM_CTL_DYN);
                 dyn[KM_DYN_CONSUMED / 4] = 0;
@@ -699,7 +703,7 @@ namespace km {
             }));
         }
 
-        // True until seeded(): the run's own spawns go here, once per run and core.
+        // True until seeded(): the run's own sends go here, once per run and core.
         bool seeding() const {
             return !seeded_;
         }
@@ -708,25 +712,25 @@ namespace km {
             seeded_ = true;
         }
 
-        // The run's members (the team without its counter tiles), and this core's.
+        // The run's members (the group without its counter tiles), and this core's.
         uint32_t count() const {
             return count_;
         }
 
-        uint32_t member() const {
-            return member_;
+        uint32_t rank() const {
+            return rank_;
         }
 
-        // A counter tile: no item comes here; next() returns only the run's end.
+        // A counter tile: no message comes here; next() returns only the run's end.
         bool counter() const {
-            return member_ >= count_;
+            return rank_ >= count_;
         }
 
         uint32_t quota() const {
             return quota_;
         }
 
-        // The next packet; empty when the run ended, the stop word was set or a wait
+        // The next packet; empty when the run ended, the stop flag was set or a wait
         // gave up. Unpack waits and tells math and pack.
         Packet next() {
             seeded_ = true;
@@ -782,7 +786,7 @@ namespace km {
                             0,
                             run_
                         );
-                        record_gave_up(ctl_, kStCompute, code, kWhereCToken, 0, run_);
+                        command_gave_up(ctl_, kStCompute, code, kWhereCToken, 0, run_);
                     }
                 }
                 ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, n);
@@ -800,45 +804,45 @@ namespace km {
             }));
             if (n == 0) {
                 PACK((end_marker()));
-                return {0, 0, item_bytes_};
+                return {0, 0, message_bytes_};
             }
-            return {n, addr + kDynHeader, item_bytes_};
+            return {n, addr + kDynHeader, message_bytes_};
         }
 
-        // The item goes on at member `dest` of the run's team. item: item_bytes / 4
-        // words; word 0 is the runtime's mark.
-        void hop(uint32_t dest, const uint32_t* item) {
+        // The message goes on at member `dest` of the run's group. message:
+        // message_bytes / 4 words; word 0 is the runtime's mark.
+        void forward(uint32_t dest, const uint32_t* message) {
             if (dest >= count_) {
                 failed_ = true;
                 PACK((dyn_gave_up(ctl_, kWhereDynBadDest, dest, run_)));
                 PACK((
-                    record_gave_up(ctl_, kStCompute, kGaveStop, kWhereCOutput, 0, run_)
+                    command_gave_up(ctl_, kStCompute, kGaveStop, kWhereCOutput, 0, run_)
                 ));
                 return;
             }
             PACK(({
                 if (!failed_) {
-                    send(first_ + dest, item);
+                    push_out(first_ + dest, message);
                 }
             }));
         }
 
-        // The item ends here: one spawn comes back to this core.
-        void retire() {
+        // The message ends here: one send comes back to this core.
+        void consume() {
             quota_++;
         }
 
-        // A new item at member `dest`; false when this core has no quota left.
-        bool spawn(uint32_t dest, const uint32_t* item) {
+        // A new message at member `dest`; false when this core has no quota left.
+        bool send(uint32_t dest, const uint32_t* message) {
             if (quota_ == 0) {
                 return false;
             }
             quota_--;
-            hop(dest, item);
+            forward(dest, message);
             return true;
         }
 
-        // The packet's page is free; CONSUMED counts its items.
+        // The packet's page is free; CONSUMED counts its messages.
         void done(const Packet& pk) {
             MATH((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1)));
             PACK((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1)));
@@ -853,7 +857,7 @@ namespace km {
             }));
         }
 
-        // Waits for the stop word (bounded by the idle limit): a body that stalls.
+        // Waits for the stop flag (bounded by the idle limit): a body that stalls.
         bool wait_stop() const {
             return poll_stop(
                        l1(ctl_ + KM_CTL_STOP),
@@ -866,35 +870,35 @@ namespace km {
         }
 
     private:
-        // Pack: one outgoing item, word 0 the destination core.
-        void send(uint32_t to, const uint32_t* item) {
+        // Pack: one outgoing message, word 0 the destination core.
+        void push_out(uint32_t to, const uint32_t* message) {
             if (!reserve()) {
                 return;
             }
             volatile tt_l1_ptr uint32_t* o = (
                 l1(get_local_cb_interface(kCbDynOut).fifo_wr_ptr << cb_addr_shift)
             );
-            for (uint32_t w = 1; w < item_bytes_ / 4; w++) {
-                o[w] = item[w];
+            for (uint32_t w = 1; w < message_bytes_ / 4; w++) {
+                o[w] = message[w];
             }
             o[0] = to;
-            __sync_synchronize();  // the item is in L1 before the push
+            __sync_synchronize();  // the message is in L1 before the push
             cb_push_back(kCbDynOut, 1);
             pushed_++;
         }
 
-        // Pack: the writer leaves its loop on this item.
+        // Pack: the writer leaves its loop on this message.
         void end_marker() {
             if (!reserve()) {
                 return;
             }
             l1(get_local_cb_interface(kCbDynOut).fifo_wr_ptr
                << cb_addr_shift)[0] = kDynEnd;
-            __sync_synchronize();  // the item is in L1 before the push
+            __sync_synchronize();  // the message is in L1 before the push
             cb_push_back(kCbDynOut, 1);
         }
 
-        // Pack: a free outgoing page (bounded, observes the stop word).
+        // Pack: a free outgoing page (bounded, observes the stop flag).
         bool reserve() {
             volatile tt_reg_ptr uint32_t* acked = get_cb_tiles_acked_ptr(kCbDynOut);
             const uint32_t code = poll_stop(
@@ -918,7 +922,7 @@ namespace km {
             if (code != kGaveNone) {
                 failed_ = true;
                 dyn_gave_up(ctl_, kWhereDynOutPage, pushed_, run_);
-                record_gave_up(ctl_, kStCompute, code, kWhereCOutput, 0, run_);
+                command_gave_up(ctl_, kStCompute, code, kWhereCOutput, 0, run_);
                 return false;
             }
             cb_reserve_back(kCbDynOut, 1);
@@ -931,8 +935,8 @@ namespace km {
         uint32_t run_;
         uint32_t first_;
         uint32_t count_;
-        uint32_t member_;
-        uint32_t item_bytes_;
+        uint32_t rank_;
+        uint32_t message_bytes_;
         uint32_t quota_;
         bool seeded_;
         uint32_t pushed_ = 0;

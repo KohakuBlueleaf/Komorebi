@@ -1,5 +1,5 @@
 """A program: its three kernel sources, buffers, start-up arguments, ring depth and
-segment numbers. A plain description; nothing here needs a device.
+handler numbers. A plain description; nothing here needs a device.
 """
 
 import functools
@@ -18,7 +18,9 @@ KERNELS = ("reader", "compute", "writer")
 # The runtime's KernelBuildOptLevel names; a kernel without one keeps the runtime's
 # default (O2 for the reader and writer, O3 for the compute kernel).
 OPT_LEVELS = ("O0", "O1", "O2", "O3", "Os", "Ofast", "Oz")
-SEGMENT = re.compile(r"constexpr\s+uint32_t\s+kSeg(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;")
+HANDLER = re.compile(
+    r"constexpr\s+uint32_t\s+kHandler(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;"
+)
 
 
 @dataclass(frozen=True)
@@ -41,10 +43,10 @@ class Buffer:
     pages: int
 
 
-def segments_from_header(path):
-    """`constexpr uint32_t kSegName = n;` lines of a header as {"name": n}."""
+def handlers_from_header(path):
+    """`constexpr uint32_t kHandlerName = n;` lines of a header as {"name": n}."""
     found = {}
-    for name, value in SEGMENT.findall(Path(path).read_text()):
+    for name, value in HANDLER.findall(Path(path).read_text()):
         snake = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
         found[snake] = int(value, 0)
     return found
@@ -52,9 +54,9 @@ def segments_from_header(path):
 
 @dataclass
 class Program:
-    """What the resident worker runs on every core: `kernels` is a directory with
+    """What the persistent kernel runs on every core: `kernels` is a directory with
     reader.cpp, compute.cpp and writer.cpp (or a dict of the three), `args(core)` the
-    (reader, writer, compute) arguments after the start-up arguments, `segments` a
+    (reader, writer, compute) arguments after the start-up arguments, `handlers` a
     dict or a header path, `opt` an optimisation level per kernel ({"reader": "Os"})."""
 
     name: str
@@ -65,7 +67,7 @@ class Program:
     compute: dict = field(default_factory=dict)
     defines: dict = field(default_factory=dict)
     depth: int = 4
-    segments: object = field(default_factory=dict)
+    handlers: object = field(default_factory=dict)
     threads: dict = field(default_factory=dict)  # work cluster -> Thread
     shared: dict = field(default_factory=dict)  # shared region name -> size or array
     dyn: "Dynamic | None" = None
@@ -74,12 +76,12 @@ class Program:
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
 
     def __post_init__(self):
-        if isinstance(self.segments, str | Path):
-            self.segments = segments_from_header(self.segments)
-        user_max = abi.headers()["KM_SEG_USER_MAX"]
-        for name, number in self.segments.items():
+        if isinstance(self.handlers, str | Path):
+            self.handlers = handlers_from_header(self.handlers)
+        user_max = abi.headers()["KM_HANDLER_USER_MAX"]
+        for name, number in self.handlers.items():
             if not 1 <= number <= user_max:
-                raise ValueError(f"segment {name} = {number}: not in 1..{user_max}")
+                raise ValueError(f"handler {name} = {number}: not in 1..{user_max}")
         if not 1 <= self.depth <= abi.headers()["KM_RING_SLOTS"]:
             raise ValueError(f"depth {self.depth}: not in 1..KM_RING_SLOTS")
         unknown = set(self.compile_args) - set(KERNELS)
@@ -163,20 +165,20 @@ class Program:
             raise FileNotFoundError(f"{self.name}: no kernel source {missing}")
         return paths
 
-    def seg(self, segment):
-        """The number of a segment given by name or number."""
-        if isinstance(segment, str):
-            if segment not in self.segments:
-                raise KeyError(f"{self.name} has no segment {segment!r}")
-            return self.segments[segment]
-        return int(segment)
+    def handler(self, handler):
+        """The number of a handler given by name or number."""
+        if isinstance(handler, str):
+            if handler not in self.handlers:
+                raise KeyError(f"{self.name} has no handler {handler!r}")
+            return self.handlers[handler]
+        return int(handler)
 
-    def dynamic(self, seg, **options):
-        """Makes segment `seg` a dynamic segment (options: those of Dynamic) and adds
-        its buffers. Returns the program."""
+    def dynamic(self, handler, **options):
+        """Makes handler `handler` a dynamic handler (options: those of Dynamic) and
+        adds its buffers. Returns the program."""
         if self.dyn is not None:
-            raise ValueError(f"{self.name} already has a dynamic segment")
-        self.dyn = Dynamic(seg=self.seg(seg), **options)
+            raise ValueError(f"{self.name} already has a dynamic handler")
+        self.dyn = Dynamic(handler=self.handler(handler), **options)
         self.buffers = [*self.buffers, *self.dyn.buffers()]
         return self
 
@@ -198,27 +200,32 @@ def dyn_header():
 
 @dataclass(frozen=True)
 class Dynamic:
-    """A dynamic segment: items of `item_bytes` move between the queues of the
-    team's cores (`queue_items` each), at most `max_live` alive at once; `bins`
+    """A dynamic handler: items of `message_bytes` move between the queues of the
+    group's cores (`queue_messages` each), at most `max_live` alive at once; `bins`
     open bins per writer; a line says idle after `idle_cycles` of idle. The last
-    `counters` cores of a run's team are counter tiles (layout.counter_tiles)."""
+    `counters` cores of a run's group are counter tiles (layout.counter_tiles)."""
 
-    seg: int
-    item_bytes: int = 64
+    handler: int
+    message_bytes: int = 64
     max_live: int = 1 << 16
-    queue_items: int = 1 << 16
+    queue_messages: int = 1 << 16
     bins: int = 16
     idle_cycles: int = 20000
     counters: int = 2
 
     def __post_init__(self):
         k, _ = dyn_header()
-        page = k["kDynPageItems"]
-        if self.item_bytes % 64 or not 64 <= self.item_bytes <= k["kDynItemMax"]:
-            raise ValueError(f"item_bytes {self.item_bytes}: a multiple of 64 to 256")
-        q = self.queue_items
+        page = k["kDynPageMessages"]
+        if (
+            self.message_bytes % 64
+            or not 64 <= self.message_bytes <= k["kDynMessageMax"]
+        ):
+            raise ValueError(
+                f"message_bytes {self.message_bytes}: a multiple of 64 to 256"
+            )
+        q = self.queue_messages
         if q < page or q & (q - 1) or q > 1 << 31:
-            raise ValueError(f"queue_items {q}: a power of two from {page} to 2**31")
+            raise ValueError(f"queue_messages {q}: a power of two from {page} to 2**31")
         if not 1 <= self.bins <= k["kDynBinsMax"]:
             raise ValueError(f"bins {self.bins}: not in 1..{k['kDynBinsMax']}")
         most = abi.headers()["KM_COUNTERS_MAX"]
@@ -228,25 +235,27 @@ class Dynamic:
             raise ValueError("max_live and idle_cycles must be at least 1")
 
     def buffers(self):
-        """The runtime's buffers of a dynamic segment: packets, outgoing items, bins."""
+        """The runtime's buffers of a dynamic handler: packets, outgoing items, bins."""
         k, _ = dyn_header()
         n = k["kDynPacket"]
         return [
-            Buffer(k["kCbDynIn"], "uint32", k["kDynHeader"] + n * self.item_bytes, 2),
-            Buffer(k["kCbDynOut"], "uint32", self.item_bytes, 2 * n),
-            Buffer(k["kCbDynBins"], "uint32", self.bins * n * self.item_bytes, 1),
+            Buffer(
+                k["kCbDynIn"], "uint32", k["kDynHeader"] + n * self.message_bytes, 2
+            ),
+            Buffer(k["kCbDynOut"], "uint32", self.message_bytes, 2 * n),
+            Buffer(k["kCbDynBins"], "uint32", self.bins * n * self.message_bytes, 1),
         ]
 
     def queue_bytes(self, cores):
         """DRAM bytes of the queues of `cores` cores."""
-        return cores * self.queue_items * self.item_bytes
+        return cores * self.queue_messages * self.message_bytes
 
     def check(self, cores, dram_bytes, depth):
-        """The launcher's refusals for a team of `cores` cores, `dram_bytes` of DRAM
+        """The launcher's rejections for a group of `cores` cores, `dram_bytes` of DRAM
         given to the queues and a ring depth `depth`; raises ValueError."""
-        if self.max_live > self.queue_items:
+        if self.max_live > self.queue_messages:
             raise ValueError(
-                f"max_live {self.max_live} > queue_items {self.queue_items}: "
+                f"max_live {self.max_live} > queue_messages {self.queue_messages}: "
                 "every item aimed at one core would not fit its queue"
             )
         if self.queue_bytes(cores) > dram_bytes:
@@ -263,20 +272,20 @@ class Dynamic:
                 f"max_live {self.max_live} < {cores - self.counters} members: no quota"
             )
         if depth < 2:
-            raise ValueError("a dynamic run needs ring depth 2 for its end record")
+            raise ValueError("a dynamic run needs ring depth 2 for its end command")
 
     def quota(self, cores):
-        """Spawns each member starts a run with, for a team of `cores` cores."""
+        """Spawns each member starts a run with, for a group of `cores` cores."""
         return self.max_live // max(cores - self.counters, 1)
 
     def args(self, queue, lines):
         """Reader and writer words of km::DynArgs (they precede the program's)."""
         _, fields = dyn_header()
         values = {
-            "seg": self.seg,
+            "handler": self.handler,
             "queue": queue,
-            "cap": self.queue_items,
-            "item_bytes": self.item_bytes,
+            "cap": self.queue_messages,
+            "message_bytes": self.message_bytes,
             "lines": lines,
             "idle": self.idle_cycles,
             "bins": self.bins,
@@ -286,4 +295,4 @@ class Dynamic:
 
     def compute_args(self, cores):
         """Compute's words (item bytes, quota, counters), before the program's own."""
-        return [self.item_bytes, self.quota(cores), self.counters]
+        return [self.message_bytes, self.quota(cores), self.counters]

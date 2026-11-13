@@ -1,4 +1,4 @@
-// Work-cluster example, grid side: no segment uses the matrix or vector units.
+// Work-cluster example, grid side: no handler uses the matrix or vector units.
 #include <stdint.h>
 
 #include "api/compute/compute_kernel_api.h"
@@ -6,5 +6,5 @@
 
 void kernel_main() {
     km::Compute cp;
-    cp.run([&](const km_record_t&) {});
+    cp.run([&](const km_command_t&) {});
 }

@@ -32,7 +32,7 @@ def test_results_round_trip_and_discovery(tmp_path):
     )
 
 
-def test_a_missing_required_array_is_refused(tmp_path):
+def test_a_missing_required_array_is_rejected(tmp_path):
     arrays = raster_arrays()
     del arrays["depth"]
     np.savez(tmp_path / "tiny.npz", **arrays)

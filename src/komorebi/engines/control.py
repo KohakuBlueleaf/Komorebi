@@ -1,4 +1,4 @@
-"""The host's side of the dispatch kernel's engines: uploads placed in the kernel's
+"""The host's side of the dispatcher's engines: uploads placed in the kernel's
 upload region, the RUN and CANCEL commands, and the engines' events as typed values.
 A `Run` keeps one `Engines` once an engine call is made (docs/reference/host.md).
 """
@@ -18,7 +18,7 @@ from komorebi.engines import graph as gr
 from komorebi.engines import stream as st
 from komorebi.errors import (
     EngineError,
-    EngineRefused,
+    EngineRejected,
     EngineTimeout,
     KomorebiError,
     WaitTimeout,
@@ -90,7 +90,7 @@ class Upload:
 
 
 @dataclass(eq=False)
-class EngineTicket:
+class EngineHandle:
     """One start of an engine: `kind`, the `req` of its events, the `upload`, every
     event so far (`events`) and the end or error event once it came (`end`).
     `unknown`: its RUN was not answered in time, so it may run; cancel settles it."""
@@ -104,7 +104,7 @@ class EngineTicket:
     end: object = field(default=None, repr=False)
     bind: int | None = field(default=None, repr=False)  # its binding line
     unknown: bool = False
-    commands: tuple = field(default=(), repr=False)  # tickets of its RUN and PING
+    commands: tuple = field(default=(), repr=False)  # handles of its RUN and PING
 
 
 class EngineEvent(NamedTuple):
@@ -113,7 +113,7 @@ class EngineEvent(NamedTuple):
     HALT's register; a graph: `regs` = (register 0's low 24 bits, register 1)) or
     "error" (`reason`, `reason_name`, and the stream's `pc` or the graph's `node`)."""
 
-    ticket: EngineTicket
+    handle: EngineHandle
     kind: str
     value: int | None = None
     regs: tuple | None = None
@@ -172,12 +172,12 @@ class Engines:
         }
         self.lo, self.hi = min(self.kinds), max(self.kinds)
         host = [c[k] for k in ("KM_EV_DONE", "KM_EV_TIMEOUT", "KM_EV_PONG")]
-        host.append(c["KM_EV_REFUSED"])
+        host.append(c["KM_EV_REJECTED"])
         if any(self.lo <= k <= self.hi for k in host):
             raise KomorebiError("an engine's event kind is also a command's")
         self.region = None
         self.uploads = []
-        self.active = {}  # (kind, req) -> the ticket of the engine running
+        self.active = {}  # (kind, req) -> the handle of the engine running
         self.unclaimed = []  # (kind, req, status, ticks) of no started engine
 
     # The region and uploads ----------------------------------------------------
@@ -190,7 +190,7 @@ class Engines:
             by = time.monotonic() + READY_WAIT_S
             while port.host_word(at) != self.c["KMD_READY_MARK"]:
                 if time.monotonic() > by:
-                    raise KomorebiError("the dispatch kernel published no ready block")
+                    raise KomorebiError("the dispatcher published no ready block")
             self.region = Region(port.host_word(at + self.at["ready_bytes"]))
         return self.region
 
@@ -243,10 +243,10 @@ class Engines:
             raise KomorebiError(f"the {up.kind} at {up.offset} runs: wait or cancel")
         if up.state == "kept":
             by = time.monotonic() + timeout  # one deadline for the command and the end
-            t = EngineTicket("graph", up.req, up, drop=True)
+            t = EngineHandle("graph", up.req, up, drop=True)
             self.active[("graph", up.req)] = t
             try:
-                self._command(self.c["KM_SEG_CANCEL"], [up.req], timeout)
+                self._command(self.c["KM_HANDLER_CANCEL"], [up.req], timeout)
             except BaseException:
                 self.active.pop(("graph", up.req), None)
                 raise
@@ -268,11 +268,11 @@ class Engines:
         if up.kind == "stream":
             if bindings or kept is not None:
                 raise ValueError("a stream takes no bindings and is never kept")
-            t = EngineTicket("stream", up.req, up)
+            t = EngineHandle("stream", up.req, up)
             return self._run(t, [up.offset, up.bytes], timeout)
         if kept is not None and bool(kept) != up.keep:
             self._set_keep(up, bool(kept))
-        t = EngineTicket("graph", up.req, up)
+        t = EngineHandle("graph", up.req, up)
         args = [up.offset, up.bytes, self.c["KM_GRUN_UPLOAD"]]
         return self._run(t, args + self._bindings(t, bindings), timeout)
 
@@ -280,7 +280,7 @@ class Engines:
         up = next((u for u in self.uploads if u.state == "kept" and u.req == req), None)
         if up is None:
             raise ValueError(f"no kept graph that is not running has req {req}")
-        t = EngineTicket("graph", req, up, restart=True)
+        t = EngineHandle("graph", req, up, restart=True)
         args = [req, 0, self.c["KM_GRUN_KEPT"]]
         return self._run(t, args + self._bindings(t, bindings), timeout)
 
@@ -288,10 +288,10 @@ class Engines:
         if t.end is not None and not t.unknown:
             return  # it has ended: nothing to cancel
         try:
-            self._command(self.c["KM_SEG_CANCEL"], [t.req], timeout)
-        except EngineRefused as err:
-            ended = t.end is not None or t.unknown  # or its RUN was refused
-            if not ended or err.reason != self.c["KMD_REFUSE_UNKNOWN"]:
+            self._command(self.c["KM_HANDLER_CANCEL"], [t.req], timeout)
+        except EngineRejected as err:
+            ended = t.end is not None or t.unknown  # or its RUN was rejected
+            if not ended or err.reason != self.c["KMD_REJECT_UNKNOWN"]:
                 raise  # unless it ended while the command was on its way
         except WaitTimeout as err:
             raise EngineTimeout(
@@ -310,21 +310,21 @@ class Engines:
             unknown = t.unknown
             try:
                 self.cancel(t, max(by - time.monotonic(), 0.0))
-            except EngineRefused:
+            except EngineRejected:
                 if not unknown:
-                    raise  # an unknown one's RUN was refused: it never ran
+                    raise  # an unknown one's RUN was rejected: it never ran
         for t in list(self.active.values()):
             self._wait(t, max(by - time.monotonic(), 0.0))
 
     def _settle_unknown(self, t):
         """The RUN of `t` was answered before the command answered now: raises its
-        refusal (it never ran) or leaves `t` running or ended."""
+        rejection (it never ran) or leaves `t` running or ended."""
         t.unknown = False
         command, ping = t.commands
         self.run.forget([ping])
         try:
             self._answer(command)
-        except EngineRefused:
+        except EngineRejected:
             self._not_started(t)
             raise
 
@@ -373,11 +373,11 @@ class Engines:
         return [offset, len(values)]
 
     def _run(self, t, args, timeout):
-        """KM_SEG_RUN for ticket `t`; its events are routed to it from now on."""
+        """KM_HANDLER_RUN for handle `t`; its events are routed to it from now on."""
         self.active[(t.kind, t.req)] = t
         t.upload.state = "running"
         try:
-            self._command(self.c["KM_SEG_RUN"], args, timeout, t)
+            self._command(self.c["KM_HANDLER_RUN"], args, timeout, t)
         except WaitTimeout as err:
             t.unknown = True  # the kernel may have started it
             raise EngineTimeout(
@@ -396,27 +396,27 @@ class Engines:
             t.upload.state = "kept" if t.restart else "idle"
             self._free_bind(t)
 
-    def _command(self, seg, args, timeout, t=None):
+    def _command(self, handler, args, timeout, t=None):
         """Sends a RUN or CANCEL and a PING behind it, and waits for the PONG: the
-        kernel answers the command before the PING, with an event only to refuse it.
+        kernel answers the command before the PING, with an event only to reject it.
         """
         run = self.run
-        ticket = run._queue_command(seg, None, args)
-        ping = run._queue_command(self.c["KM_SEG_PING"], None)
+        handle = run._queue_command(handler, None, args)
+        ping = run._queue_command(self.c["KM_HANDLER_PING"], None)
         if t is not None:
-            t.commands = (ticket, ping)
+            t.commands = (handle, ping)
         run.wait(ping, timeout)
-        self._answer(ticket)
+        self._answer(handle)
 
-    def _answer(self, ticket):
-        """Settles a command that was answered (a later PONG came): EngineRefused if
-        the kernel refused it."""
+    def _answer(self, handle):
+        """Settles a command that was answered (a later PONG came): EngineRejected if
+        the kernel rejected it."""
         run = self.run
-        ev = run.event(ticket)
-        run._settle(ticket)
-        run.forget([ticket])
-        if ev is not None and ev.kind == "refused":
-            raise EngineRefused(ticket, ev.aux, run._refusals)
+        ev = run.event(handle)
+        run._settle(handle)
+        run.forget([handle])
+        if ev is not None and ev.kind == "rejected":
+            raise EngineRejected(handle, ev.aux, run._rejections)
 
     # Events ---------------------------------------------------------------------
 
@@ -467,12 +467,12 @@ class Engines:
         and a restarted one stays kept."""
         self._free_bind(t)
         up = t.upload
-        refused = ev.kind == "error" and ev.reason in (
+        rejected = ev.kind == "error" and ev.reason in (
             self.c["KM_SERR_HEADER"],
             self.c["KM_SERR_KEPT_FULL"],
         )
         kept = t.kind == "graph" and not t.drop
-        kept = kept and (t.restart or (up.keep and up.valid and not refused))
+        kept = kept and (t.restart or (up.keep and up.valid and not rejected))
         up.state = "kept" if kept else "idle"
 
     def _free_bind(self, t):

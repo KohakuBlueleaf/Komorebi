@@ -17,8 +17,8 @@ session closed the device (the driver takes the lock at the first open and gives
 back only at the process's end). A file that opens the card in the pytest process
 (`CARD_IN_PROCESS = True`: `test_host.py`, `test_engines.py`, `test_mapcollect_fed.py`)
 followed in the same process by a file that runs a card script as a child would leave
-that child waiting for the card. `Session.open` now refuses at once in that case
-(`km.CardBusy`, naming the holder), and `conftest.py` refuses such a mixed run before
+that child waiting for the card. `Session.open` now rejects at once in that case
+(`km.CardBusy`, naming the holder), and `conftest.py` rejects such a mixed run before
 any card access; one file per process avoids both.
 
 `run_cards.py` runs the files in turn, each with a time bound (SIGTERM, then SIGKILL

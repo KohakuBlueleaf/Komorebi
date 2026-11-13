@@ -15,25 +15,25 @@ namespace scen {
 
     namespace {
 
-        // A record as the cores saw it, for the checks: its team and the slot it went
+        // A command as the cores saw it, for the checks: its group and the slot it went
         // to.
-        struct Issued {
+        struct Submitted {
             uint32_t first, count, slot;
             bool exit;
             bool done;
         };
 
-        std::map<uint32_t, Issued> issued(const Sim& s) {
-            std::map<uint32_t, Issued> m;
+        std::map<uint32_t, Submitted> submitted(const Sim& s) {
+            std::map<uint32_t, Submitted> m;
             for (size_t k = 0; k < s.jobs.size(); k++) {
                 const JobResult& r = s.jobs[k];
-                if (r.status != kNotIssued) {
+                if (r.status != kNotSubmitted) {
                     const Job& j = s.cfg.jobs[k];
                     m[r.seq] = {j.first, j.count, r.slot, false, r.status == kDone};
                 }
             }
-            if (s.exit_job.status != kNotIssued) {
-                // EXIT is completed as a team of every core, whatever its team field
+            if (s.exit_job.status != kNotSubmitted) {
+                // EXIT is completed as a group of every core, whatever its group field
                 // says.
                 m[s.exit_job.seq] = {
                     0, s.cfg.cores, 0, true, s.exit_job.status == kDone
@@ -71,7 +71,7 @@ namespace scen {
 
     Job map_job(uint32_t first, uint32_t count, uint32_t tiles) {
         Job j;
-        j.seg = kSegMap;
+        j.handler = kHandlerMap;
         j.first = first;
         j.count = count;
         j.a[1] = tiles;
@@ -81,7 +81,7 @@ namespace scen {
 
     Job nop_job(uint32_t first, uint32_t count) {
         Job j;
-        j.seg = kSegNop;
+        j.handler = kHandlerNop;
         j.first = first;
         j.count = count;
         return j;
@@ -95,7 +95,7 @@ namespace scen {
         c.wait_limit = 8;
         c.idle_limit = 64;
         c.deadline = 200000;
-        c.bound = 1500000;
+        c.timeout = 1500000;
         return c;
     }
 
@@ -109,7 +109,7 @@ namespace scen {
     }
 
     // What every case ends with: every thread returned, no stub contract broken, state
-    // words consistent, and each acknowledged record completed by its whole team.
+    // words consistent, and each acknowledged command completed by its whole group.
     void common(const Sim& s, Check& c) {
         c.expect(
             s.all_returned, "every thread of every core returned within the bound"
@@ -123,7 +123,7 @@ namespace scen {
                 );
             }
         }
-        const auto recs = issued(s);
+        const auto recs = submitted(s);
         std::map<uint32_t, std::map<uint32_t, uint32_t>> takes, reports, acks;
         std::map<uint32_t, uint32_t> runs;
         std::map<uint32_t, std::vector<Event>> by_seq;
@@ -142,7 +142,7 @@ namespace scen {
                 c.expect(
                     it != recs.end() && it->second.slot == e.b,
                     fmt("core %u acknowledged %u in ack word %u, the slot it was "
-                        "issued to",
+                        "submitted to",
                         e.core,
                         e.a,
                         e.b)
@@ -156,7 +156,7 @@ namespace scen {
             );
             c.expect(
                 s.state(core, km::kStRuns) == runs[core],
-                fmt("core %u counts %u records taken, the log shows %u",
+                fmt("core %u counts %u commands taken, the log shows %u",
                     core,
                     s.state(core, km::kStRuns),
                     runs[core])
@@ -167,24 +167,24 @@ namespace scen {
                 continue;
             }
             for (uint32_t core = 0; core < s.cfg.cores; core++) {
-                const bool member = core - r.first < r.count;
+                const bool included = core - r.first < r.count;
                 const uint32_t t = takes[seq][core];
                 c.expect(
-                    t == (member ? 1u : 0u),
-                    fmt("record %u taken %u times by core %u", seq, t, core)
+                    t == (included ? 1u : 0u),
+                    fmt("command %u taken %u times by core %u", seq, t, core)
                 );
-                if (member) {
+                if (included) {
                     const uint32_t want = core == r.first ? 0 : 1;
                     c.expect(
                         reports[seq][core] == want,
-                        fmt("record %u: core %u sent %u reports",
+                        fmt("command %u: core %u sent %u reports",
                             seq,
                             core,
                             reports[seq][core])
                     );
                     c.expect(
                         acks[seq][core] == (core == r.first ? 1u : 0u),
-                        fmt("record %u: core %u sent %u acks",
+                        fmt("command %u: core %u sent %u acks",
                             seq,
                             core,
                             acks[seq][core])
@@ -192,14 +192,16 @@ namespace scen {
                 } else {
                     c.expect(
                         reports[seq][core] + acks[seq][core] == 0,
-                        fmt("record %u: core %u, not in the team, reported", seq, core)
+                        fmt("command %u: core %u, not in the group, reported",
+                            seq,
+                            core)
                     );
                 }
             }
             // A core reports (or acks) only after every report to it for the record
             // landed, and it waits for exactly as many as its children in the tree.
-            km_record_t rec = {};
-            rec.team = km::make_team(r.first, r.count);
+            km_command_t rec = {};
+            rec.group = km::make_group(r.first, r.count);
             std::map<uint32_t, std::vector<uint64_t>> landed;
             for (const Event& e : by_seq[seq]) {
                 if (e.kind == kEvReportLand) {
@@ -217,7 +219,7 @@ namespace scen {
                 }
                 c.expect(
                     before == want,
-                    fmt("record %u: core %u sent its report after %u of the "
+                    fmt("command %u: core %u sent its report after %u of the "
                         "reports to it landed",
                         seq,
                         e.core,
@@ -247,14 +249,14 @@ namespace scen {
     }
 
     // A tile that gave up acknowledges nothing afterwards: no report or ack from `core`
-    // for record `seq` or any later one.
+    // for command `seq` or any later one.
     void silent_from(const Sim& s, Check& c, uint32_t core, uint32_t seq) {
         for (const Event& e : s.events) {
             if ((e.kind == kEvReport || e.kind == kEvAck) && e.core == core &&
                 km::newer(e.a + 1, seq)) {
                 c.expect(
                     false,
-                    fmt("core %u reported record %u after giving up on %u",
+                    fmt("core %u reported command %u after giving up on %u",
                         core,
                         e.a,
                         seq)

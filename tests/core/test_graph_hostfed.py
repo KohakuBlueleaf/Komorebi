@@ -1,5 +1,6 @@
-"""Host-fed graphs against the fake dispatch kernel: the same records and registers as
-the simulator, the loop ending on result words, a queued record placed by the kernel."""
+"""Host-fed graphs against the fake dispatcher: the same commands and registers as
+the simulator, the loop ending on result words, a queued command placed by the kernel.
+"""
 
 import shutil
 
@@ -32,34 +33,34 @@ def make_run():
 def loop():
     g = Graph(max_runs=100)
     it, err = g.bindings("it"), g.reg()
-    a = g.record(1, team=(0, 60), args=[it])
-    b = g.record(2, team=(0, 30), args=[it], after=[a])
-    c = g.record(3, team=(30, 30), args=[it], after=[a])
-    d = g.record(4, team=(0, 60), args=[it], after=[b, c], result=err)
+    a = g.command(1, group=(0, 60), args=[it])
+    b = g.command(2, group=(0, 30), args=[it], after=[a])
+    c = g.command(3, group=(30, 30), args=[it], after=[a])
+    d = g.command(4, group=(0, 60), args=[it], after=[b, c], result=err)
     e = g.cpu(after=[d])
     e.addi(it, it, 1)
     e.lt(g.again, err, g.const(65))
     return g
 
 
-def test_hostfed_gives_the_simulated_records_and_registers_and_takes_new_bindings():
+def test_hostfed_gives_the_simulated_commands_and_registers_and_takes_new_bindings():
     g = loop()
     run, _ = make_run()
     for it, rounds in ((0, 6), (2, 4)):
         got = run.run_hostfed(g, {"it": it})
         want = g.simulate({"it": it}, result=lambda r: r.args[0] + r.count)
         assert (got.status, got.runs, got.regs) == ("ended", rounds, want.regs)
-        key = sorted((r.run, r.node, r.first, r.count, r.args) for r in got.records)
+        key = sorted((r.run, r.node, r.first, r.count, r.args) for r in got.commands)
         assert key == sorted(
-            (r.run, r.node, r.first, r.count, r.args) for r in want.records
+            (r.run, r.node, r.first, r.count, r.args) for r in want.commands
         )
 
 
-def test_a_queued_record_gets_the_kernels_team_after_the_teams_in_flight():
+def test_a_queued_command_gets_the_kernels_group_after_the_groups_in_flight():
     g = Graph()
-    g.record(1, team=(0, 50))
-    g.record(2, count=20)
+    g.command(1, group=(0, 50))
+    g.command(2, count=20)
     run, port = make_run()
     got = run.run_hostfed(g)
-    assert [(r.first, r.queued) for r in got.records] == [(0, False), (None, True)]
-    assert [team for *_, team in port.issued] == [(0, 50), (50, 20)]
+    assert [(r.first, r.queued) for r in got.commands] == [(0, False), (None, True)]
+    assert [group for *_, group in port.submitted] == [(0, 50), (50, 20)]

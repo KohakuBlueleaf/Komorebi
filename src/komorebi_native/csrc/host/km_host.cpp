@@ -1,4 +1,4 @@
-// _km_host: the X280 runtime, the dispatch kernel's memory layout (km_dispatch.h), its
+// _km_host: the X280 runtime, the dispatcher's memory layout (km_dispatch.h), its
 // start and stop, batched host commands and the event ring. Every wait is bounded.
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -82,11 +82,11 @@ namespace {
     // package when it loads this module: the module does not name a build directory.
     std::string idle_image_path;
 
-    static_assert(sizeof(km_record_t) == 64);
+    static_assert(sizeof(km_command_t) == 64);
     static_assert(sizeof(km_event_t) == 16 && sizeof(kmd_args_t) <= kArgsBytes);
     static_assert(kArgsBytes <= KMD_LIM_MAILBOX);
 
-    using Records = nb::
+    using Commands = nb::
         ndarray<const uint32_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
     using Events = nb::ndarray<nb::numpy, uint32_t, nb::ndim<2>>;
     using Bytes = nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>;
@@ -116,7 +116,7 @@ namespace {
     }
 
     // Writes words into one Tensix core's L1 from the host, through the device API
-    // (not the X280): the stop word when the dispatch kernel is not there to send it.
+    // (not the X280): the stop flag when the dispatcher is not there to send it.
     void write_l1(
         const MeshDevice& mesh,
         uint32_t x,
@@ -758,7 +758,7 @@ namespace {
         return Events(owned->data(), 2, shape, owner);
     }
 
-    // The X280 runtime on one card and the dispatch kernel's port on cluster 0: its
+    // The X280 runtime on one card and the dispatcher's port on cluster 0: its
     // LIM layout, the host command ring, the event ring and the result block.
     class Dispatch {
     public:
@@ -840,7 +840,7 @@ namespace {
             uint32_t host_depth,
             uint32_t event_depth,
             double t_start_s,
-            double t_record_s,
+            double t_command_s,
             double t_idle_s,
             uint64_t state_ddr,
             uint64_t work_cmds,
@@ -849,7 +849,7 @@ namespace {
             const std::vector<uint64_t>& work_noc,
             const std::vector<uint64_t>& work_noc_addr,
             int64_t upload_bytes,
-            uint64_t dyn_seg
+            uint64_t dyn_handler
         ) {
             require_open();
             if (session_) {
@@ -937,7 +937,7 @@ namespace {
             a.pcie_x = pcie_x_;
             a.pcie_y = pcie_y_;
             a.t_start = static_cast<uint64_t>(t_start_s * kMtimeHz);
-            a.t_record = static_cast<uint64_t>(t_record_s * kMtimeHz);
+            a.t_command = static_cast<uint64_t>(t_command_s * kMtimeHz);
             a.t_idle = static_cast<uint64_t>(t_idle_s * kMtimeHz);
             a.state_ddr = state_ddr;
             a.work_cmds = work_cmds;
@@ -949,7 +949,7 @@ namespace {
             }
             a.version = KMD_ARGS_VERSION;
             a.upload_bytes = upload_bytes_;
-            a.dyn_seg = dyn_seg;
+            a.dyn_handler = dyn_handler;
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &a, sizeof(a));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
@@ -1075,7 +1075,7 @@ namespace {
             );
         }
 
-        // Stores the first k records that fit as commands next .. next + k - 1 (number
+        // Stores the first k commands that fit as commands next .. next + k - 1 (number
         // in seq and the landing words), the read count, one fence. Returns k.
         uint32_t push(const uint32_t* recs, size_t n) {
             const uint32_t k = static_cast<uint32_t>(std::min<size_t>(n, room()));
@@ -1083,7 +1083,7 @@ namespace {
             return k;
         }
 
-        // Queues n records for wait(), stored in order as the ring has room (the
+        // Queues n commands for wait(), stored in order as the ring has room (the
         // kernel orders KM_F_EXCL ones). Returns the number queued.
         size_t enqueue(const uint32_t* recs, size_t n) {
             require_open();
@@ -1186,8 +1186,8 @@ namespace {
             }
         }
 
-        // Waits (bounded) for the kernel's hart result, stops the session, reads the
-        // result block: result ready, hart result, cleaned, what failed, words, harts.
+        // Waits (bounded) for the kernel's core result, stops the session, reads the
+        // result block: result ready, core result, cleaned, what failed, words, cores.
         nb::dict finish(double timeout_s) {
             require_open();
             if (!session_) {
@@ -1220,17 +1220,17 @@ namespace {
             std::vector<uint32_t> words(KMD_R_WORDS);
             std::memcpy(words.data(), block.data(), 4 * KMD_R_WORDS);
             const auto hb = (
-                tile_->read_available_lim(base_ + KMD_LIM_HARTS, 4 * KMD_H_WORDS)
+                tile_->read_available_lim(base_ + KMD_LIM_CORES, 4 * KMD_H_WORDS)
             );
-            std::vector<uint32_t> harts(KMD_H_WORDS);
-            std::memcpy(harts.data(), hb.data(), 4 * KMD_H_WORDS);
+            std::vector<uint32_t> x280_cores(KMD_H_WORDS);
+            std::memcpy(x280_cores.data(), hb.data(), 4 * KMD_H_WORDS);
             nb::dict out;
             out["result_ready"] = ready;
             out["result"] = ready ? nb::object(nb::int_(result)) : nb::none();
             out["cleaned"] = cleaned;
             out["failed"] = failed;
             out["words"] = words;
-            out["harts"] = harts;  // the hart block (KMD_H_*)
+            out["x280_cores"] = x280_cores;  // the core block (KMD_H_*)
             return out;
         }
 
@@ -1247,7 +1247,7 @@ namespace {
             try {
                 aborted_ = {
                     lim_words(KMD_LIM_RESULT, KMD_R_WORDS),
-                    lim_words(KMD_LIM_HARTS, KMD_H_WORDS)
+                    lim_words(KMD_LIM_CORES, KMD_H_WORDS)
                 };
             } catch (const std::exception& error) {
                 note_failed("cluster 0's blocks", error.what());
@@ -1255,19 +1255,19 @@ namespace {
             return done.cleaned_up();
         }
 
-        // After abort() stopped a kernel: {words, harts} as it left them, or None.
+        // After abort() stopped a kernel: {words, cores} as it left them, or None.
         nb::object aborted() const {
             if (!aborted_) {
                 return nb::none();
             }
             nb::dict out;
             out["words"] = aborted_->first;
-            out["harts"] = aborted_->second;  // the hart block (KMD_H_*)
+            out["x280_cores"] = aborted_->second;  // the core block (KMD_H_*)
             return out;
         }
 
-        // While the kernel runs: the result and hart blocks (core 0's pass stamp) read
-        // twice gap_s apart, and the runtime's view of each hart.
+        // While the kernel runs: the result and core blocks (core 0's pass stamp) read
+        // twice gap_s apart, and the runtime's view of each core.
         nb::dict probe(double gap_s) {
             require_open();
             nb::dict out;
@@ -1276,37 +1276,38 @@ namespace {
                 return out;
             }
             std::vector<uint32_t> before, after, words;
-            std::string harts, failed;
+            std::string x280_cores, failed;
             {
                 nb::gil_scoped_release release;
                 try {
-                    before = lim_words(KMD_LIM_HARTS, KMD_H_WORDS);
+                    before = lim_words(KMD_LIM_CORES, KMD_H_WORDS);
                     std::this_thread::sleep_for(
                         std::chrono::duration<double>(std::clamp(gap_s, 0.0, 1.0))
                     );
-                    after = lim_words(KMD_LIM_HARTS, KMD_H_WORDS);
+                    after = lim_words(KMD_LIM_CORES, KMD_H_WORDS);
                     words = lim_words(KMD_LIM_RESULT, KMD_R_WORDS);
                 } catch (const std::exception& error) {
                     failed = std::string("LIM not readable: ") + error.what();
                 }
                 try {
-                    harts = x280::describe(rt().session(*session_).inspect());
+                    x280_cores = x280::describe(rt().session(*session_).inspect());
                 } catch (const std::exception& error) {
-                    harts = std::string("hart states not readable: ") + error.what();
+                    x280_cores =
+                        (std::string("core states not readable: ") + error.what());
                 }
             }
             if (failed.empty()) {
-                out["stamp_before"] = before[KMD_H_STAMP0];
-                out["stamp_after"] = after[KMD_H_STAMP0];
+                out["marker_before"] = before[KMD_H_MARKER0];
+                out["marker_after"] = after[KMD_H_MARKER0];
                 out["words"] = words;
             }
             out["failed"] = failed;
-            out["harts"] = harts;
+            out["x280_cores"] = x280_cores;
             return out;
         }
 
         // Work clusters 1 to 3: one image each, started with an argument block at the
-        // start of that cluster's available LIM. Cluster 0 is the dispatch kernel's.
+        // start of that cluster's available LIM. Cluster 0 is the dispatcher's.
         uint32_t clusters() const {
             return static_cast<uint32_t>(work_.size());
         }
@@ -1386,8 +1387,8 @@ namespace {
             return work(c, false).session.has_value();
         }
 
-        // Waits (bounded) until every hart of the cluster has returned from main:
-        // ready, the four hart results, and the runtime's description otherwise.
+        // Waits (bounded) until every core of the cluster has returned from main:
+        // ready, the four core results, and the runtime's description otherwise.
         nb::dict work_wait(uint32_t c, double timeout_s) {
             Work& w = work(c, true);
             if (!w.session) {
@@ -1493,7 +1494,7 @@ namespace {
             }
         }
 
-        // Stores k records as the next commands, every line then one fence.
+        // Stores k commands as the next commands, every line then one fence.
         void store(const uint32_t* recs, uint32_t k) {
             if (k == 0) {
                 return;
@@ -1513,7 +1514,7 @@ namespace {
         }
 
         // One batch from the queue: the commands up to upto that fit. An exclusive
-        // record is stored like any other; the kernel's KM_F_EXCL check orders it.
+        // command is stored like any other; the kernel's KM_F_EXCL check orders it.
         void store_queued(uint32_t upto) {
             const int64_t due = static_cast<int32_t>(upto - next_) + int64_t{1};
             size_t k = std::min<size_t>({queued(), batch_, room()});
@@ -1688,8 +1689,8 @@ namespace {
         uint64_t host_noc_ = 0;
         uint32_t pcie_x_ = 0, pcie_y_ = 0;
         std::optional<x280::SessionId> session_;
-        std::vector<uint32_t> queue_;  // records not stored yet, 16 words each
-        size_t head_ = 0;              // the first record not stored
+        std::vector<uint32_t> queue_;  // commands not stored yet, 16 words each
+        size_t head_ = 0;              // the first command not stored
         std::vector<Work> work_;  // every cluster in tile_ids() order; 0 unused here
     };
 
@@ -1869,7 +1870,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("host_depth"),
             nb::arg("event_depth"),
             nb::arg("t_start_s"),
-            nb::arg("t_record_s"),
+            nb::arg("t_command_s"),
             nb::arg("t_idle_s"),
             nb::arg("state_ddr"),
             nb::arg("work_cmds") = 0,
@@ -1878,7 +1879,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("work_noc") = std::vector<uint64_t>{},
             nb::arg("work_noc_addr") = std::vector<uint64_t>{},
             nb::arg("upload_bytes") = -1,
-            nb::arg("dyn_seg") = 0
+            nb::arg("dyn_handler") = 0
         )
         .def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
@@ -1896,23 +1897,23 @@ NB_MODULE(_km_host, m) {
         .def("room", &Dispatch::room)
         .def(
             "push",
-            [](Dispatch& d, Records recs) {
+            [](Dispatch& d, Commands recs) {
                 if (recs.shape(1) != 16) {
-                    throw std::runtime_error("records are [n, 16] words");
+                    throw std::runtime_error("commands are [n, 16] words");
                 }
                 return d.push(recs.data(), recs.shape(0));
             },
-            nb::arg("records")
+            nb::arg("commands")
         )
         .def(
             "enqueue",
-            [](Dispatch& d, Records recs) {
+            [](Dispatch& d, Commands recs) {
                 if (recs.shape(1) != 16) {
-                    throw std::runtime_error("records are [n, 16] words");
+                    throw std::runtime_error("commands are [n, 16] words");
                 }
                 return d.enqueue(recs.data(), recs.shape(0));
             },
-            nb::arg("records")
+            nb::arg("commands")
         )
         .def(
             "wait",

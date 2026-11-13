@@ -13,7 +13,7 @@ One Blackhole p150a, slow dispatch, AICLK 1350 MHz (driver, every run), host loa
 
 | Question | Answer |
 |---|---|
-| Build | Overlays build with the persistent kernel's own compile command and flags, linked at the slot with `--just-symbols` of its ELF: entry at the slot's first word, `.bss` zeroed by the entry, no relocations, no undefined symbol. Data symbols resolve (the persistent kernel's globals in the core's local memory, the firmware's). Text symbols do not: the runtime loads kernel text at another address than it is linked for (execute in place), so the builder refuses a call into the persistent kernel's text; its functions are passed as pointers |
+| Build | Overlays build with the persistent kernel's own compile command and flags, linked at the slot with `--just-symbols` of its ELF: entry at the slot's first word, `.bss` zeroed by the entry, no relocations, no undefined symbol. Data symbols resolve (the persistent kernel's globals in the core's local memory, the firmware's). Text symbols do not: the runtime loads kernel text at another address than it is linked for (execute in place), so the builder rejects a call into the persistent kernel's text; its functions are passed as pointers |
 | One core, two overlays, 1,000 swaps | Exact: every result, the persistent kernel's call counter, a load at every swap |
 | Load time, 4 to 80 KiB | 540 cycles + 21.1 cycles a KiB (fit over the five sizes): 0.45 µs for 4 KiB, 1.64 µs for 80 KiB |
 | A command naming the overlay held | 128 to 153 cycles (0.1 µs) besides the body itself |
@@ -37,7 +37,7 @@ One Blackhole p150a, slow dispatch, AICLK 1350 MHz (driver, every run), host loa
   symbols, so the persistent compute kernel exports the library state its overlays use
   (the runtime's whole-program build otherwise removes or hides it), and a library's
   file-static cache that an overlay holds a copy of is reset at the overlay's entry
-  (`builder.py` refuses an overlay with a second copy of any other state).
+  (`builder.py` rejects an overlay with a second copy of any other state).
 - **Against a launch.** A load and a call cost microseconds where the host's launch of a
   kernel costs tens of milliseconds.
 

@@ -17,11 +17,11 @@ SCHEDULE = r"""
 #include "komorebi/device/km_group.hpp"
 
 int main(int argc, char** argv) {
-    km_record_t r = {};
-    r.team = km::make_team(5, std::atoi(argv[1]));
+    km_command_t r = {};
+    r.group = km::make_group(5, std::atoi(argv[1]));
     const unsigned form = std::atoi(argv[2]);
     for (unsigned me = 5; me < 5 + km::count(r); me++) {
-        const km::Group g = km::team_group(r, me);
+        const km::Group g = km::group_of(r, me);
         const km::ReduceStep s = km::reduce_send(g, form);
         std::printf("%u %d %u %u %u", g.rank, s.root, s.to, s.port, s.slot);
         for (unsigned p = 0; p < KM_PORTS; p++) {
@@ -81,18 +81,18 @@ DIGITS = r"""
 #include "komorebi/device/km_group.hpp"
 
 int main() {
-    km_record_t r = {};
-    r.team = km::make_team(10, 11);  // index = block * 4 + part; the last block short
+    km_command_t r = {};
+    r.group = km::make_group(10, 11);  // index = block * 4 + part; the last block short
     for (unsigned me = 10; me < 21; me++) {
         const km::Group g = km::digit_group(r, me, 1, 4);
-        std::printf("%u %u %u %u\n", g.base, g.size, g.rank, km::member(g, g.rank));
+        std::printf("%u %u %u %u\n", g.base, g.size, g.rank, km::core_of(g, g.rank));
     }
     return 0;
 }
 """
 
 
-def test_digit_group_is_the_members_of_one_block(tmp_path):
+def test_digit_group_is_the_ranks_of_one_block(tmp_path):
     src, exe = tmp_path / "digits.cpp", tmp_path / "digits"
     src.write_text(DIGITS)
     cmd = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(INCLUDE)]
@@ -110,14 +110,14 @@ PAGES = r"""
 #include "komorebi/device/km_group.hpp"
 
 int main(int argc, char** argv) {
-    km_record_t r = {};
-    r.team = km::make_team(0, std::atoi(argv[1]));
+    km_command_t r = {};
+    r.group = km::make_group(0, std::atoi(argv[1]));
     const unsigned form = std::atoi(argv[2]);
     const km::Arrival arr = {1, 118, 2};
-    const unsigned need = km::reduce_slots(km::team_group(r, 0), form);
+    const unsigned need = km::reduce_slots(km::group_of(r, 0), form);
     std::printf("%u %u\n", km::arrival_slots(arr), need);
     for (unsigned me = 1; me < km::count(r); me++) {
-        const km::ReduceStep s = km::reduce_send(km::team_group(r, me), form);
+        const km::ReduceStep s = km::reduce_send(km::group_of(r, me), form);
         std::printf("%u %u\n", s.to, km::slot_page(arr, s.slot));
     }
     return 0;

@@ -11,7 +11,7 @@
   "r": 13,
   "kb": 12,
   "window": 2,
-  "lane_length": 5,
+  "broadcast_length": 5,
   "jobs_max": 4,
   "score_tiles_max": 4480,
   "l1_bytes": 551232
@@ -22,12 +22,12 @@
   "min": 1916.34
  },
  "us_per_call": 1932.532,
- "record_us_median": 1917.9,
+ "command_us_median": 1917.9,
  "profile": {
   "slowest_core": 44,
-  "slowest_cycles_per_record": 2585528,
+  "slowest_cycles_per_command": 2585528,
   "mean_busy_over_slowest": 0.989,
-  "score_tiles_per_record": 4480,
+  "score_tiles_per_command": 4480,
   "slowest_page": [
    167902193,
    23785607,
@@ -62,7 +62,7 @@
    0,
    0
   ],
-  "shares_of_slowest": {
+  "partitions_of_slowest": {
    "q_reads": 0.01,
    "kv_reads": 0.0,
    "sender_waits_for_slot": 0.0,
@@ -82,7 +82,7 @@
    "writes": 0.007
   }
  },
- "records_issued": [
+ "commands_submitted": [
   73,
   78
  ],
@@ -95,7 +95,7 @@
     "compute_end": 120
    },
    "gave_up": [],
-   "lane_blocks": 312400
+   "broadcast_blocks": 312400
   },
   {
    "kernel": "none",
@@ -105,11 +105,11 @@
     "compute_end": 120
    },
    "gave_up": [],
-   "lane_blocks": 9209200
+   "broadcast_blocks": 9209200
   }
  ],
  "loop": {
-  "records": 67,
+  "commands": 67,
   "passes": 31,
   "seconds": 4.146,
   "us_per_call": 1996.181,
@@ -126,12 +126,12 @@
  },
  "tflops": 68.8509476204813,
  "cuts": {
-  "cast_only": 319.736,
-  "cast_only_profile": {
+  "broadcast_only": 319.736,
+  "broadcast_only_profile": {
    "slowest_core": 60,
-   "slowest_cycles_per_record": 1493722,
+   "slowest_cycles_per_command": 1493722,
    "mean_busy_over_slowest": 0.871,
-   "score_tiles_per_record": 0,
+   "score_tiles_per_command": 0,
    "slowest_page": [
     5974890,
     7305,
@@ -166,7 +166,7 @@
     0,
     0
    ],
-   "shares_of_slowest": {
+   "partitions_of_slowest": {
     "q_reads": 0.063,
     "kv_reads": 0.287,
     "sender_waits_for_slot": 0.024,
@@ -189,9 +189,9 @@
   "compute_only": 2021.971,
   "compute_only_profile": {
    "slowest_core": 20,
-   "slowest_cycles_per_record": 10067031,
+   "slowest_cycles_per_command": 10067031,
    "mean_busy_over_slowest": 0.975,
-   "score_tiles_per_record": 17920,
+   "score_tiles_per_command": 17920,
    "slowest_page": [
     40073330,
     6550479,
@@ -226,7 +226,7 @@
     0,
     0
    ],
-   "shares_of_slowest": {
+   "partitions_of_slowest": {
     "q_reads": 0.0,
     "kv_reads": 0.0,
     "sender_waits_for_slot": 0.0,

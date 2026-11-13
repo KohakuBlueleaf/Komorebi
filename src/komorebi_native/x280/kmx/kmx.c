@@ -1,5 +1,5 @@
-/* kmx start-up and calls: every hart checks the argument block; hart 0 checks the
- * bank and runs kmx_main; harts 1 to 3 run what kmx_spawn gives them until it ends. */
+/* kmx start-up and calls: every core checks the argument block; core 0 checks the
+ * bank and runs kmx_main; cores 1 to 3 run what kmx_spawn gives them until it ends. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -18,7 +18,7 @@
  * 0, for a stop or the deadline every KMX_PORT_CHECK calls. */
 #define KMX_PORT_LOOK 4u
 #define KMX_PORT_CHECK 16u
-/* Hart h's L2 prefetcher (BASIC_CONTROL, USER_CONTROL) and the documented values,
+/* Core h's L2 prefetcher (BASIC_CONTROL, USER_CONTROL) and the documented values,
  * set unless the host asks to keep them: scalar code that walks memory runs faster. */
 #define KMX_L2PF_BASE 0x02030000ull
 #define KMX_L2PF_STRIDE 0x2000ull
@@ -29,7 +29,7 @@
 static uint64_t g_deadline[4] __attribute__((section(".data"))) = {1, 1, 1, 1};
 static int must_end(uint64_t h);
 static void flush(uint64_t addr, uint64_t bytes);
-static inline uint64_t hart_id(void);
+static inline uint64_t core_id(void);
 
 #define KMX_RING_FENCE_W() x280_fence_ow()
 #define KMX_RING_FENCE_R() x280_fence_ir()
@@ -38,36 +38,36 @@ static inline uint64_t hart_id(void);
 #define KMX_RING_END() must_end(0)
 #include "kmx_ring.h"
 
-/* The ring, hart 0's (a .data global: the image has no .bss). */
+/* The ring, core 0's (a .data global: the image has no .bss). */
 static kmx_ring_t g_ring __attribute__((section(".data"))) = {.next = 1};
 
 /* Image globals live in .data (the image has no .bss): non-zero initialisers. */
 static uint64_t g_start __attribute__((section(".data"))) = 1;
 static uint32_t g_code __attribute__((section(".data"))) = KMX_UNSET;
-static uint32_t g_in_par __attribute__((section(".data"))) = 0; /* hart 0 in kmx_par */
+static uint32_t g_in_par __attribute__((section(".data"))) = 0; /* core 0 in kmx_par */
 /* kmx_par_all: the call number, whether every other cluster said it serves, and
  * each other cluster's LIM block through its window (0: none). */
 static uint32_t g_all_gen __attribute__((section(".data"))) = 0;
 static uint32_t g_all_ready __attribute__((section(".data"))) = 0;
 static volatile uint8_t* g_peer[4] __attribute__((section(".data"))) = {0, 0, 0, 0};
 
-static inline uint64_t hart_id(void) {
+static inline uint64_t core_id(void) {
     uint64_t h;
     __asm__ volatile("csrr %0, mhartid" : "=r"(h));
     return h;
 }
 
 static inline volatile uint8_t* lim(void) {
-    return (volatile uint8_t*)(uintptr_t)x280_hart_args(hart_id());
+    return (volatile uint8_t*)(uintptr_t)x280_hart_args(core_id());
 }
 
 static inline volatile kmx_result_block* result(void) {
     return (volatile kmx_result_block*)(lim() + KMX_LIM_RESULT);
 }
 
-/* Hart h's spawn line (KMX_SPAWN_* words). */
+/* Core h's spawn line (KMX_SPAWN_* words). */
 static inline volatile uint64_t* spawn_line(uint64_t h) {
-    return (volatile uint64_t*)(lim() + KMX_LIM_HARTS + 64u * h);
+    return (volatile uint64_t*)(lim() + KMX_LIM_CORES + 64u * h);
 }
 
 static inline const volatile kmx_peers* peers(void) {
@@ -80,7 +80,7 @@ static inline volatile uint32_t* all_line(volatile uint8_t* block, uint32_t line
     return (volatile uint32_t*)(block + peers()->all + KMX_ALL_CALL + 64u * line);
 }
 
-/* Records the first library error. */
+/* Commands the first library error. */
 static void fail(uint32_t error) {
     volatile kmx_result_block* r = result();
     if (r->error == KMX_ERR_NONE) {
@@ -135,24 +135,24 @@ void* kmx_region(int id, uint64_t* bytes) {
     return (void*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + a->region[id].offset);
 }
 
-/* A hand-over sweep split by lines over the four harts: hart h takes its quarter. */
+/* A hand-over sweep split by lines over the four cores: core h takes its quarter. */
 typedef struct {
     uint64_t addr, lines;
 } sweep_t;
 
-static void sweep_part(int hart, void* arg) {
+static void sweep_part(int core, void* arg) {
     const sweep_t* s = (const sweep_t*)arg;
-    const uint64_t per = (s->lines + 3) / 4, first = (uint64_t)hart * per;
+    const uint64_t per = (s->lines + 3) / 4, first = (uint64_t)core * per;
     if (first < s->lines) {
         const uint64_t n = s->lines - first < per ? s->lines - first : per;
         flush(s->addr + first * 64, n * 64);
     }
 }
 
-/* Sweeps [addr, addr + bytes): on hart 0 outside kmx_par over the four harts. */
+/* Sweeps [addr, addr + bytes): on core 0 outside kmx_par over the four cores. */
 static void sweep(uint64_t addr, uint64_t bytes) {
-    if (hart_id() != 0 || g_in_par) {
-        flush(addr, bytes); /* inside a kmx_par call: this hart alone */
+    if (core_id() != 0 || g_in_par) {
+        flush(addr, bytes); /* inside a kmx_par call: this core alone */
         return;
     }
     const uint64_t lo = addr & ~63ull, hi = (addr + bytes + 63) & ~63ull;
@@ -162,7 +162,7 @@ static void sweep(uint64_t addr, uint64_t bytes) {
     }
 }
 
-void kmx_take_at(int id, uint64_t offset, uint64_t bytes) {
+void kmx_invalidate_at(int id, uint64_t offset, uint64_t bytes) {
     uint64_t n;
     uint8_t* p = (uint8_t*)kmx_region(id, &n);
     if (p && offset < n) {
@@ -172,36 +172,36 @@ void kmx_take_at(int id, uint64_t offset, uint64_t bytes) {
     }
 }
 
-void kmx_take(int id) {
-    kmx_take_at(id, 0, ~0ull);
+void kmx_invalidate(int id) {
+    kmx_invalidate_at(id, 0, ~0ull);
 }
 
-void kmx_give(int id) {
-    kmx_take(id); /* Flush64 both writes back and drops a line */
+void kmx_flush(int id) {
+    kmx_invalidate(id); /* Flush64 both writes back and drops a line */
 }
 
-void kmx_give_at(int id, uint64_t offset, uint64_t bytes) {
-    kmx_take_at(id, offset, bytes);
+void kmx_flush_at(int id, uint64_t offset, uint64_t bytes) {
+    kmx_invalidate_at(id, offset, bytes);
 }
 
-/* KMX_OK on hart 0; elsewhere the error is recorded and the call refused. */
-static int ring_hart(void) {
-    if (hart_id() != 0) {
+/* KMX_OK on core 0; elsewhere the error is recorded and the call rejected. */
+static int ring_core(void) {
+    if (core_id() != 0) {
         fail(KMX_ERR_PAR);
         return KMX_STOPPED;
     }
     return KMX_OK;
 }
 
-int kmx_issue(const km_record_t* r, uint32_t* ticket) {
-    const int h = ring_hart();
-    return h != KMX_OK ? h : kmx_ring_issue(&g_ring, r, ticket);
+int kmx_submit(const km_command_t* r, uint32_t* handle) {
+    const int h = ring_core();
+    return h != KMX_OK ? h : kmx_ring_submit(&g_ring, r, handle);
 }
 
-int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev) {
-    int e = ring_hart();
+int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* ev) {
+    int e = ring_core();
     if (e == KMX_OK) {
-        e = kmx_ring_wait(&g_ring, ticket, deadline, ev);
+        e = kmx_ring_wait(&g_ring, handle, deadline, ev);
     }
     if (e == KMX_LATE || (e == KMX_STOPPED && g_ring.cmd != 0)) {
         fail(e == KMX_LATE ? KMX_ERR_LATE : KMX_ERR_STOPPED);
@@ -210,22 +210,22 @@ int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev) {
 }
 
 int kmx_poll(kmx_event* ev) {
-    const int h = ring_hart();
+    const int h = ring_core();
     return h != KMX_OK ? h : kmx_ring_poll(&g_ring, ev);
 }
 
-/* Records the error of a wait that ended early and returns its code. */
+/* Commands the error of a wait that ended early and returns its code. */
 static int ended(int end) {
     fail(end == KMX_LATE ? KMX_ERR_LATE : KMX_ERR_STOPPED);
     return end;
 }
 
-/* Hart 0: the spawns started on each hart (as its line's GEN word holds), and the
- * harts kmx_spawn started that no join has seen finish (bit h). */
+/* Core 0: the spawns started on each core (as its line's GEN word holds), and the
+ * cores kmx_spawn started that no join has seen finish (bit h). */
 static uint64_t g_spawned[4] __attribute__((section(".data"))) = {0, 0, 0, 0};
 static uint32_t g_spawn_busy __attribute__((section(".data"))) = 0;
 
-/* Harts [lo, hi): fn and arg into each line, then each line's next number. */
+/* Cores [lo, hi): fn and arg into each line, then each line's next number. */
 static void start(uint64_t lo, uint64_t hi, void (*fn)(int, void*), void* arg) {
     volatile uint64_t* line = spawn_line(0);
     for (uint64_t h = lo; h < hi; h++) {
@@ -239,7 +239,7 @@ static void start(uint64_t lo, uint64_t hi, void (*fn)(int, void*), void* arg) {
     x280_fence_ow();
 }
 
-/* Whether one of harts [lo, hi) has not finished its last spawn. */
+/* Whether one of cores [lo, hi) has not finished its last spawn. */
 static int busy(uint64_t lo, uint64_t hi) {
     x280_fence_ir();
     for (uint64_t h = lo; h < hi; h++) {
@@ -250,23 +250,23 @@ static int busy(uint64_t lo, uint64_t hi) {
     return 0;
 }
 
-int kmx_spawn(int hart, void (*fn)(int hart, void* arg), void* arg) {
-    if (hart_id() != 0) {
+int kmx_spawn(int core, void (*fn)(int core, void* arg), void* arg) {
+    if (core_id() != 0) {
         fail(KMX_ERR_PAR);
         return KMX_STOPPED;
     }
-    if (hart < 1 || hart > 3) {
+    if (core < 1 || core > 3) {
         return KMX_BAD;
     }
-    if (busy((uint64_t)hart, (uint64_t)hart + 1)) {
+    if (busy((uint64_t)core, (uint64_t)core + 1)) {
         return KMX_FULL;
     }
-    start((uint64_t)hart, (uint64_t)hart + 1, fn, arg);
-    g_spawn_busy |= 1u << hart;
+    start((uint64_t)core, (uint64_t)core + 1, fn, arg);
+    g_spawn_busy |= 1u << core;
     return KMX_OK;
 }
 
-/* Hart 0: waits until harts [lo, hi) finished their spawns. */
+/* Core 0: waits until cores [lo, hi) finished their spawns. */
 static int join(uint64_t lo, uint64_t hi) {
     const volatile uint64_t* line = spawn_line(0);
     const uint64_t g1 = g_spawned[1], g2 = g_spawned[2], g3 = g_spawned[3];
@@ -287,29 +287,29 @@ static int join(uint64_t lo, uint64_t hi) {
     }
 }
 
-int kmx_join(int hart) {
-    if (hart_id() != 0) {
+int kmx_join(int core) {
+    if (core_id() != 0) {
         fail(KMX_ERR_PAR);
         return KMX_STOPPED;
     }
-    if (hart < 1 || hart > 3) {
+    if (core < 1 || core > 3) {
         return KMX_BAD;
     }
-    const int e = join((uint64_t)hart, (uint64_t)hart + 1);
+    const int e = join((uint64_t)core, (uint64_t)core + 1);
     if (e == KMX_OK) {
-        g_spawn_busy &= ~(1u << hart);
+        g_spawn_busy &= ~(1u << core);
     }
     return e;
 }
 
-int kmx_par(void (*fn)(int hart, void* arg), void* arg) {
-    if (hart_id() != 0 || g_in_par) {
-        fail(KMX_ERR_PAR); /* another hart, or a kmx_par inside one */
+int kmx_par(void (*fn)(int core, void* arg), void* arg) {
+    if (core_id() != 0 || g_in_par) {
+        fail(KMX_ERR_PAR); /* another core, or a kmx_par inside one */
         return KMX_STOPPED;
     }
     if (g_spawn_busy) {
         if (busy(1, 4)) {
-            return KMX_FULL; /* a spawned hart has not finished */
+            return KMX_FULL; /* a spawned core has not finished */
         }
         g_spawn_busy = 0;
     }
@@ -385,16 +385,16 @@ static void call(uint32_t c, uint32_t gen, uint64_t fn, uint64_t arg, uint32_t e
     x280_fence_ow();
 }
 
-/* What every hart of a cluster runs for one kmx_par_all call. */
+/* What every core of a cluster runs for one kmx_par_all call. */
 typedef struct {
-    void (*fn)(int cluster, int hart, uint64_t arg);
+    void (*fn)(int cluster, int core, uint64_t arg);
     uint64_t arg;
     int cluster;
 } all_call_t;
 
-static void all_part(int hart, void* arg) {
+static void all_part(int core, void* arg) {
     const all_call_t* c = (const all_call_t*)arg;
-    c->fn(c->cluster, hart, c->arg);
+    c->fn(c->cluster, core, c->arg);
 }
 
 /* The other clusters of the lead's group, as bits. */
@@ -426,7 +426,7 @@ static int all_ready(void) {
 /* The lead's X280 core 0, not nested: KMX_OK, or KMX_STOPPED (library error) elsewhere.
  */
 static int all_lead(void) {
-    if (hart_id() != 0 || g_in_par || kmx_lead() != kmx_cluster()) {
+    if (core_id() != 0 || g_in_par || kmx_lead() != kmx_cluster()) {
         fail(KMX_ERR_PAR);
         return KMX_STOPPED;
     }
@@ -456,13 +456,13 @@ static int all_run(
     return e;
 }
 
-int kmx_par_all(void (*fn)(int cluster, int hart, uint64_t arg), uint64_t arg) {
+int kmx_par_all(void (*fn)(int cluster, int core, uint64_t arg), uint64_t arg) {
     const int e = all_lead();
     return e != KMX_OK ? e : all_run(fn, arg, all_part);
 }
 
 int kmx_serve(void) {
-    if (hart_id() != 0 || g_in_par) {
+    if (core_id() != 0 || g_in_par) {
         fail(KMX_ERR_PAR);
         return KMX_STOPPED;
     }
@@ -545,7 +545,7 @@ static void copy_out(volatile uint8_t* dst, const uint8_t* src, uint64_t n) {
     }
 }
 
-/* One hart's push of [src, src + n) to bank address `at` of DRAM tile `tile`: posted
+/* One core's push of [src, src + n) to bank address `at` of DRAM tile `tile`: posted
  * stores per 2 MiB, the last line again, acknowledged. 0, or 1 if a window failed. */
 static int push_range(
     uint64_t h, uint32_t tile, uint64_t at, const uint8_t* src, uint64_t n
@@ -596,17 +596,17 @@ typedef struct {
     uint32_t bad[4];
 } push_t;
 
-/* Hart h's quarter, in whole lines. */
-static void push_part(int hart, void* arg) {
+/* Core h's quarter, in whole lines. */
+static void push_part(int core, void* arg) {
     push_t* p = (push_t*)arg;
     const uint64_t lines = p->bytes / 64, per = (lines + 3) / 4;
-    const uint64_t first = (uint64_t)hart * per;
-    p->bad[hart] = 0;
+    const uint64_t first = (uint64_t)core * per;
+    p->bad[core] = 0;
     if (first < lines) {
         const uint64_t n = (lines - first < per ? lines - first : per) * 64;
-        p->bad[hart] = (
+        p->bad[core] = (
             (uint32_t)push_range(
-                (uint64_t)hart, p->tile, p->at + first * 64, p->src + first * 64, n
+                (uint64_t)core, p->tile, p->at + first * 64, p->src + first * 64, n
             )
         );
     }
@@ -635,7 +635,7 @@ int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t byt
     push_t p = {
         peers()->bank[c], at + offset, bytes, (const uint8_t*)src, {0, 0, 0, 0}
     };
-    const uint64_t h = hart_id();
+    const uint64_t h = core_id();
     if (h == 0 && !g_in_par && kmx_par(push_part, &p) == KMX_OK) {
         return p.bad[0] | p.bad[1] | p.bad[2] | p.bad[3] ? KMX_BAD : KMX_OK;
     }
@@ -719,7 +719,7 @@ static void ports_close(void) {
 
 /* Whether the calling X280 core serves `core`. */
 static inline int port_mine(int core) {
-    return (uint32_t)core < KMX_PORTS_CORES && g_port_who[core] == hart_id() + 1u;
+    return (uint32_t)core < KMX_PORTS_CORES && g_port_who[core] == core_id() + 1u;
 }
 
 /* One 16-byte store of {seq, a, b, c} into line `at` of the core's KM_CTL_X280. */
@@ -807,10 +807,10 @@ int kmx_port_told(int core, kmx_msg* m) {
     return KMX_OK;
 }
 
-/* kmx_port_run on the lead's X280 core 0: inside one, its ticket, the run's number,
+/* kmx_port_run on the lead's X280 core 0: inside one, its handle, the run's number,
  * whether it ended and why (KMX_OK: its event, in g_port_ev). */
 static uint32_t g_port_live __attribute__((section(".data"))) = 0;
-static uint32_t g_port_ticket __attribute__((section(".data"))) = 0;
+static uint32_t g_port_handle __attribute__((section(".data"))) = 0;
 static uint32_t g_port_n __attribute__((section(".data"))) = 0;
 static uint32_t g_port_ended __attribute__((section(".data"))) = 0;
 static int g_port_why __attribute__((section(".data"))) = KMX_OK;
@@ -838,7 +838,7 @@ static void port_end(int why) {
 }
 
 int kmx_port_open(void) {
-    const uint64_t h = hart_id();
+    const uint64_t h = core_id();
     const uint32_t n = ++g_open_calls[h], check = n % KMX_PORT_CHECK == 0;
     if (h == 0 && g_port_live) {
         if (g_port_ended) {
@@ -847,7 +847,7 @@ int kmx_port_open(void) {
         if (n % KMX_PORT_LOOK != 0) {
             return 1;
         }
-        const int e = kmx_ring_look(&g_ring, g_port_ticket, &g_port_ev);
+        const int e = kmx_ring_look(&g_ring, g_port_handle, &g_port_ev);
         if (e != KMX_NONE) {
             port_end(e);
             return 0;
@@ -876,7 +876,7 @@ static void port_part(int cpu, void* arg) {
 }
 
 int kmx_port_run(
-    const km_record_t* r,
+    const km_command_t* r,
     void (*fn)(int cluster, int cpu, uint64_t arg),
     uint64_t arg,
     kmx_event* ev
@@ -889,12 +889,12 @@ int kmx_port_run(
         return KMX_BAD;
     }
     e = all_ready();
-    uint32_t ticket = 0;
-    e = e == KMX_OK ? kmx_issue(r, &ticket) : e;
+    uint32_t handle = 0;
+    e = e == KMX_OK ? kmx_submit(r, &handle) : e;
     if (e != KMX_OK) {
         return e;
     }
-    g_port_ticket = ticket;
+    g_port_handle = handle;
     g_port_ended = 0;
     g_port_why = KMX_OK;
     g_port_live = 1;
@@ -1022,7 +1022,7 @@ static void pull_line(volatile uint8_t* block, const kmx_pull* p) {
     put64(w + offsetof(kmx_ports, arg) / 4, p->arg);
 }
 
-int kmx_pull_run(const km_record_t* r, const kmx_pull* p, kmx_event* ev) {
+int kmx_pull_run(const km_command_t* r, const kmx_pull* p, kmx_event* ev) {
     int e = all_lead();
     if (e != KMX_OK) {
         return e;
@@ -1060,7 +1060,7 @@ uint64_t kmx_time(void) {
 }
 
 int kmx_stop_requested(void) {
-    return must_end(hart_id()) != KMX_OK;
+    return must_end(core_id()) != KMX_OK;
 }
 
 void kmx_progress(uint32_t where) {
@@ -1086,7 +1086,7 @@ void kmx_result(uint32_t code, const void* words, uint32_t n) {
     x280_fence_ow();
 }
 
-/* Harts 1 to 3: run each spawn of hart 0 until kmx_main returns, a stop is asked
+/* Cores 1 to 3: run each spawn of core 0 until kmx_main returns, a stop is asked
  * for, or the run's deadline passes. */
 static void serve(uint64_t h) {
     volatile uint64_t* line = spawn_line(h);
@@ -1233,7 +1233,7 @@ static int ring_open(const volatile kmx_ring_desc* d) {
     return 1;
 }
 
-/* Hart 0: the bank check, kmx_main, the result block. */
+/* Core 0: the bank check, kmx_main, the result block. */
 static uint64_t run_main(const volatile kmx_args* a) {
     volatile kmx_result_block* r = result();
     r->state = KMX_STATE_BOOT;
@@ -1275,7 +1275,7 @@ static uint64_t run_main(const volatile kmx_args* a) {
     for (uint32_t i = 0; i < a->nregions; i++) {
         uint64_t n;
         const void* p = kmx_region((int)i, &n);
-        flush((uint64_t)(uintptr_t)p, n); /* hart 0 alone: as fast, and after a stop */
+        flush((uint64_t)(uintptr_t)p, n); /* core 0 alone: as fast, and after a stop */
     }
     spawn_line(0)[KMX_SPAWN_EXIT] = 1;
     x280_fence_ow();
@@ -1309,20 +1309,20 @@ static __attribute__((noinline)) void boot(uint64_t h) {
     x280_hart_set_result(0, run_main(a));
 }
 
-int main(uint64_t hartid) {
-    /* Floating point and vector on first, on every hart: the harness leaves them off
+int main(uint64_t core_id) {
+    /* Floating point and vector on first, on every core: the harness leaves them off
      * and the first such instruction would trap. */
     __asm__ volatile("csrs mstatus, %0" ::"r"((3ul << 9) | (3ul << 13)));
     const volatile kmx_args* a = (const volatile kmx_args*)lim();
     if (a != 0 && !(a->flags & KMX_FLAG_KEEP_PREFETCH)) {
         volatile uint32_t* pf = (
             (volatile uint32_t*)(uintptr_t)(KMX_L2PF_BASE +
-            (hartid & 3u) * KMX_L2PF_STRIDE)
+            (core_id & 3u) * KMX_L2PF_STRIDE)
         );
         pf[0] = KMX_L2PF_BASIC;
         pf[1] = KMX_L2PF_USER;
         x280_fence_iorw();
     }
-    boot(hartid);
+    boot(core_id);
     return 0;
 }

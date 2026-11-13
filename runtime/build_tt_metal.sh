@@ -38,7 +38,7 @@ for patch in "$here"/patches/*.patch; do
 done
 
 # Without multi-host support: OpenMPI cannot be carried inside a wheel. The X280 runtime
-# needs the metal tests configured (its CMake refuses otherwise); none of them is built.
+# needs the metal tests configured (its CMake rejects otherwise); none of them is built.
 if [ ! -f "$dir/build/build.ninja" ]; then
     options=(--release --without-distributed --build-metal-tests --configure-only)
     if [ "${KMR_CCACHE:-0}" = 1 ]; then

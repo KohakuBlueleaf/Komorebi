@@ -73,8 +73,8 @@ namespace kmsim {
 
     namespace {
 
-        // The record the calling kernel works on (0: none yet).
-        uint32_t record_of() {
+        // The command the calling kernel works on (0: none yet).
+        uint32_t command_of() {
             const CoreState& c = g->me();
             switch (self->role) {
                 case kReader:
@@ -91,8 +91,8 @@ namespace kmsim {
             g->violation(
                 "buffer " + std::to_string(cb) + ", " +
                 (compute ? "compute" : "data-movement") +
-                (producer ? " producer" : " consumer") + ", record " +
-                std::to_string(record_of()) + ": " + what
+                (producer ? " producer" : " consumer") + ", command " +
+                std::to_string(command_of()) + ": " + what
             );
         }
 
@@ -122,7 +122,7 @@ namespace kmsim {
 
     }  // namespace
 
-    void note_record(uint32_t seq) {
+    void note_command(uint32_t seq) {
         CoreState& c = g->me();
         (self->role == kReader       ? c.reader_seq
              : self->role == kWriter ? c.writer_seq

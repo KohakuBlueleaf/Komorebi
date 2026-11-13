@@ -33,8 +33,8 @@ void kernel_main() {
     args.mix = mix;
     args.calls = &calls;
     const rl::Entry entry = reinterpret_cast<rl::Entry>(slot);
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) != RL_HANDLER_SWAP) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) != RL_HANDLER_SWAP) {
             return;
         }
         for (;;) {

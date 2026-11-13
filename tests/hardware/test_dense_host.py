@@ -1,4 +1,4 @@
-"""The matrix product on a card through the dispatch kernel (KMR_CARD=1): small
+"""The matrix product on a card through the dispatcher (KMR_CARD=1): small
 shapes on integer inputs are exact in every form: W resident, W streamed, the grid
 form in each layout (operands handed along rows and down columns), K split."""
 
@@ -30,7 +30,7 @@ def test_the_grid_form_is_exact(grid):
     out = run_json(SCRIPT, *shape, "--form", "grid", "--inputs", "int", "--calls", 4)
     assert out["plan"]["layout"] == grid.split(":")[0] and out["plan"]["nk"] == 2
     assert out["run"]["kernel"] == "none" and out["run"]["gave_up"] == []
-    assert out["run"]["lane_gave_up"] == []
+    assert out["run"]["broadcast_gave_up"] == []
     assert out["check"]["exact"] and out["ok"]
 
 

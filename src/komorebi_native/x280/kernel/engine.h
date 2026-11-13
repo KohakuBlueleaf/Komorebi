@@ -13,27 +13,27 @@
 typedef struct {
     uint32_t regs[KM_STREAM_REGS];
     uint32_t state; /* KMD_S_* */
-    uint32_t req, pc, steps, max_steps, n_ops, n_records, off;
-    uint32_t pending; /* its records and jobs sent and not yet answered */
-    uint32_t sent;    /* command of the ISSUE or SUBMIT at pc, not yet known taken */
+    uint32_t req, pc, steps, max_steps, n_ops, n_commands, off;
+    uint32_t pending; /* its commands and jobs sent and not yet answered */
+    uint32_t sent;    /* command of the SUBMIT or ENQUEUE at pc, not yet known taken */
     uint32_t seen;    /* sent: core 0 consumed it in an earlier pass */
-    uint32_t waking;  /* refused busy: it sends again after wake number wake_at */
+    uint32_t waking;  /* rejected busy: it sends again after wake number wake_at */
     uint32_t wake_at;
-    uint32_t jobs; /* jobs it submitted */
-    uint32_t drop; /* its queued jobs are to be dropped (KMD_SEG_DROP owed) */
+    uint32_t jobs; /* jobs it enqueued */
+    uint32_t drop; /* its queued jobs are to be dropped (KMD_HANDLER_DROP owed) */
     uint32_t last_result;
     uint32_t order;                   /* activation number; turns go in this order */
     uint32_t post_status, post_ticks; /* KMD_S_ENDING: the event to post */
-    uint64_t t_record;                /* deadline of each record it issues, in ticks */
+    uint64_t t_command; /* deadline of each command it submits, in ticks */
 } kmd_stream_t;
 
-/* A record the engine sent and the kernel has not answered, at its command number
- * modulo KMD_SENT (a record waits while its entry is taken). */
+/* A command the engine sent and the kernel has not answered, at its command number
+ * modulo KMD_SENT (a command waits while its entry is taken). */
 typedef struct {
     uint32_t cmd;   /* 0: free */
     uint32_t req;   /* the stream's req */
     uint32_t order; /* the stream's activation number */
-    uint16_t pc;    /* the ISSUE */
+    uint16_t pc;    /* the SUBMIT */
     uint8_t stream, result;
 } kmd_sent_t;
 
@@ -42,9 +42,9 @@ typedef struct {
 
 /* Core 1's state, in the state area after core 0's. */
 typedef struct {
-    uint64_t hart, run;
-    const volatile kmd_t* kernel;   /* core 0's state: the host's record deadline */
-    volatile uint32_t* harts;       /* the hart block */
+    uint64_t core, run;
+    const volatile kmd_t* kernel;   /* core 0's state: the host's command deadline */
+    volatile uint32_t* x280_cores;  /* the core block */
     volatile const uint8_t* upload; /* the upload region */
     uint32_t upload_bytes, cores;
     /* its ring, the source's side */
@@ -62,15 +62,15 @@ typedef struct {
     uint32_t wakes;    /* KMD_EV_WAKE events read */
     uint32_t told;     /* the read count last stored */
     uint32_t wrote;    /* commands written since the last fence */
-    uint64_t deadline; /* ticks of the last KM_SEG_DEADLINE it sent (0: none) */
+    uint64_t deadline; /* ticks of the last KM_HANDLER_DEADLINE it sent (0: none) */
     kmd_stream_t streams[KM_STREAM_MAX_ACTIVE];
     uint32_t orders;
     kmd_sent_t sent[KMD_SENT];
-    uint32_t orphans; /* timeouts of orphans' records waiting to be posted */
+    uint32_t orphans; /* timeouts of orphans' commands waiting to be posted */
     uint32_t orphan_req[KMD_ORPHANS], orphan_status[KMD_ORPHANS];
     uint32_t orphan_ticks[KMD_ORPHANS];
     uint64_t passes;
-    uint32_t records, posts, events_in, runs;
+    uint32_t commands, posts, events_in, runs;
     uint64_t* line; /* the command being written: 8 words, 64-byte aligned */
 } kmd_engine_t;
 
@@ -120,9 +120,9 @@ static inline uint32_t uop_fields(uint32_t op) {
             return KMD_UOP_A | KMD_UOP_B | KMD_UOP_JUMP;
         case KM_OP_JNZ:
             return KMD_UOP_A | KMD_UOP_JUMP;
-        case KM_OP_ISSUE:
-            return KMD_UOP_TEMPLATE;
         case KM_OP_SUBMIT:
+            return KMD_UOP_TEMPLATE;
+        case KM_OP_ENQUEUE:
             return KMD_UOP_A | KMD_UOP_TEMPLATE;
         case KM_OP_WAIT:
             return 0;
@@ -150,10 +150,10 @@ static inline const volatile uint64_t* stream_template(
 
 /* Whether template words `w` (km_template_t as ten 64-bit words) break the rules. */
 static inline int template_bad(const volatile uint64_t* w) {
-    const uint32_t hdr = (uint32_t)(w[0] >> 32), seg = hdr & 0xFFu;
+    const uint32_t hdr = (uint32_t)(w[0] >> 32), handler = hdr & 0xFFu;
     const uint64_t patch = w[8], tail = w[9];
     const uint32_t n = (uint32_t)(tail >> 16) & 0xFFu;
-    if (seg < 1u || seg > KM_SEG_USER_MAX ||
+    if (handler < 1u || handler > KM_HANDLER_USER_MAX ||
         (((hdr >> 8) & 0xFFu) & ~(KM_F_EXCL | KM_F_RESULT)) || n > KM_TPL_PATCHES) {
         return 1;
     }
@@ -181,15 +181,15 @@ static uint32_t stream_check(const volatile uint8_t* base, uint32_t bytes) {
         return KM_SERR_HEADER;
     }
     x280_fence_ir();
-    const uint32_t n_ops = h[2], n_records = h[3];
+    const uint32_t n_ops = h[2], n_commands = h[3];
     if (h[0] != KM_STREAM_MAGIC || h[1] != KM_STREAM_VERSION || h[7] == 0u ||
-        n_ops == 0u || n_ops > KM_STREAM_MAX_OPS || n_records > KM_STREAM_MAX_OPS ||
+        n_ops == 0u || n_ops > KM_STREAM_MAX_OPS || n_commands > KM_STREAM_MAX_OPS ||
         h[4] == 0u) {
         return KM_SERR_HEADER;
     }
     const uint64_t size =
         (sizeof(km_stream_t) + stream_lines(n_ops, sizeof(km_uop_t)) +
-         stream_lines(n_records, sizeof(km_template_t)));
+         stream_lines(n_commands, sizeof(km_template_t)));
     if (size != bytes) {
         return KM_SERR_HEADER;
     }
@@ -210,19 +210,20 @@ static uint32_t stream_check(const volatile uint8_t* base, uint32_t bytes) {
         if ((f & KMD_UOP_JUMP) && imm >= n_ops) {
             return KM_SERR_JUMP | pc << 8;
         }
-        if ((f & KMD_UOP_TEMPLATE) && imm >= n_records) {
+        if ((f & KMD_UOP_TEMPLATE) && imm >= n_commands) {
             return KM_SERR_TEMPLATE | pc << 8;
         }
     }
-    for (uint32_t t = 0; t < n_records; t++) {
+    for (uint32_t t = 0; t < n_commands; t++) {
         if (!template_bad(stream_template(base, n_ops, t))) {
             continue;
         }
-        /* Reported at the template's first ISSUE or SUBMIT, 0 if it has none. */
+        /* Reported at the template's first SUBMIT or ENQUEUE, 0 if it has none. */
         for (uint32_t pc = 0; pc < n_ops; pc++) {
             const uint64_t w = ops[2u * pc];
             const uint32_t op = (uint32_t)w & 0xFFu;
-            if ((op == KM_OP_ISSUE || op == KM_OP_SUBMIT) && (uint32_t)(w >> 32) == t) {
+            if ((op == KM_OP_SUBMIT || op == KM_OP_ENQUEUE) &&
+                (uint32_t)(w >> 32) == t) {
                 return KM_SERR_TEMPLATE | pc << 8;
             }
         }
@@ -251,16 +252,17 @@ static inline void eng_write(kmd_engine_t* e) {
     for (uint32_t j = 2; j < 8; j += 2) {
         l[j] = (l[j] & ~(uint64_t)0xFFFFFFFFu) | i;
     }
-    kmd_store_line(e->cmds + (i % KMD_ENGINE_DEPTH) * sizeof(km_record_t), l);
+    kmd_store_line(e->cmds + (i % KMD_ENGINE_DEPTH) * sizeof(km_command_t), l);
     e->wrote++;
 }
 
-/* A command to the kernel with segment `seg` and arguments a0, a1, a2 (no team). */
+/* A command to the kernel with handler `handler` and arguments a0, a1, a2 (no group).
+ */
 static inline void eng_command(
-    kmd_engine_t* e, uint32_t seg, uint32_t a0, uint32_t a1, uint32_t a2
+    kmd_engine_t* e, uint32_t handler, uint32_t a0, uint32_t a1, uint32_t a2
 ) {
     uint64_t* l = e->line;
-    l[0] = (uint64_t)seg << 32;
+    l[0] = (uint64_t)handler << 32;
     l[1] = (uint64_t)a0 << 32;
     l[2] = (uint64_t)a1 << 32;
     l[3] = a2;
@@ -278,13 +280,13 @@ static inline int eng_post(
     if (!eng_room(e, 1)) {
         return 0;
     }
-    eng_command(e, KMD_SEG_POST, req, status, ticks);
+    eng_command(e, KMD_HANDLER_POST, req, status, ticks);
     e->posts++;
     return 1;
 }
 
 /* Ends stream `s` with KM_EV_STREAM_ERROR: `reason` at program counter `pc`. Its
- * records still in flight become orphans. */
+ * commands still in flight become orphans. */
 static inline void stream_fail(kmd_stream_t* s, uint32_t reason, uint32_t pc) {
     s->state = KMD_S_ENDING;
     s->drop = s->jobs != 0;
@@ -301,7 +303,7 @@ static void eng_owed(kmd_engine_t* e) {
             continue;
         }
         if (s->drop && eng_room(e, 1)) {
-            eng_command(e, KMD_SEG_DROP, s->order & 0xFFFFu, 0, 0);
+            eng_command(e, KMD_HANDLER_DROP, s->order & 0xFFFFu, 0, 0);
             s->drop = 0;
         }
         if (!s->drop && eng_post(e, s->req, s->post_status, s->post_ticks)) {
@@ -359,9 +361,10 @@ static void stream_start(kmd_engine_t* e, uint32_t off, uint32_t bytes) {
     s->pc = s->steps = s->pending = s->last_result = s->jobs = s->drop = 0;
     s->sent = s->seen = s->waking = 0;
     s->n_ops = h[2];
-    s->n_records = h[3];
+    s->n_commands = h[3];
     s->max_steps = h[4];
-    s->t_record = h[5] ? (uint64_t)h[5] * 50u : e->kernel->ring[KMD_SRC_HOST].t_record;
+    s->t_command =
+        (h[5] ? (uint64_t)h[5] * 50u : e->kernel->ring[KMD_SRC_HOST].t_command);
     s->off = off;
     s->state = KMD_S_RUNNING;
     e->runs++;
@@ -392,7 +395,7 @@ static void eng_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t t
     }
     kmd_sent_t* x = &e->sent[req % KMD_SENT];
     if (x->cmd != req) {
-        return; /* not a record: nothing waits for it */
+        return; /* not a command: nothing waits for it */
     }
     x->cmd = 0;
     kmd_stream_t* s = &e->streams[x->stream % KM_STREAM_MAX_ACTIVE];
@@ -402,7 +405,7 @@ static void eng_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t t
             s->pending--;
             s->last_result = x->result ? ticks : s->last_result;
         }
-    } else if (kind == KM_EV_REFUSED && status >> 8 == KMD_REFUSE_BUSY) {
+    } else if (kind == KM_EV_REJECTED && status >> 8 == KMD_REJECT_BUSY) {
         /* Not taken: the stream sends it again after the next wake. */
         if (live) {
             s->pending--;
@@ -422,7 +425,7 @@ static void eng_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t t
         }
     } else if (live) {
         const uint32_t why = (
-            status >> 8 == KMD_REFUSE_TEAM ? KM_SERR_TEAM : KM_SERR_TEMPLATE
+            status >> 8 == KMD_REJECT_GROUP ? KM_SERR_GROUP : KM_SERR_TEMPLATE
         );
         stream_fail(s, why, x->pc);
     }
@@ -460,43 +463,43 @@ static void eng_events(kmd_engine_t* e) {
     }
 }
 
-/* ISSUE (`job` 0) or SUBMIT of `job` cores, template `t` at `pc`: checked, then sent
+/* SUBMIT (`job` 0) or ENQUEUE of `job` cores, template `t` at `pc`: checked, then sent
  * (DEADLINE first if changed) if the ring and the queue have room; waits either way. */
-static kmd_uop_t stream_record(
+static kmd_uop_t stream_command(
     kmd_engine_t* e, kmd_stream_t* s, uint32_t t, uint32_t pc, uint32_t job
 ) {
     if (job != 0 && job > e->cores) {
         stream_fail(s, KM_SERR_NEVER_FITS, pc);
         return KMD_UOP_ENDED;
     }
-    if (t >= s->n_records) {
+    if (t >= s->n_commands) {
         stream_fail(s, KM_SERR_TEMPLATE, pc);
         return KMD_UOP_ENDED;
     }
     const volatile uint64_t* w = stream_template(e->upload + s->off, s->n_ops, t);
     const uint64_t patch = w[8], tail = w[9];
-    const uint32_t team = (uint32_t)w[1], fr = (uint32_t)tail & 0xFFu;
+    const uint32_t group = (uint32_t)w[1], fr = (uint32_t)tail & 0xFFu;
     const uint32_t cr = (uint32_t)(tail >> 8) & 0xFFu;
     uint32_t first = 0, count = job;
     if (job == 0) {
-        first = fr == KM_TPL_NONE ? team & 0xFFFFu : s->regs[fr & 15u];
-        count = cr == KM_TPL_NONE ? team >> 16 : s->regs[cr & 15u];
+        first = fr == KM_TPL_NONE ? group & 0xFFFFu : s->regs[fr & 15u];
+        count = cr == KM_TPL_NONE ? group >> 16 : s->regs[cr & 15u];
         if (count == 0 || first > e->cores || count > e->cores - first) {
-            stream_fail(s, KM_SERR_TEAM, pc);
+            stream_fail(s, KM_SERR_GROUP, pc);
             return KMD_UOP_ENDED;
         }
     } else if (*e->queued + (e->jobs - *e->taken) >= KM_QUEUE_JOBS) {
         return KMD_UOP_WAIT; /* jobs in the queue and on their way to it */
     }
-    const uint32_t lines = s->t_record != e->deadline ? 2u : 1u;
+    const uint32_t lines = s->t_command != e->deadline ? 2u : 1u;
     const uint32_t cmd = e->next + lines - 1u;
     if (!eng_room(e, lines) || e->sent[cmd % KMD_SENT].cmd != 0) {
         return KMD_UOP_WAIT;
     }
     if (lines == 2u) {
-        const uint64_t us = s->t_record / 50u;
-        eng_command(e, KM_SEG_DEADLINE, us == 0 ? 1u : (uint32_t)us, 0, 0);
-        e->deadline = s->t_record;
+        const uint64_t us = s->t_command / 50u;
+        eng_command(e, KM_HANDLER_DEADLINE, us == 0 ? 1u : (uint32_t)us, 0, 0);
+        e->deadline = s->t_command;
     }
     uint64_t* l = e->line;
     for (uint32_t i = 0; i < 8; i++) {
@@ -510,7 +513,7 @@ static kmd_uop_t stream_record(
         e->jobs++;
         s->jobs++;
     }
-    /* Word of argument a0 to a9 in km_record_t. */
+    /* Word of argument a0 to a9 in km_command_t. */
     static const uint8_t arg_word[KM_TPL_ARGS] = {3, 5, 6, 7, 9, 10, 11, 13, 14, 15};
     const uint32_t n = (uint32_t)(tail >> 16) & 0xFFu;
     for (uint32_t i = 0; i < n && i < KM_TPL_PATCHES; i++) {
@@ -528,7 +531,7 @@ static kmd_uop_t stream_record(
     x->pc = (uint16_t)pc;
     x->stream = (uint8_t)(s - e->streams);
     x->result = ((words[1] >> 8) & KM_F_RESULT) != 0;
-    e->records++;
+    e->commands++;
     s->pending++;
     s->sent = cmd;
     return KMD_UOP_WAIT;
@@ -541,8 +544,8 @@ static inline int eng_unread(const kmd_engine_t* e) {
     return *(volatile const uint32_t*)(e->events + (i % KMD_ENGINE_EVENTS) * 16u) == i;
 }
 
-/* ISSUE or SUBMIT at pc: sent, then done once core 0 took it. Core 0 pushes a busy
- * refusal before it counts the command consumed, so no unread event means taken. */
+/* SUBMIT or ENQUEUE at pc: sent, then done once core 0 took it. Core 0 pushes a busy
+ * rejection before it counts the command consumed, so no unread event means taken. */
 static kmd_uop_t stream_send(
     kmd_engine_t* e, kmd_stream_t* s, uint32_t t, uint32_t pc, uint32_t job
 ) {
@@ -551,7 +554,7 @@ static kmd_uop_t stream_send(
             return KMD_UOP_WAIT;
         }
         s->waking = 0;
-        return stream_record(e, s, t, pc, job);
+        return stream_command(e, s, t, pc, job);
     }
     if (!s->seen) {
         x280_fence_ir();
@@ -652,13 +655,13 @@ static kmd_uop_t stream_op(kmd_engine_t* e, kmd_stream_t* s) {
             s->post_status = KM_EV_STREAM_END | (*a & 0xFFFFFFu) << 8;
             s->post_ticks = *a;
             return KMD_UOP_ENDED;
-        case KM_OP_ISSUE:
-        case KM_OP_SUBMIT: {
-            if (op == KM_OP_SUBMIT && *a == 0) {
+        case KM_OP_SUBMIT:
+        case KM_OP_ENQUEUE: {
+            if (op == KM_OP_ENQUEUE && *a == 0) {
                 stream_fail(s, KM_SERR_NEVER_FITS, pc);
                 return KMD_UOP_ENDED;
             }
-            const uint32_t job = op == KM_OP_SUBMIT ? *a : 0u;
+            const uint32_t job = op == KM_OP_ENQUEUE ? *a : 0u;
             const kmd_uop_t u = stream_send(e, s, imm, pc, job);
             if (u != KMD_UOP_DONE) {
                 return u;
@@ -691,7 +694,7 @@ static kmd_uop_t stream_op(kmd_engine_t* e, kmd_stream_t* s) {
 }
 
 /* The streams' share of a pass: each running stream runs up to KM_STEP_OPS micro-ops,
- * in activation order starting at stream `pass % running` (issuers take turns). */
+ * in activation order starting at stream `pass % running` (submitters take turns). */
 static void eng_step(kmd_engine_t* e) {
     kmd_stream_t* turn[KM_STREAM_MAX_ACTIVE];
     uint32_t n = 0;
@@ -721,7 +724,7 @@ static void eng_step(kmd_engine_t* e) {
     }
 }
 
-/* Events, owed posts, streams, one fence per pass; on either stop word it posts what it
+/* Events, owed posts, streams, one fence per pass; on either stop flag it posts what it
  * still owes for at most half of KMD_ENGINE_STOP_TICKS. */
 static void eng_loop(kmd_engine_t* e) {
     uint32_t spins = 0;
@@ -742,8 +745,8 @@ static void eng_loop(kmd_engine_t* e) {
         }
         if (++spins == KMD_POLL_EVERY) {
             spins = 0;
-            e->harts[KMD_H_STAMP1] = (uint32_t)(e->passes >> 10);
-            if (x280_hart_stop_requested(e->hart, e->run)) {
+            e->x280_cores[KMD_H_MARKER1] = (uint32_t)(e->passes >> 10);
+            if (x280_hart_stop_requested(e->core, e->run)) {
                 break;
             }
         }
@@ -758,17 +761,17 @@ static void eng_loop(kmd_engine_t* e) {
 }
 
 /* Core 1: waits for the kernel's go (bounded by twice t_start and the runtime's stop),
- * runs the engine's loop, and reports it stopped in the hart block. */
-static void eng_run(uint64_t hart, const volatile kmd_args_t* a, uint64_t run) {
+ * runs the engine's loop, and reports it stopped in the core block. */
+static void eng_run(uint64_t core, const volatile kmd_args_t* a, uint64_t run) {
     volatile uint8_t* state = (
         (volatile uint8_t*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + a->state_ddr)
     );
     volatile uint8_t* ring = state + KMD_STATE_RING;
-    volatile uint32_t* harts = (
-        (volatile uint32_t*)((volatile uint8_t*)a + KMD_LIM_HARTS)
+    volatile uint32_t* x280_cores = (
+        (volatile uint32_t*)((volatile uint8_t*)a + KMD_LIM_CORES)
     );
     volatile const uint32_t* go = (volatile const uint32_t*)(ring + KMD_ERING_GO);
-    harts[KMD_H_ENGINE] = KMD_ENGINE_WAITING;
+    x280_cores[KMD_H_ENGINE] = KMD_ENGINE_WAITING;
     const uint64_t by = x280_mtime() + 2u * a->t_start;
     uint32_t spins = 0, started = 0;
     for (;;) {
@@ -780,22 +783,22 @@ static void eng_run(uint64_t hart, const volatile kmd_args_t* a, uint64_t run) {
         }
         if (++spins == KMD_POLL_EVERY) {
             spins = 0;
-            if (x280_hart_stop_requested(hart, run) || x280_mtime() > by) {
+            if (x280_hart_stop_requested(core, run) || x280_mtime() > by) {
                 break;
             }
         }
     }
     if (!started) {
-        harts[KMD_H_ENGINE] = KMD_ENGINE_UNUSED;
+        x280_cores[KMD_H_ENGINE] = KMD_ENGINE_UNUSED;
         x280_fence_ow();
         return;
     }
     uint64_t line_buf[16];
     kmd_engine_t* e = (kmd_engine_t*)(uintptr_t)(state + KMD_STATE_ENGINE);
-    e->hart = hart;
+    e->core = core;
     e->run = run;
     e->kernel = (const volatile kmd_t*)(state + KMD_STATE_KERNEL);
-    e->harts = harts;
+    e->x280_cores = x280_cores;
     e->upload = (volatile const uint8_t*)a + KMD_LIM_UPLOAD;
     e->upload_bytes = (uint32_t)a->upload_bytes;
     e->cores = (uint32_t)a->cores;
@@ -809,15 +812,15 @@ static void eng_run(uint64_t hart, const volatile kmd_args_t* a, uint64_t run) {
     e->next = 1;
     e->room_to = KMD_ENGINE_DEPTH;
     e->line = (uint64_t*)(((uintptr_t)line_buf + 63u) & ~(uintptr_t)63u);
-    harts[KMD_H_ENGINE] = KMD_ENGINE_RUNNING;
+    x280_cores[KMD_H_ENGINE] = KMD_ENGINE_RUNNING;
     eng_loop(e);
-    harts[KMD_H_PASSES] = (uint32_t)e->passes;
-    harts[KMD_H_RECORDS] = e->records;
-    harts[KMD_H_POSTS] = e->posts;
-    harts[KMD_H_EVENTS] = e->events_in;
-    harts[KMD_H_RUNS] = e->runs;
+    x280_cores[KMD_H_PASSES] = (uint32_t)e->passes;
+    x280_cores[KMD_H_COMMANDS] = e->commands;
+    x280_cores[KMD_H_POSTS] = e->posts;
+    x280_cores[KMD_H_EVENTS] = e->events_in;
+    x280_cores[KMD_H_RUNS] = e->runs;
     kmd_flush_lines(state + KMD_STATE_ENGINE, KMD_STATE_BYTES - KMD_STATE_ENGINE);
     x280_fence_ow();
-    harts[KMD_H_ENGINE] = KMD_ENGINE_STOPPED;
+    x280_cores[KMD_H_ENGINE] = KMD_ENGINE_STOPPED;
     x280_fence_ow();
 }

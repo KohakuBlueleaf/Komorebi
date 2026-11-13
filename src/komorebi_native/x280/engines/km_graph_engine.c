@@ -44,9 +44,9 @@ static uint32_t bad_reg(uint32_t r) {
 }
 
 static uint32_t bad_template(const km_template_t* t) {
-    uint32_t seg = t->rec.hdr & 0xFFu;
+    uint32_t handler = t->rec.hdr & 0xFFu;
     uint32_t flags = t->rec.hdr >> 8 & 0xFFu;
-    if (seg < 1u || seg > KM_SEG_USER_MAX) {
+    if (handler < 1u || handler > KM_HANDLER_USER_MAX) {
         return 1u;
     }
     if (flags & ~(uint32_t)(KM_F_EXCL | KM_F_RESULT | KM_F_QUEUE)) {
@@ -92,7 +92,7 @@ static uint32_t check_node(
     const km_template_t* tpl,
     uint32_t cpu_next
 ) {
-    if (n->kind < KM_NODE_RECORD || n->kind > KM_NODE_JOIN || n->flags != 0) {
+    if (n->kind < KM_NODE_COMMAND || n->kind > KM_NODE_JOIN || n->flags != 0) {
         return KM_SERR_NODE;
     }
     if (n->n_pred > KM_GRAPH_MAX_PRED) {
@@ -101,8 +101,8 @@ static uint32_t check_node(
     if (bad_reg(n->skip_reg) || bad_reg(n->result_reg)) {
         return KM_SERR_REGISTER;
     }
-    if (n->kind == KM_NODE_RECORD) {
-        if (n->arg >= h->n_records || bad_template(&tpl[n->arg])) {
+    if (n->kind == KM_NODE_COMMAND) {
+        if (n->arg >= h->n_commands || bad_template(&tpl[n->arg])) {
             return KM_SERR_TEMPLATE;
         }
         uint32_t flags = tpl[n->arg].rec.hdr >> 8 & 0xFFu;
@@ -135,7 +135,7 @@ uint32_t kmg_check(const void* upload, uint32_t bytes) {
     }
     if (h->n_nodes < 1u || h->n_nodes > KM_GRAPH_MAX_NODES ||
         h->n_edges > KM_GRAPH_MAX_EDGES || h->n_ops > KM_GRAPH_MAX_OPS ||
-        h->n_records > KM_GRAPH_MAX_TEMPLATES) {
+        h->n_commands > KM_GRAPH_MAX_TEMPLATES) {
         return FAULT(KM_SERR_HEADER, none);
     }
     if (bad_reg(h->again_reg) || h->max_runs == 0 || h->step_limit == 0 ||
@@ -145,7 +145,7 @@ uint32_t kmg_check(const void* upload, uint32_t bytes) {
     uint32_t at_edges = sizeof(km_graph_t) + line_up(h->n_nodes * sizeof(km_node_t));
     uint32_t at_ops = at_edges + line_up(h->n_edges * 2u);
     uint32_t at_tpl = at_ops + line_up(h->n_ops * sizeof(km_uop_t));
-    if (bytes != at_tpl + line_up(h->n_records * sizeof(km_template_t))) {
+    if (bytes != at_tpl + line_up(h->n_commands * sizeof(km_template_t))) {
         return FAULT(KM_SERR_HEADER, none);
     }
     const uint8_t* base = (const uint8_t*)upload;
@@ -195,7 +195,7 @@ uint32_t kmg_check(const void* upload, uint32_t bytes) {
             return FAULT(KM_SERR_EDGE, i);
         }
     }
-    for (uint32_t t = 0; t < h->n_records; t++) {
+    for (uint32_t t = 0; t < h->n_commands; t++) {
         if (bad_template(&tpl[t])) {
             return FAULT(KM_SERR_TEMPLATE, none);
         }
@@ -363,7 +363,7 @@ static uint32_t run_cpu(kmg_state_t* s, uint32_t node) {
     return steps;
 }
 
-static void set_arg(km_record_t* rec, uint32_t i, uint32_t v) {
+static void set_arg(km_command_t* rec, uint32_t i, uint32_t v) {
     switch (i) {
         case 0:
             rec->a0 = v;
@@ -398,15 +398,15 @@ static void set_arg(km_record_t* rec, uint32_t i, uint32_t v) {
     }
 }
 
-/* Builds and issues the record of `node`: KMG_ISSUED, KMG_BUSY (put back at the tail)
-   or KMG_ERROR (team outside the grid, a job that can never fit). */
-static uint32_t issue_record(
-    kmg_state_t* s, uint32_t node, kmg_issue_fn issue, void* ctx
+/* Builds and submits the command of `node`: KMG_SUBMITTED, KMG_BUSY (put back at the
+   tail) or KMG_ERROR (group outside the grid, a job that can never fit). */
+static uint32_t submit_command(
+    kmg_state_t* s, uint32_t node, kmg_submit_fn submit, void* ctx
 ) {
     const km_node_t* n = &s->nodes[node];
-    const km_template_t* t = &s->tpl[n->arg < s->hdr->n_records ? n->arg : 0u];
-    const km_record_t* src = &t->rec;
-    km_record_t rec;
+    const km_template_t* t = &s->tpl[n->arg < s->hdr->n_commands ? n->arg : 0u];
+    const km_command_t* src = &t->rec;
+    km_command_t rec;
     rec.seq = rec.land1 = rec.land2 = rec.land3 = 0;
     rec.hdr = src->hdr & 0xFFFFu;
     rec.a0 = src->a0;
@@ -422,7 +422,7 @@ static uint32_t issue_record(
     for (uint32_t k = 0; k < t->n_patch && k < KM_TPL_PATCHES; k++) {
         set_arg(&rec, t->arg[k], s->regs[REG(t->reg[k])]);
     }
-    uint32_t first = src->team & 0xFFFFu, count = src->team >> 16;
+    uint32_t first = src->group & 0xFFFFu, count = src->group >> 16;
     if (t->first_reg != KM_GRAPH_NONE) {
         first = s->regs[REG(t->first_reg)];
     }
@@ -436,17 +436,17 @@ static uint32_t issue_record(
             return KMG_ERROR;
         }
     } else if (count == 0 || first > s->n_cores || count > s->n_cores - first) {
-        fail(s, KM_SERR_TEAM, node);
+        fail(s, KM_SERR_GROUP, node);
         return KMG_ERROR;
     }
-    rec.team = first | count << 16;
-    if (issue(ctx, node, &rec) != KMG_ISSUED) {
+    rec.group = first | count << 16;
+    if (submit(ctx, node, &rec) != KMG_SUBMITTED) {
         push(s, node);
         return KMG_BUSY;
     }
     s->status[node] = KMG_FLIGHT;
     s->in_flight++;
-    return KMG_ISSUED;
+    return KMG_SUBMITTED;
 }
 
 /* All nodes are done: go round again while `again` is set, else end. */
@@ -465,7 +465,7 @@ static uint32_t round_end(kmg_state_t* s) {
     return KMG_ROUND;
 }
 
-uint32_t kmg_step(kmg_state_t* s, kmg_issue_fn issue, void* ctx) {
+uint32_t kmg_step(kmg_state_t* s, kmg_submit_fn submit, void* ctx) {
     if (s->phase != KMG_RUNNING) {
         return s->phase;
     }
@@ -482,8 +482,8 @@ uint32_t kmg_step(kmg_state_t* s, kmg_issue_fn issue, void* ctx) {
             busy = 0;
             continue;
         }
-        if (n->kind == KM_NODE_RECORD) {
-            uint32_t got = issue_record(s, node, issue, ctx);
+        if (n->kind == KM_NODE_COMMAND) {
+            uint32_t got = submit_command(s, node, submit, ctx);
             if (got == KMG_ERROR) {
                 return KMG_ERROR;
             }

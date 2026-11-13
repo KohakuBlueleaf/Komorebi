@@ -1,4 +1,4 @@
-"""Card case: kmx_spawn / kmx_join and their refusals, kmx_par beside a busy hart,
+"""Card case: kmx_spawn / kmx_join and their rejections, kmx_par beside a busy core,
 kmx_par_all alone and a kmx_push into the thread's own bank, on cluster 1; every
 return code and mark as expected. Prints one JSON line."""
 

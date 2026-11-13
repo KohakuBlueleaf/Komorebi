@@ -1,0 +1,34 @@
+{
+ "name": "submit_excl",
+ "description": "KM_F_EXCL waits for an overlapping group",
+ "notes": "Commands, events, status, error, halt and stopped_grid are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a command submitted in pass p is acknowledged by the sweep of pass p + 1 + delay (null: never); delay is an integer, {base, mod} (base + seq % mod) or {by_seq: {seq: delay}, rest: delay}, where seq is the stream's own count of submitted commands from 1 (the `seq` of each command). A KM_F_RESULT command's result is (a0 + count) mod 2^32. Commands list a0 to a9 with trailing zeros left out. Events are [kind, req, aux, pass]. Pass order and the other rules: docs/streams.md.",
+ "params": {"n_cores": 119, "delay": 2, "deadline_passes": null, "default_deadline_passes": 1000000, "cancel_pass": null, "max_passes": 100000, "ticks_per_pass": 1000, "region_size": 1048576},
+ "expect": {
+  "check": null,
+  "status": "ended",
+  "error": null,
+  "halt": 0,
+  "stopped_grid": false,
+  "passes": 31,
+  "commands": [
+   {"seq": 1, "slot": 0, "pass": 0, "pc": 2, "queued": false, "handler": 1, "first": 0, "count": 10, "flags": 2, "args": []},
+   {"seq": 2, "slot": 0, "pass": 3, "pc": 3, "queued": false, "handler": 1, "first": 5, "count": 10, "flags": 2, "args": [0, 1]},
+   {"seq": 3, "slot": 1, "pass": 3, "pc": 4, "queued": false, "handler": 1, "first": 20, "count": 10, "flags": 0, "args": [0, 2]},
+   {"seq": 4, "slot": 0, "pass": 6, "pc": 2, "queued": false, "handler": 1, "first": 0, "count": 10, "flags": 2, "args": [1]},
+   {"seq": 5, "slot": 0, "pass": 9, "pc": 3, "queued": false, "handler": 1, "first": 5, "count": 10, "flags": 2, "args": [1, 1]},
+   {"seq": 6, "slot": 1, "pass": 9, "pc": 4, "queued": false, "handler": 1, "first": 20, "count": 10, "flags": 0, "args": [1, 2]},
+   {"seq": 7, "slot": 0, "pass": 12, "pc": 2, "queued": false, "handler": 1, "first": 0, "count": 10, "flags": 2, "args": [2]},
+   {"seq": 8, "slot": 0, "pass": 15, "pc": 3, "queued": false, "handler": 1, "first": 5, "count": 10, "flags": 2, "args": [2, 1]},
+   {"seq": 9, "slot": 1, "pass": 15, "pc": 4, "queued": false, "handler": 1, "first": 20, "count": 10, "flags": 0, "args": [2, 2]},
+   {"seq": 10, "slot": 0, "pass": 18, "pc": 2, "queued": false, "handler": 1, "first": 0, "count": 10, "flags": 2, "args": [3]},
+   {"seq": 11, "slot": 0, "pass": 21, "pc": 3, "queued": false, "handler": 1, "first": 5, "count": 10, "flags": 2, "args": [3, 1]},
+   {"seq": 12, "slot": 1, "pass": 21, "pc": 4, "queued": false, "handler": 1, "first": 20, "count": 10, "flags": 0, "args": [3, 2]},
+   {"seq": 13, "slot": 0, "pass": 24, "pc": 2, "queued": false, "handler": 1, "first": 0, "count": 10, "flags": 2, "args": [4]},
+   {"seq": 14, "slot": 0, "pass": 27, "pc": 3, "queued": false, "handler": 1, "first": 5, "count": 10, "flags": 2, "args": [4, 1]},
+   {"seq": 15, "slot": 1, "pass": 27, "pc": 4, "queued": false, "handler": 1, "first": 20, "count": 10, "flags": 0, "args": [4, 2]}
+  ],
+  "events": [
+   [5, 1, 0, 30]
+  ]
+ }
+}

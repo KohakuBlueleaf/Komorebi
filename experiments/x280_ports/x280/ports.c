@@ -1,4 +1,4 @@
-/* X280 ports experiment, the thread: records to the grid, and every X280 core of every
+/* X280 ports experiment, the thread: commands to the grid, and every X280 core of every
  * cluster serving its cores' ports meanwhile (README.md, xp.h). */
 #include <stdint.h>
 
@@ -6,7 +6,7 @@
 #include "kmx.h"
 #include "noc.h"
 
-#define WAIT_TICKS KMX_TICKS_PER_SECOND /* per record, longer than its deadline */
+#define WAIT_TICKS KMX_TICKS_PER_SECOND /* per command, longer than its deadline */
 #define BLOCK_WINDOW 160u /* X280 core h's posted window onto a core: + h */
 #define BLOCK_LAST 164u   /* X280 core h's non-posted one, for the block's last line */
 #define SPARE_WINDOW 170u /* the window step (d) aims again and again */
@@ -28,17 +28,17 @@ static uint64_t cycles(void) {
 }
 
 /* Fills r field by field (a struct assignment may call memset, which does not link). */
-static void record(
-    km_record_t* r,
-    uint32_t seg,
+static void command(
+    km_command_t* r,
+    uint32_t handler,
     uint32_t first,
     uint32_t count,
     uint32_t flags,
     const uint32_t* a
 ) {
     r->seq = r->land1 = r->land2 = r->land3 = 0;
-    r->hdr = seg | flags << 8;
-    r->team = first | count << 16;
+    r->hdr = handler | flags << 8;
+    r->group = first | count << 16;
     r->a0 = a[0];
     r->a1 = a[1];
     r->a2 = a[2];
@@ -50,12 +50,12 @@ static void record(
     r->a8 = r->a9 = 0;
 }
 
-/* Issues r and waits for its event: KMX_OK and ev, or the error. */
-static int issue(const km_record_t* r, uint32_t* ticket) {
+/* Submits r and waits for its event: KMX_OK and ev, or the error. */
+static int submit(const km_command_t* r, uint32_t* handle) {
     const uint64_t until = kmx_time() + WAIT_TICKS;
-    int e = kmx_issue(r, ticket);
+    int e = kmx_submit(r, handle);
     while (e == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
-        e = kmx_issue(r, ticket);
+        e = kmx_submit(r, handle);
     }
     return e;
 }
@@ -143,7 +143,7 @@ static int block_dram(int core, uint32_t k, uint32_t* xfer) {
         return 1;
     }
     const uint64_t t0 = cycles();
-    kmx_give_at(0, (uint64_t)core * XP_BLOCK_BYTES, XP_BLOCK_BYTES);
+    kmx_flush_at(0, (uint64_t)core * XP_BLOCK_BYTES, XP_BLOCK_BYTES);
     *xfer += (uint32_t)(cycles() - t0);
     return 0;
 }
@@ -245,18 +245,20 @@ static void finish(uint32_t code, uint32_t* w, uint32_t head) {
     kmx_result(code, w, head + 31);
 }
 
-/* Steps (a) and (b): one core, a record per round. */
+/* Steps (a) and (b): one core, a command per round. */
 static uint32_t one_core(const uint32_t* a, uint32_t* w) {
     const uint32_t mode = a[0], rounds = a[1], core = a[2];
     uint32_t bad = 0, first_bad = 0;
     for (uint32_t k = 1; k <= rounds; k++) {
-        km_record_t r;
+        km_command_t r;
         const uint32_t value = XP_ANSWER(k, core);
         const uint32_t args[8] = {k * 1000u, k, 0, 0, 0, 0, 0, k};
-        const uint32_t seg = mode == XP_MODE_TELL ? XP_SEG_TELL : XP_SEG_SEND;
-        record(&r, seg, core, 1, mode == XP_MODE_TELL ? KM_F_RESULT : 0, args);
-        uint32_t ticket;
-        if (issue(&r, &ticket) != KMX_OK) {
+        const uint32_t handler = (
+            mode == XP_MODE_TELL ? XP_HANDLER_TELL : XP_HANDLER_SEND
+        );
+        command(&r, handler, core, 1, mode == XP_MODE_TELL ? KM_F_RESULT : 0, args);
+        uint32_t handle;
+        if (submit(&r, &handle) != KMX_OK) {
             return 3;
         }
         int ok = 1;
@@ -274,7 +276,7 @@ static uint32_t one_core(const uint32_t* a, uint32_t* w) {
             ok = e == KMX_OK && m.w[0] == k * 1000u + core && m.w[1] == k;
         }
         kmx_event ev;
-        if (kmx_wait(ticket, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
+        if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
             return 3;
         }
         if (ev.kind != KM_EV_DONE) {
@@ -294,7 +296,7 @@ static uint32_t one_core(const uint32_t* a, uint32_t* w) {
     return 0;
 }
 
-/* Steps (c), (e), (f), (g): a record to cores [0, cores) per round, served by every
+/* Steps (c), (e), (f), (g): a command to cores [0, cores) per round, served by every
  * X280 core of every cluster. */
 static uint32_t all_cores(const uint32_t* a, uint32_t* w) {
     const uint32_t mode = a[0], rounds = a[1], cores = a[2];
@@ -304,24 +306,24 @@ static uint32_t all_cores(const uint32_t* a, uint32_t* w) {
         return 3;
     }
     for (uint32_t k = 1; k <= rounds; k++) {
-        km_record_t r;
-        uint32_t seg = XP_SEG_ASK, tell = 0, stop = 0;
+        km_command_t r;
+        uint32_t handler = XP_HANDLER_ASK, tell = 0, stop = 0;
         uint32_t args[8] = {a[3], a[5], a[4] | XP_F_DONE, a[6], a[7], 0, 0, k};
         if (mode == XP_MODE_BLOCK) {
-            seg = XP_SEG_BLOCK;
+            handler = XP_HANDLER_BLOCK;
             args[0] = a[3];
             args[1] = a[4];
             args[2] = a[7];
 
         } else if (mode == XP_MODE_RATE) {
-            seg = XP_SEG_RATE;
+            handler = XP_HANDLER_RATE;
             args[0] = a[3];
             args[1] = a[4];
             tell = 1;
         } else {
             stop = a[8];
         }
-        record(&r, seg, 0, cores, 0, args);
+        command(&r, handler, 0, cores, 0, args);
         const uint64_t t0 = kmx_time(), until = t0 + WAIT_TICKS;
         const uint64_t arg = k | (uint64_t)tell << 24 | (uint64_t)stop << 32;
         kmx_event ev;

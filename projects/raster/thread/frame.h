@@ -2,14 +2,14 @@
  * which checks the kernels' numbers here against kernels/setup.h and raster.h. */
 #pragma once
 
-/* Segments (kernels/setup.h) */
-#define RF_SEG_COUNT 12u
-#define RF_SEG_SETUP 13u
-#define RF_SEG_HIST 14u
-#define RF_SEG_PLACE 15u
-#define RF_SEG_SUM 16u
-#define RF_SEG_HSUM 17u
-#define RF_SEG_FILL 1u       /* kernels/raster.h */
+/* Handlers (kernels/setup.h) */
+#define RF_HANDLER_COUNT 12u
+#define RF_HANDLER_SETUP 13u
+#define RF_HANDLER_HIST 14u
+#define RF_HANDLER_PLACE 15u
+#define RF_HANDLER_SUM 16u
+#define RF_HANDLER_HSUM 17u
+#define RF_HANDLER_FILL 1u   /* kernels/raster.h */
 #define RF_PAGES_PER_ITEM 5u /* the frame's pages per tile: the fill's planes */
 
 /* The directory's frame tensors (kernels/raster.h) */
@@ -41,7 +41,7 @@
 
 /* Words */
 #define RF_W_CORES 0       /* cores that count and set up (the first ones) */
-#define RF_W_WORKERS 1     /* the team, and the cores that fill */
+#define RF_W_WORKERS 1     /* the group, and the cores that fill */
 #define RF_W_BANK 2        /* the regions' DRAM bank */
 #define RF_W_MESH 3        /* the mesh tensor */
 #define RF_W_BLOCKS 4      /* its blocks */
@@ -76,7 +76,7 @@
 #define RF_O_ITEMS 1
 #define RF_O_MARKS 2
 #define RF_O_HEAVY 3
-#define RF_O_COUNT 4  /* COUNT issued to its event */
+#define RF_O_COUNT 4  /* COUNT submitted to its event */
 #define RF_O_HIST 5   /* HIST, with the heavy tiles' page */
 #define RF_O_MIDDLE 6 /* the step: totals to the words SETUP and PLACE read */
 #define RF_O_PLACE 7
@@ -90,16 +90,16 @@
 #define RF_O_COMPACT 15  /* rm_compact, rm_base */
 #define RF_O_FILL 16
 #define RF_O_FRAMES 17 /* frames finished; the parts' ticks are their sums */
-#define RF_O_SUM 18    /* SUM issued to its event */
+#define RF_O_SUM 18    /* SUM submitted to its event */
 #define RF_O_HSUM 19   /* HSUM */
 #define RF_O_SORT 20   /* the items by falling cost (rm_sort, rm_merge) */
 #define RF_OUT_WORDS 21u
 
 /* Codes */
 #define RF_BAD_ARGS 1u
-#define RF_RING 2u   /* a record could not be issued or its event did not come */
-#define RF_RECORD 3u /* a record did not finish (timeout, refused) */
+#define RF_RING 2u    /* a record could not be submitted or its event did not come */
+#define RF_COMMAND 3u /* a record did not finish (timeout, rejected) */
 #define RF_TOO_MANY_HEAVY 4u
 #define RF_NO_LAYOUT 5u   /* the step could not lay the lists out */
 #define RF_LISTS_SMALL 6u /* the lists tensor has fewer slots than the frame needs */
-#define RF_PAR 7u         /* a part on the four harts did not finish (late, stopped) */
+#define RF_PAR 7u         /* a part on the four cores did not finish (late, stopped) */

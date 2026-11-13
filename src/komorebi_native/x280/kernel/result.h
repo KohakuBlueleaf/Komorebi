@@ -1,5 +1,5 @@
 /* Result block in LIM: the kernel's state, where it is, and at the finish the error
- * record and the counters. The host reads it after stopping the kernel. */
+ * command and the counters. The host reads it after stopping the kernel. */
 #pragma once
 
 #include "kernel.h"
@@ -19,7 +19,7 @@ static inline void result_where(kmd_t* k, uint32_t where) {
     k->result[KMD_R_WHERE] = where;
 }
 
-/* Records an error with the slot, sequence, request and value it concerns. */
+/* Commands an error with the slot, sequence, request and value it concerns. */
 static inline void result_error(
     kmd_t* k, uint32_t error, uint32_t slot, uint32_t seq, uint32_t req, uint32_t seen
 ) {
@@ -33,12 +33,12 @@ static inline void result_error(
 
 /* The counters and the final state. */
 static inline void result_finish(kmd_t* k, uint64_t now) {
-    result_word(k, KMD_R_COMMANDS, k->ring[KMD_SRC_HOST].next - 1u);
-    result_word(k, KMD_R_RECORDS, k->records);
+    result_word(k, KMD_R_HOST_COMMANDS, k->ring[KMD_SRC_HOST].next - 1u);
+    result_word(k, KMD_R_COMMANDS, k->commands);
     result_word(k, KMD_R_EVENTS, k->ring[KMD_SRC_HOST].pushed);
     result_word(k, KMD_R_BUSY, k->busy);
     result_word(k, KMD_R_MAX_BUSY, k->max_busy);
-    result_word(k, KMD_R_REFUSED, k->refused);
+    result_word(k, KMD_R_REJECTED, k->rejected);
     result_word(k, KMD_R_HELD, k->held);
     result_word(k, KMD_R_NO_ROOM, k->no_room);
     result_word(k, KMD_R_CHECKED, k->checked);

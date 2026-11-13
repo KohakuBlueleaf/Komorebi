@@ -1,5 +1,5 @@
-"""The plan of a matrix product on resident workers, as pure functions: which form,
-the K chunk and the column block, the buffers per core, and the records.
+"""The plan of a matrix product on persistent kernels, as pure functions: which form,
+the K chunk and the column block, the buffers per core, and the commands.
 
 Sizes are in 32 x 32 tiles of bf16 (2048 bytes)."""
 
@@ -19,7 +19,7 @@ S = abi.constants(SPLIT_H, known=abi.headers().constants)
 TILE = 32
 TILE_BYTES = K["kTileBytes"]
 # L1 bytes per core the program's own buffers may take: 1,381,376 ran on the card,
-# 1,459,200 was refused when the program was built.
+# 1,459,200 was rejected when the program was built.
 L1_BUDGET = 1_380_000
 MAX_CHUNK = 32  # K tiles per chunk, as Kohaku-TT's matmul
 MAX_BLOCK = 4  # output tiles per block: half of DST in fp32
@@ -105,18 +105,18 @@ def plan(mt, kt, nt, budget=L1_BUDGET, form=None):
     return None
 
 
-def team_size(p, workers):
-    """Members of a PRODUCT team: one per row tile, at most every worker."""
+def group_size(p, workers):
+    """Members of a PRODUCT group: one per row tile, at most every worker."""
     return min(p.mt, workers)
 
 
 def load_args(p, w_addr, cb=K["kCbW"]):
-    """Record words a0.. of LOAD into W buffer `cb`."""
+    """Command words a0.. of LOAD into W buffer `cb`."""
     return [w_addr, cb, 0, p.kt, p.nt]
 
 
 def product_args(p, a_addr, y_addr, w_addr=0, mode=0):
-    """Record words a0..a9 of PRODUCT."""
+    """Command words a0..a9 of PRODUCT."""
     return [a_addr, y_addr, p.mt, p.kt, p.nt, p.kc, p.ct, mode, p.form, w_addr]
 
 
@@ -124,7 +124,7 @@ def product_args(p, a_addr, y_addr, w_addr=0, mode=0):
 # that divides the block; K blocks of the largest of these that fits.
 SUBBLOCKS = ((1, 4), (4, 1), (2, 2), (1, 3), (3, 1), (1, 2), (2, 1), (1, 1))
 K_BLOCKS = (16, 8, 4, 2, 1)
-LANE_BLOCKS_MAX = 32767  # km::kLaneBlocksMax
+BROADCAST_BLOCKS_MAX = 32767  # km::kBroadcastBlocksMax
 
 
 def cdiv(a, b):
@@ -136,10 +136,10 @@ LAYOUTS = ("2d", "rows", "cols")
 
 @dataclass(frozen=True)
 class Grid:
-    """[mt, kt] @ [kt, nt] on a rectangle of cores: `rows` x `cols` output bands of
-    pcm x pcn tiles in bm x bn blocks, K blocks of kb, lane windows wa and ww. Layout
-    "2d": A along the rows, W down the columns; "rows": a row band per core, W down
-    the columns; "cols": a column band per core, A along the rows."""
+    """[mt, kt] @ [kt, nt] on a rectangle of cores: `rows` x `cols` output bands of pcm
+    x pcn tiles in bm x bn blocks, K blocks of kb, broadcast windows wa and ww. Layout
+    "2d": A along the rows, W down the columns; "rows": a row band per core, W down the
+    columns; "cols": a column band per core, A along the rows."""
 
     mt: int
     kt: int
@@ -174,7 +174,7 @@ class Grid:
         return cdiv(self.pcn, self.bn)
 
     def blocks(self):
-        """Blocks each lane hands over in one call."""
+        """Blocks each broadcast hands over in one call."""
         return self.nbh * self.nbw * self.nk
 
     def words(self):
@@ -235,13 +235,14 @@ class Grid:
                 out[y * gx + x] = (band[0] * self.pcm, band[1] * self.pcn)
         return out
 
-    def team(self, grid):
+    def group(self, grid):
         """(first, count): the smallest range of the core order covering the rect."""
         _, _, nx, ny = self.rect(grid)
         return 0, (ny - 1) * grid[0] + nx
 
     def check(self, grid, budget=L1_BUDGET):
-        """Raises ValueError when the plan does not fit the grid, L1 or the lanes."""
+        """Raises ValueError when the plan does not fit the grid, L1 or the
+        broadcasts."""
         gx, gy = grid
         _, _, nx, ny = self.rect(grid)
         if self.layout not in LAYOUTS:
@@ -256,8 +257,8 @@ class Grid:
             raise ValueError("the bands do not cover the output")
         if self.bm % self.sh or self.bn % self.sw or self.sh * self.sw > 4:
             raise ValueError(f"subblock {self.sh} x {self.sw} of {self.bm} x {self.bn}")
-        if self.blocks() > LANE_BLOCKS_MAX:
-            raise ValueError(f"{self.blocks()} lane blocks in one call")
+        if self.blocks() > BROADCAST_BLOCKS_MAX:
+            raise ValueError(f"{self.blocks()} broadcast blocks in one call")
         if self.l1_bytes() > budget:
             raise ValueError(f"{self.l1_bytes()} bytes of L1 > {budget}")
 
@@ -406,12 +407,12 @@ def split_plan(mt, kt, nt, s, oh, ow, kc=None, cores=120, budget=L1_BUDGET):
 
 
 def split_args(sp, a_addr, w_addr, y_addr, form="owner", mode=0):
-    """Record words a0..a4 of SPLIT."""
+    """Command words a0..a4 of SPLIT."""
     return [a_addr, w_addr, y_addr, REDUCE_FORMS[form], mode]
 
 
 def grid_args(g, a_addr, w_addr, y_addr, mode=0):
-    """Record words a0..a3 of GRID."""
+    """Command words a0..a3 of GRID."""
     return [a_addr, w_addr, y_addr, mode]
 
 

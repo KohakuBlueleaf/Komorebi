@@ -38,7 +38,7 @@ class CardTracer:
         policy=K["kPolicyOnce"],
         balance=False,
         sort="none",
-        per_record=0,
+        per_command=0,
         scene=None,
     ):
         self.session = session
@@ -56,7 +56,7 @@ class CardTracer:
         self.entries = entries
         self.policy = policy
         self.least = 16  # packets per record the planner keeps before dropping slots
-        self.per_record = per_record  # packets per core and record at most (0: plan)
+        self.per_command = per_command  # packets per core and record at most (0: plan)
         self.balance = balance
         self.sort = sort  # none, tile or pass: SORTED passes by coherence_key
         lo, hi = bvh.node_boxes(tree["nodes"][:1])
@@ -92,11 +92,11 @@ class CardTracer:
         pages = packets.packet_pages(lanes, o, d, tmax)
         info["host_pack_s"] = time.perf_counter() - t0
         mode = K["kModeAny"] if any_hit else K["kModeNearest"]
-        seg, args, extra, sizes = K["kSegTrace"], [mode], (), None
+        handler, args, extra, sizes = K["kHandlerTrace"], [mode], (), None
         if self.cut is not None:
             most = int(directory[:, K["kDirCount"]].max())
-            seg, extra = K["kSegTreelets"], (self.treelets,)
-            per, slots, sizes = packets.plan_records(
+            handler, extra = K["kHandlerTreelets"], (self.treelets,)
+            per, slots, sizes = packets.plan_commands(
                 most,
                 self.n_treelets,
                 self.slot_bytes,
@@ -105,19 +105,19 @@ class CardTracer:
                 entries=self.entries,
                 least=self.least,
             )
-            if self.per_record and self.per_record < per:
-                per = self.per_record
+            if self.per_command and self.per_command < per:
+                per = self.per_command
                 sizes = packets.treelet_buffers(
                     per, sizes["entries"], self.n_treelets, slots, self.slot_bytes
                 )
             args = [mode, sizes["entries"], self.slot_bytes, slots, self.policy]
-            info["l1"] = {**sizes, "packets_per_record": per, "slot_count": slots}
+            info["l1"] = {**sizes, "packets_per_command": per, "slot_count": slots}
             full = packets.chunks(full, per)
-            info["records_per_trace"] = len(full)
+            info["commands_per_trace"] = len(full)
         vectors = packets.hit_vectors(any_hit)
-        out, prof, res, times, power = card.run_segment(
+        out, prof, res, times, power = card.run_handler(
             self.session,
-            seg,
+            handler,
             full,
             packets.group(pages),
             -(-len(pages) // K["kPagePackets"]),
@@ -133,7 +133,7 @@ class CardTracer:
             info["power"] = self.power.result.as_dict()
         info["run"] = card.check_run(res, self.workers)
         info["times"] = times
-        us = card.record_us(res)
+        us = card.command_us(res)
         info["load_us"] = float(us[0])
         # A trace is its records in a row: their card times summed per round.
         per_trace = len(full) if isinstance(full, list) else 1

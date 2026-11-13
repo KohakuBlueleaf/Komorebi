@@ -1,5 +1,5 @@
 // X280 ports experiment, grid side: the reader owns the core's port to its X280 core
-// and keeps the stats page of each record (xp.h).
+// and keeps the stats page of each command (xp.h).
 #include <stdint.h>
 
 #include "../xp.h"
@@ -12,7 +12,7 @@ constexpr uint32_t kCbScratch = 16;
 namespace {
 
     // Message stats in L1 over a run's rounds, written to the core's stats page after
-    // each record.
+    // each command.
     struct Stats {
         volatile tt_l1_ptr uint32_t* w;
 
@@ -60,7 +60,7 @@ void kernel_main() {
     const uint32_t me = rd.me();
 
     // A NoC barrier polled with the wait limit; false (recorded) if it passed.
-    auto flushed = [&](const km_record_t& r, bool reads) {
+    auto flushed = [&](const km_command_t& r, bool reads) {
         const uint32_t code = rd.poll(
             [&] {
                 return (
@@ -78,7 +78,7 @@ void kernel_main() {
     };
 
     // The stats page to DRAM, after the writer's count of reads when it reads.
-    auto put_stats = [&](const km_record_t& r, uint32_t stats, bool reads) {
+    auto put_stats = [&](const km_command_t& r, uint32_t stats, bool reads) {
         if (reads) {
             const uint32_t code = rd.poll(
                 [&] {
@@ -97,21 +97,21 @@ void kernel_main() {
         flushed(r, false);
     };
 
-    rd.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
+    rd.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
         km::X280Msg m;
-        if (seg == XP_SEG_TELL) {
+        if (handler == XP_HANDLER_TELL) {
             if (port.wait_told(m)) {
                 flags[1] = m.w[0];
                 flags[0] = r.seq;
             }
             return;
         }
-        if (seg == XP_SEG_SEND) {
+        if (handler == XP_HANDLER_SEND) {
             port.tell(r.a0 + me, r.a7, 0);
             return;
         }
-        if (seg == XP_SEG_ASK) {
+        if (handler == XP_HANDLER_ASK) {
             st.begin(r.a7);
             for (uint32_t k = 1; k <= r.a0; k++) {
                 const uint32_t t0 = km::wall();
@@ -133,7 +133,7 @@ void kernel_main() {
             }
             return;
         }
-        if (seg == XP_SEG_BLOCK) {
+        if (handler == XP_HANDLER_BLOCK) {
             st.begin(r.a7);
             for (uint32_t k = 1; k <= r.a0; k++) {
                 for (uint32_t i = 0; i < XP_BLOCK_BYTES / 4; i++) {
@@ -169,7 +169,7 @@ void kernel_main() {
             }
             return;
         }
-        if (seg == XP_SEG_RATE) {
+        if (handler == XP_HANDLER_RATE) {
             st.begin(r.a7);
             const uint64_t end = km::wall64() + (static_cast<uint64_t>(r.a0) << 10);
             for (uint32_t k = 1; km::wall64() < end; k++) {

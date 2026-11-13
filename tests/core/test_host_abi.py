@@ -8,9 +8,9 @@ from komorebi import abi
 H = abi.headers()
 
 
-def test_record_and_event_fields_follow_the_abi_header():
-    assert H.record_fields == [
-        "seq", "hdr", "team", "a0", "land1", "a1", "a2", "a3",
+def test_command_and_event_fields_follow_the_abi_header():
+    assert H.command_fields == [
+        "seq", "hdr", "group", "a0", "land1", "a1", "a2", "a3",
         "land2", "a4", "a5", "a6", "land3", "a7", "a8", "a9",
     ]  # fmt: skip
     assert H.event_fields == ["index", "req", "status", "ticks"]
@@ -30,25 +30,25 @@ def test_start_up_arguments_are_in_header_order():
 
 def test_constants_of_all_three_headers():
     assert H["KM_RING_SLOTS"] == 16 and H["KM_CTL_BYTES"] == 0x15C0
-    assert H["KM_READY"] == 0xFFFFFFFF and H["KM_SEG_EXIT"] == 255
+    assert H["KM_READY"] == 0xFFFFFFFF and H["KM_HANDLER_EXIT"] == 255
     assert H["KMD_LIM_MAILBOX"] == 0x100 and H["KMD_HOST_EVENTS"] == 2
     assert H["KMD_R_WORDS"] == 32 and H["KMD_R_LAST_HI"] == 23
     assert (
         H["kOutReady"] == 1
         and H["kOutSlots"] == (H["KM_CTL_CORES"] - H["KM_CTL_OUT"]) // 16
     )
-    assert "KM_TEAM_ALL" not in H.constants  # a function-like macro
+    assert "KM_GROUP_ALL" not in H.constants  # a function-like macro
 
 
-def test_record_encoding_puts_fields_where_the_header_says():
-    words = abi.record(7, 3, 9, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
-    named = dict(zip(H.record_fields, words))
-    assert named["hdr"] == 7 and named["team"] == 3 | 9 << 16
+def test_command_encoding_puts_fields_where_the_header_says():
+    words = abi.command(7, 3, 9, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
+    named = dict(zip(H.command_fields, words))
+    assert named["hdr"] == 7 and named["group"] == 3 | 9 << 16
     assert [named[f"a{i}"] for i in range(10)] == list(range(10, 20))
     assert named["seq"] == named["land1"] == named["land2"] == named["land3"] == 0
-    assert abi.record(1, 0, 1, [0xFFFFFFFF])[3] == 0xFFFFFFFF
+    assert abi.command(1, 0, 1, [0xFFFFFFFF])[3] == 0xFFFFFFFF
     with pytest.raises(ValueError, match="11 arguments"):
-        abi.record(1, 0, 1, range(11))
+        abi.command(1, 0, 1, range(11))
 
 
 def test_column_groups_cover_every_core_once():
@@ -57,10 +57,10 @@ def test_column_groups_cover_every_core_once():
     leaders = {c for c, g in groups.items() if g[0] == c}
     assert leaders == set(range(12))
     for leader in leaders:
-        members = [c for c, g in groups.items() if g[0] == leader and c != leader]
-        assert groups[leader][2] == len(members) == 9
-        assert sorted(groups[c][1] for c in members) == list(range(9))
-        assert {groups[c][3] for c in [leader, *members]} == {leader}
+        others = [c for c, g in groups.items() if g[0] == leader and c != leader]
+        assert groups[leader][2] == len(others) == 9
+        assert sorted(groups[c][1] for c in others) == list(range(9))
+        assert {groups[c][3] for c in [leader, *others]} == {leader}
 
 
 def test_limit_units():
@@ -194,20 +194,20 @@ def test_a_name_an_earlier_header_defined_decides_a_conditional(tmp_path):
 def test_a_programs_header_reads_the_package_constants_by_their_km_names(tmp_path):
     header = write(
         tmp_path,
-        '#include "komorebi/device/km_lane.hpp"\n'
-        "constexpr uint32_t kArgLane = 0;\n"
-        "constexpr uint32_t kArgIndex = km::kLaneArgs + 1;\n"
+        '#include "komorebi/device/km_broadcast.hpp"\n'
+        "constexpr uint32_t kArgBroadcast = 0;\n"
+        "constexpr uint32_t kArgIndex = km::kBroadcastArgs + 1;\n"
         "#if !defined(COMPILE_FOR_TRISC)\n"
         "inline void f() { if constexpr (true) {} }\n"
         "#endif\n",
         "program.h",
     )
-    assert H["kLaneArgs"] == 11 and H["kWherePort"] == 17  # device headers too
+    assert H["kBroadcastArgs"] == 11 and H["kWherePort"] == 17  # device headers too
     assert abi.constants(header, known=H.constants) == {
-        "kArgLane": 0,
+        "kArgBroadcast": 0,
         "kArgIndex": 12,
     }
-    with pytest.raises(abi.HeaderError, match="km::kLaneArgs"):
+    with pytest.raises(abi.HeaderError, match="km::kBroadcastArgs"):
         abi.constants(header)
 
 

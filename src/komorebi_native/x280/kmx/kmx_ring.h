@@ -1,4 +1,4 @@
-/* The thread's side of its command ring to the dispatch kernel: the host ring's
+/* The thread's side of its command ring to the dispatcher: the host ring's
  * protocol (kernel README, "Protocol with the host"), with the placement as data. */
 #pragma once
 
@@ -52,10 +52,10 @@ static inline int kmx_ring_open(kmx_ring_t* r, const volatile kmx_ring_desc* d) 
     return 1;
 }
 
-/* Stores command r->next: the record's words first, then its number in seq and the
+/* Stores command r->next: the command's words first, then its number in seq and the
  * three landing words, so the kernel never sees the number over old words. */
-static inline int kmx_ring_issue(
-    kmx_ring_t* r, const km_record_t* rec, uint32_t* ticket
+static inline int kmx_ring_submit(
+    kmx_ring_t* r, const km_command_t* rec, uint32_t* handle
 ) {
     if (r->cmd == 0) {
         return KMX_STOPPED;
@@ -84,7 +84,7 @@ static inline int kmx_ring_issue(
         KMX_RING_SWEEP((uintptr_t)w, 64);
     }
     r->next = i + 1;
-    *ticket = i;
+    *handle = i;
     return KMX_OK;
 }
 
@@ -108,7 +108,7 @@ static inline int kmx_ring_take(kmx_ring_t* r, kmx_event* ev) {
     if (e[0] != i) {
         return 0;
     }
-    ev->ticket = req;
+    ev->handle = req;
     ev->kind = status & 0xFFu;
     ev->aux = status >> 8;
     ev->ticks = ticks;
@@ -140,14 +140,14 @@ static inline int kmx_ring_poll(kmx_ring_t* r, kmx_event* ev) {
     return kmx_ring_take(r, ev) ? KMX_OK : KMX_NONE;
 }
 
-/* The event of `ticket` if it came (KMX_OK), else KMX_NONE, or KMX_FULL as for
- * kmx_ring_wait; events of other tickets are set aside. Never waits. */
-static inline int kmx_ring_look(kmx_ring_t* r, uint32_t ticket, kmx_event* ev) {
+/* The event of `handle` if it came (KMX_OK), else KMX_NONE, or KMX_FULL as for
+ * kmx_ring_wait; events of other handles are set aside. Never waits. */
+static inline int kmx_ring_look(kmx_ring_t* r, uint32_t handle, kmx_event* ev) {
     if (r->cmd == 0) {
         return KMX_STOPPED;
     }
     for (uint32_t j = 0; j < r->stashed; j++) {
-        if (r->stash[j].ticket == ticket) {
+        if (r->stash[j].handle == handle) {
             *ev = r->stash[j];
             r->stashed--;
             for (uint32_t m = j; m < r->stashed; m++) {
@@ -161,7 +161,7 @@ static inline int kmx_ring_look(kmx_ring_t* r, uint32_t ticket, kmx_event* ev) {
         if (got.kind == KMX_EV_WAKE) {
             continue;
         }
-        if (got.ticket == ticket) {
+        if (got.handle == handle) {
             *ev = got;
             return KMX_OK;
         }
@@ -170,16 +170,16 @@ static inline int kmx_ring_look(kmx_ring_t* r, uint32_t ticket, kmx_event* ev) {
     return r->stashed == KMX_STASH ? KMX_FULL : KMX_NONE;
 }
 
-/* The event of `ticket`, waiting until the timer passes `deadline`; events of other
- * tickets are set aside for kmx_poll (KMX_FULL while KMX_STASH are set aside). */
+/* The event of `handle`, waiting until the timer passes `deadline`; events of other
+ * handles are set aside for kmx_poll (KMX_FULL while KMX_STASH are set aside). */
 static inline int kmx_ring_wait(
-    kmx_ring_t* r, uint32_t ticket, uint64_t deadline, kmx_event* ev
+    kmx_ring_t* r, uint32_t handle, uint64_t deadline, kmx_event* ev
 ) {
     if (r->cmd == 0) {
         return KMX_STOPPED;
     }
     for (uint32_t j = 0; j < r->stashed; j++) {
-        if (r->stash[j].ticket == ticket) {
+        if (r->stash[j].handle == handle) {
             *ev = r->stash[j];
             r->stashed--;
             for (uint32_t m = j; m < r->stashed; m++) {
@@ -197,7 +197,7 @@ static inline int kmx_ring_wait(
             if (got.kind == KMX_EV_WAKE) {
                 continue;
             }
-            if (got.ticket == ticket) {
+            if (got.handle == handle) {
                 *ev = got;
                 return KMX_OK;
             }

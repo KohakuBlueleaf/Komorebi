@@ -135,7 +135,7 @@ def patches():
 
 
 def check_tree(tt_metal, pin):
-    """Refuses a tree at another tag, or one where a patch is not applied."""
+    """Rejects a tree at another tag, or one where a patch is not applied."""
     have = run("git", "-C", str(tt_metal), "describe", "--tags", "--always").stdout
     if have.strip() != pin:
         raise SystemExit(f"{tt_metal} holds tt-metal {have.strip()}, the pin is {pin}")

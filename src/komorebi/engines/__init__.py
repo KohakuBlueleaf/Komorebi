@@ -1,1 +1,1 @@
-"""Engines the dispatch kernel runs from uploaded data."""
+"""Engines the dispatcher runs from uploaded data."""

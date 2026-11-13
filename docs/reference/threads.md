@@ -1,6 +1,6 @@
 ---
 title: X280 threads reference
-summary: Every kmx call with its return codes and the hart it runs on, the thread's memory layout and result block, the command ring's line, and the host side (Program.thread, ThreadRun, ThreadResult, regions).
+summary: Every kmx call with its return codes and the core it runs on, the thread's memory layout and result block, the command ring's line, and the host side (Program.thread, ThreadRun, ThreadResult, regions).
 tags:
   - reference
   - x280
@@ -10,7 +10,7 @@ tags:
 # X280 threads reference
 
 Status: implemented on one Blackhole p150a, work clusters 1, 2 and 3, each with its
-command ring to the dispatch kernel (its sources 2, 3 and 4). The library's ring calls
+command ring to the dispatcher (its sources 2, 3 and 4). The library's ring calls
 are also checked on the CPU against a fake kernel.
 
 The guide is [X280 threads](../threads.md): what a thread is for, how regions change
@@ -23,33 +23,33 @@ hands, the rules. This page lists the interface. The sources are
 Plain C, no libc. The library's start-up is the image's `main`; the thread supplies
 `kmx_main`.
 
-| Call | Hart | Does | Returns |
+| Call | Core | Does | Returns |
 |---|---|---|---|
-| `int kmx_main(int hart)` | 0 | the thread's entry, written by the program | its code, unless `kmx_result` gave one |
+| `int kmx_main(int core)` | 0 | the thread's entry, written by the program | its code, unless `kmx_result` gave one |
 | `const kmx_args* kmx_args_get(void)` | any | the argument block: `nwords`, `words[]`, `nregions`, `region[]`, `deadline`, `flags` | never 0 |
 | `void* kmx_region(int id, uint64_t* bytes)` | any | region `id` as memory, `*bytes` its size | 0 for an unknown id |
-| `void kmx_take(int id)` | any | drops the cluster's cached lines of the region: before reading what the grid or the host wrote | - |
-| `void kmx_give(int id)` | any | writes the region's cached lines back to DRAM: after writing what the grid or the host will read | - |
-| `void kmx_take_at(int id, uint64_t offset, uint64_t bytes)`, `kmx_give_at` | any | the same for the lines holding `bytes` of the region from `offset` | - |
-| `int kmx_spawn(int hart, void (*fn)(int, void*), void* arg)` | 0 | starts `fn(hart, arg)` on hart 1, 2 or 3 and returns | `KMX_OK`; `KMX_FULL` while that hart runs its last spawn; `KMX_BAD` for another hart |
-| `int kmx_join(int hart)` | 0 | waits until `hart` returned from its last spawn (at once if none) | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_BAD` |
-| `int kmx_par(void (*fn)(int, void*), void* arg)` | 0, not nested | spawns `fn` on harts 1 to 3, runs `fn(0, arg)`, joins them | `KMX_OK`; `KMX_FULL` if a spawned hart is busy (nothing started); `KMX_LATE` or `KMX_STOPPED`; `KMX_STOPPED` with error `par` from another hart or inside a `kmx_par` |
+| `void kmx_invalidate(int id)` | any | drops the cluster's cached lines of the region: before reading what the grid or the host wrote | - |
+| `void kmx_flush(int id)` | any | writes the region's cached lines back to DRAM: after writing what the grid or the host will read | - |
+| `void kmx_invalidate_at(int id, uint64_t offset, uint64_t bytes)`, `kmx_flush_at` | any | the same for the lines holding `bytes` of the region from `offset` | - |
+| `int kmx_spawn(int core, void (*fn)(int, void*), void* arg)` | 0 | starts `fn(core, arg)` on core 1, 2 or 3 and returns | `KMX_OK`; `KMX_FULL` while that core runs its last spawn; `KMX_BAD` for another core |
+| `int kmx_join(int core)` | 0 | waits until `core` returned from its last spawn (at once if none) | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_BAD` |
+| `int kmx_par(void (*fn)(int, void*), void* arg)` | 0, not nested | spawns `fn` on cores 1 to 3, runs `fn(0, arg)`, joins them | `KMX_OK`; `KMX_FULL` if a spawned core is busy (nothing started); `KMX_LATE` or `KMX_STOPPED`; `KMX_STOPPED` with error `par` from another core or inside a `kmx_par` |
 | `uint32_t kmx_clusters(void)` | any | the clusters running this image in the program, bit `c` for cluster `c` | a mask |
 | `int kmx_lead(void)` | any | the lowest of them: the one that calls `kmx_par_all` | 1, 2 or 3 |
-| `int kmx_par_all(void (*fn)(int, int, uint64_t), uint64_t arg)` | the lead's 0, not nested | runs `fn(cluster, hart, arg)` on every hart of `kmx_clusters()`; the first call waits until every other cluster serves | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED`; error `par` elsewhere |
+| `int kmx_par_all(void (*fn)(int, int, uint64_t), uint64_t arg)` | the lead's 0, not nested | runs `fn(cluster, core, arg)` on every core of `kmx_clusters()`; the first call waits until every other cluster serves | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED`; error `par` elsewhere |
 | `int kmx_serve(void)` | 0 | runs the lead's `kmx_par_all` calls until the lead's `kmx_main` returns | `KMX_OK`; `KMX_NONE` on the lead; `KMX_LATE` / `KMX_STOPPED` |
-| `int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t bytes)` | any | stores `bytes` from `src` at `offset` of region `id` of `cluster`'s thread; returns once the last line's store is acknowledged; on hart 0 outside `kmx_par`, over the four harts | `KMX_OK`; `KMX_BAD` (a cluster not in `kmx_clusters()`, an unknown region, out of range, not 64-byte multiples, a window, or before the lead's first call on another cluster); the lead's first push to another cluster waits as `kmx_par_all` does |
+| `int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t bytes)` | any | stores `bytes` from `src` at `offset` of region `id` of `cluster`'s thread; returns once the last line's store is acknowledged; on core 0 outside `kmx_par`, over the four cores | `KMX_OK`; `KMX_BAD` (a cluster not in `kmx_clusters()`, an unknown region, out of range, not 64-byte multiples, a window, or before the lead's first call on another cluster); the lead's first push to another cluster waits as `kmx_par_all` does |
 | `int kmx_port_cores(void)` | any | entries of the port tables: the grid's cores (0: the program declared no ports) | a count |
 | `int kmx_port_owner(int core)` | any | the X280 core of this cluster that serves `core` | 0 to 3, or -1 (another cluster's, or none) |
 | `int kmx_port_tell(int core, uint32_t a, uint32_t b, uint32_t c)` | the one serving `core` | stores a tell into the core's `KM_CTL_X280` line; the core sees the newest | `KMX_OK`; `KMX_BAD` for a core this X280 core does not serve |
 | `int kmx_port_asked(int core, kmx_msg* m)` | the same | `core`'s newest ask, if not answered yet; never waits | `KMX_OK` and `m`; `KMX_NONE`; `KMX_BAD` |
 | `int kmx_port_answer(int core, uint32_t seq, uint32_t a, uint32_t b, uint32_t c)` | the same | answers ask `seq`; never waits | `KMX_OK`; `KMX_BAD` (also for `seq` 0) |
 | `int kmx_port_told(int core, kmx_msg* m)` | the same | `core`'s newest tell, if newer than the last one looked at (latest wins) | `KMX_OK` and `m`; `KMX_NONE`; `KMX_BAD` |
-| `int kmx_port_run(const km_record_t* r, void (*fn)(int, int, uint64_t), uint64_t arg, kmx_event* ev)` | the lead's 0, not nested | issues `r`, runs `fn(cluster, cpu, arg)` on every X280 core as `kmx_par_all` does, ends the serve at `r`'s event | `KMX_OK` and `ev` once every `fn` returned; `KMX_FULL` (nothing issued, or 32 events kept); `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ports; error `par` elsewhere |
-| `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `fn` | whether the record still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
-| `int kmx_pull_run(const km_record_t* c, const kmx_pull* p, kmx_event* ev)` | the lead's 0, not nested | submits `c` and serves its pulls on every X280 core until its event: units 0 to `p->units - 1` in ranges of `p->per`, by `p->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `p->log`) or `p->pick` | as `kmx_port_run`; `KMX_BAD` also for a bad mode, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
-| `int kmx_issue(const km_record_t* r, uint32_t* ticket)` | 0 | stores record `r` as the next command of the ring | `KMX_OK` and the ticket (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
-| `int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev)` | 0 | waits for the ticket's event until `kmx_time()` passes `deadline`; other tickets' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
+| `int kmx_port_run(const km_command_t* r, void (*fn)(int, int, uint64_t), uint64_t arg, kmx_event* ev)` | the lead's 0, not nested | submits `r`, runs `fn(cluster, cpu, arg)` on every X280 core as `kmx_par_all` does, ends the serve at `r`'s event | `KMX_OK` and `ev` once every `fn` returned; `KMX_FULL` (nothing submitted, or 32 events kept); `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ports; error `par` elsewhere |
+| `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `fn` | whether the command still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
+| `int kmx_pull_run(const km_command_t* c, const kmx_pull* p, kmx_event* ev)` | the lead's 0, not nested | submits `c` and serves its pulls on every X280 core until its event: units 0 to `p->units - 1` in ranges of `p->per`, by `p->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `p->log`) or `p->pick` | as `kmx_port_run`; `KMX_BAD` also for a bad mode, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
+| `int kmx_submit(const km_command_t* r, uint32_t* handle)` | 0 | stores command `r` as the next command of the ring | `KMX_OK` and the handle (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
+| `int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* ev)` | 0 | waits for the handle's event until `kmx_time()` passes `deadline`; other handles' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_poll(kmx_event* ev)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
 | `int kmx_cluster(void)` | any | the work cluster the thread runs on | 1, 2 or 3 |
 | `uint64_t kmx_time(void)` | any | the 50 MHz timer (`KMX_TICKS_PER_SECOND`) | ticks |
@@ -58,21 +58,21 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `void kmx_result(uint32_t code, const void* words, uint32_t n)` | 0 | the thread's code and up to 48 words | error `result` if `n > 48` (the first 48 kept) |
 
 Ring calls, `kmx_spawn`, `kmx_join`, `kmx_par`, `kmx_par_all`, `kmx_port_run` and
-`kmx_serve` from X280 cores 1 to 3 record the library error `par` and return `KMX_STOPPED`.
-`kmx_msg`: `seq`, `w[3]`. A record for `kmx_issue` is a `km_record_t` (`komorebi/abi/km_abi.h`):
-`hdr = seg | flags << 8`, `team = first | count << 16`, arguments `a0` to `a9`; the
-library writes `seq` and the landing words. Flags: `KM_F_EXCL` (issued only when no
-team in flight overlaps it), `KM_F_RESULT` (the team leader's `wr.result(value)`
+`kmx_serve` from X280 cores 1 to 3 command the library error `par` and return `KMX_STOPPED`.
+`kmx_msg`: `seq`, `w[3]`. A command for `kmx_submit` is a `km_command_t` (`komorebi/abi/km_abi.h`):
+`hdr = handler | flags << 8`, `group = first | count << 16`, arguments `a0` to `a9`; the
+library writes `seq` and the landing words. Flags: `KM_F_EXCL` (submitted only when no
+group in flight overlaps it), `KM_F_RESULT` (the group leader's `wr.result(value)`
 comes back in the event's `ticks`), `KM_F_QUEUE` (the kernel chooses `first`). A
-record that cannot be issued now is refused at once (`KM_EV_REFUSED`, aux 11) and the
-kernel then sends one `KMX_EV_WAKE` (ticket 0) when a slot frees or the queue issues a
-job: the record may be issued again after it. The kernel's other refusals are its README's ("Refused commands"), and STOP, EXIT, RUN and
-CANCEL from a thread are refused with aux 1.
+command that cannot be submitted now is rejected at once (`KM_EV_REJECTED`, aux 11) and the
+kernel then sends one `KMX_EV_WAKE` (handle 0) when a slot frees or the queue submits a
+job: the command may be submitted again after it. The kernel's other rejections are its README's ("Rejected commands"), and STOP, EXIT, RUN and
+CANCEL from a thread are rejected with aux 1.
 
-`kmx_event`: `ticket`, `kind` (`KM_EV_DONE`, `KM_EV_TIMEOUT`, `KM_EV_REFUSED`, `KMX_EV_WAKE` from `kmx_poll` only),
-`aux` (the first core of a done record or the slot of a timeout in its low 8 bits, the
-low 16 bits of the record's sequence number above them; the reason of a refusal), `ticks` (issue to completion
-in timer ticks, or the result word of a `KM_F_RESULT` record).
+`kmx_event`: `handle`, `kind` (`KM_EV_DONE`, `KM_EV_TIMEOUT`, `KM_EV_REJECTED`, `KMX_EV_WAKE` from `kmx_poll` only),
+`aux` (the first core of a done command or the slot of a timeout in its low 8 bits, the
+low 16 bits of the command's sequence number above them; the reason of a rejection), `ticks` (submit to completion
+in timer ticks, or the result word of a `KM_F_RESULT` command).
 
 Return codes (`kmx_layout.h`): `KMX_OK` 0, `KMX_FULL` 1, `KMX_STOPPED` 2,
 `KMX_LATE` 3, `KMX_NONE` 4, `KMX_BAD` 5.
@@ -83,10 +83,10 @@ Return codes (`kmx_layout.h`): `KMX_OK` 0, `KMX_FULL` 1, `KMX_STOPPED` 2,
 |---|---|
 | size | at most 126,976 bytes, globals included |
 | globals | a non-zero initialiser and `__attribute__((section(".data")))`: the image has no `.bss` |
-| stack | 32 KiB per hart |
+| stack | 32 KiB per core |
 | libraries | none: a struct assignment or a large zero initialiser may become a `memset` call that does not link |
-| start-up | floating point and vector on; the L2 prefetchers set to the documented values unless `prefetch="keep"`; argument block, regions and bank checked; then `kmx_main` on hart 0, spawns served on harts 1 to 3; after it, every region given back |
-| build | `Thread.sources` with `Thread.includes` and `Thread.defines`, compiled with the dispatch kernel's toolchain into the build cache |
+| start-up | floating point and vector on; the L2 prefetchers set to the documented values unless `prefetch="keep"`; argument block, regions and bank checked; then `kmx_main` on core 0, spawns served on cores 1 to 3; after it, every region given back |
+| build | `Thread.sources` with `Thread.includes` and `Thread.defines`, compiled with the dispatcher's toolchain into the build cache |
 
 ## Memory
 
@@ -97,7 +97,7 @@ The thread's block in the cluster's local memory (LIM), bytes from its base:
 | `0x000` | `0x240` | `kmx_args`: run value, magic `kmx1`, version 4 (`KMX_VERSION`), deadline (ticks), region and word counts, check line address and value, flags (`KMX_FLAG_KEEP_PREFETCH` 1), the cluster (`cluster`, at `0x38`); region table at `0x040` (16 x `{offset, bytes}`); words at `0x140` (64 x `uint32`) | host, before the start |
 | `0x240` | 64 | stop line: word 0 = `0x53544F50` asks for a stop | host |
 | `0x280` | 256 | result block | thread |
-| `0x380` | 4 x 64 | spawn lines, hart `h`'s at `+ 64 h`: 64-bit words `gen`, `fn`, `arg` (hart 0), `done` (hart `h`); hart 0's word 0 ends the service | harts |
+| `0x380` | 4 x 64 | spawn lines, core `h`'s at `+ 64 h`: 64-bit words `gen`, `fn`, `arg` (core 0), `done` (core `h`); core 0's word 0 ends the service | cores |
 | `0x480` | 64 | `kmx_ring_desc`, zero for no ring | host, before the start |
 | `0x4C0` | 64 | `kmx_peers`: a value for this load (`nonce`), the lead, the mask of clusters running the image, the offset `all` of the `kmx_par_all` lines, then each cluster's tile and its bank's DRAM tile (`x \| y << 16`, indexed by cluster); zero: no peers | host, before the start |
 | `0x500` | 64 | `kmx_ports`: `at` (LIM offset of the ports area, 0: no ports), `ctl` (the cores' control block address), `cores` (table entries), `flags` (`KMX_PORTS_NOC1` 1), `state` (`kmx_port_run`'s: `n << 1` while run `n` serves, `\| 1` once it ended), `next`, `lost`, `pull`, `pick`, `arg` (`kmx_pull_run`'s, written by the lead) | host, before the start; `state` the lead |
@@ -114,7 +114,7 @@ library error: 0 none, 1 args, 2 bank, 3 late, 4 stopped, 5 par, 6 result), `cod
 the end of `kmx_main`), then 48 result words at byte 64.
 
 Windows on a work cluster: the ring's 16 (`KMX_RING_WINDOW`), cluster `c`'s LIM
-through `16 + c` (`KMX_PEER_WINDOW + c - 1`) while the thread runs, hart `h`'s push
+through `16 + c` (`KMX_PEER_WINDOW + c - 1`) while the thread runs, core `h`'s push
 through `20 + h` (`KMX_PUSH_WINDOW + h`) during a push, core `i`'s control block through
 `24 + i` (`KMX_PORT_WINDOW + i`) for the run when this cluster serves it.
 
@@ -134,10 +134,10 @@ are NoC addresses in the tile `reserved[0]` names, `x | y << 16`, inside one 2 M
 window that the start-up opens in slot `KMX_RING_WINDOW` and closes after `kmx_main`),
 `reserved[0]`. Other addresses are as the thread's cluster sees them. A line that
 names a ring but is out of range ends the start-up with error `args`. The session's
-ring: 16 command lines and the read line in the dispatch kernel's LIM after its layout
+ring: 16 command lines and the read line in the dispatcher's LIM after its layout
 (`KMD_LIM_BYTES`, cluster `c`'s ring `c - 1` rings further), 64 events after the kmx
 block in the thread's LIM
-(`KMD_WORK_*` from `KMX_LIM_BYTES`). The protocol is the host ring's (the dispatch kernel's README,
+(`KMD_WORK_*` from `KMX_LIM_BYTES`). The protocol is the host ring's (the dispatcher's README,
 "Protocol with the host").
 
 ## Python
@@ -153,27 +153,27 @@ cluster, the same fields on each:
 | `shared` | names of the program's shared regions the thread uses; ids after its own; with `regions`, 1 to 16 in all |
 | `words` | up to 64 unsigned 32-bit words |
 | `cluster` | the work cluster, 1 to 3 (bank 6 for 1, bank 7 for 2 and 3) |
-| `host_fallback` | `fn(regions, words, run) -> (code, words)`: the thread on the host, on `uint32` copies of the regions, issuing records through `run` (the session's `Run`) where the thread uses its ring |
+| `host_fallback` | `fn(regions, words, run) -> (code, words)`: the thread on the host, on `uint32` copies of the regions, submitting commands through `run` (the session's `Run`) where the thread uses its ring |
 | `deadline` | seconds for the whole thread, at most 60 (default 10) |
 | `includes`, `defines` | extra include directories and `-D` definitions |
 | `prefetch` | `"documented"` (default) or `"keep"` |
 
 `Program.region(name, value)` declares a shared region (a size in bytes or an array of
 initial contents). Every thread naming it must be on one bank, and every shared region
-must be named by a thread; `session.load` refuses the program otherwise.
+must be named by a thread; `session.load` rejects the program otherwise.
 
 `Program.ports(serve=None, noc=0)` declares X280 ports ([X280 ports](../threads.md#x280-ports)):
 `serve` `{core: (cluster, cpu)}` (`cpu` the X280 core, 0 to 3), or `None` for every core of the grid dealt over the
 threads' X280 cores in grid order, cluster by cluster (`komorebi.thread.port_plan`); `noc`
 the NoC of the X280 cores' stores into the cores. Once per program (`ValueError` again, for
-`noc` other than 0 or 1, or an empty `serve`). `session.load` refuses ports with
+`noc` other than 0 or 1, or an empty `serve`). `session.load` rejects ports with
 `thread="host"` or without a thread, a core outside the grid, a cluster without a
 thread and an X280 core outside 0 to 3. At the load it writes each served core's
 `KM_X280_TO` line (its X280 core's tile and mailbox address) into the control blocks, and
 every cluster's ports area before any thread starts.
 
 `session.load(program, thread="card" | "host")` writes the regions before the grid
-starts, then starts every image (or readies the fallbacks) once the dispatch kernel is
+starts, then starts every image (or readies the fallbacks) once the dispatcher is
 ready. `run.threads` holds a `ThreadRun` per cluster; `run.thread` is the lowest
 cluster's:
 
@@ -188,7 +188,7 @@ cluster's:
 
 `ThreadResult`: `ran` (false when it was stopped at the timeout), `state`, `error`
 (names, as in the result block), `code`, `words`, `where`, `where_us`, `us`, `stuck`
-(it did not return within 1 s of the stop word either: a hart outside the library or
+(it did not return within 1 s of the stop flag either: a core outside the library or
 halted by a trap) and `detail` (then the runtime's account of a stop that failed).
 
 `RingPlacement(cmd, consumed, events, read, cmd_depth, event_depth, cached=False,
@@ -204,11 +204,11 @@ clusters' tiles and their banks' DRAM tiles for every thread on the card.
 ## Measured
 
 On work cluster 1 of a p150a at 1,750 MHz: the bank read at about 1.3 GB/s and written
-at 1.3 to 1.8 GB/s with four harts; a hand-over sweep at 5 to 8 GB/s of region
+at 1.3 to 1.8 GB/s with four cores; a hand-over sweep at 5 to 8 GB/s of region
 (`experiments/x280_threads/`). At the session's 1,000 MHz on each of clusters 1 to 3:
 about 1.2 GB/s read and written per cluster, alone or together (three at once 3.5 GB/s);
 a push into the other bank 2.3 GB/s, a pull 0.024 GB/s; take 4.6 GB/s, give 4.3 GB/s
 (`experiments/work_clusters/`).
 An empty `kmx_par` call: 0.71 µs; `kmx_par_all` over three clusters, the map, heavy
-map and prefix sum on 1, 4, 8 and 12 harts: [X280 threads](../threads.md#twelve-harts)
+map and prefix sum on 1, 4, 8 and 12 cores: [X280 threads](../threads.md#twelve-cores)
 and `examples/08_parallel_thread/` (`--twelve`).

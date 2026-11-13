@@ -30,7 +30,7 @@ namespace {
     // directory page, its end slot and 32 headers at a time.
     template <typename Arrived, typename Flushed>
     bool place(
-        const km::Writer& wr, const km_record_t& r, Arrived arrived, Flushed flushed
+        const km::Writer& wr, const km_command_t& r, Arrived arrived, Flushed flushed
     ) {
         const uint32_t space = get_write_ptr(kCbHist);
         noc_async_read(su::addr(r.a8, r.a0, 0, 0, 0), space, kItemsBytes);
@@ -144,21 +144,24 @@ namespace {
 
 }  // namespace
 
-bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf);
+bool setup_writer_pass(const km::Writer& wr, const km_command_t& r, WProf& pf);
 
 // The passes' writing for one record; the frame program's writer calls it as well.
 // With a9, the threads' counters go to the core's profile page.
-bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
-    const uint32_t seg = km::seg(r);
-    if ((seg != kSegLanes && seg != kSegCount && seg != kSegSetup && seg != kSegHist &&
-         seg != kSegPlace && seg != kSegSum && seg != kSegHsum) ||
+bool setup_writer_command(const km::Writer& wr, const km_command_t& r) {
+    const uint32_t handler = km::handler(r);
+    if ((handler != kHandlerLanes && handler != kHandlerCount &&
+         handler != kHandlerSetup && handler != kHandlerHist &&
+         handler != kHandlerPlace && handler != kHandlerSum &&
+         handler != kHandlerHsum) ||
         r.a5 == 0 || wr.me() >= r.a5) {
         return true;
     }
     const uint32_t t0 = km::wall();
     WProf pf;
     const bool ok = setup_writer_pass(wr, r, pf);
-    if (ok && (seg == kSegCount || seg == kSegSetup) && (r.a2 & kRanges) != 0) {
+    if (ok && (handler == kHandlerCount || handler == kHandlerSetup) &&
+        (r.a2 & kRanges) != 0) {
         // the pass's ticks on this core, for the next frame's ranges
         const uint32_t line = get_write_ptr(kCbSProf) + 128;
         km::l1(line)[0] = km::wall() - t0;
@@ -166,7 +169,11 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
         noc_async_write(
             line,
             su::addr(
-                r.a8, r.a3, 0, 0, kCostsAt + 128 * wr.me() + 64 * (seg - kSegCount)
+                r.a8,
+                r.a3,
+                0,
+                0,
+                kCostsAt + 128 * wr.me() + 64 * (handler - kHandlerCount)
             ),
             64
         );
@@ -179,7 +186,7 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
             return false;
         }
     }
-    if (!ok || r.a9 == 0 || seg < kSegCount || seg > kSegPlace) {
+    if (!ok || r.a9 == 0 || handler < kHandlerCount || handler > kHandlerPlace) {
         return ok;
     }
     invalidate_l1_cache();
@@ -192,7 +199,9 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
     p[kSProfWriter + 4] = t0;
     p[kSProfWriter + 5] = pf.pages;
     noc_async_write(
-        page, su::addr(0, r.a9, wr.me(), kSProfPageBytes, 128 * (seg - kSegCount)), 128
+        page,
+        su::addr(0, r.a9, wr.me(), kSProfPageBytes, 128 * (handler - kHandlerCount)),
+        128
     );
     return wr.poll(
                [] {
@@ -203,8 +212,8 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
 }
 
 // One record's writing, its counters in pf.
-bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf) {
-    const uint32_t seg = km::seg(r);
+bool setup_writer_pass(const km::Writer& wr, const km_command_t& r, WProf& pf) {
+    const uint32_t handler = km::handler(r);
     auto flushed = [&] {
         return wr.poll(
                    [] {
@@ -221,7 +230,7 @@ bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf) {
                    wr.args().wait_limit
                ) == km::kGaveNone;
     };
-    if (seg == kSegCount) {
+    if (handler == kHandlerCount) {
         const uint32_t a = km::wall();
         if (!wr.wait_front(kCbCount, 1)) {
             return true;
@@ -237,7 +246,7 @@ bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf) {
         cb_pop_front(kCbCount, 1);
         return ok;
     }
-    if (seg == kSegHist) {
+    if (handler == kHandlerHist) {
         // the heavy tiles into the out buffer's space (unused by HIST)
         const uint32_t heavy = get_write_ptr(kCbOut);
         noc_async_read(su::addr(r.a8, r.a0, 0, kHeavyBytes), heavy, kHeavyBytes);
@@ -259,15 +268,16 @@ bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf) {
         }
         return flushed();
     }
-    if ((seg == kSegSum || seg == kSegHsum) && r.a8 == 0) {
-        give_up(kGaveBadPlace, seg);
+    if ((handler == kHandlerSum || handler == kHandlerHsum) && r.a8 == 0) {
+        give_up(kGaveBadPlace, handler);
         return true;
     }
-    if (seg == kSegHsum && (r.a0 > kHprefixPageBytes / 128 || 64 * r.a0 > r.a4)) {
+    if (handler == kHandlerHsum &&
+        (r.a0 > kHprefixPageBytes / 128 || 64 * r.a0 > r.a4)) {
         give_up(kGaveBadHeavy, r.a0);
         return true;
     }
-    if (seg == kSegSum) {
+    if (handler == kHandlerSum) {
         // a1 counters, a2 slots pages, a3 totals, a6 counting cores; 32 cores at a time
         // through one out page: their entries, then their rows
         constexpr uint32_t kBatch = 32;
@@ -319,7 +329,7 @@ bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf) {
         }
         return true;
     }
-    if (seg == kSegHsum) {
+    if (handler == kHandlerHsum) {
         // 16 cores at a time: their counts, then the 32 words each one's page gets
         // (README.md)
         constexpr uint32_t kBatch = 16;
@@ -378,14 +388,14 @@ bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf) {
         }
         return true;
     }
-    if (seg == kSegPlace) {
+    if (handler == kHandlerPlace) {
         if (r.a8 == 0) {
             give_up(kGaveBadPlace, 0);
             return true;
         }
         return place(wr, r, arrived, flushed);
     }
-    if (seg == kSegSetup) {
+    if (handler == kHandlerSetup) {
         const InterleavedAddrGen<true> lists = {
             .bank_base_address = r.a1, .page_size = kListPageBytes
         };
@@ -444,8 +454,8 @@ bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf) {
 #ifndef RASTER_NO_ENTRY
 void kernel_main() {
     km::Writer wr;
-    wr.run([&](const km_record_t& r) {
-        return setup_writer_record(wr, r);
+    wr.run([&](const km_command_t& r) {
+        return setup_writer_command(wr, r);
     });
 }
 #endif

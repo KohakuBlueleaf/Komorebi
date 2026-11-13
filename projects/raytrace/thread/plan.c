@@ -1,5 +1,5 @@
-/* The frame on the work cluster: each record issued and waited for; before each trace
- * four X280 cores cut its packets into chunk records of equal predicted cost. */
+/* The frame on the work cluster: each record submitted and waited for; before each
+ * trace four X280 cores cut its packets into chunk records of equal predicted cost. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -21,7 +21,7 @@ typedef struct {
     const uint8_t* cost;
     work_t* wk;
     uint32_t* log;
-    uint32_t used[RP_TRACES]; /* chunk records of the trace's last issue */
+    uint32_t used[RP_TRACES]; /* chunk records of the trace's last submit */
     uint32_t out[RP_OUT_WORDS];
     void* part; /* the plan's parallel step, after work_t in the work region */
 } plan_t;
@@ -158,7 +158,7 @@ static int predict(plan_t* p, part_t* a) {
     if (a->src >= RP_TRACES) {
         return kmx_par(equal_part, a) == KMX_OK ? 0 : -1;
     }
-    kmx_take_at(
+    kmx_invalidate_at(
         RP_R_COST,
         block_at(p, a->src, 0, 0),
         (uint64_t)p->used[a->src] * p->workers * RP_COST_BYTES
@@ -277,7 +277,7 @@ static uint32_t host_cut(plan_t* p) {
     return m;
 }
 
-/* Which trace predicts trace t (RP_TRACES: none) and how. The first frame of
+/* Which trace predicts trace t (RP_TRACES: none) and how. The cold frame of
  * RP_MODE_FRAME: the shadow by the primary's; plan() cuts the rest as the host does. */
 static void source_of(const plan_t* p, uint32_t t, uint32_t frame, part_t* a) {
     a->src = RP_TRACES;
@@ -313,7 +313,9 @@ static void write_dirs(plan_t* p, uint32_t t, uint32_t m, int host) {
             d[RP_DIR_COST] = p->cost_addr + block_at(p, t, k, c);
         }
     }
-    kmx_give_at(RP_R_DIRS, dir_at(p, t, 0, 0), (uint64_t)m * p->workers * RP_DIR_BYTES);
+    kmx_flush_at(
+        RP_R_DIRS, dir_at(p, t, 0, 0), (uint64_t)m * p->workers * RP_DIR_BYTES
+    );
 }
 
 /* Trace t's plan for this frame: its chunk records' count, 0 on failure */
@@ -346,32 +348,32 @@ static uint32_t plan(plan_t* p, uint32_t t, uint32_t frame, uint32_t* sub) {
     return m;
 }
 
-/* Issues r and waits for its event: 0, or the code to report */
-static uint32_t run(plan_t* p, const km_record_t* r, uint32_t* ticks) {
+/* Submits r and waits for its event: 0, or the code to report */
+static uint32_t run(plan_t* p, const km_command_t* r, uint32_t* ticks) {
     const uint64_t until = kmx_time() + WAIT_TICKS;
-    uint32_t ticket;
-    int e = kmx_issue(r, &ticket);
+    uint32_t handle;
+    int e = kmx_submit(r, &handle);
     while (e == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
-        e = kmx_issue(r, &ticket);
+        e = kmx_submit(r, &handle);
     }
     if (e != KMX_OK) {
         return RP_RING;
     }
     kmx_event ev;
-    if (kmx_wait(ticket, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
+    if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
         return RP_RING;
     }
     *ticks = ev.ticks;
     p->out[2] = ev.kind;
     p->out[3] = ev.aux;
-    return ev.kind == KM_EV_DONE ? 0u : RP_RECORD;
+    return ev.kind == KM_EV_DONE ? 0u : RP_COMMAND;
 }
 
 /* Fills r field by field (a struct assignment may call memset, which does not link) */
-static void record(km_record_t* r, const uint32_t* e) {
+static void command(km_command_t* r, const uint32_t* e) {
     r->seq = r->land1 = r->land2 = r->land3 = 0;
     r->hdr = e[1];
-    r->team = e[2];
+    r->group = e[2];
     r->a0 = e[3];
     r->a1 = e[4];
     r->a2 = e[5];
@@ -386,16 +388,16 @@ static void record(km_record_t* r, const uint32_t* e) {
 
 static uint32_t frame_once(plan_t* p, uint32_t frame) {
     uint32_t* log = p->log + frame * RP_LOG_WORDS;
-    uint32_t issued = 0;
+    uint32_t submitted = 0;
     const uint64_t t0 = kmx_time();
-    for (uint32_t i = 0; i < p->w[RP_W_RECORDS]; i++) {
+    for (uint32_t i = 0; i < p->w[RP_W_COMMANDS]; i++) {
         const uint32_t* e = p->table + i * RP_REC_WORDS;
         const uint32_t kind = e[0] & 0xFFu;
         if ((e[0] & RP_KIND_FIRST) && frame > 0) {
             continue;
         }
-        km_record_t r;
-        record(&r, e);
+        km_command_t r;
+        command(&r, e);
         uint32_t m = 1;
         if (kind != 0) {
             const uint32_t t = kind - 1;
@@ -418,23 +420,23 @@ static uint32_t frame_once(plan_t* p, uint32_t frame) {
             }
             uint32_t ticks = 0;
             const uint32_t code = run(p, &r, &ticks);
-            if (issued < RP_LOG_WORDS - RP_L_RECORD) {
-                log[RP_L_RECORD + issued] = ticks;
+            if (submitted < RP_LOG_WORDS - RP_L_COMMAND) {
+                log[RP_L_COMMAND + submitted] = ticks;
             }
-            issued++;
+            submitted++;
             if (code) {
                 p->out[1] = i;
                 return code;
             }
         }
     }
-    log[RP_L_ISSUED] = issued;
+    log[RP_L_SUBMITTED] = submitted;
     log[RP_L_FRAME] = (uint32_t)(kmx_time() - t0);
     return 0;
 }
 
 static int finish(uint32_t code, plan_t* p) {
-    kmx_give(RP_R_LOG);
+    kmx_flush(RP_R_LOG);
     kmx_result(code, p->out, RP_OUT_WORDS);
     return 0;
 }
@@ -484,12 +486,12 @@ int kmx_main(int xcore) {
     const uint32_t frames = p.w[RP_W_FRAMES];
     if (p.mode > RP_MODE_FRAME || p.workers == 0 || p.workers > RP_CORES_MAX ||
         p.packets == 0 || p.packets > RP_PACKETS_MAX || p.cap == 0 ||
-        p.cap > RP_COST_MAX || p.w[RP_W_RECORDS] > RP_RECORDS_MAX || frames == 0 ||
+        p.cap > RP_COST_MAX || p.w[RP_W_COMMANDS] > RP_COMMANDS_MAX || frames == 0 ||
         frames > RP_FRAMES_MAX) {
         return finish(RP_BAD_ARGS, &p);
     }
     /* lines an earlier image left dirty would be written over what the cores write */
-    kmx_give(RP_R_COST);
+    kmx_flush(RP_R_COST);
     for (uint32_t f = 0; f < frames; f++) {
         kmx_progress(f + 1);
         const uint32_t code = frame_once(&p, f);

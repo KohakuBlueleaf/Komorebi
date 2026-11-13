@@ -1,7 +1,7 @@
 """A graph on the card: a step on 60 cores, two branches on disjoint halves in flight
 together, a reduce whose result word decides whether to go round again; the kept graph
 is run again with other bindings. Run host-fed (the executor on the host) and on the
-X280 (the executor in the dispatch kernel). Prints one JSON line; exits 1 unless ok.
+X280 (the executor in the dispatcher). Prints one JSON line; exits 1 unless ok.
 """
 
 import argparse
@@ -33,7 +33,7 @@ def log(msg):
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--cores", type=int, default=60, help="team of STEP and NORM")
+    p.add_argument("--cores", type=int, default=60, help="group of STEP and NORM")
     p.add_argument(
         "--first", nargs=2, type=int, default=[0, 1_000_000], help="it, limit"
     )
@@ -41,7 +41,7 @@ def parse():
         "--again", nargs=2, type=int, default=[3, 10_000_000], help="it, limit"
     )
     p.add_argument("--max-runs", type=int, default=50)
-    p.add_argument("--deadline", type=float, default=1.0, help="per record, seconds")
+    p.add_argument("--deadline", type=float, default=1.0, help="per command, seconds")
     p.add_argument("--stall", action="store_true", help="a stalled graph first")
     p.add_argument(
         "--decide",
@@ -81,10 +81,10 @@ def build(n, max_runs, deadline):
     err = g.reg()
     addr, limit = g.bindings("state", "limit")
     half = n // 2
-    a = g.record(1, team=(0, n), args=[addr, it])
-    b = g.record(2, team=(0, half), args=[addr], after=[a])
-    c = g.record(3, team=(half, n - half), args=[addr], after=[a])
-    d = g.record(4, team=(0, n), args=[addr, n], after=[b, c], result=err)
+    a = g.command(1, group=(0, n), args=[addr, it])
+    b = g.command(2, group=(0, half), args=[addr], after=[a])
+    c = g.command(3, group=(half, n - half), args=[addr], after=[a])
+    d = g.command(4, group=(0, n), args=[addr, n], after=[b, c], result=err)
     e = g.cpu(after=[d])
     e.addi(it, it, 1)
     e.lt(g.again, err, limit)
@@ -115,8 +115,8 @@ def read_state(state, n):
 
 def run(session, args):
     """The stalled graph first (its own run) when asked, then one run per path. The
-    output's `ok`: every path as the numpy replay and as the simulator (records
-    issued, per core), the paths alike, the branches in flight together."""
+    output's `ok`: every path as the numpy replay and as the simulator (commands
+    submitted, per core), the paths alike, the branches in flight together."""
     n = args.cores
     cases = {"first": args.first, "again": args.again}
     modes = ["host", "x280"] if args.decide == "both" else [args.decide]
@@ -127,7 +127,7 @@ def run(session, args):
         kernels=KERNELS,
         buffers=[km.Buffer(index=16, format="uint32", page_bytes=64, pages=1)],
         compile_args={"writer": accessor},
-        segments=KERNELS / "graph.h",
+        handlers=KERNELS / "graph.h",
     )
     g, (it_reg, err_reg) = build(n, args.max_runs, args.deadline)
     out, ok = {}, True
@@ -142,8 +142,8 @@ def run(session, args):
         )
         log(f"{mode}: loaded")
         cores = load.cores
-        if "bad_uploads" not in out:  # engines started before the traced records
-            out["bad_uploads"] = refusals(load)
+        if "bad_uploads" not in out:  # engines started before the traced commands
+            out["bad_uploads"] = rejections(load)
         out["paths"][mode] = path = one_path(
             load, mode, g, (it_reg, err_reg), states, cases
         )
@@ -151,9 +151,9 @@ def run(session, args):
         if mode == "host" and "first" in path:
             path["branches_overlapping_rounds"] = overlap(load.trace(), path.pop("got"))
         path.pop("got", None)
-    refused = sum(got == want for got, want in out["bad_uploads"].values())
-    out["bad_uploads_refused"] = f"{refused}/{len(out['bad_uploads'])}"
-    ok &= refused == len(out["bad_uploads"])
+    rejected = sum(got == want for got, want in out["bad_uploads"].values())
+    out["bad_uploads_rejected"] = f"{rejected}/{len(out['bad_uploads'])}"
+    ok &= rejected == len(out["bad_uploads"])
     want = simulated(g, n, cases, args.max_runs, cores)
     for mode, path in out["paths"].items():
         ok &= "failed" not in path and path.get("max_busy", 0) >= 2
@@ -165,18 +165,20 @@ def run(session, args):
             ok &= (got.get("rounds"), got.get("it"), got.get("err")) == (
                 rounds, it_end, errs[-1]
             )  # fmt: skip
-        ok &= path.get("kernel_records") == want["kernel_records"]
-        ok &= path.get("core_records") == want["core_records"]
+        ok &= path.get("kernel_commands") == want["kernel_commands"]
+        ok &= path.get("core_commands") == want["core_commands"]
     paths = list(out["paths"].values())
     out["paths_agree"] = all(
-        {k: p.get(k) for k in [*cases, "kernel_records", "core_records"]}
-        == {k: paths[0].get(k) for k in [*cases, "kernel_records", "core_records"]}
+        {k: p.get(k) for k in [*cases, "kernel_commands", "core_commands"]}
+        == {k: paths[0].get(k) for k in [*cases, "kernel_commands", "core_commands"]}
         for p in paths
     )
-    out["simulated"] = {"kernel_records": want["kernel_records"]}
+    out["simulated"] = {"kernel_commands": want["kernel_commands"]}
     out["ok"] = bool(ok and out["paths_agree"])
     for path in paths:
-        path["core_records_ok"] = path.pop("core_records", None) == want["core_records"]
+        path["core_commands_ok"] = (
+            path.pop("core_commands", None) == want["core_commands"]
+        )
     return out
 
 
@@ -216,8 +218,8 @@ def one_path(load, mode, g, regs, states, cases):
 
 
 def card_counts(load):
-    """What the card saw: the kernel's records and most slots busy at once (its result
-    block), every core's records taken (its state words)."""
+    """What the card saw: the kernel's commands and most slots busy at once (its result
+    block), every core's commands taken (its state words)."""
     if not load.stopped:
         return {}
     with contextlib.suppress(km.KomorebiError):
@@ -225,14 +227,14 @@ def card_counts(load):
         cores = [c["runs"] for c in load.state()]
         return {
             "max_busy": r["max_busy"],
-            "kernel_records": r["records"],
-            "core_records": cores,
+            "kernel_commands": r["commands"],
+            "core_commands": cores,
         }
     return {}
 
 
 def simulated(g, n, cases, max_runs, cores):
-    """The records the simulator issues for both cases, each record's result word the
+    """The commands the simulator submits for both cases, each command's result word the
     replay's err of its round; plus the EXIT every run ends with (all cores)."""
     per_core, count = [1] * cores, 1
     for it, limit in cases.values():
@@ -242,15 +244,15 @@ def simulated(g, n, cases, max_runs, cores):
             n_cores=cores,
             result=lambda r, errs=errs: errs[r.run - 1],
         )
-        count += len(sim.records)
-        for r in sim.records:
+        count += len(sim.commands)
+        for r in sim.commands:
             for c in range(r.first, r.first + r.count):
                 per_core[c] += 1
-    return {"kernel_records": count, "core_records": per_core}
+    return {"kernel_commands": count, "core_commands": per_core}
 
 
 def on_x280(load, g, states, cases):
-    """The graph uploaded once and run by the dispatch kernel's engine: started kept,
+    """The graph uploaded once and run by the dispatcher's engine: started kept,
     then restarted by its req with the second case's bindings, then released. An
     error event raises EngineError. {case: {status, rounds, it, err}}."""
     up = load.upload(g)
@@ -269,10 +271,10 @@ def on_x280(load, g, states, cases):
 
 
 def stall(load, deadline, x280):
-    """A graph whose record never completes, in a run of its own: its deadline ends the
+    """A graph whose command never completes, in a run of its own: its deadline ends the
     graph with reason 8 and the kernel with its deadline error (4). Stops the run."""
     g = Graph(deadline_us=round(deadline * 1e6), req=7)
-    g.record(5, team=(0, 4), args=[1])
+    g.command(5, group=(0, 4), args=[1])
     out = {"on": "x280" if x280 else "host"}
     try:
         if x280:
@@ -294,11 +296,11 @@ def stall(load, deadline, x280):
 
 
 def bad_uploads():
-    """One upload per class the kernel refuses, each a fault put into a good graph (a
-    record, then a CPU node): {class: (bytes, [reason, node] of its error event)}."""
+    """One upload per class the kernel rejects, each a fault put into a good graph (a
+    command, then a CPU node): {class: (bytes, [reason, node] of its error event)}."""
     g = Graph(req=8)
     r = g.reg()
-    g.cpu(after=[g.record(1, team=(0, 4), args=[0])]).addi(r, r, 1)
+    g.cpu(after=[g.command(1, group=(0, 4), args=[0])]).addi(r, r, 1)
     good = g.encode()
     assert gr.check(good) is None
     h = dict(zip(gr.HEADER_FIELDS, gr.HEADER.unpack_from(good)))
@@ -308,17 +310,17 @@ def bad_uploads():
         "header_size": [st.ERR_HEADER, None],  # one line more than the header says
         "edge_order": [gr.ERR_EDGE, 0],  # node 0's successor is node 0
         "index_range": [st.ERR_TEMPLATE, 0],  # node 0's template is past the last
-        "cpu_opcode": [st.ERR_OPCODE, 1],  # the CPU node's micro-op is an ISSUE
+        "cpu_opcode": [st.ERR_OPCODE, 1],  # the CPU node's micro-op is an SUBMIT
     }
     data = {name: bytearray(good) for name in faults}
     data["header_size"] += bytes(gr.LINE)
     struct.pack_into("<H", data["edge_order"], edges, 0)
-    struct.pack_into("<H", data["index_range"], gr.HEADER.size + 4, h["n_records"])
-    struct.pack_into("<B", data["cpu_opcode"], ops, st.OP_ISSUE)
+    struct.pack_into("<H", data["index_range"], gr.HEADER.size + 4, h["n_commands"])
+    struct.pack_into("<B", data["cpu_opcode"], ops, st.OP_SUBMIT)
     return {name: (bytes(data[name]), want) for name, want in faults.items()}
 
 
-def refusals(load):
+def rejections(load):
     """Each bad upload run by the kernel: {class: [got, want]}, `got` the [reason,
     node] of its error event, else how it ended; the host check must agree too."""
     out = {}
@@ -340,10 +342,10 @@ def refusals(load):
 
 def overlap(trace, got):
     """Rounds in which the two branches were in flight at the same time."""
-    tickets = {(r.run, r.node): r.ticket for r in got.records}
+    handles = {(r.run, r.node): r.handle for r in got.commands}
     both = 0
     for k in range(1, got.runs + 1):
-        left, right = tickets.get((k, 1)), tickets.get((k, 2))
+        left, right = handles.get((k, 1)), handles.get((k, 2))
         leads = [trace.lead(left, right), trace.lead(right, left)]
         both += any(x is not None and x > 0 for x in leads)
     return f"{both}/{got.runs}"

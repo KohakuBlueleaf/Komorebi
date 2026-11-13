@@ -100,7 +100,9 @@ def main():
     p.add_argument("--slots", type=int, default=4, help="treelet slots per core")
     p.add_argument("--entries", type=int, default=0, help="list entries per core")
     p.add_argument("--rounds", action="store_true", help="r-th list entries per round")
-    p.add_argument("--per-record", type=int, default=0, help="packets per core at most")
+    p.add_argument(
+        "--per-command", type=int, default=0, help="packets per core at most"
+    )
     p.add_argument("--frames", type=int, default=1)
     p.add_argument("--balance", action="store_true", help="tiles by measured cost")
     p.add_argument(
@@ -136,7 +138,7 @@ def main():
             slots=args.slots,
             entries=args.entries,
             policy=0 if args.rounds else packets.K["kPolicyOnce"],
-            per_record=args.per_record,
+            per_command=args.per_command,
             balance=args.balance,
             sort=args.sort,
             scene=scene,

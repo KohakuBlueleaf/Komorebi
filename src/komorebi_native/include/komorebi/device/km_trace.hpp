@@ -1,4 +1,4 @@
-// Per-record trace: kTraceWords wall-clock words per sequence number in L1 (runtime
+// Per-command trace: kTraceWords wall-clock words per sequence number in L1 (runtime
 // buffer kCbTrace), stamped by the reader and the writer, written to DRAM at exit.
 #pragma once
 
@@ -21,7 +21,7 @@ namespace km {
             return dram_ != 0;
         }
 
-        // Clears the L1 records (reader, at start-up, before any stamp).
+        // Clears the L1 commands (reader, at start-up, before any stamp).
         void clear() const {
             if (on()) {
                 volatile tt_l1_ptr uint32_t* t = l1(base_);
@@ -31,7 +31,7 @@ namespace km {
             }
         }
 
-        // A sequence past the capacity is dropped; kStTraceDropped counts the records
+        // A sequence past the capacity is dropped; kStTraceDropped counts the commands
         // (the writer's kTraceDone stamp, so one kernel alone writes the count).
         void put(uint32_t seq, uint32_t field, uint32_t value) const {
             if (on() && seq - 1 < cap_) {
@@ -45,7 +45,7 @@ namespace km {
             put(seq, field, wall());
         }
 
-        // Writes this core's records to page `page` of the trace (writer, at exit).
+        // Writes this core's commands to page `page` of the trace (writer, at exit).
         void flush(uint32_t page) const {
             if (!on()) {
                 return;

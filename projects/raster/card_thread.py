@@ -43,17 +43,17 @@ PAGES_PER_ITEM = 5  # the frame's pages per tile (card.words)
 def same_numbers():
     """The numbers frame.h takes from the kernels' headers, as pairs that differ."""
     pairs = {
-        "RF_SEG_COUNT": S["kSegCount"],
-        "RF_SEG_SETUP": S["kSegSetup"],
-        "RF_SEG_HIST": S["kSegHist"],
-        "RF_SEG_PLACE": S["kSegPlace"],
-        "RF_SEG_SUM": S["kSegSum"],
-        "RF_SEG_HSUM": S["kSegHsum"],
+        "RF_HANDLER_COUNT": S["kHandlerCount"],
+        "RF_HANDLER_SETUP": S["kHandlerSetup"],
+        "RF_HANDLER_HIST": S["kHandlerHist"],
+        "RF_HANDLER_PLACE": S["kHandlerPlace"],
+        "RF_HANDLER_SUM": S["kHandlerSum"],
+        "RF_HANDLER_HSUM": S["kHandlerHsum"],
         "RF_BASE_AT": S["kBaseAt"],
         "RF_HPREFIX_ADDR_AT": S["kHprefixAddrAt"],
         "RF_HPREFIX_BYTES": S["kHprefixPageBytes"],
         "RF_SUMS_HEAVY_AT": S["kSumsHeavyAt"],
-        "RF_SEG_FILL": K["kSegFill"],
+        "RF_HANDLER_FILL": K["kHandlerFill"],
         "RF_PAGES_PER_ITEM": PAGES_PER_ITEM,
         "RF_FRAME_MAX": K["kDirFrameMax"],
         "RF_COUNTER_BYTES": S["kCountBytes"],
@@ -117,7 +117,7 @@ def program(scene, words, workers):
         buffers=[*fill.buffers, *passes_.buffers],
         compute=fill.compute,
         depth=1,
-        segments={**fill.segments, **passes_.segments},
+        handlers={**fill.handlers, **passes_.handlers},
     )
     prog.thread(
         cluster=CLUSTER,
@@ -269,8 +269,10 @@ def sprof_dict(sp, cores):
     """Per pass, each core's writer total and pack counters from the profile pages of
     the last frame (wall ticks), and the slowest core against the mean."""
     out = {}
-    for name, seg in (("count", S["kSegCount"]), ("setup", S["kSegSetup"])):
-        page = sp[:cores, 32 * (seg - S["kSegCount"]) :][:, :32].astype(np.int64)
+    for name, handler in (("count", S["kHandlerCount"]), ("setup", S["kHandlerSetup"])):
+        page = sp[:cores, 32 * (handler - S["kHandlerCount"]) :][:, :32].astype(
+            np.int64
+        )
         total = page[:, S["kSProfWriter"] + 2]
         pack = page[:, S["kSProfPack"] : S["kSProfPack"] + 8]
         out[name] = {

@@ -21,15 +21,15 @@ namespace {
 
     // ---- cases ----
 
-    // A long MAP record is in flight on core 1 (compute slow, reader waiting for room)
+    // A long MAP command is in flight on core 1 (compute slow, reader waiting for room)
     // when the dispatcher stops the grid because core 2 stalls.
     void stop_during_long_compute(Outcome& o) {
         Config cfg = fault_config(4);
         cfg.wait_limit = 512;
         cfg.deadline = 100000;
-        cfg.bound = 2000000;
+        cfg.timeout = 2000000;
         cfg.jobs = {map_job(1, 1, 40), Job{}};
-        cfg.jobs[1].seg = kSegStall;
+        cfg.jobs[1].handler = kHandlerStall;
         cfg.jobs[1].first = 2;
         Sim* sp = nullptr;
         cfg.triggers.push_back([&](const Probe& p) {
@@ -44,12 +44,12 @@ namespace {
         common(s, o.check);
         o.check.expect(s.timed_out, "the dispatcher's deadline stopped the grid");
         o.check.expect(
-            s.jobs[0].status != kDone, "the long record is not acknowledged"
+            s.jobs[0].status != kDone, "the long command is not acknowledged"
         );
         finish(s, o);
     }
 
-    // Core 1's math thread is held for three wait bounds in its first record: the
+    // Core 1's math thread is held for three wait bounds in its first command: the
     // writer's wait for the output gives up.
     void writer_gives_up(Outcome& o) {
         Config cfg = fault_config(2);
@@ -69,7 +69,7 @@ namespace {
         common(s, o.check);
         silent_from(s, o.check, 1, s.jobs[0].seq);
         o.check.expect(
-            s.jobs[0].status != kDone, "the record without output is not acked"
+            s.jobs[0].status != kDone, "the command without output is not acked"
         );
         o.check.expect(
             s.state(1, km::kStWriter) != 0, "core 1's writer recorded a give-up"
@@ -95,13 +95,13 @@ namespace {
         s.run();
         common(s, o.check);
         silent_from(s, o.check, 0, s.jobs[0].seq);
-        o.check.expect(s.jobs[0].status != kDone, "the record is not acknowledged");
+        o.check.expect(s.jobs[0].status != kDone, "the command is not acknowledged");
         o.check.expect(s.state(0, km::kStWriter) != 0, "the leader recorded a give-up");
         finish(s, o);
     }
 
     // Core 1's unpack thread is held at its first input tile: the reader's wait for
-    // room in the input buffer gives up in a record of 24 tiles.
+    // room in the input buffer gives up in a command of 24 tiles.
     void reader_gives_up(Outcome& o) {
         Config cfg = fault_config(2);
         cfg.jobs = {map_job(1, 1, 24), map_job(1, 1, 4), map_job(0, 1, 2)};
@@ -119,15 +119,15 @@ namespace {
         s.run();
         common(s, o.check);
         silent_from(s, o.check, 1, s.jobs[0].seq);
-        o.check.expect(s.jobs[0].status != kDone, "the short-fed record is not acked");
+        o.check.expect(s.jobs[0].status != kDone, "the short-fed command is not acked");
         o.check.expect(
             s.state(1, km::kStReader) != 0, "core 1's reader recorded a give-up"
         );
         finish(s, o);
     }
 
-    // Core 1's compute is still in its first record when the reader, having handed
-    // the second, waits for the token page and the stop word is set.
+    // Core 1's compute is still in its first command when the reader, having handed
+    // the second, waits for the token page and the stop flag is set.
     void token_wait_after_stop(Outcome& o) {
         Config cfg = fault_config(2);
         cfg.jobs = {map_job(1, 1, 2), nop_job(1, 1)};
@@ -157,21 +157,24 @@ namespace {
         sp = &s;
         s.run();
         common(s, o.check);
-        o.check.expect(stopped, "the stop word was set while the reader waited");
+        o.check.expect(stopped, "the stop flag was set while the reader waited");
         finish(s, o);
     }
 
-    // Every core counts the one refused record in its own word (not in records taken).
-    void refused_counted(const Sim& s, Check& c) {
+    // Every core counts the one rejected command in its own word (not in commands
+    // taken).
+    void rejected_counted(const Sim& s, Check& c) {
         for (uint32_t core = 0; core < s.cfg.cores; core++) {
             const uint32_t n = (
                 km::kStSlotWrong == ~0u ? 0 : s.state(core, km::kStSlotWrong)
             );
-            c.expect(n == 1, fmt("core %u counts %u refused records, not 1", core, n));
+            c.expect(
+                n == 1, fmt("core %u counts %u rejected commands, not 1", core, n)
+            );
         }
     }
 
-    // A record whose header names slot 20: not run, counted as refused by each core.
+    // A command whose header names slot 20: not run, counted as rejected by each core.
     void slot_out_of_range(Outcome& o) {
         Config cfg = fault_config(2);
         cfg.jobs = {nop_job(0, 2)};
@@ -182,15 +185,15 @@ namespace {
         for (const Event& e : s.events) {
             o.check.expect(
                 e.kind != kEvTake || e.a != s.jobs[0].seq,
-                fmt("core %u ran the record with slot field 20", e.core)
+                fmt("core %u ran the command with slot field 20", e.core)
             );
         }
-        o.check.expect(s.jobs[0].status != kDone, "the record is not acknowledged");
-        refused_counted(s, o.check);
+        o.check.expect(s.jobs[0].status != kDone, "the command is not acknowledged");
+        rejected_counted(s, o.check);
         finish(s, o);
     }
 
-    // A record of both cores, found in ring slot 0, whose header names slot 3.
+    // A command of both cores, found in ring slot 0, whose header names slot 3.
     void slot_not_ring_slot(Outcome& o) {
         Config cfg = fault_config(2);
         cfg.jobs = {nop_job(0, 2)};
@@ -201,22 +204,22 @@ namespace {
         for (const Event& e : s.events) {
             o.check.expect(
                 e.kind != kEvTake || e.a != s.jobs[0].seq,
-                fmt("core %u ran a record whose slot field is not its slot", e.core)
+                fmt("core %u ran a command whose slot field is not its slot", e.core)
             );
         }
-        o.check.expect(s.jobs[0].status != kDone, "the record is not acknowledged");
-        refused_counted(s, o.check);
+        o.check.expect(s.jobs[0].status != kDone, "the command is not acknowledged");
+        rejected_counted(s, o.check);
         finish(s, o);
     }
 
     // Sequence numbers jump in steps below 2^31 up to the 32-bit wrap and run across
-    // it (0 is skipped: it marks the synthetic EXIT); every team is the whole grid.
+    // it (0 is skipped: it marks the synthetic EXIT); every group is the whole grid.
     void scan_across_wrap(Outcome& o) {
         Config cfg = fault_config(4);
         cfg.wait_limit = 64;
         cfg.idle_limit = 4096;
         cfg.deadline = 400000;
-        cfg.bound = 1ull << 26;
+        cfg.timeout = 1ull << 26;
         cfg.first_seq = 0x100;
         cfg.next_seq = [](uint32_t s) -> uint32_t {
             if (s == 0x103) {
@@ -237,7 +240,7 @@ namespace {
         Sim s(cfg);
         s.run();
         common(s, o.check);
-        o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+        o.check.expect(all_done(s), "every command and the EXIT acknowledged");
         bool wrapped = false;
         for (size_t k = 1; k < s.jobs.size(); k++) {
             wrapped = wrapped || s.jobs[k].seq < s.jobs[k - 1].seq;
@@ -246,8 +249,8 @@ namespace {
         finish(s, o);
     }
 
-    // Record 0 (smaller sequence) lands its last chunk late on core 1; record 1, also
-    // for core 1, has fully landed: core 1 waits and runs record 0 first.
+    // Command 0 (smaller sequence) lands its last chunk late on core 1; command 1, also
+    // for core 1, has fully landed: core 1 waits and runs command 0 first.
     void smallest_unless_part_landed(Outcome& o) {
         Config cfg = fault_config(2);
         cfg.depth = 2;
@@ -258,7 +261,7 @@ namespace {
         Sim s(cfg);
         s.run();
         common(s, o.check);
-        o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+        o.check.expect(all_done(s), "every command and the EXIT acknowledged");
         std::vector<uint32_t> order;
         for (const Event& e : s.events) {
             if (e.kind == kEvTake && e.core == 1) {
@@ -270,13 +273,13 @@ namespace {
             "core 1 ran the smaller sequence first"
         );
         o.check.expect(
-            s.jobs[1].issued + 6000 > s.jobs[0].issued + 40,
-            "record 1 was complete before record 0"
+            s.jobs[1].submitted + 6000 > s.jobs[0].submitted + 40,
+            "command 1 was complete before command 0"
         );
         finish(s, o);
     }
 
-    // Chunk 2 of the record to core 1 is lost: core 1 never sees it land, the deadline
+    // Chunk 2 of the command to core 1 is lost: core 1 never sees it land, the deadline
     // stops the grid, every kernel leaves.
     void dropped_chunk_times_out(Outcome& o) {
         Config cfg = fault_config(2);
@@ -289,19 +292,19 @@ namespace {
         common(s, o.check);
         o.check.expect(
             s.timed_out && s.jobs[0].status == kTimedOut,
-            "the record timed out at the dispatcher"
+            "the command timed out at the dispatcher"
         );
         finish(s, o);
     }
 
-    // Every team (first, count) of an 8-core grid, rows of 3, random chunk delays.
-    void completion_every_team(Outcome& o) {
+    // Every group (first, count) of an 8-core grid, rows of 3, random chunk delays.
+    void completion_every_group(Outcome& o) {
         Config cfg = fault_config(8);
         cfg.row = 3;
         cfg.wait_limit = 64;
         cfg.idle_limit = 4096;
         cfg.deadline = 400000;
-        cfg.bound = 1ull << 28;
+        cfg.timeout = 1ull << 28;
         for (uint32_t f = 0; f < cfg.cores; f++) {
             for (uint32_t n = 1; f + n <= cfg.cores; n++) {
                 cfg.jobs.push_back(nop_job(f, n));
@@ -315,11 +318,11 @@ namespace {
         Sim s(cfg);
         s.run();
         common(s, o.check);
-        o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+        o.check.expect(all_done(s), "every command and the EXIT acknowledged");
         finish(s, o);
     }
 
-    // 10^4 jobs with random teams, sizes and delays on 6 cores, no fault.
+    // 10^4 jobs with random groups, sizes and delays on 6 cores, no fault.
     void random_jobs(Outcome& o) {
         Config cfg;
         cfg.cores = 6;
@@ -327,7 +330,7 @@ namespace {
         cfg.wait_limit = 256;
         cfg.idle_limit = 4096;
         cfg.deadline = 4000000;
-        cfg.bound = 1ull << 40;
+        cfg.timeout = 1ull << 40;
         cfg.host_seconds = 120;
         std::mt19937 rng(5);
         for (uint32_t k = 0; k < 10000; k++) {
@@ -344,23 +347,23 @@ namespace {
         Sim s(cfg);
         s.run();
         common(s, o.check);
-        o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+        o.check.expect(all_done(s), "every command and the EXIT acknowledged");
         finish(s, o);
     }
 
-    // Idle limit 0 means no limit: a 400,000-cycle gap between two records leaves
+    // Idle limit 0 means no limit: a 400,000-cycle gap between two commands leaves
     // every core in place, and nothing gives up.
     void idle_zero_means_no_limit(Outcome& o) {
         Config cfg = fault_config(2);
         cfg.idle_limit = 0;
         cfg.deadline = 600000;
-        cfg.bound = 3000000;
+        cfg.timeout = 3000000;
         cfg.jobs = {map_job(1, 1, 4), map_job(0, 2, 4)};
         cfg.jobs[1].gap = 400000;
         Sim s(cfg);
         s.run();
         common(s, o.check);
-        o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+        o.check.expect(all_done(s), "every command and the EXIT acknowledged");
         for (uint32_t core = 0; core < cfg.cores; core++) {
             o.check.expect(
                 s.state(core, km::kStReader) == 0 && s.state(core, km::kStWriter) == 0,
@@ -370,8 +373,8 @@ namespace {
         finish(s, o);
     }
 
-    // A nonzero idle limit that passes is a give-up like any other: the reader records
-    // it, the tile leaves and the record issued after the gap is not run.
+    // A nonzero idle limit that passes is a give-up like any other: the reader commands
+    // it, the tile leaves and the command submitted after the gap is not run.
     void idle_expiry_is_a_give_up(Outcome& o) {
         Config cfg = fault_config(2);
         cfg.jobs = {map_job(0, 2, 4), map_job(0, 2, 4)};
@@ -389,12 +392,12 @@ namespace {
         for (const Event& e : s.events) {
             o.check.expect(
                 e.kind != kEvTake || e.a != s.jobs[1].seq,
-                fmt("core %u ran a record after its idle give-up", e.core)
+                fmt("core %u ran a command after its idle give-up", e.core)
             );
         }
         o.check.expect(
             s.timed_out && s.jobs[1].status != kDone,
-            "the record after the gap timed out at the dispatcher"
+            "the command after the gap timed out at the dispatcher"
         );
         finish(s, o);
     }
@@ -468,7 +471,7 @@ namespace {
         });
     }
 
-    // Math is held at its read of the next token's "ok" while the stop word makes
+    // Math is held at its read of the next token's "ok" while the stop flag makes
     // unpack's token wait give up: math reads "not ok" later and leaves.
     void mb_math_held_while_unpack_aborts(Outcome& o) {
         mailbox_case(o, [](Config& cfg, Sim*& sp, bool& fired, Check&, bool after) {
@@ -478,7 +481,7 @@ namespace {
             cfg.jobs = {map_job(1, 1, 4), nop_job(0, 1)};
             auto reads = std::make_shared<uint32_t>(0);
             cfg.triggers.push_back([&, reads](const Probe& p) {
-                // Record 0 takes 2 reads (ok, sequence) and 1 per input tile.
+                // Command 0 takes 2 reads (ok, sequence) and 1 per input tile.
                 if (is(p, 1, kMath, "mailbox_read") && ++*reads == 7 && !fired) {
                     fired = true;
                     sp->set_stop(1);
@@ -489,7 +492,7 @@ namespace {
     }
 
     // The reader is held before its first input lands; pack is held at its first input
-    // "ok"; the stop word ends unpack's input wait and later hands an EXIT.
+    // "ok"; the stop flag ends unpack's input wait and later hands an EXIT.
     void mb_pack_held_while_input_wait_aborts(Outcome& o) {
         mailbox_case(o, [](Config& cfg, Sim*& sp, bool& fired, Check&, bool after) {
             if (after) {
@@ -515,7 +518,7 @@ namespace {
         });
     }
 
-    // The input wait of record 0 gives up on its bound (reader held, no stop); record
+    // The input wait of command 0 gives up on its bound (reader held, no stop); command
     // 1's token is good. By the rule, the tile then acknowledges nothing.
     void mb_abort_then_good_token(Outcome& o) {
         mailbox_case(o, [](Config& cfg, Sim*& sp, bool& fired, Check& c, bool after) {
@@ -539,13 +542,15 @@ namespace {
         });
     }
 
-    // Unpack is held at its first input tile of a 24-tile record: the reader's room
+    // Unpack is held at its first input tile of a 24-tile command: the reader's room
     // wait gives up on its bound, the EXIT token comes while compute is still inside.
     void mb_exit_during_input_wait(Outcome& o) {
         mailbox_case(o, [](Config& cfg, Sim*& sp, bool& fired, Check& c, bool after) {
             static bool inside = false;
             if (after) {
-                c.expect(inside, "the EXIT token came while compute was in the record");
+                c.expect(
+                    inside, "the EXIT token came while compute was in the command"
+                );
                 c.expect(
                     sp->exit_job.status == kDone || sp->timed_out,
                     "the EXIT completed or the deadline stopped the grid"
@@ -574,16 +579,16 @@ namespace {
 
     // ---- a buffer's items against its end ----
 
-    // Per record: n items of 5 pages, then one of `last` pages, through a 15-page
+    // Per command: n items of 5 pages, then one of `last` pages, through a 15-page
     // buffer from a compute producer to a data-movement consumer.
     constexpr uint32_t kCbItems = 24;
-    constexpr uint32_t kItemRecords = 20;
+    constexpr uint32_t kItemCommands = 20;
     uint32_t items_n = 5, items_last = 1;
 
     template <bool Producer>
     void items_side() {
-        for (uint32_t rec = 1; rec <= kItemRecords; rec++) {
-            note_record(rec);
+        for (uint32_t rec = 1; rec <= kItemCommands; rec++) {
+            note_command(rec);
             for (uint32_t i = 0; i <= items_n; i++) {
                 const uint32_t pages = i < items_n ? 5 : items_last;
                 if (Producer) {
@@ -597,8 +602,8 @@ namespace {
         }
     }
 
-    // The 1-page item leaves the next record's first item straddling the end at
-    // record 2 (n = 5 and 6); a 5-page last item keeps every item whole.
+    // The 1-page item leaves the next command's first item straddling the end at
+    // command 2 (n = 5 and 6); a 5-page last item keeps every item whole.
     void items_straddle_the_end(Outcome& o) {
         for (uint32_t n : {5u, 6u}) {
             for (uint32_t last : {1u, 5u}) {
@@ -619,7 +624,7 @@ namespace {
                 const std::string at = fmt("n %u, last %u: ", n, last);
                 o.check.expect(s.all_returned, at + "every thread returned");
                 o.check.expect(
-                    s.popped(0, kCbItems) == kItemRecords * (5 * n + last),
+                    s.popped(0, kCbItems) == kItemCommands * (5 * n + last),
                     at + "every page reached the consumer"
                 );
                 if (last == 5) {
@@ -630,11 +635,11 @@ namespace {
                 bool first = true;
                 for (const std::string& v : s.violations) {
                     o.check.expect(
-                        (v.find(first ? "record 2:" : "record 1:") !=
+                        (v.find(first ? "command 2:" : "command 1:") !=
                          std::string::npos) == first,
                         at +
-                            (first ? "the first violation is at record 2: "
-                                   : "no violation at record 1: ") +
+                            (first ? "the first violation is at command 2: "
+                                   : "no violation at command 1: ") +
                             v
                     );
                     first = false;
@@ -672,7 +677,7 @@ int main(int argc, char** argv) {
             {"mb_abort_then_good_token", mb_abort_then_good_token},
             {"mb_exit_during_input_wait", mb_exit_during_input_wait},
             {"items_straddle_the_end", items_straddle_the_end},
-            {"completion_every_team", completion_every_team},
+            {"completion_every_group", completion_every_group},
             {"random_jobs", random_jobs},
         }
     );

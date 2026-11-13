@@ -1,5 +1,5 @@
-// Bucket sort, Tensix side, the READER (RISC-V core 0 of each Tensix core, NoC 0). It
-// runs for every COUNT and PLACE record: it brings this core's share of the keys to L1.
+// Bucket sort, Tensix side, the READER (RISC-V core 0 of each Tensix core, NoC 0): for
+// every COUNT and PLACE command it brings this core's partition of the keys to L1.
 #include <stdint.h>
 
 #include "../bucket_sort.h"
@@ -14,16 +14,16 @@ void kernel_main() {
     // when the host built the program.
     constexpr auto keys_args = TensorAccessorArgs<0>();
     km::Reader rd;
-    // The runtime's loop: the body runs once per record whose team holds this core.
-    rd.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg != BS_SEG_COUNT && seg != BS_SEG_PLACE) {
+    // The runtime's loop: the body runs once per command whose group holds this core.
+    rd.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
+        if (handler != BS_HANDLER_COUNT && handler != BS_HANDLER_PLACE) {
             return;
         }
         // Steps 1 and 3: my share is a run of keys [start, start + len) in input order,
-        // from my rank in the team; the writer computes the same share.
+        // from my rank in the group; the writer computes the same share.
         const uint32_t rank = rd.me() - km::first(r);
-        const km::Share s = km::share(r.a1, rank, km::count(r));
+        const km::Partition s = km::partition(r.a1, rank, km::count(r));
         if (s.len == 0) {
             return;
         }

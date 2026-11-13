@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define HX_SEG_WORK                                                       \
+#define HX_HANDLER_WORK                                                   \
     1u /* a0 asks per core; the core first waits for its X280 core's salt \
         */
 

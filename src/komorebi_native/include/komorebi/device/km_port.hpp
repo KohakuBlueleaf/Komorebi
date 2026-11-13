@@ -33,7 +33,7 @@ namespace km {
     // bump of its port (each step bounded), pop. False: gave up, port in the top byte.
     inline bool emit(
         const Writer& wr,
-        const km_record_t& r,
+        const km_command_t& r,
         const Arrival& arr,
         uint32_t cb,
         uint32_t pages,
@@ -81,7 +81,7 @@ namespace km {
     // pages to compute. False: gave up; the port keeps n, so the missing count shows.
     inline bool arrive(
         const Reader& rd,
-        const km_record_t& r,
+        const km_command_t& r,
         const Arrival& arr,
         uint32_t port,
         uint32_t n
@@ -103,7 +103,7 @@ namespace km {
             rd.gave_up(kStReader, code, kWherePort, named, r.seq);
             return false;
         }
-        p[KM_PORT_COUNT] = 0;  // every sender of this record has bumped it
+        p[KM_PORT_COUNT] = 0;  // every sender of this command has bumped it
         p[KM_PORT_WANT] = 0;
         if (!rd.reserve(arr.cb, arr.pages)) {
             return false;
@@ -115,7 +115,7 @@ namespace km {
     // Reader side of a reduce: each hand-over this member waits for, in round order.
     inline bool reduce_arrive(
         const Reader& rd,
-        const km_record_t& r,
+        const km_command_t& r,
         const Arrival& arr,
         const Group& g,
         uint32_t form
@@ -137,7 +137,7 @@ namespace km {
     // of `cb` to its receiver. The root sends nothing.
     inline bool reduce_emit(
         const Writer& wr,
-        const km_record_t& r,
+        const km_command_t& r,
         const Arrival& arr,
         const Group& g,
         uint32_t form,

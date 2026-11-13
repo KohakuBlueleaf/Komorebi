@@ -10,7 +10,7 @@
  "load_avg": 5.07958984375,
  "run": {
   "done": 9,
-  "records": 9,
+  "commands": 9,
   "kernel_error": 0,
   "cores_ended": {
    "reader_end": 120,
@@ -21,8 +21,8 @@
   "gave_up": []
  },
  "host": {
-  "records": 9,
-  "issue_s": 6.640073843300343e-05,
+  "commands": 9,
+  "submit_s": 6.640073843300343e-05,
   "wait_s": 0.0234569339081645,
   "native_s": 0.023307931958697736,
   "command_bytes": 576,
@@ -129,7 +129,7 @@
    "total_per_packet": 2444.7
   }
  ],
- "record_ms": {
+ "command_ms": {
   "gen": 0.5425399999999999,
   "primary": 3.4021399999999997,
   "shade1": 2.2262199999999996,

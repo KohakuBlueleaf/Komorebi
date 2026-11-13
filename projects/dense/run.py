@@ -46,9 +46,9 @@ def check(got, rows, a, w, kind):
 
 
 def clean(run):
-    """No kernel error, no core or lane given up, and every core ended."""
+    """No kernel error, no core or broadcast given up, and every core ended."""
     ended = all(n == run["cores"] for n in run["cores_ended"].values())
-    gave_up = run["gave_up"] or run["lane_gave_up"]
+    gave_up = run["gave_up"] or run["broadcast_gave_up"]
     return run["kernel"] == "none" and ended and not gave_up
 
 
@@ -59,7 +59,7 @@ def parse():
     p.add_argument("--k", type=int, default=32)
     p.add_argument("--n", type=int, default=32)
     p.add_argument("--calls", type=int, default=1)
-    p.add_argument("--team", type=int, default=0, help="0: one member per row tile")
+    p.add_argument("--group", type=int, default=0, help="0: one member per row tile")
     p.add_argument("--form", choices=FORMS, default=None)
     p.add_argument(
         "--grid", default=None, help="[layout:]rows,cols,pcm,pcn,bm,bn,kb[,wa,ww]"
@@ -113,14 +113,14 @@ def describe(plan):
     return out
 
 
-def load(session, plan, tensors, team=0, deadline=2.0, reduce="owner"):
-    """The plan's program loaded on the session (each record's `deadline` in s): a
+def load(session, plan, tensors, group=0, deadline=2.0, reduce="owner"):
+    """The plan's program loaded on the session (each command's `deadline` in s): a
     card.Product, GridProduct or SplitProduct (summing by `reduce`)."""
     if isinstance(plan, pl.Split):
         return card.SplitProduct(session, plan, tensors, reduce, deadline=deadline)
     if isinstance(plan, pl.Grid):
         return card.GridProduct(session, plan, tensors, deadline=deadline)
-    count = team or pl.team_size(plan, len(session.nocs().words))
+    count = group or pl.group_size(plan, len(session.nocs().words))
     return card.Product(session, plan, tensors, count, deadline=deadline)
 
 
@@ -140,8 +140,8 @@ def main():
             "y": card.bf16_tensor(session, np.zeros((m, n), np.float32)),
         }
         out["upload_s"] = round(time.perf_counter() - t0, 3)
-        product = load(session, plan, tensors, args.team, reduce=args.reduce)
-        log(f"loaded, team {product.team}")
+        product = load(session, plan, tensors, args.group, reduce=args.reduce)
+        log(f"loaded, group {product.group}")
         out["load_us"] = product.load_us
         try:
             host_s, us = product.calls(args.calls)
@@ -152,7 +152,7 @@ def main():
             sys.exit(1)
         log(f"{args.calls} calls in {host_s:.4f} s")
         out["us_per_call_host"] = round(host_s * 1e6 / args.calls, 3)
-        out["record_us_median"] = float(np.median(us))
+        out["command_us_median"] = float(np.median(us))
         out["run"] = product.stop()
         t0 = time.perf_counter()
         rows = ref.sampled_rows(m)

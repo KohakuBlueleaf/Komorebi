@@ -1,7 +1,7 @@
-"""The plan of an attention call on resident workers, as pure functions: rows per job R
-and key block KB under the L1 budget, the lane length, every core's jobs, the job
-tables. The rules are Kohaku-TT's ktt_flash host program's; sizes are in 32 x 32
-tiles of bf16 (2048 bytes)."""
+"""The plan of an attention call on persistent kernels, as pure functions: rows per job
+R and key block KB under the L1 budget, the broadcast length, every core's jobs, the job
+tables. The rules are Kohaku-TT's ktt_flash host program's; sizes are in 32 x 32 tiles
+of bf16 (2048 bytes)."""
 
 import math
 import struct
@@ -22,9 +22,9 @@ TILE32_BYTES = K["kTile32Bytes"]
 TOKEN_BYTES = K["kTokenBytes"]
 SC = K["kSubChunk"]
 # L1 bytes per core the program's own buffers may take (the matrix product's measured
-# budget: 1,381,376 ran on the card, 1,459,200 was refused at build).
+# budget: 1,381,376 ran on the card, 1,459,200 was rejected at build).
 L1_BUDGET = 1_380_000
-WINDOW = 2  # K / V blocks in flight per lane, as ktt_flash's double buffer
+WINDOW = 2  # K / V blocks in flight per broadcast, as ktt_flash's double buffer
 MAX_JOBS = 46  # ktt_flash's limit per core (its runtime arguments)
 # The benchmark cases: (B, H, Hk, S, D, causal).
 SHAPES = {
@@ -137,17 +137,17 @@ def widest(bounds):
     return max(r1 - r0 for r0, r1 in zip(bounds, bounds[1:]))
 
 
-def lane_chunks(s, r, lanes, length, chunks=None):
-    """Per lane, its query chunks (batch, head, K / V head, first row, rows): even
+def broadcast_chunks(s, r, broadcasts, length, chunks=None):
+    """Per broadcast, its query chunks (batch, head, K / V head, first row, rows): even
     ranges of the (batch, head, row) order, or (causal) chunks of each head (even ranges
     of at most length x R rows, or `chunks` of equal area), largest work first onto the
-    least loaded lane below MAX_JOBS chunks."""
+    least loaded broadcast below MAX_JOBS chunks."""
     group = s.h // s.hk
-    out = [[] for _ in range(lanes)]
+    out = [[] for _ in range(broadcasts)]
     if not s.causal:
         total = s.b * s.h * s.sqt
-        for i in range(lanes):
-            lo, hi = i * total // lanes, (i + 1) * total // lanes
+        for i in range(broadcasts):
+            lo, hi = i * total // broadcasts, (i + 1) * total // broadcasts
             pos = lo
             while pos < hi:
                 head, r0 = divmod(pos, s.sqt)
@@ -180,13 +180,13 @@ def lane_chunks(s, r, lanes, length, chunks=None):
                 )
             pieces.append((work, (bi, hi_, hi_ // group, r0, r1 - r0)))
     pieces.sort(key=lambda p: -p[0])  # stable: equal work keeps its order
-    load = [0] * lanes
+    load = [0] * broadcasts
     for work, chunk in pieces:
-        open_ = [j for j in range(lanes) if len(out[j]) < MAX_JOBS]
+        open_ = [j for j in range(broadcasts) if len(out[j]) < MAX_JOBS]
         i = (
             min(open_, key=lambda j: load[j])
             if open_
-            else min(range(lanes), key=lambda j: load[j])
+            else min(range(broadcasts), key=lambda j: load[j])
         )
         out[i].append(chunk)
         load[i] += work
@@ -194,16 +194,18 @@ def lane_chunks(s, r, lanes, length, chunks=None):
 
 
 def plan(s, r, grid, length, chunks=None):
-    """Jobs per core (index y * gx + x) for lanes of `length` cores down each grid
-    column, the sender at the top; each core takes its share of a lane job's rows:
+    """Jobs per core (index y * gx + x) for broadcasts of `length` cores down each grid
+    column, the sender at the top; each core takes its share of a broadcast job's rows:
     contiguous, or (causal) `length` apart."""
     gx, gy = grid
-    lanes = [(x, y0) for x in range(gx) for y0 in range(0, gy - length + 1, length)]
-    by_lane = lane_chunks(s, r, len(lanes), length, chunks)
+    broadcasts = [
+        (x, y0) for x in range(gx) for y0 in range(0, gy - length + 1, length)
+    ]
+    by_broadcast = broadcast_chunks(s, r, len(broadcasts), length, chunks)
     per_core = [[] for _ in range(gx * gy)]
-    for (x, y0), lane in zip(lanes, by_lane):
+    for (x, y0), broadcast in zip(broadcasts, by_broadcast):
         for y in range(y0, y0 + length):
-            for bi, hi, g, r0, n in lane:
+            for bi, hi, g, r0, n in broadcast:
                 if s.causal:
                     start = r0 + (y - y0)
                     rows = math.ceil((r0 + n - start) / length) if start < r0 + n else 0
@@ -236,9 +238,10 @@ def score_tiles(s, jobs):
     )
 
 
-def choose_lanes(s, r, grid, lengths=None, chunks=None):
+def choose_broadcasts(s, r, grid, lengths=None, chunks=None):
     """(length, jobs per core): the fewest score tiles on the busiest core, then the
-    longest lane, among lengths dividing the grid height with MAX_JOBS jobs or fewer."""
+    longest broadcast, among lengths dividing the grid height with MAX_JOBS jobs or
+    fewer."""
     best = None
     for length in lengths or range(1, grid[1] + 1):
         if grid[1] % length:
@@ -253,13 +256,13 @@ def choose_lanes(s, r, grid, lengths=None, chunks=None):
         ):
             best = (tiles, length, p)
     if best is None:
-        raise ValueError(f"no lane length keeps {MAX_JOBS} jobs per core")
+        raise ValueError(f"no broadcast length keeps {MAX_JOBS} jobs per core")
     return best[1], best[2]
 
 
 @dataclass(frozen=True)
 class Plan:
-    """A call's plan: dims, R, KB, window, lane length, and every core's jobs."""
+    """A call's plan: dims, R, KB, window, broadcast length, and every core's jobs."""
 
     dims: Dims
     r: int
@@ -277,8 +280,8 @@ class Plan:
     def l1_bytes(self):
         return l1_bytes(self.dims, self.r, self.kb, self.window)
 
-    def blocks_per_lane(self, core):
-        """K / V blocks the lane of `core` hands over in one call."""
+    def blocks_per_broadcast(self, core):
+        """K / V blocks the broadcast of `core` hands over in one call."""
         return sum(math.ceil(j.nk / self.kb) for j in self.jobs[core])
 
     def summary(self):
@@ -286,7 +289,7 @@ class Plan:
             "r": self.r,
             "kb": self.kb,
             "window": self.window,
-            "lane_length": self.length,
+            "broadcast_length": self.length,
             "jobs_max": max(len(j) for j in self.jobs),
             "score_tiles_max": max(score_tiles(self.dims, j) for j in self.jobs),
             "l1_bytes": self.l1_bytes(),
@@ -295,12 +298,13 @@ class Plan:
 
 def make(s, grid, budget=L1_BUDGET, r=None, kb=None, length=None, chunks=None):
     """The plan of dims `s` on a grid (gx, gy): R and KB fitted to `budget` (or as
-    given), the lane length chosen (or as given), causal chunks per head as given."""
+    given), the broadcast length chosen (or as given), causal chunks per head as given.
+    """
     fit_r, fit_kb = blocks(s, budget)
     r, kb = r or fit_r, kb or fit_kb
     if r == 0 or l1_bytes(s, r, kb) > budget:
         raise ValueError(f"buffers of R {r}, KB {kb} do not fit {budget} bytes")
-    length, jobs = choose_lanes(s, r, grid, [length] if length else None, chunks)
+    length, jobs = choose_broadcasts(s, r, grid, [length] if length else None, chunks)
     return Plan(s, r, kb, WINDOW, length, jobs)
 
 
@@ -341,7 +345,7 @@ def exp_constants(scale, approx=False):
 
 
 def call_args(q, k, v, o, table, mode=K["kModeFull"], passes=1, first=0, count=0):
-    """Record words a0..a8 of ATTEND: jobs [first, first + count) of every member's
+    """Command words a0..a8 of ATTEND: jobs [first, first + count) of every member's
     table (count 0: to the end)."""
     return [q, k, v, o, table, mode, passes, first, count]
 

@@ -23,7 +23,7 @@ PAGE = 4096  # region granularity, bytes; regions are whole pages of one bank
 # measured on a p150a (clusters 2 and 3 share bank 7); the start-up checks it.
 BANK_OF_CLUSTER = {1: 6, 2: 7, 3: 7}
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI word, at this address in every bank
-RING_DEPTH = 16  # the thread's command lines, in the dispatch kernel's LIM
+RING_DEPTH = 16  # the thread's command lines, in the dispatcher's LIM
 RING_EVENTS = 64  # its events, in its own LIM after the kmx block
 
 
@@ -212,7 +212,7 @@ def ring_bytes():
 
 
 def work_ring(kernel_lim, kernel_xy, work_lim, work_xy, cluster=1):
-    """The ring between work cluster `cluster` and the dispatch kernel: commands and
+    """The ring between work cluster `cluster` and the dispatcher: commands and
     the read line in the kernel's LIM after its layout, cluster c's after those of
     clusters 1 to c - 1 (each side writes the other's LIM and reads its own). Returns
     the thread's RingPlacement and the kernel's (tile, NoC address of the area)."""
@@ -330,7 +330,7 @@ def args_block(
 def ports_area(ports):
     """The ports area (Ports): each core's tile and serving X280 core, the mailbox lines
     zeroed. Written before any thread of the program starts: a core may write its
-    mailbox line once the first thread issues a record."""
+    mailbox line once the first thread submits a command."""
     k = layout()
     area = bytearray(k["KMX_PORTS_BYTES"])
     tiles = struct.pack(f"<{len(ports.tiles)}I", *ports.tiles)
@@ -347,9 +347,9 @@ def new_check_value():
 
 class ThreadResult(NamedTuple):
     """The result block: state and library error (names), the thread's code and
-    words, its last progress stamp and the times in microseconds. `ran` is False
+    words, its last progress marker and the times in microseconds. `ran` is False
     when the thread did not return by the timeout; `stuck` when it did not return
-    after the stop word either, `detail` then the runtime's account of a failed stop."""
+    after the stop flag either, `detail` then the runtime's account of a failed stop."""
 
     ran: bool
     state: str
@@ -465,7 +465,7 @@ class ThreadRun:
     def collect(self, ran):
         """Asks a thread that has not returned (`ran` false) to stop, then stops it
         through the runtime and reads its result block. One that does not return
-        after the stop word either is `stuck`: a hart outside the library."""
+        after the stop flag either is `stuck`: a core outside the library."""
         if self.result is not None:
             return self.result
         c, k = self.thread.cluster, layout()

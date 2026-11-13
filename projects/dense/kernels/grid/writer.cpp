@@ -1,10 +1,10 @@
-// Grid writer: the column lane on NoC1 (W blocks, kb x bn tiles, cast up the column)
-// and Y: a block is written once the next block's first W block is handed over.
+// Grid writer: the column broadcast on NoC1 (W blocks, kb x bn tiles, cast up the
+// column) and Y: a block is written once the next block's first W block is handed over.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
 #include "grid.h"
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
@@ -20,8 +20,8 @@ void kernel_main() {
     const auto plan = [&](uint32_t i) {
         return core(kCorePlan + i);
     };
-    wr.run([&](const km_record_t& r) {
-        if (km::seg(r) == kSegGridProf) {
+    wr.run([&](const km_command_t& r) {
+        if (km::handler(r) == kHandlerGridProf) {
             const InterleavedAddrGen<true> pages = {
                 .bank_base_address = r.a0, .page_size = kProfBytes
             };
@@ -30,17 +30,17 @@ void kernel_main() {
             );
             return flushed(wr, km::kStWriter, km::kFlushSent);
         }
-        if (km::seg(r) != kSegGrid) {
+        if (km::handler(r) != kHandlerGrid) {
             return true;
         }
         const uint32_t t0 = km::wall();
-        const bool lanes = r.a3 != kGridProduct;
+        const bool broadcasts = r.a3 != kGridProduct;
         const bool store = r.a3 == kGridFull;
-        km::Lane ln(wr, r, kArgLane);
+        km::Broadcast ln(wr, r, kArgBroadcast);
         if (!ln.ok()) {
             return false;
         }
-        if (core(kCoreMember) == 0) {
+        if (core(kCoreRank) == 0) {
             return true;
         }
         const uint32_t mt = plan(kPlMt), kt = plan(kPlKt), nt = plan(kPlNt);
@@ -52,7 +52,7 @@ void kernel_main() {
         const uint32_t n_end = n0 + plan(kPlPcN) < nt ? n0 + plan(kPlPcN) : nt;
         const auto w = TensorAccessor(w_args, r.a1);
         const auto y = TensorAccessor(y_args, r.a2);
-        uint32_t read = 0, lane = 0, wait = 0, write = 0;
+        uint32_t read = 0, broadcast = 0, wait = 0, write = 0;
 
         // Output block (r0, c0) from kCbGridOut, sh x sw subblocks in compute's order.
         const auto put = [&](uint32_t r0, uint32_t c0) {
@@ -88,13 +88,13 @@ void kernel_main() {
         uint32_t pr0 = 0, pc0 = 0, k = 0;
         for (uint32_t blk = 0; blk < nbh * nbw; ++blk) {
             const uint32_t r0 = m0 + blk / nbw * bm, c0 = n0 + blk % nbw * bn;
-            for (uint32_t kblk = 0; lanes && kblk < nk; ++kblk, ++k) {
+            for (uint32_t kblk = 0; broadcasts && kblk < nk; ++kblk, ++k) {
                 const uint32_t t1 = km::wall();
                 if (!ln.sender()) {
                     if (!ln.arrive(k)) {
                         return false;
                     }
-                    lane += km::wall() - t1;
+                    broadcast += km::wall() - t1;
                 } else {
                     const uint32_t base = ln.reserve(k);
                     if (base == 0) {
@@ -119,7 +119,7 @@ void kernel_main() {
                         return false;
                     }
                     read += t3 - t2;
-                    lane += t2 - t1 + km::wall() - t3;
+                    broadcast += t2 - t1 + km::wall() - t3;
                 }
                 if (kblk == 0 && pending) {
                     if (!put(pr0, pc0)) {
@@ -128,21 +128,21 @@ void kernel_main() {
                     pending = false;
                 }
             }
-            if (!lanes && pending && !put(pr0, pc0)) {
+            if (!broadcasts && pending && !put(pr0, pc0)) {
                 return false;
             }
-            pending = r.a3 != kGridLanes;
+            pending = r.a3 != kGridBroadcasts;
             pr0 = r0;
             pc0 = c0;
         }
         if (pending && !put(pr0, pc0)) {
             return false;
         }
-        if (lanes && !ln.finish()) {
+        if (broadcasts && !ln.finish()) {
             return false;
         }
         km::add_sat(prof + kGpWrRead, read);
-        km::add_sat(prof + kGpWrLane, lane);
+        km::add_sat(prof + kGpWrBroadcast, broadcast);
         km::add_sat(prof + kGpWrWait, wait);
         km::add_sat(prof + kGpWrWrite, write);
         km::add_sat(prof + kGpWrBody, km::wall() - t0);

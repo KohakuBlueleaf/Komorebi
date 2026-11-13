@@ -8,8 +8,8 @@
 #include "raytrace.h"
 
 template <typename Record>
-inline uint64_t dir_addr(const Record& r, uint32_t seg, uint32_t core) {
-    const uint32_t bank = seg == kSegTreelets ? r.a9 >> kBankShift : 0;
+inline uint64_t dir_addr(const Record& r, uint32_t handler, uint32_t core) {
+    const uint32_t bank = handler == kHandlerTreelets ? r.a9 >> kBankShift : 0;
     if (bank != 0) {
         return get_noc_addr_from_bank_id<true>(bank - 1, r.a0 + core * kDirBytes);
     }

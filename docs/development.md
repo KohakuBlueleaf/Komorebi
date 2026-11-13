@@ -15,10 +15,10 @@ Building from a clone: [install](install.md#from-a-clone).
 src/komorebi/                  the package you import
   _env.py                      finds the tt-metal tree, its build and the X280 toolchain
   cli.py                       the `kmr` command: doctor, build, power
-  layout.py                    the grid, its panels and teams of cores (pure functions)
+  layout.py                    the grid, its panels and core groups (pure functions)
   stats.py                     timing statistics and error against a reference
-  program.py  session.py       Program; Session (loads a program under the dispatch kernel)
-  run.py  errors.py  state.py  Run (issue, wait, stop); errors; result, state and trace decoding
+  program.py  session.py       Program; Session (loads a program under the dispatcher)
+  run.py  errors.py  state.py  Run (submit, wait, stop); errors; result, state and trace decoding
   abi.py  native.py            constants read from the C headers; the image and native module
   power.py                     power sampling: cards, a GPU, the CPU package
   build.py                     out-of-tree builds: host program, Python module, X280 image
@@ -55,13 +55,13 @@ longer docstrings. The `dev` extra installs the tools, including clang-format 22
 `.clang-format` uses options older versions reject). Run the commands from the
 repository, in the environment of [install](install.md#from-a-clone).
 
-`tests/core` covers the layout functions (panels, teams, shares), statistics, the
+`tests/core` covers the layout functions (panels, groups, shares), statistics, the
 package boundary, `kmr doctor` with and without a tree, the runtime package's locator
 on a fake layout and the order in which the tree is chosen, the parsing and command
 assembly of `build.py` against a small fake `build.ninja`, the power sampler against
 fake sensors and a fake sysfs tree, and the formatter. Tests
 marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they live in
-`tests/hardware`). The host package's CPU tests run `Run` against a fake dispatch kernel
+`tests/hardware`). The host package's CPU tests run `Run` against a fake dispatcher
 (`tests/core/fake_port.py`). The formatter tests are skipped when clang-format is not installed.
 
 The reference tests in `tests/core` (`test_ref_*.py`) cover the scene generator and
@@ -82,14 +82,14 @@ programs' CPU tests.
 [`experiments/runtime_harness`](../experiments/runtime_harness/README.md) compiles the
 Tensix runtime's device headers and the map/collect kernels unchanged against a stub of
 the tt-metal calls they use, runs them as host threads on a simulated grid, and forces
-failure paths on it: stop words, give-ups, lost or late record chunks, mailbox races,
+failure paths on it: stop flags, give-ups, lost or late command chunks, mailbox races,
 items past a buffer's end. It is a tool run by hand (`python
 experiments/runtime_harness/run.py`), not part of the test suite;
 `tests/core/test_runtime_harness.py` runs four of its scenarios that pin known
 behaviour.
 
 The rule: a new wait in the runtime comes with a scenario there that makes it give up,
-by the stop word and by its bound, and shows that every kernel of the tile still
+by the stop flag and by its bound, and shows that every kernel of the tile still
 returns; when a defect is fixed, one test pins it.
 
 ## Conventions
@@ -121,6 +121,6 @@ Experiments come first; a regression test comes after behaviour settles (see
   and defines that C++ code using the X280 runtime needs. This dependency ends when
   Komorebi has its own build files. `kmr build image` is not affected: it uses the X280
   runtime's compiler, flags, entry objects and linker script directly.
-- No wheel is published. A wheel built from a clone carries the dispatch kernel image
+- No wheel is published. A wheel built from a clone carries the dispatcher image
   prebuilt; the native module is built from a tt-metal tree on first use
   ([from a wheel](install.md#from-a-wheel)).

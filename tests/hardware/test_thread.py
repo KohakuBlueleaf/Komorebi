@@ -41,17 +41,17 @@ def test_two_clusters_hand_a_shared_region_over_in_their_bank():
     assert out["ok"], out
 
 
-def test_the_parallel_patterns_are_exact_on_one_hart_and_on_four():
+def test_the_parallel_patterns_are_exact_on_one_core_and_on_four():
     out = run_json(PARALLEL, "--words", 65536, "--repeats", 1)
     assert out["ok"] and all(out["exact"].values()), out
 
 
-def test_the_patterns_are_exact_on_one_to_twelve_harts_of_three_clusters():
+def test_the_patterns_are_exact_on_one_to_twelve_cores_of_three_clusters():
     out = run_json(PARALLEL, "--twelve", "--words", 16384, "--repeats", 1)
     assert out["ok"] and all(out["exact"].values()), out
 
 
-def test_spawned_harts_run_beside_hart_0_and_refusals_are_as_documented():
+def test_spawned_cores_run_beside_core_0_and_rejections_are_as_documented():
     out = run_json(SPAWN)
     assert out["ok"], out
 
@@ -72,6 +72,6 @@ def test_a_thread_past_the_timeout_is_stopped_and_reports_where_it_was():
     assert out["ok"], out
 
 
-def test_a_thread_that_stops_taking_events_holds_up_no_host_record():
+def test_a_thread_that_stops_taking_events_holds_up_no_host_command():
     out = run_json(STALL)
     assert out["ok"], out

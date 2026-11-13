@@ -7,11 +7,11 @@ the test suite.
 - `graphs/`: 39 named reference graphs, each a `.bin` upload and a `.json` with the
   bindings, the simulation parameters and the answer. 22 run (chains, branches, the
   documented loop and the same upload kept and run with another binding, skips, CPU
-  arithmetic, patched arguments and teams, results feeding records, queued and
-  exclusive records, more ready records than slots, rounds, a kept graph, the kept
-  table full, and each error at run time); 17 are uploads the check refuses, one per
+  arithmetic, patched arguments and groups, results feeding commands, queued and
+  exclusive commands, more ready commands than slots, rounds, a kept graph, the kept
+  table full, and each error at run time); 17 are uploads the check rejects, one per
   fault class. Another
-  implementation, such as the kernel's executor, replays them: the issue set, the
+  implementation, such as the kernel's executor, replays them: the submit set, the
   events and the final registers are binding, the order is not.
 - `graph_reference.py`: builds them. `python graph_reference.py` rewrites `graphs/`;
   `--check` compares the Python executor and the C engine built for the host with them;

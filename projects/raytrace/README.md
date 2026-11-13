@@ -2,14 +2,14 @@
 
 The ray tracer of [`reference/`](reference/README.md) on the card: the same saved box
 tree, the same rays, the same float32 operations in the same order, run by the 120
-Tensix cores of a Blackhole p150a under the dispatch kernel. The whole frame (ray
+Tensix cores of a Blackhole p150a under the dispatcher. The whole frame (ray
 generation, the four traces, the shading) runs on the cores; every stage is checked
 against numpy lane by lane and the image against numpy's image, pixel by pixel.
 
 ## The thread program
 
 A pass (primary, shadow, bounce or shadow at the bounce hit) is one record of the
-segment `TRACE` sent to every core of the grid. Each core walks the packets its
+handler `TRACE` sent to every core of the grid. Each core walks the packets its
 directory entry names, 32 rays to a packet, one ray per lane of the vector unit:
 
 ```
@@ -79,18 +79,18 @@ walk (they are in the triangle record in L1), so shading reads no scene data. St
 records give the constant page (camera, light, sky, lane offsets) in a3, the profile
 pages in a4, and the streams' pages in a1, a2, a5 to a9.
 
-Every wait in the kernels is bounded by the wall clock and the run's stop word; a core
+Every wait in the kernels is bounded by the wall clock and the run's stop flag; a core
 that gives up says why in its profile, and the driver counts it as a failure. `ARITH`
 and `RECIP` run the walk's operations on given inputs for the arithmetic check;
 `PROBE` times one node visit in several forms.
 
 The same eight records also run as one graph (`framegraph.py`): uploaded once into
-the dispatch kernel's upload region and kept, each record a node after the records
+the dispatcher's upload region and kept, each record a node after the records
 that write its inputs (the shadow and bounce traces may run together). The camera is
 bound as the address of its constant page (camera, light, sky, lane offsets), the
 colour as its address: a new camera is a new constant page and a `restart` with its
-address, with no new upload and no host step inside the frame. The kernel's X280 decides what to issue next; host-fed, the same executor runs
-on the host and issues through the host ring, and both give the same image.
+address, with no new upload and no host step inside the frame. The kernel's X280 decides what to submit next; host-fed, the same executor runs
+on the host and submits through the host ring, and both give the same image.
 
 `run.py` runs the traces alone, with ray generation and shading on the host (the
 reference's functions): it checks every ray's hit and times each pass by itself.
@@ -137,7 +137,7 @@ and the two against each other. `run.py` prints a JSON line per pass (card time 
 record, rate, profile sums, the check) and a last line with `ok`: every record done, every core ended, nothing given
 up, no walk error, no ray differs from numpy, and no pixel of the image differs. It
 exits 1 without it. `--reps` reruns each pass; the time of a pass is the record's
-event time (issue to completion, the X280's timer), and records run one at a time.
+event time (submit to completion, the X280's timer), and records run one at a time.
 `--save DIR` writes the result files in the reference's layout to `DIR/card/`, so
 `reference/agree.py --external DIR` compares them.
 
@@ -150,7 +150,7 @@ is partly fused, so the walk avoids both: products and sums are separate operati
 the reference's order, and the reciprocal of the triangle test is corrected to the
 correctly rounded result with an exact remainder (`sfpu.hpp`). `arith.py` checks every
 operation of the walk on scene rays, random rays and edge cases against numpy, and the
-reciprocal over whole exponent ranges. The host refuses a scene whose triangle
+reciprocal over whole exponent ranges. The host rejects a scene whose triangle
 determinant could leave the reciprocal's exact range. Shading divides and takes square
 roots: both are correctly rounded with an exact remainder (`divsqrt.hpp`, checked by
 `arith.py --math` over a million operands each), and the reference's 32-bit hash is
@@ -173,7 +173,7 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
 
 - Kernel text: a program's kernels must fit the session's kernel buffer on a Tensix
   core, 70,656 bytes unless the session sets `kernel_bytes`; a program that does not
-  fit is refused before launch with its sizes per thread (`km.KernelSizeError`,
+  fit is rejected before launch with its sizes per thread (`km.KernelSizeError`,
   [host API](../../docs/reference/host.md#program)). Two remedies: a larger buffer
   (`Session(kernel_bytes=...)`, taken from the L1 left for circular buffers) or a
   smaller build of one kernel (`km.Program(..., opt={...})`). The ray tracer's kernels
@@ -269,7 +269,7 @@ the packet states through the unpacker and packer took Sponza's overview from 45
 349 ms and Bistro's from 633 to 524. What is left in the traces (Sponza overview, mean
 core): box tests 61 %, stack pops 13 %, triangle tests 11 %, state moves 3 %; and the
 slowest core of each record against the mean: 71 of the 349 ms (Bistro: 147 of 524). The
-host issues one 64-byte command per record and waits for one event each; nothing is
+host submits one 64-byte command per record and waits for one event each; nothing is
 read back inside the frame. The X280 work cluster is not used here; the next section
 runs the frame from it.
 

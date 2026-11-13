@@ -14,7 +14,7 @@ import numpy as np
 import komorebi as km
 
 ROOT = Path(__file__).resolve().parents[2]
-KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"  # every record a NOP
+KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"  # every command a NOP
 SPIN = ROOT / "tests" / "hardware" / "thread" / "spin.c"  # fills region 1, waits
 T0 = time.monotonic()
 

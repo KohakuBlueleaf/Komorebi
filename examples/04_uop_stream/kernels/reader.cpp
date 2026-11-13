@@ -9,11 +9,13 @@ void kernel_main() {
     constexpr auto in_args = TensorAccessorArgs<0>();
     km::Reader rd;
     uint32_t at = 0;  // write position in kCbIn, in pages: a block never wraps
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegMap) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerMap) {
             return;
         }
-        const km::Share s = km::share(r.a1, rd.me() - km::first(r), km::count(r));
+        const km::Partition s = (
+            km::partition(r.a1, rd.me() - km::first(r), km::count(r))
+        );
         const auto in = TensorAccessor(in_args, r.a0);
         for (uint32_t done = 0; done < s.len;) {
             uint32_t n = s.len - done < kBlock ? s.len - done : kBlock;

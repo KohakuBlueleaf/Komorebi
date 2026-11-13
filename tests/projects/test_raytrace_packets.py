@@ -148,7 +148,7 @@ def plan_total(per, slots, sizes, tree_pages):
 
 
 def test_plan_keeps_slots_and_fits_the_budget():
-    per, slots, sizes = packets.plan_records(300, 900, 128 * 1024, 3)
+    per, slots, sizes = packets.plan_commands(300, 900, 128 * 1024, 3)
     assert slots == 4 and 16 <= per < 300
     assert plan_total(per, slots, sizes, 3) <= packets.L1_BUDGET
     bigger = packets.treelet_buffers(per + 1, 64 * (per + 1), 900, 4, 128 * 1024)
@@ -157,13 +157,13 @@ def test_plan_keeps_slots_and_fits_the_budget():
 
 
 def test_plan_drops_slots_before_packets_and_lists_hold_every_treelet():
-    per, slots, sizes = packets.plan_records(50, 20_000, 390 * 1024, 2)
+    per, slots, sizes = packets.plan_commands(50, 20_000, 390 * 1024, 2)
     assert slots == 2 and per >= 16 and sizes["entries"] >= 20_000
-    assert packets.plan_records(5, 10, 4096, 1, slots=12)[1] == packets.MAX_SLOTS
+    assert packets.plan_commands(5, 10, 4096, 1, slots=12)[1] == packets.MAX_SLOTS
     with pytest.raises(ValueError, match="cut smaller"):
-        packets.plan_records(1, 10, 600 * 1024, 1)
+        packets.plan_commands(1, 10, 600 * 1024, 1)
     with pytest.raises(ValueError, match="treelets"):
-        packets.plan_records(1, packets.MAX_TREELETS, 4096, 1)
+        packets.plan_commands(1, packets.MAX_TREELETS, 4096, 1)
 
 
 def test_chunks_cover_each_core_range_once():

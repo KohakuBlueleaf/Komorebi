@@ -1,4 +1,4 @@
-/* The dispatch kernel's state (in the cluster's DRAM bank; the image has no .bss) and
+/* The dispatcher's state (in the cluster's DRAM bank; the image has no .bss) and
  * the helpers every part uses. One translation unit, main.c, includes the parts. */
 #pragma once
 
@@ -17,7 +17,7 @@
 #define KMD_CCACHE_FLUSH64 0x02010200ull
 /* The loop checks stop, deadlines and the idle time every this many passes. */
 #define KMD_POLL_EVERY 1024u
-/* The team allocator's answer when no team of the count fits now. */
+/* The group allocator's answer when no group of the count fits now. */
 #define KMD_NO_FIRST 0xFFFFFFFFu
 /* The loop's hot path stays inlined: an outlined call saves registers on the stack,
  * which is uncached LIM (a load costs about 17 ns). */
@@ -37,28 +37,28 @@ typedef struct {
     uint32_t told_n;               /* events the count word shows */
     uint32_t read_n;               /* events the source has read, as last loaded */
     uint32_t line_state; /* 0: line is free; 1: it holds command next; 2: held */
-    uint32_t nbusy;      /* busy slots whose record came from here */
+    uint32_t nbusy;      /* busy slots whose command came from here */
     uint32_t nqueued;    /* its jobs waiting in the queue */
     uint32_t owed;       /* events owed besides those (host: one per active stream) */
-    uint64_t t_record;   /* deadline of its next record, in ticks */
+    uint64_t t_command;  /* deadline of its next command, in ticks */
     uint64_t before;     /* queue places of jobs queued before the line was taken */
     uint64_t* line;      /* the command being taken: 8 words, 64-byte aligned */
 } kmd_ring_t;
 
-/* Sources, served in this order (the numbers are in km_dispatch.h's hart block). */
+/* Sources, served in this order (the numbers are in km_dispatch.h's core block). */
 #define KMD_SRC_HOST 0u
 #define KMD_SRC_ENGINE 1u
 #define KMD_SRC_WORK \
     2u /* work cluster c's thread: KMD_SRC_WORK + c - 1 (work_port.h) */
 #define KMD_SOURCES (KMD_SRC_WORK + KMD_WORK_CLUSTERS)
 
-/* A job waiting in the queue: its record, with its source's deadline at the time. */
+/* A job waiting in the queue: its command, with its source's deadline at the time. */
 typedef struct {
     uint64_t line[8];
     uint64_t ticks;
-    uint32_t req, count, passed; /* passed: jobs behind it issued while it waited */
+    uint32_t req, count, passed; /* passed: jobs behind it submitted while it waited */
     uint8_t src, pad;
-    uint16_t tag; /* the engine's stream tag (KMD_SEG_DROP) */
+    uint16_t tag; /* the engine's stream tag (KMD_HANDLER_DROP) */
 } kmd_job_t;
 
 /* The job queue (KMD_STATE_QUEUE): jobs in places, their order oldest first. */
@@ -70,12 +70,13 @@ typedef struct {
     uint8_t order[KM_QUEUE_JOBS];
 } kmd_queue_t;
 
-/* The dynamic run in flight (dynamic.h): its RUN record, and its end record's slot. */
+/* The dynamic run in flight (dynamic.h): its RUN command, and its end command's slot.
+ */
 typedef struct {
-    uint32_t seg;                       /* the program's dynamic segment; 0: none */
-    uint32_t active;                    /* a RUN is in flight and not yet quiet */
-    uint32_t slot, seq, team, req, src; /* the RUN record */
-    uint32_t end;                       /* 1 + the end record's slot while busy; 0 */
+    uint32_t handler;                    /* the program's dynamic handler; 0: none */
+    uint32_t active;                     /* a RUN is in flight and not yet quiet */
+    uint32_t slot, seq, group, req, src; /* the RUN command */
+    uint32_t end;                        /* 1 + the end command's slot while busy; 0 */
     uint32_t checks;
     uint32_t first[2u * KM_CORES_MAX]; /* the first pass: sent, consumed per core */
 } kmd_dyn_t;
@@ -87,11 +88,11 @@ typedef struct {
 
 typedef struct {
     /* run */
-    uint64_t hart, run;
+    uint64_t core, run;
     const volatile kmd_args_t* args;
     volatile uint8_t* lim;          /* the layout's base: the argument block */
     volatile uint32_t* result;      /* the result block */
-    volatile uint32_t* harts;       /* the hart block */
+    volatile uint32_t* x280_cores;  /* the core block */
     volatile const uint8_t* upload; /* the upload region, upload_bytes long */
     uint32_t upload_bytes;
     uint32_t error, where; /* KMD_ERR_*, KMD_WHERE_* */
@@ -106,15 +107,15 @@ typedef struct {
     kmd_queue_t* queue;      /* the job queue, in the state area */
     /* completion table */
     uint32_t depth, full, busy, nbusy, cores;
-    uint32_t seq;                     /* last sequence number issued */
-    uint32_t exited;                  /* an EXIT record was issued */
+    uint32_t seq;                     /* last sequence number submitted */
+    uint32_t exited;                  /* an EXIT command was submitted */
     uint32_t slot_seq[KM_RING_SLOTS]; /* last sequence: the ack word once free */
     uint32_t slot_req[KM_RING_SLOTS];
-    uint32_t slot_team[KM_RING_SLOTS];
-    uint8_t slot_src[KM_RING_SLOTS]; /* the source the record came from */
-    uint32_t result_busy;            /* busy slots whose record has KM_F_RESULT */
-    uint32_t last_result; /* the latest KM_F_RESULT record's result (0: none yet) */
-    uint32_t results;     /* KM_F_RESULT records completed */
+    uint32_t slot_group[KM_RING_SLOTS];
+    uint8_t slot_src[KM_RING_SLOTS]; /* the source the command came from */
+    uint32_t result_busy;            /* busy slots whose command has KM_F_RESULT */
+    uint32_t last_result; /* the latest KM_F_RESULT command's result (0: none yet) */
+    uint32_t results;     /* KM_F_RESULT commands completed */
     uint64_t slot_t0[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* streams the engine runs */
@@ -122,10 +123,10 @@ typedef struct {
     uint32_t nstreams;  /* admitted and not yet ended */
     uint32_t engine_on; /* engine_active() after its last turn; a RUN sets it */
     uint32_t queued;    /* the queue's length, for the loop */
-    uint32_t waits;     /* bit src: a busy refusal to it, KMD_EV_WAKE owed */
+    uint32_t waits;     /* bit src: a busy rejection to it, KMD_EV_WAKE owed */
     kmd_dyn_t dyn;
     /* counters */
-    uint32_t records, max_busy, refused, held, no_room;
+    uint32_t commands, max_busy, rejected, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */
     uint32_t traced, untraced;              /* KMD_TRACE builds */
     uint64_t passes, idle_passes, full_passes;
@@ -157,7 +158,7 @@ static inline kmd_wait_t kmd_poll(const kmd_t* k, uint32_t* spins, uint64_t dead
         return KMD_OK;
     }
     *spins = 0;
-    if (x280_hart_stop_requested(k->hart, k->run)) {
+    if (x280_hart_stop_requested(k->core, k->run)) {
         return KMD_STOP;
     }
     if (deadline != 0 && x280_mtime() > deadline) {

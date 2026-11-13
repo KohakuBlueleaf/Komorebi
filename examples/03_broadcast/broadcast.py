@@ -1,7 +1,7 @@
-"""Lane broadcast on a card: A blocks along the rows of a rectangle team, W blocks down
-its columns, every member's checksum against numpy. Records go through the dispatch
-kernel on X280 cluster 0 (`--feeder`: through the test feeder, no X280). See README.md.
-"""
+"""Broadcast broadcast on a card: A blocks along the rows of a rectangle group, W blocks
+down its columns, every member's checksum against numpy. Commands go through the
+dispatcher on X280 cluster 0 (`--feeder`: through the test feeder, no X280). See
+README.md."""
 
 import argparse
 import json
@@ -15,19 +15,19 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [str(ROOT / "tests" / "hardware" / "feeder"), str(ROOT / "src")]
 
+import commands as rec  # noqa: E402
 import fed  # noqa: E402
-import records as rec  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import layout, state  # noqa: E402
 
 K = rec.K
 KERNELS = HERE / "kernels"
-LANE_HPP = rec.INCLUDE / "komorebi" / "device" / "km_lane.hpp"
-LANE_FIELDS = rec.struct_fields(LANE_HPP, "LaneArgs")
+BROADCAST_HPP = rec.INCLUDE / "komorebi" / "device" / "km_broadcast.hpp"
+BROADCAST_FIELDS = rec.struct_fields(BROADCAST_HPP, "BroadcastArgs")
 EX = km.abi.constants(KERNELS / "broadcast.h", known=km.abi.headers().constants)
 TILE = 32
-COLUMN, ROW = 0, 1  # lane ids: columns on NoC1 (writer), rows on NoC0 (reader)
+COLUMN, ROW = 0, 1  # broadcast ids: columns on NoC1 (writer), rows on NoC0 (reader)
 T0 = time.monotonic()
 
 
@@ -39,13 +39,15 @@ def log(msg):
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--rect", default="0,0,6,4", help="x0,y0,columns,rows")
-    p.add_argument("--blocks", type=int, default=8, help="blocks n per lane and job")
+    p.add_argument(
+        "--blocks", type=int, default=8, help="blocks n per broadcast and job"
+    )
     p.add_argument("--pages", type=int, default=2, help="tiles P per block")
     p.add_argument("--window", type=int, default=2, help="blocks B in flight")
     p.add_argument("--jobs", type=int, default=4)
     p.add_argument("--read", action="store_true", help="members read DRAM themselves")
     p.add_argument("--stall-job", type=int, default=-1)
-    p.add_argument("--stall-member", type=int, default=0, help="team index")
+    p.add_argument("--stall-rank", type=int, default=0, help="group index")
     p.add_argument("--stall-block", type=int, default=0)
     p.add_argument("--again", action="store_true", help="then a clean run")
     p.add_argument("--empty-job", type=int, default=-1, help="a job casting 0 blocks")
@@ -54,30 +56,30 @@ def parse():
         "--first-blocks", type=int, default=0, help="job 0 casts these, cycling"
     )
     p.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
-    p.add_argument("--deadline", type=float, default=1.0, help="per record, seconds")
+    p.add_argument("--deadline", type=float, default=1.0, help="per command, seconds")
     p.add_argument("--feeder", action="store_true", help="run on the test feeder")
     p.add_argument("--no-check", action="store_true")
     p.add_argument("--seed", type=int, default=1)
     return p.parse_args()
 
 
-def lane_plan(nocs, cores, rect, window, pages):
-    """Team, per-core program arguments and the rectangle's cores (row, column), for
+def broadcast_plan(nocs, cores, rect, window, pages):
+    """Group, per-core program arguments and the rectangle's cores (row, column), for
     `cores` cores of a grid whose NoC coordinates are `nocs` (a layout.Nocs)."""
     x0, y0, nx, ny = rect
     gx = nocs.grid[0]
     first = y0 * gx + x0
-    team = layout.Team(first, (y0 + ny - 1) * gx + x0 + nx - first)
-    if team.first + team.count > cores:
+    group = layout.Group(first, (y0 + ny - 1) * gx + x0 + nx - first)
+    if group.first + group.count > cores:
         raise ValueError(f"{rect} reaches core {cores}")
     grid_panels = nocs.panels
-    common = (nocs.grid, grid_panels, team, rect)
+    common = (nocs.grid, grid_panels, group, rect)
     at = (nocs.noc0, nocs.noc_xy)
-    by_lane = {
-        COLUMN: layout.lane_args(
+    by_broadcast = {
+        COLUMN: layout.broadcast_args(
             *common, "column", 1, *at, (COLUMN, EX["kCbCol"], window, pages)
         ),
-        ROW: layout.lane_args(
+        ROW: layout.broadcast_args(
             *common, "row", 0, *at, (ROW, EX["kCbRow"], window, pages)
         ),
     }
@@ -86,41 +88,42 @@ def lane_plan(nocs, cores, rect, window, pages):
         for y in range(y0, y0 + ny)
         for x in range(x0, x0 + nx)
     }
-    idle = [0] * (len(LANE_FIELDS) + 1)
+    idle = [0] * (len(BROADCAST_FIELDS) + 1)
 
     def program_args(core):
-        if core not in team.members:
+        if core not in group.indices:
             return idle, idle, [0, window, pages]
         row, col = place.get(core, (0, 0))
         words = {
-            lane: [by_lane[lane][core][f] for f in LANE_FIELDS] for lane in by_lane
+            broadcast: [by_broadcast[broadcast][core][f] for f in BROADCAST_FIELDS]
+            for broadcast in by_broadcast
         }
-        member = int(core in place)
-        return words[ROW] + [row], words[COLUMN] + [col], [member, window, pages]
+        included = int(core in place)
+        return words[ROW] + [row], words[COLUMN] + [col], [included, window, pages]
 
-    log(f"team {team.first}:{team.count}, rect {rect}, panels {grid_panels}")
-    return team, program_args, place
+    log(f"group {group.first}:{group.count}, rect {rect}, panels {grid_panels}")
+    return group, program_args, place
 
 
-def lane_summary(lanes, team, place):
-    """Blocks every lane handed over, the longest lane wait (cycles), and each lane
-    give-up by core: lane, where, block, sequence number. `lanes[core]`: the core's
-    lane areas (as run.state() gives them)."""
-    areas = [lanes[c][ln] for c in place for ln in (COLUMN, ROW)]
+def broadcast_summary(broadcasts, group, place):
+    """Blocks every broadcast handed over, the longest broadcast wait (cycles), and each
+    broadcast give-up by core: broadcast, where, block, sequence number.
+    `broadcasts[core]`: the core's broadcast areas (as run.state() gives them)."""
+    areas = [broadcasts[c][ln] for c in place for ln in (COLUMN, ROW)]
     gave = [
-        {"core": core} | lanes[core][lane]["gave_up"]
-        for core in team.members
-        for lane in (COLUMN, ROW)
-        if lanes[core][lane]["gave_up"]
+        {"core": core} | broadcasts[core][broadcast]["gave_up"]
+        for core in group.indices
+        for broadcast in (COLUMN, ROW)
+        if broadcasts[core][broadcast]["gave_up"]
     ]
     return {
-        "lane_blocks": sum(a["blocks"] for a in areas),
-        "lane_wait_cycles_max": max((a["wait_cycles"] for a in areas), default=0),
-        "lane_gave_up": gave,
+        "broadcast_blocks": sum(a["blocks"] for a in areas),
+        "broadcast_wait_cycles_max": max((a["wait_cycles"] for a in areas), default=0),
+        "broadcast_gave_up": gave,
     }
 
 
-def make_data(session, rng, team, rect, args):
+def make_data(session, rng, group, rect, args):
     """Two input sets of integers in [-2, 2] (sums exact in fp32), their tensors and
     the output tensor (one fp32 tile per job and member)."""
     _, _, nx, ny = rect
@@ -137,39 +140,39 @@ def make_data(session, rng, team, rect, args):
         return session.tensor(a.reshape(-1, TILE), dtype, "tile")
 
     inputs = [(tensor(a, "bfloat16"), tensor(b, "bfloat16")) for a, b in sets]
-    out = tensor(np.zeros((args.jobs * team.count, TILE, TILE), np.float32), "float32")
+    out = tensor(np.zeros((args.jobs * group.count, TILE, TILE), np.float32), "float32")
     return sets, inputs, out
 
 
 def job_blocks(args, j):
-    """Blocks job j casts per lane: 0 for the empty job and every `--empty-every`th,
-    `--first-blocks` for job 0 (block k is data block k mod `--blocks`), else
-    `--blocks`."""
+    """Blocks job j casts per broadcast: 0 for the empty job and every
+    `--empty-every`th, `--first-blocks` for job 0 (block k is data block k mod
+    `--blocks`), else `--blocks`."""
     n = args.empty_every
     if j == args.empty_job or (n and j % n == n - 1):
         return 0
     return args.first_blocks if j == 0 and args.first_blocks else args.blocks
 
 
-def job_args(args, inputs, out, team, j, stall_job):
+def job_args(args, inputs, out, group, j, stall_job):
     """CAST / READ arguments of job j."""
     a_t, w_t = inputs[j % 2]
     none = (EX["kNone"], 0)
-    stall = (args.stall_member, args.stall_block) if j == stall_job else none
+    stall = (args.stall_rank, args.stall_block) if j == stall_job else none
     return [
         a_t.address,
         w_t.address,
         out.address,
         job_blocks(args, j),
         *stall,
-        j * team.count,
+        j * group.count,
         args.blocks,
     ]
 
 
-def check(args, sets, out, team, place):
+def check(args, sets, out, group, place):
     """Every member's checksum tile of every job against numpy, bit for bit."""
-    got = out.read().reshape(args.jobs, team.count, TILE, TILE)
+    got = out.read().reshape(args.jobs, group.count, TILE, TILE)
     log("outputs read back")
     bad = []
     for j in range(args.jobs):
@@ -179,21 +182,21 @@ def check(args, sets, out, team, place):
         )
         for core, (row, col) in place.items():
             want = a_sum[row] + w_sum[col]
-            mine = got[j, core - team.first]
+            mine = got[j, core - group.first]
             if not np.array_equal(mine, want):
                 wrong = int((mine != want).sum())
                 bad.append({"job": j, "core": core, "values_wrong": wrong})
     return {
-        "members_checked": args.jobs * len(place),
-        "members_bad": len(bad),
+        "ranks_checked": args.jobs * len(place),
+        "ranks_bad": len(bad),
         "first_bad": bad[:8],
     }
 
 
-def describe(args, rect, team):
+def describe(args, rect, group):
     return {
         "rect": rect,
-        "team": [team.first, team.count],
+        "group": [group.first, group.count],
         "blocks": args.blocks,
         "first_blocks": args.first_blocks,
         "pages": args.pages,
@@ -220,23 +223,23 @@ def core_gave_up(states):
 
 def verdict(run, cores, stalled, end_ok):
     """Every core ended and the run ended as it should (`end_ok`: the deadline for a
-    stalled job, else a clean end); a clean run with no core and no lane given up and
-    every member's values right."""
+    stalled job, else a clean end); a clean run with no core and no broadcast given up
+    and every member's values right."""
     ok = set(run["cores_ended"].values()) == {cores} and end_ok
     if not stalled:
-        ok &= not run["core_gave_up"] and not run["lane_gave_up"]
-        ok &= run.get("members_bad", 0) == 0
+        ok &= not run["core_gave_up"] and not run["broadcast_gave_up"]
+        ok &= run.get("ranks_bad", 0) == 0
     return bool(ok)
 
 
 def run_host(session, args, rng, stall_job):
-    """One load of the program in the session: the jobs issued through the dispatch
-    kernel, then the stop (or the timeout), the state read-out and the check."""
+    """One load of the program in the session: the jobs submitted through the
+    dispatcher, then the stop (or the timeout), the state read-out and the check."""
     nocs = session.nocs()
     rect = tuple(int(v) for v in args.rect.split(","))
     w, p = args.window, args.pages
-    team, program_args, place = lane_plan(nocs, len(nocs.words), rect, w, p)
-    sets, inputs, out = make_data(session, rng, team, rect, args)
+    group, program_args, place = broadcast_plan(nocs, len(nocs.words), rect, w, p)
+    sets, inputs, out = make_data(session, rng, group, rect, args)
     program = km.Program(
         "broadcast",
         kernels=KERNELS,
@@ -251,44 +254,44 @@ def run_host(session, args, rng, stall_job):
             "writer": inputs[0][1].accessor_args() + out.accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
-        segments=KERNELS / "broadcast.h",
+        handlers=KERNELS / "broadcast.h",
     )
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     log("loaded")
-    seg = "read" if args.read else "cast"
-    team_arg = (team.first, team.count)
+    handler = "read" if args.read else "cast"
+    group_arg = (group.first, group.count)
     timed_out = None
     t0 = time.perf_counter()
     try:
         for j in range(args.jobs):
-            words = job_args(args, inputs, out, team, j, stall_job)
-            run.issue(seg, team_arg, words, exclusive=True)
+            words = job_args(args, inputs, out, group, j, stall_job)
+            run.submit(handler, group_arg, words, exclusive=True)
         log(f"{run.drain(timeout=10.0)} events")
         host_s = time.perf_counter() - t0
         run.stop()
-    except km.RecordTimeout as err:
+    except km.CommandTimeout as err:
         host_s = time.perf_counter() - t0
         timed_out = err
         log(f"timeout: {err}")
     result = run.result()
     states = run.state()
-    out_json = describe(args, rect, team) | {
-        "kernel": {k: result[k] for k in ("error_name", "records", "events")},
+    out_json = describe(args, rect, group) | {
+        "kernel": {k: result[k] for k in ("error_name", "commands", "events")},
         "us_per_job_host": round(host_s * 1e6 / args.jobs, 2),
         "cores_magic_ok": sum(c["magic_ok"] for c in states),
         "cores_ended": kernel_ends(states),
-        **lane_summary([c["lanes"] for c in states], team, place),
+        **broadcast_summary([c["broadcasts"] for c in states], group, place),
         "core_gave_up": core_gave_up(states),
     }
     if timed_out is not None:
         out_json["timed_out"] = {
-            "ticket": timed_out.ticket,
+            "handle": timed_out.handle,
             "seq": timed_out.seq,
-            "team": list(timed_out.team),
+            "group": list(timed_out.group),
             "not_reported": timed_out.cores,
         }
     elif not args.no_check:
-        out_json.update(check(args, sets, out, team, place))
+        out_json.update(check(args, sets, out, group, place))
     stalled = 0 <= stall_job < args.jobs
     end = ("deadline", True) if stalled else ("none", False)
     end_ok = (result["error_name"], timed_out is not None) == end
@@ -297,19 +300,19 @@ def run_host(session, args, rng, stall_job):
 
 
 def run_fed(session, runner, args, rng, stall_job):
-    """The same jobs, issued by the test feeder on the grid's last core."""
+    """The same jobs, submitted by the test feeder on the grid's last core."""
     rect = tuple(int(v) for v in args.rect.split(","))
     w, p = args.window, args.pages
     nocs = session.nocs()
-    team, program_args, place = lane_plan(nocs, runner.workers, rect, w, p)
-    sets, inputs, out = make_data(session, rng, team, rect, args)
-    seg = EX["kSegRead"] if args.read else EX["kSegCast"]
-    records = [
-        rec.record(
-            seg,
-            team.first,
-            team.count,
-            job_args(args, inputs, out, team, j, stall_job),
+    group, program_args, place = broadcast_plan(nocs, runner.workers, rect, w, p)
+    sets, inputs, out = make_data(session, rng, group, rect, args)
+    handler = EX["kHandlerRead"] if args.read else EX["kHandlerBroadcast"]
+    commands = [
+        rec.command(
+            handler,
+            group.first,
+            group.count,
+            job_args(args, inputs, out, group, j, stall_job),
             K["KM_F_EXCL"],
         )
         for j in range(args.jobs)
@@ -329,7 +332,7 @@ def run_fed(session, runner, args, rng, stall_job):
     )
     res = runner.run(
         kernels,
-        records,
+        commands,
         program_args=program_args,
         tensors=[*[t for pair in inputs for t in pair], out],
         depth=1,
@@ -338,16 +341,16 @@ def run_fed(session, runner, args, rng, stall_job):
     )
     s = res.summary
     states = [rec.core_state(res.state, c) for c in range(runner.workers)]
-    result = describe(args, rect, team) | {
+    result = describe(args, rect, group) | {
         "aiclk_mhz": res.mhz,
         "feeder": {k: s[k] for k in ("status", "slot", "seq", "index", "done")},
         "us_per_job": round(s["span_cycles"] / res.mhz / max(s["done"], 1), 2),
         "cores_ended": kernel_ends(states),
-        **lane_summary([state.lanes(row) for row in res.ctl], team, place),
+        **broadcast_summary([state.broadcasts(row) for row in res.ctl], group, place),
         "core_gave_up": core_gave_up(states),
     }
     if s["status"] == "done" and not args.no_check:
-        result.update(check(args, sets, out, team, place))
+        result.update(check(args, sets, out, group, place))
     stalled = 0 <= stall_job < args.jobs
     if stalled:
         end_ok = s["status"] == "timeout"

@@ -40,7 +40,7 @@ of the receiver.
 
 | part | file |
 |---|---|
-| Kernel on core (0, 0), RISCV_0: fills the source line, issues one 4-byte write per test, then waits 20,000 cycles (posted) or polls the acknowledgement count for at most 1,000,000 cycles (non-posted) | `probe.cpp` |
+| Kernel on core (0, 0), RISCV_0: fills the source line, submits one 4-byte write per test, then waits 20,000 cycles (posted) or polls the acknowledgement count for at most 1,000,000 cycles (non-posted) | `probe.cpp` |
 | Driver: an int32 tensor sharded over cores (0, 0) and (1, 0), 128 words each, zero filled; one launch; reads both shards back | `probe.py` |
 
 Core (1, 0) runs no kernel, so nothing on the card waits for the writes to arrive, and

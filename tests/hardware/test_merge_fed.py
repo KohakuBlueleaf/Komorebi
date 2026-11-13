@@ -1,5 +1,5 @@
 """The merge-tree example on a card, fed by the test feeder (KMR_CARD=1): one process,
-three launches (both forms on four teams; a member that stalls; a clean launch)."""
+three launches (both forms on four groups; a member that stalls; a clean launch)."""
 
 from pathlib import Path
 
@@ -14,8 +14,8 @@ SCRIPT = (
 
 @pytest.fixture(scope="module")
 def out():
-    teams = "0:8,0:119,3:60,40:2"  # each run by owner, then by tree, on one input
-    args = ["--team-list", teams, "--form", "both", "--stall-member", 3]
+    groups = "0:8,0:119,3:60,40:2"  # each run by owner, then by tree, on one input
+    args = ["--group-list", groups, "--form", "both", "--stall-rank", 3]
     out = run_json(SCRIPT, *args)
     return out
 
@@ -29,7 +29,7 @@ def test_both_forms_are_exact_and_equal(out):
     assert set(out["cores_ended"].values()) == {119}
 
 
-def test_a_stalled_member_ends_in_a_timeout_naming_port_and_missing_count(out):
+def test_a_stalled_rank_ends_in_a_timeout_naming_port_and_missing_count(out):
     s = out["stall"]  # job 1: by tree on cores 0 to 7; member 3 sends to member 2
     assert s["status"] == "timeout" and s["timed_out"]["job"] == 1
     assert s["waiting_ports"] == {"2": {"0": 1}, "0": {"1": 1}}

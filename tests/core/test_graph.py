@@ -31,17 +31,17 @@ def loop(max_runs=100):
     """The documented example: round after round while the result word is under 65."""
     g = Graph(max_runs=max_runs)
     it, err = g.bindings("it"), g.reg()
-    a = g.record(1, team=(0, 60), args=[it])
-    b = g.record(2, team=(0, 30), args=[it], after=[a])
-    c = g.record(3, team=(30, 30), args=[it], after=[a])
-    d = g.record(4, team=(0, 60), args=[it], after=[b, c], result=err)
+    a = g.command(1, group=(0, 60), args=[it])
+    b = g.command(2, group=(0, 30), args=[it], after=[a])
+    c = g.command(3, group=(30, 30), args=[it], after=[a])
+    d = g.command(4, group=(0, 60), args=[it], after=[b, c], result=err)
     e = g.cpu(after=[d])
     e.addi(it, it, 1)
     e.lt(g.again, err, g.const(65))
     return g
 
 
-KEYS = ("run", "node", "seg", "first", "count", "flags")
+KEYS = ("run", "node", "handler", "first", "count", "flags")
 
 
 def trimmed(args):
@@ -51,12 +51,12 @@ def trimmed(args):
     return args
 
 
-def seq_mod(record, m):
-    return record.seq % m
+def seq_mod(command, m):
+    return command.seq % m
 
 
-def a0_plus_count(record):
-    return record.args[0] + record.count
+def a0_plus_count(command):
+    return command.args[0] + command.count
 
 
 def test_constants_match_the_header():
@@ -76,7 +76,7 @@ def test_constants_match_the_header():
         "MAX_KEPT": "KM_GRAPH_MAX_KEPT",
         "NONE": "KM_GRAPH_NONE",
         "NO_NODE": "KM_GRAPH_NO_NODE",
-        "NODE_RECORD": "KM_NODE_RECORD",
+        "NODE_COMMAND": "KM_NODE_COMMAND",
         "NODE_CPU": "KM_NODE_CPU",
         "NODE_JOIN": "KM_NODE_JOIN",
         "GRUN_UPLOAD": "KM_GRUN_UPLOAD",
@@ -102,15 +102,15 @@ def test_decode_is_the_inverse_of_encode():
         Graph.decode(data[:-64])
 
 
-def test_the_builder_refuses_what_the_check_would():
+def test_the_builder_rejects_what_the_check_would():
     g = Graph()
     nodes = [g.join() for _ in range(5)]
     with pytest.raises(ValueError, match="5 predecessors"):
         g.join(after=nodes)
     with pytest.raises(TypeError):
         g.join(after=[Graph().join()])
-    with pytest.raises(ValueError, match="either team"):
-        g.record(1, team=(0, 1), count=1)
+    with pytest.raises(ValueError, match="either group"):
+        g.command(1, group=(0, 1), count=1)
     g.bindings("x")
     with pytest.raises(ValueError, match="missing"):
         g.binding_values()
@@ -127,9 +127,9 @@ def test_bindings_fill_registers_from_zero_constants_included():
     assert g.binding_values(x=5) == [5, 0, 7]
 
 
-def test_independent_branches_are_issued_in_the_same_pass():
+def test_independent_branches_are_submitted_in_the_same_pass():
     r = loop(max_runs=1).simulate({"it": 70}, delay=2, result=a0_plus_count)
-    passes = {x.node: x.pass_index for x in r.records}
+    passes = {x.node: x.pass_index for x in r.commands}
     assert passes[1] == passes[2] < passes[3]
     assert r.status == "ended" and r.runs == 1
 
@@ -145,13 +145,13 @@ def test_the_loop_ends_on_the_result_word_and_a_kept_graph_takes_new_bindings():
     assert first.events[-1][:4] == (gr.EV_GRAPH_END, 1, 6, 65)
 
 
-def test_a_skipped_node_counts_as_done_and_issues_nothing():
+def test_a_skipped_node_counts_as_done_and_submits_nothing():
     g = Graph()
     off = g.bindings("off")
-    a = g.record(1, team=(0, 1), skip_if_zero=off)
-    g.record(2, team=(1, 1), after=[a])
+    a = g.command(1, group=(0, 1), skip_if_zero=off)
+    g.command(2, group=(1, 1), after=[a])
     r = g.simulate({"off": 0})
-    assert [x.node for x in r.records] == [1] and r.status == "ended"
+    assert [x.node for x in r.commands] == [1] and r.status == "ended"
 
 
 def test_again_still_set_after_max_runs_is_an_error():
@@ -161,13 +161,13 @@ def test_again_still_set_after_max_runs_is_an_error():
     assert r.error == (gr.ERR_RUNS, gr.NO_NODE) and r.runs == 3
 
 
-def test_more_ready_records_than_slots_wait_their_turn():
+def test_more_ready_commands_than_slots_wait_their_turn():
     g = Graph()
     for i in range(20):
-        g.record(1, team=(i, 1))
+        g.command(1, group=(i, 1))
     r = g.simulate(delay=3)
-    assert len(r.records) == 20 and max(x.slot for x in r.records) == 15
-    assert r.records[16].pass_index > r.records[15].pass_index
+    assert len(r.commands) == 20 and max(x.slot for x in r.commands) == 15
+    assert r.commands[16].pass_index > r.commands[15].pass_index
 
 
 def test_check_names_the_node_of_a_slice_with_a_non_compute_opcode():
@@ -181,25 +181,25 @@ def test_check_names_the_node_of_a_slice_with_a_non_compute_opcode():
 
 
 @needs_cc
-def test_a_record_refused_after_its_issue_goes_back_behind_the_others():
+def test_a_command_rejected_after_its_submit_goes_back_behind_the_others():
     g = Graph()
     for i in range(3):
-        g.record(1, team=(i, 1))
+        g.command(1, group=(i, 1))
     data = g.encode()
     for engine in (gr.Executor(), gn.NativeExecutor()):
-        issued = []
+        submitted = []
 
-        def issue(node, words, issued=issued):
-            issued.append(node)
-            return gr.ISSUED
+        def submit(node, words, submitted=submitted):
+            submitted.append(node)
+            return gr.SUBMITTED
 
         engine.start(data)
-        engine.step(issue)
+        engine.step(submit)
         assert (engine.retry(0), engine.retry(0)) == (0, 1)
-        engine.step(issue)
-        assert issued == [0, 1, 2, 0]
+        engine.step(submit)
+        assert submitted == [0, 1, 2, 0]
         assert [engine.complete(n, 0) for n in range(3)] == [0, 0, 0]
-        assert engine.step(issue) == gr.END
+        assert engine.step(submit) == gr.END
 
 
 @needs_cc
@@ -236,12 +236,12 @@ def test_both_executors_give_every_saved_reference_answer():
                 kept=p["kept"],
                 engine=engine,
             )
-            issued = [
-                dict(zip(KEYS, (x.run, x.node, x.seg, x.first, x.count, x.flags)))
+            submitted = [
+                dict(zip(KEYS, (x.run, x.node, x.handler, x.first, x.count, x.flags)))
                 | {"first": None if x.queued else x.first, "args": trimmed(x.args)}
-                for x in sorted(r.records, key=lambda x: (x.run, x.node))
+                for x in sorted(r.commands, key=lambda x: (x.run, x.node))
             ]
-            assert issued == want["issued"], path.name
+            assert submitted == want["submitted"], path.name
             assert [list(e[:4]) for e in r.events] == want["events"], path.name
             assert [r.status, r.regs, r.runs, r.kept] == [
                 want["status"],

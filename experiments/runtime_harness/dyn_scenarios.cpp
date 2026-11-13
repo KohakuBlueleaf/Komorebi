@@ -1,4 +1,4 @@
-// Dynamic crossing on the simulated grid: the generic reader and writer with the hop
+// Routed messages on the simulated grid: the generic reader and writer with the forward
 // example's compute, the quiet end, and the gap, overflow, stall and quota paths.
 #include <stdint.h>
 
@@ -8,15 +8,15 @@
 #include <vector>
 
 #include "checks.hpp"
-#include "hop.h"
+#include "forward.h"
 #include "komorebi/device/km_core.hpp"
 #include "komorebi/device/km_dyn.hpp"
 
 void kmsim_dyn_reader_main();
 void kmsim_dyn_writer_main();
-void kmsim_hop_unpack_main();
-void kmsim_hop_math_main();
-void kmsim_hop_pack_main();
+void kmsim_forward_unpack_main();
+void kmsim_forward_math_main();
+void kmsim_forward_pack_main();
 
 using namespace kmsim;
 using namespace scen;
@@ -27,29 +27,29 @@ namespace {
     constexpr uint32_t kRes = 0xE800;      // ctl-relative: the example's results
     constexpr uint32_t kBins = 2;          // few bins: bins are evicted and refilled
 
-    // `cores` members, then `counters` counter tiles: the run's team.
-    struct Hop {
-        uint32_t cores = 2, counters = 1, items = 1, hops = 1, cap = 256,
+    // `cores` members, then `counters` counter tiles: the run's group.
+    struct Forward {
+        uint32_t cores = 2, counters = 1, messages = 1, forwards = 1, cap = 256,
                  max_live = 256;
         int32_t one_core = -1, stall = -1, probe = -1;
         uint32_t idle = 2000;  // cycles before a line says idle
     };
 
-    // The hop example's grid: dynamic arguments, buffers and one RUN record.
-    Config dyn_config(const Hop& h) {
+    // The forward example's grid: dynamic arguments, buffers and one RUN command.
+    Config dyn_config(const Forward& h) {
         Config cfg;
         cfg.cores = h.cores + h.counters;
         cfg.row = 2;
         cfg.idle_limit = 0;
         cfg.wait_limit = 64;
         cfg.deadline = 4000000;
-        cfg.bound = 1ull << 26;
-        cfg.dyn_seg = kSegHop;
+        cfg.timeout = 1ull << 26;
+        cfg.dyn_handler = kHandlerForward;
         cfg.kernels[kReader] = kmsim_dyn_reader_main;
         cfg.kernels[kWriter] = kmsim_dyn_writer_main;
-        cfg.kernels[kUnpack] = kmsim_hop_unpack_main;
-        cfg.kernels[kMath] = kmsim_hop_math_main;
-        cfg.kernels[kPack] = kmsim_hop_pack_main;
+        cfg.kernels[kUnpack] = kmsim_forward_unpack_main;
+        cfg.kernels[kMath] = kmsim_forward_math_main;
+        cfg.kernels[kPack] = kmsim_forward_pack_main;
         cfg.cbs = {
             {km::kCbDynIn, 0xC000, km::kDynHeader + 32 * 64, 2},  // to 0xD080
             {km::kCbDynOut, 0xD100, 64, 64},
@@ -60,16 +60,18 @@ namespace {
         cfg.program_args =
             [=](uint32_t, std::vector<uint32_t>& rw, std::vector<uint32_t>& c) {
                 const uint32_t ctl = rw[0], lines = rw[4] - kDispAck + kDispLines;
-                rw.insert(rw.end(), {kSegHop, kQueue, cap, 64, lines, idle, kBins, k});
+                rw.insert(
+                    rw.end(), {kHandlerForward, kQueue, cap, 64, lines, idle, kBins, k}
+                );
                 c.insert(c.end(), {64, quota, k, ctl + kRes});
             };
         Job run;
-        run.seg = kSegHop;
+        run.handler = kHandlerForward;
         run.first = 0;
         run.count = h.cores + h.counters;
         run.flags = KM_F_EXCL;
-        run.a[0] = h.items;
-        run.a[1] = h.hops;
+        run.a[0] = h.messages;
+        run.a[1] = h.forwards;
         run.a[2] = h.one_core >= 0 ? kModeOneCore : kModeRandom;
         run.a[3] = h.one_core >= 0 ? h.one_core : 0;
         run.a[4] = h.stall + 1;
@@ -78,31 +80,31 @@ namespace {
         return cfg;
     }
 
-    // The replay: items retired, their total and the visits at each member.
+    // The replay: messages consumed, their total and the visits at each member.
     struct Expect {
-        std::vector<uint32_t> retired, visits;
+        std::vector<uint32_t> consumed, visits;
         std::vector<uint64_t> total;
     };
 
-    Expect replay(const Hop& h) {
+    Expect replay(const Forward& h) {
         Expect e{
             std::vector<uint32_t>(h.cores),
             std::vector<uint32_t>(h.cores),
             std::vector<uint64_t>(h.cores)
         };
         for (uint32_t m = 0; m < h.cores; m++) {
-            const km::Share s = km::share(h.items, m, h.cores);
+            const km::Partition s = km::partition(h.messages, m, h.cores);
             for (uint32_t id = s.start; id < s.start + s.len; id++) {
-                uint32_t st = hop_seed(id), sum = 0, at = m;
-                for (uint32_t k = 0; k <= h.hops; k++) {
+                uint32_t st = forward_seed(id), sum = 0, at = m;
+                for (uint32_t k = 0; k <= h.forwards; k++) {
                     e.visits[at]++;
-                    st = hop_next(st);
+                    st = forward_next(st);
                     sum += st;
-                    if (k < h.hops) {
+                    if (k < h.forwards) {
                         at = h.one_core >= 0 ? h.one_core : st % h.cores;
                     }
                 }
-                e.retired[at]++;
+                e.consumed[at]++;
                 e.total[at] += sum;
             }
         }
@@ -117,12 +119,14 @@ namespace {
         return s.word(core, KM_CTL_DYN + KM_DYN_GAVE);
     }
 
-    // A clean run: every item retired once where the replay says, the quiet end
-    // after the last retire, every kernel left on the EXIT.
-    void exact(const Sim& s, const Hop& h, Check& c) {
+    // A clean run: every message consumed once where the replay says, the quiet end
+    // after the last consume, every kernel left on the EXIT.
+    void exact(const Sim& s, const Forward& h, Check& c) {
         const Expect e = replay(h);
         c.expect(s.dyn.quiet_at != 0, "the quiet end was seen");
-        c.expect(all_done(s), "the run, its end record and the EXIT were acknowledged");
+        c.expect(
+            all_done(s), "the run, its end command and the EXIT were acknowledged"
+        );
         for (uint32_t m = 0; m < h.cores; m++) {
             const uint64_t total =
                 (res(s, m, kResTotalLo) |
@@ -131,11 +135,11 @@ namespace {
                 res(s, m, kResRun) == s.jobs[0].seq, fmt("core %u ran the run", m)
             );
             c.expect(
-                res(s, m, kResRetired) == e.retired[m],
-                fmt("core %u retired %u items, the replay %u",
+                res(s, m, kResConsumed) == e.consumed[m],
+                fmt("core %u consumed %u messages, the replay %u",
                     m,
-                    res(s, m, kResRetired),
-                    e.retired[m])
+                    res(s, m, kResConsumed),
+                    e.consumed[m])
             );
             c.expect(
                 total == e.total[m],
@@ -145,25 +149,25 @@ namespace {
                     static_cast<uint32_t>(e.total[m]))
             );
             c.expect(
-                res(s, m, kResVisits) == e.visits[m] + res(s, m, kResSpawned),
+                res(s, m, kResVisits) == e.visits[m] + res(s, m, kResSent),
                 fmt("core %u: visits as the replay", m)
             );
             c.expect(
-                s.dyn.quiet_at >= res(s, m, kResLastRetire),
-                fmt("core %u retired before the quiet end", m)
+                s.dyn.quiet_at >= res(s, m, kResLastConsume),
+                fmt("core %u consumed before the quiet end", m)
             );
             c.expect(gave_where(s, m) == 0, fmt("core %u gave up nothing", m));
         }
         c.expect(
             s.dyn.sent ==
-                static_cast<uint64_t>(h.items) * (h.hops + 1) +
-                    (h.probe >= 0 ? res(s, h.probe, kResSpawned) : 0),
-            "sent counts every spawn and every hop"
+                static_cast<uint64_t>(h.messages) * (h.forwards + 1) +
+                    (h.probe >= 0 ? res(s, h.probe, kResSent) : 0),
+            "sent counts every send and every forward"
         );
     }
 
     void dyn_smoke(Outcome& o) {
-        const Hop h;
+        const Forward h;
         Sim s(dyn_config(h));
         s.run();
         common(s, o.check);
@@ -171,14 +175,14 @@ namespace {
         finish(s, o);
     }
 
-    // Four members on two counter tiles, many items, two bins: bins are evicted,
+    // Four members on two counter tiles, many messages, two bins: bins are evicted,
     // packets fill and split.
     void dyn_random(Outcome& o) {
-        Hop h;
+        Forward h;
         h.cores = 4;
         h.counters = 2;
-        h.items = 60;
-        h.hops = 12;
+        h.messages = 60;
+        h.forwards = 12;
         Sim s(dyn_config(h));
         s.run();
         common(s, o.check);
@@ -187,12 +191,12 @@ namespace {
     }
 
     // The idle protocol under slow and uneven delivery: lines go idle after 50 cycles
-    // and back to busy many times; the end comes only after the last retire.
+    // and back to busy many times; the end comes only after the last consume.
     void dyn_idle_flapping(Outcome& o) {
-        Hop h;
+        Forward h;
         h.cores = 4;
-        h.items = 40;
-        h.hops = 8;
+        h.messages = 40;
+        h.forwards = 8;
         h.idle = 50;
         Config cfg = dyn_config(h);
         std::mt19937 rng(7);
@@ -207,12 +211,12 @@ namespace {
         finish(s, o);
     }
 
-    // Every hop of every item to member 0: its queue holds the whole population.
+    // Every forward of every message to member 0: its queue holds the whole population.
     void dyn_one_core(Outcome& o) {
-        Hop h;
+        Forward h;
         h.cores = 4;
-        h.items = 60;
-        h.hops = 6;
+        h.messages = 60;
+        h.forwards = 6;
         h.one_core = 0;
         h.cap = 64;
         h.max_live = 64;
@@ -223,13 +227,13 @@ namespace {
         finish(s, o);
     }
 
-    // Member 1 spawns until its quota is gone: spawn returns false once, and the
-    // spawned items retire and give their quota back.
+    // Member 1 sends until its quota is gone: send returns false once, and the
+    // sent messages consume and give their quota back.
     void dyn_quota(Outcome& o) {
-        Hop h;
+        Forward h;
         h.cores = 2;
-        h.items = 6;
-        h.hops = 3;
+        h.messages = 6;
+        h.forwards = 3;
         h.max_live = 64;
         h.probe = 1;
         Sim s(dyn_config(h));
@@ -238,14 +242,14 @@ namespace {
         exact(s, h, o.check);
         const uint32_t quota = h.max_live / h.cores;
         o.check.expect(
-            res(s, 1, kResSpawned) == quota - 3,
-            fmt("probe spawned %u, quota %u less its 3 items",
-                res(s, 1, kResSpawned),
+            res(s, 1, kResSent) == quota - 3,
+            fmt("probe sent %u, quota %u less its 3 messages",
+                res(s, 1, kResSent),
                 quota)
         );
-        o.check.expect(res(s, 1, kResRefused) == 1, "one spawn returned false");
+        o.check.expect(res(s, 1, kResRejected) == 1, "one send returned false");
         o.check.expect(
-            res(s, 1, kResNull) == res(s, 1, kResSpawned), "every probe item retired"
+            res(s, 1, kResNull) == res(s, 1, kResSent), "every probe message consumed"
         );
         finish(s, o);
     }
@@ -253,10 +257,10 @@ namespace {
     // The first packet commit to DRAM is lost: the reserved position never lands, its
     // reader reports a gap, the dispatcher stops the grid; nothing hangs.
     void dyn_gap(Outcome& o) {
-        Hop h;
+        Forward h;
         h.cores = 2;
-        h.items = 4;
-        h.hops = 4;
+        h.messages = 4;
+        h.forwards = 4;
         Config cfg = dyn_config(h);
         bool dropped = false;
         cfg.delay = [&](const Chunk& c) -> int64_t {
@@ -279,13 +283,13 @@ namespace {
         finish(s, o);
     }
 
-    // Member 0's reader is held while every other core sends all its items to it:
-    // more items are reserved than its queue holds, and it gives up with overflow.
+    // Member 0's reader is held while every other core sends all its messages to it:
+    // more messages are reserved than its queue holds, and it gives up with overflow.
     void dyn_overflow(Outcome& o) {
-        Hop h;
+        Forward h;
         h.cores = 4;
-        h.items = 80;
-        h.hops = 2;
+        h.messages = 80;
+        h.forwards = 2;
         h.one_core = 0;
         h.cap = 32;
         Config cfg = dyn_config(h);
@@ -314,10 +318,10 @@ namespace {
     // Member 1 stalls in its body: its reader gives up on a free packet page (or the
     // deadline passes); either way core 1 is named and every kernel returns.
     void dyn_stall(Outcome& o) {
-        Hop h;
+        Forward h;
         h.cores = 3;
-        h.items = 12;
-        h.hops = 4;
+        h.messages = 12;
+        h.forwards = 4;
         h.stall = 1;
         Config cfg = dyn_config(h);
         cfg.deadline = 400000;

@@ -24,9 +24,9 @@ def emulate(p, a, w):
     indices into the A and W buffers, the writer's output pages."""
     pa, pw = tiles(a), tiles(w)
     y = [None] * (p.mt * p.nt)
-    count = pl.team_size(p, 120)
+    count = pl.group_size(p, 120)
     for i in range(count):
-        for m in layout.share(range(p.mt), i, count):
+        for m in layout.partition(range(p.mt), i, count):
             row = pa[m * p.kt : (m + 1) * p.kt] if p.row_item else None
             for j0 in range(0, p.nt, p.ct):
                 dst = [np.zeros((T, T)) for _ in range(p.ct)]
@@ -170,7 +170,7 @@ def test_grid_rule_layouts_fit():
         g.check((12, 10))
     g = pl.grid_plan(128, 128, 128)
     assert (g.rows, g.cols, g.pcm, g.pcn, g.sh, g.sw) == (10, 11, 13, 12, 1, 4)
-    assert g.team((12, 10)) == (0, 119) and g.rect((12, 10)) == (0, 0, 11, 10)
+    assert g.group((12, 10)) == (0, 119) and g.rect((12, 10)) == (0, 0, 11, 10)
 
 
 def emulate_split(sp, a, w, form):
@@ -183,7 +183,7 @@ def emulate_split(sp, a, w, form):
         m0, n0 = q // sp.nbw() * sp.oh, q % sp.nbw() * sp.ow
         parts = []
         for d in range(sp.s):
-            ks = layout.share(range(sp.kt), d, sp.s)
+            ks = layout.partition(range(sp.kt), d, sp.s)
             acc = np.zeros((p, T, T))
             for k0 in range(0, len(ks), sp.kc):
                 n = min(sp.kc, len(ks) - k0)

@@ -137,14 +137,14 @@ def test_host_fallback_gets_the_initial_regions_and_its_writes_are_kept():
     assert len(out) == 1250 and list(out[:4]) == [0, 7, 14, 21] and out[10:].sum() == 0
 
 
-def test_host_fallback_issues_records_through_the_run_and_gets_result_words():
+def test_host_fallback_submits_commands_through_the_run_and_gets_result_words():
     kernel = FakeKernel()
     run = Run(FakeBackend(kernel), (12, 10))
 
     def leader_says(regions, words, run):
-        ticket = run.issue(1, (0, 8), result=True)
-        kernel.results[ticket] = 0xBEEF
-        return 0, [run.wait(ticket).result]
+        handle = run.submit(1, (0, 8), result=True)
+        kernel.results[handle] = 0xBEEF
+        return 0, [run.wait(handle).result]
 
     fallback = a_thread(host_fallback=leader_says)
     thread = kt.ThreadRun(fallback, None, None, on_card=False, run=run)
@@ -258,14 +258,14 @@ def test_one_threads_failure_stops_the_others_and_names_it():
 
 
 class Stuck(FakePort):
-    """A hart that takes no stop word: the runtime cannot stop the cluster."""
+    """A core that takes no stop flag: the runtime cannot stop the cluster."""
 
     def work_stop(self, c, timeout):
         self.calls.append(("stop", c))
-        return {"cleaned": False, "failed": "harts still running"}
+        return {"cleaned": False, "failed": "X280 cores still running"}
 
 
-def test_a_thread_that_does_not_take_the_stop_word_fails_and_says_why():
+def test_a_thread_that_does_not_read_the_stop_flag_fails_and_says_why():
     port, run = Stuck(), Run(FakeBackend(FakeKernel()), (12, 10))
     run.thread = kt.ThreadRun(a_thread(), port, None, image="t.bin")
     run.thread.start()

@@ -1,7 +1,7 @@
 {
  "name": "example_loop",
  "description": "The documented example: the loop ends on a result word computed per round.",
- "notes": "Binding: check, status, error, regs, runs, stopped_grid, the issue set and the events without their pass. The issue set lists every record issued, sorted by (run, node): seg, first (null for a queued record, the allocator places it), count, flags as the grid sees them, a0 to a9 with trailing zeros left out. `order` (seq, slot, pass per record) and the event passes are the simulator's and are advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m} (seq % m, seq counted from 1 over the whole graph). A record's result word is (a0 + count) mod 2^32. Events are [kind, req, aux, extra]: extra is register 1 for KM_EV_GRAPH_END, else 0. Rules: docs/graphs.md.",
+ "notes": "Binding: check, status, error, regs, runs, stopped_grid, the submit set and the events without their pass. The submit set lists every command submitted, sorted by (run, node): handler, first (null for a queued command, the allocator places it), count, flags as the grid sees them, a0 to a9 with trailing zeros left out. `order` (seq, slot, pass per command) and the event passes are the simulator's and are advisory. Completion: a command submitted in pass p is acknowledged by the sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m} (seq % m, seq counted from 1 over the whole graph). A command's result word is (a0 + count) mod 2^32. Events are [kind, req, aux, extra]: extra is register 1 for KM_EV_GRAPH_END, else 0. Rules: docs/graphs.md.",
  "bindings": [
   0,
   0,
@@ -43,11 +43,11 @@
   "runs": 6,
   "stopped_grid": false,
   "kept": false,
-  "issued": [
+  "submitted": [
    {
     "run": 1,
     "node": 0,
-    "seg": 1,
+    "handler": 1,
     "first": 0,
     "count": 60,
     "flags": 0,
@@ -56,7 +56,7 @@
    {
     "run": 1,
     "node": 1,
-    "seg": 2,
+    "handler": 2,
     "first": 0,
     "count": 30,
     "flags": 0,
@@ -65,7 +65,7 @@
    {
     "run": 1,
     "node": 2,
-    "seg": 3,
+    "handler": 3,
     "first": 30,
     "count": 30,
     "flags": 0,
@@ -74,7 +74,7 @@
    {
     "run": 1,
     "node": 3,
-    "seg": 4,
+    "handler": 4,
     "first": 0,
     "count": 60,
     "flags": 4,
@@ -83,7 +83,7 @@
    {
     "run": 2,
     "node": 0,
-    "seg": 1,
+    "handler": 1,
     "first": 0,
     "count": 60,
     "flags": 0,
@@ -94,7 +94,7 @@
    {
     "run": 2,
     "node": 1,
-    "seg": 2,
+    "handler": 2,
     "first": 0,
     "count": 30,
     "flags": 0,
@@ -105,7 +105,7 @@
    {
     "run": 2,
     "node": 2,
-    "seg": 3,
+    "handler": 3,
     "first": 30,
     "count": 30,
     "flags": 0,
@@ -116,7 +116,7 @@
    {
     "run": 2,
     "node": 3,
-    "seg": 4,
+    "handler": 4,
     "first": 0,
     "count": 60,
     "flags": 4,
@@ -127,7 +127,7 @@
    {
     "run": 3,
     "node": 0,
-    "seg": 1,
+    "handler": 1,
     "first": 0,
     "count": 60,
     "flags": 0,
@@ -138,7 +138,7 @@
    {
     "run": 3,
     "node": 1,
-    "seg": 2,
+    "handler": 2,
     "first": 0,
     "count": 30,
     "flags": 0,
@@ -149,7 +149,7 @@
    {
     "run": 3,
     "node": 2,
-    "seg": 3,
+    "handler": 3,
     "first": 30,
     "count": 30,
     "flags": 0,
@@ -160,7 +160,7 @@
    {
     "run": 3,
     "node": 3,
-    "seg": 4,
+    "handler": 4,
     "first": 0,
     "count": 60,
     "flags": 4,
@@ -171,7 +171,7 @@
    {
     "run": 4,
     "node": 0,
-    "seg": 1,
+    "handler": 1,
     "first": 0,
     "count": 60,
     "flags": 0,
@@ -182,7 +182,7 @@
    {
     "run": 4,
     "node": 1,
-    "seg": 2,
+    "handler": 2,
     "first": 0,
     "count": 30,
     "flags": 0,
@@ -193,7 +193,7 @@
    {
     "run": 4,
     "node": 2,
-    "seg": 3,
+    "handler": 3,
     "first": 30,
     "count": 30,
     "flags": 0,
@@ -204,7 +204,7 @@
    {
     "run": 4,
     "node": 3,
-    "seg": 4,
+    "handler": 4,
     "first": 0,
     "count": 60,
     "flags": 4,
@@ -215,7 +215,7 @@
    {
     "run": 5,
     "node": 0,
-    "seg": 1,
+    "handler": 1,
     "first": 0,
     "count": 60,
     "flags": 0,
@@ -226,7 +226,7 @@
    {
     "run": 5,
     "node": 1,
-    "seg": 2,
+    "handler": 2,
     "first": 0,
     "count": 30,
     "flags": 0,
@@ -237,7 +237,7 @@
    {
     "run": 5,
     "node": 2,
-    "seg": 3,
+    "handler": 3,
     "first": 30,
     "count": 30,
     "flags": 0,
@@ -248,7 +248,7 @@
    {
     "run": 5,
     "node": 3,
-    "seg": 4,
+    "handler": 4,
     "first": 0,
     "count": 60,
     "flags": 4,
@@ -259,7 +259,7 @@
    {
     "run": 6,
     "node": 0,
-    "seg": 1,
+    "handler": 1,
     "first": 0,
     "count": 60,
     "flags": 0,
@@ -270,7 +270,7 @@
    {
     "run": 6,
     "node": 1,
-    "seg": 2,
+    "handler": 2,
     "first": 0,
     "count": 30,
     "flags": 0,
@@ -281,7 +281,7 @@
    {
     "run": 6,
     "node": 2,
-    "seg": 3,
+    "handler": 3,
     "first": 30,
     "count": 30,
     "flags": 0,
@@ -292,7 +292,7 @@
    {
     "run": 6,
     "node": 3,
-    "seg": 4,
+    "handler": 4,
     "first": 0,
     "count": 60,
     "flags": 4,

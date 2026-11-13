@@ -1,4 +1,4 @@
-"""Merge tree on a card: records go through the dispatch kernel on X280 cluster 0;
+"""Merge tree on a card: commands go through the dispatcher on X280 cluster 0;
 every job's total and its result word are checked against numpy. One JSON line.
 See README.md (`merge_fed.py`: the same jobs under the test feeder).
 """
@@ -27,26 +27,26 @@ def log(msg):
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--jobs", type=int, default=20)
-    p.add_argument("--teams", choices=["fixed", "random"], default="fixed")
-    p.add_argument("--count", type=int, default=8, help="team size (fixed)")
+    p.add_argument("--groups", choices=["fixed", "random"], default="fixed")
+    p.add_argument("--count", type=int, default=8, help="group size (fixed)")
     p.add_argument("--first", type=int, default=0, help="first core (fixed)")
     p.add_argument(
-        "--team-list", help="first:count per job, comma-separated (overrides --teams)"
+        "--group-list", help="first:count per job, comma-separated (overrides --groups)"
     )
     p.add_argument(
         "--form",
         choices=["owner", "tree", "both", "random"],
         default="both",
-        help="both: owner and tree alternate in pairs (each team runs both)",
+        help="both: owner and tree alternate in pairs (each group runs both)",
     )
     p.add_argument("--tiles", type=int, default=64, help="input tiles T")
     p.add_argument("--depth", type=int, default=4, help="ring slots used")
     p.add_argument("--out-pages", type=int, default=256, help="output tiles")
     p.add_argument("--part", type=int, default=1, help="tiles per part P (1 to 3)")
     p.add_argument("--wait", type=float, default=0.5, help="wait limit, seconds")
-    p.add_argument("--deadline", type=float, default=0.05, help="per record, seconds")
+    p.add_argument("--deadline", type=float, default=0.05, help="per command, seconds")
     p.add_argument(
-        "--stall-member",
+        "--stall-rank",
         type=int,
         default=-1,
         help="then a load of four jobs whose job 1 has member M stall, and a clean one",
@@ -79,12 +79,12 @@ def program(args, inp, out):
             "unpack_to_dest_mode": "UnpackToDestFp32",
         },
         depth=args.depth,
-        segments=KERNELS / "merge.h",
+        handlers=KERNELS / "merge.h",
     )
 
 
 def gave_up(states):
-    """Cores that gave up anywhere but waiting for a record (with the port a reader or
+    """Cores that gave up anywhere but waiting for a command (with the port a reader or
     writer waited on)."""
     out = []
     for c in states:
@@ -94,9 +94,9 @@ def gave_up(states):
     return out
 
 
-def launch(session, args, jobs, inputs, out, stall=-1, stall_member=NONE):
+def launch(session, args, jobs, inputs, out, stall=-1, stall_rank=NONE):
     """One load: the jobs (job j writes output part j % parts), each asking for its
-    result word; job `stall` has member `stall_member` stall, under a deadline long
+    result word; job `stall` has member `stall_rank` stall, under a deadline long
     enough for its receiver's wait to give up first. Then the stop and the state."""
     run = session.load(
         program(args, inputs[0], out),
@@ -104,7 +104,7 @@ def launch(session, args, jobs, inputs, out, stall=-1, stall_member=NONE):
         wait=args.wait,
     )
     log(f"loaded, {len(jobs)} jobs")
-    tickets, timed_out = [], None
+    handles, timed_out = [], None
     t0 = time.perf_counter()
     try:
         for j, (first, count, form, src) in enumerate(jobs):
@@ -114,23 +114,25 @@ def launch(session, args, jobs, inputs, out, stall=-1, stall_member=NONE):
                 out.address,
                 j % (args.out_pages // args.part) * args.part,
                 form,
-                stall_member if j == stall else NONE,
+                stall_rank if j == stall else NONE,
                 src,
                 args.part,
             ]
-            team = (first, count)
-            tickets.append(run.issue("merge", team, words, exclusive=True, result=True))
+            group = (first, count)
+            handles.append(
+                run.submit("merge", group, words, exclusive=True, result=True)
+            )
         log(f"{run.drain(timeout=30.0)} events")
         host_s = time.perf_counter() - t0
         run.stop()
-    except km.RecordTimeout as err:
+    except km.CommandTimeout as err:
         host_s = time.perf_counter() - t0
         timed_out = err
         log(f"timeout: {err}")
-    events = [run.event(t) for t in tickets]
+    events = [run.event(t) for t in handles]
     states = run.state()
     summary = {
-        "kernel": {k: run.result()[k] for k in ("error_name", "records", "events")},
+        "kernel": {k: run.result()[k] for k in ("error_name", "commands", "events")},
         "done": sum(e is not None and e.kind == "done" for e in events),
         "us_per_job_host": round(host_s * 1e6 / len(jobs), 3),
         "cores_ended": {
@@ -148,11 +150,11 @@ def launch(session, args, jobs, inputs, out, stall=-1, stall_member=NONE):
         },
     }
     if timed_out is not None:
-        j = tickets.index(timed_out.ticket)
+        j = handles.index(timed_out.handle)
         summary["timed_out"] = {
-            "ticket": timed_out.ticket,
+            "handle": timed_out.handle,
             "job": j,
-            "team": list(timed_out.team),
+            "group": list(timed_out.group),
             "form": jobs[j][2],
             "not_reported": [c["core"] for c in timed_out.cores],
         }
@@ -198,7 +200,7 @@ def checked(args, jobs, events, out, xs):
 
 def run(session, args, rng):
     gx, gy = session.grid
-    # random teams fit the arrival buffer by owner: one slot per other member
+    # random groups fit the arrival buffer by owner: one slot per other member
     jobs = mf.make_jobs(args, min(gx * gy, M["kArrivePages"] // args.part + 1), rng)
     log(f"grid {gx} x {gy}, {len(jobs)} jobs")
 
@@ -224,11 +226,9 @@ def run(session, args, rng):
         **summary,
         **checked(args, jobs, events, out, xs),
     }
-    if args.stall_member >= 0:  # a member stalls in job 1; then a clean load
+    if args.stall_rank >= 0:  # a member stalls in job 1; then a clean load
         few = jobs[:4]
-        _, result["stall"] = launch(
-            session, args, few, inputs, out, 1, args.stall_member
-        )
+        _, result["stall"] = launch(session, args, few, inputs, out, 1, args.stall_rank)
         events, after = launch(session, args, few, inputs, out)
         result["after"] = {**after, **checked(args, few, events, out, xs)}
     result["ok"] = verdict(result, len(jobs), gx * gy)
@@ -254,7 +254,7 @@ def clean(load, jobs, cores):
 
 
 def verdict(result, jobs, cores):
-    """The jobs clean; with --stall-member, the stalled load ended in the deadline on
+    """The jobs clean; with --stall-rank, the stalled load ended in the deadline on
     job 1 with every core ended, and the load after it clean."""
     ok = clean(result, jobs, cores)
     if "stall" in result:

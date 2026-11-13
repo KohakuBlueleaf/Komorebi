@@ -1,4 +1,4 @@
-"""The host package on a card: the map/collect example under the dispatch kernel, and
+"""The host package on a card: the map/collect example under the dispatcher, and
 the session cases it does not cover (KMR_CARD=1). Every case shares one device open."""
 
 import importlib.util
@@ -45,8 +45,8 @@ def every_kernel_returned(out, cores=120):
 
 
 def counts_match(out):
-    """Each core took and finished as many records as it is a member of."""
-    return out["core_counts_bad"] == 0 and out["member_records"] > 0
+    """Each core took and finished as many commands as it is a member of."""
+    return out["core_counts_bad"] == 0 and out["rank_commands"] > 0
 
 
 def all_checked(out, jobs, stalled=0):
@@ -61,7 +61,7 @@ def all_checked(out, jobs, stalled=0):
 
 
 @pytest.mark.parametrize("count", [1, 8, 120])
-def test_fixed_team_is_exact(session, count):
+def test_fixed_group_is_exact(session, count):
     out = example(session, "--jobs", 20, "--count", count, "--out-tensors", 2)
     assert out["kernel"]["error_name"] == "none" and out["kernel"]["events"] == 21
     assert all_checked(out, 20) and out["exact_jobs_checked"] == 10
@@ -69,25 +69,25 @@ def test_fixed_team_is_exact(session, count):
     assert out["gave_up_cores"] == 0 and every_kernel_returned(out)
 
 
-def test_random_teams_with_four_in_flight(session):
-    out = example(session, "--jobs", 50, "--teams", "random", "--out-tensors", 3)
+def test_random_groups_with_four_in_flight(session):
+    out = example(session, "--jobs", 50, "--groups", "random", "--out-tensors", 3)
     assert all_checked(out, 50) and counts_match(out)
     assert out["random_total_rel_rms_max"] < 1e-2 and every_kernel_returned(out)
 
 
-def test_disjoint_teams_run_at_once(session):
+def test_disjoint_groups_run_at_once(session):
     out = example(
-        session, "--jobs", 40, "--teams", "pair", "--trace", "--out-tensors", 2
+        session, "--jobs", 40, "--groups", "pair", "--trace", "--out-tensors", 2
     )
     assert all_checked(out, 40) and counts_match(out)
     assert out["overlap"]["overlapping"] > 0
 
 
-def test_an_exclusive_record_waits_for_the_team_it_overlaps(session):
+def test_an_exclusive_command_waits_for_the_group_it_overlaps(session):
     assert cases.case_exclusive(session)["ok"]
 
 
-def test_an_exclusive_record_waits_for_the_records_queued_before_it(session):
+def test_an_exclusive_command_waits_for_the_commands_queued_before_it(session):
     out = cases.case_queue_order(session)
     assert out["ok"], out
 
@@ -125,12 +125,12 @@ def test_a_start_error_carries_the_result_and_the_host_stops_the_grid(session):
     assert cases.case_start_error(session)["ok"]
 
 
-def test_a_stalled_member_ends_in_the_timeout_exception(session):
-    stall = ["--stall", 3, "--stall-member", 2, "--deadline", 0.02]
+def test_a_stalled_rank_ends_in_the_timeout_exception(session):
+    stall = ["--stall", 3, "--stall-rank", 2, "--deadline", 0.02]
     out = example(session, "--jobs", 10, "--count", 8, "--first", 4, *stall)
     t = out["timed_out"]
     assert out["kernel"]["error_name"] == "deadline"
-    assert t["ticket"] == 4 and t["team"] == [4, 8]
+    assert t["handle"] == 4 and t["group"] == [4, 8]
     named = {c["core"]: c for c in t["not_reported"]}
     assert sorted(named) == [4, 6]
     assert (

@@ -9,7 +9,7 @@
 #include "api/compute/pack.h"
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
-#include "bounded.hpp"
+#include "timed.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "raytrace.h"
 #ifdef TRISC_PACK
@@ -35,10 +35,8 @@ namespace {
 
     // A word from unpack, kAbort if none came in time.
     uint32_t mbox_read() {
-        uint32_t v = bounded::kAbort;
-        return (
-            bounded::mail(ckernel::ThreadId::UnpackThreadId, v) ? v : bounded::kAbort
-        );
+        uint32_t v = timed::kAbort;
+        return (timed::mail(ckernel::ThreadId::UnpackThreadId, v) ? v : timed::kAbort);
     }
 
     void mbox_release() {
@@ -59,12 +57,12 @@ namespace {
 
     // A word from unpack; on kAbort the reason goes to the profile.
     bool mail(uint32_t& v, walk::Prof& pf) {
-        if (!bounded::mail(ckernel::ThreadId::UnpackThreadId, v)) {
+        if (!timed::mail(ckernel::ThreadId::UnpackThreadId, v)) {
             pf.error |= kErrMail;
             return false;
         }
-        pf.error |= v == bounded::kAbort ? kErrUnpack : 0;
-        return v != bounded::kAbort;
+        pf.error |= v == timed::kAbort ? kErrUnpack : 0;
+        return v != timed::kAbort;
     }
 
     // The next input page from the unpack thread (nullptr: gave up), its wait counted.
@@ -80,7 +78,7 @@ namespace {
     // A free output page (0: gave up).
     uint32_t reserve_out(walk::Prof& pf) {
         const uint32_t a = wall();
-        const bool ok = bounded::back(kCbOut, 1);
+        const bool ok = timed::back(kCbOut, 1);
         pf.wait_out += wall() - a;
         pf.error |= ok ? 0 : kErrOut;
         return ok ? out_ptr() : 0;
@@ -148,7 +146,7 @@ namespace {
 
     // Math has put a state into Dst (its section committed), within the bound.
     bool dst_ready(walk::Prof& pf) {
-        const bool ok = bounded::poll([] {
+        const bool ok = timed::poll([] {
             return ckernel::semaphore_read(ckernel::semaphore::MATH_PACK) > 0;
         });
         pf.error |= ok ? 0 : kErrDst;
@@ -171,8 +169,8 @@ namespace {
     // from its page, then those deferred (list did not fit) from their state.
     bool top_walks(uint32_t count, bool any, uint32_t cap, bool first, walk::Prof& pf) {
         const uint32_t list_bytes = 4 * (kLsHead + 2 * count) + 2 * cap;
-        if (bounded::room(kCbState) < count * (kStTileBytes + 4 * kStHeadWords) ||
-            bounded::room(kCbLists) < list_bytes) {
+        if (timed::room(kCbState) < count * (kStTileBytes + 4 * kStHeadWords) ||
+            timed::room(kCbLists) < list_bytes) {
             pf.error |= kErrRoom;
             return false;
         }
@@ -253,7 +251,7 @@ namespace {
             publish(ls + kLsMore, deferred);
         }
         pf.batches++;
-        if (!bounded::back(kCbSignal, 1)) {
+        if (!timed::back(kCbSignal, 1)) {
             pf.error |= kErrSignal;
             return false;
         }
@@ -671,8 +669,8 @@ namespace {
 
     // A stage over the core's packets: the constant page first, then per packet its
     // input pages into Dst from shade::kIn, the stage, its output pages from kOut.
-    bool stage_list(uint32_t seg, uint32_t count, walk::Prof& pf) {
-        const Stage st = stage_of(seg);
+    bool stage_list(uint32_t handler, uint32_t count, walk::Prof& pf) {
+        const Stage st = stage_of(handler);
         const uint32_t* c = next_page(pf);
         if (c == nullptr) {
             return false;
@@ -702,7 +700,9 @@ namespace {
                     }
                 }
                 if (s == 0) {
-                    pixel = seg == kSegGen ? pg[0] : pg[kVec * kPkHead + kHeadPixel];
+                    pixel =
+                        (handler == kHandlerGen ? pg[0]
+                                                : pg[kVec * kPkHead + kHeadPixel]);
                 }
                 order(word(last) + 62);
                 slot += st.vectors[s];
@@ -711,11 +711,11 @@ namespace {
             }
             uint32_t a = wall();
             all_lanes();
-            if (seg == kSegGen) {
+            if (handler == kHandlerGen) {
                 shade::gen(cn, pixel % cn[kCnWidth], pixel / cn[kCnWidth]);
-            } else if (seg == kSegShade1) {
+            } else if (handler == kHandlerShade1) {
                 shade::shade1(cn, pixel);
-            } else if (seg == kSegShade2) {
+            } else if (handler == kHandlerShade2) {
                 shade::shade2(cn);
             } else {
                 shade::image();
@@ -752,7 +752,7 @@ namespace {
     void profile(
         const walk::Prof& pf, uint32_t first = 0, uint32_t costs = 0, bool block = false
     ) {
-        if (!bounded::back(kCbOut, 1)) {
+        if (!timed::back(kCbOut, 1)) {
             return;
         }
         const uint32_t dst = out_ptr();
@@ -795,17 +795,17 @@ namespace {
     bool hand(uint32_t addr) {
         ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, addr);
         uint32_t v = 0;
-        return bounded::mail(ckernel::ThreadId::PackThreadId, v);
+        return timed::mail(ckernel::ThreadId::PackThreadId, v);
     }
 
     void treelet_states();
 
     // The reader's header page (first page, count) and every page after it to pack,
     // then (treelets) the work pages up to the end page. On a give-up pack gets kAbort.
-    void unpack_pages(uint32_t seg) {
+    void unpack_pages(uint32_t handler) {
         constexpr uint32_t kPack = ckernel::ThreadId::PackThreadId;
-        if (!bounded::front(kCbIn, 1)) {
-            ckernel::mailbox_write(kPack, bounded::kAbort);
+        if (!timed::front(kCbIn, 1)) {
+            ckernel::mailbox_write(kPack, timed::kAbort);
             return;
         }
         const volatile uint32_t* h = (
@@ -818,14 +818,14 @@ namespace {
         ckernel::mailbox_write(kPack, first);
         ckernel::mailbox_write(kPack, count);
         cb_pop_front(kCbIn, 1);
-        const Stage st = stage_of(seg);
+        const Stage st = stage_of(handler);
         const uint32_t pages =
-            (seg == kSegRecip    ? 0
-                 : is_stage(seg) ? 1 + count * st.inputs
-                                 : count);
+            (handler == kHandlerRecip ? 0
+                 : is_stage(handler)  ? 1 + count * st.inputs
+                                      : count);
         for (uint32_t i = 0; i < pages; ++i) {
-            if (!bounded::front(kCbIn, 1)) {
-                ckernel::mailbox_write(kPack, bounded::kAbort);
+            if (!timed::front(kCbIn, 1)) {
+                ckernel::mailbox_write(kPack, timed::kAbort);
                 return;
             }
             const bool ok = hand(get_tile_l1_byte_address(kCbIn, 0));
@@ -834,7 +834,7 @@ namespace {
                 return;
             }
         }
-        if (seg == kSegTreelets) {
+        if (handler == kHandlerTreelets) {
             copy_init(kCbState);
             treelet_states();
         }
@@ -846,8 +846,8 @@ namespace {
         constexpr uint32_t kPack = ckernel::ThreadId::PackThreadId;
         constexpr uint32_t kMath = ckernel::ThreadId::MathThreadId;
         for (bool more = true; more;) {
-            if (!bounded::front(kCbWork, 1)) {
-                ckernel::mailbox_write(kPack, bounded::kAbort);
+            if (!timed::front(kCbWork, 1)) {
+                ckernel::mailbox_write(kPack, timed::kAbort);
                 break;
             }
             const uint32_t w = get_tile_l1_byte_address(kCbWork, 0);
@@ -871,12 +871,12 @@ namespace {
                     tile_regs_commit();
                 }
                 uint32_t v = 0;
-                ok = bounded::mail(kPack, v);
+                ok = timed::mail(kPack, v);
             }
             cb_pop_front(kCbWork, 1);
             more = more && ok;
         }
-        ckernel::mailbox_write(kMath, bounded::kAbort);
+        ckernel::mailbox_write(kMath, timed::kAbort);
     }
 
 }  // namespace
@@ -891,12 +891,12 @@ namespace {
         copy_init(kCbState);
         for (uint32_t pages = 0; pages < (1u << 20); ++pages) {
             uint32_t n = 0;
-            if (!bounded::mail(ckernel::ThreadId::UnpackThreadId, n) ||
-                n == bounded::kAbort) {
+            if (!timed::mail(ckernel::ThreadId::UnpackThreadId, n) ||
+                n == timed::kAbort) {
                 return;
             }
             for (uint32_t j = 0; j < n; ++j) {
-                if (!bounded::poll([] {
+                if (!timed::poll([] {
                         return (
                             ckernel::semaphore_read(ckernel::semaphore::MATH_PACK) == 0
                         );
@@ -916,35 +916,35 @@ namespace {
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbState, kCbOut);
-    cp.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg == kSegLoad) {
+    cp.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
+        if (handler == kHandlerLoad) {
             // The tree stays in its buffer; the pack thread keeps its address.
             const uint32_t pages = (r.a1 + kTreePageBytes - 1) / kTreePageBytes;
 #ifdef TRISC_UNPACK
-            const bool ok = bounded::front(kCbTree, pages);
+            const bool ok = timed::front(kCbTree, pages);
             ckernel::mailbox_write(
                 ckernel::ThreadId::PackThreadId,
-                ok ? get_tile_l1_byte_address(kCbTree, 0) : bounded::kAbort
+                ok ? get_tile_l1_byte_address(kCbTree, 0) : timed::kAbort
             );
 #endif
 #ifdef TRISC_PACK
             const uint32_t t = mbox_read();
             g_tree =
-                (t == bounded::kAbort ? nullptr : reinterpret_cast<const uint32_t*>(t));
+                (t == timed::kAbort ? nullptr : reinterpret_cast<const uint32_t*>(t));
 #endif
             return;
         }
-        if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath &&
-            !is_stage(seg)) {
+        if (handler != kHandlerTrace && handler != kHandlerArith &&
+            handler != kHandlerRecip && handler != kHandlerTreelets &&
+            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)) {
             return;
         }
 #ifdef TRISC_UNPACK
-        unpack_pages(seg);
+        unpack_pages(handler);
 #endif
 #ifdef TRISC_MATH
-        if (seg == kSegTreelets) {
+        if (handler == kHandlerTreelets) {
             math_states();
         }
 #endif
@@ -958,12 +958,14 @@ void kernel_main() {
             return;
         }
         setup();
-        const bool trees = seg == kSegTrace || seg == kSegTreelets || seg == kSegProbe;
+        const bool trees =
+            (handler == kHandlerTrace || handler == kHandlerTreelets ||
+             handler == kHandlerProbe);
         if (trees && g_tree == nullptr) {
             pf.error |= kErrTree;
-        } else if (seg == kSegTrace) {
+        } else if (handler == kHandlerTrace) {
             trace_list(count, r.a3 == kModeAny, pf);
-        } else if (seg == kSegTreelets) {
+        } else if (handler == kHandlerTreelets) {
             // Batches until the reader's end page says no packet is left deferred.
             const bool any = r.a3 == kModeAny;
             uint32_t done = 0, end = kWorkNext;
@@ -981,20 +983,20 @@ void kernel_main() {
             ok = ok && end == kWorkEnd && results_out(count, any, pf);
             pf.phase3 = wall() - a;
             (void)ok;
-        } else if (seg == kSegProbe) {
+        } else if (handler == kHandlerProbe) {
             probe(count, r.a3, r.a5, pf);
-        } else if (seg == kSegArith) {
+        } else if (handler == kHandlerArith) {
             arith_list(count, pf);
-        } else if (seg == kSegMath) {
+        } else if (handler == kHandlerMath) {
             math_list(count, pf);
-        } else if (is_stage(seg)) {
-            stage_list(seg, count, pf);
+        } else if (is_stage(handler)) {
+            stage_list(handler, count, pf);
         } else {
             recip_list(first, count, r.a3, pf);
         }
         finish();
         pf.total = wall() - t0;
-        profile(pf, first, count, seg == kSegTreelets);
+        profile(pf, first, count, handler == kHandlerTreelets);
 #endif
     });
 }

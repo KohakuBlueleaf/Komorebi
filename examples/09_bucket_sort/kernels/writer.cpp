@@ -11,12 +11,12 @@ constexpr uint32_t kCbScratch = 16;  // L1 of this core alone: B words, then the
 
 namespace {
 
-    // Block k's table address (record words a4 to a6) and DRAM bank (a3, 8 bits each).
-    uint32_t table_of(const km_record_t& r, uint32_t k) {
+    // Block k's table address (command words a4 to a6) and DRAM bank (a3, 8 bits each).
+    uint32_t table_of(const km_command_t& r, uint32_t k) {
         return k == 0 ? r.a4 : k == 1 ? r.a5 : r.a6;
     }
 
-    uint32_t bank_of(const km_record_t& r, uint32_t k) {
+    uint32_t bank_of(const km_command_t& r, uint32_t k) {
         return (r.a3 >> (8 * k)) & 0xFFu;
     }
 
@@ -30,7 +30,7 @@ void kernel_main() {
     uint32_t* bucket = reinterpret_cast<uint32_t*>(scratch);
     const uint32_t slots = scratch + 4 * BS_BUCKETS_MAX;
 
-    // Every NoC wait below is polled with the wait limit and the stop word: false means
+    // Every NoC wait below is polled with the wait limit and the stop flag: false means
     // the core is stopping, and the body then returns false (no report).
     auto reads_done = [&] {
         const bool ok = wr.poll(
@@ -51,7 +51,7 @@ void kernel_main() {
                    wr.args().wait_limit
                ) == km::kGaveNone;
     };
-    // Acknowledged: the data is in DRAM, so the record may be reported done.
+    // Acknowledged: the data is in DRAM, so the command may be reported done.
     auto writes_done = [&] {
         return wr.poll(
                    [&] {
@@ -61,21 +61,21 @@ void kernel_main() {
                ) == km::kGaveNone;
     };
 
-    // The runtime's loop: the body runs once for each record whose team holds this
-    // core, and returns whether the record is done here (then the runtime reports it).
-    wr.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg != BS_SEG_COUNT && seg != BS_SEG_PLACE) {
+    // The runtime's loop: the body runs once for each command whose group holds this
+    // core, and returns whether the command is done here (then the runtime reports it).
+    wr.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
+        if (handler != BS_HANDLER_COUNT && handler != BS_HANDLER_PLACE) {
             return true;
         }
         // The same share of keys as the reader's, the same blocks as the thread's.
         const uint32_t rank = wr.me() - km::first(r);
-        const km::Share s = km::share(r.a1, rank, km::count(r));
+        const km::Partition s = km::partition(r.a1, rank, km::count(r));
         const uint32_t log2_b = r.a2 & 0xFFu, blocks = r.a2 >> 8;
         const uint32_t buckets = 1u << log2_b, shift = 32 - log2_b;
         const uint32_t chunks = buckets / BS_CHUNK;
 
-        if (seg == BS_SEG_PLACE) {
+        if (handler == BS_HANDLER_PLACE) {
             // Step 3a: my row of the plan, block by block, from each work cluster's
             // region in its DRAM bank into L1: where my first key of each bucket goes.
             for (uint32_t k = 0; k < blocks; k++) {
@@ -120,7 +120,7 @@ void kernel_main() {
             for (uint32_t i = lo; i < hi; i++) {
                 const uint32_t b = keys[i] >>
                     shift;  // the bucket: the top log2(B) bits
-                if (seg == BS_SEG_COUNT) {
+                if (handler == BS_HANDLER_COUNT) {
                     bucket[b]++;
                     continue;
                 }
@@ -145,7 +145,7 @@ void kernel_main() {
             cb_pop_front(kCbKeys, 1);
         }
 
-        if (seg == BS_SEG_COUNT) {
+        if (handler == BS_HANDLER_COUNT) {
             // Step 1c: my row of the counts table to each block's work cluster, in its
             // region in its bank, where its thread reads it (README.md, data layout).
             for (uint32_t k = 0; k < blocks; k++) {
@@ -163,7 +163,7 @@ void kernel_main() {
                 }
             }
         }
-        // Everything this record wrote is in DRAM before the record is reported done:
+        // Everything this command wrote is in DRAM before the command is reported done:
         // the next reader of it (the thread, or the host) may look at once.
         return writes_done();
     });

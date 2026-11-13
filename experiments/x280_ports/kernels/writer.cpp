@@ -14,9 +14,9 @@ void kernel_main() {
     km::Writer wr;
     const uint32_t scratch = get_write_ptr(kCbScratch);
     volatile tt_l1_ptr uint32_t* flags = km::l1(scratch + XP_SCRATCH_FLAGS);
-    wr.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg == XP_SEG_TELL) {
+    wr.run([&](const km_command_t& r) {
+        const uint32_t handler = km::handler(r);
+        if (handler == XP_HANDLER_TELL) {
             const uint32_t code = wr.poll(
                 [&] {
                     return flags[0] == r.seq;
@@ -30,11 +30,11 @@ void kernel_main() {
             wr.result(flags[1]);
             return true;
         }
-        if (seg != XP_SEG_ASK || !(r.a2 & XP_F_READS)) {
+        if (handler != XP_HANDLER_ASK || !(r.a2 & XP_F_READS)) {
             return true;
         }
         // DRAM pages from tensor a3 (a4 pages) while the reader asks; a bounded loop
-        // that leaves on the stop word.
+        // that leaves on the stop flag.
         const auto src = TensorAccessor(reads_args, r.a3);
         uint32_t n = 0;
         for (; n < kReadsMax; n++) {

@@ -1,10 +1,10 @@
-// Grid reader: the row lane, on NoC0. The row's sender reads each A block (bm x kb
+// Grid reader: the row broadcast, on NoC0. The row's sender reads each A block (bm x kb
 // tiles, row stride kb) from DRAM and casts it along the row; the others take it.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
 #include "grid.h"
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
@@ -20,13 +20,13 @@ void kernel_main() {
     const auto plan = [&](uint32_t i) {
         return core(kCorePlan + i);
     };
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegGrid || r.a3 == kGridProduct) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerGrid || r.a3 == kGridProduct) {
             return;
         }
         const uint32_t t0 = km::wall();
-        km::Lane ln(rd, r, kArgLane);
-        if (!ln.ok() || !ln.member()) {
+        km::Broadcast ln(rd, r, kArgBroadcast);
+        if (!ln.ok() || !ln.included()) {
             return;
         }
         const uint32_t mt = plan(kPlMt), kt = plan(kPlKt), bm = plan(kPlBm);
@@ -34,7 +34,7 @@ void kernel_main() {
         const uint32_t nbh = plan(kPlNbh), nbw = plan(kPlNbw);
         const uint32_t m0 = core(kCoreM0);
         const auto a = TensorAccessor(a_args, r.a0);
-        uint32_t read = 0, lane = 0, k = 0;
+        uint32_t read = 0, broadcast = 0, k = 0;
         for (uint32_t blk = 0; blk < nbh * nbw; ++blk) {
             const uint32_t r0 = m0 + blk / nbw * bm;
             for (uint32_t kblk = 0; kblk < nk; ++kblk, ++k) {
@@ -43,7 +43,7 @@ void kernel_main() {
                     if (!ln.arrive(k)) {
                         return;
                     }
-                    lane += km::wall() - t1;
+                    broadcast += km::wall() - t1;
                     continue;
                 }
                 const uint32_t base = ln.reserve(k);
@@ -69,14 +69,14 @@ void kernel_main() {
                     return;
                 }
                 read += t3 - t2;
-                lane += t2 - t1 + km::wall() - t3;
+                broadcast += t2 - t1 + km::wall() - t3;
             }
         }
         if (!ln.finish()) {
             return;
         }
         km::add_sat(prof + kGpRdRead, read);
-        km::add_sat(prof + kGpRdLane, lane);
+        km::add_sat(prof + kGpRdBroadcast, broadcast);
         km::add_sat(prof + kGpRdBody, km::wall() - t0);
     });
 }

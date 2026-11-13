@@ -1,5 +1,6 @@
-// Grid compute: A blocks from the row lane, W blocks from the column lane, summed into
-// fp32 partials (kCbPart) by packer accumulation; the last K block packs bf16 output.
+// Grid compute: A blocks from the row broadcast, W blocks from the column broadcast,
+// summed into fp32 partials (kCbPart) by packer accumulation; the last K block packs
+// bf16 output.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -11,7 +12,7 @@
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
 #include "grid.h"
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 namespace {
@@ -31,7 +32,7 @@ void kernel_main() {
     const auto plan = [&](uint32_t i) {
         return cp.arg(kCorePlan + i);
     };
-    const bool member = cp.arg(kCoreMember) != 0;
+    const bool included = cp.arg(kCoreRank) != 0;
     const uint32_t bm = plan(kPlBm), bn = plan(kPlBn), kb = plan(kPlKb);
     const uint32_t nk = plan(kPlNk), kb_last = plan(kPlKbLast);
     const uint32_t nb = plan(kPlNbh) * plan(kPlNbw);
@@ -42,13 +43,13 @@ void kernel_main() {
         kCbRow, kCbCol, nk > 1 ? kCbPart : kCbGridOut
     );
     volatile tt_l1_ptr uint32_t* prof = km::l1(get_tile_address(kCbGridProf, 0));
-    cp.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegGrid || !member) {
+    cp.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerGrid || !included) {
             return;
         }
         const uint32_t t0 = km::wall();
-        const bool lanes = r.a3 != kGridProduct;
-        const bool math = r.a3 != kGridLanes;
+        const bool broadcasts = r.a3 != kGridProduct;
+        const bool math = r.a3 != kGridBroadcasts;
         uint32_t wait_a = 0, wait_w = 0, wait_part = 0, mm = 0, wait_out = 0, pack = 0;
         if (math) {
             matmul_block_init(kCbRow, kCbCol, 0, sw, sh, kb);
@@ -62,11 +63,11 @@ void kernel_main() {
             for (uint32_t kblk = 0; ok && kblk < nk; ++kblk) {
                 const bool last = kblk == nk - 1;
                 const uint32_t inner = last ? kb_last : kb;
-                if (lanes) {
+                if (broadcasts) {
                     const uint32_t t1 = km::wall();
-                    ok = km::lane_take(cp, kCbRow, pa);
+                    ok = km::broadcast_receive(cp, kCbRow, pa);
                     const uint32_t t2 = km::wall();
-                    ok = ok && km::lane_take(cp, kCbCol, pw);
+                    ok = ok && km::broadcast_receive(cp, kCbCol, pw);
                     wait_a += t2 - t1;
                     wait_w += km::wall() - t2;
                     taken += ok;
@@ -134,19 +135,19 @@ void kernel_main() {
                         cb_pop_front(kCbPart, block_tiles);
                     }
                 }
-                if (ok && lanes) {
-                    km::lane_done(kCbRow, pa);
-                    km::lane_done(kCbCol, pw);
+                if (ok && broadcasts) {
+                    km::broadcast_done(kCbRow, pa);
+                    km::broadcast_done(kCbCol, pw);
                 }
             }
             if (math && nk > 1) {
                 pack_reconfig_l1_acc(0);
             }
         }
-        if (ok && lanes) {
+        if (ok && broadcasts) {
             ok =
-                (km::lane_end(cp, kCbRow, pa, wa, taken) &&
-                 km::lane_end(cp, kCbCol, pw, ww, taken));
+                (km::broadcast_end(cp, kCbRow, pa, wa, taken) &&
+                 km::broadcast_end(cp, kCbCol, pw, ww, taken));
         }
         UNPACK((km::add_sat(prof + kGpUnWaitA, wait_a)));
         UNPACK((km::add_sat(prof + kGpUnWaitW, wait_w)));

@@ -10,10 +10,10 @@ tags:
 
 Status: the breakpoints are implemented in the Tensix runtime and run on one card:
 `emit` and `wait` as ports and reduce ([ports](../reference/ports.md)), a block to a
-row or a column as lane broadcast ([lanes](../reference/lanes.md)), and `at` as items
-that move between cores in a dynamic segment ([dynamic](../reference/dynamic.md)).
-Homes declared and the thread language compiled into segments are planned; today a
-program is written as the segment bodies of its kernels.
+row or a column as broadcast broadcast ([broadcasts](../reference/broadcast.md)), and `at` as items
+that move between cores in a dynamic handler ([dynamic](../reference/dynamic.md)).
+Homes declared and the thread language compiled into handlers are planned; today a
+program is written as the handler bodies of its kernels.
 
 A Tensix grid has many cores and a network between them. A program for it has to say
 what runs where, and what travels between cores. Komorebi's model keeps the part of
@@ -37,13 +37,13 @@ three kinds, and one variant of the first:
 | `v = wait(n)` | wait | nothing | pauses until n values have landed |
 | `at pool(p): block` | move to a pool | live variables | continues on a core of the pool; the dispatcher sizes the pool |
 
-`reduce(op, part) over team via = owner | tree | ring` and
-`scan(op, s) over team in order` are library forms built from `emit` and `wait`.
+`reduce(op, part) over group via = owner | tree | ring` and
+`scan(op, s) over group in order` are library forms built from `emit` and `wait`.
 
 Nothing in the program says how a breakpoint is carried out. Where the sender, the
 receiver and the number of arrivals are known before the run, a breakpoint becomes a
 write into a fixed slot and a counted wait: no header and no queue. Where they depend
-on data, it becomes a record with a header, an inbox ring and flow control. The author
+on data, it becomes a command with a header, an inbox ring and flow control. The author
 writes the same line in both cases.
 
 ## Homes
@@ -76,17 +76,17 @@ thread path(pixel):
     emit film[pixel] += c                         # breakpoint: a value goes, the thread ends
 ```
 
-The code between breakpoints is a **segment**. This program has three:
+The code between breakpoints is a **handler**. This program has three:
 
-| Segment | Starts when | What travelled |
+| Handler | Starts when | What travelled |
 |---|---|---|
 | S0 | a thread is started on a core | `pixel` |
-| S1 | a thread arrives at a treelet | the 64-byte ray record: `r, hit, c, thr, depth, k, pixel` |
+| S1 | a thread arrives at a treelet | the 64-byte ray command: `r, hit, c, thr, depth, k, pixel` |
 | S2 | a value arrives at a film tile | `pixel, c` |
 
-- On the card this is one resident kernel with a switch over segment numbers.
-- Threads waiting at the same segment on the same core run together, 32 per packet, one
-  per vector lane. Nothing is masked.
+- On the card this is one persistent kernel with a switch over handler numbers.
+- Threads waiting at the same handler on the same core run together, 32 per packet, one
+  per vector broadcast. Nothing is masked.
 - If the whole scene is on every core, no `at` fires: SIMT is the degenerate case.
 - Cutting the scene differently changes how often threads move, not the program.
 
@@ -97,7 +97,7 @@ into roles.
 
 ```text
 thread mm(j, n):                                 # one per core, pinned
-    part = A[:, K(j)] @ B[K(j), :]               # one segment; no breakpoint
+    part = A[:, K(j)] @ B[K(j), :]               # one handler; no breakpoint
     for r in 0 .. levels(n) - 1:
         if j % 2^(r+1) == 0:                     # I merge in this round
             if j + 2^r < n:
@@ -124,7 +124,7 @@ other.
 A role is a unit of dispatch: which cores do which kind of work, sized by load. It is
 used only where there is a real balance decision, and it is not the centre of the model.
 
-- **Which program a team hosts**, for example prefill jobs against decode jobs, sized
+- **Which program a group hosts**, for example prefill jobs against decode jobs, sized
   per job by the dispatcher.
 - **A pool for heavy work with no data affinity**, such as a neural material network in
   shading: hits are gathered and run in batches on as many cores as the load needs.
@@ -139,14 +139,14 @@ code is just a function.
 Real kernels cut more than one axis: some across cores, some in time on one core. The
 model states both.
 
-- **Space is the thread's index.** `thread f(lane, i)` has one thread per index point,
+- **Space is the thread's index.** `thread f(broadcast, i)` has one thread per index point,
   pinned to a core. An axis split across cores is an index dimension.
 - **Time is a loop in the thread body.** An axis split in time on one core is a `for`
   over chunks.
 - **An axis may be both.** The index picks my share of the axis; a loop walks my share
   in chunks.
-- **A group is a slice of the index space.** `threads(lane, *)` is every thread of one
-  lane. A broadcast is `emit x -> threads(lane, *)`; a merge along one index is
+- **A group is a slice of the index space.** `threads(broadcast, *)` is every thread of one
+  broadcast. A broadcast is `emit x -> threads(broadcast, *)`; a merge along one index is
   `reduce(op, x) over threads(i, *)`.
 - **Chunk sizes are named parameters**, with a binding time: fixed at compile time, per
   size class, or at run time.
@@ -154,11 +154,11 @@ model states both.
 A fused attention kernel as a thread program:
 
 ```text
-thread attend(lane, i):                        # thread index: two spatial cuts
-    for job in jobs(lane):                     # time: (batch, head, row range)
-        rows = share(job.rows, i)              # space: query rows over the lane's cores
+thread attend(broadcast, i):                        # thread index: two spatial cuts
+    for job in jobs(broadcast):                     # time: (batch, head, row range)
+        rows = partition(job.rows, i)              # space: query rows over the broadcast's cores
         for kb in key_blocks(job.head, KB):    # time: keys, KB tiles per block
-            if i == 0:  kv = read_dram(kb);  emit kv -> threads(lane, *)    # breakpoint: broadcast
+            if i == 0:  kv = read_dram(kb);  emit kv -> threads(broadcast, *)    # breakpoint: broadcast
             else:       kv = wait(1)                                        # breakpoint
             for sub in chunks(kv, 3):          # time: 3 key tiles per step
                 for r in rows:                 # time: my rows, paired
@@ -167,8 +167,8 @@ thread attend(lane, i):                        # thread index: two spatial cuts
 ```
 
 The cuts form a nest that alternates between space and time: the grid is cut in space
-into lanes; a lane works in time through its jobs; each job is cut in space over the
-lane's cores; each core works in time through key blocks, sub-chunks and its own rows.
+into broadcasts; a broadcast works in time through its jobs; each job is cut in space over the
+broadcast's cores; each core works in time through key blocks, sub-chunks and its own rows.
 
 What an axis does to the program:
 
@@ -198,12 +198,12 @@ loops and the `reduce` line.
 ## What this costs
 
 1. Live state must be small and visible: whatever is live at a move travels. The tool
-   must report the record size at each breakpoint.
-2. No unbounded recursion across a breakpoint: a thread has a fixed-size record, not a
+   must report the command size at each breakpoint.
+2. No unbounded recursion across a breakpoint: a thread has a fixed-size command, not a
    stack.
 3. Compute follows data, so hot data makes hot cores. Shedding is legal only at points
    where the thread needs nothing local; the compiler can find those points.
-4. The on-core scheduler has to choose which segment to run when several have threads
+4. The on-core scheduler has to choose which handler to run when several have threads
    waiting, and whether to run a half-full packet or wait for 32.
 5. A wait for an unknown number of values is the end-of-run problem: the run ends when
    every core has consumed what was sent to it.

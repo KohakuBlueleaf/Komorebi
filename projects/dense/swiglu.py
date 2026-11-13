@@ -1,5 +1,5 @@
-"""SwiGLU, y = (silu(x W1) * (x W3)) W2, on the card as LAYER records through
-`komorebi.Session`: W1, W3 and W2 loaded once and resident, a call's records issued
+"""SwiGLU, y = (silu(x W1) * (x W3)) W2, on the card as LAYER commands through
+`komorebi.Session`: W1, W3 and W2 loaded once and resident, a call's commands submitted
 from the host back to back. Checked against float64 on sampled rows, optionally
 timed. Prints one JSON line; exits 1 when the check fails. See SWIGLU.md.
 """
@@ -50,33 +50,34 @@ BODIES = ("kPrRdBody", "kPrUnBody", "kPrMathBody", "kPrPkBody", "kPrWrBody")
 
 class Layer:
     """Plan s loaded on a session's grid with tensors x, w1, w3, w2, y, prof: three
-    LOAD records at the start, then calls of the plan's LAYER records."""
+    LOAD commands at the start, then calls of the plan's LAYER commands."""
 
     def __init__(self, session, s, t, fidelity="HiFi2", deadline=2.0):
-        self.s, self.t, self.team = s, t, (0, s.team)
+        self.s, self.t, self.group = s, t, (0, s.group)
         self.session = session
         prog = card.program(s, t["x"], fidelity)
         self.run = session.load(prog, deadline=deadline, wait=1.0)
         a = {k: v.address for k, v in t.items()}
         loads = sp.loads(s, a["w1"], a["w3"], a["w2"])
-        tickets = [self.run.issue("load", self.team, w) for w in loads]
-        self.load_us = [e.us for e in self.run.wait(tickets, timeout=10.0)]
-        self.words = sp.records(s, a["x"], a["y"])
-        self.seg = self.run.program.seg("layer")
+        handles = [self.run.submit("load", self.group, w) for w in loads]
+        self.load_us = [e.us for e in self.run.wait(handles, timeout=10.0)]
+        self.words = sp.commands(s, a["x"], a["y"])
+        self.handler = self.run.program.handler("layer")
 
     def calls(self, n, exclusive=False, timeout=60.0):
-        """n calls from the host, every record back to back: host seconds from the
-        first issue to the last event, and each record's microseconds [n, records]."""
+        """n calls from the host, every command back to back: host seconds from the
+        first submit to the last event, and each command's microseconds [n, commands].
+        """
         rows = np.tile(np.array(self.words, np.int64), (n, 1))
         t0 = time.perf_counter()
-        tickets = self.run.issue_many(
-            "layer", self.team[0], self.team[1], rows, exclusive=exclusive
+        handles = self.run.submit_many(
+            "layer", self.group[0], self.group[1], rows, exclusive=exclusive
         )
-        events = self.run.wait(list(tickets), timeout=timeout)
+        events = self.run.wait(list(handles), timeout=timeout)
         host_s = time.perf_counter() - t0
         bad = [e for e in events if e.kind != "done"]
         if bad:
-            raise km.KomorebiError(f"{len(bad)} records not done: {bad[0]}")
+            raise km.KomorebiError(f"{len(bad)} commands not done: {bad[0]}")
         return host_s, np.array([e.us for e in events]).reshape(n, -1)
 
     def single(self, n):
@@ -84,13 +85,13 @@ class Layer:
         return np.array([self.calls(1)[0] * 1e6 for _ in range(n)])
 
     def profile(self, timeout=10.0):
-        """Each member's profile page, summed over the records so far."""
+        """Each member's profile page, summed over the commands so far."""
         prof = self.t["prof"]
-        ticket = self.run.issue("prof", self.team, [prof.address])
-        self.run.wait(ticket, timeout=timeout)
+        handle = self.run.submit("prof", self.group, [prof.address])
+        self.run.wait(handle, timeout=timeout)
         (pages,) = self.session.read(prof)
         words = pages.reshape(-1).view(np.uint32).reshape(-1, K["kProfBytes"] // 4)
-        return words[: self.team[1], : K["kProfWords"]].astype(np.int64)
+        return words[: self.group[1], : K["kProfWords"]].astype(np.int64)
 
     def stop(self):
         """Stops the run: the kernel's result, the cores that ended, the give-ups,
@@ -122,7 +123,7 @@ def profile_per_call(before, after, calls, mhz):
     busy = np.maximum.reduce([pr[:, K[k]] for k in BODIES])
     slow = int(np.argmax(busy))
     return {
-        "slowest_member": slow,
+        "slowest_rank": slow,
         "mean_busy_over_slowest": round(float(busy.mean() / busy[slow]), 3),
         "us": {n: round(pr[slow, K[k]] / mhz, 3) for n, k in SHARES.items()},
     }
@@ -158,7 +159,7 @@ def parse():
     a = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     a.add_argument("--shape", choices=sp.SHAPES, required=True)
     a.add_argument(
-        "--gate-pass", action="store_true", help="the gate a record of its own"
+        "--gate-pass", action="store_true", help="the gate a command of its own"
     )
     a.add_argument("--fidelity", choices=["HiFi2", "HiFi4"], default="HiFi2")
     a.add_argument("--calls", type=int, default=2, help="calls before the check")
@@ -186,7 +187,7 @@ def timed(layer, args, index, out):
     (host_s, us), out["host"] = measured(index, lambda: layer.calls(n))
     out["host"] |= {"calls": n, "seconds": round(host_s, 3)}
     out["host"]["us_per_call"] = round(host_s * 1e6 / n, 3)
-    out["host"]["record_us_median"] = np.median(us, axis=0).round(2).tolist()
+    out["host"]["command_us_median"] = np.median(us, axis=0).round(2).tolist()
     out["profile_host"] = profile_per_call(p0, layer.profile(), n, mhz)
     log(f"host-fed: {out['host']['us_per_call']} us per call")
     n2 = int(min(args.max_calls, max(2, args.cut_seconds * 1e6 / rate)))
@@ -221,7 +222,7 @@ def main():
         log("uploaded")
         layer = Layer(session, s, t, args.fidelity)
         out["load_us"] = layer.load_us
-        log(f"loaded, team {s.team}, {len(layer.words)} records per call")
+        log(f"loaded, group {s.group}, {len(layer.words)} commands per call")
         host_s, _ = layer.calls(args.calls)
         out["first_calls_us"] = round(host_s * 1e6 / args.calls, 3)
         log(f"{args.calls} calls in {host_s:.4f} s")

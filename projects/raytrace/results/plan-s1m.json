@@ -6,7 +6,7 @@
  "packets": 32768,
  "treelets": {
   "count": 1024,
-  "packets_per_record": 82,
+  "packets_per_command": 82,
   "state": 339968,
   "lists": 27856,
   "slots": 638976,
@@ -41,7 +41,7 @@
     "req": 0,
     "seen": 0,
     "commands": 2,
-    "records": 110,
+    "commands": 110,
     "events": 1,
     "busy": 0,
     "max_busy": 1,
@@ -52,7 +52,7 @@
     "passes": 6356256,
     "boot_ticks": 4222,
     "last": 28304174,
-    "refused": 0,
+    "rejected": 0,
     "held": 0,
     "no_room": 0,
     "checked": 0,
@@ -66,7 +66,7 @@
     "result_ready": true,
     "cleaned": true,
     "failed": "",
-    "harts": [
+    "cores": [
      6207,
      1680,
      3,
@@ -201,7 +201,7 @@
  "repeated_frame_ms": 187.09311000000002,
  "run": {
   "done": 1,
-  "records": 1,
+  "commands": 1,
   "kernel_error": 0,
   "cores_ended": {
    "reader_end": 120,
@@ -212,7 +212,7 @@
   "gave_up": []
  },
  "host": {
-  "records": 0,
+  "commands": 0,
   "command_bytes": 0,
   "wall_s": 1.2740493720630184
  },
@@ -365,7 +365,7 @@
    "total_per_packet": 2444.7
   }
  ],
- "record_ms": {
+ "command_ms": {
   "gen": 0.54992,
   "primary": 16.06138,
   "shade1": 2.22656,

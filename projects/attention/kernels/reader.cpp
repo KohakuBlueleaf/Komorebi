@@ -1,10 +1,11 @@
 // Attention reader (NoC0): the member's job table to compute, then per job its Q rows
-// and, unless LANE_ON_WRITER, the job's K / V blocks (the lane's sender casts them).
+// and, unless BROADCAST_ON_WRITER, the job's K / V blocks (the broadcast's sender casts
+// them).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
 #include "attention.h"
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 namespace {
@@ -13,7 +14,7 @@ namespace {
     constexpr uint32_t DV = get_compile_time_arg_val(1);
     constexpr uint32_t R = get_compile_time_arg_val(2);
     constexpr uint32_t KB = get_compile_time_arg_val(3);
-    constexpr uint32_t B = get_compile_time_arg_val(4);  // lane window
+    constexpr uint32_t B = get_compile_time_arg_val(4);  // broadcast window
     constexpr uint32_t P = DT * KB + KB * DV;            // pages of a K / V block
 
     // Rows `rows` of a job's Q (DT tiles each, `stride` tile rows apart) into the Q
@@ -49,7 +50,8 @@ namespace {
         return true;
     }
 
-    // Compute only: `pages` pushed as they are in the lane buffer (no read, no lane).
+    // Compute only: `pages` pushed as they are in the broadcast buffer (no read, no
+    // broadcast).
     bool push_block(const km::Reader& rd, uint32_t pages) {
         if (!rd.reserve(kCbKv, pages)) {
             return false;
@@ -58,17 +60,17 @@ namespace {
         return true;
     }
 
-    // The record's jobs, `passes` times: Q rows, then the K / V blocks through the lane
-    // `ln` (null: not this kernel's), or pushed as they are (compute only).
+    // The command's jobs, `passes` times: Q rows, then the K / V blocks through the
+    // broadcast `ln` (null: not this kernel's), or pushed as they are (compute only).
     template <typename Accessor>
     void run_jobs(
         const km::Reader& rd,
-        const km_record_t& r,
+        const km_command_t& r,
         uint32_t table,
         const Accessor& tiles_q,
         const Accessor& tiles_k,
         const Accessor& tiles_v,
-        km::Lane* ln,
+        km::Broadcast* ln,
         volatile tt_l1_ptr uint32_t* prof,
         uint32_t t0
     ) {
@@ -79,7 +81,7 @@ namespace {
             return;
         }
         uint32_t c[kProfWords] = {};
-        uint32_t n = 0;  // blocks of this record so far, over all jobs and passes
+        uint32_t n = 0;  // blocks of this command so far, over all jobs and passes
         for (uint32_t pass = 0; pass < passes; ++pass) {
             for (uint32_t j = r.a7; j < jobs_end(r, jobs); ++j) {
                 const volatile tt_l1_ptr uint32_t* w = (
@@ -90,7 +92,7 @@ namespace {
                     return;
                 }
                 if (ln != nullptr &&
-                    !lane_job<DT, DV, KB>(*ln, tiles_k, tiles_v, w, n, c)) {
+                    !broadcast_job<DT, DV, KB>(*ln, tiles_k, tiles_v, w, n, c)) {
                     return;
                 }
                 for (
@@ -114,7 +116,7 @@ namespace {
         }
         c[kPrRdFinish] += km::wall() - t1;
         c[kPrRdBody] += km::wall() - t0;
-        // Without the lane here, its words are the writer's.
+        // Without the broadcast here, its words are the writer's.
         const uint32_t last = ln != nullptr || !reads ? kPrRdFinish : kPrRdQRead;
         for (uint32_t w = kPrRdBody; w <= last; ++w) {
             km::add_sat(prof + w, c[w]);
@@ -130,8 +132,8 @@ void kernel_main() {
     for (uint32_t w = 0; w < kProfWords; ++w) {
         prof[w] = 0;
     }
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegAttend) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerAttend) {
             return;
         }
         const uint32_t t0 = km::wall();
@@ -142,14 +144,14 @@ void kernel_main() {
         if (!read_table(rd, km::kStReader, r.a4, rd.me() - km::first(r), table)) {
             return;
         }
-        cb_push_back(kCbJobs, 1);  // compute pops it at the record's end
+        cb_push_back(kCbJobs, 1);  // compute pops it at the command's end
         const auto q = TensorAccessor(tiles, r.a0);
         const auto k = TensorAccessor(tiles, r.a1);
         const auto v = TensorAccessor(tiles, r.a2);
-#ifndef LANE_ON_WRITER
+#ifndef BROADCAST_ON_WRITER
         if (r.a5 != kModeComputeOnly) {
-            km::Lane ln(rd, r, kArgLane);
-            if (ln.ok() && ln.member()) {
+            km::Broadcast ln(rd, r, kArgBroadcast);
+            if (ln.ok() && ln.included()) {
                 run_jobs(rd, r, table, q, k, v, &ln, prof, t0);
             }
             return;

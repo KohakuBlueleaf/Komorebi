@@ -1,5 +1,5 @@
-"""X280 ports on the host: the default deal of cores over X280 cores, the refusals, the
-ports line and area the threads read, and the control-block lines (no card)."""
+"""X280 ports on the host: the default deal of cores over X280 cores, the rejections,
+the ports line and area the threads read, and the control-block lines (no card)."""
 
 import struct
 
@@ -33,7 +33,7 @@ def test_by_default_cores_are_dealt_in_grid_order_cluster_by_cluster():
         ({0: (1, 4)}, "X280 core 4 is not 0 to 3"),
     ],
 )
-def test_a_plan_out_of_the_grid_or_the_threads_is_refused(serve, match):
+def test_a_plan_out_of_the_grid_or_the_threads_is_rejected(serve, match):
     with pytest.raises(ValueError, match=match):
         kt.port_plan(serve, 120, {1})
     with pytest.raises(ValueError, match="need an X280 thread"):

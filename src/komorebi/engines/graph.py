@@ -1,7 +1,7 @@
 """Graphs: the builder, the upload encoding, the check and the simulator.
 
 The constants repeat `km_graph.h`; a test compares them. The executor here follows
-`km_graph_engine.c` step for step, so the two give the same records and registers.
+`km_graph_engine.c` step for step, so the two give the same commands and registers.
 """
 
 import struct
@@ -31,7 +31,7 @@ LINE = st.LINE
 MASK = st.MASK
 REGS = st.REGS
 
-NODE_RECORD, NODE_CPU, NODE_JOIN = 1, 2, 3
+NODE_COMMAND, NODE_CPU, NODE_JOIN = 1, 2, 3
 GRUN_UPLOAD, GRUN_KEPT = 1, 2
 EV_GRAPH, EV_GRAPH_END, EV_GRAPH_ERROR = 7, 8, 9
 ERR_NODE, ERR_EDGE, ERR_RUNS, ERR_KEPT_FULL = 12, 13, 14, 15
@@ -39,7 +39,7 @@ ERR_NODE, ERR_EDGE, ERR_RUNS, ERR_KEPT_FULL = 12, 13, 14, 15
 # kmg_step's answers (RUNNING, END and ERROR are also the phase) and the node states
 RUNNING, ROUND, END, ERROR = 0, 1, 2, 3
 WAITING, READY, FLIGHT, DONE = 0, 1, 2, 3
-ISSUED, BUSY = 0, 1
+SUBMITTED, BUSY = 0, 1
 
 HEADER = struct.Struct("<12I16x")
 HEADER_FIELDS = (
@@ -48,7 +48,7 @@ HEADER_FIELDS = (
     "n_nodes",
     "n_edges",
     "n_ops",
-    "n_records",
+    "n_commands",
     "req",
     "again_reg",
     "max_runs",
@@ -83,16 +83,16 @@ NodeRow = namedtuple(
     "NodeRow", "kind flags n_pred skip_reg arg n_ops result_reg succ_off succ_n"
 )
 Event = namedtuple("Event", "kind req aux extra pass_index")
-GraphRecord = namedtuple(
-    "GraphRecord", "node run seq slot seg first count flags args pass_index queued"
+GraphCommand = namedtuple(
+    "GraphCommand", "node run seq slot handler first count flags args pass_index queued"
 )
 GraphSimResult = namedtuple(
-    "GraphSimResult", "records events status error regs runs passes stopped kept"
+    "GraphSimResult", "commands events status error regs runs passes stopped kept"
 )
 
 
 class GraphFormatError(ValueError):
-    """An upload that `check` refuses; carries the reason and node."""
+    """An upload that `check` rejects; carries the reason and node."""
 
     def __init__(self, error):
         super().__init__(f"bad graph: reason {error.reason} at node {error.node}")
@@ -314,10 +314,10 @@ class Graph:
         self.nodes.append(node)
         return node
 
-    def record(
+    def command(
         self,
-        seg,
-        team=None,
+        handler,
+        group=None,
         count=None,
         args=(),
         after=(),
@@ -325,14 +325,14 @@ class Graph:
         exclusive=False,
         skip_if_zero=None,
     ):
-        """A RECORD node on `team` = (first, count), or on `count` cores the allocator
+        """A COMMAND node on `group` = (first, count), or on `count` cores the allocator
         places; `result` is a register for the record's result word."""
-        if (team is None) == (count is None):
-            raise ValueError("give either team=(first, count) or count")
+        if (group is None) == (count is None):
+            raise ValueError("give either group=(first, count) or count")
         result_reg = _reg_or_none(result, "result")
-        index = self._template(seg, team, count, list(args), exclusive, result_reg)
+        index = self._template(handler, group, count, list(args), exclusive, result_reg)
         return self._node(
-            Node, NODE_RECORD, after, skip_if_zero, template=index, result=result_reg
+            Node, NODE_COMMAND, after, skip_if_zero, template=index, result=result_reg
         )
 
     def cpu(self, after=(), skip_if_zero=None):
@@ -343,15 +343,15 @@ class Graph:
         """A node with no work."""
         return self._node(Node, NODE_JOIN, after, skip_if_zero)
 
-    def _template(self, seg, team, count, args, exclusive, result_reg):
-        if not 1 <= seg <= st.SEG_USER_MAX:
-            raise ValueError(f"segment {seg} is not a program segment (1 to 239)")
+    def _template(self, handler, group, count, args, exclusive, result_reg):
+        if not 1 <= handler <= st.HANDLER_USER_MAX:
+            raise ValueError(f"handler {handler} is not a program handler (1 to 239)")
         if len(args) > st.ARGS:
-            raise ValueError(f"{len(args)} arguments, a record has {st.ARGS}")
-        flags = (st.F_EXCL if exclusive else 0) | (0 if team else st.F_QUEUE)
+            raise ValueError(f"{len(args)} arguments, a command has {st.ARGS}")
+        flags = (st.F_EXCL if exclusive else 0) | (0 if group else st.F_QUEUE)
         flags |= st.F_RESULT if result_reg != NONE else 0
-        words = [0] * st.RECORD_WORDS
-        words[1] = seg | flags << 8
+        words = [0] * st.COMMAND_WORDS
+        words[1] = handler | flags << 8
         patch = []
         for i, value in enumerate(args):
             if isinstance(value, Reg):
@@ -360,16 +360,16 @@ class Graph:
                 words[st.ARG_WORD[i]] = st._u32(value, "argument")
         if len(patch) > st.PATCHES:
             raise ValueError(f"{len(patch)} register arguments, at most {st.PATCHES}")
-        first, cnt = team if team else (0, count)
+        first, cnt = group if group else (0, count)
         first_reg = count_reg = NONE
         if isinstance(first, Reg):
             first_reg = first.index
         else:
-            words[2] |= st._team_field(first, "first")
+            words[2] |= st._group_field(first, "first")
         if isinstance(cnt, Reg):
             count_reg = cnt.index
         else:
-            words[2] |= st._team_field(cnt, "count") << 16
+            words[2] |= st._group_field(cnt, "count") << 16
         pad = [0] * (st.PATCHES - len(patch))
         t = Template(
             tuple(words),
@@ -399,7 +399,7 @@ class Graph:
                 succ[p.index].append(n.index)
         rows, edges, ops = [], [], []
         for n in self.nodes:
-            arg, n_ops = n.template if n.kind == NODE_RECORD else 0, 0
+            arg, n_ops = n.template if n.kind == NODE_COMMAND else 0, 0
             if n.kind == NODE_CPU:
                 if not n.ops:
                     raise ValueError(f"CPU node {n.index} has no micro-ops")
@@ -445,7 +445,7 @@ class Graph:
     @classmethod
     def decode(cls, data):
         """The graph an upload describes (registers by number, no binding names);
-        GraphFormatError if `check` refuses it."""
+        GraphFormatError if `check` rejects it."""
         error = check(data)
         if error:
             raise GraphFormatError(error)
@@ -465,7 +465,7 @@ class Graph:
             kind_cls = CpuNode if r.kind == NODE_CPU else Node
             after = tuple(g.nodes[p] for p in preds[i])
             node = kind_cls(g, i, r.kind, after, r.skip_reg)
-            if r.kind == NODE_RECORD:
+            if r.kind == NODE_COMMAND:
                 node.template, node.result = r.arg, r.result_reg
             if r.kind == NODE_CPU:
                 node.ops = [_relative(o, r.arg) for o in ops[r.arg : r.arg + r.n_ops]]
@@ -505,7 +505,7 @@ def _layout(h):
     edges = HEADER.size + _line_up(h["n_nodes"] * NODE_BYTES)
     ops = edges + _line_up(h["n_edges"] * 2)
     tpl = ops + _line_up(h["n_ops"] * st.UOP_BYTES)
-    return edges, ops, tpl, tpl + _line_up(h["n_records"] * TEMPLATE_BYTES)
+    return edges, ops, tpl, tpl + _line_up(h["n_commands"] * TEMPLATE_BYTES)
 
 
 def _parse(data):
@@ -521,7 +521,7 @@ def _parse(data):
         op, a, b, c, imm, imm2, _ = st.UOP.unpack_from(data, at_ops + i * st.UOP_BYTES)
         ops.append(Uop(op, a, b, c, imm, imm2))
     templates = []
-    for i in range(h["n_records"]):
+    for i in range(h["n_commands"]):
         at = at_tpl + i * TEMPLATE_BYTES
         rec = struct.unpack_from("<16I", data, at)
         tail = st.TAIL.unpack_from(data, at + 64)
@@ -534,7 +534,7 @@ def _bad_reg(r):
 
 
 def _bad_template(t):
-    if not 1 <= t.seg <= st.SEG_USER_MAX:
+    if not 1 <= t.handler <= st.HANDLER_USER_MAX:
         return True
     if t.flags & ~(st.F_EXCL | st.F_RESULT | st.F_QUEUE) or t.n_patch > st.PATCHES:
         return True
@@ -556,14 +556,14 @@ def _check_slice(ops, first, end):
 
 
 def _check_node(h, n, ops, templates, cpu_next):
-    if not NODE_RECORD <= n.kind <= NODE_JOIN or n.flags:
+    if not NODE_COMMAND <= n.kind <= NODE_JOIN or n.flags:
         return ERR_NODE
     if n.n_pred > MAX_PRED:
         return ERR_EDGE
     if _bad_reg(n.skip_reg) or _bad_reg(n.result_reg):
         return st.ERR_REGISTER
-    if n.kind == NODE_RECORD:
-        if n.arg >= h["n_records"] or _bad_template(templates[n.arg]):
+    if n.kind == NODE_COMMAND:
+        if n.arg >= h["n_commands"] or _bad_template(templates[n.arg]):
             return st.ERR_TEMPLATE
         no_result = not templates[n.arg].flags & st.F_RESULT
         if n.n_ops or (n.result_reg != NONE and no_result):
@@ -591,7 +591,7 @@ def check(data):
         return header
     if not 1 <= h["n_nodes"] <= MAX_NODES or h["n_edges"] > MAX_EDGES:
         return header
-    if h["n_ops"] > MAX_OPS or h["n_records"] > MAX_TEMPLATES:
+    if h["n_ops"] > MAX_OPS or h["n_commands"] > MAX_TEMPLATES:
         return header
     if _bad_reg(h["again_reg"]) or h["max_runs"] == 0:
         return header
@@ -635,7 +635,7 @@ def check(data):
 class Executor:
     """The engine of `km_graph_engine.c` in Python: start, step, complete, stop.
 
-    `issue(node, words)` gets the record's 16 words and returns ISSUED or BUSY.
+    `submit(node, words)` gets the command's 16 words and returns SUBMITTED or BUSY.
     """
 
     def start(self, data, bindings=(), n_cores=119):
@@ -674,7 +674,7 @@ class Executor:
             if self.left[s] == 0:
                 self._push(s)
 
-    def step(self, issue):
+    def step(self, submit):
         """One bounded step; returns RUNNING, ROUND, END or ERROR."""
         if self.phase != RUNNING:
             return self.phase
@@ -688,8 +688,8 @@ class Executor:
                 self._finish(node)
                 busy = 0
                 continue
-            if r.kind == NODE_RECORD:
-                got = self._issue(node, issue)
+            if r.kind == NODE_COMMAND:
+                got = self._submit(node, submit)
                 if got == ERROR:
                     return ERROR
                 busy = busy + 1 if got == BUSY else 0
@@ -761,9 +761,9 @@ class Executor:
             pc = nxt
         return steps
 
-    def record_words(self, node):
-        """The record of a RECORD node with the registers as they are: (words, first,
-        count) before the team check."""
+    def command_words(self, node):
+        """The command of a COMMAND node with the registers as they are: (words, first,
+        count) before the group check."""
         t = self.tpl[self.rows[node].arg]
         words = list(t.rec)
         words[0] = words[4] = words[8] = words[12] = 0
@@ -777,26 +777,26 @@ class Executor:
             count = self.regs[t.count_reg]
         return words, first, count
 
-    def _issue(self, node, issue):
-        words, first, count = self.record_words(node)
+    def _submit(self, node, submit):
+        words, first, count = self.command_words(node)
         if words[1] >> 8 & st.F_QUEUE:
             first = 0
             if count == 0 or count > self.n_cores:
                 self._fail(st.ERR_NEVER_FITS, node)
                 return ERROR
-        elif st.team_outside(first, count, self.n_cores):
-            self._fail(st.ERR_TEAM, node)
+        elif st.group_outside(first, count, self.n_cores):
+            self._fail(st.ERR_GROUP, node)
             return ERROR
         words[2] = first | count << 16
-        if issue(node, words) != ISSUED:
+        if submit(node, words) != SUBMITTED:
             self._push(node)
             return BUSY
         self.status[node] = FLIGHT
         self.in_flight += 1
-        return ISSUED
+        return SUBMITTED
 
     def complete(self, node, result):
-        """The record of `node` completed; 1 if it was not in flight, else 0."""
+        """The command of `node` completed; 1 if it was not in flight, else 0."""
         if self.phase != RUNNING or not 0 <= node < self.h["n_nodes"]:
             return 1
         if self.status[node] != FLIGHT:
@@ -809,7 +809,8 @@ class Executor:
         return 0
 
     def retry(self, node):
-        """The record of `node` was refused after its issue: back to the ring's tail."""
+        """The command of `node` was rejected after its submit: back to the ring's
+        tail."""
         if self.phase != RUNNING or not 0 <= node < self.h["n_nodes"]:
             return 1
         if self.status[node] != FLIGHT:
@@ -828,7 +829,7 @@ class Executor:
 
 @dataclass
 class _Busy:
-    record: GraphRecord
+    command: GraphCommand
     done_pass: int | None
     result: int
     deadline_pass: int | None
@@ -868,23 +869,23 @@ def simulate(
         if status:
             err = GraphError(*eng.error) if status == "error" else None
             return GraphSimResult(
-                sim.records, sim.events, status, err, list(eng.regs), eng.runs, p + 1,
+                sim.commands, sim.events, status, err, list(eng.regs), eng.runs, p + 1,
                 sim.stopped, keep,
             )  # fmt: skip
     regs = list(eng.regs)
     return GraphSimResult(
-        sim.records, sim.events, "stuck", None, regs, eng.runs, max_passes, False, keep
+        sim.commands, sim.events, "stuck", None, regs, eng.runs, max_passes, False, keep
     )
 
 
 class _Sim:
-    """The completion table around one graph: 16 slots, teams, a model of the queue."""
+    """The completion table around one graph: 16 slots, groups, a model of the queue."""
 
     def __init__(self, eng, n_cores, delay, result, deadline_passes, req):
         self.eng, self.n_cores, self.delay = eng, n_cores, delay
         self.result_fn, self.deadline_passes, self.req = result, deadline_passes, req
         self.table = [None] * st.RING_SLOTS
-        self.records, self.events = [], []
+        self.commands, self.events = [], []
         self.seq = self.now = 0
         self.stopped = False
 
@@ -898,15 +899,15 @@ class _Sim:
         for slot, busy in enumerate(self.table):
             if busy and busy.done_pass is not None and busy.done_pass <= p:
                 self.table[slot] = None
-                eng.complete(busy.record.node, busy.result)
+                eng.complete(busy.command.node, busy.result)
         for busy in self.table:
             if busy and busy.deadline_pass is not None and p >= busy.deadline_pass:
                 self.stopped = True
-                eng.stop(st.ERR_DEADLINE, busy.record.node)
+                eng.stop(st.ERR_DEADLINE, busy.command.node)
                 break
         if cancel:
             eng.stop(st.ERR_CANCELLED, NO_NODE)
-        code = eng.phase if eng.phase != RUNNING else eng.step(self.issue)
+        code = eng.phase if eng.phase != RUNNING else eng.step(self.submit)
         if code == ROUND:
             self.post(EV_GRAPH, (eng.runs - 1) & 0xFFFFFF)
         elif code == END:
@@ -918,11 +919,11 @@ class _Sim:
             return "error"
         return None
 
-    def issue(self, node, words):
+    def submit(self, node, words):
         slot = next((i for i, b in enumerate(self.table) if b is None), None)
         if slot is None:
             return BUSY
-        busy = [(b.record.first, b.record.count) for b in self.table if b]
+        busy = [(b.command.first, b.command.count) for b in self.table if b]
         first, count = words[2] & 0xFFFF, words[2] >> 16
         flags = words[1] >> 8 & 0xFF
         queued = bool(flags & st.F_QUEUE)
@@ -935,11 +936,11 @@ class _Sim:
         ):
             return BUSY
         self.seq += 1
-        rec = GraphRecord(
+        rec = GraphCommand(
             node, self.eng.runs, self.seq, slot, words[1] & 0xFF, first, count,
             flags & ~st.F_QUEUE, tuple(words[i] for i in st.ARG_WORD), self.now, queued,
         )  # fmt: skip
-        self.records.append(rec)
+        self.commands.append(rec)
         delay = self.delay(rec) if callable(self.delay) else self.delay
         done = None if delay is None else self.now + 1 + delay
         value = self.result_fn(rec) & MASK if self.result_fn else 0
@@ -947,4 +948,4 @@ class _Sim:
             None if self.deadline_passes is None else self.now + self.deadline_passes
         )
         self.table[slot] = _Busy(rec, done, value, limit)
-        return ISSUED
+        return SUBMITTED

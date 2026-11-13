@@ -21,7 +21,7 @@ def log(msg):
 
 
 def program(kernels):
-    """The example's kernels with no tensors: only NOP and STALL records are sent."""
+    """The example's kernels with no tensors: only NOP and STALL commands are sent."""
     return km.Program(
         "mapcollect",
         kernels=kernels,
@@ -31,7 +31,7 @@ def program(kernels):
         ],
         compile_args={"reader": [2, 2048], "writer": [2, 2048]},
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
-        segments=Path(kernels) / "mapcollect.h",
+        handlers=Path(kernels) / "mapcollect.h",
     )
 
 
@@ -52,7 +52,7 @@ def case_compile_error(session):
             out["names_error"] = "deliberate compile error" in str(err)
     out["run_after_error"] = session.run is not before
     run = session.load(program(EXAMPLE / "kernels"))
-    out["nop_after"] = run.wait(run.issue(0, (0, 8))).kind
+    out["nop_after"] = run.wait(run.submit(0, (0, 8))).kind
     run.stop()
     out["ok"] = (
         out["raised"] == "ProgramError"
@@ -65,13 +65,13 @@ def case_compile_error(session):
 
 
 def case_exclusive(session):
-    """A STALL-free check of `exclusive`: a record overlapping one in flight is held
+    """A STALL-free check of `exclusive`: a command overlapping one in flight is held
     until that one completed (trace: its members took it after the leader pushed)."""
     run = session.load(program(EXAMPLE / "kernels"), trace=64)
     pairs = []
     for k in range(20):
-        a = run.issue(0, (0, 60))
-        b = run.issue(0, (30, 60), exclusive=k % 2 == 1)
+        a = run.submit(0, (0, 60))
+        b = run.submit(0, (30, 60), exclusive=k % 2 == 1)
         pairs.append((a, b, k % 2 == 1))
     run.drain()
     run.stop()
@@ -94,10 +94,10 @@ def case_queue_order(session, rounds=1000, jobs=32, count=8, busy=200):
     run = session.load(prog)
     at, counts, t0 = pages.address, [], time.monotonic()
     for k in range(rounds):
-        run.issue(3, None, args=[at, busy])
+        run.submit(3, None, args=[at, busy])
         for j in range(jobs):
-            run.issue(1, count, args=[at, j, k + 1], queued=True)
-        total = run.issue(2, None, args=[at, jobs, k + 1], exclusive=True, result=True)
+            run.submit(1, count, args=[at, j, k + 1], queued=True)
+        total = run.submit(2, None, args=[at, jobs, k + 1], exclusive=True, result=True)
         counts.append(run.wait(total).result)
     run.drain()
     took = time.monotonic() - t0
@@ -122,35 +122,35 @@ def queue_program(session):
 
 
 def case_queue_cost(session, windows=10, window=48, count=8, reads=(0, 100)):
-    """Where a queued record's time goes: `windows` x `window` records of `count` cores,
-    queued or on fixed disjoint teams, each window issued and waited for at once: PUTs,
-    or BUSY records whose leader reads a page `reads` times."""
+    """Where a queued command's time goes: `windows` x `window` commands of `count`
+    cores, queued or on fixed disjoint groups, each window submitted and waited for at
+    once: PUTs, or BUSY commands whose leader reads a page `reads` times."""
     prog, pages = queue_program(session)
     at, out = pages.address, {}
     for mode in [(m, r) for r in reads for m in ("plain", "queued")]:
         run = session.load(prog)
         events, t0 = [], time.monotonic()
         for w in range(windows):
-            tickets = []
+            handles = []
             for j in range(window):
                 if mode[0] == "queued":
-                    team, queued = count, True
+                    group, queued = count, True
                 else:
-                    team, queued = (count * (j % (run.cores // count)), count), False
-                seg, args = (3, [at, mode[1]]) if mode[1] else (1, [at, j, w + 1])
-                tickets.append(run.issue(seg, team, args=args, queued=queued))
-            events += run.wait(tickets)
+                    group, queued = (count * (j % (run.cores // count)), count), False
+                handler, args = (3, [at, mode[1]]) if mode[1] else (1, [at, j, w + 1])
+                handles.append(run.submit(handler, group, args=args, queued=queued))
+            events += run.wait(handles)
         wall = time.monotonic() - t0
         run.stop()
         res, n = run.result(), windows * window
         out[f"{mode[0]}_{mode[1]}_reads"] = {
-            "host_us_per_record": round(wall / n * 1e6, 2),
-            "host_issue_us": round(run.issue_s / n * 1e6, 2),
-            "kernel_us_per_record": round(res["last"] / 50 / n, 2),
-            "issue_to_done_us": round(
+            "host_us_per_command": round(wall / n * 1e6, 2),
+            "host_submit_us": round(run.submit_s / n * 1e6, 2),
+            "kernel_us_per_command": round(res["last"] / 50 / n, 2),
+            "submit_to_done_us": round(
                 float(np.mean([e.ticks for e in events])) / 50, 2
             ),
-            "passes_per_record": round(res["passes"] / n, 1),
+            "passes_per_command": round(res["passes"] / n, 1),
             "max_busy": res["max_busy"],
             "all_done": all(e.kind == "done" for e in events),
         }
@@ -179,7 +179,7 @@ def case_read(session):
         "as_whole": bool((got_a == a.read()).all()),
     }
     run = session.load(program(EXAMPLE / "kernels"))
-    run.wait(run.issue(0, (0, 8)))
+    run.wait(run.submit(0, (0, 8)))
     log("read while the run is loaded")
     (during,) = session.read_bf16(a)
     out["during_run"] = bool((during == x).all())
@@ -190,9 +190,9 @@ def case_read(session):
 
 
 def case_start_error(session):
-    """A record deadline under one timer tick: the kernel refuses its arguments before
+    """A command deadline under one timer tick: the kernel rejects its arguments before
     it opens a window. StartError with its result; the host stops the grid (every
-    reader gave up on the stop word, not its idle limit); then a run works."""
+    reader gave up on the stop flag, not its idle limit); then a run works."""
     out = {}
     t0 = time.monotonic()
     try:
@@ -211,7 +211,7 @@ def case_start_error(session):
         readers[key] = readers.get(key, 0) + 1
     out["readers"] = readers
     run = session.load(program(EXAMPLE / "kernels"))
-    out["nop_after"] = run.wait(run.issue(0, None)).kind
+    out["nop_after"] = run.wait(run.submit(0, None)).kind
     run.stop()
     out["ok"] = (
         out["raised"] == "StartError"

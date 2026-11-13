@@ -1,14 +1,13 @@
-"""Host-fed streams: the simulator's interpreter runs the stream on the host and
-issues its records through a `Run`'s host ring, so a stream gives the same records and
-registers host-fed as when the dispatch kernel runs it.
-"""
+"""Host-fed streams: the simulator's interpreter runs the stream on the host and submits
+its commands through a `Run`'s host ring, so a stream gives the same commands and
+registers host-fed as when the dispatcher runs it."""
 
 import time
 
 from komorebi.engines import graph as gr
 from komorebi.engines import stream as st
-from komorebi.engines.graph_hostfed import HostfedRecord, HostfedResult
-from komorebi.errors import RecordTimeout, WaitTimeout
+from komorebi.engines.graph_hostfed import HostfedCommand, HostfedResult
+from komorebi.errors import CommandTimeout, WaitTimeout
 
 
 def is_stream(obj):
@@ -21,7 +20,7 @@ def is_stream(obj):
 
 def run_hostfed(run, stream, bindings=None, timeout=10.0):
     """Runs `stream` (a Stream or its upload) on `run`; returns a `HostfedResult`.
-    A record's timeout ends the stream with reason 8; WaitTimeout if it does not end
+    A command's timeout ends the stream with reason 8; WaitTimeout if it does not end
     within `timeout` seconds."""
     if bindings:
         raise ValueError("a stream takes no bindings")
@@ -36,13 +35,13 @@ def run_hostfed(run, stream, bindings=None, timeout=10.0):
 
 
 class _Hostfed(st._Sim):
-    """The simulator's stream with ISSUE and SUBMIT sent through a Run: a record is
+    """The simulator's stream with SUBMIT and ENQUEUE sent through a Run: a command is
     pending until its event arrives, a result word is the latest one that arrived."""
 
     def __init__(self, run, ops, templates, h):
         super().__init__(ops, templates, h, run.cores, None, None, None)
         self.run = run
-        self.flight = {}  # ticket -> (pc, wants the result)
+        self.flight = {}  # handle -> (pc, wants the result)
         self.hostfed = []
 
     def post(self, kind, aux):
@@ -53,16 +52,16 @@ class _Hostfed(st._Sim):
             extra = self.regs[self.ops[self.pc].a]
         self.events.append(gr.Event(kind, self.h["req"], aux, extra, None))
 
-    def do_issue(self, o):
+    def do_submit(self, o):
         t, regs = self.templates[o.imm], self.regs
         first = t.rec[2] & 0xFFFF if t.first_reg == st.TPL_NONE else regs[t.first_reg]
         count = t.rec[2] >> 16 if t.count_reg == st.TPL_NONE else regs[t.count_reg]
-        if st.team_outside(first, count, self.n_cores):
-            return self.fail(st.ERR_TEAM, self.pc)
+        if st.group_outside(first, count, self.n_cores):
+            return self.fail(st.ERR_GROUP, self.pc)
         self._send(self.patched(t), first, count, False)
         return "ok"
 
-    def do_submit(self, o):
+    def do_enqueue(self, o):
         count = self.regs[o.a]
         if count == 0 or count > self.n_cores:
             return self.fail(st.ERR_NEVER_FITS, self.pc)
@@ -70,25 +69,25 @@ class _Hostfed(st._Sim):
         return "ok"
 
     def _send(self, words, first, count, queued):
-        seg, flags = words[1] & 0xFF, words[1] >> 8 & 0xFF
+        handler, flags = words[1] & 0xFF, words[1] >> 8 & 0xFF
         args = [words[i] for i in st.ARG_WORD]
         result = bool(flags & st.F_RESULT)
         if queued:
-            ticket = self.run.issue(seg, count, args, result=result, queued=True)
+            handle = self.run.submit(handler, count, args, result=result, queued=True)
         else:
             excl = bool(flags & st.F_EXCL)
-            ticket = self.run.issue(seg, (first, count), args, excl, result=result)
-        self.flight[ticket] = (self.pc, result)
+            handle = self.run.submit(handler, (first, count), args, excl, result=result)
+        self.flight[handle] = (self.pc, result)
         self.pending += 1
-        rec = HostfedRecord(
-            self.pc, 1, ticket, seg, first, count, flags & ~st.F_QUEUE, tuple(args),
+        rec = HostfedCommand(
+            self.pc, 1, handle, handler, first, count, flags & ~st.F_QUEUE, tuple(args),
             queued,
         )  # fmt: skip
         self.hostfed.append(rec)
 
     def go(self, deadline):
         while True:
-            if self.error is not None:  # a record's deadline passed
+            if self.error is not None:  # a command's deadline passed
                 return self.finish(deadline)
             self.now += 1
             state = self.step_stream()
@@ -102,24 +101,24 @@ class _Hostfed(st._Sim):
                 raise WaitTimeout("the stream did not end in time")
 
     def wait(self, deadline):
-        """Waits for the first record in flight, then takes every other completion
+        """Waits for the first command in flight, then takes every other completion
         already seen."""
         left = deadline - time.monotonic()
         try:
             ev = self.run.wait_any(self.flight, timeout=max(left, 0.0))
-        except RecordTimeout as err:
-            pc = self.flight.pop(err.ticket, (self.pc,))[0]
+        except CommandTimeout as err:
+            pc = self.flight.pop(err.handle, (self.pc,))[0]
             self.fail(st.ERR_DEADLINE, pc)
             return
-        self.done(ev.ticket, ev)
-        for ticket in sorted(self.flight):
-            ev = self.run.event(ticket)
+        self.done(ev.handle, ev)
+        for handle in sorted(self.flight):
+            ev = self.run.event(handle)
             if ev is not None:
-                self.run.forget([ticket])
-                self.done(ticket, ev)
+                self.run.forget([handle])
+                self.done(handle, ev)
 
-    def done(self, ticket, ev):
-        _, result = self.flight.pop(ticket)
+    def done(self, handle, ev):
+        _, result = self.flight.pop(handle)
         self.pending -= 1
         if result:
             self.last_result = ev.result

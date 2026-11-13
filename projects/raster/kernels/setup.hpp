@@ -92,7 +92,7 @@ namespace su {
     }
 
     // The 32 record slots to 32 records of 128 bytes (word w of record l: slot kSRec +
-    // w, lane l), two slots per segment load of 16 lanes (the register group's size).
+    // w, lane l), two slots per handler load of 16 lanes (the register group's size).
     inline void records_out(uint32_t* rec) {
 #if defined(__riscv_vector)
         const size_t vl = __riscv_vsetvl_e32m4(16);

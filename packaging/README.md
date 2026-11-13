@@ -7,7 +7,7 @@ when it is started by hand with `publish: true` ([the release workflow](#the-rel
 | File | What it does |
 |---|---|
 | `tt-metal.pin` | A link to `runtime/tt-metal.pin`, the tt-metal release Komorebi is developed and built against. |
-| `build_wheel.py` | Builds the `komorebi-tt` wheel (the package it carries is imported as `komorebi`) from a commit (`--ref`, default `HEAD`), exported with `git archive` so nothing untracked comes along. It builds the dispatch kernel image against a tt-metal tree with the X280 runtime, puts it beside the package, and refuses a wheel that misses a header or a source. |
+| `build_wheel.py` | Builds the `komorebi-tt` wheel (the package it carries is imported as `komorebi`) from a commit (`--ref`, default `HEAD`), exported with `git archive` so nothing untracked comes along. It builds the dispatcher image against a tt-metal tree with the X280 runtime, puts it beside the package, and rejects a wheel that misses a header or a source. |
 | `smoke.sh` | Installs a wheel alone into a fresh environment, runs `kmr doctor` outside the checkout, and checks that the headers and the prebuilt image are found inside the install; with `KMR_CARD=1` it also runs `examples/01_mapcollect`. |
 | `ci/` | What the release workflow runs: `build_wheels.sh` (tt-metal, then both wheels), `wheel_info.py` (names, versions and requirements read from the wheels, the version checks), `check_paths.py` (no binary names a path of the build machine). |
 | `version.py` | Reads, stamps and bumps the version in `pyproject.toml` and `komorebi.__version__`. |
@@ -19,8 +19,8 @@ the kernel runtime tree, the X280 runtime pieces and a locator.
 ## What the wheel carries
 
 - the `komorebi` package and the `kmr` command;
-- `komorebi/km-dispatch.bin`, the dispatch kernel image for X280 cluster 0, prebuilt;
-- `komorebi_native/`: the ABI and device headers (`include/`), the dispatch kernel's
+- `komorebi/km-dispatch.bin`, the dispatcher image for X280 cluster 0, prebuilt;
+- `komorebi_native/`: the ABI and device headers (`include/`), the dispatcher's
   sources and its host interface `km_dispatch.h` (`x280/kernel/`), the native host
   module's source (`csrc/host/`), its CMake file (`cmake/km_host.cmake`), and every
   file under `kernels/` (empty so far);

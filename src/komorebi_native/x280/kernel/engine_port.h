@@ -1,5 +1,5 @@
-/* Core 0's side of the stream engine on core 1: admitting KM_SEG_RUN, forwarding RUN
- * and KM_SEG_CANCEL as events on the engine's ring, its posts, and stopping it. */
+/* Core 0's side of the stream engine on core 1: admitting KM_HANDLER_RUN, forwarding
+ * RUN and KM_HANDLER_CANCEL as events on its ring, its posts, and stopping it. */
 #pragma once
 
 #include "event_ring.h"
@@ -20,7 +20,7 @@ static inline void engine_open(kmd_t* k, uint64_t* line) {
     r->depth = KMD_ENGINE_DEPTH;
     r->event_depth = KMD_ENGINE_EVENTS;
     r->next = 1;
-    r->t_record = k->ring[KMD_SRC_HOST].t_record;
+    r->t_command = k->ring[KMD_SRC_HOST].t_command;
     r->line = line;
 }
 
@@ -34,7 +34,7 @@ static inline void engine_go(kmd_t* k, uint32_t go) {
     x280_fence_ow();
 }
 
-/* Whether the engine has anything the kernel must look at: a stream, a record in
+/* Whether the engine has anything the kernel must look at: a stream, a command in
  * flight or queued, a held command. */
 static inline int engine_active(const kmd_t* k) {
     const kmd_ring_t* r = &k->ring[KMD_SRC_ENGINE];
@@ -44,8 +44,8 @@ static inline int engine_active(const kmd_t* k) {
     );
 }
 
-/* KM_SEG_RUN, host command `cmd`: refused, ended with KM_EV_STREAM_ERROR (req from the
- * header if in the region, else 0) or forwarded. Returns 1 to wait for room. */
+/* KM_HANDLER_RUN, host command `cmd`: rejected, ended with KM_EV_STREAM_ERROR (req from
+ * the header if in the region, else 0) or forwarded. Returns 1 to wait for room. */
 static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
     const uint32_t region = k->upload_bytes;
     uint32_t req = 0;
@@ -57,9 +57,9 @@ static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
         req = p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
     }
     if (k->exited || k->nstreams == KM_STREAM_MAX_ACTIVE) {
-        const uint32_t why = k->exited ? KMD_REFUSE_EXITED : KMD_REFUSE_STREAMS;
-        host_push(k, cmd, KM_EV_REFUSED | (why << 8), 0);
-        k->refused++;
+        const uint32_t why = k->exited ? KMD_REJECT_EXITED : KMD_REJECT_STREAMS;
+        host_push(k, cmd, KM_EV_REJECTED | (why << 8), 0);
+        k->rejected++;
         return 0;
     }
     uint32_t bad = (off & 63u) || off > region || bytes > region - off;
@@ -92,8 +92,8 @@ static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
     return 0;
 }
 
-/* KM_SEG_CANCEL, host command `cmd`: forwarded to the engine when a stream it runs has
- * `req`, else refused. Returns 0, or 1 when the engine's ring has no room. */
+/* KM_HANDLER_CANCEL, host command `cmd`: forwarded to the engine when a stream it runs
+ * has `req`, else rejected. Returns 0, or 1 when the engine's ring has no room. */
 static int engine_cancel(kmd_t* k, uint32_t cmd, uint32_t req) {
     for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE; i++) {
         if (k->runs[i].active && k->runs[i].req == req) {
@@ -105,13 +105,13 @@ static int engine_cancel(kmd_t* k, uint32_t cmd, uint32_t req) {
             return 0;
         }
     }
-    host_push(k, cmd, KM_EV_REFUSED | (KMD_REFUSE_UNKNOWN << 8), 0);
-    k->refused++;
+    host_push(k, cmd, KM_EV_REJECTED | (KMD_REJECT_UNKNOWN << 8), 0);
+    k->rejected++;
     return 0;
 }
 
-/* KMD_SEG_POST `l`, host event {a0, a1, a2}: a stream's end uses its held room; others
- * need room, or are dropped and counted when `finishing`. Returns 1 to wait. */
+/* KMD_HANDLER_POST `l`, host event {a0, a1, a2}: a stream's end uses its held room;
+ * others need room, or are dropped and counted when `finishing`. Returns 1 to wait. */
 static int engine_post(kmd_t* k, const uint64_t* l, int finishing) {
     const uint32_t req = (uint32_t)(l[1] >> 32), status = (uint32_t)(l[2] >> 32);
     const uint32_t ticks = (uint32_t)l[3], kind = status & 0xFFu;
@@ -135,7 +135,7 @@ static int engine_post(kmd_t* k, const uint64_t* l, int finishing) {
         if (!finishing) {
             return 1;
         }
-        k->harts[KMD_H_LOST]++;
+        k->x280_cores[KMD_H_LOST]++;
         return 0;
     }
     host_push(k, req, status, ticks);
@@ -156,7 +156,7 @@ static void engine_stop(kmd_t* k) {
     uint32_t state = 0;
     for (int last = 0; !last;) {
         x280_fence_ir();
-        state = k->harts[KMD_H_ENGINE];
+        state = k->x280_cores[KMD_H_ENGINE];
         last = state != KMD_ENGINE_RUNNING || x280_mtime() > by;
         /* At most one ring's worth per round: core 1 may still be writing. */
         for (uint32_t n = 0; n < KMD_ENGINE_DEPTH; n++) {
@@ -164,7 +164,7 @@ static void engine_stop(kmd_t* k) {
                 break;
             }
             r->line_state = 0;
-            if (((uint32_t)(r->line[0] >> 32) & 0xFFu) == KMD_SEG_POST) {
+            if (((uint32_t)(r->line[0] >> 32) & 0xFFu) == KMD_HANDLER_POST) {
                 engine_post(k, r->line, 1);
             }
             ring_consumed(r);
@@ -174,7 +174,7 @@ static void engine_stop(kmd_t* k) {
         result_error(k, KMD_ERR_ENGINE, 0, 0, 0, state);
     }
     if (state == KMD_ENGINE_TRAPPED && k->error == KMD_ERR_NONE) {
-        const uint32_t cause = k->harts[KMD_H_TRAP_CAUSE];
-        result_error(k, KMD_ERR_TRAP, cause, k->harts[KMD_H_TRAP_PC], 1, 0);
+        const uint32_t cause = k->x280_cores[KMD_H_TRAP_CAUSE];
+        result_error(k, KMD_ERR_TRAP, cause, k->x280_cores[KMD_H_TRAP_PC], 1, 0);
     }
 }

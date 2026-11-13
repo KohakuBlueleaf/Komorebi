@@ -1,4 +1,4 @@
-// Host-binned rasterizer: segments, buffers, and the layouts of the lists, the
+// Host-binned rasterizer: handlers, buffers, and the layouts of the lists, the
 // directory and the frame that the host and the three kernels share.
 #pragma once
 
@@ -6,11 +6,11 @@
 
 // FILL: a0 directory, a1 lists, a3 output pages per item, a4 profile. Each core fills
 // the tiles its directory page names and writes their planes to the frame.
-constexpr uint32_t kSegFill = 1;
+constexpr uint32_t kHandlerFill = 1;
 // ARITH: the same addresses; items are chunks of arithmetic-check inputs.
-constexpr uint32_t kSegArith = 2;
+constexpr uint32_t kHandlerArith = 2;
 // SPIN: a0 cycles of a RISC-V spin on each compute thread; no data. For power only.
-constexpr uint32_t kSegSpin = 3;
+constexpr uint32_t kHandlerSpin = 3;
 
 // Buffers: list pages in, directory scratch (reader, writer), output pages out.
 constexpr uint32_t kCbIn = 0;
@@ -93,7 +93,7 @@ constexpr uint32_t kRdWords = 1016;
 // hold a whole number of every item, and every push and pop on it is a whole item.
 static_assert(kOutPages % kPlanes == 0 && kOutPages % kArithOut == 0);
 // An item that would run past the buffer's end is not touched: the writer's gave-up
-// word gets this code (where: compute's write or the writer's send) and the stop word.
+// word gets this code (where: compute's write or the writer's send) and the stop flag.
 constexpr uint32_t kGaveBadItem = 3;
 constexpr uint32_t kWhereBadOut = 16;
 constexpr uint32_t kWhereBadSend = 17;

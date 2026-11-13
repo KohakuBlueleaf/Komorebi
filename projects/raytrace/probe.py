@@ -37,9 +37,9 @@ def main():
         full[:1] = directory
         for k, form in enumerate(FORMS):
             assert packets.K[f"kProbe{form.capitalize()}"] == k
-            _, prof, res, _, _ = card.run_segment(
+            _, prof, res, _, _ = card.run_handler(
                 session,
-                packets.K["kSegProbe"],
+                packets.K["kHandlerProbe"],
                 full,
                 packets.group(pages),
                 1,

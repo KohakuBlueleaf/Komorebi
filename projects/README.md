@@ -14,7 +14,7 @@ rather than staying in the project.
   scenes.
 - [raytrace/reference](raytrace/reference/README.md): ray tracing over a saved box tree
   in numpy, threaded C++ and CUDA, with the treelet cuts, timings and pictures.
-- [dense](dense/README.md): the matrix product on the resident workers, checked against
+- [dense](dense/README.md): the matrix product on the persistent kernels, checked against
   float64 and measured against Kohaku-TT's routes on the same card.
-- [attention](attention/README.md): scaled dot-product attention on lanes of cores,
-  K / V cast down each lane, Kohaku-TT's flash compute body, checked against float64.
+- [attention](attention/README.md): scaled dot-product attention on broadcasts of cores,
+  K / V cast down each broadcast, Kohaku-TT's flash compute body, checked against float64.

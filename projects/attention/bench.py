@@ -1,7 +1,7 @@
 """Time, power, clock and profile of attention on a card, one shape per call. One load:
-single records, records back to back, the profile; a second: multi-pass records under
+single commands, commands back to back, the profile; a second: multi-pass commands under
 the power sampler, the cut-down runs (optional). Then the check (exit 1 when it fails);
-at most 100 records per load. Usage in README.md."""
+at most 100 commands per load. Usage in README.md."""
 
 import argparse
 import json
@@ -25,7 +25,7 @@ from projects.attention.reference import sdpa  # noqa: E402
 
 K = pl.K
 log = run.log
-RECORDS_MAX = 100  # records one load may issue
+COMMANDS_MAX = 100  # commands one load may submit
 
 
 class Clock:
@@ -56,7 +56,7 @@ SHARES = {  # profile words whose share of the slowest core's time is reported
     "q_reads": "kPrRdQRead",
     "kv_reads": "kPrRdKvRead",
     "sender_waits_for_slot": "kPrRdKvFree",
-    "casts": "kPrRdCast",
+    "casts": "kPrRdBroadcast",
     "receiver_waits": "kPrRdArrive",
     "unpack_waits_for_q": "kPrUnWaitQ",
     "unpack_waits_for_kv": "kPrUnWaitKv",
@@ -74,8 +74,8 @@ SHARES = {  # profile words whose share of the slowest core's time is reported
 BODIES = ("kPrRdBody", "kPrUnBody", "kPrMaBody", "kPrPkBody", "kPrWrBody")
 
 
-def profile_summary(prof, records):
-    """Shares of the slowest core's time per unit, its busy time per record (cycles),
+def profile_summary(prof, commands):
+    """Shares of the slowest core's time per unit, its busy time per command (cycles),
     and the balance across cores."""
     pr = prof.astype(np.float64)
     busy = np.maximum.reduce([pr[:, K[k]] for k in BODIES])
@@ -83,11 +83,11 @@ def profile_summary(prof, records):
     total = busy[slow]
     return {
         "slowest_core": slow,
-        "slowest_cycles_per_record": round(total / records),
+        "slowest_cycles_per_command": round(total / commands),
         "mean_busy_over_slowest": round(float(busy.mean() / total), 3),
-        "score_tiles_per_record": int(pr[slow, K["kPrPkTiles"]] / records),
+        "score_tiles_per_command": int(pr[slow, K["kPrPkTiles"]] / commands),
         "slowest_page": [int(w) for w in prof[slow, : K["kProfWords"]]],
-        "shares_of_slowest": {
+        "partitions_of_slowest": {
             name: round(float(pr[slow, K[key]] / total), 3)
             for name, key in SHARES.items()
         },
@@ -95,13 +95,13 @@ def profile_summary(prof, records):
 
 
 def back_to_back(att, n, mode=K["kModeFull"], passes=1):
-    """n records back to back: microseconds per pass from the host's time."""
+    """n commands back to back: microseconds per pass from the host's time."""
     host_s, us = att.calls(n, mode=mode, passes=passes)
     return round(host_s * 1e6 / (n * passes), 3), float(np.median(us)) / passes
 
 
 def loop(att, n, passes, index):
-    """n records of `passes` passes each back to back, power and clock sampled."""
+    """n commands of `passes` passes each back to back, power and clock sampled."""
     meter = power.PowerSampler(index)
     with meter, Clock(index) as clock:
         meter.mark("open")
@@ -112,7 +112,7 @@ def loop(att, n, passes, index):
     phase = meter.result.phases["loop"]
     calls = n * passes
     return {
-        "records": n,
+        "commands": n,
         "passes": passes,
         "seconds": round(host_s, 3),
         "us_per_call": round(host_s * 1e6 / calls, 3),
@@ -129,11 +129,13 @@ def main():
     a = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     a.add_argument("--shape", choices=pl.SHAPES, required=True)
     a.add_argument("--approx", action="store_true", help="approximate exponential")
-    a.add_argument("--lane", type=int, default=None, help="lane length (default: plan)")
+    a.add_argument(
+        "--broadcast", type=int, default=None, help="broadcast length (default: plan)"
+    )
     a.add_argument("--chunks", type=int, default=None, help="causal chunks per head")
     a.add_argument("--seconds", type=float, default=4.0, help="power loop length")
     a.add_argument("--cuts", action="store_true", help="also the cut-down runs")
-    a.add_argument("--noc", type=int, choices=[0, 1], default=0, help="lane's NoC")
+    a.add_argument("--noc", type=int, choices=[0, 1], default=0, help="broadcast's NoC")
     a.add_argument("--seed", type=int, default=1)
     a.add_argument("--json", default=None)
     args = a.parse_args()
@@ -145,7 +147,7 @@ def main():
     index = visible_card()
     with km.Session(log=log) as session:
         nocs = session.nocs()
-        p = pl.make(s, nocs.grid, length=args.lane, chunks=args.chunks)
+        p = pl.make(s, nocs.grid, length=args.broadcast, chunks=args.chunks)
         out["plan"] = p.summary()
         out["x280_mhz"], out["noc"] = session.pll_mhz, args.noc
         tensors = {
@@ -156,8 +158,8 @@ def main():
             "tables": card.table_tensor(session, pl.tables(p)),
             "prof": card.prof_tensor(session, len(nocs.words)),
         }
-        # Load 1: single records, records back to back (5, then `n`: the second
-        # batch's time less the first's is the per-record time), the profile.
+        # Load 1: single commands, commands back to back (5, then `n`: the second
+        # batch's time less the first's is the per-command time), the profile.
         att = card.Attention(session, p, tensors, scale, args.approx, noc=args.noc)
         log(f"loaded, plan {out['plan']}")
         single = np.concatenate([att.calls(1)[1] for _ in range(6)])
@@ -168,9 +170,9 @@ def main():
         first_s, _ = att.calls(5)
         host_s, us = att.calls(n)
         out["us_per_call"] = round((host_s - first_s) * 1e6 / (n - 5), 3)
-        out["record_us_median"] = float(np.median(us))
+        out["command_us_median"] = float(np.median(us))
         out["profile"] = profile_summary(att.profile(session), n + 5)
-        out["records_issued"] = [6 + 1 + 5 + n + 1]
+        out["commands_submitted"] = [6 + 1 + 5 + n + 1]
         out["runs"] = [att.stop()]
         log(f"single {one:.1f} us, back to back {out['us_per_call']} us per call")
         # Load 2: the power loop, then the cut-down runs.
@@ -178,23 +180,23 @@ def main():
         each = out["us_per_call"]
         passes = max(1, math.ceil(0.1e6 / each))
         cuts = 11 if args.cuts else 0
-        records = math.ceil(args.seconds * 1e6 / (each * passes))
-        records = max(2, min(records, RECORDS_MAX - cuts))
-        out["loop"] = loop(att, records, passes, index)
+        commands = math.ceil(args.seconds * 1e6 / (each * passes))
+        commands = max(2, min(commands, COMMANDS_MAX - cuts))
+        out["loop"] = loop(att, commands, passes, index)
         log(f"loop: {out['loop']}")
         out["tflops"] = pl.flops(s) / out["loop"]["us_per_call"] / 1e6
         if args.cuts:
             att.profile(session)  # zeroes the loop's
             cut = {}
             for name, mode in (
-                ("cast_only", K["kModeCastOnly"]),
+                ("broadcast_only", K["kModeBroadcastOnly"]),
                 ("compute_only", K["kModeComputeOnly"]),
             ):
                 cut[name], _ = back_to_back(att, 4, mode=mode, passes=4)
                 cut[name + "_profile"] = profile_summary(att.profile(session), 4)
             out["cuts"] = cut  # neither writes O
-        out["records_issued"].append(records + cuts)
-        assert max(out["records_issued"]) <= RECORDS_MAX, out["records_issued"]
+        out["commands_submitted"].append(commands + cuts)
+        assert max(out["commands_submitted"]) <= COMMANDS_MAX, out["commands_submitted"]
         out["runs"].append(att.stop())
         out["check"] = run.check(session, tensors["o"], q, k, v, s, causal, args.approx)
     out["ok"] = out["check"]["ok"] and all(r["ok"] for r in out["runs"])

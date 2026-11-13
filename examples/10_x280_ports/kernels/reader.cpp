@@ -1,4 +1,4 @@
-// The grid side: the reader owns the port. Per record: wait for the X280 core's salt,
+// The grid side: the reader owns the port. Per command: wait for the X280 core's salt,
 // ask a0 values, hash them, tell the X280 core the hash and the asks' cycles.
 
 // HX_HANDLER_PASS runs units (equal or pulled ranges); HX_HANDLER_REPORT tells numbers.
@@ -21,14 +21,14 @@ void kernel_main() {
     km::Reader rd;
     km::X280Port port(rd);
     uint32_t got[HP_L_WHO] = {0, 0, 0, 0, 0, 0};  // the last pass's numbers
-    rd.run([&](const km_record_t& r) {
+    rd.run([&](const km_command_t& r) {
         km::X280Msg m;
-        if (km::seg(r) == HX_HANDLER_REPORT) {
+        if (km::handler(r) == HX_HANDLER_REPORT) {
             const uint32_t* w = got + (r.a0 == 0 ? HP_L_UNITS : HP_L_HASH);
             port.tell(w[0], w[1], w[2]);
             return;
         }
-        if (km::seg(r) == HX_HANDLER_PASS) {
+        if (km::handler(r) == HX_HANDLER_PASS) {
             const uint32_t t0 = km::wall();
             uint32_t units = 0, work = 0, hash = 0, pulls = 0, waited = 0;
             auto run = [&](uint32_t first, uint32_t count) {
@@ -41,8 +41,8 @@ void kernel_main() {
                 units += count;
             };
             if (r.a1 == 0) {
-                const km::Share s = (
-                    km::share(r.a0, rd.me() - km::first(r), km::count(r))
+                const km::Partition s = (
+                    km::partition(r.a0, rd.me() - km::first(r), km::count(r))
                 );
                 run(s.start, s.len);
             } else {
@@ -66,7 +66,7 @@ void kernel_main() {
             }
             return;
         }
-        if (km::seg(r) != HX_SEG_WORK || !port.wait_told(m)) {
+        if (km::handler(r) != HX_HANDLER_WORK || !port.wait_told(m)) {
             return;
         }
         uint32_t acc = m.w[0], sum = 0, top = 0;

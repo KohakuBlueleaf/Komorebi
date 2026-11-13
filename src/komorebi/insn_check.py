@@ -1,4 +1,4 @@
-"""Refuses a kernel whose linked ELF holds an instruction its Tensix core lacks (a core
+"""Rejects a kernel whose linked ELF holds an instruction its Tensix core lacks (a core
 that meets one stops without a report). Each group is documented as absent for the
 Blackhole baby RISC-V cores; the build allows them where the pack thread's vector
 flags imply the F extension."""
@@ -15,7 +15,7 @@ from komorebi.errors import KernelInstructionError, ProgramError
 
 SWITCH = "KMR_INSN_CHECK"  # "0" turns the check off
 
-# (group, pattern on the mnemonic). Not refused, though documented as absent: access
+# (group, pattern on the mnemonic). Not rejected, though documented as absent: access
 # to fflags and frm (the raster's SETUP pass uses it on main and runs).
 GROUPS = (
     ("float divide or square root", re.compile(r"f(div|sqrt)\.[sh]$")),

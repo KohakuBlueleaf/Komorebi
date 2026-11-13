@@ -80,7 +80,7 @@ PAIRS = {
     "QUEUE_LOOK": "KM_QUEUE_LOOK",
     "QUEUE_PASSES": "KM_QUEUE_PASSES",
     "RING_SLOTS": "KM_RING_SLOTS",
-    "SEG_USER_MAX": "KM_SEG_USER_MAX",
+    "HANDLER_USER_MAX": "KM_HANDLER_USER_MAX",
     "F_EXCL": "KM_F_EXCL",
     "F_RESULT": "KM_F_RESULT",
     "F_QUEUE": "KM_F_QUEUE",
@@ -109,10 +109,10 @@ def test_constants_opcodes_and_error_reasons_match_the_header():
         "MOD_ZERO",
         "DEADLINE",
     ]
-    reasons += ["NEVER_FITS", "CANCELLED", "TEAM"]
+    reasons += ["NEVER_FITS", "CANCELLED", "GROUP"]
     for number, name in enumerate(reasons, 1):
         assert H[f"KM_SERR_{name}"] == number == getattr(st, f"ERR_{name}")
-    assert H["KM_SEG_RUN"] == 251 and H["KM_SEG_CANCEL"] == 250
+    assert H["KM_HANDLER_RUN"] == 251 and H["KM_HANDLER_CANCEL"] == 250
 
 
 def test_layout_matches_the_c_structs(tmp_path):
@@ -140,7 +140,7 @@ def test_layout_matches_the_c_structs(tmp_path):
 # builder
 
 
-def test_the_builder_refuses_what_it_cannot_encode_in_registers():
+def test_the_builder_rejects_what_it_cannot_encode_in_registers():
     s = Stream()
     s.regs(14)
     with pytest.raises(ValueError, match=r"2 requested, 1 free of 15"):
@@ -159,7 +159,7 @@ def test_the_builder_refuses_what_it_cannot_encode_in_registers():
         Stream().set(b, 1 << 32)
 
 
-def test_equal_constants_share_one_register():
+def test_equal_constants_use_one_register():
     s = Stream()
     assert s.const(7) == s.const(7) != s.const(8)
     assert s.const(-1) == s.const(0xFFFFFFFF)
@@ -194,21 +194,21 @@ def test_labels_resolve_after_the_prologue_and_must_be_bound():
 def test_template_arguments_and_limits():
     s = Stream()
     a, b = s.regs(2)
-    s.issue(3, team=(a, 4), args=[1, a, 2, b], exclusive=True, result=True)
+    s.submit(3, group=(a, 4), args=[1, a, 2, b], exclusive=True, result=True)
     t = s.templates()[0]
-    assert (t.seg, t.flags) == (3, st.F_EXCL | st.F_RESULT)
+    assert (t.handler, t.flags) == (3, st.F_EXCL | st.F_RESULT)
     assert t.rec[2] == 4 << 16 and t.first_reg == 0 and t.count_reg == st.TPL_NONE
     assert t.n_patch == 2 and t.arg[:2] == (1, 3) and t.reg[:2] == (0, 1)
     assert t.rec[st.ARG_WORD[0]] == 1 and t.rec[st.ARG_WORD[2]] == 2
     with pytest.raises(ValueError, match="at most 4"):
-        s.issue(1, team=(0, 1), args=[a] * 5)
+        s.submit(1, group=(0, 1), args=[a] * 5)
     with pytest.raises(ValueError, match="11 arguments"):
-        s.issue(1, team=(0, 1), args=[0] * 11)
+        s.submit(1, group=(0, 1), args=[0] * 11)
     for bad in (0, 240, 250):
-        with pytest.raises(ValueError, match="program segment"):
-            s.issue(bad, team=(0, 1))
+        with pytest.raises(ValueError, match="program handler"):
+            s.submit(bad, group=(0, 1))
     with pytest.raises(ValueError, match="16 bits"):
-        s.issue(1, team=(0, 70000))
+        s.submit(1, group=(0, 70000))
 
 
 # encoding
@@ -218,7 +218,7 @@ def test_encoding_of_a_small_stream_by_hand():
     s = Stream(deadline_us=7, max_steps=9, seed=5, req=3)
     a = s.regs(1)[0]
     s.set(a, 0x01020304)
-    s.issue(2, team=(1, 2), args=[0xAA, a])
+    s.submit(2, group=(1, 2), args=[0xAA, a])
     s.halt(a)
     data = s.encode()
     assert len(data) == 64 + 64 + 128
@@ -254,8 +254,8 @@ def test_round_trip_of_every_micro_op():
     s.jnz(a, end)
     s.time(b)
     s.event(b)
-    s.issue(4, team=(1, c), args=[a, 5, b], exclusive=True)
-    s.submit(5, count=c, args=[b, c, a, 9, 1, 2, 3, 4, 5, 6], result=True)
+    s.submit(4, group=(1, c), args=[a, 5, b], exclusive=True)
+    s.enqueue(5, count=c, args=[b, c, a, 9, 1, 2, 3, 4, 5, 6], result=True)
     s.wait(2)
     s.result(c)
     s.jmp(top)
@@ -374,7 +374,7 @@ def test_step_limit_counts_executed_micro_ops():
 
 def test_a_stalled_micro_op_does_not_count_as_a_step():
     s = Stream(max_steps=5)
-    s.issue(1, team=(0, 1))
+    s.submit(1, group=(0, 1))
     s.wait(0)
     s.halt(s.const(0))
     assert s.simulate(delay=50).status == "ended"
@@ -384,11 +384,11 @@ def test_a_job_that_can_never_fit_is_an_error():
     for count in [0, 120]:
         s = Stream()
         s.set(s.regs(1)[0], 0)
-        s.submit(1, count)
+        s.enqueue(1, count)
         s.halt(s.const(0))
         done = s.simulate()
-        assert done.error == (st.ERR_NEVER_FITS, pcs(s, st.OP_SUBMIT)[0])
-        assert done.records == []
+        assert done.error == (st.ERR_NEVER_FITS, pcs(s, st.OP_ENQUEUE)[0])
+        assert done.commands == []
         assert done.events[-1].kind == st.EV_STREAM_ERROR
         assert done.events[-1].aux == 9 | done.error.pc << 8
 
@@ -412,24 +412,24 @@ def test_running_off_the_end_is_a_jump_error_at_n_ops():
     assert done.error == (st.ERR_JUMP, 1)
 
 
-def test_a_record_deadline_ends_the_stream_and_stops_the_grid():
+def test_a_command_deadline_ends_the_stream_and_stops_the_grid():
     s = Stream()
-    s.issue(1, team=(0, 2))
-    s.issue(1, team=(2, 2))
+    s.submit(1, group=(0, 2))
+    s.submit(1, group=(2, 2))
     s.wait(0)
     s.halt(s.const(0))
     done = s.simulate(delay=lambda r: None if r.seq == 2 else 0, deadline_passes=3)
-    assert done.error == (st.ERR_DEADLINE, pcs(s, st.OP_ISSUE)[1]) and done.stopped
-    assert done.passes == 4 and len(done.records) == 2
+    assert done.error == (st.ERR_DEADLINE, pcs(s, st.OP_SUBMIT)[1]) and done.stopped
+    assert done.passes == 4 and len(done.commands) == 2
     ok = s.simulate(delay=2, deadline_passes=3)
     assert ok.status == "ended" and not ok.stopped
     late = s.simulate(delay=3, deadline_passes=3)
-    assert late.error == (st.ERR_DEADLINE, pcs(s, st.OP_ISSUE)[0])
+    assert late.error == (st.ERR_DEADLINE, pcs(s, st.OP_SUBMIT)[0])
 
 
 def test_a_stream_that_never_finishes_reports_stuck():
     s = Stream()
-    s.issue(1, team=(0, 1))
+    s.submit(1, group=(0, 1))
     s.wait(0)
     s.halt(s.const(0))
     done = s.simulate(delay=None, max_passes=50)
@@ -440,7 +440,7 @@ def test_cancel_ends_the_stream_at_the_pc_it_has_reached():
     for cancel in [0, 4]:
         s = Stream(max_steps=10_000)
         top = s.label()
-        s.issue(1, team=(0, 1))
+        s.submit(1, group=(0, 1))
         s.wait(0)
         s.jmp(top)
         done = s.simulate(delay=1, cancel_pass=cancel)
@@ -452,7 +452,7 @@ def test_cancel_ends_the_stream_at_the_pc_it_has_reached():
 def test_waits_and_the_completion_order():
     s = Stream()
     for i in range(4):
-        s.issue(1, team=(i, 1), args=[i])
+        s.submit(1, group=(i, 1), args=[i])
     s.wait(2)
     s.event(s.const(1))
     s.wait(0)
@@ -468,24 +468,24 @@ def test_waits_and_the_completion_order():
     }
 
 
-def test_halt_waits_for_every_record():
+def test_halt_waits_for_every_command():
     s = Stream()
-    s.issue(1, team=(0, 1))
+    s.submit(1, group=(0, 1))
     s.halt(s.const(9))
     done = s.simulate(delay=6)
     assert done.passes == 8 and done.halt == 9
 
 
-def test_result_is_the_latest_completed_result_record():
+def test_result_is_the_latest_completed_result_command():
     s = Stream()
     r1, r2, r3 = s.regs(3)
     s.result(r1)
-    s.issue(1, team=(0, 2), args=[5], result=True)
-    s.issue(1, team=(2, 2), args=[7])
+    s.submit(1, group=(0, 2), args=[5], result=True)
+    s.submit(1, group=(2, 2), args=[7])
     s.wait(0)
     s.result(r2)
-    s.issue(1, team=(0, 3), args=[1], result=True)
-    s.issue(1, team=(3, 3), args=[2], result=True)
+    s.submit(1, group=(0, 3), args=[1], result=True)
+    s.submit(1, group=(3, 3), args=[2], result=True)
     s.wait(0)
     s.result(r3)
     s.event(r1)
@@ -497,15 +497,15 @@ def test_result_is_the_latest_completed_result_record():
         return r.args[0] * 100 + r.count
 
     done = s.simulate(result=fn, delay=0)
-    # records 3 and 4 are swept together; the higher slot is swept last
+    # commands 3 and 4 are swept together; the higher slot is swept last
     assert [e.aux for e in done.events[:3]] == [0, 502, 203]
 
 
-def test_result_order_follows_completion_not_issue():
+def test_result_order_follows_completion_not_submit():
     s = Stream()
     r = s.regs(1)[0]
-    s.issue(1, team=(0, 1), args=[1], result=True)
-    s.issue(1, team=(1, 1), args=[2], result=True)
+    s.submit(1, group=(0, 1), args=[1], result=True)
+    s.submit(1, group=(1, 1), args=[2], result=True)
     s.wait(0)
     s.result(r)
     s.halt(r)
@@ -517,17 +517,17 @@ def test_result_order_follows_completion_not_issue():
     assert s.simulate(delay=lambda x: x.args[0], result=lambda x: x.args[0]).halt == 2
 
 
-def test_issued_records_carry_the_template_and_the_patches():
+def test_submitted_commands_carry_the_template_and_the_patches():
     s = Stream()
     a, b, f = s.regs(3)
     s.set(a, 11)
     s.set(b, 22)
     s.set(f, 3)
-    s.issue(7, team=(f, 2), args=[1, a, 2, b, 5, 6, 7, 8, 9, 10], exclusive=True)
+    s.submit(7, group=(f, 2), args=[1, a, 2, b, 5, 6, 7, 8, 9, 10], exclusive=True)
     s.wait(0)
     s.halt(a)
-    (r,) = s.simulate().records
-    assert (r.seg, r.first, r.count, r.flags) == (7, 3, 2, st.F_EXCL)
+    (r,) = s.simulate().commands
+    assert (r.handler, r.first, r.count, r.flags) == (7, 3, 2, st.F_EXCL)
     assert r.args == (1, 11, 2, 22, 5, 6, 7, 8, 9, 10)
     assert (r.seq, r.slot, r.pc, r.queued, r.pass_index) == (1, 0, 3, False, 0)
 
@@ -537,12 +537,12 @@ def test_a_later_patch_of_the_same_argument_wins():
     x, y = s.regs(2)
     s.set(x, 1)
     s.set(y, 2)
-    s.issue(1, team=(0, 1), args=[x, y])
+    s.submit(1, group=(0, 1), args=[x, y])
     s.halt(x)
     data = bytearray(s.encode())
-    base = st.HEADER_BYTES + 64 + 64  # one line of micro-ops, then the record
+    base = st.HEADER_BYTES + 64 + 64  # one line of micro-ops, then the command
     poke(data, base + 1, "<B", 0)  # both patches name argument 0
-    assert simulate(bytes(data)).records[0].args[0] == 2
+    assert simulate(bytes(data)).commands[0].args[0] == 2
 
 
 # slots, allocator, queue
@@ -551,33 +551,33 @@ def test_a_later_patch_of_the_same_argument_wins():
 def test_slots_are_the_lowest_free_one():
     s = Stream()
     for i in range(3):
-        s.issue(1, team=(i, 1), args=[i])
+        s.submit(1, group=(i, 1), args=[i])
     s.wait(0)
-    s.issue(1, team=(0, 1), args=[9])
+    s.submit(1, group=(0, 1), args=[9])
     s.wait(0)
     s.halt(s.const(0))
     done = s.simulate(delay=lambda r: 4 if r.args[0] == 0 else 0)
-    assert [r.slot for r in done.records] == [0, 1, 2, 0]
+    assert [r.slot for r in done.commands] == [0, 1, 2, 0]
     s2 = Stream()
     for i in range(3):
-        s2.issue(1, team=(i, 1), args=[i])
+        s2.submit(1, group=(i, 1), args=[i])
     s2.wait(2)
-    s2.issue(1, team=(5, 1), args=[7])
+    s2.submit(1, group=(5, 1), args=[7])
     s2.wait(0)
     s2.halt(s2.const(0))
     done = s2.simulate(delay=lambda r: 4 if r.args[0] == 0 else 0)
-    assert [r.slot for r in done.records] == [0, 1, 2, 1]
+    assert [r.slot for r in done.commands] == [0, 1, 2, 1]
 
 
-def test_issue_waits_while_all_16_slots_are_busy():
+def test_submit_waits_while_all_16_slots_are_busy():
     s = Stream()
     top = s.label()
-    s.issue(1, team=(0, 1))
+    s.submit(1, group=(0, 1))
     s.addi(s.regs(1)[0], Reg(0), 1)
     s.jmp(top)
     done = s.simulate(delay=None, max_passes=5)
-    assert len(done.records) == 16 and done.status == "stuck"
-    assert [r.slot for r in done.records] == list(range(16))
+    assert len(done.commands) == 16 and done.status == "stuck"
+    assert [r.slot for r in done.commands] == list(range(16))
 
 
 def test_alloc_is_the_lowest_first_that_overlaps_nothing():
@@ -592,30 +592,30 @@ def test_alloc_is_the_lowest_first_that_overlaps_nothing():
         assert st.alloc(busy, count, n) == want
 
 
-def test_the_queue_picks_teams_with_the_allocator():
+def test_the_queue_picks_groups_with_the_allocator():
     s = Stream()
     for c in (10, 20, 5):
-        s.submit(1, c, args=[c])
+        s.enqueue(1, c, args=[c])
     s.wait(0)
     s.halt(s.const(0))
     done = s.simulate(delay=3)
-    assert [(r.first, r.count, r.slot) for r in done.records] == [
+    assert [(r.first, r.count, r.slot) for r in done.commands] == [
         (0, 10, 0),
         (10, 20, 1),
         (30, 5, 2),
     ]
-    assert all(r.queued and r.pass_index == 0 for r in done.records)
+    assert all(r.queued and r.pass_index == 0 for r in done.commands)
 
 
 def test_a_job_that_does_not_fit_does_not_block_those_behind_it():
     s = Stream()
-    s.submit(1, 100, args=[1])
-    s.submit(1, 100, args=[2])
-    s.submit(1, 10, args=[3])
+    s.enqueue(1, 100, args=[1])
+    s.enqueue(1, 100, args=[2])
+    s.enqueue(1, 10, args=[3])
     s.wait(0)
     s.halt(s.const(0))
     done = s.simulate(delay=2)
-    assert [(r.args[0], r.first, r.pass_index) for r in done.records] == [
+    assert [(r.args[0], r.first, r.pass_index) for r in done.commands] == [
         (1, 0, 0),
         (3, 100, 0),
         (2, 0, 3),
@@ -626,12 +626,12 @@ def test_the_queue_looks_at_the_first_16_jobs_only():
     def first_pass_of_small(blockers):
         s = Stream()
         for _ in range(blockers):
-            s.submit(1, 100, args=[0])
-        s.submit(1, 19, args=[1])
+            s.enqueue(1, 100, args=[0])
+        s.enqueue(1, 19, args=[1])
         s.wait(0)
         s.halt(s.const(0))
         done = s.simulate(delay=2)
-        return next(r for r in done.records if r.args[0] == 1).pass_index
+        return next(r for r in done.commands if r.args[0] == 1).pass_index
 
     assert first_pass_of_small(15) == 0
     assert first_pass_of_small(16) > 0
@@ -641,10 +641,10 @@ def blocked_big_job(smalls):
     """A long job, a 119-core job, then `smalls` one-core jobs."""
     s = Stream(max_steps=100_000)
     i = s.regs(1)[0]
-    s.submit(1, 1, args=[0])
-    s.submit(2, 119, args=[1])
+    s.enqueue(1, 1, args=[0])
+    s.enqueue(2, 119, args=[1])
     top = s.label()
-    s.submit(1, 1, args=[2])
+    s.enqueue(1, 1, args=[2])
     s.addi(i, i, 1)
     s.jlt(i, s.const(smalls), top)
     s.wait(0)
@@ -656,18 +656,18 @@ def long_first_job(r):
     return 3000 if r.seq == 1 else 1
 
 
-def issued_before_the_big_job(s):
+def submitted_before_the_big_job(s):
     done = s.simulate(delay=long_first_job, max_passes=10_000)
     assert done.status == "ended"
-    (big,) = [r for r in done.records if r.seg == 2]
-    ahead = [r for r in done.records if r.seg == 1 and r.seq > 1]
+    (big,) = [r for r in done.commands if r.handler == 2]
+    ahead = [r for r in done.commands if r.handler == 1 and r.seq > 1]
     return big, [r for r in ahead if r.pass_index < big.pass_index], done
 
 
 def test_a_job_is_passed_over_at_most_the_limit(monkeypatch):
     limit = 5
     monkeypatch.setattr(st, "QUEUE_PASSES", limit)
-    big, ahead, done = issued_before_the_big_job(blocked_big_job(100))
+    big, ahead, done = submitted_before_the_big_job(blocked_big_job(100))
     assert len(ahead) == limit
     assert big.pass_index == 3001  # when the long job is acknowledged
 
@@ -675,7 +675,7 @@ def test_a_job_is_passed_over_at_most_the_limit(monkeypatch):
 def test_a_full_queue_makes_submit_wait():
     s = Stream()
     for i in range(70):
-        s.submit(1, 119, args=[i])
+        s.enqueue(1, 119, args=[i])
     s.event(s.const(1))
     s.wait(0)
     s.halt(s.const(0))
@@ -683,7 +683,7 @@ def test_a_full_queue_makes_submit_wait():
     (progress,) = [e for e in done.events if e.kind == st.EV_STREAM]
     # 64 jobs fit in pass 0; each of the six more waits for one job to leave the queue
     assert progress.pass_index == 25
-    assert [r.args[0] for r in done.records] == list(range(70))
+    assert [r.args[0] for r in done.commands] == list(range(70))
     unlimited = s.simulate(delay=4, n_cores=119)
     assert unlimited.status == "ended"
 
@@ -691,36 +691,36 @@ def test_a_full_queue_makes_submit_wait():
 def test_a_cancelled_stream_drops_its_queue():
     s = Stream()
     for _ in range(10):
-        s.submit(1, 119)
+        s.enqueue(1, 119)
     s.wait(0)
     s.halt(s.const(0))
     done = s.simulate(delay=5, cancel_pass=2)
-    assert done.error.reason == st.ERR_CANCELLED and len(done.records) == 1
+    assert done.error.reason == st.ERR_CANCELLED and len(done.commands) == 1
 
 
-def test_excl_waits_for_an_overlapping_team_and_others_do_not():
+def test_excl_waits_for_an_overlapping_group_and_others_do_not():
     s = Stream()
-    s.issue(1, team=(0, 10), args=[0])
-    s.issue(1, team=(5, 10), args=[1], exclusive=True)
-    s.issue(1, team=(20, 5), args=[2], exclusive=True)
-    s.issue(1, team=(8, 4), args=[3])
+    s.submit(1, group=(0, 10), args=[0])
+    s.submit(1, group=(5, 10), args=[1], exclusive=True)
+    s.submit(1, group=(20, 5), args=[2], exclusive=True)
+    s.submit(1, group=(8, 4), args=[3])
     s.wait(0)
     s.halt(s.const(0))
     done = s.simulate(delay=2)
-    got = [(r.args[0], r.pass_index, r.flags) for r in done.records]
+    got = [(r.args[0], r.pass_index, r.flags) for r in done.commands]
     assert got == [(0, 0, 0), (1, 3, 2), (2, 3, 2), (3, 3, 0)]
 
 
 def test_excl_waits_for_every_job_queued_before_it():
     s = Stream()
     for i in range(3):
-        s.submit(1, 119, args=[i])
-    s.issue(2, team=(100, 4), args=[3], exclusive=True)
+        s.enqueue(1, 119, args=[i])
+    s.submit(2, group=(100, 4), args=[3], exclusive=True)
     s.wait(0)
     s.halt(s.const(0))
     for delay in (1, 2, 3):
         done = s.simulate(delay=delay)
-        got = [(r.args[0], r.queued) for r in done.records]
+        got = [(r.args[0], r.queued) for r in done.commands]
         assert got == [(0, True), (1, True), (2, True), (3, False)], (delay, got)
 
 
@@ -731,7 +731,7 @@ def tiny(**changes):
     s = Stream(**changes)
     a = s.regs(1)[0]
     s.set(a, 1)
-    s.issue(1, team=(0, 1))
+    s.submit(1, group=(0, 1))
     s.halt(a)
     return bytearray(s.encode())
 
@@ -787,7 +787,7 @@ def test_registers_above_15_are_reason_4_for_fields_in_use():
 def test_unused_operand_fields_are_ignored():
     d = tiny()
     poke(d, op_at(0) + 2, "<BB", 200, 201)  # SET uses only register a
-    poke(d, op_at(1) + 1, "<BBB", 200, 201, 202)  # ISSUE uses none
+    poke(d, op_at(1) + 1, "<BBB", 200, 201, 202)  # SUBMIT uses none
     poke(d, op_at(1) + 8, "<I", 0xDEADBEEF)
     assert check(bytes(d), 1 << 20) is None
 
@@ -816,7 +816,7 @@ def test_jump_targets_at_or_above_n_ops_are_reason_3():
 
 def test_bad_templates_are_reason_5_at_their_first_user():
     for offset, fmt, value in [
-        (4, "<I", 0),  # segment 0
+        (4, "<I", 0),  # handler 0
         (4, "<I", 250),
         (4, "<I", 1 | 8 << 8),  # KM_F_QUEUE is not for templates
         (64 + 10, "<B", 5),  # n_patch
@@ -843,30 +843,30 @@ def test_patch_entries_are_checked_only_up_to_n_patch():
 
 def test_an_unused_bad_template_is_reported_at_pc_0():
     s = Stream()
-    s.issue(1, team=(0, 1))
-    s.issue(2, team=(0, 1))
+    s.submit(1, group=(0, 1))
+    s.submit(2, group=(0, 1))
     s.halt(s.const(0))
     data = bytearray(s.encode())
     base = st.HEADER_BYTES + 64 + st.TEMPLATE_BYTES
     poke(data, base + 4, "<I", 250)
     assert check(bytes(data), 1 << 20) == (st.ERR_TEMPLATE, 2)
-    poke(data, op_at(2) + 4, "<I", 0)  # the second issue now uses template 0
+    poke(data, op_at(2) + 4, "<I", 0)  # the second submit now uses template 0
     assert check(bytes(data), 1 << 20) == (st.ERR_TEMPLATE, 0)
 
 
 def test_a_bad_upload_posts_one_error_event_with_the_header_request_id():
     d = poke(tiny(req=77), op_at(1), "<B", 99)
     done = simulate(bytes(d))
-    assert done.status == "error" and done.records == [] and done.passes == 1
+    assert done.status == "error" and done.commands == [] and done.passes == 1
     assert done.events == [st.Event(st.EV_STREAM_ERROR, 77, 2 | 1 << 8, 0)]
     done = simulate(bytes(d[:10]))
     assert done.events == [st.Event(st.EV_STREAM_ERROR, 0, 1, 0)]
 
 
-# the team rule, RUN, builder validation, orphans
+# the group rule, RUN, builder validation, orphans
 
 
-def test_a_team_outside_the_grid_is_found_without_a_sum():
+def test_a_group_outside_the_grid_is_found_without_a_sum():
     for first, count, outside in [
         (0, 119, False),
         (118, 2, True),
@@ -874,7 +874,7 @@ def test_a_team_outside_the_grid_is_found_without_a_sum():
         (0xFFFFFFFF, 2, True),
         (1, 0xFFFFFFFF, True),
     ]:
-        assert st.team_outside(first, count, 119) == outside
+        assert st.group_outside(first, count, 119) == outside
 
 
 def test_run_answers_what_the_kernel_must_say():
@@ -882,30 +882,30 @@ def test_run_answers_what_the_kernel_must_say():
     n = len(data)
     assert st.check_run(data, 0, 1 << 20) == (None, 9)
     assert st.check_run(data, 64, 1 << 20) == (None, 9)
-    refused = st.StreamError(st.ERR_HEADER, 0)
-    assert st.check_run(data, 8, 1 << 20) == (refused, 9)  # not a multiple of 64
-    assert st.check_run(data, 0, n - 64) == (refused, 9)  # longer than the region
-    assert st.check_run(data, 64, n + 32) == (refused, 9)  # ends outside
+    rejected = st.StreamError(st.ERR_HEADER, 0)
+    assert st.check_run(data, 8, 1 << 20) == (rejected, 9)  # not a multiple of 64
+    assert st.check_run(data, 0, n - 64) == (rejected, 9)  # longer than the region
+    assert st.check_run(data, 64, n + 32) == (rejected, 9)  # ends outside
     assert st.check_run(data, 64, n + 64) == (None, 9)  # ends exactly at the end
-    assert st.check_run(data, 1 << 32, 1 << 20) == (refused, 0)  # no sum is formed
-    assert st.check_run(data, 0xFFFFFFC0, 1 << 20) == (refused, 0)
-    assert st.check_run(data, 1 << 20, 1 << 20) == (refused, 0)  # header outside
+    assert st.check_run(data, 1 << 32, 1 << 20) == (rejected, 0)  # no sum is formed
+    assert st.check_run(data, 0xFFFFFFC0, 1 << 20) == (rejected, 0)
+    assert st.check_run(data, 1 << 20, 1 << 20) == (rejected, 0)  # header outside
 
 
-def test_run_is_refused_over_an_active_stream_or_request():
+def test_run_is_rejected_over_an_active_stream_or_request():
     data = bytes(tiny(req=9))
     n = len(data)
-    refused = st.StreamError(st.ERR_HEADER, 0)
+    rejected = st.StreamError(st.ERR_HEADER, 0)
     big = 1 << 20
-    assert st.check_run(data, 0, big, active=[(0, n)]) == (refused, 9)
+    assert st.check_run(data, 0, big, active=[(0, n)]) == (rejected, 9)
     assert st.check_run(data, n, big, active=[(0, n)]) == (None, 9)  # touching
-    assert st.check_run(data, 64, big, active=[(0, 128)]) == (refused, 9)
+    assert st.check_run(data, 64, big, active=[(0, 128)]) == (rejected, 9)
     assert st.check_run(data, 0, big, active=[(n, n)]) == (None, 9)
-    assert st.check_run(data, 0, big, active_reqs=[9]) == (refused, 9)
+    assert st.check_run(data, 0, big, active_reqs=[9]) == (rejected, 9)
     assert st.check_run(data, 0, big, active_reqs=[8]) == (None, 9)
 
 
-def test_the_builder_names_the_field_it_refuses():
+def test_the_builder_names_the_field_it_rejects():
     for field, value in (
         ("max_steps", 0),
         ("seed", 0),
@@ -924,7 +924,7 @@ def test_the_builder_names_the_field_it_refuses():
         s.wait(1 << 32)
 
 
-def test_the_builder_refuses_too_many_micro_ops():
+def test_the_builder_rejects_too_many_micro_ops():
     s = Stream()
     a = s.regs(1)[0]
     for _ in range(65535):
@@ -936,12 +936,12 @@ def test_the_builder_refuses_too_many_micro_ops():
 
 def test_the_default_deadline_applies_when_the_header_has_none():
     s = Stream(deadline_us=0)
-    s.issue(1, team=(0, 1))
+    s.submit(1, group=(0, 1))
     s.halt(s.const(0))
     done = s.simulate(delay=None, default_deadline_passes=3)
-    assert done.error == (st.ERR_DEADLINE, pcs(s, st.OP_ISSUE)[0]) and done.passes == 4
+    assert done.error == (st.ERR_DEADLINE, pcs(s, st.OP_SUBMIT)[0]) and done.passes == 4
     t = Stream(deadline_us=1)
-    t.issue(1, team=(0, 1))
+    t.submit(1, group=(0, 1))
     t.halt(t.const(0))
     assert t.simulate(delay=None, default_deadline_passes=3, max_passes=20).status == (
         "stuck"
@@ -951,9 +951,9 @@ def test_the_default_deadline_applies_when_the_header_has_none():
 def test_a_late_orphan_posts_a_timeout_for_its_slot_with_the_ended_requests_id():
     s = Stream(req=33)
     a = s.regs(1)[0]
-    s.issue(1, team=(0, 1), args=[1])
-    s.issue(1, team=(1, 1), args=[2])
-    s.issue(1, team=(2, 1), args=[3])
+    s.submit(1, group=(0, 1), args=[1])
+    s.submit(1, group=(1, 1), args=[2])
+    s.submit(1, group=(2, 1), args=[3])
     s.mod(a, a, a)
     done = s.simulate(delay=lambda r: None if r.args[0] == 2 else 0, deadline_passes=5)
     assert done.error.reason == st.ERR_MOD_ZERO
@@ -964,18 +964,18 @@ def test_a_late_orphan_posts_a_timeout_for_its_slot_with_the_ended_requests_id()
     assert len(quiet.events) == 1 and not quiet.stopped
 
 
-def test_the_two_issuers_take_turns_on_free_slots():
+def test_the_two_submitters_take_turns_on_free_slots():
     s = Stream()
     s.set(s.regs(1)[0], 0)
     for _ in range(16):
-        s.issue(1, team=(0, 1))
-    s.submit(2, 1)
+        s.submit(1, group=(0, 1))
+    s.enqueue(2, 1)
     s.wait(0)
     s.halt(s.const(0))
     done = s.simulate(delay=0)
-    job = next(r for r in done.records if r.queued)
+    job = next(r for r in done.commands if r.queued)
     assert job.pass_index % 2 == 1  # odd passes give the queue the first call
-    assert all(r.pass_index == job.pass_index or not r.queued for r in done.records)
+    assert all(r.pass_index == job.pass_index or not r.queued for r in done.commands)
 
 
 def test_the_example_in_the_docs_runs():
@@ -984,5 +984,5 @@ def test_the_example_in_the_docs_runs():
     scope = {}
     exec(code, scope)
     done = scope["s"].simulate()
-    assert done.status == "ended" and len(done.records) == 1000
-    assert all(1 <= r.count <= 119 for r in done.records)
+    assert done.status == "ended" and len(done.commands) == 1000
+    assert all(1 <= r.count <= 119 for r in done.commands)

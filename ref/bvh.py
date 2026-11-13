@@ -25,7 +25,7 @@ def triangle_arrays(scene):
 
 
 def split_levels(centroid):
-    """Levels of (first node, segment starts, counts) and the final triangle order."""
+    """Levels of (first node, handler starts, counts) and the final triangle order."""
     n = len(centroid)
     perm = np.arange(n)
     start, count, base = np.array([0]), np.array([n]), 0

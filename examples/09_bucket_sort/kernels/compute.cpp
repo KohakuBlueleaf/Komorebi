@@ -7,6 +7,6 @@
 
 void kernel_main() {
     km::Compute cp;
-    // It still takes every record and returns at once, so the writer may report it.
-    cp.run([&](const km_record_t&) {});
+    // It still takes every command and returns at once, so the writer may report it.
+    cp.run([&](const km_command_t&) {});
 }

@@ -1,4 +1,4 @@
-/* Landing experiment: X280 record issuer (hart 0): writes records 1..n into every
+/* Landing experiment: X280 command submitter (core 0): writes commands 1..n into every
  * core's control block, paced on the leaders' acks; returns mtime ticks (~k: error). */
 #include <stdint.h>
 
@@ -42,13 +42,13 @@ static inline void store_line(volatile uint8_t* dst, const uint32_t* line) {
 }
 
 typedef struct {
-    uint64_t hart, run;
+    uint64_t core, run;
 } ctx_t;
 
 static int stopped(const ctx_t* c, uint32_t* spins) {
     if (++*spins == 4096u) {
         *spins = 0;
-        return x280_hart_stop_requested(c->hart, c->run);
+        return x280_hart_stop_requested(c->core, c->run);
     }
     return 0;
 }
@@ -82,17 +82,17 @@ static int wait_all(
     }
 }
 
-int main(uint64_t hartid) {
-    if (hartid != 0) {
+int main(uint64_t core_id) {
+    if (core_id != 0) {
         return 0;
     }
-    const ctx_t ctx = {hartid, x280_hart_control(hartid)->run_value};
+    const ctx_t ctx = {core_id, x280_hart_control(core_id)->run_value};
     const volatile landing_args_t* a = (
-        (const volatile landing_args_t*) x280_hart_args(hartid)
+        (const volatile landing_args_t*) x280_hart_args(core_id)
     );
     if (a == 0 || a->run_value != ctx.run || a->nrect < 1 || a->nrect > 2 ||
         a->ordering > 2 || a->proto > 1 || a->depth < 1 || a->depth > LANDING_SLOTS) {
-        x280_hart_set_result(hartid, ~0ull);
+        x280_hart_set_result(core_id, ~0ull);
         return 0;
     }
     volatile uint32_t* mb = (volatile uint32_t*)(uintptr_t)a->mailbox;
@@ -101,7 +101,7 @@ int main(uint64_t hartid) {
     const uint32_t depth = (uint32_t)a->depth, tag = (uint32_t)a->tag & 0xFFFFu;
     const int proto_b = a->proto == 1;
 
-    if (!x280_hart_wait_word_or_stop(hartid, ctx.run, &mb[0], 1u)) {
+    if (!x280_hart_wait_word_or_stop(core_id, ctx.run, &mb[0], 1u)) {
         return 0;
     }
     if (!wait_all(&ctx, acks, k, sw, TTX_READY)) {
@@ -109,7 +109,7 @@ int main(uint64_t hartid) {
     }
     const uint32_t ctl_addr = mb[1];
     if (ctl_addr & 63u) {
-        x280_hart_set_result(hartid, ~4ull);
+        x280_hart_set_result(core_id, ~4ull);
         return 0;
     }
     __asm__ volatile("csrs mstatus, %0" ::"r"((3ul << 9) | (3ul << 13)));
@@ -133,7 +133,7 @@ int main(uint64_t hartid) {
             )
         );
         if (win == 0 || noc_verify_tlb_2m((uint32_t)r, &programmed) != 0) {
-            x280_hart_set_result(hartid, ~2ull);
+            x280_hart_set_result(core_id, ~2ull);
             return 0;
         }
         ctl[r] = (volatile uint8_t*)win + ctl_addr;
@@ -164,7 +164,7 @@ int main(uint64_t hartid) {
             }
         }
         __asm__ volatile("fence ow, ow" ::: "memory");
-        mb[4] = i; /* last issued record, for post-mortem */
+        mb[4] = i; /* last submitted command, for post-mortem */
         if (depth == 1) {
             ok = wait_all(&ctx, acks, k, sw, i);
         }
@@ -177,6 +177,6 @@ int main(uint64_t hartid) {
     for (uint64_t r = 0; r < nrect; r++) {
         noc_clear_tlb_2m((uint32_t)r);
     }
-    x280_hart_set_result(hartid, ok ? (t1 - t0) : ~3ull);
+    x280_hart_set_result(core_id, ok ? (t1 - t0) : ~3ull);
     return 0;
 }

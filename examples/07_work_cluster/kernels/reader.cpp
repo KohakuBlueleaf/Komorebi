@@ -1,4 +1,4 @@
-// Work-cluster example, grid side: no segment needs input through the reader.
+// Work-cluster example, grid side: no handler needs input through the reader.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -6,5 +6,5 @@
 
 void kernel_main() {
     km::Reader rd;
-    rd.run([&](const km_record_t&) {});
+    rd.run([&](const km_command_t&) {});
 }

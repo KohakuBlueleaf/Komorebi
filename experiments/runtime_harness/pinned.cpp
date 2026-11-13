@@ -23,23 +23,23 @@ namespace scen {
             Sim s(cfg);
             s.run();
             common(s, o.check);
-            o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+            o.check.expect(all_done(s), "every command and the EXIT acknowledged");
             finish(s, o);
         }
 
-        // EXIT with team (0, 2) on four cores; the increments of cores 2 and 3 are
+        // EXIT with group (0, 2) on four cores; the increments of cores 2 and 3 are
         // late.
-        void exit_partial_team(Outcome& o) {
+        void exit_partial_group(Outcome& o) {
             Config cfg = fault_config(4);
             cfg.jobs = {nop_job(0, 4)};
-            cfg.exit_team = km::make_team(0, 2);
+            cfg.exit_group = km::make_group(0, 2);
             cfg.delay = [](const Chunk& c) -> int64_t {
                 return c.atomic && c.src >= 2 ? 3000 : 40;
             };
             Sim s(cfg);
             s.run();
             common(s, o.check);
-            o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+            o.check.expect(all_done(s), "every command and the EXIT acknowledged");
             for (uint32_t core = 0; core < cfg.cores; core++) {
                 o.check.expect(
                     s.state(core, km::kStWriter) == 0,
@@ -49,8 +49,8 @@ namespace scen {
             finish(s, o);
         }
 
-        // A record with no output on two cores; core 1's pack is held as it takes it:
-        // the record is acknowledged only after core 1's compute is released.
+        // A command with no output on two cores; core 1's pack is held as it takes it:
+        // the command is acknowledged only after core 1's compute is released.
         void no_output_waits_for_compute(Outcome& o) {
             constexpr uint64_t kHold = 4000;
             Config cfg = fault_config(2);
@@ -68,7 +68,7 @@ namespace scen {
             sp = &s;
             s.run();
             common(s, o.check);
-            o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+            o.check.expect(all_done(s), "every command and the EXIT acknowledged");
             o.check.expect(released != 0, "core 1's pack was held");
             o.check.expect(
                 s.jobs[0].acked >= released,
@@ -104,13 +104,13 @@ namespace scen {
             }
         }
 
-        // One slot, three records on cores 1 to 3: a flagged RESULT is acked with the
+        // One slot, three commands on cores 1 to 3: a flagged RESULT is acked with the
         // leader's result, an unflagged one leaves word 1 alone, a flagged NOP sends 0.
         void result_word_from_the_leader(Outcome& o) {
             Config cfg = fault_config(4);
             cfg.depth = 1;
             Job res = nop_job(1, 3);
-            res.seg = kSegResult;
+            res.handler = kHandlerResult;
             res.a[0] = 0x5EED;
             res.flags = KM_F_RESULT;
             Job plain = res;
@@ -122,7 +122,7 @@ namespace scen {
             Sim s(cfg);
             s.run();
             common(s, o.check);
-            o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+            o.check.expect(all_done(s), "every command and the EXIT acknowledged");
             const auto& j = s.jobs;
             o.check.expect(
                 j[0].result == 0x5EED, fmt("result %x, not the leader's", j[0].result)
@@ -154,19 +154,19 @@ namespace scen {
                 std::string(w) + " recorded the bad-item give-up"
             );
             c.expect(
-                s.word(core, KM_CTL_STOP) != 0, std::string(w) + " set the stop word"
+                s.word(core, KM_CTL_STOP) != 0, std::string(w) + " set the stop flag"
             );
             c.expect(s.all_returned, std::string(w) + ": every thread returned");
         }
 
         // Each of the four wrappers is asked for an item that starts one page before
-        // the end: it gives up with the bad-item code and sets the stop word.
-        void wrappers_refuse_straddling_items(Outcome& o) {
+        // the end: it gives up with the bad-item code and sets the stop flag.
+        void wrappers_reject_straddling_items(Outcome& o) {
             for (uint32_t a1 : {1u, 0u}) {  // reader (after 5 input pages), writer
                                             // (after 1)
                 Config cfg = fault_config(2);
                 Job bad;
-                bad.seg = kSegBadItem;
+                bad.handler = kHandlerBadItem;
                 bad.first = 1;
                 bad.a[1] = a1;
                 cfg.jobs = {map_job(1, 1, 5), bad};
@@ -179,7 +179,7 @@ namespace scen {
                 );
                 o.check.expect(
                     s.jobs[1].status != kDone,
-                    std::string(w) + ": the bad record is not acked"
+                    std::string(w) + ": the bad command is not acked"
                 );
                 finish(s, o);
             }
@@ -221,24 +221,24 @@ namespace scen {
 
         // ---- KM_F_EXCL ----
 
-        // An EXCL record on a team disjoint from the one in flight is issued at once;
-        // one that overlaps either waits until both are acknowledged.
-        void excl_waits_for_overlapping_team(Outcome& o) {
+        // An EXCL command on a group disjoint from the one in flight is submitted at
+        // once; one that overlaps either waits until both are acknowledged.
+        void excl_waits_for_overlapping_group(Outcome& o) {
             Config cfg = fault_config(4);
             cfg.jobs = {map_job(0, 2, 24), map_job(2, 2, 4), map_job(1, 2, 4)};
             cfg.jobs[1].flags = cfg.jobs[2].flags = KM_F_EXCL;
             Sim s(cfg);
             s.run();
             common(s, o.check);
-            o.check.expect(all_done(s), "every record and the EXIT acknowledged");
+            o.check.expect(all_done(s), "every command and the EXIT acknowledged");
             const auto& j = s.jobs;
             o.check.expect(
-                j[1].issued < j[0].acked,
-                "the disjoint EXCL record ran beside the first"
+                j[1].submitted < j[0].acked,
+                "the disjoint EXCL command ran beside the first"
             );
             o.check.expect(
-                j[2].issued >= j[0].acked && j[2].issued >= j[1].acked,
-                "the overlapping EXCL record waited for both teams"
+                j[2].submitted >= j[0].acked && j[2].submitted >= j[1].acked,
+                "the overlapping EXCL command waited for both groups"
             );
             finish(s, o);
         }
@@ -248,12 +248,12 @@ namespace scen {
     const std::vector<Case>& pinned() {
         static const std::vector<Case> cases = {
             {"smoke", smoke},
-            {"exit_partial_team", exit_partial_team},
+            {"exit_partial_group", exit_partial_group},
             {"no_output_waits_for_compute", no_output_waits_for_compute},
             {"wall_clock_across_a_carry", wall_clock_across_a_carry},
             {"result_word_from_the_leader", result_word_from_the_leader},
-            {"wrappers_refuse_straddling_items", wrappers_refuse_straddling_items},
-            {"excl_waits_for_overlapping_team", excl_waits_for_overlapping_team},
+            {"wrappers_reject_straddling_items", wrappers_reject_straddling_items},
+            {"excl_waits_for_overlapping_group", excl_waits_for_overlapping_group},
         };
         return cases;
     }

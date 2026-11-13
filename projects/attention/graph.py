@@ -1,6 +1,6 @@
-"""The same call issued three ways, rounds back to back: one ATTEND record walking the
-job table and one record per job index, each from the host and from a kept graph that
-the dispatch kernel's engine runs (it decides each next record). Then the check. Prints
+"""The same call submitted three ways, rounds back to back: one ATTEND command walking
+the job table and one command per job index, each from the host and from a kept graph
+that the dispatcher's engine runs (it decides each next command). Then the check. Prints
 one JSON line; exits 1 when the check fails. Usage in README.md."""
 
 import argparse
@@ -24,20 +24,20 @@ log = run.log
 
 
 def calls(p, att, per_job):
-    """The record words of one call: one record, or one per job index."""
+    """The command words of one call: one command, or one per job index."""
     if not per_job:
         return [att.words()]
     jobs = max(len(j) for j in p.jobs)
     return [att.words()[:7] + [j, 1] for j in range(jobs)]
 
 
-def graph(seg, team, words, rounds, req):
-    """A kept graph: the call's records one after the other, `rounds` times."""
+def graph(handler, group, words, rounds, req):
+    """A kept graph: the call's commands one after the other, `rounds` times."""
     g = Graph(deadline_us=2_000_000, max_runs=rounds, req=req, keep=True)
     it = g.reg()
     last = []
     for w in words:
-        last = [g.record(seg, team=team, args=w, after=last, exclusive=True)]
+        last = [g.command(handler, group=group, args=w, after=last, exclusive=True)]
     step = g.cpu(after=last)
     step.addi(it, it, 1)
     step.lt(g.again, it, g.const(rounds))
@@ -45,13 +45,14 @@ def graph(seg, team, words, rounds, req):
 
 
 def from_host(att, words, rounds):
-    """Microseconds per call, the call's records issued from the host back to back."""
+    """Microseconds per call, the call's commands submitted from the host back to
+    back."""
     rows = np.array(words * rounds, np.int64)
     t0 = time.perf_counter()
-    tickets = att.run.issue_many("attend", 0, att.team[1], rows, exclusive=True)
-    events = att.run.wait(list(tickets), timeout=60.0)
+    handles = att.run.submit_many("attend", 0, att.group[1], rows, exclusive=True)
+    events = att.run.wait(list(handles), timeout=60.0)
     if any(e.kind != "done" for e in events):
-        raise km.KomorebiError("a record not done")
+        raise km.KomorebiError("a command not done")
     return (time.perf_counter() - t0) * 1e6 / rounds
 
 
@@ -90,16 +91,16 @@ def main():
             "tables": card.table_tensor(session, pl.tables(p)),
         }
         att = card.Attention(session, p, tensors, 1.0 / np.sqrt(d))
-        seg = att.run.program.seg("attend")
-        team = (0, att.team[1])
+        handler = att.run.program.handler("attend")
+        group = (0, att.group[1])
         att.calls(2)
         us = {}
         for name, per_job in (("table", False), ("jobs", True)):
             words = calls(p, att, per_job)
             us[f"host_{name}"] = from_host(att, words, args.rounds)
-            g = graph(seg, team, words, args.rounds, req=10 + per_job)
+            g = graph(handler, group, words, args.rounds, req=10 + per_job)
             us[f"graph_{name}"] = from_graph(att, g, 3)
-            out[f"records_per_call_{name}"] = len(words)
+            out[f"commands_per_call_{name}"] = len(words)
             log(f"{name}: {us}")
         out["us_per_call"] = {n: round(v, 1) for n, v in us.items()}
         out["run"] = att.stop()

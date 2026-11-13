@@ -20,14 +20,14 @@ uint32_t wc_start(wc_state* s, const uint32_t* words) {
     return bad ? 1u : 0u;
 }
 
-void wc_round(const wc_state* s, wc_record out[2]) {
-    out[0].seg = WC_SEG_STEP;
+void wc_round(const wc_state* s, wc_command out[2]) {
+    out[0].handler = WC_HANDLER_STEP;
     out[0].flags = 0;
     out[0].first = s->word[WC_BASE] + s->first;
     out[0].count = s->word[WC_COUNT];
     out[0].a0 = s->word[WC_ADDR];
     out[0].a1 = s->round + 1;
-    out[1].seg = WC_SEG_SUM;
+    out[1].handler = WC_HANDLER_SUM;
     out[1].flags = KM_F_EXCL | KM_F_RESULT;
     out[1].first = s->word[WC_BASE];
     out[1].count = s->word[WC_CORES];

@@ -53,9 +53,11 @@ namespace {
     // LAYER: per owned row and column block, A's row times W's block in DST (the gate
     // pass: A's block copied), the epilogue on DST, the pack to Y's buffer.
     void layer(
-        const km::Compute& cp, const km_record_t& r, volatile tt_l1_ptr uint32_t* prof
+        const km::Compute& cp, const km_command_t& r, volatile tt_l1_ptr uint32_t* prof
     ) {
-        const km::Share s = km::share(r.a2, cp.me() - km::first(r), km::count(r));
+        const km::Partition s = (
+            km::partition(r.a2, cp.me() - km::first(r), km::count(r))
+        );
         const uint32_t kt = r.a3, nt = r.a4, ct = r.a5, wcb = r.a6, ep = r.a7;
         const uint32_t a_at = r.a8 & 0xFF, bcb = (r.a8 >> 8) & 0xFF;
         const uint32_t y_at = (r.a8 >> 16) & 0xFF;
@@ -157,10 +159,10 @@ void kernel_main() {
     compute_kernel_hw_startup<SrcOrder::Reverse>(kCbA, kCbA, kCbOut);
     volatile tt_l1_ptr uint32_t* prof = km::l1(get_tile_address(kCbProf, 0));
     uint32_t loaded[kCbW2 + 1] = {};  // W pages held in each W buffer
-    cp.run([&](const km_record_t& r) {
+    cp.run([&](const km_command_t& r) {
         const uint32_t t0 = km::wall();
         const uint32_t kt = r.a3, nt = r.a4;
-        if (km::seg(r) == kSegLoad) {
+        if (km::handler(r) == kHandlerLoad) {
             const uint32_t cb = r.a1;
             if (cb != kCbW && cb != kCbW3 && cb != kCbW2) {
                 return;
@@ -174,15 +176,17 @@ void kernel_main() {
             }
             return;
         }
-        if (km::seg(r) == kSegLayer) {
+        if (km::handler(r) == kHandlerLayer) {
             layer(cp, r, prof);
             km::add_sat(prof + kBody, km::wall() - t0);
             return;
         }
-        if (km::seg(r) != kSegProduct) {
+        if (km::handler(r) != kHandlerProduct) {
             return;
         }
-        const km::Share s = km::share(r.a2, cp.me() - km::first(r), km::count(r));
+        const km::Partition s = (
+            km::partition(r.a2, cp.me() - km::first(r), km::count(r))
+        );
         const uint32_t kc = r.a5, ct = r.a6, mode = r.a7;
         const bool stream = r.a8 == kFormStream;
         const bool row_item = stream || kc == kt;

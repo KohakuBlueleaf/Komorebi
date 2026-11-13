@@ -16,11 +16,13 @@
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbIn, kCbOut);
-    cp.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegMap) {
+    cp.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerMap) {
             return;
         }
-        const km::Share s = km::share(r.a1, cp.me() - km::first(r), km::count(r));
+        const km::Partition s = (
+            km::partition(r.a1, cp.me() - km::first(r), km::count(r))
+        );
         tile_regs_acquire();
         bool ok = true;  // the same on all three threads (wait_front tells them)
         if (s.len == 0) {

@@ -68,7 +68,7 @@ def main():
             pw["idle_mean_w"] = info["power"]["idle_mean_w"]
             pw["block_s"] = info["power"]["seconds"]
             pw["block_mean_w"] = info["power"]["mean_w"]
-            loop = {"pass": name, "records": reps, "rays": info["rays"]}
+            loop = {"pass": name, "commands": reps, "rays": info["rays"]}
             loop["trace_us_median"] = float(np.median(info["trace_us"]))
             loop["card_s"] = float(np.sum(info["trace_us"])) / 1e6
             loop["program_s"] = info["times"]["program_s"]

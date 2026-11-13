@@ -30,7 +30,7 @@
   "seconds": 3.827,
   "wall_seconds": 3.983,
   "us_per_call": 6.276,
-  "record_us_median": 13.24,
+  "command_us_median": 13.24,
   "mean_w": 67.14660545669122,
   "peak_w": 72.0,
   "open_w": 61.65090266916075,
@@ -54,18 +54,18 @@
    "compute_end": 120
   },
   "gave_up": [],
-  "lane_wait_cycles_max": [
+  "broadcast_wait_cycles_max": [
    0,
    0
   ],
-  "lane_gave_up": []
+  "broadcast_gave_up": []
  },
  "readback_s": 0.03,
  "profile": {
   "slowest_core": 3,
   "slowest_us": 4.636,
   "mean_busy_over_slowest": 0.997,
-  "shares_of_slowest": {
+  "partitions_of_slowest": {
    "read_A": 0.271,
    "read_W_chunks": 0.0,
    "reader_waits_for_space": 0.017,

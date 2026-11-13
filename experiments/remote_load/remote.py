@@ -787,7 +787,7 @@ def check(lines, cores, swaps, bodies, sched, first, mode, mhz, kib, results):
         },
         "load_cycles": stats(lines[:, CYCLES] >> 16, mhz),
         "run_cycles": stats(lines[:, CYCLES] & 0xFFFF, mhz),
-        "record_us": round(((w[3] << 32) + w[2]) / TICKS_PER_US, 1),
+        "command_us": round(((w[3] << 32) + w[2]) / TICKS_PER_US, 1),
     }
 
 

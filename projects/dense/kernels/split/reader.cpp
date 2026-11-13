@@ -15,8 +15,8 @@ void kernel_main() {
     const auto plan = [&](uint32_t i) {
         return rd.arg(i);
     };
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegSplit) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerSplit) {
             return;
         }
         const uint32_t mt = plan(kSpMt), kt = plan(kSpKt), nt = plan(kSpNt);
@@ -25,7 +25,7 @@ void kernel_main() {
         const km::Group g = km::digit_group(r, rd.me(), 1, s);
         const uint32_t q = (rd.me() - km::first(r)) / s;
         const uint32_t m0 = q / nbw * oh, n0 = q % nbw * ow;
-        const km::Share part = km::share(kt, g.rank, g.size);
+        const km::Partition part = km::partition(kt, g.rank, g.size);
         const auto a = TensorAccessor(a_args, r.a0);
         const auto w = TensorAccessor(w_args, r.a1);
         for (uint32_t k0 = 0; k0 < part.len; k0 += kc) {

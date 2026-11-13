@@ -8,8 +8,8 @@
 void kernel_main() {
     constexpr auto out_args = TensorAccessorArgs<0>();
     km::Writer wr;
-    wr.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegMap) {
+    wr.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerMap) {
             return true;
         }
         if (!wr.wait_front(kCbOut, 1)) {

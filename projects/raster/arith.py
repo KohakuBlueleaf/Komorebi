@@ -230,7 +230,7 @@ def main():
         workers = card.workers(session)
         pages, directory = lay_out(inputs, workers)
         out, _, status, _, times = card.run_lists(
-            session, K["kSegArith"], pages, directory, chunks * 3, K["kArithOut"]
+            session, K["kHandlerArith"], pages, directory, chunks * 3, K["kArithOut"]
         )
     report = {"n": n, "edge_cases": int(source.sum()), "scene": args.scene}
     report["run"] = status

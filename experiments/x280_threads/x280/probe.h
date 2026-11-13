@@ -1,5 +1,5 @@
 /* Shared by the probe images: the LIM layout the host writes and reads, the argument
- * check, progress stamps, bounded waits and the cache operations under test. */
+ * check, progress markers, bounded waits and the cache operations under test. */
 #pragma once
 
 #include <stdint.h>
@@ -10,15 +10,15 @@
 
 /* LIM layout, in bytes from the cluster's available LIM base (all 64-byte lines). */
 #define PR_ARGS 0x000u /* argument block: run value, then the probe's own words */
-#define PR_STAMP                                                                      \
-    0x100u               /* word h: hart h's last progress stamp, word 4 + h its time \
+#define PR_MARKER                                                                      \
+    0x100u               /* word h: core h's last progress marker, word 4 + h its time \
                           */
 #define PR_GO 0x140u     /* line from the host: word 0 = the step it allows */
 #define PR_RESULT 0x200u /* the probe's result words */
 #define PR_RESULT_WORDS 256u
 #define PR_BYTES 0x600u
 
-/* Hart results: 0 for a hart with nothing to do, else one of these or a count. */
+/* Core results: 0 for a core with nothing to do, else one of these or a count. */
 #define PR_ERR_ARGS 0xE0u  /* the argument block is not this run's or out of range */
 #define PR_ERR_LATE 0xE1u  /* a bounded wait ran out */
 #define PR_ERR_STOP 0xE2u  /* the runtime asked for a stop */
@@ -29,7 +29,7 @@
 #define PR_CCACHE_FLUSH64 0x02010200ull
 
 typedef struct {
-    uint64_t hart, run;
+    uint64_t core, run;
     volatile uint8_t* lim;
     uint64_t deadline; /* mtime; every wait ends by it */
 } pr_t;
@@ -44,10 +44,10 @@ static inline void pr_enable_fpv(void) {
 }
 
 /* Reads this run's argument block; 0 when it is not this run's or too short. */
-static inline int pr_open(pr_t* p, uint64_t hart, uint64_t min_bytes) {
-    p->hart = hart;
-    p->run = x280_hart_control(hart)->run_value;
-    p->lim = (volatile uint8_t*)(uintptr_t)x280_hart_args(hart);
+static inline int pr_open(pr_t* p, uint64_t core, uint64_t min_bytes) {
+    p->core = core;
+    p->run = x280_hart_control(core)->run_value;
+    p->lim = (volatile uint8_t*)(uintptr_t)x280_hart_args(core);
     p->deadline = 0;
     if (p->lim == 0 || x280_hart_args_bytes() < min_bytes) {
         return 0;
@@ -55,15 +55,15 @@ static inline int pr_open(pr_t* p, uint64_t hart, uint64_t min_bytes) {
     return *(volatile uint64_t*)p->lim == p->run;
 }
 
-static inline void pr_stamp(const pr_t* p, uint32_t where) {
-    pr_word(p, PR_STAMP)[p->hart] = where;
-    pr_word(p, PR_STAMP)[4 + p->hart] = (uint32_t)x280_mtime();
+static inline void pr_marker(const pr_t* p, uint32_t where) {
+    pr_word(p, PR_MARKER)[p->core] = where;
+    pr_word(p, PR_MARKER)[4 + p->core] = (uint32_t)x280_mtime();
     x280_fence_ow();
 }
 
 /* 0 while the run may go on, else PR_ERR_STOP or PR_ERR_LATE. */
 static inline uint32_t pr_check(const pr_t* p) {
-    if (x280_hart_stop_requested(p->hart, p->run)) {
+    if (x280_hart_stop_requested(p->core, p->run)) {
         return PR_ERR_STOP;
     }
     if (x280_mtime() > p->deadline) {
@@ -102,17 +102,17 @@ static inline void pr_flush(uint64_t addr, uint64_t bytes) {
     x280_fence_iorw();
 }
 
-/* Arms probe mode on this hart: an access or illegal-instruction fault is skipped
- * and noted instead of halting the hart. pr_unprobe says whether one happened. */
-static inline void pr_probe(uint64_t hart) {
-    *x280_hart_probe(hart) = 1;
+/* Arms probe mode on this core: an access or illegal-instruction fault is skipped
+ * and noted instead of halting the core. pr_unprobe says whether one happened. */
+static inline void pr_probe(uint64_t core) {
+    *x280_hart_probe(core) = 1;
     x280_fence_iorw();
 }
 
-static inline int pr_unprobe(uint64_t hart) {
+static inline int pr_unprobe(uint64_t core) {
     x280_fence_iorw();
-    const int faulted = *x280_hart_probe(hart) == 2;
-    *x280_hart_probe(hart) = 0;
+    const int faulted = *x280_hart_probe(core) == 2;
+    *x280_hart_probe(core) = 0;
     x280_fence_iorw();
     return faulted;
 }

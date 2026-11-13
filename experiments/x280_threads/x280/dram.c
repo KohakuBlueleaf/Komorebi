@@ -1,4 +1,4 @@
-/* DRAM visibility probe, X280 hart 0: reads region A after the host and a Tensix core
+/* DRAM visibility probe, X280 core 0: reads region A after the host and a Tensix core
  * wrote it, and writes region B for a Tensix core, without and with Flush64 (DR_*). */
 #include <stdint.h>
 
@@ -68,7 +68,7 @@ static uint32_t probe(pr_t* p, const volatile dram_args_t* a, volatile uint32_t*
     out[DR_WORDS] = (uint32_t)(na * page / 4);
     /* 1: what the host wrote, and which bank this is */
     out[DR_STEP] = 1;
-    pr_stamp(p, 1);
+    pr_marker(p, 1);
     out[DR_SEEN_BANK] = 0xFF;
     for (uint32_t k = 0; k < 8; k++) {
         if (ra[0] == dp_word(host + k, 0, 0) && ra[1] == dp_word(host + k, 0, 1)) {
@@ -77,7 +77,7 @@ static uint32_t probe(pr_t* p, const volatile dram_args_t* a, volatile uint32_t*
     }
     const uint32_t mine = host + (uint32_t)a->bank;
     out[DR_A1_HOST] = count(ra, na, page, mine);
-    pr_stamp(p, 2);
+    pr_marker(p, 2);
     if ((e = pr_wait_go(p, 1)) != 0) {
         return e;
     }
@@ -87,11 +87,11 @@ static uint32_t probe(pr_t* p, const volatile dram_args_t* a, volatile uint32_t*
     out[DR_A2_HOST] = count(ra, na, page, mine);
     /* 3: Flush64 over A, then read again (probe mode: a fault is skipped) */
     out[DR_STEP] = 3;
-    pr_probe(p->hart);
+    pr_probe(p->core);
     uint64_t t = x280_mtime();
     pr_flush((uint64_t)(uintptr_t)ra, na * page);
     out[DR_FLUSH_TICKS] = (uint32_t)(x280_mtime() - t);
-    out[DR_FAULT] = pr_unprobe(p->hart);
+    out[DR_FAULT] = pr_unprobe(p->core);
     out[DR_FLUSH_LINES] = (uint32_t)(na * page / 64);
     if (out[DR_FAULT]) {
         return PR_ERR_FAULT;
@@ -103,14 +103,14 @@ static uint32_t probe(pr_t* p, const volatile dram_args_t* a, volatile uint32_t*
     t = x280_mtime();
     fill(rb, nb, page, (uint32_t)a->seed_b1);
     out[DR_B_STORE_TICKS] = (uint32_t)(x280_mtime() - t);
-    pr_stamp(p, 4);
+    pr_marker(p, 4);
     if ((e = pr_wait_go(p, 2)) != 0) {
         return e;
     }
     /* 5: Flush64 over B; the host copies it out (output 2) */
     out[DR_STEP] = 5;
     pr_flush((uint64_t)(uintptr_t)rb, nb * page);
-    pr_stamp(p, 5);
+    pr_marker(p, 5);
     if ((e = pr_wait_go(p, 3)) != 0) {
         return e;
     }
@@ -118,7 +118,7 @@ static uint32_t probe(pr_t* p, const volatile dram_args_t* a, volatile uint32_t*
     out[DR_STEP] = 6;
     fill(rb, nb, page, (uint32_t)a->seed_b2);
     pr_flush((uint64_t)(uintptr_t)rb, nb * page);
-    pr_stamp(p, 6);
+    pr_marker(p, 6);
     if ((e = pr_wait_go(p, 4)) != 0) {
         return e;
     }
@@ -126,13 +126,13 @@ static uint32_t probe(pr_t* p, const volatile dram_args_t* a, volatile uint32_t*
     return 0;
 }
 
-int main(uint64_t hartid) {
-    if (hartid != 0) {
+int main(uint64_t core_id) {
+    if (core_id != 0) {
         return 0;
     }
     pr_t p;
-    if (!pr_open(&p, hartid, sizeof(dram_args_t))) {
-        x280_hart_set_result(hartid, ~(uint64_t)PR_ERR_ARGS);
+    if (!pr_open(&p, core_id, sizeof(dram_args_t))) {
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
         return 0;
     }
     const volatile dram_args_t* a = (const volatile dram_args_t*)p.lim;
@@ -144,13 +144,13 @@ int main(uint64_t hartid) {
         (a->a & 63) || (a->b & 63) || a->bank > 7 || a->timeout == 0 ||
         a->timeout > 30ull * X280_MTIME_HZ) {
         out[DR_STATUS] = PR_ERR_ARGS;
-        x280_hart_set_result(hartid, ~(uint64_t)PR_ERR_ARGS);
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
         return 0;
     }
     p.deadline = x280_mtime() + a->timeout;
     const uint32_t e = probe(&p, a, out);
     out[DR_STATUS] = e;
-    pr_stamp(&p, 9);
-    x280_hart_set_result(hartid, e ? ~(uint64_t)e : 0);
+    pr_marker(&p, 9);
+    x280_hart_set_result(core_id, e ? ~(uint64_t)e : 0);
     return 0;
 }

@@ -146,7 +146,7 @@ def run_step(session, args, step, words, clusters, serve, noc=0):
         log(f"{step}: cluster {c}: {r.state}, code {r.code}, words {list(r.words)[:8]}")
     try:
         run.stop()
-    except km.KomorebiError as err:  # a record that timed out ends the kernel
+    except km.KomorebiError as err:  # a command that timed out ends the kernel
         log(f"{step}: the stop raised {type(err).__name__}: {err}")
     log(f"{step}: stopped after {took:.2f} s")
     pages = read(stats)

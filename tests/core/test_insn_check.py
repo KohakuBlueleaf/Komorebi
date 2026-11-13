@@ -32,7 +32,7 @@ def build(tmp_path, gcc, source, thread="trisc2"):
     return elf
 
 
-def test_a_float_divide_on_the_pack_thread_is_refused_naming_its_function(tmp_path):
+def test_a_float_divide_on_the_pack_thread_is_rejected_naming_its_function(tmp_path):
     tree, gcc = toolchain()
     elf = build(tmp_path, gcc, "float ratio(float a, float b) { return a / b; }\n")
     with pytest.raises(KernelInstructionError) as err:
@@ -43,12 +43,12 @@ def test_a_float_divide_on_the_pack_thread_is_refused_naming_its_function(tmp_pa
     assert (first.thread, first.instruction) == ("TRISC2", "fdiv.s")
     assert first.function == "ratio" and first.line.endswith("kernel.c:1")
     assert "TRISC2" in str(err.value) and "ratio" in str(err.value)
-    assert not (tmp_path / "cache").exists()  # a refused build is not remembered
+    assert not (tmp_path / "cache").exists()  # a rejected build is not remembered
 
 
 def test_a_clean_kernel_passes_and_is_not_disassembled_again(tmp_path, monkeypatch):
     tree, gcc = toolchain()
-    source = "int share(int a, int b) { return a / b; }\n"
+    source = "int partition(int a, int b) { return a / b; }\n"
     source += "float mul(float a) { return a * a; }\n"
     elf = build(tmp_path, gcc, source)
     cache = tmp_path / "cache"
@@ -80,7 +80,7 @@ def test_a_missing_tool_or_elf_raises_a_program_error(tmp_path):
         insn_check.check_kernels("p", [("c.cpp", [missing])], tmp_path, tmp_path)
 
 
-def test_without_addr2line_a_finding_is_still_refused(tmp_path, monkeypatch):
+def test_without_addr2line_a_finding_is_still_rejected(tmp_path, monkeypatch):
     tree, gcc = toolchain()
     elf = build(tmp_path, gcc, "float ratio(float a, float b) { return a / b; }\n")
     objdump, _ = insn_check.tools(tree)

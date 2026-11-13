@@ -1,4 +1,4 @@
-"""X280 ports: X280 cores and Tensix cores talk without the dispatch kernel. Per
+"""X280 ports: X280 cores and Tensix cores talk without the dispatcher. Per
 round each Tensix core waits for its X280 core's salt, asks it `--asks` values, hashes
 them and tells it the hash; the hashes are checked against numpy and the asks timed.
 `--pull`: a pass over uneven units, equal ranges against pulled ones. See README.md."""

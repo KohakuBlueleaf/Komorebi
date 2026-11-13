@@ -13,7 +13,7 @@ def item(in_process, card=True):
     return types.SimpleNamespace(module=module, keywords={"card"} if card else set())
 
 
-def test_a_run_of_in_process_and_child_card_modules_is_refused():
+def test_a_run_of_in_process_and_child_card_modules_is_rejected():
     spec = importlib.util.spec_from_file_location("hardware_conftest", CONFTEST)
     guard = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(guard)

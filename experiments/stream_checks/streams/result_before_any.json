@@ -1,7 +1,7 @@
 {
  "name": "result_before_any",
  "description": "RESULT before any result gives 0",
- "notes": "Records, events, status, error, halt and stopped_grid are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a record issued in pass p is acknowledged by the sweep of pass p + 1 + delay (null: never); delay is an integer, {base, mod} (base + seq % mod) or {by_seq: {seq: delay}, rest: delay}, where seq is the stream's own count of issued records from 1 (the `seq` of each record). A KM_F_RESULT record's result is (a0 + count) mod 2^32. Records list a0 to a9 with trailing zeros left out. Events are [kind, req, aux, pass]. Pass order and the other rules: docs/streams.md.",
+ "notes": "Commands, events, status, error, halt and stopped_grid are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a command submitted in pass p is acknowledged by the sweep of pass p + 1 + delay (null: never); delay is an integer, {base, mod} (base + seq % mod) or {by_seq: {seq: delay}, rest: delay}, where seq is the stream's own count of submitted commands from 1 (the `seq` of each command). A KM_F_RESULT command's result is (a0 + count) mod 2^32. Commands list a0 to a9 with trailing zeros left out. Events are [kind, req, aux, pass]. Pass order and the other rules: docs/streams.md.",
  "params": {"n_cores": 119, "delay": 0, "deadline_passes": null, "default_deadline_passes": 1000000, "cancel_pass": null, "max_passes": 100000, "ticks_per_pass": 1000, "region_size": 1048576},
  "expect": {
   "check": null,
@@ -10,7 +10,7 @@
   "halt": 0,
   "stopped_grid": false,
   "passes": 1,
-  "records": [],
+  "commands": [],
   "events": [
    [5, 1, 0, 0]
   ]

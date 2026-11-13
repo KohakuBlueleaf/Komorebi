@@ -1,5 +1,5 @@
 """The overlay builder's slot check (experiments/overlay_probe): a slot that overlaps
-reserved L1 is refused before anything is loaded."""
+reserved L1 is rejected before anything is loaded."""
 
 import importlib.util
 from pathlib import Path
@@ -17,6 +17,6 @@ def test_free_slot_passes():
     builder.check_slot(0x167F00, 96 * 1024, RESERVED)
 
 
-def test_overlapping_slot_is_refused():
+def test_overlapping_slot_is_rejected():
     with pytest.raises(builder.OverlayError, match="overlaps control words"):
         builder.check_slot(0x17FEC0, 256, RESERVED)

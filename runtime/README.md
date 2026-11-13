@@ -27,7 +27,7 @@ static X280 host runtime (`x280_device`, `x280_state`) that Komorebi's native ho
 module links (`packaging/build_wheel.py --host-module` builds it in this tree). A
 second run updates the build. `KMR_CCACHE=1` compiles through ccache.
 
-`build_wheel.py` refuses a tree at another tag or with a patch not applied, and a
+`build_wheel.py` rejects a tree at another tag or with a patch not applied, and a
 `pyproject.toml` whose version is not the pin plus `BUILD`. It needs `patchelf`
 (`--patchelf PATH`). The platform tag is `manylinux_<glibc floor>_x86_64`, where the
 floor is the newest `GLIBC_` symbol version any carried library requires (read with

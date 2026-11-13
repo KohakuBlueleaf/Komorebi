@@ -1,5 +1,5 @@
-// Reservation probe: each adder core issues K non-posted atomic adds of n to one word
-// on the target and records the value each returned. Every wait is bounded.
+// Reservation probe: each adder core submits K non-posted atomic adds of n to one word
+// on the target and commands the value each returned. Every wait is bounded.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -45,7 +45,7 @@ namespace {
         );
     }
 
-    bool atomics_flushed_bounded() {
+    bool atomics_flushed_timeout() {
         const uint64_t t0 = wall64();
         while (!ncrisc_noc_nonposted_atomics_flushed(noc_index)) {
             if (wall64() - t0 > kLimit) {
@@ -74,7 +74,7 @@ void kernel_main() {
 
     // Start barrier: count in on the target, then wait until every adder has.
     atomic_add(ready, 1, out + 4 * kRet);
-    if (!atomics_flushed_bounded()) {
+    if (!atomics_flushed_timeout()) {
         o[kStat + kFail] = 1;
         o[kStat + kDone] = 1;
         return;
@@ -103,7 +103,7 @@ void kernel_main() {
         const uint32_t n = 1 + (7 * c + k) % 32;
         const uint64_t a = wall64();
         atomic_add(target, n, out + 4 * kRet);
-        if (!atomics_flushed_bounded()) {
+        if (!atomics_flushed_timeout()) {
             o[kStat + kFail] = 3;
             break;
         }

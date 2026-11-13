@@ -1,0 +1,59 @@
+// Groups: the completion a group reports (writer side). Membership, shares and who
+// reports to whom are in km_command.hpp.
+#pragma once
+
+#include <stdint.h>
+
+#include "km_core.hpp"
+
+namespace km {
+
+    // Writer, outputs landed: waits (bounded) for `want` reports in DONE[slot], clears
+    // it, then increments the parent's DONE[slot] (NoC1) or, as first member, acks.
+    inline bool complete(const Core& c, const km_command_t& r, uint32_t result = 0) {
+        const Args& a = c.args();
+        if (!in_group(r, a.me)) {  // the reader never hands a non-member one
+            return false;
+        }
+        const uint32_t j = slot(r);
+        const uint32_t counter = KM_CTL_DONE + j * 16;
+        const Report to = report_to(r, a.me, a.row);
+        if (to.want != 0) {
+            volatile tt_l1_ptr uint32_t* done = c.ctl(counter);
+            const uint32_t code = c.poll(
+                [&] {
+                    return *done == to.want;
+                },
+                a.wait_limit
+            );
+            if (code != kGaveNone) {
+                c.gave_up(kStWriter, code, kWhereComplete, j, r.seq);
+                return false;
+            }
+            *done = 0;
+        }
+        invalidate_l1_cache();
+        if (c.stop()) {  // this tile gave up, or the grid stops: acknowledge nothing
+            c.gave_up(kStWriter, kGaveStop, kWhereComplete, j, r.seq);
+            return false;
+        }
+        if (a.me != first(r)) {
+            noc_semaphore_inc(c.core_noc(to.parent, a.ctl + counter), 1);
+            noc_async_atomic_barrier();  // a write barrier does not cover atomics
+        } else {
+            volatile tt_l1_ptr uint32_t* ack = out_slot(a.ctl, kOutAck);
+            ack[0] = KM_ACK(r.seq);
+            // KM_F_RESULT: {ack, result} as one 8-byte write.
+            if (flags(r) & KM_F_RESULT) {
+                ack[1] = result;
+                small_write<kOutAck, 8>(a.ctl, c.disp_noc(a.ack_base), j);
+            } else {
+                small_write<kOutAck, 4>(a.ctl, c.disp_noc(a.ack_base), j);
+            }
+            noc_async_writes_flushed();
+        }
+        c.state()[kStReported + j] = r.seq;
+        return true;
+    }
+
+}  // namespace km

@@ -1,4 +1,4 @@
-/* Three patterns on the work cluster's four harts with kmx_par, each run with one share
+/* Three patterns on the work cluster's four cores with kmx_par, each run with one share
  * and with four and timed: a map, a reduction, a two-pass prefix sum. See README.md. */
 #include <stdint.h>
 
@@ -41,10 +41,10 @@ enum {
     T_SEQ,
     T_PRE1,
     T_PRE4,
-    T_TAKE1,
-    T_TAKE4,
-    T_GIVE1,
-    T_GIVE4,
+    T_INVALIDATE1,
+    T_INVALIDATE4,
+    T_FLUSH1,
+    T_FLUSH4,
     T_PAR,
     S_SUM1,
     N_WORDS = S_SUM1 + 8
@@ -57,7 +57,7 @@ enum {
  * region, which then starts a whole number of ways from the input. */
 #define HALF_WAY_WORDS ((64u << 10) / 4u)
 
-/* Per-hart results, one cache line each (globals need .data and an initialiser). */
+/* Per-core results, one cache line each (globals need .data and an initialiser). */
 static uint64_t g_part[4][8] __attribute__((section(".data"), aligned(64))) = {{1}};
 /* The prefix sum's per-chunk sums, then each chunk's base. */
 static uint32_t g_chunk[CHUNKS_MAX] __attribute__((section(".data"))) = {1};
@@ -66,10 +66,10 @@ typedef struct {
     const uint32_t* in;
     uint32_t* out;
     uint64_t n;
-    uint32_t parts;         /* 1 or 4: hart h takes chunks h, h + parts, ... */
+    uint32_t parts;         /* 1 or 4: core h takes chunks h, h + parts, ... */
     uint32_t rounds;        /* f() applied this many times per word */
-    uint32_t quarters;      /* 1: hart h takes the h-th quarter instead */
-    uint32_t stride;        /* words of uint64_t between two harts' counters */
+    uint32_t quarters;      /* 1: core h takes the h-th quarter instead */
+    uint32_t stride;        /* words of uint64_t between two cores' counters */
     volatile uint64_t* ctr; /* the reduction's counters in a region, or 0 */
 } job_t;
 
@@ -77,9 +77,9 @@ static inline uint64_t chunks(const job_t* j) {
     return (j->n + CHUNK - 1) / CHUNK;
 }
 
-/* Hart h's first chunk; its next ones are `parts` apart. None past `parts`. */
-static inline uint64_t first(const job_t* j, int hart) {
-    return (uint32_t)hart < j->parts ? (uint64_t)hart : chunks(j);
+/* Core h's first chunk; its next ones are `parts` apart. None past `parts`. */
+static inline uint64_t first(const job_t* j, int core) {
+    return (uint32_t)core < j->parts ? (uint64_t)core : chunks(j);
 }
 
 static inline uint64_t end(const job_t* j, uint64_t c) {
@@ -105,33 +105,33 @@ static void map_range(const job_t* j, uint64_t lo, uint64_t hi) {
     }
 }
 
-static void map_part(int hart, void* arg) {
+static void map_part(int core, void* arg) {
     const job_t* j = (const job_t*)arg;
     if (j->quarters) {
-        const uint64_t h = (uint64_t)hart;
+        const uint64_t h = (uint64_t)core;
         map_range(j, j->n * h / 4, j->n * (h + 1) / 4);
         return;
     }
-    for (uint64_t c = first(j, hart); c < chunks(j); c += j->parts) {
+    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
         map_range(j, c * CHUNK, end(j, c));
     }
 }
 
 /* The same map (one round) with the vector unit, vmap.c. */
-static void vmap_part(int hart, void* arg) {
+static void vmap_part(int core, void* arg) {
     const job_t* j = (const job_t*)arg;
-    for (uint64_t c = first(j, hart); c < chunks(j); c += j->parts) {
+    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
         vmap(j->out + c * CHUNK, j->in + c * CHUNK, end(j, c) - c * CHUNK);
     }
 }
 
-/* (b) reduction: the hart's sum in a register, written once to its line; or, with
+/* (b) reduction: the core's sum in a register, written once to its line; or, with
  * `ctr`, added word by word to a counter in a region. */
-static void sum_part(int hart, void* arg) {
+static void sum_part(int core, void* arg) {
     const job_t* j = (const job_t*)arg;
     uint64_t s = 0;
-    volatile uint64_t* ctr = j->ctr ? j->ctr + (uint64_t)hart * j->stride : 0;
-    for (uint64_t c = first(j, hart); c < chunks(j); c += j->parts) {
+    volatile uint64_t* ctr = j->ctr ? j->ctr + (uint64_t)core * j->stride : 0;
+    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
         for (uint64_t i = c * CHUNK; i < end(j, c); i++) {
             if (ctr) {
                 *ctr += j->in[i];
@@ -140,16 +140,16 @@ static void sum_part(int hart, void* arg) {
             }
         }
     }
-    if ((uint32_t)hart < j->parts) {
-        g_part[hart][0] = s;
+    if ((uint32_t)core < j->parts) {
+        g_part[core][0] = s;
     }
 }
 
 /* (c) prefix, pass 1: each chunk's sum. */
-static void chunk_sums(int hart, void* arg) {
+static void chunk_sums(int core, void* arg) {
     const job_t* j = (const job_t*)arg;
-    /* my chunks of CHUNK words: hart, hart + parts, ... (parts: the harts in use) */
-    for (uint64_t c = first(j, hart); c < chunks(j); c += j->parts) {
+    /* my chunks of CHUNK words: core, core + parts, ... (parts: the cores in use) */
+    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
         uint32_t s = 0;
         for (uint64_t i = c * CHUNK; i < end(j, c); i++) {
             s += j->in[i];
@@ -159,9 +159,9 @@ static void chunk_sums(int hart, void* arg) {
 }
 
 /* Pass 2: out[i] = the chunk's base + the chunk's words before i. */
-static void chunk_prefix(int hart, void* arg) {
+static void chunk_prefix(int core, void* arg) {
     const job_t* j = (const job_t*)arg;
-    for (uint64_t c = first(j, hart); c < chunks(j); c += j->parts) {
+    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
         uint32_t run = g_chunk[c];
         for (uint64_t i = c * CHUNK; i < end(j, c); i++) {
             j->out[i] = run;
@@ -170,12 +170,12 @@ static void chunk_prefix(int hart, void* arg) {
     }
 }
 
-static void nothing(int hart, void* arg) {
-    (void)hart;
+static void nothing(int core, void* arg) {
+    (void)core;
     (void)arg;
 }
 
-/* Runs fn on hart 0 alone or on all four; KMX_OK, or kmx_par's error. */
+/* Runs fn on core 0 alone or on all four; KMX_OK, or kmx_par's error. */
 static int on(void (*fn)(int, void*), job_t* j) {
     if (j->parts == 1) {
         fn(0, j);
@@ -184,7 +184,7 @@ static int on(void (*fn)(int, void*), job_t* j) {
     return kmx_par(fn, j);
 }
 
-/* The two-pass exclusive prefix sum (mod 2^32); between the passes hart 0 turns the
+/* The two-pass exclusive prefix sum (mod 2^32); between the passes core 0 turns the
  * chunk sums into bases. */
 static int prefix(job_t* j) {
     const int e = on(chunk_sums, j);
@@ -197,7 +197,7 @@ static int prefix(job_t* j) {
     return e != KMX_OK ? e : on(chunk_prefix, j);
 }
 
-/* The one-pass prefix sum on hart 0: the baseline two passes are measured against. */
+/* The one-pass prefix sum on core 0: the baseline two passes are measured against. */
 static void prefix_seq(job_t* j) {
     uint32_t run = 0;
     for (uint64_t i = 0; i < j->n; i++) {
@@ -206,13 +206,13 @@ static void prefix_seq(job_t* j) {
     }
 }
 
-/* Region g_sweep swept by hart 0 alone (the others idle): one hart's hand-over. */
+/* Region g_sweep swept by core 0 alone (the others idle): one core's hand-over. */
 static int g_sweep __attribute__((section(".data"))) = -1;
 
-static void sweep_alone(int hart, void* arg) {
+static void sweep_alone(int core, void* arg) {
     (void)arg;
-    if (hart == 0) {
-        kmx_take(g_sweep); /* inside kmx_par: this hart alone */
+    if (core == 0) {
+        kmx_invalidate(g_sweep); /* inside kmx_par: this core alone */
     }
 }
 
@@ -223,9 +223,9 @@ typedef enum { MAP, VMAP, SUM, PREFIX, SEQ } kind_t;
 static int timed(kind_t k, job_t* j, int out, uint32_t repeats, uint32_t* best) {
     *best = 0xFFFFFFFFu;
     for (uint32_t r = 0; r < repeats; r++) {
-        kmx_take(R_IN);
+        kmx_invalidate(R_IN);
         if (out >= 0) {
-            kmx_take(out);
+            kmx_invalidate(out);
         }
         const uint64_t t0 = kmx_time();
         int e = KMX_OK;
@@ -245,7 +245,7 @@ static int timed(kind_t k, job_t* j, int out, uint32_t repeats, uint32_t* best) 
         *best = t < *best ? t : *best;
     }
     if (out >= 0) {
-        kmx_give(out);
+        kmx_flush(out);
     }
     return KMX_OK;
 }
@@ -255,7 +255,7 @@ static void put64(uint32_t* w, uint64_t v) {
     w[1] = (uint32_t)(v >> 32);
 }
 
-/* The maps: output region, result word, harts, heavy (f `rounds` times), quarters,
+/* The maps: output region, result word, cores, heavy (f `rounds` times), quarters,
  * the output's offset in words. */
 static const uint32_t MAPS[8][6] = {
     {R_MAP1, T_MAP1, 1, 0, 0, 0},
@@ -268,8 +268,8 @@ static const uint32_t MAPS[8][6] = {
     {R_HEAVY4, T_HEAVY4, 4, 1, 0, 0},
 };
 
-int kmx_main(int hart) {
-    (void)hart;
+int kmx_main(int core) {
+    (void)core;
     const kmx_args* a = kmx_args_get();
     uint32_t w[N_WORDS]; /* every word is set below (a zeroing loop may call memset) */
     if (a->nwords < W_COUNT || a->nregions != R_COUNT || a->words[W_REPEATS] == 0 ||
@@ -300,7 +300,7 @@ int kmx_main(int hart) {
             return 2;
         }
     }
-    /* reductions: in a register (one hart, four), then in counters (packed, padded) */
+    /* reductions: in a register (one core, four), then in counters (packed, padded) */
     j.out = 0;
     j.quarters = 0;
     volatile uint64_t* ctr = (volatile uint64_t*)r[R_COUNTERS];
@@ -332,27 +332,28 @@ int kmx_main(int hart) {
         }
     }
     /* hand-over: a region just read (clean lines), then one just written (dirty),
-     * swept by hart 0 alone and by all four */
+     * swept by core 0 alone and by all four */
     kmx_progress(16);
     j.out = (uint32_t*)r[R_MAP4];
     j.parts = 4;
     j.rounds = 1;
     for (int m = 0; m < 2; m++) {
         const int id = m == 0 ? R_IN : R_MAP4;
-        for (int harts = 1; harts <= 4; harts += 3) {
+        for (int x280_cores = 1; x280_cores <= 4; x280_cores += 3) {
             if (on(m == 0 ? sum_part : map_part, &j) != KMX_OK) {
                 return 2;
             }
             const uint64_t t0 = kmx_time();
-            if (harts == 4) {
-                kmx_take(id);
+            if (x280_cores == 4) {
+                kmx_invalidate(id);
             } else {
                 g_sweep = id;
                 if (kmx_par(sweep_alone, 0) != KMX_OK) {
                     return 2;
                 }
             }
-            w[(m ? T_GIVE1 : T_TAKE1) + harts / 4] = (uint32_t)(kmx_time() - t0);
+            w[(m ? T_FLUSH1 : T_INVALIDATE1) + x280_cores / 4] = (uint32_t)(kmx_time() -
+                                                                            t0);
         }
     }
     kmx_progress(17);

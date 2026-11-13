@@ -1,4 +1,4 @@
-// Landing experiment: the kernel on every core; for seq = 1..n it waits for record
+// Landing experiment: the kernel on every core; for seq = 1..n it waits for command
 // seq (protocol A, or B with PROTO_B), verifies its payload, counts and completes it.
 #include <stdint.h>
 
@@ -25,7 +25,7 @@ namespace {
         );
     }
 
-    // Index of the first payload word of `rec` that is not record seq's, or 16 if all
+    // Index of the first payload word of `rec` that is not command seq's, or 16 if all
     // match. Protocol A's echo words are not payload.
     uint32_t first_bad(volatile tt_l1_ptr uint32_t* rec, uint32_t seq, uint32_t tag) {
         for (uint32_t w = 0; w < 16; w++) {
@@ -52,7 +52,7 @@ void kernel_main() {
     const uint32_t tag = disp.tag;
     const uint32_t depth = disp.depth;
 
-    // L1 survives processes: clear the record slots and the sequence word before the
+    // L1 survives processes: clear the command slots and the sequence word before the
     // check-in, so nothing from an earlier run is accepted.
     volatile tt_l1_ptr uint32_t* ctl = words(get_write_ptr(ttx::kCtlCb));
     for (uint32_t w = 0; w < LANDING_SLOTS * LANDING_SLOT_BYTES / 4; w++) {
@@ -66,7 +66,7 @@ void kernel_main() {
     uint32_t check_max = 0, check_min = 0xFFFFFFFFu, checks = 0, last_seq = 0;
     uint64_t idle = 0, check_sum = 0;
     const uint32_t s0 = wall();
-    const uint32_t stamp_cost = wall() - s0;
+    const uint32_t marker_cost = wall() - s0;
 
     ttx::Worker worker(disp);
     worker.start();
@@ -128,7 +128,7 @@ void kernel_main() {
                 torn_value = rec[bad];
             }
             torn++;
-            // Diagnosis only (the record stays counted as torn): does it verify later?
+            // Diagnosis only (the command stays counted as torn): does it verify later?
             for (uint32_t k = 1; k <= kHealLimit; k++) {
                 invalidate_l1_cache();
                 if (first_bad(rec, seq, tag) == 16) {
@@ -168,7 +168,7 @@ void kernel_main() {
     c[LC_HEAL_POLLS] = heal_polls;
     c[LC_LOST] = lost;
     c[LC_LOST_SEQ] = lost_seq;
-    c[LC_STAMP_COST] = stamp_cost;
+    c[LC_MARKER_COST] = marker_cost;
     c[LC_TAG] = tag;
     c[LC_LAST_SEQ] = last_seq;
     c[LC_MAGIC] = LANDING_MAGIC | me;

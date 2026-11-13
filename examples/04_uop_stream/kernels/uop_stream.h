@@ -1,10 +1,11 @@
-// Micro-op stream example: the segment, buffers and record arguments its kernels share.
+// Micro-op stream example: the handler, buffers and command arguments its kernels
+// share.
 #pragma once
 
 #include <stdint.h>
 
 // MAP: a0 input, a1 input tiles T from tile a4, a2 output, a3 output page of member 0.
-constexpr uint32_t kSegMap = 1;
+constexpr uint32_t kHandlerMap = 1;
 
 constexpr uint32_t kCbIn = 0;
 constexpr uint32_t kCbOut = 16;

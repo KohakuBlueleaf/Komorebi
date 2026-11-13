@@ -1,5 +1,5 @@
-/* Core 0's side of the graph executor on core 1 (komorebi/abi/km_graph.h): the graph
- * table, admitting KM_SEG_RUN with a2 = 1 or 2, KM_SEG_CANCEL, and the graphs' ends. */
+/* Core 0's side of the graph executor on core 1 (komorebi/abi/km_graph.h): the table,
+ * admitting KM_HANDLER_RUN with a2 1 or 2, KM_HANDLER_CANCEL, the graphs' ends. */
 #pragma once
 
 #include "event_ring.h"
@@ -80,24 +80,24 @@ static uint32_t upload_word(const kmd_t* k, uint32_t at) {
     return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-static inline void graph_refuse(kmd_t* k, uint32_t cmd, uint32_t why) {
-    host_push(k, cmd, KM_EV_REFUSED | (why << 8), 0);
-    k->refused++;
+static inline void graph_reject(kmd_t* k, uint32_t cmd, uint32_t why) {
+    host_push(k, cmd, KM_EV_REJECTED | (why << 8), 0);
+    k->rejected++;
 }
 
-/* KM_SEG_RUN with a2 != 0, host command `cmd` in line `l`: refused, ended at once with
- * KM_EV_GRAPH_ERROR reason 1, or handed to core 1. Returns 1 to wait for room. */
+/* KM_HANDLER_RUN with a2 != 0, host command `cmd` in line `l`: rejected, ended at once
+ * with KM_EV_GRAPH_ERROR reason 1, or handed to core 1. Returns 1 to wait for room. */
 static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
     const uint32_t a0 = (uint32_t)(l[1] >> 32), a1 = (uint32_t)(l[2] >> 32);
     const uint32_t form = (uint32_t)l[3], bind_off = (uint32_t)(l[3] >> 32);
     const uint32_t n_bind = (uint32_t)(l[4] >> 32), region = k->upload_bytes;
     kmd_gtable_t* t = gtable(k);
     if (form > KM_GRUN_KEPT) {
-        graph_refuse(k, cmd, KMD_REFUSE_SEG);
+        graph_reject(k, cmd, KMD_REJECT_HANDLER);
         return 0;
     }
     if (k->exited || t->running == KM_GRAPH_MAX_ACTIVE) {
-        graph_refuse(k, cmd, k->exited ? KMD_REFUSE_EXITED : KMD_REFUSE_STREAMS);
+        graph_reject(k, cmd, k->exited ? KMD_REJECT_EXITED : KMD_REJECT_STREAMS);
         return 0;
     }
     kmd_gentry_t* x = 0;
@@ -114,7 +114,7 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
             x = y->state == KMD_GT_KEPT && y->req == a0 ? y : 0;
         }
         if (x == 0) {
-            graph_refuse(k, cmd, KMD_REFUSE_UNKNOWN);
+            graph_reject(k, cmd, KMD_REJECT_UNKNOWN);
             return 0;
         }
     } else {
@@ -168,7 +168,7 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
     return 0;
 }
 
-/* KM_SEG_CANCEL of `req`: core 1 cancels a running graph, a kept one not running is
+/* KM_HANDLER_CANCEL of `req`: core 1 cancels a running graph, a kept one not running is
  * dropped (KM_EV_GRAPH_ERROR 10). 0, 1 to wait for room, -1 if no graph has `req`. */
 static int graph_cancel(kmd_t* k, uint32_t cmd, uint32_t req) {
     kmd_gtable_t* t = gtable(k);
@@ -193,7 +193,7 @@ static int graph_cancel(kmd_t* k, uint32_t cmd, uint32_t req) {
     return -1;
 }
 
-/* A graph's end or error from core 1 (KMD_SEG_POST `l`, a3 = 1 if it is now kept): uses
+/* A graph's end or error from core 1 (KMD_HANDLER_POST `l`, a3 = 1 if now kept): uses
  * the event room held for it, frees or keeps its entry. Returns 0 if not a graph's. */
 static int graph_post(kmd_t* k, const uint64_t* l) {
     const uint32_t req = (uint32_t)(l[1] >> 32), status = (uint32_t)(l[2] >> 32);

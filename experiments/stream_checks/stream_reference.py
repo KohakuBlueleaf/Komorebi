@@ -15,17 +15,18 @@ from komorebi.engines import stream as st
 from komorebi.engines.stream import Stream
 
 DATA = Path(__file__).resolve().parent / "streams"
-SEG_A, SEG_B = 1, 7
+HANDLER_A, HANDLER_B = 1, 7
 
 NOTES = (
-    "Records, events, status, error, halt and stopped_grid are the binding answer;"
-    " `passes` is the simulator's own count and is advisory. Completion: a record"
-    " issued in pass p is acknowledged by the sweep of pass p + 1 + delay (null:"
+    "Commands, events, status, error, halt and stopped_grid are the binding answer;"
+    " `passes` is the simulator's own count and is advisory. Completion: a command"
+    " submitted in pass p is acknowledged by the sweep of pass p + 1 + delay (null:"
     " never); delay is an integer, {base, mod} (base + seq % mod) or {by_seq: {seq:"
-    " delay}, rest: delay}, where seq is the stream's own count of issued records from"
-    " 1 (the `seq` of each record). A KM_F_RESULT record's result is (a0 + count) mod"
-    " 2^32. Records list a0 to a9 with trailing zeros left out. Events are"
-    " [kind, req, aux, pass]. Pass order and the other rules: docs/streams.md."
+    " delay}, rest: delay}, where seq is the stream's own count of submitted commands"
+    " from 1 (the `seq` of each command). A KM_F_RESULT command's result is"
+    " (a0 + count) mod 2^32. Commands list a0 to a9 with trailing zeros left out."
+    " Events are [kind, req, aux, pass]. Pass order and the other rules:"
+    " docs/streams.md."
 )
 
 DEFAULTS = {
@@ -40,8 +41,8 @@ DEFAULTS = {
 }
 
 
-def result_of(record):
-    return record.args[0] + record.count & st.MASK
+def result_of(command):
+    return command.args[0] + command.count & st.MASK
 
 
 def completion(spec):
@@ -89,20 +90,20 @@ def expected(upload, params, module=st):
         "halt": r.halt,
         "stopped_grid": r.stopped,
         "passes": r.passes,
-        "records": [
+        "commands": [
             {
                 "seq": x.seq,
                 "slot": x.slot,
                 "pass": x.pass_index,
                 "pc": x.pc,
                 "queued": x.queued,
-                "seg": x.seg,
+                "handler": x.handler,
                 "first": x.first,
                 "count": x.count,
                 "flags": x.flags,
                 "args": trimmed(x.args),
             }
-            for x in r.records
+            for x in r.commands
         ],
         "events": [list(e) for e in r.events],
     }
@@ -159,18 +160,18 @@ def rand_sequence():
     return s
 
 
-def issue_loop_depth1():
+def submit_loop_depth1():
     s = Stream()
     i = s.regs(1)[0]
     top = s.label()
-    s.issue(SEG_A, team=(0, 8), args=[i, 5])
+    s.submit(HANDLER_A, group=(0, 8), args=[i, 5])
     s.wait(0)
     s.addi(i, i, 1)
     s.jlt(i, s.const(12), top)
     return _halt_with(s, 0)
 
 
-def issue_computed_team():
+def submit_computed_group():
     s = Stream(seed=9)
     i, first, count = s.regs(3)
     top = s.label()
@@ -179,18 +180,18 @@ def issue_computed_team():
     s.addi(count, count, 1)
     s.rand(first)
     s.mod(first, first, s.const(59))
-    s.issue(SEG_A, team=(first, count), args=[i, count, first])
+    s.submit(HANDLER_A, group=(first, count), args=[i, count, first])
     s.wait(0)
     s.addi(i, i, 1)
     s.jlt(i, s.const(20), top)
     return _halt_with(s, 3)
 
 
-def issue_pipeline():
+def submit_pipeline():
     s = Stream()
     i = s.regs(1)[0]
     top = s.label()
-    s.issue(SEG_A, team=(0, 4), args=[i])
+    s.submit(HANDLER_A, group=(0, 4), args=[i])
     s.wait(3)
     s.addi(i, i, 1)
     s.jlt(i, s.const(30), top)
@@ -198,23 +199,23 @@ def issue_pipeline():
     return _halt_with(s, 0)
 
 
-def issue_slots_full():
+def submit_slots_full():
     s = Stream()
     i = s.regs(1)[0]
     top = s.label()
-    s.issue(SEG_B, team=(2, 3), args=[i])
+    s.submit(HANDLER_B, group=(2, 3), args=[i])
     s.addi(i, i, 1)
     s.jlt(i, s.const(40), top)
     return _halt_with(s, 40)
 
 
-def issue_excl():
+def submit_excl():
     s = Stream()
     i = s.regs(1)[0]
     top = s.label()
-    s.issue(SEG_A, team=(0, 10), args=[i], exclusive=True)
-    s.issue(SEG_A, team=(5, 10), args=[i, 1], exclusive=True)
-    s.issue(SEG_A, team=(20, 10), args=[i, 2])
+    s.submit(HANDLER_A, group=(0, 10), args=[i], exclusive=True)
+    s.submit(HANDLER_A, group=(5, 10), args=[i, 1], exclusive=True)
+    s.submit(HANDLER_A, group=(20, 10), args=[i, 2])
     s.addi(i, i, 1)
     s.jlt(i, s.const(5), top)
     s.wait(0)
@@ -226,7 +227,7 @@ def result_chain():
     n, r = s.regs(2)
     s.set(n, 3)
     top = s.label()
-    s.issue(SEG_A, team=(0, n), args=[n], result=True)
+    s.submit(HANDLER_A, group=(0, n), args=[n], result=True)
     s.wait(0)
     s.result(r)
     s.event(r)
@@ -236,14 +237,14 @@ def result_chain():
     return s
 
 
-def submit_random_teams():
+def enqueue_random_groups():
     s = Stream(seed=12345)
     i, count = s.regs(2)
     top = s.label()
     s.rand(count)
     s.mod(count, count, s.const(119))
     s.addi(count, count, 1)
-    s.submit(SEG_A, count=count, args=[i, 99])
+    s.enqueue(HANDLER_A, count=count, args=[i, 99])
     s.addi(i, i, 1)
     s.jlt(i, s.const(100), top)
     s.wait(0)
@@ -253,21 +254,21 @@ def submit_random_teams():
 def submit_large_job_passed_over():
     s = Stream()
     i = s.regs(1)[0]
-    s.submit(SEG_A, count=1, args=[1000])
-    s.submit(SEG_B, count=119, args=[2000])
+    s.enqueue(HANDLER_A, count=1, args=[1000])
+    s.enqueue(HANDLER_B, count=119, args=[2000])
     top = s.label()
-    s.submit(SEG_A, count=1, args=[i])
+    s.enqueue(HANDLER_A, count=1, args=[i])
     s.addi(i, i, 1)
     s.jlt(i, s.const(300), top)
     s.wait(0)
     return _halt_with(s, 0)
 
 
-def submit_queue_full():
+def enqueue_queue_full():
     s = Stream()
     i = s.regs(1)[0]
     top = s.label()
-    s.submit(SEG_A, count=119, args=[i])
+    s.enqueue(HANDLER_A, count=119, args=[i])
     s.event(i)
     s.addi(i, i, 1)
     s.jlt(i, s.const(70), top)
@@ -285,10 +286,10 @@ def event_progress():
     return _halt_with(s, 0x12345678)
 
 
-def halt_waits_for_records():
+def halt_waits_for_commands():
     s = Stream()
-    s.issue(SEG_A, team=(0, 1))
-    s.issue(SEG_A, team=(1, 1))
+    s.submit(HANDLER_A, group=(0, 1))
+    s.submit(HANDLER_A, group=(1, 1))
     return _halt_with(s, 7)
 
 
@@ -317,7 +318,7 @@ def args_patched():
     s.set(b, 22)
     s.set(c, 33)
     s.set(d, 44)
-    s.issue(SEG_A, team=(3, 2), args=[1, a, 2, b, c, 3, 4, 5, d, 6], result=True)
+    s.submit(HANDLER_A, group=(3, 2), args=[1, a, 2, b, c, 3, 4, 5, d, 6], result=True)
     s.wait(0)
     return _halt_with(s, 0)
 
@@ -327,7 +328,7 @@ def time_elapsed():
     t0, t1 = s.regs(2)
     moved = s.forward()
     s.time(t0)
-    s.issue(SEG_A, team=(0, 1))
+    s.submit(HANDLER_A, group=(0, 1))
     s.wait(0)
     s.time(t1)
     s.sub(t1, t1, t0)
@@ -355,7 +356,7 @@ def _poke(data, offset, fmt, *values):
 
 def _tiny():
     s = Stream()
-    s.issue(SEG_A, team=(0, 1))
+    s.submit(HANDLER_A, group=(0, 1))
     s.wait(0)
     return _halt_with(s, 0)
 
@@ -430,29 +431,29 @@ def err_mod_zero():
 
 def err_deadline():
     s = Stream()
-    s.issue(SEG_A, team=(0, 4))
+    s.submit(HANDLER_A, group=(0, 4))
     s.wait(0)
     return _halt_with(s, 0)
 
 
 def err_never_fits():
     s = Stream()
-    s.submit(SEG_A, count=120)
+    s.enqueue(HANDLER_A, count=120)
     return _halt_with(s, 0)
 
 
 def err_cancelled():
     s = Stream()
     top = s.label()
-    s.issue(SEG_A, team=(0, 2))
+    s.submit(HANDLER_A, group=(0, 2))
     s.wait(0)
     s.jmp(top)
     return s
 
 
-def err_team_outside():
+def err_group_outside():
     s = Stream()
-    s.issue(SEG_A, team=(100, 20))
+    s.submit(HANDLER_A, group=(100, 20))
     return _halt_with(s, 0)
 
 
@@ -470,18 +471,26 @@ REFERENCES = {
     "shifts_and_mask": (shifts_and_mask, {}, "SHR masks its amount to 5 bits; AND"),
     "mod_basic": (mod_basic, {}, "MOD with a nonzero divisor"),
     "rand_sequence": (rand_sequence, {}, "five steps of the generator from seed 1"),
-    "issue_loop_depth1": (issue_loop_depth1, {"delay": 1}, "one record in flight"),
-    "issue_computed_team": (issue_computed_team, {}, "teams from RAND and MOD"),
-    "issue_pipeline": (issue_pipeline, {"delay": 3}, "at most four records in flight"),
-    "issue_slots_full": (
-        issue_slots_full,
-        {"delay": 5},
-        "all 16 slots busy: ISSUE waits",
+    "submit_loop_depth1": (submit_loop_depth1, {"delay": 1}, "one command in flight"),
+    "submit_computed_group": (submit_computed_group, {}, "groups from RAND and MOD"),
+    "submit_pipeline": (
+        submit_pipeline,
+        {"delay": 3},
+        "at most four commands in flight",
     ),
-    "issue_excl": (issue_excl, {"delay": 2}, "KM_F_EXCL waits for an overlapping team"),
-    "result_chain": (result_chain, {"delay": 1}, "RESULT feeds the next team size"),
-    "submit_random_teams": (
-        submit_random_teams,
+    "submit_slots_full": (
+        submit_slots_full,
+        {"delay": 5},
+        "all 16 slots busy: SUBMIT waits",
+    ),
+    "submit_excl": (
+        submit_excl,
+        {"delay": 2},
+        "KM_F_EXCL waits for an overlapping group",
+    ),
+    "result_chain": (result_chain, {"delay": 1}, "RESULT feeds the next group size"),
+    "enqueue_random_groups": (
+        enqueue_random_groups,
         {"delay": {"base": 2, "mod": 4}},
         "jobs of random size through the queue",
     ),
@@ -490,20 +499,20 @@ REFERENCES = {
         {"delay": {"base": 3, "mod": 5}},
         "a 119-core job behind small jobs",
     ),
-    "submit_queue_full": (
-        submit_queue_full,
+    "enqueue_queue_full": (
+        enqueue_queue_full,
         {"delay": 4},
-        "SUBMIT waits on a full queue",
+        "ENQUEUE waits on a full queue",
     ),
     "event_progress": (event_progress, {}, "EVENT posts a progress event"),
-    "halt_waits_for_records": (
-        halt_waits_for_records,
+    "halt_waits_for_commands": (
+        halt_waits_for_commands,
         {"delay": 6},
-        "HALT ends only when every record is done",
+        "HALT ends only when every command is done",
     ),
     "jump_forward_label": (jump_forward_label, {}, "forward jumps, JNZ, JEQ, JMP"),
     "args_patched": (args_patched, {}, "four registers patched into arguments"),
-    "time_elapsed": (time_elapsed, {"delay": 3}, "TIME advances while a record runs"),
+    "time_elapsed": (time_elapsed, {"delay": 3}, "TIME advances while a command runs"),
     "step_pass_limit": (step_pass_limit, {}, "64 micro-ops per pass"),
     "err_bad_magic": (err_bad_magic, {}, "reason 1 at pc 0"),
     "err_seed_zero": (err_seed_zero, {}, "reason 1: a zero seed"),
@@ -511,13 +520,13 @@ REFERENCES = {
     "err_bad_opcode": (err_bad_opcode, {}, "reason 2 at pc 1"),
     "err_bad_jump": (err_bad_jump, {}, "reason 3 at pc 1"),
     "err_bad_register": (err_bad_register, {}, "reason 4 at pc 1"),
-    "err_bad_template": (err_bad_template, {}, "reason 5 at the issuing pc"),
+    "err_bad_template": (err_bad_template, {}, "reason 5 at the submitting pc"),
     "err_step_limit": (err_step_limit, {}, "reason 6 after 10 micro-ops"),
     "err_mod_zero": (err_mod_zero, {}, "reason 7 at the MOD"),
     "err_deadline": (
         err_deadline,
         {"delay": None, "deadline_passes": 5},
-        "reason 8 at the ISSUE, grid stopped",
+        "reason 8 at the SUBMIT, grid stopped",
     ),
     "err_never_fits": (err_never_fits, {}, "reason 9: a 120-core job on 119 cores"),
     "err_cancelled": (
@@ -525,7 +534,7 @@ REFERENCES = {
         {"delay": 2, "cancel_pass": 5},
         "reason 10 at the pc reached by pass 5",
     ),
-    "err_team_outside": (err_team_outside, {}, "reason 11: cores 100 to 119"),
+    "err_group_outside": (err_group_outside, {}, "reason 11: cores 100 to 119"),
     "err_run_off_end": (err_run_off_end, {}, "reason 3 at pc 2 = n_ops"),
 }
 
@@ -548,14 +557,14 @@ def document(name):
 
 
 def dump(doc):
-    """JSON text of a reference, with one record or event per line."""
+    """JSON text of a reference, with one command or event per line."""
     expect = doc["expect"]
     top = [
         f" {json.dumps(k)}: {json.dumps(v)}" for k, v in doc.items() if k != "expect"
     ]
     rest = [f"  {json.dumps(k)}: {json.dumps(v)}" for k, v in expect.items()]
-    rest = [r for r in rest if not r.startswith(('  "records"', '  "events"'))]
-    for key in ("records", "events"):
+    rest = [r for r in rest if not r.startswith(('  "commands"', '  "events"'))]
+    for key in ("commands", "events"):
         rows = ",\n".join(f"   {json.dumps(row)}" for row in expect[key])
         rest.append(f'  "{key}": [\n{rows}\n  ]' if rows else f'  "{key}": []')
     return (

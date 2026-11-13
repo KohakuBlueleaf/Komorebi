@@ -1,4 +1,4 @@
-"""Attention on a card through the dispatch kernel (KMR_CARD=1): a small causal call
+"""Attention on a card through the dispatcher (KMR_CARD=1): a small causal call
 with grouped heads and head dim 128 is within the check's bound of float64, with the
 K / V broadcast on either NoC."""
 

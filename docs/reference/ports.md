@@ -1,6 +1,6 @@
 ---
 title: Ports, emit and reduce
-summary: The device calls that move a value from one Tensix core to one other core (emit, arrive, take), groups of a team, and reduce by owner and by tree.
+summary: The device calls that move a value from one Tensix core to one other core (emit, arrive, take), groups of a group, and reduce by owner and by tree.
 tags:
   - reference
   - device
@@ -10,12 +10,12 @@ tags:
 # Ports, emit and reduce
 
 Status: implemented in the Tensix runtime and run on one Blackhole card through a
-`Session` and `Run`, under the dispatch kernel, and under the test feeder
+`Session` and `Run`, under the dispatcher, and under the test feeder
 ([02_merge_tree](../../examples/02_merge_tree/): `python merge.py --jobs 20 --count 8
 --form both`).
 
 A static breakpoint that sends a value to one receiver. Who sends to whom, into which
-slot, and how many values a wait expects all follow from the record (`first`, `count`,
+slot, and how many values a wait expects all follow from the command (`first`, `count`,
 the arguments) and the member's rank. Nothing is queued and nothing is addressed by
 content.
 
@@ -24,8 +24,8 @@ content.
 
 constexpr km::Arrival arrival = {kCbArrive, S};  // the program's arrival buffer
 
-// reader, writer and compute, per record
-const km::Group g = km::team_group(r, me);
+// reader, writer and compute, per command
+const km::Group g = km::group_of(r, me);
 
 // reader: after its own inputs, every hand-over this member waits for
 if (!km::reduce_arrive(rd, r, arrival, g, form)) return;
@@ -63,8 +63,8 @@ if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
   runs the same program, so slot k has the same L1 address everywhere (taken from the
   buffer's configuration). It is always handed over whole, S pages pushed and S popped,
   so its addresses never drift.
-- **`KM_F_EXCL`.** A record that uses ports must carry it: two records whose teams
-  overlap are then never in flight together, so nothing of one record lands in the
+- **`KM_F_EXCL`.** A command that uses ports must carry it: two commands whose groups
+  overlap are then never in flight together, so nothing of one command lands in the
   next one's slots or ports.
 
 ## Groups
@@ -73,8 +73,8 @@ if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
 
 | Call | Group |
 |---|---|
-| `km::team_group(r, me)` | the whole team, in core order |
-| `km::digit_group(r, me, stride, radix)` | the members whose team index differs from this core's only in the digit of weight `stride` and base `radix` (for example the K parts of one output block) |
+| `km::group_of(r, me)` | the whole group, in core order |
+| `km::digit_group(r, me, stride, radix)` | the members whose group index differs from this core's only in the digit of weight `stride` and base `radix` (for example the K parts of one output block) |
 
 ## Reduce
 
@@ -91,18 +91,18 @@ free of tt-metal headers). A buffer with too few slots gives up with `bad_item`.
 
 ## When a member does not send
 
-Every wait is bounded by the start-up wait limit and sees the stop word. The port's
+Every wait is bounded by the start-up wait limit and sees the stop flag. The port's
 wait gives up first: waits that lie behind it (the writer's wait for a part that needs
 arrivals, `take`, `reduce_result`) are bounded at `km::kBehindPort` (2) wait limits. A
-give-up records `where` = `port` (or `emit` on the sender) with the port number in the
+give-up commands `where` = `port` (or `emit` on the sender) with the port number in the
 gave-up word's top byte, and leaves the wanted count in the port, so the host reads the
-missing count (`records.waiting_ports` in the test feeder). The tile stops, the
+missing count (`commands.waiting_ports` in the test feeder). The tile stops, the
 dispatcher's or feeder's deadline stops the run, every kernel leaves, and the next
 launch runs.
 
 ## X280 ports
 
-A port between a Tensix core and the X280 core that serves it, without the dispatch kernel
+A port between a Tensix core and the X280 core that serves it, without the dispatcher
 (`komorebi/device/km_x280.hpp`; the X280 core's side and the declaration are in
 [X280 threads](../threads.md#x280-ports)). A message is a sequence number and three
 words, one 16-byte NoC write each way:
@@ -146,6 +146,6 @@ writes its ask to the mailbox at `KM_BOX_ASK` (`+ 0x00`) and its tell at `KM_BOX
 `{KM_PULL_ASK, 0, 0}`, answered `{first, count, pulls so far}` (count 0: none left).
 
 **When a side does not answer.** Every wait is bounded by the wait limit and sees the
-stop word. A give-up records `where` = `kWhereX280Answer` (37), `kWhereX280Tell` (38)
+stop flag. A give-up commands `where` = `kWhereX280Answer` (37), `kWhereX280Tell` (38)
 or `kWhereX280Send` (36) for a store that did not leave, `kWhereX280None` (39) when the
-program gave the core no X280 core. The record then ends as any record whose member gave up.
+program gave the core no X280 core. The command then ends as any command whose member gave up.

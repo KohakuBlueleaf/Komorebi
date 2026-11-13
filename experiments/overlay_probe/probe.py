@@ -666,7 +666,7 @@ def grid(args):
                                 else None
                             ),
                             "command_per_core": stats([int(r[7]) for r in resp], mhz),
-                            "host_issue_ms": round(1e3 * host, 3),
+                            "host_submit_ms": round(1e3 * host, 3),
                         }
                     )
                     log(f"grid round {k} held {held}: {rounds[-1]}")

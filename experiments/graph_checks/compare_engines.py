@@ -1,5 +1,5 @@
 """Random graphs and mutated uploads through both executors and both checks: the
-Python executor and the C engine built for the host must give the same records,
+Python executor and the C engine built for the host must give the same commands,
 events and registers, and `check` and `kmg_check` the same answer.
 """
 
@@ -27,14 +27,14 @@ def random_graph(rng):
         kind = rng.random()
         if kind < 0.55:
             count = rng.randrange(1, 40)
-            team = None if rng.random() < 0.2 else (rng.randrange(0, 119), count)
-            if team and rng.random() < 0.8:
-                team = (min(team[0], 119 - count), count)
+            group = None if rng.random() < 0.2 else (rng.randrange(0, 119), count)
+            if group and rng.random() < 0.8:
+                group = (min(group[0], 119 - count), count)
             args = [rng.choice(regs) if rng.random() < 0.3 else rng.randrange(9)]
-            g.record(
+            g.command(
                 rng.randrange(1, 240),
-                team=team,
-                count=None if team else count,
+                group=group,
+                count=None if group else count,
                 args=args,
                 after=after,
                 result=rng.choice(regs) if rng.random() < 0.3 else None,
@@ -67,7 +67,7 @@ def random_graph(rng):
 
 
 def outcome(r):
-    return (r.status, r.error, r.records, r.events, r.regs, r.runs, r.stopped, r.kept)
+    return (r.status, r.error, r.commands, r.events, r.regs, r.runs, r.stopped, r.kept)
 
 
 def compare_runs(rng, lib, n):

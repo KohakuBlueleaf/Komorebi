@@ -7,7 +7,7 @@
 #include "raster.h"
 
 // An item of `per` pages at the read pointer must end inside the output buffer;
-// otherwise the give-up is recorded and the stop word set.
+// otherwise the give-up is recorded and the stop flag set.
 bool item_fits(const km::Writer& wr, uint32_t per, uint32_t seq) {
     if (get_read_ptr(kCbOut) + per * kOutPageBytes <=
         get_local_cb_interface(kCbOut).fifo_limit) {
@@ -52,8 +52,8 @@ bool writes_sent(const km::Writer& wr, uint32_t seq) {
 }
 
 // FILL and ARITH of one record; the frame program's writer calls it as well.
-bool fill_writer_record(const km::Writer& wr, const km_record_t& r) {
-    if (km::seg(r) != kSegFill && km::seg(r) != kSegArith) {
+bool fill_writer_command(const km::Writer& wr, const km_command_t& r) {
+    if (km::handler(r) != kHandlerFill && km::handler(r) != kHandlerArith) {
         return true;
     }
     const uint32_t t0 = km::wall();
@@ -83,7 +83,7 @@ bool fill_writer_record(const km::Writer& wr, const km_record_t& r) {
     };
     // The empty tile's planes: depth 0, the background colour, triangle -1.
     const uint32_t empty = get_write_ptr(kCbEmpty);
-    if (km::seg(r) == kSegFill) {
+    if (km::handler(r) == kHandlerFill) {
         constexpr uint32_t value[kPlanes] = {
             0, 0x3D4CCCCD, 0x3D4CCCCD, 0x3DA3D70A, 0xBF800000
         };
@@ -159,8 +159,8 @@ bool fill_writer_record(const km::Writer& wr, const km_record_t& r) {
 #ifndef RASTER_NO_ENTRY
 void kernel_main() {
     km::Writer wr;
-    wr.run([&](const km_record_t& r) {
-        return fill_writer_record(wr, r);
+    wr.run([&](const km_command_t& r) {
+        return fill_writer_command(wr, r);
     });
 }
 #endif

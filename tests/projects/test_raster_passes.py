@@ -33,7 +33,7 @@ def test_a_block_holds_32_triangles_in_window_order(tiny):
     assert not vec[-1, :, n % 32 :].any()  # padding: corners all 0
 
 
-def test_shares_are_contiguous_and_cover_every_block():
+def test_partitions_are_contiguous_and_cover_every_block():
     edge = passes.shares(1000, 120)
     assert edge[0] == 0 and edge[-1] == 1000 and (np.diff(edge) >= 0).all()
     assert np.diff(edge).max() - np.diff(edge).min() <= 1

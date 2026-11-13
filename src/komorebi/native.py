@@ -1,4 +1,4 @@
-"""The dispatch kernel image and the native host module: found prebuilt beside the
+"""The dispatcher image and the native host module: found prebuilt beside the
 package, else built once against the tt-metal tree into a cache directory.
 
     python -m komorebi.native [--tree TREE]    # build both now, print their paths
@@ -30,7 +30,7 @@ def native_dir():
 
 
 def kernel_dir():
-    """The dispatch kernel's sources (and its host interface, km_dispatch.h)."""
+    """The dispatcher's sources (and its host interface, km_dispatch.h)."""
     return _require_native() / "x280" / "kernel"
 
 
@@ -40,7 +40,7 @@ def module_source():
 
 
 def engines_dir():
-    """The engines' plain-C sources, compiled into the dispatch kernel image."""
+    """The engines' plain-C sources, compiled into the dispatcher image."""
     return _require_native() / "x280" / "engines"
 
 
@@ -129,7 +129,7 @@ def metal_tree(tree=None):
 
 
 def image_path(tree=None, defines=()):
-    """The dispatch kernel image: prebuilt beside the package, else built in the cache.
+    """The dispatcher image: prebuilt beside the package, else built in the cache.
 
     `defines` always builds (a variant image is never shipped prebuilt).
     """

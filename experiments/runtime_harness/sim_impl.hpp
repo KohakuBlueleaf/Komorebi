@@ -73,8 +73,8 @@ namespace kmsim {
             const char* last = "start";
             uint32_t last_cb = ~0u;
             uint64_t frozen_until = 0;
-            uint32_t writes = 0;   // writes issued and not yet landed
-            uint32_t atomics = 0;  // atomics issued and not yet landed
+            uint32_t writes = 0;   // writes submitted and not yet landed
+            uint32_t atomics = 0;  // atomics submitted and not yet landed
         };
 
         struct Cb {
@@ -92,7 +92,7 @@ namespace kmsim {
             std::vector<float> dst[16];
             int dst_state = 0;  // 0 free, 1 math, 2 committed, 3 pack
             uint32_t writer_seq = 0;
-            uint32_t reader_seq = 0, compute_seq = 0;  // record each side works on
+            uint32_t reader_seq = 0, compute_seq = 0;  // command each side works on
             std::vector<uint32_t> args, compute_args;
         };
 
@@ -195,7 +195,7 @@ namespace kmsim {
             clock += cfg.tick;
             wall_clock[0] = static_cast<uint32_t>(clock);
             wall_clock[1] = static_cast<uint32_t>(clock >> 32);
-            if (!abort && clock > cfg.bound) {
+            if (!abort && clock > cfg.timeout) {
                 abort = true;
             }
         }
@@ -457,22 +457,22 @@ namespace kmsim {
 
         uint32_t check_map(const Job& job, uint32_t k);
 
-        uint32_t issue(const Job& job, int32_t k, uint32_t j);
+        uint32_t submit(const Job& job, int32_t k, uint32_t j);
 
         bool booting();
 
-        // True when a KM_F_EXCL record's team overlaps a team in flight, as the
-        // dispatch kernel holds it.
+        // True when a KM_F_EXCL command's group overlaps a group in flight, as the
+        // dispatcher holds it.
         bool held(
             const std::vector<Job>& jobs, size_t k, const int32_t* busy, uint32_t d
         );
 
-        // A dynamic run in flight (dyn_dispatch.cpp): job k was issued with sequence
-        // seq; the end record is appended to `jobs` once the status lines are quiet.
+        // A dynamic run in flight (dyn_dispatch.cpp): job k was submitted with sequence
+        // seq; the end command is appended to `jobs` once the status lines are quiet.
         int32_t dyn_k = -1;
         uint32_t dyn_seq = 0;
         bool dyn_ended = true;
-        void dyn_issued(const Job& job, size_t k, uint32_t seq);
+        void dyn_submitted(const Job& job, size_t k, uint32_t seq);
         void dyn_watch(std::vector<Job>& jobs);
 
         void dispatcher();

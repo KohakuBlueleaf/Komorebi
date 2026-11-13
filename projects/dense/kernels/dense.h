@@ -1,22 +1,23 @@
-// Matrix product on resident workers: segments, record words, buffers and the profile
-// page that the host and the three kernels share. Sizes are in 32 x 32 tiles.
+// Matrix product on persistent kernels: handlers, command words, buffers and the
+// profile page that the host and the three kernels share. Sizes are in 32 x 32 tiles.
 #pragma once
 
 #include <stdint.h>
 
-#include "komorebi/device/km_lane.hpp"
+#include "komorebi/device/km_broadcast.hpp"
 
 // LOAD: a0 W (DRAM, [K, N] tiles row-major), a1 the W buffer, a3 kt, a4 nt. Every
-// member reads all of W into that buffer and keeps it for the records that follow.
-constexpr uint32_t kSegLoad = 1;
+// member reads all of W into that buffer and keeps it for the commands that follow.
+constexpr uint32_t kHandlerLoad = 1;
 // PRODUCT: a0 A ([M, K]), a1 Y ([M, N]), a2 mt, a3 kt, a4 nt, a5 kc (K chunk), a6 ct
-// (column block), a7 mode, a8 form, a9 W (form kFormStream). Member i: rows share(mt).
-constexpr uint32_t kSegProduct = 2;
+// (column block), a7 mode, a8 form, a9 W (form kFormStream). Member i: rows
+// partition(mt).
+constexpr uint32_t kHandlerProduct = 2;
 // PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
-constexpr uint32_t kSegProf = 3;
+constexpr uint32_t kHandlerProf = 3;
 // LAYER: a0 A, a1 Y, a2 mt, a3 kt (one chunk), a4 nt, a5 ct, a6 W buffer (0: the gate
 // pass), a7 the epilogue, a8 A | B << 8 | Y << 16: a held buffer, or kDram for A, Y.
-constexpr uint32_t kSegLayer = 4;
+constexpr uint32_t kHandlerLayer = 4;
 // Epilogues: none; silu; times B; the gate pass silu(A) * B (no product, kt == nt).
 constexpr uint32_t kEpNone = 0;
 constexpr uint32_t kEpSilu = 1;
@@ -41,8 +42,8 @@ constexpr uint32_t kCbWs = 2;
 constexpr uint32_t kCbOut = 16;
 constexpr uint32_t kCbProf = 3;
 constexpr uint32_t kCbLoaded = 4;  // reader to writer: W has landed (LOAD completes)
-// LAYER: held intermediates (a member's rows, packed by one record, taken by the next),
-// the second and third resident W.
+// LAYER: held intermediates (a member's rows, packed by one command, taken by the
+// next), the second and third resident W.
 constexpr uint32_t kCbHold0 = 5;
 constexpr uint32_t kCbHold1 = 6;
 constexpr uint32_t kCbHold2 = 7;
@@ -52,8 +53,8 @@ constexpr uint32_t kLoadedBytes = 64;
 constexpr uint32_t kTileBytes = 2048;  // bf16
 constexpr uint32_t kProfBytes = 1024;
 
-// Profile page (32-bit words; cycles of the wall clock, summed over records). Reader:
-// waits for A space, reads (issue and barrier), whole bodies, tiles read.
+// Profile page (32-bit words; cycles of the wall clock, summed over commands). Reader:
+// waits for A space, reads (submit and barrier), whole bodies, tiles read.
 constexpr uint32_t kPrRdWait = 0;
 constexpr uint32_t kPrRdRead = 1;
 constexpr uint32_t kPrRdBody = 2;
@@ -73,7 +74,7 @@ constexpr uint32_t kPrPkWaitOut = 17;
 constexpr uint32_t kPrPkPack = 18;
 constexpr uint32_t kPrPkBody = 19;
 constexpr uint32_t kPrPkTiles = 20;
-// Writer: waits for output, writes (issue and flush), bodies, tiles written.
+// Writer: waits for output, writes (submit and flush), bodies, tiles written.
 constexpr uint32_t kPrWrWait = 24;
 constexpr uint32_t kPrWrWrite = 25;
 constexpr uint32_t kPrWrBody = 26;

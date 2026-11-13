@@ -1,13 +1,13 @@
 # Atomic answers
 
 When is the returned value of a non-posted NoC atomic add lost? The dynamic crossing
-reserves queue positions with such adds and waits for each old value; at 10^6 hops on
+reserves queue positions with such adds and waits for each old value; at 10^6 forwards on
 119 cores some runs ended with reason 32 (`lost`): the add had landed and was counted
 as answered, but the old value never arrived.
 
 ## Result
 
-**The answer is lost only when the asked tile issues atomics of its own on the same
+**The answer is lost only when the asked tile submits atomics of its own on the same
 NoC while it answers, with a return address that changes from call to call.** A tile
 that only answers never lost one; neither did a tile whose own adds keep one return
 address, or go out on the other NoC. The asker's side does not matter. The add itself
@@ -15,8 +15,8 @@ always lands (every tail exact), no other answer is ever wrong, and a lost answe
 late (waits up to one second). This is an empirical condition of the atomic unit; its
 cause is not known.
 
-The runtime therefore keeps every tail on counter tiles, team cores that only answer
-([dynamic segments](../../docs/reference/dynamic.md#counter-tiles)).
+The runtime therefore keeps every tail on counter tiles, group cores that only answer
+([dynamic handlers](../../docs/reference/dynamic.md#counter-tiles)).
 
 ## The probe
 
@@ -54,13 +54,13 @@ Measured with a larger form of the same probe (more kernels and switches), card 
 |---|---|---|
 | all 119 ask random cores, RISCV_1/NoC1 (6 runs) | 21 to 35 | reproduces, at 1e-5 per answer (the runtime: 2.7e-7) |
 | same on RISCV_0/NoC0 | 24, 32 | not NoC1 specific |
-| + DRAM item writes / + reader (DRAM reads, tail polls) / both | 14 and 4 / 12 and 17 / 8 to 17 | they neither cause nor cure it |
+| + DRAM message writes / + reader (DRAM reads, tail polls) / both | 14 and 4 / 12 and 17 / 8 to 17 | they neither cause nor cure it |
 | every core asks itself | 0 | |
 | fan-in to one word (all ask core 0) | 82 | |
 | 60 askers, 59 idle answerers (2 runs) | 0 | needs more than answering |
 | same, answering cores spin on loads, stores or reads (1.2 M each) | 0 | core activity and reads of the answerer are not it |
 | 60 askers, 60 answerers that also ask (1.2 M) | 11 | |
-| A asks B; B asks idle C with a constant return address and increment, 2 x 2.4 M | 0 | the answerer issuing atomics is not enough |
+| A asks B; B asks idle C with a constant return address and increment, 2 x 2.4 M | 0 | the answerer submitting atomics is not enough |
 | A asks B; B (writer code) asks idle C | 18, 21; every loss an A to B ask | the loser is the asked-and-asking tile |
 | same, increment constant 1 on all | 2, 3 | increment variation contributes |
 | same, return line fixed on all | 0, 0 | |
@@ -79,13 +79,13 @@ Measured with a larger form of the same probe (more kernels and switches), card 
 | 1 tile, every asker also reading its tail at full rate | 0 of 4.76 M | same | 126 M |
 | (tails on the askers) | 21 to 35 per 2.38 M | 359 / 668 | 326 M |
 
-In the investigation's runtime runs on two earlier builds (10^6 hops on 119 cores, the
-hop example under the test feeder, the tails on the feeder's own tile, which issues no
+In the investigation's runtime runs on two earlier builds (10^6 forwards on 119 cores, the
+forward example under the test feeder, the tails on the feeder's own tile, which submits no
 atomics): 0 lost in 111 runs, against 2 and 12 failing runs of 50 with the tails on the
 receivers. The counter tiles of the released runtime are measured in the
-[hop example](../../examples/05_hop/README.md#measured).
+[forward example](../../examples/05_forward/README.md#measured).
 
-Not tried: posted atomics as the disturbing traffic (Blackhole issues atomics
+Not tried: posted atomics as the disturbing traffic (Blackhole submits atomics
 non-posted), and atomics aimed at DRAM or the X280.
 
 ## Files

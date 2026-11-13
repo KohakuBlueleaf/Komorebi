@@ -36,17 +36,18 @@ namespace {
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbIn, kCbOut);
-    // The runtime's loop: the body runs once per record whose team holds this core.
-    cp.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegMerge) {  // this program answers MERGE records only
+    // The runtime's loop: the body runs once per command whose group holds this core.
+    cp.run([&](const km_command_t& r) {
+        if (km::handler(r) !=
+            kHandlerMerge) {  // this program answers MERGE commands only
             return;
         }
         const uint32_t tiles = r.a1;  // input tiles T of the job
         const uint32_t form = r.a4;   // 0: merge at one owner, 1: along a tree
         const uint32_t part = r.a7;   // tiles per part P (1 to 3), one sum each in DST
-        // The team is the record's range of cores; my rank in it gives my share of T.
-        const km::Group g = km::team_group(r, cp.me());
-        const km::Share s = km::share(tiles, g.rank, g.size);
+        // The group is the command's range of cores; my rank in it gives my share of T.
+        const km::Group g = km::group_of(r, cp.me());
+        const km::Partition s = km::partition(tiles, g.rank, g.size);
         const km::Arrival arrival = {kCbArrive, kArrivePages, part};
         tile_regs_acquire();  // DST, the vector unit's registers, until the release
         clear_sums(part);     // the P sums start at zero

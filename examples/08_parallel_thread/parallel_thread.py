@@ -1,6 +1,6 @@
 """Parallel thread: a map, a reduction and a two-pass prefix sum on the work cluster's
-four harts with kmx_par (thread/parallel.c), each run with one share and with four,
-or (--twelve) the map and prefix sum on 1, 4, 8 and 12 harts of the three clusters
+four cores with kmx_par (thread/parallel.c), each run with one share and with four,
+or (--twelve) the map and prefix sum on 1, 4, 8 and 12 cores of the three clusters
 (thread/clusters.c), checked against numpy and timed. One JSON line; see README.md."""
 
 import argparse
@@ -23,7 +23,8 @@ REGIONS = (
 TIMES = (
     "map_1", "map_4", "map_quarters", "map_aliased", "vmap_1", "vmap_4", "heavy_1",
     "heavy_4", "sum_1", "sum_4", "sum_4_packed", "sum_4_padded", "prefix_seq",
-    "prefix_1", "prefix_4", "take_1", "take_4", "give_1", "give_4", "par_1000",
+    "prefix_1", "prefix_4", "invalidate_1", "invalidate_4", "flush_1", "flush_4",
+    "par_1000",
 )  # fmt: skip
 SUMS = ("sum_1", "sum_4", "sum_4_packed", "sum_4_padded")
 WAY = 128 << 10  # the cluster's L3: one way of 128 KiB (README.md, "The rules")
@@ -32,7 +33,7 @@ TWELVE_REGIONS = (
     "in", "ref_map", "ref_heavy", "ref_pre", "map", "heavy", "pre", "sums",
 )  # fmt: skip
 PATTERNS = ("map", "heavy", "prefix")
-HARTS = (1, 4, 8, 12)
+X280_CORES = (1, 4, 8, 12)
 SUMS_BYTES = 4096 * 64  # the chunk sums: a line for each of CHUNKS_MAX chunks
 TWELVE_CODES = {0: "ok", 1: "bad words or regions", 2: "late or stopped", 3: "a push"}
 
@@ -58,7 +59,7 @@ def exclusive_prefix(x):
 
 
 def program(data, repeats, rounds, deadline):
-    """The grid (every record a no-op) and the thread with its regions: each array
+    """The grid (every command a no-op) and the thread with its regions: each array
     rounded up to whole 128 KiB, the input 64 KiB more, so that every output starts
     half a way from the input; map_aliased is written half a way in, on its way."""
     prog = km.Program("parallel_thread", kernels=HERE / "kernels")
@@ -98,14 +99,14 @@ def program_twelve(data, repeats, rounds, deadline):
 
 
 def times_us(words, at):
-    """{harts: microseconds} of four result words from `at`."""
-    return {h: round(words[at + i] / TICKS_PER_US, 1) for i, h in enumerate(HARTS)}
+    """{cores: microseconds} of four result words from `at`."""
+    return {h: round(words[at + i] / TICKS_PER_US, 1) for i, h in enumerate(X280_CORES)}
 
 
 def run_twelve(args, data):
-    """The --twelve mode: per pattern and harts the best time, the input push's time,
-    and whether each output is exact (against numpy for 1 and 12 harts, against the
-    1-hart output in the thread for 4 and 8)."""
+    """The --twelve mode: per pattern and cores the best time, the input push's time,
+    and whether each output is exact (against numpy for 1 and 12 cores, against the
+    1-core output in the thread for 4 and 8)."""
     with km.Session(log=log) as session:
         prog = program_twelve(data, args.repeats, args.rounds, deadline=30.0)
         run = session.load(prog)
@@ -131,7 +132,7 @@ def run_twelve(args, data):
     for p, k in enumerate(PATTERNS):
         region = "pre" if k == "prefix" else k
         out["us"][k] = times_us(w, 4 * p)
-        differ = dict(zip(HARTS, w[12 + 4 * p : 16 + 4 * p]))  # words that differ
+        differ = dict(zip(X280_CORES, w[12 + 4 * p : 16 + 4 * p]))  # words that differ
         out["exact"][f"{k}_1"] = bool((got[f"ref_{region}"] == want[k]).all())
         out["exact"][f"{k}_4"] = differ[4] == 0
         out["exact"][f"{k}_8"] = differ[8] == 0
@@ -165,7 +166,9 @@ def main():
     p.add_argument("--repeats", type=int, default=3, help="runs per timing (the best)")
     p.add_argument("--rounds", type=int, default=16, help="f() per word, heavy map")
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--twelve", action="store_true", help="1 to 12 harts, 3 clusters")
+    p.add_argument(
+        "--twelve", action="store_true", help="1 to 12 X280 cores, 3 clusters"
+    )
     args = p.parse_args()
     rng = np.random.default_rng(args.seed)
     data = rng.integers(0, 1 << 32, args.words, dtype=np.uint64).astype(np.uint32)
@@ -200,7 +203,7 @@ def main():
     pairs = {"map": ("map_1", "map_4"), "vmap": ("vmap_1", "vmap_4")}
     pairs.update({"heavy": ("heavy_1", "heavy_4"), "sum": ("sum_1", "sum_4")})
     pairs.update({"prefix": ("prefix_seq", "prefix_4")})
-    out["four_harts_x"] = {
+    out["four_cores_x"] = {
         k: round(us[a] / us[b], 2) if us[b] else None for k, (a, b) in pairs.items()
     }
     out["ok"] = (

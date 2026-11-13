@@ -1,5 +1,5 @@
-"""The dispatch kernel's idle pass period without a thread and with one whose empty ring
-core 0 looks at every fourth pass: load, one record, an idle wait, stop; ticks over
+"""The dispatcher's idle pass period without a thread and with one whose empty ring
+core 0 looks at every fourth pass: load, one command, an idle wait, stop; ticks over
 passes. Prints one JSON line. Usage: python ring_cost.py [--idle 1.0] [--reps 3]
 """
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import komorebi as km
 
 ROOT = Path(__file__).resolve().parents[2]
-KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"  # every record a NOP
+KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"  # every command a NOP
 SPIN = ROOT / "tests" / "hardware" / "thread" / "spin.c"  # waits for its stop
 T0 = time.monotonic()
 NS_PER_TICK = 20.0  # the X280 timer runs at 50 MHz
@@ -31,7 +31,7 @@ def program(ring):
 def one(session, ring, idle):
     """The pass period (ns) and passes of one idle run."""
     run = session.load(program(ring))
-    run.wait(run.issue(1, (0, 1)), timeout=5.0)
+    run.wait(run.submit(1, (0, 1)), timeout=5.0)
     time.sleep(idle)
     if ring:
         run.thread_result(timeout=0.5)

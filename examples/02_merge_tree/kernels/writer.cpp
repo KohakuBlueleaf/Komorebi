@@ -9,13 +9,13 @@
 void kernel_main() {
     constexpr auto out_args = TensorAccessorArgs<0>();
     km::Writer wr;
-    wr.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegMerge) {
+    wr.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerMerge) {
             return true;
         }
-        const km::Group g = km::team_group(r, wr.me());
+        const km::Group g = km::group_of(r, wr.me());
         const km::Arrival arrival = {kCbArrive, kArrivePages, r.a7};
-        if (g.rank == r.a5) {  // a test: waits for the stop word, sends nothing
+        if (g.rank == r.a5) {  // a test: waits for the stop flag, sends nothing
             const uint32_t code = wr.poll(
                 [] {
                     return false;
@@ -31,7 +31,7 @@ void kernel_main() {
         if (!km::reduce_result(wr, kCbOut, r.a7)) {
             return false;
         }
-        // The record's result word, only when it asks for one: the total's 32-bit
+        // The command's result word, only when it asks for one: the total's 32-bit
         // words summed (a checksum: one more pass over the total, so only if asked).
         if (km::flags(r) & KM_F_RESULT) {
             const volatile tt_l1_ptr uint32_t*

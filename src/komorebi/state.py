@@ -1,5 +1,5 @@
-"""Decoding what a run leaves: the dispatch kernel's result block, the cores' state
-words and the per-record trace. Pure functions over arrays read back after the stop.
+"""Decoding what a run leaves: the dispatcher's result block, the cores' state
+words and the per-command trace. Pure functions over arrays read back after the stop.
 """
 
 import numpy as np
@@ -10,7 +10,7 @@ GAVES = {
     "Stop": "stop",
     "Limit": "limit",
     "BadItem": "bad_item",
-    "BadLane": "bad_lane",
+    "BadBroadcast": "bad_broadcast",
 }  # kGave*
 WHERES = (
     "Checkin",
@@ -24,10 +24,10 @@ WHERES = (
     "CInput",
     "COutput",
     "CDone",
-    "LaneBegin",
-    "LaneDone",
-    "LaneValid",
-    "LaneFree",
+    "BroadcastBegin",
+    "BroadcastDone",
+    "BroadcastValid",
+    "BroadcastFree",
     "Port",
     "Emit",
 )
@@ -35,7 +35,7 @@ KMD_PREFIXES = {"error": "KMD_ERR_", "where": "KMD_WHERE_", "state": "KMD_STATE_
 
 
 def code_name(kind, value, h=None):
-    """The name of a dispatch kernel code (`kind`: error, where, state), lower case."""
+    """The name of a dispatcher code (`kind`: error, where, state), lower case."""
     h = h or abi.headers()
     prefix = KMD_PREFIXES[kind]
     for name, v in h.constants.items():
@@ -108,27 +108,27 @@ def ports(block, h=None):
     ]
 
 
-def lanes(block, h=None):
-    """A core's lane areas from its control block words, by lane: the VALID word,
-    the first give-up (where, lane, block, seq; None if none), the blocks handed over,
-    the wait cycles and the DONE-BY words of ranks 1 to 15."""
+def broadcasts(block, h=None):
+    """A core's broadcast areas from its control block words, by broadcast: the VALID
+    word, the first give-up (where, broadcast, block, seq; None if none), the blocks
+    handed over, the wait cycles and the DONE-BY words of ranks 1 to 15."""
     h = h or abi.headers()
     wheres = {h[f"kWhere{w}"]: w.lower() for w in WHERES}
     out = []
-    for lane in range(h["KM_LANES"]):
-        a = (h["KM_CTL_LANE"] + lane * h["KM_LANE_BYTES"]) // 4
-        gave = h["KM_LANE_GAVE"] // 4 + a
-        gave = [int(v) for v in block[gave : gave + h["KM_LANE_GAVE_WORDS"]]]
-        stats = h["KM_LANE_STATS"] // 4 + a
-        stats = [int(v) for v in block[stats : stats + h["KM_LANE_STATS_WORDS"]]]
-        done, step = a + h["KM_LANE_DONE"] // 4, h["KM_LANE_DONE_STRIDE"] // 4
+    for broadcast in range(h["KM_BROADCASTS"]):
+        a = (h["KM_CTL_BROADCAST"] + broadcast * h["KM_BROADCAST_BYTES"]) // 4
+        gave = h["KM_BROADCAST_GAVE"] // 4 + a
+        gave = [int(v) for v in block[gave : gave + h["KM_BROADCAST_GAVE_WORDS"]]]
+        stats = h["KM_BROADCAST_STATS"] // 4 + a
+        stats = [int(v) for v in block[stats : stats + h["KM_BROADCAST_STATS_WORDS"]]]
+        done, step = a + h["KM_BROADCAST_DONE"] // 4, h["KM_BROADCAST_DONE_STRIDE"] // 4
         out.append(
             {
-                "valid": int(block[a + h["KM_LANE_VALID"] // 4]),
+                "valid": int(block[a + h["KM_BROADCAST_VALID"] // 4]),
                 "gave_up": (
                     {
                         "where": wheres.get(gave[0] & 0xFF, gave[0] & 0xFF),
-                        "lane": (gave[0] >> 8) & 0xFF,
+                        "broadcast": (gave[0] >> 8) & 0xFF,
                         "block": gave[1],
                         "seq": gave[2],
                     }
@@ -138,7 +138,8 @@ def lanes(block, h=None):
                 "blocks": stats[0],
                 "wait_cycles": stats[1] | stats[2] << 32,
                 "done": [
-                    int(block[done + step * r]) for r in range(1, h["KM_LANE_RANKS"])
+                    int(block[done + step * r])
+                    for r in range(1, h["KM_BROADCAST_RANKS"])
                 ],
             }
         )
@@ -231,11 +232,11 @@ def core_state(st, core, h=None):
     }
 
 
-def not_reported(st, team, slot, seq, h=None):
-    """The members of `team` whose reported word for `slot` is not `seq`, with where
+def not_reported(st, group, slot, seq, h=None):
+    """The members of `group` whose reported word for `slot` is not `seq`, with where
     each kernel gave up."""
     h = h or abi.headers()
-    first, count = team
+    first, count = group
     out = []
     for core in range(first, first + count):
         c = core_state(st, core, h)
@@ -252,36 +253,36 @@ def wrap(delta):
 
 
 class Trace:
-    """The per-record trace: wall-clock words per core and sequence number.
+    """The per-command trace: wall-clock words per core and sequence number.
 
-    `rows` is [cores, cap, kTraceWords]; `seqs` and `teams` map a ticket to its
-    sequence number and team; `mhz`: the Tensix clock.
+    `rows` is [cores, cap, kTraceWords]; `seqs` and `groups` map a handle to its
+    sequence number and group; `mhz`: the Tensix clock.
     """
 
-    def __init__(self, rows, seqs, teams, mhz, h=None):
+    def __init__(self, rows, seqs, groups, mhz, h=None):
         self.h = h or abi.headers()
         self.rows = np.asarray(rows).astype(np.int64) & abi.M32
         self.seqs = seqs
-        self.teams = teams
+        self.groups = groups
         self.mhz = mhz
 
     @property
     def capacity(self):
         return self.rows.shape[1]
 
-    def record(self, ticket):
-        """[count, 4] words (seen, done, sent, extra) of the ticket's members, or None
-        when the ticket was not traced."""
-        seq = self.seqs.get(ticket)
+    def command(self, handle):
+        """[count, 4] words (seen, done, sent, extra) of the handle's members, or None
+        when the handle was not traced."""
+        seq = self.seqs.get(handle)
         if seq is None or not 1 <= seq <= self.capacity:
             return None
-        first, count = self.teams[ticket]
+        first, count = self.groups[handle]
         return self.rows[first : first + count, seq - 1]
 
-    def phases(self, ticket):
-        """Microseconds after the first member took the record: last member took it,
+    def phases(self, handle):
+        """Microseconds after the first member took the command: last member took it,
         last outputs written, leader pushed the completion. None when not traced."""
-        t = self.record(ticket)
+        t = self.command(handle)
         if t is None or not t[:, 0].any():
             return None
         h = self.h
@@ -297,9 +298,9 @@ class Trace:
         }
 
     def lead(self, a, b):
-        """Microseconds by which a member of ticket b took its record before ticket
+        """Microseconds by which a member of handle b took its command before handle
         a's leader pushed its completion (positive: both were in flight at once)."""
-        ta, tb = self.record(a), self.record(b)
+        ta, tb = self.command(a), self.command(b)
         if ta is None or tb is None:
             return None
         pushed = int(ta[0, self.h["kTraceSent"]])

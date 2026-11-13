@@ -1,4 +1,4 @@
-"""komorebi.native: where the dispatch kernel image and the native module come from."""
+"""komorebi.native: where the dispatcher image and the native module come from."""
 
 import pytest
 from fake_tree import make_tree

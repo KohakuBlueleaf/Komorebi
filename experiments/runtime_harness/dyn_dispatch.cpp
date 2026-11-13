@@ -1,13 +1,13 @@
 // The dispatcher's side of a dynamic run: the two-pass check of the status lines and
-// the end record it issues to the run's team once every line is idle and balanced.
+// the end command it submits to the run's group once every line is idle and balanced.
 #include <stdint.h>
 
 #include "sim_impl.hpp"
 
 namespace kmsim {
 
-    void Sim::Impl::dyn_issued(const Job& job, size_t k, uint32_t seq) {
-        if (cfg.dyn_seg != 0 && job.seg == cfg.dyn_seg) {
+    void Sim::Impl::dyn_submitted(const Job& job, size_t k, uint32_t seq) {
+        if (cfg.dyn_handler != 0 && job.handler == cfg.dyn_handler) {
             dyn_k = static_cast<int32_t>(k);
             dyn_seq = seq;
             dyn_ended = false;
@@ -59,12 +59,12 @@ namespace kmsim {
         sim.dyn.quiet_at = clock;
         sim.dyn.sent = sent;
         Job end;
-        end.seg = KM_SEG_DYN_END;
+        end.handler = KM_HANDLER_DYN_END;
         end.first = run.first;
         end.count = run.count;
         end.a[0] = dyn_seq;
         jobs.push_back(end);
-        sim.cfg.jobs.push_back(end);  // the checks read the teams from here
+        sim.cfg.jobs.push_back(end);  // the checks read the groups from here
         sim.jobs.push_back(JobResult{});
         dyn_ended = true;
     }

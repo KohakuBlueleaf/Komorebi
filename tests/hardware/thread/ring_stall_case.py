@@ -1,4 +1,4 @@
-"""Card case: a thread fills its command ring and stops taking events. Host records
+"""Card case: a thread fills its command ring and stops taking events. Host commands
 still run, the thread's timeout stops it, and the kernel finishes cleanly. Prints one
 JSON line with `ok`."""
 
@@ -23,9 +23,9 @@ def main():
         run = session.load(prog)
         log("loaded")
         time.sleep(0.2)  # the thread fills its ring meanwhile
-        tickets = [run.issue(1, (c % run.cores, 1)) for c in range(200)]
-        events = run.wait(tickets, timeout=5.0)
-        log("host records done")
+        handles = [run.submit(1, (c % run.cores, 1)) for c in range(200)]
+        events = run.wait(handles, timeout=5.0)
+        log("host commands done")
         result = run.thread_result(timeout=0.3)
         log(f"thread result: {result}")
         stop = run.stop()

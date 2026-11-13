@@ -27,8 +27,8 @@ def recip_check(session, exponent, n_workers):
     """1 / a on the card for every mantissa of one exponent field, against numpy."""
     pages = (1 << 23) // K["kRecipPerPage"]
     directory = arithmetic.contiguous(pages, n_workers)
-    out, prof, res, times, _ = card.run_segment(
-        session, K["kSegRecip"], directory, None, pages, K["kRecipPerPage"],
+    out, prof, res, times, _ = card.run_handler(
+        session, K["kHandlerRecip"], directory, None, pages, K["kRecipPerPage"],
         args=[exponent], deadline_s=20.0,
     )  # fmt: skip
     a = ((exponent << 23) | np.arange(1 << 23, dtype=np.uint32)).view(np.float32)
@@ -48,7 +48,7 @@ def recip_check(session, exponent, n_workers):
             {"a": int(a.view(np.uint32)[i]), "got": int(got[i]), "want": int(want[i])}
             for i in idx
         ],
-        "us": float(card.record_us(res)[-1]),
+        "us": float(card.command_us(res)[-1]),
     }
 
 
@@ -58,13 +58,13 @@ def math_check(session, rng, n, n_workers):
     a, b, x = arithmetic.math_inputs(rng, n)
     pages = arithmetic.math_pages(a, b, x)
     directory = arithmetic.contiguous(len(pages), n_workers)
-    out, prof, res, times, _ = card.run_segment(
-        session, K["kSegMath"], directory, pages, len(pages),
+    out, prof, res, times, _ = card.run_handler(
+        session, K["kHandlerMath"], directory, pages, len(pages),
         K["kMaOutVectors"] * VEC, deadline_s=20.0,
     )  # fmt: skip
     report = arithmetic.math_compare(a, b, x, out)
     report["run"] = card.check_run(res, n_workers)
-    report["us"] = float(card.record_us(res)[-1])
+    report["us"] = float(card.command_us(res)[-1])
     return report
 
 
@@ -89,8 +89,8 @@ def main():
     with card.open_session() as session:
         workers = card.workers(session)
         directory = arithmetic.contiguous(len(pages), workers)
-        out, prof, res, times, _ = card.run_segment(
-            session, K["kSegArith"], directory, pages, len(pages),
+        out, prof, res, times, _ = card.run_handler(
+            session, K["kHandlerArith"], directory, pages, len(pages),
             K["kArOutVectors"] * VEC, deadline_s=20.0,
         )  # fmt: skip
         report["run"] = card.check_run(res, workers)

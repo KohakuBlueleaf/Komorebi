@@ -95,7 +95,7 @@ inline void noc_async_write_barrier() {
     kmsim::noc_write_barrier();
 }
 
-// Returns at once: the source was already read when the write was issued.
+// Returns at once: the source was already read when the write was submitted.
 inline void noc_async_writes_flushed() {
     kmsim::point("noc_async_writes_flushed");
     kmsim::noc_writes_flushed();

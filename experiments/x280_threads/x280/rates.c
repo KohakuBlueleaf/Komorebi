@@ -1,4 +1,4 @@
-/* Rates probe, four harts: read, write and Flush64 rates over a region of the cluster's
+/* Rates probe, four cores: read, write and Flush64 rates over a region of the cluster's
  * DRAM bank and a prefix-sum job; optionally again after the prefetcher step (RT_*). */
 #include <stdint.h>
 
@@ -31,16 +31,16 @@ enum {
 
 /* Result words (32-bit). */
 #define RT_STATUS 0u
-#define RT_TICKS 8u     /* + pass * RT_PHASES + phase: mtime ticks, slowest hart */
-#define RT_SUMS 24u     /* + hart: low word of hart's sum of the cold read of pass 0 */
+#define RT_TICKS 8u     /* + pass * RT_PHASES + phase: mtime ticks, slowest core */
+#define RT_SUMS 24u     /* + core: low word of core's sum of the cold read of pass 0 */
 #define RT_JOB 32u      /* + rep: ticks of the job, take to give */
 #define RT_JOB_TAKE 40u /* + rep: ticks of the take alone */
 #define RT_ROUND 64u    /* round 1 (after the prefetcher step): the words above + 64 */
-#define RT_PF 128u      /* + 8 * hart: the prefetcher step, see pf_setup */
+#define RT_PF 128u      /* + 8 * core: the prefetcher step, see pf_setup */
 #define RT_WAYS 160u    /* CCACHE0_WAYENABLE as read (0xFFFFFFFF: the read faulted) */
 #define RT_OUT_WORDS 192u
 
-/* This hart's L2 prefetcher (BASIC_CONTROL, USER_CONTROL at + 4), the documented
+/* This core's L2 prefetcher (BASIC_CONTROL, USER_CONTROL at + 4), the documented
  * values for them, and the L3 way-enable register (read only, never written). */
 #define RT_L2PF_BASE 0x02030000ull
 #define RT_L2PF_STRIDE 0x2000ull
@@ -48,21 +48,21 @@ enum {
 #define RT_L2PF_USER 0x38c84eu
 #define RT_WAYENABLE 0x02010008ull
 
-/* Barrier words in LIM: hart h writes its arrival (the phase) at word h. */
+/* Barrier words in LIM: core h writes its arrival (the phase) at word h. */
 #define RT_ARRIVE 0x180u
-#define RT_RELEASE 0x1C0u /* hart 0: word 0 the released phase, word 2/3 its mtime */
-#define RT_TOTALS 0x1D0u  /* the job: hart h's chunk total at word h */
+#define RT_RELEASE 0x1C0u /* core 0: word 0 the released phase, word 2/3 its mtime */
+#define RT_TOTALS 0x1D0u  /* the job: core h's chunk total at word h */
 
-/* Arrives at barrier `n` and waits until hart 0 releases it; hart 0 releases once
- * every hart arrived. Returns 0 or an error; the release time in *t0. */
+/* Arrives at barrier `n` and waits until core 0 releases it; core 0 releases once
+ * every core arrived. Returns 0 or an error; the release time in *t0. */
 static uint32_t barrier(pr_t* p, uint32_t n, uint64_t* t0) {
     volatile uint32_t* arrive = pr_word(p, RT_ARRIVE);
     volatile uint32_t* release = pr_word(p, RT_RELEASE);
-    arrive[p->hart] = n;
+    arrive[p->core] = n;
     x280_fence_ow();
     for (uint32_t spins = 0;; spins++) {
         x280_fence_ir();
-        if (p->hart == 0) {
+        if (p->core == 0) {
             if (arrive[1] >= n && arrive[2] >= n && arrive[3] >= n) {
                 const uint64_t t = x280_mtime();
                 release[2] = (uint32_t)t;
@@ -103,18 +103,18 @@ static inline void mmio_write(uint64_t addr, uint32_t v) {
                      : "memory");
 }
 
-/* Reads this hart's prefetcher registers and CSR 0x7c1, writes the documented
+/* Reads this core's prefetcher registers and CSR 0x7c1, writes the documented
  * values and zero, reads them back. out[0..7]: before, fault, after, fault. */
-static void pf_setup(uint64_t hart, volatile uint32_t* out) {
-    const uint64_t base = RT_L2PF_BASE + hart * RT_L2PF_STRIDE;
+static void pf_setup(uint64_t core, volatile uint32_t* out) {
+    const uint64_t base = RT_L2PF_BASE + core * RT_L2PF_STRIDE;
     uint64_t csr;
-    pr_probe(hart);
+    pr_probe(core);
     out[0] = mmio_read(base);
     out[1] = mmio_read(base + 4);
     __asm__ volatile("csrr %0, 0x7c1" : "=r"(csr));
     out[2] = (uint32_t)csr;
-    out[3] = (uint32_t)pr_unprobe(hart);
-    pr_probe(hart);
+    out[3] = (uint32_t)pr_unprobe(core);
+    pr_probe(core);
     mmio_write(base, RT_L2PF_BASIC);
     mmio_write(base + 4, RT_L2PF_USER);
     __asm__ volatile("csrw 0x7c1, zero" ::: "memory");
@@ -123,7 +123,7 @@ static void pf_setup(uint64_t hart, volatile uint32_t* out) {
     out[5] = mmio_read(base + 4);
     __asm__ volatile("csrr %0, 0x7c1" : "=r"(csr));
     out[6] = (uint32_t)csr;
-    out[7] = (uint32_t)pr_unprobe(hart);
+    out[7] = (uint32_t)pr_unprobe(core);
 }
 
 /* Sum of the 64-bit words of [p, p + n) with 512-byte vector loads; n >= 512. */
@@ -203,7 +203,7 @@ static uint64_t ssum(const volatile uint64_t* p, uint64_t n) {
     return s;
 }
 
-/* One phase of a size pass on this hart's quarter [q, q + n). */
+/* One phase of a size pass on this core's quarter [q, q + n). */
 static void phase(uint32_t ph, uintptr_t q, uint64_t n, uint64_t* sum) {
     switch (ph) {
         case RT_FLUSH_CLEAN:
@@ -224,7 +224,7 @@ static void phase(uint32_t ph, uintptr_t q, uint64_t n, uint64_t* sum) {
 }
 
 /* The prefix-sum job: out[c][b] = all counts of bins before b (every core) plus the
- * counts of bin b on cores before c. Hart h owns bins [h * bins / 4, ...). */
+ * counts of bin b on cores before c. Core h owns bins [h * bins / 4, ...). */
 static uint32_t job(
     pr_t* p,
     const volatile rates_args_t* a,
@@ -233,7 +233,7 @@ static uint32_t job(
     uint64_t* t_job
 ) {
     const uint32_t cores = (uint32_t)a->cores, bins = (uint32_t)a->bins;
-    const uint32_t chunk = bins / 4, b0 = (uint32_t)p->hart * chunk;
+    const uint32_t chunk = bins / 4, b0 = (uint32_t)p->core * chunk;
     volatile uint32_t*
         counts = (volatile uint32_t*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + a->counts);
     volatile uint32_t* out = (
@@ -247,7 +247,7 @@ static uint32_t job(
         return e;
     }
     *t_job = t0;
-    /* take: drop this hart's cached lines of the counts */
+    /* take: drop this core's cached lines of the counts */
     for (uint32_t c = 0; c < cores; c++) {
         pr_flush((uintptr_t)(counts + c * bins + b0), chunk * 4u);
     }
@@ -266,13 +266,13 @@ static uint32_t job(
         start[b] = total;
         total += t;
     }
-    totals[p->hart] = total;
+    totals[p->core] = total;
     if ((e = barrier(p, ++*n, &t1)) != 0) {
         return e;
     }
     x280_fence_ir();
     uint32_t base = 0;
-    for (uint32_t h = 0; h < p->hart; h++) {
+    for (uint32_t h = 0; h < p->core; h++) {
         base += totals[h];
     }
     for (uint32_t c = 0; c < cores; c++) {
@@ -281,17 +281,17 @@ static uint32_t job(
             start[b] += counts[c * bins + b0 + b];
         }
     }
-    /* give: write this hart's lines of the output back to DRAM */
+    /* give: write this core's lines of the output back to DRAM */
     for (uint32_t c = 0; c < cores; c++) {
         pr_flush((uintptr_t)(out + c * bins + b0), chunk * 4u);
     }
     return 0;
 }
 
-int main(uint64_t hartid) {
+int main(uint64_t core_id) {
     pr_t p;
-    if (!pr_open(&p, hartid, sizeof(rates_args_t))) {
-        x280_hart_set_result(hartid, ~(uint64_t)PR_ERR_ARGS);
+    if (!pr_open(&p, core_id, sizeof(rates_args_t))) {
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
         return 0;
     }
     pr_enable_fpv();
@@ -302,16 +302,16 @@ int main(uint64_t hartid) {
         a->reps > RT_REPS_MAX || (a->region & 63) || (a->counts & 63) ||
         (a->out & 63) || a->timeout == 0 || a->timeout > 60ull * X280_MTIME_HZ ||
         a->prefetch > 1) {
-        if (hartid == 0) {
+        if (core_id == 0) {
             out[RT_STATUS] = PR_ERR_ARGS;
         }
-        x280_hart_set_result(hartid, ~(uint64_t)PR_ERR_ARGS);
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
         return 0;
     }
     p.deadline = x280_mtime() + a->timeout;
     uint32_t n = 0, e = 0;
     uint64_t t0, sum = 0;
-    if (hartid == 0) {
+    if (core_id == 0) {
         /* an earlier run's words; the first barrier orders this before every slot */
         for (uint32_t i = 0; i < RT_OUT_WORDS; i++) {
             out[i] = 0;
@@ -323,22 +323,22 @@ int main(uint64_t hartid) {
         }
         x280_fence_ow();
     }
-    pr_stamp(&p, 1);
+    pr_marker(&p, 1);
     for (uint32_t round = 0; round <= a->prefetch && e == 0; round++) {
         volatile uint32_t* o = out + round * RT_ROUND;
         if (round == 1) {
             if ((e = barrier(&p, ++n, &t0)) != 0) {
                 break;
             }
-            pf_setup(hartid, out + RT_PF + 8 * hartid);
-            pr_stamp(&p, 5);
+            pf_setup(core_id, out + RT_PF + 8 * core_id);
+            pr_marker(&p, 5);
         }
         for (uint32_t pass = 0; pass < 2 && e == 0; pass++) {
             const uint64_t q = a->sizes[pass] / 4;
             if (q == 0) {
                 continue;
             }
-            const uintptr_t mine = X280_LOCAL_DDR_TILE_BASE + a->region + hartid * q;
+            const uintptr_t mine = X280_LOCAL_DDR_TILE_BASE + a->region + core_id * q;
             for (uint32_t ph = 0; ph < RT_PHASES && e == 0; ph++) {
                 if ((e = barrier(&p, ++n, &t0)) != 0) {
                     break;
@@ -346,9 +346,9 @@ int main(uint64_t hartid) {
                 phase(ph, mine, q, &sum);
                 const uint32_t ticks = (uint32_t)(x280_mtime() - t0);
                 volatile uint32_t* slot = o + RT_TICKS + pass * RT_PHASES + ph;
-                /* each hart raises the slot to its own time: one hart at a time */
+                /* each core raises the slot to its own time: one core at a time */
                 for (uint32_t h = 0; h < 4; h++) {
-                    if (h == hartid && ticks > *slot) {
+                    if (h == core_id && ticks > *slot) {
                         *slot = ticks;
                     }
                     if ((e = barrier(&p, ++n, &t0)) != 0) {
@@ -356,10 +356,10 @@ int main(uint64_t hartid) {
                     }
                 }
                 if (pass == 0 && ph == RT_READ_COLD) {
-                    o[RT_SUMS + hartid] = (uint32_t)sum;
+                    o[RT_SUMS + core_id] = (uint32_t)sum;
                 }
             }
-            pr_stamp(&p, 2 + pass + 4 * round);
+            pr_marker(&p, 2 + pass + 4 * round);
         }
         for (uint32_t r = 0; r < a->reps && e == 0; r++) {
             uint64_t take = 0, t_job = 0, t_end;
@@ -369,16 +369,16 @@ int main(uint64_t hartid) {
             if ((e = barrier(&p, ++n, &t_end)) != 0) {
                 break;
             }
-            if (hartid == 0) {
+            if (core_id == 0) {
                 o[RT_JOB + r] = (uint32_t)(t_end - t_job);
                 o[RT_JOB_TAKE + r] = (uint32_t)take;
             }
         }
     }
-    pr_stamp(&p, 9);
-    if (hartid == 0) {
+    pr_marker(&p, 9);
+    if (core_id == 0) {
         out[RT_STATUS] = e;
     }
-    x280_hart_set_result(hartid, e ? ~(uint64_t)e : n);
+    x280_hart_set_result(core_id, e ? ~(uint64_t)e : n);
     return 0;
 }

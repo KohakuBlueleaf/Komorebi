@@ -1,5 +1,5 @@
 """The graph engine's C file built for the host and driven through ctypes: the same
-`kmg_*` functions the dispatch kernel runs, behind the interface of `graph.Executor`.
+`kmg_*` functions the dispatcher runs, behind the interface of `graph.Executor`.
 """
 
 import ctypes
@@ -13,7 +13,7 @@ from komorebi.engines import graph as gr
 LIBRARY = "libkm_graph.so"
 CFLAGS = ["-std=c11", "-O2", "-ffreestanding", "-fPIC", "-shared", "-Wall", "-Werror"]
 U32P = ctypes.POINTER(ctypes.c_uint32)
-ISSUE_FN = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, U32P)
+SUBMIT_FN = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, U32P)
 STATE_WORDS = 20  # registers, runs, phase, error reason, error node
 
 _loaded = {}
@@ -53,7 +53,7 @@ def load(cc=None):
         lib.kmg_check.argtypes, lib.kmg_check.restype = [vp, u32], u32
         lib.kmg_start.argtypes = [vp, vp, U32P, u32, u32]
         lib.kmg_start.restype = u32
-        lib.kmg_step.argtypes, lib.kmg_step.restype = [vp, ISSUE_FN, vp], u32
+        lib.kmg_step.argtypes, lib.kmg_step.restype = [vp, SUBMIT_FN, vp], u32
         lib.kmg_complete.argtypes, lib.kmg_complete.restype = [vp, u32, u32], u32
         lib.kmg_retry.argtypes, lib.kmg_retry.restype = [vp, u32], u32
         lib.kmg_stop.argtypes, lib.kmg_stop.restype = [vp, u32, u32], None
@@ -105,21 +105,21 @@ class NativeExecutor:
             self._state, self._upload, values, len(bindings), n_cores
         )
 
-    def step(self, issue):
-        """One `kmg_step`; `issue(node, words)` gets the record's 16 words. An error
-        raised by `issue` counts as busy inside the step and is raised after it."""
+    def step(self, submit):
+        """One `kmg_step`; `submit(node, words)` gets the command's 16 words. An error
+        raised by `submit` counts as busy inside the step and is raised after it."""
         raised = []
 
         def call(_ctx, node, rec):
             if raised:
                 return gr.BUSY
             try:
-                return issue(node, list(rec[:16]))
+                return submit(node, list(rec[:16]))
             except Exception as err:  # noqa: BLE001 (raised again below)
                 raised.append(err)
                 return gr.BUSY
 
-        code = self.lib.kmg_step(self._state, ISSUE_FN(call), None)
+        code = self.lib.kmg_step(self._state, SUBMIT_FN(call), None)
         if raised:
             raise raised[0]
         return code

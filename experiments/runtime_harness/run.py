@@ -25,7 +25,7 @@ FORMS = {
 }
 HARNESS = ["sim", "stub_calls", "dispatcher", "dyn_dispatch", "checks", "pinned"]
 SIM_FAMILY = ["sim", "stub_calls", "dispatcher", "dyn_dispatch"]
-ROWS = ["smoke", "exit_partial_team", "completion_every_team"]
+ROWS = ["smoke", "exit_partial_group", "completion_every_group"]
 PARTS = ("unpack", "math", "pack")
 
 
@@ -73,10 +73,10 @@ def units(tree, main):
 
 
 def dyn_units(tree):
-    """The dynamic segment's generic reader and writer, the hop example's compute
+    """The dynamic handler's generic reader and writer, the hop example's compute
     (per thread), and the scenarios that run them."""
     kernels = tree / "src" / "komorebi_native" / "kernels"
-    hop = tree / "examples" / "05_hop" / "kernels" / "compute.cpp"
+    hop = tree / "examples" / "05_forward" / "kernels" / "compute.cpp"
     trisc = ["-std=c++17", "-DCOMPILE_FOR_TRISC"]
     return [
         (
@@ -91,13 +91,13 @@ def dyn_units(tree):
         ),
         *[
             (
-                f"hop_{p}",
+                f"forward_{p}",
                 hop,
                 [
                     *trisc,
                     f"-DTRISC_{p.upper()}",
                     f"-Dkm=km_{p}",
-                    f"-Dkernel_main=kmsim_hop_{p}_main",
+                    f"-Dkernel_main=kmsim_forward_{p}_main",
                 ],
             )
             for p in PARTS
@@ -127,7 +127,7 @@ def build(out, tree=ROOT, form="one"):
         f"-I{HERE / 'stub'}",
         f"-I{HERE}",
         f"-I{tree / 'src' / 'komorebi_native' / 'include'}",
-        f"-I{tree / 'examples' / '05_hop' / 'kernels'}",
+        f"-I{tree / 'examples' / '05_forward' / 'kernels'}",
     ]
     common = [cxx, "-Wall", *include, *FORMS[form]]
     todo = units(tree, "pinned_main" if form == "pinned" else "scenarios")
@@ -135,7 +135,7 @@ def build(out, tree=ROOT, form="one"):
         {
             *HERE.rglob("*.[ch]*"),
             *(tree / "src" / "komorebi_native" / "include").rglob("*.h*"),
-            *(tree / "examples" / "05_hop" / "kernels").glob("*.h"),
+            *(tree / "examples" / "05_forward" / "kernels").glob("*.h"),
         }
     )
     sources += sorted({src for _, src, _ in todo})

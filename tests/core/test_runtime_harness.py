@@ -28,12 +28,12 @@ def scenario():
     return run
 
 
-def test_a_record_completes(scenario):
+def test_a_command_completes(scenario):
     got = scenario("smoke")
     assert got["ok"] and got["done"] == got["jobs"], got
 
 
-def test_a_record_without_output_is_acked_after_its_compute(scenario):
+def test_a_command_without_output_is_acked_after_its_compute(scenario):
     got = scenario("no_output_waits_for_compute")
     assert got["ok"], got
 
@@ -43,27 +43,27 @@ def test_the_wall_clock_reads_across_a_carry_of_its_low_word(scenario):
     assert got["ok"], got
 
 
-def test_a_flagged_record_is_acked_with_the_leaders_result(scenario):
+def test_a_flagged_command_is_acked_with_the_leaders_result(scenario):
     got = scenario("result_word_from_the_leader")
     assert got["ok"], got
 
 
 def test_an_item_past_the_buffer_end_gives_up_with_its_word(scenario):
-    got = scenario("wrappers_refuse_straddling_items")
+    got = scenario("wrappers_reject_straddling_items")
     assert got["ok"], got
 
 
 def test_exit_reaches_every_worker(scenario):
-    got = scenario("exit_partial_team")
+    got = scenario("exit_partial_group")
     assert got["ok"], got
 
 
-def test_an_excl_record_waits_for_an_overlapping_team(scenario):
-    got = scenario("excl_waits_for_overlapping_team")
+def test_an_excl_command_waits_for_an_overlapping_group(scenario):
+    got = scenario("excl_waits_for_overlapping_group")
     assert got["ok"], got
 
 
-def test_a_dynamic_run_ends_quiet_with_every_item_retired(scenario):
+def test_a_dynamic_run_ends_quiet_with_every_message_consumed(scenario):
     got = scenario("dyn_smoke")
     assert got["ok"], got
 

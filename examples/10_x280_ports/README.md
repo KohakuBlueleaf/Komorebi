@@ -1,9 +1,9 @@
 # 10 X280 ports
 
-X280 cores and Tensix cores talk to each other without the dispatch kernel in the
-path ([X280 ports](../../docs/threads.md#x280-ports)). The thread issues one record per
+X280 cores and Tensix cores talk to each other without the dispatcher in the
+path ([X280 ports](../../docs/threads.md#x280-ports)). The thread submits one command per
 round to the grid's Tensix cores and serves them on every X280 core of every cluster
-until the record's event:
+until the command's event:
 
 1. each X280 core tells each Tensix core it serves a salt for the round (a tell);
 2. the Tensix core asks its X280 core for 100 values, one at a time, and hashes them
@@ -22,7 +22,7 @@ with one. Prints one JSON line: whether every hash is exact (`exact`), the mean 
 largest round trip of one ask (`ask_us_mean`, `ask_us_max`), a round's time on the
 lead's timer (`round_us_mean`, `round_us_best`), and the asks answered a second
 (`asks_per_s`). `ok` is false, and the script exits non-zero, unless every thread
-returned code 0 without a library error, every round's record completed and every hash
+returned code 0 without a library error, every round's command completed and every hash
 is exact.
 
 ## Numbers
@@ -54,7 +54,7 @@ every Tensix core tells its numbers:
 
 | Pass | How the units are dealt |
 |---|---|
-| `equal` | equal contiguous ranges, core `i` the `i`-th (`km::share`) |
+| `equal` | equal contiguous ranges, core `i` the `i`-th (`km::partition`) |
 | `pull` | ranges of `--per` units pulled (`kmx_pull_run`, `KMX_PULL_COUNT`; `port.next`) |
 | `log` | the same, and each core's ranges logged in region `log` (`KMX_PULL_LOG`) |
 | `replay` | each core gets the ranges the log holds for it (`KMX_PULL_REPLAY`) |
@@ -94,12 +94,12 @@ ask a microsecond.
 
 ## How it ends
 
-`kmx_port_run(&r, serve, round, &ev)` on X280 core 0 of the lead issues the record and
+`kmx_port_run(&r, serve, round, &ev)` on X280 core 0 of the lead submits the command and
 runs `serve` on every X280 core as `kmx_par_all` does. Each loops while
 `kmx_port_open()` returns 1; X280 core 0 of the lead looks for the record's event in
 its ring, and when it comes, every next look returns 0 and `serve` returns.
 `kmx_port_run` returns the event once all have: nothing is stored into a Tensix core
-after it, so the next round's tells cannot land in this one. A record that times out
+after it, so the next round's tells cannot land in this one. A command that times out
 ends the serve the same way (its event says `KM_EV_TIMEOUT`).
 
 ## The thread

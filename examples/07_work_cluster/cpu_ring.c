@@ -25,14 +25,14 @@ static _Alignas(64) uint64_t read_line[8];
 static uint32_t consumed, sent;
 static uint32_t x[KM_CORES_MAX]; /* page p of the state tensor: core p's word */
 static kmx_args args;
-static uint32_t teams[4096]; /* region 0 */
+static uint32_t groups[4096]; /* region 0 */
 static kmx_ring_t ring;
 
 /* Takes every landed command in order, runs it on the model, posts its event. */
 static int fake_kernel(void) {
     for (;;) {
         const uint32_t i = consumed + 1;
-        km_record_t r;
+        km_command_t r;
         memcpy(&r, cmd + (i % CMD_DEPTH) * 64, 64);
         if (r.seq != i || !KM_LANDED(&r)) {
             return KMX_OK;
@@ -41,19 +41,19 @@ static int fake_kernel(void) {
             return KMX_OK; /* the thread has not taken enough events yet */
         }
         consumed = i;
-        const uint32_t seg = r.hdr & 0xFFu, flags = r.hdr >> 8 & 0xFFu;
-        const uint32_t first = r.team & 0xFFFFu, count = r.team >> 16;
+        const uint32_t handler = r.hdr & 0xFFu, flags = r.hdr >> 8 & 0xFFu;
+        const uint32_t first = r.group & 0xFFFFu, count = r.group >> 16;
         uint32_t result = 0;
-        if (seg == WC_SEG_STEP) {
+        if (handler == WC_HANDLER_STEP) {
             for (uint32_t p = first; p < first + count; p++) {
                 x[p] += r.a1 + p;
             }
-        } else if (seg == WC_SEG_SUM) {
+        } else if (handler == WC_HANDLER_SUM) {
             for (uint32_t p = first; p < first + r.a1; p++) {
                 result += x[p];
             }
         }
-        printf("record %u %u %u %u %u %u\n", seg, flags, first, count, r.a0, r.a1);
+        printf("command %u %u %u %u %u %u\n", handler, flags, first, count, r.a0, r.a1);
         const uint32_t e[4] = {++sent, i, KM_EV_DONE, flags & KM_F_RESULT ? result : 1};
         memcpy(events + (sent % EVENT_DEPTH) * 16, e, 16);
     }
@@ -64,20 +64,20 @@ const kmx_args* kmx_args_get(void) {
 }
 
 void* kmx_region(int id, uint64_t* bytes) {
-    *bytes = id == 0 ? sizeof teams : 0;
-    return id == 0 ? teams : 0;
+    *bytes = id == 0 ? sizeof groups : 0;
+    return id == 0 ? groups : 0;
 }
 
-void kmx_give(int id) {
+void kmx_flush(int id) {
     (void)id;
 }
 
-int kmx_issue(const km_record_t* r, uint32_t* ticket) {
-    return kmx_ring_issue(&ring, r, ticket);
+int kmx_submit(const km_command_t* r, uint32_t* handle) {
+    return kmx_ring_submit(&ring, r, handle);
 }
 
-int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev) {
-    return kmx_ring_wait(&ring, ticket, deadline, ev);
+int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* ev) {
+    return kmx_ring_wait(&ring, handle, deadline, ev);
 }
 
 uint64_t kmx_time(void) {
@@ -127,9 +127,9 @@ int main(int argc, char** argv) {
     const uint32_t rounds = (
         args.words[WC_MAX_ROUNDS] < 4096 ? args.words[WC_MAX_ROUNDS] : 4096
     );
-    printf("teams");
+    printf("groups");
     for (uint32_t i = 0; i < rounds; i++) {
-        printf(" %u", teams[i]);
+        printf(" %u", groups[i]);
     }
     printf("\n");
     return 0;
