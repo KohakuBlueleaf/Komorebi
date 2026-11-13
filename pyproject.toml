@@ -12,7 +12,15 @@ requires-python = ">=3.13"
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyyaml", "ruff", "black", "blacken-docs", "clang-format>=22"]
+dev = [
+    "pytest",
+    "pyyaml",
+    "ruff",
+    "black",
+    "blacken-docs",
+    "clang-format>=22",
+    "mkdocs-material>=9.5,<10",
+]
 # The prebuilt tt-metal runtime (runtime/ in this repository), used when TT_METAL_HOME is
 # unset; not yet required.
 runtime = ["komorebi-runtime>=0.81.1.2,<0.81.2"]

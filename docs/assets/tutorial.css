@@ -1,0 +1,159 @@
+/* The stepping grid figure (assets/grid.js), in the theme's colours. */
+
+figure.km-grid {
+  margin: 1.2em 0;
+  padding: 0.6em 0.8em 0.8em;
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+  background: var(--md-default-bg-color);
+}
+
+figure.km-grid:focus-visible {
+  outline: 0.1rem solid var(--md-accent-fg-color);
+}
+
+.km-svg {
+  display: block;
+  width: 100%;
+  max-width: 34rem;
+  height: auto;
+  margin: 0 auto;
+}
+
+.km-svg .km-core,
+.km-svg .km-dram,
+.km-svg .km-x280,
+.km-svg .km-host {
+  stroke-width: 1;
+}
+
+.km-svg .km-core {
+  fill: var(--md-code-bg-color);
+  stroke: var(--md-default-fg-color--lighter);
+}
+
+.km-svg .km-dram {
+  fill: var(--md-default-fg-color--lightest);
+  stroke: none;
+}
+
+.km-svg .km-x280,
+.km-svg .km-host {
+  fill: var(--md-default-bg-color);
+  stroke: var(--md-primary-fg-color);
+  stroke-width: 1.5;
+}
+
+.km-svg .km-lit {
+  fill: var(--md-accent-fg-color);
+  stroke: var(--md-accent-fg-color);
+  fill-opacity: 0.85;
+}
+
+.km-svg .km-text {
+  fill: var(--md-default-fg-color);
+  font-size: 13px;
+  font-family: var(--md-text-font-family, sans-serif);
+}
+
+.km-svg .km-small {
+  font-size: 11.5px;
+}
+
+.km-svg .km-muted {
+  fill: var(--md-default-fg-color--light);
+}
+
+.km-svg .km-mark {
+  font-size: 12px;
+  font-weight: 700;
+  fill: var(--md-accent-bg-color);
+}
+
+.km-svg .km-arrow {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.km-svg .km-arrow.km-command {
+  stroke: var(--md-accent-fg-color);
+}
+
+.km-svg .km-arrow.km-data {
+  stroke: var(--md-default-fg-color);
+  stroke-dasharray: 5 3.5;
+}
+
+.km-svg .km-arrow.km-reply {
+  stroke: var(--md-default-fg-color);
+  stroke-width: 2.6;
+  stroke-dasharray: 1 4.5;
+}
+
+.km-svg .km-head.km-command {
+  fill: var(--md-accent-fg-color);
+}
+
+.km-svg .km-head.km-data {
+  fill: var(--md-default-fg-color);
+}
+
+.km-svg .km-head.km-reply {
+  fill: var(--md-default-fg-color);
+}
+
+.km-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.km-bar button {
+  min-width: 6.2rem;
+  padding: 0.35rem 0.7rem;
+  border: 0.05rem solid var(--md-default-fg-color--lighter);
+  border-radius: 0.2rem;
+  background: var(--md-code-bg-color);
+  color: var(--md-default-fg-color);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.km-bar button:hover:not(:disabled),
+.km-bar button:focus-visible {
+  border-color: var(--md-accent-fg-color);
+  color: var(--md-accent-fg-color);
+}
+
+.km-bar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.km-count {
+  font-size: 0.7rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.km-label {
+  min-height: 3.2em;
+  margin: 0.6rem 0 0;
+  font-size: 0.75rem;
+}
+
+/* A run's output: the lines that differ on another card are marked in the text. */
+.md-typeset .km-output {
+  border-left: 0.2rem solid var(--md-primary-fg-color);
+  padding-left: 0.6rem;
+}
+
+@media (max-width: 30em) {
+  .km-bar button {
+    min-width: 0;
+    padding: 0.35rem 0.5rem;
+  }
+}

@@ -1,0 +1,121 @@
+site_name: Komorebi
+site_description: A programming model and framework for the Tensix grid and the X280 cores of a Tenstorrent Blackhole card
+repo_url: https://github.com/KohakuBlueleaf/Komorebi
+repo_name: KohakuBlueleaf/Komorebi
+edit_uri: ""
+docs_dir: docs
+strict: true
+
+# The site is the reading surface of the tutorial; the pages outside docs/ that it
+# shows (the examples' READMEs) are added by the hook, which also turns links to other
+# files of the repository into links to the site or to GitHub.
+hooks:
+  - docs/_site/hooks.py
+
+exclude_docs: |
+  _site/
+  tutorial/README.md
+
+theme:
+  name: material
+  language: en
+  font: false
+  features:
+    - navigation.footer
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+
+extra_css:
+  - assets/tutorial.css
+extra_javascript:
+  - assets/grid.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.keys
+
+validation:
+  omitted_files: info
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+nav:
+  - Home: README.md
+  - Tutorial:
+      - tutorial/index.md
+      - Getting started:
+          - tutorial/01-what-komorebi-is.md
+          - tutorial/02-environment-setup.md
+          - tutorial/03-program-structure.md
+          - tutorial/04-a-first-kernel.md
+      - Tensix cores:
+          - tutorial/05-handlers-and-commands.md
+          - tutorial/06-buffers-and-data.md
+  - Guides:
+      - install.md
+      - development.md
+      - concepts/model.md
+      - concepts/dispatch.md
+      - concepts/runtime.md
+      - streams.md
+      - graphs.md
+      - threads.md
+  - Reference:
+      - reference/host.md
+      - reference/runtime.md
+      - reference/ports.md
+      - reference/lanes.md
+      - reference/dynamic.md
+      - reference/threads.md
+  - Examples:
+      - examples/README.md
+      - examples/01_mapcollect/README.md
+      - examples/02_merge_tree/README.md
+      - examples/03_broadcast/README.md
+      - examples/04_uop_stream/README.md
+      - examples/05_hop/README.md
+      - examples/06_graph/README.md
+      - examples/07_work_cluster/README.md
+      - examples/08_parallel_thread/README.md
+      - examples/10_x280_ports/README.md
