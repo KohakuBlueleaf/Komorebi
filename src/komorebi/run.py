@@ -784,14 +784,15 @@ class Run:
         return self._result
 
     def state(self):
-        """Every core's state words, port slots and lane areas, as dicts; valid after
-        the stop."""
+        """Every core's state words, port slots, lane areas and dynamic-run words, as
+        dicts; valid after the stop."""
         self._require_stopped()
         return [
             st.core_state(self._state, c, self.h)
             | {
                 "ports": st.ports(self._blocks[c], self.h),
                 "lanes": st.lanes(self._blocks[c], self.h),
+                "dynamic": st.dynamic(self._blocks[c], self.h),
             }
             for c in range(self.cores)
         ]

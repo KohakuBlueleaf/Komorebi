@@ -144,6 +144,59 @@ def lanes(block, h=None):
     return out
 
 
+# Dynamic runs -------------------------------------------------------------------
+
+DYN_WHERES = {
+    "Gap": "gap",
+    "Overflow": "overflow",
+    "Atomic": "atomic",
+    "Flush": "flush",
+    "Read": "read",
+    "InPage": "in_page",
+    "Line": "line",
+    "BadDest": "bad_dest",
+    "Next": "next",
+    "OutPage": "out_page",
+    "Outbox": "outbox",
+    "Stopped": "stopped",
+    "Align": "align",
+    "Lost": "lost",
+    "Fill": "fill",
+    "Full": "full",
+}  # kWhereDyn*
+
+
+def dynamic(block, h=None):
+    """A core's dynamic-run words from its control block: queue head and tail, items
+    sent and consumed, quota left, and the first give-up (where named, position, run,
+    the word seen; None if none)."""
+    h = h or abi.headers()
+    at = h["KM_CTL_DYN"] // 4
+
+    def word(offset):
+        return int(block[at + offset // 4])
+
+    gave = [word(h["KM_DYN_GAVE"] + 4 * i) for i in range(4)]
+    names = {h[f"kWhereDyn{k}"]: v for k, v in DYN_WHERES.items()}
+    return {
+        "head": word(h["KM_DYN_IN_HEAD"]),
+        "tail": word(h["KM_DYN_IN_TAIL"]),
+        "sent": word(h["KM_DYN_SENT"]),
+        "consumed": word(h["KM_DYN_CONSUMED"]),
+        "quota": word(h["KM_DYN_QUOTA"]),
+        "gave_up": (
+            {
+                "where": names.get(gave[0], gave[0]),
+                "position": gave[1],
+                "run": gave[2],
+                "seen": gave[3],
+            }
+            if gave[0]
+            else None
+        ),
+    }
+
+
 def core_state(st, core, h=None):
     """One core's state words as a dict."""
     h = h or abi.headers()

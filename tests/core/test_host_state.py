@@ -159,3 +159,29 @@ def test_program_reads_segments_and_checks_its_parts(tmp_path):
         Program("q", kernels=tmp_path, depth=17)
     with pytest.raises(ValueError, match="compile_args"):
         Program("q", kernels=tmp_path, compile_args={"feeder": []})
+
+
+def test_dynamic_words_and_a_named_dynamic_give_up():
+    block = np.zeros(K["KM_CTL_BYTES"] // 4, np.uint32)
+    dyn = K["KM_CTL_DYN"] // 4
+    for name, value in (("IN_TAIL", 40), ("IN_HEAD", 33), ("SENT", 9), ("QUOTA", 7)):
+        block[dyn + K[f"KM_DYN_{name}"] // 4] = value
+    block[dyn + K["KM_DYN_CONSUMED"] // 4] = 8
+    assert st.dynamic(block)["gave_up"] is None
+    gave = dyn + K["KM_DYN_GAVE"] // 4
+    block[gave : gave + 4] = [K["kWhereDynLost"], 21, 3, 17]
+    assert st.dynamic(block) == {
+        "head": 33,
+        "tail": 40,
+        "sent": 9,
+        "consumed": 8,
+        "quota": 7,
+        "gave_up": {"where": "lost", "position": 21, "run": 3, "seen": 17},
+    }
+    codes = [K[f"kWhereDyn{k}"] for k in st.DYN_WHERES]
+    assert codes == list(range(19, 19 + len(codes)))  # after the runtime's 1 to 18
+
+
+def test_where_codes_are_one_list_without_repeats():
+    codes = {k: v for k, v in K.items() if k.startswith("kWhere")}
+    assert len(set(codes.values())) == len(codes) and min(codes.values()) >= 1
