@@ -14,7 +14,7 @@ import numpy as np
 import numpy.ma
 
 from komorebi import abi
-from komorebi import state as st
+from komorebi import state as device_state
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.errors import (
     CommandRejected,
@@ -59,29 +59,31 @@ class Event(NamedTuple):
         return self.ticks / 50.0  # the X280 timer runs at 50 MHz
 
 
-def stuck_message(cluster, r):
+def stuck_message(cluster, result):
     """What a stuck thread (ThreadResult.stuck) means, for ThreadFailed."""
     stop = (
-        f"the runtime could not stop the cluster ({r.detail}): the card needs a reset"
-        if r.detail
+        f"the runtime could not stop the cluster ({result.detail}): the card needs a"
+        " reset"
+        if result.detail
         else "the runtime stopped the cluster"
     )
     return (
         f"the thread on cluster {cluster} did not return, nor after the stop flag: a"
         " core is stuck outside the library (which alone sees the stop flag and the"
-        f" deadline) or stopped by a trap; its last progress marker {r.where}; {stop}"
+        " deadline) or stopped by a trap; its last progress marker"
+        f" {result.where}; {stop}"
     )
 
 
-def _left(by):
-    """Seconds left until the monotonic time `by` (0 once it passed)."""
-    return max(by - time.monotonic(), 0.0)
+def _left(deadline):
+    """Seconds left until the monotonic time `deadline` (0 once it passed)."""
+    return max(deadline - time.monotonic(), 0.0)
 
 
-def _sequence_number(n):
+def _sequence_number(number):
     """The kernel's sequence number of the n-th command: it counts in 32 bits and skips
     0 (it also skips a slot's last value, which only a wrap can repeat)."""
-    return (n - 1) % M32 + 1
+    return (number - 1) % M32 + 1
 
 
 class Run:
@@ -91,8 +93,8 @@ class Run:
     `abort()`, `read_back()` -> (control blocks, trace), `mhz`.
     """
 
-    def __init__(self, backend, grid, program=None, batch=64, h=None):
-        self.h = h or abi.headers()
+    def __init__(self, backend, grid, program=None, batch=64, abi_headers=None):
+        self.h = abi_headers or abi.headers()
         self.backend = backend
         self.port = backend.port
         self.port.batch = batch
@@ -101,28 +103,31 @@ class Run:
         self.cores = grid[0] * grid[1]
         self.program = program
         self.batch = batch
-        k = self.h.constants
+        constants = self.h.constants
         self._kinds = {
-            k["KM_EVENT_DONE"]: "done",
-            k["KM_EVENT_TIMEOUT"]: "timeout",
-            k["KM_EVENT_PONG"]: "pong",
-            k.get("KM_EVENT_REJECTED", 3): "rejected",
+            constants["KM_EVENT_DONE"]: "done",
+            constants["KM_EVENT_TIMEOUT"]: "timeout",
+            constants["KM_EVENT_PONG"]: "pong",
+            constants.get("KM_EVENT_REJECTED", 3): "rejected",
         }
-        self._done = k["KM_EVENT_DONE"]
+        self._done = constants["KM_EVENT_DONE"]
         self._numbered = (
-            k["KM_EVENT_DONE"],
-            k["KM_EVENT_TIMEOUT"],
+            constants["KM_EVENT_DONE"],
+            constants["KM_EVENT_TIMEOUT"],
         )  # auxiliary holds sequence bits
         self._auxiliary_low, self._sequence_shift = (
-            k["KM_EVENT_AUXILIARY_LOW"],
-            k["KM_EVENT_SEQUENCE_SHIFT"],
+            constants["KM_EVENT_AUXILIARY_LOW"],
+            constants["KM_EVENT_SEQUENCE_SHIFT"],
         )
-        self._flag_result, self._flag_queue = k["KM_FLAG_RESULT"], k["KM_FLAG_QUEUE"]
-        self._flag_exclusive = k["KM_FLAG_EXCLUSIVE"]
+        self._flag_result, self._flag_queue = (
+            constants["KM_FLAG_RESULT"],
+            constants["KM_FLAG_QUEUE"],
+        )
+        self._flag_exclusive = constants["KM_FLAG_EXCLUSIVE"]
         self._rejections = {
-            v: n[len("KMD_REJECT_") :].lower()
-            for n, v in k.items()
-            if n.startswith("KMD_REJECT_")
+            value: name[len("KMD_REJECT_") :].lower()
+            for name, value in constants.items()
+            if name.startswith("KMD_REJECT_")
         }
         self._nop, self._user_max = (
             self.h["KM_HANDLER_NOP"],
@@ -180,7 +185,7 @@ class Run:
         first + count) (default every core); returns its handle. Nothing is sent until a
         wait. `result`: the event carries the leader's result word. `queued`: `group` is
         a count and the kernel picks the first core (group() then has first None)."""
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         if handler.__class__ is not int:
             handler = (
                 self.program.handler(handler)
@@ -199,41 +204,41 @@ class Run:
             group = self._group(group)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
-        if any(not 0 <= int(a) <= M32 for a in args):
+        if any(not 0 <= int(word) <= M32 for word in args):
             raise ValueError("arguments are 32-bit unsigned words")
         flags = (self._flag_result if result else 0) | (
             self._flag_queue if queued else 0
         )
         handle = self._queue_command(handler, group, args, exclusive, flags)
-        self.submit_s += time.perf_counter() - t0
+        self.submit_s += time.perf_counter() - started
         return handle
 
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """Queues n commands at once: `handler` a name, a number or n numbers, `firsts`
         and `counts` the groups (n each, or one for all), `args` an [n, m] matrix of
         32-bit words (m <= 10) or None. Returns the handles as a range."""
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         self._check_alive()
         if isinstance(handler, str):
             handler = self.program.handler(handler)
-        cols = [np.asarray(handler), np.asarray(firsts), np.asarray(counts)]
+        columns = [np.asarray(handler), np.asarray(firsts), np.asarray(counts)]
         if args is not None:
             args = np.asarray(args)
             if args.ndim != 2 or args.shape[1] > len(self._arg_at):
                 raise ValueError("arguments are an [n, m] matrix with m <= 10")
             if args.dtype.kind not in "iu":
                 raise ValueError("arguments are 32-bit unsigned words")
-            cols.append(np.zeros(args.shape[0], np.int64))  # its row count
-        if any(c.dtype.kind not in "iu" for c in cols[:3]):
+            columns.append(np.zeros(args.shape[0], np.int64))  # its row count
+        if any(column.dtype.kind not in "iu" for column in columns[:3]):
             raise ValueError("handlers, firsts and counts are integers")
         try:
-            n = np.broadcast_shapes(*(c.shape for c in cols))
+            shape = np.broadcast_shapes(*(column.shape for column in columns))
         except ValueError:
-            n = ()
-        if len(n) != 1:
+            shape = ()
+        if len(shape) != 1:
             raise ValueError("handlers, firsts, counts and arguments: one row each")
         handlers, first, count = (
-            np.broadcast_to(c, n).astype(np.int64) for c in cols[:3]
+            np.broadcast_to(column, shape).astype(np.int64) for column in columns[:3]
         )
         bad = ~(
             (handlers == self._nop) | ((handlers >= 1) & (handlers <= self._user_max))
@@ -250,7 +255,7 @@ class Run:
                 f"group ({int(first[i])}, {int(count[i])}) is not inside {self.cores} "
                 "cores"
             )
-        words = np.zeros((n[0], 16), np.uint32)
+        words = np.zeros((shape[0], 16), np.uint32)
         words[:, self._hdr] = handlers & 0xFF
         words[:, self._group_at] = first | count << 16
         if args is not None and args.size:
@@ -259,11 +264,11 @@ class Run:
             words[:, self._arg_at[: args.shape[1]]] = args
         self._hand()
         start = self._next
-        self._next += n[0]
+        self._next += shape[0]
         if exclusive:
             words[:, self._hdr] |= self._flag_exclusive << 8
-        self._send_block(words, first, count, np.zeros(n[0], np.uint8))
-        self.submit_s += time.perf_counter() - t0
+        self._send_block(words, first, count, np.zeros(shape[0], np.uint8))
+        self.submit_s += time.perf_counter() - started
         return range(start, self._next)
 
     def _group(self, group):
@@ -280,12 +285,12 @@ class Run:
         self._check_alive()
         first, count = group if group else (0, 0)
         flags |= self._flag_exclusive if exclusive else 0  # the kernel orders it
-        w = [0] * 16
-        w[self._hdr] = handler & 0xFF | flags << 8
-        w[self._group_at] = first | count << 16
-        for at, value in zip(self._arg_at, args):
-            w[at] = int(value) & M32
-        self._words.extend(w)
+        words = [0] * 16
+        words[self._hdr] = handler & 0xFF | flags << 8
+        words[self._group_at] = first | count << 16
+        for position, value in zip(self._arg_at, args):
+            words[position] = int(value) & M32
+        self._words.extend(words)
         self._firsts.append(-1 if flags & self._flag_queue else first)
         self._counts.append(count)
         self._fl.append(flags)
@@ -297,8 +302,8 @@ class Run:
         """Gives the commands submitted one by one to the port, as one block."""
         if not self._counts:
             return
-        n = len(self._counts)
-        words = np.frombuffer(self._words, np.uint32).reshape(n, 16)
+        rows = len(self._counts)
+        words = np.frombuffer(self._words, np.uint32).reshape(rows, 16)
         first = np.frombuffer(self._firsts, np.int32)
         count = np.frombuffer(self._counts, np.int32)
         flags = np.frombuffer(self._fl, np.uint8)
@@ -308,19 +313,19 @@ class Run:
     def _send_block(self, words, first, count, flags):
         """Notes handles handed .. handed + n - 1 (groups, flags, sequences) and queues
         their commands in the port. A queued command's first is -1 (the kernel's)."""
-        n = len(words)
-        lo = self._handed - self._base
-        self._grow(lo + n)
-        rec = count > 0
-        self._first[lo : lo + n] = first
-        self._count[lo : lo + n] = count
-        self._flags[lo : lo + n] = flags
-        self._sequence[lo : lo + n] = np.where(
-            rec, self._next_sequence + np.cumsum(rec) - 1, 0
+        rows = len(words)
+        row = self._handed - self._base
+        self._grow(row + rows)
+        has_cores = count > 0
+        self._first[row : row + rows] = first
+        self._count[row : row + rows] = count
+        self._flags[row : row + rows] = flags
+        self._sequence[row : row + rows] = np.where(
+            has_cores, self._next_sequence + np.cumsum(has_cores) - 1, 0
         )
-        self._next_sequence += int(rec.sum())
+        self._next_sequence += int(has_cores.sum())
         self.port.enqueue(np.ascontiguousarray(words))
-        self._handed += n
+        self._handed += rows
 
     def _grow(self, rows):
         have = len(self._has)
@@ -347,20 +352,22 @@ class Run:
         stored = self._handed - self._base - self.port.queued
         stray = (i >= stored) | self._has[np.minimum(i, len(self._has) - 1)]
         if stray.any() or len(np.unique(i)) != len(i):
-            t = int(handles[np.argmax(stray)]) if stray.any() else int(handles[0])
+            stray_handle = (
+                int(handles[np.argmax(stray)]) if stray.any() else int(handles[0])
+            )
             self.abort()
             raise self._remember(
                 KernelFailed(
-                    f"an event for command {t & M32} (handle {t}), which is not in "
-                    "flight: the run is stopped"
+                    f"an event for command {stray_handle & M32} (handle "
+                    f"{stray_handle}), which is not in flight: the run is stopped"
                 )
             )
         self._status[i] = rows[:, 2]
         self._ticks[i] = rows[:, 3]
         self._has[i] = True
-        at, end = self._oldest - self._base, self._handed - self._base
-        waiting = ~self._has[at:end]
-        self._oldest += int(np.argmax(waiting)) if waiting.any() else end - at
+        oldest_row, end = self._oldest - self._base, self._handed - self._base
+        waiting = ~self._has[oldest_row:end]
+        self._oldest += int(np.argmax(waiting)) if waiting.any() else end - oldest_row
         timeout = None
         for handle in handles[(rows[:, 2] & 0xFF) != self._done].tolist():
             event = self.event(handle)
@@ -403,7 +410,7 @@ class Run:
         if gone.size:
             raise ValueError(f"handle {gone[0]}: its event was returned or forgotten")
         self._wait(np.unique(wanted), timeout)
-        events = [self.event(t) for t in wanted.tolist()]
+        events = [self.event(handle) for handle in wanted.tolist()]
         self.forget(wanted)
         return events[0] if single else events
 
@@ -419,7 +426,7 @@ class Run:
             (wanted < self._base) | self._gone[np.maximum(wanted - self._base, 0)]
         ).any():
             raise ValueError("a handle whose event was returned or forgotten")
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         try:
             deadline = time.monotonic() + timeout
             while not self._arrived(wanted).any():
@@ -433,7 +440,7 @@ class Run:
                     )
                 self._step_any(wanted, left)
         finally:
-            self.wait_s += time.perf_counter() - t0
+            self.wait_s += time.perf_counter() - started
         handle = int(wanted[self._arrived(wanted)][0])
         event = self.event(handle)
         self.forget([handle])
@@ -445,13 +452,13 @@ class Run:
         """Releases what the run keeps for handles whose events arrived (the event,
         and the group and sequence unless the run is traced): for callers that read
         events with event() after drain() rather than from wait()."""
-        t = np.asarray(
+        rows = np.asarray(
             [handles] if isinstance(handles, int) else list(handles), np.int64
         )
-        t = t[(t >= self._base) & (t < self._handed)] - self._base
-        t = t[self._has[t]]
-        self._gone[t] = True
-        for handle in (t + self._base).tolist():
+        rows = rows[(rows >= self._base) & (rows < self._handed)] - self._base
+        rows = rows[self._has[rows]]
+        self._gone[rows] = True
+        for handle in (rows + self._base).tolist():
             self._rejected.pop(handle, None)
         self._compact()
 
@@ -459,8 +466,12 @@ class Run:
         """Drops the leading rows of released handles once there are many."""
         if self._keep:
             return
-        n = min(self._oldest, self._handed) - self._base
-        done = int(np.argmin(self._gone[:n])) if not self._gone[:n].all() else n
+        count = min(self._oldest, self._handed) - self._base
+        done = (
+            int(np.argmin(self._gone[:count]))
+            if not self._gone[:count].all()
+            else count
+        )
         if done < COMPACT_ROWS or 2 * done < len(self._has):
             return
         if self._ref is not None:
@@ -472,17 +483,17 @@ class Run:
     def _count_after(self, rows, ref):
         """`ref` moved past the first `rows` rows by their events' sequence bits, each
         against the one before; None once a gap is too long to tell."""
-        at = np.arange(rows)
+        numbered = np.arange(rows)
         status = self._status[:rows].astype(np.int64)
-        on = (self._sequence[:rows] > 0) & self._has[:rows]
-        at = at[on & np.isin(status & 0xFF, self._numbered)]
-        if not at.size:
+        sequenced = (self._sequence[:rows] > 0) & self._has[:rows]
+        numbered = numbered[sequenced & np.isin(status & 0xFF, self._numbered)]
+        if not numbered.size:
             return ref
-        host = np.concatenate([[ref[1]], self._sequence[at]])
+        host = np.concatenate([[ref[1]], self._sequence[numbered]])
         low = np.concatenate(
             [
                 [ref[0] % SEQUENCE_LOW],
-                status[at] >> (8 + self._sequence_shift) & (SEQUENCE_LOW - 1),
+                status[numbered] >> (8 + self._sequence_shift) & (SEQUENCE_LOW - 1),
             ]
         )
         gap = (np.diff(low) - np.diff(host)) % SEQUENCE_LOW
@@ -493,7 +504,7 @@ class Run:
 
     def _wait(self, wanted, timeout):
         """Waits for the events of `wanted` (sorted handles)."""
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         try:
             self._hand()
             deadline = time.monotonic() + timeout
@@ -511,11 +522,13 @@ class Run:
                 self._step(pending, int(pending[-1]), left)
                 pending = pending[~self._arrived(pending)]
             if self._rejected:
-                for t in sorted(self._rejected):
-                    if np.isin(t, wanted):
-                        raise CommandRejected(t, self._rejected[t], self._rejections)
+                for handle in sorted(self._rejected):
+                    if np.isin(handle, wanted):
+                        raise CommandRejected(
+                            handle, self._rejected[handle], self._rejections
+                        )
         finally:
-            self.wait_s += time.perf_counter() - t0
+            self.wait_s += time.perf_counter() - started
 
     def _kernel_report(self):
         """What the backend tells of the kernel after a wait ran out (never raises)."""
@@ -527,11 +540,11 @@ class Run:
     def _step(self, pending, upto, left):
         """One native round: store up to handle `upto`, read events until those of
         `pending` arrived (or a slice ends). Ends the run if the kernel finished."""
-        t = time.perf_counter()
+        started = time.perf_counter()
         rows = self.port.wait(
             (pending & M32).astype(np.uint32), upto & M32, min(left, WAIT_SLICE_S)
         )
-        self.native_s += time.perf_counter() - t
+        self.native_s += time.perf_counter() - started
         if len(rows):
             self._take(rows)
         elif self.port.host_word(0) >= self.h["KMD_STATE_DONE"]:
@@ -540,11 +553,11 @@ class Run:
     def _step_any(self, wanted, left):
         """Stores one batch up to the last handle, then reads events until any arrives
         (or a slice ends): the native loop returns on the first event."""
-        t = time.perf_counter()
+        started = time.perf_counter()
         rows = self.port.wait(np.zeros(0, np.uint32), int(wanted[-1]) & M32, 0.0)
         if not len(rows):
             rows = self.port.wait_events(min(left, WAIT_SLICE_S))
-        self.native_s += time.perf_counter() - t
+        self.native_s += time.perf_counter() - started
         if len(rows):
             self._take(rows)
         elif self.port.host_word(0) >= self.h["KMD_STATE_DONE"]:
@@ -554,8 +567,8 @@ class Run:
         """Sends everything queued and waits for every command's event (rejections do
         not raise here); returns how many events it waited for."""
         self._hand()
-        at, end = self._oldest - self._base, self._handed - self._base
-        open_ = (self._count[at:end] > 0) & ~self._has[at:end]
+        oldest_row, end = self._oldest - self._base, self._handed - self._base
+        open_ = (self._count[oldest_row:end] > 0) & ~self._has[oldest_row:end]
         wanted = np.flatnonzero(open_) + self._oldest
         if wanted.size:
             with contextlib.suppress(CommandRejected):
@@ -567,11 +580,13 @@ class Run:
         its result block (komorebi.thread.ThreadResult). Events go on as before."""
         if self.thread is None:
             raise KomorebiError("the program has no thread")
-        r = self.thread.wait(timeout)
-        if r.stuck:
-            c = self.thread.thread.cluster
-            raise ThreadFailed(stuck_message(c, r), c, {c: r})
-        return r
+        result = self.thread.wait(timeout)
+        if result.stuck:
+            cluster = self.thread.thread.cluster
+            raise ThreadFailed(
+                stuck_message(cluster, result), cluster, {cluster: result}
+            )
+        return result
 
     def thread_results(self, timeout=10.0):
         """Waits (with a timeout) for every X280 thread, stops each and returns
@@ -580,31 +595,35 @@ class Run:
         pending = dict(self._thread_runs())
         if not pending:
             raise KomorebiError("the program has no thread")
-        by, results, failed = time.monotonic() + timeout, {}, None
+        deadline, results, failed = time.monotonic() + timeout, {}, None
         while pending and failed is None:
-            for c, t in list(pending.items()):
-                if not t.on_card:
-                    results[c] = t.wait(timeout)
+            for cluster, thread_run in list(pending.items()):
+                if not thread_run.on_card:
+                    results[cluster] = thread_run.wait(timeout)
                 else:
-                    left = by - time.monotonic()
-                    ran = t.returned(min(THREAD_POLL_S, max(left, 0.0)))
+                    left = deadline - time.monotonic()
+                    ran = thread_run.returned(min(THREAD_POLL_S, max(left, 0.0)))
                     if not ran and left > 0:
                         continue
-                    results[c] = t.collect(ran)
-                del pending[c]
-                if not results[c].ran or results[c].state != "done":
-                    failed = c
+                    results[cluster] = thread_run.collect(ran)
+                del pending[cluster]
+                if not results[cluster].ran or results[cluster].state != "done":
+                    failed = cluster
                     break
-        for c, t in pending.items():
-            results[c] = t.collect(False)
+        for cluster, thread_run in pending.items():
+            results[cluster] = thread_run.collect(False)
         if failed is not None:
-            r = results[failed]
-            how = "did not return in time" if not r.ran else f"failed ({r.error})"
-            stuck = [c for c, x in results.items() if x.stuck]
+            result = results[failed]
+            how = (
+                "did not return in time"
+                if not result.ran
+                else f"failed ({result.error})"
+            )
+            stuck = [cluster for cluster, outcome in results.items() if outcome.stuck]
             if stuck:
-                c = failed if failed in stuck else stuck[0]
-                what = stuck_message(c, results[c])
-                if c != failed:
+                cluster = failed if failed in stuck else stuck[0]
+                what = stuck_message(cluster, results[cluster])
+                if cluster != failed:
                     what = f"the thread on cluster {failed} {how}; {what}"
                 raise ThreadFailed(what, failed, results)
             raise ThreadFailed(
@@ -642,8 +661,8 @@ class Run:
             return None
         if self._gone[i] and not self._keep:
             return None
-        n = self._kernel_count(i)
-        return None if n is None else _sequence_number(n)
+        count = self._kernel_count(i)
+        return None if count is None else _sequence_number(count)
 
     def _kernel_count(self, i, ref=None):
         """Row i's place in the kernel's count of commands (every source), from the low
@@ -681,12 +700,14 @@ class Run:
                 f"since the host's previous command; its sequence number is not known "
                 f"(an event carries its low 16 bits)"
             )
-        n = near + gap
-        n += next(
-            d for d in (0, 1, -1) if _sequence_number(n + d) % SEQUENCE_LOW == low
+        count = near + gap
+        count += next(
+            adjust
+            for adjust in (0, 1, -1)
+            if _sequence_number(count + adjust) % SEQUENCE_LOW == low
         )
-        self._kseq[i] = n
-        return n
+        self._kseq[i] = count
+        return count
 
     def group(self, handle):
         self._hand()
@@ -726,11 +747,11 @@ class Run:
             self._engine_state = control.Engines(self)
         return self._engine_state
 
-    def upload(self, obj, kind=None):
+    def upload(self, stream_or_graph, kind=None):
         """Writes a Stream's or a Graph's upload (or encoded bytes of `kind` "stream"
         or "graph") into the dispatcher's upload region, first fit beside the
         others; returns its Upload. ValueError, before any write, if it does not fit."""
-        return self._engines().upload(obj, kind)
+        return self._engines().upload(stream_or_graph, kind)
 
     def release(self, upload, timeout=10.0):
         """Frees an upload's lines; a kept graph is dropped first (CANCEL)."""
@@ -763,9 +784,9 @@ class Run:
         if self._has[i]:
             return
         self._has[i] = True
-        at, end = self._oldest - self._base, self._handed - self._base
-        waiting = ~self._has[at:end]
-        self._oldest += int(np.argmax(waiting)) if waiting.any() else end - at
+        oldest_row, end = self._oldest - self._base, self._handed - self._base
+        waiting = ~self._has[oldest_row:end]
+        self._oldest += int(np.argmax(waiting)) if waiting.any() else end - oldest_row
 
     # Stopping ---------------------------------------------------------------------
 
@@ -786,25 +807,29 @@ class Run:
         """
         if self._stopped:
             return self._result
-        by = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout
         try:
-            for t in self._thread_runs().values():
-                t.stop(_left(by))  # each thread's stop is inside the deadline
+            for thread_run in self._thread_runs().values():
+                thread_run.stop(
+                    _left(deadline)
+                )  # each thread's stop is inside the deadline
             if self._engine_state is not None:
-                self._engine_state.stop(_left(by))  # EXIT waits for running engines
-            self.drain(_left(by))
+                self._engine_state.stop(
+                    _left(deadline)
+                )  # EXIT waits for running engines
+            self.drain(_left(deadline))
             exit_handle = self._queue_command(
                 self.h["KM_HANDLER_EXIT"], (0, self.cores)
             )
-            self.wait(exit_handle, _left(by))
+            self.wait(exit_handle, _left(deadline))
             stop_handle = self._queue_command(self.h["KM_HANDLER_STOP"], None)
-            self._send(stop_handle, _left(by))
+            self._send(stop_handle, _left(deadline))
         except KernelFailed:
             raise
         except BaseException:
             self.abort()
             raise
-        self._finish(_left(by))
+        self._finish(_left(deadline))
         result = self._result
         wrong = self._finish_problems(result)
         if wrong:
@@ -813,22 +838,22 @@ class Run:
             )
         return result
 
-    def _finish_problems(self, r):
+    def _finish_problems(self, result):
         """What is wrong with a finish, as text ("" when the result is ready, the tile
         restored, the state DONE and the error 0)."""
         wrong = []
-        if not r.get("result_ready", True):
+        if not result.get("result_ready", True):
             wrong.append("the kernel's result never became ready")
-        if not r.get("cleaned", True):
+        if not result.get("cleaned", True):
             wrong.append(
                 "the X280 runtime could not restore cluster 0 (reset the card)"
             )
-        if r["state"] != self.h["KMD_STATE_DONE"]:
-            wrong.append(f"state {r['state_name']}")
-        if r["error"] != 0:
-            wrong.append(f"error {r['error_name']} in {r['where_name']}")
-        if r.get("failed"):
-            wrong.append(r["failed"])
+        if result["state"] != self.h["KMD_STATE_DONE"]:
+            wrong.append(f"state {result['state_name']}")
+        if result["error"] != 0:
+            wrong.append(f"error {result['error_name']} in {result['where_name']}")
+        if result.get("failed"):
+            wrong.append(result["failed"])
         return "; ".join(wrong)
 
     def _send(self, handle, timeout):
@@ -849,33 +874,33 @@ class Run:
         with `abandoned`, the commands left without their DONE event."""
         if self._stopped:
             return
-        for t in self._thread_runs().values():
-            t.running = False  # the runtime's close stops it
+        for thread_run in self._thread_runs().values():
+            thread_run.running = False  # the runtime's close stops it
         # if the close raises, the run stays loaded and a later exit path
         # (Session.close, the exit hooks) closes it again
         cleaned = self.backend.abort()
         self._stopped = True
         left = self.backend.aborted
         if left is not None:
-            x280_cores = [int(w) for w in left["x280_cores"]]
-            self._result = st.result_block(left["words"], self.h) | {
+            x280_cores = [int(word) for word in left["x280_cores"]]
+            self._result = device_state.result_block(left["words"], self.h) | {
                 "x280_cores": x280_cores,
                 "abandoned": x280_cores[self.h["KMD_H_ABANDONED"]],
             }
         self._read_back(stop_grid=True)
         if not cleaned:
-            r = self._result
+            result = self._result
             kernel = (
-                f"; the kernel left state {r['state_name']}, {r['abandoned']} commands "
-                "abandoned"
-                if r is not None
+                f"; the kernel left state {result['state_name']}, "
+                f"{result['abandoned']} commands abandoned"
+                if result is not None
                 else ""
             )
             raise self._remember(
                 KernelFailed(
                     "the X280 runtime could not restore cluster 0 after the stop; "
                     f"the card may need a reset: {self.backend.close_failed}{kernel}",
-                    result=r,
+                    result=result,
                 )
             )
 
@@ -885,12 +910,12 @@ class Run:
         # stopped after this, unless the runtime could not be closed: a later exit
         # path (Session.close, the exit hooks) then closes it
         self._finish(timeout, stop_grid=True)
-        r = self._result
+        result = self._result
         raise self._remember(
             StartError(
                 f"the dispatcher did not report READY (state {state}, core "
-                f"result {r.get('result')}): {self._finish_problems(r)}",
-                result=r,
+                f"result {result.get('result')}): {self._finish_problems(result)}",
+                result=result,
             )
         )
 
@@ -906,32 +931,36 @@ class Run:
                 raise
             self._read_back(stop_grid=True)
             raise
-        self._result = st.result_block(fin["words"], self.h)
-        self._result.update({k: v for k, v in fin.items() if k != "words"})
+        self._result = device_state.result_block(fin["words"], self.h)
+        self._result.update(
+            {key: value for key, value in fin.items() if key != "words"}
+        )
         self._read_back(stop_grid)
 
     def _read_back(self, stop_grid=False):
         blocks, trace_rows = self.backend.read_back(stop_grid=stop_grid)
-        for t in self._thread_runs().values():
-            t.grid_stopped()
+        for thread_run in self._thread_runs().values():
+            thread_run.grid_stopped()
         self._blocks = blocks
-        self._state = st.state_words(blocks, 0, self.h)
+        self._state = device_state.state_words(blocks, 0, self.h)
         if trace_rows is not None:
             seqs, groups = {}, {}
             ref = self._ref
             for i in range(self._handed - self._base):  # in order: one pass
                 try:
-                    n = self._kernel_count(i, ref)
+                    count = self._kernel_count(i, ref)
                 except KomorebiError:  # a gap too long to tell: not in the trace
                     continue
-                if n is None:
+                if count is None:
                     continue
-                ref = (n, int(self._sequence[i]))
+                ref = (count, int(self._sequence[i]))
                 handle = i + self._base
                 group = self.group(handle)
                 if group is not None and group[0] is not None:
-                    seqs[handle], groups[handle] = _sequence_number(n), group
-            self._trace = st.Trace(trace_rows, seqs, groups, self.backend.mhz, self.h)
+                    seqs[handle], groups[handle] = _sequence_number(count), group
+            self._trace = device_state.Trace(
+                trace_rows, seqs, groups, self.backend.mhz, self.h
+            )
 
     def _remember(self, error):
         self._failure = error
@@ -939,35 +968,45 @@ class Run:
 
     def _fail_timeout(self, event):
         self._finish(10.0)
-        r = self._result
+        result = self._result
         group = self.group(event.handle)
-        sequence = r["sequence"] if r["error"] == self.h["KMD_ERROR_DEADLINE"] else None
+        sequence = (
+            result["sequence"]
+            if result["error"] == self.h["KMD_ERROR_DEADLINE"]
+            else None
+        )
         if sequence is None:
             sequence = self.sequence(event.handle)
         known = group and group[0] is not None
         cores = (
-            st.not_reported(self._state, group, event.auxiliary, sequence, self.h)
+            device_state.not_reported(
+                self._state, group, event.auxiliary, sequence, self.h
+            )
             if known
             else []
         )
         raise self._remember(
-            CommandTimeout(event.handle, event.auxiliary, sequence, group, cores, r)
+            CommandTimeout(
+                event.handle, event.auxiliary, sequence, group, cores, result
+            )
         )
 
     def _fail_kernel(self, why):
         self._finish(10.0)
         self.backend.log_state()
-        r = self._result
+        result = self._result
         where = (
-            f"exception on X280 core {r['req']} (mcause {r['slot']:#x}, mepc "
-            f"{r['sequence']:#x}, mtval {r['seen']:#x})"
-            if r["error"] == self.h["KMD_ERROR_TRAP"]
-            else f"slot {r['slot']}, sequence {r['sequence']}, command {r['req']}"
+            f"exception on X280 core {result['req']} (mcause {result['slot']:#x}, mepc "
+            f"{result['sequence']:#x}, mtval {result['seen']:#x})"
+            if result["error"] == self.h["KMD_ERROR_TRAP"]
+            else f"slot {result['slot']}, sequence {result['sequence']}, "
+            f"command {result['req']}"
         )
         raise self._remember(
             KernelFailed(
-                f"{why}: error {r['error_name']} in {r['where_name']}, {where}",
-                result=r,
+                f"{why}: error {result['error_name']} in {result['where_name']}, "
+                f"{where}",
+                result=result,
             )
         )
 
@@ -983,13 +1022,13 @@ class Run:
         as dicts; valid after the stop."""
         self._require_stopped()
         return [
-            st.core_state(self._state, c, self.h)
+            device_state.core_state(self._state, core, self.h)
             | {
-                "ports": st.ports(self._blocks[c], self.h),
-                "broadcasts": st.broadcasts(self._blocks[c], self.h),
-                "dynamic": st.dynamic(self._blocks[c], self.h),
+                "ports": device_state.ports(self._blocks[core], self.h),
+                "broadcasts": device_state.broadcasts(self._blocks[core], self.h),
+                "dynamic": device_state.dynamic(self._blocks[core], self.h),
             }
-            for c in range(self.cores)
+            for core in range(self.cores)
         ]
 
     def state_words(self):
