@@ -6,7 +6,6 @@ Nothing runs at import; `activate()` is the only call that changes the process.
 
 import json
 import os
-import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -15,11 +14,10 @@ CACHE_VARIABLE = "KMR_CACHE"
 ROOT_VARIABLE = "TT_METAL_RUNTIME_ROOT"
 MANIFEST = "manifest.json"
 
-# Inside the package: the libraries, the kernel runtime tree (laid out as in a tt-metal
-# tree), and, for now, tt-metal's ttnn Python package.
+# Inside the package: the libraries and the kernel runtime tree (laid out as in a
+# tt-metal tree).
 LIB = "lib"
 TREE = "tree"
-PYTHON = "python"
 
 # The X280 pieces, at their paths inside a tt-metal tree and its build.
 X280_SOURCE = Path("tt_metal/fabric/experimental/x280")
@@ -67,7 +65,7 @@ def pin(base=None):
 
 
 def version(base=None):
-    """The package version: the pin plus our build number, e.g. "0.81.1.1"."""
+    """The package version: the pin plus our build number, e.g. "0.81.1.2"."""
     return manifest(base)["version"]
 
 
@@ -79,11 +77,6 @@ def tree(base=None):
 def lib_dir(base=None):
     """The directory of the tt-metal libraries."""
     return package_dir(base) / LIB
-
-
-def python_dir(base=None):
-    """The directory holding tt-metal's ttnn package (interim, see `activate`)."""
-    return package_dir(base) / PYTHON
 
 
 def x280(base=None):
@@ -142,13 +135,10 @@ def root(environ=None, base=None):
 
 def activate(environ=None, base=None):
     """Prepares this process to run tt-metal from the package: TT_METAL_RUNTIME_ROOT
-    names `root()` unless already set, and ttnn (interim) becomes importable."""
+    names `root()` unless already set."""
     environ = os.environ if environ is None else environ
     out = root(environ, base)
     environ.setdefault(ROOT_VARIABLE, str(out))
-    path = str(python_dir(base))
-    if path not in sys.path:
-        sys.path.insert(0, path)
     return out
 
 

@@ -1,6 +1,6 @@
 """Builds the komorebi-runtime wheel from a tt-metal tree built by build_tt_metal.sh:
 the locator, the libraries with $ORIGIN rpaths, the kernel runtime tree, the X280
-pieces and, for now, ttnn.
+pieces.
 Usage: build_wheel.py --tt-metal <tree> [--out dist] [--patchelf PATH]
 """
 
@@ -79,24 +79,9 @@ RUNTIME = {
 # Not needed to run kernels.
 SKIP = ("/tt-llk/tests/", "/tt-llk/docs/", "/__pycache__/", "/.git")
 
-# The libraries come from what ttnn's module loads out of the build; the module itself
-# goes with the ttnn package (interim: Komorebi's host still imports ttnn).
-TTNN_MODULE = "build/ttnn/_ttnn.so"
-# python/, by directory in the tree, as tt-metal's wheel maps it: ttnn's module imports
-# tracy, which imports tt_llk_perf, which reads the perf-counter headers beside ttnn.
-PERF_COUNTERS = "tt_metal/tt-llk/tools/include/perf_counters"
-PYTHON_PACKAGES = {
-    "ttnn": "ttnn/ttnn",
-    "tracy": "tools/tracy",
-    "tt_llk_perf": "tt_metal/tt-llk/tools/python/tt_llk_perf",
-    f"ttnn/{PERF_COUNTERS}": PERF_COUNTERS,
-}
-PYTHON_SKIP = ("/__pycache__/", "/examples/")
-INTERIM = (
-    "python/ holds tt-metal's ttnn package (with tracy and tt_llk_perf), carried "
-    "only while Komorebi's host imports ttnn; komorebi_runtime.activate() puts it on "
-    "the path"
-)
+# The libraries: _ttnncpp.so (Kohaku-TT's native library links it) and what it loads
+# out of the build, libtt_metal.so among them.
+TTNNCPP = "build/ttnn/_ttnncpp.so"
 
 
 def expand(pattern):
@@ -139,18 +124,6 @@ def build_libraries(module, build):
         if match and Path(match[2]).resolve().is_relative_to(build):
             out.append((match[1], Path(match[2]).resolve()))
     return out
-
-
-def copy_package(source, target):
-    """Copies a Python package of the tree (its files, no module builds) to `target`."""
-    for path in source.rglob("*"):
-        text = path.as_posix()
-        skipped = any(s in text for s in PYTHON_SKIP)
-        if path.is_symlink() or not path.is_file() or skipped:
-            continue
-        out = target / path.relative_to(source)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, out)
 
 
 def patches():
@@ -244,16 +217,11 @@ def main():
 
         lib = package / "lib"
         lib.mkdir()
-        module = tt_metal / TTNN_MODULE
-        libraries = build_libraries(module, build)
+        ttnncpp = tt_metal / TTNNCPP
+        libraries = [(ttnncpp.name, ttnncpp), *build_libraries(ttnncpp, build)]
         for name, path in libraries:
             shutil.copyfile(path, lib / name)
             run(args.patchelf, "--set-rpath", "$ORIGIN", str(lib / name))
-        for name, source in PYTHON_PACKAGES.items():
-            copy_package(tt_metal / source, package / "python" / name)
-        ttnn = package / "python" / "ttnn"
-        shutil.copyfile(module, ttnn / module.name)
-        run(args.patchelf, "--set-rpath", "$ORIGIN/../../lib", str(ttnn / module.name))
         count = copy_runtime(tt_metal, package / "tree")
 
         files = sorted(
@@ -271,7 +239,6 @@ def main():
             "distributed": False,
             "libraries": [name for name, _ in libraries],
             "runtime_files": count,
-            "interim": INTERIM,
             "files": files,
         }
         (package / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")

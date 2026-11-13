@@ -274,4 +274,5 @@ follow a long loop run at a throttled clock.
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `results/` | the runs behind the results table |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
+| `bench_ttnn.py` | TT-NN's product and SwiGLU on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |
 | `reference/gpu_bench.py`, `reference/gpu/gemm_gpu.cu` | cuBLAS on one idle GPU (fp32 and fp16) |

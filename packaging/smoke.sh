@@ -2,13 +2,11 @@
 # The wheel in a fresh environment: installed alone, `kmr doctor`, the headers and the
 # prebuilt image found inside the install; with KMR_CARD=1 also examples/01_mapcollect.
 # usage: smoke.sh WHEEL VENV   (env: PYTHON, default python3.13; KMR_SITE, directories
-# put on the environment's path: the tree's ttnn, the tree, its tools, and torch's
-# site-packages; PIP_ARGS, extra pip flags; TT_VISIBLE_DEVICES, the card)
+# put on the environment's path; PIP_ARGS, extra pip flags; TT_VISIBLE_DEVICES, the card)
 # With KMR_RUNTIME_WHEEL (the komorebi-runtime wheel) it is the run from the two wheels:
-# both installed with the requirements the wheels name and TORCH_SPEC (default torch),
-# TT_METAL_HOME unset and fresh caches (KMR_CACHE, TT_METAL_CACHE kept if set), the
-# runtime's compiler fetched, `doctor` of both packages, and with KMR_CARD=1 the
-# `komorebi_runtime env` lines and the example, run from the install.
+# both installed with the requirements the wheels name (numpy), TT_METAL_HOME unset and
+# fresh caches (KMR_CACHE, TT_METAL_CACHE kept if set), the runtime's compiler fetched,
+# `doctor` of both packages, and with KMR_CARD=1 the example, run from the install.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 wheel=$(realpath "${1:?wheel}")
@@ -30,13 +28,12 @@ if [ -n "$runtime" ]; then
     info="$repo/packaging/ci/wheel_info.py"
     mapfile -t others < <(
         "$python" "$info" requires "$wheel"
-        "$python" "$info" requires "$runtime" ttnn
+        "$python" "$info" requires "$runtime"
     )
     # shellcheck disable=SC2086
     "$venv/bin/pip" install -q --disable-pip-version-check --no-cache-dir ${PIP_ARGS:-} --no-deps "$runtime" "$wheel"
     # shellcheck disable=SC2086
-    "$venv/bin/pip" install -q --disable-pip-version-check --no-cache-dir ${PIP_ARGS:-} "${others[@]}" \
-        "${TORCH_SPEC:-torch}"
+    "$venv/bin/pip" install -q --disable-pip-version-check --no-cache-dir ${PIP_ARGS:-} "${others[@]}"
 else
     # shellcheck disable=SC2086
     "$venv/bin/pip" install -q --disable-pip-version-check --no-cache-dir ${PIP_ARGS:-} "$wheel"
@@ -79,9 +76,6 @@ if sys.argv[2]:
     print(f"host module from the install: {module} ({module.stat().st_size} bytes)")
 EOF
 if [ "${KMR_CARD:-0}" = 1 ]; then
-    if [ -n "$runtime" ]; then
-        eval "$("$venv/bin/python" -m komorebi_runtime env)"
-    fi
     step "examples/01_mapcollect"
     cd "$repo/examples/01_mapcollect"
     "$venv/bin/python" mapcollect.py --jobs 20 --count 8 --out-tensors 2

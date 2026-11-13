@@ -147,7 +147,7 @@ What the build runner needs:
 - `python3.13` with setuptools 77 or later, `git`, and `patchelf`;
 - network access for the tt-metal clone, its CMake package fetches and the sfpi it
   downloads at configure time, and for the smoke test's `pip` (the requirements the
-  wheels name, `torch`) and the runtime's compiler;
+  wheels name: `numpy`) and the runtime's compiler;
 - a persistent directory for the tt-metal tree (about 6 GB), named by `KMR_RUNTIME_TREE`
   in the runner's environment, and optionally ccache (`KMR_CCACHE=1`, `CCACHE_DIR`) and
   `KMR_JOBS`;
@@ -173,11 +173,10 @@ The `build` job:
    directories and `KMR_RUNTIME_TREE`; one hit fails the job.
 5. `smoke.sh` with `KMR_RUNTIME_WHEEL`: a fresh environment, both wheels installed
    with `--no-deps` and then what they require from elsewhere (`wheel_info.py requires`:
-   `numpy`, the runtime's `ttnn` extra, `torch`), `TT_METAL_HOME` unset and fresh
-   caches. It fetches the compiler (`komorebi_runtime sfpi`), runs
-   `komorebi_runtime doctor` and `kmr doctor` (which must say `from komorebi-runtime`),
-   checks that the headers, the image and the host module are found inside the install
-   and, with `KMR_CARD=1`, applies the `komorebi_runtime env` lines and runs
+   `numpy` alone), `TT_METAL_HOME` unset and fresh caches. It fetches the compiler
+   (`komorebi_runtime sfpi`), runs `komorebi_runtime doctor` and `kmr doctor` (which
+   must say `from komorebi-runtime`), checks that the headers, the image and the host
+   module are found inside the install and, with `KMR_CARD=1`, runs
    `examples/01_mapcollect`. The install does not ask pip for the project's own
    distributions: the two wheels are the files just built.
 6. Both wheels are uploaded as one artifact.

@@ -92,8 +92,6 @@ jobs:
         env:
           KMR_RUNTIME_WHEEL: dist/${{ steps.wheels.outputs.runtime_wheel }}
           WHEEL: dist/${{ steps.wheels.outputs.wheel }}
-          PIP_ARGS: --extra-index-url https://download.pytorch.org/whl/cpu
-          TORCH_SPEC: torch==2.15.0+cpu
         run: bash packaging/smoke.sh "${WHEEL}" "$RUNNER_TEMP/smoke"
 
       - uses: actions/upload-artifact@v4

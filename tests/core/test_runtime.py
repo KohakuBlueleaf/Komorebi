@@ -3,7 +3,6 @@ chooses its tt-metal tree."""
 
 import json
 import os
-import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,13 +58,11 @@ def test_the_root_links_the_tree_and_the_fetched_compiler(tmp_path):
     assert _env.x280_idle_image(root).resolve() == kr.x280(base).idle_image
 
 
-def test_activate_sets_the_root_and_the_path(tmp_path, monkeypatch):
+def test_activate_sets_the_root(tmp_path):
     base = fake_package(tmp_path / "pkg")
-    monkeypatch.setattr(sys, "path", list(sys.path))
     environ = {kr.CACHE_VARIABLE: str(tmp_path / "cache")}
     root = kr.activate(environ, base)
     assert environ[kr.ROOT_VARIABLE] == str(root)
-    assert sys.path[0] == str(kr.python_dir(base))
 
 
 def test_komorebi_takes_the_home_tree_first_then_the_runtime(tmp_path, monkeypatch):

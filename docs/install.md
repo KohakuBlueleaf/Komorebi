@@ -93,11 +93,11 @@ Both are built locally ([runtime](../runtime/README.md),
 runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
-pip install dist/komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl \
+pip install dist/komorebi_runtime-0.81.1.2-py3-none-manylinux_2_38_x86_64.whl \
     dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl
 python -m komorebi_runtime sfpi                # the RISC-V compiler, into KMR_CACHE
 python -m komorebi_runtime doctor
-kmr doctor                                     # "from komorebi-runtime 0.81.1.1"
+kmr doctor                                     # "from komorebi-runtime 0.81.1.2"
 ```
 
 The two wheels need `numpy` and nothing else: no `ttnn`, no `torch`. When they are

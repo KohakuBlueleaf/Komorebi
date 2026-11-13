@@ -144,7 +144,7 @@ def test_forbidden_paths_are_the_given_ones_and_the_runners():
 def two_wheels(directory, requirement, runtime_version="0.81.1.2"):
     make_wheel(directory, "made-up-runtime", runtime_version)
     requires = [f'made-up-runtime{requirement}; extra == "runtime"', "numpy"]
-    requires += ['other; extra == "ttnn"']
+    requires += ['other; extra == "dev"']
     return make_wheel(directory, "made-up-tt", "0.3.0", requires)
 
 
@@ -158,7 +158,7 @@ def test_wheel_info_reads_the_names_and_checks_the_versions(tmp_path):
     assert info.check_versions(tmp_path, "v0.3.0")[1] == []
     assert info.main(["versions", str(tmp_path), "--tag", "v0.3.1"]) == 1
     assert [str(r) for r in info.requirements(main)] == ["numpy"]
-    assert [str(r) for r in info.requirements(main, ["ttnn"])] == ["numpy", "other"]
+    assert [str(r) for r in info.requirements(main, ["dev"])] == ["numpy", "other"]
 
 
 def test_wheel_info_refuses_a_runtime_wheel_outside_the_range(tmp_path):

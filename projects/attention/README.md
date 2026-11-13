@@ -283,3 +283,4 @@ variable-length batches, masks, ragged lengths.
 | `results/` | the JSON behind the tables of results |
 | `reference/sdpa.py` | the float64 attention, inputs, sampled rows |
 | `reference/ktt_bench.py` | Kohaku-TT's kernel on the same inputs, checked the same way |
+| `bench_ttnn.py` | TT-NN's attention on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |
