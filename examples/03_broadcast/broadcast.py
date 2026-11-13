@@ -262,7 +262,7 @@ def run_host(session, args, rng, stall_job):
     )
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     log("loaded")
-    handler = "read" if args.read else "cast"
+    handler = "read" if args.read else "broadcast"
     group_arg = (group.first, group.count)
     timed_out = None
     t0 = time.perf_counter()
