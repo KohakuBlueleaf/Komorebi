@@ -2,7 +2,7 @@ name: Nightly
 
 # Decides whether a nightly build is due and names its version. The step that would
 # start release.yml for it is off, so nothing is built or released from here.
-# Started by hand only; the schedule is added at release time.
+# Started by hand only: no workflow here has a schedule.
 on:
   workflow_dispatch:
     inputs:

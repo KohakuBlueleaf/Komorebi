@@ -1,7 +1,9 @@
 name: Release
 
-# Publishing is off: the publish jobs below never run, nothing is uploaded, pushed or
-# tagged. The build job makes the wheel and tests it in a fresh environment.
+# Builds both wheels, komorebi-tt and komorebi-runtime, and tests them in a fresh
+# environment. The wheels are published only on a v* tag push or by hand with
+# `publish: true` (default false): a dispatch without it builds and tests and nothing
+# more. Nothing in this repository starts on a schedule.
 on:
   push:
     tags: ["v*"]
@@ -15,61 +17,178 @@ on:
         description: "Stamp this version before building (nightlies pass X.Y.Z.devN)"
         required: false
         default: ""
+      publish:
+        description: "Upload to PyPI and GitHub (off: build and smoke-test only)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
+# PyPI trusted publishing, no token and no secret: each project names this file as its
+# publisher, komorebi-tt with the environment `pypi`, the runtime with `pypi-runtime`.
 jobs:
-  # On a build machine that holds a tt-metal tree at packaging/tt-metal.pin built with
-  # the X280 runtime; the runner's environment names it in KMR_TT_METAL.
+  # On the build machine: a self-hosted runner whose environment names the persistent
+  # tt-metal tree (KMR_RUNTIME_TREE, about 6 GB, updated in seconds when the pin and
+  # the patches have not changed) and, when it has a prepared card, sets KMR_CARD=1
+  # with TT_VISIBLE_DEVICES and TT_METAL_SLOW_DISPATCH_MODE=1. It holds tt-metal's build
+  # dependencies, python3.13, git and patchelf. The steps are scripts of packaging/.
   build:
-    name: Build and smoke-test the wheel
+    name: Build and smoke-test both wheels
     runs-on: [self-hosted, linux, x64, komorebi-build]
-    timeout-minutes: 30
+    timeout-minutes: 360
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      name: ${{ steps.wheels.outputs.name }}
+      version: ${{ steps.wheels.outputs.version }}
+      wheel: ${{ steps.wheels.outputs.wheel }}
+      runtime_name: ${{ steps.wheels.outputs.runtime_name }}
+      runtime_wheel: ${{ steps.wheels.outputs.runtime_wheel }}
+      prerelease: ${{ steps.wheels.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
-      - name: Resolve version
-        id: version
+      - name: Stamp the version
+        if: inputs.version != ''
         shell: bash
+        env:
+          STAMP: ${{ inputs.version }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            python3.13 packaging/version.py write "${{ inputs.version }}"
-            git -c user.name=ci -c user.email=ci@localhost commit -qam "version ${{ inputs.version }}"
-          fi
-          echo "version=$(python3.13 packaging/version.py read)" >> "$GITHUB_OUTPUT"
+          python3.13 packaging/version.py write "${STAMP}"
+          git -c user.name=ci -c user.email=ci@localhost commit -qam "version ${STAMP}"
 
+      # A tag that disagrees with the version is a mis-cut release: stop before the
+      # build, since a PyPI filename cannot be reused.
       - name: Tag must match the version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          test "${tag}" = "${{ steps.version.outputs.version }}" \
-            || { echo "tag ${tag} != version ${{ steps.version.outputs.version }}"; exit 1; }
+          version=$(python3.13 packaging/version.py read)
+          test "${GITHUB_REF_NAME#v}" = "${version}" \
+            || { echo "tag ${GITHUB_REF_NAME} != version ${version}"; exit 1; }
 
-      - name: Build the wheel
-        run: python3.13 packaging/build_wheel.py --tt-metal "$KMR_TT_METAL" --out dist --isolated
+      - name: Build tt-metal and both wheels
+        run: bash packaging/ci/build_wheels.sh "$KMR_RUNTIME_TREE" dist
 
-      - name: Smoke test in a fresh environment
-        run: bash packaging/smoke.sh dist/*.whl "$RUNNER_TEMP/smoke"
+      # The names and versions are read from the wheels.
+      - name: Names and versions of the wheels
+        id: wheels
+        shell: bash
+        run: |
+          python3.13 packaging/ci/wheel_info.py identify dist | tee -a "$GITHUB_OUTPUT"
+          tag=()
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then tag=(--tag "${GITHUB_REF_NAME}"); fi
+          python3.13 packaging/ci/wheel_info.py versions dist "${tag[@]}"
 
+      - name: No binary names a path of this machine
+        run: python3.13 packaging/ci/check_paths.py dist/*.whl
+
+      # A fresh environment with both wheels; with a card, the example runs from them.
+      - name: Smoke test from the two wheels
+        shell: bash
+        env:
+          KMR_RUNTIME_WHEEL: dist/${{ steps.wheels.outputs.runtime_wheel }}
+          WHEEL: dist/${{ steps.wheels.outputs.wheel }}
+          PIP_ARGS: --extra-index-url https://download.pytorch.org/whl/cpu
+          TORCH_SPEC: torch==2.15.0+cpu
+        run: bash packaging/smoke.sh "${WHEEL}" "$RUNNER_TEMP/smoke"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  # One job and one environment for each project: PyPI does not accept the same
+  # workflow and environment as the trusted publisher of two projects. Each job moves
+  # its own wheel into the directory it uploads.
   publish-pypi:
-    name: Publish to PyPI (off)
+    name: Publish to PyPI
     needs: [build]
-    if: false
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: ${{ format('https://pypi.org/p/{0}', needs.build.outputs.name) }}
+    permissions:
+      id-token: write
     steps:
-      - run: echo "publishing is off"
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Keep this project's wheel
+        shell: bash
+        env:
+          WHEEL: ${{ needs.build.outputs.wheel }}
+        run: mkdir upload && mv "dist/${WHEEL}" upload/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: upload/
+
+  publish-pypi-runtime:
+    name: Publish the runtime to PyPI
+    needs: [build]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-runtime
+      url: ${{ format('https://pypi.org/p/{0}', needs.build.outputs.runtime_name) }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Keep this project's wheel
+        shell: bash
+        env:
+          WHEEL: ${{ needs.build.outputs.runtime_wheel }}
+        run: mkdir upload && mv "dist/${WHEEL}" upload/
+      # A runtime wheel changes only with the pin, a patch or runtime/BUILD, so most
+      # releases carry a version already on the index: skip-existing leaves it there
+      # and the job succeeds.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: upload/
+          skip-existing: true
 
   publish-github:
-    name: Publish the GitHub release (off)
-    needs: [build]
-    if: false
+    name: Publish the GitHub release
+    needs: [build, publish-pypi, publish-pypi-runtime]
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - run: echo "publishing is off"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Create or update the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ needs.build.outputs.name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          tag="v${VERSION}"
+          flag=()
+          if [ "${PRERELEASE}" = "true" ]; then flag=(--prerelease); fi
+          if ! gh release view "${tag}" > /dev/null 2>&1; then
+            gh release create "${tag}" --title "${NAME} ${VERSION}" --generate-notes \
+              "${flag[@]}" --target "$(git rev-parse HEAD)"
+          else
+            gh release edit "${tag}" --title "${NAME} ${VERSION}" "${flag[@]}"
+          fi
+          for f in dist/*.whl; do gh release upload "${tag}" "$f" --clobber; done

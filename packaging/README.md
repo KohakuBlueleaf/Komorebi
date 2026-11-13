@@ -1,13 +1,15 @@
 # Packaging
 
-Nothing is published: no package on PyPI, no GitHub release, no tags. The release
-workflows build and test a wheel; their publish steps are off.
+Nothing is published yet: no package on PyPI, no GitHub release, no tags. The release
+workflow builds and tests both wheels, and publishes them only on a `v*` tag push or
+when it is started by hand with `publish: true` ([the release workflow](#the-release-workflow)).
 
 | File | What it does |
 |---|---|
 | `tt-metal.pin` | A link to `runtime/tt-metal.pin`, the tt-metal release Komorebi is developed and built against. |
 | `build_wheel.py` | Builds the `komorebi-tt` wheel (the package it carries is imported as `komorebi`) from a commit (`--ref`, default `HEAD`), exported with `git archive` so nothing untracked comes along. It builds the dispatch kernel image against a tt-metal tree with the X280 runtime, puts it beside the package, and refuses a wheel that misses a header or a source. |
 | `smoke.sh` | Installs a wheel alone into a fresh environment, runs `kmr doctor` outside the checkout, and checks that the headers and the prebuilt image are found inside the install; with `KMR_CARD=1` it also runs `examples/01_mapcollect`. |
+| `ci/` | What the release workflow runs: `build_wheels.sh` (tt-metal, then both wheels), `wheel_info.py` (names, versions and requirements read from the wheels, the version checks), `check_paths.py` (no binary names a path of the build machine). |
 | `version.py` | Reads, stamps and bumps the version in `pyproject.toml` and `komorebi.__version__`. |
 
 The tt-metal build itself is a second package of this repository, `komorebi-runtime`
@@ -134,54 +136,90 @@ cd ../07_work_cluster && ../../venv/bin/python work_cluster.py
 The process maps one copy of `libtt_metal.so`, `libtt-umd.so.0` and `_ttnncpp.so`, from
 `komorebi_runtime/lib`, for both ttnn's module and `_km_host`.
 
-## What the release workflow would need for the two wheels
+## The release workflow
 
-`release.yml` builds the pure wheel against a tree the runner holds. To build
-`komorebi-runtime` and the `komorebi-tt` wheel with `--host-module` instead, it would need
-these inputs and steps (not wired: the workflow is unchanged).
+`release.yml` builds the two wheels, `komorebi-tt` and `komorebi-runtime`, tests them and,
+on the owner's trigger, publishes them. Every step of the `build` job is a script of
+this folder, so each runs by hand the same way.
 
-Inputs on the build runner:
+What the build runner needs:
 
 - tt-metal's build dependencies (its `install_dependencies.sh --no-distributed`
   list: clang 20, CMake, Ninja and the system libraries), installed beforehand: the
   build step installs nothing;
 - `python3.13` with setuptools 77 or later, `git`, and `patchelf`;
 - network access for the tt-metal clone, its CMake package fetches and the sfpi it
-  downloads at configure time;
-- a persistent directory for the tt-metal tree (about 6 GB), named for example by
-  `KMR_RUNTIME_TREE`, and optionally ccache (`KMR_CCACHE=1`, `CCACHE_DIR`);
-- for the smoke run on a card: a Blackhole card whose X280 memory is prepared.
+  downloads at configure time, and for the smoke test's `pip` (the requirements the
+  wheels name, `torch`) and the runtime's compiler;
+- a persistent directory for the tt-metal tree (about 6 GB), named by `KMR_RUNTIME_TREE`
+  in the runner's environment, and optionally ccache (`KMR_CCACHE=1`, `CCACHE_DIR`) and
+  `KMR_JOBS`;
+- for the smoke run on a card: a Blackhole card whose X280 memory is prepared, with
+  `KMR_CARD=1`, `TT_VISIBLE_DEVICES` and `TT_METAL_SLOW_DISPATCH_MODE=1` in the
+  runner's environment.
 
-Steps:
+The `build` job:
 
-1. Check out the commit.
-2. `runtime/build_tt_metal.sh "$KMR_RUNTIME_TREE"` (with `KMR_JOBS`). It applies
-   `runtime/patches/` and configures with `-ffile-prefix-map`, so the libraries carry no
-   path of the runner. The tree is rebuilt only when `runtime/tt-metal.pin` or a patch
-   changes; otherwise the run updates it in seconds.
-3. `python3.13 runtime/build_wheel.py --tt-metal "$KMR_RUNTIME_TREE" --out dist --patchelf <patchelf>`:
-   `komorebi_runtime-0.81.1.<BUILD>-py3-none-manylinux_<floor>_x86_64.whl`. A new
-   runtime wheel is only published when the pin, a patch or `runtime/BUILD` changed.
-4. `python3.13 packaging/build_wheel.py --tt-metal "$KMR_RUNTIME_TREE" --out dist --host-module --isolated --patchelf <patchelf>`:
-   `komorebi_tt-<version>-cp312-abi3-manylinux_<floor>_x86_64.whl`.
-5. Check that no binary in either wheel names a path of the runner: unpack both and run
-   `strings -a` over every `.so`, `.o` and `.bin`, failing on the runner's work
-   directory or home directory.
-6. Smoke test in a fresh environment: install the runtime wheel with its `ttnn` extra,
-   the komorebi wheel and `torch`; `python -m komorebi_runtime sfpi` with `KMR_CACHE`
-   under the runner's temporary directory; `python -m komorebi_runtime doctor` and
-   `kmr doctor` (expects "from komorebi-runtime"). With a card:
-   `eval "$(python -m komorebi_runtime env)"`, then `examples/01_mapcollect`, as in
-   [a run from the two wheels](#a-run-from-the-two-wheels). `smoke.sh` installs one
-   wheel and does not run the `env` lines, so it would need both.
-7. The version checks: the tag names the komorebi-tt version, and `komorebi-tt`'s `runtime`
-   extra (`>=0.81.1.N,<0.81.2`) admits the runtime wheel just built.
+1. Checks out the commit; with the `version` input it stamps that version; for a tag it
+   stops when the tag does not name the version.
+2. `ci/build_wheels.sh "$KMR_RUNTIME_TREE" dist`: `runtime/build_tt_metal.sh` (it
+   applies `runtime/patches/` and configures with `-ffile-prefix-map`; the tree is
+   rebuilt only when `runtime/tt-metal.pin` or a patch changes, otherwise it is updated in
+   seconds), `runtime/build_wheel.py` and `build_wheel.py --host-module --isolated`.
+   A new runtime wheel is only worth publishing when the pin, a patch or `runtime/BUILD`
+   changed.
+3. `ci/wheel_info.py identify dist` reads both names, versions and file names from the
+   wheels (the workflow writes no distribution name); `versions` checks that a tag names
+   the `komorebi-tt` version and that its `runtime` extra admits the runtime wheel.
+4. `ci/check_paths.py dist/*.whl`: every ELF file, object, archive and image of both
+   wheels is searched for the home directory, the runner's workspace, work and temporary
+   directories and `KMR_RUNTIME_TREE`; one hit fails the job.
+5. `smoke.sh` with `KMR_RUNTIME_WHEEL`: a fresh environment, both wheels installed
+   with `--no-deps` and then what they require from elsewhere (`wheel_info.py requires`:
+   `numpy`, the runtime's `ttnn` extra, `torch`), `TT_METAL_HOME` unset and fresh
+   caches. It fetches the compiler (`komorebi_runtime sfpi`), runs
+   `komorebi_runtime doctor` and `kmr doctor` (which must say `from komorebi-runtime`),
+   checks that the headers, the image and the host module are found inside the install
+   and, with `KMR_CARD=1`, applies the `komorebi_runtime env` lines and runs
+   `examples/01_mapcollect`. The install does not ask pip for the project's own
+   distributions: the two wheels are the files just built.
+6. Both wheels are uploaded as one artifact.
+
+Publishing, in three jobs that run only on a `v*` tag push or a dispatch with
+`publish: true` (default false): `publish-pypi` uploads the `komorebi-tt` wheel and
+`publish-pypi-runtime` the runtime wheel, each through trusted publishing (no token, no
+secret) with its own environment (`pypi`, `pypi-runtime`), because PyPI does not accept
+one workflow and environment for two projects; the runtime job skips a file whose
+version is already on the index. `publish-github` then creates or updates the release and
+attaches both wheels. Each PyPI project needs this workflow set up as its trusted
+publisher before the first release.
+
+`nightly.yml` and `auto-patch-release.yml` start by hand only. No workflow here has a
+schedule, and `tests/core/test_release.py` checks that, the gate of the publish jobs and
+that they name no secret.
+
+### What was run
+
+The workflow itself has not run: the repository is not on GitHub yet. Its scripts were
+run in the order of the `build` job, on 2026-11-13, against the tree
+`runtime/build_tt_metal.sh` had built (the incremental path: no change to the pin or the
+patches), with the runner's variables set by hand, and `smoke.sh` on card 1 of a
+Blackhole p150a with slow dispatch, through the card watcher:
+
+| Step | Result | Time |
+|---|---|---|
+| `ci/build_wheels.sh TREE dist` | `komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl` (50.5 MB) and `komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl` (642 kB, 78 files, `_km_host` 974,097 bytes) | 45 s |
+| `ci/wheel_info.py identify dist` | `komorebi-tt` 0.1.0, `komorebi-runtime` 0.81.1.1, requirement `>=0.81.1.1,<0.81.2`, not a prerelease | under 1 s |
+| `ci/wheel_info.py versions dist --tag v0.1.0` and `--tag v0.1.1` | passes; fails with `tag v0.1.1 does not name version 0.1.0` | under 1 s |
+| `ci/check_paths.py dist/*.whl` (home, workspace, work, temporary and tree directories) | 26 and 2 binaries, none names one; with `/usr` forbidden it finds 5 places in `libtt_metal.so` | 1 s |
+| `smoke.sh` without a card | environment, install, both `doctor`s, the install check | 58 s |
+| `smoke.sh` with `KMR_CARD=1` | the same, then `examples/01_mapcollect`: 20 jobs, no error | 85 s |
 
 ## Workflows
 
 | Workflow | Runs on | What it does |
 |---|---|---|
 | `ci.yml` | every push and pull request | format, lint, CPU tests, the version check |
-| `release.yml` | a `v*` tag or by hand | on a build machine holding a tree with the X280 runtime (`KMR_TT_METAL`): builds the wheel and runs `smoke.sh`; its PyPI and GitHub release jobs are off |
-| `nightly.yml` | by hand (its schedule is added at release time) | reports whether main has moved since the last release and the dev version; the step that would start `release.yml` is off |
-| `auto-patch-release.yml` | by hand (its schedule is added at release time) | reports whether a patch release is due and its version; tagging and pushing are off |
+| `release.yml` | a `v*` tag or by hand | on the build machine: builds both wheels, checks them, runs the smoke test from both; its three publish jobs run only on a tag or with `publish: true` |
+| `nightly.yml` | by hand | reports whether main has moved since the last release and the dev version; the step that would start `release.yml` is off |
+| `auto-patch-release.yml` | by hand | reports whether a patch release is due and its version; tagging and pushing are off |

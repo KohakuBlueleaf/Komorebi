@@ -2,7 +2,7 @@ name: Auto Patch Release
 
 # Reports whether a patch release is due and which version it would be. Tagging and
 # pushing are off: the step that would do them never runs.
-# Started by hand only; the schedule is added at release time.
+# Started by hand only: no workflow here has a schedule.
 on:
   workflow_dispatch:
     inputs:
