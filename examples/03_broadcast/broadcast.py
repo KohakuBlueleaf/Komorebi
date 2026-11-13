@@ -15,105 +15,125 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [str(ROOT / "tests" / "hardware" / "feeder"), str(ROOT / "src")]
 
-import commands as rec  # noqa: E402
+import commands as feeder_commands  # noqa: E402
 import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import layout, state  # noqa: E402
 
-K = rec.K
+RUNTIME_CONSTANTS = feeder_commands.K
 KERNELS = HERE / "kernels"
-BROADCAST_HPP = rec.INCLUDE / "komorebi" / "device" / "km_broadcast.hpp"
-BROADCAST_FIELDS = rec.struct_fields(BROADCAST_HPP, "BroadcastArgs")
-EX = km.abi.constants(KERNELS / "broadcast.h", known=km.abi.headers().constants)
+BROADCAST_HPP = feeder_commands.INCLUDE / "komorebi" / "device" / "km_broadcast.hpp"
+BROADCAST_FIELDS = feeder_commands.struct_fields(BROADCAST_HPP, "BroadcastArgs")
+CONSTANTS = km.abi.constants(KERNELS / "broadcast.h", known=km.abi.headers().constants)
 TILE = 32
 COLUMN, ROW = 0, 1  # broadcast ids: columns on NoC1 (writer), rows on NoC0 (reader)
-T0 = time.monotonic()
+STARTED = time.monotonic()
 
 
-def log(msg):
+def log(message):
     """A progress line with seconds since start, flushed."""
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def parse():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--rect", default="0,0,6,4", help="x0,y0,columns,rows")
-    p.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--rect", default="0,0,6,4", help="first_x,first_y,columns,rows"
+    )
+    parser.add_argument(
         "--blocks", type=int, default=8, help="blocks n per broadcast and job"
     )
-    p.add_argument("--pages", type=int, default=2, help="tiles P per block")
-    p.add_argument("--window", type=int, default=2, help="blocks B in flight")
-    p.add_argument("--jobs", type=int, default=4)
-    p.add_argument("--read", action="store_true", help="cores read DRAM themselves")
-    p.add_argument("--stall-job", type=int, default=-1)
-    p.add_argument("--stall-rank", type=int, default=0, help="group index")
-    p.add_argument("--stall-block", type=int, default=0)
-    p.add_argument("--again", action="store_true", help="then a clean run")
-    p.add_argument(
+    parser.add_argument("--pages", type=int, default=2, help="tiles P per block")
+    parser.add_argument("--window", type=int, default=2, help="blocks B in flight")
+    parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument(
+        "--read", action="store_true", help="cores read DRAM themselves"
+    )
+    parser.add_argument("--stall-job", type=int, default=-1)
+    parser.add_argument("--stall-rank", type=int, default=0, help="group index")
+    parser.add_argument("--stall-block", type=int, default=0)
+    parser.add_argument("--again", action="store_true", help="then a clean run")
+    parser.add_argument(
         "--empty-job", type=int, default=-1, help="a job multicasting 0 blocks"
     )
-    p.add_argument(
+    parser.add_argument(
         "--empty-every", type=int, default=0, help="every nth job multicasts 0"
     )
-    p.add_argument(
+    parser.add_argument(
         "--first-blocks", type=int, default=0, help="job 0 multicasts these, cycling"
     )
-    p.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
-    p.add_argument("--deadline", type=float, default=1.0, help="per command, seconds")
-    p.add_argument("--feeder", action="store_true", help="run on the test feeder")
-    p.add_argument("--no-check", action="store_true")
-    p.add_argument("--seed", type=int, default=1)
-    return p.parse_args()
+    parser.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
+    parser.add_argument(
+        "--deadline", type=float, default=1.0, help="per command, seconds"
+    )
+    parser.add_argument("--feeder", action="store_true", help="run on the test feeder")
+    parser.add_argument("--no-check", action="store_true")
+    parser.add_argument("--seed", type=int, default=1)
+    return parser.parse_args()
 
 
 def broadcast_plan(nocs, cores, rect, window, pages):
     """Group, per-core program arguments and the rectangle's cores (row, column), for
     `cores` cores of a grid whose NoC coordinates are `nocs` (a layout.Nocs)."""
-    x0, y0, nx, ny = rect
-    gx = nocs.grid[0]
-    first = y0 * gx + x0
-    group = layout.Group(first, (y0 + ny - 1) * gx + x0 + nx - first)
+    first_x, first_y, columns, rows = rect
+    grid_width = nocs.grid[0]
+    first = first_y * grid_width + first_x
+    group = layout.Group(
+        first, (first_y + rows - 1) * grid_width + first_x + columns - first
+    )
     if group.first + group.count > cores:
         raise ValueError(f"{rect} reaches core {cores}")
     grid_panels = nocs.panels
     common = (nocs.grid, grid_panels, group, rect)
-    at = (nocs.noc0, nocs.noc_xy)
+    noc_coordinates = (nocs.noc0, nocs.noc_xy)
     by_broadcast = {
         COLUMN: layout.broadcast_args(
-            *common, "column", 1, *at, (COLUMN, EX["kCbCol"], window, pages)
+            *common,
+            "column",
+            1,
+            *noc_coordinates,
+            (COLUMN, CONSTANTS["kCbCol"], window, pages),
         ),
         ROW: layout.broadcast_args(
-            *common, "row", 0, *at, (ROW, EX["kCbRow"], window, pages)
+            *common,
+            "row",
+            0,
+            *noc_coordinates,
+            (ROW, CONSTANTS["kCbRow"], window, pages),
         ),
     }
-    place = {
-        y * gx + x: (y - y0, x - x0)
-        for y in range(y0, y0 + ny)
-        for x in range(x0, x0 + nx)
+    cells = {
+        y * grid_width + x: (y - first_y, x - first_x)
+        for y in range(first_y, first_y + rows)
+        for x in range(first_x, first_x + columns)
     }
     idle = [0] * (len(BROADCAST_FIELDS) + 1)
 
     def program_args(core):
         if core not in group.indices:
             return idle, idle, [0, window, pages]
-        row, col = place.get(core, (0, 0))
+        row, column = cells.get(core, (0, 0))
         words = {
-            broadcast: [by_broadcast[broadcast][core][f] for f in BROADCAST_FIELDS]
+            broadcast: [
+                by_broadcast[broadcast][core][field] for field in BROADCAST_FIELDS
+            ]
             for broadcast in by_broadcast
         }
-        included = int(core in place)
-        return words[ROW] + [row], words[COLUMN] + [col], [included, window, pages]
+        included = int(core in cells)
+        return words[ROW] + [row], words[COLUMN] + [column], [included, window, pages]
 
     log(f"group {group.first}:{group.count}, rect {rect}, panels {grid_panels}")
-    return group, program_args, place
+    return group, program_args, cells
 
 
-def broadcast_summary(broadcasts, group, place):
+def broadcast_summary(broadcasts, group, cells):
     """Blocks every broadcast delivered, the longest broadcast wait (cycles), and each
     broadcast give-up by core: broadcast, where, block, sequence number.
     `broadcasts[core]`: the core's broadcast areas (as run.state() gives them)."""
-    areas = [broadcasts[c][ln] for c in place for ln in (COLUMN, ROW)]
+    areas = [
+        broadcasts[core][broadcast] for core in cells for broadcast in (COLUMN, ROW)
+    ]
     gave = [
         {"core": core} | broadcasts[core][broadcast]["gave_up"]
         for core in group.indices
@@ -121,77 +141,89 @@ def broadcast_summary(broadcasts, group, place):
         if broadcasts[core][broadcast]["gave_up"]
     ]
     return {
-        "broadcast_blocks": sum(a["blocks"] for a in areas),
-        "broadcast_wait_cycles_max": max((a["wait_cycles"] for a in areas), default=0),
+        "broadcast_blocks": sum(area["blocks"] for area in areas),
+        "broadcast_wait_cycles_max": max(
+            (area["wait_cycles"] for area in areas), default=0
+        ),
         "broadcast_gave_up": gave,
     }
 
 
-def make_data(session, rng, group, rect, args):
+def make_data(session, generator, group, rect, args):
     """Two input sets of integers in [-2, 2] (sums exact in fp32), their tensors and
     the output tensor (one fp32 tile per job and core)."""
-    _, _, nx, ny = rect
-    n, p = args.blocks, args.pages
+    _, _, columns, rows = rect
+    blocks, pages = args.blocks, args.pages
     sets = [
         (
-            rng.integers(-2, 3, (ny, n, p, TILE, TILE)).astype(np.float32),
-            rng.integers(-2, 3, (nx, n, p, TILE, TILE)).astype(np.float32),
+            generator.integers(-2, 3, (rows, blocks, pages, TILE, TILE)).astype(
+                np.float32
+            ),
+            generator.integers(-2, 3, (columns, blocks, pages, TILE, TILE)).astype(
+                np.float32
+            ),
         )
         for _ in range(2)
     ]
 
-    def tensor(a, dtype):
-        return session.tensor(a.reshape(-1, TILE), dtype, "tile")
+    def tensor(array, dtype):
+        return session.tensor(array.reshape(-1, TILE), dtype, "tile")
 
-    inputs = [(tensor(a, "bfloat16"), tensor(b, "bfloat16")) for a, b in sets]
-    out = tensor(np.zeros((args.jobs * group.count, TILE, TILE), np.float32), "float32")
-    return sets, inputs, out
+    inputs = [
+        (tensor(row_set, "bfloat16"), tensor(column_set, "bfloat16"))
+        for row_set, column_set in sets
+    ]
+    output = tensor(
+        np.zeros((args.jobs * group.count, TILE, TILE), np.float32), "float32"
+    )
+    return sets, inputs, output
 
 
-def job_blocks(args, j):
+def job_blocks(args, job):
     """Blocks job j multicasts per broadcast: 0 for the empty job and every
     `--empty-every`th, `--first-blocks` for job 0 (block k is data block k mod
     `--blocks`), else `--blocks`."""
-    n = args.empty_every
-    if j == args.empty_job or (n and j % n == n - 1):
+    every = args.empty_every
+    if job == args.empty_job or (every and job % every == every - 1):
         return 0
-    return args.first_blocks if j == 0 and args.first_blocks else args.blocks
+    return args.first_blocks if job == 0 and args.first_blocks else args.blocks
 
 
-def job_args(args, inputs, out, group, j, stall_job):
+def job_args(args, inputs, output, group, job, stall_job):
     """CAST / READ arguments of job j."""
-    a_t, w_t = inputs[j % 2]
-    none = (EX["kNone"], 0)
-    stall = (args.stall_rank, args.stall_block) if j == stall_job else none
+    row_tensor, column_tensor = inputs[job % 2]
+    no_stall = (CONSTANTS["kNone"], 0)
+    stall = (args.stall_rank, args.stall_block) if job == stall_job else no_stall
     return [
-        a_t.address,
-        w_t.address,
-        out.address,
-        job_blocks(args, j),
+        row_tensor.address,
+        column_tensor.address,
+        output.address,
+        job_blocks(args, job),
         *stall,
-        j * group.count,
+        job * group.count,
         args.blocks,
     ]
 
 
-def check(args, sets, out, group, place):
+def check(args, sets, output, group, cells):
     """Every core's checksum tile of every job against numpy, bit for bit."""
-    got = out.read().reshape(args.jobs, group.count, TILE, TILE)
+    got = output.read().reshape(args.jobs, group.count, TILE, TILE)
     log("outputs read back")
     bad = []
-    for j in range(args.jobs):
-        times, rest = divmod(job_blocks(args, j), args.blocks)
-        a_sum, w_sum = (
-            times * x.sum((1, 2)) + x[:, :rest].sum((1, 2)) for x in sets[j % 2]
+    for job in range(args.jobs):
+        times, rest = divmod(job_blocks(args, job), args.blocks)
+        row_sums, column_sums = (
+            times * values.sum((1, 2)) + values[:, :rest].sum((1, 2))
+            for values in sets[job % 2]
         )
-        for core, (row, col) in place.items():
-            want = a_sum[row] + w_sum[col]
-            mine = got[j, core - group.first]
-            if not np.array_equal(mine, want):
-                wrong = int((mine != want).sum())
-                bad.append({"job": j, "core": core, "values_wrong": wrong})
+        for core, (row, column) in cells.items():
+            want = row_sums[row] + column_sums[column]
+            got_tile = got[job, core - group.first]
+            if not np.array_equal(got_tile, want):
+                wrong = int((got_tile != want).sum())
+                bad.append({"job": job, "core": core, "values_wrong": wrong})
     return {
-        "ranks_checked": args.jobs * len(place),
+        "ranks_checked": args.jobs * len(cells),
         "ranks_bad": len(bad),
         "first_bad": bad[:8],
     }
@@ -212,16 +244,19 @@ def describe(args, rect, group):
 
 def kernel_ends(states):
     return {
-        k: sum(c[k] != 0 for c in states)
-        for k in ("reader_end", "writer_end", "compute_end")
+        key: sum(core[key] != 0 for core in states)
+        for key in ("reader_end", "writer_end", "compute_end")
     }
 
 
 def core_gave_up(states):
     return [
-        {"core": c["core"], **{k: c[k] for k in ("reader", "writer", "compute")}}
-        for c in states
-        if c["reader"] or c["writer"] or c["compute"]
+        {
+            "core": core["core"],
+            **{key: core[key] for key in ("reader", "writer", "compute")},
+        }
+        for core in states
+        if core["reader"] or core["writer"] or core["compute"]
     ][:16]
 
 
@@ -236,26 +271,38 @@ def verdict(run, cores, stalled, end_ok):
     return bool(ok)
 
 
-def run_host(session, args, rng, stall_job):
+def run_host(session, args, generator, stall_job):
     """One load of the program in the session: the jobs submitted through the
     dispatcher, then the stop (or the timeout), the state read-out and the check."""
     nocs = session.nocs()
-    rect = tuple(int(v) for v in args.rect.split(","))
-    w, p = args.window, args.pages
-    group, program_args, place = broadcast_plan(nocs, len(nocs.words), rect, w, p)
-    sets, inputs, out = make_data(session, rng, group, rect, args)
+    rect = tuple(int(field) for field in args.rect.split(","))
+    window, pages = args.window, args.pages
+    group, program_args, cells = broadcast_plan(
+        nocs, len(nocs.words), rect, window, pages
+    )
+    sets, inputs, output = make_data(session, generator, group, rect, args)
     program = km.Program(
         "broadcast",
         kernels=KERNELS,
         buffers=[
-            km.Buffer(EX["kCbRow"], "bfloat16", EX["kTileBytes"], w * p),
-            km.Buffer(EX["kCbCol"], "bfloat16", EX["kTileBytes"], w * p),
-            km.Buffer(EX["kCbOut"], "float32", 4096, 1),
+            km.Buffer(
+                CONSTANTS["kCbRow"],
+                "bfloat16",
+                CONSTANTS["kTileBytes"],
+                window * pages,
+            ),
+            km.Buffer(
+                CONSTANTS["kCbCol"],
+                "bfloat16",
+                CONSTANTS["kTileBytes"],
+                window * pages,
+            ),
+            km.Buffer(CONSTANTS["kCbOut"], "float32", 4096, 1),
         ],
         args=program_args,
         compile_args={
             "reader": inputs[0][0].accessor_args(),
-            "writer": inputs[0][1].accessor_args() + out.accessor_args(),
+            "writer": inputs[0][1].accessor_args() + output.accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         handlers=KERNELS / "broadcast.h",
@@ -265,112 +312,135 @@ def run_host(session, args, rng, stall_job):
     handler = "read" if args.read else "broadcast"
     group_arg = (group.first, group.count)
     timed_out = None
-    t0 = time.perf_counter()
+    start = time.perf_counter()
     try:
-        for j in range(args.jobs):
-            words = job_args(args, inputs, out, group, j, stall_job)
+        for job in range(args.jobs):
+            words = job_args(args, inputs, output, group, job, stall_job)
             run.submit(handler, group_arg, words, exclusive=True)
         log(f"{run.drain(timeout=10.0)} events")
-        host_s = time.perf_counter() - t0
+        host_seconds = time.perf_counter() - start
         run.stop()
-    except km.CommandTimeout as err:
-        host_s = time.perf_counter() - t0
-        timed_out = err
-        log(f"timeout: {err}")
+    except km.CommandTimeout as error:
+        host_seconds = time.perf_counter() - start
+        timed_out = error
+        log(f"timeout: {error}")
     result = run.result()
     states = run.state()
-    out_json = describe(args, rect, group) | {
-        "kernel": {k: result[k] for k in ("error_name", "commands", "events")},
-        "microseconds_per_job_host": round(host_s * 1e6 / args.jobs, 2),
-        "cores_magic_ok": sum(c["magic_ok"] for c in states),
+    report = describe(args, rect, group) | {
+        "kernel": {key: result[key] for key in ("error_name", "commands", "events")},
+        "microseconds_per_job_host": round(host_seconds * 1e6 / args.jobs, 2),
+        "cores_magic_ok": sum(core["magic_ok"] for core in states),
         "cores_ended": kernel_ends(states),
-        **broadcast_summary([c["broadcasts"] for c in states], group, place),
+        **broadcast_summary([core["broadcasts"] for core in states], group, cells),
         "core_gave_up": core_gave_up(states),
     }
     if timed_out is not None:
-        out_json["timed_out"] = {
+        report["timed_out"] = {
             "handle": timed_out.handle,
             "sequence": timed_out.sequence,
             "group": list(timed_out.group),
             "not_reported": timed_out.cores,
         }
     elif not args.no_check:
-        out_json.update(check(args, sets, out, group, place))
+        report.update(check(args, sets, output, group, cells))
     stalled = 0 <= stall_job < args.jobs
     end = ("deadline", True) if stalled else ("none", False)
     end_ok = (result["error_name"], timed_out is not None) == end
-    out_json["ok"] = verdict(out_json, len(states), stalled, end_ok)
-    return out_json
+    report["ok"] = verdict(report, len(states), stalled, end_ok)
+    return report
 
 
-def run_fed(session, runner, args, rng, stall_job):
+def run_fed(session, runner, args, generator, stall_job):
     """The same jobs, submitted by the test feeder on the grid's last core."""
-    rect = tuple(int(v) for v in args.rect.split(","))
-    w, p = args.window, args.pages
+    rect = tuple(int(field) for field in args.rect.split(","))
+    window, pages = args.window, args.pages
     nocs = session.nocs()
-    group, program_args, place = broadcast_plan(nocs, runner.workers, rect, w, p)
-    sets, inputs, out = make_data(session, rng, group, rect, args)
-    handler = EX["kHandlerRead"] if args.read else EX["kHandlerBroadcast"]
+    group, program_args, cells = broadcast_plan(
+        nocs, runner.workers, rect, window, pages
+    )
+    sets, inputs, output = make_data(session, generator, group, rect, args)
+    handler = CONSTANTS["kHandlerRead"] if args.read else CONSTANTS["kHandlerBroadcast"]
     commands = [
-        rec.command(
+        feeder_commands.command(
             handler,
             group.first,
             group.count,
-            job_args(args, inputs, out, group, j, stall_job),
-            K["KM_FLAG_EXCLUSIVE"],
+            job_args(args, inputs, output, group, job, stall_job),
+            RUNTIME_CONSTANTS["KM_FLAG_EXCLUSIVE"],
         )
-        for j in range(args.jobs)
+        for job in range(args.jobs)
     ]
     kernels = fed.Kernels(
         reader=KERNELS / "reader.cpp",
         compute=KERNELS / "compute.cpp",
         writer=KERNELS / "writer.cpp",
         reader_ct=inputs[0][0].accessor_args(),
-        writer_ct=inputs[0][1].accessor_args() + out.accessor_args(),
+        writer_ct=inputs[0][1].accessor_args() + output.accessor_args(),
         compute_options={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         cbs=[
-            (EX["kCbRow"], "bfloat16", EX["kTileBytes"], w * p),
-            (EX["kCbCol"], "bfloat16", EX["kTileBytes"], w * p),
-            (EX["kCbOut"], "float32", 4096, 1),
+            (
+                CONSTANTS["kCbRow"],
+                "bfloat16",
+                CONSTANTS["kTileBytes"],
+                window * pages,
+            ),
+            (
+                CONSTANTS["kCbCol"],
+                "bfloat16",
+                CONSTANTS["kTileBytes"],
+                window * pages,
+            ),
+            (CONSTANTS["kCbOut"], "float32", 4096, 1),
         ],
     )
-    res = runner.run(
+    launched = runner.run(
         kernels,
         commands,
         program_args=program_args,
-        tensors=[*[t for pair in inputs for t in pair], out],
+        tensors=[*[tensor for tensor_pair in inputs for tensor in tensor_pair], output],
         depth=1,
         deadline_s=args.deadline,
         wait_s=args.wait,
     )
-    s = res.summary
-    states = [rec.core_state(res.state, c) for c in range(runner.workers)]
+    feeder_summary = launched.summary
+    states = [
+        feeder_commands.core_state(launched.state, core)
+        for core in range(runner.workers)
+    ]
     result = describe(args, rect, group) | {
-        "aiclk_mhz": res.mhz,
-        "feeder": {k: s[k] for k in ("status", "slot", "sequence", "index", "done")},
+        "aiclk_mhz": launched.mhz,
+        "feeder": {
+            key: feeder_summary[key]
+            for key in ("status", "slot", "sequence", "index", "done")
+        },
         "microseconds_per_job": round(
-            s["span_cycles"] / res.mhz / max(s["done"], 1), 2
+            feeder_summary["span_cycles"]
+            / launched.mhz
+            / max(feeder_summary["done"], 1),
+            2,
         ),
         "cores_ended": kernel_ends(states),
         **broadcast_summary(
-            [state.broadcasts(row) for row in res.control], group, place
+            [state.broadcasts(row) for row in launched.control], group, cells
         ),
         "core_gave_up": core_gave_up(states),
     }
-    if s["status"] == "done" and not args.no_check:
-        result.update(check(args, sets, out, group, place))
+    if feeder_summary["status"] == "done" and not args.no_check:
+        result.update(check(args, sets, output, group, cells))
     stalled = 0 <= stall_job < args.jobs
     if stalled:
-        end_ok = s["status"] == "timeout"
+        end_ok = feeder_summary["status"] == "timeout"
     else:
-        end_ok = s["status"] == "done" and s["done"] == args.jobs
+        end_ok = (
+            feeder_summary["status"] == "done" and feeder_summary["done"] == args.jobs
+        )
     result["ok"] = verdict(result, len(states), stalled, end_ok)
     return result
 
 
 def main():
     args = parse()
-    rng = np.random.default_rng(args.seed)
+    generator = np.random.default_rng(args.seed)
     stalls = [args.stall_job] + ([-1] if args.again else [])
     runs = []
     if args.feeder:
@@ -378,17 +448,17 @@ def main():
             log("device open")
             runner = fed.Fed(session)
             log(f"grid {runner.grid}, aiclk {runner.mhz} MHz")
-            for i, stall_job in enumerate(stalls):
-                runs.append(run_fed(session, runner, args, rng, stall_job))
-                log(f"run {i + 1} done")
+            for index, stall_job in enumerate(stalls):
+                runs.append(run_fed(session, runner, args, generator, stall_job))
+                log(f"run {index + 1} done")
     else:
         with km.Session(log=log) as session:
             log("device open")
-            for i, stall_job in enumerate(stalls):
-                runs.append(run_host(session, args, rng, stall_job))
-                log(f"run {i + 1} done")
-    ok = all(r["ok"] for r in runs)
-    wall = round(time.monotonic() - T0, 1)
+            for index, stall_job in enumerate(stalls):
+                runs.append(run_host(session, args, generator, stall_job))
+                log(f"run {index + 1} done")
+    ok = all(run["ok"] for run in runs)
+    wall = round(time.monotonic() - STARTED, 1)
     print(json.dumps({"ok": ok, "runs": runs, "wall_s": wall}), flush=True)
     sys.exit(0 if ok else 1)
 

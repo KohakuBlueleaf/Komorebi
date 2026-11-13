@@ -22,7 +22,7 @@ import komorebi as km  # noqa: E402
 
 RUNTIME_CONSTANTS = feeder_commands.K
 KERNELS = HERE / "kernels"
-MERGE_CONSTANTS = feeder_commands.constants(KERNELS / "merge.h")
+CONSTANTS = feeder_commands.constants(KERNELS / "merge.h")
 TILE = 32
 NONE = 0xFFFFFFFF
 FORMS = {"owner": 0, "tree": 1}
@@ -59,8 +59,8 @@ def parse():
     )
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
-    if not 1 <= args.part <= MERGE_CONSTANTS["kPartMax"]:
-        parser.error(f"--part: 1 to {MERGE_CONSTANTS['kPartMax']}")
+    if not 1 <= args.part <= CONSTANTS["kPartMax"]:
+        parser.error(f"--part: 1 to {CONSTANTS['kPartMax']}")
     return args
 
 
@@ -97,7 +97,7 @@ def kernels(input_tensor, output_tensor):
         "fp32_dest_acc_en": True,
         "unpack_to_dest_mode": "UnpackToDestFp32",
     }
-    page = MERGE_CONSTANTS["kTileBytes"]
+    page = CONSTANTS["kTileBytes"]
     return fed.Kernels(
         reader=KERNELS / "reader.cpp",
         compute=KERNELS / "compute.cpp",
@@ -106,14 +106,14 @@ def kernels(input_tensor, output_tensor):
         writer_ct=output_tensor.accessor_args(),
         compute_options=compute_options,
         cbs=[
-            (MERGE_CONSTANTS["kCbIn"], "float32", page, MERGE_CONSTANTS["kInPages"]),
+            (CONSTANTS["kCbIn"], "float32", page, CONSTANTS["kInPages"]),
             (
-                MERGE_CONSTANTS["kCbArrive"],
+                CONSTANTS["kCbArrive"],
                 "float32",
                 page,
-                MERGE_CONSTANTS["kArrivePages"],
+                CONSTANTS["kArrivePages"],
             ),
-            (MERGE_CONSTANTS["kCbOut"], "float32", page, MERGE_CONSTANTS["kOutPages"]),
+            (CONSTANTS["kCbOut"], "float32", page, CONSTANTS["kOutPages"]),
         ],
     )
 
@@ -136,7 +136,7 @@ def launch(runner, args, jobs, inputs, output, stall=-1, stall_rank=NONE):
         ]
         commands.append(
             feeder_commands.command(
-                MERGE_CONSTANTS["kHandlerMerge"],
+                CONSTANTS["kHandlerMerge"],
                 first,
                 count,
                 words,

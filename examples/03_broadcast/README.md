@@ -8,7 +8,7 @@ is the data movement of a matrix product that reads every byte from DRAM once.
 
 ## What each core does
 
-Each core of the rectangle has a row and a column, and loops over n blocks:
+Each core of the rectangle has a row and a column, and loops over `blocks` blocks:
 
 1. The first core of its row reads a block of A from DRAM and multicasts it to the other
    cores of the row; every other core of the row waits for it.
@@ -16,7 +16,7 @@ Each core of the rectangle has a row and a column, and loops over n blocks:
    cores of the column; every other core of the column waits for it.
 3. It adds the tiles of the two blocks it holds to its sum.
 
-After the n blocks, each core writes its sum to the output.
+After the `blocks` blocks, each core writes its sum to the output.
 
 Each multicast of a row's block is one broadcast: one multicast of the block
 into a slot of the receivers' broadcast buffer, then a VALID marker; each receiver writes a marker to the
@@ -27,7 +27,7 @@ slot only after every receiver has marked it. A broadcast holds B blocks in flig
 
 | Step | Kernel | Call (`komorebi/device/km_broadcast.hpp`) |
 |---|---|---|
-| rows: the block of A goes out, the others wait | reader, NoC0 (runs +x: the sender is the row's left end) | `ln.reserve(k)`, DRAM reads into the slot, `ln.cast(k)`; `ln.arrive(k)`; `ln.finish()` |
+| rows: the block of A goes out, the others wait | reader, NoC0 (runs +x: the sender is the row's left end) | `broadcast.reserve(block)`, DRAM reads into the slot, `broadcast.cast(block)`; `broadcast.arrive(block)`; `broadcast.finish()` |
 | columns: the block of W goes out, the others wait | writer, NoC1 (runs -y: the sender is the column's bottom end) | the same calls on the column broadcast |
 | adding the tiles | compute | `km::broadcast_receive`, tiles by index, `km::broadcast_done`; `km::broadcast_end` after the last block |
 
@@ -38,7 +38,7 @@ and passes each core its broadcast words as program arguments.
 
 | Handler | Arguments | What a core does |
 |---|---|---|
-| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 rank that stalls (a test), a5 its block, a6 output page of rank 0, a7 blocks of data per broadcast (block k reads data block k mod a7) | the steps above; cores outside the rectangle only report |
+| `CAST` | a0 `row_address` (A), a1 `column_address` (W), a2 `output_address`, a3 `blocks`, a4 `stalled_rank` (a test), a5 `stall_block`, a6 `first_page` (output page of rank 0), a7 `data_blocks` per broadcast (block k reads data block k mod `data_blocks`) | the steps above; cores outside the rectangle only report |
 | `READ` | the same | every core of the group reads its own blocks from DRAM (the comparison) |
 
 ## Run
@@ -59,7 +59,7 @@ python broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --jobs 3 --empty-job 1
 python broadcast.py --rect 4,0,2,2 --blocks 4 --pages 16 --jobs 2 --first-blocks 4100
 ```
 
-`--rect x0,y0,columns,rows` places the rectangle; its group is the smallest range of the
+`--rect first_x,first_y,columns,rows` places the rectangle; its group is the smallest range of the
 core order that covers it. Inputs are integers in [-2, 2], so every checksum is exact
 and the driver compares each core's tile with numpy bit for bit. With
 `--stall-job`, that job's core (group index) stops taking row blocks at the given block

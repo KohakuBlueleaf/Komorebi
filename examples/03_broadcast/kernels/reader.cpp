@@ -8,30 +8,54 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    constexpr auto a_args = TensorAccessorArgs<0>();
-    km::Reader rd;
-    rd.run([&](const km_command_t& r) {
-        const uint32_t handler = km::handler(r);
+    constexpr auto row_args = TensorAccessorArgs<0>();
+    km::Reader reader;
+    reader.run([&](const km_command_t& command) {
+        const uint32_t handler = km::handler(command);
         if (handler != kHandlerBroadcast && handler != kHandlerRead) {
             return;
         }
-        km::Broadcast ln(rd, r, kArgBroadcast);
-        if (!ln.ok() || !ln.included()) {
+        const uint32_t row_address = command.a0;
+        const uint32_t blocks = command.a3;
+        const uint32_t stalled_rank = command.a4;
+        const uint32_t stall_block = command.a5;
+        const uint32_t data_blocks = command.a7;
+        km::Broadcast broadcast(reader, command, kArgBroadcast);
+        if (!broadcast.ok() || !broadcast.included()) {
             return;
         }
-        const auto a = TensorAccessor(a_args, r.a0);
-        const uint32_t first = rd.arg(kArgIndex) * r.a7 * ln.pages();
+        const auto row_source = TensorAccessor(row_args, row_address);
+        const uint32_t first_tile = (
+            reader.arg(kArgIndex) * data_blocks * broadcast.pages()
+        );
         if (handler == kHandlerRead) {
-            read_blocks(rd, km::kStReader, r, ln, kCbRow, a, first, r.a3, r.a7);
+            read_blocks(
+                reader,
+                km::kStReader,
+                command,
+                broadcast,
+                kCbRow,
+                row_source,
+                first_tile,
+                blocks,
+                data_blocks
+            );
             return;
         }
-        const bool stalls = rd.me() - km::first(r) == r.a4;
-        broadcast_blocks(ln, a, first, r.a3, r.a7, [&](uint32_t k) {
-            if (!stalls || k != r.a5) {
-                return false;
+        const bool stalls = reader.me() - km::first(command) == stalled_rank;
+        broadcast_blocks(
+            broadcast,
+            row_source,
+            first_tile,
+            blocks,
+            data_blocks,
+            [&](uint32_t block) {
+                if (!stalls || block != stall_block) {
+                    return false;
+                }
+                reader.wait_stop(command);  // a test: this receiver stops taking blocks
+                return true;
             }
-            rd.wait_stop(r);  // a test: this receiver stops taking blocks
-            return true;
-        });
+        );
     });
 }

@@ -14,9 +14,7 @@ import numpy as np
 import komorebi as km
 
 KERNELS = merge_fed.KERNELS
-MERGE_CONSTANTS = km.abi.constants(
-    KERNELS / "merge.h", known=km.abi.headers().constants
-)
+CONSTANTS = km.abi.constants(KERNELS / "merge.h", known=km.abi.headers().constants)
 TILE, NONE = merge_fed.TILE, merge_fed.NONE
 STARTED = time.monotonic()
 
@@ -57,29 +55,25 @@ def parse():
     )
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
-    if not 1 <= args.part <= MERGE_CONSTANTS["kPartMax"]:
-        parser.error(f"--part: 1 to {MERGE_CONSTANTS['kPartMax']}")
+    if not 1 <= args.part <= CONSTANTS["kPartMax"]:
+        parser.error(f"--part: 1 to {CONSTANTS['kPartMax']}")
     return args
 
 
 def program(args, input_tensor, output_tensor):
-    page = MERGE_CONSTANTS["kTileBytes"]
+    page = CONSTANTS["kTileBytes"]
     return km.Program(
         "merge_tree",
         kernels=KERNELS,
         buffers=[
+            km.Buffer(CONSTANTS["kCbIn"], "float32", page, CONSTANTS["kInPages"]),
             km.Buffer(
-                MERGE_CONSTANTS["kCbIn"], "float32", page, MERGE_CONSTANTS["kInPages"]
-            ),
-            km.Buffer(
-                MERGE_CONSTANTS["kCbArrive"],
+                CONSTANTS["kCbArrive"],
                 "float32",
                 page,
-                MERGE_CONSTANTS["kArrivePages"],
+                CONSTANTS["kArrivePages"],
             ),
-            km.Buffer(
-                MERGE_CONSTANTS["kCbOut"], "float32", page, MERGE_CONSTANTS["kOutPages"]
-            ),
+            km.Buffer(CONSTANTS["kCbOut"], "float32", page, CONSTANTS["kOutPages"]),
         ],
         compile_args={
             "reader": input_tensor.accessor_args(),
@@ -222,7 +216,7 @@ def run(session, args, generator):
     # random groups fit the arrival buffer by owner: one slot per other rank
     jobs = merge_fed.make_jobs(
         args,
-        min(grid_width * grid_height, MERGE_CONSTANTS["kArrivePages"] // args.part + 1),
+        min(grid_width * grid_height, CONSTANTS["kArrivePages"] // args.part + 1),
         generator,
     )
     log(f"grid {grid_width} x {grid_height}, {len(jobs)} jobs")

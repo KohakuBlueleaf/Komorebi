@@ -6,8 +6,8 @@
 
 #include "komorebi/device/km_broadcast.hpp"
 
-// CAST: a0 A (rows), a1 W (columns), a2 output, a3 blocks n, a4 rank that stalls at
-// row block a5 (a test; kNone: none), a6 output page of rank 0, a7 data blocks d.
+// CAST: a0 row_address (A), a1 column_address (W), a2 output_address, a3 blocks, a4
+// stalled_rank at block a5 stall_block (kNone: none), a6 first_page, a7 data_blocks.
 constexpr uint32_t kHandlerBroadcast = 1;
 // READ: as CAST, but every core of the group reads both of its blocks from DRAM itself.
 constexpr uint32_t kHandlerRead = 2;
@@ -26,94 +26,106 @@ constexpr uint32_t kArgIndex = km::kBroadcastArgs;
 #if !defined(COMPILE_FOR_TRISC)
 
 // Timed wait for this kernel's reads; gives up into state word `word`.
-inline bool reads_landed(const km::Core& c, uint32_t word, const km_command_t& r) {
-    const uint32_t code = c.poll(
+inline bool reads_landed(
+    const km::Core& core, uint32_t word, const km_command_t& command
+) {
+    const uint32_t code = core.poll(
         [] {
             return ncrisc_noc_reads_flushed(noc_index);
         },
-        c.args().wait_limit,
-        c.args().wait_limit
+        core.args().wait_limit,
+        core.args().wait_limit
     );
     if (code != km::kGaveNone) {
-        c.gave_up(word, code, km::kWhereData, km::slot(r), r.sequence);
+        core.gave_up(word, code, km::kWhereData, km::slot(command), command.sequence);
     }
     return code == km::kGaveNone;
 }
 
-// Blocks 0 to n - 1: the sender reads block k (tiles first + k % d * P onwards) into
-// its slot and broadcasts it; a receiver waits for it. Stops at block `stall`.
-template <typename Src, typename Stall>
+// Each block: the sender reads it (tiles first_tile + block % data_blocks * block_pages
+// on) into its slot and broadcasts it; a receiver waits for it. Stops at block `stall`.
+template <typename Source, typename Stall>
 bool broadcast_blocks(
-    km::Broadcast& ln,
-    const Src& src,
-    uint32_t first,
-    uint32_t n,
-    uint32_t d,
+    km::Broadcast& broadcast,
+    const Source& source,
+    uint32_t first_tile,
+    uint32_t blocks,
+    uint32_t data_blocks,
     Stall stall
 ) {
-    const uint32_t p = ln.pages();
-    for (uint32_t k = 0; k < n; k++) {
-        if (stall(k)) {
+    const uint32_t block_pages = broadcast.pages();
+    for (uint32_t block = 0; block < blocks; block++) {
+        if (stall(block)) {
             return false;
         }
-        if (!ln.sender()) {
-            if (!ln.arrive(k)) {
+        if (!broadcast.sender()) {
+            if (!broadcast.arrive(block)) {
                 return false;
             }
             continue;
         }
-        const uint32_t addr = ln.reserve(k);
-        if (addr == 0) {
+        const uint32_t address = broadcast.reserve(block);
+        if (address == 0) {
             return false;
         }
-        for (uint32_t i = 0; i < p; i++) {
-            noc_async_read_page(first + k % d * p + i, src, addr + i * kTileBytes);
+        for (uint32_t page = 0; page < block_pages; page++) {
+            noc_async_read_page(
+                first_tile + block % data_blocks * block_pages + page,
+                source,
+                address + page * kTileBytes
+            );
         }
-        if (!ln.cast(k)) {
+        if (!broadcast.cast(block)) {
             return false;
         }
     }
-    return ln.finish();
+    return broadcast.finish();
 }
 
 // READ: the core reads its blocks itself into the same buffer, then pads it to
 // whole windows as Broadcast::finish does (compute runs the same code for both).
-template <typename Src>
+template <typename Source>
 bool read_blocks(
-    const km::Core& c,
+    const km::Core& core,
     uint32_t word,
-    const km_command_t& r,
-    const km::Broadcast& ln,
+    const km_command_t& command,
+    const km::Broadcast& broadcast,
     uint32_t cb,
-    const Src& src,
-    uint32_t first,
-    uint32_t n,
-    uint32_t d
+    const Source& source,
+    uint32_t first_tile,
+    uint32_t blocks,
+    uint32_t data_blocks
 ) {
-    const uint32_t p = ln.pages(), w = ln.window();
-    const uint32_t pad = (w - n % w) % w * p;
-    for (uint32_t k = 0; k <= n; k++) {
-        const uint32_t pages = k < n ? p : pad;
+    const uint32_t block_pages = broadcast.pages(), window = broadcast.window();
+    const uint32_t padding = (window - blocks % window) % window * block_pages;
+    for (uint32_t block = 0; block <= blocks; block++) {
+        const uint32_t pages = block < blocks ? block_pages : padding;
         if (pages == 0) {
             break;
         }
-        const uint32_t code = c.poll(
+        const uint32_t code = core.poll(
             [&] {
                 return cb_pages_reservable_at_back(cb, pages);
             },
-            c.args().wait_limit
+            core.args().wait_limit
         );
         if (code != km::kGaveNone || !km::item_fits(cb, get_write_ptr(cb), pages)) {
-            const uint32_t why = code != km::kGaveNone ? code : km::kGaveBadItem;
-            c.gave_up(word, why, km::kWhereData, km::slot(r), r.sequence);
+            const uint32_t reason = code != km::kGaveNone ? code : km::kGaveBadItem;
+            core.gave_up(
+                word, reason, km::kWhereData, km::slot(command), command.sequence
+            );
             return false;
         }
         cb_reserve_back(cb, pages);
-        const uint32_t dst = get_write_ptr(cb);
-        for (uint32_t i = 0; k < n && i < p; i++) {
-            noc_async_read_page(first + k % d * p + i, src, dst + i * kTileBytes);
+        const uint32_t destination = get_write_ptr(cb);
+        for (uint32_t page = 0; block < blocks && page < block_pages; page++) {
+            noc_async_read_page(
+                first_tile + block % data_blocks * block_pages + page,
+                source,
+                destination + page * kTileBytes
+            );
         }
-        if (!reads_landed(c, word, r)) {
+        if (!reads_landed(core, word, command)) {
             return false;
         }
         cb_push_back(cb, pages);
