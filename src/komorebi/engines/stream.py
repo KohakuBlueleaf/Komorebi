@@ -762,8 +762,9 @@ class _Sim:
         slot = self.free_slot()
         if slot is None:
             return "stall"
-        if t.flags & F_EXCL and any(
-            first < f + c and f < first + count for f, c in self.busy_teams()
+        if t.flags & F_EXCL and (
+            self.queue  # a job queued before it is not placed yet
+            or any(first < f + c and f < first + count for f, c in self.busy_teams())
         ):
             return "stall"
         self.put(slot, self.patched(t), first, count, self.pc, False)

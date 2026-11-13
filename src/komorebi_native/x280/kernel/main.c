@@ -293,9 +293,10 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         }
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_TEAM_ALL(k->cores);
     } else if (
-        ((flags & KM_F_EXCL) && slots_overlap(k, first, count)) || dyn_held(k, seg)
+        ((flags & KM_F_EXCL) && (r->before || slots_overlap(k, first, count))) ||
+        dyn_held(k, seg)
     ) {
-        return KMD_HELD;
+        return KMD_HELD; /* exclusive: every job queued before it placed, no overlap */
     }
     const uint32_t slot = slot_free(k);
     if (slot == KM_RING_SLOTS) {
@@ -349,6 +350,7 @@ KMD_HOT int source_turn(kmd_t* k, uint32_t src, uint32_t* activity) {
             return 0;
         }
         r->line_state = 1;
+        r->before = k->queue->used;
         ++*activity;
 #ifdef KMD_VERIFY_LINES
         if (host) {

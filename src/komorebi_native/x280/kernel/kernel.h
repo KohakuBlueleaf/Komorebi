@@ -41,6 +41,7 @@ typedef struct {
     uint32_t nqueued;    /* its jobs waiting in the queue */
     uint32_t owed;       /* events owed besides those (host: one per active stream) */
     uint64_t t_record;   /* deadline of its next record, in ticks */
+    uint64_t before;     /* queue places of jobs queued before the line was taken */
     uint64_t* line;      /* the command being taken: 8 words, 64-byte aligned */
 } kmd_ring_t;
 

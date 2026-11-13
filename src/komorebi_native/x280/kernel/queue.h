@@ -45,9 +45,14 @@ static inline void queue_put(
     queue_tell(k);
 }
 
-/* Removes the job at position `pos` of the order. */
-static inline void queue_remove(kmd_queue_t* q, uint32_t pos) {
-    q->used &= ~(1ull << q->order[pos]);
+/* Removes the job at position `pos` of the order; no line waits for it any more. */
+static inline void queue_remove(kmd_t* k, uint32_t pos) {
+    kmd_queue_t* q = k->queue;
+    const uint64_t place = ~(1ull << q->order[pos]);
+    for (uint32_t src = 0; src < KMD_SOURCES; src++) {
+        k->ring[src].before &= place;
+    }
+    q->used &= place;
     q->n--;
     for (uint32_t i = pos; i < q->n; i++) {
         q->order[i] = q->order[i + 1u];
@@ -83,7 +88,7 @@ static __attribute__((noinline)) void queue_turn(kmd_t* k, uint64_t now) {
         l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | first | j->count << 16;
         const uint32_t src = j->src, req = j->req;
-        queue_remove(q, pos);
+        queue_remove(k, pos);
         k->ring[src].nqueued--;
         record_issue(k, l, slot, req, src, now, j->ticks, KMD_TRACE_QUEUED);
         issued++;
@@ -109,7 +114,7 @@ static inline void queue_drop(kmd_t* k, uint32_t tag) {
         }
         ring_push(r, j->req, KM_EV_REFUSED | (KMD_REFUSE_DROPPED << 8), 0);
         r->nqueued--;
-        queue_remove(q, pos);
+        queue_remove(k, pos);
     }
     queue_tell(k);
 }
