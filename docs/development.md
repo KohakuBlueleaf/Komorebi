@@ -69,7 +69,8 @@ CUDA versions with numpy, and a slow rasterizer case, are in `tests/ref`, run by
 
 The CPU tests of a program under `projects/` live in
 `tests/projects/test_<project>_*.py`, not in `tests/core`, which is the framework's
-suite. They run as a step of their own, in about 5 s for all programs together.
+suite. They run as a step of their own, with a budget of 5 s for all programs
+together (about 1 s each).
 
 The continuous-integration workflow runs ruff, black, the CPU tests and the
 programs' CPU tests.
