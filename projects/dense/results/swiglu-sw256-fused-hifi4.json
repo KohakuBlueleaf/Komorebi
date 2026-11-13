@@ -1,0 +1,113 @@
+{
+ "shape": "sw256",
+ "m": 256,
+ "d": 256,
+ "h": 512,
+ "gate_pass": false,
+ "fidelity": "HiFi4",
+ "plan": {
+  "mt": 8,
+  "dt": 8,
+  "ht": 16,
+  "gate_pass": false,
+  "team": 8,
+  "l1": 902208,
+  "rows": 1
+ },
+ "x280_mhz": 1000,
+ "load_us": [
+  8.92,
+  14.22,
+  19.84
+ ],
+ "first_calls_us": 214.507,
+ "profile_single": {
+  "slowest_member": 6,
+  "mean_busy_over_slowest": 0.999,
+  "us": {
+   "read_x": 1.51,
+   "reader_waits_for_space": 0.133,
+   "unpack_waits_for_a": 0.831,
+   "products": 14.247,
+   "epilogue": 26.807,
+   "pack_waits_for_math": 0.029,
+   "pack_waits_for_space": 0.528,
+   "pack": 37.932,
+   "write_y": 0.441,
+   "writer_waits_for_output": 6.193,
+   "reader_body": 1.857,
+   "unpack_body": 36.067,
+   "math_body": 42.676,
+   "pack_body": 43.499,
+   "writer_body": 6.737
+  }
+ },
+ "single_us": {
+  "median": 240.75352121144533,
+  "min": 231.03307466953993
+ },
+ "host": {
+  "mean_w": 74.31566179192244,
+  "peak_w": 76.0,
+  "open_w": 68.0,
+  "aiclk_mhz": [
+   1350,
+   1350.0,
+   1350
+  ],
+  "calls": 59974,
+  "seconds": 3.1,
+  "us_per_call": 51.681,
+  "record_us_median": [
+   70.12,
+   51.56,
+   50.2
+  ]
+ },
+ "profile_host": {
+  "slowest_member": 6,
+  "mean_busy_over_slowest": 1.0,
+  "us": {
+   "read_x": 1.379,
+   "reader_waits_for_space": 0.133,
+   "unpack_waits_for_a": 0.163,
+   "products": 14.244,
+   "epilogue": 26.807,
+   "pack_waits_for_math": 0.034,
+   "pack_waits_for_space": 0.539,
+   "pack": 37.9,
+   "write_y": 0.438,
+   "writer_waits_for_output": 6.195,
+   "reader_body": 1.726,
+   "unpack_body": 35.397,
+   "math_body": 42.01,
+   "pack_body": 42.833,
+   "writer_body": 6.736
+  }
+ },
+ "host_exclusive_us_per_call": 95.644,
+ "tflops": 3.8955630115516344,
+ "run": {
+  "kernel": "none",
+  "cores": 120,
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "ok": true
+ },
+ "check": {
+  "max_rel": 0.005488774623974272,
+  "rms_rel": 0.004339434807434678,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "5.81",
+  "7.26",
+  "6.99"
+ ]
+}

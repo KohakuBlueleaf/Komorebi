@@ -1,0 +1,114 @@
+{
+ "shape": "sw256",
+ "m": 256,
+ "d": 256,
+ "h": 512,
+ "gate_pass": true,
+ "fidelity": "HiFi2",
+ "plan": {
+  "mt": 8,
+  "dt": 8,
+  "ht": 16,
+  "gate_pass": true,
+  "team": 8,
+  "l1": 934976,
+  "rows": 1
+ },
+ "x280_mhz": 1000,
+ "load_us": [
+  8.62,
+  13.96,
+  19.76
+ ],
+ "first_calls_us": 211.718,
+ "profile_single": {
+  "slowest_member": 7,
+  "mean_busy_over_slowest": 0.999,
+  "us": {
+   "read_x": 1.501,
+   "reader_waits_for_space": 0.135,
+   "unpack_waits_for_a": 0.814,
+   "products": 9.591,
+   "epilogue": 22.243,
+   "pack_waits_for_math": 0.039,
+   "pack_waits_for_space": 0.734,
+   "pack": 32.065,
+   "write_y": 0.437,
+   "writer_waits_for_output": 3.168,
+   "reader_body": 1.869,
+   "unpack_body": 28.008,
+   "math_body": 33.711,
+   "pack_body": 34.921,
+   "writer_body": 3.708
+  }
+ },
+ "single_us": {
+  "median": 239.2635215073824,
+  "min": 234.0130740776658
+ },
+ "host": {
+  "mean_w": 76.82530810114342,
+  "peak_w": 79.0,
+  "open_w": 72.29890860005489,
+  "aiclk_mhz": [
+   1350,
+   1350.0,
+   1350
+  ],
+  "calls": 69785,
+  "seconds": 3.23,
+  "us_per_call": 46.282,
+  "record_us_median": [
+   34.46,
+   34.48,
+   34.38,
+   34.4
+  ]
+ },
+ "profile_host": {
+  "slowest_member": 6,
+  "mean_busy_over_slowest": 1.0,
+  "us": {
+   "read_x": 1.393,
+   "reader_waits_for_space": 0.134,
+   "unpack_waits_for_a": 0.162,
+   "products": 9.583,
+   "epilogue": 22.242,
+   "pack_waits_for_math": 0.038,
+   "pack_waits_for_space": 0.742,
+   "pack": 32.046,
+   "write_y": 0.439,
+   "writer_waits_for_output": 3.171,
+   "reader_body": 1.76,
+   "unpack_body": 27.355,
+   "math_body": 33.058,
+   "pack_body": 34.268,
+   "writer_body": 3.713
+  }
+ },
+ "host_exclusive_us_per_call": 102.769,
+ "tflops": 4.349997666479409,
+ "run": {
+  "kernel": "none",
+  "cores": 120,
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "ok": true
+ },
+ "check": {
+  "max_rel": 0.012847163092518848,
+  "rms_rel": 0.012258623443333984,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "6.17",
+  "7.54",
+  "7.06"
+ ]
+}
