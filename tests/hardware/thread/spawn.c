@@ -7,7 +7,7 @@
 /* Set by core 0 to let core 1's spawn end; each core's mark (globals need .data). */
 static volatile uint32_t g_go __attribute__((section(".data"))) = 0;
 static volatile uint32_t g_mark[4][16] __attribute__((section(".data"))) = {{0}};
-static uint32_t g_src[1024] __attribute__((section(".data"), aligned(64))) = {1};
+static uint32_t g_source[1024] __attribute__((section(".data"), aligned(64))) = {1};
 
 static void wait_go(int core, void* arg) {
     (void)arg;
@@ -27,42 +27,47 @@ static void mark_all(int cluster, int core, uint64_t arg) {
 
 int kmx_main(int core) {
     (void)core;
-    uint32_t w[24];
-    uint32_t n = 0;
-    w[n++] = (uint32_t)kmx_spawn(1, wait_go, 0); /* OK */
-    w[n++] = (uint32_t)kmx_spawn(1, mark, 0);    /* FULL: core 1 is busy */
-    w[n++] = (uint32_t)kmx_parallel(mark, 0);    /* FULL */
-    w[n++] = (uint32_t)kmx_spawn(0, mark, 0);    /* BAD */
-    w[n++] = (uint32_t)kmx_join(4);              /* BAD */
+    uint32_t words[24];
+    uint32_t word_count = 0;
+    words[word_count++] = (uint32_t)kmx_spawn(1, wait_go, 0); /* OK */
+    words[word_count++] = (uint32_t)kmx_spawn(1, mark, 0);    /* FULL: core 1 is busy */
+    words[word_count++] = (uint32_t)kmx_parallel(mark, 0);    /* FULL */
+    words[word_count++] = (uint32_t)kmx_spawn(0, mark, 0);    /* BAD */
+    words[word_count++] = (uint32_t)kmx_join(4);              /* BAD */
     g_go = 1;
-    w[n++] = (uint32_t)kmx_join(1); /* OK */
-    w[n++] = g_mark[1][0];          /* 101 */
-    w[n++] = (uint32_t)kmx_spawn(2, mark, (void*)200);
-    w[n++] = (uint32_t)kmx_spawn(3, mark, (void*)300);
-    w[n++] = (uint32_t)kmx_join(2);
-    w[n++] = (uint32_t)kmx_join(3);
-    w[n++] = g_mark[2][0]; /* 202 */
-    w[n++] = g_mark[3][0]; /* 303 */
-    w[n++] = (uint32_t)kmx_parallel(mark, (void*)400);
-    w[n++] = g_mark[0][0] + g_mark[1][0] + g_mark[2][0] + g_mark[3][0]; /* 1606 */
-    w[n++] = kmx_clusters();                                            /* 2 */
-    w[n++] = (uint32_t)kmx_lead();                                      /* 1 */
-    w[n++] = (uint32_t)kmx_serve();                                     /* NONE */
-    w[n++] = (uint32_t)kmx_parallel_all(mark_all, 500);
-    w[n++] = g_mark[0][0] + g_mark[3][0]; /* 510 + 513 */
+    words[word_count++] = (uint32_t)kmx_join(1); /* OK */
+    words[word_count++] = g_mark[1][0];          /* 101 */
+    words[word_count++] = (uint32_t)kmx_spawn(2, mark, (void*)200);
+    words[word_count++] = (uint32_t)kmx_spawn(3, mark, (void*)300);
+    words[word_count++] = (uint32_t)kmx_join(2);
+    words[word_count++] = (uint32_t)kmx_join(3);
+    words[word_count++] = g_mark[2][0]; /* 202 */
+    words[word_count++] = g_mark[3][0]; /* 303 */
+    words[word_count++] = (uint32_t)kmx_parallel(mark, (void*)400);
+    words[word_count++] = g_mark[0][0] + g_mark[1][0] + g_mark[2][0] +
+        g_mark[3][0];                            /* 1606 */
+    words[word_count++] = kmx_clusters();        /* 2 */
+    words[word_count++] = (uint32_t)kmx_lead();  /* 1 */
+    words[word_count++] = (uint32_t)kmx_serve(); /* NONE */
+    words[word_count++] = (uint32_t)kmx_parallel_all(mark_all, 500);
+    words[word_count++] = g_mark[0][0] + g_mark[3][0]; /* 510 + 513 */
     for (uint32_t i = 0; i < 1024; i++) {
-        g_src[i] = i * 2654435761u + 7u;
+        g_source[i] = i * 2654435761u + 7u;
     }
-    w[n++] = (uint32_t)kmx_push(2, 0, 0, g_src, 4096); /* BAD: not in the program */
-    w[n++] = (uint32_t)kmx_push(1, 0, 32, g_src, 64);  /* BAD: not a line */
-    w[n++] = (uint32_t)kmx_push(1, 0, 4096, g_src, 4096);
+    words[word_count++] = (uint32_t)kmx_push(
+        2, 0, 0, g_source, 4096
+    ); /* BAD: not in the program */
+    words[word_count++] = (uint32_t)kmx_push(
+        1, 0, 32, g_source, 64
+    ); /* BAD: not a line */
+    words[word_count++] = (uint32_t)kmx_push(1, 0, 4096, g_source, 4096);
     kmx_invalidate_at(0, 4096, 4096);
-    const uint32_t* r = (const uint32_t*)kmx_region(0, 0) + 1024;
+    const uint32_t* pushed = (const uint32_t*)kmx_region(0, 0) + 1024;
     uint32_t wrong = 0;
     for (uint32_t i = 0; i < 1024; i++) {
-        wrong += r[i] != g_src[i];
+        wrong += pushed[i] != g_source[i];
     }
-    w[n++] = wrong; /* 0 */
-    kmx_result(0, w, n);
+    words[word_count++] = wrong; /* 0 */
+    kmx_result(0, words, word_count);
     return 0;
 }

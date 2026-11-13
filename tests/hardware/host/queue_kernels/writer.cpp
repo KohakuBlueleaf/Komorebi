@@ -12,50 +12,55 @@ constexpr uint32_t kCbScratch = 16;
 
 void kernel_main() {
     constexpr auto pages_args = TensorAccessorArgs<0>();
-    km::Writer wr;
+    km::Writer writer;
     const uint32_t scratch = get_write_ptr(kCbScratch);
     volatile uint32_t* word = reinterpret_cast<volatile uint32_t*>(scratch);
     // NoC barriers polled with the wait limit; false (no report) if it passed.
     auto reads_done = [&] {
-        const bool ok = wr.poll(
+        const bool ok = writer.poll(
             [&] {
                 return ncrisc_noc_reads_flushed(noc_index);
             },
-            wr.args().wait_limit
+            writer.args().wait_limit
         ) == km::kGaveNone;
         invalidate_l1_cache();
         return ok;
     };
     auto writes_done = [&] {
-        return wr.poll(
+        return writer.poll(
             [&] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
-            wr.args().wait_limit
+            writer.args().wait_limit
         ) == km::kGaveNone;
     };
-    wr.run([&](const km_command_t& r) {
-        const uint32_t handler = km::handler(r);
+    writer.run([&](const km_command_t& command) {
+        const uint32_t handler = km::handler(command);
         if (
-            handler < kHandlerPut || handler > kHandlerBusy || wr.me() != km::first(r)
+            handler < kHandlerPut || handler > kHandlerBusy ||
+            writer.me() != km::first(command)
         ) {
             return true;
         }
-        const auto x = TensorAccessor(pages_args, r.a0);
+        const uint32_t tensor_argument = command.a0;
+        const uint32_t page_or_count = command
+                                           .a1;  // PUT: the page; SUM, BUSY: the count
+        const uint32_t value = command.a2;
+        const auto pages = TensorAccessor(pages_args, tensor_argument);
         if (handler == kHandlerPut) {
-            word[0] = r.a2;
-            noc_async_write_page(r.a1, x, scratch);
+            word[0] = value;
+            noc_async_write_page(page_or_count, pages, scratch);
             return writes_done();
         }
         uint32_t same = 0;
-        for (uint32_t p = 0; p < r.a1; p++) {
-            noc_async_read_page(handler == kHandlerSum ? p : 0, x, scratch);
+        for (uint32_t page = 0; page < page_or_count; page++) {
+            noc_async_read_page(handler == kHandlerSum ? page : 0, pages, scratch);
             if (!reads_done()) {
                 return false;
             }
-            same += word[0] == r.a2;
+            same += word[0] == value;
         }
-        wr.result(same);
+        writer.result(same);
         return true;
     });
 }

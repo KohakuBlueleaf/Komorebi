@@ -24,7 +24,7 @@ constexpr uint32_t kFdLines = 14;  // L1 address of the cores' status lines (16 
 constexpr uint32_t kFdArgs = 15;
 
 // Buffers on the feeder core: the commands plus two spares (EXIT, the end of a dynamic
-// run: n + 2 rows), the results.
+// run), the results.
 constexpr uint32_t kFdCbTable = 0;
 constexpr uint32_t kFdCbResults = 1;
 

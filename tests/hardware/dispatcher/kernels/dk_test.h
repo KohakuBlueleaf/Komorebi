@@ -12,9 +12,9 @@
 #define DK_HANDLER_RESULT 4u
 #define DK_HANDLER_SUM 5u /* result a0 + count (the graph references' result word) */
 
-/* Argument word w (2..9) of a command with key a0 and parameter a1. */
-static inline uint32_t dk_arg(uint32_t key, uint32_t param, uint32_t w) {
-    uint32_t x = key * 0x9E3779B1u ^ param * 0x85EBCA77u ^ w * 0xC2B2AE3Du;
+/* Argument word number `word` (2..9) of a command with key a0 and parameter a1. */
+static inline uint32_t dk_arg(uint32_t key, uint32_t param, uint32_t word) {
+    uint32_t x = key * 0x9E3779B1u ^ param * 0x85EBCA77u ^ word * 0xC2B2AE3Du;
     x ^= x >> 15;
     x *= 0x2C1B3C6Du;
     x ^= x >> 12;

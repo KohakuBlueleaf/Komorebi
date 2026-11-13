@@ -5,8 +5,8 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    km::Writer wr;
-    wr.run([&](const km_command_t&) {
+    km::Writer writer;
+    writer.run([&](const km_command_t&) {
         return true;
     });
 }

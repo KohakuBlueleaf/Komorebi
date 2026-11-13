@@ -6,16 +6,17 @@
 
 int kmx_main(int core) {
     (void)core;
-    km_command_t r;
-    r.sequence = r.land1 = r.land2 = r.land3 = 0;
-    r.hdr = 1u;
-    r.group = 1u << 16;
-    r.a0 = r.a1 = r.a2 = r.a3 = r.a4 = r.a5 = r.a6 = r.a7 = r.a8 = r.a9 = 0;
+    km_command_t command;
+    command.sequence = command.land1 = command.land2 = command.land3 = 0;
+    command.hdr = 1u;
+    command.group = 1u << 16;
+    command.a0 = command.a1 = command.a2 = command.a3 = command.a4 = command.a5 = 0;
+    command.a6 = command.a7 = command.a8 = command.a9 = 0;
     uint32_t submitted = 0, handle;
     uint64_t full_since = kmx_time();
     kmx_progress(1);
     while (kmx_time() - full_since < KMX_TICKS_PER_SECOND / 20 && submitted < 100000u) {
-        if (kmx_submit(&r, &handle) == KMX_OK) {
+        if (kmx_submit(&command, &handle) == KMX_OK) {
             submitted++;
             full_since = kmx_time();
         }
