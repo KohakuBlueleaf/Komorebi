@@ -1,6 +1,5 @@
-// K-split writer, NoC1: first the K chunks CHUNK_PATTERN gives mover B; then a core
-// other than its group's root sends its part (fp32) on, the root writes the group's sum
-// to Y.
+// K-split writer, NoC1: reads the K chunks CHUNK_PATTERN gives mover B; a non-root
+// core then sends its fp32 part on, the group's root writes the sum to Y.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

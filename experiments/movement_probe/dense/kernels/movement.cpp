@@ -1,6 +1,5 @@
-// The matrix product's data movement, one source for both movers: PRODUCT declares A's
-// rows and Y's blocks as streams and runs them through the engine; LOAD and PROF as in
-// main.
+// The matrix product's data movement, one source for both movers: PRODUCT runs A's
+// rows and Y's blocks as streams through the engine; LOAD and PROF as in main.
 #include <stdint.h>
 
 #include "../../kernels/movement.hpp"

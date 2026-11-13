@@ -9,9 +9,8 @@
 // LOAD: a0 W (DRAM, [K, N] tiles row-major), a1 the W buffer, a3 kt, a4 nt. Every
 // core reads all of W into that buffer and keeps it for the commands that follow.
 constexpr uint32_t kHandlerLoad = 1;
-// PRODUCT: a0 A ([M, K]), a1 Y ([M, N]), a2 mt, a3 kt, a4 nt, a5 kc (K chunk), a6 ct
-// (column block), a7 mode, a8 form, a9 W (form kFormStream). Rank i: rows
-// partition(mt).
+// PRODUCT: a0 A [M, K], a1 Y [M, N], a2 mt, a3 kt, a4 nt, a5 kc (K chunk), a6 ct
+// (column block), a7 mode, a8 form, a9 W (kFormStream); rank i: rows partition(mt).
 constexpr uint32_t kHandlerProduct = 2;
 // PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
 constexpr uint32_t kHandlerProf = 3;
