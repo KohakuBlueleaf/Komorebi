@@ -66,7 +66,7 @@ def case_compile_error(session):
 
 def case_exclusive(session):
     """A STALL-free check of `exclusive`: a command overlapping one in flight is held
-    until that one completed (trace: its members took it after the leader pushed)."""
+    until that one completed (trace: its cores took it after the leader pushed)."""
     run = session.load(program(EXAMPLE / "kernels"), trace=64)
     pairs = []
     for k in range(20):

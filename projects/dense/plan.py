@@ -106,7 +106,7 @@ def plan(mt, kt, nt, budget=L1_BUDGET, form=None):
 
 
 def group_size(p, workers):
-    """Members of a PRODUCT group: one per row tile, at most every worker."""
+    """Cores of a PRODUCT group: one per row tile, at most every worker."""
     return min(p.mt, workers)
 
 
@@ -174,7 +174,7 @@ class Grid:
         return cdiv(self.pcn, self.bn)
 
     def blocks(self):
-        """Blocks each broadcast hands over in one call."""
+        """Blocks each broadcast delivers in one call."""
         return self.nbh * self.nbw * self.nk
 
     def words(self):
@@ -398,7 +398,7 @@ class Split:
 
 def split_plan(mt, kt, nt, s, oh, ow, kc=None, cores=120, budget=L1_BUDGET):
     """A K-split plan: group size s, output block oh x ow, K chunk kc (default: the
-    whole share of K, at most MAX_CHUNK)."""
+    whole partition of K, at most MAX_CHUNK)."""
     kc = kc or min(cdiv(kt, s), MAX_CHUNK)
     sh, sw = subblock(oh, ow)
     sp = Split(mt, kt, nt, s, oh, ow, kc, sh, sw)

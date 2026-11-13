@@ -66,7 +66,7 @@ uint32_t kmg_start(
     uint32_t n_cores
 );
 
-/* One bounded step: at most KM_GRAPH_STEP ready nodes. */
+/* One step: at most KM_GRAPH_STEP ready nodes. */
 uint32_t kmg_step(kmg_state_t* s, kmg_submit_fn submit, void* ctx);
 
 /* The command of `node` completed with `result`. Returns 0, or 1 if the graph is not

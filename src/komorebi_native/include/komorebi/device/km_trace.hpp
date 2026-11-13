@@ -1,5 +1,5 @@
 // Per-command trace: kTraceWords wall-clock words per sequence number in L1 (runtime
-// buffer kCbTrace), stamped by the reader and the writer, written to DRAM at exit.
+// buffer kCbTrace), timestamped by the reader and the writer, written to DRAM at exit.
 #pragma once
 
 #include <stdint.h>
@@ -21,7 +21,7 @@ namespace km {
             return dram_ != 0;
         }
 
-        // Clears the L1 commands (reader, at start-up, before any stamp).
+        // Clears the L1 commands (reader, at start-up, before any timestamp).
         void clear() const {
             if (on()) {
                 volatile tt_l1_ptr uint32_t* t = l1(base_);
@@ -32,7 +32,7 @@ namespace km {
         }
 
         // A sequence past the capacity is dropped; kStTraceDropped counts the commands
-        // (the writer's kTraceDone stamp, so one kernel alone writes the count).
+        // (the writer's kTraceDone timestamp, so one kernel alone writes the count).
         void put(uint32_t seq, uint32_t field, uint32_t value) const {
             if (on() && seq - 1 < cap_) {
                 l1(base_)[(seq - 1) * kTraceWords + field] = value;
@@ -41,7 +41,7 @@ namespace km {
             }
         }
 
-        void stamp(uint32_t seq, uint32_t field) const {
+        void timestamp(uint32_t seq, uint32_t field) const {
             put(seq, field, wall());
         }
 

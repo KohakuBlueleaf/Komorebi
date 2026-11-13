@@ -1,6 +1,6 @@
 ---
 title: Tensix runtime reference
-summary: The device headers of the persistent kernel on the Tensix cores; the three kernels' classes and their calls, the command, every bounded wait and its limit, the gave-up and where codes, the control block map, and what a program may and may not do.
+summary: The device headers of the persistent kernel on the Tensix cores; the three kernels' classes and their calls, the command, every timed wait and its limit, the gave-up and where codes, the control block map, and what a program may and may not do.
 tags:
   - reference
   - device
@@ -61,14 +61,14 @@ void kernel_main() {           // compute.cpp: the body runs on all three thread
 | Header | What it holds | tt-metal headers |
 |---|---|---|
 | `abi/km_abi.h` | the command, flags, reserved handlers, the control block offsets, events (plain C, shared with the X280 and the host) | none |
-| `device/km_command.hpp` | command fields, sequence order, membership, `share`, `report_to`, the ring scan | none |
+| `device/km_command.hpp` | command fields, sequence order, `in_group`, `partition`, `report_to`, the ring scan | none |
 | `device/km_core.hpp` | runtime buffers, state words, gave-up and where codes, start-up arguments, the clock, `poll_stop`, `command_gave_up`, `small_write`, `km::Core` | yes |
 | `device/km_worker.hpp` | `km::Reader`, `km::Writer`, `km::Compute` | yes |
-| `device/km_completion.hpp` | `km::complete`: a member's completion report | yes |
-| `device/km_trace.hpp` | `km::Trace`: per-command stamps | yes |
+| `device/km_completion.hpp` | `km::complete`: a core's completion report | yes |
+| `device/km_trace.hpp` | `km::Trace`: per-command timestamps | yes |
 | `device/km_group.hpp` | groups of a group, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
 | `device/km_port.hpp` | emit, arrive, take, reduce ([ports](ports.md)) | yes |
-| `device/km_broadcast.hpp` | broadcast broadcast ([broadcasts](broadcast.md)) | yes |
+| `device/km_broadcast.hpp` | broadcast ([broadcasts](broadcast.md)) | yes |
 
 The headers without tt-metal can be compiled on the host; the CPU tests do so.
 
@@ -102,8 +102,8 @@ carries the sequence number. The command has landed when all four agree
 A command's header names its ring slot. A command found in another slot is not run and
 is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
 
-- `km::partition(n, index, count)` gives `{start, len}`, member `index`'s contiguous part
-  of n items. The first `n % count` members take one item more.
+- `km::partition(n, index, count)` gives `{start, len}`, rank `index`'s contiguous part
+  of n items. The first `n % count` cores take one item more.
 - `km::report_to(r, me, row)` gives `{parent, want}`, the completion tree described below.
 
 ## The three kernels
@@ -127,13 +127,13 @@ is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
 | Call | What it does |
 |---|---|
 | `run(body)` | starts up, then calls `body(command)` for each command of this core until EXIT or a wait gives up. The body returns nothing |
-| `reserve(cb, pages)` | bounded `cb_reserve_back` of a contiguous item. False: the reader gave up (recorded) |
-| `wait_stop(r)` | waits only for the stop flag, up to the idle limit, and commands a give-up at `stall`. True on stop. For tests that make a member stall |
+| `reserve(cb, pages)` | timed `cb_reserve_back` of a contiguous item. False: the reader gave up (recorded) |
+| `wait_stop(r)` | waits only for the stop flag, up to the idle limit, and commands a give-up at `stall`. True on stop. For tests that make a core stall |
 
 The reader's start-up runs once and in this order:
 1. Clears the ring, the DONE counters, the state words, the stop flag, the broadcast areas and the ports.
 2. Loads the core table.
-3. Checks in: each member writes to its leader. A leader waits for its members, then writes READY to the dispatcher.
+3. Checks in: each core of the group writes to its leader. A leader waits for its cores, then writes READY to the dispatcher.
 4. Sends the hello, if a mailbox is given.
 
 Then for each command it waits for the two token pages and scans the ring. It copies
@@ -144,8 +144,8 @@ the command into `KM_CTL_JOB` and hands a token to compute and to the writer.
 | Call | What it does |
 |---|---|
 | `run(body)` | per command: `body(command)` returns whether to report. The writer then waits for its writes (`noc_async_write_barrier`), waits until compute has left its body for this command, and runs `km::complete`. An EXIT command completes, then the writer leaves |
-| `wait_front(cb, pages, times = 1)` | bounded `cb_wait_front` of a contiguous item, bound `times` wait limits. False: gave up (recorded) |
-| `result(value)` | the command's result word: sent with the leader's ack when the command has `KM_F_RESULT`, 0 if never called. On other members it is not sent |
+| `wait_front(cb, pages, times = 1)` | timed `cb_wait_front` of a contiguous item, timeout `times` wait limits. False: gave up (recorded) |
+| `result(value)` | the command's result word: sent with the leader's ack when the command has `KM_F_RESULT`, 0 if never called. On other cores of the group it is not sent |
 
 A body that returns false reports nothing, so the command does not complete. A body
 returns false only after a give-up, when the tile is stopping anyway. A handler the
@@ -157,17 +157,17 @@ writer has nothing to do for returns true; otherwise its group never completes.
 |---|---|
 | `run(body)` | per command: all three threads copy the command and call `body(command)`. After the body, unpack marks the command done in its DONE slot, which the writer waits for |
 | `me()`, `arg(i)` | this core's index; the program's compute argument i (after `kComputeArgs`) |
-| `wait_front(cb, pages, times = 1)` | bounded `cb_wait_front`. Unpack decides and passes the answer to math and pack, so all three threads take the same path |
-| `reserve_back(cb, pages)` | bounded `cb_reserve_back`, decided by pack. False on pack only: gave up (recorded); true on unpack and math |
+| `wait_front(cb, pages, times = 1)` | timed `cb_wait_front`. Unpack decides and passes the answer to math and pack, so all three threads take the same path |
+| `reserve_back(cb, pages)` | timed `cb_reserve_back`, decided by pack. False on pack only: gave up (recorded); true on unpack and math |
 
 ### Groups and completion (`km_completion.hpp`)
 
 `km::complete(core, r, result)` runs in the writer after the body. Within one grid
-row of `row` cores (or with `row` 0), every member reports to the first member. Across
-rows, members report to their row's leader, and row leaders report to the first
-member. A member that receives reports waits (bounded) for `want` of them in
-`DONE[slot]` and clears it. A member other than the first then increments its parent's
-`DONE[slot]` with an atomic. The first member writes the ack word, and with
+row of `row` cores (or with `row` 0), every core of the group reports to the first core. Across
+rows, cores report to their row's leader, and row leaders report to the first
+core. A core that receives reports waits (with a timeout) for `want` of them in
+`DONE[slot]` and clears it. A core other than the first then increments its parent's
+`DONE[slot]` with an atomic. The first core writes the ack word, and with
 `KM_F_RESULT` also the result, into the dispatcher's ack line of the slot. Nothing is
 acknowledged once the tile's stop flag is set.
 
@@ -183,33 +183,33 @@ the program's own.
 | `cores` | DRAM address of the core table: core index to NoC `x \| y << 16` |
 | `disp_xy`, `ack_base` | the dispatcher's NoC x, y and its ack words (slot j at `ack_base + 16 j`) |
 | `mailbox` | the hello's address at the dispatcher; 0 sends none |
-| `leader`, `rank`, `members` | start-up group: leader's index, this core's check-in slot, members the leader waits for |
+| `leader`, `rank`, `peers` | start-up group: leader's index, this core's check-in slot, cores the leader waits for |
 | `ready_slot`, `ready_base` | the leader's READY word at the dispatcher |
 | `tag` | per-process random tag, 16 bits; check-ins carry it |
 | `workers` | cores 0 to `workers - 1` run commands (the group of an EXIT) |
 | `depth` | ring slots scanned, 1 to 16 (0: 16) |
 | `row` | cores per grid row for completion; 0: one level always |
-| `wait_limit` | bound of a wait for another core, in 1024-cycle units |
-| `idle_limit` | bound of a wait for the next command, in 1024-cycle units; 0: none |
+| `wait_limit` | timeout of a wait for another core, in 1024-cycle units |
+| `idle_limit` | timeout of a wait for the next command, in 1024-cycle units; 0: none |
 | `trace`, `trace_cap` | DRAM address of the trace (a page per core; 0: none), sequences traced |
 
 Compute: `kCArgCtl`, `kCArgMe`, `kCArgWait`, `kCArgIdle` (4 words), then the
 program's. The host gives the limits in seconds: `session.load(..., wait=2.0,
 idle=120.0)` becomes `abi.limit_units(seconds, mhz)`.
 
-## Bounded waits
+## Timed waits
 
 Every wait of the runtime is a `km::poll_stop(stop, ready, limit, grace)`. It polls
 `ready()` and returns `kGaveNone` when it holds. It returns `kGaveLimit` after
 `limit` units (0: no limit). It returns `kGaveStop` when the stop flag is set: at once
 with `grace` 0, otherwise after `grace` more units, so a wait already about to end
 can still end. A wait that gives up commands its first give-up and sets the tile's stop flag, so all three kernels leave. The writer reports a command only after the
-reader's and compute's bodies for it have returned, so a give-up in any of a member's
+reader's and compute's bodies for it have returned, so a give-up in any of a core's
 three kernels fails the command it happens in.
 
 | Kernel | Wait | Limit | Where |
 |---|---|---|---|
-| reader | a leader for its members' check-ins (start-up) | wait | `checkin` |
+| reader | a leader for its cores' check-ins (start-up) | wait | `checkin` |
 | reader | free token pages for the next command | idle; wait after a stop | `token` |
 | reader | the next landed command of this core | idle | `next` |
 | reader | `reserve` | wait | `data` |
@@ -218,7 +218,7 @@ three kernels fails the command it happens in.
 | writer | the next token | idle; wait after a stop | `writer` |
 | writer | `wait_front` | wait x `times` | `data` |
 | writer | compute and the reader have left their bodies for this command | wait | `cdone` |
-| writer | its members' completion reports | wait | `complete` |
+| writer | its cores' completion reports | wait | `complete` |
 | compute | the next token (unpack) | idle; wait after a stop | `ctoken` |
 | compute | `wait_front` (unpack) | wait x `times` | `cinput` |
 | compute | `reserve_back` (pack) | wait | `coutput` |
@@ -227,7 +227,7 @@ three kernels fails the command it happens in.
 | writer, compute | a wait behind a port's wait (`reduce_result`, `take`) | 2 x wait (`km::kBehindPort`) | `data`, `cinput` |
 | reader or writer | broadcast calls | wait | `broadcast*` ([broadcasts](broadcast.md)) |
 
-The NoC barriers are not bounded: `noc_async_read_barrier`,
+The NoC barriers have no timeout: `noc_async_read_barrier`,
 `noc_async_write_barrier`, `noc_async_writes_flushed` and `noc_async_atomic_barrier`.
 They end once the transactions to valid addresses complete. The buffer wrappers'
 checks are what keep those addresses valid. A program's own waits go through
@@ -244,17 +244,17 @@ of each kernel is kept, because it names the cause. The host decodes the words w
 |---|---|---|
 | 0 | - | did not give up |
 | 1 (`kGaveStop`) | `stop` | the stop flag was set |
-| 2 (`kGaveLimit`) | `limit` | the wait's bound passed |
+| 2 (`kGaveLimit`) | `limit` | the wait timed out |
 | 3 (`kGaveBadItem`) | `bad_item` | an item of several pages would pass the buffer's end, or a buffer is too small for its schedule; nothing was accessed |
 | 4 (`kGaveBadBroadcast`) | `bad_broadcast` | a broadcast's arguments do not fit the command |
 
 | Where | Name | Kernel: waiting for |
 |---|---|---|
-| 1 | `checkin` | reader (leader): its members' start-up check-ins |
+| 1 | `checkin` | reader (leader): its cores' start-up check-ins |
 | 2 | `token` | reader: free token pages |
 | 3 | `next` | reader: a command |
 | 4 | `stall` | a handler waiting for the stop flag (tests) |
-| 5 | `complete` | writer: its members' completion reports |
+| 5 | `complete` | writer: its cores' completion reports |
 | 6 | `writer` | writer: a token |
 | 7 | `data` | reader or writer: a buffer wait |
 | 8 | `ctoken` | compute (unpack): a token |
@@ -262,9 +262,9 @@ of each kernel is kept, because it names the cause. The host decodes the words w
 | 10 | `coutput` | compute (pack): output space |
 | 11 | `cdone` | writer: compute's and the reader's bodies to return |
 | 12 | `broadcastbegin` | broadcast: arguments or buffer at a command |
-| 13 | `broadcastdone` | broadcast sender: DONE stamps, its NoC flushes |
+| 13 | `broadcastdone` | broadcast sender: DONE markers, its NoC flushes |
 | 14 | `broadcastvalid` | broadcast receiver: VALID |
-| 15 | `broadcastfree` | broadcast: its compute's pops, its last stamps |
+| 15 | `broadcastfree` | broadcast: its compute's pops, its last markers |
 | 16 | - | free |
 | 17 | `port` | reader: a port's count (`km::arrive`) |
 | 18 | `emit` | writer: a put or a bump to flush (`km::emit`) |
@@ -311,8 +311,8 @@ a multiple of 16). Offsets are in bytes, and every offset has a static assert in
 | 0x780 | `KM_CTL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
 | 0x980 | `KM_CTL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
 | 0xA00 | `KM_CTL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
-| 0xC80 | `KM_CTL_DYN` | dynamic crossing: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
-| 0xD40 | `KM_CTL_TAILS` | dynamic crossing on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
+| 0xC80 | `KM_CTL_DYN` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
+| 0xD40 | `KM_CTL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
 | 0x1580 | `KM_CTL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
 | 0x15C0 | `KM_CTL_BYTES` | size of the block |
 
@@ -349,7 +349,7 @@ A program must:
   `Writer::wait_front`, `Compute::wait_front`, `Compute::reserve_back`) before the
   matching `cb_push_back` or `cb_pop_front`. A buffer is a multiple of its item, and
   every push and pop on it is a multiple of the item;
-- bound every wait of its own and check the stop flag, through `poll`;
+- give every wait of its own a timeout and check the stop flag, through `poll`;
 - return from a body after a give-up (the wrappers return false) without touching the
   buffer it was waiting for;
 - in compute, take the same path on all three threads: branch only on the command and
@@ -363,7 +363,7 @@ A program must:
 
 A program must not:
 - write the control block except through the runtime's calls;
-- loop without a bound, or wait on a NoC barrier for an address it has not checked;
+- loop without a limit, or wait on a NoC barrier for an address it has not checked;
 - write to the NoC from the compute kernel;
 - return false from the writer's body except after a give-up or in a test that means
   the command to time out: the group then never completes.

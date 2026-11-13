@@ -103,7 +103,7 @@ namespace {
         return false;
     }
 
-    // Bounded cb_reserve_back on the output buffer.
+    // Timed cb_reserve_back on the output buffer.
     bool reserve_out(uint32_t pages) {
         const bool ok = timed(
             [&] {
@@ -314,7 +314,7 @@ namespace {
 }  // namespace
 #endif
 
-// FILL, ARITH and SPIN of one record; the frame program's compute kernel calls it as
+// FILL, ARITH and SPIN of one command; the frame program's compute kernel calls it as
 // well.
 void fill_compute_command(const km_command_t& r) {
     const uint32_t handler = km::handler(r);

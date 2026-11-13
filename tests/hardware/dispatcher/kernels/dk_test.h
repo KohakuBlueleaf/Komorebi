@@ -33,12 +33,12 @@ static inline uint32_t dk_mix(uint32_t key) {
 
 /* Gave-up codes and where codes of the state words. */
 #define DK_GAVE_STOP 1u  /* the stop flag was set */
-#define DK_GAVE_LIMIT 2u /* the wait's own bound ran out */
-#define DK_GAVE_NOC 3u   /* a NoC transfer did not complete within the bound */
+#define DK_GAVE_LIMIT 2u /* the wait's own timeout ran out */
+#define DK_GAVE_NOC 3u   /* a NoC transfer did not complete within the timeout */
 #define DK_GAVE_ALIGN 4u /* an address from the host is not 16-byte aligned */
 #define DK_WHERE_BOOT 1u /* a leader collecting its column's check-ins */
 #define DK_WHERE_NEXT 2u /* waiting for a command */
-#define DK_WHERE_DONE 3u /* a group leader waiting for its members */
+#define DK_WHERE_DONE 3u /* a group leader waiting for its cores */
 #define DK_WHERE_STALL 4u
 #define DK_WHERE_DELAY 5u
 #define DK_WHERE_EXIT 6u       /* left on an EXIT command */
@@ -55,7 +55,7 @@ static inline uint32_t dk_mix(uint32_t key) {
 enum {
     DK_C_MAGIC = 0,      /* DK_MAGIC | core index: the kernel reached its end */
     DK_C_TAG = 1,        /* the tag it ran with */
-    DK_C_RUN = 2,        /* commands run as a member (EXIT not counted) */
+    DK_C_RUN = 2,        /* commands run in a group (EXIT not counted) */
     DK_C_KEY_SUM = 3,    /* sum of their keys a0 */
     DK_C_KEY_MIX = 4,    /* XOR of dk_mix(a0) */
     DK_C_IGNORED = 5,    /* commands seen that were not this core's */

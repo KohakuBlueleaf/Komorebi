@@ -62,9 +62,9 @@ class StartError(KomorebiError):
 
 
 class GridTimeout(KomorebiError):
-    """The Tensix grid's kernels did not return within the session's bound after the
+    """The Tensix grid's kernels did not return within the session's timeout after the
     stop flag. The session does not close the device; the runtime closes it at the
-    process's exit (a bounded wait for the cores, then their reset). A stuck thread is
+    process's exit (a timed wait for the cores, then their reset). A stuck thread is
     recovered by the next open; a compute unit left running is not (a card reset)."""
 
 
@@ -114,7 +114,7 @@ class KernelFailed(KomorebiError):
 
 class CommandTimeout(KernelFailed):
     """A command's group missed its deadline: the command, slot, sequence and group, and
-    after the stop the members that did not report and where each was waiting."""
+    after the stop the cores that did not report and where each was waiting."""
 
     def __init__(self, handle, slot, seq, group, cores, result=None):
         named = "; ".join(describe_core(c) for c in cores) or "none named"

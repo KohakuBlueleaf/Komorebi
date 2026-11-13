@@ -27,7 +27,7 @@ namespace {
     constexpr uint32_t kRes = 0xE800;      // ctl-relative: the example's results
     constexpr uint32_t kBins = 2;          // few bins: bins are evicted and refilled
 
-    // `cores` members, then `counters` counter tiles: the run's group.
+    // `cores` cores, then `counters` counter tiles: the run's group.
     struct Forward {
         uint32_t cores = 2, counters = 1, messages = 1, forwards = 1, cap = 256,
                  max_live = 256;
@@ -80,7 +80,7 @@ namespace {
         return cfg;
     }
 
-    // The replay: messages consumed, their total and the visits at each member.
+    // The replay: messages consumed, their total and the visits at each core.
     struct Expect {
         std::vector<uint32_t> consumed, visits;
         std::vector<uint64_t> total;
@@ -175,7 +175,7 @@ namespace {
         finish(s, o);
     }
 
-    // Four members on two counter tiles, many messages, two bins: bins are evicted,
+    // Four cores on two counter tiles, many messages, two bins: bins are evicted,
     // packets fill and split.
     void dyn_random(Outcome& o) {
         Forward h;
@@ -211,7 +211,7 @@ namespace {
         finish(s, o);
     }
 
-    // Every forward of every message to member 0: its queue holds the whole population.
+    // Every forward of every message to rank 0: its queue holds the whole population.
     void dyn_one_core(Outcome& o) {
         Forward h;
         h.cores = 4;
@@ -227,7 +227,7 @@ namespace {
         finish(s, o);
     }
 
-    // Member 1 sends until its quota is gone: send returns false once, and the
+    // Rank 1 sends until its quota is gone: send returns false once, and the
     // sent messages consume and give their quota back.
     void dyn_quota(Outcome& o) {
         Forward h;
@@ -283,7 +283,7 @@ namespace {
         finish(s, o);
     }
 
-    // Member 0's reader is held while every other core sends all its messages to it:
+    // Rank 0's reader is held while every other core sends all its messages to it:
     // more messages are reserved than its queue holds, and it gives up with overflow.
     void dyn_overflow(Outcome& o) {
         Forward h;
@@ -315,7 +315,7 @@ namespace {
         finish(s, o);
     }
 
-    // Member 1 stalls in its body: its reader gives up on a free packet page (or the
+    // Rank 1 stalls in its body: its reader gives up on a free packet page (or the
     // deadline passes); either way core 1 is named and every kernel returns.
     void dyn_stall(Outcome& o) {
         Forward h;

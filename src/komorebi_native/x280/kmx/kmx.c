@@ -135,7 +135,8 @@ void* kmx_region(int id, uint64_t* bytes) {
     return (void*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + a->region[id].offset);
 }
 
-/* A hand-over sweep split by lines over the four cores: core h takes its quarter. */
+/* A flush or invalidate sweep split by lines over the four cores: core h takes its
+ * quarter. */
 typedef struct {
     uint64_t addr, lines;
 } sweep_t;
@@ -158,7 +159,7 @@ static void sweep(uint64_t addr, uint64_t bytes) {
     const uint64_t lo = addr & ~63ull, hi = (addr + bytes + 63) & ~63ull;
     sweep_t s = {lo, (hi - lo) / 64};
     if (kmx_par(sweep_part, &s) != KMX_OK) {
-        flush(addr, bytes); /* busy, late or stopped: the hand-over is still whole */
+        flush(addr, bytes); /* busy, late or stopped: the flush is still whole */
     }
 }
 
@@ -1270,7 +1271,7 @@ static uint64_t run_main(const volatile kmx_args* a) {
     ports_close();
     const uint64_t ticks = x280_mtime() - g_start;
     r->ticks = (uint32_t)ticks;
-    /* every region given back: a dirty line left in the cluster's cache would be
+    /* every region flushed: a dirty line left in the cluster's cache would be
      * written over a later load's data (or its check line) when it is evicted */
     for (uint32_t i = 0; i < a->nregions; i++) {
         uint64_t n;

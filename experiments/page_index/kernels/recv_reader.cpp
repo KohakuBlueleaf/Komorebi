@@ -1,5 +1,5 @@
-// Receiver reader (NoC0): fills every page but k from the input, waits (bounded) for
-// the sender's bump, then pushes all S pages, also when the wait timed out.
+// Receiver reader (NoC0): fills every page but k from the input, waits (with a timeout)
+// for the sender's bump, then pushes all S pages, also when the wait timed out.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

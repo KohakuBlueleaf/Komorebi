@@ -199,7 +199,7 @@ the slice's end finishes the node.
 ## The C engine
 
 `km_graph_engine.c` is freestanding: no library calls, no floating point, no static
-data, every loop bounded by a limit above; all state is in a `kmg_state_t` the caller
+data, every loop capped by a limit above; all state is in a `kmg_state_t` the caller
 gives. The same file is compiled into the dispatcher and, on the host, into the
 library `komorebi.engines.graph_native` loads with ctypes.
 
@@ -219,7 +219,7 @@ the round, the phase, the error reason and the error node.
 
 ## In the dispatcher
 
-Core 1 of cluster 0 runs up to two graphs beside the streams, one bounded `kmg_step`
+Core 1 of cluster 0 runs up to two graphs beside the streams, one `kmg_step`
 each per pass of its loop, and sends their commands into the engine's ring like a
 stream's; core 0 submits them in the engine's turn and answers each with its `KM_EV_DONE`
 (the result word in its ticks) or `KM_EV_TIMEOUT`. A queued command goes into the

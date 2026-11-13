@@ -242,7 +242,7 @@ The two forms (`kernels/walk.hpp`):
   12 `SFPLOADI` immediates read from the record in L1; the vector unit tests (leaf:
   updates best and leaf index under condition; internal: stores `far - near`). After
   the node's packets, one `tensix_sync()`, the hit masks are read with the vector
-  extension and ORed into both children's bins. Every loop is bounded (stack depth,
+  extension and ORed into both children's bins. Every loop is limited (stack depth,
   4096 steps per packet); a breach ends the kernel with error code 2.
 
 Correctness, every run: the best distance of every ray that hits is bit-equal to the

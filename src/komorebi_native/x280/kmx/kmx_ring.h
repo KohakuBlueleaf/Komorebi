@@ -7,8 +7,8 @@
 #include "kmx_layout.h"
 #include "komorebi/abi/km_abi.h"
 
-/* The includer defines KMX_RING_FENCE_W and _R (fences), _SWEEP(p, n) (a hand-over
- * of a cached range), _NOW() (the timer) and _END() (KMX_OK or why waits end). */
+/* The includer defines KMX_RING_FENCE_W and _R (fences), _SWEEP(p, n) (a cached
+ * range's flush or invalidate), _NOW() (the timer), _END() (KMX_OK or why waits end) */
 
 #define KMX_RING_SPINS 256u /* polls between two checks of the clock and the stop */
 #define KMX_STASH 32u       /* events kmx_wait set aside for kmx_poll */

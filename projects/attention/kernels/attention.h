@@ -7,14 +7,14 @@
 #include "komorebi/device/km_broadcast.hpp"
 
 // ATTEND: a0 Q, a1 K, a2 V, a3 O (bf16 tiles, [B, H, S, D]), a4 job tables (a page per
-// member), a5 mode, a6 passes (0: one), a7 first job, a8 jobs from it (0: to the end).
+// core), a5 mode, a6 passes (0: one), a7 first job, a8 jobs from it (0: to the end).
 constexpr uint32_t kHandlerAttend = 1;
-// PROF: a0 profile tensor; the writer stores this core's profile page at the member's
+// PROF: a0 profile tensor; the writer stores this core's profile page at its rank's
 // page, then (a1 != 0) zeroes it.
 constexpr uint32_t kHandlerProf = 2;
 
-// ATTEND modes: the full call; cast only (Q reads and the K / V broadcast, compute pops
-// the blocks); compute only (Q, K, V as they are in L1: no reads, broadcast or writes).
+// ATTEND modes: the full call; broadcast only (Q reads, the K / V broadcast, compute
+// pops the blocks); compute only (Q, K, V in L1: no reads, broadcast or writes).
 constexpr uint32_t kModeFull = 0;
 constexpr uint32_t kModeBroadcastOnly = 1;
 constexpr uint32_t kModeComputeOnly = 2;
@@ -61,7 +61,8 @@ constexpr uint32_t kCbProf = 19;
 constexpr uint32_t kProfBytes = 1024;
 constexpr uint32_t kProfWords = 32;
 // Reader: body, waits for Q space, Q reads, the sender's slot waits, K / V read submit,
-// casts (read barrier, receivers' stamps, multicast), a receiver's arrivals, finish.
+// multicasts (read barrier, receivers' markers, multicast), a receiver's arrivals,
+// finish.
 constexpr uint32_t kPrRdBody = 0;
 constexpr uint32_t kPrRdQWait = 1;
 constexpr uint32_t kPrRdQRead = 2;
@@ -93,7 +94,7 @@ constexpr uint32_t kPrWrBody = 24;
 constexpr uint32_t kPrWrWait = 25;
 constexpr uint32_t kPrWrWrite = 26;
 
-// The command's end in the member's `jobs` jobs (it starts at job a7).
+// The command's end in the core's `jobs` jobs (it starts at job a7).
 inline uint32_t jobs_end(const km_command_t& r, uint32_t jobs) {
     return r.a8 == 0 || r.a7 + r.a8 > jobs ? jobs : r.a7 + r.a8;
 }
@@ -106,7 +107,7 @@ constexpr uint32_t kArgWindow = 0;
 
 #if !defined(COMPILE_FOR_TRISC)
 
-// Bounded wait until this kernel's reads have landed (km::kFlushReads) or its writes
+// Timed wait until this kernel's reads have landed (km::kFlushReads) or its writes
 // have left L1 (km::kFlushSent); a give-up goes into state word `word`.
 inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
     const uint32_t code = c.poll(
@@ -134,7 +135,7 @@ inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
     return code == km::kGaveNone;
 }
 
-// Reads this member's job table page (page `member` of the tables at `base`) to L1
+// Reads this core's job table page (page `rank` of the tables at `base`) to L1
 // `dst`. False: the read gave up (recorded).
 inline bool read_table(
     const km::Core& c, uint32_t word, uint32_t base, uint32_t rank, uint32_t dst
@@ -177,7 +178,7 @@ void read_kv(
 }
 
 // One job's K / V blocks through the broadcast (job words `w`; `n` counts the
-// command's, `c` the profile): the sender reads and casts each, a receiver waits.
+// command's, `c` the profile): the sender reads and multicasts each, a receiver waits.
 // False: gave up.
 template <uint32_t DT, uint32_t DV, uint32_t KB, typename Accessor>
 bool broadcast_job(

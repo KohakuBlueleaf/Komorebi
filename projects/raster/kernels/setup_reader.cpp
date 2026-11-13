@@ -1,5 +1,5 @@
 // COUNT and SETUP reader: SETUP's slots and items pages, then the camera's page and
-// this core's share of the mesh blocks into the mesh buffer, one page each.
+// this core's partition of the mesh blocks into the mesh buffer, one page each.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -79,7 +79,7 @@ namespace {
 
 }  // namespace
 
-// The passes' reading for one record; the frame program's reader calls it as well.
+// The passes' reading for one command; the frame program's reader calls it as well.
 void setup_reader_command(const km::Reader& rd, const km_command_t& r) {
     const uint32_t handler = km::handler(r);
     if ((handler != kHandlerLanes && handler != kHandlerCount &&

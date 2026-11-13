@@ -545,8 +545,8 @@ class Run:
         return int(wanted.size)
 
     def thread_result(self, timeout=10.0):
-        """Waits (bounded) for the program's X280 thread, stops it and returns its
-        result block (komorebi.thread.ThreadResult). Events go on as before."""
+        """Waits (with a timeout) for the program's X280 thread, stops it and returns
+        its result block (komorebi.thread.ThreadResult). Events go on as before."""
         if self.thread is None:
             raise KomorebiError("the program has no thread")
         r = self.thread.wait(timeout)
@@ -556,9 +556,9 @@ class Run:
         return r
 
     def thread_results(self, timeout=10.0):
-        """Waits (bounded) for every X280 thread, stops each and returns {cluster:
-        ThreadResult}. One that fails (no return in time, a library error) has the
-        others asked to stop at once, and ThreadFailed carries every result."""
+        """Waits (with a timeout) for every X280 thread, stops each and returns
+        {cluster: ThreadResult}. One that fails (no return in time, a library error) has
+        the others asked to stop at once, and ThreadFailed carries every result."""
         pending = dict(self._thread_runs())
         if not pending:
             raise KomorebiError("the program has no thread")

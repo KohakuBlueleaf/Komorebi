@@ -1,11 +1,11 @@
-/* The frame on the work cluster: each record submitted and waited for; before each
- * trace four X280 cores cut its packets into chunk records of equal predicted cost. */
+/* The frame on the work cluster: each command submitted and waited for; before each
+ * trace four X280 cores cut its packets into chunk commands of equal predicted cost. */
 #include <stdint.h>
 
 #include "kmx.h"
 #include "plan.h"
 
-#define WAIT_TICKS KMX_TICKS_PER_SECOND /* per record, longer than its deadline */
+#define WAIT_TICKS KMX_TICKS_PER_SECOND /* per command, longer than its deadline */
 
 typedef struct {
     uint32_t pred[RP_PACKETS_MAX]; /* each packet's predicted cost */
@@ -21,7 +21,7 @@ typedef struct {
     const uint8_t* cost;
     work_t* wk;
     uint32_t* log;
-    uint32_t used[RP_TRACES]; /* chunk records of the trace's last submit */
+    uint32_t used[RP_TRACES]; /* chunk commands of the trace's last submit */
     uint32_t out[RP_OUT_WORDS];
     void* part; /* the plan's parallel step, after work_t in the work region */
 } plan_t;
@@ -298,7 +298,7 @@ static void source_of(const plan_t* p, uint32_t t, uint32_t frame, part_t* a) {
     }
 }
 
-/* Trace t's directory entries for its m chunk records, from the bounds */
+/* Trace t's directory entries for its m chunk commands, from the bounds */
 static void write_dirs(plan_t* p, uint32_t t, uint32_t m, int host) {
     for (uint32_t c = 0; c < p->workers; c++) {
         for (uint32_t k = 0; k < m; k++) {
@@ -318,7 +318,7 @@ static void write_dirs(plan_t* p, uint32_t t, uint32_t m, int host) {
     );
 }
 
-/* Trace t's plan for this frame: its chunk records' count, 0 on failure */
+/* Trace t's plan for this frame: its chunk commands' count, 0 on failure */
 static uint32_t plan(plan_t* p, uint32_t t, uint32_t frame, uint32_t* sub) {
     part_t* a = (part_t*)p->part;
     part_init(a, p);

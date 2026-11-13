@@ -10,7 +10,7 @@ tags:
 # The Tensix runtime
 
 Status: implemented and run on one Blackhole card: the persistent kernel, commands,
-groups and completion, static breakpoints (ports and reduce, broadcast broadcast) and the
+groups and completion, static breakpoints (ports and reduce, broadcast) and the
 trace, and dynamic breakpoints (one dynamic run at a time), through a `Session` and
 under the test feeder.
 
@@ -25,11 +25,11 @@ handlers and breakpoints mean.
 |---|---|---|
 | Command | One 64-byte line: sequence number, handler, flags and ring slot, group, ten argument words. The dispatcher forwards it whole. | [runtime](../reference/runtime.md#the-command) |
 | Landing | Word 0 of each of the four 16-byte chunks carries the sequence number; a core runs a command only when all four agree. | [runtime](../reference/runtime.md#the-command) |
-| Worker | One persistent kernel set per program. The runtime owns each kernel's loop; the program gives the body. The reader copies each command into the tile's control block and hands a token to the compute and writer kernels, which read the command from that copy. Every wait is bounded and observes a stop flag. | [runtime](../reference/runtime.md#the-three-kernels) |
-| Groups | A contiguous range of cores in core order, named in the command. Completion is per group: members report to their row's leader, row leaders to the first member, which acknowledges with one write. Several groups run at once. | [runtime](../reference/runtime.md#the-three-kernels) |
-| Static breakpoints | A value to one core: `emit` writes into a fixed slot, waits for the write, increments the receiver's port; `arrive` is a bounded counted wait. `reduce` by owner and by tree. A block to a row or a column: broadcast broadcast with a window. | [ports](../reference/ports.md), [broadcasts](../reference/broadcast.md) |
-| Dynamic breakpoints | A queue per core in DRAM, positions reserved by an atomic add on the receiver; packets of up to 32 messages; bins per destination; a bounded population of live messages (a send quota); sent and consumed counters in a status line when a core goes idle. Generic reader and writer kernels own these, so a program's handler code lives in the compute kernel. Through a `Session` and under the test feeder; one dynamic run at a time. | [dynamic](../reference/dynamic.md) |
-| Trace | Per-command wall-clock stamps per core, read back after the run. | [runtime](../reference/runtime.md#trace) |
+| Worker | One persistent kernel set per program. The runtime owns each kernel's loop; the program gives the body. The reader copies each command into the tile's control block and hands a token to the compute and writer kernels, which read the command from that copy. Every wait has a timeout and observes a stop flag. | [runtime](../reference/runtime.md#the-three-kernels) |
+| Groups | A contiguous range of cores in core order, named in the command. Completion is per group: cores report to their row's leader, row leaders to the first core, which acknowledges with one write. Several groups run at once. | [runtime](../reference/runtime.md#the-three-kernels) |
+| Static breakpoints | A value to one core: `emit` writes into a fixed slot, waits for the write, increments the receiver's port; `arrive` is a timed counted wait. `reduce` by owner and by tree. A block to a row or a column: broadcast with a window. | [ports](../reference/ports.md), [broadcasts](../reference/broadcast.md) |
+| Dynamic breakpoints | A queue per core in DRAM, positions reserved by an atomic add on the receiver; packets of up to 32 messages; bins per destination; a limited population of live messages (a send quota); sent and consumed counters in a status line when a core goes idle. Generic reader and writer kernels own these, so a program's handler code lives in the compute kernel. Through a `Session` and under the test feeder; one dynamic run at a time. | [dynamic](../reference/dynamic.md) |
+| Trace | Per-command wall-clock timestamps per core, read back after the run. | [runtime](../reference/runtime.md#trace) |
 
 ## Commands and handlers
 
@@ -40,8 +40,8 @@ that handler's arguments. Handlers 1 to 239 are the program's; EXIT ends the wor
 ## Groups and completion
 
 A group is a contiguous range of cores in a fixed core order, and is named in the command
-that starts it. Members report completion to the group's leader; the leader pushes one
-word to the dispatcher. A member reports only after its writer's outputs have
+that starts it. Cores report completion to the group's leader; the leader pushes one
+word to the dispatcher. A core reports only after its writer's outputs have
 landed and its compute body has returned, so a command with no output is not complete
 while compute still runs it. Because completion is per group, several groups can be busy
 at once, and a group's size is not tied to a column of the grid. Where a group is
@@ -53,19 +53,19 @@ A command with `KM_F_RESULT` carries one 32-bit result word back with its
 acknowledgement. The leader's writer gives it with `wr.result(value)` before the command
 completes, and the leader acknowledges with `{ack, result}` as one 8-byte write into
 the slot's acknowledgement line, so the result is there whenever the acknowledgement
-is. A member that is not the leader may call it too; its value is not sent. A flagged
+is. A core that is not the leader may call it too; its value is not sent. A flagged
 command whose leader never gave a result is acknowledged with 0, and a command without
 the flag is acknowledged with the ack word alone.
 
 ## Breakpoints
 
 A static breakpoint is known before the run: who sends, who receives and how many
-arrive, all from the command and the member's rank. A value to one core is a write into
+arrive, all from the command and the core's rank. A value to one core is a write into
 a slot at a fixed address on the receiver, a wait until that write has landed, and an
 increment of a port the receiver waits on; there is no header and no queue
 ([ports](../reference/ports.md)). A block to many cores is a broadcast: one sender
 multicasts it along a row or down a column of the group, with a window of blocks in
-flight, and each receiver stamps the sender when its compute is done with a block
+flight, and each receiver writes a progress marker to the sender when its compute is done with a block
 ([broadcasts](../reference/broadcast.md)). Commands that use either carry `KM_F_EXCL`, so two
 commands whose groups overlap are never in flight together.
 
@@ -73,7 +73,7 @@ A dynamic breakpoint depends on data. Each receiver has a queue in DRAM large en
 for every live message. A sender collects messages per destination, reserves positions in
 the receiver's queue with one atomic add and writes the messages there; it never waits for
 the receiver, so a full inbox cannot deadlock the grid. The receiver reads its queue in
-order, as packets of up to 32 messages. The number of live messages is bounded by a send
+order, as packets of up to 32 messages. The number of live messages is limited by a send
 quota. When a core has been idle for a while it writes its sent and consumed counters
 in a status line at the submitter, and the run is over when every line says idle with the
 same counters on two successive sweeps and the sums match.
@@ -82,13 +82,13 @@ same counters on two successive sweeps and the sums match.
 ## Debugging
 
 The watcher cannot run while the X280 runtime is open, so the runtime is built to be
-debugged without it: every wait is bounded, each core has a "gave up" word, "where"
-codes show where a core stopped, and the trace stamps phases per core.
+debugged without it: every wait has a timeout, each core has a "gave up" word, "where"
+codes show where a core stopped, and the trace timestamps phases per core.
 
 A program takes and releases pages of its circular buffers only through the runtime's
 wrappers (`Reader::reserve`, `Writer::wait_front`, `Compute::wait_front`,
 `Compute::reserve_back`), never through the raw `cb_*` calls. A wrapper's wait is
-bounded and sees the stop flag, and it checks that the item it hands out stays inside
+timed and sees the stop flag, and it checks that the item it hands out stays inside
 the buffer. An item of several pages is one contiguous region: tt-metal's compute side
 wraps its pointer when it reaches or passes the buffer's end, the data-movement side
 only when it lands exactly on it, so a straddling item would send the data-movement
@@ -96,7 +96,7 @@ pointer out of the buffer for good. The buffer must therefore be a multiple of t
 item, and every push and pop on it a multiple of the item; a wrapper that sees an item
 pass the end gives up with the code `bad_item` before any access.
 
-The one kind of wait that is not bounded is the wait on the NoC itself
+The one kind of wait without a timeout is the wait on the NoC itself
 (`noc_async_read_barrier`, `noc_async_write_barrier`, `noc_async_writes_flushed`). It
 ends once the transactions to valid addresses complete; bounding it would let a kernel
 leave with a transaction still in flight. The wrappers' checks are what keep those

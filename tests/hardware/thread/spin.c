@@ -1,5 +1,5 @@
 /* A thread that fills region 1 (if any) with words (i + 1) * 2654435761, then waits
- * until it is asked to stop or its deadline passes; returns code 7 at stamp 2. */
+ * until it is asked to stop or its deadline passes; returns code 7 at marker 2. */
 #include <stdint.h>
 
 #include "kmx.h"

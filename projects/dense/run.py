@@ -59,7 +59,7 @@ def parse():
     p.add_argument("--k", type=int, default=32)
     p.add_argument("--n", type=int, default=32)
     p.add_argument("--calls", type=int, default=1)
-    p.add_argument("--group", type=int, default=0, help="0: one member per row tile")
+    p.add_argument("--group", type=int, default=0, help="0: one core per row tile")
     p.add_argument("--form", choices=FORMS, default=None)
     p.add_argument(
         "--grid", default=None, help="[layout:]rows,cols,pcm,pcn,bm,bn,kb[,wa,ww]"

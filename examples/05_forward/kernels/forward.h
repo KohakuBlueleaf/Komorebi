@@ -17,7 +17,7 @@ constexpr uint32_t kNullId = 0xFFFFFFFF;  // quota probe messages: consume at on
 // RUN command: a0 messages, a1 forwards per message, a2 mode, a3 target rank (mode 1),
 // a4 1 + rank that stalls in the body (0: none), a5 1 + rank that probes its quota.
 constexpr uint32_t kModeRandom = 0;   // next core: state mod group size
-constexpr uint32_t kModeOneCore = 1;  // every forward goes to member a3
+constexpr uint32_t kModeOneCore = 1;  // every forward goes to rank a3
 
 // Per-core results, 16 words at the address of compute argument 2.
 constexpr uint32_t kResConsumed = 0;

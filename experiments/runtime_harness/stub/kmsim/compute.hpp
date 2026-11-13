@@ -71,7 +71,7 @@ namespace ckernel {
         kmsim::mailbox_write(thread, data);
     }
 
-    // Waits (unbounded) for the next word from `thread`.
+    // Waits (without a timeout) for the next word from `thread`.
     static inline uint32_t mailbox_read(uint32_t thread) {
         kmsim::point("mailbox_read", thread);
         return kmsim::mailbox_read(thread);
@@ -98,7 +98,7 @@ namespace ckernel {
 
 }  // namespace ckernel
 
-// Unpack: waits (unbounded) for pages at the front. Other threads: nothing.
+// Unpack: waits (without a timeout) for pages at the front. Other threads: nothing.
 static inline void cb_wait_front(uint32_t cb, uint32_t pages) {
     UNPACK((kmsim::point("cb_wait_front", cb), kmsim::cb_wait(cb, pages)));
 }
@@ -108,7 +108,7 @@ static inline void cb_pop_front(uint32_t cb, uint32_t pages) {
     UNPACK((kmsim::point("cb_pop_front", cb), kmsim::cb_pop(cb, pages)));
 }
 
-// Pack: waits (unbounded) for free pages at the back. Other threads: nothing.
+// Pack: waits (without a timeout) for free pages at the back. Other threads: nothing.
 static inline void cb_reserve_back(uint32_t cb, uint32_t pages) {
     PACK((kmsim::point("cb_reserve_back", cb), kmsim::cb_reserve(cb, pages)));
 }
@@ -131,7 +131,7 @@ static inline void add_binary_tile_init() {
 static inline void fill_tile_init() {
 }
 
-// Math: waits (unbounded) until pack released the destination registers.
+// Math: waits (without a timeout) until pack released the destination registers.
 static inline void tile_regs_acquire() {
     MATH((kmsim::point("tile_regs_acquire"), kmsim::dst_acquire()));
 }
@@ -141,7 +141,7 @@ static inline void tile_regs_commit() {
     MATH((kmsim::point("tile_regs_commit"), kmsim::dst_commit()));
 }
 
-// Pack: waits (unbounded) until math committed the destination registers.
+// Pack: waits (without a timeout) until math committed the destination registers.
 static inline void tile_regs_wait() {
     PACK((kmsim::point("tile_regs_wait"), kmsim::dst_wait()));
 }
@@ -152,7 +152,7 @@ static inline void tile_regs_release() {
 }
 
 // Unpack sends the front tile to math (two source slots, waits when both are full);
-// math waits (unbounded) for it and stores it in register `dst`. No data formats.
+// math waits (no timeout) for it and stores it in register `dst`. No data formats.
 static inline void copy_tile(uint32_t cb, uint32_t tile, uint32_t dst) {
     UNPACK((kmsim::point("copy_tile", cb), kmsim::unpack_tile(cb, tile)));
     MATH((kmsim::point("copy_tile", cb), kmsim::math_take(dst)));

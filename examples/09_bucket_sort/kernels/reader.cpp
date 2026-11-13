@@ -20,8 +20,8 @@ void kernel_main() {
         if (handler != BS_HANDLER_COUNT && handler != BS_HANDLER_PLACE) {
             return;
         }
-        // Steps 1 and 3: my share is a run of keys [start, start + len) in input order,
-        // from my rank in the group; the writer computes the same share.
+        // Steps 1 and 3: my partition is a run of keys [start, start + len) in input
+        // order, from my rank in the group; the writer computes the same partition.
         const uint32_t rank = rd.me() - km::first(r);
         const km::Partition s = km::partition(r.a1, rank, km::count(r));
         if (s.len == 0) {
@@ -31,11 +31,12 @@ void kernel_main() {
         const uint32_t first = s.start / BS_KEYS_PER_PAGE;
         const uint32_t last = (s.start + s.len - 1) / BS_KEYS_PER_PAGE;
         for (uint32_t page = first; page <= last; page++) {
-            // A free page in the buffer (bounded: false means the core is stopping).
+            // A free page in the buffer (with a timeout: false means the core is
+            // stopping).
             if (!rd.reserve(kCbKeys, 1)) {
                 return;
             }
-            // DRAM to L1 over NoC 0; the wait for it is bounded by the wait limit.
+            // DRAM to L1 over NoC 0; the wait for it times out at the wait limit.
             noc_async_read_page(page, keys, get_write_ptr(kCbKeys));
             const uint32_t code = rd.poll(
                 [] {

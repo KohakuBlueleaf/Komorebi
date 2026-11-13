@@ -200,7 +200,7 @@ def dyn_header():
 
 @dataclass(frozen=True)
 class Dynamic:
-    """A dynamic handler: items of `message_bytes` move between the queues of the
+    """A dynamic handler: messages of `message_bytes` move between the queues of the
     group's cores (`queue_messages` each), at most `max_live` alive at once; `bins`
     open bins per writer; a line says idle after `idle_cycles` of idle. The last
     `counters` cores of a run's group are counter tiles (layout.counter_tiles)."""
@@ -235,7 +235,7 @@ class Dynamic:
             raise ValueError("max_live and idle_cycles must be at least 1")
 
     def buffers(self):
-        """The runtime's buffers of a dynamic handler: packets, outgoing items, bins."""
+        """Runtime buffers of a dynamic handler: packets, outgoing messages, bins."""
         k, _ = dyn_header()
         n = k["kDynPacket"]
         return [
@@ -256,7 +256,7 @@ class Dynamic:
         if self.max_live > self.queue_messages:
             raise ValueError(
                 f"max_live {self.max_live} > queue_messages {self.queue_messages}: "
-                "every item aimed at one core would not fit its queue"
+                "every message aimed at one core would not fit its queue"
             )
         if self.queue_bytes(cores) > dram_bytes:
             raise ValueError(
@@ -265,17 +265,17 @@ class Dynamic:
             )
         if cores <= self.counters:
             raise ValueError(
-                f"{cores} cores leave no member beside {self.counters} counter tiles"
+                f"{cores} cores leave no core beside {self.counters} counter tiles"
             )
         if self.max_live < cores - self.counters:
             raise ValueError(
-                f"max_live {self.max_live} < {cores - self.counters} members: no quota"
+                f"max_live {self.max_live} < {cores - self.counters} cores: no quota"
             )
         if depth < 2:
             raise ValueError("a dynamic run needs ring depth 2 for its end command")
 
     def quota(self, cores):
-        """Spawns each member starts a run with, for a group of `cores` cores."""
+        """Sends each core starts a run with, for a group of `cores` cores."""
         return self.max_live // max(cores - self.counters, 1)
 
     def args(self, queue, lines):
@@ -294,5 +294,5 @@ class Dynamic:
         return [int(values[f]) & abi.M32 for f in fields]
 
     def compute_args(self, cores):
-        """Compute's words (item bytes, quota, counters), before the program's own."""
+        """Compute's words (message bytes, quota, counters) before the program's."""
         return [self.message_bytes, self.quota(cores), self.counters]

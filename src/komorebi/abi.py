@@ -316,7 +316,7 @@ def start_args(values, h=None):
 
 
 def column_groups(grid, cores):
-    """Start-up groups of cores 0 to cores - 1: {core: (leader, rank, members, slot)}.
+    """Start-up groups of cores 0 to cores - 1: {core: (leader, rank, peers, slot)}.
 
     The lowest core of each column leads and reports READY in the column's slot.
     """
@@ -332,5 +332,5 @@ def column_groups(grid, cores):
 
 
 def limit_units(seconds, mhz):
-    """A bound in the kernels' units of 1024 cycles at `mhz`, at least 1."""
+    """A timeout in the kernels' units of 1024 cycles at `mhz`, at least 1."""
     return max(1, min(M32, int(seconds * mhz * 1e6) >> 10))

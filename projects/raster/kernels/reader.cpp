@@ -6,7 +6,7 @@
 #include "komorebi/device/km_worker.hpp"
 #include "raster.h"
 
-// Bounded noc_async_read_barrier. False: gave up (recorded in the reader's word).
+// Timed noc_async_read_barrier. False: gave up (recorded in the reader's word).
 bool read_done(const km::Reader& rd, uint32_t seq) {
     const uint32_t code = rd.poll(
         [] {
@@ -21,7 +21,7 @@ bool read_done(const km::Reader& rd, uint32_t seq) {
     return false;
 }
 
-// FILL and ARITH of one record; the frame program's reader calls it as well.
+// FILL and ARITH of one command; the frame program's reader calls it as well.
 void fill_reader_command(const km::Reader& rd, const km_command_t& r) {
     if (km::handler(r) != kHandlerFill && km::handler(r) != kHandlerArith) {
         return;

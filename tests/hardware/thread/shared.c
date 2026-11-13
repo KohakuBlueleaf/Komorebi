@@ -1,5 +1,5 @@
-/* Clusters 2 and 3 share bank 7: 2 fills region 1 with (i + 1) * 2654435761, gives it,
- * sets region 2's flag; 3 waits for the flag (bounded), takes region 1, sums it. */
+/* Clusters 2 and 3 share bank 7: 2 fills region 1 with (i + 1) * 2654435761, flushes
+ * it, sets region 2's flag; 3 waits for it (timed), invalidates region 1, sums it. */
 #include <stdint.h>
 
 #include "kmx.h"

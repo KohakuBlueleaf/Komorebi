@@ -8,7 +8,7 @@
 
 namespace {
 
-    // Bounded waits: a poll is a few tens of cycles, so about one to two seconds.
+    // Timed waits: a poll is a few tens of cycles, so about one to two seconds.
     constexpr uint32_t kSpinLimit = 1u << 26;
     constexpr uint32_t kHealLimit = 1u << 20;
     constexpr uint32_t kCntCb = 9;
@@ -77,7 +77,7 @@ void kernel_main() {
         [[maybe_unused]] const uint32_t echo = landing_echo(seq, tag);
         bool ok = false;
         for (uint32_t spins = 0; spins < kSpinLimit; spins++) {
-#ifdef STAMP
+#ifdef TIMESTAMP
             const uint32_t t0 = wall();
 #endif
             invalidate_l1_cache();
@@ -95,7 +95,7 @@ void kernel_main() {
             ok = m == 4;
 #endif
             if (ok) {
-#ifdef STAMP
+#ifdef TIMESTAMP
                 const uint32_t dt = wall() - t0;
                 check_sum += dt;
                 check_max = dt > check_max ? dt : check_max;

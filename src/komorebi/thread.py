@@ -346,10 +346,11 @@ def new_check_value():
 
 
 class ThreadResult(NamedTuple):
-    """The result block: state and library error (names), the thread's code and
-    words, its last progress marker and the times in microseconds. `ran` is False
-    when the thread did not return by the timeout; `stuck` when it did not return
-    after the stop flag either, `detail` then the runtime's account of a failed stop."""
+    """The result block: state and library error (names), the thread's code and words,
+    its last progress marker and the times in microseconds. `ran` is False when the
+    thread did not return by the timeout; `stuck` when it did not return after the stop
+    flag either, `detail` then the runtime's error message for a failed stop.
+    """
 
     ran: bool
     state: str
@@ -449,7 +450,7 @@ class ThreadRun:
         self.running = True
 
     def wait(self, timeout):
-        """Waits (bounded) for the thread to return, stops it, reads the result
+        """Waits (with a timeout) for the thread to return, stops it, reads the result
         block. A thread still running at the timeout is asked to stop first."""
         if self.result is not None:
             return self.result

@@ -1,7 +1,7 @@
 # Atomic answers
 
-When is the returned value of a non-posted NoC atomic add lost? The dynamic crossing
-reserves queue positions with such adds and waits for each old value; at 10^6 forwards on
+When is the returned value of a non-posted NoC atomic add lost? Routed messages
+reserve queue positions with such adds and waits for each old value; at 10^6 forwards on
 119 cores some runs ended with reason 32 (`lost`): the add had landed and was counted
 as answered, but the old value never arrived.
 
@@ -23,11 +23,11 @@ The runtime therefore keeps every tail on counter tiles, group cores that only a
 `stress.py` runs `writer.cpp` on cores 0 to `cores - 1` (RISCV_1, NoC1). Each core
 makes K reservations, one at a time, on random asking cores: an add of 1 (sometimes 2)
 to the destination's tail with its old value returned to one of 32 lines of the
-asker's own L1, then a bounded wait for the atomic's count and for the old value to
-replace a sentinel. An answer that does not come within the bound is counted lost and
+asker's own L1, then a timed wait for the atomic's count and for the old value to
+replace a sentinel. An answer that does not come within the timeout is counted lost and
 its line is not used again; a core whose 32 lines all hold a lost answer stops with
 `fail` 4. The host checks that every tail equals what was added to
-it. Every wait is bounded, the start barrier by one second.
+it. Every wait has a timeout, the start barrier's one second.
 
 ```
 python stress.py                          # tails on the asking cores themselves
@@ -93,5 +93,5 @@ non-posted), and atomics aimed at DRAM or the X280.
 | File | What it is |
 |---|---|
 | `stress.py` | the host: launch on the asking cores, read back, one JSON line |
-| `writer.cpp` | the asking kernel: K bounded reservations |
+| `writer.cpp` | the asking kernel: K timed reservations |
 | `stress.h` | the per-core L1 block |

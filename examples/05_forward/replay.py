@@ -14,7 +14,7 @@ def xorshift(s):
 
 
 def first_rank(messages, count):
-    """The member that sends each message: km::partition of the messages over the
+    """The core that sends each message: km::partition of the messages over the
     group."""
     base, extra = divmod(messages, count)
     sizes = np.full(count, base) + (np.arange(count) < extra)
@@ -22,9 +22,9 @@ def first_rank(messages, count):
 
 
 def replay(messages, forwards, count, one_core=None):
-    """Per member: messages consumed there, the 64-bit total of their sums, visits.
+    """Per core: messages consumed there, the 64-bit total of their sums, visits.
 
-    one_core: every forward goes to that member (else to state mod count)."""
+    one_core: every forward goes to that rank (else to state mod count)."""
     state = (np.arange(messages, dtype=np.uint64) + 1) * 0x9E3779B1 & M32
     state[state == 0] = 1
     core = first_rank(messages, count)

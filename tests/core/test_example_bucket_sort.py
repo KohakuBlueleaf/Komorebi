@@ -15,9 +15,9 @@ SPEC.loader.exec_module(reference)
 def test_the_plan_places_each_core_s_keys_where_the_stable_sort_puts_them():
     keys = np.array([0xF0000000, 0x10000000, 0xF0000001, 0x00000005, 0x10000002] * 3)
     keys = keys.astype(np.uint32)
-    log2_b, cores = 4, 4  # 15 keys on 4 cores: shares of 4, 4, 4 and 3
+    log2_b, cores = 4, 4  # 15 keys on 4 cores: partitions of 4, 4, 4 and 3
     plan = reference.plan(reference.counts(keys, log2_b, cores))
-    starts, lengths = reference.shares(keys.size, cores)
+    starts, lengths = reference.partitions(keys.size, cores)
     placed = np.zeros_like(keys)
     for core, (start, length) in enumerate(zip(starts, lengths)):
         cursor = plan[core].copy()

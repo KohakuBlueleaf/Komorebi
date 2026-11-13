@@ -2,20 +2,20 @@
 
 One program runs as a persistent kernel on every Tensix core of the card. The dispatcher on X280 cluster 0 takes commands from the host and sends each one to every core.
 A command names a handler and a group, cores `[first, first + count)` of the core order
-(row by row, x fastest); cores outside the group ignore it. When every member of the group
-has finished, the group's first member tells the dispatcher, which tells the host.
+(row by row, x fastest); cores outside the group ignore it. When every core of the group
+has finished, the group's first core tells the dispatcher, which tells the host.
 
-| Handler | Arguments | What a member does |
+| Handler | Arguments | What a core does |
 |---|---|---|
-| `MAP` | a0 input, a1 tiles T, a2 output, a3 output page of member 0, a6 first input tile | reads its share of input tiles a6 to a6 + T - 1, adds them into one tile (fp32), stores it at page a3 + member, reports |
-| `STALL` | a0 member | member a0 waits for the stop flag and does not report; the others report |
-| `ALIGN` (a test) | a9 release time (low word of the wall clock; the test feeder sets it) | every member reports at time a9 |
-| `LATE` (a test) | a0 member, a1 cycles | member a0 reports a1 cycles after it took the command; the others report at once |
+| `MAP` | a0 input, a1 tiles T, a2 output, a3 output page of rank 0, a6 first input tile | reads its partition of input tiles a6 to a6 + T - 1, adds them into one tile (fp32), stores it at page a3 + rank, reports |
+| `STALL` | a0 rank | rank a0 waits for the stop flag and does not report; the others report |
+| `ALIGN` (a test) | a9 release time (low word of the wall clock; the test feeder sets it) | every core of the group reports at time a9 |
+| `LATE` (a test) | a0 rank, a1 cycles | rank a0 reports a1 cycles after it took the command; the others report at once |
 | `NOP` | none | reports |
-| `BAD_ITEM` (a test) | a0 member, a1 side (0 writer, 1 reader) | member a0 asks for an item that passes the end of its buffer and gives up with `bad_item`; the others report |
-| `RESULT` (a test) | a0 value | each member gives a0 plus its index as the result word; with `KM_F_RESULT` the command is acknowledged with the leader's, a0 |
+| `BAD_ITEM` (a test) | a0 rank, a1 side (0 writer, 1 reader) | rank a0 asks for an item that passes the end of its buffer and gives up with `bad_item`; the others report |
+| `RESULT` (a test) | a0 value | each core of the group gives a0 plus its index as the result word; with `KM_F_RESULT` the command is acknowledged with the leader's, a0 |
 
-The host checks every member's tile against numpy: bit-exact on integer inputs (even
+The host checks every core's tile against numpy: bit-exact on integer inputs (even
 jobs), and the relative RMS error of the total on uniform random inputs (odd jobs).
 
 ## The program, from the host
@@ -49,9 +49,9 @@ output tensors (`tensor.accessor_args()` of tensors made by
 `address`. `mapcollect.py` is this program with the tensors, the groups and the checks
 around it.
 
-If a member never reports, the dispatcher's deadline (one second unless `load`
+If a core never reports, the dispatcher's deadline (one second unless `load`
 says otherwise) ends the run: `run.wait` raises `km.CommandTimeout`, which names the
-command, the slot, the sequence number, the group, and the members that did not report
+command, the slot, the sequence number, the group, and the cores that did not report
 with where each was waiting. The session is already closed cleanly by then.
 
 ## Files
@@ -87,10 +87,10 @@ cores in turn). `--depth` is the number of mailbox slots the cores scan and the
 dispatcher uses (default 4). Outputs go to a ring of `--out-tensors` tensors of
 `--out-pages` tiles; only jobs whose pages no later job overwrote are checked, and
 reading back runs at about 1 MB/s in slow dispatch. `--trace` adds the per-command
-phases (microseconds after the first member took the command: last member took it,
+phases (microseconds after the first core took the command: last core took it,
 last outputs written, leader pushed the completion) and counts consecutive jobs on
 disjoint groups that were in flight at once. A group inside one grid row completes in
-one level (every member reports to the first member); a group that spans rows completes
+one level (every core of the group reports to the first core); a group that spans rows completes
 through row leaders (the runtime chooses per command).
 
 The JSON line reports microseconds per job by the dispatcher's clock and by the
@@ -108,7 +108,7 @@ default), with
 python mapcollect.py --jobs 1000 --groups random --out-tensors 32
 ```
 
-1,000 jobs of 64 input tiles on random groups, 61,720 member commands, up to 4 in flight:
+1,000 jobs of 64 input tiles on random groups, 61,720 core commands, up to 4 in flight:
 1.751 µs per job by the dispatcher's clock and 2.078 by the host's; from submit to
 completion 4.2 µs per command on average (13.3 at most); every one of the 1,000 jobs
 checked against numpy, 0 wrong (500 bit-exact, the others within a relative RMS error

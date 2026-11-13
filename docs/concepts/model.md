@@ -10,7 +10,7 @@ tags:
 
 Status: the breakpoints are implemented in the Tensix runtime and run on one card:
 `emit` and `wait` as ports and reduce ([ports](../reference/ports.md)), a block to a
-row or a column as broadcast broadcast ([broadcasts](../reference/broadcast.md)), and `at` as items
+row or a column as a broadcast ([broadcasts](../reference/broadcast.md)), and `at` as messages
 that move between cores in a dynamic handler ([dynamic](../reference/dynamic.md)).
 Homes declared and the thread language compiled into handlers are planned; today a
 program is written as the handler bodies of its kernels.
@@ -30,7 +30,7 @@ that core without interruption, and after a move it stays where it landed.
 A **breakpoint** is a point where the thread must deal with another core. There are
 three kinds, and one variant of the first:
 
-| The author writes | Breakpoint | What crosses the NoC | What the thread does |
+| The author writes | Breakpoint | What the NoC carries | What the thread does |
 |---|---|---|---|
 | `at X[i]: block` | move | the thread's live variables | continues where `X[i]` lives; no breakpoint if it is already here |
 | `emit X[i] += v`, `emit v -> thread(j)` | emit | the value | keeps running |
@@ -101,7 +101,7 @@ thread mm(j, n):                                 # one per core, pinned
     for r in 0 .. levels(n) - 1:
         if j % 2^(r+1) == 0:                     # I merge in this round
             if j + 2^r < n:
-                part += wait(1)                  # breakpoint: my partner has handed over
+                part += wait(1)                  # breakpoint: my partner's value arrived
         else:
             emit part -> thread(j - 2^r)         # breakpoint: hand my partial to my merger
             return
@@ -143,7 +143,7 @@ model states both.
   pinned to a core. An axis split across cores is an index dimension.
 - **Time is a loop in the thread body.** An axis split in time on one core is a `for`
   over chunks.
-- **An axis may be both.** The index picks my share of the axis; a loop walks my share
+- **An axis may be both.** The index picks my partition of the axis; a loop walks my partition
   in chunks.
 - **A group is a slice of the index space.** `threads(broadcast, *)` is every thread of one
   broadcast. A broadcast is `emit x -> threads(broadcast, *)`; a merge along one index is
@@ -199,7 +199,7 @@ loops and the `reduce` line.
 
 1. Live state must be small and visible: whatever is live at a move travels. The tool
    must report the command size at each breakpoint.
-2. No unbounded recursion across a breakpoint: a thread has a fixed-size command, not a
+2. No recursion without a limit across a breakpoint: a thread has a fixed-size command, not a
    stack.
 3. Compute follows data, so hot data makes hot cores. Shedding is legal only at points
    where the thread needs nothing local; the compiler can find those points.

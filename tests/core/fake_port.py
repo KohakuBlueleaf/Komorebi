@@ -257,7 +257,7 @@ class FakeBackend:
         self.calls = []
         self.answer = {}  # finish() fields to answer instead (result_ready, ...)
         self.cleaned = True  # what abort() answers
-        self.close_failed = ""  # the runtime's account when not cleaned
+        self.close_failed = ""  # the runtime's error message when not cleaned
         self.aborted = None  # {words, cores} the kernel left at abort()
         self.report = "the fake kernel's report"  # what kernel_report() answers
 
@@ -295,8 +295,9 @@ class FakeBackend:
         pass
 
     def read_back(self, stop_grid=False):
-        """Control blocks whose state words say every member reported its commands'
-        sequences, except the stalled core; trace: seen/done/sent stamps per sequence.
+        """Control blocks whose state words say every core of the group reported its
+        commands' sequences, except the stalled core; trace: seen/done/sent timestamps
+        per sequence.
         """
         self.calls.append("read_back")
         self.grid_stopped = stop_grid

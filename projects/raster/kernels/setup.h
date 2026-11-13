@@ -1,14 +1,14 @@
-// The per-triangle passes: COUNT and SETUP over each core's share of the mesh, 32
+// The per-triangle passes: COUNT and SETUP over each core's partition of the mesh, 32
 // triangles a block; handlers from 11, apart from the fill's (raster.h): one program.
 #pragma once
 
 #include <stdint.h>
 
 // LANES: every block's records as the vector unit leaves them, for the exactness check.
-// Each handler's record words: kernels/README.md.
+// Each handler's command words: kernels/README.md.
 constexpr uint32_t kHandlerLanes = 11;
-// COUNT: per core, over its share, the records of every tile and their rows in it (two
-// arrays of 1,024 words), and the histograms kept for HIST.
+// COUNT: per core, over its partition, the records of every tile and their rows in it
+// (two arrays of 1,024 words), and the histograms kept for HIST.
 constexpr uint32_t kHandlerCount = 12;
 // SETUP: each kept record goes once to every item (a tile, or a band of its rows) it
 // reaches, at that item's next slot.
@@ -17,7 +17,7 @@ constexpr uint32_t kHandlerSetup = 13;
 // (kCbHist).
 constexpr uint32_t kHandlerHist = 14;
 // PLACE (writer only, a8 required): directory pages, end slots and list headers from
-// the step's words in the items region.
+// the middle pass's words in the items region.
 constexpr uint32_t kHandlerPlace = 15;
 // SUM (writer only): the counters' sums over the cores, 16 tiles a slice: each core's
 // entries before it per tile into its slots page, the totals for the X280 thread.

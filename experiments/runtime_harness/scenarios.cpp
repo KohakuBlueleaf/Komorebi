@@ -424,7 +424,7 @@ namespace {
             s.run();
             c.expect(fired, "the fault was injected at the named point");
             c.expect(
-                s.all_returned, "every thread of every core returned within the bound"
+                s.all_returned, "every thread of every core returned within the timeout"
             );
             c.expect(s.violations.empty(), "no stub contract or landing violation");
             c.expect(
@@ -518,7 +518,7 @@ namespace {
         });
     }
 
-    // The input wait of command 0 gives up on its bound (reader held, no stop); command
+    // The input wait of command 0 times out (reader held, no stop); command
     // 1's token is good. By the rule, the tile then acknowledges nothing.
     void mb_abort_then_good_token(Outcome& o) {
         mailbox_case(o, [](Config& cfg, Sim*& sp, bool& fired, Check& c, bool after) {
@@ -543,7 +543,7 @@ namespace {
     }
 
     // Unpack is held at its first input tile of a 24-tile command: the reader's room
-    // wait gives up on its bound, the EXIT token comes while compute is still inside.
+    // wait times out, the EXIT token comes while compute is still inside.
     void mb_exit_during_input_wait(Outcome& o) {
         mailbox_case(o, [](Config& cfg, Sim*& sp, bool& fired, Check& c, bool after) {
             static bool inside = false;

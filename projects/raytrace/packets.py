@@ -348,7 +348,7 @@ def state_bytes(packets):
 
 
 def treelet_buffers(packets, entries, n_treelets, slots, slot_bytes):
-    """Bytes of the state, lists and slot buffers for a record of `packets` packets
+    """Bytes of the state, lists and slot buffers for a command of `packets` packets
     with room for `entries` list entries (the reader's layout after the lists)."""
     lists = 4 * (K["kLsHead"] + 2 * packets) + 2 * entries + 6 * n_treelets
     lists += 2 * max(entries, packets)
@@ -367,7 +367,7 @@ def sort_bytes(packets):
 
 
 def fixed_bytes(tree_pages):
-    """Bytes of every buffer of a treelet record other than state, lists and slots."""
+    """Bytes of every buffer of a treelet command other than state, lists and slots."""
     total = K["kInPageBytes"] * K["kInPages"] + K["kOutPageBytes"] * K["kOutPages"]
     total += K["kWorkBytes"] * K["kWorkPages"] + K["kSignalBytes"]
     total += K["kDirReaderBytes"] + K["kDirBytes"]
@@ -385,10 +385,10 @@ def plan_commands(
     budget=L1_BUDGET,
     least=16,
 ):
-    """Packets per record, slots and buffer sizes for a core's `most` packets: the most
-    slots (down to MIN_SLOTS) that leave room for `least` packets per record, then the
+    """Packets per command, slots and buffer sizes for a core's `most` packets: the most
+    slots (down to MIN_SLOTS) that leave room for `least` packets per command, then the
     most packets that fit. List entries are at least one packet's worst case (every
-    treelet), so a record always admits a packet. Raises when nothing fits."""
+    treelet), so a command always admits a packet. Raises when nothing fits."""
     if n_treelets >= MAX_TREELETS:
         raise ValueError(f"{n_treelets} treelets; at most {MAX_TREELETS - 1}")
     free = budget - fixed_bytes(tree_pages)
@@ -415,7 +415,7 @@ def plan_commands(
 
 
 def chunks(directory, per_command):
-    """The directory (cores, 16) split into records of at most per_command packets per
+    """The directory (cores, 16) split into commands of at most per_command packets per
     core: a list of directories, the j-th giving each core its j-th chunk."""
     first = directory[:, K["kDirFirst"]].astype(np.int64)
     count = directory[:, K["kDirCount"]].astype(np.int64)

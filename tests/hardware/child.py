@@ -1,6 +1,6 @@
 """Running a card script as a child process for a hardware test: its last JSON line, and
-a bounded end. A child still running at the timeout gets SIGTERM, so its session closes
-the X280 runtime before it exits; SIGKILL follows only after a grace period."""
+an end with a timeout. A child still running at the timeout gets SIGTERM, so its session
+closes the X280 runtime before it exits; SIGKILL follows only after a grace period."""
 
 import json
 import subprocess

@@ -45,7 +45,7 @@ def every_kernel_returned(out, cores=120):
 
 
 def counts_match(out):
-    """Each core took and finished as many commands as it is a member of."""
+    """Each core took and finished as many commands as it is in."""
     return out["core_counts_bad"] == 0 and out["rank_commands"] > 0
 
 

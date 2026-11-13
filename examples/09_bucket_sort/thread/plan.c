@@ -1,5 +1,5 @@
 /* Bucket sort, X280 side: the THREAD, one image on each work cluster taking part. Core
- * 0 of cluster 1 conducts the whole program; the plan runs on 1, 4 or 12 cores. */
+ * 0 of cluster 1 drives the whole program; the plan runs on 1, 4 or 12 cores. */
 #include <stdint.h>
 
 #include "bucket_sort.h"
@@ -107,7 +107,7 @@ static void step(int cluster, int core, uint64_t arg) {
             return;
         }
         /* Step 2b: my block's bucket totals to the lead's bank (it cannot read mine),
-         * then give them back: the lead pushes the starts over these very lines. */
+         * then flush them: the lead pushes the starts over these very lines. */
         if (hi > lo) {
             const uint64_t at = skew() + (uint64_t)lo * LINE;
             const uint64_t n = (uint64_t)(hi - lo) * LINE;
@@ -129,7 +129,7 @@ static void step(int cluster, int core, uint64_t arg) {
     }
     if (phase == P_TOTALS) {
         /* Step 2a: my buckets' totals, row after row (a row is read as one stream).
-         * The cores wrote the rows over the NoC, past this cache: take, then read. */
+         * The cores wrote the rows over the NoC, past this cache: invalidate first. */
         for (uint32_t x = first; x < end; x++) {
             totals[x] = 0;
         }
@@ -168,7 +168,7 @@ static void local_step(int core, void* arg) {
 }
 
 /* One phase of step 2 on the cores the host asked for: core 0 alone, cluster 1's four
- * (kmx_par), or all twelve of clusters 1 to 3 (kmx_par_all). Each call is bounded. */
+ * (kmx_par), or all twelve of clusters 1 to 3 (kmx_par_all). Each call is timed. */
 static int phase(uint32_t p) {
     const uint32_t x280_cores = word(BS_W_X280_CORES);
     const uint64_t arg = p | (uint64_t)(x280_cores == 1 ? 1u : 4u) << 8;
@@ -190,7 +190,7 @@ static uint32_t starts(void) {
     for (uint32_t k = 1; k < blocks(); k++) {
         uint32_t lo, hi;
         bs_block(k, blocks(), chunks(), &lo, &hi);
-        /* the totals clusters 2 and 3 pushed into my bank: take before reading */
+        /* the totals clusters 2 and 3 pushed into my bank: invalidate before reading */
         kmx_invalidate_at(
             R_TOTALS, skew() + (uint64_t)lo * LINE, (uint64_t)(hi - lo) * LINE
         );
@@ -209,7 +209,7 @@ static uint32_t starts(void) {
         if (n == 0) {
             continue;
         }
-        /* Their starts back to them; then give the lines back here, or a dirty line
+        /* Their starts back to them; then flush the lines here, or a dirty line
          * would later be written over the totals they push in the next round. */
         if (kmx_push(cluster_of(k), R_TOTALS, at, totals + lo * BS_CHUNK, n) !=
             KMX_OK) {
@@ -244,7 +244,7 @@ static void command(
 }
 
 /* Submits r through this cluster's command ring to the dispatcher on cluster 0,
- * and waits for its event, both bounded: 0 once every core reported it done. */
+ * and waits for its event, both with a timeout: 0 once every core reported it done. */
 static uint32_t run_command(const km_command_t* r) {
     const uint64_t until = kmx_time() + WAIT_TICKS;
     uint32_t handle;
@@ -337,8 +337,7 @@ int kmx_main(int core) {
             return CODE_PUSH;
         }
         const uint64_t t2 = kmx_time();
-        /* Step 3, PLACE on the Tensix group, with the plan the cores gave back to DRAM.
-         */
+        /* Step 3, PLACE on the Tensix group, with the plan the cores wrote to DRAM. */
         kmx_progress(3 + 4 * round);
         command(&r, BS_HANDLER_PLACE, plan_at);
         code = run_command(&r);

@@ -44,15 +44,15 @@ def parse():
     p.add_argument("--messages", type=int, default=1)
     p.add_argument("--forwards", type=int, default=1, help="forwards per message")
     p.add_argument(
-        "--one-core", type=int, default=-1, help="every forward to this member"
+        "--one-core", type=int, default=-1, help="every forward to this rank"
     )
-    p.add_argument("--stall", type=int, default=-1, help="member that stalls")
+    p.add_argument("--stall", type=int, default=-1, help="rank that stalls")
     p.add_argument("--again", action="store_true", help="then one more run, no stall")
     p.add_argument("--repeat", type=int, default=1, help="the first run, this often")
     p.add_argument(
         "--engine", action="store_true", help="then the stream engine runs two halves"
     )
-    p.add_argument("--probe", type=int, default=-1, help="member that spends its quota")
+    p.add_argument("--probe", type=int, default=-1, help="rank that spends its quota")
     p.add_argument("--max-live", type=int, default=1 << 14)
     p.add_argument("--queue-messages", type=int, default=1 << 14)
     p.add_argument("--bins", type=int, default=16)
@@ -161,7 +161,7 @@ def run_once(session, a, stall):
     out["host_s"] = round(host_s, 4)
     if stall < 0:  # exact, ended by the kernel at the quiet end
         out["ok"] = out["exact"] and out["event"] == "done" and out["gave_core"] == -1
-    else:  # the stalled member named, the run ended by its timeout
+    else:  # the stalled core named, the run ended by its timeout
         out["ok"] = out["event"] == "timeout" and out["gave_core"] == stall
     return out
 
@@ -202,7 +202,7 @@ def run_engine(session, a):
 
 
 def exact_rows(a, res, count):
-    """The result rows of a group of `count` cores against the replay over its members;
+    """The result rows of a group of `count` cores against the replay over its cores;
     the counter tiles (the last a.counters rows) take no message."""
     m = len(counter_tiles(0, count, a.counters).workers)
     one = a.one_core if a.one_core >= 0 else None

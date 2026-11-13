@@ -23,7 +23,7 @@ namespace km {
         }
 
         // Start-up, then body(command) for each command of this core until EXIT or a
-        // wait gives up. body may call wait_stop() and the bounded buffer waits below.
+        // wait gives up. body may call wait_stop() and the timed buffer waits below.
         template <typename Body>
         void run(Body body) {
             if (!start()) {
@@ -42,7 +42,7 @@ namespace km {
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
-        // A wait only the stop flag ends (bounded by the idle limit). Returns true on
+        // A wait only the stop flag ends (the idle limit its timeout). Returns true on
         // stop.
         bool wait_stop(const km_command_t& r) const {
             const uint32_t code = poll(
@@ -55,7 +55,7 @@ namespace km {
             return code == kGaveStop;
         }
 
-        // Bounded cb_reserve_back of a contiguous item: the buffer, every push and
+        // Timed cb_reserve_back of a contiguous item: the buffer, every push and
         // every pop on it must be multiples of the item. False: gave up (recorded).
         bool reserve(uint32_t cb, uint32_t pages) const {
             if (!item_fits(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages)) {
@@ -299,16 +299,16 @@ namespace km {
                     if (r.seq == 0) {  // the reader gave up
                         end = kEndAbort;
                     } else if (complete(*this, r)) {
-                        trace_.stamp(r.seq, kTraceSent);
+                        trace_.timestamp(r.seq, kTraceSent);
                     }
                     break;
                 }
                 result_ = 0;
                 const bool report = body(r);
                 noc_async_write_barrier();
-                trace_.stamp(r.seq, kTraceDone);
+                trace_.timestamp(r.seq, kTraceDone);
                 if (report && bodies_done(r) && complete(*this, r, result_)) {
-                    trace_.stamp(r.seq, kTraceSent);
+                    trace_.timestamp(r.seq, kTraceSent);
                 }
                 add_sat(state() + kStCompleted, 1);
             }
@@ -323,7 +323,7 @@ namespace km {
             result_ = value;
         }
 
-        // Bounded (`times` wait limits) cb_wait_front of a contiguous item: buffer,
+        // Timed (`times` wait limits) cb_wait_front of a contiguous item: buffer,
         // pushes and pops are multiples of it. False: gave up (recorded).
         bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
             if (!item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)) {
@@ -345,7 +345,7 @@ namespace km {
         }
 
     private:
-        // Bounded wait until compute (its body returned on all three threads) and the
+        // Timed wait until compute (its body returned on all three threads) and the
         // reader marked command r's sequence in its slot. False: gave up (recorded).
         bool bodies_done(const km_command_t& r) const {
             const uint32_t j = slot(r);
@@ -372,8 +372,8 @@ namespace km {
 #else
 namespace km {
 
-    // Compute: unpack waits (bounded) for the token and tells math and pack by mailbox;
-    // all three copy KM_CTL_JOB and confirm by mailbox before the token is freed.
+    // Compute: unpack's timed wait for the token, then it tells math and pack by
+    // mailbox; all three copy KM_CTL_JOB and confirm by mailbox before it is freed.
     class Compute {
     public:
         Compute()
@@ -391,7 +391,7 @@ namespace km {
             return get_arg_val<uint32_t>(kComputeArgs + i);
         }
 
-        // Bounded cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
+        // Timed cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
         // of it), `times` wait limits. Unpack decides, math and pack get its answer.
         bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
             uint32_t ok = 0;
@@ -434,7 +434,7 @@ namespace km {
             return ok != 0;
         }
 
-        // Bounded cb_reserve_back of a contiguous item (buffer, pushes, pops: multiples
+        // Timed cb_reserve_back of a contiguous item (buffer, pushes, pops: multiples
         // of it), decided by pack. False on pack: gave up (recorded); true elsewhere.
         bool reserve_back(uint32_t cb, uint32_t pages) const {
             bool ok = true;
@@ -527,7 +527,7 @@ namespace km {
             return l1(ctl_ + KM_CTL_STOP);
         }
 
-        // The next token (bounded like the reader's wait for a command): unpack polls
+        // The next token (timed like the reader's wait for a command): unpack polls
         // and sends ok, then the sequence, to math and pack. False: gave up (recorded).
         bool take(uint32_t& seq) const {
             uint32_t ok = 0;

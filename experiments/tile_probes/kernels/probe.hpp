@@ -22,14 +22,14 @@ namespace probe {
     constexpr uint32_t kInWords = 8192;
 
     // Error codes (bit set per failure; 0 is a clean run).
-    constexpr uint32_t kErrSpin = 1;  // a bounded wait gave up
+    constexpr uint32_t kErrSpin = 1;  // a timed wait gave up
     constexpr uint32_t kErrLoop = 2;  // a data-dependent loop hit its bound
 
     // CBs: the input page, the output page, scratch L1 for the RISC-V loops.
     constexpr uint32_t kCbIn = 0, kCbOut = 16, kCbScratch = 24;
     constexpr uint32_t kScratchWords = 4096;
 
-    // Spin bound of every wait of this kernel: about 2^24 x 20 cycles, under a second.
+    // Timeout of every wait of this kernel: about 2^24 x 20 cycles, under a second.
     constexpr uint32_t kSpinLimit = 1u << 24;
 
 }  // namespace probe

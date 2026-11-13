@@ -85,7 +85,7 @@ class Layer:
         return np.array([self.calls(1)[0] * 1e6 for _ in range(n)])
 
     def profile(self, timeout=10.0):
-        """Each member's profile page, summed over the commands so far."""
+        """Each core's profile page, summed over the commands so far."""
         prof = self.t["prof"]
         handle = self.run.submit("prof", self.group, [prof.address])
         self.run.wait(handle, timeout=timeout)
@@ -117,7 +117,7 @@ class Layer:
 
 
 def profile_per_call(before, after, calls, mhz):
-    """Microseconds per call of each profile share on the slowest member (the one
+    """Microseconds per call of each profile share on the slowest core (the one
     with the longest body), from two profiles `calls` calls apart."""
     pr = (after - before).astype(np.float64) / calls
     busy = np.maximum.reduce([pr[:, K[k]] for k in BODIES])

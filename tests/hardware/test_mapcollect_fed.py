@@ -88,7 +88,7 @@ def test_a_flagged_command_is_acknowledged_with_the_leaders_result(run):
 
 
 def test_a_stalled_rank_is_named_after_the_feeder_timeout(run):
-    # Core group 4 to 23 (row leaders 4 and 12); member 10 (core 14) stalls job 3.
+    # Core group 4 to 23 (row leaders 4 and 12); rank 10 (core 14) stalls job 3.
     stall = ["--stall", 3, "--stall-rank", 10, "--deadline", 0.02]
     out = run("--jobs", 6, "--count", 20, "--first", 4, "--row", 12, *stall)
     seq = out["feeder"]["seq"]
@@ -135,7 +135,7 @@ def test_slow_compute_gives_up_and_acknowledges_nothing(run):
 
 
 def test_a_leader_whose_rank_is_late_acknowledges_nothing(run):
-    # Member 1 reports job 0 after 0.3 s; leader 0 waits 0.1 s, gives up, stops.
+    # Rank 1 reports job 0 after 0.3 s; leader 0 waits 0.1 s, gives up, stops.
     late = ["--late", 0, "--late-rank", 1, "--late-cycles", CYCLES_300MS]
     out = run("--group-list", "0:2,0:2", *late, "--wait", 0.1, "--deadline", 1.0)
     assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 1
@@ -147,7 +147,7 @@ def test_a_leader_whose_rank_is_late_acknowledges_nothing(run):
 
 def test_an_item_past_the_buffer_end_gives_up_before_any_access(run):
     # Job 0 (65 tiles, one output page) leaves the output buffer's pointer at page 1;
-    # job 1 asks member 0 for 2 output pages from there.
+    # job 1 asks rank 0 for 2 output pages from there.
     bad = ["--bad-item", 1, "--bad-side", "writer", "--tiles", 65, "--deadline", 0.05]
     out = run("--group-list", "0:1,0:1,0:1", "--depth", 1, *bad)  # job 0 acked first
     assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 2

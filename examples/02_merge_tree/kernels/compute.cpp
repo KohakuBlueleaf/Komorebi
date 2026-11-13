@@ -45,7 +45,8 @@ void kernel_main() {
         const uint32_t tiles = r.a1;  // input tiles T of the job
         const uint32_t form = r.a4;   // 0: merge at one owner, 1: along a tree
         const uint32_t part = r.a7;   // tiles per part P (1 to 3), one sum each in DST
-        // The group is the command's range of cores; my rank in it gives my share of T.
+        // The group is the command's range of cores; my rank in it gives my partition
+        // of T.
         const km::Group g = km::group_of(r, cp.me());
         const km::Partition s = km::partition(tiles, g.rank, g.size);
         const km::Arrival arrival = {kCbArrive, kArrivePages, part};
@@ -60,8 +61,8 @@ void kernel_main() {
                 cb_pop_front(kCbIn, 1);
             }
         }
-        // The crossing: wait for the parts other members send me, add them in rank
-        // order (by owner: member 0 takes all; by tree: one partner a round).
+        // The reduce: wait for the parts other cores of the group send me, add them in
+        // rank order (by owner: rank 0 takes all; by tree: one partner a round).
         ok = ok && km::reduce(cp, arrival, g, form, [&](uint32_t k) {
                  for (uint32_t d = 0; d < part; d++) {
                      add_page(kCbArrive, km::slot_page(arrival, k) + d, d);
@@ -69,7 +70,7 @@ void kernel_main() {
              });
         tile_regs_commit();
         tile_regs_wait();
-        // The P sums to the writer, which sends them on or (member 0) writes the total.
+        // The P sums to the writer, which sends them on or (rank 0) writes the total.
         // After a give-up (a wait ran out, or the run was stopped) nothing is packed.
         if (ok && cp.reserve_back(kCbOut, part)) {
             for (uint32_t d = 0; d < part; d++) {

@@ -1,5 +1,5 @@
 """Parallel thread: a map, a reduction and a two-pass prefix sum on the work cluster's
-four cores with kmx_par (thread/parallel.c), each run with one share and with four,
+four cores with kmx_par (thread/parallel.c), each run with one partition and with four,
 or (--twelve) the map and prefix sum on 1, 4, 8 and 12 cores of the three clusters
 (thread/clusters.c), checked against numpy and timed. One JSON line; see README.md."""
 

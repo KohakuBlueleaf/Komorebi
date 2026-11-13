@@ -55,7 +55,7 @@ longer docstrings. The `dev` extra installs the tools, including clang-format 22
 `.clang-format` uses options older versions reject). Run the commands from the
 repository, in the environment of [install](install.md#from-a-clone).
 
-`tests/core` covers the layout functions (panels, groups, shares), statistics, the
+`tests/core` covers the layout functions (panels, groups, partitions), statistics, the
 package boundary, `kmr doctor` with and without a tree, the runtime package's locator
 on a fake layout and the order in which the tree is chosen, the parsing and command
 assembly of `build.py` against a small fake `build.ninja`, the power sampler against
@@ -89,7 +89,7 @@ experiments/runtime_harness/run.py`), not part of the test suite;
 behaviour.
 
 The rule: a new wait in the runtime comes with a scenario there that makes it give up,
-by the stop flag and by its bound, and shows that every kernel of the tile still
+by the stop flag and by its timeout, and shows that every kernel of the tile still
 returns; when a defect is fixed, one test pins it.
 
 ## Conventions

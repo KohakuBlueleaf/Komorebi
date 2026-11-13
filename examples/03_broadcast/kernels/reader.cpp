@@ -1,5 +1,5 @@
 // Broadcast reader: the row broadcast, on NoC0. Each row's sender reads the row's A
-// blocks from DRAM and casts them along the row (READ: every member reads them itself).
+// blocks from DRAM and multicasts them along the row (READ: every rank reads its own).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

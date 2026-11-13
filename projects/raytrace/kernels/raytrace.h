@@ -80,7 +80,7 @@ constexpr uint32_t kDirBytes = 64;
 constexpr uint32_t kTreePageBytes = 4096;
 
 // Directory entry of a core (one 64-byte page each): first page, pages, and for a
-// TREELETS record in a bank the bank address of the core's cost block (0: none).
+// TREELETS command in a bank the bank address of the core's cost block (0: none).
 constexpr uint32_t kDirFirst = 0;
 constexpr uint32_t kDirCount = 1;
 constexpr uint32_t kDirCost = 2;
@@ -267,9 +267,9 @@ constexpr bool is_stage(uint32_t handler) {
     return handler >= kHandlerGen && handler <= kHandlerImage;
 }
 
-// Record word of stream k: a1, a2, a5, a6, ...
-template <typename Record>
-inline uint32_t stream_arg(const Record& r, uint32_t k) {
+// Command word of stream k: a1, a2, a5, a6, ...
+template <typename Command>
+inline uint32_t stream_arg(const Command& r, uint32_t k) {
     const uint32_t w[kMaxStreams] = {r.a1, r.a2, r.a5, r.a6, r.a7, r.a8, r.a9};
     return w[k];
 }

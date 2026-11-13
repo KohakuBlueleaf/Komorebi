@@ -20,7 +20,7 @@ def tiles(x):
 
 
 def emulate(s, x, w, words):
-    """Y as one member after another runs the call's LAYER commands: x's row from
+    """Y as one core after another runs the call's LAYER commands: x's row from
     DRAM or a held buffer's tiles in FIFO order, W's blocks, the epilogue, the pack."""
     buf = {cb: tiles(v) for cb, v in zip(sp.W_CBS, w)}
     px, y = tiles(x), {}

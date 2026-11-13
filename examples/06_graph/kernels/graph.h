@@ -12,7 +12,7 @@ constexpr uint32_t kHandlerLeft = 2;
 constexpr uint32_t kHandlerRight = 3;
 // NORM: a0 state, a1 pages: the leader's result word is the sum of x[0..a1).
 constexpr uint32_t kHandlerNorm = 4;
-// STALL (a test): member a0 waits for the stop flag and does not report.
+// STALL (a test): rank a0 waits for the stop flag and does not report.
 constexpr uint32_t kHandlerStall = 5;
 
 constexpr uint32_t kCbScratch = 16;

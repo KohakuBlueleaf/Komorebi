@@ -1,5 +1,5 @@
-"""The frame conducted by a thread on X280 work cluster 1 (`thread/plan.c`): it submits
-the records and, before each trace, cuts the trace's packets into chunk records of equal
+"""The frame driven by a thread on X280 work cluster 1 (`thread/plan.c`): it submits the
+commands and, before each trace, cuts the trace's packets into chunk commands of equal
 predicted cost on its four X280 cores (frame.py --plan MODE)."""
 
 import re
@@ -100,7 +100,7 @@ def program(prog, tab, mode, frames, workers, packets_, cap, commands):
 
 def run(session, prog, frames, meter, log, deadline_s=5.0):
     """Loads prog under the power meter, waits for the thread; returns the log of each
-    frame (wall, plan and chunks per trace, record ticks), its result, the state."""
+    frame (wall, plan and chunks per trace, command ticks), its result, the state."""
     with meter:
         t0 = time.perf_counter()
         r = session.load(prog, deadline=deadline_s)
@@ -138,8 +138,8 @@ def run(session, prog, frames, meter, log, deadline_s=5.0):
 
 
 def entries_of(recs, steps, per_step, treelets):
-    """Table entries from frame.records' (handler, words) list (LOAD first): a trace's
-    chunk records become one entry of kind 1 + its index; the rest stay as they are."""
+    """Table entries from frame.commands' (handler, words) list (LOAD first): a trace's
+    chunk commands become one entry of kind 1 + its index; the rest stay as they are."""
     out = [(P["RP_KIND_FIRST"], *recs[0])]
     at = 1
     for step, k in zip(steps, per_step):

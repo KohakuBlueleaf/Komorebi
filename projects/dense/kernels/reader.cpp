@@ -1,5 +1,5 @@
 // Matrix product reader: LOAD reads all of W into the W buffer; PRODUCT reads the rows
-// of A this member owns (and, in the streamed form, W's chunks), in buffer items.
+// of A this core owns (and, in the streamed form, W's chunks), in buffer items.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

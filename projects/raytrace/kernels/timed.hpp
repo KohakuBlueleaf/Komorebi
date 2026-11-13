@@ -1,5 +1,5 @@
-// Bounded waits for the ray tracer's kernels: each gives up after a wall-clock bound or
-// once the stop flag is set, and the caller records it and leaves the record.
+// Timed waits for the ray tracer's kernels: each gives up after a wall-clock timeout or
+// once the stop flag is set, and the caller records it and leaves the command.
 #pragma once
 
 #include <stdint.h>
@@ -125,7 +125,7 @@ namespace timed {
         return true;
     }
 
-    // NoC writes submitted so far have landed (acknowledged): the next record may read
+    // NoC writes submitted so far have landed (acknowledged): the next command may read
     // them.
     inline bool writes_landed(const km::Core& c, uint32_t word) {
         const uint32_t code = c.poll(

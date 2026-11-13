@@ -520,7 +520,7 @@ namespace kmsim {
                     kernel_thread(t);
                 });
             }
-            // One thread runs at a time: all on one CPU, a hand-over stays on it.
+            // One thread runs at a time: all on one CPU, a switch stays on it.
             cpu_set_t one;
             CPU_ZERO(&one);
             CPU_SET(sched_getcpu(), &one);

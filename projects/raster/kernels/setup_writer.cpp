@@ -21,7 +21,7 @@ namespace {
         *reinterpret_cast<volatile uint32_t*>(ctl + KM_CTL_STOP) = 1;
     }
 
-    // The writer's profile counters for one record (cycles, bytes, pages).
+    // The writer's profile counters for one command (cycles, bytes, pages).
     struct WProf {
         uint32_t wait = 0, write = 0, bytes = 0, pages = 0;
     };
@@ -146,7 +146,7 @@ namespace {
 
 bool setup_writer_pass(const km::Writer& wr, const km_command_t& r, WProf& pf);
 
-// The passes' writing for one record; the frame program's writer calls it as well.
+// The passes' writing for one command; the frame program's writer calls it as well.
 // With a9, the threads' counters go to the core's profile page.
 bool setup_writer_command(const km::Writer& wr, const km_command_t& r) {
     const uint32_t handler = km::handler(r);
@@ -211,7 +211,7 @@ bool setup_writer_command(const km::Writer& wr, const km_command_t& r) {
            ) == km::kGaveNone;
 }
 
-// One record's writing, its counters in pf.
+// One command's writing, its counters in pf.
 bool setup_writer_pass(const km::Writer& wr, const km_command_t& r, WProf& pf) {
     const uint32_t handler = km::handler(r);
     auto flushed = [&] {

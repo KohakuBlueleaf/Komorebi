@@ -1,5 +1,5 @@
-// Map/collect reader: MAP reads the member's share of the T input tiles in blocks;
-// STALL makes member a0 wait for the stop flag.
+// Map/collect reader: MAP reads the core's partition of the T input tiles in blocks;
+// STALL makes rank a0 wait for the stop flag.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

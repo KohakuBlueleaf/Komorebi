@@ -84,4 +84,4 @@ graph ends with reason 8 at node 0 and the kernel with error 4, without a reset.
 | `STEP` | a0 state, a1 `it` |
 | `LEFT`, `RIGHT` | a0 state |
 | `NORM` | a0 state, a1 pages to sum |
-| `STALL` (a test) | a0 the member that never reports |
+| `STALL` (a test) | a0 the rank that never reports |

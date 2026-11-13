@@ -3,13 +3,13 @@
 `y = (silu(x W1) * (x W3)) W2` with x `[M, D]`, W1 and W3 `[D, H]`, W2 `[H, D]`, bf16
 operands, fp32 accumulation, HiFi2 (or HiFi4), on the persistent kernels of one Blackhole p150a,
 with the matrix product's persistent kernels and one more handler, `LAYER`. A call is a
-chain of dependent products with no DRAM round trip between them: a member's rows stay
+chain of dependent products with no DRAM round trip between them: a core's rows stay
 on its core through the call, so the intermediates never leave L1.
 
 ## The thread program
 
 ```
-thread layer(i):                               # one thread per core over its share of the rows
+thread layer(i):                               # one thread per core over its partition of the rows
     rows = partition(M tiles, group, i)             # space: the row tiles this core owns
     W1, W3, W2 = resident                      # three LOAD commands, once per session
     for m in rows:                             # command 1, time: row tiles
@@ -23,7 +23,7 @@ thread layer(i):                               # one thread per core over its sh
 ```
 
 There are no breakpoints: no thread waits for another, and every value a command takes
-from an earlier one was made on the same core. The rows of one member are the "row
+from an earlier one was made on the same core. The rows of one core are the "row
 block" of the call: all of them are held between commands, which bounds the shapes
 (below). With `--gate-pass` the gate is a command of its own (four commands: x W1 and
 x W3 held, then silu(a) * b, then the output product).
@@ -48,7 +48,7 @@ Cores take the commands of a group in sequence order, and the held buffers make 
 wait for what the previous command packed, so the commands of a call need no completion
 boundary between them and are submitted without `exclusive`.
 
-`swiglu_plan.py` holds the plan (`Swiglu`: members, row tiles held per member, buffers, the
+`swiglu_plan.py` holds the plan (`Swiglu`: cores, row tiles held per core, buffers, the
 L1 fit, the commands of a call); `swiglu.py` loads the program, submits the commands,
 reads the profile and checks the result; `reference/ktt_swiglu.py` runs the same layer
 with Kohaku-TT's device operators.
@@ -104,7 +104,7 @@ back to back for about four seconds and one synchronize; the faster route is sho
 (`results/swiglu-<preset>-ktt-auto.json`, `-ktt-gemm.json`). Power: mean whole-card
 power over the loop (67 to 72 W open and idle); AICLK sampled every 20 ms (min /
 mean). Only the call is timed on both sides; the three W are loaded once (0.25 ms on
-120 members), and uploads and the read-back are not part of a call.
+120 cores), and uploads and the read-back are not part of a call.
 
 | Preset | M x D x H | Ours HiFi2: form, us per call | W, MHz | Ours HiFi4: form, us | W, MHz | Kohaku-TT best: route, us | W, MHz |
 |---|---|---|---|---|---|---|---|
@@ -119,12 +119,12 @@ Ours is 2.5 to 4.3 times as fast at HiFi2 and 2.0 to 3.5 times at HiFi4, and the
 
 | Preset | Bound of ours (HiFi2, best form) |
 |---|---|
-| `sw256` | the gate on DST, 24.3 us of the slowest member's 33.7; the call is 42.6, the rest is the three commands' submit |
+| `sw256` | the gate on DST, 24.3 us of the slowest core's 33.7; the call is 42.6, the rest is the three commands' submit |
 | `sw4k` | the gate, 48.5 of 66.3 us |
 | `sw16k` | the gate, 110.9 of 164.1 us; the products 48.2 |
 | `sw16k384` | the gate, 83.4 of 141.9 us; the products 53.8 |
 
-The bound is the profile of the slowest member over the loop, cycles at 1,350 MHz per
+The bound is the profile of the slowest core over the loop, cycles at 1,350 MHz per
 call: pack's body (the longest of the five kernels' bodies) and within it the epilogue
 (silu and the multiply on DST, or the gate pass). Reads of x take 1.4 to 9.4 us per
 call and the writes of Y 0.4 to 4.0 (29 and 34 in the fused `sw16k384`): the best form
@@ -145,10 +145,10 @@ completed), a call costs 43 to 124 us more (`sw256` fused 86.0 against 42.6 us,
 ## Limits
 
 - K is one chunk in `LAYER`: D and H at most 1,024 (32 tiles).
-- The three W and all of a member's held rows share one core's L1 (1,380,000 bytes):
+- The three W and all of a core's held rows share one core's L1 (1,380,000 bytes):
   a layer of model width 1,024 and hidden width 4,096 needs 8 MB per W and does not
   fit. `sw16k384` is the largest D x H with H at least D for which both forms fit with
-  16,384 rows on 120 members (5 row tiles held each); the fused form alone would fit
+  16,384 rows on 120 cores (5 row tiles held each); the fused form alone would fit
   320 x 512.
 - The gate, silu and the multiply on DST, is the bound at every shape above.
 - The multiply's fidelity is fixed in the kernel through the low-level calls that

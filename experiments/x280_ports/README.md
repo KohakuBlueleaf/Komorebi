@@ -15,7 +15,7 @@ a command that times out.
 | One ask at full load | 12 X280 cores, 120 Tensix cores (ten each): 9.06 µs mean, p99 9.86; 13.1 M answered asks a second, 1.09 M an X280 core. The X280 core's loop bounds it (about 0.9 µs a served message), not the NoC |
 | A NoC window | aiming one again: 230 cycles (450 with the read-back); a 16-byte store through one held: 51. A cluster can hold 168 windows, so the library holds one per served core for the run |
 | A look at a mailbox line | 259 cycles (`kmx_port_asked` with nothing new); a LIM word costs 30, a cached region word 3 |
-| 4 KiB to a core | into L1 at an address the core publishes: 6.5 µs; through DRAM (write, give, the core reads): 12.6 µs. 120 cores, 12 X280 cores: 8.1 GB/s against 2.1 |
+| 4 KiB to a core | into L1 at an address the core publishes: 6.5 µs; through DRAM (write, flush, the core reads): 12.6 µs. 120 cores, 12 X280 cores: 8.1 GB/s against 2.1 |
 | A soak | 1,000,800 round trips over 120 cores while the writers read 1.0 M DRAM pages: exact, 9.58 µs mean, p99 9.86. With the X280 cores' stores on NoC 1: the same |
 | A command that times out with X280 cores mid-serve | its event ends `kmx_port_run`; the next load in the same session is exact |
 | Both ways at full rate | 120 cores sent 76 M tells a second (latest wins: the X280 cores saw 72,542 of 580,409); the X280 cores handled 28.7 M messages a second, 2.4 M an X280 core; asks under that load 10.2 µs mean |

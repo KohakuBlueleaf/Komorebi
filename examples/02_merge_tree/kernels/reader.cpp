@@ -1,5 +1,5 @@
-// Merge-tree reader: reads the member's share of the T input tiles in blocks, then
-// waits for the parts this member combines (by owner or by tree).
+// Merge-tree reader: reads the core's partition of the T input tiles in blocks, then
+// waits for the parts this core combines (by owner or by tree).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

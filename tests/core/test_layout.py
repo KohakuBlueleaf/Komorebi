@@ -1,4 +1,4 @@
-"""Panels, groups and shares of the core grid."""
+"""Panels, groups and partitions of the core grid."""
 
 import pytest
 

@@ -34,7 +34,7 @@ def main():
         run = session.load(prog)
         result = run.thread_result(timeout=0.5)
         run.stop()
-        log(f"stopped, thread at stamp {result.where}; reading {size} bytes")
+        log(f"stopped, thread at marker {result.where}; reading {size} bytes")
         t = time.monotonic()
         got = run.thread.read("out")
         read_s = time.monotonic() - t

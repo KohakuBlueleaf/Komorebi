@@ -99,7 +99,7 @@ constexpr uint32_t kWhereBadOut = 16;
 constexpr uint32_t kWhereBadSend = 17;
 constexpr uint32_t kWhereBadHeader = 24;  // a tile header's tile or rows out of range
 // Compute's waits give up after kWaitCycles with kGaveWait in the writer's gave-up
-// word; the reader's and writer's NoC waits use the runtime's bound. Where each is:
+// word; the reader's and writer's NoC waits use the runtime's timeout. Where each is:
 constexpr uint32_t kGaveWait = 4;
 constexpr uint32_t kWaitCycles = 0x40000000;  // 0.8 s at 1.35 GHz
 constexpr uint32_t kWhereWaitList = 18;       // unpack thread: a list page

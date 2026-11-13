@@ -1,5 +1,6 @@
-/* The step between COUNT and SETUP in plain C (X280 thread, host check), as passes.py:
- * costs, bands, items to cores, list layout and directory, each core's next slots. */
+/* The middle pass between COUNT and SETUP in plain C (X280 thread, host check), as
+ * passes.py: costs, bands, items to cores, list layout and directory, each core's next
+ * slots. */
 #pragma once
 
 #include <stdint.h>
@@ -44,7 +45,7 @@ typedef struct {
     uint32_t tile, row0, row1, total;
 } rm_item;
 
-/* A list slot the step writes: a header (RM_MARK_TILE, tile, records, rows) or a
+/* A list slot the middle pass writes: a header (RM_MARK_TILE, tile, records, rows) or a
  * core's end slot (RM_MARK_END). */
 typedef struct {
     uint32_t slot, mark, tile, count, row0, row1;
@@ -67,8 +68,9 @@ typedef struct {
     uint32_t len[RM_MAX_CORES], count[RM_MAX_CORES]; /* rm_compact's per core */
 } rm_scratch;
 
-/* The step in parts for the four cores, ranges side by side: rm_costs (all tiles),
- * rm_pick, rm_clear (all fill cores), rm_hist, rm_layout, rm_next (all items). */
+/* The middle pass in parts for the four cores, ranges side by side: rm_costs (all
+ * tiles), rm_pick, rm_clear (all fill cores), rm_hist, rm_layout, rm_next (all items).
+ */
 
 /* Entries, rows and cost of tiles [t0, t1) over the cores. */
 void rm_costs(

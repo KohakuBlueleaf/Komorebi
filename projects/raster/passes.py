@@ -1,7 +1,7 @@
 """The two passes over the triangles on the card, modelled in numpy: the mesh as
-de-indexed blocks of 32 triangles, each core's contiguous share of blocks, the
-counters COUNT writes, and the step between COUNT and SETUP (cost, items per core,
-the list positions every core writes its records to)."""
+de-indexed blocks of 32 triangles, each core's contiguous partition of blocks, the
+counters COUNT writes, and the middle pass between COUNT and SETUP (cost, items per
+core, the list positions every core writes its records to)."""
 
 import numpy as np
 
@@ -47,15 +47,15 @@ def mesh_blocks(scene):
     return out
 
 
-def shares(blocks, cores):
+def partitions(blocks, cores):
     """First block of every core and the end: (cores + 1,), contiguous, ascending."""
     return (np.arange(cores + 1) * blocks) // cores
 
 
 def entries(recs, triangles, cores):
-    """Every (record, tile) entry in record order: its tile, the core whose share
+    """Every (record, tile) entry in record order: its tile, the core whose partition
     holds the record, and its first and last row inside the tile."""
-    edge = shares(-(-triangles // LANES), cores) * LANES
+    edge = partitions(-(-triangles // LANES), cores) * LANES
     box = recs["box"].astype(np.int64)
     tx0, tx1 = box[:, 0] // raster.TILE, box[:, 1] // raster.TILE
     ty0, ty1 = box[:, 2] // raster.TILE, box[:, 3] // raster.TILE
@@ -74,7 +74,7 @@ def entries(recs, triangles, cores):
 
 def counters(recs, triangles, cores):
     """What COUNT writes per core: entries and rows of each tile (cores, tiles) from
-    the records of `raster.setup`, each core counting its share of the triangles."""
+    the records of `raster.setup`, each core counting its partition of the triangles."""
     e = entries(recs, triangles, cores)
     at = e["core"] * lists.TILES + e["tile"]
     size = cores * lists.TILES
@@ -103,10 +103,10 @@ def cost_of(cnt, rows, cost=lists.COST):
 
 
 def middle(cnt, rows, cores, mode="balanced", bands=None):
-    """The step between COUNT and SETUP, from the counters and, for bands, `items_of`'s
-    result: items to cores by cost, the list pages with headers and end slots, the
-    directory of `lists.build_lists`, each setup core's next slot per item (setup
-    cores, items), the items in tile order and the lists' slots."""
+    """The middle pass between COUNT and SETUP, from the counters and, for bands,
+    `items_of`'s result: items to cores by cost, the list pages with headers and end
+    slots, the directory of `lists.build_lists`, each setup core's next slot per item
+    (setup cores, items), the items in tile order and the lists' slots."""
     if bands is None:
         items = [(t, 0, 32) for t in range(lists.TILES)]
         per_core, cost = cnt, cost_of(cnt, rows)

@@ -71,7 +71,7 @@ def test_words_follow_the_device_struct():
         "counters": 2,
     }
     assert d.compute_args(119) == [64, (1 << 16) // 117, 2]
-    with pytest.raises(ValueError, match="no member"):
+    with pytest.raises(ValueError, match="no core"):
         d.check(2, 4 << 30, 4)
 
 

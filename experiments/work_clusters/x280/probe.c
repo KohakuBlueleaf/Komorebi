@@ -369,7 +369,8 @@ int kmx_main(int core) {
         r[3] = (uint32_t)kmx_cluster();
         n = 4;
     } else if (mode == M_RATE) {
-        /* words: reps; per rep: take, read, write, give (ticks); r[32..33] last sum */
+        /* words: reps; per rep: invalidate, read, write, flush (ticks); r[32..33] last
+         * sum */
         const uint32_t reps = a->words[2] < 7 ? a->words[2] : 7;
         job_t j = {.addr = (uint64_t)(uintptr_t)data, .bytes = bytes & ~511ull};
         j.seed = 0x1234;

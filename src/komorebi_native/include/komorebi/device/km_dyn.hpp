@@ -1,4 +1,4 @@
-// Dynamic crossing: a message moves to the queue of another core in DRAM, reserved by
+// Routed messages: a message moves to the queue of another core in DRAM, reserved by
 // one atomic add on a counter tile; the generic reader and writer, and compute's calls.
 #pragma once
 
@@ -59,13 +59,13 @@ namespace km {
         return core * (cap / kDynPageMessages) + (pos & (cap - 1)) / kDynPageMessages;
     }
 
-    // A run's members: its group's cores before the last `k`, the counter tiles (an
+    // A run's cores: its group's cores before the last `k`, the counter tiles (an
     // asked tile that submits atomics can lose an answer; a counter tile submits none).
     inline uint32_t dyn_ranks(const km_command_t& r, uint32_t k) {
         return count(r) > k ? count(r) - k : 0;
     }
 
-    // The counter tile that holds the tail of member core `core`.
+    // The counter tile that holds the tail of core `core`.
     inline uint32_t dyn_counter(const km_command_t& r, uint32_t k, uint32_t core) {
         return first(r) + dyn_ranks(r, k) + (core - first(r)) % k;
     }
@@ -114,8 +114,8 @@ namespace km {
         }
     }
 
-    // Waits (bounded) until counter tile `counter` shows READY for `run`, reading its
-    // line into `scratch` (KM_TAILS_READER or _WRITER). False: it did not.
+    // Waits (with a timeout) until counter tile `counter` shows READY for `run`,
+    // reading its line into `scratch` (KM_TAILS_READER or _WRITER). False: it did not.
     template <typename C>
     inline bool dyn_ready(
         const C& c, uint32_t counter, uint32_t scratch, uint32_t run
@@ -205,8 +205,8 @@ namespace km {
         if (head >= kDynPosMax) {
             where = kWhereDynFull;  // marks stay unique below 2^31 positions
         }
-        // A counter tile sets its members' tails to their heads, then shows READY; a
-        // member waits for its counter tile's READY before it reads its tail there.
+        // A counter tile sets its cores' tails to their heads, then shows READY; a
+        // core waits for its counter tile's READY before it reads its tail there.
         const uint32_t ctrs = d.counters, ranks = dyn_ranks(r, ctrs);
         const bool counter = a.me - first(r) >= ranks;
         if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || ranks == 0) {
@@ -248,7 +248,7 @@ namespace km {
                            dyn_counter(r, ctrs == 0 ? 1 : ctrs, a.me),
                            a.ctl + KM_CTL_TAILS + KM_TAILS_LINE + 16 * a.me
                        ));
-        // A member's tail, read from its counter tile into IN_TAIL (bounded).
+        // A core's tail, read from its counter tile into IN_TAIL (with a timeout).
         auto refresh = [&] {
             if (counter) {
                 return true;  // nobody sends to a counter tile: its tail stays its head
@@ -486,7 +486,7 @@ namespace km {
         dyn[KM_DYN_SENT / 4] = 0;
         wf[1] = 0;
         wf[0] = run;
-        // A member reserves on the counter tiles: it waits until each shows READY.
+        // A core reserves on the counter tiles: it waits until each shows READY.
         const uint32_t ctrs = d.counters, ranks = dyn_ranks(r, ctrs);
         if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || ranks == 0) {
             where = kWhereDynCounter;
@@ -712,7 +712,7 @@ namespace km {
             seeded_ = true;
         }
 
-        // The run's members (the group without its counter tiles), and this core's.
+        // The run's cores (the group without its counter tiles), and this core's.
         uint32_t count() const {
             return count_;
         }
@@ -809,7 +809,7 @@ namespace km {
             return {n, addr + kDynHeader, message_bytes_};
         }
 
-        // The message goes on at member `dest` of the run's group. message:
+        // The message goes on at rank `dest` of the run's group. message:
         // message_bytes / 4 words; word 0 is the runtime's mark.
         void forward(uint32_t dest, const uint32_t* message) {
             if (dest >= count_) {
@@ -827,12 +827,12 @@ namespace km {
             }));
         }
 
-        // The message ends here: one send comes back to this core.
+        // The message ends here: one send returns to this core's quota.
         void consume() {
             quota_++;
         }
 
-        // A new message at member `dest`; false when this core has no quota left.
+        // A new message at rank `dest`; false when this core has no quota left.
         bool send(uint32_t dest, const uint32_t* message) {
             if (quota_ == 0) {
                 return false;
@@ -857,7 +857,7 @@ namespace km {
             }));
         }
 
-        // Waits for the stop flag (bounded by the idle limit): a body that stalls.
+        // Waits for the stop flag (the idle limit its timeout): a body that stalls.
         bool wait_stop() const {
             return poll_stop(
                        l1(ctl_ + KM_CTL_STOP),
@@ -898,7 +898,7 @@ namespace km {
             cb_push_back(kCbDynOut, 1);
         }
 
-        // Pack: a free outgoing page (bounded, observes the stop flag).
+        // Pack: a free outgoing page (with a timeout, observes the stop flag).
         bool reserve() {
             volatile tt_reg_ptr uint32_t* acked = get_cb_tiles_acked_ptr(kCbDynOut);
             const uint32_t code = poll_stop(

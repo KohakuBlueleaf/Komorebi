@@ -1,5 +1,5 @@
 """Bucket sort, first pass: COUNT on the Tensix group, PLAN on 1, 4 or 12 X280 cores,
-PLACE on the Tensix group, conducted by an X280 thread. The host loads, starts and
+PLACE on the Tensix group, driven by an X280 thread. The host loads, starts and
 checks against numpy (reference.py). Prints one JSON line; see README.md."""
 
 import argparse

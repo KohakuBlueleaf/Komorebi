@@ -31,8 +31,8 @@ region 0 and returns the result words as the thread does.
                            [--limit 1000000] [--max-rounds 1000] [--clusters 1 2 3]
 
 `--clusters` runs one loop per cluster, all at once: the cores are split into equal
-shares (`base`, the sixth word, is the share's first core), each cluster's thread runs
-the loop on its share, and the host fallbacks run likewise for `hostfed`. Prints one
+partitions (`base`, the sixth word, is the partition's first core), each cluster's thread runs
+the loop on its partition, and the host fallbacks run likewise for `hostfed`. Prints one
 JSON line: each loop's replay (`replay_<cluster>`), and for each path and cluster
 whether it matched (`same_as_numpy`, `same_commands`, `state_wrong`), and `ok`: every
 path asked for ran and matched on every cluster. The script exits non-zero without it.
@@ -52,7 +52,7 @@ cores a loop), the three threads ran at once in 5.61, 4.73 and 4.07 ms for 239, 
 `wc_round` / `wc_result` from `decide.c`, submits the round's two commands one after
 the other, waiting for each (an exclusive SUM submitted while STEP is in flight on an
 overlapping group would be rejected, reason 11), and passes SUM's result word (the event's `ticks`) to `wc_result`. It
-writes each round's STEP group into region 0 (`groups`) and gives it back at the end.
+writes each round's STEP group into region 0 (`groups`) and flushes it at the end.
 
 | Words | `state address, cores, count, limit, max rounds, base` |
 |---|---|

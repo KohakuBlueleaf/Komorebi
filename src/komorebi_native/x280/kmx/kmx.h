@@ -26,8 +26,8 @@ int kmx_cluster(void);
 /* Region `id` of the DRAM bank, as memory, and its size; 0 for an unknown id. */
 void* kmx_region(int id, uint64_t* bytes);
 
-/* Hand-over with the grid: take before reading what the grid wrote, give after
- * writing what it will read; on core 0 the sweep is spread over the four cores. */
+/* Cache flush / invalidate with the grid: invalidate before reading what the grid
+ * wrote, flush after writing what it will read; core 0 spreads it over the four. */
 void kmx_invalidate(int id);
 void kmx_flush(int id);
 
@@ -143,7 +143,7 @@ uint64_t kmx_time(void);
  * deadline passed: the thread should then return. */
 int kmx_stop_requested(void);
 
-/* A stamp the host reads with the result, also after a timeout. */
+/* A progress marker the host reads with the result, also after a timeout. */
 void kmx_progress(uint32_t where);
 
 /* The thread's result: a code and up to KMX_RESULT_WORDS_MAX words. The thread then

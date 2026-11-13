@@ -20,7 +20,7 @@ DRAM = K["kDram"]
 @dataclass(frozen=True)
 class Swiglu:
     """[mt, dt] rows of x through W1, W3 [dt, ht] and W2 [ht, dt], all resident; a
-    member's rows held in L1 between commands; the gate fused or a pass of its own."""
+    core's rows held in L1 between commands; the gate fused or a pass of its own."""
 
     mt: int
     dt: int
@@ -29,7 +29,7 @@ class Swiglu:
     group: int
 
     def rows(self):
-        """Most row tiles any member owns."""
+        """Most row tiles any core owns."""
         return -(-self.mt // self.group)
 
     def buffers(self):

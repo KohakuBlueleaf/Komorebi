@@ -76,7 +76,7 @@ namespace {
         cfg[RISCV_IC_INVALIDATE_InvalidateAll_ADDR32] = mask;
     }
 
-    // The compute cores are parked when each done word equals the go word (bounded).
+    // The compute cores are parked when each done word equals the go word (timed).
     bool parked(volatile tt_l1_ptr uint32_t* t, uint64_t t0, uint64_t limit) {
         for (uint32_t k = 0; k < 3; k++) {
             for (;;) {
@@ -92,7 +92,7 @@ namespace {
         return true;
     }
 
-    // Reads `bytes` from DRAM (bank, address) into the slot; bounded by `limit`.
+    // Reads `bytes` from DRAM (bank, address) into the slot; `limit` is the timeout.
     bool load(
         uint32_t bank, uint32_t addr, uint32_t bytes, uint32_t slot, uint64_t limit
     ) {
@@ -151,7 +151,7 @@ void kernel_main() {
         args.arg = c[kArg];
         uint32_t status = kOk;
         if (op == kOpRun && (flags & kFlagAt)) {
-            // starts at the wall-clock count in kReps (low word), bounded: every core
+            // starts at the wall-clock count in kReps (low word), timed: every core
             // of a broadcast begins together; the response's times count from there
             while (
                 static_cast<int32_t>(static_cast<uint32_t>(wall64()) - c[kReps]) < 0

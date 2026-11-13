@@ -1,5 +1,5 @@
 """A frame on the card: generation, the four traces, the shading and the colour as
-records, each core keeping its tiles' packets; the colour (--stages: every stage) is
+commands, each core keeping its tiles' packets; the colour (--stages: every stage) is
 checked against numpy, --reps reruns the frame, --pictures DIR writes PNGs and JSON.
 """
 
@@ -76,7 +76,7 @@ def sort_key(tree):
     return [int(v) & 0xFFFFFFFF for v in lo_fix] + [frac | shift << 8]
 
 
-STREAM_WORDS = (1, 2, 5, 6, 7, 8, 9)  # record word of stream k (stream_arg)
+STREAM_WORDS = (1, 2, 5, 6, 7, 8, 9)  # command word of stream k (stream_arg)
 
 
 def vectors(stream):
@@ -92,7 +92,7 @@ def vectors(stream):
 
 
 def step_words(step, addr, directory, const, prof):
-    """A step's ten record words; `addr` maps a stream to its address (or a graph's
+    """A step's ten command words; `addr` maps a stream to its address (or a graph's
     register)."""
     name, handler, ins, outs = step
     words = [0] * 10
@@ -114,8 +114,8 @@ def step_words(step, addr, directory, const, prof):
 
 
 def commands(tensors, dir_ts, const_t, profs, treelets=None, steps=STEPS, key=()):
-    """Every step's records (handler, ten words), in submit order. With treelets (the
-    tensor and four words) a trace has a record per chunk dir_ts[1:], others dir_ts[0].
+    """Every step's commands (handler, ten words), in submit order. With treelets (the
+    tensor and four words) a trace has a command per chunk dir_ts[1:], others dir_ts[0].
     """
     addr = {s: t.address for s, t in tensors.items()}
     c = const_t.address
@@ -201,7 +201,7 @@ SAMPLE_CORES = (0, 40, 80, 119)  # cores whose trace hit pages --profile keeps
 
 
 def save_profile(path, session, raw, command_us, directory, tensors, steps=STEPS):
-    """Every record's counters per core, the record times, the directory and the hit
+    """Every command's counters per core, the command times, the directory and the hit
     pages of SAMPLE_CORES' packets for each trace (first kHitAnyVectors vectors)."""
     out = {"command_us": command_us, "directory": directory}
     for (name, *_), rows in zip(steps, raw):
@@ -255,7 +255,7 @@ def check_stages(got, scene, tree, pix):
 def planned(
     args, session, recs, steps, per_step, treelets, directory, profs, shape, report
 ):
-    """The frames conducted by the X280 thread (planner.py): record us per frame and
+    """The frames driven by the X280 thread (planner.py): command us per frame and
     step, the profile tensors of the last frame, the host's seconds, power samples."""
     tree_pages, sizes, workers, n, per = shape
     cap = min(per, planner.P["RP_COST_MAX"])
@@ -276,7 +276,7 @@ def planned(
         cap,
         len(entries),
     )
-    card.log(f"frame: {n} packets, {len(entries)} table records, plan {args.plan}")
+    card.log(f"frame: {n} packets, {len(entries)} table commands, plan {args.plan}")
     meter = card.Power()
     frames, status, state, samples = planner.run(
         session, prog, args.reps, meter, card.log
@@ -367,7 +367,7 @@ def main():
         dirs, sizes, treelets = [directory], None, None
         if cut is not None:
             most = int(directory[:, K["kDirCount"]].max())
-            # SORT works in the slot buffer (free between treelet records).
+            # SORT works in the slot buffer (free between treelet commands).
             sort_bytes, short = packets.sort_bytes(most) if args.sort else 0, 0
             for _ in range(4):
                 per, slots, sizes = packets.plan_commands(
@@ -425,12 +425,12 @@ def main():
             )
         else:
             recs += one * args.reps
-            card.log(f"frame: {n} packets, {len(recs)} records")
+            card.log(f"frame: {n} packets, {len(recs)} commands")
             res, samples = card.run_commands(
                 session, recs, len(image), power=meter, sizes=sizes
             )
             report["run"] = card.check_run(res, workers)
-            # A step's time is its records' (one per directory chunk) summed.
+            # A step's time is its commands' (one per directory chunk) summed.
             step_of = np.repeat(np.arange(len(steps)), per_step)
             per_rep = card.command_us(res)[1:].reshape(args.reps, len(step_of))
             us = np.stack([np.bincount(step_of, r, len(steps)) for r in per_rep])

@@ -67,7 +67,7 @@ namespace {
         cfg[RISCV_IC_INVALIDATE_InvalidateAll_ADDR32] = mask;
     }
 
-    // Reads `bytes` from DRAM (bank, address) into L1 at `to`; bounded by `limit`.
+    // Reads `bytes` from DRAM (bank, address) into L1 at `to`; times out at `limit`.
     bool load(
         uint32_t bank, uint32_t addr, uint32_t bytes, uint32_t to, uint64_t limit
     ) {
@@ -81,7 +81,7 @@ namespace {
         return true;
     }
 
-    // Waits until every NoC write of this core is acknowledged; bounded by `limit`.
+    // Waits until every NoC write of this core is acknowledged; times out at `limit`.
     bool writes_flushed(uint64_t limit) {
         const uint64_t t0 = wall64();
         while (!ncrisc_noc_nonposted_writes_flushed(noc_index)) {

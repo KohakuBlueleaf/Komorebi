@@ -58,8 +58,8 @@ namespace km {
         return na != 0 && nb != 0 && fa < fb + nb && fb < fa + na;
     }
 
-    // Member `index` of `count` takes items [start, start + len) of `n`: contiguous
-    // parts covering every item once, the first n % count members one item more.
+    // Rank `index` of `count` takes items [start, start + len) of `n`: contiguous
+    // parts covering every item once, the first n % count cores one item more.
     struct Partition {
         uint32_t start;
         uint32_t len;
@@ -70,7 +70,7 @@ namespace km {
         return {index * base + (index < extra ? index : extra), base + (index < extra)};
     }
 
-    // Where `me` reports command r (`parent`; first member: dispatcher), after `want`
+    // Where `me` reports command r (`parent`; first core: dispatcher), after `want`
     // reports. Within one row of `row` cores: one level; across rows: via row leaders.
     struct Report {
         uint32_t parent;

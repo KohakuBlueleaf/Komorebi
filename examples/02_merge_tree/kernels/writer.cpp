@@ -1,5 +1,5 @@
-// Merge-tree writer: member 0 writes the total to output pages a3 on (its checksum the
-// result word if asked); every other member sends its part (a5 stalls instead).
+// Merge-tree writer: rank 0 writes the total to output pages a3 on (its checksum the
+// result word if asked); every other rank sends its part (a5 stalls instead).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

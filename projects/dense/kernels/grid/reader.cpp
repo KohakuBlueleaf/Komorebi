@@ -1,5 +1,5 @@
 // Grid reader: the row broadcast, on NoC0. The row's sender reads each A block (bm x kb
-// tiles, row stride kb) from DRAM and casts it along the row; the others take it.
+// tiles, row stride kb) from DRAM and multicasts it along the row; the others take it.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

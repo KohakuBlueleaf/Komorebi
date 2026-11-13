@@ -20,7 +20,7 @@ namespace km {
     constexpr uint32_t kCbTokenWriter = 30;
     constexpr uint32_t kCbTrace = 31;
     constexpr uint32_t kTokenBytes = 64;
-    // Word of each 16-byte DONE slot (word 0 counts the members): the last sequence
+    // Word of each 16-byte DONE slot (word 0 counts the cores): the last sequence
     // whose compute body returned in that slot, written by unpack, read by the writer.
     constexpr uint32_t kDoneCompute = 1;
 
@@ -50,16 +50,16 @@ namespace km {
     // Gave-up codes, where codes and how a kernel left.
     constexpr uint32_t kGaveNone = 0;
     constexpr uint32_t kGaveStop = 1;     // the stop flag was set
-    constexpr uint32_t kGaveLimit = 2;    // the wait's bound passed
+    constexpr uint32_t kGaveLimit = 2;    // the wait timed out
     constexpr uint32_t kGaveBadItem = 3;  // a multi-page item would pass the buffer end
     constexpr uint32_t kGaveBadBroadcast = 4;  // a broadcast's arguments do not fit the command
     constexpr uint32_t kWhereCheckin = 1;   // leader collecting start-up check-ins
     constexpr uint32_t kWhereToken = 2;     // reader waiting for free token pages
     constexpr uint32_t kWhereNext = 3;      // reader waiting for a command
     constexpr uint32_t kWhereStall = 4;     // a handler waiting for the stop flag
-    constexpr uint32_t kWhereComplete = 5;  // leader waiting for its members
+    constexpr uint32_t kWhereComplete = 5;  // leader waiting for its cores
     constexpr uint32_t kWhereWriter = 6;    // writer waiting for a token
-    constexpr uint32_t kWhereData = 7;      // a handler's bounded buffer wait
+    constexpr uint32_t kWhereData = 7;      // a handler's timed buffer wait
     constexpr uint32_t kWhereCToken = 8;    // compute (unpack) waiting for a token
     constexpr uint32_t kWhereCInput = 9;    // compute (unpack) waiting for input pages
     constexpr uint32_t kWhereCOutput = 10;  // compute (pack) waiting for output space
@@ -71,11 +71,11 @@ namespace km {
     constexpr uint32_t kEndWriter = 1;
     constexpr uint32_t kEndCompute = 2;
 
-    // Where codes of broadcast broadcast (km_broadcast.hpp).
+    // Where codes of broadcast (km_broadcast.hpp).
     constexpr uint32_t kWhereBroadcastBegin = 12;  // broadcast: arguments or buffer at a command
-    constexpr uint32_t kWhereBroadcastDone = 13;  // broadcast sender: DONE stamps, its NoC barriers
+    constexpr uint32_t kWhereBroadcastDone = 13;  // broadcast sender: DONE markers, its NoC barriers
     constexpr uint32_t kWhereBroadcastValid = 14;  // broadcast receiver waiting for VALID
-    constexpr uint32_t kWhereBroadcastFree = 15;  // broadcast: its compute's pops, its last stamps
+    constexpr uint32_t kWhereBroadcastFree = 15;  // broadcast: its compute's pops, its last markers
 
     // Where codes of a port's wait (reader) and of an emit (writer): the gave-up word's
     // top byte is the port; the port keeps the count it wanted (KM_PORT_WANT).
@@ -84,23 +84,23 @@ namespace km {
 
     // Where codes of a dynamic run (km_dyn.hpp), KM_DYN_GAVE word 0; word 1 position,
     // word 2 run, word 3 the word 0 at a gap or a lost answer's destination.
-    constexpr uint32_t kWhereDynGap = 19;       // a reserved item did not land in time
+    constexpr uint32_t kWhereDynGap = 19;       // reserved message: not landed in time
     constexpr uint32_t kWhereDynOverflow = 20;  // IN_TAIL - IN_HEAD passed the capacity
     constexpr uint32_t kWhereDynAtomic = 21;   // a reservation was not answered in time
-    constexpr uint32_t kWhereDynFlush = 22;    // the writer's item writes did not leave
-    constexpr uint32_t kWhereDynRead = 23;     // the reader's item reads did not land
+    constexpr uint32_t kWhereDynFlush = 22;    // writer: message writes did not leave
+    constexpr uint32_t kWhereDynRead = 23;     // reader: message reads did not land
     constexpr uint32_t kWhereDynInPage = 24;   // reader: no free packet page
     constexpr uint32_t kWhereDynLine = 25;     // the status line write did not leave
-    constexpr uint32_t kWhereDynBadDest = 26;  // hop or spawn outside the group
+    constexpr uint32_t kWhereDynBadDest = 26;  // forward or send outside the group
     constexpr uint32_t kWhereDynNext = 27;     // compute's wait for a packet
     constexpr uint32_t kWhereDynOutPage = 28;  // compute's wait for an outgoing page
-    constexpr uint32_t kWhereDynOutbox = 29;   // the writer's wait for an outgoing item
+    constexpr uint32_t kWhereDynOutbox = 29;   // writer: wait for an outgoing message
     constexpr uint32_t kWhereDynStopped = 30;  // the stop flag ended the run
-    constexpr uint32_t kWhereDynAlign = 31;    // pages or items not 64-B aligned
+    constexpr uint32_t kWhereDynAlign = 31;    // pages or messages not 64-B aligned
     constexpr uint32_t kWhereDynLost = 32;     // a reservation's answer never landed
     constexpr uint32_t kWhereDynFill = 33;     // the start-up zero fill of the queue
     constexpr uint32_t kWhereDynFull = 34;  // positions reached 2^30: reload the program
-    constexpr uint32_t kWhereDynCounter = 35;  // counter tile not ready, or no members
+    constexpr uint32_t kWhereDynCounter = 35;  // counter tile not ready, or no cores
     static_assert(
         kWhereDynGap == kWhereEmit + 1 && kWhereDynCounter == kWhereDynGap + 16 &&
             kWhereDynCounter < 256,
@@ -128,15 +128,15 @@ namespace km {
         uint32_t mailbox;     // hello address at the dispatcher; 0: send none
         uint32_t leader;      // start-up group: the leader's core index
         uint32_t rank;        // this core's check-in slot at the leader
-        uint32_t peers;       // leader: members that check in
+        uint32_t peers;       // leader: cores that check in
         uint32_t ready_slot;  // leader: its READY word, at ready_base + slot * 16
         uint32_t ready_base;  // the dispatcher's READY words (not the ack words)
         uint32_t tag;         // per-process random tag, 16 bits
         uint32_t workers;     // cores 0 to workers - 1 run commands (an EXIT's group)
         uint32_t depth;       // ring slots scanned, 1 to KM_RING_SLOTS
         uint32_t row;         // cores per grid row (completion); 0: one level always
-        uint32_t wait_limit;  // bound of a wait for another core, 1024-cycle units
-        uint32_t idle_limit;  // bound of a wait for the next command; 0: none
+        uint32_t wait_limit;  // timeout of a wait for another core, 1024-cycle units
+        uint32_t idle_limit;  // timeout of a wait for the next command; 0: none
         uint32_t trace;       // DRAM address of the trace, a page per core; 0: none
         uint32_t trace_cap;   // sequences traced: 1 to trace_cap
     };
@@ -149,11 +149,11 @@ namespace km {
     constexpr uint32_t kComputeArgs = 4;
 
     // Trace command per sequence number: 4 words of wall-clock cycles (low 32 bits).
-    constexpr uint32_t kTraceSeen = 0;   // reader took the command
-    constexpr uint32_t kTraceDone = 1;   // writer: outputs written
-    constexpr uint32_t kTraceSent = 2;   // writer: completion sent (leader: pushed)
-    constexpr uint32_t kTraceExtra = 3;  // reader: ring passes it took; with a stamp
-                                         // in a9: cycles from the stamp to taking it
+    constexpr uint32_t kTraceSeen = 0;  // reader took the command
+    constexpr uint32_t kTraceDone = 1;  // writer: outputs written
+    constexpr uint32_t kTraceSent = 2;  // writer: completion sent (leader: pushed)
+    constexpr uint32_t kTraceExtra = 3;  // reader: ring passes it took; with a timestamp
+                          // in a9: cycles from the timestamp to taking it
     constexpr uint32_t kTraceWords = 4;
 
     // A 64-bit count from a live high word read before and after the low word; a carry

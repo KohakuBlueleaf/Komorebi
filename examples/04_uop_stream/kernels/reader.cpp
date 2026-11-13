@@ -1,4 +1,4 @@
-// Reader: MAP reads the member's share of the T input tiles in blocks.
+// Reader: MAP reads the core's partition of the T input tiles in blocks.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

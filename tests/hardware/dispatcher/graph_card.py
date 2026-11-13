@@ -319,7 +319,7 @@ def case_graphs(session, args):
             )
         ping(plan, "after kept", out)
 
-        # Every other saved reference that ends by itself, on this grid.
+        # Every other saved reference that terminates, on this grid.
         for name, (data, saved) in refs.items():
             if saved["params"]["delay"] is None:
                 continue
@@ -379,7 +379,7 @@ def case_graphs(session, args):
 
 
 def case_graph_deadline(session, args):
-    """A graph's second command has member --core waiting for the stop flag, header
+    """A graph's second command has rank --core waiting for the stop flag, header
     deadline --deadline-us: KM_EV_GRAPH_ERROR reason 8 at that node, the kernel ends
     with the deadline error, every core gives up on the stop flag."""
     n_cores = 0

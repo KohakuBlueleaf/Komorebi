@@ -31,13 +31,13 @@ enum {
 
 /* Result words (32-bit). */
 #define RT_STATUS 0u
-#define RT_TICKS 8u     /* + pass * RT_PHASES + phase: mtime ticks, slowest core */
-#define RT_SUMS 24u     /* + core: low word of core's sum of the cold read of pass 0 */
-#define RT_JOB 32u      /* + rep: ticks of the job, take to give */
-#define RT_JOB_TAKE 40u /* + rep: ticks of the take alone */
-#define RT_ROUND 64u    /* round 1 (after the prefetcher step): the words above + 64 */
-#define RT_PF 128u      /* + 8 * core: the prefetcher step, see pf_setup */
-#define RT_WAYS 160u    /* CCACHE0_WAYENABLE as read (0xFFFFFFFF: the read faulted) */
+#define RT_TICKS 8u /* + pass * RT_PHASES + phase: mtime ticks, slowest core */
+#define RT_SUMS 24u /* + core: low word of core's sum of the cold read of pass 0 */
+#define RT_JOB 32u  /* + rep: ticks of the job, invalidate to flush */
+#define RT_JOB_INVALIDATE 40u /* + rep: ticks of the invalidate alone */
+#define RT_ROUND 64u /* round 1 (after the prefetcher step): the words above + 64 */
+#define RT_PF 128u   /* + 8 * core: the prefetcher step, see pf_setup */
+#define RT_WAYS 160u /* CCACHE0_WAYENABLE as read (0xFFFFFFFF: the read faulted) */
 #define RT_OUT_WORDS 192u
 
 /* This core's L2 prefetcher (BASIC_CONTROL, USER_CONTROL at + 4), the documented
@@ -247,7 +247,7 @@ static uint32_t job(
         return e;
     }
     *t_job = t0;
-    /* take: drop this core's cached lines of the counts */
+    /* invalidate: drop this core's cached lines of the counts */
     for (uint32_t c = 0; c < cores; c++) {
         pr_flush((uintptr_t)(counts + c * bins + b0), chunk * 4u);
     }
@@ -281,7 +281,7 @@ static uint32_t job(
             start[b] += counts[c * bins + b0 + b];
         }
     }
-    /* give: write this core's lines of the output back to DRAM */
+    /* flush: write this core's lines of the output back to DRAM */
     for (uint32_t c = 0; c < cores; c++) {
         pr_flush((uintptr_t)(out + c * bins + b0), chunk * 4u);
     }
@@ -362,8 +362,8 @@ int main(uint64_t core_id) {
             pr_marker(&p, 2 + pass + 4 * round);
         }
         for (uint32_t r = 0; r < a->reps && e == 0; r++) {
-            uint64_t take = 0, t_job = 0, t_end;
-            if ((e = job(&p, a, &n, &take, &t_job)) != 0) {
+            uint64_t inval = 0, t_job = 0, t_end;
+            if ((e = job(&p, a, &n, &inval, &t_job)) != 0) {
                 break;
             }
             if ((e = barrier(&p, ++n, &t_end)) != 0) {
@@ -371,7 +371,7 @@ int main(uint64_t core_id) {
             }
             if (core_id == 0) {
                 o[RT_JOB + r] = (uint32_t)(t_end - t_job);
-                o[RT_JOB_TAKE + r] = (uint32_t)take;
+                o[RT_JOB_INVALIDATE + r] = (uint32_t)inval;
             }
         }
     }

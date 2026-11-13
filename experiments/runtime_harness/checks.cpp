@@ -112,7 +112,7 @@ namespace scen {
     // words consistent, and each acknowledged command completed by its whole group.
     void common(const Sim& s, Check& c) {
         c.expect(
-            s.all_returned, "every thread of every core returned within the bound"
+            s.all_returned, "every thread of every core returned within the timeout"
         );
         c.expect(s.violations.empty(), "no stub contract or landing violation");
         if (all_done(s)) {

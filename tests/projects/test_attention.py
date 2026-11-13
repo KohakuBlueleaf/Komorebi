@@ -21,7 +21,7 @@ def test_plan_takes_every_query_row_once(causal):
             assert j.rows <= p.r and j.k0 % (s.skt * s.dt) == 0
             head = j.q0 // s.dt // s.sqt
             seen += [(head, j.start + i * j.stride) for i in range(j.rows)]
-        # the cores of a broadcast hand over the same blocks: same jobs, same key tiles
+        # the cores of a broadcast deliver the same blocks: same jobs, same key tiles
         top = (core // GRID[0]) // p.length * p.length * GRID[0] + core % GRID[0]
         assert [j.nk for j in jobs] == [j.nk for j in p.jobs[top]]
     assert sorted(seen) == [(hd, r) for hd in range(s.b * s.h) for r in range(s.sqt)]

@@ -1,4 +1,4 @@
-// Crossing costs: what the kernels of the hop and bump probes share.
+// Message costs: what the kernels of the hop and bump probes share.
 #pragma once
 
 #include <stdint.h>
@@ -6,7 +6,7 @@
 constexpr uint32_t kCbBlock = 0;  // every core: the put's source and destination
 constexpr uint32_t kCbTimes = 1;  // timing core: cycles per repetition
 constexpr uint32_t kCbSlot = 2;   // every core: 16-byte words (release, port, sync)
-constexpr uint32_t kFailed = 0xFFFFFFFFu;  // a repetition whose wait passed its bound
+constexpr uint32_t kFailed = 0xFFFFFFFFu;  // a repetition whose wait timed out
 constexpr uint32_t kLate = 0x10000u;  // a bump from a sender that saw its release late
 
 // Words of kCbSlot (16 bytes apart).
@@ -21,7 +21,7 @@ inline uint32_t wall_lo() {
     return *reinterpret_cast<volatile uint32_t*>(RISCV_DEBUG_REG_WALL_CLOCK_L);
 }
 
-// Polls ready() for at most `limit` cycles; false when the bound passed.
+// Polls ready() for at most `limit` cycles; false on a timeout.
 template <typename Ready>
 inline bool poll_timeout(Ready ready, uint32_t limit) {
     const uint32_t t0 = wall_lo();

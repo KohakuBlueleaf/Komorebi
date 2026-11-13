@@ -15,7 +15,7 @@ exists today and what is planned; this page lists where each part is described.
 Nothing here is released. Host-fed runs on one card are implemented: a program's
 persistent kernels on every Tensix core, the dispatcher on X280 cluster 0, and the
 Python host API that submits commands to groups and waits for their completion.
-Crossings between cores (ports and reduce, broadcast broadcast, dynamic handlers), deciding
+Messages between cores (ports and reduce, broadcast, dynamic handlers), deciding
 on the card (micro-op streams, the job queue and graphs in the dispatcher) and
 X280 threads on work clusters 1 to 3 are implemented. The thread language is planned.
 
@@ -43,13 +43,13 @@ X280 threads on work clusters 1 to 3 are implemented. The thread language is pla
 
 - [Host API](reference/host.md): `Program`, `Session` and `Run`; errors; builds.
 - [Tensix runtime](reference/runtime.md): the device headers; the three kernels'
-  classes and calls, the command, every bounded wait, the gave-up and where codes, the
+  classes and calls, the command, every timed wait, the gave-up and where codes, the
   control block map, and what a program may and may not do.
 - [Ports, emit and reduce](reference/ports.md): the device calls that send a value to
   one core, groups of a group, and reduce by owner and by tree.
-- [Broadcast broadcast](reference/broadcast.md): one sender to a row or a column of a group;
+- [Broadcast](reference/broadcast.md): one sender to a row or a column of a group;
   the device calls, the host layout, the rules and the give-up.
-- [Dynamic handlers](reference/dynamic.md): items that move between cores as the data
+- [Dynamic handlers](reference/dynamic.md): messages that move between cores as the data
   decides, through per-core queues in DRAM; quota; the quiet end; give-up reasons.
 - [Micro-op streams](streams.md): the upload format, the builder, the check, the
   simulator and the error reasons of the programs the dispatcher is to run.
@@ -81,7 +81,7 @@ pages describe what is built.
 | Part | Page | State | Written with |
 |---|---|---|---|
 | Persistent kernel on the Tensix cores: commands, mailbox slots, groups, completion, trace | [Tensix runtime](concepts/runtime.md) (concept); [reference](reference/runtime.md) | written | `src/komorebi_native/include/komorebi/device/` |
-| Static breakpoints: broadcast broadcast along a row or a column | [broadcast broadcast](reference/broadcast.md) | written | `src/komorebi_native/include/komorebi/device/km_broadcast.hpp` |
+| Static breakpoints: broadcast along a row or a column | [broadcast](reference/broadcast.md) | written | `src/komorebi_native/include/komorebi/device/km_broadcast.hpp` |
 | Static breakpoints: `emit`, `arrive`, `take`, reduce by owner and by tree | [ports, emit and reduce](reference/ports.md) | written | `src/komorebi_native/include/komorebi/device/km_port.hpp`, `km_group.hpp` |
 | Dynamic breakpoints: `at`, inbox rings, packets, credits | [Tensix runtime](concepts/runtime.md) (concept) | reference page missing | `src/komorebi_native/include/komorebi/device/` |
 | Dispatcher on X280 cluster 0: rings, slots, deadlines, events, upload region | [dispatcher](concepts/dispatch.md) (concept); [kernel README](../src/komorebi_native/x280/kernel/README.md) (reference) | written | `src/komorebi_native/x280/kernel/` |

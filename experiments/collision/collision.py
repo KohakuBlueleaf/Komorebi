@@ -86,7 +86,7 @@ LN_NAMES = [
 ]
 LN = {name: i for i, name in enumerate(LN_NAMES)}
 BROADCAST_MAGIC = 0x1A9E0000
-WHERE = {1: "ready", 2: "stamp", 3: "valid"}
+WHERE = {1: "ready", 2: "marker", 3: "valid"}
 PHASES = {
     1: "start",
     2: "wait_markers",
@@ -369,7 +369,7 @@ def main():
     p.add_argument("--broadcast-noc", type=int, choices=[0, 1], default=0)
     p.add_argument("--columns", default="all", help="all or a list like 3,7")
     p.add_argument("--along", choices=["column", "row"], default="column")
-    p.add_argument("--wait-ms", type=float, default=1000.0, help="bounded wait")
+    p.add_argument("--wait-ms", type=float, default=1000.0, help="timed wait")
     p.add_argument("--stream", action="store_true", help="fixed body, back to back")
     p.add_argument("--window", type=int, default=4, help="stream: blocks ahead")
     p.add_argument("--check-every", type=int, default=1024, help="stream: full check")

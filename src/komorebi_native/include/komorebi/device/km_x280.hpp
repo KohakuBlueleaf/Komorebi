@@ -84,7 +84,8 @@ namespace km {
             return read(KM_X280_ANSWER, m) && m.seq == seq;
         }
 
-        // Waits (bounded) for the answer to ask `seq`. False: gave up (recorded).
+        // Waits (with a timeout) for the answer to ask `seq`. False: gave up
+        // (recorded).
         bool wait_answer(uint32_t seq, X280Msg& m) const {
             const uint32_t code = c_.poll(
                 [&] {

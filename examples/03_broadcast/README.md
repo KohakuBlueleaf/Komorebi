@@ -3,8 +3,8 @@
 One rectangle of cores shares two kinds of blocks without every core reading them from
 DRAM: A blocks travel along the rectangle's rows, W blocks down its columns. The first
 core of each row (and the last core of each column) reads its blocks from DRAM and
-casts them to the rest of its broadcast; every core combines the two blocks it holds. This
-is the data movement of a matrix product that keeps every byte crossing DRAM once.
+multicasts them to the rest of its broadcast; every core combines the two blocks it holds. This
+is the data movement of a matrix product that reads every byte from DRAM once.
 
 ## The thread program
 
@@ -20,10 +20,10 @@ thread combine(row, col):                     # one thread per core of an R x C 
     write out[row, col] = sum
 ```
 
-Each `emit ... -> threads(row, *)` is one broadcast broadcast: one multicast of the block
-into a slot of the receivers' broadcast buffer, then a VALID stamp; each receiver stamps the
+Each `emit ... -> threads(row, *)` is one broadcast: one multicast of the block
+into a slot of the receivers' broadcast buffer, then a VALID marker; each receiver writes a marker to the
 sender when its compute kernel has finished with the block, and the sender reuses a
-slot only after every receiver has stamped it. A broadcast holds B blocks in flight.
+slot only after every receiver has marked it. A broadcast holds B blocks in flight.
 
 ## How it maps onto the runtime
 
@@ -38,10 +38,10 @@ on this card a row of 12 columns is two broadcasts of 6, each with its own sende
 computes the broadcasts, their senders and multicast rectangles (`komorebi.layout.broadcast_args`)
 and passes each core its broadcast words as program arguments.
 
-| Handler | Arguments | What a member does |
+| Handler | Arguments | What a core does |
 |---|---|---|
-| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 member that stalls (a test), a5 its block, a6 output page of member 0, a7 blocks of data per broadcast (block k reads data block k mod a7) | as the thread program; members outside the rectangle only report |
-| `READ` | the same | every member reads its own blocks from DRAM (the comparison) |
+| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 rank that stalls (a test), a5 its block, a6 output page of rank 0, a7 blocks of data per broadcast (block k reads data block k mod a7) | as the thread program; cores outside the rectangle only report |
+| `READ` | the same | every core of the group reads its own blocks from DRAM (the comparison) |
 
 ## Run
 
@@ -63,35 +63,35 @@ python broadcast.py --rect 4,0,2,2 --blocks 4 --pages 16 --jobs 2 --first-blocks
 
 `--rect x0,y0,columns,rows` places the rectangle; its group is the smallest range of the
 core order that covers it. Inputs are integers in [-2, 2], so every checksum is exact
-and the driver compares each member's tile with numpy bit for bit. With
-`--stall-job`, that job's member (group index) stops taking row blocks at the given block
-and waits for the stop flag: the broadcast's sender gives up waiting for its stamp, the
+and the driver compares each core's tile with numpy bit for bit. With
+`--stall-job`, that job's core (group index) stops taking row blocks at the given block
+and waits for the stop flag: the broadcast's sender gives up waiting for its marker, the
 other cores of the broadcast give up waiting for the next block, the dispatcher reports
 the command's deadline and the host raises `CommandTimeout`, which names the handle and
-the members that did not report. Every kernel returns; `broadcast_gave_up` names, per core,
+the cores that did not report. Every kernel returns; `broadcast_gave_up` names, per core,
 the broadcast, where it waited and the block. `--again` then loads the program again in the
-same session and runs the clean case. With `--empty-job`, that job casts zero blocks on
-every broadcast (every checksum is zero) between jobs that cast the full count;
+same session and runs the clean case. With `--empty-job`, that job multicasts zero blocks on
+every broadcast (every checksum is zero) between jobs that multicast the full count;
 `--empty-every n` does that for every nth job. With
-`--first-blocks N`, job 0 casts N blocks per broadcast, block k being data block k mod
+`--first-blocks N`, job 0 multicasts N blocks per broadcast, block k being data block k mod
 `--blocks`: a command that moves many pages through a broadcast from little host data.
 
 The JSON line reports, per run, the dispatcher's error and command count, the
-host's microseconds per job, the blocks every broadcast handed over, every core's end
+host's microseconds per job, the blocks every broadcast delivered, every core's end
 state, `ranks_bad`, and `ok` per run and for all of them: every core ended, a run
 with a stalled job ended in the deadline, a clean one with no core and no broadcast given up
-and every member right. The script exits non-zero without it.
+and every core of the group right. The script exits non-zero without it.
 
 `--feeder` runs the same commands on the test feeder (`tests/hardware/feeder/`): the
 last core of the grid submits them and no X280 is involved, so the rectangle must leave
 that core out (12 x 9 at most). The measurements below were taken that way.
 
-## Measured: broadcasts against every member reading DRAM itself
+## Measured: broadcasts against every core of the group reading DRAM itself
 
-One p150a, AICLK 1350 MHz, the 12 x 9 rectangle (108 members; 9 column broadcasts of 9 cores
-and 18 row broadcasts of 6), 64 blocks per broadcast and job, 4 jobs, every member checked
-(0 wrong), the feeder's clock per job. "Delivered" counts both blocks into every member;
-in `READ` each member reads them from DRAM, in `CAST` only the 27 senders do.
+One p150a, AICLK 1350 MHz, the 12 x 9 rectangle (108 cores; 9 column broadcasts of 9 cores
+and 18 row broadcasts of 6), 64 blocks per broadcast and job, 4 jobs, every core of the group checked
+(0 wrong), the feeder's clock per job. "Delivered" counts both blocks into every core of the group;
+in `READ` each core of the group reads them from DRAM, in `CAST` only the 27 senders do.
 
 | block | window | `CAST` us/job | per broadcast | delivered | DRAM read | `READ` us/job | delivered (= DRAM read) |
 |---|---|---|---|---|---|---|---|
@@ -100,7 +100,7 @@ in `READ` each member reads them from DRAM, in `CAST` only the 27 senders do.
 | 24 KiB | 1 | 289.3 | 5.44 GB/s | 1,174 GB/s | 147 GB/s | 738.8 | 460 GB/s |
 | 24 KiB | 4 | 250.8 | 6.27 GB/s | 1,355 GB/s | 169 GB/s | 744.0 | 457 GB/s |
 
-At 24 KiB blocks the broadcasts deliver 2.5 to 3 times what the members get by reading DRAM
+At 24 KiB blocks the broadcasts deliver 2.5 to 3 times what the cores get by reading DRAM
 themselves, which stays near 460 GB/s whatever the window. At 2 KiB both take the same
 time within 6% (`READ` slightly ahead): the job is then bound by something both modes
 share, the per-block steps and this example's compute (two tile adds per page), not by
@@ -113,5 +113,5 @@ one tile, reading DRAM directly costs no more.
 | File | What it is |
 |---|---|
 | `kernels/reader.cpp`, `writer.cpp`, `compute.cpp` | the three kernels: the row broadcast, the column broadcast and the output, the checksum |
-| `kernels/broadcast.h` | handlers, buffers, arguments, and the two block loops (cast, read) shared by reader and writer |
-| `broadcast.py` | builds the broadcasts and commands, runs them through a session (or the feeder), checks every member |
+| `kernels/broadcast.h` | handlers, buffers, arguments, and the two block loops (multicast, read) shared by reader and writer |
+| `broadcast.py` | builds the broadcasts and commands, runs them through a session (or the feeder), checks every core of the group |

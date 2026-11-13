@@ -115,7 +115,7 @@ are busy, and with `exclusive=True` also while a job queued before it is still w
 in the job queue or any busy group overlaps its group. A group
 is outside the grid when `count == 0 || first > n_cores || count > n_cores - first`
 (no sum is formed, so nothing wraps); `SUBMIT` onto such a group is an error before any
-waiting, and so is a `ENQUEUE` whose count is 0 or above the grid. A program counter that
+waiting, and so is an `ENQUEUE` whose count is 0 or above the grid. A program counter that
 reaches the end of the micro-ops is an error, as is a stream that has run `max_steps`
 micro-ops; see [Errors](#errors).
 
@@ -208,7 +208,7 @@ is the kind in the low 8 bits and the aux above it.
 | 6 | step limit | the micro-op that would have been the `max_steps + 1`th |
 | 7 | `MOD` by zero | the `MOD` |
 | 8 | a command's deadline passed (the grid is also stopped); if several are late in one pass, the lowest slot's | the `SUBMIT` or `ENQUEUE` that made it |
-| 9 | a `ENQUEUE` whose count is 0 or above the grid | the `ENQUEUE` |
+| 9 | an `ENQUEUE` whose count is 0 or above the grid | the `ENQUEUE` |
 | 10 | cancelled | the micro-op the stream had reached |
 | 11 | an `SUBMIT` whose group is empty or leaves the grid | the `SUBMIT` |
 
@@ -236,7 +236,7 @@ A command takes the lowest free completion slot. The group allocator returns the
 `first` such that cores `[first, first + count)` overlap no busy slot's group.
 
 The queue holds at most 64 waiting jobs, shared by every stream and by queued jobs from
-the host; a `ENQUEUE` into a full queue waits (the kernel rejects the engine's job with
+the host; an `ENQUEUE` into a full queue waits (the kernel rejects the engine's job with
 reason 11 and wakes it when there is room), and a queued command from the host into a
 full queue is rejected with reason 9. Queued jobs run in the same 16 completion slots as
 every other command, so at most 16 commands of all sources are in flight over the grid,
@@ -295,7 +295,7 @@ the sweep of pass `p + deadline_passes`; it replaces the header's deadline, whil
 `default_deadline_passes` (1,000,000 unless given; both at least 1) stands for a header
 with `deadline_us` 0. `cancel_pass` delivers a cancel command in that pass. `n_cores` is
 the grid size (119 by default); `ticks_per_pass` sets `TIME` (`pass * ticks_per_pass`);
-`max_passes` ends a run that does not end by itself (status `"stuck"`); `region_size`
+`max_passes` ends a run that does not terminate (status `"stuck"`); `region_size`
 is the size the check allows an upload (1 MiB by default).
 
 The simulator runs one stream. Pass counts, and what `TIME` returns, depend on the

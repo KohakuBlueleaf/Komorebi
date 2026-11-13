@@ -1,4 +1,4 @@
-# X280 command multicast against broadcast broadcasts
+# X280 command multicast against broadcasts
 
 The X280 sends every work command as a 64-byte multicast on NoC0 to all Tensix cores
 (see [landing](../landing/README.md)). Programs also want to broadcast inside the grid:
@@ -29,12 +29,12 @@ cannot share a NoC in tt-metal's dedicated mode).
 | Driver: builds the program, runs, closes the X280 runtime, reads both kernels' counters | `collision.py` |
 
 **The broadcast.** The grid column (10 cores) is cut into broadcasts of L = 2, 5 or 10 cores.
-For k = 1, 2, ... the sender waits until every receiver stamped k - 1, writes block k
+For k = 1, 2, ... the sender waits until every receiver marked k - 1, writes block k
 (B bytes; word w is `base(k, tag) + w * c`, so every word depends on the block, its
 index and the run's random tag), multicasts it to the receivers
 (`noc_async_write_multicast`), barriers, writes VALID k into its own word and
 multicasts it (`noc_semaphore_set_multicast`), barriers. Each receiver waits for
-VALID k, checks every word of the block and writes its stamp k into its own word at
+VALID k, checks every word of the block and writes its marker k into its own word at
 the sender (`noc_async_write` of 4 bytes), barrier. On NoC0 (which runs +y) the
 sender is the broadcast's top core; on NoC1 (which runs -y) it is the bottom core and the
 rectangle's corners are swapped.
@@ -43,13 +43,13 @@ rectangle's corners are swapped.
 holds its path longest, and a 64-byte command may need a channel it holds), but in the
 mode above the sender spends most of each 2 KiB or 24 KiB block writing words, not
 multicasting. In stream mode (`--stream`) the sender fills the bodies of W window slots
-once; for block k it waits until every receiver stamped at least k - W, writes block
-k's 64-byte header (its stamp and its number) into slot k mod W, multicasts the slot,
+once; for block k it waits until every receiver marked at least k - W, writes block
+k's 64-byte header (its marker and its number) into slot k mod W, multicasts the slot,
 barriers (which also acknowledges the previous VALID) and multicasts VALID k without
 waiting. A receiver waits for VALID >= k, checks the header of every block, and checks
 the whole body of blocks 1..W and of every N-th block; the body of a slot is
 overwritten with its words inverted (poisoned) before such a block lands in it, so
-every word of a checked block must have arrived. The sender stamps the cycles inside
+every word of a checked block must have arrived. The sender timestamps the cycles inside
 multicast plus barrier; their share of the sender's wall time is the duty below.
 Stop-and-wait (W = 1) kept the sender inside multicast plus barrier only 32% of the time
 at 2 KiB and 52% at 24 KiB (broadcasts alone, 20,000 blocks, full check every 1,024
@@ -60,19 +60,19 @@ and poisoning under 6% of their time (measured, below).
 **Overlap.** In the runs with commands the broadcasts start with the program and stop when
 the command kernel of the sender's core has completed its last command (the sender then
 multicasts a stop flag in place of VALID). The X280 starts submitting only once every
-core has checked in, so every broadcast broadcasts during the whole command stream.
+core has checked in, so every broadcast sends during the whole command stream.
 
-**Bounded waits.** Every wait in both kernels gives up after one second and leaves a
+**Timed waits.** Every wait in both kernels gives up after one second and leaves a
 where code; a broadcast kernel that gives up reads its peer's state words over the NoC
-(also bounded) and reports them. tt-metal's write barrier is not bounded, so before
+(also timed) and reports them. tt-metal's write barrier has no timeout, so before
 each barrier the kernel stores "about to barrier, block k" in its state words. The
 driver sets `TT_METAL_OPERATION_TIMEOUT_SECONDS=20`, so a core that never finishes
 makes the host's wait throw with the core named; the run then prints its JSON line
 with the error and exits with code 7.
 
 **Counts per run**, summed over the 120 cores: commands torn (a payload word wrong in an
-accepted command), commands lost (a bounded wait gave up), blocks and words wrong at the
-receivers, stamps missing at the senders, bounded waits that gave up (core, where
+accepted command), commands lost (a timed wait gave up), blocks and words wrong at the
+receivers, markers missing at the senders, timed waits that gave up (core, where
 code, block, the peer's phase), receivers whose block count differs from their
 sender's. Times: X280 `mtime` per command (as in the landing experiment) and sender
 wall-clock cycles per block.
@@ -99,7 +99,7 @@ p150a, 120 Tensix cores (12 x 10, two multicast panels), AICLK 1350 MHz, X280 at
 1750 MHz, slow dispatch, posted multicast windows, command pacing depth 4, measured
 with the code in this folder. 153 runs, each in its own process; every one exited
 normally with every check passing: no torn or lost command, no wrong word, no missing
-stamp, no bounded wait that gave up, no hang. Host load average (one minute) 3.2 to
+marker, no timed wait that gave up, no hang. Host load average (one minute) 3.2 to
 14.5 on 96 CPUs.
 
 ### Every word of every block checked
@@ -202,7 +202,7 @@ reservation rejected two or more hops on, and its rate under other traffic patte
 unknown.
 
 For a runtime that lets programs broadcast while the X280 dispatches, NoC1 is the
-arrangement that does not depend on that observation: the broadcast broadcast then never
+arrangement that does not depend on that observation: the broadcast then never
 shares a router with the X280's NoC0 broadcasts (NoC0 and NoC1 are separate networks;
 an inference from the documentation, not tested beyond the runs above). It costs
 nothing measurable here (block and command times within 1.5% of NoC0's). On NoC1 the
@@ -220,7 +220,7 @@ not read its peer's state words. Broadcasts on NoC0 in every row, the command ke
 | 6 | 64 B | 10^5 | 12,000,000 | 1,941,332 | 0 | 0.7761 | 0.853 |
 | 6 | 2 KiB, stream, window 4 (duty 0.56) | 10^5 | 12,000,000 | 3,489,748 (34,430 checked in full) | 0 | 0.7772 | 0.450 |
 
-No give-up, no missing stamp, no hang: row broadcasts on NoC0 behaved as the column broadcasts
+No give-up, no missing marker, no hang: row broadcasts on NoC0 behaved as the column broadcasts
 did, in these three runs (far fewer than the column runs above).
 
 ## Not tested

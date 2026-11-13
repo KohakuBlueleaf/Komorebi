@@ -23,8 +23,8 @@ namespace scen {
 
     constexpr uint32_t kHandlerMap = 1;  // the example's handlers
     constexpr uint32_t kHandlerStall = 2;
-    constexpr uint32_t kHandlerBadItem = 5;                // a0: the member; a1 = 0: writer, 1: reader
-    constexpr uint32_t kHandlerResult = 6;  // each member's result: a0 + its index
+    constexpr uint32_t kHandlerBadItem = 5;  // a0: the rank; a1 = 0: writer, 1: reader
+    constexpr uint32_t kHandlerResult = 6;   // each core's result: a0 + its index
     constexpr uint32_t kHandlerNop = 9;  // unknown to the example: every body returns
     constexpr uint32_t kCbIn = 0;
 

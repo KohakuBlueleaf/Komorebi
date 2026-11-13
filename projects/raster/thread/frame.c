@@ -1,12 +1,13 @@
-/* The frame on the work cluster: COUNT, SUM, HIST, HSUM, the step (middle.c), PLACE,
- * SETUP, FILL, each record submitted and waited for. Words, regions, codes: frame.h */
+/* The frame on the work cluster: COUNT, SUM, HIST, HSUM, the middle pass (middle.c),
+ * PLACE, SETUP, FILL, each command submitted and waited for. Words, regions, codes:
+ * frame.h */
 #include <stdint.h>
 
 #include "frame.h"
 #include "kmx.h"
 #include "middle.h"
 
-#define WAIT_TICKS KMX_TICKS_PER_SECOND /* per record, longer than its deadline */
+#define WAIT_TICKS KMX_TICKS_PER_SECOND /* per command, longer than its deadline */
 
 typedef struct {
     rm_scratch s;
@@ -25,7 +26,7 @@ typedef struct {
     uint32_t ranged; /* frames run with ranges: the costs of the last are in */
 } frame_t;
 
-/* The step's parts on the four cores: each a quarter of the tiles or items. */
+/* The middle pass's parts on the four cores: each a quarter of the tiles or items. */
 typedef struct {
     const uint32_t* counters;
     uint32_t cores, workers, ni;
@@ -101,8 +102,9 @@ static uint32_t elapsed(uint64_t* t) {
     return d;
 }
 
-/* Each core's blocks for COUNT and SETUP, into the camera's region: equal shares, then
- * equal parts of the last frame's ticks (spread evenly over each core's blocks). */
+/* Each core's blocks for COUNT and SETUP, into the camera's region: equal partitions,
+ * then equal parts of the last frame's ticks (spread evenly over each core's blocks).
+ */
 static void set_ranges(frame_t* f, work_t* wk, void* const* reg) {
     const uint32_t cores = f->w[RF_W_CORES], blocks = f->w[RF_W_BLOCKS];
     uint32_t* r = wk->ranges;
@@ -249,7 +251,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
         f->out[RF_O_TAKE] += elapsed(&t);
     }
 
-    /* the step: items, cores, the lists' layout in words for PLACE, base slots */
+    /* middle pass: items, cores, lists' layout in words for PLACE, base slots */
     kmx_progress(4);
     uint32_t ni = 0;
     if (!rm_items(wk->heavy, wk->bands, nh, &wk->s, wk->items, &ni, wk->tile_item)) {

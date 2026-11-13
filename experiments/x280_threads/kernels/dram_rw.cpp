@@ -11,7 +11,7 @@ namespace {
     constexpr uint32_t kReportCb = 1;           // 64 bytes
     constexpr uint32_t kSpinLimit = 100000000;  // about a second of polls
 
-    // Polls until every read (or write) of this core has landed; false past the bound.
+    // Polls until every read (or write) of this core has landed; false on a timeout.
     bool reads_done() {
         for (uint32_t i = 0; i < kSpinLimit; i++) {
             if (ncrisc_noc_reads_flushed(noc_index)) {

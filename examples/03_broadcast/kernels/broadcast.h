@@ -1,15 +1,15 @@
 // Broadcast example: handlers, buffers and arguments its kernels share, and the two
-// ways a member gets its blocks (broadcast broadcast, or its own DRAM reads).
+// ways a core gets its blocks (broadcast, or its own DRAM reads).
 #pragma once
 
 #include <stdint.h>
 
 #include "komorebi/device/km_broadcast.hpp"
 
-// CAST: a0 A (rows), a1 W (columns), a2 output, a3 blocks n, a4 member that stalls at
-// row block a5 (a test; kNone: none), a6 output page of member 0, a7 data blocks d.
+// CAST: a0 A (rows), a1 W (columns), a2 output, a3 blocks n, a4 rank that stalls at
+// row block a5 (a test; kNone: none), a6 output page of rank 0, a7 data blocks d.
 constexpr uint32_t kHandlerBroadcast = 1;
-// READ: as CAST, but every member reads both of its blocks from DRAM itself.
+// READ: as CAST, but every core of the group reads both of its blocks from DRAM itself.
 constexpr uint32_t kHandlerRead = 2;
 
 constexpr uint32_t kCbRow = 0;   // row broadcast buffer: B blocks of P tiles of A
@@ -19,13 +19,13 @@ constexpr uint32_t kTileBytes = 2048;
 constexpr uint32_t kNone = 0xFFFFFFFFu;
 
 // Program arguments of reader and writer: the broadcast's words, then the core's row
-// (or column) in the rectangle. Compute: member (1 inside the rectangle), B, P.
+// (or column) in the rectangle. Compute: included (1 inside the rectangle), B, P.
 constexpr uint32_t kArgBroadcast = 0;
 constexpr uint32_t kArgIndex = km::kBroadcastArgs;
 
 #if !defined(COMPILE_FOR_TRISC)
 
-// Bounded wait for this kernel's reads; gives up into state word `word`.
+// Timed wait for this kernel's reads; gives up into state word `word`.
 inline bool reads_landed(const km::Core& c, uint32_t word, const km_command_t& r) {
     const uint32_t code = c.poll(
         [] {
@@ -76,7 +76,7 @@ bool broadcast_blocks(
     return ln.finish();
 }
 
-// READ: the member reads its blocks itself into the same buffer, then pads it to
+// READ: the core reads its blocks itself into the same buffer, then pads it to
 // whole windows as Broadcast::finish does (compute runs the same code for both).
 template <typename Src>
 bool read_blocks(

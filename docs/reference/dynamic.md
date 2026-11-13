@@ -15,10 +15,10 @@ The last cores of every dynamic run's group are counter tiles that hold the queu
 a `Session` on 120 cores and in 3 of 3 under the test feeder on 119
 ([05_forward](../../examples/05_forward/README.md#measured)).
 
-A static crossing is known before the run: who sends what to whom and how many arrive.
-A dynamic crossing is known only from the data: a ray goes to the core that holds the
+A channel is known before the run: who sends what to whom and how many arrive.
+A routed message is known only from the data: a ray goes to the core that holds the
 next part of the scene, a finished ray to the core that owns its film tile. In a
-dynamic handler the program's state travels as **messages**, fixed-size commands that
+dynamic handler the program's state travels as **messages**, fixed-size blocks of words that
 move from core to core until the program consumes them. The destination of each message,
 the number of arrivals at a core and the end of the run are all decided by the data.
 
@@ -44,7 +44,7 @@ cp.run([&](const km_command_t& r) {
         for (uint32_t i = 0; i < pk.n; i++) {
             const volatile tt_l1_ptr uint32_t* in = pk[i];  // the message, in L1
             ... the body, then exactly one of:
-            dy.forward(dest, message);  // the message goes on at member dest
+            dy.forward(dest, message);  // the message goes on at rank dest
             dy.consume();         // the message ends here
             ... and any number of:
             if (!dy.send(dest, message)) { ... no quota left ... }
@@ -58,14 +58,14 @@ cp.run([&](const km_command_t& r) {
 |---|---|
 | `Dyn(cp, r)` | starts the dynamic part of the run on this core; all three compute threads construct it |
 | `seeding()`, `seeded()` | true until `seeded()` or the first `next()`: the place for the run's first sends |
-| `next()` | the next packet of up to 32 messages; empty when the run has ended, the stop flag was set or a wait gave up. Every wait inside it is bounded |
+| `next()` | the next packet of up to 32 messages; empty when the run has ended, the stop flag was set or a wait gave up. Every wait inside it is timed |
 | `pk.n`, `pk[i]` | the number of messages, and the L1 address of message `i` |
-| `forward(dest, message)` | the message joins the queue of member `dest` of the run's group (a member index, not a core index); a forward to the core itself takes the same path |
-| `consume()` | the message ends; one unit of quota comes back to this core |
-| `send(dest, message)` | a new message at member `dest`; false, and nothing is sent, when this core has no quota left |
+| `forward(dest, message)` | the message joins the queue of rank `dest` of the run's group (a rank, not a core index); a forward to the core itself takes the same path |
+| `consume()` | the message ends; one unit of quota returns to this core |
+| `send(dest, message)` | a new message at rank `dest`; false, and nothing is sent, when this core has no quota left |
 | `done(pk)` | the packet's buffer page is free and its messages are counted as consumed |
-| `quota()`, `count()` | sends left on this core; members in the group (without its counter tiles) |
-| `member()`, `counter()` | this core's member index; true on a counter tile, which takes no message |
+| `quota()`, `count()` | sends left on this core; cores in the group (without its counter tiles) |
+| `rank()`, `counter()` | this core's rank; true on a counter tile, which takes no message |
 | `wait_stop()` | waits for the stop flag (a test of the run's timeout) |
 
 A message is `message_bytes / 4` words. Word 0 belongs to the runtime: it holds the message's
@@ -97,8 +97,8 @@ The launcher rejects, before any device opens:
 - `max_live > queue_messages`: if every message were aimed at one core, its queue could not
   hold them;
 - queues that do not fit the DRAM given to them (`cores * queue_messages * message_bytes`);
-- a group with no member beside its counter tiles;
-- `max_live` smaller than the number of members (some member would start without quota);
+- a group with no core beside its counter tiles;
+- `max_live` smaller than the number of cores (some core would start without quota);
 - a ring depth below 2 (the end of a run is a second command in flight).
 
 A run is one `RUN` command of the dynamic handler to a group, with `KM_F_EXCL`. The command
@@ -133,13 +133,13 @@ call, to a 16-byte slot of the sender's own control block (the firmware's defaul
 return slot is shared). A sender waits for the answer to replace a sentinel, not only
 for the atomic's count; an answer that never lands ends the run with reason 32 (`lost`),
 naming the destination, never with a wrong result. A program that adds its own barrier between cores at start-up
-must allow more than the launch skew: under slow dispatch a bound of 7 ms let 47 of
+must allow more than the launch skew: under slow dispatch a timeout of 7 ms let 47 of
 119 cores give up; the reservation probe allows one second.
 
 So a full inbox cannot deadlock the grid, and while `max_live <= queue_messages` holds no
-queue can overflow. The cost is that every forward crosses DRAM twice.
+queue can overflow. The cost is that every forward goes through DRAM twice.
 
-**Quota.** Each member starts a run with `max_live / members` sends. `send` takes one,
+**Quota.** Each core of the group starts a run with `max_live / cores` sends. `send` takes one,
 `consume` gives one back to the core where the message ends, `forward` changes nothing. Seeding
 sends count too. Moving quota between cores is the program's business: a program that
 sends on some cores and consumes on others runs those cores dry.
@@ -147,14 +147,14 @@ sends on some cores and consumes on others runs those cores dry.
 ## Counter tiles
 
 The tails do not live on the receivers. The last K cores of a run's group (`counters`,
-2 by default; `komorebi.layout.counter_tiles` gives the layout) are counter tiles: member
+2 by default; `komorebi.layout.counter_tiles` gives the layout) are counter tiles: core
 core c's tail is a 16-byte line on counter tile c mod K, at `KM_CTL_TAILS`. Every
-reservation is an atomic add on that line; a member learns its tail by a bounded
+reservation is an atomic add on that line; a core learns its tail by a timed
 16-byte read of it. A counter tile runs the same three kernels: at the start of a run it
-sets the tails of the members it serves to their heads and shows READY (members wait
-for it, bounded, reason 35 `counter`), then takes no message, never submits an atomic, goes
-idle like any member and leaves on the end command. `run.state()` names it
-(`dynamic.counter`: the run and the members it served).
+sets the tails of the cores it serves to their heads and shows READY (cores wait
+for it, with a timeout, reason 35 `counter`), then takes no message, never submits an atomic, goes
+idle like any core and leaves on the end command. `run.state()` names it
+(`dynamic.counter`: the run and the cores it served).
 
 **Why.** On the card, the returned value of a non-posted atomic add is sometimes lost
 when the tile that answers it submits atomics of its own on the same NoC (with a return
@@ -200,7 +200,7 @@ take 2 KiB of the kernel's local memory (`KMD_LIM_DYN`).
 
 ## When something goes wrong
 
-Every wait is bounded and watches the stop flag. A core that gives up writes its first
+Every wait has a timeout and watches the stop flag. A core that gives up writes its first
 reason, the queue position and the run into its control block (`KM_CTL_DYN +
 KM_DYN_GAVE`), writes a `gave up` status line, and the submitter stops the run on every
 core. Under a `Session` the dispatcher ends the session with the `RUN` command's
@@ -213,14 +213,14 @@ the same loaded program.
 | 20 | overflow | more messages than `queue_messages` were in one core's queue |
 | 21, 22, 23, 25 | atomic, flush, read, line | a reservation, the message writes, the message reads or the status line did not finish within the wait limit |
 | 24 | in page | the compute kernel did not free a packet page within the wait limit (a body that stalls) |
-| 26 | bad dest | `forward` or `send` named a member outside the group |
+| 26 | bad dest | `forward` or `send` named a core outside the group |
 | 27, 28, 29 | next, out page, outbox | a wait between the compute kernel and the reader or writer ran out |
 | 30 | stopped | the stop flag was set |
 | 31 | align | the packet buffer or the message size is not a multiple of 64 bytes |
 | 32 | lost | a reservation was answered but its returned position never landed; word 3 names the destination (not seen with counter tiles) |
 | 33 | fill | the start-up zero fill of the queue did not finish |
 | 34 | full | this core's queue positions reached 2^30 in this load |
-| 35 | counter | a counter tile did not show READY within the wait limit, or the group has no member beside them |
+| 35 | counter | a counter tile did not show READY within the wait limit, or the group has no core beside them |
 
 The codes follow the runtime's where codes (0 to 18) and are `kWhereDyn*` in `km_core.hpp`.
 

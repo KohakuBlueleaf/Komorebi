@@ -95,7 +95,8 @@ def scene_inputs(rng, n, scene_name):
 
 
 def edge_inputs(rng, rows, tree):
-    """Edge cases written over a share of the rows (in place); returns their mask."""
+    """Edge cases written over a partition of the rows (in place); returns their
+    mask."""
     n = len(rows["o"])
     kind = rng.integers(0, 10, n)
     edge = rng.random(n) < 0.25
@@ -210,13 +211,13 @@ def input_pages(rows):
 
 
 def partition(n, index, count):
-    """(start, length) of member `index` of `count` in n items, as the runtime's."""
+    """(start, length) of rank `index` of `count` in n items, as the runtime's."""
     base, extra = divmod(n, count)
     return index * base + min(index, extra), base + (index < extra)
 
 
 def contiguous(pages, cores):
-    """Directory (cores, 16): a contiguous share of the pages for each core."""
+    """Directory (cores, 16): a contiguous partition of the pages for each core."""
     directory = np.zeros((cores, K["kDirBytes"] // 4), dtype=np.uint32)
     for c in range(cores):
         start, count = partition(pages, c, cores)

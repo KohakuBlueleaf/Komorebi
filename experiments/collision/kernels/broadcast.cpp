@@ -28,7 +28,7 @@ namespace {
     struct Broadcast {
         uint32_t base;  // broadcast buffer
         uint32_t tag;
-        uint64_t limit;  // cycles a bounded wait may take
+        uint64_t limit;  // cycles a timed wait may take
         uint64_t wait_max = 0;
 
         volatile tt_l1_ptr uint32_t& at(uint32_t off) const {
@@ -97,7 +97,7 @@ void kernel_main() {
 
     broadcast.state(LP_START, 0);
     if (role == 1) {
-        // Sender. Stale stamps carry another run's tag, so the table is not cleared.
+        // Sender. Stale markers carry another run's tag, so the table is not cleared.
         auto wait_markers = [&](uint32_t k) -> bool {
             const uint32_t want = broadcast_marker(k, tag);
             const uint64_t t0 = wall();
@@ -191,18 +191,18 @@ void kernel_main() {
             }
         }
     } else if (role == 2) {
-        // Receiver: clear VALID, stamp block 0 (ready), then the blocks.
+        // Receiver: clear VALID, mark block 0 (ready), then the blocks.
         broadcast.at(BROADCAST_VALID) = 0;
         const uint64_t my_slot = (
             get_noc_addr(snd_x, snd_y, broadcast.base + BROADCAST_DONE + 16 * rank)
         );
-        auto stamp = [&](uint32_t k) {
+        auto mark = [&](uint32_t k) {
             broadcast.at(BROADCAST_SRC) = broadcast_marker(k, tag);
             broadcast.state(LP_BARRIER_MARKER, k);
             noc_async_write(broadcast.base + BROADCAST_SRC, my_slot, 4);
             noc_async_write_barrier();
         };
-        stamp(0);
+        mark(0);
         t_begin = wall();
         for (uint32_t k = 1; k <= blocks; k++) {
             broadcast.state(LP_WAIT_VALID, k);
@@ -253,7 +253,7 @@ void kernel_main() {
             }
             bad_blocks += bad != 0;
             n_ok++;
-            stamp(k);
+            mark(k);
         }
         t_end = wall();
     }

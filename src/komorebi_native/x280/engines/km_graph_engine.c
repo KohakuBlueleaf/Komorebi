@@ -1,5 +1,5 @@
 /* The graph executor: check, start, step, complete. Freestanding: no library calls, no
-   floating point, no static data; every loop is bounded by a limit of km_graph.h. */
+   floating point, no static data; every loop is capped by a limit of km_graph.h. */
 #include "km_graph_engine.h"
 
 #define FAULT(reason, node) ((uint32_t)(reason) | (uint32_t)(node) << 8)

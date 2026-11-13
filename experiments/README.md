@@ -23,7 +23,7 @@ place to ask a question and to be wrong.
   from 256 rays on, because the ray-first walk is bound by the core's stack and copy
   work.
 - [collision](collision/README.md): whether the X280's command multicasts on NoC0 and
-  broadcast broadcasts inside a grid column (NoC0 or NoC1, short blocks checked word by
+  broadcasts inside a grid column (NoC0 or NoC1, short blocks checked word by
   word and long multicasts back to back) can run at the same time. No lost or wrong
   word and no hang in any arrangement measured; NoC1 recommended for broadcasts while the
   X280 dispatches.
@@ -50,7 +50,7 @@ place to ask a question and to be wrong.
   the host) on random graphs and mutated uploads. No difference found.
 - [page_index](page_index/README.md): whether the compute kernel can read page k of a
   circular buffer it waited for in full, by index, with nothing popped before it. Yes:
-  two runs, exact. Values put into fixed slots are handed over as the whole buffer.
+  two runs, exact. Values put into fixed slots reach compute as the whole buffer.
 - [message_cost](message_cost/README.md): one put by distance and many senders
   incrementing one word. A put's latency does not depend on the hop count (1 to 16
   hops); a target in the sender's row costs about 43 cycles more than one in its column.
@@ -64,8 +64,8 @@ place to ask a question and to be wrong.
   host bank by bank under one barrier against a whole-buffer read (then `ttnn.to_torch`):
   about 2 s against 3 s on one p150a at host load 8, the same array both ways.
 - [x280_threads](x280_threads/README.md): a user image on X280 cluster 1 beside the
-  dispatcher and a resident grid (100 of 100 cycles clean), DRAM visibility
-  between a Tensix core and the X280 (a Flush64 sweep each way is the hand-over), the
+  dispatcher and a persistent grid (100 of 100 cycles clean), DRAM visibility
+  between a Tensix core and the X280 (a Flush64 sweep each way flushes or invalidates), the
   X280's read and write rates (about 1.3 and 1.8 GB/s) and prefix sums over 119 x
   1,024 counters (2.1 ms), and what a thread that ignores its deadline leaves behind.
 - [work_clusters](work_clusters/README.md): X280 clusters 1 to 3 at once: the bank
@@ -79,12 +79,12 @@ place to ask a question and to be wrong.
   against 2.1 through DRAM.
 - [dyn_probes](dyn_probes/README.md): whether one core can reserve positions in another
   core's queue with one atomic add (yes: 119 cores, exact cover, 266 to 2596 cycles),
-  the round trip of an item through DRAM (0.93 µs) and the rate between cores (up to
-  1211 M items/s, 120 cores in packets of 32).
+  the round trip of a message through DRAM (0.93 µs) and the rate between cores (up to
+  1211 M messages/s, 120 cores in packets of 32).
 - [atomic_answers](atomic_answers/README.md): when the returned value of a non-posted
   atomic add is lost: only when the asked tile submits atomics of its own on the same NoC
   with a changing return address (11 to 35 of 2.38 M); none from tiles that only answer.
-  Decision: the dynamic crossing's tails live on counter tiles.
+  Decision: the routed messages' tails live on counter tiles.
 - [overlay_probe](overlay_probe/README.md): a persistent kernel as a loader of kernel
   bodies linked for a fixed L1 slot and kept in DRAM. Loads cost 540 cycles plus 21 a
   KiB; the i-cache must be invalidated after each load (else stale code runs); the

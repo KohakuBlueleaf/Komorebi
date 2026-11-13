@@ -99,12 +99,12 @@ grid_timeout=10.0, kernel_bytes=None)`.
   on SIGTERM (a handler is installed if the process has none; it closes the runtime,
   then exits with status 143 through the `with` blocks). A clean-up that raises leaves
   the run loaded and the device open, so the next of these paths tries again; each try
-  is bounded (5 s in the runtime). SIGKILL cannot be caught: after one, reset the card.
+  has a timeout (5 s in the runtime). SIGKILL cannot be caught: after one, reset the card.
   With `device=`, close the session before the device.
 - What an abort (an exception inside `with`, `session.close()` of a loaded run, the
   exit hooks) does: it writes the stop flag into every core and waits up to 2 s for
   the grid, then asks the X280 runtime to stop the dispatcher, which finishes
-  whatever is in flight (5 s bound); `run.result()` then holds its result block, with
+  whatever is in flight (5 s timeout); `run.result()` then holds its result block, with
   `abandoned` the commands left without their `KM_EV_DONE`. The card needs no reset
   after it. An exception in the kernel needs none either: the kernel finishes on its
   own and the run raises `KernelFailed` with error `trap`, naming the X280 core,
@@ -112,16 +112,16 @@ grid_timeout=10.0, kernel_bytes=None)`.
   also holds the first 512 bytes of the kernel's state as DRAM holds them
   (`kernel state +0x...` lines). A reset is still needed when the kernel's core 0 has
   stopped running its loop (a `WaitTimeout` says so): the runtime cannot restore
-  cluster 0, and `KernelFailed` carries the runtime's account of each core.
-- `grid_timeout` bounds every wait for the grid's kernels to return (seconds). When
+  cluster 0, and `KernelFailed` carries the runtime's error message for each core.
+- `grid_timeout`: the timeout, in seconds, of every wait for the grid's kernels. When
   it passes, `km.GridTimeout` is raised and the session does not close the device: the
   runtime closes it at the process's exit, waits for the cores up to
   `TT_METAL_OPERATION_TIMEOUT_SECONDS`, then puts them in reset. A thread that is only
   stuck (a loop, a blocked wait) is recovered by the next open; a kernel that left a
   compute unit running is not, and when the next open fails the card needs a reset.
-  The variable is read once, at the process's first device open, and bounds every
-  wait the runtime makes for the cores in that process, not only the exit's; unset,
-  it means no bound, and only then would the close wait without one. A session that
+  The variable is read once, at the process's first device open, and is the timeout of
+  every wait the runtime makes for the cores in that process, not only the exit's; unset,
+  it means no timeout, and only then would the close wait without one. A session that
   opens the device therefore sets it to 30 s when it is unset (with a log line) and
   keeps a value of the user's.
 - `kernel_bytes` is how much of each core's L1 holds the program's kernels (the
@@ -143,7 +143,7 @@ image=None, thread="card")` returns a `Run`:
 3. launches the three kernels on every core. Kernels compile here, before any X280
    image exists, so a compile error raises `km.ProgramError` and leaves nothing
    running;
-4. starts the dispatcher and waits (bounded by `start` seconds) for every column of
+4. starts the dispatcher and waits (with `start` seconds as its timeout) for every column of
    the grid to report READY; otherwise `km.StartError`, which carries the kernel's
    result block.
 
@@ -156,7 +156,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 |---|---|
 | `trace` | sequence numbers traced per core (0: no trace); 16 bytes of L1 each |
 | `deadline` | seconds a command may take from submit to its group's completion, waiting behind earlier commands included |
-| `wait`, `idle` | the cores' bound on a wait for another core, and on a wait for the next command (the longest the host may stay silent) |
+| `wait`, `idle` | the cores' timeout on a wait for another core, and on a wait for the next command (the longest the host may stay silent) |
 | `kernel_idle` | the dispatcher's own idle timeout; 0 turns it off |
 | `host_depth`, `event_depth` | the command ring in the X280's memory and the event ring in host memory; powers of two, at most 64 and 128 |
 | `batch` | commands stored per batch: every line, then one fence |
@@ -188,7 +188,7 @@ had read the event of the overlapping one) and after, alternating in one session
 | NOP on 1 core, period | 15.95, 15.96 | 1.90, 1.91 |
 | `examples/03_broadcast`, 120 cores, per job | 61.1, 60.4 | 47.9, 46.9 |
 
-The period is the first member's take of one command to that of the next (the cores'
+The period is the first core's take of one command to that of the next (the cores'
 trace, median of 99, after 10 commands of warm-up). The broadcast row is
 `broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --jobs 40 --no-check`
 (host time per job). The 4.28 is a run in which the host's stores reached the X280 fast,
@@ -218,7 +218,7 @@ A `Tensor` has `address` (its address in every bank, or in every core's L1),
 `pages`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
 for `Program(compile_args=...)`); `write(data)`; `read()` (the whole tensor as a numpy
 array, bfloat16 as float32) and `read_bytes()`; `free()`. Its `write` and `read` wait
-for the cores of a launched program to return, which the resident grid does only at
+for the cores of a launched program to return, which the persistent grid does only at
 the stop: before `load` and after `run.stop()` they are the plain way. bfloat16 values
 are rounded to nearest, ties to even; `komorebi.formats` has the conversions
 (`bf16_bits`, `bf16_values`, `tilize`, `untilize`, `to_bytes`, `from_bytes`) on their
@@ -268,16 +268,16 @@ range.
 | `forget(handles)` | releases what the run keeps for handles whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps groups and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
-| `abort()` | the failure path: stops the grid from the host (bounded), then the kernel through the runtime, closes it, reads back; `result()` then has `abandoned`; raises `KernelFailed` if the runtime could not restore cluster 0, with the runtime's account of each core (phase, stage, trap cause and address) in its message and the session log |
+| `abort()` | the failure path: stops the grid from the host (with a timeout), then the kernel through the runtime, closes it, reads back; `result()` then has `abandoned`; raises `KernelFailed` if the runtime could not restore cluster 0, with the runtime's account of each core (phase, stage, trap cause and address) in its message and the session log |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict (with `ports`: count and wanted count of every port slot, and `broadcasts`: each broadcast's VALID word, first give-up, blocks, wait cycles and DONE-BY words; a reader or writer that gave up waiting on a port or an emit names its `port`), the raw state words, the trace |
 
 `run.submit_s` adds up the host's time in `submit` and `submit_many`; `run.wait_s` the
 time in `wait` and `drain`, of which `run.native_s` was in the native loop.
 
-`trace()` returns a `komorebi.state.Trace`: `command(handle)` gives each member's
+`trace()` returns a `komorebi.state.Trace`: `command(handle)` gives each core's
 wall-clock words (taken, outputs written, completion sent, ring passes);
-`phases(handle)` gives microseconds after the first member took it; `lead(a, b)` is
-how long before handle `a`'s completion a member of `b` took its command (positive: both
+`phases(handle)` gives microseconds after the first core took it; `lead(a, b)` is
+how long before handle `a`'s completion a core of `b` took its command (positive: both
 were in flight at once).
 
 ## Engines: uploads, `start`, events
@@ -373,9 +373,9 @@ All derive from `km.KomorebiError`.
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
-| `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass stamp, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
+| `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
 | `CommandRejected` | the kernel consumed the command and submitted nothing (a reserved handler or flag, a group outside the grid, a command after EXIT); the run goes on | `handle`, `reason` (`KMD_REJECT_*`), `reason_name` |
-| `CommandTimeout` | a group missed its deadline; the kernel stopped the grid, the run is stopped and read back | `handle`, `slot`, `seq`, `group`, `cores`: each member that did not report, with where its reader and writer gave up |
+| `CommandTimeout` | a group missed its deadline; the kernel stopped the grid, the run is stopped and read back | `handle`, `slot`, `seq`, `group`, `cores`: each core of the group that did not report, with where its reader and writer gave up |
 | `KernelFailed` | the dispatcher finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |
 | `EngineRejected` | the kernel rejected a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `CommandRejected` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `handle`, `reason`, `reason_name`, `pc`, `node` |
@@ -385,7 +385,7 @@ All derive from `km.KomorebiError`.
 A card stays held by a process from its first device open until that process exits,
 even after the device is closed: tt-metal's driver takes the chip's lock at the first
 open and gives it back only when the process ends. A second process that opens the card
-meanwhile would wait without a bound, so `Session.open` first reads the lock's owner
+meanwhile would wait without a timeout, so `Session.open` first reads the lock's owner
 (from the driver's lock file, without taking the lock) and raises `km.CardBusy` naming
 that process when it still maps the file: a process that died holding the lock, a
 zombie or a PID reused since is not taken for the holder. A test run that opens the
@@ -447,7 +447,7 @@ found.
 - The host never reads or writes a core's memory while the program runs, with one
   exception: the stop flag, when the dispatcher cannot send it. State words and
   the trace are read after the stop.
-- While the dispatcher runs, every host wait is bounded. The X280 runtime is
+- While the dispatcher runs, every host wait has a timeout. The X280 runtime is
   closed before any readback, on every failure path, at the process's exit and on
   SIGTERM, always before the device.
 - Host stores into the card go in batches: every line, one fence, then a pause of

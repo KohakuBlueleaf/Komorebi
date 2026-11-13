@@ -195,8 +195,8 @@ def broadcast_chunks(s, r, broadcasts, length, chunks=None):
 
 def plan(s, r, grid, length, chunks=None):
     """Jobs per core (index y * gx + x) for broadcasts of `length` cores down each grid
-    column, the sender at the top; each core takes its share of a broadcast job's rows:
-    contiguous, or (causal) `length` apart."""
+    column, the sender at the top; each core takes its partition of a broadcast job's
+    rows: contiguous, or (causal) `length` apart."""
     gx, gy = grid
     broadcasts = [
         (x, y0) for x in range(gx) for y0 in range(0, gy - length + 1, length)
@@ -281,7 +281,7 @@ class Plan:
         return l1_bytes(self.dims, self.r, self.kb, self.window)
 
     def blocks_per_broadcast(self, core):
-        """K / V blocks the broadcast of `core` hands over in one call."""
+        """K / V blocks the broadcast of `core` delivers in one call."""
         return sum(math.ceil(j.nk / self.kb) for j in self.jobs[core])
 
     def summary(self):
@@ -345,7 +345,7 @@ def exp_constants(scale, approx=False):
 
 
 def call_args(q, k, v, o, table, mode=K["kModeFull"], passes=1, first=0, count=0):
-    """Command words a0..a8 of ATTEND: jobs [first, first + count) of every member's
+    """Command words a0..a8 of ATTEND: jobs [first, first + count) of every core's
     table (count 0: to the end)."""
     return [q, k, v, o, table, mode, passes, first, count]
 

@@ -69,15 +69,15 @@ def nocs(grid, table, noc0):
 
 
 def partition(items, index, count):
-    """The part of the range `items` that member `index` of `count` members takes.
+    """The part of the range `items` that rank `index` of `count` cores takes.
 
     Parts are contiguous and cover the range once; the first len(items) % count
-    members take one item more.
+    cores take one item more.
     """
     if count < 1 or not 0 <= index < count:
-        raise ValueError(f"member {index} of {count}")
+        raise ValueError(f"rank {index} of {count}")
     if items.step != 1:
-        raise ValueError("share needs a range with step 1")
+        raise ValueError("partition needs a range with step 1")
     base, extra = divmod(len(items), count)
     start = items.start + index * base + min(index, extra)
     return range(start, start + base + (index < extra))
@@ -86,24 +86,22 @@ def partition(items, index, count):
 @dataclass(frozen=True)
 class Counters:
     """A dynamic run's counter tiles: the last `k` cores of the group (core order
-    `first`, `count` cores) hold the other members' tails and never submit an atomic."""
+    `first`, `count` cores) hold the other cores' tails and never submit an atomic."""
 
-    workers: range  # the cores that send and receive items
+    workers: range  # the cores that send and receive messages
     counters: range  # the counter tiles
-    counter_of: dict  # member core: the counter tile that holds its tail
-    serves: dict  # counter tile: the member cores whose tails it holds
+    counter_of: dict  # core: the counter tile that holds its tail
+    serves: dict  # counter tile: the cores whose tails it holds
 
 
 def counter_tiles(first, count, k):
     """The counter tiles of a dynamic run of group (`first`, `count`) with `k` of them:
-    member core c reserves on counter tile c mod k (as km::dyn_counter)."""
+    core c reserves on counter tile c mod k (as km::dyn_counter)."""
     most = abi.headers()["KM_COUNTERS_MAX"]
     if not 1 <= k <= most:
         raise ValueError(f"counters {k}: not in 1..{most}")
     if count <= k:
-        raise ValueError(
-            f"a group of {count} cores leaves no member beside {k} counters"
-        )
+        raise ValueError(f"a group of {count} cores leaves no core beside {k} counters")
     workers = range(first, first + count - k)
     counters = range(workers.stop, first + count)
     counter_of = {c: counters[(c - first) % k] for c in workers}
@@ -124,8 +122,8 @@ def split_range(total, cores):
 
 
 def queue_pages(core, queue_messages, page_messages=32):
-    """The DRAM pages of core `core`'s queue of a dynamic handler (`page_messages` items
-    a page, the queues of all cores in core order): a range of page indices."""
+    """The DRAM pages of core `core`'s queue of a dynamic handler (`page_messages`
+    messages a page, the queues of all cores in core order): a range of page indices."""
     if queue_messages % page_messages:
         raise ValueError(f"queue_messages {queue_messages} is not whole pages")
     per = queue_messages // page_messages
@@ -156,7 +154,7 @@ class Group:
         return order[self.first : self.first + self.count]
 
     def partition(self, items, index):
-        """Member `index` of this group's part of the range `items`."""
+        """Rank `index` of this group's part of the range `items`."""
         return partition(items, index, self.count)
 
     def rectangles(self, grid, grid_panels):
@@ -193,7 +191,7 @@ class Group:
 
 
 BROADCAST_NONE = (
-    0xFF  # rank of a group member outside every broadcast (km::kBroadcastNone)
+    0xFF  # rank of a core of the group outside every broadcast (km::kBroadcastNone)
 )
 BROADCAST_CORES_MAX = 16  # a sender and up to 15 receivers (KM_BROADCAST_RANKS)
 BROADCAST_WINDOW_MAX = 8  # km::kBroadcastWindowMax
@@ -256,10 +254,10 @@ def broadcast_rect(broadcast, noc0, noc_xy, noc):
 
 
 def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buffer):
-    """Each group member's broadcast arguments by core index (km::BroadcastArgs fields).
+    """Each core's broadcast arguments by core index (km::BroadcastArgs fields).
 
     buffer = (broadcast id, circular buffer index, window B, pages P). The rectangle
-    must lie in the group; members outside it get rank BROADCAST_NONE."""
+    must lie in the group; cores outside it get rank BROADCAST_NONE."""
     broadcast_id, cb, window, pages = buffer
     if not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1:
         raise ValueError(f"window {window} or pages {pages} out of range")

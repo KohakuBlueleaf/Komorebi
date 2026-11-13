@@ -1,7 +1,7 @@
 """COUNT and SETUP on the card: program, mesh and camera upload, LANES check of the
-records, and a frame (COUNT, the host's step, SETUP, the fill of `card.py`) checked
-against the reference. `python -m projects.raster.card_passes --scene tiny [--frame]`
-prints one JSON line; exits 1 unless exact."""
+records, and a frame (COUNT, the host's middle pass, SETUP, the fill of `card.py`)
+checked against the reference. `python -m projects.raster.card_passes --scene tiny
+[--frame]` prints one JSON line; exits 1 unless exact."""
 
 import argparse
 import contextlib
@@ -23,7 +23,7 @@ S = {
 
 
 def program():
-    """The passes' three kernels on every core; one record in flight per core."""
+    """The passes' three kernels on every core; one command in flight per core."""
     return km.Program(
         "raster_passes",
         kernels={
@@ -194,8 +194,8 @@ def count_only(args):
 
 
 def frame(args, session=None):
-    """COUNT, the host's step, SETUP, FILL: one frame, each step timed (in `session`,
-    or a session of its own)."""
+    """COUNT, the host's middle pass, SETUP, FILL: one frame, each part timed (in
+    `session`, or a session of its own)."""
     scene, _ = run.load(args.scene)
     blocks = passes.mesh_blocks(scene)
     recs = raster.setup(scene)

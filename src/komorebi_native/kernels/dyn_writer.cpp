@@ -1,5 +1,5 @@
 // Generic writer of a dynamic program: the dynamic handler sends this core's outgoing
-// items; every other command (the run's end command among them) completes as a NOP.
+// messages; every other command (the run's end command among them) completes as a NOP.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

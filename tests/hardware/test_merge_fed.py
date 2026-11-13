@@ -1,5 +1,5 @@
 """The merge-tree example on a card, fed by the test feeder (KMR_CARD=1): one process,
-three launches (both forms on four groups; a member that stalls; a clean launch)."""
+three launches (both forms on four groups; a core that stalls; a clean launch)."""
 
 from pathlib import Path
 
@@ -30,7 +30,7 @@ def test_both_forms_are_exact_and_equal(out):
 
 
 def test_a_stalled_rank_ends_in_a_timeout_naming_port_and_missing_count(out):
-    s = out["stall"]  # job 1: by tree on cores 0 to 7; member 3 sends to member 2
+    s = out["stall"]  # job 1: by tree on cores 0 to 7; rank 3 sends to rank 2
     assert s["status"] == "timeout" and s["timed_out"]["job"] == 1
     assert s["waiting_ports"] == {"2": {"0": 1}, "0": {"1": 1}}
     readers = {g["core"]: g["reader"] for g in s["gave_up"] if "reader" in g}

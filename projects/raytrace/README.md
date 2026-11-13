@@ -8,7 +8,7 @@ against numpy lane by lane and the image against numpy's image, pixel by pixel.
 
 ## The thread program
 
-A pass (primary, shadow, bounce or shadow at the bounce hit) is one record of the
+A pass (primary, shadow, bounce or shadow at the bounce hit) is one command of the
 handler `TRACE` sent to every core of the grid. Each core walks the packets its
 directory entry names, 32 rays to a packet, one ray per lane of the vector unit:
 
@@ -47,7 +47,7 @@ word took 3,400.
 | `compute.cpp` | the pack thread walks each packet on the vector unit (`walk.hpp`): slab test and triangle test in the reference's operation order, with an exact reciprocal (`sfpu.hpp`); the stages' arithmetic (`shade.hpp`); the unpack thread hands it the pages and, at treelet visits, loads each packet's state into Dst with the math thread; the packer stores it back |
 | `writer.cpp` | 64 packets' output pages of each stream to one DRAM page (the host reads per page); the profile page |
 
-| Record word | Meaning |
+| Command word | Meaning |
 |---|---|
 | a0 | directory: per core, first packet page and page count |
 | a1, a2 | packet pages, hit pages |
@@ -56,8 +56,8 @@ word took 3,400.
 | a5 to a9 | TREELETS: treelet images, list entries, slot bytes, slots, schedule |
 | a1 to a9 | SORT, UNSORT: stream in, stream out, order pages, profile, vectors to put back (0: SORT), the key's low corner and scale |
 
-The frame is eight records in one load (`frame.py`), each core keeping the packets
-of its tiles from the first record to the last. The other stages are threads of the
+The frame is eight commands in one load (`frame.py`), each core keeping the packets
+of its tiles from the first command to the last. The other stages are threads of the
 same form: per packet, their input pages into the vector unit, the stage, their
 output pages; a packet is 8 x 4 pixels, lane `l` at `(l % 8, l / 8)` from the pixel in
 its header (the lane offsets are a constant page, not computed per lane).
@@ -76,16 +76,16 @@ IMAGE    state 2, second shadow hits -> colour
 
 A nearest-hit record carries the hit triangle's normal and vertex colours out of the
 walk (they are in the triangle record in L1), so shading reads no scene data. Stage
-records give the constant page (camera, light, sky, lane offsets) in a3, the profile
+commands give the constant page (camera, light, sky, lane offsets) in a3, the profile
 pages in a4, and the streams' pages in a1, a2, a5 to a9.
 
-Every wait in the kernels is bounded by the wall clock and the run's stop flag; a core
+Every wait in the kernels has a wall-clock timeout and the run's stop flag; a core
 that gives up says why in its profile, and the driver counts it as a failure. `ARITH`
 and `RECIP` run the walk's operations on given inputs for the arithmetic check;
 `PROBE` times one node visit in several forms.
 
-The same eight records also run as one graph (`framegraph.py`): uploaded once into
-the dispatcher's upload region and kept, each record a node after the records
+The same eight commands also run as one graph (`framegraph.py`): uploaded once into
+the dispatcher's upload region and kept, each command a node after the commands
 that write its inputs (the shadow and bounce traces may run together). The camera is
 bound as the address of its constant page (camera, light, sky, lane offsets), the
 colour as its address: a new camera is a new constant page and a `restart` with its
@@ -114,30 +114,30 @@ KMR_CARD=1 python -m pytest tests/hardware/test_raytrace_card.py
 ```
 
 A tree larger than L1 runs with `--treelets KIB`: each core keeps the top of the tree,
-the four trace records become TREELETS records (one per chunk of a core's packets that
+the four trace commands become TREELETS commands (one per chunk of a core's packets that
 fits the treelet buffers), and treelets are read from DRAM as packets need them; the
-stage records are unchanged. `--pictures DIR` writes the card's image, numpy's and
+stage commands are unchanged. `--pictures DIR` writes the card's image, numpy's and
 their difference as PNGs, and the JSON line, as `DIR/<scene>_*`.
 
-`--sort` (with `--treelets`) puts a SORT record before the bounce and second-shadow
-traces and an UNSORT record after each. SORT runs on each core's data-movement core:
+`--sort` (with `--treelets`) puts a SORT command before the bounce and second-shadow
+traces and an UNSORT command after each. SORT runs on each core's data-movement core:
 it reads one vector of all the core's packets at a time into L1 (the slot buffer,
-free between treelet records), keys each ray by its direction's octant and the Morton
+free between treelet commands), keys each ray by its direction's octant and the Morton
 cell (2^9 per axis over the root box) of its origin, orders the keys (radix sort,
 three passes of 11 bits, rays without a ray last) and writes the packets in that
 order with their headers' direction signs, and the order. UNSORT writes the hits back
 to their pixels' lanes. Rays never leave their core; the stages are unchanged.
 
-`frame.py` prints one JSON line: per record its median time and the cycles per packet
+`frame.py` prints one JSON line: per command its median time and the cycles per packet
 of loading, computing and writing, the clock, the card's idle and mean power, the image
 check and `ok`; `--stages` also reads every stage's pages back and checks them (use it
 on a few tiles: the whole frame's pages are 490 MB). `framegraph.py` runs the graph
 for each camera in the kernel and host-fed, and checks every image against numpy's
 and the two against each other. `run.py` prints a JSON line per pass (card time per
-record, rate, profile sums, the check) and a last line with `ok`: every record done, every core ended, nothing given
+command, rate, profile sums, the check) and a last line with `ok`: every command done, every core ended, nothing given
 up, no walk error, no ray differs from numpy, and no pixel of the image differs. It
-exits 1 without it. `--reps` reruns each pass; the time of a pass is the record's
-event time (submit to completion, the X280's timer), and records run one at a time.
+exits 1 without it. `--reps` reruns each pass; the time of a pass is the command's
+event time (submit to completion, the X280's timer), and commands run one at a time.
 `--save DIR` writes the result files in the reference's layout to `DIR/card/`, so
 `reference/agree.py --external DIR` compares them.
 
@@ -192,9 +192,9 @@ Tiny scene, 1024 x 1024 pixels, 32,768 packets on the 120 cores, tree in L1;
 2026-11-13 11:35, AICLK 1350 MHz, X280 1000 MHz, host load average 3.7;
 `python -m projects.raytrace.frame --scene tiny --reps 200 --json frame.json`. Median
 of 200 frames in one load; image 0 of 1,048,576 pixels differing. Card power 72.3 W
-mean over the 4.6 s of records (66.2 W idle before), 1.68 J per frame.
+mean over the 4.6 s of commands (66.2 W idle before), 1.68 J per frame.
 
-| record | card ms | cycles per packet: load, compute, write |
+| command | card ms | cycles per packet: load, compute, write |
 |---|---|---|
 | GEN | 0.542 | 130, 966, 1194 |
 | TRACE primary | 3.399 | 1140, 6676, 1539 |
@@ -218,17 +218,17 @@ C++ and V100: the benchmark run of the next table ([`results/reference-bench.jso
 The C++ and V100 frame is the reference's five stages, ray generation and shading
 inside them; neither counts loading or building the scene and tree, copying them to
 the GPU or copying the image back ([reference](reference/README.md#timings-and-power)).
-The card's frame is its eight records likewise: the tree is loaded before them and
+The card's frame is its eight commands likewise: the tree is loaded before them and
 the colour is read back after, neither counted.
 
 Reading it against the V100: below half everywhere, room left, in three places.
 - Moving pages between L1 and the vector unit: the cores copy them word by word
   through the Dst window, about 90 cycles per 32-word vector in and 115 out. In the
-  stage records that is 47 to 69 % of the time (SHADE1: 4.9k of 10.4k cycles per
+  stage commands that is 47 to 69 % of the time (SHADE1: 4.9k of 10.4k cycles per
   packet). The unpacker and packer move tiles between L1 and Dst without the core;
-  pages laid out as Dst tiles would take that cost off every record, traces included.
+  pages laid out as Dst tiles would take that cost off every command, traces included.
 - The traces: as below (box tests, bounce coherence). Here the shadow and bounce
-  records also walk every packet of the frame, with the lanes of missed pixels empty
+  commands also walk every packet of the frame, with the lanes of missed pixels empty
   (rays stay on their core): the second shadow trace takes 3.88 ms for 158,779 rays,
   against 1.60 ms when `run.py` packs them; a later version re-bins them into full
   packets.
@@ -242,7 +242,7 @@ sorted (the tiny row: the whole tree in L1, not sorted, the run above); 2026-11-
 card 1, AICLK 1350 MHz, X280 1000 MHz, one frame each;
 `python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --json
 frame.json` (tiny: neither flag), the JSON of every row in [`results/`](results/).
-Card ms per record; Mray/s counts the reference's rays of the four traces over the
+Card ms per command; Mray/s counts the reference's rays of the four traces over the
 card's frame. C++ (96 threads of the host's 48-core EPYC 7K62) and V100 are the
 reference's five stages, median of 3 processes x 3 frames, from one run of `python -m
 projects.raytrace.reference.bench` on 2026-11-13 14:57 to 15:20
@@ -268,8 +268,8 @@ node visit of the bounce trace, Sponza overview: 4.2 of 32 before, 6.0 after). M
 the packet states through the unpacker and packer took Sponza's overview from 451 to
 349 ms and Bistro's from 633 to 524. What is left in the traces (Sponza overview, mean
 core): box tests 61 %, stack pops 13 %, triangle tests 11 %, state moves 3 %; and the
-slowest core of each record against the mean: 71 of the 349 ms (Bistro: 147 of 524). The
-host submits one 64-byte command per record and waits for one event each; nothing is
+slowest core of each command against the mean: 71 of the 349 ms (Bistro: 147 of 524). The
+host submits each command as one 64-byte line and waits for one event each; nothing is
 read back inside the frame. The X280 work cluster is not used here; the next section
 runs the frame from it.
 
@@ -371,15 +371,15 @@ bytes.
 | 0 | 23.52 | 26.08 | 0 | 0 |
 | 1 | 23.62 | 25.43 | 0 | 0 |
 
-The frame as a graph takes the time of its records (23.20 ms above) plus about 0.3
-ms; host-fed adds about 2 ms of host round trips over the eight records.
+The frame as a graph takes the time of its commands (23.20 ms above) plus about 0.3
+ms; host-fed adds about 2 ms of host round trips over the eight commands.
 
 ### The four traces alone
 
 Tiny scene (398 triangles), 1024 x 1024 pixels, the whole grid (120 cores), tree in
 L1; 2026-11-13 09:14, AICLK 1350 MHz, host load average about 10 (shared host);
 `python -m projects.raytrace.run --scene tiny --reps 5 --json tiny.json`. Median of 5
-records per pass (the spread was under 2 us). Every pass exact, image 0 pixels
+commands per pass (the spread was under 2 us). Every pass exact, image 0 pixels
 differing. Power was not sampled in this run.
 
 | pass | rays | card ms | card Mray/s | C++ 96 threads Mray/s | V100 Mray/s | card / V100 |

@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-// MAP: a0 input, a1 input tiles T from tile a4, a2 output, a3 output page of member 0.
+// MAP: a0 input, a1 input tiles T from tile a4, a2 output, a3 output page of rank 0.
 constexpr uint32_t kHandlerMap = 1;
 
 constexpr uint32_t kCbIn = 0;

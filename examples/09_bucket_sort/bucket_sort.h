@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-/* Step 1, COUNT: every core counts its share of the keys per bucket and writes its row
- * of the counts table. Step 3, PLACE: every core writes each key to its place. */
+/* Step 1, COUNT: every core counts its partition of the keys per bucket and writes its
+ * row of the counts table. Step 3, PLACE: every core writes each key to its place. */
 #define BS_HANDLER_COUNT 1u
 #define BS_HANDLER_PLACE 2u
 

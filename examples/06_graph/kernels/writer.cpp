@@ -1,5 +1,5 @@
-// Graph writer: each member reads its state word, changes it and writes it back; NORM's
-// leader reads every word and gives their sum as the command's result word.
+// Graph writer: each rank reads its state word, changes it and writes it back;
+// NORM's leader reads every word and gives their sum as the command's result word.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

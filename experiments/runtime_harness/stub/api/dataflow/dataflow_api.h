@@ -125,7 +125,8 @@ inline bool cb_pages_reservable_at_back(uint32_t cb, uint32_t pages) {
     return kmsim::cb_room(cb, pages);
 }
 
-// Waits (unbounded) for free pages; a reservation past the buffer's end is reported.
+// Waits (without a timeout) for free pages; a reservation past the buffer's end is
+// reported.
 inline void cb_reserve_back(uint32_t cb, uint32_t pages) {
     kmsim::point("cb_reserve_back", cb);
     kmsim::cb_reserve(cb, pages);
@@ -143,7 +144,7 @@ inline bool cb_pages_available_at_front(uint32_t cb, uint32_t pages) {
     return kmsim::cb_ready(cb, pages);
 }
 
-// Waits (unbounded) for pages at the front.
+// Waits (without a timeout) for pages at the front.
 inline void cb_wait_front(uint32_t cb, uint32_t pages) {
     kmsim::point("cb_wait_front", cb);
     kmsim::cb_wait(cb, pages);

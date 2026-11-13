@@ -44,9 +44,9 @@ There is no work per command, so the protocol itself is what is measured.
   - *early*: protocol A polls that saw one to three of the four echo words, i.e. a
     partly landed command (not applicable to B, which never looks at the body early);
   - *idle polls*: polls that saw nothing of the command yet;
-  - *lost*: a bounded wait gave up (the kernel then completes the last command so the
+  - *lost*: a timed wait gave up (the kernel then completes the last command so the
     run ends instead of hanging);
-  - with `--stamp`: wall-clock cycles of the one successful acceptance check
+  - with `--timestamp`: wall-clock cycles of the one successful acceptance check
     (`invalidate_l1_cache` plus the loads and compares), min, mean and max.
 - **Time per command**: X280 `mtime` (50 MHz) from command 1 submitted to the last ack,
   divided by n.
@@ -73,7 +73,7 @@ includes unchanged. Nothing is built inside either tree.
 
 ```
 TT_METAL_TREE=<tt-metal> TTX_DISPATCH=<tt-x280-dispatch> ./build.sh
-python landing.py --proto a|b --depth 1|4 --commands N [--stamp]
+python landing.py --proto a|b --depth 1|4 --commands N [--timestamp]
 ```
 
 `landing.py` runs in slow dispatch and prints one JSON line (`ok` is true when every core
@@ -91,7 +91,7 @@ p150a, 120 Tensix cores (12 x 10) at AICLK 1350 MHz, X280 at 1750 MHz, slow disp
 posted multicast windows, two panels. Every run below finished with `ok` true: all 120
 cores accepted every command, nothing lost. Sizes were run in the order 1, 100, 10^4,
 10^5, 10^6 for each protocol and depth; then 10^6 twice more without and three times with
-stamping. Host load average (one minute) 6.6 to 12.7 on 96 CPUs.
+timestamping. Host load average (one minute) 6.6 to 12.7 on 96 CPUs.
 
 Torn commands per configuration, summed over all its runs (1, 100, 10^4, 10^5, and six
 runs of 10^6: 6,110,101 commands; core-commands = commands x 120 cores):
@@ -105,14 +105,14 @@ runs of 10^6: 6,110,101 commands; core-commands = commands x 120 cores):
 
 Microseconds per command (X280 tick counter), 10^6 commands, each run:
 
-| protocol | depth | runs, no stamp | runs, `--stamp` | acceptance check, cycles (min / mean / max) |
+| protocol | depth | runs, no timestamp | runs, `--timestamp` | acceptance check, cycles (min / mean / max) |
 |---|---|---|---|---|
 | A | 1 | 1.2849, 1.2849, 1.2851 | 1.3018, 1.3024, 1.3024 | 39 / 39.8 / 49 to 51 |
 | B | 1 | 1.3096, 1.3097, 1.3094 | 1.3229, 1.3226, 1.3225 | 29 / 29.6 / 36 |
 | A | 4 | 0.7720, 0.7720, 0.7720 | 0.7941, 0.7941, 0.7941 | 34 / 39.2 / 49 |
 | B | 4 | 0.7281, 0.7281, 0.7281 | 0.7500, 0.7500, 0.7500 | 24 / 29.2 / 36 |
 
-Stamping reads the wall clock twice per poll and adds 0.013 to 0.022 us per command; the
+Timestamping reads the wall clock twice per poll and adds 0.013 to 0.022 us per command; the
 cycle counts include one wall-clock read (1 cycle when measured back to back).
 
 What was observed:

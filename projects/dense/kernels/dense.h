@@ -7,10 +7,10 @@
 #include "komorebi/device/km_broadcast.hpp"
 
 // LOAD: a0 W (DRAM, [K, N] tiles row-major), a1 the W buffer, a3 kt, a4 nt. Every
-// member reads all of W into that buffer and keeps it for the commands that follow.
+// core reads all of W into that buffer and keeps it for the commands that follow.
 constexpr uint32_t kHandlerLoad = 1;
 // PRODUCT: a0 A ([M, K]), a1 Y ([M, N]), a2 mt, a3 kt, a4 nt, a5 kc (K chunk), a6 ct
-// (column block), a7 mode, a8 form, a9 W (form kFormStream). Member i: rows
+// (column block), a7 mode, a8 form, a9 W (form kFormStream). Rank i: rows
 // partition(mt).
 constexpr uint32_t kHandlerProduct = 2;
 // PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
@@ -42,7 +42,7 @@ constexpr uint32_t kCbWs = 2;
 constexpr uint32_t kCbOut = 16;
 constexpr uint32_t kCbProf = 3;
 constexpr uint32_t kCbLoaded = 4;  // reader to writer: W has landed (LOAD completes)
-// LAYER: held intermediates (a member's rows, packed by one command, taken by the
+// LAYER: held intermediates (a core's rows, packed by one command, taken by the
 // next), the second and third resident W.
 constexpr uint32_t kCbHold0 = 5;
 constexpr uint32_t kCbHold1 = 6;
@@ -83,7 +83,7 @@ constexpr uint32_t kProfWords = 32;
 
 #if !defined(COMPILE_FOR_TRISC)
 
-// Bounded wait until this kernel's reads have landed (kFlushReads) or its writes have
+// Timed wait until this kernel's reads have landed (kFlushReads) or its writes have
 // left L1 (kFlushSent); a give-up goes into state word `word`.
 inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
     const uint32_t code = c.poll(

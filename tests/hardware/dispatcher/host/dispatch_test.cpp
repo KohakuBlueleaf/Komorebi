@@ -1,5 +1,5 @@
 // _km_dispatch_test, the harness's host module: X280 runtime, the kernel's LIM and
-// host buffer, the host command ring, the events. Every wait is bounded.
+// host buffer, the host command ring, the events. Every wait has a timeout.
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/array.h>

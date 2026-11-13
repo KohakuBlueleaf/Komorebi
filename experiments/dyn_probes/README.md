@@ -1,6 +1,6 @@
-# Dynamic crossing probes
+# Routed message probes
 
-Three questions asked of the card before the dynamic crossing was built on them: can a
+Three questions asked of the card before routed messages were built on them: can a
 core reserve positions in another core's queue with one atomic add, how long does a
 message take from one core to another through DRAM, and how many messages per second move
 between cores.
@@ -16,7 +16,7 @@ before its returned value had landed in these runs. Two rules came out of it:
 - The return address is programmed on every call, to a 16-byte line of the sender's
   own. The firmware's default return slot is one shared L1 word.
 - A start barrier between cores must allow more than the launch skew of slow dispatch:
-  a bound of 10 million cycles let about 47 of 119 cores give up before the last one
+  a timeout of 10 million cycles let about 47 of 119 cores give up before the last one
   started; the probe allows 1.35 billion.
 
 In the runtime, at 10^6 forwards on 119 cores, a reservation's answer has been seen to
@@ -85,5 +85,5 @@ python forward.py --mode random --n 32 --packets 256
 python forward.py --mode random --n 32 --packets 256 --commit
 ```
 
-Each prints one JSON line. Every wait in the kernels is bounded; a core that gives up
+Each prints one JSON line. Every wait in the kernels has a timeout; a core that gives up
 says where.

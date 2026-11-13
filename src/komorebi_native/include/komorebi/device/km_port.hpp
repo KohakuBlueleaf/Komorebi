@@ -1,4 +1,4 @@
-// A value crossing to one core: emit (writer), arrive (reader), take (compute), and
+// A message to one core: emit (writer), arrive (reader), take (compute), and
 // reduce by owner and by tree over them. The program supplies the combine step.
 #pragma once
 
@@ -9,7 +9,7 @@
 
 namespace km {
 
-    // Bound of a wait that lies behind a port's wait (for a part that needs
+    // Timeout of a wait that lies behind a port's wait (for a part that needs
     // arrivals), in wait limits: the port's give-up comes first and names the port.
     constexpr uint32_t kBehindPort = 2;
 
@@ -30,7 +30,7 @@ namespace km {
     }
 
     // Writer: `pages` pages (at most P) at the front of `cb` into slot k of `to`, a
-    // bump of its port (each step bounded), pop. False: gave up, port in the top byte.
+    // bump of its port (each step timed), pop. False: gave up, port in the top byte.
     inline bool emit(
         const Writer& wr,
         const km_command_t& r,
@@ -112,7 +112,7 @@ namespace km {
         return true;
     }
 
-    // Reader side of a reduce: each hand-over this member waits for, in round order.
+    // Reader side of a reduce: each arrival this core waits for, in round order.
     inline bool reduce_arrive(
         const Reader& rd,
         const km_command_t& r,
@@ -133,7 +133,7 @@ namespace km {
         return true;
     }
 
-    // Writer side of a reduce: a member other than the root emits its `pages` pages
+    // Writer side of a reduce: a core other than the root emits its `pages` pages
     // of `cb` to its receiver. The root sends nothing.
     inline bool reduce_emit(
         const Writer& wr,
@@ -149,7 +149,7 @@ namespace km {
     }
 
     // Writer at the root of a reduce: waits for the result's `pages` pages of `cb`
-    // (bounded behind the ports). False: gave up (recorded).
+    // (timed behind the ports). False: gave up (recorded).
     inline bool reduce_result(const Writer& wr, uint32_t cb, uint32_t pages) {
         return wr.wait_front(cb, pages, kBehindPort);
     }
@@ -159,18 +159,18 @@ namespace km {
 #else
 namespace km {
 
-    // Compute: waits for the S pages arrive() hands over; pages are then read by index
+    // Compute: waits for the S pages arrive() pushes; pages are then read by index
     // (copy_tile(arr.cb, slot_page(arr, k) + i, ...)). False: the tile is stopping.
     inline bool take(const Compute& cp, const Arrival& arr) {
         return cp.wait_front(arr.cb, arr.pages, kBehindPort);
     }
 
-    // Gives a hand-over back: all S pages, so the slot addresses never drift.
+    // Releases an arrival: all S pages, so the slot addresses never drift.
     inline void untake(const Arrival& arr) {
         cb_pop_front(arr.cb, arr.pages);
     }
 
-    // Compute side of a reduce: each hand-over in round order; combine(k) for its slots
+    // Compute side of a reduce: each arrival in round order; combine(k) for its slots
     // in rank order (owner: 0 to size - 2; tree: the round's), from slot_page(arr, k).
     template <typename Combine>
     inline bool reduce(

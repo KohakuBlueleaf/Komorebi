@@ -31,7 +31,7 @@ class FakeDispatch(FakePort):
         self.fail = {}  # call name -> exception it raises
         self.cleaned = True  # what close() answers
         self.close_failed = ""
-        self.stamps = (7, 7)  # core 0's pass stamp before and after a probe's gap
+        self.markers = (7, 7)  # core 0's pass marker before and after a probe's gap
 
     def _call(self, name):
         self.log.append(name)
@@ -68,7 +68,7 @@ class FakeDispatch(FakePort):
         words = [0] * K["KMD_R_WORDS"]
         words[K["KMD_R_STATE"]] = K["KMD_STATE_READY"]
         words[K["KMD_R_WHERE"]] = K["KMD_WHERE_LOOP"]
-        before, after = self.stamps
+        before, after = self.markers
         x280_cores = "core 0 phase=0x2 trap(mcause=0x7)"
         out = {"running": True, "failed": "", "x280_cores": x280_cores, "words": words}
         return out | {"marker_before": before, "marker_after": after}

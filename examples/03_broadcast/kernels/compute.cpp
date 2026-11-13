@@ -1,4 +1,4 @@
-// Broadcast compute: adds every tile of the member's row block and column block, for
+// Broadcast compute: adds every tile of the core's row block and column block, for
 // each block k, into one fp32 tile (its checksum).
 #include <stdint.h>
 

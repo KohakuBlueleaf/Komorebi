@@ -145,4 +145,4 @@ def test_parts_of_two_pages_land_on_their_own_pages(tmp_path):
             got = pages.setdefault(to, set())
             assert first % 2 == 0 and first + 2 <= 118 and not {first, first + 1} & got
             got |= {first, first + 1}
-    assert run(61, 0)[0] == (59, 60)  # by owner, 61 members need 60 slots: too many
+    assert run(61, 0)[0] == (59, 60)  # by owner, 61 cores need 60 slots: too many

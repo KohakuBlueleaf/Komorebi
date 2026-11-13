@@ -55,7 +55,7 @@ KM_STATIC_ASSERT(sizeof(km_command_t) == 64, "a command is one 64-byte line");
 #define KM_CTL_RING 0x000u /* KM_RING_SLOTS commands */
 #define KM_CTL_RSVD 0x400u /* reserved, 16 bytes; not written in this version */
 #define KM_CTL_STOP 0x410u /* nonzero: every wait gives up */
-#define KM_CTL_DONE 0x440u /* KM_RING_SLOTS counters, 16 bytes apart: members done */
+#define KM_CTL_DONE 0x440u /* KM_RING_SLOTS counters, 16 bytes apart: cores done */
 #define KM_CTL_BOOT 0x540u /* start-up check-in area (column groups, as today) */
 /* per core: last sequence consumed per slot, gave-up code, where code */
 #define KM_CTL_STATE 0x640u
@@ -82,7 +82,7 @@ KM_STATIC_ASSERT(
 );
 KM_STATIC_ASSERT(KM_CTL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte slots");
 
-/* Broadcast broadcast: one area per broadcast, offsets inside it (16-byte slots). */
+/* Broadcast: one area per broadcast, offsets inside it (16-byte slots). */
 #define KM_BROADCASTS 2u
 #define KM_BROADCAST_RANKS 16u   /* DONE-BY words of ranks 1 to 15; rank 0 sends */
 #define KM_BROADCAST_VALID 0x00u /* seq << 16 | blocks valid, from the sender */
@@ -114,34 +114,33 @@ KM_STATIC_ASSERT(
     KM_CTL_BROADCAST % 16u == 0 && KM_BROADCAST_BYTES % 16u == 0, "16-byte slots"
 );
 
-#define KM_CTL_DYN 0xC80u   /* dynamic crossing: queue counters, idle words, status */
-#define KM_CTL_TAILS 0xD40u /* dynamic crossing: a counter tile's tail lines */
+#define KM_CTL_DYN 0xC80u   /* routed messages: queue counters, idle words, status */
+#define KM_CTL_TAILS 0xD40u /* routed messages: a counter tile's tail lines */
 #define KM_CTL_X280                                                   \
     0x1580u /* X280 port: the lines shared with the serving X280 core \
              */
 #define KM_CTL_BYTES 0x15C0u
 
-/* Dynamic crossing: offsets inside KM_CTL_DYN, each word in its own 16-byte slot. */
-#define KM_DYN_IN_TAIL 0x00u  /* reader: its tail as last read from its counter tile */
-#define KM_DYN_IN_HEAD 0x10u  /* reader */
-#define KM_DYN_SENT 0x20u     /* writer: items sent to any queue, spawns included */
-#define KM_DYN_CONSUMED 0x30u /* compute: items of the packets it finished */
-#define KM_DYN_QUOTA 0x40u    /* compute: spawns left */
+/* Routed messages: offsets inside KM_CTL_DYN, each word in its own 16-byte slot. */
+#define KM_DYN_IN_TAIL 0x00u /* reader: its tail as last read from its counter tile */
+#define KM_DYN_IN_HEAD 0x10u /* reader */
+#define KM_DYN_SENT 0x20u    /* writer: messages sent to any queue, new ones included */
+#define KM_DYN_CONSUMED 0x30u /* compute: messages of the packets it finished */
+#define KM_DYN_QUOTA 0x40u    /* compute: sends left */
 #define KM_DYN_FLAGS 0x50u /* idle words of reader, compute, writer, 16 bytes apart */
 #define KM_DYN_OUT 0x80u   /* source slot of the status line */
 #define KM_DYN_GAVE 0x90u  /* first give-up: where, position, run, word seen */
 #define KM_DYN_RET 0xA0u   /* writer: the reservation's returned position */
 #define KM_DYN_BYTES 0xC0u
-/* Counter tiles: the last K cores of a dynamic run's group hold the members' tails and
+/* Counter tiles: the last K cores of a dynamic run's group hold the cores' tails and
  * never submit an atomic; offsets inside KM_CTL_TAILS. */
-#define KM_TAILS_READY 0x00u  /* counter tile: {run, 1, members it serves, 0} */
-#define KM_TAILS_READER 0x10u /* member reader: a counter's READY line read here */
-#define KM_TAILS_WRITER 0x20u /* member writer: the same */
+#define KM_TAILS_READY 0x00u  /* counter tile: {run, 1, cores it serves, 0} */
+#define KM_TAILS_READER 0x10u /* reader: a counter's READY line read here */
+#define KM_TAILS_WRITER 0x20u /* writer: the same */
 #define KM_TAILS_LINE 0x30u   /* + 16 c: group core c's tail, the atomic adds' target */
 #define KM_TAILS_BYTES (KM_TAILS_LINE + 16u * KM_CORES_MAX)
 #define KM_COUNTERS_MAX 4u
-/* the submitter ends a dynamic run with this command to the run's group; a0 = run's seq
- */
+/* the submitter ends a dynamic run with this command to its group; a0 = run's seq */
 #define KM_HANDLER_DYN_END 249u
 
 /* Status line of a core in a dynamic run, 16 bytes at the submitter, one store. */

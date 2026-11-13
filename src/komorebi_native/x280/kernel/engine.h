@@ -693,7 +693,7 @@ static kmd_uop_t stream_op(kmd_engine_t* e, kmd_stream_t* s) {
     return KMD_UOP_DONE;
 }
 
-/* The streams' share of a pass: each running stream runs up to KM_STEP_OPS micro-ops,
+/* The streams' part of a pass: each running stream runs up to KM_STEP_OPS micro-ops,
  * in activation order starting at stream `pass % running` (submitters take turns). */
 static void eng_step(kmd_engine_t* e) {
     kmd_stream_t* turn[KM_STREAM_MAX_ACTIVE];
@@ -760,7 +760,7 @@ static void eng_loop(kmd_engine_t* e) {
     } while ((eng_owes(e) || graph_owes(e)) && x280_mtime() < by);
 }
 
-/* Core 1: waits for the kernel's go (bounded by twice t_start and the runtime's stop),
+/* Core 1: waits for the kernel's go (timeout: twice t_start, or the runtime's stop),
  * runs the engine's loop, and reports it stopped in the core block. */
 static void eng_run(uint64_t core, const volatile kmd_args_t* a, uint64_t run) {
     volatile uint8_t* state = (

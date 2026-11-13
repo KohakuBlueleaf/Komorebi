@@ -1,7 +1,7 @@
 """Atomic answers probe: every asking core reserves K positions with non-posted atomic
-adds on random cores, one at a time, and waits (bounded) for each returned old value.
-The tails are on the asking cores themselves, or on counter tiles that only answer.
-One JSON line. python stress.py [--counters 1] [--fixed-return]"""
+adds on random cores, one at a time, and waits (with a timeout) for each returned old
+value. The tails are on the asking cores themselves, or on counter tiles that only
+answer. One JSON line. python stress.py [--counters 1] [--fixed-return]"""
 
 import argparse
 import json

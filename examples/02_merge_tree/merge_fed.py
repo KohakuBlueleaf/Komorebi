@@ -53,7 +53,7 @@ def parse():
         "--stall-rank",
         type=int,
         default=-1,
-        help="then a launch of one job whose member M stalls, and a clean launch",
+        help="then a launch of one job whose rank M stalls, and a clean launch",
     )
     p.add_argument("--seed", type=int, default=1)
     args = p.parse_args()
@@ -107,7 +107,7 @@ def kernels(inp, out):
 
 
 def launch(runner, args, jobs, inputs, out, stall=-1, stall_rank=NONE):
-    """Runs the jobs (job j writes output part j % parts); job `stall` has member
+    """Runs the jobs (job j writes output part j % parts); job `stall` has rank
     `stall_rank` stall, under a deadline long enough for its receiver's wait to
     give up first."""
     commands = []
@@ -261,7 +261,7 @@ def run(session, args, rng):
         **summary(res, jobs),
         **check(args, jobs, res.commands["status"] == 1, out, xs),
     }
-    if args.stall_rank >= 0:  # a member stalls in job 1; then a clean launch
+    if args.stall_rank >= 0:  # a core stalls in job 1; then a clean launch
         few = jobs[:4]
         stalled = launch(runner, args, few, inputs, out, 1, args.stall_rank)
         result["stall"] = summary(stalled, few)

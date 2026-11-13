@@ -136,8 +136,8 @@ static int block_l1(int cpu, int core, uint32_t addr, uint32_t k, uint32_t* xfer
     return 0;
 }
 
-/* Round k's block for core c into region 0 at 4 KiB * c, given back to the grid (the
- * give's cycles go to *xfer). */
+/* Round k's block for core c into region 0 at 4 KiB * c, flushed to the grid (the
+ * flush's cycles go to *xfer). */
 static int block_dram(int core, uint32_t k, uint32_t* xfer) {
     if (block_make(core, k, (uint32_t)core) == 0) {
         return 1;

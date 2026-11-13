@@ -211,7 +211,7 @@ static void serve(int cluster, int cpu, uint64_t arg) {
 }
 
 /* X280 core 0 of every cluster: the lines into the bank, for the host. */
-static void give(int cluster, int cpu, uint64_t arg) {
+static void flush_out(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
@@ -219,8 +219,8 @@ static void give(int cluster, int cpu, uint64_t arg) {
     }
 }
 
-/* X280 core 0 of every cluster: the host's regions taken before they are read. */
-static void take(int cluster, int cpu, uint64_t arg) {
+/* X280 core 0 of every cluster: the host's regions invalidated before they are read. */
+static void invalidate_in(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
@@ -245,7 +245,7 @@ int kmx_main(int cpu) {
         out_bytes < 4u * RL_LINE * RL_LINES_MAX) {
         return CODE_BAD;
     }
-    if (kmx_par_all(take, 0) != KMX_OK) {
+    if (kmx_par_all(invalidate_in, 0) != KMX_OK) {
         return CODE_LATE;
     }
     km_command_t r;
@@ -260,7 +260,7 @@ int kmx_main(int cpu) {
         e = kmx_port_run(&r, serve, 0, &ev);
     }
     const uint64_t ticks = kmx_time() - t0;
-    if (kmx_par_all(give, 0) != KMX_OK) {
+    if (kmx_par_all(flush_out, 0) != KMX_OK) {
         return CODE_LATE;
     }
     uint32_t w[R_COUNT] = {0, g_fails, (uint32_t)ticks, (uint32_t)(ticks >> 32)};

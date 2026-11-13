@@ -7,7 +7,7 @@
 
 A programming model and framework for the Tensix grid and the X280 cores of a
 Tenstorrent Blackhole card (developed on a P150A). A program is a set of persistent kernels on every Tensix core; each command they receive names a handler of code and a
-core group, and every member works on its share. Values cross between cores, a
+core group, and every core of the group works on its partition. Cores send each other messages, a
 dispatcher on one X280 cluster submits the commands and runs streams and graphs of
 them on the card, and C threads on the other three X280 clusters run the irregular part
 of a program.
@@ -39,10 +39,10 @@ and a third or less (the ray tracer).
 
 ## A kernel
 
-The merge-tree example adds up a job's input tiles over a core group. Each member
-runs three kernels: the reader brings the member's share of the tiles from DRAM into
-L1 and waits for the parts other members send it; the compute kernel below adds them;
-the writer sends the member's part to its receiver, or, on member 0, writes the total.
+The merge-tree example adds up a job's input tiles over a core group. Each core of the group
+runs three kernels: the reader brings the core's partition of the tiles from DRAM into
+L1 and waits for the parts other cores of the group send it; the compute kernel below adds them;
+the writer sends the core's part to its receiver, or, on rank 0, writes the total.
 The parts meet either at one owner or along a tree
 ([02_merge_tree/kernels/compute.cpp](examples/02_merge_tree/kernels/compute.cpp),
 lines 36 to 81; above them are the includes and two helpers: `add_page` adds one tile
@@ -60,7 +60,7 @@ void kernel_main() {
         const uint32_t tiles = r.a1;  // input tiles T of the job
         const uint32_t form = r.a4;   // 0: merge at one owner, 1: along a tree
         const uint32_t part = r.a7;   // tiles per part P (1 to 3), one sum each in DST
-        // The group is the command's range of cores; my rank in it gives my share of T.
+        // The group is the command's range of cores; my rank in it gives my partition of T.
         const km::Group g = km::group_of(r, cp.me());
         const km::Partition s = km::partition(tiles, g.rank, g.size);
         const km::Arrival arrival = {kCbArrive, kArrivePages, part};
@@ -75,8 +75,8 @@ void kernel_main() {
                 cb_pop_front(kCbIn, 1);
             }
         }
-        // The crossing: wait for the parts other members send me, add them in rank
-        // order (by owner: member 0 takes all; by tree: one partner a round).
+        // The reduce: wait for the parts other cores of the group send me, add them in rank
+        // order (by owner: rank 0 takes all; by tree: one partner a round).
         ok = ok && km::reduce(cp, arrival, g, form, [&](uint32_t k) {
                  for (uint32_t d = 0; d < part; d++) {
                      add_page(kCbArrive, km::slot_page(arrival, k) + d, d);
@@ -84,7 +84,7 @@ void kernel_main() {
              });
         tile_regs_commit();
         tile_regs_wait();
-        // The P sums to the writer, which sends them on or (member 0) writes the total.
+        // The P sums to the writer, which sends them on or (rank 0) writes the total.
         // After a give-up (a wait ran out, or the run was stopped) nothing is packed.
         if (ok && cp.reserve_back(kCbOut, part)) {
             for (uint32_t d = 0; d < part; d++) {
@@ -188,34 +188,34 @@ static int prefix(job_t* j) {
 
 The grid is the card's real one in NoC0 coordinates; the numbers in the Tensix cores
 are Komorebi's core index. A **command** is one 64-byte line: the handler, the group
-(a contiguous range of cores, whose first member is its **leader**) and ten 32-bit
+(a contiguous range of cores, whose first core is its **leader**) and ten 32-bit
 argument words. Every core sees every command and skips those whose group does not hold
-it; members report to the leader, which acknowledges to the dispatcher, with a
+it; cores report to the leader, which acknowledges to the dispatcher, with a
 result word when the command asks for one.
 
 ### A thread has a program counter and a place
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/breakpoints-dark.svg">
-  <img src="docs/images/breakpoints-light.svg" width="830" alt="Two listings of real code with line numbers. First, a dynamic handler from examples/05_forward/kernels/compute.cpp: while (km::Packet pk = dy.next()) takes the items that landed on this core; for each item the generator advances and is added to the sum; when no hops are left dy.retire() ends the item there; otherwise dy.hop(...) sends its 64 bytes to the member its state names; dy.done(pk) frees the packet. The next, retire and hop lines are marked. Second, the merge tree from examples/02_merge_tree/kernels: the writer's km::reduce_emit sends a member's part into a fixed slot (marked emit), the reader's km::reduce_arrive waits for the senders' parts (marked wait), and the compute kernel's km::reduce adds them in rank order. Below, on a schematic grid of cores, two programs run one at a time: one item starts on a core, hops twice to the core its state names and retires there; and in a group of four merging by owner, ranks 1 to 3 emit their parts to rank 0, which waits for them and adds them.">
+  <img src="docs/images/breakpoints-light.svg" width="830" alt="Two listings of real code with line numbers. First, a dynamic handler from examples/05_forward/kernels/compute.cpp: while (km::Packet pk = dy.next()) takes the items that landed on this core; for each item the generator advances and is added to the sum; when no hops are left dy.retire() ends the item there; otherwise dy.hop(...) sends its 64 bytes to the core its state names; dy.done(pk) frees the packet. The next, retire and hop lines are marked. Second, the merge tree from examples/02_merge_tree/kernels: the writer's km::reduce_emit sends a core's part into a fixed slot (marked emit), the reader's km::reduce_arrive waits for the senders' parts (marked wait), and the compute kernel's km::reduce adds them in rank order. Below, on a schematic grid of cores, two programs run one at a time: one item starts on a core, hops twice to the core its state names and retires there; and in a group of four merging by owner, ranks 1 to 3 emit their parts to rank 0, which waits for them and adds them.">
 </picture>
 
 A **breakpoint** is a point where a thread must deal with another core; between two
 breakpoints it runs on its core. Today a program is written as the handler bodies of
 its kernels, as above; the thread language in the first column is planned:
 
-| Planned thread language | What crosses | On the card today |
+| Planned thread language | What is sent | On the card today |
 |---|---|---|
-| `at X[i]: block` | the thread's state | a dynamic handler: the state as a 64-byte item, `dy.hop` ([dynamic handlers](docs/reference/dynamic.md), [05_forward](examples/05_forward/)) |
+| `at X[i]: block` | the thread's state | a dynamic handler: the state as a 64-byte message, `dy.forward` ([dynamic handlers](docs/reference/dynamic.md), [05_forward](examples/05_forward/)) |
 | `emit v -> thread(j)` | the value | `km::emit` into a fixed slot, reduce by owner or by tree ([ports](docs/reference/ports.md), [02_merge_tree](examples/02_merge_tree/)) |
-| `v = wait(n)` | nothing | `km::arrive`: a bounded wait until `n` values have landed |
-| a block to a row or a column | the block, once per broadcast | broadcast broadcast ([broadcasts](docs/reference/broadcast.md), [03_broadcast](examples/03_broadcast/)) |
+| `v = wait(n)` | nothing | `km::arrive`: a timed wait until `n` values have landed |
+| a block to a row or a column | the block, once per broadcast | a broadcast ([broadcasts](docs/reference/broadcast.md), [03_broadcast](examples/03_broadcast/)) |
 
 ### Groups and commands in time
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/groups-dark.svg">
-  <img src="docs/images/groups-light.svg" width="830" alt="Time runs left to right over cores 0 to 11, the first row of the grid (NoC0 row 2, columns 1 to 6 in panel 0 and 11 to 16 in panel 1). The dispatcher submits R1 to cores 0 to 4 and R2 to cores 6 to 11; each command lands on every core, the members work at the same time, report to their leader, and each leader acknowledges its own command, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both groups. In the drawn case it lands after cores 3, 4 and 6 to 8 have begun R1 or R2, so they take it next, while core 5, in neither group, takes it at once; each member's report ends on the broadcast of the leader, core 3, which acknowledges after the last report. A note says this order is the drawn case, not a guarantee: a shared core may run two commands in flight in either order unless the later one is submitted exclusive.">
+  <img src="docs/images/groups-light.svg" width="830" alt="Time runs left to right over cores 0 to 11, the first row of the grid (NoC0 row 2, columns 1 to 6 in panel 0 and 11 to 16 in panel 1). The dispatcher submits R1 to cores 0 to 4 and R2 to cores 6 to 11; each command lands on every core, the cores work at the same time, report to their leader, and each leader acknowledges its own command, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both groups. In the drawn case it lands after cores 3, 4 and 6 to 8 have begun R1 or R2, so they take it next, while core 5, in neither group, takes it at once; each core's report ends on the broadcast of the leader, core 3, which acknowledges after the last report. A note says this order is the drawn case, not a guarantee: a shared core may run two commands in flight in either order unless the later one is submitted exclusive.">
 </picture>
 
 Up to 16 commands are in flight at once. A command that must run after an earlier one
@@ -225,24 +225,24 @@ on overlapping cores is submitted with `run.submit(..., exclusive=True)`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/mapcollect-dark.svg">
-  <img src="docs/images/mapcollect-light.svg" width="830" alt="The map/collect example on the real tile grid: the core group 0 to 7 sits at NoC0 (1, 2) to (6, 2), (11, 2) and (12, 2); core 3 at (4, 2) is highlighted. A table lists each member's share: core m reads tiles 8m to 8m+7 and writes output page a3 + m. Members report to core 0, which acknowledges to X280 0. Inside core 3: the reader reads tiles 24 to 31 from DRAM on NoC0 into circular buffer 0 in L1, compute copies each tile to DST and the vector unit adds them in fp32, pack writes the sum to circular buffer 16, the writer writes it to DRAM on NoC1, and the core reports to core 0.">
+  <img src="docs/images/mapcollect-light.svg" width="830" alt="The map/collect example on the real tile grid: the core group 0 to 7 sits at NoC0 (1, 2) to (6, 2), (11, 2) and (12, 2); core 3 at (4, 2) is highlighted. A table lists each core's share: core m reads tiles 8m to 8m+7 and writes output page a3 + m. Cores report to core 0, which acknowledges to X280 0. Inside core 3: the reader reads tiles 24 to 31 from DRAM on NoC0 into circular buffer 0 in L1, compute copies each tile to DST and the vector unit adds them in fp32, pack writes the sum to circular buffer 16, the writer writes it to DRAM on NoC1, and the core reports to core 0.">
 </picture>
 
 ## What exists
 
 | Part | On main | Page | Example |
 |---|---|---|---|
-| Persistent kernel: commands, 16 mailbox slots per core, the reader, compute and writer loops, every wait bounded, the trace | implemented | [Tensix runtime](docs/reference/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
+| Persistent kernel: commands, 16 mailbox slots per core, the reader, compute and writer loops, every wait with a timeout, the trace | implemented | [Tensix runtime](docs/reference/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
 | Groups per command, several in flight, completion per group, a result word per command | implemented | [Tensix runtime](docs/concepts/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
-| Static crossings: `emit`, `arrive`, `take`, groups, reduce by owner and by tree | implemented | [ports](docs/reference/ports.md) | [02_merge_tree](examples/02_merge_tree/) |
-| Static crossings: broadcast broadcast along a row or a column, two broadcasts at once | implemented | [broadcasts](docs/reference/broadcast.md) | [03_broadcast](examples/03_broadcast/) |
-| Dynamic crossings: items through per-core queues in DRAM, a spawn quota, the quiet end found by the dispatcher | implemented; one dynamic run at a time | [dynamic handlers](docs/reference/dynamic.md) | [05_forward](examples/05_forward/) |
+| Channels: `emit`, `arrive`, `take`, groups, reduce by owner and by tree | implemented | [ports](docs/reference/ports.md) | [02_merge_tree](examples/02_merge_tree/) |
+| Channels: broadcast along a row or a column, two broadcasts at once | implemented | [broadcasts](docs/reference/broadcast.md) | [03_broadcast](examples/03_broadcast/) |
+| Routed messages: messages through per-core queues in DRAM, a send quota, the quiet end found by the dispatcher | implemented; one dynamic run at a time | [dynamic handlers](docs/reference/dynamic.md) | [05_forward](examples/05_forward/) |
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
 | X280 threads: `kmx_par`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_par_all` over twelve cores and `kmx_push` across banks | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
-| Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, a bounded exit | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
+| Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, an exit with a timeout | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
 | The thread language; homes declared | planned | [manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md) | |
 
 ## Measured
@@ -261,7 +261,7 @@ frame (the same algorithm in CUDA on one idle Tesla V100 32 GB, and in C++ on a 
 read-back.
 
 The **rasterizer**: the passes and the counting run on the 120 cores, the serial rest of
-the step between them on a thread on the X280 work cluster; the image is bit-exact
+the middle pass between them on a thread on the X280 work cluster; the image is bit-exact
 against numpy. Median of 5 loads, each about 1 s of frames; card 1
 ([raster](projects/raster/README.md#the-frame-on-the-work-clusters-thread), results in
 `projects/raster/results/`,
@@ -269,23 +269,23 @@ against numpy. Median of 5 loads, each about 1 s of frames; card 1
 
 | Scene | Triangles | Frame | Card frame, ms | of which the X280 step | Card W | C++ 96 threads, ms | V100, ms | V100 / card |
 |---|---|---|---|---|---|---|---|---|
-| tiny | 398 | first | 1.051 | 0.436 | 64.0 | 2.66 | 0.29 | 0.28 |
-| tiny | 398 | repeated | 1.051 | 0.436 | 61.8 | 2.66 | 0.29 | 0.28 |
-| 10^4 | 11,994 | first | 1.091 | 0.440 | 65.8 | 3.32 | 0.25 | 0.23 |
-| 10^4 | 11,994 | repeated | 1.041 | 0.453 | 65.4 | 3.32 | 0.25 | 0.24 |
-| 10^5 | 102,308 | first | 2.555 | 0.751 | 67.2 | 4.08 | 0.79 | 0.31 |
-| 10^5 | 102,308 | repeated | 2.454 | 0.771 | 65.9 | 4.08 | 0.79 | 0.32 |
-| 10^6 | 997,806 | first | 12.125 | 0.804 | 67.7 | 17.87 | 4.42 | 0.36 |
-| 10^6 | 997,806 | repeated | 10.575 | 0.823 | 67.3 | 17.87 | 4.42 | 0.42 |
-| Sponza, overview | 262,266 | first | 7.223 | 0.456 | 65.7 | 7.88 | 2.31 | 0.32 |
-| Sponza, overview | 262,266 | repeated | 5.285 | 0.466 | 66.1 | 7.88 | 2.31 | 0.44 |
-| Bistro interior, overview | 1,020,903 | first | 15.373 | 0.733 | 65.3 | 14.10 | 5.99 | 0.39 |
-| Bistro interior, overview | 1,020,903 | repeated | 10.974 | 0.752 | 65.2 | 14.10 | 5.99 | 0.55 |
+| tiny | 398 | cold | 1.051 | 0.436 | 64.0 | 2.66 | 0.29 | 0.28 |
+| tiny | 398 | warm | 1.051 | 0.436 | 61.8 | 2.66 | 0.29 | 0.28 |
+| 10^4 | 11,994 | cold | 1.091 | 0.440 | 65.8 | 3.32 | 0.25 | 0.23 |
+| 10^4 | 11,994 | warm | 1.041 | 0.453 | 65.4 | 3.32 | 0.25 | 0.24 |
+| 10^5 | 102,308 | cold | 2.555 | 0.751 | 67.2 | 4.08 | 0.79 | 0.31 |
+| 10^5 | 102,308 | warm | 2.454 | 0.771 | 65.9 | 4.08 | 0.79 | 0.32 |
+| 10^6 | 997,806 | cold | 12.125 | 0.804 | 67.7 | 17.87 | 4.42 | 0.36 |
+| 10^6 | 997,806 | warm | 10.575 | 0.823 | 67.3 | 17.87 | 4.42 | 0.42 |
+| Sponza, overview | 262,266 | cold | 7.223 | 0.456 | 65.7 | 7.88 | 2.31 | 0.32 |
+| Sponza, overview | 262,266 | warm | 5.285 | 0.466 | 66.1 | 7.88 | 2.31 | 0.44 |
+| Bistro interior, overview | 1,020,903 | cold | 15.373 | 0.733 | 65.3 | 14.10 | 5.99 | 0.39 |
+| Bistro interior, overview | 1,020,903 | warm | 10.974 | 0.752 | 65.2 | 14.10 | 5.99 | 0.55 |
 
 Where the time goes: SETUP, the scatter of each triangle's record into its tiles' lists,
 is the largest part of every frame from 10^5 up (cold frame: 10^6 5.1 ms, Bistro 7.5
-ms), then COUNT (3.8 and 4.8 ms) and the fill (2.1 ms). "First" is a frame without
-history; "repeated" is a later frame of the same camera, whose COUNT and SETUP ranges are
+ms), then COUNT (3.8 and 4.8 ms) and the fill (2.1 ms). "Cold" is a frame without
+history; "warm" is a later frame of the same camera, whose COUNT and SETUP ranges are
 cut by the frame before's costs (10^6 3.9 and 3.4 ms, Bistro 4.3 and 3.6 ms).
 
 The **ray tracer**: ray generation, four traces and shading are eight commands on the
@@ -355,7 +355,7 @@ three routes (`results/<preset>-ours.json`, `-ktt-<route>.json`):
 From 4096 cubed up both sides are bound by the card's power limit in a loop; the last
 row is bound by reading W from DRAM on 72 cores.
 
-[Attention](projects/attention/README.md#time-and-power), K and V cast down broadcasts of
+[Attention](projects/attention/README.md#time-and-power), K and V multicast down broadcasts of
 cores, the same compute body as Kohaku-TT's flash kernel
 (`results/ours-<preset>.json`, `ktt-<preset>.json`):
 
@@ -379,7 +379,7 @@ ours in its faster form (`results/swiglu-<preset>-<form>-hifi2.json`, `-ktt-<rou
 | 16,384 x 256 x 512 | 180.2 | 137 | 542.1 | 109 | 3.01 |
 | 16,384 x 384 x 384 | 161.7 | 142 | 458.1 | 108 | 2.83 |
 
-The examples' own timings (commands per microsecond, broadcasts, hops, streams, graphs and
+The examples' own timings (commands per microsecond, broadcasts, forwards, streams, graphs and
 threads) are in each [example's README](examples/README.md).
 
 ## Install
@@ -420,8 +420,8 @@ cd ../..
 python -m projects.raytrace.frame --scene tiny --reps 16
 ```
 
-The second command adds a load in which member 3 of job 1 never sends: the host raises
-`km.CommandTimeout` naming the handle and the members that did not report, and the next
+The second command adds a load in which rank 3 of job 1 never sends: the host raises
+`km.CommandTimeout` naming the handle and the cores that did not report, and the next
 load in the same session runs exact.
 
 ## Repository map
@@ -457,9 +457,9 @@ docs/                          concepts, references, install, development
   bank (6 for cluster 1, 7 for clusters 2 and 3); data for the other bank is pushed
   (`kmx_push`), so twelve cores gain over four only where the work computes more than
   it moves.
-- Dynamic handlers: one dynamic run at a time; items travel through queues in DRAM,
-  also to a core's own queue; an item cannot ask for a DRAM fetch; no order between
-  items ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
+- Dynamic handlers: one dynamic run at a time; messages travel through queues in DRAM,
+  also to a core's own queue; a message cannot ask for a DRAM fetch; no order between
+  messages ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
 - At most 16 commands in flight, ten 32-bit argument words per command, handlers 1 to
   239.
 - Reading back from the card runs at about 1 to 2 MB per second
@@ -472,7 +472,7 @@ docs/                          concepts, references, install, development
   compute unit running, a packer that writes past its buffer, an X280 thread that never
   returns and polls nothing, or a dispatcher whose loop has stopped costs a card
   reset. The compute kernel's waits between its own three threads and the NoC barriers
-  are not bounded.
+  have no timeout.
 - tt-metal's watcher cannot run while the X280 runtime is open; debugging is by the
   cores' state words, "where" codes and the per-core trace, read after the stop.
 - `kmr build host` and `kmr build pymodule` take their compile flags from two targets
@@ -495,8 +495,8 @@ Planned, in order:
 |---|---|
 | [docs index](docs/README.md) | every concept and reference page |
 | [programming model](docs/concepts/model.md) | threads, breakpoints, homes, space and time |
-| [Tensix runtime](docs/reference/runtime.md) | the device headers, the command, bounded waits, the control block |
-| [ports](docs/reference/ports.md), [broadcasts](docs/reference/broadcast.md), [dynamic handlers](docs/reference/dynamic.md) | crossings between cores |
+| [Tensix runtime](docs/reference/runtime.md) | the device headers, the command, timed waits, the control block |
+| [ports](docs/reference/ports.md), [broadcasts](docs/reference/broadcast.md), [dynamic handlers](docs/reference/dynamic.md) | messages between cores |
 | [streams](docs/streams.md), [graphs](docs/graphs.md) | deciding on the card in the dispatcher |
 | [X280 threads](docs/threads.md) | C on a work cluster with kmx |
 | [host API](docs/reference/host.md) | `Program`, `Session`, `Run`, errors, builds |

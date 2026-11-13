@@ -1,5 +1,5 @@
 // Stand-in Tensix worker for the dispatcher tests (one data-movement kernel per
-// core): only what the kernel needs. Every wait is bounded; counters go to page `me`.
+// core): only what the kernel needs. Every wait is timed; counters go to page `me`.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -20,9 +20,7 @@ namespace {
     // A NoC write's source and destination share their low 4 address bits.
     static_assert(KM_CTL_OUT % 16 == 0 && KM_CTL_BOOT % 16 == 0, "16-byte slots");
     static_assert(KM_CTL_CORES % 16 == 0 && KM_ACK_STRIDE % 16 == 0, "16-byte slots");
-    static_assert(
-        noc_mode != DM_DYNAMIC_NOC, "the bounded NoC waits use the static NoC"
-    );
+    static_assert(noc_mode != DM_DYNAMIC_NOC, "the timed NoC waits use the static NoC");
 
     // Runtime arguments (host module: Plan::worker_args).
     struct Args {
@@ -121,7 +119,7 @@ namespace {
             );
         }
 
-        // Whether every address the host handed over is 16-byte aligned (else the
+        // Whether every address the host passed is 16-byte aligned (else the
         // gave-up command).
         bool aligned() {
             const uint32_t any =
@@ -341,7 +339,7 @@ namespace {
             }
         }
 
-        // Reports completion: members increment the leader's slot counter; the leader
+        // Reports completion: cores increment the leader's slot counter; the leader
         // waits for count - 1, then sends the ack ({ack, result} with KM_F_RESULT).
         bool complete(const volatile tt_l1_ptr km_command_t* r, uint32_t slot) {
             const uint32_t first = r->group & 0xFFFFu, count = r->group >> 16;

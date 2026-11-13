@@ -8,11 +8,11 @@ writes it, and what the host can do about a thread that does not return.
 
 | Question | Answer |
 |---|---|
-| Can cluster 1 run its own image beside the dispatcher on cluster 0 while a resident grid runs? | Yes: 100 of 100 start, run and stop cycles clean; the kernel saw no error, every core's state words were intact |
-| Does a Tensix core's NoC write into the cluster's DRAM bank reach the X280, and the reverse? | Only with a hand-over in each direction. A Flush64 sweep of the cluster's cache controller over the region's lines is enough both ways (30 ns per line) |
+| Can cluster 1 run its own image beside the dispatcher on cluster 0 while a persistent grid runs? | Yes: 100 of 100 start, run and stop cycles clean; the kernel saw no error, every core's state words were intact |
+| Does a Tensix core's NoC write into the cluster's DRAM bank reach the X280, and the reverse? | Only with a cache flush or invalidate in each direction. A Flush64 sweep of the cluster's cache controller over the region's lines is enough both ways (30 ns per line) |
 | What address does each side use? | The X280: `0x400030000000` + the bank address. A Tensix core: `get_noc_addr_from_bank_id<true>(6, bank address)`. Cluster 1 reaches bank 6 |
 | How fast does the X280 read and write its bank? | About 1.3 GB/s read and 1.8 GB/s write with four cores, the same for 1 MB and 64 MB; Flush64 sweeps run at 5 to 8 GB/s of region |
-| What does a decision over every core's data cost? | Prefix sums over 119 x 1,024 counters: 2.13 ms on four cores, take and give included, exact; 1.70 ms with the L2 prefetchers set as documented |
+| What does a decision over every core's data cost? | Prefix sums over 119 x 1,024 counters: 2.13 ms on four cores, invalidate and flush included, exact; 1.70 ms with the L2 prefetchers set as documented |
 | A thread that ignores its deadline? | The host asks it to stop; if it polls nothing, the cluster stays stuck until a card reset (from the runtime's sources, not run) |
 | What does a thread's ring cost the dispatcher's core 0 when it is empty? | At the session's 1000 MHz its idle pass from 59.1 ns to 73.0 ns (1.23 times) with a look at the ring every fourth pass; at 1750 MHz, 32.1 to 40.8 ns (1.27 times), and 63.5 ns (1.98 times) when it looked every pass (`ring_cost.py`) |
 
@@ -22,7 +22,7 @@ between 2.7 and 9.2. The X280 timer counts 50 MHz; times are from it.
 
 ## Two images (`probe.py two`)
 
-The dispatcher runs on cluster 0 under the resident grid of the map/collect
+The dispatcher runs on cluster 0 under the persistent grid of the map/collect
 example. The `beat` image (`x280/beat.c`: every core counts loop passes for a given
 number of timer ticks, then stores its count) is started on cluster 1, eight NOP jobs
 of random groups go through the kernel meanwhile, the image is waited for and stopped
@@ -43,16 +43,16 @@ through the runtime; that is one cycle.
 
 Two regions of 4 pages of 4 KB in bank 6, the bank cluster 1's memory port reaches.
 The host fills region A; the X280 reads it; a Tensix core (`kernels/dram_rw.cpp`)
-writes another pattern into it through the NoC; the X280 reads it without a hand-over
+writes another pattern into it through the NoC; the X280 reads it without an invalidate
 and after a Flush64 sweep. Then the X280 writes region B with plain stores, and a
-Tensix core copies B into an output buffer three times: with no hand-over, after a
+Tensix core copies B into an output buffer three times: with no flush, after a
 Flush64 sweep, and after a second pattern and a sweep. The host steps the two sides
 through a go line in the cluster's local memory and waits for the Tensix kernel's
 report line (written last) before each step.
 
     python probe.py dram --pages 4
 
-| Direction | Hand-over | Words seen of 4,096 |
+| Direction | Flush / invalidate | Words seen of 4,096 |
 |---|---|---|
 | Tensix writes, X280 reads | none | 0 new (all 4,096 still the host's) |
 | Tensix writes, X280 reads | Flush64 over A | 4,096 new |
@@ -80,8 +80,8 @@ The `rates` image (`x280/rates.c`) runs on all four cores, each on its quarter o
 region of bank 6, with a barrier between phases; each phase's time is the slowest
 core's. Then the prefix-sum job: a cores x bins table of counters (random, 0 to 63),
 `out[c][b]` = the counts of every core in bins before `b` plus bin `b` on the cores
-before `c`; each core owns a quarter of the bins, takes its part of the input with a
-Flush64 sweep, and gives its part of the output with another. The host checks the
+before `c`; each core owns a quarter of the bins, invalidates its part of the input with a
+Flush64 sweep, and flushes its part of the output with another. The host checks the
 output against numpy.
 
     python probe.py rates --small 1048576 --large 0 --cores 8 --bins 64 --reps 1   # smallest
@@ -109,8 +109,8 @@ each core's 128 KiB L2, so 1 MB does not stay.
 
 | Prefix-sum job, 119 x 1,024 counters (476 KB in, 476 KB out) | |
 |---|---|
-| take, give and compute, three runs | 2,137.0 µs, 2,130.8 µs, 2,138.7 µs |
-| of which the take sweep | 61 to 71 µs |
+| invalidate, flush and compute, three runs | 2,137.0 µs, 2,130.8 µs, 2,138.7 µs |
+| of which the invalidate sweep | 61 to 71 µs |
 | output against numpy | exact, 0 words wrong |
 
 A per-frame decision over every core's counts costs about 2 ms of the cluster: the
@@ -198,10 +198,10 @@ line and the runtime's STOP then end any thread that follows the rule.
 | `ring_cost.py` | the idle pass of the dispatcher with and without a thread's ring; one JSON line |
 | `region_read.py` | the host's read of a region the thread wrote, timed and checked; one JSON line |
 | `build.py` | builds the images into `build/` with the X280 toolchain of the tt-metal tree |
-| `x280/probe.h` | the images' shared layout: argument block, progress markers, go line, result words, bounded waits, the Flush64 sweep |
+| `x280/probe.h` | the images' shared layout: argument block, progress markers, go line, result words, timed waits, the Flush64 sweep |
 | `x280/beat.c`, `x280/dram.c`, `x280/rates.c` | the images |
 | `kernels/dram_rw.cpp`, `kernels/dram_probe.h` | the Tensix side of the DRAM probe and the pattern both sides check |
 
 Every wait in the images ends by a deadline or the runtime's stop and leaves a
-progress marker; every wait on the host is bounded. Run under a hang watcher, one card,
+progress marker; every wait on the host has a timeout. Run under a hang watcher, one card,
 `python build.py` first.

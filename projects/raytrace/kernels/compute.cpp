@@ -135,7 +135,7 @@ namespace {
     constexpr uint32_t kErrList = 256;  // a packet's list did not fit an empty pool
     constexpr uint32_t kErrDst = 512;   // no state in Dst in time
 
-    // Packet i's state image and its header (after every image of the record).
+    // Packet i's state image and its header (after every image of the command).
     uint32_t* image_of(uint32_t* st, uint32_t i) {
         return st + kStTileBytes / 4 * i;
     }
@@ -144,7 +144,7 @@ namespace {
         return st + kStTileBytes / 4 * count + kStHeadWords * i;
     }
 
-    // Math has put a state into Dst (its section committed), within the bound.
+    // Math has put a state into Dst (its section committed), within the timeout.
     bool dst_ready(walk::Prof& pf) {
         const bool ok = timed::poll([] {
             return ckernel::semaphore_read(ckernel::semaphore::MATH_PACK) > 0;
@@ -886,7 +886,7 @@ namespace {
 namespace {
 
     // TREELETS on math: per count from unpack, each state's copy into Dst tile 0, the
-    // section given to pack once it is free (bounded); kAbort ends it.
+    // section given to pack once it is free (with a timeout); kAbort ends it.
     void math_states() {
         copy_init(kCbState);
         for (uint32_t pages = 0; pages < (1u << 20); ++pages) {

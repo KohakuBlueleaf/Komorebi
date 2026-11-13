@@ -44,10 +44,10 @@ def log(msg):
 
 def block(*words):
     """An argument block: 64-bit words (word 0 is the run value), padded with zeros up
-    to the result words, so the stamp and go lines of an earlier run are cleared."""
+    to the result words, so the marker and go lines of an earlier run are cleared."""
     raw = struct.pack(f"<{len(words) + 1}Q", 0, *words)
     if len(raw) > PR_MARKER:
-        raise ValueError("the argument block runs into the stamp line")
+        raise ValueError("the argument block runs into the marker line")
     return raw + bytes(PR_RESULT - len(raw))
 
 
@@ -55,7 +55,7 @@ def read_u64(port, offset, n):
     return list(struct.unpack(f"<{n}Q", port.work_read(CLUSTER, offset, 8 * n)))
 
 
-def stamps(port):
+def markers(port):
     """Each core's last progress marker."""
     return list(struct.unpack("<4I", port.work_read(CLUSTER, PR_MARKER, 16)))
 
@@ -64,11 +64,11 @@ def wait_marker(port, where, timeout=10.0):
     """Polls core 0's progress marker until it reaches `where`; raises past timeout."""
     by = time.monotonic() + timeout
     while True:
-        got = stamps(port)[0]
+        got = markers(port)[0]
         if got >= where:
             return got
         if time.monotonic() > by:
-            raise TimeoutError(f"core 0 at stamp {got}, waited for {where}")
+            raise TimeoutError(f"core 0 at marker {got}, waited for {where}")
         time.sleep(0.005)
 
 
@@ -140,7 +140,7 @@ def report_done(tensor, row, timeout=5.0):
 
 
 def mapcollect_program(session):
-    """The map/collect example's program, for a resident grid to run NOP commands."""
+    """The map/collect example's program, for a persistent grid to run NOP commands."""
     x = session.tensor(np.zeros((32, 32), np.float32), "bfloat16", "tile")
     return km.Program(
         "mapcollect",
@@ -159,7 +159,7 @@ def mapcollect_program(session):
 
 
 def two(args):
-    """The dispatcher on cluster 0 under a resident grid, and the beat image
+    """The dispatcher on cluster 0 under a persistent grid, and the beat image
     started, run and stopped on cluster 1 `cycles` times with NOP jobs between."""
     rng = np.random.default_rng(args.seed)
     image = str(BUILD / "beat.bin")
@@ -229,7 +229,7 @@ def two(args):
 def dram(args):
     """Region A: the host fills it, the X280 reads it, a Tensix core writes it, the
     X280 reads it without and with Flush64. Region B: the X280 writes it, a Tensix
-    core copies it out without a hand-over, after Flush64, and after a second
+    core copies it out without a flush, after Flush64, and after a second
     pattern and Flush64."""
     page, na, nb = args.page, args.pages, args.pages
     words = page // 4
@@ -320,7 +320,7 @@ def dram(args):
                 ),
             ]
             for i, (where, targs, dst) in enumerate(steps):
-                log(f"waiting for stamp {where}")
+                log(f"waiting for marker {where}")
                 wait_marker(port, where)
                 log(f"tensix step {i + 1} launch")
                 tensix(session, targs, page)
@@ -468,7 +468,9 @@ def rates(args):
                 if t
             }
         out[f"job_us{tag}"] = [round(t / 50, 1) for t in w[32 : 32 + args.reps]]
-        out[f"job_take_us{tag}"] = [round(t / 50, 1) for t in w[40 : 40 + args.reps]]
+        out[f"job_invalidate_us{tag}"] = [
+            round(t / 50, 1) for t in w[40 : 40 + args.reps]
+        ]
     out["wayenable"] = hex(got[160])
     if args.prefetch:
         keys = ["basic", "user", "csr_7c1", "fault"]

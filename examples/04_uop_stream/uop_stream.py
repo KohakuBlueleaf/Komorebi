@@ -106,7 +106,7 @@ def simulated(stream, cores):
 
 
 def expected(x, jobs, tiles):
-    """Every output tile: member m of a job adds its share of the job's input tiles
+    """Every output tile: rank m of a job adds its partition of the job's input tiles
     (float64 over integer inputs, exact in bf16)."""
     sums = np.cumsum(x.reshape(-1, TILE, TILE).astype(np.float64), 0)
     prefix = np.concatenate([np.zeros((1, TILE, TILE)), sums])
@@ -120,7 +120,7 @@ def expected(x, jobs, tiles):
 
 
 def ranks_of(jobs, cores):
-    """Commands each core is a member of."""
+    """Commands each core is in."""
     edge = np.zeros(cores + 1, np.int64)
     for first, count, _, _ in jobs:
         edge[first] += 1
@@ -130,7 +130,7 @@ def ranks_of(jobs, cores):
 
 def traced(trace):
     """Each traced command in sequence order: (first, count, took, done) with took the
-    first member's reader time and done the last member's writer time, in us."""
+    first core's reader time and done the last core's writer time, in us."""
     h = trace.h
     seen = trace.rows[:, :, h["kTraceSeen"]]
     done = trace.rows[:, :, h["kTraceDone"]]

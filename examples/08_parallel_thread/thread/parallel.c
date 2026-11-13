@@ -1,5 +1,5 @@
-/* Three patterns on the work cluster's four cores with kmx_par, each run with one share
- * and with four and timed: a map, a reduction, a two-pass prefix sum. See README.md. */
+/* Three patterns on the four cores with kmx_par, each run with one partition and with
+ * four, timed: a map, a reduction, a two-pass prefix sum. See README.md. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -50,7 +50,7 @@ enum {
     N_WORDS = S_SUM1 + 8
 };
 
-#define CHUNK 1024u /* words of one share: 4 KiB, a whole number of 64-byte lines */
+#define CHUNK 1024u /* words of one partition: 4 KiB, whole 64-byte lines */
 #define CHUNKS_MAX 4096u
 #define PAR_CALLS 1000u
 /* The cluster's L3 is one 128 KiB way: the aliased map writes this far into its
@@ -206,7 +206,8 @@ static void prefix_seq(job_t* j) {
     }
 }
 
-/* Region g_sweep swept by core 0 alone (the others idle): one core's hand-over. */
+/* Region g_sweep swept by core 0 alone (the others idle): one core's flush or
+ * invalidate. */
 static int g_sweep __attribute__((section(".data"))) = -1;
 
 static void sweep_alone(int core, void* arg) {
@@ -219,7 +220,7 @@ static void sweep_alone(int core, void* arg) {
 typedef enum { MAP, VMAP, SUM, PREFIX, SEQ } kind_t;
 
 /* Best of `repeats` runs of one pattern, each from a cold cache (input and output
- * swept first); the output is given back after. KMX_OK, or kmx_par's error. */
+ * swept first); the output is flushed after. KMX_OK, or kmx_par's error. */
 static int timed(kind_t k, job_t* j, int out, uint32_t repeats, uint32_t* best) {
     *best = 0xFFFFFFFFu;
     for (uint32_t r = 0; r < repeats; r++) {
@@ -331,8 +332,8 @@ int kmx_main(int core) {
             return 2;
         }
     }
-    /* hand-over: a region just read (clean lines), then one just written (dirty),
-     * swept by core 0 alone and by all four */
+    /* flush and invalidate: a region just read (clean lines), then one just written
+     * (dirty), swept by core 0 alone and by all four */
     kmx_progress(16);
     j.out = (uint32_t*)r[R_MAP4];
     j.parts = 4;

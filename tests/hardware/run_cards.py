@@ -1,4 +1,4 @@
-"""Runs card test files one per pytest process, in turn, each under a time bound.
+"""Runs card test files one per pytest process, in turn, each under a timeout.
 Usage: run_cards.py [--timeout S] [--wrap CMD] [FILE ...] (default: every test_*.py);
 `--wrap` goes before each pytest, {name} being the file's stem (a watcher job per file).
 Prints one line per file; exits non-zero if any file failed."""

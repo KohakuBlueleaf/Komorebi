@@ -1,4 +1,4 @@
-// Work-cluster example, grid side: STEP changes each member's state word (page p is
+// Work-cluster example, grid side: STEP changes each core's state word (page p is
 // core p's); SUM's leader reads the loop's words and gives their sum as its result.
 #include <stdint.h>
 

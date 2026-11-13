@@ -111,7 +111,7 @@ def ports(block, h=None):
 def broadcasts(block, h=None):
     """A core's broadcast areas from its control block words, by broadcast: the VALID
     word, the first give-up (where, broadcast, block, seq; None if none), the blocks
-    handed over, the wait cycles and the DONE-BY words of ranks 1 to 15."""
+    delivered, the wait cycles and the DONE-BY words of ranks 1 to 15."""
     h = h or abi.headers()
     wheres = {h[f"kWhere{w}"]: w.lower() for w in WHERES}
     out = []
@@ -170,9 +170,9 @@ DYN_WHERES = {
 
 
 def dynamic(block, h=None):
-    """A core's dynamic-run words from its control block: queue head and tail, items
+    """A core's dynamic-run words from its control block: queue head and tail, messages
     sent and consumed, quota left, the first give-up (where named, position, run, the
-    word seen; None if none), and as a counter tile its last run and members served."""
+    word seen; None if none), and as a counter tile its last run and cores served."""
     h = h or abi.headers()
     at = h["KM_CTL_DYN"] // 4
 
@@ -233,7 +233,7 @@ def core_state(st, core, h=None):
 
 
 def not_reported(st, group, slot, seq, h=None):
-    """The members of `group` whose reported word for `slot` is not `seq`, with where
+    """The cores of `group` whose reported word for `slot` is not `seq`, with where
     each kernel gave up."""
     h = h or abi.headers()
     first, count = group
@@ -271,7 +271,7 @@ class Trace:
         return self.rows.shape[1]
 
     def command(self, handle):
-        """[count, 4] words (seen, done, sent, extra) of the handle's members, or None
+        """[count, 4] words (seen, done, sent, extra) of the handle's cores, or None
         when the handle was not traced."""
         seq = self.seqs.get(handle)
         if seq is None or not 1 <= seq <= self.capacity:
@@ -280,7 +280,7 @@ class Trace:
         return self.rows[first : first + count, seq - 1]
 
     def phases(self, handle):
-        """Microseconds after the first member took the command: last member took it,
+        """Microseconds after the first core took the command: last core took it,
         last outputs written, leader pushed the completion. None when not traced."""
         t = self.command(handle)
         if t is None or not t[:, 0].any():
@@ -298,7 +298,7 @@ class Trace:
         }
 
     def lead(self, a, b):
-        """Microseconds by which a member of handle b took its command before handle
+        """Microseconds by which a core of handle b took its command before handle
         a's leader pushed its completion (positive: both were in flight at once)."""
         ta, tb = self.command(a), self.command(b)
         if ta is None or tb is None:

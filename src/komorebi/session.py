@@ -43,12 +43,12 @@ STATE_DUMP_LINES = 8  # 64-byte lines of the kernel's state logged after a failu
 CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
-PROBE_GAP_S = 0.02  # core 0's pass stamp moves every 1,024 passes (about 33 us)
+PROBE_GAP_S = 0.02  # core 0's pass marker moves every 1,024 passes (about 33 us)
 ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop flag, before the close
 REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
 REGION_CHUNK = 2 << 20  # of this size, with a log line each
-# The runtime's bound on its waits for the cores, the one at device close included;
-# unset, it is 0, which means no bound. Read when the process first opens a device.
+# The runtime's timeout on its waits for the cores, the one at device close included;
+# unset, it is 0, which means no timeout. Read when the process first opens a device.
 OP_TIMEOUT = "TT_METAL_OPERATION_TIMEOUT_SECONDS"
 OP_TIMEOUT_DEFAULT = 30.0  # the runtime's own example value
 # A Blackhole Tensix core's L1 and where the runtime's kernel buffer starts in it
@@ -108,7 +108,7 @@ _HOOKED = []  # [True] once the exit hooks are installed
 
 def _release_all(why, close_device=True):
     """The exit hooks' clean-up: every live session's run is stopped through the X280
-    runtime (bounded), then the device it opened is closed."""
+    runtime (with a timeout), then the device it opened is closed."""
     for session in list(_LIVE):
         session._release(why, close_device)
 
@@ -150,7 +150,8 @@ def aiclk_mhz(card=None):
 
 def exit_timeout(environ, log):
     """Sets OP_TIMEOUT to its default in `environ` when unset or empty and logs it; a
-    value already there is kept. The bound in seconds (0: none; None: not a number)."""
+    value already there is kept. The timeout in seconds (0: none; None: not a number).
+    """
     value = environ.get(OP_TIMEOUT, "")
     if value.strip():
         try:
@@ -158,7 +159,7 @@ def exit_timeout(environ, log):
         except ValueError:
             return None  # the runtime rejects it at the open
     environ[OP_TIMEOUT] = f"{OP_TIMEOUT_DEFAULT:g}"
-    log(f"{OP_TIMEOUT} unset: set to {OP_TIMEOUT_DEFAULT:g} s (bounds the exit)")
+    log(f"{OP_TIMEOUT} unset: set to {OP_TIMEOUT_DEFAULT:g} s (the exit's timeout)")
     return OP_TIMEOUT_DEFAULT
 
 
@@ -310,8 +311,8 @@ def _read_uint32(tensor, device=None, module=None):
 
 
 class Session:
-    """One card: `card` selects it, `device` uses an open one; `grid_timeout` bounds
-    every wait for the grid's kernels. As a context manager it stops a loaded run at
+    """One card: `card` selects it, `device` uses an open one; `grid_timeout` is the
+    timeout of every grid wait. As a context manager it stops a loaded run at
     the exit (through the runtime on an exception) and closes the device it opened.
     A session left open is closed the same way at the process's exit and on SIGTERM.
     """
@@ -406,7 +407,7 @@ class Session:
         _LIVE.discard(self)
 
     def _release(self, why, close_device):
-        """The exit hooks' bounded clean-up of this session: closes the X280 runtime of
+        """The exit hooks' timed clean-up of this session: closes the X280 runtime of
         a load in progress or a loaded run, then (`close_device`) closes the session.
         Errors are logged, not raised: the process is ending. The close runs even when
         the stop raised."""
@@ -558,7 +559,7 @@ class Session:
         sources = program.sources()  # before anything opens: a missing file raises
         mhz = aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
-        # for every core to be idle, which a resident grid never is
+        # for every core to be idle, which a persistent grid never is
         regions = _bank_regions(self, program, works)
         dispatch = module.Dispatch(self.device, self.pll_mhz)
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
@@ -876,7 +877,9 @@ class _Backend:
         self.trace_t = None
         self.state_t = None
         self.read = False
-        self.close_failed = ""  # the runtime's account when an abort did not restore
+        self.close_failed = (
+            ""  # the runtime's error message when an abort did not restore
+        )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
 
     def _control_blocks(self, cores, grid, port_lines=None):
@@ -907,7 +910,7 @@ class _Backend:
             return [], []
         h = abi.headers()
         dyn.check(cores, DYN_DRAM_BYTES, depth)
-        page = 32 * dyn.message_bytes  # kDynPageMessages items a page
+        page = 32 * dyn.message_bytes  # kDynPageMessages messages a page
         queue = self.session.empty(
             (cores * dyn.queue_messages // 32, page // 4), "int32"
         )
@@ -1009,7 +1012,7 @@ class _Backend:
             self.session.log("x280 runtime closed")
 
     def abort(self):
-        """The failure path: the stop flag to every core, a bounded wait for the grid,
+        """The failure path: the stop flag to every core, a timed wait for the grid,
         then the runtime's close, so core 0 is not held behind a grid that runs on.
         Returns whether cluster 0 was restored; `aborted` holds what the kernel left."""
         gx, gy = self.port.grid_x, self.port.grid_y
@@ -1057,7 +1060,7 @@ class _Backend:
         return found[0] if len(found) == 1 else None
 
     def kernel_report(self):
-        """While the kernel runs: whether core 0 still runs its loop (its pass stamp
+        """While the kernel runs: whether core 0 still runs its loop (its pass marker
         over PROBE_GAP_S), its state and where, and the runtime's view of each core."""
         p = self.port.probe(PROBE_GAP_S)
         if not p["running"]:
@@ -1068,7 +1071,7 @@ class _Backend:
         before, after = p["marker_before"], p["marker_after"]
         doing = "is running its loop" if after != before else "is not running its loop"
         report = (
-            f"the dispatcher's core 0 {doing} (pass stamp {before} -> {after} "
+            f"the dispatcher's core 0 {doing} (pass marker {before} -> {after} "
             f"in {PROBE_GAP_S} s; state {r['state_name']}, in {r['where_name']}); "
             f"X280 cores: {p['x280_cores']}"
         )
@@ -1085,10 +1088,10 @@ class _Backend:
         self.session.log("stop flag written by the host")
 
     def read_back(self, stop_grid=False):
-        """After the X280 runtime is closed: waits (bounded) for the grid's kernels,
-        then reads the control blocks ([cores, KM_CTL_BYTES / 4] uint32) and the trace.
-        `stop_grid`: the dispatcher was not there to stop the grid, so the host
-        first writes the stop flag into every core through the device API."""
+        """After the X280 runtime is closed: waits (with a timeout) for the grid's
+        kernels, then reads the control blocks ([cores, KM_CTL_BYTES / 4] uint32) and
+        the trace. `stop_grid`: the dispatcher was not there to stop the grid, so the
+        host first writes the stop flag into every core through the device API."""
         if self.port.is_open:
             raise RuntimeError("close the X280 runtime before reading back")
         h = abi.headers()

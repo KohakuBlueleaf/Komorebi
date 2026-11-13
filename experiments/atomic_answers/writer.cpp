@@ -1,5 +1,5 @@
 // Probe writer (RISCV_1, NoC1): K reservations by non-posted atomic add on random
-// cores, one at a time, each answer awaited (bounded) in a return line of its own.
+// cores, one at a time, each answer a timed wait in a return line of its own.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -52,7 +52,7 @@ namespace {
     }
 }  // namespace
 
-// Args: block address, askers, K, core index, seed, answer bound (cycles), first
+// Args: block address, askers, K, core index, seed, answer timeout (cycles), first
 // counter tile and their count (0: every core holds its own tail), fixed return line.
 void kernel_main() {
     const uint32_t blk = get_arg_val<uint32_t>(0), cores = get_arg_val<uint32_t>(1);

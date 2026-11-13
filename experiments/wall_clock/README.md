@@ -1,8 +1,8 @@
 # The Tensix wall clock across cores
 
 Whether the wall-clock count each Tensix core reads is one count for the whole chip,
-and at what rate it runs against host time. Core (0, 0) sends a stamped ping to each
-peer core with a small NoC write; the peer stamps the arrival and replies. Two rounds
+and at what rate it runs against host time. Core (0, 0) sends a timestamped ping to each
+peer core with a small NoC write; the peer timestamps the arrival and replies. Two rounds
 a spin apart give each peer's offset, its round trip and its drift; spins of 0.5 s and
 2 s against the host's clock give the rate.
 

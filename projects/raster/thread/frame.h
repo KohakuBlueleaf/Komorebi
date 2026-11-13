@@ -48,7 +48,7 @@
 #define RF_W_LISTS 5       /* the lists tensor */
 #define RF_W_LIST_SLOTS 6  /* its slots */
 #define RF_W_DIR 7         /* the directory tensor */
-#define RF_W_STEPS 8       /* 1: COUNT; 2: and the step; 3: and PLACE, SETUP; 4: FILL */
+#define RF_W_STEPS 8       /* how far: 1 COUNT, 2 middle pass, 3 PLACE, SETUP, 4 FILL */
 #define RF_W_FRAME_PAGES 9 /* pages per frame tensor */
 #define RF_W_FRAMES 10     /* frame tensors */
 #define RF_W_FRAME 11      /* their addresses, RF_FRAME_MAX words */
@@ -71,21 +71,21 @@
 #define RF_R_SUMS 4   /* SUM's and HSUM's totals over the cores */
 #define RF_REGIONS 5u
 
-/* Result words: what the step found, and the timer ticks of each part */
+/* Result words: what the middle pass found, and the timer ticks of each part */
 #define RF_O_SLOTS 0
 #define RF_O_ITEMS 1
 #define RF_O_MARKS 2
 #define RF_O_HEAVY 3
 #define RF_O_COUNT 4  /* COUNT submitted to its event */
 #define RF_O_HIST 5   /* HIST, with the heavy tiles' page */
-#define RF_O_MIDDLE 6 /* the step: totals to the words SETUP and PLACE read */
+#define RF_O_MIDDLE 6 /* the middle pass: totals to the words SETUP and PLACE read */
 #define RF_O_PLACE 7
 #define RF_O_SETUP 8
-#define RF_O_TAKE 9      /* the step's parts: the totals' hand-overs */
+#define RF_O_TAKE 9      /* the middle pass's parts: the totals' invalidates */
 #define RF_O_HEAVY_US 10 /* the tiles to cut */
 #define RF_O_ASSIGN 11   /* rm_owners */
 #define RF_O_PAGES 12    /* the items page and frame words */
-#define RF_O_GIVE 13     /* the hand-overs to the grid */
+#define RF_O_GIVE 13     /* the flushes to the grid */
 #define RF_O_CUT 14      /* rm_items */
 #define RF_O_COMPACT 15  /* rm_compact, rm_base */
 #define RF_O_FILL 16
@@ -97,9 +97,9 @@
 
 /* Codes */
 #define RF_BAD_ARGS 1u
-#define RF_RING 2u    /* a record could not be submitted or its event did not come */
-#define RF_COMMAND 3u /* a record did not finish (timeout, rejected) */
+#define RF_RING 2u    /* a command could not be submitted or its event did not come */
+#define RF_COMMAND 3u /* a command did not finish (timeout, rejected) */
 #define RF_TOO_MANY_HEAVY 4u
-#define RF_NO_LAYOUT 5u   /* the step could not lay the lists out */
+#define RF_NO_LAYOUT 5u   /* the middle pass could not lay the lists out */
 #define RF_LISTS_SMALL 6u /* the lists tensor has fewer slots than the frame needs */
 #define RF_PAR 7u         /* a part on the four cores did not finish (late, stopped) */

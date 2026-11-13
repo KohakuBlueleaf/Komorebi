@@ -7,7 +7,7 @@
 #include "komorebi/device/km_worker.hpp"
 
 constexpr uint32_t kCbScratch = 16;
-constexpr uint32_t kReadsMax = 1u << 24;  // bound of the reading loop, pages
+constexpr uint32_t kReadsMax = 1u << 24;  // limit of the reading loop, pages
 
 void kernel_main() {
     constexpr auto reads_args = TensorAccessorArgs<0>();
@@ -33,7 +33,7 @@ void kernel_main() {
         if (handler != XP_HANDLER_ASK || !(r.a2 & XP_F_READS)) {
             return true;
         }
-        // DRAM pages from tensor a3 (a4 pages) while the reader asks; a bounded loop
+        // DRAM pages from tensor a3 (a4 pages) while the reader asks; a limited loop
         // that leaves on the stop flag.
         const auto src = TensorAccessor(reads_args, r.a3);
         uint32_t n = 0;

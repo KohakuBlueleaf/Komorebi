@@ -536,7 +536,7 @@ def case_disjoint(session, args):
 
 
 def case_stall(session, args, leader=False):
-    """A group of every core whose member --core (with leader, the group's leader, core
+    """A group of every core whose rank --core (with leader, the group's leader, core
     0) waits for the stop flag, under KM_HANDLER_DEADLINE: KM_EV_TIMEOUT, the stop flag.
     """
     n_cores = 0
@@ -560,7 +560,7 @@ def case_stall(session, args, leader=False):
     state = cnt[:n_cores, C["state"] : C["state"] + 19]
     blk = fin["block"]
     # Cores that did not report the timed-out command: never took it, or stopped other
-    # than waiting for the next command or, as its leader, for the members.
+    # than waiting for the next command or, as its leader, for the cores.
     out["not_reported"] = [
         {
             "core": i,
@@ -590,7 +590,7 @@ def case_stall(session, args, leader=False):
 def case_stall_late(session, args):
     """Depth 4: on the last core a command that waits for the stop flag under a deadline
     ten times --deadline-us (slot 0, never freed), then on the other cores a command
-    whose member --core waits (slot 1) and two behind it: KM_EV_TIMEOUT names the
+    whose rank --core waits (slot 1) and two behind it: KM_EV_TIMEOUT names the
     stalled command (its deadline passed first) and its slot 1, not the lower slot 0."""
     n_cores = 0
 
@@ -1456,7 +1456,7 @@ def result_stream(n, n_cores, req, seed):
 
 
 def loop_stream(req):
-    """A stream that never ends by itself: JMP to itself."""
+    """A stream that never terminates: JMP to itself."""
     s = ks.Stream(req=req, max_steps=0xFFFFFFFF)
     top = s.label()
     s.jmp(top)
@@ -1757,7 +1757,7 @@ def case_replay(session, args):
 
 
 def case_stream_deadline(session, args):
-    """A stream's command whose member --core waits for the stop flag, header deadline
+    """A stream's command whose rank --core waits for the stop flag, header deadline
     --deadline-us: the stream ends with KM_SERR_DEADLINE at that SUBMIT, the kernel with
     the deadline error, and every core gives up on the stop flag."""
     n_cores = 0

@@ -1,5 +1,5 @@
-// Receiver writer (NoC1): waits (bounded) for the two pages compute packed and writes
-// them to output pages 0 and 1.
+// Receiver writer (NoC1): waits (with a timeout) for the two pages compute packed and
+// writes them to output pages 0 and 1.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

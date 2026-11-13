@@ -44,7 +44,7 @@ of the receiver.
 | Driver: an int32 tensor sharded over cores (0, 0) and (1, 0), 128 words each, zero filled; one launch; reads both shards back | `probe.py` |
 
 Core (1, 0) runs no kernel, so nothing on the card waits for the writes to arrive, and
-every wait in the kernel is bounded. The tests come in two sets, each one launch: the
+every wait in the kernel has a timeout. The tests come in two sets, each one launch: the
 aligned controls first (`--set controls`), then the mismatched writes
 (`--set mismatched`).
 

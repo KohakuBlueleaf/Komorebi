@@ -1,7 +1,7 @@
 """Landing experiment: which protocol lands a 64-byte multicast command safely. One
 JSON line per run: the X280's time per command and the summed core counters.
 
-    python landing.py --proto a --depth 1 --commands 100 [--stamp]
+    python landing.py --proto a --depth 1 --commands 100 [--timestamp]
 """
 
 import argparse
@@ -138,13 +138,13 @@ def main():
     p.add_argument("--proto", choices=["a", "b"], required=True)
     p.add_argument("--depth", type=int, choices=[1, 4], required=True)
     p.add_argument("--commands", type=int, required=True)
-    p.add_argument("--stamp", action="store_true", help="time the acceptance check")
+    p.add_argument("--timestamp", action="store_true", help="time the acceptance check")
     p.add_argument("--pll", type=int, default=1750)
     p.add_argument("--timeout", type=float, default=30.0)
     args = p.parse_args()
     n = args.commands
     command = {"proto": args.proto, "depth": args.depth, "commands": n}
-    command["stamp"] = args.stamp
+    command["timestamp"] = args.timestamp
     command["load_start"] = loadavg()
     t_start = time.time()
 
@@ -165,8 +165,8 @@ def run(card, args, n):
 
     cnt = card.tensor(np.zeros((N_CORES, LC_WORDS), np.uint32), "uint32")
     defines = [("PROTO_B", "1")] if args.proto == "b" else []
-    if args.stamp:
-        defines.append(("STAMP", "1"))
+    if args.timestamp:
+        defines.append(("TIMESTAMP", "1"))
 
     # The X280 starts first: it picks the tag the worker args carry.
     session = plan.start(n)

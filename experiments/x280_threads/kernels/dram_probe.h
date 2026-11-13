@@ -12,7 +12,7 @@
 #define DP_REP_NOC_LO 0u /* the NoC address of page 0 of the region */
 #define DP_REP_NOC_HI 1u
 #define DP_REP_BANK_OFFSET 2u /* bank_to_dram_offset[bank] */
-#define DP_REP_FAILED 3u      /* a bounded NoC wait gave up */
+#define DP_REP_FAILED 3u      /* a timed NoC wait gave up */
 #define DP_REP_DONE 4u        /* DP_DONE */
 
 /* Word w of page j of a pattern; a different seed gives a different pattern. */

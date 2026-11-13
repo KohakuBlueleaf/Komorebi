@@ -33,7 +33,7 @@ namespace {
     }
 
 #ifdef TRISC_PACK
-    // Waits (bounded) for the done words of the other TRISCs in `mask`.
+    // Waits (with a timeout) for the done words of the other TRISCs in `mask`.
     uint32_t wait_done(volatile uint32_t* out, uint32_t mask, uint32_t nonce) {
         for (uint32_t t = 0; t < 2; ++t) {
             if (!((mask >> t) & 1)) {

@@ -18,7 +18,7 @@ bool item_fits(const km::Writer& wr, uint32_t per, uint32_t seq) {
     return false;
 }
 
-// Bounded NoC waits: reads arrived, or writes sent. False: gave up (recorded).
+// Timed NoC waits: reads arrived, or writes sent. False: gave up (recorded).
 template <typename Ready>
 bool noc_done(const km::Writer& wr, Ready ready, uint32_t where, uint32_t seq) {
     const uint32_t code = wr.poll(ready, wr.args().wait_limit);
@@ -51,7 +51,7 @@ bool writes_sent(const km::Writer& wr, uint32_t seq) {
     );
 }
 
-// FILL and ARITH of one record; the frame program's writer calls it as well.
+// FILL and ARITH of one command; the frame program's writer calls it as well.
 bool fill_writer_command(const km::Writer& wr, const km_command_t& r) {
     if (km::handler(r) != kHandlerFill && km::handler(r) != kHandlerArith) {
         return true;

@@ -174,7 +174,7 @@ def test_grid_rule_layouts_fit():
 
 
 def emulate_split(sp, a, w, form):
-    """Y as the K-split kernels compute it: each core's share of K in chunks (A rows
+    """Y as the K-split kernels compute it: each core's partition of K in chunks (A rows
     stride kc, W rows stride ow), then the parts summed by owner or by tree."""
     pa, pw = tiles(a), tiles(w)
     y = np.full((sp.mt, sp.nt, T, T), np.nan)

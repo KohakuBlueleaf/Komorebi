@@ -36,17 +36,17 @@ Longer runs are run by hand: `experiments/feeder_runs/`.
 | `--groups fixed\|random\|pair\|overlap`, `--first`, `--count`, `--group-list f:c,...` | How groups are chosen. |
 | `--tiles T`, `--out-pages`, `--out-tensors` | MAP input tiles per job (job j reads tiles j to j + T - 1) and output space. |
 | `--depth D` | Ring slots in use (1 to 16). |
-| `--wait S`, `--deadline S` | A core's bound on a wait for another core; the feeder's per-command deadline. |
-| `--stall J --stall-rank M` | Job J: member M waits for the stop flag. |
-| `--late J --late-rank M --late-cycles C` | Job J: member M reports C cycles late. |
-| `--bad-item J --bad-side writer\|reader` | Job J: member 0 asks for an item past the end of its buffer. |
+| `--wait S`, `--deadline S` | A core's timeout on a wait for another core; the feeder's per-command deadline. |
+| `--stall J --stall-rank M` | Job J: rank M waits for the stop flag. |
+| `--late J --late-rank M --late-cycles C` | Job J: rank M reports C cycles late. |
+| `--bad-item J --bad-side writer\|reader` | Job J: rank 0 asks for an item past the end of its buffer. |
 | `--result J --result-value V` | Job J is a RESULT command with `KM_F_RESULT`: the leader acknowledges it with the result word V, shown as `result`. |
-| `--slow J --slow-rank M --slow-cycles C` | MAP job J: member M's compute holds its tile C cycles. |
+| `--slow J --slow-rank M --slow-cycles C` | MAP job J: rank M's compute holds its tile C cycles. |
 | `--exit-at J`, `--exit-group f:c` | Job J is an EXIT (with that group in the table). |
 | `--raw J`, `--raw-slot S` | Job J is submitted as built: the header names slot S and the group is kept (tests of commands that name the wrong slot, or an EXIT with a partial group). |
 | `--row N` | Cores per grid row for completion; 0: one level. |
 | `--excl` | `KM_F_EXCL` on every MAP command. |
-| `--trace`, `--dump FILE` | Per-command stamps; save rows, state and trace (npz). |
+| `--trace`, `--dump FILE` | Per-command timestamps; save rows, state and trace (npz). |
 
 The JSON line holds the feeder summary, per-job checks (`jobs_checked`, `jobs_bad`),
 the cores that gave up and where, and `ranks_bad`: cores whose runs, completions,

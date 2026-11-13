@@ -72,7 +72,7 @@ thread product(y, x):                          # one thread per core of the rect
 The breakpoints are the broadcasts' (`km::Broadcast`, `komorebi/device/km_broadcast.hpp`): the
 sender of block k waits until every receiver's compute has freed block k minus the window
 (two blocks here), and a receiver waits for block k's VALID word. Every wait between
-cores is bounded; compute's waits on its own threads' registers (`tile_regs_wait`) are not.
+cores is timed; compute's waits on its own threads' registers (`tile_regs_wait`) are not.
 The commands carry `KM_F_EXCL` (no two commands with broadcasts in flight together).
 
 | Layout | Cores | A | W | Chosen when (`plan.layout_of`) |
@@ -89,7 +89,7 @@ reloaded for the last K block; subblocks of up to 4 tiles).
 
 | Handler | Arguments |
 |---|---|
-| `GRID` | a0 A, a1 W, a2 Y, a3 mode: 0 full, 1 broadcasts only (blocks handed over and taken, no product, no writes), 2 product only (blocks from L1 as they are, no reads, no broadcasts, packed but not written) |
+| `GRID` | a0 A, a1 W, a2 Y, a3 mode: 0 full, 1 broadcasts only (blocks delivered and taken, no product, no writes), 2 product only (blocks from L1 as they are, no reads, no broadcasts, packed but not written) |
 | `GRID_PROF` | a0 the profile tensor |
 
 ## The K split
@@ -102,7 +102,7 @@ cores on each output block and gives each core 1/S of K:
 thread part(g, d):                             # core d of group g, S cores to a group
     block = output tiles of group g (oh x ow)
     acc = 0                                    # fp32 in L1 (kCbSum)
-    for k in chunks(partition(K tiles, d, S), kc): # time: K chunks of this core's share
+    for k in chunks(partition(K tiles, d, S), kc): # time: K chunks of this core's partition
         acc += read_dram(A[block rows, k]) @ read_dram(W[k, block columns])
     acc = reduce(acc, group g)                 # owner: every core sends its part to
                                                #   core 0; tree: halves in log2 S rounds
@@ -112,10 +112,10 @@ thread part(g, d):                             # core d of group g, S cores to a
 
 The parts travel over the cores' ports (`km::reduce`, `komorebi/device/km_port.hpp`):
 the reader takes arrivals into `kCbArrive` (fp32, a slot per sender), compute adds them
-in rank order into `kCbSum` by packer accumulation, the writer sends a member's part
+in rank order into `kCbSum` by packer accumulation, the writer sends a core's part
 to its receiver or writes the root's sum to Y. Commands carry `KM_F_EXCL` (the ports).
 Plans are named by hand: `--split s,oh,ow[,kc]` (`plan.split_plan`; K chunk default:
-the whole share, at most 32 tiles) and `--reduce owner|tree`.
+the whole partition, at most 32 tiles) and `--reduce owner|tree`.
 
 | Handler | Arguments |
 |---|---|
@@ -242,7 +242,7 @@ follow a long loop run at a throttled clock.
   loop's mean 1,255 MHz; the other 11 us of the loop's 393.5 are between commands.
 - `sq4096` (`2d`, on par): the matrix unit, then power. The matrix unit is 81% of the
   slowest core at 36.2 cycles per tile product (19,968 on that core, 4.7% above an
-  even share of 110 cores); a single call takes 660.0 us at 1,350 MHz. In the loop the
+  even partition over 110 cores); a single call takes 660.0 us at 1,350 MHz. In the loop the
   clock falls to a mean of 1,008 MHz (884 us at that clock); both sides end at 957
   to 958 us.
 - `sq8192` (`2d`, ahead): the row broadcast in a single call (98.5% of the slowest core;
@@ -264,7 +264,7 @@ follow a long loop run at a throttled clock.
 
 | File | What it is |
 |---|---|
-| `kernels/dense.h` | handlers, command words, buffers, profile words, the bounded NoC barrier |
+| `kernels/dense.h` | handlers, command words, buffers, profile words, the timed NoC barrier |
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | the three kernels |
 | `plan.py` | the plan as pure functions |
 | `card.py` | the program and its commands on a session |

@@ -29,10 +29,10 @@ constexpr uint32_t kTraceSeen = 0, kTraceDone = 4, kTraceAcked = 8, kTraceBytes 
 constexpr uint32_t kRing = 0;  // command ring, depth <= 4, slot stride 16 or 64 B
 constexpr uint32_t kReaderMsg = 256;   // READY source
 constexpr uint32_t kWriterMsg = 272;   // leader ack source
-constexpr uint32_t kCheckinSrc = 288;  // member check-in source
-constexpr uint32_t kGatherSrc = 304;   // member completion source
+constexpr uint32_t kCheckinSrc = 288;  // core check-in source
+constexpr uint32_t kGatherSrc = 304;   // core completion source
 constexpr uint32_t kHello = 320;       // leader hello {1, ctl}
-constexpr uint32_t kGather = 384;      // leader gather slots, 16 B per member rank
+constexpr uint32_t kGather = 384;      // leader gather slots, 16 B per rank
 constexpr uint32_t kReady = 0xFFFFFFFFu;
 constexpr uint32_t kNumArgs = 16;
 
@@ -73,7 +73,7 @@ public:
         noc_async_write_barrier();
     }
 
-    // Reader side: clear the ring, check in (members) or collect check-ins and report
+    // Reader side: clear the ring, check in (cores) or collect check-ins and report
     // READY (leaders), send hello.
     void start() {
         for (uint32_t s = 0; s < 4; s++) {
@@ -105,7 +105,7 @@ public:
     }
 
     // Reader side: wait until command `seq` has been issued. Returns false after a
-    // bounded spin (X280 gone).
+    // timed spin (X280 gone).
     bool wait(uint32_t seq) {
         const uint32_t off =
             kRing + (d_.depth > 1 ? (seq % d_.depth) * d_.ring_stride : 0);

@@ -282,8 +282,8 @@ namespace {
         PACK((pc[kPrPkOut] += km::wall() - t0));
     }
 
-    // Output row r = O_r / l_r (bf16), to the writer. Pack waits (bounded) for room;
-    // without it the row is not packed and the command ends in a give-up.
+    // Output row r = O_r / l_r (bf16), to the writer. Pack waits (with a timeout) for
+    // room; without it the row is not packed and the command ends in a give-up.
     void finalize(const km::Compute& cp, uint32_t r) {
         const uint32_t t0 = km::wall();
         cb_wait_front(cb_otok, 1);

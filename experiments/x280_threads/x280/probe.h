@@ -1,5 +1,5 @@
 /* Shared by the probe images: the LIM layout the host writes and reads, the argument
- * check, progress markers, bounded waits and the cache operations under test. */
+ * check, progress markers, timed waits and the cache operations under test. */
 #pragma once
 
 #include <stdint.h>
@@ -20,7 +20,7 @@
 
 /* Core results: 0 for a core with nothing to do, else one of these or a count. */
 #define PR_ERR_ARGS 0xE0u  /* the argument block is not this run's or out of range */
-#define PR_ERR_LATE 0xE1u  /* a bounded wait ran out */
+#define PR_ERR_LATE 0xE1u  /* a timed wait ran out */
 #define PR_ERR_STOP 0xE2u  /* the runtime asked for a stop */
 #define PR_ERR_FAULT 0xE3u /* a probed instruction faulted (and was skipped) */
 

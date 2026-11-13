@@ -62,7 +62,7 @@ def dram_xy(device, bank):
 
 
 class Clusters:
-    """A session with a resident grid and the dispatcher; probe threads started
+    """A session with a persistent grid and the dispatcher; probe threads started
     on their clusters through the port, released together by a go line."""
 
     def __init__(self, session):
@@ -160,7 +160,7 @@ def cmd_rates(args, session, out):
     res = k.go_all(30.0)
     k.stop()
     out["clusters"] = k.info
-    names = ["take", "read", "write", "give"]
+    names = ["invalidate", "read", "write", "flush"]
     ok = True
     for r in res.values():
         ok = ok and r["code"] == 0 and r["cleaned"]

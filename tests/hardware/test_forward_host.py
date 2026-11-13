@@ -1,5 +1,5 @@
 """The forward example on a card through the dispatcher (KMR_CARD=1), in one device
-open: a stalled member ends the run, then the next load is exact (10^3 forwards), then
+open: a stalled core ends the run, then the next load is exact (10^3 forwards), then
 the engine's second dynamic run waits, rejected busy, for the first one's end. The last
 two cores of each group are its counter tiles."""
 

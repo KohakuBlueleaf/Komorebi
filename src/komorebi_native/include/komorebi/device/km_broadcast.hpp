@@ -28,7 +28,7 @@ namespace km {
         uint32_t sender;     // core index of the broadcast's sender
         uint32_t mc_start;   // multicast rectangle corners, NoC x | y << 16, in the
         uint32_t mc_end;     // order of the broadcast's NoC
-        uint32_t noc;        // the broadcast's NoC; every member runs it on that NoC
+        uint32_t noc;        // the broadcast's NoC; the whole group runs it on that NoC
         uint32_t cb;         // broadcast buffer: window * pages pages
         uint32_t window;     // B: blocks in flight, 1 to kBroadcastWindowMax
         uint32_t pages;      // P: pages per block
@@ -36,12 +36,12 @@ namespace km {
 
     constexpr uint32_t kBroadcastArgs = sizeof(BroadcastArgs) / 4;
 
-    // A stamp: the command's sequence number (low 16 bits) and a count of blocks.
+    // A marker: the command's sequence number (low 16 bits) and a count of blocks.
     inline uint32_t broadcast_marker(uint32_t seq, uint32_t blocks) {
         return (seq & 0xFFFFu) << 16 | (blocks & 0xFFFFu);
     }
 
-    // True when stamp v belongs to command `seq` and counts at least `blocks`.
+    // True when marker v belongs to command `seq` and counts at least `blocks`.
     inline bool broadcast_reached(uint32_t v, uint32_t seq, uint32_t blocks) {
         return (
             (v >> 16) == (seq & 0xFFFFu) &&
@@ -92,13 +92,13 @@ namespace km {
             return a_.window;
         }
 
-        // Blocks cast or arrived in this command.
+        // Blocks multicast or arrived in this command.
         uint32_t blocks() const {
             return n_;
         }
 
-        // Sender: waits (bounded) until its compute freed slot k mod B; returns the
-        // slot's L1 address (the same on every member), 0 after a give-up.
+        // Sender: timed wait until its compute freed slot k mod B; returns the slot's
+        // L1 address (the same on every core of the group), 0 after a give-up.
         uint32_t reserve(uint32_t k) {
             if (!in_order(k)) {
                 return 0;
@@ -116,8 +116,8 @@ namespace km {
             return slot(k);
         }
 
-        // Sender, block k filled: waits (bounded) until every receiver is done with
-        // block k - B, multicasts it, barrier, multicasts VALID, pushes it to compute.
+        // Sender, block k filled: timed wait until every receiver is done with block
+        // k - B, multicasts it, barrier, multicasts VALID, pushes it to compute.
         bool cast(uint32_t k) {
             if (!reserved_) {
                 fail(kGaveBadBroadcast, kWhereBroadcastBegin, k);
@@ -155,8 +155,8 @@ namespace km {
             return true;
         }
 
-        // Receiver: waits (bounded) for VALID >= k + 1, stamping the blocks its compute
-        // popped meanwhile, then pushes block k to compute.
+        // Receiver: waits (with a timeout) for VALID >= k + 1, marking the blocks its
+        // compute popped meanwhile, then pushes block k to compute.
         bool arrive(uint32_t k) {
             if (!in_order(k)) {
                 return false;
@@ -189,8 +189,8 @@ namespace km {
             return true;
         }
 
-        // After the last block (bounded): compute popped all, padding to whole windows,
-        // last stamp; a sender that cast waits for every receiver's. Clears the words.
+        // After the last block (timed): compute popped all, padding to whole windows,
+        // last marker; a sender that multicast waits for all receivers'. Clears words.
         bool finish() {
             if (!ok_ || !included()) {
                 return ok_;
@@ -209,7 +209,7 @@ namespace km {
                 fail(code, kWhereBroadcastFree, n_);
                 return false;
             }
-            marker_freed();  // the last pop may have come after the last stamp
+            marker_freed();  // the last pop may have come after the last marker
             if (!ok_) {
                 return false;
             }
@@ -222,7 +222,7 @@ namespace km {
                 cb_reserve_back(a_.cb, pad);  // free: every block was popped
                 cb_push_back(a_.cb, pad);
             }
-            if (sender() && n_ != 0) {  // no block cast: no receiver stamps
+            if (sender() && n_ != 0) {  // no block multicast: no receiver markers
                 if (!wait_done(n_, n_)) {
                     return false;
                 }
@@ -250,7 +250,7 @@ namespace km {
             ok_ = begin(r);
         }
 
-        // Checks the arguments against the command and the buffer, then waits (bounded)
+        // Checks the arguments against the command and the buffer, then a timed wait
         // until the buffer is empty at slot 0 (the last command's padding was popped).
         bool begin(const km_command_t& r) {
             if (a_.broadcast >= KM_BROADCASTS || a_.group != r.group) {
@@ -312,7 +312,7 @@ namespace km {
             return (n_ * a_.pages - held) / a_.pages;
         }
 
-        // Receiver: a DONE stamp to the sender when compute popped more blocks.
+        // Receiver: a DONE marker to the sender when compute popped more blocks.
         void marker_freed() {
             if (sender()) {
                 return;
@@ -323,7 +323,7 @@ namespace km {
             }
             if (!flushed(
                     kFlushSent, kWhereBroadcastFree, b
-                )) {  // the last stamp has left KM_BROADCAST_OUT
+                )) {  // the last marker has left KM_BROADCAST_OUT
                 return;
             }
             *at(KM_BROADCAST_OUT) = broadcast_marker(seq_, b);
@@ -335,7 +335,7 @@ namespace km {
             marked_ = b;
         }
 
-        // Sender: waits (bounded) until every receiver's DONE counts `blocks`.
+        // Sender: waits (with a timeout) until every receiver's DONE counts `blocks`.
         bool wait_done(uint32_t blocks, uint32_t k) {
             uint32_t q = 1;
             const uint64_t t0 = wall64();
@@ -359,8 +359,8 @@ namespace km {
             return true;
         }
 
-        // Bounded NoC barrier of this kernel: reads landed, writes sent from L1, or
-        // writes acknowledged. A stop flag set meanwhile gives it one more bound.
+        // Timed NoC barrier of this kernel: reads landed, writes sent from L1, or
+        // writes acknowledged. A stop flag set meanwhile gives it one more timeout.
         bool flushed(uint32_t what, uint32_t where, uint32_t k) {
             const uint32_t code = c_.poll(
                 [&] {
@@ -391,7 +391,7 @@ namespace km {
             return true;
         }
 
-        // Waits (bounded) until `pages` pages of the broadcast buffer are free.
+        // Waits (with a timeout) until `pages` pages of the broadcast buffer are free.
         bool wait_free(uint32_t pages, uint32_t k) {
             const uint32_t code = c_.poll(
                 [&] {
@@ -453,12 +453,12 @@ namespace km {
 #else
 namespace km {
 
-    // Compute: block k's pages, by index 0 to pages - 1 (bounded wait).
+    // Compute: block k's pages, by index 0 to pages - 1 (timed wait).
     inline bool broadcast_receive(const Compute& cp, uint32_t cb, uint32_t pages) {
         return cp.wait_front(cb, pages);
     }
 
-    // Compute: done with the block; the broadcast's data-movement kernel stamps the
+    // Compute: done with the block; the broadcast's data-movement kernel marks the
     // sender.
     inline void broadcast_done(uint32_t cb, uint32_t pages) {
         cb_pop_front(cb, pages);

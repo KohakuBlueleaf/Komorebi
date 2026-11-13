@@ -1,5 +1,5 @@
 """The merge tree on a card through the dispatcher (KMR_CARD=1), in one device
-open: a stalled member ends in the host's timeout, then the next load is exact. And a
+open: a stalled core ends in the host's timeout, then the next load is exact. And a
 session with a 128 KiB kernel buffer runs the map/collect example exact."""
 
 from pathlib import Path
@@ -15,7 +15,7 @@ BUFFER = Path(__file__).resolve().parent / "host" / "kernel_buffer_case.py"
 def test_a_stalled_rank_times_out_naming_its_ports_then_the_next_load_is_exact():
     args = ["--group-list", "0:8,0:119", "--form", "both", "--stall-rank", 3]
     out = run_json(SCRIPT, *args)
-    s = out["stall"]  # job 1: by tree on cores 0 to 7; member 3 sends to member 2
+    s = out["stall"]  # job 1: by tree on cores 0 to 7; rank 3 sends to rank 2
     assert s["kernel"]["error_name"] == "deadline"
     assert s["timed_out"]["handle"] == 2 and s["timed_out"]["group"] == [0, 8]
     assert s["waiting_ports"] == {"2": {"0": 1}, "0": {"1": 1}}

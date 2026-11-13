@@ -1,5 +1,5 @@
-// Grid writer: the column broadcast on NoC1 (W blocks, kb x bn tiles, cast up the
-// column) and Y: a block is written once the next block's first W block is handed over.
+// Grid writer: the column broadcast on NoC1 (W blocks, kb x bn tiles, multicast up the
+// column) and Y: a block is written once the next block's first W block is delivered.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

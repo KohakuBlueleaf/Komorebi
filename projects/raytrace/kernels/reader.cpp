@@ -72,7 +72,7 @@ namespace {
         uint32_t base, bytes, n;
         uint32_t treelet[kMaxSlots];
         uint32_t last[kMaxSlots];  // work pages submitted when it was last named
-        uint32_t used[kMaxSlots];  // use stamp
+        uint32_t used[kMaxSlots];  // last use
         uint32_t clock = 0;
 
         int32_t find(uint32_t t) const {
@@ -93,7 +93,7 @@ namespace {
         }
     };
 
-    // A record's treelet schedule, batch by batch: rounds (r-th list entries) or once;
+    // A command's treelet schedule, batch by batch: rounds (r-th list entries) or once;
     // packets binned by treelet, a treelet read into a slot unless present.
     class Schedule {
     public:
@@ -739,7 +739,7 @@ void kernel_main() {
                 get_noc_addr(rd.me(), profs, 4 * kProfReader),
                 4 * kRdCounters
             );
-            // The reader marks the record done without a barrier: the streams land
+            // The reader marks the command done without a barrier: the streams land
             // first.
             timed::writes_landed(rd, km::kStReader);
             return;

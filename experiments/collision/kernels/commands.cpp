@@ -9,7 +9,7 @@
 
 namespace {
 
-    // Bounded waits: a poll is a few tens of cycles, so about one to two seconds.
+    // Timed waits: a poll is a few tens of cycles, so about one to two seconds.
     constexpr uint32_t kSpinLimit = 1u << 26;
     constexpr uint32_t kHealLimit = 1u << 20;
 

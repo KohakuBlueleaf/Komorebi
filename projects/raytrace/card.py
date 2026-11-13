@@ -1,5 +1,5 @@
 """Running the ray tracer's kernels on a card through the host package: one
-`komorebi.Session`, a program load per handler run, records to every core under the
+`komorebi.Session`, a program load per handler run, commands to every core under the
 dispatcher; DRAM tensors in, hit pages and per-core profiles out.
 """
 
@@ -115,7 +115,7 @@ def workers(session):
 
 def program(tree_pages=1, sizes=None):
     """The ray tracer's program; sizes: bytes of the treelet buffers (state, lists,
-    slots), small when absent. One record at a time: its event time is its own."""
+    slots), small when absent. One command at a time: its event time is its own."""
     sizes = sizes or {}
     pages = [
         (K["kCbIn"], K["kInPageBytes"], K["kInPages"]),
@@ -156,7 +156,7 @@ def program(tree_pages=1, sizes=None):
 
 
 class Ran:
-    """What a handler run left: each record's event, the kernel's result block and
+    """What a handler run left: each command's event, the kernel's result block and
     every core's state words (read after the stop)."""
 
     def __init__(self, events, result, state, host_s):
@@ -187,7 +187,7 @@ def check_run(res, n_workers):
 
 
 def ran_cleanly(run, n_workers):
-    """Every record done, the kernel's error none, every kernel ended, nothing gave
+    """Every command done, the kernel's error none, every kernel ended, nothing gave
     up (a check_run dict)."""
     ended = set(run["cores_ended"].values())
     return (
@@ -200,7 +200,7 @@ def ran_cleanly(run, n_workers):
 
 
 def command_us(res):
-    """Submit to completion of each record, in microseconds (the X280's timer)."""
+    """Submit to completion of each command, in microseconds (the X280's timer)."""
     return np.array([ev.us for ev in res.events], dtype=np.float64)
 
 
@@ -220,7 +220,7 @@ def run_handler(
     sizes=None,
 ):
     """Runs `reps` rounds of a handler (after a LOAD of `tree`) over a directory
-    (workers, 16) or a list of them (a record each per round) and input pages, into
+    (workers, 16) or a list of them (a command each per round) and input pages, into
     out_rows pages of out_words; args[0] is a3, extra tensors and args[1:] follow a4.
     Returns (outputs, profiles summed over directories, Ran, times, power)."""
     n = workers(session)
@@ -314,8 +314,9 @@ def read_each(session, tensors, names):
 
 
 def run_commands(session, commands, tree_pages, deadline_s=5.0, power=None, sizes=None):
-    """One program load: the records (handler, words) submitted in order, one at a time,
-    each waited for; returns the Ran and the host seconds from submit to the last."""
+    """One program load: the commands (handler, words) submitted in order, one at a
+    time, each waited for; returns the Ran and the host seconds from submit to the
+    last."""
     meter = power if power is not None else Power()
     with meter:
         run = session.load(program(tree_pages, sizes), deadline=deadline_s)
@@ -326,7 +327,7 @@ def run_commands(session, commands, tree_pages, deadline_s=5.0, power=None, size
         run.stop()
     events = events if isinstance(events, list) else [events]
     ran = Ran(events, run.result(), run.state(), host_s)
-    # The host's side of the records: one 64-byte command and one event each.
+    # The host's side of the commands: one 64-byte command and one event each.
     ran.host = {
         "commands": len(commands),
         "submit_s": run.submit_s,

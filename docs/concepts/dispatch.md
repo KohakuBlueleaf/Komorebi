@@ -25,13 +25,13 @@ others for work that suits a general-purpose core. This page describes the dispa
  host (Python / C++)                         builds programs and graphs, uploads, starts, reads back
    |  commands into the dispatch cluster's host ring          ^ results pushed to host-visible memory
    v                                                          |
- X280 cluster 0: DISPATCH KERNEL (one fixed image; decides inside)
+ X280 cluster 0: DISPATCHER (one fixed image; decides inside)
    kernel loop on core 0, cores 1 to 3 as its threads
    services: grid port, completion table, rings, timers, memory
    engines:  micro-op interpreter, job queue, graph executor      CPU tasks registered in the image
    |  64-byte commands, multicast per panel                    ^ completion words and counters, pushed
    v                                                          |
- Tensix grid, 120 cores: ONE RESIDENT WORKER per program
+ Tensix grid, 120 cores: ONE PERSISTENT KERNEL per program
    next command -> handler switch -> run -> complete
    static breakpoints (fixed slot + counter)   dynamic breakpoints (inbox, packets, credits)
 
@@ -73,7 +73,7 @@ preemption.
 - **Services.**
   - Grid port: panel windows, and optional per-core windows (183 usable windows per
     cluster).
-  - Completion table: for a static program, a group is done when all its members have
+  - Completion table: for a static program, a group is done when all its cores have
     reported; for a dynamic one, when the sent and consumed counts are equal on two
     successive sweeps.
   - Rings, timers and deadlines.

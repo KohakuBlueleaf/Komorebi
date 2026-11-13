@@ -1,5 +1,5 @@
-"""Broadcast broadcast on a card: A blocks along the rows of a rectangle group, W blocks
-down its columns, every member's checksum against numpy. Commands go through the
+"""Broadcast on a card: A blocks along the rows of a rectangle group, W blocks
+down its columns, every core's checksum against numpy. Commands go through the
 dispatcher on X280 cluster 0 (`--feeder`: through the test feeder, no X280). See
 README.md."""
 
@@ -45,15 +45,19 @@ def parse():
     p.add_argument("--pages", type=int, default=2, help="tiles P per block")
     p.add_argument("--window", type=int, default=2, help="blocks B in flight")
     p.add_argument("--jobs", type=int, default=4)
-    p.add_argument("--read", action="store_true", help="members read DRAM themselves")
+    p.add_argument("--read", action="store_true", help="cores read DRAM themselves")
     p.add_argument("--stall-job", type=int, default=-1)
     p.add_argument("--stall-rank", type=int, default=0, help="group index")
     p.add_argument("--stall-block", type=int, default=0)
     p.add_argument("--again", action="store_true", help="then a clean run")
-    p.add_argument("--empty-job", type=int, default=-1, help="a job casting 0 blocks")
-    p.add_argument("--empty-every", type=int, default=0, help="every nth job casts 0")
     p.add_argument(
-        "--first-blocks", type=int, default=0, help="job 0 casts these, cycling"
+        "--empty-job", type=int, default=-1, help="a job multicasting 0 blocks"
+    )
+    p.add_argument(
+        "--empty-every", type=int, default=0, help="every nth job multicasts 0"
+    )
+    p.add_argument(
+        "--first-blocks", type=int, default=0, help="job 0 multicasts these, cycling"
     )
     p.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
     p.add_argument("--deadline", type=float, default=1.0, help="per command, seconds")
@@ -106,7 +110,7 @@ def broadcast_plan(nocs, cores, rect, window, pages):
 
 
 def broadcast_summary(broadcasts, group, place):
-    """Blocks every broadcast handed over, the longest broadcast wait (cycles), and each
+    """Blocks every broadcast delivered, the longest broadcast wait (cycles), and each
     broadcast give-up by core: broadcast, where, block, sequence number.
     `broadcasts[core]`: the core's broadcast areas (as run.state() gives them)."""
     areas = [broadcasts[c][ln] for c in place for ln in (COLUMN, ROW)]
@@ -125,7 +129,7 @@ def broadcast_summary(broadcasts, group, place):
 
 def make_data(session, rng, group, rect, args):
     """Two input sets of integers in [-2, 2] (sums exact in fp32), their tensors and
-    the output tensor (one fp32 tile per job and member)."""
+    the output tensor (one fp32 tile per job and core)."""
     _, _, nx, ny = rect
     n, p = args.blocks, args.pages
     sets = [
@@ -145,7 +149,7 @@ def make_data(session, rng, group, rect, args):
 
 
 def job_blocks(args, j):
-    """Blocks job j casts per broadcast: 0 for the empty job and every
+    """Blocks job j multicasts per broadcast: 0 for the empty job and every
     `--empty-every`th, `--first-blocks` for job 0 (block k is data block k mod
     `--blocks`), else `--blocks`."""
     n = args.empty_every
@@ -171,7 +175,7 @@ def job_args(args, inputs, out, group, j, stall_job):
 
 
 def check(args, sets, out, group, place):
-    """Every member's checksum tile of every job against numpy, bit for bit."""
+    """Every core's checksum tile of every job against numpy, bit for bit."""
     got = out.read().reshape(args.jobs, group.count, TILE, TILE)
     log("outputs read back")
     bad = []
@@ -224,7 +228,7 @@ def core_gave_up(states):
 def verdict(run, cores, stalled, end_ok):
     """Every core ended and the run ended as it should (`end_ok`: the deadline for a
     stalled job, else a clean end); a clean run with no core and no broadcast given up
-    and every member's values right."""
+    and every core's values right."""
     ok = set(run["cores_ended"].values()) == {cores} and end_ok
     if not stalled:
         ok &= not run["core_gave_up"] and not run["broadcast_gave_up"]

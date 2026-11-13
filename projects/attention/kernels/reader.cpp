@@ -1,6 +1,6 @@
-// Attention reader (NoC0): the member's job table to compute, then per job its Q rows
-// and, unless BROADCAST_ON_WRITER, the job's K / V blocks (the broadcast's sender casts
-// them).
+// Attention reader (NoC0): the core's job table to compute, then per job its Q rows
+// and, unless BROADCAST_ON_WRITER, the job's K / V blocks (the broadcast's sender
+// multicasts them).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

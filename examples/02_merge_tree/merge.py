@@ -49,7 +49,7 @@ def parse():
         "--stall-rank",
         type=int,
         default=-1,
-        help="then a load of four jobs whose job 1 has member M stall, and a clean one",
+        help="then a load of four jobs whose job 1 has rank M stall, and a clean one",
     )
     p.add_argument("--seed", type=int, default=1)
     args = p.parse_args()
@@ -96,7 +96,7 @@ def gave_up(states):
 
 def launch(session, args, jobs, inputs, out, stall=-1, stall_rank=NONE):
     """One load: the jobs (job j writes output part j % parts), each asking for its
-    result word; job `stall` has member `stall_rank` stall, under a deadline long
+    result word; job `stall` has rank `stall_rank` stall, under a deadline long
     enough for its receiver's wait to give up first. Then the stop and the state."""
     run = session.load(
         program(args, inputs[0], out),
@@ -200,7 +200,7 @@ def checked(args, jobs, events, out, xs):
 
 def run(session, args, rng):
     gx, gy = session.grid
-    # random groups fit the arrival buffer by owner: one slot per other member
+    # random groups fit the arrival buffer by owner: one slot per other rank
     jobs = mf.make_jobs(args, min(gx * gy, M["kArrivePages"] // args.part + 1), rng)
     log(f"grid {gx} x {gy}, {len(jobs)} jobs")
 
@@ -226,7 +226,7 @@ def run(session, args, rng):
         **summary,
         **checked(args, jobs, events, out, xs),
     }
-    if args.stall_rank >= 0:  # a member stalls in job 1; then a clean load
+    if args.stall_rank >= 0:  # a core stalls in job 1; then a clean load
         few = jobs[:4]
         _, result["stall"] = launch(session, args, few, inputs, out, 1, args.stall_rank)
         events, after = launch(session, args, few, inputs, out)

@@ -13,7 +13,7 @@ constexpr uint32_t kFdDepth = 5;      // slots used, 1 to KM_RING_SLOTS
 constexpr uint32_t kFdDeadline = 6;   // per command, submit to ack, 1024-cycle units
 constexpr uint32_t kFdResults = 7;    // DRAM address of the results, 64 bytes a row
 constexpr uint32_t kFdGroups = 8;     // start-up groups: READY words to wait for
-constexpr uint32_t kFdBootLimit = 9;  // bound of the start-up wait, 1024-cycle units
+constexpr uint32_t kFdBootLimit = 9;  // timeout of the start-up wait, 1024-cycle units
 constexpr uint32_t kFdExit = 10;      // nonzero: EXIT last (if the table has none)
 constexpr uint32_t kFdRelease = 11;  // nonzero: a9 = submit time + this (cycles, low word)
 // Nonzero: command kFdRaw - 1 is submitted with the slot and group it names (test

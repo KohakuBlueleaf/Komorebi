@@ -32,7 +32,7 @@ static void command(km_command_t* r, uint32_t n, uint32_t asks) {
     r->a1 = r->a2 = r->a3 = r->a4 = r->a5 = r->a6 = r->a7 = r->a8 = r->a9 = 0;
 }
 
-/* X280 core 0 of every cluster: every line zeroed (it gives them at the end). */
+/* X280 core 0 of every cluster: every line zeroed (it flushes them at the end). */
 static void clear(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
@@ -87,7 +87,7 @@ static void serve(int cluster, int cpu, uint64_t round) {
 }
 
 /* X280 core 0 of every cluster: the lines into the bank, for the host. */
-static void give(int cluster, int cpu, uint64_t arg) {
+static void flush_lines(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
@@ -136,7 +136,7 @@ int kmx_main(int cpu) {
     }
     w[R_TICKS_LO] = (uint32_t)ticks;
     w[R_TICKS_HI] = (uint32_t)(ticks >> 32);
-    if (kmx_par_all(give, 0) != KMX_OK) {
+    if (kmx_par_all(flush_lines, 0) != KMX_OK) {
         return CODE_LATE;
     }
     kmx_result(0, w, R_COUNT);

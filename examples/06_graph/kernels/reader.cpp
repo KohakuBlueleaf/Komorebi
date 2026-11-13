@@ -1,4 +1,4 @@
-// Graph reader: STALL makes member a0 wait for the stop flag; other handlers need no
+// Graph reader: STALL makes rank a0 wait for the stop flag; other handlers need no
 // input through the reader.
 #include <stdint.h>
 

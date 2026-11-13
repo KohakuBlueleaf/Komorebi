@@ -483,7 +483,7 @@ namespace {
 }  // namespace
 #endif
 
-// The passes' work for one record; the frame program's compute kernel calls it as
+// The passes' work for one command; the frame program's compute kernel calls it as
 // well.
 void setup_compute_command(const km::Compute& cp, const km_command_t& r) {
     const uint32_t handler = km::handler(r);

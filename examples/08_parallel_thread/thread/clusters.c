@@ -23,7 +23,7 @@ enum { W_N, W_REPEATS, W_ROUNDS, W_COUNT };
  * differ from the 1-core output; then the input push's times. */
 enum { T_TIME = 0, T_DIFFER = 12, T_PUSH = 24, N_WORDS = 28 };
 
-#define CHUNK 1024u /* words of one share: 4 KiB */
+#define CHUNK 1024u /* words of one partition: 4 KiB */
 #define CHUNKS_MAX 4096u
 #define LINE \
     16u /* words: a chunk's sum has a line of its own, so each block's sums push */
@@ -86,7 +86,7 @@ static uint64_t end_of(uint64_t c) {
     return (c + 1) * CHUNK < words() ? (c + 1) * CHUNK : words();
 }
 
-/* One core's share of a phase: chunks lo + core, lo + core + parts, ... */
+/* One core's partition of a phase: chunks lo + core, lo + core + parts, ... */
 static void step(int cluster, int core, uint64_t arg) {
     const uint32_t x280_cores = arg & 0xFFu, phase = (arg >> 8) & 0xFFu;
     uint32_t count;

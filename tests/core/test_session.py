@@ -235,7 +235,7 @@ def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_error(
     report = backend.kernel_report()
     assert report.startswith("the dispatcher's core 0 is not running its loop")
     assert "state ready, in loop" in report and "mcause=0x7" in report
-    backend.port.stamps = (7, 9)
+    backend.port.markers = (7, 9)
     assert "core 0 is running its loop" in backend.kernel_report()
     backend.port.cleaned = False
     log.clear()

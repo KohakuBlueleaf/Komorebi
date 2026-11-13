@@ -1,5 +1,5 @@
 // Reservation probe: each adder core submits K non-posted atomic adds of n to one word
-// on the target and commands the value each returned. Every wait is bounded.
+// on the target and commands the value each returned. Every wait has a timeout.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -14,7 +14,7 @@ namespace {
     constexpr uint32_t kStat = 16;  // adder: status words, see below
     constexpr uint32_t kPos = 32;   // adder: returned values, one per reservation
     constexpr uint32_t kSentinel = 0xDEADBEEFu;
-    constexpr uint32_t kLimit = 10000000;  // cycles of every bounded wait
+    constexpr uint32_t kLimit = 10000000;  // cycles of every timed wait
     constexpr uint32_t kStartLimit = 1350000000;  // start barrier: about 1 s (launch skew)
 
     // Status: done, fail, late, ret_mask, cyc_min, cyc_max, cyc_sum lo, cyc_sum hi.

@@ -1,5 +1,5 @@
-"""Map/collect on persistent kernels under the dispatcher on X280 cluster 0: each
-member of a MAP command's group adds its share of T input tiles into one tile; the host
+"""Map/collect on persistent kernels under the dispatcher on X280 cluster 0: each core
+of a MAP command's group adds its partition of T input tiles into one tile; the host
 checks every tile against numpy and prints one JSON line. See README.md.
 """
 
@@ -88,7 +88,7 @@ def make_groups(args, cores, rng):
 
 
 def place_outputs(groups, pages, tensors):
-    """Global output page of member 0 per job: a ring of `tensors` x `pages` pages in
+    """Global output page of rank 0 per job: a ring of `tensors` x `pages` pages in
     which no job crosses a tensor."""
     base, at = [], 0
     for _, count in groups:
@@ -120,7 +120,7 @@ def input_pages(jobs, tiles, in_tiles):
 
 
 def rank_sums(prefix, start, tiles, count):
-    """Float64 sum of each member's share of tiles [start, start + tiles) of an input,
+    """Float64 sum of each core's partition of tiles [start, start + tiles) of an input,
     from its prefix sums over tiles: [count, 32, 32]."""
     out = np.zeros((count, TILE, TILE))
     for m in range(count):
@@ -130,7 +130,7 @@ def rank_sums(prefix, start, tiles, count):
 
 
 def ranks_of(groups, cores):
-    """Commands each core is a member of."""
+    """Commands each core is in."""
     edge = np.zeros(cores + 1, np.int64)
     first = np.array([f for f, _ in groups], np.int64)
     end = first + np.array([c for _, c in groups], np.int64)
@@ -199,8 +199,8 @@ def run(session, args, rng):
     )
     log(f"loaded: {cores} cores, depth {args.depth}")
 
-    # MAP arguments per job: input, T, output, output page of member 0, no slow
-    # member (a4 0 cycles, a5 none), first input page
+    # MAP arguments per job: input, T, output, output page of rank 0, no slow
+    # core (a4 0 cycles, a5 none), first input page
     in_addr = np.array([t.address for t in inputs], np.int64)
     out_addr = np.array([t.address for t in outs], np.int64)
     jobs = np.arange(n)
@@ -307,8 +307,8 @@ def verdict(out, cores, stalled=None):
 
 
 def core_counts(states, groups, cores):
-    """Each core's commands taken (EXIT too) and finished (EXIT not) against its group
-    memberships."""
+    """Each core's commands taken (EXIT too) and finished (EXIT not) against the groups
+    that hold it."""
     rank = ranks_of(groups, cores)
     runs = np.array([c["runs"] for c in states])
     done = np.array([c["completed"] for c in states])
@@ -346,7 +346,7 @@ def trace_summary(trace, handles, groups):
 
 
 def check(session, args, groups, base, in_page, outs, xs):
-    """Every member's tile of every job not overwritten: bit-exact on exact inputs,
+    """Every core's tile of every job not overwritten: bit-exact on exact inputs,
     relative RMS of the total on random inputs. Counts the tiles that equal what the
     page held before (zeros or an earlier job's): there a stale tile would pass."""
     got = [read_bf16_chunked(session, t, f"output {i}") for i, t in enumerate(outs)]

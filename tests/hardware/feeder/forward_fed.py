@@ -34,10 +34,10 @@ def parse():
     p.add_argument("--messages", type=int, default=1)
     p.add_argument("--forwards", type=int, default=1, help="forwards per message")
     p.add_argument(
-        "--one-core", type=int, default=-1, help="every forward to this member"
+        "--one-core", type=int, default=-1, help="every forward to this rank"
     )
-    p.add_argument("--stall", type=int, default=-1, help="member that stalls")
-    p.add_argument("--probe", type=int, default=-1, help="member that spends its quota")
+    p.add_argument("--stall", type=int, default=-1, help="rank that stalls")
+    p.add_argument("--probe", type=int, default=-1, help="rank that spends its quota")
     p.add_argument("--max-live", type=int, default=1 << 14)
     p.add_argument("--queue-messages", type=int, default=1 << 14)
     p.add_argument("--bins", type=int, default=16)

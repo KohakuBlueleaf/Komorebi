@@ -675,7 +675,7 @@ class Executor:
                 self._push(s)
 
     def step(self, submit):
-        """One bounded step; returns RUNNING, ROUND, END or ERROR."""
+        """One step; returns RUNNING, ROUND, END or ERROR."""
         if self.phase != RUNNING:
             return self.phase
         taken = busy = ops = 0

@@ -1,5 +1,5 @@
 """Running the host-binned rasterizer on a card through the host package: the lists,
-directory, frame and profile tensors are written before the load, then FILL records go
+directory, frame and profile tensors are written before the load, then FILL commands go
 to every core under the dispatcher, one in flight at a time."""
 
 import time
@@ -20,8 +20,8 @@ def log(msg):
 
 
 def program():
-    """The rasterizer's three kernels on every core; one record in flight per core, so
-    a record's event time is its own, submit to the last core's acknowledgement."""
+    """The rasterizer's three kernels on every core; one command in flight per core, so
+    a command's event time is its own, submit to the last core's acknowledgement."""
     return km.Program(
         "raster",
         kernels=KERNELS,
@@ -117,9 +117,9 @@ def run_lists(
     frame=True,
     args=None,
 ):
-    """Loads the program, runs `reps` records of `handler` over the lists and directory
+    """Loads the program, runs `reps` commands of `handler` over the lists and directory
     (`args` in place of the tensors' addresses), stops, reads back. Returns (output
-    pages or None, profile pages, status, record microseconds, host seconds)."""
+    pages or None, profile pages, status, command microseconds, host seconds)."""
     if K["kOutPages"] % per_item:
         raise ValueError(f"{per_item}-page items do not divide the output buffer")
     if len(directory) != workers(session):
@@ -131,7 +131,7 @@ def run_lists(
     t0 = time.perf_counter()
     run = session.load(program(), deadline=1.0)
     times["load_s"] = time.perf_counter() - t0
-    log(f"loaded; {reps} records over {len(pages)} list pages")
+    log(f"loaded; {reps} commands over {len(pages)} list pages")
     us = loop(run, handler, args or words(up, per_item), reps)
     times["commands_s"] = time.perf_counter() - t0 - times["load_s"]
     run.stop()
@@ -146,8 +146,8 @@ def run_lists(
 
 
 def loop(run, handler, args, reps, batch=512):
-    """Submits `reps` records of `handler` on every core in batches and waits for them;
-    returns each record's microseconds from submit to acknowledgement."""
+    """Submits `reps` commands of `handler` on every core in batches and waits for them;
+    returns each command's microseconds from submit to acknowledgement."""
     us = []
     while len(us) < reps:
         n = min(batch, reps - len(us))
@@ -160,7 +160,7 @@ def loop(run, handler, args, reps, batch=512):
 
 
 def check_run(run, cores, reps, us):
-    """The run's end as a dict, `ok` when every core ended cleanly and every record
+    """The run's end as a dict, `ok` when every core ended cleanly and every command
     finished; raises nothing."""
     states = run.state()
     st_writer = km.abi.headers()["kStWriter"]

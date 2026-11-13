@@ -12,7 +12,7 @@ constexpr uint32_t kHandlerGrid = 1;
 // PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
 constexpr uint32_t kHandlerGridProf = 2;
 
-// GRID modes: full; broadcasts only (blocks handed over and taken, no product, no
+// GRID modes: full; broadcasts only (blocks delivered and taken, no product, no
 // writes); product only (no reads, no broadcasts: blocks from L1 as they are, packed,
 // not written).
 constexpr uint32_t kGridFull = 0;
@@ -29,7 +29,8 @@ constexpr uint32_t kBroadcastRow = 0;  // broadcast ids: rows on NoC0 (reader), 
 constexpr uint32_t kBroadcastCol = 1;
 
 // Arguments: reader, writer: broadcast words, then core words; compute: core words.
-// Core: member (1 in the rectangle), first row and column tile of its output, the plan.
+// Core: included (1 in the rectangle), first row and column tile of its output, the
+// plan.
 constexpr uint32_t kArgBroadcast = 0;
 constexpr uint32_t kArgCore = km::kBroadcastArgs;
 constexpr uint32_t kCoreRank = 0;

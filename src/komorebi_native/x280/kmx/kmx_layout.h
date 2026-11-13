@@ -127,7 +127,7 @@ typedef struct {
  * consumed word, the events, the read-count line. Depths: powers of two. */
 #define KMX_RING_DEPTH_MAX 1024u
 #define KMX_RING_CACHED \
-    1u /* flags: the ring is in cached memory, sweep each hand-over */
+    1u /* flags: the ring is in cached memory, sweep on each flush or invalidate */
 /* flags: cmd and read are NoC addresses in the tile reserved[0] names (x | y << 16),
  * inside one 2 MiB window the start-up opens; consumed and events are local. */
 #define KMX_RING_REMOTE 2u
@@ -182,8 +182,8 @@ typedef struct {
     uint32_t error;   /* KMX_ERR_* (the first one) */
     uint32_t code;    /* the thread's code: kmx_result's, else kmx_main's return */
     uint32_t n;       /* result words */
-    uint32_t where;   /* the last kmx_progress stamp */
-    uint32_t t_where; /* timer ticks from the start to that stamp */
+    uint32_t where;   /* the last kmx_progress marker */
+    uint32_t t_where; /* timer ticks from the start to that marker */
     uint32_t ticks;   /* timer ticks from the start to the end of kmx_main */
     uint32_t reserved[9];
     uint32_t words[KMX_RESULT_WORDS_MAX];

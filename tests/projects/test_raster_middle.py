@@ -1,4 +1,4 @@
-"""The step between COUNT and SETUP in C (thread/middle.c) against the host's
+"""The middle pass between COUNT and SETUP in C (thread/middle.c) against the host's
 (passes.py) on the same counts: items, directory, list headers and end slots, next
 slots, item table; and the next slots SETUP makes from base words and SUM's and HSUM's
 prefixes, and the directory and headers PLACE makes from rm_compact's words."""

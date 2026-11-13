@@ -1,5 +1,5 @@
 // Broadcast side, stream mode (README "Stream mode"): a fixed body multicast back to
-// back with a window; bounded waits, state words stored before each library barrier.
+// back with a window; timed waits, state words stored before each library barrier.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -107,7 +107,7 @@ void kernel_main() {
 
     broadcast.state(LP_START, 0);
     if (role == 1) {
-        // Sender. All stamps at least k: true, or false after the limit.
+        // Sender. All markers at least k: true, or false after the limit.
         auto wait_markers = [&](uint32_t k) -> bool {
             const uint64_t t0 = wall();
             uint32_t r = 1;
@@ -217,7 +217,7 @@ void kernel_main() {
             }
         }
     } else if (role == 2) {
-        // Receiver: clear VALID, poison every slot, stamp block 0 (ready).
+        // Receiver: clear VALID, poison every slot, mark block 0 (ready).
         auto poison = [&](uint32_t s) {
             volatile tt_l1_ptr uint32_t* body = words(slot(s) + STREAM_HEADER);
             for (uint32_t w = 0; w < body_words; w++) {
@@ -231,13 +231,13 @@ void kernel_main() {
         const uint64_t my_slot = (
             get_noc_addr(snd_x, snd_y, broadcast.base + BROADCAST_DONE + 16 * rank)
         );
-        auto stamp = [&](uint32_t k) {
+        auto mark = [&](uint32_t k) {
             broadcast.at(BROADCAST_SRC) = broadcast_marker(k, tag);
             broadcast.state(LP_BARRIER_MARKER, k);
             noc_async_write(broadcast.base + BROADCAST_SRC, my_slot, 4);
             noc_async_write_barrier();
         };
-        stamp(0);
+        mark(0);
         t_begin = wall();
         for (uint32_t k = 1; k <= blocks; k++) {
             broadcast.state(LP_WAIT_VALID, k);
@@ -309,7 +309,7 @@ void kernel_main() {
             }
             bad_blocks += bad != 0;
             n_ok++;
-            stamp(k);
+            mark(k);
         }
         t_end = wall();
     }

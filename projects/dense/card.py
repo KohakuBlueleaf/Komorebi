@@ -46,7 +46,7 @@ def prof_tensor(session, cores):
 
 
 def program(p, a_tensor, fidelity="HiFi2"):
-    """The resident program of plan p: the three kernels and the plan's buffers."""
+    """The persistent program of plan p: the three kernels and the plan's buffers."""
     ct = a_tensor.accessor_args()
     buffers = [km.Buffer(i, "bfloat16", pl.TILE_BYTES, n) for i, n in p.buffers()]
     buffers += [
@@ -168,7 +168,7 @@ class Product:
 
 
 def broadcasts_at_stall(states):
-    """By broadcast: blocks handed over (min, max), the cores at the min (first 8),
+    """By broadcast: blocks delivered (min, max), the cores at the min (first 8),
     their VALID words, and the cores' commands completed (min, max)."""
     out = {
         "completed": [

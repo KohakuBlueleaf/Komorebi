@@ -1,4 +1,4 @@
-// A case's compute kernels: after one page, a bounded wait (in) or reservation (out) of
+// A case's compute kernels: after one page, a timed wait (in) or reservation (out) of
 // a 2-page item in a 2-page buffer. Built per thread; KMSIM_PART names the thread.
 #include <stdint.h>
 

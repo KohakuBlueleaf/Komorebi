@@ -1,5 +1,5 @@
 // Probe 7: one 64-byte NoC read by a compute core (TRISC2) from another tile's L1, on
-// NoC 0, command buffer 1; registers saved and restored, the response polled (bounded).
+// NoC 0, command buffer 1; registers saved and restored, a timed poll for the response.
 #pragma once
 
 #include <stdint.h>

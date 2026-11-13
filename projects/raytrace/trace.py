@@ -1,6 +1,6 @@
 """The frame with the card as the intersector: the host makes rays and shades with the
 reference's own functions; every trace (primary, shadow, bounce, shadow at the bounce
-hit) is one TRACE record on the card, checked against the reference's trace.
+hit) is one TRACE command on the card, checked against the reference's trace.
 """
 
 import time
@@ -55,8 +55,8 @@ class CardTracer:
         self.slots = slots
         self.entries = entries
         self.policy = policy
-        self.least = 16  # packets per record the planner keeps before dropping slots
-        self.per_command = per_command  # packets per core and record at most (0: plan)
+        self.least = 16  # packets per command the planner keeps before dropping slots
+        self.per_command = per_command  # packets per core and command at most (0: plan)
         self.balance = balance
         self.sort = sort  # none, tile or pass: SORTED passes by coherence_key
         lo, hi = bvh.node_boxes(tree["nodes"][:1])
@@ -135,7 +135,7 @@ class CardTracer:
         info["times"] = times
         us = card.command_us(res)
         info["load_us"] = float(us[0])
-        # A trace is its records in a row: their card times summed per round.
+        # A trace is its commands in a row: their card times summed per round.
         per_trace = len(full) if isinstance(full, list) else 1
         info["trace_us"] = [float(x) for x in us[1:].reshape(-1, per_trace).sum(axis=1)]
         info["packets"] = len(pages)

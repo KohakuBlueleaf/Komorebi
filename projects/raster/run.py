@@ -105,7 +105,7 @@ def prepare(scene, workers, mode="balanced", tiles=None, cores=0, split=SPLIT):
 
 
 def frame_stats(us):
-    """Submit-to-acknowledgement time of the records in microseconds."""
+    """Submit-to-acknowledgement time of the commands in microseconds."""
     us = np.asarray(us, dtype=np.float64)
     return {
         "first": float(us[0]),
@@ -131,7 +131,7 @@ def main():
     p.add_argument("--cores", type=int, default=0, help="0: every worker")
     p.add_argument("--assign", default="balanced")
     p.add_argument("--split", type=float, default=SPLIT, help="0: no bands")
-    p.add_argument("--reps", type=int, default=1, help="FILL records in the program")
+    p.add_argument("--reps", type=int, default=1, help="FILL commands in the program")
     p.add_argument("--out", type=Path, default=None, help="results-layout folder")
     p.add_argument("--no-frame", action="store_true", help="time only: no read-back")
     p.add_argument("--json", default=None)

@@ -21,7 +21,7 @@ enum {
     DR_STATUS = 0,    /* 0, or PR_ERR_* */
     DR_SEEN_BANK = 1, /* the bank whose host pattern page 0 of A held, or 0xFF */
     DR_A1_HOST = 2,   /* words of A equal to the host pattern, first read */
-    DR_A2_TENSIX = 3, /* after the Tensix write, no hand-over: new words */
+    DR_A2_TENSIX = 3, /* after the Tensix write, no invalidate: new words */
     DR_A2_HOST = 4,   /* ... words still showing the host pattern */
     DR_A3_TENSIX = 5, /* after Flush64 of A */
     DR_A3_HOST = 6,
@@ -81,7 +81,7 @@ static uint32_t probe(pr_t* p, const volatile dram_args_t* a, volatile uint32_t*
     if ((e = pr_wait_go(p, 1)) != 0) {
         return e;
     }
-    /* 2: the Tensix core has written A; no hand-over */
+    /* 2: the Tensix core has written A; no invalidate */
     out[DR_STEP] = 2;
     out[DR_A2_TENSIX] = count(ra, na, page, (uint32_t)a->seed_tensix);
     out[DR_A2_HOST] = count(ra, na, page, mine);

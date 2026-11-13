@@ -287,7 +287,7 @@ static int graph_owes(kmd_engine_t* e) {
     return 0;
 }
 
-/* The graphs' share of a pass: what they owe, then one bounded kmg_step per running
+/* The graphs' part of a pass: what they owe, then one kmg_step per running
  * graph (none while its round event or a rejected command waits). */
 static void graph_step(kmd_engine_t* e) {
     kmd_graphs_t* gs = graphs(e);

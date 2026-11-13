@@ -1,6 +1,6 @@
 # message_cost
 
-What a value crossing to one core costs on this chip: one put by distance (the hop
+What a message to one core costs on this chip: one put by distance (the hop
 table), and many senders incrementing one word of one core at the same moment (the
 bump table). These are the two wire steps of `km::emit` and `km::arrive`.
 
@@ -9,8 +9,8 @@ python message_cost.py hops     # 1024 repetitions per target, size and NoC
 python message_cost.py bumps    # 1, 8, 32, 60, 118 senders, 1024 repetitions each
 ```
 
-Every wait in the kernels is bounded (10 ms; 2 s for start-up); a repetition that
-passes its bound is counted as failed. Each script samples AICLK and card power while it
+Every wait in the kernels has a timeout (10 ms; 2 s for start-up); a repetition that
+times out is counted as failed. Each script samples AICLK and card power while it
 runs and prints one JSON line with every row.
 
 ## Hop table
@@ -46,7 +46,7 @@ gives the same three numbers to within one cycle:
 
 Core 0 clears a word, writes a release time (its clock + 40 µs) to every sender, and
 measures from the release until the word counts every sender; senders 1 to N (core
-order, as the members of an owner reduce) wait for the release and increment the word
+order, as the cores of an owner reduce) wait for the release and increment the word
 by an atomic. Senders first check in, so all of them run before the first repetition.
 A sender that saw its release late marks its increment; none did.
 
@@ -62,7 +62,7 @@ repetitions each, cycles min / median / p99:
 | 118 | 1479 / 1496 / 1505 | 1.108 |
 
 The receiver's word takes about 12 cycles (9 ns) per increment beyond the first: the
-increments are served one after another. An owner reduce over 119 members spends about
+increments are served one after another. An owner reduce over 119 cores spends about
 1.1 µs only in counting its arrivals.
 
 The release relies on the cores' wall clocks agreeing, as the runtime's other aligned

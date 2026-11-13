@@ -1,6 +1,6 @@
-"""Frame time and power of the rasterizer on a card: host steps, then FILL records back
+"""Frame time and power of the rasterizer on a card: host steps, then FILL commands back
 to back in one run under the power and clock samplers, power over the stretches the
-records ran (see the README's "Time"). `--out` writes the results layout.
+commands ran (see the README's "Time"). `--out` writes the results layout.
 `python -m projects.raster.bench --scene s10k [--seconds 5] [--json F] [--out DIR]`"""
 
 import argparse
@@ -79,7 +79,7 @@ class ClockSampler:
 
 
 def power_figures(meter, windows, frames, idle_w):
-    """The card's power over the windows in which records ran."""
+    """The card's power over the windows in which commands ran."""
     src = meter.source
     parts = [
         power.summarize(meter.samples, a, b, src.update_s, src.limit_w)
@@ -106,19 +106,19 @@ def power_figures(meter, windows, frames, idle_w):
 
 
 def plan_loop(seconds, first_us, max_reps, budget_s):
-    """Records for `seconds` of records of `first_us` each, at most `max_reps`. Exits
+    """Commands for `seconds` of commands of `first_us` each, at most `max_reps`. Exits
     when the loop would take longer than `budget_s`."""
     reps = int(min(max_reps, max(1, math.ceil(seconds * 1e6 / first_us))))
     planned = reps * first_us * 1e-6
-    card.log(f"plan: {reps} records, about {planned:.1f} s on the card")
+    card.log(f"plan: {reps} commands, about {planned:.1f} s on the card")
     if planned > budget_s:
         raise SystemExit(f"plan of {planned:.0f} s exceeds the budget of {budget_s} s")
     return reps
 
 
 def power_loop(index, run_, handler, args, reps, batch=512):
-    """`reps` records of `handler` on every core in batches under the samplers; (meter,
-    clock, the window in which records ran, microseconds per record)."""
+    """`reps` commands of `handler` on every core in batches under the samplers; (meter,
+    clock, the window in which commands ran, microseconds per command)."""
     lat = []
     with power.PowerSampler(index) as meter, ClockSampler(index) as clock:
         start = time.perf_counter()
@@ -127,7 +127,7 @@ def power_loop(index, run_, handler, args, reps, batch=512):
             lat.append(card.loop(run_, handler, args, n, batch))
             if len(lat[-1]) < n:
                 break
-        # one record in flight at a time; the host's gaps between batches count too
+        # one command in flight at a time; the host's gaps between batches count too
         windows = [(start, time.perf_counter())]
     return meter, clock, windows, lat
 

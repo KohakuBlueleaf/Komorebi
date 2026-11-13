@@ -29,7 +29,7 @@ MODES = ("graph", "hostfed")
 
 
 def build(addr, directory, profs, workers, deadline_s):
-    """The frame's records as a kept graph, each after the records that write its
+    """The frame's commands as a kept graph, each after the commands that write its
     inputs (SHADOW and BOUNCE may run together); bindings `const` and `colour`."""
     g = Graph(deadline_us=round(deadline_s * 1e6), keep=True, req=REQ)
     const, colour = g.bindings("const", "colour")
@@ -60,7 +60,7 @@ def cameras(scene, n):
 
 def run_modes(session, g, image, tree_t, cases, modes, deadline_s):
     """One load: LOAD, then the graph per camera in each mode. Returns ({mode: [frame
-    seconds]}, the kernel check, the host-fed records per frame)."""
+    seconds]}, the kernel check, the host-fed commands per frame)."""
     run = session.load(card.program(len(image)), deadline=deadline_s)
     try:
         handle = run.submit(K["kHandlerLoad"], args=[tree_t.address, image.nbytes])
@@ -80,7 +80,7 @@ def run_modes(session, g, image, tree_t, cases, modes, deadline_s):
             res = run.run_hostfed(g, b, timeout=10.0 + 8 * deadline_s)
             seconds["hostfed"].append(time.perf_counter() - t0)
             submitted.append(len(res.commands))
-            card.log(f"hostfed camera {k}: {res.status}, {len(res.commands)} records")
+            card.log(f"hostfed camera {k}: {res.status}, {len(res.commands)} commands")
             if res.status != "ended":
                 raise RuntimeError(f"host-fed graph: {res.status} {res.error}")
     finally:
@@ -95,7 +95,7 @@ def main():
     p.add_argument("--tiles", type=int, nargs="*", default=None, help="32 x 32 tiles")
     p.add_argument("--cameras", type=int, default=2)
     p.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
-    p.add_argument("--deadline", type=float, default=5.0, help="per record, seconds")
+    p.add_argument("--deadline", type=float, default=5.0, help="per command, seconds")
     p.add_argument("--json", default=None)
     args = p.parse_args()
     data = native.data_dir()

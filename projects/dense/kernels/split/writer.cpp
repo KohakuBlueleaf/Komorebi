@@ -1,4 +1,4 @@
-// K-split writer, NoC1: a member other than its group's root sends its part (fp32) to
+// K-split writer, NoC1: a core other than its group's root sends its part (fp32) to
 // its receiver; the root writes the group's sum (bf16) to Y, tiles outside Y dropped.
 #include <stdint.h>
 

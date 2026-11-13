@@ -17,4 +17,4 @@ rather than staying in the project.
 - [dense](dense/README.md): the matrix product on the persistent kernels, checked against
   float64 and measured against Kohaku-TT's routes on the same card.
 - [attention](attention/README.md): scaled dot-product attention on broadcasts of cores,
-  K / V cast down each broadcast, Kohaku-TT's flash compute body, checked against float64.
+  K / V multicast down each broadcast, Kohaku-TT's flash compute body, checked against float64.

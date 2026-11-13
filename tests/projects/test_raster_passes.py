@@ -1,5 +1,5 @@
-"""The two passes' host side: mesh blocks, counters and the step between COUNT and
-SETUP, whose list positions must give the lists of `lists.build_lists`."""
+"""The two passes' host side: mesh blocks, counters and the middle pass between COUNT
+and SETUP, whose list positions must give the lists of `lists.build_lists`."""
 
 import numpy as np
 import pytest
@@ -34,7 +34,7 @@ def test_a_block_holds_32_triangles_in_window_order(tiny):
 
 
 def test_partitions_are_contiguous_and_cover_every_block():
-    edge = passes.shares(1000, 120)
+    edge = passes.partitions(1000, 120)
     assert edge[0] == 0 and edge[-1] == 1000 and (np.diff(edge) >= 0).all()
     assert np.diff(edge).max() - np.diff(edge).min() <= 1
 
@@ -60,7 +60,7 @@ def test_setup_at_the_middle_steps_slots_writes_the_lists_of_build_lists(tiny):
     # SETUP: each core's records in triangle order, each to the next slot of its tiles
     slots = mid["pages"].reshape(-1, lists.SLOT).copy()
     nxt = mid["next"].astype(np.int64)
-    edge = passes.shares(-(-n // 32), cores) * 32
+    edge = passes.partitions(-(-n // 32), cores) * 32
     core = np.searchsorted(edge, recs["tri"], side="right") - 1
     box = recs["box"] // raster.TILE
     for i in range(len(box)):

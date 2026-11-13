@@ -1,5 +1,5 @@
-// Compute: MAP adds the member's input tiles into one tile (a zero tile when its share
-// is empty).
+// Compute: MAP adds the core's input tiles into one tile (a zero tile when its
+// partition is empty).
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"

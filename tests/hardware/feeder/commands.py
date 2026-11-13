@@ -65,7 +65,7 @@ def command(handler, first, count, args=(), flags=0):
 
 
 def partition(n, index, count):
-    """(start, length) of member `index` of `count` in n items, as km::partition."""
+    """(start, length) of rank `index` of `count` in n items, as km::partition."""
     base, extra = divmod(n, count)
     return index * base + min(index, extra), base + (index < extra)
 
@@ -83,7 +83,7 @@ def as_uint32(array):
 def groups(grid, workers):
     """Start-up column groups of cores 0 to workers - 1 of a (gx, gy) grid.
 
-    Returns ({core: (leader, rank, members, ready_slot)}, number of groups): the
+    Returns ({core: (leader, rank, peers, ready_slot)}, number of groups): the
     lowest core of each column leads; ready_slot is the column."""
     gx = grid[0]
     out = {}
@@ -109,7 +109,7 @@ def start_args(values):
 
 
 def limit_units(seconds, mhz):
-    """A bound in the kernels' units of 1024 cycles at mhz."""
+    """A timeout in the kernels' units of 1024 cycles at mhz."""
     return max(1, int(seconds * mhz * 1e6) >> 10)
 
 

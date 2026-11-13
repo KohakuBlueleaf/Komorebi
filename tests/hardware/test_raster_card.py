@@ -1,6 +1,6 @@
 """The rasterizer on a card, one session: tiles of the tiny scene and a tile in bands
 equal to `raster.fill_tile`; COUNT and SETUP of the tiny scene, with the reference's
-counters and lists; its frame conducted by the work cluster's thread, with the
+counters and lists; its frame driven by the work cluster's thread, with the
 reference's step, directory and lists (KMR_CARD=1)."""
 
 import argparse
@@ -51,7 +51,7 @@ def test_count_and_setup_of_the_tiny_scene_write_the_reference_lists(session):
     assert out["ok"], out
 
 
-def test_the_thread_conducts_a_frame_with_the_reference_lists(session):
+def test_the_thread_drives_a_frame_with_the_reference_lists(session):
     # the third frame's COUNT and SETUP run on ranges cut by the second one's costs
     args = argparse.Namespace(
         scene="s10k",

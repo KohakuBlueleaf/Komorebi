@@ -1,7 +1,7 @@
-"""Broadcast broadcast on a card through the dispatcher (KMR_CARD=1): a stalled
-receiver ends in the host's timeout and the command behind it never runs, then the next
-run is exact; back-to-back commands on all 120 cores, every second casting no block, are
-exact; a command of 65,600 pages per broadcast, then a short one, are exact."""
+"""Broadcast on a card through the dispatcher (KMR_CARD=1): a stalled receiver ends in
+the host's timeout and the command behind it never runs, then the next run is exact;
+back-to-back commands on all 120 cores, every second multicasting no block, are exact; a
+command of 65,600 pages per broadcast, then a short one, are exact."""
 
 from pathlib import Path
 

@@ -3,7 +3,7 @@
 These tests run the dispatcher (`src/komorebi_native/x280/kernel/`) on X280
 cluster 0 of a Blackhole p150a and feed it from the host. A stand-in Tensix worker runs
 on every core of the grid. It implements only what the kernel needs: the start-up
-check-in, taking a command by its landing words, group membership, completion through the
+check-in, taking a command by its landing words, the group test, completion through the
 group's leader, the stop flag, and EXIT. Each core counts what it ran. The host reads
 the counters back only after the X280 runtime is closed.
 
@@ -40,8 +40,8 @@ one for the set, whose `ok` is true when every case's is. It takes about 13 seco
 | `submit` | Like `ping`, plus one CHECK command to the whole grid | the event carries the command's command number; no argument errors |
 | `groups` (set) | `--n` CHECK commands with random groups at depth 16, fed in batches | every event arrives once; every core's run count, key sum and key mix match |
 | `disjoint` (set) | A DELAY of `--delay-us` on the first half of the grid, then `--n` CHECK commands on the second half | the second group's events all arrive before the first's; two slots were busy at once; every core's counts match |
-| `stall` (set) | `KM_HANDLER_DEADLINE` with `--deadline-us`, then a command whose member `--core` waits for the stop flag | `KM_EV_TIMEOUT` for that slot and command; every core gave up on the stop flag; only `--core` did not report the command |
-| `stall-late` (set) | Depth 4: on the last core a command that waits for the stop flag under a deadline ten times `--deadline-us`, then on the other cores a command whose member `--core` waits for the stop flag and two commands behind it | `KM_EV_TIMEOUT` names the stalled command (its deadline passed first) and its slot 1, not the lower slot 0 of the command submitted before it with the later deadline; all four slots were busy at the finish |
+| `stall` (set) | `KM_HANDLER_DEADLINE` with `--deadline-us`, then a command whose rank `--core` waits for the stop flag | `KM_EV_TIMEOUT` for that slot and command; every core gave up on the stop flag; only `--core` did not report the command |
+| `stall-late` (set) | Depth 4: on the last core a command that waits for the stop flag under a deadline ten times `--deadline-us`, then on the other cores a command whose rank `--core` waits for the stop flag and two commands behind it | `KM_EV_TIMEOUT` names the stalled command (its deadline passed first) and its slot 1, not the lower slot 0 of the command submitted before it with the later deadline; all four slots were busy at the finish |
 | `stall-leader` | Like `stall`, with the group's leader (core 0) as the core that waits | the same, with core 0 the one that did not report |
 | `fill` (set) | 16 DELAY commands of `--delay-us` on 16 disjoint groups, then `--n` CHECK commands with random groups | all 16 slots were busy at once; every event and every core count is right |
 | `exit-busy` (set) | A DELAY on half the grid, then at once an EXIT whose group names one core | EXIT waited for the DELAY (one held command), then reached every core |
@@ -57,7 +57,7 @@ one for the set, whose `ok` is true when every case's is. It takes about 13 seco
 | `upload` (set) | The `KMD_VERIFY_LINES` image: the whole upload region written twice through the host window with a pattern of whole lines, then `KMD_HANDLER_CHECK_UPLOAD` over the region, single lines, a middle range, a wrong seed, one changed word, and two ranges outside the region | the ready block names the region after the layout; every check finds exactly the differing words (none, 16, or the one changed word at its index); the two outside ranges are rejected with reason 5 |
 | `streams` (set) | The test image: `KM_HANDLER_RUN` and `KM_HANDLER_CANCEL` rejections and range errors with four looping streams at once, every reference stream of `experiments/stream_checks/streams` that submits no command, then a stream of `--n` result commands one at a time | every rejection and error is the expected one; every reference's events equal the simulator's; the commands reach the grid in the simulated order with the simulated groups; a PING answers after each part |
 | `replay` (set) | The test image: every reference stream that submits commands and does not rest on the simulator's passes (a deadline or cancel in passes, a command never acknowledged), its handlers set to `DK_HANDLER_RESULT`, each simulated on this grid under several completion models | where all models agree, the stream's events and its groups in submit order equal the simulator's; otherwise its command counts and its last event do; every queued command got the lowest group free at its submit; every core ran exactly the traced groups; a PING answers after each |
-| `stream-deadline` (set) | A stream whose second command has a member waiting for the stop flag, header deadline `--deadline-us` | one `KM_EV_STREAM_ERROR` with reason 8 at that `SUBMIT`; the kernel ends with the deadline error; every core gave up on the stop flag |
+| `stream-deadline` (set) | A stream whose second command has a core waiting for the stop flag, header deadline `--deadline-us` | one `KM_EV_STREAM_ERROR` with reason 8 at that `SUBMIT`; the kernel ends with the deadline error; every core gave up on the stop flag |
 | `engine-busy` (set) | A host DELAY of `--delay-us` on the grid's first half, then a stream with one `KM_F_EXCL` command on that half and a stream of `--n` commands one at a time on the other half | the second stream ends before the DELAY's `KM_EV_DONE` and the first after it, both with their halt values: the blocked command was rejected busy and sent again (the engine sent more commands than the two streams have), and did not hold up the other stream |
 | `seq-events` (set) | A host command, a stream of `--n` commands one at a time, a second host command | the host commands' `KM_EV_DONE` events carry their first cores and the low 16 bits of sequence numbers 1 and n + 2: the stream's commands are counted in the same sequence and the host can tell |
 | `engine-cost` | Three streams in turn, each `--n` commands on core 0 timed by the stream: SUBMIT and WAIT 0 of a `--delay-us` DELAY; the same SUBMIT with `KM_F_EXCL` and no wait, rejected busy while the one before runs; ENQUEUE of DELAY 0 jobs | a measurement: microseconds per command of each stream and the kernel's count of rejections; ok when every stream ended and the kernel finished clean |
@@ -71,7 +71,7 @@ result word the reference graphs assume.
 | case | what it does | `ok` when |
 |---|---|---|
 | `graphs` | The test image: two graphs of a long DELAY running, then a third `RUN`, `a2 = 3`, a kept `RUN` of an unknown req, both cancelled; a graph over a running stream's range, an unaligned one; seven kept graphs, `kept_graph`, its drop, an eighth, `kept_table_full`, every drop; every saved reference of `experiments/graph_checks/graphs` that ends by itself, its templates on `DK_HANDLER_SUM`; the documented loop kept and run again by its req with another binding | every rejection, error and drop is the expected one; every graph's events (rounds, end with registers 0 and 1, error with reason and node) equal the simulator's on this grid; the engine's commands in the trace are each graph's simulated groups (a queued command's count); every core ran exactly those; a PING answers after each part |
-| `graph-deadline` | A graph whose second command has member `--core` waiting for the stop flag, header deadline `--deadline-us` | one `KM_EV_GRAPH_ERROR` with reason 8 at that node; the kernel ends with the deadline error; every core gave up on the stop flag |
+| `graph-deadline` | A graph whose second command has rank `--core` waiting for the stop flag, header deadline `--deadline-us` | one `KM_EV_GRAPH_ERROR` with reason 8 at that node; the kernel ends with the deadline error; every core gave up on the stop flag |
 
 The harness always launches the grid before it starts the image, so a compile error is
 raised before any image exists. `--image-first` reverses the order, to test that the
@@ -120,7 +120,7 @@ launch and readback. Set:
   `LIMIT`) and `OP_TIMEOUT` (`TT_METAL_OPERATION_TIMEOUT_SECONDS`, default 30, so a
   blocked host call raises before the watcher acts).
 
-The stand-in worker bounds every wait, NoC barriers included, by `--limit`, and checks
+The stand-in worker gives every wait, NoC barriers included, the timeout `--limit`, and checks
 that every address the host hands it is 16-byte aligned.
 
 Logs go to `<repo>/.logs/`, which git ignores.

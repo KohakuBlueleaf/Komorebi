@@ -1,4 +1,4 @@
-"""The thread-conducted frame's parts per frame over `--runs` loads of `--frames` frames
+"""The thread-driven frame's parts per frame over `--runs` loads of `--frames` frames
 (0: about `--seconds`), with clock and power over the threads' runs; `--host` adds a
 host-stepped frame (`card_passes`) in the same session.
 `python -m projects.raster.bench_thread --scene s10k [--runs 5] [--host]`"""
@@ -64,7 +64,10 @@ def main():
     p.add_argument("--seconds", type=float, default=1.0, help="a run's length (auto)")
     p.add_argument("--host", action="store_true", help="also one host-stepped frame")
     p.add_argument(
-        "--no-balance", dest="balance", action="store_false", help="equal block shares"
+        "--no-balance",
+        dest="balance",
+        action="store_false",
+        help="equal block partitions",
     )
     p.add_argument("--json", default=None)
     args = p.parse_args()

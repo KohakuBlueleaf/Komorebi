@@ -1,4 +1,4 @@
-"""Broadcast broadcast on a card, fed by the test feeder (KMR_CARD=1), in one device
+"""Broadcast on a card, fed by the test feeder (KMR_CARD=1), in one device
 open."""
 
 from pathlib import Path

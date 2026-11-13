@@ -34,7 +34,9 @@ def main():
     p.add_argument("--sort", choices=("none", "tile", "pass"), default="pass")
     p.add_argument("--seconds", type=float, default=4.0)
     p.add_argument("--passes", default="primary,shadow,bounce,shadow2")
-    p.add_argument("--most", type=int, default=8000, help="records per program at most")
+    p.add_argument(
+        "--most", type=int, default=8000, help="commands per program at most"
+    )
     p.add_argument("--json", default=None)
     args = p.parse_args()
     data = native.data_dir()
@@ -61,7 +63,7 @@ def main():
             reps = min(args.most, max(1, math.ceil(args.seconds * 1e6 / us)))
             tracer.reps = reps
             tracer.power = PowerSampler(index)
-            card.log(f"{name}: {reps} records of {us:.0f} us under the sampler")
+            card.log(f"{name}: {reps} commands of {us:.0f} us under the sampler")
             tracer.trace(name, *tracer.kept[name])
             info, sampler, tracer.power = tracer.passes[-1], tracer.power, None
             pw = sampler.result.phases["program"].as_dict()

@@ -73,10 +73,10 @@ def units(tree, main):
 
 
 def dyn_units(tree):
-    """The dynamic handler's generic reader and writer, the hop example's compute
+    """The dynamic handler's generic reader and writer, the forward example's compute
     (per thread), and the scenarios that run them."""
     kernels = tree / "src" / "komorebi_native" / "kernels"
-    hop = tree / "examples" / "05_forward" / "kernels" / "compute.cpp"
+    forward = tree / "examples" / "05_forward" / "kernels" / "compute.cpp"
     trisc = ["-std=c++17", "-DCOMPILE_FOR_TRISC"]
     return [
         (
@@ -92,7 +92,7 @@ def dyn_units(tree):
         *[
             (
                 f"forward_{p}",
-                hop,
+                forward,
                 [
                     *trisc,
                     f"-DTRISC_{p.upper()}",

@@ -251,7 +251,7 @@ def card_paths(args, loops, which):
 
 def send_run(run):
     """A send() through a Run: both commands at once, SUM exclusive, so it waits for
-    STEP on the card; SUM's result word comes back with its event."""
+    STEP on the card; SUM's result word is returned with its event."""
     k = abi.headers()
 
     def send(recs):
@@ -287,12 +287,12 @@ def main():
         type=int,
         nargs="+",
         default=[1],
-        help="a thread on each, on its own share of the cores, all at once",
+        help="a thread on each, on its own partition of the cores, all at once",
     )
     args = p.parse_args()
-    share = args.cores // len(args.clusters)
+    part = args.cores // len(args.clusters)
     loops = {
-        c: [0, share, args.count, args.limit, args.max_rounds, i * share]
+        c: [0, part, args.count, args.limit, args.max_rounds, i * part]
         for i, c in enumerate(args.clusters)
     }
     out = {"cores": args.cores, "count": args.count, "limit": args.limit}

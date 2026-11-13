@@ -1,7 +1,7 @@
 """Card test files that open the card in the pytest process (`CARD_IN_PROCESS = True`)
 and files that run a card script as a child never share one pytest run: the first kind
 holds the chip's lock until the process exits, so the child would wait for the card
-without a bound. run_cards.py gives every file its own process (README.md)."""
+without a timeout. run_cards.py gives every file its own process (README.md)."""
 
 import os
 

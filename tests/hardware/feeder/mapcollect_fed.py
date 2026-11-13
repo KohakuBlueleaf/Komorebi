@@ -1,5 +1,5 @@
 """The map/collect example's kernels fed by the test feeder on the last core (no X280);
-every MAP member's tile is checked against numpy. One JSON line.
+every MAP core's tile is checked against numpy. One JSON line.
 
 Example: python mapcollect_fed.py --jobs 20 --groups fixed --count 8"""
 
@@ -102,7 +102,7 @@ def make_groups(args, workers, rng):
 
 
 def place_outputs(groups, pages, tensors):
-    """Global output page of member 0 per job: a ring of `tensors` x `pages` pages
+    """Global output page of rank 0 per job: a ring of `tensors` x `pages` pages
     in which no job crosses a tensor."""
     base, at = [], 0
     for _, count in groups:
@@ -177,7 +177,7 @@ def rank_errors(args, groups, res, states):
 
 
 def rank_sums(x, count):
-    """Float64 sum of each member's share of the tiles of x: [count, 32, 32]."""
+    """Float64 sum of each core's partition of the tiles of x: [count, 32, 32]."""
     tiles = x.reshape(-1, TILE, TILE)
     out = np.zeros((count, TILE, TILE))
     for m in range(count):
@@ -218,7 +218,7 @@ def trace_phases(res, groups, n):
 
 
 def overlaps(res, groups, n):
-    """Consecutive jobs on disjoint groups where a member of the second took its command
+    """Consecutive jobs on disjoint groups where a core of the second took its command
     before the first job's leader pushed its completion (wall clock, from the trace)."""
     tr = res.trace.astype(np.int64)
     seqs = res.commands["seq"]
@@ -242,7 +242,7 @@ def overlaps(res, groups, n):
 
 
 def in_flight_together(res, groups, n, window=K["KM_RING_SLOTS"]):
-    """Pairs of jobs on overlapping groups (at most `window` apart) where a member of
+    """Pairs of jobs on overlapping groups (at most `window` apart) where a core of
     the later one took it before the earlier one's leader pushed (from the trace)."""
     tr = res.trace.astype(np.int64)
     seqs = res.commands["seq"]

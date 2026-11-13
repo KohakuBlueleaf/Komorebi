@@ -148,7 +148,7 @@ class Fed:
         dyn_rw, dyn_c, queue_t, lines_t = [], [], None, None
         if dynamic is not None:
             dynamic.check(self.workers, queue_bytes, depth)
-            page = 32 * dynamic.message_bytes  # kDynPageMessages items a page
+            page = 32 * dynamic.message_bytes  # kDynPageMessages messages a page
             shape = (self.workers * dynamic.queue_messages // 32, page // 4)
             queue_t = session.empty(shape, "int32")
             lines_t = self.l1_blocks(2 * K["KM_CORES_MAX"] * 4)  # lines, first pass

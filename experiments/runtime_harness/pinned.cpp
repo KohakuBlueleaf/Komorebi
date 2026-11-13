@@ -134,7 +134,7 @@ namespace scen {
             finish(s, o);
         }
 
-        // ---- the bounded buffer wrappers against an item past the end ----
+        // ---- the timed buffer wrappers against an item past the end ----
 
         void item_feed() {  // one page for the compute input buffer
             cb_reserve_back(24, 1);

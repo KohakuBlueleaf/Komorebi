@@ -115,7 +115,7 @@ def profile_summary(prof, mhz, grid):
 
 def loop(product, reps, index, one_us, batch):
     """`reps` commands in runs of at most `batch` back to back (each waited for), with
-    power and clock sampled; each wait bounded by 3 x their single-call time + 5 s."""
+    power and clock sampled; each wait's timeout 3 x their single-call time + 5 s."""
     meter = power.PowerSampler(index)
     host_s, us, t0 = 0.0, [], time.perf_counter()
     with meter, Clock(index) as clock:

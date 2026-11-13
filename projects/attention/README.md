@@ -22,7 +22,7 @@ thread attend(broadcast, i):                        # one thread per core: broad
 ```
 
 A broadcast is L cores down one grid column; the core on top (i == 0) reads each K / V
-block from DRAM once and casts it to the others. `merge` is the running softmax: the
+block from DRAM once and multicasts it to the others. `merge` is the running softmax: the
 row's reference, P = exp(scale s - reference), O += P V and the row sum, both scaled
 when the reference moves. Nothing is merged across cores: each core finishes its own
 output rows. Rows are shared contiguously, or for a causal call L rows apart, so that
@@ -32,7 +32,7 @@ the triangle's work spreads over the broadcast.
 
 | Thread program | Kernel | What it does |
 |---|---|---|
-| `jobs(broadcast)` | all three | the member's job table: one DRAM page per core named by the command (a4), read by the reader (handed to compute) and by the writer |
+| `jobs(broadcast)` | all three | the core's job table: one DRAM page per core named by the command (a4), read by the reader (handed to compute) and by the writer |
 | `emit kv -> threads(broadcast, *)`, `wait(1)` | `kernels/reader.cpp` (NoC0) | `km::Broadcast`: the sender `reserve`, reads K and V of block k into the slot, `cast`; a receiver `arrive`; `finish` |
 | `Q[r]` | `kernels/reader.cpp` | the job's query rows into the Q buffer |
 | `score`, `merge` | `kernels/compute.cpp`, `kernels/sfpu.hpp` | Kohaku-TT's `ktt_flash` compute body: S = Q K^T into Dst with the row state, the row reference and the exponential on the vector unit, P V and the row sum in column groups accumulated in L1 (fp32), steps in pairs of rows; `km::broadcast_receive` / `broadcast_done` / `broadcast_end` around each block |
@@ -46,10 +46,10 @@ in flight per broadcast. The broadcasts and their senders come from `komorebi.la
 
 | Handler | Arguments |
 |---|---|
-| `ATTEND` | a0 Q, a1 K, a2 V, a3 O, a4 the job tables, a5 mode (0: the full call, 1: cast only, 2: compute only), a6 passes over the jobs (0: one), a7 the first job, a8 jobs from it (0: to the end) |
+| `ATTEND` | a0 Q, a1 K, a2 V, a3 O, a4 the job tables, a5 mode (0: the full call, 1: broadcast only, 2: compute only), a6 passes over the jobs (0: one), a7 the first job, a8 jobs from it (0: to the end) |
 | `PROF` | a0 the profile tensor, a1 nonzero: zero the pages after storing them |
 
-The cut-down modes are for the benchmark: cast only reads Q and casts every K / V block
+The cut-down modes are for the benchmark: broadcast only reads Q and multicasts every K / V block
 but compute only takes and pops the blocks, and no row is written; compute only works on
 Q, K and V as they are in L1 (no reads, no broadcast, no writes). Passes repeat the command's
 jobs, so that a loop of commands lasts seconds.
@@ -65,7 +65,7 @@ same inputs (`ktt_bench.py`, by hand, not a test).
 
 `kernels/sfpu.hpp` is an unchanged copy of `ktt_flash`'s `sfpu.hpp` (Kohaku-TT, Apache
 2.0, at ac81ff2); `kernels/compute.cpp` is its `compute.cpp` with K and V taken from the
-broadcast buffer, the jobs from the table, its waits on the other kernels bounded (see
+broadcast buffer, the jobs from the table, its waits on the other kernels timed (see
 Limits), and the parts this program does not use left out (masks, packed variable
 lengths, statistics for the backward, ragged lengths).
 
@@ -159,10 +159,10 @@ check's relative RMS bound is 3e-2 (Kohaku-TT documents about 1.9e-2).
 **What bounds each row.** Each core keeps a profile page (`PROF`): wall-clock cycles of
 its five threads' parts, summed over the commands, read after 15 to 65 single-pass
 commands. The shares below are of the slowest core's longest thread; threads run side by
-side, so they add up to more than 1. Cut-down runs: cast only and compute only, us per
+side, so they add up to more than 1. Cut-down runs: broadcast only and compute only, us per
 pass.
 
-| Shape | Slowest core's shares | Cast only / compute only | Bound |
+| Shape | Slowest core's shares | Broadcast only / compute only | Bound |
 |---|---|---|---|
 | 1x32x4096x64 | score 0.48, P V 0.45 (math); exp 0.55, pack P 0.26 (pack) | 310 / 2639 | compute, both threads |
 | 1x24x4096x128 | score 0.45, P V 0.45; exp 0.52, pack P 0.22 | 323 / 2453 | compute |
@@ -183,10 +183,10 @@ Measured on 2026-11-13 as above (X280 at 1,000 MHz), `wide128` (1 x 24 x 4096 x 
 the JSON in `results/`: `noc0-wide128.json`, `noc1-wide128.json`, `broadcast-wide128-L<L>.json`
 (`bench.py --json`) and `graph-<preset>.json` (`graph.py --json`).
 NoC1: `--noc 1` builds the program with `BROADCAST_ON_WRITER`, so that the writer runs the
-broadcast (K / V reads and casts before each job's rows) and the reader reads only Q. The
+broadcast (K / V reads and multicasts before each job's rows) and the reader reads only Q. The
 broadcast length is `--broadcast L` (L = 1: every core reads its own K / V).
 
-| `wide128` | Single command (us) | Per call (us) | Per pass (us) | Cast only / compute only (us) | MHz | W |
+| `wide128` | Single command (us) | Per call (us) | Per pass (us) | Broadcast only / compute only (us) | MHz | W |
 |---|---|---|---|---|---|---|
 | NoC0, L 10 | 2312.3 | 2330.3 | 2337.3 | 310 / 2393 | 1321 | 152 |
 | NoC1, L 10 | 2276.5 | 2358.0 | 2309.6 | 597 / 2447 | 1315 | 153 |
@@ -228,7 +228,7 @@ candidates below (`bench.py --shape causal64 --broadcast L --chunks n --cuts --s
 the JSON in `results/causal64-L<L>-c<n>.json`; 2026-11-13, X280 at 1,000 MHz, AICLK
 1,349 to 1,350 MHz).
 
-| Broadcast length, chunks per head | Score tiles, busiest core | Jobs per core | Balance | Single command (us) | Per call (us) | Per pass (us) | Cast only / compute only (us) | W |
+| Broadcast length, chunks per head | Score tiles, busiest core | Jobs per core | Balance | Single command (us) | Per call (us) | Per pass (us) | Broadcast only / compute only (us) | W |
 |---|---|---|---|---|---|---|---|---|
 | 10, 1 (the default) | 68 | 1 | 0.56 | 56.9 | 72.3 | 48.4 | 36 / 63 | 104 |
 | 10, 3 | 56 | 2 | 0.88 | 59.9 | 76.5 | 51.9 | 45 / 61 | 101 |
@@ -245,33 +245,33 @@ remains for shapes where a head's work is large against those costs.
 
 ## Limits
 
-Bounded waits (a give-up is recorded with its code and place, stops the core's three
+Timed waits (a give-up is recorded with its code and place, stops the core's three
 kernels and is reported by the run):
 - the reader: room in the job table, Q and broadcast buffers (`rd.reserve`); its NoC reads
-  (`flushed`); every `km::Broadcast` wait (a free slot, the receivers' stamps, VALID, the
+  (`flushed`); every `km::Broadcast` wait (a free slot, the receivers' markers, VALID, the
   end of the command);
 - the writer: each finished output row (`wr.wait_front`); its NoC writes (`flushed`);
 - the compute kernel's waits on the data-movement kernels: the job table, Q rows and K /
   V blocks (`cp.wait_front`, decided by the unpacker and passed to the other two) and
   room for an output row (`cp.reserve_back`, the packer).
 
-Not bounded: the compute kernel's waits between its own three threads, as in
+Not timed: the compute kernel's waits between its own three threads, as in
 `ktt_flash`: the score and P tiles and their tokens (`cb_wait_front`, `cb_reserve_back`
-on `cb_p`, `cb_stok`, `cb_otok`), the destination register hand-over (`tile_regs_*`) and
+on `cb_p`, `cb_stok`, `cb_otok`), the destination-register handshake (`tile_regs_*`) and
 the semaphore and SFPU mutex waits in the vector sections. They wait only on work the
 same kernel has already started.
 
 ## Future work
 
 Not in this program: decode against a kept K / V cache (one query row against the
-cache: a reduce over a group and the dynamic crossing), the backward, packed
+cache: a reduce over a group and routed messages), the backward, packed
 variable-length batches, masks, ragged lengths.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `kernels/attention.h` | handler, command words, buffers, the job table, the bounded NoC barrier |
+| `kernels/attention.h` | handler, command words, buffers, the job table, the timed NoC barrier |
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | the three kernels |
 | `kernels/sfpu.hpp` | Kohaku-TT's vector-unit steps, unchanged |
 | `plan.py` | the plan as pure functions |

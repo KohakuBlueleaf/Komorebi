@@ -5,7 +5,7 @@
 #include "checks.hpp"
 
 int main(int argc, char** argv) {
-    // and the dynamic crossing's end, gap, overflow and idle cases
+    // and the routed messages' end, gap, overflow and idle cases
     std::vector<scen::Case> cases = scen::pinned();
     for (const scen::Case& c : scen::dyn_cases()) {
         for (

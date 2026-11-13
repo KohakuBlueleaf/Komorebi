@@ -1,5 +1,5 @@
-// Clock probe: core 0 stamps a ping to each peer, the peer stamps its arrival back;
-// two rounds `spin` cycles apart. Words at `out`, in each core's own L1 shard.
+// Clock probe: core 0 timestamps a ping to each peer, the peer timestamps its arrival
+// back; two rounds `spin` cycles apart. Words at `out`, in each core's own L1 shard.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -34,7 +34,7 @@ namespace {
     }
 
     // Waits until this core's non-posted writes are acknowledged, at most `limit`
-    // cycles (the barrier, bounded).
+    // cycles (the barrier, with a timeout).
     bool flushed(uint64_t limit) {
         const uint64_t t0 = km::wall64();
         do {
@@ -84,7 +84,7 @@ void kernel_main() {
         o[4] = static_cast<uint32_t>(end - start);
         o[5] = static_cast<uint32_t>((end - start) >> 32);
     } else {
-        // Peer: on ping r + 1 in o[0], stamps its clock (bit 0 set) into the master's
+        // Peer: on ping r + 1 in o[0], writes its clock (bit 0 set) into the master's
         // word at the same address in both shards.
         const uint32_t xy = get_arg_val<uint32_t>(4);
         for (uint32_t r = 0; r < 2; r++) {

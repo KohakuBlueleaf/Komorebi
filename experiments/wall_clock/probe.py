@@ -1,4 +1,4 @@
-"""Tensix wall clock: its rate against host time, and one core's stamp against another's
+"""Tensix wall clock: its rate against host time, and one core's clock against another's
 (round trips from core (0, 0) to up to six cores, twice, a spin apart). One JSON line.
 
 Example: python probe.py --cores 2 --smoke; python probe.py"""

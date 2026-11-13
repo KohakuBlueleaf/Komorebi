@@ -35,12 +35,12 @@ s.halt(j)
 | `enqueue` | the X280 and the dispatcher's job queue | the same calls with the ENQUEUE stream; the queue gives each job the lowest free group of its size, so several jobs are in flight |
 | `errors` | - | three streams that end in an error event, then 20 jobs of the SUBMIT stream on the same run |
 
-`MAP` (`kernels/`): member m of a job adds its share of the job's T input tiles (from
+`MAP` (`kernels/`): rank m of a job adds its partition of the job's T input tiles (from
 tile a4) into one tile and stores it at output page a3 + m. Groups differ between the ways
 (only `submit` and `hostfed` pick the same ones), but every job writes the same tiles. The
 inputs are integers in [-2, 2], so every sum is exact in bf16, and the host compares every
 output tile of every way bit for bit with numpy. It also checks each core's command count
-against the simulated groups (`hostfed`, `submit`) or the total of member commands
+against the simulated groups (`hostfed`, `submit`) or the total of core commands
 (`enqueue`), and gives microseconds per job, from the start to the stream's end. Each run
 is traced: the groups the grid saw must be the simulator's in order for `submit` (one
 command in flight), and the trace gives the most commands in flight at once.

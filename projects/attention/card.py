@@ -64,7 +64,7 @@ def broadcast_words(nocs, p, group, noc=0):
 def program(
     p, q_tensor, o_tensor, scale, approx=False, fidelity="HiFi2", broadcasts=None, noc=0
 ):
-    """The resident program of plan p: the three kernels, the plan's buffers, each
+    """The persistent program of plan p: the three kernels, the plan's buffers, each
     core's broadcast words (`broadcasts`, by core) for the kernel on NoC `noc` (0: the
     reader, 1: the writer) and the compute's window."""
     s = p.dims

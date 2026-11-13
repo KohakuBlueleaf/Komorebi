@@ -68,7 +68,7 @@ void kernel_main() {
         if (handler != BS_HANDLER_COUNT && handler != BS_HANDLER_PLACE) {
             return true;
         }
-        // The same share of keys as the reader's, the same blocks as the thread's.
+        // The same partition of keys as the reader's, the same blocks as the thread's.
         const uint32_t rank = wr.me() - km::first(r);
         const km::Partition s = km::partition(r.a1, rank, km::count(r));
         const uint32_t log2_b = r.a2 & 0xFFu, blocks = r.a2 >> 8;

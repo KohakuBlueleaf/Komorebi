@@ -63,7 +63,7 @@ headers and example kernels against this harness.
 
 Every scenario ends with these checks:
 - every kernel returned, with none of its writes still in flight;
-- each acknowledged command was run once by each member of its group and completed
+- each acknowledged command was run once by each core of its group and completed
   through its tree;
 - no write landed outside what a core receives;
 - after a clean run, every kernel recorded leaving on the EXIT.
@@ -85,7 +85,7 @@ between kernels.
 | `smoke` | a few commands on four cores, no fault |
 | `stop_during_long_compute` | the grid is stopped while compute is deep in a long command |
 | `writer_gives_up` | math is held: the writer's wait for the output gives up |
-| `leader_gives_up` | a member's writer is held before its report: the leader gives up |
+| `leader_gives_up` | a core's writer is held before its report: the leader gives up |
 | `reader_gives_up` | unpack is held: the reader's wait for input room gives up |
 | `token_wait_after_stop` | the stop flag is set while the reader waits for a token page |
 | `no_output_waits_for_compute` | pack held as it takes a command with no output |
@@ -105,18 +105,18 @@ between kernels.
 | `mb_abort_then_good_token` | an input wait gives up, then a good token arrives |
 | `mb_exit_during_input_wait` | the EXIT token arrives while unpack waits for input |
 | `items_straddle_the_end` | 5 or 6 items of 5 pages plus one of 1 page per command, in 15 pages |
-| `wrappers_reject_straddling_items` | each bounded buffer wrapper asked for an item past the end |
+| `wrappers_reject_straddling_items` | each timed buffer wrapper asked for an item past the end |
 | `excl_waits_for_overlapping_group` | `KM_F_EXCL` commands on a disjoint and an overlapping group |
 | `completion_every_group` | every group of an 8-core grid, rows of 3, random chunk delays |
 | `random_jobs` | 10^4 commands with random groups, sizes and delays on 6 cores |
-| `dyn_smoke` | one item hops once between two cores; the run ends quiet |
-| `dyn_random` | 60 items of 12 hops on 4 cores with two bins: bins evicted, packets filled and split; against the replay |
-| `dyn_idle_flapping` | an idle time of 50 cycles and chunk delays up to 3000: lines go idle and busy again many times, the end comes only after the last retire |
-| `dyn_one_core` | every hop of every item to member 0, whose queue holds the whole population |
-| `dyn_quota` | one member spawns until `spawn` returns false |
+| `dyn_smoke` | one message is forwarded once between two cores; the run ends quiet |
+| `dyn_random` | 60 messages of 12 forwards on 4 cores with two bins: bins evicted, packets filled and split; against the replay |
+| `dyn_idle_flapping` | an idle time of 50 cycles and chunk delays up to 3000: lines go idle and busy again many times, the end comes only after the last consume |
+| `dyn_one_core` | every forward of every message to rank 0, whose queue holds the whole population |
+| `dyn_quota` | one core sends until `send` returns false |
 | `dyn_gap` | the first packet commit to DRAM is lost: the reader reports the gap with core and position, the grid stops |
-| `dyn_overflow` | more items than the queue holds: the overflow is reported |
-| `dyn_stall` | a member stalls in its body: the run stops and names it |
+| `dyn_overflow` | more messages than the queue holds: the overflow is reported |
+| `dyn_stall` | a core stalls in its body: the run stops and names it |
 
 The `mb_` scenarios run at mailbox depths 1 and 4.
 
@@ -125,8 +125,8 @@ The `mb_` scenarios run at mailbox depths 1 and 4.
 Each was found while the runtime was being written. The fix is named by its commit
 subject on the main branch.
 
-- When the grid was stopped, compute was stranded in its unbounded waits. Fixed by
-  "Device: bounded compute waits for the token, input pages and output space".
+- When the grid was stopped, compute was stranded in its waits without a timeout. Fixed by
+  "Device: timed compute waits for the token, input pages and output space".
 - After a kernel gave up, the core went on reporting later commands, which were
   acknowledged with wrong outputs. Fixed by "Device: a give-up stops the tile, and a
   tile that gave up acknowledges nothing".
@@ -147,7 +147,7 @@ subject on the main branch.
   wrapper gives up on an item that would pass the buffer end".
 - Replay of a card finding. A command with no output was acknowledged while compute
   was still in its body: the writer waited only for its own body. Fixed by "Device: a
-  member completes only after its compute body returned".
+  core completes only after its compute body returned".
 - A card finding: a feeder deadline passed long before its time. The 64-bit wall clock
   was read through the high word that every core of a tile latches, so a read at the
   low word's carry could come out 2^32 cycles ahead. Fixed by "Device: the wall clock

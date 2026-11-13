@@ -1,4 +1,4 @@
-"""A frame conducted by the work cluster's thread (`thread/frame.c`), each step it
+"""A frame driven by the work cluster's thread (`thread/frame.c`), each step it
 reaches checked against the host's (`passes`) and the image against the reference;
 the mesh uploaded once, the camera at the load. `python -m projects.raster.card_thread
 --scene tiny [--steps N] [--no-image]` prints one JSON line; exits 1 unless exact."""
@@ -188,7 +188,8 @@ def words(up, blocks, cores, workers, steps, balance=True):
 
 
 def result_dict(r):
-    """The thread's result: code, what the step found, each part in microseconds."""
+    """The thread's result: code, what the middle pass found, each part in
+    microseconds."""
     o = list(r.words) + [0] * (F["RF_OUT_WORDS"] - len(r.words))
     us = 1e6 / TIMER_HZ
     names = ["count", "sum", "hist", "hsum", "middle", "place", "setup", "fill"]
@@ -221,7 +222,7 @@ def result_dict(r):
 
 
 def expected(scene, recs, cores, workers):
-    """The host's step on the reference's counts: what the thread must find."""
+    """The host's middle pass on the reference's counts: what the thread must find."""
     n = len(scene["indices"])
     cnt, rows = passes.counters(recs, n, cores)
     heavy = passes.heavy_tiles(cnt, rows, workers)
@@ -335,7 +336,7 @@ def frame(args, session=None):
         (sp,) = card.read(session, up["sprof"])
         out["sprof"] = sprof_dict(sp.view(np.uint32).reshape(workers, -1), cores)
         # Regions are not read back (a region read reads every bank's pages of the
-        # regions' tensor at once): the tensors the thread's records wrote are.
+        # regions' tensor at once): the tensors the thread's commands wrote are.
         mid = expected(scene, recs, cores, workers)
         found = {k: out["thread"][k] for k in mid["found"]}
         out["found_equal"] = found == mid["found"]
@@ -383,7 +384,10 @@ def main():
     p.add_argument("--scene", default="tiny")
     p.add_argument("--cores", type=int, default=0, help="0: every core")
     p.add_argument(
-        "--steps", type=int, default=4, help="2 the step, 3 SETUP, 4 FILL and the image"
+        "--steps",
+        type=int,
+        default=4,
+        help="2 the middle pass, 3 SETUP, 4 FILL and the image",
     )
     p.add_argument("--list-slots", type=int, default=0, help="0: from the triangles")
     p.add_argument(
@@ -393,7 +397,10 @@ def main():
         "--no-image", dest="image", action="store_false", help="no image read-back"
     )
     p.add_argument(
-        "--no-balance", dest="balance", action="store_false", help="equal block shares"
+        "--no-balance",
+        dest="balance",
+        action="store_false",
+        help="equal block partitions",
     )
     p.add_argument("--repeat", type=int, default=0, help="frames in a row (0: one)")
     p.add_argument("--json", default=None)

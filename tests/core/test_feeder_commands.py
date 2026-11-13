@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
 """
 
 # Groups (first, count) on a grid 12 cores wide: of 1; inside one row; exactly one row;
-# starting or ending mid-row; a row with a single member at either end; the whole grid.
+# starting or ending mid-row; a row with a single core at either end; the whole grid.
 GROUPS = [
     (0, 1),
     (23, 1),
@@ -298,7 +298,7 @@ def test_reports_form_a_tree_rooted_at_the_first_rank(tmp_path, row):
                 continue
             if one_row:  # one level
                 assert parent == f, (f, n, me)
-            else:  # a member reports in its own row; a row leader to the first member
+            else:  # a core reports in its own row; a row leader to the first core
                 lead = max(f, me // row * row)
                 assert parent == (lead if me != lead else f), (f, n, me)
                 assert tree[parent][0] == f or parent == f  # two levels at most
@@ -311,7 +311,7 @@ def test_row_leaders_only_for_groups_that_span_rows(tmp_path):
     trees = report_tree(tmp_path, 12, GROUPS)
     assert trees[(12, 12)][12] == (12, 11)  # exactly one row: one level
     assert trees[(3, 6)][3] == (3, 5)
-    assert trees[(11, 2)][12] == (11, 0)  # a row of one member: its row leader
+    assert trees[(11, 2)][12] == (11, 0)  # a row of one core: its row leader
     assert trees[(11, 2)][11] == (11, 1)
     assert trees[(11, 14)][11] == (11, 2)  # rows of 1, 12, 1: two row leaders report
     assert trees[(11, 14)][12] == (11, 11) and trees[(11, 14)][24] == (11, 0)

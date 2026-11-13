@@ -1,5 +1,5 @@
 // _km_host: the X280 runtime, the dispatcher's memory layout (km_dispatch.h), its
-// start and stop, batched host commands and the event ring. Every wait is bounded.
+// start and stop, batched host commands and the event ring. Every wait has a timeout.
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/array.h>
@@ -1186,8 +1186,8 @@ namespace {
             }
         }
 
-        // Waits (bounded) for the kernel's core result, stops the session, reads the
-        // result block: result ready, core result, cleaned, what failed, words, cores.
+        // Timed wait for the kernel's core result; stops the session, reads the result
+        // block: result ready, core result, cleaned, what failed, words, cores.
         nb::dict finish(double timeout_s) {
             require_open();
             if (!session_) {
@@ -1266,7 +1266,7 @@ namespace {
             return out;
         }
 
-        // While the kernel runs: the result and core blocks (core 0's pass stamp) read
+        // While the kernel runs: the result and core blocks (core 0's pass marker) read
         // twice gap_s apart, and the runtime's view of each core.
         nb::dict probe(double gap_s) {
             require_open();
@@ -1387,8 +1387,8 @@ namespace {
             return work(c, false).session.has_value();
         }
 
-        // Waits (bounded) until every core of the cluster has returned from main:
-        // ready, the four core results, and the runtime's description otherwise.
+        // Waits (with a timeout) until every core of the cluster has returned from
+        // main: ready, the four core results, and the runtime's description otherwise.
         nb::dict work_wait(uint32_t c, double timeout_s) {
             Work& w = work(c, true);
             if (!w.session) {
@@ -1414,8 +1414,8 @@ namespace {
             return out;
         }
 
-        // Stops the cluster's image through the runtime (bounded): cleaned, and the
-        // runtime's description when it did not return to idle.
+        // Stops the cluster's image through the runtime (with a timeout): cleaned, and
+        // the runtime's description when it did not return to idle.
         nb::dict work_stop(uint32_t c, double timeout_s) {
             Work& w = work(c, true);
             if (!w.session) {
@@ -1445,8 +1445,8 @@ namespace {
             return done.cleaned_up();
         }
 
-        // The runtime's account of every clean-up since the last close() that did not
-        // restore its cluster ("" when all did).
+        // The runtime's error message for every clean-up since the last close() that
+        // did not restore its cluster ("" when all did).
         const std::string& close_failed() const {
             return close_failed_;
         }

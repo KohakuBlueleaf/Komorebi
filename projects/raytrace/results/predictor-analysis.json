@@ -595,5 +595,5 @@
    }
   }
  },
- "note": "balance lost: per trace, the sum over its chunk records of the slowest core's busy cycles less the mean core's (1350 MHz), from the profile of the last frame of each run; (lost, slowest-core sum, records). pull_estimate: greedy pull of g packets in tile order over 120 cores, per-packet cycles from the cost blocks of the host-cut run, 1 us per pull; lost = makespan less mean busy."
+ "note": "balance lost: per trace, the sum over its chunk commands of the slowest core's busy cycles less the mean core's (1350 MHz), from the profile of the last frame of each run; (lost, slowest-core sum, commands). pull_estimate: greedy pull of g packets in tile order over 120 cores, per-packet cycles from the cost blocks of the host-cut run, 1 us per pull; lost = makespan less mean busy."
 }

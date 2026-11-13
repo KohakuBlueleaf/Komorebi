@@ -1,5 +1,5 @@
 // One core writes 4-byte NoC writes into another core's L1 with chosen source and
-// destination words; the other core runs nothing. Every wait is bounded.
+// destination words; the other core runs nothing. Every wait has a timeout.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -9,7 +9,7 @@ namespace {
     constexpr uint32_t kSrcWord = 32;          // 16 source words S[i] = 0xA0A00000 | i
     constexpr uint32_t kResultWord = 64;       // per test: 1 posted, 2 acked, 3 no ack
     constexpr uint32_t kSettle = 20000;        // cycles after a posted write
-    constexpr uint32_t kFlushLimit = 1000000;  // cycles of the bounded flush poll
+    constexpr uint32_t kFlushLimit = 1000000;  // cycles of the timed flush poll
 
     uint64_t wall64() {
         const uint32_t lo = (
@@ -46,14 +46,14 @@ void kernel_main() {
             while (wall64() - t0 < kSettle) {
                 ;
             }
-        } else {  // non-posted: poll the acknowledgement count, bounded
+        } else {  // non-posted: poll the acknowledgement count, with a timeout
             noc_async_write(src, dst, 4);
             const uint64_t t0 = wall64();
             bool flushed = false;
             while (!flushed && wall64() - t0 < kFlushLimit) {
                 flushed = ncrisc_noc_nonposted_writes_flushed(noc_index);
             }
-            result = flushed ? 2 : 3;  // 3: no acknowledgement within the bound
+            result = flushed ? 2 : 3;  // 3: no acknowledgement within the timeout
         }
         o[kResultWord + t] = result;
     }

@@ -54,7 +54,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_cluster(void)` | any | the work cluster the thread runs on | 1, 2 or 3 |
 | `uint64_t kmx_time(void)` | any | the 50 MHz timer (`KMX_TICKS_PER_SECOND`) | ticks |
 | `int kmx_stop_requested(void)` | any | true once the host asked for a stop or the thread's deadline passed | 0 or 1 |
-| `void kmx_progress(uint32_t where)` | any | stamps `where` and its time into the result block | - |
+| `void kmx_progress(uint32_t where)` | any | writes `where` and its time into the result block as a progress marker | - |
 | `void kmx_result(uint32_t code, const void* words, uint32_t n)` | 0 | the thread's code and up to 48 words | error `result` if `n > 48` (the first 48 kept) |
 
 Ring calls, `kmx_spawn`, `kmx_join`, `kmx_par`, `kmx_par_all`, `kmx_port_run` and
@@ -63,7 +63,7 @@ Ring calls, `kmx_spawn`, `kmx_join`, `kmx_par`, `kmx_par_all`, `kmx_port_run` an
 `hdr = handler | flags << 8`, `group = first | count << 16`, arguments `a0` to `a9`; the
 library writes `seq` and the landing words. Flags: `KM_F_EXCL` (submitted only when no
 group in flight overlaps it), `KM_F_RESULT` (the group leader's `wr.result(value)`
-comes back in the event's `ticks`), `KM_F_QUEUE` (the kernel chooses `first`). A
+is returned in the event's `ticks`), `KM_F_QUEUE` (the kernel chooses `first`). A
 command that cannot be submitted now is rejected at once (`KM_EV_REJECTED`, aux 11) and the
 kernel then sends one `KMX_EV_WAKE` (handle 0) when a slot frees or the queue submits a
 job: the command may be submitted again after it. The kernel's other rejections are its README's ("Rejected commands"), and STOP, EXIT, RUN and
@@ -110,7 +110,7 @@ line at `0x280 + 64 i` (ask at `+ 0x00`, tell at `+ 0x10`, written by the core).
 
 Result block: `state` (1 boot, 2 running, 3 done, 4 failed), `error` (the first
 library error: 0 none, 1 args, 2 bank, 3 late, 4 stopped, 5 par, 6 result), `code`,
-`n`, `where`, `t_where` (ticks from the start to the last stamp), `ticks` (start to
+`n`, `where`, `t_where` (ticks from the start to the last progress marker), `ticks` (start to
 the end of `kmx_main`), then 48 result words at byte 64.
 
 Windows on a work cluster: the ring's 16 (`KMX_RING_WINDOW`), cluster `c`'s LIM
@@ -129,7 +129,7 @@ data for a thread on the other bank is pushed there by its producer.
 aligned), `consumed` (the kernel's count of commands taken), `events` (`event_depth`
 16-byte events), `read` (a 64-byte line, word 0 the events the thread took),
 `cmd_depth`, `event_depth` (powers of two, at most 1,024), `flags`
-(`KMX_RING_CACHED` 1: each hand-over is a sweep; `KMX_RING_REMOTE` 2: `cmd` and `read`
+(`KMX_RING_CACHED` 1: each flush or invalidate is a sweep; `KMX_RING_REMOTE` 2: `cmd` and `read`
 are NoC addresses in the tile `reserved[0]` names, `x | y << 16`, inside one 2 MiB
 window that the start-up opens in slot `KMX_RING_WINDOW` and closes after `kmx_main`),
 `reserved[0]`. Other addresses are as the thread's cluster sees them. A line that
@@ -189,7 +189,7 @@ cluster's:
 `ThreadResult`: `ran` (false when it was stopped at the timeout), `state`, `error`
 (names, as in the result block), `code`, `words`, `where`, `where_us`, `us`, `stuck`
 (it did not return within 1 s of the stop flag either: a core outside the library or
-halted by a trap) and `detail` (then the runtime's account of a stop that failed).
+halted by a trap) and `detail` (then the runtime's error message for a stop that failed).
 
 `RingPlacement(cmd, consumed, events, read, cmd_depth, event_depth, cached=False,
 remote=None)`, `work_ring(kernel_lim, kernel_xy, work_lim, work_xy, cluster=1)` (the
@@ -204,10 +204,10 @@ clusters' tiles and their banks' DRAM tiles for every thread on the card.
 ## Measured
 
 On work cluster 1 of a p150a at 1,750 MHz: the bank read at about 1.3 GB/s and written
-at 1.3 to 1.8 GB/s with four cores; a hand-over sweep at 5 to 8 GB/s of region
+at 1.3 to 1.8 GB/s with four cores; a flush or invalidate sweep at 5 to 8 GB/s of region
 (`experiments/x280_threads/`). At the session's 1,000 MHz on each of clusters 1 to 3:
 about 1.2 GB/s read and written per cluster, alone or together (three at once 3.5 GB/s);
-a push into the other bank 2.3 GB/s, a pull 0.024 GB/s; take 4.6 GB/s, give 4.3 GB/s
+a push into the other bank 2.3 GB/s, a pull 0.024 GB/s; invalidate 4.6 GB/s, flush 4.3 GB/s
 (`experiments/work_clusters/`).
 An empty `kmx_par` call: 0.71 µs; `kmx_par_all` over three clusters, the map, heavy
 map and prefix sum on 1, 4, 8 and 12 cores: [X280 threads](../threads.md#twelve-cores)
