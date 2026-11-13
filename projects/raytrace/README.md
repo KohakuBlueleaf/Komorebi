@@ -6,6 +6,19 @@ Tensix cores of a Blackhole p150a under the dispatcher. The whole frame (ray
 generation, the four traces, the shading) runs on the cores; every stage is checked
 against numpy lane by lane and the image against numpy's image, pixel by pixel.
 
+## Where it stands
+
+The whole frame runs on the card, exact against numpy (ties and a few Bistro misses
+apart: [What is exact](#what-is-exact)), with the scene's tree in L1 or read from DRAM
+as treelets. Against the V100 running the reference's frame, the card's frame takes
+2.8 to 3.7 times as long on the four public views (V100 / card 0.27 to 0.35: Sponza
+360 ms close and 349 overview against 102 and 96, Bistro interior 597 and 524 against
+211 and 154) and 9 to 14 times as long on the generated scenes (0.07 to 0.11). That is
+below half of the V100 on every scene, and it stays so: the bounce trace's rays leave a
+packet's lanes at different nodes, about 6 of 32 lanes are alive at an inner node of
+it, and most box tests serve few rays. [What bounds it, and what was tried](#what-bounds-it-and-what-was-tried) lists what
+was measured against that, with its numbers.
+
 ## The thread program
 
 A pass (primary, shadow, bounce or shadow at the bounce hit) is one command of the
@@ -90,8 +103,9 @@ the dispatcher's upload region and kept, each command a node after the commands
 that write its inputs (the shadow and bounce traces may run together). The camera is
 bound as the address of its constant page (camera, light, sky, lane offsets), the
 colour as its address: a new camera is a new constant page and a `restart` with its
-address, with no new upload and no host step inside the frame. The kernel's X280 decides what to submit next; host-fed, the same executor runs
-on the host and submits through the host ring, and both give the same image.
+address, with no new upload and no host step inside the frame. The kernel's X280
+decides what to submit next; host-fed, the same executor runs on the host and submits
+through the host ring, and both give the same image.
 
 `run.py` runs the traces alone, with ray generation and shading on the host (the
 reference's functions): it checks every ray's hit and times each pass by itself.
@@ -178,9 +192,11 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
   [host API](../../docs/reference/host.md#program)). Two remedies: a larger buffer
   (`Session(kernel_bytes=...)`, taken from the L1 left for circular buffers) or a
   smaller build of one kernel (`km.Program(..., opt={...})`). The ray tracer's kernels
-  take 73,728 bytes since SORT, and `card.py` opens its session with 80 KiB; with the
-  division, square root, reciprocal and clamped inverse inlined at every use they
-  took more, so these are calls.
+  take 77,328 bytes (text per thread: BRISC 18,828, NCRISC 6,752, TRISC0 3,800, TRISC1
+  1,336, TRISC2 45,912; the session logs it at every load), more than the default
+  buffer, so `card.py` opens its session with 80 KiB (81,920 bytes). With the division,
+  square root, reciprocal and clamped inverse inlined at every use they took more, so
+  these are calls.
 - Readback: reading back is slow ([host API](../../docs/reference/host.md#session));
   large results are read in 2 MB chunks with a line per chunk, and the whole frame's
   stage pages (490 MB) are checked on tiles only.
@@ -222,17 +238,17 @@ the GPU or copying the image back ([reference](reference/README.md#timings-and-p
 The card's frame is its eight commands likewise: the tree is loaded before them and
 the colour is read back after, neither counted.
 
-Reading it against the V100: below half everywhere, room left, in three places.
-- Moving pages between L1 and the vector unit: the cores copy them word by word
-  through the Dst window, about 90 cycles per 32-word vector in and 115 out. In the
-  stage commands that is 47 to 69 % of the time (SHADE1: 4.9k of 10.4k cycles per
-  packet). The unpacker and packer move tiles between L1 and Dst without the core;
-  pages laid out as Dst tiles would take that cost off every command, traces included.
-- The traces: as below (box tests, bounce coherence). Here the shadow and bounce
+Reading it against the V100: below half everywhere, from three parts of the frame.
+- Moving pages between L1 and the vector unit: the stage commands copy them word by
+  word through the Dst window, about 90 cycles per 32-word vector in and 115 out, which
+  is 47 to 69 % of their time (SHADE1: 4.9k of 10.4k cycles per packet). The trace
+  commands' packet states, between treelet visits, go through the unpacker and packer
+  instead ([below](#the-whole-frame-on-larger-scenes)).
+- The traces: as below (box tests, bounce coherence). In this row the shadow and bounce
   commands also walk every packet of the frame, with the lanes of missed pixels empty
   (rays stay on their core): the second shadow trace takes 3.88 ms for 158,779 rays,
-  against 1.60 ms when `run.py` packs them; a later version re-bins them into full
-  packets.
+  against 1.60 ms when `run.py` packs them. With treelets, SORT puts each core's rays
+  into full packets, valid rays first (the rows below).
 - Shading arithmetic: SHADE1 computes for 4,988 cycles per packet (the table); its
   bounce direction alone is twelve 32-bit hashes, two square roots and six divisions.
 
@@ -396,7 +412,7 @@ C++ and V100 rates are the medians of the benchmark run above
 no separate rate for the second shadow rays. Its whole frame, shading included, takes
 20.59 ms on 96 CPU threads and 2.59 ms on the V100.
 
-Reading it: every pass is below half of the V100's rate, so there is room left.
+Reading it: every pass is below half of the V100's rate.
 - Where the cycles go (primary, summed over cores): box tests 56 %, the entry test
   and lane check of a pop 13 %, loading packets 9 %, triangle tests 8 %, writing hits
   5 %. The slowest core is 1.24 times the mean: tiles are split by packet count, and
@@ -406,3 +422,32 @@ Reading it: every pass is below half of the V100's rate, so there is room left.
   and origin.
 - Not counted above: the host steps (ray generation, shading) and the readback of the
   hit pages; reading back is slow ([host API](../../docs/reference/host.md#session)).
+
+## What bounds it, and what was tried
+
+Sponza's overview, the frame that the numbers below are mostly taken from, takes 348.5
+ms with the host's cut: the bounce trace 194.6, the second shadow trace 56.4, the
+primary 50.1. In the traces, on the mean core, box tests take 61 % of the time, stack
+pops 13 %, triangle tests 11 % and packet-state moves 3 %; the slowest core of each
+command is 71 ms behind the mean one in all (Bistro: 147 of 524).
+The number behind the bounce trace is the live lanes at an inner node visit: 4.2 of 32
+before sorting, 6.0 after ([larger scenes](#the-whole-frame-on-larger-scenes)).
+
+| tried | result | where |
+|---|---|---|
+| sorting each core's bounce and second-shadow rays by direction octant and origin cell (SORT, UNSORT) | Sponza overview bounce trace 359 to 251 ms, second shadow 209 to 75; Bistro overview 632 to 366 and 346 to 118; 5 ms a SORT and 1 to 3.4 ms an UNSORT; live lanes 4.2 to 6.0. These times are from the frame of 451 ms, before the next row | [larger scenes](#the-whole-frame-on-larger-scenes) |
+| packet states through the unpacker and packer between treelet visits | a state moves in about 270 cycles, copied word by word 3,400; Sponza overview 451 to 349 ms, Bistro overview 633 to 524 | [larger scenes](#the-whole-frame-on-larger-scenes) |
+| the frame planned on the X280, cut by the frame before's cycles | Sponza overview 349.4 ms cold, 313.6 warm; Bistro overview 524.7 and 477.5; Bistro close 601.8 and 596.9, no gain; 8 to 34 ms more on 10^4 to 10^6 (the traces are cut into up to 8 commands). Time lost to each command's slowest core: 70.5 to 39.8 ms (Sponza), 147.2 to 84.4 (Bistro) | [planned on the X280](#the-frame-planned-on-the-x280) |
+| cutting by the trace before's cycles, or by equal hit counts | worse than the host's even cut: Sponza 376.4 and 365.5 ms against 348.9; the cost of a core is set by a few heavy packets that these cuts cannot see | [planned on the X280](#the-frame-planned-on-the-x280) |
+| rays moving to treelets that stay in cores' L1 | predicted, not built: Sponza overview 292 ms at best (zero-copy pages, bundles of 32 rays, owners' walks overlapping the transport; 437 ms if they do not) against 348.5; Bistro interior overview 2,256 ms against 523.7, because its treelets take 156 MiB and the cores' L1 holds 118 MiB. A bundle raises the live lanes of the bounce only from 6.0 to 7.0 | [ray_moves](../../experiments/ray_moves/README.md#answer) |
+| one ray against the child boxes of a wide node | predicted, not built: a node visit of one ray takes 729 cycles at best, a packet's two-box step 400 cycles shared by about 6 live rays; Sponza overview frame 471 ms against 348.5, Bistro overview 680 against 523.7 | [ray_wide](../../experiments/ray_wide/README.md#answer) |
+
+The first four rows are in the program (the plan's other cuts stay as `--plan`
+modes). The last two are redesigns that were costed from measurements and not built:
+their predictions are above. A core that pulls ranges of 4 packets from a shared counter
+was estimated, not built, at 3 to 6 ms lost of the 70.5 and 147
+([planned on the X280](#the-frame-planned-on-the-x280)).
+
+The bound, then: about 6 of 32 lanes are alive at an inner node of the bounce trace,
+so a packet step costs what 32 lanes cost and serves 6. No grouping of rays (sorting,
+bundles by treelet) or of nodes (one ray against wide nodes) tried here fills them.
