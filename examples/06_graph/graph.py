@@ -1,11 +1,13 @@
 """A graph on the card: a step on 60 cores, two branches on disjoint halves in flight
 together, a reduce whose result word decides whether to go round again; the kept graph
 is run again with other bindings. Run host-fed (the executor on the host) and on the
-X280 (the executor in the dispatch kernel). Prints one JSON line.
+X280 (the executor in the dispatch kernel). Prints one JSON line; exits 1 unless ok.
 """
 
 import argparse
+import contextlib
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -41,7 +43,7 @@ def parse():
     )
     p.add_argument("--max-runs", type=int, default=50)
     p.add_argument("--deadline", type=float, default=1.0, help="per record, seconds")
-    p.add_argument("--stall", action="store_true", help="end with a stalled record")
+    p.add_argument("--stall", action="store_true", help="a stalled graph first")
     p.add_argument(
         "--decide",
         choices=["host", "x280", "both"],
@@ -99,8 +101,10 @@ def main():
     with km.Session(log=log) as session:
         log("device open")
         out.update(run(session, args))
+    out["ok"] = bool(sum(refused) == len(bad) and out["ok"])
     out["wall_s"] = round(time.monotonic() - T0, 1)
     print(json.dumps(out), flush=True)
+    sys.exit(0 if out["ok"] else 1)
 
 
 def state_tensor(device, n):
@@ -118,6 +122,9 @@ def read_state(state, n):
 
 
 def run(session, args):
+    """The stalled graph first (its own run) when asked, then one run per path. The
+    output's `ok`: every path as the numpy replay and as the simulator (records
+    issued, per core), the paths alike, the branches in flight together."""
     device, n = session.device, args.cores
     cases = {"first": args.first, "again": args.again}
     modes = ["host", "x280"] if args.decide == "both" else [args.decide]
@@ -133,97 +140,161 @@ def run(session, args):
         segments=KERNELS / "graph.h",
     )
     g, (it_reg, err_reg) = build(n, args.max_runs, args.deadline)
-    out, done, hostfed = {}, {}, {}
-    # One load per path: the kernel's most slots busy at once is the path's own.
+    out, ok = {}, True
+    if args.stall:
+        load = session.load(program, deadline=args.deadline)
+        out["stall"] = stall(load, args.deadline, modes[-1] == "x280")
+        ok &= out["stall"].get("error") == [8, 0]
+    out["paths"] = {}
     for mode in modes:
-        run = session.load(program, trace=8 * args.max_runs + 8, deadline=args.deadline)
+        load = session.load(
+            program, trace=8 * args.max_runs + 8, deadline=args.deadline
+        )
         log(f"{mode}: loaded")
-        try:
-            if mode == "host":
-                for name, (it, limit) in cases.items():
-                    addr = states["host", name].buffer_address()
-                    log(f"host {name}: it {it}, limit {limit}")
-                    b = {"state": addr, "it": it, "limit": limit}
-                    got = run.run_hostfed(g, b, 30.0)
-                    log(f"host {name}: {got.status} after {got.runs} rounds")
-                    hostfed[name] = got
-                    regs = (got.regs[it_reg.index], got.regs[err_reg.index])
-                    done["host", name] = (got.status, got.runs, regs, len(got.records))
-            else:
-                done.update(on_x280(run, g, states, cases))
-            if args.stall and mode == modes[-1]:
-                out["stall"] = stall(run, args.deadline, mode == "x280")
-            else:
-                run.stop()
-            log(f"{mode}: stopped")
-        except km.KomorebiError as err:
-            log(f"{mode}: failed: {err}")
-            out[f"failed_{mode}"] = str(err)
-        if not run.stopped:
-            continue  # failed: no result block to read
-        out[f"max_busy_{mode}"] = run.result()["max_busy"]
-        if mode == "host" and run.trace() is not None and "first" in hostfed:
-            out["branches_overlapping_rounds"] = overlap(run.trace(), hostfed["first"])
-    if "max_busy_x280" in out:
-        # LEFT and RIGHT in flight together on the X280: two slots busy at once.
-        out["x280_branches_together"] = out["max_busy_x280"] >= 2
-    for (mode, name), (status, rounds, (it_got, err_got), records) in done.items():
-        it, limit = cases[name]
-        want_rounds, x, errs, want_it = replay(n, it, limit, args.max_runs)
-        key = name if mode == "host" else f"{name}_x280"
-        out[key] = {
-            "status": status,
-            "rounds": rounds,
-            "rounds_numpy": want_rounds,
-            "err": err_got,
-            "err_numpy": errs[-1],
-            "it": it_got,
-            "it_numpy": want_it,
-            "state_wrong": int((read_state(states[mode, name], n) != x).sum()),
-        }
-        if records is not None:
-            out[key]["records"] = records
+        cores = load.cores
+        out["paths"][mode] = path = one_path(
+            load, mode, g, (it_reg, err_reg), states, cases
+        )
+        path.update(card_counts(load))
+        if mode == "host" and "first" in path:
+            path["branches_overlapping_rounds"] = overlap(load.trace(), path.pop("got"))
+        path.pop("got", None)
+    want = simulated(g, n, cases, args.max_runs, cores)
+    for mode, path in out["paths"].items():
+        ok &= "failed" not in path and path.get("max_busy", 0) >= 2
+        for name, (it, limit) in cases.items():
+            rounds, x, errs, it_end = replay(n, it, limit, args.max_runs)
+            got = path.get(name, {})
+            got["state_wrong"] = int((read_state(states[mode, name], n) != x).sum())
+            ok &= got.get("status") == "ended" and got["state_wrong"] == 0
+            ok &= (got.get("rounds"), got.get("it"), got.get("err")) == (
+                rounds, it_end, errs[-1]
+            )  # fmt: skip
+        ok &= path.get("kernel_records") == want["kernel_records"]
+        ok &= path.get("core_records") == want["core_records"]
+    paths = list(out["paths"].values())
+    out["paths_agree"] = all(
+        {k: p.get(k) for k in [*cases, "kernel_records", "core_records"]}
+        == {k: paths[0].get(k) for k in [*cases, "kernel_records", "core_records"]}
+        for p in paths
+    )
+    out["simulated"] = {"kernel_records": want["kernel_records"]}
+    out["ok"] = bool(ok and out["paths_agree"])
+    for path in paths:
+        path["core_records_ok"] = path.pop("core_records", None) == want["core_records"]
     return out
 
 
-def on_x280(run, g, states, cases):
+def one_path(load, mode, g, regs, states, cases):
+    """Both cases on one path, then the stop; a failure stops the run too. {case:
+    {status, rounds, it, err}, "got": the first host-fed result (for its trace)}."""
+    it_reg, err_reg = regs
+    path = {}
+    try:
+        if mode == "host":
+            for name, (it, limit) in cases.items():
+                addr = states["host", name].buffer_address()
+                log(f"host {name}: it {it}, limit {limit}")
+                b = {"state": addr, "it": it, "limit": limit}
+                got = load.run_hostfed(g, b, 30.0)
+                log(f"host {name}: {got.status} after {got.runs} rounds")
+                path.setdefault("got", got)
+                path[name] = {
+                    "status": got.status,
+                    "rounds": got.runs,
+                    "it": got.regs[it_reg.index],
+                    "err": got.regs[err_reg.index],
+                }
+        else:
+            path.update(on_x280(load, g, states, cases))
+        load.stop()
+        log(f"{mode}: stopped")
+    except km.KomorebiError as err:
+        log(f"{mode}: failed: {err}")
+        path["failed"] = str(err)
+        with contextlib.suppress(km.KomorebiError):
+            load.stop()  # stopped before the next load, its counts read if it can be
+        if not load.stopped:
+            with contextlib.suppress(km.KomorebiError):
+                load.abort()
+    return path
+
+
+def card_counts(load):
+    """What the card saw: the kernel's records and most slots busy at once (its result
+    block), every core's records taken (its state words)."""
+    if not load.stopped:
+        return {}
+    with contextlib.suppress(km.KomorebiError):
+        r = load.result()
+        cores = [c["runs"] for c in load.state()]
+        return {
+            "max_busy": r["max_busy"],
+            "kernel_records": r["records"],
+            "core_records": cores,
+        }
+    return {}
+
+
+def simulated(g, n, cases, max_runs, cores):
+    """The records the simulator issues for both cases, each record's result word the
+    replay's err of its round; plus the EXIT every run ends with (all cores)."""
+    per_core, count = [1] * cores, 1
+    for it, limit in cases.values():
+        errs = replay(n, it, limit, max_runs)[2]
+        sim = g.simulate(
+            {"state": 0, "it": it, "limit": limit},
+            n_cores=cores,
+            result=lambda r, errs=errs: errs[r.run - 1],
+        )
+        count += len(sim.records)
+        for r in sim.records:
+            for c in range(r.first, r.first + r.count):
+                per_core[c] += 1
+    return {"kernel_records": count, "core_records": per_core}
+
+
+def on_x280(load, g, states, cases):
     """The graph uploaded once and run by the dispatch kernel's engine: started kept,
-    then restarted by its req with the second case's bindings, then released.
-    An error event raises EngineError. {("x280", case): (status, rounds, (it, err),
-    None)}: the records stay in the kernel."""
-    up = run.upload(g)
-    done = {}
+    then restarted by its req with the second case's bindings, then released. An
+    error event raises EngineError. {case: {status, rounds, it, err}}."""
+    up = load.upload(g)
+    path = {}
     for k, (name, (it, limit)) in enumerate(cases.items()):
         b = {"state": states["x280", name].buffer_address(), "it": it, "limit": limit}
         log(f"x280 {name}: it {it}, limit {limit}")
-        t = run.start(up, b, kept=True) if k == 0 else run.restart(up.req, b)
-        end = run.wait_engine(t, timeout=30.0)
+        t = load.start(up, b, kept=True) if k == 0 else load.restart(up.req, b)
+        end = load.wait_engine(t, timeout=30.0)
         rounds = 1 + sum(ev.kind == "round" for ev in t.events)
         log(f"x280 {name}: {end.kind} after {rounds} rounds")
-        done["x280", name] = ("ended", rounds, tuple(end.regs), None)
-    run.release(up)
-    return done
+        it_end, err = end.regs
+        path[name] = {"status": "ended", "rounds": rounds, "it": it_end, "err": err}
+    load.release(up)
+    return path
 
 
-def stall(run, deadline, x280):
-    """A graph whose record never completes, last: its deadline ends the graph with
-    reason 8 and the kernel with its deadline error. Stops the run."""
+def stall(load, deadline, x280):
+    """A graph whose record never completes, in a run of its own: its deadline ends the
+    graph with reason 8 and the kernel with its deadline error (4). Stops the run."""
     g = Graph(deadline_us=round(deadline * 1e6), req=7)
     g.record(5, team=(0, 4), args=[1])
-    if not x280:
-        got = run.run_hostfed(g, timeout=10.0)
-        run.stop()
-        return {"status": got.status, "error": list(got.error or ())}
-    out = {"on": "x280"}
+    out = {"on": "x280" if x280 else "host"}
     try:
-        run.wait_engine(run.start(run.upload(g)), timeout=10.0)
-        out["status"] = "ended"
+        if x280:
+            load.wait_engine(load.start(load.upload(g)), timeout=10.0)
+            out["status"] = "ended"
+        else:
+            got = load.run_hostfed(g, timeout=10.0)
+            out.update(status=got.status, error=list(got.error or ()))
     except km.EngineError as err:
         out.update(status="error", error=[err.reason, err.node])
     try:
-        run.stop()
+        load.stop()
     except km.KernelFailed as err:
         out["kernel_error"] = (err.result or {}).get("error")
+    if not load.stopped:
+        with contextlib.suppress(km.KomorebiError):
+            load.abort()
     return out
 
 

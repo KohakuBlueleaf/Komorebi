@@ -50,20 +50,26 @@ whether `LEFT` and `RIGHT` were in flight together in each round of the host-fed
 On the X280 the host takes only the end event: `it` and `err` from registers 0 and 1,
 the rounds from the round events, then the state read back. Each path has a run of its
 own, so the kernel's result block gives each one's most slots busy at once (`max_busy`);
-2 on the X280 means `LEFT` and `RIGHT` were in flight together there.
+2 on the X280 means `LEFT` and `RIGHT` were in flight together there. Both paths must
+also agree on what the card saw: the kernel's record count and every core's count of
+records taken, against each other and against the records `Graph.simulate` issues (plus
+the EXIT each run ends with).
 
     python graph.py [--first IT LIMIT] [--again IT LIMIT] [--max-runs N]
                     [--decide host|x280|both] [--deadline S] [--stall]
 
-`--stall` ends with a graph whose record never completes (on the X280 unless
-`--decide host`): the record's deadline ends the graph with error reason 8, and on the
-X280 also the dispatch kernel with its deadline error (4). It prints one JSON line.
+`--stall` first runs, in a run of its own, a graph whose record never completes (on the
+X280 unless `--decide host`): the record's deadline ends the graph with error reason 8,
+and the dispatch kernel with its deadline error (4); the runs after it are exact. It
+prints one JSON line; `ok` is true when every check above holds, and the script exits 1
+when it is not. `tests/hardware/test_graph_host.py` runs it with `--stall`.
 
 On a p150a (card 1, 60 cores, default arguments), host-fed and on the X280 alike: the
 first run ends after 5 rounds and the kept graph's run after 7, as in the replay, with
-every state word right; `max_busy` is 2 on both paths, and host-fed `LEFT` and `RIGHT`
-were in flight together in 5 of 5 rounds. With `--stall --deadline 0.2` the stalled graph on the X280 ends with reason 8
-at node 0, the kernel with error 4, and the run stops without a reset.
+every state word right; 49 records (48 and the EXIT) on both paths and in the simulator,
+every core's count right; `max_busy` is 2 on both paths, and host-fed `LEFT` and `RIGHT`
+were in flight together in 5 of 5 rounds. With `--stall --deadline 0.2` the stalled
+graph ends with reason 8 at node 0 and the kernel with error 4, without a reset.
 
 | Segment | Arguments |
 |---|---|
