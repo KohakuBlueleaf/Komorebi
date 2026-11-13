@@ -13,18 +13,30 @@ takes the smallest such program apart, line by line. It relies on [[what-komoreb
 
 ## Why there are three files
 
-Every Tensix core has five CPUs ([[the-card]]). Komorebi runs one small C++ function on
-each kind of them:
+Every Tensix core has five CPUs ([[the-card]]). Komorebi runs one small C++ function on each
+of three sets of them:
 
-- the **reader** runs on the CPU that moves data in,
-- the **writer** runs on the CPU that moves data out,
-- the **compute** function runs on the three that do arithmetic.
+- `reader.cpp` runs on the first of the two CPUs that move data,
+- `writer.cpp` runs on the second of them,
+- `compute.cpp` runs on the three that do arithmetic.
 
 Such a function is called a **kernel**. It is the code that runs on a core, as opposed to
-the Python that runs on your computer. Each role is a file of its own: `reader.cpp`,
-`compute.cpp`, `writer.cpp`, all in one folder. Komorebi always loads all three onto the
-cores, so a program always has all three files, even when a role has nothing to do. In
-this lesson none has: the program does nothing on the core except to be asked.
+the Python that runs on your computer. Each is a file of its own, all in one folder.
+Komorebi always loads all three onto the cores, so a program always has all three files, even
+when a role has nothing to do. In this lesson none has: the program does nothing on the core
+except to be asked.
+
+The two data-movement CPUs are alike. Either can read from DRAM, write to DRAM, and send
+to and receive from other cores, and a kernel on one of them may do all of these.
+"Reader" and "writer" are only the traditional names of the two. A program often has the
+first bring data in and the second send it out, and the tutorial does the same from
+[[reading-from-dram]] on, but that is the program's choice. Three things are not a choice:
+
+- the two CPUs use different NoCs, one each, fixed for the program: by default the first
+  uses NoC 0 and the second NoC 1;
+- a queue of data in L1 has exactly one CPU that fills it and one that empties it;
+- in Komorebi the second CPU is the one that reports the command to Python, and the one
+  that can attach a result to it ([[a-result]]).
 
 ## The general form of a kernel file
 
@@ -54,10 +66,10 @@ void kernel_main() {
   the command that arrived. `BODY` is the work. The command is the only parameter, and
   you do not use it yet.
 
-In the writer, `BODY` must be `return true;`. That `true` is the writer saying "I am
-done with this command, report it". The reader and the compute function return nothing.
+In `writer.cpp`, `BODY` must be `return true;`. That `true` is `writer.cpp` saying "I am
+done with this command, report it". The functions of `reader.cpp` and `compute.cpp` return nothing.
 
-This is the whole writer of the program in this lesson:
+This is the whole `writer.cpp` of the program in this lesson:
 
 ```{ .cpp }
 --8<-- "tutorial/04_hello_core/kernels/writer.cpp:run"

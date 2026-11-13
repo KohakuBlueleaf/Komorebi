@@ -33,15 +33,15 @@ for (uint32_t index = 0; index < share.len; index++) {
 - `TILES` is how many tiles the tensor has. It travels as a command argument.
 - The three lines are lessons 11 and 12 together. Every core works out the same share for
   itself, with no message to any other core.
-- `STEP` is the reader's, the compute kernel's or the writer's step: [[three-kernels]] and
+- `STEP` is `reader.cpp`'s, the compute kernel's or `writer.cpp`'s step: [[three-kernels]] and
   [[computing-on-a-tile]].
-- The three kernels run the same loop count, `share.len`, so that every tile the reader
-  pushes is one the compute kernel and the writer take.
+- The three kernels run the same loop count, `share.len`, so that every tile `reader.cpp`
+  pushes is one the compute kernel and `writer.cpp` take.
 - A command's group chooses how many cores share the tiles. The kernels do not change.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "c0", "x": 0, "y": 0, "w": 140, "h": 56, "t": "core 0, rank 0\nshare: tiles 0 to 14", "small": true, "gem": "amber"}, {"id": "c1", "x": 150, "y": 0, "w": 140, "h": 56, "t": "core 1, rank 1\nshare: tiles 15 to 29", "small": true, "gem": "amber"}, {"id": "c2", "x": 300, "y": 0, "w": 140, "h": 56, "t": "core 2, rank 2\nshare: tiles 30 to 44", "small": true, "gem": "amber"}, {"id": "c3", "x": 450, "y": 0, "w": 140, "h": 56, "t": "core 3, rank 3\nshare: tiles 45 to 59", "small": true, "gem": "amber"}, {"id": "src", "x": 0, "y": 96, "w": 590, "h": 40, "t": "source tensor, first half: tiles 0 to 59 (second half: 60 to 119)", "small": true}, {"id": "dst", "x": 0, "y": 176, "w": 590, "h": 40, "t": "destination tensor: tiles 0 to 59", "small": true}], "arrows": []}
+{"kind": "boxes", "boxes": [{"id": "c0", "x": 0, "y": 0, "w": 140, "h": 56, "t": "core 0, rank 0\nshare: tiles 0 to 14", "small": true, "gem": "amber"}, {"id": "c1", "x": 150, "y": 0, "w": 140, "h": 56, "t": "core 1, rank 1\nshare: tiles 15 to 29", "small": true, "gem": "amber"}, {"id": "c2", "x": 300, "y": 0, "w": 140, "h": 56, "t": "core 2, rank 2\nshare: tiles 30 to 44", "small": true, "gem": "amber"}, {"id": "c3", "x": 450, "y": 0, "w": 140, "h": 56, "t": "core 3, rank 3\nshare: tiles 45 to 59", "small": true, "gem": "amber"}, {"id": "src", "x": 0, "y": 96, "w": 590, "h": 40, "t": "source tensor, first half: tiles 0 to 59 (second half: 60 to 119)", "small": true}, {"id": "dst", "x": 0, "y": 176, "w": 590, "h": 40, "t": "destination tensor: tiles 0 to 59", "small": true}], "arrows": [], "narrow": {"boxes": [{"id": "c0", "x": 0, "y": 0, "w": 160, "h": 56, "t": "core 0, rank 0\ntiles 0 to 14", "small": true, "gem": "amber"}, {"id": "c1", "x": 170, "y": 0, "w": 160, "h": 56, "t": "core 1, rank 1\ntiles 15 to 29", "small": true, "gem": "amber"}, {"id": "c2", "x": 0, "y": 68, "w": 160, "h": 56, "t": "core 2, rank 2\ntiles 30 to 44", "small": true, "gem": "amber"}, {"id": "c3", "x": 170, "y": 68, "w": 160, "h": 56, "t": "core 3, rank 3\ntiles 45 to 59", "small": true, "gem": "amber"}, {"id": "src", "x": 0, "y": 148, "w": 330, "h": 56, "t": "source tensor, first half:\ntiles 0 to 59 (second half: 60 to 119)", "small": true}, {"id": "dst", "x": 0, "y": 224, "w": 330, "h": 56, "t": "destination tensor:\ntiles 0 to 59", "small": true}], "arrows": []}}
 </script>
 <figcaption>A group of 4 cores and 60 tiles: each core's share is 15 tiles, and they work on their own part of the tensor at the same time.</figcaption>
 </figure>
@@ -52,7 +52,7 @@ for (uint32_t index = 0; index < share.len; index++) {
 --8<-- "tutorial/22_a_whole_map/kernels/reader.cpp:run"
 ```
 
-The reader works out its share, then for each tile of it reads the tile from the first
+`reader.cpp` works out its share, then for each tile of it reads the tile from the first
 half of the source and the tile `tile_count` further on, from the second half, into the two
 input buffers.
 
@@ -67,7 +67,7 @@ not need the tile numbers, only how many tiles: `share.len`.
 --8<-- "tutorial/22_a_whole_map/kernels/writer.cpp:run"
 ```
 
-The writer writes the tile `first_tile + share.start + index` of the destination. The
+`writer.cpp` writes the tile `first_tile + share.start + index` of the destination. The
 `first_tile` is an argument that shifts the output, so the program can keep several results
 in one tensor.
 
@@ -122,7 +122,7 @@ results are the sum of the two source tensors.
 
 ## Common mistakes
 
-- Different loop counts in the three kernels. If the reader's share and the writer's share
+- Different loop counts in the three kernels. If `reader.cpp`'s share and `writer.cpp`'s share
   differ, one waits for a tile that never comes, and the command ends with
   `CommandTimeout`.
 - Writing the tensor while the program is loaded. `destination.write(...)` waits for every

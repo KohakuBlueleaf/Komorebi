@@ -57,13 +57,7 @@ Python.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes",
- "boxes": [
-  {"id": "host", "x": 0, "y": 10, "w": 150, "h": 70, "t": "Python\non your computer", "gem": ""},
-  {"id": "core", "x": 290, "y": 10, "w": 150, "h": 70, "t": "core 0 of the card\nadds the numbers", "gem": "amber"}],
- "arrows": [
-  {"from": "host", "to": "core", "kind": "command", "t": "40 and 2", "dy": -14, "dx": -30},
-  {"from": "core", "to": "host", "kind": "reply", "t": "the sum, 42", "dy": 28, "dx": -62}]}
+{"kind": "boxes", "boxes": [{"id": "host", "x": 0, "y": 10, "w": 150, "h": 70, "t": "Python\non your computer", "gem": ""}, {"id": "core", "x": 290, "y": 10, "w": 150, "h": 70, "t": "core 0 of the card\nadds the numbers", "gem": "amber"}], "arrows": [{"from": "host", "to": "core", "kind": "command", "t": "40 and 2", "dy": -14, "dx": -30}, {"from": "core", "to": "host", "kind": "reply", "t": "the sum, 42", "dy": 28, "dx": -62}], "narrow": {"boxes": [{"id": "host", "x": 0, "y": 0, "w": 170, "h": 56, "t": "Python\non your computer"}, {"id": "core", "x": 0, "y": 110, "w": 170, "h": 56, "t": "core 0 of the card\nadds the numbers", "gem": "amber"}], "arrows": [{"from": "host", "to": "core", "kind": "command", "t": "40 and 2", "dy": 0, "dx": -100}, {"from": "core", "to": "host", "kind": "reply", "t": "the sum, 42", "dy": 0, "dx": 10}]}}
 </script>
 <figcaption>What the program does: numbers go to a core of the card, the sum comes back.</figcaption>
 </figure>

@@ -18,7 +18,7 @@ lesson 4, was for. A **handler** is a piece of work with a number and a name.
 
 All three kernels of a core receive every command. Each looks at the handler and does the
 part that belongs to it. A kernel that has nothing for a handler ignores it, as the empty
-reader and compute kernels have so far ignored everything.
+the kernels in `reader.cpp` and `compute.cpp` have so far ignored everything.
 
 ## The general form
 
@@ -67,7 +67,7 @@ agree on these numbers because they all read this one file.
 --8<-- "tutorial/08_handlers/kernels/writer.cpp:run"
 ```
 
-The writer reads the two arguments, then checks the handler. A command for `Add` makes it
+`writer.cpp` reads the two arguments, then checks the handler. A command for `Add` makes it
 the sum, a command for `Multiply` the product. The two `if`s do not overlap, so at most
 one of them runs.
 
@@ -88,12 +88,12 @@ asks for the other piece of work.
 <script type="application/json">
 {"kind": "flow",
  "steps": [
-  {"t": "a command arrives at the writer\nwith a handler number", "gem": "amber"},
+  {"t": "a command arrives at writer.cpp\nwith a handler number", "gem": "amber"},
   {"t": "is it kHandlerAdd (1)?\nyes: the result is left + right"},
   {"t": "is it kHandlerMultiply (2)?\nyes: the result is left * right"},
   {"t": "return true: report the command"}]}
 </script>
-<figcaption>What the writer of this program does with each command.</figcaption>
+<figcaption>What `writer.cpp` of this program does with each command.</figcaption>
 </figure>
 
 ## The whole program
@@ -116,7 +116,7 @@ asks for the other piece of work.
     --8<-- "tutorial/08_handlers/kernels/writer.cpp"
     ```
 
-The reader and compute files are the empty ones; the header need not be included in them,
+`reader.cpp` and `compute.cpp` are the empty ones; the header need not be included in them,
 since they do not look at the handler.
 
 ```{ .text .km-output }

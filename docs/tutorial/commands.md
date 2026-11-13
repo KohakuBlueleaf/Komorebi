@@ -30,14 +30,7 @@ it as an event.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes",
- "boxes": [
-  {"id": "host", "x": 0, "y": 0, "w": 130, "h": 64, "t": "Python\non your computer"},
-  {"id": "dispatcher", "x": 190, "y": 0, "w": 140, "h": 64, "t": "the dispatcher\non an X280 core", "gem": "sapphire"},
-  {"id": "core", "x": 390, "y": 0, "w": 150, "h": 64, "t": "the cores\nkernels waiting", "gem": "amber"}],
- "arrows": [
-  {"from": "host", "to": "dispatcher", "kind": "command", "t": "command", "dx": -26, "dy": -12},
-  {"from": "dispatcher", "to": "core", "kind": "command", "t": "command", "dx": -26, "dy": -12}]}
+{"kind": "boxes", "boxes": [{"id": "host", "x": 0, "y": 0, "w": 130, "h": 64, "t": "Python\non your computer"}, {"id": "dispatcher", "x": 190, "y": 0, "w": 140, "h": 64, "t": "the dispatcher\non an X280 core", "gem": "sapphire"}, {"id": "core", "x": 390, "y": 0, "w": 150, "h": 64, "t": "the cores\nkernels waiting", "gem": "amber"}], "arrows": [{"from": "host", "to": "dispatcher", "kind": "command", "t": "command", "dx": -26, "dy": -12}, {"from": "dispatcher", "to": "core", "kind": "command", "t": "command", "dx": -26, "dy": -12}], "narrow": {"boxes": [{"id": "host", "x": 0, "y": 0, "w": 200, "h": 52, "t": "Python\non your computer"}, {"id": "dispatcher", "x": 0, "y": 96, "w": 200, "h": 52, "t": "the dispatcher\non an X280 core", "gem": "sapphire"}, {"id": "core", "x": 0, "y": 192, "w": 200, "h": 52, "t": "the cores\nkernels waiting", "gem": "amber"}], "arrows": [{"from": "host", "to": "dispatcher", "kind": "command", "t": "command", "dx": 8, "dy": 4}, {"from": "dispatcher", "to": "core", "kind": "command", "t": "command", "dx": 8, "dy": 4}]}}
 </script>
 <figcaption>A command goes from Python through the dispatcher to the cores. The event comes back the same way.</figcaption>
 </figure>

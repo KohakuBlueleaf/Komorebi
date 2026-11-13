@@ -71,11 +71,11 @@ figure.km-grid:focus-visible {
 .km-svg .km-text {
   fill: var(--st-text);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .km-svg .km-small {
-  font-size: 11.5px;
+  font-size: 13px;
 }
 
 .km-svg .km-muted {
@@ -215,11 +215,15 @@ figure.km-grid:focus-visible {
 /* The lesson diagrams (assets/diagram.js): boxes in the gem of their kind, arrows in
    the gem of what they carry, the reader's place in iolite. */
 figure.km-diagram {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
   background: var(--st-card);
   border: 1px solid var(--st-border);
   border-radius: var(--radius-card);
   margin: 1.2em 0;
   padding: 0.9em 0.9em 0.7em;
+  overflow-x: auto;
 }
 
 figure.km-diagram figcaption {
@@ -229,21 +233,24 @@ figure.km-diagram figcaption {
   text-align: center;
 }
 
-.kd-svg {
-  max-width: 100%;
+.kd-svg,
+figure.km-diagram svg.kd-svg {
+  display: block;
+  max-width: none !important;
+  margin: 0 auto;
   overflow: visible;
 }
 
 .kd-text {
   fill: var(--st-text);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .kd-code {
   fill: var(--st-text);
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .kd-named {
@@ -251,12 +258,12 @@ figure.km-diagram figcaption {
 }
 
 .kd-note {
-  font-size: 12px;
+  font-size: 13.5px;
 }
 
 .kd-small {
   fill: var(--st-muted);
-  font-size: 11.5px;
+  font-size: 13px;
 }
 
 .kd-box {

@@ -84,7 +84,7 @@ the result ([[a-result]]). The addition runs on the core, in C++.
     ```
 
 This is the program of [[what-komorebi-is]], the one that had not been explained. Its
-reader and compute kernels are the empty ones.
+`reader.cpp` and `compute.cpp` are the empty ones.
 
 ```{ .text .km-output }
 --8<-- "tutorial/07_arguments/output.txt"

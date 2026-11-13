@@ -34,7 +34,7 @@ In Python, next to `program.thread(...)`:
 program.ports({CORE: (CLUSTER, CPU)})
 ```
 
-On the Tensix core, in the reader, with `#include "komorebi/device/km_x280.hpp"`:
+On the Tensix core, in `reader.cpp`, with `#include "komorebi/device/km_x280.hpp"`:
 
 ```cpp
 km::X280Port port(reader);
@@ -66,7 +66,7 @@ int status = kmx_port_run(&command, serve, ARGUMENT, &event);
 - `ports({CORE: (CLUSTER, CPU)})` says which X280 core serves which Tensix core:
   Tensix core number `CORE` is served by core `CPU`, 0 to 3, of cluster `CLUSTER`. Every
   served core has exactly one. The thread must run on the card, and on that cluster.
-- `km::X280Port port(reader)` makes the core's end of the port. The reader owns it; the
+- `km::X280Port port(reader)` makes the core's end of the port. `reader.cpp` owns it; the
   other kernels do not use it.
 - `port.call(A, B, C, reply)` asks, with three numbers, and waits for the answer. It returns
   `true` when the answer came. The answer's three numbers are `reply.w[0]`, `reply.w[1]`,
@@ -99,7 +99,7 @@ uses for it.
 --8<-- "tutorial/36_core_asks_x280/kernels/reader.cpp:run"
 ```
 
-The reader of core 0 asks for the number `a0` of its command, waits for the answer, and
+`reader.cpp` of core 0 asks for the number `a0` of its command, waits for the answer, and
 tells the X280 core the answer plus one. If the ask gets no answer it gives up and tells
 nothing. The tell is the proof, for the thread, that the answer arrived.
 
@@ -130,9 +130,9 @@ the tell that it saw as its result.
 {"kind": "flow",
  "steps": [
   {"t": "thread: kmx_port_run sends the\ncommand with a0 = 12 and serves", "gem": "sapphire"},
-  {"t": "core 0, the reader: port.call(12, ...)\nasks and waits", "gem": "amber"},
+  {"t": "core 0, reader.cpp: port.call(12, ...)\nasks and waits", "gem": "amber"},
   {"t": "thread: kmx_port_asked sees 12,\nkmx_port_answer(144)", "gem": "sapphire"},
-  {"t": "core 0, the reader: the answer is 144,\nport.tell(145)", "gem": "amber"},
+  {"t": "core 0, reader.cpp: the answer is 144,\nport.tell(145)", "gem": "amber"},
   {"t": "the command ends. The thread keeps 145\nand returns it to Python"}]}
 </script>
 <figcaption>The question goes to the X280 core, the answer comes back, and a proof goes with it.</figcaption>
@@ -158,7 +158,7 @@ the tell that it saw as its result.
     --8<-- "tutorial/36_core_asks_x280/kernels/reader.cpp"
     ```
 
-The compute and writer files are the empty ones of [[hello-core]]. Run it from the folder
+`compute.cpp` and `writer.cpp` are the empty ones of [[hello-core]]. Run it from the folder
 `tutorial/36_core_asks_x280`:
 
 ```bash

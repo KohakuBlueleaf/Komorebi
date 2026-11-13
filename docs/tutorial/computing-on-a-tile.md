@@ -52,7 +52,7 @@ compute.run([&](const km_command_t& command) {
   write.
 - `compute_kernel_hw_startup` and `add_init` are set-up, done once, before `run`. They
   tell the units which buffers and which operation to expect.
-- `wait_front` waits until the reader has pushed a tile into the buffer, as the writer
+- `wait_front` waits until `reader.cpp` has pushed a tile into the buffer, as `writer.cpp`
   did in [[three-kernels]].
 - `tile_regs_acquire()` takes the destination register for this kernel. `tile_regs_commit()`
   says "math is done"; `tile_regs_wait()` is where pack waits for it. `tile_regs_release()`
@@ -60,7 +60,7 @@ compute.run([&](const km_command_t& command) {
 - `add_tiles(FIRST, SECOND, 0, 0, 0)` adds the first tile of buffer `FIRST` to the first
   tile of `SECOND` and leaves the sum in register 0. The last number is the register; the
   two before it are which tile of each buffer.
-- `compute.reserve_back` and `cb_push_back` are the reader's `reserve` and `push` on the
+- `compute.reserve_back` and `cb_push_back` are `reader.cpp`'s `reserve` and `push` on the
   output side; `pack_tile(0, OUTPUT)` copies register 0 into the tile just reserved.
 - Every tile taken with `wait_front` is released with `cb_pop_front`.
 
@@ -85,7 +85,7 @@ holds what the three have in common.
 --8<-- "tutorial/20_computing_on_a_tile/kernels/reader.cpp:run"
 ```
 
-The reader puts one tile of the source in each of the two input buffers.
+`reader.cpp` puts one tile of the source in each of the two input buffers.
 
 ```{ .cpp }
 --8<-- "tutorial/20_computing_on_a_tile/kernels/compute.cpp:run"
@@ -98,7 +98,7 @@ The compute kernel is the general form with the checks: if a wait gives up, it r
 ```
 
 One command: add tile 1 and tile 2 of the source, write the result as tile 0 of the
-destination. The writer of this lesson is that of [[writing-to-dram]], reading from
+destination. `writer.cpp` of this lesson is that of [[writing-to-dram]], reading from
 buffer 16.
 
 ## The whole program

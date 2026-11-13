@@ -6,21 +6,22 @@ summary: "a core writes a tile from its L1 to a tensor in DRAM: the first progra
 
 # Writing to DRAM
 
-The writer of a core can copy a tile from the core's L1 to a tile of a tensor in DRAM, and
-that is how a program puts something where Python can read it. This lesson relies on
+A data-movement kernel can copy a tile from the core's L1 to a tile of a tensor in DRAM,
+and that is how a program puts something where Python can read it. In this lesson it is
+`writer.cpp` that does it, and `reader.cpp` that reads. This lesson relies on
 [[reading-from-dram]] and [[tiles-and-tensors]].
 
-## Why the writer writes
+## Why a kernel writes
 
 A result that is a single number can travel back in the result word ([[a-result]]).
-A result that is a tile cannot: it is 1024 numbers. Its way out is DRAM: the writer copies
-it to a tensor that Python made, and Python reads the tensor. With a read and a write, a
+A result that is a tile cannot: it is 1024 numbers. Its way out is DRAM: a data-movement
+kernel copies it to a tensor that Python made, and Python reads the tensor. With a read and a write, a
 program can now change data, and the smallest program that does is a copy: read a tile in,
 write the tile out somewhere else.
 
 ## The general form
 
-In the writer:
+In `writer.cpp`:
 
 ```cpp
 constexpr auto ARGUMENTS = TensorAccessorArgs<0>();
@@ -50,9 +51,9 @@ compile_args = {"reader": SOURCE.accessor_args(), "writer": DESTINATION.accessor
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "src", "x": 0, "y": 0, "w": 150, "h": 64, "t": "DRAM\nsource tensor\n4 tiles"}, {"id": "l1", "x": 230, "y": 0, "w": 150, "h": 64, "t": "L1 of core 0\nthe buffer\n1 tile", "gem": "amber"}, {"id": "dst", "x": 460, "y": 0, "w": 150, "h": 64, "t": "DRAM\ndestination tensor\n2 tiles"}], "arrows": [{"from": "src", "to": "l1", "kind": "data", "t": "reader: read", "dy": -12, "dx": -40}, {"from": "l1", "to": "dst", "kind": "data", "t": "writer: write", "dy": -12, "dx": -40}]}
+{"kind": "boxes", "boxes": [{"id": "src", "x": 0, "y": 0, "w": 150, "h": 64, "t": "DRAM\nsource tensor\n4 tiles"}, {"id": "l1", "x": 230, "y": 0, "w": 150, "h": 64, "t": "L1 of core 0\nthe buffer\n1 tile", "gem": "amber"}, {"id": "dst", "x": 460, "y": 0, "w": 150, "h": 64, "t": "DRAM\ndestination tensor\n2 tiles"}], "arrows": [{"from": "src", "to": "l1", "kind": "data", "t": "reader.cpp: read", "dy": -12, "dx": -40}, {"from": "l1", "to": "dst", "kind": "data", "t": "writer.cpp: write", "dy": -12, "dx": -40}], "narrow": {"boxes": [{"id": "src", "x": 0, "y": 0, "w": 190, "h": 64, "t": "DRAM\nsource tensor\n4 tiles"}, {"id": "l1", "x": 0, "y": 114, "w": 190, "h": 64, "t": "L1 of core 0\nthe buffer\n1 tile", "gem": "amber"}, {"id": "dst", "x": 0, "y": 228, "w": 190, "h": 64, "t": "DRAM\ndestination tensor\n2 tiles"}], "arrows": [{"from": "src", "to": "l1", "kind": "data", "t": "reader.cpp: read", "dy": 2, "dx": 8}, {"from": "l1", "to": "dst", "kind": "data", "t": "writer.cpp: write", "dy": 2, "dx": 8}]}}
 </script>
-<figcaption>A tile goes from one tensor through the L1 of a core to another: the reader brings it in, the writer takes it out.</figcaption>
+<figcaption>A tile goes from one tensor through the L1 of a core to another: `reader.cpp` brings it in, `writer.cpp` takes it out.</figcaption>
 </figure>
 
 ## One line at a time
@@ -68,9 +69,9 @@ like the source.
 --8<-- "tutorial/17_writing_to_dram/kernels/writer.cpp:run"
 ```
 
-The writer's half of the copy. The command says where the destination is (argument 2) and
-which tile of it to write (argument 3). Once the tile is in the buffer, the writer copies
-it out, waits until the write is done, and frees the buffer. The reader is that of
+`writer.cpp`'s half of the copy. The command says where the destination is (argument 2) and
+which tile of it to write (argument 3). Once the tile is in the buffer, `writer.cpp` copies
+it out, waits until the write is done, and frees the buffer. `reader.cpp` is that of
 [[reading-from-dram]]: arguments 0 and 1 are the source and its tile.
 
 ```{ .python }

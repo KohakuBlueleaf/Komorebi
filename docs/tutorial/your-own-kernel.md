@@ -45,7 +45,7 @@ The three lines that are new are `const uint32_t into = ...`, `mul_binary_tile_i
 `mul_binary_tile(into, into, into)`. `into` is the register the tile goes to: 0 for the first
 tile, 1 for the others. `mul_binary_tile(a, b, c)` multiplies the tiles in registers `a` and
 `b`, number by number, into register `c`; with the same register for all three, it squares the
-tile where it lies. The addition that follows is the old one. The reader, the writer, and the
+tile where it lies. The addition that follows is the old one. `reader.cpp`, `writer.cpp`, and the
 reduction between cores are unchanged; only the handler's name is new,
 `sum_squares`.
 
@@ -126,6 +126,6 @@ in a few numbers points more often at the places where the cores meet.
 - Checking with random fractions. A difference in the last digit looks like an error or like
   rounding, and you cannot tell which. Use small whole numbers.
 - Keeping the old handler name for new work. `sum_tiles` that sums squares misleads the next
-  reader, and you.
+  person who reads it, and you.
 
 Next: [[every-primitive]] lists every call that this tutorial used, with its lesson.

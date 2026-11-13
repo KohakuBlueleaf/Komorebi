@@ -101,7 +101,7 @@ first number is the first row dotted with the first column.
     --8<-- "tutorial/21_the_matrix_unit/kernels/compute.cpp"
     ```
 
-The reader and the writer are those of lesson 20, with the handler renamed.
+`reader.cpp` and `writer.cpp` are those of lesson 20, with the handler renamed.
 
 ```{ .text .km-output }
 --8<-- "tutorial/21_the_matrix_unit/output.txt"

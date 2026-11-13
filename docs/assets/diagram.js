@@ -14,6 +14,8 @@
  *   the "t" strings, joined, are the line of code; a part with "n" gets a name below.
  * boxes:   {"boxes": [{"id", "x", "y", "w", "h", "t", "gem", "dashed", "here"}],
  *           "arrows": [{"from", "to", "t", "kind"}]}   (x, y, w, h in pixels)
+ *           optional "narrow": {"boxes", "arrows"}, the layout for a column narrower
+ *           than the wide one
  * flow:    {"steps": [{"t", "gem", "here"}], "back": {"from": 3, "to": 1, "t": "again"}}
  *
  * A gem is one of amber (a Tensix core), sapphire (an X280 core), aquamarine, taaffeite,
@@ -25,7 +27,7 @@
   "use strict";
 
   var NS = "http://www.w3.org/2000/svg";
-  var LINE = 17; // pixels between two lines of a label
+  var LINE = 18; // pixels between two lines of a label
 
   function el(name, attrs, parent) {
     var node = document.createElementNS(NS, name);
@@ -46,14 +48,25 @@
 
   function width(node) { return node.getComputedTextLength ? node.getBBox().width : 0; }
 
-  function svgFor(figure, w, h) {
+  // The width of the text column inside the figure.
+  function available(figure) {
+    var style = window.getComputedStyle(figure);
+    var inner = figure.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    return inner > 0 ? inner : 600;
+  }
+
+  // A figure is drawn at its own size, never smaller (its text stays 13 px or more; a
+  // figure wider than the column scrolls), and grows by `scale` to use the column.
+  function svgFor(figure, w, h, scale) {
     var svg = el("svg", {
       class: "km-svg kd-svg",
       viewBox: "-4 -4 " + (w + 8) + " " + (h + 8),
       role: "img",
       "aria-label": (figure.querySelector("figcaption") || {}).textContent || "diagram"
     });
-    svg.style.maxWidth = (w + 8) + "px";
+    var k = scale || 1;
+    svg.style.width = ((w + 8) * k) + "px";
+    svg.style.height = ((h + 8) * k) + "px";
     var defs = el("defs", {}, svg);
     ["flow", "data", "reply", "broadcast", "routed", "error", "command"].forEach(function (kind) {
       var marker = el("marker", {
@@ -145,12 +158,19 @@
 
   function boxes(figure, spec) {
     var byId = {}, right = 0, bottom = 0;
+    // A diagram wider than the column may carry a "narrow" layout (same kind of
+    // content, placed in a column); it is used when the wide one does not fit.
+    if (spec.narrow) {
+      var wide = Math.max.apply(null, spec.boxes.map(function (b) { return b.x + b.w; }));
+      if (available(figure) < wide + 10) spec = spec.narrow;
+    }
     spec.boxes.forEach(function (b) {
       byId[b.id] = b;
       right = Math.max(right, b.x + b.w);
       bottom = Math.max(bottom, b.y + b.h);
     });
-    var svg = svgFor(figure, right + 2, bottom + 2);
+    var grow = Math.min(Math.max(available(figure) / (right + 10), 1), 1.3);
+    var svg = svgFor(figure, right + 2, bottom + 2, grow);
     spec.boxes.forEach(function (b) {
       var cls = "kd-box" + (b.gem ? " g-" + b.gem : "") + (b.dashed ? " kd-dashed" : "") + (b.here ? " kd-here" : "");
       el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: 10, class: cls }, svg);
@@ -185,12 +205,22 @@
   // ---- flow ----
   function flow(figure, spec) {
     var steps = spec.steps, BOX_H = 34, GAP = 22, PAD = 14;
-    var longest = Math.max.apply(null, steps.map(function (s) {
-      return Math.max.apply(null, String(s.t).split("\n").map(function (l) { return l.length; }));
-    }));
-    var boxW = Math.max(150, longest * 7.4 + 2 * PAD);
+    var scratch = svgFor(figure, 10, 10);
+    figure.insertBefore(scratch, figure.firstChild);
+    var needed = 0;
+    steps.forEach(function (st) {
+      String(st.t).split("\n").forEach(function (line) {
+        needed = Math.max(needed, width(text(scratch, 0, 20, line, "")));
+      });
+    });
+    var backWidth = 0;
+    if (spec.back) {
+      backWidth = 40 + (spec.back.t ? width(text(scratch, 0, 20, spec.back.t, "kd-small")) : 0);
+    }
+    figure.removeChild(scratch);
+    var boxW = Math.max(150, needed + 2 * PAD, available(figure) - backWidth - 8);
     var heights = steps.map(function (s) { return Math.max(BOX_H, String(s.t).split("\n").length * LINE + 16); });
-    var back = spec.back ? 70 : 0;
+    var back = backWidth;
     var total = heights.reduce(function (a, b) { return a + b; }, 0) + GAP * (steps.length - 1);
     var svg = svgFor(figure, boxW + back, total);
     var y = 0, tops = [];
@@ -232,6 +262,15 @@
   function start() {
     Array.prototype.forEach.call(document.querySelectorAll("figure.km-diagram"), draw);
   }
+
+  // Drawn again when the column changes width (a turned phone, a resized window).
+  var lastWidth = window.innerWidth, pending = 0;
+  window.addEventListener("resize", function () {
+    if (window.innerWidth === lastWidth) return;
+    lastWidth = window.innerWidth;
+    window.clearTimeout(pending);
+    pending = window.setTimeout(start, 150);
+  });
 
   // The site loads pages without a reload (instant navigation) when Material's
   // observable exists; draw on every page view.

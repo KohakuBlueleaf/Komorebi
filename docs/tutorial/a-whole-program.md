@@ -26,10 +26,10 @@ read after the cores have stopped, and checked.
 | Put it on the card | `session.tensor(...)` for the source, and one for each result | [[reading-from-dram]] |
 | Describe the cores' work | three kernels, a handler `sum_tiles`, buffers | [[handlers]], [[three-kernels]] |
 | Share the tiles | each core takes its part of the 48 | [[partitions]] |
-| Move tiles through L1 | the reader pushes, the compute kernel pops | [[circular-buffers]] |
+| Move tiles through L1 | `reader.cpp` pushes, the compute kernel pops | [[circular-buffers]] |
 | Compute | each core adds its tiles into one | [[computing-on-a-tile]] |
 | Combine the cores | the sums of the cores are added into one | [[reduce]] |
-| Write the answer | the writer of the leader writes the total | [[writing-to-dram]], [[the-leader]] |
+| Write the answer | `writer.cpp` of the leader writes the total | [[writing-to-dram]], [[the-leader]] |
 | Send the command | `submit` with the arguments, then `wait` | [[arguments]], [[commands]] |
 | Check | read the result after `stop` and compare with numpy | [[a-result]] |
 
@@ -50,14 +50,14 @@ before the program is loaded: a tensor cannot be written while the kernels run
 
 The program: the folder of the kernels, the header with the handler, three buffers, and the
 arithmetic setting of [[computing-on-a-tile]]. The first buffer holds the core's own tiles on their
-way from the reader to the compute kernel, two at a time. The second receives the sums that
+way from `reader.cpp` to the compute kernel, two at a time. The second receives the sums that
 other cores send ([[port]]). The third holds the output.
 
 ```{ .cpp }
 --8<-- "tutorial/39_a_whole_program/kernels/reader.cpp:run"
 ```
 
-The reader. Its core takes its share of the 48 tiles with `km::partition`, reads them one by
+`reader.cpp`. Its core takes its share of the 48 tiles with `km::partition`, reads them one by
 one into the first buffer, and then takes its part in the reduction.
 
 ```{ .cpp }
@@ -72,7 +72,7 @@ adds the sums that the other cores send. The result goes to the output buffer.
 --8<-- "tutorial/39_a_whole_program/kernels/writer.cpp:run"
 ```
 
-The writer. A core that is not the leader sends its sum to the core it reports to; the leader
+`writer.cpp`. A core that is not the leader sends its sum to the core it reports to; the leader
 writes the total into the destination tensor.
 
 ```{ .python }

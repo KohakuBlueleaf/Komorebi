@@ -17,7 +17,7 @@ number, with nothing to set up. Later lessons move whole arrays; this one moves 
 
 ## The general form
 
-In the writer kernel, before `return true;`:
+In `writer.cpp`, before `return true;`:
 
 ```cpp
 writer.result(VALUE);
@@ -44,9 +44,9 @@ event.result
 ```
 
 `writer.result(42)` stores 42 as this core's answer to this command. It is `writer` that
-has it, not `reader` or `compute`: the writer is the kernel that reports to the card
+has it, not `reader` or `compute`: `writer.cpp` is the kernel that reports to the card
 that the command is done, so it is the one that can attach a number to the report. The
-reader and the compute function cannot.
+functions of `reader.cpp` and `compute.cpp` cannot.
 
 ```{ .python }
 --8<-- "tutorial/06_a_result/a_result.py:submit"
@@ -85,7 +85,7 @@ The same `submit` as before, with `result=True`.
     --8<-- "tutorial/06_a_result/kernels/writer.cpp"
     ```
 
-The reader and the compute files are the same empty ones as before.
+`reader.cpp` and `compute.cpp` are the same empty ones as before.
 
 ```{ .text .km-output }
 --8<-- "tutorial/06_a_result/output.txt"
@@ -102,7 +102,7 @@ The next lesson sends numbers the other way.
 - Reading `event.microseconds` of a command that asked for a result. The card sends the result in
   the place where it would send the time, so `event.microseconds` is not a time then. For a time,
   use a command without `result=True`.
-- Setting the result in the reader or the compute kernel. Only the writer has
+- Setting the result in `reader.cpp` or the compute kernel. Only `writer.cpp` has
   `result`.
 
 Next: [[arguments]] sends numbers the other way, from Python into the kernel.

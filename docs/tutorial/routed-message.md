@@ -130,7 +130,7 @@ tensor.
     --8<-- "tutorial/27_routed_message/kernels/compute.cpp"
     ```
 
-This folder holds only the compute kernel: the reader and writer are the runtime's.
+This folder holds only the compute kernel: `reader.cpp` and `writer.cpp` are the runtime's.
 
 ```{ .text .km-output }
 --8<-- "tutorial/27_routed_message/output.txt"

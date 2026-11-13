@@ -19,12 +19,12 @@ reported, reports to the dispatcher. That core is the leader. This is why a comm
 done only when every core of its group is.
 
 The result word of a command ([[a-result]]) travels with the leader's report. So the
-result a Python program reads is whatever the leader's writer set, and nothing a
+result a Python program reads is whatever the leader's `writer.cpp` set, and nothing a
 different core of the group set arrives.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "c6", "x": 0, "y": 0, "w": 110, "h": 36, "t": "core 6, rank 1", "gem": "amber"}, {"id": "c7", "x": 0, "y": 48, "w": 110, "h": 36, "t": "core 7, rank 2", "gem": "amber"}, {"id": "c8", "x": 0, "y": 96, "w": 110, "h": 36, "t": "core 8, rank 3", "gem": "amber"}, {"id": "c5", "x": 190, "y": 48, "w": 130, "h": 36, "t": "core 5, rank 0\nthe leader", "gem": "amber", "here": true}, {"id": "d", "x": 400, "y": 48, "w": 130, "h": 36, "t": "the dispatcher", "gem": "sapphire"}], "arrows": [{"from": "c6", "to": "c5"}, {"from": "c7", "to": "c5"}, {"from": "c8", "to": "c5"}, {"from": "c5", "to": "d", "t": "one report", "dx": -40, "dy": -12}]}
+{"kind": "boxes", "boxes": [{"id": "c6", "x": 0, "y": 0, "w": 110, "h": 36, "t": "core 6, rank 1", "gem": "amber"}, {"id": "c7", "x": 0, "y": 48, "w": 110, "h": 36, "t": "core 7, rank 2", "gem": "amber"}, {"id": "c8", "x": 0, "y": 96, "w": 110, "h": 36, "t": "core 8, rank 3", "gem": "amber"}, {"id": "c5", "x": 190, "y": 48, "w": 130, "h": 36, "t": "core 5, rank 0\nthe leader", "gem": "amber", "here": true}, {"id": "d", "x": 400, "y": 48, "w": 130, "h": 36, "t": "the dispatcher", "gem": "sapphire"}], "arrows": [{"from": "c6", "to": "c5"}, {"from": "c7", "to": "c5"}, {"from": "c8", "to": "c5"}, {"from": "c5", "to": "d", "t": "one report", "dx": -40, "dy": -12}], "narrow": {"boxes": [{"id": "c6", "x": 0, "y": 0, "w": 110, "h": 36, "t": "core 6, rank 1", "gem": "amber"}, {"id": "c7", "x": 0, "y": 48, "w": 110, "h": 36, "t": "core 7, rank 2", "gem": "amber"}, {"id": "c8", "x": 0, "y": 96, "w": 110, "h": 36, "t": "core 8, rank 3", "gem": "amber"}, {"id": "c5", "x": 190, "y": 48, "w": 140, "h": 52, "t": "core 5, rank 0\nthe leader", "here": true, "gem": "amber"}, {"id": "d", "x": 190, "y": 150, "w": 140, "h": 36, "t": "the dispatcher", "gem": "sapphire"}], "arrows": [{"from": "c6", "to": "c5"}, {"from": "c7", "to": "c5"}, {"from": "c8", "to": "c5"}, {"from": "c5", "to": "d", "t": "one report", "dx": -80, "dy": 0}]}}
 </script>
 <figcaption>The group <code>group=(5, 4)</code>: three cores report to the leader, core 5, and the leader reports to the dispatcher with its own result.</figcaption>
 </figure>
@@ -54,7 +54,7 @@ event = run.wait(handle, timeout=SECONDS)
 --8<-- "tutorial/13_the_leader/kernels/writer.cpp:run"
 ```
 
-The writer works out its rank. For the handler `Everyone`, every core of the group sets
+`writer.cpp` works out its rank. For the handler `Everyone`, every core of the group sets
 its own core number as the result. For the handler `OnlyOne`, only the core whose rank is
 the first argument does.
 

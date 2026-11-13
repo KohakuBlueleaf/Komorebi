@@ -37,7 +37,7 @@ no core adds more than once a round, and the whole takes 3 rounds for 8 cores an
 
 ## The general form
 
-In the reader, the writer and the compute kernel, the group and the form:
+In `reader.cpp`, `writer.cpp` and the compute kernel, the group and the form:
 
 ```cpp
 const km::Group group = km::group_of(command, NAME.me());
@@ -70,7 +70,7 @@ km::reduce_result(writer, OUTPUT, 1);
 - `km::group_of(command, core)` is the command's group as an object: `group.rank` and
   `group.size` ([[core-group]]).
 - `FORM` is `km::kReduceOwner` (0) or `km::kReduceTree` (1).
-- `reduce_arrive` makes the reader wait at every port a core has to wait at, as in
+- `reduce_arrive` makes `reader.cpp` wait at every port a core has to wait at, as in
   [[port]], according to the form.
 - `reduce_emit` makes every core but rank 0 send its sum to the core the form says, and
   `reduce_result` makes rank 0 wait for the total.
@@ -100,7 +100,7 @@ the output buffer.
 --8<-- "tutorial/25_reduce/kernels/writer.cpp:run"
 ```
 
-The writer of every core but rank 0 sends the output tile on; rank 0 writes it to the
+`writer.cpp` of every core but rank 0 sends the output tile on; rank 0 writes it to the
 destination tensor.
 
 ```{ .python }
@@ -154,7 +154,7 @@ pays off with many cores, where one core would have to add a hundred tiles.
 ## Common mistakes
 
 - An arrival buffer with too few pages. The owner form needs `size - 1` slots, so a group of
-  8 needs at least 7 pages; with fewer, the reader gives up.
+  8 needs at least 7 pages; with fewer, `reader.cpp` gives up.
 - Forgetting `exclusive=True` ([[port]]).
 - A combine function that depends on the order of the tiles, such as a subtraction. The
   order is fixed (rank order), but the owner and the tree combine in different groupings,

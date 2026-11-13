@@ -30,7 +30,7 @@ of every core, as one tensor with a row for each core. The kernels write into it
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "c0", "x": 0, "y": 0, "w": 120, "h": 44, "t": "core 0\nL1: 0", "gem": "amber", "small": true}, {"id": "c1", "x": 140, "y": 0, "w": 120, "h": 44, "t": "core 1\nL1: 1", "gem": "amber", "small": true}, {"id": "c2", "x": 280, "y": 0, "w": 120, "h": 44, "t": "core 2\nL1: 4", "gem": "amber", "small": true}, {"id": "py", "x": 140, "y": 104, "w": 120, "h": 44, "t": "Python\nreads all", "gem": "sapphire", "small": true}], "arrows": [{"from": "c0", "to": "py", "kind": "reply"}, {"from": "c1", "to": "py", "kind": "reply"}, {"from": "c2", "to": "py", "kind": "reply"}]}
+{"kind": "boxes", "boxes": [{"id": "c0", "x": 0, "y": 0, "w": 120, "h": 44, "t": "core 0\nL1: 0", "gem": "amber", "small": true}, {"id": "c1", "x": 140, "y": 0, "w": 120, "h": 44, "t": "core 1\nL1: 1", "gem": "amber", "small": true}, {"id": "c2", "x": 280, "y": 0, "w": 120, "h": 44, "t": "core 2\nL1: 4", "gem": "amber", "small": true}, {"id": "py", "x": 140, "y": 104, "w": 120, "h": 44, "t": "Python\nreads all", "gem": "sapphire", "small": true}], "arrows": [{"from": "c0", "to": "py", "kind": "reply"}, {"from": "c1", "to": "py", "kind": "reply"}, {"from": "c2", "to": "py", "kind": "reply"}], "narrow": {"boxes": [{"id": "c0", "x": 0, "y": 0, "w": 100, "h": 44, "t": "core 0\nL1: 0", "small": true, "gem": "amber"}, {"id": "c1", "x": 110, "y": 0, "w": 100, "h": 44, "t": "core 1\nL1: 1", "small": true, "gem": "amber"}, {"id": "c2", "x": 220, "y": 0, "w": 100, "h": 44, "t": "core 2\nL1: 4", "small": true, "gem": "amber"}, {"id": "py", "x": 110, "y": 104, "w": 100, "h": 44, "t": "Python\nreads all", "small": true, "gem": "sapphire"}], "arrows": [{"from": "c0", "to": "py", "kind": "reply"}, {"from": "c1", "to": "py", "kind": "reply"}, {"from": "c2", "to": "py", "kind": "reply"}]}}
 </script>
 <figcaption>Each core holds a number of its own. Python can read all of them. No core can read another's.</figcaption>
 </figure>
@@ -87,7 +87,7 @@ cores stored; the others are untouched zeros. Cores 6 and 7 did not run the comm
     --8<-- "tutorial/23_why_cores_talk/kernels/writer.cpp"
     ```
 
-The reader and compute files are the empty ones.
+`reader.cpp` and `compute.cpp` are the empty ones.
 
 ```{ .text .km-output }
 --8<-- "tutorial/23_why_cores_talk/output.txt"

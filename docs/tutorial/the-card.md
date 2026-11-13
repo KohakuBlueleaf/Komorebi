@@ -52,19 +52,7 @@ A Tensix core is five small CPUs that share one memory.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes",
- "boxes": [
-  {"id": "l1", "x": 0, "y": 0, "w": 430, "h": 60, "t": "L1: the core's own memory, 1.4 MB", "gem": "amber"},
-  {"id": "reader", "x": 0, "y": 100, "w": 100, "h": 56, "t": "CPU 1\nmoves data in"},
-  {"id": "writer", "x": 110, "y": 100, "w": 100, "h": 56, "t": "CPU 2\nmoves data out"},
-  {"id": "unpack", "x": 240, "y": 100, "w": 60, "h": 56, "t": "CPU 3\nunpack", "small": true},
-  {"id": "math", "x": 305, "y": 100, "w": 60, "h": 56, "t": "CPU 4\nmath", "small": true},
-  {"id": "pack", "x": 370, "y": 100, "w": 60, "h": 56, "t": "CPU 5\npack", "small": true}],
- "arrows": [
-  {"from": "reader", "to": "l1", "kind": "data"},
-  {"from": "l1", "to": "writer", "kind": "data"},
-  {"from": "unpack", "to": "l1", "kind": "data"},
-  {"from": "pack", "to": "l1", "kind": "data"}]}
+{"kind": "boxes", "boxes": [{"id": "l1", "x": 0, "y": 0, "w": 430, "h": 60, "t": "L1: the core's own memory, 1.4 MB", "gem": "amber"}, {"id": "reader", "x": 0, "y": 100, "w": 100, "h": 56, "t": "CPU 1\nmoves data"}, {"id": "writer", "x": 110, "y": 100, "w": 100, "h": 56, "t": "CPU 2\nmoves data"}, {"id": "unpack", "x": 240, "y": 100, "w": 60, "h": 56, "t": "CPU 3\nunpack", "small": true}, {"id": "math", "x": 305, "y": 100, "w": 60, "h": 56, "t": "CPU 4\nmath", "small": true}, {"id": "pack", "x": 370, "y": 100, "w": 60, "h": 56, "t": "CPU 5\npack", "small": true}], "arrows": [{"from": "reader", "to": "l1", "kind": "data"}, {"from": "writer", "to": "l1", "kind": "data"}, {"from": "unpack", "to": "l1", "kind": "data"}, {"from": "pack", "to": "l1", "kind": "data"}], "narrow": {"boxes": [{"id": "l1", "x": 0, "y": 0, "w": 330, "h": 60, "t": "L1: the core's own memory,\n1.4 MB", "gem": "amber"}, {"id": "reader", "x": 0, "y": 110, "w": 100, "h": 56, "t": "CPU 1\nmoves data"}, {"id": "writer", "x": 110, "y": 110, "w": 100, "h": 56, "t": "CPU 2\nmoves data"}, {"id": "unpack", "x": 0, "y": 200, "w": 100, "h": 56, "t": "CPU 3\nunpack"}, {"id": "math", "x": 110, "y": 200, "w": 100, "h": 56, "t": "CPU 4\nmath"}, {"id": "pack", "x": 220, "y": 200, "w": 100, "h": 56, "t": "CPU 5\npack"}], "arrows": [{"from": "reader", "to": "l1", "kind": "data"}, {"from": "writer", "to": "l1", "kind": "data"}, {"from": "unpack", "to": "l1", "kind": "data"}, {"from": "pack", "to": "l1", "kind": "data"}]}}
 </script>
 <figcaption>One Tensix core: one memory, five CPUs. Two move data, three together do the arithmetic.</figcaption>
 </figure>
@@ -72,8 +60,11 @@ A Tensix core is five small CPUs that share one memory.
 - **L1** is the core's own memory. A core works on what is in its L1 and on nothing else.
   After Komorebi has taken its share, 1.4 MB are left for your data. L1 is not a cache:
   nothing is copied into it unless a program asks for it.
-- Two of the five CPUs move data. One brings it in, from DRAM or from another core's L1.
-  The other sends it out. Lesson 4 gives each of them a name.
+- Two of the five CPUs move data. Either of them can copy data from DRAM into L1, from L1
+  to DRAM, and between the L1 of one core and another's. They are alike, with two
+  differences that later lessons use: each of them uses its own NoC, and
+  each queue of data in L1 has one CPU that fills it and one that empties it.
+  Lesson 4 gives each of them a name.
 - The other three CPUs, together with the matrix and vector units that they drive, do the
   arithmetic. They get a lesson of their own in Part 3.
 

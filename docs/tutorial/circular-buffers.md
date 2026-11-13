@@ -1,7 +1,7 @@
 ---
 title: "Circular buffers"
 part: 3
-summary: "a buffer of several pages: a queue in L1 that lets the reader run ahead of the writer"
+summary: "a buffer of several pages: a queue in L1 that lets the filling kernel run ahead of the draining one"
 ---
 
 # Circular buffers
@@ -12,13 +12,14 @@ on at the first. This lesson relies on [[three-kernels]].
 
 ## Why more than one page
 
-In the last lesson the buffer held one tile. The reader put a tile in and the writer took
-it out, and the reader could not start the next read until the writer had finished with
-the tile in the only page. The two CPUs took turns when they could have worked together.
+In the last lesson the buffer held one tile. `reader.cpp` put a tile in and `writer.cpp`
+took it out, and `reader.cpp` could not start the next read until `writer.cpp` had finished
+with the tile in the only page. The two CPUs took turns when they could have worked
+together.
 
-With room for two tiles the reader fills the second page while the writer still writes the
-first. The buffer is the place where the two meet, and the more pages it has, the further
-the reader may run ahead before it has to wait.
+With room for two tiles `reader.cpp` fills the second page while `writer.cpp` still sends
+the first. The buffer is the place where the two meet, and the more pages it has, the
+further the filling kernel may run ahead before it has to wait.
 
 The name comes from how it is built: the pages lie one after the other in L1, and the
 buffer remembers where the next tile goes and where the oldest tile is. When either reaches
@@ -27,9 +28,9 @@ sees this: `get_write_ptr` and `get_read_ptr` give the right address.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "s0", "x": 0, "y": 0, "w": 100, "h": 44, "t": "page 0\na tile", "small": true, "gem": "amber"}, {"id": "s1", "x": 110, "y": 0, "w": 100, "h": 44, "t": "page 1\na tile", "small": true, "gem": "amber"}, {"id": "s2", "x": 220, "y": 0, "w": 100, "h": 44, "t": "page 2\nempty", "small": true}, {"id": "s3", "x": 330, "y": 0, "w": 100, "h": 44, "t": "page 3\nempty", "small": true}, {"id": "w", "x": 0, "y": 84, "w": 150, "h": 44, "t": "writer: wait_front\nreads here", "small": true}, {"id": "r", "x": 220, "y": 84, "w": 150, "h": 44, "t": "reader: reserve\nwrites here", "small": true}], "arrows": [{"from": "w", "to": "s0", "kind": "data"}, {"from": "r", "to": "s2", "kind": "data"}]}
+{"kind": "boxes", "boxes": [{"id": "s0", "x": 0, "y": 0, "w": 100, "h": 44, "t": "page 0\na tile", "small": true, "gem": "amber"}, {"id": "s1", "x": 110, "y": 0, "w": 100, "h": 44, "t": "page 1\na tile", "small": true, "gem": "amber"}, {"id": "s2", "x": 220, "y": 0, "w": 100, "h": 44, "t": "page 2\nempty", "small": true}, {"id": "s3", "x": 330, "y": 0, "w": 100, "h": 44, "t": "page 3\nempty", "small": true}, {"id": "w", "x": 0, "y": 84, "w": 200, "h": 44, "t": "writer.cpp: wait_front\ntakes from here", "small": true}, {"id": "r", "x": 230, "y": 84, "w": 200, "h": 44, "t": "reader.cpp: reserve\nfills here", "small": true}], "arrows": [{"from": "w", "to": "s0", "kind": "data"}, {"from": "r", "to": "s2", "kind": "data"}], "narrow": {"boxes": [{"id": "s0", "x": 0, "y": 0, "w": 76, "h": 44, "t": "page 0\na tile", "small": true, "gem": "amber"}, {"id": "s1", "x": 82, "y": 0, "w": 76, "h": 44, "t": "page 1\na tile", "small": true, "gem": "amber"}, {"id": "s2", "x": 164, "y": 0, "w": 76, "h": 44, "t": "page 2\nempty", "small": true}, {"id": "s3", "x": 246, "y": 0, "w": 76, "h": 44, "t": "page 3\nempty", "small": true}, {"id": "w", "x": 0, "y": 84, "w": 140, "h": 64, "t": "writer.cpp:\nwait_front\ntakes from here", "small": true}, {"id": "r", "x": 190, "y": 84, "w": 140, "h": 64, "t": "reader.cpp:\nreserve\nfills here", "small": true}], "arrows": [{"from": "w", "to": "s0", "kind": "data"}, {"from": "r", "to": "s2", "kind": "data"}]}}
 </script>
-<figcaption>A buffer of four pages with two tiles in it. The writer takes the oldest, page 0; the reader puts the next at page 2.</figcaption>
+<figcaption>A buffer of four pages with two tiles in it. writer.cpp takes the oldest, page 0; reader.cpp puts the next at page 2.</figcaption>
 </figure>
 
 ## The general form
@@ -41,13 +42,13 @@ km.Buffer(index=INDEX, format=DTYPE, page_bytes=BYTES, pages=PAGES)
 ```cpp
 reader.reserve(INDEX, 1);   // wait for a free page
 ...                         // fill get_write_ptr(INDEX)
-cb_push_back(INDEX, 1);     // the page is full: the writer may take it
+cb_push_back(INDEX, 1);     // the page is full: the other side may take it
 ```
 
 ```cpp
 writer.wait_front(INDEX, 1);  // wait for a full page
 ...                           // use get_read_ptr(INDEX)
-cb_pop_front(INDEX, 1);       // the page is free: the reader may fill it
+cb_pop_front(INDEX, 1);       // the page is free: the other side may fill it
 ```
 
 - `PAGES` is the number of pages: how many tiles may be waiting in the buffer at once.
@@ -92,9 +93,9 @@ all 64 tiles arrived.
 
 - Thinking that more pages are always faster. Two were enough here. Pages take L1,
   1.4 MB in all, and a program needs its L1 for other things.
-- Forgetting `cb_pop_front`. The buffer fills up and the reader waits for ever, as in
+- Forgetting `cb_pop_front`. The buffer fills up and `reader.cpp` waits for ever, as in
   [[reading-from-dram]]: more pages only make that happen a command or two later.
-- Letting the reader and the writer disagree on how many tiles pass. Each tile pushed is
+- Letting the two kernels disagree on how many tiles pass. Each tile pushed is
   one that has to be popped, or the buffer is left with tiles in it for the next command.
 
-Next: [[computing-on-a-tile]] puts the compute kernel between the reader and the writer.
+Next: [[computing-on-a-tile]] puts the compute kernel between the two data-movement kernels.

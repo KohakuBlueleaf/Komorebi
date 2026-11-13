@@ -114,7 +114,7 @@ The same rounds in a few lines of Python, as the check.
     --8<-- "tutorial/30_streams_and_graphs/kernels/writer.cpp"
     ```
 
-The reader and compute files are the empty ones, and the kernels are those of
+`reader.cpp` and `compute.cpp` are the empty ones, and the kernels are those of
 [[handlers]].
 
 ```{ .text .km-output }

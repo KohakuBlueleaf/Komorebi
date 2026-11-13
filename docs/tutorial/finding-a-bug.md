@@ -38,24 +38,24 @@ command N timed out: slot S, sequence Q, group first F count C; not reported:
   the deadline, and the kernel obeyed.
 - `WHERE` is the step the kernel was in. Three matter here:
     - `next`: waiting for its next command. The kernel had finished this command.
-    - `data`: waiting on a circular buffer: the writer for a tile to be there
-      (`wait_front`), the reader for room to put one (`reserve`).
-    - `cdone`: the writer, at the end of its work, waiting for the other kernels' work to end.
+    - `data`: waiting on a circular buffer: `writer.cpp` for a tile to be there
+      (`wait_front`), `reader.cpp` for room to put one (`reserve`).
+    - `cdone`: `writer.cpp`, at the end of its work, waiting for the other kernels' work to end.
 
 Other steps exist, and the message names them in the same way.
 
 ## Two bugs, one at a time
 
 The kernels of this lesson are the copy of [[circular-buffers]], with two switches. Argument
-`a5` of the command turns a bug on. In the reader:
+`a5` of the command turns a bug on. In `reader.cpp`:
 
 ```{ .cpp }
 --8<-- "tutorial/38_finding_a_bug/kernels/reader.cpp:run"
 ```
 
-With `a5` equal to 1 the reader never calls `cb_push_back`: it reads each tile into the
-buffer, and never says that the tile is there. In the writer, `a5` equal to 2 skips
-`cb_pop_front`: the writer copies each tile out, and never says that the page is free again.
+With `a5` equal to 1 `reader.cpp` never calls `cb_push_back`: it reads each tile into the
+buffer, and never says that the tile is there. In `writer.cpp`, `a5` equal to 2 skips
+`cb_pop_front`: `writer.cpp` copies each tile out, and never says that the page is free again.
 
 ```{ .python }
 --8<-- "tutorial/38_finding_a_bug/finding_a_bug.py:wait"
@@ -71,9 +71,9 @@ Read what the card said about bug 1:
 not reported: core 0 reader gave up (stop) in next writer gave up (stop) in data
 ```
 
-The reader was in `next`: it had run its whole loop and was waiting for another command. The
+`reader.cpp` was in `next`: it had run its whole loop and was waiting for another command. The
 writer was in `data`: it was waiting for a tile to be there. So the tile was read but never
-announced. The place to look is where the reader hands a tile on: the `cb_push_back`.
+announced. The place to look is where `reader.cpp` hands a tile on: the `cb_push_back`.
 
 Bug 2:
 
@@ -81,9 +81,9 @@ Bug 2:
 not reported: core 0 reader gave up (stop) in data writer gave up (stop) in cdone
 ```
 
-Now the reader was the one in `data`: it was waiting for room to put a tile. The writer was
-in `cdone`: it had written all its tiles and was waiting for the reader to end. The reader
-waited for room that the writer should have made, so look at where the writer is done with
+Now `reader.cpp` was the one in `data`: it was waiting for room to put a tile. `writer.cpp` was
+in `cdone`: it had written all its tiles and was waiting for `reader.cpp` to end. `reader.cpp`
+waited for room that `writer.cpp` should have made, so look at where `writer.cpp` is done with
 a tile: the `cb_pop_front`.
 
 <figure class="km-diagram">
@@ -91,8 +91,8 @@ a tile: the `cb_pop_front`.
 {"kind": "flow",
  "steps": [
   {"t": "the message names a kernel and a step:\nreader in next, writer in data"},
-  {"t": "which kernel is waiting, and for what?\nthe writer waits for a tile"},
-  {"t": "who should have made it?\nthe reader, with cb_push_back"},
+  {"t": "which kernel is waiting, and for what?\nwriter.cpp waits for a tile"},
+  {"t": "who should have made it?\nreader.cpp, with cb_push_back"},
   {"t": "look there: the call is missing.\nfix it and run again", "gem": "sage"}]}
 </script>
 <figcaption>From the message to the line of code.</figcaption>
@@ -141,8 +141,8 @@ tiles and the program's check passed.
 
 - Reading `stop` as the cause. It says only that the card ended the wait at the deadline.
   The cause is where the kernel was: the `WHERE`.
-- Looking only at the kernel that is in `data`. In bug 1 it was the writer that was in `data`,
-  and the mistake was in the reader. The one that waits is the victim; the one that did not
+- Looking only at the kernel that is in `data`. In bug 1 it was `writer.cpp` that was in `data`,
+  and the mistake was in `reader.cpp`. The one that waits is the victim; the one that did not
   send what it should is the cause.
 - Sending the next command after a `CommandTimeout`. The run is over ([[when-it-goes-wrong]]):
   load again.

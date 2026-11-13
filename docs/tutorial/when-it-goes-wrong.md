@@ -74,16 +74,7 @@ deadline of one second passes first. The card stops the cores, and `wait` raises
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes",
- "boxes": [
-  {"id": "start", "x": 0, "y": 20, "w": 90, "h": 44, "t": "submit"},
-  {"id": "host", "x": 130, "y": 0, "w": 150, "h": 36, "t": "host: wait(timeout)", "gem": "sapphire"},
-  {"id": "card", "x": 130, "y": 48, "w": 150, "h": 36, "t": "card: deadline", "gem": "coral"},
-  {"id": "host_end", "x": 330, "y": 0, "w": 200, "h": 36, "t": "WaitTimeout: wait again"},
-  {"id": "card_end", "x": 330, "y": 48, "w": 200, "h": 36, "t": "CommandTimeout: run is over", "gem": "coral"}],
- "arrows": [
-  {"from": "start", "to": "host"}, {"from": "start", "to": "card"},
-  {"from": "host", "to": "host_end"}, {"from": "card", "to": "card_end"}]}
+{"kind": "boxes", "boxes": [{"id": "start", "x": 0, "y": 20, "w": 90, "h": 44, "t": "submit"}, {"id": "host", "x": 130, "y": 0, "w": 150, "h": 36, "t": "host: wait(timeout)", "gem": "sapphire"}, {"id": "card", "x": 130, "y": 48, "w": 150, "h": 36, "t": "card: deadline", "gem": "coral"}, {"id": "host_end", "x": 330, "y": 0, "w": 220, "h": 36, "t": "WaitTimeout: wait again"}, {"id": "card_end", "x": 330, "y": 48, "w": 220, "h": 36, "t": "CommandTimeout: run is over", "gem": "coral"}], "arrows": [{"from": "start", "to": "host"}, {"from": "start", "to": "card"}, {"from": "host", "to": "host_end"}, {"from": "card", "to": "card_end"}], "narrow": {"boxes": [{"id": "start", "x": 120, "y": 0, "w": 90, "h": 40, "t": "submit"}, {"id": "host", "x": 0, "y": 80, "w": 150, "h": 52, "t": "host:\nwait(timeout)", "gem": "sapphire"}, {"id": "card", "x": 180, "y": 80, "w": 150, "h": 52, "t": "card:\ndeadline", "gem": "coral"}, {"id": "host_end", "x": 0, "y": 172, "w": 150, "h": 52, "t": "WaitTimeout:\nwait again"}, {"id": "card_end", "x": 180, "y": 172, "w": 150, "h": 52, "t": "CommandTimeout:\nrun is over", "gem": "coral"}], "arrows": [{"from": "start", "to": "host"}, {"from": "start", "to": "card"}, {"from": "host", "to": "host_end"}, {"from": "card", "to": "card_end"}]}}
 </script>
 <figcaption>Two clocks start at the same moment. The first to run out decides what you see.</figcaption>
 </figure>
@@ -118,7 +109,7 @@ Reading the last line, `CommandTimeout`'s message:
 - `group first 0 count 1`: the cores it was sent to.
 - `not reported: core 0`: the core of the group that had not reported when the deadline
   passed.
-- what follows says where the reader and writer of that core were when the card told them
+- what follows says where `reader.cpp` and writer of that core were when the card told them
   to stop. They are Komorebi's own step names, and you do not need them yet;
   [[finding-a-bug]] uses them.
 

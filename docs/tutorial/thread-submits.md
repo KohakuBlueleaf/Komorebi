@@ -61,7 +61,7 @@ Only core 0 of the cluster submits and waits.
 
 ## One line at a time
 
-The kernel is the writer of [[arguments]], with a product in place of the sum:
+The kernel is `writer.cpp` of [[arguments]], with a product in place of the sum:
 
 ```{ .cpp }
 --8<-- "tutorial/32_thread_submits/kernels/writer.cpp:run"
@@ -94,7 +94,7 @@ The answer is the result word, and the thread returns it to Python as its own re
 {"kind": "flow",
  "steps": [
   {"t": "thread: kmx_submit\nthe command for core 0", "gem": "sapphire"},
-  {"t": "core 0: the writer computes 6 * 7\nand sets the result word", "gem": "amber"},
+  {"t": "core 0: writer.cpp computes 6 * 7\nand sets the result word", "gem": "amber"},
   {"t": "core 0 reports: done"},
   {"t": "thread: kmx_wait returns the event\nevent.ticks is 42", "gem": "sapphire"},
   {"t": "thread: kmx_result\nPython reads 42 from thread_result"}]}
@@ -122,7 +122,7 @@ The answer is the result word, and the thread returns it to Python as its own re
     --8<-- "tutorial/32_thread_submits/kernels/writer.cpp"
     ```
 
-The reader and compute files are the empty ones. Python sends no command: it only starts
+`reader.cpp` and `compute.cpp` are the empty ones. Python sends no command: it only starts
 the program and reads the thread's result.
 
 ```{ .text .km-output }
@@ -135,7 +135,7 @@ Python in the thread's result.
 ## Common mistakes
 
 - Forgetting `KM_FLAG_RESULT`. The event is then still `KM_EVENT_DONE`, but `event.ticks`
-  is a time, not the number the writer set.
+  is a time, not the number `writer.cpp` set.
 - Leaving an argument unset. The command has ten, and an `a5` that was never written holds
   whatever the stack held. Set all ten.
 - Not checking `kmx_submit` and `kmx_wait`. Both return a code, and a thread that ignores

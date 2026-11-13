@@ -6,17 +6,19 @@ summary: "a core copies one tile from DRAM into its own L1"
 
 # Reading from DRAM
 
-The reader of a core can copy one tile of a tensor from DRAM into the core's L1, where the
-core can use it. This lesson relies on [[tiles-and-tensors]], [[arguments]] and
+A data-movement kernel can copy one tile of a tensor from DRAM into the core's L1, where
+the core can use it. Which of the two
+data-movement kernels does it is the program's choice ([[hello-core]]); in this lesson it is
+`reader.cpp`. This lesson relies on [[tiles-and-tensors]], [[arguments]] and
 [[the-card]].
 
 ## Why the core must copy
 
 A core works only on what is in its own L1 ([[the-card]]). Data in DRAM is out of its
-reach until it is copied in. The reader is the CPU for that, and it does it over the NoC:
+reach until it is copied in. A data-movement CPU does the copy, over the NoC:
 it asks for tile number so-and-so of a tensor and says where in L1 the tile is to land.
 
-A copy takes time and is not finished when the call returns. The reader has to wait for
+A copy takes time and is not finished when the call returns. The kernel has to wait for
 it, and then has to tell the others that the tile has arrived.
 
 ## The general form
@@ -36,7 +38,7 @@ program = km.Program(
 )
 ```
 
-In the reader:
+In `reader.cpp`:
 
 ```cpp
 constexpr auto ARGUMENTS = TensorAccessorArgs<0>();
@@ -67,9 +69,9 @@ cb_push_back(INDEX, PAGES);
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "dram", "x": 0, "y": 0, "w": 150, "h": 64, "t": "DRAM\nthe source tensor:\n4 tiles"}, {"id": "l1", "x": 230, "y": 0, "w": 150, "h": 64, "t": "L1 of core 0\nthe buffer:\nroom for 1 tile", "gem": "amber"}, {"id": "py", "x": 460, "y": 0, "w": 130, "h": 64, "t": "Python\nthe result", "gem": "sapphire"}], "arrows": [{"from": "dram", "to": "l1", "kind": "data", "t": "reader: noc_async_read_page", "dy": -12, "dx": -70}, {"from": "l1", "to": "py", "kind": "reply", "t": "writer: result", "dy": -12, "dx": -30}]}
+{"kind": "boxes", "boxes": [{"id": "dram", "x": 0, "y": 0, "w": 150, "h": 64, "t": "DRAM\nthe source tensor:\n4 tiles"}, {"id": "l1", "x": 230, "y": 0, "w": 150, "h": 64, "t": "L1 of core 0\nthe buffer:\nroom for 1 tile", "gem": "amber"}, {"id": "py", "x": 460, "y": 0, "w": 130, "h": 64, "t": "Python\nthe result", "gem": "sapphire"}], "arrows": [{"from": "dram", "to": "l1", "kind": "data", "t": "reader.cpp: noc_async_read_page", "dy": -12, "dx": -70}, {"from": "l1", "to": "py", "kind": "reply", "t": "writer.cpp: result", "dy": -12, "dx": -30}], "narrow": {"boxes": [{"id": "dram", "x": 0, "y": 0, "w": 190, "h": 64, "t": "DRAM\nthe source tensor:\n4 tiles"}, {"id": "l1", "x": 0, "y": 114, "w": 190, "h": 64, "t": "L1 of core 0\nthe buffer:\nroom for 1 tile", "gem": "amber"}, {"id": "py", "x": 0, "y": 228, "w": 190, "h": 64, "t": "Python\nthe result", "gem": "sapphire"}], "arrows": [{"from": "dram", "to": "l1", "kind": "data", "t": "reader.cpp: noc_async_read_page", "dy": 2, "dx": 8}, {"from": "l1", "to": "py", "kind": "reply", "t": "writer.cpp: result", "dy": 2, "dx": 8}]}}
 </script>
-<figcaption>One tile goes from DRAM to the L1 of core 0; the writer sends a number of it to Python.</figcaption>
+<figcaption>One tile goes from DRAM to the L1 of core 0; `writer.cpp` sends a number of it to Python.</figcaption>
 </figure>
 
 ## One line at a time
@@ -88,22 +90,22 @@ and positions.)
 --8<-- "tutorial/16_reading_from_dram/reading_from_dram.py:program"
 ```
 
-The program names the buffer and gives the reader what it needs to find `source`. The
+The program names the buffer and gives `reader.cpp` what it needs to find `source`. The
 buffer holds one tile of 4096 bytes in the format of the tensor.
 
 ```{ .cpp }
 --8<-- "tutorial/16_reading_from_dram/kernels/reader.cpp:run"
 ```
 
-The command's arguments say which tensor and which tile. The reader makes the accessor,
+The command's arguments say which tensor and which tile. `reader.cpp` makes the accessor,
 waits for room, starts the copy, waits for it to finish, and announces the tile.
 
 ```{ .cpp }
 --8<-- "tutorial/16_reading_from_dram/kernels/writer.cpp:run"
 ```
 
-The writer is the one that can send a result ([[a-result]]), so it takes the number out of
-the tile. `wait_front` waits until the reader has announced the tile; `get_read_ptr` is the
+`writer.cpp` is the one that can send a result ([[a-result]]), so it takes the number out of
+the tile. `wait_front` waits until `reader.cpp` has announced the tile; `get_read_ptr` is the
 address of the tile in L1; the `reinterpret_cast` says "read it as an array of `uint32_t`";
 `tile[position]` is the number at that place. `cb_pop_front` frees the room for the next
 command.
@@ -157,8 +159,8 @@ agree; beyond them a tile keeps its numbers in four blocks of 16 x 16.
   `noc_async_read_barrier()` the tile may not be in L1 yet when it is used.
 - Typing `page_bytes` by hand. It must be the size of one tile of the tensor; write
   `source.page_bytes` instead of 4096 and it cannot go wrong when the dtype changes.
-- Forgetting `cb_pop_front` in the writer. The first command works. The second finds the
-  buffer still full, the reader waits for room that never comes, and the command ends
+- Forgetting `cb_pop_front` in `writer.cpp`. The first command works. The second finds the
+  buffer still full, `reader.cpp` waits for room that never comes, and the command ends
   with `CommandTimeout` ([[when-it-goes-wrong]]).
 - Taking a number of the tile at a place that is not in the first row of the first 16
   columns, and expecting the host array's order. The numbers inside a tile are kept in

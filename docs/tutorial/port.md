@@ -18,13 +18,13 @@ things in order: it writes the tile, and, when the write is done, it adds 1 to a
 the receiver's L1. The receiver waits for the counter, and only then uses the tile. The
 counter is the **port**; every core has eight of them, numbered 0 to 7.
 
-All three kernels of the two cores take part: the sender's reader fetches the tile, the
-sender's writer sends it; the receiver's reader waits at the port, and the receiver's
-writer uses the tile.
+All three kernels of the two cores take part: on the sender `reader.cpp` fetches the tile and
+`writer.cpp` sends it; on the receiver `reader.cpp` waits at the port and `writer.cpp`
+uses the tile.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "dram", "x": 0, "y": 0, "w": 170, "h": 40, "t": "DRAM: the source tensor"}, {"id": "out", "x": 0, "y": 80, "w": 170, "h": 52, "t": "core 1\noutgoing buffer: 1 tile", "gem": "amber", "small": true}, {"id": "arr", "x": 280, "y": 80, "w": 170, "h": 52, "t": "core 0\narrival buffer + port", "gem": "amber", "small": true}, {"id": "py", "x": 280, "y": 172, "w": 170, "h": 40, "t": "Python: the result", "gem": "sapphire"}], "arrows": [{"from": "dram", "to": "out", "kind": "data", "t": "reader", "dx": 8, "dy": 2}, {"from": "out", "to": "arr", "kind": "data", "t": "writer: emit", "dy": -10, "dx": -60}, {"from": "arr", "to": "py", "kind": "reply", "t": "writer: result", "dx": 8, "dy": 2}]}
+{"kind": "boxes", "boxes": [{"id": "dram", "x": 0, "y": 0, "w": 190, "h": 40, "t": "DRAM: the source tensor"}, {"id": "out", "x": 0, "y": 80, "w": 170, "h": 52, "t": "core 1\noutgoing buffer: 1 tile", "gem": "amber", "small": true}, {"id": "arr", "x": 280, "y": 80, "w": 170, "h": 52, "t": "core 0\narrival buffer + port", "gem": "amber", "small": true}, {"id": "py", "x": 280, "y": 172, "w": 170, "h": 40, "t": "Python: the result", "gem": "sapphire"}], "arrows": [{"from": "dram", "to": "out", "kind": "data", "t": "reader.cpp", "dx": 8, "dy": 2}, {"from": "out", "to": "arr", "kind": "data", "t": "writer.cpp: emit", "dy": -10, "dx": -60}, {"from": "arr", "to": "py", "kind": "reply", "t": "writer.cpp: result", "dx": 8, "dy": 2}], "narrow": {"boxes": [{"id": "dram", "x": 0, "y": 0, "w": 190, "h": 40, "t": "DRAM: the source tensor"}, {"id": "out", "x": 0, "y": 90, "w": 190, "h": 52, "t": "core 1\noutgoing buffer: 1 tile", "gem": "amber", "small": true}, {"id": "arr", "x": 0, "y": 192, "w": 190, "h": 52, "t": "core 0\narrival buffer + port", "gem": "amber", "small": true}, {"id": "py", "x": 0, "y": 294, "w": 190, "h": 40, "t": "Python: the result", "gem": "sapphire"}], "arrows": [{"from": "dram", "to": "out", "kind": "data", "t": "reader.cpp", "dx": 8, "dy": 2}, {"from": "out", "to": "arr", "kind": "data", "t": "writer.cpp: emit", "dy": 2, "dx": 8}, {"from": "arr", "to": "py", "kind": "reply", "t": "writer.cpp: result", "dx": 8, "dy": 2}]}}
 </script>
 <figcaption>A tile goes from DRAM to the outgoing buffer of core 1, over the NoC to the arrival buffer of core 0, and a number of it goes to Python.</figcaption>
 </figure>
@@ -34,19 +34,19 @@ writer uses the tile.
 In the kernels, with `km::Arrival arrival = {BUFFER, PAGES, 1};` made before `run`, and
 `#include "komorebi/device/km_port.hpp"`:
 
-Sender's writer:
+Sender's `writer.cpp`:
 
 ```cpp
 km::emit(writer, command, arrival, OUTGOING, 1, RECEIVER, PORT, SLOT);
 ```
 
-Receiver's reader:
+Receiver's `reader.cpp`:
 
 ```cpp
 km::arrive(reader, command, arrival, PORT, 1);
 ```
 
-Receiver, to use the tile, after the reader:
+Receiver, to use the tile, after `reader.cpp`:
 
 ```cpp
 writer.wait_front(BUFFER, PAGES, km::kBehindPort);
@@ -81,7 +81,7 @@ run.submit(KIND, group=(FIRST, COUNT), args=[...], exclusive=True)
 --8<-- "tutorial/24_port/kernels/reader.cpp:run"
 ```
 
-Both cores run this reader. The one with rank 1 is the sender: it reads the tile into the
+Both cores run this `reader.cpp`. The one with rank 1 is the sender: it reads the tile into the
 outgoing buffer, as in [[reading-from-dram]]. The one with rank 0 waits at port 0 for 1
 arrival.
 
@@ -89,8 +89,8 @@ arrival.
 --8<-- "tutorial/24_port/kernels/writer.cpp:run"
 ```
 
-The sender's writer calls `emit`: the tile goes to `receiver`, the first core of the
-group, port 0, slot 0. The receiver's writer waits until the arrival buffer is full, reads
+The sender's `writer.cpp` calls `emit`: the tile goes to `receiver`, the first core of the
+group, port 0, slot 0. The receiver's `writer.cpp` waits until the arrival buffer is full, reads
 number `a2` of the tile, sets it as the result ([[the-leader]]), and frees the buffer. The
 receiver is rank 0 on purpose: it is the leader, so its result reaches Python.
 

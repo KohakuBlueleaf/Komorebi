@@ -24,7 +24,7 @@ The number of blocks that may be in flight at once is the **window**.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "dram", "x": 0, "y": 0, "w": 150, "h": 44, "t": "DRAM: 4 tiles"}, {"id": "c0", "x": 0, "y": 84, "w": 150, "h": 56, "t": "core 0, rank 0\nthe sender", "gem": "amber", "here": true}, {"id": "rest", "x": 260, "y": 84, "w": 200, "h": 56, "t": "cores 1 to 5\nthe receivers", "gem": "amber"}], "arrows": [{"from": "dram", "to": "c0", "kind": "data", "t": "read", "dx": 8, "dy": 2}, {"from": "c0", "to": "rest", "kind": "broadcast", "t": "one multicast write", "dy": -10, "dx": -60}]}
+{"kind": "boxes", "boxes": [{"id": "dram", "x": 0, "y": 0, "w": 150, "h": 44, "t": "DRAM: 4 tiles"}, {"id": "c0", "x": 0, "y": 84, "w": 150, "h": 56, "t": "core 0, rank 0\nthe sender", "gem": "amber", "here": true}, {"id": "rest", "x": 260, "y": 84, "w": 200, "h": 56, "t": "cores 1 to 5\nthe receivers", "gem": "amber"}], "arrows": [{"from": "dram", "to": "c0", "kind": "data", "t": "read", "dx": 8, "dy": 2}, {"from": "c0", "to": "rest", "kind": "broadcast", "t": "one multicast write", "dy": -10, "dx": -60}], "narrow": {"boxes": [{"id": "dram", "x": 0, "y": 0, "w": 200, "h": 44, "t": "DRAM: 4 tiles"}, {"id": "c0", "x": 0, "y": 88, "w": 200, "h": 56, "t": "core 0, rank 0\nthe sender", "gem": "amber", "here": true}, {"id": "rest", "x": 0, "y": 188, "w": 200, "h": 56, "t": "cores 1 to 5\nthe receivers", "gem": "amber"}], "arrows": [{"from": "dram", "to": "c0", "kind": "data", "t": "read", "dx": 8, "dy": 2}, {"from": "c0", "to": "rest", "kind": "broadcast", "t": "one multicast write", "dx": 8, "dy": 2}]}}
 </script>
 <figcaption>Core 0 reads from DRAM; the NoC copies each block to cores 1 to 5 with one write.</figcaption>
 </figure>
@@ -90,13 +90,13 @@ is and the corners of the rectangle of receivers on the NoC. The arguments are
 `(0, 0, 6, 1)`, the rectangle (first column, first row, columns, rows), `"row"`, the NoC the
 reader uses (0), and `(0, 0, 2, 1)`: broadcast number 0, buffer 0, a window of 2 blocks,
 1 page a block. `arguments_of(core)` returns the three argument lists of a core, in the
-order reader, writer, compute. The reader's are these eleven numbers.
+order reader, writer, compute. Those of `reader.cpp` are these eleven numbers.
 
 ```{ .cpp }
 --8<-- "tutorial/26_broadcast/kernels/reader.cpp:run"
 ```
 
-The reader is the general form: the sender reads each block of the source into the slot
+`reader.cpp` is the general form: the sender reads each block of the source into the slot
 that `reserve` gives it and casts it; the others arrive.
 
 ```{ .cpp }
