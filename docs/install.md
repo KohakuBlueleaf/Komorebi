@@ -72,12 +72,13 @@ The wheel needs nothing else to install and to run `kmr doctor`. To run on a car
 needs what a clone needs ([running on a card](#running-on-a-card)): the tt-metal tree
 with the X280 runtime and the tt-x280-dispatch targets in `TT_METAL_HOME`, `ttnn` from
 that tree and `torch` in the same environment (for a source tree's `ttnn`, three of its
-directories on the path: `ttnn`, the tree and `tools`), and `clang++-20`. The native host module
-is built from the sources in the wheel on first use, into `KMR_CACHE` (default
-`~/.cache/komorebi`). The examples are not in the wheel; run them from a clone with the
-wheel's environment active. The tt-metal inside the `kohakutt` wheel cannot serve: it
-is built without the X280 runtime. [Packaging](../packaging/README.md) lists what the
-wheel carries.
+directories on the path: `ttnn`, the tree and `tools`), and `clang++-20`. The native
+host module is built from the sources in the wheel on first use, into `KMR_CACHE`
+(default `~/.cache/komorebi`). The examples are not in the wheel; a copy of `examples/`
+runs from anywhere with the wheel's environment active, and finds the headers, the X280
+library and the image in the install ([a run on a card](../packaging/README.md#a-run-on-a-card)).
+The tt-metal inside the `kohakutt` wheel cannot serve: it is built without the X280
+runtime. [Packaging](../packaging/README.md) lists what the wheel carries.
 
 ## Building against a tt-metal tree
 

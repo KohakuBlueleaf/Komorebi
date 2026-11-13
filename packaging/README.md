@@ -62,6 +62,34 @@ export KMR_SITE=$TT_METAL_HOME/ttnn:$TT_METAL_HOME:$TT_METAL_HOME/tools:<site-pa
 `KMR_CARD=1` runs the example on a card; the card is the first of `TT_VISIBLE_DEVICES`
 (default 0). The script makes its working directory with `mktemp -d`, under `TMPDIR`.
 
+### A run on a card
+
+What was run, on a Blackhole p150a, from a fresh clone, with a fresh environment and
+empty caches (`KMR_CACHE`, `TT_METAL_CACHE`), twice in a row with the same result:
+
+```
+python3.13 packaging/build_wheel.py --tt-metal "$TT_METAL_HOME" --out dist
+KMR_CARD=1 TT_VISIBLE_DEVICES=1 TT_METAL_SLOW_DISPATCH_MODE=1 \
+    bash packaging/smoke.sh dist/komorebi-0.1.0-py3-none-any.whl smoke-venv
+```
+
+| Step | Time |
+|---|---|
+| the wheel (234 kB, 69 files, the image 22,864 bytes) | 3.9 s |
+| `smoke.sh`: environment, install, `kmr doctor`, the install check, `examples/01_mapcollect` | 29 s and 30 s |
+| of which the example (native module built, device opened, kernels compiled cold, 20 jobs, outputs read back) | 20.9 s and 24.3 s |
+
+The example finished with 20 jobs checked, none wrong, 120 cores ended. Then, with the
+same environment, a copy of `examples/` outside any checkout:
+
+| Run | Result | Wall |
+|---|---|---|
+| `python work_cluster.py --paths thread` in `07_work_cluster` | 204 rounds, sum 1,004,917, same as the numpy replay, the thread 10.2 ms on the card | 6.9 s |
+| `python graph.py` in `06_graph` | both paths ended after 5 and 7 rounds, state exact, paths agree | 7.9 s |
+
+Outside a checkout `graph.py` finds none of the bad graphs it refuses (they are under
+`experiments/`), so it reports `bad_uploads_refused` as `0/0`.
+
 ## Workflows
 
 | Workflow | Runs on | What it does |
