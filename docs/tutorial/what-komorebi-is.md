@@ -82,8 +82,7 @@ The tutorial has six parts, and every part ends with something you can do:
 5. **The other cores.** Write C code for the card's other kind of core, and let it drive the first kind.
 6. **Practice.** Measure, find a bug, read a whole program, and write one of your own.
 
-The [list of all lessons](index.md) is on the left of every page. A lesson that is not
-written yet is marked "planned".
+The [list of all lessons](index.md) is on the left of every page.
 
 ## How a lesson works
 
