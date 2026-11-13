@@ -1,6 +1,6 @@
 """The ray tracer on a card through the dispatch kernel (KMR_CARD=1): the vector unit's
-arithmetic bit for bit; on tiles, the four passes (tree in L1, treelets from DRAM),
-the frame's stages, and the frame as a graph in the kernel and host-fed, against
+arithmetic bit for bit; on tiles, the four passes and the frame's stages (tree in L1,
+treelets from DRAM), and the frame as a graph in the kernel and host-fed, against
 numpy."""
 
 from pathlib import Path
@@ -31,8 +31,13 @@ def test_four_passes_agree_on_tiles(scene):
     assert out["ok"] and out["passes"] == ["primary", "shadow", "bounce", "shadow2"]
 
 
-def test_frame_stages_on_the_card_agree_on_tiles():
-    out = run_json(HERE / "frame.py", *TILES, "--stages", timeout=300.0)
+@pytest.mark.parametrize(
+    "scene", [("tiny",), ("s10k", "--treelets", "128")], ids=["tree", "treelets"]
+)
+def test_frame_stages_on_the_card_agree_on_tiles(scene):
+    out = run_json(
+        HERE / "frame.py", "--scene", *scene, *TILES, "--stages", timeout=300.0
+    )
     assert out["ok"] and out["image_check"]["differs"] == 0
     assert set(out["stages"].values()) == {0}
 
