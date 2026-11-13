@@ -45,9 +45,10 @@ with km.Session(card=0) as session:
 ```
 
 `reader_args` and `writer_args` are the tensor accessor arguments of the input and
-output tensors (`ttnn.TensorAccessorArgs(tensor).get_compile_time_args()`); `x_addr`
-and `out_addr` are their `buffer_address()`. `mapcollect.py` is this program with the
-tensors, the teams and the checks around it.
+output tensors (`tensor.accessor_args()` of tensors made by
+`session.tensor(array, "bfloat16", "tile")`); `x_addr` and `out_addr` are their
+`address`. `mapcollect.py` is this program with the tensors, the teams and the checks
+around it.
 
 If a member never reports, the dispatch kernel's deadline (one second unless `load`
 says otherwise) ends the run: `run.wait` raises `km.RecordTimeout`, which names the
@@ -67,9 +68,8 @@ with where each was waiting. The session is already closed cleanly by then.
 - this repository installed in the Python environment (`pip install -e .` from its
   root);
 - a tt-metal v0.81.1 tree with the X280 runtime and the tt-x280-dispatch project's
-  targets, `ttnn` and `torch` from it in the same environment, `TT_METAL_HOME` naming
-  it, and a Blackhole p150a whose X280 LIM ECC was primed once: the steps are in
-  [Running on a card](../../docs/install.md#running-on-a-card). The dispatch kernel
+  targets, `TT_METAL_HOME` naming it, and a Blackhole p150a whose X280 LIM ECC was
+  primed once: the steps are in [Running on a card](../../docs/install.md#running-on-a-card). The dispatch kernel
   image and the package's native module are built from the tree on first use (about
   ten seconds) into `build/komorebi/`. The session runs in slow dispatch (it sets
   `TT_METAL_SLOW_DISPATCH_MODE=1` if unset).

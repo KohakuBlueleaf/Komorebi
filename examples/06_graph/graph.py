@@ -13,8 +13,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 from komorebi.engines import graph as gr
@@ -104,17 +102,14 @@ def main():
     sys.exit(0 if out["ok"] else 1)
 
 
-def state_tensor(device, n):
+def state_tensor(session, n):
     rows = np.zeros((PAGES, WORDS), np.uint32)
     rows[:n, 0] = initial(n)
-    host = torch.from_numpy(rows.view(np.int32))
-    return ttnn.from_torch(
-        host, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
-    )
+    return session.tensor(rows, "uint32")
 
 
 def read_state(state, n):
-    rows = ttnn.to_torch(ttnn.from_device(state)).numpy().view(np.uint32)
+    rows = state.read()
     return rows[:n, 0].astype(np.uint64)
 
 
@@ -122,13 +117,11 @@ def run(session, args):
     """The stalled graph first (its own run) when asked, then one run per path. The
     output's `ok`: every path as the numpy replay and as the simulator (records
     issued, per core), the paths alike, the branches in flight together."""
-    device, n = session.device, args.cores
+    n = args.cores
     cases = {"first": args.first, "again": args.again}
     modes = ["host", "x280"] if args.decide == "both" else [args.decide]
-    states = {(m, c): state_tensor(device, n) for m in modes for c in cases}
-    accessor = ttnn.TensorAccessorArgs(
-        next(iter(states.values()))
-    ).get_compile_time_args()
+    states = {(m, c): state_tensor(session, n) for m in modes for c in cases}
+    accessor = next(iter(states.values())).accessor_args()
     program = km.Program(
         "graph",
         kernels=KERNELS,
@@ -195,7 +188,7 @@ def one_path(load, mode, g, regs, states, cases):
     try:
         if mode == "host":
             for name, (it, limit) in cases.items():
-                addr = states["host", name].buffer_address()
+                addr = states["host", name].address
                 log(f"host {name}: it {it}, limit {limit}")
                 b = {"state": addr, "it": it, "limit": limit}
                 got = load.run_hostfed(g, b, 30.0)
@@ -263,7 +256,7 @@ def on_x280(load, g, states, cases):
     up = load.upload(g)
     path = {}
     for k, (name, (it, limit)) in enumerate(cases.items()):
-        b = {"state": states["x280", name].buffer_address(), "it": it, "limit": limit}
+        b = {"state": states["x280", name].address, "it": it, "limit": limit}
         log(f"x280 {name}: it {it}, limit {limit}")
         t = load.start(up, b, kept=True) if k == 0 else load.restart(up.req, b)
         end = load.wait_engine(t, timeout=30.0)

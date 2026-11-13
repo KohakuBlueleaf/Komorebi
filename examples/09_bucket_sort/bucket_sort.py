@@ -10,8 +10,6 @@ from pathlib import Path
 
 import numpy as np
 import reference
-import torch
-import ttnn
 
 import komorebi as km
 from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
@@ -33,17 +31,12 @@ def log(msg):
     print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
 
 
-def keys_tensor(device, values):
+def keys_tensor(session, values):
     """Step 0 (host): a DRAM tensor of 4 KiB pages, 1,024 keys a page, interleaved
     over the banks; the last page padded with zeros the kernels never read."""
     rows = np.zeros((-(-values.size // KEYS_PER_PAGE), KEYS_PER_PAGE), np.uint32)
     rows.reshape(-1)[: values.size] = values
-    return ttnn.from_torch(
-        torch.from_numpy(rows.view(np.int32)),
-        dtype=ttnn.uint32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-    )
+    return session.tensor(rows, "uint32")
 
 
 def program(keys, out, words, harts):
@@ -62,8 +55,8 @@ def program(keys, out, words, harts):
             ),
         ],
         compile_args={
-            "reader": ttnn.TensorAccessorArgs(keys).get_compile_time_args(),
-            "writer": ttnn.TensorAccessorArgs(out).get_compile_time_args(),
+            "reader": keys.accessor_args(),
+            "writer": out.accessor_args(),
         },
     )
     table = words[2] * 4 << words[1]  # cores x B counters of 4 bytes
@@ -87,15 +80,15 @@ def run_card(args, values, log2_b):
     """Loads the program, lets the thread run it, stops, reads the output back. Returns
     {cluster: ThreadResult}, the cores used and the output keys."""
     with km.Session(log=log) as session:
-        grid = session.device.compute_with_storage_grid_size()
-        cores = args.cores or grid.x * grid.y
+        gx, gy = session.grid
+        cores = args.cores or gx * gy
         log(f"device open: {cores} cores; uploading {values.size} keys")
-        keys = keys_tensor(session.device, values)
-        out = keys_tensor(session.device, np.zeros(values.size, np.uint32))
+        keys = keys_tensor(session, values)
+        out = keys_tensor(session, np.zeros(values.size, np.uint32))
         log("keys and output tensors in DRAM")
         banks = sum(BANK_OF_CLUSTER[c] << 8 * (c - 1) for c in (1, 2, 3))
-        words = [values.size, log2_b, cores, keys.buffer_address()]
-        words += [out.buffer_address(), args.harts, args.repeats, banks]
+        words = [values.size, log2_b, cores, keys.address]
+        words += [out.address, args.harts, args.repeats, banks]
         run = session.load(program(keys, out, words, args.harts), deadline=2.0)
         log(f"loaded: the grid, the dispatch kernel, the thread ({args.harts} harts)")
         try:

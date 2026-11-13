@@ -13,8 +13,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 from komorebi import abi, native
@@ -158,18 +156,15 @@ def cpu_path(words):
     return code, rounds, total, trail, teams[:rounds], records
 
 
-def state_tensor(device, cores):
+def state_tensor(session, cores):
     """One 64-byte page per core, word 0 its state; the address is a program word."""
     rows = np.zeros((abi.headers()["KM_CORES_MAX"], 16), np.uint32)
     rows[:cores, 0] = initial(cores)
-    host = torch.from_numpy(rows.view(np.int32))
-    return ttnn.from_torch(
-        host, dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
-    )
+    return session.tensor(rows, "uint32")
 
 
 def read_state(state, cores):
-    rows = ttnn.to_torch(ttnn.from_device(state)).numpy().view(np.uint32)
+    rows = state.read()
     return rows[:cores, 0].astype(np.uint64)
 
 
@@ -180,7 +175,7 @@ def program(state, lanes, fallbacks):
         "work_cluster",
         kernels=HERE / "kernels",
         buffers=[km.Buffer(index=16, format="uint32", page_bytes=64, pages=1)],
-        compile_args={"writer": ttnn.TensorAccessorArgs(state).get_compile_time_args()},
+        compile_args={"writer": state.accessor_args()},
     )
     for cluster, words in lanes.items():
         prog.thread(
@@ -217,8 +212,8 @@ def card_paths(args, lanes, which):
     with km.Session(log=log) as session:
         log("device open")
         for path in which:
-            state = state_tensor(session.device, args.cores)
-            mine = {c: [state.buffer_address(), *w[1:]] for c, w in lanes.items()}
+            state = state_tensor(session, args.cores)
+            mine = {c: [state.address, *w[1:]] for c, w in lanes.items()}
             records = {c: [] for c in lanes}
             fallbacks = {c: host_fallback(lib, records[c]) for c in lanes}
             prog = program(state, mine, fallbacks)

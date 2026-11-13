@@ -10,8 +10,6 @@ import time
 
 import merge_fed as mf
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 
@@ -71,8 +69,8 @@ def program(args, inp, out):
             km.Buffer(M["kCbOut"], "float32", page, M["kOutPages"]),
         ],
         compile_args={
-            "reader": ttnn.TensorAccessorArgs(inp).get_compile_time_args(),
-            "writer": ttnn.TensorAccessorArgs(out).get_compile_time_args(),
+            "reader": inp.accessor_args(),
+            "writer": out.accessor_args(),
         },
         # the compute kernel copies float32 tiles into DST unrounded
         compute={
@@ -111,9 +109,9 @@ def launch(session, args, jobs, inputs, out, stall=-1, stall_member=NONE):
     try:
         for j, (first, count, form, src) in enumerate(jobs):
             words = [
-                inputs[src % 2].buffer_address(),
+                inputs[src % 2].address,
                 args.tiles,
-                out.buffer_address(),
+                out.address,
                 j % (args.out_pages // args.part) * args.part,
                 form,
                 stall_member if j == stall else NONE,
@@ -170,7 +168,7 @@ def checksum(tiles):
 def check_results(args, jobs, events, out, xs):
     """Each finished job's result word against the replay (exact inputs: numpy's
     total; random inputs: the total read back, as long as no later job reused it)."""
-    got = ttnn.to_torch(out).float().numpy().reshape(-1, TILE, TILE)
+    got = out.read().reshape(-1, TILE, TILE)
     parts = args.out_pages // args.part
     last = {j % parts: j for j in range(len(jobs))}
     bad, checked = [], 0
@@ -199,11 +197,10 @@ def checked(args, jobs, events, out, xs):
 
 
 def run(session, args, rng):
-    device = session.device
-    g = device.compute_with_storage_grid_size()
+    gx, gy = session.grid
     # random teams fit the arrival buffer by owner: one slot per other member
-    jobs = mf.make_jobs(args, min(g.x * g.y, M["kArrivePages"] // args.part + 1), rng)
-    log(f"grid {g.x} x {g.y}, {len(jobs)} jobs")
+    jobs = mf.make_jobs(args, min(gx * gy, M["kArrivePages"] // args.part + 1), rng)
+    log(f"grid {gx} x {gy}, {len(jobs)} jobs")
 
     # Exact: integers in [-2, 2] (every partial sum exact in float32). Random: uniform
     # in [-1, 1]. Sources differ, so the totals do.
@@ -214,12 +211,7 @@ def run(session, args, rng):
     ]
 
     def tiles(a):
-        return ttnn.from_torch(
-            torch.from_numpy(a),
-            dtype=ttnn.float32,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
+        return session.tensor(a, "float32", "tile")
 
     inputs = [tiles(x) for x in xs]
     out = tiles(np.zeros((args.out_pages * TILE, TILE), dtype=np.float32))
@@ -239,7 +231,7 @@ def run(session, args, rng):
         )
         events, after = launch(session, args, few, inputs, out)
         result["after"] = {**after, **checked(args, few, events, out, xs)}
-    result["ok"] = verdict(result, len(jobs), g.x * g.y)
+    result["ok"] = verdict(result, len(jobs), gx * gy)
     return result
 
 

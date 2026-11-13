@@ -10,11 +10,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
-from komorebi import dram
+from komorebi import dram, formats
 from komorebi.layout import share
 
 HERE = Path(__file__).resolve().parent
@@ -31,11 +29,11 @@ def log(msg):
 def read_bf16_chunked(session, tensor, name):
     """A bfloat16 tile tensor as session.read_bf16 gives it, read in chunks of 2 MB
     with a line per chunk: a whole read of an output takes a minute or more."""
-    total, parts = tensor.buffer_num_pages(), []
+    total, parts = tensor.pages, []
     for first, pages in session.read_chunks(tensor):
         parts.append(pages)
         log(f"{name}: {first + len(pages)} of {total} pages read")
-    rows, cols = tuple(tensor.padded_shape)
+    rows, cols = tensor.shape
     return dram.untilize_bf16(np.concatenate(parts), rows, cols)
 
 
@@ -151,9 +149,8 @@ def main():
 
 
 def run(session, args, rng):
-    device = session.device
-    grid = device.compute_with_storage_grid_size()
-    cores = grid.x * grid.y
+    gx, gy = session.grid
+    cores = gx * gy
     teams = make_teams(args, cores, rng)
     n, tiles = args.jobs, args.tiles
 
@@ -161,18 +158,11 @@ def run(session, args, rng):
     # Random inputs: uniform in [-1, 1]. Job j reads T tiles from page in_page[j] on.
     in_tiles = max(args.in_tiles, tiles)
     x_exact = rng.integers(-2, 3, (in_tiles * TILE, TILE)).astype(np.float32)
-    x_rand = torch.from_numpy(
-        rng.uniform(-1, 1, (in_tiles * TILE, TILE)).astype(np.float32)
-    )
-    x_rand = x_rand.bfloat16().float().numpy()
+    x_rand = rng.uniform(-1, 1, (in_tiles * TILE, TILE)).astype(np.float32)
+    x_rand = formats.bf16_values(formats.bf16_bits(x_rand))
 
     def tile_tensor(a):
-        return ttnn.from_torch(
-            torch.from_numpy(a),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
+        return session.tensor(a, "bfloat16", "tile")
 
     inputs = [tile_tensor(x_exact), tile_tensor(x_rand)]
     pages = args.out_pages
@@ -190,8 +180,8 @@ def run(session, args, rng):
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),  # kCbOut
         ],
         compile_args={
-            "reader": ttnn.TensorAccessorArgs(inputs[0]).get_compile_time_args(),
-            "writer": ttnn.TensorAccessorArgs(outs[0]).get_compile_time_args(),
+            "reader": inputs[0].accessor_args(),
+            "writer": outs[0].accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         depth=args.depth,
@@ -208,8 +198,8 @@ def run(session, args, rng):
 
     # MAP arguments per job: input, T, output, output page of member 0, no slow
     # member (a4 0 cycles, a5 none), first input page
-    in_addr = np.array([t.buffer_address() for t in inputs], np.int64)
-    out_addr = np.array([t.buffer_address() for t in outs], np.int64)
+    in_addr = np.array([t.address for t in inputs], np.int64)
+    out_addr = np.array([t.address for t in outs], np.int64)
     jobs = np.arange(n)
     base_a = np.asarray(base, np.int64)
     words = np.stack(

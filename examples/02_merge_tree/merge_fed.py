@@ -17,8 +17,8 @@ sys.path.insert(0, str(FEEDER))
 
 import fed  # noqa: E402
 import records as rec  # noqa: E402
-import torch  # noqa: E402
-import ttnn  # noqa: E402
+
+import komorebi as km  # noqa: E402
 
 K = rec.K
 KERNELS = HERE / "kernels"
@@ -85,22 +85,23 @@ def make_jobs(args, workers, rng):
 
 def kernels(inp, out):
     """The three kernels, their buffers and a float32 compute path end to end."""
-    config = ttnn.ComputeConfigDescriptor(
-        math_fidelity=ttnn.MathFidelity.HiFi4, fp32_dest_acc_en=True
-    )
-    config.unpack_to_dest_mode = [ttnn.UnpackToDestMode.UnpackToDestFp32] * 64
+    config = {
+        "math_fidelity": "HiFi4",
+        "fp32_dest_acc_en": True,
+        "unpack_to_dest_mode": "UnpackToDestFp32",
+    }
     page = M["kTileBytes"]
     return fed.Kernels(
         reader=KERNELS / "reader.cpp",
         compute=KERNELS / "compute.cpp",
         writer=KERNELS / "writer.cpp",
-        reader_ct=ttnn.TensorAccessorArgs(inp).get_compile_time_args(),
-        writer_ct=ttnn.TensorAccessorArgs(out).get_compile_time_args(),
-        compute_config=config,
+        reader_ct=inp.accessor_args(),
+        writer_ct=out.accessor_args(),
+        compute_options=config,
         cbs=[
-            (M["kCbIn"], ttnn.float32, page, M["kInPages"]),
-            (M["kCbArrive"], ttnn.float32, page, M["kArrivePages"]),
-            (M["kCbOut"], ttnn.float32, page, M["kOutPages"]),
+            (M["kCbIn"], "float32", page, M["kInPages"]),
+            (M["kCbArrive"], "float32", page, M["kArrivePages"]),
+            (M["kCbOut"], "float32", page, M["kOutPages"]),
         ],
     )
 
@@ -112,9 +113,9 @@ def launch(runner, args, jobs, inputs, out, stall=-1, stall_member=NONE):
     records = []
     for j, (first, count, form, src) in enumerate(jobs):
         words = [
-            inputs[src % 2].buffer_address(),
+            inputs[src % 2].address,
             args.tiles,
-            out.buffer_address(),
+            out.address,
             j % (args.out_pages // args.part) * args.part,
             form,
             stall_member if j == stall else NONE,
@@ -174,7 +175,7 @@ def reference(args, src, xs):
 def check(args, jobs, done, out, xs):
     """Exact jobs bit-equal to numpy, random jobs by relative RMS; with both forms,
     the two jobs of an exact pair bit-equal to each other. `done[j]`: job j ended."""
-    got = ttnn.to_torch(out).float().numpy().reshape(-1, TILE, TILE)
+    got = out.read().reshape(-1, TILE, TILE)
     fed.log("outputs read back")
     n = len(jobs)
     P = args.part
@@ -218,20 +219,16 @@ def main():
     args = parse()
     rng = np.random.default_rng(args.seed)
     t_start = time.time()
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    device.disable_and_clear_program_cache()
-    fed.log(f"device open {time.time() - t_start:.1f}s")
-    try:
-        result = run(device, args, rng)
-    finally:
-        ttnn.close_mesh_device(device)
+    with km.Session(log=fed.log) as session:
+        fed.log(f"device open {time.time() - t_start:.1f}s")
+        result = run(session, args, rng)
     result["wall_s"] = round(time.time() - t_start, 1)
     print(json.dumps(result), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 
-def run(device, args, rng):
-    runner = fed.Fed(device)
+def run(session, args, rng):
+    runner = fed.Fed(session)
     jobs = make_jobs(args, runner.workers, rng)
     n = len(jobs)
     fed.log(f"grid {runner.grid}, {runner.workers} workers, aiclk {runner.mhz} MHz")
@@ -245,12 +242,7 @@ def run(device, args, rng):
     ]
 
     def tiles(a):
-        return ttnn.from_torch(
-            torch.from_numpy(a),
-            dtype=ttnn.float32,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
+        return session.tensor(a, "float32", "tile")
 
     inputs = [tiles(x) for x in xs]
     out = tiles(np.zeros((args.out_pages * TILE, TILE), dtype=np.float32))

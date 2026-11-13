@@ -21,8 +21,6 @@ sys.path[:0] = [
 
 import records as rec  # noqa: E402
 import replay  # noqa: E402
-import torch  # noqa: E402
-import ttnn  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
@@ -102,30 +100,16 @@ def main():
     sys.exit(0 if ok else 1)
 
 
-def l1_blocks(device, grid, words):
+def l1_blocks(session, grid, words):
     """A zeroed L1 area of `words` words on every core, at one address."""
-    config = ttnn.create_sharded_memory_config(
-        (1, words),
-        ttnn.CoreGrid(y=grid[1], x=grid[0]),
-        ttnn.ShardStrategy.HEIGHT,
-        ttnn.ShardOrientation.ROW_MAJOR,
-        use_height_and_width_as_shard_shape=True,
-    )
-    return ttnn.from_torch(
-        torch.zeros((grid[0] * grid[1], words), dtype=torch.int32),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=config,
-    )
+    zeros = np.zeros((grid[0] * grid[1], words), np.int32)
+    return session.tensor(zeros, "int32", shard_grid=grid)
 
 
 def load(session, a):
     """The program loaded: (run, results tensor, program, cores in the grid)."""
-    device = session.device
-    g = device.compute_with_storage_grid_size()
-    grid = (g.x, g.y)
-    res_t = l1_blocks(device, grid, HOP["kResWords"])  # before the grid starts
+    grid = session.grid
+    res_t = l1_blocks(session, grid, HOP["kResWords"])  # before the grid starts
     program = km.Program(
         "hop",
         kernels={
@@ -133,7 +117,7 @@ def load(session, a):
             "compute": HERE / "kernels" / "compute.cpp",
             "writer": RUNTIME / "dyn_writer.cpp",
         },
-        args=lambda core: ([], [], [res_t.buffer_address()]),
+        args=lambda core: ([], [], [res_t.address]),
         segments={"hop": HOP["kSegHop"]},
     ).dynamic("hop", **options(a))
     run = session.load(program, deadline=a.deadline, wait=a.wait)
@@ -194,7 +178,7 @@ def run_engine(session, a):
     ev = run.wait_engine(t, timeout=2 * a.deadline + 5.0)
     run.stop()
     result = run.result()
-    res = (ttnn.to_torch(res_t).numpy().astype(np.int64) & 0xFFFFFFFF)[: 2 * half]
+    res = (res_t.read().astype(np.int64) & 0xFFFFFFFF)[: 2 * half]
     exact = [exact_rows(a, res[first : first + half], half) for first in (0, half)]
     h = abi.headers()
     harts = result.get("harts") or [0] * h["KMD_H_WORDS"]
@@ -233,7 +217,7 @@ def report(a, run, event, dyn, team, stall, res_t, timed_out):
     h = abi.headers()
     result = run.result()
     harts = result.get("harts") or [0] * h["KMD_H_WORDS"]
-    res = (ttnn.to_torch(res_t).numpy().astype(np.int64) & 0xFFFFFFFF)[:count]
+    res = (res_t.read().astype(np.int64) & 0xFFFFFFFF)[:count]
     ctr = counter_tiles(0, count, a.counters)
     states = run.state()
     gave = {

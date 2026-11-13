@@ -17,11 +17,9 @@ sys.path[:0] = [str(ROOT / "tests" / "hardware" / "feeder"), str(ROOT / "src")]
 
 import fed  # noqa: E402
 import records as rec  # noqa: E402
-import torch  # noqa: E402
-import ttnn  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import layout, native, state  # noqa: E402
+from komorebi import layout, state  # noqa: E402
 
 K = rec.K
 KERNELS = HERE / "kernels"
@@ -122,7 +120,7 @@ def lane_summary(lanes, team, place):
     }
 
 
-def make_data(device, rng, team, rect, args):
+def make_data(session, rng, team, rect, args):
     """Two input sets of integers in [-2, 2] (sums exact in fp32), their tensors and
     the output tensor (one fp32 tile per job and member)."""
     _, _, nx, ny = rect
@@ -136,17 +134,10 @@ def make_data(device, rng, team, rect, args):
     ]
 
     def tensor(a, dtype):
-        return ttnn.from_torch(
-            torch.from_numpy(a.reshape(-1, TILE)),
-            dtype=dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
+        return session.tensor(a.reshape(-1, TILE), dtype, "tile")
 
-    inputs = [(tensor(a, ttnn.bfloat16), tensor(b, ttnn.bfloat16)) for a, b in sets]
-    out = tensor(
-        np.zeros((args.jobs * team.count, TILE, TILE), np.float32), ttnn.float32
-    )
+    inputs = [(tensor(a, "bfloat16"), tensor(b, "bfloat16")) for a, b in sets]
+    out = tensor(np.zeros((args.jobs * team.count, TILE, TILE), np.float32), "float32")
     return sets, inputs, out
 
 
@@ -166,9 +157,9 @@ def job_args(args, inputs, out, team, j, stall_job):
     none = (EX["kNone"], 0)
     stall = (args.stall_member, args.stall_block) if j == stall_job else none
     return [
-        a_t.buffer_address(),
-        w_t.buffer_address(),
-        out.buffer_address(),
+        a_t.address,
+        w_t.address,
+        out.address,
         job_blocks(args, j),
         *stall,
         j * team.count,
@@ -178,7 +169,7 @@ def job_args(args, inputs, out, team, j, stall_job):
 
 def check(args, sets, out, team, place):
     """Every member's checksum tile of every job against numpy, bit for bit."""
-    got = ttnn.to_torch(out).float().numpy().reshape(args.jobs, team.count, TILE, TILE)
+    got = out.read().reshape(args.jobs, team.count, TILE, TILE)
     log("outputs read back")
     bad = []
     for j in range(args.jobs):
@@ -241,12 +232,11 @@ def verdict(run, cores, stalled, end_ok):
 def run_host(session, args, rng, stall_job):
     """One load of the program in the session: the jobs issued through the dispatch
     kernel, then the stop (or the timeout), the state read-out and the check."""
-    device = session.device
     nocs = session.nocs()
     rect = tuple(int(v) for v in args.rect.split(","))
     w, p = args.window, args.pages
     team, program_args, place = lane_plan(nocs, len(nocs.words), rect, w, p)
-    sets, inputs, out = make_data(device, rng, team, rect, args)
+    sets, inputs, out = make_data(session, rng, team, rect, args)
     program = km.Program(
         "broadcast",
         kernels=KERNELS,
@@ -257,9 +247,8 @@ def run_host(session, args, rng, stall_job):
         ],
         args=program_args,
         compile_args={
-            "reader": ttnn.TensorAccessorArgs(inputs[0][0]).get_compile_time_args(),
-            "writer": ttnn.TensorAccessorArgs(inputs[0][1]).get_compile_time_args()
-            + ttnn.TensorAccessorArgs(out).get_compile_time_args(),
+            "reader": inputs[0][0].accessor_args(),
+            "writer": inputs[0][1].accessor_args() + out.accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         segments=KERNELS / "broadcast.h",
@@ -307,14 +296,13 @@ def run_host(session, args, rng, stall_job):
     return out_json
 
 
-def run_fed(device, runner, args, rng, stall_job):
+def run_fed(session, runner, args, rng, stall_job):
     """The same jobs, issued by the test feeder on the grid's last core."""
     rect = tuple(int(v) for v in args.rect.split(","))
     w, p = args.window, args.pages
-    gx, gy, table, noc0 = native.load_module().core_nocs(device)
-    nocs = layout.nocs((gx, gy), table, noc0)
+    nocs = session.nocs()
     team, program_args, place = lane_plan(nocs, runner.workers, rect, w, p)
-    sets, inputs, out = make_data(device, rng, team, rect, args)
+    sets, inputs, out = make_data(session, rng, team, rect, args)
     seg = EX["kSegRead"] if args.read else EX["kSegCast"]
     records = [
         rec.record(
@@ -330,16 +318,13 @@ def run_fed(device, runner, args, rng, stall_job):
         reader=KERNELS / "reader.cpp",
         compute=KERNELS / "compute.cpp",
         writer=KERNELS / "writer.cpp",
-        reader_ct=ttnn.TensorAccessorArgs(inputs[0][0]).get_compile_time_args(),
-        writer_ct=ttnn.TensorAccessorArgs(inputs[0][1]).get_compile_time_args()
-        + ttnn.TensorAccessorArgs(out).get_compile_time_args(),
-        compute_config=ttnn.ComputeConfigDescriptor(
-            math_fidelity=ttnn.MathFidelity.HiFi4, fp32_dest_acc_en=True
-        ),
+        reader_ct=inputs[0][0].accessor_args(),
+        writer_ct=inputs[0][1].accessor_args() + out.accessor_args(),
+        compute_options={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         cbs=[
-            (EX["kCbRow"], ttnn.bfloat16, EX["kTileBytes"], w * p),
-            (EX["kCbCol"], ttnn.bfloat16, EX["kTileBytes"], w * p),
-            (EX["kCbOut"], ttnn.float32, 4096, 1),
+            (EX["kCbRow"], "bfloat16", EX["kTileBytes"], w * p),
+            (EX["kCbCol"], "bfloat16", EX["kTileBytes"], w * p),
+            (EX["kCbOut"], "float32", 4096, 1),
         ],
     )
     res = runner.run(
@@ -378,17 +363,13 @@ def main():
     stalls = [args.stall_job] + ([-1] if args.again else [])
     runs = []
     if args.feeder:
-        device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-        device.disable_and_clear_program_cache()
-        log("device open")
-        try:
-            runner = fed.Fed(device)
+        with km.Session(log=log) as session:
+            log("device open")
+            runner = fed.Fed(session)
             log(f"grid {runner.grid}, aiclk {runner.mhz} MHz")
             for i, stall_job in enumerate(stalls):
-                runs.append(run_fed(device, runner, args, rng, stall_job))
+                runs.append(run_fed(session, runner, args, rng, stall_job))
                 log(f"run {i + 1} done")
-        finally:
-            ttnn.close_mesh_device(device)
     else:
         with km.Session(log=log) as session:
             log("device open")

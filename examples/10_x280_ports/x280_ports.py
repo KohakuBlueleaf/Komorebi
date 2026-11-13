@@ -117,8 +117,8 @@ def pull_program(args, cores):
 def pull_pass(args):
     """Runs the pull thread; its result and every core's line of every kind."""
     with km.Session(log=log) as session:
-        grid = session.device.compute_with_storage_grid_size()  # the kernels' grid
-        cores = grid.x * grid.y
+        gx, gy = session.grid  # the kernels' grid
+        cores = gx * gy
         run = session.load(pull_program(args, cores))
         mhz = aiclk_mhz()
         log(f"loaded, {cores} cores, aiclk {mhz} MHz")

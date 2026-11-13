@@ -10,8 +10,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 from komorebi import dram, native
@@ -196,9 +194,8 @@ def verdict(out, args):
 
 
 def run_ways(session, args):
-    device = session.device
-    grid = device.compute_with_storage_grid_size()
-    cores = grid.x * grid.y
+    gx, gy = session.grid
+    cores = gx * gy
     ways = args.ways.split(",")
     tiles, in_tiles = args.tiles, max(args.in_tiles, args.tiles + STEP)
     window = in_tiles - tiles + 1
@@ -207,12 +204,7 @@ def run_ways(session, args):
     x = rng.integers(-2, 3, (in_tiles * TILE, TILE)).astype(np.float32)
 
     def tile_tensor(a):
-        return ttnn.from_torch(
-            torch.from_numpy(a),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
+        return session.tensor(a, "bfloat16", "tile")
 
     # The jobs, from the simulator of the ISSUE stream: the same for every way.
     probe = {"in": 0, "out": 0, "map": 1}
@@ -242,8 +234,8 @@ def run_ways(session, args):
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),  # kCbOut
         ],
         compile_args={
-            "reader": ttnn.TensorAccessorArgs(inp).get_compile_time_args(),
-            "writer": ttnn.TensorAccessorArgs(outs[ways[0]]).get_compile_time_args(),
+            "reader": inp.accessor_args(),
+            "writer": outs[ways[0]].accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         depth=args.depth,
@@ -257,8 +249,8 @@ def run_ways(session, args):
             )
             continue
         addr = {
-            "in": inp.buffer_address(),
-            "out": outs[way].buffer_address(),
+            "in": inp.address,
+            "out": outs[way].address,
             "map": program.seg("map"),
         }
         result["ways"][way] = one_way(
@@ -321,7 +313,7 @@ def error_cases(session, program, args, inp, out_t, want, jobs, cores, window):
     """An upload with a bad opcode, a stream past its step limit and a job larger than
     the grid, each ending in its error event; then the first jobs of the ISSUE stream
     on the same run, exact, and a clean stop."""
-    addr = {"in": inp.buffer_address(), "out": out_t.buffer_address()}
+    addr = {"in": inp.address, "out": out_t.address}
     addr["map"] = program.seg("map")
     run = session.load(program, deadline=args.deadline)
     bad = bytearray(job_stream("issue", 4, cores, window, addr, args.tiles, 1).encode())
