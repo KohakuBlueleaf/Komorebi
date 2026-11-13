@@ -94,6 +94,13 @@ place to ask a question and to be wrong.
   Tensix core stores bodies into 119 others in 29 µs; an X280 core decides each core's
   next body (3.5 µs a swap), stores it, or patches a template's constant; the target
   must invalidate its own i-cache: a NoC write to that register wedges the card.
+- [overlay_costs](overlay_costs/README.md): what an overlay costs inside the runtime.
+  Runtime calls through a table of pointers add 12 cycles a call (+9.7% to a reader
+  loop, +4.9% to a compute loop); compiled in, an overlay runs as fast as the whole
+  kernel and refers only to shared state. Position-independent overlays cost nothing
+  measurable and one copy serves any slot. Checking the program before a command costs
+  0.1 µs; a switch of five 4 KiB parts 0.79 µs. A live core sets its circular buffers
+  up again in 0.68 µs (240,000 switches, every value checked).
 - [movement_probe](movement_probe/README.md): both data-movement CPUs of a core on one
   stream, each taking the blocks a pattern gives it through its own half of a paired
   buffer. One core doubles its reads (1.92 to 1.98x); across cores the ratio must follow
