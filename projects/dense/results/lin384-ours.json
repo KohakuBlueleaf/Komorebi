@@ -1,0 +1,94 @@
+{
+ "shape": "lin384",
+ "m": 16384,
+ "k": 384,
+ "n": 384,
+ "plan": {
+  "mt": 512,
+  "kt": 12,
+  "nt": 12,
+  "form": 0,
+  "kc": 12,
+  "ct": 4,
+  "a_pages": 24,
+  "w_pages": 144,
+  "ws_pages": 0,
+  "out_pages": 8,
+  "l1": 361472
+ },
+ "upload_s": 0.271,
+ "x280_mhz": 1000,
+ "deadline_s": 0.051,
+ "load_us": 87.68,
+ "single_us": {
+  "median": 65.08,
+  "min": 64.0
+ },
+ "loop": {
+  "reps": 61463,
+  "batch": 61463,
+  "seconds": 3.759,
+  "wall_seconds": 3.773,
+  "us_per_call": 61.164,
+  "record_us_median": 235.38,
+  "mean_w": 129.69040976716,
+  "peak_w": 141.0,
+  "open_w": 61.95162107021221,
+  "joules_per_call": 0.007962147004015124,
+  "aiclk_mhz": [
+   1225,
+   1295.8,
+   1350
+  ]
+ },
+ "tflops": 78.99807416127133,
+ "cut_us_per_call": {
+  "reads_only": 32.947,
+  "compute_only": 21.352
+ },
+ "run": {
+  "kernel": "none",
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "lane_wait_cycles_max": [
+   0,
+   0
+  ],
+  "lane_gave_up": []
+ },
+ "readback_s": 0.118,
+ "profile": {
+  "slowest_core": 94,
+  "slowest_us": 64.506,
+  "mean_busy_over_slowest": 0.684,
+  "shares_of_slowest": {
+   "read_A": 0.236,
+   "read_W_chunks": 0.0,
+   "reader_waits_for_space": 0.627,
+   "unpack_waits_for_A": 0.079,
+   "unpack_waits_for_W": 0.0,
+   "matrix_unit": 0.905,
+   "pack": 0.141,
+   "pack_waits_for_math": 0.001,
+   "pack_waits_for_space": 0.774,
+   "write": 0.816,
+   "writer_waits_for_output": 0.179
+  }
+ },
+ "check": {
+  "max_rel": 0.006155241119399474,
+  "rms_rel": 0.003965416401827294,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "6.68",
+  "5.35",
+  "5.04"
+ ]
+}
