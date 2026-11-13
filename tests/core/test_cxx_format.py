@@ -50,11 +50,11 @@ def test_format_text_applies_style_braces_and_value_wrap():
 WRAPPED_ARGUMENTS = """void f() {
     switch (x) {
         case 1:
-            return wr.poll(
+            return writer.poll(
                 [&] {
-                    return static_cast<int32_t>(km::wall() - r.a9) >= 0;
+                    return static_cast<int32_t>(km::wall() - command.a9) >= 0;
                 },
-                wr.args().wait_limit
+                writer.args().wait_limit
             ) == km::kGaveNone;
     }
 }
@@ -64,9 +64,9 @@ WRAPPED_ARGUMENTS = """void f() {
 @needs_clang_format
 def test_wrapped_arguments_are_one_level_from_the_line_that_opens_them():
     messy = (
-        "void f() { switch (x) { case 1: return wr.poll([&] { return"
-        " static_cast<int32_t>(km::wall() - r.a9) >= 0; }, wr.args().wait_limit)"
-        " == km::kGaveNone; } }"
+        "void f() { switch (x) { case 1: return writer.poll([&] { return"
+        " static_cast<int32_t>(km::wall() - command.a9) >= 0; },"
+        " writer.args().wait_limit) == km::kGaveNone; } }"
     )
     assert cxx_format.format_text(messy, BINARY) == WRAPPED_ARGUMENTS
     assert cxx_format.format_text(WRAPPED_ARGUMENTS, BINARY) == WRAPPED_ARGUMENTS

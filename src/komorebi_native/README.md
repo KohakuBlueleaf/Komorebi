@@ -11,7 +11,7 @@ and `kernels/` are empty.
 | `include/komorebi/device/` | Headers for kernels that run on the Tensix cores: the 64-byte command (`km_command.hpp`), the persistent reader, compute and writer (`km_worker.hpp`), group completion (`km_completion.hpp`), state words and timed waits (`km_core.hpp`), the per-core trace (`km_trace.hpp`). Static breakpoints (`emit`, `wait`, `reduce`) and the inbox ring of dynamic breakpoints are not written yet. |
 | `include/komorebi/x280/` | Reserved; the header a user's X280 thread includes is `x280/kmx/kmx.h`. |
 | `include/komorebi/host/` | The C++ host API, for programs that do not use Python. |
-| `kernels/` | The generic reader and writer kernels that own inbox and outbox traffic, shipped as source and compiled by tt-metal when a program runs. |
+| `kernels/` | The generic reader and writer kernels of the dynamic handlers (the two roles of the easy layout, one per data-movement CPU), shipped as source and compiled by tt-metal when a program runs. |
 | `x280/kernel/` | The dispatcher for X280 cluster 0: the main loop, the services (grid port, completion table, rings, timers, memory) and the code that runs on the cluster's other cores. |
 | `x280/engines/` | The engines the dispatcher runs from uploaded data: the micro-op interpreter, the job queue and the graph executor. |
 | `x280/kmx/` | The library an X280 thread on a work cluster is linked with: `kmx.h` (its entry point, regions, cache flush / invalidate with the grid, four-core calls, result and progress, the command ring to the dispatcher), the start-up, `kmx_ring.h` (the thread's side of the ring, the host ring's protocol, with its placement as data) and `kmx_layout.h`, the layout of its argument, ring and result blocks shared with the host. |
