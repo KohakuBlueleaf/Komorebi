@@ -1,13 +1,20 @@
-// K-split writer, NoC1: a core other than its group's root sends its part (fp32) to
-// its receiver; the root writes the group's sum (bf16) to Y, tiles outside Y dropped.
+// K-split writer, NoC1 (mover B): its K chunks (chunks.hpp); then a non-root core sends
+// its part (fp32) on, the group's root writes the sum (bf16) to Y.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "split.h"
 
 void kernel_main() {
     constexpr auto y_args = TensorAccessorArgs<0>();
+    constexpr auto a_args = (
+        TensorAccessorArgs<y_args.next_compile_time_args_offset()>()
+    );
+    constexpr auto w_args = (
+        TensorAccessorArgs<a_args.next_compile_time_args_offset()>()
+    );
     km::Writer writer;
     const auto plan = [&](uint32_t word) {
         return writer.arg(word);
@@ -15,7 +22,15 @@ void kernel_main() {
     writer.run([&](const km_command_t& command) {
         const uint32_t y_address = command.a2, reduce_form = command.a3;
         const uint32_t mode = command.a4;
-        if (km::handler(command) != kHandlerSplit || mode != kSplitFull) {
+        if (km::handler(command) != kHandlerSplit) {
+            return true;
+        }
+        const auto a_matrix = TensorAccessor(a_args, command.a0);
+        const auto w_matrix = TensorAccessor(w_args, command.a1);
+        if (!move_chunks(writer, command, a_matrix, w_matrix)) {
+            return false;
+        }
+        if (mode != kSplitFull) {
             return true;
         }
         const uint32_t m_tiles = plan(kSpMt), n_tiles = plan(kSpNt);

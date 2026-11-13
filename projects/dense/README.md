@@ -110,6 +110,9 @@ thread part(g, d):                             # core d of group g, S cores to a
                                                #   receiver has a free arrival slot
 ```
 
+A core's K chunks are read by both of its movers in turn (`km::move`, pattern `AB`,
+`kernels/split/chunks.hpp`): the reader on NoC0 the even chunks, the writer on NoC1 the
+odd ones, each into its own half of the A pair and the W pair (one chunk a half).
 The parts travel over the cores' ports (`km::reduce`, `komorebi/device/km_port.hpp`):
 the reader takes arrivals into `kCbArrive` (fp32, a slot per sender), compute adds them
 in rank order into `kCbSum` by packer accumulation, the writer sends a core's part
@@ -128,14 +131,21 @@ passed (`results/<preset>-split-*.json`, Kohaku-TT's as `-split-ktt-<route>`):
 | Preset | Ours: K split, us per call (single call) | Parts only | Kohaku-TT best, us | Broadcast or resident form, us |
 |---|---|---|---|---|
 | `kvproj` | 7,1,4 tree: 25.5 (9.3) | 20.1 | auto, 28.6 | resident, 6.3 |
-| `dec4096` | 14,1,16,5 tree: 121.7 (101.9); owner 131.2 | 107.0 | own, 81.0 (gemm 81.0, auto 81.0) | `cols`, 197.8 |
+| `dec4096` | 14,1,16,5 tree: 92.4 (90.2); owner 109.0 | 81.7 | own, 81.0 (gemm 81.0, auto 81.0) | `cols`, 197.8 |
+
+The `dec4096` K split was measured again on 2026-11-14 (card clock 1,343 to 1,350 MHz,
+best of three) with the chunks on both movers; the same day and card, with every chunk
+on the reader as before, it took 103.6 (101.6) tree, 117.1 owner, parts only 92.7
+(`-reader.json`).
+`kvproj` (one chunk a core: the reader alone) is not changed by it, 12.0 against 11.9.
 
 Bounds: each command costs about 16 us more back to back when exclusive. A probe of
 parts-only commands (no ports, so allowed without the flag) on the 7,1,8 plan:
 98.8 us single either way, back to back 115 to 116 us exclusive against 95.4 us not;
 on `kvproj` 21 to 23 us against 5.0 to 5.1 us. Without that cost `dec4096` is bound by
-W read from DRAM: 32 MiB in 95.4 us is 352 GB/s, against Kohaku-TT's 414 GB/s; each
-core reads its chunks on NoC0 only.
+W read from DRAM: 32 MiB in 95.4 us is 352 GB/s, against Kohaku-TT's 414 GB/s, with
+each core's chunks on NoC0 only. On both NoCs the parts-only call takes 81.7 us: at
+least 410 GB/s.
 
 ## Run
 
@@ -258,7 +268,7 @@ follow a long loop run at a throttled clock.
 - `dec4096` (`cols`, behind): W from DRAM. 32 MB of W are read by 72 cores, 512 KB
   each with one block in flight per broadcast sender: the slowest core spends 97% reading
   W, 2.9 GB/s per core, 170 GB/s in all against Kohaku-TT's 414 GB/s; broadcasts only
-  195.8 us, product only 26.1 us. The K split (above) takes it to 121.7 us.
+  195.8 us, product only 26.1 us. The K split (above) takes it to 92.4 us.
 
 ## Files
 
@@ -269,7 +279,7 @@ follow a long loop run at a throttled clock.
 | `plan.py` | the plan as pure functions |
 | `card.py` | the program and its commands on a session |
 | `kernels/grid/grid.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the broadcast form: arguments, row broadcast and A, the product, column broadcast and Y |
-| `kernels/split/split.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the K split: arguments, A and W and arrivals, the part and the sum, sending and Y |
+| `kernels/split/split.h`, `chunks.hpp`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the K split: arguments, the K chunks as two streams on both movers, chunks and arrivals, the part and the sum, chunks and sending and Y |
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `results/` | the runs behind the results table |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |

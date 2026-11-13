@@ -185,7 +185,8 @@ the run, mover B 0.99).
 
 **A shared stream gains when the other NoC is free and loses when the other mover
 already carries a stream on it.** The matrix product's K split, whose chunk reads set
-its pace while the writer is idle, gains 10.5% under `AB`; the resident product, whose
+its pace while the writer is idle, gains 10.5% under `AB` (it reads its chunks so:
+`projects/dense/kernels/split/chunks.hpp`); the resident product, whose
 writer already writes Y on NoC 1, gains at most 2% from splitting Y.
 
 **The engine costs 2 to 4% against blocking calls** on one core (pattern `A` against

@@ -451,8 +451,10 @@ class Split:
         """(index, format, page bytes, pages) of the program's buffers."""
         block_tiles = self.oh * self.ow
         return [
-            (S["kCbSa"], "bfloat16", TILE_BYTES, 2 * self.oh * self.kc),
-            (S["kCbSw"], "bfloat16", TILE_BYTES, 2 * self.kc * self.ow),
+            (S["kCbSa"], "bfloat16", TILE_BYTES, self.oh * self.kc),
+            (S["kCbSaMoverB"], "bfloat16", TILE_BYTES, self.oh * self.kc),
+            (S["kCbSw"], "bfloat16", TILE_BYTES, self.kc * self.ow),
+            (S["kCbSwMoverB"], "bfloat16", TILE_BYTES, self.kc * self.ow),
             (S["kCbArrive"], "float32", S["kSumBytes"], self.arrive_pages()),
             (S["kCbSum"], "float32", S["kSumBytes"], block_tiles),
             (S["kCbSplitOut"], "bfloat16", TILE_BYTES, block_tiles),

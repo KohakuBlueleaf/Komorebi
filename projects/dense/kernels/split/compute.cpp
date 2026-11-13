@@ -1,5 +1,5 @@
-// K-split compute: this core's part of the oh x ow block summed over its K chunks into
-// kCbSum (fp32), then the parts received in rank order; the root packs it in bf16.
+// K-split compute: this core's part summed over its K chunks (chunk q from the halves
+// of its mover) into kCbSum (fp32), then the parts received; the root packs it in bf16.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -10,6 +10,7 @@
 #include "api/compute/reconfig_data_format.h"
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
+#include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "split.h"
 
@@ -56,13 +57,18 @@ void kernel_main() {
             kCbSa, kCbSw, 0, subblock_width, subblock_height, chunk_tiles
         );
         pack_reconfig_data_format(kCbSum);
-        for (uint32_t offset = 0; ok && offset < k_part.len; offset += chunk_tiles) {
+        for (
+            uint32_t offset = 0, chunk = 0; ok && offset < k_part.len;
+            offset += chunk_tiles, chunk++
+        ) {
             const uint32_t chunk_length = (
                 k_part.len - offset < chunk_tiles ? k_part.len - offset : chunk_tiles
             );
+            const uint32_t a_half = km::block_half(kChunksA, kChunkPattern, chunk);
+            const uint32_t w_half = km::block_half(kChunksW, kChunkPattern, chunk);
             ok = (
-                compute.wait_front(kCbSa, block_height * chunk_tiles) &&
-                compute.wait_front(kCbSw, chunk_tiles * block_width)
+                compute.wait_front(a_half, block_height * chunk_tiles) &&
+                compute.wait_front(w_half, chunk_tiles * block_width)
             );
             if (!ok) {
                 break;
@@ -79,8 +85,8 @@ void kernel_main() {
                     tile_regs_acquire();
                     for (uint32_t k_tile = 0; k_tile < chunk_length; ++k_tile) {
                         matmul_block(
-                            kCbSa,
-                            kCbSw,
+                            a_half,
+                            w_half,
                             subblock_row * chunk_tiles + k_tile,
                             k_tile * block_width + subblock_column,
                             0,
@@ -111,8 +117,8 @@ void kernel_main() {
                     tile_regs_release();
                 }
             }
-            cb_pop_front(kCbSa, block_height * chunk_tiles);
-            cb_pop_front(kCbSw, chunk_tiles * block_width);
+            cb_pop_front(a_half, block_height * chunk_tiles);
+            cb_pop_front(w_half, chunk_tiles * block_width);
         }
         reconfig_data_format_srca(kCbSw, kCbArrive);
         copy_init(kCbArrive);

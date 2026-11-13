@@ -81,26 +81,12 @@ class Product(card.Product):
 
 
 def split_program(sp, tensors, pattern):
-    """K-split plan sp's program with the chunks owned by `pattern`: main's two-chunk
-    buffers become two one-chunk halves (same L1); the writer gets A's and W's tensors.
-    """
+    """K-split plan sp's program with the chunks owned by `pattern`: the program's
+    buffers (two one-chunk halves a pair) and arguments, these kernels."""
     made = card.split_program(sp, tensors)
-    halves = {S["kCbSa"]: S["kChunkAMoverB"], S["kCbSw"]: S["kChunkWMoverB"]}
-    split = [b for b in made.buffers if b.index in halves]
-    made.buffers = [b for b in made.buffers if b.index not in halves]
-    for b in split:
-        made.buffers += [
-            km.Buffer(index, b.format, b.page_bytes, b.pages // 2)
-            for index in (b.index, halves[b.index])
-        ]
     made.kernels = {
         k: SPLIT_KERNELS / f"{k}.cpp" for k in ("reader", "writer", "compute")
     }
-    made.compile_args["writer"] = (
-        tensors["y"].accessor_args()
-        + tensors["a"].accessor_args()
-        + tensors["w"].accessor_args()
-    )
     made.defines = {"CHUNK_PATTERN": km.Pattern(pattern).word}
     return made
 

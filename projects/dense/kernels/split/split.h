@@ -15,8 +15,11 @@ constexpr uint32_t kHandlerSplit = 1;
 constexpr uint32_t kSplitFull = 0;
 constexpr uint32_t kSplitParts = 1;
 
-constexpr uint32_t kCbSa = 0;      // A chunks: two of oh x kc tiles
-constexpr uint32_t kCbSw = 1;      // W chunks: two of kc x ow tiles
+// A and W chunks in two pairs (chunks.hpp): each half holds one chunk of its mover.
+constexpr uint32_t kCbSa = 0;        // mover A's A chunks: oh x kc tiles
+constexpr uint32_t kCbSw = 1;        // mover A's W chunks: kc x ow tiles
+constexpr uint32_t kCbSaMoverB = 5;  // mover B's A chunks
+constexpr uint32_t kCbSwMoverB = 6;  // mover B's W chunks
 constexpr uint32_t kCbArrive = 2;  // arrival buffer, fp32: a slot of P tiles per sender
 constexpr uint32_t kCbSum = 24;    // this core's part, fp32: P = oh x ow tiles
 constexpr uint32_t kCbSplitOut = 16;  // the group's sum in bf16 at its root: P tiles

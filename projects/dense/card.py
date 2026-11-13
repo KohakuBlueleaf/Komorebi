@@ -345,7 +345,8 @@ class GridProduct:
 
 
 def split_program(plan, tensors, fidelity="HiFi2"):
-    """The K-split form's program for `plan`: every core gets the plan words."""
+    """The K-split form's program for `plan`: every core gets the plan words; both
+    movers read the K chunks (A and W to each), the writer also writes Y."""
     words = plan.words()
     fp32 = "UnpackToDestFp32"
     return km.Program(
@@ -355,7 +356,11 @@ def split_program(plan, tensors, fidelity="HiFi2"):
         args=lambda core: (words, words, words),
         compile_args={
             "reader": tensors["a"].accessor_args() + tensors["w"].accessor_args(),
-            "writer": tensors["y"].accessor_args(),
+            "writer": (
+                tensors["y"].accessor_args()
+                + tensors["a"].accessor_args()
+                + tensors["w"].accessor_args()
+            ),
         },
         compute={
             "math_fidelity": fidelity,

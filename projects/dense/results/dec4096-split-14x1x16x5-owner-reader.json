@@ -1,0 +1,79 @@
+{
+ "shape": "dec4096",
+ "m": 32,
+ "k": 4096,
+ "n": 4096,
+ "plan": {
+  "mt": 1,
+  "kt": 128,
+  "nt": 128,
+  "s": 14,
+  "oh": 1,
+  "ow": 16,
+  "kc": 5,
+  "sh": 1,
+  "sw": 4,
+  "l1": 1298432,
+  "form": "split",
+  "cores": 112
+ },
+ "upload_s": 0.266,
+ "x280_mhz": 1000,
+ "deadline_s": 0.05,
+ "reduce": "owner",
+ "profile_mhz": 1350,
+ "load_microseconds": null,
+ "single_microseconds": {
+  "median": 114.92,
+  "min": 113.86
+ },
+ "loop": {
+  "reps": 34807,
+  "batch": 34807,
+  "seconds": 4.075,
+  "wall_seconds": 4.082,
+  "microseconds_per_call": 117.063,
+  "command_microseconds_median": 115.08,
+  "mean_w": 79.93633499703725,
+  "peak_w": 82.0,
+  "open_w": 61.04918255835079,
+  "joules_per_call": 0.00937532550580074,
+  "aiclk_mhz": [
+   1350,
+   1350.0,
+   1350
+  ]
+ },
+ "tflops": 9.172341593842631,
+ "cut_microseconds_per_call": {
+  "parts_only": 92.653
+ },
+ "run": {
+  "cores": 120,
+  "kernel": "none",
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "broadcast_wait_cycles_max": [
+   0,
+   0
+  ],
+  "broadcast_gave_up": []
+ },
+ "readback_s": 0.12,
+ "check": {
+  "max_rel": 0.005485418973027588,
+  "rms_rel": 0.0039613511507179495,
+  "rows": 32,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "2.20",
+  "2.96",
+  "3.94"
+ ]
+}

@@ -83,7 +83,7 @@ slowest core's time), and whether compute waits for it.
 | ray tracer frame (tiny, 8 commands) | packets: reader; packets out: writer | the reader reads 0.02 to 0.17 of most steps, 0.55 of shade2 and 0.85 of image; compute waits for input 0.3 to 15% | compute-bound: the two read-heavy steps are 9.6% of the frame; at most 0.7% to gain, not tried |
 
 The two variants, in copies of the program's kernels under `dense/` (the program's own
-files are unchanged). Microseconds per call in a loop of about 2 s, Y exact against
+files were unchanged then). Microseconds per call in a loop of about 2 s, Y exact against
 numpy in every run (sampled rows, rms 3.96e-3, the same as main's):
 
 Resident form, lin384, Y's column blocks split (`dense/kernels/movement.cpp` through the
@@ -109,6 +109,10 @@ chunk each, the same L1):
 AAAB gains nothing: mover A then owns three chunks in a row with one chunk of buffer, so
 only one read is in flight, as in main. AB and ABBB keep two chunk reads in flight on
 the two NoCs at once.
+
+The program's K split now reads its chunks this way, through `km::move` under `AB`
+(`projects/dense/kernels/split/chunks.hpp`), so `main` in `dense/bench.py` now runs that
+form; the copy under `dense/kernels/split/` stays as the record of the variant.
 
 ## What follows for a `km::Movement`
 
