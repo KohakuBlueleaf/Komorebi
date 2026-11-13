@@ -63,6 +63,9 @@ def main():
     p.add_argument("--frames", type=int, default=0, help="frames per run (0: auto)")
     p.add_argument("--seconds", type=float, default=1.0, help="a run's length (auto)")
     p.add_argument("--host", action="store_true", help="also one host-stepped frame")
+    p.add_argument(
+        "--no-balance", dest="balance", action="store_false", help="equal block shares"
+    )
     p.add_argument("--json", default=None)
     args = p.parse_args()
     out = {"scene": args.scene, "runs": args.runs, "frames_per_run": args.frames}
@@ -77,7 +80,7 @@ def main():
         slots = 2 * len(scene["indices"]) + 65536
         up = card_thread.tensors(session.device, blocks, workers, slots)
         out["upload_s"] = time.perf_counter() - t0
-        w = card_thread.words(up, len(blocks), workers, workers, 4)
+        w = card_thread.words(up, len(blocks), workers, workers, 4, args.balance)
         out["x280_mhz"] = session.pll_mhz
         if args.frames == 0:
             prog = session.load(card_thread.program(scene, w, workers), deadline=1.0)

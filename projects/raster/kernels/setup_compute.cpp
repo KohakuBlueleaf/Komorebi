@@ -491,8 +491,11 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
         cp.me() >= r.a5) {
         return;
     }
-    const uint32_t b0 = cp.me() * r.a2 / r.a5, b1 = (cp.me() + 1) * r.a2 / r.a5;
-    const uint32_t pages = 1 + (b1 - b0);
+    // with kRanges the camera's page brings the core's range (setup_reader.cpp)
+    const bool ranged = (r.a2 & kRanges) != 0;
+    const uint32_t blocks = r.a2 & ~kRanges;
+    uint32_t b0 = cp.me() * blocks / r.a5;
+    uint32_t pages = 1 + ((cp.me() + 1) * blocks / r.a5 - b0);
 #ifdef TRISC_UNPACK
     // SETUP: the slots and items pages first, held until the pass ends.
     const bool slots = seg != kSegSetup || (hand(kCbSlots, 4) && hand(kCbItems, 4));
@@ -500,6 +503,15 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
     for (uint32_t p = 0; slots && p < pages; ++p) {
         if (!hand(kCbMesh, 1)) {
             break;
+        }
+        if (p == 0 && ranged) {
+            asm volatile("fence" ::: "memory");
+            const volatile uint32_t* cam = (
+                reinterpret_cast<const volatile uint32_t*>(
+                    get_tile_l1_byte_address(kCbMesh, 0)
+                )
+            );
+            pages = 1 + (cam[kCamWords + 1] - cam[kCamWords]);
         }
         if (!mail_from(ckernel::ThreadId::PackThreadId, 2)) {
             break;
@@ -562,6 +574,10 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
         );
         asm volatile("fence" ::: "memory");
         if (p == 0) {
+            if (ranged) {
+                b0 = in[kCamWords];
+                pages = 1 + (in[kCamWords + 1] - b0);
+            }
             // the camera: each number to every lane of its slot
             for (uint32_t i = 0; i < kCamWords; ++i) {
                 su::fill_slot(su::kSCam + i, in[i]);

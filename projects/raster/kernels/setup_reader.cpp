@@ -123,7 +123,18 @@ void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
         cb_push_back(kCbSlots, 1);
         cb_push_back(kCbItems, 1);
     }
-    const uint32_t b0 = rd.me() * r.a2 / r.a5, b1 = (rd.me() + 1) * r.a2 / r.a5;
+    const uint32_t blocks = r.a2 & ~kRanges;
+    uint32_t b0 = rd.me() * blocks / r.a5, b1 = (rd.me() + 1) * blocks / r.a5;
+    if ((r.a2 & kRanges) != 0) {
+        const uint32_t line = get_write_ptr(kCbSProf) + 192;  // scratch
+        noc_async_read(su::addr(r.a8, r.a3, 0, 0, kRangesAt + 64 * rd.me()), line, 64);
+        if (!arrived()) {
+            return;
+        }
+        invalidate_l1_cache();
+        b0 = km::l1(line)[0];
+        b1 = km::l1(line)[1];
+    }
     const InterleavedAddrGen<true> mesh = {
         .bank_base_address = r.a0, .page_size = kMeshBytes
     };
@@ -142,6 +153,12 @@ void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
         }
         read += km::wall() - a;
         bytes += n;
+        if (b == b0) {  // the range after the camera, for the compute threads
+            volatile tt_l1_ptr uint32_t* cam = km::l1(get_write_ptr(kCbMesh));
+            cam[kCamWords] = b0;
+            cam[kCamWords + 1] = b1;
+            invalidate_l1_cache();
+        }
         cb_push_back(kCbMesh, 1);
     }
     if (r.a9 != 0) {

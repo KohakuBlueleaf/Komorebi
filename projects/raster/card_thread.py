@@ -32,7 +32,8 @@ F["RF_W_REPEAT"] = F["RF_W_PROF"] + 1
 F["RF_W_SPROF"] = F["RF_W_REPEAT"] + 1
 for i, name in enumerate(["COUNTERS", "HIST", "SLOTS", "HPREFIX"]):
     F[f"RF_W_{name}"] = F["RF_W_SPROF"] + 1 + i
-F["RF_WORDS"] = F["RF_W_HPREFIX"] + 1
+F["RF_W_BALANCE"] = F["RF_W_HPREFIX"] + 1
+F["RF_WORDS"] = F["RF_W_BALANCE"] + 1
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
 S, K = card_passes.S, lists.K
 CLUSTER = 1
@@ -63,6 +64,9 @@ def same_numbers():
         "RF_ITEM_WORDS_AT": S["kItemWordsAt"],
         "RF_CORE_WORDS_AT": S["kCoreWordsAt"],
         "RF_ITEMS_REGION_BYTES": S["kCoreWordsAt"] + 16 * S["kMaxFillCores"],
+        "RF_RANGES_AT": S["kRangesAt"],
+        "RF_COSTS_AT": S["kCostsAt"],
+        "RF_MAX_CORES": S["kMaxFillCores"],
         # PLACE's list and directory words against the fill's
         "kLayDirIds": (S["kLayDirIds"], K["kDirIds"]),
         "kLayDirFrame": (S["kLayDirFrame"], K["kDirFrame"]),
@@ -81,11 +85,18 @@ def same_numbers():
     return {k: v for k, v in pairs.items() if v[0] != v[1]}
 
 
+def camera_region(scene):
+    """The camera's numbers, then room for COUNT's and SETUP's ranges and costs."""
+    out = np.zeros((1, F["RF_CAMERA_BYTES"] // 4), dtype=np.uint32)
+    out[0, : S["kCamWords"]] = card_passes.camera_page(scene)[0]
+    return out
+
+
 def regions(scene, workers):
     """The thread's regions in frame.h's order: the camera's page, then sizes."""
     work = 256 << 10  # frame.c work_t: middle.h scratch and items (about 130 KB)
     return {
-        "camera": card_passes.camera_page(scene),
+        "camera": camera_region(scene),
         "heavy": F["RF_HEAVY_BYTES"],
         "items": F["RF_ITEMS_REGION_BYTES"],
         "work": work,
@@ -149,8 +160,9 @@ def tensors(dev, blocks, workers, list_slots):
     return up
 
 
-def words(up, blocks, cores, workers, steps):
+def words(up, blocks, cores, workers, steps, balance=True):
     w = [0] * F["RF_WORDS"]
+    w[F["RF_W_BALANCE"]] = int(balance)
     w[F["RF_W_CORES"]] = cores
     w[F["RF_W_WORKERS"]] = workers
     w[F["RF_W_BANK"]] = BANK_OF_CLUSTER[CLUSTER]
@@ -249,6 +261,23 @@ def slots_differ(session, up, recs, mid):
     return out
 
 
+def sprof_dict(sp, cores):
+    """Per pass, each core's writer total and pack counters from the profile pages of
+    the last frame (wall ticks), and the slowest core against the mean."""
+    out = {}
+    for name, seg in (("count", S["kSegCount"]), ("setup", S["kSegSetup"])):
+        page = sp[:cores, 32 * (seg - S["kSegCount"]) :][:, :32].astype(np.int64)
+        total = page[:, S["kSProfWriter"] + 2]
+        pack = page[:, S["kSProfPack"] : S["kSProfPack"] + 8]
+        out[name] = {
+            "total": total.tolist(),
+            "kept": pack[:, 4].tolist(),
+            "entries": pack[:, 6].tolist(),
+            "max_over_mean": float(total.max() / max(total.mean(), 1)),
+        }
+    return out
+
+
 def frame(args, session=None):
     scene, _ = run.load(args.scene)
     blocks = passes.mesh_blocks(scene)
@@ -267,7 +296,8 @@ def frame(args, session=None):
         slots = args.list_slots or 2 * len(scene["indices"]) + 65536
         up = tensors(dev, blocks, workers, slots)
         tm["upload_s"] = time.perf_counter() - t0
-        w = words(up, len(blocks), cores, workers, args.steps)
+        w = words(up, len(blocks), cores, workers, args.steps, args.balance)
+        w[F["RF_W_REPEAT"]] = args.repeat
         t0 = time.perf_counter()
         prog = session.load(program(scene, w, workers), deadline=1.0, trace=16)
         tm["load_s"] = time.perf_counter() - t0
@@ -297,6 +327,8 @@ def frame(args, session=None):
         out["thread"] = result_dict(r)
         out["x280_mhz"] = session.pll_mhz
         out["status"] = card.check_run(prog, workers, 0, [])
+        (sp,) = card.read(session, up["sprof"])
+        out["sprof"] = sprof_dict(sp.view(np.uint32).reshape(workers, -1), cores)
         # Regions are not read back (a region read reads every bank's pages of the
         # regions' tensor at once): the tensors the thread's records wrote are.
         mid = expected(scene, recs, cores, workers)
@@ -355,6 +387,10 @@ def main():
     p.add_argument(
         "--no-image", dest="image", action="store_false", help="no image read-back"
     )
+    p.add_argument(
+        "--no-balance", dest="balance", action="store_false", help="equal block shares"
+    )
+    p.add_argument("--repeat", type=int, default=0, help="frames in a row (0: one)")
     p.add_argument("--json", default=None)
     args = p.parse_args()
     out = frame(args)

@@ -32,6 +32,12 @@
 #define RF_ITEM_WORDS_AT 16512u  /* the items' words (rm_compact), */
 #define RF_CORE_WORDS_AT 32896u  /* the fill cores' words */
 #define RF_ITEMS_REGION_BYTES 36864u
+/* COUNT's and SETUP's blocks from the camera's region (kernels/setup.h, kRanges) */
+#define RF_RANGES 0x80000000u
+#define RF_RANGES_AT 64u   /* each core's first and end block, 64 bytes a core */
+#define RF_COSTS_AT 16384u /* each core's COUNT and SETUP ticks, 128 bytes a core */
+#define RF_CAMERA_BYTES 49152u
+#define RF_MAX_CORES 248u
 
 /* Words */
 #define RF_W_CORES 0       /* cores that count and set up (the first ones) */
@@ -50,11 +56,12 @@
 #define RF_W_REPEAT (RF_W_PROF + 1)           /* frames in a row (0: one) */
 #define RF_W_SPROF (RF_W_REPEAT + 1) /* the passes' profile tensor (a9), 0: none */
 /* Tensors only the cores read and write, a page per worker: */
-#define RF_W_COUNTERS (RF_W_SPROF + 1) /* COUNT's counters */
-#define RF_W_HIST (RF_W_COUNTERS + 1)  /* HIST's histograms (RF_HIST_BYTES pages) */
-#define RF_W_SLOTS (RF_W_HIST + 1)     /* SUM's entries before each core per tile */
-#define RF_W_HPREFIX (RF_W_SLOTS + 1)  /* HSUM's counts before each core */
-#define RF_WORDS (RF_W_HPREFIX + 1)
+#define RF_W_COUNTERS (RF_W_SPROF + 1)  /* COUNT's counters */
+#define RF_W_HIST (RF_W_COUNTERS + 1)   /* HIST's histograms (RF_HIST_BYTES pages) */
+#define RF_W_SLOTS (RF_W_HIST + 1)      /* SUM's entries before each core per tile */
+#define RF_W_HPREFIX (RF_W_SLOTS + 1)   /* HSUM's counts before each core */
+#define RF_W_BALANCE (RF_W_HPREFIX + 1) /* 1: COUNT's and SETUP's ranges by cost */
+#define RF_WORDS (RF_W_BALANCE + 1)
 
 /* Regions, in this order */
 #define RF_R_CAMERA 0 /* the camera's 16 numbers */

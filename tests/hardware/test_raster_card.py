@@ -51,9 +51,17 @@ def test_count_and_setup_of_the_tiny_scene_write_the_reference_lists(session):
     assert out["ok"], out
 
 
-def test_the_thread_conducts_the_tiny_scenes_frame_with_the_reference_lists(session):
+def test_the_thread_conducts_a_frame_with_the_reference_lists(session):
+    # the third frame's COUNT and SETUP run on ranges cut by the second one's costs
     args = argparse.Namespace(
-        scene="tiny", cores=0, steps=4, list_slots=0, lists=0, image=False
+        scene="s10k",
+        cores=0,
+        steps=4,
+        list_slots=0,
+        lists=64,
+        image=False,
+        balance=True,
+        repeat=3,
     )
     out = card_thread.frame(args, session)
     assert out["thread"]["code"] == 0 and out["thread"]["where"] == 8, out

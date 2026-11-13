@@ -28,6 +28,12 @@ constexpr uint32_t kSegHsum = 17;
 // a8, every segment: 0, or 1 + the DRAM bank of the X280 thread's regions, whose small
 // arrays are then bank addresses (pages contiguous); mesh and lists stay tensors.
 
+// a2 with kRanges (COUNT, SETUP; a8): blocks [b0, b1) at kRangesAt + 64 x core of the
+// camera's region; the writer leaves the pass's ticks at kCostsAt + 128 x core.
+constexpr uint32_t kRanges = 0x80000000;
+constexpr uint32_t kRangesAt = 64;
+constexpr uint32_t kCostsAt = 16384;
+
 // Buffers, apart from the fill's (raster.h) so that one program can hold both.
 constexpr uint32_t kCbMesh = 4;    // mesh pages in, the camera's page first
 constexpr uint32_t kCbSlots = 5;   // SETUP: the list slot of each item's next record

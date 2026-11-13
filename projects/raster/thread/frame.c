@@ -13,6 +13,8 @@ typedef struct {
     rm_item items[RM_MAX_ITEMS];
     uint32_t tile_item[RM_TILES + 1];
     uint32_t heavy[RM_MAX_HEAVY], bands[RM_MAX_HEAVY];
+    uint32_t ranges[RF_MAX_CORES + 1]; /* COUNT's and SETUP's blocks of each core */
+    uint32_t costs[RF_MAX_CORES], cuts[RF_MAX_CORES + 1];
 } work_t;
 
 typedef struct {
@@ -20,6 +22,7 @@ typedef struct {
     uint32_t bank1; /* 1 + the regions' bank */
     uint32_t addr[RF_REGIONS];
     uint32_t out[RF_OUT_WORDS];
+    uint32_t ranged; /* frames run with ranges: the costs of the last are in */
 } frame_t;
 
 /* The step's parts on the four harts: each a quarter of the tiles or items. */
@@ -98,6 +101,56 @@ static uint32_t elapsed(uint64_t* t) {
     return d;
 }
 
+/* Each core's blocks for COUNT and SETUP, into the camera's region: equal shares, then
+ * equal parts of the last frame's ticks (spread evenly over each core's blocks). */
+static void set_ranges(frame_t* f, work_t* wk, void* const* reg) {
+    const uint32_t cores = f->w[RF_W_CORES], blocks = f->w[RF_W_BLOCKS];
+    uint32_t* r = wk->ranges;
+    volatile uint32_t* cam = (volatile uint32_t*)reg[RF_R_CAMERA];
+    uint64_t total = 0;
+    if (f->ranged) {
+        kmx_take_at(RF_R_CAMERA, RF_COSTS_AT, 128u * cores);
+        for (uint32_t c = 0; c < cores; c++) {
+            const uint32_t at = (RF_COSTS_AT + 128u * c) / 4;
+            wk->costs[c] = cam[at] + cam[at + 16];
+            total += wk->costs[c];
+        }
+    }
+    if (total == 0) {
+        for (uint32_t c = 0; c <= cores; c++) {
+            r[c] = (uint32_t)((uint64_t)c * blocks / cores);
+        }
+    } else {
+        uint32_t* cut = wk->cuts;
+        uint32_t c = 0;
+        uint64_t before = 0; /* ticks of the cores before c */
+        cut[0] = 0;
+        for (uint32_t k = 1; k < cores; k++) {
+            const uint64_t want = total * k / cores;
+            while (c < cores && before + wk->costs[c] <= want) {
+                before += wk->costs[c];
+                c++;
+            }
+            uint32_t b = blocks;
+            if (c < cores) {
+                const uint32_t n = r[c + 1] - r[c];
+                b = r[c] + (uint32_t)((want - before) * n / wk->costs[c]);
+            }
+            cut[k] = b > cut[k - 1] ? b : cut[k - 1];
+        }
+        cut[cores] = blocks;
+        for (uint32_t k = 0; k <= cores; k++) {
+            r[k] = cut[k];
+        }
+    }
+    for (uint32_t c = 0; c < cores; c++) {
+        cam[(RF_RANGES_AT + 64u * c) / 4] = r[c];
+        cam[(RF_RANGES_AT + 64u * c) / 4 + 1] = r[c + 1];
+    }
+    kmx_give_at(RF_R_CAMERA, RF_RANGES_AT, 64u * cores);
+    f->ranged++;
+}
+
 /* One frame: COUNT to FILL (or as far as RF_W_STEPS says); adds each part's ticks to
  * the result words. 0, or the code to report. */
 static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
@@ -107,10 +160,18 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     /* COUNT */
     km_record_t r;
     kmx_progress(1);
+    /* fewer blocks than cores: a block each at most, nothing to balance */
+    const uint32_t ranges =
+        (f->w[RF_W_BALANCE] && cores <= RF_MAX_CORES && f->w[RF_W_BLOCKS] >= cores
+             ? RF_RANGES
+             : 0);
+    if (ranges) {
+        set_ranges(f, wk, reg);
+    }
     record(&r, RF_SEG_COUNT, f);
     r.a0 = f->w[RF_W_MESH];
     r.a1 = f->w[RF_W_COUNTERS];
-    r.a2 = f->w[RF_W_BLOCKS];
+    r.a2 = f->w[RF_W_BLOCKS] | ranges;
     r.a3 = f->addr[RF_R_CAMERA];
     uint32_t code = run(&r);
     f->out[RF_O_COUNT] += elapsed(&t);
@@ -272,7 +333,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     record(&r, RF_SEG_SETUP, f);
     r.a0 = f->w[RF_W_MESH];
     r.a1 = f->w[RF_W_LISTS];
-    r.a2 = f->w[RF_W_BLOCKS];
+    r.a2 = f->w[RF_W_BLOCKS] | ranges;
     r.a3 = f->addr[RF_R_CAMERA];
     r.a4 = f->w[RF_W_SLOTS];
     r.a6 = slots | RF_SETUP_PREFIX;
@@ -309,8 +370,9 @@ int kmx_main(int hart) {
     f.w = a->words;
     f.bank1 = 1 + f.w[RF_W_BANK];
     const uint32_t cores = f.w[RF_W_CORES], workers = f.w[RF_W_WORKERS];
+    f.ranged = 0;
     const uint32_t need[RF_REGIONS] = {
-        4 * 16,
+        f.w[RF_W_BALANCE] ? RF_CAMERA_BYTES : 4 * 16,
         RF_HEAVY_BYTES,
         RF_ITEMS_REGION_BYTES,
         sizeof(work_t),
@@ -332,6 +394,7 @@ int kmx_main(int hart) {
     work_t* wk = (work_t*)reg[RF_R_WORK];
     /* lines an earlier image left dirty would be written over what the cores write */
     kmx_give(RF_R_SUMS);
+    kmx_give(RF_R_CAMERA);
     const uint32_t frames = f.w[RF_W_REPEAT] ? f.w[RF_W_REPEAT] : 1;
     for (uint32_t k = 0; k < frames; k++) {
         const uint32_t code = frame_once(&f, wk, reg);

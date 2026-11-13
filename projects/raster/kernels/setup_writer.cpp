@@ -158,6 +158,27 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
     const uint32_t t0 = km::wall();
     WProf pf;
     const bool ok = setup_writer_pass(wr, r, pf);
+    if (ok && (seg == kSegCount || seg == kSegSetup) && (r.a2 & kRanges) != 0) {
+        // the pass's ticks on this core, for the next frame's ranges
+        const uint32_t line = get_write_ptr(kCbSProf) + 128;
+        km::l1(line)[0] = km::wall() - t0;
+        invalidate_l1_cache();
+        noc_async_write(
+            line,
+            su::addr(
+                r.a8, r.a3, 0, 0, kCostsAt + 128 * wr.me() + 64 * (seg - kSegCount)
+            ),
+            64
+        );
+        if (wr.poll(
+                [] {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                },
+                wr.args().wait_limit
+            ) != km::kGaveNone) {
+            return false;
+        }
+    }
     if (!ok || r.a9 == 0 || seg < kSegCount || seg > kSegPlace) {
         return ok;
     }
