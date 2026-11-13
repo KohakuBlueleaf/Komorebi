@@ -1,8 +1,5 @@
-"""Card cases of the host package that the example does not cover. One case per run;
-prints one JSON line with `ok`.
-
-    python session_cases.py compile-error | exclusive | read | start-error
-"""
+"""Card cases of the host package that the example does not cover, one per run
+(`python session_cases.py CASE`, CASES below); prints one JSON line with `ok`."""
 
 import argparse
 import json
@@ -91,6 +88,85 @@ def case_exclusive(session):
     return out
 
 
+def case_queue_order(session, rounds=1000, jobs=32, count=8, busy=200):
+    """Each round: BUSY on every core (its leader reads a page `busy` times), then
+    `jobs` queued PUTs of `count` cores, which wait in the kernel's queue, each writing
+    the round's value into its page, then an exclusive SUM on every core counting the
+    pages that hold it. SUM must wait for every queued job: `jobs` each round."""
+    prog, pages = queue_program(session)
+    run = session.load(prog)
+    at, counts, t0 = pages.buffer_address(), [], time.monotonic()
+    for k in range(rounds):
+        run.issue(3, None, args=[at, busy])
+        for j in range(jobs):
+            run.issue(1, count, args=[at, j, k + 1], queued=True)
+        total = run.issue(2, None, args=[at, jobs, k + 1], exclusive=True, result=True)
+        counts.append(run.wait(total).result)
+    run.drain()
+    took = time.monotonic() - t0
+    run.stop()
+    short = [(k, c) for k, c in enumerate(counts) if c != jobs]
+    out = {"rounds": rounds, "rounds_short": len(short), "first_short": short[:8]}
+    out["ms_per_round"] = round(took / rounds * 1e3, 3)
+    out["ok"] = not short and run.result()["error"] == 0
+    return out
+
+
+def queue_program(session):
+    """The queue cases' program and its tensor: 64 pages of 64 bytes, uint32."""
+    rows = np.zeros((64, 16), np.uint32)
+    pages = ttnn.from_torch(
+        torch.from_numpy(rows.view(np.int32)),
+        dtype=ttnn.uint32,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=session.device,
+    )
+    prog = km.Program(
+        "queue_order",
+        kernels=Path(__file__).resolve().parent / "queue_kernels",
+        buffers=[km.Buffer(index=16, format="uint32", page_bytes=64, pages=1)],
+        compile_args={"writer": ttnn.TensorAccessorArgs(pages).get_compile_time_args()},
+    )
+    return prog, pages
+
+
+def case_queue_cost(session, windows=10, window=48, count=8, reads=(0, 100)):
+    """Where a queued record's time goes: `windows` x `window` records of `count` cores,
+    queued or on fixed disjoint teams, each window issued and waited for at once: PUTs,
+    or BUSY records whose leader reads a page `reads` times."""
+    prog, pages = queue_program(session)
+    at, out = pages.buffer_address(), {}
+    for mode in [(m, r) for r in reads for m in ("plain", "queued")]:
+        run = session.load(prog)
+        events, t0 = [], time.monotonic()
+        for w in range(windows):
+            tickets = []
+            for j in range(window):
+                if mode[0] == "queued":
+                    team, queued = count, True
+                else:
+                    team, queued = (count * (j % (run.cores // count)), count), False
+                seg, args = (3, [at, mode[1]]) if mode[1] else (1, [at, j, w + 1])
+                tickets.append(run.issue(seg, team, args=args, queued=queued))
+            events += run.wait(tickets)
+        wall = time.monotonic() - t0
+        run.stop()
+        res, n = run.result(), windows * window
+        out[f"{mode[0]}_{mode[1]}_reads"] = {
+            "host_us_per_record": round(wall / n * 1e6, 2),
+            "host_issue_us": round(run.issue_s / n * 1e6, 2),
+            "kernel_us_per_record": round(res["last"] / 50 / n, 2),
+            "issue_to_done_us": round(
+                float(np.mean([e.ticks for e in events])) / 50, 2
+            ),
+            "passes_per_record": round(res["passes"] / n, 1),
+            "max_busy": res["max_busy"],
+            "all_done": all(e.kind == "done" for e in events),
+        }
+    out["ok"] = all(v["all_done"] for v in out.values())
+    return out
+
+
 def bf16_tiles(device, x):
     return ttnn.from_torch(
         torch.from_numpy(x), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
@@ -161,6 +237,8 @@ def case_start_error(session):
 CASES = {
     "compile-error": case_compile_error,
     "exclusive": case_exclusive,
+    "queue-cost": case_queue_cost,
+    "queue-order": case_queue_order,
     "read": case_read,
     "start-error": case_start_error,
 }

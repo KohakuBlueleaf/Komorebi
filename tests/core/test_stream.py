@@ -711,6 +711,19 @@ def test_excl_waits_for_an_overlapping_team_and_others_do_not():
     assert got == [(0, 0, 0), (1, 3, 2), (2, 3, 2), (3, 3, 0)]
 
 
+def test_excl_waits_for_every_job_queued_before_it():
+    s = Stream()
+    for i in range(3):
+        s.submit(1, 119, args=[i])
+    s.issue(2, team=(100, 4), args=[3], exclusive=True)
+    s.wait(0)
+    s.halt(s.const(0))
+    for delay in (1, 2, 3):
+        done = s.simulate(delay=delay)
+        got = [(r.args[0], r.queued) for r in done.records]
+        assert got == [(0, True), (1, True), (2, True), (3, False)], (delay, got)
+
+
 # check: every reason, with its program counter
 
 

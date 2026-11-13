@@ -89,6 +89,11 @@ def test_an_exclusive_record_waits_for_the_team_it_overlaps(session):
     assert cases.case_exclusive(session)["ok"]
 
 
+def test_an_exclusive_record_waits_for_the_records_queued_before_it(session):
+    out = cases.case_queue_order(session)
+    assert out["ok"], out
+
+
 def test_tensors_read_by_banks_match_what_was_written_also_during_a_run(session):
     assert cases.case_read(session)["ok"]
 
