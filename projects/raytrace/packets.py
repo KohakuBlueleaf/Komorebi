@@ -352,6 +352,12 @@ def treelet_buffers(packets, entries, n_treelets, slots, slot_bytes):
     }
 
 
+def sort_bytes(packets):
+    """Bytes of the slot buffer SORT and UNSORT use for a core's `packets` packets:
+    keys and orders twice, two vectors, the radix counts and the per-packet signs."""
+    return (6 * packets * VEC + (1 << K["kSortDigitBits"]) + packets) * 4
+
+
 def fixed_bytes(tree_pages):
     """Bytes of every buffer of a treelet record other than state, lists and slots."""
     total = K["kInPageBytes"] * K["kInPages"] + K["kOutPageBytes"] * K["kOutPages"]

@@ -43,6 +43,12 @@ constexpr uint32_t kSegShade1 = 9;
 constexpr uint32_t kSegShade2 = 10;
 // IMAGE: state 2 and the second shadow hits in; colour pages out.
 constexpr uint32_t kSegImage = 11;
+// SORT: a0 directory, a1 packets in, a2 out, a3 order pages, a4 profile, a5 0, a6 to a9
+// key; the core's rays by octant and origin cell. UNSORT: a5 vectors; lanes back.
+constexpr uint32_t kSegSort = 12;
+constexpr uint32_t kSortCellBits = 9;  // origin cells per axis: 2^9; a9 = frac | shift << 8
+constexpr uint32_t kSortDigitBits = 11;     // radix sort: three passes over 31 key bits
+constexpr uint32_t kSortInvalid = 1 << 30;  // the key of a lane without a ray
 
 constexpr uint32_t kModeNearest = 0;
 constexpr uint32_t kModeAny = 1;

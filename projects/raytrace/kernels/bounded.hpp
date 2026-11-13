@@ -125,6 +125,23 @@ namespace bounded {
         return true;
     }
 
+    // NoC writes issued so far have landed (acknowledged): the next record may read
+    // them.
+    inline bool writes_landed(const km::Core& c, uint32_t word) {
+        const uint32_t code = c.poll(
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            c.args().wait_limit
+        );
+        if (code != km::kGaveNone) {
+            c.gave_up(word, code, km::kWhereData, 0, 0);
+            return false;
+        }
+        noc_async_write_barrier();
+        return true;
+    }
+
     // The buffer holds `bytes` contiguous from its write pointer.
     inline bool fits(uint32_t cb, uint32_t bytes) {
         const auto& i = get_local_cb_interface(cb);
