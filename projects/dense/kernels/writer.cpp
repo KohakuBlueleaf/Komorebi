@@ -27,13 +27,18 @@ void kernel_main() {
             cb_pop_front(kCbLoaded, 1);
             return true;
         }
-        if (km::seg(r) != kSegProduct || r.a7 == kModeReadOnly) {
+        const bool layer = km::seg(r) == kSegLayer;
+        if (layer && ((r.a8 >> 16) & 0xFF) != kDram) {
+            return true;  // Y stays in a held buffer
+        }
+        if (!layer && (km::seg(r) != kSegProduct || r.a7 == kModeReadOnly)) {
             return true;
         }
         const uint32_t t0 = km::wall();
         const km::Share s = km::share(r.a2, wr.me() - km::first(r), km::count(r));
-        const uint32_t nt = r.a4, ct = r.a6;
-        const bool store = r.a7 == kModeFull;
+        // LAYER: a5 is the column block and every block is stored.
+        const uint32_t nt = r.a4, ct = layer ? r.a5 : r.a6;
+        const bool store = layer || r.a7 == kModeFull;
         const auto y = TensorAccessor(tiles, r.a1);
         uint32_t wait = 0, write = 0, n = 0;
         for (uint32_t m = s.start; m < s.start + s.len; ++m) {

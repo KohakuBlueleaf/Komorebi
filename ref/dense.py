@@ -50,3 +50,26 @@ def errors(got, ref):
         "max_rel": float(err.max() / np.abs(ref).max()),
         "rms_rel": float(np.sqrt((err**2).mean() / (ref**2).mean())),
     }
+
+
+def silu(x):
+    """x * sigmoid(x) in float64."""
+    x = np.asarray(x, dtype=np.float64)
+    return x / (1.0 + np.exp(-x))
+
+
+def swiglu(x, w1, w3, w2):
+    """(silu(x w1) * (x w3)) w2 in float64."""
+    return matmul(silu(matmul(x, w1)) * matmul(x, w3), w2)
+
+
+def swiglu_inputs(m, d, h, seed=1):
+    """x [m, d] uniform in [-1, 1); W1, W3 [d, h] and W2 [h, d] uniform in [-1, 1)
+    scaled by 1 / sqrt(fan in); all rounded to bf16, as float32 arrays."""
+    rng = np.random.default_rng(seed)
+
+    def u(shape, scale):
+        return bf16((rng.uniform(-1, 1, shape) * scale).astype(np.float32))
+
+    x = u((m, d), 1.0)
+    return x, u((d, h), d**-0.5), u((d, h), d**-0.5), u((h, d), h**-0.5)

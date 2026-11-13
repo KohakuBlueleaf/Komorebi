@@ -14,6 +14,15 @@ constexpr uint32_t kSegLoad = 1;
 constexpr uint32_t kSegProduct = 2;
 // PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
 constexpr uint32_t kSegProf = 3;
+// LAYER: a0 A, a1 Y, a2 mt, a3 kt (one chunk), a4 nt, a5 ct, a6 W buffer (0: the gate
+// pass), a7 the epilogue, a8 A | B << 8 | Y << 16: a held buffer, or kDram for A, Y.
+constexpr uint32_t kSegLayer = 4;
+// Epilogues: none; silu; times B; the gate pass silu(A) * B (no product, kt == nt).
+constexpr uint32_t kEpNone = 0;
+constexpr uint32_t kEpSilu = 1;
+constexpr uint32_t kEpMul = 2;
+constexpr uint32_t kEpGate = 3;
+constexpr uint32_t kDram = 0xFF;
 
 // PRODUCT modes: the full product, or one half of it with the other left out.
 constexpr uint32_t kModeFull = 0;
@@ -32,6 +41,13 @@ constexpr uint32_t kCbWs = 2;
 constexpr uint32_t kCbOut = 16;
 constexpr uint32_t kCbProf = 3;
 constexpr uint32_t kCbLoaded = 4;  // reader to writer: W has landed (LOAD completes)
+// LAYER: held intermediates (a member's rows, packed by one record, taken by the next),
+// the second and third resident W.
+constexpr uint32_t kCbHold0 = 5;
+constexpr uint32_t kCbHold1 = 6;
+constexpr uint32_t kCbHold2 = 7;
+constexpr uint32_t kCbW3 = 8;
+constexpr uint32_t kCbW2 = 9;
 constexpr uint32_t kLoadedBytes = 64;
 constexpr uint32_t kTileBytes = 2048;  // bf16
 constexpr uint32_t kProfBytes = 1024;
@@ -51,6 +67,7 @@ constexpr uint32_t kPrUnWaitW = 9;
 constexpr uint32_t kPrUnBody = 10;
 constexpr uint32_t kPrMathMm = 12;
 constexpr uint32_t kPrMathBody = 13;
+constexpr uint32_t kPrMathEp = 14;  // LAYER: the epilogue (silu, times B, the gate)
 constexpr uint32_t kPrPkWaitMath = 16;
 constexpr uint32_t kPrPkWaitOut = 17;
 constexpr uint32_t kPrPkPack = 18;

@@ -34,6 +34,38 @@ namespace {
         return true;
     }
 
+    // LAYER: A's row from DRAM per owned row when A is not held (B is always held).
+    template <typename Accessor>
+    void layer(
+        const km::Reader& rd,
+        const km_record_t& r,
+        const Accessor& a,
+        volatile tt_l1_ptr uint32_t* prof
+    ) {
+        if ((r.a8 & 0xFF) != kDram) {
+            return;
+        }
+        const km::Share s = km::share(r.a2, rd.me() - km::first(r), km::count(r));
+        const uint32_t kt = r.a3;
+        uint32_t wait = 0, read = 0, n = 0;
+        for (uint32_t m = s.start; m < s.start + s.len; ++m) {
+            const uint32_t t1 = km::wall();
+            if (!rd.reserve(kCbA, kt)) {
+                return;
+            }
+            const uint32_t t2 = km::wall();
+            if (!read_item(rd, kCbA, a, m * kt, 1, kt, 0)) {
+                return;
+            }
+            wait += t2 - t1;
+            read += km::wall() - t2;
+            n += kt;
+        }
+        km::add_sat(prof + kPrRdWait, wait);
+        km::add_sat(prof + kPrRdRead, read);
+        km::add_sat(prof + kPrRdTiles, n);
+    }
+
 }  // namespace
 
 void kernel_main() {
@@ -54,6 +86,11 @@ void kernel_main() {
             if (read_item(rd, r.a1, w, 0, 1, kt * nt, 0) && rd.reserve(kCbLoaded, 1)) {
                 cb_push_back(kCbLoaded, 1);
             }
+            return;
+        }
+        if (km::seg(r) == kSegLayer) {
+            layer(rd, r, TensorAccessor(tiles, r.a0), prof);
+            km::add_sat(prof + kPrRdBody, km::wall() - t0);
             return;
         }
         if (km::seg(r) != kSegProduct || r.a7 == kModeComputeOnly) {
