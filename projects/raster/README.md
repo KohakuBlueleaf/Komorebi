@@ -303,19 +303,19 @@ counts, and the image the reference's (`python -m projects.raster.card_thread --
 Frames in a row (2026-11-13, card 1, 120 cores, X280 at 1,000 MHz, AICLK 1,350 MHz
 (samples at 1,343 on some scenes); `python -m projects.raster.bench_thread --scene <s>
 --runs 5 --frames 0`, results in `results/frame/`): 5 loads of the program, each running
-as many frames as fill about 1 s (42 to 771), median per frame, us. Inside a frame the
+as many frames as fill about 1 s (64 to 919), median per frame, us. Inside a frame the
 host does nothing: 0 round trips, 0 bytes. Power is the card's mean over the threads'
 runs; it draws 60.5 to 63.0 W with the program resident and idle. The V100 column is the
 whole frame of `reference/bench.py` on one idle V100:
 
 | scene | heavy tiles | COUNT | SUM | HIST + HSUM | the step | PLACE | SETUP | FILL | frame | V100 | V100 / card | card W |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| tiny | 0 | 104 | 61 | - | 434 | 99 | 453 | 121 | 1,271 | 300 | 0.24 | 63.6 |
-| 10^4 | 0 | 118 | 61 | - | 437 | 99 | 393 | 141 | 1,251 | 250 | 0.20 | 65.2 |
-| 10^5 | 112 | 455 | 61 | 95 | 743 | 103 | 1,029 | 425 | 2,906 | 760 | 0.26 | 65.7 |
-| 10^6 | 130 | 3,886 | 61 | 161 | 797 | 104 | 8,186 | 2,108 | 15,301 | 4,370 | 0.29 | 66.6 |
-| Sponza (262,266) | 0 | 2,225 | 61 | - | 453 | 100 | 4,294 | 1,593 | 8,734 | 2,670 | 0.31 | 65.1 |
-| Bistro interior (1,020,903) | 82 | 4,862 | 61 | 92 | 727 | 103 | 15,427 | 2,096 | 23,374 | 5,900 | 0.25 | 63.7 |
+| tiny | 0 | 104 | 61 | - | 433 | 99 | 229 | 121 | 1,047 | 300 | 0.29 | 63.5 |
+| 10^4 | 0 | 118 | 61 | - | 437 | 99 | 231 | 141 | 1,087 | 250 | 0.23 | 64.0 |
+| 10^5 | 112 | 450 | 61 | 95 | 743 | 103 | 668 | 425 | 2,545 | 760 | 0.30 | 67.2 |
+| 10^6 | 130 | 3,826 | 61 | 161 | 797 | 104 | 5,062 | 2,108 | 12,118 | 4,370 | 0.36 | 66.9 |
+| Sponza (262,266) | 0 | 2,221 | 61 | - | 452 | 100 | 2,788 | 1,593 | 7,215 | 2,670 | 0.37 | 67.6 |
+| Bistro interior (1,020,903) | 82 | 4,811 | 61 | 92 | 727 | 103 | 7,476 | 2,096 | 15,365 | 5,900 | 0.38 | 70.3 |
 
 Each column is the thread's time from issuing a record to its event (the step: from
 SUM's event to PLACE's issue, HIST and HSUM apart), so the frame is the sum plus the
@@ -326,8 +326,10 @@ earlier one), the layout's words and base slots 76 (1), the items page 18 (1), t
 hand-over back 33 (1). Before the counting moved to the cores the step was 4.5 to 11.6
 ms (counters 983 KB read by the thread, next slots of every (core, item) written by it).
 
-SETUP is now the largest part of every frame but tiny's: the slowest core's scalar work
-per entry (each record copied, 128 bytes, by the pack thread) and its share of the mesh.
+SETUP's pack thread copies each entry's record (128 bytes) into the out page with one
+vector load and store instead of 32 scalar words: SETUP on tiny went from 453 to
+229 us, on 10^6 from 8,186 to 5,062 and on Bistro from 15,427 to 7,476.
+It is still the largest part of every large frame, set by its slowest core.
 
 Per frame the host still loads the program (the camera goes with the load: 0.5 to 0.8
 s) and reads the image back (20 MB, 10 to 18 s); both are outside the frame times above.

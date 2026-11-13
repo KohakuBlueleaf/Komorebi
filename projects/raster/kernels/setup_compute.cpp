@@ -283,9 +283,15 @@ namespace {
                 return false;
             }
             uint32_t* dst = page + 32 * (1 + n);
+#if defined(__riscv_vector)
+            const size_t vl = __riscv_vsetvl_e32m8(32);
+            __riscv_vse32_v_u32m8(dst, __riscv_vle32_v_u32m8(rec, vl), vl);
+            asm volatile("" ::: "memory");
+#else
             for (uint32_t k = 0; k < 32; ++k) {
                 dst[k] = rec[k];
             }
+#endif
             page[1 + n] = slot;
             ++entries;
             if (++n == kOutEntries) {
