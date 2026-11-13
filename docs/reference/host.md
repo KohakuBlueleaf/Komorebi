@@ -315,6 +315,7 @@ All derive from `km.KomorebiError`.
 |---|---|---|
 | `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
+| `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatch kernel did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass stamp, read twice 20 ms apart), its state and where, and the runtime's account of each hart | `pending` tickets |
 | `RecordRefused` | the kernel consumed the command and issued nothing (a reserved segment or flag, a team outside the grid, a record after EXIT); the run goes on | `ticket`, `reason` (`KMD_REFUSE_*`), `reason_name` |
@@ -356,6 +357,27 @@ The dispatch kernel image (`km-dispatch.bin`) and the native module
 they are built from the tt-metal tree into a cache directory, `KMR_CACHE` or
 `build/komorebi/` in a checkout, keyed by a hash of their sources and the tree:
 `python -m komorebi.native` builds both and prints their paths.
+
+### Instructions the cores lack
+
+The compute threads are built for a target that includes a float unit (the pack
+thread's vector flags imply it), so the compiler may emit instructions the Tensix
+cores do not implement. A core that meets one stops without a report and the program
+ends in a timeout that names no cause. After the kernels are built and before anything
+is loaded, `Session.load` therefore disassembles each thread's linked ELF with the
+toolchain's own objdump and raises `km.KernelInstructionError` naming the thread, the
+instruction, the function and, from the debug info, the source line. Refused are the
+groups the core's instruction set documents as absent: float divide and square root
+(`fdiv`, `fsqrt`), vector integer divide and remainder (`vdiv`, `vrem`), and vector
+float divide, square root and their estimates (`vfdiv`, `vfrdiv`, `vfsqrt`,
+`vfrsqrt7`, `vfrec7`). The result is kept with the build, so a cached build is not
+checked again (the first check costs about 0.1 s per program). A `/` on floats is the
+usual cause: divide by an integer (`div`/`divu` are implemented), multiply by a
+reciprocal computed on the host, or, on the vector unit, use a reciprocal with Newton
+steps as the projects do ([`recip`](../../projects/raytrace/kernels/sfpu.hpp), exact
+division and square root in [`divsqrt.hpp`](../../projects/raytrace/kernels/divsqrt.hpp)).
+`KMR_INSN_CHECK=0` turns the check off, for a kernel that never executes the code
+found.
 
 ## Rules the host keeps
 
