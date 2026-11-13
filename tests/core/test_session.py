@@ -243,8 +243,9 @@ def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(card, tmp_pat
     holder.stdin.close()
     holder.wait()
     zombie = mapper(path, stay=False)  # ended, not reaped yet: no mappings left
-    stat = Path(f"/proc/{zombie.pid}/stat")
+    stat, by = Path(f"/proc/{zombie.pid}/stat"), time.monotonic() + 10.0
     while stat.read_text().rsplit(")", 1)[1].split()[0] != "Z":
+        assert time.monotonic() < by, "the mapping process did not end in 10 s"
         time.sleep(0.01)
     path.write_bytes(lock(zombie.pid).read_bytes())
     assert session.chip_holder(0, path) is None

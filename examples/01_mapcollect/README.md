@@ -100,7 +100,8 @@ the batched stores, and every core's end state.
 
 ## Measured
 
-On one p150a, 2026-11-13, AICLK 1350 MHz, host load 8 to 14 (one-minute average), with
+On one p150a, 2026-11-13, AICLK 1350 MHz, X280 at 1750 MHz, host load 8 to 14
+(one-minute average), with
 
 ```
 python mapcollect.py --jobs 1000 --teams random --out-tensors 32

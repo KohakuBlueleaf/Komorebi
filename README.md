@@ -18,7 +18,9 @@ reduced by owner or by tree ([02_merge_tree](examples/02_merge_tree/)); blocks b
 along the rows and columns of a team ([03_broadcast](examples/03_broadcast/)); a graph
 run host-fed ([06_graph](examples/06_graph/)); streams and graphs uploaded from Python
 and run by the dispatch kernel, with no host step between their start and their end
-([engines](docs/reference/host.md#engines-uploads-start-events)); a thread on a second
+([engines](docs/reference/host.md#engines-uploads-start-events)), such as a stream on
+the X280 that draws each job's team size ([04_uop_stream](examples/04_uop_stream/)); a
+thread on a second
 X280 cluster that issues records and decides from their result words
 ([07_work_cluster](examples/07_work_cluster/)); and dynamic segments, in which items
 move from core to core as their data decides and the run ends by itself
@@ -221,6 +223,7 @@ against numpy; each run, with its command, is in the example's README:
 | [01_mapcollect](examples/01_mapcollect/) | 1,000 jobs of 64 input tiles on random teams (61,720 member records), up to 4 in flight, issued from Python through the dispatch kernel | 1.655 µs per job by the kernel's clock, 1.985 by the host's; a record from issue to completion 4.5 µs (mean); 0 of 1,000 jobs wrong |
 | [02_merge_tree](examples/02_merge_tree/) | parts merged by owner or by tree, under the test feeder | 7.3 µs per job on 8 cores, 24.0 on 119; 1,000 random jobs exact; both forms bit-equal |
 | [03_broadcast](examples/03_broadcast/) | 24 KiB blocks to a 12 x 9 team along 27 lanes, under the test feeder | 1,355 GB/s delivered from 169 GB/s read from DRAM; every member reading DRAM itself: 457 GB/s |
+| [04_uop_stream](examples/04_uop_stream/) | 1,000 jobs of 64 input tiles on teams whose size a micro-op stream draws at random, decided on the host (`run_hostfed`), by a stream that issues each record on the X280, or by one that submits to the dispatch kernel's job queue | 161 µs per job host-fed, 11.5 issued on the X280, 8.4 submitted (up to 3 in flight); 59,456 output tiles bit-exact each way |
 | [07_work_cluster](examples/07_work_cluster/) | a loop of 204 rounds of two records, each round's team chosen from the last result word | an X280 thread on cluster 1: 10.3 ms (about 50 µs per round); host-fed: 50 ms |
 
 Landing a 64-byte record multicast by one X280 core to every Tensix core: p150a, 120
@@ -409,8 +412,8 @@ src/komorebi_native/
   x280/kernel/                 the dispatch kernel for X280 cluster 0
   x280/engines/  x280/kmx/     the plain-C graph engine; the X280 thread library
   csrc/host/                   the native module: X280 runtime, commands, events
-examples/                      01_mapcollect, 02_merge_tree, 03_broadcast, 05_hop,
-                               06_graph, 07_work_cluster
+examples/                      01_mapcollect, 02_merge_tree, 03_broadcast, 04_uop_stream,
+                               05_hop, 06_graph, 07_work_cluster
 experiments/                   hardware and design probes (see its README)
 projects/  ref/                render references; CPU references in numpy
 tests/core/  tests/hardware/   tests with no card; card tests (KMR_CARD=1)

@@ -9,9 +9,10 @@ tags:
 
 # Ports, emit and reduce
 
-Status: implemented in the Tensix runtime and run on one Blackhole card under the test
-feeder ([02_merge_tree](../../examples/02_merge_tree/)). Not yet run under the dispatch
-kernel.
+Status: implemented in the Tensix runtime and run on one Blackhole card through a
+`Session` and `Run`, under the dispatch kernel, and under the test feeder
+([02_merge_tree](../../examples/02_merge_tree/): `python merge.py --jobs 20 --count 8
+--form both`).
 
 A static breakpoint that sends a value to one receiver. Who sends to whom, into which
 slot, and how many values a wait expects all follow from the record (`first`, `count`,

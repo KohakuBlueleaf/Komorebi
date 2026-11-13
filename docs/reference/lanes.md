@@ -8,8 +8,10 @@ tags:
 
 # Lane broadcast
 
-Status: implemented for the resident runtime; run on one card under the test feeder
-(`examples/03_broadcast`).
+Status: implemented for the resident runtime; run on one card through a `Session` and
+`Run`, under the dispatch kernel, and under the test feeder
+([03_broadcast](../../examples/03_broadcast/): `python broadcast.py --rect 0,0,12,10
+--blocks 16 --pages 4 --window 2 --jobs 8`).
 
 A lane is a run of cores of one team in one grid column, or in one grid row inside one
 panel. One core of the lane, the sender, reads block k (P pages) from DRAM into slot
