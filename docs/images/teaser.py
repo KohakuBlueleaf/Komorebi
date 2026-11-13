@@ -250,7 +250,7 @@ def legend(s, x, y, w):
         ("t", "120 Tensix cores", "resident kernels; a record names a team"),
         ("a", "X280 cluster 0", "the dispatch kernel issues the records"),
         ("v", "values cross core to core", "lanes, ports, items that move"),
-        ("w", "X280 clusters 1 to 3", "the program's C threads, 12 harts"),
+        ("w", "X280 clusters 1 to 3", "the program's C threads, 12 cores"),
     ]
     for i, (kind, head, body) in enumerate(rows):
         px, py = x + (i % 2) * (w / 2), y + (i // 2) * 42
@@ -306,7 +306,7 @@ def timeline(s, x, y, w):
             s.text(
                 x0 + 4,
                 ys[1] + lane + 15,
-                "the step, 0.80 ms on four harts: tile costs, sort, merge",
+                "the step, 0.80 ms on four cores: tile costs, sort, merge",
                 11.5,
                 c["w"],
                 600,

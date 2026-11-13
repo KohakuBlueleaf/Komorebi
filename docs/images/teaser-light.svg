@@ -234,7 +234,7 @@
 <text x="480.0" y="352.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">lanes, ports, items that move</text>
 <rect x="703.0" y="325.0" width="20.0" height="14.0" rx="3" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
 <text x="733.0" y="336.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">X280 clusters 1 to 3</text>
-<text x="733.0" y="352.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">the program's C threads, 12 harts</text>
+<text x="733.0" y="352.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">the program's C threads, 12 cores</text>
 <line x1="444.0" y1="366.0" x2="948.0" y2="366.0" stroke="#d1d9e0" stroke-width="1"/>
 <text x="444.0" y="390.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#1f2328" text-anchor="start" xml:space="preserve">one frame, over time</text>
 <text x="948.0" y="390.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="end" xml:space="preserve">10⁶ triangles, 1024 × 1024: 12.1 ms</text>
@@ -264,7 +264,7 @@
 <rect x="699.3" y="532.0" width="2.9" height="24.0" rx="0" fill="#bc4c00" stroke="none" stroke-width="1"/>
 <line x1="702.7" y1="501.0" x2="702.7" y2="519.0" stroke="#bc4c00" stroke-width="2"/>
 <rect x="702.7" y="448.0" width="19.6" height="24.0" rx="2" fill="#0969da" stroke="none" stroke-width="1"/>
-<text x="608.0" y="487.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">the step, 0.80 ms on four harts: tile costs, sort, merge</text>
+<text x="608.0" y="487.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">the step, 0.80 ms on four cores: tile costs, sort, merge</text>
 <line x1="722.4" y1="501.0" x2="722.4" y2="519.0" stroke="#bc4c00" stroke-width="2"/>
 <rect x="722.9" y="532.0" width="1.6" height="24.0" rx="0" fill="#bc4c00" stroke="none" stroke-width="1"/>
 <line x1="725.0" y1="501.0" x2="725.0" y2="519.0" stroke="#bc4c00" stroke-width="2"/>
