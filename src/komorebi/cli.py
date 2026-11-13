@@ -7,6 +7,21 @@ from pathlib import Path
 
 from komorebi import __version__, _env, build, power
 
+try:
+    from komorebi_runtime import prepare
+except ImportError:  # no runtime package, or one older than its setup steps
+    prepare = None
+
+# What `kmr sfpi`, `kmr prime` and `kmr setup` need, and a tree's own way to prime.
+NEEDS_RUNTIME = (
+    "kmr {}: needs the komorebi-runtime package, 0.81.1.3 or later "
+    '(pip install "komorebi-tt[runtime]")'
+)
+TREE_PRIME = (
+    "with a tt-metal tree instead: X280_ALLOW_LIM_ECC_PRIME=1 TT_VISIBLE_DEVICES=N "
+    "build/test/tt_metal/x280/x280_prime_test, then tt-smi -r N"
+)
+
 
 def doctor_report(environ=None):
     """What this host offers, as a dict; opens no device and runs no program."""
@@ -54,6 +69,7 @@ def format_report(report):
         ("build", found(report["build_directory"], "not found" if home else "-")),
         ("x280 runtime", runtime if tree else "-"),
         ("x280 compiler", found(report["x280_compiler"], "not found" if tree else "-")),
+        ("card setup", "once per card: kmr setup"),
     ]
     return "\n".join(f"{name:<14}{value}" for name, value in rows)
 
@@ -81,12 +97,37 @@ def run_build(args):
     return 0
 
 
+def run_setup(args):
+    """`kmr sfpi`, `kmr prime` or `kmr setup` (both, in that order) through the
+    runtime package; returns the exit code."""
+    if prepare is None or _env.runtime_version() is None:
+        print(NEEDS_RUNTIME.format(args.command), file=sys.stderr)
+        if args.command != "sfpi":
+            print(TREE_PRIME, file=sys.stderr)
+        return 2
+    if args.command in ("sfpi", "setup"):
+        print(f"compiler  {prepare.fetch_sfpi()}")
+    if args.command == "sfpi":
+        return 0
+    card = prepare.default_card() if args.card is None else args.card
+    lines, code = prepare.prime(card, "kmr sfpi")
+    print("\n".join(lines), file=sys.stderr if code else sys.stdout)
+    return code
+
+
 def main(argv=None):
     """Parses `argv` and runs the chosen subcommand; returns the exit code."""
     parser = argparse.ArgumentParser(prog="kmr", description="Komorebi tools")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("doctor", help="report the host without opening a device")
+    sub.add_parser("sfpi", help="fetch the X280 compiler into the cache")
+    for name, text in (
+        ("prime", "prime a card's X280 memory, once per card"),
+        ("setup", "once per card: the compiler (sfpi), then the card (prime)"),
+    ):
+        step = sub.add_parser(name, help=text)
+        step.add_argument("--card", type=int, help="the N of /dev/tenstorrent/N")
 
     builder = sub.add_parser(
         "build", help="build a host program, Python module or X280 image"
@@ -113,6 +154,8 @@ def main(argv=None):
     if args.command == "doctor":
         print(format_report(doctor_report()))
         return 0
+    if args.command in ("sfpi", "prime", "setup"):
+        return run_setup(args)
     return run_build(args)
 
 

@@ -1,6 +1,6 @@
 """Builds the komorebi-runtime wheel from a tt-metal tree built by build_tt_metal.sh:
 the locator, the libraries with $ORIGIN rpaths, the kernel runtime tree, the X280
-pieces.
+pieces, the X280 priming program.
 Usage: build_wheel.py --tt-metal <tree> [--out dist] [--patchelf PATH]
 """
 
@@ -85,6 +85,8 @@ SKIP = ("/tt-llk/tests/", "/tt-llk/docs/", "/__pycache__/", "/.git")
 # The libraries: _ttnncpp.so (Kohaku-TT's native library links it) and what it loads
 # out of the build, libtt_metal.so among them.
 TTNNCPP = "build/ttnn/_ttnncpp.so"
+# The pinned tree's X280 priming program; its shared libraries are among those above.
+PRIME = "build/test/tt_metal/x280/x280_prime_test"
 
 
 def expand(pattern):
@@ -226,6 +228,14 @@ def main():
             shutil.copyfile(path, lib / name)
             run(args.patchelf, "--set-rpath", "$ORIGIN", str(lib / name))
         count = copy_runtime(tt_metal, package / "tree")
+        program = package / "bin" / Path(PRIME).name
+        program.parent.mkdir()
+        shutil.copyfile(tt_metal / PRIME, program)
+        program.chmod(0o755)
+        run(args.patchelf, "--set-rpath", "$ORIGIN/../lib", str(program))
+        loaded = {name for name, _ in build_libraries(tt_metal / PRIME, build)}
+        if not loaded <= {name for name, _ in libraries}:
+            raise SystemExit(f"{PRIME} loads {sorted(loaded)}, not all carried")
 
         files = sorted(
             p.relative_to(package).as_posix() for p in package.rglob("*") if p.is_file()
@@ -250,7 +260,7 @@ def main():
         (info / "licenses").mkdir(parents=True)
         shutil.copyfile(tt_metal / "LICENSE", info / "licenses" / "LICENSE")
         (info / "METADATA").write_text(metadata(project))
-        elves = [p for p in package.rglob("*.so*") if p.is_file()]
+        elves = [*(p for p in package.rglob("*.so*") if p.is_file()), program]
         floor = glibc_floor(elves)
         platform = args.platform or "manylinux_{}_{}_x86_64".format(*floor)
         tag = f"py3-none-{platform}"

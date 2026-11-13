@@ -55,7 +55,8 @@ for a clone ([install](../docs/install.md#running-on-a-card)):
    without the X280 runtime;
 2. `clang++-20`: the native host module is built once into `KMR_CACHE` (default
    `~/.cache/komorebi`) the first time a session loads, about ten seconds;
-3. the card's X280 memory prepared once.
+3. the card's X280 memory prepared once ([install](../docs/install.md#running-on-a-card),
+   step 3; with `komorebi-runtime` installed, `kmr prime`).
 
 Neither `ttnn` nor `torch`: the host goes through tt-metal's C++ API in the native
 module, and data goes in and out as numpy arrays.
@@ -134,6 +135,27 @@ cd ../07_work_cluster && ../venv/bin/python work_cluster.py
 
 The environment held `komorebi-runtime`, `komorebi-tt`, `numpy` and `pip`, nothing else,
 and the prebuilt module was used: no host module was built into `KMR_CACHE`.
+
+### Setting up a card from the two wheels
+
+On 2026-11-14, card 0 (primed before), `komorebi-runtime` 0.81.1.3 (47.0 MB, 4,756
+members, with `bin/x280_prime_test`) and `komorebi-tt` 0.1.0 (698 kB) built from a fresh
+clone by `ci/build_wheels.sh`; `smoke.sh` with `KMR_RUNTIME_WHEEL` made the environment,
+then from it, `TT_METAL_HOME` unset, slow dispatch:
+
+```
+venv/bin/kmr setup --card 0
+cd 01_mapcollect && ../venv/bin/python mapcollect.py --jobs 20 --count 8 --out-tensors 2
+cd ../04_hello_core && ../venv/bin/python hello.py
+```
+
+| Run | Result | Wall |
+|---|---|---|
+| `kmr setup --card 0` | `compiler` (fetched before), then `card 0: X280 memory already primed; nothing written`, exit status 0 | 4 s |
+| `mapcollect.py` | 20 jobs checked (10 exact), none wrong, 120 cores ended | 9 s |
+| `hello.py` (tutorial lesson 4, copied out of the clone) | `the command is done` | 2 s |
+
+An unprimed card has not been run here: both cards of this machine were primed before.
 
 ## The release workflow
 

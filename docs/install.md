@@ -99,11 +99,10 @@ Both are built locally ([runtime](../packaging/runtime/README.md),
 packaging/runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 packaging/runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
-pip install dist/komorebi_runtime-0.81.1.2-py3-none-manylinux_2_38_x86_64.whl \
+pip install dist/komorebi_runtime-0.81.1.3-py3-none-manylinux_2_38_x86_64.whl \
     dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl
-python -m komorebi_runtime sfpi                # the RISC-V compiler, into KMR_CACHE
-python -m komorebi_runtime doctor
-kmr doctor                                     # "from komorebi-runtime 0.81.1.2"
+kmr setup                                      # the RISC-V compiler, then the card
+kmr doctor                                     # "from komorebi-runtime 0.81.1.3"
 ```
 
 The two wheels need `numpy` and nothing else: no `ttnn`, no `torch`. From 0.1.0 the
@@ -114,30 +113,42 @@ it: `kmr doctor`, `kmr build image`, the dispatcher's image and thread images us
 runtime's X280 pieces and compiler, a session activates the runtime
 (`TT_METAL_RUNTIME_ROOT`) and loads the prebuilt native module.
 `TT_METAL_HOME` set always means that tree, and the module is built against it. The
-card is prepared once as in [running on a card](#running-on-a-card), step 3.
+card is prepared once with `kmr setup` ([below](#setting-up-once)).
 
 ## From 0.1.0: the two wheels
 
 From the 0.1.0 release, both wheels are installed from PyPI. Until then they are built
 as in [the runtime package](#the-runtime-package), and the steps below are the same
 with the two files in place of the `pip install` line. You need Linux on x86-64, Python 3.13 and a Blackhole
-P150A whose X280 memory is prepared ([below](#preparing-the-card-without-a-tree)); no
-tt-metal tree, no compiler of your own, neither `ttnn` nor `torch`.
+P150A; no tt-metal tree, no compiler of your own, neither `ttnn` nor `torch`.
 
 ```
 python3.13 -m venv .venv && source .venv/bin/activate
 pip install "komorebi-tt[runtime]"             # komorebi-tt, komorebi-runtime and numpy
-python -m komorebi_runtime sfpi                # the RISC-V compiler, into KMR_CACHE
-python -m komorebi_runtime doctor
-kmr doctor                                     # "from komorebi-runtime 0.81.1.2"
+kmr setup                                      # the RISC-V compiler, then the card
+kmr doctor                                     # "from komorebi-runtime 0.81.1.3"
 ```
 
 `pip install komorebi-tt` without `[runtime]` installs the framework alone, which
-needs a tt-metal tree as from a clone. `KMR_CACHE` (default `~/.cache/komorebi`) holds
-the compiler and the runtime root; a new cache directory needs `komorebi_runtime sfpi`
-again, and `kmr doctor` says `x280 compiler  not found` until it is fetched. Leave
-`TT_METAL_HOME` unset: when it is set, Komorebi uses that tree instead of the runtime
-package.
+needs a tt-metal tree as from a clone. Leave `TT_METAL_HOME` unset: when it is set,
+Komorebi uses that tree instead of the runtime package.
+
+### Setting up once
+
+`kmr setup [--card N]` does the two one-time steps, each also a command of its own:
+
+- `kmr sfpi` fetches the RISC-V compiler the runtime names into `KMR_CACHE` (default
+  `~/.cache/komorebi`), which also holds the runtime root. A new cache directory needs
+  it again; `kmr doctor` says `x280 compiler  not found` until then.
+- `kmr prime` prepares the card's X280 memory (it primes the ECC of the X280 tiles'
+  local memory) with the program the runtime package carries, then asks for one card
+  reset (`tt-smi -r N`). The priming survives resets, so this is once per card. On a
+  card prepared before, it changes nothing and says so. It opens the card, so nothing
+  else may use the card while it runs.
+
+The card is the N of `/dev/tenstorrent/N`: `--card N`, else the first of
+`TT_VISIBLE_DEVICES`, else 0. Both commands need `komorebi-runtime` 0.81.1.3 or later;
+without it they say so and stop.
 
 ### The examples and the tutorial's programs
 
@@ -160,15 +171,6 @@ and put the clone's `src/` first on the path: `02_merge_tree/merge_fed.py`,
 [from a clone](#from-a-clone). Use the tag that matches
 the installed `komorebi-tt` version (`kmr doctor` prints it): a program of a later
 commit may need a later package.
-
-### Preparing the card without a tree
-
-The card's X280 memory is prepared once per card ([running on a card](#running-on-a-card),
-step 3), and that step runs a test program of a tt-metal build: the wheels do not carry
-it. On a machine where somebody has prepared the card already, there is nothing to do.
-Otherwise a tree configured as in step 1 builds that program
-(`ninja -C build x280_prime_test`) for step 3, and can be removed afterwards: the
-priming survives resets.
 
 ## Building against a tt-metal tree
 
@@ -211,12 +213,16 @@ into it, and a card whose X280 memory is prepared once. Step by step:
    ```
 
 3. **Prepare the card once.** Prime the X280 LIM ECC of the card, then reset it; the
-   priming survives later resets, so this is once per card, not per run:
+   priming survives later resets, so this is once per card, not per run. With the
+   tree's own program (`ninja -C build x280_prime_test` builds it):
 
    ```
    X280_ALLOW_LIM_ECC_PRIME=1 TT_VISIBLE_DEVICES=0 build/test/tt_metal/x280/x280_prime_test
    env -u TT_VISIBLE_DEVICES tt-smi -r 0
    ```
+
+   or, with `komorebi-runtime` installed in the environment, `kmr prime --card 0`
+   ([setting up once](#setting-up-once)), then the same reset.
 
 4. **The Python environment.** `numpy` beside the package (neither `ttnn` nor `torch`
    is needed), and `TT_METAL_HOME` naming the tree:

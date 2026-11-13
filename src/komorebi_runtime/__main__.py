@@ -1,59 +1,14 @@
 """Commands of the runtime package: `python -m komorebi_runtime doctor` (files present,
-libraries load, compiler found), `sfpi` (fetch the compiler the tree names), `root`
-(print the runtime root, for TT_METAL_RUNTIME_ROOT).
+libraries load, compiler found), `sfpi` (fetch the compiler the tree names), `prime`
+(prime a card's X280 memory), `root` (print the runtime root: TT_METAL_RUNTIME_ROOT).
 """
 
 import argparse
 import ctypes
-import hashlib
-import platform
-import re
 import sys
-import tarfile
-import tempfile
-import urllib.request
-from pathlib import Path
 
 import komorebi_runtime as kr
-
-
-def sfpi_url(release, machine, distro):
-    """(url, sha256) of the sfpi archive for `machine` and `distro`."""
-    name = f"sfpi_{release['version']}_{machine}_{distro}.txz"
-    url = f"{release['repo']}/releases/download/{release['version']}/{name}"
-    return url, release[f"{machine}_{distro}_txz_hash"]
-
-
-def host_distro():
-    """The sfpi build for this host: "fedora" on RHEL-likes, else "debian"."""
-    try:
-        text = Path("/etc/os-release").read_text()
-    except OSError:
-        return "debian"
-    return "fedora" if re.search(r"(?m)^ID(_LIKE)?=.*(fedora|rhel)", text) else "debian"
-
-
-def fetch_sfpi():
-    """Downloads and unpacks the sfpi release the tree names into the cache, unless it
-    is there; returns its directory."""
-    target = kr.sfpi_dir()
-    if kr.sfpi_bin() is not None:
-        return target
-    url, sha256 = sfpi_url(kr.sfpi_release(), platform.machine(), host_distro())
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
-        archive = Path(tmp) / "sfpi.txz"
-        digest = hashlib.sha256()
-        with urllib.request.urlopen(url) as response, archive.open("wb") as out:
-            while chunk := response.read(1 << 20):
-                digest.update(chunk)
-                out.write(chunk)
-        if digest.hexdigest() != sha256:
-            raise SystemExit(f"{url} does not match its recorded sha256")
-        with tarfile.open(archive) as tar:
-            tar.extractall(tmp, filter="data")
-        (Path(tmp) / "sfpi").replace(target)
-    return target
+from komorebi_runtime import prepare
 
 
 def doctor():
@@ -97,6 +52,9 @@ def doctor():
         )
     else:
         lines.append(f"sfpi      {compiler}")
+    lines.append(
+        "prime     once per card: kmr prime (python -m komorebi_runtime prime)"
+    )
     return lines, problems
 
 
@@ -105,11 +63,18 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="check files, library loading and the compiler")
     sub.add_parser("sfpi", help="fetch the RISC-V compiler into the cache")
+    primer = sub.add_parser("prime", help="prime a card's X280 memory, once per card")
+    primer.add_argument("--card", type=int, help="the N of /dev/tenstorrent/N")
     sub.add_parser("root", help="print the runtime root (TT_METAL_RUNTIME_ROOT)")
     args = parser.parse_args(argv)
     try:
         if args.command == "sfpi":
-            print(fetch_sfpi())
+            print(prepare.fetch_sfpi())
+        elif args.command == "prime":
+            card = prepare.default_card() if args.card is None else args.card
+            lines, code = prepare.prime(card, "python -m komorebi_runtime sfpi")
+            print("\n".join(lines), file=sys.stderr if code else sys.stdout)
+            return code
         elif args.command == "root":
             print(kr.root())
         else:

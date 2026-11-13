@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import komorebi_runtime
 from komorebi import _env
+from komorebi_runtime import prepare
 
 ROOT = Path(__file__).resolve().parents[2]
 SFPI = "sfpi_version='7.89.0'\nsfpi_repo='https://example.invalid/sfpi'\n"
@@ -104,3 +105,77 @@ def test_the_runtime_version_is_its_pin_and_build_number():
     pin = (ROOT / "packaging" / "tt-metal.pin").read_text().strip()
     number = (runtime / "BUILD").read_text().strip()
     assert project["project"]["version"] == f"{pin.removeprefix('v')}.{number}"
+
+
+def primed_package(tmp_path):
+    """A fake package with the priming program, a fetched compiler and card 1."""
+    base = fake_package(tmp_path / "pkg")
+    program = komorebi_runtime.prime_program(base)
+    program.parent.mkdir()
+    program.write_text("")
+    environ = {
+        komorebi_runtime.CACHE_VARIABLE: str(tmp_path / "cache"),
+        "TT_METAL_HOME": "/elsewhere",
+    }
+    gcc = komorebi_runtime.sfpi_dir(environ, base) / komorebi_runtime.SFPI_BIN
+    gcc.mkdir(parents=True)
+    (gcc / "riscv-tt-elf-gcc").write_text("")
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / "1").write_text("")
+    return base, environ, tmp_path / "dev"
+
+
+def answer(code, text):
+    """A stand-in for subprocess.run that records its call and prints `text`."""
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["env"]))
+        return SimpleNamespace(returncode=code, stdout=text, stderr="")
+
+    return run, calls
+
+
+def test_prime_reads_the_programs_three_outcomes(tmp_path):
+    base, environ, devices = primed_package(tmp_path)
+    cases = [
+        (0, f"runtime open: x\n\n{prepare.PRIMED}: tt-smi -r <device>\n", 0, "primed"),
+        (
+            1,
+            f"Failure\n  the first open of an unprimed chip {prepare.ALREADY}\n",
+            0,
+            "already",
+        ),
+        (1, "Failure\nchip 0 L2CPU 2: WayEnable read all ones\n", 1, "failed"),
+    ]
+    for status, text, code, word in cases:
+        run, calls = answer(status, text)
+        lines, got = prepare.prime(1, "sfpi", environ, base, devices, run)
+        assert got == code and word in lines[0], lines
+        ((command, env),) = calls
+        assert command == [str(komorebi_runtime.prime_program(base))]
+        assert (
+            env["TT_VISIBLE_DEVICES"] == "1" and env["X280_ALLOW_LIM_ECC_PRIME"] == "1"
+        )
+        assert env[komorebi_runtime.ROOT_VARIABLE].endswith("runtime-0.81.1.7")
+        assert "TT_METAL_HOME" not in env
+    assert lines[1:] == ["chip 0 L2CPU 2: WayEnable read all ones"]
+
+
+def test_prime_refuses_without_a_card_a_compiler_or_the_program(tmp_path):
+    base, environ, devices = primed_package(tmp_path)
+    run, calls = answer(0, "")
+    lines, code = prepare.prime(0, "kmr sfpi", environ, base, devices, run)
+    assert code == 1 and "no card 0" in lines[0]
+    other = {komorebi_runtime.CACHE_VARIABLE: str(tmp_path / "empty")}
+    lines, code = prepare.prime(1, "kmr sfpi", other, base, devices, run)
+    assert code == 1 and "`kmr sfpi`" in lines[0]
+    komorebi_runtime.prime_program(base).unlink()
+    lines, code = prepare.prime(1, "kmr sfpi", environ, base, devices, run)
+    assert code == 1 and "no priming program" in lines[0]
+    assert not calls
+
+
+def test_the_default_card_is_the_first_visible_one():
+    assert prepare.default_card({}) == 0
+    assert prepare.default_card({"TT_VISIBLE_DEVICES": "1,0"}) == 1

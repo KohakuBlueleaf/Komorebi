@@ -66,3 +66,16 @@ def test_kmr_doctor_exits_zero_in_a_fresh_process_with_a_missing_tree():
     )
     assert done.returncode == 0, done.stderr
     assert "komorebi" in done.stdout
+
+
+def test_setup_names_what_it_needs_without_the_runtime_package(monkeypatch, capsys):
+    monkeypatch.setattr(_env, "runtime_version", lambda: None)
+    for command in ("sfpi", "prime", "setup"):
+        assert cli.main([command]) == 2
+        err = capsys.readouterr().err
+        assert f"kmr {command}: needs the komorebi-runtime package" in err
+        assert ("x280_prime_test" in err) == (command != "sfpi")
+
+
+def test_doctor_names_the_card_setup(no_home, capsys):
+    assert "card setup    once per card: kmr setup" in run_doctor(capsys)[1]

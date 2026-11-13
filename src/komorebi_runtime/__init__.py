@@ -1,5 +1,5 @@
-"""The tt-metal build that Komorebi and Kohaku-TT share: where its libraries, its kernel
-runtime tree, its X280 runtime pieces and its RISC-V compiler are, and its pin.
+"""The tt-metal build that Komorebi and Kohaku-TT share: where its libraries, kernel
+runtime tree, X280 pieces, priming program and RISC-V compiler are, and its pin.
 
 Nothing runs at import; `activate()` is the only call that changes the process.
 """
@@ -24,6 +24,8 @@ X280_SOURCE = Path("tt_metal/fabric/experimental/x280")
 X280_OBJECTS = ("entry_active.o", "x280_active_start.o")
 X280_OBJECT_DIR = Path("build/x280/obj")
 X280_IDLE_IMAGE = Path("build/x280/firmware-lim-idle.bin")
+# The pinned tree's program that primes a card's X280 memory, with its rpath to LIB.
+PRIME_PROGRAM = Path("bin/x280_prime_test")
 SFPI_VERSION = Path("tt_metal/sfpi-version")
 SFPI_BIN = Path("compiler/bin")
 
@@ -65,7 +67,7 @@ def pin(base=None):
 
 
 def version(base=None):
-    """The package version: the pin plus our build number, e.g. "0.81.1.2"."""
+    """The package version: the pin plus our build number, e.g. "0.81.1.3"."""
     return manifest(base)["version"]
 
 
@@ -86,6 +88,11 @@ def x280(base=None):
     objects = [tree(base) / X280_OBJECT_DIR / name for name in X280_OBJECTS]
     script = source / "ld" / "x280.ld"
     return X280(objects, script, source / "include", tree(base) / X280_IDLE_IMAGE)
+
+
+def prime_program(base=None):
+    """The program that primes a card's X280 memory (absent before 0.81.1.3)."""
+    return package_directory(base) / PRIME_PROGRAM
 
 
 def cache_directory(environ=None):

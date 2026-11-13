@@ -465,8 +465,8 @@ Details: [install](docs/install.md).
 The distribution is named `komorebi-tt`; the package is imported as `komorebi` and the
 command is `kmr`. From 0.1.0, `pip install "komorebi-tt[runtime]"` installs it with
 `komorebi-runtime`, the pinned tt-metal build, and a program runs on a card with no
-tt-metal tree ([from 0.1.0](docs/install.md#from-010-the-two-wheels)); until then both
-wheels are built from a clone.
+tt-metal tree ([from 0.1.0](docs/install.md#from-010-the-two-wheels)); `kmr setup`
+prepares the card once. Until then both wheels are built from a clone.
 
 ## Usage
 
