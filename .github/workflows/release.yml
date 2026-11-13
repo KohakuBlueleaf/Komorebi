@@ -184,14 +184,20 @@ jobs:
           flag=()
           if [ "${PRERELEASE}" = "true" ]; then flag=(--prerelease); fi
           # The written release notes when the version has them, else generated ones.
+          # The notes are a page of the documentation: the script drops the front
+          # matter and the title and makes the links absolute at the tag.
           notes="docs/releases/${VERSION}.md"
           body=(--generate-notes)
-          if [ -f "${notes}" ]; then body=(--notes-file "${notes}"); fi
+          if [ -f "${notes}" ]; then
+            python3 packaging/ci/release_notes.py "${notes}" "${tag}" \
+              "${GITHUB_REPOSITORY}" > "${RUNNER_TEMP}/notes.md"
+            body=(--notes-file "${RUNNER_TEMP}/notes.md")
+          fi
           if ! gh release view "${tag}" > /dev/null 2>&1; then
             gh release create "${tag}" --title "${NAME} ${VERSION}" "${body[@]}" \
               "${flag[@]}" --target "$(git rev-parse HEAD)"
           else
-            if [ -f "${notes}" ]; then flag+=(--notes-file "${notes}"); fi
+            if [ -f "${notes}" ]; then flag+=("${body[@]}"); fi
             gh release edit "${tag}" --title "${NAME} ${VERSION}" "${flag[@]}"
           fi
           for f in dist/*.whl; do gh release upload "${tag}" "$f" --clobber; done

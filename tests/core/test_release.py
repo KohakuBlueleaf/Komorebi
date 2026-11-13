@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import re
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -70,7 +72,25 @@ def test_the_publish_jobs_have_the_gate_and_no_secret():
     assert "skip-existing" not in jobs["publish-pypi"]
     # The release's body: the version's written notes when they exist.
     assert 'notes="docs/releases/${VERSION}.md"' in jobs["publish-github"]
-    assert '--notes-file "${notes}"' in jobs["publish-github"]
+    assert "packaging/ci/release_notes.py" in jobs["publish-github"]
+    assert '--notes-file "${RUNNER_TEMP}/notes.md"' in jobs["publish-github"]
+
+
+def test_release_notes_body_has_no_front_matter_and_absolute_links():
+    notes = "docs/releases/0.1.0.md"
+    script = ROOT / "packaging" / "ci" / "release_notes.py"
+    out = subprocess.run(
+        [sys.executable, str(script), notes, "v0.1.0"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert not out.startswith("---") and not out.startswith("# ")
+    assert "](../" not in out
+    base = "https://github.com/KohakuBlueleaf/Komorebi/blob/v0.1.0/"
+    assert f"]({base}docs/install.md#from-a-clone)" in out
+    assert f"]({base}README.md#measured)" in out
 
 
 def test_the_release_workflow_does_not_name_a_distribution():

@@ -46,7 +46,8 @@ the card's network between them.
 | Execution control | A dispatcher on one X280 cluster submits the commands and runs streams and graphs of them on the card. C threads on the other three X280 clusters run the irregular part of a program. |
 
 **Status: early development; 0.1.0 is a first release, for one card model.** Everything
-below runs on one P150A, from a clone, against a tt-metal source tree. It has run on no other hardware.
+below runs on one P150A, from the two wheels on PyPI or from a clone against a tt-metal
+source tree. It has run on no other hardware.
 
 ## At a glance
 
