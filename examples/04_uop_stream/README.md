@@ -67,11 +67,11 @@ jobs, and the grid saw the simulator's teams in order.
 
 | Way | Microseconds per job | Most records in flight | Upload |
 |---|---|---|---|
-| `hostfed` | 163 | 1 | - |
-| `issue` | 11.0 | 1 | 576 bytes |
-| `submit` | 7.8 | 4 | 512 bytes |
+| `hostfed` | 161 | 1 | - |
+| `issue` | 11.5 | 1 | 576 bytes |
+| `submit` | 8.4 | 3 | 512 bytes |
 
 Host-fed, every job is a round trip to the host; on the X280 it is a round trip to the
 dispatch kernel on the same cluster. The three error streams ended with `opcode`,
-`steps` and `never_fits`. The dispatch kernel's image with both engines is 22,864
+`steps` and `never_fits`. The dispatch kernel's image with both engines is 23,888
 bytes.
