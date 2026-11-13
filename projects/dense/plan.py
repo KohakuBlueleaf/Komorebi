@@ -11,8 +11,10 @@ from komorebi import abi
 HERE = Path(__file__).resolve().parent
 DENSE_H = HERE / "kernels" / "dense.h"
 GRID_H = HERE / "kernels" / "grid" / "grid.h"
+SPLIT_H = HERE / "kernels" / "split" / "split.h"
 K = abi.constants(DENSE_H, known=abi.headers().constants)
 G = abi.constants(GRID_H, known=abi.headers().constants)
+S = abi.constants(SPLIT_H, known=abi.headers().constants)
 
 TILE = 32
 TILE_BYTES = K["kTileBytes"]
@@ -318,6 +320,94 @@ def grid_plan(mt, kt, nt, grid=(12, 10), budget=L1_BUDGET, layout=None):
         else:
             bm = cdiv(bm, 2) if bm > 1 else 0
     return None
+
+
+REDUCE_FORMS = {"owner": 0, "tree": 1}
+
+
+@dataclass(frozen=True)
+class Split:
+    """[mt, kt] @ [kt, nt] with K split: groups of s consecutive cores, one oh x ow
+    output block a group, each core 1/s of K in chunks of kc, its part summed into
+    the group's root by owner or by tree. Subblock sh x sw."""
+
+    mt: int
+    kt: int
+    nt: int
+    s: int
+    oh: int
+    ow: int
+    kc: int
+    sh: int
+    sw: int
+
+    def nbw(self):
+        return cdiv(self.nt, self.ow)
+
+    def groups(self):
+        return cdiv(self.mt, self.oh) * self.nbw()
+
+    def cores(self):
+        return self.groups() * self.s
+
+    def arrive_pages(self):
+        """Arrival slots of P tiles for either form: s - 1 (owner) covers the tree's."""
+        return max(1, self.s - 1) * self.oh * self.ow
+
+    def words(self):
+        """The kernels' arguments, in split.h's order."""
+        return [
+            self.mt,
+            self.kt,
+            self.nt,
+            self.s,
+            self.oh,
+            self.ow,
+            self.kc,
+            self.sh,
+            self.sw,
+            self.nbw(),
+            self.arrive_pages(),
+        ]
+
+    def buffers(self):
+        """(index, format, page bytes, pages) of the program's buffers."""
+        p = self.oh * self.ow
+        return [
+            (S["kCbSa"], "bfloat16", TILE_BYTES, 2 * self.oh * self.kc),
+            (S["kCbSw"], "bfloat16", TILE_BYTES, 2 * self.kc * self.ow),
+            (S["kCbArrive"], "float32", S["kSumBytes"], self.arrive_pages()),
+            (S["kCbSum"], "float32", S["kSumBytes"], p),
+            (S["kCbSplitOut"], "bfloat16", TILE_BYTES, p),
+        ]
+
+    def l1_bytes(self):
+        return sum(page * pages for _, _, page, pages in self.buffers())
+
+    def check(self, cores, budget=L1_BUDGET):
+        if not 1 <= self.s <= self.kt:
+            raise ValueError(f"group of {self.s} for {self.kt} K tiles")
+        if self.cores() > cores:
+            raise ValueError(f"{self.cores()} cores > {cores}")
+        if self.oh % self.sh or self.ow % self.sw or self.sh * self.sw > 4:
+            raise ValueError(f"subblock {self.sh} x {self.sw} of {self.oh} x {self.ow}")
+        if self.l1_bytes() > budget:
+            raise ValueError(f"{self.l1_bytes()} bytes of L1 > {budget}")
+
+
+def split_plan(mt, kt, nt, s, oh, ow, kc=None, cores=120, budget=L1_BUDGET):
+    """A K-split plan: group size s, output block oh x ow, K chunk kc (default: the
+    whole share of K, at most MAX_CHUNK)."""
+    kc = kc or min(cdiv(kt, s), MAX_CHUNK)
+    sh, sw = subblock(oh, ow)
+    sp = Split(mt, kt, nt, s, oh, ow, kc, sh, sw)
+    sp.check(cores, budget)
+    return sp
+
+
+def split_args(sp, a_addr, w_addr, y_addr, form="owner", mode=0):
+    """Record words a0..a4 of SPLIT."""
+    return [a_addr, w_addr, y_addr, REDUCE_FORMS[form], mode]
 
 
 def grid_args(g, a_addr, w_addr, y_addr, mode=0):

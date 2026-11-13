@@ -89,6 +89,7 @@ CUTS = {  # cut-down runs: (name, mode) per form
         ("lanes_only", pl.G["kGridLanes"]),
         ("product_only", pl.G["kGridProduct"]),
     ),
+    "split": (("parts_only", pl.S["kSplitParts"]),),
 }
 
 
@@ -149,6 +150,8 @@ def main():
     a.add_argument("--shape", choices=run.SHAPES, required=True)
     a.add_argument("--form", choices=run.FORMS, default=None)
     a.add_argument("--grid", default=None, help="as run.py's --grid")
+    a.add_argument("--split", default=None, help="as run.py's --split")
+    a.add_argument("--reduce", choices=list(pl.REDUCE_FORMS), default="owner")
     a.add_argument("--seconds", type=float, default=4.0)
     a.add_argument("--cut-seconds", type=float, default=1.0)
     a.add_argument("--max-reps", type=int, default=1_000_000)
@@ -159,8 +162,8 @@ def main():
     a.add_argument("--json", default=None)
     args = a.parse_args()
     m, k, n = run.SHAPES[args.shape]
-    p = run.make_plan(args.form, (m, k, n), args.grid)
-    form = "grid" if isinstance(p, pl.Grid) else "plain"
+    p = run.make_plan(args.form, (m, k, n), args.grid, args.split)
+    form = form_of(p)
     out = {"shape": args.shape, "m": m, "k": k, "n": n, "plan": run.describe(p)}
     log("building the inputs")
     x, w = ref.inputs(m, k, n)
@@ -179,7 +182,9 @@ def main():
         prof_t = card.prof_tensor(device, cores)
         out["x280_mhz"] = session.pll_mhz
         out["deadline_s"] = args.deadline or deadline(p)
-        product = run.load(session, p, tensors, deadline=out["deadline_s"])
+        out["reduce"] = args.reduce
+        load = dict(deadline=out["deadline_s"], reduce=args.reduce)
+        product = run.load(session, p, tensors, **load)
         mhz = out["profile_mhz"] = aiclk_mhz(index)
         out["load_us"] = product.load_us
         try:
@@ -197,13 +202,14 @@ def main():
         got = card.read_rows(session, tensors["y"], rows, log)
         out["readback_s"] = round(time.perf_counter() - t0, 3)
         log("Y's sampled rows read back")
-        # the profile last, in a load of its own: one profiled call
-        product = run.load(session, p, tensors, deadline=out["deadline_s"])
-        product.single(1)
-        prof = product.profile(session, prof_t)
-        out["profile"] = profile_summary(prof, mhz, form == "grid")
-        product.stop()
-        log("profile read")
+        # the profile last, in a load of its own: one profiled call (none in the split)
+        if form != "split":
+            product = run.load(session, p, tensors, **load)
+            product.single(1)
+            prof = product.profile(session, prof_t)
+            out["profile"] = profile_summary(prof, mhz, form == "grid")
+            product.stop()
+            log("profile read")
     log("checking the sampled rows")
     out["check"] = run.check(got[:, :n], rows, x, w, "uniform")
     out["ok"] = out["check"]["ok"] and run.clean(out["run"])
@@ -219,10 +225,14 @@ def deadline(p):
     return round(3 * pl.flops(p) / 20e12 + 0.05, 3)
 
 
+def form_of(p):
+    return {pl.Grid: "grid", pl.Split: "split"}.get(type(p), "plain")
+
+
 def measure(product, p, args, out):
     """Single calls, the loop, the cut-down runs, one last full call."""
     index = visible_card()
-    form = "grid" if isinstance(p, pl.Grid) else "plain"
+    form = form_of(p)
     single = product.single(21)
     out["single_us"] = {"median": float(np.median(single)), "min": single.min()}
     one = float(np.median(single))

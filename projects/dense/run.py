@@ -20,7 +20,7 @@ from projects.dense import plan as pl  # noqa: E402
 from ref import dense as ref  # noqa: E402
 
 SHAPES = pl.SHAPES
-FORMS = ["resident", "stream", "grid"]
+FORMS = ["resident", "stream", "grid", "split"]
 # Bound of the check on uniform inputs (README.md, "The check's bound").
 RMS_BOUND, MAX_BOUND = 1e-2, 2e-2
 EXACT_K = 64  # integer inputs in [-2, 2]: every sum is a bf16 integer up to K = 64
@@ -64,6 +64,8 @@ def parse():
     p.add_argument(
         "--grid", default=None, help="[layout:]rows,cols,pcm,pcn,bm,bn,kb[,wa,ww]"
     )
+    p.add_argument("--split", default=None, help="K split: s,oh,ow[,kc]")
+    p.add_argument("--reduce", choices=list(pl.REDUCE_FORMS), default="owner")
     p.add_argument("--inputs", choices=["uniform", "int"], default="uniform")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--json", default=None)
@@ -74,13 +76,15 @@ def parse():
     return args
 
 
-def make_plan(form, mkn, grid=None):
+def make_plan(form, mkn, grid=None, split=None):
     """The plan of a shape: the given form (or W resident when it fits, else the grid
     form); `grid` a grid plan "[layout:]rows,cols,pcm,pcn,bm,bn,kb[,wa,ww]" or a
-    layout name for the rule's plan in it."""
+    layout name for the rule's plan in it; `split` a K-split plan "s,oh,ow[,kc]"."""
     if any(v % pl.TILE for v in mkn):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {mkn}")
     mt, kt, nt = (v // pl.TILE for v in mkn)
+    if form == "split" or split:
+        return pl.split_plan(mt, kt, nt, *(int(v) for v in split.split(",")))
     if grid in pl.LAYOUTS:
         return pl.grid_plan(mt, kt, nt, layout=grid)
     if grid:
@@ -104,12 +108,16 @@ def describe(plan):
     if isinstance(plan, pl.Grid):
         out |= {"form": "grid", "nk": plan.nk, "nbh": plan.nbh, "nbw": plan.nbw}
         out |= {"rect": plan.rect((12, 10))}
+    if isinstance(plan, pl.Split):
+        out |= {"form": "split", "cores": plan.cores()}
     return out
 
 
-def load(session, plan, tensors, team=0, deadline=2.0):
+def load(session, plan, tensors, team=0, deadline=2.0, reduce="owner"):
     """The plan's program loaded on the session (each record's `deadline` in s): a
-    card.Product or card.GridProduct."""
+    card.Product, GridProduct or SplitProduct (summing by `reduce`)."""
+    if isinstance(plan, pl.Split):
+        return card.SplitProduct(session, plan, tensors, reduce, deadline=deadline)
     if isinstance(plan, pl.Grid):
         return card.GridProduct(session, plan, tensors, deadline=deadline)
     count = team or pl.team_size(plan, len(session.nocs().words))
@@ -119,10 +127,10 @@ def load(session, plan, tensors, team=0, deadline=2.0):
 def main():
     args = parse()
     m, k, n = args.mkn
-    plan = make_plan(args.form, args.mkn, args.grid)
+    plan = make_plan(args.form, args.mkn, args.grid, args.split)
     if plan is None:
         raise SystemExit(f"no plan fits L1 for {m} x {k} x {n}")
-    out = {"m": m, "k": k, "n": n, "plan": describe(plan)}
+    out = {"m": m, "k": k, "n": n, "plan": describe(plan), "reduce": args.reduce}
     a, w = ref.inputs(m, k, n, args.seed, args.inputs)
     with km.Session(log=log) as session:
         device = session.device
@@ -133,7 +141,7 @@ def main():
             "y": card.bf16_tensor(device, np.zeros((m, n), np.float32)),
         }
         out["upload_s"] = round(time.perf_counter() - t0, 3)
-        product = load(session, plan, tensors, args.team)
+        product = load(session, plan, tensors, args.team, reduce=args.reduce)
         log(f"loaded, team {product.team}")
         out["load_us"] = product.load_us
         try:

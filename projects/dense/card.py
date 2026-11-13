@@ -14,9 +14,10 @@ from komorebi import _env, abi, layout
 from projects.dense import plan as pl
 from ref import dense as ref
 
-K, G = pl.K, pl.G
+K, G, S = pl.K, pl.G, pl.S
 KERNELS = pl.HERE / "kernels"
 GRID_KERNELS = KERNELS / "grid"
+SPLIT_KERNELS = KERNELS / "split"
 LANE_FIELDS = abi.struct_fields(
     _env.include_dir() / "komorebi" / "device" / "km_lane.hpp", "LaneArgs"
 )
@@ -311,3 +312,55 @@ class GridProduct:
         return words[: self.team[1], : G["kGpWords"]]
 
     stop, failed, summary = Product.stop, Product.failed, Product.summary
+
+
+def split_program(sp, tensors, fidelity="HiFi2"):
+    """The K-split form's program for plan sp: every core gets the plan words."""
+    words = sp.words()
+    accessor = ttnn.TensorAccessorArgs
+    fp32 = "UnpackToDestFp32"
+    return km.Program(
+        "dense_split",
+        kernels=SPLIT_KERNELS,
+        buffers=[km.Buffer(*b) for b in sp.buffers()],
+        args=lambda core: (words, words, words),
+        compile_args={
+            "reader": accessor(tensors["a"]).get_compile_time_args()
+            + accessor(tensors["w"]).get_compile_time_args(),
+            "writer": accessor(tensors["y"]).get_compile_time_args(),
+        },
+        compute={
+            "math_fidelity": fidelity,
+            "fp32_dest_acc_en": True,
+            "unpack_to_dest_mode": {S["kCbArrive"]: fp32, S["kCbSum"]: fp32},
+        },
+        segments=pl.SPLIT_H,
+    )
+
+
+class SplitProduct(GridProduct):
+    """Plan sp (K split) loaded on a session with operand tensors a, w, y: one SPLIT
+    record per call on cores 0 to sp.cores() - 1, exclusive (its ports), by `form`."""
+
+    seg = "split"
+    modes = {"full": S["kSplitFull"], "parts": S["kSplitParts"]}
+
+    def __init__(
+        self,
+        session,
+        sp,
+        tensors,
+        form="owner",
+        fidelity="HiFi2",
+        deadline=2.0,
+        wait=1.0,
+    ):
+        self.g, self.t, self.form = sp, tensors, form
+        self.team = (0, sp.cores())
+        program = split_program(sp, tensors, fidelity)
+        self.run = session.load(program, deadline=deadline, wait=wait)
+        self.load_us = None
+
+    def words(self, mode):
+        addr = [self.t[k].buffer_address() for k in ("a", "w", "y")]
+        return pl.split_args(self.g, *addr, self.form, mode)
