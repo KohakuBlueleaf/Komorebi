@@ -7,14 +7,14 @@
 #include "kmx_layout.h"
 #include "komorebi/abi/km_abi.h"
 
-/* The includer defines KMX_RING_FENCE_W and _R (fences), _SWEEP(p, n) (a cached
- * range's flush or invalidate), _NOW() (the timer), _END() (KMX_OK or why waits end) */
+/* The includer defines KMX_RING_FENCE_W and _R (fences), _SWEEP(address, bytes) (flush
+ * or invalidate a cached range), _NOW() (the timer), _END() (KMX_OK or why it ends) */
 
 #define KMX_RING_SPINS 256u /* polls between two checks of the clock and the stop */
 #define KMX_STASH 32u       /* events kmx_wait set aside for kmx_poll */
 
 typedef struct {
-    volatile uint8_t* cmd;       /* command_depth slots of 64 bytes; 0: no ring */
+    volatile uint8_t* commands;  /* command_depth slots of 64 bytes; 0: no ring */
     volatile uint32_t* consumed; /* the kernel's count of commands taken */
     volatile uint8_t* events;    /* event_depth events of 16 bytes */
     volatile uint64_t* read;     /* 64-byte line: word 0 the events the thread took */
@@ -25,186 +25,192 @@ typedef struct {
     kmx_event stash[KMX_STASH];
 } kmx_ring_t;
 
-static inline int kmx_ring_pow2(uint32_t n) {
-    return n != 0 && (n & (n - 1)) == 0;
+static inline int kmx_ring_pow2(uint32_t value) {
+    return value != 0 && (value & (value - 1)) == 0;
 }
 
-/* Sets up `r` from the descriptor line: 1, or 0 when the line names no valid ring
+/* Sets up `ring` from the descriptor line: 1, or 0 when the line names no valid ring
  * (all-zero means none). Addresses are as this cluster sees them. */
-static inline int kmx_ring_open(kmx_ring_t* r, const volatile kmx_ring_descriptor* d) {
-    r->cmd = 0;
-    r->next = 1;
-    r->taken = 0;
-    r->stashed = 0;
+static inline int kmx_ring_open(
+    kmx_ring_t* ring, const volatile kmx_ring_descriptor* descriptor
+) {
+    ring->commands = 0;
+    ring->next = 1;
+    ring->taken = 0;
+    ring->stashed = 0;
     if (
-        d->cmd == 0 || !kmx_ring_pow2(d->command_depth) ||
-        !kmx_ring_pow2(d->event_depth) || d->command_depth > KMX_RING_DEPTH_MAX ||
-        d->event_depth > KMX_RING_DEPTH_MAX || (d->cmd & 63u) || (d->events & 15u) ||
-        (d->read & 63u) || (d->consumed & 3u) || d->events == 0 || d->read == 0 ||
-        d->consumed == 0
+        descriptor->cmd == 0 || !kmx_ring_pow2(descriptor->command_depth) ||
+        !kmx_ring_pow2(descriptor->event_depth) ||
+        descriptor->command_depth > KMX_RING_DEPTH_MAX ||
+        descriptor->event_depth > KMX_RING_DEPTH_MAX || (descriptor->cmd & 63u) ||
+        (descriptor->events & 15u) || (descriptor->read & 63u) ||
+        (descriptor->consumed & 3u) || descriptor->events == 0 ||
+        descriptor->read == 0 || descriptor->consumed == 0
     ) {
         return 0;
     }
-    r->consumed = (volatile uint32_t*)(uintptr_t)d->consumed;
-    r->events = (volatile uint8_t*)(uintptr_t)d->events;
-    r->read = (volatile uint64_t*)(uintptr_t)d->read;
-    r->command_depth = d->command_depth;
-    r->event_depth = d->event_depth;
-    r->cached = (d->flags & KMX_RING_CACHED) != 0;
-    r->cmd = (volatile uint8_t*)(uintptr_t)d->cmd;
+    ring->consumed = (volatile uint32_t*)(uintptr_t)descriptor->consumed;
+    ring->events = (volatile uint8_t*)(uintptr_t)descriptor->events;
+    ring->read = (volatile uint64_t*)(uintptr_t)descriptor->read;
+    ring->command_depth = descriptor->command_depth;
+    ring->event_depth = descriptor->event_depth;
+    ring->cached = (descriptor->flags & KMX_RING_CACHED) != 0;
+    ring->commands = (volatile uint8_t*)(uintptr_t)descriptor->cmd;
     return 1;
 }
 
-/* Stores command r->next: the command's words first, then its number in sequence and
+/* Stores command ring->next: the command's words first, then its number in sequence and
  * the three landing words, so the kernel never sees the number over old words. */
 static inline int kmx_ring_submit(
-    kmx_ring_t* r, const km_command_t* rec, uint32_t* handle
+    kmx_ring_t* ring, const km_command_t* command, uint32_t* handle
 ) {
-    if (r->cmd == 0) {
+    if (ring->commands == 0) {
         return KMX_STOPPED;
     }
-    const uint32_t i = r->next;
-    if (r->cached) {
-        KMX_RING_SWEEP((uintptr_t)r->consumed, 4);
+    const uint32_t number = ring->next;
+    if (ring->cached) {
+        KMX_RING_SWEEP((uintptr_t)ring->consumed, 4);
     }
     KMX_RING_FENCE_R();
-    if ((int32_t)(i - r->command_depth - *r->consumed) > 0) {
+    if ((int32_t)(number - ring->command_depth - *ring->consumed) > 0) {
         return KMX_FULL;
     }
-    volatile uint32_t* w = (volatile uint32_t*)(r->cmd + (i % r->command_depth) * 64u);
-    const uint32_t* src = (const uint32_t*)rec;
-    for (uint32_t j = 0; j < 16; j++) {
-        if (j % 4 != 0) {
-            w[j] = src[j];
+    volatile uint32_t* slot = (
+        (volatile uint32_t*)(ring->commands + (number % ring->command_depth) * 64u)
+    );
+    const uint32_t* words = (const uint32_t*)command;
+    for (uint32_t word = 0; word < 16; word++) {
+        if (word % 4 != 0) {
+            slot[word] = words[word];
         }
     }
     KMX_RING_FENCE_W();
-    for (uint32_t j = 0; j < 16; j += 4) {
-        w[j] = i;
+    for (uint32_t word = 0; word < 16; word += 4) {
+        slot[word] = number;
     }
     KMX_RING_FENCE_W();
-    if (r->cached) {
-        KMX_RING_SWEEP((uintptr_t)w, 64);
+    if (ring->cached) {
+        KMX_RING_SWEEP((uintptr_t)slot, 64);
     }
-    r->next = i + 1;
-    *handle = i;
+    ring->next = number + 1;
+    *handle = number;
     return KMX_OK;
 }
 
-/* Takes event r->taken + 1 if it is whole (its index read before and after its
+/* Takes event ring->taken + 1 if it is whole (its index read before and after its
  * fields), and tells the kernel through the read line. Returns 1 or 0. */
-static inline int kmx_ring_take(kmx_ring_t* r, kmx_event* event) {
-    const uint32_t i = r->taken + 1;
-    volatile const uint32_t* e = (
-        (volatile const uint32_t*)(r->events + (i % r->event_depth) * 16u)
+static inline int kmx_ring_take(kmx_ring_t* ring, kmx_event* event) {
+    const uint32_t number = ring->taken + 1;
+    volatile const uint32_t* line = (
+        (volatile const uint32_t*)(ring->events + (number % ring->event_depth) * 16u)
     );
-    if (r->cached) {
-        KMX_RING_SWEEP((uintptr_t)e, 16);
+    if (ring->cached) {
+        KMX_RING_SWEEP((uintptr_t)line, 16);
     }
     KMX_RING_FENCE_R();
-    if (e[0] != i) {
+    if (line[0] != number) {
         return 0;
     }
     KMX_RING_FENCE_R();
-    const uint32_t req = e[1], status = e[2], ticks = e[3];
+    const uint32_t request = line[1], status = line[2], ticks = line[3];
     KMX_RING_FENCE_R();
-    if (e[0] != i) {
+    if (line[0] != number) {
         return 0;
     }
-    event->handle = req;
+    event->handle = request;
     event->kind = status & 0xFFu;
     event->auxiliary = status >> 8;
     event->ticks = ticks;
-    r->taken = i;
-    r->read[0] = i;
-    for (uint32_t j = 1; j < 8; j++) {
-        r->read[j] = 0;
+    ring->taken = number;
+    ring->read[0] = number;
+    for (uint32_t word = 1; word < 8; word++) {
+        ring->read[word] = 0;
     }
     KMX_RING_FENCE_W();
-    if (r->cached) {
-        KMX_RING_SWEEP((uintptr_t)r->read, 64);
+    if (ring->cached) {
+        KMX_RING_SWEEP((uintptr_t)ring->read, 64);
     }
     return 1;
 }
 
 /* One event if any: a set-aside one first, else the ring's next. Never waits. */
-static inline int kmx_ring_poll(kmx_ring_t* r, kmx_event* event) {
-    if (r->cmd == 0) {
+static inline int kmx_ring_poll(kmx_ring_t* ring, kmx_event* event) {
+    if (ring->commands == 0) {
         return KMX_STOPPED;
     }
-    if (r->stashed != 0) {
-        *event = r->stash[0];
-        r->stashed--;
-        for (uint32_t j = 0; j < r->stashed; j++) {
-            r->stash[j] = r->stash[j + 1];
+    if (ring->stashed != 0) {
+        *event = ring->stash[0];
+        ring->stashed--;
+        for (uint32_t position = 0; position < ring->stashed; position++) {
+            ring->stash[position] = ring->stash[position + 1];
         }
         return KMX_OK;
     }
-    return kmx_ring_take(r, event) ? KMX_OK : KMX_NONE;
+    return kmx_ring_take(ring, event) ? KMX_OK : KMX_NONE;
 }
 
 /* The event of `handle` if it came (KMX_OK), else KMX_NONE, or KMX_FULL as for
  * kmx_ring_wait; events of other handles are set aside. Never waits. */
-static inline int kmx_ring_look(kmx_ring_t* r, uint32_t handle, kmx_event* event) {
-    if (r->cmd == 0) {
+static inline int kmx_ring_look(kmx_ring_t* ring, uint32_t handle, kmx_event* event) {
+    if (ring->commands == 0) {
         return KMX_STOPPED;
     }
-    for (uint32_t j = 0; j < r->stashed; j++) {
-        if (r->stash[j].handle == handle) {
-            *event = r->stash[j];
-            r->stashed--;
-            for (uint32_t m = j; m < r->stashed; m++) {
-                r->stash[m] = r->stash[m + 1];
+    for (uint32_t position = 0; position < ring->stashed; position++) {
+        if (ring->stash[position].handle == handle) {
+            *event = ring->stash[position];
+            ring->stashed--;
+            for (uint32_t later = position; later < ring->stashed; later++) {
+                ring->stash[later] = ring->stash[later + 1];
             }
             return KMX_OK;
         }
     }
-    kmx_event got;
-    while (r->stashed < KMX_STASH && kmx_ring_take(r, &got)) {
-        if (got.kind == KMX_EVENT_WAKE) {
+    kmx_event taken_event;
+    while (ring->stashed < KMX_STASH && kmx_ring_take(ring, &taken_event)) {
+        if (taken_event.kind == KMX_EVENT_WAKE) {
             continue;
         }
-        if (got.handle == handle) {
-            *event = got;
+        if (taken_event.handle == handle) {
+            *event = taken_event;
             return KMX_OK;
         }
-        r->stash[r->stashed++] = got;
+        ring->stash[ring->stashed++] = taken_event;
     }
-    return r->stashed == KMX_STASH ? KMX_FULL : KMX_NONE;
+    return ring->stashed == KMX_STASH ? KMX_FULL : KMX_NONE;
 }
 
 /* The event of `handle`, waiting until the timer passes `deadline`; events of other
  * handles are set aside for kmx_poll (KMX_FULL while KMX_STASH are set aside). */
 static inline int kmx_ring_wait(
-    kmx_ring_t* r, uint32_t handle, uint64_t deadline, kmx_event* event
+    kmx_ring_t* ring, uint32_t handle, uint64_t deadline, kmx_event* event
 ) {
-    if (r->cmd == 0) {
+    if (ring->commands == 0) {
         return KMX_STOPPED;
     }
-    for (uint32_t j = 0; j < r->stashed; j++) {
-        if (r->stash[j].handle == handle) {
-            *event = r->stash[j];
-            r->stashed--;
-            for (uint32_t m = j; m < r->stashed; m++) {
-                r->stash[m] = r->stash[m + 1];
+    for (uint32_t position = 0; position < ring->stashed; position++) {
+        if (ring->stash[position].handle == handle) {
+            *event = ring->stash[position];
+            ring->stashed--;
+            for (uint32_t later = position; later < ring->stashed; later++) {
+                ring->stash[later] = ring->stash[later + 1];
             }
             return KMX_OK;
         }
     }
     for (uint32_t spins = 1;; spins++) {
-        kmx_event got;
-        if (r->stashed == KMX_STASH) {
+        kmx_event taken_event;
+        if (ring->stashed == KMX_STASH) {
             return KMX_FULL; /* nothing is taken that could not be kept */
         }
-        if (kmx_ring_take(r, &got)) {
-            if (got.kind == KMX_EVENT_WAKE) {
+        if (kmx_ring_take(ring, &taken_event)) {
+            if (taken_event.kind == KMX_EVENT_WAKE) {
                 continue;
             }
-            if (got.handle == handle) {
-                *event = got;
+            if (taken_event.handle == handle) {
+                *event = taken_event;
                 return KMX_OK;
             }
-            r->stash[r->stashed++] = got;
+            ring->stash[ring->stashed++] = taken_event;
             continue;
         }
         if (spins % KMX_RING_SPINS == 0) {

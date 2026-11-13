@@ -6,9 +6,9 @@
 #include <stdint.h>
 
 #if defined(__cplusplus)
-#define KMX_STATIC_ASSERT(c, msg) static_assert(c, msg)
+#define KMX_STATIC_ASSERT(condition, message) static_assert(condition, message)
 #else
-#define KMX_STATIC_ASSERT(c, msg) _Static_assert(c, msg)
+#define KMX_STATIC_ASSERT(condition, message) _Static_assert(condition, message)
 #endif
 
 #define KMX_MAGIC 0x31786D6Bu /* "kmx1" */
