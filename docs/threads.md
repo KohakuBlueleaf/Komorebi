@@ -180,10 +180,10 @@ with km.Session() as session:
   did not return in time and was stopped), `state`, the library `error`, the thread's
   `code` and `words`, the last progress stamp `where` and its time `where_us`, and the
   thread's time `us`.
-- `run.thread.read(name)` returns a region's bytes once `run.stop()` has returned (a
-  tensor read waits for idle cores too). `run.thread.regions.address(name)` gives
-  `(bank, bank address)` for a Tensix kernel, which reaches the region with
-  `get_noc_addr_from_bank_id<true>(bank, address)`.
+- `run.thread.read(name)` returns a region's bytes once `run.stop()` has returned (the
+  thread writes its regions until it stops; an earlier read raises).
+  `run.thread.regions.address(name)` gives `(bank, bank address)` for a Tensix kernel,
+  which reaches the region with `get_noc_addr_from_bank_id<true>(bank, address)`.
 - `run.stop(timeout)` stops a thread still running before it stops the kernel, inside
   the same deadline.
 

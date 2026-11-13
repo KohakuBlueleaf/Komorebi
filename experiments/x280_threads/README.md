@@ -161,6 +161,15 @@ loop looks every fourth pass; a thread's command then waits at most four passes
 
     python ring_cost.py --idle 1.0 --reps 3
 
+## The host's read of a region (`region_read.py`)
+
+The thread fills a region with known words, the run stops, and `run.thread.read` reads
+it back: only the region's pages of bank 6, over 4 MB in 2 MB chunks. Card 1, host
+load about 4: 1 MB in 0.48 s, 5 MB in 3.8 s (three chunks), both exact.
+
+    python region_read.py --mb 1
+    python region_read.py --mb 5
+
 ## A thread that ignores its deadline (from the sources, not run)
 
 Read in tt-metal's X280 runtime (`tt_metal/fabric/experimental/x280`):
@@ -187,6 +196,7 @@ line and the runtime's STOP then end any thread that follows the rule.
 |---|---|
 | `probe.py` | the host side of the three card probes; one JSON line per run |
 | `ring_cost.py` | the idle pass of the dispatch kernel with and without a thread's ring; one JSON line |
+| `region_read.py` | the host's read of a region the thread wrote, timed and checked; one JSON line |
 | `build.py` | builds the images into `build/` with the X280 toolchain of the tt-metal tree |
 | `x280/probe.h` | the images' shared layout: argument block, progress stamps, go line, result words, bounded waits, the Flush64 sweep |
 | `x280/beat.c`, `x280/dram.c`, `x280/rates.c` | the images |
