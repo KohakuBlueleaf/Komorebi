@@ -66,6 +66,26 @@ def test_a_compile_error_in_the_checked_build_raises_program_error(card, tmp_pat
     assert "generic_op" not in log and log[-1] == "close"
 
 
+def test_the_exit_bound_is_set_only_when_the_environment_has_none(card):
+    session, _, _, _ = card
+    name, log = session.OP_TIMEOUT, []
+    unset = {}
+    assert session.bound_exit(unset, log.append) == 30.0
+    assert (
+        unset[name] == "30"
+        and len(log) == 1
+        and session.exit_wait(unset) == "up to 30 s"
+    )
+    for given, bound, phrase in (
+        ("12.5", 12.5, "up to 12.5 s"),
+        ("0", 0.0, "without a bound"),
+    ):
+        env = {name: given}
+        assert session.bound_exit(env, log.append) == bound
+        assert env[name] == given and session.exit_wait(env) == phrase
+    assert len(log) == 1  # a user's value, 0 included, is kept without a line
+
+
 def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):
     session, log, _, _ = card
     monkeypatch.setattr(FakeDispatch, "boot_error", K["KMD_ERR_START"])
