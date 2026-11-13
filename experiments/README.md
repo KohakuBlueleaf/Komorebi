@@ -68,6 +68,10 @@ place to ask a question and to be wrong.
   between a Tensix core and the X280 (a Flush64 sweep each way is the hand-over), the
   X280's read and write rates (about 1.3 and 1.8 GB/s) and prefix sums over 119 x
   1,024 counters (2.1 ms), and what a thread that ignores its deadline leaves behind.
+- [work_clusters](work_clusters/README.md): X280 clusters 1 to 3 at once: the bank
+  each reaches (6, 7, 7), about 1.2 GB/s per cluster alone or together (the limit is
+  per cluster, not per bank), a push into the other bank at 2.3 GB/s against a pull at
+  0.024, and a wake between clusters in 0.66 µs.
 - [dyn_probes](dyn_probes/README.md): whether one core can reserve positions in another
   core's queue with one atomic add (yes: 119 cores, exact cover, 266 to 2596 cycles),
   the round trip of an item through DRAM (0.93 µs) and the rate between cores (up to
