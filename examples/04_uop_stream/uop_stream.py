@@ -14,7 +14,7 @@ import torch
 import ttnn
 
 import komorebi as km
-from komorebi import native
+from komorebi import dram, native
 from komorebi.engines import stream as ks
 from komorebi.layout import share
 from komorebi.state import wrap
@@ -30,6 +30,17 @@ T0 = time.monotonic()
 def log(msg):
     """A progress line with seconds since start, flushed."""
     print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+
+
+def read_bf16_chunked(session, tensor, name):
+    """A bfloat16 tile tensor as session.read_bf16 gives it, read in chunks of 2 MB
+    with a line per chunk: a whole read of an output takes a minute or more."""
+    total, parts = tensor.buffer_num_pages(), []
+    for first, pages in session.read_chunks(tensor):
+        parts.append(pages)
+        log(f"{name}: {first + len(pages)} of {total} pages read")
+    rows, cols = tuple(tensor.padded_shape)
+    return dram.untilize_bf16(np.concatenate(parts), rows, cols)
 
 
 def parse(argv=None):
@@ -253,7 +264,7 @@ def run_ways(session, args):
         result["ways"][way] = one_way(
             session, program, args, way, addr, issue_jobs, cores, window
         )
-        got = np.concatenate(session.read_bf16(outs[way])).reshape(-1, TILE, TILE)
+        got = read_bf16_chunked(session, outs[way], way).reshape(-1, TILE, TILE)
         wrong = int(np.count_nonzero((got.astype(np.float64) != want).any((1, 2))))
         result["ways"][way]["tiles_wrong"] = wrong
         log(f"{way}: {wrong} tiles wrong of {pages}")
@@ -354,7 +365,7 @@ def error_cases(session, program, args, inp, out_t, want, jobs, cores, window):
         np.count_nonzero(done != membership(jobs[:k], cores))
     )
     pages = sum(c for _, c, _, _ in jobs[:k])
-    got = np.concatenate(session.read_bf16(out_t)).reshape(-1, TILE, TILE)
+    got = read_bf16_chunked(session, out_t, "errors").reshape(-1, TILE, TILE)
     wrong = (got.astype(np.float64) != want[:pages]).any((1, 2))
     out["after"]["tiles_wrong"] = int(np.count_nonzero(wrong))
     return out

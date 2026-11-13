@@ -14,6 +14,7 @@ import torch
 import ttnn
 
 import komorebi as km
+from komorebi import dram
 from komorebi.layout import share
 
 HERE = Path(__file__).resolve().parent
@@ -25,6 +26,17 @@ T0 = time.monotonic()
 def log(msg):
     """A progress line with seconds since start, flushed."""
     print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+
+
+def read_bf16_chunked(session, tensor, name):
+    """A bfloat16 tile tensor as session.read_bf16 gives it, read in chunks of 2 MB
+    with a line per chunk: a whole read of an output takes a minute or more."""
+    total, parts = tensor.buffer_num_pages(), []
+    for first, pages in session.read_chunks(tensor):
+        parts.append(pages)
+        log(f"{name}: {first + len(pages)} of {total} pages read")
+    rows, cols = tuple(tensor.padded_shape)
+    return dram.untilize_bf16(np.concatenate(parts), rows, cols)
 
 
 def parse(argv=None):
@@ -344,7 +356,8 @@ def check(session, args, teams, base, in_page, outs, xs):
     """Every member's tile of every job not overwritten: bit-exact on exact inputs,
     relative RMS of the total on random inputs. Counts the tiles that equal what the
     page held before (zeros or an earlier job's): there a stale tile would pass."""
-    got = np.concatenate(session.read_bf16(*outs)).reshape(-1, TILE, TILE)
+    got = [read_bf16_chunked(session, t, f"output {i}") for i, t in enumerate(outs)]
+    got = np.concatenate(got).reshape(-1, TILE, TILE)
     log(f"{len(outs)} outputs read back")
     prefix = []
     for x in xs:
