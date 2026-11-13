@@ -356,7 +356,10 @@ A program must:
   on what `wait_front` returned;
 - send a small write between two cores' L1 only with `km::small_write`, slot to slot.
   The two addresses must share their low four bits, or the write is silently wrong;
-- give records that use ports or lanes `KM_F_EXCL`.
+- give records that use ports or lanes `KM_F_EXCL`;
+- fence (`invalidate_l1_cache()`) between the stores that build data in L1 and the
+  `cb_push_back` or NoC send that hands it on: the core's stores pass through a small
+  write-through cache, and a send that starts before they land carries old bytes.
 
 A program must not:
 - write the control block except through the runtime's calls;

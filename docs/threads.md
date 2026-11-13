@@ -196,6 +196,12 @@ sweep runs at 5 to 8 GB/s of region. Prefix sums over 119 x 1,024 counters take 
 1.7 ms on four cores (a decision per frame, not per segment); see
 `experiments/x280_threads/`.
 
+Where data lives matters as much as the rate. A thread's stack is in the cluster's local
+memory and slower than a region: the rasterizer's heap of core loads took 355 us on the
+stack and 163 us in a region. Pages that only the Tensix cores read and write belong in
+interleaved tensors, not in the thread's bank: its counters took 247 us in bank 6 and
+59 us interleaved (`projects/raster/`).
+
 ## Twelve harts
 
 **Spawn and join, on one cluster.** `kmx_spawn(hart, fn, arg)` starts `fn(hart, arg)`
