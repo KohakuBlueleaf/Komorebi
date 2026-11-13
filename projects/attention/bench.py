@@ -219,8 +219,8 @@ def main():
         )
         report["commands_submitted"] = [6 + 1 + 5 + batch_commands + 1]
         report["runs"] = [attention.stop()]
-        back_to_back = report["microseconds_per_call"]
-        log(f"single {single_median:.1f} us, back to back {back_to_back} us per call")
+        batch_per_call = report["microseconds_per_call"]
+        log(f"single {single_median:.1f} us, back to back {batch_per_call} us per call")
         # Load 2: the power loop, then the cut-down runs.
         attention = card.Attention(
             session, plan, tensors, scale, arguments.approx, noc=arguments.noc
