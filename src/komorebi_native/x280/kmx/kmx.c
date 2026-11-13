@@ -4,6 +4,7 @@
 
 #include "kmx.h"
 #include "noc.h"
+#include "rt/x280_atomic.h"
 #include "rt/x280_hw.h"
 #include "rt/x280_idle.h"
 #include "x280_address_map.h"
@@ -913,6 +914,145 @@ int kmx_port_run(
         *ev = g_port_ev;
     }
     return g_port_why;
+}
+
+/* The pull's line in this cluster's (or a peer's) ports line, by word. */
+#define KMX_PULL_AT(f) (KMX_LIM_PORTS + offsetof(kmx_ports, f))
+
+/* This cluster's place among the group's clusters, and how many there are. */
+static uint32_t group_place(uint32_t* n) {
+    const uint32_t mask = kmx_clusters(), me = (uint32_t)kmx_cluster();
+    uint32_t place = 0;
+    *n = 0;
+    for (uint32_t c = 1; c < 4; c++) {
+        place += (mask >> c & 1u) && c < me;
+        *n += mask >> c & 1u;
+    }
+    return place;
+}
+
+/* Each X280 core: answers its cores' pulls from the counter, `pick` or the log. */
+static void pull_part(int cluster, int cpu, uint64_t arg) {
+    (void)cluster;
+    (void)arg;
+    const volatile kmx_ports* p = ports();
+    const uint32_t units = p->pull[0], per = p->pull[1], mode = p->pull[2] & 0xFFu;
+    uint32_t (*pick)(
+        int, uint32_t, uint64_t
+    ) = ((uint32_t (*)(int, uint32_t, uint64_t))(uintptr_t)p->pick);
+    const uint64_t parg = p->arg;
+    const uint64_t ranges = ((uint64_t)units + per - 1u) / per;
+    volatile uint32_t* next = (volatile uint32_t*)(lim() + KMX_PULL_AT(next));
+    uint64_t bytes = 0;
+    uint32_t* log = (
+        mode != KMX_PULL_COUNT ? kmx_region((int)(p->pull[2] >> 8), &bytes) : 0
+    );
+    const uint32_t cap = log ? (uint32_t)(bytes / 4u / KMX_PORTS_CORES) - 1u : 0;
+    uint32_t* lists = log ? log + KMX_PORTS_CORES : 0;
+    uint32_t groups;
+    const uint32_t place = group_place(&groups);
+    uint8_t mine[KMX_PORTS_CORES];
+    uint32_t got[KMX_PORTS_CORES];
+    int n = 0;
+    for (int c = 0; c < kmx_port_cores(); c++) {
+        if (kmx_port_owner(c) == cpu) {
+            got[n] = 0;
+            mine[n++] = (uint8_t)c;
+            if (mode == KMX_PULL_REPLAY) { /* the host's or a log run's writes */
+                flush((uint64_t)(uintptr_t)(log + c), 4);
+                const uint32_t k = log[c] < cap ? log[c] : cap;
+                flush((uint64_t)(uintptr_t)(lists + c * cap), 4ull * k);
+            }
+        }
+    }
+    uint32_t lost = 0;
+    while (kmx_port_open()) {
+        for (int i = 0; i < n; i++) {
+            const int c = mine[i];
+            kmx_msg m;
+            if (kmx_port_asked(c, &m) != KMX_OK) {
+                continue;
+            }
+            uint64_t j = KMX_PULL_NONE;
+            if (m.w[0] != KM_PULL_ASK) {
+            } else if (mode == KMX_PULL_REPLAY) {
+                j =
+                    (got[i] < log[c] && got[i] < cap ? lists[c * cap + got[i]]
+                                                     : KMX_PULL_NONE);
+            } else if (pick != 0) {
+                j = pick(c, got[i], parg);
+            } else {
+                j = (uint64_t)x280_amoadd_w(next, 1u) * groups + place;
+            }
+            uint32_t first = 0, count = 0;
+            if (j < ranges) {
+                first = (uint32_t)j * per;
+                count = units - first < per ? units - first : per;
+                if (mode == KMX_PULL_LOG && got[i] < cap) {
+                    lists[c * cap + got[i]] = (uint32_t)j;
+                } else if (mode == KMX_PULL_LOG) {
+                    lost++;
+                }
+                got[i]++;
+            }
+            kmx_port_answer(c, m.seq, first, count, got[i]);
+        }
+    }
+    for (int i = 0; i < n && mode == KMX_PULL_LOG; i++) {
+        log[mine[i]] = got[i];
+        flush((uint64_t)(uintptr_t)(log + mine[i]), 4);
+        const uint32_t k = got[i] < cap ? got[i] : cap;
+        flush((uint64_t)(uintptr_t)(lists + mine[i] * cap), 4ull * k);
+    }
+    if (lost != 0) {
+        x280_amoadd_w((volatile uint32_t*)(lim() + KMX_PULL_AT(lost)), lost);
+    }
+}
+
+/* The lead: the pull's words into the ports line of cluster c (its block), the counter
+ * and the lost count zeroed. */
+static void pull_line(volatile uint8_t* block, const kmx_pull* p) {
+    volatile uint32_t* w = (volatile uint32_t*)(block + KMX_LIM_PORTS);
+    w[offsetof(kmx_ports, next) / 4] = 0;
+    w[offsetof(kmx_ports, lost) / 4] = 0;
+    w[offsetof(kmx_ports, pull) / 4] = p->units;
+    w[offsetof(kmx_ports, pull) / 4 + 1] = p->per;
+    w[offsetof(kmx_ports, pull) / 4 + 2] = p->mode | p->log << 8;
+    put64(w + offsetof(kmx_ports, pick) / 4, (uint64_t)(uintptr_t)p->pick);
+    put64(w + offsetof(kmx_ports, arg) / 4, p->arg);
+}
+
+int kmx_pull_run(const km_record_t* r, const kmx_pull* p, kmx_event* ev) {
+    int e = all_lead();
+    if (e != KMX_OK) {
+        return e;
+    }
+    uint64_t bytes = 0;
+    if (p->mode > KMX_PULL_REPLAY || p->log > 255u || p->per == 0 ||
+        (p->mode != KMX_PULL_COUNT &&
+         (kmx_region((int)p->log, &bytes) == 0 || bytes < KMX_PULL_LOG_BYTES(1)))) {
+        return KMX_BAD;
+    }
+    e = all_ready();
+    if (e != KMX_OK) {
+        return e;
+    }
+    const uint32_t rest = others();
+    pull_line(lim(), p);
+    for (uint32_t c = 1; c < 4; c++) {
+        if ((rest >> c & 1u) && g_peer[c] != 0) {
+            pull_line(g_peer[c], p);
+        }
+    }
+    x280_fence_ow();
+    e = kmx_port_run(r, pull_part, 0, ev);
+    uint32_t lost = *(volatile uint32_t*)(lim() + KMX_PULL_AT(lost));
+    for (uint32_t c = 1; c < 4; c++) {
+        if ((rest >> c & 1u) && g_peer[c] != 0) {
+            lost += *(volatile uint32_t*)(g_peer[c] + KMX_PULL_AT(lost));
+        }
+    }
+    return e == KMX_OK && lost != 0 ? KMX_BAD : e;
 }
 
 uint64_t kmx_time(void) {

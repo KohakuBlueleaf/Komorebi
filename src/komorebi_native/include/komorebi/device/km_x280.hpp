@@ -99,6 +99,33 @@ namespace km {
             return true;
         }
 
+        // The pull: the next range of units the X280 core hands this core, `first` and
+        // the count; 0 when none is left or a wait gave up (pull_gave_up(), recorded).
+        uint32_t next(uint32_t& first) {
+            if (pull_ == 0) {
+                pull_ = ask(KM_PULL_ASK, 0, 0);
+            }
+            X280Msg m;
+            const uint32_t seq = pull_;
+            pull_ = 0;
+            if (seq == 0 || !wait_answer(seq, m)) {
+                gave_ = true;
+                return 0;
+            }
+            if (m.w[1] == 0) {
+                return 0;
+            }
+            // asked now, answered while this range runs: one ask in flight
+            pull_ = ask(KM_PULL_ASK, 0, 0);
+            first = m.w[0];
+            return m.w[1];
+        }
+
+        // Whether the last next() returned 0 because a wait gave up.
+        bool pull_gave_up() const {
+            return gave_;
+        }
+
         // ask, then wait_answer. False: gave up (recorded).
         bool call(uint32_t a, uint32_t b, uint32_t d, X280Msg& m) {
             const uint32_t seq = ask(a, b, d);
@@ -153,6 +180,8 @@ namespace km {
         uint32_t told_ = 0;
         uint32_t tells_ = 0;
         uint32_t asks_ = 0;
+        uint32_t pull_ = 0;  // the pull ask in flight, 0: none
+        bool gave_ = false;
     };
 
 }  // namespace km

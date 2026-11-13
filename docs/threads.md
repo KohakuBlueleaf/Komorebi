@@ -361,6 +361,55 @@ word, uncached: a look at a mailbox line costs 259 cycles, a tell 144. Example
 - The control block grew by one 64-byte area (`KM_CTL_X280`) for every program; the
   ports area takes 8.6 KiB of each serving cluster's local memory after its block.
 
+### The pull
+
+When the work of a command is uneven, equal ranges leave the cores with the light part
+waiting for the slowest. The **pull** hands the work out at run time instead: units 0
+to `units - 1` in ranges of `per` units, each range to the first Tensix core that asks,
+each range once. On X280 core 0 of the lead:
+
+```c
+kmx_pull p = {.units = 31000, .per = 16, .mode = KMX_PULL_COUNT};
+kmx_event ev;
+int e = kmx_pull_run(&c, &p, &ev); /* submits command c, serves its pulls until its event */
+```
+
+and on the Tensix core, in the command's handler:
+
+```cpp
+uint32_t first, count;
+while ((count = port.next(first)) != 0) {  // a range, or 0: none left (or gave up)
+    for (uint32_t u = first; u < first + count; u++) {
+        work(u);
+    }
+}
+```
+
+`next()` asks for the following range as soon as it returns one, so the answer comes
+while the range runs: one ask is in flight, and a core waits only when its range takes
+less than a round trip. Each cluster of the group keeps a counter in its local memory
+(an atomic add): cluster `i` of `n` hands out ranges `i`, `i + n`, `i + 2n`.., so no
+counter is shared across clusters. The modes:
+
+- `KMX_PULL_COUNT`: the counter, or `pick(core, k, arg)` when set: the `k`-th range of
+  `core` (or `KMX_PULL_NONE`), to hand out by the asker, for example by its cost.
+- `KMX_PULL_LOG`: the same, and the ranges each core got are written in order to region
+  `log` (`KMX_PULL_LOG_BYTES(per_core)`: a count per core, then `per_core` range
+  numbers per core; each cluster its own copy). `KMX_BAD` when the command ran but a
+  core got more than the log holds.
+- `KMX_PULL_REPLAY`: each core gets the ranges the log holds for it, in the same order:
+  a second pass over the same units on the same cores (a count, then the work it
+  counted). Use the same ports and clusters as the logged run.
+
+The range is the unit of balance: size it so that one range is worth well over the
+round trip (a pull every 200 µs or more costs under 1 %). **Costs**: example
+[10_x280_ports](../examples/10_x280_ports/) `--pull`, 31,000 units of 15 to 27 µs on 120
+Tensix cores, slowest core over mean 1.54 with equal ranges: pulled in ranges of 16
+units (278 µs) the pass takes 4.73 ms against 6.96 ms, slowest over mean 1.045, on 1, 4
+or 12 serving X280 cores alike (a core waits 0.7 µs a pull on twelve, 2.4 µs on one).
+With units of 1 µs and one unit a range, the pull loses: 1.51 ms against 0.48 ms on
+twelve X280 cores, 16.5 ms on one.
+
 ## From the host
 
 ```python

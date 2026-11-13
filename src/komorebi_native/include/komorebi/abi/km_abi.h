@@ -169,6 +169,8 @@ KM_STATIC_ASSERT(KM_SEG_DYN_END > KM_SEG_USER_MAX, "not a program segment");
 #define KM_BOX_ASK 0x00u  /* the core's ask: seq counts its asks */
 #define KM_BOX_TELL 0x10u /* the core's tell: seq counts its tells */
 #define KM_BOX_BYTES 0x40u
+/* The pull: an ask {KM_PULL_ASK} answered {first unit, count (0: none left), pulls}. */
+#define KM_PULL_ASK 0x50554C4Cu /* "PULL" */
 
 KM_STATIC_ASSERT(KM_CTL_TAILS + KM_TAILS_BYTES <= KM_CTL_X280, "tails end");
 KM_STATIC_ASSERT(

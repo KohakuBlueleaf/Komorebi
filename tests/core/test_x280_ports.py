@@ -73,3 +73,7 @@ def test_the_port_lines_end_the_control_block_and_fit_the_library():
     assert H["KM_X280_TO"] + 16 <= H["KM_X280_BYTES"]
     assert K["KMX_PORT_WINDOW"] + K["KMX_PORTS_CORES"] <= 192
     assert K["KMX_PORTS_CORES"] == H["KM_CORES_MAX"]
+
+
+def test_a_pull_asks_with_its_own_word():
+    assert H["KM_PULL_ASK"] == 0x50554C4C  # "PULL"

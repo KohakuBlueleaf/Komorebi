@@ -114,6 +114,28 @@ int kmx_port_run(
  * stop, or the deadline). fn then returns and stores into no core any more. */
 int kmx_port_open(void);
 
+/* The pull: kmx_pull_run hands units 0 to units - 1 out in ranges of `per` (range j:
+ * units j * per on) to the cores that ask (km::X280Port::next), each range once. */
+#define KMX_PULL_COUNT 0u  /* a counter per cluster: cluster i of n hands i, i + n.. */
+#define KMX_PULL_LOG 1u    /* the same, and each core's ranges logged in order */
+#define KMX_PULL_REPLAY 2u /* each core gets the ranges the log holds for it */
+#define KMX_PULL_NONE 0xFFFFFFFFu
+
+/* `log`: the log's region id (each cluster its own copy, KMX_PULL_LOG_BYTES). `pick`,
+ * when set, gives core's k-th range (or KMX_PULL_NONE) instead of the counter. */
+typedef struct {
+    uint32_t units, per, mode, log;
+    uint32_t (*pick)(int core, uint32_t k, uint64_t arg);
+    uint64_t arg;
+} kmx_pull;
+
+/* A log region: a count per core, then `per_core` range numbers per core. */
+#define KMX_PULL_LOG_BYTES(per_core) (4u * KMX_PORTS_CORES * (1u + (per_core)))
+
+/* X280 core 0 of the lead: submits command r, serves its pulls on every X280 core until
+ * its event, as kmx_port_run; KMX_BAD also when it ran but a log ran out of room. */
+int kmx_pull_run(const km_record_t* r, const kmx_pull* p, kmx_event* ev);
+
 /* Timer ticks since an arbitrary point (KMX_TICKS_PER_SECOND per second). */
 uint64_t kmx_time(void);
 

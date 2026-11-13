@@ -129,10 +129,12 @@ if (port.told(m)) { ... }    // the X280 core's newest tell, if newer; never wai
 | `answered(seq, m)` | no | true and the answer to ask `seq`, if it landed |
 | `wait_answer(seq, m)` | bounded | the same, waiting; false: gave up (recorded) |
 | `call(a, b, c, m)` | bounded | `ask`, then `wait_answer` |
+| `next(first)` | bounded | the next range of a pull (`kmx_pull_run`): its count and `first`, 0 when none is left or a wait gave up (`pull_gave_up()`); asks for the range after it before returning |
 
 **Latest wins.** A tell overwrites the line it lands in: a side that looks less often
 than the other tells sees only the newest, and tells in between are lost. Ask and
-answer are paired by the sequence number, one ask outstanding at a time.
+answer are paired by the sequence number, one ask outstanding at a time; between the
+first `next()` of a pull and the one that returns 0, that ask is the pull's.
 
 **On the wire.** The core's `KM_CTL_X280` area (64 bytes): the X280 core's tell at
 `KM_X280_TELL` (`+ 0x00`) and answer at `KM_X280_ANSWER` (`+ 0x10`), stored by the X280 core
@@ -140,7 +142,8 @@ through its window; the core's out slot `KM_X280_OUT` (`+ 0x20`), the source of 
 writes; `KM_X280_TO` (`+ 0x30`): the X280 core's tile (`x | y << 16`) and the mailbox
 address in its local memory, written by the host at the load (0: no X280 core). The core
 writes its ask to the mailbox at `KM_BOX_ASK` (`+ 0x00`) and its tell at `KM_BOX_TELL`
-(`+ 0x10`) on its kernel's NoC. Each line has one writer; no atomics.
+(`+ 0x10`) on its kernel's NoC. Each line has one writer; no atomics. A pull's ask is
+`{KM_PULL_ASK, 0, 0}`, answered `{first, count, pulls so far}` (count 0: none left).
 
 **When a side does not answer.** Every wait is bounded by the wait limit and sees the
 stop word. A give-up records `where` = `kWhereX280Answer` (37), `kWhereX280Tell` (38)
