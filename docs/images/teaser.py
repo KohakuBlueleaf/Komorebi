@@ -62,24 +62,24 @@ MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monos
 KERNEL = [
     ("void kernel_main() {", 0),
     ("    km::Compute cp;", 0),
-    ("    cp.run([&](const km_record_t& r) {", 1),
-    ("        if (km::seg(r) >= pass_k::kSegLanes) {", 0),
-    ("            pass_k::setup_compute_record(cp, r);", 0),
+    ("    cp.run([&](const km_command_t& r) {", 1),
+    ("        if (km::handler(r) >=", 0),
+    ("            pass_k::kHandlerLanes) {", 0),
+    ("            pass_k::setup_compute_command(cp, r);", 0),
     ("        } else {", 0),
-    ("            fill_k::fill_compute_record(r);", 0),
+    ("            fill_k::fill_compute_command(r);", 0),
     ("        }", 0),
     ("    });", 0),
     ("}", 0),
 ]
 THREAD = [
-    ("record(&r, RF_SEG_COUNT, f);", 1),
-    ("r.a0 = f->w[RF_W_MESH];", 0),
+    ("command(&r, RF_HANDLER_COUNT, f);", 1),
     ("uint32_t code = run(&r);", 0),
     ("...", 2),
     ("if (kmx_par(sort_part, &p) != KMX_OK ||", 1),
     ("    kmx_par(merge_part, &p) != KMX_OK) {", 0),
     ("...", 2),
-    ("record(&r, RF_SEG_FILL, f);", 1),
+    ("command(&r, RF_HANDLER_FILL, f);", 1),
 ]
 HOST = [
     ("prog = km.Program(", 1),

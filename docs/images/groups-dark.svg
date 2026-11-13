@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="830" height="514" viewBox="0 0 830 514" role="img">
-<title>Teams and records in time</title>
+<title>Groups and commands in time</title>
 <style>
   text { font-family: -apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; font-size: 13px; fill: #e6edf3; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace; }
@@ -36,7 +36,7 @@
   </marker>
 </defs>
 <rect width="830" height="514" fill="#0d1117"/>
-<text x="16" y="18" class="b s" xml:space="preserve">dispatch kernel</text>
+<text x="16" y="18" class="b s" xml:space="preserve">dispatcher</text>
 <text x="124" y="64" class="s m" text-anchor="end" xml:space="preserve">slot 0</text>
 <text x="124" y="86" class="s m" text-anchor="end" xml:space="preserve">slot 1</text>
 <text x="124" y="108" class="s m" text-anchor="end" xml:space="preserve">slot 2</text>
@@ -72,7 +72,7 @@
 <line x1="170" y1="48" x2="170" y2="418" class="thin" stroke-dasharray="3 3"/>
 <line x1="190" y1="48" x2="190" y2="418" class="thin" stroke-dasharray="3 3"/>
 <rect x="150" y="52" width="274" height="16" rx="3" class="team"/>
-<text x="158" y="64.5" class="s" xml:space="preserve">R1: team of cores 0-4</text>
+<text x="158" y="64.5" class="s" xml:space="preserve">R1: group of cores 0-4</text>
 <rect x="160" y="134" width="232" height="16" rx="3" class="team"/>
 <text x="166" y="146.5" class="s b a" xml:space="preserve">R1</text>
 <rect x="160" y="158" width="244" height="16" rx="3" class="team"/>
@@ -89,7 +89,7 @@
 <line x1="401" y1="238" x2="418" y2="142" class="athin"/>
 <line x1="424" y1="134" x2="424" y2="116" class="al" marker-end="url(#ha)"/>
 <rect x="170" y="74" width="364" height="16" rx="3" class="team"/>
-<text x="178" y="86.5" class="s" xml:space="preserve">R2: team of cores 6-11</text>
+<text x="178" y="86.5" class="s" xml:space="preserve">R2: group of cores 6-11</text>
 <rect x="182" y="278" width="324" height="16" rx="3" class="team"/>
 <text x="188" y="290.5" class="s b a" xml:space="preserve">R2</text>
 <rect x="182" y="302" width="312" height="16" rx="3" class="team"/>
@@ -109,7 +109,7 @@
 <line x1="509" y1="406" x2="528" y2="286" class="athin"/>
 <line x1="534" y1="278" x2="534" y2="116" class="al" marker-end="url(#ha)"/>
 <rect x="190" y="96" width="504" height="16" rx="3" class="box"/>
-<text x="198" y="108.5" class="s" xml:space="preserve">R3: team of cores 3-8</text>
+<text x="198" y="108.5" class="s" xml:space="preserve">R3: group of cores 3-8</text>
 <rect x="418" y="206" width="82" height="16" rx="3" class="box"/>
 <text x="424" y="218.5" class="s b m" xml:space="preserve">R3</text>
 <rect x="410" y="230" width="82" height="16" rx="3" class="box"/>
@@ -131,18 +131,18 @@
 <line x1="170" y1="34" x2="424" y2="34" class="al"/>
 <line x1="170" y1="29" x2="170" y2="39" class="al"/>
 <line x1="424" y1="29" x2="424" y2="39" class="al"/>
-<text x="180" y="26" class="s b a" xml:space="preserve">R1 and R2 in flight together: disjoint teams</text>
+<text x="180" y="26" class="s b a" xml:space="preserve">R1 and R2 in flight together: disjoint groups</text>
 <text x="546" y="356" class="s" xml:space="preserve">Drawn case: R3 lands after cores 3, 4 and</text>
 <text x="546" y="371" class="s" xml:space="preserve">6 to 8 began R1 or R2, so they take it next;</text>
 <text x="546" y="386" class="s" xml:space="preserve">core 5 takes it at once. Not a guarantee: a</text>
-<text x="546" y="401" class="s" xml:space="preserve">shared core may run two records in flight in</text>
+<text x="546" y="401" class="s" xml:space="preserve">shared core may run two commands in flight in</text>
 <text x="546" y="416" class="s" xml:space="preserve">either order, unless the later is exclusive.</text>
 <line x1="132" y1="436" x2="812" y2="436" class="ln" marker-end="url(#hl)"/>
 <text x="812" y="454" class="s m" text-anchor="end" xml:space="preserve">time (schematic)</text>
 <line x1="120" y1="472" x2="140" y2="472" class="thin" stroke-dasharray="3 3"/>
-<text x="148" y="476" class="s" xml:space="preserve">the record lands on every core; cores outside its team skip it</text>
+<text x="148" y="476" class="s" xml:space="preserve">the command lands on every core; cores outside its group skip it</text>
 <line x1="120" y1="494" x2="140" y2="494" class="athin"/>
-<text x="148" y="498" class="s" xml:space="preserve">a member reports to its leader</text>
+<text x="148" y="498" class="s" xml:space="preserve">a rank reports to its leader</text>
 <line x1="380" y1="502" x2="380" y2="486" class="al" marker-end="url(#ha)"/>
 <text x="392" y="498" class="s" xml:space="preserve">the leader acknowledges; the slot is free again</text>
 </svg>

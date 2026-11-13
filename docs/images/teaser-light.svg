@@ -8,7 +8,7 @@
 <text x="16.0" y="36.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#1f2328" text-anchor="start" xml:space="preserve">you write</text>
 <text x="428.0" y="36.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#bc4c00" text-anchor="start" xml:space="preserve">the card runs it by itself</text>
 <text x="1000.0" y="36.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#1f2328" text-anchor="start" xml:space="preserve">what comes out</text>
-<rect x="16.0" y="56.0" width="376.0" height="204.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<rect x="16.0" y="56.0" width="376.0" height="220.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="30.0" y="79.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1f2328" text-anchor="start" xml:space="preserve">Tensix kernel</text>
 <rect x="339.4" y="64.0" width="40.6" height="21.0" rx="10" fill="#ffffff" stroke="#818b98" stroke-width="1"/>
 <text x="359.7" y="79.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">C++</text>
@@ -16,22 +16,22 @@
 <text x="30.0" y="120.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">    km::Compute cp;</text>
 <rect x="17.0" y="124.0" width="374.0" height="16.0" rx="0" fill="#fff1e5" stroke="none" stroke-width="1"/>
 <rect x="17.0" y="124.0" width="3.0" height="16.0" rx="0" fill="#bc4c00" stroke="none" stroke-width="1"/>
-<text x="30.0" y="136.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">    cp.run([&amp;](const km_record_t&amp; r) {</text>
-<text x="30.0" y="152.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">        if (km::seg(r) &gt;= pass_k::kSegLanes) {</text>
-<text x="30.0" y="168.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">            pass_k::setup_compute_record(cp, r);</text>
-<text x="30.0" y="184.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">        } else {</text>
-<text x="30.0" y="200.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">            fill_k::fill_compute_record(r);</text>
-<text x="30.0" y="216.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">        }</text>
-<text x="30.0" y="232.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">    });</text>
-<text x="30.0" y="248.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">}</text>
-<rect x="16.0" y="272.0" width="376.0" height="172.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
-<text x="30.0" y="295.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1f2328" text-anchor="start" xml:space="preserve">X280 thread</text>
-<rect x="355.8" y="280.0" width="24.2" height="21.0" rx="10" fill="#ffffff" stroke="#818b98" stroke-width="1"/>
-<text x="367.9" y="295.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">C</text>
-<rect x="17.0" y="308.0" width="374.0" height="16.0" rx="0" fill="#fff1e5" stroke="none" stroke-width="1"/>
-<rect x="17.0" y="308.0" width="3.0" height="16.0" rx="0" fill="#bc4c00" stroke="none" stroke-width="1"/>
-<text x="30.0" y="320.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">record(&amp;r, RF_SEG_COUNT, f);</text>
-<text x="30.0" y="336.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">r.a0 = f-&gt;w[RF_W_MESH];</text>
+<text x="30.0" y="136.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">    cp.run([&amp;](const km_command_t&amp; r) {</text>
+<text x="30.0" y="152.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">        if (km::handler(r) &gt;=</text>
+<text x="30.0" y="168.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">            pass_k::kHandlerLanes) {</text>
+<text x="30.0" y="184.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">            pass_k::setup_compute_command(cp, r);</text>
+<text x="30.0" y="200.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">        } else {</text>
+<text x="30.0" y="216.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">            fill_k::fill_compute_command(r);</text>
+<text x="30.0" y="232.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">        }</text>
+<text x="30.0" y="248.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">    });</text>
+<text x="30.0" y="264.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">}</text>
+<rect x="16.0" y="288.0" width="376.0" height="156.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<text x="30.0" y="311.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1f2328" text-anchor="start" xml:space="preserve">X280 thread</text>
+<rect x="355.8" y="296.0" width="24.2" height="21.0" rx="10" fill="#ffffff" stroke="#818b98" stroke-width="1"/>
+<text x="367.9" y="311.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">C</text>
+<rect x="17.0" y="324.0" width="374.0" height="16.0" rx="0" fill="#fff1e5" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="324.0" width="3.0" height="16.0" rx="0" fill="#bc4c00" stroke="none" stroke-width="1"/>
+<text x="30.0" y="336.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">command(&amp;r, RF_HANDLER_COUNT, f);</text>
 <text x="30.0" y="352.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">uint32_t code = run(&amp;r);</text>
 <text x="30.0" y="368.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">...</text>
 <rect x="17.0" y="372.0" width="374.0" height="16.0" rx="0" fill="#fff1e5" stroke="none" stroke-width="1"/>
@@ -41,7 +41,7 @@
 <text x="30.0" y="416.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">...</text>
 <rect x="17.0" y="420.0" width="374.0" height="16.0" rx="0" fill="#fff1e5" stroke="none" stroke-width="1"/>
 <rect x="17.0" y="420.0" width="3.0" height="16.0" rx="0" fill="#bc4c00" stroke="none" stroke-width="1"/>
-<text x="30.0" y="432.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">record(&amp;r, RF_SEG_FILL, f);</text>
+<text x="30.0" y="432.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#1f2328" text-anchor="start" xml:space="preserve">command(&amp;r, RF_HANDLER_FILL, f);</text>
 <rect x="16.0" y="456.0" width="376.0" height="204.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="30.0" y="479.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#1f2328" text-anchor="start" xml:space="preserve">program</text>
 <rect x="314.8" y="464.0" width="65.2" height="21.0" rx="10" fill="#ffffff" stroke="#818b98" stroke-width="1"/>

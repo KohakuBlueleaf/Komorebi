@@ -43,9 +43,9 @@
   </marker>
 </defs>
 <rect width="830" height="948" fill="#ffffff"/>
-<rect x="52" y="8" width="500" height="46" rx="4" class="box"/>
+<rect x="52" y="8" width="504" height="46" rx="4" class="box"/>
 <text x="64" y="27" class="b" xml:space="preserve">host: Python Program, Session and Run</text>
-<text x="64" y="45" class="mono s" xml:space="preserve">prog.thread(...)  run.issue(seg, team, args)  run.wait(tickets)</text>
+<text x="64" y="45" class="mono s" xml:space="preserve">prog.thread(...) run.submit(handler, group, args) run.wait(handles)</text>
 <text x="72" y="90" class="s m" text-anchor="middle" xml:space="preserve">0</text>
 <text x="116" y="90" class="s m" text-anchor="middle" xml:space="preserve">1</text>
 <text x="160" y="90" class="s m" text-anchor="middle" xml:space="preserve">2</text>
@@ -490,25 +490,25 @@
 <rect x="52" y="640" width="16" height="16" rx="3" class="cell"/>
 <text x="76" y="653" class="s" xml:space="preserve">Tensix core</text>
 <rect x="302" y="640" width="16" height="16" rx="3" class="team"/>
-<text x="326" y="653" class="s" xml:space="preserve">a record's team (26 to 55)</text>
+<text x="326" y="653" class="s" xml:space="preserve">a command's group (26 to 55)</text>
 <rect x="552" y="640" width="16" height="16" rx="3" class="off"/>
 <text x="576" y="653" class="s" xml:space="preserve">fused off / router only</text>
 <rect x="52" y="664" width="16" height="16" rx="3" class="dram"/>
 <text x="76" y="677" class="s" xml:space="preserve">DRAM bank D0 to D7</text>
 <rect x="302" y="664" width="16" height="16" rx="3" class="abox"/>
-<text x="326" y="677" class="s" xml:space="preserve">X280 0: the dispatch kernel</text>
+<text x="326" y="677" class="s" xml:space="preserve">X280 0: the dispatcher</text>
 <rect x="552" y="664" width="16" height="16" rx="3" class="edge"/>
 <text x="576" y="677" class="s" xml:space="preserve">Eth, PCIe, ARC, SEC</text>
 <rect x="52" y="688" width="16" height="16" rx="3" class="wbox"/>
 <text x="76" y="701" class="s" xml:space="preserve">X280 1 to 3: a thread each (kmx_main, kmx_par)</text>
 <line x1="52" y1="720" x2="82" y2="720" class="wl" marker-start="url(#hw)" marker-end="url(#hw)"/>
-<text x="92" y="724" class="s" xml:space="preserve">a ring each: records to X280 0; events and result words back</text>
+<text x="92" y="724" class="s" xml:space="preserve">a ring each: commands to X280 0; events, result words back</text>
 <line x1="452" y1="720" x2="482" y2="720" class="wd" marker-start="url(#hw)" marker-end="url(#hw)"/>
 <text x="492" y="724" class="s" xml:space="preserve">regions in its bank: D6 for 1, D7 for 2 and 3</text>
 <line x1="52" y1="744" x2="82" y2="744" class="ad"/>
 <text x="92" y="748" class="s" xml:space="preserve">the two panels: one multicast window each</text>
 <line x1="452" y1="744" x2="482" y2="744" class="al" marker-end="url(#ha)"/>
-<text x="492" y="748" class="s" xml:space="preserve">the record, stored to every core</text>
+<text x="492" y="748" class="s" xml:space="preserve">the command, stored to every core</text>
 <text x="52" y="772" class="s b" xml:space="preserve">NoC0</text>
 <line x1="90" y1="768" x2="108" y2="768" class="ln" marker-end="url(#hl)"/>
 <line x1="118" y1="760" x2="118" y2="776" class="ln" marker-end="url(#hl)"/>
@@ -518,24 +518,24 @@
 <text x="232" y="772" class="s" xml:space="preserve">directions of data flow</text>
 <line x1="452" y1="768" x2="482" y2="768" class="athin" marker-end="url(#ha)"/>
 <text x="492" y="772" class="s" xml:space="preserve">the leader's acknowledgement (NoC1)</text>
-<text x="52" y="796" class="s m" xml:space="preserve">Measured: 0.77 µs per record with 4 in flight to all 120 cores (landing experiment).</text>
+<text x="52" y="796" class="s m" xml:space="preserve">Measured: 0.77 µs per command with 4 in flight to all 120 cores (landing experiment).</text>
 <text x="52" y="814" class="s m" xml:space="preserve">Columns 7 and 10 are the Tensix columns fused off on the card used here.</text>
 <rect x="52" y="832" width="240" height="100" rx="4" class="box"/>
-<text x="64" y="854" class="b" xml:space="preserve">X280 0: the dispatch kernel</text>
+<text x="64" y="854" class="b" xml:space="preserve">X280 0: the dispatcher</text>
 <text x="64" y="874" class="s m" xml:space="preserve">the host ring, three thread rings</text>
 <text x="64" y="890" class="s m" xml:space="preserve">streams, job queue, graphs</text>
-<text x="64" y="906" class="s m" xml:space="preserve">up to 16 records in flight</text>
-<text x="64" y="922" class="s m" xml:space="preserve">a deadline per record</text>
+<text x="64" y="906" class="s m" xml:space="preserve">up to 16 commands in flight</text>
+<text x="64" y="922" class="s m" xml:space="preserve">a deadline per command</text>
 <rect x="304" y="832" width="240" height="100" rx="4" class="box"/>
 <text x="316" y="854" class="b" xml:space="preserve">every Tensix core</text>
-<text x="316" y="874" class="s m" xml:space="preserve">reader (NoC0): the next record</text>
-<text x="316" y="890" class="s m" xml:space="preserve">compute: the segment</text>
+<text x="316" y="874" class="s m" xml:space="preserve">reader (NoC0): the next command</text>
+<text x="316" y="890" class="s m" xml:space="preserve">compute: the handler</text>
 <text x="316" y="906" class="s m" xml:space="preserve">writer (NoC1): reports</text>
-<text x="316" y="922" class="s m" xml:space="preserve">ports, lanes, item queues</text>
+<text x="316" y="922" class="s m" xml:space="preserve">ports, broadcasts, message queues</text>
 <rect x="556" y="832" width="240" height="100" rx="4" class="box"/>
 <text x="568" y="854" class="b" xml:space="preserve">X280 1 to 3: work clusters</text>
 <text x="568" y="874" class="s m" xml:space="preserve">plain C, built with kmx</text>
-<text x="568" y="890" class="s m" xml:space="preserve">kmx_issue, kmx_wait</text>
+<text x="568" y="890" class="s m" xml:space="preserve">kmx_submit, kmx_wait</text>
 <text x="568" y="906" class="s m" xml:space="preserve">a host fallback in Python</text>
 <text x="568" y="922" class="s m" xml:space="preserve">one thread per cluster</text>
 </svg>
