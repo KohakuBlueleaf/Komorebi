@@ -1,6 +1,5 @@
-// The writer kernel: waits for the tile in L1 and writes tile_count tiles to another
-// tensor, one after the other. When the command's a5 is 2 it leaves out cb_pop_front,
-// on purpose: another bug to look for.
+// The writer kernel: writes the tiles to another tensor. When the command's a5 is 2 it
+// leaves out cb_pop_front, on purpose: another bug to look for.
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"

@@ -1,6 +1,5 @@
-// What the kernels and Python agree on: the handler, and the three buffers in L1: the
-// tiles of the core's own share, the arrival buffer for the sums of the other cores,
-// and the output.
+// What the kernels and Python agree on: the handler, and three buffers in L1: the
+// core's own tiles, the arrival buffer for other cores' sums, and the output.
 #pragma once
 
 #include <stdint.h>
