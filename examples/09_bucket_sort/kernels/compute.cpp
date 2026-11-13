@@ -6,7 +6,7 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    km::Compute cp;
+    km::Compute compute;
     // It still takes every command and returns at once, so the writer may report it.
-    cp.run([&](const km_command_t&) {});
+    compute.run([&](const km_command_t&) {});
 }

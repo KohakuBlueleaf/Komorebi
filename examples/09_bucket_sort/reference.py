@@ -5,41 +5,41 @@ the thread must produce. The host script checks the card against it. See README.
 import numpy as np
 
 
-def partitions(n, cores):
+def partitions(key_count, cores):
     """(start, length) of each core's run of keys: km::partition's split, the first
-    n % cores cores one key more."""
-    lengths = np.full(cores, n // cores, np.int64)
-    lengths[: n % cores] += 1
+    `key_count % cores` cores one key more."""
+    lengths = np.full(cores, key_count // cores, np.int64)
+    lengths[: key_count % cores] += 1
     starts = np.concatenate(([0], np.cumsum(lengths)[:-1]))
     return starts, lengths
 
 
-def buckets_of(keys, log2_b):
-    """A key's bucket: its top log2(B) bits."""
-    return keys >> np.uint32(32 - log2_b)
+def buckets_of(keys, log2_buckets):
+    """A key's bucket: its top log2(buckets) bits."""
+    return keys >> np.uint32(32 - log2_buckets)
 
 
-def counts(keys, log2_b, cores):
-    """Step 1: [cores, B], how many of core c's keys fall in bucket b."""
+def counts(keys, log2_buckets, cores):
+    """Step 1: [cores, buckets], how many of each core's keys fall in each bucket."""
     _, lengths = partitions(keys.size, cores)
-    bucket = buckets_of(keys, log2_b).astype(np.int64)
+    bucket = buckets_of(keys, log2_buckets).astype(np.int64)
     core = np.repeat(np.arange(cores), lengths)
-    width = 1 << log2_b
+    width = 1 << log2_buckets
     return np.bincount(core * width + bucket, minlength=cores * width).reshape(
         cores, width
     )
 
 
 def plan(table):
-    """Step 2: [cores, B], where core c's first key of bucket b goes: the keys of all
-    earlier buckets, then those of bucket b on cores before c."""
+    """Step 2: [cores, buckets], where each core's first key of each bucket goes: the
+    keys of all earlier buckets, then those of the bucket on the cores before it."""
     totals = table.sum(axis=0)
     starts = np.concatenate(([0], np.cumsum(totals)[:-1]))
     before = np.cumsum(table, axis=0) - table
     return starts[None, :] + before
 
 
-def output(keys, log2_b):
+def output(keys, log2_buckets):
     """Step 3: the keys grouped by bucket, buckets in order, keys of one bucket in
     input order (a stable sort by bucket)."""
-    return keys[np.argsort(buckets_of(keys, log2_b), kind="stable")]
+    return keys[np.argsort(buckets_of(keys, log2_buckets), kind="stable")]
