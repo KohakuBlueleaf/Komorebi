@@ -7,13 +7,13 @@ has finished, the group's first core tells the dispatcher, which tells the host.
 
 | Handler | Arguments | What a core does |
 |---|---|---|
-| `MAP` | a0 input, a1 tiles T, a2 output, a3 output page of rank 0, a6 first input tile | reads its partition of input tiles a6 to a6 + T - 1, adds them into one tile (fp32), stores it at page a3 + rank, reports |
-| `STALL` | a0 rank | rank a0 waits for the stop flag and does not report; the others report |
-| `ALIGN` (a test) | a9 release time (low word of the wall clock; the test feeder sets it) | every core of the group reports at time a9 |
-| `LATE` (a test) | a0 rank, a1 cycles | rank a0 reports a1 cycles after it took the command; the others report at once |
+| `MAP` | a0 `input_address`, a1 `tiles` (T), a2 `output_address`, a3 `first_page` (output page of rank 0), a4 `slow_cycles`, a5 `slow_rank`, a6 `first_tile` | reads its partition of input tiles `first_tile` to `first_tile` + T - 1, adds them into one tile (fp32), stores it at page `first_page` + rank, reports (the rank `slow_rank` first holds its tile `slow_cycles` cycles: a test of slow compute) |
+| `STALL` | a0 `stalled_rank` | rank a0 waits for the stop flag and does not report; the others report |
+| `ALIGN` (a test) | a9 `report_time` (low word of the wall clock; the test feeder sets it) | every core of the group reports at time a9 |
+| `LATE` (a test) | a0 `late_rank`, a1 `delay` (cycles) | rank a0 reports a1 cycles after it took the command; the others report at once |
 | `NOP` | none | reports |
-| `BAD_ITEM` (a test) | a0 rank, a1 side (0 writer, 1 reader) | rank a0 asks for an item that passes the end of its buffer and gives up with `bad_item`; the others report |
-| `RESULT` (a test) | a0 value | each core of the group gives a0 plus its index as the result word; with `KM_FLAG_RESULT` the command is acknowledged with the leader's, a0 |
+| `BAD_ITEM` (a test) | a0 `faulty_rank`, a1 `faulty_role` (0 writer, 1 reader) | rank a0 asks for an item that passes the end of its buffer and gives up with `bad_item`; the others report |
+| `RESULT` (a test) | a0 `result_base` | each core of the group gives a0 plus its index as the result word; with `KM_FLAG_RESULT` the command is acknowledged with the leader's, a0 |
 
 The host checks every core's tile against numpy: bit-exact on integer inputs (even
 jobs), and the relative RMS error of the total on uniform random inputs (odd jobs).
@@ -37,15 +37,17 @@ program = km.Program(
 
 with km.Session(card=0) as session:
     run = session.load(program)  # launch the grid, then the dispatcher
-    t = run.submit("map", group=(0, 8), args=[x_addr, 64, out_addr, 0])
-    run.wait(t, timeout=5.0)  # sends what is queued, waits for the event
+    handle = run.submit(
+        "map", group=(0, 8), args=[input_address, 64, output_address, 0]
+    )
+    run.wait(handle, timeout=5.0)  # sends what is queued, waits for the event
     run.stop()  # EXIT to every core, stop the kernel, close the X280 runtime
     print(run.state()[0], run.trace())  # read back only now
 ```
 
 `reader_args` and `writer_args` are the tensor accessor arguments of the input and
 output tensors (`tensor.accessor_args()` of tensors made by
-`session.tensor(array, "bfloat16", "tile")`); `x_addr` and `out_addr` are their
+`session.tensor(array, "bfloat16", "tile")`); `input_address` and `output_address` are their
 `address`. `mapcollect.py` is this program with the tensors, the groups and the checks
 around it.
 

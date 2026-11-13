@@ -7,44 +7,65 @@
 #include "mapcollect.h"
 
 void kernel_main() {
-    constexpr auto in_args = TensorAccessorArgs<0>();
-    km::Reader rd;
-    uint32_t at = 0;  // write position in kCbIn, in pages: a block never wraps
-    rd.run([&](const km_command_t& r) {
-        const uint32_t index = rd.me() - km::first(r);
-        switch (km::handler(r)) {
+    constexpr auto input_args = TensorAccessorArgs<0>();
+    km::Reader reader;
+    uint32_t write_page = 0;  // write position in kCbIn, in pages: a block never wraps
+    reader.run([&](const km_command_t& command) {
+        const uint32_t index = reader.me() - km::first(command);
+        switch (km::handler(command)) {
             case kHandlerMap: {
-                const km::Partition s = km::partition(r.a1, index, km::count(r));
-                const auto in = TensorAccessor(in_args, r.a0);
-                for (uint32_t done = 0; done < s.len;) {
-                    uint32_t n = s.len - done < kBlock ? s.len - done : kBlock;
-                    n = n < kInPages - at ? n : kInPages - at;
-                    if (!rd.reserve(kCbIn, n)) {
+                const uint32_t input_address = command.a0;
+                const uint32_t tiles = command.a1;
+                const uint32_t first_tile = command.a6;
+                const km::Partition partition = (
+                    km::partition(tiles, index, km::count(command))
+                );
+                const auto input = TensorAccessor(input_args, input_address);
+                for (uint32_t done = 0; done < partition.len;) {
+                    uint32_t block_tiles = (
+                        partition.len - done < kBlock ? partition.len - done : kBlock
+                    );
+                    block_tiles = (
+                        block_tiles < kInPages - write_page
+                            ? block_tiles
+                            : kInPages - write_page
+                    );
+                    if (!reader.reserve(kCbIn, block_tiles)) {
                         return;
                     }
-                    const uint32_t dst = get_write_ptr(kCbIn);
-                    for (uint32_t k = 0; k < n; k++) {
+                    const uint32_t destination = get_write_ptr(kCbIn);
+                    for (uint32_t tile = 0; tile < block_tiles; tile++) {
                         noc_async_read_page(
-                            r.a6 + s.start + done + k, in, dst + k * kTileBytes
+                            first_tile + partition.start + done + tile,
+                            input,
+                            destination + tile * kTileBytes
                         );
                     }
                     noc_async_read_barrier();
-                    cb_push_back(kCbIn, n);
-                    done += n;
-                    at = (at + n) % kInPages;
+                    cb_push_back(kCbIn, block_tiles);
+                    done += block_tiles;
+                    write_page = (write_page + block_tiles) % kInPages;
                 }
                 break;
             }
-            case kHandlerBadItem:  // from page `at`: past the end unless at == 0
-                if (index == r.a0 && r.a1 == 1 && !rd.reserve(kCbIn, kInPages)) {
+            case kHandlerBadItem: {  // from page `write_page`: past the end unless 0
+                const uint32_t faulty_rank = command.a0;
+                const uint32_t faulty_role = command.a1;
+                if (
+                    index == faulty_rank && faulty_role == 1 &&
+                    !reader.reserve(kCbIn, kInPages)
+                ) {
                     return;
                 }
                 break;
-            case kHandlerStall:
-                if (index == r.a0) {
-                    rd.wait_stop(r);
+            }
+            case kHandlerStall: {
+                const uint32_t stalled_rank = command.a0;
+                if (index == stalled_rank) {
+                    reader.wait_stop(command);
                 }
                 break;
+            }
             default:
                 break;
         }
