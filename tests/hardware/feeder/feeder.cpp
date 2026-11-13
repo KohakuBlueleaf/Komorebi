@@ -332,9 +332,9 @@ void kernel_main() {
             in_flight++;
             max_busy = in_flight > max_busy ? in_flight : max_busy;
             record[kFrRecBusy] = in_flight;
-            if (
-                messages_handler != 0 && (command_words[1] & 0xFFu) == messages_handler
-            ) {  // a dynamic run starts
+            if (KM_IS_DYNAMIC(
+                messages_handler, command_words[1] & 0xFFu
+            )) {  // a dynamic run starts
                 messages_index = static_cast<int32_t>(next);
                 messages_sequence = sequence;
                 messages_group = command_words[2];

@@ -74,7 +74,7 @@ typedef struct {
 /* The dynamic run in flight (dynamic.h): its RUN command, and its end command's slot.
  */
 typedef struct {
-    uint32_t handler; /* the program's dynamic handler; 0: none */
+    uint32_t handler; /* the program's dynamic handlers, one per byte; 0: none */
     uint32_t active;  /* a RUN is in flight and not yet quiet */
     uint32_t slot, sequence, group, request, source; /* the RUN command */
     uint32_t end; /* 1 + the end command's slot while busy; 0 */

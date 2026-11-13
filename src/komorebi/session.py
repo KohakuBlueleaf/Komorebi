@@ -595,7 +595,7 @@ class Session:
                 state_tensor.address,
                 **thread_module.kernel_work_args(ends),
                 messages_handler=(
-                    program.messages.handler if program.messages is not None else 0
+                    program.messages.word() if program.messages is not None else 0
                 ),
             )
             check_bases(lim_bases(dispatch.lim_base))

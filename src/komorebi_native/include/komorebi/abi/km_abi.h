@@ -174,6 +174,13 @@ KM_STATIC_ASSERT(
 /* the submitter ends a dynamic run with this command to its group; a0 = run's sequence
  */
 #define KM_HANDLER_MESSAGES_END 249u
+/* A program's dynamic handlers, one per byte of a word (0: none); whether `handler` is
+   one of them. A program with one dynamic handler has its number as the word. */
+#define KM_DYNAMIC_MAX 4u
+#define KM_IS_DYNAMIC(handlers, handler)                                             \
+    ((handler) != 0u &&                                                              \
+     (((handlers) & 0xFFu) == (handler) || ((handlers) >> 8 & 0xFFu) == (handler) || \
+      ((handlers) >> 16 & 0xFFu) == (handler) || ((handlers) >> 24) == (handler)))
 
 /* Status line of a core in a dynamic run, 16 bytes at the submitter, one store. */
 #define KM_MESSAGES_LINE_RUN 0u /* word offsets: the run's sequence */

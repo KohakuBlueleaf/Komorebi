@@ -310,12 +310,13 @@ class Program:
             return self.handlers[handler]
         return int(handler)
 
-    def dynamic(self, handler, **options):
-        """Makes handler `handler` a dynamic handler (options: those of Dynamic) and
-        adds its buffers. Returns the program."""
+    def dynamic(self, handler, *handlers, **options):
+        """Makes `handler`, and each of `handlers`, a dynamic handler of one message
+        loop (options: those of Dynamic) and adds its buffers. Returns the program."""
         if self.messages is not None:
             raise ValueError(f"{self.name} already has a dynamic handler")
-        self.messages = Dynamic(handler=self.handler(handler), **options)
+        numbers = tuple(self.handler(each) for each in (handler, *handlers))
+        self.messages = Dynamic(handler=numbers[0], handlers=numbers, **options)
         self.buffers = [*self.buffers, *self.messages.buffers()]
         return self
 
@@ -335,12 +336,25 @@ def messages_header():
     return abi.constants(path, sizes={"MessagesArgs": 4 * len(fields)}), fields
 
 
+def message_word(position, queue_messages, handler, program=0):
+    """Word 0 of the message at queue position `position`, as the writer sets it: the
+    lap mark (1 to 65535, round again) in the low 16 bits, handler and program above."""
+    constants, _ = messages_header()
+    lap = position // queue_messages
+    mark = lap % constants["kMessagesLaps"] + 1
+    return (
+        mark
+        | (handler & 0xFF) << constants["kMessagesHandlerShift"]
+        | (program & 0xFF) << constants["kMessagesProgramShift"]
+    )
+
+
 @dataclass(frozen=True)
 class Dynamic:
-    """A dynamic handler: messages of `message_bytes` move between the queues of the
-    group's cores (`queue_messages` each), at most `max_live` alive at once; `bins`
-    open bins per writer; a line says idle after `idle_cycles` of idle. The last
-    `counters` cores of a run's group are counter tiles (layout.counter_tiles)."""
+    """Dynamic `handlers` (default: `handler` alone): messages of `message_bytes` move
+    between the group's queues (`queue_messages` each), at most `max_live` alive; `bins`
+    open bins per writer; a line says idle after `idle_cycles`. The last `counters`
+    cores of a run's group are counter tiles (layout.counter_tiles)."""
 
     handler: int
     message_bytes: int = 64
@@ -349,9 +363,22 @@ class Dynamic:
     bins: int = 16
     idle_cycles: int = 20000
     counters: int = 2
+    handlers: tuple = ()
 
     def __post_init__(self):
         constants, _ = messages_header()
+        handlers = tuple(int(number) for number in self.handlers) or (self.handler,)
+        object.__setattr__(self, "handlers", handlers)
+        user_max = abi.headers()["KM_HANDLER_USER_MAX"]
+        most = abi.headers()["KM_DYNAMIC_MAX"]
+        if self.handler not in handlers or len(set(handlers)) < len(handlers):
+            raise ValueError(
+                f"dynamic handlers {handlers}: distinct, with {self.handler}"
+            )
+        if len(handlers) > most or not all(1 <= h <= user_max for h in handlers):
+            raise ValueError(
+                f"dynamic handlers {handlers}: 1 to {most}, each in 1..{user_max}"
+            )
         page = constants["kMessagesPageMessages"]
         if (
             self.message_bytes % 64
@@ -425,6 +452,11 @@ class Dynamic:
         if depth < 2:
             raise ValueError("a dynamic run needs ring depth 2 for its end command")
 
+    def word(self):
+        """The dynamic handlers as the kernels and the dispatcher read them, one a byte
+        (KM_IS_DYNAMIC); one handler's word is its number."""
+        return sum(number << 8 * index for index, number in enumerate(self.handlers))
+
     def quota(self, cores):
         """Sends each core starts a run with, for a group of `cores` cores."""
         return self.max_live // max(cores - self.counters, 1)
@@ -433,7 +465,7 @@ class Dynamic:
         """Reader and writer words of km::MessagesArgs (they precede the program's)."""
         _, fields = messages_header()
         values = {
-            "handler": self.handler,
+            "handler": self.word(),
             "queue": queue,
             "cap": self.queue_messages,
             "message_bytes": self.message_bytes,

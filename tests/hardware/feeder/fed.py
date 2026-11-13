@@ -226,7 +226,7 @@ class Fed:
             "kFdExit": int(send_exit),
             "kFdRelease": release,
             "kFdRaw": raw,
-            "kFdMessagesHandler": dynamic.handler if dynamic is not None else 0,
+            "kFdMessagesHandler": dynamic.word() if dynamic is not None else 0,
             "kFdLines": lines_t.address if lines_t is not None else 0,
         }
         words = [0] * CONSTANTS["kFdArgs"]

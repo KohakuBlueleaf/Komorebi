@@ -10,6 +10,11 @@
 
 namespace {
 
+    // The probe's own mark: position + 1 (0 is empty), the runtime's before laps.
+    inline uint32_t mark(uint32_t position) {
+        return position + 1;
+    }
+
     constexpr uint32_t kRoleRank = 0;
     constexpr uint32_t kRoleStandIn = 1;
 
@@ -148,7 +153,7 @@ void kernel_main() {
         for (uint32_t i = 0; i < count; i++) {
             km::l1(
                 work + XR_WORK_STAGE + 64 * i
-            )[XR_W_MARK] = (i == 0 ? 0 : km::messages_mark(first_position + i));
+            )[XR_W_MARK] = (i == 0 ? 0 : mark(first_position + i));
         }
         invalidate_l1_cache();  // a fence: the NoC reads the stored marks
         for (uint32_t i = 0; i < count;) {
@@ -165,7 +170,7 @@ void kernel_main() {
         if (!flushed_writes()) {
             return XR_GAVE_WRITE;
         }
-        km::l1(work + XR_WORK_STAGE)[XR_W_MARK] = km::messages_mark(first_position);
+        km::l1(work + XR_WORK_STAGE)[XR_W_MARK] = mark(first_position);
         invalidate_l1_cache();
         noc_async_write(
             work + XR_WORK_STAGE,
@@ -259,7 +264,7 @@ void kernel_main() {
             while (
                 valid < XR_INBOX &&
                 km::l1(inbox + 64 * ((in_head + valid) & (XR_INBOX - 1)))[XR_W_MARK] ==
-                    km::messages_mark(in_head + valid)
+                    mark(in_head + valid)
             ) {
                 valid++;
             }

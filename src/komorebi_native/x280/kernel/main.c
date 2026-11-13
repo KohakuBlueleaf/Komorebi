@@ -40,6 +40,16 @@ static int pow2(uint64_t value) {
     return value != 0 && (value & (value - 1u)) == 0;
 }
 
+/* Dynamic handlers, one per byte: each 0 or a program handler. */
+static int dynamic_valid(uint64_t handlers) {
+    for (uint32_t index = 0; index < KM_DYNAMIC_MAX; index++) {
+        if ((uint32_t)(handlers >> 8u * index & 0xFFu) > KM_HANDLER_USER_MAX) {
+            return 0;
+        }
+    }
+    return handlers >> 32 == 0;
+}
+
 /* Checks the argument block against this run: ring depths are powers of two, so the
  * slot numbering survives the wrap of the 32-bit counters. */
 static int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
@@ -67,7 +77,7 @@ static int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
         (arguments->state_ddr & 63u) == 0 && (arguments->host_noc_addr & 63u) == 0 &&
         (arguments->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE &&
-        work_args_valid(arguments) && arguments->messages_handler <= KM_HANDLER_USER_MAX
+        work_args_valid(arguments) && dynamic_valid(arguments->messages_handler)
     );
 }
 
@@ -331,10 +341,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         group_outside(dispatcher, queued ? 0 : first, count)
     ) {
         reject = KMD_REJECT_GROUP;
-    } else if (
-        queued && dispatcher->messages.handler != 0 &&
-        handler == dispatcher->messages.handler
-    ) {
+    } else if (queued && KM_IS_DYNAMIC(dispatcher->messages.handler, handler)) {
         reject = KMD_REJECT_MESSAGES;
     }
     if (reject != 0) {

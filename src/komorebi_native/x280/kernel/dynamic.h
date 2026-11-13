@@ -16,7 +16,7 @@ KMD_HOT void messages_submitted(
     uint32_t source
 ) {
     kmd_messages_t* run = &dispatcher->messages;
-    if (run->handler == 0 || ((uint32_t)(line[0] >> 32) & 0xFFu) != run->handler) {
+    if (!KM_IS_DYNAMIC(run->handler, (uint32_t)(line[0] >> 32) & 0xFFu)) {
         return;
     }
     run->active = 1;
@@ -31,7 +31,7 @@ KMD_HOT void messages_submitted(
  */
 static inline int messages_held(const kmd_t* dispatcher, uint32_t handler) {
     return (
-        dispatcher->messages.handler != 0 && handler == dispatcher->messages.handler &&
+        KM_IS_DYNAMIC(dispatcher->messages.handler, handler) &&
         (dispatcher->messages.active || dispatcher->messages.end)
     );
 }

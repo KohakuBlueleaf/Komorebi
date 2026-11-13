@@ -12,7 +12,7 @@ namespace km {
     // Arguments of a dynamic program: reader and writer program arguments 0 to
     // kMessagesArgs - 1 (the program's own follow), compute program arguments 0 and 1.
     struct MessagesArgs {
-        uint32_t handler;  // the dynamic handler
+        uint32_t handler;  // the dynamic handlers, one per byte (KM_IS_DYNAMIC)
         uint32_t
             queue;  // DRAM address of the queues, kMessagesPageMessages messages a page
         uint32_t
@@ -48,12 +48,29 @@ namespace km {
     constexpr uint32_t kMessagesFlagCompute = 0x10;  // waiting in next() | messages pushed
     constexpr uint32_t kMessagesFlagWriter = 0x20;  // every bin sent | messages taken
 
-    // Positions per core and session. Word 0 of the message at `position` once valid; 0
-    // is empty. Queues start zero-filled and positions never restart: no stale mark.
+    // Positions per core and load; positions never restart. Word 0 of a message: its
+    // lap mark (low 16 bits), its handler and its program (0 for now) above it.
     constexpr uint32_t kMessagesPositionMax = 1u << 30;
+    constexpr uint32_t kMessagesMarkMask = 0xFFFF;
+    constexpr uint32_t kMessagesHandlerShift = 16;
+    constexpr uint32_t kMessagesProgramShift = 24;
+    constexpr uint32_t kMessagesLaps = 0xFFFF;  // marks 1 to 65535; 0 is empty
+    // The word compute hands the writer: the destination core, the handler above it.
+    constexpr uint32_t kMessagesOutHandlerShift = 8;
+    constexpr uint32_t kMessagesOutDestination = 0xFF;
 
-    inline uint32_t messages_mark(uint32_t position) {
-        return position + 1;
+    // The mark of `position` in a queue of 2^shift messages: its lap, 1 to 65535 and
+    // round again. A slot holds 0, the previous lap's mark or its own: never confused.
+    inline uint32_t messages_mark(uint32_t position, uint32_t shift) {
+        const uint32_t lap = position >> shift;
+        uint32_t folded = (lap & 0xFFFF) + (lap >> 16);  // lap mod 65535, one fold
+        folded = folded >= kMessagesLaps ? folded - kMessagesLaps : folded;
+        return folded + 1;
+    }
+
+    // The handler in a message's word 0.
+    inline uint32_t messages_handler(uint32_t word) {
+        return word >> kMessagesHandlerShift & 0xFF;
     }
 
     // Queue position `position` of core `core`: DRAM page and byte offset in it.
@@ -226,6 +243,7 @@ namespace km {
             reader.disp_noc(messages_arguments.lines + 16 * arguments.me)
         );
         const uint64_t wait = static_cast<uint64_t>(arguments.wait_limit) << 10;
+        const uint32_t shift = __builtin_ctz(messages_arguments.cap);
         reader_flags[1] = 0;
         reader_flags[0] = run;
         uint32_t head = *head_word, where = filled ? 0 : kWhereMessagesFill;
@@ -236,7 +254,7 @@ namespace km {
                                           // asked
         }
         if (head >= kMessagesPositionMax) {
-            where = kWhereMessagesFull;  // marks stay unique below 2^31 positions
+            where = kWhereMessagesFull;  // positions stay below 2^31 in a load
         }
         // A counter tile sets its cores' tails to their heads, then shows READY; a
         // core waits for its counter tile's READY before it reads its tail there.
@@ -489,10 +507,13 @@ namespace km {
             // first message, whose mark is written once the whole packet has landed.
             while (
                 valid < batch &&
-                l1(
-                    page + kMessagesHeader + valid * messages_arguments.message_bytes
-                )[0] ==
-                    messages_mark(head + valid)
+                (
+                    l1(
+                        page + kMessagesHeader +
+                        valid * messages_arguments.message_bytes
+                    )[0] &
+                    kMessagesMarkMask
+                ) == messages_mark(head + valid, shift)
             ) {
                 valid++;
             }
@@ -547,6 +568,7 @@ namespace km {
         const MessagesArgs messages_arguments = messages_args(writer);
         const uint32_t run = command.sequence;
         const uint32_t words = messages_arguments.message_bytes / 4;
+        const uint32_t shift = __builtin_ctz(messages_arguments.cap);
         const uint32_t bins = (
             messages_arguments.bins == 0 || messages_arguments.bins > kMessagesBinsMax
                 ? kMessagesBinsMax
@@ -631,16 +653,17 @@ namespace km {
                 lost_to = bin_destination[bin];
                 return false;
             }
-            // Commit: the messages go out with the first one's mark 0, then after their
-            // barrier one 16-byte write sets that mark.
+            // Commit: the messages go out with the first one's word 0 zero, then after
+            // their barrier one 16-byte write sets it (each word 0 holds its handler).
             const uint32_t first_position = returned[0];
             const uint32_t base = (
                 store + bin * kMessagesPacket * messages_arguments.message_bytes
             );
+            const uint32_t first_word = l1(base)[0];
             l1(base)[0] = 0;
             for (uint32_t i = 1; i < bin_messages; i++) {
-                l1(base + i * messages_arguments.message_bytes)[0] = messages_mark(
-                    first_position + i
+                l1(base + i * messages_arguments.message_bytes)[0] |= messages_mark(
+                    first_position + i, shift
                 );
             }
             invalidate_l1_cache();  // a fence: the NoC reads the stored marks
@@ -670,7 +693,7 @@ namespace km {
                 where = kWhereMessagesFlush;
                 return false;
             }
-            l1(base)[0] = messages_mark(first_position);
+            l1(base)[0] = first_word | messages_mark(first_position, shift);
             invalidate_l1_cache();
             noc_async_write(
                 base,
@@ -742,12 +765,13 @@ namespace km {
             quiet_from = wall64();
             cb_wait_front(kCbMessagesOut, 1);
             volatile tt_l1_ptr uint32_t* outgoing = l1(get_read_ptr(kCbMessagesOut));
-            const uint32_t destination = outgoing[0];
-            if (destination == kMessagesEnd) {
+            const uint32_t outgoing_word = outgoing[0];
+            if (outgoing_word == kMessagesEnd) {
                 cb_pop_front(kCbMessagesOut, 1);
                 ended = flush_all();
                 break;
             }
+            const uint32_t destination = outgoing_word & kMessagesOutDestination;
             const uint32_t bin = destination % bins;
             if (
                 bin_destination[bin] != destination && bin_fill[bin] != 0 && !flush(bin)
@@ -765,6 +789,10 @@ namespace km {
                         messages_arguments.message_bytes
                 )
             );
+            slot_words[0] =
+                (
+                    (outgoing_word >> kMessagesOutHandlerShift) << kMessagesHandlerShift
+                );  // the handler; the flush adds the mark
             for (uint32_t word = 1; word < words; word++) {
                 slot_words[word] = outgoing[word];
             }
@@ -795,13 +823,21 @@ namespace km {
         uint32_t count;
         uint32_t base;  // byte address of message 0
         uint32_t message_bytes;
+        uint32_t* current = nullptr;  // Messages: the handler of the message taken last
 
         explicit operator bool() const {
             return count != 0;
         }
 
+        // Message `index`; its handler becomes the one forward() and send() keep.
         const volatile tt_l1_ptr uint32_t* operator[](uint32_t index) const {
-            return l1(base + index * message_bytes);
+            const volatile tt_l1_ptr uint32_t* message = (
+                l1(base + index * message_bytes)
+            );
+            if (current != nullptr) {
+                *current = messages_handler(message[0]);
+            }
+            return message;
         }
     };
 
@@ -820,6 +856,7 @@ namespace km {
             rank_(compute.me() - km::first(command)),
             message_bytes_(compute.arg(kMessagesCArgMessage)),
             quota_(compute.arg(kMessagesCArgQuota)),
+            handler_(km::handler(command)),
             seeded_(rank_ >= count_) {
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* messages = (
@@ -857,6 +894,12 @@ namespace km {
 
         uint32_t quota() const {
             return quota_;
+        }
+
+        // The handler of the message taken last from a packet; the RUN command's
+        // before.
+        uint32_t handler() const {
+            return handler_;
         }
 
         // The next packet; empty when the run ended, the stop flag was set or a wait
@@ -946,12 +989,17 @@ namespace km {
                 PACK((end_marker()));
                 return {0, 0, message_bytes_};
             }
-            return {packet_count, address + kMessagesHeader, message_bytes_};
+            return {packet_count, address + kMessagesHeader, message_bytes_, &handler_};
         }
 
-        // The message goes on at rank `destination` of the run's group. message:
-        // message_bytes / 4 words; word 0 is the runtime's mark.
+        // The message (message_bytes / 4 words, word 0 the runtime's) goes on at rank
+        // `destination` of the group, keeping the handler of the message being handled.
         void forward(uint32_t destination, const uint32_t* message) {
+            forward(destination, message, handler_);
+        }
+
+        // The same, handled by `handler` there (one of the program's dynamic handlers).
+        void forward(uint32_t destination, const uint32_t* message, uint32_t handler) {
             if (destination >= count_) {
                 failed_ = true;
                 PACK((
@@ -964,7 +1012,11 @@ namespace km {
             }
             PACK(({
                 if (!failed_) {
-                    push_out(first_ + destination, message);
+                    push_out(
+                        (first_ + destination) |
+                            (handler & 0xFF) << kMessagesOutHandlerShift,
+                        message
+                    );
                 }
             }));
         }
@@ -976,11 +1028,16 @@ namespace km {
 
         // A new message at rank `destination`; false when this core has no quota left.
         bool send(uint32_t destination, const uint32_t* message) {
+            return send(destination, message, handler_);
+        }
+
+        // The same, handled by `handler` there.
+        bool send(uint32_t destination, const uint32_t* message, uint32_t handler) {
             if (quota_ == 0) {
                 return false;
             }
             quota_--;
-            forward(destination, message);
+            forward(destination, message, handler);
             return true;
         }
 
@@ -1014,7 +1071,7 @@ namespace km {
         }
 
     private:
-        // Pack: one outgoing message, word 0 the destination core.
+        // Pack: one outgoing message, word 0 the destination core and the handler.
         void push_out(uint32_t destination, const uint32_t* message) {
             if (!reserve()) {
                 return;
@@ -1088,6 +1145,7 @@ namespace km {
         uint32_t rank_;
         uint32_t message_bytes_;
         uint32_t quota_;
+        uint32_t handler_;
         bool seeded_;
         uint32_t pushed_ = 0;
         uint32_t consumed_ = 0;

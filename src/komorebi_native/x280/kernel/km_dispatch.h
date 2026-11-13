@@ -230,7 +230,7 @@ typedef struct {
     uint64_t work_event_depth; /* events per ring, a power of two, at most 1024 */
     uint64_t work_noc[KMD_WORK_CLUSTERS];      /* each cluster's tile: x | y << 16 */
     uint64_t work_noc_addr[KMD_WORK_CLUSTERS]; /* NoC address there of KMD_WORK_* */
-    uint64_t messages_handler; /* the program's dynamic handler (dynamic.h); 0: none */
+    uint64_t messages_handler; /* dynamic handlers, one per byte (dynamic.h); 0: none */
     uint64_t version;          /* KMD_ARGS_VERSION */
 } kmd_args_t;
 
