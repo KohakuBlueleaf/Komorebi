@@ -4,10 +4,11 @@
 
 #include <stdint.h>
 
-/* STEP: a0 state, a1 round + 1: x[p] += a1 + p on the cores of the group. */
+/* STEP: a0 state_address, a1 round (this round + 1): x[p] += round + p on the cores
+ * of the group. */
 #define WC_HANDLER_STEP 1u
-/* SUM: a0 state, a1 cores: the leader (core `first`) returns x[first] + ... +
- * x[first + a1 - 1]. */
+/* SUM: a0 state_address, a1 cores: the leader (core `first`) returns x[first] + ... +
+ * x[first + cores - 1]. */
 #define WC_HANDLER_SUM 2u
 
 /* The program's words, in this order: the loop runs on cores [base, base + cores). */
@@ -31,12 +32,12 @@ typedef struct {
 } wc_command;
 
 /* 0, or 1 when the words cannot make a run (a group outside the grid, no rounds). */
-uint32_t wc_start(wc_state* s, const uint32_t* words);
+uint32_t wc_start(wc_state* state, const uint32_t* words);
 
 /* The round's commands: STEP on `count` cores from the core the last sum chose, then
  * SUM over the loop's cores, exclusive (it waits for STEP), with a result word. */
-void wc_round(const wc_state* s, wc_command out[2]);
+void wc_round(const wc_state* state, wc_command commands[2]);
 
 /* SUM's result word: WC_END when it reached the limit, WC_NO_END after the last
  * allowed round, else WC_AGAIN with the next group chosen. */
-uint32_t wc_result(wc_state* s, uint32_t sum);
+uint32_t wc_result(wc_state* state, uint32_t sum);

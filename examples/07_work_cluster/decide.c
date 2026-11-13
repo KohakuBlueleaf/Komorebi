@@ -4,14 +4,14 @@
 
 #include "komorebi/abi/km_abi.h"
 
-uint32_t wc_start(wc_state* s, const uint32_t* words) {
+uint32_t wc_start(wc_state* state, const uint32_t* words) {
     for (int i = 0; i < WC_WORDS; i++) {
-        s->word[i] = words[i];
+        state->word[i] = words[i];
     }
-    s->round = 0;
-    s->first = 0;
-    s->sum = 0;
-    s->trail = 2166136261u;
+    state->round = 0;
+    state->first = 0;
+    state->sum = 0;
+    state->trail = 2166136261u;
     const uint32_t cores = words[WC_CORES], count = words[WC_COUNT];
     const uint32_t base = words[WC_BASE];
     const int bad = (
@@ -21,32 +21,32 @@ uint32_t wc_start(wc_state* s, const uint32_t* words) {
     return bad ? 1u : 0u;
 }
 
-void wc_round(const wc_state* s, wc_command out[2]) {
-    out[0].handler = WC_HANDLER_STEP;
-    out[0].flags = 0;
-    out[0].first = s->word[WC_BASE] + s->first;
-    out[0].count = s->word[WC_COUNT];
-    out[0].a0 = s->word[WC_ADDR];
-    out[0].a1 = s->round + 1;
-    out[1].handler = WC_HANDLER_SUM;
-    out[1].flags = KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT;
-    out[1].first = s->word[WC_BASE];
-    out[1].count = s->word[WC_CORES];
-    out[1].a0 = s->word[WC_ADDR];
-    out[1].a1 = s->word[WC_CORES];
+void wc_round(const wc_state* state, wc_command commands[2]) {
+    commands[0].handler = WC_HANDLER_STEP;
+    commands[0].flags = 0;
+    commands[0].first = state->word[WC_BASE] + state->first;
+    commands[0].count = state->word[WC_COUNT];
+    commands[0].a0 = state->word[WC_ADDR];
+    commands[0].a1 = state->round + 1;
+    commands[1].handler = WC_HANDLER_SUM;
+    commands[1].flags = KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT;
+    commands[1].first = state->word[WC_BASE];
+    commands[1].count = state->word[WC_CORES];
+    commands[1].a0 = state->word[WC_ADDR];
+    commands[1].a1 = state->word[WC_CORES];
 }
 
-uint32_t wc_result(wc_state* s, uint32_t sum) {
-    s->sum = sum;
-    s->round += 1;
-    s->trail = (s->trail ^ s->first) * 16777619u;
-    if (sum >= s->word[WC_LIMIT]) {
+uint32_t wc_result(wc_state* state, uint32_t sum) {
+    state->sum = sum;
+    state->round += 1;
+    state->trail = (state->trail ^ state->first) * 16777619u;
+    if (sum >= state->word[WC_LIMIT]) {
         return WC_END;
     }
-    if (s->round >= s->word[WC_MAX_ROUNDS]) {
+    if (state->round >= state->word[WC_MAX_ROUNDS]) {
         return WC_NO_END;
     }
     /* the value from the card picks where the next STEP lands */
-    s->first = sum % (s->word[WC_CORES] - s->word[WC_COUNT] + 1);
+    state->first = sum % (state->word[WC_CORES] - state->word[WC_COUNT] + 1);
     return WC_AGAIN;
 }

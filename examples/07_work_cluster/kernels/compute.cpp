@@ -5,6 +5,6 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    km::Compute cp;
-    cp.run([&](const km_command_t&) {});
+    km::Compute compute;
+    compute.run([&](const km_command_t&) {});
 }

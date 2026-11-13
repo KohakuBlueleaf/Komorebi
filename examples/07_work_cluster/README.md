@@ -4,8 +4,8 @@ A program whose control loop is decided by a value computed on the card. Each co
 holds one state word (page `p` of a DRAM tensor belongs to core `p`, starting at
 `7 p`). Every round submits two commands:
 
-    round k:
-        STEP  on cores [first, first + count):  x[p] += k + 1 + p
+    each round:
+        STEP  on cores [first, first + count):  x[p] += round + p   (round counts from 1)
         SUM   on the loop's cores, exclusive, with a result word:
               the leader reads x[base .. base + cores) and returns their sum
         sum >= limit          -> end
@@ -18,7 +18,7 @@ three ways:
 | Path | Who runs `decide.c` | How commands reach the grid |
 |---|---|---|
 | `thread` | an X280 thread on a work cluster (`thread/driver.c`) | `kmx_submit` / `kmx_wait` on the thread's command ring |
-| `hostfed` | the thread's host fallback (`session.load(prog, thread="host")`), through ctypes | `Run.submit(..., result=True)` and `Run.wait` on the run the fallback is given |
+| `hostfed` | the thread's host fallback (`session.load(work_program, thread="host")`), through ctypes | `Run.submit(..., result=True)` and `Run.wait` on the run the fallback is given |
 | `cpu` | the thread's own files on the CPU (`cpu_ring.c`) | the ring calls of `kmx_ring.h` against a fake kernel that runs STEP and SUM on a model of the grid |
 
 Each must give the same commands, rounds, final sum and group sequence as a numpy
@@ -67,7 +67,7 @@ ran, then `result code rounds sum trail`, then `groups` and region 0's words.
 
 `kernels/writer.cpp` runs both handlers (the reader and compute kernels have nothing
 to do): STEP reads and writes its core's page; SUM's leader reads every page and calls
-`wr.result(sum)`, which the dispatcher returns as the result word of the SUM
+`writer.result(total)`, which the dispatcher returns as the result word of the SUM
 command's done event.
 
 ## Files

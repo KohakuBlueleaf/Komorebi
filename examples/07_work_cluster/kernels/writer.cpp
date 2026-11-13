@@ -10,56 +10,63 @@ constexpr uint32_t kCbScratch = 16;
 
 void kernel_main() {
     constexpr auto state_args = TensorAccessorArgs<0>();
-    km::Writer wr;
+    km::Writer writer;
     const uint32_t scratch = get_write_ptr(kCbScratch);
     volatile uint32_t* word = reinterpret_cast<volatile uint32_t*>(scratch);
     // NoC barriers polled with the wait limit; false (no report) if it passed.
     auto reads_done = [&] {
-        const bool ok = wr.poll(
+        const bool ok = writer.poll(
             [&] {
                 return ncrisc_noc_reads_flushed(noc_index);
             },
-            wr.args().wait_limit
+            writer.args().wait_limit
         ) == km::kGaveNone;
         invalidate_l1_cache();
         return ok;
     };
     auto writes_done = [&] {
-        return wr.poll(
+        return writer.poll(
             [&] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
-            wr.args().wait_limit
+            writer.args().wait_limit
         ) == km::kGaveNone;
     };
-    wr.run([&](const km_command_t& r) {
-        const uint32_t handler = km::handler(r);
-        const auto x = TensorAccessor(state_args, r.a0);
+    writer.run([&](const km_command_t& command) {
+        const uint32_t handler = km::handler(command);
+        const uint32_t state_address = command.a0;
+        const auto state = TensorAccessor(state_args, state_address);
         if (handler == WC_HANDLER_SUM) {
-            if (wr.me() != km::first(r)) {
+            const uint32_t cores = command.a1;
+            if (writer.me() != km::first(command)) {
                 return true;
             }
-            uint32_t sum = 0;
-            for (uint32_t p = km::first(r); p < km::first(r) + r.a1; p++) {
-                noc_async_read_page(p, x, scratch);
+            uint32_t total = 0;
+            for (
+                uint32_t state_page = km::first(command);
+                state_page < km::first(command) + cores;
+                state_page++
+            ) {
+                noc_async_read_page(state_page, state, scratch);
                 if (!reads_done()) {
                     return false;
                 }
-                sum += word[0];
+                total += word[0];
             }
-            wr.result(sum);
+            writer.result(total);
             return true;
         }
         if (handler != WC_HANDLER_STEP) {
             return true;
         }
-        const uint32_t page = wr.me();
-        noc_async_read_page(page, x, scratch);
+        const uint32_t round = command.a1;
+        const uint32_t page = writer.me();
+        noc_async_read_page(page, state, scratch);
         if (!reads_done()) {
             return false;
         }
-        word[0] = word[0] + r.a1 + page;
-        noc_async_write_page(page, x, scratch);
+        word[0] = word[0] + round + page;
+        noc_async_write_page(page, state, scratch);
         return writes_done();
     });
 }

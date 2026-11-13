@@ -5,6 +5,6 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    km::Reader rd;
-    rd.run([&](const km_command_t&) {});
+    km::Reader reader;
+    reader.run([&](const km_command_t&) {});
 }
