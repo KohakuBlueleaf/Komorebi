@@ -1274,7 +1274,7 @@ NB_MODULE(_km_host, m) {
         .def(
             nb::init<std::shared_ptr<MeshDevice>, uint32_t>(),
             nb::arg("mesh_device"),
-            nb::arg("pll_mhz") = 1750
+            nb::arg("pll_mhz") = 1000
         )
         .def_ro("grid_x", &Dispatch::gx_)
         .def_ro("grid_y", &Dispatch::gy_)

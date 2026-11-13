@@ -245,3 +245,10 @@ These rules are part of the protocol; a host that relies on anything else is wro
   block (`KMD_ENGINE_TRAPPED`); core 0 reports it at its finish. Interrupts, and a
   second exception inside the handler, go to the runtime's handler, which ceases the
   core as before.
+- **Clock.** The host runs the X280 at 1000 MHz. At 1750 MHz, with every Tensix core at
+  full matrix load (the card lowers its core voltage under it), core 0's loads returned
+  wrong values (a pointer of the host ring read as 0, its base off by 12 bytes) and the
+  kernel trapped within seconds, in about half of the 8192-cubed runs; never at 1000 MHz.
+  A gap between the program's tensors and the kernel's state, or a flush of the state
+  right after boot, did not change it. The timings above were measured at 1750 MHz; a
+  host-fed record at depth 16 costs 1.228 microseconds at 1000 MHz against 0.726.

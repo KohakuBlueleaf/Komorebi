@@ -56,8 +56,13 @@ writer) and 31 (the trace); a program uses the others.
 
 ## `Session`
 
-`km.Session(card=None, device=None, pll_mhz=1750, tree=None, log=None,
+`km.Session(card=None, device=None, pll_mhz=1000, tree=None, log=None,
 grid_timeout=10.0)`.
+
+- `pll_mhz` is the X280 clock (the runtime's steps: 200, 800, 1000, 1750). At 1750 MHz,
+  with every Tensix core at full matrix load (the card lowers its core voltage), the
+  dispatch kernel's loads returned wrong values and it trapped; 1000 MHz did not.
+  A host-fed record costs about 1.2 microseconds at 1000 MHz, 0.7 at 1750.
 
 - `card` selects the card through `TT_VISIBLE_DEVICES` (an error if that variable
   already names another card); `device` uses a mesh device the caller opened and

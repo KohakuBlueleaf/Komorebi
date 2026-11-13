@@ -28,7 +28,12 @@ DYN_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic segment's queues may take
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
-KERNEL_BANK = 5  # the bank X280 cluster 0's Memory Port reaches (measured, p150a)
+# The bank X280 cluster 0's Memory Port reaches: measured on a p150a, as for the work
+# clusters (thread.BANK_OF_CLUSTER); the runtime names no bank for that port.
+KERNEL_BANK = 5
+# The X280 clock: at 1750 MHz, under full Tensix load (lowered core voltage), core 0's
+# loads returned wrong values; 1000 MHz is the next step the runtime offers.
+X280_MHZ = 1000
 STATE_DUMP_LINES = 8  # 64-byte lines of the kernel's state logged after a failure
 CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
@@ -237,7 +242,7 @@ class Session:
         self,
         card=None,
         device=None,
-        pll_mhz=1750,
+        pll_mhz=X280_MHZ,
         tree=None,
         log=None,
         grid_timeout=10.0,

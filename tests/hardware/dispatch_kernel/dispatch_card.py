@@ -2128,7 +2128,7 @@ def parser(cases):
     p.add_argument(
         "--idle-s", type=float, default=0.0, help="kernel idle limit, 0 = none"
     )
-    p.add_argument("--pll", type=int, default=1750)
+    p.add_argument("--pll", type=int, default=1000, help="X280 clock, MHz")
     p.add_argument("--image-first", action="store_true")
     p.add_argument("--batch", type=int, default=1, help="commands per store batch")
     p.add_argument("--settle-us", type=float, default=0.0, help="fence to next store")
