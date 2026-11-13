@@ -22,7 +22,7 @@ from 0.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "flow", "steps": [{"t": "buffers 0 and 1 hold tile A and tile B", "gem": "amber"}, {"t": "unpack (CPU 3): A and B go to the unit"}, {"t": "math (CPU 4): A + B, left in register 0"}, {"t": "pack (CPU 5): register 0 goes to buffer 16"}, {"t": "buffer 16 holds the sum", "gem": "amber"}]}
+{"kind": "flow", "steps": [{"t": "buffers 0 and 1 hold tile A and tile B", "gem": "amber"}, {"t": "unpack (CPU 3): A and B go to the unit"}, {"t": "math (CPU 4): A + B, left in register\n0"}, {"t": "pack (CPU 5): register 0 goes to\nbuffer 16"}, {"t": "buffer 16 holds the sum", "gem": "amber"}]}
 </script>
 <figcaption>Two tiles in, one tile out: unpack and pack touch the buffers; math works on the register between them.</figcaption>
 </figure>

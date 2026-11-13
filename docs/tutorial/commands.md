@@ -101,13 +101,7 @@ to be compiled.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "flow",
- "steps": [
-  {"t": "load: compile, copy to the cores, start\nonce, about a second", "gem": "amber"},
-  {"t": "submit, wait: a command, about two microseconds"},
-  {"t": "submit, wait: a command, about two microseconds"},
-  {"t": "stop: the kernels end"}],
- "back": {"from": 3, "to": 2, "t": "as often\nas you like"}}
+{"kind": "flow", "steps": [{"t": "load: compile, copy to the cores,\nstart\nonce, about a second", "gem": "amber"}, {"t": "submit, wait: a command, about two\nmicroseconds"}, {"t": "submit, wait: a command, about two\nmicroseconds"}, {"t": "stop: the kernels end"}], "back": {"from": 3, "to": 2, "t": "as often\nas you like"}}
 </script>
 <figcaption>The kernels are loaded once; each command only wakes them.</figcaption>
 </figure>

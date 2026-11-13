@@ -23,7 +23,7 @@ receives is decided in advance. The run ends by itself when every message has en
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "flow", "steps": [{"t": "seeding: rank 0 sends 12 messages; message v goes to rank (v x v) mod 6", "gem": "amber"}, {"t": "each message waits in the queue of its destination core"}, {"t": "each core: next() gives a packet of messages; it adds the values and consumes them", "gem": "amber"}, {"t": "every message is consumed: the run ends by itself"}, {"t": "Python reads each core's count and sum from its L1"}]}
+{"kind": "flow", "steps": [{"t": "seeding: rank 0 sends 12 messages;\nmessage v goes to rank (v x v) mod 6", "gem": "amber"}, {"t": "each message waits in the queue of its\ndestination core"}, {"t": "each core: next() gives a packet of\nmessages; it adds the values and\nconsumes them", "gem": "amber"}, {"t": "every message is consumed: the run\nends by itself"}, {"t": "Python reads each core's count and sum\nfrom its L1"}]}
 </script>
 <figcaption>The life of the program of this lesson.</figcaption>
 </figure>

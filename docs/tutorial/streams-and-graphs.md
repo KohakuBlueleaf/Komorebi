@@ -30,7 +30,7 @@ page is [Micro-op streams](../streams.md). This lesson builds a graph.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "flow", "steps": [{"t": "round starts: value = 1 (from Python), limit = 100", "gem": "amber"}, {"t": "add on core 0: value + 3 = sum, the result goes to a register"}, {"t": "multiply on core 1, after add: sum x 2 = doubled"}, {"t": "cpu step, after multiply: value = doubled; again if value < 100"}], "back": {"from": 3, "to": 0, "t": "again"}}
+{"kind": "flow", "steps": [{"t": "round starts: value = 1 (from Python),\nlimit = 100", "gem": "amber"}, {"t": "add on core 0: value + 3 = sum, the\nresult goes to a register"}, {"t": "multiply on core 1, after add: sum x 2\n= doubled"}, {"t": "cpu step, after multiply: value =\ndoubled; again if value < 100"}], "back": {"from": 3, "to": 0, "t": "again"}}
 </script>
 <figcaption>The graph of this program: one round is three nodes, and the last one decides whether there is another round.</figcaption>
 </figure>

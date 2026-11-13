@@ -165,13 +165,7 @@ reported that it finished.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "flow",
- "steps": [
-  {"t": "session.load(program)\nthe kernels start on all 120 cores and wait", "gem": "amber"},
-  {"t": "run.submit(0, group=(0, 1))\nthe command goes to the cores"},
-  {"t": "core 0: reader, compute and writer\neach run their function once", "gem": "amber"},
-  {"t": "core 0 reports: done"},
-  {"t": "run.wait(handle) returns the event"}]}
+{"kind": "flow", "steps": [{"t": "session.load(program)\nthe kernels start on all 120 cores and\nwait", "gem": "amber"}, {"t": "run.submit(0, group=(0, 1))\nthe command goes to the cores"}, {"t": "core 0: reader, compute and writer\neach run their function once", "gem": "amber"}, {"t": "core 0 reports: done"}, {"t": "run.wait(handle) returns the event"}]}
 </script>
 <figcaption>The life of the one command of this program.</figcaption>
 </figure>

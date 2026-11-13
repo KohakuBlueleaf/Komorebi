@@ -21,7 +21,7 @@ message keeps going until some core decides it is done, and consumes it.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "flow", "steps": [{"t": "seeded: rank 0 sends message 0 (value 1, 4 hops) to rank 0", "gem": "amber"}, {"t": "visit core 0: value 6, 4 hops left: forward to rank 0"}, {"t": "visit core 0: value 31, 3 hops left: forward to rank 1"}, {"t": "visit core 1: value 59, 2 hops left: forward to rank 5"}, {"t": "visit core 5: value 5, 1 hop left: forward to rank 5"}, {"t": "visit core 5: value 26, no hops left: consume", "gem": "sage"}]}
+{"kind": "flow", "steps": [{"t": "seeded: rank 0 sends message 0 (value\n1, 4 hops) to rank 0", "gem": "amber"}, {"t": "visit core 0: value 6, 4 hops left:\nforward to rank 0"}, {"t": "visit core 0: value 31, 3 hops left:\nforward to rank 1"}, {"t": "visit core 1: value 59, 2 hops left:\nforward to rank 5"}, {"t": "visit core 5: value 5, 1 hop left:\nforward to rank 5"}, {"t": "visit core 5: value 26, no hops left:\nconsume", "gem": "sage"}]}
 </script>
 <figcaption>One message of this lesson, 0, with 4 hops: five visits, on cores 0, 0, 1, 5 and 5.</figcaption>
 </figure>

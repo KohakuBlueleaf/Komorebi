@@ -30,7 +30,7 @@ no core adds more than once a round, and the whole takes 3 rounds for 8 cores an
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "flow", "steps": [{"t": "tree, round 0: ranks 1, 3, 5, 7 send to ranks 0, 2, 4, 6", "gem": "amber"}, {"t": "round 1: ranks 2 and 6 send to ranks 0 and 4"}, {"t": "round 2: rank 4 sends to rank 0", "gem": "amber"}, {"t": "rank 0 holds the sum of all 8 tiles"}]}
+{"kind": "flow", "steps": [{"t": "tree, round 0: ranks 1, 3, 5, 7 send\nto ranks 0, 2, 4, 6", "gem": "amber"}, {"t": "round 1: ranks 2 and 6 send to ranks 0\nand 4"}, {"t": "round 2: rank 4 sends to rank 0", "gem": "amber"}, {"t": "rank 0 holds the sum of all 8 tiles"}]}
 </script>
 <figcaption>The tree form for 8 cores: three rounds. Each round halves the number of cores that hold a part.</figcaption>
 </figure>
