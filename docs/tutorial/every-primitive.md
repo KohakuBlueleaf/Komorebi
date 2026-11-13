@@ -41,6 +41,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `program.thread(...)`, `program.ports(...)` | a thread on an X280 cluster, and its ports | [[hello-thread]], [[core-asks-x280]] |
 | `run.thread_result(timeout)`, `run.thread.read(name)` | the thread's result, and a region after the run | [[hello-thread]], [[sharing-memory]] |
 | `program.overlay(name, folder)`, `program.slots(count=n)` | an overlay's parts, and the slots that hold them | [[overlays]] |
+| `session.load([a, b])`, `session.load({a: group, b: group})`, `program.handler(name)` | several programs in one run; a handler of one of them | [[two-programs]] |
 
 ## Kernels, on the Tensix cores
 
@@ -64,6 +65,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `km::Messages`: `handler`, `forward` and `send` with a handler | a message names its handler | [[message-handlers]] |
 | `km::X280Port`: `call`, `tell` | ask and tell an X280 core | [[core-asks-x280]] |
 | `km::Overlay`: `load`, `call`, `held`; `km_overlay(kernel, argument)` | load an overlay into a slot and call it; a part's function | [[overlays]] |
+| `km_program(kernel, command)` | a program in the runtime's form: one function a kernel, called for each command | [[two-programs]] |
 
 ## Threads, on the X280 cores
 

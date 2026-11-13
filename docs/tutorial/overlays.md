@@ -116,4 +116,4 @@ The example [`12_overlays`](../../examples/12_overlays/README.md) loads an overl
 parts on the reader, the writer and the three compute cores on every core, and times each
 load and call. The [overlay reference](../reference/overlays.md) has every rule.
 
-Next: [[every-primitive]] lists every call that this tutorial used, with its lesson.
+Next: [[two-programs]] runs two programs in one run, each loaded as an overlay.

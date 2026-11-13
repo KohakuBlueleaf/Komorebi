@@ -1,0 +1,6 @@
+combined: add      6 and 7 = 13
+combined: multiply 6 and 7 = 42
+combined: add      6 and 7 = 13
+groups:   add      6 and 7 = 13
+groups:   multiply 6 and 7 = 42
+refused:  handler 1 of multiply: group (0, 60) does not hold multiply
