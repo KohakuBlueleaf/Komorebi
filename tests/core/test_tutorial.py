@@ -31,11 +31,11 @@ def test_a_folder_has_a_script_that_parses_three_kernels_and_its_output(folder):
         assert (folder / "output.txt").is_file()
     kernels = folder / "kernels"
     if kernels.exists():
-        assert {p.stem for p in kernels.glob("*.cpp")} == {
-            "reader",
-            "compute",
-            "writer",
-        }
+        stems = {p.stem for p in kernels.glob("*.cpp")}
+        if stems == {"compute"}:  # a dynamic handler: Komorebi's own reader and writer
+            assert ".dynamic(" in scripts[0].read_text()
+            return
+        assert stems == {"reader", "compute", "writer"}
         header = kernels / "handlers.h"
         assert km.Program(
             folder.name, kernels, handlers=header if header.exists() else {}

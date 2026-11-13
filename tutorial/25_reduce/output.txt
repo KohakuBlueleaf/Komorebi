@@ -1,0 +1,3 @@
+form 0: 8 tiles added into one in   5.1 us
+form 1: 8 tiles added into one in   4.7 us
+both forms: the destination tile is the sum of the 8 tiles

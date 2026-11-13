@@ -38,6 +38,14 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("20_computing_on_a_tile/computing_on_a_tile.py", "is the sum of tile 1"),
         ("21_the_matrix_unit/the_matrix_unit.py", "is the matrix product of tile 1"),
         ("22_a_whole_map/a_whole_map.py", "all three results are the sum"),
+        ("23_why_cores_talk/why_cores_talk.py", "[0, 1, 4, 9, 16, 25, 0, 0]"),
+        ("24_port/port.py", "core 0 holds number 5 of it: 4077"),
+        ("25_reduce/reduce.py", "is the sum of the 8 tiles"),
+        ("26_broadcast/broadcast.py", "each of the 6 cores holds the sum"),
+        ("27_routed_message/routed_message.py", "rank 4: received 4 messages"),
+        ("28_forward_and_consume/forward_and_consume.py", "as the replay says"),
+        ("29_full_buffers/full_buffers.py", "rank 0 asked 20 times and 10 sends"),
+        ("30_streams_and_graphs/streams_and_graphs.py", "the same rounds in Python"),
     ],
 )
 def test_a_tutorial_program_runs_and_prints_its_line(script, line):

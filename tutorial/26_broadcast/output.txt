@@ -1,0 +1,2 @@
+4 blocks to 6 cores in 7.4 microseconds
+each of the 6 cores holds the sum of the 4 blocks

@@ -1,0 +1,7 @@
+rank 0: accepted 10 sends, received 2, quota left 2
+rank 1: accepted 0 sends, received 2, quota left 12
+rank 2: accepted 0 sends, received 2, quota left 12
+rank 3: accepted 0 sends, received 2, quota left 12
+rank 4: accepted 0 sends, received 1, quota left 11
+rank 5: accepted 0 sends, received 1, quota left 11
+rank 0 asked 20 times and 10 sends were accepted

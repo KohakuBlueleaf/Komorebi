@@ -1,0 +1,1 @@
+what cores 0 to 7 hold in their L1: [0, 1, 4, 9, 16, 25, 0, 0]

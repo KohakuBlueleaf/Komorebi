@@ -1,0 +1,6 @@
+rank 0: received 2 messages, values add up to 6
+rank 1: received 4 messages, values add up to 24
+rank 2: received 0 messages, values add up to 0
+rank 3: received 2 messages, values add up to 12
+rank 4: received 4 messages, values add up to 24
+rank 5: received 0 messages, values add up to 0

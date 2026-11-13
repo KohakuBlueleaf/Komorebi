@@ -1,0 +1,2 @@
+core 1 sent tile 1; core 0 holds number 0 of it: 2024
+core 1 sent tile 3; core 0 holds number 5 of it: 4077

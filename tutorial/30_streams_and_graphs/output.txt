@@ -1,0 +1,2 @@
+the graph went round 4 times, ended with 106
+the same rounds in Python: 4 rounds, value 106

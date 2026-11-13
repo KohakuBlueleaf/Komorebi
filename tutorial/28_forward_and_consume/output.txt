@@ -1,0 +1,7 @@
+rank 0: 4 visits, 1 messages ended here
+rank 1: 5 visits, 2 messages ended here
+rank 2: 6 visits, 2 messages ended here
+rank 3: 5 visits, 0 messages ended here
+rank 4: 4 visits, 0 messages ended here
+rank 5: 6 visits, 1 messages ended here
+30 visits in all, 6 messages ended, as the replay says
