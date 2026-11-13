@@ -27,7 +27,7 @@ def test_a_stall_times_out_naming_the_core_then_runs_end_at_the_quiet_end():
     stall, after, engine = out["runs"]
     assert stall["kernel"]["error_name"] == "deadline" and stall["event"] == "timeout"
     assert stall["timed_out"]["ticket"] == 1 and stall["timed_out"]["team"] == [0, 120]
-    assert stall["gave_core"] == 2 and stall["dyn_gave"]["2"][0] == 24  # in page
+    assert stall["gave_core"] == 2 and stall["dyn_gave"]["2"]["where"] == "in_page"
     assert after["exact"] and after["event"] == "done" and after["hops"] == 1000
     assert after["kernel"] == {"error_name": "none", "records": 3, "events": 2}
     assert after["gave_core"] == -1 and after["checks"] > 0

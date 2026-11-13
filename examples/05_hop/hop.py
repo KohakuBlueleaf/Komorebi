@@ -29,7 +29,6 @@ from komorebi import abi  # noqa: E402
 from komorebi.engines.stream import Stream  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
-K = rec.K
 HOP = rec.constants(HERE / "kernels" / "hop.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 T0 = time.monotonic()
@@ -208,10 +207,11 @@ def report(a, run, event, dyn, team, stall, res_t, timed_out):
     result = run.result()
     harts = result.get("harts") or [0] * h["KMD_H_WORDS"]
     res = (ttnn.to_torch(res_t).numpy().astype(np.int64) & 0xFFFFFFFF)[:count]
-    rows = ttnn.to_torch(run.backend.ctl).numpy().astype(np.int64) & 0xFFFFFFFF
-    at = run.backend.ctl_offset + (K["KM_CTL_DYN"] + K["KM_DYN_GAVE"]) // 4
+    states = run.state()
     gave = {
-        c: [int(v) for v in rows[c, at : at + 4]] for c in range(count) if rows[c, at]
+        c["core"]: c["dynamic"]["gave_up"]
+        for c in states[:count]
+        if c["dynamic"]["gave_up"]
     }
     one = a.one_core if a.one_core >= 0 else None
     retired, total, visits = replay.replay(a.items, a.hops, count, one)
@@ -248,7 +248,6 @@ def report(a, run, event, dyn, team, stall, res_t, timed_out):
             "team": list(timed_out.team),
             "not_reported": timed_out.cores[:16],
         }
-        states = run.state()
         out["core_gave_up"] = [
             {"core": c["core"], **{k: c[k] for k in ("reader", "writer", "compute")}}
             for c in states
