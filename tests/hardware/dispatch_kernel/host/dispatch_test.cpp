@@ -53,6 +53,15 @@ using Clock = std::chrono::steady_clock;
 
 namespace {
 
+    // The device in a komorebi Device.mesh_capsule().
+    std::shared_ptr<MeshDevice> mesh_of(const nb::capsule& device) {
+        const char* name = device.name();
+        if (name == nullptr || std::strcmp(name, "komorebi.mesh_device") != 0) {
+            throw std::invalid_argument("not a Device.mesh_capsule() capsule");
+        }
+        return *static_cast<std::shared_ptr<MeshDevice>*>(device.data());
+    }
+
     constexpr double kMtimeHz = 50e6;
     // One page: the largest buffer that maps to the NoC without an IOMMU.
     constexpr size_t kHostBufferBytes = 4096;
@@ -903,8 +912,11 @@ NB_MODULE(_km_dispatch_test, m) {
 
     nb::class_<Runtime>(m, "Runtime")
         .def(
-            nb::init<std::shared_ptr<MeshDevice>, uint32_t>(),
-            nb::arg("mesh_device"),
+            "__init__",
+            [](Runtime* self, const nb::capsule& device, uint32_t pll_mhz) {
+                new (self) Runtime(mesh_of(device), pll_mhz);
+            },
+            nb::arg("device"),
             nb::arg("pll_mhz") = 1000
         )
         .def("image_limit", &Runtime::image_limit)

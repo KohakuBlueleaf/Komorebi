@@ -172,7 +172,7 @@ class Layout:
         return self.base + 4096 * k
 
 
-def case_graphs(device, args):
+def case_graphs(session, args):
     """The test image: RUN forms, refusals and range errors, the kept table and CANCEL,
     every saved reference against the simulator on this grid (on DK_SEG_SUM), the kept
     loop run again with another binding; a PING answers after each part. The records
@@ -344,7 +344,7 @@ def case_graphs(device, args):
     def after(plan, fin):
         trace["head"], trace["entries"] = dc.read_trace(plan)
 
-    out, fin, cnt = dc.with_kernel(device, args, body, depth=16, after=after)
+    out, fin, cnt = dc.with_kernel(session, args, body, depth=16, after=after)
     out["finish"] = fin
     out["cores"] = dc.core_report(cnt, n_cores, out["tag"])
     issues = (dc.TRACE_ISSUE, dc.TRACE_QUEUED)
@@ -375,7 +375,7 @@ def case_graphs(device, args):
     return out
 
 
-def case_graph_deadline(device, args):
+def case_graph_deadline(session, args):
     """A graph's second record has member --core waiting for the stop word, header
     deadline --deadline-us: KM_EV_GRAPH_ERROR reason 8 at that node, the kernel ends
     with the deadline error, every core gives up on the stop word."""
@@ -395,7 +395,7 @@ def case_graph_deadline(device, args):
         dc.log("graph ended")
         return out
 
-    out, fin, cnt = dc.with_kernel(device, args, body, depth=4)
+    out, fin, cnt = dc.with_kernel(session, args, body, depth=4)
     out["finish"] = fin
     out["cores"] = dc.core_report(cnt, n_cores, out["tag"])
     blk = fin["block"]
@@ -414,12 +414,12 @@ def case_graph_deadline(device, args):
 CASES = {"graphs": case_graphs, "graph-deadline": case_graph_deadline}
 
 
-def case_set(device, args):
+def case_set(session, args):
     """Both cases in one device open; a JSON line per case."""
     oks = {}
     for name in CASES:
         dc.log(f"case {name}")
-        out = CASES[name](device, argparse.Namespace(**vars(args)))
+        out = CASES[name](session, argparse.Namespace(**vars(args)))
         print(json.dumps({"case": name, **out}, default=str), flush=True)
         oks[name] = bool(out.get("ok"))
     return {"cases": oks, "ok": all(oks.values())}

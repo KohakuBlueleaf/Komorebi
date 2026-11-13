@@ -87,8 +87,8 @@ You need:
 - this repository installed (`pip install -e .`);
 - a tt-metal source tree configured with `TT_METAL_BUILD_X280=ON` (which needs
   `TT_METAL_BUILD_TESTS=ON`) and built, for `build.py`;
-- a Python environment with that tree's `ttnn`, and `torch` and `numpy`, which
-  `dispatch_card.py` imports;
+- `numpy` in the same environment (`dispatch_card.py` opens the card through a
+  `komorebi.Session` and hands its device to the module as `Device.mesh_capsule()`);
 - one Blackhole p150a whose X280 local memory has been primed by the X280 runtime's
   preparation step: the harness opens the runtime with `RequirePrepared` and does not
   prime it.
