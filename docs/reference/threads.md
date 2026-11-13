@@ -152,15 +152,17 @@ cluster's:
 
 | Member | Meaning |
 |---|---|
-| `run.thread_result(timeout)` | waits for the thread to return (asks it to stop at the timeout), stops it, returns a `ThreadResult`; with `thread="host"` runs the fallback |
-| `run.thread_results(timeout)` | the same for every thread, `{cluster: ThreadResult}`; on the first that does not return in time or ends with a library error, stops the others and raises `ThreadFailed` (`cluster`, `results`) |
+| `run.thread_result(timeout)` | waits for the thread to return (asks it to stop at the timeout), stops it, returns a `ThreadResult`; with `thread="host"` runs the fallback; raises `ThreadFailed` when the thread is `stuck` |
+| `run.thread_results(timeout)` | the same for every thread, `{cluster: ThreadResult}`; on the first that does not return in time or ends with a library error, stops the others and raises `ThreadFailed` (`cluster`, `results`; its message names a `stuck` thread) |
 | `run.thread.read(name)` | the region's bytes (`uint8`), only after `run.stop()` |
 | `run.thread.regions.address(name)` | `(bank, bank address)` for a Tensix kernel |
 | `run.thread.ring` | the `RingPlacement` the host wrote into the ring line (`None` with `thread="host"`) |
 | `run.stop()` | stops every thread still running, then the run |
 
 `ThreadResult`: `ran` (false when it was stopped at the timeout), `state`, `error`
-(names, as in the result block), `code`, `words`, `where`, `where_us`, `us`.
+(names, as in the result block), `code`, `words`, `where`, `where_us`, `us`, `stuck`
+(it did not return within 1 s of the stop word either: a hart outside the library or
+halted by a trap) and `detail` (then the runtime's account of a stop that failed).
 
 `RingPlacement(cmd, consumed, events, read, cmd_depth, event_depth, cached=False,
 remote=None)`, `work_ring(kernel_lim, kernel_xy, work_lim, work_xy, cluster=1)` (the

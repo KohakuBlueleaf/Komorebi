@@ -278,7 +278,8 @@ def new_check_value():
 class ThreadResult(NamedTuple):
     """The result block: state and library error (names), the thread's code and
     words, its last progress stamp and the times in microseconds. `ran` is False
-    when the thread did not return by the timeout (it was stopped)."""
+    when the thread did not return by the timeout; `stuck` when it did not return
+    after the stop word either, `detail` then the runtime's account of a failed stop."""
 
     ran: bool
     state: str
@@ -288,6 +289,8 @@ class ThreadResult(NamedTuple):
     where: int
     where_us: float
     us: float
+    stuck: bool = False
+    detail: str = ""
 
 
 def _names(prefix):
@@ -296,7 +299,7 @@ def _names(prefix):
     }
 
 
-def parse_result(raw, ran=True):
+def parse_result(raw, ran=True, stuck=False, detail=""):
     """A ThreadResult from the 256 bytes of the result block."""
     k = layout()
     w = struct.unpack("<64I", bytes(raw)[:256])
@@ -310,6 +313,8 @@ def parse_result(raw, ran=True):
         where=w[4],
         where_us=w[5] / 50.0,
         us=w[6] / 50.0,
+        stuck=stuck,
+        detail=detail,
     )
 
 
@@ -380,17 +385,20 @@ class ThreadRun:
 
     def collect(self, ran):
         """Asks a thread that has not returned (`ran` false) to stop, then stops it
-        through the runtime and reads its result block."""
+        through the runtime and reads its result block. One that does not return
+        after the stop word either is `stuck`: a hart outside the library."""
         if self.result is not None:
             return self.result
         c, k = self.thread.cluster, layout()
+        stuck = False
         if not ran:
             self._ask_stop()
-            self.port.work_wait(c, 1.0)
+            stuck = not self.port.work_wait(c, 1.0).get("ready")
         raw = self.port.work_read(c, k["KMX_LIM_RESULT"], 256)
-        self.port.work_stop(c, 2.0)
+        stop = self.port.work_stop(c, 2.0) or {}
         self.running = False
-        self.result = parse_result(raw, ran=ran)
+        detail = stop.get("failed", "") if stuck else ""
+        self.result = parse_result(raw, ran=ran, stuck=stuck, detail=detail)
         return self.result
 
     def stop(self, timeout=3.0):

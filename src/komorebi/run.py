@@ -51,6 +51,20 @@ class Event(NamedTuple):
         return self.ticks / 50.0  # the X280 timer runs at 50 MHz
 
 
+def stuck_message(cluster, r):
+    """What a stuck thread (ThreadResult.stuck) means, for ThreadFailed."""
+    stop = (
+        f"the runtime could not stop the cluster ({r.detail}): the card needs a reset"
+        if r.detail
+        else "the runtime stopped the cluster"
+    )
+    return (
+        f"the thread on cluster {cluster} did not return, nor after the stop word: a"
+        " hart is stuck outside the library (which alone sees the stop word and the"
+        f" deadline) or stopped by a trap; its last progress stamp {r.where}; {stop}"
+    )
+
+
 def _left(by):
     """Seconds left until the monotonic time `by` (0 once it passed)."""
     return max(by - time.monotonic(), 0.0)
@@ -516,7 +530,11 @@ class Run:
         result block (komorebi.thread.ThreadResult). Events go on as before."""
         if self.thread is None:
             raise KomorebiError("the program has no thread")
-        return self.thread.wait(timeout)
+        r = self.thread.wait(timeout)
+        if r.stuck:
+            c = self.thread.thread.cluster
+            raise ThreadFailed(stuck_message(c, r), c, {c: r})
+        return r
 
     def thread_results(self, timeout=10.0):
         """Waits (bounded) for every X280 thread, stops each and returns {cluster:
@@ -545,6 +563,13 @@ class Run:
         if failed is not None:
             r = results[failed]
             how = "did not return in time" if not r.ran else f"failed ({r.error})"
+            stuck = [c for c, x in results.items() if x.stuck]
+            if stuck:
+                c = failed if failed in stuck else stuck[0]
+                what = stuck_message(c, results[c])
+                if c != failed:
+                    what = f"the thread on cluster {failed} {how}; {what}"
+                raise ThreadFailed(what, failed, results)
             raise ThreadFailed(
                 f"the thread on cluster {failed} {how}; the others were stopped",
                 failed,

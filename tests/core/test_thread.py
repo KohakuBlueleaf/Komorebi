@@ -255,3 +255,31 @@ def test_one_threads_failure_stops_the_others_and_names_it():
     assert err.value.cluster == 2 and err.value.results[2].error == "late"
     assert not err.value.results[3].ran and ("stop", 3) in port.calls
     assert not any(t.running for t in run.threads.values())
+
+
+class Stuck(FakePort):
+    """A hart that takes no stop word: the runtime cannot stop the cluster."""
+
+    def work_stop(self, c, timeout):
+        self.calls.append(("stop", c))
+        return {"cleaned": False, "failed": "harts still running"}
+
+
+def test_a_thread_that_does_not_take_the_stop_word_fails_and_says_why():
+    port, run = Stuck(), Run(FakeBackend(FakeKernel()), (12, 10))
+    run.thread = kt.ThreadRun(a_thread(), port, None, image="t.bin")
+    run.thread.start()
+    with pytest.raises(ThreadFailed, match="stuck outside the library") as err:
+        run.thread_result(timeout=0.1)
+    assert "card needs a reset" in str(err.value) and "still running" in str(err.value)
+    assert err.value.results[1].stuck and not run.thread.running
+
+
+def test_a_thread_that_returns_after_the_stop_word_is_not_stuck():
+    port = FakePort()
+    answers = iter([{"ready": False}, {"ready": True}])
+    port.work_wait = lambda c, timeout: next(answers)
+    run = kt.ThreadRun(a_thread(), port, None, image="t.bin")
+    run.start()
+    r = run.wait(0.1)
+    assert not r.ran and not r.stuck and r.detail == ""

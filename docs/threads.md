@@ -308,7 +308,9 @@ with km.Session() as session:
 - `run.thread_result(timeout)` returns a `ThreadResult`: `ran` (false when the thread
   did not return in time and was stopped), `state`, the library `error`, the thread's
   `code` and `words`, the last progress stamp `where` and its time `where_us`, and the
-  thread's time `us`.
+  thread's time `us`. A thread that does not return within 1 s of the stop word either
+  is `stuck`, and the call raises `ThreadFailed` that says so, with the runtime's
+  account of the stop in `detail` when the cluster could not be stopped (see Limits).
 - `run.thread.read(name)` returns a region's bytes once `run.stop()` has returned (the
   thread writes its regions until it stops; an earlier read raises).
   `run.thread.regions.address(name)` gives `(bank, bank address)` for a Tensix kernel,
@@ -354,6 +356,14 @@ can give the fallback the same file through ctypes, so both run one program
 - `kmx_par_all` runs on the clusters that run the same image, led by the lowest; every
   other one must call `kmx_serve`, or the lead's first `kmx_par_all` waits until its
   deadline.
-- A thread that never returns and polls nothing cannot be stopped: the runtime marks
-  the cluster unhealthy, the other clusters go on until the process closes the card,
-  and the next process needs a card reset.
+- The stop word and the deadline are seen only inside library calls (`kmx_wait`,
+  `kmx_par`, `kmx_stop_requested`, ...). A hart stuck outside them, in a loop that
+  calls none or in a load that never completes, cannot be stopped: the host's wait
+  raises `ThreadFailed` (`stuck`, the last progress stamp, the runtime's account), the
+  runtime marks the cluster unhealthy, the other clusters go on until the process
+  closes the card, and the next session needs a card reset. A hart that traps is
+  halted by the runtime's handler; its account names `mcause`, `mepc` and `mtval`.
+- A 64-bit load or store into a region uses an offset that is a multiple of 8, a
+  32-bit one a multiple of 4: an access across that boundary is not emulated (the
+  runtime's trap handler halts the hart), and one such load into a region was seen
+  to stall the hart with no trap at all. `kmx_region` returns 64-byte aligned memory.
