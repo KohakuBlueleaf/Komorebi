@@ -209,20 +209,20 @@ static void upload_check(
 }
 #endif
 
-/* Reads source `source`'s line: kernel commands act, bad ones are rejected, a command
- * is submitted or waits. STOP, EXIT, RUN, CANCEL: host only; POST: engine. */
+/* Reads source `source`'s line: kernel commands act, bad ones are rejected, others are
+ * submitted or wait. `argument` is a0 (microseconds, tag, offset, request, address). */
 KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     kmd_ring_t* ring = &dispatcher->ring[source];
     uint64_t* line = ring->line;
     const uint32_t request = ring->next, host = source == KMD_SRC_HOST;
     uint32_t header = (uint32_t)(line[0] >> 32);
     const uint32_t handler = header & 0xFFu, flags = (header >> 8) & 0xFFu;
-    const uint32_t group = (uint32_t)line[1], a0 = (uint32_t)(line[1] >> 32);
+    const uint32_t group = (uint32_t)line[1], argument = (uint32_t)(line[1] >> 32);
     const uint32_t first = group & 0xFFFFu, count = group >> 16;
     const uint32_t queued = handler != KM_HANDLER_EXIT && (flags & KM_FLAG_QUEUE);
-    if (handler == KM_HANDLER_DEADLINE && a0 != 0) {
+    if (handler == KM_HANDLER_DEADLINE && argument != 0) {
         ring_consumed(ring);
-        ring->t_command = (uint64_t)a0 * 50u;
+        ring->t_command = (uint64_t)argument * 50u;
         return KMD_TAKEN;
     }
     if (handler == KM_HANDLER_STOP && host) {
@@ -249,7 +249,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     }
     if (handler == KMD_HANDLER_DROP && source == KMD_SRC_ENGINE) {
         ring_consumed(ring);
-        queue_drop(dispatcher, a0);
+        queue_drop(dispatcher, argument);
         return KMD_TAKEN;
     }
     /* Every other command ends in one event: it waits until that event has room. */
@@ -266,15 +266,17 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         /* a2 != 0: a graph's RUN; a CANCEL goes to the graph or stream with its
          * request. */
         int wait = (
-            handler == KM_HANDLER_RUN ? -1 : graph_cancel(dispatcher, request, a0)
+            handler == KM_HANDLER_RUN ? -1 : graph_cancel(dispatcher, request, argument)
         );
         if (handler == KM_HANDLER_RUN && (uint32_t)line[3] != 0) {
             wait = graph_run(dispatcher, request, line);
         } else if (wait < 0) {
             wait = (
                 handler == KM_HANDLER_RUN
-                    ? engine_run(dispatcher, request, a0, (uint32_t)(line[2] >> 32))
-                    : engine_cancel(dispatcher, request, a0)
+                    ? engine_run(
+                        dispatcher, request, argument, (uint32_t)(line[2] >> 32)
+                    )
+                    : engine_cancel(dispatcher, request, argument)
             );
         }
         if (wait) {
@@ -288,16 +290,16 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     if (host && handler == KMD_HANDLER_CHECK_UPLOAD) {
         ring_consumed(ring);
         upload_check(
-            dispatcher, request, a0, (uint32_t)(line[2] >> 32), (uint32_t)line[3]
+            dispatcher, request, argument, (uint32_t)(line[2] >> 32), (uint32_t)line[3]
         );
         dispatcher->last_event_mtime = now;
         return KMD_TAKEN;
     }
     if (host && handler == KMD_HANDLER_TRAP) {
         ring_consumed(ring);
-        const uint64_t v = *(volatile const uint64_t*)(uintptr_t)a0;
+        const uint64_t loaded = *(volatile const uint64_t*)(uintptr_t)argument;
         ring_push(
-            ring, request, KM_EVENT_PONG, (uint32_t)v
+            ring, request, KM_EVENT_PONG, (uint32_t)loaded
         ); /* only if the load did not trap */
         return KMD_TAKEN;
     }
@@ -334,7 +336,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     }
     if (queued) {
         /* Into the queue; when full, the host's is rejected, others' rejected busy. */
-        if (dispatcher->queue->n == KM_QUEUE_JOBS) {
+        if (dispatcher->queue->length == KM_QUEUE_JOBS) {
             if (!host) {
                 return KMD_HELD;
             }

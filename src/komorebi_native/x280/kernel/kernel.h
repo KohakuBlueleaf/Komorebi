@@ -65,9 +65,9 @@ typedef struct {
 /* The job queue (KMD_STATE_QUEUE): jobs in places, their order oldest first. */
 typedef struct {
     kmd_job_t job[KM_QUEUE_JOBS];
-    uint64_t used;  /* a bit per place */
-    uint32_t n;     /* jobs waiting */
-    uint32_t taken; /* the engine's jobs taken in, ever */
+    uint64_t used;   /* a bit per place */
+    uint32_t length; /* jobs waiting */
+    uint32_t taken;  /* the engine's jobs taken in, ever */
     uint8_t order[KM_QUEUE_JOBS];
 } kmd_queue_t;
 
@@ -141,7 +141,8 @@ _Static_assert(
 );
 _Static_assert(KM_QUEUE_JOBS <= 64u, "a 64-bit map of the queue's places");
 
-/* take()'s outcome: the command was consumed, waits in k->line, or ends the loop. */
+/* take()'s outcome: the command was consumed, waits in its ring's line, or ends the
+ * loop. */
 typedef enum {
     KMD_TAKEN = 0,
     KMD_HELD = 1,
@@ -154,12 +155,14 @@ typedef enum { KMD_OK = 0, KMD_STOP = 1, KMD_LATE = 2 } kmd_wait_t;
 
 /* Every KMD_POLL_EVERY calls: whether the runtime asked for a stop or `deadline`
  * (mtime, 0 = none) has passed. */
-static inline kmd_wait_t kmd_poll(const kmd_t* k, uint32_t* spins, uint64_t deadline) {
+static inline kmd_wait_t kmd_poll(
+    const kmd_t* dispatcher, uint32_t* spins, uint64_t deadline
+) {
     if (++*spins != KMD_POLL_EVERY) {
         return KMD_OK;
     }
     *spins = 0;
-    if (x280_hart_stop_requested(k->core, k->run)) {
+    if (x280_hart_stop_requested(dispatcher->core, dispatcher->run)) {
         return KMD_STOP;
     }
     if (deadline != 0 && x280_mtime() > deadline) {
@@ -168,9 +171,11 @@ static inline kmd_wait_t kmd_poll(const kmd_t* k, uint32_t* spins, uint64_t dead
     return KMD_OK;
 }
 
-/* Stores the 64-byte line at `source` to `dst` with one vector store (VLEN 512 = 16 x
- * e32); both 64-byte aligned. */
-static inline void kmd_store_line(volatile void* dst, volatile const void* source) {
+/* Stores the 64-byte line at `source` to `destination` with one vector store (VLEN 512
+ * = 16 x e32); both 64-byte aligned. */
+static inline void kmd_store_line(
+    volatile void* destination, volatile const void* source
+) {
     __asm__ volatile(
         ".option push\n.option arch, +v\n"
         "vsetivli zero, 16, e32, m1, ta, ma\n"
@@ -178,13 +183,13 @@ static inline void kmd_store_line(volatile void* dst, volatile const void* sourc
         "vse32.v v8, (%1)\n"
         ".option pop\n"
         :
-        : "r"(source), "r"(dst)
+        : "r"(source), "r"(destination)
         : "memory", "v8"
     );
 }
 
-/* Stores the 16-byte chunk at `source` to `dst` with one vector store. */
-static inline void kmd_store_chunk(volatile void* dst, const uint32_t* source) {
+/* Stores the 16-byte chunk at `source` to `destination` with one vector store. */
+static inline void kmd_store_chunk(volatile void* destination, const uint32_t* source) {
     __asm__ volatile(
         ".option push\n.option arch, +v\n"
         "vsetivli zero, 4, e32, m1, ta, ma\n"
@@ -192,7 +197,7 @@ static inline void kmd_store_chunk(volatile void* dst, const uint32_t* source) {
         "vse32.v v9, (%1)\n"
         ".option pop\n"
         :
-        : "r"(source), "r"(dst)
+        : "r"(source), "r"(destination)
         : "memory", "v9"
     );
 }
@@ -201,8 +206,8 @@ static inline void kmd_store_chunk(volatile void* dst, const uint32_t* source) {
  * so no dirty line is written over the next process's data later. */
 static inline void kmd_flush_lines(const volatile void* from, uint64_t bytes) {
     volatile uint64_t* flush = (volatile uint64_t*)(uintptr_t)KMD_CCACHE_FLUSH64;
-    for (uint64_t at = 0; at < bytes; at += 64u) {
-        *flush = (uint64_t)(uintptr_t)from + at;
+    for (uint64_t offset = 0; offset < bytes; offset += 64u) {
+        *flush = (uint64_t)(uintptr_t)from + offset;
         x280_fence_iorw();
     }
 }

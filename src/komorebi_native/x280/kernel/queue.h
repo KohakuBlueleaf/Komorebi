@@ -6,115 +6,118 @@
 #include "kernel.h"
 
 /* Publishes the queue's length and the engine's jobs taken in, for its ENQUEUE. */
-static inline void queue_tell(kmd_t* k) {
-    kmd_queue_t* q = k->queue;
-    k->queued = q->n;
-    *(volatile uint32_t*)(k->ering + KMD_ERING_QUEUED) = q->n;
-    *(volatile uint32_t*)(k->ering + KMD_ERING_TAKEN) = q->taken;
+static inline void queue_tell(kmd_t* dispatcher) {
+    kmd_queue_t* queue = dispatcher->queue;
+    dispatcher->queued = queue->length;
+    *(volatile uint32_t*)(dispatcher->ering + KMD_ERING_QUEUED) = queue->length;
+    *(volatile uint32_t*)(dispatcher->ering + KMD_ERING_TAKEN) = queue->taken;
 }
 
-/* Puts command `l` (command `request` of `source`, `count` cores, stream `tag`) at the
- * queue's end with its source's current deadline. The caller checked the room. */
+/* Puts command `line` (command `request` of `source`, `count` cores, stream `tag`) at
+ * the queue's end with its source's current deadline. The caller checked the room. */
 static inline void queue_put(
-    kmd_t* k,
-    const uint64_t* l,
+    kmd_t* dispatcher,
+    const uint64_t* line,
     uint32_t source,
     uint32_t request,
     uint32_t count,
     uint32_t tag
 ) {
-    kmd_queue_t* q = k->queue;
-    uint32_t at = 0; /* the lowest free place: one exists, as n < KM_QUEUE_JOBS */
-    while (at < KM_QUEUE_JOBS - 1u && (q->used >> at & 1u)) {
-        at++;
+    kmd_queue_t* queue = dispatcher->queue;
+    uint32_t free_place = 0; /* the lowest free place: one exists, as n < KM_QUEUE_JOBS */
+    while (free_place < KM_QUEUE_JOBS - 1u && (queue->used >> free_place & 1u)) {
+        free_place++;
     }
-    kmd_job_t* j = &q->job[at];
-    for (uint32_t i = 0; i < 8; i++) {
-        j->line[i] = l[i];
+    kmd_job_t* job = &queue->job[free_place];
+    for (uint32_t word = 0; word < 8; word++) {
+        job->line[word] = line[word];
     }
-    j->ticks = k->ring[source].t_command;
-    j->request = request;
-    j->count = count;
-    j->passed = 0;
-    j->source = (uint8_t)source;
-    j->tag = (uint16_t)tag;
-    q->used |= 1ull << at;
-    q->order[q->n++] = (uint8_t)at;
-    k->ring[source].queued_count++;
-    q->taken += source == KMD_SRC_ENGINE;
-    queue_tell(k);
+    job->ticks = dispatcher->ring[source].t_command;
+    job->request = request;
+    job->count = count;
+    job->passed = 0;
+    job->source = (uint8_t)source;
+    job->tag = (uint16_t)tag;
+    queue->used |= 1ull << free_place;
+    queue->order[queue->length++] = (uint8_t)free_place;
+    dispatcher->ring[source].queued_count++;
+    queue->taken += source == KMD_SRC_ENGINE;
+    queue_tell(dispatcher);
 }
 
-/* Removes the job at position `pos` of the order; no line waits for it any more. */
-static inline void queue_remove(kmd_t* k, uint32_t pos) {
-    kmd_queue_t* q = k->queue;
-    const uint64_t place = ~(1ull << q->order[pos]);
+/* Removes the job at position `position` of the order; no line waits for it any more.
+ */
+static inline void queue_remove(kmd_t* dispatcher, uint32_t position) {
+    kmd_queue_t* queue = dispatcher->queue;
+    const uint64_t place = ~(1ull << queue->order[position]);
     for (uint32_t source = 0; source < KMD_SOURCES; source++) {
-        k->ring[source].before &= place;
+        dispatcher->ring[source].before &= place;
     }
-    q->used &= place;
-    q->n--;
-    for (uint32_t i = pos; i < q->n; i++) {
-        q->order[i] = q->order[i + 1u];
+    queue->used &= place;
+    queue->length--;
+    for (uint32_t i = position; i < queue->length; i++) {
+        queue->order[i] = queue->order[i + 1u];
     }
 }
 
 /* The queue's turn (README.md): a count that found no room is not tried again in the
  * turn, as submitting only adds busy groups. Out of the loop's code: it is rare. */
-static __attribute__((noinline)) void queue_turn(kmd_t* k, uint64_t now) {
-    kmd_queue_t* q = k->queue;
-    const uint32_t look = q->n < KM_QUEUE_LOOK ? q->n : KM_QUEUE_LOOK;
-    uint32_t pos = 0, no_room = KMD_NO_FIRST, blocked = 0, submitted = 0;
-    for (uint32_t n = 0; n < look && !blocked; n++) {
-        const uint32_t slot = slot_free(k);
+static __attribute__((noinline)) void queue_turn(kmd_t* dispatcher, uint64_t now) {
+    kmd_queue_t* queue = dispatcher->queue;
+    const uint32_t look = queue->length < KM_QUEUE_LOOK ? queue->length : KM_QUEUE_LOOK;
+    uint32_t position = 0, no_room = KMD_NO_FIRST, blocked = 0, submitted = 0;
+    for (uint32_t examined = 0; examined < look && !blocked; examined++) {
+        const uint32_t slot = slot_free(dispatcher);
         if (slot == KM_RING_SLOTS) {
             break; /* nothing is submitted and nobody is passed over in this turn */
         }
-        kmd_job_t* j = &q->job[q->order[pos]];
+        kmd_job_t* job = &queue->job[queue->order[position]];
         const uint32_t first = (
-            j->count < no_room ? group_alloc(k, j->count) : KMD_NO_FIRST
+            job->count < no_room ? group_alloc(dispatcher, job->count) : KMD_NO_FIRST
         );
         if (first == KMD_NO_FIRST) {
-            no_room = j->count < no_room ? j->count : no_room;
-            blocked = j->passed >= KM_QUEUE_PASSES;
-            pos++;
+            no_room = job->count < no_room ? job->count : no_room;
+            blocked = job->passed >= KM_QUEUE_PASSES;
+            position++;
             continue;
         }
-        for (uint32_t i = 0; i < pos; i++) {
-            blocked |= ++q->job[q->order[i]].passed >= KM_QUEUE_PASSES;
+        for (uint32_t earlier = 0; earlier < position; earlier++) {
+            blocked |= ++queue->job[queue->order[earlier]].passed >= KM_QUEUE_PASSES;
         }
-        uint64_t* l = j->line;
-        const uint32_t hdr = (uint32_t)(l[0] >> 32) & ~(KM_FLAG_QUEUE << 8);
-        l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
-        l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | first | j->count << 16;
-        const uint32_t source = j->source, request = j->request;
-        queue_remove(k, pos);
-        k->ring[source].queued_count--;
-        command_submit(k, l, slot, request, source, now, j->ticks, KMD_TRACE_QUEUED);
+        uint64_t* line = job->line;
+        const uint32_t header = (uint32_t)(line[0] >> 32) & ~(KM_FLAG_QUEUE << 8);
+        line[0] = (line[0] & 0xFFFFFFFFu) | (uint64_t)header << 32;
+        line[1] = (line[1] & ~(uint64_t)0xFFFFFFFFu) | first | job->count << 16;
+        const uint32_t source = job->source, request = job->request;
+        queue_remove(dispatcher, position);
+        dispatcher->ring[source].queued_count--;
+        command_submit(
+            dispatcher, line, slot, request, source, now, job->ticks, KMD_TRACE_QUEUED
+        );
         submitted++;
     }
     if (submitted) {
-        queue_tell(k);
-        if (k->waits) {
-            sources_wake(k);
+        queue_tell(dispatcher);
+        if (dispatcher->waits) {
+            sources_wake(dispatcher);
         }
     }
 }
 
 /* KMD_HANDLER_DROP: the engine's queued jobs of stream `tag` leave the queue, each
  * answered to the engine with KM_EVENT_REJECTED, reason KMD_REJECT_DROPPED. */
-static inline void queue_drop(kmd_t* k, uint32_t tag) {
-    kmd_queue_t* q = k->queue;
-    kmd_ring_t* r = &k->ring[KMD_SRC_ENGINE];
-    for (uint32_t pos = 0; pos < q->n;) {
-        const kmd_job_t* j = &q->job[q->order[pos]];
-        if (j->source != KMD_SRC_ENGINE || j->tag != tag) {
-            pos++;
+static inline void queue_drop(kmd_t* dispatcher, uint32_t tag) {
+    kmd_queue_t* queue = dispatcher->queue;
+    kmd_ring_t* ring = &dispatcher->ring[KMD_SRC_ENGINE];
+    for (uint32_t position = 0; position < queue->length;) {
+        const kmd_job_t* job = &queue->job[queue->order[position]];
+        if (job->source != KMD_SRC_ENGINE || job->tag != tag) {
+            position++;
             continue;
         }
-        ring_push(r, j->request, KM_EVENT_REJECTED | (KMD_REJECT_DROPPED << 8), 0);
-        r->queued_count--;
-        queue_remove(k, pos);
+        ring_push(ring, job->request, KM_EVENT_REJECTED | (KMD_REJECT_DROPPED << 8), 0);
+        ring->queued_count--;
+        queue_remove(dispatcher, position);
     }
-    queue_tell(k);
+    queue_tell(dispatcher);
 }
