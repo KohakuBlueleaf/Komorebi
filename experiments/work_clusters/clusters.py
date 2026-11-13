@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import ttnn
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -58,8 +57,8 @@ def regions(session, t):
 
 
 def dram_xy(device, bank):
-    c = device.dram_core_from_logical_core(ttnn.CoreCoord(bank, 0))
-    return int(c.x) | int(c.y) << 16
+    x, y = device.dram_core(bank)
+    return int(x) | int(y) << 16
 
 
 class Clusters:

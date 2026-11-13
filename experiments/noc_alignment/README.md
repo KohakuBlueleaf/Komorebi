@@ -57,4 +57,4 @@ aligned controls first (`--set controls`), then the mismatched writes
 
 Each run prints progress lines and one JSON line: per test the slot, the source and
 destination words, the words that arrived (as S[i]) and `done` (`yes` for a posted
-write, `acked` or `no ack` for a non-posted one). It needs `ttnn` and `torch`.
+write, `acked` or `no ack` for a non-posted one). It needs the `komorebi` package.

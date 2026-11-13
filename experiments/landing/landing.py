@@ -18,8 +18,9 @@ BUILD = os.path.join(HERE, "build")
 sys.path.insert(0, BUILD)
 
 import _landing_x280 as x280mod  # noqa: E402
-import torch  # noqa: E402
-import ttnn  # noqa: E402
+import numpy as np  # noqa: E402
+
+import komorebi as km  # noqa: E402
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
 IMAGE = os.path.join(BUILD, "landing-seq.bin")
@@ -64,45 +65,20 @@ def loadavg():
         return f.read().split()[0]
 
 
-def all_cores(gx, gy):
-    return ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(gx - 1, gy - 1))]
-    )
-
-
-def cb(index, size, cores):
-    fmt = ttnn.CBFormatDescriptor(
-        buffer_index=index, data_format=ttnn.uint32, page_size=size
-    )
-    return ttnn.CBDescriptor(
-        total_size=size, core_ranges=cores, format_descriptors=[fmt]
-    )
-
-
-def program(plan, cnt_addr, n, defines):
+def program(card, plan, cnt_addr, n, defines):
     """One data-movement kernel on every core; its args are built after plan.start()."""
     gx, gy = plan.grid_x, plan.grid_y
-    cores = all_cores(gx, gy)
-    args = ttnn.RuntimeArgs()
-    for y in range(gy):
-        for x in range(gx):
-            args[x][y] = [cnt_addr, n, y * gx + x] + list(plan.worker_args(x, y))
-    kernel = ttnn.KernelDescriptor(
-        kernel_source=KERNEL,
-        source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=cores,
-        compile_time_args=[],
-        defines=defines,
-        runtime_args=args,
-        config=ttnn.DataMovementConfigDescriptor(
-            processor=ttnn.DataMovementProcessor.RISCV_0, noc=ttnn.NOC.RISCV_0_default
-        ),
-    )
-    return ttnn.ProgramDescriptor(
-        kernels=[kernel],
-        semaphores=[],
-        cbs=[cb(CTL_CB, CTL_BYTES, cores), cb(CNT_CB, LC_WORDS * 4, cores)],
-    )
+    cores = [(0, 0, gx - 1, gy - 1)]
+    args = [
+        (x, y, [cnt_addr, n, y * gx + x] + list(plan.worker_args(x, y)))
+        for y in range(gy)
+        for x in range(gx)
+    ]
+    launch = card.launch()
+    launch.kernel(KERNEL, cores, 0, [], defines, [], args)
+    launch.cb(cores, CTL_CB, "uint32", CTL_BYTES, CTL_BYTES)
+    launch.cb(cores, CNT_CB, "uint32", LC_WORDS * 4, LC_WORDS * 4)
+    return launch
 
 
 def summarize(cnt, n, mhz):
@@ -172,35 +148,22 @@ def main():
     record["load_start"] = loadavg()
     t_start = time.time()
 
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    device.disable_and_clear_program_cache()
-    log(f"device open {time.time() - t_start:.1f}s")
-    try:
-        record.update(run(device, args, n))
-    finally:
-        ttnn.close_mesh_device(device)
+    with km.Session() as card:
+        log(f"device open {time.time() - t_start:.1f}s")
+        record.update(run(card, args, n))
     record["load_end"] = loadavg()
     record["wall_s"] = round(time.time() - t_start, 1)
     print(json.dumps(record), flush=True)
 
 
-def run(device, args, n):
-    runtime = x280mod.Runtime(device, pll_mhz=args.pll)
+def run(card, args, n):
+    runtime = x280mod.Runtime(card.device.mesh_capsule(), pll_mhz=args.pll)
     plan = runtime.plan(IMAGE, args.depth, 1 if args.proto == "b" else 0)
     gx, gy = plan.grid_x, plan.grid_y
     assert gx * gy == N_CORES, (gx, gy)
     log(f"plan: grid {gx}x{gy} panels {plan.panels} depth {plan.depth}")
 
-    def zeros(rows):
-        return ttnn.from_torch(
-            torch.zeros(rows, LC_WORDS, dtype=torch.int32),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-        )
-
-    cnt = zeros(N_CORES)
-    unused = zeros(1)  # generic_op wants an input and an output tensor
+    cnt = card.tensor(np.zeros((N_CORES, LC_WORDS), np.uint32), "uint32")
     defines = [("PROTO_B", "1")] if args.proto == "b" else []
     if args.stamp:
         defines.append(("STAMP", "1"))
@@ -211,7 +174,7 @@ def run(device, args, n):
     log("launch")
     t0 = time.perf_counter()
     try:
-        ttnn.generic_op([unused, cnt], program(plan, cnt.buffer_address(), n, defines))
+        program(card, plan, cnt.address, n, defines).run()
         ticks = plan.finish(session, args.timeout)
         finished = True
     finally:
@@ -226,7 +189,7 @@ def run(device, args, n):
     gc.collect()
     log("x280 runtime closed")
 
-    counters = ttnn.to_torch(cnt).long() & 0xFFFFFFFF
+    counters = cnt.read().astype(np.int64)
     log("counters read back")
     out = {
         "ticks": ticks,

@@ -21,8 +21,9 @@ BUILD = os.path.join(HERE, "build")
 sys.path.insert(0, BUILD)
 
 import _collision_x280 as x280mod  # noqa: E402
-import torch  # noqa: E402
-import ttnn  # noqa: E402
+import numpy as np  # noqa: E402
+
+import komorebi as km  # noqa: E402
 
 RECORDS_KERNEL = os.path.join(HERE, "kernels", "records.cpp")
 LANE_KERNEL = os.path.join(HERE, "kernels", "lane.cpp")
@@ -110,15 +111,6 @@ def loadavg():
         return f.read().split()[0]
 
 
-def cb(index, size, cores):
-    fmt = ttnn.CBFormatDescriptor(
-        buffer_index=index, data_format=ttnn.uint32, page_size=size
-    )
-    return ttnn.CBDescriptor(
-        total_size=size, core_ranges=cores, format_descriptors=[fmt]
-    )
-
-
 def lane_roles(plan, args):
     """Per logical core (x, y): role, rank, sender core and multicast rectangle."""
     gx, gy, L = plan.grid_x, plan.grid_y, args.lane
@@ -186,17 +178,16 @@ def row_roles(plan, args):
     return roles
 
 
-def program(plan, rec_cnt, lane_cnt, args, roles, wait_cycles):
+def program(card, plan, rec_cnt, lane_cnt, args, roles, wait_cycles):
     slots = args.window if args.stream else 1
     gx, gy = plan.grid_x, plan.grid_y
-    cores = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(gx - 1, gy - 1))]
-    )
-    rec_args, lane_args = ttnn.RuntimeArgs(), ttnn.RuntimeArgs()
+    cores = [(0, 0, gx - 1, gy - 1)]
+    rec_args, lane_args = [], []
     for y in range(gy):
         for x in range(gx):
             me = y * gx + x
-            rec_args[x][y] = [rec_cnt, args.records, me] + list(plan.worker_args(x, y))
+            words = [rec_cnt, args.records, me] + list(plan.worker_args(x, y))
+            rec_args.append((x, y, words))
             r = roles.get((x, y))
             lane = [lane_cnt, me, plan.tag, args.blocks, args.bytes, int(args.until)]
             if r is None:
@@ -204,40 +195,31 @@ def program(plan, rec_cnt, lane_cnt, args, roles, wait_cycles):
             else:
                 lane += [r["role"], r["rank"], args.lane - 1, *r["snd"], r["step"]]
                 lane += list(r["rect"])
-            lane_args[x][y] = lane + [wait_cycles, args.window, args.check_every]
+            lane_args.append(
+                (x, y, lane + [wait_cycles, args.window, args.check_every])
+            )
     # The two kernels of a core use different NoCs; the lane kernel takes --lane-noc.
+    # (RISC-V, NoC) of the record kernel and of the lane kernel:
     if args.lane_noc == 0:
-        rec_cfg = (ttnn.DataMovementProcessor.RISCV_0, ttnn.NOC.RISCV_1_default)
-        lane_cfg = (ttnn.DataMovementProcessor.RISCV_1, ttnn.NOC.RISCV_0_default)
+        rec_cfg, lane_cfg = (0, 1), (1, 0)
     else:
-        rec_cfg = (ttnn.DataMovementProcessor.RISCV_1, ttnn.NOC.RISCV_0_default)
-        lane_cfg = (ttnn.DataMovementProcessor.RISCV_0, ttnn.NOC.RISCV_1_default)
-
-    def kernel(source, rt_args, cfg):
-        return ttnn.KernelDescriptor(
-            kernel_source=source,
-            source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-            core_ranges=cores,
-            compile_time_args=[],
-            defines=[],
-            runtime_args=rt_args,
-            config=ttnn.DataMovementConfigDescriptor(processor=cfg[0], noc=cfg[1]),
-        )
-
-    return ttnn.ProgramDescriptor(
-        kernels=[
-            kernel(RECORDS_KERNEL, rec_args, rec_cfg),
-            kernel(STREAM_KERNEL if args.stream else LANE_KERNEL, lane_args, lane_cfg),
-        ],
-        semaphores=[],
-        cbs=[
-            cb(CTL_CB, CTL_BYTES, cores),
-            cb(REC_CNT_CB, WORDS * 4, cores),
-            cb(SHARE_CB, 64, cores),
-            cb(LANE_CNT_CB, WORDS * 4, cores),
-            cb(LANE_CB, LANE_HEAD + slots * max(args.bytes, 64), cores),
-        ],
-    )
+        rec_cfg, lane_cfg = (1, 0), (0, 1)
+    launch = card.launch()
+    lane_kernel = STREAM_KERNEL if args.stream else LANE_KERNEL
+    for source, rt_args, (riscv, noc) in (
+        (RECORDS_KERNEL, rec_args, rec_cfg),
+        (lane_kernel, lane_args, lane_cfg),
+    ):
+        launch.kernel(source, cores, riscv, [], [], [], rt_args, noc=noc)
+    for index, size in (
+        (CTL_CB, CTL_BYTES),
+        (REC_CNT_CB, WORDS * 4),
+        (SHARE_CB, 64),
+        (LANE_CNT_CB, WORDS * 4),
+        (LANE_CB, LANE_HEAD + slots * max(args.bytes, 64)),
+    ):
+        launch.cb(cores, index, "uint32", size, size)
+    return launch
 
 
 def summarize_records(cnt, n):
@@ -389,31 +371,27 @@ def main():
     record["load_start"] = loadavg()
     t_start = time.time()
 
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    device.disable_and_clear_program_cache()
-    log(f"device open {time.time() - t_start:.1f}s")
     rc = 0
-    try:
-        record.update(run(device, args))
-    except RuntimeError as e:  # reported in the JSON line; a core timeout is rc 7
-        msg = str(e)
-        record["error"] = msg[-3000:]
-        rc = 7 if "Timeout" in msg else 1
-    finally:
-        record["load_end"] = loadavg()
-        record["wall_s"] = round(time.time() - t_start, 1)
-        print(json.dumps(record), flush=True)
-        ttnn.close_mesh_device(device)
+    with km.Session() as card:
+        log(f"device open {time.time() - t_start:.1f}s")
+        try:
+            record.update(run(card, args))
+        except RuntimeError as e:  # reported in the JSON line; a core timeout is rc 7
+            msg = str(e)
+            record["error"] = msg[-3000:]
+            rc = 7 if "Timeout" in msg else 1
+        finally:
+            record["load_end"] = loadavg()
+            record["wall_s"] = round(time.time() - t_start, 1)
+            print(json.dumps(record), flush=True)
     sys.exit(rc)
 
 
-def run(device, args):
+def run(card, args):
     n = args.records
-    runtime = x280mod.Runtime(device, pll_mhz=args.pll)
+    runtime = x280mod.Runtime(card.device.mesh_capsule(), pll_mhz=args.pll)
     try:
-        ticks, wall, rec_cnt, lane_cnt, roles, gx, mhz = x280_phase(
-            device, args, runtime
-        )
+        ticks, wall, rec_cnt, lane_cnt, roles, gx, mhz = x280_phase(card, args, runtime)
     except BaseException as e:  # the frames must not keep the runtime open
         traceback.clear_frames(e.__traceback__)
         raise
@@ -423,8 +401,8 @@ def run(device, args):
         gc.collect()
         log("x280 runtime closed")
 
-    rc = ttnn.to_torch(rec_cnt).long() & 0xFFFFFFFF
-    lc = ttnn.to_torch(lane_cnt).long() & 0xFFFFFFFF
+    rc = rec_cnt.read().astype(np.int64)
+    lc = lane_cnt.read().astype(np.int64)
     log("counters read back")
     out = {
         "ticks": ticks,
@@ -455,7 +433,7 @@ def run(device, args):
     return out
 
 
-def x280_phase(device, args, runtime):
+def x280_phase(card, args, runtime):
     """Starts the X280 image and the kernels, waits; returns what run() reads."""
     n = args.records
     plan = runtime.plan(IMAGE, args.depth, 0)
@@ -465,12 +443,7 @@ def x280_phase(device, args, runtime):
     log(f"plan: grid {gx}x{gy} panels {plan.panels} depth {plan.depth} aiclk {mhz}")
 
     def zeros(rows):
-        return ttnn.from_torch(
-            torch.zeros(rows, WORDS, dtype=torch.int32),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-        )
+        return card.tensor(np.zeros((rows, WORDS), np.uint32), "uint32")
 
     rec_cnt, lane_cnt = zeros(N_CORES), zeros(N_CORES)
     wait_cycles = int(args.wait_ms * 1e3 * mhz)
@@ -483,15 +456,10 @@ def x280_phase(device, args, runtime):
     t0 = time.perf_counter()
     try:  # from here an error stops the X280 image first
         prog = program(
-            plan,
-            rec_cnt.buffer_address(),
-            lane_cnt.buffer_address(),
-            args,
-            roles,
-            wait_cycles,
+            card, plan, rec_cnt.address, lane_cnt.address, args, roles, wait_cycles
         )
         log(f"launch: {len(roles)} lane cores")
-        ttnn.generic_op([rec_cnt, lane_cnt], prog)
+        prog.run()
         log("program enqueued")
         ticks = plan.finish(session, args.timeout)
         finished = True

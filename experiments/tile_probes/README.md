@@ -21,7 +21,8 @@ Every result value is checked against a CPU reference by the driver.
 
 ## How it runs
 
-One program on core (0, 0), launched with `ttnn.generic_op` in slow dispatch:
+One program on core (0, 0), launched through the session (`Session.launch`) in slow
+dispatch:
 
 | part | file |
 |---|---|

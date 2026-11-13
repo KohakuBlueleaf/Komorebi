@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
+
+import komorebi as km
 
 HERE = Path(__file__).resolve().parent
 W = 1280  # stress.h: kWords
@@ -40,74 +40,37 @@ def parse():
 
 def main():
     a = parse()
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    log("device open")
-    try:
-        g = device.compute_with_storage_grid_size()
-        total, n = g.x * g.y, a.cores
+    with km.Session() as session:
+        log("device open")
+        gx, gy = session.grid
+        total, n = gx * gy, a.cores
         if n < 1 or n + a.counters > total:
             raise SystemExit(f"{n} askers and {a.counters} counters: {total} cores")
         noc = []
         for c in range(total):
-            xy = device.worker_core_from_logical_core(ttnn.CoreCoord(c % g.x, c // g.x))
-            noc.append(xy.x | xy.y << 16)
-        grid = ttnn.CoreRangeSet(
-            [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(g.x - 1, g.y - 1))]
-        )
-        config = ttnn.create_sharded_memory_config(
-            (1, W),
-            grid,
-            ttnn.ShardStrategy.HEIGHT,
-            ttnn.ShardOrientation.ROW_MAJOR,
-            use_height_and_width_as_shard_shape=True,
-        )
+            x, y = session.device.worker_core(c % gx, c // gx)
+            noc.append(x | y << 16)
         init = np.zeros((total, W), dtype=np.uint32)
         init[:, TABLE : TABLE + total] = np.array(noc, dtype=np.uint32)
-        blk = ttnn.from_torch(
-            torch.from_numpy(init.view(np.int32)),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-            memory_config=config,
-        )
-        dummy = ttnn.from_torch(
-            torch.zeros((1, 16), dtype=torch.int32),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-        )
+        blk = session.tensor(init, "uint32", shard_grid=(gx, gy))
         rng = np.random.default_rng(a.seed)
-        args, ranges = ttnn.RuntimeArgs(), []
+        args, cores = [], []
         for c in range(n):
-            x, y = c % g.x, c // g.x
+            x, y = c % gx, c // gx
             seed = int(rng.integers(1, 1 << 31))
             ctr = [n, a.counters, int(a.fixed_return)]
-            args[x][y] = [blk.buffer_address(), n, a.k, c, seed, a.bound, *ctr]
-            ranges.append(ttnn.CoreRange(ttnn.CoreCoord(x, y), ttnn.CoreCoord(x, y)))
-        writer = ttnn.KernelDescriptor(
-            kernel_source=str(HERE / "writer.cpp"),
-            source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-            core_ranges=ttnn.CoreRangeSet(ranges),
-            compile_time_args=[],
-            defines=[],
-            runtime_args=args,
-            config=ttnn.DataMovementConfigDescriptor(
-                processor=ttnn.DataMovementProcessor.RISCV_1,
-                noc=ttnn.NOC.RISCV_1_default,
-            ),
-            compiler_include_paths=[str(HERE)],
-        )
-        desc = ttnn.ProgramDescriptor(kernels=[writer], semaphores=[], cbs=[])
+            args.append((x, y, [blk.address, n, a.k, c, seed, a.bound, *ctr]))
+            cores.append((x, y, x, y))
+        launch = session.launch()
+        launch.kernel(str(HERE / "writer.cpp"), cores, 1, [], [], [str(HERE)], args)
         log("launch")
         t = time.perf_counter()
-        ttnn.generic_op([dummy, blk], desc)
-        ttnn.synchronize_device(device)
+        launch.run()
+        session.device.finish()
         host_s = time.perf_counter() - t
         log(f"done in {host_s:.2f} s")
-        rows = ttnn.to_torch(blk).numpy().view(np.uint32).astype(np.int64)
+        rows = blk.read().astype(np.int64)
         log("read back")
-    finally:
-        ttnn.close_mesh_device(device)
     print(json.dumps(report(a, rows, host_s)), flush=True)
 
 

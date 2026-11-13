@@ -10,13 +10,14 @@ import time
 from pathlib import Path
 
 import numpy as np
-import ttnn
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "tests" / "hardware" / "feeder"))
 
 import fed  # noqa: E402
 import records as rec  # noqa: E402
+
+import komorebi as km  # noqa: E402
 
 CORES = [(0, 0), (11, 0), (0, 9), (11, 9), (5, 4), (6, 5), (1, 0)]  # master first
 WORDS = 64
@@ -25,44 +26,34 @@ POLLS = (
 )
 
 
-def run(device, spin, cores):
+def run(session, spin, cores):
     """Runs the probe once on `cores`; returns (host seconds, rows by core index)."""
     xy = []
     for x, y in cores:
-        c = device.worker_core_from_logical_core(ttnn.CoreCoord(x, y))
-        xy.append(c.x | c.y << 16)
-    core_set = fed.core_set(cores)
-    config = ttnn.create_sharded_memory_config(
-        (1, WORDS),
-        core_set,
-        ttnn.ShardStrategy.HEIGHT,
-        ttnn.ShardOrientation.ROW_MAJOR,
-        use_height_and_width_as_shard_shape=True,
-    )
-    out = fed.int32_tensor(device, np.zeros((len(cores), WORDS)), config)
-    dummy = fed.int32_tensor(device, np.zeros((1, 16)))  # generic_op: 2 tensors or more
-    args = ttnn.RuntimeArgs()
+        cx, cy = session.device.worker_core(x, y)
+        xy.append(cx | cy << 16)
+    # A row in every core of the grid at one L1 address; the probe's cores fill theirs.
+    gx, gy = session.grid
+    out = fed.int32_tensor(session, np.zeros((gx * gy, WORDS)), (gx, gy))
+    args = []
     peers = len(cores) - 1
     for i, (x, y) in enumerate(cores):
         tail = xy[1:] if i == 0 else [xy[0]]
-        args[x][y] = [out.buffer_address(), i, peers, spin, *tail]
-    kernel = ttnn.KernelDescriptor(
-        kernel_source=str(HERE / "probe.cpp"),
-        source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=core_set,
-        compile_time_args=[],
-        runtime_args=args,
-        config=ttnn.DataMovementConfigDescriptor(
-            processor=ttnn.DataMovementProcessor.RISCV_0,
-            noc=ttnn.NOC.RISCV_0_default,
-        ),
-        compiler_include_paths=[rec.INCLUDE],
+        args.append((x, y, [out.address, i, peers, spin, *tail]))
+    launch = session.launch()
+    launch.kernel(
+        str(HERE / "probe.cpp"),
+        fed.core_set(cores),
+        0,
+        [],
+        [],
+        [str(rec.INCLUDE)],
+        args,
     )
-    desc = ttnn.ProgramDescriptor(kernels=[kernel], semaphores=[], cbs=[])
     fed.log(f"launch, spin {spin} cycles")
     t0 = time.perf_counter()
-    ttnn.generic_op([dummy, out], desc)
-    ttnn.synchronize_device(device)
+    launch.run()
+    session.device.finish()
     host = time.perf_counter() - t0
     fed.log(f"run of {spin} cycles: {host:.3f} s")
     rows = rec.as_uint32(fed.read_int32(out)).astype(np.int64)
@@ -125,19 +116,15 @@ def main():
     p.add_argument("--smoke", action="store_true", help="one run of 0.1 s only")
     args = p.parse_args()
     cores = CORES[: args.cores]
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    mhz = (
-        fed.aiclk_mhz()
-    )  # after the open: the clock idles lower while no device is open
-    fed.log(f"device open, AICLK {mhz} MHz")
-    try:
-        first = run(device, mhz * 10**5, cores)  # compile and warm up (0.1 s)
+    with km.Session() as session:
+        # After the open: the clock idles lower while no device is open.
+        mhz = fed.aiclk_mhz()
+        fed.log(f"device open, AICLK {mhz} MHz")
+        first = run(session, mhz * 10**5, cores)  # compile and warm up (0.1 s)
         spins = {0.5: [], 2.0: []}
         for _ in range(0 if args.smoke else 3):
             for s in spins:
-                spins[s].append(run(device, int(s * mhz * 10**6), cores))
-    finally:
-        ttnn.close_mesh_device(device)
+                spins[s].append(run(session, int(s * mhz * 10**6), cores))
     if args.smoke:
         out = {"missed": missed([first]), "peers": peer_table([first], cores)}
         print(json.dumps(out), flush=True)

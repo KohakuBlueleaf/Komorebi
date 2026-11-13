@@ -15,8 +15,8 @@ import time
 os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
 
 import numpy as np
-import torch
-import ttnn
+
+import komorebi as km
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KDIR = os.path.join(HERE, "kernels")
@@ -50,99 +50,49 @@ def aiclk_mhz():
         return None
 
 
-def to_dev(device, words):
-    """A uint32 word array as a one-page int32 row-major DRAM tensor."""
-    t = torch.from_numpy(np.asarray(words, dtype=np.uint32).view(np.int32).copy())
-    return ttnn.from_torch(
-        t.reshape(1, -1), dtype=ttnn.int32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
-    )
+def to_dev(session, words):
+    """A uint32 word array as a one-page row-major DRAM tensor."""
+    return session.tensor(np.asarray(words, dtype=np.uint32).reshape(1, -1), "uint32")
 
 
-def run_kernel(device, probe, in_words, params, defines=(), rvv=False, peer=None):
+def run_kernel(session, probe, in_words, params, defines=(), rvv=False, peer=None):
     """Runs one probe on core (0, 0); returns (out words as uint32, nonce). With peer
     (x, y), the reader and the CBs also run on that core."""
     in_buf = np.zeros(IN_WORDS, dtype=np.uint32)
     in_buf[: len(in_words)] = in_words
     nonce = secrets.randbits(32) | 1
-    t_in = to_dev(device, in_buf)
-    t_out = to_dev(device, np.zeros(OUT_WORDS, dtype=np.uint32))
-    core = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    t_in = to_dev(session, in_buf)
+    t_out = to_dev(session, np.zeros(OUT_WORDS, dtype=np.uint32))
+    core = [(0, 0, 0, 0)]
+    both = core if peer is None else core + [(*peer, *peer)]
+    launch = session.launch()
+    sizes = {CB_IN: IN_WORDS, CB_OUT: OUT_WORDS, CB_SCRATCH: SCRATCH_WORDS}
+    for index, words in sizes.items():
+        launch.cb(both, index, "float32", words * 4, words * 4)
+
+    def args(words, ranges=core):
+        return [(x, y, list(words)) for x, y, _, _ in ranges]
+
+    in_ct, out_ct = t_in.accessor_args(), t_out.accessor_args()
+    launch.kernel(
+        os.path.join(KDIR, "reader.cpp"), both, 1, in_ct, [], [],
+        args([t_in.address], both),
+    )  # fmt: skip
+    launch.kernel(
+        os.path.join(KDIR, "writer.cpp"), core, 0, out_ct, [], [], args([t_out.address])
     )
-    both = core
-    if peer is not None:
-        both = ttnn.CoreRangeSet(
-            [
-                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0)),
-                ttnn.CoreRange(ttnn.CoreCoord(*peer), ttnn.CoreCoord(*peer)),
-            ]
-        )
-
-    def cb(index, words):
-        fmt = ttnn.CBFormatDescriptor(
-            buffer_index=index, data_format=ttnn.float32, page_size=words * 4
-        )
-        return ttnn.CBDescriptor(
-            total_size=words * 4, core_ranges=both, format_descriptors=[fmt]
-        )
-
-    def kernel(name, config, args, compile_args=(), extra_defines=(), ranges=core):
-        rt = ttnn.RuntimeArgs()
-        rt[0][0] = list(args)
-        if ranges is not core:
-            rt[peer[0]][peer[1]] = list(args)
-        return ttnn.KernelDescriptor(
-            kernel_source=os.path.join(KDIR, name),
-            source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-            core_ranges=ranges,
-            compile_time_args=list(compile_args),
-            defines=list(extra_defines),
-            runtime_args=rt,
-            config=config,
-        )
-
     p = list(params) + [0] * (7 - len(params))
-    compute_cfg = ttnn.ComputeConfigDescriptor(
-        math_fidelity=ttnn.MathFidelity.HiFi4, fp32_dest_acc_en=True
-    )
-    if rvv:
-        compute_cfg.enable_trisc2_rvv = True
-    desc = ttnn.ProgramDescriptor(
-        kernels=[
-            kernel(
-                "reader.cpp",
-                ttnn.DataMovementConfigDescriptor(
-                    processor=ttnn.DataMovementProcessor.RISCV_1,
-                    noc=ttnn.NOC.RISCV_1_default,
-                ),
-                [t_in.buffer_address()],
-                ttnn.TensorAccessorArgs(t_in).get_compile_time_args(),
-                ranges=both,
-            ),
-            kernel(
-                "writer.cpp",
-                ttnn.DataMovementConfigDescriptor(
-                    processor=ttnn.DataMovementProcessor.RISCV_0,
-                    noc=ttnn.NOC.RISCV_0_default,
-                ),
-                [t_out.buffer_address()],
-                ttnn.TensorAccessorArgs(t_out).get_compile_time_args(),
-            ),
-            kernel(
-                "probe.cpp",
-                compute_cfg,
-                [nonce] + p,
-                extra_defines=[("PROBE", str(PROBES[probe]))] + list(defines),
-            ),
-        ],
-        semaphores=[],
-        cbs=[cb(CB_IN, IN_WORDS), cb(CB_OUT, OUT_WORDS), cb(CB_SCRATCH, SCRATCH_WORDS)],
-    )
+    launch.kernel(
+        os.path.join(KDIR, "probe.cpp"), core, 2, [],
+        [("PROBE", str(PROBES[probe]))] + list(defines), [], args([nonce] + p),
+        math_fidelity="HiFi4",
+        flags=[("fp32_dest_acc_en", True), ("enable_trisc2_rvv", bool(rvv))],
+    )  # fmt: skip
     t0 = time.perf_counter()
-    ttnn.generic_op([t_in, t_out], desc)
-    ttnn.synchronize_device(device)
+    launch.run()
+    session.device.finish()
     log(f"kernel done {time.perf_counter() - t0:.2f}s")
-    out = ttnn.to_torch(t_out).numpy().reshape(-1).view(np.uint32).copy()
+    out = t_out.read().reshape(-1).copy()
     return out, nonce
 
 
@@ -163,13 +113,13 @@ def lane_words(out, base, n=32):
 # ---- probe 0 ------------------------------------------------------------------------
 
 
-def smoke(device, args):
+def smoke(session, args):
     rng = np.random.default_rng(args.seed)
     words = rng.integers(0, 2**32, 64, dtype=np.uint64).astype(np.uint32)
     # Include float edge patterns: denormals, -0, inf, NaN, max sign-magnitude.
     words[:8] = [0x00000001, 0x007FFFFF, 0x80000000, 0x7F800000, 0x7FC00001,
                  0xFF800000, 0x80000001, 0xFFFFFFFF]  # fmt: skip
-    out, nonce = run_kernel(device, "smoke", words, [])
+    out, nonce = run_kernel(session, "smoke", words, [])
     got = lane_words(out, 0, 64)
     lane_ids = lane_words(out, 64, 32)
     t = times_of(out)
@@ -193,9 +143,9 @@ def smoke(device, args):
 # ---- probe 1 ------------------------------------------------------------------------
 
 
-def pred(device, args):
+def pred(session, args):
     reps, k = args.reps, args.k
-    out, nonce = run_kernel(device, "pred", [], [reps, k])
+    out, nonce = run_kernel(session, "pred", [], [reps, k])
     t = times_of(out)
     names = ["empty", "all", "one", "none", "nest8", "chain", "nestcost"]
     per = {n: t[i * k : (i + 1) * k] for i, n in enumerate(names)}
@@ -240,9 +190,9 @@ DELAYS = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24]  # vec.hpp kDelays
 CHECKS = ["tensix_sync", "busy_bit", "fence", "or_window", "fence_busy_bit"]
 
 
-def anycc(device, args):
+def anycc(session, args):
     k = min(args.k, 6)
-    out, nonce = run_kernel(device, "anycc", [], [k])
+    out, nonce = run_kernel(session, "anycc", [], [k])
     t = times_of(out)
     d = out[DATA:]
     truth = [1 if body <= 31 else 0 for body in range(1, 41)]
@@ -299,7 +249,7 @@ def anycc(device, args):
 # ---- probe 3 ------------------------------------------------------------------------
 
 
-def gather(device, args):
+def gather(session, args):
     rng = np.random.default_rng(args.seed)
     table = rng.integers(0, 2**32, (256, 4), dtype=np.uint64).astype(np.uint32)
     table[0, :4] = [0x00000001, 0x80000000, 0x7FC00001, 0xFFFFFFFF]  # float edge bits
@@ -310,7 +260,7 @@ def gather(device, args):
     words = np.concatenate([table.reshape(-1), sets.reshape(-1)])
     w, reps = args.words, args.reps
     out, nonce = run_kernel(
-        device, "gather", words, [w, reps, n_sets, args.variant], rvv=args.variant == 2
+        session, "gather", words, [w, reps, n_sets, args.variant], rvv=args.variant == 2
     )
     t = times_of(out)
     idx_out, copy, load = t[0::3], t[1::3], t[2::3]
@@ -393,7 +343,7 @@ def slab_ref(inv, ob, tmax, lo, hi, fp64):
     return masks, gaps
 
 
-def slab(device, args):
+def slab(session, args):
     rng = np.random.default_rng(args.seed)
     n_nodes, exact = args.nodes, not args.random_data
     inv, ob, tmax, lo, hi = slab_data(rng, n_nodes, exact)
@@ -418,7 +368,7 @@ def slab(device, args):
         defines = [("SLAB_BOX", ",".join(str(int(v)) for v in box))]
     readout = args.variant
     out, nonce = run_kernel(
-        device,
+        session,
         "slab",
         words,
         [n_nodes, args.reps, mode, readout],
@@ -503,11 +453,11 @@ def riscv_ref(t, loops, n, n_float, a, b):
     return res
 
 
-def riscv(device, args):
+def riscv(session, args):
     mask, loops, n, n_float = args.mask, args.loops, args.n, args.n_float
     a = int(np.float32(0.999).view(np.uint32))
     b = int(np.float32(0.001).view(np.uint32))
-    out, nonce = run_kernel(device, "riscv", [], [mask, loops, n, n_float, a, b])
+    out, nonce = run_kernel(session, "riscv", [], [mask, loops, n, n_float, a, b])
     rec = {"mask": mask, "loops": loops, "n": n, "n_float": n_float, "threads": {}}
     bad = []
     for t in range(3):
@@ -608,7 +558,7 @@ def walk_ref(inv, ob, lo, hi):
     return best, ties
 
 
-def walk(device, args):
+def walk(session, args):
     rng = np.random.default_rng(args.seed)
     n = args.rays
     rec, lo, hi = build_tree(rng)
@@ -620,7 +570,7 @@ def walk(device, args):
     form = {"a": 0, "b": 1}[args.form]
     copy = {"rvv": 0, "scalar": 1}[args.copy]
     best0 = int(BEST0.view(np.uint32))
-    out, nonce = run_kernel(device, "walk", words, [n, form, copy, best0], rvv=True)
+    out, nonce = run_kernel(session, "walk", words, [n, form, copy, best0], rvv=True)
     st = dict(zip(WALK_STATS, (int(v) for v in out[TIMES : TIMES + 10])))
     got_best = out[DATA : DATA + n].view(np.float32)
     got_leaf = out[DATA + 1024 : DATA + 1024 + n]
@@ -666,20 +616,20 @@ NOC_WHERE = ["", "started", "waited for the peer", "command buffer ready", "issu
              "responded or gave up", "registers restored"]  # fmt: skip
 
 
-def nocread(device, args):
+def nocread(session, args):
     rng = np.random.default_rng(args.seed)
     words = rng.integers(0, 2**32, 64, dtype=np.uint64).astype(np.uint32)
     peer = (1, 0)
-    phys = device.worker_core_from_logical_core(ttnn.CoreCoord(*peer))
-    coord = int(phys.x) | int(phys.y) << 6
-    log(f"peer {peer} at NoC-0 ({phys.x}, {phys.y})")
-    out, nonce = run_kernel(device, "nocread", words, [coord, 200000], peer=peer)
+    px, py = session.device.worker_core(*peer)
+    coord = int(px) | int(py) << 6
+    log(f"peer {peer} at NoC-0 ({px}, {py})")
+    out, nonce = run_kernel(session, "nocread", words, [coord, 200000], peer=peer)
     d = out[DATA:]
     got = d[16:32]
     return (
         {
             "peer_logical": list(peer),
-            "peer_noc0": [int(phys.x), int(phys.y)],
+            "peer_noc0": [int(px), int(py)],
             "my_noc_id": hex(int(d[4])),
             "where": NOC_WHERE[int(d[0])] if int(d[0]) < len(NOC_WHERE) else int(d[0]),
             "code": ["ok", "command buffer busy", "no response"][int(d[1])],
@@ -726,15 +676,11 @@ def main():
     t_start = time.time()
     with open("/proc/loadavg") as f:
         load = f.read().split()[:3]
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    device.disable_and_clear_program_cache()
-    log(f"device open {time.time() - t_start:.1f}s")
-    try:
+    with km.Session() as session:
+        log(f"device open {time.time() - t_start:.1f}s")
         mhz = [aiclk_mhz()]
-        rec, out, nonce = globals()[args.probe](device, args)
+        rec, out, nonce = globals()[args.probe](session, args)
         mhz.append(aiclk_mhz())
-    finally:
-        ttnn.close_mesh_device(device)
     rec = {"probe": args.probe, **rec}
     rec["nonce_ok"] = int(out[NONCE]) == nonce
     rec["kernel_error"] = int(out[ERROR])

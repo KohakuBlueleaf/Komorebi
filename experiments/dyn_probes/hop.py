@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
+
+import komorebi as km
 
 SHARD_WORDS = 0x1100 // 4
 SSTAT, RSTAT = 0x40 // 4, 0x80 // 4
@@ -45,15 +45,10 @@ def plan(mode, cores, packets, n):
     return count, total
 
 
-def kernel(name, cores_set, args, proc, noc):
-    return ttnn.KernelDescriptor(
-        kernel_source=str(__file__).replace("hop.py", name),
-        source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=cores_set,
-        compile_time_args=[],
-        runtime_args=args,
-        config=ttnn.DataMovementConfigDescriptor(processor=proc, noc=noc),
-    )
+def kernel(launch, name, cores_set, args, riscv):
+    """A data movement kernel on RISC-V `riscv` and its NoC; args [(x, y, words)]."""
+    source = str(__file__).replace("hop.py", name)
+    launch.kernel(source, cores_set, riscv, [], [], [], args)
 
 
 def main():
@@ -64,86 +59,45 @@ def main():
     p.add_argument("--commit", action="store_true", help="first mark after a barrier")
     a = p.parse_args()
     assert 1 <= a.n <= 32
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    log("device open")
-    try:
-        g = device.compute_with_storage_grid_size()
-        cores = 2 if a.mode == "pair" else g.x * g.y
+    with km.Session() as session:
+        log("device open")
+        gx, gy = session.grid
+        cores = 2 if a.mode == "pair" else gx * gy
         count, total = plan(a.mode, cores, a.packets, a.n)
         cap = CHUNK
         while cap < max(count):
             cap *= 2
         salt = random.getrandbits(32)
-        logical = [(c % g.x, c // g.x) for c in range(cores)]
+        logical = [(c % gx, c // gx) for c in range(cores)]
         table = []
         for x, y in logical:
-            w = device.worker_core_from_logical_core(ttnn.CoreCoord(x, y))
-            table.append(w.x | w.y << 16)
-        grid = ttnn.CoreRangeSet(
-            [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(g.x - 1, g.y - 1))]
+            wx, wy = session.device.worker_core(x, y)
+            table.append(wx | wy << 16)
+        shard = session.tensor(
+            np.zeros((gx * gy, SHARD_WORDS), np.uint32), "uint32", shard_grid=(gx, gy)
         )
-        config = ttnn.create_sharded_memory_config(
-            (1, SHARD_WORDS),
-            grid,
-            ttnn.ShardStrategy.HEIGHT,
-            ttnn.ShardOrientation.ROW_MAJOR,
-            use_height_and_width_as_shard_shape=True,
-        )
-        shard = ttnn.from_torch(
-            torch.zeros((g.x * g.y, SHARD_WORDS), dtype=torch.int32),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-            memory_config=config,
-        )
-        queue = ttnn.empty(
-            (cores * cap // CHUNK, CHUNK * 16),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        queue = session.empty((cores * cap // CHUNK, CHUNK * 16), "uint32")
         log(f"cores {cores} cap {cap} queue MB {cores * cap * 64 / 2**20:.1f}")
-        sh, qb = shard.buffer_address(), queue.buffer_address()
-        sargs, rargs = ttnn.RuntimeArgs(), ttnn.RuntimeArgs()
+        sh, qb = shard.address, queue.address
+        sargs, rargs = [], []
         mode = (0 if a.mode == "pair" else 1) | (256 if a.commit else 0)
         for c, (x, y) in enumerate(logical):
-            sargs[x][y] = [sh, qb, cap, c, cores, mode, a.packets, a.n, salt, *table]
-            rargs[x][y] = [sh, qb, cap, c, count[c], salt]
-        used = ttnn.CoreRangeSet(
-            [ttnn.CoreRange(ttnn.CoreCoord(*xy), ttnn.CoreCoord(*xy)) for xy in logical]
-        )
-        desc = ttnn.ProgramDescriptor(
-            kernels=[
-                kernel(
-                    "hop_recv.cpp",
-                    used,
-                    rargs,
-                    ttnn.DataMovementProcessor.RISCV_0,
-                    ttnn.NOC.RISCV_0_default,
-                ),
-                kernel(
-                    "hop_send.cpp",
-                    used,
-                    sargs,
-                    ttnn.DataMovementProcessor.RISCV_1,
-                    ttnn.NOC.RISCV_1_default,
-                ),
-            ],
-            semaphores=[],
-            cbs=[],
-        )
+            words = [sh, qb, cap, c, cores, mode, a.packets, a.n, salt, *table]
+            sargs.append((x, y, words))
+            rargs.append((x, y, [sh, qb, cap, c, count[c], salt]))
+        used = [(x, y, x, y) for x, y in logical]
+        launch = session.launch()
+        kernel(launch, "hop_recv.cpp", used, rargs, 0)
+        kernel(launch, "hop_send.cpp", used, sargs, 1)
         clock = Path("/sys/class/tenstorrent/tenstorrent!0/tt_aiclk")
         aiclk_before = clock.read_text().strip()
         log("launch")
-        ttnn.generic_op([queue, shard], desc)
-        ttnn.synchronize_device(device)
+        launch.run()
+        session.device.finish()
         log("kernel done")
-        rows = ttnn.to_torch(shard).numpy().astype(np.int64) & M32
+        rows = shard.read().astype(np.int64)
         log("read back")
         aiclk = clock.read_text().strip()
-    finally:
-        ttnn.close_mesh_device(device)
     s, r = rows[:cores, SSTAT : SSTAT + 16], rows[:cores, RSTAT : RSTAT + 16]
     senders = [c for c in range(cores) if s[c, 2] > 0]
     start = min(int(s[c, 3]) for c in senders)

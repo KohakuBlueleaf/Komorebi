@@ -11,8 +11,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -104,60 +102,26 @@ def dp_word_banked(seed, r, w):
     return out
 
 
-def uint32_tensor(device, rows):
-    """A row-major int32 DRAM tensor holding the bits of uint32 rows (interleaved:
-    row r in bank r % BANKS)."""
-    data = np.ascontiguousarray(np.asarray(rows, dtype=np.uint32).view(np.int32))
-    return ttnn.from_torch(
-        torch.from_numpy(data),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+def uint32_tensor(session, rows):
+    """A row-major uint32 DRAM tensor holding `rows` (interleaved: row r in bank
+    r % BANKS)."""
+    return session.tensor(np.asarray(rows, dtype=np.uint32), "uint32")
 
 
 def read_rows(tensor):
-    return ttnn.to_torch(tensor).numpy().view(np.uint32)
+    return tensor.read()
 
 
-def tensix(device, io, args, page):
+def tensix(session, args, page):
     """Runs kernels/dram_rw.cpp on core (0, 0) with `args`, and waits for it."""
-    core = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
-    )
-    runtime = ttnn.RuntimeArgs()
-    runtime[0][0] = [int(a) for a in args]
-    kernel = ttnn.KernelDescriptor(
-        kernel_source=str(KERNELS / "dram_rw.cpp"),
-        source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=core,
-        compile_time_args=[],
-        defines=[],
-        runtime_args=runtime,
-        config=ttnn.DataMovementConfigDescriptor(
-            processor=ttnn.DataMovementProcessor.RISCV_0,
-            noc=ttnn.NOC.RISCV_0_default,
-        ),
-        compiler_include_paths=[str(KERNELS)],
-    )
-
-    def cb(index, size):
-        return ttnn.CBDescriptor(
-            total_size=size,
-            core_ranges=core,
-            format_descriptors=[
-                ttnn.CBFormatDescriptor(
-                    buffer_index=index, data_format=ttnn.uint32, page_size=size
-                )
-            ],
-        )
-
-    descriptor = ttnn.ProgramDescriptor(
-        kernels=[kernel], semaphores=[], cbs=[cb(0, page), cb(1, 64)]
-    )
-    ttnn.generic_op(io, descriptor)
-    ttnn.synchronize_device(device)
+    core = [(0, 0, 0, 0)]
+    launch = session.launch()
+    words = [(0, 0, [int(a) for a in args])]
+    launch.kernel(str(KERNELS / "dram_rw.cpp"), core, 0, [], [], [str(KERNELS)], words)
+    launch.cb(core, 0, "uint32", page, page)
+    launch.cb(core, 1, "uint32", 64, 64)
+    launch.run()
+    session.device.finish()
 
 
 def report_done(tensor, row, timeout=5.0):
@@ -175,14 +139,9 @@ def report_done(tensor, row, timeout=5.0):
         time.sleep(0.01)
 
 
-def mapcollect_program(device):
+def mapcollect_program(session):
     """The map/collect example's program, for a resident grid to run NOP records."""
-    x = ttnn.from_torch(
-        torch.zeros((32, 32)),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-    )
+    x = session.tensor(np.zeros((32, 32), np.float32), "bfloat16", "tile")
     return km.Program(
         "mapcollect",
         kernels=MAPCOLLECT,
@@ -191,8 +150,8 @@ def mapcollect_program(device):
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
         ],
         compile_args={
-            "reader": ttnn.TensorAccessorArgs(x).get_compile_time_args(),
-            "writer": ttnn.TensorAccessorArgs(x).get_compile_time_args(),
+            "reader": x.accessor_args(),
+            "writer": x.accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         segments=MAPCOLLECT / "mapcollect.h",
@@ -208,7 +167,7 @@ def two(args):
     bad, start_s, wait_s, stop_s, passes = [], [], [], [], []
     with km.Session(log=log) as session:
         log("device open")
-        program = mapcollect_program(session.device)
+        program = mapcollect_program(session)
         run = session.load(program, deadline=1.0)
         port = run.backend.port
         cores = run.cores
@@ -279,28 +238,29 @@ def dram(args):
     with km.Session(log=log) as session:
         device = session.device
         log("device open")
-        ta = uint32_tensor(device, bank_rows(na + 1, words, seeds["host"]))
-        tb = uint32_tensor(device, bank_rows(nb, words, seeds["host"]))
+        ta = uint32_tensor(session, bank_rows(na + 1, words, seeds["host"]))
+        tb = uint32_tensor(session, bank_rows(nb, words, seeds["host"]))
         outs = [
-            uint32_tensor(device, np.zeros((BANKS * (nb + 1), words))) for _ in range(3)
+            uint32_tensor(session, np.zeros((BANKS * (nb + 1), words)))
+            for _ in range(3)
         ]
         for t, n in [(ta, na + 1), (tb, nb)] + [(o, nb + 1) for o in outs]:
-            at = t.buffer_address()
+            at = t.address
             if at <= IPI_ACK_DDR < at + n * page:
                 raise RuntimeError(f"a buffer at {at:#x} covers the X280 IPI word")
         log("buffers written; tensix warm-up (compile) launch")
-        warm = [DP_COPY, 0, tb.buffer_address(), 1, page, outs[2].buffer_address(), 0]
-        tensix(device, [ta, tb, outs[2]], warm, page)
+        warm = [DP_COPY, 0, tb.address, 1, page, outs[2].address, 0]
+        tensix(session, warm, page)
         log("tensix warm-up done")
         port = native.load_module().Dispatch(device, 1750)
         try:
             info = port.work_info(CLUSTER)
             bank = BANK_OF[(info["noc_x"], info["noc_y"])]
             out["cluster"] = info | {"expected_bank": bank}
-            out["a_addr"], out["b_addr"] = ta.buffer_address(), tb.buffer_address()
+            out["a_addr"], out["b_addr"] = ta.address, tb.address
             blk = block(
-                ta.buffer_address(),
-                tb.buffer_address(),
+                ta.address,
+                tb.address,
                 na,
                 nb,
                 page,
@@ -316,7 +276,7 @@ def dram(args):
             steps = [
                 (
                     2,
-                    [DP_WRITE, bank, ta.buffer_address(), na, page, 0, seeds["tensix"]],
+                    [DP_WRITE, bank, ta.address, na, page, 0, seeds["tensix"]],
                     ta,
                 ),
                 (
@@ -324,10 +284,10 @@ def dram(args):
                     [
                         DP_COPY,
                         bank,
-                        tb.buffer_address(),
+                        tb.address,
                         nb,
                         page,
-                        outs[0].buffer_address(),
+                        outs[0].address,
                         0,
                     ],
                     outs[0],
@@ -337,10 +297,10 @@ def dram(args):
                     [
                         DP_COPY,
                         bank,
-                        tb.buffer_address(),
+                        tb.address,
                         nb,
                         page,
-                        outs[1].buffer_address(),
+                        outs[1].address,
                         0,
                     ],
                     outs[1],
@@ -350,10 +310,10 @@ def dram(args):
                     [
                         DP_COPY,
                         bank,
-                        tb.buffer_address(),
+                        tb.address,
                         nb,
                         page,
-                        outs[2].buffer_address(),
+                        outs[2].address,
                         0,
                     ],
                     outs[2],
@@ -363,7 +323,7 @@ def dram(args):
                 log(f"waiting for stamp {where}")
                 wait_stamp(port, where)
                 log(f"tensix step {i + 1} launch")
-                tensix(device, [ta, tb, dst], targs, page)
+                tensix(session, targs, page)
                 at = (na if i == 0 else nb) * BANKS + bank
                 report_done(dst, at)
                 log(f"tensix step {i + 1} done (report read back)")
@@ -412,15 +372,9 @@ def dram(args):
     return out
 
 
-def allocate(device, rows, words):
-    """An uninitialised row-major int32 DRAM tensor, interleaved over the banks."""
-    return ttnn.allocate_tensor_on_device(
-        ttnn.Shape([rows, words]),
-        ttnn.int32,
-        ttnn.ROW_MAJOR_LAYOUT,
-        device,
-        ttnn.DRAM_MEMORY_CONFIG,
-    )
+def allocate(session, rows, words):
+    """An uninitialised row-major uint32 DRAM tensor, interleaved over the banks."""
+    return session.empty((rows, words), "uint32")
 
 
 def aiclk():
@@ -434,7 +388,7 @@ def aiclk():
 def check_ipi(tensors_and_bytes):
     """Refuses buffers whose bank range covers the X280 runtime's IPI word."""
     for t, n in tensors_and_bytes:
-        at = t.buffer_address()
+        at = t.address
         if at <= IPI_ACK_DDR < at + n:
             raise RuntimeError(f"a buffer at {at:#x} covers the X280 IPI word")
 
@@ -459,10 +413,10 @@ def rates(args):
     with km.Session(log=log) as session:
         device = session.device
         log("device open")
-        tr = allocate(device, BANKS * pages, page // 4)
+        tr = allocate(session, BANKS * pages, page // 4)
         counts = rng.integers(0, 64, (BANKS * cores, bins)).astype(np.uint32)
-        tc = uint32_tensor(device, counts)
-        to = allocate(device, BANKS * cores, bins)
+        tc = uint32_tensor(session, counts)
+        to = allocate(session, BANKS * cores, bins)
         check_ipi([(tr, pages * page), (tc, cores * bins * 4), (to, cores * bins * 4)])
         log("buffers ready")
         port = native.load_module().Dispatch(device, 1750)
@@ -471,11 +425,11 @@ def rates(args):
             bank = BANK_OF[(info["noc_x"], info["noc_y"])]
             out["cluster"] = info | {"bank": bank}
             blk = block(
-                tr.buffer_address(),
+                tr.address,
                 sizes[0],
                 sizes[1],
-                tc.buffer_address(),
-                to.buffer_address(),
+                tc.address,
+                to.address,
                 cores,
                 bins,
                 args.reps,

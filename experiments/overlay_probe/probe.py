@@ -15,14 +15,12 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 OUT = ROOT / "build" / "overlay_probe"
 # One JIT cache for every job: the loader's ELF the overlays link against is the one
-# that runs. Set before ttnn is imported.
+# that runs. Set before tt-metal is loaded.
 os.environ["TT_METAL_CACHE"] = str(OUT / "jit-cache")
 sys.path.insert(0, str(ROOT / "src"))
 
 import builder  # noqa: E402
 import numpy as np  # noqa: E402
-import torch  # noqa: E402
-import ttnn  # noqa: E402
 
 from komorebi import native  # noqa: E402
 from komorebi.session import KERNEL_BUFFER_BASE, Session, aiclk_mhz  # noqa: E402
@@ -57,99 +55,48 @@ def log(msg):
 
 
 def core_set(cores):
-    return ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(x, y), ttnn.CoreCoord(x, y)) for x, y in cores]
-    )
+    return [(x, y, x, y) for x, y in cores]
 
 
-def l1_rows(device, cores, words):
-    """An int32 L1 tensor with one shard of `words` words on each core."""
-    config = ttnn.create_sharded_memory_config(
-        (1, words),
-        core_set(cores),
-        ttnn.ShardStrategy.HEIGHT,
-        ttnn.ShardOrientation.ROW_MAJOR,
-        use_height_and_width_as_shard_shape=True,
-    )
-    return dram_rows(device, np.zeros((len(cores), words), np.uint32), config)
+def l1_rows(session, cores, words):
+    """A uint32 L1 tensor with one row of `words` words on each core: `cores` are a
+    grid from (0, 0) in row-major order."""
+    gx, gy = max(x for x, _ in cores) + 1, max(y for _, y in cores) + 1
+    if cores != [(x, y) for y in range(gy) for x in range(gx)]:
+        raise ValueError("the cores of an L1 tensor are a grid from (0, 0)")
+    rows = np.zeros((len(cores), words), np.uint32)
+    return session.tensor(rows, "uint32", shard_grid=(gx, gy))
 
 
-def dram_rows(device, rows, config=None):
-    """An int32 tensor holding the bits of the uint32 rows (DRAM: one page a row)."""
-    data = np.ascontiguousarray(np.asarray(rows, np.uint32).view(np.int32))
-    return ttnn.from_torch(
-        torch.from_numpy(data),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=config or ttnn.DRAM_MEMORY_CONFIG,
-    )
+def dram_rows(session, rows):
+    """A uint32 DRAM tensor holding the rows (one page a row)."""
+    return session.tensor(np.asarray(rows, np.uint32), "uint32")
 
 
 def page_place(tensor, page):
     """(bank, address) of an interleaved DRAM tensor's page."""
-    aligned = tensor.buffer_aligned_page_size()
-    return page % 8, tensor.buffer_address() + (page // 8) * aligned
+    return page % 8, tensor.address + (page // 8) * tensor.aligned_page_bytes
 
 
-def loader_descriptor(cores, ctl, slot, tslots, results):
-    args = ttnn.RuntimeArgs()
+def loader_launch(session, cores, ctl, slot, tslots, results):
+    """The loader (and with `tslots` the persistent compute kernel) on `cores`."""
+    args = []
     for i, (x, y) in enumerate(cores):
         bank, at = page_place(results, i)
-        args[x][y] = [
-            ctl.buffer_address(),
-            bank,
-            at,
-            slot.buffer_address(),
-            SLOT_BYTES,
-            IDLE_UNITS,
-            tslots.buffer_address() if tslots is not None else 0,
-            TSLOT_BYTES,
-        ]
-    kernel = ttnn.KernelDescriptor(
-        kernel_source=str(HERE / "loader.cpp"),
-        source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=core_set(cores),
-        compile_time_args=[],
-        runtime_args=args,
-        config=ttnn.DataMovementConfigDescriptor(
-            processor=ttnn.DataMovementProcessor.RISCV_0,
-            noc=ttnn.NOC.RISCV_0_default,
-        ),
-        compiler_include_paths=[str(HERE)],
-    )
+        tslot = tslots.address if tslots is not None else 0
+        words = [ctl.address, bank, at, slot.address, SLOT_BYTES, IDLE_UNITS]
+        args.append((x, y, words + [tslot, TSLOT_BYTES]))
+    launch = session.launch()
+    where = core_set(cores)
+    launch.kernel(str(HERE / "loader.cpp"), where, 0, [], [], [str(HERE)], args)
     if tslots is None:
-        return ttnn.ProgramDescriptor(kernels=[kernel], semaphores=[], cbs=[])
-    targs = ttnn.RuntimeArgs()
-    for x, y in cores:
-        targs[x][y] = [
-            ctl.buffer_address(),
-            tslots.buffer_address(),
-            TSLOT_BYTES,
-            IDLE_UNITS,
-        ]
-    compute = ttnn.KernelDescriptor(
-        kernel_source=str(HERE / "compute.cpp"),
-        source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=core_set(cores),
-        compile_time_args=[],
-        runtime_args=targs,
-        config=ttnn.ComputeConfigDescriptor(),
-        compiler_include_paths=[str(HERE)],
-    )
-    cbs = [
-        ttnn.CBDescriptor(
-            total_size=2 * TILE_BYTES,
-            core_ranges=core_set(cores),
-            format_descriptors=[
-                ttnn.CBFormatDescriptor(
-                    buffer_index=i, data_format=ttnn.bfloat16, page_size=TILE_BYTES
-                )
-            ],
-        )
-        for i in (CB_IN, CB_OUT)
-    ]
-    return ttnn.ProgramDescriptor(kernels=[kernel, compute], semaphores=[], cbs=cbs)
+        return launch
+    words = [ctl.address, tslots.address, TSLOT_BYTES, IDLE_UNITS]
+    targs = [(x, y, words) for x, y in cores]
+    launch.kernel(str(HERE / "compute.cpp"), where, 2, [], [], [str(HERE)], targs)
+    for i in (CB_IN, CB_OUT):
+        launch.cb(where, i, "bfloat16", TILE_BYTES, 2 * TILE_BYTES)
+    return launch
 
 
 def capture(args):
@@ -158,14 +105,11 @@ def capture(args):
     if args.child:
         with Session(card=args.card, log=log) as s:
             cores = [(0, 0)]
-            ctl = l1_rows(s.device, cores, CTL_WORDS)
-            slot = l1_rows(s.device, cores, SLOT_BYTES // 4)
-            tslots = l1_rows(s.device, cores, 3 * TSLOT_BYTES // 4)
-            results = dram_rows(s.device, np.zeros((1, RESP_WORDS)))
-            module = native.load_module()
-            built = module.kernel_build(
-                s.device, loader_descriptor(cores, ctl, slot, tslots, results)
-            )
+            ctl = l1_rows(s, cores, CTL_WORDS)
+            slot = l1_rows(s, cores, SLOT_BYTES // 4)
+            tslots = l1_rows(s, cores, 3 * TSLOT_BYTES // 4)
+            results = dram_rows(s, np.zeros((1, RESP_WORDS)))
+            built = loader_launch(s, cores, ctl, slot, tslots, results).build()
             log(f"built: {built[0]}")
         return
     OUT.mkdir(parents=True, exist_ok=True)
@@ -196,16 +140,14 @@ class Rig:
     def __init__(self, session, cores, compute=False):
         self.s, self.dev, self.cores = session, session.device, cores
         self.module = native.load_module()
-        self.ctl = l1_rows(self.dev, cores, CTL_WORDS)
-        self.slot = l1_rows(self.dev, cores, SLOT_BYTES // 4)
-        self.tslots = (
-            l1_rows(self.dev, cores, 3 * TSLOT_BYTES // 4) if compute else None
+        self.ctl = l1_rows(session, cores, CTL_WORDS)
+        self.slot = l1_rows(session, cores, SLOT_BYTES // 4)
+        self.tslots = l1_rows(session, cores, 3 * TSLOT_BYTES // 4) if compute else None
+        self.results = dram_rows(session, np.zeros((len(cores), RESP_WORDS)))
+        self.loader = loader_launch(
+            session, cores, self.ctl, self.slot, self.tslots, self.results
         )
-        self.results = dram_rows(self.dev, np.zeros((len(cores), RESP_WORDS)))
-        self.desc = loader_descriptor(
-            cores, self.ctl, self.slot, self.tslots, self.results
-        )
-        built = self.module.kernel_build(self.dev, self.desc)
+        built = self.loader.build()
         elves = {Path(src).name: [Path(e) for e in es if e] for src, es in built[0]}
         self.loader_elf = elves["loader.cpp"][0]
         self.trisc_elves = elves["compute.cpp"] if compute else []
@@ -222,20 +164,20 @@ class Rig:
             ("firmware, mailboxes and the kernel buffer", 0, self.l1_base),
             (
                 "the control words",
-                self.ctl.buffer_address(),
-                self.ctl.buffer_address() + 4 * CTL_WORDS,
+                self.ctl.address,
+                self.ctl.address + 4 * CTL_WORDS,
             ),
         ]
         if self.tslots is not None:
-            at = self.tslots.buffer_address()
+            at = self.tslots.address
             self.reserved.append(("the compute slots", at, at + 3 * TSLOT_BYTES))
-        builder.check_slot(self.slot.buffer_address(), SLOT_BYTES, self.reserved)
+        builder.check_slot(self.slot.address, SLOT_BYTES, self.reserved)
         self.seq = [0] * len(cores)
         self.images = None
         log(
             f"loader {self.loader_elf.parent.parent.name}: slot "
-            f"{self.slot.buffer_address():#x} + {SLOT_BYTES}, control "
-            f"{self.ctl.buffer_address():#x}, L1 buffers from {self.l1_base:#x}"
+            f"{self.slot.address:#x} + {SLOT_BYTES}, control "
+            f"{self.ctl.address:#x}, L1 buffers from {self.l1_base:#x}"
         )
 
     def build(self, name, source, header=None):
@@ -244,7 +186,7 @@ class Rig:
             name,
             source,
             header,
-            self.slot.buffer_address(),
+            self.slot.address,
             SLOT_BYTES,
             self.loader_elf,
             OUT / "overlays",
@@ -253,7 +195,7 @@ class Rig:
     def build_compute(self, name, source, header):
         """The three parts of a compute overlay, each linked for its core's slot
         against that core's persistent ELF, as one image (part k at k x TSLOT)."""
-        base = self.tslots.buffer_address()
+        base = self.tslots.address
         parts = [
             builder.build(
                 c,
@@ -285,7 +227,7 @@ class Rig:
         for i, o in enumerate(overlays):
             rows[i, : len(o.image) // 4] = np.frombuffer(o.image, np.uint32)
         log(f"upload {len(overlays)} images of up to {width} B")
-        self.images = dram_rows(self.dev, rows)
+        self.images = dram_rows(self.s, rows)
         return [
             (i + 1, *page_place(self.images, i), len(o.image))
             for i, o in enumerate(overlays)
@@ -293,7 +235,7 @@ class Rig:
 
     def launch(self):
         log("launch")
-        ttnn.generic_op([self.results, self.ctl], self.desc)
+        self.loader.run()
         log("launched")
 
     def send(
@@ -302,7 +244,7 @@ class Rig:
         x, y = self.cores[i]
         self.seq[i] += 1
         words = [op, flags, arg & 0xFFFFFFFF, reps, *a, *b, *expect]
-        at = self.ctl.buffer_address()
+        at = self.ctl.address
         self.module.write_l1(self.dev, x, y, at + 16, [int(w) for w in words])
         self.module.write_l1(self.dev, x, y, at, [self.seq[i]])
         return self.seq[i]
@@ -327,7 +269,7 @@ class Rig:
         starting at one wall-clock count LEAD_S after core 0's clock was read: the
         command words to all, then the sequence words in one pass. (Seconds of
         that pass, the start count, the response lines in core order.)"""
-        at = self.ctl.buffer_address()
+        at = self.ctl.address
         now = int(self.call(0, OP_CLOCK)[2])
         start = (now + int(LEAD_S * mhz * 1e6)) % (1 << 32)
         for i, (x, y) in enumerate(self.cores):
@@ -365,8 +307,8 @@ class Rig:
             self.send(i, OP_EXIT)
         for i in range(len(self.cores)):
             self.response(i, self.seq[i])
-        g = self.dev.compute_with_storage_grid_size()
-        done = self.module.wait_grid(self.dev, g.x, g.y, 10.0)
+        gx, gy = self.s.grid
+        done = self.module.wait_grid(self.dev, gx, gy, 10.0)
         log(f"loader left: {done}")
 
 
@@ -530,30 +472,22 @@ def launch(args):
     (slow dispatch), launch call to the core's return, with and without the
     runtime's program cache."""
     with Session(card=args.card, log=log) as s:
-        dev = s.device
-        dummy = dram_rows(dev, np.zeros((1, 16)))
-        out = dram_rows(dev, np.zeros((1, 16)))
-        kernel = ttnn.KernelDescriptor(
-            kernel_source=str(HERE / "empty.cpp"),
-            source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-            core_ranges=core_set([(0, 0)]),
-            compile_time_args=[],
-            runtime_args=ttnn.RuntimeArgs(),
-            config=ttnn.DataMovementConfigDescriptor(
-                processor=ttnn.DataMovementProcessor.RISCV_0,
-                noc=ttnn.NOC.RISCV_0_default,
-            ),
-        )
-        desc = ttnn.ProgramDescriptor(kernels=[kernel], semaphores=[], cbs=[])
+
+        def empty():
+            launch = s.launch()
+            launch.kernel(
+                str(HERE / "empty.cpp"), core_set([(0, 0)]), 0, [], [], [], []
+            )
+            return launch
+
         res = {}
         for cached in (False, True):
-            if cached:
-                dev.enable_program_cache()
+            kept = empty()  # cached: one program built once, launched again each time
             times = []
             for _ in range(args.reps + 1):
                 t = time.perf_counter()
-                ttnn.generic_op([dummy, out], desc)
-                ttnn.synchronize_device(dev)
+                (kept if cached else empty()).run()
+                s.device.finish()
                 times.append(time.perf_counter() - t)
             log(f"program cache {cached}: first {times[0] * 1e3:.2f} ms")
             res["program_cache" if cached else "no_program_cache"] = {
@@ -680,8 +614,8 @@ def grid(args):
     """Question 5: every core loads the same overlay from DRAM on one command (one
     copy, one DRAM bank); then a command naming the overlay already held."""
     with Session(card=args.card, log=log) as s:
-        g = s.device.compute_with_storage_grid_size()
-        cores = [(x, y) for y in range(g.y) for x in range(g.x)]
+        gx, gy = s.grid
+        cores = [(x, y) for y in range(gy) for x in range(gx)]
         rig = Rig(s, cores)
         n = steps_for(args.kib * 1024)
         a, b = chain(rig, "grid-a", n, 501), chain(rig, "grid-b", n, 502)

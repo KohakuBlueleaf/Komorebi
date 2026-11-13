@@ -8,8 +8,8 @@ import json
 import time
 
 import numpy as np
-import torch
-import ttnn
+
+import komorebi as km
 
 WORDS = 512  # per core
 TARGET, READY, STAT, POS = 0, 4, 16, 32
@@ -64,64 +64,29 @@ def main():
     p.add_argument("--k", type=int, required=True)
     a = p.parse_args()
     assert a.k <= WORDS - POS
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    log("device open")
-    try:
-        g = device.compute_with_storage_grid_size()
-        cores = g.x * g.y
+    with km.Session() as session:
+        log("device open")
+        gx, gy = session.grid
+        cores = gx * gy
         assert 1 <= a.adders < cores
-        grid = ttnn.CoreRangeSet(
-            [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(g.x - 1, g.y - 1))]
-        )
-        config = ttnn.create_sharded_memory_config(
-            (1, WORDS),
-            grid,
-            ttnn.ShardStrategy.HEIGHT,
-            ttnn.ShardOrientation.ROW_MAJOR,
-            use_height_and_width_as_shard_shape=True,
-        )
-        init = torch.zeros((cores, WORDS), dtype=torch.int32)
+        init = np.zeros((cores, WORDS), dtype=np.uint32)
         init[0, TARGET] = X0
-        out = ttnn.from_torch(
-            init,
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-            memory_config=config,
-        )
-        dummy = ttnn.from_torch(
-            torch.zeros((1, 16), dtype=torch.int32),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-        )
-        t = device.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
-        args = ttnn.RuntimeArgs()
-        ranges = []
+        out = session.tensor(init, "uint32", shard_grid=(gx, gy))
+        tx, ty = session.device.worker_core(0, 0)
+        args, ranges = [], []
         for c in range(1, a.adders + 1):
-            x, y = c % g.x, c // g.x
-            args[x][y] = [out.buffer_address(), t.x | t.y << 16, a.adders, a.k, c]
-            ranges.append(ttnn.CoreRange(ttnn.CoreCoord(x, y), ttnn.CoreCoord(x, y)))
-        kernel = ttnn.KernelDescriptor(
-            kernel_source=str(__file__).replace("reservation.py", "reservation.cpp"),
-            source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-            core_ranges=ttnn.CoreRangeSet(ranges),
-            compile_time_args=[],
-            runtime_args=args,
-            config=ttnn.DataMovementConfigDescriptor(
-                processor=ttnn.DataMovementProcessor.RISCV_0,
-                noc=ttnn.NOC.RISCV_0_default,
-            ),
-        )
-        desc = ttnn.ProgramDescriptor(kernels=[kernel], semaphores=[], cbs=[])
+            x, y = c % gx, c // gx
+            args.append((x, y, [out.address, tx | ty << 16, a.adders, a.k, c]))
+            ranges.append((x, y, x, y))
+        source = str(__file__).replace("reservation.py", "reservation.cpp")
+        launch = session.launch()
+        launch.kernel(source, ranges, 0, [], [], [], args)
         log("launch")
-        ttnn.generic_op([dummy, out], desc)
-        ttnn.synchronize_device(device)
+        launch.run()
+        session.device.finish()
         log("kernel done")
-        rows = ttnn.to_torch(out).numpy().astype(np.int64) & 0xFFFFFFFF
+        rows = out.read().astype(np.int64)
         log("read back")
-    finally:
-        ttnn.close_mesh_device(device)
     print(json.dumps(check(rows, a.adders, a.k)), flush=True)
 
 

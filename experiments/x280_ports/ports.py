@@ -10,8 +10,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 from komorebi.session import aiclk_mhz
@@ -32,16 +30,13 @@ def log(msg):
     print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
 
 
-def tensor(device, rows, cols):
+def tensor(session, rows, cols):
     """A zeroed uint32 DRAM tensor of `rows` pages of `cols` words."""
-    host = torch.zeros((rows, cols), dtype=torch.int32)
-    return ttnn.from_torch(
-        host, dtype=ttnn.int32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
-    )
+    return session.tensor(np.zeros((rows, cols), np.uint32), "uint32")
 
 
 def read(t):
-    return ttnn.to_torch(ttnn.from_device(t)).numpy().view(np.uint32)
+    return t.read()
 
 
 def program(words, clusters, serve, stats, reads, noc):
@@ -55,8 +50,8 @@ def program(words, clusters, serve, stats, reads, noc):
             )
         ],
         compile_args={
-            "reader": ttnn.TensorAccessorArgs(stats).get_compile_time_args(),
-            "writer": ttnn.TensorAccessorArgs(reads).get_compile_time_args(),
+            "reader": stats.accessor_args(),
+            "writer": reads.accessor_args(),
         },
     )
     prog.thread(
@@ -124,23 +119,22 @@ def cpus(results):
 
 def run_step(session, args, step, words, clusters, serve, noc=0):
     """Loads the program, waits for the threads, stops, reads the stats pages."""
-    dev = session.device
-    stats = tensor(dev, 128, XP["XP_PAGE_BYTES"] // 4)
-    reads = tensor(dev, args.read_pages, XP["XP_READ_BYTES"] // 4)
+    stats = tensor(session, 128, XP["XP_PAGE_BYTES"] // 4)
+    reads = tensor(session, args.read_pages, XP["XP_READ_BYTES"] // 4)
     words = list(words)
     if step in ("ask", "soak", "timeout"):
         words[5], words[6], words[7] = (
-            stats.buffer_address(),
-            reads.buffer_address(),
+            stats.address,
+            reads.address,
             args.read_pages,
         )
     if step == "block":
         for i, b in ((5, 6), (6, 7)):  # the banks of clusters 1 and 2, 3
-            bank = dev.dram_core_from_logical_core(ttnn.CoreCoord(b, 0))
-            words[i] = int(bank.x) | int(bank.y) << 16
-        words[7] = stats.buffer_address()
+            bx, by = session.device.dram_core(b)
+            words[i] = int(bx) | int(by) << 16
+        words[7] = stats.address
     if step == "rate":
-        words[4] = stats.buffer_address()
+        words[4] = stats.address
     prog = program(words, clusters, serve, stats, reads, noc)
     run = session.load(prog, deadline=args.deadline, wait=args.wait)
     args.mhz = aiclk_mhz()  # with the grid running

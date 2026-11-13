@@ -8,8 +8,8 @@ import json
 import time
 
 import numpy as np
-import torch
-import ttnn
+
+import komorebi as km
 
 WORDS = 128  # per core: 8 target slots of 16 words on B; on A the sources and results
 SRC, RESULT = 32, 64
@@ -35,60 +35,24 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--set", choices=list(SETS), required=True)
     tests = SETS[p.parse_args().set]
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    log("device open")
-    try:
-        cores = ttnn.CoreRangeSet(
-            [ttnn.CoreRange(ttnn.CoreCoord(*c), ttnn.CoreCoord(*c)) for c in (A, B)]
+    with km.Session() as session:
+        log("device open")
+        out = session.tensor(
+            np.zeros((2, WORDS), np.uint32), "uint32", shard_grid=(2, 1)
         )
-        config = ttnn.create_sharded_memory_config(
-            (1, WORDS),
-            cores,
-            ttnn.ShardStrategy.HEIGHT,
-            ttnn.ShardOrientation.ROW_MAJOR,
-            use_height_and_width_as_shard_shape=True,
-        )
-        zeros = torch.zeros((2, WORDS), dtype=torch.int32)
-        out = ttnn.from_torch(
-            zeros,
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-            memory_config=config,
-        )
-        dummy = ttnn.from_torch(  # generic_op takes two tensors or more
-            torch.zeros((1, 16), dtype=torch.int32),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-        )
-        b = device.worker_core_from_logical_core(ttnn.CoreCoord(*B))
+        bx, by = session.device.worker_core(*B)
         words = [s | sw << 8 | dw << 16 | posted << 24 for s, sw, dw, posted in tests]
-        args = ttnn.RuntimeArgs()
-        args[A[0]][A[1]] = [out.buffer_address(), b.x | b.y << 16, len(tests), *words]
-        kernel = ttnn.KernelDescriptor(
-            kernel_source=str(__file__).replace("probe.py", "probe.cpp"),
-            source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-            core_ranges=ttnn.CoreRangeSet(
-                [ttnn.CoreRange(ttnn.CoreCoord(*A), ttnn.CoreCoord(*A))]
-            ),
-            compile_time_args=[],
-            runtime_args=args,
-            config=ttnn.DataMovementConfigDescriptor(
-                processor=ttnn.DataMovementProcessor.RISCV_0,
-                noc=ttnn.NOC.RISCV_0_default,
-            ),
-        )
-        desc = ttnn.ProgramDescriptor(kernels=[kernel], semaphores=[], cbs=[])
+        args = [(*A, [out.address, bx | by << 16, len(tests), *words])]
+        source = str(__file__).replace("probe.py", "probe.cpp")
+        launch = session.launch()
+        launch.kernel(source, [(*A, *A)], 0, [], [], [], args)
         log("launch")
-        ttnn.generic_op([dummy, out], desc)
-        ttnn.synchronize_device(device)
+        launch.run()
+        session.device.finish()
         log("kernel done")
-        rows = ttnn.to_torch(out).numpy().astype(np.int64) & 0xFFFFFFFF
+        rows = out.read().astype(np.int64)
         log("read back")
-    finally:
-        ttnn.close_mesh_device(device)
-    a_row, b_row = rows[0], rows[1]  # shard order follows the core set: A, then B
+    a_row, b_row = rows[0], rows[1]  # a row per core: A (0, 0), then B (1, 0)
     results = []
     for t, (slot, sw, dw, posted) in enumerate(tests):
         slot_words = b_row[16 * slot : 16 * slot + 4]

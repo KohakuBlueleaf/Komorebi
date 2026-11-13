@@ -12,8 +12,8 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
+
+import komorebi as km
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -70,9 +70,7 @@ class Clock:
 
 
 def cores(cs):
-    return ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(*c), ttnn.CoreCoord(*c)) for c in cs]
-    )
+    return [(x, y, x, y) for x, y in cs]
 
 
 def physical(logical):
@@ -100,84 +98,63 @@ def stats(cycles, mhz):
     }
 
 
-def int32_rows(device, rows, cols):
-    return ttnn.from_torch(
-        torch.zeros((rows, cols), dtype=torch.int32),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+def uint32_rows(session, rows, cols):
+    return session.tensor(np.zeros((rows, cols), np.uint32), "uint32")
 
 
 def cb(index, size, where):
-    return ttnn.CBDescriptor(
-        total_size=size,
-        core_ranges=where,
-        format_descriptors=[
-            ttnn.CBFormatDescriptor(
-                buffer_index=index, data_format=ttnn.uint32, page_size=size
-            )
-        ],
-    )
+    return (where, index, "uint32", size, size)
 
 
 def dm(name, where, args, riscv):
-    proc, noc = (
-        (ttnn.DataMovementProcessor.RISCV_0, ttnn.NOC.RISCV_0_default)
-        if riscv == 0
-        else (ttnn.DataMovementProcessor.RISCV_1, ttnn.NOC.RISCV_1_default)
-    )
-    return ttnn.KernelDescriptor(
-        kernel_source=str(KERNELS / name),
-        source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=where,
-        compile_time_args=[],
-        runtime_args=args,
-        config=ttnn.DataMovementConfigDescriptor(processor=proc, noc=noc),
-        compiler_include_paths=[str(KERNELS)],
-    )
+    """A data movement kernel on RISC-V `riscv` and its NoC; args [(x, y, words)]."""
+    return (str(KERNELS / name), where, riscv, [], [], [str(KERNELS)], args)
 
 
-def noc_xy(device, logical):
-    c = device.worker_core_from_logical_core(ttnn.CoreCoord(*logical))
-    return c.x | c.y << 16
+def launch(session, kernels, cbs):
+    """Runs one program of `kernels` and `cbs` and waits for it."""
+    program = session.launch()
+    for c in cbs:
+        program.cb(*c)
+    for k in kernels:
+        program.kernel(*k)
+    program.run()
+    session.device.finish()
 
 
-def run_hops(device, grid, args, mhz):
+def noc_xy(session, logical):
+    x, y = session.device.worker_core(*logical)
+    return x | y << 16
+
+
+def run_hops(session, grid, args, mhz):
     gx, gy = grid
     sx, sy = SENDER
     targets = [(x, sy) for x in range(gx) if x != sx]
     targets += [(sx, y) for y in range(gy) if y != sy]
     n, reps = len(targets), args.reps
     limit = int(mhz * 1e6 * 0.01)  # 10 ms per wait
-    out = int32_rows(device, 4 * n, reps)
+    out = uint32_rows(session, 4 * n, reps)
     tag = random.getrandbits(15) | 1
-    xy = [noc_xy(device, t) for t in targets]
+    xy = [noc_xy(session, t) for t in targets]
     sync_limit = int(mhz * 1e6 * 2.0)  # the NoC1 kernel waits for the NoC0 one
-    common = [out.buffer_address(), 0, n, reps, 1, limit, sync_limit, tag]
+    common = [out.address, 0, n, reps, 1, limit, sync_limit, tag]
     everyone = cores([(x, y) for y in range(gy) for x in range(gx)])
     sender = cores([SENDER])
-    rt0, rt1 = ttnn.RuntimeArgs(), ttnn.RuntimeArgs()
-    rt0[sx][sy] = common + xy
-    rt1[sx][sy] = [common[0], 2 * n, n, reps, 0, *common[5:]] + xy
-    desc = ttnn.ProgramDescriptor(
-        kernels=[
-            dm("hop_send.cpp", sender, rt0, 0),
-            dm("hop_send.cpp", sender, rt1, 1),
-        ],
-        semaphores=[],
-        cbs=[
+    rt0 = [(sx, sy, common + xy)]
+    rt1 = [(sx, sy, [common[0], 2 * n, n, reps, 0, *common[5:]] + xy)]
+    log(f"hops: launch, {n} targets, {reps} repetitions")
+    launch(
+        session,
+        [dm("hop_send.cpp", sender, rt0, 0), dm("hop_send.cpp", sender, rt1, 1)],
+        [
             cb(CB_BLOCK, 2048, everyone),
             cb(CB_SLOT, SLOT_BYTES, everyone),
             cb(CB_TIMES, reps * 4, sender),
         ],
     )
-    log(f"hops: launch, {n} targets, {reps} repetitions")
-    ttnn.generic_op([int32_rows(device, 1, 8), out], desc)  # an input and an output
-    ttnn.synchronize_device(device)
     log("hops: done")
-    got = ttnn.to_torch(out).numpy().astype(np.int64) & 0xFFFFFFFF
+    got = out.read().astype(np.int64)
     log("hops: read back")
     rows, fits = [], {}
     for noc in (0, 1):
@@ -206,7 +183,7 @@ def run_hops(device, grid, args, mhz):
     return {"sender": list(SENDER), "fits": fits, "rows": rows}
 
 
-def run_bumps(device, grid, args, mhz):
+def run_bumps(session, grid, args, mhz):
     gx, gy = grid
     logical = [(i % gx, i // gx) for i in range(gx * gy)]
     reps = args.reps
@@ -214,31 +191,27 @@ def run_bumps(device, grid, args, mhz):
     lead = int(mhz * args.lead_us)
     results = {}
     for n in args.members:
-        out = int32_rows(device, 2, reps)
+        out = uint32_rows(session, 2, reps)
         tag = random.getrandbits(15) | 1
         recv, senders = logical[0], logical[1 : n + 1]
-        rt_recv, rt_send = ttnn.RuntimeArgs(), ttnn.RuntimeArgs()
         sync = int(mhz * 1e6 * 2.0)  # cores start at different times
-        head = [out.buffer_address(), n, reps, lead, limit, tag, sync]
-        rt_recv[recv[0]][recv[1]] = head + [noc_xy(device, s) for s in senders]
-        for k, (x, y) in enumerate(senders):
-            rt_send[x][y] = [noc_xy(device, recv), reps, limit, lead, tag, k, sync]
+        head = [out.address, n, reps, lead, limit, tag, sync]
+        rt_recv = [(*recv, head + [noc_xy(session, s) for s in senders])]
+        rt_send = [
+            (x, y, [noc_xy(session, recv), reps, limit, lead, tag, k, sync])
+            for k, (x, y) in enumerate(senders)
+        ]
         team = cores([recv, *senders])
-        desc = ttnn.ProgramDescriptor(
-            kernels=[
+        log(f"bumps: launch, {n} senders")
+        launch(
+            session,
+            [
                 dm("bump_recv.cpp", cores([recv]), rt_recv, 1),
                 dm("bump_send.cpp", cores(senders), rt_send, 1),
             ],
-            semaphores=[],
-            cbs=[
-                cb(CB_SLOT, SLOT_BYTES, team),
-                cb(CB_TIMES, 2 * reps * 4, cores([recv])),
-            ],
+            [cb(CB_SLOT, SLOT_BYTES, team), cb(CB_TIMES, 2 * reps * 4, cores([recv]))],
         )
-        log(f"bumps: launch, {n} senders")
-        ttnn.generic_op([int32_rows(device, 1, 8), out], desc)  # an input and an output
-        ttnn.synchronize_device(device)
-        got = ttnn.to_torch(out).numpy().astype(np.int64) & 0xFFFFFFFF
+        got = out.read().astype(np.int64)
         log(f"bumps: {n} senders read back")
         times, late = got[0], got[1]
         ok = times[times != FAILED]
@@ -259,23 +232,18 @@ def main():
     args = p.parse_args()
     if args.reps % 16:  # a result row is whole 64-byte DRAM lines
         p.error("--reps must be a multiple of 16")
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    device.disable_and_clear_program_cache()
-    g = device.compute_with_storage_grid_size()
-    grid = (g.x, g.y)
-    virtual = [noc_xy(device, (x, 0)) & 0xFFFF for x in range(grid[0])]
-    log(f"device open, grid {grid}, NoC x of row 0: {virtual}")
-    try:
+    with km.Session() as session:
+        grid = session.grid
+        virtual = [noc_xy(session, (x, 0)) & 0xFFFF for x in range(grid[0])]
+        log(f"device open, grid {grid}, NoC x of row 0: {virtual}")
         with Clock() as clock:
             mhz = clock.read()[0]
             run = run_hops if args.what == "hops" else run_bumps
-            out = run(device, grid, args, mhz)
+            out = run(session, grid, args, mhz)
         out["clock"] = clock.summary()
         out["mhz_used"] = mhz
         out["noc_x_row0"] = virtual
         out["loadavg"] = Path("/proc/loadavg").read_text().split()[:3]
-    finally:
-        ttnn.close_mesh_device(device)
     print(json.dumps(out), flush=True)
 
 
