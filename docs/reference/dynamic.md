@@ -8,9 +8,8 @@ tags:
 
 # Dynamic Segments
 
-Status: implemented for runs fed by the test feeder on one Blackhole card. The dispatch
-kernel does not yet end a dynamic run (it has no status lines and no two-pass end), so a
-`Session` cannot run one yet.
+Status: implemented on one Blackhole card, through a `Session` (the dispatch kernel reads
+the status lines and ends the run) and under the test feeder. One dynamic run at a time.
 
 A static crossing is known before the run: who sends what to whom and how many arrive.
 A dynamic crossing is known only from the data: a ray goes to the core that holds the
@@ -147,14 +146,20 @@ The issuer reads every line of the team twice. When both passes show every core 
 with the same counters, and the total sent equals the total consumed, no item is in a
 queue or on the way: the issuer sends an end record (`KM_SEG_DYN_END`) to the team,
 `next()` returns an empty packet on every core, and the `RUN` record completes through
-the usual team completion.
+the usual team completion. Under a `Session` the issuer is the dispatch kernel: the
+lines are in its local memory (`KMD_LIM_DYN`), it checks them on every pass of its loop
+while the run is in flight, and the end record goes out under the `RUN` record's
+command, so the host sees only the `RUN` record's done event. A second `RUN` of the
+dynamic segment waits until the first has ended; a queued one (`KM_F_QUEUE`) is refused
+with reason 12.
 
 ## When something goes wrong
 
 Every wait is bounded and watches the stop word. A core that gives up writes its first
 reason, the queue position and the run into its control block (`KM_CTL_DYN +
 KM_DYN_GAVE`), writes a `gave up` status line, and the issuer stops the run on every
-core. The run's timeout names the core. No reset is needed: the next run starts on
+core. Under a `Session` the dispatch kernel ends the session with the `RUN` record's
+timeout and names the core in its hart block (`KMD_H_DYN_GAVE`, 1 + core). No reset is needed: the next run starts on
 the same loaded program.
 
 | Code | Reason | Meaning |

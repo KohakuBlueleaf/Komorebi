@@ -21,8 +21,18 @@ explains the calls, the quota and the quiet end.
 
 ## Running it
 
-The dispatch kernel does not end dynamic runs yet, so the example runs under the test
-feeder, a kernel on the last core that issues records and watches the status lines:
+Through a session: the dispatch kernel on X280 cluster 0 issues the RUN record, reads
+the cores' status lines and ends the run at the quiet end:
+
+```
+cd examples/05_hop
+python hop.py --count 2 --items 1 --hops 1
+python hop.py --items 10000 --hops 100
+python hop.py --count 8 --items 16 --hops 4 --stall 2 --deadline 2 --again
+```
+
+`--count` 0 (the default) is every core. The same run under the test feeder, a kernel on
+the last core that stands in for the dispatch kernel (no X280):
 
 ```
 cd tests/hardware/feeder
