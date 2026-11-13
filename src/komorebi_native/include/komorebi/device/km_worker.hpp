@@ -13,6 +13,10 @@
 
 namespace km {
 
+    // Word of each DONE slot: the last sequence whose reader body returned in that
+    // slot (a lane's finish() included), read by the writer before it reports.
+    constexpr uint32_t kDoneReader = 2;
+
     class Reader : public Core {
     public:
         Reader() : trace_(args()) {
@@ -33,6 +37,7 @@ namespace km {
                     return;
                 }
                 body(*r);
+                ctl(KM_CTL_DONE + slot(*r) * 16)[kDoneReader] = r->seq;
             }
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
@@ -82,6 +87,7 @@ namespace km {
             for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
                 ctl(KM_CTL_DONE)[j * 4] = 0;
                 ctl(KM_CTL_DONE)[j * 4 + kDoneCompute] = 0;
+                ctl(KM_CTL_DONE)[j * 4 + kDoneReader] = 0;
             }
             for (uint32_t w = 0; w < kStateWords; w++) {
                 state()[w] = 0;
@@ -267,7 +273,7 @@ namespace km {
         }
 
         // Per record: body(record) says whether to report, writes are flushed, compute
-        // ends its body, complete() runs. EXIT completes, then it leaves.
+        // and reader end their bodies, complete() runs. EXIT completes, then it leaves.
         template <typename Body>
         void run(Body body) {
             const Args& a = args();
@@ -301,7 +307,7 @@ namespace km {
                 const bool report = body(r);
                 noc_async_write_barrier();
                 trace_.stamp(r.seq, kTraceDone);
-                if (report && compute_done(r) && complete(*this, r, result_)) {
+                if (report && bodies_done(r) && complete(*this, r, result_)) {
                     trace_.stamp(r.seq, kTraceSent);
                 }
                 add_sat(state() + kStCompleted, 1);
@@ -339,16 +345,14 @@ namespace km {
         }
 
     private:
-        // Bounded wait until compute marked record r's sequence in its slot (its body
-        // returned on all three threads). False: gave up (recorded).
-        bool compute_done(const km_record_t& r) const {
+        // Bounded wait until compute (its body returned on all three threads) and the
+        // reader marked record r's sequence in its slot. False: gave up (recorded).
+        bool bodies_done(const km_record_t& r) const {
             const uint32_t j = slot(r);
-            volatile tt_l1_ptr uint32_t* mark = (
-                ctl(KM_CTL_DONE + j * 16 + kDoneCompute * 4)
-            );
+            volatile tt_l1_ptr uint32_t* mark = ctl(KM_CTL_DONE + j * 16);
             const uint32_t code = poll(
                 [&] {
-                    return *mark == r.seq;
+                    return mark[kDoneCompute] == r.seq && mark[kDoneReader] == r.seq;
                 },
                 args().wait_limit
             );
