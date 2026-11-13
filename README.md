@@ -50,18 +50,18 @@ P150A, from a clone, against a tt-metal source tree. It has run on no other hard
 
 ## At a glance
 
-One P150A, 2026-11-13; every number is a row of [Measured](#measured), from the
+One P150A, 2026-11-13 and 2026-11-14; every number is a row of [Measured](#measured), from the
 program's page and its committed results.
 
 | Program | Shape | Komorebi | Reference | Reference / Komorebi |
 |---|---|---|---|---|
-| Matrix product | 128 x 896 x 128 | 6.3 µs | Kohaku-TT, same card: 28.7 µs | 4.58 |
-| Matrix product | 8192 cubed | 7985.9 µs | Kohaku-TT, same card: 11797.6 µs | 1.48 |
-| Matrix product | 16,384 cubed | 84018.0 µs | Kohaku-TT, same card: 75522.5 µs | 0.90 |
+| Matrix product | 128 x 896 x 128 | 6.0 µs | Kohaku-TT, same card: 28.7 µs | 4.75 |
+| Matrix product | 8192 cubed | 8608.3 µs | Kohaku-TT, same card: 11797.6 µs | 1.37 |
+| Matrix product | 16,384 cubed | 87944.5 µs | Kohaku-TT, same card: 75522.5 µs | 0.86 |
 | SwiGLU | 256 x 256 x 512 | 42.6 µs | Kohaku-TT, same card: 181.6 µs | 4.26 |
 | SwiGLU | 16,384 x 384 x 384 | 161.7 µs | Kohaku-TT, same card: 458.1 µs | 2.83 |
-| Attention | 2 x 8 x 1024 x 128, 2 K / V heads | 163.3 µs | Kohaku-TT, same card: 261.8 µs | 1.60 |
-| Attention | 1 x 8 x 1024 x 64, causal | 73.6 µs | Kohaku-TT, same card: 53.7 µs | 0.73 |
+| Attention | 2 x 8 x 1024 x 128, 2 K / V heads | 149.9 µs | Kohaku-TT, same card: 261.8 µs | 1.75 |
+| Attention | 1 x 8 x 1024 x 64, causal | 58.1 µs | Kohaku-TT, same card: 53.7 µs | 0.92 |
 | Rasterizer, whole frame | 10^6 triangles, 1024 x 1024 | 6.34 ms | CUDA on a V100: 4.42 ms | 0.70 |
 | Ray tracer, whole frame | Sponza close, 1024 x 1024 | 359.86 ms | CUDA on a V100: 102.00 ms | 0.28 |
 
@@ -398,22 +398,30 @@ Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4
 The same card, ours and Kohaku-TT (at ac81ff2) one after the other in one session;
 bf16 operands, fp32 accumulation; time per call in a loop of calls, uploads and
 read-back outside it. "Kohaku-TT / ours" above 1 means ours is faster.
+Ours was measured again on 2026-11-14 with the programs' own bench scripts (best of three
+runs); a row that moved by less than 3 % keeps its value of 2026-11-13, and Kohaku-TT's
+columns were not run again. Replaced: four matrix product rows, three attention rows
+and the one SwiGLU cell in [its page](projects/dense/SWIGLU.md#results) that moved.
 
 [Matrix product](projects/dense/README.md#results), HiFi2, Kohaku-TT's fastest of its
 three routes (`results/<preset>-ours.json`, `-ktt-<route>.json`):
 
 | M x K x N | Ours, µs | W | Kohaku-TT, µs | W | Kohaku-TT / ours |
 |---|---|---|---|---|---|
-| 128 x 896 x 128 | 6.3 | 67 | 28.7 | 63 | 4.58 |
+| 128 x 896 x 128 | 6.0 | 71 | 28.7 | 63 | 4.75 |
 | 16,384 x 384 x 384 | 61.2 | 130 | 94.1 | 116 | 1.54 |
 | 16,384 x 1024 x 1024 | 393.5 | 128 | 389.9 | 136 | 0.99 |
 | 4096 cubed | 958.3 | 138 | 957.0 | 151 | 1.00 |
-| 8192 cubed | 7985.9 | 147 | 11797.6 | 139 | 1.48 |
-| 16,384 cubed | 84018.0 | 133 | 75522.5 | 142 | 0.90 |
-| 32 x 4096 x 4096 | 197.8 | 75 | 81.0 | 91 | 0.41 |
+| 8192 cubed | 8608.3 | 141 | 11797.6 | 139 | 1.37 |
+| 16,384 cubed | 87944.5 | 137 | 75522.5 | 142 | 0.86 |
+| 32 x 4096 x 4096, K split | 92.4 | 83 | 81.0 | 91 | 0.88 |
 
-From 4096 cubed up both sides are bound by the card's power limit in a loop; the last
-row is bound by reading W from DRAM on 72 cores.
+From 4096 cubed up both sides are bound by the card's power limit in a loop (ours ran
+in a slower mode in most loops of 4096 and 8192 cubed on 2026-11-14, see the
+[page](projects/dense/README.md#results); the table shows the fastest run); the last row
+is the K split of the [page](projects/dense/README.md#the-k-split) (14,1,16,5 tree, groups
+of 16 cores to an output block), bound by reading W from DRAM: 363 GB/s in the call
+against Kohaku-TT's 414.
 
 [Attention](projects/attention/README.md#time-and-power), K and V multicast down broadcasts of
 cores, the same compute body as Kohaku-TT's flash kernel
@@ -423,11 +431,11 @@ cores, the same compute body as Kohaku-TT's flash kernel
 |---|---|---|---|---|---|
 | 1 x 32 x 4096 x 64 | 2675.3 | 138 | 2918.5 | 135 | 1.09 |
 | 1 x 24 x 4096 x 128 | 2328.3 | 144 | 3001.8 | 132 | 1.29 |
-| 8 x 16 x 256 x 64 | 91.7 | 122 | 80.7 | 110 | 0.88 |
-| 1 x 8 x 1024 x 64, causal | 73.6 | 102 | 53.7 | 99 | 0.73 |
-| 2 x 8 x 1024 x 128, 2 K / V heads | 163.3 | 143 | 261.8 | 105 | 1.60 |
+| 8 x 16 x 256 x 64 | 76.7 | 123 | 80.7 | 110 | 1.05 |
+| 1 x 8 x 1024 x 64, causal | 58.1 | 103 | 53.7 | 99 | 0.92 |
+| 2 x 8 x 1024 x 128, 2 K / V heads | 149.9 | 136 | 261.8 | 105 | 1.75 |
 
-The rows behind are behind per call and ahead per pass: the cost of a command.
+The causal row is behind per call (58.1 against 53.7) and ahead per pass (48.3): the cost of a command.
 
 [SwiGLU](projects/dense/SWIGLU.md#results), `silu(x W1) * (x W3)` then `W2`, HiFi2,
 ours in its faster form (`results/swiglu-<preset>-<form>-hifi2.json`, `-ktt-<route>.json`):

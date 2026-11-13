@@ -134,7 +134,13 @@ each row's output committed in `results/` (`ours-<preset>[-approx].json` from `b
 --json`, `ktt-<preset>[-approx].json` from `reference/ktt_bench.py --json`),
 ours (`bench.py --shape <preset> [--approx] --cuts`) and Kohaku-TT's `ktt_flash` at
 ac81ff2 (`reference/ktt_bench.py`) one after the other in the same session, 15 s apart;
-host load (1 min) 3 to 9. Per call: ours, single-pass commands back to back (the time of
+host load (1 min) 3 to 9. Rows 8x16x256x64, 1x8x1024x64 causal and 2x8x1024x128 were
+measured again on 2026-11-14 (X280 at 1,000 MHz, host load 6 to 7; `bench.py --shape
+<preset> --cuts`, best of three, Kohaku-TT's columns not run again): their per call fell
+by 8 to 21 %, the single command did not change (the commands now follow each other
+1.0 to 1.2 us apart instead of 15.9 and 16.5). The other two exact rows (4096 x 64
+and 4096 x 128) moved by less than 1 % in one run and stay; the approximate rows were
+not run again. Per call: ours, single-pass commands back to back (the time of
 10 to 60 commands less that of 5, divided); ours per pass, the power loop of multi-pass
 commands (no command boundary); Kohaku-TT, its calls back to back for about 4 s. Clock
 (AICLK mean), power (whole card, mean of the loop) and temperature are the power
@@ -145,14 +151,14 @@ both kernels on every row.
 |---|---|---|---|---|---|---|---|
 | 1x32x4096x64 | 2675.3 | 2646.0 | 2918.5 | 1347 / 1340 | 138 / 135 | 73 / 76 | 6.65e-3 |
 | 1x24x4096x128 | 2328.3 | 2439.1 | 3001.8 | 1267 / 1244 | 144 / 132 | 72 / 70 | 6.32e-3 |
-| 8x16x256x64 | 91.7 | 65.0 | 80.7 | 1349 / 1350 | 122 / 110 | 67 / 65 | 5.87e-3 |
-| 1x8x1024x64 causal | 73.6 | 48.8 | 53.7 | 1350 / 1350 | 102 / 99 | 66 / 66 | 5.71e-3 |
-| 2x8x1024x128, Hk 2 | 163.3 | 129.9 | 261.8 | 1345 / 1350 | 143 / 105 | 68 / 66 | 6.28e-3 |
+| 8x16x256x64 | 76.7 | 65.1 | 80.7 | 1349 / 1350 | 123 / 110 | 68 / 65 | 5.87e-3 |
+| 1x8x1024x64 causal | 58.1 | 48.3 | 53.7 | 1350 / 1350 | 103 / 99 | 66 / 66 | 5.71e-3 |
+| 2x8x1024x128, Hk 2 | 149.9 | 133.9 | 261.8 | 1303 / 1350 | 136 / 105 | 69 / 66 | 6.28e-3 |
 | 1x32x4096x64, approx | 1932.5 | 1996.2 | 2183.7 | 1295 / 1284 | 143 / 140 | 69 / 71 | 1.94e-2 |
 | 8x16x256x64, approx | 81.7 | 54.7 | 67.5 | 1336 / 1350 | 128 / 117 | 68 / 67 | 2.14e-2 |
 | 1x8x1024x64 causal, approx | 60.7 | 38.8 | 44.4 | 1350 / 1350 | 108 / 103 | 65 / 66 | 2.21e-2 |
 
-The 4096 x 128 loops and the approximate 4096 x 64 ones ran below 1,350 MHz (the card's
+The 4096 x 128 loops, the 2 x 8 x 1024 x 128 one of 2026-11-14 and the approximate 4096 x 64 ones ran below 1,350 MHz (the card's
 own clock control under load), both kernels alike. With the approximate exponential the
 check's relative RMS bound is 3e-2 (Kohaku-TT documents about 1.9e-2).
 
@@ -166,16 +172,18 @@ pass.
 |---|---|---|---|
 | 1x32x4096x64 | score 0.48, P V 0.45 (math); exp 0.55, pack P 0.26 (pack) | 310 / 2639 | compute, both threads |
 | 1x24x4096x128 | score 0.45, P V 0.45; exp 0.52, pack P 0.22 | 323 / 2453 | compute |
-| 8x16x256x64 | score 0.29, P V 0.28, exp 0.32; Q reads 0.15, compute waiting for Q 0.16 and for K / V 0.16 | 59 / 67 | the command: 10.8 us of each command's 75.8 is outside the passes (table, broadcast start and end, the first Q and K / V reads), and back-to-back commands add 15.9 us each |
-| 1x8x1024x64 causal | score 0.35, P V 0.39, exp 0.43; waiting for the broadcast 0.58 | 34 / 62 | the command as above (57.1 us a command, 16.5 us between commands), and balance: the mean core is busy 0.56 of the slowest |
-| 2x8x1024x128, Hk 2 | compute waiting for K / V 0.67; score 0.14, P V 0.14 | 83 / 133 | compute (compute only = per pass) |
+| 8x16x256x64 | score 0.29, P V 0.28, exp 0.32; Q reads 0.15, compute waiting for Q 0.16 and for K / V 0.16 | 55 / 65 | the command: 10.6 us of each command's 75.6 is outside the passes (table, broadcast start and end, the first Q and K / V reads), and back-to-back commands add 1.0 us each |
+| 1x8x1024x64 causal | score 0.35, P V 0.39, exp 0.43; waiting for the broadcast 0.58 | 31 / 59 | the command as above (56.9 us a command, 1.2 us between commands), and balance: the mean core is busy 0.56 of the slowest |
+| 2x8x1024x128, Hk 2 | compute waiting for K / V 0.67; score 0.14, P V 0.14 | 83 / 134 | compute (compute only = per pass) |
 | 8x16x256x64, approx | score 0.24, P V 0.23, exp 0.24; Q reads 0.19, compute waiting for Q 0.20 and for K / V 0.20 | 63 / 58 | the command: 10.5 us of each command's 65.2 is outside the passes, and back-to-back commands add 16.5 us each |
 | 1x8x1024x64 causal, approx | score 0.33, P V 0.33, exp 0.34; waiting for the broadcast 0.60 | 36 / 49 | the command (45.8 us a command, 7.0 outside the passes, 14.9 us between commands), and balance: the mean core is busy 0.57 of the slowest |
 
 Compute only runs on whatever Q, K and V are left in L1, which takes the rescaling
-branch more often than real inputs do; it is an upper bound on the compute. The four
-short rows (both exponentials) are ahead of Kohaku-TT per pass and behind per call: what
-is behind is the cost of a command, not the kernel.
+branch more often than real inputs do; it is an upper bound on the compute. The short
+rows are ahead of Kohaku-TT per pass. Per call, 8x16x256x64 is ahead (76.7 against 80.7
+us) and the causal row is 8 % behind (58.1 against 53.7): what is behind is the cost of a
+command, now 1.0 to 1.2 us between commands. The approximate rows are of 2026-11-13, with
+15 to 17 us between commands.
 
 ### The broadcast's NoC, the broadcast length, commands and graphs
 

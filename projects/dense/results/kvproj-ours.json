@@ -16,37 +16,40 @@
   "out_pages": 8,
   "l1": 361472
  },
- "upload_s": 0.012,
+ "upload_s": 0.007,
  "x280_mhz": 1000,
  "deadline_s": 0.05,
- "load_microseconds": 6.26,
+ "reduce": "owner",
+ "profile_mhz": 1350,
+ "load_microseconds": 6.24,
  "single_microseconds": {
-  "median": 6.56,
-  "min": 6.5
+  "median": 6.5,
+  "min": 6.46
  },
  "loop": {
-  "reps": 609757,
-  "batch": 609757,
-  "seconds": 3.827,
-  "wall_seconds": 3.983,
-  "microseconds_per_call": 6.276,
-  "command_microseconds_median": 13.24,
-  "mean_w": 67.14660545669122,
-  "peak_w": 72.0,
-  "open_w": 61.65090266916075,
-  "joules_per_call": 0.0004386525465680917,
+  "reps": 615385,
+  "batch": 615385,
+  "seconds": 3.716,
+  "wall_seconds": 3.869,
+  "microseconds_per_call": 6.038,
+  "command_microseconds_median": 13.34,
+  "mean_w": 71.33273394337053,
+  "peak_w": 76.0,
+  "open_w": 65.85124563940288,
+  "joules_per_call": 0.0004485173979776629,
   "aiclk_mhz": [
    1350,
    1350.0,
    1350
   ]
  },
- "tflops": 4.6781593371574255,
+ "tflops": 4.862558463067241,
  "cut_microseconds_per_call": {
-  "reads_only": 5.156,
-  "compute_only": 5.531
+  "reads_only": 4.735,
+  "compute_only": 5.547
  },
  "run": {
+  "cores": 120,
   "kernel": "none",
   "cores_ended": {
    "reader_end": 120,
@@ -63,20 +66,20 @@
  "readback_s": 0.03,
  "profile": {
   "slowest_core": 3,
-  "slowest_microseconds": 4.636,
-  "mean_busy_over_slowest": 0.997,
+  "slowest_microseconds": 4.691,
+  "mean_busy_over_slowest": 0.99,
   "partitions_of_slowest": {
-   "read_A": 0.271,
+   "read_A": 0.269,
    "read_W_chunks": 0.0,
-   "reader_waits_for_space": 0.017,
-   "unpack_waits_for_A": 0.25,
+   "reader_waits_for_space": 0.018,
+   "unpack_waits_for_A": 0.252,
    "unpack_waits_for_W": 0.0,
-   "matrix_unit": 0.574,
-   "pack": 0.641,
-   "pack_waits_for_math": 0.001,
-   "pack_waits_for_space": 0.01,
-   "write": 0.048,
-   "writer_waits_for_output": 0.934
+   "matrix_unit": 0.57,
+   "pack": 0.634,
+   "pack_waits_for_math": 0.0,
+   "pack_waits_for_space": 0.011,
+   "write": 0.045,
+   "writer_waits_for_output": 0.935
   }
  },
  "check": {
@@ -87,8 +90,8 @@
  },
  "ok": true,
  "load_avg": [
-  "3.75",
-  "4.31",
-  "4.73"
+  "8.11",
+  "5.87",
+  "4.94"
  ]
 }

@@ -130,8 +130,14 @@ passed (`results/<preset>-split-*.json`, Kohaku-TT's as `-split-ktt-<route>`):
 
 | Preset | Ours: K split, us per call (single call) | Parts only | Kohaku-TT best, us | Broadcast or resident form, us |
 |---|---|---|---|---|
-| `kvproj` | 7,1,4 tree: 25.5 (9.3) | 20.1 | auto, 28.6 | resident, 6.3 |
-| `dec4096` | 14,1,16,5 tree: 92.4 (90.2); owner 109.0 | 81.7 | own, 81.0 (gemm 81.0, auto 81.0) | `cols`, 197.8 |
+| `kvproj` | 7,1,4 tree: 12.0 (9.4) | 7.9 | auto, 28.6 | resident, 6.0 |
+| `dec4096` | 14,1,16,5 tree: 92.4 (90.2); owner 109.0 | 81.7 | own, 81.0 (gemm 81.0, auto 81.0) | `cols`, 183.9 |
+
+The `kvproj` K split call, the resident and `cols` cells were measured again on
+2026-11-14 (best of three, the same commands): the loop took 25.5, 6.3 and 197.8 us
+on 2026-11-13, a single `kvproj` K split call 9.3, so the gap between a single call and a
+call in the loop was 16.2 us, and is 2.6 us now (`cols`: 15.7 us then, 0.9 us now). The `owner`
+form of `dec4096` took 109.0 and now takes 108.8.
 
 The `dec4096` K split was measured again on 2026-11-14 (card clock 1,343 to 1,350 MHz,
 best of three) with the chunks on both movers; the same day and card, with every chunk
@@ -211,37 +217,54 @@ passed (relative RMS 3.96e-3 to 3.98e-3, the same on both sides).
 - The runs' JSON lines are in `results/` (`<preset>-ours.json`, `<preset>-ktt-<route>.json`,
   `<preset>-gpu.json`); 16,384 cubed checks 8 sampled row tiles (256 rows).
 
+Ours was measured again on 2026-11-14 between 02:55 and 03:34 (host load average 3 to 12; the
+clocks of each run are in its JSON), with the same commands, best of three
+runs; Kohaku-TT's and the V100's columns were not run again. A row that moved by less than
+3 % keeps its value of 2026-11-13: `lin384` (+1.6 %), `lin1024` (-0.6 %), `sq4096`
+(+2.7 %, see below) and the `dec4096` K split (+0.1 %). Four rows are today's: `kvproj`
+(-3.8 %), `sq8192` (+7.8 %), `sq16384` (+4.7 %) and `dec4096`, whose row is now the
+K split (`cols` took 183.9 us, -7.0 %).
+
 | Preset | M x K x N | Ours: form, us per call | W, MHz | Kohaku-TT best: route, us | W, MHz | V100 fp16, us |
 |---|---|---|---|---|---|---|
-| `kvproj` | 128 x 896 x 128 | resident, 6.3 | 67 W, 1350 / 1350 | auto, 28.7 (gemm 28.9, own 63.1) | 63 W, 1350 / 1350 | 10.3 (112 W) |
+| `kvproj` | 128 x 896 x 128 | resident, 6.0 | 71 W, 1350 / 1350 | auto, 28.7 (gemm 28.9, own 63.1) | 63 W, 1350 / 1350 | 10.3 (112 W) |
 | `lin384` | 16,384 x 384 x 384 | resident, 61.2 | 130 W, 1225 / 1296 | gemm, 94.1 (auto 101.7, own 138.4) | 116 W, 1343 / 1348 | 83.3 (291 W) |
 | `lin1024` | 16,384 x 1024 x 1024 | rows, 393.5 | 128 W, 1168 / 1255 | gemm, 389.9 (auto 778.0, own 778.0) | 136 W, 1200 / 1264 | 469.0 (293 W) |
 | `sq4096` | 4096 cubed | 2d, 958.3 | 138 W, 850 / 1008 | gemm, 957.0 (auto 974.1, own 1119.2) | 151 W, 850 / 959 | 1740.6 (293 W) |
-| `sq8192` | 8192 cubed | 2d, 7985.9 | 147 W, 881 / 1034 | auto, 11797.6 (gemm 12310.9, own 11836.2) | 139 W, 800 / 1088 | 12997.7 (295 W) |
-| `sq16384` | 16,384 cubed | 2d, 84018.0 | 133 W, 1125 / 1220 | gemm, 75522.5 (auto 90785.6, own 92389.3) | 142 W, 875 / 972 | 105839.6 (295 W) |
-| `dec4096` | 32 x 4096 x 4096 | cols, 197.8 | 75 W, 1343 / 1350 | own, 81.0 (gemm 105.2, auto 81.0) | 91 W, 1350 / 1350 | 77.4 (183 W) |
+| `sq8192` | 8192 cubed | 2d, 8608.3 | 141 W, 800 / 969 | auto, 11797.6 (gemm 12310.9, own 11836.2) | 139 W, 800 / 1088 | 12997.7 (295 W) |
+| `sq16384` | 16,384 cubed | 2d, 87944.5 | 137 W, 1056 / 1175 | gemm, 75522.5 (auto 90785.6, own 92389.3) | 142 W, 875 / 972 | 105839.6 (295 W) |
+| `dec4096` | 32 x 4096 x 4096 | K split 14,1,16,5 tree, 92.4 | 83 W, 1343 / 1350 | own, 81.0 (gemm 105.2, auto 81.0) | 91 W, 1350 / 1350 | 77.4 (183 W) |
 
-Behind: `sq16384` (11%) and `dec4096` (2.4 times). Single calls, waited for, against
+Behind: `sq16384` (16%) and `dec4096` (14%). Single calls, waited for, against
 the loop, from the same JSON (Kohaku-TT's `synced_microseconds_median`), in us:
 
 | Preset | Ours single / loop | Kohaku-TT best route single / loop |
 |---|---|---|
 | `sq4096` | 660.0 / 958.3 | gemm 781.3 / 957.0 |
-| `sq8192` | 5765.8 / 7985.9 | auto 4568.4 / 11797.6 |
-| `sq16384` | 75877.0 / 84018.0 | gemm 56356.7 / 75522.5 (auto 32935.1 / 90785.6) |
+| `sq8192` | 5771.5 / 8608.3 | auto 4568.4 / 11797.6 |
+| `sq16384` | 76299.6 / 87944.5 | gemm 56356.7 / 75522.5 (auto 32935.1 / 90785.6) |
 
-From 4096 cubed up both sides are bound in a loop by the card's power limit (133 to
+From 4096 cubed up both sides are bound in a loop by the card's power limit (137 to
 151 W mean; the firmware lowers the clock and switches the tile product to a throttled
 form under its current limit), so time per call follows energy per call: 16,384 cubed
-takes 11.2 J per call here and 10.7 J in Kohaku-TT's gemm.
+takes 12.1 J per call here and 10.7 J in Kohaku-TT's gemm.
+
+On 2026-11-14 the 4096 and 8192 cubed loops ran in one of two modes, run after run with
+the same command. 4096 cubed took 983.8, 991.2 and 993.1 us in three runs (mean clock 965
+to 974 MHz) and 1,550 to 1,605 us in six (mean clock 1,085 to 1,089 MHz, 135 to 145 W); the product-only cut took 689 to 698 us in the first mode and 1,703 to 1,717 us in
+the second, single calls 660 us in both. 8192 cubed took 8,608.3 us in one run and 13,336.3
+and 13,490.2 us in two. The table shows the fastest run, and the 4096 cubed row keeps its
+value of 2026-11-13, which the fastest of the nine runs is within 3 % of. What selects the
+mode is not known (the firmware's current limit is our reading, not a measurement).
+Kohaku-TT's columns were measured on 2026-11-13 and not run again.
 
 Bounds of our rows, from the cut-down runs (`cut_microseconds_per_call` in each JSON) and the
 profile of one call (`profile`: shares of the slowest core's cycles; cycles per tile
 product from its matrix-unit share, at the 1,350 MHz read at load). Cut-down runs that
 follow a long loop run at a throttled clock.
-- `kvproj` (resident): command submit. A call submits every 6.3 us; the slowest core's
-  body takes 4.6 us; reads only 5.2 us, compute only 5.5 us; a single call, waited
-  for, takes 6.56 us.
+- `kvproj` (resident): command submit. A call submits every 6.0 us; the slowest core's
+  body takes 4.7 us; reads only 4.7 us, compute only 5.5 us; a single call, waited
+  for, takes 6.50 us.
 - `lin384` (resident): DRAM writes. A in and Y out are 25 MB per call (410 GB/s);
   the slowest core spends 82% of its cycles writing Y and its packer waits for space
   77%; reads only 32.9 us, compute only 21.4 us.
@@ -255,20 +278,21 @@ follow a long loop run at a throttled clock.
   even partition over 110 cores); a single call takes 660.0 us at 1,350 MHz. In the loop the
   clock falls to a mean of 1,008 MHz (884 us at that clock); both sides end at 957
   to 958 us.
-- `sq8192` (`2d`, ahead): the row broadcast in a single call (98.5% of the slowest core;
-  W read from DRAM 70.9%, four times per call since blocks of 7 of 26 rows), the
+- `sq8192` (`2d`, ahead): the row broadcast in a single call (98.3% of the slowest core;
+  W read from DRAM 71.3%, four times per call since blocks of 7 of 26 rows), the
   matrix unit 75% at 36.4 cycles per tile product; in the loop, power.
 - `sq16384` (`2d`, behind): the broadcasts with the rule's blocks. Each core's 52 x 44
   tiles are blocks of 4 x 44 with K blocks of 2, so W passes each column 13 times:
-  the row broadcast is 99.8% of the slowest core, its unpacker waits for W 52%, the matrix
+  the row broadcast is 99.8% of the slowest core, its unpacker waits for W 54%, the matrix
   unit 35%. Blocks of 13 x 12 with K blocks of 4 (`--grid 2d:10,12,52,44,13,12,4`)
   take a single call to 36.3 ms (matrix unit 87%, 35.8 cycles per tile product) but
   the loop to 99.2 ms at 143 W (`sq16384-ours-blocks-13x12.json`): the denser call
   is throttled harder.
-- `dec4096` (`cols`, behind): W from DRAM. 32 MB of W are read by 72 cores, 512 KB
-  each with one block in flight per broadcast sender: the slowest core spends 97% reading
-  W, 2.9 GB/s per core, 170 GB/s in all against Kohaku-TT's 414 GB/s; broadcasts only
-  195.8 us, product only 26.1 us. The K split (above) takes it to 92.4 us.
+- `dec4096` (K split, behind): W from DRAM. 32 MiB of W in 92.4 us is 363 GB/s against
+  Kohaku-TT's 414 GB/s (81.0 us); the parts-only call takes 81.7 us (410 GB/s). The `cols`
+  form (183.9 us) is bound the same way on 72 cores: 512 KB each with one block in flight
+  per broadcast sender, the slowest core spends 97% reading W, 2.9 GB/s per core, 184 GB/s
+  in all; broadcasts only 182.2 us, product only 13.1 us.
 
 ## Files
 

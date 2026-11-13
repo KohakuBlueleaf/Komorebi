@@ -109,9 +109,14 @@ mean). Only the call is timed on both sides; the three W are loaded once (0.25 m
 | Preset | M x D x H | Ours HiFi2: form, us per call | W, MHz | Ours HiFi4: form, us | W, MHz | Kohaku-TT best: route, us | W, MHz |
 |---|---|---|---|---|---|---|---|
 | `sw256` | 256 x 256 x 512 | fused, 42.6 (gate pass 46.3) | 76, 1350 / 1350 | fused, 51.7 (55.1) | 74, 1350 / 1350 | gemm, 181.6 (auto 186.2) | 73, 1350 / 1350 |
-| `sw4k` | 4096 x 256 x 512 | fused, 73.7 (79.5) | 114, 1343 / 1349 | fused, 91.8 (94.1) | 119, 1350 / 1350 | auto, 183.5 (gemm 192.9) | 95, 1343 / 1350 |
+| `sw4k` | 4096 x 256 x 512 | fused, 73.7 (76.3) | 114, 1343 / 1349 | fused, 91.8 (94.1) | 119, 1350 / 1350 | auto, 183.5 (gemm 192.9) | 95, 1343 / 1350 |
 | `sw16k` | 16,384 x 256 x 512 | gate pass, 180.2 (fused 186.6) | 137, 1256 / 1310 | gate pass, 231.9 (232.5) | 141, 1212 / 1290 | auto, 542.1 (gemm 604.5) | 109, 1343 / 1349 |
 | `sw16k384` | 16,384 x 384 x 384 | gate pass, 161.7 (fused 186.8) | 142, 1175 / 1278 | fused, 222.5 (225.9) | 144, 1125 / 1246 | gemm, 458.1 (auto 477.0) | 108, 1343 / 1349 |
+
+Ours was measured again on 2026-11-14 with the same commands (HiFi2, both forms of every
+preset): every cell is within 3 % of the table, except the gate pass of `sw4k`, which
+is replaced (76.3 us, in three runs of 76.3, 77.5 and 77.5, against 79.5). The HiFi4
+columns and Kohaku-TT's were not run again.
 
 Ours is 2.5 to 4.3 times as fast at HiFi2 and 2.0 to 3.5 times at HiFi4, and the
 16,384-row loops ran at the lower clock (mean 1,246 to 1,310 MHz against Kohaku-TT's
@@ -131,7 +136,7 @@ call and the writes of Y 0.4 to 4.0 (29 and 34 in the fused `sw16k384`): the bes
 of every row does not wait on DRAM.
 
 Fused or gate pass. From 16,384 rows the gate pass is faster at HiFi2 (3.5 to 16 %), on
-short calls the fused form is (3.7 to 5.8 us: a command less); at HiFi4 the two are
+short calls the fused form is (2.6 to 3.7 us: a command less); at HiFi4 the two are
 within 3 % from 4096 rows. Our reading of the profile, not a measurement of the waits: fused, pack
 waits for the vector unit inside each column block of the second product; as a pass,
 the products pack at the matrix unit's pace and the gate runs from L1.

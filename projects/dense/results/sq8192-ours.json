@@ -31,37 +31,40 @@
    10
   ]
  },
- "upload_s": 2.79,
+ "upload_s": 3.257,
  "x280_mhz": 1000,
  "deadline_s": 0.215,
+ "reduce": "owner",
+ "profile_mhz": 1350,
  "load_microseconds": null,
  "single_microseconds": {
-  "median": 5765.76,
-  "min": 5707.84
+  "median": 5771.52,
+  "min": 5698.94
  },
  "loop": {
   "reps": 694,
   "batch": 694,
-  "seconds": 5.542,
-  "wall_seconds": 5.543,
-  "microseconds_per_call": 7985.92,
-  "command_microseconds_median": 8641.169999999998,
-  "mean_w": 146.5915492101581,
-  "peak_w": 250.0,
-  "open_w": 59.90123334301708,
-  "joules_per_call": 1.1707338686374003,
+  "seconds": 5.974,
+  "wall_seconds": 5.974,
+  "microseconds_per_call": 8608.337,
+  "command_microseconds_median": 9491.36,
+  "mean_w": 141.01773865469764,
+  "peak_w": 260.0,
+  "open_w": 66.47725811519732,
+  "joules_per_call": 1.2139789546378075,
   "aiclk_mhz": [
-   881,
-   1033.5,
+   800,
+   968.8,
    1350
   ]
  },
- "tflops": 137.68127251162045,
+ "tflops": 127.72636895790674,
  "cut_microseconds_per_call": {
-  "broadcasts_only": 7652.849,
-  "product_only": 4861.496
+  "broadcasts_only": 8240.774,
+  "product_only": 4993.904
  },
  "run": {
+  "cores": 120,
   "kernel": "none",
   "cores_ended": {
    "reader_end": 120,
@@ -70,29 +73,29 @@
   },
   "gave_up": [],
   "broadcast_wait_cycles_max": [
-   6805297815,
-   6669968991
+   6804816480,
+   6669332116
   ],
   "broadcast_gave_up": []
  },
- "readback_s": 4.629,
+ "readback_s": 2.308,
  "profile": {
   "slowest_core": 117,
-  "slowest_microseconds": 5713.876,
+  "slowest_microseconds": 5747.193,
   "mean_busy_over_slowest": 0.919,
   "partitions_of_slowest": {
    "read_A_dram": 0.0,
-   "row_broadcast": 0.985,
-   "read_W_dram": 0.709,
-   "column_broadcast": 0.246,
-   "writer_waits_for_output": 0.008,
-   "write": 0.031,
+   "row_broadcast": 0.983,
+   "read_W_dram": 0.713,
+   "column_broadcast": 0.239,
+   "writer_waits_for_output": 0.007,
+   "write": 0.033,
    "unpack_waits_for_A": 0.003,
-   "unpack_waits_for_W": 0.159,
-   "unpack_waits_for_partials": 0.026,
-   "matrix_unit": 0.753,
-   "pack_waits_for_space": 0.138,
-   "pack": 0.656
+   "unpack_waits_for_W": 0.16,
+   "unpack_waits_for_partials": 0.025,
+   "matrix_unit": 0.75,
+   "pack_waits_for_space": 0.139,
+   "pack": 0.652
   }
  },
  "check": {
@@ -103,8 +106,8 @@
  },
  "ok": true,
  "load_avg": [
-  "5.60",
-  "4.93",
-  "5.37"
+  "6.52",
+  "6.05",
+  "5.09"
  ]
 }

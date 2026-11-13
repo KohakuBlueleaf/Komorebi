@@ -17,36 +17,36 @@
   "form": "split",
   "cores": 28
  },
- "upload_s": 0.014,
+ "upload_s": 0.006,
  "x280_mhz": 1000,
  "deadline_s": 0.05,
  "reduce": "tree",
  "profile_mhz": 1350,
  "load_microseconds": null,
  "single_microseconds": {
-  "median": 9.3,
-  "min": 9.24
+  "median": 9.36,
+  "min": 9.32
  },
  "loop": {
-  "reps": 430108,
-  "batch": 430108,
-  "seconds": 10.959,
-  "wall_seconds": 11.075,
-  "microseconds_per_call": 25.48,
-  "command_microseconds_median": 9.28,
-  "mean_w": 63.498041479407746,
-  "peak_w": 67.0,
-  "open_w": 60.400061790258626,
-  "joules_per_call": 0.0016350853035028527,
+  "reps": 427351,
+  "batch": 427351,
+  "seconds": 5.108,
+  "wall_seconds": 5.214,
+  "microseconds_per_call": 11.953,
+  "command_microseconds_median": 9.48,
+  "mean_w": 72.88032144836465,
+  "peak_w": 76.0,
+  "open_w": 67.49995921289633,
+  "joules_per_call": 0.0008891688731731016,
   "aiclk_mhz": [
-   1343,
-   1349.9,
+   1350,
+   1350.0,
    1350
   ]
  },
- "tflops": 1.1522813186813186,
+ "tflops": 2.456297833179955,
  "cut_microseconds_per_call": {
-  "parts_only": 20.145
+  "parts_only": 7.857
  },
  "run": {
   "cores": 120,
@@ -63,7 +63,7 @@
   ],
   "broadcast_gave_up": []
  },
- "readback_s": 0.03,
+ "readback_s": 0.059,
  "check": {
   "max_rel": 0.00509182590166291,
   "rms_rel": 0.003976997988146102,
@@ -72,8 +72,8 @@
  },
  "ok": true,
  "load_avg": [
-  "5.28",
-  "6.03",
-  "6.50"
+  "3.79",
+  "4.20",
+  "4.73"
  ]
 }
