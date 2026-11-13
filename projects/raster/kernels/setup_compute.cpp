@@ -265,23 +265,8 @@ namespace {
         return reinterpret_cast<uint32_t*>(get_local_cb_interface(cb).fifo_wr_ptr << 4);
     }
 
-    // Zeroes n words (a multiple of 32), 32 per vector store.
-    void zero(uint32_t* words, uint32_t count) {
-#if defined(__riscv_vector)
-        const size_t vector_length = __riscv_vsetvl_e32m8(32);
-        const vuint32m8_t zeros = __riscv_vmv_v_x_u32m8(0, vector_length);
-        for (uint32_t i = 0; i < count; i += 32) {
-            __riscv_vse32_v_u32m8(words + i, zeros, vector_length);
-        }
-        asm volatile("" ::: "memory");
-#else
-        for (uint32_t i = 0; i < count; ++i) {
-            words[i] = 0;
-        }
-#endif
-    }
-
-    // SETUP's out pages: up to kOutEntries records, each with its target slot.
+    // The out pages to the writer: SETUP up to kOutEntries records, each with its box
+    // word; COUNT up to kOutWords box words.
     struct Out {
         uint32_t* page = nullptr;
         uint32_t filled = 0;
@@ -326,6 +311,19 @@ namespace {
             return true;
         }
 
+        // COUNT: one box word, up to kOutWords a page.
+        bool add_word(const km::Compute& compute, uint32_t box_word) {
+            if (!open(compute)) {
+                return false;
+            }
+            page[1 + filled] = box_word;
+            ++entries;
+            if (++filled == kOutWords) {
+                push(false);
+            }
+            return true;
+        }
+
         void push(bool last) {
             page[0] = filled | (last ? kOutLast : 0);
             asm volatile("fence" ::: "memory");
@@ -345,16 +343,10 @@ namespace {
         }
     };
 
-    // One pass's state: the mode, the counters (COUNT) or the tiles' next slots and
-    // the out pages (SETUP).
+    // One pass's state: the mode and the out pages to the writer.
     struct Pass {
         const km::Compute& compute;
         uint32_t handler;
-        uint32_t* counters = nullptr;  // COUNT: entries of tile t at t, rows at kTiles + t
-        uint16_t* histogram = nullptr;  // COUNT: tile t's start and end counts at 32 t
-        uint32_t* next_slot = nullptr;  // SETUP: item i's next slot
-        const uint32_t* items = nullptr;  // SETUP: the items page (setup.h)
-        uint32_t list_slots = 0;          // SETUP: the lists' slots
         Out out;
         bool succeeded = true;
         uint32_t kept_count = 0, clipped = 0;  // the profile's counts
@@ -371,71 +363,19 @@ namespace {
                 succeeded = false;
                 return;
             }
-            for (
-                int32_t tile_y = box.first_row >> 5; tile_y <= (box.last_row >> 5);
-                ++tile_y
-            ) {
-                const int32_t top = 32 * tile_y;
-                const int32_t first_row = box.first_row > top ? box.first_row : top;
-                const int32_t last_row = (
-                    box.last_row < top + 31 ? box.last_row : top + 31
-                );
-                for (
-                    int32_t tile_x = box.first_column >> 5;
-                    tile_x <= (box.last_column >> 5);
-                    ++tile_x
-                ) {
-                    const uint32_t tile = kTilesX * tile_y + tile_x;
-                    if (handler == kHandlerCount) {
-                        counters[tile] += 1;
-                        counters[kTiles + tile] += last_row - first_row + 1;
-                        uint16_t* tile_histogram = histogram + 32 * tile;
-                        if (
-                            ++tile_histogram[(first_row - top) >> 1] == 0 ||
-                            ++tile_histogram[16 + ((last_row - top) >> 1)] == 0
-                        ) {
-                            give_up(kGaveBadHist, tile);
-                            succeeded = false;
-                            return;
-                        }
-                        continue;
-                    }
-                    const uint32_t first = items[tile] & 0xFFFF;
-                    const uint32_t item_count = items[tile] >> 16;
-                    if (first + item_count > kSlotsBytes / 4) {
-                        give_up(kGaveBadSlot, tile);
-                        succeeded = false;
-                        return;
-                    }
-                    const uint16_t* rows = (
-                        reinterpret_cast<const uint16_t*>(items + kItemRows / 4)
-                    );
-                    for (uint32_t i = first; i < first + item_count; ++i) {
-                        // the item's rows [item_first_row, item_end_row) against the
-                        // entry's 2-row groups
-                        const uint32_t item_first_row = rows[i] & 0xFF;
-                        const uint32_t item_end_row = rows[i] >> 8;
-                        if (
-                            ((first_row - top) >> 1) >=
-                                static_cast<int32_t>(item_end_row >> 1) ||
-                            ((last_row - top) >> 1) <
-                                static_cast<int32_t>(item_first_row >> 1)
-                        ) {
-                            continue;
-                        }
-                        const uint32_t entry_slot = next_slot[i]++;
-                        if (entry_slot >= list_slots) {
-                            give_up(kGaveBadSlot, tile);
-                            succeeded = false;
-                            return;
-                        }
-                        if (!out.add(compute, words, entry_slot)) {
-                            succeeded = false;
-                            return;
-                        }
-                    }
-                }
-            }
+            // the writer counts it (COUNT) or sends it to every item it reaches (SETUP)
+            const uint32_t box_word = (
+                static_cast<uint32_t>(box.first_column >> 5) |
+                static_cast<uint32_t>(box.last_column >> 5) << 5 |
+                static_cast<uint32_t>(box.first_row) << 10 |
+                static_cast<uint32_t>(box.last_row) << 20
+            );
+            const bool handed = (
+                handler == kHandlerCount
+                    ? out.add_word(compute, box_word)
+                    : out.add(compute, words, box_word)
+            );
+            succeeded = succeeded && handed;
         }
 
         // Clips a crossing triangle and sends its pieces (one or two) through the
@@ -590,7 +530,7 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
     ) {
         return;
     }
-    const uint32_t blocks_word = command.a2, list_slots = command.a6;
+    const uint32_t blocks_word = command.a2;
     const uint32_t profile_address = command.a9;
     // with kRanges the camera's page brings the core's range (setup_reader.cpp)
     const bool ranged = (blocks_word & kRanges) != 0;
@@ -598,12 +538,8 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
     uint32_t first_block = compute.me() * blocks / cores;
     uint32_t pages = 1 + ((compute.me() + 1) * blocks / cores - first_block);
 #ifdef TRISC_UNPACK
-    // SETUP: the slots and items pages first, held until the pass ends.
-    const bool held = (
-        handler != kHandlerSetup || (hand(kCbSlots, 4) && hand(kCbItems, 4))
-    );
     // Hands each page to the pack thread; frees it when the pack thread is done.
-    for (uint32_t page = 0; held && page < pages; ++page) {
+    for (uint32_t page = 0; page < pages; ++page) {
         if (!hand(kCbMesh, 1)) {
             break;
         }
@@ -623,46 +559,12 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
         (void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId);
         cb_pop_front(kCbMesh, 1);
     }
-    if (handler == kHandlerSetup && held) {
-        cb_pop_front(kCbSlots, 1);
-        cb_pop_front(kCbItems, 1);
-    }
 #endif
 #ifdef TRISC_PACK
     const uint32_t started = km::wall();
     uint32_t mail = 0, vector_cycles = 0, scalar_cycles = 0;
     setup_pass::setup();
     Pass pass{compute, handler};
-    if (handler == kHandlerSetup) {
-        if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
-            return;
-        }
-        pass.next_slot = (
-            reinterpret_cast<uint32_t*>(
-                ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
-            )
-        );
-        if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
-            return;
-        }
-        pass.items = (
-            reinterpret_cast<const uint32_t*>(
-                ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
-            )
-        );
-        pass.list_slots = list_slots & ~kSetupPrefix;
-    }
-    if (handler == kHandlerCount) {
-        if (!compute.reserve_back(kCbCount, 1)) {
-            return;
-        }
-        pass.counters = cb_ptr(kCbCount);
-        zero(pass.counters, 2 * kTiles);
-        // never pushed: the buffer's space, kept for HIST
-        uint32_t* histogram_words = cb_ptr(kCbHist);
-        zero(histogram_words, kHistBytes / 4);
-        pass.histogram = reinterpret_cast<uint16_t*>(histogram_words);
-    }
     uint32_t* work = cb_ptr(kCbWork);
     for (uint32_t page = 0; page < pages; ++page) {
         const uint32_t asked = km::wall();
@@ -745,19 +647,7 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
         profile[kSProfPack + 7] = pass.out.wait;
         asm volatile("fence" ::: "memory");
     }
-    if (handler == kHandlerCount && pass.counters != nullptr) {
-        asm volatile("fence" ::: "memory");
-        const uint32_t counters_last = (
-            reinterpret_cast<volatile uint32_t*>(pass.counters)[2 * kTiles - 1]
-        );
-        const uint32_t histogram_last = (
-            reinterpret_cast<volatile uint32_t*>(pass.histogram)[kHistBytes / 4 - 1]
-        );
-        asm volatile("and x0, x0, %0" : : "r"(counters_last) : "memory");
-        asm volatile("and x0, x0, %0" : : "r"(histogram_last) : "memory");
-        cb_push_back(kCbCount, 1);
-    }
-    if (handler == kHandlerSetup && pass.succeeded) {
+    if ((handler == kHandlerSetup || handler == kHandlerCount) && pass.succeeded) {
         pass.out.end(compute);
     }
     setup_pass::finish();

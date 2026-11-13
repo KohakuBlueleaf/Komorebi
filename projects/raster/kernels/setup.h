@@ -87,6 +87,8 @@ constexpr uint32_t kDirPageBytes = 4096;
 constexpr uint32_t kOutPages = 4;
 constexpr uint32_t kOutEntries = 31;
 constexpr uint32_t kOutLast = 0x80000000;  // in an out page's count: the last page
+// COUNT: box words a page (after the count)
+constexpr uint32_t kOutWords = 1023;
 constexpr uint32_t kListPageBytes = 2048;
 constexpr uint32_t kTiles = 1024;
 constexpr uint32_t kTilesX = 32;

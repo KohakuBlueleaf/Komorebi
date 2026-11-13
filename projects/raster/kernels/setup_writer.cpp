@@ -9,6 +9,15 @@
 
 namespace {
 
+    // A kept triangle's tile columns and rows, as the pack thread packs them.
+    struct BoxWord {
+        uint32_t first_tile_x, last_tile_x, first_row, last_row;
+    };
+
+    inline BoxWord box_of(uint32_t word) {
+        return {word & 31, word >> 5 & 31, word >> 10 & 1023, word >> 20 & 1023};
+    }
+
     // Records the first give-up of this core's writer and asks the run to stop.
     void give_up(uint32_t code, uint32_t where) {
         const uint32_t control = get_arg_val<uint32_t>(0);
@@ -178,6 +187,213 @@ namespace {
 
 }  // namespace
 
+namespace {
+
+    // COUNT's second stage: per tile entries and rows (kCbCount's space) and the
+    // 2-row histograms (kCbHist's, kept for HIST) from the pack thread's box words.
+    template <typename Flushed>
+    bool count_stage(
+        const km::Writer& writer,
+        const km_command_t& command,
+        WriterProfile& profile,
+        Flushed flushed
+    ) {
+        const uint32_t counters_address = command.a1;
+        volatile tt_l1_ptr uint32_t* counters = km::l1(get_read_ptr(kCbCount));
+        volatile tt_l1_ptr uint32_t* histogram_words = km::l1(get_read_ptr(kCbHist));
+        volatile tt_l1_ptr uint16_t*
+            histogram = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(histogram_words);
+        const uint32_t zero_started = km::wall();
+        for (uint32_t i = 0; i < 2 * kTiles; ++i) {
+            counters[i] = 0;
+        }
+        for (uint32_t i = 0; i < kHistBytes / 4; ++i) {
+            histogram_words[i] = 0;
+        }
+        profile.write += km::wall() - zero_started;
+        for (;;) {
+            const uint32_t wait_start = km::wall();
+            if (!writer.wait_front(kCbOut, 1, 4)) {
+                return true;
+            }
+            const uint32_t wait_end = km::wall();
+            profile.wait += wait_end - wait_start;
+            invalidate_l1_cache();
+            volatile tt_l1_ptr uint32_t* page_words = km::l1(get_read_ptr(kCbOut));
+            const uint32_t head = page_words[0], words = head & ~kOutLast;
+            ++profile.pages;
+            for (uint32_t i = 0; i < words && i < kOutWords; ++i) {
+                const BoxWord box = box_of(page_words[1 + i]);
+                for (
+                    uint32_t tile_y = box.first_row >> 5; tile_y <= box.last_row >> 5;
+                    ++tile_y
+                ) {
+                    const uint32_t top = 32 * tile_y;
+                    const uint32_t first_row = (
+                        box.first_row > top ? box.first_row : top
+                    );
+                    const uint32_t last_row = (
+                        box.last_row < top + 31 ? box.last_row : top + 31
+                    );
+                    for (
+                        uint32_t tile_x = box.first_tile_x; tile_x <= box.last_tile_x;
+                        ++tile_x
+                    ) {
+                        const uint32_t tile = kTilesX * tile_y + tile_x;
+                        counters[tile] += 1;
+                        counters[kTiles + tile] += last_row - first_row + 1;
+                        volatile tt_l1_ptr uint16_t*
+                            tile_histogram = (histogram + 32 * tile);
+                        const uint16_t starts = (
+                            tile_histogram[(first_row - top) >> 1] + 1
+                        );
+                        tile_histogram[(first_row - top) >> 1] = starts;
+                        const uint16_t ends = (
+                            tile_histogram[16 + ((last_row - top) >> 1)] + 1
+                        );
+                        tile_histogram[16 + ((last_row - top) >> 1)] = ends;
+                        if (starts == 0 || ends == 0) {
+                            give_up(kGaveBadHist, tile);
+                            cb_pop_front(kCbOut, 1);
+                            return true;
+                        }
+                    }
+                }
+            }
+            cb_pop_front(kCbOut, 1);
+            profile.write += km::wall() - wait_end;
+            if (head & kOutLast) {
+                break;
+            }
+        }
+        const uint32_t send_started = km::wall();
+        asm volatile(
+            "fence" ::: "memory"
+        );  // the counters' stores land before the read
+        profile.bytes += kCountBytes;
+        noc_async_write(
+            get_read_ptr(kCbCount),
+            setup_pass::noc_address(0, counters_address, writer.me(), kCountBytes),
+            kCountBytes
+        );
+        const bool succeeded = flushed();
+        profile.write += km::wall() - send_started;
+        return succeeded;
+    }
+
+    // SETUP's second stage: each record of the pack thread's pages to the next slot of
+    // every item (a tile, or a band of its rows) its box reaches.
+    template <typename Flushed>
+    bool setup_stage(
+        const km::Writer& writer,
+        const km_command_t& command,
+        WriterProfile& profile,
+        Flushed flushed
+    ) {
+        const uint32_t lists_address = command.a1;
+        const uint32_t list_slots = command.a6 & ~kSetupPrefix;
+        if (!writer.wait_front(kCbSlots, 1, 4) || !writer.wait_front(kCbItems, 1, 4)) {
+            return true;
+        }
+        invalidate_l1_cache();
+        volatile tt_l1_ptr uint32_t* next_slot = km::l1(get_read_ptr(kCbSlots));
+        volatile tt_l1_ptr uint32_t* items = km::l1(get_read_ptr(kCbItems));
+        const volatile tt_l1_ptr uint16_t*
+            rows = (
+                reinterpret_cast<const volatile tt_l1_ptr uint16_t*>(
+                    get_read_ptr(kCbItems) + kItemRows
+                )
+            );
+        const InterleavedAddrGen<true> lists = {
+            .bank_base_address = lists_address, .page_size = kListPageBytes
+        };
+        bool succeeded = true;
+        for (;;) {
+            const uint32_t wait_start = km::wall();
+            if (!writer.wait_front(kCbOut, 1, 4)) {
+                return true;
+            }
+            const uint32_t wait_end = km::wall();
+            profile.wait += wait_end - wait_start;
+            invalidate_l1_cache();
+            const uint32_t page = get_read_ptr(kCbOut);
+            volatile tt_l1_ptr uint32_t* page_words = km::l1(page);
+            const uint32_t head = page_words[0], entries = head & ~kOutLast;
+            ++profile.pages;
+            for (uint32_t i = 0; i < entries && i < kOutEntries && succeeded; ++i) {
+                const BoxWord box = box_of(page_words[1 + i]);
+                for (
+                    uint32_t tile_y = box.first_row >> 5;
+                    tile_y <= box.last_row >> 5 && succeeded;
+                    ++tile_y
+                ) {
+                    const uint32_t top = 32 * tile_y;
+                    const uint32_t first_row = (
+                        box.first_row > top ? box.first_row : top
+                    );
+                    const uint32_t last_row = (
+                        box.last_row < top + 31 ? box.last_row : top + 31
+                    );
+                    for (
+                        uint32_t tile_x = box.first_tile_x;
+                        tile_x <= box.last_tile_x && succeeded;
+                        ++tile_x
+                    ) {
+                        const uint32_t tile = kTilesX * tile_y + tile_x;
+                        const uint32_t first = items[tile] & 0xFFFF;
+                        const uint32_t item_count = items[tile] >> 16;
+                        if (first + item_count > kSlotsBytes / 4) {
+                            give_up(kGaveBadSlot, tile);
+                            succeeded = false;
+                            break;
+                        }
+                        for (uint32_t item = first; item < first + item_count; ++item) {
+                            // the item's rows [item_first_row, item_end_row) against
+                            // the entry's 2-row groups
+                            const uint32_t item_first_row = rows[item] & 0xFF;
+                            const uint32_t item_end_row = rows[item] >> 8;
+                            if (
+                                ((first_row - top) >> 1) >= (item_end_row >> 1) ||
+                                ((last_row - top) >> 1) < (item_first_row >> 1)
+                            ) {
+                                continue;
+                            }
+                            const uint32_t entry_slot = next_slot[item];
+                            next_slot[item] = entry_slot + 1;
+                            if (entry_slot >= list_slots) {
+                                give_up(kGaveBadSlot, tile);
+                                succeeded = false;
+                                break;
+                            }
+                            noc_async_write(
+                                page + 128 * (1 + i),
+                                get_noc_addr(
+                                    entry_slot / 16, lists, (entry_slot % 16) * 128
+                                ),
+                                128
+                            );
+                            profile.bytes += 128;
+                        }
+                    }
+                }
+            }
+            succeeded = flushed() && succeeded;
+            cb_pop_front(kCbOut, 1);
+            profile.write += km::wall() - wait_end;
+            if (!succeeded) {
+                return false;
+            }
+            if (head & kOutLast) {
+                break;
+            }
+        }
+        cb_pop_front(kCbSlots, 1);
+        cb_pop_front(kCbItems, 1);
+        return true;
+    }
+
+}  // namespace
+
 bool setup_writer_pass(
     const km::Writer& writer, const km_command_t& command, WriterProfile& profile
 );
@@ -287,23 +503,7 @@ bool setup_writer_pass(
         ) == km::kGaveNone;
     };
     if (handler == kHandlerCount) {
-        const uint32_t counters_address = command.a1;
-        const uint32_t wait_start = km::wall();
-        if (!writer.wait_front(kCbCount, 1)) {
-            return true;
-        }
-        const uint32_t wait_end = km::wall();
-        profile.wait += wait_end - wait_start;
-        profile.bytes += kCountBytes;
-        noc_async_write(
-            get_read_ptr(kCbCount),
-            setup_pass::noc_address(0, counters_address, writer.me(), kCountBytes),
-            kCountBytes
-        );
-        const bool succeeded = flushed();
-        profile.write += km::wall() - wait_end;
-        cb_pop_front(kCbCount, 1);
-        return succeeded;
+        return count_stage(writer, command, profile, flushed);
     }
     if (handler == kHandlerHist) {
         const uint32_t heavy_address = command.a0, histograms_address = command.a1;
@@ -549,40 +749,7 @@ bool setup_writer_pass(
         return place(writer, command, arrived, flushed);
     }
     if (handler == kHandlerSetup) {
-        const uint32_t lists_address = command.a1;
-        const InterleavedAddrGen<true> lists = {
-            .bank_base_address = lists_address, .page_size = kListPageBytes
-        };
-        for (;;) {
-            const uint32_t wait_start = km::wall();
-            if (!writer.wait_front(kCbOut, 1, 4)) {
-                return true;
-            }
-            const uint32_t wait_end = km::wall();
-            profile.wait += wait_end - wait_start;
-            const uint32_t page = get_read_ptr(kCbOut);
-            volatile tt_l1_ptr uint32_t* page_words = km::l1(page);
-            const uint32_t head = page_words[0], entries = head & ~kOutLast;
-            profile.bytes += 128 * entries;
-            ++profile.pages;
-            for (uint32_t i = 0; i < entries && i < kOutEntries; ++i) {
-                const uint32_t list_slot = page_words[1 + i];
-                noc_async_write(
-                    page + 128 * (1 + i),
-                    get_noc_addr(list_slot / 16, lists, (list_slot % 16) * 128),
-                    128
-                );
-            }
-            const bool succeeded = flushed();
-            profile.write += km::wall() - wait_end;
-            cb_pop_front(kCbOut, 1);
-            if (!succeeded) {
-                return false;
-            }
-            if (head & kOutLast) {
-                return true;
-            }
-        }
+        return setup_stage(writer, command, profile, flushed);
     }
     const uint32_t output_address = command.a1, blocks_word = command.a2;
     const uint32_t first_written = command.a4, written_blocks = command.a6;
