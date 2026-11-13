@@ -33,11 +33,11 @@ def log(msg):
 def read_bf16_chunked(session, tensor, name):
     """A bfloat16 tile tensor as session.read_bf16 gives it, read in chunks of 2 MB
     with a line per chunk: a whole read of an output takes a minute or more."""
-    total, parts = tensor.buffer_num_pages(), []
+    total, parts = tensor.pages, []
     for first, pages in session.read_chunks(tensor):
         parts.append(pages)
         log(f"{name}: {first + len(pages)} of {total} pages read")
-    rows, cols = tuple(tensor.padded_shape)
+    rows, cols = tensor.shape[-2:]
     return dram.untilize_bf16(np.concatenate(parts), rows, cols)
 
 
