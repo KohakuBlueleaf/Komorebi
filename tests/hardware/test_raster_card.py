@@ -1,11 +1,14 @@
-"""The host-binned rasterizer on a card through the host package, one session: a few
-tiles of the tiny scene, and one tile split into bands over two cores, each equal to
-`raster.fill_tile` (KMR_CARD=1)."""
+"""The rasterizer on a card through the host package, one session: a few tiles of the
+tiny scene, and one tile split into bands over two cores, each equal to
+`raster.fill_tile`; COUNT and SETUP of the tiny scene, whose counters and lists equal
+the reference's (KMR_CARD=1)."""
+
+import argparse
 
 import pytest
 
 import komorebi as km
-from projects.raster import card, lists, run
+from projects.raster import card, card_passes, lists, run
 
 pytestmark = pytest.mark.card
 CARD_IN_PROCESS = True  # opens the card in this process
@@ -39,3 +42,10 @@ def test_a_tile_split_into_bands_over_two_cores_equals_fill_tile(session):
     h, check = fill(session, [367], cores=2)
     assert len(h["tiles_of"][0]) + len(h["tiles_of"][1]) > 1
     assert run.check_ok(check), check
+
+
+def test_count_and_setup_of_the_tiny_scene_write_the_reference_lists(session):
+    args = argparse.Namespace(scene="tiny", cores=0, setup=True, lists=0)
+    out = card_passes.frame(args, session)
+    assert out["counters_equal"] and out["lists"]["pages_differ"] == 0, out
+    assert out["ok"], out
