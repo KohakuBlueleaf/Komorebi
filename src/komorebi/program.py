@@ -1,5 +1,6 @@
-"""A program: its three kernel sources, buffers, start-up arguments, ring depth and
-handler numbers. A plain description; nothing here needs a device.
+"""A program: its kernel sources (three, or one movement source for both data movers
+and a compute source), buffers, start-up arguments, ring depth and handler numbers. A
+plain description; nothing here needs a device.
 """
 
 import functools
@@ -12,9 +13,12 @@ import numpy as np
 
 from komorebi import _env, abi
 from komorebi.errors import ProgramError
+from komorebi.movement import check_pairs
 from komorebi.thread import Thread
 
 KERNELS = ("reader", "compute", "writer")
+# The movement form: one source built for both data-movement CPUs, and compute.
+MOVEMENT_KERNELS = ("movement", "compute")
 # The runtime's KernelBuildOptLevel names; a kernel without one keeps the runtime's
 # default (O2 for the reader and writer, O3 for the compute kernel).
 OPT_LEVELS = ("O0", "O1", "O2", "O3", "Os", "Ofast", "Oz")
@@ -43,6 +47,40 @@ class Buffer:
     pages: int
 
 
+@dataclass(frozen=True)
+class BufferPair:
+    """A logical buffer as two circular buffers, mover A's half (`mover_a`) and mover
+    B's (`mover_b`), with one data format and page size; `pages` is both halves' count
+    or a (mover A, mover B) pair of counts."""
+
+    mover_a: int
+    mover_b: int
+    format: str
+    page_bytes: int
+    pages: object
+
+    def __post_init__(self):
+        if self.mover_a == self.mover_b:
+            raise ValueError(f"pair ({self.mover_a}, {self.mover_b}): two halves")
+        counts = self.counts()
+        if len(counts) != 2 or min(counts) < 1:
+            raise ValueError(f"pair pages {self.pages!r}: a count or two, each >= 1")
+
+    def counts(self):
+        """(mover A's pages, mover B's pages)."""
+        if isinstance(self.pages, int):
+            return (self.pages, self.pages)
+        return tuple(int(count) for count in self.pages)
+
+    def halves(self):
+        """The two circular buffers: mover A's, then mover B's."""
+        pages_a, pages_b = self.counts()
+        return [
+            Buffer(self.mover_a, self.format, self.page_bytes, pages_a),
+            Buffer(self.mover_b, self.format, self.page_bytes, pages_b),
+        ]
+
+
 def handlers_from_header(path):
     """`constexpr uint32_t kHandlerName = n;` lines of a header as {"name": n}."""
     found = {}
@@ -54,10 +92,10 @@ def handlers_from_header(path):
 
 @dataclass
 class Program:
-    """What the persistent kernel runs on every core: `kernels` is a directory with
-    reader.cpp, compute.cpp and writer.cpp (or a dict of the three), `args(core)` the
-    (reader, writer, compute) arguments after the start-up arguments, `handlers` a
-    dict or a header path, `opt` an optimisation level per kernel ({"reader": "Os"})."""
+    """What the persistent kernel runs on every core: `kernels` a directory with
+    reader.cpp, compute.cpp and writer.cpp, or movement.cpp and compute.cpp (or a dict
+    of them), `args(core)` the (reader, writer, compute) arguments after the start-up
+    arguments, `handlers` a dict or a header path, `opt` a level per kernel."""
 
     name: str
     kernels: object
@@ -74,6 +112,7 @@ class Program:
     opt: dict = field(default_factory=dict)  # kernel -> optimisation level
     x280_ports: dict | None = None  # Program.ports(): {"serve": ..., "noc": ...}
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
+    pairs: list = field(default_factory=list, init=False)  # the BufferPairs given
 
     def __post_init__(self):
         if isinstance(self.handlers, str | Path):
@@ -84,16 +123,35 @@ class Program:
                 raise ValueError(f"handler {name} = {number}: not in 1..{user_max}")
         if not 1 <= self.depth <= abi.headers()["KM_RING_SLOTS"]:
             raise ValueError(f"depth {self.depth}: not in 1..KM_RING_SLOTS")
-        unknown = set(self.compile_args) - set(KERNELS)
+        self.pairs = [item for item in self.buffers if isinstance(item, BufferPair)]
+        self.buffers = [
+            half
+            for item in self.buffers
+            for half in (item.halves() if isinstance(item, BufferPair) else [item])
+        ]
+        indices = [buffer.index for buffer in self.buffers]
+        for pair in self.pairs:
+            for half in (pair.mover_a, pair.mover_b):
+                if indices.count(half) > 1:
+                    raise ProgramError(
+                        f"{self.name}: buffer {half}, a half of a pair, is declared "
+                        "twice"
+                    )
+        names = (*KERNELS, "movement")
+        unknown = set(self.compile_args) - set(names)
         if unknown:
             raise ValueError(f"compile_args for unknown kernels {sorted(unknown)}")
         for kernel, level in self.opt.items():
-            if kernel not in KERNELS:
-                raise ProgramError(
-                    f"opt for unknown kernel {kernel!r}: not in {KERNELS}"
-                )
+            if kernel not in names:
+                raise ProgramError(f"opt for unknown kernel {kernel!r}: not in {names}")
             if level not in OPT_LEVELS:
                 raise ProgramError(f"opt {kernel}={level!r}: not one of {OPT_LEVELS}")
+        for given in (self.compile_args, self.opt):
+            if "movement" in given and {"reader", "writer"} & set(given):
+                raise ProgramError(
+                    f"{self.name}: 'movement' stands for the reader and the writer; "
+                    "give it or them, not both"
+                )
 
     def thread(self, cluster=1, clusters=None, **kwargs):
         """Declares an X280 thread on work cluster `cluster` (the arguments of
@@ -159,16 +217,64 @@ class Program:
                     f"{sorted(banks[name])}; a thread reads only its own bank's regions"
                 )
 
-    def sources(self):
-        """{"reader": path, "compute": path, "writer": path}, each an existing file."""
+    def movement(self):
+        """True when one movement source serves both data-movement CPUs: a dict with
+        "movement" and "compute", or a directory with movement.cpp and no reader.cpp."""
         if isinstance(self.kernels, dict):
-            paths = {kernel: Path(self.kernels[kernel]) for kernel in KERNELS}
+            if "movement" in self.kernels and {"reader", "writer"} & set(self.kernels):
+                raise ProgramError(
+                    f"{self.name}: kernels name a movement source and reader or writer"
+                )
+            return "movement" in self.kernels
+        folder = Path(self.kernels)
+        if (folder / "movement.cpp").is_file():
+            if (folder / "reader.cpp").is_file() or (folder / "writer.cpp").is_file():
+                raise ProgramError(
+                    f"{self.name}: {folder} holds movement.cpp and reader.cpp or "
+                    "writer.cpp; keep one form"
+                )
+            return True
+        return False
+
+    def sources(self):
+        """{"reader": path, "compute": path, "writer": path}, each an existing file (a
+        movement program: its movement source for reader and writer); checks the pairs.
+        """
+        movement = self.movement()
+        names = MOVEMENT_KERNELS if movement else KERNELS
+        if isinstance(self.kernels, dict):
+            given = {kernel: Path(self.kernels[kernel]) for kernel in names}
         else:
-            paths = {kernel: Path(self.kernels) / f"{kernel}.cpp" for kernel in KERNELS}
-        missing = [str(path) for path in paths.values() if not path.is_file()]
+            given = {kernel: Path(self.kernels) / f"{kernel}.cpp" for kernel in names}
+        missing = [str(path) for path in given.values() if not path.is_file()]
         if missing:
             raise FileNotFoundError(f"{self.name}: no kernel source {missing}")
+        if movement:
+            paths = {
+                "reader": given["movement"],
+                "compute": given["compute"],
+                "writer": given["movement"],
+            }
+        else:
+            paths = given
+        if self.pairs:
+            check_pairs(self.name, self.pairs, paths)
         return paths
+
+    def kernel_compile_args(self, kernel):
+        """The compile-time arguments of "reader", "writer" or "compute"; a "movement"
+        entry serves both data-movement kernels."""
+        if kernel in self.compile_args:
+            return list(self.compile_args[kernel])
+        if kernel == "compute":
+            return []
+        return list(self.compile_args.get("movement", []))
+
+    def kernel_opt(self, kernel):
+        """The optimisation level of "reader", "writer" or "compute", or None."""
+        if kernel in self.opt or kernel == "compute":
+            return self.opt.get(kernel)
+        return self.opt.get("movement")
 
     def handler(self, handler):
         """The number of a handler given by name or number."""

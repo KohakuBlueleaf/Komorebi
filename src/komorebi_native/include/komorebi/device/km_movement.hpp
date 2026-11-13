@@ -1,0 +1,506 @@
+// Both data-movement CPUs of a core (the movers) carrying one stream: a pattern names
+// the mover of each block, and each mover moves its blocks through its half of a pair.
+#pragma once
+
+#include <stdint.h>
+
+#include "km_core.hpp"
+#include "km_worker.hpp"
+
+namespace km {
+
+    // Mover A is RISCV_0 on NoC 0 (the reader kernel's CPU), mover B is RISCV_1 on
+    // NoC 1 (the writer kernel's).
+    constexpr uint32_t kMoverA = 0;
+    constexpr uint32_t kMoverB = 1;
+    constexpr uint32_t kPatternLengthMax = 24;
+
+    // Which mover owns block k: a length (1 to 24) and one bit per position, set when
+    // mover B owns it. The word: the length in the low byte, the bits from bit 8.
+    struct Pattern {
+        uint32_t length;
+        uint32_t owners;
+
+        static constexpr Pattern of(uint32_t word) {
+            return {word & 0xFFu, word >> 8};
+        }
+
+        constexpr uint32_t word() const {
+            return length | owners << 8;
+        }
+
+        constexpr bool valid() const {
+            return (
+                length >= 1 && length <= kPatternLengthMax && (owners >> length) == 0
+            );
+        }
+
+        constexpr uint32_t owner(uint32_t block) const {
+            return (owners >> (block % length)) & 1u;
+        }
+    };
+
+    // The pattern of a word of letters A and B ("AAAB"); a pattern that is not valid()
+    // for any other text.
+    constexpr Pattern pattern(const char* letters) {
+        Pattern made = {0, 0};
+        for (; letters[made.length] != 0; made.length++) {
+            const char letter = letters[made.length];
+            if (made.length == kPatternLengthMax || (letter != 'A' && letter != 'B')) {
+                return {0, 0};
+            }
+            made.owners |= (letter == 'B' ? 1u : 0u) << made.length;
+        }
+        return made;
+    }
+
+    constexpr Pattern kPatternA = pattern("A");
+    constexpr Pattern kPatternB = pattern("B");
+    constexpr Pattern kPatternAB = pattern("AB");
+    constexpr Pattern kPatternAAAB = pattern("AAAB");
+    constexpr Pattern kPatternBBBBBAAA = pattern("BBBBBAAA");
+
+    // A logical buffer as two circular buffers: mover A's half and mover B's half. Each
+    // half has one filling CPU and one draining CPU for the whole life of a load.
+    struct BufferPair {
+        uint32_t mover_a;
+        uint32_t mover_b;
+
+        constexpr uint32_t half(uint32_t mover) const {
+            return mover == kMoverA ? mover_a : mover_b;
+        }
+    };
+
+    // Compute: the half that holds block `block` of a stream under `pattern`. Compute
+    // takes the blocks in order, each a whole item of the half.
+    constexpr uint32_t block_half(
+        const BufferPair& pair, const Pattern& pattern, uint32_t block
+    ) {
+        return pair.half(pattern.owner(block));
+    }
+
+}  // namespace km
+
+#if !defined(COMPILE_FOR_TRISC)
+namespace km {
+
+#if defined(COMPILE_FOR_BRISC)
+    constexpr uint32_t kMover = kMoverA;
+    constexpr uint32_t kStMover = kStReader;
+    using MoverRuntime = Reader;
+#else
+    constexpr uint32_t kMover = kMoverB;
+    constexpr uint32_t kStMover = kStWriter;
+    using MoverRuntime = Writer;
+#endif
+    static_assert(noc_mode != DM_DYNAMIC_NOC, "the movers use one NoC each");
+
+    // A read moves tensor pages into this mover's half; a write moves pages of its
+    // half to the tensor.
+    constexpr uint32_t kMoveRead = 0;
+    constexpr uint32_t kMoveWrite = 1;
+
+    // The blocks of a stream, a two-level strided walk: block b starts at tensor page
+    // first_page + b * block_step and holds `rows` rows of `columns` pages.
+    struct Walk {
+        uint32_t first_page;
+        uint32_t blocks;       // blocks in one repetition
+        uint32_t block_step;   // tensor pages from one block's first page to the next
+        uint32_t rows;         // rows of a block
+        uint32_t row_step;     // tensor pages from one row to the next
+        uint32_t columns;      // pages of a row
+        uint32_t column_step;  // tensor pages from one page of a row to the next
+        uint32_t row_pitch;    // L1 pages from one row of a block to the next
+        uint32_t tiles_per_block;  // the item: pages taken and handed on per block
+        uint32_t last_rows;        // the last block of a repetition: rows and columns
+        uint32_t last_columns;     // moved (a ragged end); the item stays whole
+
+        // `tiles` consecutive pages from `first_page` in blocks of `tiles_per_block`;
+        // the last block holds the rest.
+        static Walk run(uint32_t first_page, uint32_t tiles, uint32_t tiles_per_block) {
+            const uint32_t blocks = (
+                tiles_per_block == 0
+                    ? 0
+                    : (tiles + tiles_per_block - 1) / tiles_per_block
+            );
+            return {
+                first_page,
+                blocks,
+                tiles_per_block,
+                1,
+                0,
+                tiles_per_block,
+                1,
+                tiles_per_block,
+                tiles_per_block,
+                1,
+                blocks == 0 ? 0 : tiles - (blocks - 1) * tiles_per_block
+            };
+        }
+    };
+
+    // One stream: a direction, a tensor, its blocks, how often they repeat, the pair
+    // that holds them and the pattern that deals them to the movers.
+    template <typename Accessor>
+    struct Stream {
+        uint32_t direction;
+        Accessor tensor;
+        Walk walk;
+        uint32_t repetitions;
+        BufferPair pair;
+        Pattern pattern;
+
+        Stream(
+            uint32_t direction,
+            const Accessor& tensor,
+            const Walk& walk,
+            uint32_t repetitions,
+            BufferPair pair,
+            Pattern pattern
+        ) :
+            direction(direction),
+            tensor(tensor),
+            walk(walk),
+            repetitions(repetitions),
+            pair(pair),
+            pattern(pattern) {
+        }
+
+        // The plain case: `tiles` pages from `first_page`, `repetitions` times.
+        Stream(
+            uint32_t direction,
+            const Accessor& tensor,
+            uint32_t first_page,
+            uint32_t tiles,
+            uint32_t tiles_per_block,
+            uint32_t repetitions,
+            BufferPair pair,
+            Pattern pattern
+        ) :
+            Stream(
+                direction,
+                tensor,
+                Walk::run(first_page, tiles, tiles_per_block),
+                repetitions,
+                pair,
+                pattern
+            ) {
+        }
+    };
+
+    // What one mover spent in a move: tiles moved, cycles in passes that moved a block.
+    struct Moved {
+        uint32_t tiles;
+        uint32_t cycles;
+    };
+
+    // Halves this mover filled and drained in this load, one bit per buffer index: a
+    // half whose roles change gives up (compute's page counts would no longer agree).
+    inline uint32_t move_filled = 0;
+    inline uint32_t move_drained = 0;
+
+    // Where a mover is in a stream: the next block, that block's index in its
+    // repetition, its position in the pattern and its first page.
+    struct MoveCursor {
+        uint32_t block;
+        uint32_t in_repetition;
+        uint32_t position;
+        uint32_t page;
+        uint32_t blocks;  // blocks of the whole stream
+    };
+
+    template <typename Accessor>
+    inline void move_step(MoveCursor& cursor, const Stream<Accessor>& stream) {
+        cursor.block++;
+        cursor.position = (
+            cursor.position + 1 == stream.pattern.length ? 0 : cursor.position + 1
+        );
+        cursor.in_repetition++;
+        cursor.page += stream.walk.block_step;
+        if (cursor.in_repetition == stream.walk.blocks) {
+            cursor.in_repetition = 0;
+            cursor.page = stream.walk.first_page;
+        }
+    }
+
+    // Steps to the first block from the cursor on that this mover owns.
+    template <typename Accessor>
+    inline void move_seek(MoveCursor& cursor, const Stream<Accessor>& stream) {
+        while (
+            cursor.block < cursor.blocks &&
+            ((stream.pattern.owners >> cursor.position) & 1u) != kMover
+        ) {
+            move_step(cursor, stream);
+        }
+    }
+
+    // Checks a stream against its half and adds the half to the filled or drained
+    // bits. False: a bad pattern or walk, or an item the half does not divide.
+    template <typename Accessor>
+    inline bool move_begin(
+        const Stream<Accessor>& stream,
+        MoveCursor& cursor,
+        uint32_t& filled,
+        uint32_t& drained
+    ) {
+        const Walk& walk = stream.walk;
+        const uint32_t buffer = stream.pair.half(kMover);
+        if (buffer >= 32) {
+            return false;
+        }
+        const uint32_t bit = 1u << buffer;
+        const LocalCBInterface& ring = get_local_cb_interface(buffer);
+        const bool shaped = (
+            walk.tiles_per_block != 0 && walk.rows != 0 && walk.last_rows != 0 &&
+            walk.columns <= walk.row_pitch && walk.last_columns <= walk.row_pitch &&
+            (walk.rows - 1) * walk.row_pitch + walk.columns <= walk.tiles_per_block &&
+            (walk.last_rows - 1) * walk.row_pitch + walk.last_columns <=
+                walk.tiles_per_block
+        );
+        const bool read = stream.direction == kMoveRead;
+        if (
+            !stream.pattern.valid() || !shaped ||
+            ring.fifo_num_pages % walk.tiles_per_block != 0
+        ) {
+            return false;
+        }
+        (read ? filled : drained) |= bit;
+        cursor = {0, 0, 0, walk.first_page, walk.blocks * stream.repetitions};
+        move_seek(cursor, stream);
+        return true;
+    }
+
+    // Issues the page reads or writes of the cursor's block at this mover's half.
+    template <typename Accessor>
+    inline void move_issue(const Stream<Accessor>& stream, const MoveCursor& cursor) {
+        const Walk& walk = stream.walk;
+        const uint32_t buffer = stream.pair.half(kMover);
+        const uint32_t page_bytes = get_local_cb_interface(buffer).fifo_page_size;
+        const bool last = cursor.in_repetition + 1 == walk.blocks;
+        const uint32_t rows = last ? walk.last_rows : walk.rows;
+        const uint32_t columns = last ? walk.last_columns : walk.columns;
+        const bool read = stream.direction == kMoveRead;
+        const uint32_t base = read ? get_write_ptr(buffer) : get_read_ptr(buffer);
+        for (uint32_t row = 0; row < rows; row++) {
+            uint32_t page = cursor.page + row * walk.row_step;
+            uint32_t address = base + row * walk.row_pitch * page_bytes;
+            for (uint32_t column = 0; column < columns; column++) {
+                if (read) {
+                    noc_async_read_page(page, stream.tensor, address);
+                } else {
+                    noc_async_write_page(page, stream.tensor, address);
+                }
+                page += walk.column_step;
+                address += page_bytes;
+            }
+        }
+    }
+
+    // One pass over a stream: if this mover has a block left and its half has room
+    // (reads) or data (writes), takes the item and issues the block. False: bad item.
+    template <typename Accessor>
+    inline bool move_offer(
+        const Stream<Accessor>& stream,
+        const MoveCursor& cursor,
+        bool& issued,
+        bool& open,
+        bool& reads,
+        bool& writes
+    ) {
+        if (cursor.block >= cursor.blocks) {
+            return true;
+        }
+        open = true;
+        const uint32_t buffer = stream.pair.half(kMover);
+        const uint32_t pages = stream.walk.tiles_per_block;
+        const LocalCBInterface& ring = get_local_cb_interface(buffer);
+        const bool read = stream.direction == kMoveRead;
+        if (!item_fits(buffer, read ? ring.fifo_wr_ptr : ring.fifo_rd_ptr, pages)) {
+            return false;
+        }
+        if (read) {
+            if (!cb_pages_reservable_at_back(buffer, pages)) {
+                return true;
+            }
+            cb_reserve_back(buffer, pages);
+            reads = true;
+        } else {
+            if (!cb_pages_available_at_front(buffer, pages)) {
+                return true;
+            }
+            cb_wait_front(buffer, pages);
+            writes = true;
+        }
+        move_issue(stream, cursor);
+        issued = true;
+        return true;
+    }
+
+    // After the barrier: push (reads) or pop (writes) an issued block, go to the next.
+    template <typename Accessor>
+    inline void move_hand_on(
+        const Stream<Accessor>& stream, MoveCursor& cursor, bool& issued, Moved& moved
+    ) {
+        if (!issued) {
+            return;
+        }
+        const uint32_t buffer = stream.pair.half(kMover);
+        const uint32_t pages = stream.walk.tiles_per_block;
+        if (stream.direction == kMoveRead) {
+            cb_push_back(buffer, pages);
+        } else {
+            cb_pop_front(buffer, pages);
+        }
+        moved.tiles += pages;
+        move_step(cursor, stream);
+        move_seek(cursor, stream);
+        issued = false;
+    }
+
+    // Timed wait until this mover's reads have landed and its writes have left L1
+    // (`acknowledged`: until they are acknowledged). False: gave up (recorded).
+    inline bool move_settle(
+        const Core& core, bool reads, bool writes, bool acknowledged = false
+    ) {
+        const uint32_t code = core.poll(
+            [&] {
+                const bool read_done = !reads || ncrisc_noc_reads_flushed(noc_index);
+                if (!writes) {
+                    return read_done;
+                }
+                return (
+                    read_done &&
+                    (
+                        acknowledged
+                            ? ncrisc_noc_nonposted_writes_flushed(noc_index)
+                            : ncrisc_noc_nonposted_writes_sent(noc_index)
+                    )
+                );
+            },
+            core.args().wait_limit,
+            core.args().wait_limit
+        );
+        if (code != kGaveNone) {
+            core.gave_up(kStMover, code, kWhereData, 0, 0);
+        }
+        return code == kGaveNone;
+    }
+
+    // The engine, on this mover: per pass, issue the next block of every stream whose
+    // half has room or data, one barrier, push or pop. False: gave up (recorded).
+    template <typename... Streams>
+    bool move(Moved& moved, const Core& core, const Streams&... streams) {
+        constexpr uint32_t kCount = sizeof...(Streams);
+        static_assert(kCount >= 1, "move needs a stream");
+        MoveCursor cursors[kCount];
+        bool issued[kCount] = {};
+        bool fine = true, any_write = false;
+        uint32_t index = 0, filled = 0, drained = 0;
+        (
+            (
+                fine = fine && move_begin(streams, cursors[index], filled, drained),
+                any_write = any_write || streams.direction == kMoveWrite,
+                index++
+            ),
+            ...
+        );
+        // A half keeps the roles it had in this mover's first move of the load.
+        const uint32_t known = (filled | drained) & (move_filled | move_drained);
+        fine = (
+            fine && (known & ((filled ^ move_filled) | (drained ^ move_drained))) == 0
+        );
+        move_filled |= filled;
+        move_drained |= drained;
+        if (!fine) {
+            core.gave_up(kStMover, kGaveBadItem, kWhereData, 0, 0);
+            return false;
+        }
+        const uint64_t limit = static_cast<uint64_t>(core.args().wait_limit) << 10;
+        uint64_t deadline = wall64() + limit;
+        for (uint32_t pass = 0;; pass++) {
+            invalidate_l1_cache();
+            bool open = false, reads = false, writes = false;
+            const uint32_t start = wall();
+            index = 0;
+            (
+                (
+                    fine = fine &&
+                        move_offer(
+                            streams,
+                            cursors[index],
+                            issued[index],
+                            open,
+                            reads,
+                            writes
+                        ),
+                    index++
+                ),
+                ...
+            );
+            if (!fine) {
+                core.gave_up(kStMover, kGaveBadItem, kWhereData, 0, 0);
+                return false;
+            }
+            if (!open) {
+                break;
+            }
+            if (!reads && !writes) {
+                if ((pass & 15) == 15) {
+                    if (core.stop()) {
+                        core.gave_up(kStMover, kGaveStop, kWhereData, 0, 0);
+                        return false;
+                    }
+                    if (wall64() > deadline) {
+                        core.gave_up(kStMover, kGaveLimit, kWhereData, 0, 0);
+                        return false;
+                    }
+                }
+                continue;
+            }
+            if (!move_settle(core, reads, writes)) {
+                return false;
+            }
+            index = 0;
+            (
+                (move_hand_on(streams, cursors[index], issued[index], moved), index++),
+                ...
+            );
+            moved.cycles += wall() - start;
+            deadline = wall64() + limit;
+        }
+        if (!any_write) {
+            return true;
+        }
+        const uint32_t start = wall();
+        const bool settled = move_settle(core, false, true, true);
+        moved.cycles += wall() - start;
+        return settled;
+    }
+
+    template <typename... Streams>
+    bool move(const Core& core, const Streams&... streams) {
+        Moved moved = {0, 0};
+        return move(moved, core, streams...);
+    }
+
+    // A source compiled for both movers: on mover A the reader's runtime, on mover B
+    // the writer's, plus this mover's share of streams. One body serves both CPUs.
+    class Movement : public MoverRuntime {
+    public:
+        static constexpr uint32_t mover() {
+            return kMover;
+        }
+
+        template <typename... Streams>
+        bool move(const Streams&... streams) const {
+            return km::move(*this, streams...);
+        }
+
+        template <typename... Streams>
+        bool move(Moved& moved, const Streams&... streams) const {
+            return km::move(moved, *this, streams...);
+        }
+    };
+
+}  // namespace km
+#endif

@@ -205,7 +205,7 @@ def kernel_build(program, kernel, defines):
     """A kernel's defines, and its optimisation level when the program sets one. A set
     level also adds a define naming it: the runtime's build cache key leaves the level
     out, and two levels must not share a cached ELF."""
-    level = program.opt.get(kernel)
+    level = program.kernel_opt(kernel)
     if level is None:
         return {"defines": defines}
     return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
@@ -1061,7 +1061,7 @@ class _Backend:
                 str(sources[kernel]),
                 all_cores,
                 processor,
-                list(program.compile_args.get(kernel, [])),
+                program.kernel_compile_args(kernel),
                 includes=include,
                 args=args,
                 **kernel_build(program, kernel, defines),

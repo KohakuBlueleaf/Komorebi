@@ -24,12 +24,14 @@ from komorebi.errors import (
     ThreadFailed,
     WaitTimeout,
 )
-from komorebi.program import Buffer, KernelSizes, Program
+from komorebi.movement import Pattern
+from komorebi.program import Buffer, BufferPair, KernelSizes, Program
 
 __version__ = "0.1.0"
 
 __all__ = [
     "Buffer",
+    "BufferPair",
     "CardBusy",
     "EngineError",
     "EngineRejected",
@@ -40,6 +42,7 @@ __all__ = [
     "KernelSizeError",
     "KernelSizes",
     "KomorebiError",
+    "Pattern",
     "Program",
     "ProgramError",
     "CommandRejected",
