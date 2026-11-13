@@ -140,6 +140,29 @@ without an event fit the event ring. It writes its read count with every batch, 
 while it waits whenever the kernel could be holding a command for it, so the kernel
 waits for room only while that count is on its way.
 
+Exclusive records. The host stores a record with `KM_F_EXCL` like any other; the
+dispatch kernel holds it at the head of its command ring while a busy record's team
+shares a core with it, and issues it once that record's leader has acknowledged. Host
+commands behind a held one wait with it, whatever their teams. Its deadline counts from
+the kernel's issue, not from the store. So back-to-back exclusive records on one team
+are the kernel's boundary apart, while one issued after idle still pays the host's store
+reaching the X280 (a round trip of about 14 us). Measured on 2026-11-13, one p150a, X280
+at 1,000 MHz, host load 3 to 9, before (the host held each exclusive record until it
+had read the event of the overlapping one) and after, alternating in one session:
+
+| Records back to back, exclusive | Before (us) | After (us) |
+|---|---|---|
+| NOP on 120 cores, period | 16.25, 16.26 | 2.27, 2.27 |
+| NOP on 12 cores, period | 4.28, 16.21 | 2.28, 2.28 |
+| NOP on 1 core, period | 15.95, 15.96 | 1.90, 1.91 |
+| `examples/03_broadcast`, 120 cores, per job | 61.1, 60.4 | 47.9, 46.9 |
+
+The period is the first member's take of one record to that of the next (the cores'
+trace, median of 99, after 10 records of warm-up). The broadcast row is
+`broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --jobs 40 --no-check`
+(host time per job). The 4.28 is a run in which the host's stores reached the X280 fast,
+a state seen now and then.
+
 Cores' NoC coordinates. `session.nocs()` returns a `layout.Nocs` for the open device,
 before any load: `grid`; by core `(x, y)` the translated NoC address `noc_xy` (the one
 the dispatch kernel's core table holds) and the NoC0 coordinates `noc0`; `words`, the
@@ -181,7 +204,7 @@ range.
 
 | Call | What it does |
 |---|---|
-| `issue(seg, team=None, args=(), exclusive=False, result=False, queued=False)` | queues one record and returns its ticket (1, 2, ...). `seg` is a name or a number (`0` is NOP); `team` is `(first, count)`, default every core; `args` up to ten 32-bit words. Teams and segments are checked here. With `exclusive` (`KM_F_EXCL`), the record is held until no team in flight overlaps it. With `result` (`KM_F_RESULT`), its done event carries the team leader's 32-bit result word. With `queued` (`KM_F_QUEUE`), `team` is a count: the kernel gives the record the lowest first core whose team overlaps no busy one, and waits until there is one (nothing is refused for a full grid); `team(ticket)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). A queued record cannot be exclusive |
+| `issue(seg, team=None, args=(), exclusive=False, result=False, queued=False)` | queues one record and returns its ticket (1, 2, ...). `seg` is a name or a number (`0` is NOP); `team` is `(first, count)`, default every core; `args` up to ten 32-bit words. Teams and segments are checked here. With `exclusive` (`KM_F_EXCL`), the dispatch kernel issues the record only once no record in flight has a team that overlaps it; the host stores it as soon as the ring has room, like any other record (below, "Exclusive records"). With `result` (`KM_F_RESULT`), its done event carries the team leader's 32-bit result word. With `queued` (`KM_F_QUEUE`), `team` is a count: the kernel gives the record the lowest first core whose team overlaps no busy one, and waits until there is one (nothing is refused for a full grid); `team(ticket)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). A queued record cannot be exclusive |
 | `issue_many(seg, firsts, counts, args=None, exclusive=False)` | queues n records at once and returns their tickets as a `range`. `seg`, `firsts` and `counts` are one value or n each; `args` is an `[n, m]` integer matrix (m at most 10) or None. Checked as `issue` checks, all before any is queued |
 | `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a [graph](../graphs.md) host-fed: its executor on the host, its records through this run; returns `HostfedResult(status, error, regs, runs, records, events)` |
 | `wait(tickets, timeout=10.0)` | stores queued commands up to the tickets in batches, reads events until each ticket has one; returns the `Event` (or a list) and forgets those tickets. The stores and the event reads run in the native module with the GIL released |

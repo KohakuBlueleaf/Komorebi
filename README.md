@@ -151,8 +151,8 @@ default). Two records in flight together on overlapping teams may be run by a sh
 core in either order: a record of which no chunk has landed yet is invisible to the
 core. The figure draws one case, in which R3 lands after the shared cores have begun R1
 or R2, so they take it next. A record that must run after an earlier one is issued with
-`run.issue(..., exclusive=True)`, which holds it on the host until no team in flight
-overlaps it.
+`run.issue(..., exclusive=True)`, which the dispatch kernel holds until no team in
+flight overlaps it.
 
 ### One program on the grid
 

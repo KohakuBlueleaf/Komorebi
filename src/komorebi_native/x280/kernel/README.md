@@ -114,7 +114,10 @@ These rules are part of the protocol; a host that relies on anything else is wro
 - **EXIT** goes to every core whatever its team field says, and only once no slot is
   busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own; the
   check holds only at its own issue, so a later record without the flag may still
-  overlap it. A waiting host command holds up every host command behind it.
+  overlap it. A waiting host command holds up every host command behind it. This check
+  is the only order of exclusive records: the host stores them as soon as its ring has
+  room, so back-to-back exclusive NOP records on 120 cores come 2.3 us apart at 1000
+  MHz (the host's reference, "Exclusive records").
 - **Job queue.** A record with `KM_F_QUEUE` takes its count from the team word and
   ignores `first` (and `KM_F_EXCL`). It is taken into the job queue, which holds up to
   `KM_QUEUE_JOBS` (64) jobs of every source in arrival order, and answered with its
