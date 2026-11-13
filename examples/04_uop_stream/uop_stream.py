@@ -211,11 +211,11 @@ def run_ways(session, args):
     submit_jobs = simulated(
         job_stream("submit", args.jobs, cores, window, probe, tiles, args.seed), cores
     )
-    submit_jobs = simulated(
+    enqueue_jobs = simulated(
         job_stream("enqueue", args.jobs, cores, window, probe, tiles, args.seed), cores
     )
     # The queue may submit a later, smaller job first: the same jobs, in another order.
-    same = sorted(j[1:] for j in submit_jobs) == sorted(j[1:] for j in submit_jobs)
+    same = sorted(j[1:] for j in submit_jobs) == sorted(j[1:] for j in enqueue_jobs)
     want = expected(x, submit_jobs, tiles)
     pages = len(want)
     log(f"{len(submit_jobs)} jobs, {pages} output tiles, {cores} cores")
