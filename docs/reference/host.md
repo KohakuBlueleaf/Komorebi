@@ -144,7 +144,7 @@ through ttnn after the stop.
 | `wait(tickets, timeout=10.0)` | stores queued commands up to the tickets in batches, reads events until each ticket has one; returns the `Event` (or a list) and forgets those tickets. The stores and the event reads run in the native module with the GIL released |
 | `wait_any(tickets, timeout=10.0)` | stores what is queued and waits until one of the tickets has its event; returns that `Event` (the lowest ticket if several arrived) and forgets only that ticket. Raises as `wait` does |
 | `drain(timeout=10.0)` | the same for everything issued; returns how many events it waited for |
-| `event(ticket)` | `Event(ticket, kind, aux, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `refused`; `ticks` is issue to completion in the X280's 50 MHz timer, `us` the same in microseconds; for a record issued with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `us` then hold it too), else None |
+| `event(ticket)` | `Event(ticket, kind, aux, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `refused`; `aux` is the first core of the team that ran the record (done; for a queued record, the one the kernel chose), the slot (timeout) or the reason (refused): the low 8 bits of the event's aux, whose next 16 bits, the low bits of the record's sequence number, `seq(ticket)` reads (layout: the kernel README, "Sources"); `ticks` is issue to completion in the X280's 50 MHz timer, `us` the same in microseconds; for a record issued with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `us` then hold it too), else None |
 | `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index), from its done or timeout event (None before it, and for a refused record); its team, whose first core for a queued record comes from its done event (None before it) |
 | `forget(tickets)` | releases what the run keeps for tickets whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps teams and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
@@ -237,7 +237,9 @@ number, and the host takes the rest from its previous record's: `seq(ticket)` an
 trace's `record(ticket)` are exact while fewer than 32,768 records of other sources are
 issued between two host records. When the host sees a longer gap it raises
 `KomorebiError` for that ticket instead of giving another record's number; it cannot
-tell a gap of 65,536 or more.
+tell a gap of 65,536 or more. A queued record's number may fall up to 2,048 behind the
+host's order (the queue lets later jobs go first); a lag beyond that is read as a gap
+and raises too.
 
 ## Errors
 

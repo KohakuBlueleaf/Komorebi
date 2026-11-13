@@ -45,7 +45,8 @@ the one the allocator chose) or the slot (TIMEOUT), and above them the low 16 bi
 record's sequence number (`KM_EV_SEQ_SHIFT`, `KM_EV_SEQ_MASK`). The kernel numbers every
 source's records in one sequence; with these bits a source finds the number of each of its
 records while fewer than 32,768 records of other sources are issued between two of its
-own. A `KM_EV_TIMEOUT` names the record whose deadline passed first.
+own; a queued record's number may fall up to 2,048 behind its source's order, as the
+queue lets later jobs go first. A `KM_EV_TIMEOUT` names the record whose deadline passed first.
 
 Nothing the kernel writes through the cached port stays dirty at exit: core 1 flushes its
 part of the state area before it reports stopped and core 0 flushes the whole area before
