@@ -1,0 +1,84 @@
+{
+ "scene": "s100k",
+ "runs": 5,
+ "frames_per_run": 337,
+ "upload_s": 0.45702688104938716,
+ "x280_mhz": 1000,
+ "thread": {
+  "us": {
+   "count": 454.7151335311573,
+   "sum": 60.96391691394659,
+   "hist": 22.397685459940654,
+   "hsum": 72.9172106824926,
+   "middle": 743.4030267062315,
+   "place": 102.84035608308605,
+   "setup": 1028.7651632047478,
+   "fill": 424.74106824925815
+  },
+  "middle_us": {
+   "TAKE": 60.977626112759644,
+   "HEAVY_US": 87.36587537091988,
+   "CUT": 173.2086646884273,
+   "SORT": 116.23181008902078,
+   "ASSIGN": 181.30445103857565,
+   "COMPACT": 73.48148367952523,
+   "PAGES": 17.8,
+   "GIVE": 32.74172106824926
+  },
+  "frame_us": 2911.007477744807,
+  "first_run": {
+   "ran": true,
+   "state": "done",
+   "error": "none",
+   "code": 0,
+   "where": 8,
+   "thread_us": 980678.18,
+   "slots": 102736,
+   "items": 1168,
+   "marks": 973,
+   "heavy": 112,
+   "us": {
+    "count": 153237.66,
+    "sum": 20538.34,
+    "hist": 7542.5,
+    "hsum": 24573.24,
+    "middle": 250509.34,
+    "place": 34615.5,
+    "setup": 346456.12,
+    "fill": 143131.56
+   },
+   "middle_us": {
+    "TAKE": 20553.18,
+    "HEAVY_US": 29319.440000000002,
+    "CUT": 58391.18,
+    "SORT": 39372.44,
+    "ASSIGN": 61076.0,
+    "COMPACT": 24763.260000000002,
+    "PAGES": 5998.6,
+    "GIVE": 11035.24
+   },
+   "frames": 337,
+   "status_ok": true
+  }
+ },
+ "power": {
+  "card_idle_w": 20.932614417487347,
+  "card_idle_open_w": 61.79998104265413,
+  "card_mean_w": 65.70312866452076,
+  "card_peak_w": 77.0,
+  "card_limit_w": 150.0,
+  "card_mean_percent_of_limit": 43.80208577634718,
+  "card_joules_per_frame": 0.19134353054119504,
+  "card_joules_per_frame_above_idle": 0.13038265352496256,
+  "seconds_per_frame": 0.0029122438220285122,
+  "seconds": 4.907130840118043,
+  "whole_loop": "7.50 s, 128 samples, mean 65.1 W (43% of 150 W), peak 77.0 W, 488.2 J, idle 61.8 W, 60.6 C",
+  "aiclk_mhz_min": 1343,
+  "aiclk_mhz_mean": 1349.7666666666667,
+  "aiclk_samples": 120,
+  "aiclk_left_nominal": true
+ },
+ "read_frame_s": 10.204772311961278,
+ "image_differs": 0,
+ "ok": true
+}

@@ -528,7 +528,7 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
                 ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
             )
         );
-        pass.slots = r.a6;
+        pass.slots = r.a6 & ~kSetupPrefix;
     }
     if (seg == kSegCount) {
         if (!cp.reserve_back(kCbCount, 1)) {

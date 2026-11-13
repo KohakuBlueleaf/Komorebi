@@ -1,0 +1,84 @@
+{
+ "scene": "sponza_overview",
+ "runs": 5,
+ "frames_per_run": 114,
+ "upload_s": 1.316238027997315,
+ "x280_mhz": 1000,
+ "thread": {
+  "us": {
+   "count": 2225.4333333333334,
+   "sum": 60.95333333333333,
+   "hist": 0.0,
+   "hsum": 0.0,
+   "middle": 452.60561403508774,
+   "place": 99.63684210526316,
+   "setup": 4294.424912280701,
+   "fill": 1592.9763157894738
+  },
+  "middle_us": {
+   "TAKE": 9.69824561403509,
+   "HEAVY_US": 38.85947368421053,
+   "CUT": 29.94280701754386,
+   "SORT": 100.17771929824562,
+   "ASSIGN": 159.39122807017546,
+   "COMPACT": 67.7363157894737,
+   "PAGES": 15.821403508771931,
+   "GIVE": 30.847894736842104
+  },
+  "frame_us": 8725.848596491229,
+  "first_run": {
+   "ran": true,
+   "state": "done",
+   "error": "none",
+   "code": 0,
+   "where": 8,
+   "thread_us": 994932.1,
+   "slots": 248848,
+   "items": 1024,
+   "marks": 1137,
+   "heavy": 0,
+   "us": {
+    "count": 253694.52000000002,
+    "sum": 6948.68,
+    "hist": 0.0,
+    "hsum": 0.0,
+    "middle": 51712.74,
+    "place": 11361.82,
+    "setup": 489583.92,
+    "fill": 181601.62
+   },
+   "middle_us": {
+    "TAKE": 1105.3600000000001,
+    "HEAVY_US": 4519.42,
+    "CUT": 3413.48,
+    "SORT": 11421.64,
+    "ASSIGN": 18186.760000000002,
+    "COMPACT": 7746.28,
+    "PAGES": 1803.64,
+    "GIVE": 3516.16
+   },
+   "frames": 114,
+   "status_ok": true
+  }
+ },
+ "power": {
+  "card_idle_w": 20.0,
+  "card_idle_open_w": 61.79999362491071,
+  "card_mean_w": 65.06763079373829,
+  "card_peak_w": 81.0,
+  "card_limit_w": 150.0,
+  "card_mean_percent_of_limit": 43.37842052915886,
+  "card_joules_per_frame": 0.5677818015296101,
+  "card_joules_per_frame_above_idle": 0.3932612927594491,
+  "seconds_per_frame": 0.008726025438508051,
+  "seconds": 4.973834499949589,
+  "whole_loop": "10.93 s, 140 samples, mean 64.6 W (43% of 150 W), peak 81.0 W, 706.2 J, idle 61.8 W, 58.6 C",
+  "aiclk_mhz_min": 1343,
+  "aiclk_mhz_mean": 1349.8931297709923,
+  "aiclk_samples": 131,
+  "aiclk_left_nominal": true
+ },
+ "read_frame_s": 13.873428974999115,
+ "image_differs": 0,
+ "ok": true
+}

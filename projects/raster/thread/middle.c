@@ -25,31 +25,24 @@ static void sort_desc(uint32_t* idx, uint32_t* tmp, const uint64_t* key, uint32_
     }
 }
 
-/* (load, core) of a before b */
-static int lighter(const rm_scratch* s, uint32_t a, uint32_t b) {
-    return s->load[a] < s->load[b] || (s->load[a] == s->load[b] && a < b);
-}
-
-/* Restores the heap after the load of its first core grew. */
-static void sift_down(rm_scratch* s, uint32_t n) {
+/* Restores the heap of keys (load << 8 | core: by load, ties by core) after its
+ * first key grew. */
+static void sift_down(uint64_t* heap, uint32_t n) {
     uint32_t at = 0;
+    const uint64_t x = heap[0];
     for (;;) {
         const uint32_t l = 2 * at + 1, r = l + 1;
-        uint32_t m = at;
-        if (l < n && lighter(s, s->heap[l], s->heap[m])) {
-            m = l;
+        if (l >= n) {
+            break;
         }
-        if (r < n && lighter(s, s->heap[r], s->heap[m])) {
-            m = r;
+        const uint32_t m = r < n && heap[r] < heap[l] ? r : l;
+        if (heap[m] >= x) {
+            break;
         }
-        if (m == at) {
-            return;
-        }
-        const uint32_t x = s->heap[at];
-        s->heap[at] = s->heap[m];
-        s->heap[m] = x;
+        heap[at] = heap[m];
         at = m;
     }
+    heap[at] = x;
 }
 
 void rm_costs(
@@ -162,31 +155,10 @@ static uint32_t cut(
     return n - 1;
 }
 
-uint32_t rm_layout(
-    const uint16_t* hist,
-    uint32_t setup_cores,
-    uint32_t fill_cores,
-    const uint32_t* heavy,
-    const uint32_t* bands,
-    uint32_t n_heavy,
-    rm_scratch* s,
-    rm_item* items,
-    uint32_t* n_items,
-    uint32_t* tile_item,
-    uint32_t* dir,
-    rm_mark* marks,
-    uint32_t* n_marks
+void rm_hist(
+    const uint16_t* hist, uint32_t setup_cores, uint32_t n_heavy, rm_scratch* s
 ) {
-    if (fill_cores == 0 || fill_cores > RM_MAX_CORES || n_heavy > RM_MAX_HEAVY) {
-        return 0;
-    }
-    for (uint32_t t = 0; t < RM_TILES; t++) {
-        s->heavy_of[t] = -1;
-    }
-    for (uint32_t h = 0; h < n_heavy; h++) {
-        s->heavy_of[heavy[h]] = (int32_t)h;
-    }
-    /* the heavy tiles' counts over the cores, core by core (in memory order) */
+    /* core by core (in memory order) */
     for (uint32_t h = 0; h < n_heavy; h++) {
         for (uint32_t g = 0; g < 2 * RM_GROUPS; g++) {
             s->hist[h][g] = 0;
@@ -199,6 +171,26 @@ uint32_t rm_layout(
                 s->hist[h][g] += hc[h * 2 * RM_GROUPS + g];
             }
         }
+    }
+}
+
+uint32_t rm_items(
+    const uint32_t* heavy,
+    const uint32_t* bands,
+    uint32_t n_heavy,
+    rm_scratch* s,
+    rm_item* items,
+    uint32_t* n_items,
+    uint32_t* tile_item
+) {
+    if (n_heavy > RM_MAX_HEAVY) {
+        return 0;
+    }
+    for (uint32_t t = 0; t < RM_TILES; t++) {
+        s->heavy_of[t] = -1;
+    }
+    for (uint32_t h = 0; h < n_heavy; h++) {
+        s->heavy_of[heavy[h]] = (int32_t)h;
     }
     /* items in tile order, with their entries and costs */
     uint32_t ni = 0;
@@ -237,23 +229,79 @@ uint32_t rm_layout(
     }
     tile_item[RM_TILES] = ni;
     *n_items = ni;
-    /* items to cores */
-    for (uint32_t i = 0; i < ni; i++) {
+    return 1;
+}
+
+void rm_sort(rm_scratch* s, uint32_t lo, uint32_t hi) {
+    for (uint32_t i = lo; i < hi; i++) {
         s->order[i] = i;
     }
-    sort_desc(s->order, s->tmp, s->cost, ni);
-    /* the least loaded core (ties: the lower) from a heap of the cores; with all loads
-     * 0 the cores in order are one */
+    sort_desc(s->order + lo, s->tmp + lo, s->cost, hi - lo);
+}
+
+void rm_merge(rm_scratch* s, uint32_t lo, uint32_t mid, uint32_t hi) {
+    const uint64_t* key = s->cost;
+    uint32_t* idx = s->order;
+    uint32_t i = lo, j = mid, k = lo;
+    while (i < mid && j < hi) {
+        s->tmp[k++] = key[idx[j]] > key[idx[i]] ? idx[j++] : idx[i++];
+    }
+    while (i < mid) {
+        s->tmp[k++] = idx[i++];
+    }
+    while (j < hi) {
+        s->tmp[k++] = idx[j++];
+    }
+    for (k = lo; k < hi; k++) {
+        idx[k] = s->tmp[k];
+    }
+}
+
+uint32_t rm_assign(uint32_t fill_cores, rm_scratch* s, uint32_t ni) {
+    rm_sort(s, 0, ni);
+    return rm_owners(fill_cores, s, ni);
+}
+
+uint32_t rm_owners(uint32_t fill_cores, rm_scratch* s, uint32_t ni) {
+    if (fill_cores == 0 || fill_cores > RM_MAX_CORES) {
+        return 0;
+    }
+    /* the least loaded core (ties: the lower) from a heap of the cores' keys; with all
+     * loads 0 the cores in order are one */
+    uint64_t* heap = s->heap;
     for (uint32_t c = 0; c < fill_cores; c++) {
-        s->load[c] = 0;
-        s->heap[c] = c;
+        heap[c] = c;
     }
     for (uint32_t k = 0; k < ni; k++) {
-        const uint32_t i = s->order[k], best = s->heap[0];
-        s->owner[i] = best;
-        s->load[best] += s->cost[i];
-        sift_down(s, fill_cores);
+        const uint32_t i = s->order[k];
+        s->owner[i] = (uint32_t)(heap[0] & 0xFF);
+        heap[0] += s->cost[i] << 8;
+        sift_down(heap, fill_cores);
     }
+    for (uint32_t c = 0; c < fill_cores; c++) {
+        s->load[heap[c] & 0xFF] = heap[c] >> 8;
+    }
+    return 1;
+}
+
+uint32_t rm_layout(
+    uint32_t fill_cores,
+    const uint32_t* heavy,
+    const uint32_t* bands,
+    uint32_t n_heavy,
+    rm_scratch* s,
+    rm_item* items,
+    uint32_t* n_items,
+    uint32_t* tile_item,
+    uint32_t* dir,
+    rm_mark* marks,
+    uint32_t* n_marks
+) {
+    if (!rm_items(heavy, bands, n_heavy, s, items, n_items, tile_item) ||
+        !rm_assign(fill_cores, s, *n_items)) {
+        return 0;
+    }
+    const uint32_t ni = *n_items;
     /* each core's items in item (tile) order */
     for (uint32_t c = 0; c <= fill_cores; c++) {
         s->first[c] = 0;
@@ -307,6 +355,59 @@ uint32_t rm_layout(
     }
     *n_marks = nm;
     return RM_PAGE_SLOTS * page;
+}
+
+uint32_t rm_compact(
+    uint32_t fill_cores,
+    rm_scratch* s,
+    const rm_item* items,
+    uint32_t n_items,
+    uint32_t* item_words,
+    uint32_t* core_words
+) {
+    uint32_t* len = s->len;
+    uint32_t* count = s->count;
+    for (uint32_t c = 0; c < fill_cores; c++) {
+        len[c] = count[c] = 0;
+    }
+    for (uint32_t i = 0; i < n_items; i++) {
+        const uint32_t c = s->owner[i];
+        count[c]++;
+        len[c] += items[i].total ? 1 + items[i].total : 0;
+    }
+    uint32_t page = 0;
+    for (uint32_t c = 0; c < fill_cores; c++) {
+        if (count[c] > RM_DIR_MAX_ITEMS) {
+            return 0;
+        }
+        const uint32_t pages = (len[c] + 1 + RM_PAGE_SLOTS - 1) / RM_PAGE_SLOTS;
+        uint32_t* w = core_words + RM_CORE_WORDS * c;
+        w[0] = page;
+        w[1] = pages;
+        w[2] = count[c];
+        w[3] = RM_PAGE_SLOTS * page + len[c]; /* the end slot */
+        len[c] = RM_PAGE_SLOTS * page;        /* from here: the next header */
+        page += pages;
+    }
+    for (uint32_t i = 0; i < n_items; i++) {
+        const uint32_t c = s->owner[i], total = items[i].total;
+        s->header[i] = total ? len[c] : 0;
+        item_words[RM_ITEM_WORDS * i] = c | total << 8;
+        item_words[RM_ITEM_WORDS * i + 1] = s->header[i];
+        len[c] += total ? 1 + total : 0;
+    }
+    return RM_PAGE_SLOTS * page;
+}
+
+void rm_base(
+    const rm_scratch* s, const rm_item* items, uint32_t n_items, uint32_t* base
+) {
+    for (uint32_t i = 0; i < n_items; i++) {
+        const int32_t h = s->heavy_of[items[i].tile];
+        base[i] =
+            ((items[i].total ? s->header[i] + 1 : 0) |
+             (h < 0 ? 0 : (uint32_t)(h + 1) << RM_BASE_SLOT_BITS));
+    }
 }
 
 void rm_next(
@@ -367,11 +468,13 @@ uint32_t rm_middle(
     if (fill_cores > RM_MAX_CORES) {
         return 0;
     }
+    if (n_heavy > RM_MAX_HEAVY) {
+        return 0;
+    }
     rm_clear(dir, 0, fill_cores);
+    rm_hist(hist, setup_cores, n_heavy, s);
     const uint32_t slots = (
         rm_layout(
-            hist,
-            setup_cores,
             fill_cores,
             heavy,
             bands,

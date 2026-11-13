@@ -1,6 +1,7 @@
-"""The step between COUNT and SETUP in C (projects/raster/thread/middle.c, the work
-cluster thread's) against the host's (passes.py) on the same counts: items, directory,
-list headers and end slots, next slots, item table."""
+"""The step between COUNT and SETUP in C (thread/middle.c) against the host's
+(passes.py) on the same counts: items, directory, list headers and end slots, next
+slots, item table; and the next slots SETUP makes from base words and SUM's and HSUM's
+prefixes, and the directory and headers PLACE makes from rm_compact's words."""
 
 import ctypes
 import shutil
@@ -31,6 +32,10 @@ def lib(tmp_path_factory):
     so.rm_heavy.restype = U
     so.rm_middle.argtypes = [V, V, U, U, V, V, U, V, V, V, V, V, V, V, V, U]
     so.rm_middle.restype = U
+    so.rm_compact.argtypes = [U, V, V, U, V, V]
+    so.rm_compact.restype = U
+    so.rm_base.argtypes = [V, V, U, V]
+    so.rm_base.restype = None
     return so
 
 
@@ -61,7 +66,18 @@ def c_step(so, cnt, rows, first, last, fill):
         ctypes.addressof(nm), nxt.ctypes.data, STRIDE,
     )  # fmt: skip
     n = ni.value
+    item_words = np.zeros((MAX_ITEMS, 2), np.uint32)
+    core_words = np.zeros((fill, 4), np.uint32)
+    compact = so.rm_compact(
+        fill, scratch.ctypes.data, items.ctypes.data, n, item_words.ctypes.data,
+        core_words.ctypes.data,
+    )  # fmt: skip
+    base = np.zeros(MAX_ITEMS, np.uint32)
+    so.rm_base(scratch.ctypes.data, items.ctypes.data, n, base.ctypes.data)
     return {
+        "base": base[:n],
+        "compact": (compact, item_words[:n], core_words),
+        "hist": hist,
         "heavy": list(zip(ht.tolist(), bands[:nh].tolist())),
         "items": items[:n],
         "directory": d,
@@ -70,6 +86,50 @@ def c_step(so, cnt, rows, first, last, fill):
         "slots": slots,
         "tile_item": tile_item,
     }
+
+
+def from_prefixes(c, cnt):
+    """Each setup core's next slots as SETUP's reader makes them with kSetupPrefix:
+    base word, plus the entries before the core in a whole tile, plus for a heavy
+    tile's rows the starts before row1 less the ends before row0 of the cores before."""
+    bits = 23
+    slot, h = c["base"] & ((1 << bits) - 1), c["base"] >> bits
+    before = np.cumsum(cnt, axis=0) - cnt  # SUM's
+    hist = c["hist"].astype(np.int64)
+    hbefore = np.cumsum(hist, axis=0) - hist  # HSUM's, before the groups' sums
+    starts = np.cumsum(hbefore[:, :, : passes.GROUPS], axis=2)
+    ends = np.cumsum(hbefore[:, :, passes.GROUPS :], axis=2)
+    out = np.zeros((len(cnt), len(slot)), np.int64)
+    for i, (t, r0, r1) in enumerate(c["items"][:, :3].tolist()):
+        if h[i] == 0:
+            out[:, i] = slot[i] + before[:, t]
+            continue
+        g1, g0 = r1 // 2, r0 // 2
+        add = starts[:, h[i] - 1, g1 - 1] if g1 else 0
+        out[:, i] = slot[i] + add - (ends[:, h[i] - 1, g0 - 1] if g0 else 0)
+    return out
+
+
+def placed(item_words, core_words, items, slots):
+    """The directory pages and list headers PLACE makes from rm_compact's words."""
+    d = np.zeros((len(core_words), K["kDirBytes"] // 4), np.uint32)
+    pages = np.zeros((slots, lists.SLOT), np.uint32)
+    for c, (first, n_pages, n, end) in enumerate(core_words.tolist()):
+        d[c, : K["kDirIds"]] = first, n_pages, n
+        pages[end, 0] = K["kMarkEnd"]
+    k = np.zeros(len(core_words), int)
+    for (c, at), (t, r0, r1, total) in zip(item_words.tolist(), items.tolist()):
+        core, entries = c & 0xFF, c >> 8
+        assert entries == total
+        tile = t
+        if (r0, r1) != (0, 32):
+            tile |= r0 << K["kItemRow0Shift"] | r1 << K["kItemRow1Shift"]
+        d[core, K["kDirIds"] + k[core]] = tile | (0 if total else K["kItemEmpty"])
+        k[core] += 1
+        if total:
+            hdr = [0, K["kHdrTile"], K["kHdrCount"], K["kHdrRow0"], K["kHdrRow1"]]
+            pages[at, hdr] = K["kMarkTile"], t, total, r0, r1
+    return d, pages
 
 
 def same(c, cnt, rows, first, last, fill):
@@ -86,6 +146,7 @@ def same(c, cnt, rows, first, last, fill):
     assert np.array_equal(c["directory"], mid["directory"])
     assert c["slots"] == mid["slots"]
     assert np.array_equal(c["next"], mid["next"])
+    assert np.array_equal(from_prefixes(c, cnt), mid["next"])
     pages = np.zeros((mid["slots"], lists.SLOT), np.uint32)
     for at, mark, t, n, r0, r1 in c["marks"].tolist():
         pages[at, 0] = mark
@@ -93,6 +154,10 @@ def same(c, cnt, rows, first, last, fill):
             hdr = [K["kHdrTile"], K["kHdrCount"], K["kHdrRow0"], K["kHdrRow1"]]
             pages[at, hdr] = t, n, r0, r1
     assert np.array_equal(pages.reshape(mid["pages"].shape), mid["pages"])
+    assert c["compact"][0] == mid["slots"]
+    d, p = placed(c["compact"][1], c["compact"][2], c["items"], len(pages))
+    assert np.array_equal(d, mid["directory"])
+    assert np.array_equal(p.reshape(mid["pages"].shape), mid["pages"])
     # the thread's items page, from tile_item and the items' rows
     tile_item = c["tile_item"]
     table = passes.item_table(mid["items"])

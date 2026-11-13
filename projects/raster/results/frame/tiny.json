@@ -1,0 +1,84 @@
+{
+ "scene": "tiny",
+ "runs": 5,
+ "frames_per_run": 765,
+ "upload_s": 0.2677696750033647,
+ "x280_mhz": 1000,
+ "thread": {
+  "us": {
+   "count": 103.80907189542484,
+   "sum": 60.887137254901965,
+   "hist": 0.0,
+   "hsum": 0.0,
+   "middle": 433.52054901960787,
+   "place": 99.13341176470588,
+   "setup": 452.74096732026146,
+   "fill": 121.23675816993463
+  },
+  "middle_us": {
+   "TAKE": 9.704156862745098,
+   "HEAVY_US": 38.594352941176474,
+   "CUT": 29.923712418300653,
+   "SORT": 85.80117647058823,
+   "ASSIGN": 156.47924183006535,
+   "COMPACT": 65.67492810457516,
+   "PAGES": 15.834745098039216,
+   "GIVE": 30.852418300653596
+  },
+  "frame_us": 1271.8132549019608,
+  "first_run": {
+   "ran": true,
+   "state": "done",
+   "error": "none",
+   "code": 0,
+   "where": 8,
+   "thread_us": 977684.24,
+   "slots": 5696,
+   "items": 1024,
+   "marks": 784,
+   "heavy": 0,
+   "us": {
+    "count": 79412.2,
+    "sum": 46572.04,
+    "hist": 0.0,
+    "hsum": 0.0,
+    "middle": 336828.34,
+    "place": 75829.86,
+    "setup": 346111.28,
+    "fill": 92770.14
+   },
+   "middle_us": {
+    "TAKE": 7423.02,
+    "HEAVY_US": 29771.0,
+    "CUT": 28328.7,
+    "SORT": 65656.3,
+    "ASSIGN": 119706.62,
+    "COMPACT": 50241.32,
+    "PAGES": 12101.08,
+    "GIVE": 23600.3
+   },
+   "frames": 765,
+   "status_ok": true
+  }
+ },
+ "power": {
+  "card_idle_w": 21.1833134360036,
+  "card_idle_open_w": 61.99998532922473,
+  "card_mean_w": 63.601247099492255,
+  "card_peak_w": 76.0,
+  "card_limit_w": 150.0,
+  "card_mean_percent_of_limit": 42.400831399661506,
+  "card_joules_per_frame": 0.08091149992066966,
+  "card_joules_per_frame_above_idle": 0.05396275690757222,
+  "seconds_per_frame": 0.001272168449686195,
+  "seconds": 4.866044320049696,
+  "whole_loop": "10.44 s, 138 samples, mean 63.1 W (42% of 150 W), peak 76.0 W, 659.2 J, idle 62.0 W, 60.4 C",
+  "aiclk_mhz_min": 1343,
+  "aiclk_mhz_mean": 1349.8897637795276,
+  "aiclk_samples": 127,
+  "aiclk_left_nominal": true
+ },
+ "read_frame_s": 19.847341640968807,
+ "image_differs": 0,
+ "ok": true
+}

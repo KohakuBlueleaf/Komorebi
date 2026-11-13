@@ -16,9 +16,15 @@ constexpr uint32_t kSegSetup = 13;
 // HIST (writer only): each core writes, per heavy tile, the 32 counts COUNT kept for it
 // (kCbHist).
 constexpr uint32_t kSegHist = 14;
-// PLACE (writer only, a8 required): core c copies its directory page (c < a6) and its
-// share of the marks (a list slot's 128 bytes, then its slot number) to their slots.
+// PLACE (writer only, a8 required): directory pages, end slots and list headers from
+// the step's words in the items region.
 constexpr uint32_t kSegPlace = 15;
+// SUM (writer only): the counters' sums over the cores, 16 tiles a slice: each core's
+// entries before it per tile into its slots page, the totals for the X280 thread.
+constexpr uint32_t kSegSum = 16;
+// HSUM (writer only): the same for HIST's histograms, one heavy tile at a time: each
+// core's counts before it, summed over the groups, into its page at a2.
+constexpr uint32_t kSegHsum = 17;
 // a8, every segment: 0, or 1 + the DRAM bank of the X280 thread's regions, whose small
 // arrays are then bank addresses (pages contiguous); mesh and lists stay tensors.
 
@@ -37,17 +43,41 @@ constexpr uint32_t kRecPages = 2;
 constexpr uint32_t kSlotsBytes = 8192;  // at most 2,048 items
 constexpr uint32_t kItemsBytes = 8192;
 constexpr uint32_t kItemRows = 4096;
+// SETUP with kSetupPrefix in a6: each core's slots page from SUM's and HSUM's prefixes
+// and the items' base words (first slot | 1 + heavy index << kBaseSlotBits): README.md.
+constexpr uint32_t kSetupPrefix = 0x80000000;
+constexpr uint32_t kBaseAt = 8192;
+constexpr uint32_t kBaseSlotBits = 23;
+constexpr uint32_t kHprefixAddrAt = 16384;
+constexpr uint32_t kHprefixPageBytes = 32768;  // 128 bytes per heavy tile, 256 of them
+constexpr uint32_t kSumsHeavyAt = 8192;  // in SUM's totals: HSUM's, 128 bytes per tile
+// Then PLACE's words: frame words, per item and per fill core (README.md); each part on
+// 64 bytes, as a DRAM read must start (one at 16 mod 64 returned the line's start).
+constexpr uint32_t kFrameWordsAt = 16448;
+constexpr uint32_t kItemWordsAt = 16512;
+constexpr uint32_t kItemWords = 2;
+constexpr uint32_t kCoreWordsAt = 32896;
+constexpr uint32_t kCoreWords = 4;
+constexpr uint32_t kMaxFillCores = 248;
+constexpr uint32_t kItemsRegionBytes = kCoreWordsAt + kCoreWords * 4 * kMaxFillCores;
+// The list and directory words PLACE writes, as raster.h's (card_thread.py checks).
+constexpr uint32_t kLayDirIds = 3;
+constexpr uint32_t kLayDirFrame = 1000;
+constexpr uint32_t kLayItemEmpty = 0x80000000;
+constexpr uint32_t kLayRow0Shift = 16;
+constexpr uint32_t kLayRow1Shift = 22;
+constexpr uint32_t kLayMarkTile = 0xFFFFFFFE;
+constexpr uint32_t kLayMarkEnd = 0xFFFFFFFF;
+constexpr uint32_t kLayHdrTile = 1;
+constexpr uint32_t kLayHdrCount = 2;
+constexpr uint32_t kLayHdrRow0 = 3;
+constexpr uint32_t kLayHdrRow1 = 4;
 constexpr uint32_t kCountBytes = 8192;
 constexpr uint32_t kWorkBytes = 12288;  // records of a block, of pieces, crossing corners
 constexpr uint32_t kOutBytes = 4096;
 constexpr uint32_t kHistBytes = 65536;  // kTiles x 64
 constexpr uint32_t kHeavyBytes = 4096;  // HIST's heavy tiles: at most 1,023
 constexpr uint32_t kDirPageBytes = 4096;
-// A list slot and its number, padded to 64 bytes: a DRAM read must start on a
-// 64-byte boundary (one at 16 mod 64 returned the line's start).
-constexpr uint32_t kMarkBytes = 192;
-constexpr uint32_t kMarkBatch = 21;  // marks per copy through one out page
-static_assert(kMarkBatch * kMarkBytes <= kOutBytes);
 constexpr uint32_t kOutPages = 4;
 constexpr uint32_t kOutEntries = 31;
 constexpr uint32_t kOutLast = 0x80000000;  // in an out page's count: the last page
@@ -84,10 +114,10 @@ constexpr uint32_t kGaveBadSlot = 5;  // a slot past the lists or the slots page
 constexpr uint32_t kGaveBadBox = 6;
 constexpr uint32_t kGaveBadClip = 7;
 // A histogram count past 65,535 (where: the tile); HIST's heavy tiles past its page or
-// out stride; PLACE without the thread's bank.
+// out stride (HSUM: past its pages); PLACE without the thread's bank.
 constexpr uint32_t kGaveBadHist = 8;
 constexpr uint32_t kGaveBadHeavy = 9;
-constexpr uint32_t kGaveBadPlace = 10;  // PLACE without a8
+constexpr uint32_t kGaveBadPlace = 10;  // PLACE, SUM or HSUM without a8 (where: 0, the segment)
 
 // Profile (a9 not 0): 32 words per pass per core, at 128 x (segment - kSegCount) of its
 // page; the threads leave wall-clock counters in kCbSProf and the writer sends them.

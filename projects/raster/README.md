@@ -264,60 +264,70 @@ gives the camera with the load, waits for the thread's result and reads the imag
 
 ```
 thread frame(camera):                                    # X280, work cluster 1
-    issue COUNT; wait                                    # counters to a region of its bank
-    take counters                                        # drop the cache's lines of them
-    tile costs, tiles to cut                             # on its four cores
-    if any: write their list; issue HIST; wait; take histograms
-    bands, items, items to cores (a heap), directory and list headers;
-    next slots of every (core, item)                     # on its four cores
-    give slots, items, directory, headers                # write the cache's lines back
-    issue PLACE; wait            # cores copy directory pages and headers into the tensors
-    issue SETUP; wait            # each record to its slot
+    issue COUNT; wait                                    # counters to a tensor
+    issue SUM; wait              # cores: totals per tile, entries before each core
+    take totals                                          # drop the cache's lines of them
+    tile costs (four harts), tiles to cut
+    if any: write their list; issue HIST; wait; issue HSUM; wait; take their totals
+    bands and items; items by falling cost (four harts sort quarters, merged);
+    each to the least loaded core (a heap); list layout and base slots as words
+    give the items region                                # 37 KB written back
+    issue PLACE; wait            # cores: directory pages, list headers, end slots
+    issue SETUP; wait            # each core its next slots from the prefixes, then
+                                 # each record to its slot
     issue FILL; wait
     result: what it found, each part's time
 ```
 
-The thread's memory is regions: pages of its cluster's own DRAM bank, which Tensix
-cores reach by bank address. The fill reads its directory and lists from interleaved
-tensors and stays as it is, so the step writes the directory pages and the headers into
-regions and PLACE copies them: each core its directory page and its share of the
-headers and end slots (17 us). The passes' reader and writer take a region's address
-where the record says so (a8), the mesh and the lists stay tensors.
+The counting and the prefix sums are a reduction over the cores, so the cores do them:
+SUM gives each core of 64 a slice of 16 tiles, reads every core's counters for it,
+writes the totals for the thread and, into each core's slots page, the entries of the
+cores before it; HSUM does the same for each heavy tile's 32 group counts, summed over
+the groups as well, so that a core's start of any band of rows is two words apart.
+SETUP's reader then makes its own core's next slots: the item's base slot (from the
+thread) plus the entries before it. The thread reads 8 KB of totals instead of 983 KB
+of counters, writes 37 KB of words instead of the directory pages, headers and next
+slots (2 MB), and keeps what is serial: the costs, the cuts, the sort and the heap.
+PLACE expands its words into the directory pages and the list headers.
+
+The pages only the cores read and write are interleaved tensors, the thread's are
+regions in its own bank. All 120 cores reading one bank at once got what that bank
+gives: SUM took 247 us with its pages in the bank and 59 us with them spread over the
+banks.
 
 Exact on tiny, 10^4, 10^5, 10^6, stress-big, stress-heavy and stress-degenerate: the
 thread's counts, items, directory and lists equal the host step's on the reference's
 counts, and the image the reference's (`python -m projects.raster.card_thread --scene
-<s> [--lists 64]`).
+<s> [--lists 64]`); Sponza and Bistro interior (overview) images exact in the runs below.
 
-Frames in a row (2026-11-13, card 1, 120 cores, X280 at 1,000 MHz (the session's
-default), AICLK 1,350 MHz (one sample at 1,343 on 10^6), host load 5 to 9; `python -m
-projects.raster.bench_thread --scene <s> --runs 5 --frames 0 --host`): 5 loads of the
-program, each running as many frames as fill about 1 s (38 to 196), median per frame,
-us. Power is the card's mean over the stretches the threads ran (about 5 s per scene);
-the card draws 61.7 to 63.0 W with the program resident and idle, 20.0 to 21.7 W closed:
+Frames in a row (2026-11-13, card 1, 120 cores, X280 at 1,000 MHz, AICLK 1,350 MHz
+(samples at 1,343 on some scenes); `python -m projects.raster.bench_thread --scene <s>
+--runs 5 --frames 0`, results in `results/frame/`): 5 loads of the program, each running
+as many frames as fill about 1 s (42 to 771), median per frame, us. Inside a frame the
+host does nothing: 0 round trips, 0 bytes. Power is the card's mean over the threads'
+runs; it draws 60.5 to 63.0 W with the program resident and idle. The V100 column is the
+whole frame of `reference/bench.py` on one idle V100:
 
-| scene | bands | COUNT | HIST | the step | PLACE | SETUP | FILL | frame | X280 MHz | card W |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| tiny | 0 | 103 | - | 4,477 | 17 | 413 | 121 | 5,131 | 1,000 | 62.9 |
-| 10^4 | 0 | 117 | - | 4,462 | 17 | 349 | 141 | 5,086 | 1,000 | 62.9 |
-| 10^5 | 112 tiles | 448 | 469 | 9,897 | 18 | 966 | 425 | 12,223 | 1,000 | 62.7 |
-| 10^6 | 130 tiles | 3,814 | 472 | 11,577 | 18 | 8,043 | 2,108 | 26,033 | 1,000 | 64.1 |
-| stress-heavy | 2 tiles | 319 | 446 | 5,310 | 18 | 996 | 1,032 | 8,122 | 1,000 | 62.2 |
+| scene | heavy tiles | COUNT | SUM | HIST + HSUM | the step | PLACE | SETUP | FILL | frame | V100 | V100 / card | card W |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| tiny | 0 | 104 | 61 | - | 434 | 99 | 453 | 121 | 1,271 | 300 | 0.24 | 63.6 |
+| 10^4 | 0 | 118 | 61 | - | 437 | 99 | 393 | 141 | 1,251 | 250 | 0.20 | 65.2 |
+| 10^5 | 112 | 455 | 61 | 95 | 743 | 103 | 1,029 | 425 | 2,906 | 760 | 0.26 | 65.7 |
+| 10^6 | 130 | 3,886 | 61 | 161 | 797 | 104 | 8,186 | 2,108 | 15,301 | 4,370 | 0.29 | 66.6 |
+| Sponza (262,266) | 0 | 2,225 | 61 | - | 453 | 100 | 4,294 | 1,593 | 8,734 | 2,670 | 0.31 | 65.1 |
+| Bistro interior (1,020,903) | 82 | 4,862 | 61 | 92 | 727 | 103 | 15,427 | 2,096 | 23,374 | 5,900 | 0.25 | 63.7 |
 
 Each column is the thread's time from issuing a record to its event (the step: from
-COUNT's event to PLACE's issue), so the frame is the sum plus the thread's own
-bookkeeping. The step's parts (10^6, us): the counters' hand-over 216, the tile costs
-1,161, clearing the directory 391, the layout 4,883 (bands included), the next slots 3,987, the pages 397 and the hand-over back 542. Without bands the step is 4.5 ms, with
-them 5.3 to 11.6 ms; it is the largest part of every frame but 10^6's.
+SUM's event to PLACE's issue, HIST and HSUM apart), so the frame is the sum plus the
+thread's own bookkeeping. The step's parts (10^6, us, harts): taking the totals 73 (1),
+tile costs and the tiles to cut 88 (4, then 1), bands and items 202 (1), the sort 118 (4
+then 2 then 1), each item to the least loaded core 186 (1: each choice needs every
+earlier one), the layout's words and base slots 76 (1), the items page 18 (1), the
+hand-over back 33 (1). Before the counting moved to the cores the step was 4.5 to 11.6
+ms (counters 983 KB read by the thread, next slots of every (core, item) written by it).
 
-The step against the host's, the same frame in the same session: the host stops the
-program, reads the counters (0.44 to 1.1 s), loads and runs HIST and reads it (0.1 to
-0.6 s, with bands), takes the step (6 to 11 ms in Python, and 3 to 16 ms for the
-bands' items), writes the lists' frame and slots (0.12 to 0.65 s) and loads the program
-for SETUP and the fill (0.1 to 0.2 s each): 0.8 to 2.0 s between the card's passes,
-against 4.5 to 11.6 ms for the thread. The step's arithmetic itself takes the X280 about
-as long as the host's numpy (tiny 4.5 against 7 ms, 10^6 11.6 against 27 ms); what the
-thread saves is the stop, the read-backs, the uploads and the loads.
+SETUP is now the largest part of every frame but tiny's: the slowest core's scalar work
+per entry (each record copied, 128 bytes, by the pack thread) and its share of the mesh.
 
 Per frame the host still loads the program (the camera goes with the load: 0.5 to 0.8
 s) and reads the image back (20 MB, 10 to 18 s); both are outside the frame times above.
@@ -478,9 +488,10 @@ Triangle setup, the per-tile counts and the scatter into the tile lists run on t
 Tensix cores (COUNT and SETUP, above), the step between them on the X280 thread. The
 irregular parts, with the host-binned path's times (10^5 / 10^6, ms):
 
-- Prefix sums of the per-tile counts, tile costs, bands and the assignment of tiles and
-  bands to cores: on the X280 thread now (above), 4.5 to 11.6 ms a frame at 1,000 MHz;
-  on the host-binned path still inside the records-and-lists step (48 / 207 ms).
+- Prefix sums of the per-tile counts: on the cores (SUM, HSUM, above). Tile costs,
+  bands and the assignment of tiles and bands to cores: on the X280 thread, 0.43 to 0.80
+  ms a frame at 1,000 MHz; on the host-binned path still inside the records-and-lists
+  step (48 / 207 ms).
 - Tiles beyond 16 bands (not built). A band holds every triangle touching its rows, so
   a tile of 33,000 small triangles (the stress scene) still costs 4.7 times the mean
   core in 16 bands; past that, a tile's triangles are split by range across cores and

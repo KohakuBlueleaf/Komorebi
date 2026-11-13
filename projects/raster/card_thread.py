@@ -23,14 +23,17 @@ FRAME_H = THREAD / "frame.h"
 F = {
     name: int(value.rstrip("u"), 0)
     for name, value in re.findall(
-        r"^#define (RF_\w+) (\d+u?)\b", FRAME_H.read_text(), re.M
+        r"^#define (RF_\w+)\s+(\d+u?)\b", FRAME_H.read_text(), re.M
     )
 }
 # expressions in frame.h
 F["RF_W_PROF"] = F["RF_W_FRAME"] + F["RF_FRAME_MAX"]
 F["RF_W_REPEAT"] = F["RF_W_PROF"] + 1
 F["RF_W_SPROF"] = F["RF_W_REPEAT"] + 1
-F["RF_WORDS"] = F["RF_W_SPROF"] + 1
+for i, name in enumerate(["COUNTERS", "HIST", "SLOTS", "HPREFIX"]):
+    F[f"RF_W_{name}"] = F["RF_W_SPROF"] + 1 + i
+F["RF_WORDS"] = F["RF_W_HPREFIX"] + 1
+F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
 S, K = card_passes.S, lists.K
 CLUSTER = 1
 PAGES_PER_ITEM = 5  # the frame's pages per tile (card.words)
@@ -43,37 +46,50 @@ def same_numbers():
         "RF_SEG_SETUP": S["kSegSetup"],
         "RF_SEG_HIST": S["kSegHist"],
         "RF_SEG_PLACE": S["kSegPlace"],
+        "RF_SEG_SUM": S["kSegSum"],
+        "RF_SEG_HSUM": S["kSegHsum"],
+        "RF_BASE_AT": S["kBaseAt"],
+        "RF_HPREFIX_ADDR_AT": S["kHprefixAddrAt"],
+        "RF_HPREFIX_BYTES": S["kHprefixPageBytes"],
+        "RF_SUMS_HEAVY_AT": S["kSumsHeavyAt"],
         "RF_SEG_FILL": K["kSegFill"],
         "RF_PAGES_PER_ITEM": PAGES_PER_ITEM,
-        "RF_HDR_TILE": K["kHdrTile"],
-        "RF_HDR_COUNT": K["kHdrCount"],
-        "RF_HDR_ROW0": K["kHdrRow0"],
-        "RF_HDR_ROW1": K["kHdrRow1"],
-        "RF_DIR_FRAME": K["kDirFrame"],
         "RF_FRAME_MAX": K["kDirFrameMax"],
         "RF_COUNTER_BYTES": S["kCountBytes"],
         "RF_HEAVY_BYTES": S["kHeavyBytes"],
         "RF_SLOTS_BYTES": S["kSlotsBytes"],
         "RF_ITEMS_BYTES": S["kItemsBytes"],
-        "RF_DIR_BYTES": S["kDirPageBytes"],
-        "RF_MARK_BYTES": S["kMarkBytes"],
+        "RF_FRAME_WORDS_AT": S["kFrameWordsAt"],
+        "RF_ITEM_WORDS_AT": S["kItemWordsAt"],
+        "RF_CORE_WORDS_AT": S["kCoreWordsAt"],
+        "RF_ITEMS_REGION_BYTES": S["kCoreWordsAt"] + 16 * S["kMaxFillCores"],
+        # PLACE's list and directory words against the fill's
+        "kLayDirIds": (S["kLayDirIds"], K["kDirIds"]),
+        "kLayDirFrame": (S["kLayDirFrame"], K["kDirFrame"]),
+        "kLayItemEmpty": (S["kLayItemEmpty"], K["kItemEmpty"]),
+        "kLayRow0Shift": (S["kLayRow0Shift"], K["kItemRow0Shift"]),
+        "kLayRow1Shift": (S["kLayRow1Shift"], K["kItemRow1Shift"]),
+        "kLayMarkTile": (S["kLayMarkTile"], K["kMarkTile"]),
+        "kLayMarkEnd": (S["kLayMarkEnd"], K["kMarkEnd"]),
+        "kLayHdrTile": (S["kLayHdrTile"], K["kHdrTile"]),
+        "kLayHdrCount": (S["kLayHdrCount"], K["kHdrCount"]),
+        "kLayHdrRow0": (S["kLayHdrRow0"], K["kHdrRow0"]),
+        "kLayHdrRow1": (S["kLayHdrRow1"], K["kHdrRow1"]),
+        "kDirPageBytes": (S["kDirPageBytes"], K["kDirBytes"]),
     }
-    return {k: (F[k], v) for k, v in pairs.items() if F[k] != v}
+    pairs = {k: v if isinstance(v, tuple) else (F[k], v) for k, v in pairs.items()}
+    return {k: v for k, v in pairs.items() if v[0] != v[1]}
 
 
 def regions(scene, workers):
     """The thread's regions in frame.h's order: the camera's page, then sizes."""
-    work = 256 << 10  # frame.c work_t: middle.h scratch, items, marks (about 170 KB)
+    work = 256 << 10  # frame.c work_t: middle.h scratch and items (about 130 KB)
     return {
         "camera": card_passes.camera_page(scene),
-        "counters": workers * F["RF_COUNTER_BYTES"],
         "heavy": F["RF_HEAVY_BYTES"],
-        "hist": workers * F["RF_HIST_MAX"] * 64,
-        "slots": workers * F["RF_SLOTS_BYTES"],
-        "items": F["RF_ITEMS_BYTES"],
-        "dir": workers * F["RF_DIR_BYTES"],
-        "marks": (2048 + 248) * F["RF_MARK_BYTES"],
+        "items": F["RF_ITEMS_REGION_BYTES"],
         "work": work,
+        "sums": F["RF_SUMS_BYTES"],
     }
 
 
@@ -104,7 +120,8 @@ def program(scene, words, workers):
 
 
 def tensors(dev, blocks, workers, list_slots):
-    """The DRAM tensors: mesh (once per scene), lists, directory, frame, profile."""
+    """The DRAM tensors: mesh (once per scene), lists, directory, frame, profiles, and
+    the pages only the cores read and write."""
     pages = -(-list_slots // lists.PAGE_SLOTS)
     out_pages = lists.TILES * 5
     chunks = -(-out_pages // card.CHUNK_PAGES)
@@ -122,6 +139,10 @@ def tensors(dev, blocks, workers, list_slots):
         "frame": frame,
         "prof": card.tensor(dev, np.zeros((workers, 1024))),
         "sprof": card.tensor(dev, np.zeros((workers, S["kSProfPageBytes"] // 4))),
+        "counters": card.tensor(dev, np.zeros((workers, F["RF_COUNTER_BYTES"] // 4))),
+        "hist": card.tensor(dev, np.zeros((workers, F["RF_HIST_BYTES"] // 4))),
+        "slots": card.tensor(dev, np.zeros((workers, F["RF_SLOTS_BYTES"] // 4))),
+        "hprefix": card.tensor(dev, np.zeros((workers, F["RF_HPREFIX_BYTES"] // 4))),
         "list_slots": pages * lists.PAGE_SLOTS,
     }
 
@@ -143,6 +164,8 @@ def words(up, blocks, cores, workers, steps):
         w[F["RF_W_FRAME"] + i] = t.buffer_address()
     w[F["RF_W_PROF"]] = up["prof"].buffer_address()
     w[F["RF_W_SPROF"]] = up["sprof"].buffer_address()
+    for name in ("counters", "hist", "slots", "hprefix"):
+        w[F[f"RF_W_{name.upper()}"]] = up[name].buffer_address()
     return w
 
 
@@ -150,7 +173,7 @@ def result_dict(r):
     """The thread's result: code, what the step found, each part in microseconds."""
     o = list(r.words) + [0] * (F["RF_OUT_WORDS"] - len(r.words))
     us = 1e6 / TIMER_HZ
-    names = ["count", "hist", "middle", "place", "setup", "fill"]
+    names = ["count", "sum", "hist", "hsum", "middle", "place", "setup", "fill"]
     return {
         "ran": r.ran,
         "state": r.state,
@@ -165,7 +188,16 @@ def result_dict(r):
         "us": {n: o[F[f"RF_O_{n.upper()}"]] * us for n in names},
         "middle_us": {
             n: o[F[f"RF_O_{n}"]] * us
-            for n in ("TAKE", "HEAVY_US", "CLEAR", "LAYOUT", "NEXT", "PAGES", "GIVE")
+            for n in (
+                "TAKE",
+                "HEAVY_US",
+                "CUT",
+                "SORT",
+                "ASSIGN",
+                "COMPACT",
+                "PAGES",
+                "GIVE",
+            )
         },
     }
 
