@@ -19,12 +19,14 @@ from komorebi.errors import (
     KernelInstructionError,
     KernelSizeError,
     KomorebiError,
+    L1BudgetError,
     ProgramError,
     StartError,
     ThreadFailed,
     WaitTimeout,
 )
 from komorebi.movement import Pattern
+from komorebi.overlay import OverlayError
 from komorebi.program import Buffer, BufferPair, KernelSizes, Program
 
 __version__ = "0.1.0"
@@ -42,6 +44,8 @@ __all__ = [
     "KernelSizeError",
     "KernelSizes",
     "KomorebiError",
+    "L1BudgetError",
+    "OverlayError",
     "Pattern",
     "Program",
     "ProgramError",

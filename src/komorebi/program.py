@@ -14,6 +14,7 @@ from komorebi import _env, abi
 from komorebi.abi import handlers_from_header
 from komorebi.errors import ProgramError
 from komorebi.movement import check_pairs
+from komorebi.overlay import Slots, declare, overlays_from_header
 from komorebi.thread import Thread
 
 KERNELS = ("reader", "compute", "writer")
@@ -101,9 +102,15 @@ class Program:
     x280_ports: dict | None = None  # Program.ports(): {"serve": ..., "noc": ...}
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
     pairs: list = field(default_factory=list, init=False)  # the BufferPairs given
+    overlays: dict = field(default_factory=dict, init=False)  # name -> Overlay
+    overlay_slots: Slots = field(default_factory=Slots, init=False)
+    header: Path | None = field(default=None, init=False)  # the handlers' header
+    # the overlays as the last load built them (komorebi.overlay.Built)
+    overlays_built: object = field(default=None, init=False, compare=False)
 
     def __post_init__(self):
         if isinstance(self.handlers, str | Path):
+            self.header = Path(self.handlers)
             self.handlers = handlers_from_header(self.handlers)
         user_max = abi.headers()["KM_HANDLER_USER_MAX"]
         for name, number in self.handlers.items():
@@ -204,6 +211,37 @@ class Program:
                     f"{self.name}: shared region {name!r} is named by threads on banks "
                     f"{sorted(banks[name])}; a thread reads only its own bank's regions"
                 )
+
+    def overlay(self, name, parts, number=None, defines=None):
+        """Declares overlay `name`: `parts` a folder with reader.cpp, writer.cpp or
+        compute.cpp (any of them) or a dict of them; `number` its number, by default
+        kOverlay<Name> of the handlers' header. Returns the program."""
+        if name in self.overlays:
+            raise ValueError(f"{self.name} already has an overlay {name!r}")
+        if number is None:
+            numbers = overlays_from_header(self.header) if self.header else {}
+            if name not in numbers:
+                raise ValueError(
+                    f"overlay {name}: no number given and no kOverlay constant for it "
+                    "in the handlers' header"
+                )
+            number = numbers[name]
+        made = declare(name, parts, number, defines)
+        taken = {o.number: o.name for o in self.overlays.values()}
+        if made.number in taken:
+            raise ValueError(
+                f"overlay {name}: number {made.number} is taken by "
+                f"{taken[made.number]}"
+            )
+        self.overlays[name] = made
+        return self
+
+    def slots(self, count=None, bytes=None):
+        """Declares the slots of the kernels that have overlay parts: `count` (1 to 4)
+        and `bytes` per slot, each an int or a {"reader"|"writer"|"compute": value};
+        by default a slot per overlay with a part there, sized by the largest part."""
+        self.overlay_slots = Slots(count, bytes)
+        return self
 
     def movement(self):
         """True when one movement source serves both data-movement CPUs: a dict with

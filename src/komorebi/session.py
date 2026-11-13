@@ -16,7 +16,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import abi, dram, insn_check, layout, native
+from komorebi import abi, dram, insn_check, layout, native, overlay
 from komorebi import state as device_state
 from komorebi import tensor as tensor_module
 from komorebi import thread as thread_module
@@ -24,6 +24,7 @@ from komorebi.errors import (
     CardBusy,
     GridTimeout,
     KernelSizeError,
+    L1BudgetError,
     ProgramError,
     StartError,
 )
@@ -629,6 +630,8 @@ class Session:
                 self.log(
                     f"kernels built and checked ({time.perf_counter() - started:.2f} s)"
                 )
+            if program.overlays:
+                backend.load_overlays(program, descriptor)
             self.log("launch")
             # From here the grid may run: an interrupt is delivered when the launch
             # call returns, after the kernels started.
@@ -931,19 +934,21 @@ class _Backend:
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
 
-    def _control_blocks(self, cores, grid, port_lines=None):
+    def _control_blocks(self, cores, grid, port_lines=None, area_bytes=0):
         """Zeroed control blocks, one shard per core, padded so that the block can
         start on a 64-byte line: the same L1 address on every core. `port_lines`: the
-        KM_X280_TO line of each served core, written once the address is known."""
+        KM_X280_TO line of each served core, written once the address is known.
+        `area_bytes`: the overlay area after each block (written by load_overlays)."""
         abi_headers = abi.headers()
-        words = (abi_headers["KM_CONTROL_BYTES"] + CONTROL_ALIGN) // 4
+        words = (abi_headers["KM_CONTROL_BYTES"] + area_bytes + CONTROL_ALIGN) // 4
         self.control = _words(self.session, np.zeros((cores, words)), grid)
         base = self.control.address
         self.control_addr = (base + CONTROL_ALIGN - 1) // CONTROL_ALIGN * CONTROL_ALIGN
         self.control_offset = (self.control_addr - base) // 4
         check_bases({"control block": self.control_addr})
+        self.control_rows = np.zeros((cores, words), dtype=np.uint32)
         if port_lines is not None:
-            rows = np.zeros((cores, words), dtype=np.uint32)
+            rows = self.control_rows
             to_offset = (
                 self.control_offset
                 + (abi_headers["KM_CONTROL_X280"] + abi_headers["KM_X280_TO"]) // 4
@@ -978,7 +983,8 @@ class _Backend:
         port = self.port
         grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
-        control = self._control_blocks(cores, grid, port_lines)
+        area = overlay.constants()["kOverlayAreaBytes"] if program.overlays else 0
+        control = self._control_blocks(cores, grid, port_lines, area)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
         cores_tensor = _words(self.session, table)
@@ -1068,6 +1074,56 @@ class _Backend:
                 **config,
             )
         return launch
+
+    def load_overlays(self, program, descriptor):
+        """Builds the program's overlays against the kernels just built, puts each
+        part in every DRAM bank, places the slots in L1 (refused, with the L1 budget
+        table, when they do not fit) and writes the overlay area beside each block."""
+        session, abi_headers = self.session, abi.headers()
+        started = time.perf_counter()
+        recipes = {}
+        for _, builds in descriptor.recipes():
+            for row in builds:
+                recipe = overlay.Recipe.from_native(row)
+                recipes[recipe.target] = recipe
+        built = overlay.build(
+            program, recipes, native.cache_directory() / "overlays", session.log
+        )
+        program.overlays_built = built
+        grid = (self.port.grid_x, self.port.grid_y)
+        cores = grid[0] * grid[1]
+        buffers = sum(buffer.page_bytes * buffer.pages for buffer in program.buffers)
+        buffers += 2 * abi_headers["kTokenBytes"] + self.trace_cap * 16
+        rows = [
+            ("circular buffers", buffers),
+            ("control block and overlay area", self.control.nbytes // cores),
+        ]
+        rows += [
+            (f"slots: {part}, {count} x {size:,} B", count * size)
+            for part, (count, size) in built.slots.items()
+        ]
+        table, fits = overlay.budget(session.l1()[1], rows)
+        session.log(f"L1 budget of a core:\n{table}")
+        if not fits:
+            raise L1BudgetError(program.name, table)
+        image_rows, placed = overlay.dram_rows(built)
+        image = _words(session, image_rows)
+        slots = session.empty(
+            (cores, (built.slot_bytes + overlay.ALIGN) // 4), "uint32", shard_grid=grid
+        )
+        self.io += [image, slots]
+        slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
+        area = overlay.area_words(
+            built, placed, image.address, image.aligned_page_bytes, slot_base
+        )
+        at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
+        self.control_rows[:, at : at + len(area)] = area
+        self.control.write(self.control_rows)
+        session.log(
+            f"overlays {list(program.overlays)} built and placed: slots from "
+            f"{slot_base:#x}, {image.nbytes:,} B of DRAM "
+            f"({time.perf_counter() - started:.2f} s)"
+        )
 
     def finish(self, timeout):
         """Waits for the kernel to finish, stops it, then closes the X280 runtime."""

@@ -44,6 +44,19 @@ class KernelSizeError(ProgramError):
         self.sizes = sizes
 
 
+class L1BudgetError(ProgramError):
+    """A program's buffers, control blocks and overlay slots do not fit a core's L1;
+    nothing was loaded. `table` is the L1 budget table of one core."""
+
+    def __init__(self, program, table):
+        super().__init__(
+            f"{program}: its buffers and slots do not fit a core's L1. Fewer or "
+            "smaller slots (Program.slots(count=..., bytes=...)), fewer buffer pages, "
+            f"or a smaller kernel buffer. The L1 budget of a core:\n{table}"
+        )
+        self.table = table
+
+
 class CardBusy(KomorebiError):
     """Another live process holds the card's chip lock; opening it would wait for that
     process to exit. `pid` is the holder."""

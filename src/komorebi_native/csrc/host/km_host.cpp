@@ -255,6 +255,83 @@ namespace {
         return {kernels, config_bytes, kernel_buffer(mesh)[0], text, error};
     }
 
+    // Per kernel its source and, per processor, the runtime's build of it: target, ELF,
+    // compiler, optimisation level, flags, includes, link flags, link level, defines.
+    using KernelRecipes = std::vector<
+        std::tuple<std::string, std::vector<std::vector<std::string>>>>;
+
+    // Builds `desc`'s kernels (a JIT cache hit after kernel_build) and reads back the
+    // commands the runtime compiled and linked each processor's ELF with.
+    KernelRecipes kernel_recipes(
+        const MeshDevice& mesh, const tt::tt_metal::ProgramDescriptor& desc
+    ) {
+        tt::tt_metal::IDevice* dev = chip(mesh);
+        tt::tt_metal::Program program(desc);
+        program.impl().compile(dev);
+        auto& manager = (
+            tt::tt_metal::BuildEnvManager::get_instance(
+                tt::tt_metal::extract_context_id(dev)
+            )
+        );
+        const auto& env = manager.get_device_build_env(dev->build_id());
+        const std::string root = env.build_env.get_out_kernel_root_path();
+        const auto& hal = tt::tt_metal::MetalContext::instance().hal();
+        KernelRecipes out;
+        for (uint32_t type = 0; type < hal.get_programmable_core_type_count(); type++) {
+            for (const auto& [id, kernel] : program.impl().get_kernels(type)) {
+                // by processor index, empty before this kernel's first processor
+                std::vector<std::string> elves;
+                for (
+                    const auto& path : kernel->elf_paths_by_processor_index(*dev, root)
+                ) {
+                    if (!path.empty()) {
+                        elves.push_back(path);
+                    }
+                }
+                const uint32_t core_type = (
+                    hal.get_programmable_core_type_index(
+                        kernel->get_kernel_programmable_core_type()
+                    )
+                );
+                const auto processor_class = (
+                    static_cast<uint32_t>(kernel->get_kernel_processor_class())
+                );
+                std::vector<std::vector<std::string>> builds;
+                for (int index = 0; index < kernel->expected_num_binaries(); index++) {
+                    const auto& state = (
+                        manager.get_kernel_build_state(
+                            dev->build_id(),
+                            core_type,
+                            processor_class,
+                            kernel->get_kernel_processor_type(index)
+                        )
+                    );
+                    const auto recipe = state.export_target_recipe(kernel.get());
+                    std::vector<std::string> build = {
+                        recipe.target_name,
+                        elves.at(index),
+                        env.build_env.get_gpp(),
+                        recipe.compiler_opt_level,
+                        recipe.cflags,
+                        recipe.includes,
+                        recipe.lflags,
+                        recipe.linker_opt_level
+                    };
+                    build.insert(
+                        build.end(), recipe.defines.begin(), recipe.defines.end()
+                    );
+                    builds.push_back(std::move(build));
+                }
+                const auto& source = kernel->kernel_source();
+                out.emplace_back(
+                    source.path_.empty() ? kernel->name() : source.path_.string(),
+                    std::move(builds)
+                );
+            }
+        }
+        return out;
+    }
+
     // Reads (bank, address, bytes) spans of DRAM after one DRAM barrier, one read each.
     // No wait for idle cores: the caller reads only what no kernel is still writing.
     std::vector<Bytes> read_dram(
@@ -744,6 +821,10 @@ namespace {
 
         KernelBuild build() const {
             return kernel_build(*mesh_, desc_);
+        }
+
+        KernelRecipes recipes() const {
+            return kernel_recipes(*mesh_, desc_);
         }
 
         // Launches the program and returns without waiting for it (the launch call
@@ -1878,7 +1959,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("unpack_to_dest_mode") = std::vector<std::string>{},
             nb::arg("flags") = std::vector<std::pair<std::string, bool>>{},
             nb::arg("noc") = nb::none()
-        ).def("build", &Launch::build).def("run", &Launch::run);
+        ).def("build", &Launch::build).def("recipes", &Launch::recipes)
+        .def("run", &Launch::run);
     m.def(
         "write_l1",
         [](
