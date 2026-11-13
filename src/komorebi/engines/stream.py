@@ -174,8 +174,8 @@ def xorshift32(x):
     return x
 
 
-def _lines(n):
-    return -n % LINE
+def _lines(size):
+    return -size % LINE
 
 
 class Stream:
@@ -203,16 +203,16 @@ class Stream:
             if not isinstance(value, int) or not low <= value <= MASK:
                 raise ValueError(f"{name} must be an integer from {low} to {MASK}")
 
-    def registers(self, n):
-        """Allocate n registers (0 to 14; register 15 holds the seed)."""
-        if n < 0 or self._next_register + n > SEED_REGISTER:
+    def registers(self, count):
+        """Allocate `count` registers (0 to 14; register 15 holds the seed)."""
+        if count < 0 or self._next_register + count > SEED_REGISTER:
             free = SEED_REGISTER - self._next_register
             raise ValueError(
-                f"out of registers: {n} requested, {free} free of {SEED_REGISTER}"
+                f"out of registers: {count} requested, {free} free of {SEED_REGISTER}"
                 f" (register {SEED_REGISTER} is the seed)"
             )
-        out = [Register(self._next_register + i) for i in range(n)]
-        self._next_register += n
+        out = [Register(self._next_register + i) for i in range(count)]
+        self._next_register += count
         return out
 
     def const(self, value):
@@ -340,17 +340,17 @@ class Stream:
         if len(patch) > PATCHES:
             raise ValueError(f"{len(patch)} register arguments, at most {PATCHES}")
         first_register = count_register = TEMPLATE_NONE
-        first, cnt = group
+        first, group_size = group
         if isinstance(first, Register):
             first_register = first.index
         else:
             words[2] |= _group_field(first, "first")
-        if isinstance(cnt, Register):
-            count_register = cnt.index
+        if isinstance(group_size, Register):
+            count_register = group_size.index
         else:
-            words[2] |= _group_field(cnt, "count") << 16
-        arg = [p[0] for p in patch] + [0] * (PATCHES - len(patch))
-        register = [p[1] for p in patch] + [0] * (PATCHES - len(patch))
+            words[2] |= _group_field(group_size, "count") << 16
+        arg = [entry[0] for entry in patch] + [0] * (PATCHES - len(patch))
+        register = [entry[1] for entry in patch] + [0] * (PATCHES - len(patch))
         self._templates.append(
             Template(
                 tuple(words),
@@ -376,16 +376,21 @@ class Stream:
 
     def uops(self):
         """The micro-ops as encoded: constant prologue, body, labels resolved."""
-        prologue = [Uop(OP_SET, r.index, 0, 0, v, 0) for v, r in self._consts.items()]
+        prologue = [
+            Uop(OP_SET, register.index, 0, 0, value, 0)
+            for value, register in self._consts.items()
+        ]
         out = list(prologue)
-        for op in self._body:
-            if isinstance(op.immediate, Label):
-                if op.immediate.position is None:
+        for operation in self._body:
+            if isinstance(operation.immediate, Label):
+                if operation.immediate.position is None:
                     raise ValueError("a label was never bound")
-                if op.immediate.position >= len(self._body):
+                if operation.immediate.position >= len(self._body):
                     raise ValueError("a label is bound past the last micro-op")
-                op = op._replace(immediate=op.immediate.position + len(prologue))
-            out.append(op)
+                operation = operation._replace(
+                    immediate=operation.immediate.position + len(prologue)
+                )
+            out.append(operation)
         return out
 
     def templates(self):
@@ -403,17 +408,26 @@ class Stream:
         head += [self.deadline_microseconds, self.req, self.seed]
         data = HEADER.pack(*head)
         data += b"".join(
-            UOP.pack(o.op, o.a, o.b, o.c, o.immediate, o.imm2, 0) for o in ops
+            UOP.pack(
+                operation.op,
+                operation.a,
+                operation.b,
+                operation.c,
+                operation.immediate,
+                operation.imm2,
+                0,
+            )
+            for operation in ops
         )
         data += bytes(_lines(len(ops) * UOP_BYTES))
-        for t in self._templates:
-            data += struct.pack("<16I", *t.rec)
+        for template in self._templates:
+            data += struct.pack("<16I", *template.rec)
             data += TAIL.pack(
-                *t.arg,
-                *t.register,
-                t.first_register,
-                t.count_register,
-                t.patch_count,
+                *template.arg,
+                *template.register,
+                template.first_register,
+                template.count_register,
+                template.patch_count,
                 *[0] * 5,
             )
         return data + bytes(_lines(len(self._templates) * TEMPLATE_BYTES))
@@ -424,10 +438,15 @@ class Stream:
         error = check(data, len(data))
         if error:
             raise StreamFormatError(error)
-        h = _header(data)
-        s = cls(h["deadline_microseconds"], h["max_steps"], h["seed"], h["req"])
-        s._body, s._templates = _parse(data, h)
-        return s
+        header = _header(data)
+        stream = cls(
+            header["deadline_microseconds"],
+            header["max_steps"],
+            header["seed"],
+            header["req"],
+        )
+        stream._body, stream._templates = _parse(data, header)
+        return stream
 
     def simulate(self, **options):
         """`simulate` on this stream's upload."""
@@ -441,33 +460,33 @@ def _group_field(value, what):
 
 
 def _header(data):
-    w = HEADER.unpack_from(data)
-    return dict(zip(HEADER_FIELDS, w))
+    words = HEADER.unpack_from(data)
+    return dict(zip(HEADER_FIELDS, words))
 
 
-def _size(h):
-    ops = h["op_count"] * UOP_BYTES
-    template = h["command_count"] * TEMPLATE_BYTES
+def _size(header):
+    ops = header["op_count"] * UOP_BYTES
+    template = header["command_count"] * TEMPLATE_BYTES
     return HEADER_BYTES + ops + _lines(ops) + template + _lines(template)
 
 
-def _parse(data, h):
+def _parse(data, header):
     ops = []
-    for i in range(h["op_count"]):
-        op, a, b, c, immediate, imm2, _ = UOP.unpack_from(
+    for i in range(header["op_count"]):
+        opcode, a, b, c, immediate, imm2, _ = UOP.unpack_from(
             data, HEADER_BYTES + i * UOP_BYTES
         )
-        ops.append(Uop(op, a, b, c, immediate, imm2))
-    base = HEADER_BYTES + h["op_count"] * UOP_BYTES
-    base += _lines(h["op_count"] * UOP_BYTES)
+        ops.append(Uop(opcode, a, b, c, immediate, imm2))
+    base = HEADER_BYTES + header["op_count"] * UOP_BYTES
+    base += _lines(header["op_count"] * UOP_BYTES)
     templates = []
-    for i in range(h["command_count"]):
-        at = base + i * TEMPLATE_BYTES
-        rec = struct.unpack_from("<16I", data, at)
-        *tail, _p0, _p1, _p2, _p3, _p4 = TAIL.unpack_from(data, at + 64)
+    for i in range(header["command_count"]):
+        offset = base + i * TEMPLATE_BYTES
+        record = struct.unpack_from("<16I", data, offset)
+        *tail, _p0, _p1, _p2, _p3, _p4 = TAIL.unpack_from(data, offset + 64)
         templates.append(
             Template(
-                rec, tuple(tail[0:4]), tuple(tail[4:8]), tail[8], tail[9], tail[10]
+                record, tuple(tail[0:4]), tuple(tail[4:8]), tail[8], tail[9], tail[10]
             )
         )
     return ops, templates
@@ -480,29 +499,29 @@ def check(data, region_size):
     """
     if len(data) < HEADER_BYTES or len(data) > region_size or len(data) % LINE:
         return StreamError(ERROR_HEADER, 0)
-    h = _header(data)
-    if h["magic"] != MAGIC or h["version"] != VERSION or h["seed"] == 0:
+    header = _header(data)
+    if header["magic"] != MAGIC or header["version"] != VERSION or header["seed"] == 0:
         return StreamError(ERROR_HEADER, 0)
-    if not 1 <= h["op_count"] <= MAX_OPS or h["command_count"] > MAX_OPS:
+    if not 1 <= header["op_count"] <= MAX_OPS or header["command_count"] > MAX_OPS:
         return StreamError(ERROR_HEADER, 0)
-    if h["max_steps"] == 0 or len(data) != _size(h):
+    if header["max_steps"] == 0 or len(data) != _size(header):
         return StreamError(ERROR_HEADER, 0)
-    ops, templates = _parse(data, h)
+    ops, templates = _parse(data, header)
     first_use = {}
-    for pc, o in enumerate(ops):
-        if o.op not in OPS:
+    for pc, operation in enumerate(ops):
+        if operation.op not in OPS:
             return StreamError(ERROR_OPCODE, pc)
-        _, fields, kind = OPS[o.op]
-        if any(getattr(o, f) >= REGISTERS for f in fields):
+        _, fields, kind = OPS[operation.op]
+        if any(getattr(operation, operand) >= REGISTERS for operand in fields):
             return StreamError(ERROR_REGISTER, pc)
-        if kind == "jump" and o.immediate >= h["op_count"]:
+        if kind == "jump" and operation.immediate >= header["op_count"]:
             return StreamError(ERROR_JUMP, pc)
         if kind == "template":
-            if o.immediate >= h["command_count"]:
+            if operation.immediate >= header["command_count"]:
                 return StreamError(ERROR_TEMPLATE, pc)
-            first_use.setdefault(o.immediate, pc)
-    for index, t in enumerate(templates):
-        if _bad_template(t):
+            first_use.setdefault(operation.immediate, pc)
+    for index, template in enumerate(templates):
+        if _bad_template(template):
             return StreamError(ERROR_TEMPLATE, first_use.get(index, 0))
     return None
 
@@ -521,27 +540,31 @@ def check_run(data, offset, region_size, active=(), active_reqs=()):
     rejected = StreamError(ERROR_HEADER, 0)
     if offset % LINE or offset > region_size or length > region_size - offset:
         return rejected, req
-    if any(offset < o + n and o < offset + length for o, n in active):
+    if any(
+        offset < used_offset + used_bytes and used_offset < offset + length
+        for used_offset, used_bytes in active
+    ):
         return rejected, req
     if req in active_reqs:
         return rejected, req
     return check(data, region_size), req
 
 
-def _bad_template(t):
-    if not 1 <= t.handler <= HANDLER_USER_MAX or t.flags & ~(
+def _bad_template(template):
+    if not 1 <= template.handler <= HANDLER_USER_MAX or template.flags & ~(
         FLAG_EXCLUSIVE | FLAG_RESULT
     ):
         return True
-    if t.patch_count > PATCHES:
+    if template.patch_count > PATCHES:
         return True
     if any(
-        t.arg[i] >= ARGS or t.register[i] >= REGISTERS for i in range(t.patch_count)
+        template.arg[i] >= ARGS or template.register[i] >= REGISTERS
+        for i in range(template.patch_count)
     ):
         return True
     return any(
-        r != TEMPLATE_NONE and r >= REGISTERS
-        for r in (t.first_register, t.count_register)
+        register != TEMPLATE_NONE and register >= REGISTERS
+        for register in (template.first_register, template.count_register)
     )
 
 
@@ -554,7 +577,10 @@ def alloc(busy, count, core_count):
     """The lowest `first` whose cores [first, first + count) overlap no (first, count)
     interval in `busy`, or None if there is no room now."""
     for first in range(core_count - count + 1):
-        if all(first + count <= f or f + c <= first for f, c in busy):
+        if all(
+            first + count <= busy_first or busy_first + busy_count <= first
+            for busy_first, busy_count in busy
+        ):
             return first
     return None
 
@@ -603,39 +629,48 @@ def simulate(
         req = struct.unpack_from("<I", data, 24)[0] if len(data) >= 28 else 0
         events = [Event(EVENT_STREAM_ERROR, req, bad.reason | bad.pc << 8, 0)]
         return SimResult([], events, "error", 1, bad, None, False)
-    h = _header(data)
-    ops, templates = _parse(data, h)
-    if deadline_passes is None and h["deadline_microseconds"] == 0:
+    header = _header(data)
+    ops, templates = _parse(data, header)
+    if deadline_passes is None and header["deadline_microseconds"] == 0:
         deadline_passes = default_deadline_passes
-    sim = _Sim(ops, templates, h, core_count, delay, result, deadline_passes)
-    sim.ticks = ticks_per_pass
-    for p in range(max_passes):
-        sim.run_pass(p, cancel_pass == p)
-        if sim.error is not None or sim.halt is not None:
-            if sim.error is not None and sim.error.reason != ERROR_DEADLINE:
-                sim.drain(p + 1, max_passes)
-            status = "error" if sim.error else "ended"
+    simulation = _Sim(
+        ops, templates, header, core_count, delay, result, deadline_passes
+    )
+    simulation.ticks = ticks_per_pass
+    for pass_index in range(max_passes):
+        simulation.run_pass(pass_index, cancel_pass == pass_index)
+        if simulation.error is not None or simulation.halt is not None:
+            if (
+                simulation.error is not None
+                and simulation.error.reason != ERROR_DEADLINE
+            ):
+                simulation.drain(pass_index + 1, max_passes)
+            status = "error" if simulation.error else "ended"
             return SimResult(
-                sim.commands,
-                sim.events,
+                simulation.commands,
+                simulation.events,
                 status,
-                sim.events[-1].pass_index + 1,
-                sim.error,
-                sim.halt,
-                sim.stopped,
+                simulation.events[-1].pass_index + 1,
+                simulation.error,
+                simulation.halt,
+                simulation.stopped,
             )
-    return SimResult(sim.commands, sim.events, "stuck", max_passes, None, None, False)
+    return SimResult(
+        simulation.commands, simulation.events, "stuck", max_passes, None, None, False
+    )
 
 
 class _Sim:
     """The state of one stream, the completion table and the queue."""
 
-    def __init__(self, ops, templates, h, core_count, delay, result, deadline_passes):
-        self.ops, self.templates, self.h = ops, templates, h
+    def __init__(
+        self, ops, templates, header, core_count, delay, result, deadline_passes
+    ):
+        self.ops, self.templates, self.h = ops, templates, header
         self.core_count, self.delay, self.result_function = core_count, delay, result
         self.deadline_passes = deadline_passes
         self.registers = [0] * REGISTERS
-        self.registers[SEED_REGISTER] = h["seed"]
+        self.registers[SEED_REGISTER] = header["seed"]
         self.table = [None] * RING_SLOTS
         self.queue, self.commands, self.events = [], [], []
         self.pc = self.steps = self.sequence = self.pending = self.last_result = 0
@@ -644,24 +679,25 @@ class _Sim:
         self.now = 0
         self.stopped = False
 
-    def run_pass(self, p, cancel):
+    def run_pass(self, pass_index, cancel):
         """One pass. Submitters are the streams in activation order, then the queue; in
-        pass p the turns start at submitter p % (streams + 1) and go on cyclically."""
-        self.now = p
+        each pass the turns start at submitter pass_index % (streams + 1) and go on
+        cyclically."""
+        self.now = pass_index
         self.sweep()
         self.check_deadlines()
         if cancel and self.error is None:
             self.fail(ERROR_CANCELLED, self.pc)
         turns = [self.step_stream, self.step_queue]
-        start = p % len(turns)
+        start = pass_index % len(turns)
         for turn in turns[start:] + turns[:start]:
             if self.error is None:
                 turn()
 
     def drain(self, start, limit):
         """After a stream error its commands still run; a late one stops the grid."""
-        for p in range(start, limit):
-            self.now = p
+        for pass_index in range(start, limit):
+            self.now = pass_index
             self.sweep()
             self.check_deadlines()
             if self.stopped or not any(self.table):
@@ -702,17 +738,19 @@ class _Sim:
                 return
 
     def busy_groups(self):
-        return [(b.command.first, b.command.count) for b in self.table if b]
+        return [
+            (entry.command.first, entry.command.count) for entry in self.table if entry
+        ]
 
     def free_slot(self):
-        return next((i for i, b in enumerate(self.table) if b is None), None)
+        return next((i for i, entry in enumerate(self.table) if entry is None), None)
 
     def put(self, slot, words, first, count, pc, queued):
         self.sequence += 1
         args = tuple(words[i] for i in ARG_WORD)
         flags = words[1] >> 8 & 0xFF & ~FLAG_QUEUE
         handler = words[1] & 0xFF
-        rec = SubmittedCommand(
+        record = SubmittedCommand(
             self.sequence,
             slot,
             handler,
@@ -724,14 +762,14 @@ class _Sim:
             pc,
             queued,
         )
-        self.commands.append(rec)
-        delay = self.delay(rec) if callable(self.delay) else self.delay
+        self.commands.append(record)
+        delay = self.delay(record) if callable(self.delay) else self.delay
         done = None if delay is None else self.now + 1 + delay
-        value = self.result_function(rec) & MASK if self.result_function else 0
+        value = self.result_function(record) & MASK if self.result_function else 0
         limit = (
             None if self.deadline_passes is None else self.now + self.deadline_passes
         )
-        self.table[slot] = _Busy(rec, done, value, limit)
+        self.table[slot] = _Busy(record, done, value, limit)
         if not queued:
             self.pending += 1
 
@@ -742,105 +780,132 @@ class _Sim:
                 return self.fail(ERROR_JUMP, self.pc)
             if self.steps >= self.h["max_steps"]:
                 return self.fail(ERROR_STEPS, self.pc)
-            o = self.ops[self.pc]
-            nxt = self.pc + 1
-            if o.op in (OP_SUBMIT, OP_ENQUEUE, OP_WAIT, OP_HALT):
-                state = self.work(o)
+            operation = self.ops[self.pc]
+            next_pc = self.pc + 1
+            if operation.op in (OP_SUBMIT, OP_ENQUEUE, OP_WAIT, OP_HALT):
+                state = self.work(operation)
                 if state != "ok":
                     return state
-            elif o.op == OP_SET:
-                registers[o.a] = o.immediate
-            elif o.op == OP_MOV:
-                registers[o.a] = registers[o.b]
-            elif o.op == OP_ADD:
-                registers[o.a] = registers[o.b] + registers[o.c] & MASK
-            elif o.op == OP_ADDI:
-                registers[o.a] = registers[o.b] + o.immediate & MASK
-            elif o.op == OP_SUB:
-                registers[o.a] = registers[o.b] - registers[o.c] & MASK
-            elif o.op == OP_MUL:
-                registers[o.a] = registers[o.b] * registers[o.c] & MASK
-            elif o.op == OP_AND:
-                registers[o.a] = registers[o.b] & registers[o.c]
-            elif o.op == OP_SHR:
-                registers[o.a] = registers[o.b] >> (o.immediate & 31)
-            elif o.op == OP_MOD:
-                if registers[o.c] == 0:
+            elif operation.op == OP_SET:
+                registers[operation.a] = operation.immediate
+            elif operation.op == OP_MOV:
+                registers[operation.a] = registers[operation.b]
+            elif operation.op == OP_ADD:
+                registers[operation.a] = (
+                    registers[operation.b] + registers[operation.c] & MASK
+                )
+            elif operation.op == OP_ADDI:
+                registers[operation.a] = (
+                    registers[operation.b] + operation.immediate & MASK
+                )
+            elif operation.op == OP_SUB:
+                registers[operation.a] = (
+                    registers[operation.b] - registers[operation.c] & MASK
+                )
+            elif operation.op == OP_MUL:
+                registers[operation.a] = (
+                    registers[operation.b] * registers[operation.c] & MASK
+                )
+            elif operation.op == OP_AND:
+                registers[operation.a] = registers[operation.b] & registers[operation.c]
+            elif operation.op == OP_SHR:
+                registers[operation.a] = registers[operation.b] >> (
+                    operation.immediate & 31
+                )
+            elif operation.op == OP_MOD:
+                if registers[operation.c] == 0:
                     return self.fail(ERROR_MOD_ZERO, self.pc)
-                registers[o.a] = registers[o.b] % registers[o.c]
-            elif o.op == OP_RAND:
+                registers[operation.a] = registers[operation.b] % registers[operation.c]
+            elif operation.op == OP_RAND:
                 registers[SEED_REGISTER] = xorshift32(registers[SEED_REGISTER])
-                registers[o.a] = registers[SEED_REGISTER]
-            elif o.op == OP_JMP:
-                nxt = o.immediate
-            elif o.op == OP_JLT:
-                nxt = o.immediate if registers[o.a] < registers[o.b] else nxt
-            elif o.op == OP_JEQ:
-                nxt = o.immediate if registers[o.a] == registers[o.b] else nxt
-            elif o.op == OP_JNZ:
-                nxt = o.immediate if registers[o.a] != 0 else nxt
-            elif o.op == OP_RESULT:
-                registers[o.a] = self.last_result
-            elif o.op == OP_EVENT:
-                self.post(EVENT_STREAM, registers[o.a] & 0xFFFFFF)
-            elif o.op == OP_TIME:
-                registers[o.a] = self.now * self.ticks & MASK
+                registers[operation.a] = registers[SEED_REGISTER]
+            elif operation.op == OP_JMP:
+                next_pc = operation.immediate
+            elif operation.op == OP_JLT:
+                next_pc = (
+                    operation.immediate
+                    if registers[operation.a] < registers[operation.b]
+                    else next_pc
+                )
+            elif operation.op == OP_JEQ:
+                next_pc = (
+                    operation.immediate
+                    if registers[operation.a] == registers[operation.b]
+                    else next_pc
+                )
+            elif operation.op == OP_JNZ:
+                next_pc = (
+                    operation.immediate if registers[operation.a] != 0 else next_pc
+                )
+            elif operation.op == OP_RESULT:
+                registers[operation.a] = self.last_result
+            elif operation.op == OP_EVENT:
+                self.post(EVENT_STREAM, registers[operation.a] & 0xFFFFFF)
+            elif operation.op == OP_TIME:
+                registers[operation.a] = self.now * self.ticks & MASK
             self.steps += 1
-            self.pc = nxt
+            self.pc = next_pc
         return "ok"
 
-    def work(self, o):
+    def work(self, operation):
         """SUBMIT, ENQUEUE, WAIT and HALT: "ok" (done), "stall", "error" or "end"."""
-        if o.op == OP_WAIT:
-            return "stall" if self.pending > o.immediate else "ok"
-        if o.op == OP_HALT:
+        if operation.op == OP_WAIT:
+            return "stall" if self.pending > operation.immediate else "ok"
+        if operation.op == OP_HALT:
             if self.pending:
                 return "stall"
-            self.halt = self.registers[o.a]
+            self.halt = self.registers[operation.a]
             self.post(EVENT_STREAM_END, self.halt & 0xFFFFFF)
             return "end"
-        return self.do_submit(o) if o.op == OP_SUBMIT else self.do_enqueue(o)
+        return (
+            self.do_submit(operation)
+            if operation.op == OP_SUBMIT
+            else self.do_enqueue(operation)
+        )
 
-    def do_submit(self, o):
-        t, registers = self.templates[o.immediate], self.registers
+    def do_submit(self, operation):
+        template, registers = self.templates[operation.immediate], self.registers
         first = (
-            t.rec[2] & 0xFFFF
-            if t.first_register == TEMPLATE_NONE
-            else registers[t.first_register]
+            template.rec[2] & 0xFFFF
+            if template.first_register == TEMPLATE_NONE
+            else registers[template.first_register]
         )
         count = (
-            t.rec[2] >> 16
-            if t.count_register == TEMPLATE_NONE
-            else registers[t.count_register]
+            template.rec[2] >> 16
+            if template.count_register == TEMPLATE_NONE
+            else registers[template.count_register]
         )
         if group_outside(first, count, self.core_count):
             return self.fail(ERROR_GROUP, self.pc)
         slot = self.free_slot()
         if slot is None:
             return "stall"
-        if t.flags & FLAG_EXCLUSIVE and (
+        if template.flags & FLAG_EXCLUSIVE and (
             self.queue  # a job queued before it is not placed yet
-            or any(first < f + c and f < first + count for f, c in self.busy_groups())
+            or any(
+                first < busy_first + busy_count and busy_first < first + count
+                for busy_first, busy_count in self.busy_groups()
+            )
         ):
             return "stall"
-        self.put(slot, self.patched(t), first, count, self.pc, False)
+        self.put(slot, self.patched(template), first, count, self.pc, False)
         return "ok"
 
-    def do_enqueue(self, o):
-        count = self.registers[o.a]
+    def do_enqueue(self, operation):
+        count = self.registers[operation.a]
         if count == 0 or count > self.core_count:
             return self.fail(ERROR_NEVER_FITS, self.pc)
         if len(self.queue) >= QUEUE_JOBS:
             return "stall"
-        job = _Job(self.patched(self.templates[o.immediate]), count, self.pc)
+        job = _Job(self.patched(self.templates[operation.immediate]), count, self.pc)
         self.queue.append(job)
         self.pending += 1
         return "ok"
 
-    def patched(self, t):
-        words = list(t.rec)
-        for i in range(t.patch_count):
-            words[ARG_WORD[t.arg[i]]] = self.registers[t.register[i]]
+    def patched(self, template):
+        words = list(template.rec)
+        for i in range(template.patch_count):
+            words[ARG_WORD[template.arg[i]]] = self.registers[template.register[i]]
         return words
 
     def step_queue(self):

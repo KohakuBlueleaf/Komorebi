@@ -14,8 +14,8 @@ from typing import NamedTuple
 import numpy as np
 
 from komorebi import abi
-from komorebi.engines import graph as gr
-from komorebi.engines import stream as st
+from komorebi.engines import graph as graph_module
+from komorebi.engines import stream as stream_module
 from komorebi.errors import (
     EngineError,
     EngineRejected,
@@ -28,11 +28,16 @@ LINE = 64
 READY_WAIT_S = 1.0  # the ready block follows the READY state word closely
 
 
-def codes(h=None):
+def codes(abi_headers=None):
     """The host's constants (abi.headers) with those of km_stream.h and km_graph.h."""
-    h = h or abi.headers()
-    d = h.abi.parent
-    return {**h.constants, **abi.constants(h.abi, d / "km_stream.h", d / "km_graph.h")}
+    abi_headers = abi_headers or abi.headers()
+    abi_directory = abi_headers.abi.parent
+    return {
+        **abi_headers.constants,
+        **abi.constants(
+            abi_headers.abi, abi_directory / "km_stream.h", abi_directory / "km_graph.h"
+        ),
+    }
 
 
 def word_offset(path, name, member):
@@ -47,28 +52,28 @@ def word_offset(path, name, member):
         words = abi.FIELD.match(" ".join(decl.split()))
         if words is None:
             break
-        names += [w.strip() for w in words[1].split(",")]
+        names += [field_name.strip() for field_name in words[1].split(",")]
     if member not in names:
         raise abi.HeaderError(f"{path}: struct {name}: no uint32_t {member} up front")
     return 4 * names.index(member)
 
 
-def offsets(h=None):
+def offsets(abi_headers=None):
     """Where the host reads the headers' words: the ready block's region size (a host
     buffer word) and the byte offsets of each kind's req and of a graph's flags."""
-    h = h or abi.headers()
-    d = h.abi.parent
-    ready = abi.struct_fields(h.dispatch, "kmd_ready_t")
+    abi_headers = abi_headers or abi.headers()
+    abi_directory = abi_headers.abi.parent
+    ready = abi.struct_fields(abi_headers.dispatch, "kmd_ready_t")
     return {
         "ready_bytes": ready.index("upload_bytes"),
-        "stream": word_offset(d / "km_stream.h", "km_stream_t", "req"),
-        "graph": word_offset(d / "km_graph.h", "km_graph_t", "req"),
-        "flags": word_offset(d / "km_graph.h", "km_graph_t", "flags"),
+        "stream": word_offset(abi_directory / "km_stream.h", "km_stream_t", "req"),
+        "graph": word_offset(abi_directory / "km_graph.h", "km_graph_t", "req"),
+        "flags": word_offset(abi_directory / "km_graph.h", "km_graph_t", "flags"),
     }
 
 
-def _lines(n):
-    return -(-n // LINE) * LINE
+def _lines(size):
+    return -(-size // LINE) * LINE
 
 
 @dataclass(eq=False)
@@ -130,25 +135,25 @@ class Region:
         self.size = size
         self.used = []  # (offset, bytes), sorted
 
-    def take(self, n):
-        """The offset of `n` free bytes (a multiple of LINE), or None."""
-        at = 0
-        for offset, m in self.used:
-            if offset - at >= n:
+    def take(self, wanted):
+        """The offset of `wanted` free bytes (a multiple of LINE), or None."""
+        cursor = 0
+        for offset, length in self.used:
+            if offset - cursor >= wanted:
                 break
-            at = offset + m
-        if at + n > self.size:
+            cursor = offset + length
+        if cursor + wanted > self.size:
             return None
-        bisect.insort(self.used, (at, n))
-        return at
+        bisect.insort(self.used, (cursor, wanted))
+        return cursor
 
     def free(self, offset):
-        self.used = [u for u in self.used if u[0] != offset]
+        self.used = [piece for piece in self.used if piece[0] != offset]
 
     def largest(self):
-        ends = [0] + [o + m for o, m in self.used]
-        starts = [o for o, _ in self.used] + [self.size]
-        return max(s - e for s, e in zip(starts, ends))
+        ends = [0] + [offset + length for offset, length in self.used]
+        starts = [offset for offset, _ in self.used] + [self.size]
+        return max(start - end for start, end in zip(starts, ends))
 
 
 class Engines:
@@ -156,26 +161,29 @@ class Engines:
 
     def __init__(self, run):
         self.run = run
-        c = codes(run.h)
-        self.c = c
-        self.at = offsets(run.h)
+        constants = codes(run.h)
+        self.constants = constants
+        self.header_offsets = offsets(run.h)
         self.reasons = {
-            v: n[len("KM_STREAM_ERROR_") :].lower()
-            for n, v in c.items()
-            if "_STREAM_ERROR_" in n
+            value: name[len("KM_STREAM_ERROR_") :].lower()
+            for name, value in constants.items()
+            if "_STREAM_ERROR_" in name
         }
         self.kinds = {
-            c["KM_EVENT_STREAM"]: ("stream", "event"),
-            c["KM_EVENT_STREAM_END"]: ("stream", "end"),
-            c["KM_EVENT_STREAM_ERROR"]: ("stream", "error"),
-            c["KM_EVENT_GRAPH"]: ("graph", "round"),
-            c["KM_EVENT_GRAPH_END"]: ("graph", "end"),
-            c["KM_EVENT_GRAPH_ERROR"]: ("graph", "error"),
+            constants["KM_EVENT_STREAM"]: ("stream", "event"),
+            constants["KM_EVENT_STREAM_END"]: ("stream", "end"),
+            constants["KM_EVENT_STREAM_ERROR"]: ("stream", "error"),
+            constants["KM_EVENT_GRAPH"]: ("graph", "round"),
+            constants["KM_EVENT_GRAPH_END"]: ("graph", "end"),
+            constants["KM_EVENT_GRAPH_ERROR"]: ("graph", "error"),
         }
-        self.lo, self.hi = min(self.kinds), max(self.kinds)
-        host = [c[k] for k in ("KM_EVENT_DONE", "KM_EVENT_TIMEOUT", "KM_EVENT_PONG")]
-        host.append(c["KM_EVENT_REJECTED"])
-        if any(self.lo <= k <= self.hi for k in host):
+        self.first_kind, self.last_kind = min(self.kinds), max(self.kinds)
+        host = [
+            constants[name]
+            for name in ("KM_EVENT_DONE", "KM_EVENT_TIMEOUT", "KM_EVENT_PONG")
+        ]
+        host.append(constants["KM_EVENT_REJECTED"])
+        if any(self.first_kind <= kind <= self.last_kind for kind in host):
             raise KomorebiError("an engine's event kind is also a command's")
         self.region = None
         self.uploads = []
@@ -188,177 +196,203 @@ class Engines:
         """The region the kernel's ready block names (its size; the host writes by
         offset)."""
         if self.region is None:
-            port, at = self.run.port, self.c["KMD_HOST_READY"]
-            by = time.monotonic() + READY_WAIT_S
-            while port.host_word(at) != self.c["KMD_READY_MARK"]:
-                if time.monotonic() > by:
+            port, ready_address = self.run.port, self.constants["KMD_HOST_READY"]
+            deadline = time.monotonic() + READY_WAIT_S
+            while port.host_word(ready_address) != self.constants["KMD_READY_MARK"]:
+                if time.monotonic() > deadline:
                     raise KomorebiError("the dispatcher published no ready block")
-            self.region = Region(port.host_word(at + self.at["ready_bytes"]))
+            self.region = Region(
+                port.host_word(ready_address + self.header_offsets["ready_bytes"])
+            )
         return self.region
 
-    def upload(self, obj, kind=None):
+    def upload(self, content, kind=None):
         self.run._check_alive()
         graph = None
-        if isinstance(obj, st.Stream):
-            data, kind = obj.encode(), "stream"
-        elif isinstance(obj, gr.Graph):
-            data, kind, graph = obj.encode(), "graph", obj
+        if isinstance(content, stream_module.Stream):
+            data, kind = content.encode(), "stream"
+        elif isinstance(content, graph_module.Graph):
+            data, kind, graph = content.encode(), "graph", content
         else:
-            data = bytes(obj)
+            data = bytes(content)
             if kind not in ("stream", "graph"):
                 raise ValueError("encoded bytes need kind='stream' or kind='graph'")
         if not data:
             raise ValueError("an empty upload")
         region = self._region()
-        n = _lines(len(data))
-        offset = region.take(n)
+        padded_bytes = _lines(len(data))
+        offset = region.take(padded_bytes)
         if offset is None:
             raise ValueError(
                 f"an upload of {len(data)} bytes does not fit: the region has "
                 f"{region.size} bytes, the largest free piece {region.largest()}"
             )
-        req = self._word(data, self.at[kind])
+        req = self._word(data, self.header_offsets[kind])
         keep = False
         valid = True
         if kind == "graph":
-            flags = self._word(data, self.at["flags"])
-            keep = bool(flags & self.c["KM_GRAPH_KEEP"])
-            valid = gr.check(data) is None
+            flags = self._word(data, self.header_offsets["flags"])
+            keep = bool(flags & self.constants["KM_GRAPH_KEEP"])
+            valid = graph_module.check(data) is None
         try:
-            self.run.port.upload(offset, data + bytes(n - len(data)))
+            self.run.port.upload(offset, data + bytes(padded_bytes - len(data)))
         except BaseException:
             region.free(offset)
             raise
-        up = Upload(offset, len(data), kind, req, keep, data=data, graph=graph)
-        up.valid = valid  # the kernel's check, which the host does not enforce
-        self.uploads.append(up)
-        return up
+        created = Upload(offset, len(data), kind, req, keep, data=data, graph=graph)
+        created.valid = valid  # the kernel's check, which the host does not enforce
+        self.uploads.append(created)
+        return created
 
     @staticmethod
-    def _word(data, at):
-        """The word at byte `at`, or 0 when the upload is shorter."""
-        return struct.unpack_from("<I", data, at)[0] if len(data) >= at + 4 else 0
+    def _word(data, offset):
+        """The word at byte `offset`, or 0 when the upload is shorter."""
+        return (
+            struct.unpack_from("<I", data, offset)[0] if len(data) >= offset + 4 else 0
+        )
 
-    def release(self, up, timeout):
-        self._mine(up)
-        if up.state == "running":
-            raise KomorebiError(f"the {up.kind} at {up.offset} runs: wait or cancel")
-        if up.state == "kept":
-            by = time.monotonic() + timeout  # one deadline for the command and the end
-            t = EngineHandle("graph", up.req, up, drop=True)
-            self.active[("graph", up.req)] = t
+    def release(self, upload, timeout):
+        self._mine(upload)
+        if upload.state == "running":
+            raise KomorebiError(
+                f"the {upload.kind} at {upload.offset} runs: wait or cancel"
+            )
+        if upload.state == "kept":
+            deadline = (
+                time.monotonic() + timeout
+            )  # one deadline for the command and the end
+            engine = EngineHandle("graph", upload.req, upload, drop=True)
+            self.active[("graph", upload.req)] = engine
             try:
-                self._command(self.c["KM_HANDLER_CANCEL"], [up.req], timeout)
+                self._command(
+                    self.constants["KM_HANDLER_CANCEL"], [upload.req], timeout
+                )
             except BaseException:
-                self.active.pop(("graph", up.req), None)
+                self.active.pop(("graph", upload.req), None)
                 raise
-            self._wait(t, max(by - time.monotonic(), 0.0))
-        self.uploads.remove(up)
-        self._region().free(up.offset)
+            self._wait(engine, max(deadline - time.monotonic(), 0.0))
+        self.uploads.remove(upload)
+        self._region().free(upload.offset)
 
-    def _mine(self, up):
-        if not any(u is up for u in self.uploads):
+    def _mine(self, upload):
+        if not any(other is upload for other in self.uploads):
             raise ValueError("not an upload of this run, or released")
 
     # Starting and cancelling ------------------------------------------------------
 
-    def start(self, up, bindings, kept, timeout):
-        self._mine(up)
-        if up.state != "idle":
-            raise KomorebiError(f"the {up.kind} at {up.offset} is {up.state}")
-        self._free_req(up.req)
-        if up.kind == "stream":
+    def start(self, upload, bindings, kept, timeout):
+        self._mine(upload)
+        if upload.state != "idle":
+            raise KomorebiError(
+                f"the {upload.kind} at {upload.offset} is {upload.state}"
+            )
+        self._free_req(upload.req)
+        if upload.kind == "stream":
             if bindings or kept is not None:
                 raise ValueError("a stream takes no bindings and is never kept")
-            t = EngineHandle("stream", up.req, up)
-            return self._run(t, [up.offset, up.bytes], timeout)
-        if kept is not None and bool(kept) != up.keep:
-            self._set_keep(up, bool(kept))
-        t = EngineHandle("graph", up.req, up)
-        args = [up.offset, up.bytes, self.c["KM_GRAPH_RUN_UPLOAD"]]
-        return self._run(t, args + self._bindings(t, bindings), timeout)
+            engine = EngineHandle("stream", upload.req, upload)
+            return self._run(engine, [upload.offset, upload.bytes], timeout)
+        if kept is not None and bool(kept) != upload.keep:
+            self._set_keep(upload, bool(kept))
+        engine = EngineHandle("graph", upload.req, upload)
+        args = [upload.offset, upload.bytes, self.constants["KM_GRAPH_RUN_UPLOAD"]]
+        return self._run(engine, args + self._bindings(engine, bindings), timeout)
 
     def restart(self, req, bindings, timeout):
-        up = next((u for u in self.uploads if u.state == "kept" and u.req == req), None)
-        if up is None:
+        upload = next(
+            (
+                candidate
+                for candidate in self.uploads
+                if candidate.state == "kept" and candidate.req == req
+            ),
+            None,
+        )
+        if upload is None:
             raise ValueError(f"no kept graph that is not running has req {req}")
-        t = EngineHandle("graph", req, up, restart=True)
-        args = [req, 0, self.c["KM_GRAPH_RUN_KEPT"]]
-        return self._run(t, args + self._bindings(t, bindings), timeout)
+        engine = EngineHandle("graph", req, upload, restart=True)
+        args = [req, 0, self.constants["KM_GRAPH_RUN_KEPT"]]
+        return self._run(engine, args + self._bindings(engine, bindings), timeout)
 
-    def cancel(self, t, timeout):
-        if t.end is not None and not t.unknown:
+    def cancel(self, engine, timeout):
+        if engine.end is not None and not engine.unknown:
             return  # it has ended: nothing to cancel
         try:
-            self._command(self.c["KM_HANDLER_CANCEL"], [t.req], timeout)
+            self._command(self.constants["KM_HANDLER_CANCEL"], [engine.req], timeout)
         except EngineRejected as err:
-            ended = t.end is not None or t.unknown  # or its RUN was rejected
-            if not ended or err.reason != self.c["KMD_REJECT_UNKNOWN"]:
+            ended = engine.end is not None or engine.unknown  # or its RUN was rejected
+            if not ended or err.reason != self.constants["KMD_REJECT_UNKNOWN"]:
                 raise  # unless it ended while the command was on its way
         except WaitTimeout as err:
             raise EngineTimeout(
-                f"{t.kind} {t.req}: CANCEL not answered in {timeout} s", t
+                f"{engine.kind} {engine.req}: CANCEL not answered in {timeout} s",
+                engine,
             ) from err
-        if t.unknown:
-            self._settle_unknown(t)
+        if engine.unknown:
+            self._settle_unknown(engine)
 
     def stop(self, timeout):
         """Cancels every engine still running or unknown and waits for its end, all
         within `timeout` (the kernel's EXIT waits for them); EngineTimeout if not."""
-        by = time.monotonic() + timeout
-        for t in list(self.active.values()):
-            if t.drop or t.end is not None:
+        deadline = time.monotonic() + timeout
+        for engine in list(self.active.values()):
+            if engine.drop or engine.end is not None:
                 continue  # a kept graph's drop is on its way
-            unknown = t.unknown
+            unknown = engine.unknown
             try:
-                self.cancel(t, max(by - time.monotonic(), 0.0))
+                self.cancel(engine, max(deadline - time.monotonic(), 0.0))
             except EngineRejected:
                 if not unknown:
                     raise  # an unknown one's RUN was rejected: it never ran
-        for t in list(self.active.values()):
-            self._wait(t, max(by - time.monotonic(), 0.0))
+        for engine in list(self.active.values()):
+            self._wait(engine, max(deadline - time.monotonic(), 0.0))
 
-    def _settle_unknown(self, t):
-        """The RUN of `t` was answered before the command answered now: raises its
-        rejection (it never ran) or leaves `t` running or ended."""
-        t.unknown = False
-        command, ping = t.commands
+    def _settle_unknown(self, engine):
+        """The RUN of `engine` was answered before the command answered now: raises its
+        rejection (it never ran) or leaves `engine` running or ended."""
+        engine.unknown = False
+        command, ping = engine.commands
         self.run.forget([ping])
         try:
             self._answer(command)
         except EngineRejected:
-            self._not_started(t)
+            self._not_started(engine)
             raise
 
     def _free_req(self, req):
-        busy = {r for _, r in self.active}
-        busy |= {u.req for u in self.uploads if u.state == "kept"}
+        busy = {busy_req for _, busy_req in self.active}
+        busy |= {
+            other_upload.req
+            for other_upload in self.uploads
+            if other_upload.state == "kept"
+        }
         if req in busy:
             raise ValueError(f"req {req} belongs to a running or kept engine")
 
-    def _set_keep(self, up, keep):
-        at = self.at["flags"]
-        if up.bytes < at + 4:
+    def _set_keep(self, upload, keep):
+        flags_offset = self.header_offsets["flags"]
+        if upload.bytes < flags_offset + 4:
             raise ValueError("the upload is too short to carry the keep bit")
-        line = bytearray(up.data[:LINE].ljust(LINE, b"\0"))
-        flags = struct.unpack_from("<I", line, at)[0]
-        bit = self.c["KM_GRAPH_KEEP"]
-        struct.pack_into("<I", line, at, flags | bit if keep else flags & ~bit)
-        self.run.port.upload(up.offset, bytes(line))
-        up.data = bytes(line[: len(up.data)]) + up.data[LINE:]
-        up.keep = keep
+        line = bytearray(upload.data[:LINE].ljust(LINE, b"\0"))
+        flags = struct.unpack_from("<I", line, flags_offset)[0]
+        bit = self.constants["KM_GRAPH_KEEP"]
+        struct.pack_into(
+            "<I", line, flags_offset, flags | bit if keep else flags & ~bit
+        )
+        self.run.port.upload(upload.offset, bytes(line))
+        upload.data = bytes(line[: len(upload.data)]) + upload.data[LINE:]
+        upload.keep = keep
 
-    def _bindings(self, t, bindings):
+    def _bindings(self, engine, bindings):
         """[binding block offset, count]: the values in one line of the region."""
-        graph = t.upload.graph
+        graph = engine.upload.graph
         if isinstance(bindings, dict) or (graph is not None and not bindings):
             if graph is None:
                 raise ValueError("bindings by name need an upload made from a Graph")
             bindings = graph.binding_values(**(bindings or {}))
-        values = [int(v) for v in bindings]
-        if len(values) > self.c["KM_GRAPH_BINDINGS"]:
+        values = [int(value) for value in bindings]
+        if len(values) > self.constants["KM_GRAPH_BINDINGS"]:
             raise ValueError(f"{len(values)} bindings, at most 16")
-        if any(not 0 <= v <= abi.M32 for v in values):
+        if any(not 0 <= value <= abi.M32 for value in values):
             raise ValueError("bindings are 32-bit unsigned words")
         if not values:
             return [0, 0]
@@ -371,42 +405,42 @@ class Engines:
         except BaseException:
             self._region().free(offset)
             raise
-        t.bind = offset
+        engine.bind = offset
         return [offset, len(values)]
 
-    def _run(self, t, args, timeout):
-        """KM_HANDLER_RUN for handle `t`; its events are routed to it from now on."""
-        self.active[(t.kind, t.req)] = t
-        t.upload.state = "running"
+    def _run(self, engine, args, timeout):
+        """KM_HANDLER_RUN for `engine`; its events are routed to it from now on."""
+        self.active[(engine.kind, engine.req)] = engine
+        engine.upload.state = "running"
         try:
-            self._command(self.c["KM_HANDLER_RUN"], args, timeout, t)
+            self._command(self.constants["KM_HANDLER_RUN"], args, timeout, engine)
         except WaitTimeout as err:
-            t.unknown = True  # the kernel may have started it
+            engine.unknown = True  # the kernel may have started it
             raise EngineTimeout(
-                f"{t.kind} {t.req}: RUN not answered in {timeout} s; it may run "
-                "until cancelled",
-                t,
+                f"{engine.kind} {engine.req}: RUN not answered in {timeout} s; "
+                "it may run until cancelled",
+                engine,
             ) from err
         except BaseException:
-            self._not_started(t)
+            self._not_started(engine)
             raise
-        return t
+        return engine
 
-    def _not_started(self, t):
-        if self.active.get((t.kind, t.req)) is t and t.end is None:
-            del self.active[(t.kind, t.req)]
-            t.upload.state = "kept" if t.restart else "idle"
-            self._free_bind(t)
+    def _not_started(self, engine):
+        if self.active.get((engine.kind, engine.req)) is engine and engine.end is None:
+            del self.active[(engine.kind, engine.req)]
+            engine.upload.state = "kept" if engine.restart else "idle"
+            self._free_bind(engine)
 
-    def _command(self, handler, args, timeout, t=None):
+    def _command(self, handler, args, timeout, engine=None):
         """Sends a RUN or CANCEL and a PING behind it, and waits for the PONG: the
         kernel answers the command before the PING, with an event only to reject it.
         """
         run = self.run
         handle = run._queue_command(handler, None, args)
-        ping = run._queue_command(self.c["KM_HANDLER_PING"], None)
-        if t is not None:
-            t.commands = (handle, ping)
+        ping = run._queue_command(self.constants["KM_HANDLER_PING"], None)
+        if engine is not None:
+            engine.commands = (handle, ping)
         run.wait(ping, timeout)
         self._answer(handle)
 
@@ -426,7 +460,7 @@ class Engines:
         """Files the engines' events of a block (index, req, status, ticks); returns
         the other rows."""
         kind = rows[:, 2] & 0xFF
-        mine = (kind >= self.lo) & (kind <= self.hi)
+        mine = (kind >= self.first_kind) & (kind <= self.last_kind)
         if not mine.any():
             return rows
         for _, req, status, ticks in rows[mine].tolist():
@@ -435,69 +469,77 @@ class Engines:
 
     def _file(self, req, status, ticks):
         family, kind = self.kinds[status & 0xFF]
-        t = self.active.get((family, req))
-        if t is None:
+        engine = self.active.get((family, req))
+        if engine is None:
             self.unclaimed.append((family, req, status, ticks))
             return
         auxiliary = status >> 8
         if kind == "error":
             reason, where = auxiliary & 0xFF, auxiliary >> 8
-            event = EngineEvent(t, kind, reason=reason, reason_name=self._name(reason))
+            event = EngineEvent(
+                engine, kind, reason=reason, reason_name=self._name(reason)
+            )
             if family == "stream":
                 event = event._replace(pc=where)
             else:
                 event = event._replace(
-                    node=None if where == self.c["KM_GRAPH_NO_NODE"] else where
+                    node=None if where == self.constants["KM_GRAPH_NO_NODE"] else where
                 )
         elif kind == "end" and family == "graph":
-            event = EngineEvent(t, kind, registers=(auxiliary, ticks))
+            event = EngineEvent(engine, kind, registers=(auxiliary, ticks))
         else:
-            event = EngineEvent(t, kind, value=auxiliary if kind == "round" else ticks)
-        t.events.append(event)
+            event = EngineEvent(
+                engine, kind, value=auxiliary if kind == "round" else ticks
+            )
+        engine.events.append(event)
         if kind in ("end", "error"):
-            t.end = event
+            engine.end = event
             del self.active[(family, req)]
-            self._ended(t, event)
+            self._ended(engine, event)
 
     def _name(self, reason):
         return self.reasons.get(reason, "unknown")
 
-    def _ended(self, t, event):
+    def _ended(self, engine, event):
         """The upload is idle again, or kept: a graph started from an upload that
         passes the check with the keep bit is kept whatever its end, unless the
         kernel did not take it in (a bad range or binding block, a full kept table),
         and a restarted one stays kept."""
-        self._free_bind(t)
-        up = t.upload
+        self._free_bind(engine)
+        upload = engine.upload
         rejected = event.kind == "error" and event.reason in (
-            self.c["KM_STREAM_ERROR_HEADER"],
-            self.c["KM_STREAM_ERROR_KEPT_FULL"],
+            self.constants["KM_STREAM_ERROR_HEADER"],
+            self.constants["KM_STREAM_ERROR_KEPT_FULL"],
         )
-        kept = t.kind == "graph" and not t.drop
-        kept = kept and (t.restart or (up.keep and up.valid and not rejected))
-        up.state = "kept" if kept else "idle"
+        kept = engine.kind == "graph" and not engine.drop
+        kept = kept and (
+            engine.restart or (upload.keep and upload.valid and not rejected)
+        )
+        upload.state = "kept" if kept else "idle"
 
-    def _free_bind(self, t):
-        if t.bind is not None:
-            self._region().free(t.bind)
-            t.bind = None
+    def _free_bind(self, engine):
+        if engine.bind is not None:
+            self._region().free(engine.bind)
+            engine.bind = None
 
-    def wait(self, t, timeout):
-        """The end event of `t`; EngineError for an error, EngineTimeout."""
-        event = self._wait(t, timeout)
+    def wait(self, engine, timeout):
+        """The end event of `engine`; EngineError for an error, EngineTimeout."""
+        event = self._wait(engine, timeout)
         if event.kind == "error":
             raise EngineError(event)
         return event
 
-    def _wait(self, t, timeout):
+    def _wait(self, engine, timeout):
         run = self.run
         run._hand()
-        by = time.monotonic() + timeout
-        while t.end is None:
+        deadline = time.monotonic() + timeout
+        while engine.end is None:
             run._check_alive()
-            left = by - time.monotonic()
+            left = deadline - time.monotonic()
             if left <= 0:
-                raise EngineTimeout(f"{t.kind} {t.req}: no end event in {timeout} s", t)
+                raise EngineTimeout(
+                    f"{engine.kind} {engine.req}: no end event in {timeout} s", engine
+                )
             run.port.publish()  # an engine's posts wait for event room
             run._step_any(np.asarray([run._handed - 1], np.int64), left)
-        return t.end
+        return engine.end

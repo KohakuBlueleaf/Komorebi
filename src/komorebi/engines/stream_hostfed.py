@@ -4,18 +4,18 @@ registers host-fed as when the dispatcher runs it."""
 
 import time
 
-from komorebi.engines import graph as gr
-from komorebi.engines import stream as st
+from komorebi.engines import graph as graph_module
+from komorebi.engines import stream as stream_module
 from komorebi.engines.graph_hostfed import HostfedCommand, HostfedResult
 from komorebi.errors import CommandTimeout, WaitTimeout
 
 
-def is_stream(obj):
-    """Whether `obj` is a Stream or a stream's upload."""
-    if isinstance(obj, st.Stream):
+def is_stream(candidate):
+    """Whether `candidate` is a Stream or a stream's upload."""
+    if isinstance(candidate, stream_module.Stream):
         return True
-    data = obj if isinstance(obj, bytes | bytearray) else b""
-    return len(data) >= 4 and int.from_bytes(data[:4], "little") == st.MAGIC
+    data = candidate if isinstance(candidate, bytes | bytearray) else b""
+    return len(data) >= 4 and int.from_bytes(data[:4], "little") == stream_module.MAGIC
 
 
 def run_hostfed(run, stream, bindings=None, timeout=10.0):
@@ -24,22 +24,24 @@ def run_hostfed(run, stream, bindings=None, timeout=10.0):
     within `timeout` seconds."""
     if bindings:
         raise ValueError("a stream takes no bindings")
-    data = stream.encode() if isinstance(stream, st.Stream) else bytes(stream)
-    bad = st.check(data, len(data))
+    data = (
+        stream.encode() if isinstance(stream, stream_module.Stream) else bytes(stream)
+    )
+    bad = stream_module.check(data, len(data))
     if bad:
-        raise st.StreamFormatError(bad)
-    h = st._header(data)
-    ops, templates = st._parse(data, h)
-    sim = _Hostfed(run, ops, templates, h)
-    return sim.go(time.monotonic() + timeout)
+        raise stream_module.StreamFormatError(bad)
+    header = stream_module._header(data)
+    ops, templates = stream_module._parse(data, header)
+    simulation = _Hostfed(run, ops, templates, header)
+    return simulation.go(time.monotonic() + timeout)
 
 
-class _Hostfed(st._Sim):
+class _Hostfed(stream_module._Sim):
     """The simulator's stream with SUBMIT and ENQUEUE sent through a Run: a command is
     pending until its event arrives, a result word is the latest one that arrived."""
 
-    def __init__(self, run, ops, templates, h):
-        super().__init__(ops, templates, h, run.cores, None, None, None)
+    def __init__(self, run, ops, templates, header):
+        super().__init__(ops, templates, header, run.cores, None, None, None)
         self.run = run
         self.flight = {}  # handle -> (pc, wants the result)
         self.hostfed = []
@@ -48,50 +50,54 @@ class _Hostfed(st._Sim):
         """An event as the kernel posts it: an EVENT's or HALT's full register in
         `extra`, as the kernel's ticks."""
         extra = 0
-        if kind in (st.EVENT_STREAM, st.EVENT_STREAM_END):
+        if kind in (stream_module.EVENT_STREAM, stream_module.EVENT_STREAM_END):
             extra = self.registers[self.ops[self.pc].a]
-        self.events.append(gr.Event(kind, self.h["req"], auxiliary, extra, None))
+        self.events.append(
+            graph_module.Event(kind, self.h["req"], auxiliary, extra, None)
+        )
 
-    def do_submit(self, o):
-        t, registers = self.templates[o.immediate], self.registers
+    def do_submit(self, operation):
+        template, registers = self.templates[operation.immediate], self.registers
         first = (
-            t.rec[2] & 0xFFFF
-            if t.first_register == st.TEMPLATE_NONE
-            else registers[t.first_register]
+            template.rec[2] & 0xFFFF
+            if template.first_register == stream_module.TEMPLATE_NONE
+            else registers[template.first_register]
         )
         count = (
-            t.rec[2] >> 16
-            if t.count_register == st.TEMPLATE_NONE
-            else registers[t.count_register]
+            template.rec[2] >> 16
+            if template.count_register == stream_module.TEMPLATE_NONE
+            else registers[template.count_register]
         )
-        if st.group_outside(first, count, self.core_count):
-            return self.fail(st.ERROR_GROUP, self.pc)
-        self._send(self.patched(t), first, count, False)
+        if stream_module.group_outside(first, count, self.core_count):
+            return self.fail(stream_module.ERROR_GROUP, self.pc)
+        self._send(self.patched(template), first, count, False)
         return "ok"
 
-    def do_enqueue(self, o):
-        count = self.registers[o.a]
+    def do_enqueue(self, operation):
+        count = self.registers[operation.a]
         if count == 0 or count > self.core_count:
-            return self.fail(st.ERROR_NEVER_FITS, self.pc)
-        self._send(self.patched(self.templates[o.immediate]), None, count, True)
+            return self.fail(stream_module.ERROR_NEVER_FITS, self.pc)
+        self._send(self.patched(self.templates[operation.immediate]), None, count, True)
         return "ok"
 
     def _send(self, words, first, count, queued):
         handler, flags = words[1] & 0xFF, words[1] >> 8 & 0xFF
-        args = [words[i] for i in st.ARG_WORD]
-        result = bool(flags & st.FLAG_RESULT)
+        args = [words[i] for i in stream_module.ARG_WORD]
+        result = bool(flags & stream_module.FLAG_RESULT)
         if queued:
             handle = self.run.submit(handler, count, args, result=result, queued=True)
         else:
-            excl = bool(flags & st.FLAG_EXCLUSIVE)
-            handle = self.run.submit(handler, (first, count), args, excl, result=result)
+            exclusive = bool(flags & stream_module.FLAG_EXCLUSIVE)
+            handle = self.run.submit(
+                handler, (first, count), args, exclusive, result=result
+            )
         self.flight[handle] = (self.pc, result)
         self.pending += 1
-        rec = HostfedCommand(
-            self.pc, 1, handle, handler, first, count, flags & ~st.FLAG_QUEUE,
-            tuple(args), queued,
+        record = HostfedCommand(
+            self.pc, 1, handle, handler, first, count,
+            flags & ~stream_module.FLAG_QUEUE, tuple(args), queued,
         )  # fmt: skip
-        self.hostfed.append(rec)
+        self.hostfed.append(record)
 
     def go(self, deadline):
         while True:
@@ -116,7 +122,7 @@ class _Hostfed(st._Sim):
             event = self.run.wait_any(self.flight, timeout=max(left, 0.0))
         except CommandTimeout as err:
             pc = self.flight.pop(err.handle, (self.pc,))[0]
-            self.fail(st.ERROR_DEADLINE, pc)
+            self.fail(stream_module.ERROR_DEADLINE, pc)
             return
         self.done(event.handle, event)
         for handle in sorted(self.flight):
@@ -133,7 +139,11 @@ class _Hostfed(st._Sim):
 
     def finish(self, deadline):
         status = "ended" if self.error is None else "error"
-        if self.error and self.error.reason != st.ERROR_DEADLINE and self.flight:
+        if (
+            self.error
+            and self.error.reason != stream_module.ERROR_DEADLINE
+            and self.flight
+        ):
             self.run.drain(timeout=max(deadline - time.monotonic(), 0.0))
         return HostfedResult(
             status, self.error, list(self.registers), 1, self.hostfed, self.events

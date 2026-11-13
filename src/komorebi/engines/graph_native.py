@@ -8,7 +8,7 @@ import shutil
 import subprocess
 
 from komorebi import native
-from komorebi.engines import graph as gr
+from komorebi.engines import graph as graph_module
 
 LIBRARY = "libkm_graph.so"
 CFLAGS = ["-std=c11", "-O2", "-ffreestanding", "-fPIC", "-shared", "-Wall", "-Werror"]
@@ -25,40 +25,55 @@ def engine_source():
     return native.native_directory() / "x280" / "engines" / "km_graph_engine.c"
 
 
-def library_path(cc=None):
+def library_path(compiler=None):
     """The engine as a host shared library, built once into the cache."""
-    cc = cc or shutil.which("cc")
-    if cc is None:
+    compiler = compiler or shutil.which("cc")
+    if compiler is None:
         raise native.build.BuildError("building the graph engine needs a C compiler")
-    src = engine_source()
+    source = engine_source()
     include = native.native_directory() / "include"
-    key = native.source_key([src.parent, include / "komorebi" / "abi"], cc)
+    key = native.source_key([source.parent, include / "komorebi" / "abi"], compiler)
     out = native.cache_directory() / f"graph-engine-{key}" / LIBRARY
     if not out.is_file():
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_suffix(f".{os.getpid()}.tmp")
-        cmd = [cc, *CFLAGS, f"-I{include}", str(src), "-o", str(tmp)]
-        done = subprocess.run(cmd, capture_output=True, text=True)
+        temporary = out.with_suffix(f".{os.getpid()}.tmp")
+        command_line = [
+            compiler,
+            *CFLAGS,
+            f"-I{include}",
+            str(source),
+            "-o",
+            str(temporary),
+        ]
+        done = subprocess.run(command_line, capture_output=True, text=True)
         if done.returncode:
-            raise native.build.BuildError(f"{' '.join(cmd)}\n{done.stderr}")
-        os.replace(tmp, out)
+            raise native.build.BuildError(f"{' '.join(command_line)}\n{done.stderr}")
+        os.replace(temporary, out)
     return out
 
 
-def load(cc=None):
+def load(compiler=None):
     """The engine library with its function types set."""
-    path = library_path(cc)
+    path = library_path(compiler)
     if path not in _loaded:
         lib = ctypes.CDLL(str(path))
-        u32, vp = ctypes.c_uint32, ctypes.c_void_p
+        u32, void_pointer = ctypes.c_uint32, ctypes.c_void_p
         lib.kmg_state_bytes.restype = u32
-        lib.kmg_check.argtypes, lib.kmg_check.restype = [vp, u32], u32
-        lib.kmg_start.argtypes = [vp, vp, U32P, u32, u32]
+        lib.kmg_check.argtypes, lib.kmg_check.restype = [void_pointer, u32], u32
+        lib.kmg_start.argtypes = [void_pointer, void_pointer, U32P, u32, u32]
         lib.kmg_start.restype = u32
-        lib.kmg_step.argtypes, lib.kmg_step.restype = [vp, SUBMIT_FUNCTION, vp], u32
-        lib.kmg_complete.argtypes, lib.kmg_complete.restype = [vp, u32, u32], u32
-        lib.kmg_retry.argtypes, lib.kmg_retry.restype = [vp, u32], u32
-        lib.kmg_stop.argtypes, lib.kmg_stop.restype = [vp, u32, u32], None
+        lib.kmg_step.argtypes, lib.kmg_step.restype = [
+            void_pointer,
+            SUBMIT_FUNCTION,
+            void_pointer,
+        ], u32
+        lib.kmg_complete.argtypes, lib.kmg_complete.restype = [
+            void_pointer,
+            u32,
+            u32,
+        ], u32
+        lib.kmg_retry.argtypes, lib.kmg_retry.restype = [void_pointer, u32], u32
+        lib.kmg_stop.argtypes, lib.kmg_stop.restype = [void_pointer, u32, u32], None
         _loaded[path] = lib
     return _loaded[path]
 
@@ -66,9 +81,9 @@ def load(cc=None):
 def native_check(data, lib=None):
     """`kmg_check` on an upload: None or `GraphError(reason, node)`."""
     lib = lib or load()
-    buf = ctypes.create_string_buffer(bytes(data), max(len(data), 1))
-    got = lib.kmg_check(buf, len(data))
-    return gr.GraphError(got & 0xFF, got >> 8) if got else None
+    buffer = ctypes.create_string_buffer(bytes(data), max(len(data), 1))
+    got = lib.kmg_check(buffer, len(data))
+    return graph_module.GraphError(got & 0xFF, got >> 8) if got else None
 
 
 class NativeExecutor:
@@ -85,7 +100,7 @@ class NativeExecutor:
 
     @property
     def registers(self):
-        return self._words()[: gr.REGISTERS]
+        return self._words()[: graph_module.REGISTERS]
 
     @property
     def runs(self):
@@ -97,8 +112,12 @@ class NativeExecutor:
 
     @property
     def error(self):
-        w = self._words()
-        return gr.GraphError(w[18], w[19]) if w[17] == gr.ERROR else None
+        words = self._words()
+        return (
+            graph_module.GraphError(words[18], words[19])
+            if words[17] == graph_module.ERROR
+            else None
+        )
 
     def start(self, data, bindings=(), core_count=119):
         self._upload = ctypes.create_string_buffer(bytes(data), len(data))
@@ -114,12 +133,12 @@ class NativeExecutor:
 
         def call(_ctx, node, rec):
             if raised:
-                return gr.BUSY
+                return graph_module.BUSY
             try:
                 return submit(node, list(rec[:16]))
             except Exception as err:  # noqa: BLE001 (raised again below)
                 raised.append(err)
-                return gr.BUSY
+                return graph_module.BUSY
 
         code = self.lib.kmg_step(self._state, SUBMIT_FUNCTION(call), None)
         if raised:
@@ -127,7 +146,7 @@ class NativeExecutor:
         return code
 
     def complete(self, node, result):
-        return self.lib.kmg_complete(self._state, node, result & gr.MASK)
+        return self.lib.kmg_complete(self._state, node, result & graph_module.MASK)
 
     def retry(self, node):
         return self.lib.kmg_retry(self._state, node)
