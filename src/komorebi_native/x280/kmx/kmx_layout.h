@@ -12,7 +12,7 @@
 #endif
 
 #define KMX_MAGIC 0x31786D6Bu /* "kmx1" */
-#define KMX_VERSION 2u
+#define KMX_VERSION 3u
 #define KMX_REGIONS_MAX 16u
 #define KMX_WORDS_MAX 64u              /* the program's own argument words */
 #define KMX_RESULT_WORDS_MAX 48u       /* words a thread returns */
@@ -23,13 +23,21 @@
 #define KMX_LIM_ARGS 0x000u   /* kmx_args (host, before the start) */
 #define KMX_LIM_STOP 0x240u   /* line from the host: word 0 = KMX_STOP_WORD */
 #define KMX_LIM_RESULT 0x280u /* kmx_result_block (the thread) */
-#define KMX_LIM_PAR 0x380u    /* hart 0's kmx_par mailbox */
-#define KMX_LIM_DONE 0x3C0u   /* hart h's last finished kmx_par at + 8 * h */
-#define KMX_LIM_RING                                                \
-    0x400u /* kmx_ring_desc (host, before the start); zero: no ring \
-            */
-#define KMX_LIM_BYTES 0x440u
+#define KMX_LIM_HARTS 0x380u  /* hart h's spawn line at + 64 * h (KMX_SPAWN_*) */
+#define KMX_LIM_RING                                                                  \
+    0x480u                   /* kmx_ring_desc (host, before the start); zero: no ring \
+                              */
+#define KMX_LIM_PEERS 0x4C0u /* kmx_peers (host, before the start) */
+#define KMX_LIM_BYTES 0x500u
 #define KMX_STOP_WORD 0x53544F50u /* "STOP" */
+
+/* A spawn line's 64-bit words: the call's number, fn and arg (hart 0 writes them), the
+ * last number hart h finished (hart h). Hart 0's own line: word 0 ends the service. */
+#define KMX_SPAWN_GEN 0u
+#define KMX_SPAWN_FN 1u
+#define KMX_SPAWN_ARG 2u
+#define KMX_SPAWN_DONE 3u
+#define KMX_SPAWN_EXIT 0u
 
 /* Argument flags. KEEP_PREFETCH: leave the L2 prefetchers as they are instead of the
  * documented values (they keep either until a card reset). */
@@ -63,6 +71,33 @@ typedef struct {
     uint32_t words[KMX_WORDS_MAX];
 } kmx_args;
 
+/* The clusters running the same image in one program (kmx_par_all, kmx_push). Tiles
+ * are NoC coordinates, x | y << 16, indexed by cluster; lead 0: no others. */
+typedef struct {
+    uint32_t nonce;   /* this load's value: lines left from another load differ */
+    uint32_t lead;    /* the cluster that calls kmx_par_all */
+    uint32_t mask;    /* bit c: cluster c runs this image */
+    uint32_t all;     /* LIM offset of the kmx_par_all lines, the same on each */
+    uint32_t tile[4]; /* [c]: cluster c's tile */
+    uint32_t bank[4]; /* [c]: the DRAM tile of cluster c's bank */
+    uint32_t reserved[4];
+} kmx_peers;
+
+/* The kmx_par_all lines at `all`, outside the host's block: the lead's call (32-bit
+ * words KMX_CALL_*), and in the lead's LIM cluster c's done line at + 64 * c. */
+#define KMX_ALL_CALL 0x00u
+#define KMX_ALL_DONE 0x00u
+#define KMX_ALL_BYTES 0x100u
+#define KMX_CALL_NONCE 0u
+#define KMX_CALL_GEN 1u /* the call's number; done lines: the last one finished */
+#define KMX_CALL_FN 2u  /* 64 bits */
+#define KMX_CALL_ARG 4u /* 64 bits */
+#define KMX_CALL_EXIT 6u
+#define KMX_PEER_WINDOW                                                               \
+    17u                     /* cluster c's LIM through window KMX_PEER_WINDOW + c - 1 \
+                             */
+#define KMX_PUSH_WINDOW 20u /* hart h pushes through window KMX_PUSH_WINDOW + h */
+
 /* The command ring as the thread's cluster addresses it: command slots, the kernel's
  * consumed word, the events, the read-count line. Depths: powers of two. */
 #define KMX_RING_DEPTH_MAX 1024u
@@ -89,7 +124,8 @@ typedef struct {
 #define KMX_FULL 1    /* no free command slot, or kmx_wait has set aside all it can */
 #define KMX_STOPPED 2 /* a stop was asked for, or the thread has no ring */
 #define KMX_LATE 3    /* the deadline passed */
-#define KMX_NONE 4    /* kmx_poll: no event yet */
+#define KMX_NONE 4    /* kmx_poll: no event yet; kmx_serve: this cluster leads */
+#define KMX_BAD 5     /* an argument out of range: a hart, cluster, region or size */
 
 /* An event of a command the thread issued: its ticket, kind (KM_EV_*), aux and ticks
  * (for KM_F_RESULT records: the team leader's result word). */
@@ -138,7 +174,9 @@ KMX_STATIC_ASSERT(offsetof(kmx_args, words) == KMX_ARGS_WORDS, "argument words")
 KMX_STATIC_ASSERT(sizeof(kmx_args) == KMX_ARGS_BYTES, "kmx_args size");
 KMX_STATIC_ASSERT(KMX_LIM_ARGS + KMX_ARGS_BYTES <= KMX_LIM_STOP, "LIM: args");
 KMX_STATIC_ASSERT(sizeof(kmx_result_block) == 256, "kmx_result_block size");
-KMX_STATIC_ASSERT(KMX_LIM_RESULT + 256 <= KMX_LIM_PAR, "LIM: result");
-KMX_STATIC_ASSERT(KMX_LIM_DONE + 32 <= KMX_LIM_RING, "LIM: kmx_par");
+KMX_STATIC_ASSERT(KMX_LIM_RESULT + 256 <= KMX_LIM_HARTS, "LIM: result");
+KMX_STATIC_ASSERT(KMX_LIM_HARTS + 4 * 64 <= KMX_LIM_RING, "LIM: spawn lines");
+KMX_STATIC_ASSERT(sizeof(kmx_peers) == 64, "kmx_peers is one line");
+KMX_STATIC_ASSERT(KMX_LIM_PEERS + 64 <= KMX_LIM_BYTES, "LIM: peers");
 KMX_STATIC_ASSERT(sizeof(kmx_ring_desc) == 64, "kmx_ring_desc is one line");
 KMX_STATIC_ASSERT(KMX_LIM_RING + 64 <= KMX_LIM_BYTES, "LIM: ring");

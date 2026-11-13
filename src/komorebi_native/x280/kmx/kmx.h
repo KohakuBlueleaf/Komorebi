@@ -1,5 +1,5 @@
 /* kmx: what an X280 thread on a work cluster is written against. The library's
- * start-up enters kmx_main on hart 0; harts 1 to 3 wait for kmx_par. Plain C. */
+ * start-up enters kmx_main on hart 0; harts 1 to 3 wait for kmx_spawn. Plain C. */
 #pragma once
 
 #include <stdint.h>
@@ -31,6 +31,10 @@ void* kmx_region(int id, uint64_t* bytes);
 void kmx_take(int id);
 void kmx_give(int id);
 
+/* The same for `bytes` of region `id` from `offset` (whole lines around them). */
+void kmx_take_at(int id, uint64_t offset, uint64_t bytes);
+void kmx_give_at(int id, uint64_t offset, uint64_t bytes);
+
 /* The command ring to the dispatch kernel (hart 0; KMX_STOPPED without a ring).
  * issue: KMX_OK and the ticket, or KMX_FULL when no slot is free. */
 int kmx_issue(const km_record_t* r, uint32_t* ticket);
@@ -42,9 +46,34 @@ int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev);
 /* One event if any (a kept one first): KMX_OK, or KMX_NONE. Never waits. */
 int kmx_poll(kmx_event* ev);
 
-/* Hart 0, not nested: runs fn(hart, arg) on all four harts until all are done:
- * KMX_OK, or KMX_LATE / KMX_STOPPED if the deadline passed or a stop came meanwhile. */
+/* Hart 0: starts fn(hart, arg) on hart 1, 2 or 3 and returns. KMX_OK; KMX_FULL while
+ * that hart has not finished its last spawn; KMX_BAD for another hart. */
+int kmx_spawn(int hart, void (*fn)(int hart, void* arg), void* arg);
+
+/* Hart 0: waits until `hart` finished its last spawn (at once if none). KMX_OK, or
+ * KMX_LATE / KMX_STOPPED (library error late / stopped); KMX_BAD for another hart. */
+int kmx_join(int hart);
+
+/* Hart 0, not nested: spawns fn on harts 1 to 3, runs fn(0, arg), joins the three:
+ * KMX_OK, KMX_FULL if one of them is still busy, or KMX_LATE / KMX_STOPPED. */
 int kmx_par(void (*fn)(int hart, void* arg), void* arg);
+
+/* The clusters running this image in the program (bit c for cluster c), and the one
+ * that leads them: it calls kmx_par_all, the others kmx_serve. */
+uint32_t kmx_clusters(void);
+int kmx_lead(void);
+
+/* The lead's hart 0, not nested: runs fn(cluster, hart, arg) on every hart of every
+ * cluster of kmx_clusters() and waits for all. KMX_OK, or KMX_LATE / KMX_STOPPED. */
+int kmx_par_all(void (*fn)(int cluster, int hart, uint64_t arg), uint64_t arg);
+
+/* Hart 0 of a cluster that does not lead: runs the lead's kmx_par_all calls until the
+ * lead's kmx_main returns (KMX_OK), or KMX_LATE / KMX_STOPPED; KMX_NONE on the lead. */
+int kmx_serve(void);
+
+/* Any hart: stores `bytes` from `src` at `offset` of `cluster`'s region `id` (64-byte
+ * multiples; else KMX_BAD); the receiver takes them (kmx_take_at) before reading. */
+int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t bytes);
 
 /* Timer ticks since an arbitrary point (KMX_TICKS_PER_SECOND per second). */
 uint64_t kmx_time(void);

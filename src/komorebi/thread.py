@@ -137,6 +137,29 @@ class RingPlacement(NamedTuple):
     remote: int | None = None
 
 
+class Peers(NamedTuple):
+    """The clusters running one image in a program: `nonce` (this load's), `lead`
+    (the lowest), `tiles` and `banks`: {cluster: NoC tile x | y << 16} of each cluster
+    and of its DRAM bank."""
+
+    nonce: int
+    lead: int
+    tiles: dict
+    banks: dict
+
+    @property
+    def mask(self):
+        return sum(1 << c for c in self.tiles)
+
+
+def peer_groups(images):
+    """{cluster: [clusters running the same image]} from {cluster: image path}."""
+    by = {}
+    for c, image in sorted(images.items()):
+        by.setdefault(str(image), []).append(c)
+    return {c: group for group in by.values() for c in group}
+
+
 def ring_bytes():
     """Bytes of one work ring's command lines and read line in the kernel's LIM."""
     return RING_DEPTH * 64 + 64
@@ -188,11 +211,13 @@ def ring_area_bytes(ring):
     return abi.headers()["KMD_WORK_EVENTS"] + ring.event_depth * 16
 
 
-def args_block(thread, base, check_value, run_value=0, ring=None, table=None):
-    """The thread's whole LIM block (KMX_LIM_BYTES, and a remote ring's event area
-    zeroed): the argument block with the check line at bank address `base`, the region
-    table (`table`: [(bank address, bytes)] in id order, else place() from `base`), the
-    ring's line (zero without a `ring`, a RingPlacement)."""
+def args_block(
+    thread, base, check_value, run_value=0, ring=None, table=None, peers=None
+):
+    """The thread's LIM block (KMX_LIM_BYTES, a remote ring's event area zeroed): the
+    argument block, check line at bank address `base`, region table (`table`: [(bank
+    address, bytes)], else place() from `base`), the ring's line (`ring`, a
+    RingPlacement) and the peers line (`peers`, Peers; kmx_par_all lines after)."""
     k = layout()
     if table is None:
         table = [(base + p.page * PAGE, p.bytes) for p in place(thread)[0]]
@@ -234,6 +259,14 @@ def args_block(thread, base, check_value, run_value=0, ring=None, table=None):
         block[k["KMX_LIM_RING"] : k["KMX_LIM_RING"] + 64] = line
         if ring.remote is not None:
             block += bytes(ring_area_bytes(ring))  # its events start zeroed
+    if peers is not None:
+        tiles = [peers.tiles.get(c, 0) for c in range(4)]
+        banks = [peers.banks.get(c, 0) for c in range(4)]
+        line = struct.pack(
+            "<16I", peers.nonce, peers.lead, peers.mask, len(block), *tiles, *banks,
+            *[0] * 4,
+        )  # fmt: skip
+        block[k["KMX_LIM_PEERS"] : k["KMX_LIM_PEERS"] + 64] = line
     return bytes(block)
 
 
@@ -311,6 +344,7 @@ class ThreadRun:
         self.result = None
         self.arrays = None  # the host fallback's regions, uint32, once it ran
         self.ring = None  # RingPlacement of the command ring, when the kernel has one
+        self.peers = None  # Peers: the clusters running the same image
 
     def start(self):
         """Starts the image on the card (no-op for the host fallback)."""
@@ -320,7 +354,12 @@ class ThreadRun:
             return
         table = self.regions.table() if hasattr(self.regions, "table") else None
         block = args_block(
-            self.thread, self.base, self.check_value, ring=self.ring, table=table
+            self.thread,
+            self.base,
+            self.check_value,
+            ring=self.ring,
+            table=table,
+            peers=self.peers,
         )
         self.port.work_start(self.thread.cluster, str(self.image), block)
         self.running = True

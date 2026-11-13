@@ -77,6 +77,18 @@ def test_the_argument_block_tells_the_thread_its_cluster():
     assert struct.unpack_from("<I", block, 56)[0] == 3
 
 
+def test_threads_of_one_image_are_peers_led_by_the_lowest_cluster():
+    groups = kt.peer_groups({3: "a.bin", 1: "a.bin", 2: "b.bin"})
+    assert groups == {1: [1, 3], 3: [1, 3], 2: [2]}
+    peers = kt.Peers(0x1234, 1, {1: 8 | 9 << 16, 3: 8 | 7 << 16}, {1: 6, 3: 7})
+    ring, _ = kt.work_ring(0x8100000, (8, 3), 0x8120000, (8, 7), cluster=3)
+    block = kt.args_block(a_thread(cluster=3), 0, 1, ring=ring, peers=peers)
+    line = struct.unpack_from("<12I", block, K["KMX_LIM_PEERS"])
+    assert line[:4] == (0x1234, 1, 0b1010, len(block))  # par_all lines after the block
+    assert line[4:] == (0, 8 | 9 << 16, 0, 8 | 7 << 16, 0, 6, 0, 7)
+    assert len(block) % 64 == 0
+
+
 def test_argument_block_holds_the_region_table_and_words():
     block = kt.args_block(a_thread(deadline=2.0), base=0x100000, check_value=0xABC)
     assert len(block) == K["KMX_LIM_BYTES"]

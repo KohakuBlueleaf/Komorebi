@@ -1,5 +1,5 @@
 /* kmx start-up and calls: every hart checks the argument block; hart 0 checks the
- * bank and runs kmx_main; harts 1 to 3 run kmx_par until it ends, stops or is late. */
+ * bank and runs kmx_main; harts 1 to 3 run what kmx_spawn gives them until it ends. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -40,9 +40,11 @@ static kmx_ring_t g_ring __attribute__((section(".data"))) = {.next = 1};
 static uint64_t g_start __attribute__((section(".data"))) = 1;
 static uint32_t g_code __attribute__((section(".data"))) = KMX_UNSET;
 static uint32_t g_in_par __attribute__((section(".data"))) = 0; /* hart 0 in kmx_par */
-
-/* hart 0's kmx_par mailbox */
-enum { PAR_GEN = 0, PAR_FN = 1, PAR_ARG = 2, PAR_EXIT = 3 };
+/* kmx_par_all: the call number, whether every other cluster said it serves, and
+ * each other cluster's LIM block through its window (0: none). */
+static uint32_t g_all_gen __attribute__((section(".data"))) = 0;
+static uint32_t g_all_ready __attribute__((section(".data"))) = 0;
+static volatile uint8_t* g_peer[4] __attribute__((section(".data"))) = {0, 0, 0, 0};
 
 static inline uint64_t hart_id(void) {
     uint64_t h;
@@ -58,12 +60,19 @@ static inline volatile kmx_result_block* result(void) {
     return (volatile kmx_result_block*)(lim() + KMX_LIM_RESULT);
 }
 
-static inline volatile uint64_t* par_box(void) {
-    return (volatile uint64_t*)(lim() + KMX_LIM_PAR);
+/* Hart h's spawn line (KMX_SPAWN_* words). */
+static inline volatile uint64_t* spawn_line(uint64_t h) {
+    return (volatile uint64_t*)(lim() + KMX_LIM_HARTS + 64u * h);
 }
 
-static inline volatile uint64_t* par_done(void) {
-    return (volatile uint64_t*)(lim() + KMX_LIM_DONE);
+static inline const volatile kmx_peers* peers(void) {
+    return (const volatile kmx_peers*)(lim() + KMX_LIM_PEERS);
+}
+
+/* A kmx_par_all line (KMX_CALL_* words) of this cluster's LIM, or through the window
+ * onto cluster c's. */
+static inline volatile uint32_t* all_line(volatile uint8_t* block, uint32_t line) {
+    return (volatile uint32_t*)(block + peers()->all + KMX_ALL_CALL + 64u * line);
 }
 
 /* Records the first library error. */
@@ -135,13 +144,8 @@ static void sweep_part(int hart, void* arg) {
     }
 }
 
-void kmx_take(int id) {
-    uint64_t bytes;
-    void* p = kmx_region(id, &bytes);
-    if (!p) {
-        return;
-    }
-    const uint64_t addr = (uint64_t)(uintptr_t)p;
+/* Sweeps [addr, addr + bytes): on hart 0 outside kmx_par over the four harts. */
+static void sweep(uint64_t addr, uint64_t bytes) {
     if (hart_id() != 0 || g_in_par) {
         flush(addr, bytes); /* inside a kmx_par call: this hart alone */
         return;
@@ -149,12 +153,30 @@ void kmx_take(int id) {
     const uint64_t lo = addr & ~63ull, hi = (addr + bytes + 63) & ~63ull;
     sweep_t s = {lo, (hi - lo) / 64};
     if (kmx_par(sweep_part, &s) != KMX_OK) {
-        flush(addr, bytes); /* late or stopped: the hand-over is still whole */
+        flush(addr, bytes); /* busy, late or stopped: the hand-over is still whole */
     }
+}
+
+void kmx_take_at(int id, uint64_t offset, uint64_t bytes) {
+    uint64_t n;
+    uint8_t* p = (uint8_t*)kmx_region(id, &n);
+    if (p && offset < n) {
+        sweep(
+            (uint64_t)(uintptr_t)(p + offset), bytes < n - offset ? bytes : n - offset
+        );
+    }
+}
+
+void kmx_take(int id) {
+    kmx_take_at(id, 0, ~0ull);
 }
 
 void kmx_give(int id) {
     kmx_take(id); /* Flush64 both writes back and drops a line */
+}
+
+void kmx_give_at(int id, uint64_t offset, uint64_t bytes) {
+    kmx_take_at(id, offset, bytes);
 }
 
 /* KMX_OK on hart 0; elsewhere the error is recorded and the call refused. */
@@ -187,37 +209,418 @@ int kmx_poll(kmx_event* ev) {
     return h != KMX_OK ? h : kmx_ring_poll(&g_ring, ev);
 }
 
-int kmx_par(void (*fn)(int hart, void* arg), void* arg) {
-    if (hart_id() != 0 || g_in_par) {
-        fail(KMX_ERR_PAR); /* another hart, or a kmx_par inside one */
+/* Records the error of a wait that ended early and returns its code. */
+static int ended(int end) {
+    fail(end == KMX_LATE ? KMX_ERR_LATE : KMX_ERR_STOPPED);
+    return end;
+}
+
+/* Hart 0: the spawns started on each hart (as its line's GEN word holds), and the
+ * harts kmx_spawn started that no join has seen finish (bit h). */
+static uint64_t g_spawned[4] __attribute__((section(".data"))) = {0, 0, 0, 0};
+static uint32_t g_spawn_busy __attribute__((section(".data"))) = 0;
+
+/* Harts [lo, hi): fn and arg into each line, then each line's next number. */
+static void start(uint64_t lo, uint64_t hi, void (*fn)(int, void*), void* arg) {
+    volatile uint64_t* line = spawn_line(0);
+    for (uint64_t h = lo; h < hi; h++) {
+        line[8 * h + KMX_SPAWN_FN] = (uint64_t)(uintptr_t)fn;
+        line[8 * h + KMX_SPAWN_ARG] = (uint64_t)(uintptr_t)arg;
+    }
+    x280_fence_ow();
+    for (uint64_t h = lo; h < hi; h++) {
+        line[8 * h + KMX_SPAWN_GEN] = ++g_spawned[h];
+    }
+    x280_fence_ow();
+}
+
+/* Whether one of harts [lo, hi) has not finished its last spawn. */
+static int busy(uint64_t lo, uint64_t hi) {
+    x280_fence_ir();
+    for (uint64_t h = lo; h < hi; h++) {
+        if (spawn_line(h)[KMX_SPAWN_DONE] < g_spawned[h]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int kmx_spawn(int hart, void (*fn)(int hart, void* arg), void* arg) {
+    if (hart_id() != 0) {
+        fail(KMX_ERR_PAR);
         return KMX_STOPPED;
     }
-    g_in_par = 1;
-    volatile uint64_t* box = par_box();
-    volatile uint64_t* done = par_done();
-    const uint64_t gen = box[PAR_GEN] + 1;
-    box[PAR_FN] = (uint64_t)(uintptr_t)fn;
-    box[PAR_ARG] = (uint64_t)(uintptr_t)arg;
-    x280_fence_ow();
-    box[PAR_GEN] = gen;
-    x280_fence_ow();
-    fn(0, arg);
+    if (hart < 1 || hart > 3) {
+        return KMX_BAD;
+    }
+    if (busy((uint64_t)hart, (uint64_t)hart + 1)) {
+        return KMX_FULL;
+    }
+    start((uint64_t)hart, (uint64_t)hart + 1, fn, arg);
+    g_spawn_busy |= 1u << hart;
+    return KMX_OK;
+}
+
+/* Hart 0: waits until harts [lo, hi) finished their spawns. */
+static int join(uint64_t lo, uint64_t hi) {
+    const volatile uint64_t* line = spawn_line(0);
+    const uint64_t g1 = g_spawned[1], g2 = g_spawned[2], g3 = g_spawned[3];
     for (uint32_t spins = 0;; spins++) {
         x280_fence_ir();
-        if (done[1] >= gen && done[2] >= gen && done[3] >= gen) {
+        if ((lo > 1 || line[8 + KMX_SPAWN_DONE] >= g1) &&
+            (lo > 2 || hi < 3 || line[16 + KMX_SPAWN_DONE] >= g2) &&
+            (hi < 4 || line[24 + KMX_SPAWN_DONE] >= g3)) {
             x280_fence_iorw();
-            g_in_par = 0;
             return KMX_OK;
         }
         if (spins % KMX_POLL_EVERY == 0) {
             const int end = must_end(0);
             if (end != KMX_OK) {
-                fail(end == KMX_LATE ? KMX_ERR_LATE : KMX_ERR_STOPPED);
-                g_in_par = 0;
-                return end;
+                return ended(end);
             }
         }
     }
+}
+
+int kmx_join(int hart) {
+    if (hart_id() != 0) {
+        fail(KMX_ERR_PAR);
+        return KMX_STOPPED;
+    }
+    if (hart < 1 || hart > 3) {
+        return KMX_BAD;
+    }
+    const int e = join((uint64_t)hart, (uint64_t)hart + 1);
+    if (e == KMX_OK) {
+        g_spawn_busy &= ~(1u << hart);
+    }
+    return e;
+}
+
+int kmx_par(void (*fn)(int hart, void* arg), void* arg) {
+    if (hart_id() != 0 || g_in_par) {
+        fail(KMX_ERR_PAR); /* another hart, or a kmx_par inside one */
+        return KMX_STOPPED;
+    }
+    if (g_spawn_busy) {
+        if (busy(1, 4)) {
+            return KMX_FULL; /* a spawned hart has not finished */
+        }
+        g_spawn_busy = 0;
+    }
+    g_in_par = 1;
+    start(1, 4, fn, arg);
+    fn(0, arg);
+    const int e = join(1, 4);
+    g_in_par = 0;
+    return e;
+}
+
+uint32_t kmx_clusters(void) {
+    const volatile kmx_peers* p = peers();
+    return p->lead ? p->mask : 1u << kmx_cluster();
+}
+
+int kmx_lead(void) {
+    const uint32_t lead = peers()->lead;
+    return lead ? (int)lead : kmx_cluster();
+}
+
+/* 32-bit stores of a 64-bit value through a window, low half first. */
+static void put64(volatile uint32_t* w, uint64_t v) {
+    w[0] = (uint32_t)v;
+    w[1] = (uint32_t)(v >> 32);
+}
+
+static uint64_t get64(const volatile uint32_t* w) {
+    return (uint64_t)w[0] | (uint64_t)w[1] << 32;
+}
+
+/* This cluster's done line in the lead's LIM: number `gen` finished (0: it serves). */
+static void tell_lead(uint32_t gen) {
+    volatile uint32_t* d = all_line(g_peer[peers()->lead], (uint32_t)kmx_cluster());
+    if (gen == 0) {
+        d[KMX_CALL_GEN] = 0;
+        x280_fence_ow();
+        d[KMX_CALL_NONCE] = peers()->nonce;
+        x280_fence_ow();
+    }
+    d[KMX_CALL_GEN] = gen;
+    x280_fence_ow();
+}
+
+/* Lead: waits until cluster c's done line holds this load's nonce and `gen`. */
+static int wait_done(uint32_t c, uint32_t gen) {
+    const volatile uint32_t* d = all_line(lim(), c);
+    const uint32_t nonce = peers()->nonce;
+    for (uint32_t spins = 0;; spins++) {
+        x280_fence_ir();
+        if (d[KMX_CALL_NONCE] == nonce && d[KMX_CALL_GEN] >= gen) {
+            x280_fence_iorw();
+            return KMX_OK;
+        }
+        if (spins % KMX_POLL_EVERY == 0) {
+            const int end = must_end(0);
+            if (end != KMX_OK) {
+                return ended(end);
+            }
+        }
+    }
+}
+
+/* Lead: number `gen` of the call line into cluster c's LIM (exit: the last one). */
+static void call(uint32_t c, uint32_t gen, uint64_t fn, uint64_t arg, uint32_t exit) {
+    volatile uint32_t* l = all_line(g_peer[c], 0);
+    put64(l + KMX_CALL_FN, fn);
+    put64(l + KMX_CALL_ARG, arg);
+    l[KMX_CALL_EXIT] = exit;
+    l[KMX_CALL_NONCE] = peers()->nonce;
+    x280_fence_ow();
+    l[KMX_CALL_GEN] = gen;
+    x280_fence_ow();
+}
+
+/* What every hart of a cluster runs for one kmx_par_all call. */
+typedef struct {
+    void (*fn)(int cluster, int hart, uint64_t arg);
+    uint64_t arg;
+    int cluster;
+} all_call_t;
+
+static void all_part(int hart, void* arg) {
+    const all_call_t* c = (const all_call_t*)arg;
+    c->fn(c->cluster, hart, c->arg);
+}
+
+/* The other clusters of the lead's group, as bits. */
+static uint32_t others(void) {
+    const volatile kmx_peers* p = peers();
+    return p->lead ? p->mask & ~(1u << kmx_cluster()) : 0;
+}
+
+/* KMX_OK once every other cluster of the group serves: on the lead after each said
+ * so, on another once the lead's first call came (KMX_BAD before). */
+static int all_ready(void) {
+    if (g_all_ready) {
+        return KMX_OK;
+    }
+    if (kmx_lead() != kmx_cluster()) {
+        return KMX_BAD;
+    }
+    const uint32_t rest = others();
+    for (uint32_t c = 1; c < 4; c++) {
+        const int e = (rest >> c & 1u) ? wait_done(c, 0) : KMX_OK;
+        if (e != KMX_OK) {
+            return e;
+        }
+    }
+    g_all_ready = 1;
+    return KMX_OK;
+}
+
+int kmx_par_all(void (*fn)(int cluster, int hart, uint64_t arg), uint64_t arg) {
+    if (hart_id() != 0 || g_in_par || kmx_lead() != kmx_cluster()) {
+        fail(KMX_ERR_PAR);
+        return KMX_STOPPED;
+    }
+    const uint32_t rest = others();
+    int e = all_ready();
+    if (e != KMX_OK) {
+        return e;
+    }
+    const uint32_t gen = ++g_all_gen;
+    for (uint32_t c = 1; c < 4; c++) {
+        if (rest >> c & 1u) {
+            call(c, gen, (uint64_t)(uintptr_t)fn, arg, 0);
+        }
+    }
+    all_call_t mine = {fn, arg, kmx_cluster()};
+    e = kmx_par(all_part, &mine);
+    for (uint32_t c = 1; c < 4 && e == KMX_OK; c++) {
+        e = (rest >> c & 1u) ? wait_done(c, gen) : KMX_OK;
+    }
+    return e;
+}
+
+int kmx_serve(void) {
+    if (hart_id() != 0 || g_in_par) {
+        fail(KMX_ERR_PAR);
+        return KMX_STOPPED;
+    }
+    if (kmx_lead() == kmx_cluster()) {
+        return KMX_NONE;
+    }
+    const volatile uint32_t* l = all_line(lim(), 0);
+    const uint32_t nonce = peers()->nonce;
+    uint32_t seen = 0;
+    tell_lead(0);
+    for (uint32_t spins = 1;; spins++) {
+        x280_fence_ir();
+        const uint32_t gen = l[KMX_CALL_GEN];
+        if (gen == seen + 1 && l[KMX_CALL_NONCE] == nonce) {
+            x280_fence_ir();
+            if (l[KMX_CALL_EXIT]) {
+                return KMX_OK;
+            }
+            all_call_t mine = {
+                (void (*)(int, int, uint64_t))(uintptr_t)get64(l + KMX_CALL_FN),
+                get64(l + KMX_CALL_ARG),
+                kmx_cluster()
+            };
+            seen = gen;
+            g_all_ready = 1;
+            const int e = kmx_par(all_part, &mine);
+            if (e != KMX_OK) {
+                return e;
+            }
+            tell_lead(gen);
+            continue;
+        }
+        if (spins % KMX_POLL_EVERY == 0) {
+            const int end = must_end(0);
+            if (end != KMX_OK) {
+                return ended(end);
+            }
+            if (seen == 0 && spins % (KMX_POLL_EVERY * 256u) == 0) {
+                tell_lead(0); /* again: the lead clears its lines when it starts */
+            }
+        }
+    }
+}
+
+/* Region `id` of cluster c's thread: its bank address and size, from the argument
+ * block in its LIM (a read through the window); 0 for an unknown one. */
+static uint64_t region_of(uint32_t c, int id, uint64_t* bytes) {
+    *bytes = 0;
+    const volatile uint8_t* block = c == (uint32_t)kmx_cluster() ? lim() : g_peer[c];
+    if (block == 0 || id < 0) {
+        return 0;
+    }
+    const volatile uint32_t* a = (const volatile uint32_t*)block;
+    const uint32_t nregions = a[offsetof(kmx_args, nregions) / 4];
+    if ((uint32_t)id >= nregions || nregions > KMX_REGIONS_MAX) {
+        return 0;
+    }
+    const volatile uint32_t* r = a + (KMX_ARGS_REGIONS + 16u * (uint32_t)id) / 4;
+    *bytes = get64(r + 2);
+    return get64(r);
+}
+
+/* 64-byte multiples of `src` stored through a window, 512 bytes per vector store. */
+static void copy_out(volatile uint8_t* dst, const uint8_t* src, uint64_t n) {
+    while (n != 0) {
+        uint64_t vl;
+        __asm__ volatile(
+            ".option push\n.option arch, +v\n"
+            "vsetvli %0, %1, e64, m8, ta, ma\n"
+            "vle64.v v0, (%2)\n"
+            "vse64.v v0, (%3)\n"
+            ".option pop\n"
+            : "=&r"(vl)
+            : "r"(n / 8), "r"(src), "r"(dst)
+            : "memory", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7"
+        );
+        src += vl * 8;
+        dst += vl * 8;
+        n -= vl * 8;
+    }
+}
+
+/* One hart's push of [src, src + n) to bank address `at` of DRAM tile `tile`: posted
+ * stores per 2 MiB, the last line again, acknowledged. 0, or 1 if a window failed. */
+static int push_range(
+    uint64_t h, uint32_t tile, uint64_t at, const uint8_t* src, uint64_t n
+) {
+    const uint32_t x = tile & 0xFFFFu, y = tile >> 16;
+    const uint32_t win = KMX_PUSH_WINDOW + (uint32_t)h;
+    const uint64_t end = at + n;
+    noc_tlb_2m_t prog;
+    while (at < end) {
+        const uint64_t room = NOC_2M_WINDOW_STRIDE - (at & (NOC_2M_WINDOW_STRIDE - 1u));
+        const uint64_t k = end - at < room ? end - at : room;
+        volatile uint8_t* w = (
+            (volatile uint8_t*)noc_configure_tlb_2m_checked(
+                win, x, y, at, NOC_ORDER_POSTED, &prog
+            )
+        );
+        if (w == 0) {
+            return 1;
+        }
+        copy_out(w, src, k);
+        x280_fence_ow();
+        at += k;
+        src += k;
+    }
+    /* The last line again through a non-posted window: its acknowledgement comes
+     * after the posted stores before it on the same path. */
+    volatile uint32_t* d = (
+        (volatile uint32_t*)noc_configure_tlb_2m_checked(
+            win, x, y, end - 64, NOC_ORDER_DEFAULT, &prog
+        )
+    );
+    if (d == 0) {
+        return 1;
+    }
+    const volatile uint32_t* s = (const volatile uint32_t*)(src - 64);
+    for (int i = 0; i < 16; i++) {
+        d[i] = s[i];
+    }
+    x280_fence_ow();
+    noc_clear_tlb_2m(win);
+    return 0;
+}
+
+typedef struct {
+    uint32_t tile;
+    uint64_t at, bytes;
+    const uint8_t* src;
+    uint32_t bad[4];
+} push_t;
+
+/* Hart h's quarter, in whole lines. */
+static void push_part(int hart, void* arg) {
+    push_t* p = (push_t*)arg;
+    const uint64_t lines = p->bytes / 64, per = (lines + 3) / 4;
+    const uint64_t first = (uint64_t)hart * per;
+    p->bad[hart] = 0;
+    if (first < lines) {
+        const uint64_t n = (lines - first < per ? lines - first : per) * 64;
+        p->bad[hart] = (
+            (uint32_t)push_range(
+                (uint64_t)hart, p->tile, p->at + first * 64, p->src + first * 64, n
+            )
+        );
+    }
+}
+
+int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t bytes) {
+    const uint32_t c = (uint32_t)cluster;
+    if (cluster < 1 || cluster > 3 || !(kmx_clusters() >> c & 1u) ||
+        ((offset | bytes | (uint64_t)(uintptr_t)src) & 63u)) {
+        return KMX_BAD;
+    }
+    if (c != (uint32_t)kmx_cluster()) {
+        const int e = all_ready(); /* its argument block is this load's */
+        if (e != KMX_OK) {
+            return e;
+        }
+    }
+    uint64_t n;
+    const uint64_t at = region_of(c, id, &n);
+    if (n == 0 || offset > n || bytes > n - offset) {
+        return KMX_BAD;
+    }
+    if (bytes == 0) {
+        return KMX_OK;
+    }
+    push_t p = {
+        peers()->bank[c], at + offset, bytes, (const uint8_t*)src, {0, 0, 0, 0}
+    };
+    const uint64_t h = hart_id();
+    if (h == 0 && !g_in_par && kmx_par(push_part, &p) == KMX_OK) {
+        return p.bad[0] | p.bad[1] | p.bad[2] | p.bad[3] ? KMX_BAD : KMX_OK;
+    }
+    return push_range(h, p.tile, p.at, p.src, bytes) ? KMX_BAD : KMX_OK;
 }
 
 uint64_t kmx_time(void) {
@@ -251,30 +654,91 @@ void kmx_result(uint32_t code, const void* words, uint32_t n) {
     x280_fence_ow();
 }
 
-/* Harts 1 to 3: run each kmx_par call of hart 0 until it is done, a stop is asked
+/* Harts 1 to 3: run each spawn of hart 0 until kmx_main returns, a stop is asked
  * for, or the run's deadline passes. */
 static void serve(uint64_t h) {
-    volatile uint64_t* box = par_box();
-    volatile uint64_t* done = par_done();
+    volatile uint64_t* line = spawn_line(h);
+    const volatile uint64_t* exit = spawn_line(0);
     uint64_t seen = 0;
     for (uint32_t spins = 0;; spins++) {
         x280_fence_ir();
-        if (box[PAR_EXIT] != 0) {
+        if (exit[KMX_SPAWN_EXIT] != 0) {
             return;
         }
-        const uint64_t gen = box[PAR_GEN];
+        const uint64_t gen = line[KMX_SPAWN_GEN];
         if (gen > seen) {
             x280_fence_ir();
-            void (*fn)(int, void*) = (void (*)(int, void*))(uintptr_t)box[PAR_FN];
-            fn((int)h, (void*)(uintptr_t)box[PAR_ARG]);
-            seen = gen;
+            void (*fn)(
+                int, void*
+            ) = (void (*)(int, void*))(uintptr_t)line[KMX_SPAWN_FN];
+            fn((int)h, (void*)(uintptr_t)line[KMX_SPAWN_ARG]);
             x280_fence_iorw();
-            done[h] = gen;
+            line[KMX_SPAWN_DONE] = gen;
             x280_fence_ow();
+            seen = gen;
             continue;
         }
         if (spins % KMX_POLL_EVERY == 0 && must_end(h) != KMX_OK) {
             return;
+        }
+    }
+}
+
+/* Opens a window onto the LIM of every other cluster of the group and, on the lead,
+ * clears the done lines. 1, or 0 when a window could not be opened. */
+static int peers_open(void) {
+    const volatile kmx_peers* p = peers();
+    const uint32_t rest = others();
+    if (p->lead == 0) {
+        return 1;
+    }
+    if (p->lead > 3 || !(p->mask >> p->lead & 1u) || (p->mask & ~0xEu) ||
+        !(p->mask >> kmx_cluster() & 1u) || (p->all & 63u) || p->all < KMX_LIM_BYTES ||
+        (uint64_t)(uintptr_t)lim() + p->all + KMX_ALL_BYTES > X280_LIM_END) {
+        return 0;
+    }
+    for (uint32_t c = 1; c < 4; c++) {
+        if (!(rest >> c & 1u)) {
+            continue;
+        }
+        noc_tlb_2m_t prog;
+        volatile uint8_t* w = (
+            (volatile uint8_t*)noc_configure_tlb_2m_checked(
+                KMX_PEER_WINDOW + c - 1,
+                p->tile[c] & 0xFFFFu,
+                p->tile[c] >> 16,
+                X280_LIM_BASE,
+                NOC_ORDER_POSTED,
+                &prog
+            )
+        );
+        if (w == 0) {
+            return 0;
+        }
+        /* every cluster's block is at the same LIM address */
+        g_peer[c] = w + ((uint64_t)(uintptr_t)lim() - X280_LIM_BASE);
+    }
+    if (kmx_lead() == kmx_cluster()) {
+        for (uint32_t c = 1; c < 4; c++) {
+            volatile uint32_t* d = all_line(lim(), c);
+            d[KMX_CALL_GEN] = 0;
+            d[KMX_CALL_NONCE] = 0;
+        }
+        x280_fence_ow();
+    }
+    return 1;
+}
+
+/* The lead tells the others its kmx_main returned; every window is closed. */
+static void peers_close(void) {
+    const uint32_t rest = others();
+    for (uint32_t c = 1; c < 4; c++) {
+        if (g_peer[c] != 0 && kmx_lead() == kmx_cluster()) {
+            call(c, g_all_gen + 1, 0, 0, 1);
+        }
+        if (rest >> c & 1u) {
+            noc_clear_tlb_2m(KMX_PEER_WINDOW + c - 1);
+            g_peer[c] = 0;
         }
     }
 }
@@ -348,6 +812,9 @@ static uint64_t run_main(const volatile kmx_args* a) {
     if (d->cmd != 0 && !ring_open(d)) {
         fail(KMX_ERR_ARGS); /* a ring is named but its line is out of range */
     }
+    if (!peers_open()) {
+        fail(KMX_ERR_ARGS); /* the peers line is out of range */
+    }
     const uint64_t check = X280_LOCAL_DDR_TILE_BASE + a->check;
     flush(check, 64);
     if (*(volatile uint64_t*)(uintptr_t)check != a->check_value) {
@@ -364,9 +831,17 @@ static uint64_t run_main(const volatile kmx_args* a) {
     if (g_ring.cmd != 0 && (d->flags & KMX_RING_REMOTE)) {
         noc_clear_tlb_2m(KMX_RING_WINDOW);
     }
+    peers_close();
     const uint64_t ticks = x280_mtime() - g_start;
     r->ticks = (uint32_t)ticks;
-    par_box()[PAR_EXIT] = 1;
+    /* every region given back: a dirty line left in the cluster's cache would be
+     * written over a later load's data (or its check line) when it is evicted */
+    for (uint32_t i = 0; i < a->nregions; i++) {
+        uint64_t n;
+        const void* p = kmx_region((int)i, &n);
+        flush((uint64_t)(uintptr_t)p, n); /* hart 0 alone: as fast, and after a stop */
+    }
+    spawn_line(0)[KMX_SPAWN_EXIT] = 1;
     x280_fence_ow();
     r->state = r->error ? KMX_STATE_FAILED : KMX_STATE_DONE;
     x280_fence_ow();

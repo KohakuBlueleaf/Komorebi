@@ -621,6 +621,7 @@ class Session:
         self.log("ready")
         if works:
             shared = {n: _host_array(v) for n, v in program.shared.items()}
+            peers = _peers(self, dispatch, images) if on_card else {}
             try:
                 for work in works:
                     c = work.cluster
@@ -630,6 +631,7 @@ class Session:
                         view.check, run, shared,
                     )  # fmt: skip
                     t.ring = rings[c][0] if on_card else None
+                    t.peers = peers.get(c)
                     run.threads[c] = t
                     t.start()
             except BaseException:
@@ -639,6 +641,22 @@ class Session:
             where = "on the card" if on_card else "on the host"
             self.log(f"threads {list(run.threads)} {where}")
         return run
+
+
+def _peers(session, dispatch, images):
+    """{cluster: komorebi.thread.Peers} for the threads on the card: each with the
+    clusters running its image, their tiles and their banks' DRAM tiles."""
+    out, nonce = {}, kt.new_check_value() & 0xFFFFFFFF
+    for c, group in kt.peer_groups(images).items():
+        tiles, banks = {}, {}
+        for g in group:
+            info = dispatch.work_info(g)
+            tiles[g] = info["virtual_x"] | info["virtual_y"] << 16
+            core = ttnn.CoreCoord(kt.BANK_OF_CLUSTER[g], 0)
+            dram = session.device.dram_core_from_logical_core(core)
+            banks[g] = int(dram.x) | int(dram.y) << 16
+        out[c] = kt.Peers(nonce, min(group), tiles, banks)
+    return out
 
 
 def _region_bytes(value):
