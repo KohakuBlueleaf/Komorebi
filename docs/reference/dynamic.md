@@ -9,13 +9,14 @@ tags:
 # Dynamic Segments
 
 Status: implemented on one Blackhole card, through a `Session` (the dispatch kernel reads
-the status lines and ends the run) and under the test feeder. One dynamic run at a time.
+the status lines and ends the run) and under the test feeder, with one open defect
+(below). One dynamic run at a time.
 
 **Open defect.** A reservation's answer can be lost: the atomic add is counted as
 answered and the destination's tail moves, but the returned position never lands in the
-writer's L1. About 1 run in 5 of 10^6 hops on 119 cores ends this way: the run stops
-with reason 32 (`lost`) or with a wait it blocked (24, 28), reported and named like any
-give-up, never a hang. The runs of 10^5 hops and fewer measured so far were exact. The cause is being
+writer's L1. About 1 run in 5 of 10^6 hops on 119 cores ends this way: it ends with a
+reported reason, never a hang (32 `lost`, or a wait it blocked, 24 or 28, named like
+any give-up). The runs of 10^5 hops and fewer measured so far were exact. The cause is being
 investigated; until it is fixed, a program must expect such a run to fail and rerun it.
 
 A static crossing is known before the run: who sends what to whom and how many arrive.
@@ -182,7 +183,7 @@ the same loaded program.
 | 27, 28, 29 | next, out page, outbox | a wait between the compute kernel and the reader or writer ran out |
 | 30 | stopped | the stop word was set |
 | 31 | align | the packet buffer or the item size is not a multiple of 64 bytes |
-| 32 | lost | a reservation was answered but its returned position never landed; word 3 names the destination |
+| 32 | lost | a reservation was answered but its returned position never landed; word 3 names the destination. The open defect above |
 | 33 | fill | the start-up zero fill of the queue did not finish |
 | 34 | full | this core's queue positions reached 2^30 in this load |
 
