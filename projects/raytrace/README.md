@@ -41,7 +41,7 @@ packet states stay in L1 between visits.
 
 | Kernel | What it does |
 |---|---|
-| `reader.cpp` | LOAD: the tree image into the tree buffer. TRACE: this core's packet pages from DRAM to compute. TREELETS: also bins packets by treelet, reads treelets into slots (least recently used replaced), writes work pages |
+| `reader.cpp` | LOAD: the tree image into the tree buffer. TRACE: this core's packet pages from DRAM to compute. TREELETS: also bins packets by treelet, reads treelets into slots (least recently used replaced), writes work pages. SORT and UNSORT: this core's rays into a new order and their hits back (below) |
 | `compute.cpp` | the pack thread walks each packet on the vector unit (`walk.hpp`): slab test and triangle test in the reference's operation order, with an exact reciprocal (`sfpu.hpp`); the stages' arithmetic (`shade.hpp`); the unpack thread hands it the pages |
 | `writer.cpp` | 64 packets' output pages of each stream to one DRAM page (the host reads per page); the profile page |
 
@@ -52,6 +52,7 @@ packet states stay in L1 between visits.
 | a3 | mode: nearest hit, or any hit (shadow rays) |
 | a4 | profile pages: per core, the cycles of every step and the counts |
 | a5 to a9 | TREELETS: treelet images, list entries, slot bytes, slots, schedule |
+| a1 to a9 | SORT, UNSORT: stream in, stream out, order pages, profile, vectors to put back (0: SORT), the key's low corner and scale |
 
 The frame is eight records in one load (`frame.py`), each core keeping the packets
 of its tiles from the first record to the last. The other stages are threads of the
@@ -116,6 +117,15 @@ fits the treelet buffers), and treelets are read from DRAM as packets need them;
 stage records are unchanged. `--pictures DIR` writes the card's image, numpy's and
 their difference as PNGs, and the JSON line, as `DIR/<scene>_*`.
 
+`--sort` (with `--treelets`) puts a SORT record before the bounce and second-shadow
+traces and an UNSORT record after each. SORT runs on each core's data-movement core:
+it reads one vector of all the core's packets at a time into L1 (the slot buffer,
+free between treelet records), keys each ray by its direction's octant and the Morton
+cell (2^9 per axis over the root box) of its origin, orders the keys (radix sort,
+three passes of 11 bits, rays without a ray last) and writes the packets in that
+order with their headers' direction signs, and the order. UNSORT writes the hits back
+to their pixels' lanes. Rays never leave their core; the stages are unchanged.
+
 `frame.py` prints one JSON line: per record its median time and the cycles per packet
 of loading, computing and writing, the clock, the card's idle and mean power, the image
 check and `ok`; `--stages` also reads every stage's pages back and checks them (use it
@@ -151,9 +161,9 @@ different one. The image check counts such pixels apart as ties: a pixel whose c
 is the one the reference computes with a triangle within 1e-5 of the nearest
 distance, for the primary or the bounce ray (`ties.py`, every triangle tested against
 those rays). Ties pass the check; every other differing pixel fails it. Per scene,
-one frame with treelets of 128 KiB: 10^4 and 10^5 none, 10^6 1, Sponza 192 (close)
-and 221 (overview), Bistro interior 1 and 1. Bistro interior also has 1 (close) and
-2 (overview) pixels that differ otherwise: a bounce ray keeps a hit 3e-5 to 1.3e-4
+one frame with treelets of 128 KiB and sorted rays: 10^4 and 10^5 none, 10^6 1, Sponza
+244 (close) and 234 (overview), Bistro interior 1 and 1. Bistro interior also has 1
+(close) and 1 (overview) pixels that differ otherwise (2 before sorting): a bounce ray keeps a hit 3e-5 to 1.3e-4
 farther than the nearest, which it finds when traced in another packet; the check
 fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128`).
 
@@ -165,8 +175,9 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
   [host API](../../docs/reference/host.md#program)). Two remedies: a larger buffer
   (`Session(kernel_bytes=...)`, taken from the L1 left for circular buffers) or a
   smaller build of one kernel (`km.Program(..., opt={...})`). The ray tracer's kernels
-  fit the default; with the division, square root, reciprocal and clamped inverse
-  inlined at every use they did not, so these are calls.
+  take 73,728 bytes since SORT, and `card.py` opens its session with 80 KiB; with the
+  division, square root, reciprocal and clamped inverse inlined at every use they
+  took more, so these are calls.
 - Readback: reading back is slow ([host API](../../docs/reference/host.md#session));
   large results are read in 2 MB chunks with a line per chunk, and the whole frame's
   stage pages (490 MB) are checked on tiles only.
@@ -224,31 +235,36 @@ Reading it against the V100: below half everywhere, room left, in three places.
 
 ### The whole frame on larger scenes
 
-Treelets of at most 128 KiB from DRAM (the tiny row: the whole tree in L1); 2026-11-13
-14:27 to 15:00, card 1, AICLK 1350 MHz, X280 1000 MHz, one frame each;
-`python -m projects.raytrace.frame --scene SCENE --treelets 128 --json frame.json`
-(tiny: no `--treelets`), the JSON of every row in [`results/`](results/). Card ms per
-record; Mray/s counts the reference's rays of the four traces over the card's frame.
-C++ (96 threads of the host's 48-core EPYC 7K62) and V100 are the reference's five
-stages, median of 3 processes x 3 frames, from one run of `python -m
+Treelets of at most 128 KiB from DRAM with each core's bounce and second-shadow rays
+sorted (the tiny row: the whole tree in L1, not sorted); 2026-11-13 15:36 to 15:50,
+card 1, AICLK 1350 MHz, X280 1000 MHz, one frame each;
+`python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --json
+frame.json` (tiny: neither flag), the JSON of every row in [`results/`](results/).
+Card ms per record; Mray/s counts the reference's rays of the four traces over the
+card's frame. C++ (96 threads of the host's 48-core EPYC 7K62) and V100 are the
+reference's five stages, median of 3 processes x 3 frames, from one run of `python -m
 projects.raytrace.reference.bench` on 2026-11-13 14:57 to 15:20
 ([`results/reference-bench.json`](results/reference-bench.json)), the source of every
 C++ and V100 number in this README.
 
-| scene | treelets | GEN | primary | SHADE1 | shadow | bounce | SHADE2 | shadow 2 | IMAGE | frame ms | Mray/s | C++ ms | V100 ms | V100 / card | W | ties | pixels differing |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| tiny | (L1) | 0.54 | 3.40 | 2.23 | 2.22 | 8.79 | 1.57 | 3.88 | 0.57 | 23.20 | 108.7 | 20.59 | 2.59 | 0.112 | 61.0 | 0 | 0 |
-| 10^4 | 16 | 0.54 | 9.14 | 2.23 | 5.62 | 33.67 | 1.57 | 13.61 | 0.57 | 66.95 | 38.5 | 26.44 | 4.16 | 0.062 | 63.0 | 0 | 0 |
-| 10^5 | 128 | 0.54 | 13.33 | 2.23 | 8.33 | 66.70 | 1.57 | 23.70 | 0.56 | 116.96 | 22.9 | 35.47 | 6.57 | 0.056 | 60.0 | 0 | 0 |
-| 10^6 | 1024 | 0.54 | 23.39 | 2.23 | 15.07 | 157.38 | 1.57 | 55.68 | 0.56 | 256.42 | 11.1 | 53.66 | 11.61 | 0.045 | 63.0 | 1 | 0 |
-| Sponza, close | 256 | 0.54 | 57.43 | 2.23 | 40.12 | 367.22 | 1.57 | 211.67 | 0.57 | 681.35 | 6.1 | 264.78 | 102.00 | 0.150 | 68.1 | 192 | 0 |
-| Sponza, overview | 256 | 0.54 | 67.80 | 2.23 | 37.65 | 359.49 | 1.57 | 208.69 | 0.57 | 678.54 | 6.0 | 230.36 | 95.52 | 0.141 | 60.0 | 221 | 0 |
-| Bistro interior, close | 1024 | 0.54 | 97.65 | 2.23 | 73.81 | 678.64 | 1.57 | 411.70 | 0.57 | 1266.71 | 3.3 | 401.87 | 211.42 | 0.167 | 73.0 | 1 | 1 |
-| Bistro interior, overview | 1024 | 0.54 | 74.68 | 2.23 | 54.16 | 631.52 | 1.57 | 345.53 | 0.57 | 1110.81 | 3.7 | 336.80 | 153.94 | 0.139 | 70.3 | 1 | 2 |
+| scene | treelets | GEN | primary | SHADE1 | shadow | SORT bounce | bounce | UNSORT bounce | SHADE2 | SORT shadow 2 | shadow 2 | UNSORT shadow 2 | IMAGE | frame ms | Mray/s | C++ ms | V100 ms | V100 / card | W | ties | pixels differing |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| tiny | (L1) | 0.54 | 3.40 | 2.23 | 2.23 | - | 8.79 | - | 1.57 | - | 3.88 | - | 0.57 | 23.20 | 108.7 | 20.59 | 2.59 | 0.112 | 63.0 | 0 | 0 |
+| 10^4 | 16 | 0.54 | 9.14 | 2.23 | 5.62 | 4.91 | 23.55 | 3.32 | 1.56 | 4.85 | 5.09 | 1.25 | 0.57 | 62.63 | 41.2 | 26.44 | 4.16 | 0.066 | 63.0 | 0 | 0 |
+| 10^5 | 128 | 0.54 | 13.33 | 2.23 | 8.32 | 4.94 | 43.35 | 3.42 | 1.57 | 4.85 | 10.18 | 1.27 | 0.57 | 94.57 | 28.4 | 35.47 | 6.57 | 0.069 | 61.0 | 0 | 0 |
+| 10^6 | 1024 | 0.54 | 23.37 | 2.23 | 15.06 | 4.93 | 104.66 | 3.33 | 1.57 | 4.87 | 26.97 | 1.29 | 0.57 | 189.38 | 15.1 | 53.66 | 11.61 | 0.061 | 63.0 | 1 | 0 |
+| Sponza, close | 256 | 0.54 | 57.43 | 2.23 | 40.13 | 5.00 | 266.11 | 3.40 | 1.57 | 4.98 | 75.80 | 1.25 | 0.57 | 458.99 | 9.0 | 264.78 | 102.00 | 0.222 | 61.0 | 244 | 0 |
+| Sponza, overview | 256 | 0.54 | 67.80 | 2.23 | 37.65 | 4.98 | 250.93 | 3.38 | 1.57 | 5.05 | 74.82 | 1.22 | 0.57 | 450.73 | 9.1 | 230.36 | 95.52 | 0.212 | 61.0 | 234 | 0 |
+| Bistro interior, close | 1024 | 0.54 | 97.64 | 2.23 | 73.80 | 4.96 | 434.25 | 3.31 | 1.57 | 4.96 | 138.93 | 1.24 | 0.57 | 764.00 | 5.4 | 401.87 | 211.42 | 0.277 | 72.0 | 1 | 1 |
+| Bistro interior, overview | 1024 | 0.54 | 74.68 | 2.23 | 54.16 | 4.95 | 366.21 | 3.40 | 1.57 | 4.95 | 118.05 | 1.29 | 0.57 | 632.58 | 6.4 | 336.80 | 153.94 | 0.243 | 63.0 | 1 | 1 |
 
-Ties and the Bistro misses: "What is exact". The four traces take 93 % (s10k) to over 99 % (Sponza, Bistro) of the
-frame, the bounce trace alone half or more: rays stay with their core and every core
-reads the treelets its rays need from DRAM.
+Ties and the Bistro misses: "What is exact". Sorting took the bounce trace from 359 to
+251 ms and the second shadow from 209 to 75 ms on Sponza's overview (Bistro's
+overview: 632 to 366 and 346 to 118), for 5 ms per SORT and 1 to 3.4 ms per UNSORT on
+every scene: a packet of sorted rays shares more of the tree (live lanes per inner
+node visit of the bounce trace, Sponza overview: 4.2 of 32 before, 6.0 after). The
+host issues one 64-byte command per record and waits for one event each; nothing is
+read back inside the frame. The X280 work cluster is not used.
 
 ### The frame as a graph
 

@@ -1,7 +1,7 @@
 """The ray tracer on a card through the dispatch kernel (KMR_CARD=1): the vector unit's
 arithmetic bit for bit; on tiles, the four passes and the frame's stages (tree in L1,
-treelets from DRAM), and the frame as a graph in the kernel and host-fed, against
-numpy."""
+treelets from DRAM, rays sorted on each core), and the frame as a graph in the kernel
+and host-fed, against numpy."""
 
 from pathlib import Path
 
@@ -32,7 +32,9 @@ def test_four_passes_agree_on_tiles(scene):
 
 
 @pytest.mark.parametrize(
-    "scene", [("tiny",), ("s10k", "--treelets", "128")], ids=["tree", "treelets"]
+    "scene",
+    [("tiny",), ("s10k", "--treelets", "128"), ("s10k", "--treelets", "128", "--sort")],
+    ids=["tree", "treelets", "sorted"],
 )
 def test_frame_stages_on_the_card_agree_on_tiles(scene):
     out = run_json(
