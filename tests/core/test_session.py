@@ -14,7 +14,13 @@ import pytest
 from fake_session import FakeDispatch, K, load_session, program
 
 import komorebi as km
-from komorebi.errors import GridTimeout, ProgramError, StartError
+from komorebi import insn_check
+from komorebi.errors import (
+    GridTimeout,
+    KernelInstructionError,
+    ProgramError,
+    StartError,
+)
 
 
 @pytest.fixture
@@ -84,6 +90,20 @@ def test_the_exit_bound_is_set_only_when_the_environment_has_none(card):
         assert session.bound_exit(env, log.append) == bound
         assert env[name] == given and session.exit_wait(env) == phrase
     assert len(log) == 1  # a user's value, 0 included, is kept without a line
+
+
+def test_a_kernel_instruction_finding_stops_the_load_before_the_launch(
+    card, tmp_path, monkeypatch
+):
+    session, log, _, module = card
+    elf = tmp_path / "trisc2.elf"
+    elf.write_bytes(b"")
+    module.kernel_elves = lambda device, descriptor: [("compute.cpp", [str(elf)])]
+    found = insn_check.Finding("TRISC2", "compute.cpp", "fdiv.s", "f", "ratio", "", 0)
+    monkeypatch.setattr(insn_check, "check_elf", lambda *args: [found])
+    with pytest.raises(KernelInstructionError, match="fdiv.s"):
+        session.Session(device=object()).load(program(tmp_path))
+    assert "generic_op" not in log and "start" not in log and log[-1] == "close"
 
 
 def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):

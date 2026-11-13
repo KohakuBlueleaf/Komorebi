@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from komorebi import _env, insn_check, native
-from komorebi.errors import KernelInstructionError
+from komorebi.errors import KernelInstructionError, ProgramError
 
 # The pack thread's flags when its vector unit is on (tt-metal's blackhole HAL).
 PACK_MARCH = "-march=rv32im_zmmul_zaamo_zba_zbb_xtttensixbh_zve32f"
@@ -68,3 +68,23 @@ def test_the_groups_and_the_switch():
         assert insn_check.group_of(allowed) is None
     assert not insn_check.enabled({"KMR_INSN_CHECK": "0"})
     assert insn_check.enabled({})
+
+
+def test_a_missing_tool_or_elf_raises_a_program_error(tmp_path):
+    elf = tmp_path / "trisc2.elf"
+    elf.write_bytes(b"\x7fELF")
+    with pytest.raises(ProgramError, match="objdump not found"):
+        insn_check.check_kernels("p", [("c.cpp", [str(elf)])], tmp_path, tmp_path)
+    missing = str(tmp_path / "none.elf")
+    with pytest.raises(ProgramError, match="c.cpp built no ELF"):
+        insn_check.check_kernels("p", [("c.cpp", [missing])], tmp_path, tmp_path)
+
+
+def test_without_addr2line_a_finding_is_still_refused(tmp_path, monkeypatch):
+    tree, gcc = toolchain()
+    elf = build(tmp_path, gcc, "float ratio(float a, float b) { return a / b; }\n")
+    objdump, _ = insn_check.tools(tree)
+    monkeypatch.setattr(insn_check, "tools", lambda t: (objdump, tmp_path / "none"))
+    with pytest.raises(KernelInstructionError) as err:
+        insn_check.check_kernels("p", [("c.cpp", [str(elf)])], tree, tmp_path / "c")
+    assert (err.value.findings[0].function, err.value.findings[0].line) == ("ratio", "")
