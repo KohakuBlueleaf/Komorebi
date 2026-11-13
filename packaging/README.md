@@ -105,33 +105,33 @@ same environment, a copy of `examples/` outside any checkout:
 
 ### A run from the two wheels
 
-On a Blackhole p150a, 2026-11-13, card 0: `komorebi-runtime` 0.81.1.1 (50.5 MB) and the
+On a Blackhole p150a, 2026-11-13, card 0: `komorebi-runtime` 0.81.1.2 (46.5 MB) and the
 `komorebi-tt` wheel with the module (683 kB, 80 files, `_km_host` 1,089,969 bytes), built
 from one tt-metal build, installed with `numpy` alone into a fresh environment (no
 `ttnn`, no `torch`); `TT_METAL_HOME` unset, fresh `KMR_CACHE` and `TT_METAL_CACHE`, slow
-dispatch, a copy of the two examples outside the checkout:
+dispatch; `smoke.sh` ran the first example, then the second ran from a copy outside the
+checkout:
 
 ```
 python3.13 runtime/build_wheel.py --tt-metal TREE --out dist
 python3.13 packaging/build_wheel.py --tt-metal TREE --out dist --host-module
 python3.13 -m venv venv
-venv/bin/pip install --no-deps dist/komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl \
+venv/bin/pip install --no-deps dist/komorebi_runtime-0.81.1.2-py3-none-manylinux_2_38_x86_64.whl \
     dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl
 venv/bin/pip install numpy
 venv/bin/python -m komorebi_runtime sfpi
-venv/bin/kmr doctor                 # from komorebi-runtime 0.81.1.1 (TT_METAL_HOME unset)
+venv/bin/kmr doctor                 # from komorebi-runtime 0.81.1.2 (TT_METAL_HOME unset)
 cd 01_mapcollect && ../venv/bin/python mapcollect.py --jobs 20 --count 8 --out-tensors 2
 cd ../07_work_cluster && ../venv/bin/python work_cluster.py
 ```
 
 | Run | Result | Wall |
 |---|---|---|
-| `mapcollect.py` | 20 jobs checked (10 exact), none wrong, 120 cores ended, kernels compiled cold from the runtime's tree | 14.8 s |
-| `work_cluster.py` | the CPU, host-fed and X280-thread paths: 204 rounds, sum 1,004,917, all three the same as the numpy replay; the thread 10.82 ms on the card | 4.3 s |
+| `mapcollect.py` | 20 jobs checked (10 exact), none wrong, 120 cores ended, kernels compiled cold from the runtime's tree | 13.9 s |
+| `work_cluster.py` | the CPU, host-fed and X280-thread paths: 204 rounds, sum 1,004,917, all three the same as the numpy replay; the thread 10.79 ms on the card | 7.5 s |
 
-Neither run imported `ttnn` or `torch` (`python -X importtime`), and the prebuilt module
-was used: nothing was built into `KMR_CACHE` but the compiler, the runtime root and the
-X280 thread image.
+The environment held `komorebi-runtime`, `komorebi-tt`, `numpy` and `pip`, nothing else,
+and the prebuilt module was used: no host module was built into `KMR_CACHE`.
 
 ## The release workflow
 
@@ -197,19 +197,18 @@ that they name no secret.
 ### What was run
 
 The workflow itself has not run: the repository is not on GitHub yet. Its scripts were
-run in the order of the `build` job, on 2026-11-13, against the tree
-`runtime/build_tt_metal.sh` had built (the incremental path: no change to the pin or the
-patches), with the runner's variables set by hand, and `smoke.sh` on card 1 of a
-Blackhole p150a with slow dispatch, through the card watcher:
+run in the order of the `build` job, on 2026-11-13, against a tree
+`runtime/build_tt_metal.sh` had built (the pin and the patches unchanged, so the two
+wheel steps of `ci/build_wheels.sh` alone), with the runner's variables set by hand, and
+`smoke.sh` on card 0 of a Blackhole p150a with slow dispatch, through the card watcher:
 
 | Step | Result | Time |
 |---|---|---|
-| `ci/build_wheels.sh TREE dist` | `komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl` (50.5 MB) and `komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl` (642 kB, 78 files, `_km_host` 974,097 bytes) | 45 s |
-| `ci/wheel_info.py identify dist` | `komorebi-tt` 0.1.0, `komorebi-runtime` 0.81.1.1, requirement `>=0.81.1.1,<0.81.2`, not a prerelease | under 1 s |
-| `ci/wheel_info.py versions dist --tag v0.1.0` and `--tag v0.1.1` | passes; fails with `tag v0.1.1 does not name version 0.1.0` | under 1 s |
-| `ci/check_paths.py dist/*.whl` (home, workspace, work, temporary and tree directories) | 26 and 2 binaries, none names one; with `/usr` forbidden it finds 5 places in `libtt_metal.so` | 1 s |
-| `smoke.sh` without a card | environment, install, both `doctor`s, the install check | 58 s |
-| `smoke.sh` with `KMR_CARD=1` | the same, then `examples/01_mapcollect`: 20 jobs, no error | 85 s |
+| `runtime/build_wheel.py`, `build_wheel.py --host-module --isolated` | `komorebi_runtime-0.81.1.2-py3-none-manylinux_2_38_x86_64.whl` (46.5 MB, 4,754 members) and `komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl` (683 kB, 80 files, `_km_host` 1,089,969 bytes) | 38 s |
+| `ci/wheel_info.py identify dist` | `komorebi-tt` 0.1.0, `komorebi-runtime` 0.81.1.2, requirement `>=0.81.1.2,<0.81.2`, not a prerelease | under 1 s |
+| `ci/wheel_info.py versions dist --tag v0.1.0` | passes | under 1 s |
+| `ci/check_paths.py dist/*.whl` (home, workspace, work, temporary and tree directories) | 25 and 2 binaries, none names one | 1 s |
+| `smoke.sh` with `KMR_CARD=1` | the environment with the two wheels and `numpy`, both `doctor`s, the install check, then `examples/01_mapcollect`: 20 jobs checked (10 exact), none wrong, 120 cores ended | 55 s |
 
 ## Workflows
 
