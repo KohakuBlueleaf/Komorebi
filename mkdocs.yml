@@ -1,4 +1,5 @@
 site_name: Komorebi
+site_url: https://kohakublueleaf.github.io/Komorebi/
 site_description: A programming model and framework for the Tensix grid and the X280 cores of a Tenstorrent Blackhole card
 repo_url: https://github.com/KohakuBlueleaf/Komorebi
 repo_name: KohakuBlueleaf/Komorebi
