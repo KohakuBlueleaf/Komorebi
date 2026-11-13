@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from projects.raytrace.reference import agree, harness
-from ref import bvh, native, raytrace, scenes
+from reference import bvh, native, raytrace, scenes
 
 needs_cxx = pytest.mark.skipif(native.find_cxx() is None, reason="no C++ compiler")
 needs_gpu = pytest.mark.skipif(

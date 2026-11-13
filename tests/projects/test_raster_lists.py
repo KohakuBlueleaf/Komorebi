@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from projects.raster import lists
-from ref import raster, scenes
+from reference import raster, scenes
 
 CONSTANTS = lists.K
 FLOAT32 = np.float32

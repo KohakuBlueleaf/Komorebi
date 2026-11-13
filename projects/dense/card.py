@@ -10,7 +10,7 @@ import numpy as np
 import komorebi as km
 from komorebi import _env, abi, layout
 from projects.dense import plan as pl
-from ref import dense as ref
+from reference import dense as ref
 
 K, G, S = pl.K, pl.G, pl.S
 KERNELS = pl.HERE / "kernels"

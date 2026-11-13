@@ -5,7 +5,7 @@ import hashlib
 import numpy as np
 import pytest
 
-from ref import bvh, raytrace, scenes
+from reference import bvh, raytrace, scenes
 
 CHECKSUMS = {
     "tiny": "d59506b2beec7012577a253b4de0b9101e0b0800df798b052f1dbafe403c9c21",

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from projects.raster.reference import harness
-from ref import native, raster, scenes
+from reference import native, raster, scenes
 from tests.core.test_ref_raster import crossing_scene, screen_scene
 
 HAND_MADE = {

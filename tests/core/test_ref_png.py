@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ref import png
+from reference import png
 
 
 def test_round_trip_grey_and_rgb(tmp_path):

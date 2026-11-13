@@ -16,7 +16,7 @@ import numpy as np
 from komorebi.power import PowerSampler
 from projects.raytrace import card, trace
 from projects.raytrace.reference import harness
-from ref import native, scenes
+from reference import native, scenes
 
 
 class Recorder(trace.CardTracer):

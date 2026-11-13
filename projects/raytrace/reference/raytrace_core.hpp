@@ -1,4 +1,4 @@
-// Tree walk, triangle test and shading of ref/raytrace.py: float32 only, no fused
+// Tree walk, triangle test and shading of reference/raytrace.py: float32 only, no fused
 // multiply-add (build with -ffp-contract=off / --fmad=false), one ray with a stack.
 #pragma once
 

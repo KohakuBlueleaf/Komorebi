@@ -20,7 +20,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 from projects import ttnn_reference  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from projects.dense import swiglu_plan as sp  # noqa: E402
-from ref import dense as ref  # noqa: E402
+from reference import dense as ref  # noqa: E402
 
 TILE = ref.TILE
 # name -> compute kernel config arguments; None is TT-NN's own default, which for

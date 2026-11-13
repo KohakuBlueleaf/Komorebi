@@ -7,7 +7,7 @@ import numpy as np
 
 from komorebi import layout
 from projects.dense import swiglu_plan
-from ref import dense as ref
+from reference import dense as ref
 
 CONSTANTS = swiglu_plan.K
 T = ref.TILE

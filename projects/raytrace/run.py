@@ -16,7 +16,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 from projects.raytrace import card, packets, trace  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
-from ref import bvh, native, raytrace, results, scenes  # noqa: E402
+from reference import bvh, native, raytrace, results, scenes  # noqa: E402
 
 STAGES = ("primary", "shadow", "bounce", "shadow2")
 

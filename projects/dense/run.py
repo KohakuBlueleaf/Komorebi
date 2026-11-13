@@ -17,7 +17,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 import komorebi as km  # noqa: E402
 from projects.dense import card  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
-from ref import dense as ref  # noqa: E402
+from reference import dense as ref  # noqa: E402
 
 SHAPES = pl.SHAPES
 FORMS = ["resident", "stream", "grid", "split"]

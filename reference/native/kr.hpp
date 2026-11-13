@@ -1,4 +1,5 @@
-// Shared by the C++ and CUDA references: the hash of ref/rng.py and small helpers.
+// Shared by the C++ and CUDA references: the hash of reference/rng.py and small
+// helpers.
 #pragma once
 
 #include <cstdint>

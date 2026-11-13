@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from projects.raytrace.reference import harness
-from ref import native, png, raytrace, scenes
+from reference import native, png, raytrace, scenes
 
 SMALL_SCENES = ("tiny", "s10k")
 F = np.float32

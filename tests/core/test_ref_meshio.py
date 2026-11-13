@@ -9,7 +9,7 @@ import zipfile
 import numpy as np
 import pytest
 
-from ref import meshio
+from reference import meshio
 
 MTL = """# two materials
 newmtl red

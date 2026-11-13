@@ -6,10 +6,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ref import public, scenes
+from reference import public, scenes
 
 ROOT = Path(__file__).resolve().parents[1]
-NATIVE = ROOT / "ref" / "native"
+NATIVE = ROOT / "reference" / "native"
 CXXFLAGS = ["-std=c++17", "-O3", "-ffp-contract=off", "-pthread"]
 NVCCFLAGS = ["-std=c++17", "-O3", "--fmad=false"]
 IDLE_MIB = 100
@@ -111,7 +111,7 @@ def ensure_scene(name):
     """Writes <data>/<name>.npz and <name>/*.npy if missing; returns the folder.
 
     A generated preset is made here; a public scene's view is made from its converted
-    mesh, which only `python -m ref.public fetch` downloads (missing: an error).
+    mesh, which only `python -m reference.public fetch` downloads (missing: an error).
     """
     folder = data_dir() / name
     if not (data_dir() / f"{name}.npz").exists() or not folder.exists():

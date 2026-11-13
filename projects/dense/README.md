@@ -154,14 +154,14 @@ python -m projects.dense.reference.gpu_bench --shape lin384
 `lin384` 16,384 x 384 x 384, `lin1024` 16,384 x 1024 x 1024, `sq4096` 4096 cubed,
 `sq8192` and `sq16384` cubed, `dec4096` 32 x 4096 x 4096. Setup is that of
 [01_mapcollect](../../examples/01_mapcollect/README.md#what-it-needs). Inputs are
-uniform in [-1, 1) rounded to bf16, from a seed (`ref/dense.py`, `inputs`).
+uniform in [-1, 1) rounded to bf16, from a seed (`reference/dense.py`, `inputs`).
 
 `--form grid` takes the broadcast form with the rule's plan; `--grid` names a layout or a
 whole plan (`[layout:]rows,cols,pcm,pcn,bm,bn,kb`). M, K and N are whole tiles of 32.
 
 `run.py` and `bench.py` compare Y with the float64 product of the same bf16 operands
 on 256 sampled rows: all rows when there are at most 256, else 8 whole row tiles drawn
-from a seed (`ref.sampled_rows`). They read only those row tiles, one at a time (at
+from a seed (`sampled_rows` in `reference/dense.py`). They read only those row tiles, one at a time (at
 most 1 MB each, a progress line each). They exit 1 when the check fails.
 `bench.py` times one run of commands back to back (or runs of `--batch` commands, each
 waited for): the time per call is the runs' time (first submit to last event) per call.

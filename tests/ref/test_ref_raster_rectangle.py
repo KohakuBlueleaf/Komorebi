@@ -3,7 +3,7 @@ whole-screen rendering per triangle)."""
 
 import numpy as np
 
-from ref import raster
+from reference import raster
 from tests.core.test_ref_raster import covered
 
 

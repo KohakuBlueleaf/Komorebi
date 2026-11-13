@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from ref import rng, scenes
+from reference import rng, scenes
 
 TINY_SHA = "be345bfaf5f8346fc171db374ed27d975750e261800f3f93e3d8a1b65f0b1663"
 S10K_SHA = "0e1cee8beafb645161800b75603c76801b6fe6b6ec2336024e0fb19fcf1670fa"

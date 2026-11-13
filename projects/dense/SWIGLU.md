@@ -66,7 +66,7 @@ KTT_GEMM=1 python projects/dense/reference/ktt_swiglu.py --shape sw16k
 `--shape` names a preset of `swiglu_plan.SHAPES` (M x D x H): `sw256` 256 x 256 x 512,
 `sw4k` 4096 x 256 x 512, `sw16k` 16,384 x 256 x 512, `sw16k384` 16,384 x 384 x 384.
 Setup is that of [01_mapcollect](../../examples/01_mapcollect/README.md#what-it-needs).
-Inputs come from a seed (`ref/dense.py`, `swiglu_inputs`): x uniform in [-1, 1), the W
+Inputs come from a seed (`reference/dense.py`, `swiglu_inputs`): x uniform in [-1, 1), the W
 uniform in [-1, 1) times 1 / sqrt(fan in), all rounded to bf16. With `--seconds`, the
 driver times 20 single calls with the profile around them, then calls back to back for
 about that long under the power sampler, then a second with every command `exclusive`.

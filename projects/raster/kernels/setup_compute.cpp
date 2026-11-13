@@ -167,8 +167,8 @@ namespace {
         float values[6];
     };
 
-    // The polygon of a triangle cut at z = near (ref/raster.py clip_polygon): each
-    // corner beyond, and a point where an edge crosses, from its corner beyond.
+    // The polygon of a triangle cut at z = near (reference/raster.py clip_polygon):
+    // each corner beyond, and a point where an edge crosses, from its corner beyond.
     uint32_t clip(const Corner* corners, float near, Corner* polygon) {
         uint32_t count = 0;
         for (uint32_t corner = 0; corner < 3; ++corner) {

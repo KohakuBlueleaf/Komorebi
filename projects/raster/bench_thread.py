@@ -13,7 +13,7 @@ import numpy as np
 import komorebi as km
 from komorebi import power
 from projects.raster import bench, card, card_passes, card_thread, lists, passes, run
-from ref import raster
+from reference import raster
 
 F = card_thread.F
 

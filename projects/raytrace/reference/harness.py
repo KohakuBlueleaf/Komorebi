@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ref import bvh, native, raytrace, results, runner, scenes
+from reference import bvh, native, raytrace, results, runner, scenes
 
 HERE = Path(__file__).resolve().parent
 SCENES = list(scenes.PRESETS)

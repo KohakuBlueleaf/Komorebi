@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from projects.dense import plan as pl
-from ref import native, power
+from reference import native, power
 
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE / "gpu" / "gemm_gpu.cu"

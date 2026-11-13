@@ -14,7 +14,7 @@ import numpy as np
 
 from projects.raytrace import card, packets, trace
 from projects.raytrace.reference import harness
-from ref import native, raytrace, scenes
+from reference import native, raytrace, scenes
 
 
 class HostTracer:

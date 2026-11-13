@@ -101,7 +101,7 @@ reference's functions): it checks every ray's hit and times each pass by itself.
 Setup is that of [01_mapcollect](../../examples/01_mapcollect/README.md#what-it-needs).
 The drivers make a generated scene, its tree and the numpy reference image when they
 are missing (in `KR_DATA`, see [`reference/`](reference/README.md#running)); a public
-scene is fetched first with `python -m ref.public fetch`. From the repository root:
+scene is fetched first with `python -m reference.public fetch`. From the repository root:
 
 ```bash
 python -m projects.raytrace.frame --scene tiny --reps 16 --json frame.json

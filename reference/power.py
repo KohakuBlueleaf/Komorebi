@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from ref import native
+from reference import native
 
 INTERVAL_MS = 100
 RAPL = Path("/sys/class/powercap/intel-rapl:0/energy_uj")

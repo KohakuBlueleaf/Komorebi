@@ -1,11 +1,11 @@
 # Ray tracing: reference implementations
 
 The same ray tracer three times, with no card and no framework: numpy
-(`ref/raytrace.py`, the definition of correct), threaded C++ for the host CPU (`cpu/`)
+(`reference/raytrace.py`, the definition of correct), threaded C++ for the host CPU (`cpu/`)
 and CUDA for one GPU (`gpu/`). All three walk the **same saved tree**
-(`ref/bvh.py`, built once per scene), so the card versions can walk it too and must
+(`reference/bvh.py`, built once per scene), so the card versions can walk it too and must
 produce the same nearest hits and the same image. The scenes are the ones of the
-rasterization references ([`ref/scenes.py`](../../../ref/README.md)).
+rasterization references ([`reference/scenes.py`](../../../reference/README.md)).
 
 ![tiny scene](images/tiny_image_256.png) ![10^4 scene](images/s10k_image_256.png)
 
@@ -15,7 +15,7 @@ rasterization references ([`ref/scenes.py`](../../../ref/README.md)).
 ## The algorithm
 
 1024 x 1024 pixels, one primary ray through each pixel centre, opaque triangles seen
-from both sides, float32 arithmetic in the order written in `ref/raytrace.py`, no fused
+from both sides, float32 arithmetic in the order written in `reference/raytrace.py`, no fused
 multiply-add. Per pixel, up to four traces:
 
 1. a **primary ray** (closest hit);
@@ -24,7 +24,7 @@ multiply-add. Per pixel, up to four traces:
    along the normal that faces the ray);
 3. a **diffuse bounce** ray along `normal + random unit vector` (closest hit); the random
    vector is `sum of four uniforms - 2` per component from a hash of the pixel number
-   (seed 7, `ref/rng.py`), so every implementation draws the same numbers;
+   (seed 7, `reference/rng.py`), so every implementation draws the same numbers;
 4. a **shadow ray** from the bounce hit, shaded like the first hit.
 
 Colour: `albedo * (0.1 + direct + 0.5 * radiance)`, where `direct` is the clamped cosine
@@ -35,7 +35,7 @@ with the barycentric coordinates of the hit.
 
 ### The tree
 
-`ref/bvh.py`: a binary box tree, top-down, **one triangle per leaf**, split at the median
+`reference/bvh.py`: a binary box tree, top-down, **one triangle per leaf**, split at the median
 of the triangle centroids along the longest axis of the centroid box (stable sort, the
 left half rounded up). The builder is deliberately plain (no surface-area heuristic), so
 it is easy to state and to reproduce; its cost is a taller walk than a good builder gives.
@@ -91,7 +91,7 @@ it).
 
 | | numpy | C++ | CUDA |
 |---|---|---|---|
-| source | `ref/raytrace.py` | `cpu/raytrace_cpu.cpp` | `gpu/raytrace_gpu.cu` |
+| source | `reference/raytrace.py` | `cpu/raytrace_cpu.cpp` | `gpu/raytrace_gpu.cu` |
 | walk | rays in chunks of 65,536, one step for all active rays | one ray at a time, stack | one ray per thread, stack in local memory |
 | parallel over | (arrays) | pixels, chunks of 256 | pixels, blocks of 128 threads |
 
@@ -109,7 +109,7 @@ ray) (1024, 1024) int32.
 ```bash
 python -m pip install -e ".[dev]"                 # numpy, pytest, ruff, black
 export KR_DATA=<folder for scenes, trees and outputs>   # default: build/data
-python -m ref.scenes $KR_DATA                     # the four scenes as .npz
+python -m reference.scenes $KR_DATA                     # the four scenes as .npz
 python -m projects.raytrace.reference.agree       # numpy vs C++ vs CUDA (--fresh: rerun)
 python -m projects.raytrace.reference.bench       # timings and power
 python -m projects.raytrace.reference.pictures --out <folder>

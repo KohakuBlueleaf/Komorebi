@@ -5,7 +5,7 @@ import hashlib
 import numpy as np
 import pytest
 
-from ref import bvh, raytrace, scenes
+from reference import bvh, raytrace, scenes
 
 FLOAT32 = np.float32
 SUBSET = (

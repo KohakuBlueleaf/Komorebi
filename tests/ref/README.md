@@ -1,6 +1,6 @@
 # Reference renderer tests
 
-These compare the reference renderers of `ref/` and `projects/` with each other: the
+These compare the reference renderers of `reference/` and `projects/` with each other: the
 C++ and CUDA rasterizers and ray tracers against the numpy ones, bit for bit, and one
 slow case of the numpy rasterizer. They test the references, not the framework, so
 `pytest tests/core` and the continuous integration do not collect them.

@@ -96,9 +96,9 @@ constexpr uint32_t kBlockSlots = 18;   // x, y, z of corners 0 to 2, then their 
 constexpr uint32_t kMeshBytes = 2304;  // kBlockSlots vectors of 32 words
 constexpr uint32_t kRecBytes = 4096;   // 32 records of 32 words
 static_assert(kMeshBytes == kBlockSlots * 32 * 4);
-constexpr uint32_t kCamWords = 16;  // the scene's camera (ref/scenes.py)
+constexpr uint32_t kCamWords = 16;  // the scene's camera (reference/scenes.py)
 
-// The image, as ref/scenes.py.
+// The image, as reference/scenes.py.
 constexpr uint32_t kWidth = 1024;
 constexpr uint32_t kHeight = 1024;
 

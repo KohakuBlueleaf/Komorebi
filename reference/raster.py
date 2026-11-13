@@ -5,7 +5,7 @@ by the top-left rule; the larger 1/z wins, a tie goes to the lower triangle inde
 
 import numpy as np
 
-from ref.scenes import HEIGHT, WIDTH
+from reference.scenes import HEIGHT, WIDTH
 
 TILE = 32
 TILES_X = WIDTH // TILE

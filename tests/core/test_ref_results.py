@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from projects.raster.reference import bench, harness
-from ref import power, results
+from reference import power, results
 
 
 def raster_arrays():

@@ -19,7 +19,7 @@ from projects.raytrace import card, packets, planner  # noqa: E402
 from projects.raytrace import ties as ties_module  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
 from projects.raytrace.run import reference_frame  # noqa: E402
-from ref import bvh, native, png, raytrace, scenes  # noqa: E402
+from reference import bvh, native, png, raytrace, scenes  # noqa: E402
 
 K = packets.K
 VEC = packets.VEC

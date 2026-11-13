@@ -23,7 +23,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 from komorebi import power  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
-from ref import dense as ref  # noqa: E402
+from reference import dense as ref  # noqa: E402
 
 ROUTE_VARIABLES = ("KTT_GEMM", "KTT_OWN_MATMUL_MIN_ROWS")
 

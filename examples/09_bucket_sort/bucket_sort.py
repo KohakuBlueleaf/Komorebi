@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-import reference
 
 import komorebi as km
+import reference
 from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
 
 HERE = Path(__file__).resolve().parent

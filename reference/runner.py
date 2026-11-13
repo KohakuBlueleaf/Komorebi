@@ -5,7 +5,7 @@ import os
 
 import numpy as np
 
-from ref import native, power, results
+from reference import native, power, results
 
 
 def threads_all():

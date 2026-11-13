@@ -1,13 +1,13 @@
 # Public scenes
 
-Besides the four generated scenes (`ref/scenes.py`), the rasterizer and ray tracer
+Besides the four generated scenes (`reference/scenes.py`), the rasterizer and ray tracer
 references run on public demo scenes. Nothing of them is in this repository: `public.py`
 downloads each one from its source, checks the SHA-256 recorded in `public_scenes.json`
-and converts it to the scene layout of `ref/README.md`.
+and converts it to the scene layout of `reference/README.md`.
 
 ```sh
-python -m ref.public list                  # scenes, views and attribution
-python -m ref.public fetch sponza          # download, check, convert (all scenes if none named)
+python -m reference.public list                  # scenes, views and attribution
+python -m reference.public fetch sponza          # download, check, convert (all scenes if none named)
 python -m projects.raster.reference.agree --scenes sponza_overview
 ```
 

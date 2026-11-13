@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from projects.raster import lists, passes
-from ref import raster, scenes
+from reference import raster, scenes
 
 CONSTANTS = lists.K
 

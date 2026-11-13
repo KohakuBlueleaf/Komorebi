@@ -28,7 +28,7 @@ src/komorebi/                  the package you import
 src/komorebi_native/           the native layer (README inside)
 src/komorebi_runtime/          komorebi-runtime's locator: where the runtime's files are
 examples/  projects/           runnable examples; larger programs (README inside)
-experiments/  ref/             standalone proofs; CPU references (README inside)
+experiments/  reference/       standalone proofs; reference implementations (README inside)
 tests/core/                    tests that need no card
 tests/projects/                CPU tests of the programs under projects/
 tests/ref/                     reference renderers compared (README inside)
@@ -58,7 +58,7 @@ included from the programs in `tutorial/` when it is built, so a listing cannot 
 from the program that ran, and `.github/workflows/docs.yml` deploys it to GitHub Pages
 when started by hand.
 
-The comment check leaves out `ref/` and `projects/`, whose reference code keeps its
+The comment check leaves out `reference/` and `projects/`, whose reference code keeps its
 longer docstrings. The `dev` extra installs the tools, including clang-format 22 or later (the style file
 `.clang-format` uses options older versions reject). Run the commands from the
 repository, in the environment of [install](install.md#from-a-clone).

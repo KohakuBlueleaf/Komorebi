@@ -16,7 +16,7 @@ from embreex import rtcore_scene
 from embreex.mesh_construction import TriangleMesh
 
 from projects.raytrace.reference import harness
-from ref import native, raytrace, runner, scenes
+from reference import native, raytrace, runner, scenes
 
 F = np.float32
 GROUPS = ("primary", "shadow", "bounce", "shadow2")

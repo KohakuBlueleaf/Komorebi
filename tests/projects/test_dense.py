@@ -6,7 +6,7 @@ import pytest
 
 from komorebi import layout
 from projects.dense import plan as dense_plan
-from ref import dense as ref
+from reference import dense as ref
 
 CONSTANTS = dense_plan.K
 T = ref.TILE

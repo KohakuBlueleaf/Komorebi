@@ -6,8 +6,8 @@ child first (0 on a tie); Moeller-Trumbore both sides, equal t to the lower tria
 
 import numpy as np
 
-from ref import bvh, rng
-from ref.scenes import HEIGHT, WIDTH
+from reference import bvh, rng
+from reference.scenes import HEIGHT, WIDTH
 
 F = np.float32
 TMAX = F(1e30)

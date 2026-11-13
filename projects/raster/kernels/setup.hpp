@@ -1,5 +1,5 @@
 // The vector unit's part of COUNT and SETUP, raw instructions from the pack thread:
-// camera space, screen, box, records of 32 triangles in ref/raster.py's float32 order.
+// camera space, screen, box, records of 32 triangles (reference/raster.py's order).
 #pragma once
 
 #include <stdint.h>

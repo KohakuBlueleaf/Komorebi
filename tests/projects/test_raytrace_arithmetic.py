@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from projects.raytrace import arithmetic, packets
-from ref import bvh, raytrace, scenes
+from reference import bvh, raytrace, scenes
 
 FLOAT32 = np.float32
 

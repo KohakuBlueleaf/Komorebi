@@ -8,7 +8,7 @@ import argparse
 import json
 
 from projects.raytrace.reference import harness
-from ref import native
+from reference import native
 
 STRIDE = 4
 

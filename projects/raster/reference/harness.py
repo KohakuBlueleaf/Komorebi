@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ref import native, raster, results, runner, scenes
+from reference import native, raster, results, runner, scenes
 
 HERE = Path(__file__).resolve().parent
 SCENES = list(scenes.PRESETS)

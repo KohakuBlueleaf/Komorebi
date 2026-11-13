@@ -1,4 +1,4 @@
-// Triangle setup and pixel fill of the rasterizer, as written in ref/raster.py.
+// Triangle setup and pixel fill of the rasterizer, as written in reference/raster.py.
 // float32 only, no fused multiply-add (build with -ffp-contract=off / --fmad=false).
 #pragma once
 
@@ -32,7 +32,8 @@ namespace kr {
         float colour_planes[3][3];  // colour planes [x, y, 1][channel]
     };
 
-    // Camera-space x, y, z (along right, up, forward) of `point`, as in ref/raster.py.
+    // Camera-space x, y, z (along right, up, forward) of `point`, as in
+    // reference/raster.py.
     KR_HD inline void camera_space(
         const float* camera, const float* point, float* camera_point
     ) {
@@ -144,7 +145,7 @@ namespace kr {
     }
 
     // The one or two pieces of `triangle`, `corners` (x, y, z, colour) in camera space,
-    // cut at z = near (ref/raster.py, clip_polygon); kept out of line for the GPU.
+    // cut at z = near (clip_polygon in reference/raster.py); out of line for the GPU.
     KR_HD KR_NOINLINE int clip_triangle(
         const float* camera,
         const float (*corners)[6],

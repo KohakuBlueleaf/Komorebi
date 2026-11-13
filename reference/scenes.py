@@ -1,7 +1,7 @@
 """Deterministic scenes: spheres of mixed size over a ground, one camera, one light; a
 dict of numpy arrays (saved as .npz), equal on every host (+, -, *, / and sqrt only in
 the geometry, rng.py's hash for every random number). The arrays and the camera layout
-are in ref/README.md "Scenes"."""
+are in reference/README.md "Scenes"."""
 
 import argparse
 import hashlib
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ref import rng
+from reference import rng
 
 WIDTH = HEIGHT = 1024
 # Names of the scenes used by the benchmarks and the triangle count aimed at.

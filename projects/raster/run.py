@@ -13,7 +13,7 @@ import numpy as np
 import komorebi as km
 from projects.raster import card, lists, pictures, stress
 from projects.raster.reference import harness
-from ref import native, raster, results, scenes
+from reference import native, raster, results, scenes
 
 K = lists.K
 SPLIT = 0.33  # a tile above this fraction of a core's mean load is split into bands

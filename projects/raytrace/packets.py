@@ -10,8 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ref import bvh, raytrace
-from ref.scenes import HEIGHT, WIDTH
+from reference import bvh, raytrace
+from reference.scenes import HEIGHT, WIDTH
 
 HERE = Path(__file__).resolve().parent
 HEADER = HERE / "kernels" / "raytrace.h"

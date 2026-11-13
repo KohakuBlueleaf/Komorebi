@@ -1,9 +1,13 @@
 # Reference implementations
 
-CPU references in numpy: for each program in `examples/` and `projects/`, the same
-computation written plainly, with no card and no framework. Results from the card are
-compared against these as statistics (error, bias, correlation), and exactly on inputs
-whose result is exactly representable.
+This folder holds the plain implementations that the programs under `examples/` and
+`projects/` are checked and measured against: numpy, C++ and CUDA versions of the same
+computations, the generator of the test scenes, and the downloader of public scenes. The
+programs, their CPU tests and the comparison scripts import it; nothing here needs a
+card or the framework.
+
+Results from the card are compared against these as statistics (error, bias,
+correlation), and exactly on inputs whose result is exactly representable.
 
 | file | what |
 |---|---|
@@ -22,7 +26,7 @@ whose result is exactly representable.
 
 ## Scenes
 
-`python -m ref.scenes <folder>` writes four scenes as `.npz`; `make_scene(n)` makes one in
+`python -m reference.scenes <folder>` writes four scenes as `.npz`; `make_scene(n)` makes one in
 memory. A scene is spheres of mixed size (cube spheres, tessellation proportional to
 area, a few large ones near the camera and many small ones far away) over a ground
 grid, with per-vertex colour, one camera and one point light. Names and triangle counts:
@@ -37,6 +41,6 @@ seed), so the files are the same on every host. Nothing is shipped: the scenes a
 generated.
 
 Public demo scenes (Crytek Sponza, the conference room, the Amazon Lumberyard Bistro, San
-Miguel) are downloaded and converted by `python -m ref.public fetch`; see
+Miguel) are downloaded and converted by `python -m reference.public fetch`; see
 [SCENES.md](SCENES.md) for the list, the attribution each one asks for and how they are
 converted.

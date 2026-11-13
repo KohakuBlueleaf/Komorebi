@@ -1,6 +1,6 @@
 # Rasterization on the card
 
-The rasterizer of `ref/raster.py` on a Blackhole card's Tensix cores, on the persistent kernel runtime (`komorebi/device/km_worker.hpp`), loaded and driven through the host
+The rasterizer of `reference/raster.py` on a Blackhole card's Tensix cores, on the persistent kernel runtime (`komorebi/device/km_worker.hpp`), loaded and driven through the host
 package (`komorebi.Session` and `Run`, the dispatcher submitting the commands).
 Three ways in: host-binned (the host does setup and binning with the reference's own
 functions; the cores fill tiles); the per-triangle stages on the cores too (COUNT and
@@ -358,7 +358,7 @@ s) and reads the image back (20 MB, 10 to 18 s); both are outside the frame time
 
 ## Results
 
-Scenes of the reference (`ref/scenes.py`): tiny, 10^4, 10^5 and 10^6 triangles,
+Scenes of the reference (`reference/scenes.py`): tiny, 10^4, 10^5 and 10^6 triangles,
 1024 x 1024 pixels, 32 x 32 tiles; 119 worker cores; balanced assignment unless named.
 
 The runs behind the tables of this section: 2026-11-13, card 1 (a p150a), AICLK 1,350

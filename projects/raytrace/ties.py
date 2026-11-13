@@ -6,7 +6,7 @@ import itertools
 
 import numpy as np
 
-from ref import raytrace
+from reference import raytrace
 
 F = np.float32
 REL = 1e-5  # a tie: a triangle's distance within REL of the nearest

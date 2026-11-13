@@ -6,7 +6,7 @@ core, the list positions every core writes its records to)."""
 import numpy as np
 
 from projects.raster import lists
-from ref import raster
+from reference import raster
 
 K = lists.K
 

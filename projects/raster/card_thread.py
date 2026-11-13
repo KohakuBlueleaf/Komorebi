@@ -15,7 +15,7 @@ import numpy as np
 import komorebi as km
 from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
 from projects.raster import card, card_passes, lists, passes, run
-from ref import raster
+from reference import raster
 
 THREAD = lists.HERE / "thread"
 KERNELS = lists.HERE / "kernels"

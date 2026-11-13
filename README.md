@@ -505,7 +505,7 @@ src/komorebi_native/
 examples/                      01_mapcollect to 08_parallel_thread
 projects/                      raster, raytrace, dense (with SwiGLU), attention
 experiments/                   hardware and design probes (see its README)
-ref/                           CPU references in numpy
+reference/                     CPU, C++ and CUDA references the programs are checked against
 tests/core/  tests/projects/   tests with no card: the framework; the programs
 tests/hardware/                card tests (KMR_CARD=1)
 docs/                          concepts, references, install, development

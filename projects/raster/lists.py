@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ref import raster
+from reference import raster
 
 HERE = Path(__file__).resolve().parent
 RASTER_H = HERE / "kernels" / "raster.h"

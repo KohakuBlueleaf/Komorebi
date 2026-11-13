@@ -9,7 +9,7 @@ import numpy as np
 
 from projects.raster import lists, stress
 from projects.raster.reference import harness
-from ref import png, raster, results, runner
+from reference import png, raster, results, runner
 
 
 def reference(scene):

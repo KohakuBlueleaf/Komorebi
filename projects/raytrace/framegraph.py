@@ -19,7 +19,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 from komorebi.engines.graph import Graph  # noqa: E402
 from projects.raytrace import card, frame, packets  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
-from ref import native, raytrace, scenes  # noqa: E402
+from reference import native, raytrace, scenes  # noqa: E402
 
 K = packets.K
 VEC = packets.VEC

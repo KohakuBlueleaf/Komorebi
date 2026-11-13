@@ -26,7 +26,7 @@ from projects.dense.reference.ktt_bench import (  # noqa: E402
     sample_clock,
     version,
 )
-from ref import dense as ref  # noqa: E402
+from reference import dense as ref  # noqa: E402
 
 VARIABLES = ("KTT_GEMM", "KTT_OWN_MATMUL_MIN_ROWS", "KTT_FIDELITY", "KTT_FUSION")
 

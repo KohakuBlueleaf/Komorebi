@@ -12,7 +12,7 @@ namespace shade {
 
     using namespace rt;
 
-    // Constants of the reference (ref/raytrace.py) as float32 bits.
+    // Constants of the reference (reference/raytrace.py) as float32 bits.
     constexpr uint32_t kTmax = 0x7149F2CA;                // 1e30
     constexpr uint32_t kMinDir = 0x2B8CBCCC;              // 1e-12
     constexpr uint32_t kMinSquaredLength = 0x2B8CBCCC;    // 1e-12
@@ -25,7 +25,7 @@ namespace shade {
     constexpr uint32_t kTwo = 0x40000000;
     constexpr uint32_t kUnit24 = 0x33800000;  // 2^-24
     constexpr uint32_t kSign = 0x80000000;
-    // The hash (ref/rng.py): multipliers, and the seed of the bounce directions.
+    // The hash (reference/rng.py): multipliers, and the seed of the bounce directions.
     constexpr uint32_t kGolden = 0x9E3779B1, kMul1 = 0x7FEB352D, kMul2 = 0x846CA68B;
     constexpr uint32_t kStream = 0x85EBCA6B, kSeed = 7;
 
@@ -177,8 +177,8 @@ namespace shade {
         TTI_SFPSETCC(0, L0, 0, kLt0);
     }
 
-    // Sky colour of the directions in slots directions..+2 into slots colours..+2 (ref
-    // sky()).
+    // Sky colour of the directions in slots directions..+2 into slots colours..+2
+    // (reference sky()).
     inline void sky(uint32_t directions, uint32_t colours, const uint32_t* constants) {
         dot(directions, directions, kScratch0);
         ssqrt(kScratch0, kScratch1);
@@ -209,7 +209,7 @@ namespace shade {
     }
 
     // Normal of the hit (slots hit_normals..) turned against directions, into normals;
-    // vertex colours (9 slots) at (u, v) into albedo (ref surface()).
+    // vertex colours (9 slots) at (u, v) into albedo (reference surface()).
     inline void surface(
         uint32_t hit_normals,
         uint32_t colours,
@@ -242,7 +242,7 @@ namespace shade {
     }
 
     // From point and normals: shadow_origin = point + normals * eps, to_light = light -
-    // shadow_origin, cosine = dot(normals, to_light) / |to_light| (ref direct_light()).
+    // shadow_origin, cosine = dot(normals, to_light) / |to_light| (direct_light()).
     inline void light_ray(
         uint32_t point,
         uint32_t normals,
@@ -313,7 +313,7 @@ namespace shade {
     }
 
     // Slot destination = uniform(pixel, stream, seed) from slot hash = golden(pixel)
-    // (ref rng.py).
+    // (reference/rng.py).
     inline void uniform(uint32_t hash, uint32_t stream, uint32_t destination) {
         load(L0, hash);
         immediate(L1, (stream + 1) * kStream + kSeed);
@@ -332,7 +332,7 @@ namespace shade {
     }
 
     // Unit bounce directions `bounce` about the `normals` of the pixels whose golden()
-    // is in slot `pixels` (ref bounce_directions()).
+    // is in slot `pixels` (reference bounce_directions()).
     inline void bounce_dir(uint32_t pixels, uint32_t normals, uint32_t bounce) {
         for (uint32_t axis = 0; axis < 3; ++axis) {
             uniform(pixels, 4 * axis, kRandomVector + axis);
@@ -437,7 +437,7 @@ namespace shade {
     }
 
     // GEN: the primary rays of the packet whose lane 0 is pixel (pixel_x, pixel_y) into
-    // a packet at kOut (ref camera_rays()); `constants` is the constant page.
+    // a packet at kOut (reference camera_rays()); `constants` is the constant page.
     inline void gen(const uint32_t* constants, uint32_t pixel_x, uint32_t pixel_y) {
         const uint32_t* camera = constants + kCnCamera;
         fill(kScratch1, camera[12]);
@@ -461,7 +461,7 @@ namespace shade {
     }
 
     // SHADE1: primary packet at kInput, its hits at kInput + kPkVectors; out the shadow
-    // and bounce packets and state 1 (ref render_pixels(), up to the first traces).
+    // and bounce packets and state 1 (render_pixels() up to the first traces).
     inline void shade1(const uint32_t* constants, uint32_t pixel) {
         constexpr uint32_t primary = kInput, hit = kInput + kPkVectors;
         constexpr uint32_t shadow = kOut, bounce = kOut + kPkVectors;

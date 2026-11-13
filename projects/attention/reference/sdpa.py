@@ -5,7 +5,7 @@ the softmax and sums are float64, so the reference carries no rounding of its ow
 
 import numpy as np
 
-from ref.dense import bf16, errors
+from reference.dense import bf16, errors
 
 TILE = 32
 __all__ = ["attention", "errors", "inputs", "sample_rows"]

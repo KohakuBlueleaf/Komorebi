@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from projects.raster.reference import harness
-from ref import native, png, raster, scenes
+from reference import native, png, raster, scenes
 
 SMALL_SCENES = ("tiny", "s10k")
 

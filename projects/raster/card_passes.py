@@ -13,7 +13,7 @@ import numpy as np
 
 import komorebi as km
 from projects.raster import card, lists, passes, run
-from ref import raster
+from reference import raster
 
 KERNELS = lists.HERE / "kernels"
 SETUP_H = KERNELS / "setup.h"

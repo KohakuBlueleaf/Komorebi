@@ -12,7 +12,7 @@ import numpy as np
 
 from projects.raytrace import card, packets
 from projects.raytrace.reference import harness
-from ref import native, raytrace, scenes
+from reference import native, raytrace, scenes
 
 FORMS = ("immediate", "data", "mask", "stack", "fast", "sync")
 

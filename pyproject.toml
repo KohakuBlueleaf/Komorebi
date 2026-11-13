@@ -54,7 +54,7 @@ select = ["E", "W", "F", "I", "B", "BLE", "UP", "SIM", "PERF", "RUF100", "PLC041
 ignore = ["B905", "PERF203"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["komorebi", "komorebi_runtime", "ref", "projects"]
+known-first-party = ["komorebi", "komorebi_runtime", "reference", "projects"]
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 88

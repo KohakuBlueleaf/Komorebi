@@ -5,7 +5,7 @@ import hashlib
 import numpy as np
 import pytest
 
-from ref import raster, scenes
+from reference import raster, scenes
 
 CAMERA = np.array(
     [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 512, 512, 512, 0.05], dtype=np.float32

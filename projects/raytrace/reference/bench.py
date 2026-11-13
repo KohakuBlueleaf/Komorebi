@@ -10,7 +10,7 @@ import math
 import statistics
 
 from projects.raytrace.reference import harness
-from ref import runner
+from reference import runner
 
 POWER_SECONDS = 3.0
 RATES = ("primary", "shadow", "bounce", "together")

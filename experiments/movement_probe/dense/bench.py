@@ -20,7 +20,7 @@ from komorebi import abi  # noqa: E402
 from komorebi.session import aiclk_mhz, visible_card  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
-from ref import dense as ref  # noqa: E402
+from reference import dense as ref  # noqa: E402
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 HEADER = KERNELS / "dense.h"

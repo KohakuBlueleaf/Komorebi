@@ -8,7 +8,7 @@ import time
 import numpy as np
 
 from projects.raytrace import card, packets
-from ref import bvh, raytrace
+from reference import bvh, raytrace
 
 K = packets.K
 F = np.float32

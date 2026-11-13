@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from ref import native, public, scenes
+from reference import native, public, scenes
 
-README = Path(__file__).resolve().parents[2] / "ref" / "SCENES.md"
+README = Path(__file__).resolve().parents[2] / "reference" / "SCENES.md"
 
 OBJ = """mtllib room.mtl
 v 0 0 0
@@ -128,7 +128,7 @@ def test_convert_and_view(tmp_path, monkeypatch):
     table = fake_table(tmp_path)
     monkeypatch.setattr(public, "table", lambda: table)
     monkeypatch.setenv("KR_DATA", str(tmp_path / "data"))
-    with pytest.raises(FileNotFoundError, match="ref.public fetch room"):
+    with pytest.raises(FileNotFoundError, match="reference.public fetch room"):
         native.ensure_scene("room_overview")
     public.convert("room", tmp_path / "data")
     folder = native.ensure_scene("room_overview")

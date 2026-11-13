@@ -1,6 +1,6 @@
 """Public demo scenes, fetched from their sources and converted to the scene layout:
-`python -m ref.public list | fetch <scene> ...`. The table (`public_scenes.json`) is
-data; files go to `$KR_DATA/public/`, never into the repository. Each view is a scene
+`python -m reference.public list | fetch <scene> ...`. The table (`public_scenes.json`)
+is data; files go to `$KR_DATA/public/`, never into the repository. Each view is a scene
 of its own named `<scene>_<view>` (same triangles, its own camera)."""
 
 import argparse
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ref import meshio, scenes
+from reference import meshio, scenes
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = Path(__file__).resolve().parent / "public_scenes.json"
@@ -186,7 +186,7 @@ def load_mesh(name, data):
     path = public_dir(data) / f"{name}.npz"
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} is missing; fetch it with: python -m ref.public fetch {name}"
+            f"{path} is missing; fetch it with: python -m reference.public fetch {name}"
         )
     with np.load(path) as f:
         return {k: f[k] for k in ("positions", "colors", "indices")}, json.loads(
@@ -206,7 +206,7 @@ def camera(eye, target, fov_deg, near):
 
 
 def make_view(view, data):
-    """The scene dict of view `<scene>_<view>` (the layout of ref/scenes.py).
+    """The scene dict of view `<scene>_<view>` (the layout of reference/scenes.py).
 
     meta: triangles, vertices, then 0, 0, 0 (no generator parameters).
     """

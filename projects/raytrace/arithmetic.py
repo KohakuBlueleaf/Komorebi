@@ -8,7 +8,7 @@ import numpy as np
 
 from projects.raytrace import packets
 from projects.raytrace.reference import harness
-from ref import bvh, native, raytrace, scenes
+from reference import bvh, native, raytrace, scenes
 
 K = packets.K
 F = np.float32
