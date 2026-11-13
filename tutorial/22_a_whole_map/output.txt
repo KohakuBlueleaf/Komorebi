@@ -1,4 +1,4 @@
-group of  1: 60 tiles added in  38.4 us
-group of  4: 60 tiles added in  11.4 us
-group of 12: 60 tiles added in   5.4 us
+group of  1: 60 tiles added in  38.5 microseconds
+group of  4: 60 tiles added in  11.3 microseconds
+group of 12: 60 tiles added in   5.6 microseconds
 all three results are the sum of the two tensors

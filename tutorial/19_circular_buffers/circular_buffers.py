@@ -37,7 +37,10 @@ with km.Session() as session:
         handle = run.submit("copy", group=(0, 1), args=arguments)
         microseconds = run.wait(handle, timeout=10.0).microseconds
         run.stop()
-        print(f"buffer pages {pages}: {TILES} tiles copied in {microseconds:5.1f} us")
+        print(
+            f"buffer pages {pages}: {TILES} tiles copied in "
+            f"{microseconds:5.1f} microseconds"
+        )
 
         (source_pages,) = session.read(source)
         (destination_pages,) = session.read(destination)

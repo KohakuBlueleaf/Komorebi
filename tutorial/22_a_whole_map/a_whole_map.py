@@ -40,7 +40,10 @@ with km.Session() as session:
         arguments = [source.address, TILES, destination.address, round_number * TILES]
         handle = run.submit("map", group=(0, count), args=arguments)
         microseconds = run.wait(handle, timeout=10.0).microseconds
-        print(f"group of {count:2}: {TILES} tiles added in {microseconds:5.1f} us")
+        print(
+            f"group of {count:2}: {TILES} tiles added in "
+            f"{microseconds:5.1f} microseconds"
+        )
     # --8<-- [end:map]
     run.stop()
 

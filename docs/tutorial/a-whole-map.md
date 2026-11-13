@@ -115,7 +115,7 @@ program never is, so the program keeps the three results apart and checks them a
 --8<-- "tutorial/22_a_whole_map/output.txt"
 ```
 
-Sixty tiles took 38 microseconds on one core, 11 on four and 5.4 on twelve: about 3.4 and
+Sixty tiles took 38 microseconds on one core, 11 on four and 5.6 on twelve: about 3.4 and
 7 times faster. Not 4 and 12 times: every command also pays a fixed cost to reach the
 cores and to hear that they are done. The last line is the program's check: all three
 results are the sum of the two source tensors.
