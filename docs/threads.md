@@ -126,6 +126,12 @@ knows), then calls `kmx_main` on hart 0. Harts 1 to 3 wait for `kmx_par` calls u
 `kmx_main` returns. Every call is listed in the
 [reference](reference/threads.md).
 
+[08_parallel_thread](../examples/08_parallel_thread/) is a whole thread built on
+`kmx_par`: a map, a reduction and a two-pass prefix sum, each on one hart and on four,
+checked against numpy and timed, with the rules its numbers give: which calls harts 1
+to 3 may make, shares in 4 KiB chunks, arrays placed off each other's 128 KiB cache
+way, false sharing, the vector unit.
+
 Rules. The runtime's stop is a word the cores must poll: a core that never polls it
 never returns, its cluster stays stuck, and only a reset of the whole card brings it
 back. That is why every loop in a thread is bounded:
