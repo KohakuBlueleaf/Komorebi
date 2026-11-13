@@ -71,10 +71,12 @@ def passes_ok(passes, n_workers):
 
 
 def reference_frame(scene):
-    """The stored reference result of a scene (numpy where it exists, else C++)."""
+    """The stored reference result of a scene (numpy where it exists, else C++); without
+    one, numpy renders the frame first and stores it (seconds to a minute)."""
     found = harness.collect(scene)
     if not found:
-        raise FileNotFoundError(f"no reference result for {scene}")
+        harness.run_numpy(scene)
+        found = harness.collect(scene)
     name = harness.REFERENCE if harness.REFERENCE in found else sorted(found)[0]
     return name, found[name][0]
 
@@ -105,8 +107,8 @@ def main():
     )
     args = p.parse_args()
     data = native.data_dir()
+    tree = harness.ensure_tree(args.scene)
     scene = scenes.load_scene(data / f"{args.scene}.npz")
-    tree = bvh.load_tree(data / f"{args.scene}_tree.npz")
     cut = None
     if args.treelets:
         path = data / f"{args.scene}_treelets_{args.treelets}k.npz"

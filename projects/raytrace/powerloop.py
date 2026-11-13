@@ -15,7 +15,8 @@ import numpy as np
 
 from komorebi.power import PowerSampler
 from projects.raytrace import card, trace
-from ref import bvh, native, scenes
+from projects.raytrace.reference import harness
+from ref import native, scenes
 
 
 class Recorder(trace.CardTracer):
@@ -37,8 +38,8 @@ def main():
     p.add_argument("--json", default=None)
     args = p.parse_args()
     data = native.data_dir()
+    tree = harness.ensure_tree(args.scene)
     scene = scenes.load_scene(data / f"{args.scene}.npz")
-    tree = bvh.load_tree(data / f"{args.scene}_tree.npz")
     pixels = np.arange(scenes.WIDTH * scenes.HEIGHT)
     index = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
     report = {"scene": args.scene, "sort": args.sort, "seconds": args.seconds}

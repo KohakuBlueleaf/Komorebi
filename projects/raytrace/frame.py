@@ -12,8 +12,9 @@ import sys
 import numpy as np
 
 from projects.raytrace import card, packets
+from projects.raytrace.reference import harness
 from projects.raytrace.run import reference_frame
-from ref import bvh, native, raytrace, scenes
+from ref import native, raytrace, scenes
 
 K = packets.K
 VEC = packets.VEC
@@ -146,8 +147,8 @@ def main():
     p.add_argument("--json", default=None)
     args = p.parse_args()
     data = native.data_dir()
+    tree = harness.ensure_tree(args.scene)
     scene = scenes.load_scene(data / f"{args.scene}.npz")
-    tree = bvh.load_tree(data / f"{args.scene}_tree.npz")
     image = packets.tree_image(tree, scene)
     report = {"scene": args.scene, "tiles": args.tiles}
     with card.open_session() as session:
@@ -198,8 +199,11 @@ def main():
         got = {s: packets.ungroup(g, vectors(s), n) for s, g in zip(wanted, got)}
     flat = pix.reshape(-1)
     colour = lanes_of(got["colour"], "colour").T.view(F)
-    name, ref = reference_frame(args.scene)
-    want = ref["image"].reshape(-1, 3)[flat]
+    if args.tiles is None:
+        name, ref = reference_frame(args.scene)
+        want = ref["image"].reshape(-1, 3)[flat]
+    else:
+        name, want = "numpy", raytrace.render(scene, tree, flat)["image"]
     report["image_check"] = {"against": name, "pixels": len(flat)}
     report["image_check"]["differs"] = differ(colour, want)
     if args.stages:

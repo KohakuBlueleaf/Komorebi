@@ -7,6 +7,7 @@ Pure numpy, no card (the driver is `arith.py`).
 import numpy as np
 
 from projects.raytrace import packets
+from projects.raytrace.reference import harness
 from ref import bvh, native, raytrace, scenes
 
 K = packets.K
@@ -34,8 +35,8 @@ def parents(nodes):
 def ray_pool(scene_name, rng, n_pixels):
     """(o, d, tmax, hit leaf) of primary, shadow and bounce rays of random pixels."""
     data = native.data_dir()
+    tree = harness.ensure_tree(scene_name)
     scene = scenes.load_scene(data / f"{scene_name}.npz")
-    tree = bvh.load_tree(data / f"{scene_name}_tree.npz")
     pix = rng.choice(scenes.WIDTH * scenes.HEIGHT, n_pixels, replace=False)
     o, d = raytrace.camera_rays(scene["camera"], pix)
     hit = raytrace.trace(tree, o, d, raytrace.TMAX)

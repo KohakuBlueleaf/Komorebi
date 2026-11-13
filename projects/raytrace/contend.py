@@ -13,7 +13,8 @@ from pathlib import Path
 import numpy as np
 
 from projects.raytrace import card, packets, trace
-from ref import bvh, native, raytrace, scenes
+from projects.raytrace.reference import harness
+from ref import native, raytrace, scenes
 
 
 class HostTracer:
@@ -68,8 +69,8 @@ def main():
     p.add_argument("--json", default=None)
     args = p.parse_args()
     data = native.data_dir()
+    tree = harness.ensure_tree(args.scene)
     scene = scenes.load_scene(data / f"{args.scene}.npz")
-    tree = bvh.load_tree(data / f"{args.scene}_tree.npz")
     cut = None
     if args.treelets:
         with np.load(data / f"{args.scene}_treelets_{args.treelets}k.npz") as f:

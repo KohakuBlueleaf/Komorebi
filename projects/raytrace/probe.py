@@ -11,7 +11,8 @@ import sys
 import numpy as np
 
 from projects.raytrace import card, packets
-from ref import bvh, native, raytrace, scenes
+from projects.raytrace.reference import harness
+from ref import native, raytrace, scenes
 
 FORMS = ("imm", "data", "mask", "stack", "fast", "sync")
 
@@ -22,8 +23,8 @@ def main():
     p.add_argument("--json", default=None)
     args = p.parse_args()
     data = native.data_dir()
+    tree = harness.ensure_tree("tiny")
     scene = scenes.load_scene(data / "tiny.npz")
-    tree = bvh.load_tree(data / "tiny_tree.npz")
     every = np.arange(scenes.WIDTH * scenes.HEIGHT)
     pixels = every[np.isin(packets.ray_order(every)[1], [528])][:32]
     o, d = raytrace.camera_rays(scene["camera"], pixels)
