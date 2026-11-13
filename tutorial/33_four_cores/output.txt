@@ -1,0 +1,4 @@
+squares of 0 to 3999999, modulo 2**32: 2738291072
+one core:   2738291072 in 8000 microseconds
+four cores: 2738291072 in 3001 microseconds
+four cores took 2.7 times less time

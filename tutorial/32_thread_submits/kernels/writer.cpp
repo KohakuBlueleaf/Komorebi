@@ -1,0 +1,14 @@
+// The writer kernel: it answers every command with the product of its two arguments.
+#include "komorebi/device/km_worker.hpp"
+
+void kernel_main() {
+    km::Writer writer;
+    // --8<-- [start:run]
+    writer.run([&](const km_command_t& command) {
+        const uint32_t left = command.a0;
+        const uint32_t right = command.a1;
+        writer.result(left * right);
+        return true;
+    });
+    // --8<-- [end:run]
+}

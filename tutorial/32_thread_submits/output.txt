@@ -1,0 +1,2 @@
+the thread ended with code 0
+core 0 answered the thread with 42 = 6 * 7
