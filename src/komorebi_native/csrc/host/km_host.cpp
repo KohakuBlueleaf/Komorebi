@@ -669,7 +669,7 @@ namespace {
         }
 
         // A kernel from a file on `cores`, args (x, y, words) per core; processor 0 or
-        // 1: data movement on that RISC-V and its default NoC, 2: compute.
+        // 1: data movement on that RISC-V and NoC `noc` (default: its own), 2: compute.
         void kernel(
             const std::string& source,
             const Rects& cores,
@@ -682,7 +682,8 @@ namespace {
             const std::optional<std::string>& level,
             const std::optional<std::string>& fidelity,
             const std::vector<std::string>& unpack,
-            const std::vector<std::pair<std::string, bool>>& flags
+            const std::vector<std::pair<std::string, bool>>& flags,
+            std::optional<uint32_t> noc
         ) {
             using tt::tt_metal::DataMovementProcessor;
             using tt::tt_metal::NOC;
@@ -701,15 +702,18 @@ namespace {
             if (level) {
                 k.opt_level = opt_level(*level);
             }
+            if (noc && (processor == 2 || *noc > 1)) {
+                throw std::invalid_argument("noc: 0 or 1, for a data movement kernel");
+            }
             if (processor == 0) {
                 k.config = tt::tt_metal::DataMovementConfigDescriptor{
                     .processor = DataMovementProcessor::RISCV_0,
-                    .noc = NOC::RISCV_0_default
+                    .noc = static_cast<NOC>(noc.value_or(NOC::RISCV_0_default))
                 };
             } else if (processor == 1) {
                 k.config = tt::tt_metal::DataMovementConfigDescriptor{
                     .processor = DataMovementProcessor::RISCV_1,
-                    .noc = NOC::RISCV_1_default
+                    .noc = static_cast<NOC>(noc.value_or(NOC::RISCV_1_default))
                 };
             } else if (processor == 2) {
                 k.config = compute_config(fidelity, unpack, flags);
@@ -726,16 +730,15 @@ namespace {
         }
 
         // Launches the program and returns without waiting for it (the launch call
-        // of generic_op on a 1 x 1 mesh); the program is kept while the launch lives.
+        // of generic_op on a 1 x 1 mesh); a later run launches the kept program again.
         void run() {
             namespace d = tt::tt_metal::distributed;
-            if (workload_) {
-                throw std::runtime_error("this launch already ran");
+            if (!workload_) {
+                workload_ = std::make_unique<d::MeshWorkload>();
+                workload_->add_program(
+                    d::MeshCoordinateRange(mesh_->shape()), tt::tt_metal::Program(desc_)
+                );
             }
-            workload_ = std::make_unique<d::MeshWorkload>();
-            workload_->add_program(
-                d::MeshCoordinateRange(mesh_->shape()), tt::tt_metal::Program(desc_)
-            );
             d::EnqueueMeshWorkload(mesh_->mesh_command_queue(), *workload_, false);
         }
 
@@ -1758,7 +1761,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("opt_level") = nb::none(),
             nb::arg("math_fidelity") = nb::none(),
             nb::arg("unpack_to_dest_mode") = std::vector<std::string>{},
-            nb::arg("flags") = std::vector<std::pair<std::string, bool>>{}
+            nb::arg("flags") = std::vector<std::pair<std::string, bool>>{},
+            nb::arg("noc") = nb::none()
         )
         .def("build", &Launch::build)
         .def("run", &Launch::run);
