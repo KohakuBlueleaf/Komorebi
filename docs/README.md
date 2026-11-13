@@ -18,7 +18,7 @@ Komorebi lets you run your own C++ code on the Tensix cores of a Tenstorrent Bla
 At the end of the [tutorial](tutorial/index.md) you can write a program that spreads work over the cores, moves tensors between the card's memory and the cores, and measure and debug it.
 You need to know C++ and Python. You do not need to have written a kernel for a card like this one.
 Start with [lesson 1, What Komorebi is](tutorial/what-komorebi-is.md); every lesson teaches one thing and ends with a link to the next.
-Nothing is released yet. Programs run on one P150A card, and every example in the tutorial shows what it printed on one.
+Komorebi 0.1.0 is on PyPI (`pip install "komorebi-tt[runtime]"`), a first release for one card model. Programs run on one P150A card, and every example in the tutorial shows what it printed on one.
 
 ## Where things are
 

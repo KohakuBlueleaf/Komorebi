@@ -1,6 +1,6 @@
 ---
 title: Install
-summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels (built locally today, from PyPI from 0.1.0), and checking the host with kmr doctor. Nothing is published yet.
+summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels on PyPI (komorebi-tt and komorebi-runtime, 0.1.0), and checking the host with kmr doctor.
 tags:
   - overview
   - install
@@ -8,13 +8,14 @@ tags:
 
 # Install
 
-Nothing is published: there is no package on PyPI. Komorebi runs in two ways:
+Komorebi 0.1.0 is on PyPI as `komorebi-tt` and `komorebi-runtime`, a first release for one
+card model, the Blackhole P150A. Komorebi runs in two ways:
 
 - **from a clone** against a tt-metal source tree you build ([from a clone](#from-a-clone),
   [running on a card](#running-on-a-card)): the way to develop Komorebi itself;
 - **from the two wheels**, `komorebi-tt` and `komorebi-runtime`, with no tt-metal tree:
-  built locally today ([the runtime package](#the-runtime-package)), installed from PyPI
-  from 0.1.0 ([from 0.1.0: the two wheels](#from-010-the-two-wheels)).
+  installed from PyPI ([from 0.1.0: the two wheels](#from-010-the-two-wheels)) or built
+  locally ([the runtime package](#the-runtime-package)).
 
 What works is the Python package
 (`kmr doctor`, `kmr build`, the layout helpers), the host API that runs a program on a
@@ -105,7 +106,7 @@ kmr setup                                      # the RISC-V compiler, then the c
 kmr doctor                                     # "from komorebi-runtime 0.81.1.3"
 ```
 
-The two wheels need `numpy` and nothing else: no `ttnn`, no `torch`. From 0.1.0 the
+The two wheels need `numpy` and nothing else: no `ttnn`, no `torch`. From PyPI the
 install is `pip install "komorebi-tt[runtime]"` ([below](#from-010-the-two-wheels)).
 
 When `TT_METAL_HOME` is unset and the package is installed, Komorebi takes its tree from
@@ -117,9 +118,9 @@ card is prepared once with `kmr setup` ([below](#setting-up-once)).
 
 ## From 0.1.0: the two wheels
 
-From the 0.1.0 release, both wheels are installed from PyPI. Until then they are built
-as in [the runtime package](#the-runtime-package), and the steps below are the same
-with the two files in place of the `pip install` line. You need Linux on x86-64, Python 3.13 and a Blackhole
+From the 0.1.0 release, both wheels are installed from PyPI. Wheels built as in
+[the runtime package](#the-runtime-package) take the same steps, with the two files in
+place of the `pip install` line. You need Linux on x86-64, Python 3.13 and a Blackhole
 P150A; no tt-metal tree, no compiler of your own, neither `ttnn` nor `torch`.
 
 ```

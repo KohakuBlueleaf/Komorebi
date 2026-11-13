@@ -45,8 +45,8 @@ the card's network between them.
 | Code placement | The same kernels are loaded on every core in advance. A core loading a kernel body into itself ([overlay_probe](experiments/overlay_probe/README.md)) or into another core ([remote_load](experiments/remote_load/README.md)) works as an experiment; a thread that carries its own code is not built yet. |
 | Execution control | A dispatcher on one X280 cluster submits the commands and runs streams and graphs of them on the card. C threads on the other three X280 clusters run the irregular part of a program. |
 
-**Status: early development; nothing is released.** Everything below runs on one
-P150A, from a clone, against a tt-metal source tree. It has run on no other hardware.
+**Status: early development; 0.1.0 is a first release, for one card model.** Everything
+below runs on one P150A, from a clone, against a tt-metal source tree. It has run on no other hardware.
 
 ## At a glance
 
@@ -452,8 +452,10 @@ threads) are in each [example's README](examples/README.md).
 
 ## Install
 
-Nothing is released: no package on PyPI and no GitHub release. Komorebi is used from a
-clone, or from a wheel built from one with its dispatch image prebuilt
+Komorebi 0.1.0 is on PyPI as two distributions, `komorebi-tt` (the framework) and
+`komorebi-runtime` (the pinned tt-metal build), with the GitHub release `v0.1.0`. It is a
+first release, for one card model, the Blackhole P150A. Komorebi is used from those
+wheels ([the two wheels](docs/install.md#from-010-the-two-wheels)) or from a clone
 ([packaging](packaging/README.md), [from a wheel](docs/install.md#from-a-wheel)), on
 Linux x86-64 with Python 3.13:
 
@@ -472,10 +474,10 @@ built from the tree on first use (`python -m komorebi.native` builds them ahead)
 Details: [install](docs/install.md).
 
 The distribution is named `komorebi-tt`; the package is imported as `komorebi` and the
-command is `kmr`. From 0.1.0, `pip install "komorebi-tt[runtime]"` installs it with
+command is `kmr`. `pip install "komorebi-tt[runtime]"` installs it with
 `komorebi-runtime`, the pinned tt-metal build, and a program runs on a card with no
-tt-metal tree ([from 0.1.0](docs/install.md#from-010-the-two-wheels)); `kmr setup`
-prepares the card once. Until then both wheels are built from a clone.
+tt-metal tree ([the two wheels](docs/install.md#from-010-the-two-wheels)); `kmr setup`
+prepares the card once.
 
 ## Usage
 
@@ -557,8 +559,7 @@ Planned, in order:
 
 1. The rasterizer and the ray tracer faster on the card, where their pages say the
    time goes.
-2. A first release: the wheel published, with its prebuilt dispatch image.
-3. The manifest and the thread language.
+2. The manifest and the thread language.
 
 ## Documentation
 

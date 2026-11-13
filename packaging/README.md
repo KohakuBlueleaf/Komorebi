@@ -1,6 +1,8 @@
 # Packaging
 
-Nothing is published yet: no package on PyPI, no GitHub release, no tags. The release
+Komorebi 0.1.0 is published: `komorebi-tt` 0.1.0 and `komorebi-runtime` 0.81.1.3 on
+PyPI (`pip install "komorebi-tt[runtime]"`), and the GitHub release `v0.1.0` with both
+wheels. It is a first release, for one card model, the Blackhole P150A. The release
 workflow builds and tests both wheels, and publishes them only on a `v*` tag push or
 when it is started by hand with `publish: true` ([the release workflow](#the-release-workflow)).
 
@@ -220,8 +222,8 @@ that they name no secret.
 
 ### What was run
 
-The workflow itself has not run: the repository is not on GitHub yet. Its scripts were
-run in the order of the `build` job, on 2026-11-13, against a tree
+Before the first release, the workflow's scripts were run by hand in the order of the
+`build` job, on 2026-11-13, against a tree
 `packaging/runtime/build_tt_metal.sh` had built (the pin and the patches unchanged, so the two
 wheel steps of `ci/build_wheels.sh` alone), with the runner's variables set by hand, and
 `smoke.sh` on card 0 of a Blackhole p150a with slow dispatch, through the card watcher:

@@ -129,7 +129,7 @@ Experiments come first; a regression test comes after behaviour settles (see
   and defines that C++ code using the X280 runtime needs. This dependency ends when
   Komorebi has its own build files. `kmr build image` is not affected: it uses the X280
   runtime's compiler, flags, entry objects and linker script directly.
-- No wheel is published. A `komorebi-tt` wheel built with its native module and the
-  `komorebi-runtime` wheel run with no tree ([the runtime package](install.md#the-runtime-package));
-  a `komorebi-tt` wheel without the module builds it from a tt-metal tree on first use
-  ([from a wheel](install.md#from-a-wheel)).
+- The wheels on PyPI (0.1.0) are built for one card model, the Blackhole P150A, and
+  run with no tree ([the two wheels](install.md#from-010-the-two-wheels)); a
+  `komorebi-tt` wheel built locally without the native module builds it from a tt-metal
+  tree on first use ([from a wheel](install.md#from-a-wheel)).
