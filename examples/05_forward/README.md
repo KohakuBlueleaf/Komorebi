@@ -71,7 +71,7 @@ changed, in brackets (the stall, quota and rejection rows were not re-run).
 | rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_MESSAGES_GAVE`), whose reader gave up waiting for a free packet page (24); the next run in the same session exact |
 | `max_live` 1000000 with queues of 65536 | rejected before any device opened; `ok` false, exit code 1 |
 
-Under the test feeder (`forward_fed.py`), card 0, AICLK 1350 MHz, core group 0 to 118
+Under the test feeder (`tests/hardware/feeder/forward_fed.py`), card 0, AICLK 1350 MHz, core group 0 to 118
 (117 cores, counter tiles 117 and 118), 64-byte messages, queues of 16384 messages,
 `max_live` 16384. The rows after the first were measured before the counter tiles,
 with every core in the group.
