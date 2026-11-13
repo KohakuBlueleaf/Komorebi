@@ -103,6 +103,12 @@ class SessionBackend(FakeBackend):
         return super().read_back()
 
 
+def built(kernels, total=4096, limit=70656, error=""):
+    """What the native kernel_build returns: kernels, config bytes, the buffer, the
+    text per Tensix thread, the runtime's message."""
+    return kernels, total, limit, [1024, 512, 256, 256, 768], error
+
+
 def load_session(monkeypatch, tmp_path):
     """komorebi.session imported over a stub ttnn; returns (module, log, ttnn stub).
     The fake native module's Dispatch is the last one made: `module.dispatch`."""
@@ -131,7 +137,7 @@ def load_session(monkeypatch, tmp_path):
         return module.dispatch
 
     module.Dispatch = make
-    module.kernel_elves = lambda device, descriptor: []  # nothing to check
+    module.kernel_build = lambda device, descriptor: built([])  # nothing to check
     image = tmp_path / "km-dispatch.bin"
     image.write_bytes(b"\0" * 64)
     monkeypatch.setattr(session.native, "load_module", lambda tree=None: module)

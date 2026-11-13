@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fake_session import FakeDispatch, K, load_session, program
+from fake_session import FakeDispatch, K, built, load_session, program
 
 import komorebi as km
 from komorebi import insn_check
@@ -66,7 +66,7 @@ def test_a_compile_error_in_the_checked_build_raises_program_error(card, tmp_pat
     def compile_error(device, descriptor):
         raise RuntimeError("compute.cpp: error: deliberate")
 
-    module.kernel_elves = compile_error
+    module.kernel_build = compile_error
     with pytest.raises(ProgramError, match="build failed.*deliberate"):
         session.Session(device=object()).load(program(tmp_path))
     assert "generic_op" not in log and log[-1] == "close"
@@ -98,12 +98,45 @@ def test_a_kernel_instruction_finding_stops_the_load_before_the_launch(
     session, log, _, module = card
     elf = tmp_path / "trisc2.elf"
     elf.write_bytes(b"")
-    module.kernel_elves = lambda device, descriptor: [("compute.cpp", [str(elf)])]
+    module.kernel_build = lambda d, desc: built([("compute.cpp", [str(elf)])])
     found = insn_check.Finding("TRISC2", "compute.cpp", "fdiv.s", "f", "ratio", "", 0)
     monkeypatch.setattr(insn_check, "check_elf", lambda *args: [found])
     with pytest.raises(KernelInstructionError, match="fdiv.s"):
         session.Session(device=object()).load(program(tmp_path))
     assert "generic_op" not in log and "start" not in log and log[-1] == "close"
+
+
+def test_a_program_over_the_kernel_buffer_is_refused_before_the_launch(card, tmp_path):
+    session, log, _, module = card
+    said = "Program size (70688) too large for kernel config buffer (70656) on TENSIX"
+    module.kernel_build = lambda d, desc: built([], total=0, error=said)
+    prog = program(tmp_path)
+    with pytest.raises(km.KernelSizeError) as caught:
+        session.Session(device=object()).load(prog)
+    message = str(caught.value)
+    for part in ("70688 B of the 70656 B", "BRISC, 1024 B", "kernel_bytes", "'Os'"):
+        assert part in message
+    assert prog.sizes.total == 70688 and prog.sizes.text["TRISC2"] == 768
+    assert "generic_op" not in log and log[-1] == "close"
+
+
+def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch):
+    session, _, ttnn, _ = card
+    opened = []
+    ttnn.MeshShape = lambda rows, cols: (rows, cols)
+    ttnn.open_mesh_device = lambda shape, **kw: opened.append(
+        kw
+    ) or types.SimpleNamespace(disable_and_clear_program_cache=lambda: None)
+    monkeypatch.setattr(session, "_hook_exit", lambda: None)  # not this process's
+    session.Session().open()
+    session.Session(kernel_bytes=128 << 10).open()
+    assert opened == [{}, {"worker_l1_size": 1572864 - 41088 - (128 << 10)}]
+    assert session.worker_l1_size(69 * 1024) == 1461120  # the runtime's default
+    for bad in (100, 0, 1531776, "big"):
+        with pytest.raises(ValueError, match="multiple of 64 from 64 to 1531712"):
+            session.Session(kernel_bytes=bad)
+    with pytest.raises(ValueError, match="opens the device"):
+        session.Session(device=object(), kernel_bytes=128 << 10)
 
 
 def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):
