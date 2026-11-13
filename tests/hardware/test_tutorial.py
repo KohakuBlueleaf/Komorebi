@@ -1,6 +1,6 @@
 """The tutorial's programs on a card (KMR_CARD=1): each folder once, at its smallest
-size. The scripts check their own results against a host reference and exit non-zero
-when one differs."""
+size. The scripts check their own results; the line each page shows is looked for in
+what they print."""
 
 from pathlib import Path
 
@@ -14,14 +14,17 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
 @pytest.mark.parametrize(
     ("script", "line"),
     [
-        ("01_the_card/card_facts.py", "L1 of a core: 70656 bytes for kernels"),
-        ("03_program_structure/hello.py", "cores: 120, event: done"),
-        ("04_first_kernel/add.py", "1000 + 2345 = 3345"),
-        ("05_handlers_and_commands/commands.py", "100 commands, 0 wrong"),
-        ("06_copy_tiles/copy_tiles.py", "6 tiles copied, identical: True"),
-        ("06_sum_in_l1/sum_rows.py", "card 743169458, numpy 743169458"),
+        ("01_first_look/add.py", "1000 + 2345 = 3345"),
+        ("03_the_card/card_facts.py", "120 Tensix cores: 12 in a row, 10 rows"),
+        ("04_hello_core/hello.py", "the command is done"),
+        ("05_commands/commands.py", "command 3: done after"),
+        ("06_a_result/a_result.py", "the core answered 42"),
+        ("07_arguments/arguments.py", "1000 + 2345 = 3345"),
+        ("08_handlers/handlers.py", "6 multiply 7 = 42"),
+        ("09_many_commands/many_commands.py", "squares: [1, 4, 9, 16, 25, 36, 49, 64]"),
+        ("10_when_it_goes_wrong/when_it_goes_wrong.py", "the card stopped the command"),
     ],
 )
-def test_a_tutorial_program_runs_and_matches_its_reference(script, line):
+def test_a_tutorial_program_runs_and_prints_its_line(script, line):
     out = run_text(TUTORIAL / script, timeout=180.0)
     assert line in out

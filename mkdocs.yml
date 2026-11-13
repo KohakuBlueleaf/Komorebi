@@ -23,6 +23,7 @@ theme:
   features:
     - navigation.footer
     - navigation.sections
+    - navigation.expand
     - navigation.top
     - navigation.indexes
     - toc.follow
@@ -54,6 +55,7 @@ extra_css:
   - assets/tutorial.css
 extra_javascript:
   - assets/grid.js
+  - assets/diagram.js
 
 markdown_extensions:
   - admonition
@@ -82,26 +84,19 @@ validation:
   anchors: warn
 
 nav:
-  - Home: README.md
   - Tutorial:
       - tutorial/index.md
-      - Getting started:
-          - tutorial/01-what-komorebi-is.md
-          - tutorial/02-environment-setup.md
-          - tutorial/03-program-structure.md
-          - tutorial/04-a-first-kernel.md
-      - Tensix cores:
-          - tutorial/05-handlers-and-commands.md
-          - tutorial/06-buffers-and-data.md
-  - Guides:
-      - install.md
-      - development.md
+  - Home: README.md
+  - Concepts:
       - concepts/model.md
       - concepts/dispatch.md
       - concepts/runtime.md
       - streams.md
       - graphs.md
       - threads.md
+  - Guides:
+      - install.md
+      - development.md
   - Reference:
       - reference/host.md
       - reference/runtime.md

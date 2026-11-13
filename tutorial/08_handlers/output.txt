@@ -1,0 +1,2 @@
+6 add 7      = 13
+6 multiply 7 = 42

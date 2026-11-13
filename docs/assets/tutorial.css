@@ -211,3 +211,211 @@ figure.km-grid:focus-visible {
     padding: 0.35rem 0.5rem;
   }
 }
+
+/* The lesson diagrams (assets/diagram.js): boxes in the gem of their kind, arrows in
+   the gem of what they carry, the reader's place in iolite. */
+figure.km-diagram {
+  background: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--radius-card);
+  margin: 1.2em 0;
+  padding: 0.9em 0.9em 0.7em;
+}
+
+figure.km-diagram figcaption {
+  color: var(--st-muted);
+  font-size: var(--fs-small);
+  margin-top: 0.6rem;
+  text-align: center;
+}
+
+.kd-svg {
+  max-width: 100%;
+  overflow: visible;
+}
+
+.kd-text {
+  fill: var(--st-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.kd-code {
+  fill: var(--st-text);
+  font-family: var(--font-mono);
+  font-size: 15px;
+}
+
+.kd-named {
+  fill: var(--gt-iolite);
+}
+
+.kd-note {
+  font-size: 12px;
+}
+
+.kd-small {
+  fill: var(--st-muted);
+  font-size: 11.5px;
+}
+
+.kd-box {
+  fill: var(--st-alt);
+  stroke: var(--st-border);
+  stroke-width: 1.2;
+}
+
+.kd-box.kd-dashed {
+  stroke-dasharray: 5 4;
+}
+
+.kd-box.kd-here {
+  stroke: var(--gt-iolite);
+  stroke-width: 2.4;
+}
+
+.kd-box.g-amber {
+  fill: color-mix(in srgb, var(--gem-amber) 10%, var(--st-card));
+  stroke: color-mix(in srgb, var(--gem-amber) 40%, transparent);
+}
+
+.kd-box.g-sapphire {
+  fill: color-mix(in srgb, var(--gem-sapphire) 10%, var(--st-card));
+  stroke: color-mix(in srgb, var(--gem-sapphire) 40%, transparent);
+}
+
+.kd-box.g-aquamarine {
+  fill: color-mix(in srgb, var(--gem-aquamarine) 10%, var(--st-card));
+  stroke: color-mix(in srgb, var(--gem-aquamarine) 40%, transparent);
+}
+
+.kd-box.g-taaffeite {
+  fill: color-mix(in srgb, var(--gem-taaffeite) 10%, var(--st-card));
+  stroke: color-mix(in srgb, var(--gem-taaffeite) 40%, transparent);
+}
+
+.kd-box.g-coral {
+  fill: color-mix(in srgb, var(--gem-coral) 10%, var(--st-card));
+  stroke: color-mix(in srgb, var(--gem-coral) 40%, transparent);
+}
+
+.kd-box.g-sage {
+  fill: color-mix(in srgb, var(--gem-sage) 10%, var(--st-card));
+  stroke: color-mix(in srgb, var(--gem-sage) 40%, transparent);
+}
+
+.kd-bracket {
+  fill: none;
+  stroke: var(--st-muted);
+  stroke-width: 1.2;
+}
+
+.kd-arrow {
+  fill: none;
+  stroke: var(--st-muted);
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.kd-arrow.kd-command {
+  stroke: var(--gt-sapphire);
+}
+
+.kd-arrow.kd-data {
+  stroke: var(--st-text);
+  stroke-dasharray: 5 3.5;
+}
+
+.kd-arrow.kd-reply {
+  stroke: var(--gt-sage);
+  stroke-dasharray: 1 4.5;
+  stroke-width: 2.6;
+}
+
+.kd-arrow.kd-broadcast {
+  stroke: var(--gt-aquamarine);
+}
+
+.kd-arrow.kd-routed {
+  stroke: var(--gt-taaffeite);
+}
+
+.kd-arrow.kd-error {
+  stroke: var(--gt-coral);
+}
+
+.kd-head {
+  fill: var(--st-muted);
+}
+
+.kd-head.kd-command {
+  fill: var(--gt-sapphire);
+}
+
+.kd-head.kd-data {
+  fill: var(--st-text);
+}
+
+.kd-head.kd-reply {
+  fill: var(--gt-sage);
+}
+
+.kd-head.kd-broadcast {
+  fill: var(--gt-aquamarine);
+}
+
+.kd-head.kd-routed {
+  fill: var(--gt-taaffeite);
+}
+
+.kd-head.kd-error {
+  fill: var(--gt-coral);
+}
+
+/* The lesson's line of links, above and below the text, and its eyebrow. */
+.km-eyebrow {
+  color: var(--st-muted);
+  font-size: var(--fs-small);
+  margin: 0 0 0.2rem;
+}
+
+.km-lesson-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--fs-small);
+  gap: 0.4rem 1rem;
+  justify-content: space-between;
+  margin: 0.6rem 0 1.4rem;
+}
+
+.km-lesson-bar .km-prev,
+.km-lesson-bar .km-next {
+  flex: 1 1 14rem;
+}
+
+.km-lesson-bar .km-up {
+  color: var(--st-muted);
+  flex: 0 0 auto;
+}
+
+.km-lesson-bar .km-next {
+  text-align: right;
+}
+
+@media (max-width: 30em) {
+  .km-lesson-bar .km-next {
+    text-align: left;
+  }
+}
+
+/* A table of lessons uses the whole width. */
+.md-typeset__table {
+  display: block;
+  width: 100%;
+}
+
+.md-typeset__table table:not([class]) {
+  display: table;
+  width: 100%;
+}

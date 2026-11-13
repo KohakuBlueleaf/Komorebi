@@ -1,0 +1,9 @@
+komorebi      0.1.0
+python        3.13.18 (~/komorebi/.venv/bin/python)
+package       ~/komorebi/src/komorebi
+include       ~/komorebi/src/komorebi_native/include
+tt-metal      ~/tt-metal
+from          TT_METAL_HOME
+build         ~/tt-metal/build
+x280 runtime  yes
+x280 compiler ~/tt-metal/runtime/sfpi/compiler/bin/riscv-tt-elf-gcc

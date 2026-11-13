@@ -1,0 +1,4 @@
+loading the kernels took 1.11 seconds
+command 1: done after 2.2 microseconds
+command 2: done after 1.6 microseconds
+command 3: done after 1.7 microseconds

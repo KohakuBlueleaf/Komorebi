@@ -1,0 +1,3 @@
+120 Tensix cores: 12 in a row, 10 rows
+panels: columns 0-5 and 6-11
+each core has 1,461,120 bytes of L1 for data

@@ -1,0 +1,58 @@
+# Part 1. One core
+> You end this part able to run your own code on a core of the card and get a number back.
+what-komorebi-is
+setup
+the-card
+hello-core
+commands
+a-result
+arguments
+handlers
+many-commands
+when-it-goes-wrong
+
+# Part 2. Many cores
+> You end this part able to run one program on many cores and give each its share of the work.
+core-group
+partitions
+the-leader
+placing-groups
+
+# Part 3. Data
+> You end this part able to move tensors between DRAM and the cores and compute on tiles.
+tiles-and-tensors
+reading-from-dram
+writing-to-dram
+three-kernels
+circular-buffers
+computing-on-a-tile
+the-matrix-unit
+a-whole-map
+
+# Part 4. Cores talking to cores
+> You end this part able to send data between cores without going through DRAM.
+why-cores-talk
+port
+reduce
+broadcast
+routed-message
+forward-and-consume
+full-buffers
+streams-and-graphs
+
+# Part 5. X280 threads
+> You end this part able to write C code that runs on the card's X280 cores and drives the Tensix cores.
+hello-thread
+thread-submits
+four-cores
+sharing-memory
+twelve-cores
+core-asks-x280
+
+# Part 6. Practice
+> You end this part able to measure, debug and design a program of your own.
+measuring
+finding-a-bug
+a-whole-program
+your-own-kernel
+every-primitive
