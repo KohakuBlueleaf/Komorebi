@@ -138,6 +138,18 @@ roots: both are correctly rounded with an exact remainder (`divsqrt.hpp`, checke
 built from 16-bit halves on the 23-bit multiplier. The number of boxes and triangles
 tested differs from the reference (packets walk together), the hits do not.
 
+## Limits
+
+- Kernel text: a program's kernels must fit tt-metal's kernel configuration buffer
+  on a Tensix core, 70,656 bytes with the tt-metal this tree builds on; a program
+  that does not fit fails at launch with `Program size (...) too large for kernel
+  config buffer (70656) on TENSIX` and a size per kernel. The ray tracer's kernels
+  fit; with the division, square root, reciprocal and clamped inverse inlined at
+  every use they did not, so these are calls.
+- Readback: reading back is slow ([host API](../../docs/reference/host.md#session));
+  large results are read in 2 MB chunks with a line per chunk, and the whole frame's
+  stage pages (490 MB) are checked on tiles only.
+
 ## Measured
 
 ### The whole frame on the card
