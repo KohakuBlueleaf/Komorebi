@@ -1,0 +1,96 @@
+// Matrix product on resident workers: segments, record words, buffers and the profile
+// page that the host and the three kernels share. Sizes are in 32 x 32 tiles.
+#pragma once
+
+#include <stdint.h>
+
+#include "komorebi/device/km_lane.hpp"
+
+// LOAD: a0 W (DRAM, [K, N] tiles row-major), a1 the W buffer, a3 kt, a4 nt. Every
+// member reads all of W into that buffer and keeps it for the records that follow.
+constexpr uint32_t kSegLoad = 1;
+// PRODUCT: a0 A ([M, K]), a1 Y ([M, N]), a2 mt, a3 kt, a4 nt, a5 kc (K chunk), a6 ct
+// (column block), a7 mode, a8 form, a9 W (form kFormStream). Member i: rows share(mt).
+constexpr uint32_t kSegProduct = 2;
+// PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
+constexpr uint32_t kSegProf = 3;
+
+// PRODUCT modes: the full product, or one half of it with the other left out.
+constexpr uint32_t kModeFull = 0;
+constexpr uint32_t kModeReadOnly = 1;  // A read and popped; no product, no writes
+// A from L1 as it is, no reads; packed, not written.
+constexpr uint32_t kModeComputeOnly = 2;
+// Forms: W resident from LOAD, or W streamed per column block in K chunks.
+constexpr uint32_t kFormResident = 0;
+constexpr uint32_t kFormStream = 1;
+
+// Buffers: A items (a K chunk, or the whole row when it is one chunk), resident W,
+// streamed W chunks, output column blocks, the profile page.
+constexpr uint32_t kCbA = 0;
+constexpr uint32_t kCbW = 1;
+constexpr uint32_t kCbWs = 2;
+constexpr uint32_t kCbOut = 16;
+constexpr uint32_t kCbProf = 3;
+constexpr uint32_t kCbLoaded = 4;  // reader to writer: W has landed (LOAD completes)
+constexpr uint32_t kLoadedBytes = 64;
+constexpr uint32_t kTileBytes = 2048;  // bf16
+constexpr uint32_t kProfBytes = 1024;
+
+// Profile page (32-bit words; cycles of the wall clock, summed over records). Reader:
+// waits for A space, reads (issue and barrier), whole bodies, tiles read.
+constexpr uint32_t kPrRdWait = 0;
+constexpr uint32_t kPrRdRead = 1;
+constexpr uint32_t kPrRdBody = 2;
+constexpr uint32_t kPrRdTiles = 3;
+constexpr uint32_t kPrRdWsWait = 4;
+constexpr uint32_t kPrRdWsRead = 5;
+// Compute: unpack waits for A, unpack waits for W chunks, unpack bodies; math in the
+// product (acquire to commit); pack waits for math, for output space, packing, bodies.
+constexpr uint32_t kPrUnWaitA = 8;
+constexpr uint32_t kPrUnWaitW = 9;
+constexpr uint32_t kPrUnBody = 10;
+constexpr uint32_t kPrMathMm = 12;
+constexpr uint32_t kPrMathBody = 13;
+constexpr uint32_t kPrPkWaitMath = 16;
+constexpr uint32_t kPrPkWaitOut = 17;
+constexpr uint32_t kPrPkPack = 18;
+constexpr uint32_t kPrPkBody = 19;
+constexpr uint32_t kPrPkTiles = 20;
+// Writer: waits for output, writes (issue and flush), bodies, tiles written.
+constexpr uint32_t kPrWrWait = 24;
+constexpr uint32_t kPrWrWrite = 25;
+constexpr uint32_t kPrWrBody = 26;
+constexpr uint32_t kPrWrTiles = 27;
+constexpr uint32_t kProfWords = 32;
+
+#if !defined(COMPILE_FOR_TRISC)
+
+// Bounded wait until this kernel's reads have landed (kFlushReads) or its writes have
+// left L1 (kFlushSent); a give-up goes into state word `word`.
+inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
+    const uint32_t code = c.poll(
+        [&] {
+            if constexpr (noc_mode == DM_DYNAMIC_NOC) {
+                return (
+                    what == km::kFlushReads
+                        ? ncrisc_dynamic_noc_reads_flushed(noc_index)
+                        : ncrisc_dynamic_noc_nonposted_writes_sent(noc_index)
+                );
+            } else {
+                return (
+                    what == km::kFlushReads
+                        ? ncrisc_noc_reads_flushed(noc_index)
+                        : ncrisc_noc_nonposted_writes_sent(noc_index)
+                );
+            }
+        },
+        c.args().wait_limit,
+        c.args().wait_limit
+    );
+    if (code != km::kGaveNone) {
+        c.gave_up(word, code, km::kWhereData, 0, 0);
+    }
+    return code == km::kGaveNone;
+}
+
+#endif
