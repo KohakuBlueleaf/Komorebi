@@ -72,3 +72,7 @@ place to ask a question and to be wrong.
   core's queue with one atomic add (yes: 119 cores, exact cover, 266 to 2596 cycles),
   the round trip of an item through DRAM (0.93 µs) and the rate between cores (up to
   1211 M items/s, 120 cores in packets of 32).
+- [atomic_answers](atomic_answers/README.md): when the returned value of a non-posted
+  atomic add is lost: only when the asked tile issues atomics of its own on the same NoC
+  with a changing return address (11 to 35 of 2.38 M); none from tiles that only answer.
+  Decision: the dynamic crossing's tails live on counter tiles.
