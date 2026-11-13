@@ -556,7 +556,7 @@ Planned, in order:
 | Page | Read it for |
 |---|---|
 | [docs index](docs/README.md) | every concept and reference page |
-| [programming model](docs/concepts/model.md) | threads, breakpoints, homes, space and time |
+| [the thread language (planned)](docs/concepts/model.md) | threads, breakpoints, homes, space and time |
 | [Tensix runtime](docs/reference/runtime.md) | the device headers, the command, timed waits, the control block |
 | [ports](docs/reference/ports.md), [broadcasts](docs/reference/broadcast.md), [dynamic handlers](docs/reference/dynamic.md) | messages between cores |
 | [streams](docs/streams.md), [graphs](docs/graphs.md) | deciding on the card in the dispatcher |
