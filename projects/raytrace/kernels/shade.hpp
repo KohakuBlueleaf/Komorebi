@@ -42,7 +42,8 @@ namespace shade {
     constexpr uint32_t kT2 = kW + 21, kT3 = kW + 22, kAlb = kW + 23, kCos = kW + 26;
     constexpr uint32_t kInv = kW + 27;
 
-    // Two-operand steps on slots, one float32 rounding each.
+    // Two-operand steps on slots, one float32 rounding each. The long ones are calls:
+    // the kernels' text must fit the program's configuration buffer.
     inline void smul(uint32_t a, uint32_t b, uint32_t d) {
         load(L0, a);
         load(L1, b);
@@ -93,20 +94,20 @@ namespace shade {
         store(L2, d);
     }
 
-    inline void sdiv(uint32_t a, uint32_t b, uint32_t d) {
+    __attribute__((noinline)) void sdiv(uint32_t a, uint32_t b, uint32_t d) {
         load(L0, a);
         load(L1, b);
         divide();
         store(L2, d);
     }
 
-    inline void ssqrt(uint32_t a, uint32_t d) {
+    __attribute__((noinline)) void ssqrt(uint32_t a, uint32_t d) {
         load(L0, a);
         square_root();
         store(L1, d);
     }
 
-    inline void srecip(uint32_t a, uint32_t d) {
+    __attribute__((noinline)) void srecip(uint32_t a, uint32_t d) {
         load(L0, a);
         recip(L0, L1, L2, L3, L4, L5);
         store(L1, d);
@@ -176,7 +177,7 @@ namespace shade {
     }
 
     // 1 / d as the reference clamps it: |d| below 1e-12 becomes 1e-12 with d's sign.
-    inline void inverse_dir(uint32_t d, uint32_t inv) {
+    __attribute__((noinline)) void inverse_dir(uint32_t d, uint32_t inv) {
         for (uint32_t k = 0; k < 3; ++k) {
             load(L0, d + k);
             TTI_SFPABS(0, L0, L1, kFloatAbs);
@@ -284,10 +285,16 @@ namespace shade {
         TTI_SFPXOR(0, L1, L0, 0);
     }
 
-    // Slot u = uniform(pixel, stream, seed) of the pixels in slot px (ref rng.py).
-    inline void uniform(uint32_t px, uint32_t stream, uint32_t u) {
+    // Slot h = pixel * golden of the pixels in slot px, the hash's first step.
+    inline void golden(uint32_t px, uint32_t h) {
         load(L0, px);
         mul32(kGolden);
+        store(L0, h);
+    }
+
+    // Slot u = uniform(pixel, stream, seed) from slot h = golden(pixel) (ref rng.py).
+    inline void uniform(uint32_t h, uint32_t stream, uint32_t u) {
+        load(L0, h);
         imm(L1, (stream + 1) * kStream + kSeed);
         TT_SFPIADD(0, L1, L0, kCcNone);
         xorshift(16);
@@ -303,8 +310,8 @@ namespace shade {
         store(L2, u);
     }
 
-    // Unit bounce directions db of the pixels in slot px about the normals n (ref
-    // bounce_directions()).
+    // Unit bounce directions db about the normals n of the pixels whose golden() is
+    // in slot px (ref bounce_directions()).
     inline void bounce_dir(uint32_t px, uint32_t n, uint32_t db) {
         for (uint32_t k = 0; k < 3; ++k) {
             uniform(px, 4 * k, kG + k);
@@ -440,6 +447,7 @@ namespace shade {
         );
         light_ray(kP, kN, kO2, kTl, st + kS1Cos, cn);
         iadd_c(kRamp + 2, pixel, kPx);
+        golden(kPx, kPx);
         bounce_dir(kPx, kN, kDb);
         ray_out(shadow, kHitM, kO2, kTl, kOne);
         ray_out(bounce, kHitM, kO2, kDb, kTmax);

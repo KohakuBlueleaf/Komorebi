@@ -226,22 +226,29 @@ constexpr uint32_t kS2Vectors = 13;
 // Colour page (IMAGE): r, g, b.
 constexpr uint32_t kColVectors = 3;
 
-// A stage's streams: inputs, then outputs, each a page per packet of these vectors.
+// A stage's streams: inputs, then outputs, each a page per packet of these vectors;
+// of an input page, the vectors the stage reads (bit k: vector k).
 constexpr uint32_t kMaxStreams = 7;
+constexpr uint32_t kUsePk = 0x3F;                     // origin, direction
+constexpr uint32_t kUseHit = 0xF | (0xFFF << kHitN);  // t, triangle, u, v, attributes
+constexpr uint32_t kUseAny = 1 << kHitT;
+constexpr uint32_t kUseAll = 0xFFFFFFFF;
 
 struct Stage {
     uint32_t inputs, outputs;
     uint32_t vectors[kMaxStreams];
+    uint32_t used[kMaxStreams];
 };
 
 constexpr Stage stage_of(uint32_t seg) {
-    return seg == kSegGen ? Stage{1, 1, {kDescVectors, kPkVectors}}
+    return seg == kSegGen ? Stage{1, 1, {kDescVectors, kPkVectors}, {kUseAll}}
         : seg == kSegShade1
-        ? Stage{2, 3, {kPkVectors, kHitVectors, kPkVectors, kPkVectors, kS1Vectors}}
+        ? Stage{2, 3, {kPkVectors, kHitVectors, kPkVectors, kPkVectors, kS1Vectors}, {kUsePk, kUseHit}}
         : seg == kSegShade2
-        ? Stage{4, 2, {kS1Vectors, kHitAnyVectors, kPkVectors, kHitVectors, kPkVectors, kS2Vectors}}
-        : seg == kSegImage ? Stage{2, 1, {kS2Vectors, kHitAnyVectors, kColVectors}}
-                           : Stage{0, 0, {}};
+        ? Stage{4, 2, {kS1Vectors, kHitAnyVectors, kPkVectors, kHitVectors, kPkVectors, kS2Vectors}, {kUseAll, kUseAny, kUsePk, kUseHit}}
+        : seg == kSegImage
+        ? Stage{2, 1, {kS2Vectors, kHitAnyVectors, kColVectors}, {kUseAll, kUseAny}}
+        : Stage{0, 0, {}, {}};
 }
 
 constexpr bool is_stage(uint32_t seg) {

@@ -579,6 +579,31 @@ namespace {
     // Header of a packet page in L1: direction signs over the lanes with a ray (best
     // not -1), the first pixel.
     void packet_head(uint32_t* pg, uint32_t pixel) {
+#if defined(__riscv_vector)
+        const size_t vl = __riscv_vsetvl_e32m8(kVec);
+        const vbool4_t ray = (
+            __riscv_vmsne_vx_u32m8_b4(
+                __riscv_vle32_v_u32m8(pg + kVec * kPkBest, vl), shade::kMinusOne, vl
+            )
+        );
+        const uint32_t valid = __riscv_vcpop_m_b4(ray, vl);
+        uint32_t signs = 0;
+        for (uint32_t k = 0; k < 3; ++k) {
+            const vint32m8_t d = (
+                __riscv_vle32_v_i32m8(
+                    reinterpret_cast<const int32_t*>(pg + kVec * (kPkD + k)), vl
+                )
+            );
+            const vbool4_t neg = (
+                __riscv_vmand_mm_b4(ray, __riscv_vmslt_vx_i32m8_b4(d, 0, vl), vl)
+            );
+            signs |= (2 * __riscv_vcpop_m_b4(neg, vl) > valid ? 1u : 0u) << k;
+        }
+        uint32_t* h = pg + kVec * kPkHead;
+        __riscv_vse32_v_u32m8(h, __riscv_vmv_v_x_u32m8(0, vl), vl);
+        h[kHeadSigns] = signs;
+        h[kHeadPixel] = pixel;
+#else
         uint32_t valid = 0, neg[3] = {0, 0, 0};
         for (uint32_t l = 0; l < kVec; ++l) {
             if (pg[kVec * kPkBest + l] == shade::kMinusOne) {
@@ -598,6 +623,12 @@ namespace {
         for (uint32_t l = 2; l < kVec; ++l) {
             h[l] = 0;
         }
+#endif
+    }
+
+    // Vectors of a stage page that go through Dst: a packet page's header stays in L1.
+    constexpr uint32_t body(uint32_t vectors) {
+        return vectors == kPkVectors ? kPkHead : vectors;
     }
 
     // A stage over the core's packets: the constant page first, then per packet its
@@ -625,14 +656,18 @@ namespace {
                     return false;
                 }
                 const uint32_t b = wall();
-                for (uint32_t k = 0; k < st.vectors[s]; ++k) {
-                    to_slot(slot + k, pg + kVec * k);
+                uint32_t last = slot;
+                for (uint32_t k = 0; k < body(st.vectors[s]); ++k) {
+                    if ((st.used[s] >> k) & 1) {
+                        to_slot(slot + k, pg + kVec * k);
+                        last = slot + k;
+                    }
                 }
                 if (s == 0) {
                     pixel = seg == kSegGen ? pg[0] : pg[kVec * kPkHead + kHeadPixel];
                 }
+                order(word(last) + 62);
                 slot += st.vectors[s];
-                order(word(slot - 1) + 62);
                 mbox_release();
                 pf.load += wall() - b;
             }
@@ -659,7 +694,7 @@ namespace {
                 a = wall();
                 uint32_t* w = reinterpret_cast<uint32_t*>(dst);
                 const uint32_t n = st.vectors[s];
-                for (uint32_t k = 0; k < n; ++k) {
+                for (uint32_t k = 0; k < body(n); ++k) {
                     from_slot(slot + k, w + kVec * k);
                 }
                 if (n == kPkVectors) {

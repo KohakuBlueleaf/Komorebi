@@ -179,6 +179,10 @@ def main():
             step = {"step": name, "us": float(ev_us)}
             step["errors"] = int((pr["error"] != 0).sum())
             step["busy_max"] = int(pr["total"].max())
+            used = pr["packets"] > 0
+            for key in ("load", "box", "out", "wait_in", "wait_out", "total"):
+                per = pr[key][used].sum() / max(pr["packets"][used].sum(), 1)
+                step[f"{key}_per_packet"] = round(float(per), 1)
             report["steps"].append(step)
         wanted = sorted(names) if args.stages else ["colour"]
         got = card.read_each(session, [tensors[s] for s in wanted], wanted)

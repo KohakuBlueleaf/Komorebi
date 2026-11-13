@@ -31,7 +31,9 @@ def test_constants_are_evaluated_in_order(tmp_path):
         "constexpr uint32_t kA = 4;\nconstexpr uint32_t kB = kA * 3 + 1 - 2;\n"
     )
     assert packets.read_constants(header) == {"kA": 4, "kB": 11}
-    header.write_text("constexpr uint32_t kA = 1 << 4;\n")
+    header.write_text("constexpr uint32_t kA = 0xF | (1 << 4);\n")
+    assert packets.read_constants(header) == {"kA": 31}
+    header.write_text("constexpr uint32_t kA = 7 % 4;\n")
     with pytest.raises(ValueError):
         packets.read_constants(header)
 

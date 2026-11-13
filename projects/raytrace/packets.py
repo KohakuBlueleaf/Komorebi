@@ -23,11 +23,13 @@ OPS = {
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
     ast.Div: operator.floordiv,  # unsigned division in C++
+    ast.BitOr: operator.or_,
+    ast.LShift: operator.lshift,
 }
 
 
 def evaluate(node, names):
-    """An integer expression of literals, earlier names, +, -, * and /."""
+    """An integer expression of literals, earlier names, +, -, *, /, | and <<."""
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return node.value
     if isinstance(node, ast.Name):
