@@ -260,7 +260,7 @@ namespace km {
             if (a_.window == 0 || a_.window > kLaneWindowMax || a_.pages == 0 ||
                 a_.receivers >= KM_LANE_RANKS || a_.rank > a_.receivers ||
                 a_.noc != noc_index || i.fifo_num_pages != a_.window * a_.pages ||
-                i.fifo_size != a_.window * block_bytes_) {
+                i.fifo_num_pages > 0xFFFFu || i.fifo_size != a_.window * block_bytes_) {
                 fail(kGaveBadLane, kWhereLaneBegin, 0);
                 return false;
             }
@@ -271,8 +271,6 @@ namespace km {
                 fail(kGaveBadLane, kWhereLaneBegin, 0);
                 return false;
             }
-            acked_ = acked();
-            popped_pages_ = 0;  // the wait above may have counted from zero
             return true;
         }
 
@@ -297,23 +295,16 @@ namespace km {
             );
         }
 
-        // Pages compute has popped from the lane buffer, as its 16-bit counter.
-        uint16_t acked() const {
-            return (
-                static_cast<uint16_t>(
-                    reg_read(reinterpret_cast<uintptr_t>(get_cb_tiles_acked_ptr(a_.cb)))
-                )
+        // Blocks of this record compute has popped: those pushed less the pages still
+        // held, a 16-bit difference that cannot wrap (under 2^16 pages, padding after).
+        uint32_t popped() const {
+            const uint32_t acked = (
+                reg_read(reinterpret_cast<uintptr_t>(get_cb_tiles_acked_ptr(a_.cb)))
             );
-        }
-
-        // Blocks of this record compute has popped (padding is pushed only after all).
-        // The 16-bit counter moves less than a buffer between two calls.
-        uint32_t popped() {
-            const uint16_t now = acked();
-            popped_pages_ += static_cast<uint16_t>(now - acked_);
-            acked_ = now;
-            const uint32_t b = popped_pages_ / a_.pages;
-            return b < n_ ? b : n_;
+            const uint16_t held = (
+                static_cast<uint16_t>(get_cb_tiles_received_ptr(a_.cb)[0] - acked)
+            );
+            return (n_ * a_.pages - held) / a_.pages;
         }
 
         // Receiver: a DONE stamp to the sender when compute popped more blocks.
@@ -445,8 +436,6 @@ namespace km {
         LaneArgs a_;
         uint32_t area_ = 0;
         uint32_t block_bytes_ = 0;
-        uint16_t acked_ = 0;
-        uint32_t popped_pages_ = 0;
         uint32_t n_ = 0;
         bool reserved_ = false;
         uint32_t stamped_ = 0;

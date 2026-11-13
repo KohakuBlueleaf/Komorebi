@@ -81,8 +81,10 @@ that returns false or 0 has recorded the give-up; the kernel leaves the body.
    and slot addresses are the same on every core.
 3. A record with lanes names exactly the team the lane words were built for, and
    carries `KM_F_EXCL`: overlapping teams are never in flight together.
-4. Window B: 1 to 8. Receivers per lane: up to 15. Blocks per record: 0 to 32,767;
-   a lane that casts no block in a record still calls `finish` on every member.
+4. Window B: 1 to 8. Receivers per lane: up to 15. Blocks per record: 0 to 32,767,
+   with no limit on the pages they carry in all; the buffer, B * P pages, holds at
+   most 65,535. A lane that casts no block in a record still calls `finish` on every
+   member.
 5. A member reports only after its compute has popped every block (`finish` checks it
    for its own kernel).
 
