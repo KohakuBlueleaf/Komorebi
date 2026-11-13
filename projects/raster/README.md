@@ -302,21 +302,31 @@ counts, and the image the reference's (`python -m projects.raster.card_thread --
 
 Frames in a row (2026-11-13, card 1, 120 cores, X280 at 1,000 MHz, AICLK 1,350 MHz
 (samples at 1,343 on some scenes); `python -m projects.raster.bench_thread --scene <s>
---runs 5 --frames 0`, results in `results/frame/`): 5 loads of the program, each running
-as many frames as fill about 1 s (64 to 816), median per frame, us. Inside a frame the
-host does nothing: 0 round trips, 0 bytes. Power is the card's mean over the threads'
-runs; it draws 60.2 to 63.0 W with the program resident and idle. The V100 column is the
+--runs 5 --frames 0 [--no-balance]`, results in `results/frame/` and
+`results/frame/repeated/`): 5 loads of the program, each running as many frames as fill
+about 1 s (64 to 906), median per frame, us. Two rows per scene: "first" is a frame
+without history (COUNT and SETUP on equal block shares: what a single image costs);
+"repeated" is a frame from the second on, same camera, with COUNT's and SETUP's ranges
+cut by the frame before's costs (below; the first frame of each load counts in its
+mean). Inside a frame the host does nothing: 0 round trips, 0 bytes. Power is the card's
+mean over the threads' runs; it draws 60.2 to 63.0 W with the program resident and idle. The V100 column is the
 whole frame of `reference/bench.py` on one idle V100 (its "ms per frame";
 `reference/README.md`, Sponza and Bistro in `results/reference/`):
 
-| scene | heavy tiles | COUNT | SUM | HIST + HSUM | the step | PLACE | SETUP | FILL | frame | V100 | V100 / card | card W |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| tiny | 0 | 104 | 61 | - | 433 | 99 | 229 | 121 | 1,047 | 290 | 0.28 | 62.1 |
-| 10^4 | 0 | 117 | 61 | - | 437 | 99 | 231 | 141 | 1,087 | 250 | 0.23 | 67.0 |
-| 10^5 | 112 | 450 | 61 | 95 | 748 | 103 | 668 | 425 | 2,549 | 790 | 0.31 | 67.0 |
-| 10^6 | 130 | 3,826 | 61 | 161 | 803 | 104 | 5,062 | 2,108 | 12,126 | 4,420 | 0.36 | 67.5 |
-| Sponza (262,266) | 0 | 2,221 | 61 | - | 453 | 100 | 2,788 | 1,593 | 7,217 | 2,310 | 0.32 | 67.7 |
-| Bistro interior (1,020,903) | 82 | 4,811 | 61 | 92 | 730 | 103 | 7,475 | 2,096 | 15,372 | 5,990 | 0.39 | 67.6 |
+| scene | row | heavy tiles | COUNT | SUM | HIST + HSUM | the step | PLACE | SETUP | FILL | frame | V100 | V100 / card | card W |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| tiny | first | 0 | 104 | 59 | - | 436 | 103 | 228 | 121 | 1,051 | 290 | 0.28 | 64.0 |
+| tiny | repeated | 0 | 104 | 59 | - | 436 | 103 | 228 | 121 | 1,051 | 290 | 0.28 | 61.8 |
+| 10^4 | first | 0 | 118 | 59 | - | 440 | 103 | 231 | 141 | 1,091 | 250 | 0.23 | 65.8 |
+| 10^4 | repeated | 0 | 127 | 59 | - | 453 | 103 | 157 | 141 | 1,041 | 250 | 0.24 | 65.4 |
+| 10^5 | first | 112 | 450 | 59 | 95 | 751 | 107 | 667 | 425 | 2,555 | 790 | 0.31 | 67.2 |
+| 10^5 | repeated | 112 | 448 | 59 | 95 | 771 | 107 | 547 | 425 | 2,454 | 790 | 0.32 | 65.9 |
+| 10^6 | first | 130 | 3,825 | 59 | 160 | 804 | 108 | 5,060 | 2,108 | 12,125 | 4,420 | 0.36 | 67.7 |
+| 10^6 | repeated | 130 | 3,375 | 59 | 160 | 823 | 108 | 3,942 | 2,108 | 10,575 | 4,420 | 0.42 | 67.3 |
+| Sponza (262,266) | first | 0 | 2,221 | 59 | - | 456 | 103 | 2,790 | 1,593 | 7,223 | 2,310 | 0.32 | 65.7 |
+| Sponza (262,266) | repeated | 0 | 1,265 | 59 | - | 466 | 103 | 1,797 | 1,593 | 5,285 | 2,310 | 0.44 | 66.1 |
+| Bistro interior (1,020,903) | first | 82 | 4,808 | 59 | 92 | 733 | 107 | 7,475 | 2,095 | 15,373 | 5,990 | 0.39 | 65.3 |
+| Bistro interior (1,020,903) | repeated | 82 | 3,594 | 59 | 92 | 752 | 107 | 4,273 | 2,096 | 10,974 | 5,990 | 0.55 | 65.2 |
 
 Each column is the thread's time from issuing a record to its event (the step: from
 SUM's event to PLACE's issue, HIST and HSUM apart), so the frame is the sum plus the
@@ -331,6 +341,14 @@ SETUP's pack thread copies each entry's record (128 bytes) into the out page wit
 vector load and store instead of 32 scalar words: SETUP on tiny went from 453 to
 229 us, on 10^6 from 8,186 to 5,062 and on Bistro from 15,427 to 7,476.
 It is still the largest part of every large frame, set by its slowest core.
+
+COUNT and SETUP give each core a range of the mesh's blocks; with equal ranges some hold
+far more triangles in view than others, and the pass waits for the slowest. From the
+second frame on, each core's writer leaves its COUNT and SETUP ticks in the camera's
+region, the thread cuts the next frame's ranges into equal parts of them (each core's
+ticks spread evenly over its blocks), and the reader brings each core its range with the
+camera. Scenes with fewer blocks than cores (tiny) keep equal shares. The cut is history:
+a frame from a new camera starts from the last camera's costs.
 
 Per frame the host still loads the program (the camera goes with the load: 0.5 to 0.8
 s) and reads the image back (20 MB, 10 to 18 s); both are outside the frame times above.

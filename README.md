@@ -263,18 +263,26 @@ against numpy. Median of 5 loads, each about 1 s of frames; card 1
 `projects/raster/results/`,
 [reference](projects/raster/reference/README.md#timings-and-power)):
 
-| Scene | Triangles | Card frame, ms | of which the X280 step | Card W | C++ 96 threads, ms | V100, ms | V100 / card |
-|---|---|---|---|---|---|---|---|
-| tiny | 398 | 1.047 | 0.433 | 62.1 | 2.66 | 0.29 | 0.28 |
-| 10^4 | 11,994 | 1.087 | 0.437 | 67.0 | 3.32 | 0.25 | 0.23 |
-| 10^5 | 102,308 | 2.549 | 0.748 | 67.0 | 4.08 | 0.79 | 0.31 |
-| 10^6 | 997,806 | 12.126 | 0.803 | 67.5 | 17.87 | 4.42 | 0.36 |
-| Sponza, overview | 262,266 | 7.217 | 0.453 | 67.7 | 7.88 | 2.31 | 0.32 |
-| Bistro interior, overview | 1,020,903 | 15.372 | 0.730 | 67.6 | 14.10 | 5.99 | 0.39 |
+| Scene | Triangles | Frame | Card frame, ms | of which the X280 step | Card W | C++ 96 threads, ms | V100, ms | V100 / card |
+|---|---|---|---|---|---|---|---|---|
+| tiny | 398 | first | 1.051 | 0.436 | 64.0 | 2.66 | 0.29 | 0.28 |
+| tiny | 398 | repeated | 1.051 | 0.436 | 61.8 | 2.66 | 0.29 | 0.28 |
+| 10^4 | 11,994 | first | 1.091 | 0.440 | 65.8 | 3.32 | 0.25 | 0.23 |
+| 10^4 | 11,994 | repeated | 1.041 | 0.453 | 65.4 | 3.32 | 0.25 | 0.24 |
+| 10^5 | 102,308 | first | 2.555 | 0.751 | 67.2 | 4.08 | 0.79 | 0.31 |
+| 10^5 | 102,308 | repeated | 2.454 | 0.771 | 65.9 | 4.08 | 0.79 | 0.32 |
+| 10^6 | 997,806 | first | 12.125 | 0.804 | 67.7 | 17.87 | 4.42 | 0.36 |
+| 10^6 | 997,806 | repeated | 10.575 | 0.823 | 67.3 | 17.87 | 4.42 | 0.42 |
+| Sponza, overview | 262,266 | first | 7.223 | 0.456 | 65.7 | 7.88 | 2.31 | 0.32 |
+| Sponza, overview | 262,266 | repeated | 5.285 | 0.466 | 66.1 | 7.88 | 2.31 | 0.44 |
+| Bistro interior, overview | 1,020,903 | first | 15.373 | 0.733 | 65.3 | 14.10 | 5.99 | 0.39 |
+| Bistro interior, overview | 1,020,903 | repeated | 10.974 | 0.752 | 65.2 | 14.10 | 5.99 | 0.55 |
 
 Where the time goes: SETUP, the scatter of each triangle's record into its tiles' lists,
-is the largest part of every frame from 10^5 up (10^6 5.1 ms, Bistro 7.5 ms), then COUNT
-(3.8 and 4.8 ms) and the fill (2.1 ms).
+is the largest part of every frame from 10^5 up (first frame: 10^6 5.1 ms, Bistro 7.5
+ms), then COUNT (3.8 and 4.8 ms) and the fill (2.1 ms). "First" is a frame without
+history; "repeated" is a later frame of the same camera, whose COUNT and SETUP ranges are
+cut by the frame before's costs (10^6 3.9 and 3.4 ms, Bistro 4.3 and 3.6 ms).
 
 The **ray tracer**: ray generation, four traces and shading are eight records on the
 120 cores; trees larger than L1 are read from DRAM as treelets. One frame each, card 1
@@ -302,8 +310,8 @@ triangles at the same float32 distance, but for one on each Bistro view.
 <img src="docs/images/raytrace-sponza.jpg" width="256" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. Top: rasterized,
-both bit-exact against numpy, Sponza overview (7.22 ms a frame above) and Bistro interior
-overview (15.37 ms). Bottom: ray traced, Sponza close (359.86 ms a frame
+both bit-exact against numpy, Sponza overview (7.22 ms a first frame above) and Bistro
+interior overview (15.37 ms). Bottom: ray traced, Sponza close (359.86 ms a frame
 above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*

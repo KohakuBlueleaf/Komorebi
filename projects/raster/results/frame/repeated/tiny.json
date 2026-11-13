@@ -1,0 +1,84 @@
+{
+ "scene": "tiny",
+ "runs": 5,
+ "frames_per_run": 900,
+ "upload_s": 0.30268056399654597,
+ "x280_mhz": 1000,
+ "thread": {
+  "us": {
+   "count": 103.74524444444445,
+   "sum": 59.11775555555556,
+   "hist": 0.0,
+   "hsum": 0.0,
+   "middle": 435.9359777777778,
+   "place": 102.78242222222224,
+   "setup": 228.4236,
+   "fill": 121.25031111111112
+  },
+  "middle_us": {
+   "TAKE": 9.869822222222222,
+   "HEAVY_US": 37.82826666666667,
+   "CUT": 30.03526666666667,
+   "SORT": 86.53082222222223,
+   "ASSIGN": 158.2018,
+   "COMPACT": 65.73315555555556,
+   "PAGES": 15.796333333333335,
+   "GIVE": 31.038355555555555
+  },
+  "frame_us": 1050.9011777777778,
+  "first_run": {
+   "ran": true,
+   "state": "done",
+   "error": "none",
+   "code": 0,
+   "where": 8,
+   "thread_us": 953745.94,
+   "slots": 5696,
+   "items": 1024,
+   "marks": 784,
+   "heavy": 0,
+   "us": {
+    "count": 93376.44,
+    "sum": 53202.58,
+    "hist": 0.0,
+    "hsum": 0.0,
+    "middle": 399762.0,
+    "place": 92487.54000000001,
+    "setup": 205581.24,
+    "fill": 109125.28
+   },
+   "middle_us": {
+    "TAKE": 8883.22,
+    "HEAVY_US": 34045.44,
+    "CUT": 35320.86,
+    "SORT": 77885.40000000001,
+    "ASSIGN": 142376.56,
+    "COMPACT": 59141.06,
+    "PAGES": 14177.92,
+    "GIVE": 27931.54
+   },
+   "frames": 900,
+   "status_ok": true
+  }
+ },
+ "power": {
+  "card_idle_w": 19.09998870681663,
+  "card_idle_open_w": 59.90000428049825,
+  "card_mean_w": 61.78653900843511,
+  "card_peak_w": 72.0,
+  "card_limit_w": 150.0,
+  "card_mean_percent_of_limit": 41.19102600562341,
+  "card_joules_per_frame": 0.06502649577447746,
+  "card_joules_per_frame_above_idle": 0.044924943642437494,
+  "seconds_per_frame": 0.0010524379066709016,
+  "seconds": 4.735970580019057,
+  "whole_loop": "10.65 s, 134 samples, mean 61.2 W (41% of 150 W), peak 72.0 W, 651.7 J, idle 59.9 W, 54.3 C",
+  "aiclk_mhz_min": 1343,
+  "aiclk_mhz_mean": 1349.888888888889,
+  "aiclk_samples": 126,
+  "aiclk_left_nominal": true
+ },
+ "read_frame_s": 20.08057954593096,
+ "image_differs": 0,
+ "ok": true
+}

@@ -1,0 +1,84 @@
+{
+ "scene": "s1m",
+ "runs": 5,
+ "frames_per_run": 80,
+ "upload_s": 3.3293069628998637,
+ "x280_mhz": 1000,
+ "thread": {
+  "us": {
+   "count": 3374.5855,
+   "sum": 59.14825,
+   "hist": 23.88525,
+   "hsum": 136.284,
+   "middle": 822.57725,
+   "place": 107.8585,
+   "setup": 3942.3540000000003,
+   "fill": 2107.7830000000004
+  },
+  "middle_us": {
+   "TAKE": 73.46275,
+   "HEAVY_US": 89.7465,
+   "CUT": 217.85325000000003,
+   "SORT": 118.5655,
+   "ASSIGN": 193.40125,
+   "COMPACT": 76.63775000000001,
+   "PAGES": 18.15975,
+   "GIVE": 33.376
+  },
+  "frame_us": 10575.227,
+  "first_run": {
+   "ran": true,
+   "state": "done",
+   "error": "none",
+   "code": 0,
+   "where": 8,
+   "thread_us": 846018.16,
+   "slots": 656432,
+   "items": 1204,
+   "marks": 1054,
+   "heavy": 130,
+   "us": {
+    "count": 269962.92,
+    "sum": 4729.8,
+    "hist": 1912.64,
+    "hsum": 10902.72,
+    "middle": 65806.18000000001,
+    "place": 8628.68,
+    "setup": 315392.38,
+    "fill": 168636.88
+   },
+   "middle_us": {
+    "TAKE": 5923.2,
+    "HEAVY_US": 7238.42,
+    "CUT": 17407.36,
+    "SORT": 9513.74,
+    "ASSIGN": 15469.04,
+    "COMPACT": 6131.02,
+    "PAGES": 1452.98,
+    "GIVE": 2670.42
+   },
+   "frames": 80,
+   "status_ok": true
+  }
+ },
+ "power": {
+  "card_idle_w": 21.38404729021676,
+  "card_idle_open_w": 63.0,
+  "card_mean_w": 67.32511390621917,
+  "card_peak_w": 76.0,
+  "card_limit_w": 150.0,
+  "card_mean_percent_of_limit": 44.883409270812784,
+  "card_joules_per_frame": 0.7123012300582563,
+  "card_joules_per_frame_above_idle": 0.48605752537381064,
+  "seconds_per_frame": 0.010580022650246974,
+  "seconds": 4.23200906009879,
+  "whole_loop": "6.97 s, 116 samples, mean 66.0 W (44% of 150 W), peak 76.0 W, 460.3 J, idle 63.0 W, 61.7 C",
+  "aiclk_mhz_min": 1343,
+  "aiclk_mhz_mean": 1349.7383177570093,
+  "aiclk_samples": 107,
+  "aiclk_left_nominal": true
+ },
+ "read_frame_s": 10.377280913991854,
+ "image_differs": 0,
+ "ok": true
+}
