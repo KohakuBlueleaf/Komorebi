@@ -11,7 +11,8 @@ tags:
 
 Status: implemented and run on one Blackhole card: the resident worker, records,
 teams and completion, static breakpoints (ports and reduce, lane broadcast) and the
-trace. Dynamic breakpoints are planned.
+trace, and dynamic breakpoints (one dynamic run at a time), through a `Session` and
+under the test feeder.
 
 Each program has one resident worker on every Tensix core it uses. The worker starts
 once and then serves work: it takes the next record, switches on the segment the record
@@ -27,7 +28,7 @@ segments and breakpoints mean.
 | Worker | One resident kernel set per program. The runtime owns each kernel's loop; the program gives the body. The reader copies each record into the tile's control block and hands a token to the compute and writer kernels, which read the record from that copy. Every wait is bounded and observes a stop word. | [runtime](../reference/runtime.md#the-three-kernels) |
 | Teams | A contiguous range of cores in core order, named in the record. Completion is per team: members report to their row's leader, row leaders to the first member, which acknowledges with one write. Several teams run at once. | [runtime](../reference/runtime.md#the-three-kernels) |
 | Static breakpoints | A value to one core: `emit` writes into a fixed slot, waits for the write, increments the receiver's port; `arrive` is a bounded counted wait. `reduce` by owner and by tree. A block to a row or a column: lane broadcast with a window. | [ports](../reference/ports.md), [lanes](../reference/lanes.md) |
-| Dynamic breakpoints | A queue per core in DRAM, positions reserved by an atomic add on the receiver; packets of up to 32 items; bins per destination; a bounded population of live items (a spawn quota); sent and consumed counters in a status line when a core goes idle. Generic reader and writer kernels own these, so a program's segment code lives in the compute kernel. Under the test feeder. | [dynamic](../reference/dynamic.md) |
+| Dynamic breakpoints | A queue per core in DRAM, positions reserved by an atomic add on the receiver; packets of up to 32 items; bins per destination; a bounded population of live items (a spawn quota); sent and consumed counters in a status line when a core goes idle. Generic reader and writer kernels own these, so a program's segment code lives in the compute kernel. Through a `Session` and under the test feeder; one dynamic run at a time. | [dynamic](../reference/dynamic.md) |
 | Trace | Per-record wall-clock stamps per core, read back after the run. | [runtime](../reference/runtime.md#trace) |
 
 ## Records and segments

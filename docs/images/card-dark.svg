@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="830" height="900" viewBox="0 0 830 900" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="830" height="948" viewBox="0 0 830 948" role="img">
 <title>The card as Komorebi runs it</title>
 <style>
   text { font-family: -apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; font-size: 13px; fill: #e6edf3; }
@@ -23,6 +23,10 @@
   .grid { stroke: #3d444d; stroke-width: 1; fill: none; }
   .al { stroke: #f0883e; stroke-width: 2.5; fill: none; }
   .ad { stroke: #f0883e; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+  .wbox { fill: #0c2d6b; stroke: #4493f8; stroke-width: 1.5; }
+  .w { fill: #4493f8; }
+  .wl { stroke: #4493f8; stroke-width: 2.5; fill: none; }
+  .wd { stroke: #4493f8; stroke-width: 2; fill: none; stroke-dasharray: 5 3; }
   .athin { stroke: #f0883e; stroke-width: 1.2; fill: none; }
 </style>
 <defs>
@@ -34,11 +38,15 @@
       markerHeight="5" orient="auto-start-reverse">
     <path d="M0,0 L10,5 L0,10 z" fill="#6e7681"/>
   </marker>
+  <marker id="hw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5"
+      markerHeight="5" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/>
+  </marker>
 </defs>
-<rect width="830" height="900" fill="#0d1117"/>
+<rect width="830" height="948" fill="#0d1117"/>
 <rect x="52" y="8" width="500" height="46" rx="4" class="box"/>
 <text x="64" y="27" class="b" xml:space="preserve">host: Python Program, Session and Run</text>
-<text x="64" y="45" class="mono s" xml:space="preserve">run.issue(seg, team, args)    run.wait(tickets)</text>
+<text x="64" y="45" class="mono s" xml:space="preserve">prog.thread(...)  run.issue(seg, team, args)  run.wait(tickets)</text>
 <text x="72" y="90" class="s m" text-anchor="middle" xml:space="preserve">0</text>
 <text x="116" y="90" class="s m" text-anchor="middle" xml:space="preserve">1</text>
 <text x="160" y="90" class="s m" text-anchor="middle" xml:space="preserve">2</text>
@@ -243,9 +251,9 @@
 <text x="336" y="342" class="s m" text-anchor="middle" xml:space="preserve">41</text>
 <rect x="360" y="318" width="40" height="40" rx="3" class="off"/>
 <text x="380" y="342" class="s m" text-anchor="middle" xml:space="preserve">off</text>
-<rect x="404" y="318" width="40" height="40" rx="3" class="edge"/>
-<text x="424" y="335" class="s" text-anchor="middle" xml:space="preserve">X280</text>
-<text x="424" y="350" class="s" text-anchor="middle" xml:space="preserve">2</text>
+<rect x="404" y="318" width="40" height="40" rx="3" class="plan"/>
+<text x="424" y="335" class="s m" text-anchor="middle" xml:space="preserve">X280</text>
+<text x="424" y="350" class="s m" text-anchor="middle" xml:space="preserve">2</text>
 <rect x="448" y="318" width="40" height="40" rx="3" class="dram"/>
 <text x="468" y="342" class="s m" text-anchor="middle" xml:space="preserve">D7</text>
 <rect x="492" y="318" width="40" height="40" rx="3" class="off"/>
@@ -311,9 +319,9 @@
 <text x="336" y="430" class="s m" text-anchor="middle" xml:space="preserve">65</text>
 <rect x="360" y="406" width="40" height="40" rx="3" class="off"/>
 <text x="380" y="430" class="s m" text-anchor="middle" xml:space="preserve">off</text>
-<rect x="404" y="406" width="40" height="40" rx="3" class="edge"/>
-<text x="424" y="423" class="s" text-anchor="middle" xml:space="preserve">X280</text>
-<text x="424" y="438" class="s" text-anchor="middle" xml:space="preserve">3</text>
+<rect x="404" y="406" width="40" height="40" rx="3" class="plan"/>
+<text x="424" y="423" class="s m" text-anchor="middle" xml:space="preserve">X280</text>
+<text x="424" y="438" class="s m" text-anchor="middle" xml:space="preserve">3</text>
 <rect x="448" y="406" width="40" height="40" rx="3" class="dram"/>
 <text x="468" y="430" class="s m" text-anchor="middle" xml:space="preserve">D7</text>
 <rect x="492" y="406" width="40" height="40" rx="3" class="off"/>
@@ -379,10 +387,11 @@
 <text x="336" y="518" class="s m" text-anchor="middle" xml:space="preserve">89</text>
 <rect x="360" y="494" width="40" height="40" rx="3" class="off"/>
 <text x="380" y="518" class="s m" text-anchor="middle" xml:space="preserve">off</text>
-<rect x="404" y="494" width="40" height="40" rx="3" class="edge"/>
-<text x="424" y="511" class="s" text-anchor="middle" xml:space="preserve">X280</text>
-<text x="424" y="526" class="s" text-anchor="middle" xml:space="preserve">1</text>
+<rect x="404" y="494" width="40" height="40" rx="3" class="wbox"/>
+<text x="424" y="511" class="s b w" text-anchor="middle" xml:space="preserve">X280</text>
+<text x="424" y="526" class="s b w" text-anchor="middle" xml:space="preserve">1</text>
 <rect x="448" y="494" width="40" height="40" rx="3" class="dram"/>
+<rect x="448" y="494" width="40" height="40" rx="3" fill="none" class="wd"/>
 <text x="468" y="518" class="s m" text-anchor="middle" xml:space="preserve">D6</text>
 <rect x="492" y="494" width="40" height="40" rx="3" class="off"/>
 <text x="512" y="518" class="s m" text-anchor="middle" xml:space="preserve">off</text>
@@ -473,6 +482,8 @@
 <line x1="403" y1="258" x2="361" y2="258" class="al" marker-end="url(#ha)"/>
 <line x1="445" y1="258" x2="531" y2="258" class="al" marker-end="url(#ha)"/>
 <path d="M204.0,276 C204.0,300 374,290 410,272" class="athin" marker-end="url(#ha)"/>
+<path d="M404,508 L382,508 L382,300 L414,300 L414,274" class="wl" marker-start="url(#hw)" marker-end="url(#hw)"/>
+<line x1="492" y1="514" x2="532" y2="514" class="wd" marker-start="url(#hw)" marker-end="url(#hw)"/>
 <rect x="52" y="640" width="16" height="16" rx="3" class="cell"/>
 <text x="76" y="653" class="s" xml:space="preserve">Tensix core</text>
 <rect x="302" y="640" width="16" height="16" rx="3" class="team"/>
@@ -484,38 +495,46 @@
 <rect x="302" y="664" width="16" height="16" rx="3" class="abox"/>
 <text x="326" y="677" class="s" xml:space="preserve">X280 0: the dispatch kernel</text>
 <rect x="552" y="664" width="16" height="16" rx="3" class="edge"/>
-<text x="576" y="677" class="s" xml:space="preserve">other X280, Eth, PCIe, ARC, SEC</text>
-<line x1="52" y1="696" x2="82" y2="696" class="ad"/>
-<text x="92" y="700" class="s" xml:space="preserve">the two panels: one multicast window each</text>
-<line x1="452" y1="696" x2="482" y2="696" class="al" marker-end="url(#ha)"/>
-<text x="492" y="700" class="s" xml:space="preserve">the record, stored to every core</text>
-<text x="52" y="724" class="s b" xml:space="preserve">NoC0</text>
-<line x1="90" y1="720" x2="108" y2="720" class="ln" marker-end="url(#hl)"/>
-<line x1="118" y1="712" x2="118" y2="728" class="ln" marker-end="url(#hl)"/>
-<text x="152" y="724" class="s b" xml:space="preserve">NoC1</text>
-<line x1="208" y1="720" x2="190" y2="720" class="ln" marker-end="url(#hl)"/>
-<line x1="218" y1="728" x2="218" y2="712" class="ln" marker-end="url(#hl)"/>
-<text x="232" y="724" class="s" xml:space="preserve">directions of data flow</text>
-<line x1="452" y1="720" x2="482" y2="720" class="athin" marker-end="url(#ha)"/>
-<text x="492" y="724" class="s" xml:space="preserve">the leader's acknowledgement (NoC1)</text>
-<text x="52" y="748" class="s m" xml:space="preserve">Measured: 0.77 µs per record with 4 in flight to all 120 cores (landing experiment).</text>
-<text x="52" y="766" class="s m" xml:space="preserve">Columns 7 and 10 are the Tensix columns fused off on the card used here.</text>
-<rect x="52" y="784" width="240" height="100" rx="4" class="box"/>
-<text x="64" y="806" class="b" xml:space="preserve">X280 0: the dispatch kernel</text>
-<text x="64" y="826" class="s m" xml:space="preserve">the host ring, the thread's ring</text>
-<text x="64" y="842" class="s m" xml:space="preserve">streams, job queue, graphs</text>
-<text x="64" y="858" class="s m" xml:space="preserve">up to 16 records in flight</text>
-<text x="64" y="874" class="s m" xml:space="preserve">a deadline per record</text>
-<rect x="304" y="784" width="240" height="100" rx="4" class="box"/>
-<text x="316" y="806" class="b" xml:space="preserve">every Tensix core</text>
-<text x="316" y="826" class="s m" xml:space="preserve">reader (NoC0): the next record</text>
-<text x="316" y="842" class="s m" xml:space="preserve">compute: the segment</text>
-<text x="316" y="858" class="s m" xml:space="preserve">writer (NoC1): reports</text>
-<text x="316" y="874" class="s m" xml:space="preserve">ports, lanes, item queues</text>
-<rect x="556" y="784" width="240" height="100" rx="4" class="box"/>
-<text x="568" y="806" class="b" xml:space="preserve">X280 1: the work cluster</text>
-<text x="568" y="826" class="s m" xml:space="preserve">the program's C thread (kmx)</text>
-<text x="568" y="842" class="s m" xml:space="preserve">kmx_par on its four cores</text>
-<text x="568" y="858" class="s m" xml:space="preserve">issues records on its ring</text>
-<text x="568" y="874" class="s m" xml:space="preserve">planned: X280 2 and 3</text>
+<text x="576" y="677" class="s" xml:space="preserve">Eth, PCIe, ARC, SEC</text>
+<rect x="52" y="688" width="16" height="16" rx="3" class="wbox"/>
+<text x="76" y="701" class="s" xml:space="preserve">X280 1: the program's thread (kmx_main, kmx_par)</text>
+<rect x="552" y="688" width="16" height="16" rx="3" class="plan"/>
+<text x="576" y="701" class="s" xml:space="preserve">X280 2 and 3: not used yet</text>
+<line x1="52" y1="720" x2="82" y2="720" class="wl" marker-start="url(#hw)" marker-end="url(#hw)"/>
+<text x="92" y="724" class="s" xml:space="preserve">its ring: records to X280 0; events and result words back</text>
+<line x1="452" y1="720" x2="482" y2="720" class="wd" marker-start="url(#hw)" marker-end="url(#hw)"/>
+<text x="492" y="724" class="s" xml:space="preserve">its regions in bank D6 (kmx_take, kmx_give)</text>
+<line x1="52" y1="744" x2="82" y2="744" class="ad"/>
+<text x="92" y="748" class="s" xml:space="preserve">the two panels: one multicast window each</text>
+<line x1="452" y1="744" x2="482" y2="744" class="al" marker-end="url(#ha)"/>
+<text x="492" y="748" class="s" xml:space="preserve">the record, stored to every core</text>
+<text x="52" y="772" class="s b" xml:space="preserve">NoC0</text>
+<line x1="90" y1="768" x2="108" y2="768" class="ln" marker-end="url(#hl)"/>
+<line x1="118" y1="760" x2="118" y2="776" class="ln" marker-end="url(#hl)"/>
+<text x="152" y="772" class="s b" xml:space="preserve">NoC1</text>
+<line x1="208" y1="768" x2="190" y2="768" class="ln" marker-end="url(#hl)"/>
+<line x1="218" y1="776" x2="218" y2="760" class="ln" marker-end="url(#hl)"/>
+<text x="232" y="772" class="s" xml:space="preserve">directions of data flow</text>
+<line x1="452" y1="768" x2="482" y2="768" class="athin" marker-end="url(#ha)"/>
+<text x="492" y="772" class="s" xml:space="preserve">the leader's acknowledgement (NoC1)</text>
+<text x="52" y="796" class="s m" xml:space="preserve">Measured: 0.77 µs per record with 4 in flight to all 120 cores (landing experiment).</text>
+<text x="52" y="814" class="s m" xml:space="preserve">Columns 7 and 10 are the Tensix columns fused off on the card used here.</text>
+<rect x="52" y="832" width="240" height="100" rx="4" class="box"/>
+<text x="64" y="854" class="b" xml:space="preserve">X280 0: the dispatch kernel</text>
+<text x="64" y="874" class="s m" xml:space="preserve">the host ring, the thread's ring</text>
+<text x="64" y="890" class="s m" xml:space="preserve">streams, job queue, graphs</text>
+<text x="64" y="906" class="s m" xml:space="preserve">up to 16 records in flight</text>
+<text x="64" y="922" class="s m" xml:space="preserve">a deadline per record</text>
+<rect x="304" y="832" width="240" height="100" rx="4" class="box"/>
+<text x="316" y="854" class="b" xml:space="preserve">every Tensix core</text>
+<text x="316" y="874" class="s m" xml:space="preserve">reader (NoC0): the next record</text>
+<text x="316" y="890" class="s m" xml:space="preserve">compute: the segment</text>
+<text x="316" y="906" class="s m" xml:space="preserve">writer (NoC1): reports</text>
+<text x="316" y="922" class="s m" xml:space="preserve">ports, lanes, item queues</text>
+<rect x="556" y="832" width="240" height="100" rx="4" class="box"/>
+<text x="568" y="854" class="b" xml:space="preserve">X280 1: the work cluster</text>
+<text x="568" y="874" class="s m" xml:space="preserve">plain C, built with kmx</text>
+<text x="568" y="890" class="s m" xml:space="preserve">kmx_issue, kmx_wait</text>
+<text x="568" y="906" class="s m" xml:space="preserve">a host fallback in Python</text>
+<text x="568" y="922" class="s m" xml:space="preserve">one per program today</text>
 </svg>

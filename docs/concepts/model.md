@@ -8,7 +8,12 @@ tags:
 
 # The programming model
 
-Status: design, not yet implemented.
+Status: the breakpoints are implemented in the Tensix runtime and run on one card:
+`emit` and `wait` as ports and reduce ([ports](../reference/ports.md)), a block to a
+row or a column as lane broadcast ([lanes](../reference/lanes.md)), and `at` as items
+that move between cores in a dynamic segment ([dynamic](../reference/dynamic.md)).
+Homes declared and the thread language compiled into segments are planned; today a
+program is written as the segment bodies of its kernels.
 
 A Tensix grid has many cores and a network between them. A program for it has to say
 what runs where, and what travels between cores. Komorebi's model keeps the part of

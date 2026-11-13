@@ -14,9 +14,10 @@ exists today and what is planned; this page lists where each part is described.
 
 Nothing here is released. Host-fed runs on one card are implemented: a program's
 resident kernels on every Tensix core, the dispatch kernel on X280 cluster 0, and the
-Python host API that issues records to teams and waits for their completion. Micro-op
-streams exist as a format, a builder, a check and a simulator on the CPU. Breakpoints
-between cores, deciding on the card and the thread language are planned.
+Python host API that issues records to teams and waits for their completion.
+Crossings between cores (ports and reduce, lane broadcast, dynamic segments), deciding
+on the card (micro-op streams, the job queue and graphs in the dispatch kernel) and
+X280 threads on work cluster 1 are implemented. The thread language is planned.
 
 ## Pick a path
 

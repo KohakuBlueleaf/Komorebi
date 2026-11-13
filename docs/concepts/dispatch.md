@@ -9,7 +9,12 @@ tags:
 
 # The dispatch kernel
 
-Status: design, not yet implemented.
+Status: implemented on X280 cluster 0 of one card: the host ring, slots, deadlines
+and events, micro-op streams and the job queue ([streams](../streams.md)), and graphs
+([graphs](../graphs.md)); a user thread on work cluster 1 issues records through its
+own ring ([X280 threads](../threads.md)). One work cluster per program today;
+clusters 2 and 3 are planned. What is built, in detail, is in the
+[kernel README](../../src/komorebi_native/x280/kernel/README.md).
 
 The Blackhole card has, besides its Tensix grid, four clusters of X280 cores (RISC-V
 with vector units). Komorebi uses one cluster to decide what the grid runs, and the

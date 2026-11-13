@@ -9,8 +9,9 @@ rather than staying in the project.
   from tile lists bit for bit as the reference, with times, power and the V100 beside.
 - [raster/reference](raster/reference/README.md): rasterization in numpy, threaded C++
   and CUDA, with the scenes, timings and pictures the card versions are compared with.
-- [raytrace](raytrace/README.md): the ray tracer on the card, its four traces walked by
-  every Tensix core bit for bit as numpy, with the tiny scene's timings.
+- [raytrace](raytrace/README.md): the ray tracer's whole frame on the card, bit for bit
+  as numpy, with its times on the generated scenes and on the public Sponza and Bistro
+  scenes.
 - [raytrace/reference](raytrace/reference/README.md): ray tracing over a saved box tree
   in numpy, threaded C++ and CUDA, with the treelet cuts, timings and pictures.
 - [dense](dense/README.md): the matrix product on the resident workers, checked against
