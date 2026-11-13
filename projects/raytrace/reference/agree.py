@@ -1,15 +1,7 @@
 """Compares ray tracers: differing pixels, nearest-hit mismatches and ties, image error.
 
-Runs numpy, C++ and CUDA on each scene and compares every implementation found (also
-those in --external folders, see ref/results.py) with numpy, and C++ with CUDA. Where
-numpy is too slow for the whole image (scenes above --numpy-max triangles) it traces
-every STRIDE-th pixel in both directions and the comparison covers those pixels.
-
-    python -m projects.raytrace.reference.agree [--scenes ...] [--external DIR ...]
-        [--numpy-max N] [--fresh]
-
-Results already stored in the data folder are reused (with their timings and power);
---fresh runs everything again.
+Every implementation found (also in --external folders) against numpy, and C++ against
+CUDA; method in this folder's README. Stored results are reused unless --fresh.
 """
 
 import argparse

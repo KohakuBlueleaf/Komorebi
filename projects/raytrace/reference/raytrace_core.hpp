@@ -1,7 +1,5 @@
-// Tree walk, triangle test and shading of the ray tracer, as written in
-// ref/raytrace.py. float32 only, no fused multiply-add (build with -ffp-contract=off /
-// --fmad=false). Walk: one ray, a stack; both child boxes are tested when a node is
-// expanded and the nearer hit child is visited first (child 0 on a tie).
+// Tree walk, triangle test and shading of ref/raytrace.py: float32 only, no fused
+// multiply-add (build with -ffp-contract=off / --fmad=false), one ray with a stack.
 #pragma once
 
 #include <cmath>

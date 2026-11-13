@@ -1,15 +1,7 @@
 """Rays per second, time and power of the C++ (1 thread, all threads) and CUDA tracers.
 
-A frame is the five stages in order: primary rays, shadow rays from the primary hits,
-bounce rays, shadow rays from the bounce hits, shading. Mray/s columns: rays of the
-stage(s) over their time; "shadow" is both shadow stages together; "together" is all
-rays of the frame over the time of all five stages. Each cell is the median of RUNS
-processes x REPS repetitions (after one untimed warm-up per process) with min and max.
-Timed: the tree walks and the shading arithmetic of the whole 1024 x 1024 image. Not
-timed: loading the scene and tree, upload, readback. Seconds per frame and energy come
-from one more run of at least 3 s (see projects/raster/reference/bench.py).
-
-    python -m projects.raytrace.reference.bench [--scenes ...] [--runs 3] [--json FILE]
+A frame is the five stages in order; each cell is the median of RUNS processes x REPS
+repetitions with min and max. What is timed: this folder's README.
 """
 
 import argparse

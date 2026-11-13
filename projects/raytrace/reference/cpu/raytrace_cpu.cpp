@@ -1,6 +1,5 @@
 // Ray tracer on the host CPU: one ray at a time with a stack, threads over pixels.
-// Stages: primary rays, shadow rays, bounce rays, shadow rays at the bounce hits,
-// shade. Usage: raytrace_cpu --scene DIR --tree DIR --out DIR [--threads N] [--reps R]
+// Usage: raytrace_cpu --scene DIR --tree DIR --out DIR [--threads N] [--reps R]
 #include <algorithm>
 #include <cstdio>
 #include <string>

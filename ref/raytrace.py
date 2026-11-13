@@ -1,12 +1,7 @@
 """Ray tracing in numpy, float32: the definition the C++ and CUDA versions match.
 
-Per pixel: a primary ray, a shadow ray to the light from the hit point, one diffuse
-bounce (a ray along normal + a random unit vector, from the hash of the pixel) with its
-own hit shaded the same way, so up to four traces. The tree walk is one ray at a time
-with a stack: pop a node, skip it when its entry distance is beyond the best hit,
-test a leaf's triangle, or test both child boxes and push the hit ones, the nearer on
-top (child 0 on a tie). Triangle test: Moeller-Trumbore, both sides. A hit with an
-equal distance goes to the lower triangle index. float32, no fused multiply-add.
+Per pixel: primary, shadow, one diffuse bounce, its shadow. One ray with a stack, nearer
+child first (0 on a tie); Moeller-Trumbore both sides, equal t to the lower triangle.
 """
 
 import numpy as np

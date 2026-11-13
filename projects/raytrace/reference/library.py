@@ -1,21 +1,7 @@
 """Context row: the same rays through Embree (Python package `embreex`).
 
-A different implementation with its own tree; not part of the reference, and nothing
-else depends on it.
-
-    pip install embreex
-    python -m projects.raytrace.reference.library [--scenes ...] [--runs N]
-        [--json FILE]
-
-The four groups of rays of one frame are taken from this repository's own numpy result
-(primary rays; shadow rays and bounce rays from the primary hits; shadow rays from the
-bounce hits) so that the work is the same. Timed: the calls that trace each group
-(closest hit for primary and bounce rays, any hit with tmax 1 for shadow rays), on 1
-thread, 24 threads and all threads (pieces of rays on a thread pool; Embree releases
-the GIL).
-Not timed: loading the scene, building the Embree scene, preparing the rays. Embree uses
-its own tree and triangle test, so results agree with ours up to ties and rounding; the
-script prints the share of primary rays with the same nearest triangle.
+Not part of the reference: Embree has its own tree and triangle test, so it agrees with
+ours up to ties and rounding. Rays and timing: this folder's README.
 """
 
 import argparse

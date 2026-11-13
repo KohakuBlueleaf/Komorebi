@@ -1,10 +1,7 @@
 """A binary box tree over triangles (8-word nodes) and its cut into treelets.
 
-Builder: top-down, one triangle per leaf, split at the median of the centroids along the
-longest axis of the centroid box (stable sort, left half rounded up), all nodes of a
-level at once. Nodes are numbered breadth first; the two children of a node have
-consecutive numbers. Node (8 uint32): box min x y z, box max x y z (float32 bits),
-child 0, child 1; a leaf holds 0x80000000 | leaf index in both child words.
+Top-down, one triangle per leaf, median split on the longest axis, breadth first. Node:
+box min, max (float32 bits), child 0, 1; a leaf: 0x80000000 | leaf in both child words.
 """
 
 from pathlib import Path
@@ -111,12 +108,10 @@ def levels_of(tree):
 
 
 def cut_treelets(tree, max_bytes):
-    """Cuts the tree into treelets of at most max_bytes and a top tree over them.
-
-    Returns a dict: treelet_root, node_treelet, treelet_node_off, treelet_leaf_first,
-    treelet_leaf_off, treelet_nodes (local numbering), treelet_tris, top_nodes (children
-    are top node numbers or 0x40000000 | treelet), top_root (the word to start from).
-    """
+    """Cuts the tree into treelets of at most max_bytes and a top tree over them: dict
+    of treelet_root, node_treelet, treelet_node_off, treelet_leaf_first/off,
+    treelet_nodes (local), treelet_tris, top_nodes (child: top node or 0x40000000 |
+    treelet) and top_root (the word to start from)."""
     nodes, n_nodes = tree["nodes"], len(tree["nodes"])
     levels = levels_of(tree)
     size = np.zeros(n_nodes, dtype=np.int64)
