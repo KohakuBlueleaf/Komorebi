@@ -116,14 +116,15 @@ def test_port_slots_broadcast_areas_and_the_port_a_wait_named():
     broadcast = (
         CONSTANTS["KM_CONTROL_BROADCAST"] + CONSTANTS["KM_BROADCAST_BYTES"]
     ) // 4  # broadcast 1
-    block[broadcast + CONSTANTS["KM_BROADCAST_VALID"] // 4] = 5 << 16 | 4
+    valid = broadcast + CONSTANTS["KM_BROADCAST_VALID"] // 4
+    block[valid], block[valid + CONSTANTS["KM_BROADCAST_WORD"]] = 5 << 16 | 4, 77
     gave = broadcast + CONSTANTS["KM_BROADCAST_GAVE"] // 4
     block[gave : gave + 3] = [CONSTANTS["kWhereBroadcastValid"] | 1 << 8, 2, 5]
     stats = broadcast + CONSTANTS["KM_BROADCAST_STATS"] // 4
     block[stats : stats + 3] = [4, 10, 1]
-    block[broadcast + CONSTANTS["KM_BROADCAST_DONE"] // 4 + 4 * 2] = (
-        5 << 16 | 3
-    )  # rank 2
+    rank_2 = broadcast + CONSTANTS["KM_BROADCAST_DONE"] // 4 + 4 * 2
+    block[rank_2] = 5 << 16 | 3
+    block[rank_2 + CONSTANTS["KM_BROADCAST_ARRIVED"]] = 5 << 16 | 4
     ports = device_state.ports(block)
     assert len(ports) == CONSTANTS["KM_PORTS"] and ports[3] == {"count": 7, "want": 9}
     broadcasts = device_state.broadcasts(block)
@@ -132,6 +133,7 @@ def test_port_slots_broadcast_areas_and_the_port_a_wait_named():
         broadcasts[1]["valid"] == 5 << 16 | 4
         and broadcasts[1]["done"][1] == 5 << 16 | 3
     )
+    assert broadcasts[1]["word"] == 77 and broadcasts[1]["arrived"][1] == 5 << 16 | 4
     assert broadcasts[1]["gave_up"] == {
         "where": "broadcastvalid",
         "broadcast": 1,

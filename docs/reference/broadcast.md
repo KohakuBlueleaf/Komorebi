@@ -1,6 +1,6 @@
 ---
 title: Broadcast
-summary: One sender hands a sequence of blocks to the other cores of a row or a column of a group, with a window of blocks in flight; the device calls, the host layout, the rules a program follows, and what a stalled core leaves.
+summary: One sender hands a sequence of blocks, and with each one a word if it wants, to the other cores of a row or a column of a group, with a window of blocks in flight; a broadcast without a buffer casts words alone; the device calls, the host layout, the rules a program follows, and what a stalled core leaves.
 tags:
   - reference
   - device
@@ -11,7 +11,9 @@ tags:
 Status: implemented for the persistent-kernel runtime; run on one card through a `Session` and
 `Run`, under the dispatcher, and under the test feeder
 ([03_broadcast](../../examples/03_broadcast/): `python broadcast.py --rect 0,0,12,10
---blocks 16 --pages 4 --window 2 --jobs 8`).
+--blocks 16 --pages 4 --window 2 --jobs 8`). A cast that carries a word, with a block or
+alone: [15_leader](../../examples/15_leader/) (`python leader.py --rect 0,0,12,10
+--casts 25000 --jobs 40`).
 
 A broadcast is a run of cores of one group in one grid column, or in one grid row inside one
 panel. One core of the broadcast, the sender, reads a block (`pages` pages) from DRAM into
@@ -20,6 +22,11 @@ other core of the broadcast, then writes a VALID marker on each. Each receiver h
 block to its compute kernel and, when compute has popped it, writes its own marker in the
 sender's DONE-BY table. The sender writes a slot again only when every receiver has
 popped the block that was there. The sender's own compute takes every block too.
+
+A cast may also carry one 32-bit word, which every receiver takes when it arrives: the
+leader of a group decides from data it has seen what the group does next and tells it
+in the same cast. A broadcast without a buffer casts words alone: no tiles, no
+circular buffer, no compute.
 
 A program has up to two broadcasts at once (broadcast id 0 and 1), each with its own buffer,
 window, VALID word and DONE-BY table: a matrix product sends A blocks along rows and
@@ -65,6 +72,19 @@ if (broadcast.included()) {
 }
 ```
 
+A cast with a word, and the word on every core of the broadcast:
+
+```c++
+if (broadcast.sender()) {
+    // reserve and read the block as above (none on a broadcast without a buffer)
+    if (!broadcast.cast(block, word)) return;  // the block and the word, VALID
+} else if (!broadcast.arrive(block)) {         // VALID >= block + 1, and its word
+    return;
+}
+uint32_t taken = broadcast.word();  // the word of this block, on the sender too;
+                                    // 0 when the block was cast without one
+```
+
 ```c++
 // Compute:
 km::broadcast_receive(compute, cb, pages);  // a block's pages, read by index 0 .. pages - 1
@@ -75,19 +95,54 @@ km::broadcast_end(compute, cb, pages, window, blocks);  // after the last block:
 Every call times out at the run's wait limit and checks the tile's stop flag. A call
 that returns false or 0 has recorded the give-up; the kernel leaves the body.
 
+| Call | What it does |
+|---|---|
+| `cast(block)` | as before: the block, then VALID; the block carries no word |
+| `cast(block, word)` | the same, and `word` rides in the VALID write. Without a buffer: the word alone, no `reserve` before it |
+| `arrive(block)` | waits for VALID >= `block + 1`; takes the block's word when it carries one |
+| `word()` | the word of the block cast or arrived last; 0 when that block carried none |
+
+## A word
+
+The VALID marker and the word go in one 16-byte multicast write into the receivers'
+VALID slot: the marker, the word, and whether the cast carries one. A receiver reads the
+three in one poll and takes them only when the marker is the same before and after, so
+a word is never seen without its block. A receiver that took a word marks it in the
+sender's area (a 4-byte write beside its DONE-BY word), and the sender writes the next
+VALID only after every receiver has marked the last word: a word is never overwritten
+before every receiver took it, whatever the window. A cast without a word adds no such
+wait, so a program that casts no words runs exactly as before.
+
+Measured on one p150a (AICLK 1,350 MHz), 10^6 casts of a word alone, every word of every
+core checked: 0.54 µs a cast along a row of 6, 0.60 µs down a column of 10 (9
+receivers), 0.60 µs with twelve columns casting at once; with a tile (2 KiB) and a word
+along a row, 1.31 µs. No word was wrong or late in 1.5 × 10^8 checks
+([15_leader](../../examples/15_leader/)).
+
+## A broadcast without a buffer
+
+`window` and `pages` 0 in the broadcast words (`(broadcast, 0, 0, 0)` on the host) make a
+broadcast that casts words alone. Its casts are `cast(block, word)` with no `reserve`;
+`cast(block)` and `reserve` give up (`broadcast_begin`). Receivers `arrive` and read
+`word()`; nothing reaches compute, and the program needs no circular buffer for it.
+`finish` is still called on every core. Each cast waits until every receiver took the
+last word, so one cast costs a round trip to the farthest receiver.
+
 ## Rules for a program
 
 1. Blocks of a command go in order, block 0 to the last, on every core of the broadcast,
-   and compute takes and pops every one of them, then calls `broadcast_end`.
+   and compute takes and pops every one of them, then calls `broadcast_end` (on a
+   broadcast with a buffer).
 2. The broadcast buffer is a circular buffer of exactly `window * pages` pages, used only through
    these calls. `finish` pads it to whole windows, so every command starts at slot 0
    and slot addresses are the same on every core.
 3. A command with broadcasts names exactly the group the broadcast words were built for, and
    carries `KM_FLAG_EXCLUSIVE`: overlapping groups are never in flight together.
-4. Window (`window`): 1 to 8. Receivers per broadcast: up to 15. Blocks per command: 0 to
-   32,767, with no limit on the pages they carry in all; the buffer, `window * pages`
-   pages, holds at most 65,535. A broadcast that multicasts no block in a command still calls `finish` on every
-   core.
+4. Window (`window`): 1 to 8, or 0 with `pages` 0 for a broadcast without a buffer.
+   Receivers per broadcast: up to 15. Blocks (casts) per command: 0 to 32,767, with no
+   limit on the pages they carry in all; the buffer, `window * pages` pages, holds at
+   most 65,535. A word is 32 bits, one per cast. A broadcast that multicasts no block in
+   a command still calls `finish` on every core.
 5. A core reports only after its compute has popped every block (`finish` checks it
    for its own kernel).
 
@@ -99,7 +154,7 @@ that returns false or 0 has recorded the give-up; the kernel leaves the body.
 |---|---|
 | `broadcasts(grid, grid_panels, rect, along, noc)` | the broadcasts of a rectangle (x0, y0, columns, rows), `along` "column" or "row", cores in rank order (rank 0 sends) |
 | `broadcast_rect(broadcast, noc0, noc_xy, noc)` | the multicast corners of the receivers; rejects a broadcast whose cores are not consecutive in NoC0 |
-| `broadcast_args(grid, panels, group, rect, along, noc, noc0, noc_xy, (broadcast, cb, window, pages))` | per core of the group, the 11 words of `km::BroadcastArgs` (rank 0xFF outside the rectangle) |
+| `broadcast_args(grid, panels, group, rect, along, noc, noc0, noc_xy, (broadcast, cb, window, pages))` | per core of the group, the 11 words of `km::BroadcastArgs` (rank 0xFF outside the rectangle); `(broadcast, 0, 0, 0)` for a broadcast without a buffer |
 | `blackhole_noc0_x(harvest_mask)` | NoC0 x of each logical column, from the chip's Tensix harvesting mask |
 | `panels(noc0_x)` | runs of columns with consecutive NoC0 x |
 
@@ -108,9 +163,9 @@ The words go into the reader's or writer's program arguments, in the field order
 
 ## When a core stalls
 
-A receiver's markers are sent from inside its broadcast calls (`arrive`, `finish`),
-so a receiver whose data-movement kernel stops calling them stops sending markers, even for
-blocks its compute pops afterwards. The sender's wait for its marker
+A receiver's markers, and its marks of the words it took, are sent from inside its
+broadcast calls (`arrive`, `finish`), so a receiver whose data-movement kernel stops
+calling them stops sending markers, even for blocks its compute pops afterwards. The sender's wait for its marker
 passes the wait limit: it commands the give-up and stops its tile; the other cores of
 the broadcast give up waiting for the next VALID. Each core's broadcast area keeps the first
 give-up: where (`broadcast_done`: the sender waiting for markers or for its own NoC barriers,
@@ -121,8 +176,11 @@ reset is needed.
 
 ## Control block
 
-Two broadcast areas of 0x140 bytes from `KM_CONTROL_BROADCAST` (0xA00), in 16-byte slots: VALID,
-the source slot of this core's outgoing marker, the first give-up (where | broadcast << 8,
-block, sequence number), statistics (blocks, wait cycles), and the DONE-BY words of
-ranks 1 to 15. Markers carry the command's sequence number in the high half, so a word
-left by an earlier command never counts.
+Two broadcast areas of 0x140 bytes from `KM_CONTROL_BROADCAST` (0xA00), in 16-byte slots: VALID
+(the marker, the word at `KM_BROADCAST_WORD`, 1 at `KM_BROADCAST_CARRIES` when the cast
+carries one), the source slot of this core's outgoing writes, the first give-up (where |
+broadcast << 8, block, sequence number), statistics (blocks, wait cycles), and the
+DONE-BY slots of ranks 1 to 15 (the DONE-BY word, and at `KM_BROADCAST_ARRIVED` the
+marker of the blocks whose word the rank took). Markers carry the command's sequence
+number in the high half, so a word left by an earlier command never counts. The host's
+`state.broadcasts` shows them as `valid`, `word`, `done` and `arrived`.

@@ -125,5 +125,6 @@ nav:
       - examples/11_movement/README.md
       - examples/12_overlays/README.md
       - examples/13_thread_commands/README.md
+      - examples/15_leader/README.md
   - Releases:
       - releases/0.1.0.md

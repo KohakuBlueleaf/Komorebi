@@ -122,9 +122,9 @@ def ports(block, abi_headers=None):
 
 
 def broadcasts(block, abi_headers=None):
-    """A core's broadcast areas from its control block words, by broadcast: the VALID
-    word, the first give-up (where, broadcast, block, sequence; None if none), the
-    blocks delivered, the wait cycles and the DONE-BY words of ranks 1 to 15."""
+    """A core's broadcast areas from its control block words, by broadcast: VALID and
+    its word, the first give-up (where, broadcast, block, sequence; None if none), the
+    blocks, the wait cycles, ranks 1 to 15's DONE-BY words and marks of words taken."""
     abi_headers = abi_headers or abi.headers()
     wheres = {abi_headers[f"kWhere{where}"]: where.lower() for where in WHERES}
     out = []
@@ -143,13 +143,15 @@ def broadcasts(block, abi_headers=None):
             int(word)
             for word in block[stats : stats + abi_headers["KM_BROADCAST_STATS_WORDS"]]
         ]
+        valid = area + abi_headers["KM_BROADCAST_VALID"] // 4
         done, step = (
             area + abi_headers["KM_BROADCAST_DONE"] // 4,
             abi_headers["KM_BROADCAST_DONE_STRIDE"] // 4,
         )
         out.append(
             {
-                "valid": int(block[area + abi_headers["KM_BROADCAST_VALID"] // 4]),
+                "valid": int(block[valid]),
+                "word": int(block[valid + abi_headers["KM_BROADCAST_WORD"]]),
                 "gave_up": (
                     {
                         "where": wheres.get(gave[0] & 0xFF, gave[0] & 0xFF),
@@ -164,6 +166,10 @@ def broadcasts(block, abi_headers=None):
                 "wait_cycles": stats[1] | stats[2] << 32,
                 "done": [
                     int(block[done + step * rank])
+                    for rank in range(1, abi_headers["KM_BROADCAST_RANKS"])
+                ],
+                "arrived": [
+                    int(block[done + step * rank + abi_headers["KM_BROADCAST_ARRIVED"]])
                     for rank in range(1, abi_headers["KM_BROADCAST_RANKS"])
                 ],
             }

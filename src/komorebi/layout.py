@@ -282,10 +282,12 @@ def broadcast_rect(broadcast, noc0, noc_xy, noc):
 def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buffer):
     """Each core's broadcast arguments by core index (km::BroadcastArgs fields).
 
-    buffer = (broadcast id, circular buffer index, window B, pages P). The rectangle
-    must lie in the group; cores outside it get rank BROADCAST_NONE."""
+    buffer = (broadcast id, circular buffer index, window B, pages P), B = P = 0 for
+    words alone. The rectangle lies in the group; others get rank BROADCAST_NONE."""
     broadcast_id, cb, window, pages = buffer
-    if not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1:
+    if (window, pages) != (0, 0) and (
+        not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1
+    ):
         raise ValueError(f"window {window} or pages {pages} out of range")
     columns = grid[0]
     workers = set(group.indices)

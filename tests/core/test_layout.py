@@ -166,6 +166,17 @@ def test_broadcast_args_give_ranks_inside_the_rectangle_and_none_outside():
         )
 
 
+def test_a_broadcast_without_a_buffer_has_window_and_pages_zero_and_no_other():
+    noc0 = {(x, y): (NOC0_X[x], y + 2) for x, y in core_order(GRID)}
+    common = (GRID, PANELS, Group(12, 24), (0, 1, 2, 2), "column", 0, noc0, noc0)
+    args = broadcast_args(*common, (0, 0, 0, 0))
+    assert args[12]["rank"] == 0 and args[24]["rank"] == 1
+    assert (args[24]["window"], args[24]["pages"]) == (0, 0)
+    for window, pages in ((0, 1), (1, 0)):
+        with pytest.raises(ValueError, match="out of range"):
+            broadcast_args(*common, (0, 0, window, pages))
+
+
 def test_nocs_by_core_and_the_panels_from_their_noc0_x():
     grid = (12, 2)
     order = core_order(grid)

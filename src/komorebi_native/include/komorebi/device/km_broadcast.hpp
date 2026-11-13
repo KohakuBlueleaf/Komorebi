@@ -1,5 +1,5 @@
 // Broadcast: a sender multicasts block `block` into slot `block % window` of every
-// receiver's buffer; a receiver marks it in the sender's DONE-BY table once popped.
+// receiver (with a word, or a word alone); a receiver marks it in the DONE-BY table.
 #pragma once
 
 #include <stdint.h>
@@ -31,7 +31,7 @@ namespace km {
         uint32_t noc;        // the broadcast's NoC; the whole group runs it on that NoC
         uint32_t cb;         // broadcast buffer: window * pages pages
         uint32_t window;     // B: blocks in flight, 1 to kBroadcastWindowMax
-        uint32_t pages;      // P: pages per block
+        uint32_t pages;      // P: pages per block; window and pages 0: no buffer
     };
 
     constexpr uint32_t kBroadcastArgs = sizeof(BroadcastArgs) / 4;
@@ -97,10 +97,19 @@ namespace km {
             return block_count_;
         }
 
+        // The word of the block cast or arrived last, 0 if that block carried none.
+        uint32_t word() const {
+            return received_;
+        }
+
         // Sender: timed wait until its compute freed slot `block % window`; returns the
         // slot's L1 address (the same on every core of the group), 0 after a give-up.
         uint32_t reserve(uint32_t block) {
             if (!in_order(block)) {
+                return 0;
+            }
+            if (args_.pages == 0) {
+                fail(kGaveBadBroadcast, kWhereBroadcastBegin, block);
                 return 0;
             }
             if (!wait_free(args_.pages, block)) {
@@ -121,56 +130,36 @@ namespace km {
         // Sender, `block` filled: timed wait for every receiver to be done with block
         // `block - window`, multicasts it, barrier, VALID, push to compute.
         bool cast(uint32_t block) {
-            if (!reserved_) {
-                fail(kGaveBadBroadcast, kWhereBroadcastBegin, block);
-                return false;
-            }
-            if (!in_order(block)) {
-                return false;
-            }
-            if (!flushed(
-                kFlushReads, kWhereBroadcastDone, block
-            )) {  // the block's reads have landed
-                return false;
-            }
-            if (block >= args_.window && !wait_done(block - args_.window + 1, block)) {
-                return false;
-            }
-            if (args_.receivers != 0) {
-                const uint32_t source = slot(block);
-                noc_async_write_multicast(
-                    source, multicast_address(source), block_bytes_, args_.receivers
-                );
-                if (!flushed(
-                    kFlushWrites, kWhereBroadcastDone, block
-                )) {  // the block landed before its VALID
-                    return false;
-                }
-                *area_word(KM_BROADCAST_OUT) = broadcast_marker(sequence_, block + 1);
-                noc_semaphore_set_multicast(
-                    area_ + KM_BROADCAST_OUT,
-                    multicast_address(area_ + KM_BROADCAST_VALID),
-                    args_.receivers
-                );
-            }
-            cb_push_back(args_.cb, args_.pages);
-            reserved_ = false;
-            block_count_++;
-            return true;
+            return send(block, 0, false);
+        }
+
+        // The same, and every receiver takes `word` in arrive(block). Without a buffer
+        // the word goes alone: no reserve. Each receiver took the last word first.
+        bool cast(uint32_t block, uint32_t word) {
+            return send(block, word, true);
         }
 
         // Receiver: waits (with a timeout) for VALID >= `block + 1`, marking the blocks
-        // its compute popped meanwhile, then pushes the block to compute.
+        // its compute popped meanwhile, takes the block's word, pushes it to compute.
         bool arrive(uint32_t block) {
             if (!in_order(block)) {
                 return false;
             }
             volatile tt_l1_ptr uint32_t* valid = area_word(KM_BROADCAST_VALID);
+            uint32_t marker = 0;
+            uint32_t word = 0;
+            uint32_t carries = 0;
             const uint64_t started = wall64();
             const uint32_t code = core_.poll(
                 [&] {
                     marker_freed();
-                    return broadcast_reached(*valid, sequence_, block + 1);
+                    marker = valid[0];
+                    if (!broadcast_reached(marker, sequence_, block + 1)) {
+                        return false;
+                    }
+                    word = valid[KM_BROADCAST_WORD];
+                    carries = valid[KM_BROADCAST_CARRIES];
+                    return valid[0] == marker;  // the three words of one VALID
                 },
                 core_.args().wait_limit
             );
@@ -178,6 +167,18 @@ namespace km {
             if (code != kGaveNone) {
                 fail(code, kWhereBroadcastValid, block);
                 return false;
+            }
+            // A block with a word stays the last VALID until every receiver took it.
+            received_ = 0;
+            if (carries != 0 && (marker & 0xFFFFu) == ((block + 1) & 0xFFFFu)) {
+                received_ = word;
+                if (!took_word(block)) {
+                    return false;
+                }
+            }
+            if (args_.pages == 0) {
+                block_count_++;
+                return true;
             }
             if (!wait_free(args_.pages, block)) {
                 return false;
@@ -206,6 +207,123 @@ namespace km {
                     KM_BROADCAST_VALID
                 ) = 0;  // every VALID of this command has arrived
             }
+            if (args_.pages != 0 && !drain()) {
+                return false;
+            }
+            if (
+                sender() && block_count_ != 0
+            ) {  // no block multicast: no receiver markers
+                if (
+                    word_blocks_ != 0 &&
+                    !wait_done(word_blocks_, block_count_, KM_BROADCAST_ARRIVED)
+                ) {
+                    return false;
+                }
+                if (args_.pages != 0 && !wait_done(block_count_, block_count_)) {
+                    return false;
+                }
+                for (uint32_t receiver = 1; receiver <= args_.receivers; receiver++) {
+                    volatile tt_l1_ptr uint32_t* done = (
+                        area_word(KM_BROADCAST_DONE + 16 * receiver)
+                    );
+                    done[0] = 0;
+                    done[KM_BROADCAST_ARRIVED] = 0;
+                }
+            }
+            if (!flushed(kFlushWrites, kWhereBroadcastFree, block_count_)) {
+                return false;
+            }
+            add_sat(area_word(KM_BROADCAST_STATS), block_count_);
+            return true;
+        }
+
+    private:
+        // Sender: cast(block) and cast(block, word); `carries` says which.
+        bool send(uint32_t block, uint32_t word, bool carries) {
+            const bool tiles = args_.pages != 0;
+            if (tiles ? !reserved_ : !carries) {
+                fail(kGaveBadBroadcast, kWhereBroadcastBegin, block);
+                return false;
+            }
+            if (!in_order(block)) {
+                return false;
+            }
+            if (tiles) {
+                if (!flushed(
+                    kFlushReads, kWhereBroadcastDone, block
+                )) {  // the block's reads have landed
+                    return false;
+                }
+                if (
+                    block >= args_.window && !wait_done(block - args_.window + 1, block)
+                ) {
+                    return false;
+                }
+            }
+            if (args_.receivers != 0) {
+                if (tiles) {
+                    const uint32_t source = slot(block);
+                    noc_async_write_multicast(
+                        source, multicast_address(source), block_bytes_, args_.receivers
+                    );
+                }
+                if (!flushed(
+                    tiles ? kFlushWrites : kFlushSent, kWhereBroadcastDone, block
+                )) {  // the block landed before its VALID; the last VALID left
+                    return false;
+                }
+                if (word_blocks_ != 0) {  // every receiver took the last word
+                    if (!wait_done(word_blocks_, block, KM_BROADCAST_ARRIVED)) {
+                        return false;
+                    }
+                    word_blocks_ = 0;
+                }
+                volatile tt_l1_ptr uint32_t* out = area_word(KM_BROADCAST_OUT);
+                out[KM_BROADCAST_WORD] = word;
+                out[KM_BROADCAST_CARRIES] = carries ? 1 : 0;
+                out[0] = broadcast_marker(sequence_, block + 1);
+                noc_async_write_multicast(
+                    area_ + KM_BROADCAST_OUT,
+                    multicast_address(area_ + KM_BROADCAST_VALID),
+                    16,
+                    args_.receivers
+                );
+                if (carries) {
+                    word_blocks_ = block + 1;
+                }
+            }
+            if (tiles) {
+                cb_push_back(args_.cb, args_.pages);
+                reserved_ = false;
+            }
+            received_ = carries ? word : 0;
+            block_count_++;
+            return true;
+        }
+
+        // Receiver: marks in the sender's area that it took the word of `block`.
+        bool took_word(uint32_t block) {
+            if (!flushed(
+                kFlushSent, kWhereBroadcastValid, block
+            )) {  // the last marker has left KM_BROADCAST_OUT
+                return false;
+            }
+            const uint32_t offset = 4 * KM_BROADCAST_ARRIVED;
+            *area_word(KM_BROADCAST_OUT + offset) = broadcast_marker(
+                sequence_, block + 1
+            );
+            noc_async_write(
+                area_ + KM_BROADCAST_OUT + offset,
+                core_.core_noc(
+                    args_.sender, area_ + KM_BROADCAST_DONE + 16 * args_.rank + offset
+                ),
+                4
+            );
+            return true;
+        }
+
+        // finish() with a buffer: compute popped every block, then the padding.
+        bool drain() {
             const uint32_t code = core_.poll(
                 [&] {
                     marker_freed();
@@ -233,24 +351,9 @@ namespace km {
                 cb_reserve_back(args_.cb, padding);  // free: every block was popped
                 cb_push_back(args_.cb, padding);
             }
-            if (
-                sender() && block_count_ != 0
-            ) {  // no block multicast: no receiver markers
-                if (!wait_done(block_count_, block_count_)) {
-                    return false;
-                }
-                for (uint32_t receiver = 1; receiver <= args_.receivers; receiver++) {
-                    *area_word(KM_BROADCAST_DONE + 16 * receiver) = 0;
-                }
-            }
-            if (!flushed(kFlushWrites, kWhereBroadcastFree, block_count_)) {
-                return false;
-            }
-            add_sat(area_word(KM_BROADCAST_STATS), block_count_);
             return true;
         }
 
-    private:
         Broadcast(
             const Core& core, uint32_t word, const km_command_t& command, uint32_t arg0
         ) :
@@ -277,6 +380,16 @@ namespace km {
                 return false;
             }
             if (!included()) {
+                return true;
+            }
+            if (args_.window == 0 && args_.pages == 0) {  // no buffer: words alone
+                if (
+                    args_.receivers >= KM_BROADCAST_RANKS ||
+                    args_.rank > args_.receivers || args_.noc != noc_index
+                ) {
+                    fail(kGaveBadBroadcast, kWhereBroadcastBegin, 0);
+                    return false;
+                }
                 return true;
             }
             const LocalCBInterface& circular_buffer = get_local_cb_interface(args_.cb);
@@ -343,7 +456,7 @@ namespace km {
 
         // Receiver: a DONE marker to the sender when compute popped more blocks.
         void marker_freed() {
-            if (sender()) {
+            if (sender() || args_.pages == 0) {
                 return;
             }
             const uint32_t popped_blocks = popped();
@@ -366,8 +479,9 @@ namespace km {
             marked_ = popped_blocks;
         }
 
-        // Sender: waits (with a timeout) until every receiver's DONE counts `blocks`.
-        bool wait_done(uint32_t blocks, uint32_t block) {
+        // Sender: waits (with a timeout) until every receiver's DONE word (or the word
+        // `word` of its slot) counts `blocks`.
+        bool wait_done(uint32_t blocks, uint32_t block, uint32_t word = 0) {
             uint32_t receiver = 1;
             const uint64_t started = wall64();
             const uint32_t code = core_.poll(
@@ -375,7 +489,7 @@ namespace km {
                     while (
                         receiver <= args_.receivers &&
                         broadcast_reached(
-                            *area_word(KM_BROADCAST_DONE + 16 * receiver),
+                            area_word(KM_BROADCAST_DONE + 16 * receiver)[word],
                             sequence_,
                             blocks
                         )
@@ -490,6 +604,8 @@ namespace km {
         uint32_t block_count_ = 0;
         bool reserved_ = false;
         uint32_t marked_ = 0;
+        uint32_t word_blocks_ = 0;  // sender: blocks up to the last word cast, 0: taken
+        uint32_t received_ = 0;
         bool ok_ = false;
     };
 

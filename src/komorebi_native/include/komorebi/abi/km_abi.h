@@ -112,6 +112,11 @@ KM_STATIC_ASSERT(KM_CONTROL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte s
 #define KM_BROADCAST_GAVE_WORDS 3u   /* words of the KM_BROADCAST_GAVE slot in use */
 #define KM_BROADCAST_STATS_WORDS 3u  /* words of the KM_BROADCAST_STATS slot in use */
 #define KM_BROADCAST_DONE_STRIDE 16u /* bytes between two ranks' DONE-BY words */
+/* word offsets: in VALID (one 16-byte write) the cast's word and 1 if it carries one */
+#define KM_BROADCAST_WORD 1u
+#define KM_BROADCAST_CARRIES 2u
+/* in rank r's DONE-BY slot: the marker of the blocks whose word it took */
+#define KM_BROADCAST_ARRIVED 1u
 
 KM_STATIC_ASSERT(
     KM_CONTROL_BROADCAST == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0x80u, "ports room"
@@ -130,6 +135,11 @@ KM_STATIC_ASSERT(
 );
 KM_STATIC_ASSERT(
     KM_CONTROL_BROADCAST % 16u == 0 && KM_BROADCAST_BYTES % 16u == 0, "16-byte slots"
+);
+KM_STATIC_ASSERT(
+    KM_BROADCAST_CARRIES * 4u < KM_BROADCAST_OUT - KM_BROADCAST_VALID &&
+        KM_BROADCAST_ARRIVED * 4u < KM_BROADCAST_DONE_STRIDE,
+    "word slots"
 );
 
 /* routed messages: queue counters, idle words, status */
