@@ -1,0 +1,112 @@
+{
+ "shape": "sq16384",
+ "m": 16384,
+ "k": 16384,
+ "n": 16384,
+ "plan": {
+  "mt": 512,
+  "kt": 512,
+  "nt": 512,
+  "rows": 10,
+  "cols": 12,
+  "pcm": 52,
+  "pcn": 44,
+  "bm": 4,
+  "bn": 44,
+  "kb": 2,
+  "sh": 1,
+  "sw": 4,
+  "wa": 2,
+  "ww": 2,
+  "layout": "2d",
+  "l1": 1131520,
+  "form": "grid",
+  "nk": 256,
+  "nbh": 13,
+  "nbw": 1,
+  "rect": [
+   0,
+   0,
+   12,
+   10
+  ]
+ },
+ "upload_s": 15.567,
+ "x280_mhz": 1000,
+ "deadline_s": 1.369,
+ "profile_mhz": 1350,
+ "load_us": null,
+ "single_us": {
+  "median": 75877.04,
+  "min": 74053.78
+ },
+ "loop": {
+  "reps": 53,
+  "batch": 53,
+  "seconds": 4.453,
+  "wall_seconds": 4.453,
+  "us_per_call": 84018.004,
+  "record_us_median": 87289.7,
+  "mean_w": 132.89478703098348,
+  "peak_w": 174.0,
+  "open_w": 62.80002006551289,
+  "joules_per_call": 11.165954172441333,
+  "aiclk_mhz": [
+   1125,
+   1220.4,
+   1350
+  ]
+ },
+ "tflops": 104.69295393173111,
+ "cut_us_per_call": {
+  "lanes_only": 86680.278,
+  "product_only": 32900.052
+ },
+ "run": {
+  "cores": 120,
+  "kernel": "none",
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "gave_up": [],
+  "lane_wait_cycles_max": [
+   8810251233,
+   8744492571
+  ],
+  "lane_gave_up": []
+ },
+ "readback_s": 3.601,
+ "profile": {
+  "slowest_core": 117,
+  "slowest_us": 74111.836,
+  "mean_busy_over_slowest": 0.997,
+  "shares_of_slowest": {
+   "read_A_dram": 0.0,
+   "row_lane": 0.998,
+   "read_W_dram": 0.794,
+   "column_lane": 0.196,
+   "writer_waits_for_output": 0.001,
+   "write": 0.007,
+   "unpack_waits_for_A": 0.037,
+   "unpack_waits_for_W": 0.516,
+   "unpack_waits_for_partials": 0.025,
+   "matrix_unit": 0.351,
+   "pack_waits_for_space": 0.118,
+   "pack": 0.29
+  }
+ },
+ "check": {
+  "max_rel": 0.0055574524070737255,
+  "rms_rel": 0.00396046160629658,
+  "rows": 256,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "12.67",
+  "9.18",
+  "7.45"
+ ]
+}

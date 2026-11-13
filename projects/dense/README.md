@@ -135,12 +135,12 @@ and sum is exact, and the check is bit for bit.
 
 ## Results
 
-Measured on 2026-11-13 between 11:45 and 12:30 on one p150a (card clock nominal 1,350
-MHz, X280 at the session default of 1,000 MHz), ours at commit "Projects: the matrix
-product's lane form", Kohaku-TT at ac81ff2; for each preset ours first, then
-Kohaku-TT's three routes, one after the other in the same session. Host load average
-(1 min) 3.0 to 10.6 on a shared 96-thread host. HiFi2 on bf16 with fp32 accumulation;
-every row's check passed (relative RMS 3.96e-3 to 3.98e-3, the same on both sides).
+Measured on 2026-11-13 between 11:45 and 12:50 on one p150a (card clock nominal 1,350
+MHz, X280 at the session default of 1,000 MHz), ours at the commits of this directory
+of that day, Kohaku-TT at ac81ff2; for each preset ours first, then Kohaku-TT's three
+routes, one after the other in the same session. Host load average (1 min) 3.0 to 12.7
+on a shared 96-thread host. HiFi2 on bf16 with fp32 accumulation; every row's check
+passed (relative RMS 3.96e-3 to 3.98e-3, the same on both sides).
 
 - Ours: `python projects/dense/bench.py --shape <preset> [--form grid]`: records back
   to back for about four seconds in one run, time per call from the first issue to
@@ -154,7 +154,7 @@ every row's check passed (relative RMS 3.96e-3 to 3.98e-3, the same on both side
 - Power: mean whole-card power over the loop; AICLK sampled every 20 ms (min / mean).
   Only the product is timed: uploads and read-back are not part of a call.
 - The runs' JSON lines are in `results/` (`<preset>-ours.json`, `<preset>-ktt-<route>.json`,
-  `<preset>-gpu.json`).
+  `<preset>-gpu.json`); 16,384 cubed checks 8 sampled row tiles (256 rows).
 
 | Preset | M x K x N | Ours: form, us per call | W, MHz | Kohaku-TT best: route, us | W, MHz | V100 fp16, us |
 |---|---|---|---|---|---|---|
@@ -162,21 +162,58 @@ every row's check passed (relative RMS 3.96e-3 to 3.98e-3, the same on both side
 | `lin384` | 16,384 x 384 x 384 | resident, 61.2 | 130 W, 1225 / 1296 | gemm, 94.1 (auto 101.7, own 138.4) | 116 W, 1343 / 1348 | 83.3 (291 W) |
 | `lin1024` | 16,384 x 1024 x 1024 | rows, 393.5 | 128 W, 1168 / 1255 | gemm, 389.9 (auto 778.0, own 778.0) | 136 W, 1200 / 1264 | 469.0 (293 W) |
 | `sq4096` | 4096 cubed | 2d, 958.3 | 138 W, 850 / 1008 | gemm, 957.0 (auto 974.1, own 1119.2) | 151 W, 850 / 959 | 1740.6 (293 W) |
+| `sq8192` | 8192 cubed | 2d, 7985.9 | 147 W, 881 / 1034 | auto, 11797.6 (gemm 12310.9, own 11836.2) | 139 W, 800 / 1088 | 12997.7 (295 W) |
+| `sq16384` | 16,384 cubed | 2d, 84018.0 | 133 W, 1125 / 1220 | gemm, 75522.5 (auto 90785.6, own 92389.3) | 142 W, 875 / 972 | 105839.6 (295 W) |
+| `dec4096` | 32 x 4096 x 4096 | cols, 197.8 | 75 W, 1343 / 1350 | own, 81.0 (gemm 105.2, auto 81.0) | 91 W, 1350 / 1350 | 77.4 (183 W) |
 
-Not measured yet at the default X280 clock: `sq8192` (8192 cubed), `sq16384`
-(16,384 cubed) and `dec4096` (32 x 4096 x 4096).
+Behind: `sq16384` (11%) and `dec4096` (2.4 times). Single calls, waited for, against
+the loop, from the same JSON (Kohaku-TT's `synced_us_median`), in us:
+
+| Preset | Ours single / loop | Kohaku-TT best route single / loop |
+|---|---|---|
+| `sq4096` | 660.0 / 958.3 | gemm 781.3 / 957.0 |
+| `sq8192` | 5765.8 / 7985.9 | auto 4568.4 / 11797.6 |
+| `sq16384` | 75877.0 / 84018.0 | gemm 56356.7 / 75522.5 (auto 32935.1 / 90785.6) |
+
+From 4096 cubed up both sides are bound in a loop by the card's power limit (133 to
+151 W mean; the firmware lowers the clock and switches the tile product to a throttled
+form under its current limit), so time per call follows energy per call: 16,384 cubed
+takes 11.2 J per call here and 10.7 J in Kohaku-TT's gemm.
 
 Bounds of our rows, from the cut-down runs (`cut_us_per_call` in each JSON) and the
-profile of one call:
-- `kvproj`: dispatch. A call issues every 6.3 us; reads only 5.2 us, compute only 5.5
-  us; a single call, waited for, takes 6.56 us.
-- `lin384`: DRAM. A in and Y out are 25 MB per call; reads only 32.9 us, compute only
-  21.4 us.
-- `lin1024` (`rows`, on par: 393.5 against 389.9 us): the lanes. Lanes only 284.9
-  us, product only 173.4 us.
-- `sq4096` (`2d`, on par: 958.3 against 957.0 us, at a mean clock of 1,008 against
-  959 MHz: both loops throttle under full load): the matrix unit. Product only 668.5
-  us, lanes only 563.0 us.
+profile of one call (`profile`: shares of the slowest core's cycles; cycles per tile
+product from its matrix-unit share, at the 1,350 MHz read at load). Cut-down runs that
+follow a long loop run at a throttled clock.
+- `kvproj` (resident): record issue. A call issues every 6.3 us; the slowest core's
+  body takes 4.6 us; reads only 5.2 us, compute only 5.5 us; a single call, waited
+  for, takes 6.56 us.
+- `lin384` (resident): DRAM writes. A in and Y out are 25 MB per call (410 GB/s);
+  the slowest core spends 82% of its cycles writing Y and its packer waits for space
+  77%; reads only 32.9 us, compute only 21.4 us.
+- `lin1024` (`rows`, on par): the W lane. W is handed along to all 110 cores: lanes only
+  284.9 us, product only 173.4 us; the slowest core spends 77% on the lane and its
+  unpacker waits for W 45%; the matrix unit takes 46.2 cycles per tile product
+  against the probe's 34.4. A single call takes 355.7 us at 1,350 MHz, 382.6 at the
+  loop's mean 1,255 MHz; the other 11 us of the loop's 393.5 are between records.
+- `sq4096` (`2d`, on par): the matrix unit, then power. The matrix unit is 81% of the
+  slowest core at 36.2 cycles per tile product (19,968 on that core, 4.7% above an
+  even share of 110 cores); a single call takes 660.0 us at 1,350 MHz. In the loop the
+  clock falls to a mean of 1,008 MHz (884 us at that clock); both sides end at 957
+  to 958 us.
+- `sq8192` (`2d`, ahead): the row lane in a single call (98.5% of the slowest core;
+  W read from DRAM 70.9%, four times per call since blocks of 7 of 26 rows), the
+  matrix unit 75% at 36.4 cycles per tile product; in the loop, power.
+- `sq16384` (`2d`, behind): the lanes with the rule's blocks. Each core's 52 x 44
+  tiles are blocks of 4 x 44 with K blocks of 2, so W passes each column 13 times:
+  the row lane is 99.8% of the slowest core, its unpacker waits for W 52%, the matrix
+  unit 35%. Blocks of 13 x 12 with K blocks of 4 (`--grid 2d:10,12,52,44,13,12,4`)
+  take a single call to 36.3 ms (matrix unit 87%, 35.8 cycles per tile product) but
+  the loop to 99.2 ms at 143 W (`sq16384-ours-blocks-13x12.json`): the denser call
+  is throttled harder.
+- `dec4096` (`cols`, behind): W from DRAM. 32 MB of W are read by 72 cores, 512 KB
+  each with one block in flight per lane sender: the slowest core spends 97% reading
+  W, 2.9 GB/s per core, 170 GB/s in all against Kohaku-TT's 414 GB/s; lanes only
+  195.8 us, product only 26.1 us.
 
 ## Files
 
