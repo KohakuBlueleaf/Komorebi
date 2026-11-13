@@ -9,7 +9,7 @@ until the command's event:
 2. the Tensix core asks its X280 core for 100 values, one at a time, and hashes them
    (ask and answer: the X280 core computes each value from the ask and the core);
 3. the Tensix core tells its X280 core the hash and the cycles its asks took (a tell);
-   the X280 core keeps them in a line per Tensix core of region `out`.
+   the X280 core keeps them in a line per Tensix core of region `lines`.
 
 The host checks every hash against numpy and turns the cycles into the round trip of
 one ask.
@@ -17,7 +17,7 @@ one ask.
     python x280_ports.py [--clusters 1 2 3] [--cores 0] [--rounds 10] [--asks 100]
 
 `--cores 0` is every Tensix core of the grid; the ports deal them over the threads' X280
-cores in grid order (`prog.ports()`): ten to an X280 core with three clusters, thirty
+cores in grid order (`Program.ports()`): ten to an X280 core with three clusters, thirty
 with one. Prints one JSON line: whether every hash is exact (`exact`), the mean and the
 largest round trip of one ask (`ask_microseconds_mean`, `ask_microseconds_max`), a round's time on the
 lead's timer (`round_microseconds_mean`, `round_microseconds_best`), and the asks answered a second
@@ -45,7 +45,7 @@ of four. A round includes the salts, the hashes told back and the end of the ser
     python x280_ports.py --pull [--x280-cores 12] [--units 31000] [--per 16]
         [--base 20250] [--extra 16200] [--centre 9300] [--half 6200]
 
-A pass over `--units` units on every Tensix core of the grid, unit `u` busy for
+A pass over `--units` units on every Tensix core of the grid, each unit busy for
 `HX_COST` cycles: `--base`, plus up to `--extra` in a triangle of half-width `--half`
 about unit `--centre` (by default 15 µs, up to 27 µs, a fifth of the units heavier),
 the shape of a frame whose cost gathers in one part of the screen. The thread
@@ -54,11 +54,11 @@ every Tensix core tells its numbers:
 
 | Pass | How the units are dealt |
 |---|---|
-| `equal` | equal contiguous ranges, core `i` the `i`-th (`km::partition`) |
+| `equal` | equal contiguous ranges, each core the range of its own number (`km::partition`) |
 | `pull` | ranges of `--per` units pulled (`kmx_pull_run`, `KMX_PULL_COUNT`; `port.next`) |
 | `log` | the same, and each core's ranges logged in region `log` (`KMX_PULL_LOG`) |
 | `replay` | each core gets the ranges the log holds for it (`KMX_PULL_REPLAY`) |
-| `pick` | pulled, but `pick` deals range `k` of core `c`: `c + k * cores` |
+| `pick` | pulled, but `pick` deals a core the ranges `core`, `core + cores`, `core + 2 * cores`, ... |
 
 `--x280-cores` 1, 4 or 12 serve the Tensix cores (one X280 core, cluster 1, or all
 three clusters). Prints one JSON line with the model's slowest core over mean for equal
@@ -94,7 +94,7 @@ ask a microsecond.
 
 ## How it ends
 
-`kmx_port_run(&r, serve, round, &event)` on X280 core 0 of the lead submits the command and
+`kmx_port_run(&command, serve, round, &event)` on X280 core 0 of the lead submits the command and
 runs `serve` on every X280 core as `kmx_parallel_all` does. Each loops while
 `kmx_port_open()` returns 1; X280 core 0 of the lead looks for the record's event in
 its ring, and when it comes, every next look returns 0 and `serve` returns.
@@ -106,13 +106,13 @@ ends the serve the same way (its event says `KM_EVENT_TIMEOUT`).
 
 | Words | `rounds, cores, asks` (`cores` 0: every Tensix core) |
 |---|---|
-| Region | `out`: a 64-byte line per Tensix core: the hash of the last round, rounds told, asks, their cycles (64 bits), the largest, `1 + (cluster << 2 \| cpu)` (`cpu` the X280 core), in the bank of the cluster that serves it |
+| Region | `lines`: a 64-byte line per Tensix core: the hash of the last round, rounds told, asks, their cycles (64 bits), the largest, `1 + (cluster << 2 \| x280_core)`, in the bank of the cluster that serves it |
 | Codes | 0 done; 1 bad words or region; 2 a run was late or stopped |
 | Result words | rounds done, rounds timed out, the rounds' ticks (64 bits), the best and the worst round in ticks (50 per µs) |
 
-The `--pull` thread: words `units, per, base, extra, centre, half`; regions `out` (a
+The `--pull` thread: words `units, units per range, base, extra, centre, half`; regions `lines` (a
 32-byte line per kind of pass and Tensix core: units, busy cycles, span, the sum of
-marks, pulls, cycles waited, `1 + (cluster << 2 \| cpu)`) and `log`; codes as above
+marks, pulls, cycles waited, `1 + (cluster << 2 \| x280_core)`) and `log`; codes as above
 (1 also for a log that ran out of room); result words: each pass's ticks.
 
 ## Files
