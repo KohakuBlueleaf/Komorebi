@@ -72,6 +72,11 @@ place to ask a question and to be wrong.
   each reaches (6, 7, 7), about 1.2 GB/s per cluster alone or together (the limit is
   per cluster, not per bank), a push into the other bank at 2.3 GB/s against a pull at
   0.024, and a wake between clusters in 0.66 µs.
+- [x280_ports](x280_ports/README.md): ports between X280 cores and Tensix cores with
+  no dispatch kernel in the path: an ask answered in 0.94 µs (9.1 µs with ten Tensix
+  cores on each X280 core, 13.1 M a second over 12), exact over a million round trips
+  under DRAM load and across a record that times out, and 4 KiB into L1 at 8.1 GB/s
+  against 2.1 through DRAM.
 - [dyn_probes](dyn_probes/README.md): whether one core can reserve positions in another
   core's queue with one atomic add (yes: 119 cores, exact cover, 266 to 2596 cycles),
   the round trip of an item through DRAM (0.93 µs) and the rate between cores (up to
