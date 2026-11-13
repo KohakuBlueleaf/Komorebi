@@ -29,6 +29,7 @@ src/komorebi_native/           the native layer (README inside)
 examples/  projects/           runnable examples; larger programs (README inside)
 experiments/  ref/             standalone proofs; CPU references (README inside)
 tests/core/                    tests that need no card
+tests/ref/                     reference renderers compared (README inside)
 docs/                          concepts, install, this page
 packaging/                     tt-metal.pin: the tt-metal version Komorebi is developed against
 ```
@@ -59,12 +60,10 @@ marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they 
 `tests/hardware`). The host package's CPU tests run `Run` against a fake dispatch kernel
 (`tests/core/fake_port.py`). The formatter tests are skipped when clang-format is not installed.
 
-The reference tests (`test_ref_*.py`) cover the scene generator, the numpy
-rasterizer and ray tracer with the box tree, and, where a C++ compiler is found, the C++
-versions. The
-CUDA versions are built and run only when `nvcc` and a GPU with no process on it are
-present, and skipped otherwise. Built binaries and generated data go to `build/`
-(`KR_BUILD_DIR`, `KR_DATA`).
+The reference tests in `tests/core` (`test_ref_*.py`) cover the scene generator and
+the numpy rasterizer and ray tracer with the box tree. The comparisons of the C++ and
+CUDA versions with numpy, and a slow rasterizer case, are in `tests/ref`, run by hand
+([README](../tests/ref/README.md)); the CUDA ones only with `KMR_GPU=1`.
 
 The continuous-integration workflow runs ruff, black and the CPU tests.
 

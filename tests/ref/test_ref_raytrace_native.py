@@ -1,5 +1,7 @@
 """C++ and CUDA ray tracers against numpy, bit for bit, on sampled pixels."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -8,8 +10,10 @@ from ref import bvh, native, raytrace, scenes
 
 needs_cxx = pytest.mark.skipif(native.find_cxx() is None, reason="no C++ compiler")
 needs_gpu = pytest.mark.skipif(
-    native.find_nvcc() is None or native.idle_gpu() is None,
-    reason="no CUDA toolchain or no idle GPU",
+    os.environ.get("KMR_GPU") != "1"
+    or native.find_nvcc() is None
+    or native.idle_gpu() is None,
+    reason="needs KMR_GPU=1, a CUDA toolchain and an idle GPU",
 )
 STRIDE = 8
 
@@ -81,37 +85,45 @@ def assert_same_on_pixels(scene, tree, outputs):
     assert (expect["tri"] >= 0).any() and (expect["tri"] < 0).any()
 
 
+@pytest.fixture(scope="module")
+def tiny(root):
+    scene = scenes.make_preset("tiny")
+    return scene, folders(root, "tiny", scene)
+
+
+@pytest.fixture(scope="module")
+def hand(root):
+    scene = hand_made()
+    return scene, folders(root, "hand", scene)
+
+
+@pytest.fixture(scope="module")
+def s10k(root):
+    scene = scenes.make_preset("s10k")
+    return scene, folders(root, "s10k", scene)
+
+
 @needs_cxx
 @pytest.mark.parametrize("threads", [1, 3, 16])
-def test_cpu_matches_numpy_on_the_tiny_scene(root, threads):
-    scene = scenes.make_preset("tiny")
-    tree = folders(root, "tiny", scene)
-    assert_same_on_pixels(scene, tree, run_folder("cpu", root, "tiny", threads))
+def test_cpu_matches_numpy_on_the_tiny_scene(root, tiny, threads):
+    assert_same_on_pixels(*tiny, run_folder("cpu", root, "tiny", threads))
 
 
 @needs_cxx
-def test_cpu_matches_numpy_on_hand_made_triangles(root):
-    scene = hand_made()
-    tree = folders(root, "hand", scene)
-    assert_same_on_pixels(scene, tree, run_folder("cpu", root, "hand"))
+def test_cpu_matches_numpy_on_hand_made_triangles(root, hand):
+    assert_same_on_pixels(*hand, run_folder("cpu", root, "hand"))
 
 
 @needs_cxx
-def test_cpu_matches_numpy_on_the_ten_thousand_triangle_scene(root):
-    scene = scenes.make_preset("s10k")
-    tree = folders(root, "s10k", scene)
-    assert_same_on_pixels(scene, tree, run_folder("cpu", root, "s10k", 8))
+def test_cpu_matches_numpy_on_the_ten_thousand_triangle_scene(root, s10k):
+    assert_same_on_pixels(*s10k, run_folder("cpu", root, "s10k", 8))
 
 
 @needs_gpu
-def test_gpu_matches_numpy_on_hand_made_triangles(root):
-    scene = hand_made()
-    tree = folders(root, "hand", scene)
-    assert_same_on_pixels(scene, tree, run_folder("gpu", root, "hand"))
+def test_gpu_matches_numpy_on_hand_made_triangles(root, hand):
+    assert_same_on_pixels(*hand, run_folder("gpu", root, "hand"))
 
 
 @needs_gpu
-def test_gpu_matches_numpy_on_the_ten_thousand_triangle_scene(root):
-    scene = scenes.make_preset("s10k")
-    tree = folders(root, "s10k", scene)
-    assert_same_on_pixels(scene, tree, run_folder("gpu", root, "s10k"))
+def test_gpu_matches_numpy_on_the_ten_thousand_triangle_scene(root, s10k):
+    assert_same_on_pixels(*s10k, run_folder("gpu", root, "s10k"))

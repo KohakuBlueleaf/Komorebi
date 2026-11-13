@@ -1,11 +1,13 @@
 """The C++ and CUDA rasterizers against the numpy one, bit for bit."""
 
+import os
+
 import numpy as np
 import pytest
-from test_ref_raster import screen_scene
 
 from projects.raster.reference import harness
 from ref import native, raster, scenes
+from tests.core.test_ref_raster import screen_scene
 
 HAND_MADE = {
     "diagonal": [(10, 10, 1), (18, 10, 1), (18, 18, 1), (10, 10, 1), (18, 18, 1)]
@@ -23,8 +25,10 @@ HAND_MADE = {
 
 needs_cxx = pytest.mark.skipif(native.find_cxx() is None, reason="no C++ compiler")
 needs_gpu = pytest.mark.skipif(
-    native.find_nvcc() is None or native.idle_gpu() is None,
-    reason="no CUDA toolchain or no idle GPU",
+    os.environ.get("KMR_GPU") != "1"
+    or native.find_nvcc() is None
+    or native.idle_gpu() is None,
+    reason="needs KMR_GPU=1, a CUDA toolchain and an idle GPU",
 )
 
 

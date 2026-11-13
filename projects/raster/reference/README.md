@@ -105,13 +105,14 @@ tile list sizes:
 Why exact: every operation is a float32 add, subtract, multiply, divide or compare in a
 fixed order (no fused multiply-add: `-ffp-contract=off`, `--fmad=false`), all
 IEEE-exact, and the winner of a pixel does not depend on the order fragments arrive in.
-`agree.py` reports, for any difference, how many pixels differ in each array, how many of
-those lie on a triangle edge (a pixel whose 3 x 3 neighbourhood holds more than one
-triangle) and the colour and depth errors. The tests (`tests/core/test_ref_raster*.py`)
-check the fill rule on hand-made triangles (shared diagonal, top, bottom, left and right
-edges, a rectangle cut into random triangles covered exactly once), depth order, ties,
-culling, and run the C++ and CUDA versions on hand-made and generated scenes against
-numpy; changing `>` to `>=` in the pixel test makes six of them fail.
+`agree.py` reports, for any difference, how many pixels differ in each array, how many
+of those lie on a triangle edge (a pixel whose 3 x 3 neighbourhood holds more than one
+triangle) and the colour and depth errors. The tests (`tests/core/test_ref_raster*.py`,
+`tests/ref/test_ref_raster_*.py`) check the fill rule on hand-made triangles (shared
+diagonal, top, bottom, left and right edges, a rectangle cut into random triangles
+covered exactly once), depth order, ties, culling, and run the C++ and CUDA versions on
+hand-made and generated scenes against numpy; changing `>` to `>=` in the pixel test
+makes six of them fail.
 
 A card implementation will not be bit-exact if it uses another order of operations;
 compare coverage and depth per pixel and count the differing pixels, which sit on

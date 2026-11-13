@@ -388,6 +388,7 @@ examples/                      01_mapcollect
 experiments/                   landing, collision, tile_probes
 projects/  ref/                render references; CPU references in numpy
 tests/core/  tests/hardware/   tests with no card; card tests (KMR_CARD=1)
+tests/ref/                     the reference renderers against each other
 docs/                          concepts, host API, streams, install, development
 ```
 

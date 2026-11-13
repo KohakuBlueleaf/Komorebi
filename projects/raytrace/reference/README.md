@@ -178,17 +178,17 @@ near ties on shared edges are the expected cause of nearest-triangle differences
 image error then follows the colour of the two triangles.
 
 The tests (`tests/core/test_ref_bvh.py`, `test_ref_raytrace.py`,
-`test_ref_raytrace_native.py`): the trees of the tiny and 10^4 scenes have pinned
-checksums; the tree is a valid binary tree whose boxes contain their triangles, with the
-median split checked on hand-made triangles; the treelet cut is a partition that fits
-the budget and its walk finds the same hits as the flat tree; the numpy walk finds the
-same nearest hit as brute force over all triangles on a subset of the tiny scene's rays,
-the nearer of two triangles wins and equal distances go to the lower index, any-hit
-stops at a blocker between origin and `tmax`, and a subset of the tiny image has pinned
-checksums; the C++ and CUDA binaries are built and compared bit for bit with numpy on a
-lattice of pixels of the tiny scene, of hand-made triangles and of the 10^4 scene
-(skipped without a compiler or GPU). Changing the child-order comparison or the culling
-comparison in the C++ walk makes native tests fail.
+`tests/ref/test_ref_raytrace_native.py`): the trees of the tiny and 10^4 scenes have
+pinned checksums; the tree is a valid binary tree whose boxes contain their triangles,
+with the median split checked on hand-made triangles; the treelet cut is a partition
+that fits the budget and its walk finds the same hits as the flat tree; the numpy walk
+finds the same nearest hit as brute force over all triangles on a subset of the tiny
+scene's rays, the nearer of two triangles wins and equal distances go to the lower
+index, any-hit stops at a blocker between origin and `tmax`, and a subset of the tiny
+image has pinned checksums; the C++ and CUDA binaries are built and compared bit for bit
+with numpy on a lattice of pixels of the tiny scene, of hand-made triangles and of the
+10^4 scene (skipped without a compiler or GPU). Changing the child-order comparison or
+the culling comparison in the C++ walk makes native tests fail.
 
 numpy takes 12.7, 17, 22 and 33 s per full frame (tiny, 10^4, 10^5, 10^6); the two
 native versions are the ones to run for timings.
