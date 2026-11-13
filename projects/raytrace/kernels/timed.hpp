@@ -23,14 +23,14 @@ namespace timed {
                 get_arg_val<uint32_t>(0) + KM_CONTROL_STOP
             )
         );
-        const uint32_t t0 = clock();
+        const uint32_t started = clock();
         for (uint32_t i = 0;; ++i) {
             if (ready()) {
                 return true;
             }
             if ((i & 63) == 63) {
                 asm volatile("fence" ::: "memory");
-                if (*stop != 0 || clock() - t0 > kCycles) {
+                if (*stop != 0 || clock() - started > kCycles) {
                     return false;
                 }
             }
@@ -39,72 +39,76 @@ namespace timed {
 
     // Unpack: cb_wait_front once the pages are there.
     inline bool front(uint32_t cb, uint32_t pages) {
-        volatile uint32_t* got = get_cb_tiles_received_ptr(cb);
-        const bool ok = poll([&] {
-            const uint32_t r = (
+        volatile uint32_t* received = get_cb_tiles_received_ptr(cb);
+        const bool arrived = poll([&] {
+            const uint32_t count_register = (
                 ckernel::reg_read(
-                    static_cast<uint32_t>(reinterpret_cast<uintptr_t>(got))
+                    static_cast<uint32_t>(reinterpret_cast<uintptr_t>(received))
                 )
             );
-            const uint16_t n = (
-                static_cast<uint16_t>(r - get_local_cb_interface(cb).tiles_acked)
+            const uint16_t available = (
+                static_cast<uint16_t>(
+                    count_register - get_local_cb_interface(cb).tiles_acked
+                )
             );
-            return n >= pages;
+            return available >= pages;
         });
-        if (ok) {
+        if (arrived) {
             cb_wait_front(cb, pages);
         }
-        return ok;
+        return arrived;
     }
 
     // Pack: cb_reserve_back once the space is there.
     inline bool back(uint32_t cb, uint32_t pages) {
         volatile uint32_t* acked = get_cb_tiles_acked_ptr(cb);
-        const bool ok = poll([&] {
-            const uint32_t a = (
+        const bool reserved = poll([&] {
+            const uint32_t acked_register = (
                 ckernel::reg_read(
                     static_cast<uint32_t>(reinterpret_cast<uintptr_t>(acked))
                 )
             );
             const uint16_t used = (
-                static_cast<uint16_t>(get_local_cb_interface(cb).tiles_received - a)
+                static_cast<uint16_t>(
+                    get_local_cb_interface(cb).tiles_received - acked_register
+                )
             );
             return get_local_cb_interface(cb).fifo_num_pages - used >= pages;
         });
-        if (ok) {
+        if (reserved) {
             cb_reserve_back(cb, pages);
         }
-        return ok;
+        return reserved;
     }
 
     // A mailbox value from thread `from`; false when none came in time.
-    inline bool mail(uint8_t from, uint32_t& v) {
+    inline bool mail(uint8_t from, uint32_t& value) {
         if (!poll([&] {
             return ckernel::mailbox_not_empty(from);
         })) {
             return false;
         }
-        v = ckernel::mailbox_read(from);
+        value = ckernel::mailbox_read(from);
         return true;
     }
 
     // Bytes of a buffer from its write pointer to its end (compute's 16-byte units).
     inline uint32_t room(uint32_t cb) {
-        const auto& i = get_local_cb_interface(cb);
-        return (i.fifo_limit - i.fifo_wr_ptr) << 4;
+        const auto& cb_interface = get_local_cb_interface(cb);
+        return (cb_interface.fifo_limit - cb_interface.fifo_wr_ptr) << 4;
     }
 #else
     // NoC reads submitted so far have landed (data-movement kernels). False: gave up,
     // recorded in the state word pair `word`.
-    inline bool reads_done(const km::Core& c, uint32_t word) {
-        const uint32_t code = c.poll(
+    inline bool reads_done(const km::Core& core, uint32_t word) {
+        const uint32_t code = core.poll(
             [] {
                 return ncrisc_noc_reads_flushed(noc_index);
             },
-            c.args().wait_limit
+            core.args().wait_limit
         );
         if (code != km::kGaveNone) {
-            c.gave_up(word, code, km::kWhereData, 0, 0);
+            core.gave_up(word, code, km::kWhereData, 0, 0);
             return false;
         }
         noc_async_read_barrier();
@@ -112,15 +116,15 @@ namespace timed {
     }
 
     // NoC writes submitted so far have left the core.
-    inline bool writes_sent(const km::Core& c, uint32_t word) {
-        const uint32_t code = c.poll(
+    inline bool writes_sent(const km::Core& core, uint32_t word) {
+        const uint32_t code = core.poll(
             [] {
                 return ncrisc_noc_nonposted_writes_sent(noc_index);
             },
-            c.args().wait_limit
+            core.args().wait_limit
         );
         if (code != km::kGaveNone) {
-            c.gave_up(word, code, km::kWhereData, 0, 0);
+            core.gave_up(word, code, km::kWhereData, 0, 0);
             return false;
         }
         noc_async_writes_flushed();
@@ -129,15 +133,15 @@ namespace timed {
 
     // NoC writes submitted so far have landed (acknowledged): the next command may read
     // them.
-    inline bool writes_landed(const km::Core& c, uint32_t word) {
-        const uint32_t code = c.poll(
+    inline bool writes_landed(const km::Core& core, uint32_t word) {
+        const uint32_t code = core.poll(
             [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
-            c.args().wait_limit
+            core.args().wait_limit
         );
         if (code != km::kGaveNone) {
-            c.gave_up(word, code, km::kWhereData, 0, 0);
+            core.gave_up(word, code, km::kWhereData, 0, 0);
             return false;
         }
         noc_async_write_barrier();

@@ -47,14 +47,14 @@ word took 3,400.
 | `compute.cpp` | the pack thread walks each packet on the vector unit (`walk.hpp`): slab test and triangle test in the reference's operation order, with an exact reciprocal (`sfpu.hpp`); the stages' arithmetic (`shade.hpp`); the unpack thread hands it the pages and, at treelet visits, loads each packet's state into Dst with the math thread; the packer stores it back |
 | `writer.cpp` | 64 packets' output pages of each stream to one DRAM page (the host reads per page); the profile page |
 
-| Command word | Meaning |
-|---|---|
-| a0 | directory: per core, first packet page and page count |
-| a1, a2 | packet pages, hit pages |
-| a3 | mode: nearest hit, or any hit (shadow rays) |
-| a4 | profile pages: per core, the cycles of every step and the counts |
-| a5 to a9 | TREELETS: treelet images, list entries, slot bytes, slots, schedule |
-| a1 to a9 | SORT, UNSORT: stream in, stream out, order pages, profile, vectors to put back (0: SORT), the key's low corner and scale |
+| Command word | Name in the kernels | Meaning |
+|---|---|---|
+| a0 | `directory_address` | directory: per core, first packet page and page count |
+| a1, a2 | `packets_address`, `hits_address` | packet pages, hit pages |
+| a3 | `mode` | nearest hit, or any hit (shadow rays) |
+| a4 | `profile_address` | profile pages: per core, the cycles of every step and the counts |
+| a5 to a9 | `treelet_images_address`, `list_entries`, `slot_bytes`, `slot_limit`, `policy_word` | TREELETS: treelet images, list entries, slot bytes, slots, schedule |
+| a1 to a9 | `input_address`, `output_address`, `order_address`, `profile_address`, `unsort_vectors`, the key's corner (a6 to a8) and `key_word` (a9) | SORT, UNSORT: stream in, stream out, order pages, profile, vectors to put back (0: SORT), the key's low corner and scale |
 
 The frame is eight commands in one load (`frame.py`), each core keeping the packets
 of its tiles from the first command to the last. The other stages are threads of the
@@ -76,8 +76,9 @@ IMAGE    state 2, second shadow hits -> colour
 
 A nearest-hit record carries the hit triangle's normal and vertex colours out of the
 walk (they are in the triangle record in L1), so shading reads no scene data. Stage
-commands give the constant page (camera, light, sky, lane offsets) in a3, the profile
-pages in a4, and the streams' pages in a1, a2, a5 to a9.
+commands give the constant page (camera, light, sky, lane offsets) in a3
+(`constants_address`), the profile pages in a4 (`profile_address`), and the streams'
+pages in a1, a2, a5 to a9 (`stream_arg`).
 
 Every wait in the kernels has a wall-clock timeout and the run's stop flag; a core
 that gives up says why in its profile, and the driver counts it as a failure. `ARITH`
@@ -120,7 +121,7 @@ stage commands are unchanged. `--pictures DIR` writes the card's image, numpy's 
 their difference as PNGs, and the JSON line, as `DIR/<scene>_*`.
 
 `--sort` (with `--treelets`) puts a SORT command before the bounce and second-shadow
-traces and an UNSORT command after each. SORT runs on each core's data-movement core:
+traces and an UNSORT command after each. SORT runs in the reader kernel of each core:
 it reads one vector of all the core's packets at a time into L1 (the slot buffer,
 free between treelet commands), keys each ray by its direction's octant and the Morton
 cell (2^9 per axis over the root box) of its origin, orders the keys (radix sort,

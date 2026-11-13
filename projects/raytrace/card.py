@@ -20,9 +20,9 @@ KERNEL_BYTES = 80 << 10  # kernel buffer: the default 70656 B is too small since
 T0 = time.monotonic()
 
 
-def log(msg):
+def log(message):
     """One progress line with seconds since start, flushed (the watcher reads it)."""
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+    print(f"[{time.monotonic() - T0:7.2f}] {message}", flush=True)
 
 
 def aiclk_mhz():
@@ -32,11 +32,13 @@ def aiclk_mhz():
 
 def hwmon(card):
     """The hwmon folder (name `blackhole`) of a card, found through its device."""
-    dev = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/device").resolve()
-    for h in Path("/sys/class/hwmon").glob("hwmon*"):
-        name = (h / "name").read_text().strip() if (h / "name").exists() else ""
-        if name == "blackhole" and (h / "device").resolve() == dev:
-            return h
+    device = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/device").resolve()
+    for folder in Path("/sys/class/hwmon").glob("hwmon*"):
+        name = (
+            (folder / "name").read_text().strip() if (folder / "name").exists() else ""
+        )
+        if name == "blackhole" and (folder / "device").resolve() == device:
+            return folder
     return None
 
 
@@ -45,33 +47,33 @@ class Power:
 
     def __init__(self, period=0.005):
         card = os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0]
-        self.dir = hwmon(card)
+        self.folder = hwmon(card)
         self.period = period
         self.samples = []
         self._stop = threading.Event()
         self._thread = None
 
     def read(self):
-        return int((self.dir / "power1_input").read_text()) / 1e6
+        return int((self.folder / "power1_input").read_text()) / 1e6
 
     def limit(self):
-        if self.dir is None:
+        if self.folder is None:
             return None
-        return int((self.dir / "power1_max").read_text()) / 1e6
+        return int((self.folder / "power1_max").read_text()) / 1e6
 
     def idle(self, seconds=1.0):
         """Mean power over `seconds` (call before the job)."""
-        if self.dir is None:
+        if self.folder is None:
             return None
-        vals = []
+        readings = []
         end = time.perf_counter() + seconds
         while time.perf_counter() < end:
-            vals.append(self.read())
+            readings.append(self.read())
             time.sleep(self.period)
-        return float(np.mean(vals))
+        return float(np.mean(readings))
 
     def __enter__(self):
-        if self.dir is None:
+        if self.folder is None:
             return self
 
         def loop():
@@ -83,7 +85,7 @@ class Power:
         self._thread.start()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exception):
         self._stop.set()
         if self._thread is not None:
             self._thread.join()
@@ -117,7 +119,7 @@ def program(tree_pages=1, sizes=None):
     """The ray tracer's program; sizes: bytes of the treelet buffers (state, lists,
     slots), small when absent. One command at a time: its event time is its own."""
     sizes = sizes or {}
-    pages = [
+    specs = [
         (K["kCbIn"], K["kInPageBytes"], K["kInPages"]),
         (K["kCbTree"], K["kTreePageBytes"], max(tree_pages, 1)),
         (K["kCbDirReader"], K["kDirReaderBytes"], 1),
@@ -140,8 +142,10 @@ def program(tree_pages=1, sizes=None):
         "raytrace",
         kernels=KERNELS,
         buffers=[
-            km.Buffer(i, "float32" if i in tiles else "uint32", page, n)
-            for i, page, n in pages
+            km.Buffer(
+                index, "float32" if index in tiles else "uint32", page_bytes, count
+            )
+            for index, page_bytes, count in specs
         ],
         compute={
             "math_fidelity": "HiFi4",
@@ -166,42 +170,46 @@ class Ran:
         self.host_s = host_s
 
 
-def check_run(res, n_workers):
+def check_run(ran, worker_count):
     """Events, kernel result and kernel ends as a dict; raises nothing."""
-    states = res.state[:n_workers]
+    states = ran.state[:worker_count]
     return {
-        "done": sum(event.kind == "done" for event in res.events),
-        "commands": len(res.events),
-        "kernel_error": res.result["error"],
+        "done": sum(event.kind == "done" for event in ran.events),
+        "commands": len(ran.events),
+        "kernel_error": ran.result["error"],
         "cores_ended": {
-            k: sum(c[k] != 0 for c in states)
-            for k in ("reader_end", "writer_end", "compute_end")
+            field: sum(core_state[field] != 0 for core_state in states)
+            for field in ("reader_end", "writer_end", "compute_end")
         },
-        "compute_wrong": sum(sum(c["compute_wrong"]) for c in states),
+        "compute_wrong": sum(sum(core_state["compute_wrong"]) for core_state in states),
         "gave_up": [
-            {"core": c["core"], "reader": c["reader"], "writer": c["writer"]}
-            for c in states
-            if c["reader"] or c["writer"]
+            {
+                "core": core_state["core"],
+                "reader": core_state["reader"],
+                "writer": core_state["writer"],
+            }
+            for core_state in states
+            if core_state["reader"] or core_state["writer"]
         ],
     }
 
 
-def ran_cleanly(run, n_workers):
+def ran_cleanly(run, worker_count):
     """Every command done, the kernel's error none, every kernel ended, nothing gave
     up (a check_run dict)."""
     ended = set(run["cores_ended"].values())
     return (
         run["done"] == run["commands"]
         and run["kernel_error"] == 0
-        and ended == {n_workers}
+        and ended == {worker_count}
         and run["compute_wrong"] == 0
         and not run["gave_up"]
     )
 
 
-def command_microseconds(res):
+def command_microseconds(ran):
     """Submit to completion of each command, in microseconds (the X280's timer)."""
-    return np.array([event.microseconds for event in res.events], dtype=np.float64)
+    return np.array([event.microseconds for event in ran.events], dtype=np.float64)
 
 
 def run_handler(
@@ -209,80 +217,89 @@ def run_handler(
     handler,
     directory,
     inputs,
-    out_rows,
-    out_words,
+    output_rows,
+    output_words,
     tree=None,
     args=(),
-    reps=1,
+    repetitions=1,
     deadline_s=5.0,
     power=None,
     extra=(),
     sizes=None,
 ):
-    """Runs `reps` rounds of a handler (after a LOAD of `tree`) over a directory
+    """Runs `repetitions` rounds of a handler (after a LOAD of `tree`) over a directory
     (workers, 16) or a list of them (a command each per round) and input pages, into
-    out_rows pages of out_words; args[0] is a3, extra tensors and args[1:] follow a4.
-    Returns (outputs, profiles summed over directories, Ran, times, power)."""
-    n = workers(session)
+    `output_rows` pages of `output_words`; args[0] is a3, extra tensors and args[1:]
+    follow a4. Returns (outputs, profile sums per directory, Ran, times, power)."""
+    worker_count = workers(session)
     chunks = directory if isinstance(directory, list) else [directory]
-    for d in chunks:
-        if len(d) != n:
-            raise ValueError(f"{len(d)} directory entries for {n} workers")
+    for entry in chunks:
+        if len(entry) != worker_count:
+            raise ValueError(
+                f"{len(entry)} directory entries for {worker_count} workers"
+            )
     times = {}
-    t0 = time.perf_counter()
-    dir_ts = [tensor(session, d) for d in chunks]
-    in_t = tensor(session, inputs if inputs is not None else np.zeros((1, 32)))
-    out_t = tensor(session, np.zeros((max(out_rows, 1), out_words), dtype=np.uint32))
-    prof_rows = np.zeros((n, K["kOutPageBytes"] // 4), dtype=np.uint32)
-    prof_ts = [tensor(session, prof_rows) for _ in chunks]
-    extra_t = [tensor(session, rows) for rows in extra]
+    started = time.perf_counter()
+    directory_tensors = [tensor(session, entry) for entry in chunks]
+    input_tensor = tensor(session, inputs if inputs is not None else np.zeros((1, 32)))
+    output_tensor = tensor(
+        session, np.zeros((max(output_rows, 1), output_words), dtype=np.uint32)
+    )
+    profile_zeros = np.zeros((worker_count, K["kOutPageBytes"] // 4), dtype=np.uint32)
+    profile_tensors = [tensor(session, profile_zeros) for _ in chunks]
+    extra_tensors = [tensor(session, rows) for rows in extra]
     commands = []
     tree_pages = 0
-    tree_t = None
+    tree_tensor = None
     if tree is not None:
         # One push of the whole image into a buffer of exactly its pages.
         if tree.ndim != 2 or tree.shape[1] * 4 != K["kTreePageBytes"]:
             raise ValueError(f"tree image {tree.shape} is not whole tree pages")
-        tree_t = tensor(session, tree)
+        tree_tensor = tensor(session, tree)
         tree_pages = len(tree)
-        commands.append((K["kHandlerLoad"], [tree_t.address, tree.nbytes]))
-    times["upload_s"] = time.perf_counter() - t0
-    a3 = list(args)[:1] or [0]
-    tail = [t.address for t in extra_t] + list(args)[1:]
-    for _ in range(reps):
-        for dir_t, prof_t in zip(dir_ts, prof_ts):
-            words = [dir_t.address, in_t.address]
-            words += [out_t.address, *a3, prof_t.address, *tail]
+        commands.append((K["kHandlerLoad"], [tree_tensor.address, tree.nbytes]))
+    times["upload_s"] = time.perf_counter() - started
+    third_word = list(args)[:1] or [0]
+    tail = [extra_tensor.address for extra_tensor in extra_tensors] + list(args)[1:]
+    for _ in range(repetitions):
+        for directory_tensor, profile_tensor in zip(directory_tensors, profile_tensors):
+            words = [directory_tensor.address, input_tensor.address]
+            words += [output_tensor.address, *third_word, profile_tensor.address, *tail]
             commands.append((handler, words))
-    log(f"run: handler {handler}, {len(commands)} commands, {out_rows} output pages")
+    log(f"run: handler {handler}, {len(commands)} commands, {output_rows} output pages")
     meter = power if power is not None else Power()
     with meter:
         run = session.load(program(tree_pages, sizes), deadline=deadline_s)
         mark = getattr(meter, "mark", None)
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         if mark is not None:
             mark("program")
-        handles = [run.submit(s, args=w) for s, w in commands]
+        handles = [
+            run.submit(command_handler, args=command_words)
+            for command_handler, command_words in commands
+        ]
         events = run.wait(handles, timeout=10.0 + deadline_s * len(commands))
-        host_s = time.perf_counter() - t0
+        host_s = time.perf_counter() - started
         if mark is not None:
             mark("after")
         run.stop()
     times["program_s"] = host_s
-    res = Ran(
+    ran = Ran(
         events if isinstance(events, list) else [events],
         run.result(),
         run.state(),
         host_s,
     )
-    log(f"ran: {len(res.events)} commands, error {res.result['error']}; reading back")
-    t0 = time.perf_counter()
-    out = read_rows(session, out_t, "hits")
-    profs = read(session, *prof_ts)
-    prof = sum(p[:n].astype(np.uint64) for p in profs)  # the last round's
-    times["readback_s"] = time.perf_counter() - t0
+    log(f"ran: {len(ran.events)} commands, error {ran.result['error']}; reading back")
+    started = time.perf_counter()
+    output = read_rows(session, output_tensor, "hits")
+    profile_pages = read(session, *profile_tensors)
+    profile = sum(
+        page[:worker_count].astype(np.uint64) for page in profile_pages
+    )  # the last round's
+    times["readback_s"] = time.perf_counter() - started
     log(f"read back in {times['readback_s']:.1f}s")
-    return out[:out_rows], prof, res, times, meter.samples
+    return output[:output_rows], profile, ran, times, meter.samples
 
 
 READ_LIMIT = 4 << 20  # bytes in one read-back call; larger tensors go in chunks
@@ -293,24 +310,26 @@ def read_rows(session, tensor, name):
     """A tensor read back as uint32 rows: in one call up to READ_LIMIT, else in chunks
     of CHUNK with a progress line per chunk."""
     size = tensor.pages * tensor.page_bytes
-    t0 = time.perf_counter()
+    started = time.perf_counter()
     if size <= READ_LIMIT:
         (rows,) = read(session, tensor)
     else:
-        parts = []
+        pieces = []
         for first, pages in session.read_chunks(tensor, CHUNK):
-            parts.append(pages.view(np.uint32).reshape(len(pages), -1))
+            pieces.append(pages.view(np.uint32).reshape(len(pages), -1))
             log(
                 f"read back {name}: pages {first} + {len(pages)} of {size / 1e6:.1f} MB"
             )
-        rows = np.concatenate(parts)
-    log(f"read back {name}: {size / 1e6:.2f} MB in {time.perf_counter() - t0:.1f}s")
+        rows = np.concatenate(pieces)
+    log(
+        f"read back {name}: {size / 1e6:.2f} MB in {time.perf_counter() - started:.1f}s"
+    )
     return rows
 
 
 def read_each(session, tensors, names):
     """Tensors read back one at a time (read_rows)."""
-    return [read_rows(session, t, name) for t, name in zip(tensors, names)]
+    return [read_rows(session, entry, name) for entry, name in zip(tensors, names)]
 
 
 def run_commands(session, commands, tree_pages, deadline_s=5.0, power=None, sizes=None):
@@ -320,10 +339,10 @@ def run_commands(session, commands, tree_pages, deadline_s=5.0, power=None, size
     meter = power if power is not None else Power()
     with meter:
         run = session.load(program(tree_pages, sizes), deadline=deadline_s)
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         handles = [run.submit(handler, args=words) for handler, words in commands]
         events = run.wait(handles, timeout=10.0 + deadline_s * len(commands))
-        host_s = time.perf_counter() - t0
+        host_s = time.perf_counter() - started
         run.stop()
     events = events if isinstance(events, list) else [events]
     ran = Ran(events, run.result(), run.state(), host_s)
@@ -385,12 +404,12 @@ READER = (
 )
 
 
-def profile_rows(prof, n_workers):
+def profile_rows(profile, worker_count):
     """Per core: the pack thread's, reader's and writer's counters (dict of arrays)."""
-    p = prof[:n_workers].astype(np.int64)
-    out = {name: p[:, k] for k, name in enumerate(PROF)}
-    for k, name in enumerate(READER):
-        out[f"reader_{name}"] = p[:, K["kProfReader"] + k]
-    for k, name in enumerate(("wait", "write", "total", "pages")):
-        out[f"writer_{name}"] = p[:, K["kProfWriter"] + k]
-    return out
+    rows = profile[:worker_count].astype(np.int64)
+    result = {name: rows[:, word] for word, name in enumerate(PROF)}
+    for word, name in enumerate(READER):
+        result[f"reader_{name}"] = rows[:, K["kProfReader"] + word]
+    for word, name in enumerate(("wait", "write", "total", "pages")):
+        result[f"writer_{name}"] = rows[:, K["kProfWriter"] + word]
+    return result

@@ -12,33 +12,39 @@ namespace rt {
     constexpr uint32_t kHalfB = 0x3F00, kThreeHalvesB = 0x3FC0;  // 0.5, 1.5 as bfloat16
     constexpr uint32_t kFloatAbs = 1, kNoBias = 0, kPad9 = 1;
 
-    // m = 2^g Q B mod 2^32 from mantissas q, b (hidden bits set), from the 23-bit
-    // product halves (as recip() does). Uses t; q and b kept.
+    // product = 2^shift * left * right mod 2^32 from mantissas (hidden bits set), from
+    // the 23-bit product halves (as recip() does). Uses scratch; left, right kept.
     inline void prod_scaled(
-        uint32_t q, uint32_t b, uint32_t m, uint32_t t, uint32_t g
+        uint32_t left,
+        uint32_t right,
+        uint32_t product,
+        uint32_t scratch,
+        uint32_t shift
     ) {
-        TT_SFPMUL24(q, b, ZERO, m, 1);  // high bits of the 23-bit product
-        TT_SFPMUL24(q, b, ZERO, t, 0);  // its low 23 bits
+        TT_SFPMUL24(left, right, ZERO, product, 1);  // high bits of the 23-bit product
+        TT_SFPMUL24(left, right, ZERO, scratch, 0);  // its low 23 bits
         TTI_SFPNOP;
-        TT_SFPIADD(0, q, m, kCcNone);
-        TT_SFPIADD(0, b, m, kCcNone);
-        TT_SFPSHFT(23 + g, 0, m, 1);
-        TT_SFPSHFT(g, 0, t, 1);
-        TT_SFPIADD(0, t, m, kCcNone);
+        TT_SFPIADD(0, left, product, kCcNone);
+        TT_SFPIADD(0, right, product, kCcNone);
+        TT_SFPSHFT(23 + shift, 0, product, 1);
+        TT_SFPSHFT(shift, 0, scratch, 1);
+        TT_SFPIADD(0, scratch, product, kCcNone);
     }
 
-    // r one ulp up where rg (2^g times the exact remainder) exceeds `half`; `half`
-    // becomes the lower threshold, halved below a power of two. Uses lo.
-    inline void round_fix(uint32_t r, uint32_t rg, uint32_t half, uint32_t lo) {
-        TT_SFPMOV(0, rg, lo, 0);
+    // result one ulp up where scaled_remainder (2^shift times the exact remainder)
+    // exceeds `half` (halved below a power of two). Uses low.
+    inline void round_fix(
+        uint32_t result, uint32_t scaled_remainder, uint32_t half, uint32_t low
+    ) {
+        TT_SFPMOV(0, scaled_remainder, low, 0);
         TTI_SFPPUSHC(0, 0, 0, 0);
-        TT_SFPIADD(0, half, lo, kTwos);  // half - rg < 0: one up
-        TT_SFPIADD(1, r, r, kImmediate | kCcNone);
+        TT_SFPIADD(0, half, low, kTwos);  // half - scaled_remainder < 0: one up
+        TT_SFPIADD(1, result, result, kImmediate | kCcNone);
         TTI_SFPPOPC(0, 0, 0, 0);
         // The lower neighbour of a power of two is half an ulp away.
         TTI_SFPPUSHC(0, 0, 0, 0);
-        TT_SFPEXMAN(0, r, lo, kPad9);
-        TT_SFPSETCC(0, lo, 0, kEq0);
+        TT_SFPEXMAN(0, result, low, kPad9);
+        TT_SFPSETCC(0, low, 0, kEq0);
         TT_SFPSHFT(0xFFF, 0, half, 1);
         TTI_SFPPOPC(0, 0, 0, 0);
     }
@@ -89,7 +95,7 @@ namespace rt {
         TTI_SFPLOADI(L5, kFloatB, kThreeHalvesB);
         mul(L0, L4, L3);  // x / 2
 #pragma GCC unroll 3
-        for (uint32_t k = 0; k < 3; ++k) {
+        for (uint32_t refinement = 0; refinement < 3; ++refinement) {
             mul(L2, L2, L6);
             TT_SFPMAD(L3, L6, L5, L6, kNegA);  // 1.5 - (x / 2) y y
             mul(L2, L6, L2);

@@ -18,43 +18,64 @@ RATES = ("primary", "shadow", "bounce", "together")
 
 def runners(scene):
     """(folder, label, function(reps, with_power)) per implementation."""
-    n = harness.threads_all()
+    threads = harness.threads_all()
     return [
-        ("cpu1", "C++ 1 thread", lambda r, w: harness.run_cpu(scene, 1, r, False, w)),
+        (
+            "cpu1",
+            "C++ 1 thread",
+            lambda repetitions, with_power: harness.run_cpu(
+                scene, 1, repetitions, False, with_power
+            ),
+        ),
         (
             "cpu_all",
-            f"C++ {n} threads",
-            lambda r, w: harness.run_cpu(scene, n, r, False, w),
+            f"C++ {threads} threads",
+            lambda repetitions, with_power: harness.run_cpu(
+                scene, threads, repetitions, False, with_power
+            ),
         ),
-        ("v100", "V100", lambda r, w: harness.run_gpu(scene, r, False, w)),
+        (
+            "v100",
+            "V100",
+            lambda repetitions, with_power: harness.run_gpu(
+                scene, repetitions, False, with_power
+            ),
+        ),
     ]
 
 
-def rates(record, rep):
+def rates(record, repetition):
     """Mray/s of the stages of one repetition, and its total time."""
-    r = record
-    shadow_rays = r["rays_shadow"] + r["rays_shadow2"]
-    total_rays = r["rays_primary"] + shadow_rays + r["rays_bounce"]
+    shadow_rays = record["rays_shadow"] + record["rays_shadow2"]
+    total_rays = record["rays_primary"] + shadow_rays + record["rays_bounce"]
     return {
-        "primary": r["rays_primary"] / rep["primary_ms"] / 1000,
-        "shadow": shadow_rays / (rep["shadow_ms"] + rep["shadow2_ms"]) / 1000,
-        "bounce": r["rays_bounce"] / rep["bounce_ms"] / 1000,
-        "together": total_rays / rep["total_ms"] / 1000,
-        "total_ms": rep["total_ms"],
+        "primary": record["rays_primary"] / repetition["primary_ms"] / 1000,
+        "shadow": shadow_rays
+        / (repetition["shadow_ms"] + repetition["shadow2_ms"])
+        / 1000,
+        "bounce": record["rays_bounce"] / repetition["bounce_ms"] / 1000,
+        "together": total_rays / repetition["total_ms"] / 1000,
+        "total_ms": repetition["total_ms"],
     }
 
 
 def summarize(records):
     """Median, min and max of each rate and the total time over all repetitions."""
-    per_rep = [rates(rec, rep) for rec in records for rep in rec["reps"]]
-    out = {}
+    per_repetition = [
+        rates(record, repetition) for record in records for repetition in record["reps"]
+    ]
+    summary = {}
     for key in (*RATES, "total_ms"):
-        values = [p[key] for p in per_rep]
-        out[key] = {"median": statistics.median(values), "min": min(values)}
-        out[key].update({"max": max(values), "n": len(values)})
-    out["load"] = sorted({f"{r['load_before']} / {r['load_after']}" for r in records})
-    out["rays"] = {k: v for k, v in records[0].items() if k.startswith("rays_")}
-    return out
+        values = [repetition[key] for repetition in per_repetition]
+        summary[key] = {"median": statistics.median(values), "min": min(values)}
+        summary[key].update({"max": max(values), "n": len(values)})
+    summary["load"] = sorted(
+        {f"{record['load_before']} / {record['load_after']}" for record in records}
+    )
+    summary["rays"] = {
+        name: value for name, value in records[0].items() if name.startswith("rays_")
+    }
+    return summary
 
 
 def measure(scene, runs, reps):
@@ -84,27 +105,27 @@ HEADER = (
 )
 
 
-def fmt(x, digits=1):
-    return "n/a" if x is None else f"{x:.{digits}f}"
+def fmt(value, digits=1):
+    return "n/a" if value is None else f"{value:.{digits}f}"
 
 
-def cell(s):
-    if s["median"] != s["median"]:
+def cell(summary):
+    if summary["median"] != summary["median"]:
         return "n/a"
-    return f"{s['median']:.2f} ({s['min']:.2f}-{s['max']:.2f})"
+    return f"{summary['median']:.2f} ({summary['min']:.2f}-{summary['max']:.2f})"
 
 
 def row(scene, label, stages, power, load=""):
-    cells = " | ".join(cell(stages[k]) for k in (*RATES, "total_ms"))
-    gpu = "n/a"
+    cells = " | ".join(cell(stages[stage]) for stage in (*RATES, "total_ms"))
+    gpu_watts = "n/a"
     if "gpu_mean_w" in power:
-        gpu = f"{power['gpu_idle_w']:.0f} / {power['gpu_mean_w']:.0f} / "
-        gpu += f"{power['gpu_peak_w']:.0f}"
-    joules = power.get("gpu_joules_per_frame")
-    cpu = power.get("cpu_package_joules_per_frame")
+        gpu_watts = f"{power['gpu_idle_w']:.0f} / {power['gpu_mean_w']:.0f} / "
+        gpu_watts += f"{power['gpu_peak_w']:.0f}"
+    gpu_joules = power.get("gpu_joules_per_frame")
+    cpu_joules = power.get("cpu_package_joules_per_frame")
     return (
         f"| {scene} | {label} | {cells} | {power['seconds_per_frame'] * 1000:.1f} | "
-        f"{gpu} | {fmt(joules, 2)} | {fmt(cpu, 2)} | {load} |"
+        f"{gpu_watts} | {fmt(gpu_joules, 2)} | {fmt(cpu_joules, 2)} | {load} |"
     )
 
 
@@ -116,7 +137,9 @@ def external_rows(scene, external, rays_per_frame):
         if name in ("numpy", "C++ 1 thread", "C++ all threads", "V100") or not total:
             continue
         rate = rays_per_frame / total / 1000
-        stages = {k: {"median": float("nan"), "min": 0, "max": 0} for k in RATES}
+        stages = {
+            stage: {"median": float("nan"), "min": 0, "max": 0} for stage in RATES
+        }
         stages["together"] = {"median": rate, "min": rate, "max": rate}
         stages["total_ms"] = {"median": total, "min": total, "max": total}
         power = info.get("power", {"seconds_per_frame": info["seconds_per_frame"]})
@@ -131,24 +154,26 @@ def main():
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--external", nargs="*", default=[])
     parser.add_argument("--json", default=None)
-    args = parser.parse_args()
+    arguments = parser.parse_args()
     report = {}
     print(HEADER)
-    for scene in args.scenes:
-        report[scene] = measure(scene, args.runs, args.reps)
+    for scene in arguments.scenes:
+        report[scene] = measure(scene, arguments.runs, arguments.reps)
         rays = 0
         for folder, entry in report[scene].items():
             runner.attach_power("raytrace", scene, folder, {"power": entry["power"]})
             load = "; ".join(entry["stages"]["load"])
             print(row(scene, entry["label"], entry["stages"], entry["power"], load))
-            r = entry["stages"]["rays"]
-            rays = r["rays_primary"] + r["rays_shadow"] + r["rays_bounce"]
-            rays += r["rays_shadow2"]
-        for line in external_rows(scene, args.external, rays):
+            counts = entry["stages"]["rays"]
+            rays = (
+                counts["rays_primary"] + counts["rays_shadow"] + counts["rays_bounce"]
+            )
+            rays += counts["rays_shadow2"]
+        for line in external_rows(scene, arguments.external, rays):
             print(line)
-    if args.json:
-        with open(args.json, "w") as f:
-            json.dump(report, f, indent=1)
+    if arguments.json:
+        with open(arguments.json, "w") as file:
+            json.dump(report, file, indent=1)
 
 
 if __name__ == "__main__":

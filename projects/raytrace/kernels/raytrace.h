@@ -4,25 +4,26 @@
 
 #include <stdint.h>
 
-// LOAD: a0 tree image, a1 its bytes. Every core copies the tree into its tree buffer.
+// LOAD: a0 tree_address (the image), a1 tree_bytes. Every core copies the tree into its
+// tree buffer.
 constexpr uint32_t kHandlerLoad = 1;
-// TRACE: a0 directory, a1 packets, a2 hits, a3 mode (kModeNearest or kModeAny), a4
-// profile. Each core walks the packets its directory entry names.
+// TRACE: a0 directory_address, a1 packets_address, a2 hits_address, a3 mode
+// (kModeNearest or kModeAny), a4 profile_address; each core walks its directory entry.
 constexpr uint32_t kHandlerTrace = 2;
-// ARITH: a0 directory, a1 input pages, a2 output pages, a4 profile. The slab and
-// triangle tests on per-lane inputs (the arithmetic check).
+// ARITH: a0 directory_address, a1 input_address, a2 output_address, a4 profile_address.
+// The slab and triangle tests on per-lane inputs (the arithmetic check).
 constexpr uint32_t kHandlerArith = 3;
-// RECIP: a0 directory, a2 output pages, a3 exponent field, a4 profile. Reciprocals of
-// every mantissa with that exponent, generated on the card.
+// RECIP: a0 directory_address, a2 output_address, a3 exponent_field, a4
+// profile_address; every mantissa's reciprocal with that exponent, made on the card.
 constexpr uint32_t kHandlerRecip = 4;
-// TREELETS: as TRACE, top tree loaded; a5 treelet images, a6 list entries, a7 slot
-// bytes, a8 slots, a9 policy | (1 + bank) << kBankShift (a0 in that bank, if set).
+// TREELETS: as TRACE, top tree loaded; a5 treelet_images_address, a6 list_entries, a7
+// slot_bytes, a8 slot_limit, a9 policy_word (policy | (1 + bank) << kBankShift).
 constexpr uint32_t kHandlerTreelets = 5;
 constexpr uint32_t kPolicyRounds = 0;  // round r: the r-th treelet of every packet
 constexpr uint32_t kPolicyOnce = 1;
-constexpr uint32_t kBankShift = 8;
-// PROBE: as TRACE (one packet per page), a3 the form, a5 passes; each pass tests the
-// packet against both children of every inner node of the loaded tree.
+constexpr uint32_t kBankShift = 8;  // a0 is in that bank, if the bank field is set
+// PROBE: as TRACE (one packet per page), a3 form, a5 passes; each pass tests the packet
+// against both children of every inner node of the loaded tree.
 constexpr uint32_t kHandlerProbe = 6;
 constexpr uint32_t kProbeImmediate = 0;  // the slab tests, box words as immediates
 constexpr uint32_t kProbeData = 1;       // the same, box words loaded from Dst
@@ -32,8 +33,8 @@ constexpr uint32_t kProbeFast = 4;   // fused multiply-add, no exactness (report
 constexpr uint32_t kProbeSync = 5;   // the entry test and lane read-back alone
 // MATH: as ARITH; division and square root on per-lane inputs (their check).
 constexpr uint32_t kHandlerMath = 7;
-// Stages of a frame, each core its own packets: a0 directory, a3 constant page, a4
-// profile; per-packet streams (inputs, then outputs) in a1, a2, a5, a6, ...
+// Frame stages, each core its own packets: a0 directory_address, a3 constants_address,
+// a4 profile_address; streams (inputs, outputs) in a1, a2, a5, a6, .. (stream_arg).
 
 // GEN: packet descriptors in; primary ray packets out.
 constexpr uint32_t kHandlerGen = 8;
@@ -44,10 +45,12 @@ constexpr uint32_t kHandlerShade1 = 9;
 constexpr uint32_t kHandlerShade2 = 10;
 // IMAGE: state 2 and the second shadow hits in; colour pages out.
 constexpr uint32_t kHandlerImage = 11;
-// SORT: a0 directory, a1 packets in, a2 out, a3 order pages, a4 profile, a5 0, a6 to a9
-// key; the core's rays by octant and origin cell. UNSORT: a5 vectors; lanes back.
+// SORT: a0 directory_address, a1 input_address, a2 output_address, a3 order_address,
+// a4 profile_address, a5 unsort_vectors (0); orders the core's rays by octant and cell.
 constexpr uint32_t kHandlerSort = 12;
-constexpr uint32_t kSortCellBits = 9;  // origin cells per axis: 2^9; a9 = frac | shift << 8
+// SORT's a6 to a8: the key's low corner; a9 key_word = fraction bits | shift << 8.
+// UNSORT (the same handler): a5 unsort_vectors, the vectors to put back; lanes back.
+constexpr uint32_t kSortCellBits = 9;       // origin cells per axis: 2^9
 constexpr uint32_t kSortDigitBits = 11;     // radix sort: three passes over 31 key bits
 constexpr uint32_t kSortInvalid = 1 << 30;  // the key of a lane without a ray
 
@@ -267,11 +270,19 @@ constexpr bool is_stage(uint32_t handler) {
     return handler >= kHandlerGen && handler <= kHandlerImage;
 }
 
-// Command word of stream k: a1, a2, a5, a6, ...
+// Command word of stream `stream`: a1, a2, a5, a6, ...
 template <typename Command>
-inline uint32_t stream_arg(const Command& r, uint32_t k) {
-    const uint32_t w[kMaxStreams] = {r.a1, r.a2, r.a5, r.a6, r.a7, r.a8, r.a9};
-    return w[k];
+inline uint32_t stream_arg(const Command& command, uint32_t stream) {
+    const uint32_t words[kMaxStreams] = {
+        command.a1,
+        command.a2,
+        command.a5,
+        command.a6,
+        command.a7,
+        command.a8,
+        command.a9
+    };
+    return words[stream];
 }
 
 // Profile page of a core (a4, one 4096-byte page per core): the pack thread's counters

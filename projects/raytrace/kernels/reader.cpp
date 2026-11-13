@@ -16,9 +16,9 @@ namespace {
     uint32_t g_tree = 0;  // L1 address of the tree (or top tree) image, after LOAD
 
     // Stores to L1 finished before a push: a load of the last word written, used.
-    void settle(volatile tt_l1_ptr uint32_t* w) {
-        const uint32_t v = *w;
-        asm volatile("and x0, x0, %0" : : "r"(v) : "memory");
+    void settle(volatile tt_l1_ptr uint32_t* last_word) {
+        const uint32_t value = *last_word;
+        asm volatile("and x0, x0, %0" : : "r"(value) : "memory");
     }
 
     uint32_t in_page_bytes(uint32_t handler) {
@@ -29,7 +29,7 @@ namespace {
     }
 
     // Packet pages go kPagePackets to a DRAM page; the check pages one to a page.
-    uint32_t per_page(uint32_t handler) {
+    uint32_t packets_per_page(uint32_t handler) {
         return (
             handler == kHandlerArith || handler == kHandlerMath ||
                 handler == kHandlerRecip
@@ -38,28 +38,32 @@ namespace {
         );
     }
 
-    // Page g of a stream of `bytes` pages into the input buffer, pushed; the wait for
-    // room is added to `wait`.
+    // Page `page` of a stream of pages holding `page_packets` items of `item_bytes`
+    // each, into the input buffer, pushed; the wait for room is added to `wait`.
     bool read_page(
-        km::Reader& rd,
-        uint32_t base,
-        uint32_t bytes,
-        uint32_t per,
-        uint32_t g,
+        km::Reader& reader,
+        uint32_t base_address,
+        uint32_t item_bytes,
+        uint32_t page_packets,
+        uint32_t page,
         uint32_t& wait
     ) {
-        const uint32_t a = km::wall();
-        if (!rd.reserve(kCbIn, 1)) {
+        const uint32_t started = km::wall();
+        if (!reader.reserve(kCbIn, 1)) {
             return false;
         }
-        wait += km::wall() - a;
-        const InterleavedAddrGen<true> pages = {
-            .bank_base_address = base, .page_size = bytes * per
+        wait += km::wall() - started;
+        const InterleavedAddrGen<true> addresses = {
+            .bank_base_address = base_address, .page_size = item_bytes * page_packets
         };
         noc_async_read(
-            get_noc_addr(g / per, pages, (g % per) * bytes), get_write_ptr(kCbIn), bytes
+            get_noc_addr(
+                page / page_packets, addresses, (page % page_packets) * item_bytes
+            ),
+            get_write_ptr(kCbIn),
+            item_bytes
         );
-        if (!timed::reads_done(rd, km::kStReader)) {
+        if (!timed::reads_done(reader, km::kStReader)) {
             return false;
         }
         cb_push_back(kCbIn, 1);
@@ -69,139 +73,164 @@ namespace {
     // Treelets in L1 slots, least recently used replaced; a slot is free again once
     // compute has finished the last work page that names it.
     struct Slots {
-        uint32_t base, bytes, n;
+        uint32_t base, bytes, count;
         uint32_t treelet[kMaxSlots];
         uint32_t last[kMaxSlots];  // work pages submitted when it was last named
         uint32_t used[kMaxSlots];  // last use
         uint32_t clock = 0;
 
-        int32_t find(uint32_t t) const {
-            for (uint32_t k = 0; k < n; ++k) {
-                if (treelet[k] == t) {
-                    return static_cast<int32_t>(k);
+        int32_t find(uint32_t wanted) const {
+            for (uint32_t slot = 0; slot < count; ++slot) {
+                if (treelet[slot] == wanted) {
+                    return static_cast<int32_t>(slot);
                 }
             }
             return -1;
         }
 
         uint32_t victim() const {
-            uint32_t v = 0;
-            for (uint32_t k = 1; k < n; ++k) {
-                v = used[k] < used[v] ? k : v;
+            uint32_t oldest = 0;
+            for (uint32_t slot = 1; slot < count; ++slot) {
+                oldest = used[slot] < used[oldest] ? slot : oldest;
             }
-            return v;
+            return oldest;
         }
     };
 
-    // A command's treelet schedule, batch by batch: rounds (r-th list entries) or once;
-    // packets binned by treelet, a treelet read into a slot unless present.
+    // A command's treelet schedule per batch: rounds (entry `round` of every list) or
+    // once; packets binned by treelet, a treelet read into a slot unless present.
     class Schedule {
     public:
         Schedule(
-            km::Reader& rd,
-            const km_command_t& r,
-            uint32_t count,
-            volatile tt_l1_ptr uint32_t* d
+            km::Reader& reader,
+            const km_command_t& command,
+            uint32_t packets,
+            volatile tt_l1_ptr uint32_t* directory
         ) :
-            rd_(rd), r_(r), count_(count), d_(d) {
+            reader_(reader),
+            treelet_images_address_(command.a5),
+            list_entries_(command.a6),
+            slot_bytes_(command.a7),
+            slot_limit_(command.a8),
+            policy_word_(command.a9),
+            packets_(packets),
+            directory_(directory) {
         }
 
         // Buffers and empty slots; false when the lists' scratch does not fit.
         bool init() {
             const uint32_t* top = reinterpret_cast<const uint32_t*>(g_tree);
-            n_treelets_ = top[kTreeTreelets];
-            const uint32_t n_treelets = n_treelets_;
-            table_ = top + top[kTreeTableOff];
-            ls_ = km::l1(get_write_ptr(kCbLists));
-            uint32_t* cnt = (
+            treelet_count_ = top[kTreeTreelets];
+            const uint32_t treelets = treelet_count_;
+            treelet_table_ = top + top[kTreeTableOff];
+            lists_ = km::l1(get_write_ptr(kCbLists));
+            uint32_t* counts = (
                 reinterpret_cast<uint32_t*>(
-                    get_write_ptr(kCbLists) + 4 * (kLsHead + 2 * count_) + 2 * r_.a6
+                    get_write_ptr(kCbLists) + 4 * (kLsHead + 2 * packets_) +
+                    2 * list_entries_
                 )
             );
-            cnt_ = cnt;
-            present_ = reinterpret_cast<uint16_t*>(cnt + n_treelets);
-            order_ = present_ + n_treelets;
-            const uint32_t most = r_.a6 > count_ ? r_.a6 : count_;
+            counts_ = counts;
+            present_ = reinterpret_cast<uint16_t*>(counts + treelets);
+            order_ = present_ + treelets;
+            const uint32_t most = list_entries_ > packets_ ? list_entries_ : packets_;
             const uint32_t end = reinterpret_cast<uint32_t>(order_ + most);
             if (!timed::fits(kCbLists, end - get_write_ptr(kCbLists))) {
-                rd_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 3, end);
+                reader_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 3, end);
                 return false;
             }
             slots_.base = get_write_ptr(kCbSlots);
-            slots_.bytes = r_.a7;
-            slots_.n = r_.a8 < kMaxSlots ? r_.a8 : kMaxSlots;
-            for (uint32_t k = 0; k < slots_.n; ++k) {
-                slots_.treelet[k] = 0xFFFFFFFF;
-                slots_.last[k] = slots_.used[k] = 0;
+            slots_.bytes = slot_bytes_;
+            slots_.count = slot_limit_ < kMaxSlots ? slot_limit_ : kMaxSlots;
+            for (uint32_t slot = 0; slot < slots_.count; ++slot) {
+                slots_.treelet[slot] = 0xFFFFFFFF;
+                slots_.last[slot] = slots_.used[slot] = 0;
             }
-            for (uint32_t t = 0; t < n_treelets; ++t) {
-                cnt[t] = 0;
+            for (uint32_t treelet = 0; treelet < treelets; ++treelet) {
+                counts[treelet] = 0;
             }
             return true;
         }
 
         // The current lists (one batch); then kLsMore: packets left for another batch.
         bool batch() {
-            const volatile uint32_t* dir = ls_ + kLsHead;
+            const volatile uint32_t* heads = lists_ + kLsHead;
             const volatile uint16_t* pool = (
-                reinterpret_cast<const volatile uint16_t*>(ls_ + kLsHead + 2 * count_)
+                reinterpret_cast<const volatile uint16_t*>(
+                    lists_ + kLsHead + 2 * packets_
+                )
             );
-            uint32_t* cnt = cnt_;
+            uint32_t* counts = counts_;
             uint16_t* present = present_;
             uint16_t* order = order_;
-            // Rounds: entry r of every list in round r. Once: every entry in one round.
-            const bool once = (r_.a9 & 0xFF) == kPolicyOnce;
+            // Rounds: entry `round` of every list in that round. Once: every entry in
+            // one round.
+            const bool once = (policy_word_ & 0xFF) == kPolicyOnce;
             uint32_t rounds = 0;
-            for (uint32_t p = 0; p < count_; ++p) {
-                rounds = dir[2 * p + 1] > rounds ? dir[2 * p + 1] : rounds;
+            for (uint32_t packet = 0; packet < packets_; ++packet) {
+                rounds = (
+                    heads[2 * packet + 1] > rounds ? heads[2 * packet + 1] : rounds
+                );
             }
             rounds = once && rounds > 0 ? 1 : rounds;
-            d_[kRdWords + kRdRounds] += rounds;
+            directory_[kRdWords + kRdRounds] += rounds;
             for (uint32_t round = 0; round < rounds; ++round) {
-                const uint32_t a = km::wall();
-                uint32_t n_present = 0;
-                for (uint32_t p = 0; p < count_; ++p) {
-                    const uint32_t len = dir[2 * p + 1], at = dir[2 * p];
-                    const uint32_t hi = once ? len : (len > round ? round + 1 : 0);
-                    for (uint32_t j = once ? 0 : round; j < hi; ++j) {
-                        const uint32_t t = pool[at + j];
-                        if (cnt[t]++ == 0) {
-                            present[n_present++] = t;
+                const uint32_t started = km::wall();
+                uint32_t present_count = 0;
+                for (uint32_t packet = 0; packet < packets_; ++packet) {
+                    const uint32_t length = heads[2 * packet + 1];
+                    const uint32_t first_entry = heads[2 * packet];
+                    const uint32_t entry_end = (
+                        once ? length : (length > round ? round + 1 : 0)
+                    );
+                    for (
+                        uint32_t entry = once ? 0 : round; entry < entry_end; ++entry
+                    ) {
+                        const uint32_t treelet = pool[first_entry + entry];
+                        if (counts[treelet]++ == 0) {
+                            present[present_count++] = treelet;
                         }
                     }
                 }
                 uint32_t sum = 0;
-                for (uint32_t k = 0; k < n_present; ++k) {
-                    const uint32_t c = cnt[present[k]];
-                    cnt[present[k]] = sum;
-                    sum += c;
+                for (uint32_t index = 0; index < present_count; ++index) {
+                    const uint32_t count = counts[present[index]];
+                    counts[present[index]] = sum;
+                    sum += count;
                 }
-                for (uint32_t p = 0; p < count_; ++p) {
-                    const uint32_t len = dir[2 * p + 1], at = dir[2 * p];
-                    const uint32_t hi = once ? len : (len > round ? round + 1 : 0);
-                    for (uint32_t j = once ? 0 : round; j < hi; ++j) {
-                        order[cnt[pool[at + j]]++] = p;
+                for (uint32_t packet = 0; packet < packets_; ++packet) {
+                    const uint32_t length = heads[2 * packet + 1];
+                    const uint32_t first_entry = heads[2 * packet];
+                    const uint32_t entry_end = (
+                        once ? length : (length > round ? round + 1 : 0)
+                    );
+                    for (
+                        uint32_t entry = once ? 0 : round; entry < entry_end; ++entry
+                    ) {
+                        order[counts[pool[first_entry + entry]]++] = packet;
                     }
                 }
-                d_[kRdWords + kRdBin] += km::wall() - a;
+                directory_[kRdWords + kRdBin] += km::wall() - started;
                 // Treelets already in a slot first (marked done), then the others.
                 for (uint32_t pass = 0; pass < 2; ++pass) {
                     uint32_t begin = 0;
-                    for (uint32_t k = 0; k < n_present; ++k) {
-                        const uint32_t t = present[k] & ~kDone;
-                        const uint32_t end = cnt[t];
+                    for (uint32_t index = 0; index < present_count; ++index) {
+                        const uint32_t treelet = present[index] & ~kDone;
+                        const uint32_t end = counts[treelet];
                         const bool now = (
-                            pass == 0 ? slots_.find(t) >= 0 : (present[k] & kDone) == 0
+                            pass == 0
+                                ? slots_.find(treelet) >= 0
+                                : (present[index] & kDone) == 0
                         );
-                        if (now && !group(t, order + begin, end - begin)) {
+                        if (now && !group(treelet, order + begin, end - begin)) {
                             return false;
                         }
-                        present[k] |= now ? kDone : 0;
+                        present[index] |= now ? kDone : 0;
                         begin = end;
                     }
                 }
-                for (uint32_t k = 0; k < n_present; ++k) {
-                    cnt[present[k] & ~kDone] = 0;
+                for (uint32_t index = 0; index < present_count; ++index) {
+                    counts[present[index] & ~kDone] = 0;
                 }
             }
             return true;
@@ -209,117 +238,127 @@ namespace {
 
         // A batch's end page: kWorkEnd (after the counters are written: the writer
         // reads them next) or kWorkNext.
-        bool finish(uint32_t word) {
-            if (!rd_.reserve(kCbWork, 1)) {
+        bool finish(uint32_t marker) {
+            if (!reader_.reserve(kCbWork, 1)) {
                 return false;
             }
-            volatile tt_l1_ptr uint32_t* w = km::l1(get_write_ptr(kCbWork));
-            w[kWorkCount] = word;
-            settle(w + kWorkCount);
+            volatile tt_l1_ptr uint32_t* page = km::l1(get_write_ptr(kCbWork));
+            page[kWorkCount] = marker;
+            settle(page + kWorkCount);
             cb_push_back(kCbWork, 1);
             return true;
         }
 
         bool more() const {
-            return ls_[kLsMore] != 0;
+            return lists_[kLsMore] != 0;
         }
 
     private:
-        bool group(uint32_t t, const uint16_t* ids, uint32_t n) {
-            int32_t k = slots_.find(t);
-            if (k >= 0) {
-                d_[kRdWords + kRdHits]++;
+        bool group(uint32_t treelet, const uint16_t* ids, uint32_t packets) {
+            int32_t slot = slots_.find(treelet);
+            if (slot >= 0) {
+                directory_[kRdWords + kRdHits]++;
             } else {
-                k = static_cast<int32_t>(slots_.victim());
-                if (!wait_done(slots_.last[k]) || !fetch(t, k)) {
+                slot = static_cast<int32_t>(slots_.victim());
+                if (!wait_done(slots_.last[slot]) || !fetch(treelet, slot)) {
                     return false;
                 }
             }
-            for (uint32_t i = 0; i < n; i += kWorkMax) {
-                const uint32_t m = n - i < kWorkMax ? n - i : kWorkMax;
-                const uint32_t a = km::wall();
-                if (!rd_.reserve(kCbWork, 1)) {
+            for (uint32_t i = 0; i < packets; i += kWorkMax) {
+                const uint32_t chunk = packets - i < kWorkMax ? packets - i : kWorkMax;
+                const uint32_t started = km::wall();
+                if (!reader_.reserve(kCbWork, 1)) {
                     return false;
                 }
-                d_[kRdWords + kRdWorkWait] += km::wall() - a;
+                directory_[kRdWords + kRdWorkWait] += km::wall() - started;
                 const uint32_t page = get_write_ptr(kCbWork);
-                volatile tt_l1_ptr uint32_t* w = km::l1(page);
-                w[kWorkSlot] = slots_.base + k * slots_.bytes;
-                w[kWorkTreelet] = t;
-                w[kWorkCount] = m;
+                volatile tt_l1_ptr uint32_t* work = km::l1(page);
+                work[kWorkSlot] = slots_.base + slot * slots_.bytes;
+                work[kWorkTreelet] = treelet;
+                work[kWorkCount] = chunk;
                 volatile tt_l1_ptr uint16_t*
-                    out = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(w + kWorkIds);
-                for (uint32_t j = 0; j < m; ++j) {
-                    out[j] = ids[i + j];
+                    ids_out = (
+                        reinterpret_cast<volatile tt_l1_ptr uint16_t*>(work + kWorkIds)
+                    );
+                for (uint32_t j = 0; j < chunk; ++j) {
+                    ids_out[j] = ids[i + j];
                 }
-                settle(w + kWorkIds + (m - 1) / 2);
+                settle(work + kWorkIds + (chunk - 1) / 2);
                 cb_push_back(kCbWork, 1);
                 items_++;
-                d_[kRdWords + kRdItems] = items_;
-                d_[kRdWords + kRdVisits] += m;
+                directory_[kRdWords + kRdItems] = items_;
+                directory_[kRdWords + kRdVisits] += chunk;
             }
-            slots_.last[k] = items_;
-            slots_.used[k] = ++slots_.clock;
-            d_[kRdWords + kRdGroups]++;
+            slots_.last[slot] = items_;
+            slots_.used[slot] = ++slots_.clock;
+            directory_[kRdWords + kRdGroups]++;
             return true;
         }
 
         // Until compute has finished `need` work pages.
         bool wait_done(uint32_t need) {
-            const uint32_t a = km::wall();
-            const uint32_t code = rd_.poll(
+            const uint32_t started = km::wall();
+            const uint32_t code = reader_.poll(
                 [&] {
-                    return ls_[kLsDone] >= need;
+                    return lists_[kLsDone] >= need;
                 },
-                rd_.args().wait_limit
+                reader_.args().wait_limit
             );
-            d_[kRdWords + kRdSlotWait] += km::wall() - a;
+            directory_[kRdWords + kRdSlotWait] += km::wall() - started;
             if (code != km::kGaveNone) {
-                rd_.gave_up(km::kStReader, code, km::kWhereData, 0, 0);
+                reader_.gave_up(km::kStReader, code, km::kWhereData, 0, 0);
                 return false;
             }
             return true;
         }
 
-        bool fetch(uint32_t t, uint32_t k) {
-            const uint32_t a = km::wall();
+        bool fetch(uint32_t treelet, uint32_t slot) {
+            const uint32_t started = km::wall();
             const InterleavedAddrGen<true> images = {
-                .bank_base_address = r_.a5, .page_size = kTreePageBytes
+                .bank_base_address = treelet_images_address_,
+                .page_size = kTreePageBytes
             };
-            const uint32_t first = table_[2 * t], pages = table_[2 * t + 1];
-            const uint32_t dst = slots_.base + k * slots_.bytes;
+            const uint32_t first_page = treelet_table_[2 * treelet];
+            const uint32_t pages = treelet_table_[2 * treelet + 1];
+            const uint32_t destination = slots_.base + slot * slots_.bytes;
             if (
                 pages * kTreePageBytes > slots_.bytes ||
-                !timed::fits(kCbSlots, (k + 1) * slots_.bytes)
+                !timed::fits(kCbSlots, (slot + 1) * slots_.bytes)
             ) {
-                rd_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 1, t);
+                reader_.gave_up(
+                    km::kStReader, km::kGaveLimit, km::kWhereData, 1, treelet
+                );
                 return false;
             }
-            for (uint32_t p = 0; p < pages; ++p) {
+            for (uint32_t page = 0; page < pages; ++page) {
                 noc_async_read(
-                    get_noc_addr(first + p, images),
-                    dst + p * kTreePageBytes,
+                    get_noc_addr(first_page + page, images),
+                    destination + page * kTreePageBytes,
                     kTreePageBytes
                 );
             }
-            if (!timed::reads_done(rd_, km::kStReader)) {
+            if (!timed::reads_done(reader_, km::kStReader)) {
                 return false;
             }
-            slots_.treelet[k] = t;
-            d_[kRdWords + kRdFetch] += km::wall() - a;
-            d_[kRdWords + kRdReads]++;
-            d_[kRdWords + kRdPages] += pages;
+            slots_.treelet[slot] = treelet;
+            directory_[kRdWords + kRdFetch] += km::wall() - started;
+            directory_[kRdWords + kRdReads]++;
+            directory_[kRdWords + kRdPages] += pages;
             return true;
         }
 
-        km::Reader& rd_;
-        const km_command_t& r_;
-        const uint32_t count_;
-        volatile tt_l1_ptr uint32_t* d_;
-        volatile tt_l1_ptr uint32_t* ls_ = nullptr;
-        const uint32_t* table_ = nullptr;
-        uint32_t n_treelets_ = 0;
-        uint32_t* cnt_ = nullptr;
+        km::Reader& reader_;
+        const uint32_t treelet_images_address_;
+        const uint32_t list_entries_;
+        const uint32_t slot_bytes_;
+        const uint32_t slot_limit_;
+        const uint32_t policy_word_;
+        const uint32_t packets_;
+        volatile tt_l1_ptr uint32_t* directory_;
+        volatile tt_l1_ptr uint32_t* lists_ = nullptr;
+        const uint32_t* treelet_table_ = nullptr;
+        uint32_t treelet_count_ = 0;
+        uint32_t* counts_ = nullptr;
         uint16_t* present_ = nullptr;
         uint16_t* order_ = nullptr;
         Slots slots_;
@@ -331,75 +370,90 @@ namespace {
     class Sorter {
     public:
         Sorter(
-            km::Reader& rd,
-            const km_command_t& r,
-            uint32_t first,
-            uint32_t count,
-            volatile tt_l1_ptr uint32_t* d
+            km::Reader& reader,
+            const km_command_t& command,
+            uint32_t first_packet,
+            uint32_t packets,
+            volatile tt_l1_ptr uint32_t* directory,
+            uint32_t unsort_vectors
         ) :
-            rd_(rd), r_(r), first_(first), count_(count), n_(count * kVec), d_(d) {
+            reader_(reader),
+            input_address_(command.a1),
+            output_address_(command.a2),
+            order_address_(command.a3),
+            vectors_(unsort_vectors),
+            corner_{command.a6, command.a7, command.a8},
+            key_word_(command.a9),
+            first_packet_(first_packet),
+            packets_(packets),
+            lanes_(packets * kVec),
+            directory_(directory) {
         }
 
         // Key and order arrays, two vectors of every packet, the radix counts and the
         // per-packet signs: the bytes from the slot buffer's write pointer.
-        static uint32_t bytes(uint32_t count) {
-            return (6 * count * kVec + kSortHist + count) * 4;
+        static uint32_t scratch_bytes(uint32_t packets) {
+            return (6 * packets * kVec + kSortHist + packets) * 4;
         }
 
         bool sort() {
             if (!layout()) {
                 return false;
             }
-            const uint32_t a = km::wall();
-            for (uint32_t i = 0; i < n_; ++i) {
-                key_[i] = 0;
-                idx_[i] = i;
+            const uint32_t started = km::wall();
+            for (uint32_t lane = 0; lane < lanes_; ++lane) {
+                key_[lane] = 0;
+                index_[lane] = lane;
             }
-            const uint32_t bytes = kPacketBytes;
+            const uint32_t page_bytes = kPacketBytes;
             // Keys: the octant from the direction's signs, the origin's Morton cell.
-            if (!gather_in(r_.a1, bytes, kPkBest)) {
+            if (!gather_in(input_address_, page_bytes, kPkBest)) {
                 return false;
             }
             uint32_t* __restrict key = key_;
-            const uint32_t* __restrict src = src_;
-            const uint32_t n = n_;
-            for (uint32_t i = 0; i < n; ++i) {
-                key[i] = src[i] == kMinusOneBits ? kSortInvalid : 0;
+            const uint32_t* __restrict source = source_;
+            const uint32_t lanes = lanes_;
+            for (uint32_t lane = 0; lane < lanes; ++lane) {
+                key[lane] = source[lane] == kMinusOneBits ? kSortInvalid : 0;
             }
-            for (uint32_t k = 0; k < 3; ++k) {
-                if (!gather_in(r_.a1, bytes, kPkD + k)) {
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                if (!gather_in(input_address_, page_bytes, kPkD + axis)) {
                     return false;
                 }
-                const uint32_t at = 3 * kSortCellBits + k;
-                for (uint32_t i = 0; i < n; ++i) {
-                    key[i] |= (src[i] >> 31) << at;
+                const uint32_t bit = 3 * kSortCellBits + axis;
+                for (uint32_t lane = 0; lane < lanes; ++lane) {
+                    key[lane] |= (source[lane] >> 31) << bit;
                 }
             }
-            const uint32_t frac = r_.a9 & 0xFF, shift = (r_.a9 >> 8) & 0xFF;
-            const uint32_t lo[3] = {r_.a6, r_.a7, r_.a8};
-            for (uint32_t k = 0; k < 3; ++k) {
-                if (!gather_in(r_.a1, bytes, kPkO + k)) {
+            const uint32_t fraction_bits = key_word_ & 0xFF;
+            const uint32_t shift = (key_word_ >> 8) & 0xFF;
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                if (!gather_in(input_address_, page_bytes, kPkO + axis)) {
                     return false;
                 }
-                const uint32_t low = lo[k];
-                for (uint32_t i = 0; i < n; ++i) {
-                    key[i] |= spread(cell(src[i], frac, low, shift)) << k;
+                const uint32_t low = corner_[axis];
+                for (uint32_t lane = 0; lane < lanes; ++lane) {
+                    key[lane] |= (
+                        spread(cell(source[lane], fraction_bits, low, shift)) << axis
+                    );
                 }
             }
-            for (uint32_t i = 0; i < n; ++i) {
-                key[i] = (key[i] & kSortInvalid) ? kSortInvalid : key[i];
+            for (uint32_t lane = 0; lane < lanes; ++lane) {
+                key[lane] = (key[lane] & kSortInvalid) ? kSortInvalid : key[lane];
             }
-            const uint32_t b = km::wall();
+            const uint32_t radix_started = km::wall();
             radix();
-            d_[kRdWords + 1] += km::wall() - b;
+            directory_[kRdWords + 1] += km::wall() - radix_started;
             // The order pages, then every vector through the order; the header last.
-            for (uint32_t q = 0; q < count_; ++q) {
-                write_lanes(r_.a3, kVec * 4, q, 0, l1(order_ + q * kVec));
+            for (uint32_t packet = 0; packet < packets_; ++packet) {
+                write_lanes(
+                    order_address_, kVec * 4, packet, 0, l1(order_ + packet * kVec)
+                );
             }
-            for (uint32_t q = 0; q < count_; ++q) {
-                signs_[q] = 0;
+            for (uint32_t packet = 0; packet < packets_; ++packet) {
+                signs_[packet] = 0;
             }
-            const uint32_t order[kPkHead] = {
+            const uint32_t vector_order[kPkHead] = {
                 kPkBest,
                 kPkD,
                 kPkD + 1,
@@ -411,34 +465,34 @@ namespace {
                 kPkInv + 1,
                 kPkInv + 2
             };
-            for (uint32_t j = 0; j < kPkHead; ++j) {
-                const uint32_t v = order[j];
-                if (!gather_in(r_.a1, bytes, v)) {
+            for (uint32_t step = 0; step < kPkHead; ++step) {
+                const uint32_t vector = vector_order[step];
+                if (!gather_in(input_address_, page_bytes, vector)) {
                     return false;
                 }
-                permute(dst_, src_, order_, n_, true);
-                if (v >= kPkD && v < kPkD + 3) {
-                    count_signs(v - kPkD);
+                permute(destination_, source_, order_, lanes_, true);
+                if (vector >= kPkD && vector < kPkD + 3) {
+                    count_signs(vector - kPkD);
                 }
-                if (v == kPkBest) {
-                    for (uint32_t i = 0; i < n_; ++i) {
-                        valid_[i] = dst_[i] != kMinusOneBits;
+                if (vector == kPkBest) {
+                    for (uint32_t lane = 0; lane < lanes_; ++lane) {
+                        valid_[lane] = destination_[lane] != kMinusOneBits;
                     }
                 }
-                if (!scatter_out(r_.a2, bytes, v)) {
+                if (!scatter_out(output_address_, page_bytes, vector)) {
                     return false;
                 }
             }
-            for (uint32_t i = 0; i < n_; ++i) {
-                dst_[i] = 0;
+            for (uint32_t lane = 0; lane < lanes_; ++lane) {
+                destination_[lane] = 0;
             }
-            for (uint32_t q = 0; q < count_; ++q) {
-                dst_[q * kVec + kHeadSigns] = signs_[q];
+            for (uint32_t packet = 0; packet < packets_; ++packet) {
+                destination_[packet * kVec + kHeadSigns] = signs_[packet];
             }
-            if (!scatter_out(r_.a2, bytes, kPkHead)) {
+            if (!scatter_out(output_address_, page_bytes, kPkHead)) {
                 return false;
             }
-            d_[kRdWords + 2] = km::wall() - a;
+            directory_[kRdWords + 2] = km::wall() - started;
             return true;
         }
 
@@ -446,30 +500,34 @@ namespace {
             if (!layout()) {
                 return false;
             }
-            const uint32_t a = km::wall();
-            const uint32_t vectors = r_.a5, bytes = vectors * kVec * 4;
-            for (uint32_t q = 0; q < count_; ++q) {
-                read_lanes(r_.a3, kVec * 4, q, 0, l1(order_ + q * kVec));
+            const uint32_t started = km::wall();
+            const uint32_t vectors = vectors_, page_bytes = vectors * kVec * 4;
+            for (uint32_t packet = 0; packet < packets_; ++packet) {
+                read_lanes(
+                    order_address_, kVec * 4, packet, 0, l1(order_ + packet * kVec)
+                );
             }
-            if (!timed::reads_done(rd_, km::kStReader)) {
+            if (!timed::reads_done(reader_, km::kStReader)) {
                 return false;
             }
-            for (uint32_t i = 0; i < n_; ++i) {
-                if (order_[i] >= n_) {
-                    rd_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 4, i);
+            for (uint32_t lane = 0; lane < lanes_; ++lane) {
+                if (order_[lane] >= lanes_) {
+                    reader_.gave_up(
+                        km::kStReader, km::kGaveLimit, km::kWhereData, 4, lane
+                    );
                     return false;
                 }
             }
-            for (uint32_t v = 0; v < vectors; ++v) {
-                if (!gather_in(r_.a1, bytes, v)) {
+            for (uint32_t vector = 0; vector < vectors; ++vector) {
+                if (!gather_in(input_address_, page_bytes, vector)) {
                     return false;
                 }
-                permute(dst_, src_, order_, n_, false);
-                if (!scatter_out(r_.a2, bytes, v)) {
+                permute(destination_, source_, order_, lanes_, false);
+                if (!scatter_out(output_address_, page_bytes, vector)) {
                     return false;
                 }
             }
-            d_[kRdWords + 2] = km::wall() - a;
+            directory_[kRdWords + 2] = km::wall() - started;
             return true;
         }
 
@@ -477,243 +535,307 @@ namespace {
         static constexpr uint32_t kSortHist = 1u << kSortDigitBits;
         static constexpr uint32_t kMinusOneBits = 0xBF800000;
 
-        static uint32_t l1(const uint32_t* p) {
-            return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p));
+        static uint32_t l1(const uint32_t* pointer) {
+            return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pointer));
         }
 
         bool layout() {
-            if (!timed::fits(kCbSlots, bytes(count_))) {
-                rd_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 3, count_);
+            if (!timed::fits(kCbSlots, scratch_bytes(packets_))) {
+                reader_.gave_up(
+                    km::kStReader, km::kGaveLimit, km::kWhereData, 3, packets_
+                );
                 return false;
             }
-            uint32_t* base = reinterpret_cast<uint32_t*>(get_write_ptr(kCbSlots));
-            key_ = base;
-            order_ = key_ + n_;
-            key2_ = order_ + n_;
-            idx2_ = key2_ + n_;
-            src_ = idx2_ + n_;
-            dst_ = src_ + n_;
-            hist_ = dst_ + n_;
-            signs_ = hist_ + kSortHist;
-            valid_ = reinterpret_cast<uint8_t*>(key2_);  // free after the sort
-            idx_ = order_;
+            uint32_t* scratch = reinterpret_cast<uint32_t*>(get_write_ptr(kCbSlots));
+            key_ = scratch;
+            order_ = key_ + lanes_;
+            key_swap_ = order_ + lanes_;
+            index_swap_ = key_swap_ + lanes_;
+            source_ = index_swap_ + lanes_;
+            destination_ = source_ + lanes_;
+            histogram_ = destination_ + lanes_;
+            signs_ = histogram_ + kSortHist;
+            valid_ = reinterpret_cast<uint8_t*>(key_swap_);  // free after the sort
+            index_ = order_;
             return true;
         }
 
-        // The cell of a float coordinate: its fixed-point value (frac fraction bits,
-        // truncated) less the low corner, shifted down, clamped to the grid.
-        static uint32_t cell(uint32_t f, uint32_t frac, uint32_t lo, uint32_t shift) {
-            const int32_t e = static_cast<int32_t>((f >> 23) & 0xFF);
-            int32_t v = 0;
-            if (e != 0) {
-                const uint32_t m = (f & 0x7FFFFF) | 0x800000;
-                const int32_t sh = e - 150 + static_cast<int32_t>(frac);
-                const uint32_t u = (
-                    sh >= 8
+        // The cell of a float coordinate: its fixed-point value (fraction_bits fraction
+        // bits, truncated) less the low corner, shifted down, clamped to the grid.
+        static uint32_t cell(
+            uint32_t coordinate, uint32_t fraction_bits, uint32_t low, uint32_t shift
+        ) {
+            const int32_t exponent = static_cast<int32_t>((coordinate >> 23) & 0xFF);
+            int32_t fixed = 0;
+            if (exponent != 0) {
+                const uint32_t mantissa = (coordinate & 0x7FFFFF) | 0x800000;
+                const int32_t exponent_shift = (
+                    exponent - 150 + static_cast<int32_t>(fraction_bits)
+                );
+                const uint32_t magnitude = (
+                    exponent_shift >= 8
                         ? 0x7FFFFFFF
-                        : sh >= 0
-                            ? m << sh
-                            : sh > -32
-                                ? m >> -sh
+                        : exponent_shift >= 0
+                            ? mantissa << exponent_shift
+                            : exponent_shift > -32
+                                ? mantissa >> -exponent_shift
                                 : 0
                 );
-                v = (f >> 31) ? -static_cast<int32_t>(u) : static_cast<int32_t>(u);
+                fixed = (
+                    (coordinate >> 31)
+                        ? -static_cast<int32_t>(magnitude)
+                        : static_cast<int32_t>(magnitude)
+                );
             }
-            const int32_t c = (v - static_cast<int32_t>(lo)) >> shift;
-            const int32_t top = (1 << kSortCellBits) - 1;
-            return static_cast<uint32_t>(c < 0 ? 0 : c > top ? top : c);
+            const int32_t cell_index = (fixed - static_cast<int32_t>(low)) >> shift;
+            const int32_t last_cell = (1 << kSortCellBits) - 1;
+            return (
+                static_cast<uint32_t>(
+                    cell_index < 0
+                        ? 0
+                        : cell_index > last_cell
+                            ? last_cell
+                            : cell_index
+                )
+            );
         }
 
-        // Bit b of c (10 bits at most) to bit 3 b.
-        static uint32_t spread(uint32_t c) {
-            c &= 0x3FF;
-            c = (c | c << 16) & 0x030000FF;
-            c = (c | c << 8) & 0x0300F00F;
-            c = (c | c << 4) & 0x030C30C3;
-            return (c | c << 2) & 0x09249249;
+        // Bit `bit` of `value` (10 bits at most) to bit 3 * bit.
+        static uint32_t spread(uint32_t value) {
+            value &= 0x3FF;
+            value = (value | value << 16) & 0x030000FF;
+            value = (value | value << 8) & 0x0300F00F;
+            value = (value | value << 4) & 0x030C30C3;
+            return (value | value << 2) & 0x09249249;
         }
 
-        // dst[i] = src[order[i]] (gather) or dst[order[i]] = src[i], four at a time.
+        // destination[i] = source[order[i]] (gather) or destination[order[i]] =
+        // source[i], four at a time.
         static void permute(
-            uint32_t* __restrict dst,
-            const uint32_t* __restrict src,
+            uint32_t* __restrict destination,
+            const uint32_t* __restrict source,
             const uint32_t* __restrict order,
-            uint32_t n,
+            uint32_t lanes,
             bool gather
         ) {
             uint32_t i = 0;
             if (gather) {
-                for (; i + 4 <= n; i += 4) {
-                    const uint32_t a = src[order[i]], b = src[order[i + 1]];
-                    const uint32_t c = src[order[i + 2]], e = src[order[i + 3]];
-                    dst[i] = a;
-                    dst[i + 1] = b;
-                    dst[i + 2] = c;
-                    dst[i + 3] = e;
+                for (; i + 4 <= lanes; i += 4) {
+                    const uint32_t first = source[order[i]];
+                    const uint32_t second = source[order[i + 1]];
+                    const uint32_t third = source[order[i + 2]];
+                    const uint32_t fourth = source[order[i + 3]];
+                    destination[i] = first;
+                    destination[i + 1] = second;
+                    destination[i + 2] = third;
+                    destination[i + 3] = fourth;
                 }
-                for (; i < n; ++i) {
-                    dst[i] = src[order[i]];
+                for (; i < lanes; ++i) {
+                    destination[i] = source[order[i]];
                 }
                 return;
             }
-            for (; i + 4 <= n; i += 4) {
-                const uint32_t o0 = order[i], o1 = order[i + 1];
-                const uint32_t o2 = order[i + 2], o3 = order[i + 3];
-                const uint32_t a = src[i];
-                const uint32_t b = src[i + 1];
-                const uint32_t c = src[i + 2];
-                const uint32_t e = src[i + 3];
-                dst[o0] = a;
-                dst[o1] = b;
-                dst[o2] = c;
-                dst[o3] = e;
+            for (; i + 4 <= lanes; i += 4) {
+                const uint32_t first_place = order[i], second_place = order[i + 1];
+                const uint32_t third_place = order[i + 2], fourth_place = order[i + 3];
+                const uint32_t first = source[i];
+                const uint32_t second = source[i + 1];
+                const uint32_t third = source[i + 2];
+                const uint32_t fourth = source[i + 3];
+                destination[first_place] = first;
+                destination[second_place] = second;
+                destination[third_place] = third;
+                destination[fourth_place] = fourth;
             }
-            for (; i < n; ++i) {
-                dst[order[i]] = src[i];
+            for (; i < lanes; ++i) {
+                destination[order[i]] = source[i];
             }
         }
 
-        // Least significant digit first, stable: (key, idx) through (key2, idx2) and
-        // back.
+        // Least significant digit first, stable: (key, index) through (key_swap,
+        // index_swap) and back.
         void radix() {
-            uint32_t *k0 = key_, *i0 = idx_, *k1 = key2_, *i1 = idx2_;
-            uint32_t* __restrict hist = hist_;
-            const uint32_t n = n_;
+            uint32_t *keys = key_, *indices = index_, *keys_next = key_swap_,
+                     *indices_next = index_swap_;
+            uint32_t* __restrict histogram = histogram_;
+            const uint32_t lanes = lanes_;
             for (uint32_t pass = 0; pass < 3; ++pass) {
-                const uint32_t sh = pass * kSortDigitBits;
-                for (uint32_t h = 0; h < kSortHist; ++h) {
-                    hist[h] = 0;
+                const uint32_t digit_shift = pass * kSortDigitBits;
+                for (uint32_t digit = 0; digit < kSortHist; ++digit) {
+                    histogram[digit] = 0;
                 }
-                for (uint32_t i = 0; i < n; ++i) {
-                    hist[(k0[i] >> sh) & (kSortHist - 1)]++;
+                for (uint32_t lane = 0; lane < lanes; ++lane) {
+                    histogram[(keys[lane] >> digit_shift) & (kSortHist - 1)]++;
                 }
                 uint32_t sum = 0;
-                for (uint32_t h = 0; h < kSortHist; ++h) {
-                    const uint32_t c = hist[h];
-                    hist[h] = sum;
-                    sum += c;
+                for (uint32_t digit = 0; digit < kSortHist; ++digit) {
+                    const uint32_t count = histogram[digit];
+                    histogram[digit] = sum;
+                    sum += count;
                 }
-                for (uint32_t i = 0; i < n; ++i) {
-                    const uint32_t key = k0[i];
-                    const uint32_t at = hist[(key >> sh) & (kSortHist - 1)]++;
-                    k1[at] = key;
-                    i1[at] = i0[i];
+                for (uint32_t lane = 0; lane < lanes; ++lane) {
+                    const uint32_t key = keys[lane];
+                    const uint32_t place = (
+                        histogram[(key >> digit_shift) & (kSortHist - 1)]++
+                    );
+                    keys_next[place] = key;
+                    indices_next[place] = indices[lane];
                 }
-                uint32_t* t = k0;
-                k0 = k1;
-                k1 = t;
-                t = i0;
-                i0 = i1;
-                i1 = t;
+                uint32_t* swap = keys;
+                keys = keys_next;
+                keys_next = swap;
+                swap = indices;
+                indices = indices_next;
+                indices_next = swap;
             }
-            // Three passes leave the result in (key2, idx2): the order is idx2.
-            order_ = i0;
+            // Three passes leave the result in (key_swap, index_swap): the order is
+            // index_swap.
+            order_ = indices;
         }
 
-        // Per packet of the order: bit k of its signs when most of its rays point down
-        // axis k (the walk's child order; any value is correct).
-        void count_signs(uint32_t k) {
-            const uint8_t* __restrict ok = valid_;
-            const uint32_t* __restrict dst = dst_;
-            for (uint32_t q = 0; q < count_; ++q) {
-                uint32_t neg = 0, valid = 0;
-                for (uint32_t i = q * kVec; i < (q + 1) * kVec; ++i) {
-                    valid += ok[i];
-                    neg += ok[i] & (dst[i] >> 31);
+        // Per packet of the order: bit `axis` of its signs when most of its rays point
+        // down axis `axis` (the walk's child order; any value is correct).
+        void count_signs(uint32_t axis) {
+            const uint8_t* __restrict valid_flags = valid_;
+            const uint32_t* __restrict destination = destination_;
+            for (uint32_t packet = 0; packet < packets_; ++packet) {
+                uint32_t negative = 0, valid_count = 0;
+                for (
+                    uint32_t lane = packet * kVec; lane < (packet + 1) * kVec; ++lane
+                ) {
+                    valid_count += valid_flags[lane];
+                    negative += valid_flags[lane] & (destination[lane] >> 31);
                 }
-                signs_[q] |= (2 * neg > valid ? 1u : 0u) << k;
+                signs_[packet] |= (2 * negative > valid_count ? 1u : 0u) << axis;
             }
         }
 
         void read_lanes(
-            uint32_t base, uint32_t bytes, uint32_t q, uint32_t v, uint32_t to
+            uint32_t base_address,
+            uint32_t page_bytes,
+            uint32_t packet,
+            uint32_t vector,
+            uint32_t destination
         ) {
-            const InterleavedAddrGen<true> pages = {
-                .bank_base_address = base, .page_size = bytes * kPagePackets
+            const InterleavedAddrGen<true> addresses = {
+                .bank_base_address = base_address,
+                .page_size = page_bytes * kPagePackets
             };
-            const uint32_t g = first_ + q;
+            const uint32_t page = first_packet_ + packet;
             noc_async_read(
                 get_noc_addr(
-                    g / kPagePackets, pages, (g % kPagePackets) * bytes + v * kVec * 4
+                    page / kPagePackets,
+                    addresses,
+                    (page % kPagePackets) * page_bytes + vector * kVec * 4
                 ),
-                to,
+                destination,
                 kVec * 4
             );
         }
 
         void write_lanes(
-            uint32_t base, uint32_t bytes, uint32_t q, uint32_t v, uint32_t from
+            uint32_t base_address,
+            uint32_t page_bytes,
+            uint32_t packet,
+            uint32_t vector,
+            uint32_t source
         ) {
-            const InterleavedAddrGen<true> pages = {
-                .bank_base_address = base, .page_size = bytes * kPagePackets
+            const InterleavedAddrGen<true> addresses = {
+                .bank_base_address = base_address,
+                .page_size = page_bytes * kPagePackets
             };
-            const uint32_t g = first_ + q;
+            const uint32_t page = first_packet_ + packet;
             noc_async_write(
-                from,
+                source,
                 get_noc_addr(
-                    g / kPagePackets, pages, (g % kPagePackets) * bytes + v * kVec * 4
+                    page / kPagePackets,
+                    addresses,
+                    (page % kPagePackets) * page_bytes + vector * kVec * 4
                 ),
                 kVec * 4
             );
         }
 
-        // Vector v of every packet of a stream of `bytes` pages into src.
-        bool gather_in(uint32_t base, uint32_t bytes, uint32_t v) {
-            const uint32_t a = km::wall();
-            for (uint32_t q = 0; q < count_; ++q) {
-                read_lanes(base, bytes, q, v, l1(src_ + q * kVec));
+        // Vector `vector` of every packet of a stream of `page_bytes` pages into
+        // source_.
+        bool gather_in(uint32_t base_address, uint32_t page_bytes, uint32_t vector) {
+            const uint32_t started = km::wall();
+            for (uint32_t packet = 0; packet < packets_; ++packet) {
+                read_lanes(
+                    base_address,
+                    page_bytes,
+                    packet,
+                    vector,
+                    l1(source_ + packet * kVec)
+                );
             }
-            const bool ok = timed::reads_done(rd_, km::kStReader);
-            d_[kRdWords + 0] += km::wall() - a;
-            return ok;
+            const bool done = timed::reads_done(reader_, km::kStReader);
+            directory_[kRdWords + 0] += km::wall() - started;
+            return done;
         }
 
-        // dst as vector v of every packet of a stream of `bytes` pages.
-        bool scatter_out(uint32_t base, uint32_t bytes, uint32_t v) {
-            const uint32_t a = km::wall();
-            for (uint32_t q = 0; q < count_; ++q) {
-                write_lanes(base, bytes, q, v, l1(dst_ + q * kVec));
+        // destination_ as vector `vector` of every packet of a stream of `page_bytes`
+        // pages.
+        bool scatter_out(uint32_t base_address, uint32_t page_bytes, uint32_t vector) {
+            const uint32_t started = km::wall();
+            for (uint32_t packet = 0; packet < packets_; ++packet) {
+                write_lanes(
+                    base_address,
+                    page_bytes,
+                    packet,
+                    vector,
+                    l1(destination_ + packet * kVec)
+                );
             }
-            const bool ok = timed::writes_sent(rd_, km::kStReader);
-            d_[kRdWords + 4] += km::wall() - a;
-            return ok;
+            const bool done = timed::writes_sent(reader_, km::kStReader);
+            directory_[kRdWords + 4] += km::wall() - started;
+            return done;
         }
 
-        km::Reader& rd_;
-        const km_command_t& r_;
-        const uint32_t first_, count_, n_;
-        volatile tt_l1_ptr uint32_t* d_;
-        uint32_t *key_ = nullptr, *idx_ = nullptr, *order_ = nullptr;
-        uint32_t *key2_ = nullptr, *idx2_ = nullptr, *src_ = nullptr, *dst_ = nullptr;
-        uint32_t *hist_ = nullptr, *signs_ = nullptr;
+        km::Reader& reader_;
+        const uint32_t input_address_;
+        const uint32_t output_address_;
+        const uint32_t order_address_;
+        const uint32_t vectors_;
+        const uint32_t corner_[3];
+        const uint32_t key_word_;
+        const uint32_t first_packet_, packets_, lanes_;
+        volatile tt_l1_ptr uint32_t* directory_;
+        uint32_t *key_ = nullptr, *index_ = nullptr, *order_ = nullptr;
+        uint32_t *key_swap_ = nullptr, *index_swap_ = nullptr, *source_ = nullptr,
+                 *destination_ = nullptr;
+        uint32_t *histogram_ = nullptr, *signs_ = nullptr;
         uint8_t* valid_ = nullptr;
     };
 
 }  // namespace
 
 void kernel_main() {
-    km::Reader rd;
-    rd.run([&](const km_command_t& r) {
-        const uint32_t handler = km::handler(r);
+    km::Reader reader;
+    reader.run([&](const km_command_t& command) {
+        const uint32_t handler = km::handler(command);
         if (handler == kHandlerLoad) {
-            const uint32_t pages = (r.a1 + kTreePageBytes - 1) / kTreePageBytes;
-            if (!rd.reserve(kCbTree, pages)) {
+            const uint32_t tree_address = command.a0, tree_bytes = command.a1;
+            const uint32_t pages = (tree_bytes + kTreePageBytes - 1) / kTreePageBytes;
+            if (!reader.reserve(kCbTree, pages)) {
                 return;
             }
             const InterleavedAddrGen<true> tree = {
-                .bank_base_address = r.a0, .page_size = kTreePageBytes
+                .bank_base_address = tree_address, .page_size = kTreePageBytes
             };
             const uint32_t base = get_write_ptr(kCbTree);
             if (!timed::fits(kCbTree, pages * kTreePageBytes)) {
-                rd.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 2, pages);
+                reader.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 2, pages);
                 return;
             }
-            for (uint32_t p = 0; p < pages; ++p) {
+            for (uint32_t page = 0; page < pages; ++page) {
                 noc_async_read(
-                    get_noc_addr(p, tree), base + p * kTreePageBytes, kTreePageBytes
+                    get_noc_addr(page, tree),
+                    base + page * kTreePageBytes,
+                    kTreePageBytes
                 );
             }
-            if (!timed::reads_done(rd, km::kStReader)) {
+            if (!timed::reads_done(reader, km::kStReader)) {
                 return;
             }
             g_tree = base;
@@ -721,35 +843,47 @@ void kernel_main() {
             return;
         }
         if (handler == kHandlerSort) {
-            const uint32_t dir = get_write_ptr(kCbDirReader);
-            volatile tt_l1_ptr uint32_t* d = km::l1(dir);
-            const InterleavedAddrGen<true> dirs = {
-                .bank_base_address = r.a0, .page_size = kDirBytes
+            const uint32_t directory_address = command.a0;
+            const uint32_t profile_address = command.a4;
+            const uint32_t unsort_vectors = command.a5;
+            const uint32_t directory_space = get_write_ptr(kCbDirReader);
+            volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
+            const InterleavedAddrGen<true> directories = {
+                .bank_base_address = directory_address, .page_size = kDirBytes
             };
-            noc_async_read(get_noc_addr(rd.me(), dirs), dir, kDirBytes);
-            if (!timed::reads_done(rd, km::kStReader)) {
+            noc_async_read(
+                get_noc_addr(reader.me(), directories), directory_space, kDirBytes
+            );
+            if (!timed::reads_done(reader, km::kStReader)) {
                 return;
             }
-            for (uint32_t k = 0; k < kRdCounters; ++k) {
-                d[kRdWords + k] = 0;
+            for (uint32_t counter = 0; counter < kRdCounters; ++counter) {
+                directory[kRdWords + counter] = 0;
             }
-            d[kRdWords + 3] = d[kDirCount] * kVec;
-            Sorter so(rd, r, d[kDirFirst], d[kDirCount], d);
-            if (!(r.a5 == 0 ? so.sort() : so.unsort())) {
+            directory[kRdWords + 3] = directory[kDirCount] * kVec;
+            Sorter sorter(
+                reader,
+                command,
+                directory[kDirFirst],
+                directory[kDirCount],
+                directory,
+                unsort_vectors
+            );
+            if (!(unsort_vectors == 0 ? sorter.sort() : sorter.unsort())) {
                 return;
             }
             // The reader's counters to its place in this core's profile page.
-            const InterleavedAddrGen<true> profs = {
-                .bank_base_address = r.a4, .page_size = kOutPageBytes
+            const InterleavedAddrGen<true> profile_pages = {
+                .bank_base_address = profile_address, .page_size = kOutPageBytes
             };
             noc_async_write(
-                dir + 4 * kRdWords,
-                get_noc_addr(rd.me(), profs, 4 * kProfReader),
+                directory_space + 4 * kRdWords,
+                get_noc_addr(reader.me(), profile_pages, 4 * kProfReader),
                 4 * kRdCounters
             );
             // The reader marks the command done without a barrier: the streams land
             // first.
-            timed::writes_landed(rd, km::kStReader);
+            timed::writes_landed(reader, km::kStReader);
             return;
         }
         if (
@@ -759,94 +893,116 @@ void kernel_main() {
         ) {
             return;
         }
-        const uint32_t t0 = km::wall();
-        const uint32_t dir = get_write_ptr(kCbDirReader);
-        volatile tt_l1_ptr uint32_t* d = km::l1(dir);
-        noc_async_read(dir_addr(r, handler, rd.me()), dir, kDirBytes);
-        if (!timed::reads_done(rd, km::kStReader)) {
+        const uint32_t started = km::wall();
+        const uint32_t directory_space = get_write_ptr(kCbDirReader);
+        volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
+        noc_async_read(
+            directory_noc_address(command, handler, reader.me()),
+            directory_space,
+            kDirBytes
+        );
+        if (!timed::reads_done(reader, km::kStReader)) {
             return;
         }
-        for (uint32_t k = 0; k < kRdCounters; ++k) {
-            d[kRdWords + k] = 0;
+        for (uint32_t counter = 0; counter < kRdCounters; ++counter) {
+            directory[kRdWords + counter] = 0;
         }
-        const uint32_t first = d[kDirFirst], count = d[kDirCount];
-        if (!rd.reserve(kCbIn, 1)) {
+        const uint32_t first_packet = directory[kDirFirst];
+        const uint32_t packets = directory[kDirCount];
+        if (!reader.reserve(kCbIn, 1)) {
             return;
         }
-        volatile tt_l1_ptr uint32_t* h = km::l1(get_write_ptr(kCbIn));
-        h[kDirFirst] = first;
-        h[kDirCount] = count;
+        volatile tt_l1_ptr uint32_t* header = km::l1(get_write_ptr(kCbIn));
+        header[kDirFirst] = first_packet;
+        header[kDirCount] = packets;
         cb_push_back(kCbIn, 1);
         uint32_t wait = 0, read = 0;
         if (is_stage(handler)) {
             // The constant page, then each packet's page of every input stream.
-            const Stage st = stage_of(handler);
-            if (!read_page(rd, r.a3, kCnVectors * kVec * 4, 1, 0, wait)) {
+            const uint32_t constants_address = command.a3;
+            const Stage stage = stage_of(handler);
+            if (!read_page(
+                reader, constants_address, kCnVectors * kVec * 4, 1, 0, wait
+            )) {
                 return;
             }
-            for (uint32_t p = 0; p < count; ++p) {
-                for (uint32_t s = 0; s < st.inputs; ++s) {
-                    const uint32_t a = km::wall();
-                    const uint32_t bytes = st.vectors[s] * kVec * 4;
+            for (uint32_t packet = 0; packet < packets; ++packet) {
+                for (uint32_t stream = 0; stream < stage.inputs; ++stream) {
+                    const uint32_t read_started = km::wall();
+                    const uint32_t page_bytes = stage.vectors[stream] * kVec * 4;
                     if (!read_page(
-                        rd, stream_arg(r, s), bytes, kPagePackets, first + p, wait
+                        reader,
+                        stream_arg(command, stream),
+                        page_bytes,
+                        kPagePackets,
+                        first_packet + packet,
+                        wait
                     )) {
                         return;
                     }
-                    read += km::wall() - a;
+                    read += km::wall() - read_started;
                 }
             }
-            d[kRdWords + 0] = wait;
-            d[kRdWords + 1] = read - wait;
-            d[kRdWords + 3] = count * st.inputs;
-            d[kRdWords + 2] = km::wall() - t0;
+            directory[kRdWords + 0] = wait;
+            directory[kRdWords + 1] = read - wait;
+            directory[kRdWords + 3] = packets * stage.inputs;
+            directory[kRdWords + 2] = km::wall() - started;
             return;
         }
-        const uint32_t bytes = in_page_bytes(handler), per = per_page(handler);
-        const uint32_t n = handler == kHandlerRecip ? 0 : count;
-        for (uint32_t p = 0; p < n; ++p) {
-            const uint32_t a = km::wall();
-            if (!read_page(rd, r.a1, bytes, per, first + p, wait)) {
+        const uint32_t input_address = command.a1;
+        const uint32_t page_bytes = in_page_bytes(handler);
+        const uint32_t page_packets = packets_per_page(handler);
+        const uint32_t pages = handler == kHandlerRecip ? 0 : packets;
+        for (uint32_t page = 0; page < pages; ++page) {
+            const uint32_t read_started = km::wall();
+            if (!read_page(
+                reader,
+                input_address,
+                page_bytes,
+                page_packets,
+                first_packet + page,
+                wait
+            )) {
                 return;
             }
-            read += km::wall() - a;
+            read += km::wall() - read_started;
         }
         read -= wait;
-        d[kRdWords + 0] = wait;
-        d[kRdWords + 1] = read;
-        d[kRdWords + 3] = n;
+        directory[kRdWords + 0] = wait;
+        directory[kRdWords + 1] = read;
+        directory[kRdWords + 3] = pages;
         if (handler == kHandlerTreelets) {
             // Per batch: the top walks' end, the schedule, the batch's end page. At
-            // most count + 1 batches: each one admits a packet (compute sees to it).
-            Schedule s(rd, r, count, d);
-            for (uint32_t k = 0; k <= count; ++k) {
-                const uint32_t a = km::wall();
-                const uint32_t code = rd.poll(
+            // most packets + 1 batches: each one admits a packet (compute sees to it).
+            Schedule schedule(reader, command, packets, directory);
+            for (uint32_t batch = 0; batch <= packets; ++batch) {
+                const uint32_t signal_started = km::wall();
+                const uint32_t code = reader.poll(
                     [] {
                         return cb_pages_available_at_front(kCbSignal, 1);
                     },
-                    rd.args().wait_limit
+                    reader.args().wait_limit
                 );
                 if (code != km::kGaveNone) {
-                    rd.gave_up(km::kStReader, code, km::kWhereData, 0, 0);
+                    reader.gave_up(km::kStReader, code, km::kWhereData, 0, 0);
                     return;
                 }
                 cb_wait_front(kCbSignal, 1);
                 cb_pop_front(kCbSignal, 1);
-                d[kRdWords + kRdSignal] += km::wall() - a;
-                if ((k == 0 && !s.init()) || !s.batch()) {
+                directory[kRdWords + kRdSignal] += km::wall() - signal_started;
+                if ((batch == 0 && !schedule.init()) || !schedule.batch()) {
                     return;
                 }
-                const bool more = s.more() && k < count;
+                const bool more = schedule.more() && batch < packets;
                 if (!more) {
-                    d[kRdWords + 2] = km::wall() - t0;
+                    directory[kRdWords + 2] = km::wall() - started;
                 }
-                if (!s.finish(more ? kWorkNext : kWorkEnd) || !more) {
+                if (!schedule.finish(more ? kWorkNext : kWorkEnd) || !more) {
                     return;
                 }
             }
             return;
         }
-        d[kRdWords + 2] = km::wall() - t0;
+        directory[kRdWords + 2] = km::wall() - started;
     });
 }

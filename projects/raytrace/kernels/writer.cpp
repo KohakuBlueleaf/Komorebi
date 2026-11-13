@@ -11,9 +11,10 @@
 namespace {
 
     // Hit pages: a nearest hit's with the attributes; the probe's as any hit's.
-    uint32_t out_page_bytes(const km_command_t& r, uint32_t handler) {
+    uint32_t output_page_bytes(const km_command_t& command, uint32_t handler) {
+        const uint32_t mode = command.a3;
         if (handler == kHandlerTrace || handler == kHandlerTreelets) {
-            return r.a3 == kModeAny ? kHitAnyBytes : kHitBytes;
+            return mode == kModeAny ? kHitAnyBytes : kHitBytes;
         }
         if (handler == kHandlerProbe) {
             return kHitAnyBytes;
@@ -24,7 +25,7 @@ namespace {
         return handler == kHandlerArith ? kArOutVectors * kVec * 4 : kRecipPerPage * 4;
     }
 
-    uint32_t out_per_page(uint32_t handler) {
+    uint32_t output_packets_per_page(uint32_t handler) {
         const bool hits = (
             handler == kHandlerTrace || handler == kHandlerTreelets ||
             handler == kHandlerProbe
@@ -35,25 +36,29 @@ namespace {
     // The front output page to page g of a stream, popped; the wait for it is added to
     // `wait`.
     bool write_page(
-        km::Writer& wr,
-        uint32_t base,
+        km::Writer& writer,
+        uint32_t base_address,
         uint32_t bytes,
-        uint32_t per,
-        uint32_t g,
+        uint32_t packets_per_page,
+        uint32_t packet,
         uint32_t& wait
     ) {
-        const uint32_t a = km::wall();
-        if (!wr.wait_front(kCbOut, 1)) {
+        const uint32_t started = km::wall();
+        if (!writer.wait_front(kCbOut, 1)) {
             return false;
         }
-        wait += km::wall() - a;
-        const InterleavedAddrGen<true> out = {
-            .bank_base_address = base, .page_size = bytes * per
+        wait += km::wall() - started;
+        const InterleavedAddrGen<true> pages = {
+            .bank_base_address = base_address, .page_size = bytes * packets_per_page
         };
         noc_async_write(
-            get_read_ptr(kCbOut), get_noc_addr(g / per, out, (g % per) * bytes), bytes
+            get_read_ptr(kCbOut),
+            get_noc_addr(
+                packet / packets_per_page, pages, (packet % packets_per_page) * bytes
+            ),
+            bytes
         );
-        if (!timed::writes_sent(wr, km::kStWriter)) {
+        if (!timed::writes_sent(writer, km::kStWriter)) {
             return false;
         }
         cb_pop_front(kCbOut, 1);
@@ -63,9 +68,11 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    km::Writer wr;
-    wr.run([&](const km_command_t& r) {
-        const uint32_t handler = km::handler(r);
+    km::Writer writer;
+    writer.run([&](const km_command_t& command) {
+        const uint32_t handler = km::handler(command);
+        const uint32_t output_address = command.a2;
+        const uint32_t profile_address = command.a4, policy_word = command.a9;
         if (
             handler != kHandlerTrace && handler != kHandlerArith &&
             handler != kHandlerRecip && handler != kHandlerTreelets &&
@@ -73,71 +80,95 @@ void kernel_main() {
         ) {
             return true;
         }
-        const uint32_t t0 = km::wall();
-        const uint32_t dir = get_write_ptr(kCbDirWriter);
-        volatile tt_l1_ptr uint32_t* d = km::l1(dir);
-        noc_async_read(dir_addr(r, handler, wr.me()), dir, kDirBytes);
-        if (!timed::reads_done(wr, km::kStWriter)) {
+        const uint32_t started = km::wall();
+        const uint32_t directory_space = get_write_ptr(kCbDirWriter);
+        volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
+        noc_async_read(
+            directory_noc_address(command, handler, writer.me()),
+            directory_space,
+            kDirBytes
+        );
+        if (!timed::reads_done(writer, km::kStWriter)) {
             return true;
         }
-        const uint32_t first = d[kDirFirst], count = d[kDirCount];
+        const uint32_t first = directory[kDirFirst], count = directory[kDirCount];
         uint32_t wait = 0, write = 0;
         if (is_stage(handler)) {
             // Each packet's page of every output stream, in stream order.
-            const Stage st = stage_of(handler);
-            for (uint32_t p = 0; p < count; ++p) {
-                for (uint32_t s = st.inputs; s < st.inputs + st.outputs; ++s) {
-                    const uint32_t a = km::wall();
-                    const uint32_t bytes = st.vectors[s] * kVec * 4;
+            const Stage stage = stage_of(handler);
+            for (uint32_t packet = 0; packet < count; ++packet) {
+                for (
+                    uint32_t stream = stage.inputs;
+                    stream < stage.inputs + stage.outputs;
+                    ++stream
+                ) {
+                    const uint32_t page_started = km::wall();
+                    const uint32_t bytes = stage.vectors[stream] * kVec * 4;
                     if (!write_page(
-                        wr, stream_arg(r, s), bytes, kPagePackets, first + p, wait
+                        writer,
+                        stream_arg(command, stream),
+                        bytes,
+                        kPagePackets,
+                        first + packet,
+                        wait
                     )) {
                         return true;
                     }
-                    write += km::wall() - a;
+                    write += km::wall() - page_started;
                 }
             }
         } else {
-            const uint32_t bytes = out_page_bytes(r, handler);
-            const uint32_t per = out_per_page(handler);
-            for (uint32_t p = 0; p < count; ++p) {
-                const uint32_t a = km::wall();
-                if (!write_page(wr, r.a2, bytes, per, first + p, wait)) {
+            const uint32_t bytes = output_page_bytes(command, handler);
+            const uint32_t packets_per_page = output_packets_per_page(handler);
+            for (uint32_t packet = 0; packet < count; ++packet) {
+                const uint32_t page_started = km::wall();
+                if (!write_page(
+                    writer,
+                    output_address,
+                    bytes,
+                    packets_per_page,
+                    first + packet,
+                    wait
+                )) {
                     return true;
                 }
-                write += km::wall() - a;
+                write += km::wall() - page_started;
             }
         }
         write -= wait;
         // The profile page: compute filled words [0, 32); reader and writer follow.
-        if (!wr.wait_front(kCbOut, 1)) {
+        if (!writer.wait_front(kCbOut, 1)) {
             return true;
         }
         invalidate_l1_cache();
-        volatile tt_l1_ptr uint32_t* prof = km::l1(get_read_ptr(kCbOut));
-        volatile tt_l1_ptr uint32_t* rd = km::l1(get_write_ptr(kCbDirReader));
-        for (uint32_t k = 0; k < kRdCounters; ++k) {
-            prof[kProfReader + k] = rd[kRdWords + k];
+        volatile tt_l1_ptr uint32_t* profile = km::l1(get_read_ptr(kCbOut));
+        volatile tt_l1_ptr uint32_t* reader_words = km::l1(get_write_ptr(kCbDirReader));
+        for (uint32_t counter = 0; counter < kRdCounters; ++counter) {
+            profile[kProfReader + counter] = reader_words[kRdWords + counter];
         }
-        prof[kProfWriter + 0] = wait;
-        prof[kProfWriter + 1] = write;
-        prof[kProfWriter + 2] = km::wall() - t0;
-        prof[kProfWriter + 3] = count;
-        const InterleavedAddrGen<true> profs = {
-            .bank_base_address = r.a4, .page_size = kOutPageBytes
+        profile[kProfWriter + 0] = wait;
+        profile[kProfWriter + 1] = write;
+        profile[kProfWriter + 2] = km::wall() - started;
+        profile[kProfWriter + 3] = count;
+        const InterleavedAddrGen<true> profile_pages = {
+            .bank_base_address = profile_address, .page_size = kOutPageBytes
         };
         noc_async_write(
-            get_read_ptr(kCbOut), get_noc_addr(wr.me(), profs), kOutPageBytes
+            get_read_ptr(kCbOut),
+            get_noc_addr(writer.me(), profile_pages),
+            kOutPageBytes
         );
-        const uint32_t bank = handler == kHandlerTreelets ? r.a9 >> kBankShift : 0;
-        if (bank != 0 && d[kDirCost] != 0) {
+        const uint32_t bank = (
+            handler == kHandlerTreelets ? policy_word >> kBankShift : 0
+        );
+        if (bank != 0 && directory[kDirCost] != 0) {
             noc_async_write(
                 get_read_ptr(kCbOut) + 4 * kProfCost,
-                get_noc_addr_from_bank_id<true>(bank - 1, d[kDirCost]),
+                get_noc_addr_from_bank_id<true>(bank - 1, directory[kDirCost]),
                 kCostBytes
             );
         }
-        if (!timed::writes_sent(wr, km::kStWriter)) {
+        if (!timed::writes_sent(writer, km::kStWriter)) {
             return true;
         }
         cb_pop_front(kCbOut, 1);

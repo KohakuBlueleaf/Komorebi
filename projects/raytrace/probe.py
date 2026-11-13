@@ -18,57 +18,63 @@ FORMS = ("immediate", "data", "mask", "stack", "fast", "sync")
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--passes", type=int, default=20)
-    p.add_argument("--json", default=None)
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--passes", type=int, default=20)
+    parser.add_argument("--json", default=None)
+    arguments = parser.parse_args()
     data = native.data_dir()
     tree = harness.ensure_tree("tiny")
     scene = scenes.load_scene(data / "tiny.npz")
     every = np.arange(scenes.WIDTH * scenes.HEIGHT)
     pixels = every[np.isin(packets.ray_order(every)[1], [528])][:32]
-    o, d = raytrace.camera_rays(scene["camera"], pixels)
+    origins, directions = raytrace.camera_rays(scene["camera"], pixels)
     lanes, directory, _ = packets.split(pixels, 1)
-    pages = packets.packet_pages(lanes, o, d, raytrace.TMAX)
-    out = {"passes": args.passes, "forms": {}}
+    pages = packets.packet_pages(lanes, origins, directions, raytrace.TMAX)
+    report = {"passes": arguments.passes, "forms": {}}
     with card.open_session() as session:
         workers = card.workers(session)
-        full = np.zeros((workers, directory.shape[1]), dtype=np.uint32)
-        full[:1] = directory
-        for k, form in enumerate(FORMS):
-            assert packets.K[f"kProbe{form.capitalize()}"] == k
-            _, prof, res, _, _ = card.run_handler(
+        padded = np.zeros((workers, directory.shape[1]), dtype=np.uint32)
+        padded[:1] = directory
+        for form_index, form in enumerate(FORMS):
+            assert packets.K[f"kProbe{form.capitalize()}"] == form_index
+            _, profile, ran, _, _ = card.run_handler(
                 session,
                 packets.K["kHandlerProbe"],
-                full,
+                padded,
                 packets.group(pages),
                 1,
                 packets.K["kPagePackets"] * packets.K["kHitAnyVectors"] * packets.VEC,
                 tree=packets.tree_image(tree),
-                args=[k, args.passes],
+                args=[form_index, arguments.passes],
             )
-            rows = card.profile_rows(prof, workers)
+            rows = card.profile_rows(profile, workers)
             visits = int(rows["inner"][0])
             cycles = int(rows["box"][0])
-            out["forms"][form] = {
+            report["forms"][form] = {
                 "visits": visits,
                 "cycles": cycles,
                 "cycles_per_visit": cycles / max(visits, 1),
                 "error": int(rows["error"][0]),
-                "run": card.check_run(res, workers),
+                "run": card.check_run(ran, workers),
             }
             card.log(f"{form}: {cycles / max(visits, 1):.1f} cycles per node visit")
-    forms = out["forms"].values()
-    out["ok"] = all(
-        card.ran_cleanly(f["run"], workers) and f["error"] == 0 and f["visits"] > 0
-        for f in forms
+    forms = report["forms"].values()
+    report["ok"] = all(
+        card.ran_cleanly(entry["run"], workers)
+        and entry["error"] == 0
+        and entry["visits"] > 0
+        for entry in forms
     )
-    print(json.dumps({f: v["cycles_per_visit"] for f, v in out["forms"].items()}))
-    print(json.dumps({"ok": out["ok"]}), flush=True)
-    if args.json:
-        with open(args.json, "w") as f:
-            json.dump(out, f, indent=1)
-    return out["ok"]
+    print(
+        json.dumps(
+            {form: entry["cycles_per_visit"] for form, entry in report["forms"].items()}
+        )
+    )
+    print(json.dumps({"ok": report["ok"]}), flush=True)
+    if arguments.json:
+        with open(arguments.json, "w") as handle:
+            json.dump(report, handle, indent=1)
+    return report["ok"]
 
 
 if __name__ == "__main__":

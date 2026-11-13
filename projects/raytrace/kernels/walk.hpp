@@ -14,7 +14,7 @@ namespace walk {
     constexpr uint32_t kMaxDepth = 64;
 
     // Cycles and counts of the pack thread (profile page words 0 to 31).
-    struct Prof {
+    struct Profile {
         uint32_t wait_in = 0;   // waiting for input pages
         uint32_t load = 0;      // a packet into Dst
         uint32_t pop = 0;       // pop: the entry test, tensix_sync and the lane check
@@ -43,7 +43,7 @@ namespace walk {
         uint32_t deferred = 0;   // packet top walks put off for lack of list room
     };
 
-    constexpr uint32_t kProfWords = 26;
+    constexpr uint32_t kProfileWords = 26;
 
     struct NoEmit {
         void operator()(uint32_t) const {
@@ -52,30 +52,30 @@ namespace walk {
 
     inline uint32_t any_lane() {
         tensix_sync();
-        uint32_t v;
-        asm volatile("csrr %0, 0xBC0" : "=r"(v));
-        return (v >> 11) & 1;
+        uint32_t status;
+        asm volatile("csrr %0, 0xBC0" : "=r"(status));
+        return (status >> 11) & 1;
     }
 
-    // Box word k of the node record at b, as immediates.
-    inline auto box_immediate(const uint32_t* b) {
-        return [b](uint32_t r, uint32_t k) {
-            immediate(r, b[k]);
+    // Box word `index` of the node record at `box`, as immediates.
+    inline auto box_immediate(const uint32_t* box) {
+        return [box](uint32_t lreg, uint32_t index) {
+            immediate(lreg, box[index]);
         };
     }
 
     // The packet's lanes whose entry distance in slot s is within their best, every
     // lane enabled first; slot s is copied to s + 1 for the second child.
-    inline void pop_lanes(uint32_t s) {
+    inline void pop_lanes(uint32_t slot) {
         all_lanes();
-        load(L0, s);
-        store(L0, s + 1);
-        load(L1, kSBest);
+        load(L0, slot);
+        store(L0, slot + 1);
+        load(L1, kSlotBest);
         TTI_SFPLE(0, L1, L0, kSetCC);
     }
 
     // The walk of the packet in Dst through a tree image (nodes, order words, triangle
-    // records), nearest or any; emit(t) at each treelet reached, nearer first.
+    // records), nearest or any; emit(treelet) at each treelet reached, nearer first.
     template <typename Emit = NoEmit>
     inline void packet(
         const uint32_t* nodes,
@@ -83,139 +83,151 @@ namespace walk {
         const uint32_t* tris,
         uint32_t signs,
         bool any,
-        Prof& pf,
+        Profile& profile,
         Emit emit = Emit()
     ) {
         uint32_t stack[kMaxDepth];
-        uint32_t sp = 0;
-        uint32_t a = wall();
-        // Root: every lane; slot kSStack holds its entry distance or +inf.
+        uint32_t depth = 0;
+        uint32_t before = wall();
+        // Root: every lane; slot kSlotStack holds its entry distance or +inf.
         all_lanes();
-        box_test(box_immediate(nodes), kSO, kSInv, kSBest);
-        store(L7, kSStack);
-        stack[sp++] = 0;
-        uint32_t b = wall();
-        pf.box += b - a;
-        while (sp > 0) {
-            --sp;
-            const uint32_t n = stack[sp];
-            const uint32_t s = kSStack + sp;
-            a = wall();
-            pop_lanes(s);
+        box_test(box_immediate(nodes), kSlotOrigin, kSlotInverse, kSlotBest);
+        store(L7, kSlotStack);
+        stack[depth++] = 0;
+        uint32_t after = wall();
+        profile.box += after - before;
+        while (depth > 0) {
+            --depth;
+            const uint32_t node_index = stack[depth];
+            const uint32_t slot = kSlotStack + depth;
+            before = wall();
+            pop_lanes(slot);
             const uint32_t live = any_lane();
-            b = wall();
-            pf.pop += b - a;
-            pf.pops++;
+            after = wall();
+            profile.pop += after - before;
+            profile.pops++;
             if (!live) {
-                pf.empty++;
+                profile.empty++;
                 continue;
             }
-            const uint32_t* nd = nodes + kNodeWords * n;
-            const uint32_t c0 = nd[6];
-            if (c0 & kLeafBit) {
-                count(kSLeaves, 1);
-                const uint32_t* w = tris + kTriWords * (c0 & ~kLeafBit);
+            const uint32_t* node = nodes + kNodeWords * node_index;
+            const uint32_t first_child = node[6];
+            if (first_child & kLeafBit) {
+                count(kSlotLeaves, 1);
+                const uint32_t* triangle = tris + kTriWords * (first_child & ~kLeafBit);
                 tri_test(
-                    [w](uint32_t r, uint32_t k) {
-                        immediate(r, w[k]);
+                    [triangle](uint32_t lreg, uint32_t index) {
+                        immediate(lreg, triangle[index]);
                     },
-                    kSO,
-                    kSD,
-                    kSBest,
-                    kSTri,
-                    kSU,
-                    kSV,
+                    kSlotOrigin,
+                    kSlotDirection,
+                    kSlotBest,
+                    kSlotTriangle,
+                    kSlotU,
+                    kSlotV,
                     any,
                     !any
                 );
-                pf.tri += wall() - b;
-                pf.leaves++;
+                profile.tri += wall() - after;
+                profile.leaves++;
                 continue;
             }
-            if (c0 & kTreeletBit) {
-                emit(c0 & ~kTreeletBit);
-                pf.emits++;
+            if (first_child & kTreeletBit) {
+                emit(first_child & ~kTreeletBit);
+                profile.emits++;
                 continue;
             }
-            if (sp + 2 > kMaxDepth - 1) {
-                pf.error = 1;
+            if (depth + 2 > kMaxDepth - 1) {
+                profile.error = 1;
                 return;
             }
             // The nearer child for the packet's direction takes the higher slot.
-            const uint32_t o = order[n];
-            const bool second = ((signs >> (o & 3)) ^ (o >> 2)) & 1;
-            const uint32_t near = second ? nd[7] : c0;
-            const uint32_t far = second ? c0 : nd[7];
-            count(kSNodes, 2);
-            box_test(box_immediate(nodes + kNodeWords * far), kSO, kSInv, kSBest);
-            store(L7, s);
-            box_test(box_immediate(nodes + kNodeWords * near), kSO, kSInv, kSBest);
-            store(L7, s + 1);
-            stack[sp++] = far;
-            stack[sp++] = near;
-            pf.box += wall() - b;
-            pf.inner++;
+            const uint32_t order_word = order[node_index];
+            const bool second = ((signs >> (order_word & 3)) ^ (order_word >> 2)) & 1;
+            const uint32_t near = second ? node[7] : first_child;
+            const uint32_t far = second ? first_child : node[7];
+            count(kSlotNodes, 2);
+            box_test(
+                box_immediate(nodes + kNodeWords * far),
+                kSlotOrigin,
+                kSlotInverse,
+                kSlotBest
+            );
+            store(L7, slot);
+            box_test(
+                box_immediate(nodes + kNodeWords * near),
+                kSlotOrigin,
+                kSlotInverse,
+                kSlotBest
+            );
+            store(L7, slot + 1);
+            stack[depth++] = far;
+            stack[depth++] = near;
+            profile.box += wall() - after;
+            profile.inner++;
         }
     }
 
     // A packet page into Dst: the ray, best from the page, index -1, u = v = 0, one box
     // test (the root) and no triangle test per ray; the hit attributes zero.
-    inline void load_packet(const uint32_t* pk) {
-        for (uint32_t k = 0; k < 10; ++k) {
-            to_slot(kSO + k, pk + kVec * (kPkO + k));
+    inline void load_packet(const uint32_t* page) {
+        for (uint32_t slot = 0; slot < 10; ++slot) {
+            to_slot(kSlotOrigin + slot, page + kVec * (kPkO + slot));
         }
-        fill_slot(kSTri, 0xFFFFFFFFu);
-        fill_slot(kSU, 0);
-        fill_slot(kSV, 0);
-        fill_slot(kSNodes, 1);
-        fill_slot(kSLeaves, 0);
-        order(word(kSLeaves) + 62);
+        fill_slot(kSlotTriangle, 0xFFFFFFFFu);
+        fill_slot(kSlotU, 0);
+        fill_slot(kSlotV, 0);
+        fill_slot(kSlotNodes, 1);
+        fill_slot(kSlotLeaves, 0);
+        order(word(kSlotLeaves) + 62);
         all_lanes();
         TTI_SFPLOADI(L5, kFloatB, 0);
-        for (uint32_t k = 0; k < kTriAttrWords; ++k) {
-            store(L5, kSAttr + k);
+        for (uint32_t slot = 0; slot < kTriAttrWords; ++slot) {
+            store(L5, kSlotAttributes + slot);
         }
     }
 
     // A packet state image (Dst tile 0 in window order) into Dst through the window,
     // and back: the window words of slots 0 to kStSlots - 1.
-    constexpr uint32_t kStImageWords = word(kStSlots - 1) + 2 * kVec;
+    constexpr uint32_t kStateImageWords = word(kStSlots - 1) + 2 * kVec;
 
-    inline void load_image(const uint32_t* img) {
-        copy_words(win(), img, kStImageWords);
-        order(kStImageWords - 2);
+    inline void load_image(const uint32_t* image) {
+        copy_words(win(), image, kStateImageWords);
+        order(kStateImageWords - 2);
     }
 
-    inline void store_image(uint32_t* img) {
-        copy_words(img, win(), kStImageWords);
+    inline void store_image(uint32_t* image) {
+        copy_words(image, win(), kStateImageWords);
     }
 
-    // Broadcast l of slot s in a state image.
-    inline uint32_t image_lane(const uint32_t* img, uint32_t s, uint32_t l) {
-        return img[word(s) + 2 * l];
+    // Broadcast `lane` of `slot` in a state image.
+    inline uint32_t image_lane(const uint32_t* image, uint32_t slot, uint32_t lane) {
+        return image[word(slot) + 2 * lane];
     }
 
     // The packet's cycles as the hit page's last vector.
-    inline void store_cycles(uint32_t* out, uint32_t cycles) {
-        uint32_t* v = out + kVec * kHitCycles;
-        v[0] = cycles;
-        for (uint32_t l = 1; l < kVec; ++l) {
-            v[l] = 0;
+    inline void store_cycles(uint32_t* hit_page, uint32_t cycles) {
+        uint32_t* last_vector = hit_page + kVec * kHitCycles;
+        last_vector[0] = cycles;
+        for (uint32_t lane = 1; lane < kVec; ++lane) {
+            last_vector[lane] = 0;
         }
     }
 
     // The results of the packet in Dst to a hit page (after tensix_sync); a nearest
     // hit's page with the attributes. Returns the page's words.
-    inline uint32_t store_hits(uint32_t* out, uint32_t cycles, bool any) {
-        for (uint32_t k = 0; k < kHitCycles; ++k) {
-            from_slot(kSBest + k, out + kVec * k);
+    inline uint32_t store_hits(uint32_t* hit_page, uint32_t cycles, bool any) {
+        for (uint32_t vector = 0; vector < kHitCycles; ++vector) {
+            from_slot(kSlotBest + vector, hit_page + kVec * vector);
         }
-        store_cycles(out, cycles);
+        store_cycles(hit_page, cycles);
         if (any) {
             return kHitAnyVectors * kVec;
         }
-        for (uint32_t k = 0; k < kTriAttrWords; ++k) {
-            from_slot(kSAttr + k, out + kVec * (kHitN + k));
+        for (uint32_t attribute = 0; attribute < kTriAttrWords; ++attribute) {
+            from_slot(
+                kSlotAttributes + attribute, hit_page + kVec * (kHitN + attribute)
+            );
         }
         return kHitVectors * kVec;
     }

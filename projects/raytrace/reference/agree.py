@@ -15,13 +15,13 @@ STRIDE = 4
 
 def restrict(arrays, pixels):
     """The values of the given pixel numbers, as flat arrays."""
-    out = {}
+    restricted = {}
     for key, value in arrays.items():
         if key == "image" or (key == "colour" and value.ndim == 3):
-            out[key] = value.reshape(-1, 3)[pixels]
+            restricted[key] = value.reshape(-1, 3)[pixels]
         elif value.ndim == 2:
-            out[key] = value.reshape(-1)[pixels]
-    return out
+            restricted[key] = value.reshape(-1)[pixels]
+    return restricted
 
 
 def prepare(scene, numpy_max, fresh=False):
@@ -41,18 +41,18 @@ def agree(scene, external=(), numpy_max=None, fresh=False):
     names = list(found)
     pairs, stats = [], {}
     if harness.REFERENCE in found:
-        ref = harness.REFERENCE
-        pairs = [(ref, n) for n in names if n != ref]
+        reference = harness.REFERENCE
+        pairs = [(reference, name) for name in names if name != reference]
     elif subset is not None:
-        pixels, ref_arrays = subset
+        pixels, reference_arrays = subset
         for name in names:
             label = f"numpy (every {STRIDE}th pixel) vs {name}"
-            result = harness.compare(ref_arrays, restrict(found[name][0], pixels))
+            result = harness.compare(reference_arrays, restrict(found[name][0], pixels))
             result.pop("mask")
             stats[label] = result
-    cpu, gpu = "C++ all threads", "V100"
-    if cpu in found and gpu in found:
-        pairs.append((cpu, gpu))
+    cpu_name, gpu_name = "C++ all threads", "V100"
+    if cpu_name in found and gpu_name in found:
+        pairs.append((cpu_name, gpu_name))
     for first, second in pairs:
         result = harness.compare(found[first][0], found[second][0])
         result.pop("mask")
@@ -67,27 +67,30 @@ def main():
     parser.add_argument("--numpy-max", type=int, default=None, help="largest scene")
     parser.add_argument("--fresh", action="store_true", help="run everything again")
     parser.add_argument("--json", default=None)
-    args = parser.parse_args()
+    arguments = parser.parse_args()
     report = {
-        s: agree(s, args.external, args.numpy_max, args.fresh) for s in args.scenes
+        scene: agree(scene, arguments.external, arguments.numpy_max, arguments.fresh)
+        for scene in arguments.scenes
     }
     for scene, pairs in report.items():
-        for pair, s in pairs.items():
+        for pair, stats in pairs.items():
             print(f"{scene:6s} {pair}")
             print(
-                f"    differing pixels {s['any_differs']} of {s['pixels']} "
-                f"(on edge {s.get('differs_on_edge', 'n/a')}); nearest triangle "
-                f"differs {s['tri_differs']}: exact ties {s['tri_exact_ties']}, "
-                f"near ties {s['tri_near_ties']}, hit vs miss {s['tri_hit_vs_miss']}, "
-                f"other {s['tri_other']}"
+                f"    differing pixels {stats['any_differs']} of {stats['pixels']} "
+                f"(on edge {stats.get('differs_on_edge', 'n/a')}); nearest triangle "
+                f"differs {stats['tri_differs']}: exact ties "
+                f"{stats['tri_exact_ties']}, near ties {stats['tri_near_ties']}, "
+                f"hit vs miss "
+                f"{stats['tri_hit_vs_miss']}, other {stats['tri_other']}"
             )
             print(
-                f"    image max abs {s['image_max_abs']:.3g}, rms "
-                f"{s['image_rms']:.3g}, pixels over 1/255: {s['image_over_1_255']}"
+                f"    image max abs {stats['image_max_abs']:.3g}, rms "
+                f"{stats['image_rms']:.3g}, pixels over 1/255: "
+                f"{stats['image_over_1_255']}"
             )
-    if args.json:
-        with open(args.json, "w") as f:
-            json.dump(report, f, indent=1)
+    if arguments.json:
+        with open(arguments.json, "w") as file:
+            json.dump(report, file, indent=1)
 
 
 if __name__ == "__main__":
