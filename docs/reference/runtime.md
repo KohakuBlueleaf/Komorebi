@@ -310,8 +310,9 @@ a multiple of 16). Offsets are in bytes, and every offset has a static assert in
 | 0x780 | `KM_CTL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
 | 0x980 | `KM_CTL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
 | 0xA00 | `KM_CTL_LANE` | 2 lane areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([lanes](lanes.md)) |
-| 0xC80 | `KM_CTL_DYN` | dynamic crossing: queue tail and head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
-| 0xD40 | `KM_CTL_BYTES` | size of the block |
+| 0xC80 | `KM_CTL_DYN` | dynamic crossing: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
+| 0xD40 | `KM_CTL_TAILS` | dynamic crossing on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
+| 0x1580 | `KM_CTL_BYTES` | size of the block |
 
 Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing

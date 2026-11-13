@@ -54,7 +54,9 @@ if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
 
 - **Ports.** Every core has `KM_PORTS` (8) port slots of 16 bytes in its control block
   at `KM_CTL_PORT`: the count senders increment, and the count a wait wants. Ports are
-  cleared at start-up and by the wait that consumed them.
+  cleared at start-up and by the wait that consumed them. A sender counts the atomic's
+  acknowledgement and never reads its returned value, so a lost answer
+  ([atomic_answers](../../experiments/atomic_answers/)) cannot affect a port.
 - **The arrival buffer** is one circular buffer of S pages, P to a slot
   (`km::Arrival {cb, S, P}`, P = 1 by default): slot k is pages k * P to k * P + P - 1,
   and a part sent with `emit` is at most P pages. Every core

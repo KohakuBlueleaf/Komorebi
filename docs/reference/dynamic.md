@@ -9,15 +9,11 @@ tags:
 # Dynamic Segments
 
 Status: implemented on one Blackhole card, through a `Session` (the dispatch kernel reads
-the status lines and ends the run) and under the test feeder, with one open defect
-(below). One dynamic run at a time.
-
-**Open defect.** A reservation's answer can be lost: the atomic add is counted as
-answered and the destination's tail moves, but the returned position never lands in the
-writer's L1. About 1 run in 5 of 10^6 hops on 119 cores ends this way: it ends with a
-reported reason, never a hang (32 `lost`, or a wait it blocked, 24 or 28, named like
-any give-up). The runs of 10^5 hops and fewer measured so far were exact. The cause is being
-investigated; until it is fixed, a program must expect such a run to fail and rerun it.
+the status lines and ends the run) and under the test feeder. One dynamic run at a time.
+The last cores of every dynamic run's team are counter tiles that hold the queue tails
+([Counter tiles](#counter-tiles)). With them, 10^6 hops were exact in 91 of 91 runs through
+a `Session` on 120 cores and in 3 of 3 under the test feeder on 119
+([05_hop](../../examples/05_hop/README.md#measured)).
 
 A static crossing is known before the run: who sends what to whom and how many arrive.
 A dynamic crossing is known only from the data: a ray goes to the core that holds the
@@ -68,7 +64,8 @@ cp.run([&](const km_record_t& r) {
 | `retire()` | the item ends; one unit of quota comes back to this core |
 | `spawn(dest, item)` | a new item at member `dest`; false, and nothing is sent, when this core has no quota left |
 | `done(pk)` | the packet's buffer page is free and its items are counted as consumed |
-| `quota()`, `count()` | spawns left on this core; members in the team |
+| `quota()`, `count()` | spawns left on this core; members in the team (without its counter tiles) |
+| `member()`, `counter()` | this core's member index; true on a counter tile, which takes no item |
 | `wait_stop()` | waits for the stop word (a test of the run's timeout) |
 
 An item is `item_bytes / 4` words. Word 0 belongs to the runtime: it holds the item's
@@ -91,13 +88,15 @@ options are those of `komorebi.program.Dynamic`:
 | `queue_items` | 65536 | each core's queue in DRAM, a power of two |
 | `bins` | 16 | open bins per writer, one destination each |
 | `idle_cycles` | 20000 | how long a core must stay idle before its line says so |
+| `counters` | 2 | counter tiles, 1 to 4: the last cores of each run's team |
 
 The launcher refuses, before any device opens:
 
 - `max_live > queue_items`: if every item were aimed at one core, its queue could not
   hold them;
 - queues that do not fit the DRAM given to them (`cores * queue_items * item_bytes`);
-- `max_live` smaller than the number of cores (some core would start without quota);
+- a team with no member beside its counter tiles;
+- `max_live` smaller than the number of members (some member would start without quota);
 - a ring depth below 2 (the end of a run is a second record in flight).
 
 A run is one `RUN` record of the dynamic segment to a team, with `KM_F_EXCL`. The record
@@ -109,7 +108,7 @@ words are the program's.
 Every core has a queue of `queue_items` items in DRAM. A sender never waits for the
 receiver: the writer collects outgoing items in bins (one destination each, up to 32
 items), reserves positions in the receiver's queue with one atomic add on the
-receiver's tail word, writes the items to DRAM and counts them as sent. The receiver's
+receiver's tail word on its counter tile, writes the items to DRAM and counts them as sent. The receiver's
 reader takes items from the head of its queue in order, as packets of up to 32. A bin is sent when
 it is full, when its slot is needed for another destination, and when the core runs
 out of input, so nothing waits in a bin while the core is idle.
@@ -130,17 +129,49 @@ first item, and once that item is valid the whole packet had landed.
 **Reservation.** The atomic add's answer goes to a return address programmed on every
 call, to a 16-byte slot of the sender's own control block (the firmware's default
 return slot is shared). A sender waits for the answer to replace a sentinel, not only
-for the atomic's count. A program that adds its own barrier between cores at start-up
+for the atomic's count; an answer that never lands ends the run with reason 32 (`lost`),
+naming the destination, never with a wrong result. A program that adds its own barrier between cores at start-up
 must allow more than the launch skew: under slow dispatch a bound of 7 ms let 47 of
 119 cores give up; the reservation probe allows one second.
 
 So a full inbox cannot deadlock the grid, and while `max_live <= queue_items` holds no
 queue can overflow. The cost is that every hop crosses DRAM twice.
 
-**Quota.** Each core starts a run with `max_live / cores` spawns. `spawn` takes one,
+**Quota.** Each member starts a run with `max_live / members` spawns. `spawn` takes one,
 `retire` gives one back to the core where the item ends, `hop` changes nothing. Seeding
 spawns count too. Moving quota between cores is the program's business: a program that
 spawns on some cores and retires on others runs those cores dry.
+
+## Counter tiles
+
+The tails do not live on the receivers. The last K cores of a run's team (`counters`,
+2 by default; `komorebi.layout.counter_tiles` gives the layout) are counter tiles: member
+core c's tail is a 16-byte line on counter tile c mod K, at `KM_CTL_TAILS`. Every
+reservation is an atomic add on that line; a member learns its tail by a bounded
+16-byte read of it. A counter tile runs the same three kernels: at the start of a run it
+sets the tails of the members it serves to their heads and shows READY (members wait
+for it, bounded, reason 35 `counter`), then takes no item, never issues an atomic, goes
+idle like any member and leaves on the end record. `run.state()` names it
+(`dynamic.counter`: the run and the members it served).
+
+**Why.** On the card, the returned value of a non-posted atomic add is sometimes lost
+when the tile that answers it issues atomics of its own on the same NoC (with a return
+address that changes from call to call): the add lands, the answer never does. When every
+core kept its own tail, 2 to 12 of 50 runs of 10^6 hops ended with reason 32 (two
+builds). A tile that
+only answers lost none in the 21.4 M reservations of the probe runs that found the
+condition ([atomic_answers](../../experiments/atomic_answers/)). This is an empirical condition of
+the atomic unit; its cause is not known. Ports and team completion are not affected: they
+count acknowledgements and never use a returned value.
+
+**Cost.** K cores of the team take no item. Every core's control block grows from
+0xD40 to 0x1580 bytes for the tail lines: 2,112 bytes of L1 on every core for every
+program, dynamic or not. Card 0, 120 cores, 10000 items of 100 hops
+(10^6 hops), issue to completion: 11.8 ms with K = 2 (median of 91 runs, 11.6 to
+12.0 ms), 11.6 ms with K = 1 (10 runs); 10^5 hops 3.44 ms, 10^3 hops 158 µs. In the probe
+one counter tile answered 126 M reservations a second (one per 10.7 cycles) and two
+answered 229 M: a program that reserves more often than the example may need K = 2 or
+more.
 
 ## How the run ends
 
@@ -183,11 +214,12 @@ the same loaded program.
 | 27, 28, 29 | next, out page, outbox | a wait between the compute kernel and the reader or writer ran out |
 | 30 | stopped | the stop word was set |
 | 31 | align | the packet buffer or the item size is not a multiple of 64 bytes |
-| 32 | lost | a reservation was answered but its returned position never landed; word 3 names the destination. The open defect above |
+| 32 | lost | a reservation was answered but its returned position never landed; word 3 names the destination (not seen with counter tiles) |
 | 33 | fill | the start-up zero fill of the queue did not finish |
 | 34 | full | this core's queue positions reached 2^30 in this load |
+| 35 | counter | a counter tile did not show READY within the wait limit, or the team has no member beside them |
 
-The codes follow the runtime's where codes (0 to 18) and are `kDyn*` in `km_dyn.hpp`.
+The codes follow the runtime's where codes (0 to 18) and are `kWhereDyn*` in `km_core.hpp`.
 
 ## Not in this version
 

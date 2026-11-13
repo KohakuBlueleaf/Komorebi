@@ -24,7 +24,7 @@ thread on a second
 X280 cluster that issues records and decides from their result words
 ([07_work_cluster](examples/07_work_cluster/)); and dynamic segments, in which items
 move from core to core as their data decides and the run ends by itself
-([05_hop](examples/05_hop/), with one open defect). Threads that move (`at`) and the
+([05_hop](examples/05_hop/)). Threads that move (`at`) and the
 thread language are [planned](#roadmap).
 
 ```python
@@ -176,7 +176,7 @@ vector unit, and writes its own output tile.
 | Broadcast in a lane along a row or a column | implemented ([lane broadcast](docs/reference/lanes.md), [03_broadcast](examples/03_broadcast/)) |
 | Micro-op streams, the job queue and the graph executor | in the dispatch kernel: streams and graphs on core 1, the job queue on core 0; builders, checks and simulators on the CPU; on a card, `Run.upload`, `start` and `wait_engine` run a stream or a graph in the kernel, and `run_hostfed` runs the same one host-fed ([streams](docs/streams.md), [graphs](docs/graphs.md), [engines](docs/reference/host.md#engines-uploads-start-events)) |
 | User threads on X280 clusters 1 to 3 | implemented: `kmx` calls, a command ring to core 0, a host fallback ([X280 threads](docs/threads.md), [07_work_cluster](examples/07_work_cluster/)) |
-| `at`: threads that move, inboxes and packets of records | dynamic segments through a `Session` and on the test feeder: per-core queues in DRAM, quota, the quiet end found by the dispatch kernel ([dynamic segments](docs/reference/dynamic.md), [05_hop](examples/05_hop/)); open defect: about 1 run in 5 of 10^6 hops ends with a reported reason (a lost reservation answer), never a hang |
+| `at`: threads that move, inboxes and packets of records | dynamic segments through a `Session` and on the test feeder: per-core queues in DRAM, quota, the quiet end found by the dispatch kernel ([dynamic segments](docs/reference/dynamic.md), [05_hop](examples/05_hop/)); reservations on counter tiles, 10^6 hops exact in every run measured (91 of 91 through a `Session`, 3 of 3 under the test feeder) |
 | Homes and segments declared, and the thread language compiled into them | planned ([manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md)) |
 
 ## Highlights
@@ -446,8 +446,7 @@ docs/                          concepts, host API, streams, install, development
 
 ## Roadmap
 
-1. Dynamic segments without their open defect (a lost reservation answer), then threads
-   that move (`at`) on top of them.
+1. Threads that move (`at`) on top of dynamic segments.
 2. A first release: the wheel published, with its prebuilt dispatch image.
 3. Programs on the card against the references: matrix product, attention, SwiGLU,
    rasterization, ray tracing.
