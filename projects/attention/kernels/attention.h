@@ -7,11 +7,17 @@
 #include "komorebi/device/km_lane.hpp"
 
 // ATTEND: a0 Q, a1 K, a2 V, a3 O (bf16 tiles, [B, H, S, D] in tile order), a4 the job
-// tables (a page per member), a5 mode. Each lane's sender casts the K / V blocks.
+// tables (a page per member), a5 mode, a6 passes over the table (0: one).
 constexpr uint32_t kSegAttend = 1;
+// PROF: a0 profile tensor; the writer stores this core's profile page at the member's
+// page, then (a1 != 0) zeroes it.
+constexpr uint32_t kSegProf = 2;
 
-// ATTEND modes: the full call.
+// ATTEND modes: the full call; cast only (Q reads and the K / V broadcast, compute pops
+// the blocks); compute only (Q, K, V as they are in L1: no reads, lane or writes).
 constexpr uint32_t kModeFull = 0;
+constexpr uint32_t kModeCastOnly = 1;
+constexpr uint32_t kModeComputeOnly = 2;
 
 // Buffers: a job's Q rows; the lane buffer, B blocks of K [DT][KB] then V [KB][DV];
 // the compute's own as ktt_flash's (ones, P, row state, O, tokens, causal mask).
@@ -47,6 +53,44 @@ constexpr uint32_t kJobStart = 5;
 constexpr uint32_t kJobKeys = 6;
 constexpr uint32_t kJobStride = 7;
 constexpr uint32_t kJobsMax = (kTableBytes / 4 - kTabFirst) / kJobWords;
+
+// Profile page: 32-bit words of wall-clock cycles summed over the records, each word
+// written by one thread.
+constexpr uint32_t kCbProf = 19;
+constexpr uint32_t kProfBytes = 1024;
+constexpr uint32_t kProfWords = 32;
+// Reader: body, waits for Q space, Q reads, the sender's slot waits, K / V read issue,
+// casts (read barrier, receivers' stamps, multicast), a receiver's arrivals, finish.
+constexpr uint32_t kPrRdBody = 0;
+constexpr uint32_t kPrRdQWait = 1;
+constexpr uint32_t kPrRdQRead = 2;
+constexpr uint32_t kPrRdKvFree = 3;
+constexpr uint32_t kPrRdKvRead = 4;
+constexpr uint32_t kPrRdCast = 5;
+constexpr uint32_t kPrRdArrive = 6;
+constexpr uint32_t kPrRdFinish = 7;
+// Unpack: body, waits for Q, for K / V blocks. Math: body, the score sections (matmul
+// and row maxima), the row maxima alone, the P V sections.
+constexpr uint32_t kPrUnBody = 8;
+constexpr uint32_t kPrUnWaitQ = 9;
+constexpr uint32_t kPrUnWaitKv = 10;
+constexpr uint32_t kPrMaBody = 12;
+constexpr uint32_t kPrMaScore = 13;
+constexpr uint32_t kPrMaMax = 14;
+constexpr uint32_t kPrMaPv = 15;
+// Pack: body, waits for math, the exponential sections, packing P and the state, the
+// output sections (rescale, packing O), the rows' normalization, score tiles.
+constexpr uint32_t kPrPkBody = 16;
+constexpr uint32_t kPrPkWait = 17;
+constexpr uint32_t kPrPkExp = 18;
+constexpr uint32_t kPrPkPack = 19;
+constexpr uint32_t kPrPkOut = 20;
+constexpr uint32_t kPrPkFinal = 21;
+constexpr uint32_t kPrPkTiles = 22;
+// Writer: body, waits for output rows, writes.
+constexpr uint32_t kPrWrBody = 24;
+constexpr uint32_t kPrWrWait = 25;
+constexpr uint32_t kPrWrWrite = 26;
 
 // Program arguments. Reader: the lane's words. Compute: the lane window B.
 constexpr uint32_t kArgLane = 0;

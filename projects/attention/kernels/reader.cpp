@@ -23,11 +23,14 @@ namespace {
         const Accessor& q,
         uint32_t q0,
         uint32_t rows,
-        uint32_t stride
+        uint32_t stride,
+        uint32_t* c
     ) {
+        const uint32_t t0 = km::wall();
         if (!rd.reserve(kCbQ, R * DT)) {
             return false;
         }
+        const uint32_t t1 = km::wall();
         const uint32_t base = get_write_ptr(kCbQ);
         for (uint32_t i = 0; i < rows; ++i) {
             for (uint32_t d = 0; d < DT; ++d) {
@@ -40,6 +43,8 @@ namespace {
             return false;
         }
         cb_push_back(kCbQ, R * DT);
+        c[kPrRdQWait] += t1 - t0;
+        c[kPrRdQRead] += km::wall() - t1;
         return true;
     }
 
@@ -73,15 +78,30 @@ namespace {
         }
     }
 
+    // Compute only: block n pushed as it is in the lane buffer (no read, no lane), and
+    // after the last block the padding to whole windows, as Lane::finish pushes it.
+    bool push_block(const km::Reader& rd, uint32_t pages) {
+        if (!rd.reserve(kCbKv, pages)) {
+            return false;
+        }
+        cb_push_back(kCbKv, pages);
+        return true;
+    }
+
 }  // namespace
 
 void kernel_main() {
     constexpr auto tiles = TensorAccessorArgs<4>();  // Q, K, V: bf16 tiles in DRAM
     km::Reader rd;
+    volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbProf));
+    for (uint32_t w = 0; w < kProfWords; ++w) {
+        prof[w] = 0;
+    }
     rd.run([&](const km_record_t& r) {
         if (km::seg(r) != kSegAttend) {
             return;
         }
+        const uint32_t t0 = km::wall();
         if (!rd.reserve(kCbJobs, 1)) {
             return;
         }
@@ -90,6 +110,7 @@ void kernel_main() {
             return;
         }
         cb_push_back(kCbJobs, 1);  // compute pops it at the record's end
+        const bool reads = r.a5 != kModeComputeOnly;
         km::Lane ln(rd, r, kArgLane);
         if (!ln.ok() || !ln.member()) {
             return;
@@ -98,40 +119,67 @@ void kernel_main() {
         const auto k = TensorAccessor(tiles, r.a1);
         const auto v = TensorAccessor(tiles, r.a2);
         const uint32_t jobs = km::l1(table)[kTabJobs];
+        const uint32_t passes = r.a6 == 0 ? 1 : r.a6;
         if (jobs > kJobsMax) {
             return;
         }
-        uint32_t n = 0;  // blocks of this record so far, over all jobs
-        for (uint32_t j = 0; j < jobs; ++j) {
-            const volatile tt_l1_ptr uint32_t* w = (
-                km::l1(table + 4 * (kTabFirst + kJobWords * j))
-            );
-            const uint32_t k0 = w[kJobK], v0 = w[kJobV], nk = w[kJobKeys];
-            if (!read_q(rd, q, w[kJobQ], w[kJobRows], w[kJobStride])) {
-                return;
-            }
-            for (uint32_t k_start = 0; k_start < nk; k_start += KB, ++n) {
-                if (!ln.sender()) {
-                    if (!ln.arrive(n)) {
+        uint32_t c[kProfWords] = {};
+        uint32_t n = 0;  // blocks of this record so far, over all jobs and passes
+        for (uint32_t pass = 0; pass < passes; ++pass) {
+            for (uint32_t j = 0; j < jobs; ++j) {
+                const volatile tt_l1_ptr uint32_t* w = (
+                    km::l1(table + 4 * (kTabFirst + kJobWords * j))
+                );
+                const uint32_t k0 = w[kJobK], v0 = w[kJobV], nk = w[kJobKeys];
+                const uint32_t rows = reads ? w[kJobRows] : 0;
+                if (!read_q(rd, q, w[kJobQ], rows, w[kJobStride], c)) {
+                    return;
+                }
+                for (uint32_t k_start = 0; k_start < nk; k_start += KB, ++n) {
+                    uint32_t t1 = km::wall();
+                    if (!reads) {
+                        if (!push_block(rd, ln.pages())) {
+                            return;
+                        }
+                        continue;
+                    }
+                    if (!ln.sender()) {
+                        if (!ln.arrive(n)) {
+                            return;
+                        }
+                        c[kPrRdArrive] += km::wall() - t1;
+                        continue;
+                    }
+                    const uint32_t addr = ln.reserve(n);
+                    if (addr == 0) {
                         return;
                     }
-                    continue;
-                }
-                const uint32_t addr = ln.reserve(n);
-                if (addr == 0) {
-                    return;
-                }
-                const uint32_t kb = nk - k_start < KB ? nk - k_start : KB;
-                read_kv(k, v, k0, v0, k_start, kb, addr);
-                if (!ln.cast(n)) {
-                    return;
+                    const uint32_t t2 = km::wall();
+                    const uint32_t kb = nk - k_start < KB ? nk - k_start : KB;
+                    read_kv(k, v, k0, v0, k_start, kb, addr);
+                    const uint32_t t3 = km::wall();
+                    if (!ln.cast(n)) {
+                        return;
+                    }
+                    c[kPrRdKvFree] += t2 - t1;
+                    c[kPrRdKvRead] += t3 - t2;
+                    c[kPrRdCast] += km::wall() - t3;
                 }
             }
         }
-        // A lane with no block: its receivers never stamp, so the sender's finish()
-        // would wait for stamps that never come; nothing is left to clear.
-        if (n != 0) {
+        const uint32_t t1 = km::wall();
+        if (!reads) {
+            const uint32_t pad = (ln.window() - n % ln.window()) % ln.window();
+            if (pad != 0 && !push_block(rd, pad * ln.pages())) {
+                return;
+            }
+        } else {
             ln.finish();
+        }
+        c[kPrRdFinish] += km::wall() - t1;
+        c[kPrRdBody] += km::wall() - t0;
+        for (uint32_t w = kPrRdBody; w <= kPrRdFinish; ++w) {
+            km::add_sat(prof + w, c[w]);
         }
     });
 }

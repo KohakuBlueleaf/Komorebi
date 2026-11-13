@@ -49,6 +49,16 @@ def test_tables_follow_the_header():
     ]  # fmt: skip
 
 
+def test_buffers_and_profile_words_do_not_collide():
+    s = pl.dims(1, 2, 2, 64, 64, 128, 128, True)
+    cbs = [b[0] for b in pl.buffers(s, 13, 12)]
+    assert len(set(cbs)) == len(cbs) and max(cbs) < 29  # 29 to 31: the runtime's
+    prof = [v for name, v in K.items() if name.startswith("kPr") and "Prof" not in name]
+    assert len(set(prof)) == len(prof) and max(prof) < K["kProfWords"]
+    assert K["kProfWords"] * 4 <= K["kProfBytes"]
+    assert len(pl.call_args(1, 2, 3, 4, 5, passes=7)) == 7
+
+
 def test_exp_constants():
     a, thr = pl.exp_constants(0.125)
     assert np.uint32(a).view(np.float32) == np.float32(0.125 * 1.4426950408889634)

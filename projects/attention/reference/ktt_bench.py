@@ -86,7 +86,13 @@ def main():
             kohakutt.synchronize(dev)
             synced.append(time.perf_counter() - t0)
         out["synced_us_median"] = statistics.median(synced) * 1e6
-        reps = max(10, int(args.seconds / statistics.median(synced)))
+        # The loop's length from calls back to back (a synced call is much slower).
+        t0 = time.perf_counter()
+        for _ in range(args.calls):
+            call()
+        kohakutt.synchronize(dev)
+        back_to_back = (time.perf_counter() - t0) / args.calls
+        reps = max(10, int(args.seconds / back_to_back))
         card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
         clock, stop = [], threading.Event()
         meter = power.PowerSampler(card)
@@ -113,6 +119,7 @@ def main():
         "mean_w": phase.mean_w,
         "peak_w": phase.peak_w,
         "open_w": meter.result.phases["open"].mean_w,
+        "temp_c": phase.mean_temp_c,
         "aiclk_mhz": [min(clock), round(statistics.mean(clock), 1), max(clock)],
     }
     out["counters"] = {

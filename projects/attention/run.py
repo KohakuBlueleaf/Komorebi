@@ -19,8 +19,10 @@ from projects.attention import card  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
 from projects.attention.reference import sdpa  # noqa: E402
 
-# Bound of the check on standard normal inputs (README.md, "The check's bound").
+# Bound of the check on standard normal inputs (README.md, "The check's bound"); the
+# approximate exponential's relative RMS bound.
 RMS_BOUND, MAX_BOUND = 1.5e-2, 6e-2
+APPROX_RMS_BOUND = 3e-2
 SAMPLED = 16  # query tile rows checked
 T0 = time.monotonic()
 
@@ -47,7 +49,7 @@ def shape_dims(name):
     return (b, h, hk, s, d, causal), pl.dims(b, h, hk, s, s, d, d, causal)
 
 
-def check(session, out, q, k, v, s, causal, count=SAMPLED):
+def check(session, out, q, k, v, s, causal, approx=False, count=SAMPLED):
     """Sampled query tile rows of O against float64: error statistics and `ok`."""
     group = s.h // s.hk
     got, want = [], []
@@ -60,7 +62,8 @@ def check(session, out, q, k, v, s, causal, count=SAMPLED):
         want.append(sdpa.attention(q[bi, hi], k[bi, kv], v[bi, kv], rows, causal))
     res = sdpa.errors(np.concatenate(got), np.concatenate(want))
     res["tile_rows"] = len(got)
-    res["ok"] = res["rms_rel"] <= RMS_BOUND and res["max_rel"] <= MAX_BOUND
+    rms = APPROX_RMS_BOUND if approx else RMS_BOUND
+    res["ok"] = res["rms_rel"] <= rms and res["max_rel"] <= MAX_BOUND
     return res
 
 
@@ -92,7 +95,7 @@ def main():
         log(f"{args.calls} calls in {host_s:.4f} s")
         out["run"] = att.stop()
         log("stopped")
-        out["check"] = check(session, tensors["o"], q, k, v, s, causal)
+        out["check"] = check(session, tensors["o"], q, k, v, s, causal, args.approx)
         log("sampled rows read back")
     out["ok"] = out["check"]["ok"] and out["run"]["ok"]
     print(json.dumps(out), flush=True)

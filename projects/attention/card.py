@@ -43,6 +43,12 @@ def table_tensor(device, words):
     )
 
 
+def prof_tensor(device, cores):
+    """Profile pages [cores, kProfBytes / 4] uint32, zero, as a row-major DRAM tensor
+    (one page of kProfBytes per core)."""
+    return table_tensor(device, np.zeros((cores, K["kProfBytes"] // 4), np.uint32))
+
+
 def lane_words(nocs, p, team):
     """Each core's km::LaneArgs words: lanes of p.length cores down every grid column
     (the sender on top, NoC0), one band of rows after the other."""
@@ -123,16 +129,18 @@ class Attention:
         prog = program(p, tensors["q"], tensors["o"], scale, approx, lanes=lanes)
         self.run = session.load(prog, deadline=deadline, wait=wait)
 
-    def words(self, mode=K["kModeFull"]):
+    def words(self, mode=K["kModeFull"], passes=1):
         t = self.t
         return pl.call_args(
-            *(t[n].buffer_address() for n in ("q", "k", "v", "o", "tables")), mode
+            *(t[n].buffer_address() for n in ("q", "k", "v", "o", "tables")),
+            mode,
+            passes,
         )
 
-    def calls(self, n, mode=K["kModeFull"], timeout=60.0):
-        """n ATTEND records back to back: (host seconds from the first issue to the
-        last event, each record's issue-to-completion microseconds)."""
-        words = np.tile(np.array(self.words(mode), np.int64), (n, 1))
+    def calls(self, n, mode=K["kModeFull"], passes=1, timeout=60.0):
+        """n ATTEND records back to back (each `passes` times over its jobs): (host
+        seconds from the first issue to the last event, each record's microseconds)."""
+        words = np.tile(np.array(self.words(mode, passes), np.int64), (n, 1))
         t0 = time.perf_counter()
         tickets = self.run.issue_many(
             "attend", self.team[0], self.team[1], words, exclusive=True
@@ -143,6 +151,18 @@ class Attention:
         if bad:
             raise km.KomorebiError(f"{len(bad)} records not done: {bad[0]}")
         return host_s, np.array([e.us for e in events])
+
+    def profile(self, session, zero=True, timeout=10.0):
+        """Every core's profile page since the last zeroing ([cores, kProfWords]
+        uint32, attention.h kPr*), stored by a PROF record into tensors["prof"] (made
+        before the load); the pages are zeroed after (`zero`)."""
+        prof = self.t["prof"]
+        words = [prof.buffer_address(), 1 if zero else 0]
+        ticket = self.run.issue("prof", self.team, words)
+        self.run.wait(ticket, timeout=timeout)
+        (pages,) = session.read(prof)
+        words = pages.reshape(-1).view(np.uint32).reshape(self.team[1], -1)
+        return words[:, : K["kProfWords"]]
 
     def stop(self):
         """Stops the run; the kernel's result, the cores that ended, the give-ups, and

@@ -37,6 +37,16 @@ namespace {
     constexpr uint32_t cb_st = kCbSt, cb_o = kCbO, cb_stok = kCbStok, cb_otok = kCbOtok;
     constexpr uint32_t cb_m = kCbCausal, cb_out = kCbOut;
 
+    // This thread's profile counters for the record (attention.h, kPr*): wall-clock
+    // cycles at its own issue, added to the profile page at the record's end.
+    uint32_t pc[kProfWords];
+
+    void flush(volatile tt_l1_ptr uint32_t* prof, uint32_t first, uint32_t n) {
+        for (uint32_t w = first; w < first + n; ++w) {
+            km::add_sat(prof + w, pc[w]);
+        }
+    }
+
     static_assert(KB % SC == 0, "key block must be whole sub-chunks");
 
     struct Step {
@@ -143,6 +153,7 @@ namespace {
     // pack thread.
     void score(const Step& s) {
         const bool first = s.c == 0;
+        const uint32_t t0 = km::wall();
         tile_regs_acquire_math_clear();
         // First chunk: any slot (defines every state row).
         reconfig_data_format_srca(cb_kv, cb_st);
@@ -163,17 +174,22 @@ namespace {
                 cb_q, cb_kv, s.r * DT + d, d * KB + s.k0, 0, true, s.nt, 1, DT
             );
         }
+        const uint32_t t1 = km::wall();
         math_vector_begin();
         state_vector(s.nt);
         math_vector_end();
         tile_regs_commit();
+        MATH((pc[kPrMaMax] += km::wall() - t1));
+        MATH((pc[kPrMaScore] += km::wall() - t0));
 
         cb_reserve_back(cb_p, SC);
         cb_reserve_back(cb_stok, 1);
         tile_regs_wait();
+        const uint32_t t2 = km::wall();
         vector_begin();
         exp_vector(first, s.nt);
         vector_end();
+        const uint32_t t3 = km::wall();
         pack_format(false);
         pack_accumulate(false);
         for (uint32_t t = 0; t < s.nt; ++t) {
@@ -184,6 +200,10 @@ namespace {
         tile_regs_release_math_clear();
         cb_push_back(cb_p, SC);
         cb_push_back(cb_stok, 1);
+        PACK((pc[kPrPkWait] += t2 - t0));
+        PACK((pc[kPrPkExp] += t3 - t2));
+        PACK((pc[kPrPkPack] += km::wall() - t3));
+        PACK((pc[kPrPkTiles] += s.nt));
     }
 
     // Dst 0..: P V columns [j0, j0 + wv) of the block, then the row-sum column if
@@ -209,6 +229,7 @@ namespace {
     // moved.
     void output(const Step& s) {
         const bool first = s.c == 0;
+        const uint32_t t0 = km::wall();
         cb_wait_front(cb_stok, 1);
         cb_wait_front(cb_p, SC);
         const uint32_t moved = (
@@ -257,11 +278,14 @@ namespace {
             cb_reserve_back(cb_otok, 1);
             cb_push_back(cb_otok, 1);
         }
+        MATH((pc[kPrMaPv] += km::wall() - t0));
+        PACK((pc[kPrPkOut] += km::wall() - t0));
     }
 
     // Output row r = O_r / l_r (bf16), to the writer. Pack waits (bounded) for room;
     // without it the row is not packed and the record ends in a give-up.
     void finalize(const km::Compute& cp, uint32_t r) {
+        const uint32_t t0 = km::wall();
         cb_wait_front(cb_otok, 1);
         cb_pop_front(cb_otok, 1);
         const bool room = cp.reserve_back(cb_out, DV);
@@ -290,6 +314,7 @@ namespace {
         if (room) {
             cb_push_back(cb_out, DV);
         }
+        PACK((pc[kPrPkFinal] += km::wall() - t0));
     }
 
     // The constant tiles, built by the vector unit and packed once: ones (cb_ones);
@@ -324,26 +349,34 @@ namespace {
 #endif
     }
 
-    // One job: its rows against key tiles [0, nkj) in blocks of KB from the lane, the
-    // rows paired in steps, then each row finalized. False: a bounded wait gave up.
+    // One job: its rows against key tiles [0, nkj) in KB blocks from the lane, paired
+    // in steps, then finalized (`work` false: blocks popped only). False: gave up.
     bool job(
         const km::Compute& cp,
         uint32_t rows,
         uint32_t row0,
         uint32_t nkj,
         uint32_t stride,
-        uint32_t& blocks
+        uint32_t& blocks,
+        bool work
     ) {
+        uint32_t t0 = km::wall();
         if (!cp.wait_front(cb_q, R * DT)) {
             return false;
+        }
+        UNPACK((pc[kPrUnWaitQ] += km::wall() - t0));
+        if (!work) {
+            rows = 0;
         }
         uint32_t c_base = 0;
         for (uint32_t k_start = 0; k_start < nkj; k_start += KB) {
             const uint32_t kb = nkj - k_start < KB ? nkj - k_start : KB;
             const uint32_t nsub = (kb + SC - 1) / SC;
+            t0 = km::wall();
             if (!km::lane_take(cp, cb_kv, P)) {
                 return false;
             }
+            UNPACK((pc[kPrUnWaitKv] += km::wall() - t0));
             // Visible steps in (chunk, row) order; pairs hold two different rows.
             Step pending{};
             bool has_pending = false;
@@ -416,24 +449,53 @@ void kernel_main() {
     cb_reserve_back(cb_st, 2 * R);
     cb_reserve_back(cb_o, R * W);
     cp.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegAttend || !cp.wait_front(kCbJobs, 1)) {
+        if (km::seg(r) != kSegAttend) {
+            return;
+        }
+        const uint32_t t0 = km::wall();
+        for (uint32_t w = 0; w < kProfWords; ++w) {
+            pc[w] = 0;
+        }
+        if (!cp.wait_front(kCbJobs, 1)) {
             return;
         }
         const uint32_t table = get_tile_address(kCbJobs, 0);
         invalidate_l1_cache();
         const uint32_t jobs = km::l1(table)[kTabJobs];
+        const uint32_t passes = r.a6 == 0 ? 1 : r.a6;
+        const bool work = r.a5 != kModeCastOnly;
         uint32_t blocks = 0;
         bool ok = jobs <= kJobsMax;
-        for (uint32_t j = 0; ok && j < jobs; ++j) {
-            const volatile tt_l1_ptr uint32_t* w = (
-                km::l1(table + 4 * (kTabFirst + kJobWords * j))
-            );
-            ok = job(cp, w[kJobRows], w[kJobStart], w[kJobKeys], w[kJobStride], blocks);
+        for (uint32_t pass = 0; ok && pass < passes; ++pass) {
+            for (uint32_t j = 0; ok && j < jobs; ++j) {
+                const volatile tt_l1_ptr uint32_t* w = (
+                    km::l1(table + 4 * (kTabFirst + kJobWords * j))
+                );
+                ok = (
+                    job(cp,
+                        w[kJobRows],
+                        w[kJobStart],
+                        w[kJobKeys],
+                        w[kJobStride],
+                        blocks,
+                        work)
+                );
+            }
         }
         if (ok) {
             km::lane_end(cp, cb_kv, P, window, blocks);
         }
         cb_pop_front(kCbJobs, 1);
+        // Each thread adds its own words (the writer may have zeroed the page).
+        const uint32_t body = km::wall() - t0;
+        volatile tt_l1_ptr uint32_t* prof = km::l1(get_tile_address(kCbProf, 0));
+        invalidate_l1_cache();
+        UNPACK((pc[kPrUnBody] = body));
+        MATH((pc[kPrMaBody] = body));
+        PACK((pc[kPrPkBody] = body));
+        UNPACK((flush(prof, kPrUnBody, 4)));
+        MATH((flush(prof, kPrMaBody, 4)));
+        PACK((flush(prof, kPrPkBody, 8)));
     });
     PACK((flash::restore_constants()));
 }

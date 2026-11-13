@@ -26,6 +26,7 @@ SC = K["kSubChunk"]
 L1_BUDGET = 1_380_000
 WINDOW = 2  # K / V blocks in flight per lane, as ktt_flash's double buffer
 MAX_JOBS = 46  # ktt_flash's limit per core (its runtime arguments)
+LANE_PAGES_MAX = 65535  # pages through one lane in one record (Plan.passes_max)
 # The benchmark cases: (B, H, Hk, S, D, causal).
 SHAPES = {
     "t1": (1, 1, 1, 128, 64, False),
@@ -87,6 +88,7 @@ def buffers(s, r, kb, window=WINDOW):
         (K["kCbOut"], "bfloat16", TILE_BYTES, 2 * s.dvt),
         (K["kCbJobs"], "uint32", K["kTableBytes"], 1),
         (K["kCbWriterJobs"], "uint32", K["kTableBytes"], 1),
+        (K["kCbProf"], "uint32", K["kProfBytes"], 1),
     ]
 
 
@@ -256,6 +258,12 @@ class Plan:
         """K / V blocks the lane of `core` hands over in one call."""
         return sum(math.ceil(j.nk / self.kb) for j in self.jobs[core])
 
+    def passes_max(self):
+        """Passes one record may make: a lane's sender reads its buffer's 16-bit popped
+        counter only at the record's end, so fewer than 65536 pages per record."""
+        most = max(self.blocks_per_lane(c) for c in range(len(self.jobs)))
+        return max(1, LANE_PAGES_MAX // max(1, most * self.block_pages()))
+
     def summary(self):
         return {
             "r": self.r,
@@ -276,7 +284,11 @@ def make(s, grid, budget=L1_BUDGET, r=None, kb=None, length=None):
     if r == 0 or l1_bytes(s, r, kb) > budget:
         raise ValueError(f"buffers of R {r}, KB {kb} do not fit {budget} bytes")
     length, jobs = choose_lanes(s, r, grid, [length] if length else None)
-    return Plan(s, r, kb, WINDOW, length, jobs)
+    p = Plan(s, r, kb, WINDOW, length, jobs)
+    most = max(p.blocks_per_lane(c) for c in range(len(jobs))) * p.block_pages()
+    if most > LANE_PAGES_MAX:
+        raise ValueError(f"{most} pages through a lane in one call (Plan.passes_max)")
+    return p
 
 
 def tables(p):
@@ -315,9 +327,9 @@ def exp_constants(scale, approx=False):
     return float_bits(a), float_bits(thr)
 
 
-def call_args(q, k, v, o, table, mode=K["kModeFull"]):
-    """Record words a0..a5 of ATTEND."""
-    return [q, k, v, o, table, mode]
+def call_args(q, k, v, o, table, mode=K["kModeFull"], passes=1):
+    """Record words a0..a6 of ATTEND."""
+    return [q, k, v, o, table, mode, passes]
 
 
 def flops(s):
