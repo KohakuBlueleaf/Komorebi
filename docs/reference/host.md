@@ -160,6 +160,11 @@ read is silent, and a job watcher that kills on silence cannot tell it from a ha
 read a large tensor with `read_chunks` and log a line per chunk, and check a large
 result by sample: the pages of a few rows or tiles, from `read` or `read_tiles_bf16`.
 
+`run.thread.read(name)` reads only the region's pages of the work cluster's bank (over
+4 MB, in 2 MB chunks with a log line each): a 1 MB region in 1.40 s, against 3.58 s
+when the whole eight-bank tensor was read (host load about 4). The load still writes
+that whole tensor, 8 MB per MB of regions: no call the host uses writes a page range.
+
 ## `Run`
 
 | Call | What it does |
