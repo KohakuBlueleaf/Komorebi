@@ -2,7 +2,8 @@
 # The wheel in a fresh environment: installed alone, `kmr doctor`, the headers and the
 # prebuilt image found inside the install; with KMR_CARD=1 also examples/01_mapcollect.
 # usage: smoke.sh WHEEL VENV   (env: PYTHON, default python3.13; KMR_SITE, directories
-# put on the environment's path, e.g. the tt-metal tree's ttnn; PIP_ARGS, extra pip flags)
+# put on the environment's path: the tree's ttnn, the tree, its tools, and torch's
+# site-packages; PIP_ARGS, extra pip flags; TT_VISIBLE_DEVICES, the card)
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 wheel=$(realpath "${1:?wheel}")

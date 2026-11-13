@@ -71,7 +71,8 @@ kmr doctor
 The wheel needs nothing else to install and to run `kmr doctor`. To run on a card it
 needs what a clone needs ([running on a card](#running-on-a-card)): the tt-metal tree
 with the X280 runtime and the tt-x280-dispatch targets in `TT_METAL_HOME`, `ttnn` from
-that tree and `torch` in the same environment, and `clang++-20`. The native host module
+that tree and `torch` in the same environment (for a source tree's `ttnn`, three of its
+directories on the path: `ttnn`, the tree and `tools`), and `clang++-20`. The native host module
 is built from the sources in the wheel on first use, into `KMR_CACHE` (default
 `~/.cache/komorebi`). The examples are not in the wheel; run them from a clone with the
 wheel's environment active. The tt-metal inside the `kohakutt` wheel cannot serve: it

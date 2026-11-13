@@ -50,7 +50,17 @@ bash packaging/smoke.sh dist/komorebi-*.whl /tmp/komorebi-smoke
 `build_wheel.py` builds with `--no-build-isolation` by default (the running Python
 needs setuptools 77 or later); `--isolated` lets pip fetch the build backend instead.
 `smoke.sh` takes `PYTHON` (default `python3.13`), `KMR_SITE` (directories added to the
-environment's path, such as the tree's `ttnn`) and `PIP_ARGS` (extra pip flags).
+environment's path) and `PIP_ARGS` (extra pip flags). `ttnn` from a source tree imports
+only with three of the tree's directories on the path, `ttnn`, the tree itself and
+`tools` (which holds `tracy`); `torch` and the packages `ttnn` imports come from an
+environment that has them, such as the one the tree was built with:
+
+```
+export KMR_SITE=$TT_METAL_HOME/ttnn:$TT_METAL_HOME:$TT_METAL_HOME/tools:<site-packages with torch>
+```
+
+`KMR_CARD=1` runs the example on a card; the card is the first of `TT_VISIBLE_DEVICES`
+(default 0). The script makes its working directory with `mktemp -d`, under `TMPDIR`.
 
 ## Workflows
 
