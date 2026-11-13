@@ -99,8 +99,16 @@ grid_timeout=10.0)`.
   stopped running its loop (a `WaitTimeout` says so): the runtime cannot restore
   cluster 0, and `KernelFailed` carries the runtime's account of each hart.
 - `grid_timeout` bounds every wait for the grid's kernels to return (seconds). When
-  it passes, `km.GridTimeout` is raised and the device is left open: closing it would
-  wait for the grid without a bound. The card may then need a reset.
+  it passes, `km.GridTimeout` is raised and the session does not close the device: the
+  runtime closes it at the process's exit, waits for the cores up to
+  `TT_METAL_OPERATION_TIMEOUT_SECONDS`, then puts them in reset. A thread that is only
+  stuck (a loop, a blocked wait) is recovered by the next open; a kernel that left a
+  compute unit running is not, and when the next open fails the card needs a reset.
+  The variable is read once, at the process's first device open, and bounds every
+  wait the runtime makes for the cores in that process, not only the exit's; unset,
+  it means no bound, and only then would the close wait without one. A session that
+  opens the device therefore sets it to 30 s when it is unset (with a log line) and
+  keeps a value of the user's.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_us=1.0,
@@ -324,7 +332,7 @@ All derive from `km.KomorebiError`.
 | `EngineRefused` | the kernel refused a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `RecordRefused` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `ticket`, `reason`, `reason_name`, `pc`, `node` |
 | `EngineTimeout` | `wait_engine` ran out, or a RUN or CANCEL was not answered; a `WaitTimeout` | `ticket` |
-| `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the device is left open | |
+| `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the runtime closes the device at the process's exit | |
 
 A card stays held by a process from its first device open until that process exits,
 even after the device is closed: tt-metal's driver takes the chip's lock at the first
