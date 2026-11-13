@@ -9,7 +9,6 @@
   .a { fill: #f0883e; }
   .s { font-size: 12px; }
   .box { fill: #161b22; stroke: #3d444d; stroke-width: 1; }
-  .plan { fill: none; stroke: #6e7681; stroke-width: 1; stroke-dasharray: 5 4; }
   .dram { fill: #2d3540; stroke: none; }
   .edge { fill: #161b22; stroke: #3d444d; stroke-width: 1; }
   .off { fill: none; stroke: #3d444d; stroke-width: 1; stroke-dasharray: 3 3; }
@@ -251,10 +250,11 @@
 <text x="336" y="342" class="s m" text-anchor="middle" xml:space="preserve">41</text>
 <rect x="360" y="318" width="40" height="40" rx="3" class="off"/>
 <text x="380" y="342" class="s m" text-anchor="middle" xml:space="preserve">off</text>
-<rect x="404" y="318" width="40" height="40" rx="3" class="plan"/>
-<text x="424" y="335" class="s m" text-anchor="middle" xml:space="preserve">X280</text>
-<text x="424" y="350" class="s m" text-anchor="middle" xml:space="preserve">2</text>
+<rect x="404" y="318" width="40" height="40" rx="3" class="wbox"/>
+<text x="424" y="335" class="s b w" text-anchor="middle" xml:space="preserve">X280</text>
+<text x="424" y="350" class="s b w" text-anchor="middle" xml:space="preserve">2</text>
 <rect x="448" y="318" width="40" height="40" rx="3" class="dram"/>
+<rect x="448" y="318" width="40" height="40" rx="3" fill="none" class="wd"/>
 <text x="468" y="342" class="s m" text-anchor="middle" xml:space="preserve">D7</text>
 <rect x="492" y="318" width="40" height="40" rx="3" class="off"/>
 <text x="512" y="342" class="s m" text-anchor="middle" xml:space="preserve">off</text>
@@ -319,10 +319,11 @@
 <text x="336" y="430" class="s m" text-anchor="middle" xml:space="preserve">65</text>
 <rect x="360" y="406" width="40" height="40" rx="3" class="off"/>
 <text x="380" y="430" class="s m" text-anchor="middle" xml:space="preserve">off</text>
-<rect x="404" y="406" width="40" height="40" rx="3" class="plan"/>
-<text x="424" y="423" class="s m" text-anchor="middle" xml:space="preserve">X280</text>
-<text x="424" y="438" class="s m" text-anchor="middle" xml:space="preserve">3</text>
+<rect x="404" y="406" width="40" height="40" rx="3" class="wbox"/>
+<text x="424" y="423" class="s b w" text-anchor="middle" xml:space="preserve">X280</text>
+<text x="424" y="438" class="s b w" text-anchor="middle" xml:space="preserve">3</text>
 <rect x="448" y="406" width="40" height="40" rx="3" class="dram"/>
+<rect x="448" y="406" width="40" height="40" rx="3" fill="none" class="wd"/>
 <text x="468" y="430" class="s m" text-anchor="middle" xml:space="preserve">D7</text>
 <rect x="492" y="406" width="40" height="40" rx="3" class="off"/>
 <text x="512" y="430" class="s m" text-anchor="middle" xml:space="preserve">off</text>
@@ -483,6 +484,8 @@
 <line x1="445" y1="258" x2="531" y2="258" class="al" marker-end="url(#ha)"/>
 <path d="M204.0,276 C204.0,300 374,290 410,272" class="athin" marker-end="url(#ha)"/>
 <path d="M404,508 L382,508 L382,300 L414,300 L414,274" class="wl" marker-start="url(#hw)" marker-end="url(#hw)"/>
+<path d="M434,318 L434,274" class="wl" marker-start="url(#hw)" marker-end="url(#hw)"/>
+<path d="M404,420 L392,420 L392,309 L424,309 L424,274" class="wl" marker-start="url(#hw)" marker-end="url(#hw)"/>
 <line x1="492" y1="514" x2="532" y2="514" class="wd" marker-start="url(#hw)" marker-end="url(#hw)"/>
 <rect x="52" y="640" width="16" height="16" rx="3" class="cell"/>
 <text x="76" y="653" class="s" xml:space="preserve">Tensix core</text>
@@ -497,13 +500,11 @@
 <rect x="552" y="664" width="16" height="16" rx="3" class="edge"/>
 <text x="576" y="677" class="s" xml:space="preserve">Eth, PCIe, ARC, SEC</text>
 <rect x="52" y="688" width="16" height="16" rx="3" class="wbox"/>
-<text x="76" y="701" class="s" xml:space="preserve">X280 1: the program's thread (kmx_main, kmx_par)</text>
-<rect x="552" y="688" width="16" height="16" rx="3" class="plan"/>
-<text x="576" y="701" class="s" xml:space="preserve">X280 2 and 3: not used yet</text>
+<text x="76" y="701" class="s" xml:space="preserve">X280 1 to 3: a thread each (kmx_main, kmx_par)</text>
 <line x1="52" y1="720" x2="82" y2="720" class="wl" marker-start="url(#hw)" marker-end="url(#hw)"/>
-<text x="92" y="724" class="s" xml:space="preserve">its ring: records to X280 0; events and result words back</text>
+<text x="92" y="724" class="s" xml:space="preserve">a ring each: records to X280 0; events and result words back</text>
 <line x1="452" y1="720" x2="482" y2="720" class="wd" marker-start="url(#hw)" marker-end="url(#hw)"/>
-<text x="492" y="724" class="s" xml:space="preserve">its regions in bank D6 (kmx_take, kmx_give)</text>
+<text x="492" y="724" class="s" xml:space="preserve">regions in its bank: D6 for 1, D7 for 2 and 3</text>
 <line x1="52" y1="744" x2="82" y2="744" class="ad"/>
 <text x="92" y="748" class="s" xml:space="preserve">the two panels: one multicast window each</text>
 <line x1="452" y1="744" x2="482" y2="744" class="al" marker-end="url(#ha)"/>
@@ -521,7 +522,7 @@
 <text x="52" y="814" class="s m" xml:space="preserve">Columns 7 and 10 are the Tensix columns fused off on the card used here.</text>
 <rect x="52" y="832" width="240" height="100" rx="4" class="box"/>
 <text x="64" y="854" class="b" xml:space="preserve">X280 0: the dispatch kernel</text>
-<text x="64" y="874" class="s m" xml:space="preserve">the host ring, the thread's ring</text>
+<text x="64" y="874" class="s m" xml:space="preserve">the host ring, three thread rings</text>
 <text x="64" y="890" class="s m" xml:space="preserve">streams, job queue, graphs</text>
 <text x="64" y="906" class="s m" xml:space="preserve">up to 16 records in flight</text>
 <text x="64" y="922" class="s m" xml:space="preserve">a deadline per record</text>
@@ -532,9 +533,9 @@
 <text x="316" y="906" class="s m" xml:space="preserve">writer (NoC1): reports</text>
 <text x="316" y="922" class="s m" xml:space="preserve">ports, lanes, item queues</text>
 <rect x="556" y="832" width="240" height="100" rx="4" class="box"/>
-<text x="568" y="854" class="b" xml:space="preserve">X280 1: the work cluster</text>
+<text x="568" y="854" class="b" xml:space="preserve">X280 1 to 3: work clusters</text>
 <text x="568" y="874" class="s m" xml:space="preserve">plain C, built with kmx</text>
 <text x="568" y="890" class="s m" xml:space="preserve">kmx_issue, kmx_wait</text>
 <text x="568" y="906" class="s m" xml:space="preserve">a host fallback in Python</text>
-<text x="568" y="922" class="s m" xml:space="preserve">one per program today</text>
+<text x="568" y="922" class="s m" xml:space="preserve">one thread per cluster</text>
 </svg>

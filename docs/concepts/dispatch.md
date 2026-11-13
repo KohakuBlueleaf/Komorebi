@@ -11,9 +11,8 @@ tags:
 
 Status: implemented on X280 cluster 0 of one card: the host ring, slots, deadlines
 and events, micro-op streams and the job queue ([streams](../streams.md)), and graphs
-([graphs](../graphs.md)); a user thread on work cluster 1 issues records through its
-own ring ([X280 threads](../threads.md)). One work cluster per program today;
-clusters 2 and 3 are planned. What is built, in detail, is in the
+([graphs](../graphs.md)); user threads on work clusters 1, 2 and 3 issue records
+through a ring each ([X280 threads](../threads.md)). What is built, in detail, is in the
 [kernel README](../../src/komorebi_native/x280/kernel/README.md).
 
 The Blackhole card has, besides its Tensix grid, four clusters of X280 cores (RISC-V
@@ -113,7 +112,8 @@ a whole graph inside this kernel; a graph is not spread over clusters.
 - A user's X280 thread is a C program linked against `kmx.h`: `main(hartid)`,
   arguments from a block the host writes, a ring to the dispatch kernel (send a
   command, receive a completion), a stop word and a result.
-- Inside a cluster the four cores share memory. Between clusters, a message ring was
-  measured at about 200 ns.
+- Inside a cluster the four cores share memory. Each cluster reaches one DRAM bank
+  through its cache (cluster 1 bank 6, clusters 2 and 3 bank 7); between clusters,
+  data is pushed through NoC windows, and a wake and its answer take 0.66 µs.
 - A user who writes only Tensix kernels needs no X280 toolchain: the dispatch image is
   meant to ship prebuilt with a release.

@@ -44,7 +44,9 @@ nothing.
 
 `program.thread(cluster=1, sources, regions, words, host_fallback, deadline,
 prefetch="documented")` adds an
-X280 thread on a work cluster (one per program); see [X280 threads](../threads.md).
+X280 thread on a work cluster (one per cluster; `clusters=(1, 2, 3)` declares it on
+each, `program.region(name, value)` a region shared by threads on one bank); see
+[X280 threads](../threads.md).
 
 A program's three kernels share the session's kernel buffer, 70,656 bytes on Blackhole
 unless the session sets `kernel_bytes`. When a program is loaded its build is laid out
@@ -221,7 +223,7 @@ read is silent, and a job watcher that kills on silence cannot tell it from a ha
 read a large tensor with `read_chunks` and log a line per chunk, and check a large
 result by sample: the pages of a few rows or tiles, from `read` or `read_tiles_bf16`.
 
-`run.thread.read(name)` reads only the region's pages of the work cluster's bank (over
+`run.thread.read(name)` reads only the region's pages of the thread's bank (over
 4 MB, in 2 MB chunks with a log line each): a 1 MB region in 0.48 s, 5 MB in 3.8 s
 (`experiments/x280_threads/region_read.py`, host load about 4). The load still writes
 the regions' whole tensor, 8 MB per MB of regions: no call the host uses writes a page

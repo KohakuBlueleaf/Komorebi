@@ -9,9 +9,9 @@ tags:
 
 # X280 threads reference
 
-Status: implemented on one Blackhole p150a, work cluster 1, with the command ring to
-the dispatch kernel (its source 2). The library's ring calls are also checked on the
-CPU against a fake kernel.
+Status: implemented on one Blackhole p150a, work clusters 1, 2 and 3, each with its
+command ring to the dispatch kernel (its sources 2, 3 and 4). The library's ring calls
+are also checked on the CPU against a fake kernel.
 
 The guide is [X280 threads](../threads.md): what a thread is for, how regions change
 hands, the rules. This page lists the interface. The sources are
@@ -34,6 +34,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_issue(const km_record_t* r, uint32_t* ticket)` | 0 | stores record `r` as the next command of the ring | `KMX_OK` and the ticket (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
 | `int kmx_wait(uint32_t ticket, uint64_t deadline, kmx_event* ev)` | 0 | waits for the ticket's event until `kmx_time()` passes `deadline`; other tickets' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_poll(kmx_event* ev)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
+| `int kmx_cluster(void)` | any | the work cluster the thread runs on | 1, 2 or 3 |
 | `uint64_t kmx_time(void)` | any | the 50 MHz timer (`KMX_TICKS_PER_SECOND`) | ticks |
 | `int kmx_stop_requested(void)` | any | true once the host asked for a stop or the thread's deadline passed | 0 or 1 |
 | `void kmx_progress(uint32_t where)` | any | stamps `where` and its time into the result block | - |
@@ -75,7 +76,7 @@ The thread's block in the cluster's local memory (LIM), bytes from its base:
 
 | Offset | Bytes | What | Written by |
 |---|---|---|---|
-| `0x000` | `0x240` | `kmx_args`: run value, magic `kmx1`, version 1, deadline (ticks), region and word counts, check line address and value, flags (`KMX_FLAG_KEEP_PREFETCH` 1); region table at `0x040` (16 x `{offset, bytes}`); words at `0x140` (64 x `uint32`) | host, before the start |
+| `0x000` | `0x240` | `kmx_args`: run value, magic `kmx1`, version 2 (`KMX_VERSION`), deadline (ticks), region and word counts, check line address and value, flags (`KMX_FLAG_KEEP_PREFETCH` 1), the cluster (`cluster`, at `0x38`); region table at `0x040` (16 x `{offset, bytes}`); words at `0x140` (64 x `uint32`) | host, before the start |
 | `0x240` | 64 | stop line: word 0 = `0x53544F50` asks for a stop | host |
 | `0x280` | 256 | result block | thread |
 | `0x380` | 64 | `kmx_par` mailbox | hart 0 |
@@ -87,10 +88,12 @@ library error: 0 none, 1 args, 2 bank, 3 late, 4 stopped, 5 par, 6 result), `cod
 `n`, `where`, `t_where` (ticks from the start to the last stamp), `ticks` (start to
 the end of `kmx_main`), then 48 result words at byte 64.
 
-Regions are whole 4 KiB pages of the work cluster's DRAM bank (bank 6 for cluster 1
-on the p150a); page 0 of the thread's pages is the check line. The thread sees region
-`id` at the cached alias of the bank plus its offset; a Tensix kernel reaches it with
-`get_noc_addr_from_bank_id<true>(bank, address)`.
+Regions are whole 4 KiB pages of the work cluster's DRAM bank (on the p150a bank 6 for
+cluster 1, bank 7 for clusters 2 and 3); page 0 of a bank's pages is the check line,
+then each thread's own regions, then the shared ones. The thread sees region `id` at
+the cached alias of the bank plus its offset; a Tensix kernel reaches it with
+`get_noc_addr_from_bank_id<true>(bank, address)`. A thread reads only its own bank:
+data for a thread on the other bank is pushed there by its producer.
 
 `kmx_ring_desc` (one 64-byte line): `cmd` (`cmd_depth` 64-byte slots, 64-byte
 aligned), `consumed` (the kernel's count of commands taken), `events` (`event_depth`
@@ -102,48 +105,62 @@ window that the start-up opens in slot `KMX_RING_WINDOW` and closes after `kmx_m
 `reserved[0]`. Other addresses are as the thread's cluster sees them. A line that
 names a ring but is out of range ends the start-up with error `args`. The session's
 ring: 16 command lines and the read line in the dispatch kernel's LIM after its layout
-(`KMD_LIM_BYTES`), 64 events after the kmx block in the thread's LIM
+(`KMD_LIM_BYTES`, cluster `c`'s ring `c - 1` rings further), 64 events after the kmx
+block in the thread's LIM
 (`KMD_WORK_*` from `KMX_LIM_BYTES`). The protocol is the host ring's (the dispatch kernel's README,
 "Protocol with the host").
 
 ## Python
 
-`Program.thread(cluster=1, **fields)` declares the thread (one per program) and
-returns a `komorebi.thread.Thread`:
+`Program.thread(cluster=1, clusters=None, **fields)` declares the thread (one per
+cluster) and returns a `komorebi.thread.Thread`; with `clusters`, a list of one per
+cluster, the same fields on each:
 
 | Field | Meaning |
 |---|---|
 | `sources` | C files, linked with the kmx library |
-| `regions` | `{name: size in bytes or an array of initial contents}`, 1 to 16; ids in dict order |
+| `regions` | `{name: size in bytes or an array of initial contents}`; ids in dict order |
+| `shared` | names of the program's shared regions the thread uses; ids after its own; with `regions`, 1 to 16 in all |
 | `words` | up to 64 unsigned 32-bit words |
-| `cluster` | the work cluster, 1 to 3; only cluster 1 (bank 6) was run on a card |
+| `cluster` | the work cluster, 1 to 3 (bank 6 for 1, bank 7 for 2 and 3) |
 | `host_fallback` | `fn(regions, words, run) -> (code, words)`: the thread on the host, on `uint32` copies of the regions, issuing records through `run` (the session's `Run`) where the thread uses its ring |
 | `deadline` | seconds for the whole thread, at most 60 (default 10) |
 | `includes`, `defines` | extra include directories and `-D` definitions |
 | `prefetch` | `"documented"` (default) or `"keep"` |
 
+`Program.region(name, value)` declares a shared region (a size in bytes or an array of
+initial contents). Every thread naming it must be on one bank, and every shared region
+must be named by a thread; `session.load` refuses the program otherwise.
+
 `session.load(program, thread="card" | "host")` writes the regions before the grid
-starts, then starts the image (or readies the fallback) once the dispatch kernel is
-ready. `run.thread` is a `ThreadRun`:
+starts, then starts every image (or readies the fallbacks) once the dispatch kernel is
+ready. `run.threads` holds a `ThreadRun` per cluster; `run.thread` is the lowest
+cluster's:
 
 | Member | Meaning |
 |---|---|
 | `run.thread_result(timeout)` | waits for the thread to return (asks it to stop at the timeout), stops it, returns a `ThreadResult`; with `thread="host"` runs the fallback |
+| `run.thread_results(timeout)` | the same for every thread, `{cluster: ThreadResult}`; on the first that does not return in time or ends with a library error, stops the others and raises `ThreadFailed` (`cluster`, `results`) |
 | `run.thread.read(name)` | the region's bytes (`uint8`), only after `run.stop()` |
 | `run.thread.regions.address(name)` | `(bank, bank address)` for a Tensix kernel |
 | `run.thread.ring` | the `RingPlacement` the host wrote into the ring line (`None` with `thread="host"`) |
-| `run.stop()` | stops a thread still running, then the run |
+| `run.stop()` | stops every thread still running, then the run |
 
 `ThreadResult`: `ran` (false when it was stopped at the timeout), `state`, `error`
 (names, as in the result block), `code`, `words`, `where`, `where_us`, `us`.
 
 `RingPlacement(cmd, consumed, events, read, cmd_depth, event_depth, cached=False,
-remote=None)`, `work_ring(kernel_lim, kernel_xy, work_lim, work_xy)` (the session's
-placement and the kernel's `work_*` words) and `args_block(thread, base, check_value,
-run_value=0, ring=None)` build the LIM block; they need no device.
+remote=None)`, `work_ring(kernel_lim, kernel_xy, work_lim, work_xy, cluster=1)` (the
+session's placement of one cluster's ring and the kernel's end of it),
+`kernel_work_args(ends)` (the kernel's `work_*` words for every ring) and
+`args_block(thread, base, check_value, run_value=0, ring=None, table=None)` build the
+LIM block; they need no device.
 
 ## Measured
 
-On work cluster 1 of a p150a: the bank read at about 1.3 GB/s and written at 1.3 to
-1.8 GB/s with four harts; a hand-over sweep at 5 to 8 GB/s of region.
-`experiments/x280_threads/` has the commands and numbers.
+On work cluster 1 of a p150a at 1,750 MHz: the bank read at about 1.3 GB/s and written
+at 1.3 to 1.8 GB/s with four harts; a hand-over sweep at 5 to 8 GB/s of region
+(`experiments/x280_threads/`). At the session's 1,000 MHz on each of clusters 1 to 3:
+about 1.2 GB/s read and written per cluster, alone or together (three at once 3.5 GB/s);
+a push into the other bank 2.3 GB/s, a pull 0.024 GB/s; take 4.6 GB/s, give 4.3 GB/s
+(`experiments/work_clusters/`).

@@ -17,7 +17,7 @@ resident kernels on every Tensix core, the dispatch kernel on X280 cluster 0, an
 Python host API that issues records to teams and waits for their completion.
 Crossings between cores (ports and reduce, lane broadcast, dynamic segments), deciding
 on the card (micro-op streams, the job queue and graphs in the dispatch kernel) and
-X280 threads on work cluster 1 are implemented. The thread language is planned.
+X280 threads on work clusters 1 to 3 are implemented. The thread language is planned.
 
 ## Pick a path
 

@@ -10,8 +10,8 @@ tags:
 # X280 threads
 
 A thread program runs in three places: the resident worker on the Tensix grid, the
-dispatch kernel on X280 cluster 0, and, when the program needs one, an **X280 thread**
-on a work cluster (cluster 1). The thread is the irregular part of the program: a
+dispatch kernel on X280 cluster 0, and, when the program needs them, **X280 threads**
+on work clusters 1, 2 and 3, one per cluster. A thread is the irregular part of the program: a
 decision over every core's data (prefix sums over all cores' counts, a cost split),
 work whose size is not known ahead, the program's own control loop. It is ordinary C
 on the cluster's four coherent 64-bit cores. It does not compute on tiles.
@@ -19,14 +19,18 @@ on the cluster's four coherent 64-bit cores. It does not compute on tiles.
 Status: a thread can be declared, built, loaded beside the dispatch kernel, read and
 write its regions, run on all four cores, return a result, and be replaced by its host
 fallback, and issue records to the grid through its command ring to the dispatch
-kernel (`kmx_issue`, `kmx_wait`, `kmx_poll`), which the session sets up at load.
+kernel (`kmx_issue`, `kmx_wait`, `kmx_poll`), which the session sets up at load. A
+program may run threads on all three work clusters at once, each with its own ring, and
+two threads on one bank may share regions.
 
 ## What a thread can touch
 
 | Thing | Access |
 |---|---|
 | its argument block | read: the region table and the program's own words |
-| its regions | read and write, as memory: pages of the work cluster's DRAM bank, which Tensix cores reach through the NoC |
+| its regions | read and write, as memory: pages of its cluster's DRAM bank, which Tensix cores reach through the NoC |
+| shared regions | the same, for regions the program shares between threads on one bank |
+| other clusters | none through the library; data crossing banks is pushed by its producer (see [Clusters and banks](#clusters-and-banks)) |
 | its result block | write: a code, up to 48 words, a progress stamp |
 | the Tensix grid | none: everything goes through DRAM regions |
 | the host | none while it runs: the host starts it, may ask it to stop, reads its result |
@@ -52,6 +56,36 @@ in the `ticks` field of its `KM_EV_DONE` event, to the thread through its ring a
 a host-fed program through the host ring, by the same path. The host reads a region of
 DRAM only after the run has stopped; while the grid is resident it does not read DRAM
 at all.
+
+## Clusters and banks
+
+| Cluster | NoC tile | Its DRAM bank |
+|---|---|---|
+| 1 | (8, 9) | 6 |
+| 2 | (8, 5) | 7 |
+| 3 | (8, 7) | 7 |
+
+A cluster reads and writes memory through its cache only in its own bank (the start-up
+check fails with the error `bank` otherwise), so a program's regions follow the banks:
+
+- **A region has a home bank:** the bank of the threads that use it. A thread reads
+  only regions of its own bank; `kmx_cluster()` says which cluster it runs on.
+- **Clusters 2 and 3 share bank 7.** A region declared with `Program.region` and named
+  in both threads' `shared=` is one region for both; it changes hands between them with
+  `kmx_give` by the writer and `kmx_take` by the reader, as with the grid. The host
+  refuses a shared region named by threads on two banks.
+- **Data crossing banks is pushed by its producer** through a NoC window (stores into
+  the other bank or the other cluster's local memory), never pulled: a push runs at
+  2.3 GB/s, a pull at 0.024 GB/s. The library has no call for it yet;
+  `experiments/work_clusters/x280/probe.c` does it with the runtime's NoC windows.
+- **A region a Tensix team and a thread share lives in the thread's bank.** Tensix
+  cores reach every bank over the NoC; the thread reaches only its own.
+
+Measured at the session's 1,000 MHz, four harts per cluster: each cluster reads and
+writes its bank at about 1.2 GB/s, alone or with the others (the limit is per cluster,
+not per bank: clusters 2 and 3 together move 2.3 GB/s of bank 7, all three 3.5 GB/s);
+one cluster wakes another and gets an answer in 0.66 µs through a flag in the other's
+local memory, in 1.2 µs through a shared bank-7 region. See `experiments/work_clusters/`.
 
 ## The command ring
 
@@ -91,7 +125,7 @@ refused at once with reason 11, and the kernel then sends the thread one wake ev
 (`KMX_EV_WAKE`, ticket 0) when a slot frees or the queue issues a job: the thread issues
 the record again after it (`kmx_poll` returns the wake; `kmx_wait` passes it over). A round of two records issued and waited for in turn takes
 about 53 microseconds at the session's 1000 MHz (50 at the 1750 MHz opt-in); the
-kernel's loop looks at the ring every fourth pass.
+kernel's loop looks at one work cluster's ring per pass, each every fourth pass.
 
 ## Writing one
 
@@ -164,7 +198,7 @@ import komorebi as km
 
 prog = km.Program("frame", kernels="kernels/")
 prog.thread(
-    cluster=1,
+    cluster=1,  # 1, 2 or 3; clusters=(1, 2, 3) declares the same thread on each
     sources=["thread/frame_driver.c"],
     regions={"counts": counts, "tables": 1 << 20},  # an array (initial bytes) or a size
     words=[cores, bins],
@@ -178,13 +212,15 @@ with km.Session() as session:
     tables = run.thread.read("tables")  # after the stop
 ```
 
-- `Program.thread(...)` declares the thread (one per program). Its sources are built
+- `Program.thread(...)` declares the thread (one per cluster). Its sources are built
   with the kmx library by the dispatch kernel's toolchain, once, into the build cache.
+  With `clusters=(1, 2, 3)` it declares the same thread on each and returns the list;
+  each thread has its own copy of its regions in its own bank, and its own words.
 - `session.load(prog)` writes the regions before it launches the grid (with slow
   dispatch a tensor write waits for every core to be idle, which a resident grid never
   is), then starts the thread once the dispatch kernel is ready. The regions are pages
-  of one DRAM tensor in the work cluster's bank; arrays given as initial contents are
-  written there.
+  of one DRAM tensor per bank in use; arrays given as initial contents are written
+  there.
 - `run.thread_result(timeout)` returns a `ThreadResult`: `ran` (false when the thread
   did not return in time and was stopped), `state`, the library `error`, the thread's
   `code` and `words`, the last progress stamp `where` and its time `where_us`, and the
@@ -193,8 +229,23 @@ with km.Session() as session:
   thread writes its regions until it stops; an earlier read raises).
   `run.thread.regions.address(name)` gives `(bank, bank address)` for a Tensix kernel,
   which reaches the region with `get_noc_addr_from_bank_id<true>(bank, address)`.
-- `run.stop(timeout)` stops a thread still running before it stops the kernel, inside
-  the same deadline.
+- `run.stop(timeout)` stops every thread still running before it stops the kernel,
+  inside the same deadline.
+
+**Several threads.** `run.threads` holds each thread's `ThreadRun` by cluster
+(`run.thread` is the lowest cluster's). `run.thread_results(timeout)` waits for all and
+returns `{cluster: ThreadResult}`; when one does not return in time or ends with a
+library error, the others are asked to stop at once and `ThreadFailed` is raised with
+the failing `cluster` and every thread's `results`. A shared region:
+
+```python
+prog.region("data", 1 << 20)  # a size or an array of initial contents
+prog.thread(
+    clusters=(2, 3), sources=["thread/pass.c"], regions={"own": 4096}, shared=["data"]
+)  # region ids: own regions first, then shared ones
+```
+
+`run.threads[2].read("data")` and `run.threads[3].read("data")` read the same pages.
 
 **The host fallback.** `session.load(prog, thread="host")` loads the same program
 without the image: `run.thread_result()` then calls
@@ -213,8 +264,9 @@ can give the fallback the same file through ctypes, so both run one program
   them, every later image on that cluster runs with them, whatever it asks. The
   cluster's L3 stays as the runtime sets it (one 128 KiB cache way); the library
   never changes it.
-- One work cluster per program, cluster 1. Its DRAM bank (bank 6 on the p150a) was
-  measured; a wrong bank fails the start-up check with the error `bank`.
+- One thread per work cluster, three at most. A thread's regions and the shared regions
+  it names are at most 16 in all. Threads on banks 6 and 7 share data only by pushing
+  it; the library has no call for that yet.
 - A thread that never returns and polls nothing cannot be stopped: the runtime marks
   the cluster unhealthy, the other clusters go on until the process closes the card,
   and the next process needs a card reset.

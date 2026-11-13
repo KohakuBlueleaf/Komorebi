@@ -5,8 +5,8 @@ Tenstorrent Blackhole card (developed on a P150A). A program is a set of residen
 kernels on every Tensix core; each record they receive names a segment of code and a
 team of cores, and every member works on its share. Values cross between cores, a
 dispatch kernel on one X280 cluster issues the records and runs streams and graphs of
-them on the card, and a C thread on a second X280 cluster runs the irregular part of a
-program.
+them on the card, and C threads on the other three X280 clusters run the irregular part
+of a program.
 
 **Status: early development; nothing is released.** Everything below runs on one
 P150A, from a clone, against a tt-metal source tree.
@@ -178,7 +178,7 @@ static int prefix(job_t* j) {
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/card-dark.svg">
-  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM tiles in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. The host declares the program and its thread and issues records; commands and events pass through PCIe to X280 0 at (8, 3), which runs the dispatch kernel. Its record goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each. A team of cores 26 to 55 is filled; its leader, core 26 at (3, 4), acknowledges on NoC1. X280 1 at (8, 9), drawn in its own colour, runs the program's C thread on four harts (kmx_main, kmx_par); a ring joins it to X280 0, records going to the dispatch kernel and events with result words coming back, so records have two sources. Its regions lie in the DRAM bank beside it, D6, which Tensix cores reach over the NoC; kmx_take and kmx_give hand them over. X280 2 and 3 are outlined as not used yet. Boxes below list what the dispatch kernel, each Tensix core and the work cluster do.">
+  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM tiles in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. The host declares the program and its thread and issues records; commands and events pass through PCIe to X280 0 at (8, 3), which runs the dispatch kernel. Its record goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each. A team of cores 26 to 55 is filled; its leader, core 26 at (3, 4), acknowledges on NoC1. X280 1 at (8, 9), X280 2 at (8, 5) and X280 3 at (8, 7), drawn in their own colour, each run a C thread of the program on four harts (kmx_main, kmx_par); a ring joins each to X280 0, records going to the dispatch kernel and events with result words coming back, so records have up to four sources. Each cluster's regions lie in the DRAM bank beside it, D6 for X280 1 and D7 for X280 2 and 3, which Tensix cores reach over the NoC; kmx_take and kmx_give hand them over. Boxes below list what the dispatch kernel, each Tensix core and the work clusters do.">
 </picture>
 
 The grid is the card's real one in NoC0 coordinates; the numbers in the Tensix cores
@@ -235,10 +235,10 @@ on overlapping cores is issued with `run.issue(..., exclusive=True)`.
 | The dispatch kernel on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatch kernel](src/komorebi_native/x280/kernel/README.md) | all |
 | Micro-op streams and the job queue in the dispatch kernel | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatch kernel: record nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
-| X280 threads: `kmx_par`, regions, the command ring, a host fallback in Python | implemented on one work cluster per program (cluster 1) | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
+| X280 threads: `kmx_par`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, a bounded exit | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
-| X280 threads on clusters 2 and 3; the thread language; homes declared | planned | [manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md) | |
+| `kmx_par` over all twelve harts; the thread language; homes declared | planned | [manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md) | |
 
 ## Measured
 
@@ -417,7 +417,9 @@ docs/                          concepts, references, install, development
 
 - One Blackhole P150A, in slow dispatch. Grids of up to 128 cores in at most two
   multicast panels; one harvesting pattern has been run.
-- One X280 work cluster per program (cluster 1); clusters 2 and 3 are not used yet.
+- One thread per X280 work cluster, three at most. A cluster reads only its own DRAM
+  bank (6 for cluster 1, 7 for clusters 2 and 3); data for the other bank is pushed
+  through a NoC window, for which the thread library has no call yet.
 - Dynamic segments: one dynamic run at a time; items travel through queues in DRAM,
   also to a core's own queue; an item cannot ask for a DRAM fetch; no order between
   items ([dynamic segments](docs/reference/dynamic.md#not-in-this-version)).
@@ -447,7 +449,7 @@ Planned, in order:
 
 1. The rasterizer and the ray tracer faster on the card, where their pages say the
    time goes.
-2. X280 threads on all three work clusters.
+2. `kmx_par` over the twelve harts of the three work clusters.
 3. A first release: the wheel published, with its prebuilt dispatch image.
 4. The manifest and the thread language.
 
