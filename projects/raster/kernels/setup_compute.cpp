@@ -169,7 +169,11 @@ namespace {
         for (uint32_t k = 0; k < 3; ++k) {
             const Corner& a = c[k];
             const Corner& b = c[(k + 1) % 3];
-            const bool ia = a.v[2] > near, ib = b.v[2] > near;
+            // z > near on the bits (near > 0, z not NaN): no float compare, whose flag
+            // save and restore (frflags, fsflags) the cores' documentation leaves out.
+            const int32_t nb = static_cast<int32_t>(bits(near));
+            const bool ia = static_cast<int32_t>(bits(a.v[2])) > nb;
+            const bool ib = static_cast<int32_t>(bits(b.v[2])) > nb;
             if (ia) {
                 out[n++] = a;
             }
