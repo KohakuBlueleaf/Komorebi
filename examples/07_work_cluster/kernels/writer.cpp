@@ -1,5 +1,5 @@
 // Work-cluster example, grid side: STEP changes each member's state word (page p is
-// core p's); SUM's leader reads every word and gives the sum as its result word.
+// core p's); SUM's leader reads the loop's words and gives their sum as its result.
 #include <stdint.h>
 
 #include "../decide.h"
@@ -40,7 +40,7 @@ void kernel_main() {
                 return true;
             }
             uint32_t sum = 0;
-            for (uint32_t p = 0; p < r.a1; p++) {
+            for (uint32_t p = km::first(r); p < km::first(r) + r.a1; p++) {
                 noc_async_read_page(p, x, scratch);
                 if (!reads_done()) {
                     return false;

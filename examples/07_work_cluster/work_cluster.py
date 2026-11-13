@@ -37,13 +37,13 @@ def initial(cores):
     return (np.arange(cores, dtype=np.uint64) * 7) & M32
 
 
-def replay(cores, count, limit, max_rounds):
-    """The program in numpy, apart from decide.c: (code, rounds, sum, trail, teams,
-    final state)."""
-    p = np.arange(cores, dtype=np.uint64)
-    x, first, trail, teams = initial(cores), 0, FNV_BASIS, []
+def replay(cores, count, limit, max_rounds, base=0):
+    """The program in numpy on cores [base, base + cores), apart from decide.c: (code,
+    rounds, sum, trail, teams, final state of those cores)."""
+    p = np.arange(base, base + cores, dtype=np.uint64)
+    x, first, trail, teams = initial(base + cores)[base:], 0, FNV_BASIS, []
     for k in range(max_rounds):
-        teams.append(first)
+        teams.append(base + first)
         team = slice(first, first + count)
         x[team] = (x[team] + np.uint64(k + 1) + p[team]) & M32
         total = int(x.sum()) & M32
@@ -59,7 +59,7 @@ def replay(cores, count, limit, max_rounds):
 
 class State(ctypes.Structure):
     _fields_ = [
-        ("word", ctypes.c_uint32 * 5),
+        ("word", ctypes.c_uint32 * 6),
         ("round", ctypes.c_uint32),
         ("first", ctypes.c_uint32),
         ("sum", ctypes.c_uint32),
@@ -114,7 +114,7 @@ def hostfed(lib, words, send):
     returns SUM's result word, or None if one did not finish. Returns (code, rounds,
     sum, trail, teams, records), with the codes of thread/driver.c."""
     s, recs, records, teams = State(), (Record * 2)(), [], []
-    if lib.wc_start(ctypes.byref(s), (ctypes.c_uint32 * 5)(*words)):
+    if lib.wc_start(ctypes.byref(s), (ctypes.c_uint32 * 6)(*words)):
         return 1, 0, 0, 0, teams, records
     while True:
         lib.wc_round(ctypes.byref(s), recs)
@@ -129,15 +129,15 @@ def hostfed(lib, words, send):
             return code, s.round, s.sum, s.trail, teams, records
 
 
-def model(cores):
+def model(cores, base=0):
     """A send() over the grid in numpy (kernels/writer.cpp's STEP and SUM)."""
-    x = initial(cores).copy()
+    x = initial(base + cores).copy()
 
     def send(recs):
-        step, _ = recs
+        step, total = recs
         p = np.arange(step.first, step.first + step.count, dtype=np.uint64)
         x[p] = (x[p] + np.uint64(step.a1) + p) & M32
-        return int(x.sum()) & M32
+        return int(x[total.first : total.first + total.a1].sum()) & M32
 
     return send
 
@@ -173,24 +173,25 @@ def read_state(state, cores):
     return rows[:cores, 0].astype(np.uint64)
 
 
-def program(state, words, fallback):
-    """The grid's kernels and the X280 thread that drives them, with `fallback` as
-    its host fallback."""
+def program(state, lanes, fallbacks):
+    """The grid's kernels and one X280 thread per lane ({cluster: words}) that drives
+    them, each with its host fallback."""
     prog = km.Program(
         "work_cluster",
         kernels=HERE / "kernels",
         buffers=[km.Buffer(index=16, format="uint32", page_bytes=64, pages=1)],
         compile_args={"writer": ttnn.TensorAccessorArgs(state).get_compile_time_args()},
     )
-    prog.thread(
-        cluster=1,
-        sources=[HERE / "thread" / "driver.c", HERE / "decide.c"],
-        includes=[HERE],
-        regions={"teams": 4 * words[4]},
-        words=words,
-        host_fallback=fallback,
-        deadline=10.0,
-    )
+    for cluster, words in lanes.items():
+        prog.thread(
+            cluster=cluster,
+            sources=[HERE / "thread" / "driver.c", HERE / "decide.c"],
+            includes=[HERE],
+            regions={"teams": 4 * words[4]},
+            words=words,
+            host_fallback=fallbacks[cluster],
+            deadline=10.0,
+        )
     return prog
 
 
@@ -207,34 +208,42 @@ def host_fallback(lib, records):
     return fallback
 
 
-def card_paths(args, words, which):
-    """One program, its thread on the host (`hostfed`) or on the card (`thread`), each
-    run on its own state tensor. Returns {path: (code, rounds, sum, trail, teams,
-    records or None, state)} and each path's time in ms (the thread's own on the card,
-    the fallback's on the host)."""
+def card_paths(args, lanes, which):
+    """One program, its threads on the host (`hostfed`) or on the card (`thread`),
+    each on its own state tensor, every lane at once. Returns {path: {cluster: (code,
+    rounds, sum, trail, teams, records or None, lane cores' state)}} and each path's
+    time per lane in ms (the thread's own on the card, the fallbacks' on the host)."""
     lib, got, ms = decision(), {}, {}
     with km.Session(log=log) as session:
         log("device open")
         for path in which:
             state = state_tensor(session.device, args.cores)
-            w = [state.buffer_address(), *words[1:]]
-            records = []
-            prog = program(state, w, host_fallback(lib, records))
+            mine = {c: [state.buffer_address(), *w[1:]] for c, w in lanes.items()}
+            records = {c: [] for c in lanes}
+            fallbacks = {c: host_fallback(lib, records[c]) for c in lanes}
+            prog = program(state, mine, fallbacks)
             where = "host" if path == "hostfed" else "card"
             run = session.load(prog, deadline=1.0, thread=where)
-            log(f"{path}: loaded, thread on the {where}")
+            log(f"{path}: loaded, threads on the {where} on clusters {list(lanes)}")
             t = time.monotonic()
-            r = run.thread_result(timeout=15.0)
-            took = time.monotonic() - t if path == "hostfed" else r.us / 1e6
-            ms[path] = round(took * 1e3, 2)
-            log(f"{path}: {r.state}, code {r.code}, {ms[path]} ms")
+            results = run.thread_results(timeout=15.0)
+            took = time.monotonic() - t
+            for c, r in results.items():
+                lane_s = took if path == "hostfed" else r.us / 1e6
+                ms.setdefault(path, {})[c] = round(lane_s * 1e3, 2)
+                log(f"{path} on cluster {c}: {r.state}, code {r.code}, "
+                    f"{ms[path][c]} ms")  # fmt: skip
             run.stop()
             log(f"{path}: stopped")
-            teams = run.thread.read("teams").view(np.uint32)
-            rounds = r.words[0] if r.words else 0
-            out = (r.code, *(list(r.words) + [0, 0, 0])[:3])
-            out = (*out, [int(t) for t in teams[:rounds]], records or None)
-            got[path] = (*out, read_state(state, args.cores))
+            x = read_state(state, args.cores)
+            got[path] = {}
+            for c, r in results.items():
+                teams = run.threads[c].read("teams").view(np.uint32)
+                rounds = r.words[0] if r.words else 0
+                out = (r.code, *(list(r.words) + [0, 0, 0])[:3])
+                out = (*out, [int(t) for t in teams[:rounds]], records[c] or None)
+                base, cores = lanes[c][5], lanes[c][1]
+                got[path][c] = (*out, x[base : base + cores])
     return got, ms
 
 
@@ -271,42 +280,53 @@ def main():
     p.add_argument("--limit", type=int, default=1_000_000, help="the sum that ends it")
     p.add_argument("--max-rounds", type=int, default=1000)
     p.add_argument("--paths", nargs="+", choices=PATHS, default=list(PATHS))
+    p.add_argument(
+        "--clusters",
+        type=int,
+        nargs="+",
+        default=[1],
+        help="a thread on each, on its own share of the cores, all at once",
+    )
     args = p.parse_args()
-    words = [0, args.cores, args.count, args.limit, args.max_rounds]
-    code, rounds, total, trail, teams, x = replay(*words[1:])
-    want = {"code": code, "rounds": rounds, "sum": total, "trail": trail}
-    out = {"cores": args.cores, "count": args.count, "limit": args.limit, **want}
-    model_out = hostfed(decision(), words, model(args.cores))
-    out["decide_matches_numpy"] = list(model_out[:5]) == [*want.values(), teams]
-    got = {}
+    share = args.cores // len(args.clusters)
+    lanes = {
+        c: [0, share, args.count, args.limit, args.max_rounds, i * share]
+        for i, c in enumerate(args.clusters)
+    }
+    out = {"cores": args.cores, "count": args.count, "limit": args.limit}
+    out["clusters"] = args.clusters
+    want, got, ms, checks = {}, {}, {}, []
+    for c, words in lanes.items():
+        code, rounds, total, trail, teams, x = replay(*words[1:5], base=words[5])
+        want[c] = ([code, rounds, total, trail, teams], x)
+        model_out = hostfed(decision(), words, model(words[1], words[5]))
+        checks.append(list(model_out[:5]) == want[c][0])
+        want[c] = (*want[c], model_out[5])
+        out[f"replay_{c}"] = {"code": code, "rounds": rounds, "sum": total}
+    out["decide_matches_numpy"] = all(checks)
     if "cpu" in args.paths:
-        got["cpu"] = (*cpu_path(words), None)
+        got["cpu"] = {c: (*cpu_path(w), None) for c, w in lanes.items()}
     on_card = [path for path in ("hostfed", "thread") if path in args.paths]
-    ms = {}
     if on_card:
-        card, ms = card_paths(args, words, on_card)
+        card, ms = card_paths(args, lanes, on_card)
         got.update(card)
-    for path, (c, n, s, t, tm, records, state) in got.items():
-        out[path] = {
-            "code": c,
-            "rounds": n,
-            "sum": s,
-            "same_as_numpy": [c, n, s, t, tm] == [*want.values(), teams],
-        }
-        if records is not None:
-            # the address word differs by run; the rest must be decide.c's records
-            same = [r[:4] + r[5:] for r in records] == [
-                r[:4] + r[5:] for r in model_out[5]
-            ]
-            out[path]["same_records"] = same
-        if state is not None:
-            out[path]["state_wrong"] = int((state != x).sum())
-            out[path]["ms"] = ms[path]
+    for path, per in got.items():
+        out[path] = {}
+        for c, (code, n, s, t, tm, records, state) in per.items():
+            lane = {"code": code, "rounds": n, "sum": s}
+            lane["same_as_numpy"] = [code, n, s, t, tm] == want[c][0]
+            if records is not None:
+                # the address word differs by run; the rest must be decide.c's records
+                lane["same_records"] = [r[:4] + r[5:] for r in records] == [
+                    r[:4] + r[5:] for r in want[c][2]
+                ]
+            if state is not None:
+                lane["state_wrong"] = int((state != want[c][1]).sum())
+                lane["ms"] = ms[path][c]
+            out[path][c] = lane
+            checks += [v for k, v in lane.items() if k.startswith("same")]
+            checks.append(lane.get("state_wrong", 0) == 0)
     out["wall_s"] = round(time.monotonic() - T0, 1)
-    checks = [out["decide_matches_numpy"]]
-    for path in got:
-        checks += [v for k, v in out[path].items() if k.startswith("same")]
-        checks.append(out[path].get("state_wrong", 0) == 0)
     checks.append(set(got) == set(args.paths))  # every path asked for ran
     out["ok"] = all(checks)
     print(json.dumps(out), flush=True)

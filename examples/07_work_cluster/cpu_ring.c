@@ -49,7 +49,7 @@ static int fake_kernel(void) {
                 x[p] += r.a1 + p;
             }
         } else if (seg == WC_SEG_SUM) {
-            for (uint32_t p = 0; p < r.a1; p++) {
+            for (uint32_t p = first; p < first + r.a1; p++) {
                 result += x[p];
             }
         }

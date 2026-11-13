@@ -13,22 +13,23 @@ uint32_t wc_start(wc_state* s, const uint32_t* words) {
     s->sum = 0;
     s->trail = 2166136261u;
     const uint32_t cores = words[WC_CORES], count = words[WC_COUNT];
+    const uint32_t base = words[WC_BASE];
     const int bad =
-        (cores == 0 || cores > KM_CORES_MAX || count == 0 || count > cores ||
-         words[WC_MAX_ROUNDS] == 0);
+        (cores == 0 || base > KM_CORES_MAX || cores > KM_CORES_MAX - base ||
+         count == 0 || count > cores || words[WC_MAX_ROUNDS] == 0);
     return bad ? 1u : 0u;
 }
 
 void wc_round(const wc_state* s, wc_record out[2]) {
     out[0].seg = WC_SEG_STEP;
     out[0].flags = 0;
-    out[0].first = s->first;
+    out[0].first = s->word[WC_BASE] + s->first;
     out[0].count = s->word[WC_COUNT];
     out[0].a0 = s->word[WC_ADDR];
     out[0].a1 = s->round + 1;
     out[1].seg = WC_SEG_SUM;
     out[1].flags = KM_F_EXCL | KM_F_RESULT;
-    out[1].first = 0;
+    out[1].first = s->word[WC_BASE];
     out[1].count = s->word[WC_CORES];
     out[1].a0 = s->word[WC_ADDR];
     out[1].a1 = s->word[WC_CORES];

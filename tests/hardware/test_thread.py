@@ -1,7 +1,7 @@
 """X280 threads on a card: the work-cluster loop host-fed and through the thread's ring
-against numpy, the parallel-thread example's patterns on one hart and four, a thread
-stopped at the host's timeout (and the region it wrote, read back), a thread that
-stops taking its events (KMR_CARD=1)."""
+against numpy, on cluster 1 and on clusters 1 to 3 at once, a region shared by
+clusters 2 and 3, the parallel-thread example's patterns on one hart and four, a thread
+stopped at the host's timeout (its region read back), a stalled ring (KMR_CARD=1)."""
 
 from pathlib import Path
 
@@ -14,16 +14,29 @@ EXAMPLE = ROOT / "examples" / "07_work_cluster" / "work_cluster.py"
 PARALLEL = ROOT / "examples" / "08_parallel_thread" / "parallel_thread.py"
 STOP = Path(__file__).resolve().parent / "thread" / "stop_case.py"
 STALL = Path(__file__).resolve().parent / "thread" / "ring_stall_case.py"
+SHARED = Path(__file__).resolve().parent / "thread" / "shared_case.py"
 
 
 def test_the_work_cluster_loop_host_fed_ends_on_the_card_sum():
     out = run_json(EXAMPLE, "--paths", "cpu", "hostfed", "--limit", 100_000)
-    assert out["hostfed"]["code"] == 0 and out["ok"], out
+    assert out["hostfed"]["1"]["code"] == 0 and out["ok"], out
 
 
 def test_the_work_cluster_loop_runs_in_the_thread_through_its_ring():
     out = run_json(EXAMPLE, "--paths", "thread", "--limit", 100_000)
-    assert out["thread"]["code"] == 0 and out["ok"], out
+    assert out["thread"]["1"]["code"] == 0 and out["ok"], out
+
+
+def test_the_loop_runs_on_three_work_clusters_at_once():
+    out = run_json(
+        EXAMPLE, "--paths", "thread", "--clusters", 1, 2, 3, "--limit", 100_000
+    )
+    assert [out["thread"][c]["code"] for c in "123"] == [0, 0, 0] and out["ok"], out
+
+
+def test_two_clusters_hand_a_shared_region_over_in_their_bank():
+    out = run_json(SHARED)
+    assert out["ok"], out
 
 
 def test_the_parallel_patterns_are_exact_on_one_hart_and_on_four():

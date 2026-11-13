@@ -6,11 +6,12 @@
 
 /* STEP: a0 state, a1 round + 1: x[p] += a1 + p on the cores of the team. */
 #define WC_SEG_STEP 1u
-/* SUM: a0 state, a1 cores: the leader's result word is x[0] + ... + x[a1 - 1]. */
+/* SUM: a0 state, a1 cores: the leader (core `first`) returns x[first] + ... +
+ * x[first + a1 - 1]. */
 #define WC_SEG_SUM 2u
 
-/* The program's words, in this order. */
-enum { WC_ADDR, WC_CORES, WC_COUNT, WC_LIMIT, WC_MAX_ROUNDS, WC_WORDS };
+/* The program's words, in this order: the loop runs on cores [base, base + cores). */
+enum { WC_ADDR, WC_CORES, WC_COUNT, WC_LIMIT, WC_MAX_ROUNDS, WC_BASE, WC_WORDS };
 
 /* What wc_result returns. */
 enum { WC_AGAIN = 0, WC_END = 1, WC_NO_END = 2 };
@@ -32,7 +33,7 @@ typedef struct {
 uint32_t wc_start(wc_state* s, const uint32_t* words);
 
 /* The round's records: STEP on `count` cores from the core the last sum chose, then
- * SUM over every core, exclusive (it waits for STEP), with a result word. */
+ * SUM over the loop's cores, exclusive (it waits for STEP), with a result word. */
 void wc_round(const wc_state* s, wc_record out[2]);
 
 /* SUM's result word: WC_END when it reached the limit, WC_NO_END after the last
