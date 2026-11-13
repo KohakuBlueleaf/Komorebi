@@ -50,7 +50,7 @@ span in NoC0 coordinates, so a group is cut at panel boundaries. The layout modu
 the Python package computes these rectangles.
 
 A command with `KM_FLAG_RESULT` carries one 32-bit result word back with its
-acknowledgement. The leader's writer gives it with `wr.result(value)` before the command
+acknowledgement. The leader's writer gives it with `writer.result(value)` before the command
 completes, and the leader acknowledges with `{ack, result}` as one 8-byte write into
 the slot's acknowledgement line, so the result is there whenever the acknowledgement
 is. A core that is not the leader may call it too; its value is not sent. A flagged

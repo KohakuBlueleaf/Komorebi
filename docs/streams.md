@@ -34,18 +34,18 @@ from komorebi.engines.stream import Stream
 
 HANDLER_MAP = 3
 
-s = Stream(deadline_microseconds=200_000, max_steps=100_000, seed=1, req=1)
-i, count = s.registers(2)
-top = s.label()
-s.rand(count)
-s.mod(count, count, s.const(119))
-s.addi(count, count, 1)
-s.enqueue(HANDLER_MAP, count=count, args=[i, 77])
-s.addi(i, i, 1)
-s.jlt(i, s.const(1000), top)
-s.wait(0)
-s.halt(s.const(0))
-upload = s.encode()
+stream = Stream(deadline_microseconds=200_000, max_steps=100_000, seed=1, req=1)
+job, count = stream.registers(2)
+top = stream.label()
+stream.rand(count)
+stream.mod(count, count, stream.const(119))
+stream.addi(count, count, 1)
+stream.enqueue(HANDLER_MAP, count=count, args=[job, 77])
+stream.addi(job, job, 1)
+stream.jlt(job, stream.const(1000), top)
+stream.wait(0)
+stream.halt(stream.const(0))
+upload = stream.encode()
 ```
 
 This submits 1,000 jobs, each on a random number of cores from 1 to 119, and ends when
@@ -55,22 +55,22 @@ all are done.
   stream submits (0 uses the kernel's current default); the stream ends with an error
   after `max_steps` micro-ops; `seed` (not 0) starts the random generator; `req` is the
   request id of the stream's events.
-- `s.registers(n)` gives `n` registers. There are 16; register 15 holds the generator state
+- `stream.registers(count)` gives `count` registers. There are 16; register 15 holds the generator state
   and starts as the seed, so 15 are free. Asking for more raises an error that says how
   many were asked for and how many are free.
-- `s.const(value)` gives a register that is set once before the first micro-op; equal
+- `stream.const(value)` gives a register that is set once before the first micro-op; equal
   values share one register.
-- `s.label()` is a label at the next micro-op; `s.forward()` and `s.bind(label)` make
+- `stream.label()` is a label at the next micro-op; `stream.forward()` and `stream.bind(label)` make
   a label for a later position. Jumps take labels.
-- `s.submit(handler, group=(first, count), args=[...], exclusive=False, result=False)`: `first`
+- `stream.submit(handler, group=(first, count), args=[...], exclusive=False, result=False)`: `first`
   and `count` are integers or registers; `args` are up to ten integers, of which up to
   four may be registers. `exclusive=True` makes this one command wait at its own submit
   until every job queued before it (by this stream's `enqueue` or by any other source)
   has left the job queue and no busy group overlaps its group; it does not stop a later
   plain command from overlapping it.
-- `s.enqueue(handler, count, args=[...], exclusive=False, result=False)`: the same through the
+- `stream.enqueue(handler, count, args=[...], exclusive=False, result=False)`: the same through the
   job queue; `count` is an integer or a register and the allocator chooses `first`.
-- `s.encode()` gives the upload bytes; `Stream.decode(bytes)` is its inverse and raises
+- `stream.encode()` gives the upload bytes; `Stream.decode(data)` is its inverse and raises
   `StreamFormatError` for an upload the check rejects.
 
 The builder rejects what the check would reject, and names the field: `max_steps`,
@@ -165,7 +165,7 @@ active stream's. Otherwise the answer is that of `check`.
 
 ## The check
 
-`check(upload, region_size)` is what the kernel does before it runs a stream. It returns
+`check(data, region_size)` is what the kernel does before it runs a stream. It returns
 `None`, or `StreamError(reason, pc)`, the reason and program counter of the error event.
 The checks run in this order and the first fault wins.
 
@@ -270,12 +270,12 @@ commands' work, the free cores they wait for, or the host's waits between them.
 ```python
 from komorebi.engines.stream import Stream, simulate
 
-done = s.simulate(delay=lambda command: 1 + command.sequence % 3)
+done = stream.simulate(delay=lambda command: 1 + command.sequence % 3)
 # the same, from upload bytes
 done = simulate(upload, core_count=119, delay=0)
 ```
 
-`simulate(upload, ...)` and `Stream.simulate(...)` run the check and then the stream as
+`simulate(data, ...)` and `Stream.simulate(...)` run the check and then the stream as
 the kernel would; an upload the check rejects ends in one error event at pass 0. They return `SimResult(commands, events, status, passes, error, halt,
 stopped)`:
 

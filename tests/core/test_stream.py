@@ -999,6 +999,6 @@ def test_the_example_in_the_docs_runs():
     code = re.search(r"```python\n(.*?)```", text, re.S)[1]
     scope = {}
     exec(code, scope)
-    done = scope["s"].simulate()
+    done = scope["stream"].simulate()
     assert done.status == "ended" and len(done.commands) == 1000
     assert all(1 <= r.count <= 119 for r in done.commands)

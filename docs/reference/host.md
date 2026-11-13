@@ -15,7 +15,7 @@ import komorebi as km
 
 with km.Session(card=0) as session:
     run = session.load(program)
-    handles = [run.submit("map", group=(i * 8, 8), args=[...]) for i in range(15)]
+    handles = [run.submit("map", group=(job * 8, 8), args=[...]) for job in range(15)]
     run.wait(handles, timeout=5.0)
     run.stop()
     trace = run.trace()
@@ -276,7 +276,7 @@ time in `wait` and `drain`, of which `run.native_s` was in the native loop.
 
 `trace()` returns a `komorebi.state.Trace`: `command(handle)` gives each core's
 wall-clock words (taken, outputs written, completion sent, ring passes);
-`phases(handle)` gives microseconds after the first core took it; `lead(a, b)` is
+`phases(handle)` gives microseconds after the first core took it; `lead(earlier, later)` is
 how long before handle `a`'s completion a core of `b` took its command (positive: both
 were in flight at once).
 
@@ -289,25 +289,29 @@ These `Run` calls write the upload, start it, and turn its events into values.
 ```python
 from komorebi.engines.graph import Graph
 
-step, left, right, norm = (
-    program.handler(n) for n in ("step", "left", "right", "norm")
+step_handler, left_handler, right_handler, norm_handler = (
+    program.handler(name) for name in ("step", "left", "right", "norm")
 )
-g = Graph(deadline_microseconds=200_000, max_runs=50, req=6, keep=True)
-state, it, limit = g.bindings("state", "it", "limit")
-err = g.register()
-a = g.command(step, group=(0, 60), args=[state, it])
-b = g.command(left, group=(0, 30), args=[state], after=[a])
-c = g.command(right, group=(30, 30), args=[state], after=[a])  # in flight with b
-d = g.command(norm, group=(0, 60), args=[state, 60], after=[b, c], result=err)
-e = g.cpu(after=[d])
-e.addi(it, it, 1)
-e.lt(g.again, err, limit)  # go round again while err < limit
+graph = Graph(deadline_microseconds=200_000, max_runs=50, req=6, keep=True)
+state, iteration, limit = graph.bindings("state", "iteration", "limit")
+error = graph.register()
+step = graph.command(step_handler, group=(0, 60), args=[state, iteration])
+left = graph.command(left_handler, group=(0, 30), args=[state], after=[step])
+right = graph.command(right_handler, group=(30, 30), args=[state], after=[step])
+norm = graph.command(
+    norm_handler, group=(0, 60), args=[state, 60], after=[left, right], result=error
+)
+cpu = graph.cpu(after=[norm])
+cpu.addi(iteration, iteration, 1)
+cpu.lt(graph.again, error, limit)  # go round again while error < limit
 
-up = run.upload(g)
-event = run.wait_engine(run.start(up, {"state": x, "it": 0, "limit": 10**6}), 10.0)
-event = run.wait_engine(run.restart(6, {"state": y, "it": 3, "limit": 10**7}), 10.0)
-r0, r1 = event.registers  # register 0 (its low 24 bits) and register 1 at the end
-run.release(up)  # the kept graph is dropped, its lines are free again
+upload = run.upload(graph)
+first = {"state": x, "iteration": 0, "limit": 10**6}
+event = run.wait_engine(run.start(upload, first), 10.0)
+second = {"state": y, "iteration": 3, "limit": 10**7}
+event = run.wait_engine(run.restart(6, second), 10.0)
+iteration_end, error_end = event.registers  # registers 0 (its low 24 bits) and 1
+run.release(upload)  # the kept graph is dropped, its lines are free again
 ```
 
 This is the graph of `examples/06_graph` (the same handlers; `x` and `y` are the
@@ -316,13 +320,13 @@ and no new upload.
 
 | Call | What it does |
 |---|---|
-| `upload(obj, kind=None)` | encodes a `Stream` or a `Graph` (or takes its encoded bytes, with `kind` `"stream"` or `"graph"`) and writes it into the upload region as whole lines, at the first free place; returns an `Upload` (`offset`, `bytes`, `kind`, `req`, `keep`, `state`). Several uploads live side by side. An upload that does not fit raises `ValueError` before anything is written. The host checks nothing else: a bad upload is the kernel's to reject, with its error event |
+| `upload(stream_or_graph, kind=None)` | encodes a `Stream` or a `Graph` (or takes its encoded bytes, with `kind` `"stream"` or `"graph"`) and writes it into the upload region as whole lines, at the first free place; returns an `Upload` (`offset`, `bytes`, `kind`, `req`, `keep`, `state`). Several uploads live side by side. An upload that does not fit raises `ValueError` before anything is written. The host checks nothing else: a bad upload is the kernel's to reject, with its error event |
 | `release(upload, timeout=10.0)` | frees an upload's lines. A running one is rejected; a kept graph is first dropped (`CANCEL`, then its cancelled event, both within `timeout`) |
 | `start(upload, bindings=(), kept=None, timeout=10.0)` | sends `KM_HANDLER_RUN` and returns an `EngineHandle`. A graph takes `bindings`: a dict by name for a graph uploaded from a `Graph` (its constants are added, as `binding_values` does), or a list of up to 16 words; they go to one line of the region, freed at the end. `kept=True` or `False` rewrites the header's keep bit first; None leaves it. Another running or kept engine with the same `req` raises `ValueError`. When the kernel does not answer the RUN within `timeout` it raises `EngineTimeout` with the handle marked `unknown`: the engine may have started, and `cancel` (or `stop`) settles it |
 | `restart(req, bindings=(), timeout=10.0)` | runs the kept graph with `req` again with new bindings (`KM_HANDLER_RUN`, `a2 = 2`) |
 | `cancel(handle, timeout=10.0)` | sends `KM_HANDLER_CANCEL`; the engine then ends with its error event, reason `cancelled`. Nothing is sent for an engine that has ended. For an `unknown` handle it also learns the RUN's answer: raises `EngineRejected` if the RUN was rejected (it never ran); otherwise the engine runs or has ended as usual. `EngineTimeout` if the CANCEL is not answered |
 | `wait_engine(handle, timeout=10.0)` | waits for the engine's end and returns its `EngineEvent`; raises `EngineError` for an error event, `EngineTimeout` when `timeout` passes (the engine may still run), `KernelFailed` if the kernel finished |
-| `run_hostfed(obj, bindings=None, timeout=10.0)` | runs a graph or a stream on the host instead, its commands through the host ring: the same commands and registers as in the kernel ([graphs](../graphs.md#host-fed)); for a stream, the simulator's interpreter, `commands[i].node` the program counter of the `SUBMIT` or `ENQUEUE`, `runs` 1 |
+| `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a graph or a stream on the host instead, its commands through the host ring: the same commands and registers as in the kernel ([graphs](../graphs.md#host-fed)); for a stream, the simulator's interpreter, `commands[i].node` the program counter of the `SUBMIT` or `ENQUEUE`, `runs` 1 |
 
 `start`, `restart` and `cancel` send the command and a `PING` behind it and return
 when the `PING` is answered: the kernel answers a `RUN` or `CANCEL` with an event only

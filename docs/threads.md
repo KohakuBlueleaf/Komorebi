@@ -92,15 +92,15 @@ local memory, in 1.2 µs through a shared bank-7 region. See `experiments/work_c
 ## The command ring
 
 ```c
-km_command_t r = {0};
-r.hdr = HANDLER_MAP | KM_FLAG_RESULT << 8;      /* a handler of the program, with a result */
-r.group = first | count << 16;
+km_command_t command = {0};
+command.hdr = HANDLER_MAP | KM_FLAG_RESULT << 8;  /* a handler of the program, with a result */
+command.group = first | count << 16;
 uint32_t handle;
-if (kmx_submit(&r, &handle) != KMX_OK) { /* KMX_FULL: no free slot yet */ }
+if (kmx_submit(&command, &handle) != KMX_OK) { /* KMX_FULL: no free slot yet */ }
 kmx_event event;
 if (kmx_wait(handle, kmx_time() + KMX_TICKS_PER_SECOND, &event) == KMX_OK &&
     event.kind == KM_EVENT_DONE) {
-    uint32_t value = event.ticks;           /* the group leader's result word */
+    uint32_t result = event.ticks;          /* the group leader's result word */
 }
 ```
 
@@ -140,9 +140,9 @@ static void work(int core, void* arg) {
 
 int kmx_main(int core) {                  /* core 0 */
     uint64_t bytes;
-    uint32_t* in = kmx_region(0, &bytes); /* region 0, as declared on the host */
+    uint32_t* input = kmx_region(0, &bytes); /* region 0, as declared on the host */
     kmx_invalidate(0);
-    if (kmx_parallel(work, in) != KMX_OK) {    /* all four cores, with a timeout */
+    if (kmx_parallel(work, input) != KMX_OK) { /* all four cores, with a timeout */
         return 2;
     }
     kmx_flush(1);
@@ -204,11 +204,11 @@ interleaved tensors, not in the thread's bank: its counters took 247 us in bank 
 
 ## Twelve cores
 
-**Spawn and join, on one cluster.** `kmx_spawn(core, fn, arg)` starts `fn(core, arg)`
-on core 1, 2 or 3 and returns at once; `kmx_join(core)` waits (with a timeout) until it has
+**Spawn and join, on one cluster.** `kmx_spawn(core, function, arg)` starts
+`function(core, arg)` on core 1, 2 or 3 and returns at once; `kmx_join(core)` waits (with a timeout) until it has
 returned. Core 0 goes on meanwhile, with the ring calls, which stay core 0's. A core
 still running its last spawn rejects another (`KMX_FULL`), and so does `kmx_parallel`,
-which is spawn on cores 1 to 3, `fn(0, arg)` on core 0, and join: one mechanism, 0.71
+which is spawn on cores 1 to 3, `function(0, arg)` on core 0, and join: one mechanism, 0.71
 µs per empty call. Three clusters whose mains each spawn three are twelve independent
 threads.
 
@@ -216,13 +216,13 @@ threads.
 |---|---|---|
 | `kmx_args_get`, `kmx_region`, `kmx_cluster`, `kmx_clusters`, `kmx_lead`, `kmx_time`, `kmx_stop_requested` | yes | yes |
 | `kmx_invalidate`, `kmx_flush`, `kmx_invalidate_at`, `kmx_flush_at`, `kmx_push` | yes: outside `kmx_parallel` spread over the four cores | yes, this core alone |
-| `kmx_spawn`, `kmx_join`, `kmx_parallel`, `kmx_parallel_all`, `kmx_serve`, `kmx_submit`, `kmx_wait`, `kmx_poll` | yes (not inside `kmx_parallel`'s `fn`) | no: the library error `parallel`, `KMX_STOPPED` |
+| `kmx_spawn`, `kmx_join`, `kmx_parallel`, `kmx_parallel_all`, `kmx_serve`, `kmx_submit`, `kmx_wait`, `kmx_poll` | yes (not inside `kmx_parallel`'s `function`) | no: the library error `parallel`, `KMX_STOPPED` |
 | `kmx_progress`, `kmx_result` | yes | best not: one result block, no lock |
 | `kmx_port_cores`, `kmx_port_owner`, `kmx_port_open`; `kmx_port_tell`, `kmx_port_asked`, `kmx_port_answer`, `kmx_port_told` ([X280 ports](#x280-ports)) | yes; the last four for the cores it serves | yes; the same |
 | `kmx_port_run` | the lead's, as `kmx_parallel_all` | no: as `kmx_parallel_all` |
 
 **All three clusters.** Put the same image on the clusters
-(`prog.thread(clusters=(1, 2, 3), ...)`). The lowest, `kmx_lead()`, runs the program;
+(`program.thread(clusters=(1, 2, 3), ...)`). The lowest, `kmx_lead()`, runs the program;
 the others serve it:
 
 ```c
@@ -242,13 +242,13 @@ int kmx_main(int core) {
 }
 ```
 
-`kmx_parallel_all(fn, arg)` writes the call into each other cluster's local memory through
-a NoC window, runs `fn` on its own four cores, and waits for each cluster's done line
+`kmx_parallel_all(function, arg)` writes the call into each other cluster's local memory
+through a NoC window, runs `function` on its own four cores, and waits for each cluster's done line
 in its own local memory; the first call waits until every cluster serves. `arg` is a
 64-bit word, the same on every cluster; data lives in each cluster's own copy of the
 regions, which have the same ids.
 
-**Pushing.** `kmx_push(cluster, id, offset, src, bytes)` stores into region `id` of
+**Pushing.** `kmx_push(cluster, id, offset, source, bytes)` stores into region `id` of
 `cluster`'s thread (64-byte multiples), in posted 512-byte vector stores per 2 MiB
 window, then the last line once more through a non-posted window, and returns when that
 store is acknowledged (one core's stores to one tile arrive in order). The receiver:
@@ -269,7 +269,7 @@ input out and the outputs back.
 | 262,144 words (1 MiB) | 1 core | 4 | 8 | 12 |
 |---|---|---|---|---|
 | map, ms | 2.89 | 1.66 | 1.94 | 1.61 |
-| map, `f` 16 times, ms | 26.44 | 6.68 | 4.46 | 3.38 |
+| map, `mix` 16 times, ms | 26.44 | 6.68 | 4.46 | 3.38 |
 | prefix sum, two passes, ms | 4.90 | 2.57 | 2.46 | 2.07 |
 
 Twelve cores lose to four on small inputs: at 16,384 words the map takes 0.13 ms on
@@ -291,49 +291,51 @@ both directions:
 - **ask and answer**: the Tensix core asks, the X280 core answers that ask by its
   sequence number, the Tensix core waits (with a timeout) for that answer.
 
-The host declares the ports (`prog.ports()`); every served Tensix core has ONE X280
+The host declares the ports (`program.ports()`); every served Tensix core has ONE X280
 core, of one of the program's threads, for the whole run. By default the grid's Tensix
 cores are dealt over the threads' X280 cores in grid order, cluster by cluster (ten or
-so to an X280 core with three clusters); `prog.ports(serve={core: (cluster, cpu),
-...})` names them instead (`cpu` the X280 core, 0 to 3). The threads must run on the
+so to an X280 core with three clusters); `program.ports(serve={core: (cluster, x280_core),
+...})` names them instead (`x280_core` 0 to 3). The threads must run on the
 card.
 
 On an X280 core (`kmx.h`), a call names a Tensix core the calling X280 core serves,
 else `KMX_BAD`:
 
 ```c
-static void serve(int cluster, int cpu, uint64_t arg) {
+static void serve(int cluster, int x280_core, uint64_t arg) {
     while (kmx_port_open()) {                 /* until the command's event */
-        for (int c = 0; c < kmx_port_cores(); c++) {
-            kmx_message m;
-            if (kmx_port_owner(c) == cpu && kmx_port_asked(c, &m) == KMX_OK) {
-                kmx_port_answer(c, m.sequence, m.w[0] * 2, 0, 0);
+        for (int core = 0; core < kmx_port_cores(); core++) {
+            kmx_message message;
+            if (kmx_port_owner(core) == x280_core &&
+                kmx_port_asked(core, &message) == KMX_OK) {
+                kmx_port_answer(core, message.sequence, message.w[0] * 2, 0, 0);
             }
         }
     }
 }
 
-/* X280 core 0 of the lead: submit r, serve on all twelve X280 cores until its event */
+/* X280 core 0 of the lead: submit the command, serve on all twelve X280 cores until its event */
 kmx_event event;
-int e = kmx_port_run(&r, serve, 0, &event);
+int error = kmx_port_run(&command, serve, 0, &event);
 ```
 
-`kmx_port_run` submits the command and runs `fn` on every X280 core of the group as
+`kmx_port_run` submits the command and runs `function` on every X280 core of the group as
 `kmx_parallel_all` does. X280 core 0 of the lead looks for the record's event in its ring
 (every fourth `kmx_port_open`) and, when it comes, writes "ended" into every cluster's
-ports line: each X280 core's next `kmx_port_open` returns 0, its `fn` returns, and once
+ports line: each X280 core's next `kmx_port_open` returns 0, its `function` returns, and once
 all have, `kmx_port_run` returns the event. Nothing is stored into a Tensix core after
 that; a command that times out ends the serve the same way (its event is
 `KM_EVENT_TIMEOUT`), and a stop or the deadline also ends it (`KMX_STOPPED`, `KMX_LATE`).
 On the Tensix core (`komorebi/device/km_x280.hpp`):
 
 ```cpp
-km::Reader rd;
-km::X280Port port(rd);  // the reader owns the port
-rd.run([&](const km_command_t& r) {
-    km::X280Msg m;
-    if (port.call(r.a0, 0, 0, m)) {  // ask, wait for the answer
-        port.tell(m.w[0], 0, 0);     // tell the X280 core, never waits
+km::Reader reader;
+km::X280Port port(reader);  // the reader owns the port
+reader.run([&](const km_command_t& command) {
+    const uint32_t asks = command.a0;
+    km::X280Msg message;
+    if (port.call(asks, 0, 0, message)) {  // ask, wait for the answer
+        port.tell(message.w[0], 0, 0);     // tell the X280 core, never waits
     }
 });
 ```
@@ -348,7 +350,7 @@ word, uncached: a look at a mailbox line costs 259 cycles, a tell 144. Example
 
 **Rules.**
 - One kernel of a Tensix core sends on its port (the reader by default; the writer by
-  `km::X280Port(wr, km::kStWriter)`); never both. Any kernel may look.
+  `km::X280Port(writer, km::kStWriter)`); never both. Any kernel may look.
 - An X280 core sends only to the Tensix cores it serves; the windows are opened at the
   start and cleared at the end of the run, one per served core (a cluster holds up to
   168).
@@ -368,9 +370,9 @@ to `units - 1` in ranges of `per` units, each range to the first Tensix core tha
 each range once. On X280 core 0 of the lead:
 
 ```c
-kmx_pull p = {.units = 31000, .per = 16, .mode = KMX_PULL_COUNT};
+kmx_pull settings = {.units = 31000, .per = 16, .mode = KMX_PULL_COUNT};
 kmx_event event;
-int e = kmx_pull_run(&c, &p, &event); /* submits command c, serves its pulls until its event */
+int error = kmx_pull_run(&command, &settings, &event); /* submits the command, serves its pulls until its event */
 ```
 
 and on the Tensix core, in the command's handler:
@@ -378,8 +380,8 @@ and on the Tensix core, in the command's handler:
 ```cpp
 uint32_t first, count;
 while ((count = port.next(first)) != 0) {  // a range, or 0: none left (or gave up)
-    for (uint32_t u = first; u < first + count; u++) {
-        work(u);
+    for (uint32_t unit = first; unit < first + count; unit++) {
+        work(unit);
     }
 }
 ```
@@ -387,11 +389,11 @@ while ((count = port.next(first)) != 0) {  // a range, or 0: none left (or gave 
 `next()` asks for the following range as soon as it returns one, so the answer comes
 while the range runs: one ask is in flight, and a core waits only when its range takes
 less than a round trip. Each cluster of the group keeps a counter in its local memory
-(an atomic add): cluster `i` of `n` hands out ranges `i`, `i + n`, `i + 2n`.., so no
-counter is shared across clusters. The modes:
+(an atomic add): the cluster numbered `index` of `clusters` hands out ranges `index`,
+`index + clusters`, `index + 2 * clusters`.., so no counter is shared across clusters. The modes:
 
-- `KMX_PULL_COUNT`: the counter, or `pick(core, k, arg)` when set: the `k`-th range of
-  `core` (or `KMX_PULL_NONE`), to hand out by the asker, for example by its cost.
+- `KMX_PULL_COUNT`: the counter, or `pick(core, index, arg)` when set: the `index`-th
+  range of `core` (or `KMX_PULL_NONE`), to hand out by the asker, for example by its cost.
 - `KMX_PULL_LOG`: the same, and the ranges each core got are written in order to region
   `log` (`KMX_PULL_LOG_BYTES(per_core)`: a count per core, then `per_core` range
   numbers per core; each cluster its own copy). `KMX_BAD` when the command ran but a
@@ -414,8 +416,8 @@ twelve X280 cores, 16.5 ms on one.
 ```python
 import komorebi as km
 
-prog = km.Program("frame", kernels="kernels/")
-prog.thread(
+program = km.Program("frame", kernels="kernels/")
+program.thread(
     cluster=1,  # 1, 2 or 3; clusters=(1, 2, 3) declares the same thread on each
     sources=["thread/frame_driver.c"],
     regions={"counts": counts, "tables": 1 << 20},  # an array (initial bytes) or a size
@@ -424,7 +426,7 @@ prog.thread(
     deadline=5.0,  # seconds, for the whole thread
 )
 with km.Session() as session:
-    run = session.load(prog)  # grid, dispatcher, then the thread
+    run = session.load(program)  # grid, dispatcher, then the thread
     result = run.thread_result(timeout=10.0)  # waits, stops it, reads its result block
     run.stop()
     tables = run.thread.read("tables")  # after the stop
@@ -434,7 +436,7 @@ with km.Session() as session:
   with the kmx library by the dispatcher's toolchain, once, into the build cache.
   With `clusters=(1, 2, 3)` it declares the same thread on each and returns the list;
   each thread has its own copy of its regions in its own bank, and its own words.
-- `session.load(prog)` writes the regions before it launches the grid (with slow
+- `session.load(program)` writes the regions before it launches the grid (with slow
   dispatch a tensor write waits for every core to be idle, which a persistent grid never
   is), then starts the thread once the dispatcher is ready. The regions are pages
   of one DRAM tensor per bank in use; arrays given as initial contents are written
@@ -459,15 +461,15 @@ library error, the others are asked to stop at once and `ThreadFailed` is raised
 the failing `cluster` and every thread's `results`. A shared region:
 
 ```python
-prog.region("data", 1 << 20)  # a size or an array of initial contents
-prog.thread(
+program.region("data", 1 << 20)  # a size or an array of initial contents
+program.thread(
     clusters=(2, 3), sources=["thread/pass.c"], regions={"own": 4096}, shared=["data"]
 )  # region ids: own regions first, then shared ones
 ```
 
 `run.threads[2].read("data")` and `run.threads[3].read("data")` read the same pages.
 
-**The host fallback.** `session.load(prog, thread="host")` loads the same program
+**The host fallback.** `session.load(program, thread="host")` loads the same program
 without the image: `run.thread_result()` then calls
 `host_fallback(regions, words, run) -> (code, words)` with each region as a `uint32`
 array holding its initial contents (zeros for a region given as a size) and the run's

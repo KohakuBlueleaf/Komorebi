@@ -41,7 +41,11 @@ and a third or less (the ray tracer).
 
 A kernel is loaded once on its core and stays there: `run` calls the function below for
 every command the core receives, and the command's handler says which piece of work it
-asks for. Two kernels show how cores talk to each other.
+asks for. Two kernels show how cores talk to each other. A core's two data-movement
+CPUs run the roles of the easy layout, the reader and the writer; they are roles, not
+"the CPU that reads" and "the CPU that writes": either CPU can read, write and send to
+other cores. What differs is the NoC each uses, that a circular buffer has one CPU
+filling it and the other draining it, and that the writer reports the command.
 
 A reader kernel that broadcasts along a row. The host lays the rows out, and each core
 finds its place in its row in its own arguments. One core of the row reads a block from
@@ -49,24 +53,28 @@ DRAM and sends it to the whole row in one multicast; the others wait for it in L
 (reduced from [03_broadcast](examples/03_broadcast/kernels/reader.cpp)):
 
 ```cpp
+// Reader kernel: one core of each row reads blocks from DRAM and broadcasts them along
+// the row; the other cores of the row wait for them.
 void kernel_main() {
-    constexpr auto source_args = TensorAccessorArgs<0>();
+    constexpr auto row_args = TensorAccessorArgs<0>();
     km::Reader reader;  // stays loaded; runs once per command
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerBroadcast) {
             return;
         }
-        // This core's row, and whether it sends or receives, from its arguments.
+        // The command's arguments, each read once: where the row is, how many blocks.
+        const uint32_t row_address = command.a0;
+        const uint32_t blocks = command.a3;
+        // This core's row, and whether it sends or receives, from its own arguments.
         km::Broadcast broadcast(reader, command, kArgBroadcast);
-        const auto source = TensorAccessor(source_args, command.a0);
-        const uint32_t blocks = command.a1;
+        const auto row_source = TensorAccessor(row_args, row_address);
         for (uint32_t block = 0; block < blocks; block++) {
             if (!broadcast.sender()) {
                 broadcast.arrive(block);  // wait until the block is in my L1
                 continue;
             }
             const uint32_t address = broadcast.reserve(block);
-            noc_async_read_page(block, source, address);
+            noc_async_read_page(block, row_source, address);
             broadcast.cast(block);  // one multicast to the whole row
         }
         broadcast.finish();
@@ -81,6 +89,7 @@ here or forwarded to the core it names (reduced from
 program's own work on a message):
 
 ```cpp
+// Compute kernel: messages that choose their next core at run time.
 void kernel_main() {
     km::Compute compute;
     compute.run([&](const km_command_t& command) {
@@ -90,7 +99,7 @@ void kernel_main() {
             messages.send(messages.rank(), message);
             messages.seeded();
         }
-        while (km::Packet packet = messages.next()) {  // then whatever arrives
+        while (km::Packet packet = messages.next()) {  // then handle whatever arrives
             for (uint32_t index = 0; index < packet.count; index++) {
                 const uint32_t next_core = visit(packet[index], message);
                 if (next_core == kFinished) {
@@ -112,7 +121,7 @@ tiles over a core group, the parts meeting at one owner or along a tree
 For that example the host declares the program (`program()` in
 [merge.py](examples/02_merge_tree/merge.py): the three kernels, three circular buffers,
 the handler header) and submits one `MERGE` command per job to its group (`launch()`,
-lines 103 to 107 and 123 to 127):
+lines 110 to 114 and 130 to 136):
 
 ```python
 run = session.load(
@@ -120,11 +129,11 @@ run = session.load(
     deadline=args.deadline if stall < 0 else 4 * args.wait,
     wait=args.wait,
 )
-# ... the command words of job j (lines 108 to 122)
+# ... the command words of job `job` (lines 115 to 129)
 group = (first, count)
 handles.append(run.submit("merge", group, words, exclusive=True, result=True))
 log(f"{run.drain(timeout=30.0)} events")
-host_s = time.perf_counter() - t0
+host_seconds = time.perf_counter() - start
 run.stop()
 ```
 
@@ -137,55 +146,60 @@ The irregular part of a program is C on an X280 work cluster, where `kmx_paralle
 function on the cluster's four cores (cores). A two-pass prefix sum over chunks of the
 input, 2.48 ms for 262,144 words on four cores, exact against numpy
 ([08_parallel_thread/thread/parallel.c](examples/08_parallel_thread/thread/parallel.c),
-lines 148 to 198 without `nothing`, an empty function for timing `kmx_parallel`; the job
+lines 160 to 215 without `nothing`, an empty function for timing `kmx_parallel`; the job
 struct and the chunk helpers are above them):
 
 ```c
 /* (c) prefix, pass 1: each chunk's sum. */
-static void chunk_sums(int core, void* arg) {
-    const job_t* j = (const job_t*)arg;
-    /* my chunks of CHUNK words: core, core + parts, ... (parts: the cores in use) */
-    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
-        uint32_t s = 0;
-        for (uint64_t i = c * CHUNK; i < end(j, c); i++) {
-            s += j->in[i];
+static void sum_chunks(int core, void* arg) {
+    const job_t* job = (const job_t*)arg;
+    /* my chunks of CHUNK words: core, core + partitions, ... (partitions: the cores in
+     * use) */
+    for (
+        uint64_t chunk = first(job, core); chunk < chunks(job); chunk += job->partitions
+    ) {
+        uint32_t total = 0;
+        for (uint64_t word = chunk * CHUNK; word < end(job, chunk); word++) {
+            total += job->input[word];
         }
-        g_chunk[c] = s;
+        chunk_sums[chunk] = total;
     }
 }
 
-/* Pass 2: out[i] = the chunk's base + the chunk's words before i. */
+/* Pass 2: output[word] = the chunk's base + the chunk's words before it. */
 static void chunk_prefix(int core, void* arg) {
-    const job_t* j = (const job_t*)arg;
-    for (uint64_t c = first(j, core); c < chunks(j); c += j->parts) {
-        uint32_t run = g_chunk[c];
-        for (uint64_t i = c * CHUNK; i < end(j, c); i++) {
-            j->out[i] = run;
-            run += j->in[i];
+    const job_t* job = (const job_t*)arg;
+    for (
+        uint64_t chunk = first(job, core); chunk < chunks(job); chunk += job->partitions
+    ) {
+        uint32_t running_total = chunk_sums[chunk];
+        for (uint64_t word = chunk * CHUNK; word < end(job, chunk); word++) {
+            job->output[word] = running_total;
+            running_total += job->input[word];
         }
-    }
+    (void)arg;
 }
 
-/* Runs fn on core 0 alone or on all four; KMX_OK, or kmx_parallel's error. */
-static int on(void (*fn)(int, void*), job_t* j) {
-    if (j->parts == 1) {
-        fn(0, j);
+/* Runs `function` on core 0 alone or on all four; KMX_OK, or kmx_parallel's error. */
+static int run_on_cores(void (*function)(int, void*), job_t* job) {
+    if (job->partitions == 1) {
+        function(0, job);
         return KMX_OK;
     }
-    return kmx_parallel(fn, j);
+    return kmx_parallel(function, job);
 }
 
 /* The two-pass exclusive prefix sum (mod 2^32); between the passes core 0 turns the
  * chunk sums into bases. */
-static int prefix(job_t* j) {
-    const int e = on(chunk_sums, j);
+static int prefix(job_t* job) {
+    const int error = run_on_cores(sum_chunks, job);
     uint32_t base = 0;
-    for (uint64_t c = 0; c < chunks(j); c++) {
-        const uint32_t s = g_chunk[c];
-        g_chunk[c] = base;
-        base += s;
+    for (uint64_t chunk = 0; chunk < chunks(job); chunk++) {
+        const uint32_t chunk_sum = chunk_sums[chunk];
+        chunk_sums[chunk] = base;
+        base += chunk_sum;
     }
-    return e != KMX_OK ? e : on(chunk_prefix, j);
+    return error != KMX_OK ? error : run_on_cores(chunk_prefix, job);
 }
 ```
 
@@ -209,7 +223,7 @@ result word when the command asks for one.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/breakpoints-dark.svg">
-  <img src="docs/images/breakpoints-light.svg" width="830" alt="Two listings of real code with line numbers. First, a dynamic handler from examples/05_forward/kernels/compute.cpp: while (km::Packet pk = dy.next()) takes the messages that landed on this core; for each message the generator advances and is added to the sum; when no forwards are left dy.consume() ends the message there; otherwise dy.forward(...) sends its 64 bytes to the core its state names; dy.done(pk) frees the packet. The next, consume and forward lines are marked. Second, the merge tree from examples/02_merge_tree/kernels: the writer's km::reduce_emit sends a core's part into a fixed slot (marked emit), the reader's km::reduce_arrive waits for the senders' parts (marked wait), and the compute kernel's km::reduce adds them in rank order. Below, on a schematic grid of cores, two programs run one at a time: one message starts on a core, is forwarded twice to the core its state names and is consumed there; and in a group of four merging by owner, ranks 1 to 3 emit their parts to rank 0, which waits for them and adds them.">
+  <img src="docs/images/breakpoints-light.svg" width="830" alt="Two listings of real code with line numbers. First, a dynamic handler from examples/05_forward/kernels/compute.cpp: while (km::Packet packet = messages.next()) takes the messages that landed on this core; for each message the generator advances and is added to the sum; when no forwards are left messages.consume() ends the message there; otherwise messages.forward(...) sends its 64 bytes to the core its state names; messages.done(packet) frees the packet. The next, consume and forward lines are marked. Second, the merge tree from examples/02_merge_tree/kernels: the writer's km::reduce_emit sends a core's part into a fixed slot (marked emit), the reader's km::reduce_arrive waits for the senders' parts (marked wait), and the compute kernel's km::reduce adds them in rank order. Below, on a schematic grid of cores, two programs run one at a time: one message starts on a core, is forwarded twice to the core its state names and is consumed there; and in a group of four merging by owner, ranks 1 to 3 emit their parts to rank 0, which waits for them and adds them.">
 </picture>
 
 A **breakpoint** is a point where a thread must deal with another core; between two
@@ -218,7 +232,7 @@ its kernels, as above; the thread language in the first column is planned:
 
 | Planned thread language | What is sent | On the card today |
 |---|---|---|
-| `at X[i]: block` | the thread's state | a dynamic handler: the state as a 64-byte message, `dy.forward` ([dynamic handlers](docs/reference/dynamic.md), [05_forward](examples/05_forward/)) |
+| `at X[i]: block` | the thread's state | a dynamic handler: the state as a 64-byte message, `messages.forward` ([dynamic handlers](docs/reference/dynamic.md), [05_forward](examples/05_forward/)) |
 | `emit v -> thread(j)` | the value | `km::emit` into a fixed slot, reduce by owner or by tree ([ports](docs/reference/ports.md), [02_merge_tree](examples/02_merge_tree/)) |
 | `v = wait(n)` | nothing | `km::arrive`: a timed wait until `n` values have landed |
 | a block to a row or a column | the block, once per broadcast | a broadcast ([broadcasts](docs/reference/broadcast.md), [03_broadcast](examples/03_broadcast/)) |

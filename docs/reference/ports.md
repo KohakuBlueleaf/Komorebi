@@ -22,16 +22,16 @@ content.
 ```c++
 #include "komorebi/device/km_port.hpp"
 
-constexpr km::Arrival arrival = {kCbArrive, S};  // the program's arrival buffer
+constexpr km::Arrival arrival = {kCbArrive, kArrivePages};  // the program's arrival buffer
 
 // reader, writer and compute, per command
-const km::Group g = km::group_of(r, me);
+const km::Group group = km::group_of(command, me);
 
 // reader: after its own inputs, every arrival this core waits for
-if (!km::reduce_arrive(rd, r, arrival, g, form)) return;
+if (!km::reduce_arrive(reader, command, arrival, group, form)) return;
 
 // compute: own part in DST 0, then the parts in rank order
-ok = ok && km::reduce(cp, arrival, g, form, [](uint32_t slot) {
+ok = ok && km::reduce(compute, arrival, group, form, [](uint32_t slot) {
     copy_init(kCbArrive);
     copy_tile(kCbArrive, slot, 1);
     add_binary_tile_init();
@@ -39,17 +39,19 @@ ok = ok && km::reduce(cp, arrival, g, form, [](uint32_t slot) {
 });
 
 // writer
-if (g.rank != 0) return km::reduce_emit(wr, r, arrival, g, form, kCbOut, 1);
-if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
+if (group.rank != 0) {
+    return km::reduce_emit(writer, command, arrival, group, form, kCbOut, 1);
+}
+if (!km::reduce_result(writer, kCbOut, 1)) return false;  // then write the result
 ```
 
 ## On the wire
 
 | Step | Kernel | Call | What it does |
 |---|---|---|---|
-| put | writer (NoC1) | `km::emit` | the pages at the front of a buffer go into slot k of the receiver's arrival buffer; timed wait for the write to be acknowledged |
+| put | writer (NoC1) | `km::emit` | the pages at the front of a buffer go into a slot of the receiver's arrival buffer; timed wait for the write to be acknowledged |
 | bump | writer | `km::emit` | an atomic increment of the receiver's port; timed wait for its response (a write flush does not cover an atomic) |
-| wait | reader | `km::arrive(port, n)` | timed wait until the port has counted n; clears it; pushes the whole arrival buffer to compute |
+| wait | reader | `km::arrive(..., port, wanted)` | timed wait until the port has counted `wanted`; clears it; pushes the whole arrival buffer to compute |
 | take | compute | `km::take`, `km::untake` | waits for the arrival buffer, reads slots by page index, pops it whole |
 
 - **Ports.** Every core has `KM_PORTS` (8) port slots of 16 bytes in its control block
@@ -57,31 +59,31 @@ if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
   cleared at start-up and by the wait that consumed them. A sender counts the atomic's
   acknowledgement and never reads its returned value, so a lost answer
   ([atomic_answers](../../experiments/atomic_answers/)) cannot affect a port.
-- **The arrival buffer** is one circular buffer of S pages, P to a slot
-  (`km::Arrival {cb, S, P}`, P = 1 by default): slot k is pages k * P to k * P + P - 1,
-  and a part sent with `emit` is at most P pages. Every core
-  runs the same program, so slot k has the same L1 address everywhere (taken from the
-  buffer's configuration). It is always passed to compute whole, S pages pushed and S popped,
-  so its addresses never drift.
+- **The arrival buffer** is one circular buffer of `pages` pages, `per` to a slot
+  (`km::Arrival {cb, pages, per}`, `per` = 1 by default): slot `slot` is pages
+  `slot * per` to `slot * per + per - 1`, and a part sent with `emit` is at most `per`
+  pages. Every core runs the same program, so a slot has the same L1 address everywhere
+  (taken from the buffer's configuration). It is always passed to compute whole, all
+  `pages` pages pushed and popped, so its addresses never drift.
 - **`KM_FLAG_EXCLUSIVE`.** A command that uses ports must carry it: two commands whose groups
   overlap are then never in flight together, so nothing of one command lands in the
   next one's slots or ports.
 
 ## Groups
 
-`km::Group {base, stride, size, rank}`: rank j is core `base + j * stride`.
+`km::Group {base, stride, size, rank}`: rank `rank` is core `base + rank * stride`.
 
 | Call | Group |
 |---|---|
-| `km::group_of(r, me)` | the whole group, in core order |
-| `km::digit_group(r, me, stride, radix)` | the cores whose group index differs from this core's only in the digit of weight `stride` and base `radix` (for example the K parts of one output block) |
+| `km::group_of(command, me)` | the whole group, in core order |
+| `km::digit_group(command, me, stride, radix)` | the cores whose group index differs from this core's only in the digit of weight `stride` and base `radix` (for example the parts of one output block along the matrix's inner dimension) |
 
 ## Reduce
 
-| Form | Sender | Receiver | Port, slot | Slots (S / P) |
+| Form | Sender | Receiver | Port, slot | Slots |
 |---|---|---|---|---|
 | `km::kReduceOwner` | every core of the group but rank 0 | rank 0 waits for size - 1 on port 0, combines slots 0 to size - 2 in rank order | port 0, slot rank - 1 | at least size - 1 |
-| `km::kReduceTree` | in round r, a rank that is an odd multiple of 2^r sends to rank - 2^r and is done | a multiple of 2^(r+1) waits for 1 on port r if rank + 2^r < size | port r, slot r | one per round, ceil(log2 size), at most 7 |
+| `km::kReduceTree` | in each round, a rank that is an odd multiple of 2^round sends to rank - 2^round and is done | a multiple of 2^(round+1) waits for 1 on port `round` if rank + 2^round < size | port `round`, slot `round` | one per round, ceil(log2 size), at most 7 |
 
 The combine order is fixed by rank in both forms, so a result does not depend on
 arrival order; on exact-valued inputs both forms give the same bits.
@@ -110,25 +112,25 @@ words, one 16-byte NoC write each way:
 ```c++
 #include "komorebi/device/km_x280.hpp"
 
-km::X280Port port(rd);  // owned by the reader; X280Port(wr, km::kStWriter): the writer
-km::X280Msg m;
-if (port.call(a, b, c, m)) {  // ask, then wait for its answer
-    use(m.w[0]);
+km::X280Port port(reader);  // owned by the reader; X280Port(writer, km::kStWriter): the writer
+km::X280Msg message;
+if (port.call(ask, 0, 0, message)) {  // ask, then wait for its answer
+    use(message.w[0]);
 }
-port.tell(x, y, z);          // to the X280 core; it sees the newest
-if (port.told(m)) { ... }    // the X280 core's newest tell, if newer; never waits
+port.tell(hash, total, largest);  // to the X280 core; it sees the newest
+if (port.told(message)) { ... }   // the X280 core's newest tell, if newer; never waits
 ```
 
 | Call | Waits | Returns |
 |---|---|---|
 | `served()` | no | whether the program gave this core an X280 core |
-| `told(m)` | no | true and the X280 core's newest tell, if newer than the last one looked at |
-| `wait_told(m)` | timed | the same, waiting for one; false: gave up (recorded) |
-| `tell(a, b, c)` | for the last store to leave | false: gave up (recorded) |
-| `ask(a, b, c)` | as `tell` | the ask's sequence number, 0: gave up |
-| `answered(sequence, m)` | no | true and the answer to ask `sequence`, if it landed |
-| `wait_answer(sequence, m)` | timed | the same, waiting; false: gave up (recorded) |
-| `call(a, b, c, m)` | timed | `ask`, then `wait_answer` |
+| `told(message)` | no | true and the X280 core's newest tell, if newer than the last one looked at |
+| `wait_told(message)` | timed | the same, waiting for one; false: gave up (recorded) |
+| `tell(first_word, second_word, third_word)` | for the last store to leave | false: gave up (recorded) |
+| `ask(first_word, second_word, third_word)` | as `tell` | the ask's sequence number, 0: gave up |
+| `answered(sequence, message)` | no | true and the answer to ask `sequence`, if it landed |
+| `wait_answer(sequence, message)` | timed | the same, waiting; false: gave up (recorded) |
+| `call(first_word, second_word, third_word, message)` | timed | `ask`, then `wait_answer` |
 | `next(first)` | timed | the next range of a pull (`kmx_pull_run`): its count and `first`, 0 when none is left or a wait gave up (`pull_gave_up()`); asks for the range after it before returning |
 
 **Latest wins.** A tell overwrites the line it lands in: a side that looks less often

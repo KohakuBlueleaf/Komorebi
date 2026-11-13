@@ -14,21 +14,25 @@ Status: implemented. Runs on one Blackhole card under the dispatcher
 describes the headers in `src/komorebi_native/include/komorebi/`. The design behind
 them is in [the Tensix runtime](../concepts/runtime.md).
 
-A program has three persistent kernels on every core it uses. The reader runs on
-RISCV_0 and NoC0, the writer on RISCV_1 and NoC1, and the compute kernel on the three
-TRISC threads. The runtime owns each kernel's loop: it takes the next command, and the
-program supplies the body that runs it, usually a switch on the handler.
+A program has three persistent kernels on every core it uses: a reader and a writer on
+the core's two data-movement CPUs, and the compute kernel on the three TRISC threads.
+The easy layout runs the reader on RISCV_0 with NoC0 and the writer on RISCV_1 with
+NoC1, but the two are roles, not "the CPU that reads" and "the CPU that writes": either
+CPU can read, write and send to other cores. What differs is the NoC each uses, that a
+circular buffer has one CPU filling it and the other draining it, and that the writer
+reports the command. The runtime owns each kernel's loop: it takes the next command, and
+the program supplies the body that runs it, usually a switch on the handler.
 
 ```c++
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {           // reader.cpp
-    km::Reader rd;
-    rd.run([&](const km_command_t& r) {
-        switch (km::handler(r)) {
+    km::Reader reader;
+    reader.run([&](const km_command_t& command) {
+        switch (km::handler(command)) {
             case kHandlerMap:
-                if (!rd.reserve(kCbIn, n)) return;  // gave up: the tile is stopping
-                ...                                 // read n pages, then cb_push_back
+                if (!reader.reserve(kCbIn, tiles)) return;  // gave up: the tile is stopping
+                ...                                         // read the tiles, then cb_push_back
                 break;
             default:
                 break;
@@ -37,20 +41,20 @@ void kernel_main() {           // reader.cpp
 }
 
 void kernel_main() {           // writer.cpp: the body says whether to report
-    km::Writer wr;
-    wr.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerMap) return true;
-        if (!wr.wait_front(kCbOut, 1)) return false;  // nothing to report
+    km::Writer writer;
+    writer.run([&](const km_command_t& command) {
+        if (km::handler(command) != kHandlerMap) return true;
+        if (!writer.wait_front(kCbOut, 1)) return false;  // nothing to report
         ...                                           // write, flush, cb_pop_front
         return true;
     });
 }
 
 void kernel_main() {           // compute.cpp: the body runs on all three threads
-    km::Compute cp;
-    cp.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerMap) return;
-        bool ok = cp.wait_front(kCbIn, 1);  // the same answer on all three threads
+    km::Compute compute;
+    compute.run([&](const km_command_t& command) {
+        if (km::handler(command) != kHandlerMap) return;
+        bool ok = compute.wait_front(kCbIn, 1);  // the same answer on all three threads
         ...
     });
 }
@@ -80,11 +84,11 @@ carries the sequence number. The command has landed when all four agree
 
 | Word | Field | Read with |
 |---|---|---|
-| `sequence` | sequence number, from 1, increasing (compared across the wrap) | `km::newer(a, b)` |
-| `hdr` | `handler \| flags << 8 \| slot << 16` | `km::handler(r)`, `km::flags(r)`, `km::slot(r)` |
-| `group` | `first \| count << 16`: cores `first` to `first + count - 1` in core order | `km::first(r)`, `km::count(r)`, `km::in_group(r, me)` |
-| `a0` to `a9` | the handler's ten argument words | `r.a0` ... `r.a9` |
-| `land1` to `land3` | copies of `sequence` (landing) | `KM_LANDED(&r)` |
+| `sequence` | sequence number, from 1, increasing (compared across the wrap) | `km::newer(sequence, other)` |
+| `hdr` | `handler \| flags << 8 \| slot << 16` | `km::handler(command)`, `km::flags(command)`, `km::slot(command)` |
+| `group` | `first \| count << 16`: cores `first` to `first + count - 1` in core order | `km::first(command)`, `km::count(command)`, `km::in_group(command, me)` |
+| `a0` to `a9` | the handler's ten argument words | `command.a0` ... `command.a9` |
+| `land1` to `land3` | copies of `sequence` (landing) | `KM_LANDED(&command)` |
 
 | Handler | Meaning |
 |---|---|
@@ -102,9 +106,9 @@ carries the sequence number. The command has landed when all four agree
 A command's header names its ring slot. A command found in another slot is not run and
 is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
 
-- `km::partition(n, index, count)` gives `{start, len}`, rank `index`'s contiguous part
-  of n items. The first `n % count` cores take one item more.
-- `km::report_to(r, me, row)` gives `{parent, want}`, the completion tree described below.
+- `km::partition(items, index, count)` gives `{start, len}`, rank `index`'s contiguous
+  part of `items` items. The first `items % count` cores take one item more.
+- `km::report_to(command, me, row)` gives `{parent, want}`, the completion tree described below.
 
 ## The three kernels
 
@@ -114,11 +118,11 @@ is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
 |---|---|
 | `args()` | the start-up arguments (`km::Args`, below) |
 | `me()` | this core's index in the core order |
-| `arg(i)` | the program's start-up argument i (runtime argument `kArgs + i`) |
-| `control(off)`, `state()` | a word of the control block, the state words |
+| `arg(index)` | the program's start-up argument `index` (runtime argument `kArgs + index`) |
+| `control(offset)`, `state()` | a word of the control block, the state words |
 | `stop()` | the tile's stop flag is set (call `invalidate_l1_cache()` first) |
-| `core_noc(index, addr)` | the NoC address of `addr` on core `index` of the core table |
-| `disp_noc(addr)` | the NoC address of `addr` at the dispatcher |
+| `core_noc(index, address)` | the NoC address of `address` on core `index` of the core table |
+| `disp_noc(address)` | the NoC address of `address` at the dispatcher |
 | `poll(ready, limit, grace = 0)` | `km::poll_stop` on this tile's stop flag |
 | `gave_up(word, code, where, slot, sequence)` | `km::command_gave_up` for this tile (`kStReader` or `kStWriter`) |
 
@@ -128,7 +132,7 @@ is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
 |---|---|
 | `run(body)` | starts up, then calls `body(command)` for each command of this core until EXIT or a wait gives up. The body returns nothing |
 | `reserve(cb, pages)` | timed `cb_reserve_back` of a contiguous item. False: the reader gave up (recorded) |
-| `wait_stop(r)` | waits only for the stop flag, up to the idle limit, and commands a give-up at `stall`. True on stop. For tests that make a core stall |
+| `wait_stop(command)` | waits only for the stop flag, up to the idle limit, and commands a give-up at `stall`. True on stop. For tests that make a core stall |
 
 The reader's start-up runs once and in this order:
 1. Clears the ring, the DONE counters, the state words, the stop flag, the broadcast areas and the ports.
@@ -156,13 +160,13 @@ writer has nothing to do for returns true; otherwise its group never completes.
 | Call | What it does |
 |---|---|
 | `run(body)` | per command: all three threads copy the command and call `body(command)`. After the body, unpack marks the command done in its DONE slot, which the writer waits for |
-| `me()`, `arg(i)` | this core's index; the program's compute argument i (after `kComputeArgs`) |
+| `me()`, `arg(index)` | this core's index; the program's compute argument `index` (after `kComputeArgs`) |
 | `wait_front(cb, pages, times = 1)` | timed `cb_wait_front`. Unpack decides and passes the answer to math and pack, so all three threads take the same path |
 | `reserve_back(cb, pages)` | timed `cb_reserve_back`, decided by pack. False on pack only: gave up (recorded); true on unpack and math |
 
 ### Groups and completion (`km_completion.hpp`)
 
-`km::complete(core, r, result)` runs in the writer after the body. Within one grid
+`km::complete(core, command, result)` runs in the writer after the body. Within one grid
 row of `row` cores (or with `row` 0), every core of the group reports to the first core. Across
 rows, cores report to their row's leader, and row leaders report to the first
 core. A core that receives reports waits (with a timeout) for `want` of them in
@@ -336,13 +340,13 @@ counted in `kStTraceDropped`.
 
 A program may:
 - use handlers 1 to 239, the ten argument words, and its own start-up arguments
-  (`arg(i)`);
+  (`arg(index)`);
 - use any circular buffer except 29 to 31;
 - wait on its own conditions with `poll(ready, args().wait_limit)` and command a
   give-up with `gave_up(...)`, under a where code of the runtime (`kWhereData`,
   `kWhereStall`) or of a call it uses;
 - write to DRAM and to other cores' L1 through the NoC from the reader and the writer;
-- send a result word with `wr.result(value)` on a `KM_FLAG_RESULT` command.
+- send a result word with `writer.result(value)` on a `KM_FLAG_RESULT` command.
 
 A program must:
 - take and release pages of its buffers only through the wrappers (`Reader::reserve`,

@@ -30,17 +30,17 @@ from komorebi.engines.graph import Graph
 
 HANDLER_STEP, HANDLER_LEFT, HANDLER_RIGHT, HANDLER_NORM = 1, 2, 3, 4
 
-g = Graph(deadline_microseconds=200_000, max_runs=100)
-it, err = g.bindings("it"), g.register()
-a = g.command(HANDLER_STEP, group=(0, 60), args=[it])
-b = g.command(HANDLER_LEFT, group=(0, 30), after=[a])
-c = g.command(HANDLER_RIGHT, group=(30, 30), after=[a])  # in flight together with b
-d = g.command(HANDLER_NORM, group=(0, 60), after=[b, c], result=err)
-e = g.cpu(after=[d])
-e.addi(it, it, 1)
-e.lt(g.again, err, g.const(65))  # go round again while err < 65
-upload = g.encode()
-bindings = g.binding_values(it=0)
+graph = Graph(deadline_microseconds=200_000, max_runs=100)
+iteration, error = graph.bindings("iteration"), graph.register()
+step = graph.command(HANDLER_STEP, group=(0, 60), args=[iteration])
+left = graph.command(HANDLER_LEFT, group=(0, 30), after=[step])
+right = graph.command(HANDLER_RIGHT, group=(30, 30), after=[step])  # with left
+norm = graph.command(HANDLER_NORM, group=(0, 60), after=[left, right], result=error)
+cpu = graph.cpu(after=[norm])
+cpu.addi(iteration, iteration, 1)
+cpu.lt(graph.again, error, graph.const(65))  # go round again while error < 65
+upload = graph.encode()
+bindings = graph.binding_values(iteration=0)
 ```
 
 - `Graph(deadline_microseconds=0, max_runs=1, step_limit=4096, req=1, keep=False)`: the
@@ -50,26 +50,26 @@ bindings = g.binding_values(it=0)
 - Nodes are numbered in the order they are made, and `after` names earlier nodes only,
   so the upload's order is always one in which predecessors come first. A node has at
   most four predecessors.
-- `g.command(handler, group=(first, count) | count=n, args=[...], after=[...], result=register,
+- `graph.command(handler, group=(first, count) | count=n, args=[...], after=[...], result=register,
   exclusive=False, skip_if_zero=register)`: a `COMMAND` node. `first`, `count` and up to four
   of the ten arguments may be registers, read when the node is submitted. With `count=`
   instead of `group=` the command is queued (`KM_FLAG_QUEUE`) and the allocator places it.
   `result=register` asks for the record's result word and stores it in `register` at completion.
-- `g.cpu(after=..., skip_if_zero=...)`: a `CPU` node; its micro-ops are added through
+- `graph.cpu(after=..., skip_if_zero=...)`: a `CPU` node; its micro-ops are added through
   it: `set`, `mov`, `add`, `addi`, `sub`, `mul`, `and_`, `shr`, `mod`, `rand`, `jmp`,
   `jlt`, `jeq`, `jnz` with labels local to the node (`label`, `forward`, `bind`), and
   `lt(d, a, b)` / `ge(d, a, b)` that set `d` to 1 or 0 (four micro-ops each).
-- `g.join(after=..., skip_if_zero=...)`: a `JOIN` node, no work.
+- `graph.join(after=..., skip_if_zero=...)`: a `JOIN` node, no work.
 - `skip_if_zero=register`: when the node is taken from the ready ring and `register` is 0, it is
   not run and counts as done.
-- Registers: 16 for the whole graph, unsigned 32-bit, wrapping. `g.register()`, `g.registers(n)`,
-  `g.bindings(*names)` (registers set by name at each run), `g.const(v)` (a register
-  set to `v` at each run), `g.again` (the register that starts another round).
-- `g.binding_values(**values)` gives the binding block of one run: the values of
+- Registers: 16 for the whole graph, unsigned 32-bit, wrapping. `graph.register()`, `graph.registers(count)`,
+  `graph.bindings(*names)` (registers set by name at each run), `graph.const(value)` (a register
+  set to `value` at each run), `graph.again` (the register that starts another round).
+- `graph.binding_values(**values)` gives the binding block of one run: the values of
   registers 0 to n - 1, with every binding and constant in it. Every binding must be
   given. Registers not in the block start at 0 at every run.
 - Identical command templates are shared; a graph has at most 64 distinct ones.
-- `g.encode()` gives the upload; `Graph.decode(bytes)` is its inverse (registers by
+- `graph.encode()` gives the upload; `Graph.decode(data)` is its inverse (registers by
   number, binding names lost) and raises `GraphFormatError` for an upload the check
   rejects.
 
@@ -141,7 +141,7 @@ once both count, even if one of them then fails its check.
 
 ## The check
 
-`check(upload)` (Python) and `kmg_check(upload, bytes)` (C) return `None` / 0 or the
+`check(data)` (Python) and `kmg_check(upload, bytes)` (C) return `None` / 0 or the
 reason and node of the error event; the first fault in this order wins.
 
 1. Header (reason 1, node 0xFFFF): at least 64 bytes and a multiple of 64; magic and
@@ -248,11 +248,13 @@ passes its deadline ends the graph with reason 8 and the kernel with
 from komorebi.engines.graph import simulate
 from komorebi.engines.graph_native import NativeExecutor
 
-done = g.simulate({"it": 0}, delay=2, result=lambda r: r.args[0] + r.count)
+done = graph.simulate(
+    {"iteration": 0}, delay=2, result=lambda command: command.args[0] + command.count
+)
 same = simulate(upload, bindings=bindings, delay=2, engine=NativeExecutor())
 ```
 
-`simulate(upload, bindings=(), core_count=119, delay=0, result=None,
+`simulate(data, bindings=(), core_count=119, delay=0, result=None,
 deadline_passes=None, cancel_pass=None, max_passes=100_000, kept=0, engine=None)` runs
 the check, rejects a kept graph when `kept` graphs are kept already and that is eight,
 then runs the graph against a model of the kernel. Each pass: completions due are
@@ -272,7 +274,7 @@ args, pass_index, queued)`; events as `Event(kind, req, auxiliary, extra, pass_i
 ## Host-fed
 
 ```python
-done = run.run_hostfed(g, {"it": 0}, timeout=10.0)  # run: a komorebi.run.Run
+done = run.run_hostfed(graph, {"iteration": 0}, timeout=10.0)  # run: a komorebi.run.Run
 ```
 
 `Run.run_hostfed(graph, bindings=None, timeout=10.0)` runs the same C engine on the

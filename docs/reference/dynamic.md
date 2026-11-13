@@ -31,39 +31,39 @@ kernels of a dynamic handler are generic and ship with the runtime
 Compute kernel, inside the runtime's loop (`#include "komorebi/device/km_messages.hpp"`):
 
 ```c++
-cp.run([&](const km_command_t& r) {
-    if (km::handler(r) != kHandlerForward) {
+compute.run([&](const km_command_t& command) {
+    if (km::handler(command) != kHandlerForward) {
         return;
     }
-    km::Messages dy(cp, r);  // r: the RUN command of the dynamic handler
-    if (dy.seeding()) {  // once per run and core: the first messages
-        ... dy.send(dest, message) ...
-        dy.seeded();
+    km::Messages messages(compute, command);  // command: the RUN command of the dynamic handler
+    if (messages.seeding()) {  // once per run and core: the first messages
+        ... messages.send(destination, message) ...
+        messages.seeded();
     }
-    while (km::Packet pk = dy.next()) {  // up to 32 messages; empty when the run ended
-        for (uint32_t i = 0; i < pk.count; i++) {
-            const volatile tt_l1_ptr uint32_t* in = pk[i];  // the message, in L1
+    while (km::Packet packet = messages.next()) {  // up to 32 messages; empty when the run ended
+        for (uint32_t index = 0; index < packet.count; index++) {
+            const volatile tt_l1_ptr uint32_t* incoming = packet[index];  // the message, in L1
             ... the body, then exactly one of:
-            dy.forward(dest, message);  // the message goes on at rank dest
-            dy.consume();         // the message ends here
+            messages.forward(destination, message);  // the message goes on at rank destination
+            messages.consume();  // the message ends here
             ... and any number of:
-            if (!dy.send(dest, message)) { ... no quota left ... }
+            if (!messages.send(destination, message)) { ... no quota left ... }
         }
-        dy.done(pk);  // the packet's page is free
+        messages.done(packet);  // the packet's page is free
     }
 });
 ```
 
 | Call | What it does |
 |---|---|
-| `Messages(cp, r)` | starts the dynamic part of the run on this core; all three compute threads construct it |
+| `Messages(compute, command)` | starts the dynamic part of the run on this core; all three compute threads construct it |
 | `seeding()`, `seeded()` | true until `seeded()` or the first `next()`: the place for the run's first sends |
 | `next()` | the next packet of up to 32 messages; empty when the run has ended, the stop flag was set or a wait gave up. Every wait inside it is timed |
-| `pk.count`, `pk[i]` | the number of messages, and the L1 address of message `i` |
-| `forward(dest, message)` | the message joins the queue of rank `dest` of the run's group (a rank, not a core index); a forward to the core itself takes the same path |
+| `packet.count`, `packet[index]` | the number of messages, and the L1 address of message `index` |
+| `forward(destination, message)` | the message joins the queue of rank `destination` of the run's group (a rank, not a core index); a forward to the core itself takes the same path |
 | `consume()` | the message ends; one unit of quota returns to this core |
-| `send(dest, message)` | a new message at rank `dest`; false, and nothing is sent, when this core has no quota left |
-| `done(pk)` | the packet's buffer page is free and its messages are counted as consumed |
+| `send(destination, message)` | a new message at rank `destination`; false, and nothing is sent, when this core has no quota left |
+| `done(packet)` | the packet's buffer page is free and its messages are counted as consumed |
 | `quota()`, `count()` | sends left on this core; cores in the group (without its counter tiles) |
 | `rank()`, `counter()` | this core's rank; true on a counter tile, which takes no message |
 | `wait_stop()` | waits for the stop flag (a test of the run's timeout) |
@@ -115,7 +115,7 @@ reader takes messages from the head of its queue in order, as packets of up to 3
 it is full, when its slot is needed for another destination, and when the core runs
 out of input, so nothing waits in a bin while the core is idle.
 
-**Marks.** Word 0 of the message at queue position `p` is `p + 1` once it is valid; 0 is
+**Marks.** Word 0 of the message at a queue position is the position plus 1 once it is valid; 0 is
 empty. Every core zero-fills its own queue at start-up, before it reports ready, and
 positions never restart while the program stays loaded, so an address never holds the
 mark of the position the reader is waiting for unless that message was written for it. A

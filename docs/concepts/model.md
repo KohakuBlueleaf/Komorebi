@@ -66,16 +66,17 @@ Every core can run every piece of code. A home pins state to a core, not code to
 
 ```text
 thread path(pixel):
-    r = camera_ray(pixel);  c = 0;  thr = 1
+    ray = camera_ray(pixel);  color = 0;  throughput = 1
     for depth in 0 .. MAX:
         hit = none
-        for k in treelets_along(r):               # top of the BVH, on every core
-            at treelet[k]:                        # breakpoint: move, unless treelet[k] is here
-                hit = closer(hit, walk(r, treelet[k]))
-        if not hit:  c += thr * sky(r);  break
-        m = material(hit)                         # no breakpoint: shading happens where the ray is
-        c += thr * emitted(m);  thr *= bsdf(m);  r = bounce(r, m)
-    emit film[pixel] += c                         # breakpoint: a value goes, the thread ends
+        for index in treelets_along(ray):         # top of the BVH, on every core
+            at treelet[index]:                    # breakpoint: move, unless treelet[index] is here
+                hit = closer(hit, walk(ray, treelet[index]))
+        if not hit:  color += throughput * sky(ray);  break
+        material = material_at(hit)               # no breakpoint: shading happens where the ray is
+        color += throughput * emitted(material)
+        throughput *= bsdf(material);  ray = bounce(ray, material)
+    emit film[pixel] += color                     # breakpoint: a value goes, the thread ends
 ```
 
 The code between breakpoints is a **handler**. This program has three:
@@ -83,8 +84,8 @@ The code between breakpoints is a **handler**. This program has three:
 | Handler | Starts when | What travelled |
 |---|---|---|
 | S0 | a thread is started on a core | `pixel` |
-| S1 | a thread arrives at a treelet | the 64-byte ray command: `r, hit, c, thr, depth, k, pixel` |
-| S2 | a value arrives at a film tile | `pixel, c` |
+| S1 | a thread arrives at a treelet | the 64-byte ray command: `ray, hit, color, throughput, depth, index, pixel` |
+| S2 | a value arrives at a film tile | `pixel, color` |
 
 - On the card this is one persistent kernel with a switch over handler numbers.
 - Threads waiting at the same handler on the same core run together, 32 per packet, one
@@ -100,12 +101,12 @@ into roles.
 ```text
 thread mm(j, n):                                 # one per core, pinned
     part = A[:, K(j)] @ B[K(j), :]               # one handler; no breakpoint
-    for r in 0 .. levels(n) - 1:
-        if j % 2^(r+1) == 0:                     # I merge in this round
-            if j + 2^r < n:
+    for round in 0 .. levels(n) - 1:
+        if j % 2^(round+1) == 0:                 # I merge in this round
+            if j + 2^round < n:
                 part += wait(1)                  # breakpoint: my partner's value arrived
         else:
-            emit part -> thread(j - 2^r)         # breakpoint: hand my partial to my merger
+            emit part -> thread(j - 2^round)     # breakpoint: hand my partial to my merger
             return
     write C = part                               # only thread 0 arrives here
 ```
@@ -163,8 +164,8 @@ thread attend(broadcast, i):                        # thread index: two spatial 
             if i == 0:  kv = read_dram(kb);  emit kv -> threads(broadcast, *)    # breakpoint: broadcast
             else:       kv = wait(1)                                        # breakpoint
             for sub in chunks(kv, 3):          # time: 3 key tiles per step
-                for r in rows:                 # time: my rows, paired
-                    acc[r] = merge(acc[r], score(Q[r], sub))                # D summed inside score
+                for row in rows:               # time: my rows, paired
+                    acc[row] = merge(acc[row], score(Q[row], sub))          # D summed inside score
         write out[rows]
 ```
 
