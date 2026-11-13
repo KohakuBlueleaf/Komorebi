@@ -1,6 +1,5 @@
-// K-split compute: this core's part of the group's oh x ow output block, summed over
-// its K chunks into kCbSum (fp32) by packer accumulation; then the parts it receives,
-// added in rank order the same way; at the group's root the sum is packed in bf16.
+// K-split compute: this core's part of the oh x ow block summed over its K chunks into
+// kCbSum (fp32), then the parts received in rank order; the root packs it in bf16.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"

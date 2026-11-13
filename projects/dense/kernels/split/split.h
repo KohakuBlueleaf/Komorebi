@@ -22,9 +22,8 @@ constexpr uint32_t kCbSum = 24;    // this core's part, fp32: P = oh x ow tiles
 constexpr uint32_t kCbSplitOut = 16;  // the group's sum in bf16 at its root: P tiles
 constexpr uint32_t kSumBytes = 4096;
 
-// Program arguments (the same words on every kernel of a member): the plan.
-// Tiles M, K, N; group size S; output block oh x ow; K chunk kc; subblock sh x sw;
-// output blocks per row of blocks; pages of the arrival buffer.
+// The plan, the same words on every kernel of a member: tiles M, K, N; group size S;
+// block oh x ow; K chunk kc; subblock sh x sw; blocks per row; arrival buffer pages.
 constexpr uint32_t kSpMt = 0;
 constexpr uint32_t kSpKt = 1;
 constexpr uint32_t kSpNt = 2;
