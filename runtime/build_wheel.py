@@ -67,9 +67,14 @@ RUNTIME = {
     ],
     # The fused attention kernels of tt-train that Kohaku-TT's native library compiles.
     "tt-train/sources/ttml": ["metal/**/kernels/**/*", "metal/common/**/*"],
-    # The X280 runtime: its linker scripts and headers, and two objects of the build.
+    # The X280 runtime: its linker scripts and headers; from the build, the objects
+    # every image links and the idle image the tiles boot to.
     "tt_metal/fabric/experimental/x280": ["ld/*.ld", "include/**/*"],
-    "build/x280/obj": ["entry_active.o", "x280_active_start.o"],
+    "build/x280": [
+        "obj/entry_active.o",
+        "obj/x280_active_start.o",
+        "firmware-lim-idle.bin",
+    ],
 }
 # Not needed to run kernels.
 SKIP = ("/tt-llk/tests/", "/tt-llk/docs/", "/__pycache__/", "/.git")
@@ -77,11 +82,20 @@ SKIP = ("/tt-llk/tests/", "/tt-llk/docs/", "/__pycache__/", "/.git")
 # The libraries come from what ttnn's module loads out of the build; the module itself
 # goes with the ttnn package (interim: Komorebi's host still imports ttnn).
 TTNN_MODULE = "build/ttnn/_ttnn.so"
-TTNN_PACKAGE = "ttnn/ttnn"
-TTNN_SKIP = ("/__pycache__/", "/examples/")
+# python/, by directory in the tree, as tt-metal's wheel maps it: ttnn's module imports
+# tracy, which imports tt_llk_perf, which reads the perf-counter headers beside ttnn.
+PERF_COUNTERS = "tt_metal/tt-llk/tools/include/perf_counters"
+PYTHON_PACKAGES = {
+    "ttnn": "ttnn/ttnn",
+    "tracy": "tools/tracy",
+    "tt_llk_perf": "tt_metal/tt-llk/tools/python/tt_llk_perf",
+    f"ttnn/{PERF_COUNTERS}": PERF_COUNTERS,
+}
+PYTHON_SKIP = ("/__pycache__/", "/examples/")
 INTERIM = (
-    "python/ttnn is tt-metal's ttnn package, carried only while Komorebi's host "
-    "imports it; komorebi_runtime.activate() puts it on the path"
+    "python/ holds tt-metal's ttnn package (with tracy and tt_llk_perf), carried "
+    "only while Komorebi's host imports ttnn; komorebi_runtime.activate() puts it on "
+    "the path"
 )
 
 
@@ -127,12 +141,11 @@ def build_libraries(module, build):
     return out
 
 
-def copy_ttnn(tt_metal, target):
-    """Copies tt-metal's ttnn Python package (sources only) into `target`."""
-    source = tt_metal / TTNN_PACKAGE
+def copy_package(source, target):
+    """Copies a Python package of the tree (its files, no module builds) to `target`."""
     for path in source.rglob("*"):
         text = path.as_posix()
-        skipped = any(s in text for s in TTNN_SKIP)
+        skipped = any(s in text for s in PYTHON_SKIP)
         if path.is_symlink() or not path.is_file() or skipped:
             continue
         out = target / path.relative_to(source)
@@ -162,6 +175,16 @@ def check_tree(tt_metal, pin):
     return run("git", "-C", str(tt_metal), "rev-parse", "HEAD").stdout.strip()
 
 
+def glibc_floor(paths):
+    """The newest GLIBC symbol version the ELF files `paths` require, as (major, minor):
+    the floor of the wheel's manylinux tag."""
+    found = [(2, 17)]
+    for path in paths:
+        text = run("readelf", "-V", "--wide", str(path)).stdout
+        found += [tuple(map(int, v)) for v in re.findall(r"GLIBC_(\d+)\.(\d+)", text)]
+    return max(found)
+
+
 def record_line(stage, path):
     data = path.read_bytes()
     digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=")
@@ -178,8 +201,11 @@ def metadata(project):
         f"License-Expression: {project['license']}",
         "License-File: LICENSE",
         f"Requires-Python: {project['requires-python']}",
-        "Description-Content-Type: text/markdown",
     ]
+    for extra, requirements in project.get("optional-dependencies", {}).items():
+        lines.append(f"Provides-Extra: {extra}")
+        lines += [f'Requires-Dist: {r}; extra == "{extra}"' for r in requirements]
+    lines.append("Description-Content-Type: text/markdown")
     readme = (HERE / project["readme"]).read_text()
     return "\n".join(lines) + "\n\n" + readme
 
@@ -188,7 +214,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tt-metal", required=True, type=Path)
     parser.add_argument("--out", type=Path, default=HERE / "dist")
-    parser.add_argument("--platform", default="linux_x86_64")
+    parser.add_argument(
+        "--platform", help="wheel platform tag (default: manylinux at the glibc floor)"
+    )
     parser.add_argument("--patchelf", default="patchelf")
     args = parser.parse_args()
     tt_metal = args.tt_metal.resolve()
@@ -221,8 +249,9 @@ def main():
         for name, path in libraries:
             shutil.copyfile(path, lib / name)
             run(args.patchelf, "--set-rpath", "$ORIGIN", str(lib / name))
+        for name, source in PYTHON_PACKAGES.items():
+            copy_package(tt_metal / source, package / "python" / name)
         ttnn = package / "python" / "ttnn"
-        copy_ttnn(tt_metal, ttnn)
         shutil.copyfile(module, ttnn / module.name)
         run(args.patchelf, "--set-rpath", "$ORIGIN/../../lib", str(ttnn / module.name))
         count = copy_runtime(tt_metal, package / "tree")
@@ -251,7 +280,10 @@ def main():
         (info / "licenses").mkdir(parents=True)
         shutil.copyfile(tt_metal / "LICENSE", info / "licenses" / "LICENSE")
         (info / "METADATA").write_text(metadata(project))
-        tag = f"py3-none-{args.platform}"
+        elves = [p for p in package.rglob("*.so*") if p.is_file()]
+        floor = glibc_floor(elves)
+        platform = args.platform or "manylinux_{}_{}_x86_64".format(*floor)
+        tag = f"py3-none-{platform}"
         (info / "WHEEL").write_text(
             "Wheel-Version: 1.0\nGenerator: komorebi-runtime build_wheel.py\n"
             f"Root-Is-Purelib: false\nTag: {tag}\n"
@@ -267,6 +299,7 @@ def main():
                 archive.write(path, path.relative_to(stage).as_posix())
     with zipfile.ZipFile(wheel) as archive:
         members = sorted(archive.infolist(), key=lambda m: -m.compress_size)
+    print(f"glibc floor {floor[0]}.{floor[1]} over {len(elves)} libraries: {tag}")
     print(
         f"{wheel} ({wheel.stat().st_size / 1e6:.1f} MB, {len(members)} members, "
         f"{count} runtime files, tt-metal {pin} at {commit[:10]})"

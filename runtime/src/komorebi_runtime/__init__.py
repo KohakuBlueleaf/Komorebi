@@ -25,6 +25,7 @@ PYTHON = "python"
 X280_SOURCE = Path("tt_metal/fabric/experimental/x280")
 X280_OBJECTS = ("entry_active.o", "x280_active_start.o")
 X280_OBJECT_DIR = Path("build/x280/obj")
+X280_IDLE_IMAGE = Path("build/x280/firmware-lim-idle.bin")
 SFPI_VERSION = Path("tt_metal/sfpi-version")
 SFPI_BIN = Path("compiler/bin")
 
@@ -34,11 +35,12 @@ class RuntimeMissing(RuntimeError):
 
 
 class X280(NamedTuple):
-    """The pieces every X280 image is built with."""
+    """The pieces every X280 image is built with, and the image idle tiles run."""
 
     objects: list
     linker_script: Path
     include: Path
+    idle_image: Path
 
 
 def package_dir(base=None):
@@ -85,11 +87,12 @@ def python_dir(base=None):
 
 
 def x280(base=None):
-    """The X280 runtime objects (in link order), the linker script and the include
-    directory."""
+    """The X280 runtime objects (in link order), the linker script, the include
+    directory and the idle image."""
     source = tree(base) / X280_SOURCE
     objects = [tree(base) / X280_OBJECT_DIR / name for name in X280_OBJECTS]
-    return X280(objects, source / "ld" / "x280.ld", source / "include")
+    script = source / "ld" / "x280.ld"
+    return X280(objects, script, source / "include", tree(base) / X280_IDLE_IMAGE)
 
 
 def cache_dir(environ=None):

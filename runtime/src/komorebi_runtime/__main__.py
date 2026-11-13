@@ -1,6 +1,7 @@
 """Commands of the runtime package: `python -m komorebi_runtime doctor` (files present,
-libraries load, compiler found), `sfpi` (fetch the RISC-V compiler the tree names) and
-`root` (print the runtime root, for TT_METAL_RUNTIME_ROOT).
+libraries load, compiler found), `sfpi` (fetch the compiler the tree names), `root`
+(print the runtime root), `env` (shell lines setting TT_METAL_RUNTIME_ROOT and putting
+the interim ttnn on PYTHONPATH, for programs that import ttnn first).
 """
 
 import argparse
@@ -8,6 +9,7 @@ import ctypes
 import hashlib
 import platform
 import re
+import shlex
 import sys
 import tarfile
 import tempfile
@@ -84,7 +86,8 @@ def doctor():
             problems += 1
             lines.append(f"FAILS     {name}: {err}")
     pieces = kr.x280()
-    absent = [p for p in [*pieces.objects, pieces.linker_script] if not p.is_file()]
+    files = [*pieces.objects, pieces.linker_script, pieces.idle_image]
+    absent = [p for p in files if not p.is_file()]
     problems += bool(absent)
     lines.append(f"x280      {'missing ' + str(absent) if absent else pieces.include}")
     compiler = kr.sfpi_bin()
@@ -99,18 +102,30 @@ def doctor():
     return lines, problems
 
 
+def shell_lines():
+    """`export` lines for a shell: the runtime root, ttnn's directory on the path."""
+    path = shlex.quote(str(kr.python_dir()))
+    return [
+        f"export {kr.ROOT_VARIABLE}={shlex.quote(str(kr.root()))}",
+        f'export PYTHONPATH={path}"${{PYTHONPATH:+:$PYTHONPATH}}"',
+    ]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m komorebi_runtime")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="check files, library loading and the compiler")
     sub.add_parser("sfpi", help="fetch the RISC-V compiler into the cache")
     sub.add_parser("root", help="print the runtime root (TT_METAL_RUNTIME_ROOT)")
+    sub.add_parser("env", help="print shell lines that activate the runtime")
     args = parser.parse_args(argv)
     try:
         if args.command == "sfpi":
             print(fetch_sfpi())
         elif args.command == "root":
             print(kr.root())
+        elif args.command == "env":
+            print("\n".join(shell_lines()))
         else:
             lines, problems = doctor()
             print("\n".join(lines))

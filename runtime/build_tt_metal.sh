@@ -2,7 +2,7 @@
 # Clones the pinned tt-metal (runtime/tt-metal.pin) into DIR, applies runtime/patches/*.patch,
 # configures it with the X280 runtime and without distributed, and builds what the
 # komorebi-runtime wheel carries: the libraries, ttnn, the kernel toolchain, the X280 runtime
-# objects and the X280 host runtime that the native host module links.
+# objects and idle image, and the X280 host runtime that the native host module links.
 # usage: build_tt_metal.sh DIR   (an existing build in DIR is updated; KMR_JOBS=N limits
 # ninja's jobs; KMR_CCACHE=1 compiles through ccache, with CCACHE_DIR from the caller)
 # No system packages are installed: the host needs tt-metal's build dependencies already
@@ -52,7 +52,7 @@ grep -q '^TT_METAL_BUILD_X280:BOOL=ON' "$dir/build/CMakeCache.txt" ||
 
 # Only what the wheel carries, plus the static X280 host runtime the host module links.
 targets=(ttnn hw_toolchain x280/obj/entry_active.o x280/obj/x280_active_start.o)
-targets+=(x280_device x280_state)
+targets+=(x280/firmware-lim-idle.bin x280_device x280_state)
 ninja -C "$dir/build" ${KMR_JOBS:+-j "$KMR_JOBS"} "${targets[@]}"
 ls -la "$dir/build/tt_metal/libtt_metal.so" "$dir/build/ttnn/_ttnncpp.so" \
     "$dir/build/ttnn/_ttnn.so" "$dir/build/x280/obj/entry_active.o"
