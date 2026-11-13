@@ -36,7 +36,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `km.Buffer(index, format, page_bytes, pages)` | a circular buffer in the L1 of every core | [[circular-buffers]] |
 | `compute={...}` | arithmetic settings of the compute kernel | [[the-matrix-unit]] |
 | `exclusive=True` | a command waits for earlier ones that share cores | [[port]] |
-| `Program(...).dynamic(...)` | the handler that receives messages | [[routed-message]], [[full-buffers]] |
+| `Program(...).dynamic(...)` | the handlers that receive messages | [[routed-message]], [[message-handlers]], [[full-buffers]] |
 | `Graph`, `run_hostfed` | a chain of commands that the card runs by itself | [[streams-and-graphs]] |
 | `program.thread(...)`, `program.ports(...)` | a thread on an X280 cluster, and its ports | [[hello-thread]], [[core-asks-x280]] |
 | `run.thread_result(timeout)`, `run.thread.read(name)` | the thread's result, and a region after the run | [[hello-thread]], [[sharing-memory]] |
@@ -61,6 +61,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `km::reduce`, `reduce_arrive`, `reduce_emit`, `reduce_result` | add the tiles of many cores into one | [[reduce]] |
 | `km::Broadcast` | one core's tile, a word, or both, to many cores | [[broadcast]], [[casting-a-word]] |
 | `km::Messages`: `send`, `next`, `forward`, `consume`, `done`, `quota` | messages to any core | [[routed-message]], [[forward-and-consume]], [[full-buffers]] |
+| `km::Messages`: `handler`, `forward` and `send` with a handler | a message names its handler | [[message-handlers]] |
 | `km::X280Port`: `call`, `tell` | ask and tell an X280 core | [[core-asks-x280]] |
 | `km::Overlay`: `load`, `call`, `held`; `km_overlay(kernel, argument)` | load an overlay into a slot and call it; a part's function | [[overlays]] |
 

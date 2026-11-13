@@ -118,4 +118,4 @@ last line is the check against the replay.
 - Forwarding the address `packet[index]` itself instead of your own array. Copy the words
   you want into `message` first, as the program does.
 
-Next: [[full-buffers]] is about a core with too many messages to send.
+Next: [[message-handlers]] gives a message a handler of its own.

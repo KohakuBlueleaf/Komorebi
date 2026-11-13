@@ -22,8 +22,10 @@ dynamic handler the program's state travels as **messages**, fixed-size blocks o
 move from core to core until the program consumes them. The destination of each message,
 the number of arrivals at a core and the end of the run are all decided by the data.
 
-The program writes one handler body in its compute kernel. The reader and writer
-kernels of a dynamic handler are generic and ship with the runtime
+A program has up to four dynamic handlers, and each message names the one that handles
+it where it lands ([A message names its handler](#a-message-names-its-handler)). The
+program writes the handlers' bodies in its compute kernel. The reader and writer
+kernels of a dynamic run are generic and ship with the runtime
 (`src/komorebi_native/kernels/messages_reader.cpp` and `messages_writer.cpp`).
 
 ## The calls
@@ -60,16 +62,20 @@ compute.run([&](const km_command_t& command) {
 | `seeding()`, `seeded()` | true until `seeded()` or the first `next()`: the place for the run's first sends |
 | `next()` | the next packet of up to 32 messages; empty when the run has ended, the stop flag was set or a wait gave up. Every wait inside it is timed |
 | `packet.count`, `packet[index]` | the number of messages, and the L1 address of message `index` |
-| `forward(destination, message)` | the message joins the queue of rank `destination` of the run's group (a rank, not a core index); a forward to the core itself takes the same path |
+| `forward(destination, message)` | the message joins the queue of rank `destination` of the run's group (a rank, not a core index), with the handler of the message being handled; a forward to the core itself takes the same path |
+| `forward(destination, message, handler)` | the same, and the message is handled by `handler` where it lands |
 | `consume()` | the message ends; one unit of quota returns to this core |
-| `send(destination, message)` | a new message at rank `destination`; false, and nothing is sent, when this core has no quota left |
+| `send(destination, message)` | a new message at rank `destination`, with the handler of the message being handled (during seeding, the `RUN` command's); false, and nothing is sent, when this core has no quota left |
+| `send(destination, message, handler)` | the same, with handler `handler` |
+| `handler()` | the handler of the message taken last with `packet[index]`; before the first, the `RUN` command's |
 | `done(packet)` | the packet's buffer page is free and its messages are counted as consumed |
 | `quota()`, `count()` | sends left on this core; cores in the group (without its counter tiles) |
 | `rank()`, `counter()` | this core's rank; true on a counter tile, which takes no message |
 | `wait_stop()` | waits for the stop flag (a test of the run's timeout) |
 
 A message is `message_bytes / 4` words. Word 0 belongs to the runtime: it holds the message's
-mark. The program's fields go in the other words; the forward example uses words 1 to 4.
+mark and its handler ([Marks](#how-a-message-travels)). The program's fields go in the
+other words; the forward example uses words 1 to 4.
 
 ## The host side
 
@@ -79,8 +85,10 @@ program.dynamic(
 )
 ```
 
-`Program.dynamic` makes one handler dynamic and adds the runtime's three buffers to the
-program (circular buffers 26 to 28: incoming packets, outgoing messages, open bins). The
+`Program.dynamic` makes one handler dynamic, or several (`program.dynamic("lookup",
+"value", "report", ...)`, up to four, by name or number), and adds the runtime's three
+buffers to the program (circular buffers 26 to 28: incoming packets, outgoing messages,
+open bins). All of a program's dynamic handlers share the options and the queues. The
 options are those of `komorebi.program.Dynamic`:
 
 | Option | Default | Meaning |
@@ -101,9 +109,40 @@ The launcher rejects, before any device opens:
 - `max_live` smaller than the number of cores (some core would start without quota);
 - a ring depth below 2 (the end of a run is a second command in flight).
 
-A run is one `RUN` command of the dynamic handler to a group, with `KM_FLAG_EXCLUSIVE`. The command
-stays in flight for the whole run; its deadline is the run's deadline. Its argument
-words are the program's.
+A run is one `RUN` command of a dynamic handler to a group, with `KM_FLAG_EXCLUSIVE`; its
+handler is the one the run's seeds have. The command stays in flight for the whole run;
+its deadline is the run's deadline. Its argument words are the program's.
+
+## A message names its handler
+
+A message carries its handler where it lands. A thread of the program, one message,
+changes what it does as it moves, or without moving:
+
+```c++
+messages.send(rank, message, kHandlerKeep);  // a new message with its handler
+messages.forward(rank, message, kHandlerShade);  // goes on at rank, as shade there
+messages.forward(rank, message);  // the same handler as the message being handled
+messages.forward(messages.rank(), message, kHandlerShade);  // this core, as shade
+messages.handler();  // the handler of the message being handled
+```
+
+The compute body switches on `messages.handler()`; reading `packet[index]` makes that
+message the one being handled. A forward to the core itself goes through its queue like
+any other and comes back in a later packet. The writer takes the handler beside the
+destination in the word compute hands it (`destination | handler << 8`) and writes it
+into word 0 with the mark; the reader checks only the mark. Komorebi carries any handler
+number below 256 and does not check that it is one of the program's dynamic handlers; a
+handler the body has no case for is the program's to report. A program with one dynamic
+handler is written as before: its messages all keep the `RUN` command's handler.
+
+The [message handlers example](../../examples/14_message_handlers/README.md) sends 10^6
+messages through three handlers, to other cores and to their own, exact against a
+replay.
+
+The kernels' and the dispatcher's test of "a dynamic run" is `KM_IS_DYNAMIC(handlers,
+handler)` in `km_abi.h`: the program's dynamic handlers are one word, one a byte, the
+first word of `km::MessagesArgs` and the dispatcher's `messages_handler`; a program with
+one dynamic handler has its number there, as before.
 
 ## How a message travels
 
@@ -115,12 +154,19 @@ reader takes messages from the head of its queue in order, as packets of up to 3
 it is full, when its slot is needed for another destination, and when the core runs
 out of input, so nothing waits in a bin while the core is idle.
 
-**Marks.** Word 0 of the message at a queue position is the position plus 1 once it is valid; 0 is
-empty. Every core zero-fills its own queue at start-up, before it reports ready, and
-positions never restart while the program stays loaded, so an address never holds the
-mark of the position the reader is waiting for unless that message was written for it. A
-core rejects a run once its positions have reached 2^30 (reason `full`); reload the
-program then.
+**Marks.** Word 0 of a message in a queue is `mark | handler << 16 | program << 24`. The
+mark, in the low 16 bits, is the position's lap of the queue, `position /
+queue_messages`, counted from 1 to 65535 and round again; 0 is empty. The program field
+is 0 (reserved). Every core zero-fills its own queue at start-up, before it reports
+ready, and a writer reserves a position only after the reader has taken the one a lap
+before it (`max_live <= queue_messages`), so the slot the reader waits on holds 0, the
+previous lap's mark or the message written for it: the reader compares the low 16 bits
+alone. The mark sets no limit on a run: the lap count wraps every 65535 laps (2.1 M
+messages a core with a queue of 32, 1.07 G with 16384), and a run of 118 messages
+forwarded 72000 times each to one core with a queue of 128 (66,375 laps) was exact
+([05_forward](../../examples/05_forward/README.md#measured)). The limit is the load's, as
+before: a core rejects a run once its positions have reached 2^30 (reason `full`, about
+10^9 messages a core); reload the program then.
 
 **Commit.** Only a 16-byte chunk is known to land whole, so a packet commits
 explicitly: the writer sends the packet's messages with the first message's mark 0, waits
@@ -193,7 +239,7 @@ lines are in its local memory (`KMD_LIM_MESSAGES`), it checks them on every pass
 while the run is in flight, and the end command goes out under the `RUN` command's
 command, so the host sees only the `RUN` command's done event. One dynamic run is in
 flight at a time: a second `RUN` of the dynamic handler from the host waits until the
-first has ended; from the stream engine or a work cluster it is rejected busy (reason
+first has ended (a `RUN` of any of the program's dynamic handlers); from the stream engine or a work cluster it is rejected busy (reason
 11) and sent again after the kernel's wake, like any command of those sources that
 cannot go now. A queued one (`KM_FLAG_QUEUE`) is rejected with reason 12. The status lines
 take 2 KiB of the kernel's local memory (`KMD_LIM_MESSAGES`).
@@ -229,8 +275,10 @@ The codes follow the runtime's where codes (0 to 18) and are `kWhereMessages*` i
 - A direct L1-to-L1 path with DRAM as overflow, and a forward to the core itself without DRAM.
 - A body that asks for a DRAM fetch decided by a message: a dynamic program keeps what its
   body reads in L1.
-- Quota moving between cores; several dynamic handlers with different message sizes in one
-  run.
+- Quota moving between cores; dynamic handlers with different message sizes in one
+  program, or more than four.
+- A handler whose code is loaded when its first message arrives: every dynamic
+  handler's body is in the compute kernel.
 - Priorities or ordering between messages: a program that needs an order sorts at the
   receiver.
 

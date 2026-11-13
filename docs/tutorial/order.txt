@@ -39,6 +39,7 @@ broadcast
 casting-a-word
 routed-message
 forward-and-consume
+message-handlers
 full-buffers
 streams-and-graphs
 

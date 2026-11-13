@@ -45,6 +45,7 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("27_broadcast/broadcast.py", "each of the 6 cores holds the sum"),
         ("28_routed_message/routed_message.py", "rank 4: received 4 messages"),
         ("29_forward_and_consume/forward_and_consume.py", "as the replay says"),
+        ("44_message_handlers/message_handlers.py", "6 landings, as the replay says"),
         ("30_full_buffers/full_buffers.py", "rank 0 asked 20 times and 10 sends"),
         ("31_streams_and_graphs/streams_and_graphs.py", "the same rounds in Python"),
         ("32_hello_thread/hello_thread.py", "it returned 42 = 20 + 22"),

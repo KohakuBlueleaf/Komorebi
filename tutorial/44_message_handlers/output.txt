@@ -1,0 +1,7 @@
+rank 0: 4 climbs, 1 landed, values add to 16
+rank 1: 4 climbs, 1 landed, values add to 15
+rank 2: 4 climbs, 1 landed, values add to 14
+rank 3: 4 climbs, 1 landed, values add to 7
+rank 4: 4 climbs, 1 landed, values add to 12
+rank 5: 4 climbs, 1 landed, values add to 17
+24 climbs and 6 landings, as the replay says
