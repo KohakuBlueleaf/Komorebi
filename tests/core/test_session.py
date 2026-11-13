@@ -54,6 +54,18 @@ def test_a_compile_error_raises_program_error_and_reads_back(card, tmp_path):
     assert "start" not in log and log[-2:] == ["close", "read_back, grid stopped"]
 
 
+def test_a_compile_error_in_the_checked_build_raises_program_error(card, tmp_path):
+    session, log, _, module = card
+
+    def compile_error(device, descriptor):
+        raise RuntimeError("compute.cpp: error: deliberate")
+
+    module.kernel_elves = compile_error
+    with pytest.raises(ProgramError, match="build failed.*deliberate"):
+        session.Session(device=object()).load(program(tmp_path))
+    assert "generic_op" not in log and log[-1] == "close"
+
+
 def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):
     session, log, _, _ = card
     monkeypatch.setattr(FakeDispatch, "boot_error", K["KMD_ERR_START"])
