@@ -1,5 +1,7 @@
 """Run: tickets, batches, events and stopping, against a fake dispatch kernel."""
 
+import time
+
 import numpy as np
 import pytest
 from fake_port import FakeBackend, FakePort
@@ -280,6 +282,40 @@ def test_forget_releases_tickets_read_after_a_drain():
     run.forget(tickets)
     assert run.event(tickets[0]) is None and run.seq(tickets[4]) is None
     assert run._gone[:5].all()
+
+
+class SlowPort(FakePort):
+    """Each record (EXIT too) completes `delay` seconds after it was issued."""
+
+    def __init__(self, delay):
+        super().__init__()
+        self.delay, self.since = delay, {}
+
+    def _complete(self):
+        now = time.monotonic()
+        for slot, (seq, req, _) in sorted(self.busy.items()):
+            if now - self.since.setdefault(seq, now) >= self.delay:
+                del self.busy[slot]
+                self._event(req, K["KM_EV_DONE"])
+
+
+class SlowBackend(FakeBackend):
+    """The kernel's result is ready `delay` seconds into finish(), if it waits."""
+
+    def finish(self, timeout):
+        time.sleep(min(self.port.delay, timeout))
+        self.answer["result_ready"] = timeout >= self.port.delay
+        return super().finish(timeout)
+
+
+def test_stop_ends_within_its_timeout_when_every_part_is_slow():
+    port = SlowPort(delay=0.15)  # drain, EXIT and finish: 0.45 s in all
+    run = Run(SlowBackend(port), GRID)
+    run.issue(1, (0, 2))
+    t0 = time.monotonic()
+    with pytest.raises(KernelFailed, match="never became ready"):
+        run.stop(timeout=0.35)
+    assert time.monotonic() - t0 < 0.35 + 0.05 and run.stopped
 
 
 class CardThread:

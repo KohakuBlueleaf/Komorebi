@@ -242,6 +242,7 @@ class Engines:
         if up.state == "running":
             raise KomorebiError(f"the {up.kind} at {up.offset} runs: wait or cancel")
         if up.state == "kept":
+            by = time.monotonic() + timeout  # one deadline for the command and the end
             t = EngineTicket("graph", up.req, up, drop=True)
             self.active[("graph", up.req)] = t
             try:
@@ -249,7 +250,7 @@ class Engines:
             except BaseException:
                 self.active.pop(("graph", up.req), None)
                 raise
-            self._wait(t, timeout)
+            self._wait(t, max(by - time.monotonic(), 0.0))
         self.uploads.remove(up)
         self._region().free(up.offset)
 

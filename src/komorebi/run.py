@@ -44,6 +44,11 @@ class Event(NamedTuple):
         return self.ticks / 50.0  # the X280 timer runs at 50 MHz
 
 
+def _left(by):
+    """Seconds left until the monotonic time `by` (0 once it passed)."""
+    return max(by - time.monotonic(), 0.0)
+
+
 def _seq_number(n):
     """The kernel's sequence number of the n-th record: it counts in 32 bits and skips
     0 (it also skips a slot's last value, which only a wrap can repeat)."""
@@ -602,25 +607,27 @@ class Run:
     def stop(self, timeout=10.0):
         """Cancels running engines, drains, sends EXIT to every core, stops the
         kernel, closes the X280 runtime, then reads back the state words and the
-        trace. On any error it still closes (abort) and raises."""
+        trace, all within `timeout`. On any error it still closes (abort) and raises.
+        """
         if self._stopped:
             return self._result
+        by = time.monotonic() + timeout
         try:
             if self.thread is not None:
                 self.thread.stop()
             if self._engine_state is not None:
-                self._engine_state.stop(timeout)  # EXIT waits for running engines
-            self.drain(timeout)
+                self._engine_state.stop(_left(by))  # EXIT waits for running engines
+            self.drain(_left(by))
             exit_ticket = self._queue_command(self.h["KM_SEG_EXIT"], (0, self.cores))
-            self.wait(exit_ticket, timeout)
+            self.wait(exit_ticket, _left(by))
             stop_ticket = self._queue_command(self.h["KM_SEG_STOP"], None)
-            self._send(stop_ticket, timeout)
+            self._send(stop_ticket, _left(by))
         except KernelFailed:
             raise
         except BaseException:
             self.abort()
             raise
-        self._finish(timeout)
+        self._finish(_left(by))
         result = self._result
         wrong = self._finish_problems(result)
         if wrong:
