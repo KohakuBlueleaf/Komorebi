@@ -101,20 +101,32 @@ def test_segments_by_name_through_the_program(tmp_path):
         run.issue("missing", (0, 1))
 
 
-def test_exclusive_records_wait_for_overlapping_teams():
+def test_exclusive_records_are_stored_at_once_and_the_kernel_orders_them():
     port = FakePort(depth=4)
     port.auto = False
     run, port, _ = make_run(port)
-    a = run.issue(1, (0, 10))
-    b = run.issue(1, (20, 10))
-    c = run.issue(1, (5, 10), exclusive=True)  # overlaps a
-    d = run.issue(1, (40, 10))  # behind c in order
+    a = run.issue(1, (0, 10), exclusive=True)
+    b = run.issue(1, (5, 10), exclusive=True)  # overlaps a
+    c = run.issue(1, (40, 10), exclusive=True)  # shares no core, behind b in order
     with pytest.raises(WaitTimeout):
-        run.wait(d, timeout=0.05)
-    assert [i[0] for i in port.issued] == [a, b]
+        run.wait(c, timeout=0.05)
+    assert run.stored == 3 and [i[0] for i in port.issued] == [a]
     port.auto = True
-    run.wait([a, b, c, d])
-    assert [i[0] for i in port.issued] == [a, b, c, d]
+    run.wait([a, b, c])
+    assert [i[0] for i in port.issued] == [a, b, c]
+
+
+def test_a_record_that_times_out_ends_the_run_before_the_exclusive_one_behind_it():
+    port = FakePort(depth=4)
+    run, port, _ = make_run(port)
+    stalled = run.issue(1, (0, 10))
+    behind = run.issue(1, (5, 10), exclusive=True)
+    port.stall_req = stalled
+    with pytest.raises(RecordTimeout) as caught:
+        run.wait([stalled, behind])
+    assert caught.value.ticket == stalled and run.stored == 2
+    assert [i[0] for i in port.issued] == [stalled]
+    assert run.event(behind) is None and run.result()["error_name"] == "deadline"
 
 
 def test_the_read_count_lets_the_kernel_go_on_past_a_full_event_ring():
@@ -545,7 +557,7 @@ def test_exclusive_records_from_issue_many_wait_for_overlapping_teams():
     held = run.issue_many(1, [5, 50], 10, exclusive=True)
     with pytest.raises(WaitTimeout):
         run.wait(held[0], timeout=0.05)
-    assert [i[0] for i in port.issued] == [a]
+    assert run.stored == 2 and [i[0] for i in port.issued] == [a]  # up to held[0]
     port.auto = True
     run.wait(held)
     assert [i[0] for i in port.issued] == [a, *held]

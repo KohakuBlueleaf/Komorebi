@@ -133,7 +133,7 @@ class Run:
     def _unsent(self):
         # issue() appends here; new objects, since numpy may still view the old ones
         self._words, self._firsts, self._counts = array("I"), array("i"), array("i")
-        self._excl, self._fl = array("B"), array("B")
+        self._fl = array("B")
 
     # Issuing --------------------------------------------------------------------
 
@@ -211,11 +211,9 @@ class Run:
         self._hand()
         start = self._next
         self._next += n[0]
-        excl = None
         if exclusive:
-            excl = np.ones(n[0], np.uint8)
             words[:, self._hdr] |= self._f_excl << 8
-        self._send_block(words, first, count, excl, np.zeros(n[0], np.uint8))
+        self._send_block(words, first, count, np.zeros(n[0], np.uint8))
         self.issue_s += time.perf_counter() - t0
         return range(start, self._next)
 
@@ -232,7 +230,7 @@ class Run:
     def _queue_command(self, seg, team, args=(), exclusive=False, flags=0):
         self._check_alive()
         first, count = team if team else (0, 0)
-        flags |= self._f_excl if exclusive else 0  # the kernel checks the real teams
+        flags |= self._f_excl if exclusive else 0  # the kernel orders it
         w = [0] * 16
         w[self._hdr] = seg & 0xFF | flags << 8
         w[self._team_at] = first | count << 16
@@ -241,7 +239,6 @@ class Run:
         self._words.extend(w)
         self._firsts.append(-1 if flags & self._f_queue else first)
         self._counts.append(count)
-        self._excl.append(1 if exclusive else 0)
         self._fl.append(flags)
         ticket = self._next
         self._next += 1
@@ -255,12 +252,11 @@ class Run:
         words = np.frombuffer(self._words, np.uint32).reshape(n, 16)
         first = np.frombuffer(self._firsts, np.int32)
         count = np.frombuffer(self._counts, np.int32)
-        excl = np.frombuffer(self._excl, np.uint8)
         flags = np.frombuffer(self._fl, np.uint8)
-        self._send_block(words, first, count, excl if excl.any() else None, flags)
+        self._send_block(words, first, count, flags)
         self._unsent()
 
-    def _send_block(self, words, first, count, excl, flags):
+    def _send_block(self, words, first, count, flags):
         """Notes tickets handed .. handed + n - 1 (teams, flags, sequences) and queues
         their records in the port. A queued record's first is -1 (the kernel's)."""
         n = len(words)
@@ -272,7 +268,7 @@ class Run:
         self._flags[lo : lo + n] = flags
         self._seq[lo : lo + n] = np.where(rec, self._next_seq + np.cumsum(rec) - 1, 0)
         self._next_seq += int(rec.sum())
-        self.port.enqueue(np.ascontiguousarray(words), excl)
+        self.port.enqueue(np.ascontiguousarray(words))
         self._handed += n
 
     def _grow(self, rows):

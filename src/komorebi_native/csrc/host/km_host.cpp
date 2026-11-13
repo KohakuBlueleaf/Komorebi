@@ -62,8 +62,6 @@ namespace {
     // Ring depths are powers of two, so slot = number % depth holds across the wrap.
     constexpr uint32_t kEventDepthMax = 128;
     static_assert(KMD_HOST_RING + kEventDepthMax * 16 <= kHostBufferBytes);
-    // Teams of commands in flight, by command number: at most event_depth are.
-    constexpr uint32_t kFlight = 2 * kEventDepthMax;
 
     bool power_of_two(uint32_t n) {
         return n != 0 && (n & (n - 1)) == 0;
@@ -77,8 +75,6 @@ namespace {
         ndarray<const uint32_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
     using Events = nb::ndarray<nb::numpy, uint32_t, nb::ndim<2>>;
     using Bytes = nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>;
-    using Flags = nb::
-        ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
     using Numbers = nb::
         ndarray<const uint32_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 
@@ -391,9 +387,7 @@ namespace {
             next_ = 1;
             seen_ = published_ = 0;
             queue_.clear();
-            excl_.clear();
             head_ = 0;
-            flight_team_.fill(0);
             std::memset(const_cast<uint32_t*>(host_), 0, kHostBufferBytes);
             tile_->write_available_lim(base_, std::vector<uint8_t>(KMD_LIM_BYTES, 0));
             if (work_cmds) {
@@ -565,21 +559,16 @@ namespace {
             return k;
         }
 
-        // Queues n records for wait(); an exclusive flag holds its record until no
-        // team in flight overlaps it. Returns the number queued.
-        size_t enqueue(const uint32_t* recs, size_t n, const uint8_t* exclusive) {
+        // Queues n records for wait(), stored in order as the ring has room (the
+        // kernel orders KM_F_EXCL ones). Returns the number queued.
+        size_t enqueue(const uint32_t* recs, size_t n) {
             require_open();
             queue_.insert(queue_.end(), recs, recs + 16 * n);
-            if (exclusive != nullptr) {
-                excl_.insert(excl_.end(), exclusive, exclusive + n);
-            } else {
-                excl_.resize(excl_.size() + n, 0);
-            }
             return queued();
         }
 
         size_t queued() const {
-            return excl_.size() - head_;
+            return queue_.size() / 16 - head_;
         }
 
         // Stores queued commands up to `upto` and reads events until all `wanted` have
@@ -653,9 +642,6 @@ namespace {
                 }
                 out.insert(out.end(), {i, req, status, ticks});
                 seen_ = i;
-                if (flight_cmd_[req % kFlight] == req) {
-                    flight_team_[req % kFlight] = 0;
-                }
             }
         }
 
@@ -983,8 +969,7 @@ namespace {
             }
         }
 
-        // Stores k records as the next commands, every line then one fence, and notes
-        // their teams as in flight.
+        // Stores k records as the next commands, every line then one fence.
         void store(const uint32_t* recs, uint32_t k) {
             if (k == 0) {
                 return;
@@ -996,8 +981,6 @@ namespace {
                 std::memcpy(w, recs + 16 * j, sizeof(w));
                 w[0] = w[4] = w[8] = w[12] = i;
                 win_->write_block(KMD_LIM_HRING + (i % host_depth_) * 64u, w, 64);
-                flight_cmd_[i % kFlight] = i;
-                flight_team_[i % kFlight] = w[offsetof(km_record_t, team) / 4];
             }
             store_read();
             _mm_sfence();
@@ -1005,48 +988,19 @@ namespace {
             next_ += k;
         }
 
-        // Whether a team (first | count << 16) overlaps a team in flight.
-        bool overlaps_flight(uint32_t team) const {
-            const uint32_t a0 = team & 0xFFFFu, a1 = a0 + (team >> 16);
-            for (uint32_t s = 0; s < kFlight; s++) {
-                const uint32_t t = flight_team_[s];
-                const uint32_t b0 = t & 0xFFFFu, b1 = b0 + (t >> 16);
-                if (t != 0 && b0 < a1 && a0 < b1) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // One batch from the queue: commands up to upto that fit, ending before an
-        // exclusive record unless it comes first and overlaps nothing in flight.
+        // One batch from the queue: the commands up to upto that fit. An exclusive
+        // record is stored like any other; the kernel's KM_F_EXCL check orders it.
         void store_queued(uint32_t upto) {
             const int64_t due = static_cast<int32_t>(upto - next_) + int64_t{1};
             size_t k = std::min<size_t>({queued(), batch_, room()});
             k = std::min<int64_t>(static_cast<int64_t>(k), std::max<int64_t>(0, due));
-            const uint32_t* recs = queue_.data() + 16 * head_;
-            const uint8_t* ex = excl_.data() + head_;
-            size_t n = 0;
-            for (; n < k; n++) {
-                if (ex[n] != 0) {
-                    const uint32_t team = (
-                        recs[16 * n + offsetof(km_record_t, team) / 4]
-                    );
-                    if (n == 0 && !overlaps_flight(team)) {
-                        n = 1;
-                    }
-                    break;
-                }
-            }
-            store(recs, static_cast<uint32_t>(n));
-            head_ += n;
-            if (head_ == excl_.size()) {
+            store(queue_.data() + 16 * head_, static_cast<uint32_t>(k));
+            head_ += k;
+            if (head_ == queue_.size() / 16) {
                 queue_.clear();
-                excl_.clear();
                 head_ = 0;
-            } else if (head_ > 4096 && 2 * head_ > excl_.size()) {
+            } else if (head_ > 4096 && 2 * head_ > queue_.size() / 16) {
                 queue_.erase(queue_.begin(), queue_.begin() + 16 * head_);
-                excl_.erase(excl_.begin(), excl_.begin() + head_);
                 head_ = 0;
             }
         }
@@ -1207,10 +1161,7 @@ namespace {
         uint32_t pcie_x_ = 0, pcie_y_ = 0;
         std::optional<x280::SessionId> session_;
         std::vector<uint32_t> queue_;  // records not stored yet, 16 words each
-        std::vector<uint8_t> excl_;    // their exclusive flags
         size_t head_ = 0;              // the first record not stored
-        std::array<uint32_t, kFlight> flight_cmd_{};
-        std::array<uint32_t, kFlight> flight_team_{};  // 0: no event pending
         std::vector<Work> work_;  // every cluster in tile_ids() order; 0 unused here
     };
 
@@ -1339,21 +1290,13 @@ NB_MODULE(_km_host, m) {
         )
         .def(
             "enqueue",
-            [](Dispatch& d, Records recs, std::optional<Flags> exclusive) {
+            [](Dispatch& d, Records recs) {
                 if (recs.shape(1) != 16) {
                     throw std::runtime_error("records are [n, 16] words");
                 }
-                if (exclusive && exclusive->shape(0) != recs.shape(0)) {
-                    throw std::runtime_error("one exclusive flag per record");
-                }
-                return (
-                    d.enqueue(
-                        recs.data(), recs.shape(0), exclusive ? exclusive->data() : nullptr
-                    )
-                );
+                return d.enqueue(recs.data(), recs.shape(0));
             },
-            nb::arg("records"),
-            nb::arg("exclusive") = nb::none()
+            nb::arg("records")
         )
         .def(
             "wait",

@@ -1,8 +1,7 @@
-"""A fake dispatch kernel behind the native port's interface, for the Run tests.
-
-In order, records get the lowest free slot and the next sequence, only while their
-events fit the ring by the published read count; they complete at once or on request.
-"""
+"""A fake dispatch kernel behind the native port's interface, for the Run tests. In
+order, records get the lowest free slot and the next sequence while their events fit
+the ring by the read count (KM_F_EXCL: while no busy team overlaps); they complete at
+once or on request."""
 
 import time
 
@@ -46,8 +45,7 @@ class FakePort:
         self.max_busy = 0
         self.max_unread = 0
         self.batch = 64
-        self.queue = []  # (words, exclusive) not stored yet
-        self.flight = {}  # command number -> team word, stored without an event
+        self.queue = []  # words not stored yet
         self.waits = 0  # calls of wait()
         self.results = {}  # command number -> the leader's result word (KM_F_RESULT)
         self.handlers = {}  # segment -> handler(req, words): commands a test serves
@@ -67,19 +65,16 @@ class FakePort:
             words = [int(w) for w in rows[j]]
             words[0] = words[4] = words[8] = words[12] = self.next & abi.M32
             self.ring[self.next] = words
-            self.flight[self.next & abi.M32] = words[2]
             self.next += 1
         self.published = self.seen  # every batch carries the read count
         if k:
             self.batches.append(k)
         return k
 
-    def enqueue(self, records, exclusive=None):
+    def enqueue(self, records):
         rows = np.asarray(records, dtype=np.uint32)
         assert rows.ndim == 2 and rows.shape[1] == 16
-        flags = [0] * len(rows) if exclusive is None else list(exclusive)
-        assert len(flags) == len(rows)
-        self.queue += [([int(w) for w in r], f) for r, f in zip(rows, flags)]
+        self.queue += [[int(w) for w in r] for r in rows]
         return self.queued
 
     @property
@@ -111,24 +106,9 @@ class FakePort:
         due = (upto - self.next) & abi.M32
         due = (due - (1 << 32) if due >= 1 << 31 else due) + 1
         k = max(0, min(len(self.queue), self.batch, self.room(), due))
-        n = 0
-        while n < k:
-            words, exclusive = self.queue[n]
-            if exclusive:
-                n += n == 0 and not self._overlaps(words[2])
-                break
-            n += 1
-        if n:
-            self.push([w for w, _ in self.queue[:n]])
-            del self.queue[:n]
-
-    def _overlaps(self, team):
-        a0, a1 = team & 0xFFFF, (team & 0xFFFF) + (team >> 16)
-        for t in self.flight.values():
-            b0, b1 = t & 0xFFFF, (t & 0xFFFF) + (t >> 16)
-            if t and b0 < a1 and a0 < b1:
-                return True
-        return False
+        if k:
+            self.push(self.queue[:k])
+            del self.queue[:k]
 
     def poll(self):
         self._step()
@@ -156,7 +136,6 @@ class FakePort:
         unread = self.pushed_events - self.seen
         self.max_unread = max(self.max_unread, unread)
         assert unread <= self.event_depth, "event ring overrun"
-        self.flight.pop(req & abi.M32, None)
         index = self.pushed_events & abi.M32
         self.events.append([index, req & abi.M32, kind | aux << 8, ticks])
 
@@ -211,6 +190,8 @@ class FakePort:
                 if not fits:
                     return
                 first = fits[0]
+            elif flags & K["KM_F_EXCL"] and self._overlaps_busy(first, count):
+                return  # held, and every command behind it
             free = [j for j in range(self.depth) if j not in self.busy]
             if not free:
                 return
@@ -226,6 +207,10 @@ class FakePort:
             self.max_busy = max(self.max_busy, len(self.busy))
             self.issued.append((req, self.seq, free[0], seg, (first, count)))
             self.consumed = req
+
+    def _overlaps_busy(self, first, count):
+        taken = [t for _, _, t in self.busy.values()]
+        return any(a < first + count and first < a + n for a, n in taken)
 
     def _exit_waits(self):
         return bool(self.busy)
