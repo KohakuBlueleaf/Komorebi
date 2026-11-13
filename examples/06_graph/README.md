@@ -6,29 +6,37 @@ the X280 (the dispatcher's engine runs the uploaded graph and decides every next
 step itself). The loop it contains ends on a value computed on the card.
 
 ```python
-g = Graph(max_runs=50, req=6)
-it = g.bindings("it")  # register 0
-err = g.register()  # register 1: the two an X280 run's end event carries
-addr, limit = g.bindings("state", "limit")
-a = g.command(STEP, group=(0, 60), args=[addr, it])
-b = g.command(LEFT, group=(0, 30), args=[addr], after=[a])
-c = g.command(RIGHT, group=(30, 30), args=[addr], after=[a])  # in flight with b
-d = g.command(NORM, group=(0, 60), args=[addr, 60], after=[b, c], result=err)
-e = g.cpu(after=[d])
-e.addi(it, it, 1)
-e.lt(g.again, err, limit)  # go round again while err < limit
+graph = Graph(max_runs=50, req=6)
+iteration = graph.bindings("iteration")  # register 0
+error = graph.register()  # register 1: the two an X280 run's end event carries
+state_address, limit = graph.bindings("state", "limit")
+step = graph.command(STEP, group=(0, 60), args=[state_address, iteration])
+left = graph.command(LEFT, group=(0, 30), args=[state_address], after=[step])
+right = graph.command(
+    RIGHT, group=(30, 30), args=[state_address], after=[step]
+)  # with left
+norm = graph.command(
+    NORM, group=(0, 60), args=[state_address, 60], after=[left, right], result=error
+)
+cpu = graph.cpu(after=[norm])
+cpu.addi(iteration, iteration, 1)
+cpu.lt(graph.again, error, limit)  # go round again while error < limit
 
-got = run.run_hostfed(g, {"state": x_addr, "it": 0, "limit": 1_000_000})
-got = run.run_hostfed(g, {"state": y_addr, "it": 3, "limit": 10_000_000})  # kept
+bindings = {"state": first_state, "iteration": 0, "limit": 1_000_000}
+got = run.run_hostfed(graph, bindings)
+bindings = {"state": second_state, "iteration": 3, "limit": 10_000_000}
+got = run.run_hostfed(graph, bindings)  # kept: the same graph, other bindings
 
-up = run.upload(g)  # on the X280: uploaded once, kept, restarted by its req
-t = run.start(up, {"state": x2, "it": 0, "limit": 1_000_000}, kept=True)
-end = run.wait_engine(t)
-end = run.wait_engine(run.restart(6, {"state": y2, "it": 3, "limit": 10_000_000}))
-run.release(up)  # end.registers: (it, err)
+upload = run.upload(graph)  # on the X280: uploaded once, kept, restarted by its req
+bindings = {"state": first_state, "iteration": 0, "limit": 1_000_000}
+handle = run.start(upload, bindings, kept=True)
+end = run.wait_engine(handle)
+bindings = {"state": second_state, "iteration": 3, "limit": 10_000_000}
+end = run.wait_engine(run.restart(6, bindings))
+run.release(upload)  # end.registers: (iteration, error)
 ```
 
-The NORM leader's writer kernel gives the result word with `wr.result(sum)` before it
+The NORM leader's writer kernel gives the result word with `writer.result(total)` before it
 reports; the command carries `KM_FLAG_RESULT`, so its acknowledgement brings the value.
 
 The state is one 32-bit word per core (word 0 of a 64-byte page of a DRAM tensor).
@@ -36,18 +44,18 @@ Each round:
 
 | Node | Group | What it does |
 |---|---|---|
-| `STEP` | cores 0 to 59 | `x[p] += it + p` |
+| `STEP` | cores 0 to 59 | `x[p] += iteration + p` |
 | `LEFT` | cores 0 to 29, after `STEP` | `x[p] >>= 1` |
 | `RIGHT` | cores 30 to 59, after `STEP`, in flight together with `LEFT` | `x[p] *= 3` |
-| `NORM` | cores 0 to 59, after both | the leader reads every word; their sum is the command's result word, stored in register `err` |
-| CPU | after `NORM` | `it += 1`; go round again while `err < limit` |
+| `NORM` | cores 0 to 59, after both | the leader reads every word; their sum is the command's result word, stored in register `error` |
+| CPU | after `NORM` | `iteration += 1`; go round again while `error < limit` |
 
-The state tensor's address, `it` and `limit` are bindings. The graph is built once and
+The state tensor's address, `iteration` and `limit` are bindings. The graph is built once and
 run twice, the second time on a fresh tensor with other bindings, without being built
 again. The host checks against a numpy replay of the same rounds: the number of rounds,
-the final `it` and `err`, and every state word read back after the run. The trace shows
+the final `iteration` and `error`, and every state word read back after the run. The trace shows
 whether `LEFT` and `RIGHT` were in flight together in each round of the host-fed run.
-On the X280 the host takes only the end event: `it` and `err` from registers 0 and 1,
+On the X280 the host takes only the end event: `iteration` and `error` from registers 0 and 1,
 the rounds from the round events, then the state read back. Each path has a run of its
 own, so the kernel's result block gives each one's most slots busy at once (`max_busy`);
 2 on the X280 means `LEFT` and `RIGHT` were in flight together there. Both paths must
@@ -63,7 +71,7 @@ Each must end in its error event (`header`, `edge`, `template`, `opcode`, at the
 of the fault), the host's `check` naming the same; a class that ends otherwise counts as
 a failure (`bad_uploads_rejected` below 4/4).
 
-    python graph.py [--first IT LIMIT] [--again IT LIMIT] [--max-runs N]
+    python graph.py [--first ITERATION LIMIT] [--again ITERATION LIMIT] [--max-runs N]
                     [--decide host|x280|both] [--deadline S] [--stall]
 
 `--stall` first runs, in a run of its own, a graph whose command never completes (on the
@@ -81,7 +89,7 @@ graph ends with reason 8 at node 0 and the kernel with error 4, without a reset.
 
 | Handler | Arguments |
 |---|---|
-| `STEP` | a0 state, a1 `it` |
-| `LEFT`, `RIGHT` | a0 state |
-| `NORM` | a0 state, a1 pages to sum |
-| `STALL` (a test) | a0 the rank that never reports |
+| `STEP` | a0 `state_address`, a1 `round` |
+| `LEFT`, `RIGHT` | a0 `state_address` |
+| `NORM` | a0 `state_address`, a1 `pages` to sum |
+| `STALL` (a test) | a0 `stalled_rank`, the rank that never reports |

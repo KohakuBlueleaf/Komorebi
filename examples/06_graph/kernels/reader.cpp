@@ -1,5 +1,5 @@
-// Graph reader: STALL makes rank a0 wait for the stop flag; other handlers need no
-// input through the reader.
+// Graph reader: STALL makes rank a0 stalled_rank wait for the stop flag; other handlers
+// need no input through the reader.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -7,10 +7,14 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    km::Reader rd;
-    rd.run([&](const km_command_t& r) {
-        if (km::handler(r) == kHandlerStall && rd.me() - km::first(r) == r.a0) {
-            rd.wait_stop(r);
+    km::Reader reader;
+    reader.run([&](const km_command_t& command) {
+        const uint32_t stalled_rank = command.a0;
+        if (
+            km::handler(command) == kHandlerStall &&
+            reader.me() - km::first(command) == stalled_rank
+        ) {
+            reader.wait_stop(command);
         }
     });
 }
