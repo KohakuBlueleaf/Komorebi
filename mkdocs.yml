@@ -96,6 +96,8 @@ nav:
       - threads.md
   - Guides:
       - install.md
+      - guides/debug-a-command-that-does-not-finish.md
+      - guides/measure-a-command.md
       - development.md
   - Reference:
       - reference/host.md

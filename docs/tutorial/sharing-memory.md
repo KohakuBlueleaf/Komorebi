@@ -28,7 +28,7 @@ after.
 In Python:
 
 ```python
-program.thread(..., regions={NAME: CONTENT, ...})
+program.thread(..., regions={NAME: CONTENT, OTHER: CONTENT})
 
 run.stop()
 data = run.thread.read(NAME)

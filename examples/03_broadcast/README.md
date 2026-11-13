@@ -6,32 +6,30 @@ core of each row (and the last core of each column) reads its blocks from DRAM a
 multicasts them to the rest of its broadcast; every core combines the two blocks it holds. This
 is the data movement of a matrix product that reads every byte from DRAM once.
 
-## The thread program
+## What each core does
 
-```
-thread combine(row, col):                     # one thread per core of an R x C rectangle
-    sum = 0
-    for k in blocks(n):                        # time: n blocks per broadcast
-        if col == first:  a = read_dram(A[row, k]);  emit a -> threads(row, *)  # breakpoint
-        else:             a = wait(1)                                           # breakpoint
-        if row == last:   w = read_dram(W[col, k]);  emit w -> threads(*, col)  # breakpoint
-        else:             w = wait(1)                                           # breakpoint
-        sum += tiles(a) + tiles(w)
-    write out[row, col] = sum
-```
+Each core of the rectangle has a row and a column, and loops over n blocks:
 
-Each `emit ... -> threads(row, *)` is one broadcast: one multicast of the block
+1. The first core of its row reads a block of A from DRAM and multicasts it to the other
+   cores of the row; every other core of the row waits for it.
+2. The last core of its column reads a block of W from DRAM and multicasts it to the other
+   cores of the column; every other core of the column waits for it.
+3. It adds the tiles of the two blocks it holds to its sum.
+
+After the n blocks, each core writes its sum to the output.
+
+Each multicast of a row's block is one broadcast: one multicast of the block
 into a slot of the receivers' broadcast buffer, then a VALID marker; each receiver writes a marker to the
 sender when its compute kernel has finished with the block, and the sender reuses a
 slot only after every receiver has marked it. A broadcast holds B blocks in flight.
 
 ## How it maps onto the runtime
 
-| Thread program | Kernel | Call (`komorebi/device/km_broadcast.hpp`) |
+| Step | Kernel | Call (`komorebi/device/km_broadcast.hpp`) |
 |---|---|---|
-| rows: `emit a`, `wait(1)` | reader, NoC0 (runs +x: the sender is the row's left end) | `ln.reserve(k)`, DRAM reads into the slot, `ln.cast(k)`; `ln.arrive(k)`; `ln.finish()` |
-| columns: `emit w`, `wait(1)` | writer, NoC1 (runs -y: the sender is the column's bottom end) | the same calls on the column broadcast |
-| `sum += ...` | compute | `km::broadcast_receive`, tiles by index, `km::broadcast_done`; `km::broadcast_end` after the last block |
+| rows: the block of A goes out, the others wait | reader, NoC0 (runs +x: the sender is the row's left end) | `ln.reserve(k)`, DRAM reads into the slot, `ln.cast(k)`; `ln.arrive(k)`; `ln.finish()` |
+| columns: the block of W goes out, the others wait | writer, NoC1 (runs -y: the sender is the column's bottom end) | the same calls on the column broadcast |
+| adding the tiles | compute | `km::broadcast_receive`, tiles by index, `km::broadcast_done`; `km::broadcast_end` after the last block |
 
 A row broadcast never crosses a panel boundary (a run of columns with consecutive NoC0 x):
 on this card a row of 12 columns is two broadcasts of 6, each with its own sender. The host
@@ -40,7 +38,7 @@ and passes each core its broadcast words as program arguments.
 
 | Handler | Arguments | What a core does |
 |---|---|---|
-| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 rank that stalls (a test), a5 its block, a6 output page of rank 0, a7 blocks of data per broadcast (block k reads data block k mod a7) | as the thread program; cores outside the rectangle only report |
+| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 rank that stalls (a test), a5 its block, a6 output page of rank 0, a7 blocks of data per broadcast (block k reads data block k mod a7) | the steps above; cores outside the rectangle only report |
 | `READ` | the same | every core of the group reads its own blocks from DRAM (the comparison) |
 
 ## Run

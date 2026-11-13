@@ -2,31 +2,20 @@
 
 A group of threads adds up T input tiles: each thread adds its own partition, then the
 group merges the parts into one tile, either at one owner or along a tree. Each part
-goes from one core to one other core: a value emitted to one receiver.
+goes from one core to one other core: a value sent to one receiver.
 
-## The thread program
+## What each thread does
 
-```
-thread merge(j, n, T, form):                  # one per core of the group
-    part = sum(x[tile] for tile in partition(T, j, n))
-    if form == owner:
-        if j == 0:
-            parts = wait(n - 1)                  # one slot per sender
-            for k in 1 .. n - 1:
-                part += parts[k]                 # in rank order, not arrival order
-        else:
-            emit part -> thread(0)
-            return
-    else:                                        # tree
-        for r in 0 .. levels(n) - 1:
-            if j % 2^(r+1) == 0:
-                if j + 2^r < n:
-                    part += wait(1)              # my partner of round r
-            else:
-                emit part -> thread(j - 2^r)
-                return
-    write out[job] = part                        # only thread 0 arrives here
-```
+Each of the n threads of the group has an index `j`, 0 to n - 1.
+
+1. It adds up its own partition of the T tiles.
+2. With `form == owner`, thread 0 waits for the n - 1 other parts, one slot for each
+   sender, and adds them in rank order, not in arrival order. Every other thread sends
+   its part to thread 0 and ends.
+3. With the tree form, the threads merge in rounds. In round r, a thread whose index is a
+   multiple of 2^(r+1) adds the part of its partner `j + 2^r`, if that partner exists; any
+   other thread sends its part to `j - 2^r` and ends.
+4. Thread 0 writes the sum of all the parts to the output.
 
 ```
  tree, 8 threads:

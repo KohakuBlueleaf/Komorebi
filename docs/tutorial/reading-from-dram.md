@@ -27,9 +27,13 @@ the copy itself.
 In Python, before `load`:
 
 ```python
-program = km.Program(NAME, kernels=FOLDER, handlers=HEADER,
-                     buffers=[km.Buffer(index=INDEX, format=DTYPE, page_bytes=BYTES, pages=PAGES)],
-                     compile_args={"reader": TENSOR.accessor_args()})
+program = km.Program(
+    NAME,
+    kernels=FOLDER,
+    handlers=HEADER,
+    buffers=[km.Buffer(index=INDEX, format=DTYPE, page_bytes=BYTES, pages=PAGES)],
+    compile_args={"reader": TENSOR.accessor_args()},
+)
 ```
 
 In the reader:

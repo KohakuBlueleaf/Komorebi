@@ -33,9 +33,11 @@ receives is decided in advance. The run ends by itself when every message has en
 In Python:
 
 ```python
-program = km.Program(NAME, kernels={"reader": READER, "compute": COMPUTE, "writer": WRITER},
-                     handlers=HEADER).dynamic(HANDLER, message_bytes=64,
-                                              max_live=LIVE, queue_messages=LIVE)
+program = km.Program(
+    NAME,
+    kernels={"reader": READER, "compute": COMPUTE, "writer": WRITER},
+    handlers=HEADER,
+).dynamic(HANDLER, message_bytes=64, max_live=LIVE, queue_messages=LIVE)
 run.submit(HANDLER, group=(FIRST, COUNT), args=[...], exclusive=True)
 ```
 

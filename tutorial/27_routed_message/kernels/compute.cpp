@@ -1,6 +1,5 @@
 // The compute kernel of a dynamic handler: rank 0 sends 12 messages, each to the core
-// its value picks; every core adds up the values it receives and keeps the result in
-// L1.
+// its value picks; every core adds up what it receives and keeps it in L1.
 #include "api/compute/common.h"
 #include "komorebi/device/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"

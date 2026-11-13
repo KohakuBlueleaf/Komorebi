@@ -1,6 +1,5 @@
-// What the kernels and Python agree on: the handler, and the two buffers in L1: the one
-// that holds the tile on its way out of the sending core, and the arrival buffer in
-// which the receiving core's port puts what arrives.
+// What the kernels and Python agree on: the handler, and two buffers in L1: the
+// outgoing tile of the sender, and the arrival buffer of the receiver.
 #pragma once
 
 #include <stdint.h>

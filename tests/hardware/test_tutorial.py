@@ -52,6 +52,10 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("34_sharing_memory/sharing_memory.py", "the thread went through 1024 numbers"),
         ("35_twelve_cores/twelve_cores.py", "their sum, modulo 2**32"),
         ("36_core_asks_x280/core_asks_x280.py", "it told the X280 145"),
+        ("37_measuring/measuring.py", "host clock: first"),
+        ("38_finding_a_bug/finding_a_bug.py", "with bug 0: the command is done"),
+        ("39_a_whole_program/a_whole_program.py", "both sums are the numpy sum"),
+        ("40_your_own_kernel/your_own_kernel.py", "the squares of the 48 tiles"),
     ],
 )
 def test_a_tutorial_program_runs_and_prints_its_line(script, line):

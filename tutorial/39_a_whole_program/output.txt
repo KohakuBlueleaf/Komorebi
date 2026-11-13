@@ -1,0 +1,3 @@
+1 cores: 48 tiles added into one in  25.7 us
+8 cores: 48 tiles added into one in   6.9 us
+both sums are the numpy sum of the 48 tiles

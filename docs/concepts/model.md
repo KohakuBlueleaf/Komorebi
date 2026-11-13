@@ -1,19 +1,21 @@
 ---
-title: The programming model
+title: The thread language (planned)
 summary: Threads with a program counter and a place, the breakpoints that move, emit and wait, homes, where a role is still used, and how several chunking axes in space and time are written.
 tags:
   - concepts
   - model
 ---
 
-# The programming model
+# The thread language (planned)
 
-Status: the breakpoints are implemented in the Tensix runtime and run on one card:
+**This page is about planned work.** The code blocks on it are pseudo code of a thread
+language that does not exist yet: nothing here can be run. What runs today is what the
+[tutorial](../tutorial/index.md) teaches: the handler bodies of the kernels, written in C++.
+Of the model, the breakpoints are implemented in the Tensix runtime and run on one card:
 `emit` and `wait` as ports and reduce ([ports](../reference/ports.md)), a block to a
 row or a column as a broadcast ([broadcasts](../reference/broadcast.md)), and `at` as messages
-that move between cores in a dynamic handler ([dynamic](../reference/dynamic.md)).
-Homes declared and the thread language compiled into handlers are planned; today a
-program is written as the handler bodies of its kernels.
+that move between cores in a dynamic handler ([dynamic](../reference/dynamic.md)). Homes
+declared, and the language compiled into handlers, are planned.
 
 A Tensix grid has many cores and a network between them. A program for it has to say
 what runs where, and what travels between cores. Komorebi's model keeps the part of

@@ -35,7 +35,7 @@ cb_pop_front(INDEX, 1);
 In Python, one more entry of `compile_args`:
 
 ```python
-compile_args={"reader": SOURCE.accessor_args(), "writer": DESTINATION.accessor_args()}
+compile_args = {"reader": SOURCE.accessor_args(), "writer": DESTINATION.accessor_args()}
 ```
 
 - `ARGUMENTS` and `TensorAccessor(...)` are as in [[reading-from-dram]], here for the

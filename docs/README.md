@@ -17,10 +17,10 @@ Nothing is released yet. Programs run on one P150A card, and every example in th
 ## Where things are
 
 - **[Tutorial](tutorial/index.md)**: 41 lessons in six parts, from one core to a whole program.
-- **Concepts**: why the framework is the way it is. [The programming model](concepts/model.md),
+- **Concepts**: why the framework is the way it is. [The thread language, planned](concepts/model.md),
   [the dispatcher](concepts/dispatch.md) and [the Tensix runtime](concepts/runtime.md), then the
   longer design pages on [micro-op streams](streams.md), [graphs](graphs.md) and [X280 threads](threads.md).
-- **Guides**: how to do one thing. [Install](install.md) and [development](development.md).
+- **Guides**: how to do one thing. [Install](install.md), [debug a command that does not finish](guides/debug-a-command-that-does-not-finish.md), [measure a command](guides/measure-a-command.md) and [development](development.md).
 - **Reference**: exact descriptions of what is built: the [host API](reference/host.md), the
   [Tensix runtime](reference/runtime.md), [ports, emit and reduce](reference/ports.md),
   [broadcast](reference/broadcast.md), [dynamic handlers](reference/dynamic.md) and the

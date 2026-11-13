@@ -36,7 +36,7 @@ matmul_tiles(LEFT, RIGHT, 0, 0, 0);
 and in Python, in `km.Program`:
 
 ```python
-compute={"math_fidelity": "HiFi4"}
+compute = {"math_fidelity": "HiFi4"}
 ```
 
 - It is the program of [[computing-on-a-tile]] with three changes. `matmul_init` replaces

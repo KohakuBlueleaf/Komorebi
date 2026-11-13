@@ -1,0 +1,3 @@
+20 copies of 64 tiles
+card clock: first 32.8, middle 32.2, smallest 32.1, largest 32.8 microseconds
+host clock: first 594.8, middle 161.1, smallest 159.1, largest 594.8 microseconds
