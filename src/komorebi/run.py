@@ -25,13 +25,18 @@ from komorebi.errors import (
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
 COMPACT_ROWS = 4096  # released tickets kept before the columns are shifted
-COLUMNS = ("_first", "_count", "_flags", "_seq", "_status", "_ticks", "_has", "_gone")
+COLUMNS = (
+    "_first", "_count", "_flags", "_seq", "_kseq", "_status", "_ticks", "_has", "_gone"
+)  # fmt: skip
+SEQ_LOW = 1 << 16  # a DONE or TIMEOUT event carries the low 16 bits of the record's seq
+SEQ_BACK = 2048  # how far a queued record's seq may fall behind the host's order
 
 
 class Event(NamedTuple):
     """A finished command: its ticket, kind (done, timeout, pong, refused), the aux
-    byte (slot or reason), issue-to-completion time in X280 timer ticks, and for a
-    record issued with `result=True` the leader's result word (sent as the ticks)."""
+    (done: the team's first core; timeout: the slot; refused: the reason),
+    issue-to-completion time in X280 timer ticks, and for a record issued with
+    `result=True` the leader's result word (sent as the ticks)."""
 
     ticket: int
     kind: str
@@ -80,6 +85,8 @@ class Run:
             k.get("KM_EV_REFUSED", 3): "refused",
         }
         self._done = k["KM_EV_DONE"]
+        self._numbered = (k["KM_EV_DONE"], k["KM_EV_TIMEOUT"])  # aux holds seq bits
+        self._aux_low, self._seq_shift = k["KM_EV_AUX_LOW"], k["KM_EV_SEQ_SHIFT"]
         self._f_result, self._f_queue = k["KM_F_RESULT"], k["KM_F_QUEUE"]
         self._f_excl = k["KM_F_EXCL"]
         self._refusals = {
@@ -112,7 +119,11 @@ class Run:
         self._first = np.zeros(0, np.int32)
         self._count = np.zeros(0, np.int32)  # 0: a command to the kernel itself
         self._flags = np.zeros(0, np.uint8)  # the record's KM_F_* flags
-        self._seq = np.zeros(0, np.int64)  # 0: no sequence
+        self._seq = np.zeros(0, np.int64)  # host records up to this one; 0: no record
+        self._kseq = np.zeros(
+            0, np.int64
+        )  # the kernel's count, from the event; 0: not yet
+        self._ref = (0, 0)  # (kernel count, host count) after the dropped rows
         self._status = np.zeros(0, np.uint32)
         self._ticks = np.zeros(0, np.uint32)
         self._has = np.zeros(0, bool)  # the event arrived
@@ -404,9 +415,30 @@ class Run:
         done = int(np.argmin(self._gone[:n])) if not self._gone[:n].all() else n
         if done < COMPACT_ROWS or 2 * done < len(self._has):
             return
+        if self._ref is not None:
+            self._ref = self._count_after(done, self._ref)
         for name in COLUMNS:
             setattr(self, name, getattr(self, name)[done:].copy())
         self._base += done
+
+    def _count_after(self, rows, ref):
+        """`ref` moved past the first `rows` rows by their events' seq bits, each
+        against the one before; None once a gap is too long to tell."""
+        at = np.arange(rows)
+        status = self._status[:rows].astype(np.int64)
+        on = (self._seq[:rows] > 0) & self._has[:rows]
+        at = at[on & np.isin(status & 0xFF, self._numbered)]
+        if not at.size:
+            return ref
+        host = np.concatenate([[ref[1]], self._seq[at]])
+        low = np.concatenate(
+            [[ref[0] % SEQ_LOW], status[at] >> (8 + self._seq_shift) & (SEQ_LOW - 1)]
+        )
+        gap = (np.diff(low) - np.diff(host)) % SEQ_LOW
+        gap = np.where(gap >= SEQ_LOW - SEQ_BACK, gap - SEQ_LOW, gap)
+        if (gap >= SEQ_LOW // 2).any():
+            return None
+        return (ref[0] + int((np.diff(host) + gap).sum()), int(host[-1]))
 
     def _wait(self, wanted, timeout):
         """Waits for the events of `wanted` (sorted tickets)."""
@@ -487,35 +519,55 @@ class Run:
         status, ticks = int(self._status[i]), int(self._ticks[i])
         kind = self._kinds.get(status & 0xFF, str(status & 0xFF))
         wanted = self._flags[i] & self._f_result and kind == "done"
-        return Event(ticket, kind, status >> 8, ticks, ticks if wanted else None)
+        aux = status >> 8
+        if status & 0xFF in self._numbered:
+            aux &= self._aux_low
+        return Event(ticket, kind, aux, ticks, ticks if wanted else None)
 
     def seq(self, ticket):
-        """The sequence number the kernel gave a record (the trace's index). Raises
-        KomorebiError after an engine or a card thread started (not known)."""
-        n = self._seq_of(ticket)
-        if n is not None and self._seq_unknown(ticket):
-            raise KomorebiError(f"ticket {ticket}: {st.UNKNOWN_SEQ}")
-        return n
-
-    def _unknown_from(self):
-        """The first ticket whose sequence number the host does not know, or None."""
-        t = self.thread
-        if t is not None and t.on_card and t.ring is not None:
-            return 1  # the thread starts at the load and may issue records
-        return None if self._engine_from is None else self._engine_from + 1
-
-    def _seq_unknown(self, ticket):
-        u = self._unknown_from()
-        return u is not None and ticket >= u
-
-    def _seq_of(self, ticket):
+        """The sequence number the kernel gave a record (the trace's index), from its
+        done or timeout event; None before that event or for a refused record."""
         self._hand()
         i = ticket - self._base
         if not 0 <= i < self._handed - self._base or self._seq[i] == 0:
             return None
         if self._gone[i] and not self._keep:
             return None
-        return _seq_number(int(self._seq[i]))
+        n = self._kernel_count(i)
+        return None if n is None else _seq_number(n)
+
+    def _kernel_count(self, i, ref=None):
+        """Row i's place in the kernel's count of records (every source), from the low
+        16 bits in its event and the nearest earlier known row (or `ref`); None
+        before the event. Raises if other sources issued too many in between."""
+        if self._kseq[i]:
+            return int(self._kseq[i])
+        status = int(self._status[i])
+        if self._seq[i] == 0 or not self._has[i] or status & 0xFF not in self._numbered:
+            return None
+        if ref is None:
+            known = np.flatnonzero(self._kseq[:i])
+            j = int(known[-1]) if known.size else None
+            ref = self._ref if j is None else (int(self._kseq[j]), int(self._seq[j]))
+        if ref is None:
+            raise KomorebiError(
+                f"ticket {i + self._base}: its sequence number is not known (an "
+                f"earlier gap of other sources' records was too long to tell)"
+            )
+        near = ref[0] + int(self._seq[i]) - ref[1]  # as if no other source issued
+        low = status >> (8 + self._seq_shift) & (SEQ_LOW - 1)
+        gap = (low - _seq_number(near)) % SEQ_LOW
+        gap -= SEQ_LOW if gap >= SEQ_LOW - SEQ_BACK else 0
+        if gap >= SEQ_LOW // 2:
+            raise KomorebiError(
+                f"ticket {i + self._base}: {gap} or more records of other sources "
+                f"since the host's previous record; its sequence number is not known "
+                f"(an event carries its low 16 bits)"
+            )
+        n = near + gap
+        n += next(d for d in (0, 1, -1) if _seq_number(n + d) % SEQ_LOW == low)
+        self._kseq[i] = n
+        return n
 
     def team(self, ticket):
         self._hand()
@@ -525,6 +577,8 @@ class Run:
         if self._gone[i] and not self._keep:
             return None
         first = int(self._first[i])
+        if first < 0 and self._has[i] and self._status[i] & 0xFF == self._done:
+            first = int(self._status[i]) >> 8 & self._aux_low  # the queue's choice
         return (first if first >= 0 else None, int(self._count[i]))
 
     @property
@@ -545,7 +599,6 @@ class Run:
     # Engines ----------------------------------------------------------------------
 
     _engine_state = None  # komorebi.engines.control.Engines, from the first engine call
-    _engine_from = None  # ticket of the first RUN: later records' sequences are unknown
 
     def _engines(self):
         if self._engine_state is None:
@@ -724,31 +777,21 @@ class Run:
         self._blocks = blocks
         self._state = st.state_words(blocks, 0, self.h)
         if trace_rows is not None:
-            n = self._handed - self._base
-            tickets = np.arange(n) + self._base
-            rec = (self._seq[:n] > 0) & (self._first[:n] >= 0)  # queued: team unknown
-            late = np.zeros(n, bool)  # after an engine or a card thread: not mapped
-            if (u := self._unknown_from()) is not None:
-                late = rec & (tickets >= u)
-            rec &= ~late
-            numbers = (self._seq[:n][rec] - 1) % M32 + 1  # skips 0, as the kernel
-            seqs = dict(zip(tickets[rec].tolist(), numbers.tolist()))
-            teams = {
-                t: (f, c)
-                for t, f, c in zip(
-                    tickets[rec].tolist(),
-                    self._first[:n][rec].tolist(),
-                    self._count[:n][rec].tolist(),
-                )
-            }
-            self._trace = st.Trace(
-                trace_rows,
-                seqs,
-                teams,
-                self.backend.mhz,
-                self.h,
-                tickets[late].tolist(),
-            )
+            seqs, teams = {}, {}
+            ref = self._ref
+            for i in range(self._handed - self._base):  # in order: one pass
+                try:
+                    n = self._kernel_count(i, ref)
+                except KomorebiError:  # a gap too long to tell: not in the trace
+                    continue
+                if n is None:
+                    continue
+                ref = (n, int(self._seq[i]))
+                ticket = i + self._base
+                team = self.team(ticket)
+                if team is not None and team[0] is not None:
+                    seqs[ticket], teams[ticket] = _seq_number(n), team
+            self._trace = st.Trace(trace_rows, seqs, teams, self.backend.mhz, self.h)
 
     def _remember(self, error):
         self._failure = error
@@ -759,8 +802,8 @@ class Run:
         r = self._result
         team = self.team(ev.ticket)
         seq = r["seq"] if r["error"] == self.h["KMD_ERR_DEADLINE"] else None
-        if seq is None and not self._seq_unknown(ev.ticket):
-            seq = self._seq_of(ev.ticket)
+        if seq is None:
+            seq = self.seq(ev.ticket)
         known = team and team[0] is not None
         cores = st.not_reported(self._state, team, ev.aux, seq, self.h) if known else []
         raise self._remember(RecordTimeout(ev.ticket, ev.aux, seq, team, cores, r))

@@ -330,17 +330,39 @@ class CardThread:
         pass
 
 
-def test_sequences_are_refused_while_a_card_thread_may_issue_records():
-    run, _, _ = make_run(trace_cap=8)
+def test_sequences_are_exact_while_a_card_thread_issues_records_between():
+    run, port, _ = make_run(trace_cap=1024)
     run.thread = CardThread()  # started at the load, before any host record
-    ticket = run.issue(1, (0, 2))
-    run.wait(ticket)
-    assert run.team(ticket) == (0, 2)
-    with pytest.raises(KomorebiError, match="work-cluster thread"):
-        run.seq(ticket)
+    a = run.issue(1, (0, 2))
+    run.wait(a)
+    port.seq += 700  # the thread's records, numbered by the same kernel
+    b = run.issue(1, (2, 2))
+    run.wait(b)
+    assert run.team(b) == (2, 2)
+    assert [run.seq(t) for t in (a, b)] == [1, 702] == [x[1] for x in port.issued]
     run.stop()
-    with pytest.raises(KomorebiError, match="work-cluster thread"):
-        run.trace().phases(ticket)
+    assert run.trace().phases(b)["count"] == 2
+
+
+def test_a_gap_of_other_sources_too_long_to_tell_raises():
+    run, port, _ = make_run(trace_cap=8)  # keeps the sequences of waited tickets
+    a = run.wait(run.issue(1, (0, 2))).ticket
+    port.seq += 40_000
+    b = run.wait(run.issue(1, (0, 2))).ticket
+    assert run.seq(a) == 1
+    with pytest.raises(KomorebiError, match="other sources"):
+        run.seq(b)
+
+
+def test_a_queued_record_gets_its_first_core_and_sequence_from_its_event():
+    run, port, _ = make_run(trace_cap=8)
+    busy = run.issue(1, (0, 4))
+    queued = run.issue(1, 3, queued=True)
+    run.wait([busy, queued])
+    assert run.team(queued) == (port.issued[-1][4][0], 3)
+    assert run.seq(queued) == port.issued[-1][1] == 2
+    run.stop()
+    assert run.trace().record(queued).shape == (3, 4)
 
 
 def test_a_traced_run_keeps_teams_and_sequences_for_the_trace():

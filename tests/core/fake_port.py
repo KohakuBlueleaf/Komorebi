@@ -246,15 +246,17 @@ class FakePort:
 
     def _complete(self):
         for slot in sorted(self.busy):
-            seq, req, _ = self.busy[slot]
+            seq, req, (first, _) = self.busy[slot]
+            low = (seq & K["KM_EV_SEQ_MASK"]) << K["KM_EV_SEQ_SHIFT"]
             if req == self.stall_req:
                 del self.busy[slot]
-                self._event(req, K["KM_EV_TIMEOUT"], aux=slot, ticks=2_500_000)
+                self._event(req, K["KM_EV_TIMEOUT"], aux=slot | low, ticks=2_500_000)
                 self._finish(K["KMD_ERR_DEADLINE"], slot, seq, req)
                 return
             if self.auto:
                 del self.busy[slot]
-                self._event(req, K["KM_EV_DONE"], ticks=self.results.get(req, 100))
+                ticks = self.results.get(req, 100)
+                self._event(req, K["KM_EV_DONE"], aux=first | low, ticks=ticks)
 
 
 class FakeBackend:

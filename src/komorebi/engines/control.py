@@ -402,8 +402,6 @@ class Engines:
         """
         run = self.run
         ticket = run._queue_command(seg, None, args)
-        if seg == self.c["KM_SEG_RUN"] and run._engine_from is None:
-            run._engine_from = ticket  # the kernel's sequence counts its records too
         ping = run._queue_command(self.c["KM_SEG_PING"], None)
         if t is not None:
             t.commands = (ticket, ping)

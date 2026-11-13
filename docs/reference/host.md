@@ -138,14 +138,14 @@ through ttnn after the stop.
 
 | Call | What it does |
 |---|---|
-| `issue(seg, team=None, args=(), exclusive=False, result=False, queued=False)` | queues one record and returns its ticket (1, 2, ...). `seg` is a name or a number (`0` is NOP); `team` is `(first, count)`, default every core; `args` up to ten 32-bit words. Teams and segments are checked here. With `exclusive` (`KM_F_EXCL`), the record is held until no team in flight overlaps it. With `result` (`KM_F_RESULT`), its done event carries the team leader's 32-bit result word. With `queued` (`KM_F_QUEUE`), `team` is a count: the kernel gives the record the lowest first core whose team overlaps no busy one, and waits until there is one (nothing is refused for a full grid); `team(ticket)` is then `(None, count)`, since the event does not name the first core. A queued record cannot be exclusive |
+| `issue(seg, team=None, args=(), exclusive=False, result=False, queued=False)` | queues one record and returns its ticket (1, 2, ...). `seg` is a name or a number (`0` is NOP); `team` is `(first, count)`, default every core; `args` up to ten 32-bit words. Teams and segments are checked here. With `exclusive` (`KM_F_EXCL`), the record is held until no team in flight overlaps it. With `result` (`KM_F_RESULT`), its done event carries the team leader's 32-bit result word. With `queued` (`KM_F_QUEUE`), `team` is a count: the kernel gives the record the lowest first core whose team overlaps no busy one, and waits until there is one (nothing is refused for a full grid); `team(ticket)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). A queued record cannot be exclusive |
 | `issue_many(seg, firsts, counts, args=None, exclusive=False)` | queues n records at once and returns their tickets as a `range`. `seg`, `firsts` and `counts` are one value or n each; `args` is an `[n, m]` integer matrix (m at most 10) or None. Checked as `issue` checks, all before any is queued |
 | `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a [graph](../graphs.md) host-fed: its executor on the host, its records through this run; returns `HostfedResult(status, error, regs, runs, records, events)` |
 | `wait(tickets, timeout=10.0)` | stores queued commands up to the tickets in batches, reads events until each ticket has one; returns the `Event` (or a list) and forgets those tickets. The stores and the event reads run in the native module with the GIL released |
 | `wait_any(tickets, timeout=10.0)` | stores what is queued and waits until one of the tickets has its event; returns that `Event` (the lowest ticket if several arrived) and forgets only that ticket. Raises as `wait` does |
 | `drain(timeout=10.0)` | the same for everything issued; returns how many events it waited for |
 | `event(ticket)` | `Event(ticket, kind, aux, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `refused`; `ticks` is issue to completion in the X280's 50 MHz timer, `us` the same in microseconds; for a record issued with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `us` then hold it too), else None |
-| `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index; not known, and raises, for a record issued after an engine started or in a run whose work-cluster thread is on the card), its team |
+| `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index), from its done or timeout event (None before it, and for a refused record); its team, whose first core for a queued record comes from its done event (None before it) |
 | `forget(tickets)` | releases what the run keeps for tickets whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps teams and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
@@ -231,12 +231,13 @@ with an X280 thread, whose ring lies there. The host never writes into the range
 running stream or graph, or of a kept graph. The kernel's EXIT waits until no engine
 runs, so `stop` cancels the engines still running first.
 
-The kernel numbers the records an engine issues in the same sequence as the host's,
-and no event tells the host a record's number. So for a host record issued after the
-run's first `start`, `seq(ticket)` and the trace's `record(ticket)` (and what is built
-on it) raise `KomorebiError` instead of giving another record's number; records issued
-before it keep theirs. A program with a work-cluster thread on the card is the same
-from its first record, since the thread starts at the load and may issue records.
+The kernel numbers the records of every source (the host, an engine, a work-cluster
+thread) in one sequence. A record's done or timeout event carries the low 16 bits of its
+number, and the host takes the rest from its previous record's: `seq(ticket)` and the
+trace's `record(ticket)` are exact while fewer than 32,768 records of other sources are
+issued between two host records. When the host sees a longer gap it raises
+`KomorebiError` for that ticket instead of giving another record's number; it cannot
+tell a gap of 65,536 or more.
 
 ## Errors
 
