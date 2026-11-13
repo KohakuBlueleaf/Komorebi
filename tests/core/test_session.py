@@ -1,4 +1,4 @@
-"""Session.load and its failure paths over a stub ttnn and the fake kernel."""
+"""Session.load and its failure paths over a fake native module and the fake kernel."""
 
 import gc
 import os
@@ -6,12 +6,11 @@ import signal
 import subprocess
 import sys
 import time
-import types
 from pathlib import Path
 
 import numpy as np
 import pytest
-from fake_session import FakeDispatch, K, built, load_session, program
+from fake_session import FakeDevice, FakeDispatch, K, built, load_session, program
 
 import komorebi as km
 from komorebi import insn_check
@@ -29,51 +28,51 @@ def card(monkeypatch, tmp_path):
 
 
 def test_a_load_launches_the_grid_then_starts_the_kernel(card, tmp_path):
-    session, log, _, _ = card
+    session, log, _ = card
     run = session.Session(device=object()).load(program(tmp_path))
-    assert log == ["prepare", "describe", "generic_op", "start", "wait_ready"]
+    assert log == ["prepare", "describe", "launch", "start", "wait_ready"]
     assert not run.stopped
 
 
 def test_an_interrupt_during_the_launch_still_reads_the_grid_back(card, tmp_path):
-    session, log, ttnn, _ = card
+    session, log, module = card
 
-    def launched_then_interrupted(io, descriptor):
-        log.append("generic_op")
+    def launched_then_interrupted(launch):
+        log.append("launch")
         raise KeyboardInterrupt  # delivered as the launch call returns
 
-    ttnn.generic_op = launched_then_interrupted
+    module.run = launched_then_interrupted
     with pytest.raises(KeyboardInterrupt):
         session.Session(device=object()).load(program(tmp_path))
     assert log[-2:] == ["close", "read_back, grid stopped"]
 
 
 def test_a_compile_error_raises_program_error_and_reads_back(card, tmp_path):
-    session, log, ttnn, _ = card
+    session, log, module = card
 
-    def compile_error(io, descriptor):
+    def compile_error(launch):
         raise RuntimeError("reader.cpp: error: expected ';'")
 
-    ttnn.generic_op = compile_error
+    module.run = compile_error
     with pytest.raises(ProgramError, match="expected"):
         session.Session(device=object()).load(program(tmp_path))
     assert "start" not in log and log[-2:] == ["close", "read_back, grid stopped"]
 
 
 def test_a_compile_error_in_the_checked_build_raises_program_error(card, tmp_path):
-    session, log, _, module = card
+    session, log, module = card
 
-    def compile_error(device, descriptor):
+    def compile_error(launch):
         raise RuntimeError("compute.cpp: error: deliberate")
 
     module.kernel_build = compile_error
     with pytest.raises(ProgramError, match="build failed.*deliberate"):
         session.Session(device=object()).load(program(tmp_path))
-    assert "generic_op" not in log and log[-1] == "close"
+    assert "launch" not in log and log[-1] == "close"
 
 
 def test_the_exit_bound_is_set_only_when_the_environment_has_none(card):
-    session, _, _, _ = card
+    session, _, _ = card
     name, log = session.OP_TIMEOUT, []
     unset = {}
     assert session.bound_exit(unset, log.append) == 30.0
@@ -95,21 +94,21 @@ def test_the_exit_bound_is_set_only_when_the_environment_has_none(card):
 def test_a_kernel_instruction_finding_stops_the_load_before_the_launch(
     card, tmp_path, monkeypatch
 ):
-    session, log, _, module = card
+    session, log, module = card
     elf = tmp_path / "trisc2.elf"
     elf.write_bytes(b"")
-    module.kernel_build = lambda d, desc: built([("compute.cpp", [str(elf)])])
+    module.kernel_build = lambda launch: built([("compute.cpp", [str(elf)])])
     found = insn_check.Finding("TRISC2", "compute.cpp", "fdiv.s", "f", "ratio", "", 0)
     monkeypatch.setattr(insn_check, "check_elf", lambda *args: [found])
     with pytest.raises(KernelInstructionError, match="fdiv.s"):
         session.Session(device=object()).load(program(tmp_path))
-    assert "generic_op" not in log and "start" not in log and log[-1] == "close"
+    assert "launch" not in log and "start" not in log and log[-1] == "close"
 
 
 def test_a_program_over_the_kernel_buffer_is_refused_before_the_launch(card, tmp_path):
-    session, log, _, module = card
+    session, log, module = card
     said = "Program size (70688) too large for kernel config buffer (70656) on TENSIX"
-    module.kernel_build = lambda d, desc: built([], total=0, error=said)
+    module.kernel_build = lambda launch: built([], total=0, error=said)
     prog = program(tmp_path)
     with pytest.raises(km.KernelSizeError) as caught:
         session.Session(device=object()).load(prog)
@@ -117,20 +116,15 @@ def test_a_program_over_the_kernel_buffer_is_refused_before_the_launch(card, tmp
     for part in ("70688 B of the 70656 B", "BRISC, 1024 B", "kernel_bytes", "'Os'"):
         assert part in message
     assert prog.sizes.total == 70688 and prog.sizes.text["TRISC2"] == 768
-    assert "generic_op" not in log and log[-1] == "close"
+    assert "launch" not in log and log[-1] == "close"
 
 
 def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch):
-    session, _, ttnn, _ = card
-    opened = []
-    ttnn.MeshShape = lambda rows, cols: (rows, cols)
-    ttnn.open_mesh_device = lambda shape, **kw: opened.append(
-        kw
-    ) or types.SimpleNamespace(disable_and_clear_program_cache=lambda: None)
+    session, _, module = card
     monkeypatch.setattr(session, "_hook_exit", lambda: None)  # not this process's
     session.Session().open()
     session.Session(kernel_bytes=128 << 10).open()
-    assert opened == [{}, {"worker_l1_size": 1572864 - 41088 - (128 << 10)}]
+    assert module.opened == [None, 1572864 - 41088 - (128 << 10)]
     assert session.worker_l1_size(69 * 1024) == 1461120  # the runtime's default
     for bad in (100, 0, 1531776, "big"):
         with pytest.raises(ValueError, match="multiple of 64 from 64 to 1531712"):
@@ -140,7 +134,7 @@ def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch
 
 
 def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):
-    session, log, _, _ = card
+    session, log, _ = card
     monkeypatch.setattr(FakeDispatch, "boot_error", K["KMD_ERR_START"])
     with pytest.raises(StartError, match="error start") as caught:
         session.Session(device=object()).load(program(tmp_path))
@@ -152,8 +146,8 @@ def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):
 def test_a_kernel_that_never_started_leaves_the_host_to_stop_the_grid(
     card, tmp_path, monkeypatch
 ):
-    session, log, _, _ = card
-    _, _, _, module = card
+    session, log, _ = card
+    _, _, module = card
     original = module.Dispatch
 
     def failing(device, pll_mhz):
@@ -170,7 +164,7 @@ def test_a_kernel_that_never_started_leaves_the_host_to_stop_the_grid(
 def test_the_image_and_the_x280_are_checked_before_the_launch(
     card, tmp_path, monkeypatch
 ):
-    session, log, _, module = card
+    session, log, module = card
     missing = tmp_path / "none.bin"
     with pytest.raises(StartError, match="missing"):
         session.Session(device=object()).load(program(tmp_path), image=missing)
@@ -190,7 +184,7 @@ def test_the_image_and_the_x280_are_checked_before_the_launch(
 
 def backend_over(session, log, tmp_path, monkeypatch):
     """The real card backend over a closed fake dispatch and a stub readback."""
-    sess = session.Session(device="dev", grid_timeout=0.5)
+    sess = session.Session(device=FakeDevice(log), grid_timeout=0.5)
     sess._module = session.native.load_module()
     port = sess._module.Dispatch("dev", 1750)
     port.close()
@@ -206,7 +200,7 @@ def backend_over(session, log, tmp_path, monkeypatch):
 def test_the_host_writes_the_stop_word_into_every_core_then_waits_bounded(
     card, tmp_path, monkeypatch
 ):
-    session, log, _, _ = card
+    session, log, _ = card
     sess, backend = backend_over(session, log, tmp_path, monkeypatch)
     state, trace = backend.read_back(stop_grid=True)
     writes = [e for e in log if e[0] == "write_l1"]
@@ -222,7 +216,7 @@ def test_the_host_writes_the_stop_word_into_every_core_then_waits_bounded(
 def test_a_grid_that_does_not_return_raises_and_leaves_the_device_open(
     card, tmp_path, monkeypatch
 ):
-    session, log, _, module = card
+    session, log, module = card
     sess, backend = backend_over(session, log, tmp_path, monkeypatch)
     module.grid_returns = False
     with pytest.raises(GridTimeout, match="reset"):
@@ -236,7 +230,7 @@ def test_a_grid_that_does_not_return_raises_and_leaves_the_device_open(
 def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_account(
     card, tmp_path, monkeypatch
 ):
-    session, log, _, _ = card
+    session, log, _ = card
     sess, backend = backend_over(session, log, tmp_path, monkeypatch)
     report = backend.kernel_report()
     assert report.startswith("the dispatch kernel's core 0 is not running its loop")
@@ -253,7 +247,7 @@ def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_account(
 def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     card, tmp_path, monkeypatch
 ):
-    session, log, _, module = card
+    session, log, module = card
     sess, backend = backend_over(session, log, tmp_path, monkeypatch)
     lines, asked = [], []
     sess.log = lines.append
@@ -281,7 +275,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
 
 
 def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path):
-    session, log, _, module = card
+    session, log, module = card
     FakeDispatch.lim_base = 0x10008
     try:
         with pytest.raises(StartError, match=r"multiple of 16.*lim_base 0x10008"):
@@ -297,42 +291,8 @@ def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path
         session.check_bases({"control block": 0x20004})
 
 
-class ComputeConfigDescriptor:
-    """ttnn's descriptor as far as its fields go: the constructor takes five of them as
-    keywords, the others are attributes only, and an unknown attribute is refused."""
-
-    __slots__ = (
-        "math_fidelity",
-        "math_approx_mode",
-        "fp32_dest_acc_en",
-        "dst_full_sync_en",
-        "bfp8_pack_precise",
-        "enable_trisc2_rvv",
-        "unpack_to_dest_mode",
-    )
-
-    def __init__(
-        self,
-        math_fidelity="hifi4",
-        math_approx_mode=False,
-        fp32_dest_acc_en=False,
-        dst_full_sync_en=False,
-        bfp8_pack_precise=False,
-    ):
-        self.math_fidelity, self.math_approx_mode = math_fidelity, math_approx_mode
-        self.fp32_dest_acc_en, self.dst_full_sync_en = (
-            fp32_dest_acc_en,
-            dst_full_sync_en,
-        )
-        self.bfp8_pack_precise, self.enable_trisc2_rvv = bfp8_pack_precise, False
-        self.unpack_to_dest_mode = []
-
-
 def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
-    session, _, ttnn, _ = card
-    ttnn.ComputeConfigDescriptor = ComputeConfigDescriptor
-    ttnn.MathFidelity = types.SimpleNamespace(HiFi4="hifi4")
-    ttnn.UnpackToDestMode = types.SimpleNamespace(UnpackToDestFp32="fp32", Default="-")
+    session, _, _ = card
     c = session.compute_config(
         {
             "math_fidelity": "HiFi4",
@@ -341,12 +301,14 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
             "unpack_to_dest_mode": {3: "UnpackToDestFp32"},
         }
     )
-    assert c.math_fidelity == "hifi4" and c.fp32_dest_acc_en and c.enable_trisc2_rvv
-    assert len(c.unpack_to_dest_mode) == 64 and c.unpack_to_dest_mode[3] == "fp32"
-    assert set(c.unpack_to_dest_mode[:3] + c.unpack_to_dest_mode[4:]) == {"-"}
+    assert c["math_fidelity"] == "HiFi4"
+    assert c["flags"] == [("fp32_dest_acc_en", True), ("enable_trisc2_rvv", True)]
+    modes = c["unpack_to_dest_mode"]
+    assert len(modes) == 64 and modes[3] == "UnpackToDestFp32"
+    assert set(modes[:3] + modes[4:]) == {"Default"}
     every = session.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
-    assert set(every.unpack_to_dest_mode) == {"fp32"}
-    assert session.compute_config({}).unpack_to_dest_mode == []
+    assert set(every["unpack_to_dest_mode"]) == {"UnpackToDestFp32"}
+    assert "unpack_to_dest_mode" not in session.compute_config({})
     with pytest.raises(ProgramError, match="'fp32_dest_acc'"):  # a typo is refused
         session.compute_config({"fp32_dest_acc": True})
 
@@ -354,11 +316,7 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
 def test_an_exit_without_a_stop_closes_the_runtime_before_the_device(
     card, tmp_path, monkeypatch
 ):
-    session, log, ttnn, module = card
-    ttnn.MeshShape = lambda rows, cols: (rows, cols)
-    ttnn.open_mesh_device = lambda shape: types.SimpleNamespace(
-        disable_and_clear_program_cache=lambda: None
-    )
+    session, log, module = card
     monkeypatch.setattr(session, "_hook_exit", lambda: None)  # not this process's
     said = []
     s = session.Session(log=said.append)
@@ -427,11 +385,7 @@ def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(card, tmp_pat
 def test_the_exit_hook_closes_the_device_when_the_stop_raises(
     card, tmp_path, monkeypatch
 ):
-    session, log, ttnn, module = card
-    ttnn.MeshShape = lambda rows, cols: (rows, cols)
-    ttnn.open_mesh_device = lambda shape: types.SimpleNamespace(
-        disable_and_clear_program_cache=lambda: None
-    )
+    session, log, module = card
     monkeypatch.setattr(session, "_hook_exit", lambda: None)  # not this process's
     said = []
     s = session.Session(log=said.append)

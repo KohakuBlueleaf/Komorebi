@@ -1,7 +1,7 @@
 """Komorebi: a programming model and runtime for the Tensix grid of Blackhole cards.
 
-Importing the package needs no tt-metal tree and opens no device. `Session` (and with
-it ttnn) is imported on first use, after activating the runtime package if it is used.
+Importing the package needs no tt-metal tree and opens no device. `Session` is
+imported on first use, after preparing the process to run on the tree in use.
 """
 
 import importlib

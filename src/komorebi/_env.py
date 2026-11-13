@@ -13,6 +13,7 @@ except ImportError:  # the runtime package is optional (the `runtime` extra)
     komorebi_runtime = None
 
 HOME_VARIABLE = "TT_METAL_HOME"
+RUNTIME_ROOT_VARIABLE = "TT_METAL_RUNTIME_ROOT"  # where tt-metal finds its tree
 RUNTIME_SOURCE = "komorebi-runtime"
 
 _X280_SOURCE = Path("tt_metal/fabric/experimental/x280")
@@ -52,11 +53,15 @@ def find_tree(environ=None):
 
 
 def activate(environ=None):
-    """When the tree is the runtime package's, prepares this process to run on it
-    (TT_METAL_RUNTIME_ROOT, ttnn on the path); returns the tree's source."""
+    """Prepares this process to run on the tree: the runtime package's activation
+    when it is that package's, else TT_METAL_RUNTIME_ROOT set to TT_METAL_HOME's tree
+    unless already set; returns the tree's source."""
+    environ = os.environ if environ is None else environ
     tree, source = find_tree(environ)
     if source == RUNTIME_SOURCE:
         komorebi_runtime.activate(environ)
+    elif tree is not None:
+        environ.setdefault(RUNTIME_ROOT_VARIABLE, str(tree))
     return source
 
 

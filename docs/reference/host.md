@@ -21,8 +21,9 @@ with km.Session(card=0) as session:
     trace = run.trace()
 ```
 
-`import komorebi` needs no tt-metal tree. `km.Session` imports ttnn and the package's
-native module on first use.
+`import komorebi` needs no tt-metal tree. `km.Session` loads the package's native module
+on first use; neither ttnn nor torch is imported. Data goes to and from the card as
+numpy arrays (see [Tensors](#tensors)).
 
 ## `Program`
 
@@ -33,10 +34,10 @@ nothing.
 | Field | Meaning |
 |---|---|
 | `kernels` | a directory with `reader.cpp`, `compute.cpp` and `writer.cpp`, or a dict of the three paths |
-| `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a ttnn data type name (`"bfloat16"`, `"uint32"`) |
+| `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a data type name (`"bfloat16"`, `"float32"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, `"bfloat8_b"`, `"bfloat4_b"`) |
 | `args` | `args(core) -> (reader, writer, compute)`: the program's own runtime arguments of each core, after the runtime's start-up arguments |
 | `compile_args` | `{"reader": [...], "writer": [...], "compute": [...]}` |
-| `compute` | compute kernel options: `math_fidelity` (a `ttnn.MathFidelity` name), `fp32_dest_acc_en`, `unpack_to_dest_mode` (a `ttnn.UnpackToDestMode` name such as `"UnpackToDestFp32"` for every circular buffer, or `{cb: name}` with the others `Default`), and the other `ComputeConfigDescriptor` fields, each set as an attribute (checked against tt-metal v0.81.1: `math_approx_mode`, `dst_full_sync_en`, `bfp8_pack_precise`, `enable_trisc2_rvv`); a name the descriptor lacks raises `ProgramError` |
+| `compute` | compute kernel options, the fields of tt-metal's `ComputeConfigDescriptor` (v0.81.1): `math_fidelity` (`"LoFi"`, `"HiFi2"`, `"HiFi3"`, `"HiFi4"`), `unpack_to_dest_mode` (`"UnpackToDestFp32"` or `"Default"` for every circular buffer, or `{cb: name}` with the others `Default`), and the flags `fp32_dest_acc_en`, `math_approx_mode`, `dst_full_sync_en`, `bfp8_pack_precise`, `enable_trisc2_rvv`; any other name raises `ProgramError` |
 | `defines` | `{name: value}` for all three kernels |
 | `depth` | mailbox slots the cores scan and the dispatch kernel uses, 1 to 16 |
 | `segments` | `{name: number}`, or a header whose `constexpr uint32_t kSegName = n;` lines give them (`kSegBigStep` becomes `"big_step"`); numbers 1 to 239 |
@@ -84,8 +85,9 @@ grid_timeout=10.0, kernel_bytes=None)`.
   was never the card's own choice. The session's log names the clock it set.
 
 - `card` selects the card through `TT_VISIBLE_DEVICES` (an error if that variable
-  already names another card); `device` uses a mesh device the caller opened and
-  keeps. The session opens the card in slow dispatch.
+  already names another card); `device` uses a device (the native module's `Device`)
+  the caller opened and keeps. The session opens the card in slow dispatch, as a 1 x 1
+  mesh through tt-metal's own API, with the program cache off.
 - `tree` is the tt-metal tree for builds (default `TT_METAL_HOME`). `log(msg)` receives
   one line per step (launch, kernel started, runtime closed, read back).
 - As a context manager it stops a loaded run at the exit: with `run.stop()` on a normal
@@ -198,16 +200,35 @@ the dispatch kernel's core table holds) and the NoC0 coordinates `noc0`; `words`
 translated addresses as `x | y << 16` in core order; and the grid's `panels`. These are
 what `layout.lane_args` and program arguments that name other cores take.
 
-Reading tensors. `session.read(*tensors)` returns the raw pages of interleaved DRAM
-tensors (`[pages, page_bytes]` uint8 each) and `session.read_bf16(*tensors)` bfloat16
-tile tensors as float32 arrays. Page p of such a tensor lies in DRAM bank p % banks, so
-the native module reads each bank's pages in one go, after one DRAM barrier for all
-the tensors of the call: tt-metal's own read (`ttnn.to_torch`) runs that barrier for
-every page. These reads do not wait for the cores to be idle, so they work while a run
-is loaded; read then only what no kernel writes any more (an output whose record's
-event has arrived). Reads through ttnn wait for every core of the resident grid to
-return, which it does only at the stop. The control blocks live in L1 and are read
-through ttnn after the stop.
+### Tensors
+
+A program's inputs and outputs are tensors the session puts on the card:
+
+| Call | Returns |
+|---|---|
+| `session.tensor(data, dtype, layout="row", shard_grid=None)` | a `Tensor` holding `data` (anything `np.asarray` takes) as `dtype` (`"bfloat16"`, `"float32"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`), written before it returns. `layout="row"`: a page a row (the last dimension), interleaved over the DRAM banks; `"tile"`: a page a 32 x 32 tile of four 16 x 16 faces, the last two dimensions zero-padded to multiples of 32. `shard_grid=(x, y)`: rows `[cores, words]`, one in the L1 of each core of the grid at one address |
+| `session.empty(shape, dtype, layout="row", shard_grid=None)` | the same, not written |
+| `session.grid` | the Tensix grid `(x, y)` of the open device |
+
+A `Tensor` has `address` (its address in every bank, or in every core's L1),
+`shape` (on the card, padded), `dtype`, `layout`, `page_bytes`, `aligned_page_bytes`,
+`pages`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
+for `Program(compile_args=...)`); `write(data)`; `read()` (the whole tensor as a numpy
+array, bfloat16 as float32) and `read_bytes()`; `free()`. Its `write` and `read` wait
+for the cores of a launched program to return, which the resident grid does only at
+the stop: before `load` and after `run.stop()` they are the plain way. bfloat16 values
+are rounded to nearest, ties to even; `komorebi.formats` has the conversions
+(`bf16_bits`, `bf16_values`, `tilize`, `untilize`, `to_bytes`, `from_bytes`) on their
+own.
+
+Reading tensors while a run is loaded. `session.read(*tensors)` returns the raw pages
+of interleaved DRAM tensors (`[pages, page_bytes]` uint8 each) and
+`session.read_bf16(*tensors)` bfloat16 tile tensors as float32 arrays. Page p of such a
+tensor lies in DRAM bank p % banks, so the native module reads each bank's pages in one
+go, after one DRAM barrier for all the tensors of the call. These reads do not wait for
+the cores to be idle, so they work while a run is loaded; read then only what no kernel
+writes any more (an output whose record's event has arrived). The control blocks live
+in L1 and are read with `Tensor.read()` after the stop.
 
 A part of one tensor is read the same way:
 

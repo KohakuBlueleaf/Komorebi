@@ -10,6 +10,9 @@ from typing import NamedTuple
 
 import numpy as np
 
+# np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
+import numpy.ma
+
 from komorebi import abi
 from komorebi import state as st
 from komorebi.engines import control, graph_hostfed, stream_hostfed

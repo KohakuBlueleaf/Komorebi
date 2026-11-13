@@ -1,5 +1,6 @@
-"""Stand-ins for ttnn, the native module and the session's card backend, so that
-Session.load and its failure paths run on the CPU over the fake kernel."""
+"""Stand-ins for the native module (device, launch, dispatch) and the session's card
+backend, so that Session.load and its failure paths run on the CPU over the fake
+kernel."""
 
 import importlib
 import sys
@@ -84,7 +85,7 @@ class SessionBackend(FakeBackend):
 
     def describe(self, *args):
         self.log.append("describe")
-        return "descriptor"
+        return FakeLaunch(self.session._module)
 
     def finish(self, timeout):
         self.log.append("finish")
@@ -103,6 +104,33 @@ class SessionBackend(FakeBackend):
         return super().read_back()
 
 
+class FakeDevice:
+    """An open device: its close and its wait for the launched cores, logged."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def close(self):
+        self.log.append("close_device")
+
+    def finish(self):
+        self.log.append("synchronize")
+
+
+class FakeLaunch:
+    """The native Launch: build() and run() call the fake module's kernel_build and
+    run, which tests replace."""
+
+    def __init__(self, module):
+        self.module = module
+
+    def build(self):
+        return self.module.kernel_build(self)
+
+    def run(self):
+        self.module.run(self)
+
+
 def built(kernels, total=4096, limit=70656, error=""):
     """What the native kernel_build returns: kernels, config bytes, the buffer, the
     text per Tensix thread, the runtime's message."""
@@ -110,20 +138,22 @@ def built(kernels, total=4096, limit=70656, error=""):
 
 
 def load_session(monkeypatch, tmp_path):
-    """komorebi.session imported over a stub ttnn; returns (module, log, ttnn stub).
-    The fake native module's Dispatch is the last one made: `module.dispatch`."""
+    """komorebi.session over a fake native module; returns (session module, log,
+    native module). Its Dispatch is the last one made: `module.dispatch`; the sizes
+    each Device was opened with are in `module.opened`."""
     log = []
-    ttnn = types.ModuleType("ttnn")
-    ttnn.generic_op = lambda io, descriptor: log.append("generic_op")
-    ttnn.synchronize_device = lambda device: log.append("synchronize")
-    ttnn.close_mesh_device = lambda device: log.append("close_device")
-    monkeypatch.setitem(sys.modules, "ttnn", ttnn)
-    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
     monkeypatch.delitem(sys.modules, "komorebi.session", raising=False)
     session = importlib.import_module("komorebi.session")
     monkeypatch.delitem(sys.modules, "komorebi.session")  # undone: removed again
 
-    module = types.SimpleNamespace(dispatch=None, grid_returns=True)
+    module = types.SimpleNamespace(dispatch=None, grid_returns=True, opened=[])
+    module.run = lambda launch: log.append("launch")
+
+    def device(worker_l1_size=None):
+        module.opened.append(worker_l1_size)
+        return FakeDevice(log)
+
+    module.Device = device
     module.write_l1 = lambda *args: log.append(("write_l1", *args))
 
     def wait_grid(device, gx, gy, timeout_s):
@@ -137,7 +167,7 @@ def load_session(monkeypatch, tmp_path):
         return module.dispatch
 
     module.Dispatch = make
-    module.kernel_build = lambda device, descriptor: built([])  # nothing to check
+    module.kernel_build = lambda launch: built([])  # nothing to check
     image = tmp_path / "km-dispatch.bin"
     image.write_bytes(b"\0" * 64)
     monkeypatch.setattr(session.native, "load_module", lambda tree=None: module)
@@ -146,11 +176,11 @@ def load_session(monkeypatch, tmp_path):
     monkeypatch.setattr(session, "aiclk_mhz", lambda card=None: 1350)
     monkeypatch.delenv(session.OP_TIMEOUT, raising=False)  # restored after the test
     monkeypatch.setattr(session, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
-    state = types.SimpleNamespace(buffer_address=lambda: 0x40000)
-    monkeypatch.setattr(session, "_state_area", lambda device: state)
+    state = types.SimpleNamespace(address=0x40000)
+    monkeypatch.setattr(session, "_state_area", lambda s: state)
     module.card_backend = session._Backend  # the real one, for its own tests
     monkeypatch.setattr(session, "_Backend", SessionBackend)
-    return session, log, ttnn, module
+    return session, log, module
 
 
 def program(tmp_path):

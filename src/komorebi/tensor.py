@@ -1,0 +1,102 @@
+"""Device buffers with the shape, data type and layout of what they hold, written from
+and read into numpy arrays: interleaved in DRAM (a page a row, or a page a 32 x 32
+tile), or one row in the L1 of every core of a grid.
+"""
+
+import math
+
+import numpy as np
+
+from komorebi import formats
+
+
+class Tensor:
+    """A device buffer (the native module's `Buffer`) and the shape on the card, the
+    data type name and the layout ("row" or "tile") of its contents. `shard_grid`
+    (x, y): one row in each core's L1, cores in row-major order; None: DRAM."""
+
+    def __init__(self, buffer, shape, dtype, layout, shard_grid=None):
+        self.buffer = buffer
+        self.shape = tuple(shape)
+        self.dtype = dtype
+        self.layout = layout
+        self.shard_grid = shard_grid
+
+    def __repr__(self):
+        where = "DRAM" if self.shard_grid is None else f"L1 of {self.shard_grid}"
+        return f"Tensor({self.shape}, {self.dtype}, {self.layout}, {where})"
+
+    @property
+    def address(self):
+        """The buffer's address: in every DRAM bank, or in every core's L1."""
+        return self.buffer.address
+
+    @property
+    def page_bytes(self):
+        return self.buffer.page_size
+
+    @property
+    def aligned_page_bytes(self):
+        """A page's footprint in its bank."""
+        return self.buffer.aligned_page_size
+
+    @property
+    def pages(self):
+        return self.buffer.num_pages
+
+    @property
+    def nbytes(self):
+        return self.buffer.size
+
+    @property
+    def in_dram(self):
+        return self.shard_grid is None
+
+    def accessor_args(self):
+        """The compile-time arguments of a TensorAccessor over this buffer."""
+        return list(self.buffer.accessor_args())
+
+    def write(self, data):
+        """Writes `data` (this shape) over the whole buffer, once the cores of a
+        launched program are done."""
+        raw, shape = formats.to_bytes(data, self.dtype, self.layout)
+        if shape != self.shape:
+            raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
+        self.buffer.write(raw)
+
+    def read(self):
+        """The whole buffer as a numpy array (bfloat16 as float32), once the cores of
+        a launched program are done."""
+        return formats.from_bytes(
+            self.read_bytes(), self.shape, self.dtype, self.layout
+        )
+
+    def read_bytes(self):
+        """The whole buffer's bytes (uint8), read as read() reads them."""
+        return np.asarray(self.buffer.read())
+
+    def free(self):
+        """Gives the buffer's memory back; the tensor is not used after this."""
+        self.buffer.free()
+
+
+def empty(module, device, shape, dtype, layout="row", shard_grid=None):
+    """A tensor of `shape` (padded to whole tiles in a tile layout), not written."""
+    formats.check_dtype(dtype)
+    shape = formats.padded_shape(shape, layout)
+    page = formats.page_bytes(shape, dtype, layout)
+    size = math.prod(shape) * formats.itemsize(dtype)
+    if shard_grid is not None:
+        if layout != "row" or len(shape) != 2:
+            raise ValueError("an L1 tensor is [cores, words] rows, one a core")
+        shard_grid = tuple(int(n) for n in shard_grid)
+    buffer = module.Buffer(device, size, page, shard_grid)
+    return Tensor(buffer, shape, dtype, layout, shard_grid)
+
+
+def from_array(module, device, data, dtype, layout="row", shard_grid=None):
+    """A tensor holding `data`, written before it is returned."""
+    raw, shape = formats.to_bytes(data, dtype, layout)
+    t = empty(module, device, shape, dtype, layout, shard_grid)
+    t.buffer.write(raw)
+    return t

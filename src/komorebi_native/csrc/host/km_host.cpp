@@ -4,6 +4,7 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
@@ -29,10 +30,15 @@
 #include <immintrin.h>
 
 #include <tt-metalium/allocator.hpp>
+#include <tt-metalium/buffer.hpp>
+#include <tt-metalium/buffer_distribution_spec.hpp>
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
+#include <tt-metalium/mesh_buffer.hpp>
+#include <tt-metalium/mesh_workload.hpp>
 #include <tt-metalium/program_descriptors.hpp>
+#include <tt-metalium/tensor_accessor_args.hpp>
 #include <tt-metalium/tt_metal.hpp>
 
 #include "impl/context/context_types.hpp"
@@ -86,6 +92,8 @@ namespace {
     using Bytes = nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>;
     using Numbers = nb::
         ndarray<const uint32_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+    using Numbers8 = nb::
+        ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 
     Clock::time_point after(double seconds) {
         return (
@@ -318,6 +326,424 @@ namespace {
             }
         }
     }
+
+    // An open card: the 1 x 1 mesh of the first visible device, opened as ttnn's
+    // open_mesh_device opens it, with the program cache off.
+    class Device {
+    public:
+        explicit Device(std::optional<size_t> worker_l1_size) {
+            namespace d = tt::tt_metal::distributed;
+            mesh_ = MeshDevice::create(
+                d::MeshDeviceConfig(d::MeshShape(1, 1)),
+                DEFAULT_L1_SMALL_SIZE,
+                DEFAULT_TRACE_REGION_SIZE,
+                1,
+                tt::tt_metal::DispatchCoreConfig{},
+                {},
+                worker_l1_size.value_or(DEFAULT_WORKER_L1_SIZE)
+            );
+            mesh_->disable_and_clear_program_cache();
+        }
+
+        MeshDevice& mesh() const {
+            if (!mesh_) {
+                throw std::runtime_error("the device is closed");
+            }
+            return *mesh_;
+        }
+
+        std::shared_ptr<MeshDevice> shared() const {
+            mesh();
+            return mesh_;
+        }
+
+        bool is_open() const {
+            return mesh_ != nullptr;
+        }
+
+        void close() {
+            if (mesh_) {
+                mesh_->close();
+                mesh_.reset();
+            }
+        }
+
+        std::tuple<uint32_t, uint32_t> grid() const {
+            const auto g = mesh().compute_with_storage_grid_size();
+            return {static_cast<uint32_t>(g.x), static_cast<uint32_t>(g.y)};
+        }
+
+        // A Tensix core's NoC coordinates (the runtime's virtual ones) from its
+        // logical (x, y).
+        std::tuple<uint32_t, uint32_t> worker_core(uint32_t x, uint32_t y) const {
+            const auto c = mesh().worker_core_from_logical_core({x, y});
+            return {static_cast<uint32_t>(c.x), static_cast<uint32_t>(c.y)};
+        }
+
+        // The NoC coordinates of DRAM bank `bank`'s core.
+        std::tuple<uint32_t, uint32_t> dram_core(uint32_t bank) const {
+            const auto c = mesh().virtual_core_from_logical_core(
+                {bank, 0}, tt::CoreType::DRAM
+            );
+            return {static_cast<uint32_t>(c.x), static_cast<uint32_t>(c.y)};
+        }
+
+        // Waits until every launched program has finished.
+        void finish() const {
+            tt::tt_metal::distributed::Finish(mesh().mesh_command_queue());
+        }
+
+    private:
+        std::shared_ptr<MeshDevice> mesh_;
+    };
+
+    using MeshBuffer = tt::tt_metal::distributed::MeshBuffer;
+
+    // A device buffer: interleaved in DRAM, or (shard_grid set) height-sharded in L1
+    // with one page on each core of the grid, cores in row-major order.
+    class DeviceBuffer {
+    public:
+        DeviceBuffer(
+            const Device& device,
+            uint64_t size,
+            uint64_t page_size,
+            std::optional<std::array<uint32_t, 2>> shard_grid
+        )
+            : mesh_(device.shared()) {
+            namespace d = tt::tt_metal::distributed;
+            using tt::tt_metal::BufferType;
+            if (page_size == 0 || size % page_size != 0) {
+                throw std::invalid_argument("the size is not a whole number of pages");
+            }
+            d::DeviceLocalBufferConfig local{
+                .page_size = page_size, .buffer_type = BufferType::DRAM
+            };
+            if (shard_grid) {
+                const auto [gx, gy] = *shard_grid;
+                const uint32_t cores = gx * gy;
+                if (size != uint64_t{cores} * page_size || page_size % 4 != 0) {
+                    throw std::invalid_argument(
+                        "a sharded buffer holds one page of whole words per core"
+                    );
+                }
+                const auto words = static_cast<uint32_t>(page_size / 4);
+                const tt::tt_metal::CoreRangeSet grid(
+                    tt::tt_metal::CoreRange({0, 0}, {gx - 1, gy - 1})
+                );
+                const auto row = tt::tt_metal::ShardOrientation::ROW_MAJOR;
+                tt::tt_metal::ShardSpecBuffer spec(
+                    grid, {1, words}, row, {1, words}, {cores, 1}
+                );
+                auto spread = tt::tt_metal::BufferDistributionSpec::from_shard_spec(
+                    tt::tt_metal::Shape({cores, words}),
+                    tt::tt_metal::Shape({1, words}),
+                    tt::tt_metal::Shape2D(1, words),
+                    grid,
+                    row,
+                    tt::tt_metal::ShardDistributionStrategy::ROUND_ROBIN_1D
+                );
+                local.buffer_type = BufferType::L1;
+                local.sharding_args = (
+                    tt::tt_metal::BufferShardingArgs(
+                        std::move(spread),
+                        std::move(spec),
+                        tt::tt_metal::TensorMemoryLayout::HEIGHT_SHARDED
+                    )
+                );
+            }
+            buffer_ = MeshBuffer::create(
+                d::ReplicatedBufferConfig{.size = size}, local, mesh_.get()
+            );
+        }
+
+        const MeshBuffer& get() const {
+            if (!buffer_) {
+                throw std::runtime_error("the buffer was freed");
+            }
+            return *buffer_;
+        }
+
+        uint64_t address() const {
+            return get().address();
+        }
+
+        uint64_t size() const {
+            return get().size();
+        }
+
+        uint64_t page_size() const {
+            return get().page_size();
+        }
+
+        uint64_t aligned_page_size() const {
+            return get().get_backing_buffer()->aligned_page_size();
+        }
+
+        uint64_t num_pages() const {
+            return get().get_backing_buffer()->num_pages();
+        }
+
+        // The kernels' TensorAccessorArgs compile-time arguments for this buffer.
+        std::vector<uint32_t> accessor_args() const {
+            return tt::tt_metal::TensorAccessorArgs(get()).get_compile_time_args();
+        }
+
+        // Writes the whole buffer and returns once it is on the card; waits first
+        // for the cores of a launched program, as every buffer write does.
+        void write(const Numbers8& data) {
+            if (data.size() != size()) {
+                throw std::invalid_argument("the data is not the buffer's size");
+            }
+            nb::gil_scoped_release release;
+            mesh_->mesh_command_queue().enqueue_write_mesh_buffer(
+                buffer_, data.data(), true
+            );
+        }
+
+        // Reads the whole buffer, after the cores of a launched program are done.
+        Bytes read() {
+            auto* owned = new std::vector<uint8_t>(size());
+            {
+                nb::gil_scoped_release release;
+                try {
+                    mesh_->mesh_command_queue().enqueue_read_mesh_buffer(
+                        owned->data(), buffer_, true
+                    );
+                } catch (...) {
+                    delete owned;
+                    throw;
+                }
+            }
+            nb::capsule owner(owned, [](void* p) noexcept {
+                delete static_cast<std::vector<uint8_t>*>(p);
+            });
+            const size_t shape[1] = {owned->size()};
+            return Bytes(owned->data(), 1, shape, owner);
+        }
+
+        void free() {
+            if (buffer_) {
+                buffer_->deallocate();
+                buffer_.reset();
+            }
+        }
+
+    private:
+        std::shared_ptr<MeshDevice> mesh_;
+        std::shared_ptr<MeshBuffer> buffer_;
+    };
+
+    // Core ranges as (x0, y0, x1, y1) rectangles, ends included.
+    using Rects = std::vector<std::array<uint32_t, 4>>;
+
+    tt::tt_metal::CoreRangeSet core_set(const Rects& rects) {
+        std::vector<tt::tt_metal::CoreRange> ranges;
+        for (const auto& [x0, y0, x1, y1] : rects) {
+            ranges.emplace_back(
+                tt::tt_metal::CoreCoord{x0, y0}, tt::tt_metal::CoreCoord{x1, y1}
+            );
+        }
+        return tt::tt_metal::CoreRangeSet(ranges);
+    }
+
+    tt::DataFormat data_format(const std::string& name) {
+        static const std::vector<std::pair<std::string, tt::DataFormat>> formats = {
+            {"bfloat16", tt::DataFormat::Float16_b},
+            {"float32", tt::DataFormat::Float32},
+            {"uint32", tt::DataFormat::UInt32},
+            {"int32", tt::DataFormat::Int32},
+            {"uint16", tt::DataFormat::UInt16},
+            {"uint8", tt::DataFormat::UInt8},
+            {"bfloat8_b", tt::DataFormat::Bfp8_b},
+            {"bfloat4_b", tt::DataFormat::Bfp4_b},
+        };
+        for (const auto& [n, f] : formats) {
+            if (n == name) {
+                return f;
+            }
+        }
+        throw std::invalid_argument("no data format " + name);
+    }
+
+    tt::tt_metal::KernelBuildOptLevel opt_level(const std::string& name) {
+        using L = tt::tt_metal::KernelBuildOptLevel;
+        static const std::vector<std::pair<std::string, L>> levels = {
+            {"O0", L::O0},
+            {"O1", L::O1},
+            {"O2", L::O2},
+            {"O3", L::O3},
+            {"Os", L::Os},
+            {"Ofast", L::Ofast},
+            {"Oz", L::Oz},
+        };
+        for (const auto& [n, l] : levels) {
+            if (n == name) {
+                return l;
+            }
+        }
+        throw std::invalid_argument("no optimisation level " + name);
+    }
+
+    // The compute kernel's options: the fidelity's name, an unpack mode per circular
+    // buffer (empty: the runtime's default), and the flags by field name.
+    tt::tt_metal::ComputeConfigDescriptor compute_config(
+        const std::optional<std::string>& fidelity,
+        const std::vector<std::string>& unpack,
+        const std::vector<std::pair<std::string, bool>>& flags
+    ) {
+        tt::tt_metal::ComputeConfigDescriptor c;
+        if (fidelity) {
+            using F = tt::tt_metal::MathFidelity;
+            const std::vector<std::pair<std::string, F>> names = {
+                {"LoFi", F::LoFi},
+                {"HiFi2", F::HiFi2},
+                {"HiFi3", F::HiFi3},
+                {"HiFi4", F::HiFi4}
+            };
+            const auto it = std::find_if(
+                names.begin(), names.end(), [&](const auto& n) {
+                    return n.first == *fidelity;
+                }
+            );
+            if (it == names.end()) {
+                throw std::invalid_argument("no math fidelity " + *fidelity);
+            }
+            c.math_fidelity = it->second;
+        }
+        for (const auto& mode : unpack) {
+            if (mode == "Default") {
+                c.unpack_to_dest_mode.push_back(
+                    tt::tt_metal::UnpackToDestMode::Default
+                );
+            } else if (mode == "UnpackToDestFp32") {
+                c.unpack_to_dest_mode.push_back(
+                    tt::tt_metal::UnpackToDestMode::UnpackToDestFp32
+                );
+            } else {
+                throw std::invalid_argument("no unpack-to-dest mode " + mode);
+            }
+        }
+        for (const auto& [name, on] : flags) {
+            if (name == "fp32_dest_acc_en") {
+                c.fp32_dest_acc_en = on;
+            } else if (name == "dst_full_sync_en") {
+                c.dst_full_sync_en = on;
+            } else if (name == "bfp8_pack_precise") {
+                c.bfp8_pack_precise = on;
+            } else if (name == "math_approx_mode") {
+                c.math_approx_mode = on;
+            } else if (name == "enable_trisc2_rvv") {
+                c.enable_trisc2_rvv = on;
+            } else {
+                throw std::invalid_argument("no compute option " + name);
+            }
+        }
+        return c;
+    }
+
+    // One program on the grid, described piece by piece (circular buffers, kernels
+    // with their per-core arguments), then built and launched as generic_op does.
+    class Launch {
+    public:
+        explicit Launch(const Device& device) : mesh_(device.shared()) {
+        }
+
+        void cb(
+            const Rects& cores,
+            uint8_t index,
+            const std::string& format,
+            uint32_t page_size,
+            uint32_t total_size
+        ) {
+            tt::tt_metal::CBDescriptor cb;
+            cb.total_size = total_size;
+            cb.core_ranges = core_set(cores);
+            cb.format_descriptors.push_back(
+                tt::tt_metal::CBFormatDescriptor{
+                    .buffer_index = index,
+                    .data_format = data_format(format),
+                    .page_size = page_size
+                }
+            );
+            desc_.cbs.push_back(std::move(cb));
+        }
+
+        // A kernel from a file on `cores`, args (x, y, words) per core; processor 0 or
+        // 1: data movement on that RISC-V and its default NoC, 2: compute.
+        void kernel(
+            const std::string& source,
+            const Rects& cores,
+            uint32_t processor,
+            const std::vector<uint32_t>& compile_args,
+            const std::vector<std::pair<std::string, std::string>>& defines,
+            const std::vector<std::string>& includes,
+            const std::vector<std::tuple<uint32_t, uint32_t, std::vector<uint32_t>>>&
+                args,
+            const std::optional<std::string>& level,
+            const std::optional<std::string>& fidelity,
+            const std::vector<std::string>& unpack,
+            const std::vector<std::pair<std::string, bool>>& flags
+        ) {
+            using tt::tt_metal::DataMovementProcessor;
+            using tt::tt_metal::NOC;
+            tt::tt_metal::KernelDescriptor k;
+            k.kernel_source = source;
+            k.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
+            k.core_ranges = core_set(cores);
+            k.compile_time_args = compile_args;
+            k.defines = defines;
+            for (const auto& path : includes) {
+                k.compiler_include_paths.emplace_back(path);
+            }
+            for (const auto& [x, y, words] : args) {
+                k.runtime_args.emplace_back(tt::tt_metal::CoreCoord{x, y}, words);
+            }
+            if (level) {
+                k.opt_level = opt_level(*level);
+            }
+            if (processor == 0) {
+                k.config = tt::tt_metal::DataMovementConfigDescriptor{
+                    .processor = DataMovementProcessor::RISCV_0,
+                    .noc = NOC::RISCV_0_default
+                };
+            } else if (processor == 1) {
+                k.config = tt::tt_metal::DataMovementConfigDescriptor{
+                    .processor = DataMovementProcessor::RISCV_1,
+                    .noc = NOC::RISCV_1_default
+                };
+            } else if (processor == 2) {
+                k.config = compute_config(fidelity, unpack, flags);
+            } else {
+                throw std::invalid_argument(
+                    "processor: 0, 1 (data movement) or 2 (compute)"
+                );
+            }
+            desc_.kernels.push_back(std::move(k));
+        }
+
+        KernelBuild build() const {
+            return kernel_build(*mesh_, desc_);
+        }
+
+        // Launches the program and returns without waiting for it (the launch call
+        // of generic_op on a 1 x 1 mesh); the program is kept while the launch lives.
+        void run() {
+            namespace d = tt::tt_metal::distributed;
+            if (workload_) {
+                throw std::runtime_error("this launch already ran");
+            }
+            workload_ = std::make_unique<d::MeshWorkload>();
+            workload_->add_program(
+                d::MeshCoordinateRange(mesh_->shape()), tt::tt_metal::Program(desc_)
+            );
+            d::EnqueueMeshWorkload(mesh_->mesh_command_queue(), *workload_, false);
+        }
+
+    private:
+        std::shared_ptr<MeshDevice> mesh_;
+        tt::tt_metal::ProgramDescriptor desc_;
+        std::unique_ptr<tt::tt_metal::distributed::MeshWorkload> workload_;
+    };
 
     // [n, 4] events (index, req, status, ticks) as a numpy array that owns its words.
     Events as_array(std::vector<uint32_t>&& words) {
@@ -1276,16 +1702,76 @@ NB_MODULE(_km_host, m) {
         },
         nb::arg("path")
     );
+    nb::class_<Device>(m, "Device")
+        .def(nb::init<std::optional<size_t>>(), nb::arg("worker_l1_size") = nb::none())
+        .def_prop_ro("is_open", &Device::is_open)
+        .def("close", &Device::close)
+        .def("grid", &Device::grid)
+        .def("worker_core", &Device::worker_core, nb::arg("x"), nb::arg("y"))
+        .def("dram_core", &Device::dram_core, nb::arg("bank"))
+        .def("finish", [](const Device& d) {
+            nb::gil_scoped_release release;
+            d.finish();
+        });
+    nb::class_<DeviceBuffer>(m, "Buffer")
+        .def(
+            nb::init<
+                const Device&,
+                uint64_t,
+                uint64_t,
+                std::optional<std::array<uint32_t, 2>>>(),
+            nb::arg("device"),
+            nb::arg("size"),
+            nb::arg("page_size"),
+            nb::arg("shard_grid") = nb::none()
+        )
+        .def_prop_ro("address", &DeviceBuffer::address)
+        .def_prop_ro("size", &DeviceBuffer::size)
+        .def_prop_ro("page_size", &DeviceBuffer::page_size)
+        .def_prop_ro("aligned_page_size", &DeviceBuffer::aligned_page_size)
+        .def_prop_ro("num_pages", &DeviceBuffer::num_pages)
+        .def("accessor_args", &DeviceBuffer::accessor_args)
+        .def("write", &DeviceBuffer::write, nb::arg("data"))
+        .def("read", &DeviceBuffer::read)
+        .def("free", &DeviceBuffer::free);
+    nb::class_<Launch>(m, "Launch")
+        .def(nb::init<const Device&>(), nb::arg("device"))
+        .def(
+            "cb",
+            &Launch::cb,
+            nb::arg("cores"),
+            nb::arg("index"),
+            nb::arg("format"),
+            nb::arg("page_size"),
+            nb::arg("total_size")
+        )
+        .def(
+            "kernel",
+            &Launch::kernel,
+            nb::arg("source"),
+            nb::arg("cores"),
+            nb::arg("processor"),
+            nb::arg("compile_args"),
+            nb::arg("defines"),
+            nb::arg("includes"),
+            nb::arg("args"),
+            nb::arg("opt_level") = nb::none(),
+            nb::arg("math_fidelity") = nb::none(),
+            nb::arg("unpack_to_dest_mode") = std::vector<std::string>{},
+            nb::arg("flags") = std::vector<std::pair<std::string, bool>>{}
+        )
+        .def("build", &Launch::build)
+        .def("run", &Launch::run);
     m.def(
         "write_l1",
-        [](std::shared_ptr<MeshDevice> mesh,
+        [](const Device& d,
            uint32_t x,
            uint32_t y,
            uint32_t address,
            std::vector<uint32_t> words) {
-            write_l1(*mesh, x, y, address, std::move(words));
+            write_l1(d.mesh(), x, y, address, std::move(words));
         },
-        nb::arg("mesh_device"),
+        nb::arg("device"),
         nb::arg("x"),
         nb::arg("y"),
         nb::arg("address"),
@@ -1293,51 +1779,39 @@ NB_MODULE(_km_host, m) {
     );
     m.def(
         "core_nocs",
-        [](std::shared_ptr<MeshDevice> mesh) {
-            return core_nocs(*mesh);
+        [](const Device& d) {
+            return core_nocs(d.mesh());
         },
-        nb::arg("mesh_device")
+        nb::arg("device")
     );
     m.def(
         "dram_banks",
-        [](std::shared_ptr<MeshDevice> mesh) {
-            return dram_banks(*mesh);
+        [](const Device& d) {
+            return dram_banks(d.mesh());
         },
-        nb::arg("mesh_device")
-    );
-    m.def(
-        "kernel_build",
-        [](std::shared_ptr<MeshDevice> mesh,
-           const tt::tt_metal::ProgramDescriptor& desc) {
-            return kernel_build(*mesh, desc);
-        },
-        nb::arg("mesh_device"),
-        nb::arg("program_descriptor")
+        nb::arg("device")
     );
     m.def(
         "kernel_buffer",
-        [](std::shared_ptr<MeshDevice> mesh) {
-            return kernel_buffer(*mesh);
+        [](const Device& d) {
+            return kernel_buffer(d.mesh());
         },
-        nb::arg("mesh_device")
+        nb::arg("device")
     );
     m.def(
         "read_dram",
-        [](std::shared_ptr<MeshDevice> mesh,
-           std::vector<std::array<uint64_t, 3>> spans) {
-            return read_dram(*mesh, spans);
+        [](const Device& d, std::vector<std::array<uint64_t, 3>> spans) {
+            return read_dram(d.mesh(), spans);
         },
-        nb::arg("mesh_device"),
+        nb::arg("device"),
         nb::arg("spans")
     );
     m.def(
         "wait_grid",
-        [](
-            std::shared_ptr<MeshDevice> mesh, uint32_t gx, uint32_t gy, double timeout_s
-        ) {
-            return wait_grid(*mesh, gx, gy, timeout_s);
+        [](const Device& d, uint32_t gx, uint32_t gy, double timeout_s) {
+            return wait_grid(d.mesh(), gx, gy, timeout_s);
         },
-        nb::arg("mesh_device"),
+        nb::arg("device"),
         nb::arg("grid_x"),
         nb::arg("grid_y"),
         nb::arg("timeout_s")
@@ -1345,8 +1819,11 @@ NB_MODULE(_km_host, m) {
 
     nb::class_<Dispatch>(m, "Dispatch")
         .def(
-            nb::init<std::shared_ptr<MeshDevice>, uint32_t>(),
-            nb::arg("mesh_device"),
+            "__init__",
+            [](Dispatch* self, const Device& d, uint32_t pll_mhz) {
+                new (self) Dispatch(d.shared(), pll_mhz);
+            },
+            nb::arg("device"),
             nb::arg("pll_mhz") = 1000
         )
         .def_ro("grid_x", &Dispatch::gx_)

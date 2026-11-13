@@ -2,7 +2,6 @@
 
 import re
 import subprocess
-import types
 
 import pytest
 from fake_session import load_session
@@ -41,17 +40,13 @@ def test_the_level_is_checked_by_kernel_and_name(tmp_path):
 def test_a_set_level_reaches_the_descriptor_and_the_default_leaves_it(
     monkeypatch, tmp_path
 ):
-    session, _, ttnn, _ = load_session(monkeypatch, tmp_path)
-    levels = types.SimpleNamespace(Os="Os level")
-    ttnn.experimental = types.SimpleNamespace(
-        fabric_mux=types.SimpleNamespace(KernelBuildOptLevel=levels)
-    )
+    session, _, _ = load_session(monkeypatch, tmp_path)
     program = Program("p", kernels=kernels(tmp_path), opt={"reader": "Os"})
     defines = [("N", "1")]
     assert session.kernel_build(program, "writer", defines) == {"defines": defines}
     assert session.kernel_build(program, "reader", defines) == {
         "defines": [("N", "1"), (session.OPT_DEFINE, "Os")],  # a build key of its own
-        "opt_level": "Os level",
+        "opt_level": "Os",
     }
 
 

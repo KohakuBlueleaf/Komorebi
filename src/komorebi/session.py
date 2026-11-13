@@ -1,7 +1,7 @@
 """A card session: opens the device, loads a program as resident workers on every
 Tensix core and the dispatch kernel on X280 cluster 0, and hands out a `Run`.
 
-Needs ttnn and a tt-metal tree; `import komorebi` alone does not import this module.
+Needs a tt-metal tree or the runtime package; `import komorebi` does not import it.
 """
 
 import atexit
@@ -15,11 +15,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
-import torch
-import ttnn
 
 from komorebi import abi, dram, insn_check, layout, native
 from komorebi import state as st
+from komorebi import tensor as kmt
 from komorebi import thread as kt
 from komorebi.errors import (
     CardBusy,
@@ -63,30 +62,41 @@ TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
 
 
+# The runtime's ComputeConfigDescriptor fields that are flags.
+COMPUTE_FLAGS = (
+    "fp32_dest_acc_en",
+    "dst_full_sync_en",
+    "bfp8_pack_precise",
+    "math_approx_mode",
+    "enable_trisc2_rvv",
+)
+
+
 def compute_config(options):
-    """The compute kernel's ttnn.ComputeConfigDescriptor from Program.compute: each
-    field set as an attribute (ProgramError names one it lacks), as given except
-    `math_fidelity` (a MathFidelity name) and `unpack_to_dest_mode` (an UnpackToDestMode
-    name for every circular buffer, or {cb: name} with the others Default)."""
+    """The compute kernel's options for the native Launch from Program.compute: the
+    runtime's ComputeConfigDescriptor fields (ProgramError names an unknown one);
+    `math_fidelity` a MathFidelity name, `unpack_to_dest_mode` an UnpackToDestMode
+    name for every circular buffer, or {cb: name} with the others Default."""
     options = dict(options)
     unpack = options.pop("unpack_to_dest_mode", None)
-    if "math_fidelity" in options:
-        options["math_fidelity"] = getattr(ttnn.MathFidelity, options["math_fidelity"])
-    config = ttnn.ComputeConfigDescriptor()
-    for name, value in options.items():
-        if not hasattr(config, name):
+    fidelity = options.pop("math_fidelity", None)
+    for name in options:
+        if name not in COMPUTE_FLAGS:
             raise ProgramError(
                 f"compute option {name!r}: no such ComputeConfigDescriptor field"
             )
-        setattr(config, name, value)
+    config = {
+        "math_fidelity": fidelity,
+        "flags": [(name, bool(value)) for name, value in options.items()],
+    }
     if unpack is not None:
         by_cb = (
             unpack if isinstance(unpack, dict) else dict.fromkeys(range(CBS), unpack)
         )
-        modes = [ttnn.UnpackToDestMode.Default] * CBS
+        modes = ["Default"] * CBS
         for cb, name in by_cb.items():
-            modes[cb] = getattr(ttnn.UnpackToDestMode, name)
-        config.unpack_to_dest_mode = modes
+            modes[cb] = name
+        config["unpack_to_dest_mode"] = modes
     return config
 
 
@@ -197,11 +207,7 @@ def kernel_build(program, kernel, defines):
     level = program.opt.get(kernel)
     if level is None:
         return {"defines": defines}
-    enum = ttnn.experimental.fabric_mux.KernelBuildOptLevel  # where ttnn exports it
-    return {
-        "defines": [*defines, (OPT_DEFINE, level)],
-        "opt_level": getattr(enum, level),
-    }
+    return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
 
 
 def visible_card():
@@ -234,12 +240,12 @@ def chip_holder(card, path=None):
         return pid  # alive, another user's
 
 
-def _state_area(device):
+def _state_area(session):
     """A DRAM buffer whose bank address holds the dispatch kernel's state in every
     bank (KMD_STATE_BYTES at least); refused if it covers the runtime's IPI word."""
     h = abi.headers()
-    rows = _int32_tensor(device, np.zeros((STATE_PAGES, h["KMD_STATE_BYTES"] // 4)))
-    at = rows.buffer_address()
+    rows = _words(session, np.zeros((STATE_PAGES, h["KMD_STATE_BYTES"] // 4)))
+    at = rows.address
     if at <= IPI_ACK_DDR < at + STATE_PAGES * h["KMD_STATE_BYTES"]:
         raise StartError(f"the kernel state at {at:#x} covers the X280 IPI word")
     return rows
@@ -265,24 +271,11 @@ def check_bases(bases):
         raise StartError(f"not a multiple of {NOC_ALIGN} bytes: {named}")
 
 
-def _int32_tensor(device, rows, memory_config=None):
-    """A row-major int32 tensor holding the bits of the uint32 rows."""
-    data = np.asarray(rows, dtype=np.uint64).astype(np.uint32).view(np.int32)
-    return ttnn.from_torch(
-        torch.from_numpy(np.ascontiguousarray(data)),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=memory_config or ttnn.DRAM_MEMORY_CONFIG,
-    )
-
-
-def _dram_interleaved(tensor):
-    config = tensor.memory_config()
-    return (
-        config.buffer_type == ttnn.BufferType.DRAM
-        and config.memory_layout == ttnn.TensorMemoryLayout.INTERLEAVED
-    )
+def _words(session, rows, shard_grid=None):
+    """A row-major uint32 tensor of the rows (one page a row): in DRAM, or one row
+    in the L1 of each core of `shard_grid`."""
+    data = np.asarray(rows, dtype=np.uint64).astype(np.uint32)
+    return session.tensor(data, "uint32", shard_grid=shard_grid)
 
 
 def read_tensors(device, module, tensors, first=0, pages=None):
@@ -292,11 +285,11 @@ def read_tensors(device, module, tensors, first=0, pages=None):
     banks = module.dram_banks(device)
     spans, layout = [], []
     for t in tensors:
-        if not _dram_interleaved(t):
+        if not t.in_dram:
             raise ValueError("only interleaved DRAM tensors are read by banks")
-        page, aligned = t.buffer_page_size(), t.buffer_aligned_page_size()
-        at, count = dram.page_range(first, pages, t.buffer_num_pages())
-        mine = dram.bank_spans(t.buffer_address(), aligned, count, banks, at)
+        page, aligned = t.page_bytes, t.aligned_page_bytes
+        at, count = dram.page_range(first, pages, t.pages)
+        mine = dram.bank_spans(t.address, aligned, count, banks, at)
         layout.append((len(spans), len(mine), page, aligned, count))
         spans += mine
     chunks = module.read_dram(device, spans)
@@ -308,12 +301,12 @@ def read_tensors(device, module, tensors, first=0, pages=None):
 
 def _read_uint32(tensor, device=None, module=None):
     """A row-major 32-bit tensor's words as int64: by banks when it is in DRAM and a
-    module is given, else through ttnn (which waits for idle cores)."""
-    if module is not None and _dram_interleaved(tensor):
+    module is given, else as one buffer read (which waits for the launched cores)."""
+    if module is not None and tensor.in_dram:
         (pages,) = read_tensors(device, module, [tensor])
         words = pages.reshape(-1).view(np.uint32).reshape(tuple(tensor.shape))
         return words.astype(np.int64)
-    return ttnn.to_torch(tensor).numpy().astype(np.int64) & abi.M32
+    return tensor.read_bytes().view(np.uint32).reshape(tensor.shape).astype(np.int64)
 
 
 class Session:
@@ -382,11 +375,10 @@ class Session:
                 "an open would wait until that process exits",
                 pid=holder,
             )
-        sized = {} if self._worker_l1 is None else {"worker_l1_size": self._worker_l1}
-        self.device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1), **sized)
+        self._module = self._module or native.load_module(self.tree)
+        self.device = self._module.Device(self._worker_l1)  # program cache off
         _hook_exit()
         _LIVE.add(self)
-        self.device.disable_and_clear_program_cache()
         self._own_device = True
 
     def close(self):
@@ -409,7 +401,7 @@ class Session:
             )
             return
         if self.device is not None and self._own_device:
-            ttnn.close_mesh_device(self.device)
+            self.device.close()
             self.device = None
         _LIVE.discard(self)
 
@@ -434,6 +426,32 @@ class Session:
                     self.close()
                 except Exception as err:  # noqa: BLE001 (as above)
                     self.log(f"{why}: close raised {type(err).__name__}: {err}")
+
+    @property
+    def grid(self):
+        """The Tensix grid (x, y) of the open device."""
+        return tuple(self.device.grid())
+
+    def tensor(self, data, dtype, layout="row", shard_grid=None):
+        """A tensor on the card holding `data` (anything np.asarray takes) as `dtype`
+        ("bfloat16", "float32", "int32", "uint32", "uint16", "uint8") in `layout`
+        ("row": a page a row; "tile": 32 x 32 tiles); in DRAM, or (`shard_grid`
+        (x, y)) one row in each core's L1. Written before the grid starts."""
+        self._module = self._module or native.load_module(self.tree)
+        return kmt.from_array(
+            self._module, self.device, data, dtype, layout, shard_grid
+        )
+
+    def empty(self, shape, dtype, layout="row", shard_grid=None):
+        """A tensor as tensor() makes it, not written."""
+        self._module = self._module or native.load_module(self.tree)
+        return kmt.empty(self._module, self.device, shape, dtype, layout, shard_grid)
+
+    def launch(self):
+        """An empty native Launch on the open device, for a host-side runner that
+        builds and launches a program of its own (a test feeder) instead of load()."""
+        self._module = self._module or native.load_module(self.tree)
+        return self._module.Launch(self.device)
 
     def l1(self):
         """(kernel buffer, L1 left for buffers) of each core in bytes, from the
@@ -462,7 +480,7 @@ class Session:
     def read_chunks(self, tensor, chunk_bytes=2 << 20):
         """Yields (first, pages) over the whole tensor, each read() of at most
         `chunk_bytes` (aligned pages), so that the caller can log every chunk."""
-        total, aligned = tensor.buffer_num_pages(), tensor.buffer_aligned_page_size()
+        total, aligned = tensor.pages, tensor.aligned_page_bytes
         per = chunk_bytes // aligned
         if per < 1:
             raise ValueError(f"chunk_bytes {chunk_bytes}: a page takes {aligned}")
@@ -474,16 +492,16 @@ class Session:
         """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
         out = []
         for t, pages in zip(tensors, self.read(*tensors)):
-            if t.layout != ttnn.TILE_LAYOUT or t.dtype != ttnn.bfloat16:
-                raise ValueError("read_bf16 takes bfloat16 tile tensors")
-            rows, cols = tuple(t.padded_shape)
+            if t.layout != "tile" or t.dtype != "bfloat16" or len(t.shape) != 2:
+                raise ValueError("read_bf16 takes bfloat16 tile tensors of rank 2")
+            rows, cols = t.shape
             out.append(dram.untilize_bf16(pages, rows, cols))
         return out
 
     def read_tiles_bf16(self, tensor, first, pages):
         """Tiles first .. first + pages - 1 of a bfloat16 tile tensor (one tile a page,
         row-major tile order) as float32 [pages, 32, 32], read as read() does."""
-        if tensor.layout != ttnn.TILE_LAYOUT or tensor.dtype != ttnn.bfloat16:
+        if tensor.layout != "tile" or tensor.dtype != "bfloat16":
             raise ValueError("read_tiles_bf16 takes a bfloat16 tile tensor")
         (raw,) = self.read(tensor, first=first, pages=pages)
         tile = dram.TILE
@@ -552,7 +570,7 @@ class Session:
         try:
             if not dispatch.idle:
                 raise StartError("X280 cluster 0 is not idle: no image can start")
-            state_t = _state_area(self.device)
+            state_t = _state_area(self)
             rings = {t.cluster: _work_ring(dispatch, t) for t in works if on_card}
             ends = {c: end for c, (_, end) in rings.items()}
             tag = dispatch.prepare(
@@ -562,7 +580,7 @@ class Session:
                 start,
                 deadline,
                 kernel_idle,
-                state_t.buffer_address(),
+                state_t.address,
                 **kt.kernel_work_args(ends),
                 dyn_seg=program.dyn.seg if program.dyn is not None else 0,
             )
@@ -575,7 +593,7 @@ class Session:
             )
             t0 = time.perf_counter()
             try:
-                elves, *build = module.kernel_build(self.device, descriptor)
+                elves, *build = descriptor.build()
             except Exception as err:
                 raise ProgramError(f"{program.name}: build failed: {err}") from err
             program.sizes = kernel_sizes(build)
@@ -601,7 +619,7 @@ class Session:
             # call returns, after the kernels started.
             launched = True
             try:
-                ttnn.generic_op(backend.io, descriptor)
+                descriptor.run()
             except Exception as err:
                 raise ProgramError(f"{program.name}: launch failed: {err}") from err
             dispatch.start(str(image))
@@ -668,9 +686,8 @@ def _peers(session, dispatch, images):
         for g in group:
             info = dispatch.work_info(g)
             tiles[g] = info["virtual_x"] | info["virtual_y"] << 16
-            core = ttnn.CoreCoord(kt.BANK_OF_CLUSTER[g], 0)
-            dram = session.device.dram_core_from_logical_core(core)
-            banks[g] = int(dram.x) | int(dram.y) << 16
+            x, y = session.device.dram_core(kt.BANK_OF_CLUSTER[g])
+            banks[g] = int(x) | int(y) << 16
         out[c] = kt.Peers(nonce, min(group), tiles, banks)
     return out
 
@@ -756,7 +773,6 @@ class _Regions:
 
     def __init__(self, session, bank, threads, shared):
         self.session = session
-        device = session.device
         self.check = kt.new_check_value()
         self.bank = bank
         entries = [
@@ -780,8 +796,8 @@ class _Regions:
             p = self.placed[key]
             if data is not None:
                 mine[p.page : p.page + p.pages] = _pages(data, p.pages)
-        self.tensor = _int32_tensor(device, rows)
-        self.base = self.tensor.buffer_address()
+        self.tensor = _words(session, rows)
+        self.base = self.tensor.address
         if self.base <= kt.IPI_ACK_DDR < self.base + pages * kt.PAGE:
             raise StartError(
                 f"the thread's regions at {self.base:#x} cover the IPI word"
@@ -869,15 +885,8 @@ class _Backend:
         KM_X280_TO line of each served core, written once the address is known."""
         h = abi.headers()
         words = (h["KM_CTL_BYTES"] + CTL_ALIGN) // 4
-        config = ttnn.create_sharded_memory_config(
-            (1, words),
-            ttnn.CoreGrid(y=grid[1], x=grid[0]),
-            ttnn.ShardStrategy.HEIGHT,
-            ttnn.ShardOrientation.ROW_MAJOR,
-            use_height_and_width_as_shard_shape=True,
-        )
-        self.ctl = _int32_tensor(self.device, np.zeros((cores, words)), config)
-        base = self.ctl.buffer_address()
+        self.ctl = _words(self.session, np.zeros((cores, words)), grid)
+        base = self.ctl.address
         self.ctl_addr = (base + CTL_ALIGN - 1) // CTL_ALIGN * CTL_ALIGN
         self.ctl_offset = (self.ctl_addr - base) // 4
         check_bases({"control block": self.ctl_addr})
@@ -887,12 +896,7 @@ class _Backend:
             for core, (tile, box) in port_lines.lines.items():
                 rows[core, to + h["KM_X280_TO_TILE"]] = tile
                 rows[core, to + h["KM_X280_TO_BOX"]] = box
-            host = ttnn.from_torch(
-                torch.from_numpy(rows.view(np.int32)),
-                dtype=ttnn.int32,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-            )
-            ttnn.copy_host_to_device_tensor(host, self.ctl)
+            self.ctl.write(rows)
         return self.ctl_addr
 
     def _dynamic(self, program, cores, depth, base):
@@ -904,16 +908,10 @@ class _Backend:
         h = abi.headers()
         dyn.check(cores, DYN_DRAM_BYTES, depth)
         page = 32 * dyn.item_bytes  # kDynPageItems items a page
-        queue = ttnn.empty(
-            (cores * dyn.queue_items // 32, page // 4),
-            dtype=ttnn.int32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=self.device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        queue = self.session.empty((cores * dyn.queue_items // 32, page // 4), "int32")
         self.io.append(queue)
         lines = base + h["KMD_LIM_DYN"]
-        return dyn.args(queue.buffer_address(), lines), dyn.compute_args(cores)
+        return dyn.args(queue.address, lines), dyn.compute_args(cores)
 
     def describe(
         self, program, sources, tag, depth, wait, idle, trace, port_lines=None
@@ -926,18 +924,18 @@ class _Backend:
         ctl = self._control_blocks(cores, grid, port_lines)
         table = np.zeros((1, h["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = d.core_table()
-        cores_t = _int32_tensor(self.device, table)
+        cores_t = _words(self.session, table)
         self.io = [self.ctl, cores_t]
         if self.trace_cap:
-            self.trace_t = _int32_tensor(
-                self.device, np.zeros((cores, self.trace_cap * h["kTraceWords"]))
+            self.trace_t = _words(
+                self.session, np.zeros((cores, self.trace_cap * h["kTraceWords"]))
             )
             self.io.append(self.trace_t)
         base = d.lim_base
         groups = abi.column_groups(grid, cores)
         common = {
             "ctl": ctl,
-            "cores": cores_t.buffer_address(),
+            "cores": cores_t.address,
             "disp_xy": d.l2_x | d.l2_y << 16,
             "ack_base": base + h["KMD_LIM_ACKS"],
             "ready_base": base + h["KMD_LIM_READY"],
@@ -947,15 +945,11 @@ class _Backend:
             "row": grid[0],
             "wait_limit": abi.limit_units(wait, self.mhz),
             "idle_limit": abi.limit_units(idle, self.mhz) if idle else 0,  # 0: none
-            "trace": self.trace_t.buffer_address() if self.trace_t else 0,
+            "trace": self.trace_t.address if self.trace_t else 0,
             "trace_cap": self.trace_cap,
         }
         dyn_rw, dyn_c = self._dynamic(program, cores, depth, base)
-        reader_args, writer_args, compute_args = (
-            ttnn.RuntimeArgs(),
-            ttnn.RuntimeArgs(),
-            ttnn.RuntimeArgs(),
-        )
+        reader_args, writer_args, compute_args = [], [], []
         for core in range(cores):
             x, y = core % grid[0], core // grid[0]
             leader, rank, members, slot = groups[core]
@@ -971,78 +965,38 @@ class _Backend:
                 }
             )
             reader, writer, compute = program.core_args(core)
-            reader_args[x][y] = start + dyn_rw + reader
-            writer_args[x][y] = start + dyn_rw + writer
+            reader_args.append((x, y, start + dyn_rw + list(reader)))
+            writer_args.append((x, y, start + dyn_rw + list(writer)))
             limits = [common["wait_limit"], common["idle_limit"]]
-            compute_args[x][y] = [ctl, core, *limits, *dyn_c, *compute]
-        all_cores = ttnn.CoreRangeSet(
-            [
-                ttnn.CoreRange(
-                    ttnn.CoreCoord(0, 0), ttnn.CoreCoord(*(g - 1 for g in grid))
-                )
-            ]
-        )
-        include = [abi.headers().abi.parents[2]]
+            compute_args.append((x, y, [ctl, core, *limits, *dyn_c, *compute]))
+        all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
+        include = [str(abi.headers().abi.parents[2])]
         defines = [(k, str(v)) for k, v in program.defines.items()]
-
-        def cb(index, fmt, page, pages):
-            return ttnn.CBDescriptor(
-                total_size=page * pages,
-                core_ranges=all_cores,
-                format_descriptors=[
-                    ttnn.CBFormatDescriptor(
-                        buffer_index=index, data_format=fmt, page_size=page
-                    )
-                ],
-            )
-
+        launch = self.session._module.Launch(self.device)
         tok = h["kTokenBytes"]
-        cbs = [
-            cb(b.index, getattr(ttnn, b.format), b.page_bytes, b.pages)
-            for b in program.buffers
-        ]
+        cbs = [(b.index, b.format, b.page_bytes, b.pages) for b in program.buffers]
         cbs += [
-            cb(h["kCbTokenCompute"], ttnn.uint32, tok, 1),
-            cb(h["kCbTokenWriter"], ttnn.uint32, tok, 1),
+            (h["kCbTokenCompute"], "uint32", tok, 1),
+            (h["kCbTokenWriter"], "uint32", tok, 1),
         ]
         if self.trace_cap:
-            cbs.append(cb(h["kCbTrace"], ttnn.uint32, self.trace_cap * 16, 1))
-
-        def dm(kernel, args, riscv):
-            processor, noc = (
-                (ttnn.DataMovementProcessor.RISCV_0, ttnn.NOC.RISCV_0_default)
-                if riscv == 0
-                else (ttnn.DataMovementProcessor.RISCV_1, ttnn.NOC.RISCV_1_default)
-            )
-            return ttnn.KernelDescriptor(
-                kernel_source=str(sources[kernel]),
-                source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-                core_ranges=all_cores,
-                compile_time_args=list(program.compile_args.get(kernel, [])),
-                runtime_args=args,
-                config=ttnn.DataMovementConfigDescriptor(processor=processor, noc=noc),
-                compiler_include_paths=include,
+            cbs.append((h["kCbTrace"], "uint32", self.trace_cap * 16, 1))
+        for index, fmt, page, pages in cbs:
+            launch.cb(all_cores, index, fmt, page, page * pages)
+        kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
+        kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
+        for kernel, args, processor, config in kernels:
+            launch.kernel(
+                str(sources[kernel]),
+                all_cores,
+                processor,
+                list(program.compile_args.get(kernel, [])),
+                includes=include,
+                args=args,
                 **kernel_build(program, kernel, defines),
+                **config,
             )
-
-        return ttnn.ProgramDescriptor(
-            kernels=[
-                dm("reader", reader_args, 0),
-                dm("writer", writer_args, 1),
-                ttnn.KernelDescriptor(
-                    kernel_source=str(sources["compute"]),
-                    source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-                    core_ranges=all_cores,
-                    compile_time_args=list(program.compile_args.get("compute", [])),
-                    runtime_args=compute_args,
-                    config=compute_config(program.compute),
-                    compiler_include_paths=include,
-                    **kernel_build(program, "compute", defines),
-                ),
-            ],
-            semaphores=[],
-            cbs=cbs,
-        )
+        return launch
 
     def finish(self, timeout):
         """Waits for the kernel to finish, stops it, then closes the X280 runtime."""
@@ -1151,7 +1105,7 @@ class _Backend:
                 "that left a compute unit running is not, and if the next open fails "
                 "the card needs a reset"
             )
-        ttnn.synchronize_device(self.device)  # returns at once: every core is done
+        self.device.finish()  # returns at once: every core is done
         self.session.log(f"grid returned ({time.monotonic() - t0:.1f} s)")
         rows = _read_uint32(self.ctl)
         start = self.ctl_offset
