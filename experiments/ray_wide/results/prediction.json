@@ -1,0 +1,1142 @@
+{
+ "costs": {
+  "1x32": {
+   "method": "unpack",
+   "operation": 729.0623046875,
+   "load": 217.6017578125,
+   "ray": 0.0
+  },
+  "2x16": {
+   "method": "window",
+   "operation": 1287.2888671875,
+   "load": 828.9751953125,
+   "ray": 639.18603515625
+  },
+  "4x8": {
+   "method": "window",
+   "operation": 2132.31015625,
+   "load": 1589.3763671875,
+   "ray": 604.62265625
+  }
+ },
+ "scenes": {
+  "sponza_overview": {
+   "today_ms": {
+    "bounce": 194.64,
+    "shadow2": 56.38,
+    "frame": 348.53
+   },
+   "today_cycles_per_ray": {
+    "bounce": 21494,
+    "shadow2": 6344
+   },
+   "v100_ms": {
+    "bounce": 59.0,
+    "frame": 95.52
+   },
+   "predicted": {
+    "1x32/W8": {
+     "layout": "1x32",
+     "width": 8,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 409.89,
+       "walk_ms": {
+        "boxes": 332.25,
+        "triangles": 41.85,
+        "pops": 0.8,
+        "ray loads": 0.0
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 50473
+      },
+      "shadow2": {
+       "ms": 195.5,
+       "walk_ms": {
+        "boxes": 172.96,
+        "triangles": 8.34,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 27265
+      }
+     },
+     "frame_ms": 688.25
+    },
+    "2x16/W8": {
+     "layout": "2x16",
+     "width": 8,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 516.84,
+       "walk_ms": {
+        "boxes": 293.33,
+        "triangles": 38.97,
+        "pops": 0.8,
+        "ray loads": 148.76
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 64874
+      },
+      "shadow2": {
+       "ms": 259.27,
+       "walk_ms": {
+        "boxes": 152.7,
+        "triangles": 8.87,
+        "pops": 0.0,
+        "ray loads": 83.5
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 36856
+      }
+     },
+     "frame_ms": 858.97
+    },
+    "4x8/W8": {
+     "layout": "4x8",
+     "width": 8,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 450.14,
+       "walk_ms": {
+        "boxes": 242.94,
+        "triangles": 30.69,
+        "pops": 0.8,
+        "ray loads": 140.72
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 55893
+      },
+      "shadow2": {
+       "ms": 227.01,
+       "walk_ms": {
+        "boxes": 126.46,
+        "triangles": 7.36,
+        "pops": 0.0,
+        "ray loads": 78.99
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 32004
+      }
+     },
+     "frame_ms": 760.01
+    },
+    "1x32/W16": {
+     "layout": "1x32",
+     "width": 16,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 304.39,
+       "walk_ms": {
+        "boxes": 230.26,
+        "triangles": 38.19,
+        "pops": 0.95,
+        "ray loads": 0.0
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 36270
+      },
+      "shadow2": {
+       "ms": 152.63,
+       "walk_ms": {
+        "boxes": 130.59,
+        "triangles": 7.84,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 20818
+      }
+     },
+     "frame_ms": 539.88
+    },
+    "2x16/W16": {
+     "layout": "2x16",
+     "width": 16,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 423.55,
+       "walk_ms": {
+        "boxes": 203.28,
+        "triangles": 35.57,
+        "pops": 0.95,
+        "ray loads": 148.76
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 52313
+      },
+      "shadow2": {
+       "ms": 221.34,
+       "walk_ms": {
+        "boxes": 115.28,
+        "triangles": 8.36,
+        "pops": 0.0,
+        "ray loads": 83.5
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 31151
+      }
+     },
+     "frame_ms": 727.75
+    },
+    "4x8/W16": {
+     "layout": "4x8",
+     "width": 16,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 498.3,
+       "walk_ms": {
+        "boxes": 293.59,
+        "triangles": 28.05,
+        "pops": 0.95,
+        "ray loads": 140.72
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 62377
+      },
+      "shadow2": {
+       "ms": 262.84,
+       "walk_ms": {
+        "boxes": 162.71,
+        "triangles": 6.94,
+        "pops": 0.0,
+        "ray loads": 78.99
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 37393
+      }
+     },
+     "frame_ms": 844.0
+    },
+    "1x32/W32": {
+     "layout": "1x32",
+     "width": 32,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 264.03,
+       "walk_ms": {
+        "boxes": 193.59,
+        "triangles": 34.22,
+        "pops": 1.22,
+        "ray loads": 0.0
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 30837
+      },
+      "shadow2": {
+       "ms": 124.05,
+       "walk_ms": {
+        "boxes": 102.75,
+        "triangles": 7.11,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 16520
+      }
+     },
+     "frame_ms": 470.94
+    },
+    "2x16/W32": {
+     "layout": "2x16",
+     "width": 32,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 488.25,
+       "walk_ms": {
+        "boxes": 271.4,
+        "triangles": 31.88,
+        "pops": 1.22,
+        "ray loads": 148.76
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 61024
+      },
+      "shadow2": {
+       "ms": 248.38,
+       "walk_ms": {
+        "boxes": 143.11,
+        "triangles": 7.57,
+        "pops": 0.0,
+        "ray loads": 83.5
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 35219
+      }
+     },
+     "frame_ms": 819.49
+    },
+    "4x8/W32": {
+     "layout": "4x8",
+     "width": 32,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 617.72,
+       "walk_ms": {
+        "boxes": 415.64,
+        "triangles": 25.15,
+        "pops": 1.22,
+        "ray loads": 140.72
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 78454
+      },
+      "shadow2": {
+       "ms": 318.53,
+       "walk_ms": {
+        "boxes": 219.05,
+        "triangles": 6.3,
+        "pops": 0.0,
+        "ray loads": 78.99
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 45767
+      }
+     },
+     "frame_ms": 1019.11
+    }
+   },
+   "boxes_free": {
+    "1x32/W8": {
+     "layout": "1x32",
+     "width": 8,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 297.88,
+       "walk_ms": {
+        "boxes": 233.08,
+        "triangles": 29.0,
+        "pops": 0.8,
+        "ray loads": 0.0
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 35393
+      },
+      "shadow2": {
+       "ms": 140.52,
+       "walk_ms": {
+        "boxes": 121.34,
+        "triangles": 4.98,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 18997
+      }
+     },
+     "frame_ms": 521.26
+    },
+    "2x16/W8": {
+     "layout": "2x16",
+     "width": 8,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 303.49,
+       "walk_ms": {
+        "boxes": 104.43,
+        "triangles": 14.5,
+        "pops": 0.8,
+        "ray loads": 148.76
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 36148
+      },
+      "shadow2": {
+       "ms": 154.55,
+       "walk_ms": {
+        "boxes": 54.36,
+        "triangles": 2.49,
+        "pops": 0.0,
+        "ray loads": 83.5
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 21108
+      }
+     },
+     "frame_ms": 540.9
+    },
+    "4x8/W8": {
+     "layout": "4x8",
+     "width": 8,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 245.61,
+       "walk_ms": {
+        "boxes": 61.86,
+        "triangles": 7.25,
+        "pops": 0.8,
+        "ray loads": 140.72
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 28357
+      },
+      "shadow2": {
+       "ms": 126.63,
+       "walk_ms": {
+        "boxes": 32.2,
+        "triangles": 1.24,
+        "pops": 0.0,
+        "ray loads": 78.99
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 16908
+      }
+     },
+     "frame_ms": 455.1
+    },
+    "1x32/W16": {
+     "layout": "1x32",
+     "width": 16,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 223.95,
+       "walk_ms": {
+        "boxes": 161.53,
+        "triangles": 26.47,
+        "pops": 0.95,
+        "ray loads": 0.0
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 25440
+      },
+      "shadow2": {
+       "ms": 110.5,
+       "walk_ms": {
+        "boxes": 91.61,
+        "triangles": 4.69,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 14482
+      }
+     },
+     "frame_ms": 417.31
+    },
+    "2x16/W16": {
+     "layout": "2x16",
+     "width": 16,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 270.31,
+       "walk_ms": {
+        "boxes": 72.37,
+        "triangles": 13.24,
+        "pops": 0.95,
+        "ray loads": 148.76
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 31682
+      },
+      "shadow2": {
+       "ms": 141.09,
+       "walk_ms": {
+        "boxes": 41.04,
+        "triangles": 2.34,
+        "pops": 0.0,
+        "ray loads": 83.5
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 19083
+      }
+     },
+     "frame_ms": 494.26
+    },
+    "4x8/W16": {
+     "layout": "4x8",
+     "width": 16,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 258.04,
+       "walk_ms": {
+        "boxes": 74.75,
+        "triangles": 6.62,
+        "pops": 0.95,
+        "ray loads": 140.72
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 30030
+      },
+      "shadow2": {
+       "ms": 135.79,
+       "walk_ms": {
+        "boxes": 41.43,
+        "triangles": 1.17,
+        "pops": 0.0,
+        "ray loads": 78.99
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 18286
+      }
+     },
+     "frame_ms": 476.69
+    },
+    "1x32/W32": {
+     "layout": "1x32",
+     "width": 32,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 195.75,
+       "walk_ms": {
+        "boxes": 135.81,
+        "triangles": 23.72,
+        "pops": 1.22,
+        "ray loads": 0.0
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 21643
+      },
+      "shadow2": {
+       "ms": 90.53,
+       "walk_ms": {
+        "boxes": 72.08,
+        "triangles": 4.25,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 11479
+      }
+     },
+     "frame_ms": 369.14
+    },
+    "2x16/W32": {
+     "layout": "2x16",
+     "width": 32,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 293.46,
+       "walk_ms": {
+        "boxes": 96.63,
+        "triangles": 11.86,
+        "pops": 1.22,
+        "ray loads": 148.76
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 34799
+      },
+      "shadow2": {
+       "ms": 150.78,
+       "walk_ms": {
+        "boxes": 50.95,
+        "triangles": 2.13,
+        "pops": 0.0,
+        "ray loads": 83.5
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 20540
+      }
+     },
+     "frame_ms": 527.1
+    },
+    "4x8/W32": {
+     "layout": "4x8",
+     "width": 32,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 288.7,
+       "walk_ms": {
+        "boxes": 105.83,
+        "triangles": 5.94,
+        "pops": 1.22,
+        "ray loads": 140.72
+       },
+       "rest_ms": 34.99,
+       "cycles_per_ray": 34158
+      },
+      "shadow2": {
+       "ms": 150.02,
+       "walk_ms": {
+        "boxes": 55.77,
+        "triangles": 1.06,
+        "pops": 0.0,
+        "ray loads": 78.99
+       },
+       "rest_ms": 14.2,
+       "cycles_per_ray": 20426
+      }
+     },
+     "frame_ms": 521.58
+    }
+   }
+  },
+  "bistro_interior_overview": {
+   "today_ms": {
+    "bounce": 307.96,
+    "shadow2": 98.34,
+    "frame": 523.72
+   },
+   "today_cycles_per_ray": {
+    "bounce": 29749,
+    "shadow2": 8951
+   },
+   "v100_ms": {
+    "bounce": 97.19,
+    "frame": 153.94
+   },
+   "predicted": {
+    "1x32/W8": {
+     "layout": "1x32",
+     "width": 8,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 602.37,
+       "walk_ms": {
+        "boxes": 369.15,
+        "triangles": 153.79,
+        "pops": 0.48,
+        "ray loads": 0.0
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 67994
+      },
+      "shadow2": {
+       "ms": 338.55,
+       "walk_ms": {
+        "boxes": 252.73,
+        "triangles": 49.45,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 43083
+      }
+     },
+     "frame_ms": 1043.95
+    },
+    "2x16/W8": {
+     "layout": "2x16",
+     "width": 8,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 683.53,
+       "walk_ms": {
+        "boxes": 325.91,
+        "triangles": 143.22,
+        "pops": 0.48,
+        "ray loads": 134.98
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 78537
+      },
+      "shadow2": {
+       "ms": 431.61,
+       "walk_ms": {
+        "boxes": 223.12,
+        "triangles": 52.66,
+        "pops": 0.0,
+        "ray loads": 119.46
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 56351
+      }
+     },
+     "frame_ms": 1218.17
+    },
+    "4x8/W8": {
+     "layout": "4x8",
+     "width": 8,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 589.88,
+       "walk_ms": {
+        "boxes": 269.92,
+        "triangles": 112.85,
+        "pops": 0.48,
+        "ray loads": 127.68
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 66371
+      },
+      "shadow2": {
+       "ms": 377.87,
+       "walk_ms": {
+        "boxes": 184.79,
+        "triangles": 43.71,
+        "pops": 0.0,
+        "ray loads": 113.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 48689
+      }
+     },
+     "frame_ms": 1070.78
+    },
+    "1x32/W16": {
+     "layout": "1x32",
+     "width": 16,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 495.23,
+       "walk_ms": {
+        "boxes": 267.24,
+        "triangles": 148.41,
+        "pops": 0.63,
+        "ray loads": 0.0
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 54077
+      },
+      "shadow2": {
+       "ms": 275.33,
+       "walk_ms": {
+        "boxes": 189.92,
+        "triangles": 49.03,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 34069
+      }
+     },
+     "frame_ms": 873.59
+    },
+    "2x16/W16": {
+     "layout": "2x16",
+     "width": 16,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 588.69,
+       "walk_ms": {
+        "boxes": 235.94,
+        "triangles": 138.2,
+        "pops": 0.63,
+        "ray loads": 134.98
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 66218
+      },
+      "shadow2": {
+       "ms": 375.73,
+       "walk_ms": {
+        "boxes": 167.67,
+        "triangles": 52.23,
+        "pops": 0.0,
+        "ray loads": 119.46
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 48384
+      }
+     },
+     "frame_ms": 1067.45
+    },
+    "4x8/W16": {
+     "layout": "4x8",
+     "width": 16,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 643.01,
+       "walk_ms": {
+        "boxes": 324.11,
+        "triangles": 111.65,
+        "pops": 0.63,
+        "ray loads": 127.68
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 73273
+      },
+      "shadow2": {
+       "ms": 434.23,
+       "walk_ms": {
+        "boxes": 240.64,
+        "triangles": 44.23,
+        "pops": 0.0,
+        "ray loads": 113.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 56726
+      }
+     },
+     "frame_ms": 1180.27
+    },
+    "1x32/W32": {
+     "layout": "1x32",
+     "width": 32,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 365.54,
+       "walk_ms": {
+        "boxes": 194.29,
+        "triangles": 91.7,
+        "pops": 0.61,
+        "ray loads": 0.0
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 37230
+      },
+      "shadow2": {
+       "ms": 211.85,
+       "walk_ms": {
+        "boxes": 146.54,
+        "triangles": 28.94,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 25019
+      }
+     },
+     "frame_ms": 680.42
+    },
+    "2x16/W32": {
+     "layout": "2x16",
+     "width": 32,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 587.22,
+       "walk_ms": {
+        "boxes": 279.77,
+        "triangles": 92.92,
+        "pops": 0.61,
+        "ray loads": 134.98
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 66027
+      },
+      "shadow2": {
+       "ms": 403.37,
+       "walk_ms": {
+        "boxes": 213.87,
+        "triangles": 33.68,
+        "pops": 0.0,
+        "ray loads": 119.46
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 52325
+      }
+     },
+     "frame_ms": 1093.62
+    },
+    "4x8/W32": {
+     "layout": "4x8",
+     "width": 32,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 712.09,
+       "walk_ms": {
+        "boxes": 420.95,
+        "triangles": 83.9,
+        "pops": 0.61,
+        "ray loads": 127.68
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 82247
+      },
+      "shadow2": {
+       "ms": 507.66,
+       "walk_ms": {
+        "boxes": 326.24,
+        "triangles": 32.06,
+        "pops": 0.0,
+        "ray loads": 113.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 67195
+      }
+     },
+     "frame_ms": 1322.78
+    }
+   },
+   "boxes_free": {
+    "1x32/W8": {
+     "layout": "1x32",
+     "width": 8,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 444.98,
+       "walk_ms": {
+        "boxes": 258.97,
+        "triangles": 106.59,
+        "pops": 0.48,
+        "ray loads": 0.0
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 47549
+      },
+      "shadow2": {
+       "ms": 243.23,
+       "walk_ms": {
+        "boxes": 177.3,
+        "triangles": 29.56,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 29493
+      }
+     },
+     "frame_ms": 791.24
+    },
+    "2x16/W8": {
+     "layout": "2x16",
+     "width": 8,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 383.73,
+       "walk_ms": {
+        "boxes": 116.03,
+        "triangles": 53.3,
+        "pops": 0.48,
+        "ray loads": 134.98
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 39592
+      },
+      "shadow2": {
+       "ms": 250.04,
+       "walk_ms": {
+        "boxes": 79.44,
+        "triangles": 14.78,
+        "pops": 0.0,
+        "ray loads": 119.46
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 30464
+      }
+     },
+     "frame_ms": 736.8
+    },
+    "4x8/W8": {
+     "layout": "4x8",
+     "width": 8,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 302.48,
+       "walk_ms": {
+        "boxes": 68.73,
+        "triangles": 26.65,
+        "pops": 0.48,
+        "ray loads": 127.68
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 29038
+      },
+      "shadow2": {
+       "ms": 203.81,
+       "walk_ms": {
+        "boxes": 47.05,
+        "triangles": 7.39,
+        "pops": 0.0,
+        "ray loads": 113.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 23872
+      }
+     },
+     "frame_ms": 609.32
+    },
+    "1x32/W16": {
+     "layout": "1x32",
+     "width": 16,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 369.91,
+       "walk_ms": {
+        "boxes": 187.48,
+        "triangles": 102.86,
+        "pops": 0.63,
+        "ray loads": 0.0
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 37797
+      },
+      "shadow2": {
+       "ms": 198.91,
+       "walk_ms": {
+        "boxes": 133.24,
+        "triangles": 29.31,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 23175
+      }
+     },
+     "frame_ms": 671.85
+    },
+    "2x16/W16": {
+     "layout": "2x16",
+     "width": 16,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 349.98,
+       "walk_ms": {
+        "boxes": 84.0,
+        "triangles": 51.43,
+        "pops": 0.63,
+        "ray loads": 134.98
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 35208
+      },
+      "shadow2": {
+       "ms": 230.18,
+       "walk_ms": {
+        "boxes": 59.7,
+        "triangles": 14.65,
+        "pops": 0.0,
+        "ray loads": 119.46
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 27632
+      }
+     },
+     "frame_ms": 683.19
+    },
+    "4x8/W16": {
+     "layout": "4x8",
+     "width": 16,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 316.14,
+       "walk_ms": {
+        "boxes": 82.52,
+        "triangles": 26.36,
+        "pops": 0.63,
+        "ray loads": 127.68
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 30812
+      },
+      "shadow2": {
+       "ms": 218.11,
+       "walk_ms": {
+        "boxes": 61.27,
+        "triangles": 7.48,
+        "pops": 0.0,
+        "ray loads": 113.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 25912
+      }
+     },
+     "frame_ms": 637.28
+    },
+    "1x32/W32": {
+     "layout": "1x32",
+     "width": 32,
+     "method": "unpack",
+     "traces": {
+      "bounce": {
+       "ms": 279.41,
+       "walk_ms": {
+        "boxes": 136.3,
+        "triangles": 63.55,
+        "pops": 0.61,
+        "ray loads": 0.0
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 26040
+      },
+      "shadow2": {
+       "ms": 156.47,
+       "walk_ms": {
+        "boxes": 102.8,
+        "triangles": 17.3,
+        "pops": 0.0,
+        "ray loads": 0.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 17124
+      }
+     },
+     "frame_ms": 538.91
+    },
+    "2x16/W32": {
+     "layout": "2x16",
+     "width": 32,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 348.72,
+       "walk_ms": {
+        "boxes": 99.61,
+        "triangles": 34.58,
+        "pops": 0.61,
+        "ray loads": 134.98
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 35044
+      },
+      "shadow2": {
+       "ms": 241.42,
+       "walk_ms": {
+        "boxes": 76.14,
+        "triangles": 9.45,
+        "pops": 0.0,
+        "ray loads": 119.46
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 29235
+      }
+     },
+     "frame_ms": 693.17
+    },
+    "4x8/W32": {
+     "layout": "4x8",
+     "width": 32,
+     "method": "window",
+     "traces": {
+      "bounce": {
+       "ms": 334.23,
+       "walk_ms": {
+        "boxes": 107.18,
+        "triangles": 19.81,
+        "pops": 0.61,
+        "ray loads": 127.68
+       },
+       "rest_ms": 78.95,
+       "cycles_per_ray": 33162
+      },
+      "shadow2": {
+       "ms": 237.85,
+       "walk_ms": {
+        "boxes": 83.07,
+        "triangles": 5.42,
+        "pops": 0.0,
+        "ray loads": 113.0
+       },
+       "rest_ms": 36.37,
+       "cycles_per_ray": 28727
+      }
+     },
+     "frame_ms": 675.11
+    }
+   }
+  }
+ }
+}

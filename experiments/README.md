@@ -112,3 +112,8 @@ place to ask a question and to be wrong.
   (together 12.1 to 6.5 ms a frame at 10^6 triangles, exact), and small triangles as
   vector lanes in the fill (1.5 to 2.1 times faster per small triangle on one core). A
   scalar into all lanes through `SFPCONFIG` is exact but slower than immediates.
+- [ray_wide](ray_wide/README.md): whether one ray (or 2 or 4) tested against the child
+  boxes of wide nodes (W = 8, 16, 32) speeds up the bounce and second shadow: the counts
+  on the host, one node visit's cycles on the card, and a predicted frame. No layout
+  beats today: at best (1 x 32, W = 32, boxes through the unpacker) a visit costs 729
+  cycles and Sponza's frame is 471 ms against 348.5, Bistro's 680 against 523.7.

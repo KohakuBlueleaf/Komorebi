@@ -1,0 +1,512 @@
+{
+ "scene": "sponza_overview",
+ "trace": "bounce",
+ "rays": 64,
+ "passes": 20,
+ "cores": 1,
+ "load_before": [
+  "4.34",
+  "11.21",
+  "10.20"
+ ],
+ "layouts": {
+  "1x32": {
+   "width": 32,
+   "operations": 256,
+   "methods": {
+    "window": {
+     "check": {
+      "ok": true,
+      "cycles_per_operation": [
+       707.046875
+      ],
+      "operations": 256,
+      "visits": 256,
+      "entered": 0,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "differ": 0,
+      "checked": 5726,
+      "best": 707.046875
+     },
+     "load": {
+      "ok": true,
+      "cycles_per_operation": [
+       403.2400390625,
+       403.23671875,
+       403.23671875
+      ],
+      "operations": 5120,
+      "visits": 5120,
+      "entered": 0,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "best": 403.23671875
+     },
+     "test": {
+      "ok": true,
+      "cycles_per_operation": [
+       617.1919921875,
+       617.1869140625,
+       617.1884765625
+      ],
+      "operations": 5120,
+      "visits": 5120,
+      "entered": 0,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "best": 617.1869140625
+     },
+     "out": {
+      "ok": true,
+      "cycles_per_operation": [
+       716.1853515625,
+       716.182421875,
+       716.183203125
+      ],
+      "operations": 5120,
+      "visits": 5120,
+      "entered": 0,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "best": 716.182421875
+     },
+     "stack": {
+      "ok": true,
+      "cycles_per_operation": [
+       912.567578125,
+       912.5576171875,
+       912.559765625
+      ],
+      "operations": 5120,
+      "visits": 5120,
+      "entered": 6380,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "best": 912.5576171875
+     },
+     "ray": {
+      "ok": true,
+      "cycles_per_operation": [
+       698.5408203125,
+       698.5390625,
+       698.539453125
+      ],
+      "operations": 5120,
+      "visits": 0,
+      "entered": 0,
+      "ray_loads": 5120,
+      "clock_mhz": 1350,
+      "best": 698.5390625
+     }
+    },
+    "unpack": {
+     "check": {
+      "ok": true,
+      "cycles_per_operation": [
+       10712.3125
+      ],
+      "operations": 32,
+      "visits": 32,
+      "entered": 0,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "differ": 0,
+      "checked": 744,
+      "best": 10712.3125
+     },
+     "load": {
+      "ok": true,
+      "cycles_per_operation": [
+       217.556640625,
+       217.7990234375,
+       217.4884765625
+      ],
+      "operations": 5120,
+      "visits": 5120,
+      "entered": 0,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "best": 217.4884765625
+     },
+     "test": {
+      "ok": true,
+      "cycles_per_operation": [
+       428.8119140625,
+       428.81484375,
+       428.8171875
+      ],
+      "operations": 5120,
+      "visits": 5120,
+      "entered": 0,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "best": 428.8119140625
+     },
+     "out": {
+      "ok": true,
+      "cycles_per_operation": [
+       526.5095703125,
+       526.753125,
+       526.803125
+      ],
+      "operations": 5120,
+      "visits": 5120,
+      "entered": 0,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "best": 526.5095703125
+     },
+     "stack": {
+      "ok": true,
+      "cycles_per_operation": [
+       728.9326171875,
+       728.7958984375,
+       729.0869140625
+      ],
+      "operations": 5120,
+      "visits": 5120,
+      "entered": 6560,
+      "ray_loads": 0,
+      "clock_mhz": 1350,
+      "best": 728.7958984375
+     }
+    }
+   }
+  },
+  "2x16": {
+   "width": 16,
+   "operations": 256,
+   "methods": {
+    "window": {
+     "check": {
+      "ok": true,
+      "cycles_per_operation": [
+       1010.7109375
+      ],
+      "operations": 256,
+      "visits": 512,
+      "entered": 0,
+      "ray_loads": 13,
+      "clock_mhz": 1350,
+      "differ": 0,
+      "checked": 6796,
+      "best": 1010.7109375
+     },
+     "load": {
+      "ok": true,
+      "cycles_per_operation": [
+       828.97734375,
+       828.973046875,
+       828.9740234375
+      ],
+      "operations": 5120,
+      "visits": 10240,
+      "entered": 0,
+      "ray_loads": 260,
+      "clock_mhz": 1350,
+      "best": 828.973046875
+     },
+     "test": {
+      "ok": true,
+      "cycles_per_operation": [
+       921.9275390625,
+       921.9201171875,
+       921.923828125
+      ],
+      "operations": 5120,
+      "visits": 10240,
+      "entered": 0,
+      "ray_loads": 260,
+      "clock_mhz": 1350,
+      "best": 921.9201171875
+     },
+     "out": {
+      "ok": true,
+      "cycles_per_operation": [
+       1019.926171875,
+       1019.9216796875,
+       1019.9205078125
+      ],
+      "operations": 5120,
+      "visits": 10240,
+      "entered": 0,
+      "ray_loads": 260,
+      "clock_mhz": 1350,
+      "best": 1019.9205078125
+     },
+     "stack": {
+      "ok": true,
+      "cycles_per_operation": [
+       1287.2890625,
+       1287.2869140625,
+       1287.287109375
+      ],
+      "operations": 5120,
+      "visits": 10240,
+      "entered": 11800,
+      "ray_loads": 260,
+      "clock_mhz": 1350,
+      "best": 1287.2869140625
+     },
+     "ray": {
+      "ok": true,
+      "cycles_per_operation": [
+       1278.382421875,
+       1278.362890625,
+       1278.359375
+      ],
+      "operations": 5120,
+      "visits": 0,
+      "entered": 0,
+      "ray_loads": 10240,
+      "clock_mhz": 1350,
+      "best": 1278.359375
+     }
+    },
+    "gather": {
+     "check": {
+      "ok": true,
+      "cycles_per_operation": [
+       1743.33984375
+      ],
+      "operations": 256,
+      "visits": 512,
+      "entered": 0,
+      "ray_loads": 13,
+      "clock_mhz": 1350,
+      "differ": 0,
+      "checked": 6796,
+      "best": 1743.33984375
+     },
+     "load": {
+      "ok": true,
+      "cycles_per_operation": [
+       1562.4908203125,
+       1562.50625,
+       1562.4869140625
+      ],
+      "operations": 5120,
+      "visits": 10240,
+      "entered": 0,
+      "ray_loads": 260,
+      "clock_mhz": 1350,
+      "best": 1562.4869140625
+     },
+     "test": {
+      "ok": true,
+      "cycles_per_operation": [
+       1654.521484375,
+       1654.4953125,
+       1654.4806640625
+      ],
+      "operations": 5120,
+      "visits": 10240,
+      "entered": 0,
+      "ray_loads": 260,
+      "clock_mhz": 1350,
+      "best": 1654.4806640625
+     },
+     "out": {
+      "ok": true,
+      "cycles_per_operation": [
+       1752.4818359375,
+       1752.49765625,
+       1752.4810546875
+      ],
+      "operations": 5120,
+      "visits": 10240,
+      "entered": 0,
+      "ray_loads": 260,
+      "clock_mhz": 1350,
+      "best": 1752.4810546875
+     },
+     "stack": {
+      "ok": true,
+      "cycles_per_operation": [
+       2019.8638671875,
+       2019.8744140625,
+       2019.8673828125
+      ],
+      "operations": 5120,
+      "visits": 10240,
+      "entered": 11800,
+      "ray_loads": 260,
+      "clock_mhz": 1350,
+      "best": 2019.8638671875
+     }
+    }
+   }
+  },
+  "4x8": {
+   "width": 8,
+   "operations": 256,
+   "methods": {
+    "window": {
+     "check": {
+      "ok": true,
+      "cycles_per_operation": [
+       1771.05859375
+      ],
+      "operations": 256,
+      "visits": 1024,
+      "entered": 0,
+      "ray_loads": 19,
+      "clock_mhz": 1350,
+      "differ": 0,
+      "checked": 7104,
+      "best": 1771.05859375
+     },
+     "load": {
+      "ok": true,
+      "cycles_per_operation": [
+       1589.3771484375,
+       1589.377734375,
+       1589.3751953125
+      ],
+      "operations": 5120,
+      "visits": 20480,
+      "entered": 0,
+      "ray_loads": 380,
+      "clock_mhz": 1350,
+      "best": 1589.3751953125
+     },
+     "test": {
+      "ok": true,
+      "cycles_per_operation": [
+       1682.3298828125,
+       1682.3240234375,
+       1682.32421875
+      ],
+      "operations": 5120,
+      "visits": 20480,
+      "entered": 0,
+      "ray_loads": 380,
+      "clock_mhz": 1350,
+      "best": 1682.3240234375
+     },
+     "out": {
+      "ok": true,
+      "cycles_per_operation": [
+       1780.326953125,
+       1780.326171875,
+       1780.3271484375
+      ],
+      "operations": 5120,
+      "visits": 20480,
+      "entered": 0,
+      "ray_loads": 380,
+      "clock_mhz": 1350,
+      "best": 1780.326171875
+     },
+     "stack": {
+      "ok": true,
+      "cycles_per_operation": [
+       2132.3115234375,
+       2132.3107421875,
+       2132.309375
+      ],
+      "operations": 5120,
+      "visits": 20480,
+      "entered": 22580,
+      "ray_loads": 380,
+      "clock_mhz": 1350,
+      "best": 2132.309375
+     },
+     "ray": {
+      "ok": true,
+      "cycles_per_operation": [
+       2418.5025390625,
+       2418.484765625,
+       2418.4822265625
+      ],
+      "operations": 5120,
+      "visits": 0,
+      "entered": 0,
+      "ray_loads": 20480,
+      "clock_mhz": 1350,
+      "best": 2418.4822265625
+     }
+    },
+    "gather": {
+     "check": {
+      "ok": true,
+      "cycles_per_operation": [
+       1781.68359375
+      ],
+      "operations": 256,
+      "visits": 1024,
+      "entered": 0,
+      "ray_loads": 19,
+      "clock_mhz": 1350,
+      "differ": 0,
+      "checked": 7104,
+      "best": 1781.68359375
+     },
+     "load": {
+      "ok": true,
+      "cycles_per_operation": [
+       1600.8578125,
+       1600.8375,
+       1600.81796875
+      ],
+      "operations": 5120,
+      "visits": 20480,
+      "entered": 0,
+      "ray_loads": 380,
+      "clock_mhz": 1350,
+      "best": 1600.81796875
+     },
+     "test": {
+      "ok": true,
+      "cycles_per_operation": [
+       1692.8646484375,
+       1692.8595703125,
+       1692.8521484375
+      ],
+      "operations": 5120,
+      "visits": 20480,
+      "entered": 0,
+      "ray_loads": 380,
+      "clock_mhz": 1350,
+      "best": 1692.8521484375
+     },
+     "out": {
+      "ok": true,
+      "cycles_per_operation": [
+       1790.817578125,
+       1790.78515625,
+       1790.8177734375
+      ],
+      "operations": 5120,
+      "visits": 20480,
+      "entered": 0,
+      "ray_loads": 380,
+      "clock_mhz": 1350,
+      "best": 1790.78515625
+     },
+     "stack": {
+      "ok": true,
+      "cycles_per_operation": [
+       2142.821484375,
+       2142.8357421875,
+       2142.8005859375
+      ],
+      "operations": 5120,
+      "visits": 20480,
+      "entered": 22580,
+      "ray_loads": 380,
+      "clock_mhz": 1350,
+      "best": 2142.8005859375
+     }
+    }
+   }
+  }
+ },
+ "load_after": [
+  "5.07",
+  "8.51",
+  "9.32"
+ ],
+ "ok": true
+}
