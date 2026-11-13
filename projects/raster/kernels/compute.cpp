@@ -314,69 +314,75 @@ namespace {
 }  // namespace
 #endif
 
+// FILL, ARITH and SPIN of one record; the frame program's compute kernel calls it as
+// well.
+void fill_compute_record(const km_record_t& r) {
+    const uint32_t seg = km::seg(r);
+    if (seg == kSegSpin) {
+        const uint32_t t0 = km::wall();
+        while (km::wall() - t0 < r.a0) {
+            ;
+        }
+        return;
+    }
+    if (seg != kSegFill && seg != kSegArith) {
+        return;
+    }
+#ifdef TRISC_UNPACK
+    // Hands each page to the pack thread; frees it when the pack thread is done.
+    for (;;) {
+        const bool page = bounded(
+            [] {
+                const uint16_t received = (
+                    reg_read(
+                        reinterpret_cast<uint32_t>(get_cb_tiles_received_ptr(kCbIn))
+                    )
+                );
+                const uint16_t acked = get_local_cb_interface(kCbIn).tiles_acked;
+                return static_cast<uint16_t>(received - acked) >= 1;
+            },
+            kWhereWaitList
+        );
+        if (!page) {
+            break;
+        }
+        cb_wait_front(kCbIn, 1);
+        ckernel::mailbox_write(
+            ckernel::ThreadId::PackThreadId, get_tile_l1_byte_address(kCbIn, 0)
+        );
+        if (!mail_from(ckernel::ThreadId::PackThreadId, kWhereWaitDone)) {
+            break;
+        }
+        const uint32_t more = (ckernel::mailbox_read(ckernel::ThreadId::PackThreadId));
+        cb_pop_front(kCbIn, 1);
+        if (more == 0) {
+            break;
+        }
+    }
+#endif
+#ifdef TRISC_PACK
+    fill::Prof pf;
+    fill::setup();
+    bool ok;
+    if (seg == kSegFill) {
+        fill::edges(true);
+        ok = fill_list(pf);
+    } else {
+        ok = arith_list(pf);
+    }
+    fill::finish();
+    if (ok) {
+        profile(pf, seg == kSegFill ? kPlanes : kArithOut);
+    }
+#endif
+}
+
+#ifndef RASTER_NO_ENTRY
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbIn, kCbOut);
     cp.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if (seg == kSegSpin) {
-            const uint32_t t0 = km::wall();
-            while (km::wall() - t0 < r.a0) {
-                ;
-            }
-            return;
-        }
-        if (seg != kSegFill && seg != kSegArith) {
-            return;
-        }
-#ifdef TRISC_UNPACK
-        // Hands each page to the pack thread; frees it when the pack thread is done.
-        for (;;) {
-            const bool page = bounded(
-                [] {
-                    const uint16_t received = (
-                        reg_read(
-                            reinterpret_cast<uint32_t>(get_cb_tiles_received_ptr(kCbIn))
-                        )
-                    );
-                    const uint16_t acked = get_local_cb_interface(kCbIn).tiles_acked;
-                    return static_cast<uint16_t>(received - acked) >= 1;
-                },
-                kWhereWaitList
-            );
-            if (!page) {
-                break;
-            }
-            cb_wait_front(kCbIn, 1);
-            ckernel::mailbox_write(
-                ckernel::ThreadId::PackThreadId, get_tile_l1_byte_address(kCbIn, 0)
-            );
-            if (!mail_from(ckernel::ThreadId::PackThreadId, kWhereWaitDone)) {
-                break;
-            }
-            const uint32_t more = (
-                ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)
-            );
-            cb_pop_front(kCbIn, 1);
-            if (more == 0) {
-                break;
-            }
-        }
-#endif
-#ifdef TRISC_PACK
-        fill::Prof pf;
-        fill::setup();
-        bool ok;
-        if (seg == kSegFill) {
-            fill::edges(true);
-            ok = fill_list(pf);
-        } else {
-            ok = arith_list(pf);
-        }
-        fill::finish();
-        if (ok) {
-            profile(pf, seg == kSegFill ? kPlanes : kArithOut);
-        }
-#endif
+        fill_compute_record(r);
     });
 }
+#endif
