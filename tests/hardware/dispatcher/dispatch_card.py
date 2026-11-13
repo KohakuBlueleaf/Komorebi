@@ -27,6 +27,8 @@ import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
 from komorebi.engines import stream as stream_engine  # noqa: E402
 
+ks = stream_engine  # the name experiments/dispatcher/measure.py still reads
+
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
 INCLUDE = os.path.join(HERE, "..", "..", "..", "src", "komorebi_native", "include")
 IMAGE = os.path.join(BUILD, "km-dispatch.bin")

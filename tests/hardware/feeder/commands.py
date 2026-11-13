@@ -48,6 +48,7 @@ def struct_fields(path, name):
 
 
 CONSTANTS = constants(ABI_H, CORE_HPP, FEEDER_H)
+K = CONSTANTS  # the name examples/02_merge_tree and examples/03_broadcast still import
 COMMAND_FIELDS = struct_fields(ABI_H, "km_command_t")
 ARG_FIELDS = struct_fields(CORE_HPP, "Args")
 ARG_WORDS = [f"a{i}" for i in range(10)]
