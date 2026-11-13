@@ -129,10 +129,20 @@ class Job:
     stride: int
 
 
-def lane_chunks(s, r, lanes, length):
+def causal_cuts(rows, n):
+    """Row bounds of n chunks of about equal area of the causal triangle."""
+    return sorted({round(rows * math.sqrt(c / n)) for c in range(n + 1)})
+
+
+def widest(bounds):
+    return max(r1 - r0 for r0, r1 in zip(bounds, bounds[1:]))
+
+
+def lane_chunks(s, r, lanes, length, chunks=None):
     """Per lane, its query chunks (batch, head, K / V head, first row, rows): even
-    ranges of the (batch, head, row) order, or (causal) chunks largest work first
-    onto the least loaded lane below MAX_JOBS chunks."""
+    ranges of the (batch, head, row) order, or (causal) chunks of each head (even ranges
+    of at most length x R rows, or `chunks` of equal area), largest work first onto the
+    least loaded lane below MAX_JOBS chunks."""
     group = s.h // s.hk
     out = [[] for _ in range(lanes)]
     if not s.causal:
@@ -147,17 +157,28 @@ def lane_chunks(s, r, lanes, length):
                 out[i].append((bi, hi_, hi_ // group, r0, n))
                 pos += n
         return out
+    if chunks is None:  # even ranges of at most length x R rows
+        n_chunks = math.ceil(s.sqt / (length * r))
+        bounds = [c * s.sqt // n_chunks for c in range(n_chunks + 1)]
+    else:  # `chunks` of about equal area of the triangle
+        bounds = causal_cuts(s.sqt, chunks)
+        if widest(bounds) > length * r:
+            raise ValueError(f"{chunks} chunks per head: one over {length} x {r} rows")
     pieces = []
     for head in range(s.b * s.h):
         bi, hi_ = divmod(head, s.h)
-        n_chunks = math.ceil(s.sqt / (length * r))
-        for c in range(n_chunks):
-            r0, r1 = c * s.sqt // n_chunks, (c + 1) * s.sqt // n_chunks
-            work = (
-                math.ceil((r1 - r0) / length)
-                * (s.last_key(r0) + s.last_key(r1 - 1) + 2)
-                // 2
-            )
+        for r0, r1 in zip(bounds, bounds[1:]):
+            if chunks is None:  # about the chunk's work per core
+                work = (
+                    math.ceil((r1 - r0) / length)
+                    * (s.last_key(r0) + s.last_key(r1 - 1) + 2)
+                    // 2
+                )
+            else:  # the chunk's work on its busiest core (rows `length` apart)
+                work = max(
+                    sum(s.last_key(i) + 1 for i in range(r0 + y, r1, length))
+                    for y in range(length)
+                )
             pieces.append((work, (bi, hi_, hi_ // group, r0, r1 - r0)))
     pieces.sort(key=lambda p: -p[0])  # stable: equal work keeps its order
     load = [0] * lanes
@@ -173,15 +194,15 @@ def lane_chunks(s, r, lanes, length):
     return out
 
 
-def plan(s, r, grid, length):
+def plan(s, r, grid, length, chunks=None):
     """Jobs per core (index y * gx + x) for lanes of `length` cores down each grid
     column, the sender at the top; each core takes its share of a lane job's rows:
     contiguous, or (causal) `length` apart."""
     gx, gy = grid
     lanes = [(x, y0) for x in range(gx) for y0 in range(0, gy - length + 1, length)]
-    chunks = lane_chunks(s, r, len(lanes), length)
+    by_lane = lane_chunks(s, r, len(lanes), length, chunks)
     per_core = [[] for _ in range(gx * gy)]
-    for (x, y0), lane in zip(lanes, chunks):
+    for (x, y0), lane in zip(lanes, by_lane):
         for y in range(y0, y0 + length):
             for bi, hi, g, r0, n in lane:
                 if s.causal:
@@ -216,14 +237,17 @@ def score_tiles(s, jobs):
     )
 
 
-def choose_lanes(s, r, grid, lengths=None):
+def choose_lanes(s, r, grid, lengths=None, chunks=None):
     """(length, jobs per core): the fewest score tiles on the busiest core, then the
     longest lane, among lengths dividing the grid height with MAX_JOBS jobs or fewer."""
     best = None
     for length in lengths or range(1, grid[1] + 1):
         if grid[1] % length:
             continue
-        p = plan(s, r, grid, length)
+        try:
+            p = plan(s, r, grid, length, chunks)
+        except ValueError:
+            continue
         tiles = max(score_tiles(s, jobs) for jobs in p)
         if max(len(jobs) for jobs in p) <= MAX_JOBS and (
             best is None or tiles <= best[0]
@@ -276,14 +300,14 @@ class Plan:
         }
 
 
-def make(s, grid, budget=L1_BUDGET, r=None, kb=None, length=None):
+def make(s, grid, budget=L1_BUDGET, r=None, kb=None, length=None, chunks=None):
     """The plan of dims `s` on a grid (gx, gy): R and KB fitted to `budget` (or as
-    given), the lane length chosen (or as given)."""
+    given), the lane length chosen (or as given), causal chunks per head as given."""
     fit_r, fit_kb = blocks(s, budget)
     r, kb = r or fit_r, kb or fit_kb
     if r == 0 or l1_bytes(s, r, kb) > budget:
         raise ValueError(f"buffers of R {r}, KB {kb} do not fit {budget} bytes")
-    length, jobs = choose_lanes(s, r, grid, [length] if length else None)
+    length, jobs = choose_lanes(s, r, grid, [length] if length else None, chunks)
     p = Plan(s, r, kb, WINDOW, length, jobs)
     most = max(p.blocks_per_lane(c) for c in range(len(jobs))) * p.block_pages()
     if most > LANE_PAGES_MAX:

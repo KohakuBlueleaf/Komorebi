@@ -130,6 +130,7 @@ def main():
     a.add_argument("--shape", choices=pl.SHAPES, required=True)
     a.add_argument("--approx", action="store_true", help="approximate exponential")
     a.add_argument("--lane", type=int, default=None, help="lane length (default: plan)")
+    a.add_argument("--chunks", type=int, default=None, help="causal chunks per head")
     a.add_argument("--seconds", type=float, default=4.0, help="power loop length")
     a.add_argument("--cuts", action="store_true", help="also the cut-down runs")
     a.add_argument("--noc", type=int, choices=[0, 1], default=0, help="lane's NoC")
@@ -144,7 +145,7 @@ def main():
     index = visible_card()
     with km.Session(log=log) as session:
         nocs = session.nocs()
-        p = pl.make(s, nocs.grid, length=args.lane)
+        p = pl.make(s, nocs.grid, length=args.lane, chunks=args.chunks)
         out["plan"] = p.summary()
         out["x280_mhz"], out["noc"] = session.pll_mhz, args.noc
         device = session.device

@@ -27,6 +27,22 @@ def test_plan_takes_every_query_row_once(causal):
     assert sorted(seen) == [(hd, r) for hd in range(s.b * s.h) for r in range(s.sqt)]
 
 
+def test_causal_chunks_of_equal_area_take_every_row_once_and_even_the_cores():
+    s = pl.dims(1, 8, 8, 1024, 1024, 64, 64, True)
+    plain, split = pl.make(s, GRID, length=5), pl.make(s, GRID, length=5, chunks=6)
+    seen = sorted(
+        (j.q0 // s.dt // s.sqt, j.start + i * j.stride)
+        for jobs in split.jobs
+        for j in jobs
+        for i in range(j.rows)
+    )
+    assert seen == [(hd, r) for hd in range(s.h) for r in range(s.sqt)]
+    most = [max(pl.score_tiles(s, j) for j in p.jobs) for p in (plain, split)]
+    assert most[1] < most[0]
+    with pytest.raises(ValueError):
+        pl.make(s, GRID, length=1, chunks=1)  # 32 rows on one core: over R
+
+
 def test_blocks_fit_the_budget():
     s = pl.dims(1, 1, 1, 128, 128, 64, 64, False)
     assert pl.blocks(s) == (13, 12)

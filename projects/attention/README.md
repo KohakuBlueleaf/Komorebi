@@ -79,6 +79,7 @@ python projects/attention/run.py --shape long64 --calls 4
 python projects/attention/bench.py --shape long64 --cuts            # time, power, profile
 python projects/attention/bench.py --shape wide128 --noc 1 --lane 5  # the lane's NoC, length
 python projects/attention/graph.py --shape short64 --rounds 40       # records and graphs
+python projects/attention/bench.py --shape causal64 --lane 5 --chunks 6 --cuts
 KMR_CARD=1 python -m pytest tests/hardware/test_attention_host.py
 python projects/attention/reference/ktt_bench.py --shape long64   # Kohaku-TT's env
 ```
@@ -215,6 +216,32 @@ the host (part of that is the host's first issue, spread over the rounds). A rec
 job costs 25 us per extra record on the short shape and 215 us on the long one: each
 record starts its lanes with no block in flight and ends them with every core drained,
 which the job table inside one record overlaps.
+
+### The causal row's balance
+
+In the default plan of `causal64` (1 x 8 x 1024 x 64 causal) each of the 8 heads is one
+chunk of 32 query tile rows, so 4 of the 12 lanes of 10 have nothing to do and a lane's
+cores take 3 or 4 rows: the mean core is busy 0.56 of the slowest. `--chunks n` cuts
+each head into n chunks of about equal area of the triangle (`plan.causal_cuts`) and
+places them largest first by the busiest core's work; with `--lane` it gives the
+candidates below (`bench.py --shape causal64 --lane L --chunks n --cuts --seconds 2`,
+the JSON in `results/causal64-L<L>-c<n>.json`; 2026-11-13, X280 at 1,000 MHz, AICLK
+1,349 to 1,350 MHz).
+
+| Lane length, chunks per head | Score tiles, busiest core | Jobs per core | Balance | Single record (us) | Per call (us) | Per pass (us) | Cast only / compute only (us) | W |
+|---|---|---|---|---|---|---|---|---|
+| 10, 1 (the default) | 68 | 1 | 0.56 | 56.9 | 72.3 | 48.4 | 36 / 63 | 104 |
+| 10, 3 | 56 | 2 | 0.88 | 59.9 | 76.5 | 51.9 | 45 / 61 | 101 |
+| 5, 6 | 50 | 2 | 0.91 | 60.2 | 75.9 | 46.9 | 47 / 57 | 114 |
+| 2, 8 | 54 | 2 | 0.70 | 66.9 | 80.9 | 48.9 | 62 / 59 | 122 |
+| 1, 31 | 40 | 2 | 0.66 | 107.1 | 127.0 | 97.3 | 101 / 52 | 95 |
+
+The chunks even the cores (0.56 to 0.91) and cut the busiest core's score tiles by up to
+41 %, but the call does not get faster: a second job per core adds its own start (Q
+rows, the first K / V block, the rows' normalization), more lanes read K / V (the cast
+only time rises from 36 to 47 us), and without a lane (L 1) the reads bound it. The best
+candidate gains 3 % per pass and loses 5 % per call, so the default stays; `--chunks`
+remains for shapes where a head's work is large against those costs.
 
 ## Limits
 
