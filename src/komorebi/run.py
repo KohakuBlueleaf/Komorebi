@@ -485,7 +485,17 @@ class Run:
         return Event(ticket, kind, status >> 8, ticks, ticks if wanted else None)
 
     def seq(self, ticket):
-        """The sequence number the kernel gave a record (the trace's index)."""
+        """The sequence number the kernel gave a record (the trace's index). Raises
+        KomorebiError for a record issued after an engine started (not known)."""
+        n = self._seq_of(ticket)
+        if n is not None and self._after_engine(ticket):
+            raise KomorebiError(f"ticket {ticket}: {st.UNKNOWN_SEQ}")
+        return n
+
+    def _after_engine(self, ticket):
+        return self._engine_from is not None and ticket > self._engine_from
+
+    def _seq_of(self, ticket):
         self._hand()
         i = ticket - self._base
         if not 0 <= i < self._handed - self._base or self._seq[i] == 0:
@@ -522,6 +532,7 @@ class Run:
     # Engines ----------------------------------------------------------------------
 
     _engine_state = None  # komorebi.engines.control.Engines, from the first engine call
+    _engine_from = None  # ticket of the first RUN: later records' sequences are unknown
 
     def _engines(self):
         if self._engine_state is None:
@@ -701,6 +712,10 @@ class Run:
             n = self._handed - self._base
             tickets = np.arange(n) + self._base
             rec = (self._seq[:n] > 0) & (self._first[:n] >= 0)  # queued: team unknown
+            late = np.zeros(n, bool)  # issued after an engine started: not mapped
+            if self._engine_from is not None:
+                late = rec & (tickets > self._engine_from)
+            rec &= ~late
             numbers = (self._seq[:n][rec] - 1) % M32 + 1  # skips 0, as the kernel
             seqs = dict(zip(tickets[rec].tolist(), numbers.tolist()))
             teams = {
@@ -711,7 +726,14 @@ class Run:
                     self._count[:n][rec].tolist(),
                 )
             }
-            self._trace = st.Trace(trace_rows, seqs, teams, self.backend.mhz, self.h)
+            self._trace = st.Trace(
+                trace_rows,
+                seqs,
+                teams,
+                self.backend.mhz,
+                self.h,
+                tickets[late].tolist(),
+            )
 
     def _remember(self, error):
         self._failure = error
@@ -722,7 +744,8 @@ class Run:
         r = self._result
         team = self.team(ev.ticket)
         seq = r["seq"] if r["error"] == self.h["KMD_ERR_DEADLINE"] else None
-        seq = seq if seq is not None else self.seq(ev.ticket)
+        if seq is None and not self._after_engine(ev.ticket):
+            seq = self._seq_of(ev.ticket)
         known = team and team[0] is not None
         cores = st.not_reported(self._state, team, ev.aux, seq, self.h) if known else []
         raise self._remember(RecordTimeout(ev.ticket, ev.aux, seq, team, cores, r))

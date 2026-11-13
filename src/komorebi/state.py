@@ -5,6 +5,7 @@ words and the per-record trace. Pure functions over arrays read back after the s
 import numpy as np
 
 from komorebi import abi
+from komorebi.errors import KomorebiError
 
 GAVES = {
     "Stop": "stop",
@@ -191,19 +192,26 @@ def wrap(delta):
     return np.asarray(delta, dtype=np.int64) % (1 << 32)
 
 
+UNKNOWN_SEQ = (
+    "issued after an engine started; the kernel numbers the engine's records in "
+    "the same sequence and no event tells the host its number"
+)
+
+
 class Trace:
     """The per-record trace: wall-clock words per core and sequence number.
 
-    `rows` is [cores, cap, kTraceWords]; `seqs` maps a ticket to its sequence number
-    and `teams` to its team; `mhz` is the Tensix clock.
+    `rows` is [cores, cap, kTraceWords]; `seqs` and `teams` map a ticket to its
+    sequence number and team; `mhz`: the Tensix clock; `unknown`: record() raises.
     """
 
-    def __init__(self, rows, seqs, teams, mhz, h=None):
+    def __init__(self, rows, seqs, teams, mhz, h=None, unknown=()):
         self.h = h or abi.headers()
         self.rows = np.asarray(rows).astype(np.int64) & abi.M32
         self.seqs = seqs
         self.teams = teams
         self.mhz = mhz
+        self.unknown = frozenset(unknown)
 
     @property
     def capacity(self):
@@ -212,6 +220,8 @@ class Trace:
     def record(self, ticket):
         """[count, 4] words (seen, done, sent, extra) of the ticket's members, or None
         when the ticket was not traced."""
+        if ticket in self.unknown:
+            raise KomorebiError(f"ticket {ticket}: {UNKNOWN_SEQ}")
         seq = self.seqs.get(ticket)
         if seq is None or not 1 <= seq <= self.capacity:
             return None

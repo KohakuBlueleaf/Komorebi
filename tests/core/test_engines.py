@@ -10,7 +10,7 @@ from komorebi import abi
 from komorebi.engines import graph as gr
 from komorebi.engines import stream as st
 from komorebi.engines.control import codes, offsets
-from komorebi.errors import EngineError, EngineRefused, EngineTimeout
+from komorebi.errors import EngineError, EngineRefused, EngineTimeout, KomorebiError
 from komorebi.run import Run
 
 K = codes()
@@ -82,6 +82,7 @@ class EngineKernel(FakePort):
             ticks = [e.extra for e in sim.events]
             if sim.kept:
                 self.kept[sim.events[0].req] = (a0, a1)
+        self.seq += len(sim.records)  # an engine's records take sequence numbers
         at = AT["stream" if form == 0 else "graph"]
         req = sim.events[0].req if sim.events else struct.unpack_from("<I", data, at)[0]
         if sim.status == "stuck":
@@ -268,6 +269,22 @@ def test_stop_raises_the_timeout_of_an_unanswered_cancel_and_still_closes():
         run.stop(timeout=0.05)
     assert err.value.ticket is t and run.stopped
     assert run.backend.calls == ["abort", "read_back"] and not port.exited
+
+
+def test_sequence_numbers_of_host_records_after_an_engine_raise_not_mislead():
+    port = EngineKernel()
+    run = Run(FakeBackend(port, trace_cap=64), (12, 10))
+    before = run.issue(0, (0, 8))
+    run.wait_engine(run.start(run.upload(sum_stream())), timeout=1.0)
+    after = run.issue(0, (8, 8))
+    run.wait([before, after])
+    assert run.seq(before) == 1 and port.issued[-1][1] == 10  # 8 were the stream's
+    with pytest.raises(KomorebiError, match="after an engine started"):
+        run.seq(after)
+    run.stop()
+    assert run.trace().record(before) is not None
+    with pytest.raises(KomorebiError, match="after an engine started"):
+        run.trace().record(after)
 
 
 def test_a_stream_host_fed_issues_the_simulated_records_and_ends_alike():
