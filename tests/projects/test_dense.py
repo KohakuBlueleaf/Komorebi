@@ -116,3 +116,58 @@ def test_kernel_tile_order_gives_the_product(shape, form):
     a = rng.standard_normal((mt * T, kt * T))
     w = rng.standard_normal((kt * T, nt * T))
     assert np.allclose(emulate(p, a, w), a @ w)
+
+
+def emulate_grid(g, a, w, grid=(12, 10)):
+    """Y as the grid kernels compute it: the blocks the readers fill (A rows stride
+    kb, W rows stride bn), compute's tile indices, the writer's dropped tiles."""
+    pa, pw = tiles(a), tiles(w)
+    y = np.full((g.mt, g.nt, T, T), np.nan)
+    for m0, n0 in g.places(grid).values():
+        m_end, n_end = min(m0 + g.pcm, g.mt), min(n0 + g.pcn, g.nt)
+        for blk in range(g.nbh * g.nbw):
+            r0, c0 = m0 + blk // g.nbw * g.bm, n0 + blk % g.nbw * g.bn
+            acc = np.zeros((g.bm, g.bn, T, T))
+            for kblk in range(g.nk):
+                k0 = kblk * g.kb
+                ab = [np.zeros((T, T))] * (g.bm * g.kb)
+                wb = [np.zeros((T, T))] * (g.kb * g.bn)
+                for i in range(g.bm):
+                    for j in range(min(g.kb, g.kt - k0)):
+                        if r0 + i < g.mt:
+                            ab[i * g.kb + j] = pa[(r0 + i) * g.kt + k0 + j]
+                for i in range(min(g.kb, g.kt - k0)):
+                    for j in range(g.bn):
+                        if c0 + j < g.nt:
+                            wb[i * g.bn + j] = pw[(k0 + i) * g.nt + c0 + j]
+                inner = g.kb_last if kblk == g.nk - 1 else g.kb
+                for i in range(g.bm):
+                    for j in range(g.bn):
+                        for k in range(inner):
+                            acc[i, j] += ab[i * g.kb + k] @ wb[k * g.bn + j]
+            for i in range(g.bm):
+                for j in range(g.bn):
+                    if r0 + i < m_end and c0 + j < n_end:
+                        y[r0 + i, c0 + j] = acc[i, j]
+    return y.transpose(0, 2, 1, 3).reshape(g.mt * T, g.nt * T)
+
+
+@pytest.mark.parametrize("layout", pl.LAYOUTS)
+def test_grid_tile_order_gives_the_product(layout):
+    g = pl.grid_plan(13, 5, 14, layout=layout)
+    g = pl.Grid(**(g.__dict__ | {"bm": 2, "bn": 2, "kb": 2, "sh": 1, "sw": 2}))
+    rng = np.random.default_rng(1)
+    a = rng.integers(-2, 3, (g.mt * T, g.kt * T)).astype(np.float64)
+    w = rng.integers(-2, 3, (g.kt * T, g.nt * T)).astype(np.float64)
+    assert np.array_equal(emulate_grid(g, a, w), a @ w)
+
+
+def test_grid_rule_layouts_fit():
+    shapes = {(128, 128, 128): "2d", (512, 32, 32): "rows", (1, 128, 128): "cols"}
+    for (mt, kt, nt), lay in shapes.items():
+        g = pl.grid_plan(mt, kt, nt)
+        assert g.layout == lay and g.l1_bytes() <= pl.L1_BUDGET
+        g.check((12, 10))
+    g = pl.grid_plan(128, 128, 128)
+    assert (g.rows, g.cols, g.pcm, g.pcn, g.sh, g.sw) == (10, 11, 13, 12, 1, 4)
+    assert g.team((12, 10)) == (0, 119) and g.rect((12, 10)) == (0, 0, 11, 10)
