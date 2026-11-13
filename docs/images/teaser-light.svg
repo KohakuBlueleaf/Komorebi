@@ -307,13 +307,13 @@
 <rect x="1000.0" y="408.0" width="264.0" height="46.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="1010.0" y="427.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">Matrix product</text>
 <text x="1010.0" y="445.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">128 × 896 × 128</text>
-<text x="1254.0" y="428.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="15" font-weight="700" fill="#bc4c00" text-anchor="end" xml:space="preserve">6.3 µs</text>
-<text x="1254.0" y="446.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">7.7× TT-NN</text>
+<text x="1254.0" y="428.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="15" font-weight="700" fill="#bc4c00" text-anchor="end" xml:space="preserve">6.0 µs</text>
+<text x="1254.0" y="446.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">8.1× TT-NN</text>
 <rect x="1000.0" y="459.0" width="264.0" height="46.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="1010.0" y="478.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">Matrix product</text>
 <text x="1010.0" y="496.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">8192 cubed</text>
-<text x="1254.0" y="479.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="15" font-weight="700" fill="#bc4c00" text-anchor="end" xml:space="preserve">7.99 ms</text>
-<text x="1254.0" y="497.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">1.5× TT-NN</text>
+<text x="1254.0" y="479.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="15" font-weight="700" fill="#bc4c00" text-anchor="end" xml:space="preserve">8.61 ms</text>
+<text x="1254.0" y="497.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">1.4× TT-NN</text>
 <rect x="1000.0" y="510.0" width="264.0" height="46.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="1010.0" y="529.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">SwiGLU</text>
 <text x="1010.0" y="547.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">256 × 256 × 512</text>
@@ -322,8 +322,8 @@
 <rect x="1000.0" y="561.0" width="264.0" height="46.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="1010.0" y="580.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">Attention</text>
 <text x="1010.0" y="598.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">2 × 8 × 1024 × 128</text>
-<text x="1254.0" y="581.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="15" font-weight="700" fill="#bc4c00" text-anchor="end" xml:space="preserve">163 µs</text>
-<text x="1254.0" y="599.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">1.3× TT-NN</text>
+<text x="1254.0" y="581.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="15" font-weight="700" fill="#bc4c00" text-anchor="end" xml:space="preserve">150 µs</text>
+<text x="1254.0" y="599.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">1.4× TT-NN</text>
 <text x="1000.0" y="646.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">Sponza © 2010 Frank Meinl, Crytek, CC BY 3.0</text>
 <text x="1000.0" y="661.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">Bistro © 2017 Amazon Lumberyard, CC BY 4.0</text>
 </svg>

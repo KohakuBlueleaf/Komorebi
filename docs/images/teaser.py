@@ -156,10 +156,10 @@ PICTURES = [
 ]
 
 NUMBERS = [
-    ("Matrix product", "128 × 896 × 128", "6.3 µs", "7.7× TT-NN"),
-    ("Matrix product", "8192 cubed", "7.99 ms", "1.5× TT-NN"),
+    ("Matrix product", "128 × 896 × 128", "6.0 µs", "8.1× TT-NN"),
+    ("Matrix product", "8192 cubed", "8.61 ms", "1.4× TT-NN"),
     ("SwiGLU", "256 × 256 × 512", "42.6 µs", "6.2× TT-NN"),
-    ("Attention", "2 × 8 × 1024 × 128", "163 µs", "1.3× TT-NN"),
+    ("Attention", "2 × 8 × 1024 × 128", "150 µs", "1.4× TT-NN"),
 ]
 
 
