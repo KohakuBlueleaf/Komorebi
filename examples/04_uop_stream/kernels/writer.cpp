@@ -1,4 +1,4 @@
-// Writer: MAP stores the core's tile at output page a3 + rank.
+// Writer: MAP stores the core's tile at output page a3 first_page + rank.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

@@ -1,5 +1,5 @@
 // Broadcast writer: the column broadcast, on NoC1 (W blocks down each column), then the
-// core's checksum tile at output page a6 + rank.
+// core's checksum tile at output page a6 first_page + rank.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

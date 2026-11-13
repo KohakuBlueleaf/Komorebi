@@ -1,5 +1,5 @@
-// Map/collect writer: MAP stores the core's tile at output page a3 + rank; STALL
-// reports for every core of the group but a0.
+// Map/collect writer: MAP stores the core's tile at output page a3 first_page +
+// rank; STALL reports for every core of the group but a0 stalled_rank.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
