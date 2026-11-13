@@ -171,3 +171,71 @@ def test_grid_rule_layouts_fit():
     g = pl.grid_plan(128, 128, 128)
     assert (g.rows, g.cols, g.pcm, g.pcn, g.sh, g.sw) == (10, 11, 13, 12, 1, 4)
     assert g.team((12, 10)) == (0, 119) and g.rect((12, 10)) == (0, 0, 11, 10)
+
+
+def emulate_split(sp, a, w, form):
+    """Y as the K-split kernels compute it: each core's share of K in chunks (A rows
+    stride kc, W rows stride ow), then the parts summed by owner or by tree."""
+    pa, pw = tiles(a), tiles(w)
+    y = np.full((sp.mt, sp.nt, T, T), np.nan)
+    p = sp.oh * sp.ow
+    for q in range(sp.groups()):
+        m0, n0 = q // sp.nbw() * sp.oh, q % sp.nbw() * sp.ow
+        parts = []
+        for d in range(sp.s):
+            ks = layout.share(range(sp.kt), d, sp.s)
+            acc = np.zeros((p, T, T))
+            for k0 in range(0, len(ks), sp.kc):
+                n = min(sp.kc, len(ks) - k0)
+                ab = [np.zeros((T, T))] * (sp.oh * sp.kc)
+                wb = [np.zeros((T, T))] * (sp.kc * sp.ow)
+                for j in range(n):
+                    k = ks[k0 + j]
+                    for i in range(sp.oh):
+                        if m0 + i < sp.mt:
+                            ab[i * sp.kc + j] = pa[(m0 + i) * sp.kt + k]
+                    for c in range(sp.ow):
+                        if n0 + c < sp.nt:
+                            wb[j * sp.ow + c] = pw[k * sp.nt + n0 + c]
+                for i in range(sp.oh):
+                    for c in range(sp.ow):
+                        for k in range(n):
+                            acc[i * sp.ow + c] += ab[i * sp.kc + k] @ wb[k * sp.ow + c]
+            parts.append(acc)
+        if form == "owner":
+            total = parts[0] + sum(parts[1:], np.zeros_like(parts[0]))
+        else:
+            r = 0
+            while 1 << r < sp.s:
+                for j in range(0, sp.s, 2 << r):
+                    if j + (1 << r) < sp.s:
+                        parts[j] = parts[j] + parts[j + (1 << r)]
+                r += 1
+            total = parts[0]
+        for i in range(sp.oh):
+            for c in range(sp.ow):
+                if m0 + i < sp.mt and n0 + c < sp.nt:
+                    y[m0 + i, n0 + c] = total[i * sp.ow + c]
+    return y.transpose(0, 2, 1, 3).reshape(sp.mt * T, sp.nt * T)
+
+
+@pytest.mark.parametrize("form", list(pl.REDUCE_FORMS))
+@pytest.mark.parametrize("s, oh, ow, kc", [(3, 2, 2, 2), (5, 1, 3, 1), (1, 3, 1, 4)])
+def test_split_tile_order_gives_the_product(form, s, oh, ow, kc):
+    sp = pl.split_plan(5, 7, 4, s, oh, ow, kc)
+    rng = np.random.default_rng(1)
+    a = rng.integers(-2, 3, (sp.mt * T, sp.kt * T)).astype(np.float64)
+    w = rng.integers(-2, 3, (sp.kt * T, sp.nt * T)).astype(np.float64)
+    assert np.array_equal(emulate_split(sp, a, w, form), a @ w)
+
+
+def test_split_plans_of_the_narrow_shapes_fit():
+    for (m, k, n), (s, oh, ow) in {
+        (128, 896, 128): (7, 1, 4),
+        (32, 4096, 4096): (7, 1, 8),
+    }.items():
+        sp = pl.split_plan(m // T, k // T, n // T, s, oh, ow)
+        assert sp.cores() <= 120 and sp.l1_bytes() <= pl.L1_BUDGET
+        assert len(sp.words()) == pl.S["kSplitWords"]
+    with pytest.raises(ValueError):
+        pl.split_plan(1, 4, 128, 5, 1, 8)  # a group larger than K's tiles

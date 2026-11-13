@@ -1,6 +1,6 @@
 """The matrix product on a card through the dispatch kernel (KMR_CARD=1): small
-shapes on integer inputs are exact in every form: W resident, W streamed, and the
-grid form in each layout (operands handed along rows and down columns)."""
+shapes on integer inputs are exact in every form: W resident, W streamed, the grid
+form in each layout (operands handed along rows and down columns), K split."""
 
 from pathlib import Path
 
@@ -31,4 +31,13 @@ def test_the_grid_form_is_exact(grid):
     assert out["plan"]["layout"] == grid.split(":")[0] and out["plan"]["nk"] == 2
     assert out["run"]["kernel"] == "none" and out["run"]["gave_up"] == []
     assert out["run"]["lane_gave_up"] == []
+    assert out["check"]["exact"] and out["ok"]
+
+
+@pytest.mark.parametrize("reduce", ["owner", "tree"])
+def test_the_k_split_form_is_exact(reduce):
+    shape = ["--m", 160, "--k", 64, "--n", 96, "--split", "2,2,2,1"]
+    out = run_json(SCRIPT, *shape, "--reduce", reduce, "--inputs", "int", "--calls", 4)
+    assert out["plan"]["form"] == "split" and out["reduce"] == reduce
+    assert out["run"]["kernel"] == "none" and out["run"]["gave_up"] == []
     assert out["check"]["exact"] and out["ok"]
