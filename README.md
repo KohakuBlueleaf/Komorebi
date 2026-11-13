@@ -13,8 +13,17 @@ such as rendering, where items need different code and meet state held on other 
 resident kernels on every Tensix core, run by the dispatch kernel on X280 cluster 0,
 records issued from Python to teams that change from record to record, completion per
 team, and a deadline that stops the run and names the cores that did not report
-([examples/01_mapcollect](examples/01_mapcollect/)). Breakpoints between cores, deciding
-on the card and the thread language are [planned](#roadmap).
+([examples/01_mapcollect](examples/01_mapcollect/)); values sent from core to core and
+reduced by owner or by tree ([02_merge_tree](examples/02_merge_tree/)); blocks broadcast
+along the rows and columns of a team ([03_broadcast](examples/03_broadcast/)); a graph
+run host-fed ([06_graph](examples/06_graph/)); streams and graphs uploaded from Python
+and run by the dispatch kernel, with no host step between their start and their end
+([engines](docs/reference/host.md#engines-uploads-start-events)); a thread on a second
+X280 cluster that issues records and decides from their result words
+([07_work_cluster](examples/07_work_cluster/)); and dynamic segments, in which items
+move from core to core as their data decides and the run ends by itself
+([05_hop](examples/05_hop/), with one open defect). Threads that move (`at`) and the
+thread language are [planned](#roadmap).
 
 ```python
 import komorebi as km
@@ -161,10 +170,11 @@ vector unit, and writes its own output tile.
 | Records, the ring of 16 mailbox slots on each core, the resident reader, compute and writer | implemented ([km_worker.hpp](src/komorebi_native/include/komorebi/device/km_worker.hpp)) |
 | Teams per record; completion per team, one level or through row leaders | implemented ([km_team.hpp](src/komorebi_native/include/komorebi/device/km_team.hpp), [km_record.hpp](src/komorebi_native/include/komorebi/device/km_record.hpp)) |
 | Host-fed dispatch: `Session`, `Run`, the dispatch kernel's host ring, slots, deadlines and events | implemented ([host API](docs/reference/host.md), [x280/kernel](src/komorebi_native/x280/kernel/)) |
-| Micro-op streams and the job queue | upload format, builder, check and simulator on the CPU; running them on the card is planned ([streams](docs/streams.md)) |
-| `emit` and `wait` between cores, groups, broadcast in a lane, `reduce` | planned |
+| `emit`, `arrive` and `take` between cores, groups, `reduce` by owner and by tree | implemented ([ports, emit and reduce](docs/reference/ports.md), [02_merge_tree](examples/02_merge_tree/)) |
+| Broadcast in a lane along a row or a column | implemented ([lane broadcast](docs/reference/lanes.md), [03_broadcast](examples/03_broadcast/)) |
+| Micro-op streams, the job queue and the graph executor | in the dispatch kernel: streams and graphs on core 1, the job queue on core 0; builders, checks and simulators on the CPU; on a card, `Run.upload`, `start` and `wait_engine` run a stream or a graph in the kernel, and `run_hostfed` runs the same one host-fed ([streams](docs/streams.md), [graphs](docs/graphs.md), [engines](docs/reference/host.md#engines-uploads-start-events)) |
+| User threads on X280 clusters 1 to 3 | implemented: `kmx` calls, a command ring to core 0, a host fallback ([X280 threads](docs/threads.md), [07_work_cluster](examples/07_work_cluster/)) |
 | `at`: threads that move, inboxes and packets of records | dynamic segments through a `Session` and on the test feeder: per-core queues in DRAM, quota, the quiet end found by the dispatch kernel ([dynamic segments](docs/reference/dynamic.md), [05_hop](examples/05_hop/)); open defect: about 1 run in 5 of 10^6 hops ends with a reported reason (a lost reservation answer), never a hang |
-| The graph executor; user threads on X280 clusters 1 to 3 | planned |
 | Homes and segments declared, and the thread language compiled into them | planned ([manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md)) |
 
 ## Highlights
@@ -202,6 +212,16 @@ vector unit, and writes its own output tile.
   ([projects](projects/README.md)).
 
 ## Measured
+
+The examples on one p150a, AICLK 1350 MHz, X280 at 1750 MHz, every output checked
+against numpy; each run, with its command, is in the example's README:
+
+| Example | What runs | Result |
+|---|---|---|
+| [01_mapcollect](examples/01_mapcollect/) | 1,000 jobs of 64 input tiles on random teams (61,720 member records), up to 4 in flight, issued from Python through the dispatch kernel | 1.655 µs per job by the kernel's clock, 1.985 by the host's; a record from issue to completion 4.5 µs (mean); 0 of 1,000 jobs wrong |
+| [02_merge_tree](examples/02_merge_tree/) | parts merged by owner or by tree, under the test feeder | 7.3 µs per job on 8 cores, 24.0 on 119; 1,000 random jobs exact; both forms bit-equal |
+| [03_broadcast](examples/03_broadcast/) | 24 KiB blocks to a 12 x 9 team along 27 lanes, under the test feeder | 1,355 GB/s delivered from 169 GB/s read from DRAM; every member reading DRAM itself: 457 GB/s |
+| [07_work_cluster](examples/07_work_cluster/) | a loop of 204 rounds of two records, each round's team chosen from the last result word | an X280 thread on cluster 1: 10.3 ms (about 50 µs per round); host-fed: 50 ms |
 
 Landing a 64-byte record multicast by one X280 core to every Tensix core: p150a, 120
 Tensix cores (12 x 10) at AICLK 1350 MHz, X280 at 1750 MHz, slow dispatch, two
@@ -261,8 +281,10 @@ bit on all four scenes. Milliseconds per frame (wall time of a frame loop of at 
 
 ## Install
 
-Nothing is released: no wheel, no package on PyPI, no prebuilt X280 image. Komorebi is
-used from a clone, on Linux x86-64 with Python 3.13:
+Nothing is released: no package on PyPI and no GitHub release. Komorebi is used from a
+clone, or from a wheel built from one with its dispatch image prebuilt
+([packaging](packaging/README.md), [from a wheel](docs/install.md#from-a-wheel)), on
+Linux x86-64 with Python 3.13:
 
 ```
 git clone <this repository> komorebi && cd komorebi
@@ -349,7 +371,7 @@ s.addi(j, j, 1)
 s.jlt(j, s.const(8), top)
 s.wait(0)  # until every record of the stream has completed
 s.halt(s.const(0))
-upload = s.encode()  # the bytes the host would upload
+upload = s.encode()  # the bytes run.upload(s) writes on a card
 
 done = s.simulate(n_cores=120, delay=2)  # a record completes 2 passes after issue
 print(len(upload), done.status, done.halt)
@@ -370,22 +392,26 @@ for r in done.records:
 ```
 
 Four disjoint teams fill the 120 cores in the first pass; the next four are issued when
-the first ones complete. The simulator is the definition the card's interpreter will
-be tested against; on the card the dispatch kernel does not run streams yet.
+the first ones complete. The simulator is the definition the card's interpreter is
+tested against: `run.upload(s)` and `run.start` run the same stream in the dispatch
+kernel, and the card tests compare its registers with `s.simulate`.
 
 ## Repository map
 
 ```text
 src/komorebi/                  the Python package: Program, Session, Run, layout, power, kmr
-  engines/stream.py            micro-op streams: builder, encoding, check, simulator
+  engines/                     micro-op streams and graphs: builders, encodings, checks,
+                               simulators; the host-fed graph executor
   manifest/  lang/             reserved: records, homes and segments; the thread language
 src/komorebi_native/
   include/komorebi/abi/        the record, the event and the stream format, shared by all
-  include/komorebi/device/     the resident worker, teams, the trace (Tensix kernels)
+  include/komorebi/device/     the resident worker, teams, ports, groups, lanes, the trace
   x280/kernel/                 the dispatch kernel for X280 cluster 0
+  x280/engines/  x280/kmx/     the plain-C graph engine; the X280 thread library
   csrc/host/                   the native module: X280 runtime, commands, events
-examples/                      01_mapcollect
-experiments/                   landing, collision, tile_probes
+examples/                      01_mapcollect, 02_merge_tree, 03_broadcast, 05_hop,
+                               06_graph, 07_work_cluster
+experiments/                   hardware and design probes (see its README)
 projects/  ref/                render references; CPU references in numpy
 tests/core/  tests/hardware/   tests with no card; card tests (KMR_CARD=1)
 tests/ref/                     the reference renderers against each other
@@ -396,18 +422,20 @@ docs/                          concepts, host API, streams, install, development
 
 - One Blackhole p150a, in slow dispatch. Grids of up to 128 cores in at most two
   multicast panels; one harvesting pattern has been run.
-- Every record is a host command: the card does not decide what to run next yet, and
-  each record is one Python call to `run.issue`.
+- Host-fed, each record is one Python call to `run.issue`; deciding on the card goes
+  through an X280 thread today (streams and graphs on the card wait for their host
+  calls).
 - At most 16 records in flight, ten 32-bit argument words per record, segments 1 to
   239.
-- No core-to-core breakpoint in the runtime yet: data a segment needs from another core
-  is the segment's own NoC code.
+- Between cores the runtime has ports (`emit`, `arrive`, `take`), groups, `reduce` and
+  lanes; threads that move to another core are not built yet.
 - tt-metal's watcher cannot run while the X280 runtime is open. Debugging is by the
   cores' state words, "where" codes and the per-core trace, all read after the stop.
 - A compute body's waits on its buffers are not bounded yet, so a stop while a long
   record is in flight can leave a core's compute kernel waiting.
-- Reading tensors back in slow dispatch runs at about 1 MB/s
-  ([01_mapcollect](examples/01_mapcollect/README.md)).
+- Reading tensors back is slow: a 4 MB tensor takes about 2 s bank by bank
+  (`session.read_bf16`) and about 3 s through `ttnn.to_torch` (host load about 8;
+  [dram_read](experiments/dram_read/README.md)).
 - `kmr build host` and `kmr build pymodule` take their compile flags from two targets
   that the [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch)
   project adds to a tt-metal build
@@ -415,16 +443,12 @@ docs/                          concepts, host API, streams, install, development
 
 ## Roadmap
 
-1. Static breakpoints: `emit` and `wait` into fixed slots, groups and broadcast inside a
-   lane, `reduce` by owner and by tree.
-2. Deciding on the card: the micro-op interpreter and the job queue in the dispatch
-   kernel, so the same program runs host-fed or from an uploaded stream.
-3. Dynamic breakpoints: inboxes, packets of records with credits, the end of a run
-   detected from counts; threads that move.
-4. The graph executor, and user threads on X280 clusters 1 to 3.
-5. Programs on the card against the references: matrix product, attention, SwiGLU,
+1. Dynamic segments without their open defect (a lost reservation answer), then threads
+   that move (`at`) on top of them.
+2. A first release: the wheel published, with its prebuilt dispatch image.
+3. Programs on the card against the references: matrix product, attention, SwiGLU,
    rasterization, ray tracing.
-6. A wheel with a prebuilt dispatch image; then the manifest and the thread language.
+4. The manifest and the thread language.
 
 ## Documentation
 

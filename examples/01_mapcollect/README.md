@@ -97,3 +97,18 @@ through row leaders (the runtime chooses per record).
 The JSON line reports microseconds per job by the dispatch kernel's clock and by the
 host's, the issue-to-completion latency, the Python time per record in `issue` and in
 the batched stores, and every core's end state.
+
+## Measured
+
+On one p150a, 2026-11-13, AICLK 1350 MHz, host load 8 to 14 (one-minute average), with
+
+```
+python mapcollect.py --jobs 1000 --teams random --out-tensors 32
+```
+
+1,000 jobs of 64 input tiles on random teams, 61,720 member records, up to 4 in flight:
+1.655 µs per job by the dispatch kernel's clock and 1.985 by the host's; from issue to
+completion 4.5 µs per record on average (14.5 at most); every one of the 1,000 jobs
+checked against numpy, 0 wrong (500 bit-exact, the others within a relative RMS error
+of 0.0019 of the total); every core ended cleanly. The wall time, 111 s, is mostly the
+outputs' read-back in slow dispatch.
