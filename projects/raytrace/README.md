@@ -81,18 +81,28 @@ that gives up says why in its profile, and the driver counts it as a failure. `A
 and `RECIP` run the walk's operations on given inputs for the arithmetic check;
 `PROBE` times one node visit in several forms.
 
+The same eight records also run as one graph (`framegraph.py`): uploaded once into
+the dispatch kernel's upload region and kept, each record a node after the records
+that write its inputs (the shadow and bounce traces may run together). The camera is
+bound as the address of its constant page (camera, light, sky, lane offsets), the
+colour as its address: a new camera is a new constant page and a `restart` with its
+address, with no new upload and no host step inside the frame. The kernel's X280 decides what to issue next; host-fed, the same executor runs
+on the host and issues through the host ring, and both give the same image.
+
 `run.py` runs the traces alone, with ray generation and shading on the host (the
 reference's functions): it checks every ray's hit and times each pass by itself.
 
 ## Running it
 
-Setup is that of [01_mapcollect](../../examples/01_mapcollect/README.md#what-it-needs),
-plus the scenes and trees of the reference (`KR_DATA`, see
-[`reference/`](reference/README.md#running)). From the repository root:
+Setup is that of [01_mapcollect](../../examples/01_mapcollect/README.md#what-it-needs).
+The drivers make a generated scene, its tree and the numpy reference image when they
+are missing (in `KR_DATA`, see [`reference/`](reference/README.md#running)); a public
+scene is fetched first with `python -m ref.public fetch`. From the repository root:
 
 ```bash
 python -m projects.raytrace.frame --scene tiny --reps 16 --json frame.json
 python -m projects.raytrace.frame --tiles 0 300 528 1000 --stages
+python -m projects.raytrace.framegraph --cameras 2
 python -m projects.raytrace.run --scene tiny --reps 5 --json tiny.json
 python -m projects.raytrace.run --scene s10k --treelets 128 --tiles 0 300 528 1000
 python -m projects.raytrace.arith --n 4096 --scene tiny
@@ -102,8 +112,10 @@ KMR_CARD=1 python -m pytest tests/hardware/test_raytrace_card.py
 `frame.py` prints one JSON line: per record its median time and the cycles per packet
 of loading, computing and writing, the clock, the card's idle and mean power, the image
 check and `ok`; `--stages` also reads every stage's pages back and checks them (use it
-on a few tiles: the whole frame's pages are 490 MB). `run.py` prints a JSON line per pass (card time per record, rate, profile sums, the
-check) and a last line with `ok`: every record done, every core ended, nothing given
+on a few tiles: the whole frame's pages are 490 MB). `framegraph.py` runs the graph
+for each camera in the kernel and host-fed, and checks every image against numpy's
+and the two against each other. `run.py` prints a JSON line per pass (card time per
+record, rate, profile sums, the check) and a last line with `ok`: every record done, every core ended, nothing given
 up, no walk error, no ray differs from numpy, and no pixel of the image differs. It
 exits 1 without it. `--reps` reruns each pass; the time of a pass is the record's
 event time (issue to completion, the X280's timer), and records run one at a time.
@@ -175,6 +187,21 @@ Reading it against the V100: below half everywhere, room left, in three places.
   packets.
 - Shading arithmetic: SHADE1 computes for 4,988 cycles per packet (the table); its
   bounce direction alone is twelve 32-bit hashes, two square roots and six divisions.
+
+### The frame as a graph
+
+`python -m projects.raytrace.framegraph --cameras 2` (2026-11-13 10:28, AICLK 1350
+MHz, host load average 9.5): the whole tiny frame for two cameras (the second a step
+forward), host wall time from the graph's start to its end event. The upload is 896
+bytes.
+
+| camera | in the kernel ms | host-fed ms | pixels differing from numpy (both) | kernel against host-fed |
+|---|---|---|---|---|
+| 0 | 23.50 | 26.09 | 0 | 0 |
+| 1 | 23.61 | 25.37 | 0 | 0 |
+
+The frame as a graph takes the time of its records (23.20 ms above) plus about 0.3
+ms; host-fed adds about 2 ms of host round trips over the eight records.
 
 ### The four traces alone
 
