@@ -41,7 +41,7 @@ place to ask a question and to be wrong.
 - [stream_checks](stream_checks/README.md): the reference streams of the micro-op
   simulator and a mutation run over its source. Every one of 104 mutants changes some
   saved answer.
-- [dispatch_kernel](dispatcher/README.md): what the dispatcher costs on the
+- [dispatcher](dispatcher/README.md): what the dispatcher costs on the
   card: microseconds per command, the host's stores into the card (a store right after
   a fence stalls for about 12 microseconds), loads, stores and fences per X280 memory,
   and the stream engine's share of the kernel's loop.

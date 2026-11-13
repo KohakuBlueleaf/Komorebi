@@ -42,7 +42,7 @@ def main():
     build.build_image(
         args.tree, args.out / VERIFY, SOURCES, includes=INCLUDES, defines=defines
     )
-    memcost = ROOT / "experiments" / "dispatch_kernel" / "memcost.c"
+    memcost = ROOT / "experiments" / "dispatcher" / "memcost.c"
     build.build_image(args.tree, args.out / MEMCOST, [memcost])
     if not args.image_only:
         module = args.out / MODULE

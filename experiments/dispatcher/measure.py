@@ -12,7 +12,7 @@ import time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TESTS = os.path.join(HERE, "..", "..", "tests", "hardware", "dispatch_kernel")
+TESTS = os.path.join(HERE, "..", "..", "tests", "hardware", "dispatcher")
 sys.path.insert(0, TESTS)
 
 import dispatch_card as dc  # noqa: E402
