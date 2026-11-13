@@ -322,7 +322,11 @@ def run_records(session, records, tree_pages, deadline_s=5.0, power=None, sizes=
         host_s = time.perf_counter() - t0
         run.stop()
     events = events if isinstance(events, list) else [events]
-    return Ran(events, run.result(), run.state(), host_s), meter.samples
+    ran = Ran(events, run.result(), run.state(), host_s)
+    # The host's side of the records: one 64-byte command and one event each.
+    ran.host = {"records": len(records), "issue_s": run.issue_s, "wait_s": run.wait_s}
+    ran.host.update(native_s=run.native_s, command_bytes=64 * len(records))
+    return ran, meter.samples
 
 
 PROF = (

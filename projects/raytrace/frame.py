@@ -157,6 +157,34 @@ def pictures(out, scene, flat, colour, want, report):
         json.dump(report, f, indent=1)
 
 
+SAMPLE_CORES = (0, 40, 80, 119)  # cores whose trace hit pages --profile keeps
+
+
+def save_profile(path, session, raw, record_us, directory, tensors):
+    """Every record's counters per core, the record times, the directory and the hit
+    pages of SAMPLE_CORES' packets for each trace (first kHitAnyVectors vectors)."""
+    out = {"record_us": record_us, "directory": directory}
+    for (name, *_), rows in zip(STEPS, raw):
+        out[f"prof_{name}"] = np.stack(rows)
+    per = K["kPagePackets"]
+    for name, seg, _, outs in STEPS:
+        if seg != "kSegTrace":
+            continue
+        v = vectors(outs[0])
+        parts = []
+        for c in SAMPLE_CORES:
+            first, count = (
+                int(x) for x in directory[c, [K["kDirFirst"], K["kDirCount"]]]
+            )
+            lo, hi = first // per, (first + count - 1) // per + 1
+            (pages,) = session.read(tensors[outs[0]], first=lo, pages=hi - lo)
+            pk = pages.view(np.uint32).reshape(-1, v, VEC)
+            pk = pk[first - lo * per : first - lo * per + count, : K["kHitAnyVectors"]]
+            parts.append(pk)
+        out[f"hits_{name}"] = np.concatenate(parts)
+    np.savez_compressed(path, **out)
+
+
 def check_stages(got, scene, tree, pix):
     """Lanes that differ from the reference, stage by stage."""
     first, at = expected(scene, tree, pix)
@@ -194,6 +222,7 @@ def main():
     p.add_argument("--pictures", type=Path, default=None, help="folder for the PNGs")
     p.add_argument("--treelets", type=int, default=0, help="KiB: treelets from DRAM")
     p.add_argument("--slots", type=int, default=4, help="treelet slots per core")
+    p.add_argument("--profile", default=None, help="NPZ: every core's counters")
     args = p.parse_args()
     data = native.data_dir()
     tree = harness.ensure_tree(args.scene)
@@ -257,18 +286,20 @@ def main():
         per_rep = card.record_us(res)[1:].reshape(args.reps, len(step_of))
         us = np.stack([np.bincount(step_of, r, len(STEPS)) for r in per_rep])
         report["run"] = run
+        report["host"] = {**res.host, "wall_s": res.host_s}
         report["frame_us_median"] = float(np.median(us.sum(axis=1)))
         report["frame_ms"] = report["frame_us_median"] / 1000
         watts = [w for t, w in samples if t >= samples[-1][0] - res.host_s]
         report["power_mean_w"] = float(np.mean(watts)) if watts else None
         report["steps"] = []
-        rows = [
-            sum(
-                r.astype(np.uint64)
-                for r in card.read_each(session, ps, [s[0]] * len(ps))
-            )
-            for s, ps in zip(STEPS, profs)
+        raw = [
+            card.read_each(session, ps, [s[0]] * len(ps)) for s, ps in zip(STEPS, profs)
         ]
+        rows = [sum(r.astype(np.uint64) for r in rs) for rs in raw]
+        if args.profile:
+            save_profile(
+                args.profile, session, raw, card.record_us(res), directory, tensors
+            )
         for (name, *_), ev_us, prof in zip(STEPS, us.T, rows):
             pr = card.profile_rows(prof.astype(np.uint64), workers)
             step = {"step": name, "us": float(np.median(ev_us))}
