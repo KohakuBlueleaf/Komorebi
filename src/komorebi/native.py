@@ -114,14 +114,17 @@ def _require_native():
 
 
 def _tree(tree):
-    tree = tree or _env.metal_home()
+    tree = tree or _env.find_tree()[0]
     if tree is None:
-        raise build.BuildError(f"set {_env.HOME_VARIABLE} or pass a tt-metal tree")
+        raise build.BuildError(
+            f"set {_env.HOME_VARIABLE}, install {_env.RUNTIME_SOURCE} or pass a tree"
+        )
     return Path(tree)
 
 
 def metal_tree(tree=None):
-    """`tree`, else the tt-metal tree TT_METAL_HOME names (a BuildError if neither)."""
+    """`tree`, else TT_METAL_HOME's tree, else the runtime package's root (a
+    BuildError if none)."""
     return _tree(tree)
 
 

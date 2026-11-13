@@ -10,13 +10,15 @@ from komorebi import __version__, _env, build, power
 
 def doctor_report(environ=None):
     """What this host offers, as a dict; opens no device and runs no program."""
-    tree = _env.metal_home(environ)
+    tree, source = _env.find_tree(environ)
     return {
         "version": __version__,
         "python": f"{platform.python_version()} ({sys.executable})",
         "package_dir": str(_env.package_dir()),
         "include_dir": _env.include_dir(),
         "tt_metal": tree,
+        "source": source,
+        "runtime": _env.runtime_version(),
         "build_dir": tree and _env.build_dir(tree),
         "x280_runtime": bool(tree and _env.has_x280_runtime(tree)),
         "x280_compiler": tree and _env.x280_compiler(tree),
@@ -31,6 +33,16 @@ def format_report(report):
 
     unset = f"not found ({_env.HOME_VARIABLE} is unset or not a directory)"
     tree = report["tt_metal"]
+    if report["source"] == _env.RUNTIME_SOURCE:
+        source = (
+            f"{_env.RUNTIME_SOURCE} {report['runtime']} ({_env.HOME_VARIABLE} unset)"
+        )
+    elif report["source"]:
+        source = _env.HOME_VARIABLE
+    else:
+        source = "-"
+    # The runtime package carries a built runtime and no build directory.
+    home = tree and report["source"] == _env.HOME_VARIABLE
     runtime = "yes" if report["x280_runtime"] else "no"
     rows = [
         ("komorebi", report["version"]),
@@ -38,7 +50,8 @@ def format_report(report):
         ("package", report["package_dir"]),
         ("include", found(report["include_dir"], "not found")),
         ("tt-metal", found(tree, unset)),
-        ("build", found(report["build_dir"], "not found" if tree else "-")),
+        ("from", source),
+        ("build", found(report["build_dir"], "not found" if home else "-")),
         ("x280 runtime", runtime if tree else "-"),
         ("x280 compiler", found(report["x280_compiler"], "not found" if tree else "-")),
     ]
@@ -47,9 +60,13 @@ def format_report(report):
 
 def run_build(args):
     """Builds what the arguments name; returns the exit code."""
-    tree = args.tree or _env.metal_home()
+    tree = args.tree or _env.find_tree()[0]
     if tree is None:
-        print(f"kmr build: pass --tree or set {_env.HOME_VARIABLE}", file=sys.stderr)
+        print(
+            f"kmr build: pass --tree, set {_env.HOME_VARIABLE} or install "
+            f"{_env.RUNTIME_SOURCE}",
+            file=sys.stderr,
+        )
         return 2
     try:
         if args.kind == "image":

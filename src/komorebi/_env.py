@@ -1,12 +1,19 @@
 """Where the tt-metal tree, its build and the X280 toolchain are.
 
-Every function only looks at the file system; nothing runs at import.
+The tree is TT_METAL_HOME's when set, else the root of the komorebi-runtime package when
+it is installed. Nothing runs at import.
 """
 
 import os
 from pathlib import Path
 
+try:
+    import komorebi_runtime
+except ImportError:  # the runtime package is optional (the `runtime` extra)
+    komorebi_runtime = None
+
 HOME_VARIABLE = "TT_METAL_HOME"
+RUNTIME_SOURCE = "komorebi-runtime"
 
 _X280_SOURCE = Path("tt_metal/fabric/experimental/x280")
 _SFPI_BIN = Path("runtime/sfpi/compiler/bin")
@@ -31,6 +38,23 @@ def metal_home(environ=None):
         return None
     tree = Path(value).expanduser()
     return tree if tree.is_dir() else None
+
+
+def find_tree(environ=None):
+    """(tree, source): TT_METAL_HOME's tree when the variable is set (None if it names
+    no directory), else the runtime package's root, else (None, None)."""
+    if (os.environ if environ is None else environ).get(HOME_VARIABLE):
+        return metal_home(environ), HOME_VARIABLE
+    if komorebi_runtime is not None and komorebi_runtime.installed():
+        return komorebi_runtime.root(environ), RUNTIME_SOURCE
+    return None, None
+
+
+def runtime_version():
+    """The installed runtime package's version, or None."""
+    if komorebi_runtime is None or not komorebi_runtime.installed():
+        return None
+    return komorebi_runtime.version()
 
 
 def build_dir(tree):
