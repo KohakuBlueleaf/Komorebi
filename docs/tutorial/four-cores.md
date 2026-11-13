@@ -53,8 +53,7 @@ thread's image has no place for variables that start as zero.
 
 Four lines of 16 numbers, one line for each core: a core writes to the first number of its
 own line. A line of 64 bytes is the unit in which the cores' caches exchange memory, so
-each core's piece lies in a line of its own, as the thread example of the repository does
-it. This lesson does not measure what sharing a line would cost. The `= {1}` is the
+each core's piece lies in a line of its own. This lesson does not measure what sharing a line would cost. The `= {1}` is the
 non-zero start, and the attribute puts the array where the image allows it.
 
 ```{ .c }

@@ -10,7 +10,7 @@ __attribute__((section(".data"))) static uint32_t partial[4 * LINE_WORDS] = {1};
 // --8<-- [end:partials]
 
 // --8<-- [start:sum]
-// A number made from i that has no formula for its sum, so that the loop is real work.
+// A number made from i, with no formula for the sum of them.
 static uint32_t scramble(uint32_t i) {
     i ^= i >> 15;
     i *= 2246822519u;

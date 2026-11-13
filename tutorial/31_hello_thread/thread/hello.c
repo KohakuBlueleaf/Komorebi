@@ -1,4 +1,4 @@
-/* The smallest X280 thread: adds the two numbers Python gave it and returns the sum. */
+/* The smallest X280 thread: it adds the two numbers Python gave it. */
 #include "kmx.h"
 
 int kmx_main(int core) {

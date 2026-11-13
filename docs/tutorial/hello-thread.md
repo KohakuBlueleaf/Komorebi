@@ -41,7 +41,12 @@ int kmx_main(int core) {
 In Python, next to `km.Program(...)` and before `load`:
 
 ```python
-program.thread(cluster=CLUSTER, sources=[FILES], regions={NAME: SIZE}, words=[NUMBERS])
+program.thread(
+    cluster=CLUSTER,
+    sources=[FILES],
+    regions={NAME: SIZE},
+    words=[NUMBERS],
+)
 ```
 
 and after `load`:
@@ -81,23 +86,6 @@ empty ones, and no command is sent to the grid.
 
 This is the whole declaration of the thread. The line only describes it, as `Program`
 describes the kernels: nothing runs until `load`.
-
-<figure class="km-diagram">
-<script type="application/json">
-{"kind": "anatomy",
- "parts": [
-  {"t": "program.thread("},
-  {"t": "cluster=1", "n": "which X280\ncluster"},
-  {"t": ", "},
-  {"t": "sources=[...]", "n": "the C files"},
-  {"t": ", "},
-  {"t": "regions={...}", "n": "memory shared\nwith Python"},
-  {"t": ", "},
-  {"t": "words=[20, 22]", "n": "numbers for\nthe thread"},
-  {"t": ")"}]}
-</script>
-<figcaption>The parts of the line that declares a thread.</figcaption>
-</figure>
 
 ```{ .c }
 --8<-- "tutorial/31_hello_thread/thread/hello.c"

@@ -5,7 +5,7 @@
 #define LINE_WORDS 16 /* a 64-byte cache line holds 16 words */
 #define CORES_PER_CLUSTER 4
 
-// A number made from i that has no formula for its sum, so that the loop is real work.
+// A number made from i, with no formula for the sum of them.
 static uint32_t scramble(uint32_t i) {
     i ^= i >> 15;
     i *= 2246822519u;

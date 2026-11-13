@@ -23,7 +23,12 @@ cluster.
 In Python, where `thread` was:
 
 ```python
-program.thread(clusters=(1, 2, 3), sources=[FILES], regions={NAME: SIZE}, words=[NUMBERS])
+program.thread(
+    clusters=(1, 2, 3),
+    sources=[FILES],
+    regions={NAME: SIZE},
+    words=[NUMBERS],
+)
 results = run.thread_results(timeout=SECONDS)
 part = run.threads[CLUSTER].read(NAME)
 ```
