@@ -53,8 +53,7 @@ in flight per lane. The lanes and their senders come from `komorebi.layout.lane_
 The cut-down modes are for the benchmark: cast only reads Q and casts every K / V block
 but compute only takes and pops the blocks, and no row is written; compute only works on
 Q, K and V as they are in L1 (no reads, no lane, no writes). Passes repeat the record's
-jobs, so that a loop of records lasts seconds; a record moves fewer than 65,536 pages
-through a lane (`Plan.passes_max`, see "Limits").
+jobs, so that a loop of records lasts seconds.
 
 `plan.py` is the plan as pure functions, with Kohaku-TT's rules: R query tile rows per
 job and KB key tiles per block fitted to the L1 budget (from 13 and 12 down), the lane
@@ -107,25 +106,27 @@ rows.
 
 ## Results
 
-Correctness, measured on 2026-11-13 on one p150a (card clock 1,350 MHz), ours at commit
-"Projects: attention on resident workers with lane broadcast", Kohaku-TT at ac81ff2, one
-after the other in the same session; host load (1 min) 4 to 13. Ours: `run.py --shape
-<preset> --calls 4`; Kohaku-TT: `reference/ktt_bench.py --shape <preset>`. Both are
-compared with float64 on the same 16 sampled query tile rows.
+Correctness, measured on 2026-11-13 on one p150a (card clock 1,350 MHz), ours and
+Kohaku-TT's `ktt_flash` at ac81ff2 one after the other in the same session. Rows `t1` to
+`t3`: `run.py --shape <preset> --calls 4 --json results/run-<preset>.json` and
+`reference/ktt_bench.py --shape <preset> --seconds 1 --json results/ktt-<preset>.json`;
+the other rows: the `check` of `results/ours-<preset>.json` and
+`results/ktt-<preset>.json` (see "Time and power"). Both are compared with float64 on
+the same sampled query tile rows (16, or all 4 of `t1`).
 
 | Preset | Plan: R, KB, L | Ours: RMS / largest | Kohaku-TT: RMS / largest |
 |---|---|---|---|
 | `t1` | 13, 12, 10 | 5.50e-3 / 9.02e-3 | 5.50e-3 / 9.02e-3 |
 | `t2` | 13, 12, 10 | 6.19e-3 / 7.88e-3 | 6.19e-3 / 7.88e-3 |
 | `t3` (causal, Hk 1, D 128) | 13, 12, 10 | 4.18e-3 / 4.72e-3 | 4.18e-3 / 4.72e-3 |
-| `long64` | 13, 12, 5 | 6.65e-3 / 1.47e-2 | |
-| `wide128` | 13, 12, 10 | 6.32e-3 / 9.46e-3 | |
-| `short64` | 13, 12, 2 | 5.87e-3 / 7.52e-3 | |
-| `causal64` | 13, 12, 10 | 5.71e-3 / 7.53e-3 | |
-| `gqa128` | 13, 12, 5 | 6.28e-3 / 8.91e-3 | |
+| `long64` | 13, 12, 5 | 6.65e-3 / 1.47e-2 | 6.65e-3 / 1.47e-2 |
+| `wide128` | 13, 12, 10 | 6.32e-3 / 9.46e-3 | 6.32e-3 / 9.46e-3 |
+| `short64` | 13, 12, 2 | 5.87e-3 / 7.52e-3 | 5.87e-3 / 7.52e-3 |
+| `causal64` | 13, 12, 10 | 5.71e-3 / 7.53e-3 | 5.71e-3 / 7.53e-3 |
+| `gqa128` | 13, 12, 5 | 6.28e-3 / 8.91e-3 | 6.28e-3 / 8.91e-3 |
 
-Where both were run, the two kernels' statistics agree to every printed digit: the
-compute body and its operand order are the same.
+The two kernels' statistics agree to every printed digit: the compute body and its
+operand order are the same.
 
 ### Time and power
 
@@ -260,13 +261,6 @@ Not bounded: the compute kernel's waits between its own three threads, as in
 on `cb_p`, `cb_stok`, `cb_otok`), the destination register hand-over (`tile_regs_*`) and
 the semaphore and SFPU mutex waits in the vector sections. They wait only on work the
 same kernel has already started.
-
-A known runtime defect, being fixed: a lane's sender reads its buffer's 16-bit
-popped-page counter only in `km::Lane::finish()`, so a record that moves 65,536 pages
-or more through one lane leaves the sender waiting in `finish()` for blocks it counts
-as not popped; that record still reports done and the next one times out. Until the fix
-lands, `plan.make` refuses such a plan and `Plan.passes_max` keeps the benchmark's
-passes below it; both go with the fix.
 
 ## Future work
 

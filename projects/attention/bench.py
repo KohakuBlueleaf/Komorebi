@@ -177,7 +177,7 @@ def main():
         # Load 2: the power loop, then the cut-down runs.
         att = card.Attention(session, p, tensors, scale, args.approx, noc=args.noc)
         each = out["us_per_call"]
-        passes = min(p.passes_max(), max(1, math.ceil(0.1e6 / each)))
+        passes = max(1, math.ceil(0.1e6 / each))
         cuts = 11 if args.cuts else 0
         records = math.ceil(args.seconds * 1e6 / (each * passes))
         records = max(2, min(records, RECORDS_MAX - cuts))
@@ -191,8 +191,7 @@ def main():
                 ("cast_only", K["kModeCastOnly"]),
                 ("compute_only", K["kModeComputeOnly"]),
             ):
-                ps = min(p.passes_max(), 4)
-                cut[name], _ = back_to_back(att, 4, mode=mode, passes=ps)
+                cut[name], _ = back_to_back(att, 4, mode=mode, passes=4)
                 cut[name + "_profile"] = profile_summary(att.profile(session), 4)
             out["cuts"] = cut  # neither writes O
         out["records_issued"].append(records + cuts)
