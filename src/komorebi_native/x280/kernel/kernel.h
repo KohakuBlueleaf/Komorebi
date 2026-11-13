@@ -26,23 +26,23 @@
 /* A command source: its ring of 64-byte command lines, numbered from 1 in slot i %
  * depth, and its ring of 16-byte events; each word has one writer (README.md). */
 typedef struct {
-    volatile const uint8_t* cmds;  /* the source writes the lines */
-    volatile uint32_t* consumed;   /* the kernel writes: commands taken */
-    volatile uint8_t* events;      /* the kernel writes the events */
-    volatile uint32_t* told;       /* the kernel writes: events pushed (a hint) */
-    volatile const uint32_t* read; /* the source writes: events it has read */
-    uint32_t depth, event_depth;   /* powers of two */
-    uint32_t next;                 /* number of the next command */
-    uint32_t pushed;               /* events pushed */
-    uint32_t told_n;               /* events the count word shows */
-    uint32_t read_n;               /* events the source has read, as last loaded */
-    uint32_t line_state; /* 0: line is free; 1: it holds command next; 2: held */
-    uint32_t nbusy;      /* busy slots whose command came from here */
-    uint32_t nqueued;    /* its jobs waiting in the queue */
-    uint32_t owed;       /* events owed besides those (host: one per active stream) */
-    uint64_t t_command;  /* deadline of its next command, in ticks */
-    uint64_t before;     /* queue places of jobs queued before the line was taken */
-    uint64_t* line;      /* the command being taken: 8 words, 64-byte aligned */
+    volatile const uint8_t* commands; /* the source writes the lines */
+    volatile uint32_t* consumed;      /* the kernel writes: commands taken */
+    volatile uint8_t* events;         /* the kernel writes the events */
+    volatile uint32_t* told;          /* the kernel writes: events pushed (a hint) */
+    volatile const uint32_t* read;    /* the source writes: events it has read */
+    uint32_t depth, event_depth;      /* powers of two */
+    uint32_t next;                    /* number of the next command */
+    uint32_t pushed;                  /* events pushed */
+    uint32_t told_count;              /* events the count word shows */
+    uint32_t read_count;              /* events the source has read, as last loaded */
+    uint32_t line_state;   /* 0: line is free; 1: it holds command next; 2: held */
+    uint32_t busy_count;   /* busy slots whose command came from here */
+    uint32_t queued_count; /* its jobs waiting in the queue */
+    uint32_t owed;         /* events owed besides those (host: one per active stream) */
+    uint64_t t_command;    /* deadline of its next command, in ticks */
+    uint64_t before;       /* queue places of jobs queued before the line was taken */
+    uint64_t* line;        /* the command being taken: 8 words, 64-byte aligned */
 } kmd_ring_t;
 
 /* Sources, served in this order (the numbers are in km_dispatch.h's core block). */
@@ -56,8 +56,9 @@ typedef struct {
 typedef struct {
     uint64_t line[8];
     uint64_t ticks;
-    uint32_t req, count, passed; /* passed: jobs behind it submitted while it waited */
-    uint8_t src, pad;
+    uint32_t request, count,
+        passed; /* passed: jobs behind it submitted while it waited */
+    uint8_t source, pad;
     uint16_t tag; /* the engine's stream tag (KMD_HANDLER_DROP) */
 } kmd_job_t;
 
@@ -75,15 +76,15 @@ typedef struct {
 typedef struct {
     uint32_t handler; /* the program's dynamic handler; 0: none */
     uint32_t active;  /* a RUN is in flight and not yet quiet */
-    uint32_t slot, sequence, group, req, src; /* the RUN command */
+    uint32_t slot, sequence, group, request, source; /* the RUN command */
     uint32_t end; /* 1 + the end command's slot while busy; 0 */
     uint32_t checks;
     uint32_t first[2u * KM_CORES_MAX]; /* the first pass: sent, consumed per core */
 } kmd_messages_t;
 
-/* A stream the kernel admitted and the engine runs: its range and req. */
+/* A stream the kernel admitted and the engine runs: its range and request. */
 typedef struct {
-    uint32_t active, req, off, bytes;
+    uint32_t active, request, offset, bytes;
 } kmd_run_t;
 
 typedef struct {
@@ -96,7 +97,7 @@ typedef struct {
     volatile const uint8_t* upload; /* the upload region, upload_bytes long */
     uint32_t upload_bytes;
     uint32_t error, where; /* KMD_ERROR_*, KMD_WHERE_* */
-    uint64_t t_boot;       /* mtime at the start */
+    uint64_t start_mtime;  /* mtime at the start */
     /* grid port */
     uint32_t panels, opened; /* windows programmed: bits 0, 1 panels, 2 host, 3+ work */
     volatile uint8_t* control[2]; /* every core's control block, through each panel */
@@ -106,31 +107,31 @@ typedef struct {
     volatile uint8_t* ering; /* the engine's ring area in DRAM */
     kmd_queue_t* queue;      /* the job queue, in the state area */
     /* completion table */
-    uint32_t depth, full, busy, nbusy, cores;
+    uint32_t depth, full, busy, busy_count, cores;
     uint32_t sequence;                     /* last sequence number submitted */
     uint32_t exited;                       /* an EXIT command was submitted */
     uint32_t slot_sequence[KM_RING_SLOTS]; /* last sequence: the ack word once free */
-    uint32_t slot_req[KM_RING_SLOTS];
+    uint32_t slot_request[KM_RING_SLOTS];
     uint32_t slot_group[KM_RING_SLOTS];
-    uint8_t slot_src[KM_RING_SLOTS]; /* the source the command came from */
-    uint32_t result_busy;            /* busy slots whose command has KM_FLAG_RESULT */
+    uint8_t slot_source[KM_RING_SLOTS]; /* the source the command came from */
+    uint32_t result_busy; /* busy slots whose command has KM_FLAG_RESULT */
     uint32_t last_result; /* the latest KM_FLAG_RESULT command's result (0: none yet) */
     uint32_t results;     /* KM_FLAG_RESULT commands completed */
-    uint64_t slot_t0[KM_RING_SLOTS];
+    uint64_t slot_submitted[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* streams the engine runs */
     kmd_run_t runs[KM_STREAM_MAX_ACTIVE];
-    uint32_t nstreams;  /* admitted and not yet ended */
-    uint32_t engine_on; /* engine_active() after its last turn; a RUN sets it */
-    uint32_t queued;    /* the queue's length, for the loop */
-    uint32_t waits;     /* bit src: a busy rejection to it, KMD_EVENT_WAKE owed */
+    uint32_t stream_count; /* admitted and not yet ended */
+    uint32_t engine_on;    /* engine_active() after its last turn; a RUN sets it */
+    uint32_t queued;       /* the queue's length, for the loop */
+    uint32_t waits;        /* bit source: a busy rejection to it, KMD_EVENT_WAKE owed */
     kmd_messages_t messages;
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */
     uint32_t traced, untraced;              /* KMD_TRACE builds */
     uint64_t passes, idle_passes, full_passes;
-    uint64_t t_first, t_last_event;
+    uint64_t first_command_mtime, last_event_mtime;
 } kmd_t;
 
 _Static_assert(sizeof(kmd_t) <= KMD_STATE_ENGINE, "kmd_t outgrows its DRAM area");
@@ -167,9 +168,9 @@ static inline kmd_wait_t kmd_poll(const kmd_t* k, uint32_t* spins, uint64_t dead
     return KMD_OK;
 }
 
-/* Stores the 64-byte line at `src` to `dst` with one vector store (VLEN 512 = 16 x
+/* Stores the 64-byte line at `source` to `dst` with one vector store (VLEN 512 = 16 x
  * e32); both 64-byte aligned. */
-static inline void kmd_store_line(volatile void* dst, volatile const void* src) {
+static inline void kmd_store_line(volatile void* dst, volatile const void* source) {
     __asm__ volatile(
         ".option push\n.option arch, +v\n"
         "vsetivli zero, 16, e32, m1, ta, ma\n"
@@ -177,13 +178,13 @@ static inline void kmd_store_line(volatile void* dst, volatile const void* src) 
         "vse32.v v8, (%1)\n"
         ".option pop\n"
         :
-        : "r"(src), "r"(dst)
+        : "r"(source), "r"(dst)
         : "memory", "v8"
     );
 }
 
-/* Stores the 16-byte chunk at `src` to `dst` with one vector store. */
-static inline void kmd_store_chunk(volatile void* dst, const uint32_t* src) {
+/* Stores the 16-byte chunk at `source` to `dst` with one vector store. */
+static inline void kmd_store_chunk(volatile void* dst, const uint32_t* source) {
     __asm__ volatile(
         ".option push\n.option arch, +v\n"
         "vsetivli zero, 4, e32, m1, ta, ma\n"
@@ -191,7 +192,7 @@ static inline void kmd_store_chunk(volatile void* dst, const uint32_t* src) {
         "vse32.v v9, (%1)\n"
         ".option pop\n"
         :
-        : "r"(src), "r"(dst)
+        : "r"(source), "r"(dst)
         : "memory", "v9"
     );
 }

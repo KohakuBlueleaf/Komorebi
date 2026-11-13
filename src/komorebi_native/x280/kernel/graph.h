@@ -15,7 +15,7 @@
 
 typedef struct {
     uint32_t state; /* KMD_GR_* */
-    uint32_t req, order;
+    uint32_t request, order;
     uint32_t kept;        /* a3 of its end: the graph is kept from now on */
     uint32_t wait;        /* a command was rejected: no step before the next answer */
     uint32_t round_owed;  /* a KM_EVENT_GRAPH event waits for room */
@@ -24,7 +24,7 @@ typedef struct {
     uint32_t
         jobs; /* queued commands it sent: its end drops those left (KMD_HANDLER_DROP) */
     uint64_t t_command; /* deadline of each command it submits, in ticks */
-    kmg_state_t g;
+    kmg_state_t executor;
 } kmd_graph_run_t;
 
 typedef struct {
@@ -41,252 +41,293 @@ _Static_assert(
 );
 _Static_assert(KM_GRAPH_MAX_ACTIVE == 2u, "KMD_SENT_GRAPH keeps one bit for the run");
 
-static inline uint8_t* graph_state_base(kmd_engine_t* e) {
-    return (uint8_t*)e - KMD_STATE_ENGINE;
+static inline uint8_t* graph_state_base(kmd_engine_t* engine) {
+    return (uint8_t*)engine - KMD_STATE_ENGINE;
 }
 
-static inline kmd_graphs_t* graphs(kmd_engine_t* e) {
-    return (kmd_graphs_t*)(graph_state_base(e) + KMD_STATE_GRAPH);
+static inline kmd_graphs_t* graphs(kmd_engine_t* engine) {
+    return (kmd_graphs_t*)(graph_state_base(engine) + KMD_STATE_GRAPH);
 }
 
-/* Core 0's table entry `i`, read only. */
-static inline const volatile kmd_gentry_t* graph_entry(kmd_engine_t* e, uint32_t i) {
-    const kmd_gtable_t* t = (
-        (const kmd_gtable_t*)(graph_state_base(e) + KMD_STATE_GTABLE)
-    );
-    return (const volatile kmd_gentry_t*)&t->entry[i % KMD_GRAPH_ENTRIES];
-}
-
-/* Posts the host event {req, status, ticks} with a3 = `a3` if the ring has room. */
-static int graph_post_event(
-    kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t ticks, uint32_t a3
+/* Core 0's table entry `index`, read only. */
+static inline const volatile kmd_gentry_t* graph_entry(
+    kmd_engine_t* engine, uint32_t index
 ) {
-    if (!eng_room(e, 1)) {
+    const kmd_gtable_t* table = (
+        (const kmd_gtable_t*)(graph_state_base(engine) + KMD_STATE_GTABLE)
+    );
+    return (const volatile kmd_gentry_t*)&table->entry[index % KMD_GRAPH_ENTRIES];
+}
+
+/* Posts the host event {request, status, ticks} with a3 = `a3` if the ring has room. */
+static int graph_post_event(
+    kmd_engine_t* engine, uint32_t request, uint32_t status, uint32_t ticks, uint32_t a3
+) {
+    if (!eng_room(engine, 1)) {
         return 0;
     }
-    uint64_t* l = e->line;
-    l[0] = (uint64_t)KMD_HANDLER_POST << 32;
-    l[1] = (uint64_t)req << 32;
-    l[2] = (uint64_t)status << 32;
-    l[3] = ticks | (uint64_t)a3 << 32;
-    for (uint32_t j = 4; j < 8; j++) {
-        l[j] = 0;
+    uint64_t* line = engine->line;
+    line[0] = (uint64_t)KMD_HANDLER_POST << 32;
+    line[1] = (uint64_t)request << 32;
+    line[2] = (uint64_t)status << 32;
+    line[3] = ticks | (uint64_t)a3 << 32;
+    for (uint32_t word = 4; word < 8; word++) {
+        line[word] = 0;
     }
-    eng_write(e);
-    e->posts++;
+    eng_write(engine);
+    engine->posts++;
     return 1;
 }
 
-/* Ends run `r` with the event `status`, `ticks` (posted when the ring has room). */
-static inline void graph_end(kmd_graph_run_t* r, uint32_t status, uint32_t ticks) {
-    r->state = KMD_GR_ENDING;
-    r->post_status = status;
-    r->post_ticks = ticks;
+/* Ends run `run` with the event `status`, `ticks` (posted when the ring has room). */
+static inline void graph_end(kmd_graph_run_t* run, uint32_t status, uint32_t ticks) {
+    run->state = KMD_GR_ENDING;
+    run->post_status = status;
+    run->post_ticks = ticks;
 }
 
-/* KMD_EVENT_GRAPH_RUN for table entry `i`: the check, the kept table, the bindings,
+/* KMD_EVENT_GRAPH_RUN for table entry `index`: the check, the kept table, the bindings,
  * then the graph runs; a fault ends it at once with KM_EVENT_GRAPH_ERROR. */
-static void graph_start(kmd_engine_t* e, uint32_t i) {
-    kmd_graphs_t* gs = graphs(e);
-    kmd_graph_run_t* r = 0;
-    for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE && r == 0; j++) {
-        r = gs->run[j].state == KMD_GR_FREE ? &gs->run[j] : 0;
+static void graph_start(kmd_engine_t* engine, uint32_t index) {
+    kmd_graphs_t* graph_runs = graphs(engine);
+    kmd_graph_run_t* run = 0;
+    for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE && run == 0; j++) {
+        run = graph_runs->run[j].state == KMD_GR_FREE ? &graph_runs->run[j] : 0;
     }
-    const volatile kmd_gentry_t* x = graph_entry(e, i);
+    const volatile kmd_gentry_t* entry = graph_entry(engine, index);
     x280_fence_ir();
-    const uint32_t off = x->off, bytes = x->bytes, n_bind = x->n_bind;
-    if (r == 0 || off > e->upload_bytes || bytes > e->upload_bytes - off) {
+    const uint32_t offset = entry->offset;
+    const uint32_t bytes = entry->bytes;
+    const uint32_t binding_count = entry->binding_count;
+    if (
+        run == 0 || offset > engine->upload_bytes ||
+        bytes > engine->upload_bytes - offset
+    ) {
         return; /* core 0 admits neither */
     }
-    r->req = x->req;
+    run->request = entry->request;
     /* Shared with the streams: a job's tag names one. */
-    r->order = ++e->orders;
-    r->wait = r->round_owed = r->jobs = 0;
-    r->kept = 0;
-    const void* upload = (const void*)(uintptr_t)(e->upload + off);
-    uint32_t err = kmg_check(upload, bytes);
-    const uint32_t keep = err ? 0u : ((const km_graph_t*)upload)->flags & KM_GRAPH_KEEP;
-    if (keep && x->full) {
-        err = KM_STREAM_ERROR_KEPT_FULL | KM_GRAPH_NO_NODE << 8;
+    run->order = ++engine->orders;
+    run->wait = run->round_owed = run->jobs = 0;
+    run->kept = 0;
+    const void* upload = (const void*)(uintptr_t)(engine->upload + offset);
+    uint32_t error = kmg_check(upload, bytes);
+    const uint32_t keep = (
+        error ? 0u : ((const km_graph_t*)upload)->flags & KM_GRAPH_KEEP
+    );
+    if (keep && entry->full) {
+        error = KM_STREAM_ERROR_KEPT_FULL | KM_GRAPH_NO_NODE << 8;
     }
-    if (err == 0 && (!x->bind_ok || n_bind > KM_GRAPH_BINDINGS)) {
-        err = KM_STREAM_ERROR_HEADER | KM_GRAPH_NO_NODE << 8;
+    if (error == 0 && (!entry->bind_ok || binding_count > KM_GRAPH_BINDINGS)) {
+        error = KM_STREAM_ERROR_HEADER | KM_GRAPH_NO_NODE << 8;
     }
-    if (err == 0) {
-        uint32_t b[KM_GRAPH_BINDINGS];
-        const volatile uint32_t* w = (
-            (const volatile uint32_t*)(e->upload + x->bind_off)
-        );
-        for (uint32_t j = 0; j < n_bind; j++) {
-            b[j] = w[j];
+    if (error == 0) {
+        uint32_t bindings[KM_GRAPH_BINDINGS];
+        const volatile uint32_t*
+            words = (const volatile uint32_t*)(engine->upload + entry->binding_offset);
+        for (uint32_t j = 0; j < binding_count; j++) {
+            bindings[j] = words[j];
         }
-        err = kmg_start(&r->g, upload, b, n_bind, e->cores);
-        err = err ? err | KM_GRAPH_NO_NODE << 8 : 0u;
+        error = (
+            kmg_start(&run->executor, upload, bindings, binding_count, engine->cores)
+        );
+        error = error ? error | KM_GRAPH_NO_NODE << 8 : 0u;
     }
-    if (err != 0) {
-        graph_end(r, KM_EVENT_GRAPH_ERROR | err << 8, 0);
+    if (error != 0) {
+        graph_end(run, KM_EVENT_GRAPH_ERROR | error << 8, 0);
         return;
     }
-    const uint32_t us = r->g.hdr->deadline_microseconds;
-    r->t_command = us ? (uint64_t)us * 50u : e->kernel->ring[KMD_SRC_HOST].t_command;
-    r->kept = keep != 0;
-    r->state = KMD_GR_RUNNING;
+    const uint32_t microseconds = run->executor.hdr->deadline_microseconds;
+    run->t_command = (
+        microseconds
+            ? (uint64_t)microseconds * 50u
+            : engine->kernel->ring[KMD_SRC_HOST].t_command
+    );
+    run->kept = keep != 0;
+    run->state = KMD_GR_RUNNING;
 }
 
 /* The submit function's context: the engine and the run. */
 typedef struct {
-    kmd_engine_t* e;
-    kmd_graph_run_t* r;
+    kmd_engine_t* engine;
+    kmd_graph_run_t* run;
     uint32_t index;
 } kmd_gctx_t;
 
 /* kmg_submit_function: the command into the ring (after a KM_HANDLER_DEADLINE if the
  * deadline changed), or KMG_BUSY when the ring or the sent table has no room. */
-static uint32_t graph_submit(void* ctx, uint32_t node, const km_command_t* rec) {
-    kmd_gctx_t* c = (kmd_gctx_t*)ctx;
-    kmd_engine_t* e = c->e;
-    kmd_graph_run_t* r = c->r;
-    const uint32_t lines = r->t_command != e->deadline ? 2u : 1u;
-    const uint32_t cmd = e->next + lines - 1u, job = (rec->hdr >> 8) & KM_FLAG_QUEUE;
-    if (!eng_room(e, lines) || e->sent[cmd % KMD_SENT].cmd != 0) {
+static uint32_t graph_submit(void* context, uint32_t node, const km_command_t* record) {
+    kmd_gctx_t* submit_context = (kmd_gctx_t*)context;
+    kmd_engine_t* engine = submit_context->engine;
+    kmd_graph_run_t* run = submit_context->run;
+    const uint32_t lines = run->t_command != engine->deadline ? 2u : 1u;
+    const uint32_t command_number = engine->next + lines - 1u;
+    const uint32_t job = (record->hdr >> 8) & KM_FLAG_QUEUE;
+    if (
+        !eng_room(engine, lines) ||
+        engine->sent[command_number % KMD_SENT].command_number != 0
+    ) {
         return KMG_BUSY;
     }
-    if (job && *e->queued + (e->jobs - *e->taken) >= KM_QUEUE_JOBS) {
+    if (job && *engine->queued + (engine->jobs - *engine->taken) >= KM_QUEUE_JOBS) {
         return KMG_BUSY; /* jobs in the queue and on their way to it */
     }
     if (lines == 2u) {
-        const uint64_t us = r->t_command / 50u;
-        eng_command(e, KM_HANDLER_DEADLINE, us == 0 ? 1u : (uint32_t)us, 0, 0);
-        e->deadline = r->t_command;
+        const uint64_t microseconds = run->t_command / 50u;
+        eng_command(
+            engine,
+            KM_HANDLER_DEADLINE,
+            microseconds == 0 ? 1u : (uint32_t)microseconds,
+            0,
+            0
+        );
+        engine->deadline = run->t_command;
     }
     /* Through a volatile pointer: a plain copy loop may become a memcpy call. */
-    const volatile uint32_t* from = (const volatile uint32_t*)rec;
-    uint32_t* to = (uint32_t*)e->line;
-    for (uint32_t j = 0; j < sizeof(km_command_t) / 4u; j++) {
-        to[j] = from[j];
+    const volatile uint32_t* source_words = (const volatile uint32_t*)record;
+    uint32_t* destination_words = (uint32_t*)engine->line;
+    for (uint32_t word = 0; word < sizeof(km_command_t) / 4u; word++) {
+        destination_words[word] = source_words[word];
     }
     if (job) {
         /* The run's tag in the slot bits, as a stream's job carries its own. */
-        to[1] = (to[1] & 0xFFFFu) | (r->order & 0xFFFFu) << 16;
-        e->jobs++;
-        r->jobs++;
+        destination_words
+            [1] = ((destination_words[1] & 0xFFFFu) | (run->order & 0xFFFFu) << 16);
+        engine->jobs++;
+        run->jobs++;
     }
-    eng_write(e);
-    kmd_sent_t* x = &e->sent[cmd % KMD_SENT];
-    x->cmd = cmd;
-    x->req = r->req;
-    x->order = r->order;
-    x->pc = (uint16_t)node;
-    x->stream = (uint8_t)(KMD_SENT_GRAPH | c->index);
-    x->result = ((rec->hdr >> 8) & KM_FLAG_RESULT) != 0;
-    e->commands++;
+    eng_write(engine);
+    kmd_sent_t* sent_command = &engine->sent[command_number % KMD_SENT];
+    sent_command->command_number = command_number;
+    sent_command->request = run->request;
+    sent_command->order = run->order;
+    sent_command->pc = (uint16_t)node;
+    sent_command->stream = (uint8_t)(KMD_SENT_GRAPH | submit_context->index);
+    sent_command->result = ((record->hdr >> 8) & KM_FLAG_RESULT) != 0;
+    engine->commands++;
     return KMG_SUBMITTED;
 }
 
 /* An event from the kernel, if it is the graphs': KMD_EVENT_GRAPH_RUN, KMD_EVENT_CANCEL
- * of a graph's req, or the answer to a graph's command. Returns 1 when it was. */
-static int graph_event(kmd_engine_t* e, uint32_t req, uint32_t status, uint32_t ticks) {
+ * of a graph's request, or the answer to a graph's command. Returns 1 when it was. */
+static int graph_event(
+    kmd_engine_t* engine, uint32_t request, uint32_t status, uint32_t ticks
+) {
     const uint32_t kind = status & 0xFFu, why = status >> 8;
-    kmd_graphs_t* gs = graphs(e);
+    kmd_graphs_t* graph_runs = graphs(engine);
     if (kind == KMD_EVENT_GRAPH_RUN) {
-        graph_start(e, req);
+        graph_start(engine, request);
         return 1;
     }
     if (kind == KMD_EVENT_CANCEL) {
-        for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE; j++) {
-            kmd_graph_run_t* r = &gs->run[j];
-            if (r->state != KMD_GR_FREE && r->req == ticks) {
-                kmg_stop(&r->g, KM_STREAM_ERROR_CANCELLED, KM_GRAPH_NO_NODE);
+        for (uint32_t run_index = 0; run_index < KM_GRAPH_MAX_ACTIVE; run_index++) {
+            kmd_graph_run_t* run = &graph_runs->run[run_index];
+            if (run->state != KMD_GR_FREE && run->request == ticks) {
+                kmg_stop(&run->executor, KM_STREAM_ERROR_CANCELLED, KM_GRAPH_NO_NODE);
                 return 1;
             }
         }
         return 0;
     }
     if (kind == KMD_EVENT_WAKE) {
-        for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE; j++) {
-            gs->run[j].wait = 0;
+        for (uint32_t run_index = 0; run_index < KM_GRAPH_MAX_ACTIVE; run_index++) {
+            graph_runs->run[run_index].wait = 0;
         }
         return 0; /* the streams may want it too */
     }
-    kmd_sent_t* x = &e->sent[req % KMD_SENT];
-    if (x->cmd != req || !(x->stream & KMD_SENT_GRAPH)) {
+    kmd_sent_t* sent_command = &engine->sent[request % KMD_SENT];
+    if (
+        sent_command->command_number != request ||
+        !(sent_command->stream & KMD_SENT_GRAPH)
+    ) {
         return 0;
     }
-    x->cmd = 0;
-    kmd_graph_run_t* r = &gs->run[x->stream & 1u];
-    const int live = r->state == KMD_GR_RUNNING && r->order == x->order;
+    sent_command->command_number = 0;
+    kmd_graph_run_t* run = &graph_runs->run[sent_command->stream & 1u];
+    const int live = run->state == KMD_GR_RUNNING && run->order == sent_command->order;
     if (live) {
-        r->wait = 0;
+        run->wait = 0;
     }
     if (kind == KM_EVENT_DONE) {
         if (live) {
-            kmg_complete(&r->g, x->pc, x->result ? ticks : 0u);
+            kmg_complete(
+                &run->executor, sent_command->pc, sent_command->result ? ticks : 0u
+            );
         }
     } else if (kind == KM_EVENT_TIMEOUT) {
         if (live) {
-            kmg_stop(&r->g, KM_STREAM_ERROR_DEADLINE, x->pc);
-        } else if (e->orphans < KMD_ORPHANS) {
-            /* An orphan: the ordinary timeout event, with its graph's req. */
-            e->orphan_req[e->orphans] = x->req;
-            e->orphan_status[e->orphans] = status;
-            e->orphan_ticks[e->orphans] = ticks;
-            e->orphans++;
+            kmg_stop(&run->executor, KM_STREAM_ERROR_DEADLINE, sent_command->pc);
+        } else if (engine->orphans < KMD_ORPHANS) {
+            /* An orphan: the ordinary timeout event, with its graph's request. */
+            engine->orphan_request[engine->orphans] = sent_command->request;
+            engine->orphan_status[engine->orphans] = status;
+            engine->orphan_ticks[engine->orphans] = ticks;
+            engine->orphans++;
         }
     } else if (kind == KM_EVENT_REJECTED && why == KMD_REJECT_BUSY) {
         if (live) {
-            kmg_retry(&r->g, x->pc);
-            r->wait = 1;
+            kmg_retry(&run->executor, sent_command->pc);
+            run->wait = 1;
         }
     } else if (live) {
         kmg_stop(
-            &r->g,
+            &run->executor,
             why == KMD_REJECT_GROUP ? KM_STREAM_ERROR_GROUP : KM_STREAM_ERROR_TEMPLATE,
-            x->pc
+            sent_command->pc
         );
     }
     return 1;
 }
 
 /* Posts what the graphs owe: round events, ends and errors. */
-static void graph_owed(kmd_engine_t* e) {
-    kmd_graphs_t* gs = graphs(e);
-    for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE; j++) {
-        kmd_graph_run_t* r = &gs->run[j];
-        if (r->state == KMD_GR_RUNNING && r->g.phase == KMG_ERROR) {
+static void graph_owed(kmd_engine_t* engine) {
+    kmd_graphs_t* graph_runs = graphs(engine);
+    for (uint32_t run_index = 0; run_index < KM_GRAPH_MAX_ACTIVE; run_index++) {
+        kmd_graph_run_t* run = &graph_runs->run[run_index];
+        if (run->state == KMD_GR_RUNNING && run->executor.phase == KMG_ERROR) {
             /* Stopped by an event (a timeout, a cancel), also while core 1 stops. */
-            const uint32_t auxiliary = r->g.error_reason | r->g.error_node << 8;
-            graph_end(r, KM_EVENT_GRAPH_ERROR | auxiliary << 8, 0);
+            const uint32_t auxiliary = (
+                run->executor.error_reason | run->executor.error_node << 8
+            );
+            graph_end(run, KM_EVENT_GRAPH_ERROR | auxiliary << 8, 0);
         }
-        if (r->state == KMD_GR_RUNNING && r->round_owed) {
-            const uint32_t done = (r->g.runs - 1u) & 0xFFFFFFu;
-            r->round_owed = (
-                !graph_post_event(e, r->req, KM_EVENT_GRAPH | done << 8, 0, 0)
+        if (run->state == KMD_GR_RUNNING && run->round_owed) {
+            const uint32_t done = (run->executor.runs - 1u) & 0xFFFFFFu;
+            run->round_owed = (
+                !graph_post_event(
+                    engine, run->request, KM_EVENT_GRAPH | done << 8, 0, 0
+                )
             );
         }
-        if (r->state != KMD_GR_ENDING) {
+        if (run->state != KMD_GR_ENDING) {
             continue;
         }
-        if (r->jobs && eng_room(e, 1)) {
-            eng_command(e, KMD_HANDLER_DROP, r->order & 0xFFFFu, 0, 0);
-            r->jobs = 0;
+        if (run->jobs && eng_room(engine, 1)) {
+            eng_command(engine, KMD_HANDLER_DROP, run->order & 0xFFFFu, 0, 0);
+            run->jobs = 0;
         }
         if (
-            !r->jobs &&
-            graph_post_event(e, r->req, r->post_status, r->post_ticks, r->kept)
+            !run->jobs &&
+            graph_post_event(
+                engine, run->request, run->post_status, run->post_ticks, run->kept
+            )
         ) {
-            r->state = KMD_GR_FREE;
+            run->state = KMD_GR_FREE;
         }
     }
 }
 
 /* Whether a graph event waits to be posted. */
-static int graph_owes(kmd_engine_t* e) {
-    const kmd_graphs_t* gs = graphs(e);
-    for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE; j++) {
-        const kmd_graph_run_t* r = &gs->run[j];
+static int graph_owes(kmd_engine_t* engine) {
+    const kmd_graphs_t* graph_runs = graphs(engine);
+    for (uint32_t run_index = 0; run_index < KM_GRAPH_MAX_ACTIVE; run_index++) {
+        const kmd_graph_run_t* run = &graph_runs->run[run_index];
         if (
-            r->state == KMD_GR_ENDING ||
-            (r->state == KMD_GR_RUNNING && (r->round_owed || r->g.phase == KMG_ERROR))
+            run->state == KMD_GR_ENDING ||
+            (
+                run->state == KMD_GR_RUNNING &&
+                (run->round_owed || run->executor.phase == KMG_ERROR)
+            )
         ) {
             return 1;
         }
@@ -296,30 +337,34 @@ static int graph_owes(kmd_engine_t* e) {
 
 /* The graphs' part of a pass: what they owe, then one kmg_step per running
  * graph (none while its round event or a rejected command waits). */
-static void graph_step(kmd_engine_t* e) {
-    kmd_graphs_t* gs = graphs(e);
-    graph_owed(e);
-    for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE; j++) {
-        kmd_graph_run_t* r = &gs->run[j];
+static void graph_step(kmd_engine_t* engine) {
+    kmd_graphs_t* graph_runs = graphs(engine);
+    graph_owed(engine);
+    for (uint32_t run_index = 0; run_index < KM_GRAPH_MAX_ACTIVE; run_index++) {
+        kmd_graph_run_t* run = &graph_runs->run[run_index];
         if (
-            r->state != KMD_GR_RUNNING || r->round_owed ||
-            (r->wait && r->g.phase == KMG_RUNNING)
+            run->state != KMD_GR_RUNNING || run->round_owed ||
+            (run->wait && run->executor.phase == KMG_RUNNING)
         ) {
             continue;
         }
-        kmd_gctx_t c = {e, r, j};
-        const uint32_t got = kmg_step(&r->g, graph_submit, &c);
+        kmd_gctx_t submit_context = {engine, run, run_index};
+        const uint32_t got = kmg_step(&run->executor, graph_submit, &submit_context);
         if (got == KMG_ROUND) {
-            r->round_owed = 1;
+            run->round_owed = 1;
         } else if (got == KMG_END) {
-            const uint32_t r0 = r->g.registers[0] & 0xFFFFFFu;
+            const uint32_t register_zero = run->executor.registers[0] & 0xFFFFFFu;
             /* Every command completed: no job is left to drop. */
-            r->jobs = 0;
-            graph_end(r, KM_EVENT_GRAPH_END | r0 << 8, r->g.registers[1]);
+            run->jobs = 0;
+            graph_end(
+                run, KM_EVENT_GRAPH_END | register_zero << 8, run->executor.registers[1]
+            );
         } else if (got == KMG_ERROR) {
-            const uint32_t auxiliary = r->g.error_reason | r->g.error_node << 8;
-            graph_end(r, KM_EVENT_GRAPH_ERROR | auxiliary << 8, 0);
+            const uint32_t auxiliary = (
+                run->executor.error_reason | run->executor.error_node << 8
+            );
+            graph_end(run, KM_EVENT_GRAPH_ERROR | auxiliary << 8, 0);
         }
     }
-    graph_owed(e);
+    graph_owed(engine);
 }

@@ -13,13 +13,13 @@ static inline void queue_tell(kmd_t* k) {
     *(volatile uint32_t*)(k->ering + KMD_ERING_TAKEN) = q->taken;
 }
 
-/* Puts command `l` (command `req` of `src`, `count` cores, stream `tag`) at the queue's
- * end with its source's current deadline. The caller checked the room. */
+/* Puts command `l` (command `request` of `source`, `count` cores, stream `tag`) at the
+ * queue's end with its source's current deadline. The caller checked the room. */
 static inline void queue_put(
     kmd_t* k,
     const uint64_t* l,
-    uint32_t src,
-    uint32_t req,
+    uint32_t source,
+    uint32_t request,
     uint32_t count,
     uint32_t tag
 ) {
@@ -32,16 +32,16 @@ static inline void queue_put(
     for (uint32_t i = 0; i < 8; i++) {
         j->line[i] = l[i];
     }
-    j->ticks = k->ring[src].t_command;
-    j->req = req;
+    j->ticks = k->ring[source].t_command;
+    j->request = request;
     j->count = count;
     j->passed = 0;
-    j->src = (uint8_t)src;
+    j->source = (uint8_t)source;
     j->tag = (uint16_t)tag;
     q->used |= 1ull << at;
     q->order[q->n++] = (uint8_t)at;
-    k->ring[src].nqueued++;
-    q->taken += src == KMD_SRC_ENGINE;
+    k->ring[source].queued_count++;
+    q->taken += source == KMD_SRC_ENGINE;
     queue_tell(k);
 }
 
@@ -49,8 +49,8 @@ static inline void queue_put(
 static inline void queue_remove(kmd_t* k, uint32_t pos) {
     kmd_queue_t* q = k->queue;
     const uint64_t place = ~(1ull << q->order[pos]);
-    for (uint32_t src = 0; src < KMD_SOURCES; src++) {
-        k->ring[src].before &= place;
+    for (uint32_t source = 0; source < KMD_SOURCES; source++) {
+        k->ring[source].before &= place;
     }
     q->used &= place;
     q->n--;
@@ -87,10 +87,10 @@ static __attribute__((noinline)) void queue_turn(kmd_t* k, uint64_t now) {
         const uint32_t hdr = (uint32_t)(l[0] >> 32) & ~(KM_FLAG_QUEUE << 8);
         l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | first | j->count << 16;
-        const uint32_t src = j->src, req = j->req;
+        const uint32_t source = j->source, request = j->request;
         queue_remove(k, pos);
-        k->ring[src].nqueued--;
-        command_submit(k, l, slot, req, src, now, j->ticks, KMD_TRACE_QUEUED);
+        k->ring[source].queued_count--;
+        command_submit(k, l, slot, request, source, now, j->ticks, KMD_TRACE_QUEUED);
         submitted++;
     }
     if (submitted) {
@@ -108,12 +108,12 @@ static inline void queue_drop(kmd_t* k, uint32_t tag) {
     kmd_ring_t* r = &k->ring[KMD_SRC_ENGINE];
     for (uint32_t pos = 0; pos < q->n;) {
         const kmd_job_t* j = &q->job[q->order[pos]];
-        if (j->src != KMD_SRC_ENGINE || j->tag != tag) {
+        if (j->source != KMD_SRC_ENGINE || j->tag != tag) {
             pos++;
             continue;
         }
-        ring_push(r, j->req, KM_EVENT_REJECTED | (KMD_REJECT_DROPPED << 8), 0);
-        r->nqueued--;
+        ring_push(r, j->request, KM_EVENT_REJECTED | (KMD_REJECT_DROPPED << 8), 0);
+        r->queued_count--;
         queue_remove(k, pos);
     }
     queue_tell(k);

@@ -8,9 +8,9 @@
 #include "komorebi/abi/km_abi.h"
 
 #if defined(__cplusplus)
-#define KMD_STATIC_ASSERT(c, msg) static_assert(c, msg)
+#define KMD_STATIC_ASSERT(condition, message) static_assert(condition, message)
 #else
-#define KMD_STATIC_ASSERT(c, msg) _Static_assert(c, msg)
+#define KMD_STATIC_ASSERT(condition, message) _Static_assert(condition, message)
 #endif
 
 /* LIM layout, in bytes from the argument block (64-byte aligned, written by the host).
@@ -63,7 +63,7 @@
 #define KMD_ERROR_STOPPED 7u  /* the runtime asked the kernel to stop */
 #define KMD_ERROR_STOP_BUSY 9u /* a STOP command arrived with commands in flight */
 #define KMD_ERROR_ENGINE 10u   /* core 1 did not stop within KMD_ENGINE_STOP_TICKS */
-/* Exception on core `req` (0 or 1): slot = mcause, sequence = mepc, seen = mtval (low
+/* Exception on core `core` (0 or 1): slot = mcause, sequence = mepc, seen = mtval (low
  * words). The kernel ended without its state's pointers; the cluster restores. */
 #define KMD_ERROR_TRAP 11u
 
@@ -75,8 +75,9 @@
 #define KMD_REJECT_EXITED 4u  /* a command after EXIT */
 /* a range not 64-byte aligned or outside the upload region */
 #define KMD_REJECT_REGION 5u
-#define KMD_REJECT_STREAMS 6u  /* KM_HANDLER_RUN beyond KM_STREAM_MAX_ACTIVE streams */
-#define KMD_REJECT_UNKNOWN 7u  /* KM_HANDLER_CANCEL of a req no active stream has */
+#define KMD_REJECT_STREAMS 6u /* KM_HANDLER_RUN beyond KM_STREAM_MAX_ACTIVE streams */
+/* KM_HANDLER_CANCEL of a request no active stream has */
+#define KMD_REJECT_UNKNOWN 7u
 #define KMD_REJECT_DEADLINE 8u /* KM_HANDLER_DEADLINE of 0 (a deadline is never 0) */
 /* a KM_FLAG_QUEUE command while KM_QUEUE_JOBS jobs wait */
 #define KMD_REJECT_QUEUE 9u
@@ -84,8 +85,8 @@
 #define KMD_REJECT_BUSY 11u     /* engine, work cluster: the command cannot go now */
 #define KMD_REJECT_MESSAGES 12u /* a dynamic run with KM_FLAG_QUEUE */
 
-/* Engine to kernel: POST host event {a0 req, a1 status, a2 ticks}. Kernel to engine
- * events: RUN {req offset, ticks bytes} of an admitted upload, CANCEL {ticks req}. */
+/* Engine to kernel: POST host event {a0 request, a1 status, a2 ticks}. Kernel to
+ * engine: RUN {request offset, ticks bytes} of an upload, CANCEL {ticks request}. */
 #define KMD_HANDLER_POST 248u
 /* Engine to kernel: drop its queued jobs of stream tag a0 (the header's slot bits). */
 #define KMD_HANDLER_DROP 247u
@@ -101,7 +102,7 @@
 #define KMD_HANDLER_TRAP 244u
 
 /* KMD_TRACE builds, in the region's lower half: kmd_trace_t, then per slot taken or
- * freed {kind | slot << 8 | source << 16, req, group, mtime}. */
+ * freed {kind | slot << 8 | source << 16, request, group, mtime}. */
 #define KMD_TRACE_PART(upload_bytes) ((upload_bytes) / 2u & ~63u)
 #define KMD_TRACE_SUBMIT 1u
 #define KMD_TRACE_FREE 2u
@@ -239,17 +240,17 @@ typedef struct {
     uint32_t lim_bytes;    /* KMD_LIM_BYTES: the layout before it */
 } kmd_ready_t;
 
-/* Test builds with KMD_VERIFY_LINES check every user command against these: argument
- * word w (0 to 9) of host command i, its group (first | count << 16) and header 0. */
-static inline uint32_t kmd_verify_word(uint32_t i, uint32_t w) {
-    uint32_t x = i * 0x9E3779B1u ^ (w + 1u) * 0x85EBCA77u;
-    x ^= x >> 15;
-    return x * 0x2C1B3C6Du;
+/* Test builds with KMD_VERIFY_LINES check each user command against these: argument
+ * `word` of host command `index`, its group (first | count << 16) and header 0. */
+static inline uint32_t kmd_verify_word(uint32_t index, uint32_t word) {
+    uint32_t mixed = index * 0x9E3779B1u ^ (word + 1u) * 0x85EBCA77u;
+    mixed ^= mixed >> 15;
+    return mixed * 0x2C1B3C6Du;
 }
 
-static inline uint32_t kmd_verify_group(uint32_t i, uint32_t cores) {
-    const uint32_t count = 1u + kmd_verify_word(i, 10u) % cores;
-    return kmd_verify_word(i, 11u) % (cores - count + 1u) | count << 16;
+static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
+    const uint32_t count = 1u + kmd_verify_word(index, 10u) % cores;
+    return kmd_verify_word(index, 11u) % (cores - count + 1u) | count << 16;
 }
 
 /* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory

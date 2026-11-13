@@ -7,88 +7,109 @@
 #include "ring.h"
 
 /* The slot's ack line as one 64-bit word: the ack word, then the result word. */
-static inline volatile const uint64_t* slot_ack(const kmd_t* k, uint32_t slot) {
-    return (volatile const uint64_t*)(k->lim + KMD_LIM_ACKS + slot * KM_ACK_STRIDE);
+static inline volatile const uint64_t* slot_ack(
+    const kmd_t* dispatcher, uint32_t slot
+) {
+    return (
+        (volatile const uint64_t*)(
+            dispatcher->lim + KMD_LIM_ACKS + slot * KM_ACK_STRIDE
+        )
+    );
 }
 
 /* The lowest free slot, or KM_RING_SLOTS if every slot in use is busy. */
-static inline uint32_t slot_free(const kmd_t* k) {
-    for (uint32_t j = 0; j < k->depth; j++) {
-        if (!(k->busy & (1u << j))) {
-            return j;
+static inline uint32_t slot_free(const kmd_t* dispatcher) {
+    for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
+        if (!(dispatcher->busy & (1u << slot))) {
+            return slot;
         }
     }
     return KM_RING_SLOTS;
 }
 
 #ifdef KMD_TRACE
-/* Test builds: entry {kind | slot << 8 | source << 16, req, group, mtime} into the
+/* Test builds: entry {kind | slot << 8 | source << 16, request, group, mtime} into the
  * trace part from its second line on; the first entry that does not fit, the header. */
-static inline void trace(kmd_t* k, uint32_t kind, uint32_t slot, uint32_t req) {
-    if (64u + 16u * (k->traced + 1u) > KMD_TRACE_PART(k->upload_bytes)) {
-        if (k->untraced++ == 0u && k->upload_bytes >= 64u) {
-            const uint32_t head[4] = {KMD_TRACE_MARK, k->traced, 1u, 0u};
-            kmd_store_chunk((volatile uint8_t*)k->upload, head);
+static inline void trace(
+    kmd_t* dispatcher, uint32_t kind, uint32_t slot, uint32_t request
+) {
+    if (
+        64u + 16u * (dispatcher->traced + 1u) > KMD_TRACE_PART(dispatcher->upload_bytes)
+    ) {
+        if (dispatcher->untraced++ == 0u && dispatcher->upload_bytes >= 64u) {
+            const uint32_t header[4] = {KMD_TRACE_MARK, dispatcher->traced, 1u, 0u};
+            kmd_store_chunk((volatile uint8_t*)dispatcher->upload, header);
         }
         return;
     }
-    const uint32_t e[4] = {
-        kind | slot << 8 | (uint32_t)k->slot_src[slot] << 16,
-        req,
-        k->slot_group[slot],
+    const uint32_t entry[4] = {
+        kind | slot << 8 | (uint32_t)dispatcher->slot_source[slot] << 16,
+        request,
+        dispatcher->slot_group[slot],
         (uint32_t)x280_mtime()
     };
-    kmd_store_chunk((volatile uint8_t*)k->upload + 64u + 16u * k->traced, e);
-    k->traced++;
+    kmd_store_chunk(
+        (volatile uint8_t*)dispatcher->upload + 64u + 16u * dispatcher->traced, entry
+    );
+    dispatcher->traced++;
 }
 #else
-#define trace(k, kind, slot, req) ((void)0)
+#define trace(dispatcher, kind, slot, request) ((void)0)
 #endif
 
-/* Marks `slot` busy with command `sequence` of `req` of source `src` for `group`,
- * submitted at `now` (trace entry `how`); `result`: it has KM_FLAG_RESULT. */
+/* Marks `slot` busy with command `sequence` of `request` of source `source` for
+ * `group`, submitted at `now` (trace entry `how`); `result`: it has KM_FLAG_RESULT. */
 static inline void slot_take(
-    kmd_t* k,
+    kmd_t* dispatcher,
     uint32_t slot,
     uint32_t sequence,
-    uint32_t req,
-    uint32_t src,
+    uint32_t request,
+    uint32_t source,
     uint32_t group,
     uint64_t now,
     uint64_t ticks,
     uint32_t result,
     uint32_t how
 ) {
-    k->slot_sequence[slot] = sequence;
-    k->slot_req[slot] = req;
-    k->slot_group[slot] = group;
-    k->slot_src[slot] = (uint8_t)src;
-    k->ring[src].nbusy++;
-    k->slot_t0[slot] = now;
-    k->slot_deadline[slot] = now + ticks;
-    k->busy |= 1u << slot;
-    k->result_busy |= result ? 1u << slot : 0u;
-    if (++k->nbusy > k->max_busy) {
-        k->max_busy = k->nbusy;
+    dispatcher->slot_sequence[slot] = sequence;
+    dispatcher->slot_request[slot] = request;
+    dispatcher->slot_group[slot] = group;
+    dispatcher->slot_source[slot] = (uint8_t)source;
+    dispatcher->ring[source].busy_count++;
+    dispatcher->slot_submitted[slot] = now;
+    dispatcher->slot_deadline[slot] = now + ticks;
+    dispatcher->busy |= 1u << slot;
+    dispatcher->result_busy |= result ? 1u << slot : 0u;
+    if (++dispatcher->busy_count > dispatcher->max_busy) {
+        dispatcher->max_busy = dispatcher->busy_count;
     }
-    trace(k, how, slot, req);
+    trace(dispatcher, how, slot, request);
     (void)how;
 }
 
 /* Whether cores [first, first + count) are not all in the grid; written without a sum,
  * so no value of either wraps into the grid. */
-static inline int group_outside(const kmd_t* k, uint32_t first, uint32_t count) {
-    return count == 0 || first > k->cores || count > k->cores - first;
+static inline int group_outside(
+    const kmd_t* dispatcher, uint32_t first, uint32_t count
+) {
+    return count == 0 || first > dispatcher->cores || count > dispatcher->cores - first;
 }
 
 /* The end (last core + 1) of a busy slot's group that shares a core with cores [first,
  * first + count), the furthest if several; 0 if none. Groups lie inside the grid. */
-static inline uint32_t slots_overlap(const kmd_t* k, uint32_t first, uint32_t count) {
+static inline uint32_t slots_overlap(
+    const kmd_t* dispatcher, uint32_t first, uint32_t count
+) {
     uint32_t end = 0;
-    for (uint32_t j = 0; j < k->depth; j++) {
-        const uint32_t t = k->slot_group[j], f = t & 0xFFFFu, e = f + (t >> 16);
-        if ((k->busy & (1u << j)) && f < first + count && first < e && e > end) {
-            end = e;
+    for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
+        const uint32_t busy_group = dispatcher->slot_group[slot];
+        const uint32_t busy_first = busy_group & 0xFFFFu;
+        const uint32_t busy_end = busy_first + (busy_group >> 16);
+        if (
+            (dispatcher->busy & (1u << slot)) && busy_first < first + count &&
+            first < busy_end && busy_end > end
+        ) {
+            end = busy_end;
         }
     }
     return end;
@@ -96,10 +117,10 @@ static inline uint32_t slots_overlap(const kmd_t* k, uint32_t first, uint32_t co
 
 /* Group allocator: the lowest first such that cores [first, first + count) overlap no
  * busy slot's group, or KMD_NO_FIRST. Each round jumps past an overlapping group. */
-static inline uint32_t group_alloc(const kmd_t* k, uint32_t count) {
+static inline uint32_t group_alloc(const kmd_t* dispatcher, uint32_t count) {
     uint32_t first = 0;
-    while (count <= k->cores - first) {
-        const uint32_t end = slots_overlap(k, first, count);
+    while (count <= dispatcher->cores - first) {
+        const uint32_t end = slots_overlap(dispatcher, first, count);
         if (end == 0) {
             return first;
         }
@@ -109,99 +130,120 @@ static inline uint32_t group_alloc(const kmd_t* k, uint32_t count) {
 }
 
 /* The wake owed to each source rejected busy: a slot freed or the queue has room. */
-static inline void sources_wake(kmd_t* k) {
-    for (uint32_t src = 0; src < KMD_SOURCES; src++) {
-        if (k->waits & (1u << src)) {
-            k->ring[src].owed--;
-            ring_push(&k->ring[src], 0, KMD_EVENT_WAKE, 0);
+static inline void sources_wake(kmd_t* dispatcher) {
+    for (uint32_t source = 0; source < KMD_SOURCES; source++) {
+        if (dispatcher->waits & (1u << source)) {
+            dispatcher->ring[source].owed--;
+            ring_push(&dispatcher->ring[source], 0, KMD_EVENT_WAKE, 0);
         }
     }
-    k->waits = 0;
+    dispatcher->waits = 0;
 }
 
 /* Sweeps busy slots' ack lines (8-byte loads); a slot showing its sequence is freed:
  * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */
-static inline void slots_sweep(kmd_t* k) {
+static inline void slots_sweep(kmd_t* dispatcher) {
     x280_fence_ir();
     uint64_t now = 0;
-    for (uint32_t j = 0; j < k->depth; j++) {
-        if (!(k->busy & (1u << j))) {
+    for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
+        if (!(dispatcher->busy & (1u << slot))) {
             continue;
         }
-        const uint64_t line = *slot_ack(k, j);
-        if ((uint32_t)line != KM_ACK(k->slot_sequence[j])) {
+        const uint64_t line = *slot_ack(dispatcher, slot);
+        if ((uint32_t)line != KM_ACK(dispatcher->slot_sequence[slot])) {
             continue;
         }
         if (now == 0) {
             now = x280_mtime();
         }
-        uint32_t ticks = (uint32_t)(now - k->slot_t0[j]);
-        const uint32_t result = k->result_busy & (1u << j);
+        uint32_t ticks = (uint32_t)(now - dispatcher->slot_submitted[slot]);
+        const uint32_t result = dispatcher->result_busy & (1u << slot);
         if (result) {
-            k->result_busy &= ~(1u << j);
-            k->last_result = ticks = (uint32_t)(line >> 32);
-            k->results++;
+            dispatcher->result_busy &= ~(1u << slot);
+            dispatcher->last_result = ticks = (uint32_t)(line >> 32);
+            dispatcher->results++;
         }
-        k->busy &= ~(1u << j);
-        k->nbusy--;
-        trace(k, KMD_TRACE_FREE, j, k->slot_req[j]);
-        kmd_ring_t* r = &k->ring[k->slot_src[j]];
-        r->nbusy--;
-        if (k->messages.end == j + 1u) { /* a dynamic run's end command: no event */
-            k->messages.end = 0;
+        dispatcher->busy &= ~(1u << slot);
+        dispatcher->busy_count--;
+        trace(dispatcher, KMD_TRACE_FREE, slot, dispatcher->slot_request[slot]);
+        kmd_ring_t* ring = &dispatcher->ring[dispatcher->slot_source[slot]];
+        ring->busy_count--;
+        if (dispatcher->messages.end ==
+            slot + 1u) { /* a dynamic run's end command: no event */
+            dispatcher->messages.end = 0;
         } else {
             const uint32_t auxiliary = (
-                (k->slot_group[j] & KM_EVENT_AUXILIARY_LOW) |
-                (k->slot_sequence[j] & KM_EVENT_SEQUENCE_MASK)
+                (dispatcher->slot_group[slot] & KM_EVENT_AUXILIARY_LOW) |
+                (dispatcher->slot_sequence[slot] & KM_EVENT_SEQUENCE_MASK)
                     << KM_EVENT_SEQUENCE_SHIFT
             );
-            ring_push(r, k->slot_req[j], KM_EVENT_DONE | auxiliary << 8, ticks);
+            ring_push(
+                ring,
+                dispatcher->slot_request[slot],
+                KM_EVENT_DONE | auxiliary << 8,
+                ticks
+            );
         }
-        k->t_last_event = now;
-        if (k->waits) {
-            sources_wake(k);
+        dispatcher->last_event_mtime = now;
+        if (dispatcher->waits) {
+            sources_wake(dispatcher);
         }
     }
 }
 
 /* The busy slot whose deadline passed first, if any passed at `now`; else
  * KM_RING_SLOTS. A timeout names the command whose deadline expired first. */
-static inline uint32_t slots_late(const kmd_t* k, uint64_t now) {
+static inline uint32_t slots_late(const kmd_t* dispatcher, uint64_t now) {
     uint32_t late = KM_RING_SLOTS;
-    for (uint32_t j = 0; j < k->depth; j++) {
+    for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
         if (
-            (k->busy & (1u << j)) && now > k->slot_deadline[j] &&
-            (late == KM_RING_SLOTS || k->slot_deadline[j] < k->slot_deadline[late])
+            (dispatcher->busy & (1u << slot)) &&
+            now > dispatcher->slot_deadline[slot] &&
+            (
+                late == KM_RING_SLOTS ||
+                dispatcher->slot_deadline[slot] < dispatcher->slot_deadline[late]
+            )
         ) {
-            late = j;
+            late = slot;
         }
     }
     return late;
 }
 
-/* Submits `l` into free `slot` for command `req` of source `src` (trace entry `how`):
- * the next sequence (not 0, not the slot's last) in sequence and the landing words. */
+/* Submits `line` into free `slot` for command `request` of `source` (trace entry
+ * `how`): the next sequence (not 0, not the slot's last) and the landing words. */
 KMD_HOT void command_submit(
-    kmd_t* k,
-    uint64_t* l,
+    kmd_t* dispatcher,
+    uint64_t* line,
     uint32_t slot,
-    uint32_t req,
-    uint32_t src,
+    uint32_t request,
+    uint32_t source,
     uint64_t now,
     uint64_t ticks,
     uint32_t how
 ) {
-    const uint32_t hdr = (uint32_t)(l[0] >> 32);
-    uint32_t sequence = ++k->sequence;
-    while (sequence == 0 || sequence == k->slot_sequence[slot]) {
-        sequence = ++k->sequence;
+    const uint32_t header = (uint32_t)(line[0] >> 32);
+    uint32_t sequence = ++dispatcher->sequence;
+    while (sequence == 0 || sequence == dispatcher->slot_sequence[slot]) {
+        sequence = ++dispatcher->sequence;
     }
-    l[0] = sequence | ((uint64_t)((hdr & 0xFFFFu) | (slot << 16)) << 32);
-    for (uint32_t j = 2; j < 8; j += 2) {
-        l[j] = (l[j] & ~(uint64_t)0xFFFFFFFFu) | sequence;
+    line[0] = sequence | ((uint64_t)((header & 0xFFFFu) | (slot << 16)) << 32);
+    for (uint32_t landing = 2; landing < 8; landing += 2) {
+        line[landing] = (line[landing] & ~(uint64_t)0xFFFFFFFFu) | sequence;
     }
-    grid_store_command(k, slot, l);
-    k->commands++;
-    const uint32_t result = (hdr >> 8) & KM_FLAG_RESULT;
-    slot_take(k, slot, sequence, req, src, (uint32_t)l[1], now, ticks, result, how);
+    grid_store_command(dispatcher, slot, line);
+    dispatcher->commands++;
+    const uint32_t result = (header >> 8) & KM_FLAG_RESULT;
+    slot_take(
+        dispatcher,
+        slot,
+        sequence,
+        request,
+        source,
+        (uint32_t)line[1],
+        now,
+        ticks,
+        result,
+        how
+    );
 }
