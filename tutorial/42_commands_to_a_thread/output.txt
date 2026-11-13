@@ -1,0 +1,3 @@
+the thread answered triangle(10) = 55
+the thread answered square(5) = 25
+core 0 added them: 80

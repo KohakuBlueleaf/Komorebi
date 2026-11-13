@@ -57,6 +57,7 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("39_finding_a_bug/finding_a_bug.py", "with bug 0: the command is done"),
         ("40_a_whole_program/a_whole_program.py", "both sums are the numpy sum"),
         ("41_your_own_kernel/your_own_kernel.py", "the squares of the 48 tiles"),
+        ("42_commands_to_a_thread/commands_to_a_thread.py", "core 0 added them: 80"),
     ],
 )
 def test_a_tutorial_program_runs_and_prints_its_line(script, line):

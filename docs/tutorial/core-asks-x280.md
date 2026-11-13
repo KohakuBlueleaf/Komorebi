@@ -183,4 +183,4 @@ thread in a tell.
   look between, leave only the second.
 - An ask that nobody answers. `port.call` waits, with a limit, and returns `false`.
 
-Next: [[measuring]] starts Part 6 with how long things take.
+Next: [[commands-to-a-thread]] sends commands to the thread itself.

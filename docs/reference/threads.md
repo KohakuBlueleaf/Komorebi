@@ -21,11 +21,13 @@ hands, the rules. This page lists the interface. The sources are
 ## C: `#include "kmx.h"`
 
 Plain C, no libc. The library's start-up is the image's `main`; the thread supplies
-`kmx_main`.
+`kmx_main`, `kmx_program` or both ([commands to a thread](#commands-to-a-thread)).
 
 | Call | Core | Does | Returns |
 |---|---|---|---|
-| `int kmx_main(int core)` | 0 | the thread's entry, written by the program | its code, unless `kmx_result` gave one |
+| `int kmx_main(int core)` | 0 | the thread's entry, written by the program; optional with `kmx_program` | its code, unless `kmx_result` gave one |
+| `uint32_t kmx_program(const km_command_t* command)` | 0 | after `kmx_main` (if any), called for each command to this cluster until the run stops; written by the program | the command's result word |
+| `uint32_t kmx_handler(const km_command_t* command)` | any | the command's handler, for `kmx_program`'s switch | 0 to 255 |
 | `const kmx_args* kmx_args_get(void)` | any | the argument block: `nwords`, `words[]`, `nregions`, `region[]`, `deadline`, `flags` | never 0 |
 | `void* kmx_region(int id, uint64_t* bytes)` | any | region `id` as memory, `*bytes` its size | 0 for an unknown id |
 | `void kmx_invalidate(int id)` | any | drops the cluster's cached lines of the region: before reading what the grid or the host wrote | - |
@@ -53,7 +55,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_poll(kmx_event* event)` | 0 | one event, a kept one first; never waits | `KMX_OK` or `KMX_NONE` |
 | `int kmx_cluster(void)` | any | the work cluster the thread runs on | 1, 2 or 3 |
 | `uint64_t kmx_time(void)` | any | the 50 MHz timer (`KMX_TICKS_PER_SECOND`) | ticks |
-| `int kmx_stop_requested(void)` | any | true once the host asked for a stop or the thread's deadline passed | 0 or 1 |
+| `int kmx_stop_requested(void)` | any | true once the host asked for a stop or the thread's deadline passed (never once it serves commands) | 0 or 1 |
 | `void kmx_progress(uint32_t where)` | any | writes `where` and its time into the result block as a progress marker | - |
 | `void kmx_result(uint32_t code, const void* words, uint32_t word_count)` | 0 | the thread's code and up to 48 words | error `result` if `word_count > 48` (the first 48 kept) |
 
@@ -76,6 +78,67 @@ in timer ticks, or the result word of a `KM_FLAG_RESULT` command).
 
 Return codes (`kmx_layout.h`): `KMX_OK` 0, `KMX_FULL` 1, `KMX_STOPPED` 2,
 `KMX_LATE` 3, `KMX_NONE` 4, `KMX_BAD` 5.
+
+## Commands to a thread
+
+A command whose group names a work cluster goes to that cluster's thread instead of to
+cores: `first` = `KM_GROUP_CLUSTER_BASE` (0xFF00) + the cluster, count 1
+(`KM_GROUP_CLUSTER(c)` in C, `cluster=c` in Python). The host, a graph, a stream and
+another cluster's thread submit it as any command. The thread answers it in C:
+
+```c
+#include "kmx.h"
+
+uint32_t kmx_program(const km_command_t* command) {
+    switch (kmx_handler(command)) {
+        case kHandlerFold: /* from Thread(handlers={"fold": 1, ...}) */
+            return fold(command->a0);
+        case kHandlerServed:
+            return served;
+    }
+    return 0;
+}
+```
+
+**The serve loop.** After `kmx_main` returns (at once without one), core 0 serves: it
+tells the dispatcher it serves, then takes each command in turn, calls `kmx_program` and
+answers with its word, until the run stops. The command's event is then sent to its
+source with the word as its result (`KM_FLAG_RESULT`) or the time, as for a core group;
+`auxiliary` holds the cluster in its low 8 bits and the sequence number above them. A
+command sent before the thread serves is kept by the dispatcher until it does, within
+its deadline.
+
+**The deadline.** A thread's `deadline` bounds `kmx_main`. Once the thread serves, the
+library lifts it on every core: the thread lives until the run stops (the host's stop
+flag or the runtime's stop), and each command has its own deadline, the dispatcher's
+(`session.load(deadline=)`, or a stream's or graph's). When a command's deadline passes,
+its source gets its `KM_EVENT_TIMEOUT` and the dispatcher goes on; the command's line
+stays taken until the thread answers, and that late answer sends no event.
+
+**The limits.** A thread holds 8 unanswered commands (`KMD_WORK_IN_DEPTH`). With all 8
+taken, a further command from the stream engine, the graph engine or another thread is
+rejected busy (reason 11) and sent again after the dispatcher's wake; one from the host
+is rejected with reason 14, `thread` (`KMD_REJECT_THREAD`). A command to a thread is
+never exclusive or queued (reason 2, `flags`), and a cluster without a thread rejects it
+with reason 3 (`group`).
+
+**From a thread.** `kmx_submit` with `group = KM_GROUP_CLUSTER(c)` commands another
+cluster's thread: 4.74 µs one at a time against 3.60 µs for a NOP to one grid core, 2.02
+µs a command with 8 in flight (`experiments/thread_commands`). `kmx_program` may submit
+commands to core groups and wait for them inside the call (`kmx_wait`); while it waits
+the thread answers no other command, so the dispatcher keeps up to 8 more as above.
+At depth: a command to the thread's own cluster, or to a thread that is waiting for
+this one, is answered only after the call returns, so its wait ends at that command's
+deadline with its timeout event (or at `kmx_wait`'s own deadline with `KMX_LATE`), never
+in a deadlock. An event the call does not wait for stays in the thread's ring (64
+events) until a later `kmx_wait` or `kmx_poll` takes it.
+
+**What the host sees.** `run.submit(handler, cluster=c, args=..., result=True)` returns
+a handle; `run.wait` and `run.event` give its `Event` as for a core group. A rejection
+raises `CommandRejected` naming the reason (`thread` for a full thread). A timeout does
+not end the run, unlike a core group's: `run.wait` returns the event with kind
+`"timeout"` and the run goes on. A host-fed graph or stream ends with its deadline
+error, as on the X280.
 
 ## The image
 
@@ -134,8 +197,9 @@ are NoC addresses in the tile `reserved[0]` names, `x | y << 16`, inside one 2 M
 window that the start-up opens in slot `KMX_RING_WINDOW` and closes after `kmx_main`),
 `reserved[0]`. Other addresses are as the thread's cluster sees them. A line that
 names a ring but is out of range ends the start-up with error `args`. The session's
-ring: 16 command lines and the read line in the dispatcher's LIM after its layout
-(`KMD_LIM_BYTES`, cluster `c`'s ring `c - 1` rings further), 64 events after the kmx
+ring: 16 command lines and the read line in the dispatcher's LIM after its layout and
+its upload region (`KMD_LIM_BYTES` + 512 KiB, `komorebi.thread.rings_at()`; cluster
+`c`'s ring `c - 1` rings further), 64 events after the kmx
 block in the thread's LIM
 (`KMD_WORK_*` from `KMX_LIM_BYTES`). The protocol is the host ring's (the dispatcher's README,
 "Protocol with the host").
@@ -154,7 +218,8 @@ cluster, the same fields on each:
 | `words` | up to 64 unsigned 32-bit words |
 | `cluster` | the work cluster, 1 to 3 (bank 6 for 1, bank 7 for 2 and 3) |
 | `host_fallback` | `function(regions, words, run) -> (code, words)`: the thread on the host, on `uint32` copies of the regions, submitting commands through `run` (the session's `Run`) where the thread uses its ring |
-| `deadline` | seconds for the whole thread, at most 60 (default 10) |
+| `deadline` | seconds for `kmx_main` (a thread without `kmx_program`: the whole thread), at most 60 (default 10) |
+| `handlers` | `kmx_program`'s handlers: `{name: number}` or a header path read as `Program`'s (`constexpr uint32_t kHandlerName = n;`), numbers 1 to 239; the C sees `kHandlerName` defined as `n` |
 | `includes`, `defines` | extra include directories and `-D` definitions |
 | `prefetch` | `"documented"` (default) or `"keep"` |
 

@@ -68,6 +68,12 @@ all are done.
   until every job queued before it (by this stream's `enqueue` or by any other source)
   has left the job queue and no busy group overlaps its group; it does not stop a later
   plain command from overlapping it.
+- `stream.submit(handler, cluster=c, args=[...], result=False)`: the command goes to work
+  cluster `c`'s X280 thread (1 to 3) instead of a group; its `kmx_program` answers it,
+  and with `result=True` its word is the result `RESULT` reads
+  ([commands to a thread](reference/threads.md#commands-to-a-thread)). Such a command is
+  never exclusive. A group from registers names a thread too: `first` 0xFF00 + `c`,
+  `count` 1.
 - `stream.enqueue(handler, count, args=[...], exclusive=False, result=False)`: the same through the
   job queue; `count` is an integer or a register and the allocator chooses `first`.
 - `stream.encode()` gives the upload bytes; `Stream.decode(data)` is its inverse and raises
@@ -207,10 +213,10 @@ is the kind in the low 8 bits and the auxiliary above it.
 | 5 | bad template or patch, or template index out of range | the micro-op that uses it (0 if none) |
 | 6 | step limit | the micro-op that would have been the `max_steps + 1`th |
 | 7 | `MOD` by zero | the `MOD` |
-| 8 | a command's deadline passed (the grid is also stopped); if several are late in one pass, the lowest slot's | the `SUBMIT` or `ENQUEUE` that made it |
+| 8 | a command's deadline passed (the grid is also stopped, unless the command was a thread's); if several are late in one pass, the lowest slot's | the `SUBMIT` or `ENQUEUE` that made it |
 | 9 | an `ENQUEUE` whose count is 0 or above the grid | the `ENQUEUE` |
 | 10 | cancelled | the micro-op the stream had reached |
-| 11 | an `SUBMIT` whose group is empty or leaves the grid | the `SUBMIT` |
+| 11 | an `SUBMIT` whose group is empty or leaves the grid and names no work cluster's thread, or names one with `exclusive` | the `SUBMIT` |
 
 After an error the stream's queued jobs are dropped. Commands it had already submitted stay
 on the grid until they complete and nobody waits for them, but they keep their

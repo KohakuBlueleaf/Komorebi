@@ -84,8 +84,8 @@ its deadline.
 
 **The library.** `kmx_main` and `kmx_program` are both weak. After `kmx_main` returns,
 if there is one, core 0 serves: it takes each line, calls `kmx_program` and answers
-with the word, checking the stop line, the runtime's stop and the deadline every 256
-spins. A thread with `kmx_main` and no `kmx_program` runs exactly as before. The
+with the word, checking the stop line and the runtime's stop every 256 spins (the
+thread's deadline is lifted once it serves; each command keeps its own). A thread with `kmx_main` and no `kmx_program` runs exactly as before. The
 function may submit commands and wait for their events (`KM_TC_SUBMIT` does).
 
 **Full, deadline, stop.** With all 8 lines of a thread unanswered, a further command
@@ -98,12 +98,15 @@ the host such a timeout does not fail the run, unlike a core group's. A stop or 
 ends the thread as before; lines still unanswered then count among the commands the
 kernel abandoned at its end.
 
-**Not yet a framework feature.** The host submits by hand (`run._queue_command` with
-group `(KM_GROUP_CLUSTER_BASE + c, 1)`); there is no `run.submit` target for a cluster,
-no graph or stream node for one, no reference page and no lesson. A thread still lives
-at most its deadline (60 s at most), so a command to a thread is only served while that
-thread runs. Events of commands the thread itself submitted are not drained while it
-waits in its serve loop between lines.
+**Now a framework feature.** The host submits with `run.submit(handler,
+cluster=c, ...)`, a graph node and a stream SUBMIT name a cluster (`cluster=c`), a
+thread declares its handlers by name (`Thread(handlers=...)`), and a thread with
+`kmx_program` serves until the run stops: its deadline bounds `kmx_main` only. The
+reference is [commands to a thread](../../docs/reference/threads.md#commands-to-a-thread),
+the example `examples/13_thread_commands`, the lesson "Commands to a thread". This
+experiment keeps submitting by hand (`run._queue_command`), as it was measured. Events
+of commands the thread itself submitted are still not drained while it waits in its
+serve loop between lines.
 
 ## Running it
 

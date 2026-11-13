@@ -116,3 +116,16 @@ a whole graph inside this kernel; a graph is not spread over clusters.
   data is pushed through NoC windows, and a wake and its answer take 0.66 µs.
 - A user who writes only Tensix kernels needs no X280 toolchain: the dispatch image is
   meant to ship prebuilt with a release.
+
+A command's target is a core group or a work cluster's thread. A thread whose image has
+`kmx_program` serves commands: the dispatcher stores each command for it as a line in
+the thread's memory, the thread answers it with a word, and the dispatcher sends the
+command's event to its source as it does for a group. Any source may command a thread,
+and a graph or stream may mix both targets, so a step that suits a general-purpose core
+sits between two grid commands without a host round trip
+([commands to a thread](../reference/threads.md#commands-to-a-thread)).
+
+| Target | Named by the group word | Answered by | Holds |
+|---|---|---|---|
+| Core group | `first`, `count`: cores `[first, first + count)` | every core reports; the leader may give a result word | the program's completion slots (`depth`) |
+| Work cluster's thread | `first` = 0xFF00 + the cluster, `count` 1 | `kmx_program`'s word | 8 unanswered commands per thread |

@@ -55,6 +55,12 @@ bindings = graph.binding_values(iteration=0)
   of the ten arguments may be registers, read when the node is submitted. With `count=`
   instead of `group=` the command is queued (`KM_FLAG_QUEUE`) and the allocator places it.
   `result=register` asks for the record's result word and stores it in `register` at completion.
+- `graph.command(handler, cluster=c, args=[...], after=[...], result=register)`: a
+  `COMMAND` node for work cluster `c`'s X280 thread (1 to 3) instead of a group, never
+  exclusive; `result` gets the word its `kmx_program` returns, so a thread's step can
+  feed the next grid command ([commands to a
+  thread](reference/threads.md#commands-to-a-thread)). A group from registers names a
+  thread too: `first` 0xFF00 + `c`, `count` 1.
 - `graph.cpu(after=..., skip_if_zero=...)`: a `CPU` node; its micro-ops are added through
   it: `set`, `mov`, `add`, `addi`, `sub`, `mul`, `and_`, `shr`, `mod`, `rand`, `jmp`,
   `jlt`, `jeq`, `jnz` with labels local to the node (`label`, `forward`, `bind`), and
@@ -190,7 +196,7 @@ the slice's end finishes the node.
 | 8 | a command's deadline passed | the node |
 | 9 | a queued command whose count is 0 or above the grid | the node |
 | 10 | cancelled | 0xFFFF |
-| 11 | a command whose group is empty or leaves the grid (tested without a sum) | the node |
+| 11 | a command whose group is empty or leaves the grid (tested without a sum) and names no work cluster's thread, or names one with `exclusive` | the node |
 | 12 | bad node: kind, flags, a field its kind does not use, a slice | the node, or 0xFFFF |
 | 13 | bad successor list or predecessor count | the node, or 0xFFFF |
 | 14 | `again` still set after `max_runs` rounds | 0xFFFF |

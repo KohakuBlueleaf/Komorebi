@@ -44,10 +44,12 @@ nothing.
 | `opt` | `{"reader": "Os", "writer": "Os"}`: an optimisation level per kernel, one of the runtime's `O0`, `O1`, `O2`, `O3`, `Os`, `Ofast`, `Oz` (anything else raises `ProgramError`); a kernel without one keeps the runtime's default, `O2` for the reader and writer and `O3` for the compute kernel (its three threads together). A set level also defines `KM_OPT_LEVEL` for that kernel, so that it is cached apart |
 
 `program.thread(cluster=1, sources, regions, words, host_fallback, deadline,
-prefetch="documented")` adds an
+prefetch="documented", handlers={})` adds an
 X280 thread on a work cluster (one per cluster; `clusters=(1, 2, 3)` declares it on
 each, `program.region(name, value)` a region shared by threads on one bank); see
-[X280 threads](../threads.md).
+[X280 threads](../threads.md). `handlers` names the commands its `kmx_program` answers,
+as `handlers` above does for the kernels ([commands to a
+thread](threads.md#commands-to-a-thread)).
 
 A program's three kernels share the session's kernel buffer, 70,656 bytes on Blackhole
 unless the session sets `kernel_bytes`. When a program is loaded its build is laid out
@@ -257,7 +259,7 @@ range.
 
 | Call | What it does |
 |---|---|
-| `submit(handler, group=None, args=(), exclusive=False, result=False, queued=False)` | queues one command and returns its handle (1, 2, ...). `handler` is a name or a number (`0` is NOP); `group` is `(first, count)`, default every core; `args` up to ten 32-bit words. Groups and handlers are checked here. With `exclusive` (`KM_FLAG_EXCLUSIVE`), the dispatcher submits the command only once every queued command sent before it has left the kernel's job queue and no command in flight has a group that overlaps it; the host stores it as soon as the ring has room, like any other command (below, "Exclusive commands"). With `result` (`KM_FLAG_RESULT`), its done event carries the group leader's 32-bit result word. With `queued` (`KM_FLAG_QUEUE`), `group` is a count: the kernel gives the command the lowest first core whose group overlaps no busy one, and waits until there is one (nothing is rejected for a full grid); `group(handle)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). The kernel's job queue holds 64 commands waiting for room; one more is rejected (`CommandRejected`, reason 9), so with at most 64 queued commands unfinished none is rejected. Queued commands share the program's `depth` completion slots with every other command: at most `depth` (16 at most) run at once over the whole grid. A queued command cannot be exclusive |
+| `submit(handler, group=None, args=(), exclusive=False, result=False, queued=False, cluster=None)` | queues one command and returns its handle (1, 2, ...). `handler` is a name or a number (`0` is NOP); `group` is `(first, count)`, default every core; `args` up to ten 32-bit words. Groups and handlers are checked here. With `exclusive` (`KM_FLAG_EXCLUSIVE`), the dispatcher submits the command only once every queued command sent before it has left the kernel's job queue and no command in flight has a group that overlaps it; the host stores it as soon as the ring has room, like any other command (below, "Exclusive commands"). With `result` (`KM_FLAG_RESULT`), its done event carries the group leader's 32-bit result word. With `queued` (`KM_FLAG_QUEUE`), `group` is a count: the kernel gives the command the lowest first core whose group overlaps no busy one, and waits until there is one (nothing is rejected for a full grid); `group(handle)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). The kernel's job queue holds 64 commands waiting for room; one more is rejected (`CommandRejected`, reason 9), so with at most 64 queued commands unfinished none is rejected. Queued commands share the program's `depth` completion slots with every other command: at most `depth` (16 at most) run at once over the whole grid. A queued command cannot be exclusive. With `cluster` (1 to 3) the command goes to that work cluster's X280 thread instead of a group: `handler` is a name among the thread's `handlers` or a number, and `group`, `exclusive` and `queued` are refused (`ValueError`, as are a cluster outside 1 to 3 and one without a thread). Its event is a group's; a full thread rejects it (`CommandRejected`, reason 14, `thread`), and a timeout is returned as its event without ending the run ([commands to a thread](threads.md#commands-to-a-thread)) |
 | `submit_many(handler, firsts, counts, args=None, exclusive=False)` | queues n commands at once and returns their handles as a `range`. `handler`, `firsts` and `counts` are one value or n each; `args` is an `[n, m]` integer matrix (m at most 10) or None. Checked as `submit` checks, all before any is queued |
 | `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a [graph](../graphs.md) host-fed: its executor on the host, its commands through this run; returns `HostfedResult(status, error, registers, runs, commands, events)` |
 | `wait(handles, timeout=10.0)` | stores queued commands up to the handles in batches, reads events until each handle has one; returns the `Event` (or a list) and forgets those handles. The stores and the event reads run in the native module with the GIL released |
@@ -351,8 +353,8 @@ waits, `wait_engine` also writes the host's read count into the kernel, since an
 engine's posts wait for event room.
 
 The region is the one the kernel's ready block names: what is left of X280 cluster 0's
-local memory after the kernel's layout (707,840 bytes on a p150a), none for a program
-with an X280 thread, whose ring lies there. The host never writes into the range of a
+local memory after the kernel's layout (707,840 bytes on a p150a), 512 KiB for a
+program with an X280 thread, whose rings lie after it. The host never writes into the range of a
 running stream or graph, or of a kept graph. The kernel's EXIT waits until no engine
 runs, so `stop` cancels the engines still running first.
 

@@ -177,7 +177,9 @@ back. That is why every loop in a thread terminates:
 - **Every loop terminates.** Bound it by a count, or poll `kmx_stop_requested()`,
   which is true once the host or the runtime asked for a stop or the thread's deadline
   passed. The library's own waits (`kmx_parallel`, `kmx_join`, `kmx_parallel_all`, `kmx_serve`)
-  end at that deadline.
+  end at that deadline. A thread with `kmx_program` has no deadline once it serves
+  commands: only a stop ends it, and each command has its own deadline ([commands to a
+  thread](reference/threads.md#commands-to-a-thread)).
 - **Pointers come from `kmx_region`.** Write nowhere else. Globals need a non-zero
   initialiser and `__attribute__((section(".data")))` (the image has no `.bss`).
 - **No libc.** The image links without one; a struct assignment can become a `memset`
