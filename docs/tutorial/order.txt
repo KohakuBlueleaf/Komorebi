@@ -28,6 +28,7 @@ circular-buffers
 computing-on-a-tile
 the-matrix-unit
 a-whole-map
+both-movers
 
 # Part 4. Cores talking to cores
 > You end this part able to send data between cores without going through DRAM.

@@ -64,13 +64,13 @@ program.dynamic(HANDLER, message_bytes=64, max_live=LIVE, queue_messages=QUEUE)
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/29_full_buffers/full_buffers.py:program"
+--8<-- "tutorial/30_full_buffers/full_buffers.py:program"
 ```
 
 `max_live` is 1180: 10 units of quota for each of the 118 cores. The inboxes hold 2048.
 
 ```{ .cpp }
---8<-- "tutorial/29_full_buffers/kernels/compute.cpp:run"
+--8<-- "tutorial/30_full_buffers/kernels/compute.cpp:run"
 ```
 
 Rank 0 tries twice as many sends as its quota, counting the ones that were accepted: the
@@ -82,23 +82,23 @@ core consumes what it gets and reads its quota at the end.
 === "full_buffers.py"
 
     ``` { .python }
-    --8<-- "tutorial/29_full_buffers/full_buffers.py"
+    --8<-- "tutorial/30_full_buffers/full_buffers.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/29_full_buffers/kernels/handlers.h"
+    --8<-- "tutorial/30_full_buffers/kernels/handlers.h"
     ```
 
 === "kernels/compute.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/29_full_buffers/kernels/compute.cpp"
+    --8<-- "tutorial/30_full_buffers/kernels/compute.cpp"
     ```
 
 ```{ .text .km-output }
---8<-- "tutorial/29_full_buffers/output.txt"
+--8<-- "tutorial/30_full_buffers/output.txt"
 ```
 
 Rank 0 had 10 units, sent 10 messages and was refused the other 10 sends. Its 10 messages

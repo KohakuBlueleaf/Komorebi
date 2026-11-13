@@ -64,27 +64,27 @@ Only core 0 of the cluster submits and waits.
 The kernel is `writer.cpp` of [[arguments]], with a product in place of the sum:
 
 ```{ .cpp }
---8<-- "tutorial/32_thread_submits/kernels/writer.cpp:run"
+--8<-- "tutorial/33_thread_submits/kernels/writer.cpp:run"
 ```
 
 The command, built from the two numbers that Python gave the thread:
 
 ```{ .c }
---8<-- "tutorial/32_thread_submits/thread/submit.c:command"
+--8<-- "tutorial/33_thread_submits/thread/submit.c:command"
 ```
 
 Handler 0, the flag for a result, and the group of the one core 0. The ten arguments are
 all set.
 
 ```{ .c }
---8<-- "tutorial/32_thread_submits/thread/submit.c:send"
+--8<-- "tutorial/33_thread_submits/thread/submit.c:send"
 ```
 
 The thread submits and waits at most one second. Either step may fail, and the thread
 then ends with a code of its own, 1 or 2, which Python can read.
 
 ```{ .c }
---8<-- "tutorial/32_thread_submits/thread/submit.c:report"
+--8<-- "tutorial/33_thread_submits/thread/submit.c:report"
 ```
 
 The answer is the result word, and the thread returns it to Python as its own result.
@@ -107,26 +107,26 @@ The answer is the result word, and the thread returns it to Python as its own re
 === "thread_submits.py"
 
     ``` { .python }
-    --8<-- "tutorial/32_thread_submits/thread_submits.py"
+    --8<-- "tutorial/33_thread_submits/thread_submits.py"
     ```
 
 === "thread/submit.c"
 
     ``` { .c }
-    --8<-- "tutorial/32_thread_submits/thread/submit.c"
+    --8<-- "tutorial/33_thread_submits/thread/submit.c"
     ```
 
 === "kernels/writer.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/32_thread_submits/kernels/writer.cpp"
+    --8<-- "tutorial/33_thread_submits/kernels/writer.cpp"
     ```
 
 `reader.cpp` and `compute.cpp` are the empty ones. Python sends no command: it only starts
 the program and reads the thread's result.
 
 ```{ .text .km-output }
---8<-- "tutorial/32_thread_submits/output.txt"
+--8<-- "tutorial/33_thread_submits/output.txt"
 ```
 
 The 42 was made by a Tensix core, passed to the thread in the event, and passed on to

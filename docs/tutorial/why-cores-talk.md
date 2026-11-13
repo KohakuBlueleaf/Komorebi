@@ -42,7 +42,7 @@ of every core, as one tensor with a row for each core. The kernels write into it
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/23_why_cores_talk/why_cores_talk.py:notes"
+--8<-- "tutorial/24_why_cores_talk/why_cores_talk.py:notes"
 ```
 
 `session.tensor(..., shard_grid=session.grid)` makes a tensor that lives in the L1 of every
@@ -51,7 +51,7 @@ says it is on all 120 cores. The array has 120 rows, one for each core, in the o
 core numbers.
 
 ```{ .cpp }
---8<-- "tutorial/23_why_cores_talk/kernels/writer.cpp:run"
+--8<-- "tutorial/24_why_cores_talk/kernels/writer.cpp:run"
 ```
 
 `km::l1(address)` turns the address in the command into a pointer to the core's own L1: the
@@ -59,13 +59,13 @@ same address on every core, the row of that core. Every core of the group stores
 rank times its rank there.
 
 ```{ .python }
---8<-- "tutorial/23_why_cores_talk/why_cores_talk.py:remember"
+--8<-- "tutorial/24_why_cores_talk/why_cores_talk.py:remember"
 ```
 
 One command to the first six cores, with the address of the tensor as its argument.
 
 ```{ .python }
---8<-- "tutorial/23_why_cores_talk/why_cores_talk.py:read"
+--8<-- "tutorial/24_why_cores_talk/why_cores_talk.py:read"
 ```
 
 `notes.read()` returns all 120 rows. The first number of the first six rows is what the
@@ -76,25 +76,25 @@ cores stored; the others are untouched zeros. Cores 6 and 7 did not run the comm
 === "why_cores_talk.py"
 
     ``` { .python }
-    --8<-- "tutorial/23_why_cores_talk/why_cores_talk.py"
+    --8<-- "tutorial/24_why_cores_talk/why_cores_talk.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/23_why_cores_talk/kernels/handlers.h"
+    --8<-- "tutorial/24_why_cores_talk/kernels/handlers.h"
     ```
 
 === "kernels/writer.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/23_why_cores_talk/kernels/writer.cpp"
+    --8<-- "tutorial/24_why_cores_talk/kernels/writer.cpp"
     ```
 
 `reader.cpp` and `compute.cpp` are the empty ones.
 
 ```{ .text .km-output }
---8<-- "tutorial/23_why_cores_talk/output.txt"
+--8<-- "tutorial/24_why_cores_talk/output.txt"
 ```
 
 Each core of the group holds its own number, 0, 1, 4, 9, 16 and 25. This is also the tool

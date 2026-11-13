@@ -1,6 +1,6 @@
-"""The tutorial: each program folder holds the three kernels and a script that builds a
-Program the host accepts (no card is opened), and the lesson pages are the ones the
-order file lists, with the programs and outputs they include."""
+"""The tutorial: each program folder holds its kernels (three, or movement and compute)
+and a script that builds a Program the host accepts (no card is opened), and the lesson
+pages are the ones the order file lists, with the programs and outputs they include."""
 
 import ast
 import re
@@ -35,7 +35,7 @@ def test_a_folder_has_a_script_that_parses_three_kernels_and_its_output(folder):
         if stems == {"compute"}:  # a dynamic handler: Komorebi's own reader and writer
             assert ".dynamic(" in scripts[0].read_text()
             return
-        assert stems == {"reader", "compute", "writer"}
+        assert stems in ({"reader", "compute", "writer"}, {"movement", "compute"})
         header = kernels / "handlers.h"
         assert km.Program(
             folder.name, kernels, handlers=header if header.exists() else {}

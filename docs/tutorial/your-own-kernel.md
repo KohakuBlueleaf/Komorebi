@@ -38,7 +38,7 @@ The change is in the compute kernel. In [[a-whole-program]] each tile was added 
 it was. Now each tile is first multiplied by itself:
 
 ```{ .cpp }
---8<-- "tutorial/40_your_own_kernel/kernels/compute.cpp:run"
+--8<-- "tutorial/41_your_own_kernel/kernels/compute.cpp:run"
 ```
 
 The three lines that are new are `const uint32_t into = ...`, `mul_binary_tile_init()` and
@@ -50,7 +50,7 @@ reduction between cores are unchanged; only the handler's name is new,
 `sum_squares`.
 
 ```{ .python }
---8<-- "tutorial/40_your_own_kernel/your_own_kernel.py:sum"
+--8<-- "tutorial/41_your_own_kernel/your_own_kernel.py:sum"
 ```
 
 On the Python side, two things changed: the name of the handler, and the expected answer,
@@ -78,24 +78,24 @@ and shows the first. That is the line to read when step 4 fails.
 === "your_own_kernel.py"
 
     ``` { .python }
-    --8<-- "tutorial/40_your_own_kernel/your_own_kernel.py"
+    --8<-- "tutorial/41_your_own_kernel/your_own_kernel.py"
     ```
 
 === "kernels/compute.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/40_your_own_kernel/kernels/compute.cpp"
+    --8<-- "tutorial/41_your_own_kernel/kernels/compute.cpp"
     ```
 
 The other kernels are those of [[a-whole-program]], with the handler renamed. Run it from
-the folder `tutorial/40_your_own_kernel`:
+the folder `tutorial/41_your_own_kernel`:
 
 ```bash
 python your_own_kernel.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/40_your_own_kernel/output.txt"
+--8<-- "tutorial/41_your_own_kernel/output.txt"
 ```
 
 It worked, and the times are those of the sum: squaring costs the cores almost nothing next to

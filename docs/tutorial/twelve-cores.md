@@ -73,21 +73,21 @@ int kmx_main(int core) {
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/35_twelve_cores/twelve_cores.py:thread"
+--8<-- "tutorial/36_twelve_cores/twelve_cores.py:thread"
 ```
 
 The same declaration as before, with `clusters=(1, 2, 3)` in the place of `cluster=1`. The
 region `pieces` is 256 bytes, four lines of 64: one line for each core of a cluster.
 
 ```{ .c }
---8<-- "tutorial/35_twelve_cores/thread/twelve.c:serve"
+--8<-- "tutorial/36_twelve_cores/thread/twelve.c:serve"
 ```
 
 The first lines of `kmx_main`. Clusters 2 and 3 never leave this `if`: they serve until the
 lead is done. Only cluster 1 goes on.
 
 ```{ .c }
---8<-- "tutorial/35_twelve_cores/thread/twelve.c:piece"
+--8<-- "tutorial/36_twelve_cores/thread/twelve.c:piece"
 ```
 
 Each of the twelve cores takes a twelfth of the numbers, adds them as in [[four-cores]], and
@@ -95,14 +95,14 @@ stores the sum in its line of its own cluster's region. `kmx_flush_at(0, core * 
 flushes that one line, from this core alone.
 
 ```{ .c }
---8<-- "tutorial/35_twelve_cores/thread/twelve.c:all"
+--8<-- "tutorial/36_twelve_cores/thread/twelve.c:all"
 ```
 
 The lead calls `kmx_parallel_all` twice, and times each call. The sum is the same both
 times; the point of the second call is to see what the first one costs.
 
 ```{ .python }
---8<-- "tutorial/35_twelve_cores/twelve_cores.py:read"
+--8<-- "tutorial/36_twelve_cores/twelve_cores.py:read"
 ```
 
 After the run, Python reads the `pieces` region of each cluster's thread and keeps the first
@@ -127,23 +127,23 @@ numpy.
 === "twelve_cores.py"
 
     ``` { .python }
-    --8<-- "tutorial/35_twelve_cores/twelve_cores.py"
+    --8<-- "tutorial/36_twelve_cores/twelve_cores.py"
     ```
 
 === "thread/twelve.c"
 
     ``` { .c }
-    --8<-- "tutorial/35_twelve_cores/thread/twelve.c"
+    --8<-- "tutorial/36_twelve_cores/thread/twelve.c"
     ```
 
-The kernels are the empty ones. Run it from the folder `tutorial/35_twelve_cores`:
+The kernels are the empty ones. Run it from the folder `tutorial/36_twelve_cores`:
 
 ```bash
 python twelve_cores.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/35_twelve_cores/output.txt"
+--8<-- "tutorial/36_twelve_cores/output.txt"
 ```
 
 The twelve pieces add up to the sum numpy computes. The second call took about six

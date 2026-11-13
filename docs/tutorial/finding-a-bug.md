@@ -50,7 +50,7 @@ The kernels of this lesson are the copy of [[circular-buffers]], with two switch
 `a5` of the command turns a bug on. In `reader.cpp`:
 
 ```{ .cpp }
---8<-- "tutorial/38_finding_a_bug/kernels/reader.cpp:run"
+--8<-- "tutorial/39_finding_a_bug/kernels/reader.cpp:run"
 ```
 
 With `a5` equal to 1 `reader.cpp` never calls `cb_push_back`: it reads each tile into the
@@ -58,7 +58,7 @@ buffer, and never says that the tile is there. In `writer.cpp`, `a5` equal to 2 
 `cb_pop_front`: `writer.cpp` copies each tile out, and never says that the page is free again.
 
 ```{ .python }
---8<-- "tutorial/38_finding_a_bug/finding_a_bug.py:wait"
+--8<-- "tutorial/39_finding_a_bug/finding_a_bug.py:wait"
 ```
 
 The program runs the copy three times, with bug 1, bug 2 and no bug. The deadline of each is
@@ -103,35 +103,35 @@ a tile: the `cb_pop_front`.
 === "finding_a_bug.py"
 
     ``` { .python }
-    --8<-- "tutorial/38_finding_a_bug/finding_a_bug.py"
+    --8<-- "tutorial/39_finding_a_bug/finding_a_bug.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/38_finding_a_bug/kernels/handlers.h"
+    --8<-- "tutorial/39_finding_a_bug/kernels/handlers.h"
     ```
 
 === "kernels/reader.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/38_finding_a_bug/kernels/reader.cpp"
+    --8<-- "tutorial/39_finding_a_bug/kernels/reader.cpp"
     ```
 
 === "kernels/writer.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/38_finding_a_bug/kernels/writer.cpp"
+    --8<-- "tutorial/39_finding_a_bug/kernels/writer.cpp"
     ```
 
-The compute file is the empty one. Run it from the folder `tutorial/38_finding_a_bug`:
+The compute file is the empty one. Run it from the folder `tutorial/39_finding_a_bug`:
 
 ```bash
 python finding_a_bug.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/38_finding_a_bug/output.txt"
+--8<-- "tutorial/39_finding_a_bug/output.txt"
 ```
 
 The two bugs were found from the messages alone, and the run without a bug copied all eight

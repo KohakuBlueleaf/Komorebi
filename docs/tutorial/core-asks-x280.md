@@ -89,14 +89,14 @@ int status = kmx_port_run(&command, serve, ARGUMENT, &event);
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/36_core_asks_x280/core_asks_x280.py:ports"
+--8<-- "tutorial/37_core_asks_x280/core_asks_x280.py:ports"
 ```
 
 Tensix core 0 is served by core 0 of cluster 1. That is the one X280 core that the program
 uses for it.
 
 ```{ .cpp }
---8<-- "tutorial/36_core_asks_x280/kernels/reader.cpp:run"
+--8<-- "tutorial/37_core_asks_x280/kernels/reader.cpp:run"
 ```
 
 `reader.cpp` of core 0 asks for the number `a0` of its command, waits for the answer, and
@@ -104,14 +104,14 @@ tells the X280 core the answer plus one. If the ask gets no answer it gives up a
 nothing. The tell is the proof, for the thread, that the answer arrived.
 
 ```{ .c }
---8<-- "tutorial/36_core_asks_x280/thread/serve.c:look"
+--8<-- "tutorial/37_core_asks_x280/thread/serve.c:look"
 ```
 
 One look at the port of core 0: answer an ask with the square of its number, and keep what a
 tell says.
 
 ```{ .c }
---8<-- "tutorial/36_core_asks_x280/thread/serve.c:serve"
+--8<-- "tutorial/37_core_asks_x280/thread/serve.c:serve"
 ```
 
 The serving function. Only the X280 core that owns Tensix core 0 does anything. It looks
@@ -119,7 +119,7 @@ again and again while the command runs, and once more after it ended, because th
 come just before the end.
 
 ```{ .c }
---8<-- "tutorial/36_core_asks_x280/thread/serve.c:run"
+--8<-- "tutorial/37_core_asks_x280/thread/serve.c:run"
 ```
 
 The thread sends the command and serves it until its event comes. The thread then returns
@@ -143,30 +143,30 @@ the tell that it saw as its result.
 === "core_asks_x280.py"
 
     ``` { .python }
-    --8<-- "tutorial/36_core_asks_x280/core_asks_x280.py"
+    --8<-- "tutorial/37_core_asks_x280/core_asks_x280.py"
     ```
 
 === "thread/serve.c"
 
     ``` { .c }
-    --8<-- "tutorial/36_core_asks_x280/thread/serve.c"
+    --8<-- "tutorial/37_core_asks_x280/thread/serve.c"
     ```
 
 === "kernels/reader.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/36_core_asks_x280/kernels/reader.cpp"
+    --8<-- "tutorial/37_core_asks_x280/kernels/reader.cpp"
     ```
 
 `compute.cpp` and `writer.cpp` are the empty ones of [[hello-core]]. Run it from the folder
-`tutorial/36_core_asks_x280`:
+`tutorial/37_core_asks_x280`:
 
 ```bash
 python core_asks_x280.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/36_core_asks_x280/output.txt"
+--8<-- "tutorial/37_core_asks_x280/output.txt"
 ```
 
 The 145 is the square of 12, plus the one that the Tensix core added. It could only reach

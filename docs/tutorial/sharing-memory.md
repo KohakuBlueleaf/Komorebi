@@ -65,7 +65,7 @@ kmx_flush(ID);
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/34_sharing_memory/sharing_memory.py:regions"
+--8<-- "tutorial/35_sharing_memory/sharing_memory.py:regions"
 ```
 
 Two regions. `numbers` starts as the array of 0 to 1023, as 32-bit numbers, 4096 bytes.
@@ -73,13 +73,13 @@ Two regions. `numbers` starts as the array of 0 to 1023, as 32-bit numbers, 4096
 region 1 is `tripled`.
 
 ```{ .c }
---8<-- "tutorial/34_sharing_memory/thread/triple.c:regions"
+--8<-- "tutorial/35_sharing_memory/thread/triple.c:regions"
 ```
 
 The two regions as arrays. `numbers_bytes` is the size of the first: 4096.
 
 ```{ .c }
---8<-- "tutorial/34_sharing_memory/thread/triple.c:work"
+--8<-- "tutorial/35_sharing_memory/thread/triple.c:work"
 ```
 
 The thread drops the cache's copy of `numbers`, so that it reads what Python wrote. Then
@@ -87,7 +87,7 @@ it writes three times each number into `tripled`, and flushes `tripled`, so that
 wrote reaches the DRAM.
 
 ```{ .python }
---8<-- "tutorial/34_sharing_memory/sharing_memory.py:read"
+--8<-- "tutorial/35_sharing_memory/sharing_memory.py:read"
 ```
 
 After the thread's result and `run.stop()`, Python reads `tripled` and views its bytes as
@@ -111,23 +111,23 @@ After the thread's result and `run.stop()`, Python reads `tripled` and views its
 === "sharing_memory.py"
 
     ``` { .python }
-    --8<-- "tutorial/34_sharing_memory/sharing_memory.py"
+    --8<-- "tutorial/35_sharing_memory/sharing_memory.py"
     ```
 
 === "thread/triple.c"
 
     ``` { .c }
-    --8<-- "tutorial/34_sharing_memory/thread/triple.c"
+    --8<-- "tutorial/35_sharing_memory/thread/triple.c"
     ```
 
-The kernels are the empty ones. Run it from the folder `tutorial/34_sharing_memory`:
+The kernels are the empty ones. Run it from the folder `tutorial/35_sharing_memory`:
 
 ```bash
 python sharing_memory.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/34_sharing_memory/output.txt"
+--8<-- "tutorial/35_sharing_memory/output.txt"
 ```
 
 The thread went through the 1024 numbers that Python wrote, and Python read back what the

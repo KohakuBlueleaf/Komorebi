@@ -72,7 +72,7 @@ result = run.run_hostfed(graph, {"name": START})
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/30_streams_and_graphs/streams_and_graphs.py:build"
+--8<-- "tutorial/31_streams_and_graphs/streams_and_graphs.py:build"
 ```
 
 Three registers are made, and two nodes. `add` is the handler of [[handlers]], on core 0,
@@ -82,14 +82,14 @@ after it copies the doubled number into `value` for the next round and sets `aga
 the value is below 100. The value goes `1 -> 8 -> 22 -> 50 -> 106`, and stops at 106.
 
 ```{ .python }
---8<-- "tutorial/30_streams_and_graphs/streams_and_graphs.py:run"
+--8<-- "tutorial/31_streams_and_graphs/streams_and_graphs.py:run"
 ```
 
 One call runs all the rounds. The result has the number of rounds and the registers; register
 0 is `value`, the first one made.
 
 ```{ .python }
---8<-- "tutorial/30_streams_and_graphs/streams_and_graphs.py:check"
+--8<-- "tutorial/31_streams_and_graphs/streams_and_graphs.py:check"
 ```
 
 The same rounds in a few lines of Python, as the check.
@@ -99,26 +99,26 @@ The same rounds in a few lines of Python, as the check.
 === "streams_and_graphs.py"
 
     ``` { .python }
-    --8<-- "tutorial/30_streams_and_graphs/streams_and_graphs.py"
+    --8<-- "tutorial/31_streams_and_graphs/streams_and_graphs.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/30_streams_and_graphs/kernels/handlers.h"
+    --8<-- "tutorial/31_streams_and_graphs/kernels/handlers.h"
     ```
 
 === "kernels/writer.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/30_streams_and_graphs/kernels/writer.cpp"
+    --8<-- "tutorial/31_streams_and_graphs/kernels/writer.cpp"
     ```
 
 `reader.cpp` and `compute.cpp` are the empty ones, and the kernels are those of
 [[handlers]].
 
 ```{ .text .km-output }
---8<-- "tutorial/30_streams_and_graphs/output.txt"
+--8<-- "tutorial/31_streams_and_graphs/output.txt"
 ```
 
 Four rounds, ending at 106; the script's check, the same sum and product in a loop, gives

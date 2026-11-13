@@ -81,7 +81,7 @@ km::broadcast_end(compute, BUFFER, PAGES, WINDOW, COUNT);
 The host first works out the eleven numbers for each core:
 
 ```{ .python }
---8<-- "tutorial/26_broadcast/broadcast.py:plan"
+--8<-- "tutorial/27_broadcast/broadcast.py:plan"
 ```
 
 `session.nocs()` is the card's map of the NoC. `layout.broadcast_args(...)` computes, for
@@ -93,20 +93,20 @@ reader uses (0), and `(0, 0, 2, 1)`: broadcast number 0, buffer 0, a window of 2
 order reader, writer, compute. Those of `reader.cpp` are these eleven numbers.
 
 ```{ .cpp }
---8<-- "tutorial/26_broadcast/kernels/reader.cpp:run"
+--8<-- "tutorial/27_broadcast/kernels/reader.cpp:run"
 ```
 
 `reader.cpp` is the general form: the sender reads each block of the source into the slot
 that `reserve` gives it and casts it; the others arrive.
 
 ```{ .cpp }
---8<-- "tutorial/26_broadcast/kernels/compute.cpp:run"
+--8<-- "tutorial/27_broadcast/kernels/compute.cpp:run"
 ```
 
 Every core, the sender too, adds the blocks it receives into one tile and packs the sum.
 
 ```{ .python }
---8<-- "tutorial/26_broadcast/broadcast.py:cast"
+--8<-- "tutorial/27_broadcast/broadcast.py:cast"
 ```
 
 One command, `exclusive=True`, to the six cores.
@@ -116,35 +116,35 @@ One command, `exclusive=True`, to the six cores.
 === "broadcast.py"
 
     ``` { .python }
-    --8<-- "tutorial/26_broadcast/broadcast.py"
+    --8<-- "tutorial/27_broadcast/broadcast.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/26_broadcast/kernels/handlers.h"
+    --8<-- "tutorial/27_broadcast/kernels/handlers.h"
     ```
 
 === "kernels/reader.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/26_broadcast/kernels/reader.cpp"
+    --8<-- "tutorial/27_broadcast/kernels/reader.cpp"
     ```
 
 === "kernels/compute.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/26_broadcast/kernels/compute.cpp"
+    --8<-- "tutorial/27_broadcast/kernels/compute.cpp"
     ```
 
 === "kernels/writer.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/26_broadcast/kernels/writer.cpp"
+    --8<-- "tutorial/27_broadcast/kernels/writer.cpp"
     ```
 
 ```{ .text .km-output }
---8<-- "tutorial/26_broadcast/output.txt"
+--8<-- "tutorial/27_broadcast/output.txt"
 ```
 
 Only core 0 read the source. The script checks, for each of the six cores, that the tile it

@@ -1,0 +1,3 @@
+pattern A : 256 tiles copied in   39.6 microseconds
+pattern AB: 256 tiles copied in   21.6 microseconds
+both copies hold every tile of the source

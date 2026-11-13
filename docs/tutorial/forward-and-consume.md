@@ -57,7 +57,7 @@ if (DONE) {
 ## One line at a time
 
 ```{ .cpp }
---8<-- "tutorial/28_forward_and_consume/kernels/compute.cpp:run"
+--8<-- "tutorial/29_forward_and_consume/kernels/compute.cpp:run"
 ```
 
 Rank 0 seeds 6 messages, message `id` to rank `id % 6`, each with 4 hops and the value
@@ -68,13 +68,13 @@ value names, `value % 6`. At the end, each core stores its visit count and its c
 messages that ended there in L1.
 
 ```{ .python }
---8<-- "tutorial/28_forward_and_consume/forward_and_consume.py:run"
+--8<-- "tutorial/29_forward_and_consume/forward_and_consume.py:run"
 ```
 
 The command carries the number of messages, the hops and the address of the tensor.
 
 ```{ .python }
---8<-- "tutorial/28_forward_and_consume/forward_and_consume.py:replay"
+--8<-- "tutorial/29_forward_and_consume/forward_and_consume.py:replay"
 ```
 
 The check: the same rules in a few lines of Python, followed message by message. The cores
@@ -85,23 +85,23 @@ and the replay must agree on every count.
 === "forward_and_consume.py"
 
     ``` { .python }
-    --8<-- "tutorial/28_forward_and_consume/forward_and_consume.py"
+    --8<-- "tutorial/29_forward_and_consume/forward_and_consume.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/28_forward_and_consume/kernels/handlers.h"
+    --8<-- "tutorial/29_forward_and_consume/kernels/handlers.h"
     ```
 
 === "kernels/compute.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/28_forward_and_consume/kernels/compute.cpp"
+    --8<-- "tutorial/29_forward_and_consume/kernels/compute.cpp"
     ```
 
 ```{ .text .km-output }
---8<-- "tutorial/28_forward_and_consume/output.txt"
+--8<-- "tutorial/29_forward_and_consume/output.txt"
 ```
 
 6 messages with 4 hops are 5 visits each: 30 visits, spread over the cores by the data.

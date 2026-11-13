@@ -36,7 +36,7 @@ read after the cores have stopped, and checked.
 ## One part at a time
 
 ```{ .python }
---8<-- "tutorial/39_a_whole_program/a_whole_program.py:tensors"
+--8<-- "tutorial/40_a_whole_program/a_whole_program.py:tensors"
 ```
 
 Python makes 48 tiles of integers from -3 to 3, and puts them on the card as one tensor of
@@ -45,7 +45,7 @@ before the program is loaded: a tensor cannot be written while the kernels run
 ([[a-whole-map]]).
 
 ```{ .python }
---8<-- "tutorial/39_a_whole_program/a_whole_program.py:program"
+--8<-- "tutorial/40_a_whole_program/a_whole_program.py:program"
 ```
 
 The program: the folder of the kernels, the header with the handler, three buffers, and the
@@ -54,14 +54,14 @@ way from `reader.cpp` to the compute kernel, two at a time. The second receives 
 other cores send ([[port]]). The third holds the output.
 
 ```{ .cpp }
---8<-- "tutorial/39_a_whole_program/kernels/reader.cpp:run"
+--8<-- "tutorial/40_a_whole_program/kernels/reader.cpp:run"
 ```
 
 `reader.cpp`. Its core takes its share of the 48 tiles with `km::partition`, reads them one by
 one into the first buffer, and then takes its part in the reduction.
 
 ```{ .cpp }
---8<-- "tutorial/39_a_whole_program/kernels/compute.cpp:run"
+--8<-- "tutorial/40_a_whole_program/kernels/compute.cpp:run"
 ```
 
 The compute kernel takes the same share, and adds its tiles into one: the first tile goes
@@ -69,14 +69,14 @@ into register 0, and each later tile into register 1 and is added to 0. Then `km
 adds the sums that the other cores send. The result goes to the output buffer.
 
 ```{ .cpp }
---8<-- "tutorial/39_a_whole_program/kernels/writer.cpp:run"
+--8<-- "tutorial/40_a_whole_program/kernels/writer.cpp:run"
 ```
 
 `writer.cpp`. A core that is not the leader sends its sum to the core it reports to; the leader
 writes the total into the destination tensor.
 
 ```{ .python }
---8<-- "tutorial/39_a_whole_program/a_whole_program.py:sum"
+--8<-- "tutorial/40_a_whole_program/a_whole_program.py:sum"
 ```
 
 The same command twice, for 1 core and for 8. The arguments are the source and destination
@@ -101,41 +101,41 @@ commands are done, the program stops the cores and checks each destination again
 === "a_whole_program.py"
 
     ``` { .python }
-    --8<-- "tutorial/39_a_whole_program/a_whole_program.py"
+    --8<-- "tutorial/40_a_whole_program/a_whole_program.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/39_a_whole_program/kernels/handlers.h"
+    --8<-- "tutorial/40_a_whole_program/kernels/handlers.h"
     ```
 
 === "kernels/reader.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/39_a_whole_program/kernels/reader.cpp"
+    --8<-- "tutorial/40_a_whole_program/kernels/reader.cpp"
     ```
 
 === "kernels/compute.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/39_a_whole_program/kernels/compute.cpp"
+    --8<-- "tutorial/40_a_whole_program/kernels/compute.cpp"
     ```
 
 === "kernels/writer.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/39_a_whole_program/kernels/writer.cpp"
+    --8<-- "tutorial/40_a_whole_program/kernels/writer.cpp"
     ```
 
-Run it from the folder `tutorial/39_a_whole_program`:
+Run it from the folder `tutorial/40_a_whole_program`:
 
 ```bash
 python a_whole_program.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/39_a_whole_program/output.txt"
+--8<-- "tutorial/40_a_whole_program/output.txt"
 ```
 
 Both sums equal numpy's. Eight cores took 6.9 microseconds against 25.7 for one: 3.7 times

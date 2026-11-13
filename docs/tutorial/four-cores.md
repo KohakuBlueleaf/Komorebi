@@ -48,7 +48,7 @@ thread's image has no place for variables that start as zero.
 ## One line at a time
 
 ```{ .c }
---8<-- "tutorial/33_four_cores/thread/four.c:partials"
+--8<-- "tutorial/34_four_cores/thread/four.c:partials"
 ```
 
 Four lines of 16 numbers, one line for each core: a core writes to the first number of its
@@ -57,7 +57,7 @@ each core's piece lies in a line of its own. This lesson does not measure what s
 non-zero start, and the attribute puts the array where the image allows it.
 
 ```{ .c }
---8<-- "tutorial/33_four_cores/thread/four.c:sum"
+--8<-- "tutorial/34_four_cores/thread/four.c:sum"
 ```
 
 `scrambled_sum(first, last)` adds up a number made from each `i` from `first` up to, but
@@ -65,7 +65,7 @@ not including, `last`. The number is scrambled by `scramble` so that the loop ha
 work and no formula for its sum. It is ordinary C: a loop, a function, no library.
 
 ```{ .c }
---8<-- "tutorial/33_four_cores/thread/four.c:piece"
+--8<-- "tutorial/34_four_cores/thread/four.c:piece"
 ```
 
 Every core adds up its quarter of the numbers 0 to `n - 1`: `n` comes through the pointer,
@@ -74,14 +74,14 @@ including, `(c + 1) * share`. Core 0 and core 3 run the same code on different n
 each stores its sum in its own line.
 
 ```{ .c }
---8<-- "tutorial/33_four_cores/thread/four.c:parallel"
+--8<-- "tutorial/34_four_cores/thread/four.c:parallel"
 ```
 
 The call, timed with the thread's clock. Before it, the same thread added all the numbers
 on core 0 alone, and timed that too. After it, core 0 adds the four pieces.
 
 ```{ .python }
---8<-- "tutorial/33_four_cores/four_cores.py:check"
+--8<-- "tutorial/34_four_cores/four_cores.py:check"
 ```
 
 Python computes the same sum with numpy, so that it can check the thread's answer, and
@@ -105,24 +105,24 @@ prints the two times.
 === "four_cores.py"
 
     ``` { .python }
-    --8<-- "tutorial/33_four_cores/four_cores.py"
+    --8<-- "tutorial/34_four_cores/four_cores.py"
     ```
 
 === "thread/four.c"
 
     ``` { .c }
-    --8<-- "tutorial/33_four_cores/thread/four.c"
+    --8<-- "tutorial/34_four_cores/thread/four.c"
     ```
 
 The kernels are the empty ones of [[hello-core]]. Run it from the folder
-`tutorial/33_four_cores`:
+`tutorial/34_four_cores`:
 
 ```bash
 python four_cores.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/33_four_cores/output.txt"
+--8<-- "tutorial/34_four_cores/output.txt"
 ```
 
 Both sums equal the one numpy computed. Four cores did the work in a quarter of the time of

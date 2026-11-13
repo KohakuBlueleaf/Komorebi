@@ -78,7 +78,7 @@ run.submit(KIND, group=(FIRST, COUNT), args=[...], exclusive=True)
 ## One line at a time
 
 ```{ .cpp }
---8<-- "tutorial/24_port/kernels/reader.cpp:run"
+--8<-- "tutorial/25_port/kernels/reader.cpp:run"
 ```
 
 Both cores run this `reader.cpp`. The one with rank 1 is the sender: it reads the tile into the
@@ -86,7 +86,7 @@ outgoing buffer, as in [[reading-from-dram]]. The one with rank 0 waits at port 
 arrival.
 
 ```{ .cpp }
---8<-- "tutorial/24_port/kernels/writer.cpp:run"
+--8<-- "tutorial/25_port/kernels/writer.cpp:run"
 ```
 
 The sender's `writer.cpp` calls `emit`: the tile goes to `receiver`, the first core of the
@@ -95,7 +95,7 @@ number `a2` of the tile, sets it as the result ([[the-leader]]), and frees the b
 receiver is rank 0 on purpose: it is the leader, so its result reaches Python.
 
 ```{ .python }
---8<-- "tutorial/24_port/port.py:send"
+--8<-- "tutorial/25_port/port.py:send"
 ```
 
 Two commands to the group of cores 0 and 1. The first arguments are the source tensor, which
@@ -106,31 +106,31 @@ tile core 1 reads, and which number of it core 0 reports.
 === "port.py"
 
     ``` { .python }
-    --8<-- "tutorial/24_port/port.py"
+    --8<-- "tutorial/25_port/port.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/24_port/kernels/handlers.h"
+    --8<-- "tutorial/25_port/kernels/handlers.h"
     ```
 
 === "kernels/reader.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/24_port/kernels/reader.cpp"
+    --8<-- "tutorial/25_port/kernels/reader.cpp"
     ```
 
 === "kernels/writer.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/24_port/kernels/writer.cpp"
+    --8<-- "tutorial/25_port/kernels/writer.cpp"
     ```
 
 The compute file is the empty one.
 
 ```{ .text .km-output }
---8<-- "tutorial/24_port/output.txt"
+--8<-- "tutorial/25_port/output.txt"
 ```
 
 The numbers are 1000 plus their place in the whole tensor, so tile 1 starts at 2024 and

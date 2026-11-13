@@ -81,14 +81,14 @@ km::reduce_result(writer, OUTPUT, 1);
 ## One line at a time
 
 ```{ .cpp }
---8<-- "tutorial/25_reduce/kernels/reader.cpp:run"
+--8<-- "tutorial/26_reduce/kernels/reader.cpp:run"
 ```
 
 Each core reads the tile of its rank ([[partitions]], one tile each), then waits for what
 the others send.
 
 ```{ .cpp }
---8<-- "tutorial/25_reduce/kernels/compute.cpp:run"
+--8<-- "tutorial/26_reduce/kernels/compute.cpp:run"
 ```
 
 The compute kernel copies its own tile into register 0. The function given to `reduce`
@@ -97,14 +97,14 @@ done, register 0 holds this core's sum (the total, on rank 0) and `pack_tile` pu
 the output buffer.
 
 ```{ .cpp }
---8<-- "tutorial/25_reduce/kernels/writer.cpp:run"
+--8<-- "tutorial/26_reduce/kernels/writer.cpp:run"
 ```
 
 `writer.cpp` of every core but rank 0 sends the output tile on; rank 0 writes it to the
 destination tensor.
 
 ```{ .python }
---8<-- "tutorial/25_reduce/reduce.py:reduce"
+--8<-- "tutorial/26_reduce/reduce.py:reduce"
 ```
 
 The same command twice, with the group of 8 cores, once with each form. The two forms
@@ -116,35 +116,35 @@ be checked at the end.
 === "reduce.py"
 
     ``` { .python }
-    --8<-- "tutorial/25_reduce/reduce.py"
+    --8<-- "tutorial/26_reduce/reduce.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/25_reduce/kernels/handlers.h"
+    --8<-- "tutorial/26_reduce/kernels/handlers.h"
     ```
 
 === "kernels/reader.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/25_reduce/kernels/reader.cpp"
+    --8<-- "tutorial/26_reduce/kernels/reader.cpp"
     ```
 
 === "kernels/compute.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/25_reduce/kernels/compute.cpp"
+    --8<-- "tutorial/26_reduce/kernels/compute.cpp"
     ```
 
 === "kernels/writer.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/25_reduce/kernels/writer.cpp"
+    --8<-- "tutorial/26_reduce/kernels/writer.cpp"
     ```
 
 ```{ .text .km-output }
---8<-- "tutorial/25_reduce/output.txt"
+--8<-- "tutorial/26_reduce/output.txt"
 ```
 
 Both commands put the sum of the 8 tiles in the destination, exactly: the script compares

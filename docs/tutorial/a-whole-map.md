@@ -130,8 +130,8 @@ results are the sum of the two source tensors.
 - More cores than tiles. The last cores get `share.len == 0` and their loops run zero times;
   the command still finishes.
 
-That is the end of Part 3. A core can now read tiles from DRAM, work on them with the
-compute kernel and the matrix unit, write them back, and a group can do that for a
-whole tensor. Part 4 lets cores pass tiles to each other, without a trip to DRAM.
+A core can now read tiles from DRAM, work on them with the compute kernel and the
+matrix unit, write them back, and a group can do that for a whole tensor. One more
+lesson in this part lets both data-movement CPUs of a core carry one stream.
 
-Next: [[why-cores-talk]].
+Next: [[both-movers]].

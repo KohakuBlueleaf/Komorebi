@@ -81,14 +81,14 @@ empty ones, and no command is sent to the grid.
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/31_hello_thread/hello_thread.py:thread"
+--8<-- "tutorial/32_hello_thread/hello_thread.py:thread"
 ```
 
 This is the whole declaration of the thread. The line only describes it, as `Program`
 describes the kernels: nothing runs until `load`.
 
 ```{ .c }
---8<-- "tutorial/31_hello_thread/thread/hello.c"
+--8<-- "tutorial/32_hello_thread/thread/hello.c"
 ```
 
 The thread reads its two numbers, adds them in a constant `sum`, and stores `sum` as the
@@ -96,7 +96,7 @@ one result word. `&sum` is the address of the number: `kmx_result` takes an arra
 single number is an array of one.
 
 ```{ .python }
---8<-- "tutorial/31_hello_thread/hello_thread.py:result"
+--8<-- "tutorial/32_hello_thread/hello_thread.py:result"
 ```
 
 `thread_result` waits until the thread has ended and returns its **result**: the `state`
@@ -121,24 +121,24 @@ the thread ended in, its `code`, the list `words` that it stored, and how long i
 === "hello_thread.py"
 
     ``` { .python }
-    --8<-- "tutorial/31_hello_thread/hello_thread.py"
+    --8<-- "tutorial/32_hello_thread/hello_thread.py"
     ```
 
 === "thread/hello.c"
 
     ``` { .c }
-    --8<-- "tutorial/31_hello_thread/thread/hello.c"
+    --8<-- "tutorial/32_hello_thread/thread/hello.c"
     ```
 
 The three kernel files in `kernels/` are those of [[hello-core]]. Run it from the folder
-`tutorial/31_hello_thread`:
+`tutorial/32_hello_thread`:
 
 ```bash
 python hello_thread.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/31_hello_thread/output.txt"
+--8<-- "tutorial/32_hello_thread/output.txt"
 ```
 
 The state is `done`, the code 0 that the thread chose, and the sum 42 came from a core

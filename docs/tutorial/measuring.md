@@ -50,7 +50,7 @@ middle = statistics.median(LIST)
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/37_measuring/measuring.py:loop"
+--8<-- "tutorial/38_measuring/measuring.py:loop"
 ```
 
 Twenty copies of the 64 tiles of [[circular-buffers]], one command after the other. For each
@@ -58,7 +58,7 @@ run the program reads Python's clock before `submit` and after `wait`, and the c
 from the event, and keeps both in lists.
 
 ```{ .python }
---8<-- "tutorial/37_measuring/measuring.py:report"
+--8<-- "tutorial/38_measuring/measuring.py:report"
 ```
 
 For each clock, the first run, the middle, the smallest and the largest.
@@ -81,18 +81,18 @@ For each clock, the first run, the middle, the smallest and the largest.
 === "measuring.py"
 
     ``` { .python }
-    --8<-- "tutorial/37_measuring/measuring.py"
+    --8<-- "tutorial/38_measuring/measuring.py"
     ```
 
 The kernels are those of [[circular-buffers]], with 8 pages in the buffer. Run it from the
-folder `tutorial/37_measuring`:
+folder `tutorial/38_measuring`:
 
 ```bash
 python measuring.py
 ```
 
 ```{ .text .km-output }
---8<-- "tutorial/37_measuring/output.txt"
+--8<-- "tutorial/38_measuring/output.txt"
 ```
 
 Read the two lines.

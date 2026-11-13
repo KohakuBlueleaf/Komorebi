@@ -82,14 +82,14 @@ while (km::Packet packet = messages.next()) {
 ## One line at a time
 
 ```{ .python }
---8<-- "tutorial/27_routed_message/routed_message.py:program"
+--8<-- "tutorial/28_routed_message/routed_message.py:program"
 ```
 
 The program takes its reader and writer from the runtime and its compute kernel from this
 folder, and declares the handler dynamic with room for 4096 messages.
 
 ```{ .cpp }
---8<-- "tutorial/27_routed_message/kernels/compute.cpp:run"
+--8<-- "tutorial/28_routed_message/kernels/compute.cpp:run"
 ```
 
 The first part is seeding: rank 0 sends one message for each value from 0 to 11. The value
@@ -103,7 +103,7 @@ message, adds its value, and consumes it. At the end, the compute kernel stores
 the count and the sum in the core's L1, where Python reads them ([[why-cores-talk]]).
 
 ```{ .python }
---8<-- "tutorial/27_routed_message/routed_message.py:route"
+--8<-- "tutorial/28_routed_message/routed_message.py:route"
 ```
 
 One command, which stays in flight until every message has been consumed. `wait` returns
@@ -115,25 +115,25 @@ tensor.
 === "routed_message.py"
 
     ``` { .python }
-    --8<-- "tutorial/27_routed_message/routed_message.py"
+    --8<-- "tutorial/28_routed_message/routed_message.py"
     ```
 
 === "kernels/handlers.h"
 
     ``` { .cpp }
-    --8<-- "tutorial/27_routed_message/kernels/handlers.h"
+    --8<-- "tutorial/28_routed_message/kernels/handlers.h"
     ```
 
 === "kernels/compute.cpp"
 
     ``` { .cpp }
-    --8<-- "tutorial/27_routed_message/kernels/compute.cpp"
+    --8<-- "tutorial/28_routed_message/kernels/compute.cpp"
     ```
 
 This folder holds only the compute kernel: `reader.cpp` and `writer.cpp` are the runtime's.
 
 ```{ .text .km-output }
---8<-- "tutorial/27_routed_message/output.txt"
+--8<-- "tutorial/28_routed_message/output.txt"
 ```
 
 Rank 0 receives the values 0 and 6, rank 1 values 1, 5, 7 and 11 (24 in all), rank 3
