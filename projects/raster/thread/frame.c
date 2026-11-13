@@ -402,8 +402,9 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     new_command(&command, RF_HANDLER_PLACE, frame);
     command.a0 = frame->address[RF_R_ITEMS]; /* items_region_address */
     command.a1 = frame->words[RF_W_DIR];     /* directory_address */
-    command.a6 = workers;                    /* fill_cores */
-    command.a7 = frame->words[RF_W_LISTS];   /* lists_address */
+    command.a5 = workers; /* every fill core writes its directory page */
+    command.a6 = workers; /* fill_cores */
+    command.a7 = frame->words[RF_W_LISTS]; /* lists_address */
     code = run(&command);
     frame->result[RF_O_PLACE] += elapsed(&mark);
     if (code) {

@@ -75,3 +75,21 @@ def test_the_thread_drives_a_frame_with_the_reference_lists(session):
     assert out["thread"]["code"] == 0 and out["thread"]["where"] == 8, out
     assert out["lists"]["pages_differ"] == 0 and out["dir_equal"], out
     assert out["ok"], out
+
+
+def test_the_thread_drives_a_frame_with_fewer_pass_cores_than_fill_cores(session):
+    # PLACE still writes every fill core's directory page
+    args = argparse.Namespace(
+        scene="tiny",
+        cores=7,
+        steps=4,
+        list_slots=0,
+        lists=0,
+        image=False,
+        balance=True,
+        repeat=0,
+    )
+    out = card_thread.frame(args, session)
+    assert out["thread"]["code"] == 0 and out["thread"]["where"] == 8, out
+    assert out["lists"]["pages_differ"] == 0 and out["dir_equal"], out
+    assert out["ok"], out

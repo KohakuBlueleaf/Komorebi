@@ -260,7 +260,7 @@ def slots_differ(session, uploaded, records, middle):
     packed = lists.pack_records(records)
     packed[:, K["kRecIndex"]] = 0
     want, _ = lists.build_lists(packed, offsets, members, middle["tiles_of"])
-    (got,) = session.read(uploaded["lists"], first_differing=0, pages=len(want))
+    (got,) = session.read(uploaded["lists"], first=0, pages=len(want))
     want = want.reshape(-1, lists.SLOT)
     got = got.view(np.uint32).reshape(-1, lists.SLOT)
     differs = (got != want).any(axis=1)
