@@ -1,12 +1,5 @@
-"""What moving bundles of rays between cores costs: routed messages of 64 and 256 bytes
-(the runtime's kernels as they are) and of 2 and 4 KiB (a copy of them for page-sized
-messages, in kernels/, or that copy with pages no core copies), hopping between ranks
-drawn from part A's destinations.
-
-    python experiments/ray_moves/transport.py destinations PATHS_JSON
-    python experiments/ray_moves/transport.py run --sizes 64 256 2048 4096 --json t.json
-    python experiments/ray_moves/transport.py run --sizes 2048 4096 --variant zero-copy
-"""
+"""What moving bundles of rays between cores costs: routed messages of 64 bytes to 4 KiB
+hopping between ranks drawn from part A's destinations (the README has the commands)."""
 
 import argparse
 import json
@@ -127,9 +120,8 @@ def destinations(arguments):
     )
     text = "\n".join(
         [
-            "// Destinations of the transport probe: 1024 ranks in proportion to the",
-            "// bundles each core received in part A (written by transport.py).",
-            f"// Source: {source}.",
+            "// The transport probe's ranks, in proportion to the bundles a core got",
+            f"// in part A: {source}.",
             "#pragma once",
             "",
             "#include <stdint.h>",

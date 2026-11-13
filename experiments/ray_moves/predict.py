@@ -1,10 +1,6 @@
-"""The predicted frame of the ray tracer with resident treelets and moving rays, beside
-today's measured one: part A's walks and bundles, part B's transport rates, today's
-profile for what the redo keeps (the top walk, the output, the commands between traces).
-
-    python experiments/ray_moves/predict.py results/paths.json results/today.json \
-        results/transport-pages.json results/transport-zero-copy.json --json p.json
-"""
+"""The predicted frame with resident treelets and moving rays, beside today's: part A's
+walks and bundles, part B's rates, today's profile for what stays (the README has the
+command)."""
 
 import argparse
 import json

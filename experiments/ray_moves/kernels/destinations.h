@@ -1,6 +1,5 @@
-// Destinations of the transport probe: 1024 ranks in proportion to the
-// bundles each core received in part A (written by transport.py).
-// Source: sponza_overview, 128 KiB treelets, bounce trace, bundles 32/full.
+// The transport probe's ranks, in proportion to the bundles a core got
+// in part A: sponza_overview, 128 KiB treelets, bounce trace, bundles 32/full.
 #pragma once
 
 #include <stdint.h>

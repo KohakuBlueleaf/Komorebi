@@ -1,9 +1,6 @@
-"""The rays' paths through resident treelets: every ray of the four traces followed
-through the top tree and the treelets it visits, the owners, the bins and the bundles,
-and the lanes of the walk at the owner. Host only (numpy); one JSON file per run.
-
-    python experiments/ray_moves/paths.py --scenes sponza_overview --json paths.json
-"""
+"""The rays' paths through resident treelets: every ray of the four traces through the
+top tree and its treelets, the owners, the bundles and the lanes of the owners' walks.
+Host only (numpy); one JSON file per run (the README has the commands)."""
 
 import argparse
 import json
@@ -417,13 +414,9 @@ def home_cores(pixels):
 
 
 def bundles(paths, owners, copies, home, seed_order, bundle_rays, rule):
-    """Rays moved hop by hop in rounds: a core takes the rays that reached it in a
-    round, puts each in the bin of its next treelet (or of its home core when it is
-    finished; a treelet with copies: the copy the ray's number picks, or this core's
-    own) and sends bins as bundles of at most `bundle_rays`: "full" sends full
-    bins at once and the rest when the round's input is done, "each" every bin
-    after each input bundle. Returns the statistics, and per treelet visit its
-    bundle and the core that walks it."""
+    """Rays moved hop by hop in rounds, binned by next treelet copy or home and sent as
+    bundles of at most `bundle_rays` under `rule` (README, part A). Returns the
+    statistics, and per treelet visit its bundle and the core that walks it."""
     ray_start, visit_treelet, visits = paths
     ray_count = len(home)
     rays = np.nonzero(visits > 0)[0]
@@ -509,11 +502,9 @@ def bundles(paths, owners, copies, home, seed_order, bundle_rays, rule):
 
 
 def packet_walk(roots, lanes, best, leaf, any_hit, stop=None):
-    """The card's packet walk (one stack per packet, both children pushed with the
-    nearer for the packet's direction signs on top, a pop testing each lane's entry
-    against its best) of packets (P, 32) of rays from nodes `roots`; best and leaf
-    (P, 32) change in place. With `stop` (node -> treelet or -1) treelet roots are
-    emitted, not walked. Returns counts per packet and the emitted pairs."""
+    """The card's packet walk (README, part A) of packets (P, 32) of rays from `roots`;
+    best and leaf (P, 32) change in place. With `stop` (node -> treelet or -1) treelet
+    roots are emitted, not walked. Returns counts per packet and the emitted pairs."""
     nodes, boxes, triangles = SHARED["nodes"], SHARED["boxes"], SHARED["triangles"]
     leaf_triangle, order_words = SHARED["leaf_triangle"], SHARED["order"]
     count = len(roots)

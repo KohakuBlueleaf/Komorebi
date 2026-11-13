@@ -1,7 +1,5 @@
-// The transport probe's handler body, for the runtime's messages or a copy (included
-// first): messages hop between ranks drawn from the destination table; the pack thread
-// checks each one on arrival (unless the reader does), forwards it with `forward` or
-// consumes it.
+// The transport probe's handler: a message hops between ranks from the destination
+// table; the pack thread checks it (unless the reader does), forwards or consumes it.
 #pragma once
 
 #include <stdint.h>

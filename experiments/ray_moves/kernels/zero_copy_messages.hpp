@@ -1,6 +1,5 @@
-// The page-sized copy of the runtime's routed messages with pages that no core copies:
-// forward_page() hands the writer a page where it arrived, the writer sends it from
-// there with one NoC write, and the reader calls a check on every message as it lands.
+// The page-sized messages with pages no core copies: forward_page() hands the writer a
+// page where it landed, sent on with one NoC write; the reader checks each on arrival.
 #pragma once
 
 #include <stdint.h>
