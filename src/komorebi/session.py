@@ -422,6 +422,7 @@ class Session:
         # for every core to be idle, which a resident grid never is
         regions = _Regions(self, work) if work is not None else None
         dispatch = module.Dispatch(self.device, self.pll_mhz)
+        self.log(f"X280 clock set: {self.pll_mhz} MHz")
         _hook_exit()
         _LIVE.add(self)
         self._starting = dispatch

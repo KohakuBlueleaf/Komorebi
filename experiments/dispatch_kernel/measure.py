@@ -38,6 +38,7 @@ TARGETS = {"lim": 0, "l1": 1}
 
 def case_limit(device, args):
     runtime = dc.dk.Runtime(device, pll_mhz=args.pll)
+    dc.log(f"X280 clock set: {args.pll} MHz")
     try:
         out = dict(runtime.image_limit())
     finally:
@@ -132,6 +133,7 @@ def case_store(device, args):
     fence, per idle gap (--gaps-us), keep-busy period (--busy-us, 0 = none), burst
     positions (--spread), a read before each burst (--read); LIM or a Tensix L1."""
     runtime = dc.dk.Runtime(device, pll_mhz=args.pll)
+    dc.log(f"X280 clock set: {args.pll} MHz")
     plan = runtime.plan()
     configs = []
     try:
@@ -170,6 +172,7 @@ def case_memcost(device, args):
     cached DRAM (a buffer of ours in every bank) and registers; no grid."""
     ddr = dc.dram_area(device)
     runtime = dc.dk.Runtime(device, pll_mhz=args.pll)
+    dc.log(f"X280 clock set: {args.pll} MHz")
     plan = runtime.plan()
     try:
         dc.log("running the memory cost image")

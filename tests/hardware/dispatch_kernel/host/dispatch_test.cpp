@@ -904,7 +904,7 @@ NB_MODULE(_km_dispatch_test, m) {
         .def(
             nb::init<std::shared_ptr<MeshDevice>, uint32_t>(),
             nb::arg("mesh_device"),
-            nb::arg("pll_mhz") = 1750
+            nb::arg("pll_mhz") = 1000
         )
         .def("image_limit", &Runtime::image_limit)
         .def(

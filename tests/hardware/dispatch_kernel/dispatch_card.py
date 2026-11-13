@@ -318,6 +318,7 @@ def with_kernel(
     info = {} if info is None else info
     info["started"] = False
     runtime = dk.Runtime(device, pll_mhz=args.pll)
+    log(f"X280 clock set: {args.pll} MHz")
     plan = runtime.plan()
     gx, gy = plan.grid_x, plan.grid_y
     log(f"plan: grid {gx}x{gy} panels {plan.panels}")
