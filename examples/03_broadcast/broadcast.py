@@ -51,6 +51,7 @@ def parse():
     p.add_argument("--stall-block", type=int, default=0)
     p.add_argument("--again", action="store_true", help="then a clean run")
     p.add_argument("--empty-job", type=int, default=-1, help="a job casting 0 blocks")
+    p.add_argument("--empty-every", type=int, default=0, help="every nth job casts 0")
     p.add_argument(
         "--first-blocks", type=int, default=0, help="job 0 casts these, cycling"
     )
@@ -150,9 +151,11 @@ def make_data(device, rng, team, rect, args):
 
 
 def job_blocks(args, j):
-    """Blocks job j casts per lane: 0 for the empty job, `--first-blocks` for job 0
-    (block k is data block k mod `--blocks`), else `--blocks`."""
-    if j == args.empty_job:
+    """Blocks job j casts per lane: 0 for the empty job and every `--empty-every`th,
+    `--first-blocks` for job 0 (block k is data block k mod `--blocks`), else
+    `--blocks`."""
+    n = args.empty_every
+    if j == args.empty_job or (n and j % n == n - 1):
         return 0
     return args.first_blocks if j == 0 and args.first_blocks else args.blocks
 

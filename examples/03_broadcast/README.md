@@ -71,7 +71,8 @@ the record's deadline and the host raises `RecordTimeout`, which names the ticke
 the members that did not report. Every kernel returns; `lane_gave_up` names, per core,
 the lane, where it waited and the block. `--again` then loads the program again in the
 same session and runs the clean case. With `--empty-job`, that job casts zero blocks on
-every lane (every checksum is zero) between jobs that cast the full count. With
+every lane (every checksum is zero) between jobs that cast the full count;
+`--empty-every n` does that for every nth job. With
 `--first-blocks N`, job 0 casts N blocks per lane, block k being data block k mod
 `--blocks`: a record that moves many pages through a lane from little host data.
 
