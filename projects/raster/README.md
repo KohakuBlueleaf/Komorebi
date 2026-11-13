@@ -3,10 +3,11 @@
 The rasterizer of `ref/raster.py` on a Blackhole card's Tensix cores, on the resident
 worker runtime (`komorebi/device/km_worker.hpp`), loaded and driven through the host
 package (`komorebi.Session` and `Run`, the dispatch kernel issuing the records).
-Two ways in: host-binned (the host does setup and binning with the reference's own
-functions; the cores fill tiles), and the per-triangle stages on the cores too (COUNT
-and SETUP, below; the host only takes the step between them). Every scene's image is
-bit-exact against the reference.
+Three ways in: host-binned (the host does setup and binning with the reference's own
+functions; the cores fill tiles); the per-triangle stages on the cores too (COUNT and
+SETUP, below; the host takes the step between them); and the whole frame on the card,
+conducted by a thread on the X280 cores beside the dispatch kernel, which takes that
+step itself (below). Every scene's image is bit-exact against the reference.
 
 ## The thread program
 
@@ -182,13 +183,19 @@ COUNT    core c, its contiguous share of the blocks:
              vector unit: camera space, screen (1/z by the exact reciprocal), area, box
              pack thread, per triangle: keep rule; a triangle across the near distance is
                  clipped and its pieces go through the vector unit at its place
-             entries and rows of every tile it touches += 1, += its rows there
+             entries and rows of every tile it touches += 1, += its rows there;
+             in L1, per tile, how many of its entries start and end in each 2-row group
          writes its two counters (1,024 words each) to DRAM
-host:    tile costs from the counters; tiles to cores; each core's list (header, records, end
-         slot, as the fill reads it) laid out with headers, end slots and the directory written;
-         the slot of every (core, tile) = the tile's header + 1 + the records of lower cores
+host:    tile costs from the counters; the tiles above a third of a core's mean load
+HIST     core c writes those tiles' start and end counts (64 bytes a tile)
+host:    their bands: cut where the rows' estimated cost reaches j / k of the tile's, each
+         band's entries = those starting before its last row less those ending before its
+         first; items (tiles and bands) to cores; each core's list (header, records, end
+         slot, as the fill reads it) laid out with headers, end slots and the directory
+         written; the slot of every (core, item) = the item's header + 1 + the records of
+         lower cores
 SETUP    core c, the same share again: the same steps plus edges, 1/area and the 12 planes;
-         every kept record goes once to each tile it touches, at that tile's next slot
+         every kept record goes once to each item it reaches, at that item's next slot
 FILL     as above, over the lists in place
 ```
 
@@ -204,7 +211,8 @@ a contiguous range and lower cores' records come first.
 Exact on every scene of the package's list, with the fill unchanged (2026-11-13,
 card 1, 120 cores, host load 5 to 11, card clock not sampled in these check runs;
 `python -m projects.raster.card_passes --scene <s> --frame [--lists 400]`). Times are
-one record's event, issue to the last core's acknowledgement:
+one record's event, issue to the last core's acknowledgement. This table is the
+host-stepped kernels, without bands, with the X280 at 1,750 MHz (the session's default then):
 
 | scene | mesh blocks | list pages | COUNT us | SETUP us | FILL us | image differs | list pages differ |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -216,6 +224,18 @@ one record's event, issue to the last core's acknowledgement:
 | stress-heavy | 1,885 | 3,123 | 277.1 | 820.2 | 10,930.3 | 0 | 0 of 3,123 |
 | stress-degenerate | 10 | 240 | 33.0 | 93.2 | 119.2 | 0 | 0 of 240 |
 
+The same path with this head's kernels (bands, HIST), X280 at 1,000 MHz, AICLK 1,350
+MHz (one sample at 1,343 on 10^4): the host-stepped frame of each `bench_thread --host`
+run of the next section, one frame each, image exact:
+
+| scene | heavy tiles / items | COUNT us | SETUP us | FILL us |
+|---|---:|---:|---:|---:|
+| tiny | 0 / 1,024 | 102.3 | 397.6 | 118.2 |
+| 10^4 | 0 / 1,024 | 118.8 | 334.6 | 138.8 |
+| 10^5 | 112 / 1,168 | 467.8 | 950.8 | 423.1 |
+| 10^6 | 130 / 1,204 | 4,051.3 | 8,032.3 | 2,104.8 |
+| stress-heavy | 2 / 1,052 | 330.1 | 977.8 | 1,027.9 |
+
 The counters equal the reference's on every scene, and the records as the vector unit
 leaves them were checked word for word against `raster.setup` for every triangle of
 every scene (`card_passes.py` without `--frame`; 10^6: 549,341 kept, 0 words differ).
@@ -223,21 +243,84 @@ every scene (`card_passes.py` without `--frame`; 10^6: 549,341 kept, 0 words dif
 Between the two passes the host stops the program, reads the counters (983 KB, 0.46 to
 1.3 s), takes its step (7 to 12 ms), writes the lists' frame and the slots (0.12 to
 0.67 s) and loads the program again (0.1 to 0.4 s): seconds against the milliseconds
-of the passes. The step is meant for a thread on the X280 cores beside the dispatch
-kernel, which reads the counters from DRAM itself.
+of the passes. The next section moves the step to a thread on the X280 cores, which
+reads the counters from DRAM itself.
 
-Bands are not built for this path: the fill's format needs a list per band, and per-tile
-counters do not give per-band counts. What that costs, as the cost model estimates the
-slowest of 120 cores against the mean: 10^5 1.11 times, 10^6 1.42 times, stress-heavy
-10.5 times (the FILL time above); Sponza 1.00, Bistro 1.34 to 2.28, San Miguel 2.53 to
-2.61. Exact per-band counts would take each tile's first and last 2-row group of every
-record (64 KB of counters per core).
+Bands cost COUNT its histograms (64 KB of L1 a core; 10^6 3,813 to 4,051 us, +6 %) and
+SETUP a test per item a record reaches (10^6 6,961 to 8,032 us, +15 %), and save the
+fill what the slowest core would otherwise carry alone: stress-heavy 10,930 to 1,028
+us, 10^5 474 to 423 us, 10^6 2,961 to 2,105 us (the two tables above; their X280 clocks
+differ, the Tensix cores' do not).
 
-Measured before the build with probes that are not in the repository (card 1, 120
-cores, 1,350 MHz): a 16-byte gathered DRAM read costs about 350 cycles against 27 cycles
-per triangle streamed (hence the de-indexed mesh); a scattered 128-byte write about 140
-cycles of the writer's issue; 18 vectors in window order into the register window 655
-cycles a block.
+## The frame on the work cluster's thread
+
+One program holds both the passes and the fill (`kernels/frame_reader.cpp`,
+`frame_compute.cpp`, `frame_writer.cpp`: each includes the fill's and the passes' kernel
+file, each in a namespace of its own and without its entry, and calls one or the other
+by the record's segment). A thread on work cluster 1 (`thread/frame.c`, the step in
+`thread/middle.c`, plain C) conducts the frame; the host uploads the mesh once per scene,
+gives the camera with the load, waits for the thread's result and reads the image back
+(`card_thread.py`):
+
+```
+thread frame(camera):                                    # X280, work cluster 1
+    issue COUNT; wait                                    # counters to a region of its bank
+    take counters                                        # drop the cache's lines of them
+    tile costs, tiles to cut                             # on its four cores
+    if any: write their list; issue HIST; wait; take histograms
+    bands, items, items to cores (a heap), directory and list headers;
+    next slots of every (core, item)                     # on its four cores
+    give slots, items, directory, headers                # write the cache's lines back
+    issue PLACE; wait            # cores copy directory pages and headers into the tensors
+    issue SETUP; wait            # each record to its slot
+    issue FILL; wait
+    result: what it found, each part's time
+```
+
+The thread's memory is regions: pages of its cluster's own DRAM bank, which Tensix
+cores reach by bank address. The fill reads its directory and lists from interleaved
+tensors and stays as it is, so the step writes the directory pages and the headers into
+regions and PLACE copies them: each core its directory page and its share of the
+headers and end slots (17 us). The passes' reader and writer take a region's address
+where the record says so (a8), the mesh and the lists stay tensors.
+
+Exact on tiny, 10^4, 10^5, 10^6, stress-big, stress-heavy and stress-degenerate: the
+thread's counts, items, directory and lists equal the host step's on the reference's
+counts, and the image the reference's (`python -m projects.raster.card_thread --scene
+<s> [--lists 64]`).
+
+Frames in a row (2026-11-13, card 1, 120 cores, X280 at 1,000 MHz (the session's
+default), AICLK 1,350 MHz (one sample at 1,343 on 10^6), host load 5 to 9; `python -m
+projects.raster.bench_thread --scene <s> --runs 5 --frames 0 --host`): 5 loads of the
+program, each running as many frames as fill about 1 s (38 to 196), median per frame,
+us. Power is the card's mean over the stretches the threads ran (about 5 s per scene);
+the card draws 61.7 to 63.0 W with the program resident and idle, 20.0 to 21.7 W closed:
+
+| scene | bands | COUNT | HIST | the step | PLACE | SETUP | FILL | frame | X280 MHz | card W |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| tiny | 0 | 103 | - | 4,477 | 17 | 413 | 121 | 5,131 | 1,000 | 62.9 |
+| 10^4 | 0 | 117 | - | 4,462 | 17 | 349 | 141 | 5,086 | 1,000 | 62.9 |
+| 10^5 | 112 tiles | 448 | 469 | 9,897 | 18 | 966 | 425 | 12,223 | 1,000 | 62.7 |
+| 10^6 | 130 tiles | 3,814 | 472 | 11,577 | 18 | 8,043 | 2,108 | 26,033 | 1,000 | 64.1 |
+| stress-heavy | 2 tiles | 319 | 446 | 5,310 | 18 | 996 | 1,032 | 8,122 | 1,000 | 62.2 |
+
+Each column is the thread's time from issuing a record to its event (the step: from
+COUNT's event to PLACE's issue), so the frame is the sum plus the thread's own
+bookkeeping. The step's parts (10^6, us): the counters' hand-over 216, the tile costs
+1,161, clearing the directory 391, the layout 4,883 (bands included), the next slots 3,987, the pages 397 and the hand-over back 542. Without bands the step is 4.5 ms, with
+them 5.3 to 11.6 ms; it is the largest part of every frame but 10^6's.
+
+The step against the host's, the same frame in the same session: the host stops the
+program, reads the counters (0.44 to 1.1 s), loads and runs HIST and reads it (0.1 to
+0.6 s, with bands), takes the step (6 to 11 ms in Python, and 3 to 16 ms for the
+bands' items), writes the lists' frame and slots (0.12 to 0.65 s) and loads the program
+for SETUP and the fill (0.1 to 0.2 s each): 0.8 to 2.0 s between the card's passes,
+against 4.5 to 11.6 ms for the thread. The step's arithmetic itself takes the X280 about
+as long as the host's numpy (tiny 4.5 against 7 ms, 10^6 11.6 against 27 ms); what the
+thread saves is the stop, the read-backs, the uploads and the loads.
+
+Per frame the host still loads the program (the camera goes with the load: 0.5 to 0.8
+s) and reads the image back (20 MB, 10 to 18 s); both are outside the frame times above.
 
 ## Results
 
@@ -392,14 +475,12 @@ the busy time, and the mean core's busy time over the slowest core's.
 ## Not on the card yet
 
 Triangle setup, the per-tile counts and the scatter into the tile lists run on the
-Tensix cores (COUNT and SETUP, above). What stays on the host until a thread can run on
-the card's X280 cores beside the dispatch kernel is the irregular part, with the
-host-binned path's times (10^5 / 10^6, ms):
+Tensix cores (COUNT and SETUP, above), the step between them on the X280 thread. The
+irregular parts, with the host-binned path's times (10^5 / 10^6, ms):
 
 - Prefix sums of the per-tile counts, tile costs, bands and the assignment of tiles and
-  bands to cores: inside the records-and-lists step (48 / 207 ms, which also packs the
-  records and writes the lists). Irregular: one decision over every core's counts, and
-  how many bands a frame needs is not known ahead.
+  bands to cores: on the X280 thread now (above), 4.5 to 11.6 ms a frame at 1,000 MHz;
+  on the host-binned path still inside the records-and-lists step (48 / 207 ms).
 - Tiles beyond 16 bands (not built). A band holds every triangle touching its rows, so
   a tile of 33,000 small triangles (the stress scene) still costs 4.7 times the mean
   core in 16 bands; past that, a tile's triangles are split by range across cores and
@@ -469,6 +550,18 @@ runs at about 1 MB/s.
   becomes part of an instruction, host checks of every word written ahead of time, and
   a ladder of runs from one record and one core up.
 - **Read-back**: about 1 to 2 MB/s, 11 to 20 s for one frame.
+- **A NoC read from DRAM has to start on a 64-byte boundary.** Records 144 bytes apart
+  in a region came back from the line's start for three of every four, with no error;
+  they are 192 bytes apart now.
+- **A thread sees only regions of its cluster's DRAM bank**, so whatever the grid reads
+  from interleaved tensors has to be copied out by grid cores (PLACE above). A region
+  read used to read every bank's pages of the regions' tensor in one go (fixed in the
+  host package since).
+- **No `memset` in a thread image**: a zero initialiser of a local array compiles to a
+  call that does not link.
+- **The camera goes with the load**: a thread's words and regions are written at the
+  load and the host writes no DRAM while the program is loaded, so each new camera is a
+  load (0.5 to 0.8 s).
 - **Small things that cost time**:
   - a load-immediate of the lower half right after a multiply-add to the same register
     is unpredictable;
