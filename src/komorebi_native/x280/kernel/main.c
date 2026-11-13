@@ -13,6 +13,7 @@
 #include "queue.h"
 #include "result.h"
 #include "ring.h"
+#include "trap.h"
 #include "work_port.h"
 
 /* Waits until `word` holds `value`, the runtime asks for a stop, or `deadline`. */
@@ -235,6 +236,12 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         ring_consumed(r);
         upload_check(k, req, a0, (uint32_t)(l[2] >> 32), (uint32_t)l[3]);
         k->t_last_event = now;
+        return KMD_TAKEN;
+    }
+    if (host && seg == KMD_SEG_TRAP) {
+        ring_consumed(r);
+        const uint64_t v = *(volatile const uint64_t*)(uintptr_t)a0;
+        ring_push(r, req, KM_EV_PONG, (uint32_t)v); /* only if the load did not trap */
         return KMD_TAKEN;
     }
 #endif
@@ -477,6 +484,81 @@ static void finish(kmd_t* k) {
     x280_hart_set_result(hart, result);
 }
 
+/* After an exception on core `hart` (trap.h). Core 0 finishes as an abort does from LIM
+ * and the argument block alone: the state's pointers may be what failed. */
+__attribute__((used, noinline)) void kmd_trapped(
+    uint64_t hart, uint64_t cause, uint64_t epc, uint64_t tval
+) {
+    const uint64_t run_value = x280_hart_control(hart)->run_value;
+    const volatile kmd_args_t* a = (const volatile kmd_args_t*)x280_hart_args(hart);
+    x280_hart_set_result(hart, ~(uint64_t)KMD_ERR_TRAP);
+    if (a == 0 || !args_valid(a, run_value) || hart > 1) {
+        return;
+    }
+    volatile uint8_t* lim = (volatile uint8_t*)a;
+    volatile uint32_t* harts = (volatile uint32_t*)(lim + KMD_LIM_HARTS);
+    if (hart == 1) {
+        harts[KMD_H_TRAP_CAUSE] = (uint32_t)cause;
+        harts[KMD_H_TRAP_PC] = (uint32_t)epc;
+        x280_fence_ow();
+        harts[KMD_H_ENGINE] = KMD_ENGINE_TRAPPED;
+        return;
+    }
+    /* A fresh state on the stack, zeroed through a volatile pointer as in run(). */
+    kmd_t fresh;
+    volatile uint64_t* raw = (volatile uint64_t*)&fresh;
+    for (uint32_t i = 0; i < sizeof(kmd_t) / sizeof(uint64_t); i++) {
+        raw[i] = 0;
+    }
+    kmd_t* t = &fresh;
+    t->hart = hart;
+    t->run = run_value;
+    t->args = a;
+    t->lim = lim;
+    t->result = (volatile uint32_t*)(lim + KMD_LIM_RESULT);
+    t->harts = harts;
+    t->panels = (uint32_t)a->panels;
+    const uint32_t where = t->result[KMD_R_WHERE];
+    result_error(t, KMD_ERR_TRAP, (uint32_t)cause, (uint32_t)epc, 0, (uint32_t)tval);
+    /* The old state's words, read but never followed: whether EXIT left the grid. */
+    volatile uint8_t* state = (
+        (volatile uint8_t*)(X280_LOCAL_DDR_TILE_BASE + a->state_ddr)
+    );
+    const volatile kmd_t* old = (const volatile kmd_t*)state;
+    const uint32_t ctl = ((volatile const uint32_t*)(lim + KMD_LIM_MAILBOX))[1];
+    if (where >= KMD_WHERE_READY && (old->busy || !old->exited) &&
+        grid_open(t, ctl) == KMD_ERR_NONE) {
+        grid_stop(t);
+    }
+    /* The engine: told not to start, or to stop; waited for as at the finish. */
+    volatile uint32_t* go = (volatile uint32_t*)(state + KMD_STATE_RING + KMD_ERING_GO);
+    if (harts[KMD_H_ENGINE] == KMD_ENGINE_WAITING) {
+        go[2] = 2u;
+        x280_fence_ow();
+        *(volatile uint64_t*)go = run_value;
+    }
+    *(volatile uint32_t*)(state + KMD_STATE_RING + KMD_ERING_STOP) = 1u;
+    x280_fence_ow();
+    const uint64_t by = x280_mtime() + KMD_ENGINE_STOP_TICKS;
+    while (
+        (harts[KMD_H_ENGINE] == KMD_ENGINE_WAITING ||
+         harts[KMD_H_ENGINE] == KMD_ENGINE_RUNNING) &&
+        x280_mtime() <= by
+    ) {
+        x280_fence_ir();
+    }
+    if (where >= KMD_WHERE_HELLO && events_open(t) == KMD_ERR_NONE) {
+        events_word(t, KMD_HOST_ERROR, KMD_ERR_TRAP);
+        events_word(t, KMD_HOST_STATE, KMD_STATE_FAILED);
+    }
+    grid_close(t);
+    events_close(t);
+    noc_clear_tlb_2m(KMD_WIN_WORK);
+    kmd_flush_lines(state, KMD_STATE_BYTES);
+    x280_fence_ow();
+    result_word(t, KMD_R_STATE, KMD_STATE_FAILED);
+}
+
 /* Core 0's kernel; kept out of main so main's prologue touches no FP register. */
 static __attribute__((noinline)) void run(uint64_t hart) {
     uint64_t host_line[16], engine_line[16], work_line[16];
@@ -537,7 +619,8 @@ static __attribute__((noinline)) void run(uint64_t hart) {
     finish(k);
 }
 
-int main(uint64_t hartid) {
+/* Called by main (trap.h) on every hart. */
+__attribute__((used, noinline)) int kmd_main(uint64_t hartid) {
     /* Floating point and vector on first, on every hart: the harness leaves them off
      * and the first such instruction would trap. */
     __asm__ volatile("csrs mstatus, %0" ::"r"((3ul << 9) | (3ul << 13)));

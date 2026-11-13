@@ -63,6 +63,9 @@
 #define KMD_ERR_STOPPED 7u   /* the runtime asked the kernel to stop */
 #define KMD_ERR_STOP_BUSY 9u /* a STOP command arrived with records in flight */
 #define KMD_ERR_ENGINE 10u   /* core 1 did not stop within KMD_ENGINE_STOP_TICKS */
+/* An exception on core `req` (0 or 1): slot = mcause, seq = mepc, seen = mtval (low
+ * words). The kernel finished without its state's pointers; the cluster restores. */
+#define KMD_ERR_TRAP 11u
 
 /* Reasons of a KM_EV_REFUSED event (its aux): the command was consumed, not run. */
 #define KMD_REFUSE_SEG 1u    /* segment 240 to 249 */
@@ -92,6 +95,8 @@
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */
 #define KMD_SEG_CHECK_UPLOAD 246u
+/* Test builds with KMD_VERIFY_LINES: core 0 loads 8 bytes from address a0 (a trap). */
+#define KMD_SEG_TRAP 244u
 
 /* KMD_TRACE builds, in the region's lower half: kmd_trace_t, then per slot taken or
  * freed {kind | slot << 8 | source << 16, req, team, mtime}. */
@@ -168,6 +173,8 @@ enum {
     KMD_H_DYN_CHECKS = 11, /* core 0: two-pass checks of dynamic runs */
     KMD_H_DYN_QUIET = 12,  /* core 0: mtime, low word, of the last quiet end */
     KMD_H_ABANDONED = 13,  /* core 0: records in flight or queued at the finish */
+    KMD_H_TRAP_CAUSE = 14, /* core 1, after a trap: mcause */
+    KMD_H_TRAP_PC = 15,    /* core 1, after a trap: mepc, low word */
     KMD_H_WORDS = 16
 };
 
@@ -176,6 +183,7 @@ enum {
 #define KMD_ENGINE_RUNNING 2u
 #define KMD_ENGINE_STOPPED 3u /* left its loop; the kernel may finish */
 #define KMD_ENGINE_UNUSED 4u  /* the kernel did not start it */
+#define KMD_ENGINE_TRAPPED 5u /* an exception ended it (KMD_H_TRAP_CAUSE) */
 
 /* Window slots of the kernel (16 to 191 are free for an image). */
 #define KMD_WIN_PANEL0 16u /* panel r uses KMD_WIN_PANEL0 + r */

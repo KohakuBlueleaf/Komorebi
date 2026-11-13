@@ -231,6 +231,17 @@ These rules are part of the protocol; a host that relies on anything else is wro
   the jobs still queued at the finish: none of them gets its `KM_EV_DONE`.
 - **Abort.** The runtime's stop is the abort: core 0 looks for it every 1,024 passes
   (tens of microseconds), the poll that also checks deadlines, and finishes as
-  above whatever is in flight. Only a core that has stopped running its loop (a trap,
-  or an access that never completes) does not answer it; the runtime then cannot
-  restore the cluster and the card needs a reset.
+  above whatever is in flight. Only a core that has stopped running its loop (an
+  access that never completes) does not answer it; the runtime then cannot restore
+  the cluster and the card needs a reset.
+- **Trap.** `main` (`trap.h`) points `mtvec` at the kernel's own handler for the run
+  and restores the runtime's on return. An exception on core 0 or 1 ends in
+  `kmd_trapped`, which does not trust the state in DRAM (its pointers may be what
+  failed): core 0 rebuilds the windows from the argument block and the hello's
+  control block address in LIM, stores the stop word (unless EXIT left the grid),
+  stops core 1, writes `KMD_ERR_TRAP` (core, `mcause`, `mepc`, `mtval`) into the result
+  block and the host buffer, flushes the state's lines and returns from `main`, so the
+  runtime restores the cluster as after an abort. Core 1 notes its trap in the hart
+  block (`KMD_ENGINE_TRAPPED`); core 0 reports it at its finish. Interrupts, and a
+  second exception inside the handler, go to the runtime's handler, which ceases the
+  core as before.

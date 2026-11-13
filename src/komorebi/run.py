@@ -835,10 +835,15 @@ class Run:
     def _fail_kernel(self, why):
         self._finish(10.0)
         r = self._result
+        where = (
+            f"exception on X280 core {r['req']} (mcause {r['slot']:#x}, mepc "
+            f"{r['seq']:#x}, mtval {r['seen']:#x})"
+            if r["error"] == self.h["KMD_ERR_TRAP"]
+            else f"slot {r['slot']}, sequence {r['seq']}, command {r['req']}"
+        )
         raise self._remember(
             KernelFailed(
-                f"{why}: error {r['error_name']} in {r['where_name']}, slot "
-                f"{r['slot']}, sequence {r['seq']}, command {r['req']}",
+                f"{why}: error {r['error_name']} in {r['where_name']}, {where}",
                 result=r,
             )
         )

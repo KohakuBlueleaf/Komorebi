@@ -173,4 +173,8 @@ static void engine_stop(kmd_t* k) {
     if (state == KMD_ENGINE_RUNNING && k->error == KMD_ERR_NONE) {
         result_error(k, KMD_ERR_ENGINE, 0, 0, 0, state);
     }
+    if (state == KMD_ENGINE_TRAPPED && k->error == KMD_ERR_NONE) {
+        const uint32_t cause = k->harts[KMD_H_TRAP_CAUSE];
+        result_error(k, KMD_ERR_TRAP, cause, k->harts[KMD_H_TRAP_PC], 1, 0);
+    }
 }

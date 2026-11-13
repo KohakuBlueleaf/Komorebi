@@ -80,9 +80,11 @@ grid_timeout=10.0)`.
   the grid, then asks the X280 runtime to stop the dispatch kernel, which finishes
   whatever is in flight (5 s bound); `run.result()` then holds its result block, with
   `abandoned` the records left without their `KM_EV_DONE`. The card needs no reset
-  after it. A reset is still needed when the kernel's core 0 has stopped running its
-  loop (a `WaitTimeout` says so): the runtime cannot restore cluster 0, and
-  `KernelFailed` carries the runtime's account of each hart.
+  after it. An exception in the kernel needs none either: the kernel finishes on its
+  own and the run raises `KernelFailed` with error `trap`, naming the X280 core,
+  `mcause`, `mepc` and `mtval`. A reset is still needed when the kernel's core 0 has
+  stopped running its loop (a `WaitTimeout` says so): the runtime cannot restore
+  cluster 0, and `KernelFailed` carries the runtime's account of each hart.
 - `grid_timeout` bounds every wait for the grid's kernels to return (seconds). When
   it passes, `km.GridTimeout` is raised and the device is left open: closing it would
   wait for the grid without a bound. The card may then need a reset.

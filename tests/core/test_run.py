@@ -431,6 +431,17 @@ def test_a_kernel_that_ends_on_its_own_raises_kernel_failed():
     assert run.stopped
 
 
+def test_a_trap_in_the_kernel_names_the_core_and_the_exception():
+    run, port, _ = make_run()
+    run.wait(run.issue(1, (0, 1)))
+    port._finish(K["KMD_ERR_TRAP"], slot=5, seq=0x8003A40, req=0)
+    port.result["seen"] = 0x6C8
+    want = r"trap in .*core 0 \(mcause 0x5, mepc 0x8003a40, mtval 0x6c8\)"
+    with pytest.raises(KernelFailed, match=want):
+        run.wait(run.issue(1, (0, 1)), timeout=1.0)
+    assert run.stopped
+
+
 def test_an_error_while_stopping_aborts_through_the_runtime():
     port = FakePort()
     port.auto = False

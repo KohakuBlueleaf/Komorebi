@@ -54,12 +54,14 @@ STREAMS = os.path.join(
     HERE, "..", "..", "..", "experiments", "stream_checks", "streams"
 )
 SEG_CHECK_UPLOAD = 246  # KMD_VERIFY_LINES images only
+SEG_TRAP = 244  # KMD_VERIFY_LINES images only: core 0 loads from address a0
 LIM_UPLOAD = abi.headers()["KMD_LIM_UPLOAD"]  # the upload region, from the layout
 HOST_READY, READY_MARK = 4, 0x594452  # the ready block's first word and its mark
 TRACE_ISSUE, TRACE_FREE, TRACE_MARK = 1, 2, 0x54524345  # KMD_TRACE images only
 TRACE_QUEUED = 3  # an issue from the job queue
 STATE_READY, STATE_DONE, STATE_FAILED = 2, 3, 4
-ERR_DEADLINE, ERR_STOPPED, ERR_STOP_BUSY = 4, 7, 9
+ERR_DEADLINE, ERR_STOPPED, ERR_STOP_BUSY, ERR_TRAP = 4, 7, 9, 11
+LOAD_ACCESS_FAULT = 5  # mcause
 R_NAMES = {
     0: "state",
     1: "error",
@@ -98,6 +100,8 @@ H_NAMES = {
     8: "lost",
     9: "source",
     13: "abandoned",
+    14: "trap_cause",
+    15: "trap_pc",
 }
 ENGINE_STOPPED = 3  # KMD_ENGINE_STOPPED
 SOURCE_ENGINE = 1  # KMD_SRC_ENGINE: the stream engine on core 1
@@ -906,6 +910,46 @@ def case_runtime_stop(device, args):
         and blk["busy"] != 0
         and blk["abandoned"] == 1
         and out["cores"]["gave"] == {"stop": n_cores}
+    )
+    return out
+
+
+def case_trap(device, args):
+    """The KMD_VERIFY_LINES image: a DELAY of 0.5 s on every core, then KMD_SEG_TRAP
+    loading from address 8. Core 0 traps; the kernel finishes from LIM with the trap,
+    every core gives up on the stop word, the runtime restores the cluster, and a
+    second kernel answers a PING."""
+    if args.image == IMAGE:
+        args.image = VERIFY_IMAGE
+    n_cores = 0
+    cycles = int(0.5 * AICLK_HZ)
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out = {"tag": plan.tag}
+        out["delay_req"] = plan.submit(record(SEG_DELAY, 0, n_cores, 1, cycles))
+        out["trap_req"] = plan.submit(command(SEG_TRAP, 8))
+        by = time.monotonic() + 5.0
+        while plan.host_word(0) < STATE_DONE and time.monotonic() < by:
+            pass
+        out["host"] = [plan.host_word(0), plan.host_word(3)]
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=4)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    blk = fin["block"]
+    out["after"] = case_ping(device, args)
+    out["ok"] = bool(
+        fin["cleaned"]
+        and finished_clean(fin, n_cores, out["cores"], ERR_TRAP)
+        and fin["result"] == ERR_TRAP ^ (1 << 64) - 1
+        and out["host"] == [STATE_FAILED, ERR_TRAP]
+        and blk["state"] == STATE_FAILED
+        and [blk["slot"], blk["req"], blk["seen"]] == [LOAD_ACCESS_FAULT, 0, 8]
+        and out["cores"]["gave"] == {"stop": n_cores}
+        and out["after"]["ok"]
     )
     return out
 
@@ -2013,6 +2057,7 @@ CASES = {
     "malformed": case_malformed,
     "stop-busy": case_stop_busy,
     "runtime-stop": case_runtime_stop,
+    "trap": case_trap,
     "excl": case_excl,
     "queue": case_queue,
     "streams": case_streams,
@@ -2040,6 +2085,7 @@ SET = [
     ("after-exit", {}),
     ("malformed", {}),
     ("stop-busy", {}),
+    ("trap", {}),
     ("excl", {}),
     ("queue", {"n": 200, "delay_us": 20.0, **FED}),
     ("verify", {"n": 2000, "settle_us": 1.0, **FED}),
