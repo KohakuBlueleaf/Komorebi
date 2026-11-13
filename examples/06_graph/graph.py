@@ -143,17 +143,13 @@ def run(session, args):
         out["stall"] = stall(load, args.deadline, modes[-1] == "x280")
         ok &= out["stall"].get("error") == [8, 0]
     out["paths"] = {}
-    if "x280" not in modes:  # a run of its own: a host-fed trace refuses engine runs
-        load = session.load(program, deadline=args.deadline)
-        out["bad_uploads"] = refusals(load)
-        load.stop()
     for mode in modes:
         load = session.load(
             program, trace=8 * args.max_runs + 8, deadline=args.deadline
         )
         log(f"{mode}: loaded")
         cores = load.cores
-        if mode == "x280":  # engines run on this load anyway; not on the host's
+        if "bad_uploads" not in out:  # engines started before the traced records
             out["bad_uploads"] = refusals(load)
         out["paths"][mode] = path = one_path(
             load, mode, g, (it_reg, err_reg), states, cases
