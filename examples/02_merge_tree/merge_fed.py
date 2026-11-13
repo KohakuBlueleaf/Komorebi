@@ -227,6 +227,7 @@ def main():
         ttnn.close_mesh_device(device)
     result["wall_s"] = round(time.time() - t_start, 1)
     print(json.dumps(result), flush=True)
+    sys.exit(0 if result["ok"] else 1)
 
 
 def run(device, args, rng):
@@ -273,7 +274,40 @@ def run(device, args, rng):
         after = launch(runner, args, few, inputs, out)
         done = after.records["status"] == 1
         result["after"] = {**summary(after, few), **check(args, few, done, out, xs)}
+    result["ok"] = verdict(result, n, runner.workers)
     return result
+
+
+def ended(launch, cores):
+    return (
+        set(launch["cores_ended"].values()) == {cores} and not launch["compute_wrong"]
+    )
+
+
+def clean(launch, jobs, cores):
+    """Every job done and right, the exit acknowledged, no core gave up, no port left
+    waiting, every core ended."""
+    return (
+        ended(launch, cores)
+        and launch["status"] == "done"
+        and launch["done"] == jobs
+        and launch["exit_acked"]
+        and launch["jobs_bad"] == 0
+        and not launch["gave_up"]
+        and not launch["waiting_ports"]
+    )
+
+
+def verdict(result, jobs, cores):
+    """The jobs clean; with --stall-member, the stalled launch timed out on job 1 with
+    every core ended, and the launch after it clean."""
+    ok = clean(result, jobs, cores)
+    if "stall" in result:
+        s = result["stall"]
+        ok &= ended(s, cores) and s["status"] == "timeout"
+        ok &= s.get("timed_out", {}).get("job") == 1
+        ok &= clean(result["after"], min(4, jobs), cores)
+    return bool(ok)
 
 
 if __name__ == "__main__":

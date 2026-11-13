@@ -81,7 +81,11 @@ through the dispatch kernel on X280 cluster 0. Member 0 returns the total's chec
 `Event.result`. The driver checks every total against numpy (bit-equal on integer
 inputs, by relative RMS on uniform random ones) and every result word against the
 checksum of numpy's total (integer inputs) or of the total read back (random ones).
-One JSON line. Setup is that of [01_mapcollect](../01_mapcollect/README.md#what-it-needs).
+One JSON line, with `ok`: every job and result word right, no core given up, no port
+left waiting and every core ended (with `--stall-member`: the stalled load ends in the
+deadline on job 1 and the load after it is clean); `merge.py` and `merge_fed.py` exit
+non-zero without it. Setup is that of
+[01_mapcollect](../01_mapcollect/README.md#what-it-needs).
 
 ```
 python merge.py --jobs 20 --count 8 --form both

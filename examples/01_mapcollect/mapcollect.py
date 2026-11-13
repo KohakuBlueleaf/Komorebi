@@ -5,6 +5,7 @@ checks every tile against numpy and prints one JSON line. See README.md.
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -134,6 +135,7 @@ def main():
         out.update(run(session, args, rng))
     out["wall_s"] = round(time.monotonic() - T0, 1)
     print(json.dumps(out), flush=True)
+    sys.exit(0 if out["ok"] else 1)
 
 
 def run(session, args, rng):
@@ -277,7 +279,26 @@ def run(session, args, rng):
         out.update(trace_summary(trace, tickets, teams))
     if args.seg == "map" and timed_out is None and not args.no_check:
         out.update(check(session, args, teams, base, in_page, outs, [x_exact, x_rand]))
+    stalled = None
+    if 0 <= args.stall < n:
+        stalled = teams[args.stall][0] + args.stall_member
+    out["ok"] = verdict(out, len(states), stalled)
     return out
+
+
+def verdict(out, cores, stalled=None):
+    """Every core ended, no compute check failed, no job wrong; without a stall, no
+    kernel error, no core gave up and every core's counts right; with one, the
+    deadline named the stalled core (`stalled`) among those that did not report."""
+    ended = set(out["cores_ended"].values()) == {cores}
+    ok = ended and out["cores_magic_ok"] == cores and out["compute_wrong"] == 0
+    ok &= out.get("jobs_bad", 0) == 0
+    if stalled is None:
+        ok &= "timed_out" not in out and out["kernel"]["error_name"] == "none"
+        return bool(ok and out["gave_up_cores"] == 0 and out["core_counts_bad"] == 0)
+    t = out.get("timed_out")
+    named = [c["core"] for c in t["not_reported"]] if t else []
+    return bool(ok and out["kernel"]["error_name"] == "deadline" and stalled in named)
 
 
 def core_counts(states, teams, cores):

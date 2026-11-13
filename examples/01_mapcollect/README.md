@@ -96,7 +96,9 @@ through row leaders (the runtime chooses per record).
 
 The JSON line reports microseconds per job by the dispatch kernel's clock and by the
 host's, the issue-to-completion latency, the Python time per record in `issue` and in
-the batched stores, and every core's end state.
+the batched stores, and every core's end state. Its `ok` is true when every core ended,
+no job and no compute check is wrong, and the run ended cleanly (with `--stall`: in the
+deadline, naming the stalled core); the script exits non-zero without it.
 
 ## Measured
 

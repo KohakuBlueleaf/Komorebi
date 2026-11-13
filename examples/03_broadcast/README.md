@@ -72,7 +72,9 @@ same session and runs the clean case.
 
 The JSON line reports, per run, the dispatch kernel's error and record count, the
 host's microseconds per job, the blocks every lane handed over, every core's end
-state, and `members_bad`.
+state, `members_bad`, and `ok` per run and for all of them: every core ended, a run
+with a stalled job ended in the deadline, a clean one with no core and no lane given up
+and every member right. The script exits non-zero without it.
 
 `--feeder` runs the same records on the test feeder (`tests/hardware/feeder/`): the
 last core of the grid issues them and no X280 is involved, so the rectangle must leave

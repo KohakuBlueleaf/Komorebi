@@ -8,6 +8,7 @@ import ctypes
 import json
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -306,8 +307,10 @@ def main():
     for path in got:
         checks += [v for k, v in out[path].items() if k.startswith("same")]
         checks.append(out[path].get("state_wrong", 0) == 0)
+    checks.append(set(got) == set(args.paths))  # every path asked for ran
     out["ok"] = all(checks)
     print(json.dumps(out), flush=True)
+    sys.exit(0 if out["ok"] else 1)
 
 
 if __name__ == "__main__":

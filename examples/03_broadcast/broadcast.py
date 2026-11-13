@@ -208,6 +208,17 @@ def core_gave_up(states):
     ][:16]
 
 
+def verdict(run, cores, stalled, end_ok):
+    """Every core ended and the run ended as it should (`end_ok`: the deadline for a
+    stalled job, else a clean end); a clean run with no core and no lane given up and
+    every member's values right."""
+    ok = set(run["cores_ended"].values()) == {cores} and end_ok
+    if not stalled:
+        ok &= not run["core_gave_up"] and not run["lane_gave_up"]
+        ok &= run.get("members_bad", 0) == 0
+    return bool(ok)
+
+
 def run_host(session, args, rng, stall_job):
     """One load of the program in the session: the jobs issued through the dispatch
     kernel, then the stop (or the timeout), the state read-out and the check."""
@@ -270,6 +281,10 @@ def run_host(session, args, rng, stall_job):
         }
     elif not args.no_check:
         out_json.update(check(args, sets, out, team, place))
+    stalled = 0 <= stall_job < args.jobs
+    end = ("deadline", True) if stalled else ("none", False)
+    end_ok = (result["error_name"], timed_out is not None) == end
+    out_json["ok"] = verdict(out_json, len(states), stalled, end_ok)
     return out_json
 
 
@@ -329,6 +344,12 @@ def run_fed(device, runner, args, rng, stall_job):
     }
     if s["status"] == "done" and not args.no_check:
         result.update(check(args, sets, out, team, place))
+    stalled = 0 <= stall_job < args.jobs
+    if stalled:
+        end_ok = s["status"] == "timeout"
+    else:
+        end_ok = s["status"] == "done" and s["done"] == args.jobs
+    result["ok"] = verdict(result, len(states), stalled, end_ok)
     return result
 
 
@@ -355,7 +376,10 @@ def main():
             for i, stall_job in enumerate(stalls):
                 runs.append(run_host(session, args, rng, stall_job))
                 log(f"run {i + 1} done")
-    print(json.dumps({"runs": runs, "wall_s": round(time.monotonic() - T0, 1)}))
+    ok = all(r["ok"] for r in runs)
+    wall = round(time.monotonic() - T0, 1)
+    print(json.dumps({"ok": ok, "runs": runs, "wall_s": wall}), flush=True)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

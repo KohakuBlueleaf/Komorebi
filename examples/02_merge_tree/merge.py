@@ -5,6 +5,7 @@ See README.md (`merge_fed.py`: the same jobs under the test feeder).
 
 import argparse
 import json
+import sys
 import time
 
 import merge_fed as mf
@@ -238,7 +239,38 @@ def run(session, args, rng):
         )
         events, after = launch(session, args, few, inputs, out)
         result["after"] = {**after, **checked(args, few, events, out, xs)}
+    result["ok"] = verdict(result, len(jobs), g.x * g.y)
     return result
+
+
+def ended(load, cores):
+    return set(load["cores_ended"].values()) == {cores} and load["compute_wrong"] == 0
+
+
+def clean(load, jobs, cores):
+    """Every job done and right (tiles and result words), no kernel error, no core gave
+    up, no port left waiting, every core ended."""
+    return (
+        ended(load, cores)
+        and load["kernel"]["error_name"] == "none"
+        and load["done"] == jobs
+        and load["jobs_bad"] == 0
+        and load["results_bad"] == 0
+        and not load["gave_up"]
+        and not load["waiting_ports"]
+    )
+
+
+def verdict(result, jobs, cores):
+    """The jobs clean; with --stall-member, the stalled load ended in the deadline on
+    job 1 with every core ended, and the load after it clean."""
+    ok = clean(result, jobs, cores)
+    if "stall" in result:
+        s = result["stall"]
+        ok &= ended(s, cores) and s["kernel"]["error_name"] == "deadline"
+        ok &= s.get("timed_out", {}).get("job") == 1
+        ok &= clean(result["after"], min(4, jobs), cores)
+    return bool(ok)
 
 
 def main():
@@ -249,6 +281,7 @@ def main():
         result = run(session, args, rng)
     result["wall_s"] = round(time.monotonic() - T0, 1)
     print(json.dumps(result), flush=True)
+    sys.exit(0 if result["ok"] else 1)
 
 
 if __name__ == "__main__":
