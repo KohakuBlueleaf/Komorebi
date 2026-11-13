@@ -14,9 +14,9 @@ patchelf=${PATCHELF:-patchelf}
 
 mkdir -p "$dist"
 if [ "${KMR_SKIP_TREE:-0}" != 1 ]; then
-    bash "$repo/runtime/build_tt_metal.sh" "$tree"
+    bash "$repo/packaging/runtime/build_tt_metal.sh" "$tree"
 fi
-"$python" "$repo/runtime/build_wheel.py" --tt-metal "$tree" --out "$dist" \
+"$python" "$repo/packaging/runtime/build_wheel.py" --tt-metal "$tree" --out "$dist" \
     --patchelf "$patchelf"
 "$python" "$repo/packaging/build_wheel.py" --tt-metal "$tree" --out "$dist" \
     --host-module --isolated --patchelf "$patchelf"

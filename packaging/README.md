@@ -6,15 +6,17 @@ when it is started by hand with `publish: true` ([the release workflow](#the-rel
 
 | File | What it does |
 |---|---|
-| `tt-metal.pin` | A link to `runtime/tt-metal.pin`, the tt-metal release Komorebi is developed and built against. |
+| `tt-metal.pin` | The tt-metal release Komorebi is developed and built against (`v0.81.1`), and the one pin of the repository: both wheels are built from it. |
 | `build_wheel.py` | Builds the `komorebi-tt` wheel (the package it carries is imported as `komorebi`) from a commit (`--ref`, default `HEAD`), exported with `git archive` so nothing untracked comes along. It builds the dispatcher image against a tt-metal tree with the X280 runtime, puts it beside the package, and rejects a wheel that misses a header or a source. |
 | `smoke.sh` | Installs a wheel alone into a fresh environment, runs `kmr doctor` outside the checkout, and checks that the headers and the prebuilt image are found inside the install; with `KMR_CARD=1` it also runs `examples/01_mapcollect`. |
 | `ci/` | What the release workflow runs: `build_wheels.sh` (tt-metal, then both wheels), `wheel_info.py` (names, versions and requirements read from the wheels, the version checks), `check_paths.py` (no binary names a path of the build machine). |
 | `version.py` | Reads, stamps and bumps the version in `pyproject.toml` and `komorebi.__version__`. |
+| `runtime/` | The `komorebi-runtime` wheel: its metadata, build number, patches and the scripts that build tt-metal and the wheel ([runtime](runtime/README.md)). |
 
 The tt-metal build itself is a second package of this repository, `komorebi-runtime`
-([runtime](../runtime/README.md)): a platform wheel with the pinned tt-metal libraries,
-the kernel runtime tree, the X280 runtime pieces and a locator.
+([runtime](runtime/README.md)): a platform wheel with the pinned tt-metal libraries,
+the kernel runtime tree, the X280 runtime pieces and a locator (`src/komorebi_runtime/`,
+which the `komorebi-tt` wheel does not carry).
 
 ## What the wheel carries
 
@@ -66,7 +68,7 @@ against, so it matches a tree at the same pin.
 ```
 python3.13 packaging/build_wheel.py --tt-metal "$TT_METAL_HOME" --out dist
 bash packaging/smoke.sh dist/komorebi_tt-*.whl /tmp/komorebi-smoke
-# the wheel for komorebi-runtime, in the tree runtime/build_tt_metal.sh built
+# the wheel for komorebi-runtime, in the tree packaging/runtime/build_tt_metal.sh built
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
 ```
 
@@ -113,7 +115,7 @@ dispatch; `smoke.sh` ran the first example, then the second ran from a copy outs
 checkout:
 
 ```
-python3.13 runtime/build_wheel.py --tt-metal TREE --out dist
+python3.13 packaging/runtime/build_wheel.py --tt-metal TREE --out dist
 python3.13 packaging/build_wheel.py --tt-metal TREE --out dist --host-module
 python3.13 -m venv venv
 venv/bin/pip install --no-deps dist/komorebi_runtime-0.81.1.2-py3-none-manylinux_2_38_x86_64.whl \
@@ -161,7 +163,7 @@ The `build` job:
    stops when the tag does not name the version.
 2. `ci/build_wheels.sh "$KMR_RUNTIME_TREE" dist`: `runtime/build_tt_metal.sh` (it
    applies `runtime/patches/` and configures with `-ffile-prefix-map`; the tree is
-   rebuilt only when `runtime/tt-metal.pin` or a patch changes, otherwise it is updated in
+   rebuilt only when `tt-metal.pin` or a patch changes, otherwise it is updated in
    seconds), `runtime/build_wheel.py` and `build_wheel.py --host-module --isolated`.
    A new runtime wheel is only worth publishing when the pin, a patch or `runtime/BUILD`
    changed.
@@ -198,13 +200,13 @@ that they name no secret.
 
 The workflow itself has not run: the repository is not on GitHub yet. Its scripts were
 run in the order of the `build` job, on 2026-11-13, against a tree
-`runtime/build_tt_metal.sh` had built (the pin and the patches unchanged, so the two
+`packaging/runtime/build_tt_metal.sh` had built (the pin and the patches unchanged, so the two
 wheel steps of `ci/build_wheels.sh` alone), with the runner's variables set by hand, and
 `smoke.sh` on card 0 of a Blackhole p150a with slow dispatch, through the card watcher:
 
 | Step | Result | Time |
 |---|---|---|
-| `runtime/build_wheel.py`, `build_wheel.py --host-module --isolated` | `komorebi_runtime-0.81.1.2-py3-none-manylinux_2_38_x86_64.whl` (46.5 MB, 4,754 members) and `komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl` (683 kB, 80 files, `_km_host` 1,089,969 bytes) | 38 s |
+| `runtime/build_wheel.py`, `build_wheel.py --host-module --isolated` (both of `packaging/`) | `komorebi_runtime-0.81.1.2-py3-none-manylinux_2_38_x86_64.whl` (46.5 MB, 4,754 members) and `komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl` (683 kB, 80 files, `_km_host` 1,089,969 bytes) | 38 s |
 | `ci/wheel_info.py identify dist` | `komorebi-tt` 0.1.0, `komorebi-runtime` 0.81.1.2, requirement `>=0.81.1.2,<0.81.2`, not a prerelease | under 1 s |
 | `ci/wheel_info.py versions dist --tag v0.1.0` | passes | under 1 s |
 | `ci/check_paths.py dist/*.whl` (home, workspace, work, temporary and tree directories) | 25 and 2 binaries, none names one | 1 s |

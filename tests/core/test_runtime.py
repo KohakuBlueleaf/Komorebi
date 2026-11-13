@@ -2,7 +2,6 @@
 chooses its tt-metal tree."""
 
 import json
-import os
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -100,10 +99,8 @@ def test_komorebi_takes_the_home_tree_first_then_the_runtime(tmp_path, monkeypat
 
 
 def test_the_runtime_version_is_its_pin_and_build_number():
-    project = tomllib.loads((ROOT / "runtime" / "pyproject.toml").read_text())
-    pin = (ROOT / "runtime" / "tt-metal.pin").read_text().strip()
-    number = (ROOT / "runtime" / "BUILD").read_text().strip()
+    runtime = ROOT / "packaging" / "runtime"
+    project = tomllib.loads((runtime / "pyproject.toml").read_text())
+    pin = (ROOT / "packaging" / "tt-metal.pin").read_text().strip()
+    number = (runtime / "BUILD").read_text().strip()
     assert project["project"]["version"] == f"{pin.removeprefix('v')}.{number}"
-    assert os.path.samefile(
-        ROOT / "packaging" / "tt-metal.pin", ROOT / "runtime" / "tt-metal.pin"
-    )

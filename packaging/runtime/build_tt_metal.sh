@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Clones the pinned tt-metal (runtime/tt-metal.pin) into DIR, applies runtime/patches/*.patch,
-# configures it with the X280 runtime and without distributed, and builds what the
-# komorebi-runtime wheel carries: the libraries, ttnn, the kernel toolchain, the X280 runtime
-# objects and idle image, and the X280 host runtime that the native host module links.
+# Clones the pinned tt-metal (packaging/tt-metal.pin) into DIR, applies patches/*.patch of
+# this folder, configures it with the X280 runtime and without distributed, and builds what
+# the komorebi-runtime wheel carries: the libraries, ttnn, the kernel toolchain, the X280
+# runtime objects and idle image, and the X280 host runtime that the native host module links.
 # usage: build_tt_metal.sh DIR   (an existing build in DIR is updated; KMR_JOBS=N limits
 # ninja's jobs; KMR_CCACHE=1 compiles through ccache, with CCACHE_DIR from the caller)
 # No system packages are installed: the host needs tt-metal's build dependencies already
@@ -10,7 +10,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 dir=$(realpath -m "${1:?usage: build_tt_metal.sh DIR}")
-pin=$(tr -d '[:space:]' < "$here/tt-metal.pin")
+pin=$(tr -d '[:space:]' < "$here/../tt-metal.pin")
 
 # Cloned next to DIR, then moved: an interrupted clone leaves no DIR behind.
 if [ ! -d "$dir/.git" ]; then

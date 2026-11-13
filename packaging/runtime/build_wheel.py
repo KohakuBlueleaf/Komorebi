@@ -19,6 +19,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PACKAGE = "komorebi_runtime"
+# The locator's sources and the one pin, both outside this folder.
+SOURCE = HERE.parents[1] / "src" / PACKAGE
+PIN = HERE.parent / "tt-metal.pin"
 
 # The kernel runtime tree the JIT compiles against: what tt-metal's own wheel ships (its
 # setup.py), by root; the same list Kohaku-TT's wheel carries.
@@ -195,7 +198,7 @@ def main():
     tt_metal = args.tt_metal.resolve()
     build = (tt_metal / "build").resolve()
     project = tomllib.loads((HERE / "pyproject.toml").read_text())["project"]
-    pin = (HERE / "tt-metal.pin").read_text().strip()
+    pin = PIN.read_text().strip()
     number = (HERE / "BUILD").read_text().strip()
     version = f"{pin.removeprefix('v')}.{number}"
     if project["version"] != version:
@@ -210,7 +213,7 @@ def main():
         stage = Path(tmp) / "stage"
         package = stage / PACKAGE
         shutil.copytree(
-            HERE / "src" / PACKAGE,
+            SOURCE,
             package,
             ignore=shutil.ignore_patterns("__pycache__"),
         )

@@ -40,6 +40,8 @@ REQUIRED = [
 # Directories whose files are all carried (empty until something is written there).
 CARRIED = ["komorebi_native/include", "komorebi_native/x280", "komorebi_native/kernels"]
 CARRIED += ["komorebi_native/cmake", "komorebi_native/csrc"]
+# Packages of src/ that belong to another wheel (komorebi-runtime's locator).
+FOREIGN = ["komorebi_runtime/"]
 
 
 def run(*command, **kwargs):
@@ -142,8 +144,12 @@ def build_wheel(stage, out, isolated):
 
 
 def check(wheel, stage, required):
-    """Rejects a wheel missing a required member or a file of a carried folder."""
+    """Rejects a wheel missing a required member or a file of a carried folder, or
+    carrying a package of another wheel."""
     names = set(zipfile.ZipFile(wheel).namelist())
+    foreign = sorted(n for n in names if n.startswith(tuple(FOREIGN)))
+    if foreign:
+        raise SystemExit(f"{wheel.name} carries another wheel's files: {foreign}")
     missing = [n for n in required if n not in names]
     for folder in CARRIED:
         for path in (stage / "src" / folder).rglob("*"):

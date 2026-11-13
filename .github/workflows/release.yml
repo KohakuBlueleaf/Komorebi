@@ -148,9 +148,9 @@ jobs:
         env:
           WHEEL: ${{ needs.build.outputs.runtime_wheel }}
         run: mkdir upload && mv "dist/${WHEEL}" upload/
-      # A runtime wheel changes only with the pin, a patch or runtime/BUILD, so most
-      # releases carry a version already on the index: skip-existing leaves it there
-      # and the job succeeds.
+      # A runtime wheel changes only with the pin, a patch or packaging/runtime/BUILD,
+      # so most releases carry a version already on the index: skip-existing leaves it
+      # there and the job succeeds.
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: upload/

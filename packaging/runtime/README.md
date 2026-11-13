@@ -7,18 +7,18 @@ it. Nothing is published: the wheel is built locally.
 
 | File | What it is |
 |---|---|
-| `tt-metal.pin` | The tt-metal release the runtime is built from (`v0.81.1`). It is the only pin in the repository; `packaging/tt-metal.pin` links to it. |
+| `../tt-metal.pin` | The tt-metal release the runtime is built from (`v0.81.1`): `packaging/tt-metal.pin`, the only pin in the repository. |
 | `patches/` | Our patches to that release: a successful kernel build's compiler output goes through tt-metal's logger, and eager launches of a thread that opts in publish their fetch-queue entries together (both from Kohaku-TT's packaging); and no path of the build machine in the binaries (the X280 objects and images compiled with `-ffile-prefix-map`, the experimental NoC estimator's table looked up relative to the working directory). |
 | `BUILD` | Our build number. The version is the pin plus it: `0.81.1.2`. A dependent requires `>=0.81.1.N,<0.81.2`. |
 | `build_tt_metal.sh` | Clones the pin into a directory, applies the patches, configures it with the X280 runtime and without distributed (OpenMPI cannot be carried in a wheel) and with `-ffile-prefix-map=DIR=.` (so no path of the build machine is written into a library), and builds only what the wheel carries. It installs no system packages: tt-metal's build dependencies must be on the host. |
 | `build_wheel.py` | Builds the wheel from that directory. |
-| `src/komorebi_runtime/` | The locator and its commands. |
+| `src/komorebi_runtime/` (at the top of the repository) | The locator and its commands. The `komorebi-tt` wheel does not carry it. |
 
 ## Building
 
 ```
-runtime/build_tt_metal.sh /path/to/tt-metal              # KMR_JOBS=N limits the jobs
-python3.13 runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
+packaging/runtime/build_tt_metal.sh /path/to/tt-metal    # KMR_JOBS=N limits the jobs
+python3.13 packaging/runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 ```
 
 `build_tt_metal.sh` builds the targets `ttnn` (with it `_ttnncpp.so` and the
@@ -63,7 +63,7 @@ Nothing runs at import.
 
 | Call | Answer |
 |---|---|
-| `installed()` | whether the package holds a built runtime (an install of `runtime/` alone does not) |
+| `installed()` | whether the package holds a built runtime (an install of `packaging/runtime/` alone does not) |
 | `manifest()`, `pin()`, `version()` | the build's manifest; `"v0.81.1"`; `"0.81.1.2"` |
 | `lib_dir()`, `tree()` | the libraries; the kernel runtime tree inside the package |
 | `x280()` | the X280 runtime objects in link order, the linker script, the include directory, the idle image |

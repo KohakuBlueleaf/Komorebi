@@ -21,7 +21,7 @@ card under the dispatcher ([host API](reference/host.md)), the example
 - To check out and test the code: `git`, and either [uv](https://docs.astral.sh/uv/) or
   plain `python3.13` with `venv`.
 - To build for a card: a tt-metal source tree at the version in
-  `runtime/tt-metal.pin`, built in `<tree>/build`, and `clang++-20` for C++ hosts.
+  `packaging/tt-metal.pin`, built in `<tree>/build`, and `clang++-20` for C++ hosts.
 - For X280 images: that tree built with its X280 runtime, which also provides the
   RISC-V compiler under `<tree>/runtime/sfpi`; or, without a tree, the
   `komorebi-runtime` wheel ([the runtime package](#the-runtime-package)).
@@ -82,16 +82,16 @@ runtime. [Packaging](../packaging/README.md) lists what the wheel carries.
 
 ## The runtime package
 
-`komorebi-runtime` (`runtime/` in this repository) is the pinned tt-metal build as a
+`komorebi-runtime` (`packaging/runtime/` and `src/komorebi_runtime/` in this repository) is the pinned tt-metal build as a
 platform wheel: the libraries, the kernel runtime tree, the X280 runtime objects,
 linker script, headers and idle image, and a locator. With it and a `komorebi-tt` wheel
 that carries the prebuilt native module, a program runs on a card with no tt-metal tree.
-Both are built locally ([runtime](../runtime/README.md),
+Both are built locally ([runtime](../packaging/runtime/README.md),
 [packaging](../packaging/README.md#a-run-from-the-two-wheels)):
 
 ```
-runtime/build_tt_metal.sh /path/to/tt-metal
-python3.13 runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
+packaging/runtime/build_tt_metal.sh /path/to/tt-metal
+python3.13 packaging/runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
 pip install dist/komorebi_runtime-0.81.1.2-py3-none-manylinux_2_38_x86_64.whl \
     dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl
@@ -131,7 +131,7 @@ Running the host API on a card needs a tt-metal tree with the X280 runtime, the
 [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project hooked
 into it, and a card whose X280 memory is prepared once. Step by step:
 
-1. **tt-metal v0.81.1 with the X280 runtime** (the version in `runtime/tt-metal.pin`):
+1. **tt-metal v0.81.1 with the X280 runtime** (the version in `packaging/tt-metal.pin`):
 
    ```
    git clone --branch v0.81.1 https://github.com/tenstorrent/tt-metal && cd tt-metal

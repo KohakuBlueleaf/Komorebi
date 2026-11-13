@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "komorebi-runtime"
-# The tt-metal pin (tt-metal.pin) and our build number (BUILD); build_wheel.py checks it.
+# The tt-metal pin (../tt-metal.pin) and our build number (BUILD); build_wheel.py checks it.
 version = "0.81.1.2"
 description = "The pinned tt-metal build that Komorebi and Kohaku-TT share, with a locator"
 readme = "README.md"
@@ -15,5 +15,7 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = []
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# The locator lives with the other packages, in src/ at the top of the repository.
+[tool.setuptools]
+packages = ["komorebi_runtime"]
+package-dir = {"" = "../../src"}

@@ -456,7 +456,7 @@ kmr doctor                      # the Python, the tt-metal tree and its X280 run
 
 The CPU tests and the stream and graph tools need nothing else. To run on a card: a
 Blackhole P150A whose X280 memory is prepared for the X280 runtime, a tt-metal source
-tree at the version in [runtime/tt-metal.pin](runtime/tt-metal.pin) (v0.81.1) built
+tree at the version in [packaging/tt-metal.pin](packaging/tt-metal.pin) (v0.81.1) built
 with its X280 runtime, and `TT_METAL_HOME` naming that tree (neither `ttnn` nor
 `torch` is needed). The dispatcher image and the native module are
 built from the tree on first use (`python -m komorebi.native` builds them ahead).

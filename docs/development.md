@@ -26,14 +26,15 @@ src/komorebi/                  the package you import
   tools/cxx_format.py          clang-format with the rules it cannot express
   manifest/  lang/             reserved for later tiers (README inside, no code yet)
 src/komorebi_native/           the native layer (README inside)
+src/komorebi_runtime/          komorebi-runtime's locator: where the runtime's files are
 examples/  projects/           runnable examples; larger programs (README inside)
 experiments/  ref/             standalone proofs; CPU references (README inside)
 tests/core/                    tests that need no card
 tests/projects/                CPU tests of the programs under projects/
 tests/ref/                     reference renderers compared (README inside)
 docs/                          concepts, install, this page
-packaging/                     the komorebi-tt wheel: build, smoke test, version tools
-runtime/                       komorebi-runtime: the tt-metal pin, its patches and build (README inside)
+packaging/                     the komorebi-tt wheel: build, smoke test, version tools; the pin
+packaging/runtime/             komorebi-runtime: its patches and build (README inside)
 ```
 
 `import komorebi` needs no tt-metal tree and imports no tt-metal or TT-NN module; the
@@ -46,7 +47,7 @@ except by code that is asked to.
 python -m pytest tests/core                     # CPU tests
 python -m pytest tests/projects                 # the programs' CPU tests
 python -m komorebi.tools.cxx_format --check
-python -m komorebi.tools.comment_lint --check src tests examples experiments packaging runtime tutorial
+python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 mkdocs build --strict -d /tmp/komorebi-site     # the documentation site, tutorial included
 ```
