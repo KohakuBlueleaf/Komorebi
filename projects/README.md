@@ -15,3 +15,5 @@ rather than staying in the project.
   in numpy, threaded C++ and CUDA, with the treelet cuts, timings and pictures.
 - [dense](dense/README.md): the matrix product on the resident workers, checked against
   float64 and measured against Kohaku-TT's routes on the same card.
+- [attention](attention/README.md): scaled dot-product attention on lanes of cores,
+  K / V cast down each lane, Kohaku-TT's flash compute body, checked against float64.
