@@ -4,6 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "bounded.hpp"
+#include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "raytrace.h"
 
@@ -146,7 +147,7 @@ namespace {
             uint16_t* present = present_;
             uint16_t* order = order_;
             // Rounds: entry r of every list in round r. Once: every entry in one round.
-            const bool once = r_.a9 == kPolicyOnce;
+            const bool once = (r_.a9 & 0xFF) == kPolicyOnce;
             uint32_t rounds = 0;
             for (uint32_t p = 0; p < count_; ++p) {
                 rounds = dir[2 * p + 1] > rounds ? dir[2 * p + 1] : rounds;
@@ -748,10 +749,7 @@ void kernel_main() {
         const uint32_t t0 = km::wall();
         const uint32_t dir = get_write_ptr(kCbDirReader);
         volatile tt_l1_ptr uint32_t* d = km::l1(dir);
-        const InterleavedAddrGen<true> dirs = {
-            .bank_base_address = r.a0, .page_size = kDirBytes
-        };
-        noc_async_read(get_noc_addr(rd.me(), dirs), dir, kDirBytes);
+        noc_async_read(dir_addr(r, seg, rd.me()), dir, kDirBytes);
         if (!bounded::reads_done(rd, km::kStReader)) {
             return;
         }

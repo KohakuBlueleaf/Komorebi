@@ -15,11 +15,12 @@ constexpr uint32_t kSegArith = 3;
 // RECIP: a0 directory, a2 output pages, a3 exponent field, a4 profile. Reciprocals of
 // every mantissa with that exponent, generated on the card.
 constexpr uint32_t kSegRecip = 4;
-// TREELETS: as TRACE with the top tree loaded; a5 treelet images, a6 list entries, a7
-// slot bytes, a8 slots, a9 policy. Top tree walk per packet, then treelet visits.
+// TREELETS: as TRACE, top tree loaded; a5 treelet images, a6 list entries, a7 slot
+// bytes, a8 slots, a9 policy | (1 + bank) << kBankShift (a0 in that bank, if set).
 constexpr uint32_t kSegTreelets = 5;
 constexpr uint32_t kPolicyRounds = 0;  // round r: the r-th treelet of every packet
 constexpr uint32_t kPolicyOnce = 1;
+constexpr uint32_t kBankShift = 8;
 // PROBE: as TRACE (one packet per page), a3 the form, a5 passes; each pass tests the
 // packet against both children of every inner node of the loaded tree.
 constexpr uint32_t kSegProbe = 6;
@@ -78,9 +79,11 @@ constexpr uint32_t kOutPages = 4;
 constexpr uint32_t kDirBytes = 64;
 constexpr uint32_t kTreePageBytes = 4096;
 
-// Directory entry of a core (one 64-byte page each): first page, pages.
+// Directory entry of a core (one 64-byte page each): first page, pages, and for a
+// TREELETS record in a bank the bank address of the core's cost block (0: none).
 constexpr uint32_t kDirFirst = 0;
 constexpr uint32_t kDirCount = 1;
+constexpr uint32_t kDirCost = 2;
 
 // A vector is 32 words, word l for lane l. Packet page: these vectors, then a header.
 constexpr uint32_t kVec = 32;
@@ -275,6 +278,12 @@ inline uint32_t stream_arg(const Record& r, uint32_t k) {
 // from word 0, the reader's at kProfReader, the writer's at kProfWriter.
 constexpr uint32_t kProfReader = 32;
 constexpr uint32_t kProfWriter = 48;
+// TREELETS: the cost block at kProfCost: first, count, then from kCostHead each
+// packet's cycles, then from kCostHead + kCostMax its lanes with a hit.
+constexpr uint32_t kProfCost = 64;
+constexpr uint32_t kCostHead = 16;
+constexpr uint32_t kCostMax = 192;
+constexpr uint32_t kCostBytes = 4 * (kCostHead + 2 * kCostMax);
 constexpr uint32_t kRdWords = 16;  // reader counters after the directory entry
 constexpr uint32_t kRdCounters = 16;
 // Reader counters: packet pages (wait, read, total, pages), then the treelet schedule.
@@ -304,3 +313,7 @@ static_assert(kWorkIds * 4 + kWorkMax * 2 <= kWorkBytes && kHitBytes % 16 == 0);
 static_assert(
     kProfWriter + 4 <= kOutPageBytes / 4 && kProfReader + kRdCounters <= kProfWriter
 );
+static_assert(
+    kProfWriter + 4 <= kProfCost && 4 * kProfCost + kCostBytes <= kOutPageBytes
+);
+static_assert(kCostBytes % 64 == 0 && (4 * kProfCost) % 64 == 0);

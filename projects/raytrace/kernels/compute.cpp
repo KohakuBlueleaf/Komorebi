@@ -747,8 +747,11 @@ namespace {
         return true;
     }
 
-    // The profile page: the pack thread's counters at words 0 to kProfWords - 1.
-    void profile(const walk::Prof& pf) {
+    // The profile page: the pack thread's counters at words 0 to kProfWords - 1; with
+    // `block` (TREELETS) the cost block of its `costs` packets, even of none.
+    void profile(
+        const walk::Prof& pf, uint32_t first = 0, uint32_t costs = 0, bool block = false
+    ) {
         if (!bounded::back(kCbOut, 1)) {
             return;
         }
@@ -758,7 +761,28 @@ namespace {
         for (uint32_t k = 0; k < 32; ++k) {
             w[k] = k < walk::kProfWords ? v[k] : 0;
         }
-        push_out(dst, 32);
+        if (!block) {
+            push_out(dst, 32);
+            return;
+        }
+        uint32_t* st = raw(kCbState);
+        volatile uint32_t* c = w + kProfCost;
+        for (uint32_t k = 0; k < kCostHead; ++k) {
+            c[k] = 0;
+        }
+        const uint32_t n = costs < kCostMax ? costs : kCostMax;
+        c[0] = first;
+        c[1] = n;
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t* me = image_of(st, i);
+            uint32_t hits = 0;
+            for (uint32_t l = 0; l < kVec; ++l) {
+                hits += walk::image_lane(me, kSTri, l) != 0xFFFFFFFFu ? 1 : 0;
+            }
+            c[kCostHead + i] = head_of(st, costs, i)[kStCycles];
+            c[kCostHead + kCostMax + i] = hits;
+        }
+        push_out(dst, kProfCost + kCostHead + kCostMax + n);
     }
 
 }  // namespace
@@ -970,7 +994,7 @@ void kernel_main() {
         }
         finish();
         pf.total = wall() - t0;
-        profile(pf);
+        profile(pf, first, count, seg == kSegTreelets);
 #endif
     });
 }

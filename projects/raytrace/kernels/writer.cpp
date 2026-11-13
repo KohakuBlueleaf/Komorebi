@@ -4,6 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "bounded.hpp"
+#include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "raytrace.h"
 
@@ -70,10 +71,7 @@ void kernel_main() {
         const uint32_t t0 = km::wall();
         const uint32_t dir = get_write_ptr(kCbDirWriter);
         volatile tt_l1_ptr uint32_t* d = km::l1(dir);
-        const InterleavedAddrGen<true> dirs = {
-            .bank_base_address = r.a0, .page_size = kDirBytes
-        };
-        noc_async_read(get_noc_addr(wr.me(), dirs), dir, kDirBytes);
+        noc_async_read(dir_addr(r, seg, wr.me()), dir, kDirBytes);
         if (!bounded::reads_done(wr, km::kStWriter)) {
             return true;
         }
@@ -125,6 +123,14 @@ void kernel_main() {
         noc_async_write(
             get_read_ptr(kCbOut), get_noc_addr(wr.me(), profs), kOutPageBytes
         );
+        const uint32_t bank = seg == kSegTreelets ? r.a9 >> kBankShift : 0;
+        if (bank != 0 && d[kDirCost] != 0) {
+            noc_async_write(
+                get_read_ptr(kCbOut) + 4 * kProfCost,
+                get_noc_addr_from_bank_id<true>(bank - 1, d[kDirCost]),
+                kCostBytes
+            );
+        }
         if (!bounded::writes_sent(wr, km::kStWriter)) {
             return true;
         }

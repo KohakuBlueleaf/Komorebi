@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 from komorebi import session as km_session  # noqa: E402
-from projects.raytrace import card, packets  # noqa: E402
+from projects.raytrace import card, packets, planner  # noqa: E402
 from projects.raytrace import ties as ties_mod  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
 from projects.raytrace.run import reference_frame  # noqa: E402
@@ -252,6 +252,74 @@ def check_stages(got, scene, tree, pix):
     return out
 
 
+def planned(
+    args, session, recs, steps, per_step, treelets, directory, profs, shape, report
+):
+    """The frames conducted by the X280 thread (planner.py): record us per frame and
+    step, the profile tensors of the last frame, the host's seconds, power samples."""
+    tree_pages, sizes, workers, n, per = shape
+    cap = min(per, planner.P["RP_COST_MAX"])
+    entries = planner.entries_of(recs, steps, per_step, treelets)
+    tab = planner.table(
+        entries,
+        directory,
+        [ps for s, ps in zip(steps, profs) if s[1] == "kSegTrace"],
+        workers,
+    )
+    prog = planner.program(
+        card.program(tree_pages, sizes),
+        tab,
+        args.plan,
+        args.reps,
+        workers,
+        n,
+        cap,
+        len(entries),
+    )
+    card.log(f"frame: {n} packets, {len(entries)} table records, plan {args.plan}")
+    meter = card.Power()
+    frames, status, state, samples = planner.run(
+        session, prog, args.reps, meter, card.log
+    )
+    report["plan"] = {"mode": args.plan, "cap": cap, "thread": status}
+    kinds = [e[0] & 0xFF for e in entries]
+    us, last = [], None
+    for i, f in enumerate(frames):
+        chunks = [f["chunks"][k - 1] if k else 1 for k in kinds]
+        chunks[0] = 1 if i == 0 else 0  # LOAD: the first frame only
+        rec = np.asarray(f["record_us"], dtype=np.float64)
+        if len(rec) != sum(chunks):
+            break
+        step_us = np.bincount(np.repeat(np.arange(len(kinds)), chunks), rec)[1:]
+        us.append(step_us)
+        last = f["chunks"]
+    report["frames"] = [
+        {
+            "frame_ms": float(u.sum()) / 1000,
+            "step_ms": (u / 1000).tolist(),
+            "wall_ms": (f["wall_us"] - (f["record_us"][0] if i == 0 else 0)) / 1000,
+            "plan_ms": [x / 1000 for x in f["plan_us"]],
+            "chunks": f["chunks"],
+            "plan_parts_ms": [x / 1000 for x in f["plan_parts_us"]],
+        }
+        for i, (u, f) in enumerate(zip(us, frames))
+    ]
+    if len(us) > 1:
+        report["repeated_frame_ms"] = float(np.median([u.sum() for u in us[1:]])) / 1000
+    done = len(frames) == args.reps and len(us) == args.reps and status["code"] == "ok"
+    ran = card.Ran([], status["kernel"], state, status["host_s"])
+    report["run"] = card.check_run(ran, workers)
+    report["run"].update(done=int(done), records=1)
+    report["host"] = {"records": 0, "command_bytes": 0, "wall_s": status["host_s"]}
+    kind_of = iter(k for k in kinds[1:] if k)
+    read = []
+    for s, ps in zip(steps, profs):
+        read.append(ps[: last[next(kind_of) - 1]] if s[1] == "kSegTrace" else ps)
+    us = np.stack(us) if us else np.zeros((1, len(steps)))
+    last_us = np.asarray(frames[-1]["record_us"]) if frames else np.zeros(0)
+    return us, read, status["host_s"], samples, last_us
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--scene", default="tiny")
@@ -264,9 +332,14 @@ def main():
     p.add_argument("--slots", type=int, default=4, help="treelet slots per core")
     p.add_argument("--profile", default=None, help="NPZ: every core's counters")
     p.add_argument("--sort", action="store_true", help="sort rays on each core")
+    p.add_argument(
+        "--plan", choices=planner.MODES, default=None, help="X280 thread cuts traces"
+    )
     args = p.parse_args()
-    if args.sort and not args.treelets:
-        p.error("--sort needs --treelets")
+    if (args.sort or args.plan) and not args.treelets:
+        p.error("--sort and --plan need --treelets")
+    if args.plan and planner.same_numbers():
+        p.error(f"plan.h differs from raytrace.h: {planner.same_numbers()}")
     steps = sorted_steps() if args.sort else STEPS
     data = native.data_dir()
     tree = harness.ensure_tree(args.scene)
@@ -325,35 +398,55 @@ def main():
         per_step = [
             len(dirs) if cut is not None and s[1] == "kSegTrace" else 1 for s in steps
         ]
-        profs = [[card.tensor(dev, prof_rows) for _ in range(k)] for k in per_step]
+        most = [planner.P["RP_CHUNKS"] if args.plan else k for k in per_step]
+        most = [m if s[1] == "kSegTrace" else 1 for m, s in zip(most, steps)]
+        profs = [[card.tensor(dev, prof_rows) for _ in range(k)] for k in most]
         recs = [(K["kSegLoad"], [tree_t.buffer_address(), image.nbytes])]
         key = sort_key(tree) if args.sort else ()
-        recs += (
-            records(tensors, dir_ts, const_t, profs, treelets, steps, key) * args.reps
-        )
-        card.log(f"frame: {n} packets, {len(recs)} records")
+        one = records(tensors, dir_ts, const_t, profs, treelets, steps, key)
         meter = card.Power()
         report["power_idle_w"] = meter.idle()
         report["aiclk_mhz"] = card.aiclk_mhz()
         report["x280_mhz"] = km_session.X280_MHZ
         report["load_avg"] = os.getloadavg()[0]
-        res, samples = card.run_records(
-            session, recs, len(image), power=meter, sizes=sizes
-        )
-        run = card.check_run(res, workers)
-        # A step's time is its records' (one per directory chunk) summed.
-        step_of = np.repeat(np.arange(len(steps)), per_step)
-        per_rep = card.record_us(res)[1:].reshape(args.reps, len(step_of))
-        us = np.stack([np.bincount(step_of, r, len(steps)) for r in per_rep])
-        report["run"] = run
-        report["host"] = {**res.host, "wall_s": res.host_s}
+        if args.plan:
+            us, read_profs, host_s, samples, record_us = planned(
+                args,
+                session,
+                recs + one,
+                steps,
+                per_step,
+                treelets,
+                directory,
+                profs,
+                (len(image), sizes, workers, n, per),
+                report,
+            )
+        else:
+            recs += one * args.reps
+            card.log(f"frame: {n} packets, {len(recs)} records")
+            res, samples = card.run_records(
+                session, recs, len(image), power=meter, sizes=sizes
+            )
+            report["run"] = card.check_run(res, workers)
+            # A step's time is its records' (one per directory chunk) summed.
+            step_of = np.repeat(np.arange(len(steps)), per_step)
+            per_rep = card.record_us(res)[1:].reshape(args.reps, len(step_of))
+            us = np.stack([np.bincount(step_of, r, len(steps)) for r in per_rep])
+            report["host"] = {**res.host, "wall_s": res.host_s}
+            host_s, read_profs = res.host_s, profs
+            record_us = card.record_us(res)
+        run = report["run"]
         report["frame_us_median"] = float(np.median(us.sum(axis=1)))
         report["frame_ms"] = report["frame_us_median"] / 1000
-        watts = [w for t, w in samples if t >= samples[-1][0] - res.host_s]
+        if args.plan:
+            report["frame_ms"] = float(us[0].sum()) / 1000
+        watts = [w for t, w in samples if t >= samples[-1][0] - host_s]
         report["power_mean_w"] = float(np.mean(watts)) if watts else None
         report["steps"] = []
         raw = [
-            card.read_each(session, ps, [s[0]] * len(ps)) for s, ps in zip(steps, profs)
+            card.read_each(session, ps, [s[0]] * len(ps))
+            for s, ps in zip(steps, read_profs)
         ]
         rows = [sum(r.astype(np.uint64) for r in rs) for rs in raw]
         if args.profile:
@@ -361,7 +454,7 @@ def main():
                 args.profile,
                 session,
                 raw,
-                card.record_us(res),
+                record_us,
                 directory,
                 tensors,
                 steps,
