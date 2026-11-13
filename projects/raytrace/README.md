@@ -1,10 +1,10 @@
 # Ray tracing on the card
 
-The ray tracer of [`reference/`](reference/README.md) with the card as the intersector:
-the same saved box tree, the same rays, the same float32 operations in the same order,
-walked by the 120 Tensix cores of a Blackhole p150a under the dispatch kernel. Every
-trace is checked against numpy ray by ray and the frame image against numpy's image,
-pixel by pixel.
+The ray tracer of [`reference/`](reference/README.md) on the card: the same saved box
+tree, the same rays, the same float32 operations in the same order, run by the 120
+Tensix cores of a Blackhole p150a under the dispatch kernel. The whole frame (ray
+generation, the four traces, the shading) runs on the cores; every stage is checked
+against numpy lane by lane and the image against numpy's image, pixel by pixel.
 
 ## The thread program
 
@@ -42,8 +42,8 @@ packet states stay in L1 between visits.
 | Kernel | What it does |
 |---|---|
 | `reader.cpp` | LOAD: the tree image into the tree buffer. TRACE: this core's packet pages from DRAM to compute. TREELETS: also bins packets by treelet, reads treelets into slots (least recently used replaced), writes work pages |
-| `compute.cpp` | the pack thread walks each packet on the vector unit (`walk.hpp`): slab test and triangle test in the reference's operation order, with an exact reciprocal (`sfpu.hpp`); the unpack thread hands it the pages |
-| `writer.cpp` | 64 packets' hits to one DRAM page (the host reads per page); the profile page |
+| `compute.cpp` | the pack thread walks each packet on the vector unit (`walk.hpp`): slab test and triangle test in the reference's operation order, with an exact reciprocal (`sfpu.hpp`); the stages' arithmetic (`shade.hpp`); the unpack thread hands it the pages |
+| `writer.cpp` | 64 packets' output pages of each stream to one DRAM page (the host reads per page); the profile page |
 
 | Record word | Meaning |
 |---|---|
@@ -53,15 +53,36 @@ packet states stay in L1 between visits.
 | a4 | profile pages: per core, the cycles of every step and the counts |
 | a5 to a9 | TREELETS: treelet images, list entries, slot bytes, slots, schedule |
 
+The frame is eight records in one load (`frame.py`), each core keeping the packets
+of its tiles from the first record to the last. The other stages are threads of the
+same form: per packet, their input pages into the vector unit, the stage, their
+output pages; a packet is 8 x 4 pixels, lane `l` at `(l % 8, l / 8)` from the pixel in
+its header (the lane offsets are a constant page, not computed per lane).
+
+```
+GEN      desc                      -> primary packet        camera rays, 1 / direction
+TRACE    primary packet            -> primary hits          t, triangle, u, v, normal, vertex colours
+SHADE1   primary packet, hits      -> shadow packet, bounce packet, state 1
+                                      sky or albedo, light cosine, the bounce direction (hash)
+TRACE    shadow packet (any hit)   -> shadow hits
+TRACE    bounce packet             -> bounce hits
+SHADE2   state 1, shadow hits, bounce packet, bounce hits -> second shadow packet, state 2
+TRACE    second shadow packet      -> second shadow hits
+IMAGE    state 2, second shadow hits -> colour
+```
+
+A nearest-hit record carries the hit triangle's normal and vertex colours out of the
+walk (they are in the triangle record in L1), so shading reads no scene data. Stage
+records give the constant page (camera, light, sky, lane offsets) in a3, the profile
+pages in a4, and the streams' pages in a1, a2, a5 to a9.
+
 Every wait in the kernels is bounded by the wall clock and the run's stop word; a core
 that gives up says why in its profile, and the driver counts it as a failure. `ARITH`
 and `RECIP` run the walk's operations on given inputs for the arithmetic check;
 `PROBE` times one node visit in several forms.
 
-On the host, `run.py` makes the frame with the reference's functions: primary rays per
-32 x 32 tile in packets of 8 x 4 pixels; from the card's hits, the shadow rays, the
-bounce directions (the reference's hash) and the shading. Ray generation and shading
-are host steps in this version; only the four traces run on the card.
+`run.py` runs the traces alone, with ray generation and shading on the host (the
+reference's functions): it checks every ray's hit and times each pass by itself.
 
 ## Running it
 
@@ -70,13 +91,18 @@ plus the scenes and trees of the reference (`KR_DATA`, see
 [`reference/`](reference/README.md#running)). From the repository root:
 
 ```bash
+python -m projects.raytrace.frame --scene tiny --reps 16 --json frame.json
+python -m projects.raytrace.frame --tiles 0 300 528 1000 --stages
 python -m projects.raytrace.run --scene tiny --reps 5 --json tiny.json
 python -m projects.raytrace.run --scene s10k --treelets 128 --tiles 0 300 528 1000
 python -m projects.raytrace.arith --n 4096 --scene tiny
 KMR_CARD=1 python -m pytest tests/hardware/test_raytrace_card.py
 ```
 
-`run.py` prints a JSON line per pass (card time per record, rate, profile sums, the
+`frame.py` prints one JSON line: per record its median time and the cycles per packet
+of loading, computing and writing, the clock, the card's idle and mean power, the image
+check and `ok`; `--stages` also reads every stage's pages back and checks them (use it
+on a few tiles: the whole frame's pages are 490 MB). `run.py` prints a JSON line per pass (card time per record, rate, profile sums, the
 check) and a last line with `ok`: every record done, every core ended, nothing given
 up, no walk error, no ray differs from numpy, and no pixel of the image differs. It
 exits 1 without it. `--reps` reruns each pass; the time of a pass is the record's
@@ -86,18 +112,71 @@ event time (issue to completion, the X280's timer), and records run one at a tim
 
 ## What is exact
 
-Everything the card computes: the nearest hit (`t`, triangle, `u`, `v`) of every
-primary and bounce ray and the occlusion of every shadow ray are bit for bit those of
-numpy, so the image is too. The vector unit has no IEEE division and its multiply-add
+Everything the card computes: the camera rays, the nearest hit (`t`, triangle, `u`,
+`v`) of every primary and bounce ray, the occlusion of every shadow ray, the shading
+and the bounce directions are bit for bit those of numpy, so the image is too. The vector unit has no IEEE division and its multiply-add
 is partly fused, so the walk avoids both: products and sums are separate operations in
 the reference's order, and the reciprocal of the triangle test is corrected to the
 correctly rounded result with an exact remainder (`sfpu.hpp`). `arith.py` checks every
 operation of the walk on scene rays, random rays and edge cases against numpy, and the
 reciprocal over whole exponent ranges. The host refuses a scene whose triangle
-determinant could leave the reciprocal's exact range. The number of boxes and
-triangles tested differs from the reference (packets walk together), the hits do not.
+determinant could leave the reciprocal's exact range. Shading divides and takes square
+roots: both are correctly rounded with an exact remainder (`divsqrt.hpp`, checked by
+`arith.py --math` over a million operands each), and the reference's 32-bit hash is
+built from 16-bit halves on the 23-bit multiplier. The number of boxes and triangles
+tested differs from the reference (packets walk together), the hits do not.
 
 ## Measured
+
+### The whole frame on the card
+
+Tiny scene, 1024 x 1024 pixels, 32,768 packets on the 120 cores, tree in L1;
+2026-11-13 10:20, AICLK 1350 MHz, host load average 3.7;
+`python -m projects.raytrace.frame --scene tiny --reps 200 --json frame.json`. Median
+of 200 frames in one load; image 0 of 1,048,576 pixels differing. Card power 76.9 W
+mean over the 4.6 s of records (70.2 W idle before), 1.78 J per frame.
+
+| record | card ms | cycles per packet: load, compute, write |
+|---|---|---|
+| GEN | 0.542 | 130, 966, 1194 |
+| TRACE primary | 3.399 | 1140, 6676, 1539 |
+| SHADE1 | 2.232 | 2006, 4988, 2907 |
+| TRACE shadow | 2.225 | 1139, 4762, 564 |
+| TRACE bounce | 8.791 | 1140, 16213, 1539 |
+| SHADE2 | 1.565 | 2640, 1551, 2399 |
+| TRACE second shadow | 3.882 | 1139, 7501, 564 |
+| IMAGE | 0.566 | 1295, 181, 340 |
+| frame | 23.20 | |
+
+| | card | C++ 96 threads | V100 | card / V100 |
+|---|---|---|---|---|
+| frame ms | 23.20 | 22.22 | 2.59 | 0.11 |
+| Mray/s, all rays over the frame | 108.8 | 113.54 | 972.85 | 0.11 |
+| primary Mray/s (GEN + trace) | 266.1 | 154.19 | 1258.04 | 0.21 |
+| bounce Mray/s (trace) | 74.9 | 95.28 | 583.14 | 0.13 |
+| J per frame | 1.78 (card) | n/a | 0.51 (GPU board) | |
+
+The C++ and V100 frame is the reference's five stages, ray generation and shading
+inside them; neither counts loading or building the scene and tree, copying them to
+the GPU or copying the image back ([reference](reference/README.md#timings-and-power)).
+The card's frame is its eight records likewise: the tree is loaded before them and
+the colour is read back after, neither counted.
+
+Reading it against the V100: below half everywhere, room left, in three places.
+- Moving pages between L1 and the vector unit: the cores copy them word by word
+  through the Dst window, about 90 cycles per 32-word vector in and 115 out. In the
+  stage records that is 47 to 69 % of the time (SHADE1: 4.9k of 10.4k cycles per
+  packet). The unpacker and packer move tiles between L1 and Dst without the core;
+  pages laid out as Dst tiles would take that cost off every record, traces included.
+- The traces: as below (box tests, bounce coherence). Here the shadow and bounce
+  records also walk every packet of the frame, with the lanes of missed pixels empty
+  (rays stay on their core): the second shadow trace takes 3.88 ms for 158,779 rays,
+  against 1.60 ms when `run.py` packs them; a later version re-bins them into full
+  packets.
+- Shading arithmetic: SHADE1 computes for 4,988 cycles per packet (the table); its
+  bounce direction alone is twelve 32-bit hashes, two square roots and six divisions.
+
+### The four traces alone
 
 Tiny scene (398 triangles), 1024 x 1024 pixels, the whole grid (120 cores), tree in
 L1; 2026-11-13 09:14, AICLK 1350 MHz, host load average about 10 (shared host);
@@ -127,5 +206,4 @@ Reading it: every pass is below half of the V100's rate, so there is room left.
   nodes, so most box tests serve few lanes. `--sort` packs them by direction octant
   and origin.
 - Not counted above: the host steps (ray generation, shading) and the readback of the
-  hit pages, about 0.7 MB/s through the host package (45 s for the frame's four
-  passes).
+  hit pages; reading back is slow ([host API](../../docs/reference/host.md#session)).
