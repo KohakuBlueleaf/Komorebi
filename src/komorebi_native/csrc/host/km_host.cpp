@@ -1712,6 +1712,19 @@ NB_MODULE(_km_host, m) {
         .def("grid", &Device::grid)
         .def("worker_core", &Device::worker_core, nb::arg("x"), nb::arg("y"))
         .def("dram_core", &Device::dram_core, nb::arg("bank"))
+        // A std::shared_ptr<MeshDevice>, for native modules of their own that take
+        // the device; the capsule's name is checked on the receiving side.
+        .def(
+            "mesh_capsule",
+            [](const Device& d) {
+                using Held = std::shared_ptr<MeshDevice>;
+                return nb::capsule(
+                    new Held(d.shared()), "komorebi.mesh_device", [](void* p) noexcept {
+                        delete static_cast<Held*>(p);
+                    }
+                );
+            }
+        )
         .def("finish", [](const Device& d) {
             nb::gil_scoped_release release;
             d.finish();

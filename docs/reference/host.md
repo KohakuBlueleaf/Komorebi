@@ -210,6 +210,9 @@ A program's inputs and outputs are tensors the session puts on the card:
 | `session.empty(shape, dtype, layout="row", shard_grid=None)` | the same, not written |
 | `session.grid` | the Tensix grid `(x, y)` of the open device |
 
+`session.device.mesh_capsule()` hands the device to a native module that takes it: a
+capsule named `komorebi.mesh_device` holding a `std::shared_ptr<MeshDevice>`.
+
 A `Tensor` has `address` (its address in every bank, or in every core's L1),
 `shape` (on the card, padded), `dtype`, `layout`, `page_bytes`, `aligned_page_bytes`,
 `pages`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
