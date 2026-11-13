@@ -31,7 +31,7 @@ A and B: block k goes to the mover of letter k, counted round the word. `"AB"` g
 movers every other block; `"AAAB"` gives mover A three blocks of every four.
 
 ```python
-km.Pattern(LETTERS).word                                   # a command argument
+km.Pattern(LETTERS).word  # a command argument
 km.BufferPair(INDEX_A, INDEX_B, DTYPE, page_bytes=BYTES, pages=PAGES)
 km.Program(NAME, kernels=FOLDER, compile_args={"movement": ARGS}, ...)
 ```

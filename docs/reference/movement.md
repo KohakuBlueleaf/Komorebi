@@ -102,8 +102,8 @@ K tiles, `columns` = the chunk's K tiles) and of W (`rows` = the chunk's K tiles
 import komorebi as km
 
 pattern = km.Pattern("AAAB")
-pattern.word        # 0x804: a command argument (km::Pattern::of reads it)
-pattern.define()    # "0x804": the text of a define, for a pattern fixed at build
+pattern.word  # 0x804: a command argument (km::Pattern::of reads it)
+pattern.define()  # "0x804": the text of a define, for a pattern fixed at build
 pattern.share("B")  # Fraction(1, 4): the part of the blocks mover B moves
 pattern.blocks("A", 10)  # 8: how many of blocks 0 to 9 mover A moves
 
