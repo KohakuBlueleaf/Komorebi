@@ -7,12 +7,16 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
-from projects.raytrace import card, packets, trace
-from projects.raytrace.reference import harness
-from ref import bvh, native, raytrace, results, scenes
+ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(ROOT), str(ROOT / "src")]
+
+from projects.raytrace import card, packets, trace  # noqa: E402
+from projects.raytrace.reference import harness  # noqa: E402
+from ref import bvh, native, raytrace, results, scenes  # noqa: E402
 
 STAGES = ("primary", "shadow", "bounce", "shadow2")
 

@@ -310,12 +310,12 @@ def read_each(session, tensors, names):
     return [read_rows(session, t, name) for t, name in zip(tensors, names)]
 
 
-def run_records(session, records, tree_pages, deadline_s=5.0, power=None):
+def run_records(session, records, tree_pages, deadline_s=5.0, power=None, sizes=None):
     """One program load: the records (segment, words) issued in order, one at a time,
     each waited for; returns the Ran and the host seconds from issue to the last."""
     meter = power if power is not None else Power()
     with meter:
-        run = session.load(program(tree_pages), deadline=deadline_s)
+        run = session.load(program(tree_pages, sizes), deadline=deadline_s)
         t0 = time.perf_counter()
         tickets = [run.issue(seg, args=words) for seg, words in records]
         events = run.wait(tickets, timeout=10.0 + deadline_s * len(records))

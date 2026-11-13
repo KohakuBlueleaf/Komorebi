@@ -8,10 +8,14 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
-from projects.raytrace import arithmetic, card, packets
+ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(ROOT), str(ROOT / "src")]
+
+from projects.raytrace import arithmetic, card, packets  # noqa: E402
 
 K = packets.K
 F = np.float32

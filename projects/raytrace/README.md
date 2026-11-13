@@ -102,12 +102,19 @@ scene is fetched first with `python -m ref.public fetch`. From the repository ro
 ```bash
 python -m projects.raytrace.frame --scene tiny --reps 16 --json frame.json
 python -m projects.raytrace.frame --tiles 0 300 528 1000 --stages
+python -m projects.raytrace.frame --scene sponza_close --treelets 128 --pictures DIR
 python -m projects.raytrace.framegraph --cameras 2
 python -m projects.raytrace.run --scene tiny --reps 5 --json tiny.json
 python -m projects.raytrace.run --scene s10k --treelets 128 --tiles 0 300 528 1000
 python -m projects.raytrace.arith --n 4096 --scene tiny
 KMR_CARD=1 python -m pytest tests/hardware/test_raytrace_card.py
 ```
+
+A tree larger than L1 runs with `--treelets KIB`: each core keeps the top of the tree,
+the four trace records become TREELETS records (one per chunk of a core's packets that
+fits the treelet buffers), and treelets are read from DRAM as packets need them; the
+stage records are unchanged. `--pictures DIR` writes the card's image, numpy's and
+their difference as PNGs, and the JSON line, as `DIR/<scene>_*`.
 
 `frame.py` prints one JSON line: per record its median time and the cycles per packet
 of loading, computing and writing, the clock, the card's idle and mean power, the image
@@ -137,6 +144,11 @@ roots: both are correctly rounded with an exact remainder (`divsqrt.hpp`, checke
 `arith.py --math` over a million operands each), and the reference's 32-bit hash is
 built from 16-bit halves on the 23-bit multiplier. The number of boxes and triangles
 tested differs from the reference (packets walk together), the hits do not.
+
+With treelets the walk visits the tree in another order than the reference's, and a
+ray whose two nearest triangles lie at equal distances (rounded to float32) may keep a
+different one: on the public scenes below, every hit that differs from numpy's is such
+a tie (the same `t`, or within 1e-5 of it), and the pixels it changes are counted.
 
 ## Limits
 
@@ -199,6 +211,33 @@ Reading it against the V100: below half everywhere, room left, in three places.
   packets.
 - Shading arithmetic: SHADE1 computes for 4,988 cycles per packet (the table); its
   bounce direction alone is twelve 32-bit hashes, two square roots and six divisions.
+
+### The whole frame on larger scenes
+
+Treelets of at most 128 KiB from DRAM (the tiny row: the whole tree in L1); 2026-11-13
+14:27 to 14:50, card 1, AICLK 1350 MHz, X280 1000 MHz, one frame each;
+`python -m projects.raytrace.frame --scene SCENE --treelets 128` (tiny: no
+`--treelets`). Card ms per record; Mray/s counts the reference's rays of the four
+traces over the card's frame; C++ (all threads) and V100 are the stored reference
+results of the same frame.
+
+| scene | treelets | GEN | primary | SHADE1 | shadow | bounce | SHADE2 | shadow 2 | IMAGE | frame ms | Mray/s | C++ ms | V100 ms | W | pixels differing |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| tiny | (L1) | 0.54 | 3.40 | 2.23 | 2.22 | 8.79 | 1.57 | 3.88 | 0.57 | 23.21 | 108.7 | 36.52 | 2.59 | 61.0 | 0 |
+| s10k | 16 | 0.54 | 9.14 | 2.23 | 5.62 | 33.68 | 1.56 | 13.61 | 0.57 | 66.95 | 38.5 | 36.92 | 4.19 | 61.0 | 0 |
+| s100k | 128 | 0.54 | 13.33 | 2.23 | 8.33 | 66.70 | 1.57 | 23.70 | 0.56 | 116.96 | 22.9 | 39.91 | 6.59 | 60.0 | 0 |
+| s1m | 1024 | 0.54 | 23.37 | 2.23 | 15.07 | 157.31 | 1.57 | 55.67 | 0.57 | 256.32 | 11.1 | 48.04 | 11.57 | 61.0 | 1 |
+| Sponza, close | 256 | 0.54 | 57.42 | 2.23 | 40.13 | 367.25 | 1.57 | 211.69 | 0.57 | 681.40 | 6.1 | 262.31 | 101.34 | 70.7 | 192 |
+| Sponza, overview | 256 | 0.54 | 67.81 | 2.23 | 37.66 | 359.48 | 1.57 | 208.68 | 0.56 | 678.53 | 6.0 | 252.45 | 94.91 | 61.0 | 221 |
+| Bistro interior, close | 1024 | 0.54 | 97.66 | 2.23 | 73.80 | 678.77 | 1.57 | 411.59 | 0.56 | 1266.72 | 3.3 | 395.61 | 211.44 | 73.6 | 2 |
+| Bistro interior, overview | 1024 | 0.54 | 74.68 | 2.23 | 54.16 | 631.55 | 1.57 | 345.49 | 0.57 | 1110.77 | 3.7 | 344.46 | 154.04 | 70.9 | 3 |
+
+The differing pixels are the ties of "What is exact": on the 37 tiles that hold
+Sponza's first 64, `run.py --treelets 128` finds 28 primary and 36 bounce hits on
+another triangle, every one at the same `t` or within 1e-5 of it, and no shadow ray
+differing. The four traces take 93 % (s10k) to over 99 % (Sponza, Bistro) of the
+frame, the bounce trace alone half or more: rays stay with their core and every core
+reads the treelets its rays need from DRAM.
 
 ### The frame as a graph
 

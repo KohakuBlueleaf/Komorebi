@@ -1,20 +1,24 @@
 """A frame on the card: generation, the four traces, the shading and the colour as
-records, each core keeping its tiles' packets from the first stage to the last; the
-colour (with --stages, every stage) is checked against numpy. --reps reruns the frame
-in the same load: times are medians, power the mean over the records.
+records, each core keeping its tiles' packets; the colour (--stages: every stage) is
+checked against numpy, --reps reruns the frame, --pictures DIR writes PNGs and JSON.
 """
 
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
-from projects.raytrace import card, packets
-from projects.raytrace.reference import harness
-from projects.raytrace.run import reference_frame
-from ref import native, raytrace, scenes
+ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(ROOT), str(ROOT / "src")]
+
+from komorebi import session as km_session  # noqa: E402
+from projects.raytrace import card, packets  # noqa: E402
+from projects.raytrace.reference import harness  # noqa: E402
+from projects.raytrace.run import reference_frame  # noqa: E402
+from ref import bvh, native, png, raytrace, scenes  # noqa: E402
 
 K = packets.K
 VEC = packets.VEC
@@ -70,14 +74,32 @@ def step_words(step, addr, directory, const, prof):
     return words
 
 
-def records(tensors, directory_t, const_t, profs):
-    """Every step's record (segment, ten words), in issue order."""
+def records(tensors, dir_ts, const_t, profs, treelets=None):
+    """Every step's records (segment, ten words), in issue order. With treelets (the
+    tensor and four words) a trace has a record per chunk dir_ts[1:], others dir_ts[0].
+    """
     addr = {s: t.buffer_address() for s, t in tensors.items()}
-    d, c = directory_t.buffer_address(), const_t.buffer_address()
-    return [
-        (K[step[1]], step_words(step, addr, d, c, prof.buffer_address()))
-        for step, prof in zip(STEPS, profs)
-    ]
+    c = const_t.buffer_address()
+    out = []
+    for step, step_profs in zip(STEPS, profs):
+        chunks = dir_ts[1:] if treelets and step[1] == "kSegTrace" else dir_ts[:1]
+        for d, prof in zip(chunks, step_profs):
+            words = step_words(step, addr, d.buffer_address(), c, prof.buffer_address())
+            seg = K[step[1]]
+            if treelets and step[1] == "kSegTrace":
+                seg = K["kSegTreelets"]
+                words[5:10] = [treelets[0].buffer_address(), *treelets[1]]
+            out.append((seg, words))
+    return out
+
+
+def load_cut(scene, tree, kib):
+    """The scene's treelets of at most `kib` KiB: the stored cut, else a new one."""
+    path = native.data_dir() / f"{scene}_treelets_{kib}k.npz"
+    if path.exists():
+        with np.load(path) as f:
+            return {k: f[k] for k in f.files}
+    return bvh.cut_treelets(tree, kib * 1024)
 
 
 def lanes_of(pages, stream):
@@ -118,6 +140,22 @@ def differ(a, b):
     return int(bad.any(axis=1).sum() if bad.ndim == 2 else bad.sum())
 
 
+def pictures(out, scene, flat, colour, want, report):
+    """The card's image, the reference's and the difference as PNGs, and frame.json."""
+    out.mkdir(parents=True, exist_ok=True)
+    side = scenes.WIDTH
+    card_img = np.zeros((side * side, 3), dtype=F)
+    ref_img = np.zeros((side * side, 3), dtype=F)
+    card_img[flat], ref_img[flat] = colour, want
+    card_img, ref_img = card_img.reshape(side, side, 3), ref_img.reshape(side, side, 3)
+    mask = (packets.bits(card_img) != packets.bits(ref_img)).any(axis=2)
+    png.write_png(out / f"{scene}_card.png", png.to_srgb8(card_img))
+    png.write_png(out / f"{scene}_reference.png", png.to_srgb8(ref_img))
+    png.write_png(out / f"{scene}_diff.png", png.diff_picture(card_img, mask))
+    with open(out / f"{scene}_frame.json", "w") as f:
+        json.dump(report, f, indent=1)
+
+
 def check_stages(got, scene, tree, pix):
     """Lanes that differ from the reference, stage by stage."""
     first, at = expected(scene, tree, pix)
@@ -152,12 +190,21 @@ def main():
     p.add_argument("--stages", action="store_true", help="read and check every stage")
     p.add_argument("--reps", type=int, default=1, help="frames in the one load")
     p.add_argument("--json", default=None)
+    p.add_argument("--pictures", type=Path, default=None, help="folder for the PNGs")
+    p.add_argument("--treelets", type=int, default=0, help="KiB: treelets from DRAM")
+    p.add_argument("--slots", type=int, default=4, help="treelet slots per core")
     args = p.parse_args()
     data = native.data_dir()
     tree = harness.ensure_tree(args.scene)
     scene = scenes.load_scene(data / f"{args.scene}.npz")
-    image = packets.tree_image(tree, scene)
-    report = {"scene": args.scene, "tiles": args.tiles}
+    cut = load_cut(args.scene, tree, args.treelets) if args.treelets else None
+    if cut is None:
+        image = packets.tree_image(tree, scene)
+    else:
+        treelet_pages, table = packets.treelet_images(tree, cut, scene)
+        image = packets.top_image(cut, table)
+        slot_bytes = int(table[:, 1].max()) * K["kTreePageBytes"]
+    report = {"scene": args.scene, "tiles": args.tiles, "treelets_kib": args.treelets}
     with card.open_session() as session:
         workers = card.workers(session)
         pix, directory, desc = packets.frame_layout(args.tiles, workers)
@@ -170,27 +217,57 @@ def main():
             for s in sorted(names)
         }
         tensors["desc"] = card.tensor(dev, packets.group(desc))
-        dir_t = card.tensor(dev, directory)
+        dirs, sizes, treelets = [directory], None, None
+        if cut is not None:
+            most = int(directory[:, K["kDirCount"]].max())
+            per, slots, sizes = packets.plan_records(
+                most, len(table), slot_bytes, len(image), args.slots
+            )
+            dirs = packets.chunks(directory, per)
+            tl_t = card.tensor(dev, treelet_pages)
+            tl_words = [sizes["entries"], slot_bytes, slots, K["kPolicyOnce"]]
+            treelets = (tl_t, tl_words)
+            report["treelets"] = {"count": len(table), "packets_per_record": per}
+            report["treelets"].update(sizes, slot_count=slots, chunks=len(dirs))
+        dir_ts = [
+            card.tensor(dev, d) for d in [directory] + dirs[1 if cut is None else 0 :]
+        ]
         const_t = card.tensor(dev, packets.frame_constants(scene))
         tree_t = card.tensor(dev, image)
         prof_rows = np.zeros((workers, K["kOutPageBytes"] // 4), dtype=np.uint32)
-        profs = [card.tensor(dev, prof_rows) for _ in STEPS]
+        per_step = [
+            len(dirs) if cut is not None and s[1] == "kSegTrace" else 1 for s in STEPS
+        ]
+        profs = [[card.tensor(dev, prof_rows) for _ in range(k)] for k in per_step]
         recs = [(K["kSegLoad"], [tree_t.buffer_address(), image.nbytes])]
-        recs += records(tensors, dir_t, const_t, profs) * args.reps
+        recs += records(tensors, dir_ts, const_t, profs, treelets) * args.reps
         card.log(f"frame: {n} packets, {len(recs)} records")
         meter = card.Power()
         report["power_idle_w"] = meter.idle()
         report["aiclk_mhz"] = card.aiclk_mhz()
+        report["x280_mhz"] = km_session.X280_MHZ
         report["load_avg"] = os.getloadavg()[0]
-        res, samples = card.run_records(session, recs, len(image), power=meter)
+        res, samples = card.run_records(
+            session, recs, len(image), power=meter, sizes=sizes
+        )
         run = card.check_run(res, workers)
-        us = card.record_us(res)[1:].reshape(args.reps, len(STEPS))
+        # A step's time is its records' (one per directory chunk) summed.
+        step_of = np.repeat(np.arange(len(STEPS)), per_step)
+        per_rep = card.record_us(res)[1:].reshape(args.reps, len(step_of))
+        us = np.stack([np.bincount(step_of, r, len(STEPS)) for r in per_rep])
         report["run"] = run
         report["frame_us_median"] = float(np.median(us.sum(axis=1)))
+        report["frame_ms"] = report["frame_us_median"] / 1000
         watts = [w for t, w in samples if t >= samples[-1][0] - res.host_s]
         report["power_mean_w"] = float(np.mean(watts)) if watts else None
         report["steps"] = []
-        rows = card.read_each(session, profs, [f"profile {s[0]}" for s in STEPS])
+        rows = [
+            sum(
+                r.astype(np.uint64)
+                for r in card.read_each(session, ps, [s[0]] * len(ps))
+            )
+            for s, ps in zip(STEPS, profs)
+        ]
         for (name, *_), ev_us, prof in zip(STEPS, us.T, rows):
             pr = card.profile_rows(prof.astype(np.uint64), workers)
             step = {"step": name, "us": float(np.median(ev_us))}
@@ -201,6 +278,7 @@ def main():
                 per = pr[key][used].sum() / max(pr["packets"][used].sum(), 1)
                 step[f"{key}_per_packet"] = round(float(per), 1)
             report["steps"].append(step)
+        report["record_ms"] = {s["step"]: s["us"] / 1000 for s in report["steps"]}
         wanted = sorted(names) if args.stages else ["colour"]
         got = card.read_each(session, [tensors[s] for s in wanted], wanted)
         got = {s: packets.ungroup(g, vectors(s), n) for s, g in zip(wanted, got)}
@@ -213,6 +291,9 @@ def main():
         name, want = "numpy", raytrace.render(scene, tree, flat)["image"]
     report["image_check"] = {"against": name, "pixels": len(flat)}
     report["image_check"]["differs"] = differ(colour, want)
+    report["image_check"]["max_abs_error"] = float(np.abs(colour - want).max())
+    bad = (packets.bits(colour) != packets.bits(want)).any(axis=1)
+    report["image_check"]["first_pixels"] = flat[bad][:64].tolist()
     if args.stages:
         report["stages"] = check_stages(got, scene, tree, flat)
     ok = card.ran_cleanly(run, workers) and report["image_check"]["differs"] == 0
@@ -220,6 +301,8 @@ def main():
     ok &= all(v == 0 for v in report.get("stages", {}).values())
     report["ok"] = bool(ok)
     print(json.dumps(report), flush=True)
+    if args.pictures is not None:
+        pictures(args.pictures, args.scene, flat, colour, want, report)
     if args.json:
         with open(args.json, "w") as f:
             json.dump(report, f, indent=1)

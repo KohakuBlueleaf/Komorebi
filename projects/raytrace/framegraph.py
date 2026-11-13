@@ -9,13 +9,17 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
-from komorebi.engines.graph import Graph
-from projects.raytrace import card, frame, packets
-from projects.raytrace.reference import harness
-from ref import native, raytrace, scenes
+ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(ROOT), str(ROOT / "src")]
+
+from komorebi.engines.graph import Graph  # noqa: E402
+from projects.raytrace import card, frame, packets  # noqa: E402
+from projects.raytrace.reference import harness  # noqa: E402
+from ref import native, raytrace, scenes  # noqa: E402
 
 K = packets.K
 VEC = packets.VEC
