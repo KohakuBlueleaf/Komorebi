@@ -72,7 +72,8 @@ thread product(y, x):                          # one thread per core of the rect
 
 The breakpoints are the lanes' (`km::Lane`, `komorebi/device/km_lane.hpp`): the
 sender of block k waits until every receiver's compute has freed block k minus the window
-(two blocks here), and a receiver waits for block k's VALID word. Every wait is bounded.
+(two blocks here), and a receiver waits for block k's VALID word. Every wait between
+cores is bounded; compute's waits on its own threads' registers (`tile_regs_wait`) are not.
 The records carry `KM_F_EXCL` (no two records with lanes in flight together).
 
 | Layout | Cores | A | W | Chosen when (`plan.layout_of`) |
@@ -168,8 +169,7 @@ Not measured yet at the default X280 clock: `sq8192` (8192 cubed), `sq16384`
 Bounds of our rows, from the cut-down runs (`cut_us_per_call` in each JSON) and the
 profile of one call:
 - `kvproj`: dispatch. A call issues every 6.3 us; reads only 5.2 us, compute only 5.5
-  us. At the X280's 1,000 MHz the single call takes 6.56 us (6.32 us at 1,750 MHz)
-  while the back-to-back rate is the same (6.28 against 6.29 us).
+  us; a single call, waited for, takes 6.56 us.
 - `lin384`: DRAM. A in and Y out are 25 MB per call; reads only 32.9 us, compute only
   21.4 us.
 - `lin1024` (`rows`, on par: 393.5 against 389.9 us): the lanes. Lanes only 284.9

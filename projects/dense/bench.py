@@ -204,7 +204,7 @@ def main():
         product.stop()
         log("profile read")
     out["check"] = run.check(got[:, :n], rows, x, w, "uniform")
-    out["ok"] = out["check"]["ok"] and out["run"]["kernel"] == "none"
+    out["ok"] = out["check"]["ok"] and run.clean(out["run"])
     out["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
     print(json.dumps(out, default=float), flush=True)
     if args.json:

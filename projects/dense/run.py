@@ -45,6 +45,13 @@ def check(got, rows, a, w, kind):
     return out
 
 
+def clean(run):
+    """No kernel error, no core or lane given up, and every core ended."""
+    ended = all(n == run["cores"] for n in run["cores_ended"].values())
+    gave_up = run["gave_up"] or run["lane_gave_up"]
+    return run["kernel"] == "none" and ended and not gave_up
+
+
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--shape", choices=SHAPES, default=None)
@@ -146,7 +153,7 @@ def main():
         out["readback_s"] = round(time.perf_counter() - t0, 3)
         log("Y's sampled rows read back")
     out["check"] = check(got[:, :n], rows, a, w, args.inputs)
-    out["ok"] = out["check"]["ok"] and out["run"]["kernel"] == "none"
+    out["ok"] = out["check"]["ok"] and clean(out["run"])
     print(json.dumps(out), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(out))

@@ -153,6 +153,7 @@ class Product:
         """The stopped run's kernel result, cores ended, give-ups and lane waits."""
         states = self.run.state()
         return {
+            "cores": len(states),
             "kernel": (self.run.result() or {}).get("error_name"),
             "cores_ended": {
                 k: sum(c[k] != 0 for c in states)
