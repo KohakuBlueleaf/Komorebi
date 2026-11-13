@@ -1,6 +1,6 @@
 """X280 threads on a card: the work-cluster loop host-fed and through the thread's ring
-against numpy, a thread stopped at the host's timeout, a thread that stops taking its
-events (KMR_CARD=1)."""
+against numpy, a thread stopped at the host's timeout (and the region it wrote, read
+back), a thread that stops taking its events (KMR_CARD=1)."""
 
 from pathlib import Path
 
