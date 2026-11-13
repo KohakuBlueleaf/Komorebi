@@ -25,12 +25,13 @@ program's page and its committed results.
 | SwiGLU | 16,384 x 384 x 384 | 161.7 µs | Kohaku-TT, same card: 458.1 µs | 2.83 |
 | Attention | 2 x 8 x 1024 x 128, 2 K / V heads | 163.3 µs | Kohaku-TT, same card: 261.8 µs | 1.60 |
 | Attention | 1 x 8 x 1024 x 64, causal | 73.6 µs | Kohaku-TT, same card: 53.7 µs | 0.73 |
-| Rasterizer, whole frame | 10^6 triangles, 1024 x 1024 | 26.03 ms | CUDA on a V100: 4.42 ms | 0.17 |
+| Rasterizer, whole frame | 10^6 triangles, 1024 x 1024 | 12.13 ms | CUDA on a V100: 4.42 ms | 0.36 |
 | Ray tracer, whole frame | Sponza close, 1024 x 1024 | 681.40 ms | CUDA on a V100: 101.34 ms | 0.15 |
 
 Above 1, Komorebi takes less time. The neural workloads are on par with or ahead of
 Kohaku-TT on most shapes; the rasterizer and the ray tracer run whole frames on the
-card, bit-exact against numpy, at a fifth of the V100's speed or less today.
+card, bit-exact against numpy, today at a third of the V100's speed (the rasterizer)
+and a sixth or less (the ray tracer).
 
 ## A kernel
 
@@ -255,21 +256,25 @@ frame (the same algorithm in CUDA on one idle Tesla V100 32 GB, and in C++ on a 
 96-thread AMD EPYC 7K62); none of the three counts the scene's upload or the image's
 read-back.
 
-The **rasterizer**: the passes run on the 120 cores, the step between them on a thread
-on the X280 work cluster; the image is bit-exact against numpy. Median of 5 loads,
-each about 1 s of frames; card 1, host load 5 to 9
-([raster](projects/raster/README.md#the-frame-on-the-work-clusters-thread),
+The **rasterizer**: the passes and the counting run on the 120 cores, the serial rest of
+the step between them on a thread on the X280 work cluster; the image is bit-exact
+against numpy. Median of 5 loads, each about 1 s of frames; card 1
+([raster](projects/raster/README.md#the-frame-on-the-work-clusters-thread), results in
+`projects/raster/results/`,
 [reference](projects/raster/reference/README.md#timings-and-power)):
 
 | Scene | Triangles | Card frame, ms | of which the X280 step | Card W | C++ 96 threads, ms | V100, ms | V100 / card |
 |---|---|---|---|---|---|---|---|
-| tiny | 398 | 5.131 | 4.477 | 62.9 | 2.66 | 0.29 | 0.06 |
-| 10^4 | 11,994 | 5.086 | 4.462 | 62.9 | 3.32 | 0.25 | 0.05 |
-| 10^5 | 102,308 | 12.223 | 9.897 | 62.7 | 4.08 | 0.79 | 0.06 |
-| 10^6 | 997,806 | 26.033 | 11.577 | 64.1 | 17.87 | 4.42 | 0.17 |
+| tiny | 398 | 1.047 | 0.433 | 62.1 | 2.66 | 0.29 | 0.28 |
+| 10^4 | 11,994 | 1.087 | 0.437 | 67.0 | 3.32 | 0.25 | 0.23 |
+| 10^5 | 102,308 | 2.549 | 0.748 | 67.0 | 4.08 | 0.79 | 0.31 |
+| 10^6 | 997,806 | 12.126 | 0.803 | 67.5 | 17.87 | 4.42 | 0.36 |
+| Sponza, overview | 262,266 | 7.217 | 0.453 | 67.7 | 7.88 | 2.31 | 0.32 |
+| Bistro interior, overview | 1,020,903 | 15.372 | 0.730 | 67.6 | 14.10 | 5.99 | 0.39 |
 
-Where the time goes: the step on the X280 thread is the largest part of every frame but
-10^6's, where SETUP takes 8.0 ms.
+Where the time goes: SETUP, the scatter of each triangle's record into its tiles' lists,
+is the largest part of every frame from 10^5 up (10^6 5.1 ms, Bistro 7.5 ms), then COUNT
+(3.8 and 4.8 ms) and the fill (2.1 ms).
 
 The **ray tracer**: ray generation, four traces and shading are eight records on the
 120 cores; trees larger than L1 are read from DRAM as treelets. One frame each, card 1
@@ -295,7 +300,8 @@ triangles at the same float32 distance.
 <img src="docs/images/raytrace-sponza.jpg" width="256" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. Top: rasterized,
-both bit-exact against numpy. Bottom: ray traced, Sponza close (681.40 ms a frame
+both bit-exact against numpy, Sponza overview (7.22 ms a frame above) and Bistro interior
+overview (15.37 ms). Bottom: ray traced, Sponza close (681.40 ms a frame
 above) and Bistro interior close (1266.72 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*

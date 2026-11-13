@@ -1,0 +1,253 @@
+{
+ "bistro_interior_overview": {
+  "cpu1": {
+   "label": "C++ 1 thread",
+   "stages": {
+    "setup_ms": {
+     "median": 68.1971,
+     "min": 68.1163,
+     "max": 69.6571,
+     "n": 9
+    },
+    "bin_ms": {
+     "median": 22.5181,
+     "min": 22.404,
+     "max": 22.8146,
+     "n": 9
+    },
+    "fill_ms": {
+     "median": 128.5024,
+     "min": 128.2768,
+     "max": 128.6983,
+     "n": 9
+    },
+    "total_ms": {
+     "median": 219.3595,
+     "min": 219.058,
+     "max": 220.5641,
+     "n": 9
+    },
+    "load": [
+     "6.38 8.28 9.48 / 6.38 8.28 9.48"
+    ]
+   },
+   "power": {
+    "seconds_per_frame": 0.21936873571428572,
+    "cpu_package_joules_per_frame": null,
+    "cpu_package_note": "not available: the energy counter is not readable"
+   },
+   "frames": 14,
+   "load_power_run": "6.38 8.28 9.48 / 6.35 8.24 9.46"
+  },
+  "cpu_all": {
+   "label": "C++ 96 threads",
+   "stages": {
+    "setup_ms": {
+     "median": 4.3634,
+     "min": 3.8715,
+     "max": 5.4862,
+     "n": 9
+    },
+    "bin_ms": {
+     "median": 2.4666,
+     "min": 2.1312,
+     "max": 6.9959,
+     "n": 9
+    },
+    "fill_ms": {
+     "median": 5.7451,
+     "min": 5.0896,
+     "max": 7.4822,
+     "n": 9
+    },
+    "total_ms": {
+     "median": 13.699,
+     "min": 11.4277,
+     "max": 16.7949,
+     "n": 9
+    },
+    "load": [
+     "6.35 8.24 9.46 / 6.35 8.24 9.46"
+    ]
+   },
+   "power": {
+    "seconds_per_frame": 0.014100871232876712,
+    "cpu_package_joules_per_frame": null,
+    "cpu_package_note": "not available: the energy counter is not readable"
+   },
+   "frames": 219,
+   "load_power_run": "6.35 8.24 9.46 / 6.32 8.20 9.44"
+  },
+  "v100": {
+   "label": "V100",
+   "stages": {
+    "setup_ms": {
+     "median": 0.8509,
+     "min": 0.8335,
+     "max": 0.8571,
+     "n": 9
+    },
+    "bin_ms": {
+     "median": 0.3523,
+     "min": 0.3482,
+     "max": 0.3604,
+     "n": 9
+    },
+    "fill_ms": {
+     "median": 5.6105,
+     "min": 5.5941,
+     "max": 5.6402,
+     "n": 9
+    },
+    "total_ms": {
+     "median": 6.8116,
+     "min": 6.8065,
+     "max": 6.828,
+     "n": 9
+    },
+    "load": [
+     "6.32 8.20 9.44 / 6.32 8.20 9.44"
+    ]
+   },
+   "power": {
+    "seconds_per_frame": 0.005985280498866213,
+    "cpu_package_joules_per_frame": null,
+    "cpu_package_note": "not available: the energy counter is not readable",
+    "gpu_idle_w": 55.39,
+    "gpu_mean_w": 97.34807692307693,
+    "gpu_peak_w": 103.18,
+    "gpu_samples": 26,
+    "gpu_joules_per_frame": 0.5826555464098204
+   },
+   "frames": 441,
+   "load_power_run": "6.32 8.20 9.44 / 6.29 8.17 9.42"
+  }
+ },
+ "bistro_interior_close": {
+  "cpu1": {
+   "label": "C++ 1 thread",
+   "stages": {
+    "setup_ms": {
+     "median": 60.0492,
+     "min": 59.7379,
+     "max": 60.2014,
+     "n": 9
+    },
+    "bin_ms": {
+     "median": 16.7481,
+     "min": 16.5933,
+     "max": 17.0231,
+     "n": 9
+    },
+    "fill_ms": {
+     "median": 146.5279,
+     "min": 145.8357,
+     "max": 147.2743,
+     "n": 9
+    },
+    "total_ms": {
+     "median": 223.2649,
+     "min": 222.348,
+     "max": 224.27,
+     "n": 9
+    },
+    "load": [
+     "6.29 8.17 9.42 / 6.19 8.12 9.40",
+     "6.29 8.17 9.42 / 6.29 8.17 9.42"
+    ]
+   },
+   "power": {
+    "seconds_per_frame": 0.22320287142857143,
+    "cpu_package_joules_per_frame": null,
+    "cpu_package_note": "not available: the energy counter is not readable"
+   },
+   "frames": 14,
+   "load_power_run": "6.19 8.12 9.40 / 6.19 8.12 9.40"
+  },
+  "cpu_all": {
+   "label": "C++ 96 threads",
+   "stages": {
+    "setup_ms": {
+     "median": 3.4689,
+     "min": 3.0229,
+     "max": 4.4638,
+     "n": 9
+    },
+    "bin_ms": {
+     "median": 2.0023,
+     "min": 1.882,
+     "max": 2.2846,
+     "n": 9
+    },
+    "fill_ms": {
+     "median": 5.2133,
+     "min": 4.9047,
+     "max": 7.1747,
+     "n": 9
+    },
+    "total_ms": {
+     "median": 10.6813,
+     "min": 10.0418,
+     "max": 13.5266,
+     "n": 9
+    },
+    "load": [
+     "6.19 8.12 9.40 / 6.19 8.12 9.40",
+     "6.19 8.12 9.40 / 8.02 8.46 9.51"
+    ]
+   },
+   "power": {
+    "seconds_per_frame": 0.01295692384341637,
+    "cpu_package_joules_per_frame": null,
+    "cpu_package_note": "not available: the energy counter is not readable"
+   },
+   "frames": 281,
+   "load_power_run": "8.02 8.46 9.51 / 8.02 8.46 9.51"
+  },
+  "v100": {
+   "label": "V100",
+   "stages": {
+    "setup_ms": {
+     "median": 0.7967,
+     "min": 0.7793,
+     "max": 0.8049,
+     "n": 9
+    },
+    "bin_ms": {
+     "median": 0.2222,
+     "min": 0.2181,
+     "max": 0.2263,
+     "n": 9
+    },
+    "fill_ms": {
+     "median": 3.7847,
+     "min": 3.7724,
+     "max": 3.8001,
+     "n": 9
+    },
+    "total_ms": {
+     "median": 4.7995,
+     "min": 4.7913,
+     "max": 4.8169,
+     "n": 9
+    },
+    "load": [
+     "8.02 8.46 9.51 / 7.77 8.41 9.48",
+     "8.02 8.46 9.51 / 8.02 8.46 9.51"
+    ]
+   },
+   "power": {
+    "seconds_per_frame": 0.004244759424920128,
+    "cpu_package_joules_per_frame": null,
+    "cpu_package_note": "not available: the energy counter is not readable",
+    "gpu_idle_w": 54.465999999999994,
+    "gpu_mean_w": 104.1676923076923,
+    "gpu_peak_w": 114.46,
+    "gpu_samples": 26,
+    "gpu_joules_per_frame": 0.44216679369525674
+   },
+   "frames": 626,
+   "load_power_run": "7.77 8.41 9.48 / 7.77 8.41 9.48"
+  }
+ }
+}

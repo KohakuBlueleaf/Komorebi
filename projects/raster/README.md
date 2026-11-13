@@ -303,19 +303,20 @@ counts, and the image the reference's (`python -m projects.raster.card_thread --
 Frames in a row (2026-11-13, card 1, 120 cores, X280 at 1,000 MHz, AICLK 1,350 MHz
 (samples at 1,343 on some scenes); `python -m projects.raster.bench_thread --scene <s>
 --runs 5 --frames 0`, results in `results/frame/`): 5 loads of the program, each running
-as many frames as fill about 1 s (64 to 919), median per frame, us. Inside a frame the
+as many frames as fill about 1 s (64 to 816), median per frame, us. Inside a frame the
 host does nothing: 0 round trips, 0 bytes. Power is the card's mean over the threads'
-runs; it draws 60.5 to 63.0 W with the program resident and idle. The V100 column is the
-whole frame of `reference/bench.py` on one idle V100:
+runs; it draws 60.2 to 63.0 W with the program resident and idle. The V100 column is the
+whole frame of `reference/bench.py` on one idle V100 (its "ms per frame";
+`reference/README.md`, Sponza and Bistro in `results/reference/`):
 
 | scene | heavy tiles | COUNT | SUM | HIST + HSUM | the step | PLACE | SETUP | FILL | frame | V100 | V100 / card | card W |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| tiny | 0 | 104 | 61 | - | 433 | 99 | 229 | 121 | 1,047 | 300 | 0.29 | 63.5 |
-| 10^4 | 0 | 118 | 61 | - | 437 | 99 | 231 | 141 | 1,087 | 250 | 0.23 | 64.0 |
-| 10^5 | 112 | 450 | 61 | 95 | 743 | 103 | 668 | 425 | 2,545 | 760 | 0.30 | 67.2 |
-| 10^6 | 130 | 3,826 | 61 | 161 | 797 | 104 | 5,062 | 2,108 | 12,118 | 4,370 | 0.36 | 66.9 |
-| Sponza (262,266) | 0 | 2,221 | 61 | - | 452 | 100 | 2,788 | 1,593 | 7,215 | 2,670 | 0.37 | 67.6 |
-| Bistro interior (1,020,903) | 82 | 4,811 | 61 | 92 | 727 | 103 | 7,476 | 2,096 | 15,365 | 5,900 | 0.38 | 70.3 |
+| tiny | 0 | 104 | 61 | - | 433 | 99 | 229 | 121 | 1,047 | 290 | 0.28 | 62.1 |
+| 10^4 | 0 | 117 | 61 | - | 437 | 99 | 231 | 141 | 1,087 | 250 | 0.23 | 67.0 |
+| 10^5 | 112 | 450 | 61 | 95 | 748 | 103 | 668 | 425 | 2,549 | 790 | 0.31 | 67.0 |
+| 10^6 | 130 | 3,826 | 61 | 161 | 803 | 104 | 5,062 | 2,108 | 12,126 | 4,420 | 0.36 | 67.5 |
+| Sponza (262,266) | 0 | 2,221 | 61 | - | 453 | 100 | 2,788 | 1,593 | 7,217 | 2,310 | 0.32 | 67.7 |
+| Bistro interior (1,020,903) | 82 | 4,811 | 61 | 92 | 730 | 103 | 7,475 | 2,096 | 15,372 | 5,990 | 0.39 | 67.6 |
 
 Each column is the thread's time from issuing a record to its event (the step: from
 SUM's event to PLACE's issue, HIST and HSUM apart), so the frame is the sum plus the
