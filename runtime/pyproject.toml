@@ -1,0 +1,19 @@
+# The package's metadata. Its wheel is built by build_wheel.py from a tt-metal build
+# (build_tt_metal.sh), not by this file's backend: an install of this directory gives the
+# locator alone, without a runtime ("komorebi_runtime.installed()" is then False).
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "komorebi-runtime"
+# The tt-metal pin (tt-metal.pin) and our build number (BUILD); build_wheel.py checks it.
+version = "0.81.1.1"
+description = "The pinned tt-metal build that Komorebi and Kohaku-TT share, with a locator"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
