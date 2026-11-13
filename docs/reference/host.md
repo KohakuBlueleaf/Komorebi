@@ -134,6 +134,20 @@ event has arrived). Reads through ttnn wait for every core of the resident grid 
 return, which it does only at the stop. The control blocks live in L1 and are read
 through ttnn after the stop.
 
+A part of one tensor is read the same way:
+
+| Call | Returns |
+|---|---|
+| `session.read(tensor, first=0, pages=None)` | `[pages]`: pages `first` .. `first + pages - 1` as one `[pages, page_bytes]` uint8 array (`pages=None`: to the end); a range outside the tensor raises `km.KomorebiError` naming its page count |
+| `session.read_chunks(tensor, chunk_bytes=2 << 20)` | a generator of `(first, pages)` over the whole tensor, each chunk at most `chunk_bytes` |
+| `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]` |
+
+Reading back is slow: the card test reads a 300-page tensor (614,400 bytes) whole in
+0.29 s and in ten chunks in 0.30 s, about 2 MB per second (host load about 7). A long
+read is silent, and a job watcher that kills on silence cannot tell it from a hang. So
+read a large tensor with `read_chunks` and log a line per chunk, and check a large
+result by sample: the pages of a few rows or tiles, from `read` or `read_tiles_bf16`.
+
 ## `Run`
 
 | Call | What it does |
