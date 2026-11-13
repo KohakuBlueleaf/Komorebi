@@ -1826,6 +1826,65 @@ def case_engine_busy(device, args):
     return out
 
 
+def case_engine_cost(device, args):
+    """Three streams in turn, each --n DELAY records on core 0 timed by the stream
+    itself: ISSUE then WAIT 0 each; ISSUE with KM_F_EXCL and no wait, so a record is
+    refused busy while the one before runs and sent again after the wake (both
+    --delay-us); SUBMIT of DELAY 0 jobs."""
+    cycles = int(args.delay_us * 1e-6 * AICLK_HZ)
+
+    def timed(req, form):
+        s = ks.Stream(req=req)
+        i, one, t0, t1 = s.regs(4)
+        s.set(i, 0)
+        s.set(one, 1)
+        s.time(t0)
+        top = s.label()
+        if form == "submit":
+            s.submit(SEG_DELAY, one, args=[i, 0])
+        else:
+            s.issue(SEG_DELAY, (0, 1), args=[i, cycles], exclusive=True)
+        if form == "wait":
+            s.wait(0)
+        s.addi(i, i, 1)
+        s.jlt(i, s.const(args.n), top)
+        s.wait(0)
+        s.time(t1)
+        s.sub(t1, t1, t0)
+        s.halt(t1)
+        return s
+
+    forms = {81: "wait", 82: "refused", 83: "submit"}
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        out, base = {"tag": plan.tag}, stream_base(plan)
+        for j, (req, form) in enumerate(forms.items()):
+            before = plan.seen
+            data = timed(req, form).encode()
+            put_upload(plan, base + 4096 * j, data)
+            plan.submit(run_command(base + 4096 * j, len(data)))
+            ev = stream_events(plan, req)
+            end = [e for e in ev if e[1] == req and kind(e[2])[0] == EV_STREAM_END]
+            out[form] = round(end[0][3] / 50.0 / args.n, 3) if end else None
+            out[f"{form}_events"] = plan.seen - before
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=4)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    out["refusals"] = fin["block"]["refused"]
+    out["us_per_record"] = {f: out.pop(f) for f in forms.values()}
+    out["ok"] = bool(
+        all(v is not None for v in out["us_per_record"].values())
+        and finished_clean(fin, n_cores, out["cores"])
+    )
+    return out
+
+
 def case_exit_flush(device, args):
     """A stream issuing records and a looping one on core 1 when STOP ends the kernel;
     the host then writes a pattern over the state's DRAM buffer, a second kernel runs,
@@ -1908,6 +1967,7 @@ CASES = {
     "replay": case_replay,
     "stream-deadline": case_stream_deadline,
     "engine-busy": case_engine_busy,
+    "engine-cost": case_engine_cost,
     "exit-flush": case_exit_flush,
     "verify": case_verify,
     "upload": case_upload,
