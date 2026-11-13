@@ -11,6 +11,10 @@ needs, it has to be sent. This lesson shows the problem, and lists the ways of s
 that the rest of Part 4 teaches. It relies on [[the-card]], [[core-group]] and
 [[the-leader]].
 
+A program meets its data in one of two ways. Either the data comes to the core that
+works on it: ports, reduce and broadcast send tiles to the cores that need them. Or the
+work goes to the data: a routed message carries it to the core that holds what it needs.
+
 ## Why cores need to talk
 
 In Part 3 every core worked on its own share of tiles, and no core needed anything from

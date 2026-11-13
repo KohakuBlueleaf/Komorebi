@@ -8,6 +8,12 @@ tags:
 
 # Komorebi
 
+**Move the data, move the thread, or move the code.**
+
+A programming model for a network of independently programmable processors, in which a
+thread reads what it needs or goes to where it is. Today it runs on the Tensix grid and
+the X280 cores of a Tenstorrent Blackhole card.
+
 Komorebi lets you run your own C++ code on the Tensix cores of a Tenstorrent Blackhole card, and C code on its X280 cores, driven from Python.
 At the end of the [tutorial](tutorial/index.md) you can write a program that spreads work over the cores, moves tensors between the card's memory and the cores, and measure and debug it.
 You need to know C++ and Python. You do not need to have written a kernel for a card like this one.
