@@ -6,22 +6,22 @@
 
 /* Regions in the host's order (the same on every cluster); words; result words. */
 enum {
-    R_IN,
-    R_REF_MAP,
-    R_REF_HEAVY,
-    R_REF_PRE,
-    R_MAP,
-    R_HEAVY,
-    R_PRE,
-    R_SUMS,
-    R_COUNT
+    REGION_INPUT,
+    REGION_REFERENCE_MAP,
+    REGION_REFERENCE_HEAVY,
+    REGION_REFERENCE_PREFIX,
+    REGION_MAP,
+    REGION_HEAVY,
+    REGION_PREFIX,
+    REGION_SUMS,
+    REGION_COUNT
 };
 
-enum { W_N, W_REPEATS, W_ROUNDS, W_COUNT };
+enum { WORD_ARRAY_LENGTH, WORD_REPEATS, WORD_ROUNDS, WORD_COUNT };
 
 /* Per pattern (map, heavy map, prefix) and cores (1, 4, 8, 12): times, then words that
  * differ from the 1-core output; then the input push's times. */
-enum { T_TIME = 0, T_DIFFER = 12, T_PUSH = 24, N_WORDS = 28 };
+enum { RESULT_TIMES = 0, RESULT_DIFFERS = 12, RESULT_PUSHES = 24, RESULT_WORDS = 28 };
 
 #define CHUNK 1024u /* words of one partition: 4 KiB */
 #define CHUNKS_MAX 4096u
@@ -32,126 +32,145 @@ enum { T_TIME = 0, T_DIFFER = 12, T_PUSH = 24, N_WORDS = 28 };
 #define CODE_PUSH 3u
 
 /* What every core runs (the call's word: cores | phase << 8 | region << 16, the
- * region written or sent); a map's f is applied the words' rounds for R_HEAVY. */
-enum { P_MAP, P_SUMS, P_PRE, P_SEND };
+ * region written or sent); REGION_HEAVY's map applies mix `rounds` times. */
+enum { PHASE_MAP, PHASE_SUMS, PHASE_PREFIX, PHASE_SEND };
 
 static const uint32_t X280_CORES[4] = {1, 4, 8, 12};
 /* Set by a core whose push failed (globals need .data and an initialiser). */
-static volatile uint32_t g_bad __attribute__((section(".data"))) = 0;
+static volatile uint32_t push_failed __attribute__((section(".data"))) = 0;
 
-static inline uint32_t f(uint32_t x) {
+static inline uint32_t mix(uint32_t x) {
     return (x ^ (x >> 15)) * 2246822519u + 1u;
 }
 
 static uint64_t words(void) {
-    return kmx_args_get()->words[W_N];
+    return kmx_args_get()->words[WORD_ARRAY_LENGTH];
 }
 
 static uint64_t chunks(void) {
     return (words() + CHUNK - 1) / CHUNK;
 }
 
-/* The clusters in use with `cores` (the lowest first, the lead), and cluster c's
- * index among them; -1 when c takes no part. */
-static int index_of(uint32_t x280_cores, int c, uint32_t* count) {
+/* The clusters in use with `cores` (the lowest first, the lead), and `cluster`'s
+ * index among them; -1 when it takes no part. */
+static int index_of(uint32_t x280_cores, int cluster, uint32_t* cluster_count) {
     const uint32_t mask = kmx_clusters();
-    *count = x280_cores <= 4 ? 1 : x280_cores / 4;
-    uint32_t k = 0;
-    for (int i = 1; i < 4; i++) {
-        if (mask >> i & 1u) {
-            if (i == c) {
-                return k < *count ? (int)k : -1;
+    *cluster_count = x280_cores <= 4 ? 1 : x280_cores / 4;
+    uint32_t index = 0;
+    for (int candidate = 1; candidate < 4; candidate++) {
+        if (mask >> candidate & 1u) {
+            if (candidate == cluster) {
+                return index < *cluster_count ? (int)index : -1;
             }
-            k++;
+            index++;
         }
     }
     return -1;
 }
 
-/* Cluster k of `count`: chunks [lo, hi), whole groups each. */
-static void block(uint32_t k, uint32_t count, uint64_t* lo, uint64_t* hi) {
-    *lo = chunks() * k / count;
-    *hi = chunks() * (k + 1) / count;
-    *hi = *hi < chunks() ? *hi : chunks();
-    *lo = *lo < *hi ? *lo : *hi;
+/* Cluster `index` of `cluster_count`: chunks [first_chunk, end_chunk), whole groups
+ * each. */
+static void block(
+    uint32_t index, uint32_t cluster_count, uint64_t* first_chunk, uint64_t* end_chunk
+) {
+    *first_chunk = chunks() * index / cluster_count;
+    *end_chunk = chunks() * (index + 1) / cluster_count;
+    *end_chunk = *end_chunk < chunks() ? *end_chunk : chunks();
+    *first_chunk = *first_chunk < *end_chunk ? *first_chunk : *end_chunk;
 }
 
-/* Bytes [at, at + n) of 32-bit words [lo, hi), whole lines (regions are padded). */
-static void bytes_of(uint64_t lo, uint64_t hi, uint64_t* at, uint64_t* n) {
-    *at = lo * 4;
-    *n = ((hi - lo) * 4 + 63) / 64 * 64;
+/* Bytes [offset, offset + length) of 32-bit words [first_word, end_word), whole
+ * lines (regions are padded). */
+static void bytes_of(
+    uint64_t first_word, uint64_t end_word, uint64_t* offset, uint64_t* length
+) {
+    *offset = first_word * 4;
+    *length = ((end_word - first_word) * 4 + 63) / 64 * 64;
 }
 
-static uint64_t end_of(uint64_t c) {
-    return (c + 1) * CHUNK < words() ? (c + 1) * CHUNK : words();
+static uint64_t end_of(uint64_t chunk) {
+    return (chunk + 1) * CHUNK < words() ? (chunk + 1) * CHUNK : words();
 }
 
-/* One core's partition of a phase: chunks lo + core, lo + core + parts, ... */
+/* One core's partition of a phase: chunks first_chunk + core, first_chunk + core +
+ * partitions, ... */
 static void step(int cluster, int core, uint64_t arg) {
     const uint32_t x280_cores = arg & 0xFFu, phase = (arg >> 8) & 0xFFu;
-    uint32_t count;
-    const int k = index_of(x280_cores, cluster, &count);
-    const uint32_t parts = x280_cores == 1 ? 1 : 4;
-    if (k < 0 || (uint32_t)core >= parts) {
+    uint32_t cluster_count;
+    const int index = index_of(x280_cores, cluster, &cluster_count);
+    const uint32_t partitions = x280_cores == 1 ? 1 : 4;
+    if (index < 0 || (uint32_t)core >= partitions) {
         return;
     }
-    uint64_t lo, hi;
-    block((uint32_t)k, count, &lo, &hi);
-    const uint32_t* in = (const uint32_t*)kmx_region(R_IN, 0);
-    uint32_t* sums = (uint32_t*)kmx_region(R_SUMS, 0);
-    if (phase == P_SEND) {
+    uint64_t first_chunk, end_chunk;
+    block((uint32_t)index, cluster_count, &first_chunk, &end_chunk);
+    const uint32_t* input = (const uint32_t*)kmx_region(REGION_INPUT, 0);
+    uint32_t* sums = (uint32_t*)kmx_region(REGION_SUMS, 0);
+    if (phase == PHASE_SEND) {
         /* not the lead: its quarter of the block's range of a region, to the lead */
-        const int r = (int)((arg >> 16) & 0xFFu);
-        const uint64_t unit = r == R_SUMS ? LINE : CHUNK;
-        uint64_t at, n;
-        bytes_of(lo * unit, hi * unit, &at, &n);
-        const uint64_t lines = n / 64, per = (lines + 3) / 4, first = per * core;
-        if (k == 0 || first >= lines) {
+        const int region = (int)((arg >> 16) & 0xFFu);
+        const uint64_t unit = region == REGION_SUMS ? LINE : CHUNK;
+        uint64_t offset, length;
+        bytes_of(first_chunk * unit, end_chunk * unit, &offset, &length);
+        const uint64_t lines = length / 64;
+        const uint64_t lines_per_core = (lines + 3) / 4;
+        const uint64_t first_line = lines_per_core * core;
+        if (index == 0 || first_line >= lines) {
             return;
         }
-        at += first * 64;
-        n = (lines - first < per ? lines - first : per) * 64;
-        const uint8_t* src = (const uint8_t*)kmx_region(r, 0) + at;
-        if (kmx_push(kmx_lead(), r, at, src, n) != KMX_OK) {
-            g_bad = 1;
+        offset += first_line * 64;
+        const uint64_t remaining = lines - first_line;
+        length = (remaining < lines_per_core ? remaining : lines_per_core) * 64;
+        const uint8_t* source = (const uint8_t*)kmx_region(region, 0) + offset;
+        if (kmx_push(kmx_lead(), region, offset, source, length) != KMX_OK) {
+            push_failed = 1;
         }
-        if (r == R_SUMS) {
-            kmx_flush_at(r, at, n); /* the lead pushes the bases back over them */
+        if (region == REGION_SUMS) {
+            /* the lead pushes the bases back over them */
+            kmx_flush_at(region, offset, length);
         }
         return;
     }
-    if (k != 0 && phase == P_PRE) {
-        uint64_t at, n;
-        bytes_of(lo * LINE, hi * LINE, &at, &n);
-        kmx_invalidate_at(R_SUMS, at, n); /* the bases the lead pushed */
+    if (index != 0 && phase == PHASE_PREFIX) {
+        uint64_t offset, length;
+        bytes_of(first_chunk * LINE, end_chunk * LINE, &offset, &length);
+        kmx_invalidate_at(REGION_SUMS, offset, length); /* the bases the lead pushed */
     }
-    const int r = (int)((arg >> 16) & 0xFFu);
-    const uint32_t rounds = r == R_HEAVY ? kmx_args_get()->words[W_ROUNDS] : 1;
-    uint32_t* out = (uint32_t*)kmx_region(r, 0);
-    for (uint64_t c = lo + (uint64_t)core; c < hi; c += parts) {
-        const uint64_t a = c * CHUNK, b = end_of(c);
-        if (k != 0 && phase != P_PRE) {
-            kmx_invalidate_at(R_IN, a * 4, (b - a) * 4); /* what the lead pushed */
+    const int region = (int)((arg >> 16) & 0xFFu);
+    const uint32_t rounds = (
+        region == REGION_HEAVY ? kmx_args_get()->words[WORD_ROUNDS] : 1
+    );
+    uint32_t* output = (uint32_t*)kmx_region(region, 0);
+    for (
+        uint64_t chunk = first_chunk + (uint64_t)core; chunk < end_chunk;
+        chunk += partitions
+    ) {
+        const uint64_t first_word = chunk * CHUNK, end_word = end_of(chunk);
+        if (index != 0 && phase != PHASE_PREFIX) {
+            /* what the lead pushed */
+            kmx_invalidate_at(
+                REGION_INPUT, first_word * 4, (end_word - first_word) * 4
+            );
         }
-        if (phase == P_MAP) {
-            for (uint64_t i = a; i < b; i++) {
-                uint32_t x = in[i];
-                for (uint32_t j = 0; j < rounds; j++) {
-                    x = f(x);
+        if (phase == PHASE_MAP) {
+            for (uint64_t word = first_word; word < end_word; word++) {
+                uint32_t x = input[word];
+                for (uint32_t round = 0; round < rounds; round++) {
+                    x = mix(x);
                 }
-                out[i] = x;
+                output[word] = x;
             }
-        } else if (phase == P_SUMS) {
-            uint32_t s = 0;
-            for (uint64_t i = a; i < b; i++) {
-                s += in[i];
+        } else if (phase == PHASE_SUMS) {
+            uint32_t total = 0;
+            for (uint64_t word = first_word; word < end_word; word++) {
+                total += input[word];
             }
-            sums[c * LINE] = s;
+            sums[chunk * LINE] = total;
         } else {
-            uint32_t run = sums[c * LINE];
-            for (uint64_t i = a; i < b; i++) {
-                out[i] = run;
-                run += in[i];
+            uint32_t running_total = sums[chunk * LINE];
+            for (uint64_t word = first_word; word < end_word; word++) {
+                output[word] = running_total;
+                running_total += input[word];
             }
         }
     }
@@ -166,150 +185,174 @@ static void local_step(int core, void* arg) {
 }
 
 /* One phase on the cores in use: core 0 alone, the lead's four, or every cluster. */
-static int phase(uint32_t x280_cores, uint32_t p, int region) {
-    const uint64_t arg = x280_cores | p << 8 | (uint64_t)region << 16;
+static int run_phase(uint32_t x280_cores, uint32_t phase, int region) {
+    const uint64_t arg = x280_cores | phase << 8 | (uint64_t)region << 16;
     if (x280_cores == 1) {
         step(kmx_lead(), 0, arg);
         return KMX_OK;
     }
     if (x280_cores == 4) {
-        local_t l = {arg};
-        return kmx_parallel(local_step, &l);
+        local_t local = {arg};
+        return kmx_parallel(local_step, &local);
     }
     return kmx_parallel_all(step, arg);
 }
 
-/* The lead's pushes of region r's blocks (in `unit` words per chunk) to the others in
+/* The lead's pushes of `region`'s blocks (in `unit` words per chunk) to the others in
  * use, or its takes of what they sent back. */
-static int blocks(uint32_t x280_cores, int r, uint64_t unit, int take) {
-    uint32_t count;
-    (void)index_of(x280_cores, kmx_lead(), &count);
+static int blocks(uint32_t x280_cores, int region, uint64_t unit, int take) {
+    uint32_t cluster_count;
+    (void)index_of(x280_cores, kmx_lead(), &cluster_count);
     const uint32_t mask = kmx_clusters();
-    uint32_t k = 0;
-    for (int c = 1; c < 4; c++) {
-        if (!(mask >> c & 1u)) {
+    uint32_t index = 0;
+    for (int cluster = 1; cluster < 4; cluster++) {
+        if (!(mask >> cluster & 1u)) {
             continue;
         }
-        uint64_t lo, hi, at, n;
-        block(k, count, &lo, &hi);
-        bytes_of(lo * unit, hi * unit, &at, &n);
-        if (k > 0 && k < count && n != 0) {
+        uint64_t first_chunk, end_chunk, offset, length;
+        block(index, cluster_count, &first_chunk, &end_chunk);
+        bytes_of(first_chunk * unit, end_chunk * unit, &offset, &length);
+        if (index > 0 && index < cluster_count && length != 0) {
             if (take) {
-                kmx_invalidate_at(r, at, n);
+                kmx_invalidate_at(region, offset, length);
             } else {
-                const uint8_t* src = (const uint8_t*)kmx_region(r, 0) + at;
-                if (kmx_push(c, r, at, src, n) != KMX_OK) {
+                const uint8_t* source = (const uint8_t*)kmx_region(region, 0) + offset;
+                if (kmx_push(cluster, region, offset, source, length) != KMX_OK) {
                     return KMX_BAD;
                 }
             }
         }
-        k++;
+        index++;
     }
     return KMX_OK;
 }
 
-/* A map into region r on `cores`: the input out, the map, the outputs back. */
-static int map(uint32_t x280_cores, int r, uint32_t* push) {
-    const uint64_t t0 = kmx_time();
-    int e = blocks(x280_cores, R_IN, CHUNK, 0);
-    *push = (uint32_t)(kmx_time() - t0);
-    e = e ? e : phase(x280_cores, P_MAP, r);
-    e = e ? e : (x280_cores > 4 ? phase(x280_cores, P_SEND, r) : KMX_OK);
-    return e ? e : blocks(x280_cores, r, CHUNK, 1);
+/* A map into `region` on `cores`: the input out, the map, the outputs back. */
+static int map(uint32_t x280_cores, int region, uint32_t* push_ticks) {
+    const uint64_t start = kmx_time();
+    int error = blocks(x280_cores, REGION_INPUT, CHUNK, 0);
+    *push_ticks = (uint32_t)(kmx_time() - start);
+    error = error ? error : run_phase(x280_cores, PHASE_MAP, region);
+    error = (
+        error
+            ? error
+            : (x280_cores > 4 ? run_phase(x280_cores, PHASE_SEND, region) : KMX_OK)
+    );
+    return error ? error : blocks(x280_cores, region, CHUNK, 1);
 }
 
 /* The two-pass prefix sum: the chunk sums to the lead, the bases back out. */
 static int prefix(uint32_t x280_cores) {
-    const int all = x280_cores > 4;
-    int e = blocks(x280_cores, R_IN, CHUNK, 0);
-    e = e ? e : phase(x280_cores, P_SUMS, 0);
-    e = e ? e : (all ? phase(x280_cores, P_SEND, R_SUMS) : KMX_OK);
-    e = e ? e : blocks(x280_cores, R_SUMS, LINE, 1);
-    if (e) {
-        return e;
+    const int all_clusters = x280_cores > 4;
+    int error = blocks(x280_cores, REGION_INPUT, CHUNK, 0);
+    error = error ? error : run_phase(x280_cores, PHASE_SUMS, 0);
+    error = (
+        error
+            ? error
+            : (all_clusters ? run_phase(x280_cores, PHASE_SEND, REGION_SUMS) : KMX_OK)
+    );
+    error = error ? error : blocks(x280_cores, REGION_SUMS, LINE, 1);
+    if (error) {
+        return error;
     }
-    uint32_t* sums = (uint32_t*)kmx_region(R_SUMS, 0);
+    uint32_t* sums = (uint32_t*)kmx_region(REGION_SUMS, 0);
     uint32_t base = 0;
-    for (uint64_t c = 0; c < chunks(); c++) {
-        const uint32_t s = sums[c * LINE];
-        sums[c * LINE] = base;
-        base += s;
+    for (uint64_t chunk = 0; chunk < chunks(); chunk++) {
+        const uint32_t chunk_sum = sums[chunk * LINE];
+        sums[chunk * LINE] = base;
+        base += chunk_sum;
     }
-    e = blocks(x280_cores, R_SUMS, LINE, 0);
-    e = e ? e : phase(x280_cores, P_PRE, R_PRE);
-    e = e ? e : (all ? phase(x280_cores, P_SEND, R_PRE) : KMX_OK);
-    return e ? e : blocks(x280_cores, R_PRE, CHUNK, 1);
+    error = blocks(x280_cores, REGION_SUMS, LINE, 0);
+    error = error ? error : run_phase(x280_cores, PHASE_PREFIX, REGION_PREFIX);
+    error = (
+        error
+            ? error
+            : (all_clusters ? run_phase(x280_cores, PHASE_SEND, REGION_PREFIX) : KMX_OK)
+    );
+    return error ? error : blocks(x280_cores, REGION_PREFIX, CHUNK, 1);
 }
 
-static uint32_t differ(const uint32_t* a, const uint32_t* b) {
-    uint32_t n = 0;
-    for (uint64_t i = 0; i < words(); i++) {
-        n += a[i] != b[i];
+static uint32_t differ(const uint32_t* left, const uint32_t* right) {
+    uint32_t count = 0;
+    for (uint64_t word = 0; word < words(); word++) {
+        count += left[word] != right[word];
     }
-    return n;
+    return count;
 }
 
-static void copy(uint32_t* to, const uint32_t* from) {
-    for (uint64_t i = 0; i < words(); i++) {
-        to[i] = from[i];
+static void copy(uint32_t* destination, const uint32_t* source) {
+    for (uint64_t word = 0; word < words(); word++) {
+        destination[word] = source[word];
     }
 }
 
 int kmx_main(int core) {
     (void)core;
     if (kmx_cluster() != kmx_lead()) {
-        const int e = kmx_serve();
-        return e != KMX_OK ? (int)CODE_LATE : g_bad ? (int)CODE_PUSH : 0;
+        const int error = kmx_serve();
+        return error != KMX_OK ? (int)CODE_LATE : push_failed ? (int)CODE_PUSH : 0;
     }
-    const kmx_args* a = kmx_args_get();
-    uint32_t w[N_WORDS]; /* every word is set below */
+    const kmx_args* arguments = kmx_args_get();
+    uint32_t result_words[RESULT_WORDS]; /* every word is set below */
     if (
-        a->nwords < W_COUNT || a->nregions != R_COUNT || a->words[W_REPEATS] == 0 ||
-        words() == 0 || chunks() > CHUNKS_MAX
+        arguments->nwords < WORD_COUNT || arguments->nregions != REGION_COUNT ||
+        arguments->words[WORD_REPEATS] == 0 || words() == 0 || chunks() > CHUNKS_MAX
     ) {
         return CODE_BAD;
     }
-    for (int i = 0; i < R_COUNT; i++) {
+    for (int region = 0; region < REGION_COUNT; region++) {
         uint64_t bytes;
-        const uint64_t need = (
-            i == R_SUMS ? CHUNKS_MAX * 64 : (words() * 4 + 63) / 64 * 64
+        const uint64_t needed = (
+            region == REGION_SUMS ? CHUNKS_MAX * 64 : (words() * 4 + 63) / 64 * 64
         );
-        if (kmx_region(i, &bytes) == 0 || bytes < need) {
+        if (kmx_region(region, &bytes) == 0 || bytes < needed) {
             return CODE_BAD;
         }
     }
-    uint32_t* r[R_COUNT];
-    for (int i = 0; i < R_COUNT; i++) {
-        r[i] = (uint32_t*)kmx_region(i, 0);
+    uint32_t* regions[REGION_COUNT];
+    for (int region = 0; region < REGION_COUNT; region++) {
+        regions[region] = (uint32_t*)kmx_region(region, 0);
     }
-    static const int OUT[3] = {R_MAP, R_HEAVY, R_PRE};
-    for (int m = 0; m < 4; m++) {
-        for (int p = 0; p < 3; p++) {
+    static const int OUTPUTS[3] = {REGION_MAP, REGION_HEAVY, REGION_PREFIX};
+    for (int cores_index = 0; cores_index < 4; cores_index++) {
+        for (int pattern = 0; pattern < 3; pattern++) {
             uint32_t best = 0xFFFFFFFFu;
-            for (uint32_t rep = 0; rep < a->words[W_REPEATS]; rep++) {
-                kmx_progress(1 + 3 * m + p);
-                kmx_invalidate(R_IN); /* every run from a cold cache */
-                kmx_invalidate(OUT[p]);
-                kmx_flush(R_SUMS); /* no dirty line where the others' sums land */
-                const uint64_t t0 = kmx_time();
-                const int e = (
-                    p < 2
-                        ? map(X280_CORES[m], OUT[p], &w[T_PUSH + m])
-                        : prefix(X280_CORES[m])
-                );
-                const uint32_t t = (uint32_t)(kmx_time() - t0);
-                if (e != KMX_OK) {
-                    return e == KMX_BAD ? (int)CODE_PUSH : (int)CODE_LATE;
+            for (
+                uint32_t repeat = 0; repeat < arguments->words[WORD_REPEATS]; repeat++
+            ) {
+                kmx_progress(1 + 3 * cores_index + pattern);
+                kmx_invalidate(REGION_INPUT); /* every run from a cold cache */
+                kmx_invalidate(OUTPUTS[pattern]);
+                kmx_flush(REGION_SUMS); /* no dirty line where the others' sums land */
+                const uint64_t start = kmx_time();
+                int error;
+                if (pattern < 2) {
+                    error = (
+                        map(
+                            X280_CORES[cores_index],
+                            OUTPUTS[pattern],
+                            &result_words[RESULT_PUSHES + cores_index]
+                        )
+                    );
+                } else {
+                    error = prefix(X280_CORES[cores_index]);
                 }
-                best = t < best ? t : best;
+                const uint32_t ticks = (uint32_t)(kmx_time() - start);
+                if (error != KMX_OK) {
+                    return error == KMX_BAD ? (int)CODE_PUSH : (int)CODE_LATE;
+                }
+                best = ticks < best ? ticks : best;
             }
-            w[T_TIME + 4 * p + m] = best;
-            if (m == 0) {
-                copy(r[OUT[p] - 3], r[OUT[p]]); /* the 1-core output: the reference */
+            result_words[RESULT_TIMES + 4 * pattern + cores_index] = best;
+            if (cores_index == 0) {
+                /* the 1-core output: the reference */
+                copy(regions[OUTPUTS[pattern] - 3], regions[OUTPUTS[pattern]]);
             }
-            w[T_DIFFER + 4 * p + m] = differ(r[OUT[p]], r[OUT[p] - 3]);
+            result_words[RESULT_DIFFERS + 4 * pattern + cores_index] = (
+                differ(regions[OUTPUTS[pattern]], regions[OUTPUTS[pattern] - 3])
+            );
         }
     }
-    kmx_result(g_bad ? CODE_PUSH : 0, w, N_WORDS);
+    kmx_result(push_failed ? CODE_PUSH : 0, result_words, RESULT_WORDS);
     return 0;
 }

@@ -1,6 +1,6 @@
-/* The map's vector loop (vmap.c): d[i] = f(s[i]) for i < n. */
+/* The map's vector loop (vmap.c): destination[i] = mix(source[i]) for i < words. */
 #pragma once
 
 #include <stdint.h>
 
-void vmap(uint32_t* d, const uint32_t* s, uint64_t n);
+void vmap(uint32_t* destination, const uint32_t* source, uint64_t words);

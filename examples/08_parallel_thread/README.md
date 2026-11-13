@@ -7,7 +7,7 @@ exactly against numpy:
 
 | Pattern | What each core does | Merged by core 0 |
 |---|---|---|
-| map | `out[i] = f(in[i])` over its chunks, `f(x) = (x ^ x >> 15) * 2246822519 + 1`; also with the vector unit, and `f` applied 16 times (heavy) | nothing |
+| map | `output[word] = mix(input[word])` over its chunks, `mix(x) = (x ^ x >> 15) * 2246822519 + 1`; also with the vector unit, and `mix` applied 16 times (heavy) | nothing |
 | reduction | the sum of its chunks in a register, stored once into its own line | the four partial sums |
 | prefix sum | pass 1: the sum of each of its chunks; pass 2: each chunk's exclusive prefix from its base | between the passes: the chunk sums into bases |
 
@@ -35,7 +35,7 @@ A Blackhole p150a, work cluster 1, X280 at the session's 1000 MHz, 262,144 words
 |---|---|---|---|---|
 | map | 2.85 | 1.66 | 1.72 | the bank: 2 MiB moved in 1.66 ms, 1.27 GB/s |
 | map, vector loop | 1.66 | 1.60 | 1.04 | the bank |
-| map, `f` 16 times | 26.46 | 6.69 | 3.96 | arithmetic |
+| map, `mix` 16 times | 26.46 | 6.69 | 3.96 | arithmetic |
 | reduction | 1.81 | 0.82 | 2.21 | the bank: 1 MiB read in 0.82 ms, 1.28 GB/s |
 | prefix sum, two passes | 4.82 (one pass: 3.52) | 2.48 | 1.42 against one pass | the bank: 3 MiB moved |
 
@@ -66,7 +66,7 @@ of microseconds at least.
 **Partitions and results.** Pass one argument; every core computes its partition from its
 number. `arg` points into core 0's memory (here a struct on its stack), which all four
 cores address alike. A result is returned in a slot of its own per core (here
-`g_part[core]`, a global), which core 0 reads after `kmx_parallel` returned: `kmx_parallel`
+`core_sums[core]`, a global), which core 0 reads after `kmx_parallel` returned: `kmx_parallel`
 fences, so what `fn` stored is visible then. Read the argument's fields into locals
 before the loop: a `uint32_t` store into the output may alias a `uint32_t` field, and
 the compiler then reads the field again on every word (the map took 2.46 ms instead
@@ -79,8 +79,8 @@ runs many times slower, as one way would explain: the map with its output a whol
 number of ways from its input (`map_aliased`) took 90.6 ms instead of 2.85 ms. So:
 - the host script makes every array a whole number of 128 KiB and the input 64 KiB
   longer, so every output starts half a way from the input (`program()`);
-- the cores split the work in chunks of 4 KiB taken in turn (core `h` takes chunks
-  `h`, `h + 4`, ...), so the four move through one window together. Quarters put four
+- the cores split the work in chunks of 4 KiB taken in turn (core 0 takes chunks
+  0, 4, ...; core 1 takes 1, 5, ...), so the four move through one window together. Quarters put four
   streams a quarter of the array apart; with 65,536 words a quarter is 64 KiB, one
   core's reads fall on another's writes, and the map took 6.08 ms instead of 0.41
   (`map_quarters`; with 262,144 words, 1.86 against 1.66).
@@ -93,7 +93,7 @@ chunk's prefix from its base.
 adding into four 64-bit counters in one line of a region took 17.88 ms; the same
 counters a line apart, 2.54 ms (`sum_4_packed`, `sum_4_padded`). A slot each core
 writes often gets a line of its own; a slot written once per call, like
-`g_part[core]`, does not need one, but it costs nothing.
+`core_sums[core]`, does not need one, but it costs nothing.
 
 **Flush and invalidate.** `kmx_invalidate` before reading what the grid or the host wrote, `kmx_flush`
 after writing what they will read; inside the cluster the four cores are coherent and
@@ -143,19 +143,19 @@ times in ms, pushes included:
 | Words | Pattern | 1 core | 4 | 8 | 12 |
 |---|---|---|---|---|---|
 | 16,384 | map | 0.18 | 0.11 | 0.12 | 0.13 |
-| | map, `f` 16 times | 1.66 | 0.42 | 0.31 | 0.31 |
+| | map, `mix` 16 times | 1.66 | 0.42 | 0.31 | 0.31 |
 | | prefix sum | 0.31 | 0.13 | 0.18 | 0.18 |
 | | the map's input push | - | - | 0.03 | 0.05 |
 | 65,536 | map | 0.73 | 0.42 | 0.42 | 0.38 |
-| | map, `f` 16 times | 6.61 | 1.68 | 1.06 | 0.88 |
+| | map, `mix` 16 times | 6.61 | 1.68 | 1.06 | 0.88 |
 | | prefix sum | 1.23 | 0.66 | 0.53 | 0.48 |
 | | the map's input push | - | - | 0.11 | 0.15 |
 | 262,144 | map | 2.89 | 1.66 | 1.94 | 1.61 |
-| | map, `f` 16 times | 26.44 | 6.68 | 4.46 | 3.38 |
+| | map, `mix` 16 times | 26.44 | 6.68 | 4.46 | 3.38 |
 | | prefix sum | 4.90 | 2.57 | 2.46 | 2.07 |
 | | the map's input push | - | - | 0.54 | 0.62 |
 | 1,048,576 | map | 11.56 | 6.63 | 7.35 | 6.42 |
-| | map, `f` 16 times | 105.75 | 26.71 | 17.63 | 13.21 |
+| | map, `mix` 16 times | 105.75 | 26.71 | 17.63 | 13.21 |
 | | prefix sum | 19.70 | 10.21 | 9.18 | 7.79 |
 | | the map's input push | - | - | 1.71 | 2.34 |
 
@@ -169,7 +169,7 @@ more per byte it moves, or find its input already in each bank.
 
 ## The thread
 
-| Words | `n, repeats, rounds` (the heavy map's `f` count) |
+| Words | `array length, repeats, rounds` (how many times the heavy map applies `mix`) |
 |---|---|
 | Regions | `in`, `map_1`, `map_4`, `map_quarters`, `map_aliased` (written 64 KiB in), `vmap_1`, `vmap_4`, `heavy_1`, `heavy_4`, `sequence`, `prefix_1`, `prefix_4`, `counters` |
 | Codes | 0 done; 1 bad words or regions; 2 a `kmx_parallel` call was late or stopped |
