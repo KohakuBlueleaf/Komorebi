@@ -22,13 +22,13 @@ def reference(scene):
         if scene == "tiny":
             harness.run_numpy(scene)
         else:
-            harness.run_cpu(scene, runner.threads_all(), reps=1)
+            harness.run_cpu(scene, runner.threads_all(), repetitions=1)
     return results.load_result(folder, scene, "raster")[0]
 
 
-def busy_picture(prof_file):
+def busy_picture(profile_file):
     """Each tile coloured by the busy cycles of the core that filled it (viridis)."""
-    data = np.load(prof_file)
+    data = np.load(profile_file)
     total = data["prof"][:, 10].astype(np.float64)
     per_tile = np.zeros(lists.TILES)
     per_tile[data["tiles_of"]] = total[data["owner"]]
@@ -40,22 +40,24 @@ def busy_picture(prof_file):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--scene", default="tiny")
-    p.add_argument("--card", type=Path, required=True, help="the card's result folder")
-    p.add_argument("--profile", type=Path, required=True)
-    p.add_argument("--out", type=Path, required=True)
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--scene", default="tiny")
+    parser.add_argument(
+        "--card", type=Path, required=True, help="the card's result folder"
+    )
+    parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    s = args.scene
-    got = results.load_result(args.card, s, "raster")[0]
-    mask = harness.compare(reference(s), got)["mask"]
-    png.write_png(args.out / f"{s}_card_colour.png", png.to_srgb8(got["colour"]))
+    scene = args.scene
+    got = results.load_result(args.card, scene, "raster")[0]
+    mask = harness.compare(reference(scene), got)["mask"]
+    png.write_png(args.out / f"{scene}_card_colour.png", png.to_srgb8(got["colour"]))
     png.write_png(
-        args.out / f"{s}_card_diff.png", png.diff_picture(got["colour"], mask)
+        args.out / f"{scene}_card_diff.png", png.diff_picture(got["colour"], mask)
     )
     rgb, info = busy_picture(args.profile)
-    png.write_png(args.out / f"{s}_card_busy.png", rgb)
+    png.write_png(args.out / f"{scene}_card_busy.png", rgb)
     info["differing_pixels"] = int(mask.sum())
     print(info)
 

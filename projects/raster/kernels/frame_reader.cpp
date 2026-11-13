@@ -16,12 +16,12 @@ namespace pass_k {
 }  // namespace pass_k
 
 void kernel_main() {
-    km::Reader rd;
-    rd.run([&](const km_command_t& r) {
-        if (km::handler(r) >= pass_k::kHandlerLanes) {
-            pass_k::setup_reader_command(rd, r);
+    km::Reader reader;
+    reader.run([&](const km_command_t& command) {
+        if (km::handler(command) >= pass_k::kHandlerLanes) {
+            pass_k::setup_reader_command(reader, command);
         } else {
-            fill_k::fill_reader_command(rd, r);
+            fill_k::fill_reader_command(reader, command);
         }
     });
 }

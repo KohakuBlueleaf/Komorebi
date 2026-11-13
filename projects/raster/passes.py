@@ -22,29 +22,29 @@ MAX_BANDS = 16
 
 def window_words(slots):
     """Window word of (slot, lane) for `slots` slots of 32 lanes: (slots, 32)."""
-    s = np.arange(slots)[:, None]
+    slot = np.arange(slots)[:, None]
     lane = np.arange(LANES)[None, :]
-    return 64 * (s // 2) + s % 2 + 2 * lane
+    return 64 * (slot // 2) + slot % 2 + 2 * lane
 
 
 def mesh_blocks(scene):
     """(blocks, 576) uint32: every triangle's corners, 32 triangles per block, in the
     order of the destination register's window (copied in as they are). The last
     block is padded with triangles whose corners are all 0 (zero area: culled)."""
-    idx = scene["indices"]
-    n = len(idx)
-    blocks = -(-n // LANES)
-    pos = np.zeros((blocks * LANES, 3, 3), dtype=np.float32)
-    col = np.zeros((blocks * LANES, 3, 3), dtype=np.float32)
-    pos[:n] = scene["positions"][idx]
-    col[:n] = scene["colors"][idx]
+    indices = scene["indices"]
+    triangles = len(indices)
+    blocks = -(-triangles // LANES)
+    positions = np.zeros((blocks * LANES, 3, 3), dtype=np.float32)
+    colours = np.zeros((blocks * LANES, 3, 3), dtype=np.float32)
+    positions[:triangles] = scene["positions"][indices]
+    colours[:triangles] = scene["colors"][indices]
     # vectors (block, slot, lane): slot 3 k + i is coordinate i of corner k
-    vec = np.concatenate(
-        [pos.reshape(blocks, LANES, 9), col.reshape(blocks, LANES, 9)], axis=2
+    vectors = np.concatenate(
+        [positions.reshape(blocks, LANES, 9), colours.reshape(blocks, LANES, 9)], axis=2
     ).transpose(0, 2, 1)
-    out = np.zeros((blocks, BLOCK_WORDS), dtype=np.uint32)
-    out[:, window_words(BLOCK_SLOTS)] = vec.view(np.uint32)
-    return out
+    block_words = np.zeros((blocks, BLOCK_WORDS), dtype=np.uint32)
+    block_words[:, window_words(BLOCK_SLOTS)] = vectors.view(np.uint32)
+    return block_words
 
 
 def partitions(blocks, cores):
@@ -52,108 +52,123 @@ def partitions(blocks, cores):
     return (np.arange(cores + 1) * blocks) // cores
 
 
-def entries(recs, triangles, cores):
+def entries(records, triangles, cores):
     """Every (record, tile) entry in record order: its tile, the core whose partition
     holds the record, and its first and last row inside the tile."""
     edge = partitions(-(-triangles // LANES), cores) * LANES
-    box = recs["box"].astype(np.int64)
-    tx0, tx1 = box[:, 0] // raster.TILE, box[:, 1] // raster.TILE
-    ty0, ty1 = box[:, 2] // raster.TILE, box[:, 3] // raster.TILE
-    nx, ny = tx1 - tx0 + 1, ty1 - ty0 + 1
-    per = nx * ny
-    rec = np.repeat(np.arange(len(box)), per)
-    local = np.arange(per.sum()) - np.repeat(np.cumsum(per) - per, per)
-    ty = ty0[rec] + local // nx[rec]
-    tile = ty * raster.TILES_X + tx0[rec] + local % nx[rec]
-    top = raster.TILE * ty
-    r0 = np.maximum(box[rec, 2], top) - top
-    r1 = np.minimum(box[rec, 3], top + 31) - top
-    core = np.searchsorted(edge, recs["tri"][rec], side="right") - 1
-    return {"rec": rec, "tile": tile, "core": core, "r0": r0, "r1": r1}
+    box = records["box"].astype(np.int64)
+    first_tile_x, last_tile_x = box[:, 0] // raster.TILE, box[:, 1] // raster.TILE
+    first_tile_y, last_tile_y = box[:, 2] // raster.TILE, box[:, 3] // raster.TILE
+    tiles_across, tiles_down = (
+        last_tile_x - first_tile_x + 1,
+        last_tile_y - first_tile_y + 1,
+    )
+    per_record = tiles_across * tiles_down
+    record = np.repeat(np.arange(len(box)), per_record)
+    local = np.arange(per_record.sum()) - np.repeat(
+        np.cumsum(per_record) - per_record, per_record
+    )
+    tile_y = first_tile_y[record] + local // tiles_across[record]
+    tile = tile_y * raster.TILES_X + first_tile_x[record] + local % tiles_across[record]
+    top_row = raster.TILE * tile_y
+    first_row = np.maximum(box[record, 2], top_row) - top_row
+    last_row = np.minimum(box[record, 3], top_row + 31) - top_row
+    core = np.searchsorted(edge, records["tri"][record], side="right") - 1
+    return {
+        "record": record,
+        "tile": tile,
+        "core": core,
+        "first_row": first_row,
+        "last_row": last_row,
+    }
 
 
-def counters(recs, triangles, cores):
+def counters(records, triangles, cores):
     """What COUNT writes per core: entries and rows of each tile (cores, tiles) from
     the records of `raster.setup`, each core counting its partition of the triangles."""
-    e = entries(recs, triangles, cores)
-    at = e["core"] * lists.TILES + e["tile"]
+    table = entries(records, triangles, cores)
+    cell = table["core"] * lists.TILES + table["tile"]
     size = cores * lists.TILES
-    cnt = np.bincount(at, minlength=size).reshape(cores, lists.TILES)
-    rows = np.bincount(at, e["r1"] - e["r0"] + 1, minlength=size)
-    return cnt.astype(np.int64), rows.astype(np.int64).reshape(cores, lists.TILES)
+    entry_counts = np.bincount(cell, minlength=size).reshape(cores, lists.TILES)
+    rows = np.bincount(cell, table["last_row"] - table["first_row"] + 1, minlength=size)
+    return entry_counts.astype(np.int64), rows.astype(np.int64).reshape(
+        cores, lists.TILES
+    )
 
 
-def histograms(recs, triangles, cores):
+def histograms(records, triangles, cores):
     """What COUNT keeps per core: for every tile, how many of its entries start, and
     how many end, in each 2-row group (cores, tiles, GROUPS) twice."""
-    e = entries(recs, triangles, cores)
-    base = (e["core"] * lists.TILES + e["tile"]) * GROUPS
+    table = entries(records, triangles, cores)
+    base = (table["core"] * lists.TILES + table["tile"]) * GROUPS
     size = cores * lists.TILES * GROUPS
     shape = (cores, lists.TILES, GROUPS)
-    first = np.bincount(base + e["r0"] // 2, minlength=size).reshape(shape)
-    last = np.bincount(base + e["r1"] // 2, minlength=size).reshape(shape)
-    return first.astype(np.int64), last.astype(np.int64)
+    starts = np.bincount(base + table["first_row"] // 2, minlength=size).reshape(shape)
+    ends = np.bincount(base + table["last_row"] // 2, minlength=size).reshape(shape)
+    return starts.astype(np.int64), ends.astype(np.int64)
 
 
-def cost_of(cnt, rows, cost=lists.COST):
+def cost_of(counts, rows, cost=lists.COST):
     """Estimated cycles of each tile from the counters, as `lists.tile_cost`."""
-    n, r = cnt.sum(axis=0), rows.sum(axis=0)
-    busy = cost["tri"] * n + cost["row"] * r + cost["tile"]
-    return np.where(n > 0, busy, cost["empty"])
+    tile_entries, tile_rows = counts.sum(axis=0), rows.sum(axis=0)
+    busy = cost["tri"] * tile_entries + cost["row"] * tile_rows + cost["tile"]
+    return np.where(tile_entries > 0, busy, cost["empty"])
 
 
-def middle(cnt, rows, cores, mode="balanced", bands=None):
+def middle(counts, rows, cores, mode="balanced", bands=None):
     """The middle pass between COUNT and SETUP, from the counters and, for bands,
     `items_of`'s result: items to cores by cost, the list pages with headers and end
     slots, the directory of `lists.build_lists`, each setup core's next slot per item
     (setup cores, items), the items in tile order and the lists' slots."""
     if bands is None:
-        items = [(t, 0, 32) for t in range(lists.TILES)]
-        per_core, cost = cnt, cost_of(cnt, rows)
+        items = [(tile, 0, 32) for tile in range(lists.TILES)]
+        per_core, cost = counts, cost_of(counts, rows)
     else:
         items, per_core, cost = bands
     total = per_core.sum(axis=0)
-    part = lists.assign(cost, cores, mode)
+    partition = lists.assign(cost, cores, mode)
     header = np.full(len(items), -1, dtype=np.int64)
     directory = np.zeros((cores, K["kDirBytes"] // 4), dtype=np.uint32)
-    marks, first = [], 0
-    for core, its in enumerate(part):
-        at = 16 * first
-        ids = []
-        for i in its:
-            t, r0, r1 = items[i]
-            band = (r0, r1) != (0, 32)
-            rws = r0 << K["kItemRow0Shift"] | r1 << K["kItemRow1Shift"]
-            ids.append(t | (rws if band else 0))
-            if total[i] == 0:
-                ids[-1] |= K["kItemEmpty"]
+    marks, first_page = [], 0
+    for core, own in enumerate(partition):
+        slot = 16 * first_page
+        item_ids = []
+        for item in own:
+            tile, first_row, end_row = items[item]
+            band = (first_row, end_row) != (0, 32)
+            rows_bits = (
+                first_row << K["kItemRow0Shift"] | end_row << K["kItemRow1Shift"]
+            )
+            item_ids.append(tile | (rows_bits if band else 0))
+            if total[item] == 0:
+                item_ids[-1] |= K["kItemEmpty"]
                 continue
-            header[i] = at
-            marks.append((at, K["kMarkTile"], t, total[i], r0, r1))
-            at += 1 + total[i]
-        marks.append((at, K["kMarkEnd"], 0, 0, 0, 0))
-        pages = -(-(at + 1 - 16 * first) // lists.PAGE_SLOTS)
-        directory[core, K["kDirFirst"]] = first
+            header[item] = slot
+            marks.append((slot, K["kMarkTile"], tile, total[item], first_row, end_row))
+            slot += 1 + total[item]
+        marks.append((slot, K["kMarkEnd"], 0, 0, 0, 0))
+        pages = -(-(slot + 1 - 16 * first_page) // lists.PAGE_SLOTS)
+        directory[core, K["kDirFirst"]] = first_page
         directory[core, K["kDirPages"]] = pages
-        directory[core, K["kDirItems"]] = len(its)
-        directory[core, K["kDirIds"] : K["kDirIds"] + len(its)] = ids
-        first += pages
-    slots = np.zeros((first * lists.PAGE_SLOTS, lists.SLOT), dtype=np.uint32)
-    for at, mark, t, n, r0, r1 in marks:
-        slots[at, 0] = mark
+        directory[core, K["kDirItems"]] = len(own)
+        directory[core, K["kDirIds"] : K["kDirIds"] + len(own)] = item_ids
+        first_page += pages
+    slots = np.zeros((first_page * lists.PAGE_SLOTS, lists.SLOT), dtype=np.uint32)
+    for slot, mark, tile, count, first_row, end_row in marks:
+        slots[slot, 0] = mark
         if mark == K["kMarkTile"]:
-            slots[at, K["kHdrTile"]] = t
-            slots[at, K["kHdrCount"]] = n
-            slots[at, K["kHdrRow0"]] = r0
-            slots[at, K["kHdrRow1"]] = r1
+            slots[slot, K["kHdrTile"]] = tile
+            slots[slot, K["kHdrCount"]] = count
+            slots[slot, K["kHdrRow0"]] = first_row
+            slots[slot, K["kHdrRow1"]] = end_row
     before = np.cumsum(per_core, axis=0) - per_core
-    nxt = np.where(header >= 0, header + 1, 0)[None, :] + before
+    next_slots = np.where(header >= 0, header + 1, 0)[None, :] + before
     return {
-        "tiles_of": [[items[i] for i in its] for its in part],
+        "tiles_of": [[items[item] for item in own] for own in partition],
         "items": items,
         "pages": slots.reshape(-1, lists.PAGE_WORDS),
         "directory": directory,
-        "next": nxt.astype(np.uint32),
+        "next": next_slots.astype(np.uint32),
         "slots": len(slots),
     }
 
@@ -162,70 +177,77 @@ def item_table(items):
     """SETUP's items page (setup.h): per tile its first item and their number, then
     per item its rows (2,048 uint32)."""
     table = np.zeros(2048, dtype=np.uint32)
-    tiles = np.array([t for t, _, _ in items])
-    first = np.searchsorted(tiles, np.arange(lists.TILES))
-    n = np.bincount(tiles, minlength=lists.TILES)
-    table[: lists.TILES] = first | n << 16
+    tiles = np.array([tile for tile, _, _ in items])
+    first_item = np.searchsorted(tiles, np.arange(lists.TILES))
+    counts = np.bincount(tiles, minlength=lists.TILES)
+    table[: lists.TILES] = first_item | counts << 16
     rows = table[1024:].view(np.uint16)
-    rows[: len(items)] = [r0 | r1 << 8 for _, r0, r1 in items]
+    rows[: len(items)] = [first_row | end_row << 8 for _, first_row, end_row in items]
     return table
 
 
-def heavy_tiles(cnt, rows, cores, split=SPLIT):
+def heavy_tiles(counts, rows, cores, split=SPLIT):
     """(tile, bands) of every tile to cut: above `split` of a core's mean load, in
     up to MAX_BANDS bands; none when no tile is above the mean."""
-    cost = cost_of(cnt, rows)
+    cost = cost_of(counts, rows)
     mean = cost.sum() / cores
     if cost.max() <= mean:
         return []
-    k = np.minimum(MAX_BANDS, np.ceil(cost / (split * mean))).astype(int)
-    return [(int(t), int(k[t])) for t in np.flatnonzero(k >= 2)]
+    bands = np.minimum(MAX_BANDS, np.ceil(cost / (split * mean))).astype(int)
+    return [(int(tile), int(bands[tile])) for tile in np.flatnonzero(bands >= 2)]
 
 
-def cover_of(first, last):
+def cover_of(starts, ends):
     """Entries reaching each 2-row group, from the start and end counts (GROUPS,)."""
-    return np.cumsum(first) - np.concatenate([[0], np.cumsum(last)[:-1]])
+    return np.cumsum(starts) - np.concatenate([[0], np.cumsum(ends)[:-1]])
 
 
-def cuts(first, last, k):
-    """Band bounds in rows (even, 0 to 32) for k bands of about equal estimated cost,
-    from the tile's start and end counts summed over the cores."""
-    w = 2 * lists.COST["row"] * cover_of(first, last) + lists.COST["tri"] * first
-    cum = np.cumsum(w).astype(np.int64)
-    # the first group whose sum reaches j / k of the whole, in integers
-    at = np.searchsorted(k * cum, cum[-1] * np.arange(1, k)) + 1
-    return np.unique(np.concatenate([[0], 2 * at, [GROUPS * 2]])).astype(int)
+def cuts(starts, ends, bands):
+    """Band bounds in rows (even, 0 to 32) for `bands` bands of about equal estimated
+    cost, from the tile's start and end counts summed over the cores."""
+    weights = (
+        2 * lists.COST["row"] * cover_of(starts, ends) + lists.COST["tri"] * starts
+    )
+    cumulative = np.cumsum(weights).astype(np.int64)
+    # the first group whose sum reaches j / bands of the whole, in integers
+    groups = (
+        np.searchsorted(bands * cumulative, cumulative[-1] * np.arange(1, bands)) + 1
+    )
+    return np.unique(np.concatenate([[0], 2 * groups, [GROUPS * 2]])).astype(int)
 
 
-def band_count(first, last, row0, row1):
-    """Entries reaching rows [row0, row1): starting before row1 less ending before
-    row0 (first, last: (..., GROUPS))."""
-    return first[..., : row1 // 2].sum(-1) - last[..., : row0 // 2].sum(-1)
+def band_count(starts, ends, first_row, end_row):
+    """Entries reaching rows [first_row, end_row): starting before end_row less ending
+    before first_row (starts, ends: (..., GROUPS))."""
+    return starts[..., : end_row // 2].sum(-1) - ends[..., : first_row // 2].sum(-1)
 
 
-def items_of(cnt, rows, heavy, first, last):
-    """Items in tile order (tile, row0, row1), with per item the entries of every
-    setup core (cores, items) and the estimated cost. first, last: (cores, len(heavy),
-    GROUPS), the heavy tiles' counts."""
+def items_of(counts, rows, heavy, starts, ends):
+    """Items in tile order (tile, first_row, end_row), with per item the entries of
+    every setup core (cores, items) and the estimated cost. starts, ends: (cores,
+    len(heavy), GROUPS), the heavy tiles' counts."""
     per_core, cost, items = [], [], []
-    tile_cost = cost_of(cnt, rows)
-    cut = {t: i for i, (t, _) in enumerate(heavy)}
-    for t in range(lists.TILES):
-        if t not in cut:
-            items.append((t, 0, 32))
-            per_core.append(cnt[:, t])
-            cost.append(tile_cost[t])
+    tile_cost = cost_of(counts, rows)
+    heavy_index = {tile: position for position, (tile, _) in enumerate(heavy)}
+    for tile in range(lists.TILES):
+        if tile not in heavy_index:
+            items.append((tile, 0, 32))
+            per_core.append(counts[:, tile])
+            cost.append(tile_cost[tile])
             continue
-        i = cut[t]
-        f, la = first[:, i], last[:, i]
-        bounds = cuts(f.sum(0), la.sum(0), heavy[i][1])
-        cover = cover_of(f.sum(0), la.sum(0))
-        for r0, r1 in zip(bounds[:-1], bounds[1:]):
-            n = band_count(f, la, r0, r1)
-            items.append((t, int(r0), int(r1)))
-            per_core.append(n)
-            est = int(2 * cover[r0 // 2 : r1 // 2].sum())
-            busy = lists.COST["tri"] * n.sum() + lists.COST["row"] * est
+        position = heavy_index[tile]
+        tile_starts, tile_ends = starts[:, position], ends[:, position]
+        bounds = cuts(tile_starts.sum(0), tile_ends.sum(0), heavy[position][1])
+        cover = cover_of(tile_starts.sum(0), tile_ends.sum(0))
+        for first_row, end_row in zip(bounds[:-1], bounds[1:]):
+            band_entries = band_count(tile_starts, tile_ends, first_row, end_row)
+            items.append((tile, int(first_row), int(end_row)))
+            per_core.append(band_entries)
+            estimated_rows = int(2 * cover[first_row // 2 : end_row // 2].sum())
+            busy = (
+                lists.COST["tri"] * band_entries.sum()
+                + lists.COST["row"] * estimated_rows
+            )
             busy += lists.COST["tile"]
-            cost.append(busy if n.sum() > 0 else lists.COST["empty"])
+            cost.append(busy if band_entries.sum() > 0 else lists.COST["empty"])
     return items, np.stack(per_core, axis=1), np.asarray(cost, dtype=np.int64)

@@ -50,95 +50,102 @@ def program():
 
 def camera_page(scene):
     """The camera's 16 float32 numbers as one page."""
-    cam = np.asarray(scene["camera"], dtype=np.float32)
-    return cam.view(np.uint32).reshape(1, S["kCamWords"])
+    camera = np.asarray(scene["camera"], dtype=np.float32)
+    return camera.view(np.uint32).reshape(1, S["kCamWords"])
 
 
 def expected_lanes(scene):
     """Per triangle (padded to blocks): the reference's record words where it keeps the
     whole triangle, its box, and the triangles kept whole (dict of arrays)."""
-    n = len(scene["indices"])
-    recs = raster.setup(scene)
-    cards = lists.pack_records(recs)
-    xc, yc, zc = raster.camera_space(scene)
-    beyond = (zc > scene["camera"][15])[scene["indices"]].sum(axis=1)
+    triangle_count = len(scene["indices"])
+    records = raster.setup(scene)
+    packed = lists.pack_records(records)
+    camera_x, camera_y, camera_z = raster.camera_space(scene)
+    beyond = (camera_z > scene["camera"][15])[scene["indices"]].sum(axis=1)
     whole = beyond == 3
-    first = np.searchsorted(recs["tri"], np.arange(n))
-    kept = np.zeros(n, dtype=bool)
-    hit = first < len(recs["tri"])
-    kept[hit] = recs["tri"][first[hit]] == np.arange(n)[hit]
+    first = np.searchsorted(records["tri"], np.arange(triangle_count))
+    kept = np.zeros(triangle_count, dtype=bool)
+    has_record = first < len(records["tri"])
+    kept[has_record] = (
+        records["tri"][first[has_record]] == np.arange(triangle_count)[has_record]
+    )
     kept &= whole
     return {
-        "cards": cards,
+        "cards": packed,
         "first": first,
         "kept": kept,
         "crossing": (beyond == 1) | (beyond == 2),
-        "recs": recs,
+        "recs": records,
     }
 
 
 def check_lanes(scene, got, seen):
     """Differences between the card's records (blocks x 32 lanes, 32 words) and the
     reference over the triangles `seen`, as counts."""
-    exp = expected_lanes(scene)
-    n = len(scene["indices"])
-    got = got.reshape(-1, 32)[:n]
-    seen = seen[:n]
+    expected = expected_lanes(scene)
+    triangle_count = len(scene["indices"])
+    got = got.reshape(-1, 32)[:triangle_count]
+    seen = seen[:triangle_count]
     near = np.float32(scene["camera"][15]).view(np.int32)
-    z = got[:, S["kRawZ"] : S["kRawZ"] + 3].view(np.int32)
+    corner_z = got[:, S["kRawZ"] : S["kRawZ"] + 3].view(np.int32)
     area = got[:, S["kRawArea"]] & 0x7FFFFFFF
     box = got[:, S["kRawX0"] : S["kRawY1"] + 1].astype(np.int64) - S["kMagic"]
     # the pack thread's rule: every corner beyond the near distance, a non-zero area,
     # a box that is not empty
     kept = (
-        (z > near).all(axis=1)
+        (corner_z > near).all(axis=1)
         & (area != 0)
         & (box[:, 0] <= box[:, 1])
         & (box[:, 2] <= box[:, 3])
     )
-    both = kept & exp["kept"] & seen
-    rec = exp["cards"][exp["first"][both]]
+    both = kept & expected["kept"] & seen
+    reference_words = expected["cards"][expected["first"][both]]
     words = [*range(0, 9), *range(12, 24)]
-    differ = got[both][:, words] != rec[:, words]
-    box_differ = box[both] != exp["recs"]["box"][exp["first"][both]]
+    differ = got[both][:, words] != reference_words[:, words]
+    box_differ = box[both] != expected["recs"]["box"][expected["first"][both]]
     return {
-        "triangles": int(n),
+        "triangles": int(triangle_count),
         "kept_card": int((kept & seen).sum()),
-        "kept_ref_whole": int((exp["kept"] & seen).sum()),
+        "kept_ref_whole": int((expected["kept"] & seen).sum()),
         "checked": int(seen.sum()),
-        "kept_disagree": int(((kept != exp["kept"]) & seen).sum()),
-        "crossing": int((exp["crossing"] & seen).sum()),
+        "kept_disagree": int(((kept != expected["kept"]) & seen).sum()),
+        "crossing": int((expected["crossing"] & seen).sum()),
         "words_differ": int(differ.sum()),
         "records_differ": int(differ.any(axis=1).sum()),
-        "differ_by_word": {int(w): int(c) for w, c in zip(words, differ.sum(0)) if c},
+        "differ_by_word": {
+            int(word): int(count) for word, count in zip(words, differ.sum(0)) if count
+        },
         "box_differ": int(box_differ.any(axis=1).sum()),
     }
 
 
-def lists_check(session, up, scene, recs, middle, sample):
+def lists_check(session, uploaded, scene, records, middle, sample):
     """The lists SETUP wrote against `lists.build_lists` of the reference's records
     (the record number word aside): every page, or `sample` pages spread over them,
     read in chunks of at most 2 MB."""
-    counts, offsets, members = raster.bin_triangles(recs)
-    cards = lists.pack_records(recs)
-    cards[:, lists.K["kRecIndex"]] = 0
-    want, directory = lists.build_lists(cards, offsets, members, middle["tiles_of"])
+    counts, offsets, members = raster.bin_triangles(records)
+    packed = lists.pack_records(records)
+    packed[:, lists.K["kRecIndex"]] = 0
+    want, directory = lists.build_lists(packed, offsets, members, middle["tiles_of"])
     total = len(want)
     if sample and sample < total:
-        firsts = np.linspace(0, total - 1, sample).round().astype(int)
-        chunks = [(int(f), 1) for f in sorted(set(firsts))]
+        first_pages = np.linspace(0, total - 1, sample).round().astype(int)
+        chunks = [(int(start), 1) for start in sorted(set(first_pages))]
     else:
-        per = (2 << 20) // lists.K["kInPageBytes"]
-        chunks = [(f, min(per, total - f)) for f in range(0, total, per)]
+        pages_per_chunk = (2 << 20) // lists.K["kInPageBytes"]
+        chunks = [
+            (start, min(pages_per_chunk, total - start))
+            for start in range(0, total, pages_per_chunk)
+        ]
     differ = 0
-    for first, n in chunks:
-        (got,) = session.read(up["lists"], first=first, pages=n)
-        differ += int((got.view(np.uint32) != want[first : first + n]).any(1).sum())
-        if n > 1:
-            card.log(f"lists pages {first} + {n} of {total}")
+    for first, pages in chunks:
+        (got,) = session.read(uploaded["lists"], first=first, pages=pages)
+        differ += int((got.view(np.uint32) != want[first : first + pages]).any(1).sum())
+        if pages > 1:
+            card.log(f"lists pages {first} + {pages} of {total}")
     return {
         "pages": int(total),
-        "pages_checked": int(sum(n for _, n in chunks)),
+        "pages_checked": int(sum(pages for _, pages in chunks)),
         "pages_differ": differ,
         "directory_equal": bool(np.array_equal(directory, middle["directory"])),
     }
@@ -148,49 +155,55 @@ def count_only(args):
     """COUNT alone over `args.cores` cores: the counters against `passes.counters`."""
     scene, _ = run.load(args.scene)
     blocks = passes.mesh_blocks(scene)
-    recs = raster.setup(scene)
-    out = {"scene": args.scene, "blocks": len(blocks)}
+    records = raster.setup(scene)
+    report = {"scene": args.scene, "blocks": len(blocks)}
     with km.Session(log=card.log) as session:
         workers = card.workers(session)
         cores = args.cores or workers
         mesh = card.tensor(session, blocks)
-        cam = card.tensor(session, camera_page(scene))
+        camera = card.tensor(session, camera_page(scene))
         counters = card.tensor(session, np.zeros((workers, S["kCountBytes"] // 4)))
-        prog = session.load(program(), deadline=1.0)
-        a = [mesh.address, counters.address, len(blocks)]
-        a += [cam.address, 0, cores]
-        event = prog.wait(
-            prog.submit(S["kHandlerCount"], group=(0, workers), args=a), 10.0
+        running = session.load(program(), deadline=1.0)
+        command_words = [mesh.address, counters.address, len(blocks)]
+        command_words += [camera.address, 0, cores]
+        event = running.wait(
+            running.submit(S["kHandlerCount"], group=(0, workers), args=command_words),
+            10.0,
         )
-        out["event"] = {"kind": event.kind, "microseconds": event.microseconds}
-        prog.stop()
-        out["status"] = card.check_run(prog, workers, 1, [event.microseconds])
+        report["event"] = {"kind": event.kind, "microseconds": event.microseconds}
+        running.stop()
+        report["status"] = card.check_run(running, workers, 1, [event.microseconds])
         (raw,) = card.read(session, counters)
         raw = raw.view(np.uint32).reshape(workers, 2, lists.TILES)[:cores]
-        want_cnt, want_rows = passes.counters(recs, len(scene["indices"]), cores)
-        out["entries"] = int(want_cnt.sum())
-        out["cnt_differ"] = int((raw[:, 0] != want_cnt).sum())
-        out["rows_differ"] = int((raw[:, 1] != want_rows).sum())
+        want_entries, want_rows = passes.counters(records, len(scene["indices"]), cores)
+        report["entries"] = int(want_entries.sum())
+        report["cnt_differ"] = int((raw[:, 0] != want_entries).sum())
+        report["rows_differ"] = int((raw[:, 1] != want_rows).sum())
         # HIST over the tiles to cut (every tile with entries when none is to be cut)
-        cnt, rows = raw[:, 0].astype(np.int64), raw[:, 1].astype(np.int64)
-        heavy = passes.heavy_tiles(cnt, rows, workers)
-        out["heavy"] = len(heavy)
-        some = heavy or [(int(t), 1) for t in np.flatnonzero(cnt.sum(0))[:256]]
-        base = [mesh.address, 0, len(blocks), cam.address, 0, cores]
-        hf, hl = hist(session, base, some, cores, {})
-        want_f, want_l = passes.histograms(recs, len(scene["indices"]), cores)
-        ht = [t for t, _ in some]
-        out["hist_tiles"] = len(ht)
-        out["hist_differ"] = int(
-            (hf != want_f[:, ht]).sum() + (hl != want_l[:, ht]).sum()
+        entries, rows = raw[:, 0].astype(np.int64), raw[:, 1].astype(np.int64)
+        heavy = passes.heavy_tiles(entries, rows, workers)
+        report["heavy"] = len(heavy)
+        cut_tiles = heavy or [
+            (int(tile), 1) for tile in np.flatnonzero(entries.sum(0))[:256]
+        ]
+        base_words = [mesh.address, 0, len(blocks), camera.address, 0, cores]
+        starts, ends = hist(session, base_words, cut_tiles, cores, {})
+        want_starts, want_ends = passes.histograms(
+            records, len(scene["indices"]), cores
         )
-    out["ok"] = bool(
-        out["status"]["ok"]
-        and out["cnt_differ"] == 0
-        and out["rows_differ"] == 0
-        and out["hist_differ"] == 0
+        histogram_tiles = [tile for tile, _ in cut_tiles]
+        report["hist_tiles"] = len(histogram_tiles)
+        report["hist_differ"] = int(
+            (starts != want_starts[:, histogram_tiles]).sum()
+            + (ends != want_ends[:, histogram_tiles]).sum()
+        )
+    report["ok"] = bool(
+        report["status"]["ok"]
+        and report["cnt_differ"] == 0
+        and report["rows_differ"] == 0
+        and report["hist_differ"] == 0
     )
-    return out
+    return report
 
 
 def frame(args, session=None):
@@ -198,145 +211,176 @@ def frame(args, session=None):
     `session`, or a session of its own)."""
     scene, _ = run.load(args.scene)
     blocks = passes.mesh_blocks(scene)
-    recs = raster.setup(scene)
-    out = {"scene": args.scene, "blocks": len(blocks), "times": {}}
-    tm = out["times"]
-    own = contextlib.nullcontext(session) if session else km.Session(log=card.log)
-    with own as session:
+    records = raster.setup(scene)
+    report = {"scene": args.scene, "blocks": len(blocks), "times": {}}
+    times = report["times"]
+    session_context = (
+        contextlib.nullcontext(session) if session else km.Session(log=card.log)
+    )
+    with session_context as session:
         workers = card.workers(session)
         cores = args.cores or workers
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         mesh = card.tensor(session, blocks)
-        cam = card.tensor(session, camera_page(scene))
+        camera = card.tensor(session, camera_page(scene))
         counters = card.tensor(session, np.zeros((workers, S["kCountBytes"] // 4)))
-        tm["upload_mesh_s"] = time.perf_counter() - t0
+        times["upload_mesh_s"] = time.perf_counter() - started
         group = (0, workers)
-        base = [mesh.address, 0, len(blocks), cam.address, 0, cores]
+        base_words = [mesh.address, 0, len(blocks), camera.address, 0, cores]
 
-        t0 = time.perf_counter()
-        prog = session.load(program(), deadline=1.0)
-        tm["load_passes_s"] = time.perf_counter() - t0
-        a = list(base)
-        a[1] = counters.address
-        event = prog.wait(
-            prog.submit(S["kHandlerCount"], group=group, args=a), timeout=10.0
+        started = time.perf_counter()
+        running = session.load(program(), deadline=1.0)
+        times["load_passes_s"] = time.perf_counter() - started
+        command_words = list(base_words)
+        command_words[1] = counters.address
+        event = running.wait(
+            running.submit(S["kHandlerCount"], group=group, args=command_words),
+            timeout=10.0,
         )
-        out["count_microseconds"] = event.microseconds
-        prog.stop()
-        out["count_status"] = card.check_run(prog, workers, 1, [event.microseconds])
-        t0 = time.perf_counter()
+        report["count_microseconds"] = event.microseconds
+        running.stop()
+        report["count_status"] = card.check_run(
+            running, workers, 1, [event.microseconds]
+        )
+        started = time.perf_counter()
         (raw,) = card.read(session, counters)
-        tm["read_counters_s"] = time.perf_counter() - t0
+        times["read_counters_s"] = time.perf_counter() - started
         raw = raw.view(np.uint32).reshape(workers, 2, lists.TILES)[:cores]
-        cnt, rows = raw[:, 0].astype(np.int64), raw[:, 1].astype(np.int64)
-        want_cnt, want_rows = passes.counters(recs, len(scene["indices"]), cores)
-        out["counters_equal"] = bool(
-            np.array_equal(cnt, want_cnt) and np.array_equal(rows, want_rows)
+        entries, rows = raw[:, 0].astype(np.int64), raw[:, 1].astype(np.int64)
+        want_entries, want_rows = passes.counters(records, len(scene["indices"]), cores)
+        report["counters_equal"] = bool(
+            np.array_equal(entries, want_entries) and np.array_equal(rows, want_rows)
         )
 
-        heavy = passes.heavy_tiles(cnt, rows, workers)
-        out["heavy"] = len(heavy)
+        heavy = passes.heavy_tiles(entries, rows, workers)
+        report["heavy"] = len(heavy)
         bands = None
         if heavy:
-            hf, hl = hist(session, base, heavy, cores, tm)
-            want_f, want_l = passes.histograms(recs, len(scene["indices"]), cores)
-            ht = [t for t, _ in heavy]
-            out["hist_equal"] = bool(
-                np.array_equal(hf, want_f[:, ht]) and np.array_equal(hl, want_l[:, ht])
+            starts, ends = hist(session, base_words, heavy, cores, times)
+            want_starts, want_ends = passes.histograms(
+                records, len(scene["indices"]), cores
             )
-            t0 = time.perf_counter()
-            bands = passes.items_of(cnt, rows, heavy, hf, hl)
-            tm["items_s"] = time.perf_counter() - t0
-        t0 = time.perf_counter()
-        mid = passes.middle(cnt, rows, workers, bands=bands)
-        tm["middle_s"] = time.perf_counter() - t0
-        out["items"] = len(mid["items"])
-        t0 = time.perf_counter()
-        up = card.upload(session, mid["pages"], mid["directory"], lists.TILES * 5)
-        nxt = np.zeros((workers, S["kSlotsBytes"] // 4), dtype=np.uint32)
-        nxt[:cores, : len(mid["items"])] = mid["next"]
-        slots_t = card.tensor(session, nxt)
-        items_t = card.tensor(session, passes.item_table(mid["items"])[None, :])
-        tm["upload_lists_s"] = time.perf_counter() - t0
-        out["list_pages"] = len(mid["pages"])
-
-        t0 = time.perf_counter()
-        prog = session.load(program(), deadline=1.0)
-        tm["load_passes2_s"] = time.perf_counter() - t0
-        a = list(base)
-        a[1] = up["lists"].address
-        a[4] = slots_t.address
-        a += [mid["slots"], items_t.address]
-        event = prog.wait(
-            prog.submit(S["kHandlerSetup"], group=group, args=a), timeout=10.0
+            histogram_tiles = [tile for tile, _ in heavy]
+            report["hist_equal"] = bool(
+                np.array_equal(starts, want_starts[:, histogram_tiles])
+                and np.array_equal(ends, want_ends[:, histogram_tiles])
+            )
+            started = time.perf_counter()
+            bands = passes.items_of(entries, rows, heavy, starts, ends)
+            times["items_s"] = time.perf_counter() - started
+        started = time.perf_counter()
+        middle = passes.middle(entries, rows, workers, bands=bands)
+        times["middle_s"] = time.perf_counter() - started
+        report["items"] = len(middle["items"])
+        started = time.perf_counter()
+        uploaded = card.upload(
+            session, middle["pages"], middle["directory"], lists.TILES * 5
         )
-        out["setup_microseconds"] = event.microseconds
-        prog.stop()
-        out["setup_status"] = card.check_run(prog, workers, 1, [event.microseconds])
+        next_slots = np.zeros((workers, S["kSlotsBytes"] // 4), dtype=np.uint32)
+        next_slots[:cores, : len(middle["items"])] = middle["next"]
+        slots_tensor = card.tensor(session, next_slots)
+        items_tensor = card.tensor(session, passes.item_table(middle["items"])[None, :])
+        times["upload_lists_s"] = time.perf_counter() - started
+        report["list_pages"] = len(middle["pages"])
+
+        started = time.perf_counter()
+        running = session.load(program(), deadline=1.0)
+        times["load_passes2_s"] = time.perf_counter() - started
+        command_words = list(base_words)
+        command_words[1] = uploaded["lists"].address
+        command_words[4] = slots_tensor.address
+        command_words += [middle["slots"], items_tensor.address]
+        event = running.wait(
+            running.submit(S["kHandlerSetup"], group=group, args=command_words),
+            timeout=10.0,
+        )
+        report["setup_microseconds"] = event.microseconds
+        running.stop()
+        report["setup_status"] = card.check_run(
+            running, workers, 1, [event.microseconds]
+        )
         if args.lists >= 0:
-            out["lists"] = lists_check(session, up, scene, recs, mid, args.lists)
+            report["lists"] = lists_check(
+                session, uploaded, scene, records, middle, args.lists
+            )
 
-        got = None if args.setup else fill_frame(session, up, out)
-    ok = all(out[k]["ok"] for k in ("count_status", "setup_status"))
-    ok = ok and out["counters_equal"] and out.get("hist_equal", True)
-    if "lists" in out:
-        lc = out["lists"]
-        ok = ok and lc["pages_differ"] == 0 and lc["directory_equal"]
-    if got is not None:
-        counts, offsets, members = raster.bin_triangles(recs)
-        tiles = list(range(lists.TILES))
-        out["check"] = run.check(
-            args.scene, None, recs, offsets, members, tiles, counts, got
+        got = None if args.setup else fill_frame(session, uploaded, report)
+    succeeded = all(report[part]["ok"] for part in ("count_status", "setup_status"))
+    succeeded = (
+        succeeded and report["counters_equal"] and report.get("hist_equal", True)
+    )
+    if "lists" in report:
+        lists_report = report["lists"]
+        succeeded = (
+            succeeded
+            and lists_report["pages_differ"] == 0
+            and lists_report["directory_equal"]
         )
-        ok = ok and out["fill_status"]["ok"] and run.check_ok(out["check"])
-    out["ok"] = bool(ok)
-    return out
+    if got is not None:
+        counts, offsets, members = raster.bin_triangles(records)
+        tiles = list(range(lists.TILES))
+        report["check"] = run.check(
+            args.scene, None, records, offsets, members, tiles, counts, got
+        )
+        succeeded = (
+            succeeded and report["fill_status"]["ok"] and run.check_ok(report["check"])
+        )
+    report["ok"] = bool(succeeded)
+    return report
 
 
-def hist(session, base, heavy, cores, tm):
+def hist(session, base, heavy, cores, times):
     """HIST: the heavy tiles' start and end counts COUNT kept on every core, as
     (cores, heavy, GROUPS) twice."""
     workers = card.workers(session)
     page = np.zeros((1, S["kHeavyBytes"] // 4), dtype=np.uint32)
     page[0, 0] = len(heavy)
-    page[0, 1 : 1 + len(heavy)] = [t for t, _ in heavy]
-    t0 = time.perf_counter()
-    lst = card.tensor(session, page)
-    res = card.tensor(session, np.zeros((workers, 16 * len(heavy))))
-    tm["upload_heavy_s"] = time.perf_counter() - t0
-    t0 = time.perf_counter()
-    prog = session.load(program(), deadline=1.0)
-    tm["load_hist_s"] = time.perf_counter() - t0
-    a = [lst.address, res.address, 0, 0, 64 * len(heavy), cores]
-    event = prog.wait(
-        prog.submit(S["kHandlerHist"], group=(0, workers), args=a), timeout=10.0
+    page[0, 1 : 1 + len(heavy)] = [tile for tile, _ in heavy]
+    started = time.perf_counter()
+    heavy_tensor = card.tensor(session, page)
+    histograms_tensor = card.tensor(session, np.zeros((workers, 16 * len(heavy))))
+    times["upload_heavy_s"] = time.perf_counter() - started
+    started = time.perf_counter()
+    running = session.load(program(), deadline=1.0)
+    times["load_hist_s"] = time.perf_counter() - started
+    command_words = [
+        heavy_tensor.address,
+        histograms_tensor.address,
+        0,
+        0,
+        64 * len(heavy),
+        cores,
+    ]
+    event = running.wait(
+        running.submit(S["kHandlerHist"], group=(0, workers), args=command_words),
+        timeout=10.0,
     )
-    prog.stop()
-    status = card.check_run(prog, workers, 1, [event.microseconds])
+    running.stop()
+    status = card.check_run(running, workers, 1, [event.microseconds])
     if not status["ok"]:
         raise RuntimeError(f"HIST: {status}")
-    t0 = time.perf_counter()
-    (raw,) = card.read(session, res)
-    tm["read_hist_s"] = time.perf_counter() - t0
+    started = time.perf_counter()
+    (raw,) = card.read(session, histograms_tensor)
+    times["read_hist_s"] = time.perf_counter() - started
     raw = raw.view(np.uint32).reshape(workers, len(heavy), 16)[:cores]
     counts = raw.view(np.uint16).reshape(cores, len(heavy), 2, passes.GROUPS)
     return counts[:, :, 0].astype(np.int64), counts[:, :, 1].astype(np.int64)
 
 
-def fill_frame(session, up, out):
+def fill_frame(session, uploaded, report):
     """The fill of `card.py` over the lists in place: the frame's pages, timed."""
-    tm = out["times"]
+    times = report["times"]
     workers = card.workers(session)
-    t0 = time.perf_counter()
+    started = time.perf_counter()
     fill = session.load(card.program(), deadline=1.0)
-    tm["load_fill_s"] = time.perf_counter() - t0
-    us = card.loop(fill, lists.K["kHandlerFill"], card.words(up, 5), 1)
-    out["fill_microseconds"] = float(us[0]) if len(us) else None
+    times["load_fill_s"] = time.perf_counter() - started
+    microseconds = card.loop(fill, lists.K["kHandlerFill"], card.words(uploaded, 5), 1)
+    report["fill_microseconds"] = float(microseconds[0]) if len(microseconds) else None
     fill.stop()
-    out["fill_status"] = card.check_run(fill, workers, 1, us)
-    t0 = time.perf_counter()
-    got = card.read_frame(session, up)
-    tm["read_frame_s"] = time.perf_counter() - t0
+    report["fill_status"] = card.check_run(fill, workers, 1, microseconds)
+    started = time.perf_counter()
+    got = card.read_frame(session, uploaded)
+    times["read_frame_s"] = time.perf_counter() - started
     return got
 
 
@@ -344,81 +388,85 @@ WINDOW = 510  # blocks per read: 2 MB of records
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--scene", default="tiny")
-    p.add_argument("--cores", type=int, default=0, help="0: every core")
-    p.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--scene", default="tiny")
+    parser.add_argument("--cores", type=int, default=0, help="0: every core")
+    parser.add_argument(
         "--windows", type=int, default=0, help="check this many windows (0: all)"
     )
-    p.add_argument("--json", default=None)
-    p.add_argument("--dump", default=None, help="save the raw records (.npy)")
-    p.add_argument("--frame", action="store_true", help="a frame, not LANES")
-    p.add_argument("--count", action="store_true", help="COUNT alone, not LANES")
-    p.add_argument("--setup", action="store_true", help="frame without the fill")
-    p.add_argument(
+    parser.add_argument("--json", default=None)
+    parser.add_argument("--dump", default=None, help="save the raw records (.npy)")
+    parser.add_argument("--frame", action="store_true", help="a frame, not LANES")
+    parser.add_argument("--count", action="store_true", help="COUNT alone, not LANES")
+    parser.add_argument("--setup", action="store_true", help="frame without the fill")
+    parser.add_argument(
         "--lists",
         type=int,
         default=0,
         help="frame: list pages checked (0: all, -1: none)",
     )
-    args = p.parse_args()
+    args = parser.parse_args()
     if args.frame or args.count or args.setup:
-        out = count_only(args) if args.count else frame(args)
-        print(json.dumps(out), flush=True)
+        report = count_only(args) if args.count else frame(args)
+        print(json.dumps(report), flush=True)
         if args.json:
-            with open(args.json, "w") as f:
-                json.dump(out, f, indent=1)
-        sys.exit(0 if out["ok"] else 1)
+            with open(args.json, "w") as file:
+                json.dump(report, file, indent=1)
+        sys.exit(0 if report["ok"] else 1)
     scene, _ = run.load(args.scene)
     blocks = passes.mesh_blocks(scene)
     starts = list(range(0, len(blocks), WINDOW))
     if args.windows and args.windows < len(starts):
-        pick = np.linspace(0, len(starts) - 1, args.windows).round().astype(int)
-        starts = [starts[i] for i in sorted(set(pick))]
-    out = {"scene": args.scene, "blocks": len(blocks), "windows": len(starts)}
+        picked = np.linspace(0, len(starts) - 1, args.windows).round().astype(int)
+        starts = [starts[i] for i in sorted(set(picked))]
+    report = {"scene": args.scene, "blocks": len(blocks), "windows": len(starts)}
     got = np.zeros((len(blocks) * 32, 32), dtype=np.uint32)
     seen = np.zeros(len(blocks) * 32, dtype=bool)
     with km.Session(log=card.log) as session:
         workers = card.workers(session)
         cores = args.cores or workers
         mesh = card.tensor(session, blocks)
-        cam = card.tensor(session, camera_page(scene))
-        res = card.tensor(session, np.zeros((WINDOW, S["kRecBytes"] // 4)))
-        run_ = session.load(program(), deadline=1.0)
-        us, ok = [], True
-        for w0 in starts:
-            n = min(WINDOW, len(blocks) - w0)
-            a = [mesh.address, res.address, len(blocks)]
-            a += [cam.address, w0, cores, n]
-            t = run_.submit(S["kHandlerLanes"], group=(0, workers), args=a)
-            event = run_.wait(t, timeout=10.0)
-            us.append(event.microseconds)
+        camera = card.tensor(session, camera_page(scene))
+        output_tensor = card.tensor(session, np.zeros((WINDOW, S["kRecBytes"] // 4)))
+        running = session.load(program(), deadline=1.0)
+        microseconds, succeeded = [], True
+        for first_block in starts:
+            block_count = min(WINDOW, len(blocks) - first_block)
+            command_words = [mesh.address, output_tensor.address, len(blocks)]
+            command_words += [camera.address, first_block, cores, block_count]
+            handle = running.submit(
+                S["kHandlerLanes"], group=(0, workers), args=command_words
+            )
+            event = running.wait(handle, timeout=10.0)
+            microseconds.append(event.microseconds)
             if event.kind != "done":
-                ok = False
+                succeeded = False
                 break
-            (page,) = session.read(res, first=0, pages=n)
-            got[32 * w0 : 32 * (w0 + n)] = page.view(np.uint32).reshape(-1, 32)
-            seen[32 * w0 : 32 * (w0 + n)] = True
-            card.log(f"window {w0} of {len(blocks)}: {n} blocks")
-        run_.stop()
-        status = card.check_run(run_, workers, len(us), us)
-    out["event_microseconds"] = us
-    out["status"] = status
+            (page,) = session.read(output_tensor, first=0, pages=block_count)
+            got[32 * first_block : 32 * (first_block + block_count)] = page.view(
+                np.uint32
+            ).reshape(-1, 32)
+            seen[32 * first_block : 32 * (first_block + block_count)] = True
+            card.log(f"window {first_block} of {len(blocks)}: {block_count} blocks")
+        running.stop()
+        status = card.check_run(running, workers, len(microseconds), microseconds)
+    report["event_microseconds"] = microseconds
+    report["status"] = status
     if args.dump:
         np.save(args.dump, got)
-    out["check"] = check_lanes(scene, got, seen)
-    out["ok"] = bool(
-        ok
+    report["check"] = check_lanes(scene, got, seen)
+    report["ok"] = bool(
+        succeeded
         and status["ok"]
-        and out["check"]["words_differ"] == 0
-        and out["check"]["kept_disagree"] == 0
-        and out["check"]["box_differ"] == 0
+        and report["check"]["words_differ"] == 0
+        and report["check"]["kept_disagree"] == 0
+        and report["check"]["box_differ"] == 0
     )
-    print(json.dumps(out), flush=True)
+    print(json.dumps(report), flush=True)
     if args.json:
-        with open(args.json, "w") as f:
-            json.dump(out, f, indent=1)
-    if not out["ok"]:
+        with open(args.json, "w") as file:
+            json.dump(report, file, indent=1)
+    if not report["ok"]:
         sys.exit(1)
 
 

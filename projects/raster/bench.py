@@ -21,13 +21,16 @@ from projects.raster import card, lists, run
 K = lists.K
 
 
-def host_times(scene, workers, mode, reps, split):
-    """Median seconds of each host step over `reps` preparations, and the last one."""
-    steps, h = [], None
-    for _ in range(reps):
-        h = run.prepare(scene, workers, mode, split=split)
-        steps.append(h["host"])
-    return {k: float(np.median([s[k] for s in steps])) for k in steps[0]}, h
+def host_times(scene, workers, mode, repetitions, split):
+    """Median seconds of each host step over `repetitions` preparations, and the last
+    one."""
+    steps, prepared = [], None
+    for _ in range(repetitions):
+        prepared = run.prepare(scene, workers, mode, split=split)
+        steps.append(prepared["host"])
+    return {
+        step: float(np.median([sample[step] for sample in steps])) for step in steps[0]
+    }, prepared
 
 
 def card_index():
@@ -47,24 +50,25 @@ NOMINAL_MHZ = 1350
 
 
 class ClockSampler:
-    """Samples the card's AICLK (MHz) every `period_s` in a thread while in use."""
+    """Samples the card's AICLK (MHz) every `period_seconds` in a thread while in
+    use."""
 
-    def __init__(self, index, period_s=0.05):
+    def __init__(self, index, period_seconds=0.05):
         self.path = Path(f"/sys/class/tenstorrent/tenstorrent!{index}/tt_aiclk")
-        self.period_s, self.mhz = period_s, []
+        self.period_seconds, self.mhz = period_seconds, []
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.sample, daemon=True)
 
     def sample(self):
         while not self.stop.is_set():
             self.mhz.append(int(self.path.read_text()))
-            self.stop.wait(self.period_s)
+            self.stop.wait(self.period_seconds)
 
     def __enter__(self):
         self.thread.start()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exception):
         self.stop.set()
         self.thread.join()
 
@@ -74,29 +78,31 @@ class ClockSampler:
             "aiclk_mhz_min": min(self.mhz),
             "aiclk_mhz_mean": float(np.mean(self.mhz)),
             "aiclk_samples": len(self.mhz),
-            "aiclk_left_nominal": any(m != NOMINAL_MHZ for m in self.mhz),
+            "aiclk_left_nominal": any(sample != NOMINAL_MHZ for sample in self.mhz),
         }
 
 
 def power_figures(meter, windows, frames, idle_w):
     """The card's power over the windows in which commands ran."""
-    src = meter.source
+    source = meter.source
     parts = [
-        power.summarize(meter.samples, a, b, src.update_s, src.limit_w)
-        for a, b in windows
+        power.summarize(
+            meter.samples, window_start, window_end, source.update_s, source.limit_w
+        )
+        for window_start, window_end in windows
     ]
-    seconds = sum(b - a for a, b in windows)
-    if any(p.too_short for p in parts):
+    seconds = sum(window_end - window_start for window_start, window_end in windows)
+    if any(part.too_short for part in parts):
         return {"too_short": True, "note": parts[0].note, "seconds": seconds}
-    joules = sum(p.joules for p in parts)
+    joules = sum(part.joules for part in parts)
     mean = joules / seconds
     return {
         "card_idle_w": idle_w,
         "card_idle_open_w": meter.result.idle_mean_w,
         "card_mean_w": mean,
-        "card_peak_w": max(p.peak_w for p in parts),
-        "card_limit_w": src.limit_w,
-        "card_mean_percent_of_limit": 100 * mean / src.limit_w,
+        "card_peak_w": max(part.peak_w for part in parts),
+        "card_limit_w": source.limit_w,
+        "card_mean_percent_of_limit": 100 * mean / source.limit_w,
         "card_joules_per_frame": joules / frames,
         "card_joules_per_frame_above_idle": (mean - idle_w) * seconds / frames,
         "seconds_per_frame": seconds / frames,
@@ -105,105 +111,117 @@ def power_figures(meter, windows, frames, idle_w):
     }
 
 
-def plan_loop(seconds, first_microseconds, max_reps, budget_s):
+def plan_loop(seconds, first_microseconds, max_repetitions, budget_seconds):
     """Commands for `seconds` of commands of `first_microseconds` each, at most
-    `max_reps`. Exits when the loop would take longer than `budget_s`."""
-    reps = int(min(max_reps, max(1, math.ceil(seconds * 1e6 / first_microseconds))))
-    planned = reps * first_microseconds * 1e-6
-    card.log(f"plan: {reps} commands, about {planned:.1f} s on the card")
-    if planned > budget_s:
-        raise SystemExit(f"plan of {planned:.0f} s exceeds the budget of {budget_s} s")
-    return reps
+    `max_repetitions`. Exits when the loop would take longer than `budget_seconds`."""
+    repetitions = int(
+        min(max_repetitions, max(1, math.ceil(seconds * 1e6 / first_microseconds)))
+    )
+    planned = repetitions * first_microseconds * 1e-6
+    card.log(f"plan: {repetitions} commands, about {planned:.1f} s on the card")
+    if planned > budget_seconds:
+        raise SystemExit(
+            f"plan of {planned:.0f} s exceeds the budget of {budget_seconds} s"
+        )
+    return repetitions
 
 
-def power_loop(index, run_, handler, args, reps, batch=512):
-    """`reps` commands of `handler` on every core in batches under the samplers; (meter,
-    clock, the window in which commands ran, microseconds per command)."""
-    lat = []
+def power_loop(index, running, handler, args, repetitions, batch=512):
+    """`repetitions` commands of `handler` on every core in batches under the samplers;
+    (meter, clock, the window in which commands ran, microseconds per command)."""
+    latencies = []
     with power.PowerSampler(index) as meter, ClockSampler(index) as clock:
         start = time.perf_counter()
-        while sum(map(len, lat)) < reps:
-            n = min(batch, reps - sum(map(len, lat)))
-            lat.append(card.loop(run_, handler, args, n, batch))
-            if len(lat[-1]) < n:
+        while sum(map(len, latencies)) < repetitions:
+            commands = min(batch, repetitions - sum(map(len, latencies)))
+            latencies.append(card.loop(running, handler, args, commands, batch))
+            if len(latencies[-1]) < commands:
                 break
         # one command in flight at a time; the host's gaps between batches count too
         windows = [(start, time.perf_counter())]
-    return meter, clock, windows, lat
+    return meter, clock, windows, latencies
 
 
-def loop_stats(windows, lat):
+def loop_stats(windows, latencies):
     """Frame-time figures of a power loop."""
-    lat = np.concatenate(lat)
-    card_s = sum(b - a for a, b in windows)
+    latencies = np.concatenate(latencies)
+    card_seconds = sum(
+        window_end - window_start for window_start, window_end in windows
+    )
     return {
-        "frames": int(len(lat)),
-        "frame_microseconds_median": float(np.median(lat)),
-        "frame_microseconds_min": float(lat.min()),
-        "frame_microseconds_max": float(lat.max()),
-        "frames_per_s": len(lat) / card_s,
-        "card_s": card_s,
-        "commands_s": float(lat.sum()) * 1e-6,
+        "frames": int(len(latencies)),
+        "frame_microseconds_median": float(np.median(latencies)),
+        "frame_microseconds_min": float(latencies.min()),
+        "frame_microseconds_max": float(latencies.max()),
+        "frames_per_s": len(latencies) / card_seconds,
+        "card_s": card_seconds,
+        "commands_s": float(latencies.sum()) * 1e-6,
     }
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--scene", default="tiny")
-    p.add_argument("--assign", default="balanced")
-    p.add_argument("--split", type=float, default=run.SPLIT, help="0: no bands")
-    p.add_argument("--seconds", type=float, default=5.0)
-    p.add_argument("--max-reps", type=int, default=100_000)
-    p.add_argument("--host-reps", type=int, default=5)
-    p.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--scene", default="tiny")
+    parser.add_argument("--assign", default="balanced")
+    parser.add_argument("--split", type=float, default=run.SPLIT, help="0: no bands")
+    parser.add_argument("--seconds", type=float, default=5.0)
+    parser.add_argument("--max-reps", type=int, default=100_000)
+    parser.add_argument("--host-reps", type=int, default=5)
+    parser.add_argument(
         "--budget", type=float, default=60.0, help="seconds the loop may take at most"
     )
-    p.add_argument("--json", default=None)
-    p.add_argument("--out", type=Path, default=None)
-    args = p.parse_args()
-    out = {"name": f"card-{args.scene}", "scene": args.scene, "assign": args.assign}
-    out["split"] = args.split
-    scene, out["load_s"] = run.load(args.scene)
+    parser.add_argument("--json", default=None)
+    parser.add_argument("--out", type=Path, default=None)
+    args = parser.parse_args()
+    results = {"name": f"card-{args.scene}", "scene": args.scene, "assign": args.assign}
+    results["split"] = args.split
+    scene, results["load_s"] = run.load(args.scene)
     index = card_index()
     idle_w = idle_closed(index, 3.0)
     with km.Session(log=card.log) as session:
         workers = card.workers(session)
-        out["host"], h = host_times(
+        results["host"], prepared = host_times(
             scene, workers, args.assign, args.host_reps, args.split
         )
-        n_out = len(h["tiles"]) * K["kPlanes"]
-        up = card.upload(session, h["pages"], h["directory"], n_out)
-        words = card.words(up, K["kPlanes"])
-        run_ = session.load(card.program(), deadline=1.0)
-        first = card.loop(run_, K["kHandlerFill"], words, 1)
-        reps = plan_loop(args.seconds, float(first[0]), args.max_reps, args.budget)
-        meter, clock, windows, lat = power_loop(
-            index, run_, K["kHandlerFill"], words, reps
+        output_pages = len(prepared["tiles"]) * K["kPlanes"]
+        uploaded = card.upload(
+            session, prepared["pages"], prepared["directory"], output_pages
         )
-        run_.stop()
-        out["run"] = card.check_run(run_, workers, reps, np.concatenate(lat))
-        t0 = time.perf_counter()
-        frame = card.read_frame(session, up)
-        out["readback_s"] = time.perf_counter() - t0
-    out["loop"] = loop_stats(windows, lat)
-    out["power"] = power_figures(meter, windows, out["loop"]["frames"], idle_w)
-    out["power"].update(clock.figures())
-    out["frame_microseconds"] = {
+        words = card.words(uploaded, K["kPlanes"])
+        running = session.load(card.program(), deadline=1.0)
+        first = card.loop(running, K["kHandlerFill"], words, 1)
+        repetitions = plan_loop(
+            args.seconds, float(first[0]), args.max_reps, args.budget
+        )
+        meter, clock, windows, latencies = power_loop(
+            index, running, K["kHandlerFill"], words, repetitions
+        )
+        running.stop()
+        results["run"] = card.check_run(
+            running, workers, repetitions, np.concatenate(latencies)
+        )
+        started = time.perf_counter()
+        frame = card.read_frame(session, uploaded)
+        results["readback_s"] = time.perf_counter() - started
+    results["loop"] = loop_stats(windows, latencies)
+    results["power"] = power_figures(meter, windows, results["loop"]["frames"], idle_w)
+    results["power"].update(clock.figures())
+    results["frame_microseconds"] = {
         "first": float(first[0]),
-        "median": out["loop"]["frame_microseconds_median"],
-        "min": out["loop"]["frame_microseconds_min"],
-        "max": out["loop"]["frame_microseconds_max"],
+        "median": results["loop"]["frame_microseconds_median"],
+        "min": results["loop"]["frame_microseconds_min"],
+        "max": results["loop"]["frame_microseconds_max"],
     }
-    check = run.check(args.scene, None, *(h[k] for k in run.ARGS), frame)
-    out["check"] = check
-    out["ok"] = bool(out["run"]["ok"] and run.check_ok(check))
-    print(json.dumps(out), flush=True)
+    check = run.check(args.scene, None, *(prepared[name] for name in run.ARGS), frame)
+    results["check"] = check
+    results["ok"] = bool(results["run"]["ok"] and run.check_ok(check))
+    print(json.dumps(results), flush=True)
     if args.json:
-        with open(args.json, "w") as fh:
-            json.dump(out, fh, indent=1)
+        with open(args.json, "w") as file:
+            json.dump(results, file, indent=1)
     if args.out:
-        run.save_result(args.out, out, frame, h["counts"], out["power"])
-    if not out["ok"]:
+        run.save_result(args.out, results, frame, prepared["counts"], results["power"])
+    if not results["ok"]:
         sys.exit(1)
 
 

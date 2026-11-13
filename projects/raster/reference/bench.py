@@ -1,5 +1,5 @@
 """Timing and power table of the C++ (1 thread, all threads) and CUDA rasterizers:
-setup, binning and fill, median of RUNS processes x REPS repetitions; seconds per frame
+setup, binning and fill, median of RUNS processes x repetitions; seconds per frame
 and power from one more run of at least 3 s (the README's "Timings and power" says what
 is timed). `python -m projects.raster.reference.bench [--scenes ...] [--json FILE]`"""
 
@@ -15,39 +15,57 @@ POWER_SECONDS = 3.0
 
 
 def runners(scene):
-    """(folder, label, function(reps, store, with_power)) per implementation."""
-    n = harness.threads_all()
+    """(folder, label, function(repetitions, with_power)) per implementation."""
+    threads = harness.threads_all()
     return [
-        ("cpu1", "C++ 1 thread", lambda r, w: harness.run_cpu(scene, 1, r, False, w)),
+        (
+            "cpu1",
+            "C++ 1 thread",
+            lambda repetitions, with_power: harness.run_cpu(
+                scene, 1, repetitions, False, with_power
+            ),
+        ),
         (
             "cpu_all",
-            f"C++ {n} threads",
-            lambda r, w: harness.run_cpu(scene, n, r, False, w),
+            f"C++ {threads} threads",
+            lambda repetitions, with_power: harness.run_cpu(
+                scene, threads, repetitions, False, with_power
+            ),
         ),
-        ("v100", "V100", lambda r, w: harness.run_gpu(scene, r, False, w)),
+        (
+            "v100",
+            "V100",
+            lambda repetitions, with_power: harness.run_gpu(
+                scene, repetitions, False, with_power
+            ),
+        ),
     ]
 
 
 def summarize(records):
     """Median, min and max per stage over every repetition of every run."""
-    out = {}
+    summary = {}
     for stage in STAGES:
-        values = [rep[stage] for rec in records for rep in rec["reps"]]
-        out[stage] = {
+        values = [
+            repetition[stage] for record in records for repetition in record["reps"]
+        ]
+        summary[stage] = {
             "median": statistics.median(values),
             "min": min(values),
             "max": max(values),
             "n": len(values),
         }
-    out["load"] = sorted({f"{r['load_before']} / {r['load_after']}" for r in records})
-    return out
+    summary["load"] = sorted(
+        {f"{record['load_before']} / {record['load_after']}" for record in records}
+    )
+    return summary
 
 
-def measure(scene, runs, reps):
+def measure(scene, runs, repetitions):
     """{folder: {label, stages, power}} for the implementations available."""
     report = {}
     for folder, label, run in runners(scene):
-        records = [run(reps, False) for _ in range(runs)]
+        records = [run(repetitions, False) for _ in range(runs)]
         if records[0] is None:
             continue
         stages = summarize(records)
@@ -78,8 +96,9 @@ HEADER = (
 
 def row(scene, label, stages, power, load=""):
     cells = " | ".join(
-        f"{stages[k]['median']:.2f} ({stages[k]['min']:.2f}-{stages[k]['max']:.2f})"
-        for k in STAGES
+        f"{stages[stage]['median']:.2f} "
+        f"({stages[stage]['min']:.2f}-{stages[stage]['max']:.2f})"
+        for stage in STAGES
     )
     gpu = "n/a"
     if "gpu_mean_w" in power:
@@ -91,9 +110,9 @@ def row(scene, label, stages, power, load=""):
     if "card_mean_w" in power:
         card = f"{power['card_idle_w']:.0f} / {power['card_mean_w']:.0f} / "
         card += f"{power['card_peak_w']:.0f}, {power['card_joules_per_frame']:.3f}"
-    spf = power["seconds_per_frame"]
+    seconds_per_frame = power["seconds_per_frame"]
     return (
-        f"| {scene} | {label} | {cells} | {spf * 1000:.2f} | {gpu} | "
+        f"| {scene} | {label} | {cells} | {seconds_per_frame * 1000:.2f} | {gpu} | "
         f"{fmt(joules, 3)} | {fmt(cpu, 3)} | {card} | {load} |"
     )
 
@@ -105,8 +124,11 @@ def external_rows(scene, external):
         stages = info.get("timings_ms")
         if name in ("numpy", "C++ 1 thread", "C++ all threads", "V100") or not stages:
             continue
-        cells = {k: {"median": v, "min": v, "max": v} for k, v in stages.items()}
-        if all(k in cells for k in STAGES):
+        cells = {
+            stage: {"median": value, "min": value, "max": value}
+            for stage, value in stages.items()
+        }
+        if all(stage in cells for stage in STAGES):
             power = info.get("power", {"seconds_per_frame": info["seconds_per_frame"]})
             rows.append(row(scene, f"{name} (external)", cells, power))
     return rows
@@ -131,8 +153,8 @@ def main():
         for line in external_rows(scene, args.external):
             print(line)
     if args.json:
-        with open(args.json, "w") as f:
-            json.dump(report, f, indent=1)
+        with open(args.json, "w") as file:
+            json.dump(report, file, indent=1)
 
 
 if __name__ == "__main__":

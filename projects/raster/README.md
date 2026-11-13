@@ -32,13 +32,18 @@ frame carries the same `tri` image as the reference.
 
 ## Who does what on a core
 
-| Kernel | Thread | Work |
+The reader and the writer are the two roles of the easy layout, not "the CPU that
+reads" and "the CPU that writes": either data-movement CPU can read, write and send to
+other cores. What differs is the NoC each uses, that each circular buffer has one
+kernel filling it and one draining it, and that the writer reports the command.
+
+| Kernel | Role | Work |
 |---|---|---|
-| `reader.cpp` | data mover 0 | reads the core's directory page (first list page, page count, tile ids), streams the list pages (2 KB, 16 slots) into the input buffer |
+| `reader.cpp` | reader (RISCV_0, NoC0) | reads the core's directory page (first list page, page count, tile ids), streams the list pages (2 KB, 16 slots) into the input buffer |
 | `compute.cpp` | unpack | waits for each list page (only this thread can wait on a buffer) and passes its address to the pack thread through the mailbox; frees it when the pack thread answers |
 | `compute.cpp` + `fill.hpp` | pack | submits every vector-unit instruction: tile init, per triangle the broadcast constants, per row the edge tests and the plane updates; then copies the five planes from the destination register to five output pages |
 | `compute.cpp` | math | idle |
-| `writer.cpp` | data mover 1 | sends each tile's five pages to the frame; writes tiles without triangles itself from a constant buffer; at the end writes the profile page |
+| `writer.cpp` | writer (RISCV_1, NoC1) | sends each tile's five pages to the frame; writes tiles without triangles itself from a constant buffer; at the end writes the profile page |
 
 `raster.h` holds the layouts shared by the host and the kernels: the 128-byte record,
 the tile header and end slot, the directory page, the frame (per tile five 4 KB planes
@@ -158,7 +163,7 @@ All 120 cores are workers. `card.py` writes the lists, the directory and empty f
 and profile tensors to DRAM, then loads the program (`Session.load`): with slow
 dispatch a tensor write waits for every core to be idle, which a persistent grid never
 is, so nothing is written while the program is loaded. A FILL command goes to every core
-(a0 directory, a1 lists, a3 pages per item, a4 profile), one in flight at a time
+(`directory_address`, `lists_address`, `pages_per_item`, `profile_address`), one in flight at a time
 (mailbox depth 1), so its event's time is that frame alone. The frame is eleven tensors
 of at most 2 MB (510 pages), whose addresses every directory page holds; after the stop
 they and the profile are read by DRAM banks (`Session.read`), one tensor at a time.

@@ -6,11 +6,11 @@
 
 #include "api/dataflow/dataflow_api.h"
 
-namespace su {
+namespace setup_pass {
 
     // Byte `offset` of page `page` (of `bytes`) at `base`: with bank 0 an interleaved
     // tensor's page, otherwise bank (bank - 1)'s address base + page x bytes + offset.
-    inline uint64_t addr(
+    inline uint64_t noc_address(
         uint32_t bank, uint32_t base, uint32_t page, uint32_t bytes, uint32_t offset = 0
     ) {
         if (bank != 0) {
@@ -18,10 +18,10 @@ namespace su {
                 get_noc_addr_from_bank_id<true>(bank - 1, base + page * bytes + offset)
             );
         }
-        const InterleavedAddrGen<true> g = {
+        const InterleavedAddrGen<true> tensor = {
             .bank_base_address = base, .page_size = bytes
         };
-        return get_noc_addr(page, g, offset);
+        return get_noc_addr(page, tensor, offset);
     }
 
-}  // namespace su
+}  // namespace setup_pass

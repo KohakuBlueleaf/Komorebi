@@ -1,39 +1,41 @@
-// Rasterizer writer: each item's output pages (a3 per item) to the frame, then the
-// profile page (compute's counters, then the reader's and its own) to a4.
+// Rasterizer writer: each item's output pages (pages_per_item) to the frame, then the
+// profile page (compute's counters, then the reader's and its own) to profile_address.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
 #include "raster.h"
 
-// An item of `per` pages at the read pointer must end inside the output buffer;
+// An item of `pages` pages at the read pointer must end inside the output buffer;
 // otherwise the give-up is recorded and the stop flag set.
-bool item_fits(const km::Writer& wr, uint32_t per, uint32_t sequence) {
+bool item_fits(const km::Writer& writer, uint32_t pages, uint32_t sequence) {
     if (
-        get_read_ptr(kCbOut) + per * kOutPageBytes <=
+        get_read_ptr(kCbOut) + pages * kOutPageBytes <=
         get_local_cb_interface(kCbOut).fifo_limit
     ) {
         return true;
     }
-    wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, sequence);
-    *wr.control(KM_CONTROL_STOP) = 1;
+    writer.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, sequence);
+    *writer.control(KM_CONTROL_STOP) = 1;
     return false;
 }
 
 // Timed NoC waits: reads arrived, or writes sent. False: gave up (recorded).
 template <typename Ready>
-bool noc_done(const km::Writer& wr, Ready ready, uint32_t where, uint32_t sequence) {
-    const uint32_t code = wr.poll(ready, wr.args().wait_limit);
+bool noc_done(
+    const km::Writer& writer, Ready ready, uint32_t where, uint32_t sequence
+) {
+    const uint32_t code = writer.poll(ready, writer.args().wait_limit);
     if (code == km::kGaveNone) {
         return true;
     }
-    wr.gave_up(km::kStWriter, code, where, 0, sequence);
+    writer.gave_up(km::kStWriter, code, where, 0, sequence);
     return false;
 }
 
-bool read_done(const km::Writer& wr, uint32_t sequence) {
+bool read_done(const km::Writer& writer, uint32_t sequence) {
     return noc_done(
-        wr,
+        writer,
         [] {
             return ncrisc_noc_reads_flushed(noc_index);
         },
@@ -42,9 +44,9 @@ bool read_done(const km::Writer& wr, uint32_t sequence) {
     );
 }
 
-bool writes_sent(const km::Writer& wr, uint32_t sequence) {
+bool writes_sent(const km::Writer& writer, uint32_t sequence) {
     return noc_done(
-        wr,
+        writer,
         [] {
             return ncrisc_noc_nonposted_writes_sent(noc_index);
         },
@@ -54,115 +56,125 @@ bool writes_sent(const km::Writer& wr, uint32_t sequence) {
 }
 
 // FILL and ARITH of one command; the frame program's writer calls it as well.
-bool fill_writer_command(const km::Writer& wr, const km_command_t& r) {
-    if (km::handler(r) != kHandlerFill && km::handler(r) != kHandlerArith) {
+bool fill_writer_command(const km::Writer& writer, const km_command_t& command) {
+    if (km::handler(command) != kHandlerFill && km::handler(command) != kHandlerArith) {
         return true;
     }
-    const uint32_t t0 = km::wall();
-    const uint32_t dir = get_write_ptr(kCbDirWriter);
-    volatile tt_l1_ptr uint32_t* d = km::l1(dir);
-    const InterleavedAddrGen<true> dirs = {
-        .bank_base_address = r.a0, .page_size = kDirBytes
+    const uint32_t directory_address = command.a0, pages_per_item = command.a3;
+    const uint32_t profile_address = command.a4;
+    const uint32_t started = km::wall();
+    const uint32_t scratch = get_write_ptr(kCbDirWriter);
+    volatile tt_l1_ptr uint32_t* directory = km::l1(scratch);
+    const InterleavedAddrGen<true> directories = {
+        .bank_base_address = directory_address, .page_size = kDirBytes
     };
-    noc_async_read(get_noc_addr(wr.me(), dirs), dir, kDirBytes);
-    if (!read_done(wr, r.sequence)) {
+    noc_async_read(get_noc_addr(writer.me(), directories), scratch, kDirBytes);
+    if (!read_done(writer, command.sequence)) {
         return false;
     }
     invalidate_l1_cache();
-    const uint32_t items = d[kDirItems], per = r.a3, chunk = d[kDirFrame];
+    const uint32_t items = directory[kDirItems], tensor_pages = directory[kDirFrame];
     // An item's pages lie in one of the frame's tensors, each named in the table.
-    if (chunk == 0 || chunk % per != 0 || items > kDirMaxItems) {
-        wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, r.sequence);
-        *wr.control(KM_CONTROL_STOP) = 1;
+    if (
+        tensor_pages == 0 || tensor_pages % pages_per_item != 0 || items > kDirMaxItems
+    ) {
+        writer.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, command.sequence);
+        *writer.control(KM_CONTROL_STOP) = 1;
         return false;
     }
-    auto frame_noc = [&](uint32_t page, uint32_t at) {
-        const InterleavedAddrGen<true> part = {
-            .bank_base_address = d[kDirFrame + 1 + page / chunk],
+    auto frame_noc = [&](uint32_t page, uint32_t byte_offset) {
+        const InterleavedAddrGen<true> frame_tensor = {
+            .bank_base_address = directory[kDirFrame + 1 + page / tensor_pages],
             .page_size = kOutPageBytes
         };
-        return get_noc_addr(page % chunk, part, at);
+        return get_noc_addr(page % tensor_pages, frame_tensor, byte_offset);
     };
     // The empty tile's planes: depth 0, the background colour, triangle -1.
     const uint32_t empty = get_write_ptr(kCbEmpty);
-    if (km::handler(r) == kHandlerFill) {
-        constexpr uint32_t value[kPlanes] = {
+    if (km::handler(command) == kHandlerFill) {
+        constexpr uint32_t plane_value[kPlanes] = {
             0, 0x3D4CCCCD, 0x3D4CCCCD, 0x3DA3D70A, 0xBF800000
         };
-        volatile tt_l1_ptr uint32_t* e = km::l1(empty);
-        for (uint32_t w = 0; w < kPlanes * kPlaneWords; ++w) {
-            e[w] = value[w / kPlaneWords];
+        volatile tt_l1_ptr uint32_t* empty_words = km::l1(empty);
+        for (uint32_t word = 0; word < kPlanes * kPlaneWords; ++word) {
+            empty_words[word] = plane_value[word / kPlaneWords];
         }
     }
     uint32_t wait = 0, write = 0;
-    for (uint32_t i = 0; i < items; ++i) {
-        const uint32_t id = d[kDirIds + i];
-        const bool none = (id & kItemEmpty) != 0;
-        const uint32_t a = km::wall();
-        if (!none && !wr.wait_front(kCbOut, per)) {
+    for (uint32_t item = 0; item < items; ++item) {
+        const uint32_t id = directory[kDirIds + item];
+        const bool is_empty = (id & kItemEmpty) != 0;
+        const uint32_t asked = km::wall();
+        if (!is_empty && !writer.wait_front(kCbOut, pages_per_item)) {
             return true;
         }
-        if (!none && !item_fits(wr, per, r.sequence)) {
+        if (!is_empty && !item_fits(writer, pages_per_item, command.sequence)) {
             return false;
         }
-        const uint32_t b = km::wall();
-        const uint32_t page = (id & kItemSlot) * per;
-        if (page / chunk >= kDirFrameMax) {
-            wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, r.sequence);
-            *wr.control(KM_CONTROL_STOP) = 1;
+        const uint32_t ready = km::wall();
+        const uint32_t page = (id & kItemSlot) * pages_per_item;
+        if (page / tensor_pages >= kDirFrameMax) {
+            writer.gave_up(
+                km::kStWriter, kGaveBadItem, kWhereBadSend, 0, command.sequence
+            );
+            *writer.control(KM_CONTROL_STOP) = 1;
             return false;
         }
-        const uint32_t row0 = id >> kItemRow0Shift & kItemRowMask;
-        const uint32_t row1 = id >> kItemRow1Shift & kItemRowMask;
-        const uint32_t at = row0 * kRowBytes;
-        const uint32_t bytes = row1 > 0 ? (row1 - row0) * kRowBytes : kOutPageBytes;
-        uint32_t src = (none ? empty : get_read_ptr(kCbOut)) + at;
-        for (uint32_t p = 0; p < per; ++p) {
-            noc_async_write(src, frame_noc(page + p, at), bytes);
-            src += kOutPageBytes;
+        const uint32_t first_row = id >> kItemRow0Shift & kItemRowMask;
+        const uint32_t end_row = id >> kItemRow1Shift & kItemRowMask;
+        const uint32_t byte_offset = first_row * kRowBytes;
+        const uint32_t bytes = (
+            end_row > 0 ? (end_row - first_row) * kRowBytes : kOutPageBytes
+        );
+        uint32_t source = (is_empty ? empty : get_read_ptr(kCbOut)) + byte_offset;
+        for (uint32_t plane = 0; plane < pages_per_item; ++plane) {
+            noc_async_write(source, frame_noc(page + plane, byte_offset), bytes);
+            source += kOutPageBytes;
         }
-        if (!writes_sent(wr, r.sequence)) {
+        if (!writes_sent(writer, command.sequence)) {
             return false;
         }
-        if (!none) {
-            cb_pop_front(kCbOut, per);
+        if (!is_empty) {
+            cb_pop_front(kCbOut, pages_per_item);
         }
-        wait += b - a;
-        write += km::wall() - b;
+        wait += ready - asked;
+        write += km::wall() - ready;
     }
     // The profile item: compute filled words [0, 32); reader and writer follow.
-    if (!wr.wait_front(kCbOut, per)) {
+    if (!writer.wait_front(kCbOut, pages_per_item)) {
         return true;
     }
-    if (!item_fits(wr, per, r.sequence)) {
+    if (!item_fits(writer, pages_per_item, command.sequence)) {
         return false;
     }
     invalidate_l1_cache();
-    volatile tt_l1_ptr uint32_t* prof = km::l1(get_read_ptr(kCbOut));
-    volatile tt_l1_ptr uint32_t* rd = km::l1(get_write_ptr(kCbDirReader));
-    for (uint32_t k = 0; k < 4; ++k) {
-        prof[kProfReader + k] = rd[kRdWords + k];
+    volatile tt_l1_ptr uint32_t* profile = km::l1(get_read_ptr(kCbOut));
+    volatile tt_l1_ptr uint32_t* reader_words = km::l1(get_write_ptr(kCbDirReader));
+    for (uint32_t counter = 0; counter < 4; ++counter) {
+        profile[kProfReader + counter] = reader_words[kRdWords + counter];
     }
-    prof[kProfWriter + 0] = wait;
-    prof[kProfWriter + 1] = write;
-    prof[kProfWriter + 2] = km::wall() - t0;
-    prof[kProfWriter + 3] = items;
-    const InterleavedAddrGen<true> profs = {
-        .bank_base_address = r.a4, .page_size = kOutPageBytes
+    profile[kProfWriter + 0] = wait;
+    profile[kProfWriter + 1] = write;
+    profile[kProfWriter + 2] = km::wall() - started;
+    profile[kProfWriter + 3] = items;
+    const InterleavedAddrGen<true> profile_pages = {
+        .bank_base_address = profile_address, .page_size = kOutPageBytes
     };
-    noc_async_write(get_read_ptr(kCbOut), get_noc_addr(wr.me(), profs), kOutPageBytes);
-    if (!writes_sent(wr, r.sequence)) {
+    noc_async_write(
+        get_read_ptr(kCbOut), get_noc_addr(writer.me(), profile_pages), kOutPageBytes
+    );
+    if (!writes_sent(writer, command.sequence)) {
         return false;
     }
-    cb_pop_front(kCbOut, per);
+    cb_pop_front(kCbOut, pages_per_item);
     return true;
 }
 
 #ifndef RASTER_NO_ENTRY
 void kernel_main() {
-    km::Writer wr;
-    wr.run([&](const km_command_t& r) {
-        return fill_writer_command(wr, r);
+    km::Writer writer;
+    writer.run([&](const km_command_t& command) {
+        return fill_writer_command(writer, command);
     });
 }
 #endif

@@ -19,195 +19,259 @@ namespace kr {
         const float* colors;     // (V, 3)
         const int32_t* indices;  // (T, 3)
         float camera[16];
-        int n_tris;
+        int triangle_count;
     };
 
     // One setup record: what the fill needs of one triangle.
     struct Record {
-        int32_t tri;             // triangle index, -1 when dropped
-        int32_t box[4];          // pixel box x0, x1, y0, y1 (inclusive)
-        float a[3], b[3], c[3];  // edge values  a x + b y + c
-        uint32_t top_left;       // bit i: edge i is a top or left edge
-        float w[3];              // 1/z plane
-        float cp[3][3];          // colour planes [x, y, 1][channel]
+        int32_t triangle;           // triangle index, -1 when dropped
+        int32_t box[4];             // pixel box x0, x1, y0, y1 (inclusive)
+        float a[3], b[3], c[3];     // edge values  a x + b y + c
+        uint32_t top_left;          // bit i: edge i is a top or left edge
+        float inverse_z_plane[3];   // 1/z plane
+        float colour_planes[3][3];  // colour planes [x, y, 1][channel]
     };
 
-    // Camera-space x, y, z (along right, up, forward) of point p, as in ref/raster.py.
-    KR_HD inline void camera_space(const float* cam, const float* p, float* c) {
-        float dx = p[0] - cam[0], dy = p[1] - cam[1], dz = p[2] - cam[2];
-        c[0] = (dx * cam[3] + dy * cam[4]) + dz * cam[5];
-        c[1] = (dx * cam[6] + dy * cam[7]) + dz * cam[8];
-        c[2] = (dx * cam[9] + dy * cam[10]) + dz * cam[11];
-    }
-
-    // Screen x, y and 1/z of a camera-space point beyond the near distance.
-    KR_HD inline void to_screen(const float* cam, const float* c, float* v) {
-        float inv = 1.0f / c[2];
-        v[0] = cam[13] + cam[12] * (c[0] * inv);
-        v[1] = cam[14] - cam[12] * (c[1] * inv);
-        v[2] = inv;
-    }
-
-    KR_HD inline float plane(const float* coef, const float* values, float inv_area) {
-        return (
-            ((coef[0] * values[0] + coef[1] * values[1]) + coef[2] * values[2]) *
-            inv_area
+    // Camera-space x, y, z (along right, up, forward) of `point`, as in ref/raster.py.
+    KR_HD inline void camera_space(
+        const float* camera, const float* point, float* camera_point
+    ) {
+        float offset_x = point[0] - camera[0];
+        float offset_y = point[1] - camera[1];
+        float offset_z = point[2] - camera[2];
+        camera_point[0] = (
+            (offset_x * camera[3] + offset_y * camera[4]) + offset_z * camera[5]
+        );
+        camera_point[1] = (
+            (offset_x * camera[6] + offset_y * camera[7]) + offset_z * camera[8]
+        );
+        camera_point[2] = (
+            (offset_x * camera[9] + offset_y * camera[10]) + offset_z * camera[11]
         );
     }
 
-    // Fills `r` for the piece with screen corners v (x, y, 1/z) and colours col of
-    // triangle t; r.tri stays -1 when it covers no pixel centre box.
-    KR_HD inline void build_record(float v[3][3], float col[3][3], int t, Record& r) {
-        r.tri = -1;
-        float area2 = (v[1][0] - v[0][0]) * (v[2][1] - v[0][1]);
-        area2 = area2 - (v[2][0] - v[0][0]) * (v[1][1] - v[0][1]);
+    // Screen x, y and 1/z of a camera-space point beyond the near distance.
+    KR_HD inline void to_screen(
+        const float* camera, const float* point, float* screen
+    ) {
+        float inverse_z = 1.0f / point[2];
+        screen[0] = camera[13] + camera[12] * (point[0] * inverse_z);
+        screen[1] = camera[14] - camera[12] * (point[1] * inverse_z);
+        screen[2] = inverse_z;
+    }
+
+    KR_HD inline float plane(
+        const float* coefficients, const float* values, float inverse_area
+    ) {
+        return (
+            (
+                (coefficients[0] * values[0] + coefficients[1] * values[1]) +
+                coefficients[2] * values[2]
+            ) *
+            inverse_area
+        );
+    }
+
+    // Fills `record` for the piece with `screen` corners (x, y, 1/z) and `colours` of
+    // `triangle`; record.triangle stays -1 when it covers no pixel centre box.
+    KR_HD inline void build_record(
+        float screen[3][3], float colours[3][3], int triangle, Record& record
+    ) {
+        record.triangle = -1;
+        float area2 = (screen[1][0] - screen[0][0]) * (screen[2][1] - screen[0][1]);
+        area2 = area2 - (screen[2][0] - screen[0][0]) * (screen[1][1] - screen[0][1]);
         if (area2 == 0.0f) {
             return;
         }
         if (area2 < 0.0f) {
-            for (int k = 0; k < 3; k++) {
-                float s = v[1][k];
-                v[1][k] = v[2][k];
-                v[2][k] = s;
-                float q = col[1][k];
-                col[1][k] = col[2][k];
-                col[2][k] = q;
+            for (int axis = 0; axis < 3; axis++) {
+                float swapped = screen[1][axis];
+                screen[1][axis] = screen[2][axis];
+                screen[2][axis] = swapped;
+                float swapped_colour = colours[1][axis];
+                colours[1][axis] = colours[2][axis];
+                colours[2][axis] = swapped_colour;
             }
             area2 = -area2;
         }
-        float lo_x = fminf(fminf(v[0][0], v[1][0]), v[2][0]);
-        float hi_x = fmaxf(fmaxf(v[0][0], v[1][0]), v[2][0]);
-        float lo_y = fminf(fminf(v[0][1], v[1][1]), v[2][1]);
-        float hi_y = fmaxf(fmaxf(v[0][1], v[1][1]), v[2][1]);
-        r.box[0] = (int)fminf(fmaxf(ceilf(lo_x - 0.5f), 0.0f), (float)WIDTH);
-        r.box[1] = (int)fmaxf(fminf(floorf(hi_x - 0.5f), (float)(WIDTH - 1)), -1.0f);
-        r.box[2] = (int)fminf(fmaxf(ceilf(lo_y - 0.5f), 0.0f), (float)HEIGHT);
-        r.box[3] = (int)fmaxf(fminf(floorf(hi_y - 0.5f), (float)(HEIGHT - 1)), -1.0f);
-        if (r.box[0] > r.box[1] || r.box[2] > r.box[3]) {
+        float lo_x = fminf(fminf(screen[0][0], screen[1][0]), screen[2][0]);
+        float hi_x = fmaxf(fmaxf(screen[0][0], screen[1][0]), screen[2][0]);
+        float lo_y = fminf(fminf(screen[0][1], screen[1][1]), screen[2][1]);
+        float hi_y = fmaxf(fmaxf(screen[0][1], screen[1][1]), screen[2][1]);
+        record.box[0] = (int)fminf(fmaxf(ceilf(lo_x - 0.5f), 0.0f), (float)WIDTH);
+        record.box[1] = (
+            (int)fmaxf(fminf(floorf(hi_x - 0.5f), (float)(WIDTH - 1)), -1.0f)
+        );
+        record.box[2] = (int)fminf(fmaxf(ceilf(lo_y - 0.5f), 0.0f), (float)HEIGHT);
+        record.box[3] = (
+            (int)fmaxf(fminf(floorf(hi_y - 0.5f), (float)(HEIGHT - 1)), -1.0f)
+        );
+        if (record.box[0] > record.box[1] || record.box[2] > record.box[3]) {
             return;
         }
-        r.top_left = 0;
+        record.top_left = 0;
         for (int i = 0; i < 3; i++) {
-            int p = (i + 1) % 3, q = (i + 2) % 3;
-            r.a[i] = v[p][1] - v[q][1];
-            r.b[i] = v[q][0] - v[p][0];
-            r.c[i] = -(r.a[i] * v[p][0] + r.b[i] * v[p][1]);
-            if (r.a[i] > 0.0f || (r.a[i] == 0.0f && r.b[i] > 0.0f)) {
-                r.top_left |= 1u << i;
+            int start = (i + 1) % 3, end = (i + 2) % 3;
+            record.a[i] = screen[start][1] - screen[end][1];
+            record.b[i] = screen[end][0] - screen[start][0];
+            record.c[i] = (
+                -(record.a[i] * screen[start][0] + record.b[i] * screen[start][1])
+            );
+            if (record.a[i] > 0.0f || (record.a[i] == 0.0f && record.b[i] > 0.0f)) {
+                record.top_left |= 1u << i;
             }
         }
-        float inv_area = 1.0f / area2;
-        float w[3] = {v[0][2], v[1][2], v[2][2]};
-        r.w[0] = plane(r.a, w, inv_area);
-        r.w[1] = plane(r.b, w, inv_area);
-        r.w[2] = plane(r.c, w, inv_area);
-        for (int ch = 0; ch < 3; ch++) {
-            float f[3] = {col[0][ch], col[1][ch], col[2][ch]};
-            r.cp[0][ch] = plane(r.a, f, inv_area);
-            r.cp[1][ch] = plane(r.b, f, inv_area);
-            r.cp[2][ch] = plane(r.c, f, inv_area);
+        float inverse_area = 1.0f / area2;
+        float inverse_zs[3] = {screen[0][2], screen[1][2], screen[2][2]};
+        record.inverse_z_plane[0] = plane(record.a, inverse_zs, inverse_area);
+        record.inverse_z_plane[1] = plane(record.b, inverse_zs, inverse_area);
+        record.inverse_z_plane[2] = plane(record.c, inverse_zs, inverse_area);
+        for (int channel = 0; channel < 3; channel++) {
+            float channel_values[3] = {
+                colours[0][channel], colours[1][channel], colours[2][channel]
+            };
+            record.colour_planes[0][channel] = (
+                plane(record.a, channel_values, inverse_area)
+            );
+            record.colour_planes[1][channel] = (
+                plane(record.b, channel_values, inverse_area)
+            );
+            record.colour_planes[2][channel] = (
+                plane(record.c, channel_values, inverse_area)
+            );
         }
-        r.tri = t;
+        record.triangle = triangle;
     }
 
-    // The one or two pieces of triangle t, corners c (x, y, z, colour) in camera space,
+    // The one or two pieces of `triangle`, `corners` (x, y, z, colour) in camera space,
     // cut at z = near (ref/raster.py, clip_polygon); kept out of line for the GPU.
     KR_HD KR_NOINLINE int clip_triangle(
-        const float* cam, const float (*c)[6], int t, Record& r0, Record& r1
+        const float* camera,
+        const float (*corners)[6],
+        int triangle,
+        Record& first,
+        Record& second
     ) {
-        const float near = cam[15];
+        const float near = camera[15];
         float poly[4][6];
-        int n = 0;
-        for (int k = 0; k < 3; k++) {
-            const float* a = c[k];
-            const float* b = c[(k + 1) % 3];
-            bool in_a = a[2] > near, in_b = b[2] > near;
-            if (in_a) {
-                for (int j = 0; j < 6; j++) {
-                    poly[n][j] = a[j];
+        int vertex_count = 0;
+        for (int corner = 0; corner < 3; corner++) {
+            const float* from_corner = corners[corner];
+            const float* to_corner = corners[(corner + 1) % 3];
+            bool from_inside = from_corner[2] > near, to_inside = to_corner[2] > near;
+            if (from_inside) {
+                for (int component = 0; component < 6; component++) {
+                    poly[vertex_count][component] = from_corner[component];
                 }
-                n++;
+                vertex_count++;
             }
-            if (in_a != in_b) {
-                const float* in = in_a ? a : b;
-                const float* out = in_a ? b : a;
-                float s = (near - in[2]) / (out[2] - in[2]);
-                for (int j = 0; j < 6; j++) {
-                    poly[n][j] = in[j] + s * (out[j] - in[j]);
+            if (from_inside != to_inside) {
+                const float* inside = from_inside ? from_corner : to_corner;
+                const float* outside = from_inside ? to_corner : from_corner;
+                float fraction = (near - inside[2]) / (outside[2] - inside[2]);
+                for (int component = 0; component < 6; component++) {
+                    poly[vertex_count][component] = (
+                        inside[component] +
+                        fraction * (outside[component] - inside[component])
+                    );
                 }
-                poly[n][2] = near;
-                n++;
+                poly[vertex_count][2] = near;
+                vertex_count++;
             }
         }
-        for (int piece = 0; piece + 2 < n; piece++) {
+        for (int piece = 0; piece + 2 < vertex_count; piece++) {
             const int fan[3] = {0, piece + 1, piece + 2};
-            float v[3][3], col[3][3];
+            float screen[3][3], colours[3][3];
             for (int i = 0; i < 3; i++) {
-                to_screen(cam, poly[fan[i]], v[i]);
-                for (int ch = 0; ch < 3; ch++) {
-                    col[i][ch] = poly[fan[i]][3 + ch];
+                to_screen(camera, poly[fan[i]], screen[i]);
+                for (int channel = 0; channel < 3; channel++) {
+                    colours[i][channel] = poly[fan[i]][3 + channel];
                 }
             }
-            build_record(v, col, t, piece == 0 ? r0 : r1);
+            build_record(screen, colours, triangle, piece == 0 ? first : second);
         }
-        return (r0.tri >= 0 ? 1 : 0) | (n == 4 && r1.tri >= 0 ? 2 : 0);
+        return (
+            (first.triangle >= 0 ? 1 : 0) |
+            (vertex_count == 4 && second.triangle >= 0 ? 2 : 0)
+        );
     }
 
-    // Fills r0 (and r1) with the pieces of triangle t, whole or clipped at z = near.
-    // Returns bit 0 when r0 holds a piece, bit 1 when r1 holds one.
-    KR_HD inline int setup_triangle(const Mesh& m, int t, Record& r0, Record& r1) {
-        r0.tri = -1;
-        float c[3][6];
-        int vi[3], beyond = 0;
+    // Fills `first` (and `second`) with the pieces of `triangle`, whole or clipped at
+    // z = near. Returns bit 0 when `first` holds a piece, bit 1 when `second` holds
+    // one.
+    KR_HD inline int setup_triangle(
+        const Mesh& mesh, int triangle, Record& first, Record& second
+    ) {
+        first.triangle = -1;
+        float corners[3][6];
+        int vertex_indices[3], beyond = 0;
         for (int i = 0; i < 3; i++) {
-            vi[i] = m.indices[3 * t + i];
-            camera_space(m.camera, m.positions + 3 * vi[i], c[i]);
-            beyond += c[i][2] > m.camera[15];
+            vertex_indices[i] = mesh.indices[3 * triangle + i];
+            camera_space(
+                mesh.camera, mesh.positions + 3 * vertex_indices[i], corners[i]
+            );
+            beyond += corners[i][2] > mesh.camera[15];
         }
         if (beyond == 0) {
             return 0;
         }
         for (int i = 0; i < 3; i++) {
-            for (int ch = 0; ch < 3; ch++) {
-                c[i][3 + ch] = m.colors[3 * vi[i] + ch];
+            for (int channel = 0; channel < 3; channel++) {
+                corners[i][3 + channel] = mesh.colors[3 * vertex_indices[i] + channel];
             }
         }
         if (beyond < 3) {
-            return clip_triangle(m.camera, c, t, r0, r1);
+            return clip_triangle(mesh.camera, corners, triangle, first, second);
         }
-        float v[3][3], col[3][3];
+        float screen[3][3], colours[3][3];
         for (int i = 0; i < 3; i++) {
-            to_screen(m.camera, c[i], v[i]);
-            for (int ch = 0; ch < 3; ch++) {
-                col[i][ch] = c[i][3 + ch];
+            to_screen(mesh.camera, corners[i], screen[i]);
+            for (int channel = 0; channel < 3; channel++) {
+                colours[i][channel] = corners[i][3 + channel];
             }
         }
-        build_record(v, col, t, r0);
-        return r0.tri >= 0 ? 1 : 0;
+        build_record(screen, colours, triangle, first);
+        return first.triangle >= 0 ? 1 : 0;
     }
 
     // True when the pixel centre (px, py) is inside the triangle (top-left fill rule).
-    KR_HD inline bool covers(const Record& r, float px, float py) {
+    KR_HD inline bool covers(const Record& record, float px, float py) {
         for (int i = 0; i < 3; i++) {
-            float e = (r.a[i] * px + r.b[i] * py) + r.c[i];
-            if (!(e > 0.0f || (e == 0.0f && ((r.top_left >> i) & 1u)))) {
+            float edge_value = (record.a[i] * px + record.b[i] * py) + record.c[i];
+            if (
+                !(
+                    edge_value > 0.0f ||
+                    (edge_value == 0.0f && ((record.top_left >> i) & 1u))
+                )
+            ) {
                 return false;
             }
         }
         return true;
     }
 
-    KR_HD inline float depth_at(const Record& r, float px, float py) {
-        return (r.w[0] * px + r.w[1] * py) + r.w[2];
+    KR_HD inline float depth_at(const Record& record, float px, float py) {
+        return (
+            (record.inverse_z_plane[0] * px + record.inverse_z_plane[1] * py) +
+            record.inverse_z_plane[2]
+        );
     }
 
-    KR_HD inline bool nearer(float w, int tri, float depth, int owner) {
-        return w > depth || (w == depth && tri < owner);
+    KR_HD inline bool nearer(float inverse_z, int triangle, float depth, int owner) {
+        return inverse_z > depth || (inverse_z == depth && triangle < owner);
     }
 
-    KR_HD inline void colour_at(const Record& r, float px, float py, float* out) {
-        for (int ch = 0; ch < 3; ch++) {
-            out[ch] = (r.cp[0][ch] * px + r.cp[1][ch] * py) + r.cp[2][ch];
+    KR_HD inline void colour_at(
+        const Record& record, float px, float py, float* colour
+    ) {
+        for (int channel = 0; channel < 3; channel++) {
+            colour[channel] = (
+                (
+                    record.colour_planes[0][channel] * px +
+                    record.colour_planes[1][channel] * py
+                ) +
+                record.colour_planes[2][channel]
+            );
         }
     }
 

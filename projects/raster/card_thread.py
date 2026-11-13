@@ -81,15 +81,18 @@ def same_numbers():
         "kLayHdrRow1": (S["kLayHdrRow1"], K["kHdrRow1"]),
         "kDirPageBytes": (S["kDirPageBytes"], K["kDirBytes"]),
     }
-    pairs = {k: v if isinstance(v, tuple) else (F[k], v) for k, v in pairs.items()}
-    return {k: v for k, v in pairs.items() if v[0] != v[1]}
+    pairs = {
+        name: value if isinstance(value, tuple) else (F[name], value)
+        for name, value in pairs.items()
+    }
+    return {name: pair for name, pair in pairs.items() if pair[0] != pair[1]}
 
 
 def camera_region(scene):
     """The camera's numbers, then room for COUNT's and SETUP's ranges and costs."""
-    out = np.zeros((1, F["RF_CAMERA_BYTES"] // 4), dtype=np.uint32)
-    out[0, : S["kCamWords"]] = card_passes.camera_page(scene)[0]
-    return out
+    region = np.zeros((1, F["RF_CAMERA_BYTES"] // 4), dtype=np.uint32)
+    region[0, : S["kCamWords"]] = card_passes.camera_page(scene)[0]
+    return region
 
 
 def regions(scene, workers):
@@ -108,18 +111,19 @@ def program(scene, words, workers):
     """The frame program: the passes' and the fill's kernels behind one entry each
     (kernels/frame_*.cpp), both programs' buffers, with the frame thread on work
     cluster 1."""
-    fill, passes_ = card.program(), card_passes.program()
-    prog = km.Program(
+    fill_program, passes_program = card.program(), card_passes.program()
+    frame_program = km.Program(
         "raster_frame",
         kernels={
-            k: KERNELS / f"frame_{k}.cpp" for k in ("reader", "compute", "writer")
+            role: KERNELS / f"frame_{role}.cpp"
+            for role in ("reader", "compute", "writer")
         },
-        buffers=[*fill.buffers, *passes_.buffers],
-        compute=fill.compute,
+        buffers=[*fill_program.buffers, *passes_program.buffers],
+        compute=fill_program.compute,
         depth=1,
-        handlers={**fill.handlers, **passes_.handlers},
+        handlers={**fill_program.handlers, **passes_program.handlers},
     )
-    prog.thread(
+    frame_program.thread(
         cluster=CLUSTER,
         sources=[THREAD / "frame.c", THREAD / "middle.c"],
         includes=[THREAD],
@@ -127,23 +131,25 @@ def program(scene, words, workers):
         words=words,
         deadline=10.0,
     )
-    return prog
+    return frame_program
 
 
 def tensors(session, blocks, workers, list_slots):
     """The DRAM tensors: mesh (once per scene), lists, directory, frame, profiles, and
     the pages only the cores read and write."""
     pages = -(-list_slots // lists.PAGE_SLOTS)
-    out_pages = lists.TILES * 5
-    chunks = -(-out_pages // card.CHUNK_PAGES)
+    output_pages = lists.TILES * 5
+    chunks = -(-output_pages // card.CHUNK_PAGES)
     frame = [
         card.tensor(
             session,
-            np.zeros((min(card.CHUNK_PAGES, out_pages - i * card.CHUNK_PAGES), 1024)),
+            np.zeros(
+                (min(card.CHUNK_PAGES, output_pages - chunk * card.CHUNK_PAGES), 1024)
+            ),
         )
-        for i in range(chunks)
+        for chunk in range(chunks)
     ]
-    up = {
+    uploaded = {
         "mesh": card.tensor(session, blocks),
         "lists": card.tensor(session, np.zeros((pages, lists.PAGE_WORDS))),
         "dir": card.tensor(session, np.zeros((workers, K["kDirBytes"] // 4))),
@@ -161,53 +167,56 @@ def tensors(session, blocks, workers, list_slots):
         "list_slots": pages * lists.PAGE_SLOTS,
     }
     session.device.finish()  # the uploads land before any frame runs
-    return up
+    return uploaded
 
 
-def words(up, blocks, cores, workers, steps, balance=True):
-    w = [0] * F["RF_WORDS"]
-    w[F["RF_W_BALANCE"]] = int(balance)
-    w[F["RF_W_CORES"]] = cores
-    w[F["RF_W_WORKERS"]] = workers
-    w[F["RF_W_BANK"]] = BANK_OF_CLUSTER[CLUSTER]
-    w[F["RF_W_MESH"]] = up["mesh"].address
-    w[F["RF_W_BLOCKS"]] = blocks
-    w[F["RF_W_LISTS"]] = up["lists"].address
-    w[F["RF_W_LIST_SLOTS"]] = up["list_slots"]
-    w[F["RF_W_DIR"]] = up["dir"].address
-    w[F["RF_W_STEPS"]] = steps
-    w[F["RF_W_FRAME_PAGES"]] = card.CHUNK_PAGES
-    w[F["RF_W_FRAMES"]] = len(up["frame"])
-    for i, t in enumerate(up["frame"]):
-        w[F["RF_W_FRAME"] + i] = t.address
-    w[F["RF_W_PROF"]] = up["prof"].address
-    w[F["RF_W_SPROF"]] = up["sprof"].address
+def words(uploaded, blocks, cores, workers, steps, balance=True):
+    thread_words = [0] * F["RF_WORDS"]
+    thread_words[F["RF_W_BALANCE"]] = int(balance)
+    thread_words[F["RF_W_CORES"]] = cores
+    thread_words[F["RF_W_WORKERS"]] = workers
+    thread_words[F["RF_W_BANK"]] = BANK_OF_CLUSTER[CLUSTER]
+    thread_words[F["RF_W_MESH"]] = uploaded["mesh"].address
+    thread_words[F["RF_W_BLOCKS"]] = blocks
+    thread_words[F["RF_W_LISTS"]] = uploaded["lists"].address
+    thread_words[F["RF_W_LIST_SLOTS"]] = uploaded["list_slots"]
+    thread_words[F["RF_W_DIR"]] = uploaded["dir"].address
+    thread_words[F["RF_W_STEPS"]] = steps
+    thread_words[F["RF_W_FRAME_PAGES"]] = card.CHUNK_PAGES
+    thread_words[F["RF_W_FRAMES"]] = len(uploaded["frame"])
+    for index, frame_tensor in enumerate(uploaded["frame"]):
+        thread_words[F["RF_W_FRAME"] + index] = frame_tensor.address
+    thread_words[F["RF_W_PROF"]] = uploaded["prof"].address
+    thread_words[F["RF_W_SPROF"]] = uploaded["sprof"].address
     for name in ("counters", "hist", "slots", "hprefix"):
-        w[F[f"RF_W_{name.upper()}"]] = up[name].address
-    return w
+        thread_words[F[f"RF_W_{name.upper()}"]] = uploaded[name].address
+    return thread_words
 
 
-def result_dict(r):
+def result_dict(result):
     """The thread's result: code, what the middle pass found, each part in
     microseconds."""
-    o = list(r.words) + [0] * (F["RF_OUT_WORDS"] - len(r.words))
-    us = 1e6 / TIMER_HZ
+    out_words = list(result.words) + [0] * (F["RF_OUT_WORDS"] - len(result.words))
+    microseconds_per_tick = 1e6 / TIMER_HZ
     names = ["count", "sum", "hist", "hsum", "middle", "place", "setup", "fill"]
     return {
-        "ran": r.ran,
-        "state": r.state,
-        "error": r.error,
-        "code": r.code,
-        "where": r.where,
-        "thread_microseconds": r.microseconds,
-        "slots": o[F["RF_O_SLOTS"]],
-        "items": o[F["RF_O_ITEMS"]],
-        "marks": o[F["RF_O_MARKS"]],
-        "heavy": o[F["RF_O_HEAVY"]],
-        "microseconds": {n: o[F[f"RF_O_{n.upper()}"]] * us for n in names},
+        "ran": result.ran,
+        "state": result.state,
+        "error": result.error,
+        "code": result.code,
+        "where": result.where,
+        "thread_microseconds": result.microseconds,
+        "slots": out_words[F["RF_O_SLOTS"]],
+        "items": out_words[F["RF_O_ITEMS"]],
+        "marks": out_words[F["RF_O_MARKS"]],
+        "heavy": out_words[F["RF_O_HEAVY"]],
+        "microseconds": {
+            part: out_words[F[f"RF_O_{part.upper()}"]] * microseconds_per_tick
+            for part in names
+        },
         "middle_microseconds": {
-            n: o[F[f"RF_O_{n}"]] * us
-            for n in (
+            part: out_words[F[f"RF_O_{part}"]] * microseconds_per_tick
+            for part in (
                 "TAKE",
                 "HEAVY_MICROSECONDS",
                 "CUT",
@@ -221,196 +230,231 @@ def result_dict(r):
     }
 
 
-def expected(scene, recs, cores, workers):
+def expected(scene, records, cores, workers):
     """The host's middle pass on the reference's counts: what the thread must find."""
-    n = len(scene["indices"])
-    cnt, rows = passes.counters(recs, n, cores)
-    heavy = passes.heavy_tiles(cnt, rows, workers)
+    triangle_count = len(scene["indices"])
+    entries, rows = passes.counters(records, triangle_count, cores)
+    heavy = passes.heavy_tiles(entries, rows, workers)
     bands = None
     if heavy:
-        ht = [t for t, _ in heavy]
-        first, last = passes.histograms(recs, n, cores)
-        bands = passes.items_of(cnt, rows, heavy, first[:, ht], last[:, ht])
-    mid = passes.middle(cnt, rows, workers, bands=bands)
-    pages = mid["pages"].reshape(-1, lists.SLOT)
-    mid["found"] = {
-        "slots": int(mid["slots"]),
-        "items": len(mid["items"]),
+        histogram_tiles = [tile for tile, _ in heavy]
+        starts, ends = passes.histograms(records, triangle_count, cores)
+        bands = passes.items_of(
+            entries, rows, heavy, starts[:, histogram_tiles], ends[:, histogram_tiles]
+        )
+    middle = passes.middle(entries, rows, workers, bands=bands)
+    pages = middle["pages"].reshape(-1, lists.SLOT)
+    middle["found"] = {
+        "slots": int(middle["slots"]),
+        "items": len(middle["items"]),
         "marks": int((pages[:, 0] >= K["kMarkTile"]).sum()),
         "heavy": len(heavy),
     }
-    return mid
+    return middle
 
 
-def slots_differ(session, up, recs, mid):
+def slots_differ(session, uploaded, records, middle):
     """Differing list slots by kind (header, end, record), for a small frame."""
-    counts, offsets, members = raster.bin_triangles(recs)
-    cards = lists.pack_records(recs)
-    cards[:, K["kRecIndex"]] = 0
-    want, _ = lists.build_lists(cards, offsets, members, mid["tiles_of"])
-    (got,) = session.read(up["lists"], first=0, pages=len(want))
+    counts, offsets, members = raster.bin_triangles(records)
+    packed = lists.pack_records(records)
+    packed[:, K["kRecIndex"]] = 0
+    want, _ = lists.build_lists(packed, offsets, members, middle["tiles_of"])
+    (got,) = session.read(uploaded["lists"], first_differing=0, pages=len(want))
     want = want.reshape(-1, lists.SLOT)
     got = got.view(np.uint32).reshape(-1, lists.SLOT)
-    bad = (got != want).any(axis=1)
+    differs = (got != want).any(axis=1)
     kind = np.where(
         want[:, 0] == K["kMarkTile"],
         "header",
         np.where(want[:, 0] == K["kMarkEnd"], "end", "record"),
     )
-    out = {k: int((bad & (kind == k)).sum()) for k in ("header", "end", "record")}
-    first = np.flatnonzero(bad)[:3]
-    out["first"] = [
-        {"slot": int(i), "want": want[i, :6].tolist(), "got": got[i, :6].tolist()}
-        for i in first
+    report = {
+        name: int((differs & (kind == name)).sum())
+        for name in ("header", "end", "record")
+    }
+    first_differing = np.flatnonzero(differs)[:3]
+    report["first"] = [
+        {
+            "slot": int(slot),
+            "want": want[slot, :6].tolist(),
+            "got": got[slot, :6].tolist(),
+        }
+        for slot in first_differing
     ]
-    return out
+    return report
 
 
-def sprof_dict(sp, cores):
+def sprof_dict(profile_pages, cores):
     """Per pass, each core's writer total and pack counters from the profile pages of
     the last frame (wall ticks), and the slowest core against the mean."""
-    out = {}
+    report = {}
     for name, handler in (("count", S["kHandlerCount"]), ("setup", S["kHandlerSetup"])):
-        page = sp[:cores, 32 * (handler - S["kHandlerCount"]) :][:, :32].astype(
-            np.int64
-        )
+        page = profile_pages[:cores, 32 * (handler - S["kHandlerCount"]) :][
+            :, :32
+        ].astype(np.int64)
         total = page[:, S["kSProfWriter"] + 2]
         pack = page[:, S["kSProfPack"] : S["kSProfPack"] + 8]
-        out[name] = {
+        report[name] = {
             "total": total.tolist(),
             "kept": pack[:, 4].tolist(),
             "entries": pack[:, 6].tolist(),
             "max_over_mean": float(total.max() / max(total.mean(), 1)),
         }
-    return out
+    return report
 
 
 def frame(args, session=None):
     scene, _ = run.load(args.scene)
     blocks = passes.mesh_blocks(scene)
-    recs = raster.setup(scene)
-    out = {"scene": args.scene, "blocks": len(blocks), "times": {}}
-    tm = out["times"]
-    bad = same_numbers()
-    if bad:
-        raise SystemExit(f"frame.h differs from the kernels' headers: {bad}")
-    own = contextlib.nullcontext(session) if session else km.Session(log=card.log)
-    with own as session:
+    records = raster.setup(scene)
+    report = {"scene": args.scene, "blocks": len(blocks), "times": {}}
+    times = report["times"]
+    mismatches = same_numbers()
+    if mismatches:
+        raise SystemExit(f"frame.h differs from the kernels' headers: {mismatches}")
+    session_context = (
+        contextlib.nullcontext(session) if session else km.Session(log=card.log)
+    )
+    with session_context as session:
         workers = card.workers(session)
         cores = args.cores or workers
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         slots = args.list_slots or 2 * len(scene["indices"]) + 65536
-        up = tensors(session, blocks, workers, slots)
-        tm["upload_s"] = time.perf_counter() - t0
-        w = words(up, len(blocks), cores, workers, args.steps, args.balance)
-        w[F["RF_W_REPEAT"]] = args.repeat
-        t0 = time.perf_counter()
-        prog = session.load(program(scene, w, workers), deadline=1.0, trace=16)
-        tm["load_s"] = time.perf_counter() - t0
-        t0 = time.perf_counter()
-        r = prog.thread_result(timeout=15.0)
-        tm["thread_wait_s"] = time.perf_counter() - t0
+        uploaded = tensors(session, blocks, workers, slots)
+        times["upload_s"] = time.perf_counter() - started
+        thread_words = words(
+            uploaded, len(blocks), cores, workers, args.steps, args.balance
+        )
+        thread_words[F["RF_W_REPEAT"]] = args.repeat
+        started = time.perf_counter()
+        running = session.load(
+            program(scene, thread_words, workers), deadline=1.0, trace=16
+        )
+        times["load_s"] = time.perf_counter() - started
+        started = time.perf_counter()
+        result = running.thread_result(timeout=15.0)
+        times["thread_wait_s"] = time.perf_counter() - started
         try:
-            prog.stop()
-        except km.errors.KernelFailed as e:
-            out["stop_error"] = str(e)
-            tr = prog.trace()
-            h = km.abi.headers()
-            rows = tr.rows[:workers]
-            seen, done = rows[:, :, h["kTraceSeen"]], rows[:, :, h["kTraceDone"]]
-            out["trace"] = {
+            running.stop()
+        except km.errors.KernelFailed as error:
+            report["stop_error"] = str(error)
+            trace = running.trace()
+            headers = km.abi.headers()
+            rows = trace.rows[:workers]
+            seen, done = (
+                rows[:, :, headers["kTraceSeen"]],
+                rows[:, :, headers["kTraceDone"]],
+            )
+            report["trace"] = {
                 "seen_cores": (seen != 0).sum(0).tolist(),
                 "done_cores": (done != 0).sum(0).tolist(),
                 "not_done": [
                     [
-                        int(c)
-                        for c in np.flatnonzero((seen[:, k] != 0) & (done[:, k] == 0))
+                        int(core)
+                        for core in np.flatnonzero(
+                            (seen[:, point] != 0) & (done[:, point] == 0)
+                        )
                     ]
-                    for k in range(rows.shape[1])
+                    for point in range(rows.shape[1])
                 ],
             }
-            print(json.dumps(out, default=str), flush=True)
-        out["thread"] = result_dict(r)
-        out["x280_mhz"] = session.pll_mhz
-        out["status"] = card.check_run(prog, workers, 0, [])
-        (sp,) = card.read(session, up["sprof"])
-        out["sprof"] = sprof_dict(sp.view(np.uint32).reshape(workers, -1), cores)
+            print(json.dumps(report, default=str), flush=True)
+        report["thread"] = result_dict(result)
+        report["x280_mhz"] = session.pll_mhz
+        report["status"] = card.check_run(running, workers, 0, [])
+        (profile_pages,) = card.read(session, uploaded["sprof"])
+        report["sprof"] = sprof_dict(
+            profile_pages.view(np.uint32).reshape(workers, -1), cores
+        )
         # Regions are not read back (a region read reads every bank's pages of the
         # regions' tensor at once): the tensors the thread's commands wrote are.
-        mid = expected(scene, recs, cores, workers)
-        found = {k: out["thread"][k] for k in mid["found"]}
-        out["found_equal"] = found == mid["found"]
-        ok = r.ran and r.code == 0 and out["found_equal"] and out["status"]["ok"]
+        middle = expected(scene, records, cores, workers)
+        found = {key: report["thread"][key] for key in middle["found"]}
+        report["found_equal"] = found == middle["found"]
+        succeeded = (
+            result.ran
+            and result.code == 0
+            and report["found_equal"]
+            and report["status"]["ok"]
+        )
         if args.steps >= 3:
-            out["lists"] = card_passes.lists_check(
-                session, up, scene, recs, mid, args.lists
+            report["lists"] = card_passes.lists_check(
+                session, uploaded, scene, records, middle, args.lists
             )
-            (dirs,) = card.read(session, up["dir"])
-            dirs = dirs.view(np.uint32).reshape(workers, -1).copy()
-            frame_words = dirs[:, K["kDirFrame"] :].copy()
-            dirs[:, K["kDirFrame"] :] = 0
-            out["dir_equal"] = bool(np.array_equal(dirs, mid["directory"]))
-            want = [card.CHUNK_PAGES] + [t.address for t in up["frame"]]
-            out["dir_frame_equal"] = bool(
+            (directories,) = card.read(session, uploaded["dir"])
+            directories = directories.view(np.uint32).reshape(workers, -1).copy()
+            frame_words = directories[:, K["kDirFrame"] :].copy()
+            directories[:, K["kDirFrame"] :] = 0
+            report["dir_equal"] = bool(np.array_equal(directories, middle["directory"]))
+            want = [card.CHUNK_PAGES] + [
+                frame_tensor.address for frame_tensor in uploaded["frame"]
+            ]
+            report["dir_frame_equal"] = bool(
                 (frame_words[:, : len(want)] == want).all()
                 and not frame_words[:, len(want) :].any()
             )
-            if out["lists"]["pages_differ"] and len(mid["pages"]) <= 1024:
-                out["slots_differ"] = slots_differ(session, up, recs, mid)
-            ok = ok and out["lists"]["pages_differ"] == 0
-            ok = ok and out["dir_equal"] and out["dir_frame_equal"]
+            if report["lists"]["pages_differ"] and len(middle["pages"]) <= 1024:
+                report["slots_differ"] = slots_differ(
+                    session, uploaded, records, middle
+                )
+            succeeded = succeeded and report["lists"]["pages_differ"] == 0
+            succeeded = succeeded and report["dir_equal"] and report["dir_frame_equal"]
         if args.steps >= 4 and args.image:
-            t0 = time.perf_counter()
-            img = card.read_frame(session, up)
-            tm["read_frame_s"] = time.perf_counter() - t0
-            counts, offsets, members = raster.bin_triangles(recs)
-            out["check"] = run.check(
+            started = time.perf_counter()
+            image = card.read_frame(session, uploaded)
+            times["read_frame_s"] = time.perf_counter() - started
+            counts, offsets, members = raster.bin_triangles(records)
+            report["check"] = run.check(
                 args.scene,
                 None,
-                recs,
+                records,
                 offsets,
                 members,
                 list(range(lists.TILES)),
                 counts,
-                img,
+                image,
             )
-            ok = ok and run.check_ok(out["check"])
-    out["ok"] = bool(ok)
-    return out
+            succeeded = succeeded and run.check_ok(report["check"])
+    report["ok"] = bool(succeeded)
+    return report
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--scene", default="tiny")
-    p.add_argument("--cores", type=int, default=0, help="0: every core")
-    p.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--scene", default="tiny")
+    parser.add_argument("--cores", type=int, default=0, help="0: every core")
+    parser.add_argument(
         "--steps",
         type=int,
         default=4,
         help="2 the middle pass, 3 SETUP, 4 FILL and the image",
     )
-    p.add_argument("--list-slots", type=int, default=0, help="0: from the triangles")
-    p.add_argument(
+    parser.add_argument(
+        "--list-slots", type=int, default=0, help="0: from the triangles"
+    )
+    parser.add_argument(
         "--lists", type=int, default=0, help="list pages checked (0: all, -1: none)"
     )
-    p.add_argument(
+    parser.add_argument(
         "--no-image", dest="image", action="store_false", help="no image read-back"
     )
-    p.add_argument(
+    parser.add_argument(
         "--no-balance",
         dest="balance",
         action="store_false",
         help="equal block partitions",
     )
-    p.add_argument("--repeat", type=int, default=0, help="frames in a row (0: one)")
-    p.add_argument("--json", default=None)
-    args = p.parse_args()
-    out = frame(args)
-    print(json.dumps(out), flush=True)
+    parser.add_argument(
+        "--repeat", type=int, default=0, help="frames in a row (0: one)"
+    )
+    parser.add_argument("--json", default=None)
+    args = parser.parse_args()
+    report = frame(args)
+    print(json.dumps(report), flush=True)
     if args.json:
-        with open(args.json, "w") as f:
-            json.dump(out, f, indent=1)
-    sys.exit(0 if out["ok"] else 1)
+        with open(args.json, "w") as file:
+            json.dump(report, file, indent=1)
+    sys.exit(0 if report["ok"] else 1)
 
 
 if __name__ == "__main__":

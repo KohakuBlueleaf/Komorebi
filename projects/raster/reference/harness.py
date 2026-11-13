@@ -63,38 +63,52 @@ def ensure_results(scene, numpy_max=None, fresh=False):
     ):
         run_numpy(scene)
     if todo("cpu_all"):
-        run_cpu(scene, runner.threads_all(), reps=1)
+        run_cpu(scene, runner.threads_all(), repetitions=1)
     if todo("v100"):
-        run_gpu(scene, reps=1)
+        run_gpu(scene, repetitions=1)
 
 
-def run_cpu(scene, threads, reps=3, store=True, with_power=False):
+def run_cpu(scene, threads, repetitions=3, store=True, with_power=False):
     """Runs the C++ binary; returns its record (None without a compiler)."""
-    exe = native.build(str(HERE / "cpu" / "raster_cpu.cpp"), "raster_cpu")
-    if exe is None:
+    executable = native.build(str(HERE / "cpu" / "raster_cpu.cpp"), "raster_cpu")
+    if executable is None:
         return None
-    cmd = [exe, "--scene", native.ensure_scene(scene), "--threads", threads]
-    cmd += ["--reps", reps]
+    command_line = [
+        executable,
+        "--scene",
+        native.ensure_scene(scene),
+        "--threads",
+        threads,
+    ]
+    command_line += ["--reps", repetitions]
     folder = "cpu_all" if threads == runner.threads_all() else f"cpu{threads}"
     if store:
-        cmd += ["--out", out_dir(scene, folder)]
-    record = runner.run_binary(cmd, None, with_power)
+        command_line += ["--out", out_dir(scene, folder)]
+    record = runner.run_binary(command_line, None, with_power)
     if store:
         label = "C++ all threads" if folder == "cpu_all" else f"C++ {threads} thread(s)"
         save(scene, folder, label, load_outputs(out_dir(scene, folder)), record)
     return record
 
 
-def run_gpu(scene, reps=3, store=True, with_power=False):
+def run_gpu(scene, repetitions=3, store=True, with_power=False):
     """Runs the CUDA binary on an idle GPU; None without a toolchain or idle GPU."""
-    exe = native.build(str(HERE / "gpu" / "raster_gpu.cu"), "raster_gpu", gpu=True)
+    executable = native.build(
+        str(HERE / "gpu" / "raster_gpu.cu"), "raster_gpu", gpu=True
+    )
     gpu = native.idle_gpu()
-    if exe is None or gpu is None:
+    if executable is None or gpu is None:
         return None
-    cmd = [exe, "--scene", native.ensure_scene(scene), "--reps", reps]
+    command_line = [
+        executable,
+        "--scene",
+        native.ensure_scene(scene),
+        "--reps",
+        repetitions,
+    ]
     if store:
-        cmd += ["--out", out_dir(scene, "v100")]
-    record = runner.run_binary(cmd, gpu, with_power)
+        command_line += ["--out", out_dir(scene, "v100")]
+    record = runner.run_binary(command_line, gpu, with_power)
     record["gpu_index"] = gpu
     if store:
         save(scene, "v100", "V100", load_outputs(out_dir(scene, "v100")), record)
@@ -111,20 +125,20 @@ def collect(scene, external=()):
 edge_mask = runner.edge_mask
 
 
-def compare(a, b):
+def compare(first, second):
     """Statistics of how two output sets differ, with where the differences are.
 
     `tri` is compared only when both have it; edges come from it, else from coverage.
     """
-    has_tri = "tri" in a and "tri" in b
-    depth = a["depth"] != b["depth"]
-    colour = (a["colour"] != b["colour"]).any(axis=2)
-    tri = a["tri"] != b["tri"] if has_tri else np.zeros_like(depth)
+    has_tri = "tri" in first and "tri" in second
+    depth = first["depth"] != second["depth"]
+    colour = (first["colour"] != second["colour"]).any(axis=2)
+    tri = first["tri"] != second["tri"] if has_tri else np.zeros_like(depth)
     anywhere = tri | depth | colour
-    dc = np.abs(a["colour"].astype(np.float64) - b["colour"])
-    dd = np.abs(a["depth"].astype(np.float64) - b["depth"])
-    shape = a["tri"] if has_tri else (a["depth"] > 0).astype(np.int32)
-    other = b["tri"] if has_tri else (b["depth"] > 0).astype(np.int32)
+    colour_difference = np.abs(first["colour"].astype(np.float64) - second["colour"])
+    depth_difference = np.abs(first["depth"].astype(np.float64) - second["depth"])
+    shape = first["tri"] if has_tri else (first["depth"] > 0).astype(np.int32)
+    other = second["tri"] if has_tri else (second["depth"] > 0).astype(np.int32)
     edge = edge_mask(shape) | edge_mask(other)
     return {
         "pixels": int(depth.size),
@@ -134,10 +148,14 @@ def compare(a, b):
         "any_differs": int(anywhere.sum()),
         "differs_on_edge": int((anywhere & edge).sum()),
         "differs_inside": int((anywhere & ~edge).sum()),
-        "colour_max_abs": float(dc.max()),
-        "colour_mean_abs": float(dc.mean()),
-        "depth_max_abs": float(dd.max()),
-        "tile_counts_equal": bool(np.array_equal(a["tile_counts"], b["tile_counts"])),
-        "tile_count_abs_diff": int(np.abs(a["tile_counts"] - b["tile_counts"]).sum()),
+        "colour_max_abs": float(colour_difference.max()),
+        "colour_mean_abs": float(colour_difference.mean()),
+        "depth_max_abs": float(depth_difference.max()),
+        "tile_counts_equal": bool(
+            np.array_equal(first["tile_counts"], second["tile_counts"])
+        ),
+        "tile_count_abs_diff": int(
+            np.abs(first["tile_counts"] - second["tile_counts"]).sum()
+        ),
         "mask": anywhere,
     }

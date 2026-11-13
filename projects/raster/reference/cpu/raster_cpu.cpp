@@ -25,43 +25,53 @@ struct Times {
     double setup, bin, fill;
 };
 
-static void for_tiles_of(const Record& r, int& tx0, int& tx1, int& ty0, int& ty1) {
-    tx0 = r.box[0] / TILE;
-    tx1 = r.box[1] / TILE;
-    ty0 = r.box[2] / TILE;
-    ty1 = r.box[3] / TILE;
+static void for_tiles_of(
+    const Record& record,
+    int& first_tile_x,
+    int& last_tile_x,
+    int& first_tile_y,
+    int& last_tile_y
+) {
+    first_tile_x = record.box[0] / TILE;
+    last_tile_x = record.box[1] / TILE;
+    first_tile_y = record.box[2] / TILE;
+    last_tile_y = record.box[3] / TILE;
 }
 
-static void fill_tile(Buffers& b, int tile) {
-    const int tx = tile % TILES_X, ty = tile / TILES_X;
-    const int x0 = tx * TILE, y0 = ty * TILE;
+static void fill_tile(Buffers& buffers, int tile) {
+    const int tile_x = tile % TILES_X, tile_y = tile / TILES_X;
+    const int left = tile_x * TILE, top = tile_y * TILE;
     float depth[TILE * TILE];
     int32_t owner[TILE * TILE];
     float colour[TILE * TILE][3];
     for (int i = 0; i < TILE * TILE; i++) {
         depth[i] = 0.0f;
         owner[i] = -1;
-        for (int ch = 0; ch < 3; ch++) {
-            colour[i][ch] = background(ch);
+        for (int channel = 0; channel < 3; channel++) {
+            colour[i][channel] = background(channel);
         }
     }
-    for (int k = b.offsets[tile]; k < b.offsets[tile + 1]; k++) {
-        const Record& r = b.records[b.list[k]];
-        int xa = std::max(r.box[0], x0), xb = std::min(r.box[1], x0 + TILE - 1);
-        int ya = std::max(r.box[2], y0), yb = std::min(r.box[3], y0 + TILE - 1);
-        for (int y = ya; y <= yb; y++) {
+    for (
+        int entry = buffers.offsets[tile]; entry < buffers.offsets[tile + 1]; entry++
+    ) {
+        const Record& record = buffers.records[buffers.list[entry]];
+        int first_x = std::max(record.box[0], left);
+        int last_x = std::min(record.box[1], left + TILE - 1);
+        int first_y = std::max(record.box[2], top);
+        int last_y = std::min(record.box[3], top + TILE - 1);
+        for (int y = first_y; y <= last_y; y++) {
             float py = (float)y + 0.5f;
-            for (int x = xa; x <= xb; x++) {
+            for (int x = first_x; x <= last_x; x++) {
                 float px = (float)x + 0.5f;
-                if (!covers(r, px, py)) {
+                if (!covers(record, px, py)) {
                     continue;
                 }
-                int i = (y - y0) * TILE + (x - x0);
-                float w = depth_at(r, px, py);
-                if (nearer(w, r.tri, depth[i], owner[i])) {
-                    depth[i] = w;
-                    owner[i] = r.tri;
-                    colour_at(r, px, py, colour[i]);
+                int i = (y - top) * TILE + (x - left);
+                float inverse_z = depth_at(record, px, py);
+                if (nearer(inverse_z, record.triangle, depth[i], owner[i])) {
+                    depth[i] = inverse_z;
+                    owner[i] = record.triangle;
+                    colour_at(record, px, py, colour[i]);
                 }
             }
         }
@@ -69,167 +79,180 @@ static void fill_tile(Buffers& b, int tile) {
     for (int y = 0; y < TILE; y++) {
         for (int x = 0; x < TILE; x++) {
             int i = y * TILE + x;
-            size_t g = (size_t)(y0 + y) * WIDTH + (x0 + x);
-            b.depth[g] = depth[i];
-            b.owner[g] = owner[i];
-            for (int ch = 0; ch < 3; ch++) {
-                b.colour[3 * g + ch] = colour[i][ch];
+            size_t pixel = (size_t)(top + y) * WIDTH + (left + x);
+            buffers.depth[pixel] = depth[i];
+            buffers.owner[pixel] = owner[i];
+            for (int channel = 0; channel < 3; channel++) {
+                buffers.colour[3 * pixel + channel] = colour[i][channel];
             }
         }
     }
 }
 
-static Times run(const Mesh& mesh, Pool& pool, Buffers& b) {
-    const int n_threads = pool.size();
-    const int n_tiles = TILES_X * TILES_Y;
-    const int n_chunks = n_threads * 2;
-    const int64_t per_chunk = (mesh.n_tris + n_chunks - 1) / n_chunks;
-    Times t;
-    double t0 = now_ms();
-    pool.for_chunks(mesh.n_tris, 256, [&](int64_t a, int64_t e) {
-        for (int64_t i = a; i < e; i++) {
-            b.pieces[i] = (
+static Times run(const Mesh& mesh, Pool& pool, Buffers& buffers) {
+    const int thread_count = pool.size();
+    const int tile_count = TILES_X * TILES_Y;
+    const int chunk_count = thread_count * 2;
+    const int64_t per_chunk = (mesh.triangle_count + chunk_count - 1) / chunk_count;
+    Times times;
+    double started = now_ms();
+    pool.for_chunks(mesh.triangle_count, 256, [&](int64_t first, int64_t end) {
+        for (int64_t i = first; i < end; i++) {
+            buffers.pieces[i] = (
                 (uint8_t)setup_triangle(
-                    mesh, (int)i, b.records[i], b.records[mesh.n_tris + i]
+                    mesh,
+                    (int)i,
+                    buffers.records[i],
+                    buffers.records[mesh.triangle_count + i]
                 )
             );
         }
     });
-    double t1 = now_ms();
-    std::fill(b.chunk_counts.begin(), b.chunk_counts.end(), 0);
-    pool.for_chunks(n_chunks, 1, [&](int64_t c, int64_t) {
-        int32_t* count = &b.chunk_counts[c];
-        int64_t end = std::min<int64_t>((c + 1) * per_chunk, mesh.n_tris);
-        for (int64_t i = c * per_chunk; i < end; i++) {
+    double setup_done = now_ms();
+    std::fill(buffers.chunk_counts.begin(), buffers.chunk_counts.end(), 0);
+    pool.for_chunks(chunk_count, 1, [&](int64_t chunk, int64_t) {
+        int32_t* count = &buffers.chunk_counts[chunk];
+        int64_t end = std::min<int64_t>((chunk + 1) * per_chunk, mesh.triangle_count);
+        for (int64_t i = chunk * per_chunk; i < end; i++) {
             for (int piece = 0; piece < 2; piece++) {
-                if (!((b.pieces[i] >> piece) & 1)) {
+                if (!((buffers.pieces[i] >> piece) & 1)) {
                     continue;
                 }
-                const Record& r = b.records[i + piece * (int64_t)mesh.n_tris];
-                int tx0, tx1, ty0, ty1;
-                for_tiles_of(r, tx0, tx1, ty0, ty1);
-                for (int ty = ty0; ty <= ty1; ty++) {
-                    for (int tx = tx0; tx <= tx1; tx++) {
-                        count[(ty * TILES_X + tx) * n_chunks]++;
+                const Record& record = (
+                    buffers.records[i + piece * (int64_t)mesh.triangle_count]
+                );
+                int first_tile_x, last_tile_x, first_tile_y, last_tile_y;
+                for_tiles_of(
+                    record, first_tile_x, last_tile_x, first_tile_y, last_tile_y
+                );
+                for (int tile_y = first_tile_y; tile_y <= last_tile_y; tile_y++) {
+                    for (int tile_x = first_tile_x; tile_x <= last_tile_x; tile_x++) {
+                        count[(tile_y * TILES_X + tile_x) * chunk_count]++;
                     }
                 }
             }
         }
     });
     int32_t total = 0;
-    for (int tile = 0; tile < n_tiles; tile++) {
-        b.offsets[tile] = total;
-        for (int c = 0; c < n_chunks; c++) {
-            int32_t n = b.chunk_counts[tile * n_chunks + c];
-            b.chunk_counts[tile * n_chunks + c] = total;
-            total += n;
+    for (int tile = 0; tile < tile_count; tile++) {
+        buffers.offsets[tile] = total;
+        for (int chunk = 0; chunk < chunk_count; chunk++) {
+            int32_t entries = buffers.chunk_counts[tile * chunk_count + chunk];
+            buffers.chunk_counts[tile * chunk_count + chunk] = total;
+            total += entries;
         }
-        b.counts[tile] = total - b.offsets[tile];
+        buffers.counts[tile] = total - buffers.offsets[tile];
     }
-    b.offsets[n_tiles] = total;
-    b.list.resize(total);
-    pool.for_chunks(n_chunks, 1, [&](int64_t c, int64_t) {
-        int32_t* cursor = &b.chunk_counts[c];
-        int64_t end = std::min<int64_t>((c + 1) * per_chunk, mesh.n_tris);
-        for (int64_t i = c * per_chunk; i < end; i++) {
+    buffers.offsets[tile_count] = total;
+    buffers.list.resize(total);
+    pool.for_chunks(chunk_count, 1, [&](int64_t chunk, int64_t) {
+        int32_t* cursor = &buffers.chunk_counts[chunk];
+        int64_t end = std::min<int64_t>((chunk + 1) * per_chunk, mesh.triangle_count);
+        for (int64_t i = chunk * per_chunk; i < end; i++) {
             for (int piece = 0; piece < 2; piece++) {
-                if (!((b.pieces[i] >> piece) & 1)) {
+                if (!((buffers.pieces[i] >> piece) & 1)) {
                     continue;
                 }
-                const int64_t k = i + piece * (int64_t)mesh.n_tris;
-                const Record& r = b.records[k];
-                int tx0, tx1, ty0, ty1;
-                for_tiles_of(r, tx0, tx1, ty0, ty1);
-                for (int ty = ty0; ty <= ty1; ty++) {
-                    for (int tx = tx0; tx <= tx1; tx++) {
-                        b.list[cursor[(ty * TILES_X + tx) * n_chunks]++] = (int32_t)k;
+                const int64_t record_index = i + piece * (int64_t)mesh.triangle_count;
+                const Record& record = buffers.records[record_index];
+                int first_tile_x, last_tile_x, first_tile_y, last_tile_y;
+                for_tiles_of(
+                    record, first_tile_x, last_tile_x, first_tile_y, last_tile_y
+                );
+                for (int tile_y = first_tile_y; tile_y <= last_tile_y; tile_y++) {
+                    for (int tile_x = first_tile_x; tile_x <= last_tile_x; tile_x++) {
+                        buffers.list[
+                            cursor [(tile_y * TILES_X + tile_x) * chunk_count]++
+                        ] = (int32_t)record_index;
                     }
                 }
             }
         }
     });
-    double t2 = now_ms();
-    std::vector<int> order(n_tiles);
+    double bin_done = now_ms();
+    std::vector<int> order(tile_count);
     std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(), [&](int p, int q) {
-        return b.counts[p] > b.counts[q];
+    std::stable_sort(order.begin(), order.end(), [&](int first_tile, int second_tile) {
+        return buffers.counts[first_tile] > buffers.counts[second_tile];
     });
-    pool.for_chunks(n_tiles, 1, [&](int64_t k, int64_t) {
-        fill_tile(b, order[k]);
+    pool.for_chunks(tile_count, 1, [&](int64_t rank, int64_t) {
+        fill_tile(buffers, order[rank]);
     });
-    double t3 = now_ms();
-    t.setup = t1 - t0;
-    t.bin = t2 - t1;
-    t.fill = t3 - t2;
-    return t;
+    double fill_done = now_ms();
+    times.setup = setup_done - started;
+    times.bin = bin_done - setup_done;
+    times.fill = fill_done - bin_done;
+    return times;
 }
 
 int main(int argc, char** argv) {
     Args args(argc, argv);
-    std::string scene = args.get("scene"), out = args.get("out");
-    int n_threads = args.geti("threads", (int)std::thread::hardware_concurrency());
-    int reps = args.geti("reps", 3);
-    Array pos = load_npy(scene + "/positions.npy", 4);
-    Array col = load_npy(scene + "/colors.npy", 4);
-    Array idx = load_npy(scene + "/indices.npy", 4);
-    Array cam = load_npy(scene + "/camera.npy", 4);
+    std::string scene = args.get("scene"), out_folder = args.get("out");
+    int thread_count = args.geti("threads", (int)std::thread::hardware_concurrency());
+    int repetitions = args.geti("reps", 3);
+    Array positions = load_npy(scene + "/positions.npy", 4);
+    Array colours = load_npy(scene + "/colors.npy", 4);
+    Array indices = load_npy(scene + "/indices.npy", 4);
+    Array camera = load_npy(scene + "/camera.npy", 4);
     Mesh mesh;
-    mesh.positions = pos.data<float>();
-    mesh.colors = col.data<float>();
-    mesh.indices = idx.data<int32_t>();
-    mesh.n_tris = (int)idx.shape[0];
-    std::copy(cam.data<float>(), cam.data<float>() + 16, mesh.camera);
+    mesh.positions = positions.data<float>();
+    mesh.colors = colours.data<float>();
+    mesh.indices = indices.data<int32_t>();
+    mesh.triangle_count = (int)indices.shape[0];
+    std::copy(camera.data<float>(), camera.data<float>() + 16, mesh.camera);
 
-    Pool pool(n_threads);
-    Buffers b;
-    const int n_tiles = TILES_X * TILES_Y;
-    b.records.resize(2 * (size_t)mesh.n_tris);
-    b.pieces.resize(mesh.n_tris);
-    b.counts.resize(n_tiles);
-    b.offsets.resize(n_tiles + 1);
-    b.chunk_counts.resize((size_t)n_threads * 2 * n_tiles);
-    b.colour.resize((size_t)WIDTH * HEIGHT * 3);
-    b.depth.resize((size_t)WIDTH * HEIGHT);
-    b.owner.resize((size_t)WIDTH * HEIGHT);
+    Pool pool(thread_count);
+    Buffers buffers;
+    const int tile_count = TILES_X * TILES_Y;
+    buffers.records.resize(2 * (size_t)mesh.triangle_count);
+    buffers.pieces.resize(mesh.triangle_count);
+    buffers.counts.resize(tile_count);
+    buffers.offsets.resize(tile_count + 1);
+    buffers.chunk_counts.resize((size_t)thread_count * 2 * tile_count);
+    buffers.colour.resize((size_t)WIDTH * HEIGHT * 3);
+    buffers.depth.resize((size_t)WIDTH * HEIGHT);
+    buffers.owner.resize((size_t)WIDTH * HEIGHT);
 
-    run(mesh, pool, b);  // warm-up: page faults, thread start
-    RepLog log(reps);
-    for (int rep = 0; rep < reps; rep++) {
-        Times t = run(mesh, pool, b);
+    run(mesh, pool, buffers);  // warm-up: page faults, thread start
+    RepLog log(repetitions);
+    for (int repetition = 0; repetition < repetitions; repetition++) {
+        Times times = run(mesh, pool, buffers);
         char record[256];
         std::snprintf(
             record,
             sizeof record,
             "{\"setup_ms\": %.4f, \"bin_ms\": %.4f, \"fill_ms\": %.4f, \"total_ms\": "
             "%.4f}",
-            t.setup,
-            t.bin,
-            t.fill,
-            t.setup + t.bin + t.fill
+            times.setup,
+            times.bin,
+            times.fill,
+            times.setup + times.bin + times.fill
         );
         log.add(record);
     }
     double loop_ms = log.finish();
     int valid = 0;
-    for (uint8_t bits : b.pieces) {
+    for (uint8_t bits : buffers.pieces) {
         valid += (bits & 1) + (bits >> 1);
     }
     std::printf(
         "{\"impl\": \"cpu\", \"threads\": %d, \"triangles\": %d, \"reps_n\": %d, "
         "\"loop_ms\": %.4f, \"valid\": %d, \"entries\": %d, \"reps\": [%s]}\n",
-        n_threads,
-        mesh.n_tris,
-        reps,
+        thread_count,
+        mesh.triangle_count,
+        repetitions,
         loop_ms,
         valid,
-        b.offsets[n_tiles],
+        buffers.offsets[tile_count],
         log.body.c_str()
     );
-    if (!out.empty()) {
-        save_f32(out + "/colour.npy", b.colour.data(), {HEIGHT, WIDTH, 3});
-        save_f32(out + "/depth.npy", b.depth.data(), {HEIGHT, WIDTH});
-        save_i32(out + "/tri.npy", b.owner.data(), {HEIGHT, WIDTH});
-        save_i32(out + "/tile_counts.npy", b.counts.data(), {TILES_Y, TILES_X});
+    if (!out_folder.empty()) {
+        save_f32(out_folder + "/colour.npy", buffers.colour.data(), {HEIGHT, WIDTH, 3});
+        save_f32(out_folder + "/depth.npy", buffers.depth.data(), {HEIGHT, WIDTH});
+        save_i32(out_folder + "/tri.npy", buffers.owner.data(), {HEIGHT, WIDTH});
+        save_i32(
+            out_folder + "/tile_counts.npy", buffers.counts.data(), {TILES_Y, TILES_X}
+        );
     }
     return 0;
 }

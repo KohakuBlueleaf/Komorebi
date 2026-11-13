@@ -18,11 +18,11 @@ namespace {
     // word.
     void give_up(uint32_t code, uint32_t where) {
         const uint32_t control = get_arg_val<uint32_t>(0);
-        volatile uint32_t* st = (
+        volatile uint32_t* state = (
             reinterpret_cast<volatile uint32_t*>(control + KM_CONTROL_STATE)
         );
-        if (st[km::kStWriter] == 0) {
-            st[km::kStWriter] = code | where << 8;
+        if (state[km::kStWriter] == 0) {
+            state[km::kStWriter] = code | where << 8;
         }
         *reinterpret_cast<volatile uint32_t*>(control + KM_CONTROL_STOP) = 1;
     }
@@ -30,9 +30,9 @@ namespace {
     // Polls ready() for at most kWaitCycles. False: gave up (recorded at `where`).
     template <typename Ready>
     bool timed(Ready ready, uint32_t where) {
-        const uint32_t t0 = km::wall();
+        const uint32_t started = km::wall();
         while (!ready()) {
-            if (km::wall() - t0 > kWaitCycles) {
+            if (km::wall() - started > kWaitCycles) {
                 give_up(kGaveWait, where);
                 return false;
             }
@@ -66,7 +66,7 @@ namespace {
                 if (page != nullptr) {
                     ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
                 }
-                const uint32_t a = fill::wall();
+                const uint32_t asked = fill::wall();
                 if (!mail_from(ckernel::ThreadId::UnpackThreadId, kWhereWaitPage)) {
                     return nullptr;
                 }
@@ -76,7 +76,7 @@ namespace {
                     )
                 );
                 asm volatile("fence" ::: "memory");
-                wait += fill::wall() - a;
+                wait += fill::wall() - asked;
                 slot = 0;
             }
             return page + kSlotWords * slot++;
@@ -92,11 +92,11 @@ namespace {
         return get_local_cb_interface(kCbOut).fifo_wr_ptr << 4;
     }
 
-    // An item of `pages` at dst must end inside the output buffer; otherwise the
-    // give-up goes to the writer's gave-up word and the stop flag is set.
-    bool item_fits(uint32_t dst, uint32_t pages) {
+    // An item of `pages` at `destination` must end inside the output buffer; otherwise
+    // the give-up goes to the writer's gave-up word and the stop flag is set.
+    bool item_fits(uint32_t destination, uint32_t pages) {
         if (
-            dst + pages * kOutPageBytes <=
+            destination + pages * kOutPageBytes <=
             (get_local_cb_interface(kCbOut).fifo_limit << 4)
         ) {
             return true;
@@ -107,7 +107,7 @@ namespace {
 
     // Timed cb_reserve_back on the output buffer.
     bool reserve_out(uint32_t pages) {
-        const bool ok = timed(
+        const bool reserved = timed(
             [&] {
                 const uint16_t acked = (
                     reg_read(reinterpret_cast<uint32_t>(get_cb_tiles_acked_ptr(kCbOut)))
@@ -119,198 +119,229 @@ namespace {
             },
             kWhereWaitOut
         );
-        if (ok) {
+        if (reserved) {
             cb_reserve_back(kCbOut, pages);
         }
-        return ok;
+        return reserved;
     }
 
-    // Stores to L1 finished (a load of the last word written, addr + 4 (words - 1),
+    // Stores to L1 finished (a load of the last word written, address + 4 (words - 1),
     // used), then pushed.
-    void push_out(uint32_t addr, uint32_t words, uint32_t pages) {
+    void push_out(uint32_t address, uint32_t words, uint32_t pages) {
         asm volatile("fence" ::: "memory");
-        const uint32_t v = reinterpret_cast<volatile uint32_t*>(addr)[words - 1];
-        asm volatile("and x0, x0, %0" : : "r"(v) : "memory");
+        const uint32_t last_word = (
+            reinterpret_cast<volatile uint32_t*>(address)[words - 1]
+        );
+        asm volatile("and x0, x0, %0" : : "r"(last_word) : "memory");
         cb_push_back(kCbOut, pages);
     }
 
-    // Words [from, from + words) of the Dst window to L1 at dst: the vector extension
-    // when the build has it.
-    void copy_out(uint32_t dst, uint32_t from, uint32_t words) {
+    // Words [first_word, first_word + words) of the Dst window to L1 at `destination`:
+    // the vector extension when the build has it.
+    void copy_out(uint32_t destination, uint32_t first_word, uint32_t words) {
 #if defined(__riscv_vector)
         fill::copy_words_rvv(
-            reinterpret_cast<uint32_t*>(dst),
-            const_cast<const uint32_t*>(fill::win() + from),
+            reinterpret_cast<uint32_t*>(destination),
+            const_cast<const uint32_t*>(fill::win() + first_word),
             words
         );
 #else
         fill::copy_words(
-            reinterpret_cast<volatile uint32_t*>(dst), fill::win() + from, words
+            reinterpret_cast<volatile uint32_t*>(destination),
+            fill::win() + first_word,
+            words
         );
 #endif
     }
 
-    // Rows [row0, row1) of each plane to the same place in the item at dst.
-    void copy_band(uint32_t dst, uint32_t row0, uint32_t row1) {
-        const uint32_t at = kRowBytes / 4 * row0, words = kRowBytes / 4 * (row1 - row0);
-        for (uint32_t p = 0; p < kPlanes; ++p) {
-            copy_out(dst + 4 * (p * kPlaneWords + at), p * kPlaneWords + at, words);
+    // Rows [first_row, end_row) of each plane to the same place in the item at
+    // `destination`.
+    void copy_band(uint32_t destination, uint32_t first_row, uint32_t end_row) {
+        const uint32_t first_word = kRowBytes / 4 * first_row;
+        const uint32_t words = kRowBytes / 4 * (end_row - first_row);
+        for (uint32_t plane = 0; plane < kPlanes; ++plane) {
+            copy_out(
+                destination + 4 * (plane * kPlaneWords + first_word),
+                plane * kPlaneWords + first_word,
+                words
+            );
         }
     }
 
     // False: an output item did not fit (recorded); the list is abandoned.
-    bool fill_list(fill::Prof& pf) {
-        constexpr uint32_t bg[3] = {0x3D4CCCCD, 0x3D4CCCCD, 0x3DA3D70A};
-        Pages in;
-        const uint32_t t0 = fill::wall();
+    bool fill_list(fill::ProfileCounters& counters) {
+        constexpr uint32_t background[3] = {0x3D4CCCCD, 0x3D4CCCCD, 0x3DA3D70A};
+        Pages input;
+        const uint32_t started = fill::wall();
         for (;;) {
-            const volatile uint32_t* h = in.next();
-            if (h == nullptr) {
+            const volatile uint32_t* header = input.next();
+            if (header == nullptr) {
                 return false;
             }
-            if (h[0] == kMarkEnd) {
+            if (header[0] == kMarkEnd) {
                 break;
             }
-            const uint32_t tile = h[kHdrTile], n = h[kHdrCount];
-            const int32_t row0 = h[kHdrRow0], row1 = h[kHdrRow1];
-            if (!(0 <= row0 && row0 < row1 && row1 <= 32 && tile < 1024)) {
+            const uint32_t tile = header[kHdrTile], records = header[kHdrCount];
+            const int32_t first_row = header[kHdrRow0], end_row = header[kHdrRow1];
+            if (
+                !(0 <= first_row && first_row < end_row && end_row <= 32 && tile < 1024)
+            ) {
                 give_up(kGaveBadItem, kWhereBadHeader);
-                in.end();
+                input.end();
                 return false;
             }
-            const uint32_t tx = tile % 32, ty = tile / 32;
-            uint32_t a = fill::wall();
-            fill::init_tile(tx, ty, bg);
-            uint32_t b = fill::wall();
-            pf.init += b - a;
-            for (uint32_t i = 0; i < n; ++i) {
-                const volatile uint32_t* rec = in.next();
-                if (rec == nullptr) {
+            const uint32_t tile_x = tile % 32, tile_y = tile / 32;
+            uint32_t before = fill::wall();
+            fill::init_tile(tile_x, tile_y, background);
+            uint32_t after = fill::wall();
+            counters.init += after - before;
+            for (uint32_t index = 0; index < records; ++index) {
+                const volatile uint32_t* record = input.next();
+                if (record == nullptr) {
                     return false;
                 }
-                a = fill::wall();
-                uint32_t w[kSlotWords];
+                before = fill::wall();
+                uint32_t record_words[kSlotWords];
 #if defined(__riscv_vector)
-                fill::copy_words_rvv(w, const_cast<const uint32_t*>(rec), kSlotWords);
+                fill::copy_words_rvv(
+                    record_words, const_cast<const uint32_t*>(record), kSlotWords
+                );
 #else
-                fill::fetch(w, rec);
+                fill::fetch(record_words, record);
 #endif
-                const int32_t y0 = static_cast<int32_t>(w[kRecY0]) - 32 * ty;
-                const int32_t y1 = static_cast<int32_t>(w[kRecY1]) - 32 * ty;
-                const int32_t r0 = y0 < row0 ? row0 : y0;
-                const int32_t r1 = y1 > row1 - 1 ? row1 - 1 : y1;
-                fill::load_triangle(w);
-                b = fill::wall();
-                pf.tri += b - a;
-                for (int32_t r = r0; r <= r1; ++r) {
-                    fill::row(r);
-                    pf.row_count++;
+                const int32_t box_first_row = (
+                    static_cast<int32_t>(record_words[kRecY0]) - 32 * tile_y
+                );
+                const int32_t box_last_row = (
+                    static_cast<int32_t>(record_words[kRecY1]) - 32 * tile_y
+                );
+                const int32_t first_covered = (
+                    box_first_row < first_row ? first_row : box_first_row
+                );
+                const int32_t last_covered = (
+                    box_last_row > end_row - 1 ? end_row - 1 : box_last_row
+                );
+                fill::load_triangle(record_words);
+                after = fill::wall();
+                counters.triangle_setup += after - before;
+                for (
+                    int32_t pixel_row = first_covered; pixel_row <= last_covered;
+                    ++pixel_row
+                ) {
+                    fill::row(pixel_row);
+                    counters.row_count++;
                 }
-                pf.rows += fill::wall() - b;
-                pf.tris++;
+                counters.rows += fill::wall() - after;
+                counters.triangles++;
             }
-            a = fill::wall();
+            before = fill::wall();
             ckernel::tensix_sync();
-            b = fill::wall();
-            pf.drain += b - a;
+            after = fill::wall();
+            counters.drain += after - before;
             if (!reserve_out(kPlanes)) {
-                in.end();
+                input.end();
                 return false;
             }
-            a = fill::wall();
-            pf.wait_out += a - b;
-            const uint32_t dst = out_ptr();
-            if (!item_fits(dst, kPlanes)) {
-                in.end();
+            before = fill::wall();
+            counters.wait_out += before - after;
+            const uint32_t destination = out_ptr();
+            if (!item_fits(destination, kPlanes)) {
+                input.end();
                 return false;
             }
-            copy_band(dst, row0, row1);
-            push_out(dst, (kPlanes - 1) * kPlaneWords + kRowBytes / 4 * row1, kPlanes);
-            pf.out += fill::wall() - a;
-            pf.tiles++;
+            copy_band(destination, first_row, end_row);
+            push_out(
+                destination,
+                (kPlanes - 1) * kPlaneWords + kRowBytes / 4 * end_row,
+                kPlanes
+            );
+            counters.out += fill::wall() - before;
+            counters.tiles++;
         }
-        in.end();
-        pf.wait_in = in.wait;
-        pf.total = fill::wall() - t0;
+        input.end();
+        counters.wait_in = input.wait;
+        counters.total = fill::wall() - started;
         return true;
     }
 
-    bool arith_list(fill::Prof& pf) {
-        Pages in;
-        const uint32_t t0 = fill::wall();
+    bool arith_list(fill::ProfileCounters& counters) {
+        Pages input;
+        const uint32_t started = fill::wall();
         for (;;) {
-            in.slot = kSlotsPerPage;
-            const volatile uint32_t* p = in.next();
-            if (p == nullptr) {
+            input.slot = kSlotsPerPage;
+            const volatile uint32_t* page = input.next();
+            if (page == nullptr) {
                 return false;
             }
-            if (p[0] == kMarkEnd) {
+            if (page[0] == kMarkEnd) {
                 break;
             }
-            for (uint32_t k = 0; k < kArithIn; ++k) {
-                if (k > 0) {
-                    in.slot = kSlotsPerPage;
-                    p = in.next();
-                    if (p == nullptr) {
+            for (uint32_t input_page = 0; input_page < kArithIn; ++input_page) {
+                if (input_page > 0) {
+                    input.slot = kSlotsPerPage;
+                    page = input.next();
+                    if (page == nullptr) {
                         return false;
                     }
                 }
-                fill::copy_words(fill::win() + kArithLanes * k, p, kArithLanes);
+                fill::copy_words(
+                    fill::win() + kArithLanes * input_page, page, kArithLanes
+                );
             }
             fill::order(kArithLanes * kArithIn - 1);
             fill::arith_chunk();
             ckernel::tensix_sync();
             if (!reserve_out(kArithOut)) {
-                in.end();
+                input.end();
                 return false;
             }
-            const uint32_t dst = out_ptr();
-            if (!item_fits(dst, kArithOut)) {
-                in.end();
+            const uint32_t destination = out_ptr();
+            if (!item_fits(destination, kArithOut)) {
+                input.end();
                 return false;
             }
             fill::copy_words(
-                reinterpret_cast<volatile uint32_t*>(dst),
+                reinterpret_cast<volatile uint32_t*>(destination),
                 fill::win() + kArithLanes * kArithIn,
                 kArithOut * kPlaneWords
             );
-            push_out(dst, kArithOut * kPlaneWords, kArithOut);
-            pf.tiles++;
+            push_out(destination, kArithOut * kPlaneWords, kArithOut);
+            counters.tiles++;
         }
-        in.end();
-        pf.wait_in = in.wait;
-        pf.total = fill::wall() - t0;
+        input.end();
+        counters.wait_in = input.wait;
+        counters.total = fill::wall() - started;
         return true;
     }
 
-    // The profile item (`per` pages, so items stay aligned in the output CB): the pack
-    // thread's counters at words 0 to 10 of its first page.
-    void profile(const fill::Prof& pf, uint32_t per) {
-        if (!reserve_out(per)) {
+    // The profile item (`pages` pages, so items stay aligned in the output CB): the
+    // pack thread's counters at words 0 to 10 of its first page.
+    void profile(const fill::ProfileCounters& counters, uint32_t pages) {
+        if (!reserve_out(pages)) {
             return;
         }
         const uint32_t dst = out_ptr();
-        if (!item_fits(dst, per)) {
+        if (!item_fits(dst, pages)) {
             return;
         }
-        volatile uint32_t* w = reinterpret_cast<volatile uint32_t*>(dst);
-        const uint32_t v[11] = {
-            pf.wait_in,
-            pf.init,
-            pf.tri,
-            pf.rows,
-            pf.drain,
-            pf.out,
-            pf.wait_out,
-            pf.tiles,
-            pf.tris,
-            pf.row_count,
-            pf.total
+        volatile uint32_t* words = reinterpret_cast<volatile uint32_t*>(dst);
+        const uint32_t values[11] = {
+            counters.wait_in,
+            counters.init,
+            counters.triangle_setup,
+            counters.rows,
+            counters.drain,
+            counters.out,
+            counters.wait_out,
+            counters.tiles,
+            counters.triangles,
+            counters.row_count,
+            counters.total
         };
-        for (uint32_t k = 0; k < 32; ++k) {
-            w[k] = k < 11 ? v[k] : 0;
+        for (uint32_t word = 0; word < 32; ++word) {
+            words[word] = word < 11 ? values[word] : 0;
         }
-        push_out(dst, 32, per);
+        push_out(dst, 32, pages);
     }
 
 }  // namespace
@@ -318,11 +349,12 @@ namespace {
 
 // FILL, ARITH and SPIN of one command; the frame program's compute kernel calls it as
 // well.
-void fill_compute_command(const km_command_t& r) {
-    const uint32_t handler = km::handler(r);
+void fill_compute_command(const km_command_t& command) {
+    const uint32_t handler = km::handler(command);
     if (handler == kHandlerSpin) {
-        const uint32_t t0 = km::wall();
-        while (km::wall() - t0 < r.a0) {
+        const uint32_t cycles = command.a0;
+        const uint32_t started = km::wall();
+        while (km::wall() - started < cycles) {
             ;
         }
         return;
@@ -363,28 +395,28 @@ void fill_compute_command(const km_command_t& r) {
     }
 #endif
 #ifdef TRISC_PACK
-    fill::Prof pf;
+    fill::ProfileCounters counters;
     fill::setup();
-    bool ok;
+    bool filled;
     if (handler == kHandlerFill) {
         fill::edges(true);
-        ok = fill_list(pf);
+        filled = fill_list(counters);
     } else {
-        ok = arith_list(pf);
+        filled = arith_list(counters);
     }
     fill::finish();
-    if (ok) {
-        profile(pf, handler == kHandlerFill ? kPlanes : kArithOut);
+    if (filled) {
+        profile(counters, handler == kHandlerFill ? kPlanes : kArithOut);
     }
 #endif
 }
 
 #ifndef RASTER_NO_ENTRY
 void kernel_main() {
-    km::Compute cp;
+    km::Compute compute;
     compute_kernel_hw_startup(kCbIn, kCbOut);
-    cp.run([&](const km_command_t& r) {
-        fill_compute_command(r);
+    compute.run([&](const km_command_t& command) {
+        fill_compute_command(command);
     });
 }
 #endif

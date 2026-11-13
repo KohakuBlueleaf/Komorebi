@@ -4,8 +4,9 @@
 
 #include <stdint.h>
 
-// FILL: a0 directory, a1 lists, a3 output pages per item, a4 profile. Each core fills
-// the tiles its directory page names and writes their planes to the frame.
+// FILL: a0 directory_address, a1 lists_address, a3 pages_per_item (output pages),
+// a4 profile_address. Each core fills the tiles its directory page names and writes
+// their planes to the frame.
 constexpr uint32_t kHandlerFill = 1;
 // ARITH: the same addresses; items are chunks of arithmetic-check inputs.
 constexpr uint32_t kHandlerArith = 2;
@@ -38,7 +39,8 @@ constexpr uint32_t kDirFrameMax = 15;
 // An item id with this bit is an empty tile: the writer stores the empty planes.
 constexpr uint32_t kItemEmpty = 0x80000000;
 // Item id bits 0 to 15: its slot in the frame; a band of a split tile also holds its
-// rows [row0, row1) in bits 16 to 21 and 22 to 27 (both 0: every row of the pages).
+// rows [first_row, end_row) in bits 16 to 21 and 22 to 27 (both 0: every row of the
+// pages).
 constexpr uint32_t kItemSlot = 0xFFFF;
 constexpr uint32_t kItemRow0Shift = 16;
 constexpr uint32_t kItemRow1Shift = 22;
@@ -53,8 +55,8 @@ constexpr uint32_t kMarkTile = 0xFFFFFFFE;
 constexpr uint32_t kMarkEnd = 0xFFFFFFFF;
 constexpr uint32_t kHdrTile = 1;   // tile number, ty * 32 + tx
 constexpr uint32_t kHdrCount = 2;  // records that follow
-constexpr uint32_t kHdrRow0 = 3;   // the item's rows of the tile: [row0, row1), even
-constexpr uint32_t kHdrRow1 = 4;   // bounds; 0 and 32 for the whole tile
+constexpr uint32_t kHdrRow0 = 3;  // the item's rows of the tile: [first_row, end_row), even
+constexpr uint32_t kHdrRow1 = 4;  // bounds; 0 and 32 for the whole tile
 
 // Triangle record words (float32 bits unless named int).
 constexpr uint32_t kRecA = 0;  // edge k: a at kRecA + k, b at kRecB + k, c at kRecC + k
@@ -82,8 +84,9 @@ constexpr uint32_t kArithIn = 7;
 constexpr uint32_t kArithOut = 3;
 constexpr uint32_t kArithLanes = 512;
 
-// Profile page of a core (FILL a4 / ARITH a4, a page per core): the pack thread's
-// counters from word 0, the reader's at kProfReader, the writer's at kProfWriter.
+// Profile page of a core (profile_address of FILL and ARITH, a page per core): the pack
+// thread's counters from word 0, the reader's at kProfReader, the writer's at
+// kProfWriter.
 constexpr uint32_t kProfReader = 32;
 constexpr uint32_t kProfWriter = 36;
 // Reader counters (wait, read, total, pages) at this word of its directory scratch.

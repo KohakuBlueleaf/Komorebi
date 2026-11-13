@@ -16,20 +16,21 @@ constexpr uint32_t kHandlerSetup = 13;
 // HIST (writer only): each core writes, per heavy tile, the 32 counts COUNT kept for it
 // (kCbHist).
 constexpr uint32_t kHandlerHist = 14;
-// PLACE (writer only, a8 required): directory pages, end slots and list headers from
+// PLACE (writer only, bank required): directory pages, end slots and list headers from
 // the middle pass's words in the items region.
 constexpr uint32_t kHandlerPlace = 15;
 // SUM (writer only): the counters' sums over the cores, 16 tiles a slice: each core's
 // entries before it per tile into its slots page, the totals for the X280 thread.
 constexpr uint32_t kHandlerSum = 16;
 // HSUM (writer only): the same for HIST's histograms, one heavy tile at a time: each
-// core's counts before it, summed over the groups, into its page at a2.
+// core's counts before it, summed over the groups, into its page at prefixes_address.
 constexpr uint32_t kHandlerHsum = 17;
-// a8, every handler: 0, or 1 + the DRAM bank of the X280 thread's regions, whose small
-// arrays are then bank addresses (pages contiguous); mesh and lists stay tensors.
+// bank (a8), every handler: 0, or 1 + the DRAM bank of the X280 thread's regions, whose
+// small arrays are then bank addresses (pages contiguous); mesh and lists stay tensors.
 
-// a2 with kRanges (COUNT, SETUP; a8): blocks [b0, b1) at kRangesAt + 64 x core of the
-// camera's region; the writer leaves the pass's ticks at kCostsAt + 128 x core.
+// blocks_word (a2) with kRanges (COUNT, SETUP; bank): blocks [first_block, end_block)
+// at kRangesAt + 64 x core of the camera's region; the writer leaves the pass's ticks
+// at kCostsAt + 128 x core.
 constexpr uint32_t kRanges = 0x80000000;
 constexpr uint32_t kRangesAt = 64;
 constexpr uint32_t kCostsAt = 16384;
@@ -49,8 +50,9 @@ constexpr uint32_t kRecPages = 2;
 constexpr uint32_t kSlotsBytes = 8192;  // at most 2,048 items
 constexpr uint32_t kItemsBytes = 8192;
 constexpr uint32_t kItemRows = 4096;
-// SETUP with kSetupPrefix in a6: each core's slots page from SUM's and HSUM's prefixes
-// and the items' base words (first slot | 1 + heavy index << kBaseSlotBits): README.md.
+// SETUP with kSetupPrefix in list_slots (a6): each core's slots page from SUM's and
+// HSUM's prefixes and the items' base words (first slot | 1 + heavy index <<
+// kBaseSlotBits): README.md.
 constexpr uint32_t kSetupPrefix = 0x80000000;
 constexpr uint32_t kBaseAt = 8192;
 constexpr uint32_t kBaseSlotBits = 23;
@@ -123,11 +125,11 @@ constexpr uint32_t kGaveBadClip = 7;
 // out stride (HSUM: past its pages); PLACE without the thread's bank.
 constexpr uint32_t kGaveBadHist = 8;
 constexpr uint32_t kGaveBadHeavy = 9;
-constexpr uint32_t kGaveBadPlace = 10;  // PLACE, SUM or HSUM without a8 (where: 0, the handler)
+constexpr uint32_t kGaveBadPlace = 10;  // PLACE, SUM or HSUM without a bank (where: 0, the handler)
 
-// Profile (a9 not 0): 32 words per pass per core, at 128 x (handler - kHandlerCount) of
-// its page; the threads leave wall-clock counters in kCbSProf and the writer sends
-// them.
+// Profile (profile_address, a9, not 0): 32 words per pass per core, at 128 x (handler -
+// kHandlerCount) of its page; the threads leave wall-clock counters in kCbSProf and the
+// writer sends them.
 constexpr uint32_t kCbSProf = 9;
 constexpr uint32_t kSProfBytes = 256;
 constexpr uint32_t kSProfPageBytes = 4096;

@@ -14,17 +14,17 @@ def agree(scene, external=(), numpy_max=None, fresh=False):
     harness.ensure_results(scene, numpy_max, fresh)
     found = harness.collect(scene, external)
     names = list(found)
-    ref = harness.REFERENCE if harness.REFERENCE in found else names[0]
-    pairs = [(ref, n) for n in names if n != ref]
+    reference = harness.REFERENCE if harness.REFERENCE in found else names[0]
+    pairs = [(reference, name) for name in names if name != reference]
     cpu, gpu = "C++ all threads", "V100"
-    if cpu in found and gpu in found and ref not in (cpu, gpu):
+    if cpu in found and gpu in found and reference not in (cpu, gpu):
         pairs.append((cpu, gpu))
-    stats = {}
+    statistics = {}
     for first, second in pairs:
         result = harness.compare(found[first][0], found[second][0])
         result.pop("mask")
-        stats[f"{first} vs {second}"] = result
-    return stats
+        statistics[f"{first} vs {second}"] = result
+    return statistics
 
 
 def main():
@@ -36,20 +36,22 @@ def main():
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     report = {
-        s: agree(s, args.external, args.numpy_max, args.fresh) for s in args.scenes
+        scene: agree(scene, args.external, args.numpy_max, args.fresh)
+        for scene in args.scenes
     }
     for scene, pairs in report.items():
-        for pair, s in pairs.items():
+        for pair, statistics in pairs.items():
             print(
                 f"{scene:6s} {pair:34s} differing pixels (tri/depth/colour/any) "
-                f"{s['tri_differs']}/{s['depth_differs']}/{s['colour_differs']}/"
-                f"{s['any_differs']} of {s['pixels']}, on edge {s['differs_on_edge']}, "
-                f"max colour {s['colour_max_abs']:.3g}, "
-                f"tile counts equal {s['tile_counts_equal']}"
+                f"{statistics['tri_differs']}/{statistics['depth_differs']}/"
+                f"{statistics['colour_differs']}/{statistics['any_differs']} of "
+                f"{statistics['pixels']}, on edge {statistics['differs_on_edge']}, "
+                f"max colour {statistics['colour_max_abs']:.3g}, "
+                f"tile counts equal {statistics['tile_counts_equal']}"
             )
     if args.json:
-        with open(args.json, "w") as f:
-            json.dump(report, f, indent=1)
+        with open(args.json, "w") as file:
+            json.dump(report, file, indent=1)
 
 
 if __name__ == "__main__":

@@ -3,174 +3,205 @@
  */
 #include "middle.h"
 
-/* Stable merge sort of idx by falling key, through tmp. */
-static void sort_desc(uint32_t* idx, uint32_t* tmp, const uint64_t* key, uint32_t n) {
-    for (uint32_t width = 1; width < n; width *= 2) {
-        for (uint32_t lo = 0; lo < n; lo += 2 * width) {
-            uint32_t mid = lo + width < n ? lo + width : n;
-            uint32_t hi = lo + 2 * width < n ? lo + 2 * width : n;
-            uint32_t i = lo, j = mid, k = lo;
-            while (i < mid && j < hi) {
-                tmp[k++] = key[idx[j]] > key[idx[i]] ? idx[j++] : idx[i++];
+/* Stable merge sort of order by falling key, through spare. */
+static void sort_desc(
+    uint32_t* order, uint32_t* spare, const uint64_t* key, uint32_t count
+) {
+    for (uint32_t width = 1; width < count; width *= 2) {
+        for (uint32_t first = 0; first < count; first += 2 * width) {
+            uint32_t middle = first + width < count ? first + width : count;
+            uint32_t end = first + 2 * width < count ? first + 2 * width : count;
+            uint32_t left = first, right = middle, merged = first;
+            while (left < middle && right < end) {
+                spare[merged++] = (
+                    key[order[right]] > key[order[left]]
+                        ? order[right++]
+                        : order[left++]
+                );
             }
-            while (i < mid) {
-                tmp[k++] = idx[i++];
+            while (left < middle) {
+                spare[merged++] = order[left++];
             }
-            while (j < hi) {
-                tmp[k++] = idx[j++];
+            while (right < end) {
+                spare[merged++] = order[right++];
             }
         }
-        for (uint32_t k = 0; k < n; k++) {
-            idx[k] = tmp[k];
+        for (uint32_t position = 0; position < count; position++) {
+            order[position] = spare[position];
         }
     }
 }
 
 /* Restores the heap of keys (load << 8 | core: by load, ties by core) after its
  * first key grew. */
-static void sift_down(uint64_t* heap, uint32_t n) {
-    uint32_t at = 0;
-    const uint64_t x = heap[0];
+static void sift_down(uint64_t* heap, uint32_t count) {
+    uint32_t position = 0;
+    const uint64_t moved = heap[0];
     for (;;) {
-        const uint32_t l = 2 * at + 1, r = l + 1;
-        if (l >= n) {
+        const uint32_t left = 2 * position + 1, right = left + 1;
+        if (left >= count) {
             break;
         }
-        const uint32_t m = r < n && heap[r] < heap[l] ? r : l;
-        if (heap[m] >= x) {
+        const uint32_t smaller = (
+            right < count && heap[right] < heap[left] ? right : left
+        );
+        if (heap[smaller] >= moved) {
             break;
         }
-        heap[at] = heap[m];
-        at = m;
+        heap[position] = heap[smaller];
+        position = smaller;
     }
-    heap[at] = x;
+    heap[position] = moved;
 }
 
 void rm_costs(
-    const uint32_t* counters, uint32_t cores, rm_scratch* s, uint32_t t0, uint32_t t1
+    const uint32_t* counters,
+    uint32_t cores,
+    rm_scratch* scratch,
+    uint32_t first_tile,
+    uint32_t end_tile
 ) {
-    for (uint32_t t = t0; t < t1; t++) {
-        s->entries[t] = s->rows[t] = 0;
+    for (uint32_t tile = first_tile; tile < end_tile; tile++) {
+        scratch->entries[tile] = scratch->rows[tile] = 0;
     }
     /* core by core, so that the counters are read in order (a walk across the cores
      * per tile misses the cache at every step) */
-    for (uint32_t c = 0; c < cores; c++) {
-        const uint32_t* k = counters + c * RM_COUNTERS;
-        for (uint32_t t = t0; t < t1; t++) {
-            s->entries[t] += k[t];
-            s->rows[t] += k[RM_TILES + t];
+    for (uint32_t core = 0; core < cores; core++) {
+        const uint32_t* core_counters = counters + core * RM_COUNTERS;
+        for (uint32_t tile = first_tile; tile < end_tile; tile++) {
+            scratch->entries[tile] += core_counters[tile];
+            scratch->rows[tile] += core_counters[RM_TILES + tile];
         }
     }
-    for (uint32_t t = t0; t < t1; t++) {
-        const uint64_t n = s->entries[t], r = s->rows[t];
-        s->tile_cost[t] = (
-            n ? RM_COST_TRI * n + RM_COST_ROW * r + RM_COST_TILE : RM_COST_EMPTY
+    for (uint32_t tile = first_tile; tile < end_tile; tile++) {
+        const uint64_t tile_entries = scratch->entries[tile];
+        const uint64_t tile_rows = scratch->rows[tile];
+        scratch->tile_cost[tile] = (
+            tile_entries
+                ? RM_COST_TRI * tile_entries + RM_COST_ROW * tile_rows + RM_COST_TILE
+                : RM_COST_EMPTY
         );
     }
 }
 
-uint32_t rm_pick(rm_scratch* s, uint32_t fill_cores, uint32_t* heavy, uint32_t* bands) {
-    uint64_t sum = 0, max = 0;
-    for (uint32_t t = 0; t < RM_TILES; t++) {
-        sum += s->tile_cost[t];
-        max = s->tile_cost[t] > max ? s->tile_cost[t] : max;
+uint32_t rm_pick(
+    rm_scratch* scratch, uint32_t fill_cores, uint32_t* heavy, uint32_t* bands
+) {
+    uint64_t total_cost = 0, max = 0;
+    for (uint32_t tile = 0; tile < RM_TILES; tile++) {
+        total_cost += scratch->tile_cost[tile];
+        max = scratch->tile_cost[tile] > max ? scratch->tile_cost[tile] : max;
     }
-    const double mean = (double)sum / (double)fill_cores;
+    const double mean = (double)total_cost / (double)fill_cores;
     if ((double)max <= mean) {
         return 0;
     }
     const double target = RM_SPLIT * mean;
-    uint32_t n = 0;
-    for (uint32_t t = 0; t < RM_TILES; t++) {
-        const double q = (double)s->tile_cost[t] / target;
-        uint32_t k = (uint32_t)q;
-        k += (double)k < q;
-        k = k < RM_MAX_BANDS ? k : RM_MAX_BANDS;
-        if (k >= 2) {
-            if (n < RM_MAX_HEAVY) {
-                heavy[n] = t;
-                bands[n] = k;
+    uint32_t heavy_found = 0;
+    for (uint32_t tile = 0; tile < RM_TILES; tile++) {
+        const double ratio = (double)scratch->tile_cost[tile] / target;
+        uint32_t tile_bands = (uint32_t)ratio;
+        tile_bands += (double)tile_bands < ratio;
+        tile_bands = tile_bands < RM_MAX_BANDS ? tile_bands : RM_MAX_BANDS;
+        if (tile_bands >= 2) {
+            if (heavy_found < RM_MAX_HEAVY) {
+                heavy[heavy_found] = tile;
+                bands[heavy_found] = tile_bands;
             }
-            n++;
+            heavy_found++;
         }
     }
-    return n;
+    return heavy_found;
 }
 
 uint32_t rm_heavy(
     const uint32_t* counters,
     uint32_t setup_cores,
     uint32_t fill_cores,
-    rm_scratch* s,
+    rm_scratch* scratch,
     uint32_t* heavy,
     uint32_t* bands
 ) {
-    rm_costs(counters, setup_cores, s, 0, RM_TILES);
-    return rm_pick(s, fill_cores, heavy, bands);
+    rm_costs(counters, setup_cores, scratch, 0, RM_TILES);
+    return rm_pick(scratch, fill_cores, heavy, bands);
 }
 
-void rm_clear(uint32_t* dir, uint32_t c0, uint32_t c1) {
-    for (uint32_t w = c0 * RM_DIR_WORDS; w < c1 * RM_DIR_WORDS; w++) {
-        dir[w] = 0;
+void rm_clear(uint32_t* directory, uint32_t first_core, uint32_t end_core) {
+    for (
+        uint32_t word = first_core * RM_DIR_WORDS; word < end_core * RM_DIR_WORDS;
+        word++
+    ) {
+        directory[word] = 0;
     }
 }
 
-/* Entries of a tile's group counts that reach rows [row0, row1). */
+/* Entries of a tile's group counts that reach rows [first_row, end_row). */
 static uint64_t band_count(
-    const uint16_t* f, const uint16_t* l, uint32_t row0, uint32_t row1
+    const uint16_t* starts, const uint16_t* ends, uint32_t first_row, uint32_t end_row
 ) {
-    uint64_t n = 0;
-    for (uint32_t g = 0; g < row1 / 2; g++) {
-        n += f[g];
+    uint64_t entries = 0;
+    for (uint32_t group = 0; group < end_row / 2; group++) {
+        entries += starts[group];
     }
-    for (uint32_t g = 0; g < row0 / 2; g++) {
-        n -= l[g];
+    for (uint32_t group = 0; group < first_row / 2; group++) {
+        entries -= ends[group];
     }
-    return n;
+    return entries;
 }
 
 /* Band bounds (rows) of one heavy tile from its counts summed over the cores. */
 static uint32_t cut(
-    const uint64_t* f, const uint64_t* l, uint32_t k, uint32_t* bounds
+    const uint64_t* starts, const uint64_t* ends, uint32_t bands, uint32_t* bounds
 ) {
-    uint64_t cum[RM_GROUPS], c = 0, cf = 0, cl = 0;
-    for (uint32_t g = 0; g < RM_GROUPS; g++) {
-        cf += f[g];
-        const uint64_t cover = cf - cl; /* starts so far, less ends before g */
-        cl += l[g];
-        c += 2 * RM_COST_ROW * cover + RM_COST_TRI * f[g];
-        cum[g] = c;
+    uint64_t cumulative[RM_GROUPS], running = 0, starts_so_far = 0, ends_so_far = 0;
+    for (uint32_t group = 0; group < RM_GROUPS; group++) {
+        starts_so_far += starts[group];
+        const uint64_t cover = starts_so_far -
+            ends_so_far; /* starts so far, less ends before group */
+        ends_so_far += ends[group];
+        running += 2 * RM_COST_ROW * cover + RM_COST_TRI * starts[group];
+        cumulative[group] = running;
     }
-    uint32_t n = 0;
-    bounds[n++] = 0;
-    for (uint32_t j = 1; j < k; j++) {
-        uint32_t g = 0;
-        while (g < RM_GROUPS && k * cum[g] < cum[RM_GROUPS - 1] * j) {
-            g++;
+    uint32_t count = 0;
+    bounds[count++] = 0;
+    for (uint32_t band = 1; band < bands; band++) {
+        uint32_t group = 0;
+        while (
+            group < RM_GROUPS &&
+            bands * cumulative[group] < cumulative[RM_GROUPS - 1] * band
+        ) {
+            group++;
         }
-        const uint32_t row = 2 * (g + 1);
-        if (row > bounds[n - 1] && row < 2 * RM_GROUPS) {
-            bounds[n++] = row;
+        const uint32_t row = 2 * (group + 1);
+        if (row > bounds[count - 1] && row < 2 * RM_GROUPS) {
+            bounds[count++] = row;
         }
     }
-    bounds[n++] = 2 * RM_GROUPS;
-    return n - 1;
+    bounds[count++] = 2 * RM_GROUPS;
+    return count - 1;
 }
 
 void rm_hist(
-    const uint16_t* hist, uint32_t setup_cores, uint32_t n_heavy, rm_scratch* s
+    const uint16_t* histograms,
+    uint32_t setup_cores,
+    uint32_t heavy_count,
+    rm_scratch* scratch
 ) {
     /* core by core (in memory order) */
-    for (uint32_t h = 0; h < n_heavy; h++) {
-        for (uint32_t g = 0; g < 2 * RM_GROUPS; g++) {
-            s->hist[h][g] = 0;
+    for (uint32_t heavy_index = 0; heavy_index < heavy_count; heavy_index++) {
+        for (uint32_t group = 0; group < 2 * RM_GROUPS; group++) {
+            scratch->histograms[heavy_index][group] = 0;
         }
     }
-    for (uint32_t c = 0; c < setup_cores; c++) {
-        const uint16_t* hc = hist + c * n_heavy * 2 * RM_GROUPS;
-        for (uint32_t h = 0; h < n_heavy; h++) {
-            for (uint32_t g = 0; g < 2 * RM_GROUPS; g++) {
-                s->hist[h][g] += hc[h * 2 * RM_GROUPS + g];
+    for (uint32_t core = 0; core < setup_cores; core++) {
+        const uint16_t* core_histograms = (
+            histograms + core * heavy_count * 2 * RM_GROUPS
+        );
+        for (uint32_t heavy_index = 0; heavy_index < heavy_count; heavy_index++) {
+            for (uint32_t group = 0; group < 2 * RM_GROUPS; group++) {
+                scratch->histograms
+                    [heavy_index]
+                    [group] += (core_histograms[heavy_index * 2 * RM_GROUPS + group]);
             }
         }
     }
@@ -179,111 +210,118 @@ void rm_hist(
 uint32_t rm_items(
     const uint32_t* heavy,
     const uint32_t* bands,
-    uint32_t n_heavy,
-    rm_scratch* s,
+    uint32_t heavy_count,
+    rm_scratch* scratch,
     rm_item* items,
-    uint32_t* n_items,
+    uint32_t* items_found,
     uint32_t* tile_item
 ) {
-    if (n_heavy > RM_MAX_HEAVY) {
+    if (heavy_count > RM_MAX_HEAVY) {
         return 0;
     }
-    for (uint32_t t = 0; t < RM_TILES; t++) {
-        s->heavy_of[t] = -1;
+    for (uint32_t tile = 0; tile < RM_TILES; tile++) {
+        scratch->heavy_of[tile] = -1;
     }
-    for (uint32_t h = 0; h < n_heavy; h++) {
-        s->heavy_of[heavy[h]] = (int32_t)h;
+    for (uint32_t heavy_index = 0; heavy_index < heavy_count; heavy_index++) {
+        scratch->heavy_of[heavy[heavy_index]] = (int32_t)heavy_index;
     }
     /* items in tile order, with their entries and costs */
-    uint32_t ni = 0;
-    for (uint32_t t = 0; t < RM_TILES; t++) {
-        tile_item[t] = ni;
-        const int32_t h = s->heavy_of[t];
-        if (h < 0) {
-            items[ni] = (rm_item){t, 0, 32, (uint32_t)s->entries[t]};
-            s->cost[ni++] = s->tile_cost[t];
+    uint32_t item_count = 0;
+    for (uint32_t tile = 0; tile < RM_TILES; tile++) {
+        tile_item[tile] = item_count;
+        const int32_t heavy_index = scratch->heavy_of[tile];
+        if (heavy_index < 0) {
+            items[item_count] = (rm_item){
+                tile, 0, 32, (uint32_t)scratch->entries[tile]
+            };
+            scratch->cost[item_count++] = scratch->tile_cost[tile];
             continue;
         }
-        const uint64_t* f = s->hist[h];
-        const uint64_t* l = f + RM_GROUPS;
+        const uint64_t* starts = scratch->histograms[heavy_index];
+        const uint64_t* ends = starts + RM_GROUPS;
         uint32_t bounds[RM_MAX_BANDS + 1];
-        const uint32_t nb = cut(f, l, bands[h], bounds);
-        if (ni + nb + RM_TILES - 1 - t > RM_MAX_ITEMS) {
+        const uint32_t band_total = cut(starts, ends, bands[heavy_index], bounds);
+        if (item_count + band_total + RM_TILES - 1 - tile > RM_MAX_ITEMS) {
             return 0;
         }
-        for (uint32_t b = 0; b < nb; b++) {
-            const uint32_t r0 = bounds[b], r1 = bounds[b + 1];
-            uint64_t n = 0, cover = 0, cf = 0, cl = 0;
-            for (uint32_t g = 0; g < r1 / 2; g++) {
-                n += f[g]; /* starting before row1, less ending before row0 */
-                n -= g < r0 / 2 ? l[g] : 0;
-                cf += f[g];
-                if (g >= r0 / 2) {
-                    cover += cf - cl;
+        for (uint32_t band = 0; band < band_total; band++) {
+            const uint32_t first_row = bounds[band], end_row = bounds[band + 1];
+            uint64_t entries = 0, cover = 0, starts_so_far = 0, ends_so_far = 0;
+            for (uint32_t group = 0; group < end_row / 2; group++) {
+                entries += starts[group]; /* starting before end_row, less ending before
+                                             first_row */
+                entries -= group < first_row / 2 ? ends[group] : 0;
+                starts_so_far += starts[group];
+                if (group >= first_row / 2) {
+                    cover += starts_so_far - ends_so_far;
                 }
-                cl += l[g];
+                ends_so_far += ends[group];
             }
-            items[ni] = (rm_item){t, r0, r1, (uint32_t)n};
-            s->cost[ni++] = (
-                n
-                    ? RM_COST_TRI * n + RM_COST_ROW * 2 * cover + RM_COST_TILE
+            items[item_count] = (rm_item){tile, first_row, end_row, (uint32_t)entries};
+            scratch->cost[item_count++] = (
+                entries
+                    ? RM_COST_TRI * entries + RM_COST_ROW * 2 * cover + RM_COST_TILE
                     : RM_COST_EMPTY
             );
         }
     }
-    tile_item[RM_TILES] = ni;
-    *n_items = ni;
+    tile_item[RM_TILES] = item_count;
+    *items_found = item_count;
     return 1;
 }
 
-void rm_sort(rm_scratch* s, uint32_t lo, uint32_t hi) {
-    for (uint32_t i = lo; i < hi; i++) {
-        s->order[i] = i;
+void rm_sort(rm_scratch* scratch, uint32_t first, uint32_t end) {
+    for (uint32_t i = first; i < end; i++) {
+        scratch->order[i] = i;
     }
-    sort_desc(s->order + lo, s->tmp + lo, s->cost, hi - lo);
+    sort_desc(
+        scratch->order + first, scratch->spare_order + first, scratch->cost, end - first
+    );
 }
 
-void rm_merge(rm_scratch* s, uint32_t lo, uint32_t mid, uint32_t hi) {
-    const uint64_t* key = s->cost;
-    uint32_t* idx = s->order;
-    uint32_t i = lo, j = mid, k = lo;
-    while (i < mid && j < hi) {
-        s->tmp[k++] = key[idx[j]] > key[idx[i]] ? idx[j++] : idx[i++];
+void rm_merge(rm_scratch* scratch, uint32_t first, uint32_t middle, uint32_t end) {
+    const uint64_t* cost = scratch->cost;
+    uint32_t* order = scratch->order;
+    uint32_t left = first, right = middle, merged = first;
+    while (left < middle && right < end) {
+        scratch->spare_order[merged++] = (
+            cost[order[right]] > cost[order[left]] ? order[right++] : order[left++]
+        );
     }
-    while (i < mid) {
-        s->tmp[k++] = idx[i++];
+    while (left < middle) {
+        scratch->spare_order[merged++] = order[left++];
     }
-    while (j < hi) {
-        s->tmp[k++] = idx[j++];
+    while (right < end) {
+        scratch->spare_order[merged++] = order[right++];
     }
-    for (k = lo; k < hi; k++) {
-        idx[k] = s->tmp[k];
+    for (uint32_t position = first; position < end; position++) {
+        order[position] = scratch->spare_order[position];
     }
 }
 
-uint32_t rm_assign(uint32_t fill_cores, rm_scratch* s, uint32_t ni) {
-    rm_sort(s, 0, ni);
-    return rm_owners(fill_cores, s, ni);
+uint32_t rm_assign(uint32_t fill_cores, rm_scratch* scratch, uint32_t item_count) {
+    rm_sort(scratch, 0, item_count);
+    return rm_owners(fill_cores, scratch, item_count);
 }
 
-uint32_t rm_owners(uint32_t fill_cores, rm_scratch* s, uint32_t ni) {
+uint32_t rm_owners(uint32_t fill_cores, rm_scratch* scratch, uint32_t item_count) {
     if (fill_cores == 0 || fill_cores > RM_MAX_CORES) {
         return 0;
     }
     /* the least loaded core (ties: the lower) from a heap of the cores' keys; with all
      * loads 0 the cores in order are one */
-    uint64_t* heap = s->heap;
-    for (uint32_t c = 0; c < fill_cores; c++) {
-        heap[c] = c;
+    uint64_t* heap = scratch->heap;
+    for (uint32_t core = 0; core < fill_cores; core++) {
+        heap[core] = core;
     }
-    for (uint32_t k = 0; k < ni; k++) {
-        const uint32_t i = s->order[k];
-        s->owner[i] = (uint32_t)(heap[0] & 0xFF);
-        heap[0] += s->cost[i] << 8;
+    for (uint32_t rank = 0; rank < item_count; rank++) {
+        const uint32_t item = scratch->order[rank];
+        scratch->owner[item] = (uint32_t)(heap[0] & 0xFF);
+        heap[0] += scratch->cost[item] << 8;
         sift_down(heap, fill_cores);
     }
-    for (uint32_t c = 0; c < fill_cores; c++) {
-        s->load[heap[c] & 0xFF] = heap[c] >> 8;
+    for (uint32_t core = 0; core < fill_cores; core++) {
+        scratch->load[heap[core] & 0xFF] = heap[core] >> 8;
     }
     return 1;
 }
@@ -292,163 +330,185 @@ uint32_t rm_layout(
     uint32_t fill_cores,
     const uint32_t* heavy,
     const uint32_t* bands,
-    uint32_t n_heavy,
-    rm_scratch* s,
+    uint32_t heavy_count,
+    rm_scratch* scratch,
     rm_item* items,
-    uint32_t* n_items,
+    uint32_t* items_found,
     uint32_t* tile_item,
-    uint32_t* dir,
+    uint32_t* directory,
     rm_mark* marks,
-    uint32_t* n_marks
+    uint32_t* marks_written
 ) {
     if (
-        !rm_items(heavy, bands, n_heavy, s, items, n_items, tile_item) ||
-        !rm_assign(fill_cores, s, *n_items)
+        !rm_items(heavy, bands, heavy_count, scratch, items, items_found, tile_item) ||
+        !rm_assign(fill_cores, scratch, *items_found)
     ) {
         return 0;
     }
-    const uint32_t ni = *n_items;
+    const uint32_t item_count = *items_found;
     /* each core's items in item (tile) order */
-    for (uint32_t c = 0; c <= fill_cores; c++) {
-        s->first[c] = 0;
+    for (uint32_t core = 0; core <= fill_cores; core++) {
+        scratch->first_item[core] = 0;
     }
-    for (uint32_t i = 0; i < ni; i++) {
-        s->first[s->owner[i] + 1]++;
+    for (uint32_t i = 0; i < item_count; i++) {
+        scratch->first_item[scratch->owner[i] + 1]++;
     }
-    for (uint32_t c = 0; c < fill_cores; c++) {
-        s->first[c + 1] += s->first[c];
+    for (uint32_t core = 0; core < fill_cores; core++) {
+        scratch->first_item[core + 1] += scratch->first_item[core];
     }
-    for (uint32_t i = 0; i < ni; i++) {
-        s->tmp[s->first[s->owner[i]]++] = i;
+    for (uint32_t i = 0; i < item_count; i++) {
+        scratch->spare_order[scratch->first_item[scratch->owner[i]]++] = i;
     }
-    for (uint32_t c = fill_cores; c > 0; c--) {
-        s->first[c] = s->first[c - 1];
+    for (uint32_t core = fill_cores; core > 0; core--) {
+        scratch->first_item[core] = scratch->first_item[core - 1];
     }
-    s->first[0] = 0;
+    scratch->first_item[0] = 0;
     /* each core's stream: headers, records, the end slot */
-    uint32_t page = 0, nm = 0;
-    for (uint32_t c = 0; c < fill_cores; c++) {
-        uint32_t* d = dir + c * RM_DIR_WORDS;
-        uint32_t at = RM_PAGE_SLOTS * page, n = 0;
-        for (uint32_t j = s->first[c]; j < s->first[c + 1]; j++) {
-            const uint32_t i = s->tmp[j];
-            if (n == RM_DIR_MAX_ITEMS) {
+    uint32_t page = 0, mark_count = 0;
+    for (uint32_t core = 0; core < fill_cores; core++) {
+        uint32_t* directory_page = directory + core * RM_DIR_WORDS;
+        uint32_t slot = RM_PAGE_SLOTS * page, own_items = 0;
+        for (
+            uint32_t rank = scratch->first_item[core];
+            rank < scratch->first_item[core + 1];
+            rank++
+        ) {
+            const uint32_t item_index = scratch->spare_order[rank];
+            if (own_items == RM_DIR_MAX_ITEMS) {
                 return 0;
             }
-            const rm_item* it = &items[i];
-            uint32_t id = it->tile;
-            if (it->row0 != 0 || it->row1 != 32) {
-                id |= it->row0 << RM_ITEM_ROW0_SHIFT | it->row1 << RM_ITEM_ROW1_SHIFT;
+            const rm_item* item = &items[item_index];
+            uint32_t id = item->tile;
+            if (item->first_row != 0 || item->end_row != 32) {
+                id |= (
+                    item->first_row << RM_ITEM_ROW0_SHIFT |
+                    item->end_row << RM_ITEM_ROW1_SHIFT
+                );
             }
-            if (it->total == 0) {
-                d[RM_DIR_IDS + n++] = id | RM_ITEM_EMPTY;
+            if (item->total == 0) {
+                directory_page[RM_DIR_IDS + own_items++] = id | RM_ITEM_EMPTY;
                 continue;
             }
-            d[RM_DIR_IDS + n++] = id;
-            s->header[i] = at;
-            marks[nm++] = (rm_mark){
-                at, RM_MARK_TILE, it->tile, it->total, it->row0, it->row1
+            directory_page[RM_DIR_IDS + own_items++] = id;
+            scratch->header[item_index] = slot;
+            marks[mark_count++] = (rm_mark){
+                slot,
+                RM_MARK_TILE,
+                item->tile,
+                item->total,
+                item->first_row,
+                item->end_row
             };
-            at += 1 + it->total;
+            slot += 1 + item->total;
         }
-        marks[nm++] = (rm_mark){at, RM_MARK_END, 0, 0, 0, 0};
+        marks[mark_count++] = (rm_mark){slot, RM_MARK_END, 0, 0, 0, 0};
         const uint32_t pages = (
-            (at + 1 - RM_PAGE_SLOTS * page + RM_PAGE_SLOTS - 1) / RM_PAGE_SLOTS
+            (slot + 1 - RM_PAGE_SLOTS * page + RM_PAGE_SLOTS - 1) / RM_PAGE_SLOTS
         );
-        d[RM_DIR_FIRST] = page;
-        d[RM_DIR_PAGES] = pages;
-        d[RM_DIR_ITEMS] = n;
+        directory_page[RM_DIR_FIRST] = page;
+        directory_page[RM_DIR_PAGES] = pages;
+        directory_page[RM_DIR_ITEMS] = own_items;
         page += pages;
     }
-    *n_marks = nm;
+    *marks_written = mark_count;
     return RM_PAGE_SLOTS * page;
 }
 
 uint32_t rm_compact(
     uint32_t fill_cores,
-    rm_scratch* s,
+    rm_scratch* scratch,
     const rm_item* items,
-    uint32_t n_items,
+    uint32_t item_count,
     uint32_t* item_words,
     uint32_t* core_words
 ) {
-    uint32_t* len = s->len;
-    uint32_t* count = s->count;
-    for (uint32_t c = 0; c < fill_cores; c++) {
-        len[c] = count[c] = 0;
+    uint32_t* slot_counts = scratch->slot_counts;
+    uint32_t* item_counts = scratch->item_counts;
+    for (uint32_t core = 0; core < fill_cores; core++) {
+        slot_counts[core] = item_counts[core] = 0;
     }
-    for (uint32_t i = 0; i < n_items; i++) {
-        const uint32_t c = s->owner[i];
-        count[c]++;
-        len[c] += items[i].total ? 1 + items[i].total : 0;
+    for (uint32_t i = 0; i < item_count; i++) {
+        const uint32_t core = scratch->owner[i];
+        item_counts[core]++;
+        slot_counts[core] += items[i].total ? 1 + items[i].total : 0;
     }
     uint32_t page = 0;
-    for (uint32_t c = 0; c < fill_cores; c++) {
-        if (count[c] > RM_DIR_MAX_ITEMS) {
+    for (uint32_t core = 0; core < fill_cores; core++) {
+        if (item_counts[core] > RM_DIR_MAX_ITEMS) {
             return 0;
         }
-        const uint32_t pages = (len[c] + 1 + RM_PAGE_SLOTS - 1) / RM_PAGE_SLOTS;
-        uint32_t* w = core_words + RM_CORE_WORDS * c;
-        w[0] = page;
-        w[1] = pages;
-        w[2] = count[c];
-        w[3] = RM_PAGE_SLOTS * page + len[c]; /* the end slot */
-        len[c] = RM_PAGE_SLOTS * page;        /* from here: the next header */
+        const uint32_t pages = (
+            (slot_counts[core] + 1 + RM_PAGE_SLOTS - 1) / RM_PAGE_SLOTS
+        );
+        uint32_t* words = core_words + RM_CORE_WORDS * core;
+        words[0] = page;
+        words[1] = pages;
+        words[2] = item_counts[core];
+        words[3] = RM_PAGE_SLOTS * page + slot_counts[core]; /* the end slot */
+        slot_counts[core] = RM_PAGE_SLOTS * page; /* from here: the next header */
         page += pages;
     }
-    for (uint32_t i = 0; i < n_items; i++) {
-        const uint32_t c = s->owner[i], total = items[i].total;
-        s->header[i] = total ? len[c] : 0;
-        item_words[RM_ITEM_WORDS * i] = c | total << 8;
-        item_words[RM_ITEM_WORDS * i + 1] = s->header[i];
-        len[c] += total ? 1 + total : 0;
+    for (uint32_t i = 0; i < item_count; i++) {
+        const uint32_t core = scratch->owner[i], total = items[i].total;
+        scratch->header[i] = total ? slot_counts[core] : 0;
+        item_words[RM_ITEM_WORDS * i] = core | total << 8;
+        item_words[RM_ITEM_WORDS * i + 1] = scratch->header[i];
+        slot_counts[core] += total ? 1 + total : 0;
     }
     return RM_PAGE_SLOTS * page;
 }
 
 void rm_base(
-    const rm_scratch* s, const rm_item* items, uint32_t n_items, uint32_t* base
+    const rm_scratch* scratch, const rm_item* items, uint32_t item_count, uint32_t* base
 ) {
-    for (uint32_t i = 0; i < n_items; i++) {
-        const int32_t h = s->heavy_of[items[i].tile];
+    for (uint32_t i = 0; i < item_count; i++) {
+        const int32_t heavy_index = scratch->heavy_of[items[i].tile];
         base[i] = (
-            (items[i].total ? s->header[i] + 1 : 0) |
-            (h < 0 ? 0 : (uint32_t)(h + 1) << RM_BASE_SLOT_BITS)
+            (items[i].total ? scratch->header[i] + 1 : 0) |
+            (heavy_index < 0 ? 0 : (uint32_t)(heavy_index + 1) << RM_BASE_SLOT_BITS)
         );
     }
 }
 
 void rm_next(
     const uint32_t* counters,
-    const uint16_t* hist,
+    const uint16_t* histograms,
     uint32_t setup_cores,
-    uint32_t n_heavy,
-    rm_scratch* s,
+    uint32_t heavy_count,
+    rm_scratch* scratch,
     const rm_item* items,
-    uint32_t i0,
-    uint32_t i1,
-    uint32_t* next,
+    uint32_t first_item,
+    uint32_t end_item,
+    uint32_t* next_slots,
     uint32_t next_stride
 ) {
-    for (uint32_t i = i0; i < i1; i++) {
-        s->at[i] = items[i].total ? s->header[i] + 1 : 0;
+    for (uint32_t i = first_item; i < end_item; i++) {
+        scratch->next_slot[i] = items[i].total ? scratch->header[i] + 1 : 0;
     }
-    for (uint32_t c = 0; c < setup_cores; c++) {
-        const uint32_t* k = counters + c * RM_COUNTERS;
-        uint32_t* nx = next + c * next_stride;
-        for (uint32_t i = i0; i < i1; i++) {
-            const rm_item* it = &items[i];
-            nx[i] = s->at[i];
-            if (it->total == 0) {
+    for (uint32_t core = 0; core < setup_cores; core++) {
+        const uint32_t* core_counters = counters + core * RM_COUNTERS;
+        uint32_t* core_next = next_slots + core * next_stride;
+        for (uint32_t i = first_item; i < end_item; i++) {
+            const rm_item* item = &items[i];
+            core_next[i] = scratch->next_slot[i];
+            if (item->total == 0) {
                 continue;
             }
-            const int32_t h = s->heavy_of[it->tile];
-            if (h < 0) {
-                s->at[i] += k[it->tile];
+            const int32_t heavy_index = scratch->heavy_of[item->tile];
+            if (heavy_index < 0) {
+                scratch->next_slot[i] += core_counters[item->tile];
             } else {
-                const uint16_t* hc = hist + (c * n_heavy + (uint32_t)h) * 2 * RM_GROUPS;
-                s->at[i] += (
-                    (uint32_t)band_count(hc, hc + RM_GROUPS, it->row0, it->row1)
+                const uint16_t* core_histograms = (
+                    histograms +
+                    (core * heavy_count + (uint32_t)heavy_index) * 2 * RM_GROUPS
+                );
+                scratch->next_slot[i] += (
+                    (uint32_t)band_count(
+                        core_histograms,
+                        core_histograms + RM_GROUPS,
+                        item->first_row,
+                        item->end_row
+                    )
                 );
             }
         }
@@ -457,50 +517,59 @@ void rm_next(
 
 uint32_t rm_middle(
     const uint32_t* counters,
-    const uint16_t* hist,
+    const uint16_t* histograms,
     uint32_t setup_cores,
     uint32_t fill_cores,
     const uint32_t* heavy,
     const uint32_t* bands,
-    uint32_t n_heavy,
-    rm_scratch* s,
+    uint32_t heavy_count,
+    rm_scratch* scratch,
     rm_item* items,
-    uint32_t* n_items,
+    uint32_t* items_found,
     uint32_t* tile_item,
-    uint32_t* dir,
+    uint32_t* directory,
     rm_mark* marks,
-    uint32_t* n_marks,
-    uint32_t* next,
+    uint32_t* marks_written,
+    uint32_t* next_slots,
     uint32_t next_stride
 ) {
     if (fill_cores > RM_MAX_CORES) {
         return 0;
     }
-    if (n_heavy > RM_MAX_HEAVY) {
+    if (heavy_count > RM_MAX_HEAVY) {
         return 0;
     }
-    rm_clear(dir, 0, fill_cores);
-    rm_hist(hist, setup_cores, n_heavy, s);
+    rm_clear(directory, 0, fill_cores);
+    rm_hist(histograms, setup_cores, heavy_count, scratch);
     const uint32_t slots = (
         rm_layout(
             fill_cores,
             heavy,
             bands,
-            n_heavy,
-            s,
+            heavy_count,
+            scratch,
             items,
-            n_items,
+            items_found,
             tile_item,
-            dir,
+            directory,
             marks,
-            n_marks
+            marks_written
         )
     );
-    if (slots == 0 || *n_items > next_stride) {
+    if (slots == 0 || *items_found > next_stride) {
         return 0;
     }
     rm_next(
-        counters, hist, setup_cores, n_heavy, s, items, 0, *n_items, next, next_stride
+        counters,
+        histograms,
+        setup_cores,
+        heavy_count,
+        scratch,
+        items,
+        0,
+        *items_found,
+        next_slots,
+        next_stride
     );
     return slots;
 }

@@ -16,11 +16,11 @@ namespace pass_k {
 }  // namespace pass_k
 
 void kernel_main() {
-    km::Writer wr;
-    wr.run([&](const km_command_t& r) {
-        if (km::handler(r) >= pass_k::kHandlerLanes) {
-            return pass_k::setup_writer_command(wr, r);
+    km::Writer writer;
+    writer.run([&](const km_command_t& command) {
+        if (km::handler(command) >= pass_k::kHandlerLanes) {
+            return pass_k::setup_writer_command(writer, command);
         }
-        return fill_k::fill_writer_command(wr, r);
+        return fill_k::fill_writer_command(writer, command);
     });
 }

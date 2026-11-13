@@ -28,13 +28,13 @@ namespace pass_k {
 }  // namespace pass_k
 
 void kernel_main() {
-    km::Compute cp;
+    km::Compute compute;
     compute_kernel_hw_startup(fill_k::kCbIn, fill_k::kCbOut);
-    cp.run([&](const km_command_t& r) {
-        if (km::handler(r) >= pass_k::kHandlerLanes) {
-            pass_k::setup_compute_command(cp, r);
+    compute.run([&](const km_command_t& command) {
+        if (km::handler(command) >= pass_k::kHandlerLanes) {
+            pass_k::setup_compute_command(compute, command);
         } else {
-            fill_k::fill_compute_command(r);
+            fill_k::fill_compute_command(command);
         }
     });
 }

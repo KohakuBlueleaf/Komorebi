@@ -21,27 +21,27 @@ using namespace kr;
         }                                                                           \
     } while (0)
 
-constexpr int N_TILES = TILES_X * TILES_Y;
+constexpr int TILE_COUNT = TILES_X * TILES_Y;
 constexpr int BATCH = 64;
 
 // records: (2T), the first piece of triangle t at t and a second one at T + t.
 __global__ void setup_kernel(
     Mesh mesh, Record* records, uint8_t* pieces, int32_t* counts
 ) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= mesh.n_tris) {
+    int triangle = blockIdx.x * blockDim.x + threadIdx.x;
+    if (triangle >= mesh.triangle_count) {
         return;
     }
-    int bits = setup_triangle(mesh, t, records[t], records[mesh.n_tris + t]);
-    pieces[t] = (uint8_t)bits;
+    int bits = setup_triangle(mesh, triangle, records[triangle], records[mesh.triangle_count + triangle]);
+    pieces[triangle] = (uint8_t)bits;
     for (int piece = 0; piece < 2; piece++) {
         if (!((bits >> piece) & 1)) {
             continue;
         }
-        const Record& r = records[t + piece * mesh.n_tris];
-        for (int ty = r.box[2] / TILE; ty <= r.box[3] / TILE; ty++) {
-            for (int tx = r.box[0] / TILE; tx <= r.box[1] / TILE; tx++) {
-                atomicAdd(&counts[ty * TILES_X + tx], 1);
+        const Record& record = records[triangle + piece * mesh.triangle_count];
+        for (int tile_y = record.box[2] / TILE; tile_y <= record.box[3] / TILE; tile_y++) {
+            for (int tile_x = record.box[0] / TILE; tile_x <= record.box[1] / TILE; tile_x++) {
+                atomicAdd(&counts[tile_y * TILES_X + tile_x], 1);
             }
         }
     }
@@ -49,21 +49,21 @@ __global__ void setup_kernel(
 
 // Exclusive scan of the 1024 tile counts by one block; cursor starts as the offsets.
 __global__ void scan_kernel(const int32_t* counts, int32_t* offsets, int32_t* cursor) {
-    __shared__ int32_t s[N_TILES];
+    __shared__ int32_t sums[TILE_COUNT];
     int i = threadIdx.x;
-    s[i] = counts[i];
+    sums[i] = counts[i];
     __syncthreads();
-    for (int d = 1; d < N_TILES; d *= 2) {
-        int32_t add = i >= d ? s[i - d] : 0;
+    for (int distance = 1; distance < TILE_COUNT; distance *= 2) {
+        int32_t add = i >= distance ? sums[i - distance] : 0;
         __syncthreads();
-        s[i] += add;
+        sums[i] += add;
         __syncthreads();
     }
-    int32_t before = s[i] - counts[i];
+    int32_t before = sums[i] - counts[i];
     offsets[i] = before;
     cursor[i] = before;
-    if (i == N_TILES - 1) {
-        offsets[N_TILES] = s[i];
+    if (i == TILE_COUNT - 1) {
+        offsets[TILE_COUNT] = sums[i];
     }
 }
 
@@ -74,20 +74,20 @@ __global__ void scatter_kernel(
     int32_t* cursor,
     int32_t* list
 ) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= mesh.n_tris) {
+    int triangle = blockIdx.x * blockDim.x + threadIdx.x;
+    if (triangle >= mesh.triangle_count) {
         return;
     }
-    int bits = pieces[t];
+    int bits = pieces[triangle];
     for (int piece = 0; piece < 2; piece++) {
         if (!((bits >> piece) & 1)) {
             continue;
         }
-        const int k = t + piece * mesh.n_tris;
-        const Record& r = records[k];
-        for (int ty = r.box[2] / TILE; ty <= r.box[3] / TILE; ty++) {
-            for (int tx = r.box[0] / TILE; tx <= r.box[1] / TILE; tx++) {
-                list[atomicAdd(&cursor[ty * TILES_X + tx], 1)] = k;
+        const int record_index = triangle + piece * mesh.triangle_count;
+        const Record& record = records[record_index];
+        for (int tile_y = record.box[2] / TILE; tile_y <= record.box[3] / TILE; tile_y++) {
+            for (int tile_x = record.box[0] / TILE; tile_x <= record.box[1] / TILE; tile_x++) {
+                list[atomicAdd(&cursor[tile_y * TILES_X + tile_x], 1)] = record_index;
             }
         }
     }
@@ -95,25 +95,25 @@ __global__ void scatter_kernel(
 
 // Bitonic sort of the tiles by list size, largest first (ties: lower tile first).
 __global__ void order_kernel(const int32_t* counts, int32_t* order) {
-    __shared__ uint32_t key[N_TILES];
+    __shared__ uint32_t key[TILE_COUNT];
     int i = threadIdx.x;
-    key[i] = (uint32_t)counts[i] * 1024u + (uint32_t)(N_TILES - 1 - i);
+    key[i] = (uint32_t)counts[i] * 1024u + (uint32_t)(TILE_COUNT - 1 - i);
     __syncthreads();
-    for (int k = 2; k <= N_TILES; k *= 2) {
-        for (int j = k / 2; j > 0; j /= 2) {
-            int partner = i ^ j;
+    for (int size = 2; size <= TILE_COUNT; size *= 2) {
+        for (int stride = size / 2; stride > 0; stride /= 2) {
+            int partner = i ^ stride;
             if (partner > i) {
-                bool descending = (i & k) == 0;
-                uint32_t a = key[i], b = key[partner];
-                if ((a < b) == descending) {
-                    key[i] = b;
-                    key[partner] = a;
+                bool descending = (i & size) == 0;
+                uint32_t own_key = key[i], partner_key = key[partner];
+                if ((own_key < partner_key) == descending) {
+                    key[i] = partner_key;
+                    key[partner] = own_key;
                 }
             }
             __syncthreads();
         }
     }
-    order[i] = N_TILES - 1 - (int)(key[i] & 1023u);
+    order[i] = TILE_COUNT - 1 - (int)(key[i] & 1023u);
 }
 
 __global__ void fill_kernel(
@@ -121,62 +121,62 @@ __global__ void fill_kernel(
     const int32_t* list,
     const int32_t* offsets,
     const int32_t* order,
-    float* colour,
+    float* colour_out,
     float* depth_out,
     int32_t* owner_out
 ) {
     __shared__ Record batch[BATCH];
     const int tile = order[blockIdx.x];
     const int x = (tile % TILES_X) * TILE + threadIdx.x;
-    const int y0 = (tile / TILES_X) * TILE + threadIdx.y;
-    const int tid = threadIdx.y * TILE + threadIdx.x;
+    const int top_y = (tile / TILES_X) * TILE + threadIdx.y;
+    const int thread_number = threadIdx.y * TILE + threadIdx.x;
     const float px = (float)x + 0.5f;
-    float depth[4], col[4][3];
+    float depth[4], colours[4][3];
     int owner[4];
-    for (int k = 0; k < 4; k++) {
-        depth[k] = 0.0f;
-        owner[k] = -1;
-        for (int ch = 0; ch < 3; ch++) {
-            col[k][ch] = background(ch);
+    for (int row = 0; row < 4; row++) {
+        depth[row] = 0.0f;
+        owner[row] = -1;
+        for (int channel = 0; channel < 3; channel++) {
+            colours[row][channel] = background(channel);
         }
     }
     const int begin = offsets[tile], end = offsets[tile + 1];
     for (int base = begin; base < end; base += BATCH) {
-        int n = min(BATCH, end - base);
+        int batch_count = min(BATCH, end - base);
         __syncthreads();
-        if (tid < n) {
-            batch[tid] = records[list[base + tid]];
+        if (thread_number < batch_count) {
+            batch[thread_number] = records[list[base + thread_number]];
         }
         __syncthreads();
-        for (int j = 0; j < n; j++) {
-            const Record& r = batch[j];
-            if (x < r.box[0] || x > r.box[1]) {
+        for (int entry = 0; entry < batch_count; entry++) {
+            const Record& record = batch[entry];
+            if (x < record.box[0] || x > record.box[1]) {
                 continue;
             }
-            for (int k = 0; k < 4; k++) {
-                int y = y0 + 8 * k;
-                if (y < r.box[2] || y > r.box[3]) {
+            for (int row = 0; row < 4; row++) {
+                int y = top_y + 8 * row;
+                if (y < record.box[2] || y > record.box[3]) {
                     continue;
                 }
                 float py = (float)y + 0.5f;
-                if (!covers(r, px, py)) {
+                if (!covers(record, px, py)) {
                     continue;
                 }
-                float w = depth_at(r, px, py);
-                if (nearer(w, r.tri, depth[k], owner[k])) {
-                    depth[k] = w;
-                    owner[k] = r.tri;
-                    colour_at(r, px, py, col[k]);
+                float inverse_z = depth_at(record, px, py);
+                if (nearer(inverse_z, record.triangle, depth[row], owner[row])) {
+                    depth[row] = inverse_z;
+                    owner[row] = record.triangle;
+                    colour_at(record, px, py, colours[row]);
                 }
             }
         }
     }
-    for (int k = 0; k < 4; k++) {
-        size_t g = (size_t)(y0 + 8 * k) * WIDTH + x;
-        depth_out[g] = depth[k];
-        owner_out[g] = owner[k];
-        for (int ch = 0; ch < 3; ch++) {
-            colour[3 * g + ch] = col[k][ch];
+    for (int row = 0; row < 4; row++) {
+        size_t pixel = (size_t)(top_y + 8 * row) * WIDTH + x;
+        depth_out[pixel] = depth[row];
+        owner_out[pixel] = owner[row];
+        for (int channel = 0; channel < 3; channel++) {
+            colour_out[3 * pixel + channel] = colours[row][channel];
         }
     }
 }
@@ -193,136 +193,136 @@ struct Times {
     float setup, bin, fill;
 };
 
-static Times run(const Mesh& mesh, Device& d, bool grow) {
-    cudaEvent_t e[4];
-    for (auto& event : e) {
+static Times run(const Mesh& mesh, Device& device, bool grow) {
+    cudaEvent_t events[4];
+    for (auto& event : events) {
         CHECK(cudaEventCreate(&event));
     }
-    const int blocks = (mesh.n_tris + 255) / 256;
-    CHECK(cudaEventRecord(e[0]));
-    CHECK(cudaMemset(d.counts, 0, N_TILES * sizeof(int32_t)));
-    setup_kernel<<<blocks, 256>>>(mesh, d.records, d.pieces, d.counts);
-    CHECK(cudaEventRecord(e[1]));
-    scan_kernel<<<1, N_TILES>>>(d.counts, d.offsets, d.cursor);
+    const int blocks = (mesh.triangle_count + 255) / 256;
+    CHECK(cudaEventRecord(events[0]));
+    CHECK(cudaMemset(device.counts, 0, TILE_COUNT * sizeof(int32_t)));
+    setup_kernel<<<blocks, 256>>>(mesh, device.records, device.pieces, device.counts);
+    CHECK(cudaEventRecord(events[1]));
+    scan_kernel<<<1, TILE_COUNT>>>(device.counts, device.offsets, device.cursor);
     int32_t total = 0;
-    CHECK(cudaMemcpy(&total, d.offsets + N_TILES, 4, cudaMemcpyDeviceToHost));
-    if ((size_t)total > d.list_capacity) {
+    CHECK(cudaMemcpy(&total, device.offsets + TILE_COUNT, 4, cudaMemcpyDeviceToHost));
+    if ((size_t)total > device.list_capacity) {
         if (!grow) {
             std::fprintf(stderr, "list buffer too small\n");
             std::exit(1);
         }
-        CHECK(cudaFree(d.list));
-        CHECK(cudaMalloc(&d.list, (size_t)total * 4));
-        d.list_capacity = total;
+        CHECK(cudaFree(device.list));
+        CHECK(cudaMalloc(&device.list, (size_t)total * 4));
+        device.list_capacity = total;
     }
-    scatter_kernel<<<blocks, 256>>>(mesh, d.records, d.pieces, d.cursor, d.list);
-    order_kernel<<<1, N_TILES>>>(d.counts, d.order);
-    CHECK(cudaEventRecord(e[2]));
+    scatter_kernel<<<blocks, 256>>>(mesh, device.records, device.pieces, device.cursor, device.list);
+    order_kernel<<<1, TILE_COUNT>>>(device.counts, device.order);
+    CHECK(cudaEventRecord(events[2]));
     dim3 block(TILE, 8);
-    fill_kernel<<<N_TILES, block>>>(
-        d.records, d.list, d.offsets, d.order, d.colour, d.depth, d.owner
+    fill_kernel<<<TILE_COUNT, block>>>(
+        device.records, device.list, device.offsets, device.order, device.colour, device.depth, device.owner
     );
-    CHECK(cudaEventRecord(e[3]));
-    CHECK(cudaEventSynchronize(e[3]));
+    CHECK(cudaEventRecord(events[3]));
+    CHECK(cudaEventSynchronize(events[3]));
     CHECK(cudaGetLastError());
-    Times t;
-    CHECK(cudaEventElapsedTime(&t.setup, e[0], e[1]));
-    CHECK(cudaEventElapsedTime(&t.bin, e[1], e[2]));
-    CHECK(cudaEventElapsedTime(&t.fill, e[2], e[3]));
-    for (auto& event : e) {
+    Times times;
+    CHECK(cudaEventElapsedTime(&times.setup, events[0], events[1]));
+    CHECK(cudaEventElapsedTime(&times.bin, events[1], events[2]));
+    CHECK(cudaEventElapsedTime(&times.fill, events[2], events[3]));
+    for (auto& event : events) {
         CHECK(cudaEventDestroy(event));
     }
-    return t;
+    return times;
 }
 
 template <class T>
-static T* upload(const Array& a) {
-    T* p;
-    CHECK(cudaMalloc(&p, a.bytes.size()));
-    CHECK(cudaMemcpy(p, a.bytes.data(), a.bytes.size(), cudaMemcpyHostToDevice));
-    return p;
+static T* upload(const Array& array) {
+    T* pointer;
+    CHECK(cudaMalloc(&pointer, array.bytes.size()));
+    CHECK(cudaMemcpy(pointer, array.bytes.data(), array.bytes.size(), cudaMemcpyHostToDevice));
+    return pointer;
 }
 
 int main(int argc, char** argv) {
     Args args(argc, argv);
-    std::string scene = args.get("scene"), out = args.get("out");
-    int reps = args.geti("reps", 3);
-    Array pos = load_npy(scene + "/positions.npy", 4);
-    Array col = load_npy(scene + "/colors.npy", 4);
-    Array idx = load_npy(scene + "/indices.npy", 4);
-    Array cam = load_npy(scene + "/camera.npy", 4);
+    std::string scene = args.get("scene"), out_folder = args.get("out");
+    int repetitions = args.geti("reps", 3);
+    Array positions = load_npy(scene + "/positions.npy", 4);
+    Array colours = load_npy(scene + "/colors.npy", 4);
+    Array indices = load_npy(scene + "/indices.npy", 4);
+    Array camera = load_npy(scene + "/camera.npy", 4);
     Mesh mesh;
-    mesh.positions = upload<float>(pos);
-    mesh.colors = upload<float>(col);
-    mesh.indices = upload<int32_t>(idx);
-    mesh.n_tris = (int)idx.shape[0];
-    std::copy(cam.data<float>(), cam.data<float>() + 16, mesh.camera);
+    mesh.positions = upload<float>(positions);
+    mesh.colors = upload<float>(colours);
+    mesh.indices = upload<int32_t>(indices);
+    mesh.triangle_count = (int)indices.shape[0];
+    std::copy(camera.data<float>(), camera.data<float>() + 16, mesh.camera);
 
-    Device d{};
-    CHECK(cudaMalloc(&d.records, 2 * (size_t)mesh.n_tris * sizeof(Record)));
-    CHECK(cudaMalloc(&d.pieces, (size_t)mesh.n_tris));
-    CHECK(cudaMalloc(&d.counts, N_TILES * 4));
-    CHECK(cudaMalloc(&d.offsets, (N_TILES + 1) * 4));
-    CHECK(cudaMalloc(&d.cursor, N_TILES * 4));
-    CHECK(cudaMalloc(&d.order, N_TILES * 4));
-    CHECK(cudaMalloc(&d.list, 4));
-    CHECK(cudaMalloc(&d.colour, (size_t)WIDTH * HEIGHT * 12));
-    CHECK(cudaMalloc(&d.depth, (size_t)WIDTH * HEIGHT * 4));
-    CHECK(cudaMalloc(&d.owner, (size_t)WIDTH * HEIGHT * 4));
-    d.list_capacity = 1;
+    Device device{};
+    CHECK(cudaMalloc(&device.records, 2 * (size_t)mesh.triangle_count * sizeof(Record)));
+    CHECK(cudaMalloc(&device.pieces, (size_t)mesh.triangle_count));
+    CHECK(cudaMalloc(&device.counts, TILE_COUNT * 4));
+    CHECK(cudaMalloc(&device.offsets, (TILE_COUNT + 1) * 4));
+    CHECK(cudaMalloc(&device.cursor, TILE_COUNT * 4));
+    CHECK(cudaMalloc(&device.order, TILE_COUNT * 4));
+    CHECK(cudaMalloc(&device.list, 4));
+    CHECK(cudaMalloc(&device.colour, (size_t)WIDTH * HEIGHT * 12));
+    CHECK(cudaMalloc(&device.depth, (size_t)WIDTH * HEIGHT * 4));
+    CHECK(cudaMalloc(&device.owner, (size_t)WIDTH * HEIGHT * 4));
+    device.list_capacity = 1;
 
     cudaDeviceProp prop;
     CHECK(cudaGetDeviceProperties(&prop, 0));
-    run(mesh, d, true);  // warm-up: sizes the tile lists, loads the code
-    RepLog log(reps);
-    for (int rep = 0; rep < reps; rep++) {
-        Times t = run(mesh, d, false);
+    run(mesh, device, true);  // warm-up: sizes the tile lists, loads the code
+    RepLog log(repetitions);
+    for (int repetition = 0; repetition < repetitions; repetition++) {
+        Times times = run(mesh, device, false);
         char record[256];
         std::snprintf(
             record,
             sizeof record,
             "{\"setup_ms\": %.4f, \"bin_ms\": %.4f, \"fill_ms\": %.4f, \"total_ms\": "
             "%.4f}",
-            t.setup,
-            t.bin,
-            t.fill,
-            t.setup + t.bin + t.fill
+            times.setup,
+            times.bin,
+            times.fill,
+            times.setup + times.bin + times.fill
         );
         log.add(record);
     }
     double loop_ms = log.finish();
-    std::vector<int32_t> counts(N_TILES), offsets(N_TILES + 1);
-    CHECK(cudaMemcpy(counts.data(), d.counts, N_TILES * 4, cudaMemcpyDeviceToHost));
+    std::vector<int32_t> counts(TILE_COUNT), offsets(TILE_COUNT + 1);
+    CHECK(cudaMemcpy(counts.data(), device.counts, TILE_COUNT * 4, cudaMemcpyDeviceToHost));
     CHECK(
-        cudaMemcpy(offsets.data(), d.offsets, (N_TILES + 1) * 4, cudaMemcpyDeviceToHost)
+        cudaMemcpy(offsets.data(), device.offsets, (TILE_COUNT + 1) * 4, cudaMemcpyDeviceToHost)
     );
     std::printf(
         "{\"impl\": \"gpu\", \"device\": \"%s\", \"triangles\": %d, \"reps_n\": %d, "
         "\"loop_ms\": %.4f, \"entries\": %d, \"reps\": [%s]}\n",
         prop.name,
-        mesh.n_tris,
-        reps,
+        mesh.triangle_count,
+        repetitions,
         loop_ms,
-        offsets[N_TILES],
+        offsets[TILE_COUNT],
         log.body.c_str()
     );
-    if (!out.empty()) {
+    if (!out_folder.empty()) {
         std::vector<float> colour((size_t)WIDTH * HEIGHT * 3),
             depth((size_t)WIDTH * HEIGHT);
         std::vector<int32_t> owner((size_t)WIDTH * HEIGHT);
         CHECK(cudaMemcpy(
-            colour.data(), d.colour, colour.size() * 4, cudaMemcpyDeviceToHost
+            colour.data(), device.colour, colour.size() * 4, cudaMemcpyDeviceToHost
         ));
         CHECK(
-            cudaMemcpy(depth.data(), d.depth, depth.size() * 4, cudaMemcpyDeviceToHost)
+            cudaMemcpy(depth.data(), device.depth, depth.size() * 4, cudaMemcpyDeviceToHost)
         );
         CHECK(
-            cudaMemcpy(owner.data(), d.owner, owner.size() * 4, cudaMemcpyDeviceToHost)
+            cudaMemcpy(owner.data(), device.owner, owner.size() * 4, cudaMemcpyDeviceToHost)
         );
-        save_f32(out + "/colour.npy", colour.data(), {HEIGHT, WIDTH, 3});
-        save_f32(out + "/depth.npy", depth.data(), {HEIGHT, WIDTH});
-        save_i32(out + "/tri.npy", owner.data(), {HEIGHT, WIDTH});
-        save_i32(out + "/tile_counts.npy", counts.data(), {TILES_Y, TILES_X});
+        save_f32(out_folder + "/colour.npy", colour.data(), {HEIGHT, WIDTH, 3});
+        save_f32(out_folder + "/depth.npy", depth.data(), {HEIGHT, WIDTH});
+        save_i32(out_folder + "/tri.npy", owner.data(), {HEIGHT, WIDTH});
+        save_i32(out_folder + "/tile_counts.npy", counts.data(), {TILES_Y, TILES_X});
     }
     return 0;
 }

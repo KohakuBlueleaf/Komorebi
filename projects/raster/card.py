@@ -11,12 +11,12 @@ from projects.raster import lists
 
 K = lists.K
 KERNELS = lists.HERE / "kernels"
-T0 = time.monotonic()
+STARTED = time.monotonic()
 
 
-def log(msg):
+def log(message):
     """A progress line with seconds since start, flushed."""
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def program():
@@ -43,7 +43,8 @@ def program():
 
 
 def workers(session):
-    """The cores of the open card's grid; core c is (c % x, c // x)."""
+    """The cores of the open card's grid; the core numbered `index` is at
+    (index % x, index // x)."""
     x, y = session.grid
     return x * y
 
@@ -56,37 +57,42 @@ def tensor(session, rows):
 def read(session, *tensors):
     """The tensors' words, [pages, page words] uint32 each, read by DRAM banks one
     tensor at a time (each at most 2 MB) with a progress line per tensor."""
-    out = []
-    for i, t in enumerate(tensors):
-        (pages,) = session.read(t)
-        out.append(pages.view(np.uint32))
-        log(f"read {i + 1} of {len(tensors)}: {pages.nbytes} bytes")
-    return out
+    pages_read = []
+    for number, source_tensor in enumerate(tensors):
+        (pages,) = session.read(source_tensor)
+        pages_read.append(pages.view(np.uint32))
+        log(f"read {number + 1} of {len(tensors)}: {pages.nbytes} bytes")
+    return pages_read
 
 
-def read_frame(session, up):
+def read_frame(session, uploaded):
     """The frame's pages, its tensors read one by one."""
-    return np.concatenate(read(session, *up["frame"]))
+    return np.concatenate(read(session, *uploaded["frame"]))
 
 
 # Frame pages per tensor: at most 2 MB, a whole number of 3- and 5-page items.
 CHUNK_PAGES = 510
 
 
-def upload(session, pages, directory, out_pages):
+def upload(session, pages, directory, output_pages):
     """The DRAM tensors of a run: lists, directory (naming the frame's tensors), the
     frame in tensors of CHUNK_PAGES pages, and the profile pages."""
-    chunks = -(-out_pages // CHUNK_PAGES)
+    chunks = -(-output_pages // CHUNK_PAGES)
     if chunks > K["kDirFrameMax"]:
-        raise ValueError(f"a frame of {out_pages} pages needs {chunks} tensors")
+        raise ValueError(f"a frame of {output_pages} pages needs {chunks} tensors")
     frame = [
-        tensor(session, np.zeros((min(CHUNK_PAGES, out_pages - i * CHUNK_PAGES), 1024)))
-        for i in range(chunks)
+        tensor(
+            session,
+            np.zeros((min(CHUNK_PAGES, output_pages - chunk * CHUNK_PAGES), 1024)),
+        )
+        for chunk in range(chunks)
     ]
     directory = np.array(directory, dtype=np.uint32)
-    at = K["kDirFrame"]
-    directory[:, at] = CHUNK_PAGES
-    directory[:, at + 1 : at + 1 + chunks] = [t.address for t in frame]
+    frame_column = K["kDirFrame"]
+    directory[:, frame_column] = CHUNK_PAGES
+    directory[:, frame_column + 1 : frame_column + 1 + chunks] = [
+        chunk_tensor.address for chunk_tensor in frame
+    ]
     return {
         "lists": tensor(session, pages),
         "dir": tensor(session, directory),
@@ -95,14 +101,14 @@ def upload(session, pages, directory, out_pages):
     }
 
 
-def words(up, per_item):
+def words(uploaded, pages_per_item):
     """FILL's arguments: directory, lists, (unused), pages per item, profile."""
     return [
-        up["dir"].address,
-        up["lists"].address,
+        uploaded["dir"].address,
+        uploaded["lists"].address,
         0,
-        per_item,
-        up["prof"].address,
+        pages_per_item,
+        uploaded["prof"].address,
     ]
 
 
@@ -111,83 +117,88 @@ def run_lists(
     handler,
     pages,
     directory,
-    out_pages,
-    per_item,
-    reps=1,
+    output_pages,
+    pages_per_item,
+    repetitions=1,
     frame=True,
     args=None,
 ):
     """Loads the program, runs `reps` commands of `handler` over the lists and directory
     (`args` in place of the tensors' addresses), stops, reads back. Returns (output
     pages or None, profile pages, status, command microseconds, host seconds)."""
-    if K["kOutPages"] % per_item:
-        raise ValueError(f"{per_item}-page items do not divide the output buffer")
+    if K["kOutPages"] % pages_per_item:
+        raise ValueError(f"{pages_per_item}-page items do not divide the output buffer")
     if len(directory) != workers(session):
         raise ValueError(f"{len(directory)} directory pages for {workers(session)}")
     times = {}
-    t0 = time.perf_counter()
-    up = upload(session, pages, directory, out_pages)
-    times["upload_s"] = time.perf_counter() - t0
-    t0 = time.perf_counter()
+    started = time.perf_counter()
+    uploaded = upload(session, pages, directory, output_pages)
+    times["upload_s"] = time.perf_counter() - started
+    started = time.perf_counter()
     run = session.load(program(), deadline=1.0)
-    times["load_s"] = time.perf_counter() - t0
-    log(f"loaded; {reps} commands over {len(pages)} list pages")
-    us = loop(run, handler, args or words(up, per_item), reps)
-    times["commands_s"] = time.perf_counter() - t0 - times["load_s"]
+    times["load_s"] = time.perf_counter() - started
+    log(f"loaded; {repetitions} commands over {len(pages)} list pages")
+    microseconds = loop(
+        run, handler, args or words(uploaded, pages_per_item), repetitions
+    )
+    times["commands_s"] = time.perf_counter() - started - times["load_s"]
     run.stop()
     log("stopped")
-    t0 = time.perf_counter()
-    (prof,) = read(session, up["prof"])
-    out = read_frame(session, up) if frame else None
-    times["readback_s"] = time.perf_counter() - t0
+    started = time.perf_counter()
+    (profile_pages,) = read(session, uploaded["prof"])
+    frame_pages = read_frame(session, uploaded) if frame else None
+    times["readback_s"] = time.perf_counter() - started
     log(f"read back in {times['readback_s']:.1f} s")
-    status = check_run(run, len(directory), reps, us)
-    return out, prof, status, us, times
+    status = check_run(run, len(directory), repetitions, microseconds)
+    return frame_pages, profile_pages, status, microseconds, times
 
 
-def loop(run, handler, args, reps, batch=512):
+def loop(run, handler, args, repetitions, batch=512):
     """Submits `reps` commands of `handler` on every core in batches and waits for them;
     returns each command's microseconds from submit to acknowledgement."""
-    us = []
-    while len(us) < reps:
-        n = min(batch, reps - len(us))
-        handles = run.submit_many(handler, 0, run.cores, np.tile(args, (n, 1)))
-        events = run.wait(list(handles), timeout=10.0 + n * 0.01)
-        us += [e.microseconds for e in events]
-        if any(e.kind != "done" for e in events):
+    microseconds = []
+    while len(microseconds) < repetitions:
+        commands = min(batch, repetitions - len(microseconds))
+        handles = run.submit_many(handler, 0, run.cores, np.tile(args, (commands, 1)))
+        events = run.wait(list(handles), timeout=10.0 + commands * 0.01)
+        microseconds += [event.microseconds for event in events]
+        if any(event.kind != "done" for event in events):
             break
-    return np.array(us)
+    return np.array(microseconds)
 
 
-def check_run(run, cores, reps, us):
+def check_run(run, cores, repetitions, microseconds):
     """The run's end as a dict, `ok` when every core ended cleanly and every command
     finished; raises nothing."""
     states = run.state()
-    st_writer = km.abi.headers()["kStWriter"]
-    word = np.asarray(run.state_words())[:cores, st_writer].astype(np.int64)
-    bad = np.flatnonzero((word & 0xFF) == K["kGaveBadItem"])
+    writer_column = km.abi.headers()["kStWriter"]
+    writer_words = np.asarray(run.state_words())[:cores, writer_column].astype(np.int64)
+    bad_cores = np.flatnonzero((writer_words & 0xFF) == K["kGaveBadItem"])
     ended = {
-        k: sum(c[k] != 0 for c in states[:cores])
-        for k in ("reader_end", "writer_end", "compute_end")
+        key: sum(state[key] != 0 for state in states[:cores])
+        for key in ("reader_end", "writer_end", "compute_end")
     }
     gave = [
-        {"core": c["core"], "reader": c["reader"], "writer": c["writer"]}
-        for c in states[:cores]
-        if c["reader"] or c["writer"] or c["compute"]
+        {"core": state["core"], "reader": state["reader"], "writer": state["writer"]}
+        for state in states[:cores]
+        if state["reader"] or state["writer"] or state["compute"]
     ]
-    out = {
+    result = {
         "kernel": run.result()["error_name"],
-        "commands": int(len(us)),
+        "commands": int(len(microseconds)),
         "cores_ended": ended,
-        "compute_wrong": sum(sum(c["compute_wrong"]) for c in states[:cores]),
-        "bad_items": [{"core": int(c), "where": int(word[c] >> 8 & 0xFF)} for c in bad],
+        "compute_wrong": sum(sum(state["compute_wrong"]) for state in states[:cores]),
+        "bad_items": [
+            {"core": int(core), "where": int(writer_words[core] >> 8 & 0xFF)}
+            for core in bad_cores
+        ],
         "gave_up": gave,
     }
-    out["ok"] = bool(
-        len(us) == reps
-        and all(v == cores for v in ended.values())
-        and out["compute_wrong"] == 0
+    result["ok"] = bool(
+        len(microseconds) == repetitions
+        and all(count == cores for count in ended.values())
+        and result["compute_wrong"] == 0
         and not gave
-        and not out["bad_items"]
+        and not result["bad_items"]
     )
-    return out
+    return result
