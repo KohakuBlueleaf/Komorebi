@@ -1,11 +1,12 @@
-"""A frame on the card: ray generation, the four traces, the shading and the colour
-as records under the dispatch kernel, each core keeping the packets of its tiles from
-the first stage to the last; the host uploads the scene and reads the colour back,
-checked against numpy (with --stages, every stage's pages too).
+"""A frame on the card: generation, the four traces, the shading and the colour as
+records, each core keeping its tiles' packets from the first stage to the last; the
+colour (with --stages, every stage) is checked against numpy. --reps reruns the frame
+in the same load: times are medians, power the mean over the records.
 """
 
 import argparse
 import json
+import os
 import sys
 
 import numpy as np
@@ -141,6 +142,7 @@ def main():
     p.add_argument("--scene", default="tiny")
     p.add_argument("--tiles", type=int, nargs="*", default=None, help="32 x 32 tiles")
     p.add_argument("--stages", action="store_true", help="read and check every stage")
+    p.add_argument("--reps", type=int, default=1, help="frames in the one load")
     p.add_argument("--json", default=None)
     args = p.parse_args()
     data = native.data_dir()
@@ -166,17 +168,24 @@ def main():
         prof_rows = np.zeros((workers, K["kOutPageBytes"] // 4), dtype=np.uint32)
         profs = [card.tensor(dev, prof_rows) for _ in STEPS]
         recs = [(K["kSegLoad"], [tree_t.buffer_address(), image.nbytes])]
-        recs += records(tensors, dir_t, const_t, profs)
+        recs += records(tensors, dir_t, const_t, profs) * args.reps
         card.log(f"frame: {n} packets, {len(recs)} records")
-        res, _ = card.run_records(session, recs, len(image))
+        meter = card.Power()
+        report["power_idle_w"] = meter.idle()
+        report["aiclk_mhz"] = card.aiclk_mhz()
+        report["load_avg"] = os.getloadavg()[0]
+        res, samples = card.run_records(session, recs, len(image), power=meter)
         run = card.check_run(res, workers)
-        us = card.record_us(res)
+        us = card.record_us(res)[1:].reshape(args.reps, len(STEPS))
         report["run"] = run
+        report["frame_us_median"] = float(np.median(us.sum(axis=1)))
+        watts = [w for t, w in samples if t >= samples[-1][0] - res.host_s]
+        report["power_mean_w"] = float(np.mean(watts)) if watts else None
         report["steps"] = []
         rows = card.read_each(session, profs, [f"profile {s[0]}" for s in STEPS])
-        for (name, *_), ev_us, prof in zip(STEPS, us[1:], rows):
+        for (name, *_), ev_us, prof in zip(STEPS, us.T, rows):
             pr = card.profile_rows(prof.astype(np.uint64), workers)
-            step = {"step": name, "us": float(ev_us)}
+            step = {"step": name, "us": float(np.median(ev_us))}
             step["errors"] = int((pr["error"] != 0).sum())
             step["busy_max"] = int(pr["total"].max())
             used = pr["packets"] > 0

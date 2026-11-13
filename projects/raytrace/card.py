@@ -274,28 +274,40 @@ def run_segment(
     )
     log(f"ran: {len(res.events)} records, error {res.result['error']}; reading back")
     t0 = time.perf_counter()
-    out, *profs = read(session, out_t, *prof_ts)
+    out = read_rows(session, out_t, "hits")
+    profs = read(session, *prof_ts)
     prof = sum(p[:n].astype(np.uint64) for p in profs)  # the last round's
     times["readback_s"] = time.perf_counter() - t0
     log(f"read back in {times['readback_s']:.1f}s")
     return out[:out_rows], prof, res, times, meter.samples
 
 
-READ_LIMIT = 4 << 20  # bytes per read-back call; larger results are read by sample
+READ_LIMIT = 4 << 20  # bytes in one read-back call; larger tensors go in chunks
+CHUNK = 2 << 20  # bytes per chunk
+
+
+def read_rows(session, tensor, name):
+    """A tensor read back as uint32 rows: in one call up to READ_LIMIT, else in chunks
+    of CHUNK with a progress line per chunk."""
+    size = tensor.buffer_num_pages() * tensor.buffer_page_size()
+    t0 = time.perf_counter()
+    if size <= READ_LIMIT:
+        (rows,) = read(session, tensor)
+    else:
+        parts = []
+        for first, pages in session.read_chunks(tensor, CHUNK):
+            parts.append(pages.view(np.uint32).reshape(len(pages), -1))
+            log(
+                f"read back {name}: pages {first} + {len(pages)} of {size / 1e6:.1f} MB"
+            )
+        rows = np.concatenate(parts)
+    log(f"read back {name}: {size / 1e6:.2f} MB in {time.perf_counter() - t0:.1f}s")
+    return rows
 
 
 def read_each(session, tensors, names):
-    """Tensors read back one call each, with a progress line per tensor; a tensor
-    over READ_LIMIT is refused."""
-    out = []
-    for t, name in zip(tensors, names):
-        size = t.buffer_num_pages() * t.buffer_page_size()
-        if size > READ_LIMIT:
-            raise ValueError(f"{name}: {size} bytes; read back {READ_LIMIT} at most")
-        t0 = time.perf_counter()
-        out += read(session, t)
-        log(f"read back {name}: {size / 1e6:.2f} MB in {time.perf_counter() - t0:.1f}s")
-    return out
+    """Tensors read back one at a time (read_rows)."""
+    return [read_rows(session, t, name) for t, name in zip(tensors, names)]
 
 
 def run_records(session, records, tree_pages, deadline_s=5.0, power=None):
