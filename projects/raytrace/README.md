@@ -155,10 +155,10 @@ tested differs from the reference (packets walk together), the hits do not.
 ### The whole frame on the card
 
 Tiny scene, 1024 x 1024 pixels, 32,768 packets on the 120 cores, tree in L1;
-2026-11-13 10:20, AICLK 1350 MHz, host load average 3.7;
+2026-11-13 11:35, AICLK 1350 MHz, X280 1000 MHz, host load average 3.7;
 `python -m projects.raytrace.frame --scene tiny --reps 200 --json frame.json`. Median
-of 200 frames in one load; image 0 of 1,048,576 pixels differing. Card power 76.9 W
-mean over the 4.6 s of records (70.2 W idle before), 1.78 J per frame.
+of 200 frames in one load; image 0 of 1,048,576 pixels differing. Card power 72.3 W
+mean over the 4.6 s of records (66.2 W idle before), 1.68 J per frame.
 
 | record | card ms | cycles per packet: load, compute, write |
 |---|---|---|
@@ -178,7 +178,7 @@ mean over the 4.6 s of records (70.2 W idle before), 1.78 J per frame.
 | Mray/s, all rays over the frame | 108.8 | 113.54 | 972.85 | 0.11 |
 | primary Mray/s (GEN + trace) | 266.1 | 154.19 | 1258.04 | 0.21 |
 | bounce Mray/s (trace) | 74.9 | 95.28 | 583.14 | 0.13 |
-| J per frame | 1.78 (card) | n/a | 0.51 (GPU board) | |
+| J per frame | 1.68 (card) | n/a | 0.51 (GPU board) | |
 
 The C++ and V100 frame is the reference's five stages, ray generation and shading
 inside them; neither counts loading or building the scene and tree, copying them to
@@ -202,15 +202,15 @@ Reading it against the V100: below half everywhere, room left, in three places.
 
 ### The frame as a graph
 
-`python -m projects.raytrace.framegraph --cameras 2` (2026-11-13 10:28, AICLK 1350
-MHz, host load average 9.5): the whole tiny frame for two cameras (the second a step
+`python -m projects.raytrace.framegraph --cameras 2` (2026-11-13 11:36, AICLK 1350
+MHz, X280 1000 MHz, host load average 3.7): the whole tiny frame for two cameras (the second a step
 forward), host wall time from the graph's start to its end event. The upload is 896
 bytes.
 
 | camera | in the kernel ms | host-fed ms | pixels differing from numpy (both) | kernel against host-fed |
 |---|---|---|---|---|
-| 0 | 23.50 | 26.09 | 0 | 0 |
-| 1 | 23.61 | 25.37 | 0 | 0 |
+| 0 | 23.52 | 26.08 | 0 | 0 |
+| 1 | 23.62 | 25.43 | 0 | 0 |
 
 The frame as a graph takes the time of its records (23.20 ms above) plus about 0.3
 ms; host-fed adds about 2 ms of host round trips over the eight records.
