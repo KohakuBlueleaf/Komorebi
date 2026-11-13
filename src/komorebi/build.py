@@ -144,8 +144,8 @@ def run(commands):
     for command in commands:
         try:
             subprocess.run(command, check=True)
-        except (OSError, subprocess.CalledProcessError) as err:
-            raise BuildError(f"{shlex.join(command)}: {err}") from err
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise BuildError(f"{shlex.join(command)}: {error}") from error
 
 
 def build_cxx(kind, tree, out, source, includes=(), defines=()):

@@ -421,14 +421,14 @@ class Session:
             if self.run is not None and not self.run.stopped:
                 self.log(f"{why}: stopping the loaded run through the X280 runtime")
                 self.run.abort()
-        except Exception as err:  # noqa: BLE001 (the process ends; logged, not raised)
-            self.log(f"{why}: clean-up raised {type(err).__name__}: {err}")
+        except Exception as error:  # noqa: BLE001 (the process ends: logged)
+            self.log(f"{why}: clean-up raised {type(error).__name__}: {error}")
         finally:
             if close_device:
                 try:
                     self.close()
-                except Exception as err:  # noqa: BLE001 (as above)
-                    self.log(f"{why}: close raised {type(err).__name__}: {err}")
+                except Exception as error:  # noqa: BLE001 (as above)
+                    self.log(f"{why}: close raised {type(error).__name__}: {error}")
 
     @property
     def grid(self):
@@ -607,8 +607,8 @@ class Session:
             started = time.perf_counter()
             try:
                 elves, *build = descriptor.build()
-            except Exception as err:
-                raise ProgramError(f"{program.name}: build failed: {err}") from err
+            except Exception as error:
+                raise ProgramError(f"{program.name}: build failed: {error}") from error
             program.sizes = kernel_sizes(build)
             text = ", ".join(
                 f"{name} {size}" for name, size in program.sizes.text.items()
@@ -635,8 +635,8 @@ class Session:
             launched = True
             try:
                 descriptor.run()
-            except Exception as err:
-                raise ProgramError(f"{program.name}: launch failed: {err}") from err
+            except Exception as error:
+                raise ProgramError(f"{program.name}: launch failed: {error}") from error
             dispatch.start(str(image))
             self.log("dispatcher started")
             state = dispatch.wait_ready(start + 1.0)
@@ -1088,8 +1088,10 @@ class _Backend:
                 self.device, grid_x, grid_y, ABORT_GRID_S
             )
             self.session.log("grid returned" if back else "grid still running")
-        except Exception as err:  # noqa: BLE001 (the close below runs whatever happens)
-            self.session.log(f"stopping the grid raised {type(err).__name__}: {err}")
+        except Exception as error:  # noqa: BLE001 (the close below always runs)
+            self.session.log(
+                f"stopping the grid raised {type(error).__name__}: {error}"
+            )
         cleaned = self.port.close()
         self.close_failed = "" if cleaned else self.port.close_failed
         self.aborted = self.port.aborted()
@@ -1112,8 +1114,8 @@ class _Backend:
             for line_index, line in enumerate(words.reshape(-1, 8)):
                 text = " ".join(f"{int(word):#x}" for word in line)
                 self.session.log(f"kernel state +{64 * line_index:#05x}: {text}")
-        except Exception as err:  # noqa: BLE001 (a failure path: reported, not raised)
-            self.session.log(f"kernel state not read ({type(err).__name__}: {err})")
+        except Exception as error:  # noqa: BLE001 (a failure path: reported)
+            self.session.log(f"kernel state not read ({type(error).__name__}: {error})")
 
     def kernel_state(self):
         """The first STATE_DUMP_LINES lines of the kernel's state (uint64 words) from

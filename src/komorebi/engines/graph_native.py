@@ -136,8 +136,8 @@ class NativeExecutor:
                 return graph_module.BUSY
             try:
                 return submit(node, list(rec[:16]))
-            except Exception as err:  # noqa: BLE001 (raised again below)
-                raised.append(err)
+            except Exception as error:  # noqa: BLE001 (raised again below)
+                raised.append(error)
                 return graph_module.BUSY
 
         code = self.lib.kmg_step(self._state, SUBMIT_FUNCTION(call), None)

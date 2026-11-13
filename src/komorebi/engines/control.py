@@ -318,15 +318,15 @@ class Engines:
             return  # it has ended: nothing to cancel
         try:
             self._command(self.constants["KM_HANDLER_CANCEL"], [engine.req], timeout)
-        except EngineRejected as err:
+        except EngineRejected as error:
             ended = engine.end is not None or engine.unknown  # or its RUN was rejected
-            if not ended or err.reason != self.constants["KMD_REJECT_UNKNOWN"]:
+            if not ended or error.reason != self.constants["KMD_REJECT_UNKNOWN"]:
                 raise  # unless it ended while the command was on its way
-        except WaitTimeout as err:
+        except WaitTimeout as error:
             raise EngineTimeout(
                 f"{engine.kind} {engine.req}: CANCEL not answered in {timeout} s",
                 engine,
-            ) from err
+            ) from error
         if engine.unknown:
             self._settle_unknown(engine)
 
@@ -414,13 +414,13 @@ class Engines:
         engine.upload.state = "running"
         try:
             self._command(self.constants["KM_HANDLER_RUN"], args, timeout, engine)
-        except WaitTimeout as err:
+        except WaitTimeout as error:
             engine.unknown = True  # the kernel may have started it
             raise EngineTimeout(
                 f"{engine.kind} {engine.req}: RUN not answered in {timeout} s; "
                 "it may run until cancelled",
                 engine,
-            ) from err
+            ) from error
         except BaseException:
             self._not_started(engine)
             raise

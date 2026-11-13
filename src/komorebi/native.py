@@ -219,8 +219,8 @@ def main(argv=None):
     try:
         print(image_path(args.tree))
         print(module_path(args.tree))
-    except build.BuildError as err:
-        print(f"komorebi.native: {err}", file=sys.stderr)
+    except build.BuildError as error:
+        print(f"komorebi.native: {error}", file=sys.stderr)
         return 2
     return 0
 

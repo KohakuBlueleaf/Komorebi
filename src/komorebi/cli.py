@@ -75,8 +75,8 @@ def run_build(args):
             build.build_cxx(
                 args.kind, tree, args.out, args.sources[0], args.includes, args.defines
             )
-    except build.BuildError as err:
-        print(f"kmr build: {err}", file=sys.stderr)
+    except build.BuildError as error:
+        print(f"kmr build: {error}", file=sys.stderr)
         return 2
     return 0
 

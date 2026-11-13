@@ -112,8 +112,8 @@ def evaluate(expr, known, sizes=None, where=""):
         raise HeaderError(f"{what}: not a C integer literal")
     try:
         tree = ast.parse(text.replace("/", "//"), mode="eval")
-    except SyntaxError as err:
-        raise HeaderError(what) from err
+    except SyntaxError as error:
+        raise HeaderError(what) from error
 
     def checked(number):
         if not 0 <= number <= M32:

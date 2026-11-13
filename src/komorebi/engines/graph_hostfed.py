@@ -94,8 +94,8 @@ class _Hostfed:
         left = deadline - time.monotonic()
         try:
             event = self.run.wait_any(self.flight, timeout=max(left, 0.0))
-        except CommandTimeout as err:
-            node = self.flight.pop(err.handle, (graph_module.NO_NODE,))[0]
+        except CommandTimeout as error:
+            node = self.flight.pop(error.handle, (graph_module.NO_NODE,))[0]
             self.executor.stop(stream_module.ERROR_DEADLINE, node)
             return
         self.done(event.handle, event)

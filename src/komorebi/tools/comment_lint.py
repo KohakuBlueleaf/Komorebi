@@ -325,8 +325,8 @@ def main():
     for path in files:
         try:
             findings = check_text(read_source(path), path.suffix)
-        except (SyntaxError, tokenize.TokenError, UnicodeDecodeError) as err:
-            print(f"comment_lint: {path}: cannot read: {err}", file=sys.stderr)
+        except (SyntaxError, tokenize.TokenError, UnicodeDecodeError) as error:
+            print(f"comment_lint: {path}: cannot read: {error}", file=sys.stderr)
             status = max(status, 2)
             continue
         shown = shown_path(path, root)

@@ -534,8 +534,8 @@ class Run:
         """What the backend tells of the kernel after a wait ran out (never raises)."""
         try:
             return self.backend.kernel_report()
-        except Exception as err:  # noqa: BLE001 (a failure path: reported, not raised)
-            return f"the kernel could not be probed ({type(err).__name__}: {err})"
+        except Exception as error:  # noqa: BLE001 (a failure path: reported)
+            return f"the kernel could not be probed ({type(error).__name__}: {error})"
 
     def _step(self, pending, upto, left):
         """One native round: store up to handle `upto`, read events until those of

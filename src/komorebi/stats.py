@@ -31,10 +31,10 @@ def error_stats(result, reference):
     reference = np.asarray(reference, dtype=np.float64).ravel()
     if not result.size:
         raise ValueError("error_stats needs at least one value")
-    err = result - reference
+    difference = result - reference
     ref_rms = float(np.sqrt(np.mean(reference**2)))
-    error_rms = float(np.sqrt(np.mean(err**2)))
-    bias = float(err.mean())
+    error_rms = float(np.sqrt(np.mean(difference**2)))
+    bias = float(difference.mean())
 
     # Against a zero reference the error is 0.0 when exact and inf otherwise.
     if ref_rms == 0:
@@ -58,7 +58,7 @@ def error_stats(result, reference):
 
     return {
         "rel_rms": float(f"{rel_rms:.3e}"),
-        "max_abs": float(f"{np.abs(err).max():.3e}"),
+        "max_abs": float(f"{np.abs(difference).max():.3e}"),
         "mean_bias": float(f"{mean_bias:.3e}"),
         "pcc": pcc,
         "ref_rms": float(f"{ref_rms:.3e}"),

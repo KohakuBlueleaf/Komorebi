@@ -84,8 +84,8 @@ def read_number(path):
     """The number in a sysfs file; SensorLost when it cannot be read."""
     try:
         return int(Path(path).read_text())
-    except (OSError, ValueError) as err:
-        raise SensorLost(f"{path}: {err}") from err
+    except (OSError, ValueError) as error:
+        raise SensorLost(f"{path}: {error}") from error
 
 
 class Card(Source):
@@ -165,8 +165,8 @@ def smi(args):
             timeout=SMI_TIMEOUT_S,
             check=True,
         )
-    except (OSError, subprocess.SubprocessError) as err:
-        raise SensorLost(f"nvidia-smi: {err}") from err
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SensorLost(f"nvidia-smi: {error}") from error
     return done.stdout
 
 

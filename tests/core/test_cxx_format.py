@@ -120,8 +120,8 @@ def test_check_lists_a_file_and_format_rewrites_it(monkeypatch, tmp_path, capsys
 
 def test_a_missing_style_file_is_a_one_line_error(monkeypatch, tmp_path, capsys):
     assert run(monkeypatch, "--config", str(tmp_path / "none"), "a.cpp") == 2
-    err = capsys.readouterr().err
-    assert str(tmp_path / "none") in err and err.count("\n") == 1
+    error_output = capsys.readouterr().err
+    assert str(tmp_path / "none") in error_output and error_output.count("\n") == 1
 
 
 def test_the_style_file_is_used_in_place_at_its_own_column_limit(tmp_path):

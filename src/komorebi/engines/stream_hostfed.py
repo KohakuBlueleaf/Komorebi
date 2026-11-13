@@ -120,8 +120,8 @@ class _Hostfed(stream_module._Sim):
         left = deadline - time.monotonic()
         try:
             event = self.run.wait_any(self.flight, timeout=max(left, 0.0))
-        except CommandTimeout as err:
-            pc = self.flight.pop(err.handle, (self.pc,))[0]
+        except CommandTimeout as error:
+            pc = self.flight.pop(error.handle, (self.pc,))[0]
             self.fail(stream_module.ERROR_DEADLINE, pc)
             return
         self.done(event.handle, event)

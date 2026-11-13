@@ -287,7 +287,8 @@ def with_kernel(
 ):
     """Grid, then kernel (after preload(plan)); body(plan); the kernel's end (with stop,
     the runtime stops it), then after(plan, fin); X280 runtime closed, counters read.
-    (body, finish, counters). `info` gets "started" and "aborted" if the kernel was stopped.
+    (body, finish, counters). `info` gets "started" and "aborted" if the kernel was
+    stopped.
     """
     info = {} if info is None else info
     info["started"] = False
