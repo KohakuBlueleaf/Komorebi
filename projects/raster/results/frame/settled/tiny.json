@@ -1,0 +1,84 @@
+{
+ "scene": "tiny",
+ "runs": 5,
+ "frames_per_run": 954,
+ "upload_s": 0.2047410709783435,
+ "x280_mhz": 1000,
+ "thread": {
+  "microseconds": {
+   "count": 83.51104821802936,
+   "sum": 59.368071278825994,
+   "hist": 0.0,
+   "hsum": 0.0,
+   "middle": 436.05060796645705,
+   "place": 97.88930817610064,
+   "setup": 188.71331236897274,
+   "fill": 121.25060796645703
+  },
+  "middle_microseconds": {
+   "TAKE": 9.922809224318659,
+   "HEAVY_MICROSECONDS": 37.82563941299791,
+   "CUT": 30.06561844863732,
+   "SORT": 86.15861635220126,
+   "ASSIGN": 158.56947589098533,
+   "COMPACT": 65.72018867924528,
+   "PAGES": 15.83733752620545,
+   "GIVE": 31.090545073375264
+  },
+  "frame_microseconds": 986.5280293501048,
+  "first_run": {
+   "ran": true,
+   "state": "done",
+   "error": "none",
+   "code": 0,
+   "where": 8,
+   "thread_microseconds": 949816.2,
+   "slots": 5696,
+   "items": 1024,
+   "marks": 784,
+   "heavy": 0,
+   "microseconds": {
+    "count": 79673.56,
+    "sum": 56632.42,
+    "hist": 0.0,
+    "hsum": 0.0,
+    "middle": 424198.34,
+    "place": 93338.5,
+    "setup": 180032.5,
+    "fill": 115683.34
+   },
+   "middle_microseconds": {
+    "TAKE": 9465.2,
+    "HEAVY_MICROSECONDS": 36085.66,
+    "CUT": 37747.86,
+    "SORT": 82231.06,
+    "ASSIGN": 151261.7,
+    "COMPACT": 62651.44,
+    "PAGES": 15093.52,
+    "GIVE": 29661.9
+   },
+   "frames": 954,
+   "status_ok": true
+  }
+ },
+ "power": {
+  "card_idle_w": 20.0,
+  "card_idle_open_w": 61.19972181005869,
+  "card_mean_w": 63.42080431200315,
+  "card_peak_w": 72.0,
+  "card_limit_w": 150.0,
+  "card_mean_percent_of_limit": 42.2805362080021,
+  "card_joules_per_frame": 0.06265971025330987,
+  "card_joules_per_frame_above_idle": 0.04289972425721591,
+  "seconds_per_frame": 0.0009879992998046976,
+  "seconds": 4.712756660068408,
+  "whole_loop": "7.19 s, 140 samples, mean 62.9 W (42% of 150 W), peak 72.0 W, 452.3 J, idle 61.2 W, 58.6 C",
+  "aiclk_mhz_min": 1350,
+  "aiclk_mhz_mean": 1350.0,
+  "aiclk_samples": 135,
+  "aiclk_left_nominal": false
+ },
+ "read_frame_s": 10.572246439056471,
+ "image_differs": 0,
+ "ok": true
+}

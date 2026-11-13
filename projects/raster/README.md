@@ -204,12 +204,17 @@ FILL     as above, over the lists in place
 
 The float32 operations are the reference's, in its order, one rounding each, on the
 vector unit with 32 triangles as lanes; the box's ceil and floor clamp first and then
-round by adding 1.5 x 2^23. The pack thread finishes each kept record (top-left
-thresholds, the box as integers and float16 columns, the triangle number), and clips a
-crossing triangle with the cores' scalar floats (rounded to nearest, one operation at
-a time); those cores have no divide, so the clip's one division is done in integers,
-rounded to nearest even. Lists stay in ascending triangle order: each core's partition is
-a contiguous range and lower cores' records come first.
+round by adding 1.5 x 2^23. The vector unit also finishes the 32 lanes (`finish_lanes`
+in `kernels/setup.hpp`: the keep rule's flags, top-left thresholds, the box as integers
+and float16 columns, the triangle number); the pack thread reads the flags and boxes as
+pairs and each kept record from Dst by segment loads, and clips a crossing triangle with
+the cores' scalar floats (rounded to nearest, one operation at a time); those cores
+have no divide, so the clip's one division is done in integers, rounded to nearest even.
+The pack thread then hands each kept triangle's box word (tile columns and rows) to the
+writer, in SETUP with its record: the writer counts entries, rows and the 2-row
+histograms (COUNT) or sends the record to every item it reaches (SETUP), so the pack
+thread goes on to the next block. Lists stay in ascending triangle order: each core's
+partition is a contiguous range and lower cores' records come first.
 
 Exact on every scene of the package's list, with the fill unchanged (2026-11-13,
 card 1, 120 cores, host load 5 to 11, card clock not sampled in these check runs;
@@ -303,33 +308,34 @@ thread's counts, items, directory and lists equal the host middle pass's on the 
 counts, and the image the reference's (`python -m projects.raster.card_thread --scene
 <s> [--lists 64]`); Sponza and Bistro interior (overview) images exact in the runs below.
 
-Frames in a row (2026-11-13, card 1, 120 cores, X280 at 1,000 MHz, AICLK 1,350 MHz
-(samples at 1,343 on some scenes); `python -m projects.raster.bench_thread --scene <s>
---runs 5 --frames 0 [--no-balance]`, results in `results/frame/` and
-`results/frame/warm/`): 5 loads of the program, each running as many frames as fill
-about 1 s (64 to 906), median per frame, us. Two rows per scene: "cold" is a frame
-without history (COUNT and SETUP on equal block partitions: what a single image costs);
-"warm" is a frame from the second on, same camera, with COUNT's and SETUP's ranges
-cut by the frame before's costs (below; the cold frame of each load counts in its
-mean). Inside a frame the host does nothing: 0 round trips, 0 bytes. Power is the card's
-mean over the threads' runs; it draws 60.2 to 63.0 W with the program loaded and idle. The V100 column is the
-whole frame of `reference/bench.py` on one idle V100 (its "ms per frame";
-`reference/README.md`, Sponza and Bistro in `results/reference/`):
+Frames in a row (2026-11-14, card 1, 120 cores, X280 at 1,000 MHz, AICLK 1,350 MHz
+(samples at 1,343 on some scenes), host load 2.9 to 12.9 (`/proc/loadavg`, one minute);
+`python -m projects.raster.bench_thread --scene <s> --runs 5 --frames 0 [--no-balance]`,
+results in `results/frame/` (first) and `results/frame/settled/`): 5 loads of the
+program, each running as many frames as fill about 1 s (112 to 954), median per frame,
+us. Two rows per scene. "first" is a scene's first frame: COUNT and SETUP on equal block
+partitions, what a single image costs. "settled" is a frame from the second on, same
+camera, with COUNT's and SETUP's ranges cut by the frame before's predicted costs (below;
+the first frame of each load counts in its mean). Inside a frame the host does nothing:
+0 round trips, 0 bytes. Power is the card's mean over the threads' runs. The V100
+columns are `reference/bench.py` on one idle V100, its stages and its whole frame ("ms
+per frame"; the committed rows of `reference/README.md`, Sponza and Bistro in
+`results/reference/`, not re-run: the reference's scripts did not change):
 
-| scene | row | heavy tiles | COUNT | SUM | HIST + HSUM | middle pass | PLACE | SETUP | FILL | frame | V100 | V100 / card | card W |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| tiny | cold | 0 | 104 | 59 | - | 436 | 103 | 228 | 121 | 1,051 | 290 | 0.28 | 64.0 |
-| tiny | warm | 0 | 104 | 59 | - | 436 | 103 | 228 | 121 | 1,051 | 290 | 0.28 | 61.8 |
-| 10^4 | cold | 0 | 118 | 59 | - | 440 | 103 | 231 | 141 | 1,091 | 250 | 0.23 | 65.8 |
-| 10^4 | warm | 0 | 127 | 59 | - | 453 | 103 | 157 | 141 | 1,041 | 250 | 0.24 | 65.4 |
-| 10^5 | cold | 112 | 450 | 59 | 95 | 751 | 107 | 667 | 425 | 2,555 | 790 | 0.31 | 67.2 |
-| 10^5 | warm | 112 | 448 | 59 | 95 | 771 | 107 | 547 | 425 | 2,454 | 790 | 0.32 | 65.9 |
-| 10^6 | cold | 130 | 3,825 | 59 | 160 | 804 | 108 | 5,060 | 2,108 | 12,125 | 4,420 | 0.36 | 67.7 |
-| 10^6 | warm | 130 | 3,375 | 59 | 160 | 823 | 108 | 3,942 | 2,108 | 10,575 | 4,420 | 0.42 | 67.3 |
-| Sponza (262,266) | cold | 0 | 2,221 | 59 | - | 456 | 103 | 2,790 | 1,593 | 7,223 | 2,310 | 0.32 | 65.7 |
-| Sponza (262,266) | warm | 0 | 1,265 | 59 | - | 466 | 103 | 1,797 | 1,593 | 5,285 | 2,310 | 0.44 | 66.1 |
-| Bistro interior (1,020,903) | cold | 82 | 4,808 | 59 | 92 | 733 | 107 | 7,475 | 2,095 | 15,373 | 5,990 | 0.39 | 65.3 |
-| Bistro interior (1,020,903) | warm | 82 | 3,594 | 59 | 92 | 752 | 107 | 4,273 | 2,096 | 10,974 | 5,990 | 0.55 | 65.2 |
+| scene | frame | heavy tiles | COUNT | SUM | HIST + HSUM | middle pass | PLACE | SETUP | FILL | card frame | V100 setup | V100 binning | V100 fill | V100 frame | V100 / card | card W |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| tiny | first | 0 | 83 | 59 | - | 436 | 98 | 189 | 121 | 987 | 70 | 170 | 60 | 290 | 0.29 | 61.9 |
+| tiny | settled | 0 | 84 | 59 | - | 436 | 98 | 189 | 121 | 987 | 70 | 170 | 60 | 290 | 0.29 | 63.4 |
+| 10^4 | first | 0 | 79 | 59 | - | 440 | 98 | 164 | 141 | 982 | 30 | 50 | 160 | 250 | 0.25 | 67.0 |
+| 10^4 | settled | 0 | 69 | 59 | - | 453 | 98 | 132 | 141 | 952 | 30 | 50 | 160 | 250 | 0.26 | 65.8 |
+| 10^5 | first | 112 | 232 | 59 | 95 | 753 | 101 | 384 | 425 | 2,050 | 120 | 80 | 570 | 790 | 0.39 | 68.0 |
+| 10^5 | settled | 112 | 190 | 59 | 95 | 772 | 101 | 324 | 425 | 1,967 | 120 | 80 | 570 | 790 | 0.40 | 68.2 |
+| 10^6 | first | 130 | 1,027 | 59 | 160 | 807 | 102 | 2,632 | 2,107 | 6,894 | 770 | 270 | 3,340 | 4,420 | 0.64 | 68.9 |
+| 10^6 | settled | 130 | 1,146 | 59 | 160 | 823 | 102 | 1,942 | 2,107 | 6,339 | 770 | 270 | 3,340 | 4,420 | 0.70 | 70.2 |
+| Sponza (262,266) | first | 0 | 1,680 | 59 | - | 457 | 98 | 1,881 | 1,592 | 5,770 | 460 | 480 | 1,690 | 2,310 | 0.40 | 68.8 |
+| Sponza (262,266) | settled | 0 | 647 | 59 | - | 466 | 98 | 932 | 1,592 | 3,795 | 460 | 480 | 1,690 | 2,310 | 0.61 | 71.6 |
+| Bistro interior (1,020,903) | first | 82 | 2,142 | 59 | 91 | 736 | 102 | 3,535 | 2,095 | 8,762 | 850 | 350 | 5,610 | 5,990 | 0.68 | 66.9 |
+| Bistro interior (1,020,903) | settled | 82 | 1,266 | 59 | 91 | 753 | 102 | 2,135 | 2,095 | 6,503 | 850 | 350 | 5,610 | 5,990 | 0.92 | 69.4 |
 
 Each column is the thread's time from submitting a command to its event (the middle pass: from
 SUM's event to PLACE's submit, HIST and HSUM apart), so the frame is the sum plus the
@@ -340,23 +346,47 @@ earlier one), the layout's words and base slots 76 (1), the items page 18 (1), t
 flush back 33 (1). Before the counting moved to the cores the middle pass was 4.5 to 11.6
 ms (counters 983 KB read by the thread, next slots of every (core, item) written by it).
 
-SETUP's pack thread copies each entry's record (128 bytes) into the out page with one
-vector load and store instead of 32 scalar words: SETUP on tiny went from 453 to
-229 us, on 10^6 from 8,186 to 5,062 and on Bistro from 15,427 to 7,476.
-It is still the largest part of every large frame, set by its slowest core.
+Three changes took the 10^6 frame from 12,125 to 6,894 us (first) and 10,575 to 6,339
+(settled); each was measured on its own, with the frame unprofiled (`bench_thread --runs
+3`, results in `results/steps/`):
 
-COUNT and SETUP give each core a range of the mesh's blocks; with equal ranges some hold
-far more triangles in view than others, and the pass waits for the slowest. From the
-second frame on, each core's writer leaves its COUNT and SETUP ticks in the camera's
-region, the thread cuts the next frame's ranges into equal parts of them (each core's
-ticks spread evenly over its blocks), and the reader brings each core its range with the
-camera. Scenes with fewer blocks than cores (tiny) keep equal partitions. The cut is history:
-a frame from a new camera starts from the last camera's costs.
+| change | 10^5 first | 10^5 settled | 10^6 first | 10^6 settled |
+|---|---:|---:|---:|---:|
+| before (main, 2026-11-14) | 2,557 | - | 12,124 | - |
+| the vector unit finishes the lanes; kept records from Dst by segment loads | 2,255 | - | 9,313 | - |
+| the writer counts and sends the records to their slots | 2,047 | 1,989 | 6,892 | 6,371 |
+| ranges from the last frame's predicted block costs | 2,042 | 1,963 | 6,886 | 6,336 |
+
+- The vector unit finishes all 32 lanes of a block (keep flags, top-left thresholds,
+  box); the pack thread had done it lane by lane in scalar code after copying every
+  record out of Dst. COUNT 3,826 to 1,843 us, SETUP 5,064 to 4,236 (10^6).
+- The pack thread hands each kept triangle's box word to the writer (in SETUP with its
+  record) instead of walking the tiles the box reaches itself; the writer, otherwise
+  waiting, keeps the counters and histograms and gives every item its next slot. COUNT
+  1,843 to 1,045, SETUP 4,236 to 2,619.
+- COUNT and SETUP give each core a range of the mesh's blocks; with equal ranges some
+  hold far more triangles in view than others, and the pass waits for the slowest.
+  COUNT's pack thread adds up a predicted cost per block (6,347 a block, 408 a kept
+  triangle or piece, 22 a tile entry, 19,433 a clipped triangle: a fit to measured
+  passes) and keeps its sums at 31 evenly spaced places of its range; the thread cuts the
+  next frame's ranges into equal parts of the total, linear between the places, and
+  writes them while the grid runs FILL (COUNT and SETUP are done by then; the cut reads
+  about 1,000 words of the camera's region, 30 ns each, and would otherwise cost 40 us
+  before COUNT). Before, each core's COUNT and SETUP ticks were spread evenly over its
+  range: settled 6,371 against 6,336. Scenes with fewer blocks than cores (tiny) keep
+  equal partitions. The cut is history: a frame from a new camera starts from the last
+  camera's costs.
 
 Per frame the host still loads the program (the camera goes with the load: 0.5 to 0.8
 s) and reads the image back (20 MB, 10 to 18 s); both are outside the frame times above.
 
 ## Results
+
+The whole frame runs on the card: the table of the previous section (settled frame,
+V100 / card: 10^6 0.70, Sponza 0.61, Bistro interior 0.92; a scene's first frame 0.64,
+0.40, 0.68). The rest of this section is the host-binned path, where the host does setup
+and binning and the cores run FILL alone; it is where the fill's own measurements come
+from.
 
 Scenes of the reference (`reference/scenes.py`): tiny, 10^4, 10^5 and 10^6 triangles,
 1024 x 1024 pixels, 32 x 32 tiles; 119 worker cores; balanced assignment unless named.
@@ -389,8 +419,8 @@ and without `--split 0`, and `stress-degenerate`), all exact:
 The V100 version is the same algorithm written plainly and not tuned, with no
 hardware rasterizer; the card's numbers sit beside it stage for stage.
 
-**Time, milliseconds.** The card runs the fill; setup, binning and the lists run on the
-host (numpy and Python) and are listed as host stages, not compared. Card: the frame
+**Time of the host-binned path, milliseconds.** The card runs FILL; setup, binning and
+the lists run on the host (numpy and Python) and are listed as host stages, not compared. Card: the frame
 from a FILL command's submit to its acknowledgement, which comes after the command's
 output (the frame's tiles) is written; over a loop of FILL commands back to back
 (`bench.py`: 48,000 / 40,000 / 16,000 / 2,462 frames; median, min and max; host load
@@ -401,7 +431,7 @@ the assignment and the lists (medians of five). Upload of the lists: one run, sl
 dispatch. References: the medians of the committed table in
 [`reference/README.md`](reference/README.md) (fill stage; not rerun here).
 
-| scene | card frame (min-max) | AICLK MHz min / mean | card W mean | host setup | host binning | records + lists | upload | C++ 1 thread fill | C++ 96 threads fill | V100 fill | V100 fill / card frame |
+| scene | card FILL (min-max) | AICLK MHz min / mean | card W mean | host setup | host binning | records + lists | upload | C++ 1 thread fill | C++ 96 threads fill | V100 fill | V100 fill / card FILL |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | tiny | 0.1195 (0.1154-0.1232) | 1343 / 1349.9 (*) | 75.1 | 0.46 | 0.27 | 8.0 | 119 | 11.12 | 1.01 | 0.06 | 0.50 |
 | 10^4 | 0.1394 (0.1386-0.1406) | 1350 / 1350 | 79.0 | 4.01 | 1.19 | 10.5 | 187 | 15.65 | 1.42 | 0.16 | 1.15 |
@@ -416,10 +446,9 @@ masked record fields and the timed waits; the same scenes before both took 0.419
 1.9940 ms (bands) and 0.4518 and 2.8226 ms (no bands). The bands cost host time in the
 lists step (the band filter is plain Python per band).
 
-The whole frame is not on the card: setup and binning run on the host in numpy. With
-the host stages and the upload a frame takes 128, 203, 315 and 1,364 ms today (9, 16,
-88 and 629 ms without the upload). That is a description of how much still runs on the
-host, not a comparison: the V100's frame does not include the same host process.
+On this path setup and binning run on the host in numpy: with the host stages and the
+upload a frame takes 128, 203, 315 and 1,364 ms (9, 16, 88 and 629 ms without the
+upload). The thread-driven program above runs those stages on the card instead.
 
 **Power** of card 1 (`komorebi.power.PowerSampler`), counted over the stretch in which
 the loop's commands ran (5.0 to 7.0 s per scene). Idle: the closed card before the run,
@@ -532,10 +561,13 @@ runs at about 1 MB/s.
 
 ## Next on the fill
 
-- Triangle setup: the unpacker path wins on the core but needs 4 KB per (triangle,
-  tile). Triangles as the lanes for small triangles (a 4 KB tile holds 32 triangles'
-  records) is being costed; a broadcast of a few scalars to all lanes would be the
-  other road.
+- Small triangles as lanes: an entry whose box, clipped to its tile, is at most 4 x 4
+  pixels (73 % of the entries at 10^6) filled 32 at a time, one per lane, took a tile's
+  fill to 0.49 to 0.78 of row by row on one core (`experiments/raster_passes`, probe 4).
+  It is not in the frame: the lists would have to carry those entries as runs of their
+  own per item (COUNT and SUM counting them apart, PLACE's directory naming them, SETUP's
+  writer sending them there), and the fill would take each run of 32 into Dst in lane
+  order. FILL is a third of the settled 10^6 frame and two fifths of Sponza's.
 
 ## What the framework made hard
 

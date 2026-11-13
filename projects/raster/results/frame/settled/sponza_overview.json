@@ -1,0 +1,84 @@
+{
+ "scene": "sponza_overview",
+ "runs": 5,
+ "frames_per_run": 171,
+ "upload_s": 1.002842777990736,
+ "x280_mhz": 1000,
+ "thread": {
+  "microseconds": {
+   "count": 646.666432748538,
+   "sum": 59.39461988304093,
+   "hist": 0.0,
+   "hsum": 0.0,
+   "middle": 465.5181286549708,
+   "place": 98.47532163742689,
+   "setup": 931.7795321637428,
+   "fill": 1592.4974269005847
+  },
+  "middle_microseconds": {
+   "TAKE": 9.922456140350878,
+   "HEAVY_MICROSECONDS": 38.1259649122807,
+   "CUT": 32.26631578947369,
+   "SORT": 101.66128654970761,
+   "ASSIGN": 168.28327485380117,
+   "COMPACT": 68.39181286549707,
+   "PAGES": 15.85309941520468,
+   "GIVE": 31.087836257309945
+  },
+  "frame_microseconds": 3794.7452631578944,
+  "first_run": {
+   "ran": true,
+   "state": "done",
+   "error": "none",
+   "code": 0,
+   "where": 8,
+   "thread_microseconds": 648989.22,
+   "slots": 248848,
+   "items": 1024,
+   "marks": 1137,
+   "heavy": 0,
+   "microseconds": {
+    "count": 110577.98,
+    "sum": 10154.28,
+    "hist": 0.0,
+    "hsum": 0.0,
+    "middle": 79695.98,
+    "place": 16831.32,
+    "setup": 159334.30000000002,
+    "fill": 272320.52
+   },
+   "middle_microseconds": {
+    "TAKE": 1697.32,
+    "HEAVY_MICROSECONDS": 6551.38,
+    "CUT": 5520.38,
+    "SORT": 17384.08,
+    "ASSIGN": 28769.100000000002,
+    "COMPACT": 11739.54,
+    "PAGES": 2717.16,
+    "GIVE": 5317.02
+   },
+   "frames": 171,
+   "status_ok": true
+  }
+ },
+ "power": {
+  "card_idle_w": 20.666829910978667,
+  "card_idle_open_w": 62.54915596684441,
+  "card_mean_w": 71.62948161572602,
+  "card_peak_w": 84.0,
+  "card_limit_w": 150.0,
+  "card_mean_percent_of_limit": 47.75298774381734,
+  "card_joules_per_frame": 0.2718007538841408,
+  "card_joules_per_frame_above_idle": 0.19337969284206202,
+  "seconds_per_frame": 0.003794537497036246,
+  "seconds": 3.2443295599659905,
+  "whole_loop": "8.44 s, 158 samples, mean 66.4 W (44% of 150 W), peak 84.0 W, 561.1 J, idle 62.5 W, 59.6 C",
+  "aiclk_mhz_min": 1343,
+  "aiclk_mhz_mean": 1349.9072847682119,
+  "aiclk_samples": 151,
+  "aiclk_left_nominal": true
+ },
+ "read_frame_s": 9.822695035021752,
+ "image_differs": 0,
+ "ok": true
+}

@@ -1,0 +1,84 @@
+{
+ "scene": "s100k",
+ "runs": 5,
+ "frames_per_run": 454,
+ "upload_s": 0.5710345440311357,
+ "x280_mhz": 1000,
+ "thread": {
+  "microseconds": {
+   "count": 189.67052863436123,
+   "sum": 59.38,
+   "hist": 22.774008810572685,
+   "hsum": 72.24828193832599,
+   "middle": 771.7076651982379,
+   "place": 101.25581497797357,
+   "setup": 324.31735682819385,
+   "fill": 424.58704845814975
+  },
+  "middle_microseconds": {
+   "TAKE": 63.060837004405286,
+   "HEAVY_MICROSECONDS": 88.56083700440529,
+   "CUT": 191.28665198237886,
+   "SORT": 115.50850220264317,
+   "ASSIGN": 188.97422907488988,
+   "COMPACT": 73.6347577092511,
+   "PAGES": 17.785859030837003,
+   "GIVE": 32.98185022026432
+  },
+  "frame_microseconds": 1967.2695594713657,
+  "first_run": {
+   "ran": true,
+   "state": "done",
+   "error": "none",
+   "code": 0,
+   "where": 8,
+   "thread_microseconds": 892461.7,
+   "slots": 102736,
+   "items": 1168,
+   "marks": 973,
+   "heavy": 112,
+   "microseconds": {
+    "count": 86106.62,
+    "sum": 26945.64,
+    "hist": 10378.98,
+    "hsum": 32797.5,
+    "middle": 350135.54,
+    "place": 45953.72,
+    "setup": 147240.08000000002,
+    "fill": 192762.52
+   },
+   "middle_microseconds": {
+    "TAKE": 28665.100000000002,
+    "HEAVY_MICROSECONDS": 39914.200000000004,
+    "CUT": 86844.14,
+    "SORT": 52440.86,
+    "ASSIGN": 85792.22,
+    "COMPACT": 33430.18,
+    "PAGES": 8074.78,
+    "GIVE": 14974.06
+   },
+   "frames": 454,
+   "status_ok": true
+  }
+ },
+ "power": {
+  "card_idle_w": 21.866674491011363,
+  "card_idle_open_w": 63.10000149195548,
+  "card_mean_w": 68.19617978409727,
+  "card_peak_w": 80.0,
+  "card_limit_w": 150.0,
+  "card_mean_percent_of_limit": 45.46411985606485,
+  "card_joules_per_frame": 0.1341280583372814,
+  "card_joules_per_frame_above_idle": 0.09112074324927921,
+  "seconds_per_frame": 0.001966797242337009,
+  "seconds": 4.464629740105011,
+  "whole_loop": "10.43 s, 196 samples, mean 65.4 W (44% of 150 W), peak 80.0 W, 682.2 J, idle 63.1 W, 61.8 C",
+  "aiclk_mhz_min": 1350,
+  "aiclk_mhz_mean": 1350.0,
+  "aiclk_samples": 188,
+  "aiclk_left_nominal": false
+ },
+ "read_frame_s": 14.118876068969257,
+ "image_differs": 0,
+ "ok": true
+}
