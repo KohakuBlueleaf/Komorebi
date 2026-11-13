@@ -61,6 +61,12 @@ def test_twelve_x280_cores_answer_every_core_through_its_port_exactly():
     assert out["ok"] and out["exact"] and out["x280_cores"] == 12, out
 
 
+def test_pulled_ranges_run_every_unit_once_and_a_replay_repeats_the_log():
+    out = run_json(PORTS, "--pull", "--units", 4000, "--centre", 1200, "--half", 800)
+    assert out["ok"] and out["exact"] and out["x280_cores"] == 12, out
+    assert out["pull"]["slowest_over_mean"] < out["equal"]["slowest_over_mean"], out
+
+
 def test_a_thread_past_the_timeout_is_stopped_and_reports_where_it_was():
     out = run_json(STOP)
     assert out["ok"], out

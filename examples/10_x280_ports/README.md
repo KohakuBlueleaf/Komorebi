@@ -40,6 +40,58 @@ An X280 core answers an ask in about 0.9 µs and serves its Tensix cores in turn
 round trip grows with how many it serves; twelve X280 cores give three times the rate
 of four. A round includes the salts, the hashes told back and the end of the serve.
 
+## The pull
+
+    python x280_ports.py --pull [--x280-cores 12] [--units 31000] [--per 16]
+        [--base 20250] [--extra 16200] [--centre 9300] [--half 6200]
+
+A pass over `--units` units on every Tensix core of the grid, unit `u` busy for
+`HX_COST` cycles: `--base`, plus up to `--extra` in a triangle of half-width `--half`
+about unit `--centre` (by default 15 µs, up to 27 µs, a fifth of the units heavier),
+the shape of a frame whose cost gathers in one part of the screen. The thread
+(`thread/pull.c`) runs five passes, each a command, then two report commands in which
+every Tensix core tells its numbers:
+
+| Pass | How the units are dealt |
+|---|---|
+| `equal` | equal contiguous ranges, core `i` the `i`-th (`km::share`) |
+| `pull` | ranges of `--per` units pulled (`kmx_pull_run`, `KMX_PULL_COUNT`; `port.next`) |
+| `log` | the same, and each core's ranges logged in region `log` (`KMX_PULL_LOG`) |
+| `replay` | each core gets the ranges the log holds for it (`KMX_PULL_REPLAY`) |
+| `pick` | pulled, but `pick` deals range `k` of core `c`: `c + k * cores` |
+
+`--x280-cores` 1, 4 or 12 serve the Tensix cores (one X280 core, cluster 1, or all
+three clusters). Prints one JSON line with the model's slowest core over mean for equal
+ranges, and per pass: its time on the lead's timer (`pass_us`), the slowest core's
+busy cycles over the mean (`slowest_over_mean`), the pulls, a core's wait in
+`next()` a pull (`wait_us_per_pull`), and `exact`: every unit ran once (count and a
+sum of marks per unit), each `equal` core ran its own range, the `replay` cores ran
+what the `log` cores ran, core by core, and each `pick` core got its ranges.
+
+### Numbers
+
+The same card, defaults (31,000 units, 17.4 µs mean, 278 µs a range, 1,938 ranges):
+
+| X280 cores | equal: pass, slowest/mean | pull | log | replay | pick | wait a pull |
+|---|---|---|---|---|---|---|
+| 12 | 6,960 µs, 1.544 | 4,728 µs, 1.045 | 4,739 µs | 4,732 µs | 4,736 µs | 0.68 µs |
+| 4 | 6,959 µs, 1.544 | 4,755 µs, 1.046 | 4,769 µs | 4,748 µs | 4,743 µs | 0.96 µs |
+| 1 | 6,959 µs, 1.544 | 4,774 µs, 1.046 | 4,832 µs | 4,856 µs | 4,771 µs | 2.37 µs |
+
+Perfect balance would take 4,495 µs; the pull is 5 % above it, the end of the last
+ranges. **When the pull loses**: units of 1 to 2 µs (`--base 1350 --extra 1080`), equal
+ranges take 482 µs:
+
+| `--per` (a range) | 12 X280 cores | 1 X280 core |
+|---|---|---|
+| 1 (1.2 µs) | 1,510 µs | 16,473 µs |
+| 4 (4.6 µs) | 402 µs | 4,185 µs |
+| 16 (18.6 µs) | 351 µs | 1,140 µs |
+
+A range must take longer than a round trip (9 µs with ten Tensix cores on an X280 core,
+60 µs with 120 on one), else the cores wait for their X280 core, which answers about one
+ask a microsecond.
+
 ## How it ends
 
 `kmx_port_run(&r, serve, round, &ev)` on X280 core 0 of the lead issues the record and
@@ -58,12 +110,18 @@ ends the serve the same way (its event says `KM_EV_TIMEOUT`).
 | Codes | 0 done; 1 bad words or region; 2 a run was late or stopped |
 | Result words | rounds done, rounds timed out, the rounds' ticks (64 bits), the best and the worst round in ticks (50 per µs) |
 
+The `--pull` thread: words `units, per, base, extra, centre, half`; regions `out` (a
+32-byte line per kind of pass and Tensix core: units, busy cycles, span, the sum of
+marks, pulls, cycles waited, `1 + (cluster << 2 \| cpu)`) and `log`; codes as above
+(1 also for a log that ran out of room); result words: each pass's ticks.
+
 ## Files
 
 | File | What it is |
 |---|---|
 | `thread/ports.c` | the thread: the rounds, the serve on every X280 core, the lines |
-| `kernels/reader.cpp` | the grid's reader: owns the Tensix core's port, waits for the salt, asks, tells the hash |
+| `thread/pull.c` | the `--pull` thread: the five passes, the reports, the lines |
+| `kernels/reader.cpp` | the grid's reader: owns the Tensix core's port, waits for the salt, asks, tells the hash; runs a pass's units and reports |
 | `kernels/writer.cpp`, `kernels/compute.cpp` | the grid's other kernels, which do nothing |
 | `x280_ports.h` | what the reader and the thread share: the salt, the values, the hash, the line |
 | `x280_ports.py` | the host script: the program, the ports, the numpy check |
