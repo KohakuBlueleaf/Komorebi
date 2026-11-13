@@ -10,8 +10,7 @@ that a host-chosen pattern gives it.
 
 | part | file |
 |---|---|
-| A pattern word: its length (1 to 24) and one bit per position, set when mover B (RISCV_1) owns that block; `A`, `B`, `AB`, `AAAB`, `AAAAABBB` | `kernels/pattern.hpp` |
-| The engine: streams (direction, tensor, first page, tiles, tiles per block, repetitions, buffer pair, pattern), run by one loop that issues every stream whose half has room or data, one barrier, then push or pop | `kernels/movement.hpp` |
+| The pattern and the engine, first written here, now Komorebi's `km::Movement` ([reference](../../docs/reference/movement.md)): a pattern word (its length, 1 to 24, and one bit per position, set when mover B owns that block), streams (direction, tensor, blocks, repetitions, buffer pair, pattern), run by one loop that issues every stream whose half has room or data, one barrier, then push or pop | `komorebi/device/km_movement.hpp` |
 | One data-movement source compiled for both movers, plus the classic layout for comparison | `kernels/movement.cpp` |
 | Compute: takes block k from the half of its owner, so tile order is kept | `kernels/compute.cpp` |
 | Driver: read, write and copy programs, exact against numpy before timing | `probe.py` |
@@ -52,6 +51,11 @@ Routes, 32 tiles a block, GB/s over all cores:
 |---|---|---|---|---|---|---|---|---|
 | row of 8 | 300.5 | 86.5 | 300.8 | 172.5 | 115.2 | 138.3 | 300.1 | 224.1 |
 | 120 cores | 313.1 | 178.2 | 312.6 | 354.8 | 237.3 | 284.7 | 413.4 | 460.0 |
+
+On the landed header (2026-11-14, AICLK 1,350 MHz, host load 4.7), 120 cores: reads
+423.3, 424.0, 247.4, 481.0, 500.9, 498.3, 330.2; writes 313.0, 178.2, 312.5, 354.9,
+237.3, 284.8, 411.4, 458.9, all within 1% of the tables (row of 8: reads within 2%,
+writes B +7%, BBBA -10%); `results/primitive-read.json`, `results/primitive-write.json`.
 
 Copy (DRAM to DRAM through L1), GB/s copied, classic (reader reads, writer writes)
 against halves (each mover reads and writes its own blocks, AB):

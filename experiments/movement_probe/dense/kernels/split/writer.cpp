@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "../../../kernels/movement.hpp"
+#include "komorebi/device/km_movement.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "split.h"
 
@@ -45,9 +45,9 @@ namespace {
         const uint32_t m0 = block / blocks_per_row * oh;
         const uint32_t n0 = block % blocks_per_row * ow;
         const km::Partition part = km::partition(kt, group.rank, group.size);
-        const movement::Pattern pattern = movement::pattern_of(CHUNK_PATTERN);
+        const km::Pattern pattern = km::Pattern::of(CHUNK_PATTERN);
         for (uint32_t k0 = 0, chunk = 0; k0 < part.len; k0 += kc, chunk++) {
-            if (movement::owner(pattern, chunk) != movement::kMoverB) {
+            if (pattern.owner(chunk) != km::kMoverB) {
                 continue;
             }
             const uint32_t n = part.len - k0 < kc ? part.len - k0 : kc;
@@ -74,7 +74,7 @@ namespace {
                     );
                 }
             }
-            if (!movement::settle(writer, km::kStWriter, true, false)) {
+            if (!km::move_settle(writer, true, false)) {
                 return false;
             }
             cb_push_back(kChunkAMoverB, oh * kc);

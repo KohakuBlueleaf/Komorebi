@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_movement.hpp"
 #include "komorebi/device/km_worker.hpp"
-#include "movement.hpp"
 #include "probe.h"
 
 namespace {
@@ -51,19 +51,19 @@ namespace {
     template <typename Accessor>
     bool classic(
         const Runtime& runtime,
-        const movement::Stream<Accessor>& stream,
+        const km::Stream<Accessor>& stream,
         uint32_t buffer,
-        movement::Busy& busy
+        km::Moved& busy
     ) {
-        const uint32_t pages = stream.tiles_per_block;
-        const uint32_t blocks = stream.tiles / pages * stream.repetitions;
-        const bool read = stream.direction == movement::kRead;
+        const uint32_t pages = stream.walk.tiles_per_block;
+        const uint32_t blocks = stream.walk.blocks * stream.repetitions;
+        const bool read = stream.direction == km::kMoveRead;
         for (uint32_t block = 0; block < blocks; block++) {
             if (!wait_buffer(runtime, buffer, pages, read)) {
                 return false;
             }
             const uint32_t start = km::wall();
-            uint32_t page = stream.first_page + block % (stream.tiles / pages) * pages;
+            uint32_t page = stream.walk.first_page + block % stream.walk.blocks * pages;
             if (read) {
                 cb_reserve_back(buffer, pages);
                 uint32_t address = get_write_ptr(buffer);
@@ -79,7 +79,7 @@ namespace {
                     address += kTileBytes;
                 }
             }
-            if (!movement::settle(runtime, kGaveUpWord, read, !read)) {
+            if (!km::move_settle(runtime, read, !read)) {
                 return false;
             }
             if (read) {
@@ -94,7 +94,7 @@ namespace {
             return true;
         }
         const uint32_t start = km::wall();
-        const bool settled = movement::settle(runtime, kGaveUpWord, false, true, true);
+        const bool settled = km::move_settle(runtime, false, true, true);
         busy.cycles += km::wall() - start;
         return settled;
     }
@@ -109,7 +109,7 @@ namespace {
                 address -= ring.fifo_size;
             }
             volatile tt_l1_ptr uint32_t* words = km::l1(address);
-            const uint32_t head = salt << 20 | movement::kMover << 19 | position << 9;
+            const uint32_t head = salt << 20 | km::kMover << 19 | position << 9;
             for (uint32_t word = 0; word < kTileBytes / 4; word++) {
                 words[word] = head | word;
             }
@@ -137,13 +137,12 @@ namespace {
         const uint32_t first_page = rank * tiles;
         // A buffer keeps its filling and draining CPUs for the whole load (compute
         // counts pages itself), so copies use halves of their own.
-        const movement::Pair pair = program == kProgramCopy
-            ? movement::Pair{kBufferCopyA, kBufferCopyB}
-            : movement::Pair{kBufferA, kBufferB};
-        const movement::Pattern pattern = movement::pattern_of(pattern_word);
-        using Accessor = decltype(TensorAccessor(arguments, 0));
-        const movement::Stream<Accessor> read = {
-            movement::kRead,
+        const km::BufferPair pair = program == kProgramCopy
+            ? km::BufferPair{kBufferCopyA, kBufferCopyB}
+            : km::BufferPair{kBufferA, kBufferB};
+        const km::Pattern pattern = km::Pattern::of(pattern_word);
+        const km::Stream read(
+            km::kMoveRead,
             TensorAccessor(arguments, input),
             first_page,
             tiles,
@@ -151,9 +150,9 @@ namespace {
             repetitions,
             pair,
             pattern
-        };
-        const movement::Stream<Accessor> write = {
-            movement::kWrite,
+        );
+        const km::Stream write(
+            km::kMoveWrite,
             TensorAccessor(arguments, output),
             first_page,
             tiles,
@@ -161,15 +160,15 @@ namespace {
             repetitions,
             pair,
             pattern
-        };
+        );
 
-        movement::Busy busy = {0, 0};
+        km::Moved busy = {0, 0};
         const uint32_t start = km::wall();
         bool done = true;
         if (layout == kLayoutClassic) {
             // A classic copy passes through a buffer the reader fills, the writer
             // drains.
-            const bool reader = movement::kMover == movement::kMoverA;
+            const bool reader = km::kMover == km::kMoverA;
             if (program == kProgramRead && reader) {
                 done = classic(runtime, read, kBufferA, busy);
             } else if (program == kProgramWrite && !reader) {
@@ -185,17 +184,14 @@ namespace {
                 );
             }
         } else if (program == kProgramRead) {
-            const movement::Stream<Accessor> streams[1] = {read};
-            done = movement::run(runtime, kGaveUpWord, streams, busy);
+            done = km::move(busy, runtime, read);
         } else if (program == kProgramWrite) {
             if (salt != 0) {
-                stamp(movement::half(pair, movement::kMover), salt);
+                stamp(pair.half(km::kMover), salt);
             }
-            const movement::Stream<Accessor> streams[1] = {write};
-            done = movement::run(runtime, kGaveUpWord, streams, busy);
+            done = km::move(busy, runtime, write);
         } else {
-            const movement::Stream<Accessor> streams[2] = {read, write};
-            done = movement::run(runtime, kGaveUpWord, streams, busy);
+            done = km::move(busy, runtime, read, write);
         }
         profile[kProfileMover + kProfileStart] = start;
         profile[kProfileMover + kProfileEnd] = km::wall();
@@ -218,7 +214,7 @@ void kernel_main() {
         if (handler == kHandlerRun) {
             return run(runtime, command, arguments, profile);
         }
-        if (handler != kHandlerProfile || movement::kMover != movement::kMoverB) {
+        if (handler != kHandlerProfile || km::kMover != km::kMoverB) {
             return true;
         }
         const uint32_t profile_tensor = command.a0;
@@ -230,6 +226,6 @@ void kernel_main() {
             get_noc_addr(runtime.me(), pages),
             kProfileBytes
         );
-        return movement::settle(runtime, kGaveUpWord, false, true);
+        return km::move_settle(runtime, false, true);
     });
 }

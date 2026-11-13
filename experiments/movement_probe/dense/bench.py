@@ -30,12 +30,6 @@ S = abi.constants(SPLIT_KERNELS / "split.h", known=abi.headers().constants)
 log = run.log
 
 
-def pattern_word(pattern):
-    """The pattern's word: its length, then a bit per position owned by mover B."""
-    owners = sum(1 << i for i, letter in enumerate(pattern) if letter == "B")
-    return len(pattern) | owners << 8
-
-
 def movement_program(p, a_tensor, pattern, fidelity="HiFi2"):
     """Plan p's program with the movement kernels: Y's blocks owned by `pattern`."""
     arguments = a_tensor.accessor_args()
@@ -56,7 +50,7 @@ def movement_program(p, a_tensor, pattern, fidelity="HiFi2"):
         buffers=buffers,
         compile_args={"reader": arguments, "writer": arguments},
         compute={"math_fidelity": fidelity, "fp32_dest_acc_en": True},
-        defines={"Y_PATTERN": pattern_word(pattern)},
+        defines={"Y_PATTERN": km.Pattern(pattern).word},
         handlers=HEADER,
     )
 
@@ -107,7 +101,7 @@ def split_program(sp, tensors, pattern):
         + tensors["a"].accessor_args()
         + tensors["w"].accessor_args()
     )
-    made.defines = {"CHUNK_PATTERN": pattern_word(pattern)}
+    made.defines = {"CHUNK_PATTERN": km.Pattern(pattern).word}
     return made
 
 

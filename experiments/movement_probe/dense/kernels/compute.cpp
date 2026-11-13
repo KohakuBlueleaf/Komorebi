@@ -9,7 +9,7 @@
 #include "api/compute/pack.h"
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
-#include "../../kernels/pattern.hpp"
+#include "komorebi/device/km_movement.hpp"
 #include "dense.h"
 #include "komorebi/device/km_worker.hpp"
 
@@ -65,7 +65,7 @@ void kernel_main() {
         }
         uint32_t wait_a = 0, wait_w = 0, mm = 0, wait_math = 0, wait_out = 0;
         uint32_t pack = 0, tiles = 0, block = 0;
-        const movement::Pattern pattern = movement::pattern_of(Y_PATTERN);
+        const km::Pattern pattern = km::Pattern::of(Y_PATTERN);
         bool ok = true;
         for (uint32_t m = s.start; ok && m < s.start + s.len; ++m) {
             if (row_item && reads) {
@@ -113,10 +113,8 @@ void kernel_main() {
                 mm += t2 - t1;
                 tile_regs_wait();
                 const uint32_t t3 = km::wall();
-                const uint32_t out = (
-                    movement::owner(pattern, block) == movement::kMoverA
-                        ? kOutputMoverA
-                        : kCbOut
+                const uint32_t out = km::block_half(
+                    {kOutputMoverA, kCbOut}, pattern, block
                 );
                 block++;
                 const bool room = ok && cp.reserve_back(out, ct);

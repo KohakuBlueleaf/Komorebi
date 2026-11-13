@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "../../../kernels/pattern.hpp"
+#include "komorebi/device/km_movement.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "split.h"
 
@@ -29,9 +29,9 @@ void kernel_main() {
         const km::Partition part = km::partition(kt, g.rank, g.size);
         const auto a = TensorAccessor(a_args, r.a0);
         const auto w = TensorAccessor(w_args, r.a1);
-        const movement::Pattern pattern = movement::pattern_of(CHUNK_PATTERN);
+        const km::Pattern pattern = km::Pattern::of(CHUNK_PATTERN);
         for (uint32_t k0 = 0, chunk = 0; k0 < part.len; k0 += kc, chunk++) {
-            if (movement::owner(pattern, chunk) != movement::kMoverA) {
+            if (pattern.owner(chunk) != km::kMoverA) {
                 continue;
             }
             const uint32_t n = part.len - k0 < kc ? part.len - k0 : kc;

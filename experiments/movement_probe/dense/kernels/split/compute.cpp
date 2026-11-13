@@ -10,7 +10,7 @@
 #include "api/compute/reconfig_data_format.h"
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
-#include "../../../kernels/pattern.hpp"
+#include "komorebi/device/km_movement.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "split.h"
 
@@ -50,10 +50,10 @@ void kernel_main() {
         bool ok = true;  // the same on all three threads (wait_front tells them)
         matmul_block_init(kCbSa, kCbSw, 0, sw, sh, kc);
         pack_reconfig_data_format(kCbSum);
-        const movement::Pattern pattern = movement::pattern_of(CHUNK_PATTERN);
+        const km::Pattern pattern = km::Pattern::of(CHUNK_PATTERN);
         for (uint32_t k0 = 0, chunk = 0; ok && k0 < part.len; k0 += kc, chunk++) {
             const uint32_t n = part.len - k0 < kc ? part.len - k0 : kc;
-            const bool mover_a = movement::owner(pattern, chunk) == movement::kMoverA;
+            const bool mover_a = pattern.owner(chunk) == km::kMoverA;
             const uint32_t chunk_a = mover_a ? kCbSa : kChunkAMoverB;
             const uint32_t chunk_w = mover_a ? kCbSw : kChunkWMoverB;
             ok = cp.wait_front(chunk_a, oh * kc) && cp.wait_front(chunk_w, kc * ow);

@@ -71,14 +71,6 @@ class Clock:
         }
 
 
-def pattern_word(pattern):
-    """The pattern's word: its length, then a bit per position owned by mover B."""
-    if not 1 <= len(pattern) <= 24 or set(pattern) - {"A", "B"}:
-        raise ValueError(f"pattern {pattern!r}: 1 to 24 letters A and B")
-    owners = sum(1 << i for i, letter in enumerate(pattern) if letter == "B")
-    return len(pattern) | owners << 8
-
-
 def owners_of(pattern, blocks):
     """The mover (0: A, 1: B) owning each of `blocks` blocks."""
     return np.array([pattern[k % len(pattern)] == "B" for k in range(blocks)], int)
@@ -175,7 +167,7 @@ class Probe:
             self.t["output"].address,
             TILES_PER_CORE,
             self.block,
-            pattern_word(pattern),
+            km.Pattern(pattern).word,
             repetitions,
             PROGRAMS[program],
             CONSTANTS["kLayoutClassic" if layout == "classic" else "kLayoutEngine"],

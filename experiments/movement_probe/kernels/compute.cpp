@@ -4,8 +4,8 @@
 
 #include "api/compute/cb_api.h"
 #include "api/compute/compute_kernel_api.h"
+#include "komorebi/device/km_movement.hpp"
 #include "komorebi/device/km_worker.hpp"
-#include "pattern.hpp"
 #include "probe.h"
 
 namespace {
@@ -53,18 +53,16 @@ void kernel_main() {
         if (program == kProgramCopy || tiles_per_block == 0) {
             return;
         }
-        const movement::Pattern pattern = movement::pattern_of(pattern_word);
-        if (!movement::valid(pattern)) {
+        const km::Pattern pattern = km::Pattern::of(pattern_word);
+        if (!pattern.valid()) {
             return;
         }
         const uint32_t blocks = tiles / tiles_per_block * repetitions;
         const uint32_t start = km::wall();
         uint32_t sum = 0, weighted = 0, taken = 0;
         for (uint32_t block = 0; block < blocks; block++) {
-            const uint32_t buffer = (
-                movement::owner(pattern, block) == movement::kMoverA
-                    ? kBufferA
-                    : kBufferB
+            const uint32_t buffer = km::block_half(
+                {kBufferA, kBufferB}, pattern, block
             );
             if (program == kProgramRead) {
                 if (!compute.wait_front(buffer, tiles_per_block)) {

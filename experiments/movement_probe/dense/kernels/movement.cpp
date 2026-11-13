@@ -2,9 +2,9 @@
 // rows and Y's blocks as streams through the engine; LOAD and PROF as in main.
 #include <stdint.h>
 
-#include "../../kernels/movement.hpp"
 #include "api/dataflow/dataflow_api.h"
 #include "dense.h"
+#include "komorebi/device/km_movement.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 namespace {
@@ -22,7 +22,7 @@ namespace {
     constexpr uint32_t kProfileBody = kPrWrBody;
     constexpr uint32_t kProfileTiles = kPrWrTiles;
 #endif
-    constexpr bool kReaderRole = movement::kMover == movement::kMoverA;
+    constexpr bool kReaderRole = km::kMover == km::kMoverA;
 
     // LOAD: the reader role reads all of W into the W buffer and tells the writer role,
     // which completes the command once W has landed.
@@ -52,7 +52,7 @@ namespace {
                 noc_async_read_page(page, tensor, address);
                 address += kTileBytes;
             }
-            if (!movement::settle(runtime, kGaveUpWord, true, false)) {
+            if (!km::move_settle(runtime, true, false)) {
                 return false;
             }
             cb_push_back(buffer, pages);
@@ -101,32 +101,29 @@ namespace {
                 row_tiles, runtime.me() - km::first(command), km::count(command)
             )
         );
-        using Accessor = decltype(TensorAccessor(tiles, 0));
-        const movement::Stream<Accessor> streams[2] = {
-            {
-                movement::kRead,
-                TensorAccessor(tiles, command.a0),
-                rows.start * inner_tiles,
-                rows.len * inner_tiles,
-                inner_tiles,
-                1,
-                {kCbA, kCbA},
-                movement::pattern_of(1)
-            },
-            {
-                movement::kWrite,
-                TensorAccessor(tiles, command.a1),
-                rows.start * column_tiles,
-                rows.len * column_tiles,
-                block_tiles,
-                1,
-                {kOutputMoverA, kCbOut},
-                movement::pattern_of(Y_PATTERN)
-            },
-        };
-        movement::Busy busy = {0, 0};
+        const km::Stream rows_of_a(
+            km::kMoveRead,
+            TensorAccessor(tiles, command.a0),
+            rows.start * inner_tiles,
+            rows.len * inner_tiles,
+            inner_tiles,
+            1,
+            {kCbA, kCbA},
+            km::kPatternA
+        );
+        const km::Stream blocks_of_y(
+            km::kMoveWrite,
+            TensorAccessor(tiles, command.a1),
+            rows.start * column_tiles,
+            rows.len * column_tiles,
+            block_tiles,
+            1,
+            {kOutputMoverA, kCbOut},
+            km::Pattern::of(Y_PATTERN)
+        );
+        km::Moved busy = {0, 0};
         const bool done = (
-            rows.len == 0 || movement::run(runtime, kGaveUpWord, streams, busy)
+            rows.len == 0 || km::move(busy, runtime, rows_of_a, blocks_of_y)
         );
         km::add_sat(profile + kProfileBusy, busy.cycles);
         km::add_sat(profile + kProfileTiles, busy.tiles);
@@ -161,6 +158,6 @@ void kernel_main() {
         noc_async_write(
             get_write_ptr(kCbProf), get_noc_addr(runtime.me(), pages), kProfBytes
         );
-        return movement::settle(runtime, kGaveUpWord, false, true);
+        return km::move_settle(runtime, false, true);
     });
 }
