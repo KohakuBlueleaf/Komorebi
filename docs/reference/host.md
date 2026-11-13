@@ -46,10 +46,15 @@ nothing.
 prefetch="documented")` adds an
 X280 thread on a work cluster (one per program); see [X280 threads](../threads.md).
 
-A program's three kernels share the runtime's kernel config buffer, 69 KiB (70,656
-bytes) on Blackhole, which holds their binaries; a program at that limit fails to
-launch. Lower the reader and writer to `"Os"` first, and the compute kernel only when
-that is not enough, since its hot loops are what `O3` is for.
+A program's three kernels share the session's kernel buffer, 70,656 bytes on Blackhole
+unless the session sets `kernel_bytes`. When a program is loaded its build is laid out
+against that buffer: `program.sizes` (a `km.KernelSizes`) holds the packed text per
+thread, the total and the buffer, and the session log has them in one line. A program
+that does not fit raises `km.KernelSizeError` before anything is loaded, naming the
+total, the buffer and the largest thread (in place of the runtime's "Program size
+... too large for kernel config buffer"). Give the session more with `kernel_bytes`,
+or lower the reader and writer to `"Os"` first and the compute kernel only when that
+is not enough, since its hot loops are what `O3` is for.
 
 A program's own header (its segments, buffers and argument indices, shared by its
 kernels and its driver) is read with `km.abi.constants(path,
@@ -63,7 +68,7 @@ writer) and 31 (the trace); a program uses the others.
 ## `Session`
 
 `km.Session(card=None, device=None, pll_mhz=1000, tree=None, log=None,
-grid_timeout=10.0)`.
+grid_timeout=10.0, kernel_bytes=None)`.
 
 - `pll_mhz` is the X280 clock (the runtime's steps: 200, 800, 1000, 1750). One PLL
   clocks all four X280 clusters, so the work clusters' threads run at it too. 1750 is an
@@ -115,6 +120,14 @@ grid_timeout=10.0)`.
   it means no bound, and only then would the close wait without one. A session that
   opens the device therefore sets it to 30 s when it is unset (with a log line) and
   keeps a value of the user's.
+- `kernel_bytes` is how much of each core's L1 holds the program's kernels (the
+  runtime's kernel config buffer: the five threads' text, their arguments and the
+  buffer configs), a multiple of 64 from 64 to 1,531,712; None keeps the runtime's
+  70,656 bytes. Every byte added is taken from the L1 left for circular buffers and
+  L1 tensors (1,461,120 bytes by default; 1,400,704 with 128 KiB of kernels): the
+  session opens the device with the runtime's `worker_l1_size` that gives it, so it is
+  set only when the session opens the device. `session.l1()` returns `(kernel buffer,
+  L1 left)` of the open device, from the runtime's layout.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_us=1.0,
@@ -329,6 +342,7 @@ All derive from `km.KomorebiError`.
 |---|---|---|
 | `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
+| `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatch kernel did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass stamp, read twice 20 ms apart), its state and where, and the runtime's account of each hart | `pending` tickets |
