@@ -124,3 +124,12 @@ place to ask a question and to be wrong.
   on the host, one node visit's cycles on the card, and a predicted frame. No layout
   beats today: at best (1 x 32, W = 32, boxes through the unpacker) a visit costs 729
   cycles and Sponza's frame is 471 ms against 348.5, Bistro's 680 against 523.7.
+- [thread_commands](thread_commands/README.md): a command whose group names a work
+  cluster (`KM_GROUP_CLUSTER`) answered by the thread's `kmx_program`: 10,000 from the
+  host and 10,000 from another cluster's thread exact, a deadline on a function that
+  does not return; 4.74 µs from a thread against 3.60 for a NOP to one core, and no
+  cost to the commands that do not use it.
+- [x280_rank](x280_rank/README.md): an X280 core as a rank of a dynamic run, its queue
+  in its cluster's region and inboxes in the cores' L1, the dispatcher's own end:
+  exact, 2.6 µs a round trip (0.87 for an ask), 12.9 M round trips a second on 12 X280
+  cores; a proper build is about 900 lines, most in the generic reader.
