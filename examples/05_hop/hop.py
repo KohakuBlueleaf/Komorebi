@@ -27,6 +27,7 @@ import ttnn  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
 from komorebi.engines.stream import Stream  # noqa: E402
+from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
 HOP = rec.constants(HERE / "kernels" / "hop.h")
@@ -47,6 +48,7 @@ def parse():
     p.add_argument("--one-core", type=int, default=-1, help="every hop to this member")
     p.add_argument("--stall", type=int, default=-1, help="member that stalls")
     p.add_argument("--again", action="store_true", help="then one more run, no stall")
+    p.add_argument("--repeat", type=int, default=1, help="the first run, this often")
     p.add_argument(
         "--engine", action="store_true", help="then the stream engine runs two halves"
     )
@@ -55,6 +57,7 @@ def parse():
     p.add_argument("--queue-items", type=int, default=1 << 14)
     p.add_argument("--bins", type=int, default=16)
     p.add_argument("--idle-cycles", type=int, default=20000)
+    p.add_argument("--counters", type=int, default=2, help="counter tiles of the team")
     p.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     p.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
     return p.parse_args()
@@ -66,17 +69,20 @@ def options(a):
         "queue_items": a.queue_items,
         "bins": a.bins,
         "idle_cycles": a.idle_cycles,
+        "counters": a.counters,
     }
 
 
 def main():
     a = parse()
     try:  # the launcher's refusals, before any device opens
-        Dynamic(seg=HOP["kSegHop"], **options(a)).check(max(a.count, 1), 4 << 30, 4)
+        Dynamic(seg=HOP["kSegHop"], **options(a)).check(
+            a.count or a.counters + 1, 4 << 30, 4
+        )
     except ValueError as err:
-        print(json.dumps({"refused": str(err)}), flush=True)
-        return
-    stalls = [a.stall] + ([-1] if a.again else [])
+        print(json.dumps({"ok": False, "refused": str(err)}), flush=True)
+        sys.exit(1)
+    stalls = [a.stall] * a.repeat + ([-1] if a.again else [])
     runs = []
     with km.Session(log=log) as session:
         log("device open")
@@ -87,9 +93,12 @@ def main():
             runs.append(run_engine(session, a))
             log("engine run done")
     ok = all(r["ok"] for r in runs)
-    print(
-        json.dumps({"ok": ok, "runs": runs, "wall_s": round(time.monotonic() - T0, 1)})
-    )
+    timed = [r["run_us"] for r in runs if r.get("run_us")]
+    summary = {"exact": sum(bool(r.get("exact")) for r in runs), "runs": len(runs)}
+    if timed:
+        summary["run_us"] = [min(timed), round(float(np.median(timed)), 1), max(timed)]
+    out = {"ok": ok, "summary": summary, "runs": runs}
+    print(json.dumps(out | {"wall_s": round(time.monotonic() - T0, 1)}))
     sys.exit(0 if ok else 1)
 
 
@@ -186,15 +195,7 @@ def run_engine(session, a):
     run.stop()
     result = run.result()
     res = (ttnn.to_torch(res_t).numpy().astype(np.int64) & 0xFFFFFFFF)[: 2 * half]
-    retired, total, visits = replay.replay(a.items, a.hops, half, None)
-    exact = []
-    for part in (res[:half], res[half:]):
-        totals = part[:, HOP["kResTotalLo"]] | (part[:, HOP["kResTotalHi"]] << 32)
-        exact.append(
-            bool((part[:, HOP["kResRetired"]] == retired).all())
-            and bool((totals.astype(np.uint64) == total).all())
-            and bool((part[:, HOP["kResVisits"]] == visits).all())
-        )
+    exact = [exact_rows(a, res[first : first + half], half) for first in (0, half)]
     h = abi.headers()
     harts = result.get("harts") or [0] * h["KMD_H_WORDS"]
     return {
@@ -208,6 +209,23 @@ def run_engine(session, a):
     }
 
 
+def exact_rows(a, res, count):
+    """The result rows of a team of `count` cores against the replay over its members;
+    the counter tiles (the last a.counters rows) take no item."""
+    m = len(counter_tiles(0, count, a.counters).members)
+    one = a.one_core if a.one_core >= 0 else None
+    retired, total, visits = replay.replay(a.items, a.hops, m, one)
+    if a.probe >= 0:  # the probe's items visit their own core once
+        visits[a.probe] += res[a.probe, HOP["kResSpawned"]]
+    totals = res[:m, HOP["kResTotalLo"]] | (res[:m, HOP["kResTotalHi"]] << 32)
+    return (
+        bool((res[:m, HOP["kResRetired"]] == retired).all())
+        and bool((totals.astype(np.uint64) == total).all())
+        and bool((res[:m, HOP["kResVisits"]] == visits).all())
+        and not res[m:, HOP["kResVisits"]].any()
+    )
+
+
 def report(a, run, event, dyn, team, stall, res_t, timed_out):
     """The checks and numbers of one run as a dict: `event` (the RUN's event, its
     sequence), `team` (count, cores in the grid)."""
@@ -216,19 +234,21 @@ def report(a, run, event, dyn, team, stall, res_t, timed_out):
     result = run.result()
     harts = result.get("harts") or [0] * h["KMD_H_WORDS"]
     res = (ttnn.to_torch(res_t).numpy().astype(np.int64) & 0xFFFFFFFF)[:count]
+    ctr = counter_tiles(0, count, a.counters)
     states = run.state()
     gave = {
         c["core"]: c["dynamic"]["gave_up"]
         for c in states[:count]
         if c["dynamic"]["gave_up"]
     }
-    one = a.one_core if a.one_core >= 0 else None
-    retired, total, visits = replay.replay(a.items, a.hops, count, one)
-    if a.probe >= 0:  # the probe's items visit their own core once
-        visits[a.probe] += res[a.probe, HOP["kResSpawned"]]
-    totals = res[:, HOP["kResTotalLo"]] | (res[:, HOP["kResTotalHi"]] << 32)
     out = {
         "count": count,
+        "counters": [
+            c["core"]
+            for c in states[:count]
+            if (c["dynamic"]["counter"] or {}).get("run") == seq
+        ],
+        "counters_expected": list(ctr.counters),
         "items": a.items,
         "hops_per_item": a.hops,
         "stall": stall,
@@ -236,16 +256,14 @@ def report(a, run, event, dyn, team, stall, res_t, timed_out):
         "event": ev.kind if ev else None,
         "run_us": round(ev.us, 1) if ev and ev.kind == "done" else None,
         "exact": bool((res[:, HOP["kResRun"]] == seq).all())
-        and bool((res[:, HOP["kResRetired"]] == retired).all())
-        and bool((totals.astype(np.uint64) == total).all())
-        and bool((res[:, HOP["kResVisits"]] == visits).all()),
+        and exact_rows(a, res, count),
         "retired": int(res[:, HOP["kResRetired"]].sum()),
-        "expected_retired": int(retired.sum()),
+        "expected_retired": a.items,
         "hops": int(res[:, HOP["kResVisits"]].sum()) - a.items,
         "probe_spawned": int(res[:, HOP["kResSpawned"]].sum()),
         "refused": int(res[:, HOP["kResRefused"]].sum()),
         "quota_start": dyn.quota(cores),
-        "quota_left_min": int(res[:, HOP["kResQuota"]].min()),
+        "quota_left_min": int(res[: len(ctr.members), HOP["kResQuota"]].min()),
         "checks": int(harts[h["KMD_H_DYN_CHECKS"]]),
         "gave_core": int(harts[h["KMD_H_DYN_GAVE"]]) - 1,
         "dyn_gave": gave,

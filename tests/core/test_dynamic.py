@@ -2,7 +2,7 @@
 
 import pytest
 
-from komorebi.layout import queue_pages
+from komorebi.layout import counter_tiles, queue_pages
 from komorebi.program import Dynamic, dyn_header
 
 
@@ -22,6 +22,8 @@ def test_queue_pages_are_consecutive_per_core():
         {"queue_items": 16},
         {"bins": 0},
         {"max_live": 0},
+        {"counters": 0},
+        {"counters": 5},
     ],
 )
 def test_bad_options_are_refused(options):
@@ -64,5 +66,19 @@ def test_words_follow_the_device_struct():
         "lines": 0x2000,
         "idle": 99,
         "bins": 4,
+        "counters": 2,
     }
-    assert d.compute_args(119) == [64, (1 << 16) // 119]
+    assert d.compute_args(119) == [64, (1 << 16) // 117, 2]
+    with pytest.raises(ValueError, match="no member"):
+        d.check(2, 4 << 30, 4)
+
+
+def test_counter_tiles_are_the_last_k_cores_and_core_c_reserves_on_c_mod_k():
+    c = counter_tiles(10, 7, 2)
+    assert c.members == range(10, 15) and c.counters == range(15, 17)
+    assert c.counter_of == {10: 15, 11: 16, 12: 15, 13: 16, 14: 15}
+    assert c.serves == {15: [10, 12, 14], 16: [11, 13]}
+    assert counter_tiles(0, 2, 1).serves == {1: [0]}
+    for first, count, k in ((0, 2, 2), (0, 9, 0), (0, 9, 5)):
+        with pytest.raises(ValueError):
+            counter_tiles(first, count, k)

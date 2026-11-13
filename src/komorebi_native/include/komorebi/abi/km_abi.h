@@ -102,11 +102,12 @@ KM_STATIC_ASSERT(
 );
 KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte slots");
 
-#define KM_CTL_DYN 0xC80u /* dynamic crossing: queue counters, idle words, status */
-#define KM_CTL_BYTES 0xD40u
+#define KM_CTL_DYN 0xC80u   /* dynamic crossing: queue counters, idle words, status */
+#define KM_CTL_TAILS 0xD40u /* dynamic crossing: a counter tile's tail lines */
+#define KM_CTL_BYTES 0x1580u
 
 /* Dynamic crossing: offsets inside KM_CTL_DYN, each word in its own 16-byte slot. */
-#define KM_DYN_IN_TAIL 0x00u  /* the only word other cores add to (atomic) */
+#define KM_DYN_IN_TAIL 0x00u  /* reader: its tail as last read from its counter tile */
 #define KM_DYN_IN_HEAD 0x10u  /* reader */
 #define KM_DYN_SENT 0x20u     /* writer: items sent to any queue, spawns included */
 #define KM_DYN_CONSUMED 0x30u /* compute: items of the packets it finished */
@@ -116,6 +117,14 @@ KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte sl
 #define KM_DYN_GAVE 0x90u  /* first give-up: where, position, run, word seen */
 #define KM_DYN_RET 0xA0u   /* writer: the reservation's returned position */
 #define KM_DYN_BYTES 0xC0u
+/* Counter tiles: the last K cores of a dynamic run's team hold the members' tails and
+ * never issue an atomic; offsets inside KM_CTL_TAILS. */
+#define KM_TAILS_READY 0x00u  /* counter tile: {run, 1, members it serves, 0} */
+#define KM_TAILS_READER 0x10u /* member reader: a counter's READY line read here */
+#define KM_TAILS_WRITER 0x20u /* member writer: the same */
+#define KM_TAILS_LINE 0x30u   /* + 16 c: tail of team core c, the atomic adds' target */
+#define KM_TAILS_BYTES (KM_TAILS_LINE + 16u * KM_CORES_MAX)
+#define KM_COUNTERS_MAX 4u
 /* the issuer ends a dynamic run with this record to the run's team; a0 = run's seq */
 #define KM_SEG_DYN_END 249u
 
@@ -132,7 +141,10 @@ KM_STATIC_ASSERT(
     KM_CTL_DYN == KM_CTL_CORES + 4u * KM_CORES_MAX + 0x300u, "after lanes"
 );
 KM_STATIC_ASSERT(KM_CTL_LANE + KM_LANES * KM_LANE_BYTES == KM_CTL_DYN, "lane end");
-KM_STATIC_ASSERT(KM_CTL_DYN + KM_DYN_BYTES == KM_CTL_BYTES, "dynamic area ends");
+KM_STATIC_ASSERT(KM_CTL_DYN + KM_DYN_BYTES == KM_CTL_TAILS, "dynamic area ends");
+KM_STATIC_ASSERT(
+    KM_CTL_TAILS + KM_TAILS_BYTES <= KM_CTL_BYTES && KM_CTL_BYTES % 64u == 0, "tails"
+);
 KM_STATIC_ASSERT(KM_CTL_DYN % 16u == 0 && KM_DYN_RET + 16u <= KM_DYN_BYTES, "slots");
 KM_STATIC_ASSERT(KM_DYN_IN_TAIL % 16u == 0 && KM_DYN_OUT % 16u == 0, "16-byte slots");
 KM_STATIC_ASSERT(KM_SEG_DYN_END > KM_SEG_USER_MAX, "not a program segment");

@@ -100,10 +100,11 @@ namespace km {
     constexpr uint32_t kWhereDynLost = 32;     // a reservation's answer never landed
     constexpr uint32_t kWhereDynFill = 33;     // the start-up zero fill of the queue
     constexpr uint32_t kWhereDynFull = 34;  // positions reached 2^30: reload the program
+    constexpr uint32_t kWhereDynCounter = 35;  // counter tile not ready, or no members
     static_assert(
-        kWhereDynGap == kWhereEmit + 1 && kWhereDynFull == kWhereDynGap + 15 &&
-            kWhereDynFull < 256,
-        "dynamic where codes: 19 to 34, after the runtime's, one byte"
+        kWhereDynGap == kWhereEmit + 1 && kWhereDynCounter == kWhereDynGap + 16 &&
+            kWhereDynCounter < 256,
+        "dynamic where codes: 19 to 35, after the runtime's, one byte"
     );
 
     // Slots of KM_CTL_OUT (16 bytes each), the sources of small NoC writes: check-in,

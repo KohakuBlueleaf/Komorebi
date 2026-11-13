@@ -1,6 +1,7 @@
 """The hop example on a card through the dispatch kernel (KMR_CARD=1), in one device
 open: a stalled member ends the run, then the next load is exact (10^3 hops), then the
-engine's second dynamic run waits, refused busy, for the first one's end."""
+engine's second dynamic run waits, refused busy, for the first one's end. The last two
+cores of each team are its counter tiles."""
 
 from pathlib import Path
 
@@ -23,6 +24,7 @@ def test_a_stall_times_out_naming_the_core_then_runs_end_at_the_quiet_end():
     assert after["exact"] and after["event"] == "done" and after["hops"] == 1000
     assert after["kernel"] == {"error_name": "none", "records": 3, "events": 2}
     assert after["gave_core"] == -1 and after["checks"] > 0
+    assert after["counters"] == after["counters_expected"] == [118, 119]
     assert engine["engine"] == "end" and engine["halves_exact"] == [True, True]
     assert engine["kernel"]["records"] == 5 and engine["kernel"]["refused"] >= 1
     assert engine["runs"][1] > engine["runs"][0] + 1  # after the first one's end record

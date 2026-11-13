@@ -15,7 +15,7 @@ void kernel_main() {
             return;
         }
         km::Dyn dy(cp, r);
-        const uint32_t member = cp.me() - km::first(r), count = km::count(r);
+        const uint32_t member = dy.member(), count = dy.count();  // counter tiles: none
         uint32_t retired = 0, visits = 0, nulls = 0, spawned = 0, refused = 0, last = 0;
         uint64_t total = 0;
         uint32_t item[kItemWords] = {};

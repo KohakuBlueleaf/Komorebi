@@ -164,13 +164,14 @@ DYN_WHERES = {
     "Lost": "lost",
     "Fill": "fill",
     "Full": "full",
+    "Counter": "counter",
 }  # kWhereDyn*
 
 
 def dynamic(block, h=None):
     """A core's dynamic-run words from its control block: queue head and tail, items
-    sent and consumed, quota left, and the first give-up (where named, position, run,
-    the word seen; None if none)."""
+    sent and consumed, quota left, the first give-up (where named, position, run, the
+    word seen; None if none), and as a counter tile its last run and members served."""
     h = h or abi.headers()
     at = h["KM_CTL_DYN"] // 4
 
@@ -178,6 +179,9 @@ def dynamic(block, h=None):
         return int(block[at + offset // 4])
 
     gave = [word(h["KM_DYN_GAVE"] + 4 * i) for i in range(4)]
+    ready = [
+        int(block[(h["KM_CTL_TAILS"] + h["KM_TAILS_READY"]) // 4 + i]) for i in range(4)
+    ]
     names = {h[f"kWhereDyn{k}"]: v for k, v in DYN_WHERES.items()}
     return {
         "head": word(h["KM_DYN_IN_HEAD"]),
@@ -195,6 +199,7 @@ def dynamic(block, h=None):
             if gave[0]
             else None
         ),
+        "counter": {"run": ready[0], "serves": ready[2]} if ready[1] == 1 else None,
     }
 
 

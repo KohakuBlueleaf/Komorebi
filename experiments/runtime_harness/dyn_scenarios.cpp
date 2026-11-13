@@ -27,8 +27,10 @@ namespace {
     constexpr uint32_t kRes = 0xE800;      // ctl-relative: the example's results
     constexpr uint32_t kBins = 2;          // few bins: bins are evicted and refilled
 
+    // `cores` members, then `counters` counter tiles: the run's team.
     struct Hop {
-        uint32_t cores = 2, items = 1, hops = 1, cap = 256, max_live = 256;
+        uint32_t cores = 2, counters = 1, items = 1, hops = 1, cap = 256,
+                 max_live = 256;
         int32_t one_core = -1, stall = -1, probe = -1;
         uint32_t idle = 2000;  // cycles before a line says idle
     };
@@ -36,7 +38,7 @@ namespace {
     // The hop example's grid: dynamic arguments, buffers and one RUN record.
     Config dyn_config(const Hop& h) {
         Config cfg;
-        cfg.cores = h.cores;
+        cfg.cores = h.cores + h.counters;
         cfg.row = 2;
         cfg.idle_limit = 0;
         cfg.wait_limit = 64;
@@ -54,17 +56,17 @@ namespace {
             {km::kCbDynBins, 0xE100, kBins * 32 * 64, 1},
         };
         const uint32_t quota = h.max_live / h.cores;
-        const uint32_t cap = h.cap, idle = h.idle;
+        const uint32_t cap = h.cap, idle = h.idle, k = h.counters;
         cfg.program_args =
             [=](uint32_t, std::vector<uint32_t>& rw, std::vector<uint32_t>& c) {
                 const uint32_t ctl = rw[0], lines = rw[4] - kDispAck + kDispLines;
-                rw.insert(rw.end(), {kSegHop, kQueue, cap, 64, lines, idle, kBins});
-                c.insert(c.end(), {64, quota, ctl + kRes});
+                rw.insert(rw.end(), {kSegHop, kQueue, cap, 64, lines, idle, kBins, k});
+                c.insert(c.end(), {64, quota, k, ctl + kRes});
             };
         Job run;
         run.seg = kSegHop;
         run.first = 0;
-        run.count = h.cores;
+        run.count = h.cores + h.counters;
         run.flags = KM_F_EXCL;
         run.a[0] = h.items;
         run.a[1] = h.hops;
@@ -169,10 +171,12 @@ namespace {
         finish(s, o);
     }
 
-    // Four cores, many items, two bins: bins are evicted, packets fill and split.
+    // Four members on two counter tiles, many items, two bins: bins are evicted,
+    // packets fill and split.
     void dyn_random(Outcome& o) {
         Hop h;
         h.cores = 4;
+        h.counters = 2;
         h.items = 60;
         h.hops = 12;
         Sim s(dyn_config(h));

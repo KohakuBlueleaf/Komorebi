@@ -1,6 +1,6 @@
 """The hop example's dynamic run fed by the test feeder on the last core (no X280):
 items hop between the team's cores until their hops are used up; every core's totals
-are checked against the numpy replay. One JSON line. python hop_fed.py --count 2"""
+are checked against the numpy replay. One JSON line. python hop_fed.py --count 3"""
 
 import argparse
 import json
@@ -19,6 +19,7 @@ import records as rec  # noqa: E402
 import replay  # noqa: E402
 import ttnn  # noqa: E402
 
+from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
 K = rec.K
@@ -28,7 +29,7 @@ KERNELS = ROOT / "src" / "komorebi_native" / "kernels"
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--count", type=int, default=2, help="team: cores 0 to count - 1")
+    p.add_argument("--count", type=int, default=3, help="team: cores 0 to count - 1")
     p.add_argument("--items", type=int, default=1)
     p.add_argument("--hops", type=int, default=1, help="hops per item")
     p.add_argument("--one-core", type=int, default=-1, help="every hop to this member")
@@ -38,6 +39,7 @@ def parse():
     p.add_argument("--queue-items", type=int, default=1 << 14)
     p.add_argument("--bins", type=int, default=16)
     p.add_argument("--idle-cycles", type=int, default=20000)
+    p.add_argument("--counters", type=int, default=2, help="counter tiles of the team")
     p.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     p.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
     return p.parse_args()
@@ -52,11 +54,13 @@ def main():
             queue_items=a.queue_items,
             bins=a.bins,
             idle_cycles=a.idle_cycles,
+            counters=a.counters,
         )
         dyn.check(119, 4 << 30, 4)
+        dyn.check(a.count, 4 << 30, 4)
     except ValueError as err:  # the launcher's refusal, before any device opens
-        print(json.dumps({"refused": str(err)}), flush=True)
-        return
+        print(json.dumps({"ok": False, "refused": str(err)}), flush=True)
+        sys.exit(1)
     kernels = fed.Kernels(
         reader=KERNELS / "dyn_reader.cpp",
         compute=EXAMPLE / "kernels" / "compute.cpp",
@@ -109,21 +113,23 @@ def report(a, dyn, result, res):
         for c in range(a.count)
         if result.ctl[c, gave_at]
     }
+    m = len(counter_tiles(0, a.count, a.counters).members)  # the rest: counter tiles
     one = a.one_core if a.one_core >= 0 else None
-    retired, total, visits = replay.replay(a.items, a.hops, a.count, one)
+    retired, total, visits = replay.replay(a.items, a.hops, m, one)
     if a.probe >= 0:  # the probe's items visit their own core once
         visits[a.probe] += res[a.probe, HOP["kResSpawned"]]
-    totals = res[:, HOP["kResTotalLo"]].astype(np.uint64) | (
-        res[:, HOP["kResTotalHi"]].astype(np.uint64) << np.uint64(32)
+    totals = res[:m, HOP["kResTotalLo"]].astype(np.uint64) | (
+        res[:m, HOP["kResTotalHi"]].astype(np.uint64) << np.uint64(32)
     )
     out = {
         "feeder": result.summary,
         "run_status": int(result.records["status"][0]),
         "run_seq": seq,
         "exact": bool((res[:, HOP["kResRun"]] == seq).all())
-        and bool((res[:, HOP["kResRetired"]] == retired).all())
+        and bool((res[:m, HOP["kResRetired"]] == retired).all())
         and bool((totals == total).all())
-        and bool((res[:, HOP["kResVisits"]] == visits).all()),
+        and bool((res[:m, HOP["kResVisits"]] == visits).all())
+        and not res[m:, HOP["kResVisits"]].any(),
         "retired": int(res[:, HOP["kResRetired"]].sum()),
         "expected_retired": int(retired.sum()),
         "hops": int(res[:, HOP["kResVisits"]].sum()) - a.items,
@@ -131,7 +137,7 @@ def report(a, dyn, result, res):
         "probe_spawned": int(res[:, HOP["kResSpawned"]].sum()),
         "refused": int(res[:, HOP["kResRefused"]].sum()),
         "quota_start": dyn.quota(result.lines.shape[0]),
-        "quota_left_min": int(res[:, HOP["kResQuota"]].min()),
+        "quota_left_min": int(res[:m, HOP["kResQuota"]].min()),
         "lines_not_idle": [
             c
             for c in range(a.count)

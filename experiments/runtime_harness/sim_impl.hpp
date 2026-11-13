@@ -348,7 +348,9 @@ namespace kmsim {
                     q.src < n &&
                     ((at >= KM_CTL_DONE && at < KM_CTL_DONE + 16 * 16 &&
                       (at - KM_CTL_DONE) % 16 == 0) ||
-                     at == KM_CTL_DYN + KM_DYN_IN_TAIL)
+                     (at >= KM_CTL_TAILS + KM_TAILS_LINE &&
+                      at < KM_CTL_TAILS + KM_TAILS_BYTES &&
+                      (at - KM_CTL_TAILS - KM_TAILS_LINE) % 16 == 0))
                 );
             }
             if (q.src == n) {

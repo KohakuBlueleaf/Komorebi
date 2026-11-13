@@ -122,7 +122,8 @@ def dyn_header():
 class Dynamic:
     """A dynamic segment: items of `item_bytes` move between the queues of the
     team's cores (`queue_items` each), at most `max_live` alive at once; `bins`
-    open bins per writer; a line says idle after `idle_cycles` of idle."""
+    open bins per writer; a line says idle after `idle_cycles` of idle. The last
+    `counters` cores of a run's team are counter tiles (layout.counter_tiles)."""
 
     seg: int
     item_bytes: int = 64
@@ -130,6 +131,7 @@ class Dynamic:
     queue_items: int = 1 << 16
     bins: int = 16
     idle_cycles: int = 20000
+    counters: int = 2
 
     def __post_init__(self):
         k, _ = dyn_header()
@@ -141,6 +143,9 @@ class Dynamic:
             raise ValueError(f"queue_items {q}: a power of two from {page} to 2**31")
         if not 1 <= self.bins <= k["kDynBinsMax"]:
             raise ValueError(f"bins {self.bins}: not in 1..{k['kDynBinsMax']}")
+        most = abi.headers()["KM_COUNTERS_MAX"]
+        if not 1 <= self.counters <= most:
+            raise ValueError(f"counters {self.counters}: not in 1..{most}")
         if self.max_live < 1 or self.idle_cycles < 1:
             raise ValueError("max_live and idle_cycles must be at least 1")
 
@@ -171,14 +176,20 @@ class Dynamic:
                 f"queues of {cores} cores need {self.queue_bytes(cores)} bytes, "
                 f"{dram_bytes} given"
             )
-        if self.max_live < cores:
-            raise ValueError(f"max_live {self.max_live} < {cores} cores: no quota")
+        if cores <= self.counters:
+            raise ValueError(
+                f"{cores} cores leave no member beside {self.counters} counter tiles"
+            )
+        if self.max_live < cores - self.counters:
+            raise ValueError(
+                f"max_live {self.max_live} < {cores - self.counters} members: no quota"
+            )
         if depth < 2:
             raise ValueError("a dynamic run needs ring depth 2 for its end record")
 
     def quota(self, cores):
-        """Spawns each core starts a run with."""
-        return self.max_live // cores
+        """Spawns each member starts a run with, for a team of `cores` cores."""
+        return self.max_live // max(cores - self.counters, 1)
 
     def args(self, queue, lines):
         """Reader and writer words of km::DynArgs (they precede the program's)."""
@@ -191,9 +202,10 @@ class Dynamic:
             "lines": lines,
             "idle": self.idle_cycles,
             "bins": self.bins,
+            "counters": self.counters,
         }
         return [int(values[f]) & abi.M32 for f in fields]
 
     def compute_args(self, cores):
-        """Compute's words (item bytes, quota), before the program's own."""
-        return [self.item_bytes, self.quota(cores)]
+        """Compute's words (item bytes, quota, counters), before the program's own."""
+        return [self.item_bytes, self.quota(cores), self.counters]

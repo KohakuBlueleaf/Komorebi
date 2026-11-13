@@ -1,5 +1,5 @@
 // Dynamic crossing: an item moves to the queue of another core in DRAM, reserved by
-// one atomic add on the receiver; the generic reader and writer, and compute's calls.
+// one atomic add on a counter tile; the generic reader and writer, and compute's calls.
 #pragma once
 
 #include <stdint.h>
@@ -19,12 +19,14 @@ namespace km {
         uint32_t lines;       // status lines at the issuer: core me at lines + 16 me
         uint32_t idle;        // cycles the idle condition holds before a line says so
         uint32_t bins;        // writer bins, 1 to kDynBinsMax
+        uint32_t counters;    // K: the team's last K cores are counter tiles
     };
 
     constexpr uint32_t kDynArgs = sizeof(DynArgs) / 4;
-    constexpr uint32_t kDynCArgItem = 0;   // compute: item bytes
-    constexpr uint32_t kDynCArgQuota = 1;  // compute: spawns at the start of a run
-    constexpr uint32_t kDynCArgs = 2;
+    constexpr uint32_t kDynCArgItem = 0;      // compute: item bytes
+    constexpr uint32_t kDynCArgQuota = 1;     // compute: spawns at the start of a run
+    constexpr uint32_t kDynCArgCounters = 2;  // compute: K, as DynArgs::counters
+    constexpr uint32_t kDynCArgs = 3;
 
     // Buffers: packets reader -> compute, outgoing items compute -> writer, bins.
     constexpr uint32_t kCbDynIn = 26;
@@ -55,6 +57,17 @@ namespace km {
     // Queue position `pos` of core `core`: DRAM page and byte offset in it.
     inline uint32_t dyn_page(uint32_t core, uint32_t pos, uint32_t cap) {
         return core * (cap / kDynPageItems) + (pos & (cap - 1)) / kDynPageItems;
+    }
+
+    // A run's members: its team's cores before the last `k`, the counter tiles (an
+    // asked tile that issues atomics can lose an answer; a counter tile issues none).
+    inline uint32_t dyn_members(const km_record_t& r, uint32_t k) {
+        return count(r) > k ? count(r) - k : 0;
+    }
+
+    // The counter tile that holds the tail of member core `core`.
+    inline uint32_t dyn_counter(const km_record_t& r, uint32_t k, uint32_t core) {
+        return first(r) + dyn_members(r, k) + (core - first(r)) % k;
     }
 
     // Records the first give-up of a dynamic run (where, position, run).
@@ -96,6 +109,38 @@ namespace km {
                 return true;
             }
             if ((i & 15) == 15 && wall64() > end) {
+                return false;
+            }
+        }
+    }
+
+    // Waits (bounded) until counter tile `counter` shows READY for `run`, reading its
+    // line into `scratch` (KM_TAILS_READER or _WRITER). False: it did not.
+    template <typename C>
+    inline bool dyn_ready(
+        const C& c, uint32_t counter, uint32_t scratch, uint32_t run
+    ) {
+        const uint32_t ctl = c.args().ctl;
+        volatile tt_l1_ptr uint32_t* w = l1(ctl + KM_CTL_TAILS + scratch);
+        const uint64_t end = (
+            wall64() + (static_cast<uint64_t>(c.args().wait_limit) << 10)
+        );
+        for (;;) {
+            noc_async_read(
+                c.core_noc(counter, ctl + KM_CTL_TAILS + KM_TAILS_READY),
+                ctl + KM_CTL_TAILS + scratch,
+                16
+            );
+            if (!noc_bounded(c, [] {
+                    return ncrisc_noc_reads_flushed(noc_index);
+                })) {
+                return false;
+            }
+            invalidate_l1_cache();
+            if (w[0] == run && w[1] == 1) {
+                return true;
+            }
+            if (c.stop() || wall64() > end) {
                 return false;
             }
         }
@@ -156,9 +201,64 @@ namespace km {
             where = kWhereDynAlign;  // a DRAM read lands 64-byte aligned or not as
                                      // asked
         }
-        if (*tail >= kDynPosMax) {
+        if (head >= kDynPosMax) {
             where = kWhereDynFull;  // marks stay unique below 2^31 positions
         }
+        // A counter tile sets its members' tails to their heads, then shows READY; a
+        // member waits for its counter tile's READY before it reads its tail there.
+        const uint32_t ctrs = d.counters, members = dyn_members(r, ctrs);
+        const bool counter = a.me - first(r) >= members;
+        if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || members == 0) {
+            where = where != 0 ? where : kWhereDynCounter;
+        } else if (where == 0 && counter) {
+            *tail = head;  // nobody sends here: the loop sees an empty queue
+            uint32_t served = 0;
+            for (uint32_t m = a.me - first(r) - members; m < members; m += ctrs) {
+                const uint32_t core = first(r) + m;
+                noc_async_read(
+                    rd.core_noc(core, a.ctl + KM_CTL_DYN + KM_DYN_IN_HEAD),
+                    a.ctl + KM_CTL_TAILS + KM_TAILS_LINE + 16 * core,
+                    16
+                );
+                served++;
+            }
+            if (!noc_bounded(rd, [] {
+                    return ncrisc_noc_reads_flushed(noc_index);
+                })) {
+                where = kWhereDynRead;
+            } else {
+                volatile tt_l1_ptr uint32_t* ready = rd.ctl(KM_CTL_TAILS);
+                ready[1] = 1;
+                ready[2] = served;
+                ready[3] = 0;
+                invalidate_l1_cache();  // a fence: the run's word goes last
+                ready[0] = run;
+                invalidate_l1_cache();
+            }
+        } else if (
+            where == 0 &&
+            !dyn_ready(rd, dyn_counter(r, ctrs, a.me), KM_TAILS_READER, run)
+        ) {
+            where = kWhereDynCounter;
+        }
+        const uint64_t tail_line =
+            (counter ? 0
+                     : rd.core_noc(
+                           dyn_counter(r, ctrs == 0 ? 1 : ctrs, a.me),
+                           a.ctl + KM_CTL_TAILS + KM_TAILS_LINE + 16 * a.me
+                       ));
+        // A member's tail, read from its counter tile into IN_TAIL (bounded).
+        auto refresh = [&] {
+            if (counter) {
+                return true;  // nobody sends to a counter tile: its tail stays its head
+            }
+            noc_async_read(tail_line, a.ctl + KM_CTL_DYN + KM_DYN_IN_TAIL, 16);
+            const bool ok = noc_bounded(rd, [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            });
+            invalidate_l1_cache();
+            return ok;
+        };
         bool idle_shown = false, busy = true, armed = false;
         uint32_t key[3] = {0, 0, 0};
         uint64_t since = 0, waiting_from = 0;
@@ -214,6 +314,10 @@ namespace km {
                 where = kWhereDynStopped;
                 break;
             }
+            if (!refresh()) {
+                where = kWhereDynRead;
+                break;
+            }
             const uint32_t t = *tail;
             if (t - head > d.cap) {
                 where = kWhereDynOverflow;
@@ -232,6 +336,10 @@ namespace km {
                 const uint32_t consumed = dyn[KM_DYN_CONSUMED / 4];
                 uint32_t k2[3];
                 invalidate_l1_cache();
+                if (!refresh()) {
+                    where = kWhereDynRead;
+                    break;
+                }
                 if (!sample(*tail, k2) || k2[0] != k[0] || k2[1] != k[1] ||
                     k2[2] != k[2]) {
                     armed = false;
@@ -374,6 +482,17 @@ namespace km {
         dyn[KM_DYN_SENT / 4] = 0;
         wf[1] = 0;
         wf[0] = run;
+        // A member reserves on the counter tiles: it waits until each shows READY.
+        const uint32_t ctrs = d.counters, members = dyn_members(r, ctrs);
+        if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || members == 0) {
+            where = kWhereDynCounter;
+        } else if (a.me - first(r) < members) {
+            for (uint32_t j = 0; j < ctrs && where == 0; j++) {
+                if (!dyn_ready(wr, first(r) + members + j, KM_TAILS_WRITER, run)) {
+                    where = kWhereDynCounter;
+                }
+            }
+        }
 
         // Bin b to its destination: reserve, mark, write, wait for the writes.
         auto flush = [&](uint32_t b) {
@@ -383,7 +502,10 @@ namespace km {
             noc_fast_atomic_increment<noc_mode, true>(
                 noc_index,
                 write_at_cmd_buf,
-                wr.core_noc(dest[b], a.ctl + KM_CTL_DYN + KM_DYN_IN_TAIL),
+                wr.core_noc(
+                    dyn_counter(r, ctrs, dest[b]),
+                    a.ctl + KM_CTL_TAILS + KM_TAILS_LINE + 16 * dest[b]
+                ),
                 NOC_UNICAST_WRITE_VC,
                 n,
                 31,
@@ -563,9 +685,11 @@ namespace km {
               wait_(get_arg_val<uint32_t>(kCArgWait)),
               run_(r.seq),
               first_(km::first(r)),
-              count_(km::count(r)),
+              count_(dyn_members(r, cp.arg(kDynCArgCounters))),
+              member_(cp.me() - km::first(r)),
               item_bytes_(cp.arg(kDynCArgItem)),
-              quota_(cp.arg(kDynCArgQuota)) {
+              quota_(cp.arg(kDynCArgQuota)),
+              seeded_(member_ >= count_) {
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* dyn = l1(ctl_ + KM_CTL_DYN);
                 dyn[KM_DYN_CONSUMED / 4] = 0;
@@ -584,8 +708,18 @@ namespace km {
             seeded_ = true;
         }
 
+        // The run's members (the team without its counter tiles), and this core's.
         uint32_t count() const {
             return count_;
+        }
+
+        uint32_t member() const {
+            return member_;
+        }
+
+        // A counter tile: no item comes here; next() returns only the run's end.
+        bool counter() const {
+            return member_ >= count_;
         }
 
         uint32_t quota() const {
@@ -797,11 +931,12 @@ namespace km {
         uint32_t run_;
         uint32_t first_;
         uint32_t count_;
+        uint32_t member_;
         uint32_t item_bytes_;
         uint32_t quota_;
+        bool seeded_;
         uint32_t pushed_ = 0;
         uint32_t consumed_ = 0;
-        bool seeded_ = false;
         bool failed_ = false;
     };
 

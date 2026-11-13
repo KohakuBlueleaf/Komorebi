@@ -6,6 +6,8 @@ columns (x0, x1) with consecutive NoC0 x; a multicast rectangle never crosses on
 
 from dataclasses import dataclass
 
+from komorebi import abi
+
 
 def panels(noc0_x):
     """Panels from `noc0_x`, the NoC0 x coordinate of each logical column in order.
@@ -79,6 +81,34 @@ def share(items, index, count):
     base, extra = divmod(len(items), count)
     start = items.start + index * base + min(index, extra)
     return range(start, start + base + (index < extra))
+
+
+@dataclass(frozen=True)
+class Counters:
+    """A dynamic run's counter tiles: the last `k` cores of the team (core order
+    `first`, `count` cores) hold the other members' tails and never issue an atomic."""
+
+    members: range  # the cores that send and receive items
+    counters: range  # the counter tiles
+    counter_of: dict  # member core: the counter tile that holds its tail
+    serves: dict  # counter tile: the member cores whose tails it holds
+
+
+def counter_tiles(first, count, k):
+    """The counter tiles of a dynamic run of team (`first`, `count`) with `k` of them:
+    member core c reserves on counter tile c mod k (as km::dyn_counter)."""
+    most = abi.headers()["KM_COUNTERS_MAX"]
+    if not 1 <= k <= most:
+        raise ValueError(f"counters {k}: not in 1..{most}")
+    if count <= k:
+        raise ValueError(
+            f"a team of {count} cores leaves no member beside {k} counters"
+        )
+    members = range(first, first + count - k)
+    counters = range(members.stop, first + count)
+    counter_of = {c: counters[(c - first) % k] for c in members}
+    serves = {t: [c for c in members if counter_of[c] == t] for t in counters}
+    return Counters(members, counters, counter_of, serves)
 
 
 def split_range(total, cores):

@@ -36,7 +36,8 @@ static inline void dyn_gave(kmd_t* k, uint32_t core) {
     k->dyn.active = 0;
 }
 
-/* The two passes: 1 quiet, 0 not yet (a line busy, of an earlier run or changed). */
+/* The two passes: 1 quiet, 0 not yet (a line busy, of an earlier run or changed).
+ * Counter tiles are team cores like the rest: idle lines, nothing sent or consumed. */
 static inline int dyn_quiet(kmd_t* k) {
     kmd_dyn_t* d = &k->dyn;
     const uint32_t f = d->team & 0xFFFFu, end = f + (d->team >> 16);

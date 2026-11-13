@@ -177,7 +177,11 @@ def test_dynamic_words_and_a_named_dynamic_give_up():
         "consumed": 8,
         "quota": 7,
         "gave_up": {"where": "lost", "position": 21, "run": 3, "seen": 17},
+        "counter": None,
     }
+    ready = (K["KM_CTL_TAILS"] + K["KM_TAILS_READY"]) // 4
+    block[ready : ready + 4] = [3, 1, 59, 0]
+    assert st.dynamic(block)["counter"] == {"run": 3, "serves": 59}
     codes = [K[f"kWhereDyn{k}"] for k in st.DYN_WHERES]
     assert codes == list(range(19, 19 + len(codes)))  # after the runtime's 1 to 18
 
