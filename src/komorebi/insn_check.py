@@ -67,16 +67,16 @@ def scan(listing):
     -d listing; label is the nearest symbol before it that is not a local label."""
     out, label = [], "?"
     for text in listing.splitlines():
-        m = _LABEL.match(text)
-        if m:
-            if not m.group(1).startswith("."):
-                label = m.group(1)
+        found = _LABEL.match(text)
+        if found:
+            if not found.group(1).startswith("."):
+                label = found.group(1)
             continue
-        m = _INSN.match(text)
-        if m:
-            group = group_of(m.group(2))
+        found = _INSN.match(text)
+        if found:
+            group = group_of(found.group(2))
             if group:
-                out.append((int(m.group(1), 16), m.group(2), group, label))
+                out.append((int(found.group(1), 16), found.group(2), group, label))
     return out
 
 
@@ -133,8 +133,8 @@ def check_elf(elf, source, tree):
 
 
 def _marker(cache, elf):
-    st = Path(elf).stat()
-    key = f"{Path(elf).resolve()}|{st.st_size}|{st.st_mtime_ns}"
+    status = Path(elf).stat()
+    key = f"{Path(elf).resolve()}|{status.st_size}|{status.st_mtime_ns}"
     return Path(cache) / hashlib.sha256(key.encode()).hexdigest()[:32]
 
 

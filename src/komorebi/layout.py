@@ -34,8 +34,8 @@ def blackhole_noc0_x(harvest_mask):
 
 def core_order(grid):
     """Every core of the grid in the fixed core order: row by row, x fastest."""
-    gx, gy = grid
-    return [(x, y) for y in range(gy) for x in range(gx)]
+    columns, rows = grid
+    return [(x, y) for y in range(rows) for x in range(columns)]
 
 
 @dataclass(frozen=True)
@@ -59,12 +59,19 @@ def nocs(grid, table, noc0):
         raise ValueError(f"{len(table)} and {len(noc0)} words for {len(order)} cores")
 
     def by_core(words):
-        return {c: (int(w) & 0xFFFF, int(w) >> 16) for c, w in zip(order, words)}
+        return {
+            core: (int(word) & 0xFFFF, int(word) >> 16)
+            for core, word in zip(order, words)
+        }
 
     at0 = by_core(noc0)
-    xs = [at0[(x, 0)][0] for x in range(grid[0])]
+    column_xs = [at0[(x, 0)][0] for x in range(grid[0])]
     return Nocs(
-        tuple(grid), by_core(table), at0, tuple(int(w) for w in table), panels(xs)
+        tuple(grid),
+        by_core(table),
+        at0,
+        tuple(int(word) for word in table),
+        panels(column_xs),
     )
 
 
@@ -94,18 +101,24 @@ class Counters:
     serves: dict  # counter tile: the cores whose tails it holds
 
 
-def counter_tiles(first, count, k):
-    """The counter tiles of a dynamic run of group (`first`, `count`) with `k` of them:
-    core c reserves on counter tile c mod k (as km::messages_counter)."""
+def counter_tiles(first, count, counter_count):
+    """The counter tiles of a dynamic run of group (`first`, `count`) with
+    `counter_count` of them: a core reserves on counter tile (core - first) mod
+    `counter_count` (as km::messages_counter)."""
     most = abi.headers()["KM_COUNTERS_MAX"]
-    if not 1 <= k <= most:
-        raise ValueError(f"counters {k}: not in 1..{most}")
-    if count <= k:
-        raise ValueError(f"a group of {count} cores leaves no core beside {k} counters")
-    workers = range(first, first + count - k)
+    if not 1 <= counter_count <= most:
+        raise ValueError(f"counters {counter_count}: not in 1..{most}")
+    if count <= counter_count:
+        raise ValueError(
+            f"a group of {count} cores leaves no core beside {counter_count} counters"
+        )
+    workers = range(first, first + count - counter_count)
     counters = range(workers.stop, first + count)
-    counter_of = {c: counters[(c - first) % k] for c in workers}
-    serves = {t: [c for c in workers if counter_of[c] == t] for t in counters}
+    counter_of = {core: counters[(core - first) % counter_count] for core in workers}
+    serves = {
+        tile: [core for core in workers if counter_of[core] == tile]
+        for tile in counters
+    }
     return Counters(workers, counters, counter_of, serves)
 
 
@@ -163,30 +176,34 @@ class Group:
         The rectangles are disjoint and cover exactly the group's cores.
         """
         self.cores(grid)
-        gx = grid[0]
-        if [x for p0, p1 in grid_panels for x in range(p0, p1 + 1)] != list(range(gx)):
-            raise ValueError(f"panels {grid_panels} do not tile {gx} columns")
-        ya, xa = divmod(self.first, gx)
-        yb, xb = divmod(self.first + self.count - 1, gx)
+        columns = grid[0]
+        if [
+            x
+            for panel_first, panel_last in grid_panels
+            for x in range(panel_first, panel_last + 1)
+        ] != list(range(columns)):
+            raise ValueError(f"panels {grid_panels} do not tile {columns} columns")
+        first_row, first_column = divmod(self.first, columns)
+        last_row, last_column = divmod(self.first + self.count - 1, columns)
         # Row bands (y0, y1, x0, x1): partial first row, full rows, partial last row.
-        if ya == yb:
-            bands = [(ya, ya, xa, xb)]
+        if first_row == last_row:
+            bands = [(first_row, first_row, first_column, last_column)]
         else:
-            bands, low, high = [], ya, yb
-            if xa:
-                bands.append((ya, ya, xa, gx - 1))
+            bands, low, high = [], first_row, last_row
+            if first_column:
+                bands.append((first_row, first_row, first_column, columns - 1))
                 low += 1
-            if xb != gx - 1:
+            if last_column != columns - 1:
                 high -= 1
             if low <= high:
-                bands.append((low, high, 0, gx - 1))
-            if xb != gx - 1:
-                bands.append((yb, yb, 0, xb))
+                bands.append((low, high, 0, columns - 1))
+            if last_column != columns - 1:
+                bands.append((last_row, last_row, 0, last_column))
         return [
-            (max(x0, p0), y0, min(x1, p1), y1)
+            (max(x0, panel_first), y0, min(x1, panel_last), y1)
             for y0, y1, x0, x1 in bands
-            for p0, p1 in grid_panels
-            if max(x0, p0) <= min(x1, p1)
+            for panel_first, panel_last in grid_panels
+            if max(x0, panel_first) <= min(x1, panel_last)
         ]
 
 
@@ -213,20 +230,27 @@ def broadcasts(grid, grid_panels, rect, along, noc):
 
     One broadcast per column of the rectangle, or per row and panel. The sender is where
     the NoC's direction starts: NoC0 top or left, NoC1 bottom or right."""
-    x0, y0, nx, ny = rect
-    if nx < 1 or ny < 1 or x0 < 0 or y0 < 0 or x0 + nx > grid[0] or y0 + ny > grid[1]:
+    x0, y0, columns, rows = rect
+    if (
+        columns < 1
+        or rows < 1
+        or x0 < 0
+        or y0 < 0
+        or x0 + columns > grid[0]
+        or y0 + rows > grid[1]
+    ):
         raise ValueError(f"rectangle {rect} does not fit a {grid[0]} by {grid[1]} grid")
     if noc not in (0, 1) or along not in ("column", "row"):
         raise ValueError(f"broadcasts along {along!r} on NoC {noc}")
-    xs, ys = range(x0, x0 + nx), range(y0, y0 + ny)
+    x_range, y_range = range(x0, x0 + columns), range(y0, y0 + rows)
     if along == "column":
-        runs = [[(x, y) for y in ys] for x in xs]
+        runs = [[(x, y) for y in y_range] for x in x_range]
     else:
         runs = [
-            [(x, y) for x in xs if p0 <= x <= p1]
-            for y in ys
-            for p0, p1 in grid_panels
-            if p0 <= xs[-1] and xs[0] <= p1
+            [(x, y) for x in x_range if panel_first <= x <= panel_last]
+            for y in y_range
+            for panel_first, panel_last in grid_panels
+            if panel_first <= x_range[-1] and x_range[0] <= panel_last
         ]
     out = [Broadcast(tuple(run if noc == 0 else run[::-1])) for run in runs]
     if any(len(broadcast.cores) > BROADCAST_CORES_MAX for broadcast in out):
@@ -244,10 +268,12 @@ def broadcast_rect(broadcast, noc0, noc_xy, noc):
     if len(broadcast.cores) < 2:
         return None
     step = 1 if noc == 0 else -1
-    sx, sy = noc0[broadcast.sender]
-    dx, dy = (step, 0) if broadcast.cores[1][1] == broadcast.sender[1] else (0, step)
+    sender_x, sender_y = noc0[broadcast.sender]
+    step_x, step_y = (
+        (step, 0) if broadcast.cores[1][1] == broadcast.sender[1] else (0, step)
+    )
     for rank, core in enumerate(broadcast.cores):
-        if noc0[core] != (sx + rank * dx, sy + rank * dy):
+        if noc0[core] != (sender_x + rank * step_x, sender_y + rank * step_y):
             raise ValueError(f"{core} is not NoC0 step {rank} from the sender")
     first, last = noc_xy[broadcast.cores[1]], noc_xy[broadcast.cores[-1]]
     return first[0] | first[1] << 16, last[0] | last[1] << 16
@@ -261,7 +287,7 @@ def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buf
     broadcast_id, cb, window, pages = buffer
     if not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1:
         raise ValueError(f"window {window} or pages {pages} out of range")
-    gx = grid[0]
+    columns = grid[0]
     workers = set(group.indices)
     common = {
         "broadcast": broadcast_id,
@@ -274,7 +300,7 @@ def broadcast_args(grid, grid_panels, group, rect, along, noc, noc0, noc_xy, buf
     none = common | {"rank": BROADCAST_NONE, "receivers": 0, "sender": 0}
     out = {i: none | {"mc_start": 0, "mc_end": 0} for i in workers}
     for broadcast in broadcasts(grid, grid_panels, rect, along, noc):
-        index = [y * gx + x for x, y in broadcast.cores]
+        index = [y * columns + x for x, y in broadcast.cores]
         if not workers.issuperset(index):
             raise ValueError(f"rectangle {rect} is not inside {group}")
         corners = broadcast_rect(broadcast, noc0, noc_xy, noc) or (0, 0)

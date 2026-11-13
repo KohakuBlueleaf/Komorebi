@@ -83,8 +83,8 @@ def inputs_key(commands, sources):
     """A short hash of a build's inputs: its commands (compilers, flags, libraries),
     the size and time of every file they name, and the sources' contents."""
     digest = hashlib.sha256()
-    for cmd in commands:
-        for arg in cmd:
+    for command in commands:
+        for arg in command:
             digest.update(arg.encode() + b"\0")
             named = shutil.which(arg) if "/" not in arg else arg
             if named and Path(named).is_file():
@@ -159,7 +159,7 @@ def thread_image(thread, tree=None):
     tree = _tree(tree)
     sources = [*thread.source_paths(), kmx_directory() / "kmx.c"]
     extra = [Path(i) for i in thread.includes]
-    defines = [f"{k}={v}" for k, v in sorted(thread.defines.items())]
+    defines = [f"{name}={value}" for name, value in sorted(thread.defines.items())]
     key = source_key([*sources, kmx_directory(), *includes(), *extra], tree)
     key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]
     out = cache_directory() / f"thread-{key}" / "thread.bin"
@@ -182,7 +182,7 @@ def module_path(tree=None):
     if prebuilt.is_file() and runtime:
         return prebuilt
     tree = _tree(tree)
-    paths = [str(p) for p in includes()]
+    paths = [str(include) for include in includes()]
     commands = build.cxx_commands(
         "pymodule", tree, PLACEHOLDER / MODULE_FILE, module_source(), paths
     )

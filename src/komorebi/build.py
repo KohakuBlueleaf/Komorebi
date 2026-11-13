@@ -69,24 +69,31 @@ def cxx_commands(kind, tree, out, source, includes=(), defines=()):
     compile_vars = ninja_block(build_directory, compile_prefix)
     link_vars = ninja_block(build_directory, link_prefix)
     out = Path(out)
-    obj = out.with_suffix(".o")
-    compile_cmd = (
+    object_file = out.with_suffix(".o")
+    compile_command = (
         ["clang++-20"]
         + shlex.split(_DROPPED_DEFINE.sub("", compile_vars.get("DEFINES", "")))
-        + [f"-D{d}" for d in defines]
-        + [f"-I{i}" for i in includes]
+        + [f"-D{define}" for define in defines]
+        + [f"-I{include_path}" for include_path in includes]
         + shlex.split(compile_vars.get("INCLUDES", ""))
         + shlex.split(required(compile_vars, "FLAGS", compile_prefix))
-        + ["-c", str(source), "-o", str(obj)]
+        + ["-c", str(source), "-o", str(object_file)]
     )
 
     # Library names in the link statement are relative to the build directory.
-    libs = [
-        str(build_directory / tok) if not tok.startswith(("-", "/")) else tok
-        for tok in shlex.split(required(link_vars, "LINK_LIBRARIES", link_prefix))
+    libraries = [
+        str(build_directory / token) if not token.startswith(("-", "/")) else token
+        for token in shlex.split(required(link_vars, "LINK_LIBRARIES", link_prefix))
     ]
-    link_cmd = ["clang++-20", *link_flags, str(obj), "-o", str(out), *libs]
-    return compile_cmd, link_cmd
+    link_command = [
+        "clang++-20",
+        *link_flags,
+        str(object_file),
+        "-o",
+        str(out),
+        *libraries,
+    ]
+    return compile_command, link_command
 
 
 def image_commands(tree, out, sources, includes=(), defines=()):
@@ -102,14 +109,16 @@ def image_commands(tree, out, sources, includes=(), defines=()):
         "-nostdlib", "-nostartfiles", "-ffreestanding", "-O2", "-g", "-Wall",
         "-Werror", "-mcmodel=medany",
     ]  # fmt: skip
-    cflags += [f"-D{d}" for d in defines] + [f"-I{i}" for i in includes]
+    cflags += [f"-D{define}" for define in defines] + [
+        f"-I{include_path}" for include_path in includes
+    ]
     cflags.append(f"-I{include}")
     out = Path(out)
     commands, objects = [], []
-    for src in sources:
-        obj = out.parent / (Path(src).stem + ".x280.o")
-        commands.append([str(gcc), *cflags, "-c", str(src), "-o", str(obj)])
-        objects.append(str(obj))
+    for source in sources:
+        object_file = out.parent / (Path(source).stem + ".x280.o")
+        commands.append([str(gcc), *cflags, "-c", str(source), "-o", str(object_file)])
+        objects.append(str(object_file))
     elf = out.with_suffix(".elf")
     commands.append(
         [
@@ -132,11 +141,11 @@ def image_commands(tree, out, sources, includes=(), defines=()):
 
 def run(commands):
     """Runs each command in order; a failing one raises BuildError."""
-    for cmd in commands:
+    for command in commands:
         try:
-            subprocess.run(cmd, check=True)
+            subprocess.run(command, check=True)
         except (OSError, subprocess.CalledProcessError) as err:
-            raise BuildError(f"{shlex.join(cmd)}: {err}") from err
+            raise BuildError(f"{shlex.join(command)}: {err}") from err
 
 
 def build_cxx(kind, tree, out, source, includes=(), defines=()):

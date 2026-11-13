@@ -89,7 +89,7 @@ def empty(module, device, shape, dtype, layout="row", shard_grid=None):
     if shard_grid is not None:
         if layout != "row" or len(shape) != 2:
             raise ValueError("an L1 tensor is [cores, words] rows, one a core")
-        shard_grid = tuple(int(n) for n in shard_grid)
+        shard_grid = tuple(int(extent) for extent in shard_grid)
     buffer = module.Buffer(device, size, page, shard_grid)
     return Tensor(buffer, shape, dtype, layout, shard_grid)
 
@@ -97,6 +97,6 @@ def empty(module, device, shape, dtype, layout="row", shard_grid=None):
 def from_array(module, device, data, dtype, layout="row", shard_grid=None):
     """A tensor holding `data`, written before it is returned."""
     raw, shape = formats.to_bytes(data, dtype, layout)
-    t = empty(module, device, shape, dtype, layout, shard_grid)
-    t.buffer.write(raw)
-    return t
+    tensor = empty(module, device, shape, dtype, layout, shard_grid)
+    tensor.buffer.write(raw)
+    return tensor

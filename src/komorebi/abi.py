@@ -59,7 +59,8 @@ class Headers:
         self.core = device / "km_core.hpp"
         # the device headers whose constants a program's header may use (km::name)
         self.device = [
-            device / f"km_{n}.hpp" for n in ("command", "group", "port", "broadcast")
+            device / f"km_{name}.hpp"
+            for name in ("command", "group", "port", "broadcast")
         ]
         self.dispatch = Path(kernel) / "km_dispatch.h"
 
@@ -91,7 +92,7 @@ class Headers:
     def positions(self):
         """Word index in a command of hdr, group and a0 to a9."""
         index = {name: i for i, name in enumerate(self.command_fields)}
-        return index["hdr"], index["group"], [index[a] for a in ARG_WORDS]
+        return index["hdr"], index["group"], [index[word] for word in ARG_WORDS]
 
     def __getitem__(self, name):
         return self.constants[name]
@@ -103,20 +104,21 @@ def evaluate(expr, known, sizes=None, where=""):
     arithmetic gives the same); anything else raises HeaderError."""
     what = f"{where}: cannot read {expr.strip()!r}"
     text = SIZEOF.sub(
-        lambda m: str((sizes or {}).get(m[1], f"sizeof_{m[1]}")), expr.strip()
+        lambda matched: str((sizes or {}).get(matched[1], f"sizeof_{matched[1]}")),
+        expr.strip(),
     )
     text = SUFFIX.sub(r"\1", KM_SCOPE.sub("", text))
-    if any(not C_NUMBER.fullmatch(n) for n in NUMBER.findall(text)):
+    if any(not C_NUMBER.fullmatch(literal) for literal in NUMBER.findall(text)):
         raise HeaderError(f"{what}: not a C integer literal")
     try:
         tree = ast.parse(text.replace("/", "//"), mode="eval")
     except SyntaxError as err:
         raise HeaderError(what) from err
 
-    def checked(v):
-        if not 0 <= v <= M32:
-            raise HeaderError(f"{what}: {v} is outside 0..2**32 - 1")
-        return v
+    def checked(number):
+        if not 0 <= number <= M32:
+            raise HeaderError(f"{what}: {number} is outside 0..2**32 - 1")
+        return number
 
     def value(node):
         if isinstance(node, ast.Constant) and type(node.value) is int:
@@ -124,12 +126,12 @@ def evaluate(expr, known, sizes=None, where=""):
         if isinstance(node, ast.Name) and node.id in known:
             return checked(known[node.id])
         if isinstance(node, ast.BinOp) and type(node.op) in OPERATORS:
-            a, b = value(node.left), value(node.right)
-            if type(node.op) in (ast.LShift, ast.RShift) and b > 31:
-                raise HeaderError(f"{what}: shift by {b}")
-            if type(node.op) is ast.FloorDiv and b == 0:
+            left, right = value(node.left), value(node.right)
+            if type(node.op) in (ast.LShift, ast.RShift) and right > 31:
+                raise HeaderError(f"{what}: shift by {right}")
+            if type(node.op) is ast.FloorDiv and right == 0:
                 raise HeaderError(f"{what}: division by zero")
-            return checked(OPERATORS[type(node.op)](a, b))
+            return checked(OPERATORS[type(node.op)](left, right))
         raise HeaderError(what)
 
     return value(tree.body)
@@ -145,8 +147,12 @@ def _strip(text):
     """The text with comments removed (string literals kept) and continued lines
     joined."""
 
-    def keep(m):
-        return m[0] if m[0][0] in "\"'" else " " * m[0].count("\n") or " "
+    def keep(matched):
+        return (
+            matched[0]
+            if matched[0][0] in "\"'"
+            else " " * matched[0].count("\n") or " "
+        )
 
     return LEXEME.sub(keep, text.replace("\\\n", " "))
 
@@ -176,8 +182,8 @@ def _clean(text, where="", known=()):
     lines = _strip(text).split("\n")
     active, unsure, stack, defined = [], [], [], set(known)
     for i, line in enumerate(lines):
-        d = DIRECTIVE.match(line)
-        kind, rest = (d[1], d[2]) if d else ("", "")
+        directive = DIRECTIVE.match(line)
+        kind, rest = (directive[1], directive[2]) if directive else ("", "")
         if kind in ("if", "ifdef", "ifndef"):
             after = "\n".join(lines[i + 1 : i + 2])
             cond = _condition(kind, rest, defined, after)
@@ -194,9 +200,9 @@ def _clean(text, where="", known=()):
             else:
                 stack[-1][0] = None  # #elif: not decided here
             continue
-        if any(c is False for c, _ in stack):
+        if any(condition is False for condition, _ in stack):
             continue  # a disabled block
-        target = unsure if any(c is None for c, _ in stack) else active
+        target = unsure if any(condition is None for condition, _ in stack) else active
         target.append(line)
         if target is unsure and line.strip():
             active.append("@undecided;")  # a struct around it cannot be read
@@ -218,23 +224,30 @@ def constants(*paths, sizes=None, known=None):
     found = ChainMap({}, known)
     for path in paths:
         text, unsure = _clean(Path(path).read_text(), path, found)
-        objects = [m for m in DEFINE.finditer(unsure) if not m[2]]
+        objects = [matched for matched in DEFINE.finditer(unsure) if not matched[2]]
         if objects or ANY_CONSTEXPR.search(unsure) or "enum" in unsure:
             raise HeaderError(
                 f"{path}: a constant inside an #if the host cannot decide"
             )
         for line in text.split("\n"):
-            d = DIRECTIVE.match(line)
-            if d and d[1] == "undef":
-                found.pop(d[2], None)
-            elif d and d[1] == "define":
-                m = DEFINE.match(line)
-                if m and not m[2]:  # function-like macros are not constants
-                    _add(found, m[1], evaluate(m[3], found, sizes, f"{path}"), path)
+            directive = DIRECTIVE.match(line)
+            if directive and directive[1] == "undef":
+                found.pop(directive[2], None)
+            elif directive and directive[1] == "define":
+                matched = DEFINE.match(line)
+                if matched and not matched[2]:  # function-like macros are not constants
+                    _add(
+                        found,
+                        matched[1],
+                        evaluate(matched[3], found, sizes, f"{path}"),
+                        path,
+                    )
         typed = CONSTEXPR.findall(text)
         if len(ANY_CONSTEXPR.findall(text)) != len(typed):
             other = [
-                c for c in ANY_CONSTEXPR.findall(text) if not CONSTEXPR.match(c + ";")
+                declaration
+                for declaration in ANY_CONSTEXPR.findall(text)
+                if not CONSTEXPR.match(declaration + ";")
             ]
             raise HeaderError(
                 f"{path}: a constexpr that is not uint32_t k*: {other[:1]}"
@@ -244,13 +257,15 @@ def constants(*paths, sizes=None, known=None):
         if len(ANY_ENUM.findall(text)) != len(ENUM.findall(text)):
             raise HeaderError(f"{path}: an enum other than `enum {{...}};`")
         for body in ENUM.findall(text):
-            at = 0
+            next_value = 0
             for item in filter(None, (i.strip() for i in body.split(","))):
                 name, _, expr = item.partition("=")
                 name = name.strip()
-                at = evaluate(expr, found, sizes, f"{path}") if expr else at
-                _add(found, name, at, path)
-                at += 1
+                next_value = (
+                    evaluate(expr, found, sizes, f"{path}") if expr else next_value
+                )
+                _add(found, name, next_value, path)
+                next_value += 1
     return dict(found.maps[0])
 
 
@@ -269,11 +284,13 @@ def struct_fields(path, name):
         raise HeaderError(f"{path}: struct {name} defined {len(found)} times")
     body = [None, found[0]]
     fields = []
-    for decl in filter(None, (d.strip() for d in body[1].split(";"))):
+    for decl in filter(
+        None, (declaration.strip() for declaration in body[1].split(";"))
+    ):
         member = FIELD.match(" ".join(decl.split()))
         if member is None:
             raise HeaderError(f"{path}: struct {name}: cannot read member {decl!r}")
-        fields += [f.strip() for f in member[1].split(",")]
+        fields += [field.strip() for field in member[1].split(",")]
     if len(set(fields)) != len(fields):
         raise HeaderError(f"{path}: struct {name}: a member name is used twice")
     return fields
@@ -289,30 +306,30 @@ def headers():
     return Headers(include, kernel)
 
 
-def command(handler, first, count, args=(), flags=0, h=None):
+def command(handler, first, count, args=(), flags=0, abi_headers=None):
     """The 16 words of a command; the dispatcher fills sequence, slot, landing words."""
-    h = h or headers()
-    hdr, group, arg_at = h.positions
+    abi_headers = abi_headers or headers()
+    header_word, group, arg_at = abi_headers.positions
     if len(args) > len(arg_at):
         raise ValueError(f"{len(args)} arguments; a command has {len(arg_at)}")
     words = [0] * 16
-    words[hdr] = (handler & 0xFF) | (flags & 0xFF) << 8
+    words[header_word] = (handler & 0xFF) | (flags & 0xFF) << 8
     words[group] = (first & 0xFFFF) | (count & 0xFFFF) << 16
-    for at, value in zip(arg_at, args):
-        words[at] = int(value) & M32
+    for word, value in zip(arg_at, args):
+        words[word] = int(value) & M32
     return words
 
 
-def start_args(values, h=None):
+def start_args(values, abi_headers=None):
     """The start-up arguments in the order of km::Args, from a dict of every field."""
-    h = h or headers()
-    missing = set(h.arg_fields) - set(values)
+    abi_headers = abi_headers or headers()
+    missing = set(abi_headers.arg_fields) - set(values)
     if missing:
         raise ValueError(f"missing start-up arguments: {sorted(missing)}")
-    extra = set(values) - set(h.arg_fields)
+    extra = set(values) - set(abi_headers.arg_fields)
     if extra:
         raise ValueError(f"unknown start-up arguments: {sorted(extra)}")
-    return [int(values[f]) & M32 for f in h.arg_fields]
+    return [int(values[field]) & M32 for field in abi_headers.arg_fields]
 
 
 def column_groups(grid, cores):
@@ -320,10 +337,10 @@ def column_groups(grid, cores):
 
     The lowest core of each column leads and reports READY in the column's slot.
     """
-    gx = grid[0]
+    columns = grid[0]
     out = {}
-    for x in range(gx):
-        column = list(range(x, cores, gx))
+    for x in range(columns):
+        column = list(range(x, cores, columns))
         if column:
             out[column[0]] = (column[0], 0, len(column) - 1, x)
             for rank, core in enumerate(column[1:]):

@@ -117,7 +117,7 @@ class CommandTimeout(KernelFailed):
     after the stop the cores that did not report and where each was waiting."""
 
     def __init__(self, handle, slot, sequence, group, cores, result=None):
-        named = "; ".join(describe_core(c) for c in cores) or "none named"
+        named = "; ".join(describe_core(core) for core in cores) or "none named"
         first, count = group if group else (None, None)
         super().__init__(
             f"command {handle} timed out: slot {slot}, sequence {sequence}, "
@@ -154,14 +154,14 @@ class EngineError(KomorebiError):
     tied to one), and the `event`. The run goes on unless the kernel stopped too."""
 
     def __init__(self, event):
-        t = event.handle
+        handle = event.handle
         where = f"pc {event.pc}" if event.pc is not None else f"node {event.node}"
         super().__init__(
-            f"{t.kind} {t.req} ended with error {event.reason} ({event.reason_name}) "
-            f"at {where}"
+            f"{handle.kind} {handle.req} ended with error {event.reason} "
+            f"({event.reason_name}) at {where}"
         )
         self.event = event
-        self.handle = t
+        self.handle = handle
         self.reason = event.reason
         self.reason_name = event.reason_name
         self.pc = event.pc

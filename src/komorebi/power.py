@@ -224,23 +224,32 @@ def cpu_package(root=None):
     return None
 
 
-def value_at(points, t):
-    """`points` (sorted (t, v)) interpolated at `t`, held constant beyond the ends."""
-    times = [p[0] for p in points]
-    i = bisect_left(times, t)
+def value_at(points, at_time):
+    """`points` (sorted (time, value)) interpolated at `at_time`, held constant beyond
+    the ends."""
+    times = [point[0] for point in points]
+    i = bisect_left(times, at_time)
     if i == 0:
         return points[0][1]
     if i == len(points):
         return points[-1][1]
-    (t0, v0), (t1, v1) = points[i - 1], points[i]
-    return v1 if t1 == t0 else v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+    (start, value_start), (end, value_end) = points[i - 1], points[i]
+    return (
+        value_end
+        if end == start
+        else value_start + (value_end - value_start) * (at_time - start) / (end - start)
+    )
 
 
-def integral(points, t0, t1):
-    """The trapezoid integral of `points` between t0 and t1 (the ends interpolated)."""
-    inner = [p for p in points if t0 < p[0] < t1]
-    line = [(t0, value_at(points, t0)), *inner, (t1, value_at(points, t1))]
-    return sum((b[0] - a[0]) * (a[1] + b[1]) / 2 for a, b in zip(line, line[1:]))
+def integral(points, start, stop):
+    """The trapezoid integral of `points` between `start` and `stop` (the ends
+    interpolated)."""
+    inner = [point for point in points if start < point[0] < stop]
+    line = [(start, value_at(points, start)), *inner, (stop, value_at(points, stop))]
+    return sum(
+        (right[0] - left[0]) * (left[1] + right[1]) / 2
+        for left, right in zip(line, line[1:])
+    )
 
 
 def too_short_note(covered, update_s, lost):
@@ -252,30 +261,30 @@ def too_short_note(covered, update_s, lost):
     return f"{base} and the sensor was lost" if lost else base
 
 
-def summarize(samples, t0, t1, update_s, limit_w=None, lost_at=None):
-    """The Summary of `samples` ((t, watts, temperature)) between t0 and t1; when the
-    sensor was lost after its last good sample at `lost_at`, only the time before it
-    is covered."""
-    end = t1 if lost_at is None else min(t1, lost_at)
-    covered = max(0.0, end - t0)
-    inside = [s for s in samples if t0 <= s[0] <= end]
-    lost = lost_at is not None and lost_at < t1
+def summarize(samples, start, stop, update_s, limit_w=None, lost_at=None):
+    """The Summary of `samples` ((time, watts, temperature)) between `start` and
+    `stop`; when the sensor was lost after its last good sample at `lost_at`, only the
+    time before it is covered."""
+    end = stop if lost_at is None else min(stop, lost_at)
+    covered = max(0.0, end - start)
+    inside = [sample for sample in samples if start <= sample[0] <= end]
+    lost = lost_at is not None and lost_at < stop
     note = too_short_note(covered, update_s, lost)
     if note or not inside:
         return Summary(
-            t1 - t0, len(inside), True, limit_w=limit_w, lost=lost, note=note
+            stop - start, len(inside), True, limit_w=limit_w, lost=lost, note=note
         )
-    power = [(s[0], s[1]) for s in samples]
-    temps = [(s[0], s[2]) for s in samples if s[2] is not None]
-    joules = integral(power, t0, end)
-    temp = integral(temps, t0, end) / covered if temps else None
+    power = [(sample[0], sample[1]) for sample in samples]
+    temps = [(sample[0], sample[2]) for sample in samples if sample[2] is not None]
+    joules = integral(power, start, end)
+    temp = integral(temps, start, end) / covered if temps else None
     note = f"sensor lost after {covered:.2f} s" if lost else ""
     return Summary(
-        t1 - t0,
+        stop - start,
         len(inside),
         False,
         mean_w=joules / covered,
-        peak_w=max(s[1] for s in inside),
+        peak_w=max(sample[1] for sample in inside),
         joules=joules,
         mean_temp_c=temp,
         limit_w=limit_w,
@@ -367,23 +376,27 @@ class PowerSampler:
 
     def summary(self, end, lost_at):
         """The section's Summary with its phases and the idle mean."""
-        src, samples = self.source, self.samples
-        whole = summarize(samples, self.start, end, src.update_s, src.limit_w, lost_at)
+        source, samples = self.source, self.samples
+        whole = summarize(
+            samples, self.start, end, source.update_s, source.limit_w, lost_at
+        )
         idle = None
         if self.idle_s > 0:
             before = summarize(
                 samples,
                 self.start - self.idle_s,
                 self.start,
-                src.update_s,
+                source.update_s,
                 None,
                 lost_at,
             )
             idle = before.mean_w
-        bounds = [t for t, _ in self.marks[1:]] + [end]
+        bounds = [mark_time for mark_time, _ in self.marks[1:]] + [end]
         phases = {
-            name: summarize(samples, t, stop, src.update_s, src.limit_w, lost_at)
-            for (t, name), stop in zip(self.marks, bounds)
+            name: summarize(
+                samples, mark_time, stop, source.update_s, source.limit_w, lost_at
+            )
+            for (mark_time, name), stop in zip(self.marks, bounds)
         }
         return replace(whole, idle_mean_w=idle, phases=phases)
 
@@ -392,12 +405,12 @@ def select(card, gpu, cpu):
     """(sources, notes): what the command line asks for; every card when nothing is."""
     chosen, notes = [], []
     if card is not None or not (gpu is not None or cpu):
-        found = [c for c in cards() if card in (None, c.index)]
+        found = [source for source in cards() if card in (None, source.index)]
         chosen += found
         if not found:
             notes.append("no Tenstorrent card with a power sensor found")
     if gpu is not None:
-        found = [g for g in gpus() if g.index == gpu]
+        found = [source for source in gpus() if source.index == gpu]
         chosen += found
         if not found:
             notes.append(f"gpu {gpu}: not available (nvidia-smi)")
@@ -418,7 +431,8 @@ def run_cli(args, out):
         return 1
     with contextlib.ExitStack() as stack:
         samplers = [
-            stack.enter_context(PowerSampler(s, args.period, idle_s=0)) for s in sources
+            stack.enter_context(PowerSampler(source, args.period, idle_s=0))
+            for source in sources
         ]
         begin = time.perf_counter()
         while (elapsed := time.perf_counter() - begin) < args.seconds:

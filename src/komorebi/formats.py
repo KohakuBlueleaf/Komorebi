@@ -45,29 +45,29 @@ def bf16_values(bits):
     return wide.view(np.float32)
 
 
-def tilize(a):
+def tilize(array):
     """A [rows, cols] array (multiples of 32) as [tiles, 1024]: tiles in row-major
     order, each its four 16 x 16 faces in turn, each face row-major."""
-    rows, cols = a.shape
-    t = a.reshape(rows // TILE, 2, FACE, cols // TILE, 2, FACE)
-    return t.transpose(0, 3, 1, 4, 2, 5).reshape(-1, TILE * TILE)
+    rows, cols = array.shape
+    blocks = array.reshape(rows // TILE, 2, FACE, cols // TILE, 2, FACE)
+    return blocks.transpose(0, 3, 1, 4, 2, 5).reshape(-1, TILE * TILE)
 
 
 def untilize(tiles, rows, cols):
     """The [rows, cols] array of tiles laid out as tilize() lays them."""
-    t = np.asarray(tiles).reshape(rows // TILE, cols // TILE, 2, 2, FACE, FACE)
-    return t.transpose(0, 2, 4, 1, 3, 5).reshape(rows, cols)
+    blocks = np.asarray(tiles).reshape(rows // TILE, cols // TILE, 2, 2, FACE, FACE)
+    return blocks.transpose(0, 2, 4, 1, 3, 5).reshape(rows, cols)
 
 
 def padded_shape(shape, layout):
     """The shape on the card: the last two dimensions of a tile layout rounded up to
     32."""
-    shape = tuple(int(n) for n in shape)
+    shape = tuple(int(size) for size in shape)
     if layout == "row":
         return shape
     if len(shape) < 2:
         raise ValueError(f"shape {shape}: a tile layout needs two dimensions")
-    return (*shape[:-2], *(-(-n // TILE) * TILE for n in shape[-2:]))
+    return (*shape[:-2], *(-(-size // TILE) * TILE for size in shape[-2:]))
 
 
 def page_bytes(shape, dtype, layout):
@@ -81,31 +81,33 @@ def page_bytes(shape, dtype, layout):
 def to_bytes(data, dtype, layout):
     """`data` as the buffer's bytes (uint8) and its shape on the card. A tile layout
     zero-pads the last two dimensions to 32 and tiles every [rows, cols] slice."""
-    a = np.asarray(data)
-    shape = padded_shape(a.shape, layout)
-    if layout == "tile" and shape != a.shape:
-        pad = [(0, 0)] * (a.ndim - 2) + [
-            (0, p - n) for p, n in zip(shape[-2:], a.shape[-2:])
+    array = np.asarray(data)
+    shape = padded_shape(array.shape, layout)
+    if layout == "tile" and shape != array.shape:
+        pad = [(0, 0)] * (array.ndim - 2) + [
+            (0, padded - size) for padded, size in zip(shape[-2:], array.shape[-2:])
         ]
-        a = np.pad(a, pad)
+        array = np.pad(array, pad)
     if dtype == "bfloat16":
-        a = bf16_bits(a.astype(np.float32, copy=False))
+        array = bf16_bits(array.astype(np.float32, copy=False))
     else:
-        a = a.astype(DTYPES[check_dtype(dtype)], copy=False)
+        array = array.astype(DTYPES[check_dtype(dtype)], copy=False)
     if layout == "tile":
-        a = np.concatenate([tilize(s) for s in a.reshape(-1, *shape[-2:])])
-    return np.ascontiguousarray(a).view(np.uint8).reshape(-1), shape
+        array = np.concatenate(
+            [tilize(matrix) for matrix in array.reshape(-1, *shape[-2:])]
+        )
+    return np.ascontiguousarray(array).view(np.uint8).reshape(-1), shape
 
 
 def from_bytes(raw, shape, dtype, layout):
     """The values of a buffer's bytes (to_bytes' inverse); bfloat16 as float32."""
     raw = np.ascontiguousarray(raw, np.uint8)
     if dtype == "bfloat16":
-        a = bf16_values(raw.view(np.uint16))
+        array = bf16_values(raw.view(np.uint16))
     else:
-        a = raw.view(DTYPES[check_dtype(dtype)])
+        array = raw.view(DTYPES[check_dtype(dtype)])
     if layout == "tile":
         rows, cols = shape[-2:]
-        a = a.reshape(-1, rows * cols)
-        a = np.stack([untilize(s, rows, cols) for s in a])
-    return a.reshape(shape)
+        array = array.reshape(-1, rows * cols)
+        array = np.stack([untilize(tile_slice, rows, cols) for tile_slice in array])
+    return array.reshape(shape)

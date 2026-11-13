@@ -103,25 +103,30 @@ class Program:
         clusters = (cluster,) if single else tuple(clusters)
         if len(set(clusters)) < len(clusters):
             raise ValueError(f"clusters {clusters}: each at most once")
-        for c in clusters:
-            if c in self.threads:
-                raise ValueError(f"{self.name} already has a thread on cluster {c}")
-        made = [Thread(cluster=c, **kwargs) for c in clusters]
-        for t in made:
-            self.threads[t.cluster] = t
+        for number in clusters:
+            if number in self.threads:
+                raise ValueError(
+                    f"{self.name} already has a thread on cluster {number}"
+                )
+        made = [Thread(cluster=number, **kwargs) for number in clusters]
+        for declared in made:
+            self.threads[declared.cluster] = declared
         return made[0] if single else made
 
     def ports(self, serve=None, noc=0):
         """Declares X280 ports: each served Tensix core gets one X280 core of the
-        threads for the run. `serve`: {core: (cluster, cpu)}, or None for every core
-        dealt over the threads' X280 cores in grid order. `noc`: the NoC of the X280
-        cores' stores into the Tensix cores (0 or 1)."""
+        threads for the run. `serve`: {core: (cluster, x280_core)}, or None for every
+        core dealt over the threads' X280 cores in grid order. `noc`: the NoC of the
+        X280 cores' stores into the Tensix cores (0 or 1)."""
         if self.x280_ports is not None:
             raise ValueError(f"{self.name} already declares its X280 ports")
         if noc not in (0, 1):
             raise ValueError(f"noc={noc!r}: 0 or 1")
         if serve is not None:
-            serve = {int(core): (int(c), int(h)) for core, (c, h) in serve.items()}
+            serve = {
+                int(core): (int(cluster), int(x280_core))
+                for core, (cluster, x280_core) in serve.items()
+            }
             if not serve:
                 raise ValueError("serve names no core")
         self.x280_ports = {"serve": serve, "noc": noc}
@@ -131,8 +136,8 @@ class Program:
         contents. Threads that name it in `shared` see it; all must share its bank."""
         if name in self.shared:
             raise ValueError(f"{self.name} already has a shared region {name!r}")
-        n = int(value) if isinstance(value, int) else np.asarray(value).nbytes
-        if n <= 0:
+        size = int(value) if isinstance(value, int) else np.asarray(value).nbytes
+        if size <= 0:
             raise ValueError(f"shared region {name!r} is empty")
         self.shared[name] = value
 
@@ -140,11 +145,11 @@ class Program:
         """Every shared region a thread names exists, is named by some thread, and all
         threads naming it read one bank (a thread reads only its own bank's regions)."""
         banks = {}
-        for t in self.threads.values():
-            for name in t.shared:
+        for thread in self.threads.values():
+            for name in thread.shared:
                 if name not in self.shared:
                     raise ValueError(f"{self.name}: no shared region {name!r}")
-                banks.setdefault(name, set()).add(t.bank)
+                banks.setdefault(name, set()).add(thread.bank)
         for name in self.shared:
             if name not in banks:
                 raise ValueError(f"{self.name}: no thread names shared region {name!r}")
@@ -157,10 +162,10 @@ class Program:
     def sources(self):
         """{"reader": path, "compute": path, "writer": path}, each an existing file."""
         if isinstance(self.kernels, dict):
-            paths = {k: Path(self.kernels[k]) for k in KERNELS}
+            paths = {kernel: Path(self.kernels[kernel]) for kernel in KERNELS}
         else:
-            paths = {k: Path(self.kernels) / f"{k}.cpp" for k in KERNELS}
-        missing = [str(p) for p in paths.values() if not p.is_file()]
+            paths = {kernel: Path(self.kernels) / f"{kernel}.cpp" for kernel in KERNELS}
+        missing = [str(path) for path in paths.values() if not path.is_file()]
         if missing:
             raise FileNotFoundError(f"{self.name}: no kernel source {missing}")
         return paths
@@ -214,20 +219,24 @@ class Dynamic:
     counters: int = 2
 
     def __post_init__(self):
-        k, _ = messages_header()
-        page = k["kMessagesPageMessages"]
+        constants, _ = messages_header()
+        page = constants["kMessagesPageMessages"]
         if (
             self.message_bytes % 64
-            or not 64 <= self.message_bytes <= k["kMessagesMessageMax"]
+            or not 64 <= self.message_bytes <= constants["kMessagesMessageMax"]
         ):
             raise ValueError(
                 f"message_bytes {self.message_bytes}: a multiple of 64 to 256"
             )
-        q = self.queue_messages
-        if q < page or q & (q - 1) or q > 1 << 31:
-            raise ValueError(f"queue_messages {q}: a power of two from {page} to 2**31")
-        if not 1 <= self.bins <= k["kMessagesBinsMax"]:
-            raise ValueError(f"bins {self.bins}: not in 1..{k['kMessagesBinsMax']}")
+        queue_size = self.queue_messages
+        if queue_size < page or queue_size & (queue_size - 1) or queue_size > 1 << 31:
+            raise ValueError(
+                f"queue_messages {queue_size}: a power of two from {page} to 2**31"
+            )
+        if not 1 <= self.bins <= constants["kMessagesBinsMax"]:
+            raise ValueError(
+                f"bins {self.bins}: not in 1..{constants['kMessagesBinsMax']}"
+            )
         most = abi.headers()["KM_COUNTERS_MAX"]
         if not 1 <= self.counters <= most:
             raise ValueError(f"counters {self.counters}: not in 1..{most}")
@@ -236,18 +245,23 @@ class Dynamic:
 
     def buffers(self):
         """Runtime buffers of a dynamic handler: packets, outgoing messages, bins."""
-        k, _ = messages_header()
-        n = k["kMessagesPacket"]
+        constants, _ = messages_header()
+        packet = constants["kMessagesPacket"]
         return [
             Buffer(
-                k["kCbMessagesIn"],
+                constants["kCbMessagesIn"],
                 "uint32",
-                k["kMessagesHeader"] + n * self.message_bytes,
+                constants["kMessagesHeader"] + packet * self.message_bytes,
                 2,
             ),
-            Buffer(k["kCbMessagesOut"], "uint32", self.message_bytes, 2 * n),
             Buffer(
-                k["kCbMessagesBins"], "uint32", self.bins * n * self.message_bytes, 1
+                constants["kCbMessagesOut"], "uint32", self.message_bytes, 2 * packet
+            ),
+            Buffer(
+                constants["kCbMessagesBins"],
+                "uint32",
+                self.bins * packet * self.message_bytes,
+                1,
             ),
         ]
 
@@ -296,7 +310,7 @@ class Dynamic:
             "bins": self.bins,
             "counters": self.counters,
         }
-        return [int(values[f]) & abi.M32 for f in fields]
+        return [int(values[field]) & abi.M32 for field in fields]
 
     def compute_args(self, cores):
         """Compute's words (message bytes, quota, counters) before the program's."""
