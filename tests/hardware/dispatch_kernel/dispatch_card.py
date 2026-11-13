@@ -615,25 +615,23 @@ def case_stall(device, args, leader=False):
 
 
 def case_stall_late(device, args):
-    """Depth 4, in one store batch: two 10-us records on the last core, then on the
-    other cores a record whose member --core waits for the stop word and three behind
-    it, the later two in slots 0 and 1 about 10 us later: KM_EV_TIMEOUT names the
-    stalled record, whose deadline passed first, and its slot 2."""
+    """Depth 4: on the last core a record that waits for the stop word under a deadline
+    ten times --deadline-us (slot 0, never freed), then on the other cores a record
+    whose member --core waits (slot 1) and two behind it: KM_EV_TIMEOUT names the
+    stalled record (its deadline passed first) and its slot 1, not the lower slot 0."""
     n_cores = 0
 
     def body(plan):
         nonlocal n_cores
         n_cores = plan.grid_x * plan.grid_y
         out = {"tag": plan.tag}
-        plan.submit(command(SEG_DEADLINE, args.deadline_us))
         rest = n_cores - 1
-        # 10 us on the last core: slots 0 and 1 stay busy until the next two are issued.
-        cycles = int(10e-6 * AICLK_HZ)
-        recs = [record(SEG_DELAY, rest, 1, 3 + k, cycles) for k in (0, 1)]
-        recs.append(record(SEG_STALL, 0, rest, 9, args.core))
-        recs += [record(SEG_CHECK, 0, rest, 5 + k, k) for k in range(3)]
-        req = plan.next
-        out["before"], out["stall_req"] = [req, req + 1], req + 2
+        plan.submit(command(SEG_DEADLINE, 10 * args.deadline_us))
+        out["early_req"] = plan.submit(record(SEG_STALL, rest, 1, 3, rest))
+        plan.submit(command(SEG_DEADLINE, args.deadline_us))
+        recs = [record(SEG_STALL, 0, rest, 9, args.core)]
+        recs += [record(SEG_CHECK, 0, rest, 5 + k, k) for k in range(2)]
+        out["stall_req"] = plan.next
         out["events"], _ = plan.stream(np.array(recs, dtype=np.uint32), HOST_WAIT_S, 8)
         return out
 
@@ -642,15 +640,14 @@ def case_stall_late(device, args):
     out["cores"] = core_report(cnt, n_cores, out["tag"])
     blk, ev = fin["block"], out["events"]
     timeouts = [e for e in ev if kind(e[2])[0] == EV_TIMEOUT]
-    done = sorted(e[1] for e in ev if kind(e[2]) == (EV_DONE, n_cores - 1))
     out["ok"] = bool(
         len(timeouts) == 1
         and timeouts[0][1] == out["stall_req"]
-        and kind(timeouts[0][2]) == (EV_TIMEOUT, 2)
-        and done == out["before"]
+        and kind(timeouts[0][2]) == (EV_TIMEOUT, 1)
         and blk["error"] == ERR_DEADLINE
         and blk["req"] == out["stall_req"]
-        and blk["slot"] == 2
+        and blk["slot"] == 1
+        and blk["busy"] == 0b1111
         and out["cores"]["cores_finished"] == n_cores
     )
     return out
