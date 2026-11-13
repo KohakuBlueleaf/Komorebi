@@ -187,7 +187,7 @@ namespace km {
         }
 
         // After the last block (bounded): compute popped all, padding to whole windows,
-        // last stamp; the sender waits for every receiver's. Clears the record's words.
+        // last stamp; a sender that cast waits for every receiver's. Clears the words.
         bool finish() {
             if (!ok_ || !member()) {
                 return ok_;
@@ -219,7 +219,7 @@ namespace km {
                 cb_reserve_back(a_.cb, pad);  // free: every block was popped
                 cb_push_back(a_.cb, pad);
             }
-            if (sender()) {
+            if (sender() && n_ != 0) {  // no block cast: no receiver stamps
                 if (!wait_done(n_, n_)) {
                     return false;
                 }
