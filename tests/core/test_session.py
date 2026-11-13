@@ -263,7 +263,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
         return [words.view(np.uint8)]
 
     monkeypatch.setattr(sess, "read", read)
-    backend.state_t = "state"
+    backend.state_tensor = "state"
     backend.log_state()
     assert asked == [("state", 0, 8)]
     assert len(lines) == session.STATE_DUMP_LINES

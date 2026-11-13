@@ -17,9 +17,9 @@ from typing import NamedTuple
 import numpy as np
 
 from komorebi import abi, dram, insn_check, layout, native
-from komorebi import state as st
-from komorebi import tensor as kmt
-from komorebi import thread as kt
+from komorebi import state as device_state
+from komorebi import tensor as tensor_module
+from komorebi import thread as thread_module
 from komorebi.errors import (
     CardBusy,
     GridTimeout,
@@ -138,7 +138,7 @@ def _command(pid):
         words = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
     except OSError:
         return "?"
-    return " ".join(w.decode(errors="replace") for w in words if w)[:160]
+    return " ".join(word.decode(errors="replace") for word in words if word)[:160]
 
 
 def aiclk_mhz(card=None):
@@ -244,20 +244,20 @@ def chip_holder(card, path=None):
 def _state_area(session):
     """A DRAM buffer whose bank address holds the dispatcher's state in every
     bank (KMD_STATE_BYTES at least); rejected if it covers the runtime's IPI word."""
-    h = abi.headers()
-    rows = _words(session, np.zeros((STATE_PAGES, h["KMD_STATE_BYTES"] // 4)))
-    at = rows.address
-    if at <= IPI_ACK_DDR < at + STATE_PAGES * h["KMD_STATE_BYTES"]:
-        raise StartError(f"the kernel state at {at:#x} covers the X280 IPI word")
+    abi_headers = abi.headers()
+    rows = _words(session, np.zeros((STATE_PAGES, abi_headers["KMD_STATE_BYTES"] // 4)))
+    address = rows.address
+    if address <= IPI_ACK_DDR < address + STATE_PAGES * abi_headers["KMD_STATE_BYTES"]:
+        raise StartError(f"the kernel state at {address:#x} covers the X280 IPI word")
     return rows
 
 
-def lim_bases(lim_base, h=None):
+def lim_bases(lim_base, abi_headers=None):
     """The X280 local-memory addresses the kernels are given or derive from the
     runtime's base: the base, every KMD_LIM_* offset from it, the ack stride."""
-    h = h or abi.headers()
-    bases = {"lim_base": lim_base, "KM_ACK_STRIDE": h["KM_ACK_STRIDE"]}
-    for name, offset in h.constants.items():
+    abi_headers = abi_headers or abi.headers()
+    bases = {"lim_base": lim_base, "KM_ACK_STRIDE": abi_headers["KM_ACK_STRIDE"]}
+    for name, offset in abi_headers.constants.items():
         if name.startswith("KMD_LIM_"):
             bases[name] = lim_base + offset
     return bases
@@ -266,9 +266,9 @@ def lim_bases(lim_base, h=None):
 def check_bases(bases):
     """Rejects bases that are not multiples of NOC_ALIGN: the runtime's small writes
     go slot to slot and rely on them."""
-    bad = {k: v for k, v in bases.items() if v % NOC_ALIGN}
+    bad = {name: address for name, address in bases.items() if address % NOC_ALIGN}
     if bad:
-        named = ", ".join(f"{k} {v:#x}" for k, v in bad.items())
+        named = ", ".join(f"{name} {address:#x}" for name, address in bad.items())
         raise StartError(f"not a multiple of {NOC_ALIGN} bytes: {named}")
 
 
@@ -285,18 +285,20 @@ def read_tensors(device, module, tensors, first=0, pages=None):
     and tensor, no wait for idle cores."""
     banks = module.dram_banks(device)
     spans, layout = [], []
-    for t in tensors:
-        if not t.in_dram:
+    for tensor in tensors:
+        if not tensor.in_dram:
             raise ValueError("only interleaved DRAM tensors are read by banks")
-        page, aligned = t.page_bytes, t.aligned_page_bytes
-        at, count = dram.page_range(first, pages, t.pages)
-        mine = dram.bank_spans(t.address, aligned, count, banks, at)
+        page, aligned = tensor.page_bytes, tensor.aligned_page_bytes
+        start_page, count = dram.page_range(first, pages, tensor.pages)
+        mine = dram.bank_spans(tensor.address, aligned, count, banks, start_page)
         layout.append((len(spans), len(mine), page, aligned, count))
         spans += mine
     chunks = module.read_dram(device, spans)
     return [
-        dram.pages_in_order(chunks[at : at + n], page, aligned, pages, banks)
-        for at, n, page, aligned, pages in layout
+        dram.pages_in_order(
+            chunks[first_span : first_span + span_count], page, aligned, pages, banks
+        )
+        for first_span, span_count, page, aligned, pages in layout
     ]
 
 
@@ -332,7 +334,7 @@ class Session:
         self._own_device = device is None
         self.pll_mhz = pll_mhz
         self.tree = tree
-        self.log = log or (lambda msg: None)
+        self.log = log or (lambda message: None)
         self.grid_timeout = grid_timeout
         self.kernel_bytes = kernel_bytes  # None: the runtime's default buffer
         self._worker_l1 = worker_l1_size(kernel_bytes)
@@ -348,7 +350,7 @@ class Session:
             self.open()
         return self
 
-    def __exit__(self, kind, error, tb):
+    def __exit__(self, kind, error, traceback):
         try:
             if self.run is not None and not self.run.stopped:
                 if kind is None:
@@ -439,14 +441,16 @@ class Session:
         ("row": a page a row; "tile": 32 x 32 tiles); in DRAM, or (`shard_grid`
         (x, y)) one row in each core's L1. Written before the grid starts."""
         self._module = self._module or native.load_module(self.tree)
-        return kmt.from_array(
+        return tensor_module.from_array(
             self._module, self.device, data, dtype, layout, shard_grid
         )
 
     def empty(self, shape, dtype, layout="row", shard_grid=None):
         """A tensor as tensor() makes it, not written."""
         self._module = self._module or native.load_module(self.tree)
-        return kmt.empty(self._module, self.device, shape, dtype, layout, shard_grid)
+        return tensor_module.empty(
+            self._module, self.device, shape, dtype, layout, shard_grid
+        )
 
     def launch(self):
         """An empty native Launch on the open device, for a host-side runner that
@@ -465,8 +469,8 @@ class Session:
         """The grid's NoC coordinates by core (a layout.Nocs), from the open device:
         for program arguments that name other cores, before load()."""
         self._module = self._module or native.load_module(self.tree)
-        gx, gy, table, noc0 = self._module.core_nocs(self.device)
-        return layout.nocs((gx, gy), table, noc0)
+        grid_x, grid_y, table, noc0 = self._module.core_nocs(self.device)
+        return layout.nocs((grid_x, grid_y), table, noc0)
 
     def read(self, *tensors, first=0, pages=None):
         """The raw pages of interleaved DRAM tensors ([pages, page_bytes] uint8 each),
@@ -492,10 +496,14 @@ class Session:
     def read_bf16(self, *tensors):
         """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
         out = []
-        for t, pages in zip(tensors, self.read(*tensors)):
-            if t.layout != "tile" or t.dtype != "bfloat16" or len(t.shape) != 2:
+        for tensor, pages in zip(tensors, self.read(*tensors)):
+            if (
+                tensor.layout != "tile"
+                or tensor.dtype != "bfloat16"
+                or len(tensor.shape) != 2
+            ):
                 raise ValueError("read_bf16 takes bfloat16 tile tensors of rank 2")
-            rows, cols = t.shape
+            rows, cols = tensor.shape
             out.append(dram.untilize_bf16(pages, rows, cols))
         return out
 
@@ -533,7 +541,7 @@ class Session:
             raise RuntimeError("a run is loaded: stop it first")
         if thread not in ("card", "host"):
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
-        works = [program.threads[c] for c in sorted(program.threads)]
+        works = [program.threads[cluster] for cluster in sorted(program.threads)]
         program.check_threads()
         if program.x280_ports is not None and (not works or thread != "card"):
             raise ValueError(
@@ -551,7 +559,7 @@ class Session:
         module = self._module = native.load_module(self.tree)
         on_card = bool(works) and thread == "card"
         images = (
-            {t.cluster: native.thread_image(t, self.tree) for t in works}
+            {work.cluster: native.thread_image(work, self.tree) for work in works}
             if on_card
             else {}
         )
@@ -571,9 +579,11 @@ class Session:
         try:
             if not dispatch.idle:
                 raise StartError("X280 cluster 0 is not idle: no image can start")
-            state_t = _state_area(self)
-            rings = {t.cluster: _work_ring(dispatch, t) for t in works if on_card}
-            ends = {c: end for c, (_, end) in rings.items()}
+            state_tensor = _state_area(self)
+            rings = {
+                work.cluster: _work_ring(dispatch, work) for work in works if on_card
+            }
+            ends = {cluster: end for cluster, (_, end) in rings.items()}
             tag = dispatch.prepare(
                 depth,
                 host_depth,
@@ -581,8 +591,8 @@ class Session:
                 start,
                 deadline,
                 kernel_idle,
-                state_t.address,
-                **kt.kernel_work_args(ends),
+                state_tensor.address,
+                **thread_module.kernel_work_args(ends),
                 messages_handler=(
                     program.messages.handler if program.messages is not None else 0
                 ),
@@ -590,17 +600,19 @@ class Session:
             check_bases(lim_bases(dispatch.lim_base))
             plan, port_lines = _port_lines(program, dispatch, rings)
             backend = _Backend(self, dispatch, mhz, trace)
-            backend.state_t = state_t  # kept while the kernel may use it
+            backend.state_tensor = state_tensor  # kept while the kernel may use it
             descriptor = backend.describe(
                 program, sources, tag, depth, wait, idle, trace, port_lines
             )
-            t0 = time.perf_counter()
+            started = time.perf_counter()
             try:
                 elves, *build = descriptor.build()
             except Exception as err:
                 raise ProgramError(f"{program.name}: build failed: {err}") from err
             program.sizes = kernel_sizes(build)
-            text = ", ".join(f"{k} {v}" for k, v in program.sizes.text.items())
+            text = ", ".join(
+                f"{name} {size}" for name, size in program.sizes.text.items()
+            )
             self.log(
                 f"kernel buffer: {program.sizes.total} of {program.sizes.limit} B "
                 f"(text: {text})"
@@ -615,7 +627,7 @@ class Session:
                     native.cache_directory() / "insn-check",
                 )
                 self.log(
-                    f"kernels built and checked ({time.perf_counter() - t0:.2f} s)"
+                    f"kernels built and checked ({time.perf_counter() - started:.2f} s)"
                 )
             self.log("launch")
             # From here the grid may run: an interrupt is delivered when the launch
@@ -647,30 +659,34 @@ class Session:
             run._fail_start(state)
         self.log("ready")
         if works:
-            shared = {n: _host_array(v) for n, v in program.shared.items()}
+            shared = {
+                name: _host_array(value) for name, value in program.shared.items()
+            }
             peers = _peers(self, dispatch, images) if on_card else {}
             try:
                 for work in works:
-                    c = work.cluster
+                    cluster = work.cluster
                     view = regions[work.bank].view(work)
-                    t = kt.ThreadRun(
-                        work, dispatch, view, images.get(c), on_card, view.base,
+                    thread_run = thread_module.ThreadRun(
+                        work, dispatch, view, images.get(cluster), on_card, view.base,
                         view.check, run, shared,
                     )  # fmt: skip
-                    t.ring = rings[c][0] if on_card else None
-                    t.peers = peers.get(c)
+                    thread_run.ring = rings[cluster][0] if on_card else None
+                    thread_run.peers = peers.get(cluster)
                     if plan is not None:
-                        t.ports = kt.Ports(
+                        thread_run.ports = thread_module.Ports(
                             backend.control_addr,
                             len(port_lines.cores),
                             port_lines.cores,
                             plan,
                             program.x280_ports["noc"],
                         )
-                        t.write_ports()
-                    run.threads[c] = t
-                for t in run.threads.values():  # every ports area is written first
-                    t.start()
+                        thread_run.write_ports()
+                    run.threads[cluster] = thread_run
+                for (
+                    thread_run
+                ) in run.threads.values():  # every ports area is written first
+                    thread_run.start()
             except BaseException:
                 run.abort()
                 raise
@@ -683,15 +699,15 @@ class Session:
 def _peers(session, dispatch, images):
     """{cluster: komorebi.thread.Peers} for the threads on the card: each with the
     clusters running its image, their tiles and their banks' DRAM tiles."""
-    out, nonce = {}, kt.new_check_value() & 0xFFFFFFFF
-    for c, group in kt.peer_groups(images).items():
+    out, nonce = {}, thread_module.new_check_value() & 0xFFFFFFFF
+    for cluster, group in thread_module.peer_groups(images).items():
         tiles, banks = {}, {}
-        for g in group:
-            info = dispatch.work_info(g)
-            tiles[g] = info["virtual_x"] | info["virtual_y"] << 16
-            x, y = session.device.dram_core(kt.BANK_OF_CLUSTER[g])
-            banks[g] = int(x) | int(y) << 16
-        out[c] = kt.Peers(nonce, min(group), tiles, banks)
+        for peer in group:
+            info = dispatch.work_info(peer)
+            tiles[peer] = info["virtual_x"] | info["virtual_y"] << 16
+            x, y = session.device.dram_core(thread_module.BANK_OF_CLUSTER[peer])
+            banks[peer] = int(x) | int(y) << 16
+        out[cluster] = thread_module.Peers(nonce, min(group), tiles, banks)
     return out
 
 
@@ -708,13 +724,18 @@ def _port_lines(program, dispatch, rings):
     if program.x280_ports is None:
         return None, None
     cores = dispatch.grid_x * dispatch.grid_y
-    plan = kt.port_plan(program.x280_ports["serve"], cores, set(rings))
+    plan = thread_module.port_plan(program.x280_ports["serve"], cores, set(rings))
     lines = {}
-    for core, (c, _) in plan.items():
-        info = dispatch.work_info(c)
+    for core, (cluster, _) in plan.items():
+        info = dispatch.work_info(cluster)
         tile = info["virtual_x"] | info["virtual_y"] << 16
-        lines[core] = (tile, kt.port_box(info["lim_base"], rings[c][0], core))
-    return plan, _PortLines([int(t) for t in dispatch.core_table()[:cores]], lines)
+        lines[core] = (
+            tile,
+            thread_module.port_box(info["lim_base"], rings[cluster][0], core),
+        )
+    return plan, _PortLines(
+        [int(core_tile) for core_tile in dispatch.core_table()[:cores]], lines
+    )
 
 
 def _region_bytes(value):
@@ -730,21 +751,23 @@ def _region_initial(value):
 
 def _host_array(value):
     """A shared region for the host fallbacks: uint32 words of its initial bytes."""
-    n = _region_bytes(value)
-    data = np.zeros(-(-n // 4) * 4, dtype=np.uint8)
+    size = _region_bytes(value)
+    data = np.zeros(-(-size // 4) * 4, dtype=np.uint8)
     initial = _region_initial(value)
     if initial is not None:
-        data[:n] = initial
+        data[:size] = initial
     return data.view(np.uint32)
 
 
 def _bank_regions(session, program, works):
     """{bank: _Regions} for the threads' own regions and the shared ones."""
     out = {}
-    for bank in sorted({t.bank for t in works}):
-        mine = [t for t in works if t.bank == bank]
-        names = {n for t in mine for n in t.shared}
-        shared = {n: v for n, v in program.shared.items() if n in names}
+    for bank in sorted({work.bank for work in works}):
+        mine = [work for work in works if work.bank == bank]
+        names = {name for work in mine for name in work.shared}
+        shared = {
+            name: value for name, value in program.shared.items() if name in names
+        }
         out[bank] = _Regions(session, bank, mine, shared)
     return out
 
@@ -752,7 +775,7 @@ def _bank_regions(session, program, works):
 def _work_ring(dispatch, work):
     """The thread's ring (RingPlacement) and the kernel's end of it (tile, area)."""
     info = dispatch.work_info(work.cluster)
-    return kt.work_ring(
+    return thread_module.work_ring(
         dispatch.lim_base,
         (dispatch.l2_x, dispatch.l2_y),
         info["lim_base"],
@@ -763,7 +786,7 @@ def _work_ring(dispatch, work):
 
 def _pages(data, pages):
     """`data` (uint8) zero-padded to `pages` region pages, as [pages, words] uint32."""
-    out = np.zeros(pages * kt.PAGE, dtype=np.uint8)
+    out = np.zeros(pages * thread_module.PAGE, dtype=np.uint8)
     out[: data.size] = data
     return out.view(np.uint32).reshape(pages, -1)
 
@@ -776,32 +799,40 @@ class _Regions:
 
     def __init__(self, session, bank, threads, shared):
         self.session = session
-        self.check = kt.new_check_value()
+        self.check = thread_module.new_check_value()
         self.bank = bank
         entries = [
-            ((t.cluster, n), t.region_bytes(n), t.initial(n))
-            for t in threads
-            for n in t.regions
+            ((thread.cluster, name), thread.region_bytes(name), thread.initial(name))
+            for thread in threads
+            for name in thread.regions
         ]
         entries += [
-            (("shared", n), _region_bytes(v), _region_initial(v))
-            for n, v in shared.items()
+            (("shared", name), _region_bytes(value), _region_initial(value))
+            for name, value in shared.items()
         ]
         self.placed, pages = {}, 1
-        for key, n, _ in entries:
-            self.placed[key] = kt.Placement(key[1], pages, -(-n // kt.PAGE), n)
+        for key, size, _ in entries:
+            self.placed[key] = thread_module.Placement(
+                key[1], pages, -(-size // thread_module.PAGE), size
+            )
             pages += self.placed[key].pages
         self.readable = False  # set by the run once the grid has stopped
-        rows = np.zeros((DRAM_BANKS * pages, kt.PAGE // 4), dtype=np.uint32)
+        rows = np.zeros((DRAM_BANKS * pages, thread_module.PAGE // 4), dtype=np.uint32)
         mine = rows[self.bank :: DRAM_BANKS]
         mine[0, :2] = [self.check & abi.M32, self.check >> 32]
         for key, _, data in entries:
-            p = self.placed[key]
+            placement = self.placed[key]
             if data is not None:
-                mine[p.page : p.page + p.pages] = _pages(data, p.pages)
+                mine[placement.page : placement.page + placement.pages] = _pages(
+                    data, placement.pages
+                )
         self.tensor = _words(session, rows)
         self.base = self.tensor.address
-        if self.base <= kt.IPI_ACK_DDR < self.base + pages * kt.PAGE:
+        if (
+            self.base
+            <= thread_module.IPI_ACK_DDR
+            < self.base + pages * thread_module.PAGE
+        ):
             raise StartError(
                 f"the thread's regions at {self.base:#x} cover the IPI word"
             )
@@ -812,23 +843,38 @@ class _Regions:
 
     def address(self, key):
         """(bank, bank address) of a region, for Tensix kernels."""
-        return self.bank, self.base + self.placed[key].page * kt.PAGE
+        return self.bank, self.base + self.placed[key].page * thread_module.PAGE
 
     def read(self, key):
         """The region's bytes, as uint8."""
         if not self.readable:
             raise RuntimeError("regions are read after run.stop()")
-        p, s = self.placed[key], self.session
-        name = p.name
-        per = p.pages if p.pages * kt.PAGE <= REGION_WHOLE else REGION_CHUNK // kt.PAGE
-        spans = dram.bank_chunks(self.base, kt.PAGE, self.bank, p.page, p.pages, per)
-        out = np.empty(p.pages * kt.PAGE, np.uint8)
-        for at, span in zip(range(0, out.size, per * kt.PAGE), spans):
-            (chunk,) = s._module.read_dram(s.device, [span])
-            out[at : at + span[2]] = np.asarray(chunk, np.uint8)
+        placement, session = self.placed[key], self.session
+        name = placement.name
+        chunk_pages = (
+            placement.pages
+            if placement.pages * thread_module.PAGE <= REGION_WHOLE
+            else REGION_CHUNK // thread_module.PAGE
+        )
+        spans = dram.bank_chunks(
+            self.base,
+            thread_module.PAGE,
+            self.bank,
+            placement.page,
+            placement.pages,
+            chunk_pages,
+        )
+        out = np.empty(placement.pages * thread_module.PAGE, np.uint8)
+        for offset, span in zip(
+            range(0, out.size, chunk_pages * thread_module.PAGE), spans
+        ):
+            (chunk,) = session._module.read_dram(session.device, [span])
+            out[offset : offset + span[2]] = np.asarray(chunk, np.uint8)
             if len(spans) > 1:
-                s.log(f"region {name}: {at + span[2]} of {out.size} bytes read")
-        return out[: p.bytes].copy()
+                session.log(
+                    f"region {name}: {offset + span[2]} of {out.size} bytes read"
+                )
+        return out[: placement.bytes].copy()
 
 
 class _ThreadRegions:
@@ -837,8 +883,8 @@ class _ThreadRegions:
 
     def __init__(self, regions, thread):
         self.all = regions
-        self.keys = {n: (thread.cluster, n) for n in thread.regions}
-        self.keys |= {n: ("shared", n) for n in thread.shared}
+        self.keys = {name: (thread.cluster, name) for name in thread.regions}
+        self.keys |= {name: ("shared", name) for name in thread.shared}
         self.bank, self.base, self.check = regions.bank, regions.base, regions.check
 
     @property
@@ -851,7 +897,8 @@ class _ThreadRegions:
 
     def table(self):
         return [
-            (self.address(n)[1], self.all.placed[k].bytes) for n, k in self.keys.items()
+            (self.address(name)[1], self.all.placed[key].bytes)
+            for name, key in self.keys.items()
         ]
 
     def address(self, name):
@@ -876,8 +923,8 @@ class _Backend:
         self.control = None
         self.control_addr = 0
         self.control_offset = 0
-        self.trace_t = None
-        self.state_t = None
+        self.trace_tensor = None
+        self.state_tensor = None
         self.read = False
         self.close_failed = (
             ""  # the runtime's error message when an abort did not restore
@@ -888,8 +935,8 @@ class _Backend:
         """Zeroed control blocks, one shard per core, padded so that the block can
         start on a 64-byte line: the same L1 address on every core. `port_lines`: the
         KM_X280_TO line of each served core, written once the address is known."""
-        h = abi.headers()
-        words = (h["KM_CONTROL_BYTES"] + CONTROL_ALIGN) // 4
+        abi_headers = abi.headers()
+        words = (abi_headers["KM_CONTROL_BYTES"] + CONTROL_ALIGN) // 4
         self.control = _words(self.session, np.zeros((cores, words)), grid)
         base = self.control.address
         self.control_addr = (base + CONTROL_ALIGN - 1) // CONTROL_ALIGN * CONTROL_ALIGN
@@ -897,10 +944,13 @@ class _Backend:
         check_bases({"control block": self.control_addr})
         if port_lines is not None:
             rows = np.zeros((cores, words), dtype=np.uint32)
-            to = self.control_offset + (h["KM_CONTROL_X280"] + h["KM_X280_TO"]) // 4
+            to_offset = (
+                self.control_offset
+                + (abi_headers["KM_CONTROL_X280"] + abi_headers["KM_X280_TO"]) // 4
+            )
             for core, (tile, box) in port_lines.lines.items():
-                rows[core, to + h["KM_X280_TO_TILE"]] = tile
-                rows[core, to + h["KM_X280_TO_BOX"]] = box
+                rows[core, to_offset + abi_headers["KM_X280_TO_TILE"]] = tile
+                rows[core, to_offset + abi_headers["KM_X280_TO_BOX"]] = box
             self.control.write(rows)
         return self.control_addr
 
@@ -910,52 +960,55 @@ class _Backend:
         messages = program.messages
         if messages is None:
             return [], []
-        h = abi.headers()
+        abi_headers = abi.headers()
         messages.check(cores, MESSAGES_DRAM_BYTES, depth)
         page = 32 * messages.message_bytes  # kMessagesPageMessages messages a page
         queue = self.session.empty(
             (cores * messages.queue_messages // 32, page // 4), "int32"
         )
         self.io.append(queue)
-        lines = base + h["KMD_LIM_MESSAGES"]
+        lines = base + abi_headers["KMD_LIM_MESSAGES"]
         return messages.args(queue.address, lines), messages.compute_args(cores)
 
     def describe(
         self, program, sources, tag, depth, wait, idle, trace, port_lines=None
     ):
         """The program descriptor for every core, with the start-up arguments."""
-        h = abi.headers()
-        d = self.port
-        grid = (d.grid_x, d.grid_y)
+        abi_headers = abi.headers()
+        port = self.port
+        grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
         control = self._control_blocks(cores, grid, port_lines)
-        table = np.zeros((1, h["KM_CORES_MAX"]), dtype=np.uint64)
-        table[0] = d.core_table()
-        cores_t = _words(self.session, table)
-        self.io = [self.control, cores_t]
+        table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
+        table[0] = port.core_table()
+        cores_tensor = _words(self.session, table)
+        self.io = [self.control, cores_tensor]
         if self.trace_cap:
-            self.trace_t = _words(
-                self.session, np.zeros((cores, self.trace_cap * h["kTraceWords"]))
+            self.trace_tensor = _words(
+                self.session,
+                np.zeros((cores, self.trace_cap * abi_headers["kTraceWords"])),
             )
-            self.io.append(self.trace_t)
-        base = d.lim_base
+            self.io.append(self.trace_tensor)
+        base = port.lim_base
         groups = abi.column_groups(grid, cores)
         common = {
             "control": control,
-            "cores": cores_t.address,
-            "dispatcher_coordinates": d.l2_x | d.l2_y << 16,
-            "ack_base": base + h["KMD_LIM_ACKS"],
-            "ready_base": base + h["KMD_LIM_READY"],
+            "cores": cores_tensor.address,
+            "dispatcher_coordinates": port.l2_x | port.l2_y << 16,
+            "ack_base": base + abi_headers["KMD_LIM_ACKS"],
+            "ready_base": base + abi_headers["KMD_LIM_READY"],
             "tag": tag,
             "depth": depth,
             "workers": cores,
             "row": grid[0],
             "wait_limit": abi.limit_units(wait, self.mhz),
             "idle_limit": abi.limit_units(idle, self.mhz) if idle else 0,  # 0: none
-            "trace": self.trace_t.address if self.trace_t else 0,
+            "trace": self.trace_tensor.address if self.trace_tensor else 0,
             "trace_cap": self.trace_cap,
         }
-        messages_rw, messages_c = self._dynamic(program, cores, depth, base)
+        messages_reader_writer_args, messages_compute_args = self._dynamic(
+            program, cores, depth, base
+        )
         reader_args, writer_args, compute_args = [], [], []
         for core in range(cores):
             x, y = core % grid[0], core // grid[0]
@@ -964,7 +1017,9 @@ class _Backend:
                 common
                 | {
                     "me": core,
-                    "mailbox": base + h["KMD_LIM_MAILBOX"] if core == 0 else 0,
+                    "mailbox": (
+                        base + abi_headers["KMD_LIM_MAILBOX"] if core == 0 else 0
+                    ),
                     "leader": leader,
                     "rank": rank,
                     "peers": peers,
@@ -972,22 +1027,31 @@ class _Backend:
                 }
             )
             reader, writer, compute = program.core_args(core)
-            reader_args.append((x, y, start + messages_rw + list(reader)))
-            writer_args.append((x, y, start + messages_rw + list(writer)))
+            reader_args.append(
+                (x, y, start + messages_reader_writer_args + list(reader))
+            )
+            writer_args.append(
+                (x, y, start + messages_reader_writer_args + list(writer))
+            )
             limits = [common["wait_limit"], common["idle_limit"]]
-            compute_args.append((x, y, [control, core, *limits, *messages_c, *compute]))
+            compute_args.append(
+                (x, y, [control, core, *limits, *messages_compute_args, *compute])
+            )
         all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
         include = [str(abi.headers().abi.parents[2])]
-        defines = [(k, str(v)) for k, v in program.defines.items()]
+        defines = [(name, str(value)) for name, value in program.defines.items()]
         launch = self.session._module.Launch(self.device)
-        tok = h["kTokenBytes"]
-        cbs = [(b.index, b.format, b.page_bytes, b.pages) for b in program.buffers]
+        token_bytes = abi_headers["kTokenBytes"]
+        cbs = [
+            (buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
+            for buffer in program.buffers
+        ]
         cbs += [
-            (h["kCbTokenCompute"], "uint32", tok, 1),
-            (h["kCbTokenWriter"], "uint32", tok, 1),
+            (abi_headers["kCbTokenCompute"], "uint32", token_bytes, 1),
+            (abi_headers["kCbTokenWriter"], "uint32", token_bytes, 1),
         ]
         if self.trace_cap:
-            cbs.append((h["kCbTrace"], "uint32", self.trace_cap * 16, 1))
+            cbs.append((abi_headers["kCbTrace"], "uint32", self.trace_cap * 16, 1))
         for index, fmt, page, pages in cbs:
             launch.cb(all_cores, index, fmt, page, page * pages)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
@@ -1017,10 +1081,12 @@ class _Backend:
         """The failure path: the stop flag to every core, a timed wait for the grid,
         then the runtime's close, so core 0 is not held behind a grid that runs on.
         Returns whether cluster 0 was restored; `aborted` holds what the kernel left."""
-        gx, gy = self.port.grid_x, self.port.grid_y
+        grid_x, grid_y = self.port.grid_x, self.port.grid_y
         try:
             self.stop_grid()
-            back = self.session._module.wait_grid(self.device, gx, gy, ABORT_GRID_S)
+            back = self.session._module.wait_grid(
+                self.device, grid_x, grid_y, ABORT_GRID_S
+            )
             self.session.log("grid returned" if back else "grid still running")
         except Exception as err:  # noqa: BLE001 (the close below runs whatever happens)
             self.session.log(f"stopping the grid raised {type(err).__name__}: {err}")
@@ -1029,8 +1095,8 @@ class _Backend:
         self.aborted = self.port.aborted()
         why = f": {self.close_failed}" if self.close_failed else ""
         if self.aborted is not None:
-            n = self.aborted["x280_cores"][abi.headers()["KMD_H_ABANDONED"]]
-            why += f"; {n} commands abandoned"
+            abandoned = self.aborted["x280_cores"][abi.headers()["KMD_H_ABANDONED"]]
+            why += f"; {abandoned} commands abandoned"
         self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned}){why}")
         self.log_state()
         return cleaned
@@ -1043,9 +1109,9 @@ class _Backend:
             if words is None:
                 self.session.log("kernel state not found in DRAM (lines not flushed)")
                 return
-            for at, line in enumerate(words.reshape(-1, 8)):
-                text = " ".join(f"{int(w):#x}" for w in line)
-                self.session.log(f"kernel state +{64 * at:#05x}: {text}")
+            for line_index, line in enumerate(words.reshape(-1, 8)):
+                text = " ".join(f"{int(word):#x}" for word in line)
+                self.session.log(f"kernel state +{64 * line_index:#05x}: {text}")
         except Exception as err:  # noqa: BLE001 (a failure path: reported, not raised)
             self.session.log(f"kernel state not read ({type(err).__name__}: {err})")
 
@@ -1054,39 +1120,48 @@ class _Backend:
         the first page of each bank: the one whose args and lim words name the LIM
         base is the bank the cluster's Memory Port reaches. None if no page does."""
         banks = self.session._module.dram_banks(self.device)
-        (pages,) = self.session.read(self.state_t, first=0, pages=banks)
+        (pages,) = self.session.read(self.state_tensor, first=0, pages=banks)
         words = np.asarray(pages, np.uint8)[:, : 64 * STATE_DUMP_LINES]
         words = np.ascontiguousarray(words).view("<u8")
         base = self.port.lim_base
-        found = [w for w in words if w[2] == base and w[3] == base]  # args, lim
+        found = [
+            line for line in words if line[2] == base and line[3] == base
+        ]  # args, lim
         return found[0] if len(found) == 1 else None
 
     def kernel_report(self):
         """While the kernel runs: whether core 0 still runs its loop (its pass marker
         over PROBE_GAP_S), its state and where, and the runtime's view of each core."""
-        p = self.port.probe(PROBE_GAP_S)
-        if not p["running"]:
+        probe = self.port.probe(PROBE_GAP_S)
+        if not probe["running"]:
             return "no dispatcher is running"
-        if p["failed"]:
-            return f"the dispatcher's {p['failed']}; X280 cores: {p['x280_cores']}"
-        r = st.result_block(p["words"])
-        before, after = p["marker_before"], p["marker_after"]
+        if probe["failed"]:
+            return (
+                f"the dispatcher's {probe['failed']}; X280 cores: {probe['x280_cores']}"
+            )
+        result = device_state.result_block(probe["words"])
+        before, after = probe["marker_before"], probe["marker_after"]
         doing = "is running its loop" if after != before else "is not running its loop"
         report = (
             f"the dispatcher's core 0 {doing} (pass marker {before} -> {after} "
-            f"in {PROBE_GAP_S} s; state {r['state_name']}, in {r['where_name']}); "
-            f"X280 cores: {p['x280_cores']}"
+            f"in {PROBE_GAP_S} s; state {result['state_name']}, "
+            f"in {result['where_name']}); "
+            f"X280 cores: {probe['x280_cores']}"
         )
         self.session.log(report)
         return report
 
     def stop_grid(self):
         """Writes the stop flag into every core through the device API."""
-        h = abi.headers()
-        module, gx, gy = self.session._module, self.port.grid_x, self.port.grid_y
-        for core in range(gx * gy):
-            at = self.control_addr + h["KM_CONTROL_STOP"]
-            module.write_l1(self.device, core % gx, core // gx, at, [1])
+        abi_headers = abi.headers()
+        module, grid_x, grid_y = (
+            self.session._module,
+            self.port.grid_x,
+            self.port.grid_y,
+        )
+        for core in range(grid_x * grid_y):
+            address = self.control_addr + abi_headers["KM_CONTROL_STOP"]
+            module.write_l1(self.device, core % grid_x, core // grid_x, address, [1])
         self.session.log("stop flag written by the host")
 
     def read_back(self, stop_grid=False):
@@ -1096,13 +1171,17 @@ class _Backend:
         the host first writes the stop flag into every core through the device API."""
         if self.port.is_open:
             raise RuntimeError("close the X280 runtime before reading back")
-        h = abi.headers()
-        module, gx, gy = self.session._module, self.port.grid_x, self.port.grid_y
+        abi_headers = abi.headers()
+        module, grid_x, grid_y = (
+            self.session._module,
+            self.port.grid_x,
+            self.port.grid_y,
+        )
         if stop_grid:
             self.stop_grid()
-        t0 = time.monotonic()
+        started = time.monotonic()
         timeout = self.session.grid_timeout
-        if not module.wait_grid(self.device, gx, gy, timeout):
+        if not module.wait_grid(self.device, grid_x, grid_y, timeout):
             self.session.stuck = True
             raise GridTimeout(
                 f"the grid's kernels did not return within {timeout} s after the stop. "
@@ -1113,13 +1192,19 @@ class _Backend:
                 "the card needs a reset"
             )
         self.device.finish()  # returns at once: every core is done
-        self.session.log(f"grid returned ({time.monotonic() - t0:.1f} s)")
+        self.session.log(f"grid returned ({time.monotonic() - started:.1f} s)")
         rows = _read_uint32(self.control)
         start = self.control_offset
-        blocks = rows[:, start : start + h["KM_CONTROL_BYTES"] // 4].astype(np.uint32)
+        blocks = rows[:, start : start + abi_headers["KM_CONTROL_BYTES"] // 4].astype(
+            np.uint32
+        )
         trace = None
-        if self.trace_t is not None:
-            words = _read_uint32(self.trace_t, self.device, module).astype(np.uint32)
-            trace = words.reshape(words.shape[0], self.trace_cap, h["kTraceWords"])
+        if self.trace_tensor is not None:
+            words = _read_uint32(self.trace_tensor, self.device, module).astype(
+                np.uint32
+            )
+            trace = words.reshape(
+                words.shape[0], self.trace_cap, abi_headers["kTraceWords"]
+            )
         self.session.log("state and trace read back")
         return blocks, trace
