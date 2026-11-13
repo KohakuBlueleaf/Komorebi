@@ -148,6 +148,7 @@ static void sum_part(int hart, void* arg) {
 /* (c) prefix, pass 1: each chunk's sum. */
 static void chunk_sums(int hart, void* arg) {
     const job_t* j = (const job_t*)arg;
+    /* my chunks of CHUNK words: hart, hart + parts, ... (parts: the harts in use) */
     for (uint64_t c = first(j, hart); c < chunks(j); c += j->parts) {
         uint32_t s = 0;
         for (uint64_t i = c * CHUNK; i < end(j, c); i++) {

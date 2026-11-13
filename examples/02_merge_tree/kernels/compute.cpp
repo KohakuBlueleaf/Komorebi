@@ -23,43 +23,58 @@ namespace {
         add_binary_tile(d, kPartMax, d);
     }
 
+    // DST 0 to n - 1 = 0: the part's sums.
+    void clear_sums(uint32_t n) {
+        fill_tile_init();
+        for (uint32_t d = 0; d < n; d++) {
+            fill_tile(d, 0.0f);
+        }
+    }
+
 }  // namespace
 
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbIn, kCbOut);
+    // The runtime's loop: the body runs once per record whose team holds this core.
     cp.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegMerge) {
+        if (km::seg(r) != kSegMerge) {  // this program answers MERGE records only
             return;
         }
+        const uint32_t tiles = r.a1;  // input tiles T of the job
+        const uint32_t form = r.a4;   // 0: merge at one owner, 1: along a tree
+        const uint32_t part = r.a7;   // tiles per part P (1 to 3), one sum each in DST
+        // The team is the record's range of cores; my rank in it gives my share of T.
         const km::Group g = km::team_group(r, cp.me());
-        const km::Share s = km::share(r.a1, g.rank, g.size);
-        const km::Arrival arrival = {kCbArrive, kArrivePages, r.a7};
-        tile_regs_acquire();
-        fill_tile_init();
-        for (uint32_t d = 0; d < r.a7; d++) {
-            fill_tile(d, 0.0f);
-        }
+        const km::Share s = km::share(tiles, g.rank, g.size);
+        const km::Arrival arrival = {kCbArrive, kArrivePages, part};
+        tile_regs_acquire();  // DST, the vector unit's registers, until the release
+        clear_sums(part);     // the P sums start at zero
+        // My own tiles, as the reader brings them from DRAM: tile t into sum t mod P.
         bool ok = true;  // the same on all three threads (wait_front tells them)
         for (uint32_t i = 0; ok && i < s.len; i++) {
             ok = cp.wait_front(kCbIn, 1);
             if (ok) {
-                add_page(kCbIn, 0, (s.start + i) % r.a7);
+                add_page(kCbIn, 0, (s.start + i) % part);
                 cb_pop_front(kCbIn, 1);
             }
         }
-        ok = ok && km::reduce(cp, arrival, g, r.a4, [&](uint32_t k) {
-                 for (uint32_t d = 0; d < r.a7; d++) {
+        // The crossing: wait for the parts other members send me, add them in rank
+        // order (by owner: member 0 takes all; by tree: one partner a round).
+        ok = ok && km::reduce(cp, arrival, g, form, [&](uint32_t k) {
+                 for (uint32_t d = 0; d < part; d++) {
                      add_page(kCbArrive, km::slot_page(arrival, k) + d, d);
                  }
              });
         tile_regs_commit();
         tile_regs_wait();
-        if (ok && cp.reserve_back(kCbOut, r.a7)) {  // a give-up: no output tiles
-            for (uint32_t d = 0; d < r.a7; d++) {
+        // The P sums to the writer, which sends them on or (member 0) writes the total.
+        // After a give-up (a wait ran out, or the run was stopped) nothing is packed.
+        if (ok && cp.reserve_back(kCbOut, part)) {
+            for (uint32_t d = 0; d < part; d++) {
                 pack_tile(d, kCbOut);
             }
-            cb_push_back(kCbOut, r.a7);
+            cb_push_back(kCbOut, part);
         }
         tile_regs_release();
     });
