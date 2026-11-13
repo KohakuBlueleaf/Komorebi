@@ -4,9 +4,11 @@ A `Run` keeps one `Engines` once an engine call is made (docs/reference/host.md)
 """
 
 import bisect
+import re
 import struct
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
@@ -23,7 +25,6 @@ from komorebi.errors import (
 
 LINE = 64
 READY_WAIT_S = 1.0  # the ready block follows the READY state word closely
-REQ_AT, FLAGS_AT = 24, 44  # byte offsets of the header's req and a graph's flags
 
 
 def codes(h=None):
@@ -31,6 +32,38 @@ def codes(h=None):
     h = h or abi.headers()
     d = h.abi.parent
     return {**h.constants, **abi.constants(h.abi, d / "km_stream.h", d / "km_graph.h")}
+
+
+def word_offset(path, name, member):
+    """Byte offset of `member` among the leading uint32_t members of struct `name`
+    (the members after the first other one are not read)."""
+    text, _ = abi._clean(Path(path).read_text(), path)
+    body = re.search(rf"typedef\s+struct\s*\{{([^{{}}]*)\}}\s*{name}\s*;", text)
+    if body is None:
+        raise abi.HeaderError(f"no struct {name} in {path}")
+    names = []
+    for decl in body[1].split(";"):
+        words = abi.FIELD.match(" ".join(decl.split()))
+        if words is None:
+            break
+        names += [w.strip() for w in words[1].split(",")]
+    if member not in names:
+        raise abi.HeaderError(f"{path}: struct {name}: no uint32_t {member} up front")
+    return 4 * names.index(member)
+
+
+def offsets(h=None):
+    """Where the host reads the headers' words: the ready block's region size (a host
+    buffer word) and the byte offsets of each kind's req and of a graph's flags."""
+    h = h or abi.headers()
+    d = h.abi.parent
+    ready = abi.struct_fields(h.dispatch, "kmd_ready_t")
+    return {
+        "ready_bytes": ready.index("upload_bytes"),
+        "stream": word_offset(d / "km_stream.h", "km_stream_t", "req"),
+        "graph": word_offset(d / "km_graph.h", "km_graph_t", "req"),
+        "flags": word_offset(d / "km_graph.h", "km_graph_t", "flags"),
+    }
 
 
 def _lines(n):
@@ -121,6 +154,7 @@ class Engines:
         self.run = run
         c = codes(run.h)
         self.c = c
+        self.at = offsets(run.h)
         self.reasons = {
             v: n[len("KM_SERR_") :].lower() for n, v in c.items() if "_SERR_" in n
         }
@@ -153,7 +187,7 @@ class Engines:
             while port.host_word(at) != self.c["KMD_READY_MARK"]:
                 if time.monotonic() > by:
                     raise KomorebiError("the dispatch kernel published no ready block")
-            self.region = Region(port.host_word(at + 2))
+            self.region = Region(port.host_word(at + self.at["ready_bytes"]))
         return self.region
 
     def upload(self, obj, kind=None):
@@ -177,13 +211,11 @@ class Engines:
                 f"an upload of {len(data)} bytes does not fit: the region has "
                 f"{region.size} bytes, the largest free piece {region.largest()}"
             )
-        req = struct.unpack_from("<I", data, REQ_AT)[0] if len(data) >= 28 else 0
+        req = self._word(data, self.at[kind])
         keep = False
         valid = True
         if kind == "graph":
-            flags = (
-                struct.unpack_from("<I", data, FLAGS_AT)[0] if len(data) >= 48 else 0
-            )
+            flags = self._word(data, self.at["flags"])
             keep = bool(flags & self.c["KM_GRAPH_KEEP"])
             valid = gr.check(data) is None
         try:
@@ -195,6 +227,11 @@ class Engines:
         up.valid = valid  # the kernel's check, which the host does not enforce
         self.uploads.append(up)
         return up
+
+    @staticmethod
+    def _word(data, at):
+        """The word at byte `at`, or 0 when the upload is shorter."""
+        return struct.unpack_from("<I", data, at)[0] if len(data) >= at + 4 else 0
 
     def release(self, up, timeout):
         self._mine(up)
@@ -258,12 +295,13 @@ class Engines:
             raise ValueError(f"req {req} belongs to a running or kept engine")
 
     def _set_keep(self, up, keep):
-        if up.bytes < 48:
+        at = self.at["flags"]
+        if up.bytes < at + 4:
             raise ValueError("the upload is too short to carry the keep bit")
         line = bytearray(up.data[:LINE].ljust(LINE, b"\0"))
-        flags = struct.unpack_from("<I", line, FLAGS_AT)[0]
+        flags = struct.unpack_from("<I", line, at)[0]
         bit = self.c["KM_GRAPH_KEEP"]
-        struct.pack_into("<I", line, FLAGS_AT, flags | bit if keep else flags & ~bit)
+        struct.pack_into("<I", line, at, flags | bit if keep else flags & ~bit)
         self.run.port.upload(up.offset, bytes(line))
         up.data = bytes(line[: len(up.data)]) + up.data[LINE:]
         up.keep = keep

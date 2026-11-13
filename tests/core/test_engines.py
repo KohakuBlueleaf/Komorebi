@@ -9,11 +9,12 @@ from fake_port import FakeBackend, FakePort
 from komorebi import abi
 from komorebi.engines import graph as gr
 from komorebi.engines import stream as st
-from komorebi.engines.control import codes
+from komorebi.engines.control import codes, offsets
 from komorebi.errors import EngineError, EngineRefused, EngineTimeout
 from komorebi.run import Run
 
 K = codes()
+AT = offsets()
 REGION = 2048
 
 
@@ -38,7 +39,7 @@ class EngineKernel(FakePort):
     def host_word(self, word):
         ready = {
             K["KMD_HOST_READY"]: K["KMD_READY_MARK"],
-            K["KMD_HOST_READY"] + 2: REGION,
+            K["KMD_HOST_READY"] + AT["ready_bytes"]: REGION,
         }
         return ready.get(word, super().host_word(word))
 
@@ -71,7 +72,8 @@ class EngineKernel(FakePort):
             ticks = [e.extra for e in sim.events]
             if sim.kept:
                 self.kept[sim.events[0].req] = (a0, a1)
-        req = sim.events[0].req if sim.events else struct.unpack_from("<I", data, 24)[0]
+        at = AT["stream" if form == 0 else "graph"]
+        req = sim.events[0].req if sim.events else struct.unpack_from("<I", data, at)[0]
         if sim.status == "stuck":
             self.running[req] = K[
                 "KM_EV_STREAM_ERROR" if form == 0 else "KM_EV_GRAPH_ERROR"
@@ -120,6 +122,10 @@ def two_branches(keep=False):
     c = g.record(1, team=(30, 30), args=[it], after=[a], result=r)
     g.cpu(after=[b, c]).addi(it, r, 5)
     return g
+
+
+def test_the_offsets_are_the_headers_static_asserts():
+    assert AT == {"ready_bytes": 2, "stream": 24, "graph": 24, "flags": 44}
 
 
 def test_uploads_sit_side_by_side_and_what_does_not_fit_is_refused_unwritten():
