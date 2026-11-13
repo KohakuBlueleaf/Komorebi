@@ -132,7 +132,7 @@ def tensors(dev, blocks, workers, list_slots):
         )
         for i in range(chunks)
     ]
-    return {
+    up = {
         "mesh": card.tensor(dev, blocks),
         "lists": card.tensor(dev, np.zeros((pages, lists.PAGE_WORDS))),
         "dir": card.tensor(dev, np.zeros((workers, K["kDirBytes"] // 4))),
@@ -145,6 +145,8 @@ def tensors(dev, blocks, workers, list_slots):
         "hprefix": card.tensor(dev, np.zeros((workers, F["RF_HPREFIX_BYTES"] // 4))),
         "list_slots": pages * lists.PAGE_SLOTS,
     }
+    card.ttnn.synchronize_device(dev)  # the uploads land before any frame runs
+    return up
 
 
 def words(up, blocks, cores, workers, steps):
@@ -267,12 +269,31 @@ def frame(args, session=None):
         tm["upload_s"] = time.perf_counter() - t0
         w = words(up, len(blocks), cores, workers, args.steps)
         t0 = time.perf_counter()
-        prog = session.load(program(scene, w, workers), deadline=1.0)
+        prog = session.load(program(scene, w, workers), deadline=1.0, trace=16)
         tm["load_s"] = time.perf_counter() - t0
         t0 = time.perf_counter()
         r = prog.thread_result(timeout=15.0)
         tm["thread_wait_s"] = time.perf_counter() - t0
-        prog.stop()
+        try:
+            prog.stop()
+        except km.errors.KernelFailed as e:
+            out["stop_error"] = str(e)
+            tr = prog.trace()
+            h = km.abi.headers()
+            rows = tr.rows[:workers]
+            seen, done = rows[:, :, h["kTraceSeen"]], rows[:, :, h["kTraceDone"]]
+            out["trace"] = {
+                "seen_cores": (seen != 0).sum(0).tolist(),
+                "done_cores": (done != 0).sum(0).tolist(),
+                "not_done": [
+                    [
+                        int(c)
+                        for c in np.flatnonzero((seen[:, k] != 0) & (done[:, k] == 0))
+                    ]
+                    for k in range(rows.shape[1])
+                ],
+            }
+            print(json.dumps(out, default=str), flush=True)
         out["thread"] = result_dict(r)
         out["x280_mhz"] = session.pll_mhz
         out["status"] = card.check_run(prog, workers, 0, [])
