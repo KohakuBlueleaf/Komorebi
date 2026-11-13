@@ -39,9 +39,13 @@ through a cache. Each pass of core 0's loop sweeps the busy slots, then takes at
 one command from each source in the order host, engine, work cluster; the engine is
 looked at only while it has a stream, a record in flight or a waiting command, the work
 cluster's ring every fourth pass.
-A record's `KM_EV_DONE` or `KM_EV_TIMEOUT` goes to the source that sent it. The aux of
-`KM_EV_DONE` is the first core of the team that ran the record (for `KM_F_QUEUE`, the one
-the allocator chose); a `KM_EV_TIMEOUT` names the record whose deadline passed first.
+A record's `KM_EV_DONE` or `KM_EV_TIMEOUT` goes to the source that sent it. Its aux holds
+in its low 8 bits the first core of the team that ran the record (DONE; for `KM_F_QUEUE`,
+the one the allocator chose) or the slot (TIMEOUT), and above them the low 16 bits of the
+record's sequence number (`KM_EV_SEQ_SHIFT`, `KM_EV_SEQ_MASK`). The kernel numbers every
+source's records in one sequence; with these bits a source finds the number of each of its
+records while fewer than 32,768 records of other sources are issued between two of its
+own. A `KM_EV_TIMEOUT` names the record whose deadline passed first.
 
 Nothing the kernel writes through the cached port stays dirty at exit: core 1 flushes its
 part of the state area before it reports stopped and core 0 flushes the whole area before
@@ -181,8 +185,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   pass 32 to 41 ns (the experiment `x280_threads/ring_cost.py`); a STEP and SUM round of
   `examples/07_work_cluster`, two records issued and waited for in turn, takes about
   50 microseconds from the thread.
-- **What streams cost the sweep.** Measured on a p150a with the harness's
-  `stream-bench` case (pass period of core 0 = run time / passes): 32 ns with no
+- **What streams cost the sweep.** Measured on a p150a (pass period of core 0 = run
+  time / passes): 32 ns with no
   stream, 49 ns with one or four streams that only loop, 89 ns with one stream issuing
   one record at a time, 159 ns with four. One issuing stream takes 2.3 microseconds per
   record, 1.34 microseconds (median) from a record's free to the stream's next issue

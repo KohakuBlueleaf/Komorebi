@@ -426,9 +426,10 @@ static void loop(kmd_t* k) {
                 k, KMD_ERR_DEADLINE, late, k->slot_seq[late], k->slot_req[late], took
             );
             k->harts[KMD_H_SOURCE] = src;
-            ring_push(
-                &k->ring[src], k->slot_req[late], KM_EV_TIMEOUT | (late << 8), took
+            const uint32_t aux = (
+                late | (k->slot_seq[late] & KM_EV_SEQ_MASK) << KM_EV_SEQ_SHIFT
             );
+            ring_push(&k->ring[src], k->slot_req[late], KM_EV_TIMEOUT | aux << 8, took);
             return;
         }
         if (activity != seen_activity || k->busy || k->nstreams || k->queued ||

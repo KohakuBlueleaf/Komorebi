@@ -51,7 +51,8 @@ job: the record may be issued again after it. The kernel's other refusals are it
 CANCEL from a thread are refused with aux 1.
 
 `kmx_event`: `ticket`, `kind` (`KM_EV_DONE`, `KM_EV_TIMEOUT`, `KM_EV_REFUSED`, `KMX_EV_WAKE` from `kmx_poll` only),
-`aux` (the slot of a timeout, the reason of a refusal), `ticks` (issue to completion
+`aux` (the first core of a done record or the slot of a timeout in its low 8 bits, the
+low 16 bits of the record's sequence number above them; the reason of a refusal), `ticks` (issue to completion
 in timer ticks, or the result word of a `KM_F_RESULT` record).
 
 Return codes (`kmx_layout.h`): `KMX_OK` 0, `KMX_FULL` 1, `KMX_STOPPED` 2,

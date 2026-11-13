@@ -660,7 +660,9 @@ namespace {
             uint32_t bad = 0;
             for (const auto& e : events) {
                 const uint32_t first = e.req % (cores - count + 1);
-                if (e.status != (KM_EV_DONE | first << 8) ||
+                const uint32_t low = (e.status >> 8) &
+                    KM_EV_AUX_LOW; /* not the seq bits */
+                if ((e.status & 0xFFu) != KM_EV_DONE || low != first ||
                     e.ticks != dk_result(e.req, param)) {
                     if (bad++ < 8) {
                         wrong.push_back(e);

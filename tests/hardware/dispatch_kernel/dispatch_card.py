@@ -210,7 +210,14 @@ def command(seg, a0=0):
 
 
 def kind(status):
-    return status & 0xFF, status >> 8
+    """(kind, aux) of a status; a DONE or TIMEOUT aux without its seq bits."""
+    aux = status >> 8
+    return status & 0xFF, aux & 0xFF if status & 0xFF in (EV_DONE, EV_TIMEOUT) else aux
+
+
+def seq_low(status):
+    """The low 16 bits of the record's sequence number in a DONE or TIMEOUT event."""
+    return status >> 16 & 0xFFFF
 
 
 # ---------------------------------------------------------------------------------
@@ -594,6 +601,7 @@ def case_stall(device, args, leader=False):
     out["ok"] = bool(
         ev
         and kind(ev[-1][2]) == (EV_TIMEOUT, blk["slot"])
+        and seq_low(ev[-1][2]) == blk["seq"] & 0xFFFF
         and ev[-1][1] == out["stall_req"]
         and blk["error"] == ERR_DEADLINE
         and blk["req"] == out["stall_req"]
@@ -1826,6 +1834,50 @@ def case_engine_busy(device, args):
     return out
 
 
+def case_seq_events(device, args):
+    """A host record, a stream of --n records one at a time, a second host record: the
+    host records' DONE events carry sequence numbers 1 and n + 2 in their low 16 bits,
+    with the team's first core below them."""
+    n_cores = 0
+
+    def body(plan):
+        nonlocal n_cores
+        n_cores = plan.grid_x * plan.grid_y
+        s = ks.Stream(req=91)
+        i = s.regs(1)[0]
+        s.set(i, 0)
+        top = s.label()
+        s.issue(SEG_DELAY, (0, 1), args=[i, 0])
+        s.wait(0)
+        s.addi(i, i, 1)
+        s.jlt(i, s.const(args.n), top)
+        s.halt(i)
+        out = {"tag": plan.tag}
+        a = plan.submit(record(SEG_DELAY, 5, 3, 1, 0))
+        got = [e for e in plan.take(a, 5.0) if e[1] == a]
+        data, base = s.encode(), stream_base(plan)
+        put_upload(plan, base, data)
+        plan.submit(run_command(base, len(data)))
+        ended = stream_events(plan, 91)
+        b = plan.submit(record(SEG_DELAY, 7, 2, 2, 0))
+        got += [e for e in plan.take(b, 5.0) if e[1] == b]
+        out["host"] = [[kind(e[2])[0], kind(e[2])[1], seq_low(e[2])] for e in got]
+        out["stream_end"] = [list(kind(e[2])) for e in ended if e[1] == 91][-1:]
+        out["exit"] = exit_and_stop(plan)
+        return out
+
+    out, fin, cnt = with_kernel(device, args, body, depth=4)
+    out["finish"] = fin
+    out["cores"] = core_report(cnt, n_cores, out["tag"])
+    want = [[EV_DONE, 5, 1], [EV_DONE, 7, (args.n + 2) & 0xFFFF]]
+    out["ok"] = bool(
+        out["host"] == want
+        and out["stream_end"] == [[EV_STREAM_END, args.n]]
+        and finished_clean(fin, n_cores, out["cores"])
+    )
+    return out
+
+
 def case_engine_cost(device, args):
     """Three streams in turn, each --n DELAY records on core 0 timed by the stream
     itself: ISSUE then WAIT 0 each; ISSUE with KM_F_EXCL and no wait, so a record is
@@ -1968,6 +2020,7 @@ CASES = {
     "stream-deadline": case_stream_deadline,
     "engine-busy": case_engine_busy,
     "engine-cost": case_engine_cost,
+    "seq-events": case_seq_events,
     "exit-flush": case_exit_flush,
     "verify": case_verify,
     "upload": case_upload,
@@ -1997,6 +2050,7 @@ SET = [
     ("stream-deadline", {}),
     ("engine-busy", {"n": 20, "delay_us": 2000.0}),
     ("exit-flush", {"n": 50}),
+    ("seq-events", {"n": 300}),
 ]
 
 

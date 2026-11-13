@@ -120,7 +120,7 @@ static inline void sources_wake(kmd_t* k) {
 }
 
 /* Sweeps busy slots' ack lines (one 8-byte load each); a slot showing its sequence is
- * freed with KM_EV_DONE {aux first core, ticks time or result} to its source. */
+ * freed with KM_EV_DONE {aux first core | seq low 16 << 8, ticks time or result}. */
 static inline void slots_sweep(kmd_t* k) {
     x280_fence_ir();
     uint64_t now = 0;
@@ -150,9 +150,10 @@ static inline void slots_sweep(kmd_t* k) {
         if (k->dyn.end == j + 1u) { /* a dynamic run's end record: no event */
             k->dyn.end = 0;
         } else {
-            ring_push(
-                r, k->slot_req[j], KM_EV_DONE | (k->slot_team[j] & 0xFFFFu) << 8, ticks
-            );
+            const uint32_t aux =
+                ((k->slot_team[j] & KM_EV_AUX_LOW) |
+                 (k->slot_seq[j] & KM_EV_SEQ_MASK) << KM_EV_SEQ_SHIFT);
+            ring_push(r, k->slot_req[j], KM_EV_DONE | aux << 8, ticks);
         }
         k->t_last_event = now;
         if (k->waits) {

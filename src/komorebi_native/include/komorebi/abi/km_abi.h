@@ -147,8 +147,8 @@ KM_STATIC_ASSERT(KM_SEG_DYN_END > KM_SEG_USER_MAX, "not a program segment");
 
 /* Dispatch kernel -> host: one 16-byte event per finished command, in a ring in host
    memory. */
-#define KM_EV_DONE 0u    /* aux = first core of the team that ran it */
-#define KM_EV_TIMEOUT 1u /* aux = slot; the cores are named by their state words */
+#define KM_EV_DONE 0u /* aux = first core of the team that ran it | seq low 16 << 8 */
+#define KM_EV_TIMEOUT 1u /* aux = slot | seq low 16 << 8; cores: their state words */
 #define KM_EV_PONG 2u
 #define KM_EV_REFUSED 3u /* consumed, not run; aux = reason (KMD_REFUSE_*) */
 
@@ -160,5 +160,12 @@ typedef struct {
 } km_event_t;        /* sizeof == 16: one chunk, lands whole */
 
 KM_STATIC_ASSERT(sizeof(km_event_t) == 16, "an event is one 16-byte chunk");
+
+/* A DONE or TIMEOUT event's aux: the first core or the slot in its low 8 bits, the low
+   16 bits of the record's sequence number above them. */
+#define KM_EV_AUX_LOW 0xFFu
+#define KM_EV_SEQ_SHIFT 8u
+#define KM_EV_SEQ_MASK 0xFFFFu
+KM_STATIC_ASSERT(KM_CORES_MAX <= KM_EV_AUX_LOW + 1u, "a first core fits in 8 bits");
 
 #endif /* KOMOREBI_ABI_KM_ABI_H */
