@@ -3,8 +3,8 @@
 #include "km_graph_engine.h"
 
 #define FAULT(reason, node) ((uint32_t)(reason) | (uint32_t)(node) << 8)
-#define REGISTER(r) ((r) & (KM_STREAM_REGISTERS - 1u))
-#define RING(i) ((i) & (KM_GRAPH_MAX_NODES - 1u))
+#define REGISTER(register_index) ((register_index) & (KM_STREAM_REGISTERS - 1u))
+#define RING(position) ((position) & (KM_GRAPH_MAX_NODES - 1u))
 
 /* Register fields a CPU micro-op reads or writes (bit 0 a, 1 b, 2 c), bit 3 for a
    jump; 0xFF for an opcode a CPU slice may not hold. */
@@ -39,46 +39,52 @@ static uint32_t line_up(uint32_t bytes) {
     return (bytes + KM_STREAM_LINE - 1u) & ~(KM_STREAM_LINE - 1u);
 }
 
-static uint32_t bad_register(uint32_t r) {
-    return r != KM_GRAPH_NONE && r >= KM_STREAM_REGISTERS;
+static uint32_t bad_register(uint32_t register_index) {
+    return register_index != KM_GRAPH_NONE && register_index >= KM_STREAM_REGISTERS;
 }
 
-static uint32_t bad_template(const km_template_t* t) {
-    uint32_t handler = t->rec.hdr & 0xFFu;
-    uint32_t flags = t->rec.hdr >> 8 & 0xFFu;
+static uint32_t bad_template(const km_template_t* template_entry) {
+    uint32_t handler = template_entry->rec.hdr & 0xFFu;
+    uint32_t flags = template_entry->rec.hdr >> 8 & 0xFFu;
     if (handler < 1u || handler > KM_HANDLER_USER_MAX) {
         return 1u;
     }
     if (flags & ~(uint32_t)(KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT | KM_FLAG_QUEUE)) {
         return 1u;
     }
-    if (t->patch_count > KM_TEMPLATE_PATCHES) {
+    if (template_entry->patch_count > KM_TEMPLATE_PATCHES) {
         return 1u;
     }
-    for (uint32_t k = 0; k < t->patch_count; k++) {
-        if (t->arg[k] >= KM_TEMPLATE_ARGS || t->registers[k] >= KM_STREAM_REGISTERS) {
+    for (uint32_t k = 0; k < template_entry->patch_count; k++) {
+        if (
+            template_entry->arg[k] >= KM_TEMPLATE_ARGS ||
+            template_entry->registers[k] >= KM_STREAM_REGISTERS
+        ) {
             return 1u;
         }
     }
-    return bad_register(t->first_register) || bad_register(t->count_register);
+    return (
+        bad_register(template_entry->first_register) ||
+        bad_register(template_entry->count_register)
+    );
 }
 
 /* The micro-ops of one CPU slice [first, end): opcode, registers, jump targets. */
 static uint32_t check_slice(const km_uop_t* ops, uint32_t first, uint32_t end) {
     for (uint32_t pc = first; pc < end; pc++) {
-        const km_uop_t* o = &ops[pc];
-        uint32_t use = cpu_op_use(o->op);
+        const km_uop_t* micro_op = &ops[pc];
+        uint32_t use = cpu_op_use(micro_op->op);
         if (use == 0xFFu) {
             return KM_STREAM_ERROR_OPCODE;
         }
         if (
-            ((use & 1u) && o->a >= KM_STREAM_REGISTERS) ||
-            ((use & 2u) && o->b >= KM_STREAM_REGISTERS) ||
-            ((use & 4u) && o->c >= KM_STREAM_REGISTERS)
+            ((use & 1u) && micro_op->a >= KM_STREAM_REGISTERS) ||
+            ((use & 2u) && micro_op->b >= KM_STREAM_REGISTERS) ||
+            ((use & 4u) && micro_op->c >= KM_STREAM_REGISTERS)
         ) {
             return KM_STREAM_ERROR_REGISTER;
         }
-        if ((use & 8u) && (o->immediate < first || o->immediate > end)) {
+        if ((use & 8u) && (micro_op->immediate < first || micro_op->immediate > end)) {
             return KM_STREAM_ERROR_JUMP;
         }
     }
@@ -88,81 +94,100 @@ static uint32_t check_slice(const km_uop_t* ops, uint32_t first, uint32_t end) {
 /* One node's own fields, its template or slice; `cpu_next` is where its slice starts.
  */
 static uint32_t check_node(
-    const km_graph_t* h,
-    const km_node_t* n,
+    const km_graph_t* graph,
+    const km_node_t* node_entry,
     const km_uop_t* ops,
-    const km_template_t* template,
+    const km_template_t* templates,
     uint32_t cpu_next
 ) {
-    if (n->kind < KM_NODE_COMMAND || n->kind > KM_NODE_JOIN || n->flags != 0) {
+    if (
+        node_entry->kind < KM_NODE_COMMAND || node_entry->kind > KM_NODE_JOIN ||
+        node_entry->flags != 0
+    ) {
         return KM_STREAM_ERROR_NODE;
     }
-    if (n->predecessor_count > KM_GRAPH_MAX_PREDECESSORS) {
+    if (node_entry->predecessor_count > KM_GRAPH_MAX_PREDECESSORS) {
         return KM_STREAM_ERROR_EDGE;
     }
-    if (bad_register(n->skip_register) || bad_register(n->result_register)) {
+    if (
+        bad_register(node_entry->skip_register) ||
+        bad_register(node_entry->result_register)
+    ) {
         return KM_STREAM_ERROR_REGISTER;
     }
-    if (n->kind == KM_NODE_COMMAND) {
-        if (n->arg >= h->command_count || bad_template(&template[n->arg])) {
+    if (node_entry->kind == KM_NODE_COMMAND) {
+        if (
+            node_entry->arg >= graph->command_count ||
+            bad_template(&templates[node_entry->arg])
+        ) {
             return KM_STREAM_ERROR_TEMPLATE;
         }
-        uint32_t flags = template[n->arg].rec.hdr >> 8 & 0xFFu;
+        uint32_t flags = templates[node_entry->arg].rec.hdr >> 8 & 0xFFu;
         if (
-            n->op_count != 0 ||
-            (n->result_register != KM_GRAPH_NONE && !(flags & KM_FLAG_RESULT))
+            node_entry->op_count != 0 ||
+            (node_entry->result_register != KM_GRAPH_NONE && !(flags & KM_FLAG_RESULT))
         ) {
             return KM_STREAM_ERROR_NODE;
         }
         return 0;
     }
-    if (n->result_register != KM_GRAPH_NONE) {
+    if (node_entry->result_register != KM_GRAPH_NONE) {
         return KM_STREAM_ERROR_NODE;
     }
-    if (n->kind == KM_NODE_JOIN) {
-        return n->arg != 0 || n->op_count != 0 ? KM_STREAM_ERROR_NODE : 0;
+    if (node_entry->kind == KM_NODE_JOIN) {
+        return (
+            node_entry->arg != 0 || node_entry->op_count != 0 ? KM_STREAM_ERROR_NODE : 0
+        );
     }
     if (
-        n->arg != cpu_next || n->op_count == 0 || n->op_count > h->op_count - cpu_next
+        node_entry->arg != cpu_next || node_entry->op_count == 0 ||
+        node_entry->op_count > graph->op_count - cpu_next
     ) {
         return KM_STREAM_ERROR_NODE;
     }
-    return check_slice(ops, n->arg, n->arg + (uint32_t)n->op_count);
+    return (
+        check_slice(
+            ops, node_entry->arg, node_entry->arg + (uint32_t)node_entry->op_count
+        )
+    );
 }
 
 uint32_t kmg_check(const void* upload, uint32_t bytes) {
-    const km_graph_t* h = (const km_graph_t*)upload;
+    const km_graph_t* graph = (const km_graph_t*)upload;
     const uint32_t none = KM_GRAPH_NO_NODE;
     if (bytes < sizeof(km_graph_t) || bytes % KM_STREAM_LINE != 0) {
         return FAULT(KM_STREAM_ERROR_HEADER, none);
     }
-    if (h->magic != KM_GRAPH_MAGIC || h->version != KM_GRAPH_VERSION) {
+    if (graph->magic != KM_GRAPH_MAGIC || graph->version != KM_GRAPH_VERSION) {
         return FAULT(KM_STREAM_ERROR_HEADER, none);
     }
     if (
-        h->node_count < 1u || h->node_count > KM_GRAPH_MAX_NODES ||
-        h->edge_count > KM_GRAPH_MAX_EDGES || h->op_count > KM_GRAPH_MAX_OPS ||
-        h->command_count > KM_GRAPH_MAX_TEMPLATES
+        graph->node_count < 1u || graph->node_count > KM_GRAPH_MAX_NODES ||
+        graph->edge_count > KM_GRAPH_MAX_EDGES || graph->op_count > KM_GRAPH_MAX_OPS ||
+        graph->command_count > KM_GRAPH_MAX_TEMPLATES
     ) {
         return FAULT(KM_STREAM_ERROR_HEADER, none);
     }
     if (
-        bad_register(h->again_register) || h->max_runs == 0 || h->step_limit == 0 ||
-        h->step_limit > KM_GRAPH_MAX_STEPS || (h->flags & ~KM_GRAPH_KEEP) != 0
+        bad_register(graph->again_register) || graph->max_runs == 0 ||
+        graph->step_limit == 0 || graph->step_limit > KM_GRAPH_MAX_STEPS ||
+        (graph->flags & ~KM_GRAPH_KEEP) != 0
     ) {
         return FAULT(KM_STREAM_ERROR_HEADER, none);
     }
-    uint32_t at_edges = sizeof(km_graph_t) + line_up(h->node_count * sizeof(km_node_t));
-    uint32_t at_ops = at_edges + line_up(h->edge_count * 2u);
-    uint32_t at_template = at_ops + line_up(h->op_count * sizeof(km_uop_t));
-    if (bytes != at_template + line_up(h->command_count * sizeof(km_template_t))) {
+    uint32_t at_edges = (
+        sizeof(km_graph_t) + line_up(graph->node_count * sizeof(km_node_t))
+    );
+    uint32_t at_ops = at_edges + line_up(graph->edge_count * 2u);
+    uint32_t at_template = at_ops + line_up(graph->op_count * sizeof(km_uop_t));
+    if (bytes != at_template + line_up(graph->command_count * sizeof(km_template_t))) {
         return FAULT(KM_STREAM_ERROR_HEADER, none);
     }
     const uint8_t* base = (const uint8_t*)upload;
     const km_node_t* nodes = (const km_node_t*)(base + sizeof(km_graph_t));
     const uint16_t* edges = (const uint16_t*)(base + at_edges);
     const km_uop_t* ops = (const km_uop_t*)(base + at_ops);
-    const km_template_t* template = (const km_template_t*)(base + at_template);
+    const km_template_t* templates = (const km_template_t*)(base + at_template);
     /* Predecessors seen per node; zeroed through a volatile pointer, as a plain loop
        may become a memset call. */
     uint8_t seen[KM_GRAPH_MAX_NODES];
@@ -171,47 +196,55 @@ uint32_t kmg_check(const void* upload, uint32_t bytes) {
         zero[i] = 0;
     }
     uint32_t cpu_next = 0, edge_next = 0;
-    for (uint32_t i = 0; i < h->node_count; i++) {
-        const km_node_t* n = &nodes[i];
-        uint32_t why = check_node(h, n, ops, template, cpu_next);
-        if (why != 0) {
-            return FAULT(why, i);
+    for (uint32_t i = 0; i < graph->node_count; i++) {
+        const km_node_t* node_entry = &nodes[i];
+        uint32_t fault = check_node(graph, node_entry, ops, templates, cpu_next);
+        if (fault != 0) {
+            return FAULT(fault, i);
         }
-        if (n->kind == KM_NODE_CPU) {
-            cpu_next += n->op_count;
+        if (node_entry->kind == KM_NODE_CPU) {
+            cpu_next += node_entry->op_count;
         }
         if (
-            n->successor_offset != edge_next ||
-            n->successor_count > h->edge_count - edge_next
+            node_entry->successor_offset != edge_next ||
+            node_entry->successor_count > graph->edge_count - edge_next
         ) {
             return FAULT(KM_STREAM_ERROR_EDGE, i);
         }
-        uint32_t prev = i;
-        for (uint32_t k = 0; k < n->successor_count; k++) {
-            uint32_t s = edges[edge_next + k];
+        uint32_t previous = i;
+        for (
+            uint32_t successor_position = 0;
+            successor_position < node_entry->successor_count;
+            successor_position++
+        ) {
+            uint32_t successor = edges[edge_next + successor_position];
             if (
-                s <= prev || s >= h->node_count || seen[s] >= KM_GRAPH_MAX_PREDECESSORS
+                successor <= previous || successor >= graph->node_count ||
+                seen[successor] >= KM_GRAPH_MAX_PREDECESSORS
             ) {
                 return FAULT(KM_STREAM_ERROR_EDGE, i);
             }
-            seen[s]++;
-            prev = s;
+            seen[successor]++;
+            previous = successor;
         }
-        edge_next += n->successor_count;
+        edge_next += node_entry->successor_count;
     }
-    if (edge_next != h->edge_count) {
+    if (edge_next != graph->edge_count) {
         return FAULT(KM_STREAM_ERROR_EDGE, none);
     }
-    if (cpu_next != h->op_count) {
+    if (cpu_next != graph->op_count) {
         return FAULT(KM_STREAM_ERROR_NODE, none);
     }
-    for (uint32_t i = 0; i < h->node_count; i++) {
+    for (uint32_t i = 0; i < graph->node_count; i++) {
         if (seen[i] != nodes[i].predecessor_count) {
             return FAULT(KM_STREAM_ERROR_EDGE, i);
         }
     }
-    for (uint32_t t = 0; t < h->command_count; t++) {
-        if (bad_template(&template[t])) {
+    for (
+        uint32_t template_index = 0; template_index < graph->command_count;
+        template_index++
+    ) {
+        if (bad_template(&templates[template_index])) {
             return FAULT(KM_STREAM_ERROR_TEMPLATE, none);
         }
     }
@@ -222,52 +255,58 @@ uint32_t kmg_state_bytes(void) {
     return sizeof(kmg_state_t);
 }
 
-static void push(kmg_state_t* s, uint32_t node) {
-    s->ready[RING(s->head + s->ready_n)] = (uint16_t)node;
-    s->ready_n++;
-    s->status[node] = KMG_READY;
+static void push(kmg_state_t* state, uint32_t node) {
+    state->ready[RING(state->head + state->ready_n)] = (uint16_t)node;
+    state->ready_n++;
+    state->status[node] = KMG_READY;
 }
 
-static uint32_t pop(kmg_state_t* s) {
-    uint32_t node = s->ready[RING(s->head)];
-    s->head = RING(s->head + 1u);
-    s->ready_n--;
+static uint32_t pop(kmg_state_t* state) {
+    uint32_t node = state->ready[RING(state->head)];
+    state->head = RING(state->head + 1u);
+    state->ready_n--;
     return node;
 }
 
 /* Every node waits for its predecessors again; the roots are ready, in node order. */
-static void reset(kmg_state_t* s) {
-    s->done = s->head = s->ready_n = 0;
-    for (uint32_t i = 0; i < s->hdr->node_count; i++) {
-        uint32_t predecessor_count = s->nodes[i].predecessor_count;
-        s->left[i] = (uint8_t)predecessor_count;
-        s->status[i] = predecessor_count == 0 ? KMG_READY : KMG_WAITING;
+static void reset(kmg_state_t* state) {
+    state->done = state->head = state->ready_n = 0;
+    for (uint32_t i = 0; i < state->hdr->node_count; i++) {
+        uint32_t predecessor_count = state->nodes[i].predecessor_count;
+        state->left[i] = (uint8_t)predecessor_count;
+        state->status[i] = predecessor_count == 0 ? KMG_READY : KMG_WAITING;
         if (predecessor_count == 0) {
-            push(s, i);
+            push(state, i);
         }
     }
 }
 
-static void fail(kmg_state_t* s, uint32_t reason, uint32_t node) {
-    s->phase = KMG_ERROR;
-    s->error_reason = reason;
-    s->error_node = node;
+static void fail(kmg_state_t* state, uint32_t reason, uint32_t node) {
+    state->phase = KMG_ERROR;
+    state->error_reason = reason;
+    state->error_node = node;
 }
 
-static void finish(kmg_state_t* s, uint32_t node) {
-    const km_node_t* n = &s->nodes[node];
-    s->status[node] = KMG_DONE;
-    s->done++;
-    for (uint32_t k = 0; k < n->successor_count; k++) {
-        uint32_t succ = s->edges[n->successor_offset + k];
-        if (--s->left[succ] == 0) {
-            push(s, succ);
+static void finish(kmg_state_t* state, uint32_t node) {
+    const km_node_t* node_entry = &state->nodes[node];
+    state->status[node] = KMG_DONE;
+    state->done++;
+    for (
+        uint32_t successor_position = 0;
+        successor_position < node_entry->successor_count;
+        successor_position++
+    ) {
+        uint32_t successor = (
+            state->edges [node_entry->successor_offset + successor_position]
+        );
+        if (--state->left[successor] == 0) {
+            push(state, successor);
         }
     }
 }
 
 uint32_t kmg_start(
-    kmg_state_t* s,
+    kmg_state_t* state,
     const void* upload,
     const uint32_t* bindings,
     uint32_t n_bindings,
@@ -276,103 +315,118 @@ uint32_t kmg_start(
     if (n_bindings > KM_GRAPH_BINDINGS) {
         return KM_STREAM_ERROR_HEADER;
     }
-    const km_graph_t* h = (const km_graph_t*)upload;
+    const km_graph_t* graph = (const km_graph_t*)upload;
     const uint8_t* base = (const uint8_t*)upload;
-    uint32_t at_edges = sizeof(km_graph_t) + line_up(h->node_count * sizeof(km_node_t));
-    uint32_t at_ops = at_edges + line_up(h->edge_count * 2u);
-    uint32_t at_template = at_ops + line_up(h->op_count * sizeof(km_uop_t));
-    s->hdr = h;
-    s->nodes = (const km_node_t*)(base + sizeof(km_graph_t));
-    s->edges = (const uint16_t*)(base + at_edges);
-    s->ops = (const km_uop_t*)(base + at_ops);
-    s->template = (const km_template_t*)(base + at_template);
-    for (uint32_t r = 0; r < KM_STREAM_REGISTERS; r++) {
-        s->registers[r] = r < n_bindings ? bindings[r] : 0u;
+    uint32_t at_edges = (
+        sizeof(km_graph_t) + line_up(graph->node_count * sizeof(km_node_t))
+    );
+    uint32_t at_ops = at_edges + line_up(graph->edge_count * 2u);
+    uint32_t at_template = at_ops + line_up(graph->op_count * sizeof(km_uop_t));
+    state->hdr = graph;
+    state->nodes = (const km_node_t*)(base + sizeof(km_graph_t));
+    state->edges = (const uint16_t*)(base + at_edges);
+    state->ops = (const km_uop_t*)(base + at_ops);
+    state->template = (const km_template_t*)(base + at_template);
+    for (
+        uint32_t register_index = 0; register_index < KM_STREAM_REGISTERS;
+        register_index++
+    ) {
+        state->registers[register_index] = (
+            register_index < n_bindings ? bindings[register_index] : 0u
+        );
     }
-    s->runs = 1;
-    s->phase = KMG_RUNNING;
-    s->error_reason = s->error_node = 0;
-    s->in_flight = 0;
-    s->core_count = core_count;
-    reset(s);
+    state->runs = 1;
+    state->phase = KMG_RUNNING;
+    state->error_reason = state->error_node = 0;
+    state->in_flight = 0;
+    state->core_count = core_count;
+    reset(state);
     return 0;
 }
 
 /* Runs one CPU slice to its end; returns the micro-ops run (the phase says if it
    failed). At most step_limit micro-ops. */
-static uint32_t run_cpu(kmg_state_t* s, uint32_t node) {
-    const km_node_t* n = &s->nodes[node];
-    uint32_t* r = s->registers;
-    uint32_t pc = n->arg, end = n->arg + (uint32_t)n->op_count, steps = 0;
+static uint32_t run_cpu(kmg_state_t* state, uint32_t node) {
+    const km_node_t* node_entry = &state->nodes[node];
+    uint32_t* registers = state->registers;
+    uint32_t pc = node_entry->arg;
+    uint32_t end = node_entry->arg + (uint32_t)node_entry->op_count;
+    uint32_t steps = 0;
     while (pc != end) {
         if (pc > end) {
-            fail(s, KM_STREAM_ERROR_JUMP, node);
+            fail(state, KM_STREAM_ERROR_JUMP, node);
             return steps;
         }
-        if (steps >= s->hdr->step_limit) {
-            fail(s, KM_STREAM_ERROR_STEPS, node);
+        if (steps >= state->hdr->step_limit) {
+            fail(state, KM_STREAM_ERROR_STEPS, node);
             return steps;
         }
-        const km_uop_t* o = &s->ops[pc];
-        uint32_t a = REGISTER(o->a);
-        uint32_t b = REGISTER(o->b);
-        uint32_t c = REGISTER(o->c);
+        const km_uop_t* micro_op = &state->ops[pc];
+        uint32_t index_a = REGISTER(micro_op->a);
+        uint32_t index_b = REGISTER(micro_op->b);
+        uint32_t index_c = REGISTER(micro_op->c);
         uint32_t next = pc + 1u;
-        switch (o->op) {
+        switch (micro_op->op) {
             case KM_OP_SET:
-                r[a] = o->immediate;
+                registers[index_a] = micro_op->immediate;
                 break;
             case KM_OP_MOV:
-                r[a] = r[b];
+                registers[index_a] = registers[index_b];
                 break;
             case KM_OP_ADD:
-                r[a] = r[b] + r[c];
+                registers[index_a] = registers[index_b] + registers[index_c];
                 break;
             case KM_OP_ADDI:
-                r[a] = r[b] + o->immediate;
+                registers[index_a] = registers[index_b] + micro_op->immediate;
                 break;
             case KM_OP_SUB:
-                r[a] = r[b] - r[c];
+                registers[index_a] = registers[index_b] - registers[index_c];
                 break;
             case KM_OP_MUL:
-                r[a] = r[b] * r[c];
+                registers[index_a] = registers[index_b] * registers[index_c];
                 break;
             case KM_OP_AND:
-                r[a] = r[b] & r[c];
+                registers[index_a] = registers[index_b] & registers[index_c];
                 break;
             case KM_OP_SHR:
-                r[a] = r[b] >> (o->immediate & 31u);
+                registers[index_a] = registers[index_b] >> (micro_op->immediate & 31u);
                 break;
             case KM_OP_MOD:
-                if (r[c] == 0) {
-                    fail(s, KM_STREAM_ERROR_MOD_ZERO, node);
+                if (registers[index_c] == 0) {
+                    fail(state, KM_STREAM_ERROR_MOD_ZERO, node);
                     return steps;
                 }
-                r[a] = r[b] % r[c];
+                registers[index_a] = registers[index_b] % registers[index_c];
                 break;
             case KM_OP_RAND: {
-                uint32_t x = r[KM_STREAM_SEED_REGISTER];
-                x ^= x << 13;
-                x ^= x >> 17;
-                x ^= x << 5;
-                r[KM_STREAM_SEED_REGISTER] = x;
-                r[a] = x;
+                uint32_t random = registers[KM_STREAM_SEED_REGISTER];
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                registers[KM_STREAM_SEED_REGISTER] = random;
+                registers[index_a] = random;
                 break;
             }
             case KM_OP_JMP:
-                next = o->immediate;
+                next = micro_op->immediate;
                 break;
             case KM_OP_JLT:
-                next = r[a] < r[b] ? o->immediate : next;
+                next = (
+                    registers[index_a] < registers[index_b] ? micro_op->immediate : next
+                );
                 break;
             case KM_OP_JEQ:
-                next = r[a] == r[b] ? o->immediate : next;
+                next = (
+                    registers[index_a] == registers[index_b]
+                        ? micro_op->immediate
+                        : next
+                );
                 break;
             case KM_OP_JNZ:
-                next = r[a] != 0 ? o->immediate : next;
+                next = registers[index_a] != 0 ? micro_op->immediate : next;
                 break;
             default:
-                fail(s, KM_STREAM_ERROR_OPCODE, node);
+                fail(state, KM_STREAM_ERROR_OPCODE, node);
                 return steps;
         }
         steps++;
@@ -381,37 +435,37 @@ static uint32_t run_cpu(kmg_state_t* s, uint32_t node) {
     return steps;
 }
 
-static void set_arg(km_command_t* rec, uint32_t i, uint32_t v) {
-    switch (i) {
+static void set_arg(km_command_t* command, uint32_t index, uint32_t value) {
+    switch (index) {
         case 0:
-            rec->a0 = v;
+            command->a0 = value;
             break;
         case 1:
-            rec->a1 = v;
+            command->a1 = value;
             break;
         case 2:
-            rec->a2 = v;
+            command->a2 = value;
             break;
         case 3:
-            rec->a3 = v;
+            command->a3 = value;
             break;
         case 4:
-            rec->a4 = v;
+            command->a4 = value;
             break;
         case 5:
-            rec->a5 = v;
+            command->a5 = value;
             break;
         case 6:
-            rec->a6 = v;
+            command->a6 = value;
             break;
         case 7:
-            rec->a7 = v;
+            command->a7 = value;
             break;
         case 8:
-            rec->a8 = v;
+            command->a8 = value;
             break;
         default:
-            rec->a9 = v;
+            command->a9 = value;
             break;
     }
 }
@@ -419,143 +473,157 @@ static void set_arg(km_command_t* rec, uint32_t i, uint32_t v) {
 /* Builds and submits the command of `node`: KMG_SUBMITTED, KMG_BUSY (put back at the
    tail) or KMG_ERROR (group outside the grid, a job that can never fit). */
 static uint32_t submit_command(
-    kmg_state_t* s, uint32_t node, kmg_submit_function submit, void* ctx
+    kmg_state_t* state, uint32_t node, kmg_submit_function submit, void* context
 ) {
-    const km_node_t* n = &s->nodes[node];
-    const km_template_t* t = &s->template[n->arg < s->hdr->command_count ? n->arg : 0u];
-    const km_command_t* src = &t->rec;
-    km_command_t rec;
-    rec.sequence = rec.land1 = rec.land2 = rec.land3 = 0;
-    rec.hdr = src->hdr & 0xFFFFu;
-    rec.a0 = src->a0;
-    rec.a1 = src->a1;
-    rec.a2 = src->a2;
-    rec.a3 = src->a3;
-    rec.a4 = src->a4;
-    rec.a5 = src->a5;
-    rec.a6 = src->a6;
-    rec.a7 = src->a7;
-    rec.a8 = src->a8;
-    rec.a9 = src->a9;
-    for (uint32_t k = 0; k < t->patch_count && k < KM_TEMPLATE_PATCHES; k++) {
-        set_arg(&rec, t->arg[k], s->registers[REGISTER(t->registers[k])]);
+    const km_node_t* node_entry = &state->nodes[node];
+    const km_template_t* template_entry = (
+        &state->template
+             [node_entry->arg < state->hdr->command_count ? node_entry->arg : 0u]
+    );
+    const km_command_t* template_command = &template_entry->rec;
+    km_command_t command;
+    command.sequence = command.land1 = command.land2 = command.land3 = 0;
+    command.hdr = template_command->hdr & 0xFFFFu;
+    command.a0 = template_command->a0;
+    command.a1 = template_command->a1;
+    command.a2 = template_command->a2;
+    command.a3 = template_command->a3;
+    command.a4 = template_command->a4;
+    command.a5 = template_command->a5;
+    command.a6 = template_command->a6;
+    command.a7 = template_command->a7;
+    command.a8 = template_command->a8;
+    command.a9 = template_command->a9;
+    for (
+        uint32_t patch = 0;
+        patch < template_entry->patch_count && patch < KM_TEMPLATE_PATCHES;
+        patch++
+    ) {
+        set_arg(
+            &command,
+            template_entry->arg[patch],
+            state->registers[REGISTER(template_entry->registers[patch])]
+        );
     }
-    uint32_t first = src->group & 0xFFFFu, count = src->group >> 16;
-    if (t->first_register != KM_GRAPH_NONE) {
-        first = s->registers[REGISTER(t->first_register)];
+    uint32_t first = template_command->group & 0xFFFFu;
+    uint32_t count = template_command->group >> 16;
+    if (template_entry->first_register != KM_GRAPH_NONE) {
+        first = state->registers[REGISTER(template_entry->first_register)];
     }
-    if (t->count_register != KM_GRAPH_NONE) {
-        count = s->registers[REGISTER(t->count_register)];
+    if (template_entry->count_register != KM_GRAPH_NONE) {
+        count = state->registers[REGISTER(template_entry->count_register)];
     }
-    if (rec.hdr >> 8 & KM_FLAG_QUEUE) {
+    if (command.hdr >> 8 & KM_FLAG_QUEUE) {
         first = 0;
-        if (count == 0 || count > s->core_count) {
-            fail(s, KM_STREAM_ERROR_NEVER_FITS, node);
+        if (count == 0 || count > state->core_count) {
+            fail(state, KM_STREAM_ERROR_NEVER_FITS, node);
             return KMG_ERROR;
         }
-    } else if (count == 0 || first > s->core_count || count > s->core_count - first) {
-        fail(s, KM_STREAM_ERROR_GROUP, node);
+    } else if (
+        count == 0 || first > state->core_count || count > state->core_count - first
+    ) {
+        fail(state, KM_STREAM_ERROR_GROUP, node);
         return KMG_ERROR;
     }
-    rec.group = first | count << 16;
-    if (submit(ctx, node, &rec) != KMG_SUBMITTED) {
-        push(s, node);
+    command.group = first | count << 16;
+    if (submit(context, node, &command) != KMG_SUBMITTED) {
+        push(state, node);
         return KMG_BUSY;
     }
-    s->status[node] = KMG_FLIGHT;
-    s->in_flight++;
+    state->status[node] = KMG_FLIGHT;
+    state->in_flight++;
     return KMG_SUBMITTED;
 }
 
 /* All nodes are done: go round again while `again` is set, else end. */
-static uint32_t round_end(kmg_state_t* s) {
-    uint32_t again = s->hdr->again_register;
-    if (again == KM_GRAPH_NONE || s->registers[REGISTER(again)] == 0) {
-        s->phase = KMG_END;
+static uint32_t round_end(kmg_state_t* state) {
+    uint32_t again = state->hdr->again_register;
+    if (again == KM_GRAPH_NONE || state->registers[REGISTER(again)] == 0) {
+        state->phase = KMG_END;
         return KMG_END;
     }
-    if (s->runs >= s->hdr->max_runs) {
-        fail(s, KM_STREAM_ERROR_RUNS, KM_GRAPH_NO_NODE);
+    if (state->runs >= state->hdr->max_runs) {
+        fail(state, KM_STREAM_ERROR_RUNS, KM_GRAPH_NO_NODE);
         return KMG_ERROR;
     }
-    s->runs++;
-    reset(s);
+    state->runs++;
+    reset(state);
     return KMG_ROUND;
 }
 
-uint32_t kmg_step(kmg_state_t* s, kmg_submit_function submit, void* ctx) {
-    if (s->phase != KMG_RUNNING) {
-        return s->phase;
+uint32_t kmg_step(kmg_state_t* state, kmg_submit_function submit, void* context) {
+    if (state->phase != KMG_RUNNING) {
+        return state->phase;
     }
-    uint32_t taken = 0, busy = 0, ops = 0;
+    uint32_t taken = 0, busy = 0, micro_ops_run = 0;
     while (
-        s->done < s->hdr->node_count && taken < KM_GRAPH_STEP && s->ready_n != 0 &&
-        busy < s->ready_n
+        state->done < state->hdr->node_count && taken < KM_GRAPH_STEP &&
+        state->ready_n != 0 && busy < state->ready_n
     ) {
-        uint32_t node = pop(s);
-        const km_node_t* n = &s->nodes[node];
+        uint32_t node = pop(state);
+        const km_node_t* node_entry = &state->nodes[node];
         taken++;
         if (
-            n->skip_register != KM_GRAPH_NONE &&
-            s->registers[REGISTER(n->skip_register)] == 0
+            node_entry->skip_register != KM_GRAPH_NONE &&
+            state->registers[REGISTER(node_entry->skip_register)] == 0
         ) {
-            finish(s, node);
+            finish(state, node);
             busy = 0;
             continue;
         }
-        if (n->kind == KM_NODE_COMMAND) {
-            uint32_t got = submit_command(s, node, submit, ctx);
-            if (got == KMG_ERROR) {
+        if (node_entry->kind == KM_NODE_COMMAND) {
+            uint32_t outcome = submit_command(state, node, submit, context);
+            if (outcome == KMG_ERROR) {
                 return KMG_ERROR;
             }
-            busy = got == KMG_BUSY ? busy + 1u : 0u;
+            busy = outcome == KMG_BUSY ? busy + 1u : 0u;
             continue;
         }
         busy = 0;
-        if (n->kind == KM_NODE_CPU) {
-            ops += run_cpu(s, node);
-            if (s->phase != KMG_RUNNING) {
+        if (node_entry->kind == KM_NODE_CPU) {
+            micro_ops_run += run_cpu(state, node);
+            if (state->phase != KMG_RUNNING) {
                 return KMG_ERROR;
             }
         }
-        finish(s, node);
-        if (ops >= KM_GRAPH_STEP_OPS) {
+        finish(state, node);
+        if (micro_ops_run >= KM_GRAPH_STEP_OPS) {
             break;
         }
     }
-    return s->done == s->hdr->node_count ? round_end(s) : KMG_RUNNING;
+    return state->done == state->hdr->node_count ? round_end(state) : KMG_RUNNING;
 }
 
-uint32_t kmg_complete(kmg_state_t* s, uint32_t node, uint32_t result) {
+uint32_t kmg_complete(kmg_state_t* state, uint32_t node, uint32_t result) {
     if (
-        s->phase != KMG_RUNNING || node >= s->hdr->node_count ||
-        s->status[node] != KMG_FLIGHT
+        state->phase != KMG_RUNNING || node >= state->hdr->node_count ||
+        state->status[node] != KMG_FLIGHT
     ) {
         return 1u;
     }
-    uint32_t reg = s->nodes[node].result_register;
-    if (reg != KM_GRAPH_NONE) {
-        s->registers[REGISTER(reg)] = result;
+    uint32_t register_index = state->nodes[node].result_register;
+    if (register_index != KM_GRAPH_NONE) {
+        state->registers[REGISTER(register_index)] = result;
     }
-    s->in_flight--;
-    finish(s, node);
+    state->in_flight--;
+    finish(state, node);
     return 0;
 }
 
-uint32_t kmg_retry(kmg_state_t* s, uint32_t node) {
+uint32_t kmg_retry(kmg_state_t* state, uint32_t node) {
     if (
-        s->phase != KMG_RUNNING || node >= s->hdr->node_count ||
-        s->status[node] != KMG_FLIGHT
+        state->phase != KMG_RUNNING || node >= state->hdr->node_count ||
+        state->status[node] != KMG_FLIGHT
     ) {
         return 1u;
     }
-    s->in_flight--;
-    push(s, node);
+    state->in_flight--;
+    push(state, node);
     return 0;
 }
 
-void kmg_stop(kmg_state_t* s, uint32_t reason, uint32_t node) {
-    if (s->phase == KMG_RUNNING) {
-        fail(s, reason, node);
+void kmg_stop(kmg_state_t* state, uint32_t reason, uint32_t node) {
+    if (state->phase == KMG_RUNNING) {
+        fail(state, reason, node);
     }
 }

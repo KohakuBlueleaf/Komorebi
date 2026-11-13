@@ -27,10 +27,10 @@ extern "C" {
 #define KMG_FLIGHT 2u  /* a command submitted, its completion not seen */
 #define KMG_DONE 3u
 
-/* Submits `rec` for `node` (sequence, landing and slot bits are 0; a queued command
+/* Submits `command` for `node` (sequence, landing and slot bits are 0; a queued command
    keeps KM_FLAG_QUEUE and first 0). Returns KMG_SUBMITTED or KMG_BUSY. */
 typedef uint32_t (*kmg_submit_function)(
-    void* ctx, uint32_t node, const km_command_t* rec
+    void* context, uint32_t node, const km_command_t* command
 );
 
 /* All engine state, in a block the caller gives. The first 20 words are fixed: the
@@ -61,7 +61,7 @@ uint32_t kmg_check(const void* upload, uint32_t bytes);
 /* Starts a checked upload, which stays in place and unchanged while the graph runs.
    Returns 0, or KM_STREAM_ERROR_HEADER for more than KM_GRAPH_BINDINGS bindings. */
 uint32_t kmg_start(
-    kmg_state_t* s,
+    kmg_state_t* state,
     const void* upload,
     const uint32_t* bindings,
     uint32_t n_bindings,
@@ -69,18 +69,18 @@ uint32_t kmg_start(
 );
 
 /* One step: at most KM_GRAPH_STEP ready nodes. */
-uint32_t kmg_step(kmg_state_t* s, kmg_submit_function submit, void* ctx);
+uint32_t kmg_step(kmg_state_t* state, kmg_submit_function submit, void* context);
 
 /* The command of `node` completed with `result`. Returns 0, or 1 if the graph is not
    running or the node has no command in flight (nothing changes). */
-uint32_t kmg_complete(kmg_state_t* s, uint32_t node, uint32_t result);
+uint32_t kmg_complete(kmg_state_t* state, uint32_t node, uint32_t result);
 
 /* The command of `node` was submitted, then rejected for now (no slot, a group busy):
    the node goes back to the ready ring's tail. Returns 0, or 1 as kmg_complete. */
-uint32_t kmg_retry(kmg_state_t* s, uint32_t node);
+uint32_t kmg_retry(kmg_state_t* state, uint32_t node);
 
 /* Ends a running graph with an error from outside: a deadline, a cancel. */
-void kmg_stop(kmg_state_t* s, uint32_t reason, uint32_t node);
+void kmg_stop(kmg_state_t* state, uint32_t reason, uint32_t node);
 
 #if defined(__cplusplus)
 }
