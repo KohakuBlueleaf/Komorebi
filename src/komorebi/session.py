@@ -188,21 +188,19 @@ def _dram_interleaved(tensor):
     )
 
 
-def read_tensors(device, module, tensors):
-    """The raw pages of interleaved DRAM tensors as [pages, page_bytes] uint8 each:
-    one DRAM barrier, one read per bank and tensor, no wait for idle cores."""
+def read_tensors(device, module, tensors, first=0, pages=None):
+    """The raw pages first .. first + pages - 1 (pages=None: to the end) of interleaved
+    DRAM tensors as [pages, page_bytes] uint8 each: one DRAM barrier, one read per bank
+    and tensor, no wait for idle cores."""
     banks = module.dram_banks(device)
     spans, layout = [], []
     for t in tensors:
         if not _dram_interleaved(t):
             raise ValueError("only interleaved DRAM tensors are read by banks")
-        page, aligned, pages = (
-            t.buffer_page_size(),
-            t.buffer_aligned_page_size(),
-            t.buffer_num_pages(),
-        )
-        mine = dram.bank_spans(t.buffer_address(), aligned, pages, banks)
-        layout.append((len(spans), len(mine), page, aligned, pages))
+        page, aligned = t.buffer_page_size(), t.buffer_aligned_page_size()
+        at, count = dram.page_range(first, pages, t.buffer_num_pages())
+        mine = dram.bank_spans(t.buffer_address(), aligned, count, banks, at)
+        layout.append((len(spans), len(mine), page, aligned, count))
         spans += mine
     chunks = module.read_dram(device, spans)
     return [
@@ -333,12 +331,26 @@ class Session:
         gx, gy, table, noc0 = self._module.core_nocs(self.device)
         return layout.nocs((gx, gy), table, noc0)
 
-    def read(self, *tensors):
+    def read(self, *tensors, first=0, pages=None):
         """The raw pages of interleaved DRAM tensors ([pages, page_bytes] uint8 each),
-        under one DRAM barrier. It does not wait for idle cores, so it may run while a
-        program runs: read only what no kernel writes any more (after its event)."""
+        under one DRAM barrier; with `first` or `pages`, only those pages of one tensor
+        (pages=None: to the end). It does not wait for idle cores, so it may run while
+        a program runs: read only what no kernel writes any more (after its event)."""
+        if (first or pages is not None) and len(tensors) != 1:
+            raise ValueError("a page range is read from one tensor")
         self._module = self._module or native.load_module(self.tree)
-        return read_tensors(self.device, self._module, tensors)
+        return read_tensors(self.device, self._module, tensors, first, pages)
+
+    def read_chunks(self, tensor, chunk_bytes=2 << 20):
+        """Yields (first, pages) over the whole tensor, each read() of at most
+        `chunk_bytes` (aligned pages), so that the caller can log every chunk."""
+        total, aligned = tensor.buffer_num_pages(), tensor.buffer_aligned_page_size()
+        per = chunk_bytes // aligned
+        if per < 1:
+            raise ValueError(f"chunk_bytes {chunk_bytes}: a page takes {aligned}")
+        for first in range(0, total, per):
+            (pages,) = self.read(tensor, first=first, pages=min(per, total - first))
+            yield first, pages
 
     def read_bf16(self, *tensors):
         """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
@@ -349,6 +361,15 @@ class Session:
             rows, cols = tuple(t.padded_shape)
             out.append(dram.untilize_bf16(pages, rows, cols))
         return out
+
+    def read_tiles_bf16(self, tensor, first, pages):
+        """Tiles first .. first + pages - 1 of a bfloat16 tile tensor (one tile a page,
+        row-major tile order) as float32 [pages, 32, 32], read as read() does."""
+        if tensor.layout != ttnn.TILE_LAYOUT or tensor.dtype != ttnn.bfloat16:
+            raise ValueError("read_tiles_bf16 takes a bfloat16 tile tensor")
+        (raw,) = self.read(tensor, first=first, pages=pages)
+        tile = dram.TILE
+        return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
 
     def load(
         self,
