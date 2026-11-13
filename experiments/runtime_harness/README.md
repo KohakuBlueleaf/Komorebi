@@ -30,7 +30,9 @@ hand. Seven of its scenarios pin known behaviour in
 
 The program is built into `build/runtime_harness/` and reused while the sources are
 unchanged. `--build-only --pinned` builds the tests' program instead: the eleven pinned
-scenarios, at `-O0`.
+scenarios, at `-O0`, with the harness's own eight files compiled as two units (those on
+`sim_impl.hpp` and the rest) so that each header family is parsed once: about 3.8 s of
+compiler time instead of 7.4 s.
 
 Each compute thread is compiled as its own object, as it is its own program on the
 card. The build renames the runtime's namespace per thread (`-Dkm=km_unpack`, and so

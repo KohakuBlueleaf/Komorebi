@@ -24,6 +24,7 @@ FORMS = {
     "pinned": ["-O0"],
 }
 HARNESS = ["sim", "stub_calls", "dispatcher", "dyn_dispatch", "checks", "pinned"]
+SIM_FAMILY = ["sim", "stub_calls", "dispatcher", "dyn_dispatch"]
 ROWS = ["smoke", "exit_partial_team", "completion_every_team"]
 PARTS = ("unpack", "math", "pack")
 
@@ -105,6 +106,20 @@ def dyn_units(tree):
     ]
 
 
+def two_units(todo, d):
+    """The harness's own files (same flags) as two translation units in `d`, those on
+    sim_impl.hpp and the rest: each header family is parsed once. Kernels stay apart."""
+    plain = ["-std=c++17", "-Werror"]
+    own = [(name, src) for name, src, flags in todo if flags == plain]
+    units = []
+    for part in ("sim", "checks"):
+        unit = d / f"harness_{part}.cpp"
+        mine = [src for name, src in own if (name in SIM_FAMILY) == (part == "sim")]
+        unit.write_text("".join(f'#include "{src}"\n' for src in mine))
+        units.append((f"harness_{part}", unit, plain))
+    return [t for t in todo if t[2] != plain] + units
+
+
 def build(out, tree=ROOT, form="one"):
     """Path of the scenario program for `form`, compiled into `out` unless current."""
     cxx = shutil.which("c++")
@@ -132,6 +147,8 @@ def build(out, tree=ROOT, form="one"):
     if program.exists() and stamp.exists() and stamp.read_text() == key.hexdigest():
         return program
     d.mkdir(parents=True, exist_ok=True)
+    if form == "pinned":
+        todo = two_units(todo, d)
     jobs = [
         [*common, *flags, "-c", str(src), "-o", str(d / f"{name}.o")]
         for name, src, flags in todo
