@@ -100,3 +100,9 @@ place to ask a question and to be wrong.
   the routes (AAAB reads +18%, BBBBBAAA writes +47% on 120 cores); the K-split matrix
   product gains 10.5% with its chunk reads split AB; attention, the rasterizer and the
   ray tracer are compute-bound.
+- [ray_moves](ray_moves/README.md): whether the ray tracer gains when treelets stay in
+  their owners' L1 and bundles of rays move between cores: the rays' paths on the host,
+  routed messages of 64 bytes to 4 KiB on the card, and a predicted frame. Sponza's
+  overview: 292 ms against 348.5 today with 2 KiB pages that no core copies (12.7
+  million a second), R = 32, if walking and moving overlap (437 ms if not). Bistro's
+  treelets need 156 MiB of L1 against 118: 2256 ms against 523.7.

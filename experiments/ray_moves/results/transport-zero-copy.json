@@ -1,0 +1,454 @@
+{
+ "load_before": [
+  "12.39",
+  "10.15",
+  "8.58"
+ ],
+ "card": "0",
+ "sizes": {
+  "2048": {
+   "kernels": "zero-copy",
+   "messages": 2048,
+   "packet": 4,
+   "moves_per_second": 12739011.980145054,
+   "bytes_per_second": 26089496535.33707,
+   "rates": [
+    12739011.980145054,
+    12724527.645403204,
+    12738061.177524291
+   ],
+   "pairs": [
+    [
+     {
+      "forwards": 100,
+      "microseconds": 17531.0,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 206848,
+      "visits_per_core_max_mean": [
+       4150,
+       1752.949152542373
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.4462890625,
+       "forward": 113.37625696163366,
+       "wait": 11552.961822207611
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     },
+     {
+      "forwards": 400,
+      "microseconds": 65760.8,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 821248,
+      "visits_per_core_max_mean": [
+       16010,
+       6959.728813559322
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.44993108050187,
+       "forward": 114.29820833658043,
+       "wait": 11099.319674446695
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     }
+    ],
+    [
+     {
+      "forwards": 100,
+      "microseconds": 17518.8,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 206848,
+      "visits_per_core_max_mean": [
+       4150,
+       1752.949152542373
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.449561997215347,
+       "forward": 113.33811784498762,
+       "wait": 11544.574890741027
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     },
+     {
+      "forwards": 400,
+      "microseconds": 65803.5,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 821248,
+      "visits_per_core_max_mean": [
+       16010,
+       6959.728813559322
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.448097286081671,
+       "forward": 114.30953256507169,
+       "wait": 11101.477104358244
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     }
+    ],
+    [
+     {
+      "forwards": 100,
+      "microseconds": 17535.5,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 206848,
+      "visits_per_core_max_mean": [
+       4150,
+       1752.949152542373
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.456571975556931,
+       "forward": 113.33321086014851,
+       "wait": 11549.386259475557
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     },
+     {
+      "forwards": 400,
+      "microseconds": 65768.9,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 821248,
+      "visits_per_core_max_mean": [
+       16010,
+       6959.728813559322
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.452247067877182,
+       "forward": 114.31143941903055,
+       "wait": 11099.786306937734
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     }
+    ]
+   ],
+   "ok": true
+  },
+  "4096": {
+   "kernels": "zero-copy",
+   "messages": 2048,
+   "packet": 4,
+   "moves_per_second": 6529959.804186232,
+   "bytes_per_second": 26746715357.946808,
+   "rates": [
+    6529460.150526162,
+    6527781.319325803,
+    6529959.804186232
+   ],
+   "pairs": [
+    [
+     {
+      "forwards": 100,
+      "microseconds": 33980.8,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 206848,
+      "visits_per_core_max_mean": [
+       4150,
+       1752.949152542373
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.509258005878713,
+       "forward": 113.30162728186882,
+       "wait": 23877.09987527073
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     },
+     {
+      "forwards": 400,
+      "microseconds": 128077.4,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 821248,
+      "visits_per_core_max_mean": [
+       16010,
+       6959.728813559322
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.531441172459476,
+       "forward": 114.25273486206359,
+       "wait": 23053.863083989247
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     }
+    ],
+    [
+     {
+      "forwards": 100,
+      "microseconds": 33980.1,
+      "aiclk_mhz": [
+       1343,
+       1350
+      ],
+      "visits": 206848,
+      "visits_per_core_max_mean": [
+       4150,
+       1752.949152542373
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.509349860767327,
+       "forward": 113.2839573019802,
+       "wait": 23871.61503616182
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     },
+     {
+      "forwards": 400,
+      "microseconds": 128100.9,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 821248,
+      "visits_per_core_max_mean": [
+       16010,
+       6959.728813559322
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.52138452696384,
+       "forward": 114.22314818422693,
+       "wait": 23052.794641813434
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     }
+    ],
+    [
+     {
+      "forwards": 100,
+      "microseconds": 34020.8,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 206848,
+      "visits_per_core_max_mean": [
+       4150,
+       1752.949152542373
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.5157410272277225,
+       "forward": 113.30440710086634,
+       "wait": 23875.621422493812
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     },
+     {
+      "forwards": 400,
+      "microseconds": 128110.2,
+      "aiclk_mhz": [
+       1350,
+       1350
+      ],
+      "visits": 821248,
+      "visits_per_core_max_mean": [
+       16010,
+       6959.728813559322
+      ],
+      "bad": 0,
+      "pack_cycles_per_visit": {
+       "check": 4.520456670822942,
+       "forward": 114.23099356101933,
+       "wait": 23053.58900843594
+      },
+      "quota": 34,
+      "queue_messages": 4096,
+      "checks": {
+       "event_done": true,
+       "run_matches": true,
+       "visits": true,
+       "consumed": true,
+       "bad": true,
+       "reader_bad": true,
+       "reader_checked": true,
+       "rejected": true,
+       "counters_idle": true
+      },
+      "ok": true
+     }
+    ]
+   ],
+   "ok": true
+  }
+ },
+ "load_after": [
+  "11.70",
+  "10.08",
+  "8.57"
+ ],
+ "ok": true
+}
