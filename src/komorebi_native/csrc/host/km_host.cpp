@@ -74,8 +74,8 @@ namespace {
     constexpr uint32_t kEventDepthMax = 128;
     static_assert(KMD_HOST_RING + kEventDepthMax * 16 <= kHostBufferBytes);
 
-    bool power_of_two(uint32_t n) {
-        return n != 0 && (n & (n - 1)) == 0;
+    bool power_of_two(uint32_t value) {
+        return value != 0 && (value & (value - 1)) == 0;
     }
 
     // The X280 idle image of the tree in use (firmware-lim-idle.bin), set by the
@@ -133,34 +133,41 @@ namespace {
     // core table's) and its NoC0 coordinates, as x | y << 16 words; no X280 needed.
     std::tuple<uint32_t, uint32_t, std::vector<uint32_t>, std::vector<uint32_t>>
     core_nocs(MeshDevice& mesh) {
-        const auto g = mesh.compute_with_storage_grid_size();
+        const auto grid = mesh.compute_with_storage_grid_size();
         const auto& soc = (
             tt::tt_metal::MetalContext::instance().get_cluster().get_soc_desc(
                 chip(mesh)->id()
             )
         );
         std::vector<uint32_t> table, noc0;
-        for (uint32_t y = 0; y < g.y; y++) {
-            for (uint32_t x = 0; x < g.x; x++) {
-                const auto t = x280::X280Runtime::virtual_core_from_logical_core(
+        for (uint32_t y = 0; y < grid.y; y++) {
+            for (uint32_t x = 0; x < grid.x; x++) {
+                const auto virtual_core = x280::X280Runtime::virtual_core_from_logical_core(
                     mesh,
                     tt::tt_metal::CoreCoord{x, y},
                     tt::CoreType::WORKER,
                     tt::tt_metal::NOC::NOC_0
                 );
-                const auto p = (
+                const auto noc0_core = (
                     soc.translate_coord_to(
                         tt::umd::CoreCoord(
-                            t.x(), t.y(), tt::CoreType::TENSIX, tt::CoordSystem::TRANSLATED
+                            virtual_core.x(),
+                            virtual_core.y(),
+                            tt::CoreType::TENSIX,
+                            tt::CoordSystem::TRANSLATED
                         ),
                         tt::CoordSystem::NOC0
                     )
                 );
-                table.push_back(static_cast<uint32_t>(t.x() | t.y() << 16));
-                noc0.push_back(static_cast<uint32_t>(p.x | p.y << 16));
+                table.push_back(
+                    static_cast<uint32_t>(virtual_core.x() | virtual_core.y() << 16)
+                );
+                noc0.push_back(static_cast<uint32_t>(noc0_core.x | noc0_core.y << 16));
             }
         }
-        return {static_cast<uint32_t>(g.x), static_cast<uint32_t>(g.y), table, noc0};
+        return {
+            static_cast<uint32_t>(grid.x), static_cast<uint32_t>(grid.y), table, noc0
+        };
     }
 
     // The number of DRAM banks of interleaved buffers (bank b is DRAM view b).
@@ -214,11 +221,11 @@ namespace {
         const auto& hal = tt::tt_metal::MetalContext::instance().hal();
         const uint32_t types = hal.get_programmable_core_type_count();
         std::vector<std::tuple<std::string, std::vector<std::string>>> kernels;
-        for (uint32_t t = 0; t < types; t++) {
-            for (const auto& [id, kernel] : program.impl().get_kernels(t)) {
-                const auto& src = kernel->kernel_source();
+        for (uint32_t core_type = 0; core_type < types; core_type++) {
+            for (const auto& [id, kernel] : program.impl().get_kernels(core_type)) {
+                const auto& source = kernel->kernel_source();
                 kernels.emplace_back(
-                    src.path_.empty() ? kernel->name() : src.path_.string(),
+                    source.path_.empty() ? kernel->name() : source.path_.string(),
                     kernel->elf_paths_by_processor_index(*dev, root)
                 );
             }
@@ -230,8 +237,8 @@ namespace {
         try {
             program.impl().finalize_offsets(dev);
             config_bytes = program.impl().get_program_config_sizes()[index];
-        } catch (const std::exception& e) {
-            error = e.what();
+        } catch (const std::exception& failure) {
+            error = failure.what();
         }
         // The text sizes are set before the size check, so they are there either way.
         std::vector<uint32_t> text(hal.get_num_risc_processors(tensix), 0);
@@ -239,8 +246,10 @@ namespace {
             const auto sizes = (
                 group->launch_msg.view().kernel_config().kernel_text_size()
             );
-            for (size_t p = 0; p < text.size(); p++) {
-                text[p] = std::max(text[p], static_cast<uint32_t>(sizes[p]));
+            for (size_t processor = 0; processor < text.size(); processor++) {
+                text[processor] = (
+                    std::max(text[processor], static_cast<uint32_t>(sizes[processor]))
+                );
             }
         }
         return {kernels, config_bytes, kernel_buffer(mesh)[0], text, error};
@@ -263,10 +272,10 @@ namespace {
         {
             nb::gil_scoped_release release;
             cluster.dram_barrier(dev->id());
-            for (size_t i = 0; i < spans.size(); i++) {
-                const auto& [bank, address, bytes] = spans[i];
+            for (size_t span_index = 0; span_index < spans.size(); span_index++) {
+                const auto& [bank, address, bytes] = spans[span_index];
                 cluster.read_dram_vec(
-                    data[i]->data(),
+                    data[span_index]->data(),
                     static_cast<uint32_t>(bytes),
                     dev->id(),
                     static_cast<int>(bank),
@@ -276,8 +285,8 @@ namespace {
         }
         std::vector<Bytes> out;
         for (auto* owned : data) {
-            nb::capsule owner(owned, [](void* p) noexcept {
-                delete static_cast<std::vector<uint8_t>*>(p);
+            nb::capsule owner(owned, [](void* memory) noexcept {
+                delete static_cast<std::vector<uint8_t>*>(memory);
             });
             const size_t shape[1] = {owned->size()};
             out.emplace_back(owned->data(), 1, shape, owner);
@@ -285,23 +294,27 @@ namespace {
         return out;
     }
 
-    // Waits up to timeout_s for the kernels on the gx x gy worker grid to return, in
-    // slices of at most a second with signals checked between them. True: returned.
-    bool wait_grid(const MeshDevice& mesh, uint32_t gx, uint32_t gy, double timeout_s) {
+    // Waits up to timeout_s for the kernels of the worker grid to return, in slices of
+    // at most a second, signals checked between them. True: returned.
+    bool wait_grid(
+        const MeshDevice& mesh, uint32_t grid_x, uint32_t grid_y, double timeout_s
+    ) {
         auto* dev = chip(mesh);
         std::unordered_set<tt::tt_metal::CoreCoord> left;
-        for (uint32_t y = 0; y < gy; y++) {
-            for (uint32_t x = 0; x < gx; x++) {
+        for (uint32_t y = 0; y < grid_y; y++) {
+            for (uint32_t x = 0; x < grid_x; x++) {
                 left.insert(dev->virtual_core_from_logical_core(
                     tt::tt_metal::CoreCoord{x, y}, tt::CoreType::WORKER
                 ));
             }
         }
         auto& context = tt::tt_metal::MetalContext::instance();
-        const auto by = after(timeout_s);
+        const auto deadline = after(timeout_s);
         for (;;) {
             const auto rest = (
-                std::chrono::duration_cast<std::chrono::milliseconds>(by - Clock::now())
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - Clock::now()
+                )
             );
             const int slice = (
                 static_cast<int>(std::clamp<int64_t>(rest.count(), 1, 1000))
@@ -319,7 +332,7 @@ namespace {
             if (left.empty()) {
                 return true;
             }
-            if (Clock::now() >= by) {
+            if (Clock::now() >= deadline) {
                 return false;
             }
             if (PyErr_CheckSignals() != 0) {
@@ -333,9 +346,9 @@ namespace {
     class Device {
     public:
         explicit Device(std::optional<size_t> worker_l1_size) {
-            namespace d = tt::tt_metal::distributed;
+            namespace distributed = tt::tt_metal::distributed;
             mesh_ = MeshDevice::create(
-                d::MeshDeviceConfig(d::MeshShape(1, 1)),
+                distributed::MeshDeviceConfig(distributed::MeshShape(1, 1)),
                 DEFAULT_L1_SMALL_SIZE,
                 DEFAULT_TRACE_REGION_SIZE,
                 1,
@@ -370,23 +383,23 @@ namespace {
         }
 
         std::tuple<uint32_t, uint32_t> grid() const {
-            const auto g = mesh().compute_with_storage_grid_size();
-            return {static_cast<uint32_t>(g.x), static_cast<uint32_t>(g.y)};
+            const auto size = mesh().compute_with_storage_grid_size();
+            return {static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y)};
         }
 
         // A Tensix core's NoC coordinates (the runtime's virtual ones) from its
         // logical (x, y).
         std::tuple<uint32_t, uint32_t> worker_core(uint32_t x, uint32_t y) const {
-            const auto c = mesh().worker_core_from_logical_core({x, y});
-            return {static_cast<uint32_t>(c.x), static_cast<uint32_t>(c.y)};
+            const auto core = mesh().worker_core_from_logical_core({x, y});
+            return {static_cast<uint32_t>(core.x), static_cast<uint32_t>(core.y)};
         }
 
         // The NoC coordinates of DRAM bank `bank`'s core.
         std::tuple<uint32_t, uint32_t> dram_core(uint32_t bank) const {
-            const auto c = mesh().virtual_core_from_logical_core(
+            const auto core = mesh().virtual_core_from_logical_core(
                 {bank, 0}, tt::CoreType::DRAM
             );
-            return {static_cast<uint32_t>(c.x), static_cast<uint32_t>(c.y)};
+            return {static_cast<uint32_t>(core.x), static_cast<uint32_t>(core.y)};
         }
 
         // Waits until every launched program has finished.
@@ -411,17 +424,17 @@ namespace {
             std::optional<std::array<uint32_t, 2>> shard_grid
         ) :
             mesh_(device.shared()) {
-            namespace d = tt::tt_metal::distributed;
+            namespace distributed = tt::tt_metal::distributed;
             using tt::tt_metal::BufferType;
             if (page_size == 0 || size % page_size != 0) {
                 throw std::invalid_argument("the size is not a whole number of pages");
             }
-            d::DeviceLocalBufferConfig local{
+            distributed::DeviceLocalBufferConfig local{
                 .page_size = page_size, .buffer_type = BufferType::DRAM
             };
             if (shard_grid) {
-                const auto [gx, gy] = *shard_grid;
-                const uint32_t cores = gx * gy;
+                const auto [grid_x, grid_y] = *shard_grid;
+                const uint32_t cores = grid_x * grid_y;
                 if (size != uint64_t{cores} * page_size || page_size % 4 != 0) {
                     throw std::invalid_argument(
                         "a sharded buffer holds one page of whole words per core"
@@ -429,7 +442,7 @@ namespace {
                 }
                 const auto words = static_cast<uint32_t>(page_size / 4);
                 const tt::tt_metal::CoreRangeSet grid(
-                    tt::tt_metal::CoreRange({0, 0}, {gx - 1, gy - 1})
+                    tt::tt_metal::CoreRange({0, 0}, {grid_x - 1, grid_y - 1})
                 );
                 const auto row = tt::tt_metal::ShardOrientation::ROW_MAJOR;
                 tt::tt_metal::ShardSpecBuffer spec(
@@ -453,7 +466,7 @@ namespace {
                 );
             }
             buffer_ = MeshBuffer::create(
-                d::ReplicatedBufferConfig{.size = size}, local, mesh_.get()
+                distributed::ReplicatedBufferConfig{.size = size}, local, mesh_.get()
             );
         }
 
@@ -515,8 +528,8 @@ namespace {
                     throw;
                 }
             }
-            nb::capsule owner(owned, [](void* p) noexcept {
-                delete static_cast<std::vector<uint8_t>*>(p);
+            nb::capsule owner(owned, [](void* memory) noexcept {
+                delete static_cast<std::vector<uint8_t>*>(memory);
             });
             const size_t shape[1] = {owned->size()};
             return Bytes(owned->data(), 1, shape, owner);
@@ -558,28 +571,28 @@ namespace {
             {"bfloat8_b", tt::DataFormat::Bfp8_b},
             {"bfloat4_b", tt::DataFormat::Bfp4_b},
         };
-        for (const auto& [n, f] : formats) {
-            if (n == name) {
-                return f;
+        for (const auto& [format_name, format] : formats) {
+            if (format_name == name) {
+                return format;
             }
         }
         throw std::invalid_argument("no data format " + name);
     }
 
     tt::tt_metal::KernelBuildOptLevel opt_level(const std::string& name) {
-        using L = tt::tt_metal::KernelBuildOptLevel;
-        static const std::vector<std::pair<std::string, L>> levels = {
-            {"O0", L::O0},
-            {"O1", L::O1},
-            {"O2", L::O2},
-            {"O3", L::O3},
-            {"Os", L::Os},
-            {"Ofast", L::Ofast},
-            {"Oz", L::Oz},
+        using Level = tt::tt_metal::KernelBuildOptLevel;
+        static const std::vector<std::pair<std::string, Level>> levels = {
+            {"O0", Level::O0},
+            {"O1", Level::O1},
+            {"O2", Level::O2},
+            {"O3", Level::O3},
+            {"Os", Level::Os},
+            {"Ofast", Level::Ofast},
+            {"Oz", Level::Oz},
         };
-        for (const auto& [n, l] : levels) {
-            if (n == name) {
-                return l;
+        for (const auto& [level_name, level] : levels) {
+            if (level_name == name) {
+                return level;
             }
         }
         throw std::invalid_argument("no optimisation level " + name);
@@ -592,32 +605,32 @@ namespace {
         const std::vector<std::string>& unpack,
         const std::vector<std::pair<std::string, bool>>& flags
     ) {
-        tt::tt_metal::ComputeConfigDescriptor c;
+        tt::tt_metal::ComputeConfigDescriptor config;
         if (fidelity) {
-            using F = tt::tt_metal::MathFidelity;
-            const std::vector<std::pair<std::string, F>> names = {
-                {"LoFi", F::LoFi},
-                {"HiFi2", F::HiFi2},
-                {"HiFi3", F::HiFi3},
-                {"HiFi4", F::HiFi4}
+            using Fidelity = tt::tt_metal::MathFidelity;
+            const std::vector<std::pair<std::string, Fidelity>> names = {
+                {"LoFi", Fidelity::LoFi},
+                {"HiFi2", Fidelity::HiFi2},
+                {"HiFi3", Fidelity::HiFi3},
+                {"HiFi4", Fidelity::HiFi4}
             };
-            const auto it = std::find_if(
-                names.begin(), names.end(), [&](const auto& n) {
-                    return n.first == *fidelity;
+            const auto found = std::find_if(
+                names.begin(), names.end(), [&](const auto& entry) {
+                    return entry.first == *fidelity;
                 }
             );
-            if (it == names.end()) {
+            if (found == names.end()) {
                 throw std::invalid_argument("no math fidelity " + *fidelity);
             }
-            c.math_fidelity = it->second;
+            config.math_fidelity = found->second;
         }
         for (const auto& mode : unpack) {
             if (mode == "Default") {
-                c.unpack_to_dest_mode.push_back(
+                config.unpack_to_dest_mode.push_back(
                     tt::tt_metal::UnpackToDestMode::Default
                 );
             } else if (mode == "UnpackToDestFp32") {
-                c.unpack_to_dest_mode.push_back(
+                config.unpack_to_dest_mode.push_back(
                     tt::tt_metal::UnpackToDestMode::UnpackToDestFp32
                 );
             } else {
@@ -626,20 +639,20 @@ namespace {
         }
         for (const auto& [name, on] : flags) {
             if (name == "fp32_dest_acc_en") {
-                c.fp32_dest_acc_en = on;
+                config.fp32_dest_acc_en = on;
             } else if (name == "dst_full_sync_en") {
-                c.dst_full_sync_en = on;
+                config.dst_full_sync_en = on;
             } else if (name == "bfp8_pack_precise") {
-                c.bfp8_pack_precise = on;
+                config.bfp8_pack_precise = on;
             } else if (name == "math_approx_mode") {
-                c.math_approx_mode = on;
+                config.math_approx_mode = on;
             } else if (name == "enable_trisc2_rvv") {
-                c.enable_trisc2_rvv = on;
+                config.enable_trisc2_rvv = on;
             } else {
                 throw std::invalid_argument("no compute option " + name);
             }
         }
-        return c;
+        return config;
     }
 
     // One program on the grid, described piece by piece (circular buffers, kernels
@@ -656,17 +669,17 @@ namespace {
             uint32_t page_size,
             uint32_t total_size
         ) {
-            tt::tt_metal::CBDescriptor cb;
-            cb.total_size = total_size;
-            cb.core_ranges = core_set(cores);
-            cb.format_descriptors.push_back(
+            tt::tt_metal::CBDescriptor descriptor;
+            descriptor.total_size = total_size;
+            descriptor.core_ranges = core_set(cores);
+            descriptor.format_descriptors.push_back(
                 tt::tt_metal::CBFormatDescriptor{
                     .buffer_index = index,
                     .data_format = data_format(format),
                     .page_size = page_size
                 }
             );
-            desc_.cbs.push_back(std::move(cb));
+            desc_.cbs.push_back(std::move(descriptor));
         }
 
         // A kernel from a file on `cores`, args (x, y, words) per core; processor 0 or
@@ -688,42 +701,45 @@ namespace {
         ) {
             using tt::tt_metal::DataMovementProcessor;
             using tt::tt_metal::NOC;
-            tt::tt_metal::KernelDescriptor k;
-            k.kernel_source = source;
-            k.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
-            k.core_ranges = core_set(cores);
-            k.compile_time_args = compile_args;
-            k.defines = defines;
+            tt::tt_metal::KernelDescriptor kernel_descriptor;
+            kernel_descriptor.kernel_source = source;
+            kernel_descriptor
+                .source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
+            kernel_descriptor.core_ranges = core_set(cores);
+            kernel_descriptor.compile_time_args = compile_args;
+            kernel_descriptor.defines = defines;
             for (const auto& path : includes) {
-                k.compiler_include_paths.emplace_back(path);
+                kernel_descriptor.compiler_include_paths.emplace_back(path);
             }
             for (const auto& [x, y, words] : args) {
-                k.runtime_args.emplace_back(tt::tt_metal::CoreCoord{x, y}, words);
+                kernel_descriptor.runtime_args.emplace_back(
+                    tt::tt_metal::CoreCoord{x, y}, words
+                );
             }
             if (level) {
-                k.opt_level = opt_level(*level);
+                kernel_descriptor.opt_level = opt_level(*level);
             }
             if (noc && (processor == 2 || *noc > 1)) {
                 throw std::invalid_argument("noc: 0 or 1, for a data movement kernel");
             }
             if (processor == 0) {
-                k.config = tt::tt_metal::DataMovementConfigDescriptor{
+                kernel_descriptor.config = tt::tt_metal::DataMovementConfigDescriptor{
                     .processor = DataMovementProcessor::RISCV_0,
                     .noc = static_cast<NOC>(noc.value_or(NOC::RISCV_0_default))
                 };
             } else if (processor == 1) {
-                k.config = tt::tt_metal::DataMovementConfigDescriptor{
+                kernel_descriptor.config = tt::tt_metal::DataMovementConfigDescriptor{
                     .processor = DataMovementProcessor::RISCV_1,
                     .noc = static_cast<NOC>(noc.value_or(NOC::RISCV_1_default))
                 };
             } else if (processor == 2) {
-                k.config = compute_config(fidelity, unpack, flags);
+                kernel_descriptor.config = compute_config(fidelity, unpack, flags);
             } else {
                 throw std::invalid_argument(
                     "processor: 0, 1 (data movement) or 2 (compute)"
                 );
             }
-            desc_.kernels.push_back(std::move(k));
+            desc_.kernels.push_back(std::move(kernel_descriptor));
         }
 
         KernelBuild build() const {
@@ -733,14 +749,17 @@ namespace {
         // Launches the program and returns without waiting for it (the launch call
         // of generic_op on a 1 x 1 mesh); a later run launches the kept program again.
         void run() {
-            namespace d = tt::tt_metal::distributed;
+            namespace distributed = tt::tt_metal::distributed;
             if (!workload_) {
-                workload_ = std::make_unique<d::MeshWorkload>();
+                workload_ = std::make_unique<distributed::MeshWorkload>();
                 workload_->add_program(
-                    d::MeshCoordinateRange(mesh_->shape()), tt::tt_metal::Program(desc_)
+                    distributed::MeshCoordinateRange(mesh_->shape()),
+                    tt::tt_metal::Program(desc_)
                 );
             }
-            d::EnqueueMeshWorkload(mesh_->mesh_command_queue(), *workload_, false);
+            distributed::EnqueueMeshWorkload(
+                mesh_->mesh_command_queue(), *workload_, false
+            );
         }
 
     private:
@@ -752,8 +771,8 @@ namespace {
     // [n, 4] events (index, req, status, ticks) as a numpy array that owns its words.
     Events as_array(std::vector<uint32_t>&& words) {
         auto* owned = new std::vector<uint32_t>(std::move(words));
-        nb::capsule owner(owned, [](void* p) noexcept {
-            delete static_cast<std::vector<uint32_t>*>(p);
+        nb::capsule owner(owned, [](void* memory) noexcept {
+            delete static_cast<std::vector<uint32_t>*>(memory);
         });
         const size_t shape[2] = {owned->size() / 4, 4};
         return Events(owned->data(), 2, shape, owner);
@@ -810,8 +829,8 @@ namespace {
         bool close() {
             close_failed_.clear();
             bool cleaned = true;
-            for (uint32_t c = 1; c < work_.size(); c++) {
-                cleaned = work_abort(c) && cleaned;
+            for (uint32_t cluster = 1; cluster < work_.size(); cluster++) {
+                cleaned = work_abort(cluster) && cleaned;
             }
             cleaned = abort() && cleaned;
             win_.reset();
@@ -824,14 +843,14 @@ namespace {
 
         // Core index -> translated NoC0 x | y << 16; core index = y * grid_x + x.
         std::vector<uint32_t> core_table() const {
-            std::vector<uint32_t> t(KM_CORES_MAX, 0);
-            for (uint32_t y = 0; y < gy_; y++) {
-                for (uint32_t x = 0; x < gx_; x++) {
-                    const auto c = translated(x, y);
-                    t[y * gx_ + x] = c[0] | (c[1] << 16);
+            std::vector<uint32_t> table(KM_CORES_MAX, 0);
+            for (uint32_t y = 0; y < grid_y_; y++) {
+                for (uint32_t x = 0; x < grid_x_; x++) {
+                    const auto core = translated(x, y);
+                    table[y * grid_x_ + x] = core[0] | (core[1] << 16);
                 }
             }
-            return t;
+            return table;
         }
 
         // Picks the run and the tag, zeroes LIM layout and host buffer, writes the
@@ -897,8 +916,10 @@ namespace {
                     base_ + win_->get_size()
                 )
             );
-            const uint64_t lo = base_ + KMD_LIM_UPLOAD;
-            const uint64_t room = end > lo ? (end - lo) & ~63ull : 0;
+            const uint64_t upload_start = base_ + KMD_LIM_UPLOAD;
+            const uint64_t room = (
+                end > upload_start ? (end - upload_start) & ~63ull : 0
+            );
             if (
                 upload_bytes > static_cast<int64_t>(room) ||
                 (upload_bytes >= 0 && upload_bytes % 64 != 0)
@@ -913,10 +934,13 @@ namespace {
             depth_ = depth;
             host_depth_ = host_depth;
             event_depth_ = event_depth;
-            std::random_device rd;
-            run_ = (0x6b6d680000000000ull ^ (static_cast<uint64_t>(rd()) << 16)) + rd();
+            std::random_device entropy;
+            run_ = (
+                (0x6b6d680000000000ull ^ (static_cast<uint64_t>(entropy()) << 16)) +
+                entropy()
+            );
             do {
-                tag_ = (rd() & 0xFFFFu) | 1u;
+                tag_ = (entropy() & 0xFFFFu) | 1u;
             } while (tag_ == 0xFFFFu);
             next_ = 1;
             seen_ = published_ = 0;
@@ -930,41 +954,43 @@ namespace {
                 );
             }
 
-            kmd_args_t a{};
-            a.run_value = run_;
-            a.depth = depth_;
-            a.host_depth = host_depth_;
-            a.event_depth = event_depth_;
-            a.columns = gx_;
-            a.cores = gx_ * gy_;
-            a.panels = panels_.size();
-            for (size_t r = 0; r < panels_.size(); r++) {
-                const auto p0 = translated(panels_[r][0], 0);
-                const auto p1 = translated(panels_[r][1], gy_ - 1);
-                a.rect[r][0] = p0[0];
-                a.rect[r][1] = p0[1];
-                a.rect[r][2] = p1[0];
-                a.rect[r][3] = p1[1];
+            kmd_args_t arguments{};
+            arguments.run_value = run_;
+            arguments.depth = depth_;
+            arguments.host_depth = host_depth_;
+            arguments.event_depth = event_depth_;
+            arguments.columns = grid_x_;
+            arguments.cores = grid_x_ * grid_y_;
+            arguments.panels = panels_.size();
+            for (size_t panel = 0; panel < panels_.size(); panel++) {
+                const auto first_corner = translated(panels_[panel][0], 0);
+                const auto last_corner = translated(panels_[panel][1], grid_y_ - 1);
+                arguments.rect[panel][0] = first_corner[0];
+                arguments.rect[panel][1] = first_corner[1];
+                arguments.rect[panel][2] = last_corner[0];
+                arguments.rect[panel][3] = last_corner[1];
             }
-            a.host_noc_addr = host_noc_;
-            a.pcie_x = pcie_x_;
-            a.pcie_y = pcie_y_;
-            a.t_start = static_cast<uint64_t>(t_start_s * kMtimeHz);
-            a.t_command = static_cast<uint64_t>(t_command_s * kMtimeHz);
-            a.t_idle = static_cast<uint64_t>(t_idle_s * kMtimeHz);
-            a.state_ddr = state_ddr;
-            a.work_cmds = work_cmds;
-            a.work_depth = work_depth;
-            a.work_event_depth = work_event_depth;
-            for (size_t w = 0; w < work_noc.size(); w++) {
-                a.work_noc[w] = work_noc[w];
-                a.work_noc_addr[w] = work_noc_addr[w];
+            arguments.host_noc_addr = host_noc_;
+            arguments.pcie_x = pcie_x_;
+            arguments.pcie_y = pcie_y_;
+            arguments.t_start = static_cast<uint64_t>(t_start_s * kMtimeHz);
+            arguments.t_command = static_cast<uint64_t>(t_command_s * kMtimeHz);
+            arguments.t_idle = static_cast<uint64_t>(t_idle_s * kMtimeHz);
+            arguments.state_ddr = state_ddr;
+            arguments.work_cmds = work_cmds;
+            arguments.work_depth = work_depth;
+            arguments.work_event_depth = work_event_depth;
+            for (
+                size_t work_cluster = 0; work_cluster < work_noc.size(); work_cluster++
+            ) {
+                arguments.work_noc[work_cluster] = work_noc[work_cluster];
+                arguments.work_noc_addr[work_cluster] = work_noc_addr[work_cluster];
             }
-            a.version = KMD_ARGS_VERSION;
-            a.upload_bytes = upload_bytes_;
-            a.messages_handler = messages_handler;
+            arguments.version = KMD_ARGS_VERSION;
+            arguments.upload_bytes = upload_bytes_;
+            arguments.messages_handler = messages_handler;
             std::vector<uint8_t> block(kArgsBytes, 0);
-            std::memcpy(block.data(), &a, sizeof(a));
+            std::memcpy(block.data(), &arguments, sizeof(arguments));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
             return tag_;
         }
@@ -975,31 +1001,33 @@ namespace {
             if (session_) {
                 throw std::runtime_error("a kernel is running");
             }
-            x280::ActiveRunRequest req;
-            req.image_path = image;
-            req.run_value = run_;
-            req.args_addr = base_ + KMD_LIM_ARGS;
-            req.args_bytes = kArgsBytes;
-            const auto enq = rt().enqueue(*tile_, req);
-            if (!enq.session) {
-                throw std::runtime_error("X280 enqueue failed: " + x280::describe(enq));
+            x280::ActiveRunRequest request;
+            request.image_path = image;
+            request.run_value = run_;
+            request.args_addr = base_ + KMD_LIM_ARGS;
+            request.args_bytes = kArgsBytes;
+            const auto enqueued = x280_runtime().enqueue(*tile_, request);
+            if (!enqueued.session) {
+                throw std::runtime_error(
+                    "X280 enqueue failed: " + x280::describe(enqueued)
+                );
             }
-            session_ = enq.session;
+            session_ = enqueued.session;
             aborted_.reset();
         }
 
         // Stores whole 64-byte lines at `offset` of the upload region, then a fence.
         void upload(uint64_t offset, const nb::bytes& data) {
             require_open();
-            const uint64_t n = data.size();
+            const uint64_t bytes = data.size();
             if (
-                offset % 64 != 0 || n % 64 != 0 || offset > upload_bytes_ ||
-                n > upload_bytes_ - offset
+                offset % 64 != 0 || bytes % 64 != 0 || offset > upload_bytes_ ||
+                bytes > upload_bytes_ - offset
             ) {
                 throw std::runtime_error("upload: whole lines inside the region");
             }
             settle();
-            win_->write_block(KMD_LIM_UPLOAD + offset, data.c_str(), n);
+            win_->write_block(KMD_LIM_UPLOAD + offset, data.c_str(), bytes);
             _mm_sfence();
             fenced_ = Clock::now();
         }
@@ -1015,25 +1043,25 @@ namespace {
             }
         }
 
-        uint32_t host_word(uint32_t w) const {
+        uint32_t host_word(uint32_t word) const {
             require_open();
-            if (w >= KMD_HOST_RING / 4) {
+            if (word >= KMD_HOST_RING / 4) {
                 throw std::runtime_error("no such host word");
             }
-            return host_[w];
+            return host_[word];
         }
 
         // Waits until the kernel reports READY or a final state; returns that state, or
         // 0 after the timeout.
         uint32_t wait_ready(double timeout_s) const {
             require_open();
-            const auto by = after(timeout_s);
+            const auto deadline = after(timeout_s);
             for (;;) {
-                const uint32_t s = host_[KMD_HOST_STATE];
-                if (s >= KMD_STATE_READY) {
-                    return s;
+                const uint32_t state = host_[KMD_HOST_STATE];
+                if (state >= KMD_STATE_READY) {
+                    return state;
                 }
-                if (Clock::now() > by) {
+                if (Clock::now() > deadline) {
                     return 0;
                 }
             }
@@ -1058,8 +1086,8 @@ namespace {
         // Stores the read count line (KMD_LIM_READ: events the host has read), without
         // a fence. The kernel takes a command only while its events fit the ring.
         void store_read() {
-            alignas(64) uint32_t w[16] = {seen_};
-            win_->write_block(KMD_LIM_READ, w, 64);
+            alignas(64) uint32_t line[16] = {seen_};
+            win_->write_block(KMD_LIM_READ, line, 64);
             published_ = seen_;
         }
 
@@ -1096,17 +1124,19 @@ namespace {
 
         // Stores the first k commands that fit as commands next .. next + k - 1 (number
         // in sequence and the landing words), the read count, one fence. Returns k.
-        uint32_t push(const uint32_t* recs, size_t n) {
-            const uint32_t k = static_cast<uint32_t>(std::min<size_t>(n, room()));
-            store(recs, k);
-            return k;
+        uint32_t push(const uint32_t* commands, size_t count) {
+            const uint32_t stored = (
+                static_cast<uint32_t>(std::min<size_t>(count, room()))
+            );
+            store(commands, stored);
+            return stored;
         }
 
         // Queues n commands for wait(), stored in order as the ring has room (the
         // kernel orders KM_FLAG_EXCLUSIVE ones). Returns the number queued.
-        size_t enqueue(const uint32_t* recs, size_t n) {
+        size_t enqueue(const uint32_t* commands, size_t count) {
             require_open();
-            queue_.insert(queue_.end(), recs, recs + 16 * n);
+            queue_.insert(queue_.end(), commands, commands + 16 * count);
             return queued();
         }
 
@@ -1121,14 +1151,16 @@ namespace {
         ) {
             require_open();
             // wanted is in command order: offsets from its first fit one table.
-            const uint32_t lo = wanted.empty() ? 0 : wanted.front();
-            std::vector<uint8_t> need(wanted.empty() ? 0 : wanted.back() - lo + 1u, 0);
+            const uint32_t first_wanted = wanted.empty() ? 0 : wanted.front();
+            std::vector<uint8_t> need(
+                wanted.empty() ? 0 : wanted.back() - first_wanted + 1u, 0
+            );
             size_t left = 0;
-            for (const uint32_t c : wanted) {
-                left += need[c - lo] == 0;
-                need[c - lo] = 1;
+            for (const uint32_t command : wanted) {
+                left += need[command - first_wanted] == 0;
+                need[command - first_wanted] = 1;
             }
-            const auto by = after(timeout_s);
+            const auto deadline = after(timeout_s);
             std::vector<uint32_t> out;
             for (;;) {
                 store_queued(upto);
@@ -1136,17 +1168,17 @@ namespace {
                 read_events(out);
                 publish_if_held();
                 bool other = false;
-                for (size_t e = had; e < out.size(); e += 4) {
-                    const uint32_t off = out[e + 1] - lo;
-                    if (off < need.size() && need[off] != 0) {
-                        need[off] = 0;
+                for (size_t event = had; event < out.size(); event += 4) {
+                    const uint32_t offset = out[event + 1] - first_wanted;
+                    if (offset < need.size() && need[offset] != 0) {
+                        need[offset] = 0;
                         left--;
                     }
-                    other = other || (out[e + 2] & 0xFFu) != KM_EVENT_DONE;
+                    other = other || (out[event + 2] & 0xFFu) != KM_EVENT_DONE;
                 }
                 if (
                     left == 0 || other || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
-                    Clock::now() > by
+                    Clock::now() > deadline
                 ) {
                     return out;
                 }
@@ -1174,32 +1206,32 @@ namespace {
             for (;;) {
                 // A sequence lock: index, fields, index again; a change means the
                 // event was being written, so it is read again.
-                const uint32_t i = seen_ + 1;
-                const volatile uint32_t* e = ring + (i % event_depth_) * 4;
-                if (e[0] != i) {
+                const uint32_t number = seen_ + 1;
+                const volatile uint32_t* line = ring + (number % event_depth_) * 4;
+                if (line[0] != number) {
                     return;
                 }
                 _mm_lfence();
-                const uint32_t req = e[1], status = e[2], ticks = e[3];
+                const uint32_t request = line[1], status = line[2], ticks = line[3];
                 _mm_lfence();
-                if (e[0] != i) {
+                if (line[0] != number) {
                     continue;
                 }
-                out.insert(out.end(), {i, req, status, ticks});
-                seen_ = i;
+                out.insert(out.end(), {number, request, status, ticks});
+                seen_ = number;
             }
         }
 
         // poll() until at least one event arrives, the kernel reaches a final state, or
         // timeout_s passes.
         std::vector<uint32_t> wait_events(double timeout_s) {
-            const auto by = after(timeout_s);
+            const auto deadline = after(timeout_s);
             for (;;) {
                 auto out = poll();
                 publish_if_held();
                 if (
                     !out.empty() || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
-                    Clock::now() > by
+                    Clock::now() > deadline
                 ) {
                     auto rest = poll();
                     out.insert(out.end(), rest.begin(), rest.end());
@@ -1221,16 +1253,20 @@ namespace {
             std::string failed;
             {
                 nb::gil_scoped_release release;
-                const auto res = (
-                    rt().session(*session_).wait_until_result_ready(millis(timeout_s))
+                const auto wait_result = (
+                    x280_runtime().session(*session_).wait_until_result_ready(
+                        millis(timeout_s)
+                    )
                 );
-                const auto done = rt().cleanup(*session_, std::chrono::seconds(5));
+                const auto done = (
+                    x280_runtime().cleanup(*session_, std::chrono::seconds(5))
+                );
                 session_.reset();
-                ready = res.succeeded();
+                ready = wait_result.succeeded();
                 if (ready) {
-                    result = res.hartstates[0].state.result;
+                    result = wait_result.hartstates[0].state.result;
                 } else {
-                    failed = x280::describe(res);
+                    failed = x280::describe(wait_result);
                 }
                 cleaned = done.cleaned_up();
                 if (!cleaned) {
@@ -1242,11 +1278,11 @@ namespace {
             );
             std::vector<uint32_t> words(KMD_R_WORDS);
             std::memcpy(words.data(), block.data(), 4 * KMD_R_WORDS);
-            const auto hb = (
+            const auto core_block = (
                 tile_->read_available_lim(base_ + KMD_LIM_CORES, 4 * KMD_H_WORDS)
             );
             std::vector<uint32_t> x280_cores(KMD_H_WORDS);
-            std::memcpy(x280_cores.data(), hb.data(), 4 * KMD_H_WORDS);
+            std::memcpy(x280_cores.data(), core_block.data(), 4 * KMD_H_WORDS);
             nb::dict out;
             out["result_ready"] = ready;
             out["result"] = ready ? nb::object(nb::int_(result)) : nb::none();
@@ -1264,7 +1300,9 @@ namespace {
                 session_.reset();
                 return true;
             }
-            const auto done = rt().cleanup(*session_, std::chrono::seconds(5));
+            const auto done = (
+                x280_runtime().cleanup(*session_, std::chrono::seconds(5))
+            );
             session_.reset();
             note_failed("cluster 0", done);
             try {
@@ -1313,7 +1351,9 @@ namespace {
                     failed = std::string("LIM not readable: ") + error.what();
                 }
                 try {
-                    x280_cores = x280::describe(rt().session(*session_).inspect());
+                    x280_cores = (
+                        x280::describe(x280_runtime().session(*session_).inspect())
+                    );
                 } catch (const std::exception& error) {
                     x280_cores = (
                         std::string("core states not readable: ") + error.what()
@@ -1337,122 +1377,141 @@ namespace {
         }
 
         // The cluster's hardware index, NoC0 coordinate and available LIM.
-        nb::dict work_info(uint32_t c) const {
-            const Work& w = work(c, true);
+        nb::dict work_info(uint32_t cluster) const {
+            const Work& cluster_state = work(cluster, true);
             nb::dict out;
-            out["hw_index"] = w.tile->id().hw_index;
-            out["noc_x"] = w.tile->id().noc_x;
-            out["noc_y"] = w.tile->id().noc_y;
+            out["hw_index"] = cluster_state.tile->id().hw_index;
+            out["noc_x"] = cluster_state.tile->id().noc_x;
+            out["noc_y"] = cluster_state.tile->id().noc_y;
             // The coordinate another cluster's window aims at (as for cluster 0's).
-            const auto v = (
-                rt().virtual_core_from_tile(w.tile->id(), tt::tt_metal::NOC::NOC_0)
+            const auto virtual_core = (
+                x280_runtime().virtual_core_from_tile(
+                    cluster_state.tile->id(), tt::tt_metal::NOC::NOC_0
+                )
             );
-            out["virtual_x"] = static_cast<uint32_t>(v.x());
-            out["virtual_y"] = static_cast<uint32_t>(v.y());
-            out["lim_base"] = w.base;
-            out["lim_bytes"] = w.bytes;
+            out["virtual_x"] = static_cast<uint32_t>(virtual_core.x());
+            out["virtual_y"] = static_cast<uint32_t>(virtual_core.y());
+            out["lim_base"] = cluster_state.base;
+            out["lim_bytes"] = cluster_state.bytes;
             return out;
         }
 
         // Whole 64-byte lines at `offset` from the cluster's LIM base.
-        void work_write(uint32_t c, uint64_t offset, const nb::bytes& data) {
-            Work& w = work(c, true);
+        void work_write(uint32_t cluster, uint64_t offset, const nb::bytes& data) {
+            Work& cluster_state = work(cluster, true);
             if (
                 offset % 64 != 0 || data.size() % 64 != 0 ||
-                offset + data.size() > w.bytes
+                offset + data.size() > cluster_state.bytes
             ) {
                 throw std::runtime_error("LIM writes are whole lines inside the area");
             }
-            const auto* p = static_cast<const uint8_t*>(data.data());
-            w.tile->write_available_lim(w.base + offset, {p, data.size()});
+            const auto* source = static_cast<const uint8_t*>(data.data());
+            cluster_state.tile->write_available_lim(
+                cluster_state.base + offset, {source, data.size()}
+            );
         }
 
-        nb::bytes work_read(uint32_t c, uint64_t offset, uint64_t n) const {
-            const Work& w = work(c, true);
-            if (offset % 4 != 0 || n % 4 != 0 || offset + n > w.bytes) {
+        nb::bytes work_read(uint32_t cluster, uint64_t offset, uint64_t n) const {
+            const Work& cluster_state = work(cluster, true);
+            if (offset % 4 != 0 || n % 4 != 0 || offset + n > cluster_state.bytes) {
                 throw std::runtime_error("LIM reads are whole words inside the area");
             }
-            const auto got = w.tile->read_available_lim(w.base + offset, n);
+            const auto got = (
+                cluster_state.tile->read_available_lim(cluster_state.base + offset, n)
+            );
             return nb::bytes(reinterpret_cast<const char*>(got.data()), got.size());
         }
 
         // Writes `block` (whole lines; its first 8 bytes become the run value) at the
         // cluster's LIM base and starts `image` with it. Returns the run value.
-        uint64_t work_start(uint32_t c, const std::string& image, nb::bytes block) {
-            Work& w = work(c, true);
-            if (w.session) {
+        uint64_t work_start(
+            uint32_t cluster, const std::string& image, nb::bytes block
+        ) {
+            Work& cluster_state = work(cluster, true);
+            if (cluster_state.session) {
                 throw std::runtime_error("an image is running on that cluster");
             }
-            if (block.size() < 64 || block.size() % 64 != 0 || block.size() > w.bytes) {
+            if (
+                block.size() < 64 || block.size() % 64 != 0 ||
+                block.size() > cluster_state.bytes
+            ) {
                 throw std::runtime_error("the argument block is whole 64-byte lines");
             }
             std::vector<uint8_t> bytes(
                 static_cast<const uint8_t*>(block.data()),
                 static_cast<const uint8_t*>(block.data()) + block.size()
             );
-            std::random_device rd;
-            w.run = (
-                (0x6b6d780000000000ull ^ (static_cast<uint64_t>(rd()) << 16)) + rd() + c
+            std::random_device entropy;
+            cluster_state.run = (
+                (0x6b6d780000000000ull ^ (static_cast<uint64_t>(entropy()) << 16)) +
+                entropy() + cluster
             );
-            std::memcpy(bytes.data(), &w.run, sizeof(w.run));
-            w.tile->write_available_lim(w.base, bytes);
-            x280::ActiveRunRequest req;
-            req.image_path = image;
-            req.run_value = w.run;
-            req.args_addr = w.base;
-            req.args_bytes = bytes.size();
-            const auto enq = rt().enqueue(*w.tile, req);
-            if (!enq.session) {
-                throw std::runtime_error("X280 enqueue failed: " + x280::describe(enq));
+            std::memcpy(bytes.data(), &cluster_state.run, sizeof(cluster_state.run));
+            cluster_state.tile->write_available_lim(cluster_state.base, bytes);
+            x280::ActiveRunRequest request;
+            request.image_path = image;
+            request.run_value = cluster_state.run;
+            request.args_addr = cluster_state.base;
+            request.args_bytes = bytes.size();
+            const auto enqueued = x280_runtime().enqueue(*cluster_state.tile, request);
+            if (!enqueued.session) {
+                throw std::runtime_error(
+                    "X280 enqueue failed: " + x280::describe(enqueued)
+                );
             }
-            w.session = enq.session;
-            return w.run;
+            cluster_state.session = enqueued.session;
+            return cluster_state.run;
         }
 
-        bool work_running(uint32_t c) const {
-            return work(c, false).session.has_value();
+        bool work_running(uint32_t cluster) const {
+            return work(cluster, false).session.has_value();
         }
 
         // Waits (with a timeout) until every core of the cluster has returned from
         // main: ready, the four core results, and the runtime's description otherwise.
-        nb::dict work_wait(uint32_t c, double timeout_s) {
-            Work& w = work(c, true);
-            if (!w.session) {
+        nb::dict work_wait(uint32_t cluster, double timeout_s) {
+            Work& cluster_state = work(cluster, true);
+            if (!cluster_state.session) {
                 throw std::runtime_error("no image running on that cluster");
             }
-            x280::WaitResult res;
+            x280::WaitResult wait_result;
             {
                 nb::gil_scoped_release release;
-                res = (
-                    rt().session(*w.session).wait_until_result_ready(millis(timeout_s))
+                wait_result = (
+                    x280_runtime()
+                        .session(*cluster_state.session)
+                        .wait_until_result_ready(millis(timeout_s))
                 );
             }
             std::vector<uint64_t> results, stages;
-            for (const auto& h : res.hartstates) {
-                results.push_back(h.state.result);
-                stages.push_back(h.state.stage);
+            for (const auto& hart : wait_result.hartstates) {
+                results.push_back(hart.state.result);
+                stages.push_back(hart.state.stage);
             }
             nb::dict out;
-            out["ready"] = res.outcome == x280::WaitOutcome::ResultReady;
+            out["ready"] = wait_result.outcome == x280::WaitOutcome::ResultReady;
             out["results"] = results;
             out["stages"] = stages;
-            out["failed"] = res.succeeded() ? std::string() : x280::describe(res);
+            out["failed"] = wait_result.succeeded() ? std::string()
+                                                    : x280::describe(wait_result);
             return out;
         }
 
         // Stops the cluster's image through the runtime (with a timeout): cleaned, and
         // the runtime's description when it did not return to idle.
-        nb::dict work_stop(uint32_t c, double timeout_s) {
-            Work& w = work(c, true);
-            if (!w.session) {
+        nb::dict work_stop(uint32_t cluster, double timeout_s) {
+            Work& cluster_state = work(cluster, true);
+            if (!cluster_state.session) {
                 throw std::runtime_error("no image running on that cluster");
             }
             x280::CleanupResult done;
             {
                 nb::gil_scoped_release release;
-                done = rt().cleanup(*w.session, millis(timeout_s));
+                done = (
+                    x280_runtime().cleanup(*cluster_state.session, millis(timeout_s))
+                );
             }
-            w.session.reset();
+            cluster_state.session.reset();
             nb::dict out;
             out["cleaned"] = done.cleaned_up();
             out["failed"] = done.cleaned_up() ? std::string() : x280::describe(done);
@@ -1461,13 +1520,15 @@ namespace {
 
         // Stops the cluster's image if one runs (any failure path); whether it
         // returned to idle.
-        bool work_abort(uint32_t c) {
-            if (c >= work_.size() || !work_[c].session || !opened_) {
+        bool work_abort(uint32_t cluster) {
+            if (cluster >= work_.size() || !work_[cluster].session || !opened_) {
                 return true;
             }
-            const auto done = rt().cleanup(*work_[c].session, std::chrono::seconds(5));
-            work_[c].session.reset();
-            note_failed("cluster " + std::to_string(c), done);
+            const auto done = (
+                x280_runtime().cleanup(*work_[cluster].session, std::chrono::seconds(5))
+            );
+            work_[cluster].session.reset();
+            note_failed("cluster " + std::to_string(cluster), done);
             return done.cleaned_up();
         }
 
@@ -1478,7 +1539,7 @@ namespace {
         }
 
         uint32_t batch_ = 64;  // commands per store: every line, then one fence
-        uint32_t gx_ = 0, gy_ = 0, l2x_ = 0, l2y_ = 0;
+        uint32_t grid_x_ = 0, grid_y_ = 0, l2x_ = 0, l2y_ = 0;
         uint64_t base_ = 0;  // LIM address of the layout (the argument block)
         std::vector<std::array<uint32_t, 2>> panels_;  // logical column ranges
         uint32_t tag_ = 0, depth_ = 1, host_depth_ = 1, event_depth_ = 1;
@@ -1493,7 +1554,7 @@ namespace {
         std::string close_failed_;
         std::optional<std::pair<std::vector<uint32_t>, std::vector<uint32_t>>> aborted_;
 
-        x280::X280Runtime& rt() const {
+        x280::X280Runtime& x280_runtime() const {
             return *opened_->runtime;
         }
 
@@ -1507,10 +1568,10 @@ namespace {
             }
         }
 
-        std::vector<uint32_t> lim_words(uint64_t offset, uint32_t n) const {
-            const auto block = tile_->read_available_lim(base_ + offset, 4 * n);
-            std::vector<uint32_t> words(n);
-            std::memcpy(words.data(), block.data(), 4 * n);
+        std::vector<uint32_t> lim_words(uint64_t offset, uint32_t count) const {
+            const auto block = tile_->read_available_lim(base_ + offset, 4 * count);
+            std::vector<uint32_t> words(count);
+            std::memcpy(words.data(), block.data(), 4 * count);
             return words;
         }
 
@@ -1521,32 +1582,38 @@ namespace {
         }
 
         // Stores k commands as the next commands, every line then one fence.
-        void store(const uint32_t* recs, uint32_t k) {
-            if (k == 0) {
+        void store(const uint32_t* commands, uint32_t count) {
+            if (count == 0) {
                 return;
             }
             settle();
-            alignas(64) uint32_t w[16];
-            for (uint32_t j = 0; j < k; j++) {
-                const uint32_t i = next_ + j;
-                std::memcpy(w, recs + 16 * j, sizeof(w));
-                w[0] = w[4] = w[8] = w[12] = i;
-                win_->write_block(KMD_LIM_HRING + (i % host_depth_) * 64u, w, 64);
+            alignas(64) uint32_t line[16];
+            for (uint32_t index = 0; index < count; index++) {
+                const uint32_t number = next_ + index;
+                std::memcpy(line, commands + 16 * index, sizeof(line));
+                line[0] = line[4] = line[8] = line[12] = number;
+                win_->write_block(
+                    KMD_LIM_HRING + (number % host_depth_) * 64u, line, 64
+                );
             }
             store_read();
             _mm_sfence();
             fenced_ = Clock::now();
-            next_ += k;
+            next_ += count;
         }
 
         // One batch from the queue: the commands up to upto that fit. An exclusive one
         // is stored as any other; the kernel's KM_FLAG_EXCLUSIVE check orders it.
         void store_queued(uint32_t upto) {
             const int64_t due = static_cast<int32_t>(upto - next_) + int64_t{1};
-            size_t k = std::min<size_t>({queued(), batch_, room()});
-            k = std::min<int64_t>(static_cast<int64_t>(k), std::max<int64_t>(0, due));
-            store(queue_.data() + 16 * head_, static_cast<uint32_t>(k));
-            head_ += k;
+            size_t count = std::min<size_t>({queued(), batch_, room()});
+            count = (
+                std::min<int64_t>(
+                    static_cast<int64_t>(count), std::max<int64_t>(0, due)
+                )
+            );
+            store(queue_.data() + 16 * head_, static_cast<uint32_t>(count));
+            head_ += count;
             if (head_ == queue_.size() / 16) {
                 queue_.clear();
                 head_ = 0;
@@ -1562,28 +1629,28 @@ namespace {
             std::optional<x280::SessionId> session;
         };
 
-        // Work cluster c (1 to 3); `open` also requires the runtime to be open.
-        const Work& work(uint32_t c, bool open) const {
+        // A work cluster (1 to 3); `open` also requires the runtime to be open.
+        const Work& work(uint32_t cluster, bool open) const {
             if (open) {
                 require_open();
             }
-            if (c == 0 || c >= work_.size()) {
+            if (cluster == 0 || cluster >= work_.size()) {
                 throw std::runtime_error("work clusters are 1 to clusters() - 1");
             }
-            return work_[c];
+            return work_[cluster];
         }
 
-        Work& work(uint32_t c, bool open) {
-            return const_cast<Work&>(std::as_const(*this).work(c, open));
+        Work& work(uint32_t cluster, bool open) {
+            return const_cast<Work&>(std::as_const(*this).work(cluster, open));
         }
 
         // Boots the tiles to their idle image if they are not idle, then sets the
         // clock.
         void boot(uint32_t pll_mhz) {
-            auto& r = rt();
+            auto& runtime = x280_runtime();
             bool all_idle = true;
-            for (const auto& id : r.tile_ids()) {
-                all_idle = all_idle && r.tile(id).inspect().resident_idle_live;
+            for (const auto& id : runtime.tile_ids()) {
+                all_idle = all_idle && runtime.tile(id).inspect().resident_idle_live;
             }
             if (!all_idle) {
                 if (idle_image_path.empty()) {
@@ -1591,45 +1658,51 @@ namespace {
                         "X280 boot: set_idle_image was not called"
                     );
                 }
-                x280::MultiTileBootRequest req;
-                req.tiles = r.tile_ids();
-                req.idle_image_path = idle_image_path;
-                req.allow_reset_release = true;
-                if (!r.boot_tiles(req).ready()) {
+                x280::MultiTileBootRequest request;
+                request.tiles = runtime.tile_ids();
+                request.idle_image_path = idle_image_path;
+                request.allow_reset_release = true;
+                if (!runtime.boot_tiles(request).ready()) {
                     throw std::runtime_error("X280 boot_tiles failed");
                 }
             }
-            r.set_pll(r.tile_ids().front().chip_id, pll_mhz);
+            runtime.set_pll(runtime.tile_ids().front().chip_id, pll_mhz);
         }
 
         std::array<uint32_t, 2> translated(uint32_t x, uint32_t y) const {
-            const auto t = x280::X280Runtime::virtual_core_from_logical_core(
+            const auto core = x280::X280Runtime::virtual_core_from_logical_core(
                 *mesh_,
                 tt::tt_metal::CoreCoord{x, y},
                 tt::CoreType::WORKER,
                 tt::tt_metal::NOC::NOC_0
             );
-            return {static_cast<uint32_t>(t.x()), static_cast<uint32_t>(t.y())};
+            return {static_cast<uint32_t>(core.x()), static_cast<uint32_t>(core.y())};
         }
 
         // Cluster 0, its LIM layout, the grid's panels, the host window and buffer.
         void locate() {
-            auto& r = rt();
-            const auto ids = r.tile_ids();
-            tile_ = &r.tile(ids.front());
+            auto& runtime = x280_runtime();
+            const auto ids = runtime.tile_ids();
+            tile_ = &runtime.tile(ids.front());
             work_.resize(ids.size());
-            for (size_t c = 0; c < ids.size(); c++) {
-                work_[c].tile = &r.tile(ids[c]);
-                const auto lim = work_[c].tile->available_lim();
-                work_[c].base = (lim.begin + 63) / 64 * 64;
-                work_[c].bytes = lim.end > work_[c].base ? lim.end - work_[c].base : 0;
+            for (
+                size_t cluster_index = 0; cluster_index < ids.size(); cluster_index++
+            ) {
+                work_[cluster_index].tile = &runtime.tile(ids[cluster_index]);
+                const auto lim = work_[cluster_index].tile->available_lim();
+                work_[cluster_index].base = (lim.begin + 63) / 64 * 64;
+                work_[cluster_index].bytes = (
+                    lim.end > work_[cluster_index].base
+                        ? lim.end - work_[cluster_index].base
+                        : 0
+                );
             }
             const auto l2 = (
-                r.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_0)
+                runtime.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_0)
             );
             // The writers push completions on NoC1: the same coordinate must reach it.
             const auto l2_noc1 = (
-                r.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_1)
+                runtime.virtual_core_from_tile(ids.front(), tt::tt_metal::NOC::NOC_1)
             );
             if (l2.x() != l2_noc1.x() || l2.y() != l2_noc1.y()) {
                 throw std::runtime_error(
@@ -1644,22 +1717,22 @@ namespace {
                     "available LIM is not a 64-byte line below 4 GiB"
                 );
             }
-            const auto g = mesh_->compute_with_storage_grid_size();
-            gx_ = g.x;
-            gy_ = g.y;
+            const auto grid = mesh_->compute_with_storage_grid_size();
+            grid_x_ = grid.x;
+            grid_y_ = grid.y;
             // Panels: runs of logical columns whose NoC0 x are consecutive.
             const auto& soc = (
                 tt::tt_metal::MetalContext::instance().get_cluster().get_soc_desc(
                     mesh_->get_devices().front()->id()
                 )
             );
-            auto phys_x = [&](uint32_t lx) {
-                const auto t = translated(lx, 0);
+            auto phys_x = [&](uint32_t logical_x) {
+                const auto core = translated(logical_x, 0);
                 return (
                     soc.translate_coord_to(
                         tt::umd::CoreCoord(
-                            t[0],
-                            t[1],
+                            core[0],
+                            core[1],
                             tt::CoreType::TENSIX,
                             tt::CoordSystem::TRANSLATED
                         ),
@@ -1668,14 +1741,17 @@ namespace {
                     .x
                 );
             };
-            for (uint32_t x = 0; x < gx_; x++) {
+            for (uint32_t x = 0; x < grid_x_; x++) {
                 if (!panels_.empty() && phys_x(x) == phys_x(panels_.back()[1]) + 1) {
                     panels_.back()[1] = x;
                 } else {
                     panels_.push_back({x, x});
                 }
             }
-            if (panels_.size() > 2 || gx_ > KMD_READY_MAX || gx_ * gy_ > KM_CORES_MAX) {
+            if (
+                panels_.size() > 2 || grid_x_ > KMD_READY_MAX ||
+                grid_x_ * grid_y_ > KM_CORES_MAX
+            ) {
                 throw std::runtime_error("grid not supported: more than two panels");
             }
             const auto chip = mesh_->get_devices().front()->id();
@@ -1743,17 +1819,19 @@ NB_MODULE(_km_host, m) {
         // the device; the capsule's name is checked on the receiving side.
         .def(
             "mesh_capsule",
-            [](const Device& d) {
+            [](const Device& device) {
                 using Held = std::shared_ptr<MeshDevice>;
                 return nb::capsule(
-                    new Held(d.shared()), "komorebi.mesh_device", [](void* p) noexcept {
-                        delete static_cast<Held*>(p);
+                    new Held(device.shared()),
+                    "komorebi.mesh_device",
+                    [](void* pointer) noexcept {
+                        delete static_cast<Held*>(pointer);
                     }
                 );
             }
-        ).def("finish", [](const Device& d) {
+        ).def("finish", [](const Device& device) {
             nb::gil_scoped_release release;
-            d.finish();
+            device.finish();
         });
     nb::class_<DeviceBuffer>(m, "Buffer")
         .def(
@@ -1804,13 +1882,13 @@ NB_MODULE(_km_host, m) {
     m.def(
         "write_l1",
         [](
-            const Device& d,
+            const Device& device,
             uint32_t x,
             uint32_t y,
             uint32_t address,
             std::vector<uint32_t> words
         ) {
-            write_l1(d.mesh(), x, y, address, std::move(words));
+            write_l1(device.mesh(), x, y, address, std::move(words));
         },
         nb::arg("device"),
         nb::arg("x"),
@@ -1820,37 +1898,37 @@ NB_MODULE(_km_host, m) {
     );
     m.def(
         "core_nocs",
-        [](const Device& d) {
-            return core_nocs(d.mesh());
+        [](const Device& device) {
+            return core_nocs(device.mesh());
         },
         nb::arg("device")
     );
     m.def(
         "dram_banks",
-        [](const Device& d) {
-            return dram_banks(d.mesh());
+        [](const Device& device) {
+            return dram_banks(device.mesh());
         },
         nb::arg("device")
     );
     m.def(
         "kernel_buffer",
-        [](const Device& d) {
-            return kernel_buffer(d.mesh());
+        [](const Device& device) {
+            return kernel_buffer(device.mesh());
         },
         nb::arg("device")
     );
     m.def(
         "read_dram",
-        [](const Device& d, std::vector<std::array<uint64_t, 3>> spans) {
-            return read_dram(d.mesh(), spans);
+        [](const Device& device, std::vector<std::array<uint64_t, 3>> spans) {
+            return read_dram(device.mesh(), spans);
         },
         nb::arg("device"),
         nb::arg("spans")
     );
     m.def(
         "wait_grid",
-        [](const Device& d, uint32_t gx, uint32_t gy, double timeout_s) {
-            return wait_grid(d.mesh(), gx, gy, timeout_s);
+        [](const Device& device, uint32_t grid_x, uint32_t grid_y, double timeout_s) {
+            return wait_grid(device.mesh(), grid_x, grid_y, timeout_s);
         },
         nb::arg("device"),
         nb::arg("grid_x"),
@@ -1861,12 +1939,12 @@ NB_MODULE(_km_host, m) {
     nb::class_<Dispatch>(m, "Dispatch")
         .def(
             "__init__",
-            [](Dispatch* self, const Device& d, uint32_t pll_mhz) {
-                new (self) Dispatch(d.shared(), pll_mhz);
+            [](Dispatch* self, const Device& device, uint32_t pll_mhz) {
+                new (self) Dispatch(device.shared(), pll_mhz);
             },
             nb::arg("device"),
             nb::arg("pll_mhz") = 1000
-        ).def_ro("grid_x", &Dispatch::gx_).def_ro("grid_y", &Dispatch::gy_)
+        ).def_ro("grid_x", &Dispatch::grid_x_).def_ro("grid_y", &Dispatch::grid_y_)
         .def_ro("panels", &Dispatch::panels_)
         .def_ro("l2_x", &Dispatch::l2x_)
         .def_ro("l2_y", &Dispatch::l2y_)
@@ -1908,39 +1986,39 @@ NB_MODULE(_km_host, m) {
         .def("publish", &Dispatch::publish)
         .def(
             "wait_ready",
-            [](const Dispatch& d, double timeout_s) {
+            [](const Dispatch& device, double timeout_s) {
                 nb::gil_scoped_release release;
-                return d.wait_ready(timeout_s);
+                return device.wait_ready(timeout_s);
             },
             nb::arg("timeout_s")
         ).def("room", &Dispatch::room).def(
             "push",
-            [](Dispatch& d, Commands recs) {
-                if (recs.shape(1) != 16) {
+            [](Dispatch& device, Commands commands) {
+                if (commands.shape(1) != 16) {
                     throw std::runtime_error("commands are [n, 16] words");
                 }
-                return d.push(recs.data(), recs.shape(0));
+                return device.push(commands.data(), commands.shape(0));
             },
             nb::arg("commands")
         ).def(
             "enqueue",
-            [](Dispatch& d, Commands recs) {
-                if (recs.shape(1) != 16) {
+            [](Dispatch& device, Commands commands) {
+                if (commands.shape(1) != 16) {
                     throw std::runtime_error("commands are [n, 16] words");
                 }
-                return d.enqueue(recs.data(), recs.shape(0));
+                return device.enqueue(commands.data(), commands.shape(0));
             },
             nb::arg("commands")
         ).def(
             "wait",
-            [](Dispatch& d, Numbers wanted, uint32_t upto, double timeout_s) {
+            [](Dispatch& device, Numbers wanted, uint32_t upto, double timeout_s) {
                 std::vector<uint32_t> want(
                     wanted.data(), wanted.data() + wanted.shape(0)
                 );
                 std::vector<uint32_t> out;
                 {
                     nb::gil_scoped_release release;
-                    out = d.wait(want, upto, timeout_s);
+                    out = device.wait(want, upto, timeout_s);
                 }
                 return as_array(std::move(out));
             },
@@ -1949,16 +2027,16 @@ NB_MODULE(_km_host, m) {
             nb::arg("timeout_s")
         ).def(
             "poll",
-            [](Dispatch& d) {
-                return as_array(d.poll());
+            [](Dispatch& device) {
+                return as_array(device.poll());
             }
         ).def(
             "wait_events",
-            [](Dispatch& d, double timeout_s) {
+            [](Dispatch& device, double timeout_s) {
                 std::vector<uint32_t> out;
                 {
                     nb::gil_scoped_release release;
-                    out = d.wait_events(timeout_s);
+                    out = device.wait_events(timeout_s);
                 }
                 return as_array(std::move(out));
             },
