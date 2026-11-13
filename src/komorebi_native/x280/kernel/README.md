@@ -245,10 +245,18 @@ These rules are part of the protocol; a host that relies on anything else is wro
   block (`KMD_ENGINE_TRAPPED`); core 0 reports it at its finish. Interrupts, and a
   second exception inside the handler, go to the runtime's handler, which ceases the
   core as before.
-- **Clock.** The host runs the X280 at 1000 MHz. At 1750 MHz, with every Tensix core at
-  full matrix load (the card lowers its core voltage under it), core 0's loads returned
-  wrong values (a pointer of the host ring read as 0, its base off by 12 bytes) and the
-  kernel trapped within seconds, in about half of the 8192-cubed runs; never at 1000 MHz.
-  A gap between the program's tensors and the kernel's state, or a flush of the state
-  right after boot, did not change it. The timings above were measured at 1750 MHz; a
-  host-fed record at depth 16 costs 1.228 microseconds at 1000 MHz against 0.726.
+- **Clock.** The session runs the X280 at 1000 MHz; 1750 is an explicit opt-in that
+  loses loads when the Tensix grid is under full matrix load. At 1750 MHz, with every
+  Tensix core at full matrix load (the card lowers its core voltage under it), core 0's
+  loads returned wrong values (a pointer of the host ring read as 0, its base off by 12
+  bytes) and the kernel trapped within seconds: 9 of 18 runs of the 8192-cubed matrix
+  product, against 0 of 23 at 1000 MHz (the bisect below). One PLL clocks all four
+  clusters, so thread programs on the work clusters run at the same clock.
+
+  | Variant of the 8192-cubed run (a profile record, then 300 calls) | 1750 MHz | 1000 MHz |
+  |---|---|---|
+  | as the program runs it | 4 of 7 | 0 of 23 (3 with 700 calls) |
+  | a 64 KiB gap per bank before the kernel's state | 1 of 3 | |
+  | the state flushed to DRAM right after boot | 2 of 4 | |
+  | the profile record's pages not read by the host | 2 of 4 | |
+  | no profile record | 0 of 5 | |
