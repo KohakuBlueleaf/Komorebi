@@ -12,7 +12,9 @@ from komorebi.engines.graph_native import NativeExecutor
 from komorebi.errors import CommandTimeout, WaitTimeout
 
 HostfedCommand = namedtuple(
-    "HostfedCommand", "node run handle handler first count flags args queued"
+    "HostfedCommand",
+    "node run handle handler first count flags args queued program",
+    defaults=(0,),
 )
 HostfedResult = namedtuple(
     "HostfedResult", "status error registers runs commands events"
@@ -51,25 +53,26 @@ class _Hostfed:
         """Queues the command on the Run (a queued one by its count: the kernel picks
         its group, so its `first` is None here)."""
         handler, flags = words[1] & 0xFF, words[1] >> 8 & 0xFF
+        named = self.run.field_handler(handler, words[1] >> 24)
         first, count = words[2] & 0xFFFF, words[2] >> 16
         queued = bool(flags & stream_module.FLAG_QUEUE)
         args = [words[i] for i in stream_module.ARG_WORD]
         result = bool(flags & stream_module.FLAG_RESULT)
         if queued:
             first = None
-            handle = self.run.submit(handler, count, args, result=result, queued=True)
+            handle = self.run.submit(named, count, args, result=result, queued=True)
         elif stream_module.cluster_of(first, count) is not None:
             cluster = stream_module.cluster_of(first, count)
-            handle = self.run.submit(handler, args=args, result=result, cluster=cluster)
+            handle = self.run.submit(named, args=args, result=result, cluster=cluster)
         else:
             exclusive = bool(flags & stream_module.FLAG_EXCLUSIVE)
             handle = self.run.submit(
-                handler, (first, count), args, exclusive, result=result
+                named, (first, count), args, exclusive, result=result
             )
         self.flight[handle] = (node, result)
         record = HostfedCommand(
             node, self.executor.runs, handle, handler, first, count,
-            flags & ~stream_module.FLAG_QUEUE, tuple(args), queued,
+            flags & ~stream_module.FLAG_QUEUE, tuple(args), queued, words[1] >> 24,
         )  # fmt: skip
         self.commands.append(record)
         return graph_module.SUBMITTED

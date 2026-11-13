@@ -57,6 +57,20 @@ class L1BudgetError(ProgramError):
         self.table = table
 
 
+class L1LayoutError(L1BudgetError):
+    """Programs that share cores declare one buffer index two ways: they share one L1
+    layout, so an index both declare is declared identically. Nothing was loaded."""
+
+    def __init__(self, reason, table):
+        ProgramError.__init__(
+            self,
+            f"{reason}: programs that share cores share one L1 layout (disjoint "
+            f"buffer indices, or one index declared identically). The L1 budget of a "
+            f"core:\n{table}",
+        )
+        self.table = table
+
+
 class CardBusy(KomorebiError):
     """Another live process holds the card's chip lock; opening it would wait for that
     process to exit. `pid` is the holder."""

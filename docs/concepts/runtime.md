@@ -37,6 +37,18 @@ A command is the unit that travels from the dispatcher to the cores. Its first
 words say which handler to run, for which group and in which ring slot; the rest are
 that handler's arguments. Handlers 1 to 239 are the program's; EXIT ends the worker.
 
+A run may hold several programs. Then the kernels are the runtime's own: a reader, a writer
+and a compute kernel that serve every command of the run, and each program supplies, per
+kernel, the function they call (`km_program`), built as an
+[overlay](../reference/overlays.md#a-program-as-an-overlay). A command names its program in
+its header's program field (0 is the run's first program). For each command the runtime's
+kernels compare that field with what the core's slots hold: a program held costs a look
+at the slots' records, about 130 cycles a command; one not held is loaded first (its five
+parts read from DRAM, about 2,200 cycles on one core). The host loads each program on a
+group of cores (`session.load({program: (first, count)})`) or every program on every core
+(`session.load([...])`), and refuses a command whose cores do not hold its program
+([host](../reference/host.md#several-programs-in-one-run)).
+
 ## Groups and completion
 
 A group is a contiguous range of cores in a fixed core order, and is named in the command

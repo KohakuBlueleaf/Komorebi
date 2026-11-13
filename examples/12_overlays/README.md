@@ -82,29 +82,29 @@ commands, in cycles:
 
 | | 1 core | 12 cores | 120 cores | 120 cores, 2 slots | Experiments |
 |---|---|---|---|---|---|
-| `load()` of mix, loading | 935 | 935 | 947 | 1,036 | 557, 576, 614 for one 832 B reader body (1, 12, 120 cores; overlay_costs) |
-| `load()` of mix, held | 376 | 376 | 376 | 420 | |
-| `load()` of scale, loading: five parts, the meeting and one invalidation | 1,382 | 1,382 | 1,414 | 3,165 | 1,061 for five 4 KiB parts on one core; 5,778 median core on 120 (overlay_costs, "a command naming another program") |
-| `load()` of scale, held | 909 | 913 | 911 | 955 | 142 for "a command naming the program held" (overlay_costs) |
-| `call()` of mix (64 steps) | 801 to 817 | 803 to 815 | 803 to 815 | 813 to 824 | |
-| `call()` of scale on the reader (fill one tile, 1,024 values) | 25,893 | 25,904 | 25,900 | 51,680 (2 tiles) | |
+| `load()` of mix, loading | 998 | 998 | 1,004 | 1,150 | 557, 576, 614 for one 832 B reader body (1, 12, 120 cores; overlay_costs) |
+| `load()` of mix, held | 72 | 73 | 72 | 76 | |
+| `load()` of scale, loading: five parts, the meeting and one invalidation | 1,318 | 1,316 | 1,347 | 3,126 | 1,061 for five 4 KiB parts on one core; 5,778 median core on 120 (overlay_costs, "a command naming another program") |
+| `load()` of scale, held | 72 | 72 | 72 | 97 | 142 for "a command naming the program held" (overlay_costs) |
+| `call()` of mix (64 steps) | 815 to 816 | 815 to 816 | 815 to 816 | 809 to 824 | |
+| `call()` of scale on the reader (fill one tile, 1,024 values) | 25,880 to 25,923 | 25,880 to 25,925 | 25,884 to 25,925 | 51,660 to 51,727 (2 tiles) | |
 
 Commands: `python overlays.py --cores 1 --rounds 10`, `--cores 12 --rounds 10`,
 `--rounds 10`, `--rounds 10 --slots 2 --tiles 2`.
 
 What the numbers say:
 
-- A load costs about one DRAM read and the bookkeeping: 935 cycles for 128 B against 557
+- A load costs about one DRAM read and the bookkeeping: 998 cycles for 128 B against 557
   for 832 B in the experiment. The difference is the framework's records, the least
-  recently used choice and the checks: about 400 cycles, the same as a held `load()`.
-- Five parts loaded together cost 1,382 cycles on one core: the meeting, five reads and one
+  recently used choice, the checks and the use clock.
+- Five parts loaded together cost 1,318 cycles on one core: the meeting, five reads and one
   invalidation. The experiment's five parts of 4 KiB each cost 1,061 cycles without the
   framework's bookkeeping.
-- A held `load()` of scale costs 909 cycles against the experiment's 142 for its check.
-  Where those cycles go was not measured. It is the place to save cycles if a program loads
-  on every command.
+- A held `load()` costs 72 cycles on every core, one or five parts, against the
+  experiment's 142 for its check: each core reads its own record of the slot, with no
+  meeting. With 2 slots and the overlays in turn it costs 76 and 97.
 - With 2 slots, only the first command of each overlay loads (120 loading runs). The loading
-  median on 120 cores, 3,165 cycles, is that first load on every core at once.
+  median on 120 cores, 3,126 cycles, is that first load on every core at once.
 - The calls cost what the same code costs in a kernel: mix's loop takes about 800 cycles
   loaded or held.
 

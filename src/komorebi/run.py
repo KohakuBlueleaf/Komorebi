@@ -16,6 +16,7 @@ import numpy.ma
 from komorebi import abi
 from komorebi import state as device_state
 from komorebi.engines import control, graph_hostfed, stream_hostfed
+from komorebi.engines import stream as stream_module
 from komorebi.errors import (
     CommandRejected,
     CommandTimeout,
@@ -25,6 +26,7 @@ from komorebi.errors import (
     ThreadFailed,
     WaitTimeout,
 )
+from komorebi.program import Handler
 
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
@@ -93,7 +95,16 @@ class Run:
     `abort()`, `read_back()` -> (control blocks, trace), `mhz`.
     """
 
-    def __init__(self, backend, grid, program=None, batch=64, abi_headers=None):
+    def __init__(
+        self,
+        backend,
+        grid,
+        program=None,
+        batch=64,
+        abi_headers=None,
+        programs=None,
+        holds=None,
+    ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
         self.port = backend.port
@@ -102,6 +113,9 @@ class Run:
         self.grid = grid
         self.cores = grid[0] * grid[1]
         self.program = program
+        # the run's programs by program field; holds[field]: the cores holding it
+        self.programs = list(programs or ([program] if program is not None else []))
+        self._holds = holds
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -196,14 +210,11 @@ class Run:
         returns its handle. Nothing is sent until a wait. `result`: the event carries
         the result word. `queued`: `group` is a count and the kernel picks the cores."""
         started = time.perf_counter()
+        program_field = 0
         if cluster is not None:
             handler, group = self._to_thread(handler, cluster, group, exclusive, queued)
-        elif handler.__class__ is not int:
-            handler = (
-                self.program.handler(handler)
-                if self.program is not None
-                else int(handler)
-            )
+        else:
+            handler, program_field = self._handler(handler)
         if not (handler == self._nop or 1 <= handler <= self._user_max):
             raise ValueError(
                 f"handler {handler}: not NOP and not in 1..KM_HANDLER_USER_MAX"
@@ -212,8 +223,10 @@ class Run:
             if exclusive:
                 raise ValueError("a queued command cannot be exclusive")
             group = self._group((0, group))
+            self._check_holds(program_field, handler, 0, self.cores, "queued")
         elif cluster is None:
             group = self._group(group)
+            self._check_holds(program_field, handler, *group)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(word) <= M32 for word in args):
@@ -221,9 +234,72 @@ class Run:
         flags = (self._flag_result if result else 0) | (
             self._flag_queue if queued else 0
         )
-        handle = self._queue_command(handler, group, args, exclusive, flags)
+        handle = self._queue_command(
+            handler, group, args, exclusive, flags, program_field
+        )
         self.submit_s += time.perf_counter() - started
         return handle
+
+    def _handler(self, handler):
+        """(number, program field) of `handler`: a Handler names its program; a name
+        or a number is a handler of the run's first program."""
+        if isinstance(handler, Handler):
+            return int(handler), self.program_field(handler.program)
+        if handler.__class__ is not int:
+            handler = (
+                self.program.handler(handler)
+                if self.program is not None
+                else int(handler)
+            )
+        return int(handler), 0
+
+    def field_handler(self, number, program_field):
+        """What submit takes for handler `number` of the program with field
+        `program_field` (a command's header names both)."""
+        if program_field == 0:
+            return number
+        if program_field >= len(self.programs):
+            raise ValueError(f"program field {program_field}: no such program here")
+        return self.programs[program_field].handler(number)
+
+    def check_templates(self, templates):
+        """Refuses a stream's or graph's command template whose program this run does
+        not hold on its group (a group from registers: the dispatcher's to refuse)."""
+        none = stream_module.TEMPLATE_NONE
+        for template in templates:
+            program_field, handler = template.rec[1] >> 24, template.rec[1] & 0xFF
+            if program_field >= max(len(self.programs), 1):
+                raise ValueError(
+                    f"handler {handler}: program field {program_field}, and this run "
+                    f"holds {len(self.programs)} programs"
+                )
+            first, count = template.rec[2] & 0xFFFF, template.rec[2] >> 16
+            if template.first_register != none or template.count_register != none:
+                continue
+            if count == 0 or template.rec[1] >> 8 & self._flag_queue:
+                self._check_holds(program_field, handler, 0, self.cores, "queued")
+            elif first < self._cluster_base:
+                self._check_holds(program_field, handler, first, count)
+
+    def program_field(self, program):
+        """The program field of `program`'s commands in this run (ValueError if the
+        run does not hold it)."""
+        for program_field, loaded in enumerate(self.programs):
+            if loaded is program:
+                return program_field
+        raise ValueError(f"{program.name} is not a program of this run")
+
+    def _check_holds(self, program_field, handler, first, count, queued=None):
+        """Refuses a command whose group's cores do not hold its program (a queued
+        one: every core, since the kernel picks them)."""
+        if self._holds is None or handler == self._nop:
+            return
+        if not self._holds[program_field][first : first + count].all():
+            name = self.programs[program_field].name
+            where = "every core" if queued else f"group ({first}, {count})"
+            raise ValueError(
+                f"handler {handler} of {name}: {where} does not hold {name}"
+            )
 
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """Queues n commands at once: `handler` a name, a number or n numbers, `firsts`
@@ -231,8 +307,9 @@ class Run:
         32-bit words (m <= 10) or None. Returns the handles as a range."""
         started = time.perf_counter()
         self._check_alive()
-        if isinstance(handler, str):
-            handler = self.program.handler(handler)
+        program_field = 0
+        if isinstance(handler, str | Handler):
+            handler, program_field = self._handler(handler)
         columns = [np.asarray(handler), np.asarray(firsts), np.asarray(counts)]
         if args is not None:
             args = np.asarray(args)
@@ -267,8 +344,18 @@ class Run:
                 f"group ({int(first[i])}, {int(count[i])}) is not inside {self.cores} "
                 "cores"
             )
+        if self._holds is not None:
+            missing = np.concatenate([[0], np.cumsum(~self._holds[program_field])])
+            bad = (missing[first + count] - missing[first] > 0) & (
+                handlers != self._nop
+            )
+            if bad.any():
+                i = int(np.argmax(bad))
+                self._check_holds(
+                    program_field, int(handlers[i]), int(first[i]), int(count[i])
+                )
         words = np.zeros((shape[0], 16), np.uint32)
-        words[:, self._hdr] = handlers & 0xFF
+        words[:, self._hdr] = handlers & 0xFF | program_field << 24
         words[:, self._group_at] = first | count << 16
         if args is not None and args.size:
             if args.min() < 0 or args.max() > M32:
@@ -311,12 +398,14 @@ class Run:
             )
         return (first, count)
 
-    def _queue_command(self, handler, group, args=(), exclusive=False, flags=0):
+    def _queue_command(
+        self, handler, group, args=(), exclusive=False, flags=0, program_field=0
+    ):
         self._check_alive()
         first, count = group if group else (0, 0)
         flags |= self._flag_exclusive if exclusive else 0  # the kernel orders it
         words = [0] * 16
-        words[self._hdr] = handler & 0xFF | flags << 8
+        words[self._hdr] = handler & 0xFF | flags << 8 | program_field << 24
         words[self._group_at] = first | count << 16
         for position, value in zip(self._arg_at, args):
             words[position] = int(value) & M32

@@ -33,7 +33,7 @@ WHERES = (
     "Emit",
     "OverlayFind",
     "OverlayLoad",
-    "OverlayPair",
+    "OverlayMeet",
 )
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 

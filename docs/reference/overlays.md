@@ -55,7 +55,7 @@ reader.run([&](const km_command_t& command) {
 | Call | What it does |
 |---|---|
 | `km::Overlay overlay(kernel, number)` | names overlay `number` for `kernel` (a `km::Reader`, `km::Writer` or `km::Compute`) |
-| `overlay.load()` | on the reader: reads every part of the overlay that the tile does not hold into a slot, and meets the writer and compute (below). On the writer and compute: the meeting. Nothing moves when every part is held. Returns false when it gave up |
+| `overlay.load()` | on the reader: reads every part of the overlay that the tile does not hold into a slot, and meets the writer and compute (below). On the writer and compute: the meet. Nothing moves when every part is held. Returns false when it gave up |
 | `overlay.call(argument)` | calls this kernel's part with `argument` (passed by reference) and returns the part's `uint32_t` (0 for a `void` part). Only after a `load()` that returned true |
 | `overlay.held()` | whether a slot of this core holds this kernel's part |
 
@@ -88,15 +88,18 @@ compute core, as a compute kernel is.
   slot: its own part, the writer's and the three compute parts. An overlay with a writer or
   compute part needs `load()` called by the reader **and** by that kernel, in the same command.
   The writer's and compute's `load()` park until the reader has written their parts, then
-  take the slot from the reader's go. A kernel that loads alone waits until its time limit
+  take the slot from the reader's go: the reader and they **meet**. A kernel that loads alone waits until its time limit
   (`wait_limit`), then gives up.
 - **Who invalidates.** After the reads have landed, the reader invalidates the instruction
   caches of every core whose part it read, in one write of the tile's register
   (`RISCV_IC_INVALIDATE`). The writer and the compute cores never write or read that register.
   The writer's core cannot reach it at all.
 - **When nothing moves.** When the tile already holds every part, `load()` returns at once on
-  every kernel. All kernels decide this from the same records, so they skip the meeting
-  together.
+  every kernel. All kernels decide this from the same records, so they skip the meet
+  together. A kernel that found the tile holding the overlay marks its slot's record with
+  the tile's **epoch**, a count the reader steps whenever it changes which overlay a slot
+  holds. While the epoch is unchanged, that kernel's next `load()` of the overlay is a
+  look at its slots' records: about 70 cycles (below).
 - **Which slot is replaced.** A load replaces an empty slot, or else the least recently used
   slot with no call running in it. When every slot is running a call, the load gives up.
 - **Each core reads its own copy.** Core `i` reads its parts from DRAM bank `i % 8`. Every
@@ -108,9 +111,9 @@ compute core, as a compute kernel is.
 |---|---|
 | `overlay_find` | the number is not in the program; the kernel has no part of it; no slot is free; a part is larger than its slot; `call()` without a successful `load()` |
 | `overlay_load` | the reads from DRAM did not land within the time limit |
-| `overlay_pair` | the meeting did not happen within the time limit, or the kernels met on different overlays |
+| `overlay_meet` | the meet did not happen within the time limit, or the kernels met on different overlays |
 
-The gave-up record names the kind `overlay` (for a meeting with the wrong overlay) or the
+The gave-up record names the kind `overlay` (for a meet on the wrong overlay) or the
 timeout, the `where` above, and the overlay's number (`"overlay"` in the decoded state).
 
 ## The builder
@@ -145,11 +148,12 @@ math core resets it again after each call.
 
 | Where | What |
 |---|---|
-| beside each core's control block, 3,072 bytes | the overlay area: header (table size, each part's first slot, slots and slot bytes), a record per (part, slot) (overlay held, last use, calls running), the reader's meeting lines with each follower, and the table (DRAM address and bytes of every part of every overlay) |
+| beside each core's control block, 3,328 bytes | the overlay area: header (table size, each part's first slot, slots and slot bytes), a record per (part, slot) (overlay held, the part's check at an epoch, calls running, the slot's address), the clock and the epoch, the reader's meet lines with each follower, the last use of each overlay, and the table (DRAM address and bytes of every part of every overlay) |
 | a sharded L1 tensor, 64-byte aligned | the slots, by part: reader, writer, unpack, math, pack |
 | one interleaved DRAM tensor | every part, a copy in each of the 8 banks |
 
-The area is part of the control L1 tensor only when the program has overlays. The host writes
+The area is part of the control L1 tensor only when the program has overlays or the run
+holds programs in the runtime's form. The host writes
 the header and table at load; after that, the cores write the records and lines.
 
 ## A leader casts the overlay
@@ -171,11 +175,58 @@ On one Blackhole card, AICLK 1,350 MHz, medians over cores and commands
 
 | | 1 core | 120 cores |
 |---|---|---|
-| `load()` of a 128-byte reader part, loading | 1,013 cycles | 947 cycles |
-| `load()` of the same, held (the check) | 420 cycles | 376 cycles |
-| `load()` of five parts (768, 832, 1,280, 1,024, 1,152 B), meeting included | 1,382 cycles | 1,414 cycles |
-| `load()` of the same, held | 954 cycles | 911 cycles |
-| `call()` of a 64-step loop | 802 cycles | 803 cycles |
+| `load()` of a 128-byte reader part, loading | 998 cycles | 1,004 cycles |
+| `load()` of the same, held (the check) | 72 cycles | 72 cycles |
+| `load()` of five parts (768, 832, 1,280, 1,024, 1,152 B), the meet included | 1,318 cycles | 1,347 cycles |
+| `load()` of the same, held | 72 cycles | 72 cycles |
+| `load()` held, two overlays in turn in two slots | | 76 and 97 cycles |
+| `call()` of a 64-step loop | 816 cycles | 816 cycles |
+
+## A program as an overlay
+
+A program in the runtime's form ([host](host.md#several-programs-in-one-run)) is an
+overlay under kernels the runtime owns (`src/komorebi_native/kernels/program_reader.cpp`,
+`program_writer.cpp`, `program_compute.cpp`). Program field `p` is overlay number `63 - p`
+(`km::program_overlay(p)`). For each command the runtime's kernels run
+
+```c++
+km::Overlay program(reader, km::program_overlay(km::program(command)));
+if (!program.load()) {
+    return;  // the give-up path
+}
+program.call(command);
+```
+
+and the same on the writer (which completes the command unless the program's
+`km_program` returned false) and on compute. A NOP is not passed to a program.
+
+- **The parts.** The builder builds a program's three sources as an overlay's parts with
+  the function `km_program` in place of `km_overlay`, and with the program's
+  `compile_args` and `defines` in place of the runtime kernel's. A part holds no state
+  from one command to the next (its `.bss` is zeroed at every call): what it must keep it
+  reads from the buffers' own pointers or the command.
+- **The slots.** By default a slot a program on each kernel (at most 4), each as large as
+  the largest part; the first program's `slots()` sets them. With fewer slots than
+  programs, a command to a program the tile does not hold loads its five parts.
+- **The compute start-up.** The runtime's compute kernel calls
+  `compute_kernel_hw_startup(in, out)` once, on the group's first buffer below index 16 and
+  its first from 16 on (0 and 16 when there is none). A part that uses other buffers
+  calls the compute API's own `*_init` calls for them, as any compute code does.
+- **Each group apart.** With `{program: group}`, each group's runtime kernels are built
+  apart, on its cores, with its buffers and compute options, and its overlay table holds
+  only its own programs: a core that does not hold a program gives up (`overlay_find`) on
+  a command for it.
+
+What it costs ([16_two_programs](../../examples/16_two_programs/README.md)), cycles from
+the reader taking a command to its completion, medians, one command at a time:
+
+| Command | today's form | runtime's form |
+|---|---|---|
+| empty, 1 core | 596 | 724 |
+| empty, 120 cores | 811 | 941 |
+| a sum of 16 tiles, 1 core | 5,233 | 6,274 |
+| the first command after a change of program (five parts loaded), 1 core | | 2,919 |
+| the same, 120 cores | | 3,971 |
 
 The experiments these numbers stand beside are
 [overlay_costs](../../experiments/overlay_costs/README.md),

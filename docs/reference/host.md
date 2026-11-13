@@ -33,7 +33,7 @@ nothing.
 
 | Field | Meaning |
 |---|---|
-| `kernels` | a directory with `reader.cpp`, `compute.cpp` and `writer.cpp`, or a dict of the three paths |
+| `kernels` | a directory with `reader.cpp`, `compute.cpp` and `writer.cpp`, or a dict of the three paths. Each source defines `kernel_main` (today's kernels) or `km_program` (the runtime's form, [below](#several-programs-in-one-run)) |
 | `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a data type name (`"bfloat16"`, `"float32"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, `"bfloat8_b"`, `"bfloat4_b"`) |
 | `args` | `args(core) -> (reader, writer, compute)`: the program's own runtime arguments of each core, after the runtime's start-up arguments |
 | `compile_args` | `{"reader": [...], "writer": [...], "compute": [...]}` |
@@ -69,6 +69,61 @@ enum value, as a dict; it may use the package's constants by their C++ names
 
 The runtime owns circular buffers 29 and 30 (the command's token for compute and
 writer) and 31 (the trace); a program uses the others.
+
+`program.handler(name)` returns a `km.Handler`: the handler's number (an `int`) that also
+names its program (`.program`). `submit`, `submit_many`, `graph.command` and a stream's
+`submit` take it, and put the program's place in the run, the **program field**, into
+bits 24 to 31 of the command's header word (`.field`; 0 is the run's first or only
+program). A name or a plain number is a handler of the run's first program, so a run of
+one program is written as before. Each program numbers its handlers 1 to 239 on its own:
+two programs may both have handler 1.
+
+### Several programs in one run
+
+A program in the **runtime's form** has a source per kernel that defines, in place of
+`kernel_main`, the function the runtime's command loop calls for a command of that
+program:
+
+```c++
+#include "komorebi/device/km_program.hpp"
+
+void km_program(km::Reader& reader, const km_command_t& command) {
+    switch (km::handler(command)) {
+        case kHandlerTrace: trace(reader, command); break;
+    }
+}
+```
+
+and the same with `km::Writer&` (it may return `bool`: false sends no completion, the way a
+writer body's false does) and `km::Compute&`. The host tells the forms apart from the
+sources: one that defines `km_program` (comments aside) is in the runtime's form, any
+other is today's kernel. A program whose sources mix the forms, or a source that defines
+both, raises `ProgramError`. The runtime owns `kernel_main` and the loop; each program is
+an [overlay](overlays.md#a-program-as-an-overlay) under them.
+
+```python
+run = session.load({tracer: (0, 88), expert: (88, 32)})  # each group its own program
+run = session.load([tracer, expert])  # combined: every core holds both
+run.submit(tracer.handler("trace"), group=(0, 88), args=[...])
+```
+
+| `session.load(...)` | What the cores hold |
+|---|---|
+| `program` | today's kernels as before; a program in the runtime's form, the runtime's kernels with that program |
+| `{program: (first, count), ...}` | each group its own program and buffers (disjoint groups; a core outside them holds no program) |
+| `[program, ...]` | every core every program, in one L1 layout: buffer indices disjoint, or an index both declare declared identically (then one shared buffer); otherwise `km.L1LayoutError` with the L1 budget table |
+
+The programs' order (the list, or the dict's) is their program field. Programs that share
+cores share compute options (`compute`) and `opt` levels; per-core `args` are taken when a
+group holds one program. In the runtime's form a program has no dynamic handler and no
+overlays of its own, and only the first program has X280 threads or ports. A run holds up
+to 63 programs. `run.programs` lists them by program field.
+
+The host refuses (`ValueError`, before anything is sent) a command whose group has a core
+that does not hold its program, a queued one unless every core holds it, and a handler of
+a program the run does not hold; a stream's or graph's upload is checked the same way for
+its commands with a fixed group (a group from registers is not checked). The dispatcher
+has the rejection reason for it, 13 (`program`), not yet used.
 
 ## `Session`
 
@@ -259,7 +314,7 @@ range.
 
 | Call | What it does |
 |---|---|
-| `submit(handler, group=None, args=(), exclusive=False, result=False, queued=False, cluster=None)` | queues one command and returns its handle (1, 2, ...). `handler` is a name or a number (`0` is NOP); `group` is `(first, count)`, default every core; `args` up to ten 32-bit words. Groups and handlers are checked here. With `exclusive` (`KM_FLAG_EXCLUSIVE`), the dispatcher submits the command only once every queued command sent before it has left the kernel's job queue and no command in flight has a group that overlaps it; the host stores it as soon as the ring has room, like any other command (below, "Exclusive commands"). With `result` (`KM_FLAG_RESULT`), its done event carries the group leader's 32-bit result word. With `queued` (`KM_FLAG_QUEUE`), `group` is a count: the kernel gives the command the lowest first core whose group overlaps no busy one, and waits until there is one (nothing is rejected for a full grid); `group(handle)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). The kernel's job queue holds 64 commands waiting for room; one more is rejected (`CommandRejected`, reason 9), so with at most 64 queued commands unfinished none is rejected. Queued commands share the program's `depth` completion slots with every other command: at most `depth` (16 at most) run at once over the whole grid. A queued command cannot be exclusive. With `cluster` (1 to 3) the command goes to that work cluster's X280 thread instead of a group: `handler` is a name among the thread's `handlers` or a number, and `group`, `exclusive` and `queued` are refused (`ValueError`, as are a cluster outside 1 to 3 and one without a thread). Its event is a group's; a full thread rejects it (`CommandRejected`, reason 14, `thread`), and a timeout is returned as its event without ending the run ([commands to a thread](threads.md#commands-to-a-thread)) |
+| `submit(handler, group=None, args=(), exclusive=False, result=False, queued=False, cluster=None)` | queues one command and returns its handle (1, 2, ...). `handler` is a name or a number (`0` is NOP) of the run's first program, or a `km.Handler` of any of its programs; `group` is `(first, count)`, default every core; `args` up to ten 32-bit words. Groups and handlers are checked here. With `exclusive` (`KM_FLAG_EXCLUSIVE`), the dispatcher submits the command only once every queued command sent before it has left the kernel's job queue and no command in flight has a group that overlaps it; the host stores it as soon as the ring has room, like any other command (below, "Exclusive commands"). With `result` (`KM_FLAG_RESULT`), its done event carries the group leader's 32-bit result word. With `queued` (`KM_FLAG_QUEUE`), `group` is a count: the kernel gives the command the lowest first core whose group overlaps no busy one, and waits until there is one (nothing is rejected for a full grid); `group(handle)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). The kernel's job queue holds 64 commands waiting for room; one more is rejected (`CommandRejected`, reason 9), so with at most 64 queued commands unfinished none is rejected. Queued commands share the program's `depth` completion slots with every other command: at most `depth` (16 at most) run at once over the whole grid. A queued command cannot be exclusive. With `cluster` (1 to 3) the command goes to that work cluster's X280 thread instead of a group: `handler` is a name among the thread's `handlers` or a number, and `group`, `exclusive` and `queued` are refused (`ValueError`, as are a cluster outside 1 to 3 and one without a thread). Its event is a group's; a full thread rejects it (`CommandRejected`, reason 14, `thread`), and a timeout is returned as its event without ending the run ([commands to a thread](threads.md#commands-to-a-thread)) |
 | `submit_many(handler, firsts, counts, args=None, exclusive=False)` | queues n commands at once and returns their handles as a `range`. `handler`, `firsts` and `counts` are one value or n each; `args` is an `[n, m]` integer matrix (m at most 10) or None. Checked as `submit` checks, all before any is queued |
 | `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a [graph](../graphs.md) host-fed: its executor on the host, its commands through this run; returns `HostfedResult(status, error, registers, runs, commands, events)` |
 | `wait(handles, timeout=10.0)` | stores queued commands up to the handles in batches, reads events until each handle has one; returns the `Event` (or a list) and forgets those handles. The stores and the event reads run in the native module with the GIL released |
@@ -376,6 +431,8 @@ All derive from `km.KomorebiError`.
 |---|---|---|
 | `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
+| `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core |
+| `L1LayoutError` | programs that share cores declare one buffer index two ways; an `L1BudgetError` | `table` |
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
@@ -408,6 +465,7 @@ the kernel's header; `reason_name` is the lower-case suffix):
 | 3 | `group` | has a group of 0 cores, or one that does not lie inside the cores |
 | 4 | `exited` | came after EXIT |
 | 9 | `queue` | is queued (`queued=True`) while the kernel's job queue holds 64 commands |
+| 13 | `program` | names a program its group's cores do not hold (named for the dispatcher's check; the host refuses such a command first) |
 
 `submit` and `submit_many` check handlers and groups before anything is queued, the
 host sets no reserved flag, and a stopped run submits nothing, so through this API a

@@ -211,8 +211,10 @@ class Engines:
         graph = None
         if isinstance(content, stream_module.Stream):
             data, kind = content.encode(), "stream"
+            self.run.check_templates(content.templates())
         elif isinstance(content, graph_module.Graph):
             data, kind, graph = content.encode(), "graph", content
+            self.run.check_templates(content.templates())
         else:
             data = bytes(content)
             if kind not in ("stream", "graph"):

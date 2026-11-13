@@ -27,37 +27,53 @@ namespace km {
     constexpr uint32_t kOverlayBase = 1;
     constexpr uint32_t kOverlaySlots = 6;
     constexpr uint32_t kOverlaySlotBytes = 11;
-    // A 16-byte record per (part, slot): the overlay it holds (0: none), the clock at
-    // its last use, the calls running in it. The reader writes held and used.
+    // A 16-byte record per (part, slot): the overlay held (0: none; the reader writes
+    // it), the part's own check (below), the calls running, the slot's address (host).
     constexpr uint32_t kOverlayRecords = 64;
     constexpr uint32_t kOverlayHeld = 0;
-    constexpr uint32_t kOverlayUsed = 1;
+    constexpr uint32_t kOverlayChecked = 1;
     constexpr uint32_t kOverlayCalling = 2;
+    constexpr uint32_t kOverlayAddress = 3;
+    // The check: the epoch, marked, at which the part's core found the tile holding
+    // every part of the slot's overlay. While the epoch is that, load() is that slot.
+    constexpr uint32_t kOverlayCheckedMark = 1u << 31;
     // The reader is the tile's loader; the writer and the compute cores (followers 0
     // to 3, parts 1 to 4) meet it parked in their load().
     constexpr uint32_t kOverlayFollowers = 4;
-    // The clock line (32 bytes): word p counts the loads of part p.
+    // The clock line (32 bytes): the uses of overlays, then the epoch (24 bits), which
+    // the reader steps after it changes any record's held word.
     constexpr uint32_t kOverlayClock = (
         kOverlayRecords + 16 * kOverlayParts * kOverlaySlotsMax
     );
-    // The reader's meeting count with each follower (a word each).
+    constexpr uint32_t kOverlayEpoch = kOverlayClock + 4;
+    constexpr uint32_t kOverlayEpochMask = 0xFFFFFFu;
+    // The reader's meet count with each follower (a word each).
     constexpr uint32_t kOverlayMet = kOverlayClock + 32;
     // The reader's go to each follower (8 bytes each): token, slot.
     constexpr uint32_t kOverlayGo = kOverlayMet + 16;
     // Each follower's park line to the reader (8 bytes each): token, its count.
     constexpr uint32_t kOverlayPark = kOverlayGo + 8 * kOverlayFollowers;
+    // The clock at the last use of each overlay (a word per number): the slot a load
+    // replaces holds the least recently used one.
+    constexpr uint32_t kOverlayUsed = 512;
     // The table: (DRAM address in every bank, bytes) of part p of overlay n at
     // kOverlayTable + 8 * (kOverlayParts * n + p); bytes 0: no such part.
-    constexpr uint32_t kOverlayTable = 512;
+    constexpr uint32_t kOverlayTable = kOverlayUsed + 4 * kOverlaysMax;
     constexpr uint32_t kOverlayAreaBytes = (
         kOverlayTable + 8 * kOverlayParts * kOverlaysMax
     );
     static_assert(
-        kOverlayClock + 4 * kOverlayParts <= kOverlayMet &&
-            kOverlayPark + 8 * kOverlayFollowers <= kOverlayTable &&
-            KM_CONTROL_BYTES % 64 == 0,
+        kOverlayEpoch < kOverlayMet &&
+            kOverlayPark + 8 * kOverlayFollowers <= kOverlayUsed &&
+            kOverlayTable % 64 == 0 && KM_CONTROL_BYTES % 64 == 0,
         "the overlay area's lines do not overlap and end before its table"
     );
+
+    // The overlay that holds program `program` of the run (a command's program field):
+    // numbers from 63 down, below them the programs' own overlays.
+    inline uint32_t program_overlay(uint32_t program) {
+        return kOverlaysMax - 1 - program;
+    }
 
     // An overlay's entry, at its slot's first byte: the kernel's object, the argument.
     using OverlayEntry = uint32_t (*)(void*, const void*);
@@ -119,10 +135,11 @@ namespace km {
             if (record[kOverlayCalling] != 0) {
                 continue;
             }
-            if (record[kOverlayHeld] == 0) {
+            const uint32_t held = record[kOverlayHeld];
+            if (held == 0) {
                 return slot;
             }
-            const uint32_t age = record[kOverlayUsed];
+            const uint32_t age = l1(control + kOverlayArea + kOverlayUsed)[held];
             if (found == kOverlaySlotsMax || age < oldest) {
                 found = slot;
                 oldest = age;
@@ -138,11 +155,41 @@ namespace km {
         return area[kOverlayBase + part] + slot * area[kOverlaySlotBytes + part];
     }
 
-    // Marks the record's last use with the part's clock.
-    inline void overlay_touch(uint32_t control, uint32_t part, uint32_t slot) {
+    // Marks the last use of overlay `number` with the clock (the reader only).
+    inline void overlay_touch(uint32_t control, uint32_t number) {
         volatile tt_l1_ptr uint32_t* clock = l1(control + kOverlayArea + kOverlayClock);
-        clock[part] = clock[part] + 1;
-        overlay_record(control, part, slot)[kOverlayUsed] = clock[part];
+        const uint32_t now = clock[0] + 1;
+        clock[0] = now;
+        l1(control + kOverlayArea + kOverlayUsed)[number] = now;
+    }
+
+    inline volatile tt_l1_ptr uint32_t* overlay_epoch(uint32_t control) {
+        return l1(control + kOverlayArea + kOverlayEpoch);
+    }
+
+    // The record of the slot of `part` that holds `number` with this core's check at
+    // the current epoch (no record changed since), or none: the fast path of load().
+    inline volatile tt_l1_ptr uint32_t* overlay_checked_record(
+        uint32_t control, uint32_t part, uint32_t number
+    ) {
+        const uint32_t checked = *overlay_epoch(control) | kOverlayCheckedMark;
+        const uint32_t slots = overlay_area(control)[kOverlaySlots + part];
+        for (uint32_t slot = 0; slot < slots && slot < kOverlaySlotsMax; slot++) {
+            volatile tt_l1_ptr uint32_t* record = overlay_record(control, part, slot);
+            if (record[kOverlayHeld] == number && record[kOverlayChecked] == checked) {
+                return record;
+            }
+        }
+        return nullptr;
+    }
+
+    // This core's check of its slot `slot` of `part` at `epoch` (read before the
+    // records that showed every part held, or given by the reader's go).
+    inline void overlay_check(
+        uint32_t control, uint32_t part, uint32_t slot, uint32_t epoch
+    ) {
+        overlay_record(control, part, slot)[kOverlayChecked] = epoch |
+            kOverlayCheckedMark;
     }
 
     // The instruction cache bit of the core that runs `part` (the firmware's mask).
@@ -183,8 +230,8 @@ namespace km {
         return true;
     }
 
-    // A follower's load() of `part`: parks until the reader's go unless the tile holds
-    // every follower part. The slot; kOverlaySlotsMax: gave up (`code`, `where`).
+    // A follower's load() of `part` after its check missed: parks until the reader's go
+    // unless the tile holds every follower part. The slot; kOverlaySlotsMax: gave up.
     inline uint32_t overlay_follow(
         uint32_t control,
         uint32_t number,
@@ -193,14 +240,16 @@ namespace km {
         uint32_t& code,
         uint32_t& where
     ) {
-        invalidate_l1_cache();
         if (!overlay_has_part(control, number, part)) {
             code = kGaveOverlay;
             where = kWhereOverlayFind;
             return kOverlaySlotsMax;
         }
+        const uint32_t epoch = *overlay_epoch(control);  // before the records
         if (overlay_members_held(control, number)) {
-            return overlay_held_slot(control, part, number);
+            const uint32_t slot = overlay_held_slot(control, part, number);
+            overlay_check(control, part, slot, epoch);
+            return slot;
         }
         const uint32_t follower = part - kOverlayPartWriter;
         volatile tt_l1_ptr uint32_t* park = (
@@ -222,10 +271,12 @@ namespace km {
             0
         );
         if (code != kGaveNone) {
-            where = kWhereOverlayPair;
+            where = kWhereOverlayMeet;
             return kOverlaySlotsMax;
         }
-        return go[1] & 0xFFu;
+        const uint32_t slot = go[1] & 0xFFu;
+        overlay_check(control, part, slot, go[1] >> 8);
+        return slot;
     }
 
 }  // namespace km
@@ -273,6 +324,10 @@ namespace km {
         bool load() {
             const uint32_t control = kernel_.args().control;
 #if defined(COMPILE_FOR_NCRISC)
+            invalidate_l1_cache();
+            if (place_checked(control)) {
+                return true;
+            }
             uint32_t code = kGaveNone, where = 0;
             const uint32_t slot = (
                 overlay_follow(
@@ -289,6 +344,10 @@ namespace km {
             }
             return place(control, slot);
 #else
+            if (place_checked(control)) {
+                overlay_touch(control, number_);
+                return true;
+            }
             return load_tile(control);
 #endif
         }
@@ -321,6 +380,19 @@ namespace km {
             return true;
         }
 
+        // The slot this core checked for the overlay at the current epoch, if any.
+        bool place_checked(uint32_t control) {
+            volatile tt_l1_ptr uint32_t* record = (
+                overlay_checked_record(control, kOverlayPartHere, number_)
+            );
+            if (record == nullptr) {
+                return false;
+            }
+            slot_ = record[kOverlayAddress];
+            record_ = record;
+            return true;
+        }
+
 #if !defined(COMPILE_FOR_NCRISC)
         // Starts the read of `part` into `slot` (the record says none until it lands).
         // False: the part does not fit the slot (recorded).
@@ -331,6 +403,8 @@ namespace km {
                 return give_up(kGaveOverlay, kWhereOverlayFind);
             }
             overlay_record(control, part, slot)[kOverlayHeld] = 0;
+            volatile tt_l1_ptr uint32_t* epoch = overlay_epoch(control);
+            *epoch = (*epoch + 1) & kOverlayEpochMask;  // after the record changed
             noc_async_read(
                 get_noc_addr_from_bank_id<true>(kernel_.me() % kOverlayBanks, entry[0]),
                 overlay_slot_address(control, part, slot),
@@ -368,7 +442,7 @@ namespace km {
             return true;
         }
 
-        // Timed wait until every follower in `members` is parked in its next meeting
+        // Timed wait until every follower in `members` is parked in its next meet
         // with the reader, for this overlay.
         bool parked(uint32_t control, uint32_t members) const {
             volatile tt_l1_ptr uint32_t* park = (
@@ -396,7 +470,7 @@ namespace km {
                 kernel_.args().wait_limit
             );
             if (code != kGaveNone || mismatch) {
-                return give_up(mismatch ? kGaveOverlay : code, kWhereOverlayPair);
+                return give_up(mismatch ? kGaveOverlay : code, kWhereOverlayMeet);
             }
             return true;
         }
@@ -449,11 +523,13 @@ namespace km {
                         : ((members >> (part - kOverlayPartWriter)) & 1u) != 0
                 );
                 if (wanted) {
-                    const uint32_t slot = slots[part] & 0xFFu;
-                    overlay_record(control, part, slot)[kOverlayHeld] = number_;
-                    overlay_touch(control, part, slot);
+                    overlay_record(
+                        control, part, slots[part] & 0xFFu
+                    )[kOverlayHeld] = (number_);
                 }
             }
+            overlay_touch(control, number_);
+            const uint32_t epoch = *overlay_epoch(control);
             if (meet) {
                 volatile tt_l1_ptr uint32_t* go = (
                     l1(control + kOverlayArea + kOverlayGo)
@@ -465,14 +541,19 @@ namespace km {
                     if (((members >> follower) & 1u) != 0) {
                         const uint32_t count = met[follower] + 1;
                         met[follower] = count;
-                        go[
-                            2 * follower + 1
-                        ] = (slots[kOverlayPartWriter + follower] & 0xFFu);
+                        go[2 * follower + 1] = (
+                            (slots[kOverlayPartWriter + follower] & 0xFFu) | epoch << 8
+                        );
                         go[2 * follower] = count << 8 | number_;
                     }
                 }
             }
-            return mine ? place(control, slots[kOverlayPartReader] & 0xFFu) : true;
+            if (!mine) {
+                return true;
+            }
+            const uint32_t slot = slots[kOverlayPartReader] & 0xFFu;
+            overlay_check(control, kOverlayPartReader, slot, epoch);
+            return place(control, slot);
         }
 #endif
 
@@ -516,6 +597,15 @@ namespace km {
         // reader's load() of it has put them in place. False: gave up (recorded).
         bool load() {
             const uint32_t control = kernel_.control();
+            invalidate_l1_cache();
+            volatile tt_l1_ptr uint32_t* checked = (
+                overlay_checked_record(control, kOverlayPartHere, number_)
+            );
+            if (checked != nullptr) {
+                slot_ = checked[kOverlayAddress];
+                record_ = checked;
+                return true;
+            }
             uint32_t code = kGaveNone, where = 0;
             const uint32_t slot = (
                 overlay_follow(

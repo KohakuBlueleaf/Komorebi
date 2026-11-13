@@ -36,6 +36,39 @@ namespace km {
 
 }  // namespace km
 
+#if defined(KM_PROGRAM_PART)
+namespace km {
+
+    // A program's part: 1 completes the command (the writer's), 0 does not.
+    template <typename Kernel>
+    inline uint32_t program_result(
+        void (*function)(Kernel&, const km_command_t&),
+        Kernel& kernel,
+        const km_command_t& command
+    ) {
+        function(kernel, command);
+        return 1;
+    }
+
+    template <typename Kernel>
+    inline uint32_t program_result(
+        bool (*function)(Kernel&, const km_command_t&),
+        Kernel& kernel,
+        const km_command_t& command
+    ) {
+        return function(kernel, command) ? 1u : 0u;
+    }
+
+}  // namespace km
+
+// The function the entry calls (KM_OVERLAY_FUNCTION): the program's km_program.
+static uint32_t km_program_part(
+    KM_OVERLAY_KERNEL& kernel, const km_command_t& command
+) {
+    return km::program_result<KM_OVERLAY_KERNEL>(km_program, kernel, command);
+}
+#endif
+
 // The builder's linker script: the part's .bss, hidden so that a position-independent
 // build reaches them without a table entry.
 extern "C" uint32_t __km_overlay_bss_start[] __attribute__((visibility("hidden")));

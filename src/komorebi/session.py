@@ -16,7 +16,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import abi, dram, insn_check, layout, native, overlay
+from komorebi import abi, dram, insn_check, layout, native, overlay, programs
 from komorebi import state as device_state
 from komorebi import tensor as tensor_module
 from komorebi import thread as thread_module
@@ -28,7 +28,7 @@ from komorebi.errors import (
     ProgramError,
     StartError,
 )
-from komorebi.program import KernelSizes
+from komorebi.program import KernelSizes, Program
 from komorebi.run import Run
 
 CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
@@ -200,6 +200,17 @@ def kernel_sizes(build):
         said = re.search(r"Program size \((\d+)\) too large", error)
         total = int(said.group(1)) if said else None
     return KernelSizes(dict(zip(TENSIX_THREADS, text, strict=False)), total, limit)
+
+
+def _core_args(program, placed, core):
+    """(reader, writer, compute) program arguments of `core`: its group's program's
+    when the run holds programs in the runtime's form."""
+    if placed is None:
+        return program.core_args(core)
+    for group in placed.groups:
+        if group.first <= core < group.first + group.count and group.programs:
+            return placed.programs[group.programs[0]].core_args(core)
+    return [], [], []
 
 
 def kernel_build(program, kernel, defines):
@@ -534,12 +545,17 @@ class Session:
         image=None,
         thread="card",
     ):
-        """Launches `program` on every core, then the dispatcher, then the
-        program's X280 thread (`thread="card"`, or "host" for its host fallback);
-        returns a Run. The arguments are described in docs/reference/host.md.
-        """
+        """Launches `program` (or programs in the runtime's form: a list, every core
+        holding each, or {program: (first, count)}) on every core, then the dispatcher,
+        then the X280 thread (`thread` "card" or "host"); returns a Run. The arguments
+        are described in docs/reference/host.md."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
+        placed = None
+        if not isinstance(program, Program) or program.form() == "program":
+            grid = self.grid
+            placed = programs.plan(program, grid[0] * grid[1])
+            program = placed.programs[0]
         if thread not in ("card", "host"):
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
         works = [program.threads[cluster] for cluster in sorted(program.threads)]
@@ -566,6 +582,8 @@ class Session:
         )
         depth = depth or program.depth
         sources = program.sources()  # before anything opens: a missing file raises
+        if placed is not None:
+            sources = programs.runtime_kernels()
         mhz = aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
@@ -603,7 +621,7 @@ class Session:
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
             descriptor = backend.describe(
-                program, sources, tag, depth, wait, idle, trace, port_lines
+                program, sources, tag, depth, wait, idle, trace, port_lines, placed
             )
             started = time.perf_counter()
             try:
@@ -611,6 +629,8 @@ class Session:
             except Exception as error:
                 raise ProgramError(f"{program.name}: build failed: {error}") from error
             program.sizes = kernel_sizes(build)
+            for other in placed.programs if placed is not None else ():
+                other.sizes = program.sizes
             text = ", ".join(
                 f"{name} {size}" for name, size in program.sizes.text.items()
             )
@@ -630,7 +650,9 @@ class Session:
                 self.log(
                     f"kernels built and checked ({time.perf_counter() - started:.2f} s)"
                 )
-            if program.overlays:
+            if placed is not None:
+                backend.load_programs(placed, descriptor)
+            elif program.overlays:
                 backend.load_overlays(program, descriptor)
             self.log("launch")
             # From here the grid may run: an interrupt is delivered when the launch
@@ -655,7 +677,14 @@ class Session:
             if launched:
                 backend.read_back(stop_grid=True)  # the kernel never stopped it
             raise
-        run = Run(backend, (dispatch.grid_x, dispatch.grid_y), program, batch)
+        run = Run(
+            backend,
+            (dispatch.grid_x, dispatch.grid_y),
+            program,
+            batch,
+            programs=placed.programs if placed is not None else None,
+            holds=placed.holds() if placed is not None else None,
+        )
         self.run = run
         self._starting = None
         if state != abi.headers()["KMD_STATE_READY"]:
@@ -976,14 +1005,28 @@ class _Backend:
         return messages.args(queue.address, lines), messages.compute_args(cores)
 
     def describe(
-        self, program, sources, tag, depth, wait, idle, trace, port_lines=None
+        self,
+        program,
+        sources,
+        tag,
+        depth,
+        wait,
+        idle,
+        trace,
+        port_lines=None,
+        placed=None,
     ):
-        """The program descriptor for every core, with the start-up arguments."""
+        """The program descriptor for every core, with the start-up arguments; with
+        `placed` (a programs.Plan) the runtime's kernels, per group of cores."""
         abi_headers = abi.headers()
         port = self.port
         grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
-        area = overlay.constants()["kOverlayAreaBytes"] if program.overlays else 0
+        area = (
+            overlay.constants()["kOverlayAreaBytes"]
+            if program.overlays or placed is not None
+            else 0
+        )
         control = self._control_blocks(cores, grid, port_lines, area)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
@@ -1032,7 +1075,7 @@ class _Backend:
                     "ready_slot": slot,
                 }
             )
-            reader, writer, compute = program.core_args(core)
+            reader, writer, compute = _core_args(program, placed, core)
             reader_args.append(
                 (x, y, start + messages_reader_writer_args + list(reader))
             )
@@ -1043,22 +1086,15 @@ class _Backend:
             compute_args.append(
                 (x, y, [control, core, *limits, *messages_compute_args, *compute])
             )
+        launch = self.session._module.Launch(self.device)
+        if placed is not None:
+            args = (reader_args, writer_args, compute_args)
+            self._describe_groups(launch, placed, sources, args, grid)
+            return launch
         all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
         include = [str(abi.headers().abi.parents[2])]
         defines = [(name, str(value)) for name, value in program.defines.items()]
-        launch = self.session._module.Launch(self.device)
-        token_bytes = abi_headers["kTokenBytes"]
-        cbs = [
-            (buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
-            for buffer in program.buffers
-        ]
-        cbs += [
-            (abi_headers["kCbTokenCompute"], "uint32", token_bytes, 1),
-            (abi_headers["kCbTokenWriter"], "uint32", token_bytes, 1),
-        ]
-        if self.trace_cap:
-            cbs.append((abi_headers["kCbTrace"], "uint32", self.trace_cap * 16, 1))
-        for index, fmt, page, pages in cbs:
+        for index, fmt, page, pages in self._cbs(program.buffers):
             launch.cb(all_cores, index, fmt, page, page * pages)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
         kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
@@ -1074,6 +1110,65 @@ class _Backend:
                 **config,
             )
         return launch
+
+    def _cbs(self, buffers):
+        """(index, format, page bytes, pages) of `buffers` and the runtime's own."""
+        abi_headers = abi.headers()
+        token_bytes = abi_headers["kTokenBytes"]
+        cbs = [
+            (buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
+            for buffer in buffers
+        ]
+        cbs += [
+            (abi_headers["kCbTokenCompute"], "uint32", token_bytes, 1),
+            (abi_headers["kCbTokenWriter"], "uint32", token_bytes, 1),
+        ]
+        if self.trace_cap:
+            cbs.append((abi_headers["kCbTrace"], "uint32", self.trace_cap * 16, 1))
+        return cbs
+
+    def _describe_groups(self, launch, placed, sources, args, grid):
+        """The runtime's kernels and each group's buffers on its cores: a group's
+        kernels are built apart (KM_PROGRAM_GROUP), with its buffers and options."""
+        include = [str(abi.headers().abi.parents[2])]
+        free = self.session.l1()[1]
+        self.group_buffers = []
+        for number, group in enumerate(placed.groups):
+            held = [placed.programs[index] for index in group.programs]
+            buffers = programs.joint_buffers(held, free)
+            self.group_buffers.append(buffers)
+            cores = programs.rectangles(group.first, group.count, grid[0])
+            for index, fmt, page, pages in self._cbs(buffers):
+                launch.cb(cores, index, fmt, page, page * pages)
+            cb_in, cb_out = programs.start_buffers(buffers)
+            defines = [
+                ("KM_PROGRAM_GROUP", str(number)),
+                ("KM_PROGRAM_CB_IN", str(cb_in)),
+                ("KM_PROGRAM_CB_OUT", str(cb_out)),
+            ]
+            first = held[0] if held else None
+            mine = range(group.first, group.first + group.count)
+            for processor, kernel in enumerate(("reader", "writer", "compute")):
+                config = (
+                    compute_config(first.compute if first else {})
+                    if kernel == "compute"
+                    else {}
+                )
+                build = (
+                    kernel_build(first, kernel, defines)
+                    if first
+                    else {"defines": defines}
+                )
+                launch.kernel(
+                    str(sources[kernel]),
+                    cores,
+                    processor,
+                    [],
+                    includes=include,
+                    args=[args[processor][core] for core in mine],
+                    **build,
+                    **config,
+                )
 
     def load_overlays(self, program, descriptor):
         """Builds the program's overlays against the kernels just built, puts each
@@ -1122,6 +1217,84 @@ class _Backend:
         session.log(
             f"overlays {list(program.overlays)} built and placed: slots from "
             f"{slot_base:#x}, {image.nbytes:,} B of DRAM "
+            f"({time.perf_counter() - started:.2f} s)"
+        )
+
+    def load_programs(self, placed, descriptor):
+        """Builds each program as an overlay against its group's runtime kernels, puts
+        the parts in every DRAM bank, places the slots (refused, with the L1 budget
+        table, when a group's do not fit) and writes each group's overlay area."""
+        session, abi_headers = self.session, abi.headers()
+        started = time.perf_counter()
+        kernels = descriptor.recipes()
+        grid = (self.port.grid_x, self.port.grid_y)
+        cores = grid[0] * grid[1]
+        declared = placed.programs[0].overlay_slots
+        built = []
+        for number, group in enumerate(placed.groups):
+            recipes = {}
+            for _, builds in kernels[3 * number : 3 * number + 3]:
+                for row in builds:
+                    recipe = overlay.Recipe.from_native(row)
+                    recipes[recipe.target] = recipe
+            held = [placed.programs[index] for index in group.programs]
+            if not held:
+                built.append(None)
+                continue
+            made = overlay.build_overlays(
+                [programs.program_overlay(program) for program in held],
+                declared,
+                recipes,
+                native.cache_directory() / "overlays",
+                session.log,
+            )
+            for program in held:
+                program.overlays_built = made
+            built.append(made)
+            buffers = sum(
+                buffer.page_bytes * buffer.pages
+                for buffer in self.group_buffers[number]
+            )
+            buffers += 2 * abi_headers["kTokenBytes"] + self.trace_cap * 16
+            rows = [
+                ("circular buffers", buffers),
+                ("control block and overlay area", self.control.nbytes // cores),
+            ]
+            rows += [
+                (f"slots: {part}, {count} x {size:,} B", count * size)
+                for part, (count, size) in made.slots.items()
+            ]
+            table, fits = overlay.budget(session.l1()[1], rows)
+            names = ", ".join(program.name for program in held)
+            session.log(f"L1 budget of a core of {names}:\n{table}")
+            if not fits:
+                raise L1BudgetError(names, table)
+        images = {}
+        for made in built:
+            if made is not None:
+                images.update(made.images)
+        image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
+        image = _words(session, image_rows)
+        slot_bytes = max(made.slot_bytes for made in built if made is not None)
+        slots = session.empty(
+            (cores, (slot_bytes + overlay.ALIGN) // 4), "uint32", shard_grid=grid
+        )
+        self.io += [image, slots]
+        slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
+        at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
+        for group, made in zip(placed.groups, built, strict=True):
+            if made is None:
+                continue
+            mine = {key: placed_rows[key] for key in made.images}
+            area = overlay.area_words(
+                made, mine, image.address, image.aligned_page_bytes, slot_base
+            )
+            rows = slice(group.first, group.first + group.count)
+            self.control_rows[rows, at : at + len(area)] = area
+        self.control.write(self.control_rows)
+        session.log(
+            f"programs {[program.name for program in placed.programs]} built and "
+            f"placed: slots from {slot_base:#x}, {image.nbytes:,} B of DRAM "
             f"({time.perf_counter() - started:.2f} s)"
         )
 

@@ -87,7 +87,8 @@ NodeRow = namedtuple(
 Event = namedtuple("Event", "kind req auxiliary extra pass_index")
 GraphCommand = namedtuple(
     "GraphCommand",
-    "node run sequence slot handler first count flags args pass_index queued",
+    "node run sequence slot handler first count flags args pass_index queued program",
+    defaults=(0,),
 )
 GraphSimResult = namedtuple(
     "GraphSimResult", "commands events status error registers runs passes stopped kept"
@@ -414,7 +415,9 @@ class Graph:
         )
         flags |= stream_module.FLAG_RESULT if result_register != NONE else 0
         words = [0] * stream_module.COMMAND_WORDS
-        words[1] = handler | flags << 8
+        words[1] = (
+            int(handler) | flags << 8 | stream_module.program_field(handler) << 24
+        )
         patch = []
         for i, value in enumerate(args):
             if isinstance(value, Register):
@@ -1128,6 +1131,7 @@ class _Sim:
             node, self.executor.runs, self.sequence, slot, words[1] & 0xFF, first,
             count, flags & ~stream_module.FLAG_QUEUE,
             tuple(words[i] for i in stream_module.ARG_WORD), self.now, queued,
+            words[1] >> 24,
         )  # fmt: skip
         self.commands.append(record)
         delay = self.delay(record) if callable(self.delay) else self.delay

@@ -82,23 +82,24 @@ class _Hostfed(stream_module._Sim):
 
     def _send(self, words, first, count, queued):
         handler, flags = words[1] & 0xFF, words[1] >> 8 & 0xFF
+        named = self.run.field_handler(handler, words[1] >> 24)
         args = [words[i] for i in stream_module.ARG_WORD]
         result = bool(flags & stream_module.FLAG_RESULT)
         if queued:
-            handle = self.run.submit(handler, count, args, result=result, queued=True)
+            handle = self.run.submit(named, count, args, result=result, queued=True)
         elif stream_module.cluster_of(first, count) is not None:
             cluster = stream_module.cluster_of(first, count)
-            handle = self.run.submit(handler, args=args, result=result, cluster=cluster)
+            handle = self.run.submit(named, args=args, result=result, cluster=cluster)
         else:
             exclusive = bool(flags & stream_module.FLAG_EXCLUSIVE)
             handle = self.run.submit(
-                handler, (first, count), args, exclusive, result=result
+                named, (first, count), args, exclusive, result=result
             )
         self.flight[handle] = (self.pc, result)
         self.pending += 1
         record = HostfedCommand(
             self.pc, 1, handle, handler, first, count,
-            flags & ~stream_module.FLAG_QUEUE, tuple(args), queued,
+            flags & ~stream_module.FLAG_QUEUE, tuple(args), queued, words[1] >> 24,
         )  # fmt: skip
         self.hostfed.append(record)
 

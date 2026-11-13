@@ -156,6 +156,8 @@ def test_the_area_holds_the_table_and_the_slots():
     # image 1's copies are pages 8 to 15: one page into each bank
     assert list(words[entry : entry + 2]) == [0x1000 + 1024, 256]
     assert np.count_nonzero(words[c["kOverlayBase"] + 1 : c["kOverlayBase"] + 5]) == 0
+    second = (c["kOverlayRecords"] + 16) // 4  # the reader's slot 1: its address
+    assert words[second + c["kOverlayAddress"]] == 0x20000 + 256
 
 
 def test_the_budget_table_says_whether_it_fits():

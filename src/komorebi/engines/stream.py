@@ -105,7 +105,8 @@ Uop = namedtuple("Uop", "op a b c immediate imm2", defaults=(0, 0, 0, 0, 0))
 Event = namedtuple("Event", "kind req auxiliary pass_index")
 SubmittedCommand = namedtuple(
     "SubmittedCommand",
-    "sequence slot handler first count flags args pass_index pc queued",
+    "sequence slot handler first count flags args pass_index pc queued program",
+    defaults=(0,),
 )
 SimResult = namedtuple("SimResult", "commands events status passes error halt stopped")
 
@@ -154,6 +155,11 @@ class Template:
     @property
     def flags(self):
         return self.rec[1] >> 8 & 0xFF
+
+    @property
+    def program(self):
+        """The program field (header bits 24 to 31)."""
+        return self.rec[1] >> 24
 
 
 def _u32(value, what):
@@ -331,9 +337,10 @@ class Stream:
             raise ValueError(f"{len(args)} arguments, a command has {ARGS}")
         words = [0] * COMMAND_WORDS
         words[1] = (
-            handler
+            int(handler)
             | (FLAG_EXCLUSIVE if exclusive else 0) << 8
             | (FLAG_RESULT if result else 0) << 8
+            | program_field(handler) << 24
         )
         patch = []
         for i, value in enumerate(args):
@@ -460,6 +467,12 @@ class Stream:
     def simulate(self, **options):
         """`simulate` on this stream's upload."""
         return simulate(self.encode(), **options)
+
+
+def program_field(handler):
+    """The program field of a command to `handler`: a Handler's program's, else 0 (the
+    run's first program)."""
+    return getattr(handler, "field", 0)
 
 
 def _group_field(value, what):
@@ -791,6 +804,7 @@ class _Sim:
             self.now,
             pc,
             queued,
+            words[1] >> 24,
         )
         self.commands.append(record)
         delay = self.delay(record) if callable(self.delay) else self.delay

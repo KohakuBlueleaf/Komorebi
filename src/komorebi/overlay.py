@@ -38,6 +38,8 @@ KERNEL_CLASSES = {
     "compute": "km::Compute",
 }
 FUNCTION = "km_overlay"  # the part's function: (kernel object, const argument&)
+PROGRAM_FUNCTION = "km_program_part"  # a program's part: its km_program (entry hpp)
+COMPILE_ARGS = "-DKERNEL_COMPILE_TIME_ARGS="  # a program's part gives its own
 OVERLAY = re.compile(
     r"constexpr\s+uint32_t\s+kOverlay(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;"
 )
@@ -106,12 +108,15 @@ def overlays_from_header(path):
 @dataclass(frozen=True)
 class Overlay:
     """An overlay of a program: its number (1 to 63) and a source per kernel that has a
-    part ("reader", "writer", "compute"); `defines` go to its parts' builds only."""
+    part ("reader", "writer", "compute"); `defines` go to its parts' builds only. A
+    program's overlay (`program`) calls km_program with its own `compile_args`."""
 
     name: str
     number: int
     sources: dict
     defines: dict = field(default_factory=dict)
+    program: bool = False
+    compile_args: dict = field(default_factory=dict)  # kernel -> [words]
 
     def __post_init__(self):
         most = constants()["kOverlaysMax"] - 1
@@ -193,10 +198,10 @@ class Recipe:
         """A binutils program beside the compiler (readelf, objcopy, gcc-nm)."""
         return self.compiler[0][: -len("g++")] + name
 
-    def compile_command(self, source, out, defines, action="-c"):
+    def compile_command(self, source, out, defines, action="-c", compile_args=None):
         """The runtime's compile of this core, position-independent, with `defines`
-        ({name: value}); `action` -c or -E. Include folders the runtime gives relative
-        to the ELF's folder are made absolute."""
+        ({name: value}); `action` -c or -E; `compile_args` (a list) in place of the
+        kernel's. Include folders relative to the ELF's folder are made absolute."""
         folder = self.elf.parent
         includes = []
         for word in self.includes:
@@ -204,12 +209,23 @@ class Recipe:
             if path is not None and not Path(path).is_absolute():
                 word = f"-I{(folder / path).resolve()}"
             includes.append(word)
+        dropped = (
+            (DROPPED_DEFINE,)
+            if compile_args is None
+            else (DROPPED_DEFINE, COMPILE_ARGS)
+        )
+        own = (
+            []
+            if not compile_args
+            else [COMPILE_ARGS + ",".join(map(str, compile_args))]
+        )
         return [
             *self.compiler,
             f"-{self.opt}",
             *(word for word in self.cflags if word not in DROPPED_COMPILE),
             *includes,
-            *(word for word in self.defines if not word.startswith(DROPPED_DEFINE)),
+            *(word for word in self.defines if not word.startswith(dropped)),
+            *own,
             "-fpie",
             "-fvisibility=hidden",
             *(f"-D{name}={value}" for name, value in defines.items()),
@@ -365,28 +381,38 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
     """Builds and checks one part: compiled with the runtime's commands, position-
     independent, linked at two bases; kept under `cache` by a hash of its preprocessed
     source, the recipe and the persistent ELF. Returns the first link's Linked."""
-    stem = f"{overlay.name}-{part}"
+    stem = f"{re.sub(r'[^\w.-]', '_', overlay.name)}-{part}"
     scratch = Path(cache) / "sources"
     scratch.mkdir(parents=True, exist_ok=True)
     defines = {
         "KM_OVERLAY_PART": 1,
         "KM_OVERLAY_KERNEL": KERNEL_CLASSES[kernel],
-        "KM_OVERLAY_FUNCTION": FUNCTION,
+        "KM_OVERLAY_FUNCTION": PROGRAM_FUNCTION if overlay.program else FUNCTION,
+        **({"KM_PROGRAM_PART": 1} if overlay.program else {}),
         **overlay.defines,
     }
-    recipe_key = hashlib.sha256(repr((recipe, defines)).encode()).hexdigest()[:16]
+    compile_args = overlay.compile_args.get(kernel, []) if overlay.program else None
+    recipe_key = hashlib.sha256(
+        repr((recipe, defines, compile_args)).encode()
+    ).hexdigest()[:16]
     wrapper = scratch / f"{stem}-{recipe_key}.cpp"
     source = Path(overlay.sources[kernel]).resolve()
     wrapper.write_text(WRAPPER.format(part=part, name=overlay.name, source=source))
     preprocessed = wrapper.with_suffix(".ii")
-    run(recipe.compile_command(wrapper, preprocessed, defines, "-E"), cwd=scratch)
+    run(
+        recipe.compile_command(wrapper, preprocessed, defines, "-E", compile_args),
+        cwd=scratch,
+    )
     digest = hashlib.sha256(preprocessed.read_bytes() + recipe_key.encode())
     digest.update(recipe.elf.read_bytes() + SCRIPT.encode())
     work = Path(cache) / f"{stem}-{digest.hexdigest()[:16]}"
     work.mkdir(exist_ok=True)
     obj = work / "part.o"
     if not obj.is_file():
-        run(recipe.compile_command(wrapper, obj, defines), cwd=work)
+        run(
+            recipe.compile_command(wrapper, obj, defines, compile_args=compile_args),
+            cwd=work,
+        )
     names = run([recipe.tool("gcc-nm"), "-u", str(obj)]).split()
     undefined = [name for name in names if name != "U"]
     links = []
@@ -438,12 +464,19 @@ class Built:
 def build(program, recipes, cache, log=lambda message: None):
     """Builds every part of the program's overlays against `recipes` ({target:
     Recipe} of its persistent kernels) and sizes the slots: a Built."""
-    by_part = {TARGETS[target]: recipe for target, recipe in recipes.items()}
     overlays = list(program.overlays.values())
+    return build_overlays(overlays, program.overlay_slots, recipes, cache, log)
+
+
+def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message: None):
+    """Builds every part of `overlays` against `recipes` ({target: Recipe} of the
+    persistent kernels) and sizes the slots as `declared_slots` (Slots) says: a Built.
+    """
+    by_part = {TARGETS[target]: recipe for target, recipe in recipes.items()}
     declared, images, extents = {}, {}, {}
     for kernel in KERNELS:
         if any(kernel in overlay.sources for overlay in overlays):
-            declared[kernel] = program.overlay_slots.of(kernel, overlays)
+            declared[kernel] = declared_slots.of(kernel, overlays)
     for overlay in overlays:
         for kernel, part in overlay.parts():
             linked = build_part(
@@ -488,6 +521,9 @@ def area_words(built, placed, image_address, image_page_bytes, slot_base):
         words[c["kOverlayBase"] + index] = at if count else 0
         words[c["kOverlaySlots"] + index] = count
         words[c["kOverlaySlotBytes"] + index] = size
+        for slot in range(count):  # each record's slot address
+            record = c["kOverlayRecords"] + 16 * (c["kOverlaySlotsMax"] * index + slot)
+            words[record // 4 + c["kOverlayAddress"]] = at + slot * size
         at += count * size
     for (number, part), (row, size) in placed.items():
         entry = (
