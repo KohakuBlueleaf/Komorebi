@@ -34,31 +34,31 @@ void kernel_main() {
     // the core is stopping, and the body then returns false (no report).
     auto reads_done = [&] {
         const bool ok = wr.poll(
-                            [&] {
-                                return ncrisc_noc_reads_flushed(noc_index);
-                            },
-                            wr.args().wait_limit
-                        ) == km::kGaveNone;
+            [&] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
         invalidate_l1_cache();  // this RISC's load cache must not hold the old words
         return ok;
     };
     // Sent: the data has left L1, so the slots may be written again.
     auto writes_sent = [&] {
         return wr.poll(
-                   [&] {
-                       return ncrisc_noc_nonposted_writes_sent(noc_index);
-                   },
-                   wr.args().wait_limit
-               ) == km::kGaveNone;
+            [&] {
+                return ncrisc_noc_nonposted_writes_sent(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
     };
     // Acknowledged: the data is in DRAM, so the command may be reported done.
     auto writes_done = [&] {
         return wr.poll(
-                   [&] {
-                       return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                   },
-                   wr.args().wait_limit
-               ) == km::kGaveNone;
+            [&] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
     };
 
     // The runtime's loop: the body runs once for each command whose group holds this

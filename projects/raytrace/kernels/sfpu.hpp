@@ -36,8 +36,16 @@ namespace rt {
 
     // Packet slots in Dst (a slot is 32 lanes): the ray, the results, the hit's normal
     // and colours, scratch, then the stack of entry distances (one slot per depth).
-    constexpr uint32_t kSO = 0, kSD = 3, kSInv = 6, kSBest = 9, kSTri = 10, kSU = 11,
-                       kSV = 12, kSNodes = 13, kSLeaves = 14, kSAttr = 15;
+    constexpr uint32_t kSO = 0;
+    constexpr uint32_t kSD = 3;
+    constexpr uint32_t kSInv = 6;
+    constexpr uint32_t kSBest = 9;
+    constexpr uint32_t kSTri = 10;
+    constexpr uint32_t kSU = 11;
+    constexpr uint32_t kSV = 12;
+    constexpr uint32_t kSNodes = 13;
+    constexpr uint32_t kSLeaves = 14;
+    constexpr uint32_t kSAttr = 15;
     constexpr uint32_t kSPv = 27, kSDet = 30, kSDetInv = 31, kSUt = 32, kSQ = 33;
     constexpr uint32_t kSStack = 36;
     constexpr uint32_t kSlots = 256;

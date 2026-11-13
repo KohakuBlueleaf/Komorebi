@@ -73,11 +73,11 @@ void kernel_main() {
     // Start barrier on core 0 (every core's sender counts in).
     atomic_add(noc_of(0, sh + kReady), 1, sh + kRet);
     if (!wait_timeout(
-            [] {
-                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
-            },
-            kLimit
-        )) {
+        [] {
+            return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+        },
+        kLimit
+    )) {
         st[kSFail] = kFailAtomic;
         st[kSDone] = 1;
         return;
@@ -88,11 +88,11 @@ void kernel_main() {
         [&] {
             noc_async_read(noc_of(0, sh + kReady), sh + kPeek, 4);
             if (!wait_timeout(
-                    [] {
-                        return ncrisc_noc_reads_flushed(noc_index);
-                    },
-                    kLimit
-                )) {
+                [] {
+                    return ncrisc_noc_reads_flushed(noc_index);
+                },
+                kLimit
+            )) {
                 read_hung = true;
                 return true;
             }
@@ -115,11 +115,11 @@ void kernel_main() {
         ret[0] = 0xDEADBEEFu;
         atomic_add(noc_of(dest, sh + kTail), n, sh + kRet);
         if (!wait_timeout(
-                [] {
-                    return ncrisc_noc_nonposted_atomics_flushed(noc_index);
-                },
-                kLimit
-            )) {
+            [] {
+                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+            },
+            kLimit
+        )) {
             fail = kFailAtomic;
             break;
         }
@@ -130,11 +130,11 @@ void kernel_main() {
         const uint32_t p = ret[0];
         // The previous packet's writes must have left the buffer before it is refilled.
         if (!wait_timeout(
-                [] {
-                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                },
-                kLimit
-            )) {
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            kLimit
+        )) {
             fail = kFailFlush;
             break;
         }
@@ -166,11 +166,11 @@ void kernel_main() {
         }
         if (mode >> 8) {  // commit: the first message's mark goes after the packet
             if (!wait_timeout(
-                    [] {
-                        return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                    },
-                    kLimit
-                )) {
+                [] {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                },
+                kLimit
+            )) {
                 fail = kFailFlush;
                 break;
             }

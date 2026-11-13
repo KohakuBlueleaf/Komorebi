@@ -142,9 +142,10 @@ static inline const volatile uint64_t* stream_template(
     const volatile uint8_t* base, uint32_t n_ops, uint32_t t
 ) {
     return (
-        (const volatile uint64_t*)(base + sizeof(km_stream_t) +
-                                              stream_lines(n_ops, sizeof(km_uop_t)) +
-        (uint64_t)t * sizeof(km_template_t))
+        (const volatile uint64_t*)(
+            base + sizeof(km_stream_t) + stream_lines(n_ops, sizeof(km_uop_t)) +
+            (uint64_t)t * sizeof(km_template_t)
+        )
     );
 }
 
@@ -153,8 +154,10 @@ static inline int template_bad(const volatile uint64_t* w) {
     const uint32_t hdr = (uint32_t)(w[0] >> 32), handler = hdr & 0xFFu;
     const uint64_t patch = w[8], tail = w[9];
     const uint32_t n = (uint32_t)(tail >> 16) & 0xFFu;
-    if (handler < 1u || handler > KM_HANDLER_USER_MAX ||
-        (((hdr >> 8) & 0xFFu) & ~(KM_F_EXCL | KM_F_RESULT)) || n > KM_TPL_PATCHES) {
+    if (
+        handler < 1u || handler > KM_HANDLER_USER_MAX ||
+        (((hdr >> 8) & 0xFFu) & ~(KM_F_EXCL | KM_F_RESULT)) || n > KM_TPL_PATCHES
+    ) {
         return 1;
     }
     for (uint32_t i = 0; i < n; i++) {
@@ -182,14 +185,17 @@ static uint32_t stream_check(const volatile uint8_t* base, uint32_t bytes) {
     }
     x280_fence_ir();
     const uint32_t n_ops = h[2], n_commands = h[3];
-    if (h[0] != KM_STREAM_MAGIC || h[1] != KM_STREAM_VERSION || h[7] == 0u ||
+    if (
+        h[0] != KM_STREAM_MAGIC || h[1] != KM_STREAM_VERSION || h[7] == 0u ||
         n_ops == 0u || n_ops > KM_STREAM_MAX_OPS || n_commands > KM_STREAM_MAX_OPS ||
-        h[4] == 0u) {
+        h[4] == 0u
+    ) {
         return KM_SERR_HEADER;
     }
-    const uint64_t size =
-        (sizeof(km_stream_t) + stream_lines(n_ops, sizeof(km_uop_t)) +
-         stream_lines(n_commands, sizeof(km_template_t)));
+    const uint64_t size = (
+        sizeof(km_stream_t) + stream_lines(n_ops, sizeof(km_uop_t)) +
+        stream_lines(n_commands, sizeof(km_template_t))
+    );
     if (size != bytes) {
         return KM_SERR_HEADER;
     }
@@ -222,8 +228,9 @@ static uint32_t stream_check(const volatile uint8_t* base, uint32_t bytes) {
         for (uint32_t pc = 0; pc < n_ops; pc++) {
             const uint64_t w = ops[2u * pc];
             const uint32_t op = (uint32_t)w & 0xFFu;
-            if ((op == KM_OP_SUBMIT || op == KM_OP_ENQUEUE) &&
-                (uint32_t)(w >> 32) == t) {
+            if (
+                (op == KM_OP_SUBMIT || op == KM_OP_ENQUEUE) && (uint32_t)(w >> 32) == t
+            ) {
                 return KM_SERR_TEMPLATE | pc << 8;
             }
         }
@@ -339,8 +346,10 @@ static void stream_start(kmd_engine_t* e, uint32_t off, uint32_t bytes) {
     for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE && s == 0; i++) {
         s = e->streams[i].state == KMD_S_FREE ? &e->streams[i] : 0;
     }
-    if (s == 0 || off > e->upload_bytes || bytes > e->upload_bytes - off ||
-        bytes < sizeof(km_stream_t)) {
+    if (
+        s == 0 || off > e->upload_bytes || bytes > e->upload_bytes - off ||
+        bytes < sizeof(km_stream_t)
+    ) {
         return; /* the kernel admits neither */
     }
     const volatile uint32_t* h = (const volatile uint32_t*)(e->upload + off);
@@ -363,8 +372,9 @@ static void stream_start(kmd_engine_t* e, uint32_t off, uint32_t bytes) {
     s->n_ops = h[2];
     s->n_commands = h[3];
     s->max_steps = h[4];
-    s->t_command =
-        (h[5] ? (uint64_t)h[5] * 50u : e->kernel->ring[KMD_SRC_HOST].t_command);
+    s->t_command = (
+        h[5] ? (uint64_t)h[5] * 50u : e->kernel->ring[KMD_SRC_HOST].t_command
+    );
     s->off = off;
     s->state = KMD_S_RUNNING;
     e->runs++;
@@ -438,9 +448,9 @@ static void eng_events(kmd_engine_t* e) {
         const uint32_t i = e->seen + 1u;
         volatile const uint32_t*
             p = (
-                (volatile const uint32_t*)(e->events +
-                                                      (i % KMD_ENGINE_EVENTS) *
-                sizeof(km_event_t))
+                (volatile const uint32_t*)(
+                    e->events + (i % KMD_ENGINE_EVENTS) * sizeof(km_event_t)
+                )
             );
         x280_fence_ir();
         if (p[0] != i) {

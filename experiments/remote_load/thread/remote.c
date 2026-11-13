@@ -117,9 +117,10 @@ static int patch(uint32_t win, uint32_t xy, uint32_t at, uint32_t rd, uint32_t v
 static int submit(int cluster, int cpu, int c, uint32_t k, uint32_t* line) {
     const uint32_t* cfg = region(REG_CFG);
     const uint32_t mode = word(RL_W_MODE), slot = word(RL_W_SLOT);
-    const uint32_t b =
-        (word(RL_W_FIRST) +
-         cfg[RL_CFG_SCHED + (4u * cluster + cpu) * RL_SCHED + k % RL_SCHED]);
+    const uint32_t b = (
+        word(RL_W_FIRST) +
+        cfg[RL_CFG_SCHED + (4u * cluster + cpu) * RL_SCHED + k % RL_SCHED]
+    );
     const uint32_t bytes = cfg[RL_CFG_BYTES + b], xy = cfg[RL_CFG_NOC + c];
     const uint8_t* src = (const uint8_t*)region(REG_BODIES) + cfg[RL_CFG_OFFSET + b];
     const uint32_t win = RL_WINDOW + (uint32_t)cpu, arg = RL_ARG(c, k);
@@ -237,12 +238,14 @@ int kmx_main(int cpu) {
     const kmx_args* a = kmx_args_get();
     uint64_t cfg_bytes = 0, out_bytes = 0, bodies_bytes = 0;
     const uint32_t cores = a->nwords >= RL_WORDS ? a->words[RL_W_CORES] : 0;
-    if (a->nwords < RL_WORDS || kmx_region(REG_CFG, &cfg_bytes) == 0 ||
+    if (
+        a->nwords < RL_WORDS || kmx_region(REG_CFG, &cfg_bytes) == 0 ||
         cfg_bytes < 4u * RL_CFG_WORDS || kmx_region(REG_BODIES, &bodies_bytes) == 0 ||
         kmx_region(REG_OUT, &out_bytes) == 0 || cores == 0 ||
         cores > (uint32_t)kmx_port_cores() ||
         (uint64_t)cores * a->words[RL_W_SWAPS] > RL_LINES_MAX ||
-        out_bytes < 4u * RL_LINE * RL_LINES_MAX) {
+        out_bytes < 4u * RL_LINE * RL_LINES_MAX
+    ) {
         return CODE_BAD;
     }
     if (kmx_par_all(invalidate_in, 0) != KMX_OK) {

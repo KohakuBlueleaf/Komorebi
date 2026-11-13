@@ -86,8 +86,8 @@ namespace {
         std::shared_ptr<MeshDevice> mesh;
         std::unique_ptr<x280::RuntimeOpenResult> opened;
 
-        Runtime(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz)
-            : mesh(std::move(mesh_device)) {
+        Runtime(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz) :
+            mesh(std::move(mesh_device)) {
             opened = std::make_unique<x280::RuntimeOpenResult>(x280::X280Runtime::open(
                 mesh,
                 x280::RuntimeOpenConfig{
@@ -107,8 +107,9 @@ namespace {
             if (!all_idle) {
                 x280::MultiTileBootRequest req;
                 req.tiles = rt.tile_ids();
-                req.idle_image_path =
-                    (std::string(X280_IMAGE_DIR) + "/firmware-lim-idle.bin");
+                req.idle_image_path = (
+                    std::string(X280_IMAGE_DIR) + "/firmware-lim-idle.bin"
+                );
                 req.allow_reset_release = true;
                 if (!rt.boot_tiles(req).ready()) {
                     throw std::runtime_error("X280 boot_tiles failed");
@@ -232,13 +233,13 @@ namespace {
                 const auto t = p.translated(lx, 0);
                 return (
                     soc.translate_coord_to(
-                                      tt::umd::CoreCoord(
-                                          t[0],
-                                          t[1],
-                                          tt::CoreType::TENSIX,
-                                          tt::CoordSystem::TRANSLATED
-                                      ),
-                                      tt::CoordSystem::NOC0
+                        tt::umd::CoreCoord(
+                            t[0],
+                            t[1],
+                            tt::CoreType::TENSIX,
+                            tt::CoordSystem::TRANSLATED
+                        ),
+                        tt::CoordSystem::NOC0
                     )
                     .x
                 );
@@ -250,8 +251,10 @@ namespace {
                     p.panels.push_back({x, x});
                 }
             }
-            if (p.panels.size() > 2 || p.gx > KMD_READY_MAX ||
-                p.gx * p.gy > KM_CORES_MAX) {
+            if (
+                p.panels.size() > 2 || p.gx > KMD_READY_MAX ||
+                p.gx * p.gy > KM_CORES_MAX
+            ) {
                 throw std::runtime_error("grid not supported: more than two panels");
             }
             return p;
@@ -315,19 +318,24 @@ namespace {
             if (session) {
                 throw std::runtime_error("a kernel is running");
             }
-            if (depth_ < 1 || depth_ > KM_RING_SLOTS || host_depth_ < 1 ||
+            if (
+                depth_ < 1 || depth_ > KM_RING_SLOTS || host_depth_ < 1 ||
                 host_depth_ > KMD_HOST_DEPTH_MAX || event_depth_ < 1 ||
-                KMD_HOST_RING + event_depth_ * sizeof(km_event_t) > kHostBufferBytes) {
+                KMD_HOST_RING + event_depth_ * sizeof(km_event_t) > kHostBufferBytes
+            ) {
                 throw std::runtime_error(
                     "depth, host_depth or event_depth out of range"
                 );
             }
-            const uint64_t room =
-                (lim_end > base + KMD_LIM_UPLOAD
-                     ? (lim_end - base - KMD_LIM_UPLOAD) & ~63ull
-                     : 0);
-            if (upload_bytes_ > static_cast<int64_t>(room) ||
-                (upload_bytes_ >= 0 && upload_bytes_ % 64 != 0)) {
+            const uint64_t room = (
+                lim_end > base + KMD_LIM_UPLOAD
+                    ? (lim_end - base - KMD_LIM_UPLOAD) & ~63ull
+                    : 0
+            );
+            if (
+                upload_bytes_ > static_cast<int64_t>(room) ||
+                (upload_bytes_ >= 0 && upload_bytes_ % 64 != 0)
+            ) {
                 throw std::runtime_error(
                     "upload_bytes: a multiple of 64, at most the room"
                 );
@@ -362,8 +370,8 @@ namespace {
             a.cores = gx * gy;
             a.panels = panels.size();
             for (size_t r = 0; r < panels.size(); r++) {
-                const auto p0 = translated(panels[r][0], 0),
-                           p1 = translated(panels[r][1], gy - 1);
+                const auto p0 = translated(panels[r][0], 0);
+                const auto p1 = translated(panels[r][1], gy - 1);
                 a.rect[r][0] = p0[0];
                 a.rect[r][1] = p0[1];
                 a.rect[r][2] = p1[0];
@@ -403,8 +411,10 @@ namespace {
         // Stores `n` bytes (whole 64-byte lines) at `offset` of the upload region
         // through the host window, then a fence.
         void upload(uint64_t offset, const uint8_t* data, size_t n) {
-            if (offset % 64 != 0 || n % 64 != 0 || offset > upload_bytes ||
-                n > upload_bytes - offset) {
+            if (
+                offset % 64 != 0 || n % 64 != 0 || offset > upload_bytes ||
+                n > upload_bytes - offset
+            ) {
                 throw std::runtime_error("upload: whole lines inside the region");
             }
             if (KMD_LIM_UPLOAD + offset + n > win->get_size()) {
@@ -437,8 +447,10 @@ namespace {
             const auto by = after(timeout_s);
             for (;;) {
                 const uint32_t s = host[KMD_HOST_STATE];
-                if (s > KMD_STATE_READY ||
-                    (s == KMD_STATE_READY && host[KMD_HOST_READY] == KMD_READY_MARK)) {
+                if (
+                    s > KMD_STATE_READY ||
+                    (s == KMD_STATE_READY && host[KMD_HOST_READY] == KMD_READY_MARK)
+                ) {
                     return s;
                 }
                 if (Clock::now() > by) {
@@ -493,8 +505,10 @@ namespace {
         // While waiting: the read count and a fence, only if the kernel could hold a
         // command for it (command i can wait only if i - 1 - published >= depth).
         void publish() {
-            if (seen != published && next - 1u - published >= event_depth &&
-                __rdtsc() - fenced >= static_cast<uint64_t>(hz * 1e-6)) {
+            if (
+                seen != published && next - 1u - published >= event_depth &&
+                __rdtsc() - fenced >= static_cast<uint64_t>(hz * 1e-6)
+            ) {
                 store_read();
                 _mm_sfence();
                 fenced = __rdtsc();
@@ -672,8 +686,10 @@ namespace {
                 const uint32_t first = e.req % (cores - count + 1);
                 const uint32_t low = (e.status >> 8) &
                     KM_EV_AUX_LOW; /* not the seq bits */
-                if ((e.status & 0xFFu) != KM_EV_DONE || low != first ||
-                    e.ticks != dk_result(e.req, param)) {
+                if (
+                    (e.status & 0xFFu) != KM_EV_DONE || low != first ||
+                    e.ticks != dk_result(e.req, param)
+                ) {
                     if (bad++ < 8) {
                         wrong.push_back(e);
                     }
@@ -768,8 +784,10 @@ namespace {
             if (session) {
                 throw std::runtime_error("a kernel is running");
             }
-            if (lines < 1 || spread < 1 || lines * spread > 64 || target < 0 ||
-                target > 1) {
+            if (
+                lines < 1 || spread < 1 || lines * spread > 64 || target < 0 ||
+                target > 1
+            ) {
                 throw std::runtime_error("lines * spread is 1 to 64, target 0 or 1");
             }
             open_host_side();
@@ -873,8 +891,7 @@ namespace {
                         .core_start = {c[0], c[1]},
                         .addr = mesh->allocator()->get_base_allocator_addr(
                             tt::tt_metal::HalMemType::L1
-                        ),
-                        .noc = tt::umd::NocId::NOC0
+                        ),.noc = tt::umd::NocId::NOC0
                     },
                     tt::umd::HostIoWindowConfig{
                         .mapping = tt::umd::HostMemoryCaching::WC
@@ -920,9 +937,7 @@ NB_MODULE(_km_dispatch_test, m) {
             },
             nb::arg("device"),
             nb::arg("pll_mhz") = 1000
-        )
-        .def("image_limit", &Runtime::image_limit)
-        .def(
+        ).def("image_limit", &Runtime::image_limit).def(
             "plan",
             [](Runtime& self) {
                 return Plan::make(self);
@@ -949,8 +964,7 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("table"),
             nb::arg("out"),
             nb::arg("limit")
-        )
-        .def(
+        ).def(
             "prepare",
             &Plan::prepare,
             nb::arg("depth"),
@@ -961,22 +975,21 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("t_idle_s") = 0.0,
             nb::arg("state_ddr") = 0,
             nb::arg("upload_bytes") = -1
-        )
-        .def_ro("upload_bytes", &Plan::upload_bytes)
-        .def_ro("lim_base", &Plan::base)
+        ).def_ro("upload_bytes", &Plan::upload_bytes).def_ro("lim_base", &Plan::base)
         .def(
             "upload",
-            [](Plan& p,
-               uint64_t offset,
-               nb::ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>
-                   data) {
+            [](
+                Plan & p,
+                uint64_t offset,
+                nb::ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>
+                    data
+            ) {
                 nb::gil_scoped_release release;
                 p.upload(offset, data.data(), data.shape(0));
             },
             nb::arg("offset"),
             nb::arg("data")
-        )
-        .def(
+        ).def(
             "upload_read",
             [](Plan& p, uint64_t offset, size_t n) {
                 std::vector<uint8_t> data;
@@ -990,8 +1003,7 @@ NB_MODULE(_km_dispatch_test, m) {
             },
             nb::arg("offset"),
             nb::arg("n")
-        )
-        .def("start", &Plan::start, nb::arg("image"))
+        ).def("start", &Plan::start, nb::arg("image"))
         .def("host_word", &Plan::host_word, nb::arg("word"))
         .def(
             "wait_ready",
@@ -1000,8 +1012,7 @@ NB_MODULE(_km_dispatch_test, m) {
                 return p.wait_ready(timeout_s);
             },
             nb::arg("timeout_s")
-        )
-        .def(
+        ).def(
             "submit",
             [](Plan& p, const std::vector<uint32_t>& rec, double timeout_s) {
                 if (rec.size() != 16) {
@@ -1011,23 +1022,23 @@ NB_MODULE(_km_dispatch_test, m) {
             },
             nb::arg("rec"),
             nb::arg("timeout_s") = 10.0
-        )
-        .def(
+        ).def(
             "take",
             [](Plan& p, uint32_t count, double timeout_s) {
                 return events_list(p.take(count, timeout_s));
             },
             nb::arg("count"),
             nb::arg("timeout_s") = 10.0
-        )
-        .def(
+        ).def(
             "stream",
-            [](Plan& p,
-               nb::ndarray<const uint32_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>
-                   recs,
-               double timeout_s,
-               size_t batch,
-               double settle_us) {
+            [](
+                Plan & p,
+                nb::ndarray<const uint32_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>
+                    recs,
+                double timeout_s,
+                size_t batch,
+                double settle_us
+            ) {
                 if (recs.shape(1) != 16) {
                     throw std::runtime_error("recs is [n, 16]");
                 }
@@ -1043,8 +1054,7 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("timeout_s") = 10.0,
             nb::arg("batch") = 1,
             nb::arg("settle_us") = 0.0
-        )
-        .def(
+        ).def(
             "finish",
             [](Plan& p, double timeout_s, bool wait) {
                 Finish f;
@@ -1063,13 +1073,14 @@ NB_MODULE(_km_dispatch_test, m) {
             },
             nb::arg("timeout_s") = 10.0,
             nb::arg("wait") = true
-        )
-        .def(
+        ).def(
             "run_image",
-            [](Plan& p,
-               const std::string& image,
-               const std::vector<uint64_t>& words,
-               double timeout_s) {
+            [](
+                Plan & p,
+                const std::string& image,
+                const std::vector<uint64_t>& words,
+                double timeout_s
+            ) {
                 Finish f;
                 {
                     nb::gil_scoped_release release;
@@ -1085,20 +1096,22 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("image"),
             nb::arg("words"),
             nb::arg("timeout_s") = 10.0
-        )
-        .def("abort", &Plan::abort)
-        .def(
+        ).def("abort", &Plan::abort).def(
             "store_probe",
-            [](Plan& p,
-               uint32_t n,
-               uint32_t lines,
-               uint32_t spread,
-               double gap_us,
-               double busy_us,
-               bool read,
-               int target) {
+            [](
+                Plan & p,
+                uint32_t n,
+                uint32_t lines,
+                uint32_t spread,
+                double gap_us,
+                double busy_us,
+                bool read,
+                int target
+            ) {
                 nb::gil_scoped_release release;
-                return p.store_probe(n, lines, spread, gap_us, busy_us, read, target);
+                return (
+                    p.store_probe(n, lines, spread, gap_us, busy_us, read, target)
+                );
             },
             nb::arg("n"),
             nb::arg("lines") = 2,
@@ -1107,15 +1120,16 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("busy_us") = 0.0,
             nb::arg("read") = false,
             nb::arg("target") = 0
-        )
-        .def(
+        ).def(
             "result_run",
-            [](Plan& p,
-               uint32_t n,
-               uint32_t count,
-               uint32_t param,
-               double timeout_s,
-               size_t batch) {
+            [](
+                Plan & p,
+                uint32_t n,
+                uint32_t count,
+                uint32_t param,
+                double timeout_s,
+                size_t batch
+            ) {
                 std::pair<std::map<std::string, double>, std::vector<Event>> r;
                 {
                     nb::gil_scoped_release release;
@@ -1128,14 +1142,12 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("param") = 0,
             nb::arg("timeout_s") = 30.0,
             nb::arg("batch") = 64
-        )
-        .def(
+        ).def(
             "expected",
             [](const Plan& p) {
                 return nb::make_tuple(p.exp_runs, p.exp_sums, p.exp_mixes);
             }
-        )
-        .def("running", [](const Plan& p) {
+        ).def("running", [](const Plan& p) {
             return p.session.has_value();
         });
 }

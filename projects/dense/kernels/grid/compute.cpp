@@ -145,9 +145,10 @@ void kernel_main() {
             }
         }
         if (ok && broadcasts) {
-            ok =
-                (km::broadcast_end(cp, kCbRow, pa, wa, taken) &&
-                 km::broadcast_end(cp, kCbCol, pw, ww, taken));
+            ok = (
+                km::broadcast_end(cp, kCbRow, pa, wa, taken) &&
+                km::broadcast_end(cp, kCbCol, pw, ww, taken)
+            );
         }
         UNPACK((km::add_sat(prof + kGpUnWaitA, wait_a)));
         UNPACK((km::add_sat(prof + kGpUnWaitW, wait_w)));

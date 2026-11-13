@@ -175,9 +175,11 @@ namespace km {
             );
             volatile tt_l1_ptr uint32_t* last = state() + kStLast;
             const uint64_t t0 = wall64();
-            const uint64_t end =
-                (a.idle_limit == 0 ? ~0ull
-                                   : t0 + (static_cast<uint64_t>(a.idle_limit) << 10));
+            const uint64_t end = (
+                a.idle_limit == 0
+                    ? ~0ull
+                    : t0 + (static_cast<uint64_t>(a.idle_limit) << 10)
+            );
             uint32_t passes = 0, gave = kGaveNone, seq = 0;
             for (;;) {
                 invalidate_l1_cache();
@@ -376,11 +378,11 @@ namespace km {
     // mailbox; all three copy KM_CTL_JOB and confirm by mailbox before it is freed.
     class Compute {
     public:
-        Compute()
-            : ctl_(get_arg_val<uint32_t>(kCArgCtl)),
-              me_(get_arg_val<uint32_t>(kCArgMe)),
-              wait_(get_arg_val<uint32_t>(kCArgWait)),
-              idle_(get_arg_val<uint32_t>(kCArgIdle)) {
+        Compute() :
+            ctl_(get_arg_val<uint32_t>(kCArgCtl)),
+            me_(get_arg_val<uint32_t>(kCArgMe)),
+            wait_(get_arg_val<uint32_t>(kCArgWait)),
+            idle_(get_arg_val<uint32_t>(kCArgIdle)) {
         }
 
         uint32_t me() const {
@@ -403,23 +405,23 @@ namespace km {
                 const uint32_t code = !fits
                     ? kGaveBadItem
                     : poll_stop(
-                          stop(),
-                          [&] {
-                              const uint16_t n = (
-                                  static_cast<uint16_t>(
-                                      ckernel::reg_read(
-                                          static_cast<uint32_t>(
-                                              reinterpret_cast<uintptr_t>(got)
-                                          )
-                                      ) -
-                                      get_local_cb_interface(cb).tiles_acked
-                                  )
-                              );
-                              return n >= pages;
-                          },
-                          wait_ * times,
-                          0
-                      );
+                        stop(),
+                        [&] {
+                            const uint16_t n = (
+                                static_cast<uint16_t>(
+                                    ckernel::reg_read(
+                                        static_cast<uint32_t>(
+                                            reinterpret_cast<uintptr_t>(got)
+                                        )
+                                    ) -
+                                    get_local_cb_interface(cb).tiles_acked
+                                )
+                            );
+                            return n >= pages;
+                        },
+                        wait_ * times,
+                        0
+                    );
                 ok = code == kGaveNone;
                 if (ok) {
                     cb_wait_front(cb, pages);
@@ -446,26 +448,26 @@ namespace km {
                 const uint32_t code = !fits
                     ? kGaveBadItem
                     : poll_stop(
-                          stop(),
-                          [&] {
-                              const uint16_t used = (
-                                  static_cast<uint16_t>(
-                                      get_local_cb_interface(cb).tiles_received -
-                                      ckernel::reg_read(
-                                          static_cast<uint32_t>(
-                                              reinterpret_cast<uintptr_t>(acked)
-                                          )
-                                      )
-                                  )
-                              );
-                              return (
-                                  get_local_cb_interface(cb).fifo_num_pages - used >=
-                                  pages
-                              );
-                          },
-                          wait_,
-                          0
-                      );
+                        stop(),
+                        [&] {
+                            const uint16_t used = (
+                                static_cast<uint16_t>(
+                                    get_local_cb_interface(cb).tiles_received -
+                                    ckernel::reg_read(
+                                        static_cast<uint32_t>(
+                                            reinterpret_cast<uintptr_t>(acked)
+                                        )
+                                    )
+                                )
+                            );
+                            return (
+                                get_local_cb_interface(cb).fifo_num_pages - used >=
+                                pages
+                            );
+                        },
+                        wait_,
+                        0
+                    );
                 ok = code == kGaveNone;
                 if (ok) {
                     cb_reserve_back(cb, pages);

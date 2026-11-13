@@ -308,8 +308,9 @@ static void write_dirs(plan_t* p, uint32_t t, uint32_t m, int host) {
                 d[i] = 0;
             }
             d[RP_DIR_FIRST] = p->wk->bound[j];
-            d[RP_DIR_COUNT] =
-                (host ? p->wk->pred[j] : p->wk->bound[j + 1] - p->wk->bound[j]);
+            d[RP_DIR_COUNT] = (
+                host ? p->wk->pred[j] : p->wk->bound[j + 1] - p->wk->bound[j]
+            );
             d[RP_DIR_COST] = p->cost_addr + block_at(p, t, k, c);
         }
     }
@@ -484,10 +485,12 @@ int kmx_main(int xcore) {
     p.cap = p.w[RP_W_CAP];
     p.bank1 = 1 + p.w[RP_W_BANK];
     const uint32_t frames = p.w[RP_W_FRAMES];
-    if (p.mode > RP_MODE_FRAME || p.workers == 0 || p.workers > RP_CORES_MAX ||
+    if (
+        p.mode > RP_MODE_FRAME || p.workers == 0 || p.workers > RP_CORES_MAX ||
         p.packets == 0 || p.packets > RP_PACKETS_MAX || p.cap == 0 ||
         p.cap > RP_COST_MAX || p.w[RP_W_COMMANDS] > RP_COMMANDS_MAX || frames == 0 ||
-        frames > RP_FRAMES_MAX) {
+        frames > RP_FRAMES_MAX
+    ) {
         return finish(RP_BAD_ARGS, &p);
     }
     /* lines an earlier image left dirty would be written over what the cores write */

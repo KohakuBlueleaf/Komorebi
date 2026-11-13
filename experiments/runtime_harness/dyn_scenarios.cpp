@@ -29,8 +29,12 @@ namespace {
 
     // `cores` cores, then `counters` counter tiles: the run's group.
     struct Forward {
-        uint32_t cores = 2, counters = 1, messages = 1, forwards = 1, cap = 256,
-                 max_live = 256;
+        uint32_t cores = 2;
+        uint32_t counters = 1;
+        uint32_t messages = 1;
+        uint32_t forwards = 1;
+        uint32_t cap = 256;
+        uint32_t max_live = 256;
         int32_t one_core = -1, stall = -1, probe = -1;
         uint32_t idle = 2000;  // cycles before a line says idle
     };
@@ -57,14 +61,15 @@ namespace {
         };
         const uint32_t quota = h.max_live / h.cores;
         const uint32_t cap = h.cap, idle = h.idle, k = h.counters;
-        cfg.program_args =
-            [=](uint32_t, std::vector<uint32_t>& rw, std::vector<uint32_t>& c) {
-                const uint32_t ctl = rw[0], lines = rw[4] - kDispAck + kDispLines;
-                rw.insert(
-                    rw.end(), {kHandlerForward, kQueue, cap, 64, lines, idle, kBins, k}
-                );
-                c.insert(c.end(), {64, quota, k, ctl + kRes});
-            };
+        cfg.program_args = [=](
+            uint32_t, std::vector<uint32_t>& rw, std::vector<uint32_t>& c
+        ) {
+            const uint32_t ctl = rw[0], lines = rw[4] - kDispAck + kDispLines;
+            rw.insert(
+                rw.end(), {kHandlerForward, kQueue, cap, 64, lines, idle, kBins, k}
+            );
+            c.insert(c.end(), {64, quota, k, ctl + kRes});
+        };
         Job run;
         run.handler = kHandlerForward;
         run.first = 0;
@@ -128,25 +133,30 @@ namespace {
             all_done(s), "the run, its end command and the EXIT were acknowledged"
         );
         for (uint32_t m = 0; m < h.cores; m++) {
-            const uint64_t total =
-                (res(s, m, kResTotalLo) |
-                 static_cast<uint64_t>(res(s, m, kResTotalHi)) << 32);
+            const uint64_t total = (
+                res(s, m, kResTotalLo) |
+                static_cast<uint64_t>(res(s, m, kResTotalHi)) << 32
+            );
             c.expect(
                 res(s, m, kResRun) == s.jobs[0].seq, fmt("core %u ran the run", m)
             );
             c.expect(
                 res(s, m, kResConsumed) == e.consumed[m],
-                fmt("core %u consumed %u messages, the replay %u",
+                fmt(
+                    "core %u consumed %u messages, the replay %u",
                     m,
                     res(s, m, kResConsumed),
-                    e.consumed[m])
+                    e.consumed[m]
+                )
             );
             c.expect(
                 total == e.total[m],
-                fmt("core %u: total %x, the replay %x",
+                fmt(
+                    "core %u: total %x, the replay %x",
                     m,
                     static_cast<uint32_t>(total),
-                    static_cast<uint32_t>(e.total[m]))
+                    static_cast<uint32_t>(e.total[m])
+                )
             );
             c.expect(
                 res(s, m, kResVisits) == e.visits[m] + res(s, m, kResSent),
@@ -243,9 +253,11 @@ namespace {
         const uint32_t quota = h.max_live / h.cores;
         o.check.expect(
             res(s, 1, kResSent) == quota - 3,
-            fmt("probe sent %u, quota %u less its 3 messages",
+            fmt(
+                "probe sent %u, quota %u less its 3 messages",
                 res(s, 1, kResSent),
-                quota)
+                quota
+            )
         );
         o.check.expect(res(s, 1, kResRejected) == 1, "one send returned false");
         o.check.expect(
@@ -296,9 +308,11 @@ namespace {
         Sim* sp = nullptr;
         bool held = false;
         cfg.triggers.push_back([&](const Probe& p) {
-            if (!held && p.core == 0 && p.role == kReader &&
+            if (
+                !held && p.core == 0 && p.role == kReader &&
                 !std::strcmp(p.name, "cb_pages_reservable_at_back") &&
-                p.cb == km::kCbDynIn) {
+                p.cb == km::kCbDynIn
+            ) {
                 held = true;
                 sp->freeze(0, kReader, 200000);
             }

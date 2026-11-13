@@ -17,20 +17,27 @@ static inline int work_args_valid(const volatile kmd_args_t* a) {
     }
     const uint64_t d = a->work_depth, e = a->work_event_depth;
     const uint64_t remote = KMD_WORK_EVENTS + e * sizeof(km_event_t);
-    int ok =
-        (work_pow2(d) && d <= KMD_WORK_DEPTH_MAX && work_pow2(e) &&
-         e <= KMD_WORK_EVENTS_MAX && (a->work_cmds & 63u) == 0 &&
-         a->work_cmds >= KMD_LIM_UPLOAD + a->upload_bytes &&
-         (uintptr_t)a + a->work_cmds + KMD_WORK_CLUSTERS * KMD_WORK_RING_BYTES(d) <=
-             X280_LIM_END);
+    int ok = (
+        work_pow2(d) && d <= KMD_WORK_DEPTH_MAX && work_pow2(e) &&
+        e <= KMD_WORK_EVENTS_MAX && (a->work_cmds & 63u) == 0 &&
+        a->work_cmds >= KMD_LIM_UPLOAD + a->upload_bytes &&
+        (uintptr_t)a + a->work_cmds + KMD_WORK_CLUSTERS * KMD_WORK_RING_BYTES(d) <=
+            X280_LIM_END
+    );
     for (uint32_t w = 0; w < KMD_WORK_CLUSTERS; w++) {
         const uint64_t noc = a->work_noc[w], at = a->work_noc_addr[w];
-        ok =
-            (ok &&
-             (at == 0 ||
-              ((at & 63u) == 0 &&
-               (at & (NOC_2M_WINDOW_STRIDE - 1u)) + remote <= NOC_2M_WINDOW_STRIDE &&
-               (noc & 0xFFFFu) <= NOC_MAX_COORD && (noc >> 16) <= NOC_MAX_COORD)));
+        ok = (
+            ok &&
+            (
+                at == 0 ||
+                (
+                    (at & 63u) == 0 &&
+                    (at & (NOC_2M_WINDOW_STRIDE - 1u)) + remote <=
+                        NOC_2M_WINDOW_STRIDE &&
+                    (noc & 0xFFFFu) <= NOC_MAX_COORD && (noc >> 16) <= NOC_MAX_COORD
+                )
+            )
+        );
     }
     return ok;
 }

@@ -124,9 +124,13 @@ namespace kmsim {
 
     void note_command(uint32_t seq) {
         CoreState& c = g->me();
-        (self->role == kReader       ? c.reader_seq
-             : self->role == kWriter ? c.writer_seq
-                                     : c.compute_seq) = seq;
+        (
+            self->role == kReader
+                ? c.reader_seq
+                : self->role == kWriter
+                    ? c.writer_seq
+                    : c.compute_seq
+        ) = seq;
     }
 
     void cb_reserve(uint32_t cb, uint32_t pages) {
@@ -248,8 +252,8 @@ namespace kmsim {
 
         // Receiver and offset of a NoC address; false (and a violation) if it is none.
         bool target(uint64_t a, uint32_t bytes, uint32_t& core, uint32_t& off) {
-            const uint32_t tag = static_cast<uint32_t>(a >> 32),
-                           addr = static_cast<uint32_t>(a);
+            const uint32_t tag = static_cast<uint32_t>(a >> 32);
+            const uint32_t addr = static_cast<uint32_t>(a);
             if (tag == 0xFFFFFu) {
                 core = kDram;
                 off = addr;
@@ -307,8 +311,10 @@ namespace kmsim {
             return;
         }
         uint32_t kind = 0, seq = 0;
-        if (self->role == kWriter && core == g->n && off >= kDispAck &&
-            off < kDispAck + 16 * KM_RING_SLOTS) {
+        if (
+            self->role == kWriter && core == g->n && off >= kDispAck &&
+            off < kDispAck + 16 * KM_RING_SLOTS
+        ) {
             kind = 2;
             seq = first_word(src);
             g->log(self->core, kEvAck, seq, (off - kDispAck) / 16);

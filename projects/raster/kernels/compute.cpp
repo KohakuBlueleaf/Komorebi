@@ -95,8 +95,10 @@ namespace {
     // An item of `pages` at dst must end inside the output buffer; otherwise the
     // give-up goes to the writer's gave-up word and the stop flag is set.
     bool item_fits(uint32_t dst, uint32_t pages) {
-        if (dst + pages * kOutPageBytes <=
-            (get_local_cb_interface(kCbOut).fifo_limit << 4)) {
+        if (
+            dst + pages * kOutPageBytes <=
+            (get_local_cb_interface(kCbOut).fifo_limit << 4)
+        ) {
             return true;
         }
         give_up(kGaveBadItem, kWhereBadOut);

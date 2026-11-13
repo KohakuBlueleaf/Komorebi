@@ -40,8 +40,10 @@ static int pow2(uint64_t n) {
 /* Checks the argument block against this run: ring depths are powers of two, so the
  * slot numbering survives the wrap of the 32-bit counters. */
 static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
-    if (x280_hart_args_bytes() < sizeof(kmd_args_t) || a->run_value != run ||
-        a->version != KMD_ARGS_VERSION) {
+    if (
+        x280_hart_args_bytes() < sizeof(kmd_args_t) || a->run_value != run ||
+        a->version != KMD_ARGS_VERSION
+    ) {
         return 0;
     }
     const uint64_t host_bytes = KMD_HOST_RING + a->event_depth * sizeof(km_event_t);
@@ -146,8 +148,9 @@ static void verify_line(kmd_t* k) {
 static void upload_check(
     kmd_t* k, uint32_t req, uint32_t off, uint32_t bytes, uint32_t seed
 ) {
-    if (((off | bytes) & 63u) || off > k->upload_bytes ||
-        bytes > k->upload_bytes - off) {
+    if (
+        ((off | bytes) & 63u) || off > k->upload_bytes || bytes > k->upload_bytes - off
+    ) {
         host_push(k, req, KM_EV_REJECTED | (KMD_REJECT_REGION << 8), 0);
         k->rejected++;
         return;
@@ -221,10 +224,11 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         if (handler == KM_HANDLER_RUN && (uint32_t)l[3] != 0) {
             wait = graph_run(k, req, l);
         } else if (wait < 0) {
-            wait =
-                (handler == KM_HANDLER_RUN
-                     ? engine_run(k, req, a0, (uint32_t)(l[2] >> 32))
-                     : engine_cancel(k, req, a0));
+            wait = (
+                handler == KM_HANDLER_RUN
+                    ? engine_run(k, req, a0, (uint32_t)(l[2] >> 32))
+                    : engine_cancel(k, req, a0)
+            );
         }
         if (wait) {
             return KMD_NO_ROOM;
@@ -447,8 +451,10 @@ static void loop(kmd_t* k) {
             ring_push(&k->ring[src], k->slot_req[late], KM_EV_TIMEOUT | aux << 8, took);
             return;
         }
-        if (activity != seen_activity || k->busy || k->nstreams || k->queued ||
-            graph_running(k)) {
+        if (
+            activity != seen_activity || k->busy || k->nstreams || k->queued ||
+            graph_running(k)
+        ) {
             seen_activity = activity;
             t_active = now;
         } else if (a->t_idle != 0 && now - t_active > a->t_idle) {
@@ -534,8 +540,10 @@ __attribute__((used, noinline)) void kmd_trapped(
     );
     const volatile kmd_t* old = (const volatile kmd_t*)state;
     const uint32_t ctl = ((volatile const uint32_t*)(lim + KMD_LIM_MAILBOX))[1];
-    if (where >= KMD_WHERE_READY && (old->busy || !old->exited) &&
-        grid_open(t, ctl) == KMD_ERR_NONE) {
+    if (
+        where >= KMD_WHERE_READY && (old->busy || !old->exited) &&
+        grid_open(t, ctl) == KMD_ERR_NONE
+    ) {
         grid_stop(t);
     }
     /* The engine: told not to start, or to stop; waited for as at the finish. */
@@ -549,8 +557,10 @@ __attribute__((used, noinline)) void kmd_trapped(
     x280_fence_ow();
     const uint64_t by = x280_mtime() + KMD_ENGINE_STOP_TICKS;
     while (
-        (x280_cores[KMD_H_ENGINE] == KMD_ENGINE_WAITING ||
-         x280_cores[KMD_H_ENGINE] == KMD_ENGINE_RUNNING) &&
+        (
+            x280_cores[KMD_H_ENGINE] == KMD_ENGINE_WAITING ||
+            x280_cores[KMD_H_ENGINE] == KMD_ENGINE_RUNNING
+        ) &&
         x280_mtime() <= by
     ) {
         x280_fence_ir();

@@ -117,9 +117,10 @@ namespace {
         }
         uint32_t ma = (ua & 0x7FFFFF) | 0x800000;
         const uint32_t mb = (ub & 0x7FFFFF) | 0x800000;
-        int32_t e =
-            (static_cast<int32_t>(ua >> 23 & 0xFF) -
-             static_cast<int32_t>(ub >> 23 & 0xFF) + 127);
+        int32_t e = (
+            static_cast<int32_t>(ua >> 23 & 0xFF) -
+            static_cast<int32_t>(ub >> 23 & 0xFF) + 127
+        );
         if (ma < mb) {
             ma <<= 1;
             e -= 1;
@@ -344,8 +345,10 @@ namespace {
 
         // A finished record that touches box b (inside the image, or a give-up).
         void record(const uint32_t* w, const Box& b) {
-            if (b.x0 < 0 || b.y0 < 0 || b.x1 >= static_cast<int32_t>(kWidth) ||
-                b.y1 >= static_cast<int32_t>(kHeight)) {
+            if (
+                b.x0 < 0 || b.y0 < 0 || b.x1 >= static_cast<int32_t>(kWidth) ||
+                b.y1 >= static_cast<int32_t>(kHeight)
+            ) {
                 give_up(kGaveBadBox, w[28] & 0xFFFF);
                 ok = false;
                 return;
@@ -360,8 +363,10 @@ namespace {
                         cnt[t] += 1;
                         cnt[kTiles + t] += r1 - r0 + 1;
                         uint16_t* h = hist + 32 * t;
-                        if (++h[(r0 - top) >> 1] == 0 ||
-                            ++h[16 + ((r1 - top) >> 1)] == 0) {
+                        if (
+                            ++h[(r0 - top) >> 1] == 0 ||
+                            ++h[16 + ((r1 - top) >> 1)] == 0
+                        ) {
                             give_up(kGaveBadHist, t);
                             ok = false;
                             return;
@@ -380,8 +385,10 @@ namespace {
                     for (uint32_t i = first; i < first + n; ++i) {
                         // the item's rows [b0, b1) against the entry's 2-row groups
                         const uint32_t b0 = rows[i] & 0xFF, b1 = rows[i] >> 8;
-                        if (((r0 - top) >> 1) >= static_cast<int32_t>(b1 >> 1) ||
-                            ((r1 - top) >> 1) < static_cast<int32_t>(b0 >> 1)) {
+                        if (
+                            ((r0 - top) >> 1) >= static_cast<int32_t>(b1 >> 1) ||
+                            ((r1 - top) >> 1) < static_cast<int32_t>(b0 >> 1)
+                        ) {
                             continue;
                         }
                         const uint32_t s = slot[i]++;
@@ -487,9 +494,13 @@ namespace {
 // well.
 void setup_compute_command(const km::Compute& cp, const km_command_t& r) {
     const uint32_t handler = km::handler(r);
-    if ((handler != kHandlerLanes && handler != kHandlerCount &&
-         handler != kHandlerSetup) ||
-        r.a5 == 0 || cp.me() >= r.a5) {
+    if (
+        (
+            handler != kHandlerLanes && handler != kHandlerCount &&
+            handler != kHandlerSetup
+        ) ||
+        r.a5 == 0 || cp.me() >= r.a5
+    ) {
         return;
     }
     // with kRanges the camera's page brings the core's range (setup_reader.cpp)

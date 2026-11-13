@@ -16,16 +16,16 @@ struct Buffers {
     std::vector<Hit> hit0, hit1;
     std::vector<float> normal, origin, albedo, direct0, bounce_dir, radiance1, colour;
 
-    Buffers()
-        : hit0(PIXELS),
-          hit1(PIXELS),
-          normal(3 * PIXELS),
-          origin(3 * PIXELS),
-          albedo(3 * PIXELS),
-          direct0(PIXELS),
-          bounce_dir(3 * PIXELS),
-          radiance1(3 * PIXELS),
-          colour(3 * PIXELS) {
+    Buffers() :
+        hit0(PIXELS),
+        hit1(PIXELS),
+        normal(3 * PIXELS),
+        origin(3 * PIXELS),
+        albedo(3 * PIXELS),
+        direct0(PIXELS),
+        bounce_dir(3 * PIXELS),
+        radiance1(3 * PIXELS),
+        colour(3 * PIXELS) {
     }
 };
 

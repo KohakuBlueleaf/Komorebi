@@ -407,10 +407,11 @@ namespace vec {
                 const uint32_t q2 = qstatus_raw();
                 tensix_sync();
                 const uint32_t q3 = qstatus_raw();
-                d[40 * pass + k] =
-                    (any_bit(q0) | any_bit(q1) << 1 | any_bit(q2) << 2 |
-                     any_bit(q3) << 3 | ((q3 >> 24) & 1) << 4 |
-                     (polls > 0xffff ? 0xffff : polls) << 8);
+                d[40 * pass + k] = (
+                    any_bit(q0) | any_bit(q1) << 1 | any_bit(q2) << 2 |
+                    any_bit(q3) << 3 | ((q3 >> 24) & 1) << 4 |
+                    (polls > 0xffff ? 0xffff : polls) << 8
+                );
             }
         }
         // Delay sweep: fence, wait kDelays[i] cycles (mcycle), read the bit.

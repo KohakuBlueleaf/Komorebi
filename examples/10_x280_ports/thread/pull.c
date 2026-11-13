@@ -123,10 +123,12 @@ int kmx_main(int cpu) {
     const kmx_args* a = kmx_args_get();
     const uint32_t* w = a->words;
     uint64_t out_bytes = 0, log_bytes = 0;
-    if (a->nwords < HP_WORDS || kmx_region(0, &out_bytes) == 0 ||
+    if (
+        a->nwords < HP_WORDS || kmx_region(0, &out_bytes) == 0 ||
         out_bytes < 4u * HP_LINE * HP_KINDS * KMX_PORTS_CORES ||
         kmx_region(1, &log_bytes) == 0 || kmx_port_cores() == 0 || w[HP_W_PER] == 0 ||
-        w[HP_W_HALF] == 0) {
+        w[HP_W_HALF] == 0
+    ) {
         return CODE_BAD;
     }
     const uint64_t ranges = ((uint64_t)w[HP_W_UNITS] + w[HP_W_PER] - 1) / w[HP_W_PER];

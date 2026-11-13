@@ -58,8 +58,10 @@ namespace scen {
             Sim* sp = nullptr;
             uint64_t released = 0;
             cfg.triggers.push_back([&](const Probe& p) {
-                if (released == 0 && p.core == 1 && p.role == kPack &&
-                    !std::strcmp(p.name, "mailbox_write")) {
+                if (
+                    released == 0 && p.core == 1 && p.role == kPack &&
+                    !std::strcmp(p.name, "mailbox_write")
+                ) {
                     released = p.t + kHold;
                     sp->freeze(1, kPack, kHold);
                 }
@@ -72,9 +74,11 @@ namespace scen {
             o.check.expect(released != 0, "core 1's pack was held");
             o.check.expect(
                 s.jobs[0].acked >= released,
-                fmt("acknowledged at %u, before compute was released at %u",
+                fmt(
+                    "acknowledged at %u, before compute was released at %u",
                     static_cast<unsigned>(s.jobs[0].acked),
-                    static_cast<unsigned>(released))
+                    static_cast<unsigned>(released)
+                )
             );
             finish(s, o);
         }
@@ -98,8 +102,10 @@ namespace scen {
                 );
                 o.check.expect(
                     got > start && got <= t,
-                    fmt("start 2^32 - 8 + %u: a reading outside the reads",
-                        static_cast<unsigned>(start - ((1ull << 32) - 8)))
+                    fmt(
+                        "start 2^32 - 8 + %u: a reading outside the reads",
+                        static_cast<unsigned>(start - ((1ull << 32) - 8))
+                    )
                 );
             }
         }

@@ -32,7 +32,7 @@ namespace {
     uint32_t per_page(uint32_t handler) {
         return (
             handler == kHandlerArith || handler == kHandlerMath ||
-                    handler == kHandlerRecip
+                handler == kHandlerRecip
                 ? 1
                 : kPagePackets
         );
@@ -102,8 +102,8 @@ namespace {
             const km_command_t& r,
             uint32_t count,
             volatile tt_l1_ptr uint32_t* d
-        )
-            : rd_(rd), r_(r), count_(count), d_(d) {
+        ) :
+            rd_(rd), r_(r), count_(count), d_(d) {
         }
 
         // Buffers and empty slots; false when the lists' scratch does not fit.
@@ -190,9 +190,9 @@ namespace {
                     for (uint32_t k = 0; k < n_present; ++k) {
                         const uint32_t t = present[k] & ~kDone;
                         const uint32_t end = cnt[t];
-                        const bool now =
-                            (pass == 0 ? slots_.find(t) >= 0
-                                       : (present[k] & kDone) == 0);
+                        const bool now = (
+                            pass == 0 ? slots_.find(t) >= 0 : (present[k] & kDone) == 0
+                        );
                         if (now && !group(t, order + begin, end - begin)) {
                             return false;
                         }
@@ -288,8 +288,10 @@ namespace {
             };
             const uint32_t first = table_[2 * t], pages = table_[2 * t + 1];
             const uint32_t dst = slots_.base + k * slots_.bytes;
-            if (pages * kTreePageBytes > slots_.bytes ||
-                !timed::fits(kCbSlots, (k + 1) * slots_.bytes)) {
+            if (
+                pages * kTreePageBytes > slots_.bytes ||
+                !timed::fits(kCbSlots, (k + 1) * slots_.bytes)
+            ) {
                 rd_.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 1, t);
                 return false;
             }
@@ -334,8 +336,8 @@ namespace {
             uint32_t first,
             uint32_t count,
             volatile tt_l1_ptr uint32_t* d
-        )
-            : rd_(rd), r_(r), first_(first), count_(count), n_(count * kVec), d_(d) {
+        ) :
+            rd_(rd), r_(r), first_(first), count_(count), n_(count * kVec), d_(d) {
         }
 
         // Key and order arrays, two vectors of every packet, the radix counts and the
@@ -506,11 +508,15 @@ namespace {
             if (e != 0) {
                 const uint32_t m = (f & 0x7FFFFF) | 0x800000;
                 const int32_t sh = e - 150 + static_cast<int32_t>(frac);
-                const uint32_t u =
-                    (sh >= 8        ? 0x7FFFFFFF
-                         : sh >= 0  ? m << sh
-                         : sh > -32 ? m >> -sh
-                                    : 0);
+                const uint32_t u = (
+                    sh >= 8
+                        ? 0x7FFFFFFF
+                        : sh >= 0
+                            ? m << sh
+                            : sh > -32
+                                ? m >> -sh
+                                : 0
+                );
                 v = (f >> 31) ? -static_cast<int32_t>(u) : static_cast<int32_t>(u);
             }
             const int32_t c = (v - static_cast<int32_t>(lo)) >> shift;
@@ -553,8 +559,10 @@ namespace {
             for (; i + 4 <= n; i += 4) {
                 const uint32_t o0 = order[i], o1 = order[i + 1];
                 const uint32_t o2 = order[i + 2], o3 = order[i + 3];
-                const uint32_t a = src[i], b = src[i + 1], c = src[i + 2],
-                               e = src[i + 3];
+                const uint32_t a = src[i];
+                const uint32_t b = src[i + 1];
+                const uint32_t c = src[i + 2];
+                const uint32_t e = src[i + 3];
                 dst[o0] = a;
                 dst[o1] = b;
                 dst[o2] = c;
@@ -744,9 +752,11 @@ void kernel_main() {
             timed::writes_landed(rd, km::kStReader);
             return;
         }
-        if (handler != kHandlerTrace && handler != kHandlerArith &&
+        if (
+            handler != kHandlerTrace && handler != kHandlerArith &&
             handler != kHandlerRecip && handler != kHandlerTreelets &&
-            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)) {
+            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)
+        ) {
             return;
         }
         const uint32_t t0 = km::wall();
@@ -779,8 +789,8 @@ void kernel_main() {
                     const uint32_t a = km::wall();
                     const uint32_t bytes = st.vectors[s] * kVec * 4;
                     if (!read_page(
-                            rd, stream_arg(r, s), bytes, kPagePackets, first + p, wait
-                        )) {
+                        rd, stream_arg(r, s), bytes, kPagePackets, first + p, wait
+                    )) {
                         return;
                     }
                     read += km::wall() - a;

@@ -33,8 +33,14 @@ namespace fill {
     // row r at 160 + r, the triangle's broadcast constants from 192.
     constexpr uint32_t kVecPy = 160;
     constexpr uint32_t kVecK = 192;
-    constexpr uint32_t kKA = 0, kKB = 3, kKC = 6, kKW = 9, kKColA = 12, kKColB = 15,
-                       kKColC = 18, kKPx = 21;
+    constexpr uint32_t kKA = 0;
+    constexpr uint32_t kKB = 3;
+    constexpr uint32_t kKC = 6;
+    constexpr uint32_t kKW = 9;
+    constexpr uint32_t kKColA = 12;
+    constexpr uint32_t kKColB = 15;
+    constexpr uint32_t kKColC = 18;
+    constexpr uint32_t kKPx = 21;
 
     // Dst address of vector v: an aligned group of four rows, even or odd columns.
     constexpr uint32_t addr(uint32_t v) {

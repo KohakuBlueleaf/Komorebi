@@ -14,8 +14,9 @@ void kernel_main() {
         for (uint32_t i = 0; i < k; i++) {
             const bool to_pack = both && (i & 1);
             ckernel::mailbox_write(
-                to_pack ? ckernel::ThreadId::PackThreadId
-                        : ckernel::ThreadId::MathThreadId,
+                to_pack
+                    ? ckernel::ThreadId::PackThreadId
+                    : ckernel::ThreadId::MathThreadId,
                 100 + i
             );
         }

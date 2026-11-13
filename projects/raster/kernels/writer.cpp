@@ -9,8 +9,10 @@
 // An item of `per` pages at the read pointer must end inside the output buffer;
 // otherwise the give-up is recorded and the stop flag set.
 bool item_fits(const km::Writer& wr, uint32_t per, uint32_t seq) {
-    if (get_read_ptr(kCbOut) + per * kOutPageBytes <=
-        get_local_cb_interface(kCbOut).fifo_limit) {
+    if (
+        get_read_ptr(kCbOut) + per * kOutPageBytes <=
+        get_local_cb_interface(kCbOut).fifo_limit
+    ) {
         return true;
     }
     wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, seq);

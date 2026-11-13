@@ -102,9 +102,11 @@ int kmx_main(int cpu) {
     }
     const kmx_args* a = kmx_args_get();
     uint64_t bytes = 0;
-    if (a->nwords < HX_WORDS || kmx_region(0, &bytes) == 0 ||
+    if (
+        a->nwords < HX_WORDS || kmx_region(0, &bytes) == 0 ||
         bytes < 4u * HX_LINE * KMX_PORTS_CORES || kmx_port_cores() == 0 ||
-        cores() > (uint32_t)kmx_port_cores()) {
+        cores() > (uint32_t)kmx_port_cores()
+    ) {
         return CODE_BAD;
     }
     uint32_t w[R_COUNT] = {0, 0, 0, 0, 0xFFFFFFFFu, 0};

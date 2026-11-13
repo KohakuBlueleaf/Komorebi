@@ -97,9 +97,10 @@ namespace {
                 }
                 uint32_t id = tile_of[i];
                 if (rows[i] != (32u << 8)) {
-                    id |=
-                        ((rows[i] & 0xFF) << kLayRow0Shift |
-                         (rows[i] >> 8) << kLayRow1Shift);
+                    id |= (
+                        (rows[i] & 0xFF) << kLayRow0Shift |
+                        (rows[i] >> 8) << kLayRow1Shift
+                    );
                 }
                 d[kLayDirIds + n++] = (w >> 8) == 0 ? id | kLayItemEmpty : id;
             }
@@ -109,8 +110,9 @@ namespace {
             for (uint32_t k = 0; k < 16; ++k) {
                 d[kLayDirFrame + k] = fw[k];
             }
-            asm volatile("fence" ::
-                             : "memory");  // the page's stores before the NoC reads it
+            asm volatile(
+                "fence" ::: "memory"
+            );  // the page's stores before the NoC reads it
             noc_async_write(out, su::addr(0, r.a1, me, kDirPageBytes), kDirPageBytes);
             const uint32_t end = cw[kCoreWords * me + 3];
             const uint32_t at = out + kDirPageBytes;
@@ -150,18 +152,24 @@ bool setup_writer_pass(const km::Writer& wr, const km_command_t& r, WProf& pf);
 // With a9, the threads' counters go to the core's profile page.
 bool setup_writer_command(const km::Writer& wr, const km_command_t& r) {
     const uint32_t handler = km::handler(r);
-    if ((handler != kHandlerLanes && handler != kHandlerCount &&
-         handler != kHandlerSetup && handler != kHandlerHist &&
-         handler != kHandlerPlace && handler != kHandlerSum &&
-         handler != kHandlerHsum) ||
-        r.a5 == 0 || wr.me() >= r.a5) {
+    if (
+        (
+            handler != kHandlerLanes && handler != kHandlerCount &&
+            handler != kHandlerSetup && handler != kHandlerHist &&
+            handler != kHandlerPlace && handler != kHandlerSum &&
+            handler != kHandlerHsum
+        ) ||
+        r.a5 == 0 || wr.me() >= r.a5
+    ) {
         return true;
     }
     const uint32_t t0 = km::wall();
     WProf pf;
     const bool ok = setup_writer_pass(wr, r, pf);
-    if (ok && (handler == kHandlerCount || handler == kHandlerSetup) &&
-        (r.a2 & kRanges) != 0) {
+    if (
+        ok && (handler == kHandlerCount || handler == kHandlerSetup) &&
+        (r.a2 & kRanges) != 0
+    ) {
         // the pass's ticks on this core, for the next frame's ranges
         const uint32_t line = get_write_ptr(kCbSProf) + 128;
         km::l1(line)[0] = km::wall() - t0;
@@ -178,11 +186,11 @@ bool setup_writer_command(const km::Writer& wr, const km_command_t& r) {
             64
         );
         if (wr.poll(
-                [] {
-                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                },
-                wr.args().wait_limit
-            ) != km::kGaveNone) {
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) != km::kGaveNone) {
             return false;
         }
     }
@@ -204,11 +212,11 @@ bool setup_writer_command(const km::Writer& wr, const km_command_t& r) {
         128
     );
     return wr.poll(
-               [] {
-                   return ncrisc_noc_nonposted_writes_flushed(noc_index);
-               },
-               wr.args().wait_limit
-           ) == km::kGaveNone;
+        [] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        },
+        wr.args().wait_limit
+    ) == km::kGaveNone;
 }
 
 // One command's writing, its counters in pf.
@@ -216,19 +224,19 @@ bool setup_writer_pass(const km::Writer& wr, const km_command_t& r, WProf& pf) {
     const uint32_t handler = km::handler(r);
     auto flushed = [&] {
         return wr.poll(
-                   [] {
-                       return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                   },
-                   wr.args().wait_limit
-               ) == km::kGaveNone;
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
     };
     auto arrived = [&] {
         return wr.poll(
-                   [] {
-                       return ncrisc_noc_reads_flushed(noc_index);
-                   },
-                   wr.args().wait_limit
-               ) == km::kGaveNone;
+            [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
     };
     if (handler == kHandlerCount) {
         const uint32_t a = km::wall();
@@ -272,8 +280,9 @@ bool setup_writer_pass(const km::Writer& wr, const km_command_t& r, WProf& pf) {
         give_up(kGaveBadPlace, handler);
         return true;
     }
-    if (handler == kHandlerHsum &&
-        (r.a0 > kHprefixPageBytes / 128 || 64 * r.a0 > r.a4)) {
+    if (
+        handler == kHandlerHsum && (r.a0 > kHprefixPageBytes / 128 || 64 * r.a0 > r.a4)
+    ) {
         give_up(kGaveBadHeavy, r.a0);
         return true;
     }

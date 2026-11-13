@@ -101,10 +101,12 @@ namespace kmsim {
         }
         const uint32_t group = km::make_group(jobs[k].first, jobs[k].count);
         for (uint32_t j = 0; j < d; j++) {
-            if (busy[j] >= 0 &&
+            if (
+                busy[j] >= 0 &&
                 km::groups_overlap(
                     group, km::make_group(jobs[busy[j]].first, jobs[busy[j]].count)
-                )) {
+                )
+            ) {
                 return true;
             }
         }
@@ -244,10 +246,11 @@ namespace kmsim {
             for (auto& d : s.dst) {
                 d.assign(kTileBytes / 2, 0.0f);
             }
-            const auto cb =
-                [&](uint32_t id, uint32_t off, uint32_t page, uint32_t pages) {
-                    s.cb[id] = Cb{s.base + off, page, pages};
-                };
+            const auto cb = [&](
+                uint32_t id, uint32_t off, uint32_t page, uint32_t pages
+            ) {
+                s.cb[id] = Cb{s.base + off, page, pages};
+            };
             cb(km::kCbTokenCompute, 0x2000, km::kTokenBytes, 1);
             cb(km::kCbTokenWriter, 0x2040, km::kTokenBytes, 1);
             cb(0, 0x3000, kTileBytes, 16);

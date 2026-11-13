@@ -266,8 +266,10 @@ static void graph_owed(kmd_engine_t* e) {
             eng_command(e, KMD_HANDLER_DROP, r->order & 0xFFFFu, 0, 0);
             r->jobs = 0;
         }
-        if (!r->jobs &&
-            graph_post_event(e, r->req, r->post_status, r->post_ticks, r->kept)) {
+        if (
+            !r->jobs &&
+            graph_post_event(e, r->req, r->post_status, r->post_ticks, r->kept)
+        ) {
             r->state = KMD_GR_FREE;
         }
     }
@@ -278,9 +280,10 @@ static int graph_owes(kmd_engine_t* e) {
     const kmd_graphs_t* gs = graphs(e);
     for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE; j++) {
         const kmd_grun_t* r = &gs->run[j];
-        if (r->state == KMD_GR_ENDING ||
-            (r->state == KMD_GR_RUNNING &&
-             (r->round_owed || r->g.phase == KMG_ERROR))) {
+        if (
+            r->state == KMD_GR_ENDING ||
+            (r->state == KMD_GR_RUNNING && (r->round_owed || r->g.phase == KMG_ERROR))
+        ) {
             return 1;
         }
     }
@@ -294,8 +297,10 @@ static void graph_step(kmd_engine_t* e) {
     graph_owed(e);
     for (uint32_t j = 0; j < KM_GRAPH_MAX_ACTIVE; j++) {
         kmd_grun_t* r = &gs->run[j];
-        if (r->state != KMD_GR_RUNNING || r->round_owed ||
-            (r->wait && r->g.phase == KMG_RUNNING)) {
+        if (
+            r->state != KMD_GR_RUNNING || r->round_owed ||
+            (r->wait && r->g.phase == KMG_RUNNING)
+        ) {
             continue;
         }
         kmd_gctx_t c = {e, r, j};

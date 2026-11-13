@@ -33,21 +33,29 @@ namespace {
         UNPACK(
             (llk_unpack_A_init<BroadcastType::NONE, true, kReuse>(false, false, icb))
         );
-        MATH((llk_math_eltwise_binary_init<
-              kMul,
-              BroadcastType::NONE,
-              MathFidelity::HiFi4,
-              kReuse>(icb, icb, false)));
+        MATH(
+            (
+                llk_math_eltwise_binary_init<
+                    kMul,
+                    BroadcastType::NONE,
+                    MathFidelity::HiFi4,
+                    kReuse>(icb, icb, false)
+            )
+        );
     }
 
     inline void mul_hifi4(uint32_t icb, uint32_t tile, uint32_t dst) {
         UNPACK((llk_unpack_A<BroadcastType::NONE, true, kReuse>(icb, tile)));
-        MATH((llk_math_eltwise_binary<
-              kMul,
-              BroadcastType::NONE,
-              DST_ACCUM_MODE,
-              MathFidelity::HiFi4,
-              kReuse>(icb, icb, dst, true)));
+        MATH(
+            (
+                llk_math_eltwise_binary<
+                    kMul,
+                    BroadcastType::NONE,
+                    DST_ACCUM_MODE,
+                    MathFidelity::HiFi4,
+                    kReuse>(icb, icb, dst, true)
+            )
+        );
     }
 
     // LAYER: per owned row and column block, A's row times W's block in DST (the gate

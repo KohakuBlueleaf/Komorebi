@@ -22,9 +22,9 @@ void kernel_main() {
         return ncrisc_noc_reads_flushed(noc_index);
     });
     const bool seen = read && probe_poll([&] {
-                          invalidate_l1_cache();
-                          return f[kFlag] >= 1;
-                      });
+        invalidate_l1_cache();
+        return f[kFlag] >= 1;
+    });
     f[kRecv] = seen ? 1 : (read ? 2 : 3);
     cb_push_back(kCbArrive, kPages);
 }

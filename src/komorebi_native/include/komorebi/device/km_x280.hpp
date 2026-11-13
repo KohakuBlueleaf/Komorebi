@@ -30,8 +30,8 @@ namespace km {
     // kStReader or kStWriter). Only that kernel sends on it; any may look.
     class X280Port {
     public:
-        explicit X280Port(const Core& c, uint32_t word = kStReader)
-            : c_(c), word_(word) {
+        explicit X280Port(const Core& c, uint32_t word = kStReader) :
+            c_(c), word_(word) {
         }
 
         // Whether the program gave this core an X280 core.

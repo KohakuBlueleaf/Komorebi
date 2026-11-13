@@ -229,8 +229,9 @@ namespace km {
     inline uint32_t poll_stop(
         volatile tt_l1_ptr uint32_t* stop, Ready ready, uint32_t limit, uint32_t grace
     ) {
-        uint64_t end =
-            (limit == 0 ? ~0ull : wall64() + (static_cast<uint64_t>(limit) << 10));
+        uint64_t end = (
+            limit == 0 ? ~0ull : wall64() + (static_cast<uint64_t>(limit) << 10)
+        );
         bool stopped = false;
         for (uint32_t i = 0;; i++) {
             invalidate_l1_cache();

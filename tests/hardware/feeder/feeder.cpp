@@ -194,8 +194,9 @@ void kernel_main() {
                 volatile tt_l1_ptr uint32_t* r = row(1 + busy[j]);
                 if (ack[j * 4] == KM_ACK(busy_seq[j])) {
                     if (static_cast<uint32_t>(busy[j]) == n) {  // a dynamic run's end
-                        row(1 +
-                            dyn_index)[kFrRecDynEndAck] = static_cast<uint32_t>(now);
+                        row(
+                            1 + dyn_index
+                        )[kFrRecDynEndAck] = static_cast<uint32_t>(now);
                         busy[j] = -1;
                         in_flight--;
                         continue;
@@ -301,8 +302,9 @@ void kernel_main() {
             in_flight++;
             max_busy = in_flight > max_busy ? in_flight : max_busy;
             r[kFrRecBusy] = in_flight;
-            if (dyn_handler != 0 &&
-                (w[1] & 0xFFu) == dyn_handler) {  // a dynamic run starts
+            if (
+                dyn_handler != 0 && (w[1] & 0xFFu) == dyn_handler
+            ) {  // a dynamic run starts
                 dyn_index = static_cast<int32_t>(next);
                 dyn_seq = seq;
                 dyn_group = w[2];

@@ -64,9 +64,10 @@ void kernel_main() {
         bool ok = false;
         for (uint32_t spins = 0; spins < kSpinLimit; spins++) {
             invalidate_l1_cache();
-            const uint32_t m =
-                ((rec[0] == echo) + (rec[4] == echo) + (rec[8] == echo) +
-                 (rec[12] == echo));
+            const uint32_t m = (
+                (rec[0] == echo) + (rec[4] == echo) + (rec[8] == echo) +
+                (rec[12] == echo)
+            );
             if (m == 4) {
                 ok = true;
                 break;

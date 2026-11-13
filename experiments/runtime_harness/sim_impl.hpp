@@ -335,9 +335,11 @@ namespace kmsim {
                 };
                 return (
                     !q.atomic &&
-                    (in(kDispAck, KM_RING_SLOTS, 8) || in(kDispReady, 16, 4) ||
-                     (q.off == kDispMailbox && q.bytes <= 8) ||
-                     (in(kDispLines, n, 16) && q.bytes == 16))
+                    (
+                        in(kDispAck, KM_RING_SLOTS, 8) || in(kDispReady, 16, 4) ||
+                        (q.off == kDispMailbox && q.bytes <= 8) ||
+                        (in(kDispLines, n, 16) && q.bytes == 16)
+                    )
                 );
             }
             if (q.off < kCtlOff) {
@@ -346,11 +348,17 @@ namespace kmsim {
             if (q.atomic) {
                 return (
                     q.src < n &&
-                    ((at >= KM_CTL_DONE && at < KM_CTL_DONE + 16 * 16 &&
-                      (at - KM_CTL_DONE) % 16 == 0) ||
-                     (at >= KM_CTL_TAILS + KM_TAILS_LINE &&
-                      at < KM_CTL_TAILS + KM_TAILS_BYTES &&
-                      (at - KM_CTL_TAILS - KM_TAILS_LINE) % 16 == 0))
+                    (
+                        (
+                            at >= KM_CTL_DONE && at < KM_CTL_DONE + 16 * 16 &&
+                            (at - KM_CTL_DONE) % 16 == 0
+                        ) ||
+                        (
+                            at >= KM_CTL_TAILS + KM_TAILS_LINE &&
+                            at < KM_CTL_TAILS + KM_TAILS_BYTES &&
+                            (at - KM_CTL_TAILS - KM_TAILS_LINE) % 16 == 0
+                        )
+                    )
                 );
             }
             if (q.src == n) {
@@ -383,8 +391,9 @@ namespace kmsim {
                     );
                     violation(what);
                 }
-                uint8_t* to =
-                    (q.dst == kDram ? dram.data() + q.off : cores[q.dst].mem + q.off);
+                uint8_t* to = (
+                    q.dst == kDram ? dram.data() + q.off : cores[q.dst].mem + q.off
+                );
                 if (q.atomic) {
                     uint32_t v;
                     std::memcpy(&v, to, 4);
@@ -447,9 +456,9 @@ namespace kmsim {
         uint32_t seq = 0;
 
         uint32_t next_seq() {
-            seq =
-                (seq == 0 ? cfg.first_seq
-                          : (cfg.next_seq ? cfg.next_seq(seq) : seq + 1));
+            seq = (
+                seq == 0 ? cfg.first_seq : (cfg.next_seq ? cfg.next_seq(seq) : seq + 1)
+            );
             return seq;
         }
 
@@ -534,12 +543,12 @@ namespace kmsim {
                 std::unique_lock<std::mutex> lock(mu);
                 const auto limit = std::chrono::duration<double>(cfg.host_seconds);
                 if (!cv.wait_for(lock, limit, [&] {
-                        return finished;
-                    })) {
+                    return finished;
+                })) {
                     abort = true;  // read by the running thread at its next step
                     if (!cv.wait_for(lock, std::chrono::seconds(5), [&] {
-                            return finished;
-                        })) {
+                        return finished;
+                    })) {
                         std::fprintf(
                             stderr, "a thread runs without scheduling points\n"
                         );
@@ -553,9 +562,8 @@ namespace kmsim {
                 t->th.join();
             }
             sim.host_ms = std::chrono::duration<double, std::milli>(
-                              std::chrono::steady_clock::now() - t0
-            )
-                              .count();
+                std::chrono::steady_clock::now() - t0
+            ).count();
             sim.end_cycles = clock;
             sim.all_returned = true;
             for (auto& t : threads) {

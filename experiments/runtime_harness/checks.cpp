@@ -156,10 +156,12 @@ namespace scen {
             );
             c.expect(
                 s.state(core, km::kStRuns) == runs[core],
-                fmt("core %u counts %u commands taken, the log shows %u",
+                fmt(
+                    "core %u counts %u commands taken, the log shows %u",
                     core,
                     s.state(core, km::kStRuns),
-                    runs[core])
+                    runs[core]
+                )
             );
         }
         for (const auto& [seq, r] : recs) {
@@ -177,24 +179,28 @@ namespace scen {
                     const uint32_t want = core == r.first ? 0 : 1;
                     c.expect(
                         reports[seq][core] == want,
-                        fmt("command %u: core %u sent %u reports",
+                        fmt(
+                            "command %u: core %u sent %u reports",
                             seq,
                             core,
-                            reports[seq][core])
+                            reports[seq][core]
+                        )
                     );
                     c.expect(
                         acks[seq][core] == (core == r.first ? 1u : 0u),
-                        fmt("command %u: core %u sent %u acks",
+                        fmt(
+                            "command %u: core %u sent %u acks",
                             seq,
                             core,
-                            acks[seq][core])
+                            acks[seq][core]
+                        )
                     );
                 } else {
                     c.expect(
                         reports[seq][core] + acks[seq][core] == 0,
-                        fmt("command %u: core %u, not in the group, reported",
-                            seq,
-                            core)
+                        fmt(
+                            "command %u: core %u, not in the group, reported", seq, core
+                        )
                     );
                 }
             }
@@ -239,9 +245,9 @@ namespace scen {
                 for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
                     c.expect(
                         s.word(core, KM_CTL_DONE + j * 16) == 0,
-                        fmt("core %u: completion counter %u is zero at the end",
-                            core,
-                            j)
+                        fmt(
+                            "core %u: completion counter %u is zero at the end", core, j
+                        )
                     );
                 }
             }
@@ -252,14 +258,18 @@ namespace scen {
     // for command `seq` or any later one.
     void silent_from(const Sim& s, Check& c, uint32_t core, uint32_t seq) {
         for (const Event& e : s.events) {
-            if ((e.kind == kEvReport || e.kind == kEvAck) && e.core == core &&
-                km::newer(e.a + 1, seq)) {
+            if (
+                (e.kind == kEvReport || e.kind == kEvAck) && e.core == core &&
+                km::newer(e.a + 1, seq)
+            ) {
                 c.expect(
                     false,
-                    fmt("core %u reported command %u after giving up on %u",
+                    fmt(
+                        "core %u reported command %u after giving up on %u",
                         core,
                         e.a,
-                        seq)
+                        seq
+                    )
                 );
             }
         }

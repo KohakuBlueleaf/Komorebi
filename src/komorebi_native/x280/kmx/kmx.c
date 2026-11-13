@@ -93,8 +93,10 @@ static void fail(uint32_t error) {
 static int must_end(uint64_t h) {
     x280_fence_ir();
     const volatile uint32_t* stop = (const volatile uint32_t*)(lim() + KMX_LIM_STOP);
-    if (*stop == KMX_STOP_WORD ||
-        x280_hart_stop_requested(h, x280_hart_control(h)->run_value)) {
+    if (
+        *stop == KMX_STOP_WORD ||
+        x280_hart_stop_requested(h, x280_hart_control(h)->run_value)
+    ) {
         return KMX_STOPPED;
     }
     return x280_mtime() > g_deadline[h] ? KMX_LATE : KMX_OK;
@@ -106,9 +108,9 @@ static void flush(uint64_t addr, uint64_t bytes) {
     x280_fence_iorw();
     for (uint64_t a = addr & ~63ull; a < addr + bytes; a += 64) {
         __asm__ volatile(".option push\n.option norvc\nsd %0, 0(%1)\n.option pop\n"
-                         :
-                         : "r"(a), "r"(reg)
-                         : "memory");
+            :
+            : "r"(a), "r"(reg)
+            : "memory");
     }
     x280_fence_iorw();
 }
@@ -273,9 +275,11 @@ static int join(uint64_t lo, uint64_t hi) {
     const uint64_t g1 = g_spawned[1], g2 = g_spawned[2], g3 = g_spawned[3];
     for (uint32_t spins = 0;; spins++) {
         x280_fence_ir();
-        if ((lo > 1 || line[8 + KMX_SPAWN_DONE] >= g1) &&
+        if (
+            (lo > 1 || line[8 + KMX_SPAWN_DONE] >= g1) &&
             (lo > 2 || hi < 3 || line[16 + KMX_SPAWN_DONE] >= g2) &&
-            (hi < 4 || line[24 + KMX_SPAWN_DONE] >= g3)) {
+            (hi < 4 || line[24 + KMX_SPAWN_DONE] >= g3)
+        ) {
             x280_fence_iorw();
             return KMX_OK;
         }
@@ -615,8 +619,10 @@ static void push_part(int core, void* arg) {
 
 int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t bytes) {
     const uint32_t c = (uint32_t)cluster;
-    if (cluster < 1 || cluster > 3 || !(kmx_clusters() >> c & 1u) ||
-        ((offset | bytes | (uint64_t)(uintptr_t)src) & 63u)) {
+    if (
+        cluster < 1 || cluster > 3 || !(kmx_clusters() >> c & 1u) ||
+        ((offset | bytes | (uint64_t)(uintptr_t)src) & 63u)
+    ) {
         return KMX_BAD;
     }
     if (c != (uint32_t)kmx_cluster()) {
@@ -668,10 +674,12 @@ static int ports_open(void) {
     if (at == 0) {
         return 1;
     }
-    if ((at & 63u) || at < x280_hart_args_bytes() ||
+    if (
+        (at & 63u) || at < x280_hart_args_bytes() ||
         (uint64_t)(uintptr_t)lim() + at + KMX_PORTS_BYTES > X280_LIM_END ||
         cores == 0 || cores > KMX_PORTS_CORES || (ctl & 63u) ||
-        ctl + KM_CTL_BYTES > KMX_L1_BYTES || (p->flags & ~KMX_PORTS_NOC1)) {
+        ctl + KM_CTL_BYTES > KMX_L1_BYTES || (p->flags & ~KMX_PORTS_NOC1)
+    ) {
         return 0;
     }
     const volatile uint8_t* area = lim() + at;
@@ -977,9 +985,11 @@ static void pull_part(int cluster, int cpu, uint64_t arg) {
             uint64_t j = KMX_PULL_NONE;
             if (m.w[0] != KM_PULL_ASK) {
             } else if (mode == KMX_PULL_REPLAY) {
-                j =
-                    (got[i] < log[c] && got[i] < cap ? lists[c * cap + got[i]]
-                                                     : KMX_PULL_NONE);
+                j = (
+                    got[i] < log[c] && got[i] < cap
+                        ? lists[c * cap + got[i]]
+                        : KMX_PULL_NONE
+                );
             } else if (pick != 0) {
                 j = pick(c, got[i], parg);
             } else {
@@ -1029,9 +1039,13 @@ int kmx_pull_run(const km_command_t* r, const kmx_pull* p, kmx_event* ev) {
         return e;
     }
     uint64_t bytes = 0;
-    if (p->mode > KMX_PULL_REPLAY || p->log > 255u || p->per == 0 ||
-        (p->mode != KMX_PULL_COUNT &&
-         (kmx_region((int)p->log, &bytes) == 0 || bytes < KMX_PULL_LOG_BYTES(1)))) {
+    if (
+        p->mode > KMX_PULL_REPLAY || p->log > 255u || p->per == 0 ||
+        (
+            p->mode != KMX_PULL_COUNT &&
+            (kmx_region((int)p->log, &bytes) == 0 || bytes < KMX_PULL_LOG_BYTES(1))
+        )
+    ) {
         return KMX_BAD;
     }
     e = all_ready();
@@ -1125,9 +1139,11 @@ static int peers_open(void) {
     if (p->lead == 0) {
         return 1;
     }
-    if (p->lead > 3 || !(p->mask >> p->lead & 1u) || (p->mask & ~0xEu) ||
+    if (
+        p->lead > 3 || !(p->mask >> p->lead & 1u) || (p->mask & ~0xEu) ||
         !(p->mask >> kmx_cluster() & 1u) || (p->all & 63u) || p->all < KMX_LIM_BYTES ||
-        (uint64_t)(uintptr_t)lim() + p->all + KMX_ALL_BYTES > X280_LIM_END) {
+        (uint64_t)(uintptr_t)lim() + p->all + KMX_ALL_BYTES > X280_LIM_END
+    ) {
         return 0;
     }
     for (uint32_t c = 1; c < 4; c++) {
@@ -1178,17 +1194,21 @@ static void peers_close(void) {
 
 /* Whether the argument block is this run's and every entry is in range. */
 static int args_valid(const volatile kmx_args* a, uint64_t run) {
-    if (x280_hart_args_bytes() < KMX_ARGS_BYTES || a->run_value != run ||
+    if (
+        x280_hart_args_bytes() < KMX_ARGS_BYTES || a->run_value != run ||
         a->magic != KMX_MAGIC || a->version != KMX_VERSION || a->deadline == 0 ||
         a->deadline > KMX_DEADLINE_MAX || a->nregions > KMX_REGIONS_MAX ||
         a->cluster < 1 || a->cluster > 3 || a->nwords > KMX_WORDS_MAX ||
-        (a->check & 63u)) {
+        (a->check & 63u)
+    ) {
         return 0;
     }
     for (uint32_t i = 0; i < a->nregions; i++) {
         const uint64_t at = a->region[i].offset, n = a->region[i].bytes;
-        if ((at & 63u) || n == 0 || at + n < at || at + n > (1ull << 32) ||
-            (at <= X280_IPI_ACK_OFFSET && X280_IPI_ACK_OFFSET < at + n)) {
+        if (
+            (at & 63u) || n == 0 || at + n < at || at + n > (1ull << 32) ||
+            (at <= X280_IPI_ACK_OFFSET && X280_IPI_ACK_OFFSET < at + n)
+        ) {
             return 0;
         }
     }
@@ -1209,8 +1229,10 @@ static int ring_open(const volatile kmx_ring_desc* d) {
     if (l.flags & KMX_RING_REMOTE) {
         const uint64_t base = l.cmd & ~(NOC_2M_WINDOW_STRIDE - 1u);
         const uint32_t xy = d->reserved[0], x = xy & 0xFFFFu, y = xy >> 16;
-        if ((l.read & ~(NOC_2M_WINDOW_STRIDE - 1u)) != base || (l.flags & 1u) ||
-            l.read + 64u > base + NOC_2M_WINDOW_STRIDE) {
+        if (
+            (l.read & ~(NOC_2M_WINDOW_STRIDE - 1u)) != base || (l.flags & 1u) ||
+            l.read + 64u > base + NOC_2M_WINDOW_STRIDE
+        ) {
             return 0;
         }
         noc_tlb_2m_t programmed;
@@ -1317,8 +1339,9 @@ int main(uint64_t core_id) {
     const volatile kmx_args* a = (const volatile kmx_args*)lim();
     if (a != 0 && !(a->flags & KMX_FLAG_KEEP_PREFETCH)) {
         volatile uint32_t* pf = (
-            (volatile uint32_t*)(uintptr_t)(KMX_L2PF_BASE +
-            (core_id & 3u) * KMX_L2PF_STRIDE)
+            (volatile uint32_t*)(uintptr_t)(
+                KMX_L2PF_BASE + (core_id & 3u) * KMX_L2PF_STRIDE
+            )
         );
         pf[0] = KMX_L2PF_BASIC;
         pf[1] = KMX_L2PF_USER;

@@ -71,9 +71,11 @@ static uint32_t check_slice(const km_uop_t* ops, uint32_t first, uint32_t end) {
         if (use == 0xFFu) {
             return KM_SERR_OPCODE;
         }
-        if (((use & 1u) && o->a >= KM_STREAM_REGS) ||
+        if (
+            ((use & 1u) && o->a >= KM_STREAM_REGS) ||
             ((use & 2u) && o->b >= KM_STREAM_REGS) ||
-            ((use & 4u) && o->c >= KM_STREAM_REGS)) {
+            ((use & 4u) && o->c >= KM_STREAM_REGS)
+        ) {
             return KM_SERR_REGISTER;
         }
         if ((use & 8u) && (o->imm < first || o->imm > end)) {
@@ -106,8 +108,9 @@ static uint32_t check_node(
             return KM_SERR_TEMPLATE;
         }
         uint32_t flags = tpl[n->arg].rec.hdr >> 8 & 0xFFu;
-        if (n->n_ops != 0 ||
-            (n->result_reg != KM_GRAPH_NONE && !(flags & KM_F_RESULT))) {
+        if (
+            n->n_ops != 0 || (n->result_reg != KM_GRAPH_NONE && !(flags & KM_F_RESULT))
+        ) {
             return KM_SERR_NODE;
         }
         return 0;
@@ -133,13 +136,17 @@ uint32_t kmg_check(const void* upload, uint32_t bytes) {
     if (h->magic != KM_GRAPH_MAGIC || h->version != KM_GRAPH_VERSION) {
         return FAULT(KM_SERR_HEADER, none);
     }
-    if (h->n_nodes < 1u || h->n_nodes > KM_GRAPH_MAX_NODES ||
+    if (
+        h->n_nodes < 1u || h->n_nodes > KM_GRAPH_MAX_NODES ||
         h->n_edges > KM_GRAPH_MAX_EDGES || h->n_ops > KM_GRAPH_MAX_OPS ||
-        h->n_commands > KM_GRAPH_MAX_TEMPLATES) {
+        h->n_commands > KM_GRAPH_MAX_TEMPLATES
+    ) {
         return FAULT(KM_SERR_HEADER, none);
     }
-    if (bad_reg(h->again_reg) || h->max_runs == 0 || h->step_limit == 0 ||
-        h->step_limit > KM_GRAPH_MAX_STEPS || (h->flags & ~KM_GRAPH_KEEP) != 0) {
+    if (
+        bad_reg(h->again_reg) || h->max_runs == 0 || h->step_limit == 0 ||
+        h->step_limit > KM_GRAPH_MAX_STEPS || (h->flags & ~KM_GRAPH_KEEP) != 0
+    ) {
         return FAULT(KM_SERR_HEADER, none);
     }
     uint32_t at_edges = sizeof(km_graph_t) + line_up(h->n_nodes * sizeof(km_node_t));
@@ -506,8 +513,10 @@ uint32_t kmg_step(kmg_state_t* s, kmg_submit_fn submit, void* ctx) {
 }
 
 uint32_t kmg_complete(kmg_state_t* s, uint32_t node, uint32_t result) {
-    if (s->phase != KMG_RUNNING || node >= s->hdr->n_nodes ||
-        s->status[node] != KMG_FLIGHT) {
+    if (
+        s->phase != KMG_RUNNING || node >= s->hdr->n_nodes ||
+        s->status[node] != KMG_FLIGHT
+    ) {
         return 1u;
     }
     uint32_t reg = s->nodes[node].result_reg;
@@ -520,8 +529,10 @@ uint32_t kmg_complete(kmg_state_t* s, uint32_t node, uint32_t result) {
 }
 
 uint32_t kmg_retry(kmg_state_t* s, uint32_t node) {
-    if (s->phase != KMG_RUNNING || node >= s->hdr->n_nodes ||
-        s->status[node] != KMG_FLIGHT) {
+    if (
+        s->phase != KMG_RUNNING || node >= s->hdr->n_nodes ||
+        s->status[node] != KMG_FLIGHT
+    ) {
         return 1u;
     }
     s->in_flight--;

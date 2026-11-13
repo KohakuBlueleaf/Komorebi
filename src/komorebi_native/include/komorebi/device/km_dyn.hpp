@@ -132,8 +132,8 @@ namespace km {
                 16
             );
             if (!noc_timeout(c, [] {
-                    return ncrisc_noc_reads_flushed(noc_index);
-                })) {
+                return ncrisc_noc_reads_flushed(noc_index);
+            })) {
                 return false;
             }
             invalidate_l1_cache();
@@ -165,8 +165,8 @@ namespace km {
             noc_async_write(src, get_noc_addr(rd.args().me * pages + k, q), page_bytes);
             if ((k & 15) == 15 || k + 1 == pages) {
                 if (!noc_timeout(rd, [] {
-                        return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                    })) {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                })) {
                     return false;
                 }
             }
@@ -224,8 +224,8 @@ namespace km {
                 served++;
             }
             if (!noc_timeout(rd, [] {
-                    return ncrisc_noc_reads_flushed(noc_index);
-                })) {
+                return ncrisc_noc_reads_flushed(noc_index);
+            })) {
                 where = kWhereDynRead;
             } else {
                 volatile tt_l1_ptr uint32_t* ready = rd.ctl(KM_CTL_TAILS);
@@ -242,12 +242,14 @@ namespace km {
         ) {
             where = kWhereDynCounter;
         }
-        const uint64_t tail_line =
-            (counter ? 0
-                     : rd.core_noc(
-                           dyn_counter(r, ctrs == 0 ? 1 : ctrs, a.me),
-                           a.ctl + KM_CTL_TAILS + KM_TAILS_LINE + 16 * a.me
-                       ));
+        const uint64_t tail_line = (
+            counter
+                ? 0
+                : rd.core_noc(
+                    dyn_counter(r, ctrs == 0 ? 1 : ctrs, a.me),
+                    a.ctl + KM_CTL_TAILS + KM_TAILS_LINE + 16 * a.me
+                )
+        );
         // A core's tail, read from its counter tile into IN_TAIL (with a timeout).
         auto refresh = [&] {
             if (counter) {
@@ -301,8 +303,10 @@ namespace km {
                 }
                 km_command_t e;
                 copy_command(&ring[j], &e);
-                if (e.seq == s && KM_LANDED(&e) && handler(e) == KM_HANDLER_DYN_END &&
-                    e.a0 == run && in_group(e, a.me)) {
+                if (
+                    e.seq == s && KM_LANDED(&e) && handler(e) == KM_HANDLER_DYN_END &&
+                    e.a0 == run && in_group(e, a.me)
+                ) {
                     return true;
                 }
             }
@@ -341,8 +345,10 @@ namespace km {
                     where = kWhereDynRead;
                     break;
                 }
-                if (!sample(*tail, k2) || k2[0] != k[0] || k2[1] != k[1] ||
-                    k2[2] != k[2]) {
+                if (
+                    !sample(*tail, k2) || k2[0] != k[0] || k2[1] != k[1] ||
+                    k2[2] != k[2]
+                ) {
                     armed = false;
                     continue;
                 }
@@ -377,11 +383,11 @@ namespace km {
                 idle_shown = false;
             }
             if (rd.poll(
-                    [&] {
-                        return cb_pages_reservable_at_back(kCbDynIn, 1);
-                    },
-                    a.wait_limit
-                ) != kGaveNone) {
+                [&] {
+                    return cb_pages_reservable_at_back(kCbDynIn, 1);
+                },
+                a.wait_limit
+            ) != kGaveNone) {
                 where = kWhereDynInPage;
                 break;
             }
@@ -403,8 +409,8 @@ namespace km {
                 i += n;
             }
             if (!noc_timeout(rd, [] {
-                    return ncrisc_noc_reads_flushed(noc_index);
-                })) {
+                return ncrisc_noc_reads_flushed(noc_index);
+            })) {
                 where = kWhereDynRead;
                 break;
             }
@@ -445,12 +451,12 @@ namespace km {
         }
         // Compute leaves its loop on the end packet (or on the stop flag).
         if (rd.poll(
-                [] {
-                    return cb_pages_reservable_at_back(kCbDynIn, 1);
-                },
-                a.wait_limit,
-                a.wait_limit
-            ) == kGaveNone) {
+            [] {
+                return cb_pages_reservable_at_back(kCbDynIn, 1);
+            },
+            a.wait_limit,
+            a.wait_limit
+        ) == kGaveNone) {
             cb_reserve_back(kCbDynIn, 1);
             l1(get_write_ptr(kCbDynIn))[0] = kDynEnd;
             cb_push_back(kCbDynIn, 1);
@@ -518,16 +524,16 @@ namespace km {
                 ret_addr
             );
             if (!noc_timeout(wr, [] {
-                    return ncrisc_noc_nonposted_atomics_flushed(noc_index);
-                })) {
+                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+            })) {
                 where = kWhereDynAtomic;
                 return false;
             }
             // On the card the answer can stay away although its count moved.
             if (!noc_timeout(wr, [&] {
-                    invalidate_l1_cache();
-                    return ret[0] != kDynEnd;
-                })) {
+                invalidate_l1_cache();
+                return ret[0] != kDynEnd;
+            })) {
                 where = kWhereDynLost;
                 lost_to = dest[b];
                 return false;
@@ -555,8 +561,8 @@ namespace km {
                 i += m;
             }
             if (!noc_timeout(wr, [] {
-                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                })) {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            })) {
                 where = kWhereDynFlush;
                 return false;
             }
@@ -572,8 +578,8 @@ namespace km {
                 16
             );
             if (!noc_timeout(wr, [] {
-                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                })) {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            })) {
                 where = kWhereDynFlush;
                 return false;
             }
@@ -594,8 +600,9 @@ namespace km {
         };
 
         bool ended = false;
-        const uint64_t limit =
-            (a.idle_limit == 0 ? ~0ull : static_cast<uint64_t>(a.idle_limit) << 10);
+        const uint64_t limit = (
+            a.idle_limit == 0 ? ~0ull : static_cast<uint64_t>(a.idle_limit) << 10
+        );
         uint64_t quiet_from = wall64();
         for (uint32_t loop = 0; where == 0 && !ended; loop++) {
             invalidate_l1_cache();
@@ -683,17 +690,17 @@ namespace km {
     class Dyn {
     public:
         template <typename Cp>
-        Dyn(const Cp& cp, const km_command_t& r)
-            : ctl_(get_arg_val<uint32_t>(kCArgCtl)),
-              idle_(get_arg_val<uint32_t>(kCArgIdle)),
-              wait_(get_arg_val<uint32_t>(kCArgWait)),
-              run_(r.seq),
-              first_(km::first(r)),
-              count_(dyn_ranks(r, cp.arg(kDynCArgCounters))),
-              rank_(cp.me() - km::first(r)),
-              message_bytes_(cp.arg(kDynCArgMessage)),
-              quota_(cp.arg(kDynCArgQuota)),
-              seeded_(rank_ >= count_) {
+        Dyn(const Cp& cp, const km_command_t& r) :
+            ctl_(get_arg_val<uint32_t>(kCArgCtl)),
+            idle_(get_arg_val<uint32_t>(kCArgIdle)),
+            wait_(get_arg_val<uint32_t>(kCArgWait)),
+            run_(r.seq),
+            first_(km::first(r)),
+            count_(dyn_ranks(r, cp.arg(kDynCArgCounters))),
+            rank_(cp.me() - km::first(r)),
+            message_bytes_(cp.arg(kDynCArgMessage)),
+            quota_(cp.arg(kDynCArgQuota)),
+            seeded_(rank_ >= count_) {
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* dyn = l1(ctl_ + KM_CTL_DYN);
                 dyn[KM_DYN_CONSUMED / 4] = 0;
@@ -860,13 +867,13 @@ namespace km {
         // Waits for the stop flag (the idle limit its timeout): a body that stalls.
         bool wait_stop() const {
             return poll_stop(
-                       l1(ctl_ + KM_CTL_STOP),
-                       [] {
-                           return false;
-                       },
-                       idle_,
-                       0
-                   ) == kGaveStop;
+                l1(ctl_ + KM_CTL_STOP),
+                [] {
+                    return false;
+                },
+                idle_,
+                0
+            ) == kGaveStop;
         }
 
     private:
@@ -892,8 +899,9 @@ namespace km {
             if (!reserve()) {
                 return;
             }
-            l1(get_local_cb_interface(kCbDynOut).fifo_wr_ptr
-               << cb_addr_shift)[0] = kDynEnd;
+            l1(
+                get_local_cb_interface(kCbDynOut).fifo_wr_ptr << cb_addr_shift
+            )[0] = kDynEnd;
             __sync_synchronize();  // the message is in L1 before the push
             cb_push_back(kCbDynOut, 1);
         }

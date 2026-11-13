@@ -45,8 +45,10 @@ namespace kmsim {
         uint64_t sent = 0, consumed = 0;
         for (uint32_t k = 0; k < run.count; k++) {
             for (uint32_t w = 0; w < 4; w++) {
-                if (disp_word(kDispLines + 16 * (run.first + k) + 4 * w) !=
-                    first[4 * k + w]) {
+                if (
+                    disp_word(kDispLines + 16 * (run.first + k) + 4 * w) !=
+                    first[4 * k + w]
+                ) {
                     return;
                 }
             }

@@ -43,8 +43,8 @@ namespace {
         std::shared_ptr<MeshDevice> mesh;
         std::unique_ptr<x280::RuntimeOpenResult> opened;
 
-        Runtime(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz)
-            : mesh(std::move(mesh_device)) {
+        Runtime(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz) :
+            mesh(std::move(mesh_device)) {
             opened = std::make_unique<x280::RuntimeOpenResult>(x280::X280Runtime::open(
                 mesh,
                 x280::RuntimeOpenConfig{
@@ -64,8 +64,9 @@ namespace {
             if (!all_idle) {
                 x280::MultiTileBootRequest req;
                 req.tiles = rt.tile_ids();
-                req.idle_image_path =
-                    (std::string(X280_IMAGE_DIR) + "/firmware-lim-idle.bin");
+                req.idle_image_path = (
+                    std::string(X280_IMAGE_DIR) + "/firmware-lim-idle.bin"
+                );
                 req.allow_reset_release = true;
                 if (!rt.boot_tiles(req).ready()) {
                     throw std::runtime_error("X280 boot_tiles failed");
@@ -85,8 +86,10 @@ namespace {
         uint32_t proto = 0;
 
         x280::SessionId start(uint64_t n_commands) {
-            run = (0x6c616e6400000000ull ^
-                   (static_cast<uint64_t>(std::random_device{}()) << 8)) +
+            run = (
+                0x6c616e6400000000ull ^
+                (static_cast<uint64_t>(std::random_device{}()) << 8)
+            ) +
                 n_commands;
             tag = ((std::random_device{}() ^ static_cast<uint32_t>(run)) & 0xFFFFu) |
                 1u;
@@ -100,8 +103,8 @@ namespace {
             a.k = gx;
             a.nrect = panels.size();
             for (size_t r = 0; r < panels.size(); r++) {
-                const auto p0 = translated(panels[r][0], 0),
-                           p1 = translated(panels[r][1], gy - 1);
+                const auto p0 = translated(panels[r][0], 0);
+                const auto p1 = translated(panels[r][1], gy - 1);
                 a.rect[r][0] = p0[0];
                 a.rect[r][1] = p0[1];
                 a.rect[r][2] = p1[0];
@@ -144,8 +147,7 @@ NB_MODULE(_collision_x280, m) {
             },
             nb::arg("device"),
             nb::arg("pll_mhz") = 1750
-        )
-        .def(
+        ).def(
             "plan",
             [](
                 Runtime& self, const std::string& image, uint32_t depth, uint32_t proto

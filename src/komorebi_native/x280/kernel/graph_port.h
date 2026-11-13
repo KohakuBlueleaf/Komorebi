@@ -62,8 +62,10 @@ static int graph_claims(kmd_t* k, uint32_t off, uint32_t bytes, uint32_t req) {
     const kmd_gtable_t* t = gtable(k);
     for (uint32_t i = 0; i < KMD_GRAPH_ENTRIES; i++) {
         const kmd_gentry_t* x = &t->entry[i];
-        if (x->state != KMD_GT_FREE &&
-            (x->req == req || (off < x->off + x->bytes && x->off < off + bytes))) {
+        if (
+            x->state != KMD_GT_FREE &&
+            (x->req == req || (off < x->off + x->bytes && x->off < off + bytes))
+        ) {
             return 1;
         }
     }
@@ -104,9 +106,10 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
     uint32_t kept = 0, req = a0;
     for (uint32_t i = 0; i < KMD_GRAPH_ENTRIES; i++) {
         const kmd_gentry_t* y = &t->entry[i];
-        kept +=
-            (y->state == KMD_GT_KEPT ||
-             (y->state == KMD_GT_RUNNING && (y->again || (y->keep && !y->full))));
+        kept += (
+            y->state == KMD_GT_KEPT ||
+            (y->state == KMD_GT_RUNNING && (y->again || (y->keep && !y->full)))
+        );
     }
     if (form == KM_GRUN_KEPT) {
         for (uint32_t i = 0; i < KMD_GRAPH_ENTRIES && x == 0; i++) {
@@ -122,9 +125,10 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
         uint32_t bad = (a0 & 63u) || a0 > region || a1 > region - a0;
         for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE; i++) {
             const kmd_run_t* s = &k->runs[i];
-            bad |=
-                (s->active &&
-                 ((a0 < s->off + s->bytes && s->off < a0 + a1) || s->req == req));
+            bad |= (
+                s->active &&
+                ((a0 < s->off + s->bytes && s->off < a0 + a1) || s->req == req)
+            );
         }
         bad |= graph_claims(k, a0, a1, req);
         for (uint32_t i = 0; i < KMD_GRAPH_ENTRIES && x == 0; i++) {
@@ -154,10 +158,10 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
     }
     x->bind_off = bind_off;
     x->n_bind = n_bind;
-    x->bind_ok =
-        (n_bind == 0 ||
-         (!(bind_off & 63u) && bind_off <= region &&
-          n_bind <= (region - bind_off) / 4u));
+    x->bind_ok = (
+        n_bind == 0 ||
+        (!(bind_off & 63u) && bind_off <= region && n_bind <= (region - bind_off) / 4u)
+    );
     x->state = KMD_GT_RUNNING;
     /* Core 1 reads the entry once the event shows. */
     x280_fence_ow();

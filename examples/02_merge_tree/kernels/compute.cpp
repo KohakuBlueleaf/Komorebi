@@ -38,8 +38,9 @@ void kernel_main() {
     compute_kernel_hw_startup(kCbIn, kCbOut);
     // The runtime's loop: the body runs once per command whose group holds this core.
     cp.run([&](const km_command_t& r) {
-        if (km::handler(r) !=
-            kHandlerMerge) {  // this program answers MERGE commands only
+        if (
+            km::handler(r) != kHandlerMerge
+        ) {  // this program answers MERGE commands only
             return;
         }
         const uint32_t tiles = r.a1;  // input tiles T of the job
@@ -64,10 +65,10 @@ void kernel_main() {
         // The reduce: wait for the parts other cores of the group send me, add them in
         // rank order (by owner: rank 0 takes all; by tree: one partner a round).
         ok = ok && km::reduce(cp, arrival, g, form, [&](uint32_t k) {
-                 for (uint32_t d = 0; d < part; d++) {
-                     add_page(kCbArrive, km::slot_page(arrival, k) + d, d);
-                 }
-             });
+            for (uint32_t d = 0; d < part; d++) {
+                add_page(kCbArrive, km::slot_page(arrival, k) + d, d);
+            }
+        });
         tile_regs_commit();
         tile_regs_wait();
         // The P sums to the writer, which sends them on or (rank 0) writes the total.

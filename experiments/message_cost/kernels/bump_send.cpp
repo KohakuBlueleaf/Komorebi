@@ -20,20 +20,20 @@ void kernel_main() {
         4
     );
     if (!poll_timeout(
-            [] {
-                return ncrisc_noc_nonposted_writes_flushed(noc_index);
-            },
-            limit
-        )) {
+        [] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        },
+        limit
+    )) {
         return;
     }
     for (uint32_t i = 0; i < reps; i++) {
         if (!poll_timeout(
-                [&] {
-                    return w[kSlotRelease + 1] == (tag | (i + 1));
-                },
-                i == 0 ? sync_limit : limit + lead
-            )) {
+            [&] {
+                return w[kSlotRelease + 1] == (tag | (i + 1));
+            },
+            i == 0 ? sync_limit : limit + lead
+        )) {
             break;
         }
         const uint32_t release = w[kSlotRelease];
@@ -46,11 +46,11 @@ void kernel_main() {
         );
         noc_semaphore_inc(port, late ? kLate + 1 : 1);
         if (!poll_timeout(
-                [] {
-                    return ncrisc_noc_nonposted_atomics_flushed(noc_index);
-                },
-                limit
-            )) {
+            [] {
+                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+            },
+            limit
+        )) {
             break;
         }
     }

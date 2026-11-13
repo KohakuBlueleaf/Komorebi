@@ -14,9 +14,10 @@ uint32_t wc_start(wc_state* s, const uint32_t* words) {
     s->trail = 2166136261u;
     const uint32_t cores = words[WC_CORES], count = words[WC_COUNT];
     const uint32_t base = words[WC_BASE];
-    const int bad =
-        (cores == 0 || base > KM_CORES_MAX || cores > KM_CORES_MAX - base ||
-         count == 0 || count > cores || words[WC_MAX_ROUNDS] == 0);
+    const int bad = (
+        cores == 0 || base > KM_CORES_MAX || cores > KM_CORES_MAX - base ||
+        count == 0 || count > cores || words[WC_MAX_ROUNDS] == 0
+    );
     return bad ? 1u : 0u;
 }
 

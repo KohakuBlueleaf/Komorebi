@@ -78,8 +78,8 @@ namespace timed {
     // A mailbox value from thread `from`; false when none came in time.
     inline bool mail(uint8_t from, uint32_t& v) {
         if (!poll([&] {
-                return ckernel::mailbox_not_empty(from);
-            })) {
+            return ckernel::mailbox_not_empty(from);
+        })) {
             return false;
         }
         v = ckernel::mailbox_read(from);

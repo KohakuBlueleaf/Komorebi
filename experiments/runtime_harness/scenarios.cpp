@@ -33,8 +33,10 @@ namespace {
         cfg.jobs[1].first = 2;
         Sim* sp = nullptr;
         cfg.triggers.push_back([&](const Probe& p) {
-            if (p.core == 1 && p.role == kUnpack &&
-                !std::strcmp(p.name, "cb_wait_front") && p.cb == kCbIn) {
+            if (
+                p.core == 1 && p.role == kUnpack &&
+                !std::strcmp(p.name, "cb_wait_front") && p.cb == kCbIn
+            ) {
                 sp->freeze(1, kUnpack, 5000);
             }
         });
@@ -57,8 +59,10 @@ namespace {
         Sim* sp = nullptr;
         bool held = false;
         cfg.triggers.push_back([&](const Probe& p) {
-            if (!held && p.core == 1 && p.role == kMath &&
-                !std::strcmp(p.name, "tile_regs_acquire")) {
+            if (
+                !held && p.core == 1 && p.role == kMath &&
+                !std::strcmp(p.name, "tile_regs_acquire")
+            ) {
                 held = true;
                 sp->freeze(1, kMath, 3 * 8 * 1024);
             }
@@ -84,8 +88,10 @@ namespace {
         Sim* sp = nullptr;
         bool held = false;
         cfg.triggers.push_back([&](const Probe& p) {
-            if (!held && p.core == 1 && p.role == kWriter &&
-                !std::strcmp(p.name, "noc_semaphore_inc")) {
+            if (
+                !held && p.core == 1 && p.role == kWriter &&
+                !std::strcmp(p.name, "noc_semaphore_inc")
+            ) {
                 held = true;
                 sp->freeze(1, kWriter, 3 * 8 * 1024);
             }
@@ -108,8 +114,10 @@ namespace {
         Sim* sp = nullptr;
         bool held = false;
         cfg.triggers.push_back([&](const Probe& p) {
-            if (!held && p.core == 1 && p.role == kUnpack &&
-                !std::strcmp(p.name, "cb_wait_front") && p.cb == kCbIn) {
+            if (
+                !held && p.core == 1 && p.role == kUnpack &&
+                !std::strcmp(p.name, "cb_wait_front") && p.cb == kCbIn
+            ) {
                 held = true;
                 sp->freeze(1, kUnpack, 3 * 8 * 1024);
             }
@@ -142,13 +150,17 @@ namespace {
                 held = true;
                 sp->freeze(1, kMath, 6 * 8 * 1024);
             }
-            if (p.role == kReader && !std::strcmp(p.name, "cb_push_back") &&
-                p.cb == km::kCbTokenCompute) {
+            if (
+                p.role == kReader && !std::strcmp(p.name, "cb_push_back") &&
+                p.cb == km::kCbTokenCompute
+            ) {
                 handed++;
             }
-            if (!stopped && handed == 2 && p.role == kReader &&
+            if (
+                !stopped && handed == 2 && p.role == kReader &&
                 !std::strcmp(p.name, "cb_pages_reservable_at_back") &&
-                p.cb == km::kCbTokenCompute) {
+                p.cb == km::kCbTokenCompute
+            ) {
                 stopped = true;
                 sp->set_stop(1);
             }
@@ -504,8 +516,10 @@ namespace {
             auto barriers = std::make_shared<uint32_t>(0);
             cfg.triggers.push_back([&, reads, held, barriers](const Probe& p) {
                 // The reader's first read barrier is start-up's; the second is input.
-                if (!*held && is(p, 1, kReader, "noc_async_read_barrier") &&
-                    ++*barriers == 2) {
+                if (
+                    !*held && is(p, 1, kReader, "noc_async_read_barrier") &&
+                    ++*barriers == 2
+                ) {
                     *held = true;
                     sp->freeze(1, kReader, 3 * 8 * 1024);
                 }
@@ -533,8 +547,10 @@ namespace {
             auto held = std::make_shared<bool>(false);
             auto barriers = std::make_shared<uint32_t>(0);
             cfg.triggers.push_back([&, held, barriers](const Probe& p) {
-                if (!*held && is(p, 1, kReader, "noc_async_read_barrier") &&
-                    ++*barriers == 2) {
+                if (
+                    !*held && is(p, 1, kReader, "noc_async_read_barrier") &&
+                    ++*barriers == 2
+                ) {
                     *held = fired = true;
                     sp->freeze(1, kReader, 12 * 1024);
                 }
@@ -561,15 +577,21 @@ namespace {
             cfg.jobs = {map_job(1, 1, 24)};
             auto held = std::make_shared<bool>(false);
             cfg.triggers.push_back([&, held](const Probe& p) {
-                if (!*held && p.core == 1 && p.role == kUnpack &&
-                    (!std::strcmp(p.name, "reg_read") ||
-                     (!std::strcmp(p.name, "cb_wait_front") && p.cb == kCbIn)) &&
-                    sp->popped(1, km::kCbTokenCompute) == 1) {
+                if (
+                    !*held && p.core == 1 && p.role == kUnpack &&
+                    (
+                        !std::strcmp(p.name, "reg_read") ||
+                        (!std::strcmp(p.name, "cb_wait_front") && p.cb == kCbIn)
+                    ) &&
+                    sp->popped(1, km::kCbTokenCompute) == 1
+                ) {
                     *held = true;
                     sp->freeze(1, kUnpack, 12 * 1024);
                 }
-                if (is(p, 1, kReader, "cb_push_back") && p.cb == km::kCbTokenCompute &&
-                    sp->popped(1, km::kCbTokenCompute) == 1 && *held) {
+                if (
+                    is(p, 1, kReader, "cb_push_back") && p.cb == km::kCbTokenCompute &&
+                    sp->popped(1, km::kCbTokenCompute) == 1 && *held
+                ) {
                     fired = true;
                     inside = inside || sp->popped(1, kCbIn) < 24;
                 }
@@ -635,11 +657,16 @@ namespace {
                 bool first = true;
                 for (const std::string& v : s.violations) {
                     o.check.expect(
-                        (v.find(first ? "command 2:" : "command 1:") !=
-                         std::string::npos) == first,
+                        (
+                            v.find(first ? "command 2:" : "command 1:") !=
+                            std::string::npos
+                        ) == first,
                         at +
-                            (first ? "the first violation is at command 2: "
-                                   : "no violation at command 1: ") +
+                            (
+                                first
+                                    ? "the first violation is at command 2: "
+                                    : "no violation at command 1: "
+                            ) +
                             v
                     );
                     first = false;

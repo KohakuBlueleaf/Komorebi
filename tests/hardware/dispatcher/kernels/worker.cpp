@@ -122,9 +122,10 @@ namespace {
         // Whether every address the host passed is 16-byte aligned (else the
         // gave-up command).
         bool aligned() {
-            const uint32_t any =
-                (ctl | a.mailbox | a.ready | a.ack_base | a.table | a.out |
-                 get_write_ptr(kOutCb));
+            const uint32_t any = (
+                ctl | a.mailbox | a.ready | a.ack_base | a.table | a.out |
+                get_write_ptr(kOutCb)
+            );
             if (any & 15u) {
                 gave_up(DK_GAVE_ALIGN, DK_WHERE_BOOT);
                 return false;
@@ -173,11 +174,11 @@ namespace {
             }
             if (!a.is_leader) {
                 if (!send_word(
-                        get_noc_addr(
-                            a.leader_x, a.leader_y, ctl + KM_CTL_BOOT + 16 * a.rank
-                        ),
-                        a.tag << 16
-                    )) {
+                    get_noc_addr(
+                        a.leader_x, a.leader_y, ctl + KM_CTL_BOOT + 16 * a.rank
+                    ),
+                    a.tag << 16
+                )) {
                     return false;
                 }
             } else {
@@ -238,8 +239,9 @@ namespace {
                         cnt[DK_C_IGNORED]++;
                         continue;
                     }
-                    if (best == KM_RING_SLOTS ||
-                        static_cast<int32_t>(s - best_seq) < 0) {
+                    if (
+                        best == KM_RING_SLOTS || static_cast<int32_t>(s - best_seq) < 0
+                    ) {
                         best = j;
                         best_seq = s;
                     }
@@ -375,9 +377,11 @@ namespace {
             const uint64_t ack = (
                 get_noc_addr(a.l2_x, a.l2_y, a.ack_base + slot * KM_ACK_STRIDE)
             );
-            const bool sent =
-                (((r->hdr >> 8) & KM_F_RESULT) ? send_pair(ack, KM_ACK(r->seq), result)
-                                               : send_word(ack, KM_ACK(r->seq)));
+            const bool sent = (
+                ((r->hdr >> 8) & KM_F_RESULT)
+                    ? send_pair(ack, KM_ACK(r->seq), result)
+                    : send_word(ack, KM_ACK(r->seq))
+            );
             if (!sent) {
                 return false;
             }

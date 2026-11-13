@@ -26,22 +26,22 @@ void kernel_main() {
                 return index != r.a0;
             case kHandlerAlign:
                 return wr.poll(
-                           [&] {
-                               return static_cast<int32_t>(km::wall() - r.a9) >= 0;
-                           },
-                           wr.args().wait_limit
-                       ) == km::kGaveNone;
+                    [&] {
+                        return static_cast<int32_t>(km::wall() - r.a9) >= 0;
+                    },
+                    wr.args().wait_limit
+                ) == km::kGaveNone;
             case kHandlerLate: {
                 if (index != r.a0) {
                     return true;
                 }
                 const uint32_t t0 = km::wall();
                 return wr.poll(
-                           [&] {
-                               return km::wall() - t0 >= r.a1;
-                           },
-                           wr.args().idle_limit
-                       ) == km::kGaveNone;
+                    [&] {
+                        return km::wall() - t0 >= r.a1;
+                    },
+                    wr.args().idle_limit
+                ) == km::kGaveNone;
             }
             case kHandlerResult:
                 wr.result(r.a0 + index);

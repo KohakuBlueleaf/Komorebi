@@ -64,8 +64,9 @@ void kernel_main() {
         const uint32_t code = rd.poll(
             [&] {
                 return (
-                    reads ? ncrisc_noc_reads_flushed(noc_index)
-                          : ncrisc_noc_nonposted_writes_flushed(noc_index)
+                    reads
+                        ? ncrisc_noc_reads_flushed(noc_index)
+                        : ncrisc_noc_nonposted_writes_flushed(noc_index)
                 );
             },
             rd.args().wait_limit

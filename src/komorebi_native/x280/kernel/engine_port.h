@@ -49,8 +49,10 @@ static inline int engine_active(const kmd_t* k) {
 static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
     const uint32_t region = k->upload_bytes;
     uint32_t req = 0;
-    if (region >= sizeof(km_stream_t) && off <= region - sizeof(km_stream_t) &&
-        bytes >= 28u) {
+    if (
+        region >= sizeof(km_stream_t) && off <= region - sizeof(km_stream_t) &&
+        bytes >= 28u
+    ) {
         /* Byte loads: `off` may be unaligned here. */
         const volatile uint8_t* p = k->upload + off + 24u;
         x280_fence_ir();

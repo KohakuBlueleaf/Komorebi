@@ -25,9 +25,10 @@ namespace {
     }
 
     uint32_t out_per_page(uint32_t handler) {
-        const bool hits =
-            (handler == kHandlerTrace || handler == kHandlerTreelets ||
-             handler == kHandlerProbe);
+        const bool hits = (
+            handler == kHandlerTrace || handler == kHandlerTreelets ||
+            handler == kHandlerProbe
+        );
         return hits ? kPagePackets : 1;
     }
 
@@ -65,9 +66,11 @@ void kernel_main() {
     km::Writer wr;
     wr.run([&](const km_command_t& r) {
         const uint32_t handler = km::handler(r);
-        if (handler != kHandlerTrace && handler != kHandlerArith &&
+        if (
+            handler != kHandlerTrace && handler != kHandlerArith &&
             handler != kHandlerRecip && handler != kHandlerTreelets &&
-            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)) {
+            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)
+        ) {
             return true;
         }
         const uint32_t t0 = km::wall();
@@ -87,16 +90,16 @@ void kernel_main() {
                     const uint32_t a = km::wall();
                     const uint32_t bytes = st.vectors[s] * kVec * 4;
                     if (!write_page(
-                            wr, stream_arg(r, s), bytes, kPagePackets, first + p, wait
-                        )) {
+                        wr, stream_arg(r, s), bytes, kPagePackets, first + p, wait
+                    )) {
                         return true;
                     }
                     write += km::wall() - a;
                 }
             }
         } else {
-            const uint32_t bytes = out_page_bytes(r, handler),
-                           per = out_per_page(handler);
+            const uint32_t bytes = out_page_bytes(r, handler);
+            const uint32_t per = out_per_page(handler);
             for (uint32_t p = 0; p < count; ++p) {
                 const uint32_t a = km::wall();
                 if (!write_page(wr, r.a2, bytes, per, first + p, wait)) {

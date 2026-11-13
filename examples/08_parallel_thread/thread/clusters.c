@@ -263,8 +263,10 @@ int kmx_main(int core) {
     }
     const kmx_args* a = kmx_args_get();
     uint32_t w[N_WORDS]; /* every word is set below */
-    if (a->nwords < W_COUNT || a->nregions != R_COUNT || a->words[W_REPEATS] == 0 ||
-        words() == 0 || chunks() > CHUNKS_MAX) {
+    if (
+        a->nwords < W_COUNT || a->nregions != R_COUNT || a->words[W_REPEATS] == 0 ||
+        words() == 0 || chunks() > CHUNKS_MAX
+    ) {
         return CODE_BAD;
     }
     for (int i = 0; i < R_COUNT; i++) {
@@ -290,9 +292,11 @@ int kmx_main(int core) {
                 kmx_invalidate(OUT[p]);
                 kmx_flush(R_SUMS); /* no dirty line where the others' sums land */
                 const uint64_t t0 = kmx_time();
-                const int e =
-                    (p < 2 ? map(X280_CORES[m], OUT[p], &w[T_PUSH + m])
-                           : prefix(X280_CORES[m]));
+                const int e = (
+                    p < 2
+                        ? map(X280_CORES[m], OUT[p], &w[T_PUSH + m])
+                        : prefix(X280_CORES[m])
+                );
                 const uint32_t t = (uint32_t)(kmx_time() - t0);
                 if (e != KMX_OK) {
                     return e == KMX_BAD ? (int)CODE_PUSH : (int)CODE_LATE;

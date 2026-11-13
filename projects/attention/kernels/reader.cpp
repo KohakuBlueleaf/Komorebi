@@ -91,8 +91,10 @@ namespace {
                 if (!read_q(rd, tiles_q, w[kJobQ], rows, w[kJobStride], c)) {
                     return;
                 }
-                if (ln != nullptr &&
-                    !broadcast_job<DT, DV, KB>(*ln, tiles_k, tiles_v, w, n, c)) {
+                if (
+                    ln != nullptr &&
+                    !broadcast_job<DT, DV, KB>(*ln, tiles_k, tiles_v, w, n, c)
+                ) {
                     return;
                 }
                 for (

@@ -90,17 +90,17 @@ static uint32_t barrier(pr_t* p, uint32_t n, uint64_t* t0) {
 static inline uint32_t mmio_read(uint64_t addr) {
     uint32_t v = 0xFFFFFFFFu;
     __asm__ volatile(".option push\n.option norvc\nlw %0, 0(%1)\n.option pop\n"
-                     : "+r"(v)
-                     : "r"(addr)
-                     : "memory");
+        : "+r"(v)
+        : "r"(addr)
+        : "memory");
     return v;
 }
 
 static inline void mmio_write(uint64_t addr, uint32_t v) {
     __asm__ volatile(".option push\n.option norvc\nsw %0, 0(%1)\n.option pop\n"
-                     :
-                     : "r"(v), "r"(addr)
-                     : "memory");
+        :
+        : "r"(v), "r"(addr)
+        : "memory");
 }
 
 /* Reads this core's prefetcher registers and CSR 0x7c1, writes the documented
@@ -146,30 +146,30 @@ static uint64_t vsum(uintptr_t p, uint64_t n) {
         : [p] "+r"(p), [s] "=r"(s)
         : [end] "r"(end), [vl] "r"(64ul)
         : "memory",
-          "v0",
-          "v1",
-          "v2",
-          "v3",
-          "v4",
-          "v5",
-          "v6",
-          "v7",
-          "v8",
-          "v9",
-          "v10",
-          "v11",
-          "v12",
-          "v13",
-          "v14",
-          "v15",
-          "v16",
-          "v17",
-          "v18",
-          "v19",
-          "v20",
-          "v21",
-          "v22",
-          "v23"
+        "v0",
+        "v1",
+        "v2",
+        "v3",
+        "v4",
+        "v5",
+        "v6",
+        "v7",
+        "v8",
+        "v9",
+        "v10",
+        "v11",
+        "v12",
+        "v13",
+        "v14",
+        "v15",
+        "v16",
+        "v17",
+        "v18",
+        "v19",
+        "v20",
+        "v21",
+        "v22",
+        "v23"
     );
     return s;
 }
@@ -196,9 +196,10 @@ static void vfill(uintptr_t p, uint64_t n, uint64_t value) {
 static uint64_t ssum(const volatile uint64_t* p, uint64_t n) {
     uint64_t s = 0;
     for (uint64_t i = 0; i < n / 8; i += 8) {
-        s +=
-            (p[i] + p[i + 1] + p[i + 2] + p[i + 3] + p[i + 4] + p[i + 5] + p[i + 6] +
-             p[i + 7]);
+        s += (
+            p[i] + p[i + 1] + p[i + 2] + p[i + 3] + p[i + 4] + p[i + 5] + p[i + 6] +
+            p[i + 7]
+        );
     }
     return s;
 }
@@ -298,10 +299,12 @@ int main(uint64_t core_id) {
     const volatile rates_args_t* a = (const volatile rates_args_t*)p.lim;
     volatile uint32_t* out = pr_word(&p, PR_RESULT);
     const int sizes_ok = (a->sizes[0] % 2048 == 0) && (a->sizes[1] % 2048 == 0);
-    if (!sizes_ok || a->bins == 0 || a->bins % 64 != 0 || a->bins > RT_BINS_MAX ||
+    if (
+        !sizes_ok || a->bins == 0 || a->bins % 64 != 0 || a->bins > RT_BINS_MAX ||
         a->reps > RT_REPS_MAX || (a->region & 63) || (a->counts & 63) ||
         (a->out & 63) || a->timeout == 0 || a->timeout > 60ull * X280_MTIME_HZ ||
-        a->prefetch > 1) {
+        a->prefetch > 1
+    ) {
         if (core_id == 0) {
             out[RT_STATUS] = PR_ERR_ARGS;
         }

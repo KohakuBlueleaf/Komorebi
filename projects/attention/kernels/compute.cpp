@@ -98,9 +98,13 @@ namespace {
     // Math thread: vector work after the section's matmuls, holding the SFPU mutex.
     void math_vector_begin() {
         MATH((TTI_STALLWAIT(p_stall::STALL_SFPU | p_stall::STALL_SYNC, p_stall::MATH)));
-        MATH((math::set_dst_write_addr<
-              DstTileShape::Tile32x32,
-              UnpackDestination::SrcRegs>(0)));
+        MATH(
+            (
+                math::set_dst_write_addr<
+                    DstTileShape::Tile32x32,
+                    UnpackDestination::SrcRegs>(0)
+            )
+        );
         MATH((t6_mutex_acquire(mutex::SFPU)));
     }
 
@@ -136,9 +140,13 @@ namespace {
             semaphore::t6_sem(semaphore::MATH_PACK),
             p_stall::STALL_ON_ZERO
         )));
-        PACK((math::set_dst_write_addr<
-              DstTileShape::Tile32x32,
-              UnpackDestination::SrcRegs>(0)));
+        PACK(
+            (
+                math::set_dst_write_addr<
+                    DstTileShape::Tile32x32,
+                    UnpackDestination::SrcRegs>(0)
+            )
+        );
         PACK((t6_mutex_acquire(mutex::SFPU)));
     }
 
@@ -395,8 +403,9 @@ namespace {
                     if (kg > last_key) {
                         continue;
                     }
-                    const uint32_t nt =
-                        (last_key - kg + 1 < nt_block ? last_key - kg + 1 : nt_block);
+                    const uint32_t nt = (
+                        last_key - kg + 1 < nt_block ? last_key - kg + 1 : nt_block
+                    );
                     const bool last = kg + nt - 1 == last_key;
 #ifdef FLASH_CAUSAL
                     const bool diag = last && last_key == rowg;
@@ -473,13 +482,15 @@ void kernel_main() {
                     km::l1(table + 4 * (kTabFirst + kJobWords * j))
                 );
                 ok = (
-                    job(cp,
+                    job(
+                        cp,
                         w[kJobRows],
                         w[kJobStart],
                         w[kJobKeys],
                         w[kJobStride],
                         blocks,
-                        work)
+                        work
+                    )
                 );
             }
         }

@@ -229,9 +229,10 @@ namespace kr {
         const int32_t* tri = s.indices + 3 * (size_t)s.tree.leaf_tri[h.leaf];
         float w1 = h.u, w2 = h.v, w0 = (1.0f - w1) - w2;
         for (int k = 0; k < 3; k++) {
-            albedo[k] =
-                ((s.colors[3 * tri[0] + k] * w0 + s.colors[3 * tri[1] + k] * w1) +
-                 s.colors[3 * tri[2] + k] * w2);
+            albedo[k] = (
+                (s.colors[3 * tri[0] + k] * w0 + s.colors[3 * tri[1] + k] * w1) +
+                s.colors[3 * tri[2] + k] * w2
+            );
         }
     }
 
@@ -364,9 +365,10 @@ namespace kr {
             return;
         }
         for (int k = 0; k < 3; k++) {
-            c[k] =
-                (b.albedo[3 * p + k] *
-                 ((AMBIENT + b.direct0[p]) + GI * b.radiance1[3 * p + k]));
+            c[k] = (
+                b.albedo[3 * p + k] *
+                ((AMBIENT + b.direct0[p]) + GI * b.radiance1[3 * p + k])
+            );
         }
     }
 

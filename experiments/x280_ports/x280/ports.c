@@ -408,19 +408,27 @@ static uint32_t windows(const uint32_t* a, uint32_t* w) {
     /* how many windows a cluster can hold: every free one aimed and read back */
     uint32_t held = 0;
     for (uint32_t i = FREE_FIRST; i < FREE_END; i++) {
-        if (i >= KMX_PORT_WINDOW && i < KMX_PORT_WINDOW + KMX_PORTS_CORES &&
-            kmx_port_owner((int)(i - KMX_PORT_WINDOW)) >= 0) {
+        if (
+            i >= KMX_PORT_WINDOW && i < KMX_PORT_WINDOW + KMX_PORTS_CORES &&
+            kmx_port_owner((int)(i - KMX_PORT_WINDOW)) >= 0
+        ) {
             held++; /* the library's own, open for the run */
             continue;
         }
-        if (noc_configure_tlb_2m_checked(i, x, y, 0, NOC_ORDER_POSTED, &prog) != 0 &&
-            noc_verify_tlb_2m(i, &prog) == 0) {
+        if (
+            noc_configure_tlb_2m_checked(i, x, y, 0, NOC_ORDER_POSTED, &prog) != 0 &&
+            noc_verify_tlb_2m(i, &prog) == 0
+        ) {
             held++;
         }
     }
     for (uint32_t i = FREE_FIRST; i < FREE_END; i++) {
-        if (!(i >= KMX_PORT_WINDOW && i < KMX_PORT_WINDOW + KMX_PORTS_CORES &&
-              kmx_port_owner((int)(i - KMX_PORT_WINDOW)) >= 0)) {
+        if (
+            !(
+                i >= KMX_PORT_WINDOW && i < KMX_PORT_WINDOW + KMX_PORTS_CORES &&
+                kmx_port_owner((int)(i - KMX_PORT_WINDOW)) >= 0
+            )
+        ) {
             noc_clear_tlb_2m(i);
         }
     }
@@ -456,9 +464,10 @@ static uint32_t windows(const uint32_t* a, uint32_t* w) {
     const uint8_t* lim = (const uint8_t*)kmx_args_get();
     const volatile uint32_t*
         box = (
-            (const volatile uint32_t*)(lim +
-                                       ((const kmx_ports*)(lim + KMX_LIM_PORTS))->at +
-                                       KMX_PORTS_BOX + 64u * core)
+            (const volatile uint32_t*)(
+                lim + ((const kmx_ports*)(lim + KMX_LIM_PORTS))->at + KMX_PORTS_BOX +
+                64u * core
+            )
         );
     uint32_t sink = 0, v4[4];
     t = cycles();

@@ -206,8 +206,8 @@ void kernel_main() {
         t_begin = wall();
         for (uint32_t k = 1; k <= blocks; k++) {
             broadcast.state(LP_WAIT_VALID, k);
-            const uint32_t want = broadcast_marker(k, tag),
-                           stop = broadcast_stop(k, tag);
+            const uint32_t want = broadcast_marker(k, tag);
+            const uint32_t stop = broadcast_stop(k, tag);
             const uint64_t t0 = wall();
             uint32_t v = 0;
             for (;;) {

@@ -9,9 +9,9 @@
 static inline int ring_take(kmd_ring_t* r) {
     const uint32_t i = r->next;
     volatile const uint64_t* w = (
-        (volatile const uint64_t*)(r->cmds +
-                                              (i & (r->depth - 1u)) *
-        sizeof(km_command_t))
+        (volatile const uint64_t*)(
+            r->cmds + (i & (r->depth - 1u)) * sizeof(km_command_t)
+        )
     );
     uint64_t* l = r->line;
     x280_fence_ir();

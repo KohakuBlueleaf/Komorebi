@@ -7,8 +7,14 @@
 namespace probe {
 
     // Probe ids (define PROBE).
-    constexpr uint32_t kSmoke = 0, kPred = 1, kAnyCC = 2, kGather = 3, kSlab = 4,
-                       kRiscv = 5, kWalk = 6, kNocRead = 7;
+    constexpr uint32_t kSmoke = 0;
+    constexpr uint32_t kPred = 1;
+    constexpr uint32_t kAnyCC = 2;
+    constexpr uint32_t kGather = 3;
+    constexpr uint32_t kSlab = 4;
+    constexpr uint32_t kRiscv = 5;
+    constexpr uint32_t kWalk = 6;
+    constexpr uint32_t kNocRead = 7;
 
     // Output words. kNonce is written last: the host sees a finished run by it.
     constexpr uint32_t kNonce = 0, kError = 1, kNumTimes = 2;

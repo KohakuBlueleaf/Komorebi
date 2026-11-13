@@ -58,12 +58,12 @@ namespace km {
     // order: the sender reserve(k), fill, cast(k); a receiver arrive(k); then finish().
     class Broadcast {
     public:
-        Broadcast(const Reader& k, const km_command_t& r, uint32_t arg0)
-            : Broadcast(static_cast<const Core&>(k), kStReader, r, arg0) {
+        Broadcast(const Reader& k, const km_command_t& r, uint32_t arg0) :
+            Broadcast(static_cast<const Core&>(k), kStReader, r, arg0) {
         }
 
-        Broadcast(const Writer& k, const km_command_t& r, uint32_t arg0)
-            : Broadcast(static_cast<const Core&>(k), kStWriter, r, arg0) {
+        Broadcast(const Writer& k, const km_command_t& r, uint32_t arg0) :
+            Broadcast(static_cast<const Core&>(k), kStWriter, r, arg0) {
         }
 
         // False: the arguments, the command or the buffer did not fit (recorded).
@@ -106,8 +106,10 @@ namespace km {
             if (!wait_free(a_.pages, k)) {
                 return 0;
             }
-            if (get_write_ptr(a_.cb) != slot(k) ||
-                !item_fits(a_.cb, get_write_ptr(a_.cb), a_.pages)) {
+            if (
+                get_write_ptr(a_.cb) != slot(k) ||
+                !item_fits(a_.cb, get_write_ptr(a_.cb), a_.pages)
+            ) {
                 fail(kGaveBadItem, kWhereBroadcastFree, k);
                 return 0;
             }
@@ -127,8 +129,8 @@ namespace km {
                 return false;
             }
             if (!flushed(
-                    kFlushReads, kWhereBroadcastDone, k
-                )) {  // the block's reads have landed
+                kFlushReads, kWhereBroadcastDone, k
+            )) {  // the block's reads have landed
                 return false;
             }
             if (k >= a_.window && !wait_done(k - a_.window + 1, k)) {
@@ -138,8 +140,8 @@ namespace km {
                 const uint32_t src = slot(k);
                 noc_async_write_multicast(src, mc(src), block_bytes_, a_.receivers);
                 if (!flushed(
-                        kFlushWrites, kWhereBroadcastDone, k
-                    )) {  // block k landed before its VALID
+                    kFlushWrites, kWhereBroadcastDone, k
+                )) {  // block k landed before its VALID
                     return false;
                 }
                 *at(KM_BROADCAST_OUT) = broadcast_marker(seq_, k + 1);
@@ -178,8 +180,10 @@ namespace km {
             if (!wait_free(a_.pages, k)) {
                 return false;
             }
-            if (get_write_ptr(a_.cb) != slot(k) ||
-                !item_fits(a_.cb, get_write_ptr(a_.cb), a_.pages)) {
+            if (
+                get_write_ptr(a_.cb) != slot(k) ||
+                !item_fits(a_.cb, get_write_ptr(a_.cb), a_.pages)
+            ) {
                 fail(kGaveBadItem, kWhereBroadcastFree, k);
                 return false;
             }
@@ -238,15 +242,16 @@ namespace km {
         }
 
     private:
-        Broadcast(const Core& c, uint32_t word, const km_command_t& r, uint32_t arg0)
-            : c_(c), word_(word), seq_(r.seq), slot_(km::slot(r)) {
+        Broadcast(const Core& c, uint32_t word, const km_command_t& r, uint32_t arg0) :
+            c_(c), word_(word), seq_(r.seq), slot_(km::slot(r)) {
             uint32_t* f = &a_.broadcast;
             for (uint32_t i = 0; i < kBroadcastArgs; i++) {
                 f[i] = c.arg(arg0 + i);
             }
-            area_ =
-                (c.args().ctl + KM_CTL_BROADCAST +
-                 (a_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES);
+            area_ = (
+                c.args().ctl + KM_CTL_BROADCAST +
+                (a_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES
+            );
             ok_ = begin(r);
         }
 
@@ -262,10 +267,12 @@ namespace km {
             }
             const LocalCBInterface& i = get_local_cb_interface(a_.cb);
             block_bytes_ = a_.pages * i.fifo_page_size;
-            if (a_.window == 0 || a_.window > kBroadcastWindowMax || a_.pages == 0 ||
+            if (
+                a_.window == 0 || a_.window > kBroadcastWindowMax || a_.pages == 0 ||
                 a_.receivers >= KM_BROADCAST_RANKS || a_.rank > a_.receivers ||
                 a_.noc != noc_index || i.fifo_num_pages != a_.window * a_.pages ||
-                i.fifo_num_pages > 0xFFFFu || i.fifo_size != a_.window * block_bytes_) {
+                i.fifo_num_pages > 0xFFFFu || i.fifo_size != a_.window * block_bytes_
+            ) {
                 fail(kGaveBadBroadcast, kWhereBroadcastBegin, 0);
                 return false;
             }
@@ -322,8 +329,8 @@ namespace km {
                 return;
             }
             if (!flushed(
-                    kFlushSent, kWhereBroadcastFree, b
-                )) {  // the last marker has left KM_BROADCAST_OUT
+                kFlushSent, kWhereBroadcastFree, b
+            )) {  // the last marker has left KM_BROADCAST_OUT
                 return;
             }
             *at(KM_BROADCAST_OUT) = broadcast_marker(seq_, b);
@@ -369,15 +376,20 @@ namespace km {
                             what == kFlushReads
                                 ? ncrisc_dynamic_noc_reads_flushed(noc_index)
                                 : what == kFlushSent
-                                ? ncrisc_dynamic_noc_nonposted_writes_sent(noc_index)
-                                : ncrisc_dynamic_noc_nonposted_writes_flushed(noc_index)
+                                    ? ncrisc_dynamic_noc_nonposted_writes_sent(
+                                        noc_index
+                                    )
+                                    : ncrisc_dynamic_noc_nonposted_writes_flushed(
+                                        noc_index
+                                    )
                         );
                     } else {
                         return (
-                            what == kFlushReads ? ncrisc_noc_reads_flushed(noc_index)
+                            what == kFlushReads
+                                ? ncrisc_noc_reads_flushed(noc_index)
                                 : what == kFlushSent
-                                ? ncrisc_noc_nonposted_writes_sent(noc_index)
-                                : ncrisc_noc_nonposted_writes_flushed(noc_index)
+                                    ? ncrisc_noc_nonposted_writes_sent(noc_index)
+                                    : ncrisc_noc_nonposted_writes_flushed(noc_index)
                         );
                     }
                 },

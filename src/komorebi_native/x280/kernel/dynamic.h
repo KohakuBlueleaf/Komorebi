@@ -68,9 +68,11 @@ static inline int dyn_quiet(kmd_t* k) {
     uint64_t sent = 0, consumed = 0;
     for (uint32_t c = f; c < end; c++) {
         volatile const uint32_t* l = lines + 4u * c;
-        if (l[KM_DYN_LINE_RUN] != d->seq || l[KM_DYN_LINE_STATE] != KM_DYN_IDLE ||
+        if (
+            l[KM_DYN_LINE_RUN] != d->seq || l[KM_DYN_LINE_STATE] != KM_DYN_IDLE ||
             l[KM_DYN_LINE_SENT] != d->first[2u * c] ||
-            l[KM_DYN_LINE_CONSUMED] != d->first[2u * c + 1u]) {
+            l[KM_DYN_LINE_CONSUMED] != d->first[2u * c + 1u]
+        ) {
             return 0;
         }
         sent += d->first[2u * c];

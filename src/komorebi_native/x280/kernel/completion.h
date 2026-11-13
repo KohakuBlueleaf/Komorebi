@@ -150,9 +150,10 @@ static inline void slots_sweep(kmd_t* k) {
         if (k->dyn.end == j + 1u) { /* a dynamic run's end command: no event */
             k->dyn.end = 0;
         } else {
-            const uint32_t aux =
-                ((k->slot_group[j] & KM_EV_AUX_LOW) |
-                 (k->slot_seq[j] & KM_EV_SEQ_MASK) << KM_EV_SEQ_SHIFT);
+            const uint32_t aux = (
+                (k->slot_group[j] & KM_EV_AUX_LOW) |
+                (k->slot_seq[j] & KM_EV_SEQ_MASK) << KM_EV_SEQ_SHIFT
+            );
             ring_push(r, k->slot_req[j], KM_EV_DONE | aux << 8, ticks);
         }
         k->t_last_event = now;
@@ -167,8 +168,10 @@ static inline void slots_sweep(kmd_t* k) {
 static inline uint32_t slots_late(const kmd_t* k, uint64_t now) {
     uint32_t late = KM_RING_SLOTS;
     for (uint32_t j = 0; j < k->depth; j++) {
-        if ((k->busy & (1u << j)) && now > k->slot_deadline[j] &&
-            (late == KM_RING_SLOTS || k->slot_deadline[j] < k->slot_deadline[late])) {
+        if (
+            (k->busy & (1u << j)) && now > k->slot_deadline[j] &&
+            (late == KM_RING_SLOTS || k->slot_deadline[j] < k->slot_deadline[late])
+        ) {
             late = j;
         }
     }

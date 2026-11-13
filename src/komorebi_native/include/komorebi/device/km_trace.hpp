@@ -10,11 +10,11 @@ namespace km {
 
     class Trace {
     public:
-        explicit Trace(const Args& a)
-            : dram_(a.trace),
-              cap_(a.trace_cap),
-              base_(a.trace ? get_write_ptr(kCbTrace) : 0),
-              state_(a.ctl + KM_CTL_STATE) {
+        explicit Trace(const Args& a) :
+            dram_(a.trace),
+            cap_(a.trace_cap),
+            base_(a.trace ? get_write_ptr(kCbTrace) : 0),
+            state_(a.ctl + KM_CTL_STATE) {
         }
 
         bool on() const {

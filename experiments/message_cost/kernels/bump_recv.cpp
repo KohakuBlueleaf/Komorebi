@@ -8,8 +8,8 @@
 void kernel_main() {
     const uint32_t out = get_arg_val<uint32_t>(0), n = get_arg_val<uint32_t>(1);
     const uint32_t reps = get_arg_val<uint32_t>(2), lead = get_arg_val<uint32_t>(3);
-    const uint32_t limit = get_arg_val<uint32_t>(4),
-                   tag = get_arg_val<uint32_t>(5) << 16;
+    const uint32_t limit = get_arg_val<uint32_t>(4);
+    const uint32_t tag = get_arg_val<uint32_t>(5) << 16;
     const uint32_t sync_limit = get_arg_val<uint32_t>(6);
     const uint32_t slot = get_write_ptr(kCbSlot), times = get_write_ptr(kCbTimes);
     volatile uint32_t* w = reinterpret_cast<volatile uint32_t*>(slot);
@@ -45,10 +45,10 @@ void kernel_main() {
         ok = ok && poll_timeout(flushed, limit);
         ok = ok &&
             poll_timeout(
-                 [&] {
-                     return (w[kSlotPort] & 0xFFFFu) >= n;
-                 },
-                 limit + lead
+                [&] {
+                    return (w[kSlotPort] & 0xFFFFu) >= n;
+                },
+                limit + lead
             );
         t[i] = ok ? wall_lo() - release : kFailed;
         lates[i] = w[kSlotPort] >> 16;

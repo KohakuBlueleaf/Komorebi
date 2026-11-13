@@ -42,8 +42,9 @@ namespace kr {
             throw std::runtime_error("cannot open " + path);
         }
         unsigned char head[10];
-        if (std::fread(head, 1, 10, f) != 10 ||
-            std::memcmp(head, "\x93NUMPY", 6) != 0) {
+        if (
+            std::fread(head, 1, 10, f) != 10 || std::memcmp(head, "\x93NUMPY", 6) != 0
+        ) {
             throw std::runtime_error("not an npy file: " + path);
         }
         size_t header_len = head[8] | (head[9] << 8);
@@ -85,9 +86,10 @@ namespace kr {
             dims += std::to_string(d) + (shape.size() == 1 ? "," : ", ");
             count *= d;
         }
-        std::string header =
-            ("{'descr': '" + descr + "', 'fortran_order': False, 'shape': (" + dims +
-             "), }");
+        std::string header = (
+            "{'descr': '" + descr + "', 'fortran_order': False, 'shape': (" + dims +
+            "), }"
+        );
         while ((10 + header.size() + 1) % 64 != 0) {
             header += ' ';
         }
@@ -119,9 +121,8 @@ namespace kr {
     inline double now_ms() {
         using clock = std::chrono::steady_clock;
         return std::chrono::duration<double, std::milli>(
-                   clock::now().time_since_epoch()
-        )
-            .count();
+            clock::now().time_since_epoch()
+        ).count();
     }
 
     // Collects the per-repetition JSON records (kept only for runs of at most 100

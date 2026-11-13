@@ -95,9 +95,9 @@ static inline void pr_flush(uint64_t addr, uint64_t bytes) {
     volatile uint64_t* reg = (volatile uint64_t*)(uintptr_t)PR_CCACHE_FLUSH64;
     for (uint64_t a = addr & ~63ull; a < addr + bytes; a += 64) {
         __asm__ volatile(".option push\n.option norvc\nsd %0, 0(%1)\n.option pop\n"
-                         :
-                         : "r"(a), "r"(reg)
-                         : "memory");
+            :
+            : "r"(a), "r"(reg)
+            : "memory");
     }
     x280_fence_iorw();
 }

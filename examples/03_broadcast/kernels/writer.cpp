@@ -30,20 +30,20 @@ void kernel_main() {
         const bool got = handler == kHandlerRead
             ? read_blocks(wr, km::kStWriter, r, ln, kCbCol, w, first, r.a3, r.a7)
             : broadcast_blocks(ln, w, first, r.a3, r.a7, [](uint32_t) {
-                  return false;
-              });
+                return false;
+            });
         if (!got || !wr.wait_front(kCbOut, 1)) {
             return false;
         }
         const auto out = TensorAccessor(out_args, r.a2);
         noc_async_write_page(r.a6 + wr.me() - km::first(r), out, get_read_ptr(kCbOut));
         const bool sent = wr.poll(
-                              [] {
-                                  return ncrisc_noc_nonposted_writes_sent(noc_index);
-                              },
-                              wr.args().wait_limit,
-                              wr.args().wait_limit
-                          ) == km::kGaveNone;
+            [] {
+                return ncrisc_noc_nonposted_writes_sent(noc_index);
+            },
+            wr.args().wait_limit,
+            wr.args().wait_limit
+        ) == km::kGaveNone;
         cb_pop_front(kCbOut, 1);
         return sent;
     });

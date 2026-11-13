@@ -77,8 +77,8 @@ void kernel_main() {
     constexpr uint64_t kSecond = 1350000000ull;
     atomic_add(noc_of(0, hs::kBar), 1, blk + 4 * hs::kBarRet);
     if (!timed(kSecond, [] {
-            return ncrisc_noc_nonposted_atomics_flushed(noc_index);
-        })) {
+        return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+    })) {
         st[hs::sFail] = 1;
         st[hs::sDone] = 1;
         return;
@@ -87,8 +87,8 @@ void kernel_main() {
     for (;;) {
         noc_async_read(noc_of(0, hs::kBar), blk + 4 * hs::kPeek, 4);
         if (!timed(kSecond, [] {
-                return ncrisc_noc_reads_flushed(noc_index);
-            })) {
+            return ncrisc_noc_reads_flushed(noc_index);
+        })) {
             st[hs::sFail] = 2;
             st[hs::sDone] = 1;
             return;
@@ -125,14 +125,15 @@ void kernel_main() {
         volatile tt_l1_ptr uint32_t* ret = w + hs::kRing + 4 * slot;
         const uint64_t a = wall64();
         atomic_add(
-            ccount ? noc_of(cbase + d % ccount, hs::kTailArr + 4 * d)
-                   : noc_of(d, hs::kTail),
+            ccount
+                ? noc_of(cbase + d % ccount, hs::kTailArr + 4 * d)
+                : noc_of(d, hs::kTail),
             n,
             blk + 4 * (hs::kRing + 4 * slot)
         );
         if (!timed(timeout, [] {
-                return ncrisc_noc_nonposted_atomics_flushed(noc_index);
-            })) {
+            return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+        })) {
             st[hs::sFail] = 3;
             break;
         }

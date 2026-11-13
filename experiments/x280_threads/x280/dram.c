@@ -140,9 +140,11 @@ int main(uint64_t core_id) {
     for (uint32_t i = 0; i < 16; i++) {
         out[i] = 0;
     }
-    if (a->page == 0 || a->page % 64 != 0 || a->pages_a == 0 || a->pages_b == 0 ||
+    if (
+        a->page == 0 || a->page % 64 != 0 || a->pages_a == 0 || a->pages_b == 0 ||
         (a->a & 63) || (a->b & 63) || a->bank > 7 || a->timeout == 0 ||
-        a->timeout > 30ull * X280_MTIME_HZ) {
+        a->timeout > 30ull * X280_MTIME_HZ
+    ) {
         out[DR_STATUS] = PR_ERR_ARGS;
         x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
         return 0;

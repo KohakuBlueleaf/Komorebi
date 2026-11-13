@@ -83,15 +83,17 @@ void kernel_main() {
             invalidate_l1_cache();
 #ifdef PROTO_B
             const uint32_t v = *seq_word;
-            ok =
-                ((v >> 16) == tag &&
-                 static_cast<int16_t>(
-                     static_cast<uint16_t>(v) - static_cast<uint16_t>(seq)
-                 ) >= 0);
+            ok = (
+                (v >> 16) == tag &&
+                static_cast<int16_t>(
+                    static_cast<uint16_t>(v) - static_cast<uint16_t>(seq)
+                ) >= 0
+            );
 #else
-            const uint32_t m =
-                ((rec[0] == echo) + (rec[4] == echo) + (rec[8] == echo) +
-                 (rec[12] == echo));
+            const uint32_t m = (
+                (rec[0] == echo) + (rec[4] == echo) + (rec[8] == echo) +
+                (rec[12] == echo)
+            );
             ok = m == 4;
 #endif
             if (ok) {

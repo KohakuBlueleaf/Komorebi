@@ -63,8 +63,9 @@ void rm_costs(
     }
     for (uint32_t t = t0; t < t1; t++) {
         const uint64_t n = s->entries[t], r = s->rows[t];
-        s->tile_cost[t] =
-            (n ? RM_COST_TRI * n + RM_COST_ROW * r + RM_COST_TILE : RM_COST_EMPTY);
+        s->tile_cost[t] = (
+            n ? RM_COST_TRI * n + RM_COST_ROW * r + RM_COST_TILE : RM_COST_EMPTY
+        );
     }
 }
 
@@ -223,9 +224,11 @@ uint32_t rm_items(
                 cl += l[g];
             }
             items[ni] = (rm_item){t, r0, r1, (uint32_t)n};
-            s->cost[ni++] =
-                (n ? RM_COST_TRI * n + RM_COST_ROW * 2 * cover + RM_COST_TILE
-                   : RM_COST_EMPTY);
+            s->cost[ni++] = (
+                n
+                    ? RM_COST_TRI * n + RM_COST_ROW * 2 * cover + RM_COST_TILE
+                    : RM_COST_EMPTY
+            );
         }
     }
     tile_item[RM_TILES] = ni;
@@ -298,8 +301,10 @@ uint32_t rm_layout(
     rm_mark* marks,
     uint32_t* n_marks
 ) {
-    if (!rm_items(heavy, bands, n_heavy, s, items, n_items, tile_item) ||
-        !rm_assign(fill_cores, s, *n_items)) {
+    if (
+        !rm_items(heavy, bands, n_heavy, s, items, n_items, tile_item) ||
+        !rm_assign(fill_cores, s, *n_items)
+    ) {
         return 0;
     }
     const uint32_t ni = *n_items;
@@ -347,8 +352,9 @@ uint32_t rm_layout(
             at += 1 + it->total;
         }
         marks[nm++] = (rm_mark){at, RM_MARK_END, 0, 0, 0, 0};
-        const uint32_t pages =
-            ((at + 1 - RM_PAGE_SLOTS * page + RM_PAGE_SLOTS - 1) / RM_PAGE_SLOTS);
+        const uint32_t pages = (
+            (at + 1 - RM_PAGE_SLOTS * page + RM_PAGE_SLOTS - 1) / RM_PAGE_SLOTS
+        );
         d[RM_DIR_FIRST] = page;
         d[RM_DIR_PAGES] = pages;
         d[RM_DIR_ITEMS] = n;
@@ -405,9 +411,10 @@ void rm_base(
 ) {
     for (uint32_t i = 0; i < n_items; i++) {
         const int32_t h = s->heavy_of[items[i].tile];
-        base[i] =
-            ((items[i].total ? s->header[i] + 1 : 0) |
-             (h < 0 ? 0 : (uint32_t)(h + 1) << RM_BASE_SLOT_BITS));
+        base[i] = (
+            (items[i].total ? s->header[i] + 1 : 0) |
+            (h < 0 ? 0 : (uint32_t)(h + 1) << RM_BASE_SLOT_BITS)
+        );
     }
 }
 

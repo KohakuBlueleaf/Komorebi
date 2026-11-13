@@ -16,21 +16,21 @@ void kernel_main() {
     // NoC barriers polled with the wait limit; false (no report) if it passed.
     auto reads_done = [&] {
         const bool ok = wr.poll(
-                            [&] {
-                                return ncrisc_noc_reads_flushed(noc_index);
-                            },
-                            wr.args().wait_limit
-                        ) == km::kGaveNone;
+            [&] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
         invalidate_l1_cache();
         return ok;
     };
     auto writes_done = [&] {
         return wr.poll(
-                   [&] {
-                       return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                   },
-                   wr.args().wait_limit
-               ) == km::kGaveNone;
+            [&] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
     };
     wr.run([&](const km_command_t& r) {
         const uint32_t handler = km::handler(r);

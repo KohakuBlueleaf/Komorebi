@@ -68,8 +68,11 @@ static int wait_all(
         x280_fence_ir();
         while (from < k) {
             const uint32_t v = acks[from * stride_words];
-            if (value == TTX_READY ? v != TTX_READY
-                                   : (v == TTX_READY || (int32_t)(v - value) < 0)) {
+            if (
+                value == TTX_READY
+                    ? v != TTX_READY
+                    : (v == TTX_READY || (int32_t)(v - value) < 0)
+            ) {
                 break;
             }
             from++;
@@ -91,8 +94,10 @@ int main(uint64_t core_id) {
     const volatile landing_args_t* a = (
         (const volatile landing_args_t*) x280_hart_args(core_id)
     );
-    if (a == 0 || a->run_value != ctx.run || a->nrect < 1 || a->nrect > 2 ||
-        a->ordering > 2 || a->proto > 1 || a->depth < 1 || a->depth > LANDING_SLOTS) {
+    if (
+        a == 0 || a->run_value != ctx.run || a->nrect < 1 || a->nrect > 2 ||
+        a->ordering > 2 || a->proto > 1 || a->depth < 1 || a->depth > LANDING_SLOTS
+    ) {
         x280_hart_set_result(core_id, ~0ull);
         return 0;
     }

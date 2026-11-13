@@ -14,21 +14,21 @@ void kernel_main() {
     // NoC barriers polled with the wait limit; false (no report) if it passed.
     auto reads_done = [&] {
         const bool ok = wr.poll(
-                            [&] {
-                                return ncrisc_noc_reads_flushed(noc_index);
-                            },
-                            wr.args().wait_limit
-                        ) == km::kGaveNone;
+            [&] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
         invalidate_l1_cache();
         return ok;
     };
     auto writes_done = [&] {
         return wr.poll(
-                   [&] {
-                       return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                   },
-                   wr.args().wait_limit
-               ) == km::kGaveNone;
+            [&] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            wr.args().wait_limit
+        ) == km::kGaveNone;
     };
     wr.run([&](const km_command_t& r) {
         const uint32_t index = wr.me() - km::first(r);
@@ -53,8 +53,10 @@ void kernel_main() {
             wr.result(sum);
             return true;
         }
-        if (handler != kHandlerStep && handler != kHandlerLeft &&
-            handler != kHandlerRight) {
+        if (
+            handler != kHandlerStep && handler != kHandlerLeft &&
+            handler != kHandlerRight
+        ) {
             return true;
         }
         noc_async_read_page(page, x, scratch);
@@ -62,10 +64,13 @@ void kernel_main() {
             return false;
         }
         const uint32_t v = word[0];
-        word[0] =
-            (handler == kHandlerStep       ? v + r.a1 + page
-                 : handler == kHandlerLeft ? v >> 1
-                                           : v * 3u);
+        word[0] = (
+            handler == kHandlerStep
+                ? v + r.a1 + page
+                : handler == kHandlerLeft
+                    ? v >> 1
+                    : v * 3u
+        );
         noc_async_write_page(page, x, scratch);
         return writes_done();
     });

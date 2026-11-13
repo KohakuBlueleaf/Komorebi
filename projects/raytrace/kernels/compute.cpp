@@ -169,8 +169,10 @@ namespace {
     // from its page, then those deferred (list did not fit) from their state.
     bool top_walks(uint32_t count, bool any, uint32_t cap, bool first, walk::Prof& pf) {
         const uint32_t list_bytes = 4 * (kLsHead + 2 * count) + 2 * cap;
-        if (timed::room(kCbState) < count * (kStTileBytes + 4 * kStHeadWords) ||
-            timed::room(kCbLists) < list_bytes) {
+        if (
+            timed::room(kCbState) < count * (kStTileBytes + 4 * kStHeadWords) ||
+            timed::room(kCbLists) < list_bytes
+        ) {
             pf.error |= kErrRoom;
             return false;
         }
@@ -700,9 +702,9 @@ namespace {
                     }
                 }
                 if (s == 0) {
-                    pixel =
-                        (handler == kHandlerGen ? pg[0]
-                                                : pg[kVec * kPkHead + kHeadPixel]);
+                    pixel = (
+                        handler == kHandlerGen ? pg[0] : pg[kVec * kPkHead + kHeadPixel]
+                    );
                 }
                 order(word(last) + 62);
                 slot += st.vectors[s];
@@ -819,10 +821,13 @@ namespace {
         ckernel::mailbox_write(kPack, count);
         cb_pop_front(kCbIn, 1);
         const Stage st = stage_of(handler);
-        const uint32_t pages =
-            (handler == kHandlerRecip ? 0
-                 : is_stage(handler)  ? 1 + count * st.inputs
-                                      : count);
+        const uint32_t pages = (
+            handler == kHandlerRecip
+                ? 0
+                : is_stage(handler)
+                    ? 1 + count * st.inputs
+                    : count
+        );
         for (uint32_t i = 0; i < pages; ++i) {
             if (!timed::front(kCbIn, 1)) {
                 ckernel::mailbox_write(kPack, timed::kAbort);
@@ -891,16 +896,15 @@ namespace {
         copy_init(kCbState);
         for (uint32_t pages = 0; pages < (1u << 20); ++pages) {
             uint32_t n = 0;
-            if (!timed::mail(ckernel::ThreadId::UnpackThreadId, n) ||
-                n == timed::kAbort) {
+            if (
+                !timed::mail(ckernel::ThreadId::UnpackThreadId, n) || n == timed::kAbort
+            ) {
                 return;
             }
             for (uint32_t j = 0; j < n; ++j) {
                 if (!timed::poll([] {
-                        return (
-                            ckernel::semaphore_read(ckernel::semaphore::MATH_PACK) == 0
-                        );
-                    })) {
+                    return ckernel::semaphore_read(ckernel::semaphore::MATH_PACK) == 0;
+                })) {
                     return;
                 }
                 tile_regs_acquire();
@@ -930,14 +934,17 @@ void kernel_main() {
 #endif
 #ifdef TRISC_PACK
             const uint32_t t = mbox_read();
-            g_tree =
-                (t == timed::kAbort ? nullptr : reinterpret_cast<const uint32_t*>(t));
+            g_tree = (
+                t == timed::kAbort ? nullptr : reinterpret_cast<const uint32_t*>(t)
+            );
 #endif
             return;
         }
-        if (handler != kHandlerTrace && handler != kHandlerArith &&
+        if (
+            handler != kHandlerTrace && handler != kHandlerArith &&
             handler != kHandlerRecip && handler != kHandlerTreelets &&
-            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)) {
+            handler != kHandlerProbe && handler != kHandlerMath && !is_stage(handler)
+        ) {
             return;
         }
 #ifdef TRISC_UNPACK
@@ -958,9 +965,10 @@ void kernel_main() {
             return;
         }
         setup();
-        const bool trees =
-            (handler == kHandlerTrace || handler == kHandlerTreelets ||
-             handler == kHandlerProbe);
+        const bool trees = (
+            handler == kHandlerTrace || handler == kHandlerTreelets ||
+            handler == kHandlerProbe
+        );
         if (trees && g_tree == nullptr) {
             pf.error |= kErrTree;
         } else if (handler == kHandlerTrace) {

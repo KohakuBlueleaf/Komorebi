@@ -19,12 +19,22 @@ namespace nocread {
     constexpr uint32_t kCmdBuf = 1;
 
     // Output data words.
-    constexpr uint32_t kWhere = 0, kCode = 1, kPolls = 2, kCycles = 3, kMyId = 4,
-                       kCounterBefore = 5, kCounterAfter = 6, kGot = 16;
+    constexpr uint32_t kWhere = 0;
+    constexpr uint32_t kCode = 1;
+    constexpr uint32_t kPolls = 2;
+    constexpr uint32_t kCycles = 3;
+    constexpr uint32_t kMyId = 4;
+    constexpr uint32_t kCounterBefore = 5;
+    constexpr uint32_t kCounterAfter = 6;
+    constexpr uint32_t kGot = 16;
 
     // Where codes.
-    constexpr uint32_t kStarted = 1, kWaitedPeer = 2, kBufReady = 3, kSubmitting = 4,
-                       kResponded = 5, kRestored = 6;
+    constexpr uint32_t kStarted = 1;
+    constexpr uint32_t kWaitedPeer = 2;
+    constexpr uint32_t kBufReady = 3;
+    constexpr uint32_t kSubmitting = 4;
+    constexpr uint32_t kResponded = 5;
+    constexpr uint32_t kRestored = 6;
     // Result codes.
     constexpr uint32_t kOk = 0, kBufBusy = 1, kNoResponse = 2;
 

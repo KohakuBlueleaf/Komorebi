@@ -73,23 +73,23 @@ static uint64_t vsum(uintptr_t p, uint64_t n) {
         : [p] "+r"(p), [s] "=r"(s)
         : [end] "r"(end), [vl] "r"(64ul)
         : "memory",
-          "v0",
-          "v1",
-          "v2",
-          "v3",
-          "v4",
-          "v5",
-          "v6",
-          "v7",
-          "v8",
-          "v16",
-          "v17",
-          "v18",
-          "v19",
-          "v20",
-          "v21",
-          "v22",
-          "v23"
+        "v0",
+        "v1",
+        "v2",
+        "v3",
+        "v4",
+        "v5",
+        "v6",
+        "v7",
+        "v8",
+        "v16",
+        "v17",
+        "v18",
+        "v19",
+        "v20",
+        "v21",
+        "v22",
+        "v23"
     );
     return s;
 }
@@ -202,9 +202,9 @@ static void flush_range(uint64_t addr, uint64_t bytes) {
     __asm__ volatile("fence iorw, iorw" ::: "memory");
     for (uint64_t a = addr & ~63ull; a < addr + bytes; a += 64) {
         __asm__ volatile(".option push\n.option norvc\nsd %0, 0(%1)\n.option pop\n"
-                         :
-                         : "r"(a), "r"(reg)
-                         : "memory");
+            :
+            : "r"(a), "r"(reg)
+            : "memory");
     }
     __asm__ volatile("fence iorw, iorw" ::: "memory");
 }
@@ -402,9 +402,9 @@ int kmx_main(int core) {
         uint64_t t = kmx_time();
         if (code == 0) {
             code = kmx_par(par_push, &j) == KMX_OK ? 0 : CODE_STOPPED;
-            code =
-                (code ? code
-                      : (uint32_t)(j.out[0] | j.out[1] | j.out[2] | j.out[3]) * 4u);
+            code = (
+                code ? code : (uint32_t)(j.out[0] | j.out[1] | j.out[2] | j.out[3]) * 4u
+            );
         }
         r[0] = (uint32_t)(kmx_time() - t);
         uint32_t bad = 0;

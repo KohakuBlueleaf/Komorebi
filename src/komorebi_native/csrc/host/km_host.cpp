@@ -177,9 +177,10 @@ namespace {
         const uint64_t config = (
             hal.get_dev_addr(tensix, tt::tt_metal::HalL1MemAddrType::KERNEL_CONFIG)
         );
-        const uint64_t l1 =
-            (hal.get_dev_addr(tensix, tt::tt_metal::HalL1MemAddrType::BASE) +
-             hal.get_dev_size(tensix, tt::tt_metal::HalL1MemAddrType::BASE));
+        const uint64_t l1 = (
+            hal.get_dev_addr(tensix, tt::tt_metal::HalL1MemAddrType::BASE) +
+            hal.get_dev_size(tensix, tt::tt_metal::HalL1MemAddrType::BASE)
+        );
         const uint64_t base = (
             dev->allocator()->get_base_allocator_addr(tt::tt_metal::HalMemType::L1)
         );
@@ -408,8 +409,8 @@ namespace {
             uint64_t size,
             uint64_t page_size,
             std::optional<std::array<uint32_t, 2>> shard_grid
-        )
-            : mesh_(device.shared()) {
+        ) :
+            mesh_(device.shared()) {
             namespace d = tt::tt_metal::distributed;
             using tt::tt_metal::BufferType;
             if (page_size == 0 || size % page_size != 0) {
@@ -762,8 +763,8 @@ namespace {
     // LIM layout, the host command ring, the event ring and the result block.
     class Dispatch {
     public:
-        Dispatch(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz)
-            : mesh_(std::move(mesh_device)) {
+        Dispatch(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz) :
+            mesh_(std::move(mesh_device)) {
             opened_ = std::make_unique<x280::RuntimeOpenResult>(x280::X280Runtime::open(
                 mesh_,
                 x280::RuntimeOpenConfig{
@@ -855,9 +856,11 @@ namespace {
             if (session_) {
                 throw std::runtime_error("a kernel is running");
             }
-            if (depth < 1 || depth > KM_RING_SLOTS || !power_of_two(host_depth) ||
+            if (
+                depth < 1 || depth > KM_RING_SLOTS || !power_of_two(host_depth) ||
                 host_depth > KMD_HOST_DEPTH_MAX || !power_of_two(event_depth) ||
-                event_depth > kEventDepthMax) {
+                event_depth > kEventDepthMax
+            ) {
                 throw std::runtime_error(
                     "depth out of range, or host_depth or event_depth not a power of "
                     "two in range"
@@ -868,15 +871,22 @@ namespace {
             }
             // The work clusters' rings: per cluster 1 to 3 its command lines and read
             // line after the layout; work_noc and work_noc_addr per cluster (0: none).
-            const uint64_t work_bytes =
-                (work_cmds ? KMD_WORK_CLUSTERS * KMD_WORK_RING_BYTES(work_depth) : 0);
-            if (work_noc.size() > KMD_WORK_CLUSTERS ||
-                work_noc_addr.size() != work_noc.size()) {
+            const uint64_t work_bytes = (
+                work_cmds ? KMD_WORK_CLUSTERS * KMD_WORK_RING_BYTES(work_depth) : 0
+            );
+            if (
+                work_noc.size() > KMD_WORK_CLUSTERS ||
+                work_noc_addr.size() != work_noc.size()
+            ) {
                 throw std::runtime_error("work_noc and work_noc_addr: one per cluster");
             }
-            if (work_cmds &&
-                (work_cmds % 64 != 0 || work_cmds < KMD_LIM_BYTES ||
-                 base_ + work_cmds + work_bytes > tile_->available_lim().end)) {
+            if (
+                work_cmds &&
+                (
+                    work_cmds % 64 != 0 || work_cmds < KMD_LIM_BYTES ||
+                    base_ + work_cmds + work_bytes > tile_->available_lim().end
+                )
+            ) {
                 throw std::runtime_error("the work ring's lines are not inside LIM");
             }
             // The upload region ends at the work ring, at the end of LIM or of the
@@ -889,14 +899,17 @@ namespace {
             );
             const uint64_t lo = base_ + KMD_LIM_UPLOAD;
             const uint64_t room = end > lo ? (end - lo) & ~63ull : 0;
-            if (upload_bytes > static_cast<int64_t>(room) ||
-                (upload_bytes >= 0 && upload_bytes % 64 != 0)) {
+            if (
+                upload_bytes > static_cast<int64_t>(room) ||
+                (upload_bytes >= 0 && upload_bytes % 64 != 0)
+            ) {
                 throw std::runtime_error(
                     "upload_bytes: a multiple of 64, at most the room"
                 );
             }
-            upload_bytes_ =
-                (upload_bytes < 0 ? room : static_cast<uint64_t>(upload_bytes));
+            upload_bytes_ = (
+                upload_bytes < 0 ? room : static_cast<uint64_t>(upload_bytes)
+            );
             depth_ = depth;
             host_depth_ = host_depth;
             event_depth_ = event_depth;
@@ -979,8 +992,10 @@ namespace {
         void upload(uint64_t offset, const nb::bytes& data) {
             require_open();
             const uint64_t n = data.size();
-            if (offset % 64 != 0 || n % 64 != 0 || offset > upload_bytes_ ||
-                n > upload_bytes_ - offset) {
+            if (
+                offset % 64 != 0 || n % 64 != 0 || offset > upload_bytes_ ||
+                n > upload_bytes_ - offset
+            ) {
                 throw std::runtime_error("upload: whole lines inside the region");
             }
             settle();
@@ -1029,12 +1044,14 @@ namespace {
         uint32_t room() const {
             require_open();
             const uint32_t taken = host_[KMD_HOST_CONSUMED];
-            const int64_t ring =
-                (static_cast<int64_t>(host_depth_) -
-                 static_cast<int32_t>(next_ - 1u - taken));
-            const int64_t events =
-                (static_cast<int64_t>(event_depth_) -
-                 static_cast<int32_t>(next_ - 1u - seen_));
+            const int64_t ring = (
+                static_cast<int64_t>(host_depth_) -
+                static_cast<int32_t>(next_ - 1u - taken)
+            );
+            const int64_t events = (
+                static_cast<int64_t>(event_depth_) -
+                static_cast<int32_t>(next_ - 1u - seen_)
+            );
             return static_cast<uint32_t>(std::max<int64_t>(0, std::min(ring, events)));
         }
 
@@ -1049,8 +1066,10 @@ namespace {
         // While waiting: the read count and a fence, only when the kernel may hold a
         // command for it (command i waits only while i - 1 - published reaches depth).
         void publish_if_held() {
-            if (seen_ != published_ && next_ - 1u - published_ >= event_depth_ &&
-                Clock::now() >= settled()) {
+            if (
+                seen_ != published_ && next_ - 1u - published_ >= event_depth_ &&
+                Clock::now() >= settled()
+            ) {
                 store_read();
                 _mm_sfence();
                 fenced_ = Clock::now();
@@ -1125,8 +1144,10 @@ namespace {
                     }
                     other = other || (out[e + 2] & 0xFFu) != KM_EV_DONE;
                 }
-                if (left == 0 || other || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
-                    Clock::now() > by) {
+                if (
+                    left == 0 || other || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
+                    Clock::now() > by
+                ) {
                     return out;
                 }
                 if (out.size() == had) {
@@ -1176,8 +1197,10 @@ namespace {
             for (;;) {
                 auto out = poll();
                 publish_if_held();
-                if (!out.empty() || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
-                    Clock::now() > by) {
+                if (
+                    !out.empty() || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
+                    Clock::now() > by
+                ) {
                     auto rest = poll();
                     out.insert(out.end(), rest.begin(), rest.end());
                     return out;
@@ -1292,8 +1315,9 @@ namespace {
                 try {
                     x280_cores = x280::describe(rt().session(*session_).inspect());
                 } catch (const std::exception& error) {
-                    x280_cores =
-                        (std::string("core states not readable: ") + error.what());
+                    x280_cores = (
+                        std::string("core states not readable: ") + error.what()
+                    );
                 }
             }
             if (failed.empty()) {
@@ -1333,8 +1357,10 @@ namespace {
         // Whole 64-byte lines at `offset` from the cluster's LIM base.
         void work_write(uint32_t c, uint64_t offset, const nb::bytes& data) {
             Work& w = work(c, true);
-            if (offset % 64 != 0 || data.size() % 64 != 0 ||
-                offset + data.size() > w.bytes) {
+            if (
+                offset % 64 != 0 || data.size() % 64 != 0 ||
+                offset + data.size() > w.bytes
+            ) {
                 throw std::runtime_error("LIM writes are whole lines inside the area");
             }
             const auto* p = static_cast<const uint8_t*>(data.data());
@@ -1365,9 +1391,9 @@ namespace {
                 static_cast<const uint8_t*>(block.data()) + block.size()
             );
             std::random_device rd;
-            w.run =
-                ((0x6b6d780000000000ull ^ (static_cast<uint64_t>(rd()) << 16)) + rd() +
-                 c);
+            w.run = (
+                (0x6b6d780000000000ull ^ (static_cast<uint64_t>(rd()) << 16)) + rd() + c
+            );
             std::memcpy(bytes.data(), &w.run, sizeof(w.run));
             w.tile->write_available_lim(w.base, bytes);
             x280::ActiveRunRequest req;
@@ -1631,13 +1657,13 @@ namespace {
                 const auto t = translated(lx, 0);
                 return (
                     soc.translate_coord_to(
-                                      tt::umd::CoreCoord(
-                                          t[0],
-                                          t[1],
-                                          tt::CoreType::TENSIX,
-                                          tt::CoordSystem::TRANSLATED
-                                      ),
-                                      tt::CoordSystem::NOC0
+                        tt::umd::CoreCoord(
+                            t[0],
+                            t[1],
+                            tt::CoreType::TENSIX,
+                            tt::CoordSystem::TRANSLATED
+                        ),
+                        tt::CoordSystem::NOC0
                     )
                     .x
                 );
@@ -1725,8 +1751,7 @@ NB_MODULE(_km_host, m) {
                     }
                 );
             }
-        )
-        .def("finish", [](const Device& d) {
+        ).def("finish", [](const Device& d) {
             nb::gil_scoped_release release;
             d.finish();
         });
@@ -1741,8 +1766,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("size"),
             nb::arg("page_size"),
             nb::arg("shard_grid") = nb::none()
-        )
-        .def_prop_ro("address", &DeviceBuffer::address)
+        ).def_prop_ro("address", &DeviceBuffer::address)
         .def_prop_ro("size", &DeviceBuffer::size)
         .def_prop_ro("page_size", &DeviceBuffer::page_size)
         .def_prop_ro("aligned_page_size", &DeviceBuffer::aligned_page_size)
@@ -1761,8 +1785,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("format"),
             nb::arg("page_size"),
             nb::arg("total_size")
-        )
-        .def(
+        ).def(
             "kernel",
             &Launch::kernel,
             nb::arg("source"),
@@ -1777,16 +1800,16 @@ NB_MODULE(_km_host, m) {
             nb::arg("unpack_to_dest_mode") = std::vector<std::string>{},
             nb::arg("flags") = std::vector<std::pair<std::string, bool>>{},
             nb::arg("noc") = nb::none()
-        )
-        .def("build", &Launch::build)
-        .def("run", &Launch::run);
+        ).def("build", &Launch::build).def("run", &Launch::run);
     m.def(
         "write_l1",
-        [](const Device& d,
-           uint32_t x,
-           uint32_t y,
-           uint32_t address,
-           std::vector<uint32_t> words) {
+        [](
+            const Device& d,
+            uint32_t x,
+            uint32_t y,
+            uint32_t address,
+            std::vector<uint32_t> words
+        ) {
             write_l1(d.mesh(), x, y, address, std::move(words));
         },
         nb::arg("device"),
@@ -1843,9 +1866,7 @@ NB_MODULE(_km_host, m) {
             },
             nb::arg("device"),
             nb::arg("pll_mhz") = 1000
-        )
-        .def_ro("grid_x", &Dispatch::gx_)
-        .def_ro("grid_y", &Dispatch::gy_)
+        ).def_ro("grid_x", &Dispatch::gx_).def_ro("grid_y", &Dispatch::gy_)
         .def_ro("panels", &Dispatch::panels_)
         .def_ro("l2_x", &Dispatch::l2x_)
         .def_ro("l2_y", &Dispatch::l2y_)
@@ -1880,8 +1901,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("work_noc_addr") = std::vector<uint64_t>{},
             nb::arg("upload_bytes") = -1,
             nb::arg("dyn_handler") = 0
-        )
-        .def("start", &Dispatch::start, nb::arg("image"))
+        ).def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
         .def_ro("upload_bytes", &Dispatch::upload_bytes_)
         .def("upload", &Dispatch::upload, nb::arg("offset"), nb::arg("data"))
@@ -1893,9 +1913,7 @@ NB_MODULE(_km_host, m) {
                 return d.wait_ready(timeout_s);
             },
             nb::arg("timeout_s")
-        )
-        .def("room", &Dispatch::room)
-        .def(
+        ).def("room", &Dispatch::room).def(
             "push",
             [](Dispatch& d, Commands recs) {
                 if (recs.shape(1) != 16) {
@@ -1904,8 +1922,7 @@ NB_MODULE(_km_host, m) {
                 return d.push(recs.data(), recs.shape(0));
             },
             nb::arg("commands")
-        )
-        .def(
+        ).def(
             "enqueue",
             [](Dispatch& d, Commands recs) {
                 if (recs.shape(1) != 16) {
@@ -1914,8 +1931,7 @@ NB_MODULE(_km_host, m) {
                 return d.enqueue(recs.data(), recs.shape(0));
             },
             nb::arg("commands")
-        )
-        .def(
+        ).def(
             "wait",
             [](Dispatch& d, Numbers wanted, uint32_t upto, double timeout_s) {
                 std::vector<uint32_t> want(
@@ -1931,14 +1947,12 @@ NB_MODULE(_km_host, m) {
             nb::arg("wanted"),
             nb::arg("upto"),
             nb::arg("timeout_s")
-        )
-        .def(
+        ).def(
             "poll",
             [](Dispatch& d) {
                 return as_array(d.poll());
             }
-        )
-        .def(
+        ).def(
             "wait_events",
             [](Dispatch& d, double timeout_s) {
                 std::vector<uint32_t> out;
@@ -1949,8 +1963,7 @@ NB_MODULE(_km_host, m) {
                 return as_array(std::move(out));
             },
             nb::arg("timeout_s")
-        )
-        .def("finish", &Dispatch::finish, nb::arg("timeout_s"))
+        ).def("finish", &Dispatch::finish, nb::arg("timeout_s"))
         .def("abort", &Dispatch::abort)
         .def("close", &Dispatch::close)
         .def_prop_ro("close_failed", &Dispatch::close_failed)
@@ -1964,27 +1977,21 @@ NB_MODULE(_km_host, m) {
             nb::arg("cluster"),
             nb::arg("offset"),
             nb::arg("data")
-        )
-        .def(
+        ).def(
             "work_read",
             &Dispatch::work_read,
             nb::arg("cluster"),
             nb::arg("offset"),
             nb::arg("n")
-        )
-        .def(
+        ).def(
             "work_start",
             &Dispatch::work_start,
             nb::arg("cluster"),
             nb::arg("image"),
             nb::arg("block")
-        )
-        .def("work_running", &Dispatch::work_running, nb::arg("cluster"))
-        .def(
+        ).def("work_running", &Dispatch::work_running, nb::arg("cluster")).def(
             "work_wait", &Dispatch::work_wait, nb::arg("cluster"), nb::arg("timeout_s")
-        )
-        .def(
+        ).def(
             "work_stop", &Dispatch::work_stop, nb::arg("cluster"), nb::arg("timeout_s")
-        )
-        .def("work_abort", &Dispatch::work_abort, nb::arg("cluster"));
+        ).def("work_abort", &Dispatch::work_abort, nb::arg("cluster"));
 }

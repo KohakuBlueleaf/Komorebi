@@ -46,8 +46,8 @@ struct TensorAccessorArgs {
 
 template <typename Args>
 struct TensorAccessor {
-    TensorAccessor(Args, uint32_t base)
-        : base(base), page_size(kmsim::compile_arg(Args::index)) {
+    TensorAccessor(Args, uint32_t base) :
+        base(base), page_size(kmsim::compile_arg(Args::index)) {
     }
 
     uint32_t base;

@@ -36,10 +36,12 @@ static inline int kmx_ring_open(kmx_ring_t* r, const volatile kmx_ring_desc* d) 
     r->next = 1;
     r->taken = 0;
     r->stashed = 0;
-    if (d->cmd == 0 || !kmx_ring_pow2(d->cmd_depth) || !kmx_ring_pow2(d->event_depth) ||
+    if (
+        d->cmd == 0 || !kmx_ring_pow2(d->cmd_depth) || !kmx_ring_pow2(d->event_depth) ||
         d->cmd_depth > KMX_RING_DEPTH_MAX || d->event_depth > KMX_RING_DEPTH_MAX ||
         (d->cmd & 63u) || (d->events & 15u) || (d->read & 63u) || (d->consumed & 3u) ||
-        d->events == 0 || d->read == 0 || d->consumed == 0) {
+        d->events == 0 || d->read == 0 || d->consumed == 0
+    ) {
         return 0;
     }
     r->consumed = (volatile uint32_t*)(uintptr_t)d->consumed;

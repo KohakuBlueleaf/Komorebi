@@ -273,8 +273,10 @@ int kmx_main(int core) {
     (void)core;
     const kmx_args* a = kmx_args_get();
     uint32_t w[N_WORDS]; /* every word is set below (a zeroing loop may call memset) */
-    if (a->nwords < W_COUNT || a->nregions != R_COUNT || a->words[W_REPEATS] == 0 ||
-        a->words[W_N] == 0 || a->words[W_N] > CHUNKS_MAX * CHUNK) {
+    if (
+        a->nwords < W_COUNT || a->nregions != R_COUNT || a->words[W_REPEATS] == 0 ||
+        a->words[W_N] == 0 || a->words[W_N] > CHUNKS_MAX * CHUNK
+    ) {
         return 1;
     }
     const uint64_t n = a->words[W_N];
@@ -353,8 +355,9 @@ int kmx_main(int core) {
                     return 2;
                 }
             }
-            w[(m ? T_FLUSH1 : T_INVALIDATE1) + x280_cores / 4] = (uint32_t)(kmx_time() -
-                                                                            t0);
+            w[(m ? T_FLUSH1 : T_INVALIDATE1) + x280_cores / 4] = (uint32_t)(
+                kmx_time() - t0
+            );
         }
     }
     kmx_progress(17);

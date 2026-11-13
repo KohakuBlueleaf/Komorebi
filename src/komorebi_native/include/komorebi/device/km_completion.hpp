@@ -13,8 +13,8 @@ namespace km {
     inline bool complete(const Core& c, const km_command_t& r, uint32_t result = 0) {
         const Args& a = c.args();
         if (!in_group(
-                r, a.me
-            )) {  // the reader never hands one to a core outside the group
+            r, a.me
+        )) {  // the reader never hands one to a core outside the group
             return false;
         }
         const uint32_t j = slot(r);

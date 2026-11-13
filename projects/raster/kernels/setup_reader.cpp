@@ -82,9 +82,13 @@ namespace {
 // The passes' reading for one command; the frame program's reader calls it as well.
 void setup_reader_command(const km::Reader& rd, const km_command_t& r) {
     const uint32_t handler = km::handler(r);
-    if ((handler != kHandlerLanes && handler != kHandlerCount &&
-         handler != kHandlerSetup) ||
-        r.a5 == 0 || rd.me() >= r.a5) {
+    if (
+        (
+            handler != kHandlerLanes && handler != kHandlerCount &&
+            handler != kHandlerSetup
+        ) ||
+        r.a5 == 0 || rd.me() >= r.a5
+    ) {
         return;
     }
     const uint32_t t0 = km::wall();
@@ -97,11 +101,11 @@ void setup_reader_command(const km::Reader& rd, const km_command_t& r) {
     };
     auto arrived = [&] {
         return rd.poll(
-                   [] {
-                       return ncrisc_noc_reads_flushed(noc_index);
-                   },
-                   rd.args().wait_limit
-               ) == km::kGaveNone;
+            [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            rd.args().wait_limit
+        ) == km::kGaveNone;
     };
     if (handler == kHandlerSetup) {
         if (!reserve(kCbSlots) || !reserve(kCbItems)) {
@@ -144,9 +148,9 @@ void setup_reader_command(const km::Reader& rd, const km_command_t& r) {
             return;
         }
         const uint32_t a = km::wall();
-        const uint64_t src =
-            (b == b0 ? su::addr(r.a8, r.a3, 0, 4 * kCamWords)
-                     : get_noc_addr(b - 1, mesh));
+        const uint64_t src = (
+            b == b0 ? su::addr(r.a8, r.a3, 0, 4 * kCamWords) : get_noc_addr(b - 1, mesh)
+        );
         const uint32_t n = b == b0 ? 4 * kCamWords : kMeshBytes;
         noc_async_read(src, get_write_ptr(kCbMesh), n);
         if (!arrived()) {

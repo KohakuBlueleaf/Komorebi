@@ -15,8 +15,11 @@ namespace {
     constexpr uint32_t kExpectA = 16, kExpectB = 17;
     constexpr uint32_t kResp = 32;   // response line, 16 words, 64-byte aligned
     constexpr uint32_t kTrisc = 48;  // compute: go, then done per compute core
-    constexpr uint32_t kOpRun = 1, kOpAlt = 2, kOpExit = 3, kOpCompute = 4,
-                       kOpClock = 5;
+    constexpr uint32_t kOpRun = 1;
+    constexpr uint32_t kOpAlt = 2;
+    constexpr uint32_t kOpExit = 3;
+    constexpr uint32_t kOpCompute = 4;
+    constexpr uint32_t kOpClock = 5;
     constexpr uint32_t kFlagInvalidate = 1;  // invalidate the i-cache after a load
     constexpr uint32_t kFlagAt = 2;          // run: start at the wall clock in kReps
     constexpr uint32_t kOk = 0, kBadOp = 1, kReadTimeout = 2, kTooBig = 3, kIdle = 4;
@@ -110,10 +113,10 @@ namespace {
 
 void kernel_main() {
     const uint32_t ctl = get_arg_val<uint32_t>(0);
-    const uint32_t resp_bank = get_arg_val<uint32_t>(1),
-                   resp_addr = get_arg_val<uint32_t>(2);
-    const uint32_t slot = get_arg_val<uint32_t>(3),
-                   slot_bytes = get_arg_val<uint32_t>(4);
+    const uint32_t resp_bank = get_arg_val<uint32_t>(1);
+    const uint32_t resp_addr = get_arg_val<uint32_t>(2);
+    const uint32_t slot = get_arg_val<uint32_t>(3);
+    const uint32_t slot_bytes = get_arg_val<uint32_t>(4);
     const uint64_t idle = static_cast<uint64_t>(get_arg_val<uint32_t>(5)) << 20;
     const uint32_t tslots = get_arg_val<uint32_t>(6);  // compute slots: 3 x tslot bytes
     const uint32_t tslot_bytes = get_arg_val<uint32_t>(7);

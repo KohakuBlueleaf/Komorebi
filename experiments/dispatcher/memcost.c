@@ -131,8 +131,10 @@ int main(uint64_t core_id) {
         return 0;
     }
     const volatile mc_args_t* a = (const volatile mc_args_t*)x280_hart_args(core_id);
-    if (a == 0 || a->run_value != x280_hart_control(core_id)->run_value ||
-        (a->ddr_offset & 63u) != 0) {
+    if (
+        a == 0 || a->run_value != x280_hart_control(core_id)->run_value ||
+        (a->ddr_offset & 63u) != 0
+    ) {
         x280_hart_set_result(core_id, 0xE0);
         return 0;
     }

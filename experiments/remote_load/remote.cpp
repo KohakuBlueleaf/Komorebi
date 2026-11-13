@@ -100,15 +100,15 @@ namespace {
 
 void kernel_main() {
     const uint32_t ctl = get_arg_val<uint32_t>(0);
-    const uint32_t resp_bank = get_arg_val<uint32_t>(1),
-                   resp_addr = get_arg_val<uint32_t>(2);
-    const uint32_t slot = get_arg_val<uint32_t>(3),
-                   slot_bytes = get_arg_val<uint32_t>(4);
+    const uint32_t resp_bank = get_arg_val<uint32_t>(1);
+    const uint32_t resp_addr = get_arg_val<uint32_t>(2);
+    const uint32_t slot = get_arg_val<uint32_t>(3);
+    const uint32_t slot_bytes = get_arg_val<uint32_t>(4);
     const uint64_t idle = static_cast<uint64_t>(get_arg_val<uint32_t>(5)) << 20;
     const uint32_t store = get_arg_val<uint32_t>(6);  // two halves of slot_bytes
     const uint32_t table = get_arg_val<uint32_t>(7);
-    const uint32_t table_bank = get_arg_val<uint32_t>(8),
-                   table_addr = get_arg_val<uint32_t>(9);
+    const uint32_t table_bank = get_arg_val<uint32_t>(8);
+    const uint32_t table_addr = get_arg_val<uint32_t>(9);
     const uint64_t limit = 50000000;  // cycles (about 37 ms) for one wait
     volatile tt_l1_ptr uint32_t* c = (
         reinterpret_cast<volatile tt_l1_ptr uint32_t*>(ctl)
@@ -186,12 +186,12 @@ void kernel_main() {
                 if (c[o + 3] > slot_bytes) {
                     status = kTooBig;
                 } else if (!load(
-                               c[o + 1],
-                               c[o + 2],
-                               c[o + 3],
-                               store + w * slot_bytes,
-                               limit
-                           )) {
+                    c[o + 1],
+                    c[o + 2],
+                    c[o + 3],
+                    store + w * slot_bytes,
+                    limit
+                )) {
                     status = kReadTimeout;
                 } else {
                     held_id[w] = c[o];

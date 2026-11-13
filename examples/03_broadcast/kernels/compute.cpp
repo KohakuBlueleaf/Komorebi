@@ -44,9 +44,10 @@ void kernel_main() {
                 km::broadcast_done(cb, pages);
             }
         }
-        ok =
-            (ok && km::broadcast_end(cp, kCbRow, pages, window, n) &&
-             km::broadcast_end(cp, kCbCol, pages, window, n));
+        ok = (
+            ok && km::broadcast_end(cp, kCbRow, pages, window, n) &&
+            km::broadcast_end(cp, kCbCol, pages, window, n)
+        );
         tile_regs_commit();
         tile_regs_wait();
         if (ok && cp.reserve_back(kCbOut, 1)) {

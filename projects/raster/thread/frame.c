@@ -163,10 +163,11 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     km_command_t r;
     kmx_progress(1);
     /* fewer blocks than cores: a block each at most, nothing to balance */
-    const uint32_t ranges =
-        (f->w[RF_W_BALANCE] && cores <= RF_MAX_CORES && f->w[RF_W_BLOCKS] >= cores
-             ? RF_RANGES
-             : 0);
+    const uint32_t ranges = (
+        f->w[RF_W_BALANCE] && cores <= RF_MAX_CORES && f->w[RF_W_BLOCKS] >= cores
+            ? RF_RANGES
+            : 0
+    );
     if (ranges) {
         set_ranges(f, wk, reg);
     }
@@ -311,10 +312,11 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     f->out[RF_O_PAGES] += elapsed(&t);
     kmx_flush(RF_R_ITEMS);
     f->out[RF_O_GIVE] += elapsed(&t);
-    f->out[RF_O_MIDDLE] =
-        (f->out[RF_O_TAKE] + f->out[RF_O_HEAVY_US] + f->out[RF_O_CUT] +
-         f->out[RF_O_SORT] + f->out[RF_O_ASSIGN] + f->out[RF_O_COMPACT] +
-         f->out[RF_O_PAGES] + f->out[RF_O_GIVE]);
+    f->out[RF_O_MIDDLE] = (
+        f->out[RF_O_TAKE] + f->out[RF_O_HEAVY_US] + f->out[RF_O_CUT] +
+        f->out[RF_O_SORT] + f->out[RF_O_ASSIGN] + f->out[RF_O_COMPACT] +
+        f->out[RF_O_PAGES] + f->out[RF_O_GIVE]
+    );
     if (f->w[RF_W_STEPS] < 3) {
         return 0;
     }
@@ -389,8 +391,10 @@ int kmx_main(int core) {
         }
         f.addr[i] = (uint32_t)a->region[i].offset;
     }
-    if (cores == 0 || cores > workers || workers > RM_MAX_CORES ||
-        f.w[RF_W_FRAMES] > RF_FRAME_MAX) {
+    if (
+        cores == 0 || cores > workers || workers > RM_MAX_CORES ||
+        f.w[RF_W_FRAMES] > RF_FRAME_MAX
+    ) {
         return finish(RF_BAD_ARGS, &f);
     }
     work_t* wk = (work_t*)reg[RF_R_WORK];

@@ -10,8 +10,8 @@ void kernel_main() {
     const uint32_t out = get_arg_val<uint32_t>(0), flags = get_arg_val<uint32_t>(1);
     volatile uint32_t* f = reinterpret_cast<volatile uint32_t*>(flags);
     if (!probe_poll([] {
-            return cb_pages_available_at_front(kCbOut, 2);
-        })) {
+        return cb_pages_available_at_front(kCbOut, 2);
+    })) {
         f[kWrite] = 2;
         return;
     }

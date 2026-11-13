@@ -111,8 +111,9 @@ static void step(int cluster, int core, uint64_t arg) {
         if (hi > lo) {
             const uint64_t at = skew() + (uint64_t)lo * LINE;
             const uint64_t n = (uint64_t)(hi - lo) * LINE;
-            if (kmx_push(kmx_lead(), R_TOTALS, at, totals + lo * BS_CHUNK, n) !=
-                KMX_OK) {
+            if (
+                kmx_push(kmx_lead(), R_TOTALS, at, totals + lo * BS_CHUNK, n) != KMX_OK
+            ) {
                 g_bad = 1;
             }
             kmx_flush_at(R_TOTALS, at, n);
@@ -211,8 +212,9 @@ static uint32_t starts(void) {
         }
         /* Their starts back to them; then flush the lines here, or a dirty line
          * would later be written over the totals they push in the next round. */
-        if (kmx_push(cluster_of(k), R_TOTALS, at, totals + lo * BS_CHUNK, n) !=
-            KMX_OK) {
+        if (
+            kmx_push(cluster_of(k), R_TOTALS, at, totals + lo * BS_CHUNK, n) != KMX_OK
+        ) {
             g_bad = 1;
         }
         kmx_flush_at(R_TOTALS, at, n);
@@ -273,9 +275,11 @@ int kmx_main(int core) {
     const uint32_t x280_cores = a->nwords >= BS_WORDS ? word(BS_W_X280_CORES) : 0;
     const uint32_t want = x280_cores == 12 ? 0xEu
                                            : 0x2u; /* clusters 1 to 3, or 1 alone */
-    if ((x280_cores != 1 && x280_cores != 4 && x280_cores != 12) ||
+    if (
+        (x280_cores != 1 && x280_cores != 4 && x280_cores != 12) ||
         kmx_clusters() != want || word(BS_W_LOG2_B) < 4 || word(BS_W_LOG2_B) > 14 ||
-        word(BS_W_CORES) == 0 || word(BS_W_REPEATS) == 0) {
+        word(BS_W_CORES) == 0 || word(BS_W_REPEATS) == 0
+    ) {
         return CODE_BAD;
     }
     const uint64_t table = (uint64_t)word(BS_W_CORES) * row_bytes();

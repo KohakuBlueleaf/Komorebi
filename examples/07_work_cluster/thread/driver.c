@@ -43,8 +43,10 @@ int kmx_main(int core) {
     }
     uint64_t bytes;
     volatile uint32_t* groups = (volatile uint32_t*)kmx_region(0, &bytes);
-    if (a->nwords < WC_WORDS || wc_start(&s, words) || groups == 0 ||
-        bytes < (uint64_t)words[WC_MAX_ROUNDS] * 4) {
+    if (
+        a->nwords < WC_WORDS || wc_start(&s, words) || groups == 0 ||
+        bytes < (uint64_t)words[WC_MAX_ROUNDS] * 4
+    ) {
         return 1;
     }
     for (;;) {

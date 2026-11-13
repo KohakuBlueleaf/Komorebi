@@ -14,23 +14,23 @@ void kernel_main() {
     const auto src = TensorAccessor(in_args, in);
     noc_async_read_page(k, src, base);
     if (!probe_poll([] {
-            return ncrisc_noc_reads_flushed(noc_index);
-        })) {
+        return ncrisc_noc_reads_flushed(noc_index);
+    })) {
         f[kSend] = 2;
         return;
     }
     const uint32_t x = xy & 0xFFFFu, y = xy >> 16;
     noc_async_write(base, get_noc_addr(x, y, base + k * kTileBytes), kTileBytes);
     if (!probe_poll([] {
-            return ncrisc_noc_nonposted_writes_flushed(noc_index);
-        })) {
+        return ncrisc_noc_nonposted_writes_flushed(noc_index);
+    })) {
         f[kSend] = 3;
         return;
     }
     noc_semaphore_inc(get_noc_addr(x, y, flags + 4 * kFlag), 1);
     if (!probe_poll([] {
-            return ncrisc_noc_nonposted_atomics_flushed(noc_index);
-        })) {
+        return ncrisc_noc_nonposted_atomics_flushed(noc_index);
+    })) {
         f[kSend] = 4;
         return;
     }
