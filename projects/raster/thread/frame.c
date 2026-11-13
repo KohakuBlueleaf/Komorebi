@@ -330,6 +330,8 @@ int kmx_main(int hart) {
         return finish(RF_BAD_ARGS, &f);
     }
     work_t* wk = (work_t*)reg[RF_R_WORK];
+    /* lines an earlier image left dirty would be written over what the cores write */
+    kmx_give(RF_R_SUMS);
     const uint32_t frames = f.w[RF_W_REPEAT] ? f.w[RF_W_REPEAT] : 1;
     for (uint32_t k = 0; k < frames; k++) {
         const uint32_t code = frame_once(&f, wk, reg);
