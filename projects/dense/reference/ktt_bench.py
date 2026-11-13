@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -34,6 +35,24 @@ def sample_clock(card, samples, stop):
         samples.append(int(path.read_text().split()[0]))
 
 
+def version():
+    """The commit of the Kohaku-TT checkout kohakutt was imported from, if any."""
+    git = ["git", "-C", str(Path(kohakutt.__file__).parent), "rev-parse", "--short"]
+    done = subprocess.run([*git, "HEAD"], capture_output=True, text=True, timeout=10)
+    return done.stdout.strip() or None
+
+
+def read_rows(y, rows):
+    """Rows `rows` of the device tensor y as float32, one 32-row slice per read (at most
+    1 MB each, a progress line each)."""
+    got = {}
+    for t in np.unique(rows // ref.TILE):
+        r0 = int(t) * ref.TILE
+        got[r0] = y[r0 : r0 + ref.TILE].cpu().float().numpy()
+        print(f"rows {r0} to {r0 + ref.TILE} read", flush=True)
+    return np.stack([got[r // ref.TILE * ref.TILE][r % ref.TILE] for r in rows])
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--shape", choices=pl.SHAPES, required=True)
@@ -50,9 +69,9 @@ def main():
     kohakutt.synchronize(dev)
     out = {"shape": args.shape, "m": m, "k": k, "n": n}
     out["env"] = {v: os.environ.get(v) for v in ROUTE_VARIABLES}
-    rows = np.sort(np.random.default_rng(2).permutation(m)[:256])
-    got = y.cpu().float().numpy()
-    out["check"] = ref.errors(got[rows], ref.matmul(a[rows], w))
+    out["kohakutt"] = version()
+    rows = ref.sampled_rows(m)
+    out["check"] = ref.errors(read_rows(y, rows), ref.matmul(a[rows], w))
     synced = []
     for _ in range(args.calls):
         t0 = time.perf_counter()

@@ -26,6 +26,16 @@ def inputs(m, k, n, seed=1, kind="uniform"):
     return a, w
 
 
+def sampled_rows(m, count=256, seed=2):
+    """The rows a check compares, sorted: all of them when there are at most `count`,
+    else count / 32 whole row tiles drawn from a seed (so a card reads few tiles)."""
+    if m <= count:
+        return np.arange(m)
+    tiles = np.random.default_rng(seed).permutation(-(-m // TILE))[: count // TILE]
+    rows = (np.sort(tiles)[:, None] * TILE + np.arange(TILE)).reshape(-1)
+    return rows[rows < m]
+
+
 def matmul(a, w):
     """a @ w in float64."""
     return np.asarray(a, dtype=np.float64) @ np.asarray(w, dtype=np.float64)

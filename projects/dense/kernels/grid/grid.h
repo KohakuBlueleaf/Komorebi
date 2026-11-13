@@ -1,0 +1,79 @@
+// Matrix product over a rectangle of cores: A blocks along the rows on the row lane,
+// W blocks down the columns on the column lane. Segments, buffers, arguments, profile.
+#pragma once
+
+#include <stdint.h>
+
+#include "../dense.h"
+
+// GRID: a0 A ([M, K] tiles), a1 W ([K, N]), a2 Y ([M, N]), a3 mode. One call.
+constexpr uint32_t kSegGrid = 1;
+// PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
+constexpr uint32_t kSegGridProf = 2;
+
+// GRID modes: full; lanes only (blocks handed over and taken, no product, no writes);
+// product only (no reads, no lanes: blocks from L1 as they are, packed, not written).
+constexpr uint32_t kGridFull = 0;
+constexpr uint32_t kGridLanes = 1;
+constexpr uint32_t kGridProduct = 2;
+
+constexpr uint32_t kCbRow = 0;       // row lane: B_A blocks of bm x kb tiles of A
+constexpr uint32_t kCbCol = 1;       // column lane: B_W blocks of kb x bn tiles of W
+constexpr uint32_t kCbGridOut = 16;  // output subblocks, bf16: two of sh x sw tiles
+constexpr uint32_t kCbPart = 24;     // partial sums of one output block, fp32: bm x bn
+constexpr uint32_t kCbGridProf = 3;
+constexpr uint32_t kPartBytes = 4096;
+constexpr uint32_t kLaneRow = 0;  // lane ids: rows on NoC0 (reader), columns on NoC1
+constexpr uint32_t kLaneCol = 1;
+
+// Arguments: reader, writer: lane words, then core words; compute: core words. Core:
+// member (1 in the rectangle), first row and column tile of its output, the plan.
+constexpr uint32_t kArgLane = 0;
+constexpr uint32_t kArgCore = km::kLaneArgs;
+constexpr uint32_t kCoreMember = 0;
+constexpr uint32_t kCoreM0 = 1;
+constexpr uint32_t kCoreN0 = 2;
+constexpr uint32_t kCorePlan = 3;
+// Plan words: tiles M, K, N; output tiles per core (rows, columns); block bm x bn; K
+// block kb, K blocks, tiles of the last; blocks per core (rows, columns); subblock.
+constexpr uint32_t kPlMt = 0;
+constexpr uint32_t kPlKt = 1;
+constexpr uint32_t kPlNt = 2;
+constexpr uint32_t kPlPcM = 3;
+constexpr uint32_t kPlPcN = 4;
+constexpr uint32_t kPlBm = 5;
+constexpr uint32_t kPlBn = 6;
+constexpr uint32_t kPlKb = 7;
+constexpr uint32_t kPlNk = 8;
+constexpr uint32_t kPlKbLast = 9;
+constexpr uint32_t kPlNbh = 10;
+constexpr uint32_t kPlNbw = 11;
+constexpr uint32_t kPlSh = 12;
+constexpr uint32_t kPlSw = 13;
+constexpr uint32_t kPlanWords = 14;
+constexpr uint32_t kCoreWords = kCorePlan + kPlanWords;
+
+// Profile page (32-bit words, wall-clock cycles summed over records). Reader: DRAM
+// reads of A blocks (issue), row lane calls (reserve and cast, or arrive), bodies.
+constexpr uint32_t kGpRdRead = 0;
+constexpr uint32_t kGpRdLane = 1;
+constexpr uint32_t kGpRdBody = 2;
+// Writer: DRAM reads of W blocks, column lane calls, waits for output, output writes.
+constexpr uint32_t kGpWrRead = 4;
+constexpr uint32_t kGpWrLane = 5;
+constexpr uint32_t kGpWrWait = 6;
+constexpr uint32_t kGpWrWrite = 7;
+constexpr uint32_t kGpWrBody = 8;
+// Unpack: waits for row blocks, column blocks, partial sums; bodies.
+constexpr uint32_t kGpUnWaitA = 12;
+constexpr uint32_t kGpUnWaitW = 13;
+constexpr uint32_t kGpUnWaitPart = 14;
+constexpr uint32_t kGpUnBody = 15;
+// Math: the products (acquire to commit); bodies. Pack: waits for room, packing,
+// bodies.
+constexpr uint32_t kGpMathMm = 16;
+constexpr uint32_t kGpMathBody = 17;
+constexpr uint32_t kGpPkWaitOut = 20;
+constexpr uint32_t kGpPkPack = 21;
+constexpr uint32_t kGpPkBody = 22;
+constexpr uint32_t kGpWords = 24;
