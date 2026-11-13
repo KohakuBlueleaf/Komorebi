@@ -106,3 +106,9 @@ place to ask a question and to be wrong.
   overview: 292 ms against 348.5 today with 2 KiB pages that no core copies (12.7
   million a second), R = 32, if walking and moving overlap (437 ms if not). Bistro's
   treelets need 156 MiB of L1 against 118: 2256 ms against 523.7.
+- [raster_passes](raster_passes/README.md): the rasterizer's per-triangle passes and
+  fill with each part on the unit that suits it: block ranges cut by predicted cost, each
+  triangle finished on the vector unit, counting and slot writes on the writer core
+  (together 12.1 to 6.5 ms a frame at 10^6 triangles, exact), and small triangles as
+  vector lanes in the fill (1.5 to 2.1 times faster per small triangle on one core). A
+  scalar into all lanes through `SFPCONFIG` is exact but slower than immediates.
