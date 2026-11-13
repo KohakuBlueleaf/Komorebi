@@ -270,7 +270,94 @@ the packet states through the unpacker and packer took Sponza's overview from 45
 core): box tests 61 %, stack pops 13 %, triangle tests 11 %, state moves 3 %; and the
 slowest core of each record against the mean: 71 of the 349 ms (Bistro: 147 of 524). The
 host issues one 64-byte command per record and waits for one event each; nothing is
-read back inside the frame. The X280 work cluster is not used.
+read back inside the frame. The X280 work cluster is not used here; the next section
+runs the frame from it.
+
+### The frame planned on the X280
+
+`python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --plan frame
+--reps 3 --json plan.json` (2026-11-13 17:31 to 17:38, card 1, AICLK 1350 MHz, X280 1000
+MHz; JSON: `results/plan-*.json`). A thread on X280 work cluster 1 (`thread/plan.c`,
+`planner.py`) submits the commands of three frames and waits for each command's event.
+The host only loads the program and reads back the image and the logs. In every chunk
+command of a trace, each core writes a cost block to DRAM: its packets' busy cycles and
+hit lanes. Before each trace, the four X280 cores of the cluster read the blocks and cut
+the tile order into ranges of equal predicted cost, at most one command's packets (82 to
+135) per range. They then write each core's directory entry for the trace's chunk
+commands. No ray moves in DRAM; only the cores' ranges change.
+
+The cold frame (the first, without history): the shadow trace is cut by the primary
+trace's costs, the other traces as the host cuts them. A warm frame (a later one of the
+same camera) cuts each trace by the same trace's costs in the frame before. Commands ms
+is the sum of the commands. Card frame ms is the thread's clock over the frame's
+commands and plans (the cold frame: less the scene load).
+
+| scene | frame | primary | shadow | bounce | shadow 2 | commands per trace | commands ms | X280 plan ms | card frame ms |
+|---|---|---|---|---|---|---|---|---|---|
+| 10^4 | cold | 8.28 | 7.01 | 21.08 | 4.66 | 3 / 8 / 3 / 3 | 60.25 | 2.16 | 62.46 |
+| 10^4 | warm | 12.11 | 5.99 | 21.47 | 6.43 | 7 / 8 / 8 / 8 | 65.28 | 5.27 | 70.63 |
+| 10^5 | cold | 11.65 | 8.04 | 34.58 | 8.81 | 3 / 8 / 3 / 3 | 82.30 | 2.17 | 84.53 |
+| 10^5 | warm | 14.01 | 6.70 | 36.46 | 11.11 | 8 / 8 / 8 / 8 | 87.58 | 5.34 | 93.01 |
+| 10^6 | cold | 17.51 | 12.63 | 83.58 | 22.63 | 4 / 8 / 4 / 4 | 155.66 | 2.53 | 158.26 |
+| 10^6 | warm | 15.93 | 9.91 | 109.75 | 32.18 | 8 / 8 / 8 / 8 | 187.09 | 5.32 | 192.50 |
+| Sponza, close | cold | 42.18 | 30.77 | 213.49 | 57.89 | 4 / 6 / 4 / 4 | 363.93 | 2.31 | 366.30 |
+| Sponza, close | warm | 37.34 | 22.24 | 189.56 | 51.00 | 6 / 5 / 5 / 5 | 319.68 | 3.64 | 323.38 |
+| Sponza, overview | cold | 50.19 | 26.18 | 194.80 | 56.45 | 4 / 6 / 4 / 4 | 347.06 | 2.30 | 349.42 |
+| Sponza, overview | warm | 39.36 | 20.20 | 179.83 | 50.59 | 6 / 7 / 6 / 5 | 309.43 | 4.14 | 313.63 |
+| Bistro interior, close | cold | 66.12 | 54.73 | 347.98 | 111.09 | 4 / 7 / 4 / 4 | 599.33 | 2.38 | 601.77 |
+| Bistro interior, close | warm | 60.61 | 44.55 | 345.49 | 122.36 | 7 / 7 / 5 / 8 | 592.44 | 4.35 | 596.86 |
+| Bistro interior, overview | cold | 56.86 | 39.44 | 307.98 | 98.45 | 4 / 7 / 4 / 4 | 522.23 | 2.37 | 524.66 |
+| Bistro interior, overview | warm | 44.25 | 29.14 | 278.87 | 100.98 | 7 / 8 / 7 / 7 | 472.83 | 4.57 | 477.48 |
+
+The image of the last frame is checked: every scene as in the table above. Bistro
+interior's close view has one more bounce miss (pixel 484,724): a miss of the kind in
+"What is exact" depends on which packets share a range. The plan of a trace takes 0.2 to
+1.4 ms on the four X280 cores and is not hidden: the Tensix cores wait for it.
+
+What the plan gains is the time lost to each command's slowest core. Per trace, that is
+the sum over its commands of the slowest core's busy time less the mean core's, from the
+last frame's profile (`--profile`). Commands = the trace's commands in that frame.
+Sponza and Bistro interior overviews: four ways to cut, three frames each
+(`results/predictor-*.json`, `results/predictor-analysis.json`):
+
+| cut | Sponza frame ms | lost ms | commands | Bistro frame ms | lost ms | commands |
+|---|---|---|---|---|---|---|
+| as the host (`--plan host`) | 348.9 | 70.5 | 4 / 4 / 4 / 4 | 524.6 | 147.2 | 4 / 4 / 4 / 4 |
+| counts: equal hits of the trace before, one frame (`counts`) | 365.5 | 93.6 | 4 / 5 / 4 / 4 | 585.1 | 215.1 | 4 / 8 / 4 / 4 |
+| the trace before's cycles (`trace`) | 376.4 | 104.1 | 4 / 6 / 4 / 4 | 562.5 | 201.7 | 4 / 7 / 5 / 5 |
+| the frame before's cycles (`frame`), warm frame | 310.2 | 39.8 | 6 / 7 / 6 / 5 | 471.4 | 84.4 | 7 / 8 / 7 / 7 |
+
+The counts and the trace before cut the primary trace into equal packets. The bounce and
+the second shadow are cut by the trace before's mean per owner core. Both predict worse
+than the host's even ranges: the primary trace alone loses 24.4 against 18.1 ms on
+Sponza. A core's cost is set by the few heavy packets in its range, and the trace before
+does not know which packets of the next trace are heavy. The frame before does. It
+leaves about 40 of Sponza's 70.5 ms and 84 of Bistro's 147, most of it in the bounce
+trace (24 and 49 ms). There, a range holds at most one command's packets: the slowest
+core of each command still carries whole heavy packets.
+
+The last command of each trace is not the cause. Cutting each core's packets into
+commands of equal size instead of full commands then the rest left Sponza at 348.5 ms
+and Bistro at 526.9 (523.7 before). The last command loses 8 of the 70.5 ms on Sponza
+and 33 of the 147 on Bistro.
+
+A core that pulls ranges of g packets from a shared counter instead (estimate, not
+built): greedy pulls in tile order over 120 cores, with the cost blocks' per-packet
+cycles of the host-cut frame and 1 us per pull. The table gives ms lost to the slowest
+core per trace, summed over the four traces. Pulls per trace per core = 32,768 packets /
+(120 g).
+
+| g, packets per pull | pulls per trace per core | Sponza lost ms | Bistro lost ms |
+|---|---|---|---|
+| 1 | 273 | 1.9 | 2.9 |
+| 4 | 68 | 3.3 | 6.4 |
+| 8 | 34 | 6.5 | 12.3 |
+| 16 | 17 | 12.0 | 24.4 |
+| 89 (a full command) | 3 | 59.0 | 83.9 |
+
+Per-packet cycles cover 62 to 83 % of a core's busy time (10^4), so these are lower
+bounds. A pull of 4 packets (68 pulls per trace per core) leaves 3 to 6 ms of the 70.5
+and 147.
 
 ### The frame as a graph
 

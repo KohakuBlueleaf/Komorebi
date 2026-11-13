@@ -1,0 +1,599 @@
+{
+ "balance_lost_ms": {
+  "sponza_overview-host": {
+   "primary": [
+    18.1,
+    50.1,
+    4
+   ],
+   "shadow": [
+    9.8,
+    27.8,
+    4
+   ],
+   "bounce": [
+    32.3,
+    194.7,
+    4
+   ],
+   "shadow2": [
+    10.3,
+    56.3,
+    4
+   ],
+   "all": 70.5
+  },
+  "sponza_overview-counts": {
+   "primary": [
+    24.4,
+    55.1,
+    4
+   ],
+   "shadow": [
+    13.8,
+    31.2,
+    5
+   ],
+   "bounce": [
+    40.2,
+    198.6,
+    4
+   ],
+   "shadow2": [
+    15.2,
+    60.8,
+    4
+   ],
+   "all": 93.6
+  },
+  "sponza_overview-trace": {
+   "primary": [
+    24.4,
+    55.1,
+    4
+   ],
+   "shadow": [
+    10.0,
+    27.4,
+    6
+   ],
+   "bounce": [
+    52.2,
+    210.7,
+    4
+   ],
+   "shadow2": [
+    17.5,
+    63.1,
+    4
+   ],
+   "all": 104.1
+  },
+  "bistro_interior_overview-host": {
+   "primary": [
+    20.1,
+    56.8,
+    4
+   ],
+   "shadow": [
+    16.8,
+    41.3,
+    4
+   ],
+   "bounce": [
+    81.7,
+    308.3,
+    4
+   ],
+   "shadow2": [
+    28.6,
+    98.3,
+    4
+   ],
+   "all": 147.2
+  },
+  "bistro_interior_overview-counts": {
+   "primary": [
+    29.1,
+    65.7,
+    4
+   ],
+   "shadow": [
+    36.3,
+    61.0,
+    8
+   ],
+   "bounce": [
+    104.3,
+    328.2,
+    4
+   ],
+   "shadow2": [
+    45.4,
+    110.2,
+    4
+   ],
+   "all": 215.1
+  },
+  "bistro_interior_overview-trace": {
+   "primary": [
+    29.1,
+    65.7,
+    4
+   ],
+   "shadow": [
+    14.0,
+    38.9,
+    7
+   ],
+   "bounce": [
+    107.8,
+    322.9,
+    5
+   ],
+   "shadow2": [
+    50.8,
+    115.5,
+    5
+   ],
+   "all": 201.7
+  },
+  "sponza_overview-frame": {
+   "primary": [
+    9.2,
+    39.8,
+    6
+   ],
+   "shadow": [
+    2.7,
+    20.1,
+    7
+   ],
+   "bounce": [
+    24.2,
+    181.5,
+    6
+   ],
+   "shadow2": [
+    3.7,
+    49.9,
+    5
+   ],
+   "all": 39.8
+  },
+  "bistro_interior_overview-frame": {
+   "primary": [
+    8.6,
+    45.2,
+    7
+   ],
+   "shadow": [
+    4.4,
+    29.1,
+    8
+   ],
+   "bounce": [
+    48.8,
+    278.2,
+    7
+   ],
+   "shadow2": [
+    22.6,
+    98.3,
+    7
+   ],
+   "all": 84.4
+  }
+ },
+ "pull_estimate": {
+  "sponza_overview-primary": {
+   "packets": 32768,
+   "busy_ms_per_core": 28.2,
+   "packet_us_p50_p99_max": [
+    94.2,
+    234.0,
+    385.4
+   ],
+   "g": {
+    "1": {
+     "lost_ms": 0.33,
+     "pull_ms": 0.273,
+     "pulls_per_core": 273.1
+    },
+    "2": {
+     "lost_ms": 0.31,
+     "pull_ms": 0.137,
+     "pulls_per_core": 136.5
+    },
+    "4": {
+     "lost_ms": 0.4,
+     "pull_ms": 0.068,
+     "pulls_per_core": 68.3
+    },
+    "8": {
+     "lost_ms": 0.73,
+     "pull_ms": 0.034,
+     "pulls_per_core": 34.1
+    },
+    "16": {
+     "lost_ms": 2.03,
+     "pull_ms": 0.017,
+     "pulls_per_core": 17.1
+    },
+    "32": {
+     "lost_ms": 4.86,
+     "pull_ms": 0.009,
+     "pulls_per_core": 8.5
+    },
+    "64": {
+     "lost_ms": 7.9,
+     "pull_ms": 0.004,
+     "pulls_per_core": 4.3
+    },
+    "89": {
+     "lost_ms": 9.02,
+     "pull_ms": 0.003,
+     "pulls_per_core": 3.1
+    }
+   }
+  },
+  "sponza_overview-shadow": {
+   "packets": 32768,
+   "busy_ms_per_core": 16.24,
+   "packet_us_p50_p99_max": [
+    54.6,
+    137.6,
+    298.3
+   ],
+   "g": {
+    "1": {
+     "lost_ms": 0.33,
+     "pull_ms": 0.273,
+     "pulls_per_core": 273.1
+    },
+    "2": {
+     "lost_ms": 0.25,
+     "pull_ms": 0.137,
+     "pulls_per_core": 136.5
+    },
+    "4": {
+     "lost_ms": 0.23,
+     "pull_ms": 0.068,
+     "pulls_per_core": 68.3
+    },
+    "8": {
+     "lost_ms": 0.37,
+     "pull_ms": 0.034,
+     "pulls_per_core": 34.1
+    },
+    "16": {
+     "lost_ms": 1.08,
+     "pull_ms": 0.017,
+     "pulls_per_core": 17.1
+    },
+    "32": {
+     "lost_ms": 2.91,
+     "pull_ms": 0.009,
+     "pulls_per_core": 8.5
+    },
+    "64": {
+     "lost_ms": 5.12,
+     "pull_ms": 0.004,
+     "pulls_per_core": 4.3
+    },
+    "89": {
+     "lost_ms": 4.76,
+     "pull_ms": 0.003,
+     "pulls_per_core": 3.1
+    }
+   }
+  },
+  "sponza_overview-bounce": {
+   "packets": 32768,
+   "busy_ms_per_core": 153.92,
+   "packet_us_p50_p99_max": [
+    567.0,
+    965.7,
+    1442.4
+   ],
+   "g": {
+    "1": {
+     "lost_ms": 0.75,
+     "pull_ms": 0.273,
+     "pulls_per_core": 273.1
+    },
+    "2": {
+     "lost_ms": 0.95,
+     "pull_ms": 0.137,
+     "pulls_per_core": 136.5
+    },
+    "4": {
+     "lost_ms": 1.81,
+     "pull_ms": 0.068,
+     "pulls_per_core": 68.3
+    },
+    "8": {
+     "lost_ms": 3.95,
+     "pull_ms": 0.034,
+     "pulls_per_core": 34.1
+    },
+    "16": {
+     "lost_ms": 6.37,
+     "pull_ms": 0.017,
+     "pulls_per_core": 17.1
+    },
+    "32": {
+     "lost_ms": 14.19,
+     "pull_ms": 0.009,
+     "pulls_per_core": 8.5
+    },
+    "64": {
+     "lost_ms": 28.14,
+     "pull_ms": 0.004,
+     "pulls_per_core": 4.3
+    },
+    "89": {
+     "lost_ms": 33.88,
+     "pull_ms": 0.003,
+     "pulls_per_core": 3.1
+    }
+   }
+  },
+  "sponza_overview-shadow2": {
+   "packets": 32768,
+   "busy_ms_per_core": 44.27,
+   "packet_us_p50_p99_max": [
+    159.0,
+    359.5,
+    447.9
+   ],
+   "g": {
+    "1": {
+     "lost_ms": 0.48,
+     "pull_ms": 0.273,
+     "pulls_per_core": 273.1
+    },
+    "2": {
+     "lost_ms": 0.54,
+     "pull_ms": 0.137,
+     "pulls_per_core": 136.5
+    },
+    "4": {
+     "lost_ms": 0.85,
+     "pull_ms": 0.068,
+     "pulls_per_core": 68.3
+    },
+    "8": {
+     "lost_ms": 1.49,
+     "pull_ms": 0.034,
+     "pulls_per_core": 34.1
+    },
+    "16": {
+     "lost_ms": 2.51,
+     "pull_ms": 0.017,
+     "pulls_per_core": 17.1
+    },
+    "32": {
+     "lost_ms": 4.5,
+     "pull_ms": 0.009,
+     "pulls_per_core": 8.5
+    },
+    "64": {
+     "lost_ms": 9.12,
+     "pull_ms": 0.004,
+     "pulls_per_core": 4.3
+    },
+    "89": {
+     "lost_ms": 11.38,
+     "pull_ms": 0.003,
+     "pulls_per_core": 3.1
+    }
+   }
+  },
+  "bistro_interior_overview-primary": {
+   "packets": 32768,
+   "busy_ms_per_core": 33.79,
+   "packet_us_p50_p99_max": [
+    110.4,
+    337.1,
+    776.5
+   ],
+   "g": {
+    "1": {
+     "lost_ms": 0.42,
+     "pull_ms": 0.273,
+     "pulls_per_core": 273.1
+    },
+    "2": {
+     "lost_ms": 0.52,
+     "pull_ms": 0.137,
+     "pulls_per_core": 136.5
+    },
+    "4": {
+     "lost_ms": 0.57,
+     "pull_ms": 0.068,
+     "pulls_per_core": 68.3
+    },
+    "8": {
+     "lost_ms": 1.13,
+     "pull_ms": 0.034,
+     "pulls_per_core": 34.1
+    },
+    "16": {
+     "lost_ms": 2.55,
+     "pull_ms": 0.017,
+     "pulls_per_core": 17.1
+    },
+    "32": {
+     "lost_ms": 5.2,
+     "pull_ms": 0.009,
+     "pulls_per_core": 8.5
+    },
+    "64": {
+     "lost_ms": 7.09,
+     "pull_ms": 0.004,
+     "pulls_per_core": 4.3
+    },
+    "89": {
+     "lost_ms": 8.97,
+     "pull_ms": 0.003,
+     "pulls_per_core": 3.1
+    }
+   }
+  },
+  "bistro_interior_overview-shadow": {
+   "packets": 32768,
+   "busy_ms_per_core": 23.34,
+   "packet_us_p50_p99_max": [
+    69.4,
+    259.3,
+    480.5
+   ],
+   "g": {
+    "1": {
+     "lost_ms": 0.38,
+     "pull_ms": 0.273,
+     "pulls_per_core": 273.1
+    },
+    "2": {
+     "lost_ms": 0.42,
+     "pull_ms": 0.137,
+     "pulls_per_core": 136.5
+    },
+    "4": {
+     "lost_ms": 0.39,
+     "pull_ms": 0.068,
+     "pulls_per_core": 68.3
+    },
+    "8": {
+     "lost_ms": 0.96,
+     "pull_ms": 0.034,
+     "pulls_per_core": 34.1
+    },
+    "16": {
+     "lost_ms": 2.13,
+     "pull_ms": 0.017,
+     "pulls_per_core": 17.1
+    },
+    "32": {
+     "lost_ms": 4.88,
+     "pull_ms": 0.009,
+     "pulls_per_core": 8.5
+    },
+    "64": {
+     "lost_ms": 7.19,
+     "pull_ms": 0.004,
+     "pulls_per_core": 4.3
+    },
+    "89": {
+     "lost_ms": 8.02,
+     "pull_ms": 0.003,
+     "pulls_per_core": 3.1
+    }
+   }
+  },
+  "bistro_interior_overview-bounce": {
+   "packets": 32768,
+   "busy_ms_per_core": 206.48,
+   "packet_us_p50_p99_max": [
+    706.2,
+    1691.2,
+    2379.0
+   ],
+   "g": {
+    "1": {
+     "lost_ms": 1.25,
+     "pull_ms": 0.273,
+     "pulls_per_core": 273.1
+    },
+    "2": {
+     "lost_ms": 2.11,
+     "pull_ms": 0.137,
+     "pulls_per_core": 136.5
+    },
+    "4": {
+     "lost_ms": 3.7,
+     "pull_ms": 0.068,
+     "pulls_per_core": 68.3
+    },
+    "8": {
+     "lost_ms": 7.16,
+     "pull_ms": 0.034,
+     "pulls_per_core": 34.1
+    },
+    "16": {
+     "lost_ms": 14.27,
+     "pull_ms": 0.017,
+     "pulls_per_core": 17.1
+    },
+    "32": {
+     "lost_ms": 15.78,
+     "pull_ms": 0.009,
+     "pulls_per_core": 8.5
+    },
+    "64": {
+     "lost_ms": 29.93,
+     "pull_ms": 0.004,
+     "pulls_per_core": 4.3
+    },
+    "89": {
+     "lost_ms": 46.92,
+     "pull_ms": 0.003,
+     "pulls_per_core": 3.1
+    }
+   }
+  },
+  "bistro_interior_overview-shadow2": {
+   "packets": 32768,
+   "busy_ms_per_core": 61.8,
+   "packet_us_p50_p99_max": [
+    189.2,
+    726.5,
+    1182.2
+   ],
+   "g": {
+    "1": {
+     "lost_ms": 0.84,
+     "pull_ms": 0.273,
+     "pulls_per_core": 273.1
+    },
+    "2": {
+     "lost_ms": 1.03,
+     "pull_ms": 0.137,
+     "pulls_per_core": 136.5
+    },
+    "4": {
+     "lost_ms": 1.75,
+     "pull_ms": 0.068,
+     "pulls_per_core": 68.3
+    },
+    "8": {
+     "lost_ms": 3.05,
+     "pull_ms": 0.034,
+     "pulls_per_core": 34.1
+    },
+    "16": {
+     "lost_ms": 5.46,
+     "pull_ms": 0.017,
+     "pulls_per_core": 17.1
+    },
+    "32": {
+     "lost_ms": 8.89,
+     "pull_ms": 0.009,
+     "pulls_per_core": 8.5
+    },
+    "64": {
+     "lost_ms": 14.54,
+     "pull_ms": 0.004,
+     "pulls_per_core": 4.3
+    },
+    "89": {
+     "lost_ms": 19.99,
+     "pull_ms": 0.003,
+     "pulls_per_core": 3.1
+    }
+   }
+  }
+ },
+ "note": "balance lost: per trace, the sum over its chunk records of the slowest core's busy cycles less the mean core's (1350 MHz), from the profile of the last frame of each run; (lost, slowest-core sum, records). pull_estimate: greedy pull of g packets in tile order over 120 cores, per-packet cycles from the cost blocks of the host-cut run, 1 us per pull; lost = makespan less mean busy."
+}

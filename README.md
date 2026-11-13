@@ -290,26 +290,39 @@ history; "repeated" is a later frame of the same camera, whose COUNT and SETUP r
 cut by the frame before's costs (10^6 3.9 and 3.4 ms, Bistro 4.3 and 3.6 ms).
 
 The **ray tracer**: ray generation, four traces and shading are eight records on the
-120 cores; trees larger than L1 are read from DRAM as treelets. One frame each, card 1
-([raytrace](projects/raytrace/README.md#the-whole-frame-on-larger-scenes)):
+120 cores; trees larger than L1 are read from DRAM as treelets. Card 1. A cold frame
+has no history and is submitted by the host. A warm frame is the second or third of the
+same camera, submitted by a thread on the X280. Before each trace the thread cuts the
+rays into the cores' ranges by the frame before's costs; its plan time counts in the frame
+([raytrace](projects/raytrace/README.md#the-frame-planned-on-the-x280)):
 
-| Scene | Card frame, ms | Card W | C++ all threads, ms | V100, ms | V100 / card | Pixels differing from numpy |
-|---|---|---|---|---|---|---|
-| tiny (tree in L1) | 23.20 | 63.0 | 20.59 | 2.59 | 0.11 | 0 |
-| 10^4 | 57.91 | 63.0 | 26.44 | 4.16 | 0.07 | 0 |
-| 10^5 | 81.51 | 63.0 | 35.47 | 6.57 | 0.08 | 0 |
-| 10^6 | 154.21 | 63.0 | 53.66 | 11.61 | 0.08 | 1 |
-| Sponza, close | 359.86 | 63.0 | 264.78 | 102.00 | 0.28 | 244 |
-| Sponza, overview | 348.53 | 69.2 | 230.36 | 95.52 | 0.27 | 234 |
-| Bistro interior, close | 596.97 | 61.0 | 401.87 | 211.42 | 0.35 | 2 |
-| Bistro interior, overview | 523.72 | 73.1 | 336.80 | 153.94 | 0.29 | 2 |
+| Scene | Frame | Card frame, ms | of which the X280 plan | Card W | C++ all threads, ms | V100, ms | V100 / card | Pixels differing from numpy |
+|---|---|---|---|---|---|---|---|---|
+| tiny (tree in L1) | cold and warm | 23.20 | - | 63.0 | 20.59 | 2.59 | 0.11 | 0 |
+| 10^4 | cold | 57.91 | - | 63.0 | 26.44 | 4.16 | 0.07 | 0 |
+| 10^4 | warm | 70.63 | 5.27 | 61.0 | 26.44 | 4.16 | 0.06 | 0 |
+| 10^5 | cold | 81.51 | - | 63.0 | 35.47 | 6.57 | 0.08 | 0 |
+| 10^5 | warm | 93.01 | 5.34 | 66.9 | 35.47 | 6.57 | 0.07 | 0 |
+| 10^6 | cold | 154.21 | - | 63.0 | 53.66 | 11.61 | 0.08 | 1 |
+| 10^6 | warm | 192.50 | 5.32 | 70.4 | 53.66 | 11.61 | 0.06 | 1 |
+| Sponza, close | cold | 359.86 | - | 63.0 | 264.78 | 102.00 | 0.28 | 244 |
+| Sponza, close | warm | 323.38 | 3.64 | 71.0 | 264.78 | 102.00 | 0.32 | 244 |
+| Sponza, overview | cold | 348.53 | - | 69.2 | 230.36 | 95.52 | 0.27 | 234 |
+| Sponza, overview | warm | 313.63 | 4.14 | 68.2 | 230.36 | 95.52 | 0.30 | 234 |
+| Bistro interior, close | cold | 596.97 | - | 61.0 | 401.87 | 211.42 | 0.35 | 2 |
+| Bistro interior, close | warm | 596.86 | 4.35 | 70.0 | 401.87 | 211.42 | 0.35 | 3 |
+| Bistro interior, overview | cold | 523.72 | - | 73.1 | 336.80 | 153.94 | 0.29 | 2 |
+| Bistro interior, overview | warm | 477.48 | 4.57 | 70.5 | 336.80 | 153.94 | 0.32 | 2 |
 
 Where the time goes: the four traces take 67 % (10^4) to 97 % (Bistro) of the frame,
 the bounce trace alone 36 to 59 %; each core sorts its bounce and second-shadow rays
 (about 15 ms a frame) and reads the treelets its rays need from DRAM. In the traces,
 box tests on packets with few live lanes come first (61 % on Sponza's overview), then
 the wait for each record's slowest core. The differing pixels are ties between two
-triangles at the same float32 distance, but for one on each Bistro view.
+triangles at the same float32 distance, but for one or two on each Bistro view. The
+plan by the frame before takes 35 to 46 ms off Sponza and Bistro's overview, nothing off
+Bistro's close view, and costs 12 to 38 ms on 10^4 to 10^6: it cuts the traces into up
+to 8 commands, and the cores read more treelets.
 
 <img src="docs/images/raster-sponza.jpg" width="256" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card">
 <img src="docs/images/raytrace-sponza.jpg" width="256" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
