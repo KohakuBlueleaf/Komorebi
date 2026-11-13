@@ -1,6 +1,5 @@
-// COUNT and SETUP compute: the unpack thread hands each mesh page to the pack thread,
-// which runs the vector unit over the block, keeps or clips each triangle, and counts
-// its tiles (COUNT) or sends its record to each of them (SETUP).
+// COUNT and SETUP compute: unpack hands each mesh page to pack, which runs the vector
+// unit, keeps or clips each triangle, and counts (COUNT) or sends (SETUP) its records.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -238,6 +237,22 @@ namespace {
         return reinterpret_cast<uint32_t*>(get_local_cb_interface(cb).fifo_wr_ptr << 4);
     }
 
+    // Zeroes n words (a multiple of 32), 32 per vector store.
+    void zero(uint32_t* p, uint32_t n) {
+#if defined(__riscv_vector)
+        const size_t vl = __riscv_vsetvl_e32m8(32);
+        const vuint32m8_t z = __riscv_vmv_v_x_u32m8(0, vl);
+        for (uint32_t i = 0; i < n; i += 32) {
+            __riscv_vse32_v_u32m8(p + i, z, vl);
+        }
+        asm volatile("" ::: "memory");
+#else
+        for (uint32_t i = 0; i < n; ++i) {
+            p[i] = 0;
+        }
+#endif
+    }
+
     // SETUP's out pages: up to kOutEntries records, each with its target slot.
     struct Out {
         uint32_t* page = nullptr;
@@ -303,8 +318,10 @@ namespace {
         const km::Compute& cp;
         uint32_t seg;
         uint32_t* cnt = nullptr;   // COUNT: entries of tile t at t, rows at kTiles + t
-        uint32_t* slot = nullptr;  // SETUP: tile t's next slot
-        uint32_t slots = 0;        // SETUP: the lists' slots
+        uint16_t* hist = nullptr;  // COUNT: tile t's start and end counts at 32 t
+        uint32_t* slot = nullptr;  // SETUP: item i's next slot
+        const uint32_t* items = nullptr;  // SETUP: the items page (setup.h)
+        uint32_t slots = 0;               // SETUP: the lists' slots
         Out out;
         bool ok = true;
 
@@ -325,17 +342,41 @@ namespace {
                     if (seg == kSegCount) {
                         cnt[t] += 1;
                         cnt[kTiles + t] += r1 - r0 + 1;
+                        uint16_t* h = hist + 32 * t;
+                        if (++h[(r0 - top) >> 1] == 0 ||
+                            ++h[16 + ((r1 - top) >> 1)] == 0) {
+                            give_up(kGaveBadHist, t);
+                            ok = false;
+                            return;
+                        }
                         continue;
                     }
-                    const uint32_t s = slot[t]++;
-                    if (s >= slots) {
+                    const uint32_t first = items[t] & 0xFFFF, n = items[t] >> 16;
+                    if (first + n > kSlotsBytes / 4) {
                         give_up(kGaveBadSlot, t);
                         ok = false;
                         return;
                     }
-                    if (!out.add(cp, w, s)) {
-                        ok = false;
-                        return;
+                    const uint16_t* rows = (
+                        reinterpret_cast<const uint16_t*>(items + kItemRows / 4)
+                    );
+                    for (uint32_t i = first; i < first + n; ++i) {
+                        // the item's rows [b0, b1) against the entry's 2-row groups
+                        const uint32_t b0 = rows[i] & 0xFF, b1 = rows[i] >> 8;
+                        if (((r0 - top) >> 1) >= static_cast<int32_t>(b1 >> 1) ||
+                            ((r1 - top) >> 1) < static_cast<int32_t>(b0 >> 1)) {
+                            continue;
+                        }
+                        const uint32_t s = slot[i]++;
+                        if (s >= slots) {
+                            give_up(kGaveBadSlot, t);
+                            ok = false;
+                            return;
+                        }
+                        if (!out.add(cp, w, s)) {
+                            ok = false;
+                            return;
+                        }
                     }
                 }
             }
@@ -378,10 +419,8 @@ namespace {
             }
         }
 
-        // Every kept triangle of the block, in triangle order, from its raw records at
-        // `rec` (Dst still holding the block); a crossing triangle's pieces, from its
-        // camera-space corners in Dst and colours on the mesh page, at its place.
-        // `work`: 2,048 free words.
+        // The block's kept triangles in order, from raw records at `rec` (Dst holds the
+        // block), a crossing one's pieces at its place; `work`: 2,048 words.
         void block(uint32_t* rec, const uint32_t* mesh, uint32_t* work, uint32_t tri0) {
             const uint32_t near = su::win()[su::word(su::kSCam + 15)];
             Corner* corners = reinterpret_cast<Corner*>(work + 1024);
@@ -424,115 +463,138 @@ namespace {
 }  // namespace
 #endif
 
+// The passes' work for one record; the frame program's compute kernel calls it as
+// well.
+void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
+    const uint32_t seg = km::seg(r);
+    if ((seg != kSegLanes && seg != kSegCount && seg != kSegSetup) || r.a5 == 0 ||
+        cp.me() >= r.a5) {
+        return;
+    }
+    const uint32_t b0 = cp.me() * r.a2 / r.a5, b1 = (cp.me() + 1) * r.a2 / r.a5;
+    const uint32_t pages = 1 + (b1 - b0);
+#ifdef TRISC_UNPACK
+    // SETUP: the slots and items pages first, held until the pass ends.
+    const bool slots = seg != kSegSetup || (hand(kCbSlots, 4) && hand(kCbItems, 4));
+    // Hands each page to the pack thread; frees it when the pack thread is done.
+    for (uint32_t p = 0; slots && p < pages; ++p) {
+        if (!hand(kCbMesh, 1)) {
+            break;
+        }
+        if (!mail_from(ckernel::ThreadId::PackThreadId, 2)) {
+            break;
+        }
+        (void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId);
+        cb_pop_front(kCbMesh, 1);
+    }
+    if (seg == kSegSetup && slots) {
+        cb_pop_front(kCbSlots, 1);
+        cb_pop_front(kCbItems, 1);
+    }
+#endif
+#ifdef TRISC_PACK
+    su::setup();
+    Pass pass{cp, seg};
+    if (seg == kSegSetup) {
+        if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
+            return;
+        }
+        pass.slot = (
+            reinterpret_cast<uint32_t*>(
+                ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
+            )
+        );
+        if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
+            return;
+        }
+        pass.items = (
+            reinterpret_cast<const uint32_t*>(
+                ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
+            )
+        );
+        pass.slots = r.a6;
+    }
+    if (seg == kSegCount) {
+        if (!cp.reserve_back(kCbCount, 1)) {
+            return;
+        }
+        pass.cnt = cb_ptr(kCbCount);
+        zero(pass.cnt, 2 * kTiles);
+        // never pushed: the buffer's space, kept for HIST
+        uint32_t* hist = cb_ptr(kCbHist);
+        zero(hist, kHistBytes / 4);
+        pass.hist = reinterpret_cast<uint16_t*>(hist);
+    }
+    uint32_t* work = cb_ptr(kCbWork);
+    for (uint32_t p = 0; p < pages; ++p) {
+        if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
+            pass.ok = false;
+            break;
+        }
+        const uint32_t* in = (
+            reinterpret_cast<const uint32_t*>(
+                ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
+            )
+        );
+        asm volatile("fence" ::: "memory");
+        if (p == 0) {
+            // the camera: each number to every lane of its slot
+            for (uint32_t i = 0; i < kCamWords; ++i) {
+                su::fill_slot(su::kSCam + i, in[i]);
+            }
+            su::order(su::word(su::kSCam + kCamWords - 1) + 62);
+            ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
+            continue;
+        }
+        su::block_in(in);
+        su::camera_space();
+        su::triangles(seg != kSegCount);
+        ckernel::tensix_sync();
+        if (seg == kSegLanes) {
+            ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
+            if (!cp.reserve_back(kCbRec, 1)) {
+                break;
+            }
+            uint32_t* rec = cb_ptr(kCbRec);
+            su::records_out(rec);
+            asm volatile("fence" ::: "memory");
+            const uint32_t v = reinterpret_cast<volatile uint32_t*>(rec)[1023];
+            asm volatile("and x0, x0, %0" : : "r"(v) : "memory");
+            cb_push_back(kCbRec, 1);
+            continue;
+        }
+        su::records_out(work);
+        pass.block(work, in, work + 1024, 32 * (b0 + p - 1));
+        ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
+        if (!pass.ok) {
+            break;
+        }
+    }
+    if (seg == kSegCount && pass.cnt != nullptr) {
+        asm volatile("fence" ::: "memory");
+        const uint32_t v = (
+            reinterpret_cast<volatile uint32_t*>(pass.cnt)[2 * kTiles - 1]
+        );
+        const uint32_t u = (
+            reinterpret_cast<volatile uint32_t*>(pass.hist)[kHistBytes / 4 - 1]
+        );
+        asm volatile("and x0, x0, %0" : : "r"(v) : "memory");
+        asm volatile("and x0, x0, %0" : : "r"(u) : "memory");
+        cb_push_back(kCbCount, 1);
+    }
+    if (seg == kSegSetup && pass.ok) {
+        pass.out.end(cp);
+    }
+    su::finish();
+#endif
+}
+
+#ifndef RASTER_NO_ENTRY
 void kernel_main() {
     km::Compute cp;
     compute_kernel_hw_startup(kCbMesh, kCbRec);
     cp.run([&](const km_record_t& r) {
-        const uint32_t seg = km::seg(r);
-        if ((seg != kSegLanes && seg != kSegCount && seg != kSegSetup) || r.a5 == 0 ||
-            cp.me() >= r.a5) {
-            return;
-        }
-        const uint32_t b0 = cp.me() * r.a2 / r.a5, b1 = (cp.me() + 1) * r.a2 / r.a5;
-        const uint32_t pages = 1 + (b1 - b0);
-#ifdef TRISC_UNPACK
-        // SETUP: the slots page first, held until the pass ends.
-        const bool slots = seg != kSegSetup || hand(kCbSlots, 4);
-        // Hands each page to the pack thread; frees it when the pack thread is done.
-        for (uint32_t p = 0; slots && p < pages; ++p) {
-            if (!hand(kCbMesh, 1)) {
-                break;
-            }
-            if (!mail_from(ckernel::ThreadId::PackThreadId, 2)) {
-                break;
-            }
-            (void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId);
-            cb_pop_front(kCbMesh, 1);
-        }
-        if (seg == kSegSetup && slots) {
-            cb_pop_front(kCbSlots, 1);
-        }
-#endif
-#ifdef TRISC_PACK
-        su::setup();
-        Pass pass{cp, seg};
-        if (seg == kSegSetup) {
-            if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
-                return;
-            }
-            pass.slot = (
-                reinterpret_cast<uint32_t*>(
-                    ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
-                )
-            );
-            pass.slots = r.a6;
-        }
-        if (seg == kSegCount) {
-            if (!cp.reserve_back(kCbCount, 1)) {
-                return;
-            }
-            pass.cnt = cb_ptr(kCbCount);
-            for (uint32_t i = 0; i < 2 * kTiles; ++i) {
-                pass.cnt[i] = 0;
-            }
-        }
-        uint32_t* work = cb_ptr(kCbWork);
-        for (uint32_t p = 0; p < pages; ++p) {
-            if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
-                pass.ok = false;
-                break;
-            }
-            const uint32_t* in = (
-                reinterpret_cast<const uint32_t*>(
-                    ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
-                )
-            );
-            asm volatile("fence" ::: "memory");
-            if (p == 0) {
-                // the camera: each number to every lane of its slot
-                for (uint32_t i = 0; i < kCamWords; ++i) {
-                    su::fill_slot(su::kSCam + i, in[i]);
-                }
-                su::order(su::word(su::kSCam + kCamWords - 1) + 62);
-                ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
-                continue;
-            }
-            su::block_in(in);
-            su::camera_space();
-            su::triangles(seg != kSegCount);
-            ckernel::tensix_sync();
-            if (seg == kSegLanes) {
-                ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
-                if (!cp.reserve_back(kCbRec, 1)) {
-                    break;
-                }
-                uint32_t* rec = cb_ptr(kCbRec);
-                su::records_out(rec);
-                asm volatile("fence" ::: "memory");
-                const uint32_t v = reinterpret_cast<volatile uint32_t*>(rec)[1023];
-                asm volatile("and x0, x0, %0" : : "r"(v) : "memory");
-                cb_push_back(kCbRec, 1);
-                continue;
-            }
-            su::records_out(work);
-            pass.block(work, in, work + 1024, 32 * (b0 + p - 1));
-            ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
-            if (!pass.ok) {
-                break;
-            }
-        }
-        if (seg == kSegCount && pass.cnt != nullptr) {
-            asm volatile("fence" ::: "memory");
-            const uint32_t v = (
-                reinterpret_cast<volatile uint32_t*>(pass.cnt)[2 * kTiles - 1]
-            );
-            asm volatile("and x0, x0, %0" : : "r"(v) : "memory");
-            cb_push_back(kCbCount, 1);
-        }
-        if (seg == kSegSetup && pass.ok) {
-            pass.out.end(cp);
-        }
-        su::finish();
-#endif
+        setup_compute_record(cp, r);
     });
 }
+#endif

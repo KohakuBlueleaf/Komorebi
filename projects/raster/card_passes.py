@@ -1,8 +1,7 @@
-"""COUNT and SETUP on the card: the program, the mesh and camera upload, the LANES
-check of the vector unit's records against the reference, and a frame (COUNT, the
-host's step, SETUP, then the fill of `card.py`) checked against the reference's image
-and lists. `python -m projects.raster.card_passes --scene tiny [--frame]` prints one
-JSON line; exits 1 unless exact."""
+"""COUNT and SETUP on the card: program, mesh and camera upload, LANES check of the
+records, and a frame (COUNT, the host's step, SETUP, the fill of `card.py`) checked
+against the reference. `python -m projects.raster.card_passes --scene tiny [--frame]`
+prints one JSON line; exits 1 unless exact."""
 
 import argparse
 import contextlib
@@ -39,6 +38,8 @@ def program():
             km.Buffer(S["kCbWork"], "uint32", S["kWorkBytes"], 1),
             km.Buffer(S["kCbCount"], "uint32", S["kCountBytes"], 1),
             km.Buffer(S["kCbOut"], "uint32", S["kOutBytes"], S["kOutPages"]),
+            km.Buffer(S["kCbHist"], "uint32", S["kHistBytes"], 1),
+            km.Buffer(S["kCbItems"], "uint32", S["kItemsBytes"], 1),
         ],
         compute={"fp32_dest_acc_en": True, "enable_trisc2_rvv": True},
         depth=1,
@@ -163,13 +164,29 @@ def count_only(args):
         prog.stop()
         out["status"] = card.check_run(prog, workers, 1, [ev.us])
         (raw,) = card.read(session, counters)
-    raw = raw.view(np.uint32).reshape(workers, 2, lists.TILES)[:cores]
-    want_cnt, want_rows = passes.counters(recs, len(scene["indices"]), cores)
-    out["entries"] = int(want_cnt.sum())
-    out["cnt_differ"] = int((raw[:, 0] != want_cnt).sum())
-    out["rows_differ"] = int((raw[:, 1] != want_rows).sum())
+        raw = raw.view(np.uint32).reshape(workers, 2, lists.TILES)[:cores]
+        want_cnt, want_rows = passes.counters(recs, len(scene["indices"]), cores)
+        out["entries"] = int(want_cnt.sum())
+        out["cnt_differ"] = int((raw[:, 0] != want_cnt).sum())
+        out["rows_differ"] = int((raw[:, 1] != want_rows).sum())
+        # HIST over the tiles to cut (every tile with entries when none is to be cut)
+        cnt, rows = raw[:, 0].astype(np.int64), raw[:, 1].astype(np.int64)
+        heavy = passes.heavy_tiles(cnt, rows, workers)
+        out["heavy"] = len(heavy)
+        some = heavy or [(int(t), 1) for t in np.flatnonzero(cnt.sum(0))[:256]]
+        base = [mesh.buffer_address(), 0, len(blocks), cam.buffer_address(), 0, cores]
+        hf, hl = hist(session, base, some, cores, {})
+        want_f, want_l = passes.histograms(recs, len(scene["indices"]), cores)
+        ht = [t for t, _ in some]
+        out["hist_tiles"] = len(ht)
+        out["hist_differ"] = int(
+            (hf != want_f[:, ht]).sum() + (hl != want_l[:, ht]).sum()
+        )
     out["ok"] = bool(
-        out["status"]["ok"] and out["cnt_differ"] == 0 and out["rows_differ"] == 0
+        out["status"]["ok"]
+        and out["cnt_differ"] == 0
+        and out["rows_differ"] == 0
+        and out["hist_differ"] == 0
     )
     return out
 
@@ -214,14 +231,29 @@ def frame(args, session=None):
             np.array_equal(cnt, want_cnt) and np.array_equal(rows, want_rows)
         )
 
+        heavy = passes.heavy_tiles(cnt, rows, workers)
+        out["heavy"] = len(heavy)
+        bands = None
+        if heavy:
+            hf, hl = hist(session, base, heavy, cores, tm)
+            want_f, want_l = passes.histograms(recs, len(scene["indices"]), cores)
+            ht = [t for t, _ in heavy]
+            out["hist_equal"] = bool(
+                np.array_equal(hf, want_f[:, ht]) and np.array_equal(hl, want_l[:, ht])
+            )
+            t0 = time.perf_counter()
+            bands = passes.items_of(cnt, rows, heavy, hf, hl)
+            tm["items_s"] = time.perf_counter() - t0
         t0 = time.perf_counter()
-        mid = passes.middle(cnt, rows, workers)
+        mid = passes.middle(cnt, rows, workers, bands=bands)
         tm["middle_s"] = time.perf_counter() - t0
+        out["items"] = len(mid["items"])
         t0 = time.perf_counter()
         up = card.upload(dev, mid["pages"], mid["directory"], lists.TILES * 5)
-        nxt = np.zeros((workers, lists.TILES), dtype=np.uint32)
-        nxt[:cores] = mid["next"]
+        nxt = np.zeros((workers, S["kSlotsBytes"] // 4), dtype=np.uint32)
+        nxt[:cores, : len(mid["items"])] = mid["next"]
         slots_t = card.tensor(dev, nxt)
+        items_t = card.tensor(dev, passes.item_table(mid["items"])[None, :])
         tm["upload_lists_s"] = time.perf_counter() - t0
         out["list_pages"] = len(mid["pages"])
 
@@ -231,7 +263,7 @@ def frame(args, session=None):
         a = list(base)
         a[1] = up["lists"].buffer_address()
         a[4] = slots_t.buffer_address()
-        a.append(mid["slots"])
+        a += [mid["slots"], items_t.buffer_address()]
         ev = prog.wait(prog.issue(S["kSegSetup"], team=team, args=a), timeout=10.0)
         out["setup_us"] = ev.us
         prog.stop()
@@ -241,7 +273,7 @@ def frame(args, session=None):
 
         got = None if args.setup else fill_frame(session, up, out)
     ok = all(out[k]["ok"] for k in ("count_status", "setup_status"))
-    ok = ok and out["counters_equal"]
+    ok = ok and out["counters_equal"] and out.get("hist_equal", True)
     if "lists" in out:
         lc = out["lists"]
         ok = ok and lc["pages_differ"] == 0 and lc["directory_equal"]
@@ -254,6 +286,35 @@ def frame(args, session=None):
         ok = ok and out["fill_status"]["ok"] and run.check_ok(out["check"])
     out["ok"] = bool(ok)
     return out
+
+
+def hist(session, base, heavy, cores, tm):
+    """HIST: the heavy tiles' start and end counts COUNT kept on every core, as
+    (cores, heavy, GROUPS) twice."""
+    workers = card.workers(session)
+    dev = session.device
+    page = np.zeros((1, S["kHeavyBytes"] // 4), dtype=np.uint32)
+    page[0, 0] = len(heavy)
+    page[0, 1 : 1 + len(heavy)] = [t for t, _ in heavy]
+    t0 = time.perf_counter()
+    lst = card.tensor(dev, page)
+    res = card.tensor(dev, np.zeros((workers, 16 * len(heavy))))
+    tm["upload_heavy_s"] = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    prog = session.load(program(), deadline=1.0)
+    tm["load_hist_s"] = time.perf_counter() - t0
+    a = [lst.buffer_address(), res.buffer_address(), 0, 0, 64 * len(heavy), cores]
+    ev = prog.wait(prog.issue(S["kSegHist"], team=(0, workers), args=a), timeout=10.0)
+    prog.stop()
+    status = card.check_run(prog, workers, 1, [ev.us])
+    if not status["ok"]:
+        raise RuntimeError(f"HIST: {status}")
+    t0 = time.perf_counter()
+    (raw,) = card.read(session, res)
+    tm["read_hist_s"] = time.perf_counter() - t0
+    raw = raw.view(np.uint32).reshape(workers, len(heavy), 16)[:cores]
+    counts = raw.view(np.uint16).reshape(cores, len(heavy), 2, passes.GROUPS)
+    return counts[:, :, 0].astype(np.int64), counts[:, :, 1].astype(np.int64)
 
 
 def fill_frame(session, up, out):
