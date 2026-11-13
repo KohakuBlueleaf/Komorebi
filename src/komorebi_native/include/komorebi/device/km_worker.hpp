@@ -420,6 +420,15 @@ namespace km {
             return get_arg_val<uint32_t>(kComputeArgs + index);
         }
 
+        // The control block's address and the wait limit (1024-cycle units).
+        uint32_t control() const {
+            return control_;
+        }
+
+        uint32_t wait_limit() const {
+            return wait_;
+        }
+
         // Timed cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
         // of it), `times` wait limits. Unpack decides, math and pack get its answer.
         bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {

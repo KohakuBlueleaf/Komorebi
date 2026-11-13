@@ -101,6 +101,16 @@ namespace km {
     constexpr uint32_t kWhereMessagesFill = 33;   // the start-up zero fill of the queue
     constexpr uint32_t kWhereMessagesFull = 34;  // positions reached 2^30: reload the program
     constexpr uint32_t kWhereMessagesCounter = 35;  // counter tile not ready, or no cores
+    // Where codes of an overlay (km_overlay.hpp): the gave-up word's top half is the
+    // overlay's number. kGaveOverlay: unknown, no part here, too large, no free slot.
+    constexpr uint32_t kGaveOverlay = 5;
+    constexpr uint32_t kWhereOverlayFind = 36;  // the table or the slots
+    constexpr uint32_t kWhereOverlayLoad = 37;  // the read of a part from DRAM
+    constexpr uint32_t kWhereOverlayPair = 38;  // reader and compute meeting for a load
+    static_assert(
+        kWhereOverlayFind == kWhereMessagesCounter + 1 && kWhereOverlayPair < 40,
+        "overlay where codes: 36 to 38, after the dynamic ones"
+    );
     static_assert(
         kWhereMessagesGap == kWhereEmit + 1 &&
             kWhereMessagesCounter == kWhereMessagesGap + 16 &&

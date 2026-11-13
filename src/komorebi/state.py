@@ -11,6 +11,7 @@ GAVES = {
     "Limit": "limit",
     "BadItem": "bad_item",
     "BadBroadcast": "bad_broadcast",
+    "Overlay": "overlay",
 }  # kGave*
 WHERES = (
     "Checkin",
@@ -30,6 +31,9 @@ WHERES = (
     "BroadcastFree",
     "Port",
     "Emit",
+    "OverlayFind",
+    "OverlayLoad",
+    "OverlayPair",
 )
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 
@@ -92,6 +96,8 @@ def gave_up(word, sequence, abi_headers=None):
     }
     if out["where"] in ("port", "emit"):
         out["port"] = word >> abi_headers["KM_GAVE_PORT_SHIFT"]  # the port a wait named
+    if str(out["where"]).startswith("overlay"):
+        out["overlay"] = word >> 16  # the overlay's number
     return out
 
 
