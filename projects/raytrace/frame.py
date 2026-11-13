@@ -54,23 +54,30 @@ def vectors(stream):
     return K[named.get(stream, "kColVectors")]
 
 
+def step_words(step, addr, directory, const, prof):
+    """A step's ten record words; `addr` maps a stream to its address (or a graph's
+    register)."""
+    name, seg, ins, outs = step
+    words = [0] * 10
+    words[0], words[4] = directory, prof
+    if seg == "kSegTrace":
+        words[1], words[2] = addr[ins[0]], addr[outs[0]]
+        words[3] = K["kModeAny"] if name in ANY_HIT else K["kModeNearest"]
+    else:
+        words[3] = const
+        for k, stream in enumerate(ins + outs):
+            words[STREAM_WORDS[k]] = addr[stream]
+    return words
+
+
 def records(tensors, directory_t, const_t, profs):
     """Every step's record (segment, ten words), in issue order."""
-    out = []
-    for (name, seg, ins, outs), prof in zip(STEPS, profs):
-        words = [0] * 10
-        words[0] = directory_t.buffer_address()
-        words[4] = prof.buffer_address()
-        if seg == "kSegTrace":
-            words[1] = tensors[ins[0]].buffer_address()
-            words[2] = tensors[outs[0]].buffer_address()
-            words[3] = K["kModeAny"] if name in ANY_HIT else K["kModeNearest"]
-        else:
-            words[3] = const_t.buffer_address()
-            for k, stream in enumerate(ins + outs):
-                words[STREAM_WORDS[k]] = tensors[stream].buffer_address()
-        out.append((K[seg], words))
-    return out
+    addr = {s: t.buffer_address() for s, t in tensors.items()}
+    d, c = directory_t.buffer_address(), const_t.buffer_address()
+    return [
+        (K[step[1]], step_words(step, addr, d, c, prof.buffer_address()))
+        for step, prof in zip(STEPS, profs)
+    ]
 
 
 def lanes_of(pages, stream):
