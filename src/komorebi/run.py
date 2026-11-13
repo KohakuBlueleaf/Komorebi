@@ -834,6 +834,7 @@ class Run:
 
     def _fail_kernel(self, why):
         self._finish(10.0)
+        self.backend.log_state()
         r = self._result
         where = (
             f"exception on X280 core {r['req']} (mcause {r['slot']:#x}, mepc "

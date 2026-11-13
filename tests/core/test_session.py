@@ -165,6 +165,30 @@ def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_account(
     assert log[120:] == ["wait_grid", "close"] and backend.aborted["harts"][13] == 2
 
 
+def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
+    card, tmp_path, monkeypatch
+):
+    session, log, _, _ = card
+    sess, backend = backend_over(session, log, tmp_path, monkeypatch)
+    lines, asked = [], []
+    sess.log = lines.append
+    page = np.arange(K["KMD_STATE_BYTES"] // 8, dtype="<u8").view(np.uint8)
+
+    def read(tensor, first=0, pages=None):
+        asked.append((tensor, first, pages))
+        return [page.reshape(1, -1)]
+
+    monkeypatch.setattr(sess, "read", read)
+    backend.state_t = "state"
+    backend.log_state()
+    assert asked == [("state", session.KERNEL_BANK, 1)]
+    assert len(lines) == session.STATE_DUMP_LINES
+    assert lines[1] == "kernel state +0x040: " + " ".join(hex(w) for w in range(8, 16))
+    monkeypatch.setattr(sess, "read", None)  # a failing read is logged, not raised
+    backend.log_state()
+    assert lines[-1].startswith("kernel state not read (TypeError")
+
+
 def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path):
     session, log, _, module = card
     FakeDispatch.lim_base = 0x10008

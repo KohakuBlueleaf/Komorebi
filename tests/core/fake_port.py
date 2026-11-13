@@ -304,6 +304,9 @@ class FakeBackend:
         self.calls.append("kernel_report")
         return self.report
 
+    def log_state(self):
+        pass
+
     def read_back(self, stop_grid=False):
         """Control blocks whose state words say every member reported its records'
         sequences, except the stalled core; trace: seen/done/sent stamps per sequence.

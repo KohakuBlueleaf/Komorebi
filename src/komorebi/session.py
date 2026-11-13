@@ -28,6 +28,8 @@ DYN_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic segment's queues may take
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
+KERNEL_BANK = 5  # the bank X280 cluster 0's Memory Port reaches (measured, p150a)
+STATE_DUMP_LINES = 8  # 64-byte lines of the kernel's state logged after a failure
 CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
@@ -766,7 +768,20 @@ class _Backend:
             n = self.aborted["harts"][abi.headers()["KMD_H_ABANDONED"]]
             why += f"; {n} records abandoned"
         self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned}){why}")
+        self.log_state()
         return cleaned
+
+    def log_state(self):
+        """Logs the first STATE_DUMP_LINES lines of the kernel's state as DRAM holds
+        them (the kernel flushes them when it finishes); never raises."""
+        try:
+            (page,) = self.session.read(self.state_t, first=KERNEL_BANK, pages=1)
+            words = np.asarray(page, np.uint8).reshape(-1)[: 64 * STATE_DUMP_LINES]
+            for at, line in enumerate(words.view("<u8").reshape(-1, 8)):
+                text = " ".join(f"{int(w):#x}" for w in line)
+                self.session.log(f"kernel state +{64 * at:#05x}: {text}")
+        except Exception as err:  # noqa: BLE001 (a failure path: reported, not raised)
+            self.session.log(f"kernel state not read ({type(err).__name__}: {err})")
 
     def kernel_report(self):
         """While the kernel runs: whether core 0 still runs its loop (its pass stamp
