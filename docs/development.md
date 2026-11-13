@@ -129,6 +129,7 @@ Experiments come first; a regression test comes after behaviour settles (see
   and defines that C++ code using the X280 runtime needs. This dependency ends when
   Komorebi has its own build files. `kmr build image` is not affected: it uses the X280
   runtime's compiler, flags, entry objects and linker script directly.
-- No wheel is published. A wheel built from a clone carries the dispatcher image
-  prebuilt; the native module is built from a tt-metal tree on first use
+- No wheel is published. A `komorebi-tt` wheel built with its native module and the
+  `komorebi-runtime` wheel run with no tree ([the runtime package](install.md#the-runtime-package));
+  a `komorebi-tt` wheel without the module builds it from a tt-metal tree on first use
   ([from a wheel](install.md#from-a-wheel)).

@@ -1,6 +1,6 @@
 ---
 title: Install
-summary: Installing Komorebi from a clone or from a wheel built locally, against a tt-metal source tree, and checking the host with kmr doctor. Nothing is published yet.
+summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels (built locally today, from PyPI from 0.1.0), and checking the host with kmr doctor. Nothing is published yet.
 tags:
   - overview
   - install
@@ -8,9 +8,15 @@ tags:
 
 # Install
 
-Nothing is published: there is no package on PyPI. Komorebi is used from a clone of
-this repository, or from a wheel built from one ([from a wheel](#from-a-wheel)). What
-works is the Python package
+Nothing is published: there is no package on PyPI. Komorebi runs in two ways:
+
+- **from a clone** against a tt-metal source tree you build ([from a clone](#from-a-clone),
+  [running on a card](#running-on-a-card)): the way to develop Komorebi itself;
+- **from the two wheels**, `komorebi-tt` and `komorebi-runtime`, with no tt-metal tree:
+  built locally today ([the runtime package](#the-runtime-package)), installed from PyPI
+  from 0.1.0 ([from 0.1.0: the two wheels](#from-010-the-two-wheels)).
+
+What works is the Python package
 (`kmr doctor`, `kmr build`, the layout helpers), the host API that runs a program on a
 card under the dispatcher ([host API](reference/host.md)), the example
 `examples/01_mapcollect`, and the tests.
@@ -82,8 +88,8 @@ runtime. [Packaging](../packaging/README.md) lists what the wheel carries.
 
 ## The runtime package
 
-`komorebi-runtime` (`packaging/runtime/` and `src/komorebi_runtime/` in this repository) is the pinned tt-metal build as a
-platform wheel: the libraries, the kernel runtime tree, the X280 runtime objects,
+`komorebi-runtime` (`packaging/runtime/` and `src/komorebi_runtime/` in this
+repository) is the pinned tt-metal build as a platform wheel: the libraries, the kernel runtime tree, the X280 runtime objects,
 linker script, headers and idle image, and a locator. With it and a `komorebi-tt` wheel
 that carries the prebuilt native module, a program runs on a card with no tt-metal tree.
 Both are built locally ([runtime](../packaging/runtime/README.md),
@@ -100,8 +106,8 @@ python -m komorebi_runtime doctor
 kmr doctor                                     # "from komorebi-runtime 0.81.1.2"
 ```
 
-The two wheels need `numpy` and nothing else: no `ttnn`, no `torch`. When they are
-published, the install is `pip install "komorebi-tt[runtime]"`.
+The two wheels need `numpy` and nothing else: no `ttnn`, no `torch`. From 0.1.0 the
+install is `pip install "komorebi-tt[runtime]"` ([below](#from-010-the-two-wheels)).
 
 When `TT_METAL_HOME` is unset and the package is installed, Komorebi takes its tree from
 it: `kmr doctor`, `kmr build image`, the dispatcher's image and thread images use the
@@ -109,6 +115,60 @@ runtime's X280 pieces and compiler, a session activates the runtime
 (`TT_METAL_RUNTIME_ROOT`) and loads the prebuilt native module.
 `TT_METAL_HOME` set always means that tree, and the module is built against it. The
 card is prepared once as in [running on a card](#running-on-a-card), step 3.
+
+## From 0.1.0: the two wheels
+
+From the 0.1.0 release, both wheels are installed from PyPI. Until then they are built
+as in [the runtime package](#the-runtime-package), and the steps below are the same
+with the two files in place of the `pip install` line. You need Linux on x86-64, Python 3.13 and a Blackhole
+P150A whose X280 memory is prepared ([below](#preparing-the-card-without-a-tree)); no
+tt-metal tree, no compiler of your own, neither `ttnn` nor `torch`.
+
+```
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install "komorebi-tt[runtime]"             # komorebi-tt, komorebi-runtime and numpy
+python -m komorebi_runtime sfpi                # the RISC-V compiler, into KMR_CACHE
+python -m komorebi_runtime doctor
+kmr doctor                                     # "from komorebi-runtime 0.81.1.2"
+```
+
+`pip install komorebi-tt` without `[runtime]` installs the framework alone, which
+needs a tt-metal tree as from a clone. `KMR_CACHE` (default `~/.cache/komorebi`) holds
+the compiler and the runtime root; a new cache directory needs `komorebi_runtime sfpi`
+again, and `kmr doctor` says `x280 compiler  not found` until it is fetched. Leave
+`TT_METAL_HOME` unset: when it is set, Komorebi uses that tree instead of the runtime
+package.
+
+### The examples and the tutorial's programs
+
+The wheels carry the framework, not the programs. `examples/` and `tutorial/` come from
+the repository at the release's tag, as a clone or as the source archive of the GitHub
+release:
+
+```
+git clone --depth 1 --branch v0.1.0 <this repository> komorebi-src
+cp -r komorebi-src/examples komorebi-src/tutorial .
+cd tutorial/04_hello_core && python hello.py        # the command is done
+```
+
+A lesson's folder runs on its own from anywhere, with the wheels' environment active:
+the kernels sit beside the program, and the headers, the dispatcher's image, the native
+module and the runtime come from the install. So do the examples, except three programs
+written for a clone, which import the card tests' feeder from `tests/hardware/feeder`
+and put the clone's `src/` first on the path: `02_merge_tree/merge_fed.py`,
+`03_broadcast` and `05_forward`; they run from a clone set up as in
+[from a clone](#from-a-clone). Use the tag that matches
+the installed `komorebi-tt` version (`kmr doctor` prints it): a program of a later
+commit may need a later package.
+
+### Preparing the card without a tree
+
+The card's X280 memory is prepared once per card ([running on a card](#running-on-a-card),
+step 3), and that step runs a test program of a tt-metal build: the wheels do not carry
+it. On a machine where somebody has prepared the card already, there is nothing to do.
+Otherwise a tree configured as in step 1 builds that program
+(`ninja -C build x280_prime_test`) for step 3, and can be removed afterwards: the
+priming survives resets.
 
 ## Building against a tt-metal tree
 
