@@ -36,6 +36,28 @@ export TT_METAL_HOME=~/tt-metal
 that `import komorebi` works. The `-e` means the package is read from the folder itself.
 The last line tells Komorebi where tt-metal is.
 
+### Or, from 0.1.0: the two wheels
+
+From the 0.1.0 release there is a second way, with no tt-metal folder of your own: two
+packages from PyPI, `komorebi-tt` (the framework) and `komorebi-runtime` (tt-metal,
+already built). The card must still be prepared once, as
+[the install guide](../install.md#preparing-the-card-without-a-tree) says. The packages
+do not hold the tutorial's programs, so you clone the repository at the release's tag
+for them:
+
+```bash
+git clone --depth 1 --branch v0.1.0 <this repository> komorebi
+cd komorebi
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install "komorebi-tt[runtime]"
+python -m komorebi_runtime sfpi
+```
+
+The last line fetches the compiler for the card's cores, once. Do not set
+`TT_METAL_HOME` in this way of working: when it is set, Komorebi uses that folder
+instead of the package. Everything else in this tutorial is the same.
+
 ## Check the machine
 
 `kmr doctor` looks at what you have set up and prints one line for each thing. It does
@@ -57,7 +79,8 @@ pairs of name and answer:
 - `package` and `include`: where the package is, and where the C++ headers are that
   your own C++ files will include.
 - `tt-metal` and `build`: the tt-metal folder it found and whether it comes from
-  `TT_METAL_HOME`.
+  `TT_METAL_HOME`. With the two wheels the folder is inside your cache and the line
+  under it says `from komorebi-runtime`.
 - The last two lines name a part of the card that [[the-card]] explains. The first must
   say `yes` and the second must show a path. Without them nothing in this tutorial runs.
 
