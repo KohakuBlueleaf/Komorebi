@@ -26,6 +26,7 @@ import ttnn  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
+from komorebi.engines.stream import Stream  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
 K = rec.K
@@ -47,6 +48,9 @@ def parse():
     p.add_argument("--one-core", type=int, default=-1, help="every hop to this member")
     p.add_argument("--stall", type=int, default=-1, help="member that stalls")
     p.add_argument("--again", action="store_true", help="then one more run, no stall")
+    p.add_argument(
+        "--engine", action="store_true", help="then the stream engine runs two halves"
+    )
     p.add_argument("--probe", type=int, default=-1, help="member that spends its quota")
     p.add_argument("--max-live", type=int, default=1 << 14)
     p.add_argument("--queue-items", type=int, default=1 << 14)
@@ -80,6 +84,9 @@ def main():
         for i, stall in enumerate(stalls):
             runs.append(run_once(session, a, stall))
             log(f"run {i + 1} done")
+        if a.engine:
+            runs.append(run_engine(session, a))
+            log("engine run done")
     print(json.dumps({"runs": runs, "wall_s": round(time.monotonic() - T0, 1)}))
 
 
@@ -101,13 +108,11 @@ def l1_blocks(device, grid, words):
     )
 
 
-def run_once(session, a, stall):
-    """One load of the program: the RUN record, its end (or the timeout), the check."""
+def load(session, a):
+    """The program loaded: (run, results tensor, program, cores in the grid)."""
     device = session.device
     g = device.compute_with_storage_grid_size()
     grid = (g.x, g.y)
-    cores = grid[0] * grid[1]
-    count = a.count or cores
     res_t = l1_blocks(device, grid, HOP["kResWords"])  # before the grid starts
     program = km.Program(
         "hop",
@@ -120,8 +125,11 @@ def run_once(session, a, stall):
         segments={"hop": HOP["kSegHop"]},
     ).dynamic("hop", **options(a))
     run = session.load(program, deadline=a.deadline, wait=a.wait)
-    log(f"loaded: team of {count} of {cores} cores")
-    words = [
+    return run, res_t, program, grid[0] * grid[1]
+
+
+def record_words(a, stall):
+    return [
         a.items,
         a.hops,
         HOP["kModeOneCore"] if a.one_core >= 0 else HOP["kModeRandom"],
@@ -129,6 +137,14 @@ def run_once(session, a, stall):
         stall + 1,
         a.probe + 1,
     ]
+
+
+def run_once(session, a, stall):
+    """One load of the program: the RUN record, its end (or the timeout), the check."""
+    run, res_t, program, cores = load(session, a)
+    count = a.count or cores
+    log(f"loaded: team of {count} of {cores} cores")
+    words = record_words(a, stall)
     timed_out = None
     t0 = time.perf_counter()
     ticket = run.issue("hop", (0, count), words, exclusive=True)
@@ -146,6 +162,42 @@ def run_once(session, a, stall):
     )
     out["host_s"] = round(host_s, 4)
     return out
+
+
+def run_engine(session, a):
+    """One load: a stream on the engine issues the RUN to two halves of the grid one
+    after the other; the second waits (refused busy, then woken) for the first's end."""
+    run, res_t, program, cores = load(session, a)
+    half = cores // 2
+    s = Stream(req=21, deadline_us=int(a.deadline * 1e6))
+    for first in (0, half):
+        s.issue(HOP["kSegHop"], (first, half), args=record_words(a, -1), exclusive=True)
+    s.wait(0)
+    s.halt(s.const(7))
+    t = run.start(run.upload(s))
+    ev = run.wait_engine(t, timeout=2 * a.deadline + 5.0)
+    run.stop()
+    result = run.result()
+    res = (ttnn.to_torch(res_t).numpy().astype(np.int64) & 0xFFFFFFFF)[: 2 * half]
+    retired, total, visits = replay.replay(a.items, a.hops, half, None)
+    exact = []
+    for part in (res[:half], res[half:]):
+        totals = part[:, HOP["kResTotalLo"]] | (part[:, HOP["kResTotalHi"]] << 32)
+        exact.append(
+            bool((part[:, HOP["kResRetired"]] == retired).all())
+            and bool((totals.astype(np.uint64) == total).all())
+            and bool((part[:, HOP["kResVisits"]] == visits).all())
+        )
+    h = abi.headers()
+    harts = result.get("harts") or [0] * h["KMD_H_WORDS"]
+    return {
+        "engine": ev.kind,
+        "halt": ev.value,
+        "halves_exact": exact,
+        "runs": [int(res[0, HOP["kResRun"]]), int(res[half, HOP["kResRun"]])],
+        "kernel": {k: result[k] for k in ("error_name", "records", "refused")},
+        "checks": int(harts[h["KMD_H_DYN_CHECKS"]]),
+    }
 
 
 def report(a, run, event, dyn, team, stall, res_t, timed_out):
