@@ -20,24 +20,35 @@ the kernel runtime tree, the X280 runtime pieces and a locator.
 - `komorebi/km-dispatch.bin`, the dispatch kernel image for X280 cluster 0, prebuilt;
 - `komorebi_native/`: the ABI and device headers (`include/`), the dispatch kernel's
   sources and its host interface `km_dispatch.h` (`x280/kernel/`), the native host
-  module's source (`csrc/host/`), and every file under `kernels/` and `cmake/` (both
-  empty so far).
+  module's source (`csrc/host/`), its CMake file (`cmake/km_host.cmake`), and every
+  file under `kernels/` (empty so far);
+- with `--host-module`: `komorebi/_km_host.abi3.so`, the native host module prebuilt
+  for `komorebi-runtime`.
 
-The wheel is pure Python (`py3-none-any`): the image is a RISC-V binary, and the native
-host module links the tt-metal libraries of the user's own tree, so it is built there on
-first use, not shipped.
+Without `--host-module` the wheel is pure Python (`py3-none-any`): the image is a
+RISC-V binary, and the native host module is built against the user's own tree on
+first use. With it, the module is built in the tt-metal build `komorebi-runtime` is
+made from (`--tt-metal` names that tree), by `cmake/km_host.cmake` with tt-metal's own
+targets: the tree is reconfigured with the file as `CMAKE_PROJECT_Metalium_INCLUDE`,
+`ninja _km_host` runs, and the configuration is restored. The module's rpath is
+`$ORIGIN/../komorebi_runtime/lib`, so it loads the runtime package's libraries, the
+same files ttnn's module loads, when both wheels are installed in one environment. The
+wheel is then tagged `cp312-abi3-manylinux_<floor>_x86_64`, the floor being the newest
+`GLIBC_` symbol version the module requires (2.32). The prebuilt module is used only
+when the tree is the runtime package's: with `TT_METAL_HOME` set, the module is built
+against that tree as before.
 
 ## What a run needs
 
-The wheel installs and `kmr doctor` runs with nothing else. Running a program on a card
-needs, as for a clone ([install](../docs/install.md#running-on-a-card)):
+The wheel installs and `kmr doctor` runs with nothing else. A wheel with the module and
+`komorebi-runtime` run a program on a card with no tree
+([a run from the two wheels](#a-run-from-the-two-wheels)). Otherwise a run needs, as
+for a clone ([install](../docs/install.md#running-on-a-card)):
 
 1. a tt-metal tree at the pinned version, built with the X280 runtime
    (`-DTT_METAL_BUILD_X280=ON`), with the tt-x280-dispatch targets hooked in, named by
    `TT_METAL_HOME`. The tt-metal inside the `kohakutt` wheel does not do: it is built
-   without the X280 runtime. With `TT_METAL_HOME` unset, an installed `komorebi-runtime`
-   serves for `kmr doctor` and for building X280 images (the dispatch kernel image and
-   threads); the native host module still needs the tree;
+   without the X280 runtime;
 2. `ttnn` from that tree and `torch` in the environment the wheel is installed in;
 3. `clang++-20`: the native host module is built once into `KMR_CACHE` (default
    `~/.cache/komorebi`) the first time a session loads, about ten seconds;
@@ -51,6 +62,8 @@ against, so it matches a tree at the same pin.
 ```
 python3.13 packaging/build_wheel.py --tt-metal "$TT_METAL_HOME" --out dist
 bash packaging/smoke.sh dist/komorebi-*.whl /tmp/komorebi-smoke
+# the wheel for komorebi-runtime, in the tree runtime/build_tt_metal.sh built
+python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
 ```
 
 `build_wheel.py` builds with `--no-build-isolation` by default (the running Python
@@ -92,6 +105,34 @@ same environment, a copy of `examples/` outside any checkout:
 |---|---|---|
 | `python work_cluster.py --paths thread` in `07_work_cluster` | 204 rounds, sum 1,004,917, same as the numpy replay, the thread 10.2 ms on the card | 6.9 s |
 | `python graph.py` in `06_graph` | both paths ended after 5 and 7 rounds, state exact, paths agree | 7.9 s |
+
+### A run from the two wheels
+
+On a Blackhole p150a, 2026-11-13, card 0: `komorebi-runtime` 0.81.1.1 (50.5 MB) and the
+`komorebi` wheel with the module (632 kB, 77 files, `_km_host` 974,097 bytes), built
+from one tt-metal build, installed with `torch` 2.15.0 (CPU) into a fresh environment;
+`TT_METAL_HOME` unset, fresh `KMR_CACHE` and `TT_METAL_CACHE`, slow dispatch:
+
+```
+python3.13 runtime/build_wheel.py --tt-metal TREE --out dist
+python3.13 packaging/build_wheel.py --tt-metal TREE --out dist --host-module
+uv venv -p 3.13 venv && uv pip install -p venv/bin/python \
+    "dist/komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl[ttnn]" \
+    dist/komorebi-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl torch==2.15.0 \
+    --extra-index-url https://download.pytorch.org/whl/cpu
+venv/bin/python -m komorebi_runtime sfpi
+eval "$(venv/bin/python -m komorebi_runtime env)"   # the examples import ttnn first
+cd examples/01_mapcollect && ../../venv/bin/python mapcollect.py --jobs 20 --count 8 --out-tensors 2
+cd ../07_work_cluster && ../../venv/bin/python work_cluster.py
+```
+
+| Run | Result | Wall |
+|---|---|---|
+| `mapcollect.py` | 20 jobs checked (10 exact), none wrong, 120 cores ended, kernels compiled cold from the runtime's tree | 23.0 s |
+| `work_cluster.py` | the CPU, host-fed and X280-thread paths: 204 rounds, sum 1,004,917, all three the same as the numpy replay; the thread 10.82 ms on the card | 6.0 s |
+
+The process maps one copy of `libtt_metal.so`, `libtt-umd.so.0` and `_ttnncpp.so`, from
+`komorebi_runtime/lib`, for both ttnn's module and `_km_host`.
 
 ## Workflows
 
