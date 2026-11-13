@@ -9,9 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from komorebi import _env, abi
+from komorebi.errors import ProgramError
 from komorebi.thread import Thread
 
 KERNELS = ("reader", "compute", "writer")
+# The runtime's KernelBuildOptLevel names; a kernel without one keeps the runtime's
+# default (O2 for the reader and writer, O3 for the compute kernel).
+OPT_LEVELS = ("O0", "O1", "O2", "O3", "Os", "Ofast", "Oz")
 SEGMENT = re.compile(r"constexpr\s+uint32_t\s+kSeg(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;")
 
 
@@ -39,7 +43,7 @@ class Program:
     """What the resident worker runs on every core: `kernels` is a directory with
     reader.cpp, compute.cpp and writer.cpp (or a dict of the three), `args(core)` the
     (reader, writer, compute) arguments after the start-up arguments, `segments` a
-    dict or a header path."""
+    dict or a header path, `opt` an optimisation level per kernel ({"reader": "Os"})."""
 
     name: str
     kernels: object
@@ -52,6 +56,7 @@ class Program:
     segments: object = field(default_factory=dict)
     threads: dict = field(default_factory=dict)  # work cluster -> Thread
     dyn: "Dynamic | None" = None
+    opt: dict = field(default_factory=dict)  # kernel -> optimisation level
 
     def __post_init__(self):
         if isinstance(self.segments, str | Path):
@@ -65,6 +70,13 @@ class Program:
         unknown = set(self.compile_args) - set(KERNELS)
         if unknown:
             raise ValueError(f"compile_args for unknown kernels {sorted(unknown)}")
+        for kernel, level in self.opt.items():
+            if kernel not in KERNELS:
+                raise ProgramError(
+                    f"opt for unknown kernel {kernel!r}: not in {KERNELS}"
+                )
+            if level not in OPT_LEVELS:
+                raise ProgramError(f"opt {kernel}={level!r}: not one of {OPT_LEVELS}")
 
     def thread(self, cluster=1, **kwargs):
         """Declares the program's X280 thread on work cluster `cluster` (the

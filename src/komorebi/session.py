@@ -43,6 +43,7 @@ REGION_CHUNK = 2 << 20  # of this size, with a log line each
 # unset, it is 0, which means no bound. Read when the process first opens a device.
 OP_TIMEOUT = "TT_METAL_OPERATION_TIMEOUT_SECONDS"
 OP_TIMEOUT_DEFAULT = 30.0  # the runtime's own example value
+OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
 
 
 def compute_config(options):
@@ -142,6 +143,20 @@ def exit_wait(environ=None):
     except ValueError:
         seconds = 0.0
     return f"up to {seconds:g} s" if seconds > 0 else "without a bound"
+
+
+def kernel_build(program, kernel, defines):
+    """A kernel's defines, and its optimisation level when the program sets one. A set
+    level also adds a define naming it: the runtime's build cache key leaves the level
+    out, and two levels must not share a cached ELF."""
+    level = program.opt.get(kernel)
+    if level is None:
+        return {"defines": defines}
+    enum = ttnn.experimental.fabric_mux.KernelBuildOptLevel  # where ttnn exports it
+    return {
+        "defines": [*defines, (OPT_DEFINE, level)],
+        "opt_level": getattr(enum, level),
+    }
 
 
 def visible_card():
@@ -776,10 +791,10 @@ class _Backend:
                 source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
                 core_ranges=all_cores,
                 compile_time_args=list(program.compile_args.get(kernel, [])),
-                defines=defines,
                 runtime_args=args,
                 config=ttnn.DataMovementConfigDescriptor(processor=processor, noc=noc),
                 compiler_include_paths=include,
+                **kernel_build(program, kernel, defines),
             )
 
         return ttnn.ProgramDescriptor(
@@ -791,10 +806,10 @@ class _Backend:
                     source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
                     core_ranges=all_cores,
                     compile_time_args=list(program.compile_args.get("compute", [])),
-                    defines=defines,
                     runtime_args=compute_args,
                     config=compute_config(program.compute),
                     compiler_include_paths=include,
+                    **kernel_build(program, "compute", defines),
                 ),
             ],
             semaphores=[],
