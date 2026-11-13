@@ -345,17 +345,6 @@ namespace {
         }
     };
 
-    // Corners beyond the near distance (z > near > 0: float32 order as integers).
-    uint32_t beyond_of(const uint32_t* words, uint32_t near) {
-        uint32_t count = 0;
-        for (uint32_t corner = 0; corner < 3; ++corner) {
-            count += (
-                static_cast<int32_t>(words[kRawZ + corner]) > static_cast<int32_t>(near)
-            );
-        }
-        return count;
-    }
-
     // One pass's state: the mode, the counters (COUNT) or the tiles' next slots and
     // the out pages (SETUP).
     struct Pass {
@@ -370,14 +359,15 @@ namespace {
         bool succeeded = true;
         uint32_t kept_count = 0, clipped = 0;  // the profile's counts
 
-        // A finished record that touches `box` (inside the image, or a give-up).
-        void record(const uint32_t* words, const Box& box) {
+        // A finished record that touches `box` (inside the image, or a give-up); COUNT
+        // reads no word of it.
+        void record(const uint32_t* words, const Box& box, uint32_t triangle) {
             if (
                 box.first_column < 0 || box.first_row < 0 ||
                 box.last_column >= static_cast<int32_t>(kWidth) ||
                 box.last_row >= static_cast<int32_t>(kHeight)
             ) {
-                give_up(kGaveBadBox, words[28] & 0xFFFF);
+                give_up(kGaveBadBox, triangle & 0xFFFF);
                 succeeded = false;
                 return;
             }
@@ -495,29 +485,50 @@ namespace {
                 }
                 finish(words, box, triangle);
                 ++kept_count;
-                record(words, box);
+                record(words, box, triangle);
             }
         }
 
-        // The block's kept triangles in order, from raw records at `records` (Dst holds
-        // the block), a crossing one's pieces at its place; `work`: 2,048 words.
-        void block(
-            uint32_t* records,
-            const uint32_t* mesh,
-            uint32_t* work,
-            uint32_t first_triangle
+        // The same after finish_lanes. `work`: records from 0, pieces' records from
+        // 1,024, corners from 2,048, the lanes' flags and boxes from 2,688.
+        void block_finished(
+            const uint32_t* mesh, uint32_t* work, uint32_t first_triangle
         ) {
+            // pair-major (setup_pass::pairs_out): flags with first columns, last
+            // columns with lane numbers, then first with last rows
+            uint32_t* lane_words = work + 2688;
+            setup_pass::pairs_out(setup_pass::kSlotFlags, 2, lane_words);
+            setup_pass::pairs_out(
+                setup_pass::kSlotRecords + kRawY0, 1, lane_words + 128
+            );
+            const uint32_t* rows = lane_words + 128;
+            uint32_t kept_lanes = 0, crossing = 0;
+            for (uint32_t lane = 0; lane < 32; ++lane) {
+                const uint32_t flags = lane_words[2 * lane];
+                kept_lanes |= (flags & 1) << lane;
+                crossing |= (flags >> 1 & 1) << lane;
+            }
+            // SETUP: each kept lane's record by segment loads from the window,
+            // before any clipping reuses the window
+            if (handler == kHandlerSetup) {
+                for (uint32_t left = kept_lanes; left != 0; left &= left - 1) {
+                    const uint32_t lane = __builtin_ctz(left);
+                    setup_pass::lane_record(
+                        const_cast<const uint32_t*>(
+                            setup_pass::window() +
+                            setup_pass::word(setup_pass::kSlotRecords)
+                        ),
+                        lane,
+                        work + 32 * lane
+                    );
+                }
+            }
             const uint32_t near = (
                 setup_pass::window()[setup_pass::word(setup_pass::kSlotCamera + 15)]
             );
-            Corner* corners = reinterpret_cast<Corner*>(work + 1024);
-            uint32_t crossing = 0;
-            for (uint32_t lane = 0; lane < 32; ++lane) {
-                const uint32_t beyond = beyond_of(records + 32 * lane, near);
-                if (beyond != 1 && beyond != 2) {
-                    continue;
-                }
-                crossing |= 1u << lane;
+            Corner* corners = reinterpret_cast<Corner*>(work + 2048);
+            for (uint32_t left = crossing; left != 0; left &= left - 1) {
+                const uint32_t lane = __builtin_ctz(left);
                 for (uint32_t vertex = 0; vertex < 3; ++vertex) {
                     Corner& corner = corners[3 * lane + vertex];
                     for (uint32_t i = 0; i < 3; ++i) {
@@ -536,24 +547,28 @@ namespace {
                     }
                 }
             }
-            for (uint32_t lane = 0; lane < 32 && succeeded; ++lane) {
-                uint32_t* words = records + 32 * lane;
+            for (
+                uint32_t left = kept_lanes | crossing; left != 0 && succeeded;
+                left &= left - 1
+            ) {
+                const uint32_t lane = __builtin_ctz(left);
                 if (crossing >> lane & 1) {
                     pieces(
-                        corners + 3 * lane, value(near), work, first_triangle + lane
+                        corners + 3 * lane,
+                        value(near),
+                        work + 1024,
+                        first_triangle + lane
                     );
                     continue;
                 }
-                if (beyond_of(words, near) != 3) {
-                    continue;
-                }
-                const Box box = box_of(words);
-                if (!kept(words, box)) {
-                    continue;
-                }
-                finish(words, box, first_triangle + lane);
+                const Box box{
+                    static_cast<int32_t>(lane_words[2 * lane + 1]),
+                    static_cast<int32_t>(lane_words[64 + 2 * lane]),
+                    static_cast<int32_t>(rows[2 * lane]),
+                    static_cast<int32_t>(rows[2 * lane + 1])
+                };
                 ++kept_count;
-                record(words, box);
+                record(work + 32 * lane, box, first_triangle + lane);
             }
         }
     };
@@ -674,6 +689,12 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
             setup_pass::order(
                 setup_pass::word(setup_pass::kSlotCamera + kCamWords - 1) + 62
             );
+            // each lane's number as a float, for finish_lanes
+            const uint32_t lane_numbers = setup_pass::word(setup_pass::kSlotLaneNumber);
+            for (uint32_t lane = 0; lane < 32; ++lane) {
+                setup_pass::window()[lane_numbers + 2 * lane] = float_bits(lane);
+            }
+            setup_pass::order(lane_numbers + 62);
             ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
             continue;
         }
@@ -681,6 +702,12 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
         setup_pass::block_in(mesh_words);
         setup_pass::camera_space();
         setup_pass::triangles(handler != kHandlerCount);
+        const uint32_t first_triangle = 32 * (first_block + page - 1);
+        if (handler != kHandlerLanes) {
+            setup_pass::finish_lanes(
+                handler == kHandlerSetup, float_bits(first_triangle)
+            );
+        }
         ckernel::tensix_sync();
         if (handler == kHandlerLanes) {
             ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
@@ -697,10 +724,9 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
             cb_push_back(kCbRec, 1);
             continue;
         }
-        setup_pass::records_out(work);
         const uint32_t scalar_started = km::wall();
         vector_cycles += scalar_started - vector_started;
-        pass.block(work, mesh_words, work + 1024, 32 * (first_block + page - 1));
+        pass.block_finished(mesh_words, work, first_triangle);
         scalar_cycles += km::wall() - scalar_started;
         ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
         if (!pass.succeeded) {

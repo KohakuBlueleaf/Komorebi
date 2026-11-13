@@ -41,6 +41,15 @@ namespace setup_pass {
     constexpr uint32_t kSlotScreen = 96;
     constexpr uint32_t kSlotArea = 106;
     constexpr uint32_t kSlotInverseArea = 107;
+    // finish_lanes: per lane 1 kept, 2 crossing the near distance, else 0; the box's
+    // columns as integers; the lane number as a float (written once by the pack thread)
+    constexpr uint32_t kSlotFlags = 108;
+    constexpr uint32_t kSlotFirstColumn = 109;
+    constexpr uint32_t kSlotLastColumn = 110;
+    constexpr uint32_t kSlotLaneNumber = 111;
+    constexpr uint32_t kSetVd = 8;           // SFPGT, SFPLE: -1 or 0 into VD
+    constexpr uint32_t kShiftImmediate = 1;  // SFPSHFT: by the immediate, logical
+    constexpr uint32_t kIaddSubtract = 2;    // SFPIADD: VD = VC - VD
 
     inline uint32_t wall() {
         return *reinterpret_cast<volatile uint32_t*>(kWallClock);
@@ -412,6 +421,153 @@ namespace setup_pass {
         for (uint32_t channel = 0; channel < 3; ++channel) {
             plane(kSlotColour + channel, 3, 15 + 3 * channel);
         }
+    }
+
+    // The integer n of a box word 1.5 x 2^23 + n into `integer` (L4 holds the magic).
+    inline void box_integer(uint32_t raw, uint32_t integer) {
+        TT_SFPMOV(0, L4, integer, 0);
+        TT_SFPIADD(0, raw, integer, kIaddSubtract | kCcNone);
+    }
+
+    // float16 bits of the integer n in [0, 2048) whose float32 is in `number` (L5
+    // holds 0x1C000): (bits >> 13) - 0x1C000, and 0 for n = 0.
+    inline void half_of(uint32_t number, uint32_t work) {
+        TTI_SFPNOP;  // number may come from a multiply-add; SFPSHFT reads VD unseen
+        TT_SFPMOV(0, number, work, 0);
+        TT_SFPGT(0, ZERO, work, kSetVd);  // n > 0
+        TT_SFPSHFT((-13) & 0xFFF, 0, number, kShiftImmediate);
+        TT_SFPMOV(0, L5, L6, 0);
+        TT_SFPIADD(0, number, L6, kIaddSubtract | kCcNone);
+        TT_SFPAND(0, work, L6, 0);
+    }
+
+    // Per lane: kept and crossing flags, box as integers and float16 columns; with
+    // `records` the thresholds, number (first + lane), words 29 to 31 as 0.
+    inline void finish_lanes(bool records, uint32_t first_bits) {
+        // beyond the near distance, per corner (float order, near > 0)
+        load(L7, kSlotCamera + 15);
+        load(L0, kSlotRecords + kRawZ);
+        TT_SFPGT(0, L7, L0, kSetVd);
+        load(L1, kSlotRecords + kRawZ + 1);
+        TT_SFPGT(0, L7, L1, kSetVd);
+        load(L2, kSlotRecords + kRawZ + 2);
+        TT_SFPGT(0, L7, L2, kSetVd);
+        TT_SFPMOV(0, L0, L3, 0);
+        TT_SFPAND(0, L1, L3, 0);
+        TT_SFPAND(0, L2, L3, 0);  // L3: every corner beyond
+        TT_SFPOR(0, L1, L0, 0);
+        TT_SFPOR(0, L2, L0, 0);
+        TT_SFPXOR(0, L3, L0, 0);  // L0: some but not all beyond (crossing)
+        immediate(L6, 0x7FFFFFFF);
+        load(L1, kSlotRecords + kRawArea);
+        TT_SFPAND(0, L6, L1, 0);
+        TT_SFPGT(0, ZERO, L1, kSetVd);  // a non-zero area
+        TT_SFPAND(0, L1, L3, 0);
+        load(L1, kSlotRecords + kRawX0);
+        load(L2, kSlotRecords + kRawX1);
+        TT_SFPLE(0, L2, L1, kSetVd);  // x0 <= x1 (box words ordered as numbers)
+        TT_SFPAND(0, L1, L3, 0);
+        load(L1, kSlotRecords + kRawY0);
+        load(L2, kSlotRecords + kRawY1);
+        TT_SFPLE(0, L2, L1, kSetVd);
+        TT_SFPAND(0, L1, L3, 0);
+        TT_SFPSHFT((-31) & 0xFFF, 0, L3, kShiftImmediate);  // kept: 1
+        TT_SFPSHFT((-31) & 0xFFF, 0, L0, kShiftImmediate);
+        TT_SFPSHFT(1, 0, L0, kShiftImmediate);  // crossing: 2
+        TT_SFPOR(0, L0, L3, 0);
+        store(L3, kSlotFlags);
+        // the box: rows as integers in place, columns as integers aside
+        immediate(L4, kMagic);
+        load(L0, kSlotRecords + kRawY0);
+        box_integer(L0, L1);
+        store(L1, kSlotRecords + kRawY0);
+        load(L0, kSlotRecords + kRawY1);
+        box_integer(L0, L1);
+        store(L1, kSlotRecords + kRawY1);
+        load(L0, kSlotRecords + kRawX0);
+        box_integer(L0, L1);
+        store(L1, kSlotFirstColumn);
+        load(L2, kSlotRecords + kRawX1);
+        box_integer(L2, L3);
+        store(L3, kSlotLastColumn);
+        if (!records) {
+            return;
+        }
+        // columns x0 and x1 + 1 as float16 (L0: x0's word, L2: x1's word)
+        immediate(L5, 0x1C000);
+        sub(L0, L4, L0);
+        half_of(L0, L1);
+        store(L6, kSlotRecords + kRawX0);
+        add(L2, ONE, L2);
+        sub(L2, L4, L2);
+        half_of(L2, L1);
+        store(L6, kSlotRecords + kRawX1);
+        // top-left thresholds: a > 0, or a = ±0 and b > 0
+        immediate(L7, 0x80000001);
+        immediate(L6, 0x7FFFFFFF);
+        for (uint32_t corner = 0; corner < 3; ++corner) {
+            load(L0, kSlotRecords + corner);
+            load(L1, kSlotRecords + 3 + corner);
+            TT_SFPMOV(0, L0, L2, 0);
+            TT_SFPGT(0, ZERO, L2, kSetVd);  // a > +0
+            TT_SFPAND(0, L6, L0, 0);
+            TT_SFPLE(0, ZERO, L0, kSetVd);  // |a| <= +0: a is a zero
+            TT_SFPGT(0, ZERO, L1, kSetVd);  // b > +0
+            TT_SFPAND(0, L1, L0, 0);
+            TT_SFPOR(0, L2, L0, 0);
+            TT_SFPAND(0, L7, L0, 0);
+            store(L0, kSlotRecords + 9 + corner);
+        }
+        // triangle number, then words 29 to 31
+        load(L0, kSlotLaneNumber);
+        immediate(L1, first_bits);
+        add(L0, L1, L0);
+        store(L0, kSlotRecords + 28);
+        TT_SFPMOV(0, ZERO, L0, 0);
+        store(L0, kSlotRecords + 29);
+        store(L0, kSlotRecords + 30);
+        store(L0, kSlotRecords + 31);
+    }
+
+    // Slots first_slot (even) on, 2 count of them, as window pairs (slot 2 j + s, lane
+    // l at 64 j + 2 l + s): unit-stride copies, about 1 cycle a word against 6.
+    inline void pairs_out(uint32_t first_slot, uint32_t count, uint32_t* words) {
+        const volatile uint32_t* source = window() + word(first_slot);
+#if defined(__riscv_vector)
+        const size_t vector_length = __riscv_vsetvl_e32m8(32);
+        for (uint32_t i = 0; i < 64 * count; i += 32) {
+            __riscv_vse32_v_u32m8(
+                words + i,
+                __riscv_vle32_v_u32m8(
+                    const_cast<const uint32_t*>(source + i), vector_length
+                ),
+                vector_length
+            );
+        }
+        asm volatile("" ::: "memory");
+#else
+        for (uint32_t i = 0; i < 64 * count; ++i) {
+            words[i] = source[i];
+        }
+#endif
+    }
+
+    // Lane `lane`'s record (32 words) out of 16 pairs copied by pairs_out, to `record`.
+    inline void lane_record(const uint32_t* pairs, uint32_t lane, uint32_t* record) {
+#if defined(__riscv_vector)
+        const size_t vector_length = __riscv_vsetvl_e32m4(16);
+        const auto pair_values = (
+            __riscv_vlsseg2e32_v_u32m4x2(pairs + 2 * lane, 256, vector_length)
+        );
+        __riscv_vsseg2e32_v_u32m4x2(record, pair_values, vector_length);
+        asm volatile("" ::: "memory");
+#else
+        for (uint32_t word_index = 0; word_index < 32; ++word_index) {
+            record[word_index] = (
+                pairs [64 * (word_index >> 1) + 2 * lane + (word_index & 1)]
+            );
+        }
+#endif
     }
 
 }  // namespace setup_pass
