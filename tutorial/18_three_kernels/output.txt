@@ -1,0 +1,3 @@
+8 commands of 1 tile:   19.1 microseconds in all
+1 command of 8 tiles:     8.2 microseconds
+all 8 tiles of the destination are the tiles of the source

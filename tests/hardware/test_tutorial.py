@@ -27,6 +27,15 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("12_partitions/partitions.py", "together they cover items 0 to 9"),
         ("13_the_leader/the_leader.py", "only rank 3 answers; Python receives 0"),
         ("14_placing_groups/placing_groups.py", "right panel of rows 2 to 4"),
+        ("15_tiles_and_tensors/tiles_and_tensors.py", "6 tiles of 4096 bytes"),
+        ("16_reading_from_dram/reading_from_dram.py", "tile 3, number 0: 3000"),
+        (
+            "17_writing_to_dram/writing_to_dram.py",
+            "are tiles 0 and 1 of the destination",
+        ),
+        ("18_three_kernels/three_kernels.py", "all 8 tiles of the destination"),
+        ("19_circular_buffers/circular_buffers.py", "buffer pages 8:"),
+        ("20_computing_on_a_tile/computing_on_a_tile.py", "is the sum of tile 1"),
     ],
 )
 def test_a_tutorial_program_runs_and_prints_its_line(script, line):

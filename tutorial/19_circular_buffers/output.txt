@@ -1,0 +1,3 @@
+buffer pages 1: 64 tiles copied in  54.6 us
+buffer pages 2: 64 tiles copied in  32.8 us
+buffer pages 8: 64 tiles copied in  32.8 us
