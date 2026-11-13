@@ -1,10 +1,12 @@
-# Rasterization on the card, host-binned
+# Rasterization on the card
 
 The rasterizer of `ref/raster.py` on a Blackhole card's Tensix cores, on the resident
 worker runtime (`komorebi/device/km_worker.hpp`), loaded and driven through the host
 package (`komorebi.Session` and `Run`, the dispatch kernel issuing the records).
-The host does setup and binning with the reference's own functions; the cores fill
-tiles. Every scene's image is bit-exact against the reference.
+Two ways in: host-binned (the host does setup and binning with the reference's own
+functions; the cores fill tiles), and the per-triangle stages on the cores too (COUNT
+and SETUP, below; the host only takes the step between them). Every scene's image is
+bit-exact against the reference.
 
 ## The thread program
 
@@ -167,6 +169,76 @@ projects.raster.run --scene <s>`): tiny 119.3 us, 10^4 139.1 us, both exact, aga
 119.5 and 139.4 us with the earlier driver. Reading the frame back (20 MiB) took 11 to
 14 s, apart from the frame time.
 
+## COUNT and SETUP on the cores
+
+The per-triangle stages run on the same 120 cores as a program of their own
+(`kernels/setup_reader.cpp`, `setup_compute.cpp`, `setup_writer.cpp`; host side
+`passes.py`, driver `card_passes.py`), two passes over the triangles:
+
+```
+upload:  the mesh de-indexed, 32 triangles a block: 18 vectors (x, y, z and colour of three
+         corners) already in the order of the vector unit's register window, 2,304 bytes
+COUNT    core c, its contiguous share of the blocks:
+             vector unit: camera space, screen (1/z by the exact reciprocal), area, box
+             pack thread, per triangle: keep rule; a triangle across the near distance is
+                 clipped and its pieces go through the vector unit at its place
+             entries and rows of every tile it touches += 1, += its rows there
+         writes its two counters (1,024 words each) to DRAM
+host:    tile costs from the counters; tiles to cores; each core's list (header, records, end
+         slot, as the fill reads it) laid out with headers, end slots and the directory written;
+         the slot of every (core, tile) = the tile's header + 1 + the records of lower cores
+SETUP    core c, the same share again: the same steps plus edges, 1/area and the 12 planes;
+         every kept record goes once to each tile it touches, at that tile's next slot
+FILL     as above, over the lists in place
+```
+
+The float32 operations are the reference's, in its order, one rounding each, on the
+vector unit with 32 triangles as lanes; the box's ceil and floor clamp first and then
+round by adding 1.5 x 2^23. The pack thread finishes each kept record (top-left
+thresholds, the box as integers and float16 columns, the triangle number), and clips a
+crossing triangle with the cores' scalar floats (rounded to nearest, one operation at
+a time); those cores have no divide, so the clip's one division is done in integers,
+rounded to nearest even. Lists stay in ascending triangle order: each core's share is
+a contiguous range and lower cores' records come first.
+
+Exact on every scene of the package's list, with the fill unchanged (2026-11-13,
+card 1, 120 cores, host load 5 to 11, card clock not sampled in these check runs;
+`python -m projects.raster.card_passes --scene <s> --frame [--lists 400]`). Times are
+one record's event, issue to the last core's acknowledgement:
+
+| scene | mesh blocks | list pages | COUNT us | SETUP us | FILL us | image differs | list pages differ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| tiny | 13 | 356 | 73.6 | 327.2 | 119.3 | 0 | 0 of 356 |
+| 10^4 | 375 | 1,181 | 96.8 | 279.7 | 139.9 | 0 | 0 of 1,181 |
+| 10^5 | 3,198 | 5,913 | 430.2 | 844.4 | 473.7 | 0 | 0 of 5,913 |
+| 10^6 | 31,182 | 39,233 | 3,813.1 | 6,960.6 | 2,960.5 | 0 | 0 of 400 sampled |
+| stress-big | 7 | 966 | 247.0 | 2,439.1 | 235.3 | 0 | 0 of 966 |
+| stress-heavy | 1,885 | 3,123 | 277.1 | 820.2 | 10,930.3 | 0 | 0 of 3,123 |
+| stress-degenerate | 10 | 240 | 33.0 | 93.2 | 119.2 | 0 | 0 of 240 |
+
+The counters equal the reference's on every scene, and the records as the vector unit
+leaves them were checked word for word against `raster.setup` for every triangle of
+every scene (`card_passes.py` without `--frame`; 10^6: 549,341 kept, 0 words differ).
+
+Between the two passes the host stops the program, reads the counters (983 KB, 0.46 to
+1.3 s), takes its step (7 to 12 ms), writes the lists' frame and the slots (0.12 to
+0.67 s) and loads the program again (0.1 to 0.4 s): seconds against the milliseconds
+of the passes. The step is meant for a thread on the X280 cores beside the dispatch
+kernel, which reads the counters from DRAM itself.
+
+Bands are not built for this path: the fill's format needs a list per band, and per-tile
+counters do not give per-band counts. What that costs, as the cost model estimates the
+slowest of 120 cores against the mean: 10^5 1.11 times, 10^6 1.42 times, stress-heavy
+10.5 times (the FILL time above); Sponza 1.00, Bistro 1.34 to 2.28, San Miguel 2.53 to
+2.61. Exact per-band counts would take each tile's first and last 2-row group of every
+record (64 KB of counters per core).
+
+Measured before the build with probes that are not in the repository (card 1, 120
+cores, 1,350 MHz): a 16-byte gathered DRAM read costs about 350 cycles against 27 cycles
+per triangle streamed (hence the de-indexed mesh); a scattered 128-byte write about 140
+cycles of the writer's issue; 18 vectors in window order into the register window 655
+cycles a block.
+
 ## Results
 
 Scenes of the reference (`ref/scenes.py`): tiny, 10^4, 10^5 and 10^6 triangles,
@@ -319,10 +391,10 @@ the busy time, and the mean core's busy time over the slowest core's.
 
 ## Not on the card yet
 
-Triangle setup, the per-tile counts and the scatter into the tile lists are regular
-per-core work and are being moved onto the Tensix cores as their own stage. What stays
-on the host until a thread can run on the card's X280 cores beside the dispatch kernel
-is the irregular part, with today's host times (10^5 / 10^6, ms):
+Triangle setup, the per-tile counts and the scatter into the tile lists run on the
+Tensix cores (COUNT and SETUP, above). What stays on the host until a thread can run on
+the card's X280 cores beside the dispatch kernel is the irregular part, with the
+host-binned path's times (10^5 / 10^6, ms):
 
 - Prefix sums of the per-tile counts, tile costs, bands and the assignment of tiles and
   bands to cores: inside the records-and-lists step (48 / 207 ms, which also packs the
@@ -361,6 +433,10 @@ runs at about 1 MB/s.
   cycles per triangle, but every number has to arrive already copied to all 32 lanes,
   which multiplies the list bytes by 32. Missing in between: a way to bring a few
   scalars into all lanes of a register from L1.
+- **The pack thread's hardware float has no divide.** With its vector extension on, its
+  scalar float32 compiles to the cores' float instructions, division included; a kernel
+  that compiles one stops its core without a report (the clip's division is done in
+  integers).
 - **Only the unpack thread can wait on a circular buffer**, but the pack thread is the
   one with the vector extension and the destination register window. Every list page
   goes through a mailbox hand-off between the two threads.
