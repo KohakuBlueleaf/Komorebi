@@ -75,5 +75,5 @@ jobs, and the grid saw the simulator's teams in order.
 
 Host-fed, every job is a round trip to the host; on the X280 it is a round trip to the
 dispatch kernel on the same cluster. The three error streams ended with `opcode`,
-`steps` and `never_fits`. The dispatch kernel's image with both engines is 23,888
+`steps` and `never_fits`. The dispatch kernel's image with both engines is 27,664
 bytes.
