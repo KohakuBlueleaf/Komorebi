@@ -252,6 +252,13 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         queue_drop(dispatcher, argument);
         return KMD_TAKEN;
     }
+    if (handler == KMD_HANDLER_ANSWER && source >= KMD_SRC_WORK) {
+        ring_consumed(ring);
+        work_answer(
+            dispatcher, source - KMD_SRC_WORK, argument, (uint32_t)(line[2] >> 32), now
+        );
+        return KMD_TAKEN;
+    }
     /* Every other command ends in one event: it waits until that event has room. */
     if (!ring_room(ring)) {
         return KMD_NO_ROOM;
@@ -304,6 +311,9 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
 #endif
+    if (first >= KM_GROUP_CLUSTER_BASE && handler <= KM_HANDLER_USER_MAX) {
+        return work_command(dispatcher, source, now); /* to a work cluster's thread */
+    }
     uint32_t reject = 0;
     if (handler == KM_HANDLER_DEADLINE) {
         reject = KMD_REJECT_DEADLINE;
@@ -512,6 +522,9 @@ static void loop(kmd_t* dispatcher) {
             return;
         }
         const uint64_t now = x280_mtime();
+        if (dispatcher->thread_busy) {
+            work_late(dispatcher, now);
+        }
         const uint32_t late = slots_late(dispatcher, now);
         if (late != KM_RING_SLOTS) {
             /* The command's source gets the timeout event; the engine turns it into its
@@ -542,7 +555,7 @@ static void loop(kmd_t* dispatcher) {
         }
         if (
             activity != seen_activity || dispatcher->busy || dispatcher->stream_count ||
-            dispatcher->queued || graph_running(dispatcher)
+            dispatcher->queued || dispatcher->thread_busy || graph_running(dispatcher)
         ) {
             seen_activity = activity;
             active_since = now;
@@ -562,6 +575,7 @@ static void finish(kmd_t* dispatcher) {
     for (uint32_t slot = 0; slot < KM_RING_SLOTS; slot++) {
         abandoned += (dispatcher->busy >> slot) & 1u;
     }
+    abandoned += work_abandoned(dispatcher);
     dispatcher->x280_cores[KMD_H_ABANDONED] = abandoned;
     if (dispatcher->control[0] != 0 && (dispatcher->busy || !dispatcher->exited)) {
         grid_stop(dispatcher);

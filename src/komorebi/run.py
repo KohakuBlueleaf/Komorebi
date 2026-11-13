@@ -124,6 +124,8 @@ class Run:
             constants["KM_FLAG_QUEUE"],
         )
         self._flag_exclusive = constants["KM_FLAG_EXCLUSIVE"]
+        # a group from this first core on names a work cluster's thread
+        self._cluster_base = constants["KM_GROUP_CLUSTER_BASE"]
         self._rejections = {
             value: name[len("KMD_REJECT_") :].lower()
             for name, value in constants.items()
@@ -375,8 +377,10 @@ class Run:
                 self._rejected[handle] = event.auxiliary
                 if self.group(handle) is not None:
                     self._unsequence(handle)
-            elif event.kind == "timeout":
-                timeout = event
+            elif event.kind == "timeout" and self._first[handle - self._base] < (
+                self._cluster_base
+            ):
+                timeout = event  # a thread's late command does not end the run
         if timeout is not None:
             self._fail_timeout(timeout)
 

@@ -84,12 +84,17 @@
 #define KMD_REJECT_DROPPED 10u  /* to the engine: a queued job of its stream dropped */
 #define KMD_REJECT_BUSY 11u     /* engine, work cluster: the command cannot go now */
 #define KMD_REJECT_MESSAGES 12u /* a dynamic run with KM_FLAG_QUEUE */
+/* the host's command to a work cluster whose thread has KMD_WORK_IN_DEPTH unanswered */
+#define KMD_REJECT_THREAD 14u
 
 /* Engine to kernel: POST host event {a0 request, a1 status, a2 ticks}. Kernel to
  * engine: RUN {request offset, ticks bytes} of an upload, CANCEL {ticks request}. */
 #define KMD_HANDLER_POST 248u
 /* Engine to kernel: drop its queued jobs of stream tag a0 (the header's slot bits). */
 #define KMD_HANDLER_DROP 247u
+/* Work cluster to kernel: its thread's answer to command line a0, a1 the word that
+ * kmx_program returned; no event. */
+#define KMD_HANDLER_ANSWER 243u
 #define KMD_EVENT_RUN 0x10u
 #define KMD_EVENT_CANCEL 0x11u
 /* Kernel to engine, once after a KMD_REJECT_BUSY: a slot or the queue has room. */
@@ -282,6 +287,11 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 #define KMD_WORK_EVENTS 0x80u   /* work_event_depth events */
 #define KMD_WORK_DEPTH_MAX 64u
 #define KMD_WORK_EVENTS_MAX 1024u
+/* Commands to the thread (kmx_program): KMD_WORK_IN_DEPTH lines of 64 bytes after the
+ * events, the core 0's; line n (from 1) in slot n % depth until the thread answers. */
+#define KMD_WORK_IN(event_depth) \
+    (KMD_WORK_EVENTS + (((event_depth) * 16u + 63u) & ~63u))
+#define KMD_WORK_IN_DEPTH 8u
 
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u

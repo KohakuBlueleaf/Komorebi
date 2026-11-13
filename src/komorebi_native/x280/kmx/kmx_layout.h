@@ -130,6 +130,13 @@ typedef struct {
  * inside one 2 MiB window the start-up opens; consumed and events are local. */
 #define KMX_RING_REMOTE 2u
 #define KMX_RING_WINDOW 16u /* the window slot it uses */
+/* Commands the dispatcher hands the thread (kmx_program): KMX_RING_IN_DEPTH lines of
+ * 64 bytes this many bytes after the events; line n (from 1) in slot n % depth. */
+#define KMX_RING_IN_AFTER(event_depth) (((event_depth) * 16u + 63u) & ~63u)
+#define KMX_RING_IN_DEPTH 8u
+/* The thread's answer to line a0, a1 the word kmx_program returned: a command of the
+ * dispatcher's own, which sends no event for it. */
+#define KMX_HANDLER_ANSWER 243u
 
 typedef struct {
     uint64_t cmd;      /* command_depth 64-byte slots, 64-byte aligned */

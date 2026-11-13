@@ -51,6 +51,18 @@ def test_the_threads_wake_is_the_kernels():
     assert CONSTANTS["KMX_EVENT_WAKE"] == thread_module.abi.headers()["KMD_EVENT_WAKE"]
 
 
+def test_the_lines_the_kernel_hands_a_thread_follow_its_events_on_both_sides():
+    headers = thread_module.abi.headers()
+    ring, _ = thread_module.work_ring(0x8100000, (8, 3), 0x8120000, (8, 9))
+    assert CONSTANTS["KMX_RING_IN_DEPTH"] == headers["KMD_WORK_IN_DEPTH"]
+    assert CONSTANTS["KMX_HANDLER_ANSWER"] == headers["KMD_HANDLER_ANSWER"]
+    lines = headers["KMD_WORK_EVENTS"] + 16 * ring.event_depth
+    assert (
+        thread_module.ring_area_bytes(ring)
+        == lines + 64 * CONSTANTS["KMX_RING_IN_DEPTH"]
+    )
+
+
 def test_ring_line_names_the_placement():
     ring = thread_module.RingPlacement(
         0x1000, 0x2040, 0x3000, 0x4000, 16, 64, cached=True

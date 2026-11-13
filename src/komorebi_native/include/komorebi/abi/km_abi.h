@@ -32,6 +32,10 @@
 /* dispatcher: a queued job; `first` is ignored, the group allocator chooses it */
 #define KM_FLAG_QUEUE 8u
 #define KM_GROUP_ALL(n) ((uint32_t)(n) << 16) /* first 0, count n */
+/* A command to the X280 thread of work cluster c (1 to 3): first is
+   KM_GROUP_CLUSTER_BASE + c, count 1. No core has such a first. */
+#define KM_GROUP_CLUSTER_BASE 0xFF00u
+#define KM_GROUP_CLUSTER(c) ((KM_GROUP_CLUSTER_BASE + (uint32_t)(c)) | 1u << 16)
 
 /* One command: four 16-byte chunks. Word 0 of each chunk carries the sequence number;
    a command has landed when all four agree (KM_LANDED). */
@@ -51,6 +55,10 @@ typedef struct {
 } km_command_t;                 /* sizeof == 64; ten argument words */
 
 KM_STATIC_ASSERT(sizeof(km_command_t) == 64, "a command is one 64-byte line");
+KM_STATIC_ASSERT(
+    KM_GROUP_CLUSTER_BASE >= KM_CORES_MAX && KM_GROUP_CLUSTER_BASE % 256u == 0,
+    "a cluster's group is no core's, and its low 8 bits are the cluster"
+);
 
 /* Control block in L1: the same address on every core. Offsets in bytes. */
 #define KM_CONTROL_RING 0x000u /* KM_RING_SLOTS commands */

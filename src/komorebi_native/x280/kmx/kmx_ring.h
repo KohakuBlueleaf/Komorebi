@@ -23,6 +23,8 @@ typedef struct {
     uint32_t taken;   /* events taken from the ring */
     uint32_t stashed; /* events in stash[], oldest first */
     kmx_event stash[KMX_STASH];
+    volatile const uint8_t* in; /* the lines the dispatcher hands the thread */
+    uint32_t in_next;           /* the next of them to take, from 1 */
 } kmx_ring_t;
 
 static inline int kmx_ring_pow2(uint32_t value) {
@@ -38,6 +40,7 @@ static inline int kmx_ring_open(
     ring->next = 1;
     ring->taken = 0;
     ring->stashed = 0;
+    ring->in_next = 1;
     if (
         descriptor->cmd == 0 || !kmx_ring_pow2(descriptor->command_depth) ||
         !kmx_ring_pow2(descriptor->event_depth) ||
@@ -56,6 +59,7 @@ static inline int kmx_ring_open(
     ring->event_depth = descriptor->event_depth;
     ring->cached = (descriptor->flags & KMX_RING_CACHED) != 0;
     ring->commands = (volatile uint8_t*)(uintptr_t)descriptor->cmd;
+    ring->in = ring->events + KMX_RING_IN_AFTER(ring->event_depth);
     return 1;
 }
 
@@ -223,4 +227,47 @@ static inline int kmx_ring_wait(
             }
         }
     }
+}
+
+/* Copies the dispatcher's line ring->in_next into `command` if it is whole (its number
+ * in sequence and the three landing words): 1, else 0. 64-bit loads; never waits. */
+static inline int kmx_ring_command(kmx_ring_t* ring, km_command_t* command) {
+    const uint32_t number = ring->in_next;
+    volatile const uint64_t* line = (
+        (volatile const uint64_t*)(ring->in + (number % KMX_RING_IN_DEPTH) * 64u)
+    );
+    if (ring->cached) {
+        KMX_RING_SWEEP((uintptr_t)line, 64);
+    }
+    KMX_RING_FENCE_R();
+    if ((uint32_t)line[0] != number) {
+        return 0;
+    }
+    KMX_RING_FENCE_R();
+    uint32_t* words = (uint32_t*)command;
+    for (uint32_t word = 0; word < 8; word++) {
+        const uint64_t pair = line[word];
+        words[2 * word] = (uint32_t)pair;
+        words[2 * word + 1] = (uint32_t)(pair >> 32);
+    }
+    if (command->sequence != number || !KM_LANDED(command)) {
+        return 0;
+    }
+    ring->in_next = number + 1;
+    return 1;
+}
+
+/* Answers the dispatcher's line `number` with `word` (KMX_HANDLER_ANSWER on the ring):
+ * KMX_OK, or kmx_ring_submit's KMX_FULL / KMX_STOPPED. Never waits. */
+static inline int kmx_ring_answer(kmx_ring_t* ring, uint32_t number, uint32_t word) {
+    km_command_t answer;
+    uint32_t* words = (uint32_t*)&answer;
+    for (uint32_t index = 0; index < 16; index++) {
+        words[index] = 0; /* a loop, not an initialiser: no memset in the image */
+    }
+    answer.hdr = KMX_HANDLER_ANSWER;
+    answer.a0 = number;
+    answer.a1 = word;
+    uint32_t handle;
+    return kmx_ring_submit(ring, &answer, &handle);
 }

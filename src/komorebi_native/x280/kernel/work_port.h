@@ -1,7 +1,8 @@
-/* Core 0's side of the work clusters' rings (sources 2 to 4): commands and read lines
- * here, events and counts in each cluster's LIM through a window of its own. */
+/* Core 0's side of the work clusters' rings (sources 2 to 4), and the commands any
+ * source sends to a cluster's thread, with their answers and deadlines. */
 #pragma once
 
+#include "completion.h"
 #include "kernel.h"
 #include "ring.h"
 
@@ -17,7 +18,7 @@ static inline int work_args_valid(const volatile kmd_args_t* arguments) {
     }
     const uint64_t depth = arguments->work_depth;
     const uint64_t event_depth = arguments->work_event_depth;
-    const uint64_t remote = KMD_WORK_EVENTS + event_depth * sizeof(km_event_t);
+    const uint64_t remote = KMD_WORK_IN(event_depth) + KMD_WORK_IN_DEPTH * 64u;
     int ok = (
         work_pow2(depth) && depth <= KMD_WORK_DEPTH_MAX && work_pow2(event_depth) &&
         event_depth <= KMD_WORK_EVENTS_MAX && (arguments->work_cmds & 63u) == 0 &&
@@ -86,6 +87,8 @@ static inline uint32_t work_open_one(
     ring->next = 1;
     ring->t_command = dispatcher->ring[KMD_SRC_HOST].t_command;
     ring->line = line;
+    dispatcher->thread[ring_index].lines = window + KMD_WORK_IN(ring->event_depth);
+    dispatcher->thread[ring_index].next = 1;
     return KMD_ERROR_NONE;
 }
 
@@ -113,4 +116,173 @@ static inline void work_close(kmd_t* dispatcher) {
             dispatcher->ring[KMD_SRC_WORK + ring_index].events = 0;
         }
     }
+}
+
+/* Stores slot `slot`'s line into the thread's LIM: four 16-byte stores, as the events
+ * (no 64-byte store into that LIM is relied on), then a fence. */
+static inline void work_store(kmd_thread_t* thread, uint32_t slot) {
+    for (uint32_t chunk = 0; chunk < 4; chunk++) {
+        kmd_store_chunk(
+            thread->lines + slot * 64u + 16u * chunk,
+            (const uint32_t*)&thread->line[slot][2u * chunk]
+        );
+    }
+    x280_fence_ow();
+}
+
+/* A command of `source` to a work cluster: the thread's next line (stored if it serves)
+ * or rejected; with every line unanswered, busy (the host's: KMD_REJECT_THREAD). */
+static __attribute__((noinline)) kmd_take_t
+work_command(kmd_t* dispatcher, uint32_t source, uint64_t now) {
+    kmd_ring_t* ring = &dispatcher->ring[source];
+    uint64_t* line = ring->line;
+    const uint32_t request = ring->next, header = (uint32_t)(line[0] >> 32);
+    const uint32_t flags = (header >> 8) & 0xFFu, group = (uint32_t)line[1];
+    const uint32_t cluster = (group & 0xFFFFu) - KM_GROUP_CLUSTER_BASE;
+    uint32_t reject = 0;
+    if (flags & (1u | KM_FLAG_EXCLUSIVE | KM_FLAG_QUEUE)) {
+        reject = KMD_REJECT_FLAGS;
+    } else if (dispatcher->exited) {
+        reject = KMD_REJECT_EXITED;
+    } else if (
+        cluster < 1 || cluster > KMD_WORK_CLUSTERS || (group >> 16) != 1 ||
+        dispatcher->thread[cluster - 1].lines == 0
+    ) {
+        reject = KMD_REJECT_GROUP;
+    }
+    kmd_thread_t* thread = &dispatcher->thread[reject ? 0 : cluster - 1];
+    const uint32_t number = thread->next, slot = number & (KMD_WORK_IN_DEPTH - 1u);
+    if (reject == 0 && (thread->busy & (1u << slot))) {
+        if (source != KMD_SRC_HOST) {
+            return KMD_HELD; /* rejected busy with the wake owed (source_busy) */
+        }
+        reject = KMD_REJECT_THREAD;
+    }
+    ring_consumed(ring);
+    dispatcher->last_event_mtime = now;
+    if (reject != 0) {
+        ring_push(ring, request, KM_EVENT_REJECTED | (reject << 8), 0);
+        dispatcher->rejected++;
+        return KMD_TAKEN;
+    }
+    uint32_t sequence = ++dispatcher->sequence;
+    if (sequence == 0) {
+        sequence = ++dispatcher->sequence;
+    }
+    uint64_t* kept = thread->line[slot];
+    kept[0] = number | (uint64_t)(header & 0xFFFFu) << 32;
+    for (uint32_t word = 1; word < 8; word++) {
+        kept[word] = (
+            word % 2 == 0 ? (line[word] & ~(uint64_t)0xFFFFFFFFu) | number : line[word]
+        );
+    }
+    if (thread->serving) {
+        work_store(thread, slot);
+    } else {
+        thread->unstored |= 1u << slot;
+    }
+    thread->next = number + 1u;
+    thread->number[slot] = number;
+    thread->request[slot] = request;
+    thread->sequence[slot] = sequence;
+    thread->source[slot] = (uint8_t)source;
+    thread->submitted[slot] = now;
+    thread->deadline[slot] = now + ring->t_command;
+    thread->busy |= 1u << slot;
+    thread->result = (
+        (thread->result & ~(1u << slot)) | ((flags & KM_FLAG_RESULT) ? 1u << slot : 0u)
+    );
+    ring->busy_count++;
+    dispatcher->thread_busy++;
+    return KMD_TAKEN;
+}
+
+/* Cluster `ring_index + 1`'s answer to line `number`: the command's DONE event (ticks:
+ * the word with KM_FLAG_RESULT, else the time) unless its timeout went out. */
+static __attribute__((noinline)) void work_answer(
+    kmd_t* dispatcher, uint32_t ring_index, uint32_t number, uint32_t word, uint64_t now
+) {
+    kmd_thread_t* thread = &dispatcher->thread[ring_index];
+    if (number == 0 && !thread->serving) {
+        /* the thread serves: the lines taken before, oldest first */
+        thread->serving = 1;
+        for (uint32_t back = KMD_WORK_IN_DEPTH; back > 0; back--) {
+            const uint32_t slot = (thread->next - back) & (KMD_WORK_IN_DEPTH - 1u);
+            if (thread->unstored & (1u << slot)) {
+                work_store(thread, slot);
+            }
+        }
+        thread->unstored = 0;
+        return;
+    }
+    const uint32_t slot = number & (KMD_WORK_IN_DEPTH - 1u), bit = 1u << slot;
+    if (!(thread->busy & bit) || thread->number[slot] != number) {
+        return;
+    }
+    thread->busy &= ~bit;
+    dispatcher->thread_busy--;
+    if (thread->late & bit) {
+        thread->late &= ~bit;
+    } else {
+        kmd_ring_t* ring = &dispatcher->ring[thread->source[slot]];
+        uint32_t ticks = (uint32_t)(now - thread->submitted[slot]);
+        if (thread->result & bit) {
+            dispatcher->last_result = ticks = word;
+            dispatcher->results++;
+        }
+        const uint32_t auxiliary = (
+            (ring_index + 1u) |
+            (thread->sequence[slot] & KM_EVENT_SEQUENCE_MASK) << KM_EVENT_SEQUENCE_SHIFT
+        );
+        ring->busy_count--;
+        ring_push(ring, thread->request[slot], KM_EVENT_DONE | auxiliary << 8, ticks);
+        dispatcher->last_event_mtime = now;
+    }
+    if (dispatcher->waits) {
+        sources_wake(dispatcher);
+    }
+}
+
+/* Every unanswered line whose deadline passed at `now` gets its KM_EVENT_TIMEOUT
+ * (auxiliary: the cluster); the kernel goes on, the line stays taken until answered. */
+static __attribute__((noinline)) void work_late(kmd_t* dispatcher, uint64_t now) {
+    for (uint32_t ring_index = 0; ring_index < KMD_WORK_CLUSTERS; ring_index++) {
+        kmd_thread_t* thread = &dispatcher->thread[ring_index];
+        for (uint32_t slot = 0; slot < KMD_WORK_IN_DEPTH; slot++) {
+            const uint32_t bit = 1u << slot;
+            if (
+                (thread->busy & ~thread->late & bit) == 0 ||
+                now <= thread->deadline[slot]
+            ) {
+                continue;
+            }
+            thread->late |= bit;
+            kmd_ring_t* ring = &dispatcher->ring[thread->source[slot]];
+            const uint32_t auxiliary = (
+                (ring_index + 1u) |
+                (thread->sequence[slot] & KM_EVENT_SEQUENCE_MASK)
+                    << KM_EVENT_SEQUENCE_SHIFT
+            );
+            ring->busy_count--;
+            ring_push(
+                ring,
+                thread->request[slot],
+                KM_EVENT_TIMEOUT | auxiliary << 8,
+                (uint32_t)(now - thread->submitted[slot])
+            );
+            dispatcher->last_event_mtime = now;
+        }
+    }
+}
+
+/* Lines handed to threads that neither got an answer nor a timeout: no event. */
+static inline uint32_t work_abandoned(const kmd_t* dispatcher) {
+    uint32_t abandoned = 0;
+    for (uint32_t ring_index = 0; ring_index < KMD_WORK_CLUSTERS; ring_index++) {
+        const kmd_thread_t* thread = &dispatcher->thread[ring_index];
+        for (uint32_t slot = 0; slot < KMD_WORK_IN_DEPTH; slot++) {
+            abandoned += (thread->busy & ~thread->late) >> slot & 1u;
+        }
+    }
+    return abandoned;
 }

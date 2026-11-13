@@ -260,8 +260,11 @@ def kernel_work_args(ends):
 
 
 def ring_area_bytes(ring):
-    """Bytes of the thread's LIM after the kmx block that the ring's events use."""
-    return abi.headers()["KMD_WORK_EVENTS"] + ring.event_depth * 16
+    """Bytes of the thread's LIM after the kmx block that the ring uses: the counts, the
+    events, then the command lines the dispatcher hands the thread (KMD_WORK_IN)."""
+    headers = abi.headers()
+    events = -(-ring.event_depth * 16 // 64) * 64
+    return headers["KMD_WORK_EVENTS"] + events + headers["KMD_WORK_IN_DEPTH"] * 64
 
 
 def args_block(

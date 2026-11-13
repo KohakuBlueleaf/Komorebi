@@ -21,7 +21,8 @@ static int end_code;
         return 1;                                      \
     }
 
-static _Alignas(64) uint8_t command_slots[4 * 64], events[8 * 16];
+/* the events, then the lines the dispatcher hands the thread */
+static _Alignas(64) uint8_t command_slots[4 * 64], events[8 * 16 + 8 * 64];
 static _Alignas(64) uint64_t read_line[8];
 static uint32_t consumed, sent;
 
@@ -103,6 +104,18 @@ int main(void) {
         kmx_ring_look(&ring, 4, &event) == KMX_OK && event.ticks == 1 &&
         ring.stashed == 0
     );
+    /* the dispatcher's lines are taken whole and in order; an answer is a command */
+    uint8_t* lines = events + KMX_RING_IN_AFTER(8);
+    km_command_t line = {.sequence = 1, .hdr = 10, .a0 = 5, .land1 = 1, .land2 = 1};
+    CHECK(!kmx_ring_command(&ring, &got));
+    memcpy(lines + 64, &line, 64);
+    CHECK(!kmx_ring_command(&ring, &got) && ring.in_next == 1);
+    line.land3 = 1;
+    memcpy(lines + 64, &line, 64);
+    CHECK(kmx_ring_command(&ring, &got) && got.hdr == 10 && got.a0 == 5);
+    CHECK(ring.in_next == 2 && !kmx_ring_command(&ring, &got));
+    CHECK(kmx_ring_answer(&ring, 1, 77) == KMX_OK && take_command(6, &got));
+    CHECK(got.hdr == KMX_HANDLER_ANSWER && got.a0 == 1 && got.a1 == 77);
     /* no event by the deadline, then a stop */
     CHECK(kmx_ring_wait(&ring, 3, now + 5000, &event) == KMX_LATE);
     end_code = KMX_STOPPED;

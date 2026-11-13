@@ -82,6 +82,25 @@ typedef struct {
     uint32_t first[2u * KM_CORES_MAX]; /* the first pass: sent, consumed per core */
 } kmd_messages_t;
 
+/* Commands handed to a work cluster's thread (work_port.h), line n in slot n % depth;
+ * stored only once the thread said it serves, as its start-up writes the area over. */
+typedef struct {
+    volatile uint8_t* lines; /* the thread's command lines, through the ring's window */
+    uint32_t next;           /* number of the next line, from 1 */
+    uint32_t serving;        /* the thread's answer to line 0 came: it serves */
+    uint32_t unstored;       /* bit k: slot k's line waits for that */
+    uint32_t busy;           /* bit k: slot k's line is not answered yet */
+    uint32_t late;   /* bit k: its timeout event went out; the answer sends none */
+    uint32_t result; /* bit k: its command has KM_FLAG_RESULT */
+    uint32_t number[KMD_WORK_IN_DEPTH];
+    uint32_t request[KMD_WORK_IN_DEPTH];
+    uint32_t sequence[KMD_WORK_IN_DEPTH];
+    uint8_t source[KMD_WORK_IN_DEPTH];
+    uint64_t submitted[KMD_WORK_IN_DEPTH];
+    uint64_t deadline[KMD_WORK_IN_DEPTH];
+    uint64_t line[KMD_WORK_IN_DEPTH][8]; /* each line as the thread is to see it */
+} kmd_thread_t;
+
 /* A stream the kernel admitted and the engine runs: its range and request. */
 typedef struct {
     uint32_t active, request, offset, bytes;
@@ -126,6 +145,8 @@ typedef struct {
     uint32_t queued;       /* the queue's length, for the loop */
     uint32_t waits;        /* bit source: a busy rejection to it, KMD_EVENT_WAKE owed */
     kmd_messages_t messages;
+    kmd_thread_t thread[KMD_WORK_CLUSTERS]; /* commands to work cluster c at c - 1 */
+    uint32_t thread_busy; /* lines handed to threads and not answered, all clusters */
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */

@@ -14,8 +14,17 @@ extern "C" {
 #define KMX_TICKS_PER_SECOND 50000000ull /* kmx_time() counts the 50 MHz timer */
 
 /* The user's entry, on core 0. Its return value is the result code unless the thread
- * called kmx_result. */
+ * called kmx_result. Optional when the thread has kmx_program. */
 int kmx_main(int core);
+
+/* Optional: after kmx_main, if any, core 0 calls it for each command to this cluster
+ * (KM_GROUP_CLUSTER) until a stop; its word is the result of the command's event. */
+uint32_t kmx_program(const km_command_t* command);
+
+/* A command's handler, for kmx_program's switch. */
+static inline uint32_t kmx_handler(const km_command_t* command) {
+    return command->hdr & 0xFFu;
+}
 
 /* The argument block: region table and the program's words. */
 const kmx_args* kmx_args_get(void);

@@ -1181,6 +1181,40 @@ void kmx_result(uint32_t code, const void* words, uint32_t word_count) {
     x280_fence_ow();
 }
 
+/* A thread may leave out either of these (kmx.h); the start-up calls those it has. */
+#pragma weak kmx_main
+#pragma weak kmx_program
+
+/* Answers the dispatcher's line `number` with `word`, waiting while the ring is full:
+ * KMX_OK, or why it ended (a stop, the deadline). */
+static int answer(uint32_t number, uint32_t word) {
+    int status = kmx_ring_answer(&g_ring, number, word);
+    for (uint32_t tries = 1; status == KMX_FULL; tries++) {
+        const int end = tries % KMX_RING_SPINS == 0 ? must_end(0) : KMX_OK;
+        if (end != KMX_OK) {
+            return end;
+        }
+        status = kmx_ring_answer(&g_ring, number, word);
+    }
+    return status;
+}
+
+/* Core 0 with kmx_program: says it serves (answers line 0), then answers each line with
+ * its word, until a stop (KMX_STOPPED) or the deadline (KMX_LATE). */
+static int serve_commands(void) {
+    int status = answer(0, 0);
+    for (uint32_t spins = 1; status == KMX_OK; spins++) {
+        km_command_t command;
+        if (kmx_ring_command(&g_ring, &command)) {
+            status = answer(command.sequence, kmx_program(&command));
+            spins = 0;
+        } else if (spins % KMX_POLL_EVERY == 0) {
+            status = must_end(0);
+        }
+    }
+    return status;
+}
+
 /* Cores 1 to 3: run each spawn of core 0 until kmx_main returns, a stop is asked
  * for, or the run's deadline passes. */
 static void serve(uint64_t core) {
@@ -1368,9 +1402,16 @@ static uint64_t run_main(const volatile kmx_args* arguments) {
     if (block->error == KMX_ERROR_NONE) {
         block->state = KMX_STATE_RUNNING;
         x280_fence_ow();
-        const int code = kmx_main(0);
+        const int code = kmx_main != 0 ? kmx_main(0) : 0;
         if (g_code == KMX_UNSET) {
             block->code = (uint32_t)code;
+        }
+        if (kmx_program != 0) {
+            /* a stop is how a thread that serves commands ends */
+            const int end = g_ring.commands != 0 ? serve_commands() : KMX_BAD;
+            if (end == KMX_LATE || end == KMX_BAD) {
+                fail(end == KMX_LATE ? KMX_ERROR_LATE : KMX_ERROR_ARGS);
+            }
         }
     }
     if (g_ring.commands != 0 && (descriptor->flags & KMX_RING_REMOTE)) {

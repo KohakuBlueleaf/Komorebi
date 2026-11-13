@@ -457,6 +457,15 @@ def test_a_timeout_names_command_slot_sequence_and_cores():
         run.submit(1, (0, 1))
 
 
+def test_a_late_command_to_a_thread_is_its_event_and_the_run_goes_on():
+    run, port, _ = make_run()
+    timeout = CONSTANTS["KM_EVENT_TIMEOUT"]
+    port.handlers[10] = lambda req, words: port._event(req, timeout, auxiliary=2)
+    late = run._queue_command(10, (CONSTANTS["KM_GROUP_CLUSTER_BASE"] + 2, 1))
+    assert run.wait(late).kind == "timeout"
+    assert run.wait(run.submit(1, (0, 1))).kind == "done"
+
+
 def test_a_kernel_that_ends_on_its_own_raises_kernel_failed():
     run, port, _ = make_run()
     run.wait(run.submit(1, (0, 1)))

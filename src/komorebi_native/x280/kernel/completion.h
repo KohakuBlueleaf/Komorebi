@@ -142,7 +142,7 @@ static inline void sources_wake(kmd_t* dispatcher) {
 
 /* Sweeps busy slots' ack lines (8-byte loads); a slot showing its sequence is freed:
  * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */
-static inline void slots_sweep(kmd_t* dispatcher) {
+KMD_HOT void slots_sweep(kmd_t* dispatcher) {
     x280_fence_ir();
     uint64_t now = 0;
     for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
