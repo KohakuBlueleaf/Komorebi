@@ -15,6 +15,10 @@ The grid takes no part: its kernels do nothing. The thread is
 `thread/parallel.c`, with the vector loop in `thread/vmap.c`.
 
     python parallel_thread.py [--words 262144] [--repeats 3] [--rounds 16] [--seed 1]
+                              [--twelve]
+
+`--twelve` runs the map, the heavy map and the prefix sum on 1, 4, 8 and 12 harts of
+the three work clusters instead ([Twelve harts](#twelve-harts)).
 
 Prints one JSON line: the times in microseconds (`us`, the best of `--repeats` runs,
 each from a cold cache), the thread's whole time (`thread_ms`), whether each output is
@@ -42,20 +46,22 @@ is the limit, and one hart with the vector loop reaches it alone.
 
 ## The rules
 
-**Who calls what.** `kmx_main` and `kmx_par` run on hart 0; `kmx_par(fn, arg)` runs
-`fn(hart, arg)` on harts 0 to 3 and returns when all four have returned (`kmx.c`):
+**Who calls what.** `kmx_main` and `kmx_par` run on hart 0; `kmx_par(fn, arg)` spawns
+`fn(hart, arg)` on harts 1 to 3, runs it on hart 0 and joins the three (`kmx.c`):
 
 | Call | Hart 0 | Harts 1 to 3 (inside `fn`) |
 |---|---|---|
 | `kmx_args_get`, `kmx_region`, `kmx_time`, `kmx_stop_requested` | yes | yes |
 | `kmx_take`, `kmx_give` | yes: outside `kmx_par` the sweep is split over the four harts; inside, this hart alone | yes, this hart alone |
-| `kmx_par` | yes, not inside `fn` | no: the library error `par`, `KMX_STOPPED`, and the run ends failed |
+| `kmx_par`, `kmx_spawn`, `kmx_join` | yes, not inside `fn` | no: the library error `par`, `KMX_STOPPED`, and the run ends failed |
 | `kmx_issue`, `kmx_wait`, `kmx_poll` | yes | no: as `kmx_par` |
 | `kmx_progress`, `kmx_result` | yes | best not: they write the one result block, without a lock |
 
+The calls across clusters are in [X280 threads](../../docs/threads.md#twelve-harts).
 `fn` runs on hart 0 too, as share 0: hart 0 does a quarter of the work and then waits.
-A call to `kmx_par` with an empty `fn` costs 0.59 microseconds (1,000 calls in 591),
-so a share should be worth tens of microseconds at least.
+A call to `kmx_par` with an empty `fn` costs 0.71 microseconds (1,000 calls in 709;
+0.59 before `kmx_par` was built on spawn and join), so a share should be worth tens
+of microseconds at least.
 
 **Shares and results.** Pass one argument; every hart computes its share from its
 number. `arg` points into hart 0's memory (here a struct on its stack), which all four
@@ -113,6 +119,54 @@ nothing more: the bank is the limit.
 `fn` that may be long polls `kmx_stop_requested()`, which harts 1 to 3 may call. The
 whole thread takes 0.55 s of a 30 s deadline (`thread_ms`).
 
+## Twelve harts
+
+`thread/clusters.c` runs on clusters 1 to 3 (`prog.thread(clusters=(1, 2, 3))`). Cluster
+1 leads; 2 and 3 call `kmx_serve`. With eight or twelve harts the chunks are split into
+a contiguous block per cluster (two or three), and within a block the cluster's four
+harts take chunks in turn. Each cluster reads and writes its own copy of the regions,
+in its own bank, so data crosses banks by `kmx_push` only:
+
+- map: cluster 1 pushes each other block's input into that cluster's `in`;
+  `kmx_par_all` maps (each cluster takes its block of `in` first); a second call has
+  clusters 2 and 3 push their outputs into cluster 1's, which takes them;
+- prefix sum: the input out as for the map; pass 1 (chunk sums, one 64-byte line per
+  chunk so each block's sums push whole); clusters 2 and 3 push their sums to cluster
+  1 and give them back (a dirty line would later overwrite the bases); cluster 1 turns
+  the sums into bases and pushes each block's bases out; pass 2; the outputs back.
+
+The 1-hart output is the reference: the thread counts the words of every other run
+that differ from it, and the host checks the 1-hart and 12-hart outputs against numpy.
+On a Blackhole p150a, X280 at the session's 1000 MHz, best of 3, every output exact,
+times in ms, pushes included:
+
+| Words | Pattern | 1 hart | 4 | 8 | 12 |
+|---|---|---|---|---|---|
+| 16,384 | map | 0.18 | 0.11 | 0.12 | 0.13 |
+| | map, `f` 16 times | 1.66 | 0.42 | 0.31 | 0.31 |
+| | prefix sum | 0.31 | 0.13 | 0.18 | 0.18 |
+| | the map's input push | - | - | 0.03 | 0.05 |
+| 65,536 | map | 0.73 | 0.42 | 0.42 | 0.38 |
+| | map, `f` 16 times | 6.61 | 1.68 | 1.06 | 0.88 |
+| | prefix sum | 1.23 | 0.66 | 0.53 | 0.48 |
+| | the map's input push | - | - | 0.11 | 0.15 |
+| 262,144 | map | 2.89 | 1.66 | 1.94 | 1.61 |
+| | map, `f` 16 times | 26.44 | 6.68 | 4.46 | 3.38 |
+| | prefix sum | 4.90 | 2.57 | 2.46 | 2.07 |
+| | the map's input push | - | - | 0.54 | 0.62 |
+| 1,048,576 | map | 11.56 | 6.63 | 7.35 | 6.42 |
+| | map, `f` 16 times | 105.75 | 26.71 | 17.63 | 13.21 |
+| | prefix sum | 19.70 | 10.21 | 9.18 | 7.79 |
+| | the map's input push | - | - | 1.71 | 2.34 |
+
+Four harts are one cluster and `kmx_par`; eight and twelve pay for the pushes: the
+lead's input push reads its bank through the cache, at about 1.2 GB/s. Twelve harts
+lose to four on small inputs (at 16,384 words the map and the prefix sum; the heavy
+map still gains), and where the work only moves memory they gain little at any size (the map: 6.42 against
+6.63 ms at a million words). The prefix sum gains 1.3 times at a million words, the
+heavy map, which computes, 2.0 times; a step that wants twelve harts should compute
+more per byte it moves, or find its input already in each bank.
+
 ## The thread
 
 | Words | `n, repeats, rounds` (the heavy map's `f` count) |
@@ -127,6 +181,7 @@ whole thread takes 0.55 s of a 30 s deadline (`thread_ms`).
 | File | What it is |
 |---|---|
 | `thread/parallel.c` | the thread: the patterns, their shares, the timings |
+| `thread/clusters.c` | the `--twelve` thread: three patterns on 1 to 12 harts |
 | `thread/vmap.c`, `thread/vmap.h` | the map's vector loop |
 | `kernels/` | the grid's kernels, which do nothing |
 | `parallel_thread.py` | the host script: the regions, the run, the numpy checks |
