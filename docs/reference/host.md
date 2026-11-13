@@ -261,7 +261,8 @@ even after the device is closed: tt-metal's driver takes the chip's lock at the 
 open and gives it back only when the process ends. A second process that opens the card
 meanwhile would wait without a bound, so `Session.open` first reads the lock's owner
 (from the driver's lock file, without taking the lock) and raises `km.CardBusy` naming
-that process. A test run that opens the card in its own process therefore cannot start
+that process when it still maps the file: a process that died holding the lock, a
+zombie or a PID reused since is not taken for the holder. A test run that opens the card in its own process therefore cannot start
 a card script as a child (see `tests/hardware/README.md`).
 
 The kernel's reasons for a refusal (`RecordRefused.reason`, from `KMD_REFUSE_*` in

@@ -107,9 +107,10 @@ def visible_card():
 
 def chip_holder(card, path=None):
     """The PID of another live process that holds `card`'s chip lock, else None. Read
-    from UMD's lock file without taking the lock: a pthread mutex (40 bytes), a 64-bit
-    word, the owner's TID and PID; None as well if the file is missing or not 56 bytes.
-    UMD keeps the lock from a process's first open until that process exits."""
+    from UMD's lock file (a pthread mutex, a 64-bit word, the owner's TID and PID)
+    without taking it; UMD keeps the lock from a process's first open to its exit."""
+    # the file's mtime cannot date the PID: UMD writes the lock through a mapping,
+    # which leaves the mtime unchanged
     path = Path(path or CHIP_LOCK.format(card=card))
     try:
         data = path.read_bytes()
@@ -120,13 +121,14 @@ def chip_holder(card, path=None):
     pid = int.from_bytes(data[CHIP_LOCK_PID : CHIP_LOCK_PID + 4], "little", signed=True)
     if pid <= 0 or pid == os.getpid():
         return None
-    try:
-        os.kill(pid, 0)  # a lock word left by a process that died is not a holder
-    except ProcessLookupError:
-        return None
+    try:  # the owner holds it only while it maps the file: a zombie, a reused PID
+        # or a process that died holding the lock does not
+        with open(f"/proc/{pid}/maps") as maps:
+            return pid if any(str(path) in line for line in maps) else None
+    except (FileNotFoundError, ProcessLookupError):
+        return None  # the process ended
     except PermissionError:
-        pass  # alive, another user's
-    return pid
+        return pid  # alive, another user's
 
 
 def _state_area(device):

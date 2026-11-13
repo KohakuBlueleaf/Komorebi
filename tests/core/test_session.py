@@ -4,7 +4,10 @@ import gc
 import os
 import signal
 import subprocess
+import sys
+import time
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -207,27 +210,51 @@ def test_an_exit_without_a_stop_closes_the_runtime_before_the_device(
     assert s.run.stopped and s.device is None and s not in session._LIVE
 
 
-def test_the_chip_lock_holder_is_another_live_process(card, tmp_path):
-    session, _, _, _ = card
+def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(card, tmp_path):
+    session = card[0]
 
-    def lock(pid, size=56):
-        path = tmp_path / f"lock-{pid}"
+    def lock(pid, size=56, name="lock"):
+        path = tmp_path / f"{name}-{pid}"
         data = bytearray(size)
         if size >= 56:
             data[52:56] = pid.to_bytes(4, "little")
         path.write_bytes(bytes(data))
         return path
 
-    assert session.chip_holder(0, lock(os.getppid())) == os.getppid()
+    def mapper(path, stay):
+        """A process that maps `path` (as UMD maps its lock), then waits or ends."""
+        code = (
+            "import mmap, sys; f = open(sys.argv[1], 'r+b')"
+            "; m = mmap.mmap(f.fileno(), 0); print(1, flush=True)"
+            "; sys.stdin.read() if sys.argv[2] == '1' else None"
+        )
+        p = subprocess.Popen(
+            [sys.executable, "-c", code, str(path), str(int(stay))],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+        )
+        p.stdout.readline()
+        return p
+
+    path = lock(0, name="umd")
+    holder = mapper(path, stay=True)
+    path.write_bytes(lock(holder.pid).read_bytes())
+    assert session.chip_holder(0, path) == holder.pid
+    holder.stdin.close()
+    holder.wait()
+    zombie = mapper(path, stay=False)  # ended, not reaped yet: no mappings left
+    stat = Path(f"/proc/{zombie.pid}/stat")
+    while stat.read_text().rsplit(")", 1)[1].split()[0] != "Z":
+        time.sleep(0.01)
+    path.write_bytes(lock(zombie.pid).read_bytes())
+    assert session.chip_holder(0, path) is None
+    zombie.wait()
+    assert session.chip_holder(0, path) is None  # reaped: the PID is gone
+    assert session.chip_holder(0, lock(os.getppid())) is None  # alive, not mapping it
     assert session.chip_holder(0, lock(os.getpid())) is None  # this process
     assert session.chip_holder(0, lock(0)) is None  # no owner
-    assert (
-        session.chip_holder(0, lock(os.getppid(), size=40)) is None
-    )  # not UMD's layout
+    assert session.chip_holder(0, lock(os.getppid(), size=40)) is None  # not UMD's
     assert session.chip_holder(0, tmp_path / "missing") is None
-    ended = subprocess.Popen(["true"])
-    ended.wait()  # its PID left in a lock word by a process that died
-    assert session.chip_holder(0, lock(ended.pid)) is None
 
 
 def test_the_exit_hook_closes_the_device_when_the_stop_raises(

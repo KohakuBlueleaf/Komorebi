@@ -23,7 +23,11 @@ any card access; one file per process avoids both.
 
 `run_cards.py` runs the files in turn, each with a time bound (SIGTERM, then SIGKILL
 30 s later). `--wrap` puts a command in front of each pytest, with `{name}` replaced by
-the file's stem, so that each file can run under its own watcher job.
+the file's stem, so that each file can run under its own watcher job. The time bound's
+SIGTERM and SIGKILL then reach the wrapper only: a wrapper must pass SIGTERM on to its
+command, or bound the command itself. A watcher that starts its job in a session of its
+own and has no SIGTERM handler ends at the SIGTERM and leaves pytest running; its own
+time limit is then the only one that reaches the test.
 
 ## Child scripts
 
