@@ -13,6 +13,7 @@ from komorebi.engines.stream import Stream
 pytest.importorskip("ttnn")
 
 pytestmark = pytest.mark.card
+CARD_IN_PROCESS = True  # opens the card in this process
 KERNELS = Path(__file__).resolve().parents[2] / "examples" / "01_mapcollect" / "kernels"
 RESULT = 6  # kSegResult: with KM_F_RESULT the record's result word is the leader's a0
 CORES = 120

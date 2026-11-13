@@ -17,6 +17,7 @@ import mapcollect_fed as mf
 import ttnn
 
 pytestmark = pytest.mark.card
+CARD_IN_PROCESS = True  # opens the card in this process
 CYCLES_300MS = 405_000_000  # at 1350 MHz
 
 

@@ -1,12 +1,10 @@
 """The merge-tree example on a card, fed by the test feeder (KMR_CARD=1): one process,
 three launches (both forms on four teams; a member that stalls; a clean launch)."""
 
-import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+from child import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = (
@@ -18,14 +16,8 @@ SCRIPT = (
 def out():
     teams = "0:8,0:119,3:60,40:2"  # each run by owner, then by tree, on one input
     args = ["--team-list", teams, "--form", "both", "--stall-member", 3]
-    done = subprocess.run(
-        [sys.executable, str(SCRIPT), *map(str, args)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=True,
-    )
-    return json.loads([x for x in done.stdout.splitlines() if x.startswith("{")][-1])
+    out = run_json(SCRIPT, *args)
+    return out
 
 
 def test_both_forms_are_exact_and_equal(out):

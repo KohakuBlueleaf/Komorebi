@@ -1,12 +1,10 @@
 """The merge tree on a card through the dispatch kernel (KMR_CARD=1), in one device
 open: a stalled member ends in the host's timeout, then the next load is exact."""
 
-import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+from child import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "02_merge_tree" / "merge.py"
@@ -14,14 +12,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "02_merge_tree" / "m
 
 def test_a_stalled_member_times_out_naming_its_ports_then_the_next_load_is_exact():
     args = ["--team-list", "0:8,0:119", "--form", "both", "--stall-member", 3]
-    done = subprocess.run(
-        [sys.executable, str(SCRIPT), *map(str, args)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=True,
-    )
-    out = json.loads([x for x in done.stdout.splitlines() if x.startswith("{")][-1])
+    out = run_json(SCRIPT, *args)
     s = out["stall"]  # job 1: by tree on cores 0 to 7; member 3 sends to member 2
     assert s["kernel"]["error_name"] == "deadline"
     assert s["timed_out"]["ticket"] == 2 and s["timed_out"]["team"] == [0, 8]

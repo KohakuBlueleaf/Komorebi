@@ -12,6 +12,7 @@ import komorebi as km
 pytest.importorskip("ttnn")
 
 pytestmark = pytest.mark.card
+CARD_IN_PROCESS = True  # opens the card in this process
 ROOT = Path(__file__).resolve().parents[2]
 
 

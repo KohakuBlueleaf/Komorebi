@@ -2,25 +2,17 @@
 open: a stalled graph on the X280 ends in its deadline error, then the graph run
 host-fed and on the X280 is exact on both paths."""
 
-import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+from child import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "06_graph" / "graph.py"
 
 
 def test_a_stalled_graph_ends_in_its_error_then_both_paths_are_exact():
-    done = subprocess.run(
-        [sys.executable, str(SCRIPT), "--stall", "--deadline", "0.2"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    out = json.loads([x for x in done.stdout.splitlines() if x.startswith("{")][-1])
+    out = run_json(SCRIPT, "--stall", "--deadline", "0.2")  # fails on a non-zero exit
     assert out["stall"] == {
         "on": "x280",
         "status": "error",
@@ -37,4 +29,3 @@ def test_a_stalled_graph_ends_in_its_error_then_both_paths_are_exact():
         assert path["core_records_ok"] and path["max_busy"] == 2
     assert out["paths"]["host"]["branches_overlapping_rounds"] == "5/5"
     assert out["paths_agree"] and out["ok"]
-    assert done.returncode == 0
