@@ -1,5 +1,10 @@
 # Komorebi
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
+  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write: a compute kernel that runs on every Tensix core and picks a segment per record, a C thread on the X280 that issues the passes and calls kmx_par, and the Python lines that declare the program and its thread. Centre, the card runs it by itself: two panels of 6 by 10 Tensix cores with resident kernels, X280 cluster 0 issuing records to both panels, X280 clusters 1 to 3 running the program's threads, values crossing core to core; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.80 ms step between passes, seven records, the Tensix passes COUNT 3.8, SETUP 5.1 and FILL 2.1 ms, 12.1 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (7.2 and 15.4 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.3 us (7.7 times) and 7.99 ms (1.5 times), SwiGLU 42.6 us (6.2 times), attention 163 us (1.3 times).">
+</picture>
+
 A programming model and framework for the Tensix grid and the X280 cores of a
 Tenstorrent Blackhole card (developed on a P150A). A program is a set of resident
 kernels on every Tensix core; each record they receive names a segment of code and a
