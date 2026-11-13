@@ -6,7 +6,7 @@ workflows build and test a wheel; their publish steps are off.
 | File | What it does |
 |---|---|
 | `tt-metal.pin` | A link to `runtime/tt-metal.pin`, the tt-metal release Komorebi is developed and built against. |
-| `build_wheel.py` | Builds the wheel from a commit (`--ref`, default `HEAD`), exported with `git archive` so nothing untracked comes along. It builds the dispatch kernel image against a tt-metal tree with the X280 runtime, puts it beside the package, and refuses a wheel that misses a header or a source. |
+| `build_wheel.py` | Builds the `komorebi-tt` wheel (the package it carries is imported as `komorebi`) from a commit (`--ref`, default `HEAD`), exported with `git archive` so nothing untracked comes along. It builds the dispatch kernel image against a tt-metal tree with the X280 runtime, puts it beside the package, and refuses a wheel that misses a header or a source. |
 | `smoke.sh` | Installs a wheel alone into a fresh environment, runs `kmr doctor` outside the checkout, and checks that the headers and the prebuilt image are found inside the install; with `KMR_CARD=1` it also runs `examples/01_mapcollect`. |
 | `version.py` | Reads, stamps and bumps the version in `pyproject.toml` and `komorebi.__version__`. |
 
@@ -61,7 +61,7 @@ against, so it matches a tree at the same pin.
 
 ```
 python3.13 packaging/build_wheel.py --tt-metal "$TT_METAL_HOME" --out dist
-bash packaging/smoke.sh dist/komorebi-*.whl /tmp/komorebi-smoke
+bash packaging/smoke.sh dist/komorebi_tt-*.whl /tmp/komorebi-smoke
 # the wheel for komorebi-runtime, in the tree runtime/build_tt_metal.sh built
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
 ```
@@ -89,7 +89,7 @@ empty caches (`KMR_CACHE`, `TT_METAL_CACHE`), twice in a row with the same resul
 ```
 python3.13 packaging/build_wheel.py --tt-metal "$TT_METAL_HOME" --out dist
 KMR_CARD=1 TT_VISIBLE_DEVICES=1 TT_METAL_SLOW_DISPATCH_MODE=1 \
-    bash packaging/smoke.sh dist/komorebi-0.1.0-py3-none-any.whl smoke-venv
+    bash packaging/smoke.sh dist/komorebi_tt-0.1.0-py3-none-any.whl smoke-venv
 ```
 
 | Step | Time |
@@ -109,7 +109,7 @@ same environment, a copy of `examples/` outside any checkout:
 ### A run from the two wheels
 
 On a Blackhole p150a, 2026-11-13, card 0: `komorebi-runtime` 0.81.1.1 (50.5 MB) and the
-`komorebi` wheel with the module (632 kB, 77 files, `_km_host` 974,097 bytes), built
+`komorebi-tt` wheel with the module (632 kB, 77 files, `_km_host` 974,097 bytes), built
 from one tt-metal build, installed with `torch` 2.15.0 (CPU) into a fresh environment;
 `TT_METAL_HOME` unset, fresh `KMR_CACHE` and `TT_METAL_CACHE`, slow dispatch:
 
@@ -118,7 +118,7 @@ python3.13 runtime/build_wheel.py --tt-metal TREE --out dist
 python3.13 packaging/build_wheel.py --tt-metal TREE --out dist --host-module
 uv venv -p 3.13 venv && uv pip install -p venv/bin/python \
     "dist/komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl[ttnn]" \
-    dist/komorebi-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl torch==2.15.0 \
+    dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl torch==2.15.0 \
     --extra-index-url https://download.pytorch.org/whl/cpu
 venv/bin/python -m komorebi_runtime sfpi
 eval "$(venv/bin/python -m komorebi_runtime env)"   # the examples import ttnn first
@@ -137,7 +137,7 @@ The process maps one copy of `libtt_metal.so`, `libtt-umd.so.0` and `_ttnncpp.so
 ## What the release workflow would need for the two wheels
 
 `release.yml` builds the pure wheel against a tree the runner holds. To build
-`komorebi-runtime` and the `komorebi` wheel with `--host-module` instead, it would need
+`komorebi-runtime` and the `komorebi-tt` wheel with `--host-module` instead, it would need
 these inputs and steps (not wired: the workflow is unchanged).
 
 Inputs on the build runner:
@@ -163,7 +163,7 @@ Steps:
    `komorebi_runtime-0.81.1.<BUILD>-py3-none-manylinux_<floor>_x86_64.whl`. A new
    runtime wheel is only published when the pin, a patch or `runtime/BUILD` changed.
 4. `python3.13 packaging/build_wheel.py --tt-metal "$KMR_RUNTIME_TREE" --out dist --host-module --isolated --patchelf <patchelf>`:
-   `komorebi-<version>-cp312-abi3-manylinux_<floor>_x86_64.whl`.
+   `komorebi_tt-<version>-cp312-abi3-manylinux_<floor>_x86_64.whl`.
 5. Check that no binary in either wheel names a path of the runner: unpack both and run
    `strings -a` over every `.so`, `.o` and `.bin`, failing on the runner's work
    directory or home directory.
@@ -174,7 +174,7 @@ Steps:
    `eval "$(python -m komorebi_runtime env)"`, then `examples/01_mapcollect`, as in
    [a run from the two wheels](#a-run-from-the-two-wheels). `smoke.sh` installs one
    wheel and does not run the `env` lines, so it would need both.
-7. The version checks: the tag names the komorebi version, and `komorebi`'s `runtime`
+7. The version checks: the tag names the komorebi-tt version, and `komorebi-tt`'s `runtime`
    extra (`>=0.81.1.N,<0.81.2`) admits the runtime wheel just built.
 
 ## Workflows

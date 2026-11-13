@@ -1,7 +1,7 @@
 # komorebi-runtime
 
 The tt-metal build that Komorebi runs on, as one platform wheel with a locator. It is
-the one copy of the runtime that `komorebi` (and later `kohakutt`) depend on, so that
+the one copy of the runtime that `komorebi-tt` (and later `kohakutt`) depend on, so that
 both can run in one process on one card. Nothing of Komorebi's programming model is in
 it. Nothing is published: the wheel is built locally.
 
@@ -95,8 +95,8 @@ compiler is not fetched.
 With `TT_METAL_HOME` set, Komorebi uses that tree, as before. Otherwise, when
 `komorebi_runtime` is importable and holds a runtime, Komorebi uses `root()` as its
 tree: the X280 objects, linker script, include directory, idle image and compiler come
-from the package through it, and a `komorebi` wheel built with `--host-module` loads
+from the package through it, and a `komorebi-tt` wheel built with `--host-module` loads
 its prebuilt `_km_host`, whose rpath `$ORIGIN/../komorebi_runtime/lib` finds this
 package's libraries when both are installed in one environment. `kmr doctor` says
 which was used (`from TT_METAL_HOME` or `from komorebi-runtime 0.81.1.1`).
-`komorebi`'s extra `runtime` names this package; it is not yet required.
+`komorebi-tt`'s extra `runtime` names this package; it is not yet required.

@@ -32,7 +32,7 @@ tests/core/                    tests that need no card
 tests/projects/                CPU tests of the programs under projects/
 tests/ref/                     reference renderers compared (README inside)
 docs/                          concepts, install, this page
-packaging/                     the komorebi wheel: build, smoke test, version tools
+packaging/                     the komorebi-tt wheel: build, smoke test, version tools
 runtime/                       komorebi-runtime: the tt-metal pin, its patches and build (README inside)
 ```
 

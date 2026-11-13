@@ -53,7 +53,7 @@ def installed_or_source_version():
     """The installed distribution's version; with none installed (a fresh clone), the
     version source the release workflows stamp, packaging/version.py."""
     try:
-        return metadata.version("komorebi")
+        return metadata.version("komorebi-tt")
     except metadata.PackageNotFoundError:
         spec = importlib.util.spec_from_file_location(
             "version_source", ROOT / "packaging" / "version.py"
@@ -67,5 +67,5 @@ def test_version_matches_pyproject_and_the_installed_distribution():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert komorebi.__version__ == project["version"]
     assert komorebi.__version__ == installed_or_source_version()
-    assert project["name"] == "komorebi"
+    assert project["name"] == "komorebi-tt"
     assert project["scripts"]["kmr"] == "komorebi.cli:main"

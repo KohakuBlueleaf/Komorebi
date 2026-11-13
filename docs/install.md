@@ -65,7 +65,7 @@ tree it is given (which needs the X280 runtime):
 ```
 python3.13 packaging/build_wheel.py --tt-metal "$TT_METAL_HOME" --out dist
 python3.13 -m venv .venv && source .venv/bin/activate
-pip install dist/komorebi-*.whl
+pip install dist/komorebi_tt-*.whl
 kmr doctor
 ```
 
@@ -85,7 +85,7 @@ runtime. [Packaging](../packaging/README.md) lists what the wheel carries.
 
 `komorebi-runtime` (`runtime/` in this repository) is the pinned tt-metal build as a
 platform wheel: the libraries, the kernel runtime tree, the X280 runtime objects,
-linker script, headers and idle image, and a locator. With it and a `komorebi` wheel
+linker script, headers and idle image, and a locator. With it and a `komorebi-tt` wheel
 that carries the prebuilt native module, a program runs on a card with no tt-metal tree.
 Both are built locally ([runtime](../runtime/README.md),
 [packaging](../packaging/README.md#a-run-from-the-two-wheels)):
@@ -95,7 +95,7 @@ runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
 pip install "dist/komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl[ttnn]" \
-    dist/komorebi-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl torch
+    dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl torch
 python -m komorebi_runtime sfpi                # the RISC-V compiler, into KMR_CACHE
 python -m komorebi_runtime doctor
 kmr doctor                                     # "from komorebi-runtime 0.81.1.1"

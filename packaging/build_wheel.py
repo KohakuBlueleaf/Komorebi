@@ -1,6 +1,6 @@
-"""Builds the komorebi wheel from a committed tree: the package, the native sources and
-the dispatcher's image, prebuilt against a tt-metal tree with the X280 runtime; with
---host-module also _km_host, built in komorebi-runtime's tt-metal build.
+"""Builds the komorebi-tt wheel (imported as komorebi) from a committed tree: the
+package, the native sources and the dispatcher's image, prebuilt against a tt-metal
+tree with the X280 runtime; --host-module adds _km_host built in that tree.
 Usage: build_wheel.py --tt-metal <tree> [--ref HEAD] [--out dist] [--host-module]
 """
 
@@ -176,7 +176,7 @@ def main():
     tree = args.tt_metal.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     out = args.out.resolve()
-    for old in out.glob("komorebi-*.whl"):
+    for old in out.glob("komorebi_tt-*.whl"):
         old.unlink()
     with tempfile.TemporaryDirectory(prefix="komorebi-wheel-", dir=out) as tmp:
         stage = Path(tmp) / "src"

@@ -404,6 +404,9 @@ with its X280 runtime, `ttnn` and `torch` from it in the same environment, and
 built from the tree on first use (`python -m komorebi.native` builds them ahead).
 Details: [install](docs/install.md).
 
+The distribution is named `komorebi-tt` (`pip install komorebi-tt` once a release is
+published); the package is imported as `komorebi` and the command is `kmr`.
+
 ## Usage
 
 Every example runs on its own, checks its output against numpy and prints one JSON
