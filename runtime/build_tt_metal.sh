@@ -45,8 +45,12 @@ if [ ! -f "$dir/build/build.ninja" ]; then
         options+=(--enable-ccache)
     fi
     (cd "$dir" && ./build_metal.sh "${options[@]}")
-    cmake -B "$dir/build" -S "$dir" -DTT_METAL_BUILD_X280=ON
 fi
+# Paths under DIR are written relative to it (__FILE__, std::source_location, debug
+# information), so the libraries carry no path of this machine.
+map="-ffile-prefix-map=$dir=."
+cmake -B "$dir/build" -S "$dir" -DTT_METAL_BUILD_X280=ON \
+    -DCMAKE_C_FLAGS="$map" -DCMAKE_CXX_FLAGS="$map"
 grep -q '^TT_METAL_BUILD_X280:BOOL=ON' "$dir/build/CMakeCache.txt" ||
     { echo "$dir/build is configured without the X280 runtime"; exit 1; }
 
