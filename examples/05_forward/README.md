@@ -14,11 +14,11 @@ explains the calls, the quota and the quiet end.
 
 | Command argument | Meaning |
 |---|---|
-| a0 | messages, shared over the cores of the group, each seeded by its own core |
-| a1 | forwards per message |
-| a2, a3 | mode: 0 random destinations, 1 every forward to rank a3 |
-| a4 | rank + 1 that stalls in its body (0: none), a test of the timeout |
-| a5 | rank + 1 that sends until its quota is gone (0: none), a test of the quota |
+| a0 | `message_count`, shared over the cores of the group, each seeded by its own core |
+| a1 | `forwards` per message |
+| a2, a3 | `mode`: 0 random destinations, 1 every forward to rank `target_rank` (a3) |
+| a4 | `stall_rank_plus_one`: rank + 1 that stalls in its body (0: none), a test of the timeout |
+| a5 | `probe_rank_plus_one`: rank + 1 that sends until its quota is gone (0: none), a test of the quota |
 
 ## Running it
 

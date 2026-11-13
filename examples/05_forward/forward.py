@@ -19,7 +19,7 @@ sys.path[:0] = [
     str(ROOT / "src"),
 ]
 
-import commands as rec  # noqa: E402
+import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
@@ -28,81 +28,98 @@ from komorebi.engines.stream import Stream  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
-FORWARD = rec.constants(HERE / "kernels" / "forward.h")
+FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
-T0 = time.monotonic()
+STARTED = time.monotonic()
 
 
-def log(msg):
+def log(message):
     """A progress line with seconds since start, flushed."""
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def parse():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--count", type=int, default=0, help="group: cores 0 to count - 1")
-    p.add_argument("--messages", type=int, default=1)
-    p.add_argument("--forwards", type=int, default=1, help="forwards per message")
-    p.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--count", type=int, default=0, help="group: cores 0 to count - 1"
+    )
+    parser.add_argument("--messages", type=int, default=1)
+    parser.add_argument("--forwards", type=int, default=1, help="forwards per message")
+    parser.add_argument(
         "--one-core", type=int, default=-1, help="every forward to this rank"
     )
-    p.add_argument("--stall", type=int, default=-1, help="rank that stalls")
-    p.add_argument("--again", action="store_true", help="then one more run, no stall")
-    p.add_argument("--repeat", type=int, default=1, help="the first run, this often")
-    p.add_argument(
+    parser.add_argument("--stall", type=int, default=-1, help="rank that stalls")
+    parser.add_argument(
+        "--again", action="store_true", help="then one more run, no stall"
+    )
+    parser.add_argument(
+        "--repeat", type=int, default=1, help="the first run, this often"
+    )
+    parser.add_argument(
         "--engine", action="store_true", help="then the stream engine runs two halves"
     )
-    p.add_argument("--probe", type=int, default=-1, help="rank that spends its quota")
-    p.add_argument("--max-live", type=int, default=1 << 14)
-    p.add_argument("--queue-messages", type=int, default=1 << 14)
-    p.add_argument("--bins", type=int, default=16)
-    p.add_argument("--idle-cycles", type=int, default=20000)
-    p.add_argument("--counters", type=int, default=2, help="counter tiles of the group")
-    p.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
-    p.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
-    return p.parse_args()
+    parser.add_argument(
+        "--probe", type=int, default=-1, help="rank that spends its quota"
+    )
+    parser.add_argument("--max-live", type=int, default=1 << 14)
+    parser.add_argument("--queue-messages", type=int, default=1 << 14)
+    parser.add_argument("--bins", type=int, default=16)
+    parser.add_argument("--idle-cycles", type=int, default=20000)
+    parser.add_argument(
+        "--counters", type=int, default=2, help="counter tiles of the group"
+    )
+    parser.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
+    parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
+    return parser.parse_args()
 
 
-def options(a):
+def options(args):
     return {
-        "max_live": a.max_live,
-        "queue_messages": a.queue_messages,
-        "bins": a.bins,
-        "idle_cycles": a.idle_cycles,
-        "counters": a.counters,
+        "max_live": args.max_live,
+        "queue_messages": args.queue_messages,
+        "bins": args.bins,
+        "idle_cycles": args.idle_cycles,
+        "counters": args.counters,
     }
 
 
 def main():
-    a = parse()
+    args = parse()
     try:  # the launcher's rejections, before any device opens
-        Dynamic(handler=FORWARD["kHandlerForward"], **options(a)).check(
-            a.count or a.counters + 1, 4 << 30, 4
+        Dynamic(handler=FORWARD["kHandlerForward"], **options(args)).check(
+            args.count or args.counters + 1, 4 << 30, 4
         )
-    except ValueError as err:
-        print(json.dumps({"ok": False, "rejected": str(err)}), flush=True)
+    except ValueError as error:
+        print(json.dumps({"ok": False, "rejected": str(error)}), flush=True)
         sys.exit(1)
-    stalls = [a.stall] * a.repeat + ([-1] if a.again else [])
+    stalls = [args.stall] * args.repeat + ([-1] if args.again else [])
     runs = []
     with km.Session(log=log) as session:
         log("device open")
-        for i, stall in enumerate(stalls):
-            runs.append(run_once(session, a, stall))
-            log(f"run {i + 1} done")
-        if a.engine:
-            runs.append(run_engine(session, a))
+        for index, stall in enumerate(stalls):
+            runs.append(run_once(session, args, stall))
+            log(f"run {index + 1} done")
+        if args.engine:
+            runs.append(run_engine(session, args))
             log("engine run done")
-    ok = all(r["ok"] for r in runs)
-    timed = [r["run_microseconds"] for r in runs if r.get("run_microseconds")]
-    summary = {"exact": sum(bool(r.get("exact")) for r in runs), "runs": len(runs)}
+    ok = all(run_report["ok"] for run_report in runs)
+    timed = [
+        run_report["run_microseconds"]
+        for run_report in runs
+        if run_report.get("run_microseconds")
+    ]
+    summary = {
+        "exact": sum(bool(run_report.get("exact")) for run_report in runs),
+        "runs": len(runs),
+    }
     if timed:
         summary["run_microseconds"] = [
             min(timed),
             round(float(np.median(timed)), 1),
             max(timed),
         ]
-    out = {"ok": ok, "summary": summary, "runs": runs}
-    print(json.dumps(out | {"wall_s": round(time.monotonic() - T0, 1)}))
+    result = {"ok": ok, "summary": summary, "runs": runs}
+    print(json.dumps(result | {"wall_s": round(time.monotonic() - STARTED, 1)}))
     sys.exit(0 if ok else 1)
 
 
@@ -112,10 +129,11 @@ def l1_blocks(session, grid, words):
     return session.tensor(zeros, "int32", shard_grid=grid)
 
 
-def load(session, a):
+def load(session, args):
     """The program loaded: (run, results tensor, program, cores in the grid)."""
     grid = session.grid
-    res_t = l1_blocks(session, grid, FORWARD["kResWords"])  # before the grid starts
+    # The results area, made before the grid starts.
+    results_tensor = l1_blocks(session, grid, FORWARD["kResWords"])
     program = km.Program(
         "forward",
         kernels={
@@ -123,169 +141,183 @@ def load(session, a):
             "compute": HERE / "kernels" / "compute.cpp",
             "writer": RUNTIME / "messages_writer.cpp",
         },
-        args=lambda core: ([], [], [res_t.address]),
+        args=lambda core: ([], [], [results_tensor.address]),
         handlers={"forward": FORWARD["kHandlerForward"]},
-    ).dynamic("forward", **options(a))
-    run = session.load(program, deadline=a.deadline, wait=a.wait)
-    return run, res_t, program, grid[0] * grid[1]
+    ).dynamic("forward", **options(args))
+    run = session.load(program, deadline=args.deadline, wait=args.wait)
+    return run, results_tensor, program, grid[0] * grid[1]
 
 
-def command_words(a, stall):
+def command_words(args, stall):
     return [
-        a.messages,
-        a.forwards,
-        FORWARD["kModeOneCore"] if a.one_core >= 0 else FORWARD["kModeRandom"],
-        max(a.one_core, 0),
+        args.messages,
+        args.forwards,
+        FORWARD["kModeOneCore"] if args.one_core >= 0 else FORWARD["kModeRandom"],
+        max(args.one_core, 0),
         stall + 1,
-        a.probe + 1,
+        args.probe + 1,
     ]
 
 
-def run_once(session, a, stall):
+def run_once(session, args, stall):
     """One load of the program: the RUN command, its end (or the timeout), the check."""
-    run, res_t, program, cores = load(session, a)
-    count = a.count or cores
+    run, results_tensor, program, cores = load(session, args)
+    count = args.count or cores
     log(f"loaded: group of {count} of {cores} cores")
-    words = command_words(a, stall)
+    words = command_words(args, stall)
     timed_out = None
-    t0 = time.perf_counter()
+    start = time.perf_counter()
     handle = run.submit("forward", (0, count), words, exclusive=True)
     try:
-        run.drain(timeout=a.deadline + 5.0)
-        host_s = time.perf_counter() - t0
+        run.drain(timeout=args.deadline + 5.0)
+        host_seconds = time.perf_counter() - start
         run.stop()
-    except km.CommandTimeout as err:
-        host_s = time.perf_counter() - t0
-        timed_out = err
-        log(f"timeout: {err}")
+    except km.CommandTimeout as error:
+        host_seconds = time.perf_counter() - start
+        timed_out = error
+        log(f"timeout: {error}")
     event, sequence = run.event(handle), run.sequence(handle)
-    out = report(
-        a,
+    result = report(
+        args,
         run,
         (event, sequence),
         program.messages,
         (count, cores),
         stall,
-        res_t,
+        results_tensor,
         timed_out,
     )
-    out["host_s"] = round(host_s, 4)
+    result["host_s"] = round(host_seconds, 4)
     if stall < 0:  # exact, ended by the kernel at the quiet end
-        out["ok"] = out["exact"] and out["event"] == "done" and out["gave_core"] == -1
+        result["ok"] = (
+            result["exact"] and result["event"] == "done" and result["gave_core"] == -1
+        )
     else:  # the stalled core named, the run ended by its timeout
-        out["ok"] = out["event"] == "timeout" and out["gave_core"] == stall
-    return out
+        result["ok"] = result["event"] == "timeout" and result["gave_core"] == stall
+    return result
 
 
-def run_engine(session, a):
+def run_engine(session, args):
     """One load: a stream on the engine submits the RUN to two halves of the grid one
     after the other; the second waits (rejected busy, then woken) for the first's end.
     """
-    run, res_t, program, cores = load(session, a)
+    run, results_tensor, program, cores = load(session, args)
     half = cores // 2
-    s = Stream(req=21, deadline_microseconds=int(a.deadline * 1e6))
+    stream = Stream(req=21, deadline_microseconds=int(args.deadline * 1e6))
     for first in (0, half):
-        s.submit(
+        stream.submit(
             FORWARD["kHandlerForward"],
             (first, half),
-            args=command_words(a, -1),
+            args=command_words(args, -1),
             exclusive=True,
         )
-    s.wait(0)
-    s.halt(s.const(7))
-    t = run.start(run.upload(s))
-    event = run.wait_engine(t, timeout=2 * a.deadline + 5.0)
+    stream.wait(0)
+    stream.halt(stream.const(7))
+    handle = run.start(run.upload(stream))
+    event = run.wait_engine(handle, timeout=2 * args.deadline + 5.0)
     run.stop()
     result = run.result()
-    res = (res_t.read().astype(np.int64) & 0xFFFFFFFF)[: 2 * half]
-    exact = [exact_rows(a, res[first : first + half], half) for first in (0, half)]
-    h = abi.headers()
-    x280_cores = result.get("x280_cores") or [0] * h["KMD_H_WORDS"]
+    result_rows = (results_tensor.read().astype(np.int64) & 0xFFFFFFFF)[: 2 * half]
+    exact = [
+        exact_rows(args, result_rows[first : first + half], half) for first in (0, half)
+    ]
+    headers = abi.headers()
+    x280_cores = result.get("x280_cores") or [0] * headers["KMD_H_WORDS"]
     return {
         "ok": event.kind == "end" and all(exact) and result["error_name"] == "none",
         "engine": event.kind,
         "halt": event.value,
         "halves_exact": exact,
-        "runs": [int(res[0, FORWARD["kResRun"]]), int(res[half, FORWARD["kResRun"]])],
-        "kernel": {k: result[k] for k in ("error_name", "commands", "rejected")},
-        "checks": int(x280_cores[h["KMD_H_MESSAGES_CHECKS"]]),
+        "runs": [
+            int(result_rows[0, FORWARD["kResRun"]]),
+            int(result_rows[half, FORWARD["kResRun"]]),
+        ],
+        "kernel": {key: result[key] for key in ("error_name", "commands", "rejected")},
+        "checks": int(x280_cores[headers["KMD_H_MESSAGES_CHECKS"]]),
     }
 
 
-def exact_rows(a, res, count):
+def exact_rows(args, result_rows, count):
     """The result rows of a group of `count` cores against the replay over its cores;
     the counter tiles (the last a.counters rows) take no message."""
-    m = len(counter_tiles(0, count, a.counters).workers)
-    one = a.one_core if a.one_core >= 0 else None
-    consumed, total, visits = replay.replay(a.messages, a.forwards, m, one)
-    if a.probe >= 0:  # the probe's messages visit their own core once
-        visits[a.probe] += res[a.probe, FORWARD["kResSent"]]
-    totals = res[:m, FORWARD["kResTotalLo"]] | (res[:m, FORWARD["kResTotalHi"]] << 32)
+    workers = len(counter_tiles(0, count, args.counters).workers)
+    one = args.one_core if args.one_core >= 0 else None
+    consumed, total, visits = replay.replay(args.messages, args.forwards, workers, one)
+    if args.probe >= 0:  # the probe's messages visit their own core once
+        visits[args.probe] += result_rows[args.probe, FORWARD["kResSent"]]
+    totals = result_rows[:workers, FORWARD["kResTotalLo"]] | (
+        result_rows[:workers, FORWARD["kResTotalHi"]] << 32
+    )
     return (
-        bool((res[:m, FORWARD["kResConsumed"]] == consumed).all())
+        bool((result_rows[:workers, FORWARD["kResConsumed"]] == consumed).all())
         and bool((totals.astype(np.uint64) == total).all())
-        and bool((res[:m, FORWARD["kResVisits"]] == visits).all())
-        and not res[m:, FORWARD["kResVisits"]].any()
+        and bool((result_rows[:workers, FORWARD["kResVisits"]] == visits).all())
+        and not result_rows[workers:, FORWARD["kResVisits"]].any()
     )
 
 
-def report(a, run, event, messages, group, stall, res_t, timed_out):
+def report(args, run, event, messages, group, stall, results_tensor, timed_out):
     """The checks and numbers of one run as a dict: `event` (the RUN's event, its
     sequence), `group` (count, cores in the grid)."""
     (event, sequence), (count, cores) = event, group
-    h = abi.headers()
+    headers = abi.headers()
     result = run.result()
-    x280_cores = result.get("x280_cores") or [0] * h["KMD_H_WORDS"]
-    res = (res_t.read().astype(np.int64) & 0xFFFFFFFF)[:count]
-    ctr = counter_tiles(0, count, a.counters)
+    x280_cores = result.get("x280_cores") or [0] * headers["KMD_H_WORDS"]
+    result_rows = (results_tensor.read().astype(np.int64) & 0xFFFFFFFF)[:count]
+    counter_layout = counter_tiles(0, count, args.counters)
     states = run.state()
     gave = {
-        c["core"]: c["dynamic"]["gave_up"]
-        for c in states[:count]
-        if c["dynamic"]["gave_up"]
+        state["core"]: state["dynamic"]["gave_up"]
+        for state in states[:count]
+        if state["dynamic"]["gave_up"]
     }
-    out = {
+    numbers = {
         "count": count,
         "counters": [
-            c["core"]
-            for c in states[:count]
-            if (c["dynamic"]["counter"] or {}).get("run") == sequence
+            state["core"]
+            for state in states[:count]
+            if (state["dynamic"]["counter"] or {}).get("run") == sequence
         ],
-        "counters_expected": list(ctr.counters),
-        "messages": a.messages,
-        "forwards_per_message": a.forwards,
+        "counters_expected": list(counter_layout.counters),
+        "messages": args.messages,
+        "forwards_per_message": args.forwards,
         "stall": stall,
-        "kernel": {k: result[k] for k in ("error_name", "commands", "events")},
+        "kernel": {key: result[key] for key in ("error_name", "commands", "events")},
         "event": event.kind if event else None,
         "run_microseconds": (
             round(event.microseconds, 1) if event and event.kind == "done" else None
         ),
-        "exact": bool((res[:, FORWARD["kResRun"]] == sequence).all())
-        and exact_rows(a, res, count),
-        "consumed_by_compute": int(res[:, FORWARD["kResConsumed"]].sum()),
-        "expected_consumed": a.messages,
-        "forwards": int(res[:, FORWARD["kResVisits"]].sum()) - a.messages,
-        "probe_sent": int(res[:, FORWARD["kResSent"]].sum()),
-        "rejected": int(res[:, FORWARD["kResRejected"]].sum()),
+        "exact": bool((result_rows[:, FORWARD["kResRun"]] == sequence).all())
+        and exact_rows(args, result_rows, count),
+        "consumed_by_compute": int(result_rows[:, FORWARD["kResConsumed"]].sum()),
+        "expected_consumed": args.messages,
+        "forwards": int(result_rows[:, FORWARD["kResVisits"]].sum()) - args.messages,
+        "probe_sent": int(result_rows[:, FORWARD["kResSent"]].sum()),
+        "rejected": int(result_rows[:, FORWARD["kResRejected"]].sum()),
         "quota_start": messages.quota(cores),
-        "quota_left_min": int(res[: len(ctr.workers), FORWARD["kResQuota"]].min()),
-        "checks": int(x280_cores[h["KMD_H_MESSAGES_CHECKS"]]),
-        "gave_core": int(x280_cores[h["KMD_H_MESSAGES_GAVE"]]) - 1,
+        "quota_left_min": int(
+            result_rows[: len(counter_layout.workers), FORWARD["kResQuota"]].min()
+        ),
+        "checks": int(x280_cores[headers["KMD_H_MESSAGES_CHECKS"]]),
+        "gave_core": int(x280_cores[headers["KMD_H_MESSAGES_GAVE"]]) - 1,
         "messages_gave": gave,
     }
     if timed_out is not None:
-        out["timed_out"] = {
+        numbers["timed_out"] = {
             "handle": timed_out.handle,
             "sequence": timed_out.sequence,
             "group": list(timed_out.group),
             "not_reported": timed_out.cores[:16],
         }
-        out["core_gave_up"] = [
-            {"core": c["core"], **{k: c[k] for k in ("reader", "writer", "compute")}}
-            for c in states
-            if c["reader"] or c["writer"] or c["compute"]
+        numbers["core_gave_up"] = [
+            {
+                "core": state["core"],
+                **{key: state[key] for key in ("reader", "writer", "compute")},
+            }
+            for state in states
+            if state["reader"] or state["writer"] or state["compute"]
         ][:16]
-    return out
+    return numbers
 
 
 if __name__ == "__main__":

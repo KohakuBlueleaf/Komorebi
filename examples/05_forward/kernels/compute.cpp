@@ -8,51 +8,59 @@
 #include "forward.h"
 
 void kernel_main() {
-    km::Compute cp;
-    const uint32_t results = cp.arg(km::kMessagesCArgs);
-    cp.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerForward) {
+    km::Compute compute;
+    const uint32_t results_address = compute.arg(km::kMessagesCArgs);
+    compute.run([&](const km_command_t& command) {
+        if (km::handler(command) != kHandlerForward) {
             return;
         }
-        km::Messages dy(cp, r);
-        const uint32_t rank = dy.rank(), count = dy.count();  // counter tiles: none
-        uint32_t consumed = 0, visits = 0, nulls = 0, sent = 0, rejected = 0, last = 0;
+        const uint32_t message_count = command.a0;
+        const uint32_t forwards = command.a1;
+        const uint32_t mode = command.a2;
+        const uint32_t target_rank = command.a3;
+        const uint32_t stall_rank_plus_one = command.a4;
+        const uint32_t probe_rank_plus_one = command.a5;
+        km::Messages messages(compute, command);
+        const uint32_t rank = messages.rank(),
+                       count = messages.count();  // counter tiles: none
+        uint32_t consumed = 0, visits = 0, nulls = 0, sent = 0, rejected = 0;
+        uint32_t last_consume = 0;
         uint64_t total = 0;
         uint32_t message[kMessageWords] = {};
-        if (dy.seeding()) {
-            const km::Partition s = km::partition(r.a0, rank, count);
-            for (uint32_t k = 0; k < s.len; k++) {
-                message[kMsgId] = s.start + k;
-                message[kMsgForwards] = r.a1;
-                message[kMsgState] = forward_seed(s.start + k);
+        if (messages.seeding()) {
+            const km::Partition partition = km::partition(message_count, rank, count);
+            for (uint32_t index = 0; index < partition.len; index++) {
+                message[kMsgId] = partition.start + index;
+                message[kMsgForwards] = forwards;
+                message[kMsgState] = forward_seed(partition.start + index);
                 message[kMsgSum] = 0;
-                rejected += !dy.send(rank, message);
+                rejected += !messages.send(rank, message);
             }
-            if (r.a5 == rank + 1) {  // send until the quota is gone
+            if (probe_rank_plus_one == rank + 1) {  // send until the quota is gone
                 message[kMsgId] = kNullId;
                 message[kMsgForwards] = 0;
-                while (dy.send(rank, message)) {
+                while (messages.send(rank, message)) {
                     sent++;
                 }
                 rejected++;
             }
-            dy.seeded();
+            messages.seeded();
         }
-        bool stall = r.a4 == rank + 1;
-        while (km::Packet pk = dy.next()) {
+        bool stall = stall_rank_plus_one == rank + 1;
+        while (km::Packet packet = messages.next()) {
             if (stall) {  // test: this core never finishes its first packet
-                dy.wait_stop();
+                messages.wait_stop();
                 stall = false;
             }
-            for (uint32_t i = 0; i < pk.count; i++) {
-                const volatile tt_l1_ptr uint32_t* in = pk[i];
-                for (uint32_t w = 1; w < kMessageWords; w++) {
-                    message[w] = in[w];
+            for (uint32_t index = 0; index < packet.count; index++) {
+                const volatile tt_l1_ptr uint32_t* incoming = packet[index];
+                for (uint32_t word = 1; word < kMessageWords; word++) {
+                    message[word] = incoming[word];
                 }
                 visits++;
                 if (message[kMsgId] == kNullId) {
                     nulls++;
-                    dy.consume();
+                    messages.consume();
                     continue;
                 }
                 message[kMsgState] = forward_next(message[kMsgState]);
@@ -60,29 +68,30 @@ void kernel_main() {
                 if (message[kMsgForwards] == 0) {
                     consumed++;
                     total += message[kMsgSum];
-                    last = km::wall();
-                    dy.consume();
+                    last_consume = km::wall();
+                    messages.consume();
                     continue;
                 }
                 message[kMsgForwards]--;
-                dy.forward(
-                    r.a2 == kModeOneCore ? r.a3 : message[kMsgState] % count, message
+                messages.forward(
+                    mode == kModeOneCore ? target_rank : message[kMsgState] % count,
+                    message
                 );
             }
-            dy.done(pk);
+            messages.done(packet);
         }
         UNPACK(({
-            volatile tt_l1_ptr uint32_t* o = km::l1(results);
-            o[kResConsumed] = consumed;
-            o[kResTotalLo] = static_cast<uint32_t>(total);
-            o[kResTotalHi] = static_cast<uint32_t>(total >> 32);
-            o[kResVisits] = visits;
-            o[kResLastConsume] = last;
-            o[kResNull] = nulls;
-            o[kResSent] = sent;
-            o[kResRejected] = rejected;
-            o[kResQuota] = dy.quota();
-            o[kResRun] = r.sequence;
+            volatile tt_l1_ptr uint32_t* result_words = km::l1(results_address);
+            result_words[kResConsumed] = consumed;
+            result_words[kResTotalLo] = static_cast<uint32_t>(total);
+            result_words[kResTotalHi] = static_cast<uint32_t>(total >> 32);
+            result_words[kResVisits] = visits;
+            result_words[kResLastConsume] = last_consume;
+            result_words[kResNull] = nulls;
+            result_words[kResSent] = sent;
+            result_words[kResRejected] = rejected;
+            result_words[kResQuota] = messages.quota();
+            result_words[kResRun] = command.sequence;
         }));
     });
 }
