@@ -1,6 +1,8 @@
 """Session.load and its failure paths over a stub ttnn and the fake kernel."""
 
+import os
 import signal
+import subprocess
 import types
 
 import numpy as np
@@ -202,3 +204,26 @@ def test_an_exit_without_a_stop_closes_the_runtime_before_the_device(
     session._release_all("exit")  # the exit hook tries again, then closes the device
     assert log == ["abort", "close", "read_back, grid stopped", "close_device"]
     assert s.run.stopped and s.device is None and s not in session._LIVE
+
+
+def test_the_chip_lock_holder_is_another_live_process(card, tmp_path):
+    session, _, _, _ = card
+
+    def lock(pid, size=56):
+        path = tmp_path / f"lock-{pid}"
+        data = bytearray(size)
+        if size >= 56:
+            data[52:56] = pid.to_bytes(4, "little")
+        path.write_bytes(bytes(data))
+        return path
+
+    assert session.chip_holder(0, lock(os.getppid())) == os.getppid()
+    assert session.chip_holder(0, lock(os.getpid())) is None  # this process
+    assert session.chip_holder(0, lock(0)) is None  # no owner
+    assert (
+        session.chip_holder(0, lock(os.getppid(), size=40)) is None
+    )  # not UMD's layout
+    assert session.chip_holder(0, tmp_path / "missing") is None
+    ended = subprocess.Popen(["true"])
+    ended.wait()  # its PID left in a lock word by a process that died
+    assert session.chip_holder(0, lock(ended.pid)) is None

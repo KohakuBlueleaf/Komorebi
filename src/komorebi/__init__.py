@@ -7,6 +7,7 @@ it ttnn) is imported on first use.
 import importlib
 
 from komorebi.errors import (
+    CardBusy,
     EngineError,
     EngineRefused,
     EngineTimeout,
@@ -25,6 +26,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Buffer",
+    "CardBusy",
     "EngineError",
     "EngineRefused",
     "EngineTimeout",

@@ -244,6 +244,7 @@ All derive from `km.KomorebiError`.
 
 | Error | When | Facts it carries |
 |---|---|---|
+| `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatch kernel did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded | `pending` tickets |
@@ -254,6 +255,14 @@ All derive from `km.KomorebiError`.
 | `EngineError` | a stream or graph ended with an error event | `event`, `ticket`, `reason`, `reason_name`, `pc`, `node` |
 | `EngineTimeout` | `wait_engine` ran out, or a RUN or CANCEL was not answered; a `WaitTimeout` | `ticket` |
 | `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the device is left open | |
+
+A card stays held by a process from its first device open until that process exits,
+even after the device is closed: tt-metal's driver takes the chip's lock at the first
+open and gives it back only when the process ends. A second process that opens the card
+meanwhile would wait without a bound, so `Session.open` first reads the lock's owner
+(from the driver's lock file, without taking the lock) and raises `km.CardBusy` naming
+that process. A test run that opens the card in its own process therefore cannot start
+a card script as a child (see `tests/hardware/README.md`).
 
 The kernel's reasons for a refusal (`RecordRefused.reason`, from `KMD_REFUSE_*` in
 the kernel's header; `reason_name` is the lower-case suffix):

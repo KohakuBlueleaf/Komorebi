@@ -117,6 +117,7 @@ def load_session(monkeypatch, tmp_path):
     monkeypatch.setattr(session.native, "load_module", lambda tree=None: module)
     monkeypatch.setattr(session.native, "image_path", lambda tree=None: image)
     monkeypatch.setattr(session, "aiclk_mhz", lambda card=None: 1350)
+    monkeypatch.setattr(session, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
     state = types.SimpleNamespace(buffer_address=lambda: 0x40000)
     monkeypatch.setattr(session, "_state_area", lambda device: state)
     module.card_backend = session._Backend  # the real one, for its own tests

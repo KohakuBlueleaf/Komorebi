@@ -12,6 +12,15 @@ class ProgramError(KomorebiError):
     """
 
 
+class CardBusy(KomorebiError):
+    """Another live process holds the card's chip lock; opening it would wait for that
+    process to exit. `pid` is the holder."""
+
+    def __init__(self, message, pid=None):
+        super().__init__(message)
+        self.pid = pid
+
+
 class StartError(KomorebiError):
     """The dispatch kernel did not report READY; `result` is its result block."""
 

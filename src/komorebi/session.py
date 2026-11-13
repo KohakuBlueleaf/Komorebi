@@ -17,7 +17,7 @@ import ttnn
 
 from komorebi import abi, dram, layout, native
 from komorebi import thread as kt
-from komorebi.errors import GridTimeout, ProgramError, StartError
+from komorebi.errors import CardBusy, GridTimeout, ProgramError, StartError
 from komorebi.run import Run
 
 CTL_ALIGN = 64  # the dispatch kernel stores whole 64-byte lines into the control block
@@ -25,6 +25,8 @@ IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM 
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
+CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
+CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 
 
@@ -79,6 +81,15 @@ def _hook_exit():
             signal.signal(signal.SIGTERM, _on_sigterm)
 
 
+def _command(pid):
+    """A process's command line, shortened, or "?"."""
+    try:
+        words = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return "?"
+    return " ".join(w.decode(errors="replace") for w in words if w)[:160]
+
+
 def aiclk_mhz(card=None):
     """The Tensix clock of the card this process uses, from the driver (MHz)."""
     card = card if card is not None else visible_card()
@@ -88,6 +99,30 @@ def aiclk_mhz(card=None):
 
 def visible_card():
     return int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
+
+
+def chip_holder(card, path=None):
+    """The PID of another live process that holds `card`'s chip lock, else None. Read
+    from UMD's lock file without taking the lock: a pthread mutex (40 bytes), a 64-bit
+    word, the owner's TID and PID; None as well if the file is missing or not 56 bytes.
+    UMD keeps the lock from a process's first open until that process exits."""
+    path = Path(path or CHIP_LOCK.format(card=card))
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) != CHIP_LOCK_BYTES:
+        return None
+    pid = int.from_bytes(data[CHIP_LOCK_PID : CHIP_LOCK_PID + 4], "little", signed=True)
+    if pid <= 0 or pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)  # a lock word left by a process that died is not a holder
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        pass  # alive, another user's
+    return pid
 
 
 def _state_area(device):
@@ -225,6 +260,14 @@ class Session:
                 raise ValueError(f"card {self.card} is not visible ({visible})")
             os.environ["TT_VISIBLE_DEVICES"] = str(self.card)
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
+        card = self.card if self.card is not None else visible_card()
+        holder = chip_holder(card)
+        if holder is not None:
+            raise CardBusy(
+                f"card {card} is held by process {holder} ({_command(holder)}): "
+                "an open would wait until that process exits",
+                pid=holder,
+            )
         self.device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
         _hook_exit()
         _LIVE.add(self)
