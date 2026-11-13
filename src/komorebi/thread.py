@@ -20,7 +20,7 @@ from komorebi import abi, native
 TIMER_HZ = 50_000_000  # the X280's timer: kmx_time() ticks per second
 PAGE = 4096  # region granularity, bytes; regions are whole pages of one bank
 # The DRAM bank each work cluster reaches through its Memory Port (cluster: bank),
-# measured on a p150a; the thread's start-up checks it (KMX_ERR_BANK otherwise).
+# measured on a p150a (clusters 2 and 3 share bank 7); the start-up checks it.
 BANK_OF_CLUSTER = {1: 6, 2: 7, 3: 7}
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI word, at this address in every bank
 RING_DEPTH = 16  # the thread's command lines, in the dispatch kernel's LIM
@@ -36,8 +36,8 @@ def layout():
 @dataclass
 class Thread:
     """A program's X280 thread: C `sources` linked with kmx, run on `cluster`;
-    `regions`: name -> size in bytes or initial contents (ids in dict order);
-    `words`: the program's argument words; `deadline`: seconds for the whole thread;
+    `regions`: name -> size or initial contents (ids in dict order), then `shared`,
+    names of program regions; `words`: argument words; `deadline`: seconds in all;
     `host_fallback(regions, words, run) -> (code, words)`: it on the host, on a Run."""
 
     sources: list
@@ -49,13 +49,22 @@ class Thread:
     includes: list = field(default_factory=list)
     defines: dict = field(default_factory=dict)
     prefetch: str = "documented"  # or "keep": the L2 prefetchers as they are
+    shared: tuple = ()  # names of Program.shared regions, after its own in id order
 
     def __post_init__(self):
         k = layout()
         if self.cluster not in BANK_OF_CLUSTER:
             raise ValueError(f"cluster {self.cluster}: work clusters are 1 to 3")
-        if not 1 <= len(self.regions) <= k["KMX_REGIONS_MAX"]:
-            raise ValueError(f"1 to {k['KMX_REGIONS_MAX']} regions")
+        self.shared = tuple(self.shared)
+        n = len(self.regions) + len(self.shared)
+        if not self.regions or n > k["KMX_REGIONS_MAX"]:
+            raise ValueError(
+                f"1 to {k['KMX_REGIONS_MAX']} regions, shared ones included"
+            )
+        if set(self.shared) & set(self.regions) or len(set(self.shared)) < len(
+            self.shared
+        ):
+            raise ValueError("a shared region's name is the thread's own or repeated")
         if len(self.words) > k["KMX_WORDS_MAX"]:
             raise ValueError(f"at most {k['KMX_WORDS_MAX']} words")
         if any(not 0 <= int(w) <= abi.M32 for w in self.words):
@@ -68,6 +77,11 @@ class Thread:
         for name in self.regions:
             if self.region_bytes(name) <= 0:
                 raise ValueError(f"region {name!r} is empty")
+
+    @property
+    def bank(self):
+        """The DRAM bank of the thread's cluster: every region it reads lives there."""
+        return BANK_OF_CLUSTER[self.cluster]
 
     def region_bytes(self, name):
         value = self.regions[name]
@@ -123,13 +137,19 @@ class RingPlacement(NamedTuple):
     remote: int | None = None
 
 
-def work_ring(kernel_lim, kernel_xy, work_lim, work_xy):
-    """The ring between a work cluster and the dispatch kernel: commands and the read
-    line in the kernel's LIM after its layout (each side writes the other's LIM and
-    reads its own). Returns the thread's RingPlacement and the kernel's work_*
-    arguments (cmds offset, depth, event depth, tile, NoC address of the area)."""
+def ring_bytes():
+    """Bytes of one work ring's command lines and read line in the kernel's LIM."""
+    return RING_DEPTH * 64 + 64
+
+
+def work_ring(kernel_lim, kernel_xy, work_lim, work_xy, cluster=1):
+    """The ring between work cluster `cluster` and the dispatch kernel: commands and
+    the read line in the kernel's LIM after its layout, cluster c's after those of
+    clusters 1 to c - 1 (each side writes the other's LIM and reads its own). Returns
+    the thread's RingPlacement and the kernel's (tile, NoC address of the area)."""
     d, k = abi.headers(), layout()
-    cmds = d["KMD_LIM_BYTES"]  # after the layout: the host gives no upload region
+    # after the layout (the host gives no upload region), one ring per cluster
+    cmds = d["KMD_LIM_BYTES"] + (cluster - 1) * ring_bytes()
     area = work_lim + k["KMX_LIM_BYTES"]
     x0, y0 = kernel_xy
     ring = RingPlacement(
@@ -142,7 +162,25 @@ def work_ring(kernel_lim, kernel_xy, work_lim, work_xy):
         remote=x0 | y0 << 16,
     )
     x1, y1 = work_xy
-    return ring, (cmds, RING_DEPTH, RING_EVENTS, x1 | y1 << 16, area)
+    return ring, (x1 | y1 << 16, area)
+
+
+def kernel_work_args(ends):
+    """The kernel's work_* arguments for the rings `ends` ({cluster: (tile, NoC
+    address of the area)}, from work_ring); none for an empty dict."""
+    if not ends:
+        return {}
+    n = abi.headers()["KMD_WORK_CLUSTERS"]
+    nocs, addrs = [0] * n, [0] * n
+    for c, (noc, area) in ends.items():
+        nocs[c - 1], addrs[c - 1] = noc, area
+    return {
+        "work_cmds": abi.headers()["KMD_LIM_BYTES"],
+        "work_depth": RING_DEPTH,
+        "work_event_depth": RING_EVENTS,
+        "work_noc": nocs,
+        "work_noc_addr": addrs,
+    }
 
 
 def ring_area_bytes(ring):
@@ -150,30 +188,33 @@ def ring_area_bytes(ring):
     return abi.headers()["KMD_WORK_EVENTS"] + ring.event_depth * 16
 
 
-def args_block(thread, base, check_value, run_value=0, ring=None):
+def args_block(thread, base, check_value, run_value=0, ring=None, table=None):
     """The thread's whole LIM block (KMX_LIM_BYTES, and a remote ring's event area
-    zeroed): the argument block with the region table at bank address `base` (page 0
-    the check line), the ring's line (zero without a `ring`, a RingPlacement)."""
+    zeroed): the argument block with the check line at bank address `base`, the region
+    table (`table`: [(bank address, bytes)] in id order, else place() from `base`), the
+    ring's line (zero without a `ring`, a RingPlacement)."""
     k = layout()
-    placed, _ = place(thread)
+    if table is None:
+        table = [(base + p.page * PAGE, p.bytes) for p in place(thread)[0]]
     block = bytearray(k["KMX_LIM_BYTES"])
     flags = k["KMX_FLAG_KEEP_PREFETCH"] if thread.prefetch == "keep" else 0
     head = struct.pack(
-        "<QIIQIIQQQ",
+        "<QIIQIIQQQI",
         run_value,
         k["KMX_MAGIC"],
         k["KMX_VERSION"],
         int(thread.deadline * TIMER_HZ),
-        len(placed),
+        len(table),
         len(thread.words),
         base,
         check_value,
         flags,
+        thread.cluster,
     )
     block[: len(head)] = head
-    for i, p in enumerate(placed):
+    for i, (address, n) in enumerate(table):
         at = k["KMX_ARGS_REGIONS"] + 16 * i
-        block[at : at + 16] = struct.pack("<QQ", base + p.page * PAGE, p.bytes)
+        block[at : at + 16] = struct.pack("<QQ", address, n)
     words = struct.pack(f"<{len(thread.words)}I", *map(int, thread.words))
     at = k["KMX_LIM_ARGS"] + k["KMX_ARGS_WORDS"]
     block[at : at + len(words)] = words
@@ -241,9 +282,9 @@ def parse_result(raw, ran=True):
 
 class ThreadRun:
     """A program's thread in one run: on the card through `port` (the work_* calls
-    of the native module), or its host fallback issuing through `run`. `regions` reads
-    a region from the card; `image` is the thread's image, `base` the regions' bank
-    address, `check_value` what the host wrote into the check line."""
+    of the native module), or its host fallback through `run`. `regions` reads regions
+    from the card and gives their table; `image`: the thread's image; `base`, the check
+    line's bank address, holds `check_value`; `shared`: the fallback's shared arrays."""
 
     def __init__(
         self,
@@ -255,8 +296,10 @@ class ThreadRun:
         base=0,
         check_value=1,
         run=None,
+        shared=None,
     ):
         self.thread = thread
+        self.shared = shared if shared is not None else {}
         self.port = port
         self.regions = regions
         self.image = image
@@ -275,7 +318,10 @@ class ThreadRun:
             if self.thread.host_fallback is None:
                 raise ValueError("the thread has no host_fallback")
             return
-        block = args_block(self.thread, self.base, self.check_value, ring=self.ring)
+        table = self.regions.table() if hasattr(self.regions, "table") else None
+        block = args_block(
+            self.thread, self.base, self.check_value, ring=self.ring, table=table
+        )
         self.port.work_start(self.thread.cluster, str(self.image), block)
         self.running = True
 
@@ -287,8 +333,18 @@ class ThreadRun:
         if not self.on_card:
             self.result = self._fallback()
             return self.result
+        return self.collect(self.port.work_wait(self.thread.cluster, timeout)["ready"])
+
+    def returned(self, timeout):
+        """Whether the thread on the card has returned, waiting at most `timeout`."""
+        return self.port.work_wait(self.thread.cluster, timeout)["ready"]
+
+    def collect(self, ran):
+        """Asks a thread that has not returned (`ran` false) to stop, then stops it
+        through the runtime and reads its result block."""
+        if self.result is not None:
+            return self.result
         c, k = self.thread.cluster, layout()
-        ran = self.port.work_wait(c, timeout)["ready"]
         if not ran:
             self._ask_stop()
             self.port.work_wait(c, 1.0)
@@ -318,6 +374,8 @@ class ThreadRun:
         if not self.on_card:
             if self.arrays is None:
                 raise RuntimeError("the host fallback has not run: thread_result()")
+            if name in self.thread.shared:
+                return self.shared[name].view(np.uint8)
             return self.arrays[name].view(np.uint8)[: self.thread.region_bytes(name)]
         return self.regions.read(name)
 
@@ -341,6 +399,8 @@ class ThreadRun:
             if initial is not None:
                 data[:n] = initial
             self.arrays[name] = data.view(np.uint32)
+        for name in self.thread.shared:
+            self.arrays[name] = self.shared[name]
         words = list(self.thread.words)
         code, words = self.thread.host_fallback(self.arrays, words, self.run)
         words = [int(w) & abi.M32 for w in words]

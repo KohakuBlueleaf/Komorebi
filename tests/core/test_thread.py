@@ -13,6 +13,8 @@ from fake_port import FakeBackend
 from fake_port import FakePort as FakeKernel
 
 from komorebi import thread as kt
+from komorebi.errors import ThreadFailed
+from komorebi.program import Program
 from komorebi.run import Run
 
 KMX = kt.native.kmx_dir()
@@ -46,23 +48,33 @@ def test_ring_line_names_the_placement():
 
 
 def test_a_work_ring_has_commands_in_the_kernels_lim_and_events_in_the_threads():
-    ring, kernel = kt.work_ring(0x8100000, (8, 3), 0x8120000, (8, 9))
+    ring, end = kt.work_ring(0x8100000, (8, 3), 0x8120000, (8, 9))
     d = kt.abi.headers()
     assert ring.cmd == 0x8100000 + d["KMD_LIM_BYTES"] and ring.remote == 8 | 3 << 16
     assert ring.read == ring.cmd + 64 * kt.RING_DEPTH
     area = 0x8120000 + K["KMX_LIM_BYTES"]
     assert (ring.consumed, ring.events) == (area, area + d["KMD_WORK_EVENTS"])
-    assert kernel == (
-        d["KMD_LIM_BYTES"],
-        kt.RING_DEPTH,
-        kt.RING_EVENTS,
-        8 | 9 << 16,
-        area,
-    )
+    assert end == (8 | 9 << 16, area)
     block = kt.args_block(a_thread(), base=0, check_value=1, ring=ring)
     assert len(block) == K["KMX_LIM_BYTES"] + kt.ring_area_bytes(ring)
     flags, tile = struct.unpack_from("<2I", block, K["KMX_LIM_RING"] + 40)
     assert (flags, tile) == (K["KMX_RING_REMOTE"], 8 | 3 << 16)
+
+
+def test_each_work_cluster_has_its_own_ring_after_the_ones_before():
+    d = kt.abi.headers()
+    ring3, end3 = kt.work_ring(0x8100000, (8, 3), 0x8120000, (8, 7), cluster=3)
+    assert ring3.cmd == 0x8100000 + d["KMD_LIM_BYTES"] + 2 * kt.ring_bytes()
+    args = kt.kernel_work_args({3: end3, 1: (8 | 9 << 16, 0x500)})
+    assert args["work_cmds"] == d["KMD_LIM_BYTES"]
+    assert args["work_noc"] == [8 | 9 << 16, 0, 8 | 7 << 16]
+    assert args["work_noc_addr"] == [0x500, 0, end3[1]]
+    assert kt.kernel_work_args({}) == {}
+
+
+def test_the_argument_block_tells_the_thread_its_cluster():
+    block = kt.args_block(a_thread(cluster=3), base=0, check_value=1)
+    assert struct.unpack_from("<I", block, 56)[0] == 3
 
 
 def test_argument_block_holds_the_region_table_and_words():
@@ -185,3 +197,49 @@ def test_a_thread_stop_stays_inside_the_time_it_is_given():
     run.running = True
     run.stop(30.0)  # the thread's own wait stays at most 1 s
     assert given[0] == ("wait", 1.0) and 29.0 < given[1][1] <= 30.0
+
+
+def test_one_call_puts_the_same_thread_on_several_clusters():
+    prog = Program("p", kernels="k")
+    made = prog.thread(clusters=(1, 2, 3), sources=["t.c"], regions={"r": 64})
+    assert [t.cluster for t in made] == [1, 2, 3] and [t.bank for t in made] == [
+        6,
+        7,
+        7,
+    ]
+    with pytest.raises(ValueError, match="already has a thread on cluster 2"):
+        prog.thread(cluster=2, sources=["t.c"], regions={"r": 64})
+
+
+def test_a_shared_region_lives_in_one_bank():
+    prog = Program("p", kernels="k")
+    prog.region("pool", 4096)
+    prog.thread(clusters=(2, 3), sources=["t.c"], regions={"r": 64}, shared=["pool"])
+    prog.check_threads()
+    prog.thread(cluster=1, sources=["t.c"], regions={"r": 64}, shared=["pool"])
+    with pytest.raises(ValueError, match="banks \\[6, 7\\]"):
+        prog.check_threads()
+
+
+class TwoClusters(FakePort):
+    """Cluster 2's thread fails at once; cluster 3's would run on."""
+
+    def work_wait(self, c, timeout):
+        self.calls.append(("wait", c))
+        return {"ready": c == 2}
+
+    def work_read(self, c, offset, n):
+        state = K["KMX_STATE_FAILED"] if c == 2 else K["KMX_STATE_RUNNING"]
+        return struct.pack("<64I", state, K["KMX_ERR_LATE"] if c == 2 else 0, *[0] * 62)
+
+
+def test_one_threads_failure_stops_the_others_and_names_it():
+    port, run = TwoClusters(), Run(FakeBackend(FakeKernel()), (12, 10))
+    for c in (2, 3):
+        run.threads[c] = kt.ThreadRun(a_thread(cluster=c), port, None, image="t.bin")
+        run.threads[c].start()
+    with pytest.raises(ThreadFailed) as err:
+        run.thread_results(timeout=5.0)
+    assert err.value.cluster == 2 and err.value.results[2].error == "late"
+    assert not err.value.results[3].ran and ("stop", 3) in port.calls
+    assert not any(t.running for t in run.threads.values())

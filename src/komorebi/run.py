@@ -19,11 +19,13 @@ from komorebi.errors import (
     RecordRefused,
     RecordTimeout,
     StartError,
+    ThreadFailed,
     WaitTimeout,
 )
 
 M32 = abi.M32
 WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
+THREAD_POLL_S = 0.002  # one look at a thread while several are waited for
 COMPACT_ROWS = 4096  # released tickets kept before the columns are shifted
 COLUMNS = (
     "_first", "_count", "_flags", "_seq", "_kseq", "_status", "_ticks", "_has", "_gone"
@@ -106,7 +108,8 @@ class Run:
         self._state = None
         self._blocks = None
         self._trace = None
-        self.thread = None  # the program's X280 thread (komorebi.thread.ThreadRun)
+        self.thread = None  # the program's first X280 thread (thread.ThreadRun)
+        self.threads = {}  # every X280 thread by work cluster
         self.issue_s = 0.0  # host time in issue() and issue_many()
         self.wait_s = 0.0  # host time in wait() and drain(), native loop included
         self.native_s = 0.0  # of which in the native loop (stores, reading events)
@@ -515,6 +518,46 @@ class Run:
             raise KomorebiError("the program has no thread")
         return self.thread.wait(timeout)
 
+    def thread_results(self, timeout=10.0):
+        """Waits (bounded) for every X280 thread, stops each and returns {cluster:
+        ThreadResult}. One that fails (no return in time, a library error) has the
+        others asked to stop at once, and ThreadFailed carries every result."""
+        pending = dict(self._thread_runs())
+        if not pending:
+            raise KomorebiError("the program has no thread")
+        by, results, failed = time.monotonic() + timeout, {}, None
+        while pending and failed is None:
+            for c, t in list(pending.items()):
+                if not t.on_card:
+                    results[c] = t.wait(timeout)
+                else:
+                    left = by - time.monotonic()
+                    ran = t.returned(min(THREAD_POLL_S, max(left, 0.0)))
+                    if not ran and left > 0:
+                        continue
+                    results[c] = t.collect(ran)
+                del pending[c]
+                if not results[c].ran or results[c].state != "done":
+                    failed = c
+                    break
+        for c, t in pending.items():
+            results[c] = t.collect(False)
+        if failed is not None:
+            r = results[failed]
+            how = "did not return in time" if not r.ran else f"failed ({r.error})"
+            raise ThreadFailed(
+                f"the thread on cluster {failed} {how}; the others were stopped",
+                failed,
+                results,
+            )
+        return results
+
+    def _thread_runs(self):
+        """{cluster: ThreadRun} of the program (the one thread when only it is set)."""
+        if self.threads:
+            return self.threads
+        return {} if self.thread is None else {0: self.thread}
+
     def event(self, ticket):
         """The event of a ticket, or None if it has not arrived (or was released)."""
         i = ticket - self._base
@@ -670,8 +713,8 @@ class Run:
             return self._result
         by = time.monotonic() + timeout
         try:
-            if self.thread is not None:
-                self.thread.stop(_left(by))  # the thread's stop is inside the deadline
+            for t in self._thread_runs().values():
+                t.stop(_left(by))  # each thread's stop is inside the deadline
             if self._engine_state is not None:
                 self._engine_state.stop(_left(by))  # EXIT waits for running engines
             self.drain(_left(by))
@@ -729,8 +772,8 @@ class Run:
         with `abandoned`, the records left without their DONE event."""
         if self._stopped:
             return
-        if self.thread is not None:
-            self.thread.running = False  # the runtime's close stops it
+        for t in self._thread_runs().values():
+            t.running = False  # the runtime's close stops it
         # if the close raises, the run stays loaded and a later exit path
         # (Session.close, the exit hooks) closes it again
         cleaned = self.backend.abort()
@@ -792,8 +835,8 @@ class Run:
 
     def _read_back(self, stop_grid=False):
         blocks, trace_rows = self.backend.read_back(stop_grid=stop_grid)
-        if self.thread is not None:
-            self.thread.grid_stopped()
+        for t in self._thread_runs().values():
+            t.grid_stopped()
         self._blocks = blocks
         self._state = st.state_words(blocks, 0, self.h)
         if trace_rows is not None:

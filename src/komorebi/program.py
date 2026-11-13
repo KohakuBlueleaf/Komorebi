@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from komorebi import _env, abi
 from komorebi.errors import ProgramError
 from komorebi.thread import Thread
@@ -65,6 +67,7 @@ class Program:
     depth: int = 4
     segments: object = field(default_factory=dict)
     threads: dict = field(default_factory=dict)  # work cluster -> Thread
+    shared: dict = field(default_factory=dict)  # shared region name -> size or array
     dyn: "Dynamic | None" = None
     opt: dict = field(default_factory=dict)  # kernel -> optimisation level
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
@@ -89,13 +92,49 @@ class Program:
             if level not in OPT_LEVELS:
                 raise ProgramError(f"opt {kernel}={level!r}: not one of {OPT_LEVELS}")
 
-    def thread(self, cluster=1, **kwargs):
-        """Declares the program's X280 thread on work cluster `cluster` (the
-        arguments of komorebi.thread.Thread) and returns it. One per program."""
-        if self.threads:
-            raise ValueError(f"{self.name} already has a thread (one per program)")
-        self.threads[cluster] = Thread(cluster=cluster, **kwargs)
-        return self.threads[cluster]
+    def thread(self, cluster=1, clusters=None, **kwargs):
+        """Declares an X280 thread on work cluster `cluster` (the arguments of
+        komorebi.thread.Thread) and returns it; with `clusters`, the same thread on
+        each of them (a list, one Thread per cluster). One thread per cluster."""
+        single = clusters is None
+        clusters = (cluster,) if single else tuple(clusters)
+        if len(set(clusters)) < len(clusters):
+            raise ValueError(f"clusters {clusters}: each at most once")
+        for c in clusters:
+            if c in self.threads:
+                raise ValueError(f"{self.name} already has a thread on cluster {c}")
+        made = [Thread(cluster=c, **kwargs) for c in clusters]
+        for t in made:
+            self.threads[t.cluster] = t
+        return made[0] if single else made
+
+    def region(self, name, value):
+        """Declares a shared region: `value` a size in bytes or an array of initial
+        contents. Threads that name it in `shared` see it; all must share its bank."""
+        if name in self.shared:
+            raise ValueError(f"{self.name} already has a shared region {name!r}")
+        n = int(value) if isinstance(value, int) else np.asarray(value).nbytes
+        if n <= 0:
+            raise ValueError(f"shared region {name!r} is empty")
+        self.shared[name] = value
+
+    def check_threads(self):
+        """Every shared region a thread names exists, is named by some thread, and all
+        threads naming it read one bank (a thread reads only its own bank's regions)."""
+        banks = {}
+        for t in self.threads.values():
+            for name in t.shared:
+                if name not in self.shared:
+                    raise ValueError(f"{self.name}: no shared region {name!r}")
+                banks.setdefault(name, set()).add(t.bank)
+        for name in self.shared:
+            if name not in banks:
+                raise ValueError(f"{self.name}: no thread names shared region {name!r}")
+            if len(banks[name]) > 1:
+                raise ValueError(
+                    f"{self.name}: shared region {name!r} is named by threads on banks "
+                    f"{sorted(banks[name])}; a thread reads only its own bank's regions"
+                )
 
     def sources(self):
         """{"reader": path, "compute": path, "writer": path}, each an existing file."""

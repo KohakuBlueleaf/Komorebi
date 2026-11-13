@@ -20,6 +20,7 @@ from komorebi.errors import (
     RecordRefused,
     RecordTimeout,
     StartError,
+    ThreadFailed,
     WaitTimeout,
 )
 from komorebi.program import Buffer, KernelSizes, Program
@@ -44,6 +45,7 @@ __all__ = [
     "RecordTimeout",
     "Session",
     "StartError",
+    "ThreadFailed",
     "WaitTimeout",
 ]
 

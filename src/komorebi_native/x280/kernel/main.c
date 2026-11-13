@@ -40,7 +40,8 @@ static int pow2(uint64_t n) {
 /* Checks the argument block against this run: ring depths are powers of two, so the
  * slot numbering survives the wrap of the 32-bit counters. */
 static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
-    if (x280_hart_args_bytes() < sizeof(kmd_args_t) || a->run_value != run) {
+    if (x280_hart_args_bytes() < sizeof(kmd_args_t) || a->run_value != run ||
+        a->version != KMD_ARGS_VERSION) {
         return 0;
     }
     const uint64_t host_bytes = KMD_HOST_RING + a->event_depth * sizeof(km_event_t);
@@ -387,7 +388,6 @@ static void loop(kmd_t* k) {
     uint64_t t_active = x280_mtime();
     kmd_ring_t* host = &k->ring[KMD_SRC_HOST];
     kmd_ring_t* engine = &k->ring[KMD_SRC_ENGINE];
-    kmd_ring_t* work = &k->ring[KMD_SRC_WORK];
     for (;;) {
         k->passes++;
         if (k->busy) {
@@ -407,10 +407,12 @@ static void loop(kmd_t* k) {
         if (k->queued != 0) {
             queue_turn(k, x280_mtime());
         }
-        /* Every fourth pass: one look at the work ring costs the idle pass 31 ns. */
-        if (work->cmds != 0 && (k->passes & 3u) == 0) {
-            source_turn(k, KMD_SRC_WORK, &activity);
-            ring_flush(work);
+        /* Work ring w is looked at on passes w mod 4, at most one ring a pass: one
+         * look costs the idle pass 31 ns. */
+        const uint32_t w = (uint32_t)(k->passes & 3u);
+        if (w < KMD_WORK_CLUSTERS && k->ring[KMD_SRC_WORK + w].cmds != 0) {
+            source_turn(k, KMD_SRC_WORK + w, &activity);
+            ring_flush(&k->ring[KMD_SRC_WORK + w]);
         }
         ring_flush(host);
         if (++spins != KMD_POLL_EVERY) {
@@ -553,7 +555,9 @@ __attribute__((used, noinline)) void kmd_trapped(
     }
     grid_close(t);
     events_close(t);
-    noc_clear_tlb_2m(KMD_WIN_WORK);
+    for (uint32_t w = 0; w < KMD_WORK_CLUSTERS; w++) {
+        noc_clear_tlb_2m(KMD_WIN_WORK + w);
+    }
     kmd_flush_lines(state, KMD_STATE_BYTES);
     x280_fence_ow();
     result_word(t, KMD_R_STATE, KMD_STATE_FAILED);
@@ -561,7 +565,7 @@ __attribute__((used, noinline)) void kmd_trapped(
 
 /* Core 0's kernel; kept out of main so main's prologue touches no FP register. */
 static __attribute__((noinline)) void run(uint64_t hart) {
-    uint64_t host_line[16], engine_line[16], work_line[16];
+    uint64_t host_line[16], engine_line[16], work_lines[8u * KMD_WORK_CLUSTERS + 8u];
     const uint64_t run_value = x280_hart_control(hart)->run_value;
     const uint64_t t_boot = x280_mtime();
     const volatile kmd_args_t* a = (const volatile kmd_args_t*)x280_hart_args(hart);
@@ -601,7 +605,7 @@ static __attribute__((noinline)) void run(uint64_t hart) {
     h->t_record = a->t_record;
     h->line = (uint64_t*)(((uintptr_t)host_line + 63u) & ~(uintptr_t)63u);
     result_word(k, KMD_R_STATE, KMD_STATE_BOOT);
-    uint64_t* wl = (uint64_t*)(((uintptr_t)work_line + 63u) & ~(uintptr_t)63u);
+    uint64_t* wl = (uint64_t*)(((uintptr_t)work_lines + 63u) & ~(uintptr_t)63u);
     if (boot(k) == KMD_ERR_NONE && work_open(k, wl) != KMD_ERR_NONE) {
         result_error(k, KMD_ERR_WINDOW, 0, 0, 0, 0);
     }

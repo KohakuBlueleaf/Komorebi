@@ -368,6 +368,7 @@ namespace {
             a.t_idle = static_cast<uint64_t>(t_idle_s * kMtimeHz);
             a.state_ddr = state_ddr;
             a.upload_bytes = upload_bytes;
+            a.version = KMD_ARGS_VERSION;
             std::vector<uint8_t> block(256, 0);  // whole 64-byte lines
             std::memcpy(block.data(), &a, sizeof(a));
             tile->write_available_lim(base + KMD_LIM_ARGS, block);

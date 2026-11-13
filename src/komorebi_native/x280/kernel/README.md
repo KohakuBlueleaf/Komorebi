@@ -26,19 +26,21 @@ is one of those sources. `km_dispatch.h` holds the exact layouts;
 ## Sources
 
 A source is anything that sends core 0 commands: the host (source 0), the stream
-engine on core 1 (source 1) and the thread on a work cluster (source 2). Each has a command ring and an event ring, served by the
+engine on core 1 (source 1) and the threads on work clusters 1 to 3 (sources 2 to 4). Each has a command ring and an event ring, served by the
 same code (`ring.h`) under the protocol below; only their memory differs. The host's
 command ring is in LIM and its event ring in host memory; the engine's two rings are in
 the state area in the cluster's DRAM bank (`KMD_STATE_RING`, `KMD_ERING_*`), cached
 and coherent between the cluster's cores. A work cluster's ring is split so that each
 side reads only its own LIM: the thread writes its command lines and its read line into
-this cluster's LIM after the layout (`work_cmds`), through a window of its own; core 0
-writes the consumed count, the event count and the events into the work cluster's LIM
-(`work_noc_addr`, `KMD_WORK_*`) through window `KMD_WIN_WORK`. Neither part passes
+this cluster's LIM after the layout (cluster c's at `work_cmds + (c - 1) *
+KMD_WORK_RING_BYTES(work_depth)`), through a window of its own; core 0 writes the
+consumed count, the event count and the events into the work cluster's LIM
+(`work_noc_addr[c - 1]`, `KMD_WORK_*`) through window `KMD_WIN_WORK + c - 1`. Neither part passes
 through a cache. Each pass of core 0's loop sweeps the busy slots, then takes at most
-one command from each source in the order host, engine, work cluster; the engine is
-looked at only while it has a stream, a record in flight or a waiting command, the work
-cluster's ring every fourth pass.
+one command from each source in the order host, engine, one work ring; the engine is
+looked at only while it has a stream, a record in flight or a waiting command, and work
+ring c - 1 on the passes whose number is c - 1 modulo 4 (each ring every fourth pass, at
+most one ring a pass).
 A record's `KM_EV_DONE` or `KM_EV_TIMEOUT` goes to the source that sent it. Its aux holds
 in its low 8 bits the first core of the team that ran the record (DONE; for `KM_F_QUEUE`,
 the one the allocator chose) or the slot (TIMEOUT), and above them the low 16 bits of the
@@ -174,8 +176,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
   the queue issues a job; its room in the engine's event ring is kept from the refusal
   on. Core 1 does the waiting: a refused stream sends the same ISSUE or SUBMIT again
   after the next wake, the other streams go on meanwhile.
-- **Commands from a work cluster.** The argument block's `work_*` words name the ring
-  (`work_cmds` 0: none); the host zeroes its command lines before the start and the
+- **Commands from a work cluster.** The argument block's `work_*` words name the rings
+  (`work_cmds` 0: none; ring c - 1 in use when `work_noc_addr[c - 1]` is nonzero; one
+  depth and one event depth for all, `KMD_ARGS_VERSION` 2); the host zeroes its command lines before the start and the
   thread's event area before the thread starts. The thread may send records,
   `KM_SEG_DEADLINE` and `KM_SEG_PING`; STOP, EXIT, RUN, CANCEL and the engine's commands
   from it are refused with reason 1 (the run belongs to the host, which stops the

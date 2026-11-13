@@ -188,7 +188,12 @@ enum {
 /* Window slots of the kernel (16 to 191 are free for an image). */
 #define KMD_WIN_PANEL0 16u /* panel r uses KMD_WIN_PANEL0 + r */
 #define KMD_WIN_HOST 18u
-#define KMD_WIN_WORK 19u /* the work cluster's ring area (work_port.h) */
+#define KMD_WIN_WORK 19u /* work cluster c's ring area: KMD_WIN_WORK + c - 1 */
+
+/* The argument block's layout; the kernel refuses a block of another version. */
+#define KMD_ARGS_VERSION 2u
+/* Work clusters with a ring to the kernel (clusters 1 to 3). */
+#define KMD_WORK_CLUSTERS 3u
 
 /* Argument block, at the start of the layout. Deadlines are in mtime ticks (50 MHz). */
 typedef struct {
@@ -209,13 +214,15 @@ typedef struct {
     uint64_t state_ddr; /* offset in this cluster's DRAM bank of KMD_STATE_BYTES */
     uint64_t
         upload_bytes; /* upload region at KMD_LIM_UPLOAD: a multiple of 64, may be 0 */
-    /* A work cluster's ring, source 2 (work_port.h); work_cmds 0: none. */
-    uint64_t work_cmds;        /* LIM offset from this block of its command lines */
-    uint64_t work_depth;       /* command lines, a power of two, at most 64 */
-    uint64_t work_event_depth; /* events, a power of two, at most 1024 */
-    uint64_t work_noc;         /* the work cluster's tile: x | y << 16 */
-    uint64_t work_noc_addr;    /* NoC address there of KMD_WORK_* (64-byte aligned) */
-    uint64_t dyn_seg;          /* the program's dynamic segment (dynamic.h); 0: none */
+    /* The work clusters' rings, sources 2 to 4 (work_port.h); work_cmds 0: none. Ring
+     * c - 1 (cluster c) is in use when work_noc_addr[c - 1] is nonzero. */
+    uint64_t work_cmds;  /* LIM offset from this block of ring 0's command lines */
+    uint64_t work_depth; /* command lines per ring, a power of two, at most 64 */
+    uint64_t work_event_depth; /* events per ring, a power of two, at most 1024 */
+    uint64_t work_noc[KMD_WORK_CLUSTERS];      /* each cluster's tile: x | y << 16 */
+    uint64_t work_noc_addr[KMD_WORK_CLUSTERS]; /* NoC address there of KMD_WORK_* */
+    uint64_t dyn_seg; /* the program's dynamic segment (dynamic.h); 0: none */
+    uint64_t version; /* KMD_ARGS_VERSION */
 } kmd_args_t;
 
 /* The ready block: the host waits for `mark` (its buffer is zeroed before the run), as
@@ -263,8 +270,9 @@ static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
 #define KMD_ERING_QUEUED 0x1940u   /* core 0: jobs waiting in the queue */
 #define KMD_ERING_TAKEN 0x1980u    /* core 0: the engine's jobs taken into it, ever */
 #define KMD_ERING_BYTES 0x19C0u
-/* A work cluster's ring: its command lines, then its read line, in this cluster's LIM
- * at work_cmds; these, from work_noc_addr in the work cluster's LIM. */
+/* Ring r: command lines, then its read line, here at work_cmds + r * ring bytes;
+ * these at work_noc_addr[r] in the work cluster's LIM. */
+#define KMD_WORK_RING_BYTES(depth) ((depth) * 64u + 64u)
 #define KMD_WORK_CONSUMED 0x00u /* core 0: commands taken */
 #define KMD_WORK_TOLD 0x40u     /* core 0: events pushed */
 #define KMD_WORK_EVENTS 0x80u   /* work_event_depth events */
@@ -274,8 +282,9 @@ static inline uint32_t kmd_verify_team(uint32_t i, uint32_t cores) {
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u
 
-KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 200, "kmd_args_t is 200 bytes");
+KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 240, "kmd_args_t is 240 bytes");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, work_cmds) == 152, "work_cmds at 152");
+KMD_STATIC_ASSERT(offsetof(kmd_args_t, version) == 232, "version at 232");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, upload_bytes) == 144, "upload_bytes at 144");
 KMD_STATIC_ASSERT(sizeof(kmd_ready_t) == 16, "the ready block is one 16-byte store");
 KMD_STATIC_ASSERT(KMD_HOST_READY * 4u + 16u <= KMD_HOST_RING, "host buffer: ready");

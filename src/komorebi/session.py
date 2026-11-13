@@ -513,21 +513,30 @@ class Session:
             raise RuntimeError("a run is loaded: stop it first")
         if thread not in ("card", "host"):
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
-        work = next(iter(program.threads.values()), None)
-        if work is not None and thread == "host" and work.host_fallback is None:
-            raise ValueError(f"{program.name}: the thread has no host_fallback")
+        works = [program.threads[c] for c in sorted(program.threads)]
+        program.check_threads()
+        for work in works:
+            if thread == "host" and work.host_fallback is None:
+                raise ValueError(
+                    f"{program.name}: the thread on cluster {work.cluster} has no "
+                    "host_fallback"
+                )
         image = Path(image) if image else native.image_path(self.tree)
         if not image.is_file() or image.stat().st_size == 0:
             raise StartError(f"dispatch kernel image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
-        on_card = work is not None and thread == "card"
-        work_image = native.thread_image(work, self.tree) if on_card else None
+        on_card = bool(works) and thread == "card"
+        images = (
+            {t.cluster: native.thread_image(t, self.tree) for t in works}
+            if on_card
+            else {}
+        )
         depth = depth or program.depth
         sources = program.sources()  # before anything opens: a missing file raises
         mhz = aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a resident grid never is
-        regions = _Regions(self, work) if work is not None else None
+        regions = _bank_regions(self, program, works)
         dispatch = module.Dispatch(self.device, self.pll_mhz)
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
         _hook_exit()
@@ -539,7 +548,8 @@ class Session:
             if not dispatch.idle:
                 raise StartError("X280 cluster 0 is not idle: no image can start")
             state_t = _state_area(self.device)
-            ring, work_args = _work_ring(dispatch, work) if on_card else (None, ())
+            rings = {t.cluster: _work_ring(dispatch, t) for t in works if on_card}
+            ends = {c: end for c, (_, end) in rings.items()}
             tag = dispatch.prepare(
                 depth,
                 host_depth,
@@ -548,7 +558,7 @@ class Session:
                 deadline,
                 kernel_idle,
                 state_t.buffer_address(),
-                *work_args,
+                **kt.kernel_work_args(ends),
                 dyn_seg=program.dyn.seg if program.dyn is not None else 0,
             )
             check_bases(lim_bases(dispatch.lim_base))
@@ -609,36 +619,69 @@ class Session:
         if state != abi.headers()["KMD_STATE_READY"]:
             run._fail_start(state)
         self.log("ready")
-        if work is not None:
+        if works:
+            shared = {n: _host_array(v) for n, v in program.shared.items()}
             try:
-                run.thread = self._start_thread(
-                    dispatch, work, regions, work_image, on_card, run, ring
-                )
+                for work in works:
+                    c = work.cluster
+                    view = regions[work.bank].view(work)
+                    t = kt.ThreadRun(
+                        work, dispatch, view, images.get(c), on_card, view.base,
+                        view.check, run, shared,
+                    )  # fmt: skip
+                    t.ring = rings[c][0] if on_card else None
+                    run.threads[c] = t
+                    t.start()
             except BaseException:
                 run.abort()
                 raise
-            self.log("thread started" if on_card else "thread on the host")
+            run.thread = run.threads[works[0].cluster]
+            where = "on the card" if on_card else "on the host"
+            self.log(f"threads {list(run.threads)} {where}")
         return run
 
-    def _start_thread(self, dispatch, work, regions, image, on_card, run, ring):
-        """Starts the thread on the card with its command ring, or readies its host
-        fallback (which issues through `run`)."""
-        thread = kt.ThreadRun(
-            work, dispatch, regions, image, on_card, regions.base, regions.check, run
-        )
-        thread.ring = ring
-        thread.start()
-        return thread
+
+def _region_bytes(value):
+    return int(value) if isinstance(value, int) else np.asarray(value).nbytes
+
+
+def _region_initial(value):
+    """The initial bytes as uint8, or None for a zeroed region."""
+    if isinstance(value, int):
+        return None
+    return np.ascontiguousarray(value).view(np.uint8).reshape(-1)
+
+
+def _host_array(value):
+    """A shared region for the host fallbacks: uint32 words of its initial bytes."""
+    n = _region_bytes(value)
+    data = np.zeros(-(-n // 4) * 4, dtype=np.uint8)
+    initial = _region_initial(value)
+    if initial is not None:
+        data[:n] = initial
+    return data.view(np.uint32)
+
+
+def _bank_regions(session, program, works):
+    """{bank: _Regions} for the threads' own regions and the shared ones."""
+    out = {}
+    for bank in sorted({t.bank for t in works}):
+        mine = [t for t in works if t.bank == bank]
+        names = {n for t in mine for n in t.shared}
+        shared = {n: v for n, v in program.shared.items() if n in names}
+        out[bank] = _Regions(session, bank, mine, shared)
+    return out
 
 
 def _work_ring(dispatch, work):
-    """The thread's ring (RingPlacement) and the kernel's work_* arguments."""
+    """The thread's ring (RingPlacement) and the kernel's end of it (tile, area)."""
     info = dispatch.work_info(work.cluster)
     return kt.work_ring(
         dispatch.lim_base,
         (dispatch.l2_x, dispatch.l2_y),
         info["lim_base"],
         (info["virtual_x"], info["virtual_y"]),
+        work.cluster,
     )
 
 
@@ -650,23 +693,35 @@ def _pages(data, pages):
 
 
 class _Regions:
-    """A thread's regions in one DRAM tensor whose pages of the work cluster's bank
-    hold them (page 0: the check line). Written before the grid starts; read(name)
-    only once the grid has stopped, from that bank's pages of the region alone."""
+    """The regions of one DRAM bank in one DRAM tensor whose pages of that bank hold
+    them: page 0 the check line, then each thread's own regions (keys (cluster,
+    name)), then the shared ones (("shared", name)). Written before the grid starts;
+    read(key) only once the grid has stopped, from that bank's pages alone."""
 
-    def __init__(self, session, work):
+    def __init__(self, session, bank, threads, shared):
         self.session = session
         device = session.device
         self.check = kt.new_check_value()
-        self.bank = kt.BANK_OF_CLUSTER[work.cluster]
-        placed, pages = kt.place(work)
-        self.placed = {p.name: p for p in placed}
+        self.bank = bank
+        entries = [
+            ((t.cluster, n), t.region_bytes(n), t.initial(n))
+            for t in threads
+            for n in t.regions
+        ]
+        entries += [
+            (("shared", n), _region_bytes(v), _region_initial(v))
+            for n, v in shared.items()
+        ]
+        self.placed, pages = {}, 1
+        for key, n, _ in entries:
+            self.placed[key] = kt.Placement(key[1], pages, -(-n // kt.PAGE), n)
+            pages += self.placed[key].pages
         self.readable = False  # set by the run once the grid has stopped
         rows = np.zeros((DRAM_BANKS * pages, kt.PAGE // 4), dtype=np.uint32)
         mine = rows[self.bank :: DRAM_BANKS]
         mine[0, :2] = [self.check & abi.M32, self.check >> 32]
-        for name, p in self.placed.items():
-            data = work.initial(name)
+        for key, _, data in entries:
+            p = self.placed[key]
             if data is not None:
                 mine[p.page : p.page + p.pages] = _pages(data, p.pages)
         self.tensor = _int32_tensor(device, rows)
@@ -676,15 +731,20 @@ class _Regions:
                 f"the thread's regions at {self.base:#x} cover the IPI word"
             )
 
-    def address(self, name):
-        """(bank, bank address) of a region, for Tensix kernels."""
-        return self.bank, self.base + self.placed[name].page * kt.PAGE
+    def view(self, thread):
+        """The regions `thread` sees, by name."""
+        return _ThreadRegions(self, thread)
 
-    def read(self, name):
+    def address(self, key):
+        """(bank, bank address) of a region, for Tensix kernels."""
+        return self.bank, self.base + self.placed[key].page * kt.PAGE
+
+    def read(self, key):
         """The region's bytes, as uint8."""
         if not self.readable:
             raise RuntimeError("regions are read after run.stop()")
-        p, s = self.placed[name], self.session
+        p, s = self.placed[key], self.session
+        name = p.name
         per = p.pages if p.pages * kt.PAGE <= REGION_WHOLE else REGION_CHUNK // kt.PAGE
         spans = dram.bank_chunks(self.base, kt.PAGE, self.bank, p.page, p.pages, per)
         out = np.empty(p.pages * kt.PAGE, np.uint8)
@@ -694,6 +754,38 @@ class _Regions:
             if len(spans) > 1:
                 s.log(f"region {name}: {at + span[2]} of {out.size} bytes read")
         return out[: p.bytes].copy()
+
+
+class _ThreadRegions:
+    """One thread's regions in its bank's _Regions: its own, then the shared ones it
+    names, in id order (table() gives the argument block's region table)."""
+
+    def __init__(self, regions, thread):
+        self.all = regions
+        self.keys = {n: (thread.cluster, n) for n in thread.regions}
+        self.keys |= {n: ("shared", n) for n in thread.shared}
+        self.bank, self.base, self.check = regions.bank, regions.base, regions.check
+
+    @property
+    def readable(self):
+        return self.all.readable
+
+    @readable.setter
+    def readable(self, value):
+        self.all.readable = value
+
+    def table(self):
+        return [
+            (self.address(n)[1], self.all.placed[k].bytes) for n, k in self.keys.items()
+        ]
+
+    def address(self, name):
+        """(bank, bank address) of a region, for Tensix kernels."""
+        return self.all.address(self.keys[name])
+
+    def read(self, name):
+        """The region's bytes, as uint8, after run.stop()."""
+        return self.all.read(self.keys[name])
 
 
 class _Backend:

@@ -413,8 +413,8 @@ namespace {
             uint64_t work_cmds,
             uint64_t work_depth,
             uint64_t work_event_depth,
-            uint64_t work_noc,
-            uint64_t work_noc_addr,
+            const std::vector<uint64_t>& work_noc,
+            const std::vector<uint64_t>& work_noc_addr,
             int64_t upload_bytes,
             uint64_t dyn_seg
         ) {
@@ -433,8 +433,14 @@ namespace {
             if (state_ddr == 0 || state_ddr % 64 != 0) {
                 throw std::runtime_error("state_ddr is not a nonzero multiple of 64");
             }
-            // A work cluster's ring: its command lines and read line after the layout.
-            const uint64_t work_bytes = work_cmds ? work_depth * 64 + 64 : 0;
+            // The work clusters' rings: per cluster 1 to 3 its command lines and read
+            // line after the layout; work_noc and work_noc_addr per cluster (0: none).
+            const uint64_t work_bytes =
+                (work_cmds ? KMD_WORK_CLUSTERS * KMD_WORK_RING_BYTES(work_depth) : 0);
+            if (work_noc.size() > KMD_WORK_CLUSTERS ||
+                work_noc_addr.size() != work_noc.size()) {
+                throw std::runtime_error("work_noc and work_noc_addr: one per cluster");
+            }
             if (work_cmds &&
                 (work_cmds % 64 != 0 || work_cmds < KMD_LIM_BYTES ||
                  base_ + work_cmds + work_bytes > tile_->available_lim().end)) {
@@ -504,8 +510,11 @@ namespace {
             a.work_cmds = work_cmds;
             a.work_depth = work_depth;
             a.work_event_depth = work_event_depth;
-            a.work_noc = work_noc;
-            a.work_noc_addr = work_noc_addr;
+            for (size_t w = 0; w < work_noc.size(); w++) {
+                a.work_noc[w] = work_noc[w];
+                a.work_noc_addr[w] = work_noc_addr[w];
+            }
+            a.version = KMD_ARGS_VERSION;
             a.upload_bytes = upload_bytes_;
             a.dyn_seg = dyn_seg;
             std::vector<uint8_t> block(kArgsBytes, 0);
@@ -871,7 +880,7 @@ namespace {
 
         // The cluster's hardware index, NoC0 coordinate and available LIM.
         nb::dict work_info(uint32_t c) const {
-            const Work& w = work(c, false);
+            const Work& w = work(c, true);
             nb::dict out;
             out["hw_index"] = w.tile->id().hw_index;
             out["noc_x"] = w.tile->id().noc_x;
@@ -1357,8 +1366,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("work_cmds") = 0,
             nb::arg("work_depth") = 0,
             nb::arg("work_event_depth") = 0,
-            nb::arg("work_noc") = 0,
-            nb::arg("work_noc_addr") = 0,
+            nb::arg("work_noc") = std::vector<uint64_t>{},
+            nb::arg("work_noc_addr") = std::vector<uint64_t>{},
             nb::arg("upload_bytes") = -1,
             nb::arg("dyn_seg") = 0
         )

@@ -68,6 +68,17 @@ class GridTimeout(KomorebiError):
     recovered by the next open; a compute unit left running is not (a card reset)."""
 
 
+class ThreadFailed(KomorebiError):
+    """An X280 thread did not return in time or ended with a library error; the
+    program's other threads were stopped. `cluster` names it, `results` holds every
+    thread's ThreadResult by cluster."""
+
+    def __init__(self, message, cluster, results):
+        super().__init__(message)
+        self.cluster = cluster
+        self.results = results
+
+
 class WaitTimeout(KomorebiError):
     """A host-side wait ran out; the run is still alive. `pending` lists the tickets."""
 

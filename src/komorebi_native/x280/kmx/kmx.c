@@ -103,6 +103,10 @@ const kmx_args* kmx_args_get(void) {
     return (const kmx_args*)lim();
 }
 
+int kmx_cluster(void) {
+    return (int)kmx_args_get()->cluster;
+}
+
 void* kmx_region(int id, uint64_t* bytes) {
     const kmx_args* a = kmx_args_get();
     if (id < 0 || (uint32_t)id >= a->nregions) {
@@ -280,7 +284,8 @@ static int args_valid(const volatile kmx_args* a, uint64_t run) {
     if (x280_hart_args_bytes() < KMX_ARGS_BYTES || a->run_value != run ||
         a->magic != KMX_MAGIC || a->version != KMX_VERSION || a->deadline == 0 ||
         a->deadline > KMX_DEADLINE_MAX || a->nregions > KMX_REGIONS_MAX ||
-        a->nwords > KMX_WORDS_MAX || (a->check & 63u)) {
+        a->cluster < 1 || a->cluster > 3 || a->nwords > KMX_WORDS_MAX ||
+        (a->check & 63u)) {
         return 0;
     }
     for (uint32_t i = 0; i < a->nregions; i++) {

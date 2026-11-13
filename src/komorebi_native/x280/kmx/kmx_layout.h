@@ -12,7 +12,7 @@
 #endif
 
 #define KMX_MAGIC 0x31786D6Bu /* "kmx1" */
-#define KMX_VERSION 1u
+#define KMX_VERSION 2u
 #define KMX_REGIONS_MAX 16u
 #define KMX_WORDS_MAX 64u              /* the program's own argument words */
 #define KMX_RESULT_WORDS_MAX 48u       /* words a thread returns */
@@ -57,7 +57,8 @@ typedef struct {
     uint64_t check;       /* bank address of the check line (the bank check) */
     uint64_t check_value; /* what the host wrote at the start of that line */
     uint64_t flags;       /* KMX_FLAG_* */
-    uint64_t reserved;
+    uint32_t cluster;     /* the work cluster the thread runs on, 1 to 3 */
+    uint32_t reserved;
     kmx_region_t region[KMX_REGIONS_MAX];
     uint32_t words[KMX_WORDS_MAX];
 } kmx_args;
@@ -131,6 +132,7 @@ KMX_STATIC_ASSERT(offsetof(kmx_args, deadline) == 16, "kmx_args.deadline at 16")
 KMX_STATIC_ASSERT(offsetof(kmx_args, check) == 32, "kmx_args.check at 32");
 KMX_STATIC_ASSERT(offsetof(kmx_args, check_value) == 40, "check_value at 40");
 KMX_STATIC_ASSERT(offsetof(kmx_args, flags) == 48, "kmx_args.flags at 48");
+KMX_STATIC_ASSERT(offsetof(kmx_args, cluster) == 56, "kmx_args.cluster at 56");
 KMX_STATIC_ASSERT(offsetof(kmx_args, region) == KMX_ARGS_REGIONS, "region table");
 KMX_STATIC_ASSERT(offsetof(kmx_args, words) == KMX_ARGS_WORDS, "argument words");
 KMX_STATIC_ASSERT(sizeof(kmx_args) == KMX_ARGS_BYTES, "kmx_args size");

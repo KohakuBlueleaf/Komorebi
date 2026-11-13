@@ -20,6 +20,9 @@ int kmx_main(int hart);
 /* The argument block: region table and the program's words. */
 const kmx_args* kmx_args_get(void);
 
+/* The work cluster this thread runs on, 1 to 3 (the same image may run on several). */
+int kmx_cluster(void);
+
 /* Region `id` of the DRAM bank, as memory, and its size; 0 for an unknown id. */
 void* kmx_region(int id, uint64_t* bytes);
 

@@ -47,8 +47,9 @@ typedef struct {
 /* Sources, served in this order (the numbers are in km_dispatch.h's hart block). */
 #define KMD_SRC_HOST 0u
 #define KMD_SRC_ENGINE 1u
-#define KMD_SRC_WORK 2u /* a work cluster's thread (work_port.h) */
-#define KMD_SOURCES 3u
+#define KMD_SRC_WORK \
+    2u /* work cluster c's thread: KMD_SRC_WORK + c - 1 (work_port.h) */
+#define KMD_SOURCES (KMD_SRC_WORK + KMD_WORK_CLUSTERS)
 
 /* A job waiting in the queue: its record, with its source's deadline at the time. */
 typedef struct {
@@ -95,7 +96,7 @@ typedef struct {
     uint32_t error, where; /* KMD_ERR_*, KMD_WHERE_* */
     uint64_t t_boot;       /* mtime at the start */
     /* grid port */
-    uint32_t panels, opened;  /* windows programmed: bit 0, 1 panels, bit 2 host */
+    uint32_t panels, opened; /* windows programmed: bits 0, 1 panels, 2 host, 3+ work */
     volatile uint8_t* ctl[2]; /* every core's control block, through each panel */
     /* sources and the host buffer */
     volatile uint32_t* host; /* the host buffer, through the host window */
