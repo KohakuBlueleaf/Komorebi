@@ -555,7 +555,15 @@ static kmd_uop_t stream_command(
                 ? group >> 16
                 : stream->registers[count_register & 15u]
         );
-        if (count == 0 || first > engine->cores || count > engine->cores - first) {
+        /* a work cluster's thread takes no exclusive command */
+        const uint32_t exclusive = (
+            (uint32_t)(template_words[0] >> 40) & KM_FLAG_EXCLUSIVE
+        );
+        if (
+            KM_GROUP_IS_CLUSTER(first, count)
+                ? exclusive != 0
+                : count == 0 || first > engine->cores || count > engine->cores - first
+        ) {
             stream_fail(stream, KM_STREAM_ERROR_GROUP, pc);
             return KMD_UOP_ENDED;
         }

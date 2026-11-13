@@ -47,6 +47,10 @@ class HeaderError(ValueError):
 
 
 ARG_WORDS = [f"a{i}" for i in range(10)]
+# A program's or a thread's handler, by name: `constexpr uint32_t kHandlerName = n;`
+HANDLER = re.compile(
+    r"constexpr\s+uint32_t\s+kHandler(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;"
+)
 M32 = 0xFFFFFFFF
 
 
@@ -351,3 +355,12 @@ def column_groups(grid, cores):
 def limit_units(seconds, mhz):
     """A timeout in the kernels' units of 1024 cycles at `mhz`, at least 1."""
     return max(1, min(M32, int(seconds * mhz * 1e6) >> 10))
+
+
+def handlers_from_header(path):
+    """`constexpr uint32_t kHandlerName = n;` lines of a header as {"name": n}."""
+    found = {}
+    for name, value in HANDLER.findall(Path(path).read_text()):
+        snake = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+        found[snake] = int(value, 0)
+    return found

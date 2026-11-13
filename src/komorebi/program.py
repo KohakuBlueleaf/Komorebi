@@ -4,7 +4,6 @@ plain description; nothing here needs a device.
 """
 
 import functools
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from komorebi import _env, abi
+from komorebi.abi import handlers_from_header
 from komorebi.errors import ProgramError
 from komorebi.movement import check_pairs
 from komorebi.thread import Thread
@@ -22,9 +22,6 @@ MOVEMENT_KERNELS = ("movement", "compute")
 # The runtime's KernelBuildOptLevel names; a kernel without one keeps the runtime's
 # default (O2 for the reader and writer, O3 for the compute kernel).
 OPT_LEVELS = ("O0", "O1", "O2", "O3", "Os", "Ofast", "Oz")
-HANDLER = re.compile(
-    r"constexpr\s+uint32_t\s+kHandler(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;"
-)
 
 
 @dataclass(frozen=True)
@@ -79,15 +76,6 @@ class BufferPair:
             Buffer(self.mover_a, self.format, self.page_bytes, pages_a),
             Buffer(self.mover_b, self.format, self.page_bytes, pages_b),
         ]
-
-
-def handlers_from_header(path):
-    """`constexpr uint32_t kHandlerName = n;` lines of a header as {"name": n}."""
-    found = {}
-    for name, value in HANDLER.findall(Path(path).read_text()):
-        snake = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
-        found[snake] = int(value, 0)
-    return found
 
 
 @dataclass

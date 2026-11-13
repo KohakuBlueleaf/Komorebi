@@ -159,7 +159,8 @@ def thread_image(thread, tree=None):
     tree = _tree(tree)
     sources = [*thread.source_paths(), kmx_directory() / "kmx.c"]
     extra = [Path(i) for i in thread.includes]
-    defines = [f"{name}={value}" for name, value in sorted(thread.defines.items())]
+    named = {**thread.handler_defines(), **thread.defines}
+    defines = [f"{name}={value}" for name, value in sorted(named.items())]
     key = source_key([*sources, kmx_directory(), *includes(), *extra], tree)
     key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]
     out = cache_directory() / f"thread-{key}" / "thread.bin"

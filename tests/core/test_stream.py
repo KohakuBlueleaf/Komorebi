@@ -87,6 +87,7 @@ PAIRS = {
     "FLAG_EXCLUSIVE": "KM_FLAG_EXCLUSIVE",
     "FLAG_RESULT": "KM_FLAG_RESULT",
     "FLAG_QUEUE": "KM_FLAG_QUEUE",
+    "GROUP_CLUSTER_BASE": "KM_GROUP_CLUSTER_BASE",
     "EVENT_TIMEOUT": "KM_EVENT_TIMEOUT",
     "EVENT_STREAM": "KM_EVENT_STREAM",
     "EVENT_STREAM_END": "KM_EVENT_STREAM_END",
@@ -1009,8 +1010,53 @@ def test_a_group_outside_the_grid_is_found_without_a_sum():
         (0, 0, True),
         (0xFFFFFFFF, 2, True),
         (1, 0xFFFFFFFF, True),
+        (0xFF01, 1, False),  # work cluster 1's thread
+        (0xFF03, 1, False),
+        (0xFF00, 1, True),
+        (0xFF04, 1, True),
+        (0xFF02, 2, True),
     ]:
         assert stream_module.group_outside(first, count, 119) == outside
+    exclusive = stream_module.FLAG_EXCLUSIVE
+    assert stream_module.group_outside(0xFF02, 1, 119, exclusive)
+    assert not stream_module.group_outside(0, 2, 119, exclusive)
+
+
+def test_a_command_to_a_thread_names_its_cluster_and_feeds_the_next_command():
+    stream = Stream()
+    word = stream.registers(1)[0]
+    stream.submit(9, cluster=2, args=[5], result=True)
+    stream.wait(0)
+    stream.result(word)
+    stream.submit(1, group=(0, 4), args=[word])
+    stream.wait(0)
+    stream.halt(word)
+    done = stream.simulate(result=lambda command: command.args[0] * 10)
+    assert [(c.handler, c.first, c.count) for c in done.commands] == [
+        (9, 0xFF02, 1),
+        (1, 0, 4),
+    ]
+    assert done.commands[1].args[0] == 50 and done.error is None
+    with pytest.raises(ValueError, match="not both"):
+        stream.submit(9, group=(0, 1), cluster=2)
+    with pytest.raises(ValueError, match="exclusive"):
+        stream.submit(9, cluster=2, exclusive=True)
+    with pytest.raises(ValueError, match="work clusters"):
+        stream.submit(9, cluster=4)
+
+
+def test_an_exclusive_command_to_a_thread_from_registers_is_a_group_error():
+    stream = Stream()
+    first, count = stream.registers(2)
+    stream.set(first, 0xFF01)
+    stream.set(count, 1)
+    stream.submit(9, group=(first, count), exclusive=True)
+    stream.halt(stream.const(0))
+    done = stream.simulate()
+    assert done.error == (
+        stream_module.ERROR_GROUP,
+        pcs(stream, stream_module.OP_SUBMIT)[0],
+    )
 
 
 def test_run_answers_what_the_kernel_must_say():

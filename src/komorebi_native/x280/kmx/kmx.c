@@ -100,7 +100,8 @@ static int must_end(uint64_t core) {
     ) {
         return KMX_STOPPED;
     }
-    return x280_mtime() > g_deadline[core] ? KMX_LATE : KMX_OK;
+    const uint64_t deadline = ((volatile const uint64_t*)g_deadline)[core];
+    return x280_mtime() > deadline ? KMX_LATE : KMX_OK;
 }
 
 /* Flush64 of every line of [address, address + bytes): a 4-byte store per line. */
@@ -1199,10 +1200,18 @@ static int answer(uint32_t number, uint32_t word) {
     return status;
 }
 
-/* Core 0 with kmx_program: says it serves (answers line 0), then answers each line with
- * its word, until a stop (KMX_STOPPED) or the deadline (KMX_LATE). */
+/* Core 0 with kmx_program, by its deadline: lifts every core's deadline (a command has
+ * the dispatcher's), answers line 0 (it serves), then each line until a stop. */
 static int serve_commands(void) {
-    int status = answer(0, 0);
+    int status = must_end(0);
+    if (status != KMX_OK) {
+        return status;
+    }
+    for (uint32_t core = 0; core < 4; core++) {
+        ((volatile uint64_t*)g_deadline)[core] = UINT64_MAX;
+    }
+    x280_fence_ow();
+    status = answer(0, 0);
     for (uint32_t spins = 1; status == KMX_OK; spins++) {
         km_command_t command;
         if (kmx_ring_command(&g_ring, &command)) {

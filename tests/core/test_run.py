@@ -466,6 +466,54 @@ def test_a_late_command_to_a_thread_is_its_event_and_the_run_goes_on():
     assert run.wait(run.submit(1, (0, 1))).kind == "done"
 
 
+def a_program_with_a_thread(tmp_path):
+    program = Program("p", kernels=tmp_path, handlers={"map": 1})
+    program.thread(cluster=2, sources=["t.c"], regions={"out": 64}, handlers={"sum": 5})
+    return program
+
+
+def test_a_command_to_a_thread_names_its_cluster_and_its_handler(tmp_path):
+    run, port, _ = make_run(program=a_program_with_a_thread(tmp_path))
+    done = CONSTANTS["KM_EVENT_DONE"]
+    port.handlers[5] = lambda req, words: port._event(req, done, 2, ticks=0x1234)
+    handle = run.submit("sum", cluster=2, args=(3, 4), result=True)
+    event = run.wait(handle)
+    words = port.ring[handle]
+    assert words[1] == 5 | CONSTANTS["KM_FLAG_RESULT"] << 8
+    assert words[2] == CONSTANTS["KM_GROUP_CLUSTER_BASE"] + 2 | 1 << 16
+    assert (words[3], words[5]) == (3, 4)
+    assert event.kind == "done" and event.result == 0x1234
+    assert run.wait(run.submit("map", (0, 4))).kind == "done"
+
+
+def test_a_command_to_a_thread_takes_no_group_and_no_core_flags(tmp_path):
+    run, _, _ = make_run(program=a_program_with_a_thread(tmp_path))
+    for options in [
+        {"group": (0, 1)},
+        {"exclusive": True},
+        {"queued": True},
+    ]:
+        with pytest.raises(ValueError, match="takes no group"):
+            run.submit(5, cluster=2, **options)
+    for cluster in [0, 4, True]:
+        with pytest.raises(ValueError, match="work clusters"):
+            run.submit(5, cluster=cluster)
+    with pytest.raises(ValueError, match="no thread on cluster 1"):
+        run.submit(5, cluster=1)
+    with pytest.raises(KeyError):
+        run.submit("map", cluster=2)  # a grid handler, not the thread's
+
+
+def test_a_full_thread_rejects_the_hosts_command_by_name():
+    run, port, _ = make_run()
+    reason = CONSTANTS["KMD_REJECT_THREAD"]
+    rejected = CONSTANTS["KM_EVENT_REJECTED"]
+    port.handlers[5] = lambda req, words: port._event(req, rejected, reason)
+    with pytest.raises(CommandRejected, match=f"reason {reason}: thread"):
+        run.wait(run.submit(5, cluster=1))
+    assert run.wait(run.submit(1, (0, 1))).kind == "done"
+
+
 def test_a_kernel_that_ends_on_its_own_raises_kernel_failed():
     run, port, _ = make_run()
     run.wait(run.submit(1, (0, 1)))

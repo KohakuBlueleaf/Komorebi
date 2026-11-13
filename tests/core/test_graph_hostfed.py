@@ -79,3 +79,24 @@ def test_a_queued_command_gets_the_kernels_group_after_the_groups_in_flight():
         (None, True),
     ]
     assert [group for *_, group in port.submitted] == [(0, 50), (50, 20)]
+
+
+def test_a_threads_word_feeds_the_next_command_and_its_timeout_is_a_deadline_error():
+    graph = Graph()
+    word = graph.register()
+    first = graph.command(9, cluster=2, args=[40], result=word)
+    graph.command(1, group=(0, 4), args=[word], after=[first])
+    run, port = make_run()
+    done = CONSTANTS["KM_EVENT_DONE"]
+    port.handlers[9] = lambda req, words: port._event(req, done, 2)  # a0 + 1
+    got = run.run_hostfed(graph)
+    assert got.status == "ended" and got.registers[0] == 41
+    assert [(command.first, command.args[0]) for command in got.commands] == [
+        (0xFF02, 40),
+        (0, 41),
+    ]
+    timeout = CONSTANTS["KM_EVENT_TIMEOUT"]
+    port.handlers[9] = lambda req, words: port._event(req, timeout, 2)
+    got = run.run_hostfed(graph)
+    assert got.status == "error" and tuple(got.error) == (8, 0)  # the deadline, node 0
+    assert run.wait(run.submit(1, (0, 1))).kind == "done"  # the run goes on

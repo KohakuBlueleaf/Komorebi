@@ -29,6 +29,8 @@ HANDLER_USER_MAX = 239
 FLAG_EXCLUSIVE = 2
 FLAG_RESULT = 4
 FLAG_QUEUE = 8
+GROUP_CLUSTER_BASE = 0xFF00  # first = this + c names work cluster c's thread, count 1
+WORK_CLUSTERS = 3
 MASK = 0xFFFFFFFF
 DEFAULT_DEADLINE_PASSES = 1_000_000
 
@@ -321,6 +323,8 @@ class Stream:
         return target
 
     def _template(self, handler, group, args, exclusive, result):
+        if group is None:
+            raise ValueError("give a group (first, count) or a cluster")
         if not 1 <= handler <= HANDLER_USER_MAX:
             raise ValueError(f"handler {handler} is not a program handler (1 to 239)")
         if len(args) > ARGS:
@@ -363,8 +367,13 @@ class Stream:
         )
         return len(self._templates) - 1
 
-    def submit(self, handler, group, args=(), exclusive=False, result=False):
-        """SUBMIT: a command on `group` = (first, count), each an int or a register."""
+    def submit(
+        self, handler, group=None, args=(), exclusive=False, result=False, cluster=None
+    ):
+        """SUBMIT: a command on `group` = (first, count), each an int or a register, or
+        to the X280 thread of work cluster `cluster` (1 to 3; never exclusive)."""
+        if cluster is not None:
+            group = cluster_group(cluster, group, exclusive)
         index = self._template(handler, group, list(args), exclusive, result)
         self._add(OP_SUBMIT, immediate=index)
 
@@ -568,8 +577,29 @@ def _bad_template(template):
     )
 
 
-def group_outside(first, count, core_count):
-    """True if cores [first, first + count) are not in the grid; forms no sum."""
+def cluster_group(cluster, group=None, exclusive=False):
+    """The group (first, count) of work cluster `cluster`'s thread, for a builder given
+    `cluster=` (and so no `group`, and not `exclusive`)."""
+    if group is not None:
+        raise ValueError("give a group or a cluster, not both")
+    if exclusive:
+        raise ValueError("a command to a thread cannot be exclusive")
+    if cluster.__class__ is not int or not 1 <= cluster <= WORK_CLUSTERS:
+        raise ValueError(f"cluster {cluster!r}: work clusters are 1 to {WORK_CLUSTERS}")
+    return (GROUP_CLUSTER_BASE + cluster, 1)
+
+
+def cluster_of(first, count):
+    """The work cluster a group names (`KM_GROUP_IS_CLUSTER`), or None."""
+    cluster = first - GROUP_CLUSTER_BASE
+    return cluster if count == 1 and 1 <= cluster <= WORK_CLUSTERS else None
+
+
+def group_outside(first, count, core_count, flags=0):
+    """True if cores [first, first + count) are not in the grid, forming no sum, and
+    the group names no work cluster's thread (one that is never exclusive)."""
+    if cluster_of(first, count) is not None:
+        return bool(flags & FLAG_EXCLUSIVE)
     return count == 0 or first > core_count or count > core_count - first
 
 
@@ -875,7 +905,7 @@ class _Sim:
             if template.count_register == TEMPLATE_NONE
             else registers[template.count_register]
         )
-        if group_outside(first, count, self.core_count):
+        if group_outside(first, count, self.core_count, template.flags):
             return self.fail(ERROR_GROUP, self.pc)
         slot = self.free_slot()
         if slot is None:

@@ -126,6 +126,7 @@ class Run:
         self._flag_exclusive = constants["KM_FLAG_EXCLUSIVE"]
         # a group from this first core on names a work cluster's thread
         self._cluster_base = constants["KM_GROUP_CLUSTER_BASE"]
+        self._work_clusters = constants["KMD_WORK_CLUSTERS"]
         self._rejections = {
             value: name[len("KMD_REJECT_") :].lower()
             for name, value in constants.items()
@@ -181,14 +182,23 @@ class Run:
     # Submitting --------------------------------------------------------------------
 
     def submit(
-        self, handler, group=None, args=(), exclusive=False, result=False, queued=False
+        self,
+        handler,
+        group=None,
+        args=(),
+        exclusive=False,
+        result=False,
+        queued=False,
+        cluster=None,
     ):
         """Queues a command for handler `handler` (name or number) on cores [first,
-        first + count) (default every core); returns its handle. Nothing is sent until a
-        wait. `result`: the event carries the leader's result word. `queued`: `group` is
-        a count and the kernel picks the first core (group() then has first None)."""
+        first + count) (default every core), or on work cluster `cluster`'s X280 thread;
+        returns its handle. Nothing is sent until a wait. `result`: the event carries
+        the result word. `queued`: `group` is a count and the kernel picks the cores."""
         started = time.perf_counter()
-        if handler.__class__ is not int:
+        if cluster is not None:
+            handler, group = self._to_thread(handler, cluster, group, exclusive, queued)
+        elif handler.__class__ is not int:
             handler = (
                 self.program.handler(handler)
                 if self.program is not None
@@ -198,11 +208,11 @@ class Run:
             raise ValueError(
                 f"handler {handler}: not NOP and not in 1..KM_HANDLER_USER_MAX"
             )
-        if queued:
+        if cluster is None and queued:
             if exclusive:
                 raise ValueError("a queued command cannot be exclusive")
             group = self._group((0, group))
-        else:
+        elif cluster is None:
             group = self._group(group)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
@@ -272,6 +282,24 @@ class Run:
         self._send_block(words, first, count, np.zeros(shape[0], np.uint8))
         self.submit_s += time.perf_counter() - started
         return range(start, self._next)
+
+    def _to_thread(self, handler, cluster, group, exclusive, queued):
+        """(handler number, group) of a command to work cluster `cluster`'s thread; a
+        name is one of that thread's handlers."""
+        if group is not None or queued or exclusive:
+            raise ValueError(
+                "a command to a thread takes no group, and is not queued or exclusive"
+            )
+        if cluster.__class__ is not int or not 1 <= cluster <= self._work_clusters:
+            raise ValueError(
+                f"cluster {cluster!r}: work clusters are 1 to {self._work_clusters}"
+            )
+        thread = None if self.program is None else self.program.threads.get(cluster)
+        if self.program is not None and thread is None:
+            raise ValueError(f"{self.program.name} has no thread on cluster {cluster}")
+        if handler.__class__ is not int:
+            handler = thread.handler(handler) if thread is not None else int(handler)
+        return handler, (self._cluster_base + cluster, 1)
 
     def _group(self, group):
         if group is None:

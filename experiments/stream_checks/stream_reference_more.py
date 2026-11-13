@@ -66,6 +66,20 @@ def group_count0_submit():
     return _group(3, 0)
 
 
+def group_no_cluster_4():
+    return _group(0xFF04, 1)
+
+
+def thread_exclusive():
+    s = Stream()
+    f, c = s.registers(2)
+    s.set(f, 0xFF01)
+    s.set(c, 1)
+    s.submit(HANDLER_A, group=(f, c), exclusive=True)
+    s.wait(0)
+    return _halt_with(s, 5)
+
+
 def submit_count0():
     s = Stream()
     c = s.registers(1)[0]
@@ -459,6 +473,8 @@ MORE = {
     "group_whole_grid": (group_whole_grid, {}, "cores 0 to 118 are a valid group"),
     "group_last_core": (group_last_core, {}, "core 118 alone is a valid group"),
     "group_count0_submit": (group_count0_submit, {}, "reason 11: an empty group"),
+    "group_no_cluster_4": (group_no_cluster_4, {}, "reason 11: there is no cluster 4"),
+    "thread_exclusive": (thread_exclusive, {}, "reason 11: exclusive to a thread"),
     "submit_count0": (submit_count0, {}, "reason 9: a job of 0 cores"),
     "submit_whole_grid": (submit_whole_grid, {}, "a job of 119 cores is placed at 0"),
     "deadline_boundary_ok": (

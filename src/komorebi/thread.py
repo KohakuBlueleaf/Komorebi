@@ -24,6 +24,7 @@ PAGE = 4096  # region granularity, bytes; regions are whole pages of one bank
 BANK_OF_CLUSTER = {1: 6, 2: 7, 3: 7}
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI word, at this address in every bank
 RING_DEPTH = 16  # the thread's command lines, in the dispatcher's LIM
+UPLOAD_BYTES = 512 * 1024  # the dispatcher's upload region, before the work rings
 RING_EVENTS = 64  # its events, in its own LIM after the kmx block
 
 
@@ -36,9 +37,9 @@ def layout():
 @dataclass
 class Thread:
     """A program's X280 thread: C `sources` linked with kmx, run on `cluster`;
-    `regions`: name -> size or initial contents (ids in dict order), then `shared`,
-    names of program regions; `words`: argument words; `deadline`: seconds in all;
-    `host_fallback(regions, words, run) -> (code, words)`: it on the host, on a Run."""
+    `regions`: name -> size or initial contents (ids in dict order), then `shared`
+    (program regions); `words`: argument words; `deadline`: seconds for kmx_main;
+    `host_fallback(regions, words, run)`; `handlers`: kmx_program's, as Program's."""
 
     sources: list
     regions: dict
@@ -50,9 +51,16 @@ class Thread:
     defines: dict = field(default_factory=dict)
     prefetch: str = "documented"  # or "keep": the L2 prefetchers as they are
     shared: tuple = ()  # names of Program.shared regions, after its own in id order
+    handlers: object = field(default_factory=dict)  # name -> number for kmx_program
 
     def __post_init__(self):
         constants = layout()
+        if isinstance(self.handlers, str | Path):
+            self.handlers = abi.handlers_from_header(self.handlers)
+        user_max = abi.headers()["KM_HANDLER_USER_MAX"]
+        for name, number in self.handlers.items():
+            if not 1 <= number <= user_max:
+                raise ValueError(f"handler {name} = {number}: not in 1..{user_max}")
         if self.cluster not in BANK_OF_CLUSTER:
             raise ValueError(f"cluster {self.cluster}: work clusters are 1 to 3")
         self.shared = tuple(self.shared)
@@ -82,6 +90,25 @@ class Thread:
     def bank(self):
         """The DRAM bank of the thread's cluster: every region it reads lives there."""
         return BANK_OF_CLUSTER[self.cluster]
+
+    def handler(self, handler):
+        """The number of one of kmx_program's handlers, given by name or number."""
+        if isinstance(handler, str):
+            if handler not in self.handlers:
+                raise KeyError(
+                    f"the thread on cluster {self.cluster} has no handler "
+                    f"{handler!r}"
+                )
+            return self.handlers[handler]
+        return int(handler)
+
+    def handler_defines(self):
+        """The handlers as the thread's C sees them: kHandlerBigStep=7u for big_step."""
+        return {
+            "kHandler"
+            + "".join(part.capitalize() for part in name.split("_")): (f"{number}u")
+            for name, number in self.handlers.items()
+        }
 
     def region_bytes(self, name):
         value = self.regions[name]
@@ -218,14 +245,19 @@ def ring_bytes():
     return RING_DEPTH * 64 + 64
 
 
+def rings_at():
+    """Offset in the dispatcher's LIM of the work rings: after its upload region."""
+    return abi.headers()["KMD_LIM_BYTES"] + UPLOAD_BYTES
+
+
 def work_ring(kernel_lim, kernel_coordinates, work_lim, work_coordinates, cluster=1):
     """The ring between work cluster `cluster` and the dispatcher: commands and
     the read line in the kernel's LIM after its layout, cluster c's after those of
     clusters 1 to c - 1 (each side writes the other's LIM and reads its own). Returns
     the thread's RingPlacement and the kernel's (tile, NoC address of the area)."""
     abi_headers, constants = abi.headers(), layout()
-    # after the layout (the host gives no upload region), one ring per cluster
-    command_lines = abi_headers["KMD_LIM_BYTES"] + (cluster - 1) * ring_bytes()
+    # after the layout and the upload region (streams, graphs), one ring per cluster
+    command_lines = rings_at() + (cluster - 1) * ring_bytes()
     area = work_lim + constants["KMX_LIM_BYTES"]
     kernel_x, kernel_y = kernel_coordinates
     ring = RingPlacement(
@@ -251,7 +283,7 @@ def kernel_work_args(ends):
     for cluster, (noc, area) in ends.items():
         nocs[cluster - 1], addrs[cluster - 1] = noc, area
     return {
-        "work_cmds": abi.headers()["KMD_LIM_BYTES"],
+        "work_cmds": rings_at(),
         "work_depth": RING_DEPTH,
         "work_event_depth": RING_EVENTS,
         "work_noc": nocs,

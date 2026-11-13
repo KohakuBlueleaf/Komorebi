@@ -68,7 +68,7 @@ class _Hostfed(stream_module._Sim):
             if template.count_register == stream_module.TEMPLATE_NONE
             else registers[template.count_register]
         )
-        if stream_module.group_outside(first, count, self.core_count):
+        if stream_module.group_outside(first, count, self.core_count, template.flags):
             return self.fail(stream_module.ERROR_GROUP, self.pc)
         self._send(self.patched(template), first, count, False)
         return "ok"
@@ -86,6 +86,9 @@ class _Hostfed(stream_module._Sim):
         result = bool(flags & stream_module.FLAG_RESULT)
         if queued:
             handle = self.run.submit(handler, count, args, result=result, queued=True)
+        elif stream_module.cluster_of(first, count) is not None:
+            cluster = stream_module.cluster_of(first, count)
+            handle = self.run.submit(handler, args=args, result=result, cluster=cluster)
         else:
             exclusive = bool(flags & stream_module.FLAG_EXCLUSIVE)
             handle = self.run.submit(
@@ -132,9 +135,12 @@ class _Hostfed(stream_module._Sim):
                 self.done(handle, event)
 
     def done(self, handle, event):
-        _, result = self.flight.pop(handle)
+        pc, result = self.flight.pop(handle)
         self.pending -= 1
-        if result:
+        if event.kind == "timeout":  # a thread's late command, which ends no run
+            if self.error is None:
+                self.fail(stream_module.ERROR_DEADLINE, pc)
+        elif result:
             self.last_result = event.result
 
     def finish(self, deadline):

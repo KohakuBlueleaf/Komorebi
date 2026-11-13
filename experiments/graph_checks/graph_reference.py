@@ -243,6 +243,14 @@ def group_outside_grid():
     return g, g.binding_values(first=118), {}
 
 
+def exclusive_to_thread():
+    """An exclusive command whose group from registers names a thread: a group error."""
+    g = Graph()
+    first = g.bindings("first")
+    g.command(HANDLER_A, group=(first, g.const(1)), exclusive=True)
+    return g, g.binding_values(first=0xFF02), {}
+
+
 def never_fits():
     g = Graph()
     n = g.bindings("n")
@@ -378,6 +386,7 @@ GOOD = [
     more_ready_than_slots,
     round_events,
     group_outside_grid,
+    exclusive_to_thread,
     never_fits,
     mod_zero,
     step_limit,

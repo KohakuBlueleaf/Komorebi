@@ -58,6 +58,9 @@ class _Hostfed:
         if queued:
             first = None
             handle = self.run.submit(handler, count, args, result=result, queued=True)
+        elif stream_module.cluster_of(first, count) is not None:
+            cluster = stream_module.cluster_of(first, count)
+            handle = self.run.submit(handler, args=args, result=result, cluster=cluster)
         else:
             exclusive = bool(flags & stream_module.FLAG_EXCLUSIVE)
             handle = self.run.submit(
@@ -107,7 +110,10 @@ class _Hostfed:
 
     def done(self, handle, event):
         node, result = self.flight.pop(handle)
-        self.executor.complete(node, event.result if result else 0)
+        if event.kind == "timeout":  # a thread's late command, which ends no run
+            self.executor.stop(stream_module.ERROR_DEADLINE, node)
+        else:
+            self.executor.complete(node, event.result if result else 0)
 
     def finish(self, code, deadline):
         executor = self.executor

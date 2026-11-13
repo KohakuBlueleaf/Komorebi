@@ -370,9 +370,15 @@ class Graph:
         result=None,
         exclusive=False,
         skip_if_zero=None,
+        cluster=None,
     ):
-        """A COMMAND node on `group` = (first, count), or on `count` cores the allocator
-        places; `result` is a register for the record's result word."""
+        """A COMMAND node on `group` = (first, count), on `count` cores the allocator
+        places, or to the X280 thread of work cluster `cluster` (1 to 3); `result` is
+        a register for the record's result word."""
+        if cluster is not None:
+            if count is not None:
+                raise ValueError("give a count or a cluster, not both")
+            group = stream_module.cluster_group(cluster, group, exclusive)
         if (group is None) == (count is None):
             raise ValueError("give either group=(first, count) or count")
         result_register = _register_or_none(result, "result")
@@ -940,7 +946,7 @@ class Executor:
             if count == 0 or count > self.core_count:
                 self._fail(stream_module.ERROR_NEVER_FITS, node)
                 return ERROR
-        elif stream_module.group_outside(first, count, self.core_count):
+        elif stream_module.group_outside(first, count, self.core_count, words[1] >> 8):
             self._fail(stream_module.ERROR_GROUP, node)
             return ERROR
         words[2] = first | count << 16

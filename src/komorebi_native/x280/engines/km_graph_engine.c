@@ -520,7 +520,10 @@ static uint32_t submit_command(
             return KMG_ERROR;
         }
     } else if (
-        count == 0 || first > state->core_count || count > state->core_count - first
+        KM_GROUP_IS_CLUSTER(first, count)
+            ? (command.hdr >> 8 & KM_FLAG_EXCLUSIVE) != 0
+            : count == 0 || first > state->core_count ||
+                count > state->core_count - first
     ) {
         fail(state, KM_STREAM_ERROR_GROUP, node);
         return KMG_ERROR;

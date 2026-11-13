@@ -4,13 +4,13 @@ Tools for the graph executor (`komorebi.engines.graph` and
 `src/komorebi_native/x280/engines/km_graph_engine.c`). They are run by hand, not by
 the test suite.
 
-- `graphs/`: 39 named reference graphs, each a `.bin` upload and a `.json` with the
-  bindings, the simulation parameters and the answer. 22 run (chains, branches, the
+- `graphs/`: 40 named reference graphs, each a `.bin` upload and a `.json` with the
+  bindings, the simulation parameters and the answer. 23 run (chains, branches, the
   documented loop and the same upload kept and run with another binding, skips, CPU
   arithmetic, patched arguments and groups, results feeding commands, queued and
   exclusive commands, more ready commands than slots, rounds, a kept graph, the kept
-  table full, and each error at run time); 17 are uploads the check rejects, one per
-  fault class. Another
+  table full, and each error at run time, an exclusive command to a thread among
+  them); 17 are uploads the check rejects, one per fault class. Another
   implementation, such as the kernel's executor, replays them: the submit set, the
   events and the final registers are binding, the order is not.
 - `graph_reference.py`: builds them. `python graph_reference.py` rewrites `graphs/`;

@@ -3,7 +3,7 @@
 Tools for hunting slips in the micro-op stream simulator (`komorebi.engines.stream`).
 They are not part of the test suite: the mutation run takes about nine seconds.
 
-- `streams/`: 89 named reference streams, each a `.bin` upload with a `.json` beside it
+- `streams/`: 91 named reference streams, each a `.bin` upload with a `.json` beside it
   holding the simulation parameters and the simulator's answer. Another implementation,
   such as the kernel's interpreter, can replay them.
 - `stream_reference.py` and `stream_reference_more.py`: build the reference streams.

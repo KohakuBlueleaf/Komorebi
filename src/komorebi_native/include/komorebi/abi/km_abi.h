@@ -36,6 +36,9 @@
    KM_GROUP_CLUSTER_BASE + c, count 1. No core has such a first. */
 #define KM_GROUP_CLUSTER_BASE 0xFF00u
 #define KM_GROUP_CLUSTER(c) ((KM_GROUP_CLUSTER_BASE + (uint32_t)(c)) | 1u << 16)
+/* Whether a group (first, count) names a work cluster's thread, cluster 1 to 3. */
+#define KM_GROUP_IS_CLUSTER(first, count) \
+    ((count) == 1u && (uint32_t)(first) - (KM_GROUP_CLUSTER_BASE + 1u) < 3u)
 
 /* One command: four 16-byte chunks. Word 0 of each chunk carries the sequence number;
    a command has landed when all four agree (KM_LANDED). */

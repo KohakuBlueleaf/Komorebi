@@ -217,6 +217,45 @@ def test_a_command_rejected_after_its_submit_goes_back_behind_the_others():
         assert engine.step(submit) == graph_module.END
 
 
+def a_thread_between_two_groups(exclusive_first=None):
+    """A thread's word (a0 * 10) feeds a grid command; or, with `exclusive_first`, an
+    exclusive command on a group from registers, which names a thread."""
+    graph = Graph()
+    word = graph.register()
+    if exclusive_first is not None:
+        first = graph.bindings("first")
+        graph.command(1, group=(first, graph.const(1)), exclusive=True)
+        return graph.encode(), graph.binding_values(first=exclusive_first)
+    root = graph.command(1, group=(0, 8), args=[2])
+    thread = graph.command(9, cluster=3, args=[5], after=[root], result=word)
+    graph.command(2, group=(8, 8), args=[word], after=[thread])
+    return graph.encode(), []
+
+
+@needs_cc
+def test_both_executors_take_a_thread_as_a_commands_target():
+    for engine in (graph_module.Executor(), graph_native_module.NativeExecutor()):
+        upload, bindings = a_thread_between_two_groups()
+        done = graph_module.simulate(
+            upload, result=lambda command: command.args[0] * 10, engine=engine
+        )
+        assert done.status == "ended"
+        assert [(c.handler, c.first, c.count) for c in done.commands] == [
+            (1, 0, 8),
+            (9, 0xFF03, 1),
+            (2, 8, 8),
+        ]
+        assert done.commands[2].args[0] == 50
+        upload, bindings = a_thread_between_two_groups(exclusive_first=0xFF02)
+        done = graph_module.simulate(upload, bindings=bindings, engine=engine)
+        assert done.error == (stream_module.ERROR_GROUP, 0) and not done.commands
+    graph = Graph()
+    with pytest.raises(ValueError, match="exclusive"):
+        graph.command(9, cluster=1, exclusive=True)
+    with pytest.raises(ValueError, match="not both"):
+        graph.command(9, cluster=1, count=1)
+
+
 @needs_cc
 def test_the_engine_is_freestanding_with_no_data_of_its_own(tmp_path):
     object_file = tmp_path / "engine.o"

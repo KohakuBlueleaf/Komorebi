@@ -18,7 +18,7 @@ extern "C" {
 int kmx_main(int core);
 
 /* Optional: after kmx_main, if any, core 0 calls it for each command to this cluster
- * (KM_GROUP_CLUSTER) until a stop; its word is the result of the command's event. */
+ * until a stop (no deadline then); its word is the result of the command's event. */
 uint32_t kmx_program(const km_command_t* command);
 
 /* A command's handler, for kmx_program's switch. */
@@ -156,7 +156,7 @@ int kmx_pull_run(
 uint64_t kmx_time(void);
 
 /* Nonzero once the host or the runtime asked the thread to stop, or the run's
- * deadline passed: the thread should then return. */
+ * deadline passed (never while serving commands): the thread should then return. */
 int kmx_stop_requested(void);
 
 /* A progress marker the host reads with the result, also after a timeout. */

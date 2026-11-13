@@ -84,8 +84,7 @@ def test_a_work_ring_has_commands_in_the_kernels_lim_and_events_in_the_threads()
     ring, end = thread_module.work_ring(0x8100000, (8, 3), 0x8120000, (8, 9))
     abi_headers = thread_module.abi.headers()
     assert (
-        ring.cmd == 0x8100000 + abi_headers["KMD_LIM_BYTES"]
-        and ring.remote == 8 | 3 << 16
+        ring.cmd == 0x8100000 + thread_module.rings_at() and ring.remote == 8 | 3 << 16
     )
     assert ring.read == ring.cmd + 64 * thread_module.RING_DEPTH
     area = 0x8120000 + CONSTANTS["KMX_LIM_BYTES"]
@@ -100,16 +99,15 @@ def test_a_work_ring_has_commands_in_the_kernels_lim_and_events_in_the_threads()
 
 
 def test_each_work_cluster_has_its_own_ring_after_the_ones_before():
-    abi_headers = thread_module.abi.headers()
     ring3, end3 = thread_module.work_ring(
         0x8100000, (8, 3), 0x8120000, (8, 7), cluster=3
     )
     assert (
         ring3.cmd
-        == 0x8100000 + abi_headers["KMD_LIM_BYTES"] + 2 * thread_module.ring_bytes()
+        == 0x8100000 + thread_module.rings_at() + 2 * thread_module.ring_bytes()
     )
     args = thread_module.kernel_work_args({3: end3, 1: (8 | 9 << 16, 0x500)})
-    assert args["work_cmds"] == abi_headers["KMD_LIM_BYTES"]
+    assert args["work_cmds"] == thread_module.rings_at()
     assert args["work_noc"] == [8 | 9 << 16, 0, 8 | 7 << 16]
     assert args["work_noc_addr"] == [0x500, 0, end3[1]]
     assert thread_module.kernel_work_args({}) == {}
@@ -364,3 +362,19 @@ def test_a_thread_that_returns_after_the_stop_word_is_not_stuck():
     run.start()
     result = run.wait(0.1)
     assert not result.ran and not result.stuck and result.detail == ""
+
+
+def test_a_threads_handlers_come_from_a_dict_or_a_header_and_reach_its_c(tmp_path):
+    header = tmp_path / "h.h"
+    header.write_text(
+        "constexpr uint32_t kHandlerSum = 5;\nconstexpr uint32_t kHandlerBigStep = 7;\n"
+    )
+    thread = a_thread(handlers=header)
+    assert thread.handlers == {"sum": 5, "big_step": 7}
+    assert thread.handler("big_step") == 7 and thread.handler(9) == 9
+    assert thread.handler_defines() == {"kHandlerSum": "5u", "kHandlerBigStep": "7u"}
+    assert a_thread().handler_defines() == {}
+    with pytest.raises(KeyError):
+        thread.handler("missing")
+    with pytest.raises(ValueError, match="not in 1"):
+        a_thread(handlers={"stop": 240})
