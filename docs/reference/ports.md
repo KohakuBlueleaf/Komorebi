@@ -99,3 +99,50 @@ gave-up word's top byte, and leaves the wanted count in the port, so the host re
 missing count (`records.waiting_ports` in the test feeder). The tile stops, the
 dispatcher's or feeder's deadline stops the run, every kernel leaves, and the next
 launch runs.
+
+## X280 ports
+
+A port between a Tensix core and the X280 core that serves it, without the dispatch kernel
+(`komorebi/device/km_x280.hpp`; the X280 core's side and the declaration are in
+[X280 threads](../threads.md#x280-ports)). A message is a sequence number and three
+words, one 16-byte NoC write each way:
+
+```c++
+#include "komorebi/device/km_x280.hpp"
+
+km::X280Port port(rd);  // owned by the reader; X280Port(wr, km::kStWriter): the writer
+km::X280Msg m;
+if (port.call(a, b, c, m)) {  // ask, then wait for its answer
+    use(m.w[0]);
+}
+port.tell(x, y, z);          // to the X280 core; it sees the newest
+if (port.told(m)) { ... }    // the X280 core's newest tell, if newer; never waits
+```
+
+| Call | Waits | Returns |
+|---|---|---|
+| `served()` | no | whether the program gave this core an X280 core |
+| `told(m)` | no | true and the X280 core's newest tell, if newer than the last one looked at |
+| `wait_told(m)` | bounded | the same, waiting for one; false: gave up (recorded) |
+| `tell(a, b, c)` | for the last store to leave | false: gave up (recorded) |
+| `ask(a, b, c)` | as `tell` | the ask's sequence number, 0: gave up |
+| `answered(seq, m)` | no | true and the answer to ask `seq`, if it landed |
+| `wait_answer(seq, m)` | bounded | the same, waiting; false: gave up (recorded) |
+| `call(a, b, c, m)` | bounded | `ask`, then `wait_answer` |
+
+**Latest wins.** A tell overwrites the line it lands in: a side that looks less often
+than the other tells sees only the newest, and tells in between are lost. Ask and
+answer are paired by the sequence number, one ask outstanding at a time.
+
+**On the wire.** The core's `KM_CTL_X280` area (64 bytes): the X280 core's tell at
+`KM_X280_TELL` (`+ 0x00`) and answer at `KM_X280_ANSWER` (`+ 0x10`), stored by the X280 core
+through its window; the core's out slot `KM_X280_OUT` (`+ 0x20`), the source of its
+writes; `KM_X280_TO` (`+ 0x30`): the X280 core's tile (`x | y << 16`) and the mailbox
+address in its local memory, written by the host at the load (0: no X280 core). The core
+writes its ask to the mailbox at `KM_BOX_ASK` (`+ 0x00`) and its tell at `KM_BOX_TELL`
+(`+ 0x10`) on its kernel's NoC. Each line has one writer; no atomics.
+
+**When a side does not answer.** Every wait is bounded by the wait limit and sees the
+stop word. A give-up records `where` = `kWhereX280Answer` (37), `kWhereX280Tell` (38)
+or `kWhereX280Send` (36) for a store that did not leave, `kWhereX280None` (39) when the
+program gave the core no X280 core. The record then ends as any record whose member gave up.

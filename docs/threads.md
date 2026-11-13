@@ -24,7 +24,8 @@ program may run threads on all three work clusters at once, each with its own ri
 two threads on one bank may share regions. Inside a cluster, hart 0 starts a function
 on another hart and joins it later (`kmx_spawn`, `kmx_join`; `kmx_par` is both); across
 clusters, one image runs a function on all twelve harts (`kmx_par_all`) and pushes data
-into another cluster's bank (`kmx_push`).
+into another cluster's bank (`kmx_push`). X280 cores and Tensix cores exchange messages both
+ways through X280 ports, without the dispatch kernel ([X280 ports](#x280-ports)).
 
 ## What a thread can touch
 
@@ -218,6 +219,8 @@ threads.
 | `kmx_take`, `kmx_give`, `kmx_take_at`, `kmx_give_at`, `kmx_push` | yes: outside `kmx_par` spread over the four harts | yes, this hart alone |
 | `kmx_spawn`, `kmx_join`, `kmx_par`, `kmx_par_all`, `kmx_serve`, `kmx_issue`, `kmx_wait`, `kmx_poll` | yes (not inside `kmx_par`'s `fn`) | no: the library error `par`, `KMX_STOPPED` |
 | `kmx_progress`, `kmx_result` | yes | best not: one result block, no lock |
+| `kmx_port_cores`, `kmx_port_owner`, `kmx_port_open`; `kmx_port_tell`, `kmx_port_asked`, `kmx_port_answer`, `kmx_port_told` ([X280 ports](#x280-ports)) | yes; the last four for the cores it serves | yes; the same |
+| `kmx_port_run` | the lead's, as `kmx_par_all` | no: as `kmx_par_all` |
 
 **All three clusters.** Put the same image on the clusters
 (`prog.thread(clusters=(1, 2, 3), ...)`). The lowest, `kmx_lead()`, runs the program;
@@ -274,6 +277,89 @@ Twelve harts lose to four on small inputs: at 16,384 words the map takes 0.13 ms
 twelve and 0.11 on four, the prefix sum 0.18 and 0.13; work that only moves memory
 gains little at any size (each cluster reads its bank at 1.2 GB/s and the input must
 be pushed first), and work that computes gains most (the heavy map runs 2.0 times faster than on four).
+
+## X280 ports
+
+An **X280 port** joins one Tensix core and the X280 core that serves it, both ways,
+with no dispatch kernel in the path: the X280 core stores into the Tensix core's
+control block through a NoC window it holds for the run, and the Tensix core stores
+into a mailbox line in the X280 core's local memory. A message is a sequence number and
+three 32-bit words, landed as one 16-byte NoC write. Two kinds share that format, in
+both directions:
+
+- **tell**: the newest wins. The receiver looks without waiting (or waits, bounded) and
+  sees only the newest tell since its last look; tells in between are lost.
+- **ask and answer**: the Tensix core asks, the X280 core answers that ask by its
+  sequence number, the Tensix core waits (bounded) for that answer.
+
+The host declares the ports (`prog.ports()`); every served Tensix core has ONE X280
+core, of one of the program's threads, for the whole run. By default the grid's Tensix
+cores are dealt over the threads' X280 cores in grid order, cluster by cluster (ten or
+so to an X280 core with three clusters); `prog.ports(serve={core: (cluster, cpu),
+...})` names them instead (`cpu` the X280 core, 0 to 3). The threads must run on the
+card.
+
+On an X280 core (`kmx.h`), a call names a Tensix core the calling X280 core serves,
+else `KMX_BAD`:
+
+```c
+static void serve(int cluster, int cpu, uint64_t arg) {
+    while (kmx_port_open()) {                 /* until the record's event */
+        for (int c = 0; c < kmx_port_cores(); c++) {
+            kmx_msg m;
+            if (kmx_port_owner(c) == cpu && kmx_port_asked(c, &m) == KMX_OK) {
+                kmx_port_answer(c, m.seq, m.w[0] * 2, 0, 0);
+            }
+        }
+    }
+}
+
+/* X280 core 0 of the lead: issue r, serve on all twelve X280 cores until its event */
+kmx_event ev;
+int e = kmx_port_run(&r, serve, 0, &ev);
+```
+
+`kmx_port_run` issues the record and runs `fn` on every X280 core of the group as
+`kmx_par_all` does. X280 core 0 of the lead looks for the record's event in its ring
+(every fourth `kmx_port_open`) and, when it comes, writes "ended" into every cluster's
+ports line: each X280 core's next `kmx_port_open` returns 0, its `fn` returns, and once
+all have, `kmx_port_run` returns the event. Nothing is stored into a Tensix core after
+that; a record that times out ends the serve the same way (its event is
+`KM_EV_TIMEOUT`), and a stop or the deadline also ends it (`KMX_STOPPED`, `KMX_LATE`).
+On the Tensix core (`komorebi/device/km_x280.hpp`):
+
+```cpp
+km::Reader rd;
+km::X280Port port(rd);  // the reader owns the port
+rd.run([&](const km_record_t& r) {
+    km::X280Msg m;
+    if (port.call(r.a0, 0, 0, m)) {  // ask, wait for the answer
+        port.tell(m.w[0], 0, 0);     // tell the X280 core, never waits
+    }
+});
+```
+
+**Costs** (one Blackhole p150a, AICLK 1350 MHz, X280 1000 MHz;
+`experiments/x280_ports/`): an ask is answered in 0.94 µs with one Tensix core on its
+X280 core; with ten each, 9.1 µs at full load and 13.1 M asks a second over twelve X280
+cores. The X280 core's loop bounds it, about 0.9 µs a served message, not the NoC (NoC 1
+measured the same). Its image, data and stack live in its local memory, 30 cycles a
+word, uncached: a look at a mailbox line costs 259 cycles, a tell 144. Example
+[10_x280_ports](../examples/10_x280_ports/) runs it on 1, 4 and 12 X280 cores.
+
+**Rules.**
+- One kernel of a Tensix core sends on its port (the reader by default; the writer by
+  `km::X280Port(wr, km::kStWriter)`); never both. Any kernel may look.
+- An X280 core sends only to the Tensix cores it serves; the windows are opened at the
+  start and cleared at the end of the run, one per served core (a cluster holds up to
+  168).
+- Tell a Tensix core only while it runs a record that looks for it: a tell stays in the
+  line, and the core's next look sees it if it is newer than the last one it saw.
+- Every wait on the Tensix core is bounded by the wait limit and watches the stop word
+  (`kWhereX280Answer`, `kWhereX280Tell`, `kWhereX280Send`; `kWhereX280None` when the
+  program gave the core no X280 core).
+- The control block grew by one 64-byte area (`KM_CTL_X280`) for every program; the
+  ports area takes 8.6 KiB of each serving cluster's local memory after its block.
 
 ## From the host
 
