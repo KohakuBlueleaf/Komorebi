@@ -50,8 +50,19 @@ issue and from the last retire to the quiet end.
 
 ## Measured
 
-One Blackhole p150a, slow dispatch, AICLK 1350 MHz, team of cores 0 to 118, 64-byte
-items, queues of 16384 items, `max_live` 16384 (quota 137 per core).
+Through a session (`hop.py`), card 1, every core (120) unless named, the same item and
+queue sizes, `max_live` 16384 (quota 136 per core). Times are the `RUN` record's, from
+its issue by the dispatch kernel to its completion, which follows the quiet end.
+
+| Case | Result |
+|---|---|
+| 2 cores, 1 item, 1 hop | exact; 22 µs |
+| 100 items, 10 hops each (10^3 hops) | exact; 156 µs; the kernel checked the lines 979 times |
+| 1000 items, 100 hops each (10^5 hops) | exact; 3.46 ms |
+| member 2 stalls in its body (8 cores) | the `RUN` record's timeout names its ticket; the kernel names core 2 (`KMD_H_DYN_GAVE`), whose reader gave up waiting for a free packet page (24); the next run in the same session exact |
+
+Under the test feeder (`hop_fed.py`), card 0, AICLK 1350 MHz, team of cores 0 to 118,
+64-byte items, queues of 16384 items, `max_live` 16384 (quota 137 per core).
 
 | Case | Result |
 |---|---|
