@@ -165,24 +165,58 @@ def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path
         session.check_bases({"control block": 0x20004})
 
 
+class ComputeConfigDescriptor:
+    """ttnn's descriptor as far as its fields go: the constructor takes five of them as
+    keywords, the others are attributes only, and an unknown attribute is refused."""
+
+    __slots__ = (
+        "math_fidelity",
+        "math_approx_mode",
+        "fp32_dest_acc_en",
+        "dst_full_sync_en",
+        "bfp8_pack_precise",
+        "enable_trisc2_rvv",
+        "unpack_to_dest_mode",
+    )
+
+    def __init__(
+        self,
+        math_fidelity="hifi4",
+        math_approx_mode=False,
+        fp32_dest_acc_en=False,
+        dst_full_sync_en=False,
+        bfp8_pack_precise=False,
+    ):
+        self.math_fidelity, self.math_approx_mode = math_fidelity, math_approx_mode
+        self.fp32_dest_acc_en, self.dst_full_sync_en = (
+            fp32_dest_acc_en,
+            dst_full_sync_en,
+        )
+        self.bfp8_pack_precise, self.enable_trisc2_rvv = bfp8_pack_precise, False
+        self.unpack_to_dest_mode = []
+
+
 def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
     session, _, ttnn, _ = card
-    ttnn.ComputeConfigDescriptor = types.SimpleNamespace
+    ttnn.ComputeConfigDescriptor = ComputeConfigDescriptor
     ttnn.MathFidelity = types.SimpleNamespace(HiFi4="hifi4")
     ttnn.UnpackToDestMode = types.SimpleNamespace(UnpackToDestFp32="fp32", Default="-")
     c = session.compute_config(
         {
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
+            "enable_trisc2_rvv": True,  # not a constructor keyword
             "unpack_to_dest_mode": {3: "UnpackToDestFp32"},
         }
     )
-    assert c.math_fidelity == "hifi4" and c.fp32_dest_acc_en
+    assert c.math_fidelity == "hifi4" and c.fp32_dest_acc_en and c.enable_trisc2_rvv
     assert len(c.unpack_to_dest_mode) == 64 and c.unpack_to_dest_mode[3] == "fp32"
     assert set(c.unpack_to_dest_mode[:3] + c.unpack_to_dest_mode[4:]) == {"-"}
     every = session.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
     assert set(every.unpack_to_dest_mode) == {"fp32"}
-    assert not hasattr(session.compute_config({}), "unpack_to_dest_mode")
+    assert session.compute_config({}).unpack_to_dest_mode == []
+    with pytest.raises(ProgramError, match="'fp32_dest_acc'"):  # a typo is refused
+        session.compute_config({"fp32_dest_acc": True})
 
 
 def test_an_exit_without_a_stop_closes_the_runtime_before_the_device(

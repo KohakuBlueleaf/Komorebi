@@ -36,7 +36,7 @@ nothing.
 | `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a ttnn data type name (`"bfloat16"`, `"uint32"`) |
 | `args` | `args(core) -> (reader, writer, compute)`: the program's own runtime arguments of each core, after the runtime's start-up arguments |
 | `compile_args` | `{"reader": [...], "writer": [...], "compute": [...]}` |
-| `compute` | compute kernel options: `math_fidelity` (a `ttnn.MathFidelity` name), `fp32_dest_acc_en`, `unpack_to_dest_mode` (a `ttnn.UnpackToDestMode` name such as `"UnpackToDestFp32"` for every circular buffer, or `{cb: name}` with the others `Default`), and the other `ComputeConfigDescriptor` fields |
+| `compute` | compute kernel options: `math_fidelity` (a `ttnn.MathFidelity` name), `fp32_dest_acc_en`, `unpack_to_dest_mode` (a `ttnn.UnpackToDestMode` name such as `"UnpackToDestFp32"` for every circular buffer, or `{cb: name}` with the others `Default`), and the other `ComputeConfigDescriptor` fields, each set as an attribute (checked against tt-metal v0.81.1: `math_approx_mode`, `dst_full_sync_en`, `bfp8_pack_precise`, `enable_trisc2_rvv`); a name the descriptor lacks raises `ProgramError` |
 | `defines` | `{name: value}` for all three kernels |
 | `depth` | mailbox slots the cores scan and the dispatch kernel uses, 1 to 16 |
 | `segments` | `{name: number}`, or a header whose `constexpr uint32_t kSegName = n;` lines give them (`kSegBigStep` becomes `"big_step"`); numbers 1 to 239 |

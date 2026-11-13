@@ -33,15 +33,21 @@ CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 
 
 def compute_config(options):
-    """The compute kernel's ttnn.ComputeConfigDescriptor from Program.compute: field
-    values as given, except `math_fidelity` (a ttnn.MathFidelity name) and
-    `unpack_to_dest_mode` (a ttnn.UnpackToDestMode name for every circular buffer, or
-    {cb: name} with the others Default)."""
+    """The compute kernel's ttnn.ComputeConfigDescriptor from Program.compute: each
+    field set as an attribute (ProgramError names one it lacks), as given except
+    `math_fidelity` (a MathFidelity name) and `unpack_to_dest_mode` (an UnpackToDestMode
+    name for every circular buffer, or {cb: name} with the others Default)."""
     options = dict(options)
     unpack = options.pop("unpack_to_dest_mode", None)
     if "math_fidelity" in options:
         options["math_fidelity"] = getattr(ttnn.MathFidelity, options["math_fidelity"])
-    config = ttnn.ComputeConfigDescriptor(**options)
+    config = ttnn.ComputeConfigDescriptor()
+    for name, value in options.items():
+        if not hasattr(config, name):
+            raise ProgramError(
+                f"compute option {name!r}: no such ComputeConfigDescriptor field"
+            )
+        setattr(config, name, value)
     if unpack is not None:
         by_cb = (
             unpack if isinstance(unpack, dict) else dict.fromkeys(range(CBS), unpack)
