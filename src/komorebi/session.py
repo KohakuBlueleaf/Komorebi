@@ -28,9 +28,6 @@ DYN_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic segment's queues may take
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
-# The bank X280 cluster 0's Memory Port reaches: measured on a p150a, as for the work
-# clusters (thread.BANK_OF_CLUSTER); the runtime names no bank for that port.
-KERNEL_BANK = 5
 # The X280 clock: at 1750 MHz, under full Tensix load (lowered core voltage), core 0's
 # loads returned wrong values; 1000 MHz is the next step the runtime offers.
 X280_MHZ = 1000
@@ -787,13 +784,27 @@ class _Backend:
         """Logs the first STATE_DUMP_LINES lines of the kernel's state as DRAM holds
         them (the kernel flushes them when it finishes); never raises."""
         try:
-            (page,) = self.session.read(self.state_t, first=KERNEL_BANK, pages=1)
-            words = np.asarray(page, np.uint8).reshape(-1)[: 64 * STATE_DUMP_LINES]
-            for at, line in enumerate(words.view("<u8").reshape(-1, 8)):
+            words = self.kernel_state()
+            if words is None:
+                self.session.log("kernel state not found in DRAM (lines not flushed)")
+                return
+            for at, line in enumerate(words.reshape(-1, 8)):
                 text = " ".join(f"{int(w):#x}" for w in line)
                 self.session.log(f"kernel state +{64 * at:#05x}: {text}")
         except Exception as err:  # noqa: BLE001 (a failure path: reported, not raised)
             self.session.log(f"kernel state not read ({type(err).__name__}: {err})")
+
+    def kernel_state(self):
+        """The first STATE_DUMP_LINES lines of the kernel's state (uint64 words) from
+        the first page of each bank: the one whose args and lim words name the LIM
+        base is the bank the cluster's Memory Port reaches. None if no page does."""
+        banks = self.session._module.dram_banks(self.device)
+        (pages,) = self.session.read(self.state_t, first=0, pages=banks)
+        words = np.asarray(pages, np.uint8)[:, : 64 * STATE_DUMP_LINES]
+        words = np.ascontiguousarray(words).view("<u8")
+        base = self.port.lim_base
+        found = [w for w in words if w[2] == base and w[3] == base]  # args, lim
+        return found[0] if len(found) == 1 else None
 
     def kernel_report(self):
         """While the kernel runs: whether core 0 still runs its loop (its pass stamp
