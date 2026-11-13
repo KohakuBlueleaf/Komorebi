@@ -42,13 +42,17 @@ class Clock:
         self.thread.start()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exception):
         self.stop.set()
         self.thread.join()
 
     def summary(self):
-        v = self.samples
-        return [min(v), round(float(np.mean(v)), 1), max(v)] if v else None
+        values = self.samples
+        return (
+            [min(values), round(float(np.mean(values)), 1), max(values)]
+            if values
+            else None
+        )
 
 
 SHARES = {  # profile words whose share of the slowest core's time is reported
@@ -93,21 +97,21 @@ CUTS = {  # cut-down runs: (name, mode) per form
 }
 
 
-def profile_summary(prof, mhz, grid):
+def profile_summary(profile, mhz, grid):
     """Shares of the slowest core's time per unit, and the balance across cores."""
     words, shares, bodies = (
         (pl.G, GRID_PARTITIONS, GRID_BODIES) if grid else (K, SHARES, BODIES)
     )
-    pr = prof.astype(np.float64)
-    busy = np.maximum.reduce([pr[:, words[k]] for k in bodies])
-    slow = int(np.argmax(busy))
-    total = busy[slow]
+    cycles = profile.astype(np.float64)
+    busy = np.maximum.reduce([cycles[:, words[key]] for key in bodies])
+    slowest = int(np.argmax(busy))
+    total = busy[slowest]
     return {
-        "slowest_core": slow,
+        "slowest_core": slowest,
         "slowest_microseconds": round(total / mhz, 3),
         "mean_busy_over_slowest": round(float(busy.mean() / total), 3),
         "partitions_of_slowest": {
-            name: round(float(pr[slow, words[key]] / total), 3)
+            name: round(float(cycles[slowest, words[key]] / total), 3)
             for name, key in shares.items()
         },
     }
@@ -117,17 +121,22 @@ def loop(product, reps, index, one_microseconds, batch):
     """`reps` commands in runs of at most `batch` back to back (each waited for), with
     power and clock sampled; each wait's timeout 3 x their single-call time + 5 s."""
     meter = power.PowerSampler(index)
-    host_s, us, t0 = 0.0, [], time.perf_counter()
+    host_s, command_microseconds, started = 0.0, [], time.perf_counter()
     with meter, Clock(index) as clock:
         meter.mark("open")
         time.sleep(1.0)
         meter.mark("loop")
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         for first in range(0, reps, batch):
-            n = min(batch, reps - first)
-            s, u = product.calls(n, timeout=3 * n * one_microseconds / 1e6 + 5)
-            host_s, us = host_s + s, us + list(u)
-        wall_s = time.perf_counter() - t0
+            count = min(batch, reps - first)
+            seconds, microseconds = product.calls(
+                count, timeout=3 * count * one_microseconds / 1e6 + 5
+            )
+            host_s, command_microseconds = (
+                host_s + seconds,
+                command_microseconds + list(microseconds),
+            )
+        wall_s = time.perf_counter() - started
         meter.mark("after")
     phase = meter.result.phases["loop"]
     return {
@@ -136,7 +145,7 @@ def loop(product, reps, index, one_microseconds, batch):
         "seconds": round(host_s, 3),
         "wall_seconds": round(wall_s, 3),
         "microseconds_per_call": round(host_s * 1e6 / reps, 3),
-        "command_microseconds_median": float(np.median(us)),
+        "command_microseconds_median": float(np.median(command_microseconds)),
         "mean_w": phase.mean_w,
         "peak_w": phase.peak_w,
         "open_w": meter.result.phases["open"].mean_w,
@@ -146,109 +155,125 @@ def loop(product, reps, index, one_microseconds, batch):
 
 
 def main():
-    a = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    a.add_argument("--shape", choices=run.SHAPES, required=True)
-    a.add_argument("--form", choices=run.FORMS, default=None)
-    a.add_argument("--grid", default=None, help="as run.py's --grid")
-    a.add_argument("--split", default=None, help="as run.py's --split")
-    a.add_argument("--reduce", choices=list(pl.REDUCE_FORMS), default="owner")
-    a.add_argument("--seconds", type=float, default=4.0)
-    a.add_argument("--cut-seconds", type=float, default=1.0)
-    a.add_argument("--max-reps", type=int, default=1_000_000)
-    a.add_argument("--batch", type=int, default=0, help="commands per run; 0: one run")
-    a.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--shape", choices=run.SHAPES, required=True)
+    parser.add_argument("--form", choices=run.FORMS, default=None)
+    parser.add_argument("--grid", default=None, help="as run.py's --grid")
+    parser.add_argument("--split", default=None, help="as run.py's --split")
+    parser.add_argument("--reduce", choices=list(pl.REDUCE_FORMS), default="owner")
+    parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument("--cut-seconds", type=float, default=1.0)
+    parser.add_argument("--max-reps", type=int, default=1_000_000)
+    parser.add_argument(
+        "--batch", type=int, default=0, help="commands per run; 0: one run"
+    )
+    parser.add_argument(
         "--deadline", type=float, default=None, help="s; default: deadline()"
     )
-    a.add_argument("--json", default=None)
-    args = a.parse_args()
-    m, k, n = run.SHAPES[args.shape]
-    p = run.make_plan(args.form, (m, k, n), args.grid, args.split)
-    form = form_of(p)
-    out = {"shape": args.shape, "m": m, "k": k, "n": n, "plan": run.describe(p)}
+    parser.add_argument("--json", default=None)
+    args = parser.parse_args()
+    m_rows, k_depth, n_columns = run.SHAPES[args.shape]
+    plan = run.make_plan(args.form, (m_rows, k_depth, n_columns), args.grid, args.split)
+    form = form_of(plan)
+    report = {
+        "shape": args.shape,
+        "m": m_rows,
+        "k": k_depth,
+        "n": n_columns,
+        "plan": run.describe(plan),
+    }
     log("building the inputs")
-    x, w = ref.inputs(m, k, n)
+    a_matrix, w_matrix = ref.inputs(m_rows, k_depth, n_columns)
     log("inputs built")
     index = visible_card()
     with km.Session(log=log) as session:
         cores = len(session.nocs().words)
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         tensors = {}
-        for name, value in (("a", x), ("w", w), ("y", np.zeros((m, n), np.float32))):
+        for name, value in (
+            ("a", a_matrix),
+            ("w", w_matrix),
+            ("y", np.zeros((m_rows, n_columns), np.float32)),
+        ):
             tensors[name] = card.bf16_tensor(session, value)
             log(f"{name.upper()} uploaded")
-        out["upload_s"] = round(time.perf_counter() - t0, 3)
-        log(f"operands uploaded in {out['upload_s']} s")
-        prof_t = card.prof_tensor(session, cores)
-        out["x280_mhz"] = session.pll_mhz
-        out["deadline_s"] = args.deadline or deadline(p)
-        out["reduce"] = args.reduce
-        load = dict(deadline=out["deadline_s"], reduce=args.reduce)
-        product = run.load(session, p, tensors, **load)
-        mhz = out["profile_mhz"] = aiclk_mhz(index)
-        out["load_microseconds"] = product.load_microseconds
+        report["upload_s"] = round(time.perf_counter() - started, 3)
+        log(f"operands uploaded in {report['upload_s']} s")
+        profile_tensor = card.prof_tensor(session, cores)
+        report["x280_mhz"] = session.pll_mhz
+        report["deadline_s"] = args.deadline or deadline(plan)
+        report["reduce"] = args.reduce
+        load = dict(deadline=report["deadline_s"], reduce=args.reduce)
+        product = run.load(session, plan, tensors, **load)
+        mhz = report["profile_mhz"] = aiclk_mhz(index)
+        report["load_microseconds"] = product.load_microseconds
         try:
-            measure(product, p, args, out)
-        except km.KomorebiError as err:
-            out["failed"] = product.failed(err)
-            log(f"failed: {json.dumps(out['failed'], default=str)}")
-            print(json.dumps(out, default=str), flush=True)
+            measure(product, plan, args, report)
+        except km.KomorebiError as error:
+            report["failed"] = product.failed(error)
+            log(f"failed: {json.dumps(report['failed'], default=str)}")
+            print(json.dumps(report, default=str), flush=True)
             if args.json:
-                Path(args.json).write_text(json.dumps(out, indent=1, default=str))
+                Path(args.json).write_text(json.dumps(report, indent=1, default=str))
             sys.exit(1)
-        out["run"] = product.stop()
-        t0 = time.perf_counter()
-        rows = ref.sampled_rows(m)
+        report["run"] = product.stop()
+        started = time.perf_counter()
+        rows = ref.sampled_rows(m_rows)
         got = card.read_rows(session, tensors["y"], rows, log)
-        out["readback_s"] = round(time.perf_counter() - t0, 3)
+        report["readback_s"] = round(time.perf_counter() - started, 3)
         log("Y's sampled rows read back")
         # the profile last, in a load of its own: one profiled call (none in the split)
         if form != "split":
-            product = run.load(session, p, tensors, **load)
+            product = run.load(session, plan, tensors, **load)
             product.single(1)
-            prof = product.profile(session, prof_t)
-            out["profile"] = profile_summary(prof, mhz, form == "grid")
+            profile = product.profile(session, profile_tensor)
+            report["profile"] = profile_summary(profile, mhz, form == "grid")
             product.stop()
             log("profile read")
     log("checking the sampled rows")
-    out["check"] = run.check(got[:, :n], rows, x, w, "uniform")
-    out["ok"] = out["check"]["ok"] and run.clean(out["run"])
-    out["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(out, default=float), flush=True)
+    report["check"] = run.check(got[:, :n_columns], rows, a_matrix, w_matrix, "uniform")
+    report["ok"] = report["check"]["ok"] and run.clean(report["run"])
+    report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
+    print(json.dumps(report, default=float), flush=True)
     if args.json:
-        Path(args.json).write_text(json.dumps(out, indent=1, default=float))
-    sys.exit(0 if out["ok"] else 1)
+        Path(args.json).write_text(json.dumps(report, indent=1, default=float))
+    sys.exit(0 if report["ok"] else 1)
 
 
-def deadline(p):
+def deadline(plan):
     """A command's deadline (s): three times the call at 20 TFLOP/s, plus 50 ms."""
-    return round(3 * pl.flops(p) / 20e12 + 0.05, 3)
+    return round(3 * pl.flops(plan) / 20e12 + 0.05, 3)
 
 
-def form_of(p):
-    return {pl.Grid: "grid", pl.Split: "split"}.get(type(p), "plain")
+def form_of(plan):
+    return {pl.Grid: "grid", pl.Split: "split"}.get(type(plan), "plain")
 
 
-def measure(product, p, args, out):
+def measure(product, plan, args, report):
     """Single calls, the loop, the cut-down runs, one last full call."""
     index = visible_card()
-    form = form_of(p)
+    form = form_of(plan)
     single = product.single(21)
-    out["single_microseconds"] = {
+    report["single_microseconds"] = {
         "median": float(np.median(single)),
         "min": single.min(),
     }
-    one = float(np.median(single))
-    log(f"single call {one:.2f} us")
-    reps = int(min(args.max_reps, max(2, math.ceil(args.seconds * 1e6 / one))))
-    out["loop"] = loop(product, reps, index, one, args.batch or reps)
-    log(f"loop: {out['loop']['microseconds_per_call']} us per call")
-    out["tflops"] = pl.flops(p) / out["loop"]["microseconds_per_call"] / 1e6
+    one_microseconds = float(np.median(single))
+    log(f"single call {one_microseconds:.2f} us")
+    reps = int(
+        min(args.max_reps, max(2, math.ceil(args.seconds * 1e6 / one_microseconds)))
+    )
+    report["loop"] = loop(product, reps, index, one_microseconds, args.batch or reps)
+    log(f"loop: {report['loop']['microseconds_per_call']} us per call")
+    report["tflops"] = pl.flops(plan) / report["loop"]["microseconds_per_call"] / 1e6
     cut = {}
     for name, mode in CUTS[form]:
-        r2 = int(min(args.max_reps, max(2, args.cut_seconds * 1e6 / one)))
-        host_s, _ = product.calls(r2, mode=mode)
-        cut[name] = round(host_s * 1e6 / r2, 3)
-    out["cut_microseconds_per_call"] = cut
+        cut_reps = int(
+            min(args.max_reps, max(2, args.cut_seconds * 1e6 / one_microseconds))
+        )
+        host_s, _ = product.calls(cut_reps, mode=mode)
+        cut[name] = round(host_s * 1e6 / cut_reps, 3)
+    report["cut_microseconds_per_call"] = cut
     # the cut-down runs left Y as it was: one more full call before the check
     product.calls(1)
 

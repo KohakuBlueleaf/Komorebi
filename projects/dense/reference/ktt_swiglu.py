@@ -31,43 +31,47 @@ from ref import dense as ref  # noqa: E402
 VARIABLES = ("KTT_GEMM", "KTT_OWN_MATMUL_MIN_ROWS", "KTT_FIDELITY", "KTT_FUSION")
 
 
-def log(msg):
-    print(msg, flush=True)
+def log(message):
+    print(message, flush=True)
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--shape", choices=sp.SHAPES, required=True)
-    p.add_argument("--calls", type=int, default=20)
-    p.add_argument("--seconds", type=float, default=4.0)
-    p.add_argument("--json", default=None)
-    args = p.parse_args()
-    m, d, h = sp.SHAPES[args.shape]
-    x, w1, w3, w2 = ref.swiglu_inputs(m, d, h)
-    dev = kohakutt.device(0)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--shape", choices=sp.SHAPES, required=True)
+    parser.add_argument("--calls", type=int, default=20)
+    parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument("--json", default=None)
+    args = parser.parse_args()
+    m_rows, model_width, hidden_width = sp.SHAPES[args.shape]
+    x, w1, w3, w2 = ref.swiglu_inputs(m_rows, model_width, hidden_width)
+    device = kohakutt.device(0)
     log("device open")
-    tx, t1, t3, t2 = (torch.from_numpy(v).bfloat16().to(dev) for v in (x, w1, w3, w2))
+    x_tensor, w1_tensor, w3_tensor, w2_tensor = (
+        torch.from_numpy(array).bfloat16().to(device) for array in (x, w1, w3, w2)
+    )
 
     def layer():
-        return (torch.nn.functional.silu(tx @ t1) * (tx @ t3)) @ t2
+        return (
+            torch.nn.functional.silu(x_tensor @ w1_tensor) * (x_tensor @ w3_tensor)
+        ) @ w2_tensor
 
-    t0 = time.perf_counter()
+    started = time.perf_counter()
     y = layer()
-    kohakutt.synchronize(dev)
-    out = {"shape": args.shape, "m": m, "d": d, "h": h}
-    out["first_call_ms"] = (time.perf_counter() - t0) * 1e3
-    out["env"] = {v: os.environ.get(v) for v in VARIABLES}
-    out["kohakutt"] = version()
-    log(f"first call {out['first_call_ms']:.1f} ms")
-    rows = ref.sampled_rows(m)
-    out["check"] = ref.errors(read_rows(y, rows), ref.swiglu(x[rows], w1, w3, w2))
+    kohakutt.synchronize(device)
+    report = {"shape": args.shape, "m": m_rows, "d": model_width, "h": hidden_width}
+    report["first_call_ms"] = (time.perf_counter() - started) * 1e3
+    report["env"] = {variable: os.environ.get(variable) for variable in VARIABLES}
+    report["kohakutt"] = version()
+    log(f"first call {report['first_call_ms']:.1f} ms")
+    rows = ref.sampled_rows(m_rows)
+    report["check"] = ref.errors(read_rows(y, rows), ref.swiglu(x[rows], w1, w3, w2))
     synced = []
     for _ in range(args.calls):
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         y = layer()
-        kohakutt.synchronize(dev)
-        synced.append(time.perf_counter() - t0)
-    out["synced_microseconds_median"] = statistics.median(synced) * 1e6
+        kohakutt.synchronize(device)
+        synced.append(time.perf_counter() - started)
+    report["synced_microseconds_median"] = statistics.median(synced) * 1e6
     reps = max(10, int(args.seconds / statistics.median(synced)))
     card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
     clock, stop = [], threading.Event()
@@ -78,17 +82,17 @@ def main():
         time.sleep(1.0)
         meter.mark("loop")
         sampler.start()
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         for _ in range(reps):
             y = layer()
-        kohakutt.synchronize(dev)
-        loop_s = time.perf_counter() - t0
+        kohakutt.synchronize(device)
+        loop_s = time.perf_counter() - started
         meter.mark("after")
         stop.set()
         sampler.join()
     log(f"loop of {reps} calls in {loop_s:.2f} s")
     phase = meter.result.phases["loop"]
-    out["loop"] = {
+    report["loop"] = {
         "reps": reps,
         "microseconds_per_call": loop_s / reps * 1e6,
         "mean_w": phase.mean_w,
@@ -96,10 +100,10 @@ def main():
         "open_w": meter.result.phases["open"].mean_w,
         "aiclk_mhz": [min(clock), round(statistics.mean(clock), 1), max(clock)],
     }
-    out["load_avg"] = os.getloadavg()[0]
-    print(json.dumps(out), flush=True)
+    report["load_avg"] = os.getloadavg()[0]
+    print(json.dumps(report), flush=True)
     if args.json:
-        Path(args.json).write_text(json.dumps(out))
+        Path(args.json).write_text(json.dumps(report))
 
 
 if __name__ == "__main__":

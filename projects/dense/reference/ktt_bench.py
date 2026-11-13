@@ -37,8 +37,16 @@ def sample_clock(card, samples, stop):
 
 def version():
     """The commit of the Kohaku-TT checkout kohakutt was imported from, if any."""
-    git = ["git", "-C", str(Path(kohakutt.__file__).parent), "rev-parse", "--short"]
-    done = subprocess.run([*git, "HEAD"], capture_output=True, text=True, timeout=10)
+    git_command = [
+        "git",
+        "-C",
+        str(Path(kohakutt.__file__).parent),
+        "rev-parse",
+        "--short",
+    ]
+    done = subprocess.run(
+        [*git_command, "HEAD"], capture_output=True, text=True, timeout=10
+    )
     return done.stdout.strip() or None
 
 
@@ -46,46 +54,46 @@ def read_rows(y, rows):
     """Rows `rows` of the device tensor y as float32, one 32-row slice per read (at most
     1 MB each, a progress line each)."""
     got = {}
-    for t in np.unique(rows // ref.TILE):
-        r0 = int(t) * ref.TILE
-        got[r0] = y[r0 : r0 + ref.TILE].cpu().float().numpy()
-        print(f"rows {r0} to {r0 + ref.TILE} read", flush=True)
-    return np.stack([got[r // ref.TILE * ref.TILE][r % ref.TILE] for r in rows])
+    for tile in np.unique(rows // ref.TILE):
+        first_row = int(tile) * ref.TILE
+        got[first_row] = y[first_row : first_row + ref.TILE].cpu().float().numpy()
+        print(f"rows {first_row} to {first_row + ref.TILE} read", flush=True)
+    return np.stack([got[row // ref.TILE * ref.TILE][row % ref.TILE] for row in rows])
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--shape", choices=pl.SHAPES, required=True)
-    p.add_argument("--calls", type=int, default=20)
-    p.add_argument("--seconds", type=float, default=4.0)
-    p.add_argument("--json", default=None)
-    args = p.parse_args()
-    m, k, n = pl.SHAPES[args.shape]
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--shape", choices=pl.SHAPES, required=True)
+    parser.add_argument("--calls", type=int, default=20)
+    parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument("--json", default=None)
+    args = parser.parse_args()
+    m_rows, k_depth, n_columns = pl.SHAPES[args.shape]
     print("building the inputs", flush=True)
-    a, w = ref.inputs(m, k, n)
+    a_matrix, w_matrix = ref.inputs(m_rows, k_depth, n_columns)
     print("inputs built", flush=True)
-    dev = kohakutt.device(0)
-    ta = torch.from_numpy(a).bfloat16().to(dev)
+    device = kohakutt.device(0)
+    a_tensor = torch.from_numpy(a_matrix).bfloat16().to(device)
     print("A uploaded", flush=True)
-    tw = torch.from_numpy(w).bfloat16().to(dev)
+    w_tensor = torch.from_numpy(w_matrix).bfloat16().to(device)
     print("W uploaded", flush=True)
-    y = ta @ tw
-    kohakutt.synchronize(dev)
+    y = a_tensor @ w_tensor
+    kohakutt.synchronize(device)
     print("first product done", flush=True)
-    out = {"shape": args.shape, "m": m, "k": k, "n": n}
-    out["env"] = {v: os.environ.get(v) for v in ROUTE_VARIABLES}
-    out["kohakutt"] = version()
-    rows = ref.sampled_rows(m)
+    report = {"shape": args.shape, "m": m_rows, "k": k_depth, "n": n_columns}
+    report["env"] = {variable: os.environ.get(variable) for variable in ROUTE_VARIABLES}
+    report["kohakutt"] = version()
+    rows = ref.sampled_rows(m_rows)
     got = read_rows(y, rows)
     print("checking the sampled rows", flush=True)
-    out["check"] = ref.errors(got, ref.matmul(a[rows], w))
+    report["check"] = ref.errors(got, ref.matmul(a_matrix[rows], w_matrix))
     synced = []
     for _ in range(args.calls):
-        t0 = time.perf_counter()
-        y = ta @ tw
-        kohakutt.synchronize(dev)
-        synced.append(time.perf_counter() - t0)
-    out["synced_microseconds_median"] = statistics.median(synced) * 1e6
+        started = time.perf_counter()
+        y = a_tensor @ w_tensor
+        kohakutt.synchronize(device)
+        synced.append(time.perf_counter() - started)
+    report["synced_microseconds_median"] = statistics.median(synced) * 1e6
     reps = max(10, int(args.seconds / statistics.median(synced)))
     card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
     clock, stop = [], threading.Event()
@@ -96,16 +104,16 @@ def main():
         time.sleep(1.0)
         meter.mark("loop")
         sampler.start()
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         for _ in range(reps):
-            y = ta @ tw
-        kohakutt.synchronize(dev)
-        loop_s = time.perf_counter() - t0
+            y = a_tensor @ w_tensor
+        kohakutt.synchronize(device)
+        loop_s = time.perf_counter() - started
         meter.mark("after")
         stop.set()
         sampler.join()
     phase = meter.result.phases["loop"]
-    out["loop"] = {
+    report["loop"] = {
         "reps": reps,
         "microseconds_per_call": loop_s / reps * 1e6,
         "mean_w": phase.mean_w,
@@ -113,10 +121,10 @@ def main():
         "open_w": meter.result.phases["open"].mean_w,
         "aiclk_mhz": [min(clock), round(statistics.mean(clock), 1), max(clock)],
     }
-    out["load_avg"] = os.getloadavg()[0]
-    print(json.dumps(out), flush=True)
+    report["load_avg"] = os.getloadavg()[0]
+    print(json.dumps(report), flush=True)
     if args.json:
-        Path(args.json).write_text(json.dumps(out))
+        Path(args.json).write_text(json.dumps(report))
 
 
 if __name__ == "__main__":

@@ -28,24 +28,24 @@ namespace {
 
     // eltwise_binary.h's mul_reuse_dest_init and _tiles at HiFi4 whatever the program's
     // fidelity: at HiFi2 an element-wise product loses its operands' low bits.
-    inline void mul_hifi4_init(uint32_t icb) {
-        state_configure(icb, __LINE__);
-        UNPACK(
-            (llk_unpack_A_init<BroadcastType::NONE, true, kReuse>(false, false, icb))
-        );
+    inline void mul_hifi4_init(uint32_t input_buffer) {
+        state_configure(input_buffer, __LINE__);
+        UNPACK((llk_unpack_A_init<BroadcastType::NONE, true, kReuse>(
+            false, false, input_buffer
+        )));
         MATH(
             (
                 llk_math_eltwise_binary_init<
                     kMul,
                     BroadcastType::NONE,
                     MathFidelity::HiFi4,
-                    kReuse>(icb, icb, false)
+                    kReuse>(input_buffer, input_buffer, false)
             )
         );
     }
 
-    inline void mul_hifi4(uint32_t icb, uint32_t tile, uint32_t dst) {
-        UNPACK((llk_unpack_A<BroadcastType::NONE, true, kReuse>(icb, tile)));
+    inline void mul_hifi4(uint32_t input_buffer, uint32_t tile, uint32_t dst) {
+        UNPACK((llk_unpack_A<BroadcastType::NONE, true, kReuse>(input_buffer, tile)));
         MATH(
             (
                 llk_math_eltwise_binary<
@@ -53,7 +53,7 @@ namespace {
                     BroadcastType::NONE,
                     DST_ACCUM_MODE,
                     MathFidelity::HiFi4,
-                    kReuse>(icb, icb, dst, true)
+                    kReuse>(input_buffer, input_buffer, dst, true)
             )
         );
     }
@@ -61,226 +61,275 @@ namespace {
     // LAYER: per owned row and column block, A's row times W's block in DST (the gate
     // pass: A's block copied), the epilogue on DST, the pack to Y's buffer.
     void layer(
-        const km::Compute& cp, const km_command_t& r, volatile tt_l1_ptr uint32_t* prof
+        const km::Compute& compute,
+        const km_command_t& command,
+        volatile tt_l1_ptr uint32_t* profile
     ) {
-        const km::Partition s = (
-            km::partition(r.a2, cp.me() - km::first(r), km::count(r))
+        const uint32_t m_tiles = command.a2, k_tiles = command.a3, n_tiles = command.a4;
+        const uint32_t block_width = command.a5, w_buffer = command.a6;
+        const uint32_t epilogue = command.a7, held_buffers = command.a8;
+        const km::Partition owned_rows = (
+            km::partition(
+                m_tiles, compute.me() - km::first(command), km::count(command)
+            )
         );
-        const uint32_t kt = r.a3, nt = r.a4, ct = r.a5, wcb = r.a6, ep = r.a7;
-        const uint32_t a_at = r.a8 & 0xFF, bcb = (r.a8 >> 8) & 0xFF;
-        const uint32_t y_at = (r.a8 >> 16) & 0xFF;
-        const uint32_t acb = a_at == kDram ? kCbA : a_at;
-        const uint32_t ycb = y_at == kDram ? kCbOut : y_at;
-        const bool gate = wcb == 0;
-        const bool silu = ep == kEpSilu || ep == kEpGate, mul = ep == kEpMul || gate;
-        uint32_t wait_a = 0, mm = 0, epi = 0, wait_math = 0, wait_out = 0;
+        const uint32_t a_location = held_buffers & 0xFF;
+        const uint32_t b_buffer = (held_buffers >> 8) & 0xFF;
+        const uint32_t y_location = (held_buffers >> 16) & 0xFF;
+        const uint32_t a_buffer = a_location == kDram ? kCbA : a_location;
+        const uint32_t y_buffer = y_location == kDram ? kCbOut : y_location;
+        const bool gate = w_buffer == 0;
+        const bool silu = epilogue == kEpSilu || epilogue == kEpGate;
+        const bool multiply = epilogue == kEpMul || gate;
+        uint32_t wait_for_a = 0, matmul_cycles = 0, epilogue_cycles = 0;
+        uint32_t wait_math = 0, wait_out = 0;
         uint32_t pack = 0, tiles = 0;
         bool ok = true, init = true;
-        for (uint32_t m = s.start; ok && m < s.start + s.len; ++m) {
+        for (
+            uint32_t row = owned_rows.start;
+            ok && row < owned_rows.start + owned_rows.len;
+            ++row
+        ) {
             if (!gate) {
-                const uint32_t t1 = km::wall();
-                ok = cp.wait_front(acb, kt);
-                wait_a += km::wall() - t1;
+                const uint32_t asked = km::wall();
+                ok = compute.wait_front(a_buffer, k_tiles);
+                wait_for_a += km::wall() - asked;
             }
-            for (uint32_t j0 = 0; ok && j0 < nt; j0 += ct) {
-                const uint32_t t1 = km::wall();
+            for (uint32_t column = 0; ok && column < n_tiles; column += block_width) {
+                const uint32_t block_started = km::wall();
                 tile_regs_acquire();
                 if (gate) {
-                    ok = cp.wait_front(acb, ct);
+                    ok = compute.wait_front(a_buffer, block_width);
                     if (ok) {
-                        copy_init(acb);
-                        for (uint32_t j = 0; j < ct; ++j) {
-                            copy_tile(acb, j, j);
+                        copy_init(a_buffer);
+                        for (uint32_t tile = 0; tile < block_width; ++tile) {
+                            copy_tile(a_buffer, tile, tile);
                         }
                     }
                 } else {
                     if (init) {  // first block, or an epilogue changed the units' state
-                        matmul_block_init(acb, wcb, 0, ct, 1, kt);
-                        init = ep != kEpNone;
+                        matmul_block_init(
+                            a_buffer, w_buffer, 0, block_width, 1, k_tiles
+                        );
+                        init = epilogue != kEpNone;
                     }
-                    for (uint32_t k = 0; k < kt; ++k) {
-                        matmul_block(acb, wcb, k, k * nt + j0, 0, 0, ct, 1, kt);
+                    for (uint32_t k_tile = 0; k_tile < k_tiles; ++k_tile) {
+                        matmul_block(
+                            a_buffer,
+                            w_buffer,
+                            k_tile,
+                            k_tile * n_tiles + column,
+                            0,
+                            0,
+                            block_width,
+                            1,
+                            k_tiles
+                        );
                     }
                 }
-                const uint32_t t2 = km::wall();
+                const uint32_t product_issued = km::wall();
                 if (ok && silu) {
                     silu_tile_init();
-                    for (uint32_t j = 0; j < ct; ++j) {
-                        silu_tile(j);
+                    for (uint32_t tile = 0; tile < block_width; ++tile) {
+                        silu_tile(tile);
                     }
                 }
-                if (ok && mul) {
-                    ok = cp.wait_front(bcb, ct);
+                if (ok && multiply) {
+                    ok = compute.wait_front(b_buffer, block_width);
                     if (ok) {
-                        mul_hifi4_init(bcb);
-                        for (uint32_t j = 0; j < ct; ++j) {
-                            mul_hifi4(bcb, j, j);
+                        mul_hifi4_init(b_buffer);
+                        for (uint32_t tile = 0; tile < block_width; ++tile) {
+                            mul_hifi4(b_buffer, tile, tile);
                         }
-                        cb_pop_front(bcb, ct);
+                        cb_pop_front(b_buffer, block_width);
                     }
                 }
                 if (ok && gate) {
-                    cb_pop_front(acb, ct);
+                    cb_pop_front(a_buffer, block_width);
                 }
                 tile_regs_commit();
-                const uint32_t t3 = km::wall();
+                const uint32_t epilogue_issued = km::wall();
                 tile_regs_wait();
-                const uint32_t t4 = km::wall();
-                const bool room = ok && cp.reserve_back(ycb, ct);
-                const uint32_t t5 = km::wall();
+                const uint32_t math_done = km::wall();
+                const bool room = ok && compute.reserve_back(y_buffer, block_width);
+                const uint32_t output_reserved = km::wall();
                 if (room) {
-                    for (uint32_t j = 0; j < ct; ++j) {
-                        pack_tile(j, ycb);
+                    for (uint32_t tile = 0; tile < block_width; ++tile) {
+                        pack_tile(tile, y_buffer);
                     }
                 }
                 tile_regs_release();
                 if (room) {
-                    cb_push_back(ycb, ct);
-                    tiles += ct;
+                    cb_push_back(y_buffer, block_width);
+                    tiles += block_width;
                 }
-                mm += t2 - t1;
-                epi += t3 - t2;
-                wait_math += t4 - t3;
-                wait_out += t5 - t4;
-                pack += km::wall() - t5;
+                matmul_cycles += product_issued - block_started;
+                epilogue_cycles += epilogue_issued - product_issued;
+                wait_math += math_done - epilogue_issued;
+                wait_out += output_reserved - math_done;
+                pack += km::wall() - output_reserved;
             }
             if (ok && !gate) {
-                cb_pop_front(acb, kt);
+                cb_pop_front(a_buffer, k_tiles);
             }
         }
-        UNPACK((km::add_sat(prof + kPrUnWaitA, wait_a)));
-        MATH((km::add_sat(prof + kPrMathMm, mm)));
-        MATH((km::add_sat(prof + kPrMathEp, epi)));
-        PACK((km::add_sat(prof + kPrPkWaitMath, wait_math)));
-        PACK((km::add_sat(prof + kPrPkWaitOut, wait_out)));
-        PACK((km::add_sat(prof + kPrPkPack, pack)));
-        PACK((km::add_sat(prof + kPrPkTiles, tiles)));
-        (void)wait_a, (void)mm, (void)epi, (void)wait_math, (void)wait_out, (void)pack;
+        UNPACK((km::add_sat(profile + kPrUnWaitA, wait_for_a)));
+        MATH((km::add_sat(profile + kPrMathMm, matmul_cycles)));
+        MATH((km::add_sat(profile + kPrMathEp, epilogue_cycles)));
+        PACK((km::add_sat(profile + kPrPkWaitMath, wait_math)));
+        PACK((km::add_sat(profile + kPrPkWaitOut, wait_out)));
+        PACK((km::add_sat(profile + kPrPkPack, pack)));
+        PACK((km::add_sat(profile + kPrPkTiles, tiles)));
+        (void)wait_for_a, (void)matmul_cycles, (void)epilogue_cycles, (void)wait_math,
+            (void)wait_out, (void)pack;
         (void)tiles;
     }
 
 }  // namespace
 
 void kernel_main() {
-    km::Compute cp;
+    km::Compute compute;
     // Every operand is bf16; A's buffer stands for W's, which the streamed form lacks.
     compute_kernel_hw_startup<SrcOrder::Reverse>(kCbA, kCbA, kCbOut);
-    volatile tt_l1_ptr uint32_t* prof = km::l1(get_tile_address(kCbProf, 0));
+    volatile tt_l1_ptr uint32_t* profile = km::l1(get_tile_address(kCbProf, 0));
     uint32_t loaded[kCbW2 + 1] = {};  // W pages held in each W buffer
-    cp.run([&](const km_command_t& r) {
-        const uint32_t t0 = km::wall();
-        const uint32_t kt = r.a3, nt = r.a4;
-        if (km::handler(r) == kHandlerLoad) {
-            const uint32_t cb = r.a1;
-            if (cb != kCbW && cb != kCbW3 && cb != kCbW2) {
+    compute.run([&](const km_command_t& command) {
+        const uint32_t started = km::wall();
+        const uint32_t k_tiles = command.a3, n_tiles = command.a4;
+        if (km::handler(command) == kHandlerLoad) {
+            const uint32_t w_buffer = command.a1;
+            if (w_buffer != kCbW && w_buffer != kCbW3 && w_buffer != kCbW2) {
                 return;
             }
-            if (loaded[cb] != 0) {
-                cb_pop_front(cb, loaded[cb]);
-                loaded[cb] = 0;
+            if (loaded[w_buffer] != 0) {
+                cb_pop_front(w_buffer, loaded[w_buffer]);
+                loaded[w_buffer] = 0;
             }
-            if (cp.wait_front(cb, kt * nt)) {
-                loaded[cb] = kt * nt;
+            if (compute.wait_front(w_buffer, k_tiles * n_tiles)) {
+                loaded[w_buffer] = k_tiles * n_tiles;
             }
             return;
         }
-        if (km::handler(r) == kHandlerLayer) {
-            layer(cp, r, prof);
-            km::add_sat(prof + kBody, km::wall() - t0);
+        if (km::handler(command) == kHandlerLayer) {
+            layer(compute, command, profile);
+            km::add_sat(profile + kBody, km::wall() - started);
             return;
         }
-        if (km::handler(r) != kHandlerProduct) {
+        if (km::handler(command) != kHandlerProduct) {
             return;
         }
-        const km::Partition s = (
-            km::partition(r.a2, cp.me() - km::first(r), km::count(r))
+        const uint32_t m_tiles = command.a2, chunk_tiles = command.a5;
+        const uint32_t block_width = command.a6, mode = command.a7, form = command.a8;
+        const km::Partition owned_rows = (
+            km::partition(
+                m_tiles, compute.me() - km::first(command), km::count(command)
+            )
         );
-        const uint32_t kc = r.a5, ct = r.a6, mode = r.a7;
-        const bool stream = r.a8 == kFormStream;
-        const bool row_item = stream || kc == kt;
+        const bool stream = form == kFormStream;
+        const bool row_item = stream || chunk_tiles == k_tiles;
         const bool reads = mode != kModeComputeOnly;
         const bool math = mode == kModeFull || mode == kModeComputeOnly;
-        const uint32_t cbw = stream ? kCbWs : kCbW;
+        const uint32_t w_buffer = stream ? kCbWs : kCbW;
         if (math) {
-            matmul_block_init(kCbA, cbw, 0, ct, 1, kc);
+            matmul_block_init(kCbA, w_buffer, 0, block_width, 1, chunk_tiles);
         }
-        uint32_t wait_a = 0, wait_w = 0, mm = 0, wait_math = 0, wait_out = 0;
+        uint32_t wait_for_a = 0, wait_for_w = 0, matmul_cycles = 0;
+        uint32_t wait_math = 0, wait_out = 0;
         uint32_t pack = 0, tiles = 0;
         bool ok = true;
-        for (uint32_t m = s.start; ok && m < s.start + s.len; ++m) {
+        for (
+            uint32_t row = owned_rows.start;
+            ok && row < owned_rows.start + owned_rows.len;
+            ++row
+        ) {
             if (row_item && reads) {
-                const uint32_t t1 = km::wall();
-                ok = cp.wait_front(kCbA, kt);
-                wait_a += km::wall() - t1;
+                const uint32_t asked = km::wall();
+                ok = compute.wait_front(kCbA, k_tiles);
+                wait_for_a += km::wall() - asked;
             }
-            for (uint32_t j0 = 0; ok && j0 < nt; j0 += ct) {
-                const uint32_t t1 = km::wall();
+            for (uint32_t column = 0; ok && column < n_tiles; column += block_width) {
+                const uint32_t block_started = km::wall();
                 if (math) {
                     tile_regs_acquire();
                 }
-                for (uint32_t k0 = 0; ok && k0 < kt; k0 += kc) {
+                for (uint32_t chunk = 0; ok && chunk < k_tiles; chunk += chunk_tiles) {
                     if (!row_item && reads) {
-                        const uint32_t t2 = km::wall();
-                        ok = cp.wait_front(kCbA, kc);
-                        wait_a += km::wall() - t2;
+                        const uint32_t asked = km::wall();
+                        ok = compute.wait_front(kCbA, chunk_tiles);
+                        wait_for_a += km::wall() - asked;
                     }
                     if (ok && stream && reads) {
-                        const uint32_t t2 = km::wall();
-                        ok = cp.wait_front(kCbWs, kc * ct);
-                        wait_w += km::wall() - t2;
+                        const uint32_t asked = km::wall();
+                        ok = compute.wait_front(kCbWs, chunk_tiles * block_width);
+                        wait_for_w += km::wall() - asked;
                     }
                     if (ok && math) {
-                        // A: the chunk's tiles (or the row's from k0); W: k rows of nt
-                        // (resident) or of ct (a streamed chunk).
-                        const uint32_t a0 = row_item ? k0 : 0;
-                        for (uint32_t k = 0; k < kc; ++k) {
-                            const uint32_t w = stream ? k * ct : (k0 + k) * nt + j0;
-                            matmul_block(kCbA, cbw, a0 + k, w, 0, 0, ct, 1, kc);
+                        // A: the chunk's tiles (or the row's from `chunk`); W:
+                        // chunk_tiles rows of n_tiles (resident) or of block_width (a
+                        // streamed chunk).
+                        const uint32_t a_first = row_item ? chunk : 0;
+                        for (uint32_t k_tile = 0; k_tile < chunk_tiles; ++k_tile) {
+                            const uint32_t w_tile = (
+                                stream
+                                    ? k_tile * block_width
+                                    : (chunk + k_tile) * n_tiles + column
+                            );
+                            matmul_block(
+                                kCbA,
+                                w_buffer,
+                                a_first + k_tile,
+                                w_tile,
+                                0,
+                                0,
+                                block_width,
+                                1,
+                                chunk_tiles
+                            );
                         }
                     }
                     if (ok && !row_item && reads) {
-                        cb_pop_front(kCbA, kc);
+                        cb_pop_front(kCbA, chunk_tiles);
                     }
                     if (ok && stream && reads) {
-                        cb_pop_front(kCbWs, kc * ct);
+                        cb_pop_front(kCbWs, chunk_tiles * block_width);
                     }
                 }
                 if (!math) {
                     continue;
                 }
                 tile_regs_commit();
-                const uint32_t t2 = km::wall();
-                mm += t2 - t1;
+                const uint32_t product_issued = km::wall();
+                matmul_cycles += product_issued - block_started;
                 tile_regs_wait();
-                const uint32_t t3 = km::wall();
-                const bool room = ok && cp.reserve_back(kCbOut, ct);
-                const uint32_t t4 = km::wall();
+                const uint32_t math_done = km::wall();
+                const bool room = ok && compute.reserve_back(kCbOut, block_width);
+                const uint32_t output_reserved = km::wall();
                 if (room) {
-                    for (uint32_t j = 0; j < ct; ++j) {
-                        pack_tile(j, kCbOut);
+                    for (uint32_t tile = 0; tile < block_width; ++tile) {
+                        pack_tile(tile, kCbOut);
                     }
                 }
                 tile_regs_release();
                 if (room) {
-                    cb_push_back(kCbOut, ct);
-                    tiles += ct;
+                    cb_push_back(kCbOut, block_width);
+                    tiles += block_width;
                 }
-                wait_math += t3 - t2;
-                wait_out += t4 - t3;
-                pack += km::wall() - t4;
+                wait_math += math_done - product_issued;
+                wait_out += output_reserved - math_done;
+                pack += km::wall() - output_reserved;
             }
             if (ok && row_item && reads) {
-                cb_pop_front(kCbA, kt);
+                cb_pop_front(kCbA, k_tiles);
             }
         }
-        UNPACK((km::add_sat(prof + kPrUnWaitA, wait_a)));
-        UNPACK((km::add_sat(prof + kPrUnWaitW, wait_w)));
-        MATH((km::add_sat(prof + kPrMathMm, mm)));
-        PACK((km::add_sat(prof + kPrPkWaitMath, wait_math)));
-        PACK((km::add_sat(prof + kPrPkWaitOut, wait_out)));
-        PACK((km::add_sat(prof + kPrPkPack, pack)));
-        PACK((km::add_sat(prof + kPrPkTiles, tiles)));
-        km::add_sat(prof + kBody, km::wall() - t0);
+        UNPACK((km::add_sat(profile + kPrUnWaitA, wait_for_a)));
+        UNPACK((km::add_sat(profile + kPrUnWaitW, wait_for_w)));
+        MATH((km::add_sat(profile + kPrMathMm, matmul_cycles)));
+        PACK((km::add_sat(profile + kPrPkWaitMath, wait_math)));
+        PACK((km::add_sat(profile + kPrPkWaitOut, wait_out)));
+        PACK((km::add_sat(profile + kPrPkPack, pack)));
+        PACK((km::add_sat(profile + kPrPkTiles, tiles)));
+        km::add_sat(profile + kBody, km::wall() - started);
         (void)pack;
     });
 }

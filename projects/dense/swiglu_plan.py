@@ -34,23 +34,30 @@ class Swiglu:
 
     def buffers(self):
         """(index, pages) of the program's buffers."""
-        out = [(K["kCbA"], 2 * self.dt), (K["kCbOut"], 2 * block(self.dt))]
-        out += [(cb, self.dt * self.ht) for cb in W_CBS]
+        buffers = [(K["kCbA"], 2 * self.dt), (K["kCbOut"], 2 * block(self.dt))]
+        buffers += [(cb, self.dt * self.ht) for cb in W_CBS]
         holds = 3 if self.gate_pass else 2
-        return out + [(cb, self.rows() * self.ht) for cb in HOLDS[:holds]]
+        return buffers + [(cb, self.rows() * self.ht) for cb in HOLDS[:holds]]
 
     def l1_bytes(self):
-        pages = sum(n for _, n in self.buffers())
+        pages = sum(count for _, count in self.buffers())
         return pages * TILE_BYTES + K["kProfBytes"] + K["kLoadedBytes"]
 
     def fits(self, budget=L1_BUDGET):
         return self.l1_bytes() <= budget and max(self.dt, self.ht) <= MAX_CHUNK
 
 
-def make(m, d, h, gate_pass, workers):
-    """The SwiGLU plan of an [m, d] x with hidden width h on `workers` cores."""
-    mt = m // TILE
-    return Swiglu(mt, d // TILE, h // TILE, gate_pass, min(mt, workers))
+def make(rows, model_width, hidden_width, gate_pass, workers):
+    """The SwiGLU plan of an [rows, model_width] x with `hidden_width` on `workers`
+    cores."""
+    m_tiles = rows // TILE
+    return Swiglu(
+        m_tiles,
+        model_width // TILE,
+        hidden_width // TILE,
+        gate_pass,
+        min(m_tiles, workers),
+    )
 
 
 def where(a=DRAM, b=DRAM, y=DRAM):
@@ -58,35 +65,119 @@ def where(a=DRAM, b=DRAM, y=DRAM):
     return a | b << 8 | y << 16
 
 
-def layer_args(s, a, y, kt, nt, w_cb, ep, at):
+def layer_args(
+    plan, a_address, y_address, k_tiles, n_tiles, w_cb, epilogue, held_buffers
+):
     """Command words a0..a9 of LAYER."""
-    return [a, y, s.mt, kt, nt, block(nt), w_cb, ep, at, 0]
-
-
-def loads(s, w1, w3, w2):
-    """LOAD words of the three W (DRAM addresses) into their buffers."""
-    dims = ((s.dt, s.ht), (s.dt, s.ht), (s.ht, s.dt))
-    return [[w, cb, 0, *kn] for w, cb, kn in zip((w1, w3, w2), W_CBS, dims)]
-
-
-def commands(s, x, y):
-    """The LAYER words of one call, x and y the DRAM input and output: three commands
-    (the gate fused into the second product) or four (a gate pass of its own)."""
-    d, h, (w1, w3, w2), (h0, h1, h2) = s.dt, s.ht, W_CBS, HOLDS
-    if not s.gate_pass:
-        return [
-            layer_args(s, x, 0, d, h, w1, K["kEpSilu"], where(y=h0)),
-            layer_args(s, x, 0, d, h, w3, K["kEpMul"], where(b=h0, y=h1)),
-            layer_args(s, 0, y, h, d, w2, K["kEpNone"], where(a=h1)),
-        ]
     return [
-        layer_args(s, x, 0, d, h, w1, K["kEpNone"], where(y=h0)),
-        layer_args(s, x, 0, d, h, w3, K["kEpNone"], where(y=h1)),
-        layer_args(s, 0, 0, h, h, 0, K["kEpGate"], where(a=h0, b=h1, y=h2)),
-        layer_args(s, 0, y, h, d, w2, K["kEpNone"], where(a=h2)),
+        a_address,
+        y_address,
+        plan.mt,
+        k_tiles,
+        n_tiles,
+        block(n_tiles),
+        w_cb,
+        epilogue,
+        held_buffers,
+        0,
     ]
 
 
-def flops(s):
+def loads(plan, w1, w3, w2):
+    """LOAD words of the three W (DRAM addresses) into their buffers."""
+    dimensions = ((plan.dt, plan.ht), (plan.dt, plan.ht), (plan.ht, plan.dt))
+    return [
+        [address, cb, 0, *shape]
+        for address, cb, shape in zip((w1, w3, w2), W_CBS, dimensions)
+    ]
+
+
+def commands(plan, x, y):
+    """The LAYER words of one call, x and y the DRAM input and output: three commands
+    (the gate fused into the second product) or four (a gate pass of its own)."""
+    (
+        model_tiles,
+        hidden_tiles,
+        (w1_buffer, w3_buffer, w2_buffer),
+        (hold0, hold1, hold2),
+    ) = (plan.dt, plan.ht, W_CBS, HOLDS)
+    if not plan.gate_pass:
+        return [
+            layer_args(
+                plan,
+                x,
+                0,
+                model_tiles,
+                hidden_tiles,
+                w1_buffer,
+                K["kEpSilu"],
+                where(y=hold0),
+            ),
+            layer_args(
+                plan,
+                x,
+                0,
+                model_tiles,
+                hidden_tiles,
+                w3_buffer,
+                K["kEpMul"],
+                where(b=hold0, y=hold1),
+            ),
+            layer_args(
+                plan,
+                0,
+                y,
+                hidden_tiles,
+                model_tiles,
+                w2_buffer,
+                K["kEpNone"],
+                where(a=hold1),
+            ),
+        ]
+    return [
+        layer_args(
+            plan,
+            x,
+            0,
+            model_tiles,
+            hidden_tiles,
+            w1_buffer,
+            K["kEpNone"],
+            where(y=hold0),
+        ),
+        layer_args(
+            plan,
+            x,
+            0,
+            model_tiles,
+            hidden_tiles,
+            w3_buffer,
+            K["kEpNone"],
+            where(y=hold1),
+        ),
+        layer_args(
+            plan,
+            0,
+            0,
+            hidden_tiles,
+            hidden_tiles,
+            0,
+            K["kEpGate"],
+            where(a=hold0, b=hold1, y=hold2),
+        ),
+        layer_args(
+            plan,
+            0,
+            y,
+            hidden_tiles,
+            model_tiles,
+            w2_buffer,
+            K["kEpNone"],
+            where(a=hold2),
+        ),
+    ]
+
+
+def flops(plan):
     """Floating-point operations of the three products of one call."""
-    return 3 * 2 * s.mt * s.dt * s.ht * TILE**3
+    return 3 * 2 * plan.mt * plan.dt * plan.ht * TILE**3

@@ -11,9 +11,9 @@ thread product(i):                             # one thread per core of the grou
     rows = partition(M tiles, group, i)             # space: the output rows this core owns
     for m in rows:                             # time: row tiles
         a = read_dram(A[m, :])                 # the whole row of A, one item
-        for j in blocks(N tiles, ct):          # time: column blocks of ct tiles
+        for j in blocks(N tiles, block_width): # time: column blocks of block_width tiles
             acc = 0                            # fp32, in DST
-            for k in chunks(K tiles, kc):      # time: K chunks
+            for k in chunks(K tiles, chunk_tiles): # time: K chunks
                 w = W_resident[k, j]           # resident form: W read once by LOAD
                   or read_dram(W[k, j])        # streamed form: every chunk from DRAM
                 acc += a[k] @ w
@@ -30,14 +30,14 @@ once per row tile it owns, which costs DRAM bandwidth whenever W is large.
 | Thread program | Kernel | What it does |
 |---|---|---|
 | `read_dram(A[m, :])`, `read_dram(W[k, j])` | `kernels/reader.cpp` (NoC0) | A's row (or K chunk) into `kCbA`, streamed W chunks into `kCbWs`; `LOAD` reads all of W into `kCbW` |
-| `acc += a[k] @ w` | `kernels/compute.cpp` | `matmul_block` over the chunk's K tiles, ct output tiles in DST |
+| `acc += a[k] @ w` | `kernels/compute.cpp` | `matmul_block` over the chunk's K tiles, block_width output tiles in DST |
 | `write Y[m, j]` | `kernels/writer.cpp` (NoC1) | the packed column block to Y's pages |
 
 | Handler | Arguments |
 |---|---|
-| `LOAD` | a0 W, a1 the W buffer, a3 K tiles, a4 N tiles |
-| `PRODUCT` | a0 A, a1 Y, a2 to a4 M, K, N tiles, a5 K chunk, a6 column block, a7 mode, a8 form, a9 W (streamed form) |
-| `PROF` | a0 the profile tensor: each core's profile page (cycles per unit, summed over the commands) |
+| `LOAD` | a0 w_address (W), a1 w_buffer (the W buffer), a3 k_tiles, a4 n_tiles |
+| `PRODUCT` | a0 a_address (A), a1 y_address (Y), a2 to a4 m_tiles, k_tiles, n_tiles, a5 chunk_tiles (K chunk), a6 block_width (column block), a7 mode, a8 form, a9 w_address (W, streamed form) |
+| `PROF` | a0 profile_address (the profile tensor): each core's profile page (cycles per unit, summed over the commands) |
 
 `PRODUCT` modes 1 and 2 are the cut-down runs: reads only (A read and popped, no
 product, no writes), and compute only (A taken from L1 as it is, no reads, packed but
@@ -57,9 +57,9 @@ the operands travel between cores instead of each core reading them from DRAM:
 ```
 thread product(y, x):                          # one thread per core of the rectangle
     band = output tiles [rows of band y, columns of band x]
-    for (r, c) in blocks(band, bm x bn):       # time: output blocks
+    for (r, c) in blocks(band, block_height x block_width): # time: output blocks
         acc = 0                                # fp32 partial sums in L1 (kCbPart)
-        for k in blocks(K tiles, kb):          # time: K blocks
+        for k in blocks(K tiles, k_block_tiles): # time: K blocks
             a = broadcast_row(y).take(A[r, k])      # the row's first core reads it from
                                                #   DRAM and hands it along the row
             w = broadcast_col(x).take(W[k, c])      # the column's bottom core reads it and
@@ -89,8 +89,8 @@ reloaded for the last K block; subblocks of up to 4 tiles).
 
 | Handler | Arguments |
 |---|---|
-| `GRID` | a0 A, a1 W, a2 Y, a3 mode: 0 full, 1 broadcasts only (blocks delivered and taken, no product, no writes), 2 product only (blocks from L1 as they are, no reads, no broadcasts, packed but not written) |
-| `GRID_PROF` | a0 the profile tensor |
+| `GRID` | a0 a_address (A), a1 w_address (W), a2 y_address (Y), a3 mode: 0 full, 1 broadcasts only (blocks delivered and taken, no product, no writes), 2 product only (blocks from L1 as they are, no reads, no broadcasts, packed but not written) |
+| `GRID_PROF` | a0 profile_address (the profile tensor) |
 
 ## The K split
 
@@ -100,9 +100,9 @@ cores on each output block and gives each core 1/S of K:
 
 ```
 thread part(g, d):                             # core d of group g, S cores to a group
-    block = output tiles of group g (oh x ow)
+    block = output tiles of group g (block_height x block_width)
     acc = 0                                    # fp32 in L1 (kCbSum)
-    for k in chunks(partition(K tiles, d, S), kc): # time: K chunks of this core's partition
+    for k in chunks(partition(K tiles, d, S), chunk_tiles): # time: K chunks of this partition
         acc += read_dram(A[block rows, k]) @ read_dram(W[k, block columns])
     acc = reduce(acc, group g)                 # owner: every core sends its part to
                                                #   core 0; tree: halves in log2 S rounds
@@ -119,7 +119,7 @@ the whole partition, at most 32 tiles) and `--reduce owner|tree`.
 
 | Handler | Arguments |
 |---|---|
-| `SPLIT` | a0 A, a1 W, a2 Y, a3 reduce (0 owner, 1 tree), a4 mode: 0 full, 1 parts only (each core's part packed and dropped: no reduce, no writes) |
+| `SPLIT` | a0 a_address (A), a1 w_address (W), a2 y_address (Y), a3 reduce_form (0 owner, 1 tree), a4 mode: 0 full, 1 parts only (each core's part packed and dropped: no reduce, no writes) |
 
 Measured on 2026-11-13 at 13:00 to 13:06 (X280 at 1,000 MHz, card clock 1,350 MHz
 throughout), each against Kohaku-TT's best route in the same session, every check

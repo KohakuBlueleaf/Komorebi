@@ -8,26 +8,28 @@
 
 namespace {
 
-    // Reads `rows` x `width` tiles of t from tile `first` (rows `stride` tiles apart)
-    // into the reserved item of cb, then pushes it. False: the reads gave up.
+    // Reads `rows` x `width` tiles of accessor from tile `first` (rows `stride` tiles
+    // apart) into the reserved item of cb, then pushes it. False: the reads gave up.
     template <typename Accessor>
     bool read_item(
-        const km::Reader& rd,
+        const km::Reader& reader,
         uint32_t cb,
-        const Accessor& t,
+        const Accessor& accessor,
         uint32_t first,
         uint32_t rows,
         uint32_t width,
         uint32_t stride
     ) {
-        uint32_t dst = get_write_ptr(cb);
-        for (uint32_t i = 0; i < rows; ++i) {
-            for (uint32_t j = 0; j < width; ++j) {
-                noc_async_read_page(first + i * stride + j, t, dst);
-                dst += kTileBytes;
+        uint32_t destination = get_write_ptr(cb);
+        for (uint32_t row = 0; row < rows; ++row) {
+            for (uint32_t column = 0; column < width; ++column) {
+                noc_async_read_page(
+                    first + row * stride + column, accessor, destination
+                );
+                destination += kTileBytes;
             }
         }
-        if (!flushed(rd, km::kStReader, km::kFlushReads)) {
+        if (!flushed(reader, km::kStReader, km::kFlushReads)) {
             return false;
         }
         cb_push_back(cb, rows * width);
@@ -37,115 +39,147 @@ namespace {
     // LAYER: A's row from DRAM per owned row when A is not held (B is always held).
     template <typename Accessor>
     void layer(
-        const km::Reader& rd,
-        const km_command_t& r,
-        const Accessor& a,
-        volatile tt_l1_ptr uint32_t* prof
+        const km::Reader& reader,
+        const km_command_t& command,
+        const Accessor& a_matrix,
+        volatile tt_l1_ptr uint32_t* profile
     ) {
-        if ((r.a8 & 0xFF) != kDram) {
+        if ((command.a8 & 0xFF) != kDram) {
             return;
         }
-        const km::Partition s = (
-            km::partition(r.a2, rd.me() - km::first(r), km::count(r))
+        const km::Partition owned_rows = (
+            km::partition(
+                command.a2, reader.me() - km::first(command), km::count(command)
+            )
         );
-        const uint32_t kt = r.a3;
-        uint32_t wait = 0, read = 0, n = 0;
-        for (uint32_t m = s.start; m < s.start + s.len; ++m) {
-            const uint32_t t1 = km::wall();
-            if (!rd.reserve(kCbA, kt)) {
+        const uint32_t k_tiles = command.a3;
+        uint32_t wait = 0, read = 0, tiles_read = 0;
+        for (
+            uint32_t row = owned_rows.start; row < owned_rows.start + owned_rows.len;
+            ++row
+        ) {
+            const uint32_t asked = km::wall();
+            if (!reader.reserve(kCbA, k_tiles)) {
                 return;
             }
-            const uint32_t t2 = km::wall();
-            if (!read_item(rd, kCbA, a, m * kt, 1, kt, 0)) {
+            const uint32_t reserved = km::wall();
+            if (!read_item(reader, kCbA, a_matrix, row * k_tiles, 1, k_tiles, 0)) {
                 return;
             }
-            wait += t2 - t1;
-            read += km::wall() - t2;
-            n += kt;
+            wait += reserved - asked;
+            read += km::wall() - reserved;
+            tiles_read += k_tiles;
         }
-        km::add_sat(prof + kPrRdWait, wait);
-        km::add_sat(prof + kPrRdRead, read);
-        km::add_sat(prof + kPrRdTiles, n);
+        km::add_sat(profile + kPrRdWait, wait);
+        km::add_sat(profile + kPrRdRead, read);
+        km::add_sat(profile + kPrRdTiles, tiles_read);
     }
 
 }  // namespace
 
 void kernel_main() {
-    constexpr auto tiles = TensorAccessorArgs<0>();  // every operand: bf16 tiles in DRAM
-    km::Reader rd;
-    volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbProf));
-    for (uint32_t w = 0; w < kProfWords; ++w) {
-        prof[w] = 0;
+    constexpr auto tile_args = TensorAccessorArgs<0>();  // every operand: bf16 tiles in DRAM
+    km::Reader reader;
+    volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbProf));
+    for (uint32_t word = 0; word < kProfWords; ++word) {
+        profile[word] = 0;
     }
-    rd.run([&](const km_command_t& r) {
-        const uint32_t t0 = km::wall();
-        const uint32_t kt = r.a3, nt = r.a4;
-        if (km::handler(r) == kHandlerLoad) {
-            if (!rd.reserve(r.a1, kt * nt)) {
+    reader.run([&](const km_command_t& command) {
+        const uint32_t started = km::wall();
+        const uint32_t k_tiles = command.a3, n_tiles = command.a4;
+        if (km::handler(command) == kHandlerLoad) {
+            const uint32_t w_address = command.a0, w_buffer = command.a1;
+            if (!reader.reserve(w_buffer, k_tiles * n_tiles)) {
                 return;
             }
-            const auto w = TensorAccessor(tiles, r.a0);
-            if (read_item(rd, r.a1, w, 0, 1, kt * nt, 0) && rd.reserve(kCbLoaded, 1)) {
+            const auto w_matrix = TensorAccessor(tile_args, w_address);
+            if (
+                read_item(reader, w_buffer, w_matrix, 0, 1, k_tiles * n_tiles, 0) &&
+                reader.reserve(kCbLoaded, 1)
+            ) {
                 cb_push_back(kCbLoaded, 1);
             }
             return;
         }
-        if (km::handler(r) == kHandlerLayer) {
-            layer(rd, r, TensorAccessor(tiles, r.a0), prof);
-            km::add_sat(prof + kPrRdBody, km::wall() - t0);
+        if (km::handler(command) == kHandlerLayer) {
+            const uint32_t a_address = command.a0;
+            layer(reader, command, TensorAccessor(tile_args, a_address), profile);
+            km::add_sat(profile + kPrRdBody, km::wall() - started);
             return;
         }
-        if (km::handler(r) != kHandlerProduct || r.a7 == kModeComputeOnly) {
+        const uint32_t mode = command.a7;
+        if (km::handler(command) != kHandlerProduct || mode == kModeComputeOnly) {
             return;
         }
-        const km::Partition s = (
-            km::partition(r.a2, rd.me() - km::first(r), km::count(r))
+        const uint32_t a_address = command.a0, m_tiles = command.a2;
+        const uint32_t chunk_tiles = command.a5, block_width = command.a6;
+        const uint32_t form = command.a8, w_address = command.a9;
+        const km::Partition owned_rows = (
+            km::partition(m_tiles, reader.me() - km::first(command), km::count(command))
         );
-        const uint32_t kc = r.a5, ct = r.a6;
-        const auto a = TensorAccessor(tiles, r.a0);
-        const auto w = TensorAccessor(tiles, r.a9);
-        const bool stream = r.a8 == kFormStream;
+        const auto a_matrix = TensorAccessor(tile_args, a_address);
+        const auto w_matrix = TensorAccessor(tile_args, w_address);
+        const bool stream = form == kFormStream;
         // The row is one item when it is one chunk or when W is streamed.
-        const bool row_item = stream || kc == kt;
-        uint32_t wait = 0, read = 0, ws_wait = 0, ws_read = 0, n = 0;
-        for (uint32_t m = s.start; m < s.start + s.len; ++m) {
-            for (uint32_t j0 = 0; j0 < nt; j0 += ct) {
-                for (uint32_t k0 = 0; k0 < kt; k0 += kc) {
-                    if (!row_item || (j0 == 0 && k0 == 0)) {
-                        const uint32_t len = row_item ? kt : kc;
-                        const uint32_t t1 = km::wall();
-                        if (!rd.reserve(kCbA, len)) {
+        const bool row_item = stream || chunk_tiles == k_tiles;
+        uint32_t wait = 0, read = 0, stream_wait = 0, stream_read = 0, tiles_read = 0;
+        for (
+            uint32_t row = owned_rows.start; row < owned_rows.start + owned_rows.len;
+            ++row
+        ) {
+            for (uint32_t column = 0; column < n_tiles; column += block_width) {
+                for (uint32_t chunk = 0; chunk < k_tiles; chunk += chunk_tiles) {
+                    if (!row_item || (column == 0 && chunk == 0)) {
+                        const uint32_t length = row_item ? k_tiles : chunk_tiles;
+                        const uint32_t asked = km::wall();
+                        if (!reader.reserve(kCbA, length)) {
                             return;
                         }
-                        const uint32_t t2 = km::wall();
-                        if (!read_item(rd, kCbA, a, m * kt + k0, 1, len, 0)) {
+                        const uint32_t reserved = km::wall();
+                        if (!read_item(
+                            reader,
+                            kCbA,
+                            a_matrix,
+                            row * k_tiles + chunk,
+                            1,
+                            length,
+                            0
+                        )) {
                             return;
                         }
-                        wait += t2 - t1;
-                        read += km::wall() - t2;
-                        n += len;
+                        wait += reserved - asked;
+                        read += km::wall() - reserved;
+                        tiles_read += length;
                     }
                     if (stream) {
-                        const uint32_t t1 = km::wall();
-                        if (!rd.reserve(kCbWs, kc * ct)) {
+                        const uint32_t asked = km::wall();
+                        if (!reader.reserve(kCbWs, chunk_tiles * block_width)) {
                             return;
                         }
-                        const uint32_t t2 = km::wall();
-                        if (!read_item(rd, kCbWs, w, k0 * nt + j0, kc, ct, nt)) {
+                        const uint32_t reserved = km::wall();
+                        if (!read_item(
+                            reader,
+                            kCbWs,
+                            w_matrix,
+                            chunk * n_tiles + column,
+                            chunk_tiles,
+                            block_width,
+                            n_tiles
+                        )) {
                             return;
                         }
-                        ws_wait += t2 - t1;
-                        ws_read += km::wall() - t2;
-                        n += kc * ct;
+                        stream_wait += reserved - asked;
+                        stream_read += km::wall() - reserved;
+                        tiles_read += chunk_tiles * block_width;
                     }
                 }
             }
         }
-        km::add_sat(prof + kPrRdWait, wait);
-        km::add_sat(prof + kPrRdRead, read);
-        km::add_sat(prof + kPrRdWsWait, ws_wait);
-        km::add_sat(prof + kPrRdWsRead, ws_read);
-        km::add_sat(prof + kPrRdTiles, n);
-        km::add_sat(prof + kPrRdBody, km::wall() - t0);
+        km::add_sat(profile + kPrRdWait, wait);
+        km::add_sat(profile + kPrRdRead, read);
+        km::add_sat(profile + kPrRdWsWait, stream_wait);
+        km::add_sat(profile + kPrRdWsRead, stream_read);
+        km::add_sat(profile + kPrRdTiles, tiles_read);
+        km::add_sat(profile + kPrRdBody, km::wall() - started);
     });
 }

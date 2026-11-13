@@ -12,140 +12,191 @@ void kernel_main() {
     constexpr auto y_args = (
         TensorAccessorArgs<w_args.next_compile_time_args_offset()>()
     );
-    km::Writer wr;
-    volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbGridProf));
-    const auto core = [&](uint32_t i) {
-        return wr.arg(kArgCore + i);
+    km::Writer writer;
+    volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbGridProf));
+    const auto core = [&](uint32_t word) {
+        return writer.arg(kArgCore + word);
     };
-    const auto plan = [&](uint32_t i) {
-        return core(kCorePlan + i);
+    const auto plan = [&](uint32_t word) {
+        return core(kCorePlan + word);
     };
-    wr.run([&](const km_command_t& r) {
-        if (km::handler(r) == kHandlerGridProf) {
+    writer.run([&](const km_command_t& command) {
+        if (km::handler(command) == kHandlerGridProf) {
+            const uint32_t profile_address = command.a0;
             const InterleavedAddrGen<true> pages = {
-                .bank_base_address = r.a0, .page_size = kProfBytes
+                .bank_base_address = profile_address, .page_size = kProfBytes
             };
             noc_async_write(
-                get_write_ptr(kCbGridProf), get_noc_addr(wr.me(), pages), kProfBytes
+                get_write_ptr(kCbGridProf), get_noc_addr(writer.me(), pages), kProfBytes
             );
-            return flushed(wr, km::kStWriter, km::kFlushSent);
+            return flushed(writer, km::kStWriter, km::kFlushSent);
         }
-        if (km::handler(r) != kHandlerGrid) {
+        if (km::handler(command) != kHandlerGrid) {
             return true;
         }
-        const uint32_t t0 = km::wall();
-        const bool broadcasts = r.a3 != kGridProduct;
-        const bool store = r.a3 == kGridFull;
-        km::Broadcast ln(wr, r, kArgBroadcast);
-        if (!ln.ok()) {
+        const uint32_t started = km::wall();
+        const uint32_t w_address = command.a1, y_address = command.a2;
+        const uint32_t mode = command.a3;
+        const bool broadcasts = mode != kGridProduct;
+        const bool store = mode == kGridFull;
+        km::Broadcast broadcast(writer, command, kArgBroadcast);
+        if (!broadcast.ok()) {
             return false;
         }
         if (core(kCoreRank) == 0) {
             return true;
         }
-        const uint32_t mt = plan(kPlMt), kt = plan(kPlKt), nt = plan(kPlNt);
-        const uint32_t bm = plan(kPlBm), bn = plan(kPlBn), kb = plan(kPlKb);
-        const uint32_t nk = plan(kPlNk), nbh = plan(kPlNbh), nbw = plan(kPlNbw);
-        const uint32_t sh = plan(kPlSh), sw = plan(kPlSw), sub = sh * sw;
-        const uint32_t m0 = core(kCoreM0), n0 = core(kCoreN0);
-        const uint32_t m_end = m0 + plan(kPlPcM) < mt ? m0 + plan(kPlPcM) : mt;
-        const uint32_t n_end = n0 + plan(kPlPcN) < nt ? n0 + plan(kPlPcN) : nt;
-        const auto w = TensorAccessor(w_args, r.a1);
-        const auto y = TensorAccessor(y_args, r.a2);
-        uint32_t read = 0, broadcast = 0, wait = 0, write = 0;
+        const uint32_t m_tiles = plan(kPlMt);
+        const uint32_t k_tiles = plan(kPlKt);
+        const uint32_t n_tiles = plan(kPlNt);
+        const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
+        const uint32_t k_block_tiles = plan(kPlKb);
+        const uint32_t k_blocks = plan(kPlNk), blocks_high = plan(kPlNbh);
+        const uint32_t blocks_wide = plan(kPlNbw);
+        const uint32_t subblock_height = plan(kPlSh), subblock_width = plan(kPlSw);
+        const uint32_t subblock_tiles = subblock_height * subblock_width;
+        const uint32_t first_row = core(kCoreM0), first_column = core(kCoreN0);
+        const uint32_t row_end = (
+            first_row + plan(kPlPcM) < m_tiles ? first_row + plan(kPlPcM) : m_tiles
+        );
+        const uint32_t column_end = (
+            first_column + plan(kPlPcN) < n_tiles
+                ? first_column + plan(kPlPcN)
+                : n_tiles
+        );
+        const auto w_matrix = TensorAccessor(w_args, w_address);
+        const auto y_matrix = TensorAccessor(y_args, y_address);
+        uint32_t read = 0, broadcast_cycles = 0, wait = 0, write = 0;
 
-        // Output block (r0, c0) from kCbGridOut, sh x sw subblocks in compute's order.
-        const auto put = [&](uint32_t r0, uint32_t c0) {
-            for (uint32_t i = 0; i < bm; i += sh) {
-                for (uint32_t j = 0; j < bn; j += sw) {
-                    const uint32_t t1 = km::wall();
-                    if (!wr.wait_front(kCbGridOut, sub)) {
+        // Output block (block_row, block_column) from kCbGridOut, subblocks of
+        // subblock_height x subblock_width tiles in compute's order.
+        const auto put = [&](uint32_t block_row, uint32_t block_column) {
+            for (
+                uint32_t subblock_row = 0; subblock_row < block_height;
+                subblock_row += subblock_height
+            ) {
+                for (
+                    uint32_t subblock_column = 0; subblock_column < block_width;
+                    subblock_column += subblock_width
+                ) {
+                    const uint32_t asked = km::wall();
+                    if (!writer.wait_front(kCbGridOut, subblock_tiles)) {
                         return false;
                     }
-                    const uint32_t t2 = km::wall();
-                    uint32_t src = get_read_ptr(kCbGridOut);
-                    for (uint32_t a = 0; a < sh; ++a) {
-                        for (uint32_t b = 0; b < sw; ++b) {
-                            const uint32_t row = r0 + i + a, col = c0 + j + b;
-                            if (store && row < m_end && col < n_end) {
-                                noc_async_write_page(row * nt + col, y, src);
+                    const uint32_t ready = km::wall();
+                    uint32_t source = get_read_ptr(kCbGridOut);
+                    for (
+                        uint32_t tile_row = 0; tile_row < subblock_height; ++tile_row
+                    ) {
+                        for (
+                            uint32_t tile_column = 0; tile_column < subblock_width;
+                            ++tile_column
+                        ) {
+                            const uint32_t row = block_row + subblock_row + tile_row;
+                            const uint32_t column = (
+                                block_column + subblock_column + tile_column
+                            );
+                            if (store && row < row_end && column < column_end) {
+                                noc_async_write_page(
+                                    row * n_tiles + column, y_matrix, source
+                                );
                             }
-                            src += kTileBytes;
+                            source += kTileBytes;
                         }
                     }
-                    if (!flushed(wr, km::kStWriter, km::kFlushSent)) {
+                    if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                         return false;
                     }
-                    cb_pop_front(kCbGridOut, sub);
-                    wait += t2 - t1;
-                    write += km::wall() - t2;
+                    cb_pop_front(kCbGridOut, subblock_tiles);
+                    wait += ready - asked;
+                    write += km::wall() - ready;
                 }
             }
             return true;
         };
 
         bool pending = false;
-        uint32_t pr0 = 0, pc0 = 0, k = 0;
-        for (uint32_t blk = 0; blk < nbh * nbw; ++blk) {
-            const uint32_t r0 = m0 + blk / nbw * bm, c0 = n0 + blk % nbw * bn;
-            for (uint32_t kblk = 0; broadcasts && kblk < nk; ++kblk, ++k) {
-                const uint32_t t1 = km::wall();
-                if (!ln.sender()) {
-                    if (!ln.arrive(k)) {
+        uint32_t pending_row = 0, pending_column = 0, step = 0;
+        for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
+            const uint32_t block_row = first_row + block / blocks_wide * block_height;
+            const uint32_t block_column = (
+                first_column + block % blocks_wide * block_width
+            );
+            for (
+                uint32_t k_block = 0; broadcasts && k_block < k_blocks;
+                ++k_block, ++step
+            ) {
+                const uint32_t step_started = km::wall();
+                if (!broadcast.sender()) {
+                    if (!broadcast.arrive(step)) {
                         return false;
                     }
-                    broadcast += km::wall() - t1;
+                    broadcast_cycles += km::wall() - step_started;
                 } else {
-                    const uint32_t base = ln.reserve(k);
+                    const uint32_t base = broadcast.reserve(step);
                     if (base == 0) {
                         return false;
                     }
-                    const uint32_t t2 = km::wall();
-                    const uint32_t k0 = kblk * kb;
-                    const uint32_t kc = kt - k0 < kb ? kt - k0 : kb;
-                    for (uint32_t i = 0; i < kc; ++i) {
-                        const uint32_t page = (k0 + i) * nt + c0;
-                        for (uint32_t j = 0; j < bn && c0 + j < nt; ++j) {
+                    const uint32_t reserved = km::wall();
+                    const uint32_t k_start = k_block * k_block_tiles;
+                    const uint32_t k_length = (
+                        k_tiles - k_start < k_block_tiles
+                            ? k_tiles - k_start
+                            : k_block_tiles
+                    );
+                    for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
+                        const uint32_t page = (
+                            (k_start + k_tile) * n_tiles + block_column
+                        );
+                        for (
+                            uint32_t column = 0;
+                            column < block_width && block_column + column < n_tiles;
+                            ++column
+                        ) {
                             noc_async_read_page(
-                                page + j, w, base + (i * bn + j) * kTileBytes
+                                page + column,
+                                w_matrix,
+                                base + (k_tile * block_width + column) * kTileBytes
                             );
                         }
                     }
-                    if (!flushed(wr, km::kStWriter, km::kFlushReads)) {
+                    if (!flushed(writer, km::kStWriter, km::kFlushReads)) {
                         return false;
                     }
-                    const uint32_t t3 = km::wall();
-                    if (!ln.cast(k)) {
+                    const uint32_t read_done = km::wall();
+                    if (!broadcast.cast(step)) {
                         return false;
                     }
-                    read += t3 - t2;
-                    broadcast += t2 - t1 + km::wall() - t3;
+                    read += read_done - reserved;
+                    broadcast_cycles += (
+                        reserved - step_started + km::wall() - read_done
+                    );
                 }
-                if (kblk == 0 && pending) {
-                    if (!put(pr0, pc0)) {
+                if (k_block == 0 && pending) {
+                    if (!put(pending_row, pending_column)) {
                         return false;
                     }
                     pending = false;
                 }
             }
-            if (!broadcasts && pending && !put(pr0, pc0)) {
+            if (!broadcasts && pending && !put(pending_row, pending_column)) {
                 return false;
             }
-            pending = r.a3 != kGridBroadcasts;
-            pr0 = r0;
-            pc0 = c0;
+            pending = mode != kGridBroadcasts;
+            pending_row = block_row;
+            pending_column = block_column;
         }
-        if (pending && !put(pr0, pc0)) {
+        if (pending && !put(pending_row, pending_column)) {
             return false;
         }
-        if (broadcasts && !ln.finish()) {
+        if (broadcasts && !broadcast.finish()) {
             return false;
         }
-        km::add_sat(prof + kGpWrRead, read);
-        km::add_sat(prof + kGpWrBroadcast, broadcast);
-        km::add_sat(prof + kGpWrWait, wait);
-        km::add_sat(prof + kGpWrWrite, write);
-        km::add_sat(prof + kGpWrBody, km::wall() - t0);
+        km::add_sat(profile + kGpWrRead, read);
+        km::add_sat(profile + kGpWrBroadcast, broadcast_cycles);
+        km::add_sat(profile + kGpWrWait, wait);
+        km::add_sat(profile + kGpWrWrite, write);
+        km::add_sat(profile + kGpWrBody, km::wall() - started);
         return true;
     });
 }

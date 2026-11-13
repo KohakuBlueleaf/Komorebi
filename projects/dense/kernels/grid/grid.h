@@ -7,9 +7,11 @@
 
 #include "../dense.h"
 
-// GRID: a0 A ([M, K] tiles), a1 W ([K, N]), a2 Y ([M, N]), a3 mode. One call.
+// GRID: a0 a_address (A, [M, K] tiles), a1 w_address (W, [K, N]), a2 y_address (Y,
+// [M, N]), a3 mode. One call.
 constexpr uint32_t kHandlerGrid = 1;
-// PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
+// PROF: a0 profile_address (the profile tensor); the writer stores this core's profile
+// page at page `me`.
 constexpr uint32_t kHandlerGridProf = 2;
 
 // GRID modes: full; broadcasts only (blocks delivered and taken, no product, no

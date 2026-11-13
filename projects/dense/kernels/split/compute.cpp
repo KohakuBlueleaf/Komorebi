@@ -15,90 +15,131 @@
 
 namespace {
 
-    // Tile `page` of fp32 buffer `from` into tile `to` of buffer `cb` (accumulated when
-    // the packer's L1 accumulation is on), through DST 0.
-    void move_tile(uint32_t from, uint32_t page, uint32_t cb, uint32_t to) {
+    // Tile `page` of fp32 buffer `source_buffer` into tile `target_tile` of buffer `cb`
+    // (accumulated when the packer's L1 accumulation is on), through DST 0.
+    void move_tile(
+        uint32_t source_buffer, uint32_t page, uint32_t cb, uint32_t target_tile
+    ) {
         tile_regs_acquire();
-        copy_tile(from, page, 0);
+        copy_tile(source_buffer, page, 0);
         tile_regs_commit();
         tile_regs_wait();
-        pack_tile<true>(0, cb, to);
+        pack_tile<true>(0, cb, target_tile);
         tile_regs_release();
     }
 
 }  // namespace
 
 void kernel_main() {
-    km::Compute cp;
-    const auto plan = [&](uint32_t i) {
-        return cp.arg(i);
+    km::Compute compute;
+    const auto plan = [&](uint32_t word) {
+        return compute.arg(word);
     };
-    const uint32_t kt = plan(kSpKt), oh = plan(kSpOh), ow = plan(kSpOw);
-    const uint32_t kc = plan(kSpKc), sh = plan(kSpSh), sw = plan(kSpSw), s = plan(kSpS);
-    const uint32_t p = oh * ow;
+    const uint32_t k_tiles = plan(kSpKt), block_height = plan(kSpOh);
+    const uint32_t block_width = plan(kSpOw);
+    const uint32_t chunk_tiles = plan(kSpKc), subblock_height = plan(kSpSh);
+    const uint32_t subblock_width = plan(kSpSw), group_size = plan(kSpS);
+    const uint32_t block_tiles = block_height * block_width;
     compute_kernel_hw_startup<SrcOrder::Reverse>(kCbSa, kCbSw, kCbSum);
-    cp.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerSplit) {
+    compute.run([&](const km_command_t& command) {
+        if (km::handler(command) != kHandlerSplit) {
             return;
         }
-        const km::Group g = km::digit_group(r, cp.me(), 1, s);
-        const km::Partition part = km::partition(kt, g.rank, g.size);
-        const km::Arrival arrival = {kCbArrive, plan(kSpArrive), p};
-        const bool full = r.a4 == kSplitFull;
-        const bool room = cp.reserve_back(kCbSum, p);
+        const uint32_t reduce_form = command.a3, mode = command.a4;
+        const km::Group group = km::digit_group(command, compute.me(), 1, group_size);
+        const km::Partition k_part = km::partition(k_tiles, group.rank, group.size);
+        const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
+        const bool full = mode == kSplitFull;
+        const bool room = compute.reserve_back(kCbSum, block_tiles);
         bool ok = true;  // the same on all three threads (wait_front tells them)
-        matmul_block_init(kCbSa, kCbSw, 0, sw, sh, kc);
+        matmul_block_init(
+            kCbSa, kCbSw, 0, subblock_width, subblock_height, chunk_tiles
+        );
         pack_reconfig_data_format(kCbSum);
-        for (uint32_t k0 = 0; ok && k0 < part.len; k0 += kc) {
-            const uint32_t n = part.len - k0 < kc ? part.len - k0 : kc;
-            ok = cp.wait_front(kCbSa, oh * kc) && cp.wait_front(kCbSw, kc * ow);
+        for (uint32_t offset = 0; ok && offset < k_part.len; offset += chunk_tiles) {
+            const uint32_t chunk_length = (
+                k_part.len - offset < chunk_tiles ? k_part.len - offset : chunk_tiles
+            );
+            ok = (
+                compute.wait_front(kCbSa, block_height * chunk_tiles) &&
+                compute.wait_front(kCbSw, chunk_tiles * block_width)
+            );
             if (!ok) {
                 break;
             }
-            pack_reconfig_l1_acc(k0 > 0 ? 1 : 0);
-            for (uint32_t i = 0; i < oh; i += sh) {
-                for (uint32_t j = 0; j < ow; j += sw) {
+            pack_reconfig_l1_acc(offset > 0 ? 1 : 0);
+            for (
+                uint32_t subblock_row = 0; subblock_row < block_height;
+                subblock_row += subblock_height
+            ) {
+                for (
+                    uint32_t subblock_column = 0; subblock_column < block_width;
+                    subblock_column += subblock_width
+                ) {
                     tile_regs_acquire();
-                    for (uint32_t k = 0; k < n; ++k) {
+                    for (uint32_t k_tile = 0; k_tile < chunk_length; ++k_tile) {
                         matmul_block(
-                            kCbSa, kCbSw, i * kc + k, k * ow + j, 0, 0, sw, sh, kc
+                            kCbSa,
+                            kCbSw,
+                            subblock_row * chunk_tiles + k_tile,
+                            k_tile * block_width + subblock_column,
+                            0,
+                            0,
+                            subblock_width,
+                            subblock_height,
+                            chunk_tiles
                         );
                     }
                     tile_regs_commit();
                     tile_regs_wait();
-                    for (uint32_t a = 0; room && a < sh; ++a) {
-                        for (uint32_t b = 0; b < sw; ++b) {
-                            pack_tile<true>(a * sw + b, kCbSum, (i + a) * ow + j + b);
+                    for (
+                        uint32_t tile_row = 0; room && tile_row < subblock_height;
+                        ++tile_row
+                    ) {
+                        for (
+                            uint32_t tile_column = 0; tile_column < subblock_width;
+                            ++tile_column
+                        ) {
+                            pack_tile<true>(
+                                tile_row * subblock_width + tile_column,
+                                kCbSum,
+                                (subblock_row + tile_row) * block_width +
+                                    subblock_column + tile_column
+                            );
                         }
                     }
                     tile_regs_release();
                 }
             }
-            cb_pop_front(kCbSa, oh * kc);
-            cb_pop_front(kCbSw, kc * ow);
+            cb_pop_front(kCbSa, block_height * chunk_tiles);
+            cb_pop_front(kCbSw, chunk_tiles * block_width);
         }
         reconfig_data_format_srca(kCbSw, kCbArrive);
         copy_init(kCbArrive);
         if (ok && full) {
             pack_reconfig_l1_acc(1);
-            ok = km::reduce(cp, arrival, g, r.a3, [&](uint32_t k) {
-                for (uint32_t d = 0; d < p; ++d) {
-                    move_tile(kCbArrive, km::slot_page(arrival, k) + d, kCbSum, d);
+            ok = km::reduce(compute, arrival, group, reduce_form, [&](uint32_t slot) {
+                for (uint32_t tile = 0; tile < block_tiles; ++tile) {
+                    move_tile(
+                        kCbArrive, km::slot_page(arrival, slot) + tile, kCbSum, tile
+                    );
                 }
             });
         }
         pack_reconfig_l1_acc(0);
         if (ok && full && room) {
-            cb_push_back(kCbSum, p);
+            cb_push_back(kCbSum, block_tiles);
         }
-        if (ok && full && g.rank == 0) {  // the group's sum, in bf16, for the writer
-            ok = cp.wait_front(kCbSum, p);
-            const bool out = cp.reserve_back(kCbSplitOut, p);
+        if (
+            ok && full && group.rank == 0
+        ) {  // the group's sum, in bf16, for the writer
+            ok = compute.wait_front(kCbSum, block_tiles);
+            const bool out = compute.reserve_back(kCbSplitOut, block_tiles);
             pack_reconfig_data_format(kCbSplitOut);
             copy_init(kCbSum);
-            for (uint32_t d = 0; ok && d < p; ++d) {
+            for (uint32_t tile = 0; ok && tile < block_tiles; ++tile) {
                 tile_regs_acquire();
-                copy_tile(kCbSum, d, 0);
+                copy_tile(kCbSum, tile, 0);
                 tile_regs_commit();
                 tile_regs_wait();
                 if (out) {
@@ -107,10 +148,10 @@ void kernel_main() {
                 tile_regs_release();
             }
             if (ok && out) {
-                cb_push_back(kCbSplitOut, p);
+                cb_push_back(kCbSplitOut, block_tiles);
             }
             if (ok) {
-                cb_pop_front(kCbSum, p);
+                cb_pop_front(kCbSum, block_tiles);
             }
         }
         reconfig_data_format_srca(kCbArrive, kCbSw);

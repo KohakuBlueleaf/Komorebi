@@ -39,7 +39,7 @@ x W3 held, then silu(a) * b, then the output product).
 
 | Handler | Arguments |
 |---|---|
-| `LAYER` | a0 A (x in DRAM), a1 Y, a2 M tiles, a3 K tiles (at most 32), a4 N tiles, a5 column block, a6 the W buffer (0: the gate pass), a7 the epilogue (none, silu, times B, the gate), a8 where A, B and Y live (`A \| B << 8 \| Y << 16`, a held buffer or `kDram`) |
+| `LAYER` | a0 a_address (A, x in DRAM), a1 y_address (Y), a2 m_tiles, a3 k_tiles (at most 32), a4 n_tiles, a5 block_width (column block), a6 w_buffer (0: the gate pass), a7 epilogue (none, silu, times B, the gate), a8 held_buffers: where A, B and Y live (`A \| B << 8 \| Y << 16`, a held buffer or `kDram`) |
 
 `LOAD` and `PROF` are the matrix product's. Profile words are summed over all commands;
 `LAYER` adds the epilogue's time (`kPrMathEp`).

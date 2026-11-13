@@ -9,74 +9,87 @@
 
 void kernel_main() {
     constexpr auto a_args = TensorAccessorArgs<0>();
-    km::Reader rd;
-    volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbGridProf));
-    for (uint32_t w = 0; w < kGpWords; ++w) {
-        prof[w] = 0;
+    km::Reader reader;
+    volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbGridProf));
+    for (uint32_t word = 0; word < kGpWords; ++word) {
+        profile[word] = 0;
     }
-    const auto core = [&](uint32_t i) {
-        return rd.arg(kArgCore + i);
+    const auto core = [&](uint32_t word) {
+        return reader.arg(kArgCore + word);
     };
-    const auto plan = [&](uint32_t i) {
-        return core(kCorePlan + i);
+    const auto plan = [&](uint32_t word) {
+        return core(kCorePlan + word);
     };
-    rd.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerGrid || r.a3 == kGridProduct) {
+    reader.run([&](const km_command_t& command) {
+        const uint32_t mode = command.a3;
+        if (km::handler(command) != kHandlerGrid || mode == kGridProduct) {
             return;
         }
-        const uint32_t t0 = km::wall();
-        km::Broadcast ln(rd, r, kArgBroadcast);
-        if (!ln.ok() || !ln.included()) {
+        const uint32_t started = km::wall();
+        km::Broadcast broadcast(reader, command, kArgBroadcast);
+        if (!broadcast.ok() || !broadcast.included()) {
             return;
         }
-        const uint32_t mt = plan(kPlMt), kt = plan(kPlKt), bm = plan(kPlBm);
-        const uint32_t kb = plan(kPlKb), nk = plan(kPlNk);
-        const uint32_t nbh = plan(kPlNbh), nbw = plan(kPlNbw);
-        const uint32_t m0 = core(kCoreM0);
-        const auto a = TensorAccessor(a_args, r.a0);
-        uint32_t read = 0, broadcast = 0, k = 0;
-        for (uint32_t blk = 0; blk < nbh * nbw; ++blk) {
-            const uint32_t r0 = m0 + blk / nbw * bm;
-            for (uint32_t kblk = 0; kblk < nk; ++kblk, ++k) {
-                const uint32_t t1 = km::wall();
-                if (!ln.sender()) {
-                    if (!ln.arrive(k)) {
+        const uint32_t a_address = command.a0;
+        const uint32_t m_tiles = plan(kPlMt), k_tiles = plan(kPlKt);
+        const uint32_t block_height = plan(kPlBm);
+        const uint32_t k_block_tiles = plan(kPlKb), k_blocks = plan(kPlNk);
+        const uint32_t blocks_high = plan(kPlNbh), blocks_wide = plan(kPlNbw);
+        const uint32_t first_row = core(kCoreM0);
+        const auto a_matrix = TensorAccessor(a_args, a_address);
+        uint32_t read = 0, broadcast_cycles = 0, step = 0;
+        for (uint32_t block = 0; block < blocks_high * blocks_wide; ++block) {
+            const uint32_t block_row = first_row + block / blocks_wide * block_height;
+            for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
+                const uint32_t step_started = km::wall();
+                if (!broadcast.sender()) {
+                    if (!broadcast.arrive(step)) {
                         return;
                     }
-                    broadcast += km::wall() - t1;
+                    broadcast_cycles += km::wall() - step_started;
                     continue;
                 }
-                const uint32_t base = ln.reserve(k);
+                const uint32_t base = broadcast.reserve(step);
                 if (base == 0) {
                     return;
                 }
-                const uint32_t t2 = km::wall();
-                const uint32_t k0 = kblk * kb;
-                const uint32_t kc = kt - k0 < kb ? kt - k0 : kb;
-                for (uint32_t i = 0; i < bm && r0 + i < mt; ++i) {
-                    const uint32_t page = (r0 + i) * kt + k0;
-                    for (uint32_t j = 0; j < kc; ++j) {
+                const uint32_t reserved = km::wall();
+                const uint32_t k_start = k_block * k_block_tiles;
+                const uint32_t k_length = (
+                    k_tiles - k_start < k_block_tiles
+                        ? k_tiles - k_start
+                        : k_block_tiles
+                );
+                for (
+                    uint32_t tile_row = 0;
+                    tile_row < block_height && block_row + tile_row < m_tiles;
+                    ++tile_row
+                ) {
+                    const uint32_t page = (block_row + tile_row) * k_tiles + k_start;
+                    for (uint32_t k_tile = 0; k_tile < k_length; ++k_tile) {
                         noc_async_read_page(
-                            page + j, a, base + (i * kb + j) * kTileBytes
+                            page + k_tile,
+                            a_matrix,
+                            base + (tile_row * k_block_tiles + k_tile) * kTileBytes
                         );
                     }
                 }
-                if (!flushed(rd, km::kStReader, km::kFlushReads)) {
+                if (!flushed(reader, km::kStReader, km::kFlushReads)) {
                     return;
                 }
-                const uint32_t t3 = km::wall();
-                if (!ln.cast(k)) {
+                const uint32_t read_done = km::wall();
+                if (!broadcast.cast(step)) {
                     return;
                 }
-                read += t3 - t2;
-                broadcast += t2 - t1 + km::wall() - t3;
+                read += read_done - reserved;
+                broadcast_cycles += reserved - step_started + km::wall() - read_done;
             }
         }
-        if (!ln.finish()) {
+        if (!broadcast.finish()) {
             return;
         }
-        km::add_sat(prof + kGpRdRead, read);
-        km::add_sat(prof + kGpRdBroadcast, broadcast);
-        km::add_sat(prof + kGpRdBody, km::wall() - t0);
+        km::add_sat(profile + kGpRdRead, read);
+        km::add_sat(profile + kGpRdBroadcast, broadcast_cycles);
+        km::add_sat(profile + kGpRdBody, km::wall() - started);
     });
 }

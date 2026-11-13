@@ -8,40 +8,58 @@
 
 void kernel_main() {
     constexpr auto y_args = TensorAccessorArgs<0>();
-    km::Writer wr;
-    const auto plan = [&](uint32_t i) {
-        return wr.arg(i);
+    km::Writer writer;
+    const auto plan = [&](uint32_t word) {
+        return writer.arg(word);
     };
-    wr.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerSplit || r.a4 != kSplitFull) {
+    writer.run([&](const km_command_t& command) {
+        const uint32_t y_address = command.a2, reduce_form = command.a3;
+        const uint32_t mode = command.a4;
+        if (km::handler(command) != kHandlerSplit || mode != kSplitFull) {
             return true;
         }
-        const uint32_t mt = plan(kSpMt), nt = plan(kSpNt);
-        const uint32_t oh = plan(kSpOh), ow = plan(kSpOw), p = oh * ow;
-        const uint32_t nbw = plan(kSpNbw), s = plan(kSpS);
-        const km::Group g = km::digit_group(r, wr.me(), 1, s);
-        const km::Arrival arrival = {kCbArrive, plan(kSpArrive), p};
-        if (g.rank != 0) {
-            return km::reduce_emit(wr, r, arrival, g, r.a3, kCbSum, p);
+        const uint32_t m_tiles = plan(kSpMt), n_tiles = plan(kSpNt);
+        const uint32_t block_height = plan(kSpOh), block_width = plan(kSpOw);
+        const uint32_t block_tiles = block_height * block_width;
+        const uint32_t blocks_per_row = plan(kSpNbw), group_size = plan(kSpS);
+        const km::Group group = km::digit_group(command, writer.me(), 1, group_size);
+        const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
+        if (group.rank != 0) {
+            return (
+                km::reduce_emit(
+                    writer, command, arrival, group, reduce_form, kCbSum, block_tiles
+                )
+            );
         }
-        if (!km::reduce_result(wr, kCbSplitOut, p)) {
+        if (!km::reduce_result(writer, kCbSplitOut, block_tiles)) {
             return false;
         }
-        const uint32_t q = (wr.me() - km::first(r)) / s;
-        const uint32_t m0 = q / nbw * oh, n0 = q % nbw * ow;
-        const auto y = TensorAccessor(y_args, r.a2);
-        const uint32_t src = get_read_ptr(kCbSplitOut);
-        for (uint32_t i = 0; i < oh && m0 + i < mt; ++i) {
-            for (uint32_t j = 0; j < ow && n0 + j < nt; ++j) {
+        const uint32_t group_index = (writer.me() - km::first(command)) / group_size;
+        const uint32_t first_row = group_index / blocks_per_row * block_height;
+        const uint32_t first_column = group_index % blocks_per_row * block_width;
+        const auto y_matrix = TensorAccessor(y_args, y_address);
+        const uint32_t source = get_read_ptr(kCbSplitOut);
+        for (
+            uint32_t tile_row = 0;
+            tile_row < block_height && first_row + tile_row < m_tiles;
+            ++tile_row
+        ) {
+            for (
+                uint32_t tile_column = 0;
+                tile_column < block_width && first_column + tile_column < n_tiles;
+                ++tile_column
+            ) {
                 noc_async_write_page(
-                    (m0 + i) * nt + n0 + j, y, src + (i * ow + j) * kTileBytes
+                    (first_row + tile_row) * n_tiles + first_column + tile_column,
+                    y_matrix,
+                    source + (tile_row * block_width + tile_column) * kTileBytes
                 );
             }
         }
-        if (!flushed(wr, km::kStWriter, km::kFlushSent)) {
+        if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
             return false;
         }
-        cb_pop_front(kCbSplitOut, p);
+        cb_pop_front(kCbSplitOut, block_tiles);
         return true;
     });
 }

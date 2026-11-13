@@ -6,19 +6,24 @@
 
 #include "komorebi/device/km_broadcast.hpp"
 
-// LOAD: a0 W (DRAM, [K, N] tiles row-major), a1 the W buffer, a3 kt, a4 nt. Every
-// core reads all of W into that buffer and keeps it for the commands that follow.
+// LOAD: a0 w_address (W in DRAM, [K, N] tiles row-major), a1 w_buffer (the W buffer),
+// a3 k_tiles, a4 n_tiles. Every core reads all of W into that buffer and keeps it for
+// the commands that follow.
 constexpr uint32_t kHandlerLoad = 1;
-// PRODUCT: a0 A ([M, K]), a1 Y ([M, N]), a2 mt, a3 kt, a4 nt, a5 kc (K chunk), a6 ct
-// (column block), a7 mode, a8 form, a9 W (form kFormStream). Rank i: rows
-// partition(mt).
+// PRODUCT: a0 a_address (A, [M, K]), a1 y_address (Y, [M, N]), a2 m_tiles, a3 k_tiles,
+// a4 n_tiles, a5 chunk_tiles (K chunk), a6 block_width (column block), a7 mode,
+// a8 form, a9 w_address (W, form kFormStream). Rank i: owned rows
+// partition(m_tiles).
 constexpr uint32_t kHandlerProduct = 2;
-// PROF: a0 profile tensor; the writer stores this core's profile page at page `me`.
+// PROF: a0 profile_address (the profile tensor); the writer stores this core's profile
+// page at page `me`.
 constexpr uint32_t kHandlerProf = 3;
-// LAYER: a0 A, a1 Y, a2 mt, a3 kt (one chunk), a4 nt, a5 ct, a6 W buffer (0: the gate
-// pass), a7 the epilogue, a8 A | B << 8 | Y << 16: a held buffer, or kDram for A, Y.
+// LAYER: a0 a_address (A), a1 y_address (Y), a2 m_tiles, a3 k_tiles (one chunk),
+// a4 n_tiles, a5 block_width, a6 w_buffer (0: the gate pass), a7 epilogue,
+// a8 held_buffers: A | B << 8 | Y << 16, each a held buffer, or kDram for A, Y.
 constexpr uint32_t kHandlerLayer = 4;
-// Epilogues: none; silu; times B; the gate pass silu(A) * B (no product, kt == nt).
+// Epilogues: none; silu; times B; the gate pass silu(A) * B (no product, k_tiles ==
+// n_tiles).
 constexpr uint32_t kEpNone = 0;
 constexpr uint32_t kEpSilu = 1;
 constexpr uint32_t kEpMul = 2;
@@ -85,8 +90,8 @@ constexpr uint32_t kProfWords = 32;
 
 // Timed wait until this kernel's reads have landed (kFlushReads) or its writes have
 // left L1 (kFlushSent); a give-up goes into state word `word`.
-inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
-    const uint32_t code = c.poll(
+inline bool flushed(const km::Core& core, uint32_t word, uint32_t what) {
+    const uint32_t code = core.poll(
         [&] {
             if constexpr (noc_mode == DM_DYNAMIC_NOC) {
                 return (
@@ -102,11 +107,11 @@ inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
                 );
             }
         },
-        c.args().wait_limit,
-        c.args().wait_limit
+        core.args().wait_limit,
+        core.args().wait_limit
     );
     if (code != km::kGaveNone) {
-        c.gave_up(word, code, km::kWhereData, 0, 0);
+        core.gave_up(word, code, km::kWhereData, 0, 0);
     }
     return code == km::kGaveNone;
 }

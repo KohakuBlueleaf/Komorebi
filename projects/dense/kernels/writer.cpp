@@ -7,69 +7,81 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    constexpr auto tiles = TensorAccessorArgs<0>();
-    km::Writer wr;
-    volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbProf));
-    wr.run([&](const km_command_t& r) {
-        if (km::handler(r) == kHandlerProf) {
+    constexpr auto tile_args = TensorAccessorArgs<0>();
+    km::Writer writer;
+    volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbProf));
+    writer.run([&](const km_command_t& command) {
+        if (km::handler(command) == kHandlerProf) {
+            const uint32_t profile_address = command.a0;
             const InterleavedAddrGen<true> pages = {
-                .bank_base_address = r.a0, .page_size = kProfBytes
+                .bank_base_address = profile_address, .page_size = kProfBytes
             };
             noc_async_write(
-                get_write_ptr(kCbProf), get_noc_addr(wr.me(), pages), kProfBytes
+                get_write_ptr(kCbProf), get_noc_addr(writer.me(), pages), kProfBytes
             );
-            return flushed(wr, km::kStWriter, km::kFlushSent);
+            return flushed(writer, km::kStWriter, km::kFlushSent);
         }
-        if (km::handler(r) == kHandlerLoad) {  // completes once W is in L1
-            if (!wr.wait_front(kCbLoaded, 1)) {
+        if (km::handler(command) == kHandlerLoad) {  // completes once W is in L1
+            if (!writer.wait_front(kCbLoaded, 1)) {
                 return false;
             }
             cb_pop_front(kCbLoaded, 1);
             return true;
         }
-        const bool layer = km::handler(r) == kHandlerLayer;
-        if (layer && ((r.a8 >> 16) & 0xFF) != kDram) {
+        const bool layer = km::handler(command) == kHandlerLayer;
+        const uint32_t held_buffers = command.a8;  // LAYER only: A | B << 8 | Y << 16
+        const uint32_t mode = command.a7;
+        if (layer && ((held_buffers >> 16) & 0xFF) != kDram) {
             return true;  // Y stays in a held buffer
         }
-        if (!layer && (km::handler(r) != kHandlerProduct || r.a7 == kModeReadOnly)) {
+        if (
+            !layer && (km::handler(command) != kHandlerProduct || mode == kModeReadOnly)
+        ) {
             return true;
         }
-        const uint32_t t0 = km::wall();
-        const km::Partition s = (
-            km::partition(r.a2, wr.me() - km::first(r), km::count(r))
-        );
+        const uint32_t started = km::wall();
+        const uint32_t y_address = command.a1, m_tiles = command.a2;
+        const uint32_t n_tiles = command.a4;
         // LAYER: a5 is the column block and every block is stored.
-        const uint32_t nt = r.a4, ct = layer ? r.a5 : r.a6;
-        const bool store = layer || r.a7 == kModeFull;
-        const auto y = TensorAccessor(tiles, r.a1);
-        uint32_t wait = 0, write = 0, n = 0;
-        for (uint32_t m = s.start; m < s.start + s.len; ++m) {
-            for (uint32_t j0 = 0; j0 < nt; j0 += ct) {
-                const uint32_t t1 = km::wall();
-                if (!wr.wait_front(kCbOut, ct)) {
+        const uint32_t block_width = layer ? command.a5 : command.a6;
+        const km::Partition owned_rows = (
+            km::partition(m_tiles, writer.me() - km::first(command), km::count(command))
+        );
+        const bool store = layer || mode == kModeFull;
+        const auto y_matrix = TensorAccessor(tile_args, y_address);
+        uint32_t wait = 0, write = 0, tiles_written = 0;
+        for (
+            uint32_t row = owned_rows.start; row < owned_rows.start + owned_rows.len;
+            ++row
+        ) {
+            for (uint32_t column = 0; column < n_tiles; column += block_width) {
+                const uint32_t asked = km::wall();
+                if (!writer.wait_front(kCbOut, block_width)) {
                     return false;  // nothing to report: the tile is stopping
                 }
-                const uint32_t t2 = km::wall();
+                const uint32_t ready = km::wall();
                 if (store) {
-                    uint32_t src = get_read_ptr(kCbOut);
-                    for (uint32_t j = 0; j < ct; ++j) {
-                        noc_async_write_page(m * nt + j0 + j, y, src);
-                        src += kTileBytes;
+                    uint32_t source = get_read_ptr(kCbOut);
+                    for (uint32_t tile = 0; tile < block_width; ++tile) {
+                        noc_async_write_page(
+                            row * n_tiles + column + tile, y_matrix, source
+                        );
+                        source += kTileBytes;
                     }
-                    if (!flushed(wr, km::kStWriter, km::kFlushSent)) {
+                    if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                         return false;
                     }
-                    n += ct;
+                    tiles_written += block_width;
                 }
-                cb_pop_front(kCbOut, ct);
-                wait += t2 - t1;
-                write += km::wall() - t2;
+                cb_pop_front(kCbOut, block_width);
+                wait += ready - asked;
+                write += km::wall() - ready;
             }
         }
-        km::add_sat(prof + kPrWrWait, wait);
-        km::add_sat(prof + kPrWrWrite, write);
-        km::add_sat(prof + kPrWrTiles, n);
-        km::add_sat(prof + kPrWrBody, km::wall() - t0);
+        km::add_sat(profile + kPrWrWait, wait);
+        km::add_sat(profile + kPrWrWrite, write);
+        km::add_sat(profile + kPrWrTiles, tiles_written);
+        km::add_sat(profile + kPrWrBody, km::wall() - started);
         return true;
     });
 }

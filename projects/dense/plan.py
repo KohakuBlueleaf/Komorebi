@@ -68,56 +68,92 @@ class Plan:
 
     def buffers(self):
         """(index, pages) of the program's buffers."""
-        out = [(K["kCbA"], self.a_pages), (K["kCbOut"], self.out_pages)]
+        buffers = [(K["kCbA"], self.a_pages), (K["kCbOut"], self.out_pages)]
         if self.w_pages:
-            out.append((K["kCbW"], self.w_pages))
+            buffers.append((K["kCbW"], self.w_pages))
         if self.ws_pages:
-            out.append((K["kCbWs"], self.ws_pages))
-        return out
+            buffers.append((K["kCbWs"], self.ws_pages))
+        return buffers
 
 
-def chunk(kt):
-    """The largest divisor of kt that is at most MAX_CHUNK."""
-    return max(d for d in range(1, min(kt, MAX_CHUNK) + 1) if kt % d == 0)
-
-
-def block(nt):
-    """The largest column block of at most MAX_BLOCK tiles that divides nt."""
-    return max(d for d in range(1, MAX_BLOCK + 1) if nt % d == 0)
-
-
-def plan(mt, kt, nt, budget=L1_BUDGET, form=None):
-    """The plan for [mt, kt] @ [kt, nt] tiles: W resident when it fits `budget` with
-    the other buffers (or as `form` says), else streamed; None when neither fits."""
-    kc, ct = chunk(kt), block(nt)
-    item = kt if kc == kt else kc
-    resident = Plan(
-        mt, kt, nt, K["kFormResident"], kc, ct, 2 * item, kt * nt, 0, 2 * ct
+def chunk(k_tiles):
+    """The largest divisor of k_tiles that is at most MAX_CHUNK."""
+    return max(
+        divisor
+        for divisor in range(1, min(k_tiles, MAX_CHUNK) + 1)
+        if k_tiles % divisor == 0
     )
-    stream = Plan(mt, kt, nt, K["kFormStream"], kc, ct, 2 * kt, 0, 2 * kc * ct, 2 * ct)
+
+
+def block(n_tiles):
+    """The largest column block of at most MAX_BLOCK tiles that divides n_tiles."""
+    return max(divisor for divisor in range(1, MAX_BLOCK + 1) if n_tiles % divisor == 0)
+
+
+def plan(m_tiles, k_tiles, n_tiles, budget=L1_BUDGET, form=None):
+    """The plan for [m_tiles, k_tiles] @ [k_tiles, n_tiles] tiles: W resident when it
+    fits `budget` with the other buffers (or as `form` says), else streamed; None when
+    neither fits."""
+    chunk_tiles, block_width = chunk(k_tiles), block(n_tiles)
+    item = k_tiles if chunk_tiles == k_tiles else chunk_tiles
+    resident = Plan(
+        m_tiles,
+        k_tiles,
+        n_tiles,
+        K["kFormResident"],
+        chunk_tiles,
+        block_width,
+        2 * item,
+        k_tiles * n_tiles,
+        0,
+        2 * block_width,
+    )
+    stream = Plan(
+        m_tiles,
+        k_tiles,
+        n_tiles,
+        K["kFormStream"],
+        chunk_tiles,
+        block_width,
+        2 * k_tiles,
+        0,
+        2 * chunk_tiles * block_width,
+        2 * block_width,
+    )
     choices = {K["kFormResident"]: resident, K["kFormStream"]: stream}
     if form is not None:
-        p = choices[form]
-        return p if p.l1_bytes() <= budget else None
-    for p in (resident, stream):
-        if p.l1_bytes() <= budget:
-            return p
+        chosen = choices[form]
+        return chosen if chosen.l1_bytes() <= budget else None
+    for candidate in (resident, stream):
+        if candidate.l1_bytes() <= budget:
+            return candidate
     return None
 
 
-def group_size(p, workers):
+def group_size(plan, workers):
     """Cores of a PRODUCT group: one per row tile, at most every worker."""
-    return min(p.mt, workers)
+    return min(plan.mt, workers)
 
 
-def load_args(p, w_addr, cb=K["kCbW"]):
+def load_args(plan, w_address, cb=K["kCbW"]):
     """Command words a0.. of LOAD into W buffer `cb`."""
-    return [w_addr, cb, 0, p.kt, p.nt]
+    return [w_address, cb, 0, plan.kt, plan.nt]
 
 
-def product_args(p, a_addr, y_addr, w_addr=0, mode=0):
+def product_args(plan, a_address, y_address, w_address=0, mode=0):
     """Command words a0..a9 of PRODUCT."""
-    return [a_addr, y_addr, p.mt, p.kt, p.nt, p.kc, p.ct, mode, p.form, w_addr]
+    return [
+        a_address,
+        y_address,
+        plan.mt,
+        plan.kt,
+        plan.nt,
+        plan.kc,
+        plan.ct,
+        mode,
+        plan.form,
+        w_address,
+    ]
 
 
 # The grid form. Subblocks sh x sw of at most 4 fp32 tiles (half of DST), the first
@@ -127,8 +163,8 @@ K_BLOCKS = (16, 8, 4, 2, 1)
 BROADCAST_BLOCKS_MAX = 32767  # km::kBroadcastBlocksMax
 
 
-def cdiv(a, b):
-    return -(-a // b)
+def cdiv(numerator, denominator):
+    return -(-numerator // denominator)
 
 
 LAYOUTS = ("2d", "rows", "cols")
@@ -212,47 +248,50 @@ class Grid:
 
     def rect(self, grid):
         """The rectangle of cores (x0, y0, columns, rows) the bands lie on."""
-        gx, gy = grid
+        grid_columns, grid_rows = grid
         if self.layout == "rows":
-            return (0, 0, cdiv(self.rows, gy), gy)
+            return (0, 0, cdiv(self.rows, grid_rows), grid_rows)
         if self.layout == "cols":
-            return (0, 0, gx, cdiv(self.cols, gx))
+            return (0, 0, grid_columns, cdiv(self.cols, grid_columns))
         return (0, 0, self.cols, self.rows)
 
     def places(self, grid):
         """{core index: (first row tile, first column tile)} of every rect core."""
-        gx, gy = grid
-        _, _, nx, ny = self.rect(grid)
-        out = {}
-        for y in range(ny):
-            for x in range(nx):
+        grid_columns, grid_rows = grid
+        _, _, core_columns, core_rows = self.rect(grid)
+        placed = {}
+        for y in range(core_rows):
+            for x in range(core_columns):
                 if self.layout == "rows":
-                    band = (x * gy + y, 0)
+                    band = (x * grid_rows + y, 0)
                 elif self.layout == "cols":
-                    band = (0, y * gx + x)
+                    band = (0, y * grid_columns + x)
                 else:
                     band = (y, x)
-                out[y * gx + x] = (band[0] * self.pcm, band[1] * self.pcn)
-        return out
+                placed[y * grid_columns + x] = (band[0] * self.pcm, band[1] * self.pcn)
+        return placed
 
     def group(self, grid):
         """(first, count): the smallest range of the core order covering the rect."""
-        _, _, nx, ny = self.rect(grid)
-        return 0, (ny - 1) * grid[0] + nx
+        _, _, core_columns, core_rows = self.rect(grid)
+        return 0, (core_rows - 1) * grid[0] + core_columns
 
     def check(self, grid, budget=L1_BUDGET):
         """Raises ValueError when the plan does not fit the grid, L1 or the
         broadcasts."""
-        gx, gy = grid
-        _, _, nx, ny = self.rect(grid)
+        grid_columns, grid_rows = grid
+        _, _, core_columns, core_rows = self.rect(grid)
         if self.layout not in LAYOUTS:
             raise ValueError(f"layout {self.layout!r}")
-        if self.layout == "rows" and (self.cols != 1 or self.rows % gy):
+        if self.layout == "rows" and (self.cols != 1 or self.rows % grid_rows):
             raise ValueError("layout rows: one column band, whole columns of cores")
-        if self.layout == "cols" and (self.rows != 1 or self.cols % gx):
+        if self.layout == "cols" and (self.rows != 1 or self.cols % grid_columns):
             raise ValueError("layout cols: one row band, whole rows of cores")
-        if not (1 <= ny <= gy and 1 <= nx <= gx):
-            raise ValueError(f"{ny} x {nx} cores on a {gx} x {gy} grid")
+        if not (1 <= core_rows <= grid_rows and 1 <= core_columns <= grid_columns):
+            raise ValueError(
+                f"{core_rows} x {core_columns} cores on a "
+                f"{grid_columns} x {grid_rows} grid"
+            )
         if self.rows * self.pcm < self.mt or self.cols * self.pcn < self.nt:
             raise ValueError("the bands do not cover the output")
         if self.bm % self.sh or self.bn % self.sw or self.sh * self.sw > 4:
@@ -263,63 +302,100 @@ class Grid:
             raise ValueError(f"{self.l1_bytes()} bytes of L1 > {budget}")
 
 
-def subblock(bm, bn):
-    return next((h, w) for h, w in SUBBLOCKS if bm % h == 0 and bn % w == 0)
+def subblock(block_height, block_width):
+    return next(
+        (height, width)
+        for height, width in SUBBLOCKS
+        if block_height % height == 0 and block_width % width == 0
+    )
 
 
-def layout_of(mt, nt, grid):
+def layout_of(m_tiles, n_tiles, grid):
     """The rule's layout: "cols" for fewer row tiles than grid rows; "rows" when a
     band of rows per core reuses W more than 2d reuses either operand; else "2d"."""
-    gx, gy = grid
-    if mt < gy:
+    grid_columns, grid_rows = grid
+    if m_tiles < grid_rows:
         return "cols"
-    rows1 = cdiv(mt, gx * gy)
-    return "rows" if rows1 >= 3 and rows1 > min(cdiv(mt, gy), cdiv(nt, gx)) else "2d"
+    rows_per_core = cdiv(m_tiles, grid_columns * grid_rows)
+    return (
+        "rows"
+        if rows_per_core >= 3
+        and rows_per_core > min(cdiv(m_tiles, grid_rows), cdiv(n_tiles, grid_columns))
+        else "2d"
+    )
 
 
-def bands(mt, nt, layout, grid):
+def bands(m_tiles, n_tiles, layout, grid):
     """(rows, cols, pcm, pcn) of a layout: bands over the grid, whole lines of cores
     for "rows" and "cols"; 2d column bands rounded up to whole subblocks of 4."""
-    gx, gy = grid
+    grid_columns, grid_rows = grid
     if layout == "rows":
-        pcm = cdiv(mt, gx * gy)
-        return cdiv(cdiv(mt, pcm), gy) * gy, 1, pcm, nt
+        band_height = cdiv(m_tiles, grid_columns * grid_rows)
+        return (
+            cdiv(cdiv(m_tiles, band_height), grid_rows) * grid_rows,
+            1,
+            band_height,
+            n_tiles,
+        )
     if layout == "cols":
-        pcn = cdiv(nt, gx * gy)
-        return 1, cdiv(cdiv(nt, pcn), gx) * gx, mt, pcn
-    pcm = cdiv(mt, min(gy, mt))
-    pcn = cdiv(nt, min(gx, nt))
-    if pcn > 2 and pcn % 4:
-        pcn = min(cdiv(pcn, 4) * 4, nt)
-    return cdiv(mt, pcm), cdiv(nt, pcn), pcm, pcn
+        band_width = cdiv(n_tiles, grid_columns * grid_rows)
+        return (
+            1,
+            cdiv(cdiv(n_tiles, band_width), grid_columns) * grid_columns,
+            m_tiles,
+            band_width,
+        )
+    band_height = cdiv(m_tiles, min(grid_rows, m_tiles))
+    band_width = cdiv(n_tiles, min(grid_columns, n_tiles))
+    if band_width > 2 and band_width % 4:
+        band_width = min(cdiv(band_width, 4) * 4, n_tiles)
+    return (
+        cdiv(m_tiles, band_height),
+        cdiv(n_tiles, band_width),
+        band_height,
+        band_width,
+    )
 
 
-def grid_plan(mt, kt, nt, grid=(12, 10), budget=L1_BUDGET, layout=None):
+def grid_plan(m_tiles, k_tiles, n_tiles, grid=(12, 10), budget=L1_BUDGET, layout=None):
     """The rule for the grid form: the layout, its bands, then the largest blocks that
     fit L1 (2d and cols halve rows first, rows halves columns first, starting from two
-    column blocks when nt >= 8), then the largest K block. None when nothing fits."""
-    layout = layout or layout_of(mt, nt, grid)
-    rows, cols, pcm, pcn = bands(mt, nt, layout, grid)
-    bm, bn = pcm, pcn
-    if layout == "rows" and pcn >= 8:
-        bn = cdiv(pcn, 2)
-    while bm >= 1 and bn >= 1:
-        sh, sw = subblock(bm, bn)
-        for kb in K_BLOCKS:
-            if kb > kt and kb > 1:
+    column blocks when n_tiles >= 8), then the largest K block. None when nothing
+    fits."""
+    layout = layout or layout_of(m_tiles, n_tiles, grid)
+    rows, cols, band_height, band_width = bands(m_tiles, n_tiles, layout, grid)
+    block_height, block_width = band_height, band_width
+    if layout == "rows" and band_width >= 8:
+        block_width = cdiv(band_width, 2)
+    while block_height >= 1 and block_width >= 1:
+        subblock_height, subblock_width = subblock(block_height, block_width)
+        for k_block_tiles in K_BLOCKS:
+            if k_block_tiles > k_tiles and k_block_tiles > 1:
                 continue
-            g = Grid(
-                mt, kt, nt, rows, cols, pcm, pcn, bm, bn, kb, sh, sw, layout=layout
+            candidate = Grid(
+                m_tiles,
+                k_tiles,
+                n_tiles,
+                rows,
+                cols,
+                band_height,
+                band_width,
+                block_height,
+                block_width,
+                k_block_tiles,
+                subblock_height,
+                subblock_width,
+                layout=layout,
             )
             try:
-                g.check(grid, budget)
+                candidate.check(grid, budget)
             except ValueError:
                 continue
-            return g
-        if layout == "rows" and bn > 1:
-            bn = cdiv(bn, 2)
+            return candidate
+        if layout == "rows" and block_width > 1:
+            block_width = cdiv(block_width, 2)
         else:
-            bm = cdiv(bm, 2) if bm > 1 else 0
+            block_height = cdiv(block_height, 2) if block_height > 1 else 0
     return None
 
 
@@ -373,13 +449,13 @@ class Split:
 
     def buffers(self):
         """(index, format, page bytes, pages) of the program's buffers."""
-        p = self.oh * self.ow
+        block_tiles = self.oh * self.ow
         return [
             (S["kCbSa"], "bfloat16", TILE_BYTES, 2 * self.oh * self.kc),
             (S["kCbSw"], "bfloat16", TILE_BYTES, 2 * self.kc * self.ow),
             (S["kCbArrive"], "float32", S["kSumBytes"], self.arrive_pages()),
-            (S["kCbSum"], "float32", S["kSumBytes"], p),
-            (S["kCbSplitOut"], "bfloat16", TILE_BYTES, p),
+            (S["kCbSum"], "float32", S["kSumBytes"], block_tiles),
+            (S["kCbSplitOut"], "bfloat16", TILE_BYTES, block_tiles),
         ]
 
     def l1_bytes(self):
@@ -396,30 +472,51 @@ class Split:
             raise ValueError(f"{self.l1_bytes()} bytes of L1 > {budget}")
 
 
-def split_plan(mt, kt, nt, s, oh, ow, kc=None, cores=120, budget=L1_BUDGET):
-    """A K-split plan: group size s, output block oh x ow, K chunk kc (default: the
-    whole partition of K, at most MAX_CHUNK)."""
-    kc = kc or min(cdiv(kt, s), MAX_CHUNK)
-    sh, sw = subblock(oh, ow)
-    sp = Split(mt, kt, nt, s, oh, ow, kc, sh, sw)
-    sp.check(cores, budget)
-    return sp
+def split_plan(
+    m_tiles,
+    k_tiles,
+    n_tiles,
+    group_cores,
+    block_height,
+    block_width,
+    chunk_tiles=None,
+    cores=120,
+    budget=L1_BUDGET,
+):
+    """A K-split plan: group_cores cores a group, output block block_height x
+    block_width, K chunk chunk_tiles (default: the whole partition of K, at most
+    MAX_CHUNK)."""
+    chunk_tiles = chunk_tiles or min(cdiv(k_tiles, group_cores), MAX_CHUNK)
+    subblock_height, subblock_width = subblock(block_height, block_width)
+    plan = Split(
+        m_tiles,
+        k_tiles,
+        n_tiles,
+        group_cores,
+        block_height,
+        block_width,
+        chunk_tiles,
+        subblock_height,
+        subblock_width,
+    )
+    plan.check(cores, budget)
+    return plan
 
 
-def split_args(sp, a_addr, w_addr, y_addr, form="owner", mode=0):
+def split_args(plan, a_address, w_address, y_address, form="owner", mode=0):
     """Command words a0..a4 of SPLIT."""
-    return [a_addr, w_addr, y_addr, REDUCE_FORMS[form], mode]
+    return [a_address, w_address, y_address, REDUCE_FORMS[form], mode]
 
 
-def grid_args(g, a_addr, w_addr, y_addr, mode=0):
+def grid_args(plan, a_address, w_address, y_address, mode=0):
     """Command words a0..a3 of GRID."""
-    return [a_addr, w_addr, y_addr, mode]
+    return [a_address, w_address, y_address, mode]
 
 
-def flops(p):
+def flops(plan):
     """Floating-point operations of one product (multiply and add counted)."""
-    return 2 * p.mt * p.kt * p.nt * TILE**3
+    return 2 * plan.mt * plan.kt * plan.nt * TILE**3
 
 
-def tile_products(p):
-    return p.mt * p.kt * p.nt
+def tile_products(plan):
+    return plan.mt * plan.kt * plan.nt

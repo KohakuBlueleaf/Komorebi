@@ -37,130 +37,142 @@ CONFIGS = {
 ROUTES = ("composed", "fused-silu")  # SwiGLU: silu as an op, or inside the multiply
 
 
-def upload(dev, x):
-    """x (float32 array of bf16 values) as a bf16 tile-layout tensor on the device."""
-    t = torch.from_numpy(x).bfloat16()
-    return ttnn.from_torch(t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=dev)
+def upload(device, array):
+    """`array` (float32, bf16 values) as a bf16 tile-layout tensor on the device."""
+    host_tensor = torch.from_numpy(array).bfloat16()
+    return ttnn.from_torch(
+        host_tensor, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
+    )
 
 
 def read_rows(y, rows):
     """Rows `rows` of the 2-D device tensor y as float32, one 32-row slice per read
     (at most 1 MB each, a progress line each)."""
     got = {}
-    for t in np.unique(rows // TILE):
-        r0 = int(t) * TILE
-        piece = ttnn.slice(y, [r0, 0], [r0 + TILE, y.shape[-1]])
-        got[r0] = ttnn.to_torch(piece).float().numpy()
-        tr.log(f"rows {r0} to {r0 + TILE} read")
-    return np.stack([got[r // TILE * TILE][r % TILE] for r in rows])
+    for tile in np.unique(rows // TILE):
+        first_row = int(tile) * TILE
+        piece = ttnn.slice(y, [first_row, 0], [first_row + TILE, y.shape[-1]])
+        got[first_row] = ttnn.to_torch(piece).float().numpy()
+        tr.log(f"rows {first_row} to {first_row + TILE} read")
+    return np.stack([got[row // TILE * TILE][row % TILE] for row in rows])
 
 
-def matmul_call(ta, tw, cfg):
+def matmul_call(a_tensor, w_tensor, config):
     """One `ttnn.matmul`."""
-    return lambda: ttnn.matmul(ta, tw, compute_kernel_config=cfg)
+    return lambda: ttnn.matmul(a_tensor, w_tensor, compute_kernel_config=config)
 
 
-def swiglu_call(route, tx, w1, w3, w2, cfg):
+def swiglu_call(route, x_tensor, w1, w3, w2, config):
     """One layer, (silu(x W1) * (x W3)) W2, from `ttnn.matmul`; `composed` has silu and
     multiply as ops of their own, `fused-silu` puts silu on the multiply's first input.
     """
 
     def layer():
-        a = ttnn.matmul(tx, w1, compute_kernel_config=cfg)
-        b = ttnn.matmul(tx, w3, compute_kernel_config=cfg)
+        x_w1 = ttnn.matmul(x_tensor, w1, compute_kernel_config=config)
+        x_w3 = ttnn.matmul(x_tensor, w3, compute_kernel_config=config)
         if route == "composed":
-            h = ttnn.multiply(ttnn.silu(a), b)
+            hidden = ttnn.multiply(ttnn.silu(x_w1), x_w3)
         else:
-            h = ttnn.multiply(a, b, input_tensor_a_activations=[ttnn.UnaryOpType.SILU])
-        return ttnn.matmul(h, w2, compute_kernel_config=cfg)
+            hidden = ttnn.multiply(
+                x_w1, x_w3, input_tensor_a_activations=[ttnn.UnaryOpType.SILU]
+            )
+        return ttnn.matmul(hidden, w2, compute_kernel_config=config)
 
     return layer
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--operation", choices=("matmul", "swiglu"), required=True)
-    p.add_argument("--shape", required=True)
-    p.add_argument("--configs", nargs="*", default=list(CONFIGS), choices=CONFIGS)
-    p.add_argument("--loops", type=int, default=tr.LOOPS)
-    p.add_argument("--target", type=float, default=tr.TARGET_S)
-    p.add_argument("--json", default=None)
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--operation", choices=("matmul", "swiglu"), required=True)
+    parser.add_argument("--shape", required=True)
+    parser.add_argument("--configs", nargs="*", default=list(CONFIGS), choices=CONFIGS)
+    parser.add_argument("--loops", type=int, default=tr.LOOPS)
+    parser.add_argument("--target", type=float, default=tr.TARGET_S)
+    parser.add_argument("--json", default=None)
+    args = parser.parse_args()
     swiglu = args.operation == "swiglu"
     shapes = sp.SHAPES if swiglu else pl.SHAPES
     if args.shape not in shapes:
-        p.error(f"--shape: one of {', '.join(shapes)}")
-    m, k, n = shapes[args.shape]
-    out = {"op": args.operation, "shape": args.shape, "m": m, "k": k, "n": n}
-    out["command"] = tr.command(sys.argv)
+        parser.error(f"--shape: one of {', '.join(shapes)}")
+    m_rows, k_depth, n_columns = shapes[args.shape]
+    report = {
+        "op": args.operation,
+        "shape": args.shape,
+        "m": m_rows,
+        "k": k_depth,
+        "n": n_columns,
+    }
+    report["command"] = tr.command(sys.argv)
     with tr.heartbeat("building the inputs"):
         if swiglu:
-            host = ref.swiglu_inputs(m, k, n)
-            rows = ref.sampled_rows(m)
+            host = ref.swiglu_inputs(m_rows, k_depth, n_columns)
+            rows = ref.sampled_rows(m_rows)
             want = ref.swiglu(host[0][rows], *host[1:])
-            out["d"], out["h"] = k, n
+            report["d"], report["h"] = k_depth, n_columns
         else:
-            host = ref.inputs(m, k, n)
-            rows = ref.sampled_rows(m)
+            host = ref.inputs(m_rows, k_depth, n_columns)
+            rows = ref.sampled_rows(m_rows)
             want = ref.matmul(host[0][rows], host[1])
     tr.log("inputs built, float64 reference done")
     card = tr.visible_card()
-    dev = ttnn.open_device(device_id=0)
+    device = ttnn.open_device(device_id=0)
     try:
-        out["device"] = {
-            "arch": str(dev.arch()),
-            "compute_grid": [dev.compute_with_storage_grid_size().x]
-            + [dev.compute_with_storage_grid_size().y],
+        report["device"] = {
+            "arch": str(device.arch()),
+            "compute_grid": [device.compute_with_storage_grid_size().x]
+            + [device.compute_with_storage_grid_size().y],
         }
         with tr.heartbeat("upload"):
-            tensors = [upload(dev, x) for x in host]
-            ttnn.synchronize_device(dev)
+            tensors = [upload(device, array) for array in host]
+            ttnn.synchronize_device(device)
         tr.log("uploaded")
         routes = ROUTES if swiglu else ("matmul",)
-        out["results"] = {}
+        report["results"] = {}
         for route in routes:
             for name in args.configs:
-                cfg = CONFIGS[name]
-                cfg = (
+                config = CONFIGS[name]
+                config = (
                     None
-                    if cfg is None
-                    else ttnn.init_device_compute_kernel_config(dev.arch(), None, **cfg)
+                    if config is None
+                    else ttnn.init_device_compute_kernel_config(
+                        device.arch(), None, **config
+                    )
                 )
                 key = f"{route}/{name}"
                 tr.log(f"== {key}")
                 call = (
-                    swiglu_call(route, *tensors, cfg)
+                    swiglu_call(route, *tensors, config)
                     if swiglu
-                    else matmul_call(*tensors, cfg)
+                    else matmul_call(*tensors, config)
                 )
-                res = tr.measure(
+                result = tr.measure(
                     call,
-                    lambda: ttnn.synchronize_device(dev),
+                    lambda: ttnn.synchronize_device(device),
                     card,
                     args.loops,
                     args.target,
                 )
                 y = call()
-                ttnn.synchronize_device(dev)
+                ttnn.synchronize_device(device)
                 with tr.heartbeat("check"):
                     got = read_rows(y, rows)
-                    res["check"] = ref.errors(got, want)
-                microseconds = res["microseconds_per_call"]
-                tr.log(f"{key}: {microseconds:.2f} us, check {res['check']}")
-                out["results"][key] = res
-        out["program_cache_entries"] = dev.num_program_cache_entries()
+                    result["check"] = ref.errors(got, want)
+                microseconds = result["microseconds_per_call"]
+                tr.log(f"{key}: {microseconds:.2f} us, check {result['check']}")
+                report["results"][key] = result
+        report["program_cache_entries"] = device.num_program_cache_entries()
     finally:
-        ttnn.close_device(dev)
-    out["ttnn"] = {
+        ttnn.close_device(device)
+    report["ttnn"] = {
         "tt_metal": tr.tt_metal_version(os.environ["TT_METAL_HOME"]),
         "dispatch": "slow" if os.environ.get("TT_METAL_SLOW_DISPATCH_MODE") else "fast",
     }
-    out["layout"] = "bf16, TILE_LAYOUT, DRAM interleaved; output the same"
-    out["load_avg"] = os.getloadavg()[0]
-    out["date"] = time.strftime("%Y-%m-%d %H:%M")
-    print(json.dumps(out), flush=True)
+    report["layout"] = "bf16, TILE_LAYOUT, DRAM interleaved; output the same"
+    report["load_avg"] = os.getloadavg()[0]
+    report["date"] = time.strftime("%Y-%m-%d %H:%M")
+    print(json.dumps(report), flush=True)
     if args.json:
-        Path(args.json).write_text(json.dumps(out))
+        Path(args.json).write_text(json.dumps(report))
 
 
 if __name__ == "__main__":
