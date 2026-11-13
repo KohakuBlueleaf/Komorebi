@@ -16,7 +16,7 @@ import numpy as np
 import torch
 import ttnn
 
-from komorebi import abi, dram, layout, native
+from komorebi import abi, dram, insn_check, layout, native
 from komorebi import state as st
 from komorebi import thread as kt
 from komorebi.errors import CardBusy, GridTimeout, ProgramError, StartError
@@ -450,6 +450,21 @@ class Session:
             descriptor = backend.describe(
                 program, sources, tag, depth, wait, idle, trace
             )
+            if insn_check.enabled():
+                t0 = time.perf_counter()
+                try:
+                    elves = module.kernel_elves(self.device, descriptor)
+                except Exception as err:
+                    raise ProgramError(f"{program.name}: build failed: {err}") from err
+                insn_check.check_kernels(
+                    program.name,
+                    elves,
+                    native.metal_tree(self.tree),
+                    native.cache_dir() / "insn-check",
+                )
+                self.log(
+                    f"kernels built and checked ({time.perf_counter() - t0:.2f} s)"
+                )
             self.log("launch")
             # From here the grid may run: an interrupt is delivered when the launch
             # call returns, after the kernels started.

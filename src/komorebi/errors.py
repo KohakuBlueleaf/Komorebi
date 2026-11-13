@@ -12,6 +12,22 @@ class ProgramError(KomorebiError):
     """
 
 
+class KernelInstructionError(ProgramError):
+    """A kernel's build holds an instruction its core lacks; nothing was loaded.
+    `findings` lists each one (thread, instruction, function, source line)."""
+
+    def __init__(self, program, findings):
+        first = findings[0]
+        where = f" at {first.line}" if first.line else ""
+        super().__init__(
+            f"{program}: {first.source} on {first.thread} holds {first.instruction} "
+            f"({first.group}, which the core lacks) in {first.function}{where}; "
+            f"{len(findings)} such instruction(s) in all. Not loaded "
+            "(docs/reference/host.md, 'Instructions the cores lack')."
+        )
+        self.findings = findings
+
+
 class CardBusy(KomorebiError):
     """Another live process holds the card's chip lock; opening it would wait for that
     process to exit. `pid` is the holder."""

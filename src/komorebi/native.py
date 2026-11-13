@@ -120,6 +120,11 @@ def _tree(tree):
     return Path(tree)
 
 
+def metal_tree(tree=None):
+    """`tree`, else the tt-metal tree TT_METAL_HOME names (a BuildError if neither)."""
+    return _tree(tree)
+
+
 def image_path(tree=None, defines=()):
     """The dispatch kernel image: prebuilt beside the package, else built in the cache.
 

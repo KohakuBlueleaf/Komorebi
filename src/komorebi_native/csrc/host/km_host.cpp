@@ -32,9 +32,14 @@
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/tt_metal.hpp>
 
+#include "impl/context/context_types.hpp"
 #include "impl/context/metal_context.hpp"
+#include "impl/kernels/kernel.hpp"
+#include "impl/program/program_impl.hpp"
+#include "jit_build/build_env_manager.hpp"
 #include <llrt/llrt.hpp>
 #include <llrt/tt_cluster.hpp>
 #include <umd/device/chip_helpers/sysmem_buffer.hpp>
@@ -149,6 +154,39 @@ namespace {
     // The number of DRAM banks of interleaved buffers (bank b is DRAM view b).
     uint32_t dram_banks(const MeshDevice& mesh) {
         return chip(mesh)->allocator()->get_num_banks(tt::tt_metal::BufferType::DRAM);
+    }
+
+    // Builds `desc`'s kernels for this device as generic_op does (its own build then
+    // hits the JIT cache); per kernel, its source and its ELF paths.
+    std::vector<std::tuple<std::string, std::vector<std::string>>> kernel_elves(
+        const MeshDevice& mesh, const tt::tt_metal::ProgramDescriptor& desc
+    ) {
+        tt::tt_metal::IDevice* dev = chip(mesh);
+        tt::tt_metal::Program program(desc);
+        program.impl().compile(dev);
+        const auto& env = (
+            tt::tt_metal::BuildEnvManager::get_instance(
+                tt::tt_metal::extract_context_id(dev)
+            )
+                .get_device_build_env(dev->build_id())
+        );
+        const std::string root = env.build_env.get_out_kernel_root_path();
+        const uint32_t types = (
+            tt::tt_metal::MetalContext::instance()
+                .hal()
+                .get_programmable_core_type_count()
+        );
+        std::vector<std::tuple<std::string, std::vector<std::string>>> out;
+        for (uint32_t t = 0; t < types; t++) {
+            for (const auto& [id, kernel] : program.impl().get_kernels(t)) {
+                const auto& src = kernel->kernel_source();
+                out.emplace_back(
+                    src.path_.empty() ? kernel->name() : src.path_.string(),
+                    kernel->elf_paths_by_processor_index(*dev, root)
+                );
+            }
+        }
+        return out;
     }
 
     // Reads (bank, address, bytes) spans of DRAM after one DRAM barrier, one read each.
@@ -1198,6 +1236,15 @@ NB_MODULE(_km_host, m) {
             return dram_banks(*mesh);
         },
         nb::arg("mesh_device")
+    );
+    m.def(
+        "kernel_elves",
+        [](std::shared_ptr<MeshDevice> mesh,
+           const tt::tt_metal::ProgramDescriptor& desc) {
+            return kernel_elves(*mesh, desc);
+        },
+        nb::arg("mesh_device"),
+        nb::arg("program_descriptor")
     );
     m.def(
         "read_dram",

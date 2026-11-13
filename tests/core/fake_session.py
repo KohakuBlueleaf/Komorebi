@@ -131,10 +131,12 @@ def load_session(monkeypatch, tmp_path):
         return module.dispatch
 
     module.Dispatch = make
+    module.kernel_elves = lambda device, descriptor: []  # nothing to check
     image = tmp_path / "km-dispatch.bin"
     image.write_bytes(b"\0" * 64)
     monkeypatch.setattr(session.native, "load_module", lambda tree=None: module)
     monkeypatch.setattr(session.native, "image_path", lambda tree=None: image)
+    monkeypatch.setattr(session.native, "metal_tree", lambda tree=None: tmp_path)
     monkeypatch.setattr(session, "aiclk_mhz", lambda card=None: 1350)
     monkeypatch.setattr(session, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
     state = types.SimpleNamespace(buffer_address=lambda: 0x40000)
