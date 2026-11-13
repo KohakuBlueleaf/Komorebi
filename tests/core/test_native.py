@@ -57,6 +57,18 @@ def test_without_a_tree_the_build_says_so(tmp_path, monkeypatch):
         native.module_path()
 
 
+def test_the_prebuilt_module_serves_only_the_runtime_package(tmp_path, monkeypatch):
+    monkeypatch.setattr(_env, "package_dir", lambda: tmp_path)
+    (tmp_path / native.MODULE_FILE).write_bytes(b"x")
+    source = []
+    monkeypatch.setattr(_env, "find_tree", lambda: (tmp_path / "rt", source[0]))
+    source.append(_env.RUNTIME_SOURCE)
+    assert native.module_path() == tmp_path / native.MODULE_FILE
+    source[0] = _env.HOME_VARIABLE  # a tree of one's own builds its own module
+    with pytest.raises(build.BuildError, match="native sources"):
+        native.module_path()
+
+
 def test_the_key_follows_the_build_inputs(tmp_path, monkeypatch):
     tree = make_tree(tmp_path / "tree")
     monkeypatch.setenv(native.CACHE_VARIABLE, str(tmp_path / "cache"))

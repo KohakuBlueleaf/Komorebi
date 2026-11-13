@@ -175,9 +175,11 @@ def thread_image(thread, tree=None):
 
 
 def module_path(tree=None):
-    """The native host module: prebuilt beside the package, else built in the cache."""
+    """The native host module: prebuilt beside the package when the tree is the
+    runtime package's (it links that runtime), else built in the cache."""
     prebuilt = _env.package_dir() / MODULE_FILE
-    if prebuilt.is_file():
+    runtime = tree is None and _env.find_tree()[1] == _env.RUNTIME_SOURCE
+    if prebuilt.is_file() and runtime:
         return prebuilt
     tree = _tree(tree)
     paths = [str(p) for p in includes()]
@@ -205,6 +207,7 @@ def load_module(tree=None):
     spec = importlib.util.spec_from_file_location(MODULE, path, loader=loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
+    module.set_idle_image(str(_env.x280_idle_image(_tree(tree))))
     sys.modules[MODULE] = module
     return module
 

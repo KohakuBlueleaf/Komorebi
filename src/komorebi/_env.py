@@ -18,6 +18,7 @@ RUNTIME_SOURCE = "komorebi-runtime"
 _X280_SOURCE = Path("tt_metal/fabric/experimental/x280")
 _SFPI_BIN = Path("runtime/sfpi/compiler/bin")
 _X280_OBJECTS = ("entry_active.o", "x280_active_start.o")
+_X280_IDLE_IMAGE = Path("build/x280/firmware-lim-idle.bin")
 
 
 def package_dir():
@@ -50,6 +51,15 @@ def find_tree(environ=None):
     return None, None
 
 
+def activate(environ=None):
+    """When the tree is the runtime package's, prepares this process to run on it
+    (TT_METAL_RUNTIME_ROOT, ttnn on the path); returns the tree's source."""
+    tree, source = find_tree(environ)
+    if source == RUNTIME_SOURCE:
+        komorebi_runtime.activate(environ)
+    return source
+
+
 def runtime_version():
     """The installed runtime package's version, or None."""
     if komorebi_runtime is None or not komorebi_runtime.installed():
@@ -77,6 +87,11 @@ def x280_objects(tree):
     """The runtime objects every X280 image is linked with, in link order."""
     obj_dir = Path(tree) / "build" / "x280" / "obj"
     return [obj_dir / name for name in _X280_OBJECTS]
+
+
+def x280_idle_image(tree):
+    """The image the X280 tiles are booted to before an active image runs."""
+    return Path(tree) / _X280_IDLE_IMAGE
 
 
 def sfpi_bin(tree):

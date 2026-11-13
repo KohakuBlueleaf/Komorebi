@@ -72,6 +72,10 @@ namespace {
         return n != 0 && (n & (n - 1)) == 0;
     }
 
+    // The X280 idle image of the tree in use (firmware-lim-idle.bin), set by the
+    // package when it loads this module: the module does not name a build directory.
+    std::string idle_image_path;
+
     static_assert(sizeof(km_record_t) == 64);
     static_assert(sizeof(km_event_t) == 16 && sizeof(kmd_args_t) <= kArgsBytes);
     static_assert(kArgsBytes <= KMD_LIM_MAILBOX);
@@ -1126,10 +1130,14 @@ namespace {
                 all_idle = all_idle && r.tile(id).inspect().resident_idle_live;
             }
             if (!all_idle) {
+                if (idle_image_path.empty()) {
+                    throw std::runtime_error(
+                        "X280 boot: set_idle_image was not called"
+                    );
+                }
                 x280::MultiTileBootRequest req;
                 req.tiles = r.tile_ids();
-                req.idle_image_path =
-                    (std::string(X280_IMAGE_DIR) + "/firmware-lim-idle.bin");
+                req.idle_image_path = idle_image_path;
                 req.allow_reset_release = true;
                 if (!r.boot_tiles(req).ready()) {
                     throw std::runtime_error("X280 boot_tiles failed");
@@ -1261,6 +1269,13 @@ namespace {
 NB_MODULE(_km_host, m) {
     m.attr("MTIME_HZ") = kMtimeHz;
     m.attr("EVENT_DEPTH_MAX") = kEventDepthMax;
+    m.def(
+        "set_idle_image",
+        [](std::string path) {
+            idle_image_path = std::move(path);
+        },
+        nb::arg("path")
+    );
     m.def(
         "write_l1",
         [](std::shared_ptr<MeshDevice> mesh,

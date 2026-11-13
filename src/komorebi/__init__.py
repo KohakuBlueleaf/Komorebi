@@ -1,11 +1,12 @@
 """Komorebi: a programming model and runtime for the Tensix grid of Blackhole cards.
 
 Importing the package needs no tt-metal tree and opens no device. `Session` (and with
-it ttnn) is imported on first use.
+it ttnn) is imported on first use, after activating the runtime package if it is used.
 """
 
 import importlib
 
+from komorebi import _env
 from komorebi.errors import (
     CardBusy,
     EngineError,
@@ -52,5 +53,6 @@ __all__ = [
 
 def __getattr__(name):
     if name == "Session":
+        _env.activate()
         return importlib.import_module("komorebi.session").Session
     raise AttributeError(f"module 'komorebi' has no attribute {name!r}")

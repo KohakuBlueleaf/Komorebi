@@ -56,6 +56,7 @@ def test_the_root_links_the_tree_and_the_fetched_compiler(tmp_path):
     assert _env.x280_compiler(root).resolve() == gcc
     assert _env.x280_linker_script(root).resolve() == kr.x280(base).linker_script
     assert [p.resolve() for p in _env.x280_objects(root)] == kr.x280(base).objects
+    assert _env.x280_idle_image(root).resolve() == kr.x280(base).idle_image
 
 
 def test_activate_sets_the_root_and_the_path(tmp_path, monkeypatch):

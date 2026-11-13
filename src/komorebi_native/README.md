@@ -4,7 +4,7 @@ The native layer: everything that runs on the card or builds against tt-metal. W
 so far: the Tensix worker headers, the X280 dispatch kernel, the library of X280 user
 threads, the native Python module and, in `x280/engines/`, the graph executor in plain
 C (also built for the host). `include/komorebi/x280/`, `include/komorebi/host/`,
-`kernels/` and `cmake/` are empty.
+and `kernels/` are empty.
 
 | Directory | What it holds |
 |---|---|
@@ -16,6 +16,6 @@ C (also built for the host). `include/komorebi/x280/`, `include/komorebi/host/`,
 | `x280/engines/` | The engines the dispatch kernel runs from uploaded data: the micro-op interpreter, the job queue and the graph executor. |
 | `x280/kmx/` | The library an X280 thread on a work cluster is linked with: `kmx.h` (its entry point, regions, hand-over with the grid, four-core calls, result and progress, the command ring to the dispatch kernel), the start-up, `kmx_ring.h` (the thread's side of the ring, the host ring's protocol, with its placement as data) and `kmx_layout.h`, the layout of its argument, ring and result blocks shared with the host. |
 | `csrc/host/` | The native Python module: the runtime (open the card, load X280 images, start, stop) and plans (upload a stream, a job list or a graph, run, read back). |
-| `cmake/` | CMake helpers to build a C++ host and an X280 image against a tt-metal tree. |
+| `cmake/` | `km_host.cmake`: the native Python module built inside a configured tt-metal tree with that tree's targets (how `packaging/build_wheel.py --host-module` prebuilds it). |
 
 C and C++ sources are formatted with `python -m komorebi.tools.cxx_format`.
