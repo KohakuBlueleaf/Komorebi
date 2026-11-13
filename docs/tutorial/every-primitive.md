@@ -59,7 +59,7 @@ A program is Python on the host, kernels on the Tensix cores, and, when it has o
 | `km::l1(address)` | a core's L1 as a tensor Python can read | [[why-cores-talk]] |
 | `km::Arrival`, `km::emit`, `km::arrive` | send a tile to another core, and wait for it | [[port]] |
 | `km::reduce`, `reduce_arrive`, `reduce_emit`, `reduce_result` | add the tiles of many cores into one | [[reduce]] |
-| `km::Broadcast` | one core's tile to many cores | [[broadcast]] |
+| `km::Broadcast` | one core's tile, a word, or both, to many cores | [[broadcast]], [[casting-a-word]] |
 | `km::Messages`: `send`, `next`, `forward`, `consume`, `done`, `quota` | messages to any core | [[routed-message]], [[forward-and-consume]], [[full-buffers]] |
 | `km::X280Port`: `call`, `tell` | ask and tell an X280 core | [[core-asks-x280]] |
 | `km::Overlay`: `load`, `call`, `held`; `km_overlay(kernel, argument)` | load an overlay into a slot and call it; a part's function | [[overlays]] |

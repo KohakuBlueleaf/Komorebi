@@ -162,4 +162,4 @@ every block.
 - A buffer that does not hold `WINDOW * PAGES` pages. The buffer of a broadcast is used only
   through these calls and must have exactly that many.
 
-Next: [[routed-message]] sends to a core that the data picks.
+Next: [[casting-a-word]] sends a word with a cast, or a word alone.

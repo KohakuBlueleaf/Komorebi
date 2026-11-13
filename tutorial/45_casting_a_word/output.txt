@@ -1,0 +1,2 @@
+the leader read [4, 7, 10, 3, 8, 8, 1, 6] and cast 8 choices
+every core's total: [110, 110, 110, 110, 110, 110], expected 110
