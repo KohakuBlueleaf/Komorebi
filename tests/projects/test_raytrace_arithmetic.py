@@ -7,7 +7,7 @@ import pytest
 from projects.raytrace import arithmetic, packets
 from ref import bvh, raytrace, scenes
 
-F = np.float32
+FLOAT32 = np.float32
 
 
 @pytest.fixture(scope="module")
@@ -16,16 +16,16 @@ def rows():
     tree = bvh.build(scene)
     rng = np.random.default_rng(2)
     n = 2048
-    o = rng.uniform(-5, 5, (n, 3)).astype(F)
-    d = rng.normal(size=(n, 3)).astype(F)
+    o = rng.uniform(-5, 5, (n, 3)).astype(FLOAT32)
+    d = rng.normal(size=(n, 3)).astype(FLOAT32)
     leaf = rng.integers(0, len(tree["tris"]), n)
     g = tree["tris"][leaf]
     lo, hi = bvh.node_boxes(tree["nodes"][tree["leaf_node"][leaf]])
-    d = (g[:, 0:3] + 0.3 * g[:, 3:6] + 0.3 * g[:, 6:9] - o).astype(F)
+    d = (g[:, 0:3] + 0.3 * g[:, 3:6] + 0.3 * g[:, 6:9] - o).astype(FLOAT32)
     out = {
         "o": o, "d": d, "bmin": lo.copy(), "bmax": hi.copy(),
         "v0": g[:, 0:3].copy(), "e1": g[:, 3:6].copy(), "e2": g[:, 6:9].copy(),
-        "tri": leaf.astype(np.int64), "best": np.full(n, raytrace.TMAX, F),
+        "tri": leaf.astype(np.int64), "best": np.full(n, raytrace.TMAX, FLOAT32),
     }  # fmt: skip
     edge = arithmetic.edge_inputs(rng, out, tree)
     arithmetic.bests(rng, out)
@@ -47,7 +47,7 @@ def test_bests_make_ties_and_neighbours(rows):
     ok, t, _, _ = arithmetic.triangle(r)
     tie = ok & (r["best"] == t)
     assert tie.sum() > 50
-    assert (ok & (r["best"] == np.nextafter(t, F(np.inf)))).any()
+    assert (ok & (r["best"] == np.nextafter(t, FLOAT32(np.inf)))).any()
     assert set(np.unique(r["cur"] - r["tri"])) >= {-1, 0, 1}
 
 
@@ -67,14 +67,14 @@ def test_pages_hold_the_rows(rows):
     k = packets.K
     assert pages.shape == (len(r["o"]) // 32, k["kArInVectors"] * 32)
     v = pages.reshape(-1, k["kArInVectors"], 32)
-    assert np.array_equal(v[:, k["kArO"]].ravel().view(F), r["o"][:, 0])
+    assert np.array_equal(v[:, k["kArO"]].ravel().view(FLOAT32), r["o"][:, 0])
 
 
 def test_math_inputs_stay_in_range_and_fill_pages():
     a, b, x = arithmetic.math_inputs(np.random.default_rng(3), 4096)
     q = a / b
     assert (b > 0).all() and (x > 0).all() and (a == 0).any() and (a < 0).any()
-    normal = np.abs(q[a != 0]) >= np.finfo(F).tiny
+    normal = np.abs(q[a != 0]) >= np.finfo(FLOAT32).tiny
     assert normal.all() and np.isfinite(q).all()
     v = arithmetic.math_pages(a, b, x).reshape(-1, packets.K["kMaInVectors"], 32)
-    assert np.array_equal(v[:, packets.K["kMaB"]].ravel().view(F), b)
+    assert np.array_equal(v[:, packets.K["kMaB"]].ravel().view(FLOAT32), b)

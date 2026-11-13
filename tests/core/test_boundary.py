@@ -26,7 +26,7 @@ print(json.dumps(sorted(sys.modules)))
 
 def child_environment(**extra):
     """A copy of the current environment without TT_METAL_HOME, plus `extra`."""
-    env = {k: v for k, v in os.environ.items() if k != "TT_METAL_HOME"}
+    env = {name: value for name, value in os.environ.items() if name != "TT_METAL_HOME"}
     return {**env, **extra}
 
 
@@ -45,7 +45,7 @@ def imported_modules(env):
 def test_import_pulls_in_no_tt_module_and_loads_the_session_only_on_use():
     modules = imported_modules(child_environment(TT_METAL_HOME="/nonexistent/tt-metal"))
     assert "komorebi.layout" in modules and "komorebi.cli" in modules
-    assert [m for m in modules if m.split(".")[0] in FORBIDDEN] == []
+    assert [module for module in modules if module.split(".")[0] in FORBIDDEN] == []
     assert "komorebi.session" not in modules and "komorebi.run" in modules
 
 

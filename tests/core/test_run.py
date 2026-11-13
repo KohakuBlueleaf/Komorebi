@@ -18,7 +18,7 @@ from komorebi.errors import (
 from komorebi.program import Program
 from komorebi.run import Run
 
-K = abi.headers().constants
+CONSTANTS = abi.headers().constants
 GRID = (12, 10)
 
 
@@ -40,11 +40,11 @@ def test_wait_stores_in_batches_and_returns_the_events():
     run, port, _ = make_run(port, batch=8)
     handles = [run.submit(5, (i % 120, 1), [i]) for i in range(30)]
     events = run.wait(handles)
-    assert [e.handle for e in events] == handles
-    assert all(e.kind == "done" for e in events)
+    assert [event.handle for event in events] == handles
+    assert all(event.kind == "done" for event in events)
     assert max(port.batches) <= 8 and sum(port.batches) == 30
     submitted = [(req, handler, group) for req, _, _, handler, group in port.submitted]
-    assert submitted == [(t, 5, (i % 120, 1)) for i, t in enumerate(handles)]
+    assert submitted == [(handle, 5, (i % 120, 1)) for i, handle in enumerate(handles)]
     with pytest.raises(ValueError, match="returned or forgotten"):
         run.wait(handles[3])
 
@@ -105,15 +105,15 @@ def test_exclusive_commands_are_stored_at_once_and_the_kernel_orders_them():
     port = FakePort(depth=4)
     port.auto = False
     run, port, _ = make_run(port)
-    a = run.submit(1, (0, 10), exclusive=True)
-    b = run.submit(1, (5, 10), exclusive=True)  # overlaps a
-    c = run.submit(1, (40, 10), exclusive=True)  # shares no core, behind b in order
+    first = run.submit(1, (0, 10), exclusive=True)
+    second = run.submit(1, (5, 10), exclusive=True)  # overlaps a
+    third = run.submit(1, (40, 10), exclusive=True)  # shares no core, behind b in order
     with pytest.raises(WaitTimeout):
-        run.wait(c, timeout=0.05)
-    assert run.stored == 3 and [i[0] for i in port.submitted] == [a]
+        run.wait(third, timeout=0.05)
+    assert run.stored == 3 and [i[0] for i in port.submitted] == [first]
     port.auto = True
-    run.wait([a, b, c])
-    assert [i[0] for i in port.submitted] == [a, b, c]
+    run.wait([first, second, third])
+    assert [i[0] for i in port.submitted] == [first, second, third]
 
 
 def test_a_command_that_times_out_ends_the_run_before_the_exclusive_one_behind_it():
@@ -143,9 +143,9 @@ def test_a_host_that_never_publishes_its_read_count_stalls_the_kernel():
     class Silent(FakePort):
         def push(self, rows):
             published = self.published
-            k = super().push(rows)
+            pushed = super().push(rows)
             self.published = published  # the batch did not carry the read count
-            return k
+            return pushed
 
         def _publish_if_held(self):
             pass  # waits without storing the read count
@@ -160,7 +160,9 @@ def test_sequences_follow_commands_and_skip_kernel_commands():
     run, port, _ = make_run()
     handles = [run.submit(0, (0, 1)) for _ in range(3)]
     run.drain()
-    assert [run.sequence(t) for t in handles] == [s for _, s, _, _, _ in port.submitted]
+    assert [run.sequence(handle) for handle in handles] == [
+        sequence for _, sequence, _, _, _ in port.submitted
+    ]
 
 
 def test_a_rejected_command_raises_for_its_handle_and_the_run_goes_on():
@@ -171,7 +173,7 @@ def test_a_rejected_command_raises_for_its_handle_and_the_run_goes_on():
     with pytest.raises(CommandRejected, match="reason 3: group") as caught:
         run.wait([good, bad, after])
     assert caught.value.handle == bad
-    assert caught.value.reason == K["KMD_REJECT_GROUP"]
+    assert caught.value.reason == CONSTANTS["KMD_REJECT_GROUP"]
     assert run.event(after).kind == "done"
     assert run.sequence(after) == 2 and run.sequence(bad) is None
     assert run.wait(run.submit(1, (0, 4))).kind == "done"
@@ -182,8 +184,12 @@ def test_sequences_skip_0_at_the_wrap_as_the_kernel_numbers_them():
     run._next_sequence, port.sequence = abi.M32 - 1, abi.M32 - 2
     handles = [run.submit(0, (0, 1)) for _ in range(3)]
     run.drain()
-    assert [run.sequence(t) for t in handles] == [abi.M32 - 1, abi.M32, 1]
-    assert [s for _, s, _, _, _ in port.submitted] == [abi.M32 - 1, abi.M32, 1]
+    assert [run.sequence(handle) for handle in handles] == [abi.M32 - 1, abi.M32, 1]
+    assert [sequence for _, sequence, _, _, _ in port.submitted] == [
+        abi.M32 - 1,
+        abi.M32,
+        1,
+    ]
 
 
 def test_the_kernel_holds_exit_while_a_slot_is_busy_and_rejects_commands_after_it():
@@ -191,13 +197,16 @@ def test_the_kernel_holds_exit_while_a_slot_is_busy_and_rejects_commands_after_i
     port.auto = False
     busy = run.submit(1, (0, 4))
     run._send(busy, 1.0)
-    exit_ = run._queue_command(K["KM_HANDLER_EXIT"], None)
+    exit_ = run._queue_command(CONSTANTS["KM_HANDLER_EXIT"], None)
     run._send(exit_, 1.0)
     run.port.poll()
     assert port.held_exit > 0 and not port.exited
     port.auto = True
     run.wait([busy, exit_])
-    assert port.exited and port.submitted[-1][3:] == (K["KM_HANDLER_EXIT"], (0, 120))
+    assert port.exited and port.submitted[-1][3:] == (
+        CONSTANTS["KM_HANDLER_EXIT"],
+        (0, 120),
+    )
     late = run._queue_command(1, (0, 4))  # past the host's own stop
     with pytest.raises(CommandRejected, match="exited"):
         run.wait(late)
@@ -207,10 +216,10 @@ def test_stop_drains_sends_exit_to_every_core_then_stop():
     run, port, backend = make_run(trace_cap=8)
     handles = [run.submit(1, (i, 2)) for i in range(3)]
     result = run.stop()
-    assert all(run.event(t).kind == "done" for t in handles)
+    assert all(run.event(handle).kind == "done" for handle in handles)
     exit_req, _, _, handler, group = port.submitted[-1]
-    assert handler == K["KM_HANDLER_EXIT"] and group == (0, 120)
-    assert port.state == K["KMD_STATE_DONE"] and result["error"] == 0
+    assert handler == CONSTANTS["KM_HANDLER_EXIT"] and group == (0, 120)
+    assert port.state == CONSTANTS["KMD_STATE_DONE"] and result["error"] == 0
     assert backend.calls == ["finish", "read_back"]
     assert run.stopped and len(run.state()) == 120
     assert run.trace().phases(handles[1])["count"] == 2
@@ -224,7 +233,7 @@ def test_stop_drains_sends_exit_to_every_core_then_stop():
     [
         ({"result_ready": False, "failed": "timeout waiting for the core"}, "never"),
         ({"cleaned": False}, "could not restore"),
-        ({"state": K["KMD_STATE_READY"]}, "state ready"),
+        ({"state": CONSTANTS["KMD_STATE_READY"]}, "state ready"),
     ],
 )
 def test_stop_raises_unless_the_kernel_finished_cleanly(answer, says):
@@ -242,8 +251,11 @@ def test_abort_raises_when_the_runtime_could_not_restore_the_tile():
     run, _, backend = make_run()
     backend.cleaned = False
     backend.close_failed = "core 0 phase=0x2 trap(mcause=0x7)"
-    words, x280_cores = [0] * K["KMD_R_WORDS"], [0] * 16
-    words[K["KMD_R_STATE"]], x280_cores[K["KMD_H_ABANDONED"]] = K["KMD_STATE_FAILED"], 3
+    words, x280_cores = [0] * CONSTANTS["KMD_R_WORDS"], [0] * 16
+    words[CONSTANTS["KMD_R_STATE"]], x280_cores[CONSTANTS["KMD_H_ABANDONED"]] = (
+        CONSTANTS["KMD_STATE_FAILED"],
+        3,
+    )
     backend.aborted = {"words": words, "x280_cores": x280_cores}
     with pytest.raises(KernelFailed, match=r"mcause=0x7.*failed, 3 commands aband"):
         run.abort()
@@ -273,8 +285,10 @@ def test_stop_waits_for_commands_in_flight_before_exit():
     port.auto = True
     run.stop()
     assert port.held_exit == 0  # the host drained: the kernel had nothing to hold
-    assert [run.event(t).kind for t in handles] == ["done"] * 3
-    assert port.submitted[-1][3] == K["KM_HANDLER_EXIT"] and port.submitted[-1][4] == (
+    assert [run.event(handle).kind for handle in handles] == ["done"] * 3
+    assert port.submitted[-1][3] == CONSTANTS["KM_HANDLER_EXIT"] and port.submitted[-1][
+        4
+    ] == (
         0,
         120,
     )
@@ -282,7 +296,7 @@ def test_stop_waits_for_commands_in_flight_before_exit():
 
 def stray_event(port, req):
     port.pushed_events += 1
-    port.events.append([port.pushed_events, req, K["KM_EVENT_DONE"], 7])
+    port.events.append([port.pushed_events, req, CONSTANTS["KM_EVENT_DONE"], 7])
 
 
 @pytest.mark.parametrize("req", [9, 1])  # never stored; already filed
@@ -329,7 +343,7 @@ class SlowPort(FakePort):
         for slot, (sequence, req, _) in sorted(self.busy.items()):
             if now - self.since.setdefault(sequence, now) >= self.delay:
                 del self.busy[slot]
-                self._event(req, K["KM_EVENT_DONE"])
+                self._event(req, CONSTANTS["KM_EVENT_DONE"])
 
 
 class SlowBackend(FakeBackend):
@@ -345,10 +359,10 @@ def test_stop_ends_within_its_timeout_when_every_part_is_slow():
     port = SlowPort(delay=0.06)  # drain, EXIT and finish: 0.18 s in all
     run = Run(SlowBackend(port), GRID)
     run.submit(1, (0, 2))
-    t0 = time.monotonic()
+    started = time.monotonic()
     with pytest.raises(KernelFailed, match="never became ready"):
         run.stop(timeout=0.14)
-    assert time.monotonic() - t0 < 0.14 + 0.05 and run.stopped
+    assert time.monotonic() - started < 0.14 + 0.05 and run.stopped
 
 
 class CardThread:
@@ -366,27 +380,29 @@ class CardThread:
 def test_sequences_are_exact_while_a_card_thread_submits_commands_between():
     run, port, _ = make_run(trace_cap=1024)
     run.thread = CardThread()  # started at the load, before any host command
-    a = run.submit(1, (0, 2))
-    run.wait(a)
+    first = run.submit(1, (0, 2))
+    run.wait(first)
     port.sequence += 700  # the thread's commands, numbered by the same kernel
-    b = run.submit(1, (2, 2))
-    run.wait(b)
-    assert run.group(b) == (2, 2)
+    second = run.submit(1, (2, 2))
+    run.wait(second)
+    assert run.group(second) == (2, 2)
     assert (
-        [run.sequence(t) for t in (a, b)] == [1, 702] == [x[1] for x in port.submitted]
+        [run.sequence(handle) for handle in (first, second)]
+        == [1, 702]
+        == [x[1] for x in port.submitted]
     )
     run.stop()
-    assert run.trace().phases(b)["count"] == 2
+    assert run.trace().phases(second)["count"] == 2
 
 
 def test_a_gap_of_other_sources_too_long_to_tell_raises():
     run, port, _ = make_run(trace_cap=8)  # keeps the sequences of waited handles
-    a = run.wait(run.submit(1, (0, 2))).handle
+    first = run.wait(run.submit(1, (0, 2))).handle
     port.sequence += 40_000
-    b = run.wait(run.submit(1, (0, 2))).handle
-    assert run.sequence(a) == 1
+    second = run.wait(run.submit(1, (0, 2))).handle
+    assert run.sequence(first) == 1
     with pytest.raises(KomorebiError, match="other sources"):
-        run.sequence(b)
+        run.sequence(second)
 
 
 def test_a_queued_command_gets_its_first_core_and_sequence_from_its_event():
@@ -427,14 +443,14 @@ def test_a_timeout_names_command_slot_sequence_and_cores():
     port.stall_req = stalled
     with pytest.raises(CommandTimeout) as caught:
         run.wait(stalled)
-    err = caught.value
-    assert err.handle == stalled and err.group == (4, 8)
-    assert err.sequence == run.sequence(stalled) == 3
-    assert err.slot == port.submitted[-1][2]
-    assert [c["core"] for c in err.cores] == [4, 6]
-    assert err.cores[1]["reader"]["where"] == "stall"
-    assert err.cores[0]["writer"]["where"] == "complete"
-    assert "core 6 reader gave up (stop) in stall" in str(err)
+    error = caught.value
+    assert error.handle == stalled and error.group == (4, 8)
+    assert error.sequence == run.sequence(stalled) == 3
+    assert error.slot == port.submitted[-1][2]
+    assert [entry["core"] for entry in error.cores] == [4, 6]
+    assert error.cores[1]["reader"]["where"] == "stall"
+    assert error.cores[0]["writer"]["where"] == "complete"
+    assert "core 6 reader gave up (stop) in stall" in str(error)
     assert backend.calls == ["finish", "read_back"]
     assert run.result()["error_name"] == "deadline"
     with pytest.raises(CommandTimeout):
@@ -444,7 +460,7 @@ def test_a_timeout_names_command_slot_sequence_and_cores():
 def test_a_kernel_that_ends_on_its_own_raises_kernel_failed():
     run, port, _ = make_run()
     run.wait(run.submit(1, (0, 1)))
-    port._finish(K["KMD_ERROR_IDLE"])
+    port._finish(CONSTANTS["KMD_ERROR_IDLE"])
     with pytest.raises(KernelFailed, match="idle"):
         run.wait(run.submit(1, (0, 1)), timeout=1.0)
     assert run.stopped
@@ -453,7 +469,7 @@ def test_a_kernel_that_ends_on_its_own_raises_kernel_failed():
 def test_a_trap_in_the_kernel_names_the_core_and_the_exception():
     run, port, _ = make_run()
     run.wait(run.submit(1, (0, 1)))
-    port._finish(K["KMD_ERROR_TRAP"], slot=5, sequence=0x8003A40, req=0)
+    port._finish(CONSTANTS["KMD_ERROR_TRAP"], slot=5, sequence=0x8003A40, req=0)
     port.result["seen"] = 0x6C8
     want = r"trap in .*core 0 \(mcause 0x5, mepc 0x8003a40, mtval 0x6c8\)"
     with pytest.raises(KernelFailed, match=want):
@@ -482,9 +498,9 @@ def test_handles_map_onto_command_numbers_across_the_32_bit_wrap():
     handles += list(run.submit_many(0, np.arange(5, 25), 1))
     assert handles == list(range(start, start + 25)) and handles[-1] > abi.M32
     assert run.drain() == 25
-    assert [run.event(t).handle for t in handles] == handles
-    assert [r for r, _, _, _, _ in port.submitted] == handles
-    assert [run.sequence(t) for t in handles] == list(range(1, 26))
+    assert [run.event(handle).handle for handle in handles] == handles
+    assert [request for request, _, _, _, _ in port.submitted] == handles
+    assert [run.sequence(handle) for handle in handles] == list(range(1, 26))
 
 
 def test_python_cost_counters_add_up():
@@ -498,13 +514,16 @@ def test_submit_many_encodes_as_submit_does():
     many, port_many, _ = make_run()
     firsts, counts = np.array([0, 5, 119]), np.array([4, 10, 1])
     args = np.array([[1, 2, 3], [4, 5, 6], [7, 8, abi.M32]], np.uint64)
-    singles = [one.submit(7, (f, c), a) for f, c, a in zip(firsts, counts, args)]
+    singles = [
+        one.submit(7, (first, count), arguments)
+        for first, count, arguments in zip(firsts, counts, args)
+    ]
     handles = many.submit_many(7, firsts, counts, args)
     assert handles == range(1, 4) and singles == list(handles)
     one.drain()
     many.drain()
     assert port_one.ring == port_many.ring
-    assert [many.group(t) for t in handles] == [(0, 4), (5, 10), (119, 1)]
+    assert [many.group(handle) for handle in handles] == [(0, 4), (5, 10), (119, 1)]
 
 
 def test_submit_many_broadcasts_and_takes_a_handler_per_command():
@@ -537,13 +556,13 @@ def test_submit_many_checks_every_command_before_queueing_any():
 
 def test_submit_many_and_submit_keep_one_order():
     run, port, _ = make_run()
-    a = run.submit(0, (0, 1))
-    b = run.submit_many(0, [1, 2], 1)
-    c = run.submit(0, (3, 1))
+    first = run.submit(0, (0, 1))
+    middle = run.submit_many(0, [1, 2], 1)
+    last = run.submit(0, (3, 1))
     run.drain()
-    assert [i[0] for i in port.submitted] == [a, *b, c]
+    assert [i[0] for i in port.submitted] == [first, *middle, last]
     assert [i[4][0] for i in port.submitted] == [0, 1, 2, 3]
-    assert [run.sequence(t) for t in [a, *b, c]] == [1, 2, 3, 4]
+    assert [run.sequence(handle) for handle in [first, *middle, last]] == [1, 2, 3, 4]
 
 
 def test_a_drain_of_many_commands_is_one_native_loop_per_slice():
@@ -560,14 +579,16 @@ def test_exclusive_commands_from_submit_many_wait_for_overlapping_groups():
     port = FakePort(depth=4)
     port.auto = False
     run, port, _ = make_run(port)
-    a = run.submit(1, (0, 10))
+    first = run.submit(1, (0, 10))
     held = run.submit_many(1, [5, 50], 10, exclusive=True)
     with pytest.raises(WaitTimeout):
         run.wait(held[0], timeout=0.05)
-    assert run.stored == 2 and [i[0] for i in port.submitted] == [a]  # up to held[0]
+    assert run.stored == 2 and [i[0] for i in port.submitted] == [
+        first
+    ]  # up to held[0]
     port.auto = True
     run.wait(held)
-    assert [i[0] for i in port.submitted] == [a, *held]
+    assert [i[0] for i in port.submitted] == [first, *held]
 
 
 def test_a_result_command_returns_the_leaders_word_on_its_done_event():
@@ -576,7 +597,7 @@ def test_a_result_command_returns_the_leaders_word_on_its_done_event():
     port.results[with_result] = 0xBEEF
     one, other = run.wait([with_result, plain])
     assert one.result == 0xBEEF and other.result is None
-    assert port.ring[with_result][1] >> 8 == K["KM_FLAG_RESULT"]
+    assert port.ring[with_result][1] >> 8 == CONSTANTS["KM_FLAG_RESULT"]
 
 
 def test_a_queued_command_takes_its_count_and_the_kernel_picks_the_group():
@@ -594,11 +615,11 @@ def test_a_queued_command_takes_its_count_and_the_kernel_picks_the_group():
 def test_wait_any_returns_the_first_event_of_a_set_and_forgets_only_it():
     run, port, _ = make_run()
     port.auto = False
-    a, b = run.submit(1, (0, 8)), run.submit(1, (8, 8))
+    first, second = run.submit(1, (0, 8)), run.submit(1, (8, 8))
     with pytest.raises(WaitTimeout):
-        run.wait_any([b, a], timeout=0.05)
+        run.wait_any([second, first], timeout=0.05)
     port.auto = True
-    assert run.wait_any([b, a]).handle == a
-    assert run.wait_any([b]).handle == b
+    assert run.wait_any([second, first]).handle == first
+    assert run.wait_any([second]).handle == second
     with pytest.raises(ValueError, match="returned or forgotten"):
-        run.wait_any([a])
+        run.wait_any([first])

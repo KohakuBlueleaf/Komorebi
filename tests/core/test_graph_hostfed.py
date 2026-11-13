@@ -11,7 +11,7 @@ from komorebi import abi
 from komorebi.engines.graph import Graph
 from komorebi.run import Run
 
-K = abi.headers().constants
+CONSTANTS = abi.headers().constants
 pytestmark = pytest.mark.skipif(shutil.which("cc") is None, reason="needs cc")
 
 
@@ -20,7 +20,7 @@ class ResultPort(FakePort):
 
     def _event(self, req, kind, auxiliary=0, ticks=100):
         words = self.ring.get(req)
-        if kind == K["KM_EVENT_DONE"] and words:
+        if kind == CONSTANTS["KM_EVENT_DONE"] and words:
             ticks = words[3] + (words[2] >> 16)
         super()._event(req, kind, auxiliary, ticks)
 
@@ -31,40 +31,51 @@ def make_run():
 
 
 def loop():
-    g = Graph(max_runs=100)
-    it, err = g.bindings("it"), g.register()
-    a = g.command(1, group=(0, 60), args=[it])
-    b = g.command(2, group=(0, 30), args=[it], after=[a])
-    c = g.command(3, group=(30, 30), args=[it], after=[a])
-    d = g.command(4, group=(0, 60), args=[it], after=[b, c], result=err)
-    e = g.cpu(after=[d])
-    e.addi(it, it, 1)
-    e.lt(g.again, err, g.const(65))
-    return g
+    graph = Graph(max_runs=100)
+    binding, result_register = graph.bindings("it"), graph.register()
+    root = graph.command(1, group=(0, 60), args=[binding])
+    left = graph.command(2, group=(0, 30), args=[binding], after=[root])
+    right = graph.command(3, group=(30, 30), args=[binding], after=[root])
+    merge = graph.command(
+        4, group=(0, 60), args=[binding], after=[left, right], result=result_register
+    )
+    update = graph.cpu(after=[merge])
+    update.addi(binding, binding, 1)
+    update.lt(graph.again, result_register, graph.const(65))
+    return graph
 
 
 def test_hostfed_gives_the_simulated_commands_and_registers_and_takes_new_bindings():
-    g = loop()
+    graph = loop()
     run, _ = make_run()
-    for it, rounds in ((0, 6), (2, 4)):
-        got = run.run_hostfed(g, {"it": it})
-        want = g.simulate({"it": it}, result=lambda r: r.args[0] + r.count)
+    for value, rounds in ((0, 6), (2, 4)):
+        got = run.run_hostfed(graph, {"it": value})
+        want = graph.simulate(
+            {"it": value}, result=lambda command: command.args[0] + command.count
+        )
         assert (got.status, got.runs, got.registers) == (
             "ended",
             rounds,
             want.registers,
         )
-        key = sorted((r.run, r.node, r.first, r.count, r.args) for r in got.commands)
+        key = sorted(
+            (command.run, command.node, command.first, command.count, command.args)
+            for command in got.commands
+        )
         assert key == sorted(
-            (r.run, r.node, r.first, r.count, r.args) for r in want.commands
+            (command.run, command.node, command.first, command.count, command.args)
+            for command in want.commands
         )
 
 
 def test_a_queued_command_gets_the_kernels_group_after_the_groups_in_flight():
-    g = Graph()
-    g.command(1, group=(0, 50))
-    g.command(2, count=20)
+    graph = Graph()
+    graph.command(1, group=(0, 50))
+    graph.command(2, count=20)
     run, port = make_run()
-    got = run.run_hostfed(g)
-    assert [(r.first, r.queued) for r in got.commands] == [(0, False), (None, True)]
+    got = run.run_hostfed(graph)
+    assert [(command.first, command.queued) for command in got.commands] == [
+        (0, False),
+        (None, True),
+    ]
     assert [group for *_, group in port.submitted] == [(0, 50), (50, 20)]

@@ -20,7 +20,7 @@ import fed  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi import formats  # noqa: E402
 
-K = rec.K
+CONSTANTS = rec.CONSTANTS
 KERNELS = HERE.parents[2] / "examples" / "01_mapcollect" / "kernels"
 HANDLERS = rec.constants(KERNELS / "mapcollect.h")
 HANDLER_MAP, HANDLER_STALL = HANDLERS["kHandlerMap"], HANDLERS["kHandlerStall"]
@@ -246,7 +246,7 @@ def overlaps(res, groups, n):
     }
 
 
-def in_flight_together(res, groups, n, window=K["KM_RING_SLOTS"]):
+def in_flight_together(res, groups, n, window=CONSTANTS["KM_RING_SLOTS"]):
     """Pairs of jobs on overlapping groups (at most `window` apart) where a core of
     the later one took it before the earlier one's leader pushed (from the trace)."""
     tr = res.trace.astype(np.int64)
@@ -304,7 +304,7 @@ def run(session, args, rng):
     base = place_outputs(groups, pages, args.out_tensors)
 
     commands = []
-    flags = K["KM_FLAG_EXCLUSIVE"] if args.exclusive else 0
+    flags = CONSTANTS["KM_FLAG_EXCLUSIVE"] if args.exclusive else 0
     for j, (first, count) in enumerate(groups):
         if j == args.stall:
             commands.append(rec.command(HANDLER_STALL, first, count, [args.stall_rank]))
@@ -312,7 +312,7 @@ def run(session, args, rng):
             side = [0, int(args.bad_side == "reader")]
             commands.append(rec.command(HANDLER_BAD_ITEM, first, count, side))
         elif j == args.result:
-            value, flag = [args.result_value], K["KM_FLAG_RESULT"]
+            value, flag = [args.result_value], CONSTANTS["KM_FLAG_RESULT"]
             commands.append(rec.command(HANDLER_RESULT, first, count, value, flag))
         elif j == args.late:
             late = [args.late_rank, args.late_cycles]
@@ -323,11 +323,11 @@ def run(session, args, rng):
                 if args.exit_group
                 else (0, 1)
             )
-            commands.append(rec.command(K["KM_HANDLER_EXIT"], *x))
+            commands.append(rec.command(CONSTANTS["KM_HANDLER_EXIT"], *x))
         elif args.handler == "align":
             commands.append(rec.command(HANDLER_ALIGN, first, count))
         elif args.handler == "nop":
-            commands.append(rec.command(K["KM_HANDLER_NOP"], first, count))
+            commands.append(rec.command(CONSTANTS["KM_HANDLER_NOP"], first, count))
         else:
             words = [
                 inputs[j % 2].address,

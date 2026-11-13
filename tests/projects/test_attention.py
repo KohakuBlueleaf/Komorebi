@@ -7,7 +7,7 @@ import pytest
 from projects.attention import plan as pl
 from projects.attention.reference import sdpa
 
-K = pl.K
+CONSTANTS = pl.K
 GRID = (12, 10)
 
 
@@ -56,11 +56,11 @@ def test_tables_follow_the_header():
     s = pl.dims(1, 2, 2, 64, 64, 64, 64, False)
     p = pl.make(s, GRID, length=10)
     words = pl.tables(p)
-    assert words.shape == (120, K["kTableBytes"] // 4)
+    assert words.shape == (120, CONSTANTS["kTableBytes"] // 4)
     core = next(c for c, jobs in enumerate(p.jobs) if jobs)
-    j, at = p.jobs[core][0], K["kTabFirst"]
-    assert words[core, K["kTabJobs"]] == len(p.jobs[core])
-    assert list(words[core, at : at + K["kJobWords"]]) == [
+    j, at = p.jobs[core][0], CONSTANTS["kTabFirst"]
+    assert words[core, CONSTANTS["kTabJobs"]] == len(p.jobs[core])
+    assert list(words[core, at : at + CONSTANTS["kJobWords"]]) == [
         j.q0, j.k0, j.v0, j.o0, j.rows, j.start, j.nk, j.stride
     ]  # fmt: skip
 
@@ -69,9 +69,13 @@ def test_buffers_and_profile_words_do_not_collide():
     s = pl.dims(1, 2, 2, 64, 64, 128, 128, True)
     cbs = [b[0] for b in pl.buffers(s, 13, 12)]
     assert len(set(cbs)) == len(cbs) and max(cbs) < 29  # 29 to 31: the runtime's
-    prof = [v for name, v in K.items() if name.startswith("kPr") and "Prof" not in name]
-    assert len(set(prof)) == len(prof) and max(prof) < K["kProfWords"]
-    assert K["kProfWords"] * 4 <= K["kProfBytes"]
+    prof = [
+        v
+        for name, v in CONSTANTS.items()
+        if name.startswith("kPr") and "Prof" not in name
+    ]
+    assert len(set(prof)) == len(prof) and max(prof) < CONSTANTS["kProfWords"]
+    assert CONSTANTS["kProfWords"] * 4 <= CONSTANTS["kProfBytes"]
     assert len(pl.call_args(1, 2, 3, 4, 5, passes=7)) == 9
 
 

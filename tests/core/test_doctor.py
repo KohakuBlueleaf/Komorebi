@@ -55,7 +55,7 @@ def test_doctor_with_a_tree_without_the_x280_runtime(monkeypatch, tmp_path, caps
 
 
 def test_kmr_doctor_exits_zero_in_a_fresh_process_with_a_missing_tree():
-    env = {k: v for k, v in os.environ.items() if k != "TT_METAL_HOME"}
+    env = {name: value for name, value in os.environ.items() if name != "TT_METAL_HOME"}
     env["PYTHONPATH"] = str(ROOT / "src")
     env["TT_METAL_HOME"] = "/nonexistent/tt-metal"
     done = subprocess.run(

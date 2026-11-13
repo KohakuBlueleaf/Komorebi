@@ -7,7 +7,7 @@ import pytest
 from projects.raster import lists, passes
 from ref import raster, scenes
 
-K = lists.K
+CONSTANTS = lists.K
 
 
 @pytest.fixture(scope="module")
@@ -54,7 +54,7 @@ def test_setup_at_the_middle_steps_slots_writes_the_lists_of_build_lists(tiny):
     cnt, rows = passes.counters(recs, n, cores)
     mid = passes.middle(cnt, rows, 5)
     cards = lists.pack_records(recs)
-    cards[:, K["kRecIndex"]] = 0
+    cards[:, CONSTANTS["kRecIndex"]] = 0
     want, directory = lists.build_lists(cards, offsets, members, mid["tiles_of"])
     assert np.array_equal(directory, mid["directory"])
     # SETUP: each core's records in triangle order, each to the next slot of its tiles

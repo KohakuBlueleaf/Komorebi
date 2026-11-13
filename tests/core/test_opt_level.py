@@ -72,12 +72,14 @@ def text_bytes(tmp_path, level):
     size = _env.sfpi_bin(tree) / "riscv-tt-elf-size"
     if not (gcc.is_file() and size.is_file()):
         pytest.skip(f"needs {gcc.name} and {size.name}")
-    src, obj = tmp_path / "kernel.c", tmp_path / f"kernel-{level}.o"
-    src.write_text(SOURCE)
+    source_file, object_file = tmp_path / "kernel.c", tmp_path / f"kernel-{level}.o"
+    source_file.write_text(SOURCE)
     flags = ["-mcpu=tt-bh", "-mabi=ilp32", f"-{level}"]
-    subprocess.run([str(gcc), *flags, "-c", str(src), "-o", str(obj)], check=True)
+    subprocess.run(
+        [str(gcc), *flags, "-c", str(source_file), "-o", str(object_file)], check=True
+    )
     out = subprocess.run(
-        [str(size), str(obj)], capture_output=True, text=True, check=True
+        [str(size), str(object_file)], capture_output=True, text=True, check=True
     )
     return int(out.stdout.splitlines()[1].split()[0])
 

@@ -17,7 +17,7 @@ SPEC = importlib.util.spec_from_file_location(
 )
 rec = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(rec)
-K = rec.K
+CONSTANTS = rec.CONSTANTS
 GRID = (12, 10)
 
 
@@ -43,11 +43,14 @@ def test_command_fields_follow_the_abi_header():
 
 
 def test_constants_come_from_the_headers():
-    assert K["KM_RING_SLOTS"] == 16 and K["KM_CONTROL_BYTES"] == 0x15C0
-    assert K["KM_READY"] == 0xFFFFFFFF and K["KM_HANDLER_EXIT"] == 255
-    assert K["KM_HANDLER_USER_MAX"] == 239 and "KM_FLAG_ACK" not in K
-    assert K["kStateWords"] * 4 <= K["KM_CONTROL_JOB"] - K["KM_CONTROL_STATE"]
-    assert K["kFdArgs"] == 15 and K["kFeederMagic"] == 0xFEED0000
+    assert CONSTANTS["KM_RING_SLOTS"] == 16 and CONSTANTS["KM_CONTROL_BYTES"] == 0x15C0
+    assert CONSTANTS["KM_READY"] == 0xFFFFFFFF and CONSTANTS["KM_HANDLER_EXIT"] == 255
+    assert CONSTANTS["KM_HANDLER_USER_MAX"] == 239 and "KM_FLAG_ACK" not in CONSTANTS
+    assert (
+        CONSTANTS["kStateWords"] * 4
+        <= CONSTANTS["KM_CONTROL_JOB"] - CONSTANTS["KM_CONTROL_STATE"]
+    )
+    assert CONSTANTS["kFdArgs"] == 15 and CONSTANTS["kFeederMagic"] == 0xFEED0000
 
 
 def test_start_up_arguments_are_in_header_order():
@@ -62,11 +65,13 @@ def test_start_up_arguments_are_in_header_order():
 
 def test_command_encoding():
     words = rec.command(7, 5, 60, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-    w = dict(zip(rec.COMMAND_FIELDS, words))
-    assert w["hdr"] == 7  # flags zero: every command completes
-    assert w["group"] == 5 | 60 << 16
-    assert [w[f"a{i}"] for i in range(10)] == list(range(1, 11))
-    assert w["sequence"] == w["land1"] == w["land2"] == w["land3"] == 0
+    fields = dict(zip(rec.COMMAND_FIELDS, words))
+    assert fields["hdr"] == 7  # flags zero: every command completes
+    assert fields["group"] == 5 | 60 << 16
+    assert [fields[f"a{i}"] for i in range(10)] == list(range(1, 11))
+    assert (
+        fields["sequence"] == fields["land1"] == fields["land2"] == fields["land3"] == 0
+    )
     with pytest.raises(ValueError):
         rec.command(1, 0, 1, list(range(11)))
 
@@ -80,29 +85,39 @@ def test_int32_round_trip_keeps_the_bits():
 def test_groups_cover_every_worker_once(workers):
     grp, n_groups = rec.groups(GRID, workers)
     assert sorted(grp) == list(range(workers))
-    leaders = {c for c, g in grp.items() if g[0] == c}
-    assert n_groups == len(leaders) <= K["KM_RING_SLOTS"]
+    leaders = {core for core, group in grp.items() if group[0] == core}
+    assert n_groups == len(leaders) <= CONSTANTS["KM_RING_SLOTS"]
     for leader in leaders:
-        others = [c for c, g in grp.items() if g[0] == leader and c != leader]
+        others = [
+            core for core, group in grp.items() if group[0] == leader and core != leader
+        ]
         assert grp[leader][2] == len(others)
-        assert sorted(grp[c][1] for c in others) == list(range(len(others)))
-        assert all(c % GRID[0] == leader % GRID[0] and c > leader for c in others)
-    assert len({g[3] for c, g in grp.items() if g[0] == c}) == n_groups
+        assert sorted(grp[core][1] for core in others) == list(range(len(others)))
+        assert all(
+            core % GRID[0] == leader % GRID[0] and core > leader for core in others
+        )
+    assert (
+        len({group[3] for core, group in grp.items() if group[0] == core}) == n_groups
+    )
 
 
 def test_partition_matches_the_layout_partition():
-    for n in (0, 1, 7, 64, 120):
+    for size in (0, 1, 7, 64, 120):
         for count in (1, 3, 8, 60, 119):
             for i in range(count):
-                start, length = rec.partition(n, i, count)
-                assert range(start, start + length) == partition(range(n), i, count)
+                start, length = rec.partition(size, i, count)
+                assert range(start, start + length) == partition(range(size), i, count)
 
 
 def test_random_groups_fit_the_workers():
     rng = np.random.default_rng(3)
     groups = rec.random_groups(rng, 500, 119)
-    assert all(c >= 1 and f >= 0 and f + c <= 119 for f, c in groups)
-    assert {c for _, c in groups} >= {1, 119} or len({c for _, c in groups}) > 50
+    assert all(
+        count >= 1 and first >= 0 and first + count <= 119 for first, count in groups
+    )
+    assert {count for _, count in groups} >= {1, 119} or len(
+        {count for _, count in groups}
+    ) > 50
 
 
 def test_limit_units():
@@ -112,50 +127,72 @@ def test_limit_units():
 
 def test_feeder_rows_decode():
     rows = np.zeros((3, 16), dtype=np.uint64)
-    rows[0, K["kFrMagic"]] = K["kFeederMagic"]
-    rows[0, K["kFrStatus"]] = K["kFsTimeout"]
-    rows[0, K["kFrSlot"]], rows[0, K["kFrSequence"]] = 3, 41
-    rows[0, K["kFrSpanLo"]], rows[0, K["kFrSpanHi"]] = 5, 1
-    rows[2, K["kFrRecSequence"]] = 2
-    rows[2, K["kFrRecAcked"]] = 0xFFFFFFF0
-    s = rec.feeder_summary(rec.as_int32(rows))
-    assert s["magic_ok"] and s["status"] == "timeout"
-    assert (s["slot"], s["sequence"], s["span_cycles"]) == (3, 41, (1 << 32) + 5)
-    r = rec.feeder_commands(rec.as_int32(rows))
-    assert r["sequence"].tolist() == [0, 2] and r["acked"][1] == 0xFFFFFFF0
+    rows[0, CONSTANTS["kFrMagic"]] = CONSTANTS["kFeederMagic"]
+    rows[0, CONSTANTS["kFrStatus"]] = CONSTANTS["kFsTimeout"]
+    rows[0, CONSTANTS["kFrSlot"]], rows[0, CONSTANTS["kFrSequence"]] = 3, 41
+    rows[0, CONSTANTS["kFrSpanLo"]], rows[0, CONSTANTS["kFrSpanHi"]] = 5, 1
+    rows[2, CONSTANTS["kFrRecSequence"]] = 2
+    rows[2, CONSTANTS["kFrRecAcked"]] = 0xFFFFFFF0
+    summary = rec.feeder_summary(rec.as_int32(rows))
+    assert summary["magic_ok"] and summary["status"] == "timeout"
+    assert (summary["slot"], summary["sequence"], summary["span_cycles"]) == (
+        3,
+        41,
+        (1 << 32) + 5,
+    )
+    commands = rec.feeder_commands(rec.as_int32(rows))
+    assert (
+        commands["sequence"].tolist() == [0, 2] and commands["acked"][1] == 0xFFFFFFF0
+    )
     assert rec.wrap(np.int64(3) - np.int64(0xFFFFFFFE)) == 5
 
 
 def test_state_words_decode():
-    control = np.zeros((2, K["KM_CONTROL_BYTES"] // 4), dtype=np.uint64)
-    base = K["KM_CONTROL_STATE"] // 4
-    control[1, base + K["kStMagic"]] = K["kStateMagic"] | 0xBEEF << 8 | 1
-    word = K["kGaveStop"] | K["kWhereStall"] << 8 | 4 << 16
-    control[1, base + K["kStReader"]], control[1, base + K["kStReaderSequence"]] = (
+    control = np.zeros((2, CONSTANTS["KM_CONTROL_BYTES"] // 4), dtype=np.uint64)
+    base = CONSTANTS["KM_CONTROL_STATE"] // 4
+    control[1, base + CONSTANTS["kStMagic"]] = (
+        CONSTANTS["kStateMagic"] | 0xBEEF << 8 | 1
+    )
+    word = CONSTANTS["kGaveStop"] | CONSTANTS["kWhereStall"] << 8 | 4 << 16
+    (
+        control[1, base + CONSTANTS["kStReader"]],
+        control[1, base + CONSTANTS["kStReaderSequence"]],
+    ) = (
         word,
         77,
     )
-    control[1, base + K["kStEnds"]] = K["kEndExit"] | K["kEndAbort"] << 8 | 2 << 16
-    control[1, base + K["kStWrong"]] = 3 << 16
-    st = rec.state_words(rec.as_int32(control))
-    c = rec.core_state(st, 1, tag=0xBEEF)
-    assert c["magic_ok"] and c["writer"] is None and c["compute"] is None
-    assert c["reader"] == {"code": "stop", "where": "stall", "slot": 4, "sequence": 77}
-    assert (c["reader_end"], c["writer_end"], c["compute_end"]) == (1, 3, 2)
-    assert c["compute_wrong"] == [0, 0, 3]
-    assert not rec.core_state(st, 1, tag=0xBEEE)["magic_ok"]
-    assert not rec.core_state(st, 0)["magic_ok"]
+    control[1, base + CONSTANTS["kStEnds"]] = (
+        CONSTANTS["kEndExit"] | CONSTANTS["kEndAbort"] << 8 | 2 << 16
+    )
+    control[1, base + CONSTANTS["kStWrong"]] = 3 << 16
+    state_words = rec.state_words(rec.as_int32(control))
+    core = rec.core_state(state_words, 1, tag=0xBEEF)
+    assert core["magic_ok"] and core["writer"] is None and core["compute"] is None
+    assert core["reader"] == {
+        "code": "stop",
+        "where": "stall",
+        "slot": 4,
+        "sequence": 77,
+    }
+    assert (core["reader_end"], core["writer_end"], core["compute_end"]) == (1, 3, 2)
+    assert core["compute_wrong"] == [0, 0, 3]
+    assert not rec.core_state(state_words, 1, tag=0xBEEE)["magic_ok"]
+    assert not rec.core_state(state_words, 0)["magic_ok"]
 
 
 def test_state_words_are_distinct_and_fit():
-    words = {k: v for k, v in K.items() if k.startswith("kSt") and k != "kStateWords"}
+    words = {
+        constant: value
+        for constant, value in CONSTANTS.items()
+        if constant.startswith("kSt") and constant != "kStateWords"
+    }
     words.pop("kStateMagic")
     taken = []
-    for name, at in words.items():
+    for name, offset in words.items():
         size = 16 if name in ("kStLast", "kStReported") else 1
-        taken += range(at, at + size)
-    assert len(taken) == len(set(taken)) == K["kStateWords"]
-    assert max(taken) < K["kStateWords"]
+        taken += range(offset, offset + size)
+    assert len(taken) == len(set(taken)) == CONSTANTS["kStateWords"]
+    assert max(taken) < CONSTANTS["kStateWords"]
 
 
 HOST_CHECK = r"""
@@ -206,11 +243,11 @@ int main() {
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
 def test_command_header_logic_on_the_host(tmp_path):
-    src = tmp_path / "check.cpp"
-    src.write_text(HOST_CHECK)
+    source_file = tmp_path / "check.cpp"
+    source_file.write_text(HOST_CHECK)
     exe = tmp_path / "check"
-    cmd = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
-    subprocess.run([*cmd, str(src), "-o", str(exe)], check=True)
+    command = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
+    subprocess.run([*command, str(source_file), "-o", str(exe)], check=True)
     lines = subprocess.run([str(exe)], capture_output=True, text=True, check=True)
     first, second = lines.stdout.splitlines()
     got = json.loads(first)
@@ -269,17 +306,17 @@ GROUPS = [
 
 def report_tree(tmp_path, row, groups):
     """{(first, count): {me: (parent, want)}} from the header, compiled on the host."""
-    src = tmp_path / "report.cpp"
-    src.write_text(REPORT_CHECK)
+    source_file = tmp_path / "report.cpp"
+    source_file.write_text(REPORT_CHECK)
     exe = tmp_path / "report"
-    cmd = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
-    subprocess.run([*cmd, str(src), "-o", str(exe)], check=True)
-    argv = [str(exe), str(row), *(str(v) for t in groups for v in t)]
+    command = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
+    subprocess.run([*command, str(source_file), "-o", str(exe)], check=True)
+    argv = [str(exe), str(row), *(str(value) for group in groups for value in group)]
     out = subprocess.run(argv, capture_output=True, text=True, check=True)
     trees = {}
     for line in out.stdout.splitlines():
-        f, n, me, parent, want = map(int, line.split())
-        trees.setdefault((f, n), {})[me] = (parent, want)
+        first, count, me, parent, want = map(int, line.split())
+        trees.setdefault((first, count), {})[me] = (parent, want)
     return trees
 
 
@@ -288,26 +325,26 @@ def report_tree(tmp_path, row, groups):
 def test_reports_form_a_tree_rooted_at_the_first_rank(tmp_path, row):
     trees = report_tree(tmp_path, row, GROUPS)
     assert sorted(trees) == sorted(GROUPS)
-    for (f, n), tree in trees.items():
-        assert sorted(tree) == list(range(f, f + n))
+    for (first, count), tree in trees.items():
+        assert sorted(tree) == list(range(first, first + count))
         children = {me: 0 for me in tree}
         for me, (parent, _) in tree.items():
-            if me != f:
+            if me != first:
                 assert parent in tree and parent < me
                 children[parent] += 1
-        assert all(tree[me][1] == children[me] for me in tree), (f, n)
-        one_row = row == 0 or f // row == (f + n - 1) // row
+        assert all(tree[me][1] == children[me] for me in tree), (first, count)
+        one_row = row == 0 or first // row == (first + count - 1) // row
         for me, (parent, _) in tree.items():
-            if me == f:
+            if me == first:
                 continue
             if one_row:  # one level
-                assert parent == f, (f, n, me)
+                assert parent == first, (first, count, me)
             else:  # a core reports in its own row; a row leader to the first core
-                lead = max(f, me // row * row)
-                assert parent == (lead if me != lead else f), (f, n, me)
-                assert tree[parent][0] == f or parent == f  # two levels at most
-        if n == 1:
-            assert tree == {f: (f, 0)}
+                lead = max(first, me // row * row)
+                assert parent == (lead if me != lead else first), (first, count, me)
+                assert tree[parent][0] == first or parent == first  # two levels at most
+        if count == 1:
+            assert tree == {first: (first, 0)}
 
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
@@ -320,7 +357,7 @@ def test_row_leaders_only_for_groups_that_span_rows(tmp_path):
     assert trees[(11, 14)][11] == (11, 2)  # rows of 1, 12, 1: two row leaders report
     assert trees[(11, 14)][12] == (11, 11) and trees[(11, 14)][24] == (11, 0)
     assert trees[(0, 119)][0] == (0, 11 + 9)  # its own row, then nine row leaders
-    assert all(trees[(0, 119)][c] == (0, 11) for c in range(12, 108, 12))
+    assert all(trees[(0, 119)][core] == (0, 11) for core in range(12, 108, 12))
     assert trees[(0, 119)][108] == (0, 10)
 
 
@@ -343,21 +380,28 @@ int main() {
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
 def test_excl_overlap_is_a_shared_core(tmp_path):
-    assert rec.K["KM_FLAG_EXCLUSIVE"] == 2  # flag bit 1; bit 0 stays reserved
-    src = tmp_path / "overlap.cpp"
-    src.write_text(OVERLAP_CHECK)
+    assert rec.CONSTANTS["KM_FLAG_EXCLUSIVE"] == 2  # flag bit 1; bit 0 stays reserved
+    source_file = tmp_path / "overlap.cpp"
+    source_file.write_text(OVERLAP_CHECK)
     exe = tmp_path / "overlap"
-    cmd = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
-    subprocess.run([*cmd, str(src), "-o", str(exe)], check=True)
+    command = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
+    subprocess.run([*command, str(source_file), "-o", str(exe)], check=True)
     got, last = subprocess.run(
         [str(exe)], capture_output=True, text=True, check=True
     ).stdout.split()
     want = "".join(
-        str(int(bool(set(range(fa, fa + na)) & set(range(fb, fb + nb)))))
-        for fa in range(8)
-        for na in range(6)
-        for fb in range(8)
-        for nb in range(6)
+        str(
+            int(
+                bool(
+                    set(range(first_a, first_a + count_a))
+                    & set(range(first_b, first_b + count_b))
+                )
+            )
+        )
+        for first_a in range(8)
+        for count_a in range(6)
+        for first_b in range(8)
+        for count_b in range(6)
     )
     assert got == want and last == "1"
 
@@ -370,8 +414,12 @@ def test_abi_header_compiles_as_c_and_cpp_with_its_size_checks(
 ):
     if shutil.which(compiler) is None:
         pytest.skip(f"needs {compiler}")
-    src = tmp_path / f"abi.{suffix}"
-    src.write_text('#include "komorebi/abi/km_abi.h"\nint main(void) { return 0; }\n')
+    source_file = tmp_path / f"abi.{suffix}"
+    source_file.write_text(
+        '#include "komorebi/abi/km_abi.h"\nint main(void) { return 0; }\n'
+    )
     flags = [f"-std={std}", "-Wall", "-Wextra", "-pedantic", "-Werror", "-fsyntax-only"]
-    subprocess.run([compiler, *flags, "-I", str(rec.INCLUDE), str(src)], check=True)
+    subprocess.run(
+        [compiler, *flags, "-I", str(rec.INCLUDE), str(source_file)], check=True
+    )
     assert "KM_STATIC_ASSERT(sizeof(km_command_t) == 64" in rec.ABI_H.read_text()

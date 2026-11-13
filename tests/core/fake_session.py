@@ -11,7 +11,7 @@ from fake_port import FakeBackend, FakePort
 from komorebi import abi
 from komorebi.program import Program
 
-K = abi.headers().constants
+CONSTANTS = abi.headers().constants
 
 
 class FakeDispatch(FakePort):
@@ -26,7 +26,7 @@ class FakeDispatch(FakePort):
         self.log = log
         self.is_open = True
         self.settle_microseconds = 1.0
-        self.ready_state = K["KMD_STATE_READY"]
+        self.ready_state = CONSTANTS["KMD_STATE_READY"]
         self.idle = True
         self.fail = {}  # call name -> exception it raises
         self.cleaned = True  # what close() answers
@@ -61,13 +61,13 @@ class FakeDispatch(FakePort):
 
     def aborted(self):
         x280_cores = [0] * 16
-        x280_cores[K["KMD_H_ABANDONED"]] = 2
-        return {"words": [0] * K["KMD_R_WORDS"], "x280_cores": x280_cores}
+        x280_cores[CONSTANTS["KMD_H_ABANDONED"]] = 2
+        return {"words": [0] * CONSTANTS["KMD_R_WORDS"], "x280_cores": x280_cores}
 
     def probe(self, gap_s):
-        words = [0] * K["KMD_R_WORDS"]
-        words[K["KMD_R_STATE"]] = K["KMD_STATE_READY"]
-        words[K["KMD_R_WHERE"]] = K["KMD_WHERE_LOOP"]
+        words = [0] * CONSTANTS["KMD_R_WORDS"]
+        words[CONSTANTS["KMD_R_STATE"]] = CONSTANTS["KMD_STATE_READY"]
+        words[CONSTANTS["KMD_R_WHERE"]] = CONSTANTS["KMD_WHERE_LOOP"]
         before, after = self.markers
         x280_cores = "core 0 phase=0x2 trap(mcause=0x7)"
         out = {"running": True, "failed": "", "x280_cores": x280_cores, "words": words}
@@ -156,7 +156,7 @@ def load_session(monkeypatch, tmp_path):
     module.Device = device
     module.write_l1 = lambda *args: log.append(("write_l1", *args))
 
-    def wait_grid(device, gx, gy, timeout_s):
+    def wait_grid(device, grid_x, grid_y, timeout_s):
         log.append("wait_grid")
         return module.grid_returns
 
@@ -177,7 +177,7 @@ def load_session(monkeypatch, tmp_path):
     monkeypatch.delenv(session.OP_TIMEOUT, raising=False)  # restored after the test
     monkeypatch.setattr(session, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
     state = types.SimpleNamespace(address=0x40000)
-    monkeypatch.setattr(session, "_state_area", lambda s: state)
+    monkeypatch.setattr(session, "_state_area", lambda host_session: state)
     module.card_backend = session._Backend  # the real one, for its own tests
     monkeypatch.setattr(session, "_Backend", SessionBackend)
     return session, log, module

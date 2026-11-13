@@ -5,7 +5,7 @@ import pytest
 
 from projects.raytrace import packets, planner
 
-K = packets.K
+CONSTANTS = packets.K
 P = planner.P
 
 
@@ -16,13 +16,13 @@ class Tensor:
 
 def test_plan_h_agrees_with_the_kernels():
     assert planner.same_numbers() == {}
-    assert P["RP_COST_BYTES"] == K["kCostBytes"]
+    assert P["RP_COST_BYTES"] == CONSTANTS["kCostBytes"]
 
 
 def test_table_holds_commands_owners_and_profiles():
-    directory = np.zeros((3, K["kDirBytes"] // 4), dtype=np.uint32)
-    directory[:, K["kDirFirst"]] = [0, 5, 9]
-    directory[:, K["kDirCount"]] = [5, 4, 2]
+    directory = np.zeros((3, CONSTANTS["kDirBytes"] // 4), dtype=np.uint32)
+    directory[:, CONSTANTS["kDirFirst"]] = [0, 5, 9]
+    directory[:, CONSTANTS["kDirCount"]] = [5, 4, 2]
     entries = [(P["RP_KIND_FIRST"], 7, [1, 2]), (2, 5, list(range(10)))]
     profs = [[Tensor(100 + k) for k in range(2)] for _ in range(planner.P["RP_TRACES"])]
     t = planner.table(entries, directory, profs, 3)

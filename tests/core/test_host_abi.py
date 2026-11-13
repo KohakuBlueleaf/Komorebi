@@ -5,19 +5,19 @@ import pytest
 
 from komorebi import abi
 
-H = abi.headers()
+HEADERS = abi.headers()
 
 
 def test_command_and_event_fields_follow_the_abi_header():
-    assert H.command_fields == [
+    assert HEADERS.command_fields == [
         "sequence", "hdr", "group", "a0", "land1", "a1", "a2", "a3",
         "land2", "a4", "a5", "a6", "land3", "a7", "a8", "a9",
     ]  # fmt: skip
-    assert H.event_fields == ["index", "req", "status", "ticks"]
+    assert HEADERS.event_fields == ["index", "req", "status", "ticks"]
 
 
 def test_start_up_arguments_are_in_header_order():
-    assert H.arg_fields[:6] == [
+    assert HEADERS.arg_fields[:6] == [
         "control",
         "me",
         "cores",
@@ -25,9 +25,9 @@ def test_start_up_arguments_are_in_header_order():
         "ack_base",
         "mailbox",
     ]
-    assert len(H.arg_fields) == H["kArgs"] == 19
-    assert {"row", "workers"} <= set(H.arg_fields)
-    values = {name: i for i, name in enumerate(H.arg_fields)}
+    assert len(HEADERS.arg_fields) == HEADERS["kArgs"] == 19
+    assert {"row", "workers"} <= set(HEADERS.arg_fields)
+    values = {name: i for i, name in enumerate(HEADERS.arg_fields)}
     assert abi.start_args(values) == list(range(19))
     with pytest.raises(ValueError, match="missing"):
         abi.start_args({"control": 1})
@@ -36,20 +36,21 @@ def test_start_up_arguments_are_in_header_order():
 
 
 def test_constants_of_all_three_headers():
-    assert H["KM_RING_SLOTS"] == 16 and H["KM_CONTROL_BYTES"] == 0x15C0
-    assert H["KM_READY"] == 0xFFFFFFFF and H["KM_HANDLER_EXIT"] == 255
-    assert H["KMD_LIM_MAILBOX"] == 0x100 and H["KMD_HOST_EVENTS"] == 2
-    assert H["KMD_R_WORDS"] == 32 and H["KMD_R_LAST_HI"] == 23
+    assert HEADERS["KM_RING_SLOTS"] == 16 and HEADERS["KM_CONTROL_BYTES"] == 0x15C0
+    assert HEADERS["KM_READY"] == 0xFFFFFFFF and HEADERS["KM_HANDLER_EXIT"] == 255
+    assert HEADERS["KMD_LIM_MAILBOX"] == 0x100 and HEADERS["KMD_HOST_EVENTS"] == 2
+    assert HEADERS["KMD_R_WORDS"] == 32 and HEADERS["KMD_R_LAST_HI"] == 23
     assert (
-        H["kOutReady"] == 1
-        and H["kOutSlots"] == (H["KM_CONTROL_CORES"] - H["KM_CONTROL_OUT"]) // 16
+        HEADERS["kOutReady"] == 1
+        and HEADERS["kOutSlots"]
+        == (HEADERS["KM_CONTROL_CORES"] - HEADERS["KM_CONTROL_OUT"]) // 16
     )
-    assert "KM_GROUP_ALL" not in H.constants  # a function-like macro
+    assert "KM_GROUP_ALL" not in HEADERS.constants  # a function-like macro
 
 
 def test_command_encoding_puts_fields_where_the_header_says():
     words = abi.command(7, 3, 9, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
-    named = dict(zip(H.command_fields, words))
+    named = dict(zip(HEADERS.command_fields, words))
     assert named["hdr"] == 7 and named["group"] == 3 | 9 << 16
     assert [named[f"a{i}"] for i in range(10)] == list(range(10, 20))
     assert named["sequence"] == named["land1"] == named["land2"] == named["land3"] == 0
@@ -61,13 +62,17 @@ def test_command_encoding_puts_fields_where_the_header_says():
 def test_column_groups_cover_every_core_once():
     groups = abi.column_groups((12, 10), 120)
     assert sorted(groups) == list(range(120))
-    leaders = {c for c, g in groups.items() if g[0] == c}
+    leaders = {core for core, group in groups.items() if group[0] == core}
     assert leaders == set(range(12))
     for leader in leaders:
-        others = [c for c, g in groups.items() if g[0] == leader and c != leader]
+        others = [
+            core
+            for core, group in groups.items()
+            if group[0] == leader and core != leader
+        ]
         assert groups[leader][2] == len(others) == 9
-        assert sorted(groups[c][1] for c in others) == list(range(9))
-        assert {groups[c][3] for c in [leader, *others]} == {leader}
+        assert sorted(groups[core][1] for core in others) == list(range(9))
+        assert {groups[core][3] for core in [leader, *others]} == {leader}
 
 
 def test_limit_units():
@@ -209,8 +214,10 @@ def test_a_programs_header_reads_the_package_constants_by_their_km_names(tmp_pat
         "#endif\n",
         "program.h",
     )
-    assert H["kBroadcastArgs"] == 11 and H["kWherePort"] == 17  # device headers too
-    assert abi.constants(header, known=H.constants) == {
+    assert (
+        HEADERS["kBroadcastArgs"] == 11 and HEADERS["kWherePort"] == 17
+    )  # device headers too
+    assert abi.constants(header, known=HEADERS.constants) == {
         "kArgBroadcast": 0,
         "kArgIndex": 12,
     }

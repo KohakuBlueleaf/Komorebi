@@ -12,7 +12,7 @@ from projects.raster import card, card_passes, card_thread, lists, run
 
 pytestmark = pytest.mark.card
 CARD_IN_PROCESS = True  # opens the card in this process
-K = lists.K
+CONSTANTS = lists.K
 
 
 @pytest.fixture(scope="module")
@@ -25,8 +25,14 @@ def fill(session, tiles, cores=0):
     """Fills the tiny scene's `tiles` on `cores` (0: all); the check of each tile."""
     scene, _ = run.load("tiny")
     h = run.prepare(scene, card.workers(session), tiles=tiles, cores=cores)
-    n_out = len(h["tiles"]) * K["kPlanes"]
-    lists_args = (K["kHandlerFill"], h["pages"], h["directory"], n_out, K["kPlanes"])
+    n_out = len(h["tiles"]) * CONSTANTS["kPlanes"]
+    lists_args = (
+        CONSTANTS["kHandlerFill"],
+        h["pages"],
+        h["directory"],
+        n_out,
+        CONSTANTS["kPlanes"],
+    )
     frame, _, status, _, _ = card.run_lists(session, *lists_args)
     assert status["ok"], status
     return h, run.check("tiny", tiles, *(h[k] for k in run.ARGS), frame)

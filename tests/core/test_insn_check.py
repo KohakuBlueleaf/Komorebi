@@ -24,25 +24,27 @@ def toolchain():
 
 
 def build(tmp_path, gcc, source, thread="trisc2"):
-    src = tmp_path / "kernel.c"
-    src.write_text(source)
+    source_file = tmp_path / "kernel.c"
+    source_file.write_text(source)
     elf = tmp_path / f"{thread}.elf"
     flags = ["-mcpu=tt-bh-tensix", PACK_MARCH, "-mabi=ilp32", "-O2", "-g"]
-    subprocess.run([str(gcc), *flags, "-c", str(src), "-o", str(elf)], check=True)
+    subprocess.run(
+        [str(gcc), *flags, "-c", str(source_file), "-o", str(elf)], check=True
+    )
     return elf
 
 
 def test_a_float_divide_on_the_pack_thread_is_rejected_naming_its_function(tmp_path):
     tree, gcc = toolchain()
     elf = build(tmp_path, gcc, "float ratio(float a, float b) { return a / b; }\n")
-    with pytest.raises(KernelInstructionError) as err:
+    with pytest.raises(KernelInstructionError) as raised:
         insn_check.check_kernels(
             "p", [("compute.cpp", [str(elf)])], tree, tmp_path / "cache"
         )
-    first = err.value.findings[0]
+    first = raised.value.findings[0]
     assert (first.thread, first.instruction) == ("TRISC2", "fdiv.s")
     assert first.function == "ratio" and first.line.endswith("kernel.c:1")
-    assert "TRISC2" in str(err.value) and "ratio" in str(err.value)
+    assert "TRISC2" in str(raised.value) and "ratio" in str(raised.value)
     assert not (tmp_path / "cache").exists()  # a rejected build is not remembered
 
 
@@ -55,7 +57,7 @@ def test_a_clean_kernel_passes_and_is_not_disassembled_again(tmp_path, monkeypat
     insn_check.check_kernels("p", [("compute.cpp", [str(elf)])], tree, cache)
     assert len(list(cache.iterdir())) == 1
     monkeypatch.setattr(
-        insn_check, "check_elf", lambda *a: pytest.fail("checked again")
+        insn_check, "check_elf", lambda *arguments: pytest.fail("checked again")
     )
     insn_check.check_kernels("p", [("compute.cpp", [str(elf)])], tree, cache)
 
@@ -84,7 +86,10 @@ def test_without_addr2line_a_finding_is_still_rejected(tmp_path, monkeypatch):
     tree, gcc = toolchain()
     elf = build(tmp_path, gcc, "float ratio(float a, float b) { return a / b; }\n")
     objdump, _ = insn_check.tools(tree)
-    monkeypatch.setattr(insn_check, "tools", lambda t: (objdump, tmp_path / "none"))
-    with pytest.raises(KernelInstructionError) as err:
+    monkeypatch.setattr(insn_check, "tools", lambda name: (objdump, tmp_path / "none"))
+    with pytest.raises(KernelInstructionError) as raised:
         insn_check.check_kernels("p", [("c.cpp", [str(elf)])], tree, tmp_path / "c")
-    assert (err.value.findings[0].function, err.value.findings[0].line) == ("ratio", "")
+    assert (raised.value.findings[0].function, raised.value.findings[0].line) == (
+        "ratio",
+        "",
+    )

@@ -72,7 +72,7 @@ def test_the_publish_jobs_have_the_gate_and_no_secret():
 
 def test_the_release_workflow_does_not_name_a_distribution():
     jobs = job_texts(ROOT / ".github" / "workflows" / "release.yml")
-    code = "\n".join(re.sub(r"\s#.*", "", t) for t in jobs.values())
+    code = "\n".join(re.sub(r"\s#.*", "", job) for job in jobs.values())
     assert not re.search(r"komorebi[-_](tt|runtime)", code)
 
 
@@ -100,7 +100,7 @@ def make_wheel(directory, name, version, requires=(), members=None):
     """A made-up wheel with the METADATA of a distribution and the `members`."""
     stem = f"{name.replace('-', '_')}-{version}"
     lines = ["Metadata-Version: 2.4", f"Name: {name}", f"Version: {version}"]
-    lines += [f"Requires-Dist: {r}" for r in requires]
+    lines += [f"Requires-Dist: {requirement}" for requirement in requires]
     wheel = Path(directory) / f"{stem}-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr(f"{stem}.dist-info/METADATA", "\n".join(lines) + "\n\n")
@@ -122,7 +122,7 @@ def test_path_check_finds_a_runner_path_in_a_binary_only(tmp_path):
     wheel = make_wheel(tmp_path, "made-up", "1.0", members=members)
     found, count = paths.scan(wheel, [work, "/home/runner"])
     assert count == 3
-    assert sorted((m, p) for m, p, _ in found) == [
+    assert sorted((member, pattern) for member, pattern, _ in found) == [
         ("pkg/clean.so", "/home/runner"),
         ("pkg/image.bin", "/home/runner"),
         ("pkg/lib.so.1", "/home/runner"),
@@ -157,8 +157,11 @@ def test_wheel_info_reads_the_names_and_checks_the_versions(tmp_path):
     assert found["wheel"] == main.name and found["prerelease"] == "false"
     assert info.check_versions(tmp_path, "v0.3.0")[1] == []
     assert info.main(["versions", str(tmp_path), "--tag", "v0.3.1"]) == 1
-    assert [str(r) for r in info.requirements(main)] == ["numpy"]
-    assert [str(r) for r in info.requirements(main, ["dev"])] == ["numpy", "other"]
+    assert [str(requirement) for requirement in info.requirements(main)] == ["numpy"]
+    assert [str(requirement) for requirement in info.requirements(main, ["dev"])] == [
+        "numpy",
+        "other",
+    ]
 
 
 def test_wheel_info_rejects_a_runtime_wheel_outside_the_range(tmp_path):

@@ -9,7 +9,7 @@ from komorebi import layout
 from projects.dense import swiglu_plan as sp
 from ref import dense as ref
 
-K = sp.K
+CONSTANTS = sp.K
 T = ref.TILE
 
 
@@ -42,9 +42,9 @@ def emulate(s, x, w, words):
                         ]
                     else:
                         dst = [held[a_at].popleft() for _ in range(ct)]
-                    if ep in (K["kEpSilu"], K["kEpGate"]):
+                    if ep in (CONSTANTS["kEpSilu"], CONSTANTS["kEpGate"]):
                         dst = [ref.silu(t) for t in dst]
-                    if ep in (K["kEpMul"], K["kEpGate"]):
+                    if ep in (CONSTANTS["kEpMul"], CONSTANTS["kEpGate"]):
                         dst = [t * held[b_at].popleft() for t in dst]
                     for j in range(ct):
                         if y_at == sp.DRAM:
@@ -61,7 +61,7 @@ def test_the_shapes_fit_and_a_wide_layer_does_not():
             assert sp.make(m, d, h, gate_pass, 119).fits()
     s = sp.make(16384, 256, 512, False, 119)
     assert (s.mt, s.group, s.rows()) == (512, 119, 5)
-    assert dict(s.buffers())[K["kCbHold1"]] == 5 * 16
+    assert dict(s.buffers())[CONSTANTS["kCbHold1"]] == 5 * 16
     assert not sp.make(16384, 1024, 4096, False, 119).fits()
 
 
@@ -69,11 +69,16 @@ def test_commands_chain_through_the_held_buffers():
     s = sp.make(256, 256, 512, False, 119)
     r1, r2, r3 = sp.commands(s, 100, 200)
     assert r1[0] == r2[0] == 100 and r3[1] == 200 and len(r1) == 10
-    assert r1[8] == sp.where(y=K["kCbHold0"])
-    assert r2[8] == sp.where(b=K["kCbHold0"], y=K["kCbHold1"])
-    assert r3[8] == sp.where(a=K["kCbHold1"]) and r3[3:5] == [16, 8]
+    assert r1[8] == sp.where(y=CONSTANTS["kCbHold0"])
+    assert r2[8] == sp.where(b=CONSTANTS["kCbHold0"], y=CONSTANTS["kCbHold1"])
+    assert r3[8] == sp.where(a=CONSTANTS["kCbHold1"]) and r3[3:5] == [16, 8]
     gate = sp.commands(sp.make(256, 256, 512, True, 119), 100, 200)
-    assert [w[6] for w in gate] == [K["kCbW"], K["kCbW3"], 0, K["kCbW2"]]
+    assert [w[6] for w in gate] == [
+        CONSTANTS["kCbW"],
+        CONSTANTS["kCbW3"],
+        0,
+        CONSTANTS["kCbW2"],
+    ]
 
 
 def test_kernel_tile_order_gives_swiglu():

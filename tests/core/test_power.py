@@ -51,7 +51,7 @@ def test_a_section_shorter_than_a_few_updates_reports_no_numbers():
 
 
 def test_a_lost_sensor_covers_only_the_time_before_the_loss():
-    samples = [(t / 10, 10.0, None) for t in range(0, 11)]
+    samples = [(tenth / 10, 10.0, None) for tenth in range(0, 11)]
     got = power.summarize(samples, 0.0, 3.0, 0.1, lost_at=1.0)
     assert got.lost and got.mean_w == pytest.approx(10.0)
     assert got.joules == pytest.approx(10.0) and "lost after 1.00 s" in got.note
@@ -137,10 +137,10 @@ def test_cards_are_found_through_the_device_link_not_the_hwmon_number(tmp_path):
     other = tmp_path / "devices/pci0000:c0/0000:c0:01.1/0000:c3:00.0/hwmon/hwmon5/name"
     other.write_text("other\n")
     found = power.cards(tmp_path)
-    assert [c.index for c in found] == [0, 1]
-    assert [c.pci for c in found] == ["0000:c1:00.0", "0000:c2:00.0"]
-    assert [c.hwmon.name for c in found] == ["hwmon4", "hwmon3"]
-    assert [c.limit_w for c in found] == [150.0, 120.0]
+    assert [card.index for card in found] == [0, 1]
+    assert [card.pci for card in found] == ["0000:c1:00.0", "0000:c2:00.0"]
+    assert [card.hwmon.name for card in found] == ["hwmon4", "hwmon3"]
+    assert [card.limit_w for card in found] == [150.0, 120.0]
     assert found[0].read()[0] == 69.0 and found[1].read()[0] == 19.0
     assert power.cards(tmp_path / "empty") == []
 
@@ -174,7 +174,7 @@ def fake_smi(monkeypatch, tmp_path):
 
 def test_gpus_and_their_readings_come_from_nvidia_smi(fake_smi, monkeypatch, tmp_path):
     found = power.gpus()
-    assert [(g.index, g.limit_w) for g in found] == [(0, 300.0), (1, 250.0)]
+    assert [(gpu.index, gpu.limit_w) for gpu in found] == [(0, 300.0), (1, 250.0)]
     assert found[0].read() == (66.98, 35.0)
     assert found[1].read() == (None, 41.0)
     monkeypatch.setattr(power, "NVIDIA_SMI", "false")
@@ -210,8 +210,8 @@ def test_select_takes_every_card_unless_told_otherwise(monkeypatch, tmp_path):
     make_pci_card(tmp_path, 0, "0000:c1:00.0", "hwmon3", 69_000_000)
     make_pci_card(tmp_path, 1, "0000:c2:00.0", "hwmon4", 19_000_000)
     monkeypatch.setattr(power, "SYS", tmp_path)
-    assert [s.index for s in power.select(None, None, False)[0]] == [0, 1]
-    assert [s.index for s in power.select(1, None, False)[0]] == [1]
+    assert [card.index for card in power.select(None, None, False)[0]] == [0, 1]
+    assert [card.index for card in power.select(1, None, False)[0]] == [1]
 
 
 def run_power(capsys, *args):

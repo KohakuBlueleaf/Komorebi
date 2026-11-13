@@ -83,7 +83,7 @@ def test_group_needs_a_first_core_and_at_least_one_rank():
 def test_group_partition_splits_a_range_among_its_ranks():
     group = Group(10, 4)
     parts = [group.partition(range(9), i) for i in range(group.count)]
-    assert [list(p) for p in parts] == [[0, 1, 2], [3, 4], [5, 6], [7, 8]]
+    assert [list(part) for part in parts] == [[0, 1, 2], [3, 4], [5, 6], [7, 8]]
 
 
 def test_whole_grid_is_one_rectangle_per_panel():
@@ -112,8 +112,8 @@ def test_column_broadcasts_send_from_the_start_of_the_nocs_direction():
         ((2, 1), (2, 2), (2, 3)),
         ((3, 1), (3, 2), (3, 3)),
     ]
-    up = broadcasts(GRID, PANELS, (2, 1, 2, 3), "column", 1)
-    assert up[0].sender == (2, 3) and up[0].cores[-1] == (2, 1)
+    upward = broadcasts(GRID, PANELS, (2, 1, 2, 3), "column", 1)
+    assert upward[0].sender == (2, 3) and upward[0].cores[-1] == (2, 1)
 
 
 def test_row_broadcasts_are_cut_at_the_panel_boundary():
@@ -171,8 +171,8 @@ def test_nocs_by_core_and_the_panels_from_their_noc0_x():
     order = core_order(grid)
     noc0 = [NOC0_X[x] | (y + 2) << 16 for x, y in order]
     table = [(x + 1) | (y + 2) << 16 for x, y in order]
-    n = nocs(grid, table, noc0)
-    assert n.noc0[(6, 1)] == (11, 3) and n.noc_xy[(6, 1)] == (7, 3)
-    assert n.words == tuple(table) and n.panels == PANELS
+    core_nocs = nocs(grid, table, noc0)
+    assert core_nocs.noc0[(6, 1)] == (11, 3) and core_nocs.noc_xy[(6, 1)] == (7, 3)
+    assert core_nocs.words == tuple(table) and core_nocs.panels == PANELS
     with pytest.raises(ValueError, match="for 24 cores"):
         nocs(grid, table[:-1], noc0)

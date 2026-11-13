@@ -43,13 +43,13 @@ def test_a_missing_required_array_is_rejected(tmp_path):
 
 def test_an_external_result_without_tri_is_compared_and_shown_in_the_table(tmp_path):
     ref = raster_arrays()
-    other = {k: v.copy() for k, v in ref.items() if k != "tri"}
+    other = {name: array.copy() for name, array in ref.items() if name != "tri"}
     other["depth"][6, 6] = 0.5
     stats = harness.compare(ref, other)
     assert stats["tri_differs"] is None and stats["depth_differs"] == 1
     assert stats["any_differs"] == 1 and stats["mask"][6, 6]
     info = {"name": "card", "scene": "tiny", "seconds_per_frame": 0.01}
-    info["timings_ms"] = {k: 1.0 for k in bench.STAGES}
+    info["timings_ms"] = {name: 1.0 for name in bench.STAGES}
     info["power"] = {"seconds_per_frame": 0.01, "gpu_joules_per_frame": 0.5}
     results.save_result(tmp_path / "card", "tiny", "raster", other, info)
     rows = bench.external_rows("tiny", [tmp_path])
@@ -66,9 +66,9 @@ def test_power_record_from_a_binary_that_marks_its_loop(tmp_path):
         "print(json.dumps({'reps_n': 4, 'loop_ms': 200.0}))\n"
     )
     out = power.run_with_power([sys.executable, str(script)])
-    p = out["power"]
-    assert p["seconds_per_frame"] == pytest.approx(0.05)
-    joules = p["cpu_package_joules_per_frame"]
+    record = out["power"]
+    assert record["seconds_per_frame"] == pytest.approx(0.05)
+    joules = record["cpu_package_joules_per_frame"]
     assert (joules is None) == (power.cpu_energy_uj() is None)
     assert joules is None or joules >= 0
-    assert "load_before" in out and "gpu_mean_w" not in p
+    assert "load_before" in out and "gpu_mean_w" not in record

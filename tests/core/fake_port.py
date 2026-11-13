@@ -9,8 +9,8 @@ import numpy as np
 
 from komorebi import abi
 
-H = abi.headers()
-K = H.constants
+HEADERS = abi.headers()
+CONSTANTS = HEADERS.constants
 
 
 class FakePort:
@@ -32,7 +32,7 @@ class FakePort:
         self.sequence = 0
         self.events = []  # pushed, not yet read: [index, req, status, ticks]
         self.pushed_events = 0
-        self.state = K["KMD_STATE_READY"]
+        self.state = CONSTANTS["KMD_STATE_READY"]
         self.error = 0
         self.result = {}
         self.auto = True  # complete every busy command at each poll
@@ -60,21 +60,21 @@ class FakePort:
     def push(self, rows):
         rows = np.asarray(rows, dtype=np.uint32)
         assert rows.ndim == 2 and rows.shape[1] == 16
-        k = min(len(rows), self.room())
-        for j in range(k):
-            words = [int(w) for w in rows[j]]
+        pushed = min(len(rows), self.room())
+        for j in range(pushed):
+            words = [int(word) for word in rows[j]]
             words[0] = words[4] = words[8] = words[12] = self.next & abi.M32
             self.ring[self.next] = words
             self.next += 1
         self.published = self.seen  # every batch carries the read count
-        if k:
-            self.batches.append(k)
-        return k
+        if pushed:
+            self.batches.append(pushed)
+        return pushed
 
     def enqueue(self, commands):
         rows = np.asarray(commands, dtype=np.uint32)
         assert rows.ndim == 2 and rows.shape[1] == 16
-        self.queue += [[int(w) for w in r] for r in rows]
+        self.queue += [[int(word) for word in row] for row in rows]
         return self.queued
 
     @property
@@ -86,8 +86,8 @@ class FakePort:
         command in `wanted` has one, another kind arrives, the kernel ended, or time
         is up; with nothing wanted, once."""
         self.waits += 1
-        need = {int(w) for w in wanted}
-        by = time.monotonic() + timeout_s
+        need = {int(handle) for handle in wanted}
+        deadline = time.monotonic() + timeout_s
         out = []
         while True:
             self._store_queued(int(upto))
@@ -96,19 +96,19 @@ class FakePort:
             other = False
             for row in rows.tolist():
                 need.discard(row[1])
-                other = other or (row[2] & 0xFF) != K["KM_EVENT_DONE"]
+                other = other or (row[2] & 0xFF) != CONSTANTS["KM_EVENT_DONE"]
             out += rows.tolist()
-            ended = self.state != K["KMD_STATE_READY"]
-            if not need or other or ended or time.monotonic() > by:
+            ended = self.state != CONSTANTS["KMD_STATE_READY"]
+            if not need or other or ended or time.monotonic() > deadline:
                 return np.asarray(out, dtype=np.uint32).reshape(-1, 4)
 
     def _store_queued(self, upto):
         due = (upto - self.next) & abi.M32
         due = (due - (1 << 32) if due >= 1 << 31 else due) + 1
-        k = max(0, min(len(self.queue), self.batch, self.room(), due))
-        if k:
-            self.push(self.queue[:k])
-            del self.queue[:k]
+        stored = max(0, min(len(self.queue), self.batch, self.room(), due))
+        if stored:
+            self.push(self.queue[:stored])
+            del self.queue[:stored]
 
     def poll(self):
         self._step()
@@ -141,29 +141,34 @@ class FakePort:
 
     def _finish(self, error, slot=0, sequence=0, req=0):
         self.error = error
-        self.state = K["KMD_STATE_FAILED"] if error else K["KMD_STATE_DONE"]
+        self.state = (
+            CONSTANTS["KMD_STATE_FAILED"] if error else CONSTANTS["KMD_STATE_DONE"]
+        )
         self.result = {"error": error, "slot": slot, "sequence": sequence, "req": req}
 
     def _step(self):
         """Takes the commands that fit, then completes the busy slots: a command in
         flight is still busy when a command behind it is taken."""
         self._take()
-        if self.state == K["KMD_STATE_READY"]:
+        if self.state == CONSTANTS["KMD_STATE_READY"]:
             self._complete()
 
     def _take(self):
-        while self.consumed + 1 in self.ring and self.state == K["KMD_STATE_READY"]:
+        while (
+            self.consumed + 1 in self.ring
+            and self.state == CONSTANTS["KMD_STATE_READY"]
+        ):
             req = self.consumed + 1
             words = self.ring[req]
             handler, flags = words[1] & 0xFF, (words[1] >> 8) & 0xFF
             first, count = words[2] & 0xFFFF, words[2] >> 16
-            if handler == K["KM_HANDLER_STOP"]:
+            if handler == CONSTANTS["KM_HANDLER_STOP"]:
                 self.consumed = req
-                self._finish(K["KMD_ERROR_STOP_BUSY"] if self.busy else 0)
+                self._finish(CONSTANTS["KMD_ERROR_STOP_BUSY"] if self.busy else 0)
                 return
-            if handler == K["KM_HANDLER_PING"]:
+            if handler == CONSTANTS["KM_HANDLER_PING"]:
                 self.consumed = req
-                self._event(req, K["KM_EVENT_PONG"])
+                self._event(req, CONSTANTS["KM_EVENT_PONG"])
                 continue
             if handler in self.handlers:
                 self.consumed = req
@@ -172,27 +177,33 @@ class FakePort:
             reason = self._rejection(handler, flags, first, count)
             if reason:
                 self.consumed = req
-                self._event(req, K["KM_EVENT_REJECTED"], auxiliary=reason)
+                self._event(req, CONSTANTS["KM_EVENT_REJECTED"], auxiliary=reason)
                 continue
-            if handler == K["KM_HANDLER_EXIT"]:
+            if handler == CONSTANTS["KM_HANDLER_EXIT"]:
                 if self._exit_waits():  # held until no slot is busy
                     self.held_exit += 1
                     return
                 first, count = 0, self.cores  # to every core
                 self.exited = True
             elif (
-                flags & K["KM_FLAG_QUEUE"]
+                flags & CONSTANTS["KM_FLAG_QUEUE"]
             ):  # the lowest first overlapping no busy group
-                taken = [t for _, _, t in self.busy.values()]
+                taken = [group for _, _, group in self.busy.values()]
                 fits = [
-                    f
-                    for f in range(self.cores - count + 1)
-                    if all(f + count <= a or a + n <= f for a, n in taken)
+                    candidate
+                    for candidate in range(self.cores - count + 1)
+                    if all(
+                        candidate + count <= busy_first
+                        or busy_first + busy_count <= candidate
+                        for busy_first, busy_count in taken
+                    )
                 ]
                 if not fits:
                     return
                 first = fits[0]
-            elif flags & K["KM_FLAG_EXCLUSIVE"] and self._overlaps_busy(first, count):
+            elif flags & CONSTANTS["KM_FLAG_EXCLUSIVE"] and self._overlaps_busy(
+                first, count
+            ):
                 return  # held, and every command behind it
             free = [j for j in range(self.depth) if j not in self.busy]
             if not free:
@@ -215,8 +226,11 @@ class FakePort:
             self.consumed = req
 
     def _overlaps_busy(self, first, count):
-        taken = [t for _, _, t in self.busy.values()]
-        return any(a < first + count and first < a + n for a, n in taken)
+        taken = [group for _, _, group in self.busy.values()]
+        return any(
+            busy_first < first + count and first < busy_first + busy_count
+            for busy_first, busy_count in taken
+        )
 
     def _exit_waits(self):
         return bool(self.busy)
@@ -224,36 +238,45 @@ class FakePort:
     def _rejection(self, handler, flags, first, count):
         """The README's reasons a command is consumed with KM_EVENT_REJECTED, or 0."""
         if self.exited:
-            return K["KMD_REJECT_EXITED"]
-        if K["KM_HANDLER_USER_MAX"] < handler < K["KM_HANDLER_DEADLINE"]:
-            return K["KMD_REJECT_HANDLER"]
+            return CONSTANTS["KMD_REJECT_EXITED"]
+        if (
+            CONSTANTS["KM_HANDLER_USER_MAX"]
+            < handler
+            < CONSTANTS["KM_HANDLER_DEADLINE"]
+        ):
+            return CONSTANTS["KMD_REJECT_HANDLER"]
         if flags & 1:
-            return K["KMD_REJECT_FLAGS"]
-        if flags & K["KM_FLAG_QUEUE"]:
+            return CONSTANTS["KMD_REJECT_FLAGS"]
+        if flags & CONSTANTS["KM_FLAG_QUEUE"]:
             first = 0  # only the count is checked
-        if handler != K["KM_HANDLER_EXIT"] and (
+        if handler != CONSTANTS["KM_HANDLER_EXIT"] and (
             count == 0 or first + count > self.cores
         ):
-            return K["KMD_REJECT_GROUP"]
+            return CONSTANTS["KMD_REJECT_GROUP"]
         return 0
 
     def _complete(self):
         for slot in sorted(self.busy):
             sequence, req, (first, _) = self.busy[slot]
-            low = (sequence & K["KM_EVENT_SEQUENCE_MASK"]) << K[
+            low = (sequence & CONSTANTS["KM_EVENT_SEQUENCE_MASK"]) << CONSTANTS[
                 "KM_EVENT_SEQUENCE_SHIFT"
             ]
             if req == self.stall_req:
                 del self.busy[slot]
                 self._event(
-                    req, K["KM_EVENT_TIMEOUT"], auxiliary=slot | low, ticks=2_500_000
+                    req,
+                    CONSTANTS["KM_EVENT_TIMEOUT"],
+                    auxiliary=slot | low,
+                    ticks=2_500_000,
                 )
-                self._finish(K["KMD_ERROR_DEADLINE"], slot, sequence, req)
+                self._finish(CONSTANTS["KMD_ERROR_DEADLINE"], slot, sequence, req)
                 return
             if self.auto:
                 del self.busy[slot]
                 ticks = self.results.get(req, 100)
-                self._event(req, K["KM_EVENT_DONE"], auxiliary=first | low, ticks=ticks)
+                self._event(
+                    req, CONSTANTS["KM_EVENT_DONE"], auxiliary=first | low, ticks=ticks
+                )
 
 
 class FakeBackend:
@@ -275,14 +298,16 @@ class FakeBackend:
         self.calls.append("finish")
         self.port._step()  # the kernel takes what is in its ring (STOP)
         if self.answer.get("result_ready", True):
-            assert self.port.state != K["KMD_STATE_READY"], "finished while running"
-        words = [0] * K["KMD_R_WORDS"]
-        words[K["KMD_R_STATE"]] = self.port.state
+            assert (
+                self.port.state != CONSTANTS["KMD_STATE_READY"]
+            ), "finished while running"
+        words = [0] * CONSTANTS["KMD_R_WORDS"]
+        words[CONSTANTS["KMD_R_STATE"]] = self.port.state
         for name, value in self.port.result.items():
-            words[K[f"KMD_R_{name.upper()}"]] = value
-        words[K["KMD_R_COMMANDS"]] = len(self.port.submitted)
+            words[CONSTANTS[f"KMD_R_{name.upper()}"]] = value
+        words[CONSTANTS["KMD_R_COMMANDS"]] = len(self.port.submitted)
         if "state" in self.answer:
-            words[K["KMD_R_STATE"]] = self.answer["state"]
+            words[CONSTANTS["KMD_R_STATE"]] = self.answer["state"]
         out = {
             "result_ready": True,
             "result": 0,
@@ -290,7 +315,7 @@ class FakeBackend:
             "failed": "",
             "words": words,
         }
-        out.update({k: v for k, v in self.answer.items() if k in out})
+        out.update({key: entry for key, entry in self.answer.items() if key in out})
         return out
 
     def abort(self):
@@ -312,10 +337,14 @@ class FakeBackend:
         self.calls.append("read_back")
         self.grid_stopped = stop_grid
         cores = self.port.cores
-        blocks = np.zeros((cores, K["KM_CONTROL_BYTES"] // 4), dtype=np.uint32)
-        at = K["KM_CONTROL_STATE"] // 4
-        st = blocks[:, at : at + K["kStateWords"]]  # a view: written below
-        st[:, K["kStMagic"]] = K["kStateMagic"] | np.arange(cores)
+        blocks = np.zeros((cores, CONSTANTS["KM_CONTROL_BYTES"] // 4), dtype=np.uint32)
+        state_offset = CONSTANTS["KM_CONTROL_STATE"] // 4
+        state_words = blocks[
+            :, state_offset : state_offset + CONSTANTS["kStateWords"]
+        ]  # a view: written below
+        state_words[:, CONSTANTS["kStMagic"]] = CONSTANTS["kStateMagic"] | np.arange(
+            cores
+        )
         trace = None
         if self.trace_cap:
             trace = np.zeros((cores, self.trace_cap, 4), dtype=np.uint32)
@@ -323,22 +352,30 @@ class FakeBackend:
         for req, sequence, slot, _, (first, count) in self.port.submitted:
             for core in range(first, first + count):
                 if req == stalled and core == self.stalled_core:
-                    word = K["kGaveStop"] | K["kWhereStall"] << 8 | slot << 16
-                    st[core, K["kStReader"]] = word
-                    st[core, K["kStReaderSequence"]] = sequence
+                    word = (
+                        CONSTANTS["kGaveStop"]
+                        | CONSTANTS["kWhereStall"] << 8
+                        | slot << 16
+                    )
+                    state_words[core, CONSTANTS["kStReader"]] = word
+                    state_words[core, CONSTANTS["kStReaderSequence"]] = sequence
                     continue
                 if req == stalled and core == first:
-                    word = K["kGaveStop"] | K["kWhereComplete"] << 8 | slot << 16
-                    st[core, K["kStWriter"]] = word
-                    st[core, K["kStWriterSequence"]] = sequence
+                    word = (
+                        CONSTANTS["kGaveStop"]
+                        | CONSTANTS["kWhereComplete"] << 8
+                        | slot << 16
+                    )
+                    state_words[core, CONSTANTS["kStWriter"]] = word
+                    state_words[core, CONSTANTS["kStWriterSequence"]] = sequence
                     continue
-                st[core, K["kStReported"] + slot] = sequence
+                state_words[core, CONSTANTS["kStReported"] + slot] = sequence
                 if trace is not None and sequence <= self.trace_cap:
-                    t0 = 1000 * sequence
+                    tick_base = 1000 * sequence
                     trace[core, sequence - 1] = [
-                        t0 + core,
-                        t0 + 500,
-                        t0 + 600 + core,
+                        tick_base + core,
+                        tick_base + 500,
+                        tick_base + 600 + core,
                         3,
                     ]
         return blocks, trace

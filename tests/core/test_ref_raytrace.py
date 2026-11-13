@@ -7,7 +7,7 @@ import pytest
 
 from ref import bvh, raytrace, scenes
 
-F = np.float32
+FLOAT32 = np.float32
 SUBSET = (
     np.arange(64)[:, None] * 16 * 1024 + np.arange(64)[None, :] * 16 + 8 * 1025
 ).ravel()
@@ -27,9 +27,11 @@ def vec(*rows):
     return np.array(rows, dtype=np.float32)
 
 
-def tri_record(a, b, c):
-    a, b, c = (np.array(p, dtype=np.float32) for p in (a, b, c))
-    return np.concatenate([a, b - a, c - a])[None]
+def tri_record(corner_a, corner_b, corner_c):
+    corner_a, corner_b, corner_c = (
+        np.array(corner, dtype=np.float32) for corner in (corner_a, corner_b, corner_c)
+    )
+    return np.concatenate([corner_a, corner_b - corner_a, corner_c - corner_a])[None]
 
 
 @pytest.fixture(scope="module")
@@ -40,52 +42,70 @@ def tiny():
 
 def test_triangle_test_hit_miss_and_both_sides():
     tri = tri_record((0, 0, 5), (4, 0, 5), (0, 4, 5))
-    o = vec((1, 1, 0), (1, 1, 10), (3, 3, 0), (1, 1, 0))
-    d = vec((0, 0, 1), (0, 0, -1), (0, 0, 1), (0, 1, 0))
-    ok, t, u, v = raytrace.triangle_test(tri, np.zeros(4, dtype=int), o, d)
-    assert ok.tolist() == [True, True, False, False]
-    assert t[:2].tolist() == [5.0, 5.0] and u[0] == 0.25 and v[0] == 0.25
+    origin = vec((1, 1, 0), (1, 1, 10), (3, 3, 0), (1, 1, 0))
+    direction = vec((0, 0, 1), (0, 0, -1), (0, 0, 1), (0, 1, 0))
+    hits, distance, u, v = raytrace.triangle_test(
+        tri, np.zeros(4, dtype=int), origin, direction
+    )
+    assert hits.tolist() == [True, True, False, False]
+    assert distance[:2].tolist() == [5.0, 5.0] and u[0] == 0.25 and v[0] == 0.25
 
 
 def test_triangle_test_parallel_ray_and_edges():
     tri = tri_record((0, 0, 5), (4, 0, 5), (0, 4, 5))
-    o = vec((1, 1, 0), (0, 0, 0), (4, 0, 0), (2, 2, 0), (2.5, 2, 0))
-    d = vec((1, 0, 0), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1))
-    ok, _, _, _ = raytrace.triangle_test(tri, np.zeros(5, dtype=int), o, d)
-    assert ok.tolist() == [False, True, True, True, False]
+    origin = vec((1, 1, 0), (0, 0, 0), (4, 0, 0), (2, 2, 0), (2.5, 2, 0))
+    direction = vec((1, 0, 0), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1))
+    hits, _, _, _ = raytrace.triangle_test(
+        tri, np.zeros(5, dtype=int), origin, direction
+    )
+    assert hits.tolist() == [False, True, True, True, False]
 
 
 def test_box_test_inside_outside_and_axis_parallel():
     box = np.array([[0, 0, 0, 1, 1, 1]], dtype=np.float32)
     ids = np.zeros(4, dtype=int)
-    o = vec((0.5, 0.5, -2), (5, 5, -2), (0.5, 0.5, 0.5), (0.5, 0.5, 3))
-    d = vec((0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1))
-    hit, entry = raytrace.box_test(box, ids, o, raytrace.inverse_direction(d), F(1e30))
+    origin = vec((0.5, 0.5, -2), (5, 5, -2), (0.5, 0.5, 0.5), (0.5, 0.5, 3))
+    direction = vec((0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1))
+    hit, entry = raytrace.box_test(
+        box, ids, origin, raytrace.inverse_direction(direction), FLOAT32(1e30)
+    )
     assert hit.tolist() == [True, False, True, False]
     assert entry[0] == 2.0 and entry[2] == 0.0
     hit, _ = raytrace.box_test(
-        box, ids[:1], o[:1], raytrace.inverse_direction(d[:1]), F(1.5)
+        box,
+        ids[:1],
+        origin[:1],
+        raytrace.inverse_direction(direction[:1]),
+        FLOAT32(1.5),
     )
     assert not hit[0]
 
 
 def test_zero_direction_components_do_not_poison_the_slab_test():
     inv = raytrace.inverse_direction(vec((0, 0, 1), (-0.0, 1e-20, 2)))
-    assert np.isfinite(inv).all() and inv[0, 0] == F(1e12) and inv[1, 0] == F(-1e12)
+    assert (
+        np.isfinite(inv).all()
+        and inv[0, 0] == FLOAT32(1e12)
+        and inv[1, 0] == FLOAT32(-1e12)
+    )
 
 
 def test_walk_equals_brute_force_over_all_triangles(tiny):
     scene, tree = tiny
-    o, d = raytrace.camera_rays(scene["camera"], SUBSET)
-    hit = raytrace.trace(tree, o, d, raytrace.TMAX)
-    n = len(SUBSET)
-    best, leaf = np.full(n, raytrace.TMAX, dtype=np.float32), np.full(n, -1)
-    for k in range(len(tree["tris"])):
-        ok, t, _, _ = raytrace.triangle_test(tree["tris"], np.full(n, k), o, d)
-        tie = ok & (t == best) & (leaf >= 0)
-        tie &= tree["leaf_tri"][k] < tree["leaf_tri"][np.maximum(leaf, 0)]
-        take = (ok & (t < best)) | tie
-        best, leaf = np.where(take, t, best), np.where(take, k, leaf)
+    origin, direction = raytrace.camera_rays(scene["camera"], SUBSET)
+    hit = raytrace.trace(tree, origin, direction, raytrace.TMAX)
+    ray_count = len(SUBSET)
+    best, leaf = np.full(ray_count, raytrace.TMAX, dtype=np.float32), np.full(
+        ray_count, -1
+    )
+    for triangle in range(len(tree["tris"])):
+        hits, distance, _, _ = raytrace.triangle_test(
+            tree["tris"], np.full(ray_count, triangle), origin, direction
+        )
+        tie = hits & (distance == best) & (leaf >= 0)
+        tie &= tree["leaf_tri"][triangle] < tree["leaf_tri"][np.maximum(leaf, 0)]
+        take = (hits & (distance < best)) | tie
+        best, leaf = np.where(take, distance, best), np.where(take, triangle, leaf)
     assert (leaf == hit["leaf"]).all() and (best == hit["t"]).all()
     assert 0.4 < (leaf >= 0).mean() < 0.9 and hit["nodes"].min() >= 1
 
@@ -98,12 +118,12 @@ def test_nearer_of_two_triangles_wins_and_ties_go_to_the_lower_index():
         "indices": np.arange(9, dtype=np.int32).reshape(3, 3),
     }
     tree = bvh.build(scene)
-    o, d = vec((1, 1, 0)), vec((0, 0, 1))
-    hit = raytrace.trace(tree, o, d, raytrace.TMAX)
+    origin, direction = vec((1, 1, 0)), vec((0, 0, 1))
+    hit = raytrace.trace(tree, origin, direction, raytrace.TMAX)
     assert tree["leaf_tri"][hit["leaf"][0]] == 2 and hit["t"][0] == 3.0
     scene["indices"] = scene["indices"][:2]
     tree = bvh.build(scene)
-    hit = raytrace.trace(tree, o, d, raytrace.TMAX)
+    hit = raytrace.trace(tree, origin, direction, raytrace.TMAX)
     assert tree["leaf_tri"][hit["leaf"][0]] == 0 and hit["t"][0] == 5.0
 
 
@@ -113,12 +133,14 @@ def test_any_hit_stops_at_a_blocker_between_origin_and_tmax():
         "indices": np.arange(3, dtype=np.int32).reshape(1, 3),
     }
     tree = bvh.build(scene)
-    o, d = vec((1, 1, 0), (1, 1, 0), (1, 1, 6)), vec((0, 0, 10), (0, 0, 10), (0, 0, 10))
+    origin, direction = vec((1, 1, 0), (1, 1, 0), (1, 1, 6)), vec(
+        (0, 0, 10), (0, 0, 10), (0, 0, 10)
+    )
     for tmax, expect in (
-        (F(1.0), [True, True, False]),
-        (F(0.4), [False, False, False]),
+        (FLOAT32(1.0), [True, True, False]),
+        (FLOAT32(0.4), [False, False, False]),
     ):
-        out = raytrace.trace(tree, o, d, tmax, any_hit=True)
+        out = raytrace.trace(tree, origin, direction, tmax, any_hit=True)
         assert (out["leaf"] >= 0).tolist() == expect
 
 
@@ -134,8 +156,8 @@ def test_misses_show_the_sky_and_hits_are_lit(tiny):
     scene, tree = tiny
     out = raytrace.render(scene, tree, np.array([100 * 1024 + 500, 900 * 1024 + 500]))
     assert out["tri"][0] == -1 and out["t"][0] == raytrace.TMAX and out["nodes"][0] >= 1
-    _, d = raytrace.camera_rays(scene["camera"], np.array([100 * 1024 + 500]))
-    assert np.array_equal(out["image"][0], raytrace.sky(d)[0])
+    _, direction = raytrace.camera_rays(scene["camera"], np.array([100 * 1024 + 500]))
+    assert np.array_equal(out["image"][0], raytrace.sky(direction)[0])
     assert (
         out["tri"][1] >= 0
         and (out["image"][1] > 0).all()
@@ -146,4 +168,4 @@ def test_misses_show_the_sky_and_hits_are_lit(tiny):
 def test_pinned_checksums_of_a_subset_of_the_tiny_scene(tiny):
     scene, tree = tiny
     out = raytrace.render(scene, tree, SUBSET)
-    assert {k: sha(out[k]) for k in PINNED} == PINNED
+    assert {name: sha(out[name]) for name in PINNED} == PINNED

@@ -20,7 +20,7 @@ TINY_SHA = {
 def screen_scene(triangles, colors=None):
     """A scene whose vertices project to the given (x, y, z) pixel positions."""
     verts = np.array(triangles, dtype=np.float64).reshape(-1, 3)
-    pos = np.stack(
+    positions = np.stack(
         [
             (verts[:, 0] - 512) * verts[:, 2] / 512,
             (512 - verts[:, 1]) * verts[:, 2] / 512,
@@ -28,13 +28,15 @@ def screen_scene(triangles, colors=None):
         ],
         axis=1,
     )
-    n = len(verts) // 3
+    triangle_count = len(verts) // 3
     if colors is None:
         colors = np.full((len(verts), 3), 0.5)
     return {
-        "positions": pos.astype(np.float32),
+        "positions": positions.astype(np.float32),
         "colors": np.asarray(colors, dtype=np.float32),
-        "indices": np.arange(3 * n, dtype=np.int32).reshape(n, 3),
+        "indices": np.arange(3 * triangle_count, dtype=np.int32).reshape(
+            triangle_count, 3
+        ),
         "camera": CAMERA,
     }
 
@@ -123,12 +125,12 @@ def test_triangles_that_cover_nothing_are_dropped():
 def crossing_scene():
     """A floor quad from behind the camera to z = 100 and two triangles that cross
     the near plane (one and two vertices behind it), in camera space."""
-    pos = [(-100, -1, -10), (100, -1, -10), (100, -1, 100), (-100, -1, 100)]
-    pos += [(-0.5, 0.2, 0.01), (0.4, 0.3, 2), (-0.2, 0.6, 3)]
-    pos += [(0.1, -0.2, 0.02), (0.6, -0.1, -1), (0.3, -0.5, 4)]
-    colors = np.linspace(0.1, 0.9, 3 * len(pos)).reshape(-1, 3)
+    positions = [(-100, -1, -10), (100, -1, -10), (100, -1, 100), (-100, -1, 100)]
+    positions += [(-0.5, 0.2, 0.01), (0.4, 0.3, 2), (-0.2, 0.6, 3)]
+    positions += [(0.1, -0.2, 0.02), (0.6, -0.1, -1), (0.3, -0.5, 4)]
+    colors = np.linspace(0.1, 0.9, 3 * len(positions)).reshape(-1, 3)
     return {
-        "positions": np.array(pos, dtype=np.float32),
+        "positions": np.array(positions, dtype=np.float32),
         "colors": colors.astype(np.float32),
         "indices": np.array(
             [[0, 1, 2], [0, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int32
@@ -145,15 +147,15 @@ def test_crossing_triangles_are_clipped():
     rows = np.arange(1024)
     assert (floor | (out["tri"] >= 2))[rows >= 517].all()
     assert not floor[rows <= 516].any()
-    for t in (2, 3):
-        assert (out["tri"] == t).sum() > 1000, t
+    for triangle_id in (2, 3):
+        assert (out["tri"] == triangle_id).sum() > 1000, triangle_id
     assert out["depth"].max() <= np.float32(1) / CAMERA[15]
 
 
 def test_clipped_pieces_equal_the_pieces_drawn_whole():
     scene = crossing_scene()
-    pieces, colours, src = [], [], []
-    for t, tri in enumerate(scene["indices"]):
+    pieces, colours, sources = [], [], []
+    for triangle_index, tri in enumerate(scene["indices"]):
         corners = np.concatenate(
             [scene["positions"][tri], scene["colors"][tri]], axis=1
         )
@@ -161,8 +163,8 @@ def test_clipped_pieces_equal_the_pieces_drawn_whole():
         for fan in ([0, 1, 2], [0, 2, 3])[: len(poly) - 2]:
             pieces += [poly[i][:3] for i in fan]
             colours += [poly[i][3:] for i in fan]
-            src.append(t)
-        assert all(p[2] >= CAMERA[15] for p in poly)
+            sources.append(triangle_index)
+        assert all(point[2] >= CAMERA[15] for point in poly)
     whole = {
         "positions": np.array(pieces, dtype=np.float32),
         "colors": np.array(colours, dtype=np.float32),
@@ -170,20 +172,24 @@ def test_clipped_pieces_equal_the_pieces_drawn_whole():
         # points on the near plane are not beyond it: draw them with a nearer plane
         "camera": np.concatenate([CAMERA[:15], [0.04]]).astype(np.float32),
     }
-    assert len(src) == 6
-    a, b = raster.rasterize(scene), raster.rasterize(whole)
-    assert np.array_equal(a["depth"], b["depth"])
-    assert np.array_equal(a["colour"], b["colour"])
+    assert len(sources) == 6
+    clipped_output, whole_output = raster.rasterize(scene), raster.rasterize(whole)
+    assert np.array_equal(clipped_output["depth"], whole_output["depth"])
+    assert np.array_equal(clipped_output["colour"], whole_output["colour"])
     assert np.array_equal(
-        a["tri"], np.where(b["tri"] >= 0, np.array(src)[b["tri"]], -1)
+        clipped_output["tri"],
+        np.where(whole_output["tri"] >= 0, np.array(sources)[whole_output["tri"]], -1),
     )
 
 
 def test_winding_does_not_matter():
     tri = [(20, 20, 1), (90, 30, 1), (40, 95, 1)]
-    a = raster.rasterize(screen_scene(tri))
-    b = raster.rasterize(screen_scene([tri[0], tri[2], tri[1]]))
-    assert np.array_equal(a["tri"], b["tri"]) and (a["tri"] >= 0).sum() > 1000
+    normal = raster.rasterize(screen_scene(tri))
+    flipped = raster.rasterize(screen_scene([tri[0], tri[2], tri[1]]))
+    assert (
+        np.array_equal(normal["tri"], flipped["tri"])
+        and (normal["tri"] >= 0).sum() > 1000
+    )
 
 
 def test_tile_counts_follow_the_pixel_box():
@@ -203,4 +209,4 @@ def test_tiny_scene_checksums():
     covered_partition = float((out["tri"] >= 0).mean())
     assert 0.3 < covered_partition < 0.9
     assert out["tile_counts"].sum() > 300
-    assert {k: sha(out[k]) for k in TINY_SHA} == TINY_SHA
+    assert {name: sha(out[name]) for name in TINY_SHA} == TINY_SHA

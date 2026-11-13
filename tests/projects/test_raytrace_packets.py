@@ -7,7 +7,7 @@ import pytest
 from projects.raytrace import packets
 from ref import bvh, raytrace, scenes
 
-K = packets.K
+CONSTANTS = packets.K
 VEC = packets.VEC
 EVERY = np.arange(scenes.WIDTH * scenes.HEIGHT)
 
@@ -19,10 +19,17 @@ def tiny():
 
 
 def test_page_sizes_follow_the_vectors():
-    assert K["kPacketBytes"] == K["kPkVectors"] * VEC * 4
-    assert VEC == 32 and K["kHitAnyVectors"] == len(packets.HIT_KEYS) + 1
-    assert K["kHitVectors"] == K["kHitAnyVectors"] + K["kTriAttrWords"]
-    assert K["kTriWords"] == K["kTriAttr"] + K["kTriAttrWords"] == 22
+    assert CONSTANTS["kPacketBytes"] == CONSTANTS["kPkVectors"] * VEC * 4
+    assert VEC == 32 and CONSTANTS["kHitAnyVectors"] == len(packets.HIT_KEYS) + 1
+    assert (
+        CONSTANTS["kHitVectors"]
+        == CONSTANTS["kHitAnyVectors"] + CONSTANTS["kTriAttrWords"]
+    )
+    assert (
+        CONSTANTS["kTriWords"]
+        == CONSTANTS["kTriAttr"] + CONSTANTS["kTriAttrWords"]
+        == 22
+    )
 
 
 def test_constants_are_evaluated_in_order(tmp_path):
@@ -41,19 +48,19 @@ def test_constants_are_evaluated_in_order(tmp_path):
 def test_tree_image_holds_nodes_order_and_triangles(tiny):
     scene, tree = tiny
     image = packets.tree_image(tree, scene)
-    assert image.shape[1] == K["kTreePageBytes"] // 4
+    assert image.shape[1] == CONSTANTS["kTreePageBytes"] // 4
     w = image.ravel()
     n = len(tree["nodes"])
-    assert w[K["kTreeNodes"]] == n
-    nodes = w[w[K["kTreeNodeOff"]] :][: n * K["kNodeWords"]]
+    assert w[CONSTANTS["kTreeNodes"]] == n
+    nodes = w[w[CONSTANTS["kTreeNodeOff"]] :][: n * CONSTANTS["kNodeWords"]]
     assert np.array_equal(nodes.reshape(n, -1), tree["nodes"])
-    order = w[w[K["kTreeOrderOff"]] :][:n]
+    order = w[w[CONSTANTS["kTreeOrderOff"]] :][:n]
     assert np.array_equal(order, packets.child_order(tree["nodes"]))
     m = len(tree["tris"])
-    tris = w[w[K["kTreeTriOff"]] :][: m * K["kTriWords"]].reshape(m, -1)
+    tris = w[w[CONSTANTS["kTreeTriOff"]] :][: m * CONSTANTS["kTriWords"]].reshape(m, -1)
     assert np.array_equal(tris[:, :9].view(np.float32), tree["tris"])
     assert np.array_equal(tris[:, 9], tree["leaf_tri"])
-    attrs = tris[:, K["kTriAttr"] :].view(np.float32)
+    attrs = tris[:, CONSTANTS["kTriAttr"] :].view(np.float32)
     colours = scene["colors"][scene["indices"][tree["leaf_tri"]]].reshape(m, 9)
     assert np.array_equal(attrs[:, 3:], colours)
     hit = {"leaf": np.arange(m), "u": np.zeros(m, np.float32), "v": np.zeros(m)}
@@ -70,7 +77,7 @@ def test_child_order_names_the_lower_child(tiny):
     inner = np.nonzero(~bvh.is_leaf(nodes[:, 6]))[0]
     c0 = nodes[inner, 6].astype(np.int64)
     axis = order[inner] & 3
-    flip = (order[inner] & K["kOrderFlip"]) != 0
+    flip = (order[inner] & CONSTANTS["kOrderFlip"]) != 0
     rows = np.arange(len(inner))
     lower = np.where(flip, c0 + 1, c0)
     upper = np.where(flip, c0, c0 + 1)
@@ -83,7 +90,10 @@ def check_split(pixels, cores):
     lanes, directory, tiles = packets.split(pixels, cores)
     used = lanes[lanes >= 0]
     assert np.array_equal(np.sort(used), np.arange(len(pixels)))
-    first, count = directory[:, K["kDirFirst"]], directory[:, K["kDirCount"]]
+    first, count = (
+        directory[:, CONSTANTS["kDirFirst"]],
+        directory[:, CONSTANTS["kDirCount"]],
+    )
     assert np.array_equal(first, np.concatenate([[0], np.cumsum(count)[:-1]]))
     assert count.sum() == len(lanes) == len(tiles)
     _, tile = packets.ray_order(pixels)
@@ -132,7 +142,7 @@ def test_sorted_split_keeps_every_ray_once_in_key_order(within_tile):
     lanes, directory, tiles = packets.split(pixels, 7, None, key, within_tile)
     used = lanes[lanes >= 0]
     assert np.array_equal(np.sort(used), np.arange(len(pixels)))
-    assert directory[:, K["kDirCount"]].sum() == len(lanes) == len(tiles)
+    assert directory[:, CONSTANTS["kDirCount"]].sum() == len(lanes) == len(tiles)
     _, tile = packets.sorted_order(pixels, key, within_tile)
     for t in np.unique(tiles)[:20]:
         rays = lanes[tiles == t]
@@ -167,17 +177,20 @@ def test_plan_drops_slots_before_packets_and_lists_hold_every_treelet():
 
 
 def test_chunks_cover_each_core_range_once():
-    directory = np.zeros((4, K["kDirBytes"] // 4), dtype=np.uint32)
-    directory[:, K["kDirFirst"]] = [0, 10, 13, 13]
-    directory[:, K["kDirCount"]] = [10, 3, 0, 7]
+    directory = np.zeros((4, CONSTANTS["kDirBytes"] // 4), dtype=np.uint32)
+    directory[:, CONSTANTS["kDirFirst"]] = [0, 10, 13, 13]
+    directory[:, CONSTANTS["kDirCount"]] = [10, 3, 0, 7]
     parts = packets.chunks(directory, 4)
     assert len(parts) == 3
     for core in range(4):
         got = []
         for d in parts:
-            f, c = d[core, K["kDirFirst"]], d[core, K["kDirCount"]]
+            f, c = d[core, CONSTANTS["kDirFirst"]], d[core, CONSTANTS["kDirCount"]]
             got += list(range(f, f + c))
-        first, count = directory[core, K["kDirFirst"]], directory[core, K["kDirCount"]]
+        first, count = (
+            directory[core, CONSTANTS["kDirFirst"]],
+            directory[core, CONSTANTS["kDirCount"]],
+        )
         assert got == list(range(first, first + count))
 
 
@@ -190,32 +203,34 @@ def test_packet_pages_and_hits_round_trip():
     lanes = np.full((5, VEC), -1, dtype=np.int64)
     lanes.ravel()[:n] = rng.permutation(n)
     pages = packets.packet_pages(lanes, o, d, raytrace.TMAX)
-    assert pages.shape == (5, K["kPacketBytes"] // 4)
-    pk = pages.reshape(5, K["kPkVectors"], VEC)
+    assert pages.shape == (5, CONSTANTS["kPacketBytes"] // 4)
+    pk = pages.reshape(5, CONSTANTS["kPkVectors"], VEC)
     valid = lanes >= 0
     inv = raytrace.inverse_direction(d)
     for k in range(3):
         assert np.array_equal(
-            pk[:, K["kPkO"] + k][valid].view(np.float32), o[lanes[valid], k]
+            pk[:, CONSTANTS["kPkO"] + k][valid].view(np.float32), o[lanes[valid], k]
         )
         assert np.array_equal(
-            pk[:, K["kPkInv"] + k][valid].view(np.float32), inv[lanes[valid], k]
+            pk[:, CONSTANTS["kPkInv"] + k][valid].view(np.float32), inv[lanes[valid], k]
         )
-    best = pk[:, K["kPkBest"]].view(np.float32)
+    best = pk[:, CONSTANTS["kPkBest"]].view(np.float32)
     assert np.all(best[valid] == raytrace.TMAX) and np.all(best[~valid] == -1)
     neg = np.where(valid[:, :, None], d[np.maximum(lanes, 0)] < 0, False).sum(axis=1)
     signs = ((2 * neg > valid.sum(axis=1)[:, None]) * [1, 2, 4]).sum(axis=1)
-    assert np.array_equal(pk[:, K["kPkHead"], K["kHeadSigns"]], signs)
+    assert np.array_equal(pk[:, CONSTANTS["kPkHead"], CONSTANTS["kHeadSigns"]], signs)
     pix = packets.packet_pages(lanes, o, d, raytrace.TMAX, np.arange(n) + 7)
-    head = pix.reshape(5, K["kPkVectors"], VEC)[:, K["kPkHead"], K["kHeadPixel"]]
+    head = pix.reshape(5, CONSTANTS["kPkVectors"], VEC)[
+        :, CONSTANTS["kPkHead"], CONSTANTS["kHeadPixel"]
+    ]
     assert np.array_equal(head[:3], lanes[:3, 0] + 7)
     rows = packets.group(pages)
-    assert rows.shape == (1, K["kPagePackets"] * K["kPacketBytes"] // 4)
-    assert np.array_equal(packets.ungroup(rows, K["kPkVectors"], 5), pages)
-    hits = np.zeros((5, K["kHitVectors"], VEC), dtype=np.uint32)
+    assert rows.shape == (1, CONSTANTS["kPagePackets"] * CONSTANTS["kPacketBytes"] // 4)
+    assert np.array_equal(packets.ungroup(rows, CONSTANTS["kPkVectors"], 5), pages)
+    hits = np.zeros((5, CONSTANTS["kHitVectors"], VEC), dtype=np.uint32)
     hits[:, 0] = np.where(valid, lanes, 0).astype(np.float32).view(np.uint32)
     hits[:, 1] = np.where(valid, lanes * 3, 0)
-    hits[:, K["kHitN"] + 11] = (
+    hits[:, CONSTANTS["kHitN"] + 11] = (
         np.where(valid, lanes, 0).astype(np.float32).view(np.uint32)
     )
     out = packets.decode_hits(hits.reshape(5, -1), lanes, n)
@@ -223,7 +238,7 @@ def test_packet_pages_and_hits_round_trip():
     assert np.array_equal(out["tri"], np.arange(n) * 3)
     assert np.array_equal(out["packet_cycles"], np.zeros(5))
     assert np.array_equal(out["attrs"][:, 11], np.arange(n, dtype=np.float32))
-    any_hits = hits[:, : K["kHitAnyVectors"]].reshape(5, -1)
+    any_hits = hits[:, : CONSTANTS["kHitAnyVectors"]].reshape(5, -1)
     assert "attrs" not in packets.decode_hits(any_hits, lanes, n)
 
 
@@ -236,14 +251,18 @@ def test_treelet_images_hold_their_part_of_the_tree(tiny):
     members = np.argsort(cut["node_treelet"], kind="stable")
     for t, (first, count) in enumerate(table):
         w = pages[first : first + count].ravel()
-        n = w[K["kTreeNodes"]]
-        nodes = w[w[K["kTreeNodeOff"]] :][: n * K["kNodeWords"]].reshape(n, -1)
+        n = w[CONSTANTS["kTreeNodes"]]
+        nodes = w[w[CONSTANTS["kTreeNodeOff"]] :][
+            : n * CONSTANTS["kNodeWords"]
+        ].reshape(n, -1)
         mine = np.sort(np.nonzero(cut["node_treelet"] == t)[0])
         assert np.array_equal(nodes[:, :6], tree["nodes"][mine, :6])
         leaf = bvh.is_leaf(nodes[:, 6])
         local = nodes[leaf, 6] & ~bvh.LEAF
-        recs = w[w[K["kTreeTriOff"]] :][: (local.max() + 1) * K["kTriWords"]]
-        index = recs.reshape(-1, K["kTriWords"])[local, 9]
+        recs = w[w[CONSTANTS["kTreeTriOff"]] :][
+            : (local.max() + 1) * CONSTANTS["kTriWords"]
+        ]
+        index = recs.reshape(-1, CONSTANTS["kTriWords"])[local, 9]
         global_leaf = tree["nodes"][mine[leaf], 6] & ~bvh.LEAF
         assert np.array_equal(index, tree["leaf_tri"][global_leaf])
     assert len(members) == len(tree["nodes"])
@@ -254,17 +273,19 @@ def test_top_image_ends_in_one_node_per_treelet(tiny):
     cut = bvh.cut_treelets(tree, 8 * 1024)
     _, table = packets.treelet_images(tree, cut)
     w = packets.top_image(cut, table).ravel()
-    n, k = w[K["kTreeNodes"]], w[K["kTreeTreelets"]]
-    nodes = w[w[K["kTreeNodeOff"]] :][: n * K["kNodeWords"]].reshape(n, -1)
+    n, k = w[CONSTANTS["kTreeNodes"]], w[CONSTANTS["kTreeTreelets"]]
+    nodes = w[w[CONSTANTS["kTreeNodeOff"]] :][: n * CONSTANTS["kNodeWords"]].reshape(
+        n, -1
+    )
     n_top = len(cut["top_nodes"])
     assert k == len(table) and n == n_top + k
     assert np.array_equal(nodes[0, :6], tree["nodes"][0, :6])
     refs = nodes[n_top:, 6]
-    assert np.array_equal(refs & ~np.uint32(K["kTreeletBit"]), np.arange(k))
+    assert np.array_equal(refs & ~np.uint32(CONSTANTS["kTreeletBit"]), np.arange(k))
     assert np.array_equal(nodes[n_top:, :6], tree["nodes"][cut["treelet_root"], :6])
     children = nodes[:n_top, 6:8].ravel()
     assert np.array_equal(np.sort(children), np.arange(1, n))
-    tab = w[w[K["kTreeTableOff"]] :][: 2 * k].reshape(k, 2)
+    tab = w[w[CONSTANTS["kTreeTableOff"]] :][: 2 * k].reshape(k, 2)
     assert np.array_equal(tab, table)
 
 
@@ -272,12 +293,16 @@ def test_split_by_cost_balances_the_cost():
     rng = np.random.default_rng(5)
     cost = rng.gamma(0.5, 1000.0, packets.TILES)
     _, directory, tiles = packets.split(EVERY, 119, cost)
-    count = directory[:, K["kDirCount"]]
-    first = directory[:, K["kDirFirst"]]
+    count = directory[:, CONSTANTS["kDirCount"]]
+    first = directory[:, CONSTANTS["kDirFirst"]]
     load = [cost[np.unique(tiles[f : f + c])].sum() for f, c in zip(first, count)]
     assert max(load) - min(load) <= cost.max()
     _, directory, _ = packets.split(EVERY, 119)
-    assert directory[:, K["kDirCount"]].max() - directory[:, K["kDirCount"]].min() <= 32
+    assert (
+        directory[:, CONSTANTS["kDirCount"]].max()
+        - directory[:, CONSTANTS["kDirCount"]].min()
+        <= 32
+    )
 
 
 def test_det_range_is_checked(tiny):
@@ -297,11 +322,11 @@ def test_frame_layout_and_constants_describe_whole_blocks(tiny):
     scene, _ = tiny
     pix, directory, desc = packets.frame_layout([0, 33], 4)
     assert pix.shape == (64, VEC) and np.array_equal(desc[:, 0], pix[:, 0])
-    assert directory[:2, K["kDirCount"]].tolist() == [32, 32]
+    assert directory[:2, CONSTANTS["kDirCount"]].tolist() == [32, 32]
     x, y = pix % 1024, pix // 1024
     assert np.array_equal(x - x[:, :1], np.tile(np.arange(VEC) % 8, (64, 1)))
     assert np.array_equal(y - y[:, :1], np.tile(np.arange(VEC) // 8, (64, 1)))
-    page = packets.frame_constants(scene).reshape(K["kCnVectors"], VEC)
+    page = packets.frame_constants(scene).reshape(CONSTANTS["kCnVectors"], VEC)
     assert np.array_equal(page[0, :15].view(np.float32), scene["camera"][:15])
-    assert np.array_equal(page[K["kCnPixel"]], pix[0] - pix[0, 0])
-    assert page[0, K["kCnWidth"]] == 1024
+    assert np.array_equal(page[CONSTANTS["kCnPixel"]], pix[0] - pix[0, 0])
+    assert page[0, CONSTANTS["kCnWidth"]] == 1024

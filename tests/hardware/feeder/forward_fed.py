@@ -23,7 +23,7 @@ import komorebi as km  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
-K = rec.K
+CONSTANTS = rec.CONSTANTS
 FORWARD = rec.constants(EXAMPLE / "kernels" / "forward.h")
 KERNELS = ROOT / "src" / "komorebi_native" / "kernels"
 
@@ -82,7 +82,7 @@ def main():
             a.stall + 1,
             a.probe + 1,
         ],
-        flags=K["KM_FLAG_EXCLUSIVE"],
+        flags=CONSTANTS["KM_FLAG_EXCLUSIVE"],
     )
     with km.Session(log=fed.log) as session:
         fed.log("device open")
@@ -107,7 +107,7 @@ def report(a, messages, result, res):
     """The checks and numbers of one run as a dict."""
     sequence = int(result.commands["sequence"][0])
     lines = result.lines[: a.count]
-    gave_at = (K["KM_CONTROL_MESSAGES"] + K["KM_MESSAGES_GAVE"]) // 4
+    gave_at = (CONSTANTS["KM_CONTROL_MESSAGES"] + CONSTANTS["KM_MESSAGES_GAVE"]) // 4
     gave = {
         c: [int(v) for v in result.control[c, gave_at : gave_at + 4]]
         for c in range(a.count)
@@ -141,11 +141,12 @@ def report(a, messages, result, res):
         "lines_not_idle": [
             c
             for c in range(a.count)
-            if lines[c, K["KM_MESSAGES_LINE_RUN"]] != sequence
-            or lines[c, K["KM_MESSAGES_LINE_STATE"]] != K["KM_MESSAGES_IDLE"]
+            if lines[c, CONSTANTS["KM_MESSAGES_LINE_RUN"]] != sequence
+            or lines[c, CONSTANTS["KM_MESSAGES_LINE_STATE"]]
+            != CONSTANTS["KM_MESSAGES_IDLE"]
         ],
-        "sent": int(lines[:, K["KM_MESSAGES_LINE_SENT"]].sum()),
-        "consumed": int(lines[:, K["KM_MESSAGES_LINE_CONSUMED"]].sum()),
+        "sent": int(lines[:, CONSTANTS["KM_MESSAGES_LINE_SENT"]].sum()),
+        "consumed": int(lines[:, CONSTANTS["KM_MESSAGES_LINE_CONSUMED"]].sum()),
         "messages_gave": gave,
         "state_gave": {
             c: {k: s[k] for k in ("reader", "writer", "compute") if s[k]}
@@ -165,11 +166,13 @@ def timing(result, res):
     run = result.rows[1]  # the RUN command is command 0
     submit = int(result.commands["submit"][0])
     out = {
-        "checks": int(run[K["kFrRecMessagesChecks"]]),
-        "submitter_sent": int(run[K["kFrRecMessagesSent"]]),
-        "gave_core": int(run[K["kFrRecMessagesGave"]]) - 1,
+        "checks": int(run[CONSTANTS["kFrRecMessagesChecks"]]),
+        "submitter_sent": int(run[CONSTANTS["kFrRecMessagesSent"]]),
+        "gave_core": int(run[CONSTANTS["kFrRecMessagesGave"]]) - 1,
     }
-    quiet, ack = int(run[K["kFrRecMessagesEnd"]]), int(run[K["kFrRecMessagesEndAck"]])
+    quiet, ack = int(run[CONSTANTS["kFrRecMessagesEnd"]]), int(
+        run[CONSTANTS["kFrRecMessagesEndAck"]]
+    )
     last = max(int(v) for v in res[:, FORWARD["kResLastConsume"]])
     if quiet:
         out["run_to_quiet_microseconds"] = float(rec.wrap(quiet - submit)) / result.mhz

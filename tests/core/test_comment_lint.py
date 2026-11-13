@@ -130,7 +130,7 @@ def test_main_default_checks_tracked_files_minus_the_clang_format_ignore(
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text(text)
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    tracked = [n for n in names if n != "untracked.py"]
+    tracked = [file_name for file_name in names if file_name != "untracked.py"]
     subprocess.run(["git", "add", *tracked], cwd=tmp_path, check=True)
     monkeypatch.chdir(tmp_path)
     assert run(monkeypatch) == 1

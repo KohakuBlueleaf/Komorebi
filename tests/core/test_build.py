@@ -73,7 +73,9 @@ def ninja_without(tmp_path, *names):
     path = tree / "build" / "build.ninja"
     lines = path.read_text().splitlines()
     kept = [
-        x for x in lines if not x.strip().startswith(tuple(f"{n} =" for n in names))
+        x
+        for x in lines
+        if not x.strip().startswith(tuple(f"{name} =" for name in names))
     ]
     path.write_text("\n".join(kept) + "\n")
     return tree
@@ -105,7 +107,7 @@ def test_image_commands_compile_link_and_convert(tmp_path):
     elf = str(out.with_suffix(".elf"))
     assert link[link.index("-o") + 1] == elf
     assert link[link.index("-T") + 1] == str(_env.x280_linker_script(tree))
-    runtime = [str(p) for p in _env.x280_objects(tree)]
+    runtime = [str(path) for path in _env.x280_objects(tree)]
     objects = [str(out.parent / name) for name in ("a.x280.o", "b.x280.o")]
     assert link[-4:] == [*runtime, *objects]
     assert commands[3][1:] == ["-O", "binary", elf, str(out)]
@@ -125,7 +127,7 @@ def test_image_commands_pass_includes_and_defines_to_every_compile(tmp_path):
         mine = [flags.index("-Iinc/one"), flags.index("-Iinc/two")]
         assert mine == sorted(mine) and mine[-1] < flags.index(runtime)
     link, objcopy = commands[2], commands[3]
-    assert not any(t.startswith(("-I", "-D")) for t in link + objcopy)
+    assert not any(argument.startswith(("-I", "-D")) for argument in link + objcopy)
     assert commands[2:] == build.image_commands(tree, out, ["a.c", "b.c"])[2:]
 
 
@@ -141,7 +143,9 @@ def test_build_image_creates_the_output_directory_and_runs_in_order(
 ):
     tree = make_tree(tmp_path / "tree")
     ran = []
-    monkeypatch.setattr(build.subprocess, "run", lambda cmd, check: ran.append(cmd))
+    monkeypatch.setattr(
+        build.subprocess, "run", lambda command, check: ran.append(command)
+    )
     out = tmp_path / "deep" / "dir" / "image.bin"
     build.build_image(tree, out, ["a.c"])
     assert out.parent.is_dir()
@@ -159,6 +163,6 @@ def test_kmr_build_in_a_tree_that_is_not_built_prints_one_line(tmp_path, capsys)
     for kind in ["host", "pymodule"]:
         args = ["build", kind, str(tmp_path / "prog"), "m.cpp", "--tree", str(tree)]
         assert cli.main(args) == 2
-        err = capsys.readouterr().err
-        assert err.startswith("kmr build:") and "not built" in err
-        assert err.count("\n") == 1
+        error_text = capsys.readouterr().err
+        assert error_text.startswith("kmr build:") and "not built" in error_text
+        assert error_text.count("\n") == 1

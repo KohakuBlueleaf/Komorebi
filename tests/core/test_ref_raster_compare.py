@@ -23,12 +23,12 @@ def test_identical_outputs_show_no_difference():
 
 
 def test_differences_are_counted_by_array_and_placed():
-    a, b = outputs(), outputs()
-    b["tri"][10, 15] = 7  # on the border of the square
-    b["depth"][20, 20] = 2.0  # inside it
-    b["colour"][50, 50, 1] = 0.25  # far from any edge
-    b["tile_counts"][0, 1] = 3
-    stats = harness.compare(a, b)
+    reference, changed = outputs(), outputs()
+    changed["tri"][10, 15] = 7  # on the border of the square
+    changed["depth"][20, 20] = 2.0  # inside it
+    changed["colour"][50, 50, 1] = 0.25  # far from any edge
+    changed["tile_counts"][0, 1] = 3
+    stats = harness.compare(reference, changed)
     assert (stats["tri_differs"], stats["depth_differs"], stats["colour_differs"]) == (
         1,
         1,
@@ -48,11 +48,14 @@ def test_edge_mask_marks_the_border_of_regions():
 
 
 def test_timing_summary_takes_the_median_over_all_repetitions():
-    reps = [{k: v for k in bench.STAGES} for v in (1.0, 2.0, 9.0)]
+    reps = [
+        {stage: milliseconds for stage in bench.STAGES}
+        for milliseconds in (1.0, 2.0, 9.0)
+    ]
     records = [
         {"reps": reps, "load_before": "1 2 3", "load_after": "4 5 6"},
         {"reps": reps, "load_before": "1 2 3", "load_after": "4 5 6"},
     ]
-    s = bench.summarize(records)
-    assert s["total_ms"] == {"median": 2.0, "min": 1.0, "max": 9.0, "n": 6}
-    assert s["load"] == ["1 2 3 / 4 5 6"]
+    summary = bench.summarize(records)
+    assert summary["total_ms"] == {"median": 2.0, "min": 1.0, "max": 9.0, "n": 6}
+    assert summary["load"] == ["1 2 3 / 4 5 6"]

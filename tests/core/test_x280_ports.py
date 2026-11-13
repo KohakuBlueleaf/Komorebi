@@ -9,8 +9,8 @@ from komorebi import abi
 from komorebi import thread as kt
 from komorebi.program import Program
 
-K = kt.layout()
-H = abi.headers()
+CONSTANTS = kt.layout()
+HEADERS = abi.headers()
 
 
 def test_by_default_cores_are_dealt_in_grid_order_cluster_by_cluster():
@@ -22,7 +22,9 @@ def test_by_default_cores_are_dealt_in_grid_order_cluster_by_cluster():
         per_cpu[who] = per_cpu.get(who, 0) + 1
     assert sorted(set(per_cpu.values())) == [10]
     one = kt.port_plan(None, 120, {2})
-    assert set(one.values()) == {(2, h) for h in range(4)} and one[119] == (2, 3)
+    assert set(one.values()) == {(2, x280_core) for x280_core in range(4)} and one[
+        119
+    ] == (2, 3)
 
 
 @pytest.mark.parametrize(
@@ -56,24 +58,35 @@ def test_the_ports_line_and_area_name_the_tiles_and_x280_cores():
     thread = kt.Thread(sources=["t.c"], regions={"r": 64})
     ports = kt.Ports(0x1000, 3, [0x10001, 0x20002, 0x30003], {0: (1, 2), 2: (3, 0)}, 1)
     block = kt.args_block(thread, base=0, check_value=1, ports=ports)
-    line = struct.unpack_from("<5I", block, K["KMX_LIM_PORTS"])
-    at = K["KMX_LIM_BYTES"] + K["KMX_ALL_BYTES"]
-    assert line == (at, 0x1000, 3, K["KMX_PORTS_NOC1"], 0) and kt.ports_at(None) == at
+    line = struct.unpack_from("<5I", block, CONSTANTS["KMX_LIM_PORTS"])
+    area_offset = CONSTANTS["KMX_LIM_BYTES"] + CONSTANTS["KMX_ALL_BYTES"]
+    assert (
+        line == (area_offset, 0x1000, 3, CONSTANTS["KMX_PORTS_NOC1"], 0)
+        and kt.ports_at(None) == area_offset
+    )
     area = kt.ports_area(ports)
-    assert len(area) == K["KMX_PORTS_BYTES"] and area[K["KMX_PORTS_BYTES"] - 1] == 0
-    assert struct.unpack_from("<3I", area, K["KMX_PORTS_TILES"]) == tuple(ports.tiles)
-    owners = area[K["KMX_PORTS_OWNER"] : K["KMX_PORTS_OWNER"] + 3]
+    assert (
+        len(area) == CONSTANTS["KMX_PORTS_BYTES"]
+        and area[CONSTANTS["KMX_PORTS_BYTES"] - 1] == 0
+    )
+    assert struct.unpack_from("<3I", area, CONSTANTS["KMX_PORTS_TILES"]) == tuple(
+        ports.tiles
+    )
+    owners = area[CONSTANTS["KMX_PORTS_OWNER"] : CONSTANTS["KMX_PORTS_OWNER"] + 3]
     assert list(owners) == [1 << 2 | 2, 0, 3 << 2 | 0]
     box = kt.port_box(0x8000000, None, 2)
-    assert box == 0x8000000 + at + K["KMX_PORTS_BOX"] + 128
+    assert box == 0x8000000 + area_offset + CONSTANTS["KMX_PORTS_BOX"] + 128
 
 
 def test_the_port_lines_end_the_control_block_and_fit_the_library():
-    assert H["KM_CONTROL_X280"] + H["KM_X280_BYTES"] == H["KM_CONTROL_BYTES"]
-    assert H["KM_X280_TO"] + 16 <= H["KM_X280_BYTES"]
-    assert K["KMX_PORT_WINDOW"] + K["KMX_PORTS_CORES"] <= 192
-    assert K["KMX_PORTS_CORES"] == H["KM_CORES_MAX"]
+    assert (
+        HEADERS["KM_CONTROL_X280"] + HEADERS["KM_X280_BYTES"]
+        == HEADERS["KM_CONTROL_BYTES"]
+    )
+    assert HEADERS["KM_X280_TO"] + 16 <= HEADERS["KM_X280_BYTES"]
+    assert CONSTANTS["KMX_PORT_WINDOW"] + CONSTANTS["KMX_PORTS_CORES"] <= 192
+    assert CONSTANTS["KMX_PORTS_CORES"] == HEADERS["KM_CORES_MAX"]
 
 
 def test_a_pull_asks_with_its_own_word():
-    assert H["KM_PULL_ASK"] == 0x50554C4C  # "PULL"
+    assert HEADERS["KM_PULL_ASK"] == 0x50554C4C  # "PULL"

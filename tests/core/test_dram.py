@@ -16,7 +16,7 @@ for p in range(PAGES):
 def read(first, pages):
     """Pages read at bank_spans from MEMORY, put in order by pages_in_order."""
     spans = dram.bank_spans(BASE, ALIGNED, pages, BANKS, first)
-    chunks = [MEMORY[bank, at : at + size] for bank, at, size in spans]
+    chunks = [MEMORY[bank, offset : offset + size] for bank, offset, size in spans]
     return dram.pages_in_order(chunks, PAGE_BYTES, ALIGNED, pages, BANKS)
 
 
@@ -48,6 +48,8 @@ def test_a_region_reads_its_own_pages_of_one_bank_only():
     for first, size in [(0, 3), (1, 8), (1, 13), (0, 24)]:  # start, middle, end
         pages = -(-size // ALIGNED)
         spans = dram.bank_chunks(BASE, ALIGNED, 1, first, pages, 2)
-        got = np.concatenate([MEMORY[b, at : at + n] for b, at, n in spans])
+        got = np.concatenate(
+            [MEMORY[bank, offset : offset + length] for bank, offset, length in spans]
+        )
         want = DATA[1 + BANKS * first :: BANKS][:pages]
         assert (got.reshape(pages, ALIGNED)[:, :PAGE_BYTES] == want).all()

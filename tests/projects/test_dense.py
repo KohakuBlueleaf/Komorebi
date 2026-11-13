@@ -8,7 +8,7 @@ from komorebi import layout
 from projects.dense import plan as pl
 from ref import dense as ref
 
-K = pl.K
+CONSTANTS = pl.K
 T = ref.TILE
 
 
@@ -83,19 +83,21 @@ def test_chunk_and_block():
 def test_plan_resident_until_w_overflows():
     p = pl.plan(512, 12, 12)
     assert p.resident and (p.kc, p.ct) == (12, 4) and p.row_item
-    assert p.l1_bytes() == (24 + 144 + 8) * pl.TILE_BYTES + K["kProfBytes"]
+    assert p.l1_bytes() == (24 + 144 + 8) * pl.TILE_BYTES + CONSTANTS["kProfBytes"]
     big = pl.plan(512, 32, 32, budget=1_000_000)
     assert not big.resident and big.ws_pages == 2 * 32 * 4 and big.a_pages == 64
     assert pl.plan(512, 32, 32, budget=100_000) is None
-    assert pl.plan(4, 4, 4, form=K["kFormStream"]).form == K["kFormStream"]
+    assert (
+        pl.plan(4, 4, 4, form=CONSTANTS["kFormStream"]).form == CONSTANTS["kFormStream"]
+    )
 
 
 def test_product_args_follow_the_header():
     p = pl.plan(8, 4, 8)
-    words = pl.product_args(p, 100, 200, 300, K["kModeReadOnly"])
+    words = pl.product_args(p, 100, 200, 300, CONSTANTS["kModeReadOnly"])
     assert len(words) == 10
     assert words[:2] == [100, 200] and words[9] == 300
-    assert words[2:9] == [8, 4, 8, p.kc, p.ct, K["kModeReadOnly"], p.form]
+    assert words[2:9] == [8, 4, 8, p.kc, p.ct, CONSTANTS["kModeReadOnly"], p.form]
     assert pl.load_args(p, 300)[0] == 300 and pl.load_args(p, 300)[3:] == [4, 8]
     assert pl.flops(p) == 2 * 8 * 4 * 8 * 32**3
 
@@ -111,7 +113,7 @@ def test_product_args_follow_the_header():
 )
 def test_kernel_tile_order_gives_the_product(shape, form):
     mt, kt, nt = shape
-    p = pl.plan(mt, kt, nt, form=K[form])
+    p = pl.plan(mt, kt, nt, form=CONSTANTS[form])
     rng = np.random.default_rng(1)
     a = rng.standard_normal((mt * T, kt * T))
     w = rng.standard_normal((kt * T, nt * T))

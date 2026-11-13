@@ -44,7 +44,7 @@ def test_image_and_module_are_built_once_into_the_cache(tmp_path, monkeypatch):
     assert built[0][1] == [native.kernel_directory() / "main.c", engine]
     module = native.module_path(tree)
     assert module.name == native.MODULE_FILE and module == native.module_path(tree)
-    assert [b[0] for b in built] == ["image", "pymodule"]
+    assert [entry[0] for entry in built] == ["image", "pymodule"]
     variant = native.image_path(tree, defines=["X=1"])
     assert variant != image and built[-1][3] == ["X=1"]
 
@@ -73,7 +73,9 @@ def test_the_key_follows_the_build_inputs(tmp_path, monkeypatch):
     tree = make_tree(tmp_path / "tree")
     monkeypatch.setenv(native.CACHE_VARIABLE, str(tmp_path / "cache"))
     monkeypatch.setattr(
-        build, "build_cxx", lambda k, t, out, *a, **kw: out.write_bytes(b"x")
+        build,
+        "build_cxx",
+        lambda kind, build_tree, out, *arguments, **keywords: out.write_bytes(b"x"),
     )
     first = native.module_path(tree)
     ninja = tree / "build" / "build.ninja"
@@ -82,7 +84,9 @@ def test_the_key_follows_the_build_inputs(tmp_path, monkeypatch):
     assert first != second and first.is_file() and second.is_file()
     compiler = _env.sfpi_bin(tree) / "riscv-tt-elf-gcc"
     monkeypatch.setattr(
-        build, "build_image", lambda t, out, *a, **kw: out.write_bytes(b"x")
+        build,
+        "build_image",
+        lambda build_tree, out, *arguments, **keywords: out.write_bytes(b"x"),
     )
     image = native.image_path(tree)
     compiler.write_text("a newer compiler")  # same path, other file
@@ -100,5 +104,5 @@ def test_an_interrupted_build_leaves_no_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "build_cxx", interrupted)
     with pytest.raises(KeyboardInterrupt):
         native.module_path(tree)
-    left = [p for p in (tmp_path / "cache").rglob("*") if p.is_file()]
+    left = [path for path in (tmp_path / "cache").rglob("*") if path.is_file()]
     assert left == []

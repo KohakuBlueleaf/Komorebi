@@ -13,7 +13,7 @@ import pytest
 from projects.raster import lists, passes
 from ref import raster, scenes
 
-K = lists.K
+CONSTANTS = lists.K
 THREAD = lists.HERE / "thread"
 MAX_ITEMS, STRIDE = 2048, 2048
 V, U = ctypes.c_void_p, ctypes.c_uint32
@@ -55,7 +55,7 @@ def c_step(so, cnt, rows, first, last, fill):
     hist = np.ascontiguousarray(hist, dtype=np.uint16)
     items = np.zeros((MAX_ITEMS, 4), np.uint32)
     tile_item = np.zeros(lists.TILES + 1, np.uint32)
-    d = np.zeros((fill, K["kDirBytes"] // 4), np.uint32)
+    d = np.zeros((fill, CONSTANTS["kDirBytes"] // 4), np.uint32)
     marks = np.zeros((MAX_ITEMS + 248, 6), np.uint32)
     nxt = np.zeros((setup, STRIDE), np.uint32)
     ni, nm = U(), U()
@@ -112,23 +112,33 @@ def from_prefixes(c, cnt):
 
 def placed(item_words, core_words, items, slots):
     """The directory pages and list headers PLACE makes from rm_compact's words."""
-    d = np.zeros((len(core_words), K["kDirBytes"] // 4), np.uint32)
+    d = np.zeros((len(core_words), CONSTANTS["kDirBytes"] // 4), np.uint32)
     pages = np.zeros((slots, lists.SLOT), np.uint32)
     for c, (first, n_pages, n, end) in enumerate(core_words.tolist()):
-        d[c, : K["kDirIds"]] = first, n_pages, n
-        pages[end, 0] = K["kMarkEnd"]
+        d[c, : CONSTANTS["kDirIds"]] = first, n_pages, n
+        pages[end, 0] = CONSTANTS["kMarkEnd"]
     k = np.zeros(len(core_words), int)
     for (c, at), (t, r0, r1, total) in zip(item_words.tolist(), items.tolist()):
         core, entries = c & 0xFF, c >> 8
         assert entries == total
         tile = t
         if (r0, r1) != (0, 32):
-            tile |= r0 << K["kItemRow0Shift"] | r1 << K["kItemRow1Shift"]
-        d[core, K["kDirIds"] + k[core]] = tile | (0 if total else K["kItemEmpty"])
+            tile |= (
+                r0 << CONSTANTS["kItemRow0Shift"] | r1 << CONSTANTS["kItemRow1Shift"]
+            )
+        d[core, CONSTANTS["kDirIds"] + k[core]] = tile | (
+            0 if total else CONSTANTS["kItemEmpty"]
+        )
         k[core] += 1
         if total:
-            hdr = [0, K["kHdrTile"], K["kHdrCount"], K["kHdrRow0"], K["kHdrRow1"]]
-            pages[at, hdr] = K["kMarkTile"], t, total, r0, r1
+            hdr = [
+                0,
+                CONSTANTS["kHdrTile"],
+                CONSTANTS["kHdrCount"],
+                CONSTANTS["kHdrRow0"],
+                CONSTANTS["kHdrRow1"],
+            ]
+            pages[at, hdr] = CONSTANTS["kMarkTile"], t, total, r0, r1
     return d, pages
 
 
@@ -150,8 +160,13 @@ def same(c, cnt, rows, first, last, fill):
     pages = np.zeros((mid["slots"], lists.SLOT), np.uint32)
     for at, mark, t, n, r0, r1 in c["marks"].tolist():
         pages[at, 0] = mark
-        if mark == K["kMarkTile"]:
-            hdr = [K["kHdrTile"], K["kHdrCount"], K["kHdrRow0"], K["kHdrRow1"]]
+        if mark == CONSTANTS["kMarkTile"]:
+            hdr = [
+                CONSTANTS["kHdrTile"],
+                CONSTANTS["kHdrCount"],
+                CONSTANTS["kHdrRow0"],
+                CONSTANTS["kHdrRow1"],
+            ]
             pages[at, hdr] = t, n, r0, r1
     assert np.array_equal(pages.reshape(mid["pages"].shape), mid["pages"])
     assert c["compact"][0] == mid["slots"]

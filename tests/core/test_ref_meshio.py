@@ -41,8 +41,8 @@ f 2 5 3
 
 def faces_as_sets(mesh):
     """The triangles as sets of corner positions (order-free)."""
-    p = mesh.positions[mesh.faces]
-    return [frozenset(map(tuple, t)) for t in p.tolist()]
+    corners = mesh.positions[mesh.faces]
+    return [frozenset(map(tuple, triangle)) for triangle in corners.tolist()]
 
 
 def test_mtl_colours():
@@ -61,7 +61,7 @@ def test_obj_fans_materials_and_degenerates():
     assert mesh.counts["materials_without_colour"] == 2
     assert mesh.counts["triangles_without_material"] == 1
     grey, red = meshio.DEFAULT_COLOUR, (1.0, 0.0, 0.0)
-    assert [tuple(c) for c in mesh.colour] == [grey, red, red, grey, grey]
+    assert [tuple(row) for row in mesh.colour] == [grey, red, red, grey, grey]
     np.testing.assert_array_equal(mesh.faces[1:3], [[0, 1, 2], [0, 2, 3]])
     # negative indices count back from the last vertex read so far
     np.testing.assert_array_equal(mesh.faces[3], [0, 1, 4])
@@ -104,10 +104,10 @@ def test_ply_ascii():
 def test_ply_binary(order, uniform):
     fmt = "binary_little_endian" if order == "<" else "binary_big_endian"
     faces = [[0, 1, 2], [0, 2, 3]] if uniform else [[0, 1, 2], [0, 1, 2, 3]]
-    body = b"".join(struct.pack(order + "4f", *v, 0.5) for v in VERTS)
-    for f in faces:
-        body += struct.pack(order + "BB", 7, len(f)) + struct.pack(
-            order + f"{len(f)}i", *f
+    body = b"".join(struct.pack(order + "4f", *vertex, 0.5) for vertex in VERTS)
+    for face in faces:
+        body += struct.pack(order + "BB", 7, len(face)) + struct.pack(
+            order + f"{len(face)}i", *face
         )
     mesh = meshio.read_ply(ply_header(fmt, 2, face_head=True) + body)
     np.testing.assert_array_equal(mesh.positions, VERTS)
@@ -126,10 +126,10 @@ def test_archives(tmp_path):
     ply = ply_header("ascii", 1, extra_vertex=False)
     ply += "".join(f"{x} {y} {z}\n" for x, y, z in VERTS).encode() + b"3 0 1 2\n"
     tpath = tmp_path / "scan.tar.gz"
-    with tarfile.open(tpath, "w:gz") as t:
+    with tarfile.open(tpath, "w:gz") as archive:
         info = tarfile.TarInfo("scan/mesh.ply")
         info.size = len(ply)
-        t.addfile(info, io.BytesIO(ply))
+        archive.addfile(info, io.BytesIO(ply))
     assert meshio.read_mesh(tpath, "scan/mesh.ply").counts["triangles"] == 1
     gpath = tmp_path / "mesh.ply.gz"
     gpath.write_bytes(gzip.compress(ply))

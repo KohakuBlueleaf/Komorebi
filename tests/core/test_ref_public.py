@@ -42,11 +42,11 @@ def test_table_is_complete():
         for key in ("title", "page", "licence", "attribution", "light", "views"):
             assert entry[key], (name, key)
         assert len(entry["light"]) == 3
-        files = {f["url"].rsplit("/", 1)[1] for f in entry["files"]}
-        for f in entry["files"]:
-            assert f["url"].startswith("https://")
-            assert re.fullmatch(r"[0-9a-f]{64}", f["sha256"])
-            assert f["bytes"] > 0
+        files = {file["url"].rsplit("/", 1)[1] for file in entry["files"]}
+        for file in entry["files"]:
+            assert file["url"].startswith("https://")
+            assert re.fullmatch(r"[0-9a-f]{64}", file["sha256"])
+            assert file["bytes"] > 0
         for mesh in entry["meshes"]:
             assert mesh["file"] in files
         assert set(entry["views"]) == {"overview", "close"}
@@ -80,10 +80,10 @@ def test_view_names():
 
 def test_camera_is_orthonormal():
     cam = public.camera([1.0, 2.0, 3.0], [0.0, 0.5, -1.0], 60.0, 0.01).astype(float)
-    right, up, fwd = cam[3:6], cam[6:9], cam[9:12]
-    for v in (right, up, fwd):
-        assert abs(np.dot(v, v) - 1) < 1e-6
-    assert abs(np.dot(right, up)) < 1e-6 and abs(np.dot(up, fwd)) < 1e-6
+    right, up, forward = cam[3:6], cam[6:9], cam[9:12]
+    for axis in (right, up, forward):
+        assert abs(np.dot(axis, axis) - 1) < 1e-6
+    assert abs(np.dot(right, up)) < 1e-6 and abs(np.dot(up, forward)) < 1e-6
     assert abs(right[1]) < 1e-7 and up[1] > 0
     assert cam[12] == pytest.approx(512 / np.tan(np.radians(30)), rel=1e-6)
 
@@ -150,21 +150,27 @@ def test_convert_and_view(tmp_path, monkeypatch):
 
 
 def test_ground_under_single_objects():
-    lo, hi = np.array([-1.0, 0.5, -2.0]), np.array([1.0, 3.0, 2.0])
-    pos, faces, tint = public.ground(lo, hi, 1.5)
+    lower, upper = np.array([-1.0, 0.5, -2.0]), np.array([1.0, 3.0, 2.0])
+    positions, faces, tint = public.ground(lower, upper, 1.5)
     assert len(faces) == 2 * public.GROUND_CELLS**2 == len(tint)
-    assert (pos[:, 1] == 0.5).all()
-    assert pos[:, 0].min() == pytest.approx(-6) and pos[:, 2].max() == pytest.approx(6)
-    p = pos[faces]
-    area = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])[:, 1] / 2
+    assert (positions[:, 1] == 0.5).all()
+    assert positions[:, 0].min() == pytest.approx(-6) and positions[
+        :, 2
+    ].max() == pytest.approx(6)
+    corners = positions[faces]
+    area = (
+        np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])[:, 1] / 2
+    )
     assert area.sum() == pytest.approx(144)
 
 
 def test_shared_vertices_keep_triangles():
-    pos = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]])
+    positions = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]])
     faces = np.array([[0, 1, 2], [1, 3, 2]])
     colour = np.array([[1.0, 0, 0], [0, 1.0, 0]])
-    vp, vc, idx = public.shared_vertices(pos, faces, colour)
-    assert len(vp) == 6
-    np.testing.assert_array_equal(vp[idx], pos[faces])
-    np.testing.assert_array_equal(vc[idx][:, 0], colour)
+    vertex_positions, vertex_colours, indices = public.shared_vertices(
+        positions, faces, colour
+    )
+    assert len(vertex_positions) == 6
+    np.testing.assert_array_equal(vertex_positions[indices], positions[faces])
+    np.testing.assert_array_equal(vertex_colours[indices][:, 0], colour)

@@ -47,7 +47,7 @@ def struct_fields(path, name):
     return fields
 
 
-K = constants(ABI_H, CORE_HPP, FEEDER_H)
+CONSTANTS = constants(ABI_H, CORE_HPP, FEEDER_H)
 COMMAND_FIELDS = struct_fields(ABI_H, "km_command_t")
 ARG_FIELDS = struct_fields(CORE_HPP, "Args")
 ARG_WORDS = [f"a{i}" for i in range(10)]
@@ -127,26 +127,29 @@ def feeder_summary(rows):
     """Row 0 of the feeder's results as a dict."""
     r = as_uint32(rows)[0]
     status = {
-        K["kFsNone"]: "none",
-        K["kFsDone"]: "done",
-        K["kFsTimeout"]: "timeout",
-        K["kFsBoot"]: "boot",
-        K["kFsMessagesGave"]: "messages_gave",
+        CONSTANTS["kFsNone"]: "none",
+        CONSTANTS["kFsDone"]: "done",
+        CONSTANTS["kFsTimeout"]: "timeout",
+        CONSTANTS["kFsBoot"]: "boot",
+        CONSTANTS["kFsMessagesGave"]: "messages_gave",
     }
     return {
-        "magic_ok": int(r[K["kFrMagic"]]) == K["kFeederMagic"],
-        "status": status.get(int(r[K["kFrStatus"]]), int(r[K["kFrStatus"]])),
-        "slot": int(r[K["kFrSlot"]]),
-        "sequence": int(r[K["kFrSequence"]]),
-        "index": int(r[K["kFrIndex"]]),
-        "submitted": int(r[K["kFrSubmitted"]]),
-        "done": int(r[K["kFrDone"]]),
-        "boot_cycles": int(r[K["kFrBoot"]]) * 16,
-        "span_cycles": int(r[K["kFrSpanLo"]]) | int(r[K["kFrSpanHi"]]) << 32,
-        "submit_cycles": int(r[K["kFrSubmitCycles"]]),
-        "max_busy": int(r[K["kFrMaxBusy"]]),
-        "ready_mask": int(r[K["kFrReady"]]),
-        "exit_acked": bool(r[K["kFrExitAcked"]]),
+        "magic_ok": int(r[CONSTANTS["kFrMagic"]]) == CONSTANTS["kFeederMagic"],
+        "status": status.get(
+            int(r[CONSTANTS["kFrStatus"]]), int(r[CONSTANTS["kFrStatus"]])
+        ),
+        "slot": int(r[CONSTANTS["kFrSlot"]]),
+        "sequence": int(r[CONSTANTS["kFrSequence"]]),
+        "index": int(r[CONSTANTS["kFrIndex"]]),
+        "submitted": int(r[CONSTANTS["kFrSubmitted"]]),
+        "done": int(r[CONSTANTS["kFrDone"]]),
+        "boot_cycles": int(r[CONSTANTS["kFrBoot"]]) * 16,
+        "span_cycles": int(r[CONSTANTS["kFrSpanLo"]])
+        | int(r[CONSTANTS["kFrSpanHi"]]) << 32,
+        "submit_cycles": int(r[CONSTANTS["kFrSubmitCycles"]]),
+        "max_busy": int(r[CONSTANTS["kFrMaxBusy"]]),
+        "ready_mask": int(r[CONSTANTS["kFrReady"]]),
+        "exit_acked": bool(r[CONSTANTS["kFrExitAcked"]]),
     }
 
 
@@ -162,25 +165,25 @@ def feeder_commands(rows):
         "CmdSubmitted",
         "RecAcked",
     )
-    out = {n[3:].lower(): r[:, K[f"kFr{n}"]].astype(np.int64) for n in names}
-    out["busy"] = r[:, K["kFrRecBusy"]].astype(np.int64)
-    out["held"] = r[:, K["kFrRecHeld"]].astype(np.int64)
-    out["result"] = r[:, K["kFrRecResult"]].astype(np.int64)
+    out = {n[3:].lower(): r[:, CONSTANTS[f"kFr{n}"]].astype(np.int64) for n in names}
+    out["busy"] = r[:, CONSTANTS["kFrRecBusy"]].astype(np.int64)
+    out["held"] = r[:, CONSTANTS["kFrRecHeld"]].astype(np.int64)
+    out["result"] = r[:, CONSTANTS["kFrRecResult"]].astype(np.int64)
     return out
 
 
 def state_words(control_rows):
     """[cores, kStateWords] uint32 state words from the control blocks read back."""
-    start = K["KM_CONTROL_STATE"] // 4
-    return as_uint32(control_rows)[:, start : start + K["kStateWords"]]
+    start = CONSTANTS["KM_CONTROL_STATE"] // 4
+    return as_uint32(control_rows)[:, start : start + CONSTANTS["kStateWords"]]
 
 
 def port_words(control_rows):
     """[cores, KM_PORTS, 2] uint32 (count, wanted) of every port, from the blocks."""
-    start, stride = K["KM_CONTROL_PORT"] // 4, K["KM_PORT_STRIDE"] // 4
-    words = as_uint32(control_rows)[:, start : start + K["KM_PORTS"] * stride]
-    words = words.reshape(len(words), K["KM_PORTS"], stride)
-    return words[:, :, [K["KM_PORT_COUNT"], K["KM_PORT_WANT"]]]
+    start, stride = CONSTANTS["KM_CONTROL_PORT"] // 4, CONSTANTS["KM_PORT_STRIDE"] // 4
+    words = as_uint32(control_rows)[:, start : start + CONSTANTS["KM_PORTS"] * stride]
+    words = words.reshape(len(words), CONSTANTS["KM_PORTS"], stride)
+    return words[:, :, [CONSTANTS["KM_PORT_COUNT"], CONSTANTS["KM_PORT_WANT"]]]
 
 
 def waiting_ports(ports, core):
@@ -193,18 +196,18 @@ def waiting_ports(ports, core):
 
 
 GAVES = {
-    K["kGaveStop"]: "stop",
-    K["kGaveLimit"]: "limit",
-    K["kGaveBadItem"]: "bad_item",
+    CONSTANTS["kGaveStop"]: "stop",
+    CONSTANTS["kGaveLimit"]: "limit",
+    CONSTANTS["kGaveBadItem"]: "bad_item",
 }
 
 
 def gave_up(word, sequence):
     """A gave-up word pair as a dict, or None when the kernel did not give up."""
     code = word & 0xFF
-    if code == K["kGaveNone"]:
+    if code == CONSTANTS["kGaveNone"]:
         return None
-    wheres = {v: k[6:].lower() for k, v in K.items() if k.startswith("kWhere")}
+    wheres = {v: k[6:].lower() for k, v in CONSTANTS.items() if k.startswith("kWhere")}
     where = (word >> 8) & 0xFF
     out = {
         "code": GAVES.get(code, code),
@@ -212,7 +215,10 @@ def gave_up(word, sequence):
         "slot": (word >> 16) & 0xFF,
         "sequence": int(sequence),
     }
-    if where in (K["kWherePort"], K["kWhereEmit"]):  # the top byte names the port
+    if where in (
+        CONSTANTS["kWherePort"],
+        CONSTANTS["kWhereEmit"],
+    ):  # the top byte names the port
         out["port"] = word >> 24
     return out
 
@@ -220,29 +226,31 @@ def gave_up(word, sequence):
 def core_state(st, core, tag=None):
     """One core's state words as a dict (`tag`: the run's tag, checked with magic)."""
     s = [int(v) for v in st[core]]
-    magic = s[K["kStMagic"]]
-    ends, wrong = s[K["kStEnds"]], s[K["kStWrong"]]
+    magic = s[CONSTANTS["kStMagic"]]
+    ends, wrong = s[CONSTANTS["kStEnds"]], s[CONSTANTS["kStWrong"]]
     return {
         "core": core,
-        "magic_ok": magic >> 24 == K["kStateMagic"] >> 24
+        "magic_ok": magic >> 24 == CONSTANTS["kStateMagic"] >> 24
         and magic & 0xFF == core
         and (tag is None or (magic >> 8) & 0xFFFF == tag),
-        "runs": s[K["kStRuns"]],
-        "completed": s[K["kStCompleted"]],
-        "passes": s[K["kStPasses"]],
-        "next_cycles": s[K["kStNextCycles"]] * 16,
-        "compute_seen": s[K["kStSeen"]],
+        "runs": s[CONSTANTS["kStRuns"]],
+        "completed": s[CONSTANTS["kStCompleted"]],
+        "passes": s[CONSTANTS["kStPasses"]],
+        "next_cycles": s[CONSTANTS["kStNextCycles"]] * 16,
+        "compute_seen": s[CONSTANTS["kStSeen"]],
         "compute_wrong": [(wrong >> (8 * b)) & 0xFF for b in range(3)],
         "reader_end": ends & 0xFF,
         "writer_end": (ends >> 8) & 0xFF,
         "compute_end": (ends >> 16) & 0xFF,
-        "slot_wrong": s[K["kStSlotWrong"]],
-        "trace_dropped": s[K["kStTraceDropped"]],
-        "reader": gave_up(s[K["kStReader"]], s[K["kStReaderSequence"]]),
-        "writer": gave_up(s[K["kStWriter"]], s[K["kStWriterSequence"]]),
-        "compute": gave_up(s[K["kStCompute"]], s[K["kStComputeSequence"]]),
-        "last": s[K["kStLast"] : K["kStLast"] + 16],
-        "reported": s[K["kStReported"] : K["kStReported"] + 16],
+        "slot_wrong": s[CONSTANTS["kStSlotWrong"]],
+        "trace_dropped": s[CONSTANTS["kStTraceDropped"]],
+        "reader": gave_up(s[CONSTANTS["kStReader"]], s[CONSTANTS["kStReaderSequence"]]),
+        "writer": gave_up(s[CONSTANTS["kStWriter"]], s[CONSTANTS["kStWriterSequence"]]),
+        "compute": gave_up(
+            s[CONSTANTS["kStCompute"]], s[CONSTANTS["kStComputeSequence"]]
+        ),
+        "last": s[CONSTANTS["kStLast"] : CONSTANTS["kStLast"] + 16],
+        "reported": s[CONSTANTS["kStReported"] : CONSTANTS["kStReported"] + 16],
     }
 
 

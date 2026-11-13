@@ -14,7 +14,7 @@ import numpy as np
 
 from komorebi.session import compute_config
 
-K = rec.K
+CONSTANTS = rec.CONSTANTS
 FEEDER_KERNEL = rec.HERE / "feeder.cpp"
 
 
@@ -99,7 +99,7 @@ class Fed:
 
     def control_blocks(self):
         """Zeroed control blocks, one shard per core: the same L1 address everywhere."""
-        return self.l1_blocks(K["KM_CONTROL_BYTES"] // 4)
+        return self.l1_blocks(CONSTANTS["KM_CONTROL_BYTES"] // 4)
 
     def l1_blocks(self, words):
         """A zeroed L1 area of `words` words on every core, at one address."""
@@ -132,7 +132,7 @@ class Fed:
         tag = (random.getrandbits(16) | 1) & 0xFFFF
         control = self.control_blocks()
         control_addr = control.address
-        core_table = np.zeros((1, K["KM_CORES_MAX"]), dtype=np.uint64)
+        core_table = np.zeros((1, CONSTANTS["KM_CORES_MAX"]), dtype=np.uint64)
         core_table[0, : self.core_count] = self.noc
         cores_t = int32_tensor(session, core_table)
         table_t = int32_tensor(
@@ -143,7 +143,7 @@ class Fed:
             raise ValueError(f"trace_cap {trace_cap} is not a multiple of 4")
         trace_t = None
         if trace_cap:
-            words = trace_cap * K["kTraceWords"]
+            words = trace_cap * CONSTANTS["kTraceWords"]
             trace_t = int32_tensor(session, np.zeros((self.workers, words)))
         messages_rw, messages_c, queue_t, lines_t = [], [], None, None
         if dynamic is not None:
@@ -151,7 +151,9 @@ class Fed:
             page = 32 * dynamic.message_bytes  # kMessagesPageMessages messages a page
             shape = (self.workers * dynamic.queue_messages // 32, page // 4)
             queue_t = session.empty(shape, "int32")
-            lines_t = self.l1_blocks(2 * K["KM_CORES_MAX"] * 4)  # lines, first pass
+            lines_t = self.l1_blocks(
+                2 * CONSTANTS["KM_CORES_MAX"] * 4
+            )  # lines, first pass
             messages_rw = dynamic.args(queue_t.address, lines_t.address)
             messages_c = dynamic.compute_args(self.workers)
             log(f"dynamic: {dynamic.queue_bytes(self.workers) >> 20} MiB of queues")
@@ -163,8 +165,8 @@ class Fed:
             "control": control_addr,
             "cores": cores_t.address,
             "dispatcher_coordinates": self.noc[feeder],
-            "ack_base": control_addr + K["KM_CONTROL_DONE"],
-            "ready_base": control_addr + K["KM_CONTROL_BOOT"],
+            "ack_base": control_addr + CONSTANTS["KM_CONTROL_DONE"],
+            "ready_base": control_addr + CONSTANTS["KM_CONTROL_BOOT"],
             "tag": tag,
             "depth": depth,
             "workers": self.workers,
@@ -174,7 +176,7 @@ class Fed:
             "trace": trace_t.address if trace_t is not None else 0,
             "trace_cap": trace_cap,
         }
-        mailbox = control_addr + K["KM_CONTROL_JOB"]
+        mailbox = control_addr + CONSTANTS["KM_CONTROL_JOB"]
         aligned = [control_addr, base["ack_base"], base["ready_base"], mailbox]
         if any(addr % 16 for addr in aligned):  # small writes go slot to slot
             raise ValueError(f"bases not 16-byte aligned: {[hex(a) for a in aligned]}")
@@ -216,24 +218,24 @@ class Fed:
             "kFdMessagesHandler": dynamic.handler if dynamic is not None else 0,
             "kFdLines": lines_t.address if lines_t is not None else 0,
         }
-        words = [0] * K["kFdArgs"]
+        words = [0] * CONSTANTS["kFdArgs"]
         for name, value in fd.items():
-            words[K[name]] = value
+            words[CONSTANTS[name]] = value
         feeder_args = [(fx, fy, words)]
 
         include = [str(rec.INCLUDE)]
         launch = session.launch()
-        tok = K["kTokenBytes"]
+        tok = CONSTANTS["kTokenBytes"]
         cbs = [(i, f, p, c, self.worker_set) for i, f, p, c in kernels.cbs]
         cbs += [
-            (K["kCbTokenCompute"], "uint32", tok, 1, self.worker_set),
-            (K["kCbTokenWriter"], "uint32", tok, 1, self.worker_set),
-            (K["kFdCbTable"], "uint32", 64 * (n + 2), 1, self.feeder_set),
-            (K["kFdCbResults"], "uint32", 64 * (n + 2), 1, self.feeder_set),
+            (CONSTANTS["kCbTokenCompute"], "uint32", tok, 1, self.worker_set),
+            (CONSTANTS["kCbTokenWriter"], "uint32", tok, 1, self.worker_set),
+            (CONSTANTS["kFdCbTable"], "uint32", 64 * (n + 2), 1, self.feeder_set),
+            (CONSTANTS["kFdCbResults"], "uint32", 64 * (n + 2), 1, self.feeder_set),
         ]
         if trace_cap:
-            page = trace_cap * K["kTraceWords"] * 4
-            cbs.append((K["kCbTrace"], "uint32", page, 1, self.worker_set))
+            page = trace_cap * CONSTANTS["kTraceWords"] * 4
+            cbs.append((CONSTANTS["kCbTrace"], "uint32", page, 1, self.worker_set))
         for index, fmt, page, pages, cores in cbs:
             launch.cb(cores, index, fmt, page, page * pages)
         defines = list(kernels.defines)

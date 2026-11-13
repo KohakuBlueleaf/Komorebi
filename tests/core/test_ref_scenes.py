@@ -10,8 +10,8 @@ S10K_SHA = "0e1cee8beafb645161800b75603c76801b6fe6b6ec2336024e0fb19fcf1670fa"
 
 
 def test_hash_ranges():
-    h = rng.hash32(np.arange(1000), stream=3, seed=7)
-    assert h.dtype == np.uint32 and len(set(h.tolist())) == 1000
+    hashes = rng.hash32(np.arange(1000), stream=3, seed=7)
+    assert hashes.dtype == np.uint32 and len(set(hashes.tolist())) == 1000
     u = rng.uniform(np.arange(100000))
     assert u.dtype == np.float32 and u.min() >= 0 and u.max() < 1
     assert abs(float(u.mean()) - 0.5) < 0.01
@@ -19,21 +19,21 @@ def test_hash_ranges():
 
 def test_hash_matches_the_written_formula():
     def hash_py(index, stream, seed):
-        m = 0xFFFFFFFF
-        h = (index * 0x9E3779B1 + (stream + 1) * 0x85EBCA6B + seed) & m
-        h ^= h >> 16
-        h = (h * 0x7FEB352D) & m
-        h ^= h >> 15
-        h = (h * 0x846CA68B) & m
-        return h ^ (h >> 16)
+        mask = 0xFFFFFFFF
+        hashed = (index * 0x9E3779B1 + (stream + 1) * 0x85EBCA6B + seed) & mask
+        hashed ^= hashed >> 16
+        hashed = (hashed * 0x7FEB352D) & mask
+        hashed ^= hashed >> 15
+        hashed = (hashed * 0x846CA68B) & mask
+        return hashed ^ (hashed >> 16)
 
     for index, stream, seed in [(0, 0, 0), (1, 2, 3), (99999, 11, 5), (2**31, 0, 1)]:
         assert int(rng.hash32(index, stream, seed)) == hash_py(index, stream, seed)
 
 
 def test_scene_is_deterministic():
-    a, b = scenes.make_preset("tiny"), scenes.make_preset("tiny")
-    assert scenes.checksum(a) == scenes.checksum(b)
+    first, second = scenes.make_preset("tiny"), scenes.make_preset("tiny")
+    assert scenes.checksum(first) == scenes.checksum(second)
 
 
 def test_pinned_checksums():
@@ -56,18 +56,20 @@ def test_scene_shape(name):
 
 def test_no_degenerate_triangles():
     scene = scenes.make_preset("s10k")
-    p = scene["positions"][scene["indices"]].astype(np.float64)
-    area = np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    corners = scene["positions"][scene["indices"]].astype(np.float64)
+    area = np.linalg.norm(
+        np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]), axis=1
+    )
     assert area.min() > 0
 
 
 def test_camera_basis_is_orthonormal():
     cam = scenes.make_preset("tiny")["camera"].astype(np.float64)
-    right, up, fwd = cam[3:6], cam[6:9], cam[9:12]
-    for a, b in [(right, up), (right, fwd), (up, fwd)]:
-        assert abs(a @ b) < 1e-6
-    for a in (right, up, fwd):
-        assert abs(a @ a - 1) < 1e-6
+    right, up, forward = cam[3:6], cam[6:9], cam[9:12]
+    for first, second in [(right, up), (right, forward), (up, forward)]:
+        assert abs(first @ second) < 1e-6
+    for first in (right, up, forward):
+        assert abs(first @ first - 1) < 1e-6
     assert cam[12] == pytest.approx(512 / scenes.TAN_HALF_FOV, rel=1e-6)
 
 
@@ -76,12 +78,12 @@ def test_cube_sphere_is_closed_and_unit():
     assert len(tris) == 12 * 9 and len(verts) == 6 * 16
     assert np.allclose(np.linalg.norm(verts, axis=1), 1)
     ids = {}
-    welded = [ids.setdefault(tuple(np.round(v, 9)), len(ids)) for v in verts]
+    welded = [ids.setdefault(tuple(np.round(vertex, 9)), len(ids)) for vertex in verts]
     assert len(ids) == 6 * 9 + 2
     edges = {}
-    for t in tris:
-        for a, b in ((0, 1), (1, 2), (2, 0)):
-            key = tuple(sorted((welded[t[a]], welded[t[b]])))
+    for triangle in tris:
+        for start, end in ((0, 1), (1, 2), (2, 0)):
+            key = tuple(sorted((welded[triangle[start]], welded[triangle[end]])))
             edges[key] = edges.get(key, 0) + 1
     assert set(edges.values()) == {2}
 
