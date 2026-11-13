@@ -13,24 +13,24 @@ namespace km {
 
     constexpr uint32_t kCommandWords = 16;
 
-    inline uint32_t handler(const km_command_t& r) {
-        return r.hdr & 0xFFu;
+    inline uint32_t handler(const km_command_t& command) {
+        return command.hdr & 0xFFu;
     }
 
-    inline uint32_t flags(const km_command_t& r) {
-        return (r.hdr >> 8) & 0xFFu;
+    inline uint32_t flags(const km_command_t& command) {
+        return (command.hdr >> 8) & 0xFFu;
     }
 
-    inline uint32_t slot(const km_command_t& r) {
-        return (r.hdr >> 16) & 0xFFu;
+    inline uint32_t slot(const km_command_t& command) {
+        return (command.hdr >> 16) & 0xFFu;
     }
 
-    inline uint32_t first(const km_command_t& r) {
-        return r.group & 0xFFFFu;
+    inline uint32_t first(const km_command_t& command) {
+        return command.group & 0xFFFFu;
     }
 
-    inline uint32_t count(const km_command_t& r) {
-        return r.group >> 16;
+    inline uint32_t count(const km_command_t& command) {
+        return command.group >> 16;
     }
 
     inline uint32_t make_hdr(uint32_t handler, uint32_t flags, uint32_t slot) {
@@ -41,64 +41,76 @@ namespace km {
         return first | count << 16;
     }
 
-    // True when sequence `a` comes after `b` (signed difference: valid across wrap).
-    inline bool newer(uint32_t a, uint32_t b) {
-        return static_cast<int32_t>(a - b) > 0;
+    // True when `sequence` comes after `other` (signed difference: valid across wrap).
+    inline bool newer(uint32_t sequence, uint32_t other) {
+        return static_cast<int32_t>(sequence - other) > 0;
     }
 
     // True when core `me` is in the command's group.
-    inline bool in_group(const km_command_t& r, uint32_t me) {
-        return me - first(r) < count(r);  // unsigned: me < first wraps to a large value
+    inline bool in_group(const km_command_t& command, uint32_t me) {
+        return me - first(command) <
+            count(command);  // unsigned: me < first wraps to a large value
     }
 
-    // True when groups `a` and `b` (first | count << 16) share a core: the test that
+    // True when `group` and `other` (first | count << 16) share a core: the test that
     // holds a KM_FLAG_EXCLUSIVE command while an overlapping group is in flight.
-    inline bool groups_overlap(uint32_t a, uint32_t b) {
-        const uint32_t fa = a & 0xFFFFu, na = a >> 16, fb = b & 0xFFFFu, nb = b >> 16;
-        return na != 0 && nb != 0 && fa < fb + nb && fb < fa + na;
+    inline bool groups_overlap(uint32_t group, uint32_t other) {
+        const uint32_t first = group & 0xFFFFu;
+        const uint32_t count = group >> 16;
+        const uint32_t other_first = other & 0xFFFFu;
+        const uint32_t other_count = other >> 16;
+        return (
+            count != 0 && other_count != 0 && first < other_first + other_count &&
+            other_first < first + count
+        );
     }
 
-    // Rank `index` of `count` takes items [start, start + len) of `n`: contiguous
-    // parts covering every item once, the first n % count cores one item more.
+    // Rank `index` of `count` takes items [start, start + len) of `items`: contiguous
+    // parts covering every item once, the first items % count cores one item more.
     struct Partition {
         uint32_t start;
         uint32_t len;
     };
 
-    inline Partition partition(uint32_t n, uint32_t index, uint32_t count) {
-        const uint32_t base = n / count, extra = n % count;
+    inline Partition partition(uint32_t items, uint32_t index, uint32_t count) {
+        const uint32_t base = items / count, extra = items % count;
         return {index * base + (index < extra ? index : extra), base + (index < extra)};
     }
 
-    // Where `me` reports command r (`parent`; first core: dispatcher), after `want`
+    // Where `me` reports `command` (`parent`; first core: dispatcher), after `want`
     // reports. Within one row of `row` cores: one level; across rows: via row leaders.
     struct Report {
         uint32_t parent;
         uint32_t want;
     };
 
-    inline Report report_to(const km_command_t& r, uint32_t me, uint32_t row) {
-        const uint32_t f = first(r), n = count(r), end = f + n;
-        if (row == 0 || f / row == (end - 1) / row) {
-            return {f, me == f ? n - 1 : 0};
+    inline Report report_to(const km_command_t& command, uint32_t me, uint32_t row) {
+        const uint32_t first_core = first(command);
+        const uint32_t size = count(command);
+        const uint32_t end = first_core + size;
+        if (row == 0 || first_core / row == (end - 1) / row) {
+            return {first_core, me == first_core ? size - 1 : 0};
         }
-        const uint32_t row0 = me / row * row;
-        const uint32_t lead = row0 > f ? row0 : f;
+        const uint32_t row_first = me / row * row;
+        const uint32_t lead = row_first > first_core ? row_first : first_core;
         if (me != lead) {
             return {lead, 0};
         }
-        const uint32_t row_end = row0 + row < end ? row0 + row : end;
-        const uint32_t rows = me == f ? (end - 1) / row - f / row : 0;
-        return {f, row_end - lead - 1 + rows};
+        const uint32_t row_end = row_first + row < end ? row_first + row : end;
+        const uint32_t rows = me == first_core ? (end - 1) / row - first_core / row : 0;
+        return {first_core, row_end - lead - 1 + rows};
     }
 
     // Copies a command word by word (from a ring slot or into the job copy).
-    template <typename Src, typename Dst>
-    inline void copy_command(const Src* src, Dst* dst) {
-        const volatile uint32_t* s = reinterpret_cast<const volatile uint32_t*>(src);
-        volatile uint32_t* d = reinterpret_cast<volatile uint32_t*>(dst);
-        for (uint32_t w = 0; w < kCommandWords; w++) {
-            d[w] = s[w];
+    template <typename Source, typename Destination>
+    inline void copy_command(const Source* source, Destination* destination) {
+        const volatile uint32_t*
+            source_words = reinterpret_cast<const volatile uint32_t*>(source);
+        volatile uint32_t* destination_words = (
+            reinterpret_cast<volatile uint32_t*>(destination)
+        );
+        for (uint32_t word = 0; word < kCommandWords; word++) {
+            destination_words[word] = source_words[word];
         }
     }
 
@@ -115,28 +127,28 @@ namespace km {
     inline Pass scan(
         const volatile km_command_t* ring, Word* last, uint32_t depth, uint32_t me
     ) {
-        Pass p = {-1, 0, false};
-        for (uint32_t j = 0; j < depth; j++) {
-            const uint32_t s = ring[j].sequence;
-            if (!newer(s, last[j])) {
+        Pass found = {-1, 0, false};
+        for (uint32_t slot_index = 0; slot_index < depth; slot_index++) {
+            const uint32_t sequence = ring[slot_index].sequence;
+            if (!newer(sequence, last[slot_index])) {
                 continue;
             }
-            km_command_t r;
-            copy_command(&ring[j], &r);
-            if (r.sequence != s || !KM_LANDED(&r)) {
-                p.partial = true;
+            km_command_t command;
+            copy_command(&ring[slot_index], &command);
+            if (command.sequence != sequence || !KM_LANDED(&command)) {
+                found.partial = true;
                 continue;
             }
-            if (handler(r) != KM_HANDLER_EXIT && !in_group(r, me)) {
-                last[j] = s;
+            if (handler(command) != KM_HANDLER_EXIT && !in_group(command, me)) {
+                last[slot_index] = sequence;
                 continue;
             }
-            if (p.pick < 0 || newer(p.pick_sequence, s)) {
-                p.pick = static_cast<int32_t>(j);
-                p.pick_sequence = s;
+            if (found.pick < 0 || newer(found.pick_sequence, sequence)) {
+                found.pick = static_cast<int32_t>(slot_index);
+                found.pick_sequence = sequence;
             }
         }
-        return p;
+        return found;
     }
 
 }  // namespace km

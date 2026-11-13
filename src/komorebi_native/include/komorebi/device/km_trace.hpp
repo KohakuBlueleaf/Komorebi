@@ -10,11 +10,11 @@ namespace km {
 
     class Trace {
     public:
-        explicit Trace(const Args& a) :
-            dram_(a.trace),
-            cap_(a.trace_cap),
-            base_(a.trace ? get_write_ptr(kCbTrace) : 0),
-            state_(a.control + KM_CONTROL_STATE) {
+        explicit Trace(const Args& args) :
+            dram_(args.trace),
+            capacity_(args.trace_cap),
+            base_(args.trace ? get_write_ptr(kCbTrace) : 0),
+            state_(args.control + KM_CONTROL_STATE) {
         }
 
         bool on() const {
@@ -24,9 +24,9 @@ namespace km {
         // Clears the L1 commands (reader, at start-up, before any timestamp).
         void clear() const {
             if (on()) {
-                volatile tt_l1_ptr uint32_t* t = l1(base_);
-                for (uint32_t w = 0; w < cap_ * kTraceWords; w++) {
-                    t[w] = 0;
+                volatile tt_l1_ptr uint32_t* words = l1(base_);
+                for (uint32_t word = 0; word < capacity_ * kTraceWords; word++) {
+                    words[word] = 0;
                 }
             }
         }
@@ -34,7 +34,7 @@ namespace km {
         // A sequence past the capacity is dropped; kStTraceDropped counts the commands
         // (the writer's kTraceDone timestamp, so one kernel alone writes the count).
         void put(uint32_t sequence, uint32_t field, uint32_t value) const {
-            if (on() && sequence - 1 < cap_) {
+            if (on() && sequence - 1 < capacity_) {
                 l1(base_)[(sequence - 1) * kTraceWords + field] = value;
             } else if (on() && field == kTraceDone) {
                 add_sat(l1(state_) + kStTraceDropped, 1);
@@ -51,17 +51,17 @@ namespace km {
                 return;
             }
             invalidate_l1_cache();
-            const uint32_t bytes = cap_ * kTraceWords * 4;
-            const InterleavedAddrGen<true> dst = {
+            const uint32_t bytes = capacity_ * kTraceWords * 4;
+            const InterleavedAddrGen<true> destination = {
                 .bank_base_address = dram_, .page_size = bytes
             };
-            noc_async_write(base_, get_noc_addr(page, dst), bytes);
+            noc_async_write(base_, get_noc_addr(page, destination), bytes);
             noc_async_write_barrier();
         }
 
     private:
         uint32_t dram_;
-        uint32_t cap_;
+        uint32_t capacity_;
         uint32_t base_;
         uint32_t state_;
     };

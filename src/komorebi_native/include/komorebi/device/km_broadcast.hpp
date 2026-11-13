@@ -1,5 +1,5 @@
-// Broadcast: a sender multicasts block k into slot k mod B of every receiver's buffer;
-// a receiver writes its marker in the sender's DONE-BY table once compute popped it.
+// Broadcast: a sender multicasts block `block` into slot `block % window` of every
+// receiver's buffer; a receiver marks it in the sender's DONE-BY table once popped.
 #pragma once
 
 #include <stdint.h>
@@ -41,11 +41,11 @@ namespace km {
         return (sequence & 0xFFFFu) << 16 | (blocks & 0xFFFFu);
     }
 
-    // True when marker v belongs to command `sequence` and counts at least `blocks`.
-    inline bool broadcast_reached(uint32_t v, uint32_t sequence, uint32_t blocks) {
+    // True when `marker` belongs to command `sequence` and counts at least `blocks`.
+    inline bool broadcast_reached(uint32_t marker, uint32_t sequence, uint32_t blocks) {
         return (
-            (v >> 16) == (sequence & 0xFFFFu) &&
-            static_cast<int16_t>(static_cast<uint16_t>(v - blocks)) >= 0
+            (marker >> 16) == (sequence & 0xFFFFu) &&
+            static_cast<int16_t>(static_cast<uint16_t>(marker - blocks)) >= 0
         );
     }
 
@@ -54,16 +54,16 @@ namespace km {
 #if !defined(COMPILE_FOR_TRISC)
 namespace km {
 
-    // One broadcast in one command, in the DM kernel on the broadcast's NoC. In block
-    // order: the sender reserve(k), fill, cast(k); a receiver arrive(k); then finish().
+    // One broadcast in one command, in the DM kernel on the broadcast's NoC. Per block:
+    // the sender reserve, fill, cast; a receiver arrive; after the last, finish().
     class Broadcast {
     public:
-        Broadcast(const Reader& k, const km_command_t& r, uint32_t arg0) :
-            Broadcast(static_cast<const Core&>(k), kStReader, r, arg0) {
+        Broadcast(const Reader& reader, const km_command_t& command, uint32_t arg0) :
+            Broadcast(static_cast<const Core&>(reader), kStReader, command, arg0) {
         }
 
-        Broadcast(const Writer& k, const km_command_t& r, uint32_t arg0) :
-            Broadcast(static_cast<const Core&>(k), kStWriter, r, arg0) {
+        Broadcast(const Writer& writer, const km_command_t& command, uint32_t arg0) :
+            Broadcast(static_cast<const Core&>(writer), kStWriter, command, arg0) {
         }
 
         // False: the arguments, the command or the buffer did not fit (recorded).
@@ -72,124 +72,126 @@ namespace km {
         }
 
         uint32_t rank() const {
-            return a_.rank;
+            return args_.rank;
         }
 
         bool sender() const {
-            return a_.rank == 0;
+            return args_.rank == 0;
         }
 
         bool included() const {
-            return a_.rank != kBroadcastNone;
+            return args_.rank != kBroadcastNone;
         }
 
         // P, pages per block, and B, blocks in flight.
         uint32_t pages() const {
-            return a_.pages;
+            return args_.pages;
         }
 
         uint32_t window() const {
-            return a_.window;
+            return args_.window;
         }
 
         // Blocks multicast or arrived in this command.
         uint32_t blocks() const {
-            return n_;
+            return block_count_;
         }
 
-        // Sender: timed wait until its compute freed slot k mod B; returns the slot's
-        // L1 address (the same on every core of the group), 0 after a give-up.
-        uint32_t reserve(uint32_t k) {
-            if (!in_order(k)) {
+        // Sender: timed wait until its compute freed slot `block % window`; returns the
+        // slot's L1 address (the same on every core of the group), 0 after a give-up.
+        uint32_t reserve(uint32_t block) {
+            if (!in_order(block)) {
                 return 0;
             }
-            if (!wait_free(a_.pages, k)) {
+            if (!wait_free(args_.pages, block)) {
                 return 0;
             }
             if (
-                get_write_ptr(a_.cb) != slot(k) ||
-                !item_fits(a_.cb, get_write_ptr(a_.cb), a_.pages)
+                get_write_ptr(args_.cb) != slot(block) ||
+                !item_fits(args_.cb, get_write_ptr(args_.cb), args_.pages)
             ) {
-                fail(kGaveBadItem, kWhereBroadcastFree, k);
+                fail(kGaveBadItem, kWhereBroadcastFree, block);
                 return 0;
             }
-            cb_reserve_back(a_.cb, a_.pages);
+            cb_reserve_back(args_.cb, args_.pages);
             reserved_ = true;
-            return slot(k);
+            return slot(block);
         }
 
-        // Sender, block k filled: timed wait until every receiver is done with block
-        // k - B, multicasts it, barrier, multicasts VALID, pushes it to compute.
-        bool cast(uint32_t k) {
+        // Sender, `block` filled: timed wait for every receiver to be done with block
+        // `block - window`, multicasts it, barrier, VALID, push to compute.
+        bool cast(uint32_t block) {
             if (!reserved_) {
-                fail(kGaveBadBroadcast, kWhereBroadcastBegin, k);
+                fail(kGaveBadBroadcast, kWhereBroadcastBegin, block);
                 return false;
             }
-            if (!in_order(k)) {
+            if (!in_order(block)) {
                 return false;
             }
             if (!flushed(
-                kFlushReads, kWhereBroadcastDone, k
+                kFlushReads, kWhereBroadcastDone, block
             )) {  // the block's reads have landed
                 return false;
             }
-            if (k >= a_.window && !wait_done(k - a_.window + 1, k)) {
+            if (block >= args_.window && !wait_done(block - args_.window + 1, block)) {
                 return false;
             }
-            if (a_.receivers != 0) {
-                const uint32_t src = slot(k);
-                noc_async_write_multicast(src, mc(src), block_bytes_, a_.receivers);
+            if (args_.receivers != 0) {
+                const uint32_t source = slot(block);
+                noc_async_write_multicast(
+                    source, multicast_address(source), block_bytes_, args_.receivers
+                );
                 if (!flushed(
-                    kFlushWrites, kWhereBroadcastDone, k
-                )) {  // block k landed before its VALID
+                    kFlushWrites, kWhereBroadcastDone, block
+                )) {  // the block landed before its VALID
                     return false;
                 }
-                *at(KM_BROADCAST_OUT) = broadcast_marker(sequence_, k + 1);
+                *area_word(KM_BROADCAST_OUT) = broadcast_marker(sequence_, block + 1);
                 noc_semaphore_set_multicast(
                     area_ + KM_BROADCAST_OUT,
-                    mc(area_ + KM_BROADCAST_VALID),
-                    a_.receivers
+                    multicast_address(area_ + KM_BROADCAST_VALID),
+                    args_.receivers
                 );
             }
-            cb_push_back(a_.cb, a_.pages);
+            cb_push_back(args_.cb, args_.pages);
             reserved_ = false;
-            n_++;
+            block_count_++;
             return true;
         }
 
-        // Receiver: waits (with a timeout) for VALID >= k + 1, marking the blocks its
-        // compute popped meanwhile, then pushes block k to compute.
-        bool arrive(uint32_t k) {
-            if (!in_order(k)) {
+        // Receiver: waits (with a timeout) for VALID >= `block + 1`, marking the blocks
+        // its compute popped meanwhile, then pushes the block to compute.
+        bool arrive(uint32_t block) {
+            if (!in_order(block)) {
                 return false;
             }
-            volatile tt_l1_ptr uint32_t* valid = at(KM_BROADCAST_VALID);
-            const uint64_t t0 = wall64();
-            const uint32_t code = c_.poll(
+            volatile tt_l1_ptr uint32_t* valid = area_word(KM_BROADCAST_VALID);
+            const uint64_t started = wall64();
+            const uint32_t code = core_.poll(
                 [&] {
                     marker_freed();
-                    return broadcast_reached(*valid, sequence_, k + 1);
+                    return broadcast_reached(*valid, sequence_, block + 1);
                 },
-                c_.args().wait_limit
+                core_.args().wait_limit
             );
-            add_wait(wall64() - t0);
+            add_wait(wall64() - started);
             if (code != kGaveNone) {
-                fail(code, kWhereBroadcastValid, k);
+                fail(code, kWhereBroadcastValid, block);
                 return false;
             }
-            if (!wait_free(a_.pages, k)) {
+            if (!wait_free(args_.pages, block)) {
                 return false;
             }
             if (
-                get_write_ptr(a_.cb) != slot(k) ||
-                !item_fits(a_.cb, get_write_ptr(a_.cb), a_.pages)
+                get_write_ptr(args_.cb) != slot(block) ||
+                !item_fits(args_.cb, get_write_ptr(args_.cb), args_.pages)
             ) {
-                fail(kGaveBadItem, kWhereBroadcastFree, k);
+                fail(kGaveBadItem, kWhereBroadcastFree, block);
                 return false;
             }
-            cb_reserve_back(a_.cb, a_.pages);
-            cb_push_back(a_.cb, a_.pages);
-            n_++;
+            cb_reserve_back(args_.cb, args_.pages);
+            cb_push_back(args_.cb, args_.pages);
+            block_count_++;
             return true;
         }
 
@@ -200,109 +202,129 @@ namespace km {
                 return ok_;
             }
             if (!sender()) {
-                *at(KM_BROADCAST_VALID) = 0;  // every VALID of this command has arrived
+                *area_word(
+                    KM_BROADCAST_VALID
+                ) = 0;  // every VALID of this command has arrived
             }
-            const uint32_t code = c_.poll(
+            const uint32_t code = core_.poll(
                 [&] {
                     marker_freed();
-                    return popped() == n_;
+                    return popped() == block_count_;
                 },
-                c_.args().wait_limit
+                core_.args().wait_limit
             );
             if (code != kGaveNone) {
-                fail(code, kWhereBroadcastFree, n_);
+                fail(code, kWhereBroadcastFree, block_count_);
                 return false;
             }
             marker_freed();  // the last pop may have come after the last marker
             if (!ok_) {
                 return false;
             }
-            const uint32_t pad = (a_.window - n_ % a_.window) % a_.window * a_.pages;
-            if (pad != 0) {
-                if (!item_fits(a_.cb, get_write_ptr(a_.cb), pad)) {
-                    fail(kGaveBadItem, kWhereBroadcastFree, n_);
+            const uint32_t padding = (
+                (args_.window - block_count_ % args_.window) % args_.window *
+                args_.pages
+            );
+            if (padding != 0) {
+                if (!item_fits(args_.cb, get_write_ptr(args_.cb), padding)) {
+                    fail(kGaveBadItem, kWhereBroadcastFree, block_count_);
                     return false;
                 }
-                cb_reserve_back(a_.cb, pad);  // free: every block was popped
-                cb_push_back(a_.cb, pad);
+                cb_reserve_back(args_.cb, padding);  // free: every block was popped
+                cb_push_back(args_.cb, padding);
             }
-            if (sender() && n_ != 0) {  // no block multicast: no receiver markers
-                if (!wait_done(n_, n_)) {
+            if (
+                sender() && block_count_ != 0
+            ) {  // no block multicast: no receiver markers
+                if (!wait_done(block_count_, block_count_)) {
                     return false;
                 }
-                for (uint32_t q = 1; q <= a_.receivers; q++) {
-                    *at(KM_BROADCAST_DONE + 16 * q) = 0;
+                for (uint32_t receiver = 1; receiver <= args_.receivers; receiver++) {
+                    *area_word(KM_BROADCAST_DONE + 16 * receiver) = 0;
                 }
             }
-            if (!flushed(kFlushWrites, kWhereBroadcastFree, n_)) {
+            if (!flushed(kFlushWrites, kWhereBroadcastFree, block_count_)) {
                 return false;
             }
-            add_sat(at(KM_BROADCAST_STATS), n_);
+            add_sat(area_word(KM_BROADCAST_STATS), block_count_);
             return true;
         }
 
     private:
-        Broadcast(const Core& c, uint32_t word, const km_command_t& r, uint32_t arg0) :
-            c_(c), word_(word), sequence_(r.sequence), slot_(km::slot(r)) {
-            uint32_t* f = &a_.broadcast;
+        Broadcast(
+            const Core& core, uint32_t word, const km_command_t& command, uint32_t arg0
+        ) :
+            core_(core),
+            word_(word),
+            sequence_(command.sequence),
+            slot_(km::slot(command)) {
+            uint32_t* words = &args_.broadcast;
             for (uint32_t i = 0; i < kBroadcastArgs; i++) {
-                f[i] = c.arg(arg0 + i);
+                words[i] = core.arg(arg0 + i);
             }
             area_ = (
-                c.args().control + KM_CONTROL_BROADCAST +
-                (a_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES
+                core.args().control + KM_CONTROL_BROADCAST +
+                (args_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES
             );
-            ok_ = begin(r);
+            ok_ = begin(command);
         }
 
         // Checks the arguments against the command and the buffer, then a timed wait
         // until the buffer is empty at slot 0 (the last command's padding was popped).
-        bool begin(const km_command_t& r) {
-            if (a_.broadcast >= KM_BROADCASTS || a_.group != r.group) {
+        bool begin(const km_command_t& command) {
+            if (args_.broadcast >= KM_BROADCASTS || args_.group != command.group) {
                 fail(kGaveBadBroadcast, kWhereBroadcastBegin, 0);
                 return false;
             }
             if (!included()) {
                 return true;
             }
-            const LocalCBInterface& i = get_local_cb_interface(a_.cb);
-            block_bytes_ = a_.pages * i.fifo_page_size;
+            const LocalCBInterface& circular_buffer = get_local_cb_interface(args_.cb);
+            block_bytes_ = args_.pages * circular_buffer.fifo_page_size;
             if (
-                a_.window == 0 || a_.window > kBroadcastWindowMax || a_.pages == 0 ||
-                a_.receivers >= KM_BROADCAST_RANKS || a_.rank > a_.receivers ||
-                a_.noc != noc_index || i.fifo_num_pages != a_.window * a_.pages ||
-                i.fifo_num_pages > 0xFFFFu || i.fifo_size != a_.window * block_bytes_
+                args_.window == 0 || args_.window > kBroadcastWindowMax ||
+                args_.pages == 0 || args_.receivers >= KM_BROADCAST_RANKS ||
+                args_.rank > args_.receivers || args_.noc != noc_index ||
+                circular_buffer.fifo_num_pages != args_.window * args_.pages ||
+                circular_buffer.fifo_num_pages > 0xFFFFu ||
+                circular_buffer.fifo_size != args_.window * block_bytes_
             ) {
                 fail(kGaveBadBroadcast, kWhereBroadcastBegin, 0);
                 return false;
             }
-            if (!wait_free(i.fifo_num_pages, 0)) {
+            if (!wait_free(circular_buffer.fifo_num_pages, 0)) {
                 return false;
             }
-            if (get_write_ptr(a_.cb) != i.fifo_limit - i.fifo_size) {
+            if (
+                get_write_ptr(args_.cb) !=
+                circular_buffer.fifo_limit - circular_buffer.fifo_size
+            ) {
                 fail(kGaveBadBroadcast, kWhereBroadcastBegin, 0);
                 return false;
             }
             return true;
         }
 
-        volatile tt_l1_ptr uint32_t* at(uint32_t off) const {
-            return l1(area_ + off);
+        volatile tt_l1_ptr uint32_t* area_word(uint32_t offset) const {
+            return l1(area_ + offset);
         }
 
-        uint32_t slot(uint32_t k) const {
-            const LocalCBInterface& i = get_local_cb_interface(a_.cb);
-            return i.fifo_limit - i.fifo_size + (k % a_.window) * block_bytes_;
+        uint32_t slot(uint32_t block) const {
+            const LocalCBInterface& circular_buffer = get_local_cb_interface(args_.cb);
+            return (
+                circular_buffer.fifo_limit - circular_buffer.fifo_size +
+                (block % args_.window) * block_bytes_
+            );
         }
 
-        uint64_t mc(uint32_t addr) const {
+        uint64_t multicast_address(uint32_t address) const {
             return (
                 get_noc_multicast_addr(
-                    a_.mc_start & 0xFFFFu,
-                    a_.mc_start >> 16,
-                    a_.mc_end & 0xFFFFu,
-                    a_.mc_end >> 16,
-                    addr
+                    args_.mc_start & 0xFFFFu,
+                    args_.mc_start >> 16,
+                    args_.mc_end & 0xFFFFu,
+                    args_.mc_end >> 16,
+                    address
                 )
             );
         }
@@ -311,12 +333,12 @@ namespace km {
         // held, a 16-bit difference that cannot wrap (under 2^16 pages, padding after).
         uint32_t popped() const {
             const uint32_t acked = (
-                reg_read(reinterpret_cast<uintptr_t>(get_cb_tiles_acked_ptr(a_.cb)))
+                reg_read(reinterpret_cast<uintptr_t>(get_cb_tiles_acked_ptr(args_.cb)))
             );
             const uint16_t held = (
-                static_cast<uint16_t>(get_cb_tiles_received_ptr(a_.cb)[0] - acked)
+                static_cast<uint16_t>(get_cb_tiles_received_ptr(args_.cb)[0] - acked)
             );
-            return (n_ * a_.pages - held) / a_.pages;
+            return (block_count_ * args_.pages - held) / args_.pages;
         }
 
         // Receiver: a DONE marker to the sender when compute popped more blocks.
@@ -324,45 +346,49 @@ namespace km {
             if (sender()) {
                 return;
             }
-            const uint32_t b = popped();
-            if (b == marked_) {
+            const uint32_t popped_blocks = popped();
+            if (popped_blocks == marked_) {
                 return;
             }
             if (!flushed(
-                kFlushSent, kWhereBroadcastFree, b
+                kFlushSent, kWhereBroadcastFree, popped_blocks
             )) {  // the last marker has left KM_BROADCAST_OUT
                 return;
             }
-            *at(KM_BROADCAST_OUT) = broadcast_marker(sequence_, b);
+            *area_word(KM_BROADCAST_OUT) = broadcast_marker(sequence_, popped_blocks);
             noc_async_write(
                 area_ + KM_BROADCAST_OUT,
-                c_.core_noc(a_.sender, area_ + KM_BROADCAST_DONE + 16 * a_.rank),
+                core_.core_noc(
+                    args_.sender, area_ + KM_BROADCAST_DONE + 16 * args_.rank
+                ),
                 4
             );
-            marked_ = b;
+            marked_ = popped_blocks;
         }
 
         // Sender: waits (with a timeout) until every receiver's DONE counts `blocks`.
-        bool wait_done(uint32_t blocks, uint32_t k) {
-            uint32_t q = 1;
-            const uint64_t t0 = wall64();
-            const uint32_t code = c_.poll(
+        bool wait_done(uint32_t blocks, uint32_t block) {
+            uint32_t receiver = 1;
+            const uint64_t started = wall64();
+            const uint32_t code = core_.poll(
                 [&] {
                     while (
-                        q <= a_.receivers &&
+                        receiver <= args_.receivers &&
                         broadcast_reached(
-                            *at(KM_BROADCAST_DONE + 16 * q), sequence_, blocks
+                            *area_word(KM_BROADCAST_DONE + 16 * receiver),
+                            sequence_,
+                            blocks
                         )
                     ) {
-                        q++;
+                        receiver++;
                     }
-                    return q > a_.receivers;
+                    return receiver > args_.receivers;
                 },
-                c_.args().wait_limit
+                core_.args().wait_limit
             );
-            add_wait(wall64() - t0);
+            add_wait(wall64() - started);
             if (code != kGaveNone) {
-                fail(code, kWhereBroadcastDone, k);
+                fail(code, kWhereBroadcastDone, block);
                 return false;
             }
             return true;
@@ -370,8 +396,8 @@ namespace km {
 
         // Timed NoC barrier of this kernel: reads landed, writes sent from L1, or
         // writes acknowledged. A stop flag set meanwhile gives it one more timeout.
-        bool flushed(uint32_t what, uint32_t where, uint32_t k) {
-            const uint32_t code = c_.poll(
+        bool flushed(uint32_t what, uint32_t where, uint32_t block) {
+            const uint32_t code = core_.poll(
                 [&] {
                     if constexpr (noc_mode == DM_DYNAMIC_NOC) {
                         return (
@@ -395,68 +421,73 @@ namespace km {
                         );
                     }
                 },
-                c_.args().wait_limit,
-                c_.args().wait_limit
+                core_.args().wait_limit,
+                core_.args().wait_limit
             );
             if (code != kGaveNone) {
-                fail(code, where, k);
+                fail(code, where, block);
                 return false;
             }
             return true;
         }
 
         // Waits (with a timeout) until `pages` pages of the broadcast buffer are free.
-        bool wait_free(uint32_t pages, uint32_t k) {
-            const uint32_t code = c_.poll(
+        bool wait_free(uint32_t pages, uint32_t block) {
+            const uint32_t code = core_.poll(
                 [&] {
                     marker_freed();
-                    return cb_pages_reservable_at_back(a_.cb, pages);
+                    return cb_pages_reservable_at_back(args_.cb, pages);
                 },
-                c_.args().wait_limit
+                core_.args().wait_limit
             );
             if (code != kGaveNone) {
-                fail(code, kWhereBroadcastFree, k);
+                fail(code, kWhereBroadcastFree, block);
                 return false;
             }
             return true;
         }
 
-        bool in_order(uint32_t k) {
-            if (!ok_ || !included() || k != n_ || k >= kBroadcastBlocksMax) {
-                fail(kGaveBadBroadcast, kWhereBroadcastBegin, k);
+        bool in_order(uint32_t block) {
+            if (
+                !ok_ || !included() || block != block_count_ ||
+                block >= kBroadcastBlocksMax
+            ) {
+                fail(kGaveBadBroadcast, kWhereBroadcastBegin, block);
                 return false;
             }
             return true;
         }
 
         void add_wait(uint64_t cycles) const {
-            volatile tt_l1_ptr uint32_t* s = at(KM_BROADCAST_STATS);
-            const uint64_t w = (static_cast<uint64_t>(s[2]) << 32 | s[1]) + cycles;
-            s[1] = static_cast<uint32_t>(w);
-            s[2] = static_cast<uint32_t>(w >> 32);
+            volatile tt_l1_ptr uint32_t* stats = area_word(KM_BROADCAST_STATS);
+            const uint64_t waited = (
+                (static_cast<uint64_t>(stats[2]) << 32 | stats[1]) + cycles
+            );
+            stats[1] = static_cast<uint32_t>(waited);
+            stats[2] = static_cast<uint32_t>(waited >> 32);
         }
 
         // The first broadcast give-up of this core names broadcast and block; the tile
         // stops.
-        void fail(uint32_t code, uint32_t where, uint32_t k) {
-            volatile tt_l1_ptr uint32_t* g = at(KM_BROADCAST_GAVE);
-            if (g[0] == 0) {
-                g[0] = where | a_.broadcast << 8;
-                g[1] = k;
-                g[2] = sequence_;
+        void fail(uint32_t code, uint32_t where, uint32_t block) {
+            volatile tt_l1_ptr uint32_t* gave = area_word(KM_BROADCAST_GAVE);
+            if (gave[0] == 0) {
+                gave[0] = where | args_.broadcast << 8;
+                gave[1] = block;
+                gave[2] = sequence_;
             }
-            c_.gave_up(word_, code, where, slot_, sequence_);
+            core_.gave_up(word_, code, where, slot_, sequence_);
             ok_ = false;
         }
 
-        const Core& c_;
+        const Core& core_;
         const uint32_t word_;
         const uint32_t sequence_;
         const uint32_t slot_;
-        BroadcastArgs a_;
+        BroadcastArgs args_;
         uint32_t area_ = 0;
         uint32_t block_bytes_ = 0;
-        uint32_t n_ = 0;
+        uint32_t block_count_ = 0;
         bool reserved_ = false;
         uint32_t marked_ = 0;
         bool ok_ = false;
@@ -467,9 +498,9 @@ namespace km {
 #else
 namespace km {
 
-    // Compute: block k's pages, by index 0 to pages - 1 (timed wait).
-    inline bool broadcast_receive(const Compute& cp, uint32_t cb, uint32_t pages) {
-        return cp.wait_front(cb, pages);
+    // Compute: a block's pages, by index 0 to pages - 1 (timed wait).
+    inline bool broadcast_receive(const Compute& compute, uint32_t cb, uint32_t pages) {
+        return compute.wait_front(cb, pages);
     }
 
     // Compute: done with the block; the broadcast's data-movement kernel marks the
@@ -480,13 +511,17 @@ namespace km {
 
     // Compute, after the command's last block: pops the padding that finish() pushes.
     inline bool broadcast_end(
-        const Compute& cp, uint32_t cb, uint32_t pages, uint32_t window, uint32_t blocks
+        const Compute& compute,
+        uint32_t cb,
+        uint32_t pages,
+        uint32_t window,
+        uint32_t blocks
     ) {
         const uint32_t pad = (window - blocks % window) % window * pages;
         if (pad == 0) {
             return true;
         }
-        if (!cp.wait_front(cb, pad)) {
+        if (!compute.wait_front(cb, pad)) {
             return false;
         }
         cb_pop_front(cb, pad);

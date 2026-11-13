@@ -7,12 +7,14 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    km::Reader rd;
-    const uint32_t messages_handler = rd.arg(0);
-    const bool filled = km::messages_zero_fill(rd);  // before READY: nobody sends yet
-    rd.run([&](const km_command_t& r) {
-        if (km::handler(r) == messages_handler) {
-            km::messages_reader(rd, r, filled);
+    km::Reader reader;
+    const uint32_t messages_handler = reader.arg(0);
+    const bool filled = km::messages_zero_fill(
+        reader
+    );  // before READY: nobody sends yet
+    reader.run([&](const km_command_t& command) {
+        if (km::handler(command) == messages_handler) {
+            km::messages_reader(reader, command, filled);
         }
     });
 }

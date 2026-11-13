@@ -48,45 +48,56 @@ namespace km {
     constexpr uint32_t kMessagesFlagCompute = 0x10;  // waiting in next() | messages pushed
     constexpr uint32_t kMessagesFlagWriter = 0x20;  // every bin sent | messages taken
 
-    // Positions per core and session. Word 0 of the message at `pos` once valid; 0 is
-    // empty. Queues start zero-filled and positions never restart: no stale mark.
+    // Positions per core and session. Word 0 of the message at `position` once valid; 0
+    // is empty. Queues start zero-filled and positions never restart: no stale mark.
     constexpr uint32_t kMessagesPositionMax = 1u << 30;
 
-    inline uint32_t messages_mark(uint32_t pos) {
-        return pos + 1;
+    inline uint32_t messages_mark(uint32_t position) {
+        return position + 1;
     }
 
-    // Queue position `pos` of core `core`: DRAM page and byte offset in it.
-    inline uint32_t messages_page(uint32_t core, uint32_t pos, uint32_t cap) {
+    // Queue position `position` of core `core`: DRAM page and byte offset in it.
+    inline uint32_t messages_page(uint32_t core, uint32_t position, uint32_t capacity) {
         return (
-            core * (cap / kMessagesPageMessages) +
-            (pos & (cap - 1)) / kMessagesPageMessages
+            core * (capacity / kMessagesPageMessages) +
+            (position & (capacity - 1)) / kMessagesPageMessages
         );
     }
 
-    // A run's cores: its group's cores before the last `k`, the counter tiles (an
-    // asked tile that submits atomics can lose an answer; a counter tile submits none).
-    inline uint32_t messages_ranks(const km_command_t& r, uint32_t k) {
-        return count(r) > k ? count(r) - k : 0;
+    // A run's cores: the group's cores before its last `counter_tiles` (counter tiles:
+    // a tile that submits atomics can lose an answer; they submit none).
+    inline uint32_t messages_ranks(
+        const km_command_t& command, uint32_t counter_tiles
+    ) {
+        return count(command) > counter_tiles ? count(command) - counter_tiles : 0;
     }
 
     // The counter tile that holds the tail of core `core`.
-    inline uint32_t messages_counter(const km_command_t& r, uint32_t k, uint32_t core) {
-        return first(r) + messages_ranks(r, k) + (core - first(r)) % k;
+    inline uint32_t messages_counter(
+        const km_command_t& command, uint32_t counter_tiles, uint32_t core
+    ) {
+        return (
+            first(command) + messages_ranks(command, counter_tiles) +
+            (core - first(command)) % counter_tiles
+        );
     }
 
     // Commands the first give-up of a dynamic run (where, position, run).
     inline void messages_gave_up(
-        uint32_t control, uint32_t where, uint32_t pos, uint32_t run, uint32_t seen = 0
+        uint32_t control,
+        uint32_t where,
+        uint32_t position,
+        uint32_t run,
+        uint32_t seen = 0
     ) {
-        volatile tt_l1_ptr uint32_t* g = (
+        volatile tt_l1_ptr uint32_t* gave = (
             l1(control + KM_CONTROL_MESSAGES + KM_MESSAGES_GAVE)
         );
-        if (g[0] == 0) {
-            g[1] = pos;
-            g[2] = run;
-            g[3] = seen;
-            g[0] = where;
+        if (gave[0] == 0) {
+            gave[1] = position;
+            gave[2] = run;
+            gave[3] = seen;
+            gave[0] = where;
         }
     }
 
@@ -96,26 +107,26 @@ namespace km {
 namespace km {
 
     // Reads the dynamic arguments that follow the start-up arguments.
-    inline MessagesArgs messages_args(const Core& c) {
-        MessagesArgs d;
-        uint32_t* f = &d.handler;
-        for (uint32_t k = 0; k < kMessagesArgs; k++) {
-            f[k] = c.arg(k);
+    inline MessagesArgs messages_args(const Core& core) {
+        MessagesArgs messages_arguments;
+        uint32_t* words = &messages_arguments.handler;
+        for (uint32_t index = 0; index < kMessagesArgs; index++) {
+            words[index] = core.arg(index);
         }
-        return d;
+        return messages_arguments;
     }
 
     // Polls a NoC counter `done()` for at most the wait limit. False: it did not.
     template <typename Done>
-    inline bool noc_timeout(const Core& c, Done done) {
+    inline bool noc_timeout(const Core& core, Done done) {
         const uint64_t end = (
-            wall64() + (static_cast<uint64_t>(c.args().wait_limit) << 10)
+            wall64() + (static_cast<uint64_t>(core.args().wait_limit) << 10)
         );
-        for (uint32_t i = 0;; i++) {
+        for (uint32_t polls = 0;; polls++) {
             if (done()) {
                 return true;
             }
-            if ((i & 15) == 15 && wall64() > end) {
+            if ((polls & 15) == 15 && wall64() > end) {
                 return false;
             }
         }
@@ -123,31 +134,31 @@ namespace km {
 
     // Waits (with a timeout) until counter tile `counter` shows READY for `run`,
     // reading its line into `scratch` (KM_TAILS_READER or _WRITER). False: it did not.
-    template <typename C>
+    template <typename CoreType>
     inline bool messages_ready(
-        const C& c, uint32_t counter, uint32_t scratch, uint32_t run
+        const CoreType& core, uint32_t counter, uint32_t scratch, uint32_t run
     ) {
-        const uint32_t control = c.args().control;
-        volatile tt_l1_ptr uint32_t* w = l1(control + KM_CONTROL_TAILS + scratch);
+        const uint32_t control = core.args().control;
+        volatile tt_l1_ptr uint32_t* words = l1(control + KM_CONTROL_TAILS + scratch);
         const uint64_t end = (
-            wall64() + (static_cast<uint64_t>(c.args().wait_limit) << 10)
+            wall64() + (static_cast<uint64_t>(core.args().wait_limit) << 10)
         );
         for (;;) {
             noc_async_read(
-                c.core_noc(counter, control + KM_CONTROL_TAILS + KM_TAILS_READY),
+                core.core_noc(counter, control + KM_CONTROL_TAILS + KM_TAILS_READY),
                 control + KM_CONTROL_TAILS + scratch,
                 16
             );
-            if (!noc_timeout(c, [] {
+            if (!noc_timeout(core, [] {
                 return ncrisc_noc_reads_flushed(noc_index);
             })) {
                 return false;
             }
             invalidate_l1_cache();
-            if (w[0] == run && w[1] == 1) {
+            if (words[0] == run && words[1] == 1) {
                 return true;
             }
-            if (c.stop() || wall64() > end) {
+            if (core.stop() || wall64() > end) {
                 return false;
             }
         }
@@ -155,23 +166,29 @@ namespace km {
 
     // Start-up, before the first command: zero-fills this core's queue (mark 0 is
     // empty) from the packet buffer's zeroed first page. False: a write stalled.
-    template <typename Rd>
-    inline bool messages_zero_fill(Rd& rd) {
-        const MessagesArgs d = messages_args(rd);
-        const uint32_t page_bytes = kMessagesPageMessages * d.message_bytes;
-        const InterleavedAddrGen<true> q = {
-            .bank_base_address = d.queue, .page_size = page_bytes
+    template <typename ReaderType>
+    inline bool messages_zero_fill(ReaderType& reader) {
+        const MessagesArgs messages_arguments = messages_args(reader);
+        const uint32_t page_bytes = (
+            kMessagesPageMessages * messages_arguments.message_bytes
+        );
+        const InterleavedAddrGen<true> queue_addresses = {
+            .bank_base_address = messages_arguments.queue, .page_size = page_bytes
         };
-        const uint32_t src = get_write_ptr(kCbMessagesIn) + kMessagesHeader;
-        for (uint32_t w = 0; w < page_bytes / 4; w++) {
-            l1(src)[w] = 0;
+        const uint32_t source = get_write_ptr(kCbMessagesIn) + kMessagesHeader;
+        for (uint32_t word = 0; word < page_bytes / 4; word++) {
+            l1(source)[word] = 0;
         }
         invalidate_l1_cache();  // a fence: the NoC reads the stored zeros
-        const uint32_t pages = d.cap / kMessagesPageMessages;
-        for (uint32_t k = 0; k < pages; k++) {
-            noc_async_write(src, get_noc_addr(rd.args().me * pages + k, q), page_bytes);
-            if ((k & 15) == 15 || k + 1 == pages) {
-                if (!noc_timeout(rd, [] {
+        const uint32_t pages = messages_arguments.cap / kMessagesPageMessages;
+        for (uint32_t page = 0; page < pages; page++) {
+            noc_async_write(
+                source,
+                get_noc_addr(reader.args().me * pages + page, queue_addresses),
+                page_bytes
+            );
+            if ((page & 15) == 15 || page + 1 == pages) {
+                if (!noc_timeout(reader, [] {
                     return ncrisc_noc_nonposted_writes_flushed(noc_index);
                 })) {
                     return false;
@@ -183,32 +200,38 @@ namespace km {
 
     // Generic reader: this core's queue in order, to compute in packets; idle and busy
     // lines to the submitter; leaves on the run's end, the stop flag or an error.
-    template <typename Rd>
-    inline void messages_reader(Rd& rd, const km_command_t& r, bool filled = true) {
-        const Args& a = rd.args();
-        const MessagesArgs d = messages_args(rd);
-        const uint32_t run = r.sequence;
-        volatile tt_l1_ptr uint32_t* messages = rd.control(KM_CONTROL_MESSAGES);
+    template <typename ReaderType>
+    inline void messages_reader(
+        ReaderType& reader, const km_command_t& command, bool filled = true
+    ) {
+        const Args& arguments = reader.args();
+        const MessagesArgs messages_arguments = messages_args(reader);
+        const uint32_t run = command.sequence;
+        volatile tt_l1_ptr uint32_t* messages = reader.control(KM_CONTROL_MESSAGES);
         volatile tt_l1_ptr uint32_t* tail = messages + KM_MESSAGES_IN_TAIL / 4;
-        volatile tt_l1_ptr uint32_t* head_w = messages + KM_MESSAGES_IN_HEAD / 4;
+        volatile tt_l1_ptr uint32_t* head_word = messages + KM_MESSAGES_IN_HEAD / 4;
         volatile tt_l1_ptr uint32_t*
-            cf = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagCompute) / 4);
+            compute_flags = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagCompute) / 4);
         volatile tt_l1_ptr uint32_t*
-            wf = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagWriter) / 4);
+            writer_flags = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagWriter) / 4);
         volatile tt_l1_ptr uint32_t*
-            rf = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagReader) / 4);
+            reader_flags = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagReader) / 4);
         volatile tt_l1_ptr uint32_t* out = messages + KM_MESSAGES_OUT / 4;
-        const InterleavedAddrGen<true> q = {
-            .bank_base_address = d.queue,
-            .page_size = kMessagesPageMessages * d.message_bytes
+        const InterleavedAddrGen<true> queue_addresses = {
+            .bank_base_address = messages_arguments.queue,
+            .page_size = kMessagesPageMessages * messages_arguments.message_bytes
         };
         const uint32_t in_pages = get_local_cb_interface(kCbMessagesIn).fifo_num_pages;
-        const uint64_t line = rd.disp_noc(d.lines + 16 * a.me);
-        const uint64_t wait = static_cast<uint64_t>(a.wait_limit) << 10;
-        rf[1] = 0;
-        rf[0] = run;
-        uint32_t head = *head_w, where = filled ? 0 : kWhereMessagesFill;
-        if ((get_write_ptr(kCbMessagesIn) | d.message_bytes) % 64 != 0) {
+        const uint64_t line = (
+            reader.disp_noc(messages_arguments.lines + 16 * arguments.me)
+        );
+        const uint64_t wait = static_cast<uint64_t>(arguments.wait_limit) << 10;
+        reader_flags[1] = 0;
+        reader_flags[0] = run;
+        uint32_t head = *head_word, where = filled ? 0 : kWhereMessagesFill;
+        if (
+            (get_write_ptr(kCbMessagesIn) | messages_arguments.message_bytes) % 64 != 0
+        ) {
             where = kWhereMessagesAlign;  // a DRAM read lands 64-byte aligned or not as
                                           // asked
         }
@@ -217,30 +240,35 @@ namespace km {
         }
         // A counter tile sets its cores' tails to their heads, then shows READY; a
         // core waits for its counter tile's READY before it reads its tail there.
-        const uint32_t ctrs = d.counters, ranks = messages_ranks(r, ctrs);
-        const bool counter = a.me - first(r) >= ranks;
-        if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || ranks == 0) {
+        const uint32_t counter_tiles = messages_arguments.counters;
+        const uint32_t ranks = messages_ranks(command, counter_tiles);
+        const bool counter = arguments.me - first(command) >= ranks;
+        if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
             where = where != 0 ? where : kWhereMessagesCounter;
         } else if (where == 0 && counter) {
             *tail = head;  // nobody sends here: the loop sees an empty queue
             uint32_t served = 0;
-            for (uint32_t m = a.me - first(r) - ranks; m < ranks; m += ctrs) {
-                const uint32_t core = first(r) + m;
+            for (
+                uint32_t rank = arguments.me - first(command) - ranks; rank < ranks;
+                rank += counter_tiles
+            ) {
+                const uint32_t core = first(command) + rank;
                 noc_async_read(
-                    rd.core_noc(
-                        core, a.control + KM_CONTROL_MESSAGES + KM_MESSAGES_IN_HEAD
+                    reader.core_noc(
+                        core,
+                        arguments.control + KM_CONTROL_MESSAGES + KM_MESSAGES_IN_HEAD
                     ),
-                    a.control + KM_CONTROL_TAILS + KM_TAILS_LINE + 16 * core,
+                    arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE + 16 * core,
                     16
                 );
                 served++;
             }
-            if (!noc_timeout(rd, [] {
+            if (!noc_timeout(reader, [] {
                 return ncrisc_noc_reads_flushed(noc_index);
             })) {
                 where = kWhereMessagesRead;
             } else {
-                volatile tt_l1_ptr uint32_t* ready = rd.control(KM_CONTROL_TAILS);
+                volatile tt_l1_ptr uint32_t* ready = reader.control(KM_CONTROL_TAILS);
                 ready[1] = 1;
                 ready[2] = served;
                 ready[3] = 0;
@@ -250,16 +278,24 @@ namespace km {
             }
         } else if (
             where == 0 &&
-            !messages_ready(rd, messages_counter(r, ctrs, a.me), KM_TAILS_READER, run)
+            !messages_ready(
+                reader,
+                messages_counter(command, counter_tiles, arguments.me),
+                KM_TAILS_READER,
+                run
+            )
         ) {
             where = kWhereMessagesCounter;
         }
         const uint64_t tail_line = (
             counter
                 ? 0
-                : rd.core_noc(
-                    messages_counter(r, ctrs == 0 ? 1 : ctrs, a.me),
-                    a.control + KM_CONTROL_TAILS + KM_TAILS_LINE + 16 * a.me
+                : reader.core_noc(
+                    messages_counter(
+                        command, counter_tiles == 0 ? 1 : counter_tiles, arguments.me
+                    ),
+                    arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
+                        16 * arguments.me
                 )
         );
         // A core's tail, read from its counter tile into IN_TAIL (with a timeout).
@@ -268,9 +304,11 @@ namespace km {
                 return true;  // nobody sends to a counter tile: its tail stays its head
             }
             noc_async_read(
-                tail_line, a.control + KM_CONTROL_MESSAGES + KM_MESSAGES_IN_TAIL, 16
+                tail_line,
+                arguments.control + KM_CONTROL_MESSAGES + KM_MESSAGES_IN_TAIL,
+                16
             );
-            const bool ok = noc_timeout(rd, [] {
+            const bool ok = noc_timeout(reader, [] {
                 return ncrisc_noc_reads_flushed(noc_index);
             });
             invalidate_l1_cache();
@@ -288,21 +326,22 @@ namespace km {
             out[3] = consumed;
             invalidate_l1_cache();  // a fence: the NoC reads the stored line
             noc_async_write(
-                a.control + KM_CONTROL_MESSAGES + KM_MESSAGES_OUT, line, 16
+                arguments.control + KM_CONTROL_MESSAGES + KM_MESSAGES_OUT, line, 16
             );
-            return noc_timeout(rd, [] {
+            return noc_timeout(reader, [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             });
         };
         // The idle condition, as one comparable sample (compute and writer words).
-        auto sample = [&](uint32_t t, uint32_t* k) {
-            k[0] = t;
-            k[1] = cf[1];
-            k[2] = wf[1];
+        auto sample = [&](uint32_t tail_value, uint32_t* words) {
+            words[0] = tail_value;
+            words[1] = compute_flags[1];
+            words[2] = writer_flags[1];
             return (
-                t == head && cf[0] == run && wf[0] == run &&
-                (k[1] & kMessagesWaiting) && (k[2] & kMessagesWaiting) &&
-                k[1] == k[2] && cb_pages_reservable_at_back(kCbMessagesIn, in_pages)
+                tail_value == head && compute_flags[0] == run &&
+                writer_flags[0] == run && (words[1] & kMessagesWaiting) &&
+                (words[2] & kMessagesWaiting) && words[1] == words[2] &&
+                cb_pages_reservable_at_back(kCbMessagesIn, in_pages)
             );
         };
         // True when the next command of this core in the ring is this run's end.
@@ -310,21 +349,21 @@ namespace km {
             const volatile km_command_t*
                 ring = (
                     reinterpret_cast<const volatile km_command_t*>(
-                        rd.control(KM_CONTROL_RING)
+                        reader.control(KM_CONTROL_RING)
                     )
                 );
-            volatile tt_l1_ptr uint32_t* last = rd.state() + kStLast;
-            for (uint32_t j = 0; j < a.depth; j++) {
-                const uint32_t s = ring[j].sequence;
-                if (!newer(s, last[j])) {
+            volatile tt_l1_ptr uint32_t* last = reader.state() + kStLast;
+            for (uint32_t slot_index = 0; slot_index < arguments.depth; slot_index++) {
+                const uint32_t sequence = ring[slot_index].sequence;
+                if (!newer(sequence, last[slot_index])) {
                     continue;
                 }
-                km_command_t e;
-                copy_command(&ring[j], &e);
+                km_command_t candidate;
+                copy_command(&ring[slot_index], &candidate);
                 if (
-                    e.sequence == s && KM_LANDED(&e) &&
-                    handler(e) == KM_HANDLER_MESSAGES_END && e.a0 == run &&
-                    in_group(e, a.me)
+                    candidate.sequence == sequence && KM_LANDED(&candidate) &&
+                    handler(candidate) == KM_HANDLER_MESSAGES_END &&
+                    candidate.a0 == run && in_group(candidate, arguments.me)
                 ) {
                     return true;
                 }
@@ -334,7 +373,7 @@ namespace km {
 
         while (where == 0) {
             invalidate_l1_cache();
-            if (rd.stop()) {
+            if (reader.stop()) {
                 where = kWhereMessagesStopped;
                 break;
             }
@@ -342,51 +381,56 @@ namespace km {
                 where = kWhereMessagesRead;
                 break;
             }
-            const uint32_t t = *tail;
-            if (t - head > d.cap) {
+            const uint32_t tail_value = *tail;
+            if (tail_value - head > messages_arguments.cap) {
                 where = kWhereMessagesOverflow;
                 break;
             }
-            if (t == head) {
+            if (tail_value == head) {
                 if (end_command()) {
                     break;
                 }
-                uint32_t k[3];
-                if (!busy || !sample(t, k)) {
+                uint32_t first_sample[3];
+                if (!busy || !sample(tail_value, first_sample)) {
                     armed = false;
                     continue;
                 }
                 const uint32_t sent = messages[KM_MESSAGES_SENT / 4];
                 const uint32_t consumed = messages[KM_MESSAGES_CONSUMED / 4];
-                uint32_t k2[3];
+                uint32_t second_sample[3];
                 invalidate_l1_cache();
                 if (!refresh()) {
                     where = kWhereMessagesRead;
                     break;
                 }
                 if (
-                    !sample(*tail, k2) || k2[0] != k[0] || k2[1] != k[1] ||
-                    k2[2] != k[2]
+                    !sample(*tail, second_sample) ||
+                    second_sample[0] != first_sample[0] ||
+                    second_sample[1] != first_sample[1] ||
+                    second_sample[2] != first_sample[2]
                 ) {
                     armed = false;
                     continue;
                 }
-                if (!armed || key[0] != k[0] || key[1] != k[1] || key[2] != k[2]) {
+                if (
+                    !armed || key[0] != first_sample[0] || key[1] != first_sample[1] ||
+                    key[2] != first_sample[2]
+                ) {
                     armed = true;
-                    key[0] = k[0];
-                    key[1] = k[1];
-                    key[2] = k[2];
+                    key[0] = first_sample[0];
+                    key[1] = first_sample[1];
+                    key[2] = first_sample[2];
                     since = wall64();
                     continue;
                 }
-                if (wall64() - since < d.idle) {
+                if (wall64() - since < messages_arguments.idle) {
                     continue;
                 }
                 if (!status(KM_MESSAGES_IDLE, sent, consumed)) {
                     where = kWhereMessagesLine;
                     break;
                 }
-                rf[1] = 1;
+                reader_flags[1] = 1;
                 idle_shown = true;
                 busy = false;  // until the next message is taken
                 continue;
@@ -398,53 +442,61 @@ namespace km {
                     where = kWhereMessagesLine;
                     break;
                 }
-                rf[1] = 0;
+                reader_flags[1] = 0;
                 idle_shown = false;
             }
-            if (rd.poll(
+            if (reader.poll(
                 [&] {
                     return cb_pages_reservable_at_back(kCbMessagesIn, 1);
                 },
-                a.wait_limit
+                arguments.wait_limit
             ) != kGaveNone) {
                 where = kWhereMessagesInPage;
                 break;
             }
             cb_reserve_back(kCbMessagesIn, 1);
             const uint32_t page = get_write_ptr(kCbMessagesIn);
-            uint32_t k = t - head < kMessagesPacket ? t - head : kMessagesPacket;
-            for (uint32_t i = 0; i < k;) {
-                const uint32_t pos = (head + i) & (d.cap - 1);
-                const uint32_t in_page = pos % kMessagesPageMessages;
-                uint32_t n = kMessagesPageMessages - in_page;
-                n = n < k - i ? n : k - i;
+            uint32_t batch = (
+                tail_value - head < kMessagesPacket
+                    ? tail_value - head
+                    : kMessagesPacket
+            );
+            for (uint32_t i = 0; i < batch;) {
+                const uint32_t position = (head + i) & (messages_arguments.cap - 1);
+                const uint32_t in_page = position % kMessagesPageMessages;
+                uint32_t chunk = kMessagesPageMessages - in_page;
+                chunk = chunk < batch - i ? chunk : batch - i;
                 noc_async_read(
                     get_noc_addr(
-                        messages_page(a.me, pos, d.cap), q, in_page * d.message_bytes
+                        messages_page(arguments.me, position, messages_arguments.cap),
+                        queue_addresses,
+                        in_page * messages_arguments.message_bytes
                     ),
-                    page + kMessagesHeader + i * d.message_bytes,
-                    n * d.message_bytes
+                    page + kMessagesHeader + i * messages_arguments.message_bytes,
+                    chunk * messages_arguments.message_bytes
                 );
-                i += n;
+                i += chunk;
             }
-            if (!noc_timeout(rd, [] {
+            if (!noc_timeout(reader, [] {
                 return ncrisc_noc_reads_flushed(noc_index);
             })) {
                 where = kWhereMessagesRead;
                 break;
             }
             invalidate_l1_cache();
-            uint32_t m = 0;
+            uint32_t valid = 0;
             // The prefix of valid marks: a message is valid only after its packet's
             // first message, whose mark is written once the whole packet has landed.
             while (
-                m < k &&
-                l1(page + kMessagesHeader + m * d.message_bytes)[0] ==
-                    messages_mark(head + m)
+                valid < batch &&
+                l1(
+                    page + kMessagesHeader + valid * messages_arguments.message_bytes
+                )[0] ==
+                    messages_mark(head + valid)
             ) {
-                m++;
+                valid++;
             }
-            if (m == 0) {  // the message at head has not landed yet
+            if (valid == 0) {  // the message at head has not landed yet
                 const uint64_t now = wall64();
                 if (waiting_from == 0) {
                     waiting_from = now;
@@ -455,31 +507,31 @@ namespace km {
                 continue;
             }
             waiting_from = 0;
-            l1(page)[0] = m;
+            l1(page)[0] = valid;
             l1(page)[1] = head;
             cb_push_back(kCbMessagesIn, 1);
-            head += m;
-            *head_w = head;
+            head += valid;
+            *head_word = head;
         }
         if (where != 0) {
             // a gap: word 0 of the message found at the head, for the report
             messages_gave_up(
-                a.control,
+                arguments.control,
                 where,
                 head,
                 run,
                 l1(get_write_ptr(kCbMessagesIn))[kMessagesHeader / 4]
             );
             status(KM_MESSAGES_GAVE_UP, head, where);
-            rd.gave_up(kStReader, kGaveStop, kWhereData, slot(r), run);
+            reader.gave_up(kStReader, kGaveStop, kWhereData, slot(command), run);
         }
         // Compute leaves its loop on the end packet (or on the stop flag).
-        if (rd.poll(
+        if (reader.poll(
             [] {
                 return cb_pages_reservable_at_back(kCbMessagesIn, 1);
             },
-            a.wait_limit,
-            a.wait_limit
+            arguments.wait_limit,
+            arguments.wait_limit
         ) == kGaveNone) {
             cb_reserve_back(kCbMessagesIn, 1);
             l1(get_write_ptr(kCbMessagesIn))[0] = kMessagesEnd;
@@ -489,139 +541,165 @@ namespace km {
 
     // Generic writer: outgoing messages in bins by destination; one atomic add per bin
     // reserves positions, then the messages go to that queue. True: the run ended.
-    template <typename Wr>
-    inline bool messages_writer(Wr& wr, const km_command_t& r) {
-        const Args& a = wr.args();
-        const MessagesArgs d = messages_args(wr);
-        const uint32_t run = r.sequence, words = d.message_bytes / 4;
+    template <typename WriterType>
+    inline bool messages_writer(WriterType& writer, const km_command_t& command) {
+        const Args& arguments = writer.args();
+        const MessagesArgs messages_arguments = messages_args(writer);
+        const uint32_t run = command.sequence;
+        const uint32_t words = messages_arguments.message_bytes / 4;
         const uint32_t bins = (
-            d.bins == 0 || d.bins > kMessagesBinsMax ? kMessagesBinsMax : d.bins
+            messages_arguments.bins == 0 || messages_arguments.bins > kMessagesBinsMax
+                ? kMessagesBinsMax
+                : messages_arguments.bins
         );
-        volatile tt_l1_ptr uint32_t* messages = wr.control(KM_CONTROL_MESSAGES);
+        volatile tt_l1_ptr uint32_t* messages = writer.control(KM_CONTROL_MESSAGES);
         volatile tt_l1_ptr uint32_t*
-            wf = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagWriter) / 4);
+            writer_flags = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagWriter) / 4);
         volatile tt_l1_ptr uint32_t*
-            cf = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagCompute) / 4);
-        volatile tt_l1_ptr uint32_t* ret = messages + KM_MESSAGES_RETURNED / 4;
-        const uint32_t ret_addr = (
-            a.control + KM_CONTROL_MESSAGES + KM_MESSAGES_RETURNED
+            compute_flags = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagCompute) / 4);
+        volatile tt_l1_ptr uint32_t* returned = messages + KM_MESSAGES_RETURNED / 4;
+        const uint32_t returned_address = (
+            arguments.control + KM_CONTROL_MESSAGES + KM_MESSAGES_RETURNED
         );
-        const InterleavedAddrGen<true> q = {
-            .bank_base_address = d.queue,
-            .page_size = kMessagesPageMessages * d.message_bytes
+        const InterleavedAddrGen<true> queue_addresses = {
+            .bank_base_address = messages_arguments.queue,
+            .page_size = kMessagesPageMessages * messages_arguments.message_bytes
         };
         const uint32_t store = get_write_ptr(kCbMessagesBins);
-        uint32_t dest[kMessagesBinsMax], fill[kMessagesBinsMax];
-        for (uint32_t b = 0; b < kMessagesBinsMax; b++) {
-            dest[b] = kMessagesEnd;
-            fill[b] = 0;
+        uint32_t bin_destination[kMessagesBinsMax], bin_fill[kMessagesBinsMax];
+        for (uint32_t bin = 0; bin < kMessagesBinsMax; bin++) {
+            bin_destination[bin] = kMessagesEnd;
+            bin_fill[bin] = 0;
         }
         uint32_t taken = 0, sent = 0, held = 0, where = 0, flag = 0, lost_to = 0;
         messages[KM_MESSAGES_SENT / 4] = 0;
-        wf[1] = 0;
-        wf[0] = run;
+        writer_flags[1] = 0;
+        writer_flags[0] = run;
         // A core reserves on the counter tiles: it waits until each shows READY.
-        const uint32_t ctrs = d.counters, ranks = messages_ranks(r, ctrs);
-        if (ctrs == 0 || ctrs > KM_COUNTERS_MAX || ranks == 0) {
+        const uint32_t counter_tiles = messages_arguments.counters;
+        const uint32_t ranks = messages_ranks(command, counter_tiles);
+        if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
             where = kWhereMessagesCounter;
-        } else if (a.me - first(r) < ranks) {
-            for (uint32_t j = 0; j < ctrs && where == 0; j++) {
-                if (!messages_ready(wr, first(r) + ranks + j, KM_TAILS_WRITER, run)) {
+        } else if (arguments.me - first(command) < ranks) {
+            for (
+                uint32_t counter_tile = 0; counter_tile < counter_tiles && where == 0;
+                counter_tile++
+            ) {
+                if (!messages_ready(
+                    writer,
+                    first(command) + ranks + counter_tile,
+                    KM_TAILS_WRITER,
+                    run
+                )) {
                     where = kWhereMessagesCounter;
                 }
             }
         }
 
-        // Bin b to its destination: reserve, mark, write, wait for the writes.
-        auto flush = [&](uint32_t b) {
-            const uint32_t n = fill[b];
-            ret[0] = kMessagesEnd;
+        // Bin `bin` to its destination: reserve, mark, write, wait for the writes.
+        auto flush = [&](uint32_t bin) {
+            const uint32_t bin_messages = bin_fill[bin];
+            returned[0] = kMessagesEnd;
             invalidate_l1_cache();  // a fence: the store lands before the answer can
             noc_fast_atomic_increment<noc_mode, true>(
                 noc_index,
                 write_at_cmd_buf,
-                wr.core_noc(
-                    messages_counter(r, ctrs, dest[b]),
-                    a.control + KM_CONTROL_TAILS + KM_TAILS_LINE + 16 * dest[b]
+                writer.core_noc(
+                    messages_counter(command, counter_tiles, bin_destination[bin]),
+                    arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
+                        16 * bin_destination[bin]
                 ),
                 NOC_UNICAST_WRITE_VC,
-                n,
+                bin_messages,
                 31,
                 false,
                 false,
-                ret_addr
+                returned_address
             );
-            if (!noc_timeout(wr, [] {
+            if (!noc_timeout(writer, [] {
                 return ncrisc_noc_nonposted_atomics_flushed(noc_index);
             })) {
                 where = kWhereMessagesAtomic;
                 return false;
             }
             // On the card the answer can stay away although its count moved.
-            if (!noc_timeout(wr, [&] {
+            if (!noc_timeout(writer, [&] {
                 invalidate_l1_cache();
-                return ret[0] != kMessagesEnd;
+                return returned[0] != kMessagesEnd;
             })) {
                 where = kWhereMessagesLost;
-                lost_to = dest[b];
+                lost_to = bin_destination[bin];
                 return false;
             }
             // Commit: the messages go out with the first one's mark 0, then after their
             // barrier one 16-byte write sets that mark.
-            const uint32_t p = ret[0];
-            const uint32_t base = store + b * kMessagesPacket * d.message_bytes;
+            const uint32_t first_position = returned[0];
+            const uint32_t base = (
+                store + bin * kMessagesPacket * messages_arguments.message_bytes
+            );
             l1(base)[0] = 0;
-            for (uint32_t i = 1; i < n; i++) {
-                l1(base + i * d.message_bytes)[0] = messages_mark(p + i);
+            for (uint32_t i = 1; i < bin_messages; i++) {
+                l1(base + i * messages_arguments.message_bytes)[0] = messages_mark(
+                    first_position + i
+                );
             }
             invalidate_l1_cache();  // a fence: the NoC reads the stored marks
-            for (uint32_t i = 0; i < n;) {
-                const uint32_t pos = (p + i) & (d.cap - 1);
-                const uint32_t in_page = pos % kMessagesPageMessages;
-                uint32_t m = kMessagesPageMessages - in_page;
-                m = m < n - i ? m : n - i;
-                noc_async_write(
-                    base + i * d.message_bytes,
-                    get_noc_addr(
-                        messages_page(dest[b], pos, d.cap), q, in_page * d.message_bytes
-                    ),
-                    m * d.message_bytes
+            for (uint32_t i = 0; i < bin_messages;) {
+                const uint32_t position = (
+                    (first_position + i) & (messages_arguments.cap - 1)
                 );
-                i += m;
+                const uint32_t in_page = position % kMessagesPageMessages;
+                uint32_t chunk = kMessagesPageMessages - in_page;
+                chunk = chunk < bin_messages - i ? chunk : bin_messages - i;
+                noc_async_write(
+                    base + i * messages_arguments.message_bytes,
+                    get_noc_addr(
+                        messages_page(
+                            bin_destination[bin], position, messages_arguments.cap
+                        ),
+                        queue_addresses,
+                        in_page * messages_arguments.message_bytes
+                    ),
+                    chunk * messages_arguments.message_bytes
+                );
+                i += chunk;
             }
-            if (!noc_timeout(wr, [] {
+            if (!noc_timeout(writer, [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             })) {
                 where = kWhereMessagesFlush;
                 return false;
             }
-            l1(base)[0] = messages_mark(p);
+            l1(base)[0] = messages_mark(first_position);
             invalidate_l1_cache();
             noc_async_write(
                 base,
                 get_noc_addr(
-                    messages_page(dest[b], p, d.cap),
-                    q,
-                    (p & (d.cap - 1)) % kMessagesPageMessages * d.message_bytes
+                    messages_page(
+                        bin_destination[bin], first_position, messages_arguments.cap
+                    ),
+                    queue_addresses,
+                    (first_position & (messages_arguments.cap - 1)) %
+                        kMessagesPageMessages * messages_arguments.message_bytes
                 ),
                 16
             );
-            if (!noc_timeout(wr, [] {
+            if (!noc_timeout(writer, [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             })) {
                 where = kWhereMessagesFlush;
                 return false;
             }
-            sent += n;
+            sent += bin_messages;
             messages[KM_MESSAGES_SENT / 4] = sent;
-            fill[b] = 0;
-            dest[b] = kMessagesEnd;
+            bin_fill[bin] = 0;
+            bin_destination[bin] = kMessagesEnd;
             held--;
             return true;
         };
         auto flush_all = [&] {
-            for (uint32_t b = 0; b < bins; b++) {
-                if (fill[b] != 0 && !flush(b)) {
+            for (uint32_t bin = 0; bin < bins; bin++) {
+                if (bin_fill[bin] != 0 && !flush(bin)) {
                     return false;
                 }
             }
@@ -630,24 +708,31 @@ namespace km {
 
         bool ended = false;
         const uint64_t limit = (
-            a.idle_limit == 0 ? ~0ull : static_cast<uint64_t>(a.idle_limit) << 10
+            arguments.idle_limit == 0
+                ? ~0ull
+                : static_cast<uint64_t>(arguments.idle_limit) << 10
         );
         uint64_t quiet_from = wall64();
         for (uint32_t loop = 0; where == 0 && !ended; loop++) {
             invalidate_l1_cache();
-            if (wr.stop()) {
+            if (writer.stop()) {
                 where = kWhereMessagesStopped;
                 break;
             }
             if (!cb_pages_available_at_front(kCbMessagesOut, 1)) {
-                if (held != 0 && cf[0] == run && (cf[1] & kMessagesWaiting)) {
+                if (
+                    held != 0 && compute_flags[0] == run &&
+                    (compute_flags[1] & kMessagesWaiting)
+                ) {
                     flush_all();  // compute waits: nothing stays in a bin
                     continue;
                 }
-                const uint32_t f = held == 0 ? (taken | kMessagesWaiting) : taken;
-                if (f != flag) {
-                    flag = f;
-                    wf[1] = f;
+                const uint32_t next_flag = (
+                    held == 0 ? (taken | kMessagesWaiting) : taken
+                );
+                if (next_flag != flag) {
+                    flag = next_flag;
+                    writer_flags[1] = next_flag;
                 }
                 if ((loop & 15) == 15 && wall64() - quiet_from > limit) {
                     where = kWhereMessagesOutbox;
@@ -656,39 +741,45 @@ namespace km {
             }
             quiet_from = wall64();
             cb_wait_front(kCbMessagesOut, 1);
-            volatile tt_l1_ptr uint32_t* it = l1(get_read_ptr(kCbMessagesOut));
-            const uint32_t to = it[0];
-            if (to == kMessagesEnd) {
+            volatile tt_l1_ptr uint32_t* outgoing = l1(get_read_ptr(kCbMessagesOut));
+            const uint32_t destination = outgoing[0];
+            if (destination == kMessagesEnd) {
                 cb_pop_front(kCbMessagesOut, 1);
                 ended = flush_all();
                 break;
             }
-            const uint32_t b = to % bins;
-            if (dest[b] != to && fill[b] != 0 && !flush(b)) {
+            const uint32_t bin = destination % bins;
+            if (
+                bin_destination[bin] != destination && bin_fill[bin] != 0 && !flush(bin)
+            ) {
                 break;
             }
-            if (fill[b] == 0) {
-                dest[b] = to;
+            if (bin_fill[bin] == 0) {
+                bin_destination[bin] = destination;
                 held++;
             }
-            volatile tt_l1_ptr uint32_t* slot_w = (
-                l1(store + (b * kMessagesPacket + fill[b]) * d.message_bytes)
+            volatile tt_l1_ptr uint32_t* slot_words = (
+                l1(
+                    store +
+                    (bin * kMessagesPacket + bin_fill[bin]) *
+                        messages_arguments.message_bytes
+                )
             );
-            for (uint32_t w = 1; w < words; w++) {
-                slot_w[w] = it[w];
+            for (uint32_t word = 1; word < words; word++) {
+                slot_words[word] = outgoing[word];
             }
-            fill[b]++;
+            bin_fill[bin]++;
             cb_pop_front(kCbMessagesOut, 1);
             taken++;
             flag = taken;
-            wf[1] = taken;
-            if (fill[b] == kMessagesPacket && !flush(b)) {
+            writer_flags[1] = taken;
+            if (bin_fill[bin] == kMessagesPacket && !flush(bin)) {
                 break;
             }
         }
         if (where != 0) {
-            messages_gave_up(a.control, where, taken, run, lost_to);
-            wr.gave_up(kStWriter, kGaveStop, kWhereData, slot(r), run);
+            messages_gave_up(arguments.control, where, taken, run, lost_to);
+            writer.gave_up(kStWriter, kGaveStop, kWhereData, slot(command), run);
             return false;
         }
         return ended;
@@ -709,8 +800,8 @@ namespace km {
             return count != 0;
         }
 
-        const volatile tt_l1_ptr uint32_t* operator[](uint32_t i) const {
-            return l1(base + i * message_bytes);
+        const volatile tt_l1_ptr uint32_t* operator[](uint32_t index) const {
+            return l1(base + index * message_bytes);
         }
     };
 
@@ -718,17 +809,17 @@ namespace km {
     // writes the outgoing messages, unpack takes and frees the packets.
     class Messages {
     public:
-        template <typename Cp>
-        Messages(const Cp& cp, const km_command_t& r) :
+        template <typename ComputeType>
+        Messages(const ComputeType& compute, const km_command_t& command) :
             control_(get_arg_val<uint32_t>(kCArgControl)),
             idle_(get_arg_val<uint32_t>(kCArgIdle)),
             wait_(get_arg_val<uint32_t>(kCArgWait)),
-            run_(r.sequence),
-            first_(km::first(r)),
-            count_(messages_ranks(r, cp.arg(kMessagesCArgCounters))),
-            rank_(cp.me() - km::first(r)),
-            message_bytes_(cp.arg(kMessagesCArgMessage)),
-            quota_(cp.arg(kMessagesCArgQuota)),
+            run_(command.sequence),
+            first_(km::first(command)),
+            count_(messages_ranks(command, compute.arg(kMessagesCArgCounters))),
+            rank_(compute.me() - km::first(command)),
+            message_bytes_(compute.arg(kMessagesCArgMessage)),
+            quota_(compute.arg(kMessagesCArgQuota)),
             seeded_(rank_ >= count_) {
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* messages = (
@@ -772,23 +863,24 @@ namespace km {
         // gave up. Unpack waits and tells math and pack.
         Packet next() {
             seeded_ = true;
-            uint32_t n = 0, addr = 0;
+            uint32_t packet_count = 0, address = 0;
             PACK((ckernel::mailbox_write(
                 ckernel::ThreadId::UnpackThreadId,
                 pushed_ | (failed_ ? kMessagesWaiting : 0)
             )));
             UNPACK(({
-                const uint32_t p = (
+                const uint32_t pack_word = (
                     ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)
                 );
                 volatile tt_l1_ptr uint32_t* messages = (
                     l1(control_ + KM_CONTROL_MESSAGES)
                 );
-                volatile tt_l1_ptr uint32_t*
-                    cf = (messages + (KM_MESSAGES_FLAGS + kMessagesFlagCompute) / 4);
-                if (!(p & kMessagesWaiting) && !failed_) {
-                    pushed_ = p;
-                    cf[1] = pushed_ | kMessagesWaiting;
+                volatile tt_l1_ptr uint32_t* compute_flags = (
+                    messages + (KM_MESSAGES_FLAGS + kMessagesFlagCompute) / 4
+                );
+                if (!(pack_word & kMessagesWaiting) && !failed_) {
+                    pushed_ = pack_word;
+                    compute_flags[1] = pushed_ | kMessagesWaiting;
                     volatile tt_l1_ptr uint32_t* got = (
                         get_cb_tiles_received_ptr(kCbMessagesIn)
                     );
@@ -812,13 +904,16 @@ namespace km {
                     if (code == kGaveNone) {
                         cb_wait_front(kCbMessagesIn, 1);
                         invalidate_l1_cache();
-                        addr = ckernel::get_tile_l1_byte_address(kCbMessagesIn, 0);
-                        n = l1(addr)[0];
-                        if (n == kMessagesEnd || n == 0 || n > kMessagesPacket) {
+                        address = ckernel::get_tile_l1_byte_address(kCbMessagesIn, 0);
+                        packet_count = l1(address)[0];
+                        if (
+                            packet_count == kMessagesEnd || packet_count == 0 ||
+                            packet_count > kMessagesPacket
+                        ) {
                             cb_pop_front(kCbMessagesIn, 1);
-                            n = 0;
+                            packet_count = 0;
                         } else {
-                            cf[1] = pushed_;
+                            compute_flags[1] = pushed_;
                         }
                     } else {
                         messages_gave_up(
@@ -834,32 +929,34 @@ namespace km {
                         );
                     }
                 }
-                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, n);
-                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, n);
-                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, addr);
-                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, addr);
+                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, packet_count);
+                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, packet_count);
+                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, address);
+                ckernel::mailbox_write(ckernel::ThreadId::PackThreadId, address);
             }));
             MATH(({
-                n = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
-                addr = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
+                packet_count = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
+                address = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
             }));
             PACK(({
-                n = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
-                addr = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
+                packet_count = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
+                address = ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId);
             }));
-            if (n == 0) {
+            if (packet_count == 0) {
                 PACK((end_marker()));
                 return {0, 0, message_bytes_};
             }
-            return {n, addr + kMessagesHeader, message_bytes_};
+            return {packet_count, address + kMessagesHeader, message_bytes_};
         }
 
-        // The message goes on at rank `dest` of the run's group. message:
+        // The message goes on at rank `destination` of the run's group. message:
         // message_bytes / 4 words; word 0 is the runtime's mark.
-        void forward(uint32_t dest, const uint32_t* message) {
-            if (dest >= count_) {
+        void forward(uint32_t destination, const uint32_t* message) {
+            if (destination >= count_) {
                 failed_ = true;
-                PACK((messages_gave_up(control_, kWhereMessagesBadDest, dest, run_)));
+                PACK((
+                    messages_gave_up(control_, kWhereMessagesBadDest, destination, run_)
+                ));
                 PACK((command_gave_up(
                     control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_
                 )));
@@ -867,7 +964,7 @@ namespace km {
             }
             PACK(({
                 if (!failed_) {
-                    push_out(first_ + dest, message);
+                    push_out(first_ + destination, message);
                 }
             }));
         }
@@ -877,25 +974,25 @@ namespace km {
             quota_++;
         }
 
-        // A new message at rank `dest`; false when this core has no quota left.
-        bool send(uint32_t dest, const uint32_t* message) {
+        // A new message at rank `destination`; false when this core has no quota left.
+        bool send(uint32_t destination, const uint32_t* message) {
             if (quota_ == 0) {
                 return false;
             }
             quota_--;
-            forward(dest, message);
+            forward(destination, message);
             return true;
         }
 
         // The packet's page is free; CONSUMED counts its messages.
-        void done(const Packet& pk) {
+        void done(const Packet& packet) {
             MATH((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1)));
             PACK((ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1)));
             UNPACK(({
                 (void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId);
                 (void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId);
                 cb_pop_front(kCbMessagesIn, 1);
-                consumed_ += pk.count;
+                consumed_ += packet.count;
                 volatile tt_l1_ptr uint32_t* messages = (
                     l1(control_ + KM_CONTROL_MESSAGES)
                 );
@@ -918,17 +1015,17 @@ namespace km {
 
     private:
         // Pack: one outgoing message, word 0 the destination core.
-        void push_out(uint32_t to, const uint32_t* message) {
+        void push_out(uint32_t destination, const uint32_t* message) {
             if (!reserve()) {
                 return;
             }
-            volatile tt_l1_ptr uint32_t* o = (
+            volatile tt_l1_ptr uint32_t* outgoing = (
                 l1(get_local_cb_interface(kCbMessagesOut).fifo_wr_ptr << cb_addr_shift)
             );
-            for (uint32_t w = 1; w < message_bytes_ / 4; w++) {
-                o[w] = message[w];
+            for (uint32_t word = 1; word < message_bytes_ / 4; word++) {
+                outgoing[word] = message[word];
             }
-            o[0] = to;
+            outgoing[0] = destination;
             __sync_synchronize();  // the message is in L1 before the push
             cb_push_back(kCbMessagesOut, 1);
             pushed_++;

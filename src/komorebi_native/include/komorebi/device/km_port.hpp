@@ -18,53 +18,66 @@ namespace km {
 #if !defined(COMPILE_FOR_TRISC)
 namespace km {
 
-    inline volatile tt_l1_ptr uint32_t* port_words(const Core& c, uint32_t port) {
-        return c.control(KM_CONTROL_PORT + port * KM_PORT_STRIDE);
+    inline volatile tt_l1_ptr uint32_t* port_words(const Core& core, uint32_t port) {
+        return core.control(KM_CONTROL_PORT + port * KM_PORT_STRIDE);
     }
 
-    // L1 address of slot k: the buffer's base from its configuration, not from its
-    // pointers, so any kernel of any core computes the same address.
-    inline uint32_t slot_addr(const Arrival& a, uint32_t k) {
-        const LocalCBInterface& i = get_local_cb_interface(a.cb);
-        return i.fifo_limit - i.fifo_size + slot_page(a, k) * i.fifo_page_size;
+    // L1 address of `arrival_slot`: the buffer's base from its configuration, not from
+    // its pointers, so any kernel of any core computes the same address.
+    inline uint32_t slot_addr(const Arrival& arrival, uint32_t arrival_slot) {
+        const LocalCBInterface& circular_buffer = get_local_cb_interface(arrival.cb);
+        return (
+            circular_buffer.fifo_limit - circular_buffer.fifo_size +
+            slot_page(arrival, arrival_slot) * circular_buffer.fifo_page_size
+        );
     }
 
-    // Writer: `pages` pages (at most P) at the front of `cb` into slot k of `to`, a
-    // bump of its port (each step timed), pop. False: gave up, port in the top byte.
+    // Writer: `pages` pages (at most P) at the front of `cb` into `arrival_slot` of
+    // core `destination`, bump its port (each step timed), pop. False: gave up.
     inline bool emit(
-        const Writer& wr,
-        const km_command_t& r,
-        const Arrival& arr,
+        const Writer& writer,
+        const km_command_t& command,
+        const Arrival& arrival,
         uint32_t cb,
         uint32_t pages,
-        uint32_t to,
+        uint32_t destination,
         uint32_t port,
-        uint32_t k
+        uint32_t arrival_slot
     ) {
-        const uint32_t named = slot(r) | port << 8;
+        const uint32_t named = slot(command) | port << 8;
         const uint32_t bytes = pages * get_local_cb_interface(cb).fifo_page_size;
-        const uint32_t room = arr.per * get_local_cb_interface(arr.cb).fifo_page_size;
-        if (port >= KM_PORTS || k >= arrival_slots(arr) || bytes > room) {
-            wr.gave_up(kStWriter, kGaveBadItem, kWhereEmit, named, r.sequence);
+        const uint32_t room = (
+            arrival.per * get_local_cb_interface(arrival.cb).fifo_page_size
+        );
+        if (
+            port >= KM_PORTS || arrival_slot >= arrival_slots(arrival) || bytes > room
+        ) {
+            writer.gave_up(
+                kStWriter, kGaveBadItem, kWhereEmit, named, command.sequence
+            );
             return false;
         }
-        if (!wr.wait_front(cb, pages, kBehindPort)) {
+        if (!writer.wait_front(cb, pages, kBehindPort)) {
             return false;
         }
-        const uint32_t limit = wr.args().wait_limit;
-        noc_async_write(get_read_ptr(cb), wr.core_noc(to, slot_addr(arr, k)), bytes);
-        uint32_t code = wr.poll(
+        const uint32_t limit = writer.args().wait_limit;
+        noc_async_write(
+            get_read_ptr(cb),
+            writer.core_noc(destination, slot_addr(arrival, arrival_slot)),
+            bytes
+        );
+        uint32_t code = writer.poll(
             [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
             limit
         );
         if (code == kGaveNone) {
-            const uint32_t at = (
-                wr.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE
+            const uint32_t port_address = (
+                writer.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE
             );
-            noc_semaphore_inc(wr.core_noc(to, at), 1);
-            code = wr.poll(
+            noc_semaphore_inc(writer.core_noc(destination, port_address), 1);
+            code = writer.poll(
                 [] {
                     return ncrisc_noc_nonposted_atomics_flushed(noc_index);
                 },
@@ -72,63 +85,67 @@ namespace km {
             );
         }
         if (code != kGaveNone) {
-            wr.gave_up(kStWriter, code, kWhereEmit, named, r.sequence);
+            writer.gave_up(kStWriter, code, kWhereEmit, named, command.sequence);
             return false;
         }
         cb_pop_front(cb, pages);
         return true;
     }
 
-    // Reader: waits until the port has counted n arrivals, clears it, hands all S
-    // pages to compute. False: gave up; the port keeps n, so the missing count shows.
+    // Reader: waits until the port has counted `wanted` arrivals, clears it, hands all
+    // S pages to compute. False: gave up; the port keeps `wanted`: the missing count.
     inline bool arrive(
-        const Reader& rd,
-        const km_command_t& r,
-        const Arrival& arr,
+        const Reader& reader,
+        const km_command_t& command,
+        const Arrival& arrival,
         uint32_t port,
-        uint32_t n
+        uint32_t wanted
     ) {
-        const uint32_t named = slot(r) | port << 8;
+        const uint32_t named = slot(command) | port << 8;
         if (port >= KM_PORTS) {
-            rd.gave_up(kStReader, kGaveBadItem, kWherePort, named, r.sequence);
+            reader.gave_up(
+                kStReader, kGaveBadItem, kWherePort, named, command.sequence
+            );
             return false;
         }
-        volatile tt_l1_ptr uint32_t* p = port_words(rd, port);
-        p[KM_PORT_WANT] = n;
-        const uint32_t code = rd.poll(
+        volatile tt_l1_ptr uint32_t* words = port_words(reader, port);
+        words[KM_PORT_WANT] = wanted;
+        const uint32_t code = reader.poll(
             [&] {
-                return static_cast<int32_t>(p[KM_PORT_COUNT] - n) >= 0;
+                return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
             },
-            rd.args().wait_limit
+            reader.args().wait_limit
         );
         if (code != kGaveNone) {
-            rd.gave_up(kStReader, code, kWherePort, named, r.sequence);
+            reader.gave_up(kStReader, code, kWherePort, named, command.sequence);
             return false;
         }
-        p[KM_PORT_COUNT] = 0;  // every sender of this command has bumped it
-        p[KM_PORT_WANT] = 0;
-        if (!rd.reserve(arr.cb, arr.pages)) {
+        words[KM_PORT_COUNT] = 0;  // every sender of this command has bumped it
+        words[KM_PORT_WANT] = 0;
+        if (!reader.reserve(arrival.cb, arrival.pages)) {
             return false;
         }
-        cb_push_back(arr.cb, arr.pages);
+        cb_push_back(arrival.cb, arrival.pages);
         return true;
     }
 
     // Reader side of a reduce: each arrival this core waits for, in round order.
     inline bool reduce_arrive(
-        const Reader& rd,
-        const km_command_t& r,
-        const Arrival& arr,
-        const Group& g,
+        const Reader& reader,
+        const km_command_t& command,
+        const Arrival& arrival,
+        const Group& group,
         uint32_t form
     ) {
-        if (reduce_slots(g, form) > arrival_slots(arr)) {  // a slot per sender
-            rd.gave_up(kStReader, kGaveBadItem, kWherePort, slot(r), r.sequence);
+        if (reduce_slots(group, form) > arrival_slots(arrival)) {  // a slot per sender
+            reader.gave_up(
+                kStReader, kGaveBadItem, kWherePort, slot(command), command.sequence
+            );
             return false;
         }
         for (uint32_t port = 0; port < KM_PORTS; port++) {
-            const uint32_t n = reduce_wants(g, form, port);
-            if (n != 0 && !arrive(rd, r, arr, port, n)) {
+            const uint32_t wanted = reduce_wants(group, form, port);
+            if (wanted != 0 && !arrive(reader, command, arrival, port, wanted)) {
                 return false;
             }
         }
@@ -138,22 +155,25 @@ namespace km {
     // Writer side of a reduce: a core other than the root emits its `pages` pages
     // of `cb` to its receiver. The root sends nothing.
     inline bool reduce_emit(
-        const Writer& wr,
-        const km_command_t& r,
-        const Arrival& arr,
-        const Group& g,
+        const Writer& writer,
+        const km_command_t& command,
+        const Arrival& arrival,
+        const Group& group,
         uint32_t form,
         uint32_t cb,
         uint32_t pages
     ) {
-        const ReduceStep s = reduce_send(g, form);
-        return s.root || emit(wr, r, arr, cb, pages, s.to, s.port, s.slot);
+        const ReduceStep step = reduce_send(group, form);
+        return (
+            step.root ||
+            emit(writer, command, arrival, cb, pages, step.to, step.port, step.slot)
+        );
     }
 
     // Writer at the root of a reduce: waits for the result's `pages` pages of `cb`
     // (timed behind the ports). False: gave up (recorded).
-    inline bool reduce_result(const Writer& wr, uint32_t cb, uint32_t pages) {
-        return wr.wait_front(cb, pages, kBehindPort);
+    inline bool reduce_result(const Writer& writer, uint32_t cb, uint32_t pages) {
+        return writer.wait_front(cb, pages, kBehindPort);
     }
 
 }  // namespace km
@@ -162,42 +182,42 @@ namespace km {
 namespace km {
 
     // Compute: waits for the S pages arrive() pushes; pages are then read by index
-    // (copy_tile(arr.cb, slot_page(arr, k) + i, ...)). False: the tile is stopping.
-    inline bool take(const Compute& cp, const Arrival& arr) {
-        return cp.wait_front(arr.cb, arr.pages, kBehindPort);
+    // (copy_tile(arrival.cb, slot_page(arrival, slot) + i, ...)). False: stopping.
+    inline bool take(const Compute& compute, const Arrival& arrival) {
+        return compute.wait_front(arrival.cb, arrival.pages, kBehindPort);
     }
 
     // Releases an arrival: all S pages, so the slot addresses never drift.
-    inline void untake(const Arrival& arr) {
-        cb_pop_front(arr.cb, arr.pages);
+    inline void untake(const Arrival& arrival) {
+        cb_pop_front(arrival.cb, arrival.pages);
     }
 
-    // Compute side of a reduce: each arrival in round order; combine(k) for its slots
-    // in rank order (owner: 0 to size - 2; tree: the round's), from slot_page(arr, k).
+    // Compute side of a reduce: each arrival in round order; combine(slot) for its
+    // slots in rank order (owner: 0 to size - 2; tree: the round's), from slot_page().
     template <typename Combine>
     inline bool reduce(
-        const Compute& cp,
-        const Arrival& arr,
-        const Group& g,
+        const Compute& compute,
+        const Arrival& arrival,
+        const Group& group,
         uint32_t form,
         Combine combine
     ) {
         for (uint32_t port = 0; port < KM_PORTS; port++) {
-            const uint32_t n = reduce_wants(g, form, port);
-            if (n == 0) {
+            const uint32_t wanted = reduce_wants(group, form, port);
+            if (wanted == 0) {
                 continue;
             }
-            if (!take(cp, arr)) {
+            if (!take(compute, arrival)) {
                 return false;
             }
             if (form == kReduceOwner) {
-                for (uint32_t k = 0; k < n; k++) {
-                    combine(k);
+                for (uint32_t arrival_slot = 0; arrival_slot < wanted; arrival_slot++) {
+                    combine(arrival_slot);
                 }
             } else {
                 combine(port);
             }
-            untake(arr);
+            untake(arrival);
         }
         return true;
     }

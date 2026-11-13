@@ -31,27 +31,29 @@ namespace km {
                 put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
                 return;
             }
-            while (const km_command_t* r = next()) {
-                if (handler(*r) == KM_HANDLER_EXIT) {
+            while (const km_command_t* command = next()) {
+                if (handler(*command) == KM_HANDLER_EXIT) {
                     put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
-                body(*r);
-                control(KM_CONTROL_DONE + slot(*r) * 16)[kDoneReader] = r->sequence;
+                body(*command);
+                control(
+                    KM_CONTROL_DONE + slot(*command) * 16
+                )[kDoneReader] = command->sequence;
             }
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
         // A wait only the stop flag ends (the idle limit its timeout). Returns true on
         // stop.
-        bool wait_stop(const km_command_t& r) const {
+        bool wait_stop(const km_command_t& command) const {
             const uint32_t code = poll(
                 [] {
                     return false;
                 },
                 args().idle_limit
             );
-            gave_up(kStReader, code, kWhereStall, slot(r), r.sequence);
+            gave_up(kStReader, code, kWhereStall, slot(command), command.sequence);
             return code == kGaveStop;
         }
 
@@ -80,69 +82,79 @@ namespace km {
         // Clears ring, counters, state and stop flags, loads the core table, checks in
         // (leaders report READY, one core sends the hello). False: a leader gave up.
         bool start() {
-            const Args& a = args();
-            for (uint32_t w = 0; w < KM_RING_SLOTS * kCommandWords; w++) {
-                control(KM_CONTROL_RING)[w] = 0;
+            const Args& arguments = args();
+            for (uint32_t word = 0; word < KM_RING_SLOTS * kCommandWords; word++) {
+                control(KM_CONTROL_RING)[word] = 0;
             }
-            for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
-                control(KM_CONTROL_DONE)[j * 4] = 0;
-                control(KM_CONTROL_DONE)[j * 4 + kDoneCompute] = 0;
-                control(KM_CONTROL_DONE)[j * 4 + kDoneReader] = 0;
+            for (uint32_t slot_index = 0; slot_index < KM_RING_SLOTS; slot_index++) {
+                control(KM_CONTROL_DONE)[slot_index * 4] = 0;
+                control(KM_CONTROL_DONE)[slot_index * 4 + kDoneCompute] = 0;
+                control(KM_CONTROL_DONE)[slot_index * 4 + kDoneReader] = 0;
             }
-            for (uint32_t w = 0; w < kStateWords; w++) {
-                state()[w] = 0;
+            for (uint32_t word = 0; word < kStateWords; word++) {
+                state()[word] = 0;
             }
             *control(KM_CONTROL_STOP) = 0;
-            for (uint32_t w = 0; w < KM_BROADCASTS * KM_BROADCAST_BYTES / 4; w++) {
-                control(KM_CONTROL_BROADCAST)[w] = 0;
+            for (
+                uint32_t word = 0; word < KM_BROADCASTS * KM_BROADCAST_BYTES / 4; word++
+            ) {
+                control(KM_CONTROL_BROADCAST)[word] = 0;
             }
-            for (uint32_t w = 0; w < KM_PORTS * KM_PORT_STRIDE / 4; w++) {
-                control(KM_CONTROL_PORT)[w] = 0;
+            for (uint32_t word = 0; word < KM_PORTS * KM_PORT_STRIDE / 4; word++) {
+                control(KM_CONTROL_PORT)[word] = 0;
             }
             trace_.clear();
             const InterleavedAddrGen<true> table = {
-                .bank_base_address = a.cores, .page_size = KM_CORES_MAX * 4
+                .bank_base_address = arguments.cores, .page_size = KM_CORES_MAX * 4
             };
             noc_async_read(
-                get_noc_addr(0, table), a.control + KM_CONTROL_CORES, KM_CORES_MAX * 4
+                get_noc_addr(0, table),
+                arguments.control + KM_CONTROL_CORES,
+                KM_CORES_MAX * 4
             );
             noc_async_read_barrier();
             invalidate_l1_cache();
-            state()[kStMagic] = kStateMagic | a.tag << 8 | a.me;
+            state()[kStMagic] = kStateMagic | arguments.tag << 8 | arguments.me;
 
-            if (a.me != a.leader) {
-                *out_slot(a.control, kOutCheckin) = a.tag << 16;
+            if (arguments.me != arguments.leader) {
+                *out_slot(arguments.control, kOutCheckin) = arguments.tag << 16;
                 small_write<kOutCheckin, 4>(
-                    a.control, core_noc(a.leader, a.control + KM_CONTROL_BOOT), a.rank
+                    arguments.control,
+                    core_noc(arguments.leader, arguments.control + KM_CONTROL_BOOT),
+                    arguments.rank
                 );
                 noc_async_write_barrier();
             } else {
                 volatile tt_l1_ptr uint32_t* boot = control(KM_CONTROL_BOOT);
                 const uint32_t code = poll(
                     [&] {
-                        for (uint32_t k = 0; k < a.peers; k++) {
-                            if ((boot[k * 4] >> 16) != a.tag) {
+                        for (uint32_t peer = 0; peer < arguments.peers; peer++) {
+                            if ((boot[peer * 4] >> 16) != arguments.tag) {
                                 return false;
                             }
                         }
                         return true;
                     },
-                    a.wait_limit
+                    arguments.wait_limit
                 );
                 if (code != kGaveNone) {
                     gave_up(kStReader, code, kWhereCheckin, 0, 0);
                     return false;
                 }
-                *out_slot(a.control, kOutReady) = KM_READY;
+                *out_slot(arguments.control, kOutReady) = KM_READY;
                 small_write<kOutReady, 4>(
-                    a.control, disp_noc(a.ready_base), a.ready_slot
+                    arguments.control,
+                    disp_noc(arguments.ready_base),
+                    arguments.ready_slot
                 );
                 noc_async_write_barrier();
             }
-            if (a.mailbox != 0) {
-                out_slot(a.control, kOutHello)[0] = 1;
-                out_slot(a.control, kOutHello)[1] = a.control;
-                small_write<kOutHello, 8>(a.control, disp_noc(a.mailbox), 0);
+            if (arguments.mailbox != 0) {
+                out_slot(arguments.control, kOutHello)[0] = 1;
+                out_slot(arguments.control, kOutHello)[1] = arguments.control;
+                small_write<kOutHello, 8>(
+                    arguments.control, disp_noc(arguments.mailbox), 0
+                );
                 noc_async_write_barrier();
             }
             return true;
@@ -151,7 +163,7 @@ namespace km {
         // When compute and writer took the last command: the next one into
         // KM_CONTROL_JOB and a token to each. nullptr: a wait gave up (they get EXIT).
         const km_command_t* next() {
-            const Args& a = args();
+            const Args& arguments = args();
             const uint32_t code = poll(
                 [] {
                     return (
@@ -159,8 +171,8 @@ namespace km {
                         cb_pages_reservable_at_back(kCbTokenWriter, 1)
                     );
                 },
-                a.idle_limit,
-                a.wait_limit
+                arguments.idle_limit,
+                arguments.wait_limit
             );
             if (code != kGaveNone) {
                 gave_up(kStReader, code, kWhereToken, 0, 0);
@@ -180,11 +192,11 @@ namespace km {
                 reinterpret_cast<volatile km_command_t*>(control(KM_CONTROL_JOB))
             );
             volatile tt_l1_ptr uint32_t* last = state() + kStLast;
-            const uint64_t t0 = wall64();
+            const uint64_t started = wall64();
             const uint64_t end = (
-                a.idle_limit == 0
+                arguments.idle_limit == 0
                     ? ~0ull
-                    : t0 + (static_cast<uint64_t>(a.idle_limit) << 10)
+                    : started + (static_cast<uint64_t>(arguments.idle_limit) << 10)
             );
             uint32_t passes = 0, gave = kGaveNone, sequence = 0;
             for (;;) {
@@ -193,23 +205,23 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
-                const Pass p = scan(ring, last, a.depth, a.me);
+                const Pass found = scan(ring, last, arguments.depth, arguments.me);
                 passes++;
-                if (p.pick >= 0 && !p.partial) {
-                    copy_command(&ring[p.pick], job);
-                    if (job->sequence == p.pick_sequence && KM_LANDED(job)) {
-                        last[p.pick] = p.pick_sequence;
+                if (found.pick >= 0 && !found.partial) {
+                    copy_command(&ring[found.pick], job);
+                    if (job->sequence == found.pick_sequence && KM_LANDED(job)) {
+                        last[found.pick] = found.pick_sequence;
                         const km_command_t& got = *const_cast<const km_command_t*>(job);
                         // A command names its own slot; one found elsewhere is not run.
-                        if (slot(got) != static_cast<uint32_t>(p.pick)) {
+                        if (slot(got) != static_cast<uint32_t>(found.pick)) {
                             add_sat(state() + kStSlotWrong, 1);
                             continue;
                         }
                         // EXIT completes as a group of every worker, whatever it names.
                         if (handler(got) == KM_HANDLER_EXIT) {
-                            job->group = make_group(0, a.workers);
+                            job->group = make_group(0, arguments.workers);
                         }
-                        sequence = p.pick_sequence;
+                        sequence = found.pick_sequence;
                         break;
                     }
                 }
@@ -218,17 +230,18 @@ namespace km {
                     break;
                 }
             }
-            const uint32_t t1 = wall();
+            const uint32_t taken = wall();
             add_sat(state() + kStPasses, passes);
             add_sat(
-                state() + kStNextCycles, static_cast<uint32_t>((wall64() - t0) >> 4)
+                state() + kStNextCycles,
+                static_cast<uint32_t>((wall64() - started) >> 4)
             );
             if (gave != kGaveNone) {
                 gave_up(kStReader, gave, kWhereNext, 0, 0);
                 hand_off_exit();
                 return nullptr;
             }
-            trace_.put(sequence, kTraceSeen, t1);
+            trace_.put(sequence, kTraceSeen, taken);
             trace_.put(sequence, kTraceExtra, passes);
             add_sat(state() + kStRuns, 1);
             hand_off(sequence);
@@ -285,15 +298,15 @@ namespace km {
         // compute and reader end their bodies, complete() runs; EXIT completes, leaves.
         template <typename Body>
         void run(Body body) {
-            const Args& a = args();
+            const Args& arguments = args();
             uint32_t end = kEndExit;
             for (;;) {
                 const uint32_t code = poll(
                     [] {
                         return cb_pages_available_at_front(kCbTokenWriter, 1);
                     },
-                    a.idle_limit,
-                    a.wait_limit
+                    arguments.idle_limit,
+                    arguments.wait_limit
                 );
                 if (code != kGaveNone) {
                     gave_up(kStWriter, code, kWhereWriter, 0, 0);
@@ -301,28 +314,30 @@ namespace km {
                     break;
                 }
                 invalidate_l1_cache();
-                km_command_t r;
-                copy_command(control(KM_CONTROL_JOB), &r);
+                km_command_t command;
+                copy_command(control(KM_CONTROL_JOB), &command);
                 cb_pop_front(kCbTokenWriter, 1);
-                if (handler(r) == KM_HANDLER_EXIT) {
-                    if (r.sequence == 0) {  // the reader gave up
+                if (handler(command) == KM_HANDLER_EXIT) {
+                    if (command.sequence == 0) {  // the reader gave up
                         end = kEndAbort;
-                    } else if (complete(*this, r)) {
-                        trace_.timestamp(r.sequence, kTraceSent);
+                    } else if (complete(*this, command)) {
+                        trace_.timestamp(command.sequence, kTraceSent);
                     }
                     break;
                 }
                 result_ = 0;
-                const bool report = body(r);
+                const bool report = body(command);
                 noc_async_write_barrier();
-                trace_.timestamp(r.sequence, kTraceDone);
-                if (report && bodies_done(r) && complete(*this, r, result_)) {
-                    trace_.timestamp(r.sequence, kTraceSent);
+                trace_.timestamp(command.sequence, kTraceDone);
+                if (
+                    report && bodies_done(command) && complete(*this, command, result_)
+                ) {
+                    trace_.timestamp(command.sequence, kTraceSent);
                 }
                 add_sat(state() + kStCompleted, 1);
             }
             noc_async_write_barrier();  // the last acknowledgement has landed
-            trace_.flush(a.me);
+            trace_.flush(arguments.me);
             put_byte(state(), kStEnds, kEndWriter, end);
         }
 
@@ -356,20 +371,22 @@ namespace km {
     private:
         // Timed wait until compute (its body returned on all three threads) and the
         // reader marked command r's sequence in its slot. False: gave up (recorded).
-        bool bodies_done(const km_command_t& r) const {
-            const uint32_t j = slot(r);
-            volatile tt_l1_ptr uint32_t* mark = control(KM_CONTROL_DONE + j * 16);
+        bool bodies_done(const km_command_t& command) const {
+            const uint32_t slot_index = slot(command);
+            volatile tt_l1_ptr uint32_t* mark = (
+                control(KM_CONTROL_DONE + slot_index * 16)
+            );
             const uint32_t code = poll(
                 [&] {
                     return (
-                        mark[kDoneCompute] == r.sequence &&
-                        mark[kDoneReader] == r.sequence
+                        mark[kDoneCompute] == command.sequence &&
+                        mark[kDoneReader] == command.sequence
                     );
                 },
                 args().wait_limit
             );
             if (code != kGaveNone) {
-                gave_up(kStWriter, code, kWhereCDone, j, r.sequence);
+                gave_up(kStWriter, code, kWhereCDone, slot_index, command.sequence);
                 return false;
             }
             return true;
@@ -399,8 +416,8 @@ namespace km {
             return me_;
         }
 
-        uint32_t arg(uint32_t i) const {
-            return get_arg_val<uint32_t>(kComputeArgs + i);
+        uint32_t arg(uint32_t index) const {
+            return get_arg_val<uint32_t>(kComputeArgs + index);
         }
 
         // Timed cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
@@ -417,7 +434,7 @@ namespace km {
                     : poll_stop(
                         stop(),
                         [&] {
-                            const uint16_t n = (
+                            const uint16_t available = (
                                 static_cast<uint16_t>(
                                     ckernel::reg_read(
                                         static_cast<uint32_t>(
@@ -427,7 +444,7 @@ namespace km {
                                     get_local_cb_interface(cb).tiles_acked
                                 )
                             );
-                            return n >= pages;
+                            return available >= pages;
                         },
                         wait_ * times,
                         0
@@ -494,7 +511,7 @@ namespace km {
 
         template <typename Body>
         void run(Body body) {
-            volatile tt_l1_ptr uint32_t* st = state();
+            volatile tt_l1_ptr uint32_t* state_words = state();
             uint32_t wrong = 0, end = kEndExit;
             for (;;) {
                 uint32_t sequence = 0;
@@ -504,9 +521,12 @@ namespace km {
                 }
                 sequence_ = sequence;
                 invalidate_l1_cache();
-                km_command_t r;
-                copy_command(l1(control_ + KM_CONTROL_JOB), &r);
-                wrong += (r.sequence != sequence || !KM_LANDED(&r)) && wrong < 255;
+                km_command_t command;
+                copy_command(l1(control_ + KM_CONTROL_JOB), &command);
+                wrong += (
+                    (command.sequence != sequence || !KM_LANDED(&command)) &&
+                    wrong < 255
+                );
                 MATH((
                     ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, sequence)
                 ));
@@ -516,15 +536,15 @@ namespace km {
                 UNPACK(((void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId)));
                 UNPACK(((void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
                 cb_pop_front(kCbTokenCompute, 1);
-                UNPACK((add_sat(st + kStSeen, 1)));
-                UNPACK((put_byte(st, kStWrong, 0, wrong)));
-                MATH((put_byte(st, kStWrong, 1, wrong)));
-                PACK((put_byte(st, kStWrong, 2, wrong)));
-                if (handler(r) == KM_HANDLER_EXIT) {
-                    end = r.sequence == 0 ? kEndAbort : kEndExit;
+                UNPACK((add_sat(state_words + kStSeen, 1)));
+                UNPACK((put_byte(state_words, kStWrong, 0, wrong)));
+                MATH((put_byte(state_words, kStWrong, 1, wrong)));
+                PACK((put_byte(state_words, kStWrong, 2, wrong)));
+                if (handler(command) == KM_HANDLER_EXIT) {
+                    end = command.sequence == 0 ? kEndAbort : kEndExit;
                     break;
                 }
-                body(r);
+                body(command);
                 // Math and pack tell unpack they left the body; unpack marks it.
                 MATH((
                     ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, sequence)
@@ -536,11 +556,11 @@ namespace km {
                     (void)ckernel::mailbox_read(ckernel::ThreadId::MathThreadId);
                     (void)ckernel::mailbox_read(ckernel::ThreadId::PackThreadId);
                     l1(
-                        control_ + KM_CONTROL_DONE + slot(r) * 16
+                        control_ + KM_CONTROL_DONE + slot(command) * 16
                     )[kDoneCompute] = sequence;
                 }));
             }
-            PACK((put_byte(st, kStEnds, kEndCompute, end)));
+            PACK((put_byte(state_words, kStEnds, kEndCompute, end)));
             (void)end;  // only pack writes the end byte
         }
 

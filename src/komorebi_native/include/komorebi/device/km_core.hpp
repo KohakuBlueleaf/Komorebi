@@ -165,10 +165,10 @@ namespace km {
     template <typename High, typename Low>
     inline uint64_t wall64_of(High high, Low low) {
         for (uint32_t i = 0; i < 2; i++) {
-            const uint32_t hi = high();
-            const uint32_t lo = low();
-            if (high() == hi) {
-                return static_cast<uint64_t>(hi) << 32 | lo;
+            const uint32_t high_word = high();
+            const uint32_t low_word = low();
+            if (high() == high_word) {
+                return static_cast<uint64_t>(high_word) << 32 | low_word;
             }
         }
         return static_cast<uint64_t>(high()) << 32;
@@ -203,28 +203,31 @@ namespace km {
         );
     }
 
-    inline volatile tt_l1_ptr uint32_t* l1(uint32_t addr) {
-        return reinterpret_cast<volatile tt_l1_ptr uint32_t*>(addr);
+    inline volatile tt_l1_ptr uint32_t* l1(uint32_t address) {
+        return reinterpret_cast<volatile tt_l1_ptr uint32_t*>(address);
     }
 
-    // Adds v to a counter that stops at 0xFFFFFFFF.
-    inline void add_sat(volatile tt_l1_ptr uint32_t* w, uint32_t v) {
-        const uint32_t x = *w + v;
-        *w = x < v ? 0xFFFFFFFFu : x;
+    // Adds `amount` to a counter that stops at 0xFFFFFFFF.
+    inline void add_sat(volatile tt_l1_ptr uint32_t* counter, uint32_t amount) {
+        const uint32_t sum = *counter + amount;
+        *counter = sum < amount ? 0xFFFFFFFFu : sum;
     }
 
     // Byte `b` of state word `word` (each byte has one writer).
     inline void put_byte(
-        volatile tt_l1_ptr uint32_t* state, uint32_t word, uint32_t b, uint32_t v
+        volatile tt_l1_ptr uint32_t* state, uint32_t word, uint32_t byte, uint32_t value
     ) {
-        reinterpret_cast<volatile tt_l1_ptr uint8_t*>(state + word)[b] = v;
+        reinterpret_cast<volatile tt_l1_ptr uint8_t*>(state + word)[byte] = value;
     }
 
     // True if `pages` pages from `ptr` (this side's fifo_rd_ptr or fifo_wr_ptr, in its
     // units) end at or before the limit of buffer cb: an item is one contiguous region.
-    inline bool item_fits(uint32_t cb, uint32_t ptr, uint32_t pages) {
-        const LocalCBInterface& i = get_local_cb_interface(cb);
-        return ptr + pages * i.fifo_page_size <= i.fifo_limit;
+    inline bool item_fits(uint32_t cb, uint32_t pointer, uint32_t pages) {
+        const LocalCBInterface& circular_buffer = get_local_cb_interface(cb);
+        return (
+            pointer + pages * circular_buffer.fifo_page_size <=
+            circular_buffer.fifo_limit
+        );
     }
 
     // Polls ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle
@@ -237,7 +240,7 @@ namespace km {
             limit == 0 ? ~0ull : wall64() + (static_cast<uint64_t>(limit) << 10)
         );
         bool stopped = false;
-        for (uint32_t i = 0;; i++) {
+        for (uint32_t polls = 0;; polls++) {
             invalidate_l1_cache();
             if (ready()) {
                 return kGaveNone;
@@ -247,10 +250,12 @@ namespace km {
                     return kGaveStop;
                 }
                 stopped = true;
-                const uint64_t e = wall64() + (static_cast<uint64_t>(grace) << 10);
-                end = e < end ? e : end;
+                const uint64_t grace_end = (
+                    wall64() + (static_cast<uint64_t>(grace) << 10)
+                );
+                end = grace_end < end ? grace_end : end;
             }
-            if ((i & 15) == 15 && wall64() > end) {
+            if ((polls & 15) == 15 && wall64() > end) {
                 return stopped ? kGaveStop : kGaveLimit;
             }
         }
@@ -284,43 +289,45 @@ namespace km {
         return l1(control + KM_CONTROL_OUT + 16 * slot);
     }
 
-    // A small NoC write: Bytes from slot From of KM_CONTROL_OUT to slot `to` above the
-    // 16-byte aligned `base`, so both ends share their low four address bits.
+    // A small NoC write: Bytes from slot From of KM_CONTROL_OUT to slot `target_slot`
+    // above the 16-byte aligned `base`, so both ends share their low four address bits.
     template <uint32_t From, uint32_t Bytes>
-    inline void small_write(uint32_t control, uint64_t base, uint32_t to) {
+    inline void small_write(uint32_t control, uint64_t base, uint32_t target_slot) {
         static_assert(From < kOutSlots && Bytes > 0 && Bytes <= 16, "one slot");
-        noc_async_write(control + KM_CONTROL_OUT + 16 * From, base + 16 * to, Bytes);
+        noc_async_write(
+            control + KM_CONTROL_OUT + 16 * From, base + 16 * target_slot, Bytes
+        );
     }
 
     // A data-movement kernel's view of the control block and of its start-up arguments.
     class Core {
     public:
         Core() {
-            uint32_t* f = &a_.control;
-            for (uint32_t k = 0; k < kArgs; k++) {
-                f[k] = get_arg_val<uint32_t>(k);
+            uint32_t* words = &args_.control;
+            for (uint32_t index = 0; index < kArgs; index++) {
+                words[index] = get_arg_val<uint32_t>(index);
             }
-            a_.tag &= 0xFFFFu;
-            if (a_.depth == 0 || a_.depth > KM_RING_SLOTS) {
-                a_.depth = KM_RING_SLOTS;
+            args_.tag &= 0xFFFFu;
+            if (args_.depth == 0 || args_.depth > KM_RING_SLOTS) {
+                args_.depth = KM_RING_SLOTS;
             }
         }
 
         const Args& args() const {
-            return a_;
+            return args_;
         }
 
         uint32_t me() const {
-            return a_.me;
+            return args_.me;
         }
 
-        // The program's argument i (after the start-up arguments).
-        uint32_t arg(uint32_t i) const {
-            return get_arg_val<uint32_t>(kArgs + i);
+        // The program's argument `index` (after the start-up arguments).
+        uint32_t arg(uint32_t index) const {
+            return get_arg_val<uint32_t>(kArgs + index);
         }
 
-        volatile tt_l1_ptr uint32_t* control(uint32_t off) const {
-            return l1(a_.control + off);
+        volatile tt_l1_ptr uint32_t* control(uint32_t offset) const {
+            return l1(args_.control + offset);
         }
 
         volatile tt_l1_ptr uint32_t* state() const {
@@ -332,18 +339,18 @@ namespace km {
             return *control(KM_CONTROL_STOP) != 0;
         }
 
-        // NoC address of `addr` on core `index` of the core table.
-        uint64_t core_noc(uint32_t index, uint32_t addr) const {
-            const uint32_t xy = control(KM_CONTROL_CORES)[index];
-            return get_noc_addr(xy & 0xFFFFu, xy >> 16, addr);
+        // NoC address of `address` on core `index` of the core table.
+        uint64_t core_noc(uint32_t index, uint32_t address) const {
+            const uint32_t coordinates = control(KM_CONTROL_CORES)[index];
+            return get_noc_addr(coordinates & 0xFFFFu, coordinates >> 16, address);
         }
 
-        uint64_t disp_noc(uint32_t addr) const {
+        uint64_t disp_noc(uint32_t address) const {
             return (
                 get_noc_addr(
-                    a_.dispatcher_coordinates & 0xFFFFu,
-                    a_.dispatcher_coordinates >> 16,
-                    addr
+                    args_.dispatcher_coordinates & 0xFFFFu,
+                    args_.dispatcher_coordinates >> 16,
+                    address
                 )
             );
         }
@@ -362,11 +369,11 @@ namespace km {
             uint32_t slot,
             uint32_t sequence
         ) const {
-            command_gave_up(a_.control, word, code, where, slot, sequence);
+            command_gave_up(args_.control, word, code, where, slot, sequence);
         }
 
     private:
-        Args a_;
+        Args args_;
     };
 
 }  // namespace km

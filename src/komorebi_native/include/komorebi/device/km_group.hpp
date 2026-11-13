@@ -17,23 +17,25 @@ namespace km {
         uint32_t rank;
     };
 
-    inline uint32_t core_of(const Group& g, uint32_t j) {
-        return g.base + j * g.stride;
+    inline uint32_t core_of(const Group& group, uint32_t rank) {
+        return group.base + rank * group.stride;
     }
 
     // The whole group, in core order. `me` is in it.
-    inline Group group_of(const km_command_t& r, uint32_t me) {
-        return {first(r), 1, count(r), me - first(r)};
+    inline Group group_of(const km_command_t& command, uint32_t me) {
+        return {first(command), 1, count(command), me - first(command)};
     }
 
-    // The cores whose group index differs from this core's only in the digit of
-    // weight `stride` and base `radix` (index = hi * stride * radix + d * stride + lo).
+    // The cores whose group index differs from this core's only in the digit of weight
+    // `stride`, base `radix` (index = high * stride * radix + digit * stride + low).
     inline Group digit_group(
-        const km_command_t& r, uint32_t me, uint32_t stride, uint32_t radix
+        const km_command_t& command, uint32_t me, uint32_t stride, uint32_t radix
     ) {
-        const uint32_t t = me - first(r), d = t / stride % radix, lo = t - d * stride;
-        const uint32_t fit = (count(r) - lo + stride - 1) / stride;
-        return {first(r) + lo, stride, fit < radix ? fit : radix, d};
+        const uint32_t index = me - first(command);
+        const uint32_t digit = index / stride % radix;
+        const uint32_t low = index - digit * stride;
+        const uint32_t fit = (count(command) - low + stride - 1) / stride;
+        return {first(command) + low, stride, fit < radix ? fit : radix, digit};
     }
 
     // Reduce forms.
@@ -41,19 +43,19 @@ namespace km {
     constexpr uint32_t kReduceTree = 1;
     constexpr uint32_t kTreeRounds = 7;  // rounds of a group of up to 128 cores
 
-    // Tree, round r: an odd multiple of 2^r sends to rank - 2^r (port r, slot r); a
-    // multiple of 2^(r+1) receives if rank + 2^r < size. Owner: all send to rank 0.
-    inline bool tree_receives(uint32_t rank, uint32_t size, uint32_t r) {
-        return (rank & ((2u << r) - 1)) == 0 && rank + (1u << r) < size;
+    // Tree, `round`: an odd multiple of 2^round sends to rank - 2^round (port and slot
+    // `round`); a multiple of 2^(round+1) receives. Owner: all send to rank 0.
+    inline bool tree_receives(uint32_t rank, uint32_t size, uint32_t round) {
+        return (rank & ((2u << round) - 1)) == 0 && rank + (1u << round) < size;
     }
 
     // The round in which a rank other than 0 sends: its lowest set bit.
     inline uint32_t tree_send_round(uint32_t rank) {
-        uint32_t r = 0;
-        while (((rank >> r) & 1u) == 0 && r < 31) {
-            r++;
+        uint32_t round = 0;
+        while (((rank >> round) & 1u) == 0 && round < 31) {
+            round++;
         }
-        return r;
+        return round;
     }
 
     // A core's send in a reduce (to, port, slot), or root: it sends nothing.
@@ -64,28 +66,28 @@ namespace km {
         uint32_t slot;
     };
 
-    inline ReduceStep reduce_send(const Group& g, uint32_t form) {
-        if (g.rank == 0) {
+    inline ReduceStep reduce_send(const Group& group, uint32_t form) {
+        if (group.rank == 0) {
             return {true, 0, 0, 0};
         }
         if (form == kReduceOwner) {
-            return {false, core_of(g, 0), 0, g.rank - 1};
+            return {false, core_of(group, 0), 0, group.rank - 1};
         }
-        const uint32_t r = tree_send_round(g.rank);
-        return {false, core_of(g, g.rank - (1u << r)), r, r};
+        const uint32_t round = tree_send_round(group.rank);
+        return {false, core_of(group, group.rank - (1u << round)), round, round};
     }
 
     // Arrival slots a reduce needs in each core's buffer (owner: size - 1 at the
     // root; tree: one per round).
-    inline uint32_t reduce_slots(const Group& g, uint32_t form) {
+    inline uint32_t reduce_slots(const Group& group, uint32_t form) {
         if (form == kReduceOwner) {
-            return g.size > 1 ? g.size - 1 : 0;
+            return group.size > 1 ? group.size - 1 : 0;
         }
-        uint32_t r = 0;
-        while ((1u << r) < g.size && r < 31) {
-            r++;
+        uint32_t rounds = 0;
+        while ((1u << rounds) < group.size && rounds < 31) {
+            rounds++;
         }
-        return r;
+        return rounds;
     }
 
     // The program's arrival buffer: circular buffer `cb` of `pages` pages, `per` (P) to
@@ -96,22 +98,25 @@ namespace km {
         uint32_t per = 1;
     };
 
-    inline uint32_t arrival_slots(const Arrival& a) {
-        return a.per == 0 ? 0 : a.pages / a.per;
+    inline uint32_t arrival_slots(const Arrival& arrival) {
+        return arrival.per == 0 ? 0 : arrival.pages / arrival.per;
     }
 
-    // First page of slot k (a part's page i is page slot_page(a, k) + i).
-    inline uint32_t slot_page(const Arrival& a, uint32_t k) {
-        return k * a.per;
+    // First page of `arrival_slot`; a part's page i is page
+    // slot_page(arrival, arrival_slot) + i.
+    inline uint32_t slot_page(const Arrival& arrival, uint32_t arrival_slot) {
+        return arrival_slot * arrival.per;
     }
 
-    // Arrivals rank g waits for on port `port` (by owner: port 0, size - 1 at the
+    // Arrivals this rank waits for on port `port` (by owner: port 0, size - 1 at the
     // root; by tree: 1 in each round it receives before it sends).
-    inline uint32_t reduce_wants(const Group& g, uint32_t form, uint32_t port) {
+    inline uint32_t reduce_wants(const Group& group, uint32_t form, uint32_t port) {
         if (form == kReduceOwner) {
-            return g.rank == 0 && port == 0 && g.size > 1 ? g.size - 1 : 0;
+            return group.rank == 0 && port == 0 && group.size > 1 ? group.size - 1 : 0;
         }
-        return port < kTreeRounds && tree_receives(g.rank, g.size, port) ? 1 : 0;
+        return (
+            port < kTreeRounds && tree_receives(group.rank, group.size, port) ? 1 : 0
+        );
     }
 
 }  // namespace km
