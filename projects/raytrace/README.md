@@ -159,12 +159,14 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
 
 ## Limits
 
-- Kernel text: a program's kernels must fit tt-metal's kernel configuration buffer
-  on a Tensix core, 70,656 bytes with the tt-metal this tree builds on; a program
-  that does not fit fails at launch with `Program size (...) too large for kernel
-  config buffer (70656) on TENSIX` and a size per kernel. The ray tracer's kernels
-  fit; with the division, square root, reciprocal and clamped inverse inlined at
-  every use they did not, so these are calls.
+- Kernel text: a program's kernels must fit the session's kernel buffer on a Tensix
+  core, 70,656 bytes unless the session sets `kernel_bytes`; a program that does not
+  fit is refused before launch with its sizes per thread (`km.KernelSizeError`,
+  [host API](../../docs/reference/host.md#program)). Two remedies: a larger buffer
+  (`Session(kernel_bytes=...)`, taken from the L1 left for circular buffers) or a
+  smaller build of one kernel (`km.Program(..., opt={...})`). The ray tracer's kernels
+  fit the default; with the division, square root, reciprocal and clamped inverse
+  inlined at every use they did not, so these are calls.
 - Readback: reading back is slow ([host API](../../docs/reference/host.md#session));
   large results are read in 2 MB chunks with a line per chunk, and the whole frame's
   stage pages (490 MB) are checked on tiles only.
