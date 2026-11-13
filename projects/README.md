@@ -11,3 +11,5 @@ rather than staying in the project.
   every Tensix core bit for bit as numpy, with the tiny scene's timings.
 - [raytrace/reference](raytrace/reference/README.md): ray tracing over a saved box tree
   in numpy, threaded C++ and CUDA, with the treelet cuts, timings and pictures.
+- [dense](dense/README.md): the matrix product on the resident workers, checked against
+  float64 and measured against Kohaku-TT's routes on the same card.
