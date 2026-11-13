@@ -24,7 +24,6 @@ theme:
   features:
     - navigation.footer
     - navigation.sections
-    - navigation.expand
     - navigation.top
     - navigation.indexes
     - toc.follow
@@ -84,10 +83,14 @@ validation:
   unrecognized_links: warn
   anchors: warn
 
+# The tutorial's parts stay folded in the side navigation until one is opened (no
+# navigation.expand above), so the other sections stay in sight.
 nav:
+  - Home: README.md
+  - Getting started:
+      - install.md
   - Tutorial:
       - tutorial/index.md
-  - Home: README.md
   - Concepts:
       - concepts/model.md
       - concepts/dispatch.md
@@ -96,7 +99,6 @@ nav:
       - graphs.md
       - threads.md
   - Guides:
-      - install.md
       - guides/debug-a-command-that-does-not-finish.md
       - guides/measure-a-command.md
       - development.md
@@ -108,8 +110,6 @@ nav:
       - reference/movement.md
       - reference/dynamic.md
       - reference/threads.md
-  - Releases:
-      - releases/0.1.0.md
   - Examples:
       - examples/README.md
       - examples/01_mapcollect/README.md
@@ -122,3 +122,5 @@ nav:
       - examples/08_parallel_thread/README.md
       - examples/10_x280_ports/README.md
       - examples/11_movement/README.md
+  - Releases:
+      - releases/0.1.0.md
