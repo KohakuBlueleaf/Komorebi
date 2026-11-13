@@ -1,0 +1,573 @@
+// The vector unit's part of COUNT and SETUP, raw instructions from the pack thread:
+// camera space, screen, box, records of 32 triangles (reference/raster.py's order).
+#pragma once
+
+#include <stdint.h>
+
+#include "ckernel.h"
+#include "ckernel_addrmod.h"
+#include "ckernel_dest.h"
+#include "ckernel_ops.h"
+#include "setup.h"
+
+#if defined(__riscv_vector)
+#include <riscv_vector.h>
+#endif
+
+namespace setup_pass {
+
+    using namespace ckernel;
+
+    // LRegs: L0 to L7 work registers; 9 = 0, 10 = 1.0.
+    constexpr uint32_t L0 = 0, L1 = 1, L2 = 2, L3 = 3, L4 = 4, L5 = 5, L6 = 6, L7 = 7;
+    constexpr uint32_t ZERO = 9, ONE = 10;
+    constexpr uint32_t kInt32 = 4;  // SFPLOAD / SFPSTORE: 32 bits as they are
+    constexpr uint32_t kAddressMode = ADDR_MOD_7;
+    constexpr uint32_t kFloatB = 0, kLower = 10;
+    constexpr uint32_t kNegA = 1, kNegC = 2;  // SFPMAD
+    constexpr uint32_t kSetCC = 1;            // SFPGT
+    constexpr uint32_t kSign = 1;             // SFPMOV: the sign inverted
+    constexpr uint32_t kCcNone = 4;           // SFPIADD
+    constexpr uint32_t kLt0 = 0;              // SFPSETCC
+    constexpr uint32_t kWallClock = 0xFFB121F0;
+    constexpr uint32_t kDstWindow = 0xFFBD8000;
+
+    // Dst slots of 32 lanes: block, camera (16 in every lane), camera-space corners,
+    // records (kSlotRecords + w: word w), screen x, y, 1/z per corner, area, 1/area.
+    constexpr uint32_t kSlotColour = 9;
+    constexpr uint32_t kSlotCamera = 32;
+    constexpr uint32_t kSlotCameraSpace = 48;
+    constexpr uint32_t kSlotRecords = 64;
+    constexpr uint32_t kSlotScreen = 96;
+    constexpr uint32_t kSlotArea = 106;
+    constexpr uint32_t kSlotInverseArea = 107;
+    // finish_lanes: per lane 1 kept, 2 crossing the near distance, else 0; the box's
+    // columns as integers; the lane number as a float (written once by the pack thread)
+    constexpr uint32_t kSlotFlags = 108;
+    constexpr uint32_t kSlotFirstColumn = 109;
+    constexpr uint32_t kSlotLastColumn = 110;
+    constexpr uint32_t kSlotLaneNumber = 111;
+    constexpr uint32_t kSetVd = 8;           // SFPGT, SFPLE: -1 or 0 into VD
+    constexpr uint32_t kShiftImmediate = 1;  // SFPSHFT: by the immediate, logical
+    constexpr uint32_t kIaddSubtract = 2;    // SFPIADD: VD = VC - VD
+
+    inline uint32_t wall() {
+        return *reinterpret_cast<volatile uint32_t*>(kWallClock);
+    }
+
+    inline volatile uint32_t* window() {
+        return reinterpret_cast<volatile uint32_t*>(kDstWindow);
+    }
+
+    // SFPLOAD / SFPSTORE address of `slot`, and the window word of its lane 0 (lane l
+    // at + 2 l).
+    constexpr uint32_t dst_address(uint32_t slot) {
+        return 4 * (slot >> 1) + 2 * (slot & 1);
+    }
+
+    constexpr uint32_t word(uint32_t slot) {
+        return 64 * (slot >> 1) + (slot & 1);
+    }
+
+    // Waits until earlier window stores are done (a load of `word_index`, used).
+    inline void order(uint32_t word_index) {
+        const uint32_t value = window()[word_index];
+        asm volatile("and x0, x0, %0" : : "r"(value) : "memory");
+    }
+
+    inline void fill_slot(uint32_t slot, uint32_t value) {
+        volatile uint32_t* words = window() + word(slot);
+        for (uint32_t lane = 0; lane < 32; ++lane) {
+            words[2 * lane] = value;
+        }
+    }
+
+    // A block of kBlockSlots vectors, already in the window's order, to slots 0 on.
+    inline void block_in(const uint32_t* source) {
+#if defined(__riscv_vector)
+        const size_t vector_length = __riscv_vsetvl_e32m8(32);
+        for (uint32_t i = 0; i < kBlockSlots * 32; i += 32) {
+            __riscv_vse32_v_u32m8(
+                const_cast<uint32_t*>(window() + i),
+                __riscv_vle32_v_u32m8(source + i, vector_length),
+                vector_length
+            );
+        }
+        asm volatile("" ::: "memory");
+#else
+        for (uint32_t i = 0; i < kBlockSlots * 32; ++i) {
+            window()[i] = source[i];
+        }
+#endif
+        order(kBlockSlots * 32 - 1);
+    }
+
+    // The 32 record slots to 32 records of 128 bytes (word w of record l: slot
+    // kSlotRecords + w, lane l), two slots per handler load of 16 lanes.
+    inline void records_out(uint32_t* records) {
+#if defined(__riscv_vector)
+        const size_t vector_length = __riscv_vsetvl_e32m4(16);
+        for (uint32_t half = 0; half < 2; ++half) {
+            for (uint32_t pair = 0; pair < 16; ++pair) {
+                const auto pair_values = (
+                    __riscv_vlseg2e32_v_u32m4x2(
+                        const_cast<const uint32_t*>(
+                            window() + word(kSlotRecords) + 64 * pair + 32 * half
+                        ),
+                        vector_length
+                    )
+                );
+                __riscv_vssseg2e32_v_u32m4x2(
+                    records + 512 * half + 2 * pair, 128, pair_values, vector_length
+                );
+            }
+        }
+        asm volatile("" ::: "memory");
+#else
+        for (uint32_t word = 0; word < 32; ++word) {
+            for (uint32_t lane = 0; lane < 32; ++lane) {
+                records
+                    [
+                        32 * lane + word
+                    ] = (window()[word(kSlotRecords + word) + 2 * lane]);
+            }
+        }
+#endif
+    }
+
+    // A float32 (or integer) bit pattern into an LReg as two immediates.
+    inline void immediate(uint32_t lreg, uint32_t bits) {
+        TT_SFPLOADI(lreg, kFloatB, bits >> 16);
+        TT_SFPLOADI(lreg, kLower, bits & 0xFFFF);
+    }
+
+    inline void load(uint32_t lreg, uint32_t slot) {
+        TT_SFPLOAD(lreg, kInt32, kAddressMode, dst_address(slot));
+    }
+
+    inline void store(uint32_t lreg, uint32_t slot) {
+        TT_SFPSTORE(lreg, kInt32, kAddressMode, dst_address(slot));
+    }
+
+    // d = a * b, d = a + b, d = a - b: one rounding each, as separate float32
+    // operations (the product's addend is -0, which keeps the sign of a zero product).
+    inline void mul(uint32_t a, uint32_t b, uint32_t d) {
+        TT_SFPMAD(a, b, ZERO, d, kNegC);
+    }
+
+    inline void add(uint32_t a, uint32_t b, uint32_t d) {
+        TT_SFPMAD(a, ONE, b, d, 0);
+    }
+
+    inline void sub(uint32_t a, uint32_t b, uint32_t d) {
+        TT_SFPMAD(a, ONE, b, d, kNegC);
+    }
+
+    // d = -a, the sign bit inverted (as numpy's negation).
+    inline void neg(uint32_t a, uint32_t d) {
+        TT_SFPMOV(0, a, d, kSign);
+    }
+
+    // high = max(high, low), low = min(high, low).
+    inline void order_pair(uint32_t high, uint32_t low) {
+        TTI_SFPNOP;
+        TT_SFPSWAP(0, high, low, 1);
+    }
+
+    // Thread state: no address step, Dst offset 0, 32-bit Dst, every lane enabled.
+    inline void setup() {
+        addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, .dest = {.incr = 0}}.set(
+            ADDR_MOD_7
+        );
+        TTI_SETC16(DEST_TARGET_REG_CFG_MATH_Offset_ADDR32, 0);
+        TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, p_setrwc::SET_D);
+        configure_dest_access<ThreadId::PackThreadId>(DataFormat::Float32, true);
+        TTI_SFPENCC(3, 0, 0, 10);
+        TTI_SFPNOP;
+        tensix_sync();
+    }
+
+    inline void finish() {
+        TTI_SFPENCC(3, 0, 0, 10);
+        TTI_SFPNOP;
+        tensix_sync();
+    }
+
+    // y = 1 / a to nearest (|a| in [2^-126, 2^103)): estimate, two Newton steps, an
+    // exact integer test for the rounding (as projects/raytrace/kernels/sfpu.hpp).
+    inline void recip(
+        uint32_t a,
+        uint32_t y,
+        uint32_t work0,
+        uint32_t work1,
+        uint32_t work2,
+        uint32_t work3
+    ) {
+        TT_SFPARECIP(0, a, y, 0);
+        TT_SFPMAD(a, y, ONE, work0, kNegA);  // e = 1 - a y
+        TT_SFPMAD(y, work0, y, y, 0);        // y = y e + y
+        TT_SFPMAD(a, y, ONE, work0, kNegA);
+        TT_SFPMAD(y, work0, y, y, 0);
+        // A, Y: significands of a and y. R = 2^47 - Y A, known mod 2^26 from the low
+        // product bits; work2 = -64 R, then y moves by one where |2 R| > A.
+        TT_SFPEXMAN(0, a, work0, 0);
+        TT_SFPEXMAN(0, y, work1, 0);
+        TT_SFPMUL24(
+            work0, work1, ZERO, work2, 1
+        );  // high 23 bits of the low 23-bit product
+        TT_SFPMUL24(work0, work1, ZERO, work3, 0);  // its low 23 bits
+        TTI_SFPNOP;
+        TT_SFPIADD(0, work1, work2, kCcNone);
+        TT_SFPIADD(0, work0, work2, kCcNone);
+        TT_SFPSHFT(29, 0, work2, 1);
+        TT_SFPSHFT(6, 0, work3, 1);
+        TT_SFPIADD(0, work3, work2, kCcNone);
+        TT_SFPSHFT(5, 0, work0, 1);  // 32 A
+        TT_SFPMOV(0, work2, work3, 0);
+        TTI_SFPPUSHC(0, 0, 0, 0);
+        TT_SFPIADD(0, work0, work2, kLt0);  // 32 A - 64 R < 0: one up
+        TT_SFPIADD(1, y, y, 1 | kCcNone);
+        TTI_SFPPOPC(0, 0, 0, 0);
+        TTI_SFPPUSHC(0, 0, 0, 0);
+        TT_SFPIADD(0, work0, work3, 2 | kLt0);  // 32 A + 64 R < 0: one down
+        TT_SFPIADD(0xFFF, y, y, 1 | kCcNone);
+        TTI_SFPPOPC(0, 0, 0, 0);
+    }
+
+    // Camera space of every corner: d = p - eye; x = (d0 c3 + d1 c4) + d2 c5, and y,
+    // z with the next two rows of the camera.
+    inline void camera_space() {
+        for (uint32_t corner = 0; corner < 3; ++corner) {
+            for (uint32_t i = 0; i < 3; ++i) {
+                load(L0, 3 * corner + i);
+                load(L1, kSlotCamera + i);
+                sub(L0, L1, L2 + i);
+            }
+            for (uint32_t j = 0; j < 3; ++j) {
+                load(L5, kSlotCamera + 3 + 3 * j);
+                load(L6, kSlotCamera + 4 + 3 * j);
+                load(L7, kSlotCamera + 5 + 3 * j);
+                mul(L2, L5, L0);
+                mul(L3, L6, L1);
+                add(L0, L1, L0);
+                mul(L4, L7, L1);
+                add(L0, L1, L0);
+                store(L0, kSlotCameraSpace + 3 * corner + j);
+            }
+        }
+    }
+
+    // Screen x, y, 1/z per corner: inv = 1/z, x = c13 + c12 x inv, y = c14 - c12 y inv;
+    // a lane with a corner short of the near distance gets numbers nobody uses.
+    inline void screen() {
+        for (uint32_t corner = 0; corner < 3; ++corner) {
+            load(L0, kSlotCameraSpace + 3 * corner + 2);
+            recip(L0, L1, L2, L3, L4, L5);
+            store(L1, kSlotScreen + 3 * corner + 2);
+            load(L2, kSlotCamera + 12);
+            load(L0, kSlotCameraSpace + 3 * corner);
+            mul(L0, L1, L0);
+            mul(L2, L0, L0);
+            load(L3, kSlotCamera + 13);
+            add(L3, L0, L0);
+            store(L0, kSlotScreen + 3 * corner);
+            load(L0, kSlotCameraSpace + 3 * corner + 1);
+            mul(L0, L1, L0);
+            mul(L2, L0, L0);
+            load(L3, kSlotCamera + 14);
+            sub(L3, L0, L0);
+            store(L0, kSlotScreen + 3 * corner + 1);
+        }
+    }
+
+    // ceil or floor of L0 (clamped to [low, high] first) as 1.5 x 2^23 + n, to `slot`.
+    inline void round_box(uint32_t low, uint32_t high, bool up, uint32_t slot) {
+        immediate(L3, low);
+        order_pair(L0, L3);
+        immediate(L3, high);
+        order_pair(L3, L0);
+        immediate(L4, kMagic);
+        add(L0, L4, L5);  // to the nearest integer
+        sub(L5, L4, L6);
+        TTI_SFPNOP;
+        TTI_SFPPUSHC(0, 0, 0, 0);
+        if (up) {
+            TTI_SFPGT(0, L6, L0, kSetCC);  // rounded below the value: one up
+            add(L5, ONE, L5);
+        } else {
+            TTI_SFPGT(0, L0, L6, kSetCC);  // rounded above the value: one down
+            sub(L5, ONE, L5);
+        }
+        TTI_SFPPOPC(0, 0, 0, 0);
+        store(L5, slot);
+    }
+
+    // Box of `coordinate` (0: x, 1: y) to words kRawX0 + 2 c, kRawX1 + 2 c:
+    // ceil(lo - 0.5) in [0, size], floor(hi - 0.5) in [-1, size - 1].
+    inline void box(uint32_t coordinate, uint32_t size_bits, uint32_t last_bits) {
+        load(L0, kSlotScreen + coordinate);
+        load(L1, kSlotScreen + 3 + coordinate);
+        load(L2, kSlotScreen + 6 + coordinate);
+        order_pair(L1, L0);
+        order_pair(L2, L0);
+        order_pair(L1, L2);
+        immediate(L7, 0x3F000000);  // 0.5
+        sub(L0, L7, L0);
+        sub(L1, L7, L2);
+        round_box(0xBF000000, size_bits, true, kSlotRecords + kRawX0 + 2 * coordinate);
+        TT_SFPMOV(0, L2, L0, 0);
+        round_box(0xBF800000, last_bits, false, kSlotRecords + kRawX1 + 2 * coordinate);
+    }
+
+    // The doubled area, raw to kRawArea; corners 1 and 2 swapped where it is
+    // negative (their screen numbers and colours), the area then made positive.
+    inline void area_and_order() {
+        load(L0, kSlotScreen + 3);
+        load(L1, kSlotScreen);
+        sub(L0, L1, L2);  // x1 - x0
+        load(L0, kSlotScreen + 7);
+        load(L3, kSlotScreen + 1);
+        sub(L0, L3, L4);  // y2 - y0
+        mul(L2, L4, L2);
+        load(L0, kSlotScreen + 6);
+        sub(L0, L1, L4);  // x2 - x0
+        load(L0, kSlotScreen + 4);
+        sub(L0, L3, L5);  // y1 - y0
+        mul(L4, L5, L4);
+        sub(L2, L4, L2);
+        store(L2, kSlotRecords + kRawArea);
+        TTI_SFPNOP;
+        TTI_SFPPUSHC(0, 0, 0, 0);
+        TTI_SFPSETCC(0, L2, 0, kLt0);
+        for (uint32_t j = 0; j < 3; ++j) {
+            load(L0, kSlotScreen + 3 + j);
+            load(L1, kSlotScreen + 6 + j);
+            store(L1, kSlotScreen + 3 + j);
+            store(L0, kSlotScreen + 6 + j);
+            load(L0, kSlotColour + 3 + j);
+            load(L1, kSlotColour + 6 + j);
+            store(L1, kSlotColour + 3 + j);
+            store(L0, kSlotColour + 6 + j);
+        }
+        neg(L2, L2);
+        TTI_SFPPOPC(0, 0, 0, 0);
+        store(L2, kSlotArea);
+    }
+
+    // Edge `edge` between corners p and q: a = y_p - y_q, b = x_q - x_p, c = -(a x_p +
+    // b y_p), to record words k, 3 + k, 6 + k.
+    inline void edges() {
+        constexpr uint32_t pq[3][2] = {{1, 2}, {2, 0}, {0, 1}};
+        for (uint32_t edge = 0; edge < 3; ++edge) {
+            const uint32_t p = kSlotScreen + 3 * pq[edge][0];
+            const uint32_t q = kSlotScreen + 3 * pq[edge][1];
+            load(L0, p);
+            load(L1, p + 1);
+            load(L2, q);
+            load(L3, q + 1);
+            sub(L1, L3, L4);  // a
+            sub(L2, L0, L5);  // b
+            store(L4, kSlotRecords + edge);
+            store(L5, kSlotRecords + 3 + edge);
+            mul(L4, L0, L4);
+            mul(L5, L1, L5);
+            add(L4, L5, L4);
+            TTI_SFPNOP;
+            neg(L4, L4);
+            store(L4, kSlotRecords + 6 + edge);
+        }
+    }
+
+    // Per-corner values in slots first_slot + {0, 1, 2} x step: for each of a, b, c,
+    // ((c0 v0 + c1 v1) + c2 v2) / area to record word first_word + coefficient.
+    inline void plane(uint32_t first_slot, uint32_t step, uint32_t first_word) {
+        for (uint32_t coefficient = 0; coefficient < 3; ++coefficient) {
+            load(L0, kSlotRecords + 3 * coefficient);
+            load(L1, first_slot);
+            mul(L0, L1, L2);
+            load(L0, kSlotRecords + 3 * coefficient + 1);
+            load(L1, first_slot + step);
+            mul(L0, L1, L3);
+            add(L2, L3, L2);
+            load(L0, kSlotRecords + 3 * coefficient + 2);
+            load(L1, first_slot + 2 * step);
+            mul(L0, L1, L3);
+            add(L2, L3, L2);
+            load(L4, kSlotInverseArea);
+            mul(L2, L4, L2);
+            store(L2, kSlotRecords + first_word + coefficient);
+        }
+    }
+
+    // Everything of a block whose corners' camera space is in place: screen, area,
+    // box, the camera distances, and with `planes` the edges and planes.
+    inline void triangles(bool planes) {
+        screen();
+        area_and_order();
+        box(0, 0x44800000, 0x447FC000);  // 1024, 1023
+        box(1, 0x44800000, 0x447FC000);
+        for (uint32_t corner = 0; corner < 3; ++corner) {
+            load(L0, kSlotCameraSpace + 3 * corner + 2);
+            store(L0, kSlotRecords + kRawZ + corner);
+        }
+        if (!planes) {
+            return;
+        }
+        edges();
+        load(L0, kSlotArea);
+        recip(L0, L1, L2, L3, L4, L5);
+        store(L1, kSlotInverseArea);
+        plane(kSlotScreen + 2, 3, 12);
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            plane(kSlotColour + channel, 3, 15 + 3 * channel);
+        }
+    }
+
+    // The integer n of a box word 1.5 x 2^23 + n into `integer` (L4 holds the magic).
+    inline void box_integer(uint32_t raw, uint32_t integer) {
+        TT_SFPMOV(0, L4, integer, 0);
+        TT_SFPIADD(0, raw, integer, kIaddSubtract | kCcNone);
+    }
+
+    // float16 bits of the integer n in [0, 2048) whose float32 is in `number` (L5
+    // holds 0x1C000): (bits >> 13) - 0x1C000, and 0 for n = 0.
+    inline void half_of(uint32_t number, uint32_t work) {
+        TTI_SFPNOP;  // number may come from a multiply-add; SFPSHFT reads VD unseen
+        TT_SFPMOV(0, number, work, 0);
+        TT_SFPGT(0, ZERO, work, kSetVd);  // n > 0
+        TT_SFPSHFT((-13) & 0xFFF, 0, number, kShiftImmediate);
+        TT_SFPMOV(0, L5, L6, 0);
+        TT_SFPIADD(0, number, L6, kIaddSubtract | kCcNone);
+        TT_SFPAND(0, work, L6, 0);
+    }
+
+    // Per lane: kept and crossing flags, box as integers and float16 columns; with
+    // `records` the thresholds, number (first + lane), words 29 to 31 as 0.
+    inline void finish_lanes(bool records, uint32_t first_bits) {
+        // beyond the near distance, per corner (float order, near > 0)
+        load(L7, kSlotCamera + 15);
+        load(L0, kSlotRecords + kRawZ);
+        TT_SFPGT(0, L7, L0, kSetVd);
+        load(L1, kSlotRecords + kRawZ + 1);
+        TT_SFPGT(0, L7, L1, kSetVd);
+        load(L2, kSlotRecords + kRawZ + 2);
+        TT_SFPGT(0, L7, L2, kSetVd);
+        TT_SFPMOV(0, L0, L3, 0);
+        TT_SFPAND(0, L1, L3, 0);
+        TT_SFPAND(0, L2, L3, 0);  // L3: every corner beyond
+        TT_SFPOR(0, L1, L0, 0);
+        TT_SFPOR(0, L2, L0, 0);
+        TT_SFPXOR(0, L3, L0, 0);  // L0: some but not all beyond (crossing)
+        immediate(L6, 0x7FFFFFFF);
+        load(L1, kSlotRecords + kRawArea);
+        TT_SFPAND(0, L6, L1, 0);
+        TT_SFPGT(0, ZERO, L1, kSetVd);  // a non-zero area
+        TT_SFPAND(0, L1, L3, 0);
+        load(L1, kSlotRecords + kRawX0);
+        load(L2, kSlotRecords + kRawX1);
+        TT_SFPLE(0, L2, L1, kSetVd);  // x0 <= x1 (box words ordered as numbers)
+        TT_SFPAND(0, L1, L3, 0);
+        load(L1, kSlotRecords + kRawY0);
+        load(L2, kSlotRecords + kRawY1);
+        TT_SFPLE(0, L2, L1, kSetVd);
+        TT_SFPAND(0, L1, L3, 0);
+        TT_SFPSHFT((-31) & 0xFFF, 0, L3, kShiftImmediate);  // kept: 1
+        TT_SFPSHFT((-31) & 0xFFF, 0, L0, kShiftImmediate);
+        TT_SFPSHFT(1, 0, L0, kShiftImmediate);  // crossing: 2
+        TT_SFPOR(0, L0, L3, 0);
+        store(L3, kSlotFlags);
+        // the box: rows as integers in place, columns as integers aside
+        immediate(L4, kMagic);
+        load(L0, kSlotRecords + kRawY0);
+        box_integer(L0, L1);
+        store(L1, kSlotRecords + kRawY0);
+        load(L0, kSlotRecords + kRawY1);
+        box_integer(L0, L1);
+        store(L1, kSlotRecords + kRawY1);
+        load(L0, kSlotRecords + kRawX0);
+        box_integer(L0, L1);
+        store(L1, kSlotFirstColumn);
+        load(L2, kSlotRecords + kRawX1);
+        box_integer(L2, L3);
+        store(L3, kSlotLastColumn);
+        if (!records) {
+            return;
+        }
+        // columns x0 and x1 + 1 as float16 (L0: x0's word, L2: x1's word)
+        immediate(L5, 0x1C000);
+        sub(L0, L4, L0);
+        half_of(L0, L1);
+        store(L6, kSlotRecords + kRawX0);
+        add(L2, ONE, L2);
+        sub(L2, L4, L2);
+        half_of(L2, L1);
+        store(L6, kSlotRecords + kRawX1);
+        // top-left thresholds: a > 0, or a = ±0 and b > 0
+        immediate(L7, 0x80000001);
+        immediate(L6, 0x7FFFFFFF);
+        for (uint32_t corner = 0; corner < 3; ++corner) {
+            load(L0, kSlotRecords + corner);
+            load(L1, kSlotRecords + 3 + corner);
+            TT_SFPMOV(0, L0, L2, 0);
+            TT_SFPGT(0, ZERO, L2, kSetVd);  // a > +0
+            TT_SFPAND(0, L6, L0, 0);
+            TT_SFPLE(0, ZERO, L0, kSetVd);  // |a| <= +0: a is a zero
+            TT_SFPGT(0, ZERO, L1, kSetVd);  // b > +0
+            TT_SFPAND(0, L1, L0, 0);
+            TT_SFPOR(0, L2, L0, 0);
+            TT_SFPAND(0, L7, L0, 0);
+            store(L0, kSlotRecords + 9 + corner);
+        }
+        // triangle number, then words 29 to 31
+        load(L0, kSlotLaneNumber);
+        immediate(L1, first_bits);
+        add(L0, L1, L0);
+        store(L0, kSlotRecords + 28);
+        TT_SFPMOV(0, ZERO, L0, 0);
+        store(L0, kSlotRecords + 29);
+        store(L0, kSlotRecords + 30);
+        store(L0, kSlotRecords + 31);
+    }
+
+    // Slots first_slot (even) on, 2 count of them, as window pairs (slot 2 j + s, lane
+    // l at 64 j + 2 l + s): unit-stride copies, about 1 cycle a word against 6.
+    inline void pairs_out(uint32_t first_slot, uint32_t count, uint32_t* words) {
+        const volatile uint32_t* source = window() + word(first_slot);
+#if defined(__riscv_vector)
+        const size_t vector_length = __riscv_vsetvl_e32m8(32);
+        for (uint32_t i = 0; i < 64 * count; i += 32) {
+            __riscv_vse32_v_u32m8(
+                words + i,
+                __riscv_vle32_v_u32m8(
+                    const_cast<const uint32_t*>(source + i), vector_length
+                ),
+                vector_length
+            );
+        }
+        asm volatile("" ::: "memory");
+#else
+        for (uint32_t i = 0; i < 64 * count; ++i) {
+            words[i] = source[i];
+        }
+#endif
+    }
+
+    // Lane `lane`'s record (32 words) out of 16 pairs copied by pairs_out, to `record`.
+    inline void lane_record(const uint32_t* pairs, uint32_t lane, uint32_t* record) {
+#if defined(__riscv_vector)
+        const size_t vector_length = __riscv_vsetvl_e32m4(16);
+        const auto pair_values = (
+            __riscv_vlsseg2e32_v_u32m4x2(pairs + 2 * lane, 256, vector_length)
+        );
+        __riscv_vsseg2e32_v_u32m4x2(record, pair_values, vector_length);
+        asm volatile("" ::: "memory");
+#else
+        for (uint32_t word_index = 0; word_index < 32; ++word_index) {
+            record[word_index] = (
+                pairs [64 * (word_index >> 1) + 2 * lane + (word_index & 1)]
+            );
+        }
+#endif
+    }
+
+}  // namespace setup_pass
