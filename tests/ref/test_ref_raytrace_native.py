@@ -21,11 +21,11 @@ STRIDE = 8
 @pytest.fixture(scope="module")
 def root(tmp_path_factory):
     path = tmp_path_factory.mktemp("native")
-    mp = pytest.MonkeyPatch()
-    mp.setenv("KR_BUILD_DIR", str(path / "build"))
-    mp.setenv("KR_DATA", str(path / "data"))
+    patch = pytest.MonkeyPatch()
+    patch.setenv("KR_BUILD_DIR", str(path / "build"))
+    patch.setenv("KR_DATA", str(path / "data"))
     yield path
-    mp.undo()
+    patch.undo()
 
 
 def hand_made():
@@ -35,15 +35,19 @@ def hand_made():
     blocker = [(-3, 1, 6), (3, 1, 6), (0, 6, 6)]
     floor = [(-30, -4, 1), (30, -4, 1), (-30, -4, 40), (30, -4, 1), (30, -4, 40)]
     floor += [(-30, -4, 40)]
-    pos = np.array(wall + blocker + floor, dtype=np.float32)
-    n = len(pos)
-    colors = np.linspace(0.2, 0.9, 3 * n).reshape(n, 3).astype(np.float32)
+    positions = np.array(wall + blocker + floor, dtype=np.float32)
+    vertex_count = len(positions)
+    colors = (
+        np.linspace(0.2, 0.9, 3 * vertex_count)
+        .reshape(vertex_count, 3)
+        .astype(np.float32)
+    )
     camera = np.array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=np.float32)
     camera = np.concatenate([camera, [512, 512, 512, 0.05]]).astype(np.float32)
     return {
-        "positions": pos,
+        "positions": positions,
         "colors": colors,
-        "indices": np.arange(n, dtype=np.int32).reshape(-1, 3),
+        "indices": np.arange(vertex_count, dtype=np.int32).reshape(-1, 3),
         "camera": camera,
         "light": np.array([4, 12, 2], dtype=np.float32),
         "eps": np.array([1e-3], dtype=np.float32),
@@ -65,12 +69,12 @@ def run_folder(kind, root, name, threads=4):
     base = ["--scene", root / name, "--tree", root / f"{name}_tree", "--out", out]
     if kind == "cpu":
         exe = native.build(str(here / "cpu" / "raytrace_cpu.cpp"), "raytrace_cpu")
-        cmd, gpu = [exe, *base, "--threads", threads, "--reps", 1], None
+        command, gpu = [exe, *base, "--threads", threads, "--reps", 1], None
     else:
         source = str(here / "gpu" / "raytrace_gpu.cu")
         exe = native.build(source, "raytrace_gpu", gpu=True)
-        cmd, gpu = [exe, *base, "--reps", 1], native.idle_gpu()
-    native.run_json([str(c) for c in cmd], gpu=gpu)
+        command, gpu = [exe, *base, "--reps", 1], native.idle_gpu()
+    native.run_json([str(argument) for argument in command], gpu=gpu)
     return harness.load_outputs(out)
 
 
@@ -78,7 +82,7 @@ def assert_same_on_pixels(scene, tree, outputs):
     pixels = harness.lattice(STRIDE)
     expect = raytrace.render(scene, tree, pixels)
     got = agree.restrict(
-        {k: outputs[k] for k in ("image", "t", "tri", "nodes")}, pixels
+        {name: outputs[name] for name in ("image", "t", "tri", "nodes")}, pixels
     )
     for key in ("image", "t", "tri", "nodes"):
         assert np.array_equal(expect[key], got[key]), key

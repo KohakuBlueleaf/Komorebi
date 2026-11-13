@@ -24,15 +24,25 @@ def test_table_holds_commands_owners_and_profiles():
     directory[:, CONSTANTS["kDirFirst"]] = [0, 5, 9]
     directory[:, CONSTANTS["kDirCount"]] = [5, 4, 2]
     entries = [(P["RP_KIND_FIRST"], 7, [1, 2]), (2, 5, list(range(10)))]
-    profs = [[Tensor(100 + k) for k in range(2)] for _ in range(planner.P["RP_TRACES"])]
-    t = planner.table(entries, directory, profs, 3)
-    rec = t[: 2 * P["RP_REC_WORDS"]].reshape(2, -1)
-    assert rec[0, :5].tolist() == [P["RP_KIND_FIRST"], 7, 3 << 16, 1, 2]
-    assert rec[1, :3].tolist() == [2, 5, 3 << 16] and rec[1, 3:].tolist() == list(
-        range(10)
-    )
-    assert t[P["RP_T_BASE"] : P["RP_T_BASE"] + 6].tolist() == [0, 5, 5, 4, 9, 2]
-    assert t[P["RP_T_PROF"] + P["RP_CHUNKS"] + 1] == 101
+    profs = [
+        [Tensor(100 + index) for index in range(2)]
+        for _ in range(planner.P["RP_TRACES"])
+    ]
+    table_words = planner.table(entries, directory, profs, 3)
+    records = table_words[: 2 * P["RP_REC_WORDS"]].reshape(2, -1)
+    assert records[0, :5].tolist() == [P["RP_KIND_FIRST"], 7, 3 << 16, 1, 2]
+    assert records[1, :3].tolist() == [2, 5, 3 << 16] and records[
+        1, 3:
+    ].tolist() == list(range(10))
+    assert table_words[P["RP_T_BASE"] : P["RP_T_BASE"] + 6].tolist() == [
+        0,
+        5,
+        5,
+        4,
+        9,
+        2,
+    ]
+    assert table_words[P["RP_T_PROF"] + P["RP_CHUNKS"] + 1] == 101
     with pytest.raises(ValueError, match="table holds"):
         planner.table([entries[1]] * (P["RP_COMMANDS_MAX"] + 1), directory, profs, 3)
 
@@ -45,5 +55,5 @@ def test_entries_make_one_per_trace():
     )
     recs = [(9, [0, 0]), (1, [0] * 10), (5, [3] * 10), (5, [4] * 10), (5, [5] * 10)]
     out = planner.entries_of(recs, steps, [1, 2, 1], treelets=True)
-    assert [e[0] for e in out] == [P["RP_KIND_FIRST"], 0, 1, 2]
+    assert [entry[0] for entry in out] == [P["RP_KIND_FIRST"], 0, 1, 2]
     assert out[2][2][0] == 0 and out[2][2][4] == 0 and out[2][2][1] == 3

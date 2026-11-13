@@ -11,8 +11,14 @@ def test_calls_for_sizes_a_loop_to_the_target_and_never_below_the_minimum():
 
 def test_summarize_takes_the_median_time_and_the_mean_power():
     loops = [
-        {"microseconds": u, "w": w, "peak_w": 2 * w, "temp_c": 60.0, "aiclk": c}
-        for u, w, c in [
+        {
+            "microseconds": microseconds,
+            "w": watts,
+            "peak_w": 2 * watts,
+            "temp_c": 60.0,
+            "aiclk": clock,
+        }
+        for microseconds, watts, clock in [
             (9.0, 100.0, [1350]),
             (5.0, 110.0, [800, 900]),
             (7.0, 120.0, []),

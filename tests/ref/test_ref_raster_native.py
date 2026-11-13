@@ -35,11 +35,11 @@ needs_gpu = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def paths(tmp_path_factory):
     root = tmp_path_factory.mktemp("native")
-    mp = pytest.MonkeyPatch()
-    mp.setenv("KR_BUILD_DIR", str(root / "build"))
-    mp.setenv("KR_DATA", str(root / "data"))
+    patch = pytest.MonkeyPatch()
+    patch.setenv("KR_BUILD_DIR", str(root / "build"))
+    patch.setenv("KR_DATA", str(root / "data"))
     yield root
-    mp.undo()
+    patch.undo()
 
 
 def run_folder(kind, folder, threads=4):
@@ -49,18 +49,28 @@ def run_folder(kind, folder, threads=4):
     here = harness.HERE
     if kind == "cpu":
         exe = native.build(str(here / "cpu" / "raster_cpu.cpp"), "raster_cpu")
-        cmd = [exe, "--scene", folder, "--out", out, "--threads", threads, "--reps", 1]
-        native.run_json([str(c) for c in cmd])
+        command = [
+            exe,
+            "--scene",
+            folder,
+            "--out",
+            out,
+            "--threads",
+            threads,
+            "--reps",
+            1,
+        ]
+        native.run_json([str(argument) for argument in command])
     else:
         exe = native.build(str(here / "gpu" / "raster_gpu.cu"), "raster_gpu", gpu=True)
-        cmd = [exe, "--scene", folder, "--out", out, "--reps", 1]
-        native.run_json([str(c) for c in cmd], gpu=native.idle_gpu())
+        command = [exe, "--scene", folder, "--out", out, "--reps", 1]
+        native.run_json([str(argument) for argument in command], gpu=native.idle_gpu())
     return harness.load_outputs(out)
 
 
-def assert_same(a, b):
+def assert_same(first, second):
     for key in harness.KEYS:
-        assert np.array_equal(a[key], b[key]), key
+        assert np.array_equal(first[key], second[key]), key
 
 
 def scene_folder(root, name, scene):

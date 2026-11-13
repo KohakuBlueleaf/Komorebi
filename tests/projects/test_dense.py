@@ -15,41 +15,61 @@ T = ref.TILE
 def tiles(x):
     """x [r*32, c*32] as a list of 32 x 32 tiles in row-major tile order (the
     order of a tile-layout tensor's pages)."""
-    r, c = x.shape[0] // T, x.shape[1] // T
-    return list(x.reshape(r, T, c, T).transpose(0, 2, 1, 3).reshape(r * c, T, T))
+    tile_rows, tile_columns = x.shape[0] // T, x.shape[1] // T
+    return list(
+        x.reshape(tile_rows, T, tile_columns, T)
+        .transpose(0, 2, 1, 3)
+        .reshape(tile_rows * tile_columns, T, T)
+    )
 
 
-def emulate(p, a, w):
+def emulate(plan, activations, weights):
     """Y as the kernels compute it: the reader's pages, the compute loop's tile
     indices into the A and W buffers, the writer's output pages."""
-    pa, pw = tiles(a), tiles(w)
-    y = [None] * (p.mt * p.nt)
-    count = pl.group_size(p, 120)
+    activation_tiles, weight_tiles = tiles(activations), tiles(weights)
+    y = [None] * (plan.mt * plan.nt)
+    count = pl.group_size(plan, 120)
     for i in range(count):
-        for m in layout.partition(range(p.mt), i, count):
-            row = pa[m * p.kt : (m + 1) * p.kt] if p.row_item else None
-            for j0 in range(0, p.nt, p.ct):
-                dst = [np.zeros((T, T)) for _ in range(p.ct)]
-                for k0 in range(0, p.kt, p.kc):
-                    a_item = row if p.row_item else pa[m * p.kt + k0 :][: p.kc]
-                    a0 = k0 if p.row_item else 0
-                    if p.resident:
-                        wbuf = pw
-                    else:
-                        first = k0 * p.nt + j0
-                        wbuf = [
-                            pw[first + i * p.nt + j]
-                            for i in range(p.kc)
-                            for j in range(p.ct)
+        for tile_row in layout.partition(range(plan.mt), i, count):
+            row = (
+                activation_tiles[tile_row * plan.kt : (tile_row + 1) * plan.kt]
+                if plan.row_item
+                else None
+            )
+            for first_column in range(0, plan.nt, plan.ct):
+                accumulators = [np.zeros((T, T)) for _ in range(plan.ct)]
+                for first_depth in range(0, plan.kt, plan.kc):
+                    a_item = (
+                        row
+                        if plan.row_item
+                        else activation_tiles[tile_row * plan.kt + first_depth :][
+                            : plan.kc
                         ]
-                    for k in range(p.kc):
-                        base = k * p.ct if not p.resident else (k0 + k) * p.nt + j0
-                        for j in range(p.ct):
-                            dst[j] += a_item[a0 + k] @ wbuf[base + j]
-                for j in range(p.ct):
-                    y[m * p.nt + j0 + j] = dst[j]
-    full = np.array(y).reshape(p.mt, p.nt, T, T).transpose(0, 2, 1, 3)
-    return full.reshape(p.mt * T, p.nt * T)
+                    )
+                    row_offset = first_depth if plan.row_item else 0
+                    if plan.resident:
+                        wbuf = weight_tiles
+                    else:
+                        first = first_depth * plan.nt + first_column
+                        wbuf = [
+                            weight_tiles[first + i * plan.nt + j]
+                            for i in range(plan.kc)
+                            for j in range(plan.ct)
+                        ]
+                    for depth in range(plan.kc):
+                        base = (
+                            depth * plan.ct
+                            if not plan.resident
+                            else (first_depth + depth) * plan.nt + first_column
+                        )
+                        for j in range(plan.ct):
+                            accumulators[j] += (
+                                a_item[row_offset + depth] @ wbuf[base + j]
+                            )
+                for j in range(plan.ct):
+                    y[tile_row * plan.nt + first_column + j] = accumulators[j]
+    full = np.array(y).reshape(plan.mt, plan.nt, T, T).transpose(0, 2, 1, 3)
+    return full.reshape(plan.mt * T, plan.nt * T)
 
 
 def test_bf16_rounds_to_nearest_even():
@@ -68,7 +88,7 @@ def test_errors_are_relative_to_the_reference():
 
 
 def test_chunk_and_block():
-    assert [pl.chunk(k) for k in (1, 12, 28, 32, 64, 96, 37)] == [
+    assert [pl.chunk(depth) for depth in (1, 12, 28, 32, 64, 96, 37)] == [
         1,
         12,
         28,
@@ -77,13 +97,21 @@ def test_chunk_and_block():
         32,
         1,
     ]
-    assert [pl.block(n) for n in (1, 2, 3, 4, 6, 12, 7)] == [1, 2, 3, 4, 3, 4, 1]
+    assert [pl.block(count) for count in (1, 2, 3, 4, 6, 12, 7)] == [
+        1,
+        2,
+        3,
+        4,
+        3,
+        4,
+        1,
+    ]
 
 
 def test_plan_resident_until_w_overflows():
-    p = pl.plan(512, 12, 12)
-    assert p.resident and (p.kc, p.ct) == (12, 4) and p.row_item
-    assert p.l1_bytes() == (24 + 144 + 8) * pl.TILE_BYTES + CONSTANTS["kProfBytes"]
+    plan = pl.plan(512, 12, 12)
+    assert plan.resident and (plan.kc, plan.ct) == (12, 4) and plan.row_item
+    assert plan.l1_bytes() == (24 + 144 + 8) * pl.TILE_BYTES + CONSTANTS["kProfBytes"]
     big = pl.plan(512, 32, 32, budget=1_000_000)
     assert not big.resident and big.ws_pages == 2 * 32 * 4 and big.a_pages == 64
     assert pl.plan(512, 32, 32, budget=100_000) is None
@@ -93,13 +121,21 @@ def test_plan_resident_until_w_overflows():
 
 
 def test_product_args_follow_the_header():
-    p = pl.plan(8, 4, 8)
-    words = pl.product_args(p, 100, 200, 300, CONSTANTS["kModeReadOnly"])
+    plan = pl.plan(8, 4, 8)
+    words = pl.product_args(plan, 100, 200, 300, CONSTANTS["kModeReadOnly"])
     assert len(words) == 10
     assert words[:2] == [100, 200] and words[9] == 300
-    assert words[2:9] == [8, 4, 8, p.kc, p.ct, CONSTANTS["kModeReadOnly"], p.form]
-    assert pl.load_args(p, 300)[0] == 300 and pl.load_args(p, 300)[3:] == [4, 8]
-    assert pl.flops(p) == 2 * 8 * 4 * 8 * 32**3
+    assert words[2:9] == [
+        8,
+        4,
+        8,
+        plan.kc,
+        plan.ct,
+        CONSTANTS["kModeReadOnly"],
+        plan.form,
+    ]
+    assert pl.load_args(plan, 300)[0] == 300 and pl.load_args(plan, 300)[3:] == [4, 8]
+    assert pl.flops(plan) == 2 * 8 * 4 * 8 * 32**3
 
 
 @pytest.mark.parametrize(
@@ -113,122 +149,155 @@ def test_product_args_follow_the_header():
 )
 def test_kernel_tile_order_gives_the_product(shape, form):
     mt, kt, nt = shape
-    p = pl.plan(mt, kt, nt, form=CONSTANTS[form])
+    plan = pl.plan(mt, kt, nt, form=CONSTANTS[form])
     rng = np.random.default_rng(1)
-    a = rng.standard_normal((mt * T, kt * T))
-    w = rng.standard_normal((kt * T, nt * T))
-    assert np.allclose(emulate(p, a, w), a @ w)
+    activations = rng.standard_normal((mt * T, kt * T))
+    weights = rng.standard_normal((kt * T, nt * T))
+    assert np.allclose(emulate(plan, activations, weights), activations @ weights)
 
 
-def emulate_grid(g, a, w, grid=(12, 10)):
+def emulate_grid(plan, activations, weights, grid=(12, 10)):
     """Y as the grid kernels compute it: the blocks the readers fill (A rows stride
     kb, W rows stride bn), compute's tile indices, the writer's dropped tiles."""
-    pa, pw = tiles(a), tiles(w)
-    y = np.full((g.mt, g.nt, T, T), np.nan)
-    for m0, n0 in g.places(grid).values():
-        m_end, n_end = min(m0 + g.pcm, g.mt), min(n0 + g.pcn, g.nt)
-        for blk in range(g.nbh * g.nbw):
-            r0, c0 = m0 + blk // g.nbw * g.bm, n0 + blk % g.nbw * g.bn
-            acc = np.zeros((g.bm, g.bn, T, T))
-            for kblk in range(g.nk):
-                k0 = kblk * g.kb
-                ab = [np.zeros((T, T))] * (g.bm * g.kb)
-                wb = [np.zeros((T, T))] * (g.kb * g.bn)
-                for i in range(g.bm):
-                    for j in range(min(g.kb, g.kt - k0)):
-                        if r0 + i < g.mt:
-                            ab[i * g.kb + j] = pa[(r0 + i) * g.kt + k0 + j]
-                for i in range(min(g.kb, g.kt - k0)):
-                    for j in range(g.bn):
-                        if c0 + j < g.nt:
-                            wb[i * g.bn + j] = pw[(k0 + i) * g.nt + c0 + j]
-                inner = g.kb_last if kblk == g.nk - 1 else g.kb
-                for i in range(g.bm):
-                    for j in range(g.bn):
-                        for k in range(inner):
-                            acc[i, j] += ab[i * g.kb + k] @ wb[k * g.bn + j]
-            for i in range(g.bm):
-                for j in range(g.bn):
-                    if r0 + i < m_end and c0 + j < n_end:
-                        y[r0 + i, c0 + j] = acc[i, j]
-    return y.transpose(0, 2, 1, 3).reshape(g.mt * T, g.nt * T)
+    activation_tiles, weight_tiles = tiles(activations), tiles(weights)
+    y = np.full((plan.mt, plan.nt, T, T), np.nan)
+    for tile_row, tile_column in plan.places(grid).values():
+        m_end, n_end = min(tile_row + plan.pcm, plan.mt), min(
+            tile_column + plan.pcn, plan.nt
+        )
+        for blk in range(plan.nbh * plan.nbw):
+            first_row, first_column = (
+                tile_row + blk // plan.nbw * plan.bm,
+                tile_column + blk % plan.nbw * plan.bn,
+            )
+            acc = np.zeros((plan.bm, plan.bn, T, T))
+            for kblk in range(plan.nk):
+                first_depth = kblk * plan.kb
+                activation_block = [np.zeros((T, T))] * (plan.bm * plan.kb)
+                weight_block = [np.zeros((T, T))] * (plan.kb * plan.bn)
+                for i in range(plan.bm):
+                    for j in range(min(plan.kb, plan.kt - first_depth)):
+                        if first_row + i < plan.mt:
+                            activation_block[i * plan.kb + j] = activation_tiles[
+                                (first_row + i) * plan.kt + first_depth + j
+                            ]
+                for i in range(min(plan.kb, plan.kt - first_depth)):
+                    for j in range(plan.bn):
+                        if first_column + j < plan.nt:
+                            weight_block[i * plan.bn + j] = weight_tiles[
+                                (first_depth + i) * plan.nt + first_column + j
+                            ]
+                inner = plan.kb_last if kblk == plan.nk - 1 else plan.kb
+                for i in range(plan.bm):
+                    for j in range(plan.bn):
+                        for depth in range(inner):
+                            acc[i, j] += (
+                                activation_block[i * plan.kb + depth]
+                                @ weight_block[depth * plan.bn + j]
+                            )
+            for i in range(plan.bm):
+                for j in range(plan.bn):
+                    if first_row + i < m_end and first_column + j < n_end:
+                        y[first_row + i, first_column + j] = acc[i, j]
+    return y.transpose(0, 2, 1, 3).reshape(plan.mt * T, plan.nt * T)
 
 
 @pytest.mark.parametrize("layout", pl.LAYOUTS)
 def test_grid_tile_order_gives_the_product(layout):
-    g = pl.grid_plan(13, 5, 14, layout=layout)
-    g = pl.Grid(**(g.__dict__ | {"bm": 2, "bn": 2, "kb": 2, "sh": 1, "sw": 2}))
+    plan = pl.grid_plan(13, 5, 14, layout=layout)
+    plan = pl.Grid(**(plan.__dict__ | {"bm": 2, "bn": 2, "kb": 2, "sh": 1, "sw": 2}))
     rng = np.random.default_rng(1)
-    a = rng.integers(-2, 3, (g.mt * T, g.kt * T)).astype(np.float64)
-    w = rng.integers(-2, 3, (g.kt * T, g.nt * T)).astype(np.float64)
-    assert np.array_equal(emulate_grid(g, a, w), a @ w)
+    activations = rng.integers(-2, 3, (plan.mt * T, plan.kt * T)).astype(np.float64)
+    weights = rng.integers(-2, 3, (plan.kt * T, plan.nt * T)).astype(np.float64)
+    assert np.array_equal(
+        emulate_grid(plan, activations, weights), activations @ weights
+    )
 
 
 def test_grid_rule_layouts_fit():
     shapes = {(128, 128, 128): "2d", (512, 32, 32): "rows", (1, 128, 128): "cols"}
     for (mt, kt, nt), lay in shapes.items():
-        g = pl.grid_plan(mt, kt, nt)
-        assert g.layout == lay and g.l1_bytes() <= pl.L1_BUDGET
-        g.check((12, 10))
-    g = pl.grid_plan(128, 128, 128)
-    assert (g.rows, g.cols, g.pcm, g.pcn, g.sh, g.sw) == (10, 11, 13, 12, 1, 4)
-    assert g.group((12, 10)) == (0, 119) and g.rect((12, 10)) == (0, 0, 11, 10)
+        plan = pl.grid_plan(mt, kt, nt)
+        assert plan.layout == lay and plan.l1_bytes() <= pl.L1_BUDGET
+        plan.check((12, 10))
+    plan = pl.grid_plan(128, 128, 128)
+    assert (plan.rows, plan.cols, plan.pcm, plan.pcn, plan.sh, plan.sw) == (
+        10,
+        11,
+        13,
+        12,
+        1,
+        4,
+    )
+    assert plan.group((12, 10)) == (0, 119) and plan.rect((12, 10)) == (0, 0, 11, 10)
 
 
-def emulate_split(sp, a, w, form):
+def emulate_split(split, activations, weights, form):
     """Y as the K-split kernels compute it: each core's partition of K in chunks (A rows
     stride kc, W rows stride ow), then the parts summed by owner or by tree."""
-    pa, pw = tiles(a), tiles(w)
-    y = np.full((sp.mt, sp.nt, T, T), np.nan)
-    p = sp.oh * sp.ow
-    for q in range(sp.groups()):
-        m0, n0 = q // sp.nbw() * sp.oh, q % sp.nbw() * sp.ow
+    activation_tiles, weight_tiles = tiles(activations), tiles(weights)
+    y = np.full((split.mt, split.nt, T, T), np.nan)
+    outputs = split.oh * split.ow
+    for group_index in range(split.groups()):
+        tile_row, tile_column = (
+            group_index // split.nbw() * split.oh,
+            group_index % split.nbw() * split.ow,
+        )
         parts = []
-        for d in range(sp.s):
-            ks = layout.partition(range(sp.kt), d, sp.s)
-            acc = np.zeros((p, T, T))
-            for k0 in range(0, len(ks), sp.kc):
-                n = min(sp.kc, len(ks) - k0)
-                ab = [np.zeros((T, T))] * (sp.oh * sp.kc)
-                wb = [np.zeros((T, T))] * (sp.kc * sp.ow)
-                for j in range(n):
-                    k = ks[k0 + j]
-                    for i in range(sp.oh):
-                        if m0 + i < sp.mt:
-                            ab[i * sp.kc + j] = pa[(m0 + i) * sp.kt + k]
-                    for c in range(sp.ow):
-                        if n0 + c < sp.nt:
-                            wb[j * sp.ow + c] = pw[k * sp.nt + n0 + c]
-                for i in range(sp.oh):
-                    for c in range(sp.ow):
-                        for k in range(n):
-                            acc[i * sp.ow + c] += ab[i * sp.kc + k] @ wb[k * sp.ow + c]
+        for part in range(split.s):
+            depth_indices = layout.partition(range(split.kt), part, split.s)
+            acc = np.zeros((outputs, T, T))
+            for first_depth in range(0, len(depth_indices), split.kc):
+                depth_count = min(split.kc, len(depth_indices) - first_depth)
+                activation_block = [np.zeros((T, T))] * (split.oh * split.kc)
+                weight_block = [np.zeros((T, T))] * (split.kc * split.ow)
+                for j in range(depth_count):
+                    depth = depth_indices[first_depth + j]
+                    for i in range(split.oh):
+                        if tile_row + i < split.mt:
+                            activation_block[i * split.kc + j] = activation_tiles[
+                                (tile_row + i) * split.kt + depth
+                            ]
+                    for column in range(split.ow):
+                        if tile_column + column < split.nt:
+                            weight_block[j * split.ow + column] = weight_tiles[
+                                depth * split.nt + tile_column + column
+                            ]
+                for i in range(split.oh):
+                    for column in range(split.ow):
+                        for depth in range(depth_count):
+                            acc[i * split.ow + column] += (
+                                activation_block[i * split.kc + depth]
+                                @ weight_block[depth * split.ow + column]
+                            )
             parts.append(acc)
         if form == "owner":
             total = parts[0] + sum(parts[1:], np.zeros_like(parts[0]))
         else:
-            r = 0
-            while 1 << r < sp.s:
-                for j in range(0, sp.s, 2 << r):
-                    if j + (1 << r) < sp.s:
-                        parts[j] = parts[j] + parts[j + (1 << r)]
-                r += 1
+            level = 0
+            while 1 << level < split.s:
+                for j in range(0, split.s, 2 << level):
+                    if j + (1 << level) < split.s:
+                        parts[j] = parts[j] + parts[j + (1 << level)]
+                level += 1
             total = parts[0]
-        for i in range(sp.oh):
-            for c in range(sp.ow):
-                if m0 + i < sp.mt and n0 + c < sp.nt:
-                    y[m0 + i, n0 + c] = total[i * sp.ow + c]
-    return y.transpose(0, 2, 1, 3).reshape(sp.mt * T, sp.nt * T)
+        for i in range(split.oh):
+            for column in range(split.ow):
+                if tile_row + i < split.mt and tile_column + column < split.nt:
+                    y[tile_row + i, tile_column + column] = total[i * split.ow + column]
+    return y.transpose(0, 2, 1, 3).reshape(split.mt * T, split.nt * T)
 
 
 @pytest.mark.parametrize("form", list(pl.REDUCE_FORMS))
 @pytest.mark.parametrize("s, oh, ow, kc", [(3, 2, 2, 2), (5, 1, 3, 1), (1, 3, 1, 4)])
 def test_split_tile_order_gives_the_product(form, s, oh, ow, kc):
-    sp = pl.split_plan(5, 7, 4, s, oh, ow, kc)
+    split = pl.split_plan(5, 7, 4, s, oh, ow, kc)
     rng = np.random.default_rng(1)
-    a = rng.integers(-2, 3, (sp.mt * T, sp.kt * T)).astype(np.float64)
-    w = rng.integers(-2, 3, (sp.kt * T, sp.nt * T)).astype(np.float64)
-    assert np.array_equal(emulate_split(sp, a, w, form), a @ w)
+    activations = rng.integers(-2, 3, (split.mt * T, split.kt * T)).astype(np.float64)
+    weights = rng.integers(-2, 3, (split.kt * T, split.nt * T)).astype(np.float64)
+    assert np.array_equal(
+        emulate_split(split, activations, weights, form), activations @ weights
+    )
 
 
 def test_split_plans_of_the_narrow_shapes_fit():
@@ -236,8 +305,8 @@ def test_split_plans_of_the_narrow_shapes_fit():
         (128, 896, 128): (7, 1, 4),
         (32, 4096, 4096): (7, 1, 8),
     }.items():
-        sp = pl.split_plan(m // T, k // T, n // T, s, oh, ow)
-        assert sp.cores() <= 120 and sp.l1_bytes() <= pl.L1_BUDGET
-        assert len(sp.words()) == pl.S["kSplitWords"]
+        split = pl.split_plan(m // T, k // T, n // T, s, oh, ow)
+        assert split.cores() <= 120 and split.l1_bytes() <= pl.L1_BUDGET
+        assert len(split.words()) == pl.S["kSplitWords"]
     with pytest.raises(ValueError):
         pl.split_plan(1, 4, 128, 5, 1, 8)  # a group larger than K's tiles

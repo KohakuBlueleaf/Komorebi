@@ -13,65 +13,75 @@ GRID = (12, 10)
 
 @pytest.mark.parametrize("causal", [False, True])
 def test_plan_takes_every_query_row_once(causal):
-    s = pl.dims(2, 4, 2, 256, 256, 64, 64, causal)
-    p = pl.make(s, GRID, length=5)
+    dims = pl.dims(2, 4, 2, 256, 256, 64, 64, causal)
+    plan = pl.make(dims, GRID, length=5)
     seen = []
-    for core, jobs in enumerate(p.jobs):
+    for core, jobs in enumerate(plan.jobs):
         for j in jobs:
-            assert j.rows <= p.r and j.k0 % (s.skt * s.dt) == 0
-            head = j.q0 // s.dt // s.sqt
+            assert j.rows <= plan.r and j.k0 % (dims.skt * dims.dt) == 0
+            head = j.q0 // dims.dt // dims.sqt
             seen += [(head, j.start + i * j.stride) for i in range(j.rows)]
         # the cores of a broadcast deliver the same blocks: same jobs, same key tiles
-        top = (core // GRID[0]) // p.length * p.length * GRID[0] + core % GRID[0]
-        assert [j.nk for j in jobs] == [j.nk for j in p.jobs[top]]
-    assert sorted(seen) == [(hd, r) for hd in range(s.b * s.h) for r in range(s.sqt)]
+        top = (core // GRID[0]) // plan.length * plan.length * GRID[0] + core % GRID[0]
+        assert [j.nk for j in jobs] == [j.nk for j in plan.jobs[top]]
+    assert sorted(seen) == [
+        (head_index, row)
+        for head_index in range(dims.b * dims.h)
+        for row in range(dims.sqt)
+    ]
 
 
 def test_causal_chunks_of_equal_area_take_every_row_once_and_even_the_cores():
-    s = pl.dims(1, 8, 8, 1024, 1024, 64, 64, True)
-    plain, split = pl.make(s, GRID, length=5), pl.make(s, GRID, length=5, chunks=6)
+    dims = pl.dims(1, 8, 8, 1024, 1024, 64, 64, True)
+    plain, split = pl.make(dims, GRID, length=5), pl.make(
+        dims, GRID, length=5, chunks=6
+    )
     seen = sorted(
-        (j.q0 // s.dt // s.sqt, j.start + i * j.stride)
+        (j.q0 // dims.dt // dims.sqt, j.start + i * j.stride)
         for jobs in split.jobs
         for j in jobs
         for i in range(j.rows)
     )
-    assert seen == [(hd, r) for hd in range(s.h) for r in range(s.sqt)]
-    most = [max(pl.score_tiles(s, j) for j in p.jobs) for p in (plain, split)]
+    assert seen == [
+        (head_index, row) for head_index in range(dims.h) for row in range(dims.sqt)
+    ]
+    most = [max(pl.score_tiles(dims, j) for j in plan.jobs) for plan in (plain, split)]
     assert most[1] < most[0]
     with pytest.raises(ValueError):
-        pl.make(s, GRID, length=1, chunks=1)  # 32 rows on one core: over R
+        pl.make(dims, GRID, length=1, chunks=1)  # 32 rows on one core: over R
 
 
 def test_blocks_fit_the_budget():
-    s = pl.dims(1, 1, 1, 128, 128, 64, 64, False)
-    assert pl.blocks(s) == (13, 12)
-    r, kb = pl.blocks(s, budget=300_000)
-    assert (r, kb) == (6, 6) and pl.l1_bytes(s, r, kb) <= 300_000
-    assert pl.l1_bytes(s, 7, 6) > 300_000  # KB first went down to 6, then R
-    assert pl.blocks(s, budget=10_000) == (0, 0)
+    dims = pl.dims(1, 1, 1, 128, 128, 64, 64, False)
+    assert pl.blocks(dims) == (13, 12)
+    query_rows, key_block = pl.blocks(dims, budget=300_000)
+    assert (query_rows, key_block) == (6, 6) and pl.l1_bytes(
+        dims, query_rows, key_block
+    ) <= 300_000
+    assert pl.l1_bytes(dims, 7, 6) > 300_000  # KB first went down to 6, then R
+    assert pl.blocks(dims, budget=10_000) == (0, 0)
 
 
 def test_tables_follow_the_header():
-    s = pl.dims(1, 2, 2, 64, 64, 64, 64, False)
-    p = pl.make(s, GRID, length=10)
-    words = pl.tables(p)
+    dims = pl.dims(1, 2, 2, 64, 64, 64, 64, False)
+    plan = pl.make(dims, GRID, length=10)
+    words = pl.tables(plan)
     assert words.shape == (120, CONSTANTS["kTableBytes"] // 4)
-    core = next(c for c, jobs in enumerate(p.jobs) if jobs)
-    j, at = p.jobs[core][0], CONSTANTS["kTabFirst"]
-    assert words[core, CONSTANTS["kTabJobs"]] == len(p.jobs[core])
-    assert list(words[core, at : at + CONSTANTS["kJobWords"]]) == [
+    core = next(core_index for core_index, jobs in enumerate(plan.jobs) if jobs)
+    j, offset = plan.jobs[core][0], CONSTANTS["kTabFirst"]
+    assert words[core, CONSTANTS["kTabJobs"]] == len(plan.jobs[core])
+    assert list(words[core, offset : offset + CONSTANTS["kJobWords"]]) == [
         j.q0, j.k0, j.v0, j.o0, j.rows, j.start, j.nk, j.stride
     ]  # fmt: skip
 
 
 def test_buffers_and_profile_words_do_not_collide():
-    s = pl.dims(1, 2, 2, 64, 64, 128, 128, True)
-    cbs = [b[0] for b in pl.buffers(s, 13, 12)]
+    dims = pl.dims(1, 2, 2, 64, 64, 128, 128, True)
+    cbs = [buffer[0] for buffer in pl.buffers(dims, 13, 12)]
     assert len(set(cbs)) == len(cbs) and max(cbs) < 29  # 29 to 31: the runtime's
     prof = [
-        v
-        for name, v in CONSTANTS.items()
+        value
+        for name, value in CONSTANTS.items()
         if name.startswith("kPr") and "Prof" not in name
     ]
     assert len(set(prof)) == len(prof) and max(prof) < CONSTANTS["kProfWords"]
@@ -80,18 +90,19 @@ def test_buffers_and_profile_words_do_not_collide():
 
 
 def test_exp_constants():
-    a, thr = pl.exp_constants(0.125)
-    assert np.uint32(a).view(np.float32) == np.float32(0.125 * 1.4426950408889634)
+    factor, thr = pl.exp_constants(0.125)
+    assert np.uint32(factor).view(np.float32) == np.float32(0.125 * 1.4426950408889634)
     assert np.uint32(thr).view(np.float32) == 655.0
 
 
 def test_reference_is_the_softmax():
-    q, k, v = sdpa.inputs(1, 1, 1, 64, 64, 32, 32)
+    queries, keys, values = sdpa.inputs(1, 1, 1, 64, 64, 32, 32)
     rows = np.arange(64)
-    s = q[0, 0].astype(np.float64) @ k[0, 0].T / np.sqrt(32)
-    p = np.exp(s) / np.exp(s).sum(1, keepdims=True)
+    scores = queries[0, 0].astype(np.float64) @ keys[0, 0].T / np.sqrt(32)
+    probabilities = np.exp(scores) / np.exp(scores).sum(1, keepdims=True)
     assert np.allclose(
-        sdpa.attention(q[0, 0], k[0, 0], v[0, 0], rows, False), p @ v[0, 0]
+        sdpa.attention(queries[0, 0], keys[0, 0], values[0, 0], rows, False),
+        probabilities @ values[0, 0],
     )
-    causal = sdpa.attention(q[0, 0], k[0, 0], v[0, 0], rows, True)
-    assert np.array_equal(causal[0], v[0, 0, 0].astype(np.float64))
+    causal = sdpa.attention(queries[0, 0], keys[0, 0], values[0, 0], rows, True)
+    assert np.array_equal(causal[0], values[0, 0, 0].astype(np.float64))
