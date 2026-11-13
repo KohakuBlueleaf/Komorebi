@@ -10,50 +10,54 @@
 
 namespace {
 
-    constexpr uint32_t DT = get_compile_time_arg_val(0);
-    constexpr uint32_t DV = get_compile_time_arg_val(1);
-    constexpr uint32_t R = get_compile_time_arg_val(2);
-    constexpr uint32_t KB = get_compile_time_arg_val(3);
-    constexpr uint32_t B = get_compile_time_arg_val(4);  // broadcast window
-    constexpr uint32_t P = DT * KB + KB * DV;            // pages of a K / V block
+    constexpr uint32_t HEAD_TILES = get_compile_time_arg_val(0);
+    constexpr uint32_t VALUE_TILES = get_compile_time_arg_val(1);
+    constexpr uint32_t MAX_ROWS = get_compile_time_arg_val(2);
+    constexpr uint32_t BLOCK_KEYS = get_compile_time_arg_val(3);
+    constexpr uint32_t WINDOW_BLOCKS = get_compile_time_arg_val(4);  // broadcast window
+    constexpr uint32_t BLOCK_PAGES = HEAD_TILES * BLOCK_KEYS +
+        BLOCK_KEYS * VALUE_TILES;  // pages of a K / V block
 
-    // Rows `rows` of a job's Q (DT tiles each, `stride` tile rows apart) into the Q
-    // buffer, pushed as one item of R x DT pages. False: gave up (recorded).
+    // Rows `rows` of a job's Q (HEAD_TILES tiles each, `stride` tile rows apart) into
+    // the Q buffer, pushed as one item of MAX_ROWS x HEAD_TILES pages. False: gave up
+    // (recorded).
     template <typename Accessor>
     bool read_q(
-        const km::Reader& rd,
-        const Accessor& q,
-        uint32_t q0,
+        const km::Reader& reader,
+        const Accessor& queries,
+        uint32_t first_tile,
         uint32_t rows,
         uint32_t stride,
-        uint32_t* c
+        uint32_t* counters
     ) {
-        const uint32_t t0 = km::wall();
-        if (!rd.reserve(kCbQ, R * DT)) {
+        const uint32_t started = km::wall();
+        if (!reader.reserve(kCbQ, MAX_ROWS * HEAD_TILES)) {
             return false;
         }
-        const uint32_t t1 = km::wall();
-        const uint32_t base = get_write_ptr(kCbQ);
-        for (uint32_t i = 0; i < rows; ++i) {
-            for (uint32_t d = 0; d < DT; ++d) {
+        const uint32_t reserved = km::wall();
+        const uint32_t destination = get_write_ptr(kCbQ);
+        for (uint32_t row = 0; row < rows; ++row) {
+            for (uint32_t head_tile = 0; head_tile < HEAD_TILES; ++head_tile) {
                 noc_async_read_page(
-                    q0 + i * stride * DT + d, q, base + (i * DT + d) * kTileBytes
+                    first_tile + row * stride * HEAD_TILES + head_tile,
+                    queries,
+                    destination + (row * HEAD_TILES + head_tile) * kTileBytes
                 );
             }
         }
-        if (!flushed(rd, km::kStReader, km::kFlushReads)) {
+        if (!flushed(reader, km::kStReader, km::kFlushReads)) {
             return false;
         }
-        cb_push_back(kCbQ, R * DT);
-        c[kPrRdQWait] += t1 - t0;
-        c[kPrRdQRead] += km::wall() - t1;
+        cb_push_back(kCbQ, MAX_ROWS * HEAD_TILES);
+        counters[kPrRdQWait] += reserved - started;
+        counters[kPrRdQRead] += km::wall() - reserved;
         return true;
     }
 
     // Compute only: `pages` pushed as they are in the broadcast buffer (no read, no
     // broadcast).
-    bool push_block(const km::Reader& rd, uint32_t pages) {
-        if (!rd.reserve(kCbKv, pages)) {
+    bool push_block(const km::Reader& reader, uint32_t pages) {
+        if (!reader.reserve(kCbKv, pages)) {
             return false;
         }
         cb_push_back(kCbKv, pages);
@@ -61,104 +65,143 @@ namespace {
     }
 
     // The command's jobs, `passes` times: Q rows, then the K / V blocks through the
-    // broadcast `ln` (null: not this kernel's), or pushed as they are (compute only).
+    // broadcast `broadcast` (null: not this kernel's), or pushed as they are (compute
+    // only).
     template <typename Accessor>
     void run_jobs(
-        const km::Reader& rd,
-        const km_command_t& r,
+        const km::Reader& reader,
+        const km_command_t& command,
         uint32_t table,
-        const Accessor& tiles_q,
-        const Accessor& tiles_k,
-        const Accessor& tiles_v,
-        km::Broadcast* ln,
-        volatile tt_l1_ptr uint32_t* prof,
-        uint32_t t0
+        const Accessor& queries,
+        const Accessor& keys,
+        const Accessor& values,
+        km::Broadcast* broadcast,
+        volatile tt_l1_ptr uint32_t* profile,
+        uint32_t started
     ) {
-        const bool reads = r.a5 != kModeComputeOnly;
+        const uint32_t mode = command.a5, requested_passes = command.a6;
+        const uint32_t first_job = command.a7;
+        const bool reads = mode != kModeComputeOnly;
         const uint32_t jobs = km::l1(table)[kTabJobs];
-        const uint32_t passes = r.a6 == 0 ? 1 : r.a6;
+        const uint32_t passes = requested_passes == 0 ? 1 : requested_passes;
         if (jobs > kJobsMax) {
             return;
         }
-        uint32_t c[kProfWords] = {};
-        uint32_t n = 0;  // blocks of this command so far, over all jobs and passes
+        uint32_t counters[kProfWords] = {};
+        uint32_t blocks = 0;  // blocks of this command so far, over all jobs and passes
         for (uint32_t pass = 0; pass < passes; ++pass) {
-            for (uint32_t j = r.a7; j < jobs_end(r, jobs); ++j) {
-                const volatile tt_l1_ptr uint32_t* w = (
-                    km::l1(table + 4 * (kTabFirst + kJobWords * j))
+            for (
+                uint32_t job_index = first_job; job_index < jobs_end(command, jobs);
+                ++job_index
+            ) {
+                const volatile tt_l1_ptr uint32_t* job_words = (
+                    km::l1(table + 4 * (kTabFirst + kJobWords * job_index))
                 );
-                const uint32_t rows = reads ? w[kJobRows] : 0;
-                if (!read_q(rd, tiles_q, w[kJobQ], rows, w[kJobStride], c)) {
+                const uint32_t rows = reads ? job_words[kJobRows] : 0;
+                if (!read_q(
+                    reader,
+                    queries,
+                    job_words[kJobQ],
+                    rows,
+                    job_words[kJobStride],
+                    counters
+                )) {
                     return;
                 }
                 if (
-                    ln != nullptr &&
-                    !broadcast_job<DT, DV, KB>(*ln, tiles_k, tiles_v, w, n, c)
+                    broadcast != nullptr &&
+                    !broadcast_job<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
+                        *broadcast, keys, values, job_words, blocks, counters
+                    )
                 ) {
                     return;
                 }
                 for (
-                    uint32_t k_start = 0; !reads && k_start < w[kJobKeys];
-                    k_start += KB, ++n
+                    uint32_t block_start = 0;
+                    !reads && block_start < job_words[kJobKeys];
+                    block_start += BLOCK_KEYS, ++blocks
                 ) {
-                    if (!push_block(rd, P)) {
+                    if (!push_block(reader, BLOCK_PAGES)) {
                         return;
                     }
                 }
             }
         }
-        const uint32_t t1 = km::wall();
+        const uint32_t finish_started = km::wall();
         if (!reads) {
-            const uint32_t pad = (B - n % B) % B;
-            if (pad != 0 && !push_block(rd, pad * P)) {
+            const uint32_t pad = (
+                (WINDOW_BLOCKS - blocks % WINDOW_BLOCKS) % WINDOW_BLOCKS
+            );
+            if (pad != 0 && !push_block(reader, pad * BLOCK_PAGES)) {
                 return;
             }
-        } else if (ln != nullptr) {
-            ln->finish();
+        } else if (broadcast != nullptr) {
+            broadcast->finish();
         }
-        c[kPrRdFinish] += km::wall() - t1;
-        c[kPrRdBody] += km::wall() - t0;
+        counters[kPrRdFinish] += km::wall() - finish_started;
+        counters[kPrRdBody] += km::wall() - started;
         // Without the broadcast here, its words are the writer's.
-        const uint32_t last = ln != nullptr || !reads ? kPrRdFinish : kPrRdQRead;
-        for (uint32_t w = kPrRdBody; w <= last; ++w) {
-            km::add_sat(prof + w, c[w]);
+        const uint32_t last = broadcast != nullptr || !reads ? kPrRdFinish : kPrRdQRead;
+        for (uint32_t word = kPrRdBody; word <= last; ++word) {
+            km::add_sat(profile + word, counters[word]);
         }
     }
 
 }  // namespace
 
 void kernel_main() {
-    constexpr auto tiles = TensorAccessorArgs<5>();  // Q, K, V: bf16 tiles in DRAM
-    km::Reader rd;
-    volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbProf));
-    for (uint32_t w = 0; w < kProfWords; ++w) {
-        prof[w] = 0;
+    constexpr auto tile_args = TensorAccessorArgs<5>();  // Q, K, V: bf16 tiles in DRAM
+    km::Reader reader;
+    volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbProf));
+    for (uint32_t word = 0; word < kProfWords; ++word) {
+        profile[word] = 0;
     }
-    rd.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerAttend) {
+    reader.run([&](const km_command_t& command) {
+        if (km::handler(command) != kHandlerAttend) {
             return;
         }
-        const uint32_t t0 = km::wall();
-        if (!rd.reserve(kCbJobs, 1)) {
+        const uint32_t started = km::wall();
+        const uint32_t q_address = command.a0, k_address = command.a1;
+        const uint32_t v_address = command.a2, job_tables = command.a4;
+        const uint32_t mode = command.a5;
+        if (!reader.reserve(kCbJobs, 1)) {
             return;
         }
         const uint32_t table = get_write_ptr(kCbJobs);
-        if (!read_table(rd, km::kStReader, r.a4, rd.me() - km::first(r), table)) {
+        if (!read_table(
+            reader,
+            km::kStReader,
+            job_tables,
+            reader.me() - km::first(command),
+            table
+        )) {
             return;
         }
         cb_push_back(kCbJobs, 1);  // compute pops it at the command's end
-        const auto q = TensorAccessor(tiles, r.a0);
-        const auto k = TensorAccessor(tiles, r.a1);
-        const auto v = TensorAccessor(tiles, r.a2);
+        const auto queries = TensorAccessor(tile_args, q_address);
+        const auto keys = TensorAccessor(tile_args, k_address);
+        const auto values = TensorAccessor(tile_args, v_address);
 #ifndef BROADCAST_ON_WRITER
-        if (r.a5 != kModeComputeOnly) {
-            km::Broadcast ln(rd, r, kArgBroadcast);
-            if (ln.ok() && ln.included()) {
-                run_jobs(rd, r, table, q, k, v, &ln, prof, t0);
+        if (mode != kModeComputeOnly) {
+            km::Broadcast broadcast(reader, command, kArgBroadcast);
+            if (broadcast.ok() && broadcast.included()) {
+                run_jobs(
+                    reader,
+                    command,
+                    table,
+                    queries,
+                    keys,
+                    values,
+                    &broadcast,
+                    profile,
+                    started
+                );
             }
             return;
         }
 #endif
-        run_jobs(rd, r, table, q, k, v, nullptr, prof, t0);
+        run_jobs(
+            reader, command, table, queries, keys, values, nullptr, profile, started
+        );
     });
 }

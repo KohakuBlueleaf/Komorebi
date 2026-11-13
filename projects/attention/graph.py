@@ -23,93 +23,121 @@ from projects.attention.reference import sdpa  # noqa: E402
 log = run.log
 
 
-def calls(p, att, per_job):
+def calls(plan, attention, per_job):
     """The command words of one call: one command, or one per job index."""
     if not per_job:
-        return [att.words()]
-    jobs = max(len(j) for j in p.jobs)
-    return [att.words()[:7] + [j, 1] for j in range(jobs)]
+        return [attention.words()]
+    jobs = max(len(core_jobs) for core_jobs in plan.jobs)
+    return [attention.words()[:7] + [job_index, 1] for job_index in range(jobs)]
 
 
-def graph(handler, group, words, rounds, req):
+def graph(handler, group, words, rounds, request):
     """A kept graph: the call's commands one after the other, `rounds` times."""
-    g = Graph(deadline_microseconds=2_000_000, max_runs=rounds, req=req, keep=True)
-    it = g.register()
+    kept_graph = Graph(
+        deadline_microseconds=2_000_000, max_runs=rounds, req=request, keep=True
+    )
+    iteration = kept_graph.register()
     last = []
-    for w in words:
-        last = [g.command(handler, group=group, args=w, after=last, exclusive=True)]
-    step = g.cpu(after=last)
-    step.addi(it, it, 1)
-    step.lt(g.again, it, g.const(rounds))
-    return g
+    for command_words in words:
+        last = [
+            kept_graph.command(
+                handler, group=group, args=command_words, after=last, exclusive=True
+            )
+        ]
+    step = kept_graph.cpu(after=last)
+    step.addi(iteration, iteration, 1)
+    step.lt(kept_graph.again, iteration, kept_graph.const(rounds))
+    return kept_graph
 
 
-def from_host(att, words, rounds):
+def from_host(attention, words, rounds):
     """Microseconds per call, the call's commands submitted from the host back to
     back."""
     rows = np.array(words * rounds, np.int64)
-    t0 = time.perf_counter()
-    handles = att.run.submit_many("attend", 0, att.group[1], rows, exclusive=True)
-    events = att.run.wait(list(handles), timeout=60.0)
-    if any(e.kind != "done" for e in events):
+    started = time.perf_counter()
+    handles = attention.run.submit_many(
+        "attend", 0, attention.group[1], rows, exclusive=True
+    )
+    events = attention.run.wait(list(handles), timeout=60.0)
+    if any(event.kind != "done" for event in events):
         raise km.KomorebiError("a command not done")
-    return (time.perf_counter() - t0) * 1e6 / rounds
+    return (time.perf_counter() - started) * 1e6 / rounds
 
 
-def from_graph(att, g, times):
+def from_graph(attention, kept_graph, times):
     """Microseconds per call of a kept graph's rounds: uploaded and started once, then
     restarted `times` times; the median of the restarts."""
-    up = att.run.upload(g)
-    att.run.wait_engine(att.run.start(up, kept=True), timeout=60.0)
-    us = []
+    upload = attention.run.upload(kept_graph)
+    attention.run.wait_engine(attention.run.start(upload, kept=True), timeout=60.0)
+    microseconds = []
     for _ in range(times):
-        t0 = time.perf_counter()
-        att.run.wait_engine(att.run.restart(up.req), timeout=60.0)
-        us.append((time.perf_counter() - t0) * 1e6 / g.max_runs)
-    att.run.release(up)
-    return float(np.median(us))
+        started = time.perf_counter()
+        attention.run.wait_engine(attention.run.restart(upload.req), timeout=60.0)
+        microseconds.append((time.perf_counter() - started) * 1e6 / kept_graph.max_runs)
+    attention.run.release(upload)
+    return float(np.median(microseconds))
 
 
 def main():
-    a = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    a.add_argument("--shape", choices=pl.SHAPES, required=True)
-    a.add_argument("--rounds", type=int, default=20, help="calls per run")
-    a.add_argument("--seed", type=int, default=1)
-    a.add_argument("--json", default=None)
-    args = a.parse_args()
-    (b, h, hk, sq, d, causal), s = run.shape_dims(args.shape)
-    q, k, v = sdpa.inputs(b, h, hk, sq, sq, d, d, args.seed)
-    out = {"shape": args.shape, "rounds": args.rounds}
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--shape", choices=pl.SHAPES, required=True)
+    parser.add_argument("--rounds", type=int, default=20, help="calls per run")
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--json", default=None)
+    arguments = parser.parse_args()
+    (batches, heads, kv_heads, sequence_length, head_dim, causal), call = (
+        run.shape_dims(arguments.shape)
+    )
+    queries, keys, values = sdpa.inputs(
+        batches,
+        heads,
+        kv_heads,
+        sequence_length,
+        sequence_length,
+        head_dim,
+        head_dim,
+        arguments.seed,
+    )
+    report = {"shape": arguments.shape, "rounds": arguments.rounds}
     with km.Session(log=log) as session:
-        p = pl.make(s, session.nocs().grid)
-        out["plan"], out["x280_mhz"] = p.summary(), session.pll_mhz
+        plan = pl.make(call, session.nocs().grid)
+        report["plan"], report["x280_mhz"] = plan.summary(), session.pll_mhz
         tensors = {
-            "q": card.bf16_tensor(session, q),
-            "k": card.bf16_tensor(session, k),
-            "v": card.bf16_tensor(session, v),
-            "o": card.bf16_tensor(session, np.zeros((b, h, sq, d), np.float32)),
-            "tables": card.table_tensor(session, pl.tables(p)),
+            "q": card.bf16_tensor(session, queries),
+            "k": card.bf16_tensor(session, keys),
+            "v": card.bf16_tensor(session, values),
+            "o": card.bf16_tensor(
+                session,
+                np.zeros((batches, heads, sequence_length, head_dim), np.float32),
+            ),
+            "tables": card.table_tensor(session, pl.tables(plan)),
         }
-        att = card.Attention(session, p, tensors, 1.0 / np.sqrt(d))
-        handler = att.run.program.handler("attend")
-        group = (0, att.group[1])
-        att.calls(2)
-        us = {}
+        attention = card.Attention(session, plan, tensors, 1.0 / np.sqrt(head_dim))
+        handler = attention.run.program.handler("attend")
+        group = (0, attention.group[1])
+        attention.calls(2)
+        microseconds = {}
         for name, per_job in (("table", False), ("jobs", True)):
-            words = calls(p, att, per_job)
-            us[f"host_{name}"] = from_host(att, words, args.rounds)
-            g = graph(handler, group, words, args.rounds, req=10 + per_job)
-            us[f"graph_{name}"] = from_graph(att, g, 3)
-            out[f"commands_per_call_{name}"] = len(words)
-            log(f"{name}: {us}")
-        out["microseconds_per_call"] = {n: round(v, 1) for n, v in us.items()}
-        out["run"] = att.stop()
-        out["check"] = run.check(session, tensors["o"], q, k, v, s, causal)
-    out["ok"] = out["check"]["ok"] and out["run"]["ok"]
-    print(json.dumps(out, default=float), flush=True)
-    if args.json:
-        Path(args.json).write_text(json.dumps(out, default=float))
-    sys.exit(0 if out["ok"] else 1)
+            words = calls(plan, attention, per_job)
+            microseconds[f"host_{name}"] = from_host(attention, words, arguments.rounds)
+            kept_graph = graph(
+                handler, group, words, arguments.rounds, req=10 + per_job
+            )
+            microseconds[f"graph_{name}"] = from_graph(attention, kept_graph, 3)
+            report[f"commands_per_call_{name}"] = len(words)
+            log(f"{name}: {microseconds}")
+        report["microseconds_per_call"] = {
+            name: round(value, 1) for name, value in microseconds.items()
+        }
+        report["run"] = attention.stop()
+        report["check"] = run.check(
+            session, tensors["o"], queries, keys, values, call, causal
+        )
+    report["ok"] = report["check"]["ok"] and report["run"]["ok"]
+    print(json.dumps(report, default=float), flush=True)
+    if arguments.json:
+        Path(arguments.json).write_text(json.dumps(report, default=float))
+    sys.exit(0 if report["ok"] else 1)
 
 
 if __name__ == "__main__":

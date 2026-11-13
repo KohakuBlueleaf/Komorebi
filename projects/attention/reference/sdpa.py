@@ -11,32 +11,48 @@ TILE = 32
 __all__ = ["attention", "errors", "inputs", "sample_rows"]
 
 
-def inputs(b, h, hk, sq, sk, d, dv, seed=1):
-    """q [b, h, sq, d], k [b, hk, sk, d], v [b, hk, sk, dv]: standard normal values
-    rounded to bf16, as float32 arrays."""
-    rng = np.random.default_rng(seed)
+def inputs(
+    batches, heads, kv_heads, query_length, key_length, head_dim, value_dim, seed=1
+):
+    """queries [batches, heads, query_length, head_dim], keys [batches, kv_heads,
+    key_length, head_dim], values [batches, kv_heads, key_length, value_dim]:
+    standard normal values rounded to bf16, as float32 arrays."""
+    generator = np.random.default_rng(seed)
     return tuple(
-        bf16(rng.standard_normal(shape, dtype=np.float32))
-        for shape in ((b, h, sq, d), (b, hk, sk, d), (b, hk, sk, dv))
+        bf16(generator.standard_normal(shape, dtype=np.float32))
+        for shape in (
+            (batches, heads, query_length, head_dim),
+            (batches, kv_heads, key_length, head_dim),
+            (batches, kv_heads, key_length, value_dim),
+        )
     )
 
 
-def attention(q, k, v, rows, causal, scale=None):
-    """softmax(q k^T scale) v of query rows `rows` (indices into q's third axis) of
-    one head: q [sq, d], k [sk, d], v [sk, dv]; causal: row i sees keys <= i."""
-    q, k, v = (np.asarray(x, dtype=np.float64) for x in (q, k, v))
-    scale = 1.0 / np.sqrt(q.shape[-1]) if scale is None else scale
-    s = q[rows] @ k.T * scale
+def attention(queries, keys, values, rows, causal, scale=None):
+    """softmax(queries keys^T scale) values of query rows `rows` (indices into the
+    queries' first axis) of one head: queries [query_length, head_dim], keys
+    [key_length, head_dim], values [key_length, value_dim]; causal: row i sees keys
+    <= i."""
+    queries, keys, values = (
+        np.asarray(x, dtype=np.float64) for x in (queries, keys, values)
+    )
+    scale = 1.0 / np.sqrt(queries.shape[-1]) if scale is None else scale
+    scores = queries[rows] @ keys.T * scale
     if causal:
-        s = np.where(
-            np.arange(k.shape[0])[None, :] > np.asarray(rows)[:, None], -np.inf, s
+        scores = np.where(
+            np.arange(keys.shape[0])[None, :] > np.asarray(rows)[:, None],
+            -np.inf,
+            scores,
         )
-    p = np.exp(s - s.max(axis=1, keepdims=True))
-    return (p / p.sum(axis=1, keepdims=True)) @ v
+    weights = np.exp(scores - scores.max(axis=1, keepdims=True))
+    return (weights / weights.sum(axis=1, keepdims=True)) @ values
 
 
-def sample_rows(b, h, sqt, count, seed=2):
+def sample_rows(batches, heads, sqt, count, seed=2):
     """`count` query tile rows (batch, head, tile row) drawn without repetition."""
-    total = b * h * sqt
+    total = batches * heads * sqt
     picks = np.sort(np.random.default_rng(seed).permutation(total)[:count])
-    return [(int(p // (h * sqt)), int(p // sqt % h), int(p % sqt)) for p in picks]
+    return [
+        (int(pick // (heads * sqt)), int(pick // sqt % heads), int(pick % sqt))
+        for pick in picks
+    ]

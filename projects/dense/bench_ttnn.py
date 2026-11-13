@@ -17,7 +17,7 @@ import ttnn
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
-from projects import ttnn_reference as tr  # noqa: E402
+from projects import ttnn_reference  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from projects.dense import swiglu_plan as sp  # noqa: E402
 from ref import dense as ref  # noqa: E402
@@ -53,7 +53,7 @@ def read_rows(y, rows):
         first_row = int(tile) * TILE
         piece = ttnn.slice(y, [first_row, 0], [first_row + TILE, y.shape[-1]])
         got[first_row] = ttnn.to_torch(piece).float().numpy()
-        tr.log(f"rows {first_row} to {first_row + TILE} read")
+        ttnn_reference.log(f"rows {first_row} to {first_row + TILE} read")
     return np.stack([got[row // TILE * TILE][row % TILE] for row in rows])
 
 
@@ -86,8 +86,8 @@ def main():
     parser.add_argument("--operation", choices=("matmul", "swiglu"), required=True)
     parser.add_argument("--shape", required=True)
     parser.add_argument("--configs", nargs="*", default=list(CONFIGS), choices=CONFIGS)
-    parser.add_argument("--loops", type=int, default=tr.LOOPS)
-    parser.add_argument("--target", type=float, default=tr.TARGET_S)
+    parser.add_argument("--loops", type=int, default=ttnn_reference.LOOPS)
+    parser.add_argument("--target", type=float, default=ttnn_reference.TARGET_S)
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     swiglu = args.operation == "swiglu"
@@ -102,8 +102,8 @@ def main():
         "k": k_depth,
         "n": n_columns,
     }
-    report["command"] = tr.command(sys.argv)
-    with tr.heartbeat("building the inputs"):
+    report["command"] = ttnn_reference.command(sys.argv)
+    with ttnn_reference.heartbeat("building the inputs"):
         if swiglu:
             host = ref.swiglu_inputs(m_rows, k_depth, n_columns)
             rows = ref.sampled_rows(m_rows)
@@ -113,8 +113,8 @@ def main():
             host = ref.inputs(m_rows, k_depth, n_columns)
             rows = ref.sampled_rows(m_rows)
             want = ref.matmul(host[0][rows], host[1])
-    tr.log("inputs built, float64 reference done")
-    card = tr.visible_card()
+    ttnn_reference.log("inputs built, float64 reference done")
+    card = ttnn_reference.visible_card()
     device = ttnn.open_device(device_id=0)
     try:
         report["device"] = {
@@ -122,10 +122,10 @@ def main():
             "compute_grid": [device.compute_with_storage_grid_size().x]
             + [device.compute_with_storage_grid_size().y],
         }
-        with tr.heartbeat("upload"):
+        with ttnn_reference.heartbeat("upload"):
             tensors = [upload(device, array) for array in host]
             ttnn.synchronize_device(device)
-        tr.log("uploaded")
+        ttnn_reference.log("uploaded")
         routes = ROUTES if swiglu else ("matmul",)
         report["results"] = {}
         for route in routes:
@@ -139,13 +139,13 @@ def main():
                     )
                 )
                 key = f"{route}/{name}"
-                tr.log(f"== {key}")
+                ttnn_reference.log(f"== {key}")
                 call = (
                     swiglu_call(route, *tensors, config)
                     if swiglu
                     else matmul_call(*tensors, config)
                 )
-                result = tr.measure(
+                result = ttnn_reference.measure(
                     call,
                     lambda: ttnn.synchronize_device(device),
                     card,
@@ -154,17 +154,19 @@ def main():
                 )
                 y = call()
                 ttnn.synchronize_device(device)
-                with tr.heartbeat("check"):
+                with ttnn_reference.heartbeat("check"):
                     got = read_rows(y, rows)
                     result["check"] = ref.errors(got, want)
                 microseconds = result["microseconds_per_call"]
-                tr.log(f"{key}: {microseconds:.2f} us, check {result['check']}")
+                ttnn_reference.log(
+                    f"{key}: {microseconds:.2f} us, check {result['check']}"
+                )
                 report["results"][key] = result
         report["program_cache_entries"] = device.num_program_cache_entries()
     finally:
         ttnn.close_device(device)
     report["ttnn"] = {
-        "tt_metal": tr.tt_metal_version(os.environ["TT_METAL_HOME"]),
+        "tt_metal": ttnn_reference.tt_metal_version(os.environ["TT_METAL_HOME"]),
         "dispatch": "slow" if os.environ.get("TT_METAL_SLOW_DISPATCH_MODE") else "fast",
     }
     report["layout"] = "bf16, TILE_LAYOUT, DRAM interleaved; output the same"

@@ -24,96 +24,133 @@ from komorebi import power  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
 from projects.attention.reference import sdpa  # noqa: E402
 
-T0 = time.monotonic()
+STARTED = time.monotonic()
 
 
-def log(msg):
+def log(message):
     """A progress line with seconds since start, flushed."""
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
-def sample_clock(card, samples, stop):
+def sample_clock(card_index, samples, stop):
     """AICLK (MHz) every 20 ms into `samples` until `stop` is set."""
-    path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
+    path = Path(f"/sys/class/tenstorrent/tenstorrent!{card_index}/tt_aiclk")
     while not stop.wait(0.02):
         samples.append(int(path.read_text().split()[0]))
 
 
-def check(y, q, k, v, s, causal, count):
+def check(output, queries, keys, values, call, causal, count):
     """The sampled query tile rows of y (on the card) against float64."""
-    group = s.h // s.hk
+    group = call.h // call.hk
     got, want = [], []
-    for bi, hi, row in sdpa.sample_rows(s.b, s.h, s.sqt, count):
-        r0 = row * pl.TILE
-        got.append(y[bi, hi, r0 : r0 + pl.TILE].cpu().float().numpy())
-        rows = np.arange(r0, r0 + pl.TILE)
-        kv = hi // group
-        want.append(sdpa.attention(q[bi, hi], k[bi, kv], v[bi, kv], rows, causal))
+    for batch, head, row in sdpa.sample_rows(call.b, call.h, call.sqt, count):
+        first_row = row * pl.TILE
+        got.append(
+            output[batch, head, first_row : first_row + pl.TILE].cpu().float().numpy()
+        )
+        rows = np.arange(first_row, first_row + pl.TILE)
+        kv_head = head // group
+        want.append(
+            sdpa.attention(
+                queries[batch, head],
+                keys[batch, kv_head],
+                values[batch, kv_head],
+                rows,
+                causal,
+            )
+        )
     return sdpa.errors(np.concatenate(got), np.concatenate(want))
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--shape", choices=pl.SHAPES, required=True)
-    p.add_argument("--approx", action="store_true", help="approximate exponential")
-    p.add_argument("--calls", type=int, default=20)
-    p.add_argument("--seconds", type=float, default=4.0)
-    p.add_argument("--rows", type=int, default=16, help="query tile rows checked")
-    p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--json", default=None)
-    args = p.parse_args()
-    b, h, hk, sq, d, causal = pl.SHAPES[args.shape]
-    s = pl.dims(b, h, hk, sq, sq, d, d, causal)
-    q, k, v = sdpa.inputs(b, h, hk, sq, sq, d, d, args.seed)
-    dev = kohakutt.device(0)
-    tq, tk, tv = (torch.from_numpy(x).bfloat16().to(dev) for x in (q, k, v))
-    out = {"shape": args.shape, "approx": args.approx}
-    with kohakutt.sdpa_kernel("flash"), kohakutt.numerics(approx=args.approx):
-        out["numerics"] = str(kohakutt.current_numerics())
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--shape", choices=pl.SHAPES, required=True)
+    parser.add_argument("--approx", action="store_true", help="approximate exponential")
+    parser.add_argument("--calls", type=int, default=20)
+    parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument("--rows", type=int, default=16, help="query tile rows checked")
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--json", default=None)
+    arguments = parser.parse_args()
+    batches, heads, kv_heads, sequence_length, head_dim, causal = pl.SHAPES[
+        arguments.shape
+    ]
+    call = pl.dims(
+        batches,
+        heads,
+        kv_heads,
+        sequence_length,
+        sequence_length,
+        head_dim,
+        head_dim,
+        causal,
+    )
+    queries, keys, values = sdpa.inputs(
+        batches,
+        heads,
+        kv_heads,
+        sequence_length,
+        sequence_length,
+        head_dim,
+        head_dim,
+        arguments.seed,
+    )
+    device = kohakutt.device(0)
+    query_tensor, key_tensor, value_tensor = (
+        torch.from_numpy(array).bfloat16().to(device)
+        for array in (queries, keys, values)
+    )
+    report = {"shape": arguments.shape, "approx": arguments.approx}
+    with kohakutt.sdpa_kernel("flash"), kohakutt.numerics(approx=arguments.approx):
+        report["numerics"] = str(kohakutt.current_numerics())
 
         def call():
-            return kohakutt.sdpa(tq, tk, tv, is_causal=causal)
+            return kohakutt.sdpa(
+                query_tensor, key_tensor, value_tensor, is_causal=causal
+            )
 
         y = call()
-        kohakutt.synchronize(dev)
+        kohakutt.synchronize(device)
         log("first call")
-        out["check"] = check(y, q, k, v, s, causal, args.rows)
-        log(f"checked {out['check']}")
+        report["check"] = check(y, queries, keys, values, call, causal, arguments.rows)
+        log(f"checked {report['check']}")
         synced = []
-        for _ in range(args.calls):
-            t0 = time.perf_counter()
+        for _ in range(arguments.calls):
+            started = time.perf_counter()
             call()
-            kohakutt.synchronize(dev)
-            synced.append(time.perf_counter() - t0)
-        out["synced_microseconds_median"] = statistics.median(synced) * 1e6
+            kohakutt.synchronize(device)
+            synced.append(time.perf_counter() - started)
+        report["synced_microseconds_median"] = statistics.median(synced) * 1e6
         # The loop's length from calls back to back (a synced call is much slower).
-        t0 = time.perf_counter()
-        for _ in range(args.calls):
+        started = time.perf_counter()
+        for _ in range(arguments.calls):
             call()
-        kohakutt.synchronize(dev)
-        back_to_back = (time.perf_counter() - t0) / args.calls
-        reps = max(10, int(args.seconds / back_to_back))
-        card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
+        kohakutt.synchronize(device)
+        back_to_back = (time.perf_counter() - started) / arguments.calls
+        reps = max(10, int(arguments.seconds / back_to_back))
+        card_index = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
         clock, stop = [], threading.Event()
-        meter = power.PowerSampler(card)
-        sampler = threading.Thread(target=sample_clock, args=(card, clock, stop))
+        meter = power.PowerSampler(card_index)
+        sampler = threading.Thread(
+            target=sample_clock, arguments=(card_index, clock, stop)
+        )
         log(f"loop of {reps} calls")
         with meter:
             meter.mark("open")
             time.sleep(1.0)
             meter.mark("loop")
             sampler.start()
-            t0 = time.perf_counter()
+            started = time.perf_counter()
             for _ in range(reps):
                 call()
-            kohakutt.synchronize(dev)
-            loop_s = time.perf_counter() - t0
+            kohakutt.synchronize(device)
+            loop_s = time.perf_counter() - started
             meter.mark("after")
             stop.set()
             sampler.join()
         log("loop done")
     phase = meter.result.phases["loop"]
-    out["loop"] = {
+    report["loop"] = {
         "reps": reps,
         "microseconds_per_call": loop_s / reps * 1e6,
         "mean_w": phase.mean_w,
@@ -122,13 +159,15 @@ def main():
         "temp_c": phase.mean_temp_c,
         "aiclk_mhz": [min(clock), round(statistics.mean(clock), 1), max(clock)],
     }
-    out["counters"] = {
-        n: c for n, c in kohakutt.counters().items() if n.startswith("attention")
+    report["counters"] = {
+        name: value
+        for name, value in kohakutt.counters().items()
+        if name.startswith("attention")
     }
-    out["load_avg"] = os.getloadavg()[0]
-    print(json.dumps(out, default=str), flush=True)
-    if args.json:
-        Path(args.json).write_text(json.dumps(out, default=str))
+    report["load_avg"] = os.getloadavg()[0]
+    print(json.dumps(report, default=str), flush=True)
+    if arguments.json:
+        Path(arguments.json).write_text(json.dumps(report, default=str))
 
 
 if __name__ == "__main__":

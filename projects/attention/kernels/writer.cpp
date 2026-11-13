@@ -10,125 +10,165 @@
 
 namespace {
 
-    constexpr uint32_t DT = get_compile_time_arg_val(0);
-    constexpr uint32_t DV = get_compile_time_arg_val(1);
-    constexpr uint32_t KB = get_compile_time_arg_val(3);
+    constexpr uint32_t HEAD_TILES = get_compile_time_arg_val(0);
+    constexpr uint32_t VALUE_TILES = get_compile_time_arg_val(1);
+    constexpr uint32_t BLOCK_KEYS = get_compile_time_arg_val(3);
 
-    // The command's jobs, `passes` times: each job's blocks through `ln` (null: none),
-    // then its rows written (full), popped (compute only) or none. False: gave up.
+    // The command's jobs, `passes` times: each job's blocks through `broadcast` (null:
+    // none), then its rows written (full), popped (compute only) or none. False: gave
+    // up.
     template <typename Accessor>
     bool run_jobs(
-        const km::Writer& wr,
-        const km_command_t& r,
+        const km::Writer& writer,
+        const km_command_t& command,
         uint32_t table,
-        const Accessor& o,
-        const Accessor& k,
-        const Accessor& v,
-        km::Broadcast* ln,
-        volatile tt_l1_ptr uint32_t* prof,
-        uint32_t t0
+        const Accessor& outputs,
+        const Accessor& keys,
+        const Accessor& values,
+        km::Broadcast* broadcast,
+        volatile tt_l1_ptr uint32_t* profile,
+        uint32_t started
     ) {
+        const uint32_t mode = command.a5, requested_passes = command.a6;
+        const uint32_t first_job = command.a7;
         const uint32_t jobs = km::l1(table)[kTabJobs];
-        const uint32_t passes = r.a6 == 0 ? 1 : r.a6;
+        const uint32_t passes = requested_passes == 0 ? 1 : requested_passes;
         if (jobs > kJobsMax) {
             return false;
         }
-        const uint32_t each = r.a5 == kModeBroadcastOnly ? 0 : 1;
-        const bool writes = r.a5 == kModeFull;
-        uint32_t c[kProfWords] = {};
-        uint32_t n = 0;  // broadcast blocks of this command so far
+        const uint32_t outputs_per_row = mode == kModeBroadcastOnly ? 0 : 1;
+        const bool writes = mode == kModeFull;
+        uint32_t counters[kProfWords] = {};
+        uint32_t blocks = 0;  // broadcast blocks of this command so far
         for (uint32_t pass = 0; pass < passes; ++pass) {
-            for (uint32_t j = r.a7; j < jobs_end(r, jobs); ++j) {
-                const volatile tt_l1_ptr uint32_t* w = (
-                    km::l1(table + 4 * (kTabFirst + kJobWords * j))
+            for (
+                uint32_t job_index = first_job; job_index < jobs_end(command, jobs);
+                ++job_index
+            ) {
+                const volatile tt_l1_ptr uint32_t* job_words = (
+                    km::l1(table + 4 * (kTabFirst + kJobWords * job_index))
                 );
-                if (ln != nullptr && !broadcast_job<DT, DV, KB>(*ln, k, v, w, n, c)) {
+                if (
+                    broadcast != nullptr &&
+                    !broadcast_job<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
+                        *broadcast, keys, values, job_words, blocks, counters
+                    )
+                ) {
                     return false;
                 }
-                const uint32_t o0 = w[kJobO], rows = w[kJobRows] * each;
-                const uint32_t stride = w[kJobStride];
-                for (uint32_t i = 0; i < rows; ++i) {
-                    const uint32_t t1 = km::wall();
-                    if (!wr.wait_front(kCbOut, DV)) {
+                const uint32_t first_page = job_words[kJobO];
+                const uint32_t rows = job_words[kJobRows] * outputs_per_row;
+                const uint32_t stride = job_words[kJobStride];
+                for (uint32_t row = 0; row < rows; ++row) {
+                    const uint32_t wait_started = km::wall();
+                    if (!writer.wait_front(kCbOut, VALUE_TILES)) {
                         return false;  // nothing to report: the tile is stopping
                     }
-                    const uint32_t t2 = km::wall();
-                    const uint32_t src = get_read_ptr(kCbOut);
-                    for (uint32_t col = 0; writes && col < DV; ++col) {
+                    const uint32_t wait_done = km::wall();
+                    const uint32_t source = get_read_ptr(kCbOut);
+                    for (
+                        uint32_t column = 0; writes && column < VALUE_TILES; ++column
+                    ) {
                         noc_async_write_page(
-                            o0 + i * stride * DV + col, o, src + col * kTileBytes
+                            first_page + row * stride * VALUE_TILES + column,
+                            outputs,
+                            source + column * kTileBytes
                         );
                     }
-                    if (!flushed(wr, km::kStWriter, km::kFlushSent)) {
+                    if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                         return false;
                     }
-                    cb_pop_front(kCbOut, DV);
-                    c[kPrWrWait] += t2 - t1;
-                    c[kPrWrWrite] += km::wall() - t2;
+                    cb_pop_front(kCbOut, VALUE_TILES);
+                    counters[kPrWrWait] += wait_done - wait_started;
+                    counters[kPrWrWrite] += km::wall() - wait_done;
                 }
             }
         }
-        if (ln != nullptr) {
-            const uint32_t t1 = km::wall();
-            ln->finish();
-            c[kPrRdFinish] += km::wall() - t1;
-            for (uint32_t i = kPrRdKvFree; i <= kPrRdFinish; ++i) {
+        if (broadcast != nullptr) {
+            const uint32_t finish_started = km::wall();
+            broadcast->finish();
+            counters[kPrRdFinish] += km::wall() - finish_started;
+            for (uint32_t word = kPrRdKvFree; word <= kPrRdFinish; ++word) {
                 km::add_sat(
-                    prof + i, c[i]
+                    profile + word, counters[word]
                 );  // the broadcast's words, the reader's otherwise
             }
         }
-        km::add_sat(prof + kPrWrWait, c[kPrWrWait]);
-        km::add_sat(prof + kPrWrWrite, c[kPrWrWrite]);
-        km::add_sat(prof + kPrWrBody, km::wall() - t0);
+        km::add_sat(profile + kPrWrWait, counters[kPrWrWait]);
+        km::add_sat(profile + kPrWrWrite, counters[kPrWrWrite]);
+        km::add_sat(profile + kPrWrBody, km::wall() - started);
         return true;
     }
 
 }  // namespace
 
 void kernel_main() {
-    constexpr auto tiles = TensorAccessorArgs<5>();  // K, V, O: bf16 tiles in DRAM
-    km::Writer wr;
+    constexpr auto tile_args = TensorAccessorArgs<5>();  // K, V, O: bf16 tiles in DRAM
+    km::Writer writer;
     // The table copy's page: reserved once, used in place, never pushed.
     cb_reserve_back(kCbWriterJobs, 1);
     const uint32_t table = get_write_ptr(kCbWriterJobs);
-    volatile tt_l1_ptr uint32_t* prof = km::l1(get_write_ptr(kCbProf));
-    wr.run([&](const km_command_t& r) {
-        if (km::handler(r) == kHandlerProf) {
+    volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbProf));
+    writer.run([&](const km_command_t& command) {
+        if (km::handler(command) == kHandlerProf) {
+            const uint32_t profile_address = command.a0, zero_profile = command.a1;
             const InterleavedAddrGen<true> pages = {
-                .bank_base_address = r.a0, .page_size = kProfBytes
+                .bank_base_address = profile_address, .page_size = kProfBytes
             };
-            const uint32_t rank = wr.me() - km::first(r);
+            const uint32_t rank = writer.me() - km::first(command);
             noc_async_write(
                 get_write_ptr(kCbProf), get_noc_addr(rank, pages), kProfBytes
             );
-            if (!flushed(wr, km::kStWriter, km::kFlushSent)) {
+            if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                 return false;
             }
-            for (uint32_t w = 0; r.a1 != 0 && w < kProfWords; ++w) {
-                prof[w] = 0;
+            for (uint32_t word = 0; zero_profile != 0 && word < kProfWords; ++word) {
+                profile[word] = 0;
             }
             return true;
         }
-        if (km::handler(r) != kHandlerAttend) {
+        if (km::handler(command) != kHandlerAttend) {
             return true;
         }
-        const uint32_t t0 = km::wall();
-        if (!read_table(wr, km::kStWriter, r.a4, wr.me() - km::first(r), table)) {
+        const uint32_t started = km::wall();
+        const uint32_t k_address = command.a1, v_address = command.a2;
+        const uint32_t o_address = command.a3, job_tables = command.a4;
+        const uint32_t mode = command.a5;
+        if (!read_table(
+            writer,
+            km::kStWriter,
+            job_tables,
+            writer.me() - km::first(command),
+            table
+        )) {
             return false;
         }
-        const auto k = TensorAccessor(tiles, r.a1);
-        const auto v = TensorAccessor(tiles, r.a2);
-        const auto o = TensorAccessor(tiles, r.a3);
+        const auto keys = TensorAccessor(tile_args, k_address);
+        const auto values = TensorAccessor(tile_args, v_address);
+        const auto outputs = TensorAccessor(tile_args, o_address);
 #ifdef BROADCAST_ON_WRITER
-        if (r.a5 != kModeComputeOnly) {
-            km::Broadcast ln(wr, r, kArgBroadcast);
+        if (mode != kModeComputeOnly) {
+            km::Broadcast broadcast(writer, command, kArgBroadcast);
             return (
-                ln.ok() && ln.included() &&
-                run_jobs(wr, r, table, o, k, v, &ln, prof, t0)
+                broadcast.ok() && broadcast.included() &&
+                run_jobs(
+                    writer,
+                    command,
+                    table,
+                    outputs,
+                    keys,
+                    values,
+                    &broadcast,
+                    profile,
+                    started
+                )
             );
         }
 #endif
-        return run_jobs(wr, r, table, o, k, v, nullptr, prof, t0);
+        return (
+            run_jobs(
+                writer, command, table, outputs, keys, values, nullptr, profile, started
+            )
+        );
     });
 }

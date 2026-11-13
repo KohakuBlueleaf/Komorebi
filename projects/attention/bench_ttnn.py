@@ -18,7 +18,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import numpy as np  # noqa: E402
 
-from projects import ttnn_reference as tr  # noqa: E402
+from projects import ttnn_reference  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
 from projects.attention.reference import sdpa  # noqa: E402
 
@@ -33,19 +33,22 @@ ROUTES = {
 }
 
 
-def upload(dev, x):
-    """x (float32 array of bf16 values) as a bf16 tile-layout tensor on the device."""
-    t = torch.from_numpy(x).bfloat16()
-    return ttnn.from_torch(t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=dev)
+def upload(device, values):
+    """`values` (float32 array of bf16 values) as a bf16 tile-layout tensor on the
+    device."""
+    tensor = torch.from_numpy(values).bfloat16()
+    return ttnn.from_torch(
+        tensor, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
+    )
 
 
-def configs(dev, route, sq):
+def configs(device, route, query_length):
     """(compute kernel config, program config) of a route; None: the library's own."""
     fp32, tuned, exact = ROUTES[route]
     compute = program = None
     if fp32 is not None:
         compute = ttnn.init_device_compute_kernel_config(
-            dev.arch(),
+            device.arch(),
             None,
             math_fidelity=ttnn.MathFidelity.HiFi2,
             math_approx_mode=False,
@@ -53,8 +56,8 @@ def configs(dev, route, sq):
             packer_l1_acc=False,
         )
     if tuned:
-        chunk = 256 if sq >= 2048 else 64
-        grid = dev.compute_with_storage_grid_size()
+        chunk = 256 if query_length >= 2048 else 64
+        grid = device.compute_with_storage_grid_size()
         program = ttnn.SDPAProgramConfig(
             compute_with_storage_grid_size=(grid.x, grid.y),
             q_chunk_size=chunk,
@@ -64,95 +67,137 @@ def configs(dev, route, sq):
     return compute, program
 
 
-def check(y, host, s, causal, count):
+def check(output, host, call, causal, count):
     """The sampled query tile rows of y (on the device) against float64."""
-    q, k, v = host
-    group = s.h // s.hk
+    queries, keys, values = host
+    group = call.h // call.hk
     got, want = [], []
-    for bi, hi, row in sdpa.sample_rows(s.b, s.h, s.sqt, count):
-        r0 = row * TILE
-        piece = ttnn.slice(y, [bi, hi, r0, 0], [bi + 1, hi + 1, r0 + TILE, y.shape[-1]])
+    for batch, head, row in sdpa.sample_rows(call.b, call.h, call.sqt, count):
+        first_row = row * TILE
+        piece = ttnn.slice(
+            output,
+            [batch, head, first_row, 0],
+            [batch + 1, head + 1, first_row + TILE, output.shape[-1]],
+        )
         got.append(ttnn.to_torch(piece).float().numpy().reshape(TILE, -1))
-        rows = np.arange(r0, r0 + TILE)
+        rows = np.arange(first_row, first_row + TILE)
         want.append(
             sdpa.attention(
-                q[bi, hi], k[bi, hi // group], v[bi, hi // group], rows, causal
+                queries[batch, head],
+                keys[batch, head // group],
+                values[batch, head // group],
+                rows,
+                causal,
             )
         )
-        tr.log(f"batch {bi} head {hi} rows {r0} to {r0 + TILE} read")
+        ttnn_reference.log(
+            f"batch {batch} head {head} rows {first_row} to {first_row + TILE} read"
+        )
     return sdpa.errors(np.concatenate(got), np.concatenate(want))
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--shape", choices=pl.SHAPES, required=True)
-    p.add_argument("--routes", nargs="*", default=list(ROUTES), choices=ROUTES)
-    p.add_argument("--rows", type=int, default=16, help="query tile rows checked")
-    p.add_argument("--loops", type=int, default=tr.LOOPS)
-    p.add_argument("--target", type=float, default=tr.TARGET_S)
-    p.add_argument("--json", default=None)
-    args = p.parse_args()
-    b, h, hk, sq, d, causal = pl.SHAPES[args.shape]
-    s = pl.dims(b, h, hk, sq, sq, d, d, causal)
-    out = {"shape": args.shape, "b": b, "h": h, "hk": hk, "s": sq, "d": d}
-    out["causal"] = causal
-    out["command"] = tr.command(sys.argv)
-    with tr.heartbeat("building the inputs"):
-        host = sdpa.inputs(b, h, hk, sq, sq, d, d)
-    tr.log("inputs built")
-    card = tr.visible_card()
-    dev = ttnn.open_device(device_id=0)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--shape", choices=pl.SHAPES, required=True)
+    parser.add_argument("--routes", nargs="*", default=list(ROUTES), choices=ROUTES)
+    parser.add_argument("--rows", type=int, default=16, help="query tile rows checked")
+    parser.add_argument("--loops", type=int, default=ttnn_reference.LOOPS)
+    parser.add_argument("--target", type=float, default=ttnn_reference.TARGET_S)
+    parser.add_argument("--json", default=None)
+    arguments = parser.parse_args()
+    batches, heads, kv_heads, sequence_length, head_dim, causal = pl.SHAPES[
+        arguments.shape
+    ]
+    call = pl.dims(
+        batches,
+        heads,
+        kv_heads,
+        sequence_length,
+        sequence_length,
+        head_dim,
+        head_dim,
+        causal,
+    )
+    report = {
+        "shape": arguments.shape,
+        "b": batches,
+        "h": heads,
+        "hk": kv_heads,
+        "s": sequence_length,
+        "d": head_dim,
+    }
+    report["causal"] = causal
+    report["command"] = ttnn_reference.command(sys.argv)
+    with ttnn_reference.heartbeat("building the inputs"):
+        host = sdpa.inputs(
+            batches,
+            heads,
+            kv_heads,
+            sequence_length,
+            sequence_length,
+            head_dim,
+            head_dim,
+        )
+    ttnn_reference.log("inputs built")
+    card_index = ttnn_reference.visible_card()
+    device = ttnn.open_device(device_id=0)
     try:
-        grid = dev.compute_with_storage_grid_size()
-        out["device"] = {"arch": str(dev.arch()), "compute_grid": [grid.x, grid.y]}
-        with tr.heartbeat("upload"):
-            tq, tk, tv = (upload(dev, x) for x in host)
-            ttnn.synchronize_device(dev)
-        tr.log("uploaded")
-        out["results"] = {}
-        for route in args.routes:
-            compute, program = configs(dev, route, sq)
-            tr.log(f"== {route}")
+        grid = device.compute_with_storage_grid_size()
+        report["device"] = {
+            "arch": str(device.arch()),
+            "compute_grid": [grid.x, grid.y],
+        }
+        with ttnn_reference.heartbeat("upload"):
+            query_tensor, key_tensor, value_tensor = (
+                upload(device, array) for array in host
+            )
+            ttnn.synchronize_device(device)
+        ttnn_reference.log("uploaded")
+        report["results"] = {}
+        for route in arguments.routes:
+            compute, program = configs(device, route, sequence_length)
+            ttnn_reference.log(f"== {route}")
 
             def call(compute=compute, program=program):
                 return ttnn.transformer.scaled_dot_product_attention(
-                    tq,
-                    tk,
-                    tv,
+                    query_tensor,
+                    key_tensor,
+                    value_tensor,
                     is_causal=causal,
                     program_config=program,
                     compute_kernel_config=compute,
                 )
 
-            res = tr.measure(
+            measurement = ttnn_reference.measure(
                 call,
-                lambda: ttnn.synchronize_device(dev),
-                card,
-                args.loops,
-                args.target,
+                lambda: ttnn.synchronize_device(device),
+                card_index,
+                arguments.loops,
+                arguments.target,
             )
-            y = call()
-            ttnn.synchronize_device(dev)
-            with tr.heartbeat("check"):
-                res["check"] = check(y, host, s, causal, args.rows)
-            res["exact_exp"] = ROUTES[route][2]
-            tr.log(
-                f"{route}: {res['microseconds_per_call']:.2f} us, check {res['check']}"
+            output = call()
+            ttnn.synchronize_device(device)
+            with ttnn_reference.heartbeat("check"):
+                measurement["check"] = check(output, host, call, causal, arguments.rows)
+            measurement["exact_exp"] = ROUTES[route][2]
+            ttnn_reference.log(
+                f"{route}: {measurement['microseconds_per_call']:.2f} us, "
+                f"check {measurement['check']}"
             )
-            out["results"][route] = res
-        out["program_cache_entries"] = dev.num_program_cache_entries()
+            report["results"][route] = measurement
+        report["program_cache_entries"] = device.num_program_cache_entries()
     finally:
-        ttnn.close_device(dev)
-    out["ttnn"] = {
-        "tt_metal": tr.tt_metal_version(os.environ["TT_METAL_HOME"]),
+        ttnn.close_device(device)
+    report["ttnn"] = {
+        "tt_metal": ttnn_reference.tt_metal_version(os.environ["TT_METAL_HOME"]),
         "dispatch": "slow" if os.environ.get("TT_METAL_SLOW_DISPATCH_MODE") else "fast",
     }
-    out["layout"] = "bf16, TILE_LAYOUT, DRAM interleaved; output the same"
-    out["load_avg"] = os.getloadavg()[0]
-    out["date"] = time.strftime("%Y-%m-%d %H:%M")
-    print(json.dumps(out), flush=True)
-    if args.json:
-        Path(args.json).write_text(json.dumps(out))
+    report["layout"] = "bf16, TILE_LAYOUT, DRAM interleaved; output the same"
+    report["load_avg"] = os.getloadavg()[0]
+    report["date"] = time.strftime("%Y-%m-%d %H:%M")
+    print(json.dumps(report), flush=True)
+    if arguments.json:
+        Path(arguments.json).write_text(json.dumps(report))
 
 
 if __name__ == "__main__":

@@ -6,11 +6,12 @@
 
 #include "komorebi/device/km_broadcast.hpp"
 
-// ATTEND: a0 Q, a1 K, a2 V, a3 O (bf16 tiles, [B, H, S, D]), a4 job tables (a page per
-// core), a5 mode, a6 passes (0: one), a7 first job, a8 jobs from it (0: to the end).
+// ATTEND: a0 q_address, a1 k_address, a2 v_address, a3 o_address (Q, K, V, O: bf16
+// tiles, [B, H, S, D]), a4 job_tables (a page per core), a5 mode, a6 requested_passes
+// (0: one), a7 first_job, a8 job_count (jobs from the first, 0: to the end).
 constexpr uint32_t kHandlerAttend = 1;
-// PROF: a0 profile tensor; the writer stores this core's profile page at its rank's
-// page, then (a1 != 0) zeroes it.
+// PROF: a0 profile_address (the profile tensor); the writer stores this core's profile
+// page at its rank's page, then (zero_profile, a1 != 0) zeroes it.
 constexpr uint32_t kHandlerProf = 2;
 
 // ATTEND modes: the full call; broadcast only (Q reads, the K / V broadcast, compute
@@ -94,9 +95,12 @@ constexpr uint32_t kPrWrBody = 24;
 constexpr uint32_t kPrWrWait = 25;
 constexpr uint32_t kPrWrWrite = 26;
 
-// The command's end in the core's `jobs` jobs (it starts at job a7).
-inline uint32_t jobs_end(const km_command_t& r, uint32_t jobs) {
-    return r.a8 == 0 || r.a7 + r.a8 > jobs ? jobs : r.a7 + r.a8;
+// The command's end in the core's `jobs` jobs (it starts at job first_job).
+inline uint32_t jobs_end(const km_command_t& command, uint32_t jobs) {
+    const uint32_t first_job = command.a7, job_count = command.a8;
+    return (
+        job_count == 0 || first_job + job_count > jobs ? jobs : first_job + job_count
+    );
 }
 
 // Program arguments. The kernel that runs the broadcast (the reader on NoC0, the writer
@@ -109,8 +113,8 @@ constexpr uint32_t kArgWindow = 0;
 
 // Timed wait until this kernel's reads have landed (km::kFlushReads) or its writes
 // have left L1 (km::kFlushSent); a give-up goes into state word `word`.
-inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
-    const uint32_t code = c.poll(
+inline bool flushed(const km::Core& core, uint32_t word, uint32_t what) {
+    const uint32_t code = core.poll(
         [&] {
             if constexpr (noc_mode == DM_DYNAMIC_NOC) {
                 return (
@@ -126,11 +130,11 @@ inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
                 );
             }
         },
-        c.args().wait_limit,
-        c.args().wait_limit
+        core.args().wait_limit,
+        core.args().wait_limit
     );
     if (code != km::kGaveNone) {
-        c.gave_up(word, code, km::kWhereData, 0, 0);
+        core.gave_up(word, code, km::kWhereData, 0, 0);
     }
     return code == km::kGaveNone;
 }
@@ -138,81 +142,107 @@ inline bool flushed(const km::Core& c, uint32_t word, uint32_t what) {
 // Reads this core's job table page (page `rank` of the tables at `base`) to L1
 // `dst`. False: the read gave up (recorded).
 inline bool read_table(
-    const km::Core& c, uint32_t word, uint32_t base, uint32_t rank, uint32_t dst
+    const km::Core& core, uint32_t word, uint32_t base, uint32_t rank, uint32_t dst
 ) {
     const InterleavedAddrGen<true> pages = {
         .bank_base_address = base, .page_size = kTableBytes
     };
     noc_async_read(get_noc_addr(rank, pages), dst, kTableBytes);
-    return flushed(c, word, km::kFlushReads);
+    return flushed(core, word, km::kFlushReads);
 }
 
-// Sender: K tiles [k_start, k_start + kb) of every head-dim tile (d-major) and their V
-// rows (key-major) into the block at `addr`.
-template <uint32_t DT, uint32_t DV, uint32_t KB, typename Accessor>
+// Sender: K tiles [block_start, block_start + keys_in_block) of every head-dim tile
+// (head-tile-major) and their V rows (key-major) into the block at `address`.
+template <
+    uint32_t HEAD_TILES,
+    uint32_t VALUE_TILES,
+    uint32_t BLOCK_KEYS,
+    typename Accessor>
 void read_kv(
-    const Accessor& k,
-    const Accessor& v,
-    uint32_t k0,
-    uint32_t v0,
-    uint32_t k_start,
-    uint32_t kb,
-    uint32_t addr
+    const Accessor& keys,
+    const Accessor& values,
+    uint32_t first_key_page,
+    uint32_t first_value_page,
+    uint32_t block_start,
+    uint32_t keys_in_block,
+    uint32_t address
 ) {
-    for (uint32_t j = 0; j < kb; ++j) {
-        for (uint32_t d = 0; d < DT; ++d) {
+    for (uint32_t key = 0; key < keys_in_block; ++key) {
+        for (uint32_t head_tile = 0; head_tile < HEAD_TILES; ++head_tile) {
             noc_async_read_page(
-                k0 + (k_start + j) * DT + d, k, addr + (d * KB + j) * kTileBytes
+                first_key_page + (block_start + key) * HEAD_TILES + head_tile,
+                keys,
+                address + (head_tile * BLOCK_KEYS + key) * kTileBytes
             );
         }
     }
-    for (uint32_t j = 0; j < kb; ++j) {
-        for (uint32_t c = 0; c < DV; ++c) {
+    for (uint32_t key = 0; key < keys_in_block; ++key) {
+        for (uint32_t column = 0; column < VALUE_TILES; ++column) {
             noc_async_read_page(
-                v0 + (k_start + j) * DV + c,
-                v,
-                addr + (DT * KB + j * DV + c) * kTileBytes
+                first_value_page + (block_start + key) * VALUE_TILES + column,
+                values,
+                address +
+                    (HEAD_TILES * BLOCK_KEYS + key * VALUE_TILES + column) * kTileBytes
             );
         }
     }
 }
 
-// One job's K / V blocks through the broadcast (job words `w`; `n` counts the
-// command's, `c` the profile): the sender reads and multicasts each, a receiver waits.
-// False: gave up.
-template <uint32_t DT, uint32_t DV, uint32_t KB, typename Accessor>
+// One job's K / V blocks through the broadcast (`job_words` of the job; `blocks` counts
+// the command's, `counters` the profile): the sender reads and multicasts each, a
+// receiver waits. False: gave up.
+template <
+    uint32_t HEAD_TILES,
+    uint32_t VALUE_TILES,
+    uint32_t BLOCK_KEYS,
+    typename Accessor>
 bool broadcast_job(
-    km::Broadcast& ln,
-    const Accessor& k,
-    const Accessor& v,
-    const volatile tt_l1_ptr uint32_t* w,
-    uint32_t& n,
-    uint32_t* c
+    km::Broadcast& broadcast,
+    const Accessor& keys,
+    const Accessor& values,
+    const volatile tt_l1_ptr uint32_t* job_words,
+    uint32_t& blocks,
+    uint32_t* counters
 ) {
-    const uint32_t k0 = w[kJobK], v0 = w[kJobV], nk = w[kJobKeys];
-    for (uint32_t k_start = 0; k_start < nk; k_start += KB, ++n) {
-        const uint32_t t1 = km::wall();
-        if (!ln.sender()) {
-            if (!ln.arrive(n)) {
+    const uint32_t first_key_page = job_words[kJobK];
+    const uint32_t first_value_page = job_words[kJobV];
+    const uint32_t key_tiles = job_words[kJobKeys];
+    for (
+        uint32_t block_start = 0; block_start < key_tiles;
+        block_start += BLOCK_KEYS, ++blocks
+    ) {
+        const uint32_t started = km::wall();
+        if (!broadcast.sender()) {
+            if (!broadcast.arrive(blocks)) {
                 return false;
             }
-            c[kPrRdArrive] += km::wall() - t1;
+            counters[kPrRdArrive] += km::wall() - started;
             continue;
         }
-        const uint32_t addr = ln.reserve(n);
-        if (addr == 0) {
+        const uint32_t address = broadcast.reserve(blocks);
+        if (address == 0) {
             return false;
         }
-        const uint32_t t2 = km::wall();
-        const uint32_t kb = nk - k_start < KB ? nk - k_start : KB;
-        read_kv<DT, DV, KB>(k, v, k0, v0, k_start, kb, addr);
-        const uint32_t t3 = km::wall();
-        if (!ln.cast(n)) {
+        const uint32_t reserved = km::wall();
+        const uint32_t keys_in_block = (
+            key_tiles - block_start < BLOCK_KEYS ? key_tiles - block_start : BLOCK_KEYS
+        );
+        read_kv<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
+            keys,
+            values,
+            first_key_page,
+            first_value_page,
+            block_start,
+            keys_in_block,
+            address
+        );
+        const uint32_t read_issued = km::wall();
+        if (!broadcast.cast(blocks)) {
             return false;
         }
-        c[kPrRdKvFree] += t2 - t1;
-        c[kPrRdKvRead] += t3 - t2;
-        c[kPrRdBroadcast] += km::wall() - t3;
+        counters[kPrRdKvFree] += reserved - started;
+        counters[kPrRdKvRead] += read_issued - reserved;
+        counters[kPrRdBroadcast] += km::wall() - read_issued;
     }
     return true;
 }

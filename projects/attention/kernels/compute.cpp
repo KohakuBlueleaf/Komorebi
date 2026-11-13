@@ -1,5 +1,6 @@
 // Attention compute, the body of Kohaku-TT's ktt_flash compute (Apache-2.0): per job,
-// up to R query tile rows against the job's key blocks taken from the broadcast buffer.
+// up to MAX_ROWS query tile rows against the job's key blocks taken from the broadcast
+// buffer.
 #include <cstdint>
 
 #include "api/compute/cb_api.h"
@@ -20,54 +21,62 @@
 
 namespace {
 
-    constexpr uint32_t DT = get_compile_time_arg_val(0);
-    constexpr uint32_t DV = get_compile_time_arg_val(1);
-    constexpr uint32_t R = get_compile_time_arg_val(2);
-    constexpr uint32_t KB = get_compile_time_arg_val(3);
-    constexpr uint32_t A_BITS = get_compile_time_arg_val(4);
-    constexpr uint32_t THR_BITS = get_compile_time_arg_val(5);
-    // Accumulator columns per row: O, then the row sum l (column DV).
-    constexpr uint32_t W = DV + 1;
-    constexpr uint32_t SC = kSubChunk;
+    constexpr uint32_t HEAD_TILES = get_compile_time_arg_val(0);
+    constexpr uint32_t VALUE_TILES = get_compile_time_arg_val(1);
+    constexpr uint32_t MAX_ROWS = get_compile_time_arg_val(2);
+    constexpr uint32_t BLOCK_KEYS = get_compile_time_arg_val(3);
+    constexpr uint32_t SCALE_BITS = get_compile_time_arg_val(4);
+    constexpr uint32_t THRESHOLD_BITS = get_compile_time_arg_val(5);
+    // Accumulator columns per row: O, then the row sum l (column VALUE_TILES).
+    constexpr uint32_t ACCUMULATOR_COLUMNS = VALUE_TILES + 1;
+    constexpr uint32_t SUB_CHUNK = kSubChunk;
     constexpr uint32_t ANY_WORD = 257;  // fp32 state tile: row 0, column 17 (the flag)
-    constexpr uint32_t P = DT * KB + KB * DV;  // pages of a K / V block
-    constexpr uint32_t V0 = DT * KB;           // its first V page
+    constexpr uint32_t BLOCK_PAGES = HEAD_TILES * BLOCK_KEYS +
+        BLOCK_KEYS * VALUE_TILES;  // pages of a K / V block
+    constexpr uint32_t FIRST_VALUE_PAGE = HEAD_TILES * BLOCK_KEYS;  // its first V page
 
-    constexpr uint32_t cb_q = kCbQ, cb_kv = kCbKv, cb_e = kCbOnes, cb_p = kCbP;
-    constexpr uint32_t cb_st = kCbSt, cb_o = kCbO, cb_stok = kCbStok, cb_otok = kCbOtok;
-    constexpr uint32_t cb_m = kCbCausal, cb_out = kCbOut;
+    constexpr uint32_t cb_queries = kCbQ;
+    constexpr uint32_t cb_keys_values = kCbKv;
+    constexpr uint32_t cb_ones = kCbOnes;
+    constexpr uint32_t cb_probabilities = kCbP;
+    constexpr uint32_t cb_state = kCbSt;
+    constexpr uint32_t cb_accumulator = kCbO;
+    constexpr uint32_t cb_state_token = kCbStok;
+    constexpr uint32_t cb_accumulator_token = kCbOtok;
+    constexpr uint32_t cb_causal = kCbCausal, cb_output = kCbOut;
 
     // This thread's profile counters for the record (attention.h, kPr*): wall-clock
     // cycles at its own submit, added to the profile page at the command's end.
-    uint32_t pc[kProfWords];
+    uint32_t profile_counters[kProfWords];
 
-    void flush(volatile tt_l1_ptr uint32_t* prof, uint32_t first, uint32_t n) {
-        for (uint32_t w = first; w < first + n; ++w) {
-            km::add_sat(prof + w, pc[w]);
+    void flush(volatile tt_l1_ptr uint32_t* profile, uint32_t first, uint32_t count) {
+        for (uint32_t word = first; word < first + count; ++word) {
+            km::add_sat(profile + word, profile_counters[word]);
         }
     }
 
-    static_assert(KB % SC == 0, "key block must be whole sub-chunks");
+    static_assert(BLOCK_KEYS % SUB_CHUNK == 0, "key block must be whole sub-chunks");
 
     struct Step {
-        uint32_t r;   // query tile row
-        uint32_t c;   // chunk index along the keys (0 = first)
-        uint32_t k0;  // first key tile of the chunk within the block
-        uint32_t nt;  // key tiles in the chunk
-        bool last;    // the row's last chunk
-        bool diag;    // the chunk's last tile is the row's diagonal tile (causal mask)
+        uint32_t row;          // query tile row
+        uint32_t chunk;        // chunk index along the keys (0 = first)
+        uint32_t chunk_start;  // first key tile of the chunk within the block
+        uint32_t key_tiles;    // key tiles in the chunk
+        bool last;             // the row's last chunk
+        bool
+            diagonal;  // the chunk's last tile is the row's diagonal tile (causal mask)
     };
 
-    uint32_t slot(uint32_t r, uint32_t c) {
-        return 2 * r + (c & 1);
+    uint32_t slot(uint32_t row, uint32_t chunk) {
+        return 2 * row + (chunk & 1);
     }
 
     // Math thread: broadcast-wise row maxima of the section.
-    void state_vector(uint32_t nt) {
+    void state_vector(uint32_t key_tiles) {
 #ifdef TRISC_MATH
-        if (nt == 3) {
+        if (key_tiles == 3) {
             flash::state_max<3>();
-        } else if (nt == 2) {
+        } else if (key_tiles == 2) {
             flash::state_max<2>();
         } else {
             flash::state_max<1>();
@@ -76,17 +85,17 @@ namespace {
     }
 
     // Pack thread: row state update and P of the section.
-    void exp_vector(bool first, uint32_t nt) {
+    void exp_vector(bool first, uint32_t key_tiles) {
 #ifdef TRISC_PACK
         flash::exp_section_begin();
         if (first) {
-            flash::state_update<true>(THR_BITS);
+            flash::state_update<true>(THRESHOLD_BITS);
         } else {
-            flash::state_update<false>(THR_BITS);
+            flash::state_update<false>(THRESHOLD_BITS);
         }
-        if (nt == 3) {
+        if (key_tiles == 3) {
             flash::exp_step<3>();
-        } else if (nt == 2) {
+        } else if (key_tiles == 2) {
             flash::exp_step<2>();
         } else {
             flash::exp_step<1>();
@@ -113,22 +122,25 @@ namespace {
         MATH((t6_mutex_release(mutex::SFPU)));
     }
 
-    // Packer output format (fp32: cb_o, cb_st; bf16: cb_p, cb_out) and L1
-    // accumulation, changed only on transitions.
+    // Packer output format (fp32: cb_accumulator, cb_state; bf16: cb_probabilities,
+    // cb_output) and L1 accumulation, changed only on transitions.
     bool pack_fp32 = false;
-    bool pack_acc = false;
+    bool pack_accumulating = false;
 
     void pack_format(bool fp32) {
         if (fp32 != pack_fp32) {
-            pack_reconfig_data_format(fp32 ? cb_p : cb_o, fp32 ? cb_o : cb_p);
+            pack_reconfig_data_format(
+                fp32 ? cb_probabilities : cb_accumulator,
+                fp32 ? cb_accumulator : cb_probabilities
+            );
             pack_fp32 = fp32;
         }
     }
 
-    void pack_accumulate(bool acc) {
-        if (acc != pack_acc) {
-            pack_reconfig_l1_acc(acc ? 1 : 0);
-            pack_acc = acc;
+    void pack_accumulate(bool accumulate) {
+        if (accumulate != pack_accumulating) {
+            pack_reconfig_l1_acc(accumulate ? 1 : 0);
+            pack_accumulating = accumulate;
         }
     }
 
@@ -159,116 +171,182 @@ namespace {
 
     // S = Q_r K^T (raw scores) and the row state into Dst; state update and P on the
     // pack thread.
-    void score(const Step& s) {
-        const bool first = s.c == 0;
-        const uint32_t t0 = km::wall();
+    void score(const Step& step) {
+        const bool first = step.chunk == 0;
+        const uint32_t started = km::wall();
         tile_regs_acquire_math_clear();
         // First chunk: any slot (defines every state row).
-        reconfig_data_format_srca(cb_kv, cb_st);
-        copy_init(cb_st);
-        copy_tile(cb_st, first ? slot(s.r, 1) : slot(s.r, s.c - 1), 3);
-        reconfig_data_format_srca(cb_st, cb_kv);
+        reconfig_data_format_srca(cb_keys_values, cb_state);
+        copy_init(cb_state);
+        copy_tile(
+            cb_state, first ? slot(step.row, 1) : slot(step.row, step.chunk - 1), 3
+        );
+        reconfig_data_format_srca(cb_state, cb_keys_values);
         // The causal mask is copied into the diagonal score tile first; the score
         // matmul accumulates onto it.
 #ifdef FLASH_CAUSAL
-        if (s.diag) {
-            copy_init(cb_m);
-            copy_tile(cb_m, 0, s.nt - 1);
+        if (step.diagonal) {
+            copy_init(cb_causal);
+            copy_tile(cb_causal, 0, step.key_tiles - 1);
         }
 #endif
-        mm_no_mop_init_short(cb_q, cb_kv, true, s.nt, 1, DT);
-        for (uint32_t d = 0; d < DT; ++d) {
+        mm_no_mop_init_short(
+            cb_queries, cb_keys_values, true, step.key_tiles, 1, HEAD_TILES
+        );
+        for (uint32_t head_tile = 0; head_tile < HEAD_TILES; ++head_tile) {
             matmul_block_no_mop(
-                cb_q, cb_kv, s.r * DT + d, d * KB + s.k0, 0, true, s.nt, 1, DT
+                cb_queries,
+                cb_keys_values,
+                step.row * HEAD_TILES + head_tile,
+                head_tile * BLOCK_KEYS + step.chunk_start,
+                0,
+                true,
+                step.key_tiles,
+                1,
+                HEAD_TILES
             );
         }
-        const uint32_t t1 = km::wall();
+        const uint32_t matmul_issued = km::wall();
         math_vector_begin();
-        state_vector(s.nt);
+        state_vector(step.key_tiles);
         math_vector_end();
         tile_regs_commit();
-        MATH((pc[kPrMaMax] += km::wall() - t1));
-        MATH((pc[kPrMaScore] += km::wall() - t0));
+        MATH((profile_counters[kPrMaMax] += km::wall() - matmul_issued));
+        MATH((profile_counters[kPrMaScore] += km::wall() - started));
 
-        cb_reserve_back(cb_p, SC);
-        cb_reserve_back(cb_stok, 1);
+        cb_reserve_back(cb_probabilities, SUB_CHUNK);
+        cb_reserve_back(cb_state_token, 1);
         tile_regs_wait();
-        const uint32_t t2 = km::wall();
+        const uint32_t math_ready = km::wall();
         vector_begin();
-        exp_vector(first, s.nt);
+        exp_vector(first, step.key_tiles);
         vector_end();
-        const uint32_t t3 = km::wall();
+        const uint32_t exp_done = km::wall();
         pack_format(false);
         pack_accumulate(false);
-        for (uint32_t t = 0; t < s.nt; ++t) {
-            pack_tile(t, cb_p);
+        for (uint32_t tile = 0; tile < step.key_tiles; ++tile) {
+            pack_tile(tile, cb_probabilities);
         }
         pack_format(true);
-        pack_tile<true>(3, cb_st, slot(s.r, s.c));
+        pack_tile<true>(3, cb_state, slot(step.row, step.chunk));
         tile_regs_release_math_clear();
-        cb_push_back(cb_p, SC);
-        cb_push_back(cb_stok, 1);
-        PACK((pc[kPrPkWait] += t2 - t0));
-        PACK((pc[kPrPkExp] += t3 - t2));
-        PACK((pc[kPrPkPack] += km::wall() - t3));
-        PACK((pc[kPrPkTiles] += s.nt));
+        cb_push_back(cb_probabilities, SUB_CHUNK);
+        cb_push_back(cb_state_token, 1);
+        PACK((profile_counters[kPrPkWait] += math_ready - started));
+        PACK((profile_counters[kPrPkExp] += exp_done - math_ready));
+        PACK((profile_counters[kPrPkPack] += km::wall() - exp_done));
+        PACK((profile_counters[kPrPkTiles] += step.key_tiles));
     }
 
     // Dst 0..: P V columns [j0, j0 + wv) of the block, then the row-sum column if
     // `sum`.
-    void pv_columns(const Step& s, uint32_t j0, uint32_t wv, bool sum) {
-        if (wv > 0) {
-            mm_no_mop_init_short(cb_p, cb_kv, false, wv, 1, s.nt);
-            for (uint32_t k = 0; k < s.nt; ++k) {
+    void pv_columns(
+        const Step& step, uint32_t first_column, uint32_t value_columns, bool sum
+    ) {
+        if (value_columns > 0) {
+            mm_no_mop_init_short(
+                cb_probabilities,
+                cb_keys_values,
+                false,
+                value_columns,
+                1,
+                step.key_tiles
+            );
+            for (uint32_t key = 0; key < step.key_tiles; ++key) {
                 matmul_block_no_mop(
-                    cb_p, cb_kv, k, V0 + (s.k0 + k) * DV + j0, 0, false, wv, 1, s.nt
+                    cb_probabilities,
+                    cb_keys_values,
+                    key,
+                    FIRST_VALUE_PAGE + (step.chunk_start + key) * VALUE_TILES +
+                        first_column,
+                    0,
+                    false,
+                    value_columns,
+                    1,
+                    step.key_tiles
                 );
             }
         }
         if (sum) {
-            mm_no_mop_init_short(cb_p, cb_e, false, 1, 1, s.nt);
-            for (uint32_t k = 0; k < s.nt; ++k) {
-                matmul_block_no_mop(cb_p, cb_e, k, 0, wv, false, 1, 1, s.nt);
+            mm_no_mop_init_short(
+                cb_probabilities, cb_ones, false, 1, 1, step.key_tiles
+            );
+            for (uint32_t key = 0; key < step.key_tiles; ++key) {
+                matmul_block_no_mop(
+                    cb_probabilities,
+                    cb_ones,
+                    key,
+                    0,
+                    value_columns,
+                    false,
+                    1,
+                    1,
+                    step.key_tiles
+                );
             }
         }
     }
 
     // O_r (and l_r) += P V (and P 1); scaled by alpha first when the tile's reference
     // moved.
-    void output(const Step& s) {
-        const bool first = s.c == 0;
-        const uint32_t t0 = km::wall();
-        cb_wait_front(cb_stok, 1);
-        cb_wait_front(cb_p, SC);
+    void output(const Step& step) {
+        const bool first = step.chunk == 0;
+        const uint32_t started = km::wall();
+        cb_wait_front(cb_state_token, 1);
+        cb_wait_front(cb_probabilities, SUB_CHUNK);
         const uint32_t moved = (
-            first ? 0 : read_tile_value(cb_st, slot(s.r, s.c), ANY_WORD)
+            first ? 0 : read_tile_value(cb_state, slot(step.row, step.chunk), ANY_WORD)
         );
         if (moved == 0) {
-            for (uint32_t j0 = 0; j0 < W; j0 += 4) {
-                const uint32_t w = W - j0 < 4 ? W - j0 : 4;
-                const uint32_t wv = j0 < DV ? (DV - j0 < w ? DV - j0 : w) : 0;
+            for (
+                uint32_t first_column = 0; first_column < ACCUMULATOR_COLUMNS;
+                first_column += 4
+            ) {
+                const uint32_t columns = (
+                    ACCUMULATOR_COLUMNS - first_column < 4
+                        ? ACCUMULATOR_COLUMNS - first_column
+                        : 4
+                );
+                const uint32_t value_columns = (
+                    first_column < VALUE_TILES
+                        ? (VALUE_TILES - first_column < columns
+                                 ? VALUE_TILES - first_column
+                                 : columns)
+                        : 0
+                );
                 tile_regs_acquire_math_clear();
-                pv_columns(s, j0, wv, j0 <= DV && DV < j0 + w);
+                pv_columns(
+                    step,
+                    first_column,
+                    value_columns,
+                    first_column <= VALUE_TILES && VALUE_TILES < first_column + columns
+                );
                 tile_regs_commit();
                 tile_regs_wait();
                 pack_format(true);
                 pack_accumulate(!first);
-                for (uint32_t t = 0; t < w; ++t) {
-                    pack_tile<true>(t, cb_o, s.r * W + j0 + t);
+                for (uint32_t tile = 0; tile < columns; ++tile) {
+                    pack_tile<true>(
+                        tile,
+                        cb_accumulator,
+                        step.row * ACCUMULATOR_COLUMNS + first_column + tile
+                    );
                 }
                 tile_regs_release_math_clear();
             }
         } else {
-            for (uint32_t j = 0; j < W; ++j) {
+            for (uint32_t column = 0; column < ACCUMULATOR_COLUMNS; ++column) {
                 tile_regs_acquire_math_clear();
-                pv_columns(s, j, j < DV ? 1 : 0, j == DV);
-                reconfig_data_format_srca(cb_kv, cb_st);
-                copy_init(cb_st);
-                copy_tile(cb_st, slot(s.r, s.c), 2);
-                copy_tile(cb_st, slot(s.r, s.c - 1), 3);
-                copy_init(cb_o);
-                copy_tile(cb_o, s.r * W + j, 1);
-                reconfig_data_format_srca(cb_o, cb_kv);
+                pv_columns(
+                    step, column, column < VALUE_TILES ? 1 : 0, column == VALUE_TILES
+                );
+                reconfig_data_format_srca(cb_keys_values, cb_state);
+                copy_init(cb_state);
+                copy_tile(cb_state, slot(step.row, step.chunk), 2);
+                copy_tile(cb_state, slot(step.row, step.chunk - 1), 3);
+                copy_init(cb_accumulator);
+                copy_tile(cb_accumulator, step.row * ACCUMULATOR_COLUMNS + column, 1);
+                reconfig_data_format_srca(cb_accumulator, cb_keys_values);
                 tile_regs_commit();
                 tile_regs_wait();
                 vector_begin();
@@ -276,53 +354,61 @@ namespace {
                 vector_end();
                 pack_format(true);
                 pack_accumulate(false);
-                pack_tile<true>(0, cb_o, s.r * W + j);
+                pack_tile<true>(
+                    0, cb_accumulator, step.row * ACCUMULATOR_COLUMNS + column
+                );
                 tile_regs_release_math_clear();
             }
         }
-        cb_pop_front(cb_p, SC);
-        cb_pop_front(cb_stok, 1);
-        if (s.last) {
-            cb_reserve_back(cb_otok, 1);
-            cb_push_back(cb_otok, 1);
+        cb_pop_front(cb_probabilities, SUB_CHUNK);
+        cb_pop_front(cb_state_token, 1);
+        if (step.last) {
+            cb_reserve_back(cb_accumulator_token, 1);
+            cb_push_back(cb_accumulator_token, 1);
         }
-        MATH((pc[kPrMaPv] += km::wall() - t0));
-        PACK((pc[kPrPkOut] += km::wall() - t0));
+        MATH((profile_counters[kPrMaPv] += km::wall() - started));
+        PACK((profile_counters[kPrPkOut] += km::wall() - started));
     }
 
     // Output row r = O_r / l_r (bf16), to the writer. Pack waits (with a timeout) for
     // room; without it the row is not packed and the command ends in a give-up.
-    void finalize(const km::Compute& cp, uint32_t r) {
-        const uint32_t t0 = km::wall();
-        cb_wait_front(cb_otok, 1);
-        cb_pop_front(cb_otok, 1);
-        const bool room = cp.reserve_back(cb_out, DV);
-        for (uint32_t j0 = 0; j0 < DV; j0 += 3) {
-            const uint32_t w = DV - j0 < 3 ? DV - j0 : 3;
+    void finalize(const km::Compute& compute, uint32_t row) {
+        const uint32_t started = km::wall();
+        cb_wait_front(cb_accumulator_token, 1);
+        cb_pop_front(cb_accumulator_token, 1);
+        const bool room = compute.reserve_back(cb_output, VALUE_TILES);
+        for (uint32_t first_column = 0; first_column < VALUE_TILES; first_column += 3) {
+            const uint32_t columns = (
+                VALUE_TILES - first_column < 3 ? VALUE_TILES - first_column : 3
+            );
             tile_regs_acquire_math_clear();
-            reconfig_data_format_srca(cb_kv, cb_o);
-            copy_init(cb_o);
-            for (uint32_t t = 0; t < w; ++t) {
-                copy_tile(cb_o, r * W + j0 + t, t);
+            reconfig_data_format_srca(cb_keys_values, cb_accumulator);
+            copy_init(cb_accumulator);
+            for (uint32_t tile = 0; tile < columns; ++tile) {
+                copy_tile(
+                    cb_accumulator,
+                    row * ACCUMULATOR_COLUMNS + first_column + tile,
+                    tile
+                );
             }
-            copy_tile(cb_o, r * W + DV, 3);
-            reconfig_data_format_srca(cb_o, cb_kv);
+            copy_tile(cb_accumulator, row * ACCUMULATOR_COLUMNS + VALUE_TILES, 3);
+            reconfig_data_format_srca(cb_accumulator, cb_keys_values);
             tile_regs_commit();
             tile_regs_wait();
             vector_begin();
-            PACK((flash::normalize_step(w)));
+            PACK((flash::normalize_step(columns)));
             vector_end();
             pack_format(false);
             pack_accumulate(false);
-            for (uint32_t t = 0; room && t < w; ++t) {
-                pack_tile(t, cb_out);
+            for (uint32_t tile = 0; room && tile < columns; ++tile) {
+                pack_tile(tile, cb_output);
             }
             tile_regs_release_math_clear();
         }
         if (room) {
-            cb_push_back(cb_out, DV);
+            cb_push_back(cb_output, VALUE_TILES);
         }
-        PACK((pc[kPrPkFinal] += km::wall() - t0));
+        PACK((profile_counters[kPrPkFinal] += km::wall() - started));
     }
 
     // The constant tiles, built by the vector unit and packed once: ones (cb_ones);
@@ -342,89 +428,105 @@ namespace {
         tile_regs_wait();
         pack_format(false);
         pack_accumulate(false);
-        cb_reserve_back(cb_e, 1);
-        pack_tile(0, cb_e);
-        cb_push_back(cb_e, 1);
+        cb_reserve_back(cb_ones, 1);
+        pack_tile(0, cb_ones);
+        cb_push_back(cb_ones, 1);
 #ifdef FLASH_CAUSAL
-        cb_reserve_back(cb_m, 1);
-        pack_tile(1, cb_m);
-        cb_push_back(cb_m, 1);
+        cb_reserve_back(cb_causal, 1);
+        pack_tile(1, cb_causal);
+        cb_push_back(cb_causal, 1);
 #endif
         tile_regs_release_math_clear();
-        cb_wait_front(cb_e, 1);
+        cb_wait_front(cb_ones, 1);
 #ifdef FLASH_CAUSAL
-        cb_wait_front(cb_m, 1);
+        cb_wait_front(cb_causal, 1);
 #endif
     }
 
-    // One job: its rows against key tiles [0, nkj) in KB blocks from the broadcast,
-    // paired in steps, then finalized (`work` false: blocks popped only). False: gave
-    // up.
+    // One job: its rows against key tiles [0, key_tiles) in BLOCK_KEYS blocks from the
+    // broadcast, paired in steps, then finalized (`work` false: blocks popped only).
+    // False: gave up.
     bool job(
-        const km::Compute& cp,
+        const km::Compute& compute,
         uint32_t rows,
-        uint32_t row0,
-        uint32_t nkj,
+        uint32_t first_row,
+        uint32_t key_tiles,
         uint32_t stride,
         uint32_t& blocks,
         bool work
     ) {
-        uint32_t t0 = km::wall();
-        if (!cp.wait_front(cb_q, R * DT)) {
+        uint32_t started = km::wall();
+        if (!compute.wait_front(cb_queries, MAX_ROWS * HEAD_TILES)) {
             return false;
         }
-        UNPACK((pc[kPrUnWaitQ] += km::wall() - t0));
+        UNPACK((profile_counters[kPrUnWaitQ] += km::wall() - started));
         if (!work) {
             rows = 0;
         }
-        uint32_t c_base = 0;
-        for (uint32_t k_start = 0; k_start < nkj; k_start += KB) {
-            const uint32_t kb = nkj - k_start < KB ? nkj - k_start : KB;
-            const uint32_t nsub = (kb + SC - 1) / SC;
-            t0 = km::wall();
-            if (!km::broadcast_receive(cp, cb_kv, P)) {
+        uint32_t chunk_base = 0;
+        for (
+            uint32_t block_start = 0; block_start < key_tiles; block_start += BLOCK_KEYS
+        ) {
+            const uint32_t keys_in_block = (
+                key_tiles - block_start < BLOCK_KEYS
+                    ? key_tiles - block_start
+                    : BLOCK_KEYS
+            );
+            const uint32_t sub_chunks = (keys_in_block + SUB_CHUNK - 1) / SUB_CHUNK;
+            started = km::wall();
+            if (!km::broadcast_receive(compute, cb_keys_values, BLOCK_PAGES)) {
                 return false;
             }
-            UNPACK((pc[kPrUnWaitKv] += km::wall() - t0));
+            UNPACK((profile_counters[kPrUnWaitKv] += km::wall() - started));
             // Visible steps in (chunk, row) order; pairs hold two different rows.
             Step pending{};
             bool has_pending = false;
-            for (uint32_t sub = 0; sub < nsub; ++sub) {
-                const uint32_t k0 = sub * SC;
-                const uint32_t kg = k_start + k0;
-                const uint32_t nt_block = kb - k0 < SC ? kb - k0 : SC;
-                for (uint32_t r = 0; r < rows; ++r) {
+            for (uint32_t sub_chunk = 0; sub_chunk < sub_chunks; ++sub_chunk) {
+                const uint32_t chunk_start = sub_chunk * SUB_CHUNK;
+                const uint32_t chunk_first_key = block_start + chunk_start;
+                const uint32_t chunk_keys = (
+                    keys_in_block - chunk_start < SUB_CHUNK
+                        ? keys_in_block - chunk_start
+                        : SUB_CHUNK
+                );
+                for (uint32_t row = 0; row < rows; ++row) {
 #ifdef FLASH_CAUSAL
-                    const uint32_t rowg = row0 + r * stride;
-                    const uint32_t last_key = rowg < nkj - 1 ? rowg : nkj - 1;
+                    const uint32_t global_row = first_row + row * stride;
+                    const uint32_t last_key = (
+                        global_row < key_tiles - 1 ? global_row : key_tiles - 1
+                    );
 #else
-                    const uint32_t last_key = nkj - 1;
+                    const uint32_t last_key = key_tiles - 1;
 #endif
-                    if (kg > last_key) {
+                    if (chunk_first_key > last_key) {
                         continue;
                     }
-                    const uint32_t nt = (
-                        last_key - kg + 1 < nt_block ? last_key - kg + 1 : nt_block
+                    const uint32_t keys = (
+                        last_key - chunk_first_key + 1 < chunk_keys
+                            ? last_key - chunk_first_key + 1
+                            : chunk_keys
                     );
-                    const bool last = kg + nt - 1 == last_key;
+                    const bool last = chunk_first_key + keys - 1 == last_key;
 #ifdef FLASH_CAUSAL
-                    const bool diag = last && last_key == rowg;
+                    const bool diagonal = last && last_key == global_row;
 #else
-                    const bool diag = false;
+                    const bool diagonal = false;
 #endif
-                    const Step s{r, c_base + sub, k0, nt, last, diag};
-                    if (has_pending && pending.r != s.r) {
+                    const Step step{
+                        row, chunk_base + sub_chunk, chunk_start, keys, last, diagonal
+                    };
+                    if (has_pending && pending.row != step.row) {
                         score(pending);
-                        score(s);
+                        score(step);
                         output(pending);
-                        output(s);
+                        output(step);
                         has_pending = false;
                     } else {
                         if (has_pending) {
                             score(pending);
                             output(pending);
                         }
-                        pending = s;
+                        pending = step;
                         has_pending = true;
                     }
                 }
@@ -433,61 +535,69 @@ namespace {
                 score(pending);
                 output(pending);
             }
-            km::broadcast_done(cb_kv, P);
+            km::broadcast_done(cb_keys_values, BLOCK_PAGES);
             ++blocks;
-            c_base += nsub;
+            chunk_base += sub_chunks;
         }
-        for (uint32_t r = 0; r < rows; ++r) {
-            finalize(cp, r);
+        for (uint32_t row = 0; row < rows; ++row) {
+            finalize(compute, row);
         }
-        cb_pop_front(cb_q, R * DT);
+        cb_pop_front(cb_queries, MAX_ROWS * HEAD_TILES);
         return true;
     }
 
 }  // namespace
 
 void kernel_main() {
-    km::Compute cp;
-    const uint32_t window = cp.arg(kArgWindow);
-    compute_kernel_hw_startup<SrcOrder::Reverse>(cb_q, cb_kv, cb_p);
+    km::Compute compute;
+    const uint32_t window = compute.arg(kArgWindow);
+    compute_kernel_hw_startup<SrcOrder::Reverse>(
+        cb_queries, cb_keys_values, cb_probabilities
+    );
     MATH((llk_math_eltwise_unary_sfpu_init<SfpuType::exponential, DST_ACCUM_MODE>()));
-    MATH((flash::init(__builtin_bit_cast(float, A_BITS))));
+    MATH((flash::init(__builtin_bit_cast(float, SCALE_BITS))));
     MATH((flash::macro_init()));
     PACK((flash::addr_init()));
     constant_tiles();
     // Row state and O are slots written in place, reserved once and never pushed.
-    cb_reserve_back(cb_st, 2 * R);
-    cb_reserve_back(cb_o, R * W);
-    cp.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerAttend) {
+    cb_reserve_back(cb_state, 2 * MAX_ROWS);
+    cb_reserve_back(cb_accumulator, MAX_ROWS * ACCUMULATOR_COLUMNS);
+    compute.run([&](const km_command_t& command) {
+        if (km::handler(command) != kHandlerAttend) {
             return;
         }
-        const uint32_t t0 = km::wall();
-        for (uint32_t w = 0; w < kProfWords; ++w) {
-            pc[w] = 0;
+        const uint32_t started = km::wall();
+        const uint32_t mode = command.a5, requested_passes = command.a6;
+        const uint32_t first_job = command.a7;
+        for (uint32_t word = 0; word < kProfWords; ++word) {
+            profile_counters[word] = 0;
         }
-        if (!cp.wait_front(kCbJobs, 1)) {
+        if (!compute.wait_front(kCbJobs, 1)) {
             return;
         }
         const uint32_t table = get_tile_address(kCbJobs, 0);
         invalidate_l1_cache();
         const uint32_t jobs = km::l1(table)[kTabJobs];
-        const uint32_t passes = r.a6 == 0 ? 1 : r.a6;
-        const bool work = r.a5 != kModeBroadcastOnly;
+        const uint32_t passes = requested_passes == 0 ? 1 : requested_passes;
+        const bool work = mode != kModeBroadcastOnly;
         uint32_t blocks = 0;
         bool ok = jobs <= kJobsMax;
         for (uint32_t pass = 0; ok && pass < passes; ++pass) {
-            for (uint32_t j = r.a7; ok && j < jobs_end(r, jobs); ++j) {
-                const volatile tt_l1_ptr uint32_t* w = (
-                    km::l1(table + 4 * (kTabFirst + kJobWords * j))
+            for (
+                uint32_t job_index = first_job;
+                ok && job_index < jobs_end(command, jobs);
+                ++job_index
+            ) {
+                const volatile tt_l1_ptr uint32_t* job_words = (
+                    km::l1(table + 4 * (kTabFirst + kJobWords * job_index))
                 );
                 ok = (
                     job(
-                        cp,
-                        w[kJobRows],
-                        w[kJobStart],
-                        w[kJobKeys],
-                        w[kJobStride],
+                        compute,
+                        job_words[kJobRows],
+                        job_words[kJobStart],
+                        job_words[kJobKeys],
+                        job_words[kJobStride],
                         blocks,
                         work
                     )
@@ -495,19 +605,19 @@ void kernel_main() {
             }
         }
         if (ok) {
-            km::broadcast_end(cp, cb_kv, P, window, blocks);
+            km::broadcast_end(compute, cb_keys_values, BLOCK_PAGES, window, blocks);
         }
         cb_pop_front(kCbJobs, 1);
         // Each thread adds its own words (the writer may have zeroed the page).
-        const uint32_t body = km::wall() - t0;
-        volatile tt_l1_ptr uint32_t* prof = km::l1(get_tile_address(kCbProf, 0));
+        const uint32_t body = km::wall() - started;
+        volatile tt_l1_ptr uint32_t* profile = km::l1(get_tile_address(kCbProf, 0));
         invalidate_l1_cache();
-        UNPACK((pc[kPrUnBody] = body));
-        MATH((pc[kPrMaBody] = body));
-        PACK((pc[kPrPkBody] = body));
-        UNPACK((flush(prof, kPrUnBody, 4)));
-        MATH((flush(prof, kPrMaBody, 4)));
-        PACK((flush(prof, kPrPkBody, 8)));
+        UNPACK((profile_counters[kPrUnBody] = body));
+        MATH((profile_counters[kPrMaBody] = body));
+        PACK((profile_counters[kPrPkBody] = body));
+        UNPACK((flush(profile, kPrUnBody, 4)));
+        MATH((flush(profile, kPrMaBody, 4)));
+        PACK((flush(profile, kPrPkBody, 8)));
     });
     PACK((flash::restore_constants()));
 }

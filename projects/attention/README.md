@@ -9,19 +9,19 @@ Kohaku-TT's `ktt_flash` kernel's.
 ## The thread program
 
 ```
-thread attend(broadcast, i):                        # one thread per core: broadcast, place in broadcast
+thread attend(broadcast, rank):                     # one thread per core: broadcast, place in broadcast
     for job in jobs(broadcast):                     # time: (batch, head, row range)
-        rows = partition(job.rows, i)              # space: query rows over the broadcast's cores
-        for kb in key_blocks(job.head, KB):    # time: keys, KB tiles per block
-            if i == 0:  kv = read_dram(kb);  emit kv -> threads(broadcast, *)    # breakpoint
-            else:       kv = wait(1)                                        # breakpoint
-            for sub in chunks(kv, 3):          # time: 3 key tiles per step
-                for r in rows:                 # time: my rows, paired
-                    acc[r] = merge(acc[r], score(Q[r], sub))   # D summed inside score
+        rows = partition(job.rows, rank)           # space: query rows over the broadcast's cores
+        for block in key_blocks(job.head, BLOCK_KEYS):  # time: keys, BLOCK_KEYS tiles per block
+            if rank == 0:  kv = read_dram(block);  emit kv -> threads(broadcast, *)    # breakpoint
+            else:          kv = wait(1)                                     # breakpoint
+            for chunk in chunks(kv, 3):        # time: 3 key tiles per step
+                for row in rows:               # time: my rows, paired
+                    accumulator[row] = merge(accumulator[row], score(Q[row], chunk))   # D summed inside score
         write out[rows]
 ```
 
-A broadcast is L cores down one grid column; the core on top (i == 0) reads each K / V
+A broadcast is L cores down one grid column; the core on top (rank == 0) reads each K / V
 block from DRAM once and multicasts it to the others. `merge` is the running softmax: the
 row's reference, P = exp(scale s - reference), O += P V and the row sum, both scaled
 when the reference moves. Nothing is merged across cores: each core finishes its own
@@ -32,30 +32,30 @@ the triangle's work spreads over the broadcast.
 
 | Thread program | Kernel | What it does |
 |---|---|---|
-| `jobs(broadcast)` | all three | the core's job table: one DRAM page per core named by the command (a4), read by the reader (handed to compute) and by the writer |
+| `jobs(broadcast)` | all three | the core's job table: one DRAM page per core named by the command (job_tables), read by the reader (handed to compute) and by the writer |
 | `emit kv -> threads(broadcast, *)`, `wait(1)` | `kernels/reader.cpp` (NoC0) | `km::Broadcast`: the sender `reserve`, reads K and V of block k into the slot, `cast`; a receiver `arrive`; `finish` |
-| `Q[r]` | `kernels/reader.cpp` | the job's query rows into the Q buffer |
+| `Q[row]` | `kernels/reader.cpp` | the job's query rows into the Q buffer |
 | `score`, `merge` | `kernels/compute.cpp`, `kernels/sfpu.hpp` | Kohaku-TT's `ktt_flash` compute body: S = Q K^T into Dst with the row state, the row reference and the exponential on the vector unit, P V and the row sum in column groups accumulated in L1 (fp32), steps in pairs of rows; `km::broadcast_receive` / `broadcast_done` / `broadcast_end` around each block |
-| `write out[rows]` | `kernels/writer.cpp` (NoC1) | each finished row's DV tiles to O |
+| `write out[rows]` | `kernels/writer.cpp` (NoC1) | each finished row's VALUE_TILES tiles to O |
 
 One call is one `ATTEND` command on the group of every core, with `KM_FLAG_EXCLUSIVE` (a command
 with broadcasts is never in flight beside an overlapping group). A K / V block is one broadcast
-block: K's tiles head-dim-major `[DT][KB]`, then V's key-major `[KB][DV]`, two blocks
+block: K's tiles head-dim-major `[HEAD_TILES][BLOCK_KEYS]`, then V's key-major `[BLOCK_KEYS][VALUE_TILES]`, two blocks
 in flight per broadcast. The broadcasts and their senders come from `komorebi.layout.broadcast_args`
 (one band of L rows of the grid after the other).
 
 | Handler | Arguments |
 |---|---|
-| `ATTEND` | a0 Q, a1 K, a2 V, a3 O, a4 the job tables, a5 mode (0: the full call, 1: broadcast only, 2: compute only), a6 passes over the jobs (0: one), a7 the first job, a8 jobs from it (0: to the end) |
-| `PROF` | a0 the profile tensor, a1 nonzero: zero the pages after storing them |
+| `ATTEND` | a0 q_address, a1 k_address, a2 v_address, a3 o_address (Q, K, V, O), a4 job_tables, a5 mode (0: the full call, 1: broadcast only, 2: compute only), a6 requested_passes over the jobs (0: one), a7 first_job, a8 job_count (jobs from it, 0: to the end) |
+| `PROF` | a0 profile_address (the profile tensor), a1 zero_profile (nonzero: zero the pages after storing them) |
 
 The cut-down modes are for the benchmark: broadcast only reads Q and multicasts every K / V block
 but compute only takes and pops the blocks, and no row is written; compute only works on
 Q, K and V as they are in L1 (no reads, no broadcast, no writes). Passes repeat the command's
 jobs, so that a loop of commands lasts seconds.
 
-`plan.py` is the plan as pure functions, with Kohaku-TT's rules: R query tile rows per
-job and KB key tiles per block fitted to the L1 budget (from 13 and 12 down), the broadcast
+`plan.py` is the plan as pure functions, with Kohaku-TT's rules: MAX_ROWS query tile rows per
+job and BLOCK_KEYS key tiles per block fitted to the L1 budget (from 13 and 12 down), the broadcast
 length L with the fewest score tiles on the busiest core (then the longest broadcast), broadcasts
 taking even ranges of the (batch, head, row) order (causal: chunks largest work first
 onto the least loaded broadcast), at most 46 jobs per core. `card.py` loads the program and
@@ -113,7 +113,7 @@ the other rows: the `check` of `results/ours-<preset>.json` and
 `results/ktt-<preset>.json` (see "Time and power"). Both are compared with float64 on
 the same sampled query tile rows (16, or all 4 of `t1`).
 
-| Preset | Plan: R, KB, L | Ours: RMS / largest | Kohaku-TT: RMS / largest |
+| Preset | Plan: rows, block keys, length | Ours: RMS / largest | Kohaku-TT: RMS / largest |
 |---|---|---|---|
 | `t1` | 13, 12, 10 | 5.50e-3 / 9.02e-3 | 5.50e-3 / 9.02e-3 |
 | `t2` | 13, 12, 10 | 6.19e-3 / 7.88e-3 | 6.19e-3 / 7.88e-3 |
@@ -247,10 +247,10 @@ remains for shapes where a head's work is large against those costs.
 
 Timed waits (a give-up is recorded with its code and place, stops the core's three
 kernels and is reported by the run):
-- the reader: room in the job table, Q and broadcast buffers (`rd.reserve`); its NoC reads
+- the reader: room in the job table, Q and broadcast buffers (`reader.reserve`); its NoC reads
   (`flushed`); every `km::Broadcast` wait (a free slot, the receivers' markers, VALID, the
   end of the command);
-- the writer: each finished output row (`wr.wait_front`); its NoC writes (`flushed`);
+- the writer: each finished output row (`writer.wait_front`); its NoC writes (`flushed`);
 - the compute kernel's waits on the data-movement kernels: the job table, Q rows and K /
   V blocks (`cp.wait_front`, decided by the unpacker and passed to the other two) and
   room for an output row (`cp.reserve_back`, the packer).

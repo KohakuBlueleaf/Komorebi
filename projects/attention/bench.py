@@ -31,12 +31,12 @@ COMMANDS_MAX = 100  # commands one load may submit
 class Clock:
     """AICLK of the card (MHz) sampled every 20 ms while the with-block runs."""
 
-    def __init__(self, index):
-        self.index, self.samples, self.stop = index, [], threading.Event()
+    def __init__(self, card_index):
+        self.card_index, self.samples, self.stop = card_index, [], threading.Event()
 
     def sample(self):
         while not self.stop.wait(0.02):
-            self.samples.append(aiclk_mhz(self.index))
+            self.samples.append(aiclk_mhz(self.card_index))
 
     def __enter__(self):
         self.thread = threading.Thread(target=self.sample, daemon=True)
@@ -48,8 +48,12 @@ class Clock:
         self.thread.join()
 
     def summary(self):
-        v = self.samples
-        return [min(v), round(float(np.mean(v)), 1), max(v)] if v else None
+        samples = self.samples
+        return (
+            [min(samples), round(float(np.mean(samples)), 1), max(samples)]
+            if samples
+            else None
+        )
 
 
 SHARES = {  # profile words whose share of the slowest core's time is reported
@@ -74,45 +78,50 @@ SHARES = {  # profile words whose share of the slowest core's time is reported
 BODIES = ("kPrRdBody", "kPrUnBody", "kPrMaBody", "kPrPkBody", "kPrWrBody")
 
 
-def profile_summary(prof, commands):
+def profile_summary(profile, commands):
     """Shares of the slowest core's time per unit, its busy time per command (cycles),
     and the balance across cores."""
-    pr = prof.astype(np.float64)
-    busy = np.maximum.reduce([pr[:, K[k]] for k in BODIES])
-    slow = int(np.argmax(busy))
-    total = busy[slow]
+    cycles = profile.astype(np.float64)
+    busy = np.maximum.reduce([cycles[:, K[body]] for body in BODIES])
+    slowest = int(np.argmax(busy))
+    total = busy[slowest]
     return {
-        "slowest_core": slow,
+        "slowest_core": slowest,
         "slowest_cycles_per_command": round(total / commands),
         "mean_busy_over_slowest": round(float(busy.mean() / total), 3),
-        "score_tiles_per_command": int(pr[slow, K["kPrPkTiles"]] / commands),
-        "slowest_page": [int(w) for w in prof[slow, : K["kProfWords"]]],
+        "score_tiles_per_command": int(cycles[slowest, K["kPrPkTiles"]] / commands),
+        "slowest_page": [int(word) for word in profile[slowest, : K["kProfWords"]]],
         "partitions_of_slowest": {
-            name: round(float(pr[slow, K[key]] / total), 3)
+            name: round(float(cycles[slowest, K[key]] / total), 3)
             for name, key in SHARES.items()
         },
     }
 
 
-def back_to_back(att, n, mode=K["kModeFull"], passes=1):
+def back_to_back(attention, commands, mode=K["kModeFull"], passes=1):
     """n commands back to back: microseconds per pass from the host's time."""
-    host_s, us = att.calls(n, mode=mode, passes=passes)
-    return round(host_s * 1e6 / (n * passes), 3), float(np.median(us)) / passes
+    host_s, command_microseconds = attention.calls(commands, mode=mode, passes=passes)
+    return (
+        round(host_s * 1e6 / (commands * passes), 3),
+        float(np.median(command_microseconds)) / passes,
+    )
 
 
-def loop(att, n, passes, index):
+def loop(attention, commands, passes, card_index):
     """n commands of `passes` passes each back to back, power and clock sampled."""
-    meter = power.PowerSampler(index)
-    with meter, Clock(index) as clock:
+    meter = power.PowerSampler(card_index)
+    with meter, Clock(card_index) as clock:
         meter.mark("open")
         time.sleep(1.0)
         meter.mark("loop")
-        host_s, us = att.calls(n, passes=passes, timeout=60.0)
+        host_s, command_microseconds = attention.calls(
+            commands, passes=passes, timeout=60.0
+        )
         meter.mark("after")
     phase = meter.result.phases["loop"]
-    calls = n * passes
+    calls = commands * passes
     return {
-        "commands": n,
+        "commands": commands,
         "passes": passes,
         "seconds": round(host_s, 3),
         "microseconds_per_call": round(host_s * 1e6 / calls, 3),
@@ -126,87 +135,135 @@ def loop(att, n, passes, index):
 
 
 def main():
-    a = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    a.add_argument("--shape", choices=pl.SHAPES, required=True)
-    a.add_argument("--approx", action="store_true", help="approximate exponential")
-    a.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--shape", choices=pl.SHAPES, required=True)
+    parser.add_argument("--approx", action="store_true", help="approximate exponential")
+    parser.add_argument(
         "--broadcast", type=int, default=None, help="broadcast length (default: plan)"
     )
-    a.add_argument("--chunks", type=int, default=None, help="causal chunks per head")
-    a.add_argument("--seconds", type=float, default=4.0, help="power loop length")
-    a.add_argument("--cuts", action="store_true", help="also the cut-down runs")
-    a.add_argument("--noc", type=int, choices=[0, 1], default=0, help="broadcast's NoC")
-    a.add_argument("--seed", type=int, default=1)
-    a.add_argument("--json", default=None)
-    args = a.parse_args()
-    (b, h, hk, sq, d, causal), s = run.shape_dims(args.shape)
-    q, k, v = sdpa.inputs(b, h, hk, sq, sq, d, d, args.seed)
-    scale = 1.0 / np.sqrt(d)
-    out = {"shape": args.shape, "b": b, "h": h, "hk": hk, "s": sq, "d": d}
-    out["causal"], out["approx"] = causal, args.approx
-    index = visible_card()
+    parser.add_argument(
+        "--chunks", type=int, default=None, help="causal chunks per head"
+    )
+    parser.add_argument("--seconds", type=float, default=4.0, help="power loop length")
+    parser.add_argument("--cuts", action="store_true", help="also the cut-down runs")
+    parser.add_argument(
+        "--noc", type=int, choices=[0, 1], default=0, help="broadcast's NoC"
+    )
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--json", default=None)
+    arguments = parser.parse_args()
+    (batches, heads, kv_heads, sequence_length, head_dim, causal), call = (
+        run.shape_dims(arguments.shape)
+    )
+    queries, keys, values = sdpa.inputs(
+        batches,
+        heads,
+        kv_heads,
+        sequence_length,
+        sequence_length,
+        head_dim,
+        head_dim,
+        arguments.seed,
+    )
+    scale = 1.0 / np.sqrt(head_dim)
+    report = {
+        "shape": arguments.shape,
+        "b": batches,
+        "h": heads,
+        "hk": kv_heads,
+        "s": sequence_length,
+        "d": head_dim,
+    }
+    report["causal"], report["approx"] = causal, arguments.approx
+    card_index = visible_card()
     with km.Session(log=log) as session:
         nocs = session.nocs()
-        p = pl.make(s, nocs.grid, length=args.broadcast, chunks=args.chunks)
-        out["plan"] = p.summary()
-        out["x280_mhz"], out["noc"] = session.pll_mhz, args.noc
+        plan = pl.make(
+            call, nocs.grid, length=arguments.broadcast, chunks=arguments.chunks
+        )
+        report["plan"] = plan.summary()
+        report["x280_mhz"], report["noc"] = session.pll_mhz, arguments.noc
         tensors = {
-            "q": card.bf16_tensor(session, q),
-            "k": card.bf16_tensor(session, k),
-            "v": card.bf16_tensor(session, v),
-            "o": card.bf16_tensor(session, np.zeros((b, h, sq, d), np.float32)),
-            "tables": card.table_tensor(session, pl.tables(p)),
+            "q": card.bf16_tensor(session, queries),
+            "k": card.bf16_tensor(session, keys),
+            "v": card.bf16_tensor(session, values),
+            "o": card.bf16_tensor(
+                session,
+                np.zeros((batches, heads, sequence_length, head_dim), np.float32),
+            ),
+            "tables": card.table_tensor(session, pl.tables(plan)),
             "prof": card.prof_tensor(session, len(nocs.words)),
         }
-        # Load 1: single commands, commands back to back (5, then `n`: the second
-        # batch's time less the first's is the per-command time), the profile.
-        att = card.Attention(session, p, tensors, scale, args.approx, noc=args.noc)
-        log(f"loaded, plan {out['plan']}")
-        single = np.concatenate([att.calls(1)[1] for _ in range(6)])
-        one = float(np.median(single[1:]))
-        out["single_microseconds"] = {"median": one, "min": float(single[1:].min())}
-        att.profile(session)  # zeroes the pages
-        n = int(min(60, max(10, math.ceil(0.2e6 / one))))
-        first_s, _ = att.calls(5)
-        host_s, us = att.calls(n)
-        out["microseconds_per_call"] = round((host_s - first_s) * 1e6 / (n - 5), 3)
-        out["command_microseconds_median"] = float(np.median(us))
-        out["profile"] = profile_summary(att.profile(session), n + 5)
-        out["commands_submitted"] = [6 + 1 + 5 + n + 1]
-        out["runs"] = [att.stop()]
-        back_to_back = out["microseconds_per_call"]
-        log(f"single {one:.1f} us, back to back {back_to_back} us per call")
+        # Load 1: single commands, then back to back (5, `batch_commands`): the second
+        # batch's time less the first's is the per-command time; the profile.
+        attention = card.Attention(
+            session, plan, tensors, scale, arguments.approx, noc=arguments.noc
+        )
+        log(f"loaded, plan {report['plan']}")
+        single = np.concatenate([attention.calls(1)[1] for _ in range(6)])
+        single_median = float(np.median(single[1:]))
+        report["single_microseconds"] = {
+            "median": single_median,
+            "min": float(single[1:].min()),
+        }
+        attention.profile(session)  # zeroes the pages
+        batch_commands = int(min(60, max(10, math.ceil(0.2e6 / single_median))))
+        first_batch_seconds, _ = attention.calls(5)
+        host_s, command_microseconds = attention.calls(batch_commands)
+        report["microseconds_per_call"] = round(
+            (host_s - first_batch_seconds) * 1e6 / (batch_commands - 5), 3
+        )
+        report["command_microseconds_median"] = float(np.median(command_microseconds))
+        report["profile"] = profile_summary(
+            attention.profile(session), batch_commands + 5
+        )
+        report["commands_submitted"] = [6 + 1 + 5 + batch_commands + 1]
+        report["runs"] = [attention.stop()]
+        back_to_back = report["microseconds_per_call"]
+        log(f"single {single_median:.1f} us, back to back {back_to_back} us per call")
         # Load 2: the power loop, then the cut-down runs.
-        att = card.Attention(session, p, tensors, scale, args.approx, noc=args.noc)
-        each = out["microseconds_per_call"]
-        passes = max(1, math.ceil(0.1e6 / each))
-        cuts = 11 if args.cuts else 0
-        commands = math.ceil(args.seconds * 1e6 / (each * passes))
-        commands = max(2, min(commands, COMMANDS_MAX - cuts))
-        out["loop"] = loop(att, commands, passes, index)
-        log(f"loop: {out['loop']}")
-        out["tflops"] = pl.flops(s) / out["loop"]["microseconds_per_call"] / 1e6
-        if args.cuts:
-            att.profile(session)  # zeroes the loop's
-            cut = {}
+        attention = card.Attention(
+            session, plan, tensors, scale, arguments.approx, noc=arguments.noc
+        )
+        per_call = report["microseconds_per_call"]
+        passes = max(1, math.ceil(0.1e6 / per_call))
+        cut_commands = 11 if arguments.cuts else 0
+        commands = math.ceil(arguments.seconds * 1e6 / (per_call * passes))
+        commands = max(2, min(commands, COMMANDS_MAX - cut_commands))
+        report["loop"] = loop(attention, commands, passes, card_index)
+        log(f"loop: {report['loop']}")
+        report["tflops"] = (
+            pl.flops(call) / report["loop"]["microseconds_per_call"] / 1e6
+        )
+        if arguments.cuts:
+            attention.profile(session)  # zeroes the loop's
+            cut_runs = {}
             for name, mode in (
                 ("broadcast_only", K["kModeBroadcastOnly"]),
                 ("compute_only", K["kModeComputeOnly"]),
             ):
-                cut[name], _ = back_to_back(att, 4, mode=mode, passes=4)
-                cut[name + "_profile"] = profile_summary(att.profile(session), 4)
-            out["cuts"] = cut  # neither writes O
-        out["commands_submitted"].append(commands + cuts)
-        assert max(out["commands_submitted"]) <= COMMANDS_MAX, out["commands_submitted"]
-        out["runs"].append(att.stop())
-        out["check"] = run.check(session, tensors["o"], q, k, v, s, causal, args.approx)
-    out["ok"] = out["check"]["ok"] and all(r["ok"] for r in out["runs"])
-    out["aiclk_after_mhz"] = aiclk_mhz(index)
-    out["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(out, default=float), flush=True)
-    if args.json:
-        Path(args.json).write_text(json.dumps(out, indent=1, default=float))
-    sys.exit(0 if out["ok"] else 1)
+                cut_runs[name], _ = back_to_back(attention, 4, mode=mode, passes=4)
+                cut_runs[name + "_profile"] = profile_summary(
+                    attention.profile(session), 4
+                )
+            report["cuts"] = cut_runs  # neither writes O
+        report["commands_submitted"].append(commands + cut_commands)
+        assert max(report["commands_submitted"]) <= COMMANDS_MAX, report[
+            "commands_submitted"
+        ]
+        report["runs"].append(attention.stop())
+        report["check"] = run.check(
+            session, tensors["o"], queries, keys, values, call, causal, arguments.approx
+        )
+    report["ok"] = report["check"]["ok"] and all(
+        run_report["ok"] for run_report in report["runs"]
+    )
+    report["aiclk_after_mhz"] = aiclk_mhz(card_index)
+    report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
+    print(json.dumps(report, default=float), flush=True)
+    if arguments.json:
+        Path(arguments.json).write_text(json.dumps(report, indent=1, default=float))
+    sys.exit(0 if report["ok"] else 1)
 
 
 if __name__ == "__main__":
