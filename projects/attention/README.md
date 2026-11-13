@@ -252,8 +252,8 @@ kernels and is reported by the run):
   end of the command);
 - the writer: each finished output row (`writer.wait_front`); its NoC writes (`flushed`);
 - the compute kernel's waits on the data-movement kernels: the job table, Q rows and K /
-  V blocks (`cp.wait_front`, decided by the unpacker and passed to the other two) and
-  room for an output row (`cp.reserve_back`, the packer).
+  V blocks (`compute.wait_front`, decided by the unpacker and passed to the other two) and
+  room for an output row (`compute.reserve_back`, the packer).
 
 Not timed: the compute kernel's waits between its own three threads, as in
 `ktt_flash`: the score and P tiles and their tokens (`cb_wait_front`, `cb_reserve_back`
