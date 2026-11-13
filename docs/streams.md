@@ -65,8 +65,9 @@ all are done.
 - `s.issue(seg, team=(first, count), args=[...], exclusive=False, result=False)`: `first`
   and `count` are integers or registers; `args` are up to ten integers, of which up to
   four may be registers. `exclusive=True` makes this one record wait at its own issue
-  while a busy team overlaps its team; it does not stop a later plain record from
-  overlapping it.
+  until every job queued before it (by this stream's `submit` or by any other source)
+  has left the job queue and no busy team overlaps its team; it does not stop a later
+  plain record from overlapping it.
 - `s.submit(seg, count, args=[...], exclusive=False, result=False)`: the same through the
   job queue; `count` is an integer or a register and the allocator chooses `first`.
 - `s.encode()` gives the upload bytes; `Stream.decode(bytes)` is its inverse and raises
@@ -110,7 +111,8 @@ values they have when the job is finally issued.
 
 `ISSUE` and `SUBMIT` fill a record from the template and the registers named in its
 patch list, then wait if they cannot go on: `ISSUE` waits while all 16 completion slots
-are busy, and with `exclusive=True` also while any busy team overlaps its team. A team
+are busy, and with `exclusive=True` also while a job queued before it is still waiting
+in the job queue or any busy team overlaps its team. A team
 is outside the grid when `count == 0 || first > n_cores || count > n_cores - first`
 (no sum is formed, so nothing wraps); `ISSUE` onto such a team is an error before any
 waiting, and so is a `SUBMIT` whose count is 0 or above the grid. A program counter that
@@ -234,11 +236,34 @@ A record takes the lowest free completion slot. The team allocator returns the l
 `first` such that cores `[first, first + count)` overlap no busy slot's team.
 
 The queue holds at most 64 waiting jobs, shared by every stream and by queued jobs from
-the host; a `SUBMIT` into a full queue waits. Each pass
+the host; a `SUBMIT` into a full queue waits (the kernel refuses the engine's job with
+reason 11 and wakes it when there is room), and a queued record from the host into a
+full queue is refused with reason 9. Queued jobs run in the same 16 completion slots as
+every other record, so at most 16 records of all sources are in flight over the grid,
+whatever their team sizes. Each pass
 the queue looks at the first 16 waiting jobs in order and issues each that finds a free
 slot and room. A job that does not fit does not block those behind it, but once 1,024
 jobs have been issued ahead of it nothing behind it is issued until it fits, so a large
 job is not starved.
+
+What a queued record costs. Measured on one p150a, X280 at 1,000 MHz, 480 records of
+8 cores in windows of 48 issued by the host and waited for at once, queued or on fixed
+disjoint teams (`tests/hardware/host/session_cases.py queue-cost`), in microseconds per
+record:
+
+| | Plain, 8 cores | Queued, 8 cores | Plain, leader reads 100 pages | Queued, the same |
+|---|---|---|---|---|
+| host: `issue` | 2.77 | 2.69 | 2.51 | 2.53 |
+| host: issue, store and event, per record | 10.08 | 9.59 | 17.65 | 17.82 |
+| kernel: first command to last event, per record | 9.03 | 9.08 | 17.15 | 17.24 |
+| kernel: issue to acknowledgement (event ticks) | 2.29 | 2.44 | 38.62 | 38.65 |
+| most records in flight | 3 | 2 | 4 | 4 |
+
+The queue adds no time of its own that shows: a queued job is placed in the pass that
+takes it when a slot and room are free, and its record then costs what a plain one
+does. Host-fed records arrive about 10 microseconds apart, so the kernel waits for
+commands; a program that sees tens of microseconds per queued record is paying for its
+records' work, the free cores they wait for, or the host's waits between them.
 
 ## The simulator
 

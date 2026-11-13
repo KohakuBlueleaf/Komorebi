@@ -233,7 +233,7 @@ range.
 
 | Call | What it does |
 |---|---|
-| `issue(seg, team=None, args=(), exclusive=False, result=False, queued=False)` | queues one record and returns its ticket (1, 2, ...). `seg` is a name or a number (`0` is NOP); `team` is `(first, count)`, default every core; `args` up to ten 32-bit words. Teams and segments are checked here. With `exclusive` (`KM_F_EXCL`), the dispatch kernel issues the record only once no record in flight has a team that overlaps it; the host stores it as soon as the ring has room, like any other record (below, "Exclusive records"). With `result` (`KM_F_RESULT`), its done event carries the team leader's 32-bit result word. With `queued` (`KM_F_QUEUE`), `team` is a count: the kernel gives the record the lowest first core whose team overlaps no busy one, and waits until there is one (nothing is refused for a full grid); `team(ticket)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). A queued record cannot be exclusive |
+| `issue(seg, team=None, args=(), exclusive=False, result=False, queued=False)` | queues one record and returns its ticket (1, 2, ...). `seg` is a name or a number (`0` is NOP); `team` is `(first, count)`, default every core; `args` up to ten 32-bit words. Teams and segments are checked here. With `exclusive` (`KM_F_EXCL`), the dispatch kernel issues the record only once every queued record sent before it has left the kernel's job queue and no record in flight has a team that overlaps it; the host stores it as soon as the ring has room, like any other record (below, "Exclusive records"). With `result` (`KM_F_RESULT`), its done event carries the team leader's 32-bit result word. With `queued` (`KM_F_QUEUE`), `team` is a count: the kernel gives the record the lowest first core whose team overlaps no busy one, and waits until there is one (nothing is refused for a full grid); `team(ticket)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). The kernel's job queue holds 64 records waiting for room; one more is refused (`RecordRefused`, reason 9), so with at most 64 queued records unfinished none is refused. Queued records share the program's `depth` completion slots with every other record: at most `depth` (16 at most) run at once over the whole grid. A queued record cannot be exclusive |
 | `issue_many(seg, firsts, counts, args=None, exclusive=False)` | queues n records at once and returns their tickets as a `range`. `seg`, `firsts` and `counts` are one value or n each; `args` is an `[n, m]` integer matrix (m at most 10) or None. Checked as `issue` checks, all before any is queued |
 | `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a [graph](../graphs.md) host-fed: its executor on the host, its records through this run; returns `HostfedResult(status, error, regs, runs, records, events)` |
 | `wait(tickets, timeout=10.0)` | stores queued commands up to the tickets in batches, reads events until each ticket has one; returns the `Event` (or a list) and forgets those tickets. The stores and the event reads run in the native module with the GIL released |
@@ -375,10 +375,12 @@ the kernel's header; `reason_name` is the lower-case suffix):
 | 2 | `flags` | sets the reserved flag bit 0 |
 | 3 | `team` | has a team of 0 cores, or one that does not lie inside the cores |
 | 4 | `exited` | came after EXIT |
+| 9 | `queue` | is queued (`queued=True`) while the kernel's job queue holds 64 records |
 
 `issue` and `issue_many` check segments and teams before anything is queued, the
 host sets no reserved flag, and a stopped run issues nothing, so through this API a
-refusal means that the host and the kernel were built from different headers.
+refusal other than 9 means that the host and the kernel were built from different
+headers.
 
 ## Builds
 

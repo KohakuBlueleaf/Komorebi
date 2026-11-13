@@ -114,9 +114,13 @@ These rules are part of the protocol; a host that relies on anything else is wro
   `ticks` field of the record's `KM_EV_DONE` event. Such an event has no time; every
   other `KM_EV_DONE` event's ticks are the record's time from issue to acknowledgement.
 - **EXIT** goes to every core whatever its team field says, and only once no slot is
-  busy. A record with `KM_F_EXCL` waits until no busy slot's team overlaps its own; the
-  check holds only at its own issue, so a later record without the flag may still
-  overlap it. A waiting host command holds up every host command behind it. This check
+  busy. A record with `KM_F_EXCL` waits until every job queued before it, by any
+  source, has left the job queue and no busy slot's team overlaps its own: when the
+  kernel takes the command it notes the queue's occupied places, and each job leaving
+  the queue (issued or dropped) clears its place. A command of the engine or a work
+  cluster that was refused busy counts from the take of its next attempt. The check
+  holds only at its own issue, so a later record without the flag may still overlap
+  it. A waiting host command holds up every host command behind it. This check
   is the only order of exclusive records: the host stores them as soon as its ring has
   room, so back-to-back exclusive NOP records on 120 cores come 2.3 us apart at 1000
   MHz (the host's reference, "Exclusive records").
@@ -124,7 +128,10 @@ These rules are part of the protocol; a host that relies on anything else is wro
   ignores `first` (and `KM_F_EXCL`). It is taken into the job queue, which holds up to
   `KM_QUEUE_JOBS` (64) jobs of every source in arrival order, and answered with its
   `KM_EV_DONE` once it has run; a full queue refuses the host's (reason 9) and the
-  engine's and a work cluster's (reason 11, below). Each pass ends with the queue's turn: of the first `KM_QUEUE_LOOK` (16) jobs
+  engine's and a work cluster's (reason 11, below). The queue issues into the same
+  completion slots as every record: at most the program's depth (16 at most) records of
+  all sources are in flight at once over the whole grid, queued ones included. Each
+  pass ends with the queue's turn: of the first `KM_QUEUE_LOOK` (16) jobs
   as they are at its start, each that finds a free slot and room is issued, the team
   allocator giving it the lowest `first` whose cores overlap no busy slot's team (the
   overlap test of `KM_F_EXCL`). A job that does not fit does not hold up the ones
