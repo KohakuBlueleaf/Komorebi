@@ -14,6 +14,14 @@ void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
         rd.me() >= r.a5) {
         return;
     }
+    const uint32_t t0 = km::wall();
+    uint32_t wait = 0, read = 0, bytes = 0;
+    auto reserve = [&](uint32_t cb) {
+        const uint32_t a = km::wall();
+        const bool ok = rd.reserve(cb, 1);
+        wait += km::wall() - a;
+        return ok;
+    };
     auto arrived = [&] {
         return rd.poll(
                    [] {
@@ -23,7 +31,7 @@ void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
                ) == km::kGaveNone;
     };
     if (seg == kSegSetup) {
-        if (!rd.reserve(kCbSlots, 1)) {
+        if (!reserve(kCbSlots)) {
             return;
         }
         noc_async_read(
@@ -35,7 +43,7 @@ void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
             return;
         }
         cb_push_back(kCbSlots, 1);
-        if (!rd.reserve(kCbItems, 1)) {
+        if (!reserve(kCbItems)) {
             return;
         }
         noc_async_read(
@@ -51,18 +59,29 @@ void setup_reader_record(const km::Reader& rd, const km_record_t& r) {
         .bank_base_address = r.a0, .page_size = kMeshBytes
     };
     for (uint32_t b = b0; b <= b1; ++b) {
-        if (!rd.reserve(kCbMesh, 1)) {
+        if (!reserve(kCbMesh)) {
             return;
         }
+        const uint32_t a = km::wall();
         const uint64_t src =
             (b == b0 ? su::addr(r.a8, r.a3, 0, 4 * kCamWords)
                      : get_noc_addr(b - 1, mesh));
-        const uint32_t bytes = b == b0 ? 4 * kCamWords : kMeshBytes;
-        noc_async_read(src, get_write_ptr(kCbMesh), bytes);
+        const uint32_t n = b == b0 ? 4 * kCamWords : kMeshBytes;
+        noc_async_read(src, get_write_ptr(kCbMesh), n);
         if (!arrived()) {
             return;
         }
+        read += km::wall() - a;
+        bytes += n;
         cb_push_back(kCbMesh, 1);
+    }
+    if (r.a9 != 0) {
+        volatile tt_l1_ptr uint32_t* pf = km::l1(get_write_ptr(kCbSProf));
+        pf[kSProfReader + 0] = wait;
+        pf[kSProfReader + 1] = read;
+        pf[kSProfReader + 2] = km::wall() - t0;
+        pf[kSProfReader + 3] = bytes;
+        pf[kSProfReader + 4] = t0;
     }
 }
 

@@ -69,7 +69,8 @@ static void record(km_record_t* r, uint32_t seg, const frame_t* f) {
     r->seq = r->land1 = r->land2 = r->land3 = 0;
     r->hdr = seg;
     r->team = f->w[RF_W_WORKERS] << 16;
-    r->a0 = r->a1 = r->a2 = r->a3 = r->a4 = r->a6 = r->a7 = r->a9 = 0;
+    r->a0 = r->a1 = r->a2 = r->a3 = r->a4 = r->a6 = r->a7 = 0;
+    r->a9 = f->w[RF_W_SPROF];
     r->a5 = f->w[RF_W_CORES];
     r->a8 = f->bank1;
 }

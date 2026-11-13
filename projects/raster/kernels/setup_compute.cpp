@@ -261,10 +261,15 @@ namespace {
     struct Out {
         uint32_t* page = nullptr;
         uint32_t n = 0;
+        uint32_t wait = 0;     // cycles waiting for a free out page
+        uint32_t entries = 0;  // records sent
 
         bool open(const km::Compute& cp) {
             if (page == nullptr) {
-                if (!cp.reserve_back(kCbOut, 1)) {
+                const uint32_t a = km::wall();
+                const bool ok = cp.reserve_back(kCbOut, 1);
+                wait += km::wall() - a;
+                if (!ok) {
                     return false;
                 }
                 page = cb_ptr(kCbOut);
@@ -282,6 +287,7 @@ namespace {
                 dst[k] = rec[k];
             }
             page[1 + n] = slot;
+            ++entries;
             if (++n == kOutEntries) {
                 push(false);
             }
@@ -328,6 +334,7 @@ namespace {
         uint32_t slots = 0;               // SETUP: the lists' slots
         Out out;
         bool ok = true;
+        uint32_t kept_n = 0, clipped = 0;  // the profile's counts
 
         // A finished record that touches box b (inside the image, or a give-up).
         void record(const uint32_t* w, const Box& b) {
@@ -398,6 +405,7 @@ namespace {
             }
             constexpr uint32_t fan[2][3] = {{0, 1, 2}, {0, 2, 3}};
             const uint32_t m = n - 2;
+            ++clipped;
             volatile uint32_t* win = su::win();
             for (uint32_t j = 0; j < m; ++j) {
                 for (uint32_t k = 0; k < 3; ++k) {
@@ -419,6 +427,7 @@ namespace {
                     continue;
                 }
                 finish(w, b, tri);
+                ++kept_n;
                 record(w, b);
             }
         }
@@ -459,6 +468,7 @@ namespace {
                     continue;
                 }
                 finish(w, b, tri0 + l);
+                ++kept_n;
                 record(w, b);
             }
         }
@@ -497,6 +507,8 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
     }
 #endif
 #ifdef TRISC_PACK
+    const uint32_t t0 = km::wall();
+    uint32_t mail = 0, vec = 0, scalar = 0;
     su::setup();
     Pass pass{cp, seg};
     if (seg == kSegSetup) {
@@ -531,10 +543,12 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
     }
     uint32_t* work = cb_ptr(kCbWork);
     for (uint32_t p = 0; p < pages; ++p) {
+        const uint32_t a = km::wall();
         if (!mail_from(ckernel::ThreadId::UnpackThreadId, 3)) {
             pass.ok = false;
             break;
         }
+        mail += km::wall() - a;
         const uint32_t* in = (
             reinterpret_cast<const uint32_t*>(
                 ckernel::mailbox_read(ckernel::ThreadId::UnpackThreadId)
@@ -550,6 +564,7 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
             ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
             continue;
         }
+        const uint32_t v0 = km::wall();
         su::block_in(in);
         su::camera_space();
         su::triangles(seg != kSegCount);
@@ -568,11 +583,26 @@ void setup_compute_record(const km::Compute& cp, const km_record_t& r) {
             continue;
         }
         su::records_out(work);
+        const uint32_t s0 = km::wall();
+        vec += s0 - v0;
         pass.block(work, in, work + 1024, 32 * (b0 + p - 1));
+        scalar += km::wall() - s0;
         ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
         if (!pass.ok) {
             break;
         }
+    }
+    if (r.a9 != 0) {
+        volatile uint32_t* pf = cb_ptr(kCbSProf);
+        pf[kSProfPack + 0] = mail;
+        pf[kSProfPack + 1] = vec;
+        pf[kSProfPack + 2] = scalar;
+        pf[kSProfPack + 3] = km::wall() - t0;
+        pf[kSProfPack + 4] = pass.kept_n;
+        pf[kSProfPack + 5] = pass.clipped;
+        pf[kSProfPack + 6] = pass.out.entries;
+        pf[kSProfPack + 7] = pass.out.wait;
+        asm volatile("fence" ::: "memory");
     }
     if (seg == kSegCount && pass.cnt != nullptr) {
         asm volatile("fence" ::: "memory");

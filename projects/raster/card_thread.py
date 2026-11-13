@@ -29,7 +29,8 @@ F = {
 # expressions in frame.h
 F["RF_W_PROF"] = F["RF_W_FRAME"] + F["RF_FRAME_MAX"]
 F["RF_W_REPEAT"] = F["RF_W_PROF"] + 1
-F["RF_WORDS"] = F["RF_W_REPEAT"] + 1
+F["RF_W_SPROF"] = F["RF_W_REPEAT"] + 1
+F["RF_WORDS"] = F["RF_W_SPROF"] + 1
 S, K = card_passes.S, lists.K
 CLUSTER = 1
 PAGES_PER_ITEM = 5  # the frame's pages per tile (card.words)
@@ -120,6 +121,7 @@ def tensors(dev, blocks, workers, list_slots):
         "dir": card.tensor(dev, np.zeros((workers, K["kDirBytes"] // 4))),
         "frame": frame,
         "prof": card.tensor(dev, np.zeros((workers, 1024))),
+        "sprof": card.tensor(dev, np.zeros((workers, S["kSProfPageBytes"] // 4))),
         "list_slots": pages * lists.PAGE_SLOTS,
     }
 
@@ -140,6 +142,7 @@ def words(up, blocks, cores, workers, steps):
     for i, t in enumerate(up["frame"]):
         w[F["RF_W_FRAME"] + i] = t.buffer_address()
     w[F["RF_W_PROF"]] = up["prof"].buffer_address()
+    w[F["RF_W_SPROF"]] = up["sprof"].buffer_address()
     return w
 
 

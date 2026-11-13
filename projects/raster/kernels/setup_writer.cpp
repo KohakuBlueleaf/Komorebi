@@ -21,9 +21,17 @@ namespace {
         *reinterpret_cast<volatile uint32_t*>(ctl + KM_CTL_STOP) = 1;
     }
 
+    // The writer's profile counters for one record (cycles, bytes, pages).
+    struct WProf {
+        uint32_t wait = 0, write = 0, bytes = 0, pages = 0;
+    };
+
 }  // namespace
 
+bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf);
+
 // The passes' writing for one record; the frame program's writer calls it as well.
+// With a9, the threads' counters go to the core's profile page.
 bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
     const uint32_t seg = km::seg(r);
     if ((seg != kSegLanes && seg != kSegCount && seg != kSegSetup && seg != kSegHist &&
@@ -31,6 +39,35 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
         r.a5 == 0 || wr.me() >= r.a5) {
         return true;
     }
+    const uint32_t t0 = km::wall();
+    WProf pf;
+    const bool ok = setup_writer_pass(wr, r, pf);
+    if (!ok || r.a9 == 0 || seg < kSegCount) {
+        return ok;
+    }
+    invalidate_l1_cache();
+    const uint32_t page = get_write_ptr(kCbSProf);
+    volatile tt_l1_ptr uint32_t* p = km::l1(page);
+    p[kSProfWriter + 0] = pf.wait;
+    p[kSProfWriter + 1] = pf.write;
+    p[kSProfWriter + 2] = km::wall() - t0;
+    p[kSProfWriter + 3] = pf.bytes;
+    p[kSProfWriter + 4] = t0;
+    p[kSProfWriter + 5] = pf.pages;
+    noc_async_write(
+        page, su::addr(0, r.a9, wr.me(), kSProfPageBytes, 128 * (seg - kSegCount)), 128
+    );
+    return wr.poll(
+               [] {
+                   return ncrisc_noc_nonposted_writes_flushed(noc_index);
+               },
+               wr.args().wait_limit
+           ) == km::kGaveNone;
+}
+
+// One record's writing, its counters in pf.
+bool setup_writer_pass(const km::Writer& wr, const km_record_t& r, WProf& pf) {
+    const uint32_t seg = km::seg(r);
     auto flushed = [&] {
         return wr.poll(
                    [] {
@@ -48,15 +85,20 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
                ) == km::kGaveNone;
     };
     if (seg == kSegCount) {
+        const uint32_t a = km::wall();
         if (!wr.wait_front(kCbCount, 1)) {
             return true;
         }
+        const uint32_t b = km::wall();
+        pf.wait += b - a;
+        pf.bytes += kCountBytes;
         noc_async_write(
             get_read_ptr(kCbCount),
             su::addr(r.a8, r.a1, wr.me(), kCountBytes),
             kCountBytes
         );
         const bool ok = flushed();
+        pf.write += km::wall() - b;
         cb_pop_front(kCbCount, 1);
         return ok;
     }
@@ -128,12 +170,17 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
             .bank_base_address = r.a1, .page_size = kListPageBytes
         };
         for (;;) {
+            const uint32_t a = km::wall();
             if (!wr.wait_front(kCbOut, 1, 4)) {
                 return true;
             }
+            const uint32_t b = km::wall();
+            pf.wait += b - a;
             const uint32_t page = get_read_ptr(kCbOut);
             volatile tt_l1_ptr uint32_t* p = km::l1(page);
             const uint32_t head = p[0], n = head & ~kOutLast;
+            pf.bytes += 128 * n;
+            ++pf.pages;
             for (uint32_t i = 0; i < n && i < kOutEntries; ++i) {
                 const uint32_t s = p[1 + i];
                 noc_async_write(
@@ -143,6 +190,7 @@ bool setup_writer_record(const km::Writer& wr, const km_record_t& r) {
                 );
             }
             const bool ok = flushed();
+            pf.write += km::wall() - b;
             cb_pop_front(kCbOut, 1);
             if (!ok) {
                 return false;

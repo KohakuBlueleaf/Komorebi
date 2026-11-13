@@ -42,7 +42,8 @@
 #define RF_W_FRAME 11      /* their addresses, RF_FRAME_MAX words */
 #define RF_W_PROF (RF_W_FRAME + RF_FRAME_MAX) /* the fill's profile tensor */
 #define RF_W_REPEAT (RF_W_PROF + 1)           /* frames in a row (0: one) */
-#define RF_WORDS (RF_W_REPEAT + 1)
+#define RF_W_SPROF (RF_W_REPEAT + 1) /* the passes' profile tensor (a9), 0: none */
+#define RF_WORDS (RF_W_SPROF + 1)
 
 /* Regions, in this order */
 #define RF_R_CAMERA 0   /* the camera's 16 numbers */

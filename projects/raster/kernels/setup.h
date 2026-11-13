@@ -88,3 +88,13 @@ constexpr uint32_t kGaveBadClip = 7;
 constexpr uint32_t kGaveBadHist = 8;
 constexpr uint32_t kGaveBadHeavy = 9;
 constexpr uint32_t kGaveBadPlace = 10;  // PLACE without a8
+
+// Profile (a9 not 0): 32 words per pass per core, at 128 x (segment - kSegCount) of its
+// page; the threads leave wall-clock counters in kCbSProf and the writer sends them.
+constexpr uint32_t kCbSProf = 9;
+constexpr uint32_t kSProfBytes = 256;
+constexpr uint32_t kSProfPageBytes = 4096;
+constexpr uint32_t kSProfReader = 0;  // reserve wait, read, total, bytes, start
+constexpr uint32_t kSProfPack = 8;  // mail wait, vector, scalar, total, kept, clipped,
+                                    // entries, out wait
+constexpr uint32_t kSProfWriter = 16;  // wait, write, total, bytes, start, pages
