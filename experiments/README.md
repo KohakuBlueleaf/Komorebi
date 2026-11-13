@@ -90,3 +90,7 @@ place to ask a question and to be wrong.
   KiB; the i-cache must be invalidated after each load (else stale code runs); the
   compute cores are parked in a wait loop outside the slots; 120 cores swap a 20 KiB
   overlay in 11.5 µs with a copy in every DRAM bank.
+- [remote_load](remote_load/README.md): a core's slot programmed by another core. A
+  Tensix core stores bodies into 119 others in 29 µs; an X280 core decides each core's
+  next body (3.5 µs a swap), stores it, or patches a template's constant; the target
+  must invalidate its own i-cache: a NoC write to that register wedges the card.
