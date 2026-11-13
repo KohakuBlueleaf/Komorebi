@@ -50,6 +50,7 @@ def parse():
     p.add_argument("--stall-member", type=int, default=0, help="team index")
     p.add_argument("--stall-block", type=int, default=0)
     p.add_argument("--again", action="store_true", help="then a clean run")
+    p.add_argument("--empty-job", type=int, default=-1, help="a job casting 0 blocks")
     p.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
     p.add_argument("--deadline", type=float, default=1.0, help="per record, seconds")
     p.add_argument("--feeder", action="store_true", help="run on the test feeder")
@@ -154,7 +155,7 @@ def job_args(args, inputs, out, team, j, stall_job):
         a_t.buffer_address(),
         w_t.buffer_address(),
         out.buffer_address(),
-        args.blocks,
+        0 if j == args.empty_job else args.blocks,
         *stall,
         j * team.count,
     ]
@@ -169,7 +170,7 @@ def check(args, sets, out, team, place):
         a, b = sets[j % 2]
         a_sum, w_sum = a.sum((1, 2)), b.sum((1, 2))
         for core, (row, col) in place.items():
-            want = a_sum[row] + w_sum[col]
+            want = (a_sum[row] + w_sum[col]) * (j != args.empty_job)  # 0 blocks: 0
             mine = got[j, core - team.first]
             if not np.array_equal(mine, want):
                 wrong = int((mine != want).sum())

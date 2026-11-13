@@ -57,6 +57,7 @@ python broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --jobs 8
 python broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --read
 python broadcast.py --rect 4,0,4,3 --blocks 6 --pages 2 --jobs 2 --stall-job 0 \
     --stall-member 13 --stall-block 2 --wait 0.05 --deadline 0.5 --again
+python broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --jobs 3 --empty-job 1
 ```
 
 `--rect x0,y0,columns,rows` places the rectangle; its team is the smallest range of the
@@ -68,7 +69,8 @@ other cores of the lane give up waiting for the next block, the dispatch kernel 
 the record's deadline and the host raises `RecordTimeout`, which names the ticket and
 the members that did not report. Every kernel returns; `lane_gave_up` names, per core,
 the lane, where it waited and the block. `--again` then loads the program again in the
-same session and runs the clean case.
+same session and runs the clean case. With `--empty-job`, that job casts zero blocks on
+every lane (every checksum is zero) between jobs that cast the full count.
 
 The JSON line reports, per run, the dispatch kernel's error and record count, the
 host's microseconds per job, the blocks every lane handed over, every core's end

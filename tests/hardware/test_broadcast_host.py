@@ -1,5 +1,6 @@
-"""Lane broadcast on a card through the dispatch kernel (KMR_CARD=1), in one device
-open: a stalled receiver ends in the host's timeout, then the next run is exact."""
+"""Lane broadcast on a card through the dispatch kernel (KMR_CARD=1): a stalled
+receiver ends in the host's timeout, then the next run is exact; a record that casts
+no block finishes."""
 
 from pathlib import Path
 
@@ -29,3 +30,12 @@ def test_a_stalled_receiver_times_out_then_the_next_run_is_exact():
     assert clean["members_checked"] == 24 and clean["members_bad"] == 0
     for run in (stalled, clean):
         assert set(run["cores_ended"].values()) == {120}
+
+
+def test_a_record_that_casts_no_block_finishes_and_the_next_is_exact():
+    args = ["--rect", "4,0,4,3", "--blocks", 5, "--pages", 2, "--window", 2]
+    out = run_json(SCRIPT, *args, "--jobs", 3, "--empty-job", 1)
+    (run,) = out["runs"]
+    assert run["kernel"]["error_name"] == "none" and run["kernel"]["records"] == 4
+    assert run["core_gave_up"] == [] and run["lane_gave_up"] == []
+    assert run["members_checked"] == 36 and run["members_bad"] == 0
