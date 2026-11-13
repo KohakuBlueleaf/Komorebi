@@ -502,20 +502,20 @@
 <text x="52" y="766" class="s m" xml:space="preserve">Columns 7 and 10 are the Tensix columns fused off on the card used here.</text>
 <rect x="52" y="784" width="240" height="100" rx="4" class="box"/>
 <text x="64" y="806" class="b" xml:space="preserve">X280 0: the dispatch kernel</text>
-<text x="64" y="826" class="s m" xml:space="preserve">host ring, in order</text>
-<text x="64" y="842" class="s m" xml:space="preserve">up to 16 slots in flight</text>
-<text x="64" y="858" class="s m" xml:space="preserve">a deadline per record</text>
-<text x="64" y="874" class="s m" xml:space="preserve">one window per panel</text>
+<text x="64" y="826" class="s m" xml:space="preserve">the host ring, the thread's ring</text>
+<text x="64" y="842" class="s m" xml:space="preserve">streams, job queue, graphs</text>
+<text x="64" y="858" class="s m" xml:space="preserve">up to 16 records in flight</text>
+<text x="64" y="874" class="s m" xml:space="preserve">a deadline per record</text>
 <rect x="304" y="784" width="240" height="100" rx="4" class="box"/>
 <text x="316" y="806" class="b" xml:space="preserve">every Tensix core</text>
-<text x="316" y="826" class="s m" xml:space="preserve">reader (NoC0): takes the</text>
-<text x="316" y="842" class="s m" xml:space="preserve">next record of its team</text>
-<text x="316" y="858" class="s m" xml:space="preserve">compute: the segment</text>
-<text x="316" y="874" class="s m" xml:space="preserve">writer (NoC1): reports</text>
-<rect x="556" y="784" width="240" height="100" rx="4" class="plan"/>
-<text x="568" y="806" class="b m" xml:space="preserve">planned</text>
-<text x="568" y="826" class="s m" xml:space="preserve">streams, job queue and</text>
-<text x="568" y="842" class="s m" xml:space="preserve">graph executor on X280 0</text>
-<text x="568" y="858" class="s m" xml:space="preserve">user threads on X280 1-3</text>
-<text x="568" y="874" class="s m" xml:space="preserve">breakpoints between cores</text>
+<text x="316" y="826" class="s m" xml:space="preserve">reader (NoC0): the next record</text>
+<text x="316" y="842" class="s m" xml:space="preserve">compute: the segment</text>
+<text x="316" y="858" class="s m" xml:space="preserve">writer (NoC1): reports</text>
+<text x="316" y="874" class="s m" xml:space="preserve">ports, lanes, item queues</text>
+<rect x="556" y="784" width="240" height="100" rx="4" class="box"/>
+<text x="568" y="806" class="b" xml:space="preserve">X280 1: the work cluster</text>
+<text x="568" y="826" class="s m" xml:space="preserve">the program's C thread (kmx)</text>
+<text x="568" y="842" class="s m" xml:space="preserve">kmx_par on its four cores</text>
+<text x="568" y="858" class="s m" xml:space="preserve">issues records on its ring</text>
+<text x="568" y="874" class="s m" xml:space="preserve">planned: X280 2 and 3</text>
 </svg>
