@@ -17,25 +17,27 @@ CONSTANTS = lists.K
 
 @pytest.fixture(scope="module")
 def session():
-    with km.Session(log=card.log) as s:
-        yield s
+    with km.Session(log=card.log) as opened_session:
+        yield opened_session
 
 
 def fill(session, tiles, cores=0):
     """Fills the tiny scene's `tiles` on `cores` (0: all); the check of each tile."""
     scene, _ = run.load("tiny")
-    h = run.prepare(scene, card.workers(session), tiles=tiles, cores=cores)
-    n_out = len(h["tiles"]) * CONSTANTS["kPlanes"]
+    prepared = run.prepare(scene, card.workers(session), tiles=tiles, cores=cores)
+    n_out = len(prepared["tiles"]) * CONSTANTS["kPlanes"]
     lists_args = (
         CONSTANTS["kHandlerFill"],
-        h["pages"],
-        h["directory"],
+        prepared["pages"],
+        prepared["directory"],
         n_out,
         CONSTANTS["kPlanes"],
     )
     frame, _, status, _, _ = card.run_lists(session, *lists_args)
     assert status["ok"], status
-    return h, run.check("tiny", tiles, *(h[k] for k in run.ARGS), frame)
+    return prepared, run.check(
+        "tiny", tiles, *(prepared[name] for name in run.ARGS), frame
+    )
 
 
 def test_tiles_of_the_tiny_scene_equal_fill_tile(session):
@@ -45,8 +47,8 @@ def test_tiles_of_the_tiny_scene_equal_fill_tile(session):
 
 
 def test_a_tile_split_into_bands_over_two_cores_equals_fill_tile(session):
-    h, check = fill(session, [367], cores=2)
-    assert len(h["tiles_of"][0]) + len(h["tiles_of"][1]) > 1
+    prepared, check = fill(session, [367], cores=2)
+    assert len(prepared["tiles_of"][0]) + len(prepared["tiles_of"][1]) > 1
     assert run.check_ok(check), check
 
 

@@ -9,21 +9,21 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import commands as rec
+import commands as feeder_commands
 import numpy as np
 
 from komorebi.session import compute_config
 
-CONSTANTS = rec.CONSTANTS
-FEEDER_KERNEL = rec.HERE / "feeder.cpp"
+CONSTANTS = feeder_commands.CONSTANTS
+FEEDER_KERNEL = feeder_commands.HERE / "feeder.cpp"
 
 
-T0 = time.monotonic()
+STARTED = time.monotonic()
 
 
-def log(msg):
+def log(message):
     """One progress line with seconds since start, flushed (the watcher reads it)."""
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def aiclk_mhz():
@@ -40,7 +40,9 @@ def core_set(cores):
 
 def int32_tensor(session, rows, shard_grid=None):
     """A row-major int32 tensor with the bits of the uint32 rows (one page a row)."""
-    return session.tensor(rec.as_int32(rows), "int32", shard_grid=shard_grid)
+    return session.tensor(
+        feeder_commands.as_int32(rows), "int32", shard_grid=shard_grid
+    )
 
 
 def read_int32(tensor):
@@ -84,15 +86,15 @@ class Fed:
 
     def __init__(self, session):
         self.session = session
-        gx, gy = session.grid
-        self.grid = (gx, gy)
-        self.core_count = gx * gy
+        grid_x, grid_y = session.grid
+        self.grid = (grid_x, grid_y)
+        self.core_count = grid_x * grid_y
         self.workers = self.core_count - 1
-        self.logical = [(i % gx, i // gx) for i in range(self.core_count)]
+        self.logical = [(i % grid_x, i // grid_x) for i in range(self.core_count)]
         self.noc = []
         for x, y in self.logical:
-            cx, cy = session.device.worker_core(x, y)
-            self.noc.append(cx | cy << 16)
+            noc_x, noc_y = session.device.worker_core(x, y)
+            self.noc.append(noc_x | noc_y << 16)
         self.worker_set = core_set(self.logical[: self.workers])
         self.feeder_set = core_set(self.logical[self.workers :])
         self.mhz = aiclk_mhz()
@@ -128,7 +130,7 @@ class Fed:
         (komorebi.program.Dynamic): its handler runs dynamic, queues in DRAM (at most
         queue_bytes), status lines on the feeder, its arguments before the program's."""
         session, mhz = self.session, self.mhz
-        n = len(commands)
+        command_count = len(commands)
         tag = (random.getrandbits(16) | 1) & 0xFFFF
         control = self.control_blocks()
         control_addr = control.address
@@ -136,9 +138,11 @@ class Fed:
         core_table[0, : self.core_count] = self.noc
         cores_t = int32_tensor(session, core_table)
         table_t = int32_tensor(
-            session, np.asarray(commands, dtype=np.uint64).reshape(n, 16)
+            session, np.asarray(commands, dtype=np.uint64).reshape(command_count, 16)
         )
-        results_t = int32_tensor(session, np.zeros((n + 2, 16)))  # + EXIT, end command
+        results_t = int32_tensor(
+            session, np.zeros((command_count + 2, 16))
+        )  # + EXIT, end command
         if trace_cap % 4:  # the kernel writes cap * 16 bytes as one page
             raise ValueError(f"trace_cap {trace_cap} is not a multiple of 4")
         trace_t = None
@@ -157,9 +161,12 @@ class Fed:
             messages_rw = dynamic.args(queue_t.address, lines_t.address)
             messages_c = dynamic.compute_args(self.workers)
             log(f"dynamic: {dynamic.queue_bytes(self.workers) >> 20} MiB of queues")
-        log(f"tensors: control at {control_addr:#x}, {n} commands, tag {tag:#06x}")
+        log(
+            f"tensors: control at {control_addr:#x}, {command_count} commands, "
+            f"tag {tag:#06x}"
+        )
 
-        grp, n_groups = rec.groups(self.grid, self.workers)
+        grp, n_groups = feeder_commands.groups(self.grid, self.workers)
         feeder = self.workers
         base = {
             "control": control_addr,
@@ -171,20 +178,24 @@ class Fed:
             "depth": depth,
             "workers": self.workers,
             "row": self.grid[0] if row is None else row,
-            "wait_limit": rec.limit_units(wait_s, mhz),
-            "idle_limit": rec.limit_units(idle_s, mhz) if idle_s else 0,  # 0: none
+            "wait_limit": feeder_commands.limit_units(wait_s, mhz),
+            "idle_limit": (
+                feeder_commands.limit_units(idle_s, mhz) if idle_s else 0
+            ),  # 0: none
             "trace": trace_t.address if trace_t is not None else 0,
             "trace_cap": trace_cap,
         }
         mailbox = control_addr + CONSTANTS["KM_CONTROL_JOB"]
         aligned = [control_addr, base["ack_base"], base["ready_base"], mailbox]
-        if any(addr % 16 for addr in aligned):  # small writes go slot to slot
-            raise ValueError(f"bases not 16-byte aligned: {[hex(a) for a in aligned]}")
+        if any(address % 16 for address in aligned):  # small writes go slot to slot
+            raise ValueError(
+                f"bases not 16-byte aligned: {[hex(address) for address in aligned]}"
+            )
         reader_args, writer_args, compute_args = [], [], []
         for core in range(self.workers):
             x, y = self.logical[core]
             leader, rank, peers, ready_slot = grp[core]
-            start = rec.start_args(
+            start = feeder_commands.start_args(
                 base
                 | {
                     "me": core,
@@ -200,18 +211,18 @@ class Fed:
             writer_args.append((x, y, start + messages_rw + list(extra[1])))
             compute = [control_addr, core, base["wait_limit"], base["idle_limit"]]
             compute_args.append((x, y, compute + messages_c + list(extra[2])))
-        fx, fy = self.logical[feeder]
-        fd = {
+        feeder_x, feeder_y = self.logical[feeder]
+        feeder_words = {
             "kFdControl": control_addr,
             "kFdWorkers": self.workers,
             "kFdCores": cores_t.address,
             "kFdTable": table_t.address,
-            "kFdCommands": n,
+            "kFdCommands": command_count,
             "kFdDepth": depth,
-            "kFdDeadline": rec.limit_units(deadline_s, mhz),
+            "kFdDeadline": feeder_commands.limit_units(deadline_s, mhz),
             "kFdResults": results_t.address,
             "kFdGroups": n_groups,
-            "kFdBootLimit": rec.limit_units(wait_s, mhz),
+            "kFdBootLimit": feeder_commands.limit_units(wait_s, mhz),
             "kFdExit": int(send_exit),
             "kFdRelease": release,
             "kFdRaw": raw,
@@ -219,19 +230,34 @@ class Fed:
             "kFdLines": lines_t.address if lines_t is not None else 0,
         }
         words = [0] * CONSTANTS["kFdArgs"]
-        for name, value in fd.items():
+        for name, value in feeder_words.items():
             words[CONSTANTS[name]] = value
-        feeder_args = [(fx, fy, words)]
+        feeder_args = [(feeder_x, feeder_y, words)]
 
-        include = [str(rec.INCLUDE)]
+        include = [str(feeder_commands.INCLUDE)]
         launch = session.launch()
         tok = CONSTANTS["kTokenBytes"]
-        cbs = [(i, f, p, c, self.worker_set) for i, f, p, c in kernels.cbs]
+        cbs = [
+            (i, data_format, page_bytes, page_count, self.worker_set)
+            for i, data_format, page_bytes, page_count in kernels.cbs
+        ]
         cbs += [
             (CONSTANTS["kCbTokenCompute"], "uint32", tok, 1, self.worker_set),
             (CONSTANTS["kCbTokenWriter"], "uint32", tok, 1, self.worker_set),
-            (CONSTANTS["kFdCbTable"], "uint32", 64 * (n + 2), 1, self.feeder_set),
-            (CONSTANTS["kFdCbResults"], "uint32", 64 * (n + 2), 1, self.feeder_set),
+            (
+                CONSTANTS["kFdCbTable"],
+                "uint32",
+                64 * (command_count + 2),
+                1,
+                self.feeder_set,
+            ),
+            (
+                CONSTANTS["kFdCbResults"],
+                "uint32",
+                64 * (command_count + 2),
+                1,
+                self.feeder_set,
+            ),
         ]
         if trace_cap:
             page = trace_cap * CONSTANTS["kTraceWords"] * 4
@@ -250,40 +276,44 @@ class Fed:
                 compute_config(kernels.compute_options),
             ),
         ]
-        for source, args, processor, ct, config in worker:
+        for source, args, processor, compile_arguments, config in worker:
             launch.kernel(
-                str(source), self.worker_set, processor, list(ct), defines, include,
-                args, **config,
+                str(source), self.worker_set, processor, list(compile_arguments),
+                defines, include, args, **config,
             )  # fmt: skip
         launch.kernel(
             str(FEEDER_KERNEL), self.feeder_set, 0, [], defines, include, feeder_args
         )
         log("launch")
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         launch.run()
         session.device.finish()
-        host_s = time.perf_counter() - t0
+        host_s = time.perf_counter() - started
         log(f"program done in {host_s:.2f}s")
         rows = read_int32(results_t)
         control_words = read_int32(control)
-        state, ports = rec.state_words(control_words), rec.port_words(control_words)
+        state, ports = feeder_commands.state_words(
+            control_words
+        ), feeder_commands.port_words(control_words)
         lines = None
         if lines_t is not None:  # the feeder's shard holds the lines
-            shard = rec.as_uint32(read_int32(lines_t))[feeder]
+            shard = feeder_commands.as_uint32(read_int32(lines_t))[feeder]
             lines = shard[: self.workers * 4].reshape(self.workers, 4)
         trace = None
         if trace_t is not None:
-            trace = rec.as_uint32(read_int32(trace_t)).reshape(self.workers, -1, 4)
+            trace = feeder_commands.as_uint32(read_int32(trace_t)).reshape(
+                self.workers, -1, 4
+            )
         log("results read back")
         return Result(
-            summary=rec.feeder_summary(rows),
-            commands=rec.feeder_commands(rows[: n + 1]),
+            summary=feeder_commands.feeder_summary(rows),
+            commands=feeder_commands.feeder_commands(rows[: command_count + 1]),
             state=state,
             ports=ports,
             trace=trace,
             mhz=mhz,
             host_s=host_s,
-            control=rec.as_uint32(control_words),
+            control=feeder_commands.as_uint32(control_words),
             lines=lines,
-            rows=rec.as_uint32(rows),
+            rows=feeder_commands.as_uint32(rows),
         )

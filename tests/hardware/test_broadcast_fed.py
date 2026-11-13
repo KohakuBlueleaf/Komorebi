@@ -20,9 +20,9 @@ def test_a_stalled_receiver_times_out_then_rows_and_columns_are_exact():
     stalled, clean = out["runs"]
     assert stalled["feeder"]["status"] == "timeout"
     sender = [
-        g
-        for g in stalled["broadcast_gave_up"]
-        if g["core"] == 16 and g["broadcast"] == 1
+        entry
+        for entry in stalled["broadcast_gave_up"]
+        if entry["core"] == 16 and entry["broadcast"] == 1
     ]
     assert sender[0]["where"] == "broadcastdone" and sender[0]["block"] == 3
     assert clean["feeder"]["status"] == "done" and clean["core_gave_up"] == []

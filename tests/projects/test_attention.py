@@ -4,17 +4,17 @@ tables) and the float64 reference."""
 import numpy as np
 import pytest
 
-from projects.attention import plan as pl
+from projects.attention import plan as attention_plan
 from projects.attention.reference import sdpa
 
-CONSTANTS = pl.K
+CONSTANTS = attention_plan.K
 GRID = (12, 10)
 
 
 @pytest.mark.parametrize("causal", [False, True])
 def test_plan_takes_every_query_row_once(causal):
-    dims = pl.dims(2, 4, 2, 256, 256, 64, 64, causal)
-    plan = pl.make(dims, GRID, length=5)
+    dims = attention_plan.dims(2, 4, 2, 256, 256, 64, 64, causal)
+    plan = attention_plan.make(dims, GRID, length=5)
     seen = []
     for core, jobs in enumerate(plan.jobs):
         for j in jobs:
@@ -32,8 +32,8 @@ def test_plan_takes_every_query_row_once(causal):
 
 
 def test_causal_chunks_of_equal_area_take_every_row_once_and_even_the_cores():
-    dims = pl.dims(1, 8, 8, 1024, 1024, 64, 64, True)
-    plain, split = pl.make(dims, GRID, length=5), pl.make(
+    dims = attention_plan.dims(1, 8, 8, 1024, 1024, 64, 64, True)
+    plain, split = attention_plan.make(dims, GRID, length=5), attention_plan.make(
         dims, GRID, length=5, chunks=6
     )
     seen = sorted(
@@ -45,27 +45,34 @@ def test_causal_chunks_of_equal_area_take_every_row_once_and_even_the_cores():
     assert seen == [
         (head_index, row) for head_index in range(dims.h) for row in range(dims.sqt)
     ]
-    most = [max(pl.score_tiles(dims, j) for j in plan.jobs) for plan in (plain, split)]
+    most = [
+        max(attention_plan.score_tiles(dims, j) for j in plan.jobs)
+        for plan in (plain, split)
+    ]
     assert most[1] < most[0]
     with pytest.raises(ValueError):
-        pl.make(dims, GRID, length=1, chunks=1)  # 32 rows on one core: over R
+        attention_plan.make(
+            dims, GRID, length=1, chunks=1
+        )  # 32 rows on one core: over R
 
 
 def test_blocks_fit_the_budget():
-    dims = pl.dims(1, 1, 1, 128, 128, 64, 64, False)
-    assert pl.blocks(dims) == (13, 12)
-    query_rows, key_block = pl.blocks(dims, budget=300_000)
-    assert (query_rows, key_block) == (6, 6) and pl.l1_bytes(
+    dims = attention_plan.dims(1, 1, 1, 128, 128, 64, 64, False)
+    assert attention_plan.blocks(dims) == (13, 12)
+    query_rows, key_block = attention_plan.blocks(dims, budget=300_000)
+    assert (query_rows, key_block) == (6, 6) and attention_plan.l1_bytes(
         dims, query_rows, key_block
     ) <= 300_000
-    assert pl.l1_bytes(dims, 7, 6) > 300_000  # KB first went down to 6, then R
-    assert pl.blocks(dims, budget=10_000) == (0, 0)
+    assert (
+        attention_plan.l1_bytes(dims, 7, 6) > 300_000
+    )  # KB first went down to 6, then R
+    assert attention_plan.blocks(dims, budget=10_000) == (0, 0)
 
 
 def test_tables_follow_the_header():
-    dims = pl.dims(1, 2, 2, 64, 64, 64, 64, False)
-    plan = pl.make(dims, GRID, length=10)
-    words = pl.tables(plan)
+    dims = attention_plan.dims(1, 2, 2, 64, 64, 64, 64, False)
+    plan = attention_plan.make(dims, GRID, length=10)
+    words = attention_plan.tables(plan)
     assert words.shape == (120, CONSTANTS["kTableBytes"] // 4)
     core = next(core_index for core_index, jobs in enumerate(plan.jobs) if jobs)
     j, offset = plan.jobs[core][0], CONSTANTS["kTabFirst"]
@@ -76,8 +83,8 @@ def test_tables_follow_the_header():
 
 
 def test_buffers_and_profile_words_do_not_collide():
-    dims = pl.dims(1, 2, 2, 64, 64, 128, 128, True)
-    cbs = [buffer[0] for buffer in pl.buffers(dims, 13, 12)]
+    dims = attention_plan.dims(1, 2, 2, 64, 64, 128, 128, True)
+    cbs = [buffer[0] for buffer in attention_plan.buffers(dims, 13, 12)]
     assert len(set(cbs)) == len(cbs) and max(cbs) < 29  # 29 to 31: the runtime's
     prof = [
         value
@@ -86,11 +93,11 @@ def test_buffers_and_profile_words_do_not_collide():
     ]
     assert len(set(prof)) == len(prof) and max(prof) < CONSTANTS["kProfWords"]
     assert CONSTANTS["kProfWords"] * 4 <= CONSTANTS["kProfBytes"]
-    assert len(pl.call_args(1, 2, 3, 4, 5, passes=7)) == 9
+    assert len(attention_plan.call_args(1, 2, 3, 4, 5, passes=7)) == 9
 
 
 def test_exp_constants():
-    factor, thr = pl.exp_constants(0.125)
+    factor, thr = attention_plan.exp_constants(0.125)
     assert np.uint32(factor).view(np.float32) == np.float32(0.125 * 1.4426950408889634)
     assert np.uint32(thr).view(np.float32) == 655.0
 

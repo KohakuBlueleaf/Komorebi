@@ -13,11 +13,11 @@ import numpy as np
 import komorebi as km
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect"
-T0 = time.monotonic()
+STARTED = time.monotonic()
 
 
-def log(msg):
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+def log(message):
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def program(kernels):
@@ -39,17 +39,17 @@ def case_compile_error(session):
     """A compute kernel that fails to compile: ProgramError, no run loaded; then the
     good program loads and runs in the same session (no image was left running)."""
     out, before = {}, session.run
-    with tempfile.TemporaryDirectory() as tmp:
-        broken = Path(tmp) / "kernels"
+    with tempfile.TemporaryDirectory() as directory:
+        broken = Path(directory) / "kernels"
         shutil.copytree(EXAMPLE / "kernels", broken)
         compute = broken / "compute.cpp"
         compute.write_text(compute.read_text() + "\n#error deliberate compile error\n")
         try:
             session.load(program(broken))
             out["raised"] = None
-        except km.ProgramError as err:
-            out["raised"] = type(err).__name__
-            out["names_error"] = "deliberate compile error" in str(err)
+        except km.ProgramError as error:
+            out["raised"] = type(error).__name__
+            out["names_error"] = "deliberate compile error" in str(error)
     out["run_after_error"] = session.run is not before
     run = session.load(program(EXAMPLE / "kernels"))
     out["nop_after"] = run.wait(run.submit(0, (0, 8))).kind
@@ -69,19 +69,25 @@ def case_exclusive(session):
     until that one completed (trace: its cores took it after the leader pushed)."""
     run = session.load(program(EXAMPLE / "kernels"), trace=64)
     pairs = []
-    for k in range(20):
-        a = run.submit(0, (0, 60))
-        b = run.submit(0, (30, 60), exclusive=k % 2 == 1)
-        pairs.append((a, b, k % 2 == 1))
+    for index in range(20):
+        first = run.submit(0, (0, 60))
+        second = run.submit(0, (30, 60), exclusive=index % 2 == 1)
+        pairs.append((first, second, index % 2 == 1))
     run.drain()
     run.stop()
     trace = run.trace()
-    leads = [(excl, trace.lead(a, b)) for a, b, excl in pairs]
+    leads = [
+        (exclusive, trace.lead(first, second)) for first, second, exclusive in pairs
+    ]
     out = {
-        "exclusive_leads_microseconds": [round(v, 3) for e, v in leads if e],
-        "plain_leads_microseconds": [round(v, 3) for e, v in leads if not e],
+        "exclusive_leads_microseconds": [
+            round(lead, 3) for is_exclusive, lead in leads if is_exclusive
+        ],
+        "plain_leads_microseconds": [
+            round(lead, 3) for is_exclusive, lead in leads if not is_exclusive
+        ],
     }
-    out["ok"] = all(v < 0 for e, v in leads if e)
+    out["ok"] = all(lead < 0 for is_exclusive, lead in leads if is_exclusive)
     return out
 
 
@@ -92,17 +98,23 @@ def case_queue_order(session, rounds=1000, jobs=32, count=8, busy=200):
     pages that hold it. SUM must wait for every queued job: `jobs` each round."""
     prog, pages = queue_program(session)
     run = session.load(prog)
-    at, counts, t0 = pages.address, [], time.monotonic()
-    for k in range(rounds):
-        run.submit(3, None, args=[at, busy])
+    address, counts, started = pages.address, [], time.monotonic()
+    for round_index in range(rounds):
+        run.submit(3, None, args=[address, busy])
         for j in range(jobs):
-            run.submit(1, count, args=[at, j, k + 1], queued=True)
-        total = run.submit(2, None, args=[at, jobs, k + 1], exclusive=True, result=True)
+            run.submit(1, count, args=[address, j, round_index + 1], queued=True)
+        total = run.submit(
+            2, None, args=[address, jobs, round_index + 1], exclusive=True, result=True
+        )
         counts.append(run.wait(total).result)
     run.drain()
-    took = time.monotonic() - t0
+    took = time.monotonic() - started
     run.stop()
-    short = [(k, c) for k, c in enumerate(counts) if c != jobs]
+    short = [
+        (round_index, done_count)
+        for round_index, done_count in enumerate(counts)
+        if done_count != jobs
+    ]
     out = {"rounds": rounds, "rounds_short": len(short), "first_short": short[:8]}
     out["ms_per_round"] = round(took / rounds * 1e3, 3)
     out["ok"] = not short and run.result()["error"] == 0
@@ -126,35 +138,41 @@ def case_queue_cost(session, windows=10, window=48, count=8, reads=(0, 100)):
     cores, queued or on fixed disjoint groups, each window submitted and waited for at
     once: PUTs, or BUSY commands whose leader reads a page `reads` times."""
     prog, pages = queue_program(session)
-    at, out = pages.address, {}
-    for mode in [(m, r) for r in reads for m in ("plain", "queued")]:
+    address, out = pages.address, {}
+    for mode in [
+        (mode_name, reader) for reader in reads for mode_name in ("plain", "queued")
+    ]:
         run = session.load(prog)
-        events, t0 = [], time.monotonic()
-        for w in range(windows):
+        events, started = [], time.monotonic()
+        for window_index in range(windows):
             handles = []
             for j in range(window):
                 if mode[0] == "queued":
                     group, queued = count, True
                 else:
                     group, queued = (count * (j % (run.cores // count)), count), False
-                handler, args = (3, [at, mode[1]]) if mode[1] else (1, [at, j, w + 1])
+                handler, args = (
+                    (3, [address, mode[1]])
+                    if mode[1]
+                    else (1, [address, j, window_index + 1])
+                )
                 handles.append(run.submit(handler, group, args=args, queued=queued))
             events += run.wait(handles)
-        wall = time.monotonic() - t0
+        wall = time.monotonic() - started
         run.stop()
-        res, n = run.result(), windows * window
+        result, commands = run.result(), windows * window
         out[f"{mode[0]}_{mode[1]}_reads"] = {
-            "host_microseconds_per_command": round(wall / n * 1e6, 2),
-            "host_submit_microseconds": round(run.submit_s / n * 1e6, 2),
-            "kernel_microseconds_per_command": round(res["last"] / 50 / n, 2),
+            "host_microseconds_per_command": round(wall / commands * 1e6, 2),
+            "host_submit_microseconds": round(run.submit_s / commands * 1e6, 2),
+            "kernel_microseconds_per_command": round(result["last"] / 50 / commands, 2),
             "submit_to_done_microseconds": round(
-                float(np.mean([e.ticks for e in events])) / 50, 2
+                float(np.mean([event.ticks for event in events])) / 50, 2
             ),
-            "passes_per_command": round(res["passes"] / n, 1),
-            "max_busy": res["max_busy"],
-            "all_done": all(e.kind == "done" for e in events),
+            "passes_per_command": round(result["passes"] / commands, 1),
+            "max_busy": result["max_busy"],
+            "all_done": all(event.kind == "done" for event in events),
         }
-    out["ok"] = all(v["all_done"] for v in out.values())
+    out["ok"] = all(lead["all_done"] for lead in out.values())
     return out
 
 
@@ -170,21 +188,23 @@ def case_read(session):
     rng = np.random.default_rng(3)
     words = rng.integers(0, 1 << 32, (37, 24), dtype=np.uint64).astype(np.uint32)
     x = rng.integers(-4, 5, (96, 64)).astype(np.float32)  # exact in bfloat16
-    w = session.tensor(words, "uint32")
-    a, b = bf16_tiles(session, x), bf16_tiles(session, 2 * x)
-    raw, got_a, got_b = session.read(w)[0], *session.read_bf16(a, b)
+    words_tensor = session.tensor(words, "uint32")
+    first_tiles, second_tiles = bf16_tiles(session, x), bf16_tiles(session, 2 * x)
+    raw, got_a, got_b = session.read(words_tensor)[0], *session.read_bf16(
+        first_tiles, second_tiles
+    )
     out = {
         "words": bool((raw.reshape(-1).view(np.uint32) == words.reshape(-1)).all()),
         "tiles": bool((got_a == x).all() and (got_b == 2 * x).all()),
-        "as_whole": bool((got_a == a.read()).all()),
+        "as_whole": bool((got_a == first_tiles.read()).all()),
     }
     run = session.load(program(EXAMPLE / "kernels"))
     run.wait(run.submit(0, (0, 8)))
     log("read while the run is loaded")
-    (during,) = session.read_bf16(a)
+    (during,) = session.read_bf16(first_tiles)
     out["during_run"] = bool((during == x).all())
     run.stop()
-    out["ok"] = all(out[k] for k in ("words", "tiles", "as_whole"))
+    out["ok"] = all(out[name] for name in ("words", "tiles", "as_whole"))
     out["ok"] = out["ok"] and out["during_run"] and run.result()["error"] == 0
     return out
 
@@ -194,20 +214,20 @@ def case_start_error(session):
     it opens a window. StartError with its result; the host stops the grid (every
     reader gave up on the stop flag, not its idle limit); then a run works."""
     out = {}
-    t0 = time.monotonic()
+    started = time.monotonic()
     try:
         session.load(program(EXAMPLE / "kernels"), deadline=1e-9, idle=60.0)
         out["raised"] = None
-    except km.StartError as err:
-        out["raised"] = type(err).__name__
-        out["result"] = err.result is not None
-        out["message"] = str(err)[:200]
-    out["start_error_s"] = round(time.monotonic() - t0, 2)
+    except km.StartError as error:
+        out["raised"] = type(error).__name__
+        out["result"] = error.result is not None
+        out["message"] = str(error)[:200]
+    out["start_error_s"] = round(time.monotonic() - started, 2)
     failed = session.run
     readers = {}
-    for c in failed.state():
-        r = c["reader"]
-        key = f"{r['code']} in {r['where']}" if r else "none"
+    for core in failed.state():
+        reader = core["reader"]
+        key = f"{reader['code']} in {reader['where']}" if reader else "none"
         readers[key] = readers.get(key, 0) + 1
     out["readers"] = readers
     run = session.load(program(EXAMPLE / "kernels"))
@@ -234,9 +254,9 @@ CASES = {
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("case", choices=sorted(CASES))
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("case", choices=sorted(CASES))
+    args = parser.parse_args()
     with km.Session(log=log) as session:
         out = {"case": args.case, **CASES[args.case](session)}
     print(json.dumps(out), flush=True)

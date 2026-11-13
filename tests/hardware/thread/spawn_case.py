@@ -9,7 +9,7 @@ from pathlib import Path
 import komorebi as km
 
 HERE = Path(__file__).resolve().parent
-T0 = time.monotonic()
+STARTED = time.monotonic()
 OK, FULL, NONE, BAD = 0, 1, 4, 5
 WANT = [
     OK, FULL, FULL, BAD, BAD, OK, 101, OK, OK, OK, OK, 202, 303, OK, 1606, 2, 1,
@@ -17,8 +17,8 @@ WANT = [
 ]  # fmt: skip
 
 
-def log(msg):
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+def log(message):
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def main():
@@ -27,12 +27,12 @@ def main():
     with km.Session(log=log) as session:
         run = session.load(prog)
         log("loaded")
-        r = run.thread_result(timeout=5.0)
-        log(f"thread result: {r}")
+        result = run.thread_result(timeout=5.0)
+        log(f"thread result: {result}")
         run.stop()
-    out = r._asdict()
+    out = result._asdict()
     out["want"] = WANT
-    out["ok"] = r.code == 0 and r.error == "none" and r.words == WANT
+    out["ok"] = result.code == 0 and result.error == "none" and result.words == WANT
     print(json.dumps(out), flush=True)
 
 

@@ -15,17 +15,21 @@ BUFFER = Path(__file__).resolve().parent / "host" / "kernel_buffer_case.py"
 def test_a_stalled_rank_times_out_naming_its_ports_then_the_next_load_is_exact():
     args = ["--group-list", "0:8,0:119", "--form", "both", "--stall-rank", 3]
     out = run_json(SCRIPT, *args)
-    s = out["stall"]  # job 1: by tree on cores 0 to 7; rank 3 sends to rank 2
-    assert s["kernel"]["error_name"] == "deadline"
-    assert s["timed_out"]["handle"] == 2 and s["timed_out"]["group"] == [0, 8]
-    assert s["waiting_ports"] == {"2": {"0": 1}, "0": {"1": 1}}
-    readers = {g["core"]: g["reader"] for g in s["gave_up"] if "reader" in g}
+    stall = out["stall"]  # job 1: by tree on cores 0 to 7; rank 3 sends to rank 2
+    assert stall["kernel"]["error_name"] == "deadline"
+    assert stall["timed_out"]["handle"] == 2 and stall["timed_out"]["group"] == [0, 8]
+    assert stall["waiting_ports"] == {"2": {"0": 1}, "0": {"1": 1}}
+    readers = {
+        entry["core"]: entry["reader"]
+        for entry in stall["gave_up"]
+        if "reader" in entry
+    }
     assert readers[2]["where"] == "port" and readers[2]["port"] == 0
     after = out["after"]  # both forms on 0:8 and on 0:119, with their result words
     assert after["done"] == 4 and after["jobs_bad"] == 0
     assert after["pairs_checked"] == after["pairs_bit_equal"] == 1
     assert after["results_checked"] == 4 and after["results_bad"] == 0
-    for run in (s, after):
+    for run in (stall, after):
         assert set(run["cores_ended"].values()) == {120}
 
 

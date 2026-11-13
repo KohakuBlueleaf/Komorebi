@@ -26,12 +26,12 @@ def test_a_stalled_receiver_times_out_then_the_next_run_is_exact():
         stalled["kernel"]["commands"] == 1
     )  # job 1, stored behind it, never submitted
     assert timed_out["handle"] == 1 and timed_out["group"] == [4, 28]
-    named = {c["core"]: c for c in timed_out["not_reported"]}
+    named = {core["core"]: core for core in timed_out["not_reported"]}
     assert named[17]["reader"]["where"] == "stall"
     sender = [
-        g
-        for g in stalled["broadcast_gave_up"]
-        if g["core"] == 16 and g["broadcast"] == 1
+        entry
+        for entry in stalled["broadcast_gave_up"]
+        if entry["core"] == 16 and entry["broadcast"] == 1
     ]
     assert sender[0]["where"] == "broadcastdone" and sender[0]["block"] == 3
     assert clean["kernel"]["error_name"] == "none" and clean["core_gave_up"] == []

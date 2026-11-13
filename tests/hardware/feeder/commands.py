@@ -43,7 +43,7 @@ def struct_fields(path, name):
     for decl in re.findall(
         r"uint32_t\s+([^;]+);", re.sub(r"//.*|/\*.*?\*/", "", body[1])
     ):
-        fields += [f.strip() for f in decl.split(",")]
+        fields += [field.strip() for field in decl.split(",")]
     return fields
 
 
@@ -61,12 +61,12 @@ def command(handler, first, count, args=(), flags=0):
     words["hdr"] = handler | flags << 8  # flag bit 0 is reserved and zero
     words["group"] = first | count << 16
     words.update(zip(ARG_WORDS, args))
-    return [words[f] & 0xFFFFFFFF for f in COMMAND_FIELDS]
+    return [words[field] & 0xFFFFFFFF for field in COMMAND_FIELDS]
 
 
-def partition(n, index, count):
+def partition(size, index, count):
     """(start, length) of rank `index` of `count` in n items, as km::partition."""
-    base, extra = divmod(n, count)
+    base, extra = divmod(size, count)
     return index * base + min(index, extra), base + (index < extra)
 
 
@@ -85,11 +85,11 @@ def groups(grid, workers):
 
     Returns ({core: (leader, rank, peers, ready_slot)}, number of groups): the
     lowest core of each column leads; ready_slot is the column."""
-    gx = grid[0]
+    grid_x = grid[0]
     out = {}
     columns = 0
-    for x in range(gx):
-        column = [i for i in range(x, workers, gx)]
+    for x in range(grid_x):
+        column = [i for i in range(x, workers, grid_x)]
         if not column:
             continue
         columns += 1
@@ -105,7 +105,7 @@ def start_args(values):
     missing = set(ARG_FIELDS) - set(values)
     if missing:
         raise ValueError(f"missing start-up arguments: {sorted(missing)}")
-    return [values[f] & 0xFFFFFFFF for f in ARG_FIELDS]
+    return [values[field] & 0xFFFFFFFF for field in ARG_FIELDS]
 
 
 def limit_units(seconds, mhz):
@@ -113,10 +113,10 @@ def limit_units(seconds, mhz):
     return max(1, int(seconds * mhz * 1e6) >> 10)
 
 
-def random_groups(rng, n, workers):
+def random_groups(rng, jobs, workers):
     """n groups (first, count) of cores 0 to workers - 1, count and first uniform."""
     groups = []
-    for _ in range(n):
+    for _ in range(jobs):
         count = int(rng.integers(1, workers + 1))
         first = int(rng.integers(0, workers - count + 1))
         groups.append((first, count))
@@ -125,7 +125,7 @@ def random_groups(rng, n, workers):
 
 def feeder_summary(rows):
     """Row 0 of the feeder's results as a dict."""
-    r = as_uint32(rows)[0]
+    row = as_uint32(rows)[0]
     status = {
         CONSTANTS["kFsNone"]: "none",
         CONSTANTS["kFsDone"]: "done",
@@ -134,29 +134,29 @@ def feeder_summary(rows):
         CONSTANTS["kFsMessagesGave"]: "messages_gave",
     }
     return {
-        "magic_ok": int(r[CONSTANTS["kFrMagic"]]) == CONSTANTS["kFeederMagic"],
+        "magic_ok": int(row[CONSTANTS["kFrMagic"]]) == CONSTANTS["kFeederMagic"],
         "status": status.get(
-            int(r[CONSTANTS["kFrStatus"]]), int(r[CONSTANTS["kFrStatus"]])
+            int(row[CONSTANTS["kFrStatus"]]), int(row[CONSTANTS["kFrStatus"]])
         ),
-        "slot": int(r[CONSTANTS["kFrSlot"]]),
-        "sequence": int(r[CONSTANTS["kFrSequence"]]),
-        "index": int(r[CONSTANTS["kFrIndex"]]),
-        "submitted": int(r[CONSTANTS["kFrSubmitted"]]),
-        "done": int(r[CONSTANTS["kFrDone"]]),
-        "boot_cycles": int(r[CONSTANTS["kFrBoot"]]) * 16,
-        "span_cycles": int(r[CONSTANTS["kFrSpanLo"]])
-        | int(r[CONSTANTS["kFrSpanHi"]]) << 32,
-        "submit_cycles": int(r[CONSTANTS["kFrSubmitCycles"]]),
-        "max_busy": int(r[CONSTANTS["kFrMaxBusy"]]),
-        "ready_mask": int(r[CONSTANTS["kFrReady"]]),
-        "exit_acked": bool(r[CONSTANTS["kFrExitAcked"]]),
+        "slot": int(row[CONSTANTS["kFrSlot"]]),
+        "sequence": int(row[CONSTANTS["kFrSequence"]]),
+        "index": int(row[CONSTANTS["kFrIndex"]]),
+        "submitted": int(row[CONSTANTS["kFrSubmitted"]]),
+        "done": int(row[CONSTANTS["kFrDone"]]),
+        "boot_cycles": int(row[CONSTANTS["kFrBoot"]]) * 16,
+        "span_cycles": int(row[CONSTANTS["kFrSpanLo"]])
+        | int(row[CONSTANTS["kFrSpanHi"]]) << 32,
+        "submit_cycles": int(row[CONSTANTS["kFrSubmitCycles"]]),
+        "max_busy": int(row[CONSTANTS["kFrMaxBusy"]]),
+        "ready_mask": int(row[CONSTANTS["kFrReady"]]),
+        "exit_acked": bool(row[CONSTANTS["kFrExitAcked"]]),
     }
 
 
 def feeder_commands(rows):
     """Per command (rows 1 to n): sequence, slot, status, submit, submitted, acked,
     busy, held, result."""
-    r = as_uint32(rows)[1:]
+    records = as_uint32(rows)[1:]
     names = (
         "RecSequence",
         "RecSlot",
@@ -165,10 +165,13 @@ def feeder_commands(rows):
         "CmdSubmitted",
         "RecAcked",
     )
-    out = {n[3:].lower(): r[:, CONSTANTS[f"kFr{n}"]].astype(np.int64) for n in names}
-    out["busy"] = r[:, CONSTANTS["kFrRecBusy"]].astype(np.int64)
-    out["held"] = r[:, CONSTANTS["kFrRecHeld"]].astype(np.int64)
-    out["result"] = r[:, CONSTANTS["kFrRecResult"]].astype(np.int64)
+    out = {
+        name[3:].lower(): records[:, CONSTANTS[f"kFr{name}"]].astype(np.int64)
+        for name in names
+    }
+    out["busy"] = records[:, CONSTANTS["kFrRecBusy"]].astype(np.int64)
+    out["held"] = records[:, CONSTANTS["kFrRecHeld"]].astype(np.int64)
+    out["result"] = records[:, CONSTANTS["kFrRecResult"]].astype(np.int64)
     return out
 
 
@@ -189,8 +192,8 @@ def port_words(control_rows):
 def waiting_ports(ports, core):
     """Ports of `core` still wanting arrivals: {port: missing count}."""
     return {
-        p: int(want) - int(count)
-        for p, (count, want) in enumerate(ports[core])
+        port: int(want) - int(count)
+        for port, (count, want) in enumerate(ports[core])
         if want != 0
     }
 
@@ -207,7 +210,11 @@ def gave_up(word, sequence):
     code = word & 0xFF
     if code == CONSTANTS["kGaveNone"]:
         return None
-    wheres = {v: k[6:].lower() for k, v in CONSTANTS.items() if k.startswith("kWhere")}
+    wheres = {
+        value: name[6:].lower()
+        for name, value in CONSTANTS.items()
+        if name.startswith("kWhere")
+    }
     where = (word >> 8) & 0xFF
     out = {
         "code": GAVES.get(code, code),
@@ -223,34 +230,38 @@ def gave_up(word, sequence):
     return out
 
 
-def core_state(st, core, tag=None):
+def core_state(words_by_core, core, tag=None):
     """One core's state words as a dict (`tag`: the run's tag, checked with magic)."""
-    s = [int(v) for v in st[core]]
-    magic = s[CONSTANTS["kStMagic"]]
-    ends, wrong = s[CONSTANTS["kStEnds"]], s[CONSTANTS["kStWrong"]]
+    words = [int(value) for value in words_by_core[core]]
+    magic = words[CONSTANTS["kStMagic"]]
+    ends, wrong = words[CONSTANTS["kStEnds"]], words[CONSTANTS["kStWrong"]]
     return {
         "core": core,
         "magic_ok": magic >> 24 == CONSTANTS["kStateMagic"] >> 24
         and magic & 0xFF == core
         and (tag is None or (magic >> 8) & 0xFFFF == tag),
-        "runs": s[CONSTANTS["kStRuns"]],
-        "completed": s[CONSTANTS["kStCompleted"]],
-        "passes": s[CONSTANTS["kStPasses"]],
-        "next_cycles": s[CONSTANTS["kStNextCycles"]] * 16,
-        "compute_seen": s[CONSTANTS["kStSeen"]],
-        "compute_wrong": [(wrong >> (8 * b)) & 0xFF for b in range(3)],
+        "runs": words[CONSTANTS["kStRuns"]],
+        "completed": words[CONSTANTS["kStCompleted"]],
+        "passes": words[CONSTANTS["kStPasses"]],
+        "next_cycles": words[CONSTANTS["kStNextCycles"]] * 16,
+        "compute_seen": words[CONSTANTS["kStSeen"]],
+        "compute_wrong": [(wrong >> (8 * position)) & 0xFF for position in range(3)],
         "reader_end": ends & 0xFF,
         "writer_end": (ends >> 8) & 0xFF,
         "compute_end": (ends >> 16) & 0xFF,
-        "slot_wrong": s[CONSTANTS["kStSlotWrong"]],
-        "trace_dropped": s[CONSTANTS["kStTraceDropped"]],
-        "reader": gave_up(s[CONSTANTS["kStReader"]], s[CONSTANTS["kStReaderSequence"]]),
-        "writer": gave_up(s[CONSTANTS["kStWriter"]], s[CONSTANTS["kStWriterSequence"]]),
-        "compute": gave_up(
-            s[CONSTANTS["kStCompute"]], s[CONSTANTS["kStComputeSequence"]]
+        "slot_wrong": words[CONSTANTS["kStSlotWrong"]],
+        "trace_dropped": words[CONSTANTS["kStTraceDropped"]],
+        "reader": gave_up(
+            words[CONSTANTS["kStReader"]], words[CONSTANTS["kStReaderSequence"]]
         ),
-        "last": s[CONSTANTS["kStLast"] : CONSTANTS["kStLast"] + 16],
-        "reported": s[CONSTANTS["kStReported"] : CONSTANTS["kStReported"] + 16],
+        "writer": gave_up(
+            words[CONSTANTS["kStWriter"]], words[CONSTANTS["kStWriterSequence"]]
+        ),
+        "compute": gave_up(
+            words[CONSTANTS["kStCompute"]], words[CONSTANTS["kStComputeSequence"]]
+        ),
+        "last": words[CONSTANTS["kStLast"] : CONSTANTS["kStLast"] + 16],
+        "reported": words[CONSTANTS["kStReported"] : CONSTANTS["kStReported"] + 16],
     }
 
 

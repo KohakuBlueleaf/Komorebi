@@ -29,13 +29,13 @@ cases = load("session_cases", Path(__file__).parent / "host" / "session_cases.py
 
 @pytest.fixture(scope="module")
 def session():
-    with km.Session(log=mapcollect.log) as s:
-        yield s
+    with km.Session(log=mapcollect.log) as opened_session:
+        yield opened_session
 
 
 def example(session, *argv):
     """The example's run on the shared session; returns its JSON dict."""
-    args = mapcollect.parse([str(a) for a in argv])
+    args = mapcollect.parse([str(argument) for argument in argv])
     return mapcollect.run(session, args, np.random.default_rng(args.seed))
 
 
@@ -100,20 +100,22 @@ def test_a_page_range_and_the_chunks_equal_slices_of_the_whole_read(session):
     """A bfloat16 tile tensor of 300 pages: a range from the middle, the chunks of
     64 KB and two tiles equal the whole read; the read times go to the log."""
     x = np.random.default_rng(5).integers(-8, 9, (640, 480)).astype(np.float32)
-    t = cases.bf16_tiles(session, x)
-    t0 = time.monotonic()
-    (whole,) = session.read(t)
-    mapcollect.log(f"{whole.nbytes} bytes read whole in {time.monotonic() - t0:.2f} s")
+    tensor = cases.bf16_tiles(session, x)
+    started = time.monotonic()
+    (whole,) = session.read(tensor)
+    mapcollect.log(
+        f"{whole.nbytes} bytes read whole in {time.monotonic() - started:.2f} s"
+    )
     assert (dram.untilize_bf16(whole, 640, 480) == x).all()
-    (middle,) = session.read(t, first=117, pages=45)
+    (middle,) = session.read(tensor, first=117, pages=45)
     assert (middle == whole[117:162]).all()
-    chunks, t0 = [], time.monotonic()
-    for first, pages in session.read_chunks(t, chunk_bytes=64 << 10):
+    chunks, started = [], time.monotonic()
+    for first, pages in session.read_chunks(tensor, chunk_bytes=64 << 10):
         mapcollect.log(f"chunk at page {first}: {len(pages)} pages")
         chunks.append(pages)
-    mapcollect.log(f"10 chunks read in {time.monotonic() - t0:.2f} s")
+    mapcollect.log(f"10 chunks read in {time.monotonic() - started:.2f} s")
     assert len(chunks) == 10 and (np.concatenate(chunks) == whole).all()
-    tiles = session.read_tiles_bf16(t, 16, 2)  # tiles (1, 1) and (1, 2)
+    tiles = session.read_tiles_bf16(tensor, 16, 2)  # tiles (1, 1) and (1, 2)
     assert (tiles[0] == x[32:64, 32:64]).all() and (tiles[1] == x[32:64, 64:96]).all()
 
 
@@ -128,14 +130,14 @@ def test_a_start_error_carries_the_result_and_the_host_stops_the_grid(session):
 def test_a_stalled_rank_ends_in_the_timeout_exception(session):
     stall = ["--stall", 3, "--stall-rank", 2, "--deadline", 0.02]
     out = example(session, "--jobs", 10, "--count", 8, "--first", 4, *stall)
-    t = out["timed_out"]
+    timed_out = out["timed_out"]
     assert out["kernel"]["error_name"] == "deadline"
-    assert t["handle"] == 4 and t["group"] == [4, 8]
-    named = {c["core"]: c for c in t["not_reported"]}
+    assert timed_out["handle"] == 4 and timed_out["group"] == [4, 8]
+    named = {core_entry["core"]: core_entry for core_entry in timed_out["not_reported"]}
     assert sorted(named) == [4, 6]
     assert (
         named[6]["reader"]["where"] == "stall"
-        and named[6]["reader"]["sequence"] == t["sequence"]
+        and named[6]["reader"]["sequence"] == timed_out["sequence"]
     )
     assert named[4]["writer"]["where"] == "complete"
     assert every_kernel_returned(out)

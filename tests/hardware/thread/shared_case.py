@@ -11,12 +11,12 @@ import numpy as np
 import komorebi as km
 
 HERE = Path(__file__).resolve().parent
-T0 = time.monotonic()
+STARTED = time.monotonic()
 WORDS = 4096 + 100  # a page and a part of one
 
 
-def log(msg):
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+def log(message):
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def main():
@@ -39,10 +39,10 @@ def main():
         log("run stopped")
         got = run.threads[3].read("data").view(np.uint32)
     want = np.arange(1, WORDS + 1, dtype=np.uint32) * np.uint32(2654435761)
-    out = {c: r._asdict() for c, r in results.items()}
+    out = {cluster: result._asdict() for cluster, result in results.items()}
     out["region_exact"] = bool(got.size == WORDS and (got == want).all())
     out["ok"] = (
-        [(r.code, r.where) for r in results.values()] == [(0, 2), (0, 3)]
+        [(result.code, result.where) for result in results.values()] == [(0, 2), (0, 3)]
         and results[3].words == [int(want.sum(dtype=np.uint32))]
         and out["region_exact"]
     )

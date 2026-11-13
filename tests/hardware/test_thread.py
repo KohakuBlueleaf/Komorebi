@@ -33,7 +33,9 @@ def test_the_loop_runs_on_three_work_clusters_at_once():
     out = run_json(
         EXAMPLE, "--paths", "thread", "--clusters", 1, 2, 3, "--limit", 100_000
     )
-    assert [out["thread"][c]["code"] for c in "123"] == [0, 0, 0] and out["ok"], out
+    assert [out["thread"][cluster]["code"] for cluster in "123"] == [0, 0, 0] and out[
+        "ok"
+    ], out
 
 
 def test_two_clusters_hand_a_shared_region_over_in_their_bank():

@@ -12,12 +12,12 @@ import komorebi as km
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
-T0 = time.monotonic()
+STARTED = time.monotonic()
 OUT_BYTES = 3 * 4096 + 100  # region pages 2 to 5 of the bank, the last one in part
 
 
-def log(msg):
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+def log(message):
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def main():
@@ -30,9 +30,9 @@ def main():
     with km.Session(log=log) as session:
         run = session.load(prog)
         log("loaded")
-        t = time.monotonic()
+        started = time.monotonic()
         result = run.thread_result(timeout=0.2)
-        stop_s = time.monotonic() - t
+        stop_s = time.monotonic() - started
         log(f"thread result: {result}")
         run.stop()
         log("run stopped")

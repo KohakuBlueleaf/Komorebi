@@ -21,9 +21,13 @@ def test_a_stalled_graph_ends_in_its_error_then_both_paths_are_exact():
     }
     want = {"first": (5, 5, 2761255), "again": (7, 10, 25159642)}  # the numpy replay
     for path in out["paths"].values():
-        for name, (rounds, it, err) in want.items():
+        for name, (rounds, iteration, error_code) in want.items():
             got = path[name]
-            assert (got["rounds"], got["it"], got["err"]) == (rounds, it, err)
+            assert (got["rounds"], got["it"], got["err"]) == (
+                rounds,
+                iteration,
+                error_code,
+            )
             assert got["state_wrong"] == 0
         assert path["kernel_commands"] == out["simulated"]["kernel_commands"] == 49
         assert path["core_commands_ok"] and path["max_busy"] == 2

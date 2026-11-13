@@ -6,22 +6,22 @@ import struct
 import pytest
 
 from komorebi import abi
-from komorebi import thread as kt
+from komorebi import thread as thread_module
 from komorebi.program import Program
 
-CONSTANTS = kt.layout()
+CONSTANTS = thread_module.layout()
 HEADERS = abi.headers()
 
 
 def test_by_default_cores_are_dealt_in_grid_order_cluster_by_cluster():
-    plan = kt.port_plan(None, 120, {3, 1, 2})
+    plan = thread_module.port_plan(None, 120, {3, 1, 2})
     assert plan[0] == (1, 0) and plan[9] == (1, 0) and plan[10] == (1, 1)
     assert plan[119] == (3, 3) and len(plan) == 120
     per_cpu = {}
     for who in plan.values():
         per_cpu[who] = per_cpu.get(who, 0) + 1
     assert sorted(set(per_cpu.values())) == [10]
-    one = kt.port_plan(None, 120, {2})
+    one = thread_module.port_plan(None, 120, {2})
     assert set(one.values()) == {(2, x280_core) for x280_core in range(4)} and one[
         119
     ] == (2, 3)
@@ -37,9 +37,9 @@ def test_by_default_cores_are_dealt_in_grid_order_cluster_by_cluster():
 )
 def test_a_plan_out_of_the_grid_or_the_threads_is_rejected(serve, match):
     with pytest.raises(ValueError, match=match):
-        kt.port_plan(serve, 120, {1})
+        thread_module.port_plan(serve, 120, {1})
     with pytest.raises(ValueError, match="need an X280 thread"):
-        kt.port_plan(None, 120, set())
+        thread_module.port_plan(None, 120, set())
 
 
 def test_ports_are_declared_once_on_noc_0_or_1_with_some_core():
@@ -55,16 +55,18 @@ def test_ports_are_declared_once_on_noc_0_or_1_with_some_core():
 
 
 def test_the_ports_line_and_area_name_the_tiles_and_x280_cores():
-    thread = kt.Thread(sources=["t.c"], regions={"r": 64})
-    ports = kt.Ports(0x1000, 3, [0x10001, 0x20002, 0x30003], {0: (1, 2), 2: (3, 0)}, 1)
-    block = kt.args_block(thread, base=0, check_value=1, ports=ports)
+    thread = thread_module.Thread(sources=["t.c"], regions={"r": 64})
+    ports = thread_module.Ports(
+        0x1000, 3, [0x10001, 0x20002, 0x30003], {0: (1, 2), 2: (3, 0)}, 1
+    )
+    block = thread_module.args_block(thread, base=0, check_value=1, ports=ports)
     line = struct.unpack_from("<5I", block, CONSTANTS["KMX_LIM_PORTS"])
     area_offset = CONSTANTS["KMX_LIM_BYTES"] + CONSTANTS["KMX_ALL_BYTES"]
     assert (
         line == (area_offset, 0x1000, 3, CONSTANTS["KMX_PORTS_NOC1"], 0)
-        and kt.ports_at(None) == area_offset
+        and thread_module.ports_at(None) == area_offset
     )
-    area = kt.ports_area(ports)
+    area = thread_module.ports_area(ports)
     assert (
         len(area) == CONSTANTS["KMX_PORTS_BYTES"]
         and area[CONSTANTS["KMX_PORTS_BYTES"] - 1] == 0
@@ -74,7 +76,7 @@ def test_the_ports_line_and_area_name_the_tiles_and_x280_cores():
     )
     owners = area[CONSTANTS["KMX_PORTS_OWNER"] : CONSTANTS["KMX_PORTS_OWNER"] + 3]
     assert list(owners) == [1 << 2 | 2, 0, 3 << 2 | 0]
-    box = kt.port_box(0x8000000, None, 2)
+    box = thread_module.port_box(0x8000000, None, 2)
     assert box == 0x8000000 + area_offset + CONSTANTS["KMX_PORTS_BOX"] + 128
 
 

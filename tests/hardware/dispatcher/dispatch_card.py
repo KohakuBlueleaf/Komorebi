@@ -25,7 +25,7 @@ import _km_dispatch_test as dk  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
-from komorebi.engines import stream as ks  # noqa: E402
+from komorebi.engines import stream as stream_engine  # noqa: E402
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
 INCLUDE = os.path.join(HERE, "..", "..", "..", "src", "komorebi_native", "include")
@@ -109,7 +109,7 @@ SOURCE_ENGINE = 1  # KMD_SRC_ENGINE: the stream engine on core 1
 HANDLER_CHECK, HANDLER_DELAY, HANDLER_STALL, HANDLER_RESULT = 1, 2, 3, 4
 FLAG_RESULT = 4  # KM_FLAG_RESULT
 DK_WORDS, DK_MAGIC = 64, 0xD15C0000
-C = {
+COUNTER_COLUMNS = {
     "magic": 0,
     "tag": 1,
     "run": 2,
@@ -141,18 +141,18 @@ GAVE = {0: "none", 1: "stop", 2: "limit", 3: "noc", 4: "align"}
 M32 = 0xFFFFFFFF
 
 
-def log(msg):
-    print(msg, flush=True)
+def log(message):
+    print(message, flush=True)
 
 
 def loadavg():
-    with open("/proc/loadavg") as f:
-        return f.read().split()[0]
+    with open("/proc/loadavg") as file:
+        return file.read().split()[0]
 
 
-def dk_arg(key, param, w):
+def dk_arg(key, param, word):
     """kernels/dk_test.h dk_arg, on Python ints."""
-    x = ((key * 0x9E3779B1) ^ (param * 0x85EBCA77) ^ (w * 0xC2B2AE3D)) & M32
+    x = ((key * 0x9E3779B1) ^ (param * 0x85EBCA77) ^ (word * 0xC2B2AE3D)) & M32
     x ^= x >> 15
     x = (x * 0x2C1B3C6D) & M32
     x ^= x >> 12
@@ -167,17 +167,17 @@ def dk_mix(key):
     return dk_arg(key, 0x5EED, 0)
 
 
-def verify_word(i, w):
+def verify_word(i, word):
     """km_dispatch.h kmd_verify_word, on Python ints."""
-    x = ((i * 0x9E3779B1) ^ ((w + 1) * 0x85EBCA77)) & M32
+    x = ((i * 0x9E3779B1) ^ ((word + 1) * 0x85EBCA77)) & M32
     x ^= x >> 15
     return (x * 0x2C1B3C6D) & M32
 
 
-def upload_words(seed, first, n):
+def upload_words(seed, first, count):
     """kmd_verify_word(seed, w) for w = first .. first + n - 1, as uint32."""
-    w = np.arange(first, first + n, dtype=np.uint64)
-    x = np.uint64((seed * 0x9E3779B1) & M32) ^ (((w + 1) * 0x85EBCA77) & M32)
+    indices = np.arange(first, first + count, dtype=np.uint64)
+    x = np.uint64((seed * 0x9E3779B1) & M32) ^ (((indices + 1) * 0x85EBCA77) & M32)
     x ^= x >> np.uint64(15)
     return ((x * 0x2C1B3C6D) & M32).astype(np.uint32)
 
@@ -188,8 +188,8 @@ def verify_command(i, cores):
     first = verify_word(i, 11) % (cores - count + 1)
     words = [0] * 16
     words[2] = first | (count << 16)
-    for j, at in enumerate([3, 5, 6, 7, 9, 10, 11, 13, 14, 15]):
-        words[at] = verify_word(i, j)
+    for j, position in enumerate([3, 5, 6, 7, 9, 10, 11, 13, 14, 15]):
+        words[position] = verify_word(i, j)
     return words
 
 
@@ -199,17 +199,19 @@ def command(handler, first, count, key=0, param=0):
     words = [0] * 16
     words[1] = handler
     words[2] = first | (count << 16)
-    args = [key & M32, param & M32] + [dk_arg(key, param, w) for w in range(2, 10)]
+    args = [key & M32, param & M32] + [
+        dk_arg(key, param, word) for word in range(2, 10)
+    ]
     for i, value in enumerate(args):
         words[[3, 5, 6, 7, 9, 10, 11, 13, 14, 15][i]] = value
     return words
 
 
-def kernel_command(handler, a0=0):
+def kernel_command(handler, first_argument=0):
     """A command to the dispatcher itself (KM_HANDLER_PING, _STOP, _DEADLINE)."""
     words = [0] * 16
     words[1] = handler
-    words[3] = a0
+    words[3] = first_argument
     return words
 
 
@@ -233,13 +235,13 @@ def sequence_low(status):
 
 def program(session, plan, table, out, limit_s, defines):
     """The stand-in worker on every core, one data-movement kernel."""
-    gx, gy = plan.grid_x, plan.grid_y
-    cores = [(0, 0, gx - 1, gy - 1)]
+    grid_x, grid_y = plan.grid_x, plan.grid_y
+    cores = [(0, 0, grid_x - 1, grid_y - 1)]
     limit = max(1, int(limit_s * AICLK_HZ) >> 20)
     args = [
         (x, y, list(plan.worker_args(x, y, table, out, limit)))
-        for y in range(gy)
-        for x in range(gx)
+        for y in range(grid_y)
+        for x in range(grid_x)
     ]
     launch = session.launch()
     include = [os.path.abspath(INCLUDE)]
@@ -267,8 +269,8 @@ def dram_area(session):
 def result_block(words):
     out = {name: words[i] for i, name in R_NAMES.items()}
     out.update({name: words[32 + i] for i, name in H_NAMES.items()})
-    for name, lo in R_WIDE.items():
-        out[name] = words[lo] | (words[lo + 1] << 32)
+    for name, low_word in R_WIDE.items():
+        out[name] = words[low_word] | (words[low_word + 1] << 32)
     return out
 
 
@@ -292,14 +294,14 @@ def with_kernel(
     runtime = dk.Runtime(session.device.mesh_capsule(), pll_mhz=args.pll)
     log(f"X280 clock set: {args.pll} MHz")
     plan = runtime.plan()
-    gx, gy = plan.grid_x, plan.grid_y
-    log(f"plan: grid {gx}x{gy} panels {plan.panels}")
+    grid_x, grid_y = plan.grid_x, plan.grid_y
+    log(f"plan: grid {grid_x}x{grid_y} panels {plan.panels}")
     table = int_tensor(session, np.array([plan.core_table()], dtype=np.uint32))
     state = dram_area(session)
     plan.prepare(
         depth, args.host_depth, args.event_depth, 30.0, 1.0, args.idle_s, state
     )
-    out = int_tensor(session, np.zeros((gx * gy, DK_WORDS), dtype=np.uint32))
+    out = int_tensor(session, np.zeros((grid_x * grid_y, DK_WORDS), dtype=np.uint32))
     prog = program(session, plan, table.address, out.address, args.limit, defines)
     body_out, fin = None, None
     if preload is not None:
@@ -338,47 +340,52 @@ def with_kernel(
         gc.collect()
         log("x280 runtime closed")
     log("reading the counters")
-    cnt = out.read().astype(np.int64)
+    counters = out.read().astype(np.int64)
     log("counters read back")
     fin["block"] = result_block(fin.pop("words"))
-    return body_out, fin, cnt
+    return body_out, fin, counters
 
 
 def exit_and_stop(plan):
     """EXIT to the whole grid, then STOP; returns the events up to EXIT's."""
-    n = plan.grid_x * plan.grid_y
-    i = plan.submit(command(HANDLER_EXIT, 0, n))
-    events, by = [], time.time() + 10.0
-    while not any(e[1] == i for e in events) and time.time() < by:
+    core_count = plan.grid_x * plan.grid_y
+    i = plan.submit(command(HANDLER_EXIT, 0, core_count))
+    events, deadline = [], time.time() + 10.0
+    while not any(event[1] == i for event in events) and time.time() < deadline:
         with contextlib.suppress(RuntimeError):
             events += plan.take(plan.seen + 1, 1.0)
     plan.submit(kernel_command(HANDLER_STOP))
     return events
 
 
-def core_report(cnt, core_count, tag):
+def core_report(counters, core_count, tag):
     """Cores that finished, with their tag, and the gave-up / where of every core."""
     magic_ok = [
-        int(cnt[i, C["magic"]]) == (DK_MAGIC | i) and int(cnt[i, C["tag"]]) == tag
+        int(counters[i, COUNTER_COLUMNS["magic"]]) == (DK_MAGIC | i)
+        and int(counters[i, COUNTER_COLUMNS["tag"]]) == tag
         for i in range(core_count)
     ]
-    state = cnt[:, C["state"] : C["state"] + 19]
+    state = counters[:, COUNTER_COLUMNS["state"] : COUNTER_COLUMNS["state"] + 19]
     return {
         "cores_finished": int(sum(magic_ok)),
         "where": {
-            WHERE.get(w, str(w)): int((state[:, S_WHERE] == w).sum())
-            for w in sorted(set(state[:, S_WHERE].tolist()))
+            WHERE.get(where_code, str(where_code)): int(
+                (state[:, S_WHERE] == where_code).sum()
+            )
+            for where_code in sorted(set(state[:, S_WHERE].tolist()))
         },
         "gave": {
-            GAVE.get(g, str(g)): int((state[:, S_GAVE] == g).sum())
-            for g in sorted(set(state[:, S_GAVE].tolist()))
+            GAVE.get(gave_code, str(gave_code)): int(
+                (state[:, S_GAVE] == gave_code).sum()
+            )
+            for gave_code in sorted(set(state[:, S_GAVE].tolist()))
         },
-        "arg_errors": int(cnt[:, C["arg_errors"]].sum()),
-        "hdr_errors": int(cnt[:, C["hdr_errors"]].sum()),
+        "arg_errors": int(counters[:, COUNTER_COLUMNS["arg_errors"]].sum()),
+        "hdr_errors": int(counters[:, COUNTER_COLUMNS["hdr_errors"]].sum()),
     }
 
 
-def check_groups(cnt, core_count, sent):
+def check_groups(counters, core_count, sent):
     """Compare every core's run count, key sum and key mix with the commands sent
     ([(first, count, key)]); returns the number of cores that differ and examples."""
     runs = np.zeros(core_count, dtype=np.int64)
@@ -392,14 +399,14 @@ def check_groups(cnt, core_count, sent):
     bad = [
         {
             "core": i,
-            "run": [int(cnt[i, C["run"]]), int(runs[i])],
-            "sum_ok": int(cnt[i, C["key_sum"]]) == int(sums[i]),
-            "mix_ok": int(cnt[i, C["key_mix"]]) == int(mixes[i]),
+            "run": [int(counters[i, COUNTER_COLUMNS["run"]]), int(runs[i])],
+            "sum_ok": int(counters[i, COUNTER_COLUMNS["key_sum"]]) == int(sums[i]),
+            "mix_ok": int(counters[i, COUNTER_COLUMNS["key_mix"]]) == int(mixes[i]),
         }
         for i in range(core_count)
-        if int(cnt[i, C["run"]]) != runs[i]
-        or int(cnt[i, C["key_sum"]]) != sums[i]
-        or int(cnt[i, C["key_mix"]]) != mixes[i]
+        if int(counters[i, COUNTER_COLUMNS["run"]]) != runs[i]
+        or int(counters[i, COUNTER_COLUMNS["key_sum"]]) != sums[i]
+        or int(counters[i, COUNTER_COLUMNS["key_mix"]]) != mixes[i]
     ]
     return len(bad), bad[:8]
 
@@ -407,13 +414,13 @@ def check_groups(cnt, core_count, sent):
 def check_events(events, reqs, first, kinds=(EVENT_DONE,)):
     """Events numbered first, first + 1, .. in order, each request once, status in
     `kinds`."""
-    got = [e[1] for e in events]
-    indices_ok = [e[0] for e in events] == list(range(first, first + len(reqs)))
+    got = [event[1] for event in events]
+    indices_ok = [event[0] for event in events] == list(range(first, first + len(reqs)))
     return {
         "events": len(events),
         "indices_ok": bool(indices_ok),
         "reqs_ok": sorted(got) == sorted(reqs),
-        "status_ok": all(kind(e[2])[0] in kinds for e in events),
+        "status_ok": all(kind(event[2])[0] in kinds for event in events),
     }
 
 
@@ -438,10 +445,12 @@ def case_ping(session, args, submit_one=False):
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body)
+    out, fin, counters = with_kernel(session, args, body)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
-    out["run_per_core"] = sorted(set(cnt[:core_count, C["run"]].tolist()))
+    out["cores"] = core_report(counters, core_count, out["tag"])
+    out["run_per_core"] = sorted(
+        set(counters[:core_count, COUNTER_COLUMNS["run"]].tolist())
+    )
     out["ok"] = bool(
         fin["result_ready"]
         and fin["block"]["error"] == 0
@@ -479,10 +488,12 @@ def case_groups(session, args):
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=16)
+    out, fin, counters = with_kernel(session, args, body, depth=16)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
-    out["group_mismatch"], out["first_mismatch"] = check_groups(cnt, core_count, sent)
+    out["cores"] = core_report(counters, core_count, out["tag"])
+    out["group_mismatch"], out["first_mismatch"] = check_groups(
+        counters, core_count, sent
+    )
     out["ok"] = bool(
         fin["result_ready"]
         and fin["block"]["error"] == 0
@@ -505,26 +516,28 @@ def case_disjoint(session, args):
         nonlocal core_count
         core_count = plan.grid_x * plan.grid_y
         half = core_count // 2
-        a = plan.submit(command(HANDLER_DELAY, 0, half, 1, cycles))
+        delayed = plan.submit(command(HANDLER_DELAY, 0, half, 1, cycles))
         sent.append((0, half, 1))
         last = 0
-        for k in range(args.n):
-            last = plan.submit(command(HANDLER_CHECK, half, half, 2 + k, k))
-            sent.append((half, half, 2 + k))
+        for number in range(args.n):
+            last = plan.submit(command(HANDLER_CHECK, half, half, 2 + number, number))
+            sent.append((half, half, 2 + number))
         events = plan.take(last, 10.0)
-        out = {"tag": plan.tag, "events": events, "a_req": a}
+        out = {"tag": plan.tag, "events": events, "a_req": delayed}
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=16)
+    out, fin, counters = with_kernel(session, args, body, depth=16)
     events = out["events"]
-    order = [e[1] for e in events]
+    order = [event[1] for event in events]
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     out["order"] = order
-    out["group_mismatch"], out["first_mismatch"] = check_groups(cnt, core_count, sent)
+    out["group_mismatch"], out["first_mismatch"] = check_groups(
+        counters, core_count, sent
+    )
     a_req = out["a_req"]
-    a_ticks = [e[3] for e in events if e[1] == a_req]
+    a_ticks = [event[3] for event in events if event[1] == a_req]
     out["ok"] = bool(
         fin["result_ready"]
         and fin["block"]["error"] == 0
@@ -534,7 +547,7 @@ def case_disjoint(session, args):
         and order[-1] == a_req
         and fin["block"]["max_busy"] >= 2
         and a_ticks
-        and a_ticks[0] > max(e[3] for e in events if e[1] != a_req)
+        and a_ticks[0] > max(event[3] for event in events if event[1] != a_req)
         and out["cores"]["cores_finished"] == core_count
     )
     return out
@@ -561,10 +574,12 @@ def case_stall(session, args, leader=False):
         out["host_state"] = plan.host_word(0)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4)
+    out, fin, counters = with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
-    state = cnt[:core_count, C["state"] : C["state"] + 19]
+    out["cores"] = core_report(counters, core_count, out["tag"])
+    state = counters[
+        :core_count, COUNTER_COLUMNS["state"] : COUNTER_COLUMNS["state"] + 19
+    ]
     blk = fin["block"]
     # Cores that did not report the timed-out command: never took it, or stopped other
     # than waiting for the next command or, as its leader, for the cores.
@@ -590,7 +605,7 @@ def case_stall(session, args, leader=False):
         and event[-1][3] >= args.deadline_microseconds * 50
         and out["cores"]["cores_finished"] == core_count
         and out["cores"]["gave"] == {"stop": core_count}
-        and [c["core"] for c in out["not_reported"]] == [stalled]
+        and [entry["core"] for entry in out["not_reported"]] == [stalled]
     )
     return out
 
@@ -611,16 +626,18 @@ def case_stall_late(session, args):
         out["early_req"] = plan.submit(command(HANDLER_STALL, rest, 1, 3, rest))
         plan.submit(kernel_command(HANDLER_DEADLINE, args.deadline_microseconds))
         recs = [command(HANDLER_STALL, 0, rest, 9, args.core)]
-        recs += [command(HANDLER_CHECK, 0, rest, 5 + k, k) for k in range(2)]
+        recs += [
+            command(HANDLER_CHECK, 0, rest, 5 + number, number) for number in range(2)
+        ]
         out["stall_req"] = plan.next
         out["events"], _ = plan.stream(np.array(recs, dtype=np.uint32), HOST_WAIT_S, 8)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4)
+    out, fin, counters = with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     blk, event = fin["block"], out["events"]
-    timeouts = [e for e in event if kind(e[2])[0] == EVENT_TIMEOUT]
+    timeouts = [entry for entry in event if kind(entry[2])[0] == EVENT_TIMEOUT]
     out["ok"] = bool(
         len(timeouts) == 1
         and timeouts[0][1] == out["stall_req"]
@@ -646,15 +663,15 @@ def case_compile_error(session, args):
             defines=[("DK_COMPILE_ERROR", "1")],
             info=info,
         )
-    except Exception as err:  # noqa: BLE001
-        message = str(err)
+    except Exception as error:  # noqa: BLE001
+        message = str(error)
         compile_error = "build failed" in message and "DK_COMPILE_ERROR" in message
         if args.image_first:
             image_ok = info["started"] and info.get("aborted") is True
         else:
             image_ok = not info["started"]
         return {
-            "raised": type(err).__name__,
+            "raised": type(error).__name__,
             "message": message[:300],
             "compile_error": compile_error,
             "image": info,
@@ -688,27 +705,31 @@ def case_fill(session, args):
         nonlocal core_count
         core_count = plan.grid_x * plan.grid_y
         width = core_count // 16
-        s0 = plan.seen
+        seen_before = plan.seen
         reqs = []
         for j in range(16):
             reqs.append(
                 plan.submit(command(HANDLER_DELAY, j * width, width, 1 + j, cycles))
             )
             sent.append((j * width, width, 1 + j))
-        for k in range(args.n):
+        for number in range(args.n):
             count = int(rng.integers(1, core_count + 1))
             first = int(rng.integers(0, core_count - count + 1))
-            reqs.append(plan.submit(command(HANDLER_CHECK, first, count, 100 + k, k)))
-            sent.append((first, count, 100 + k))
-        events = plan.take(s0 + len(reqs), 10.0)
-        out = {"tag": plan.tag, "check": check_events(events, reqs, s0 + 1)}
+            reqs.append(
+                plan.submit(command(HANDLER_CHECK, first, count, 100 + number, number))
+            )
+            sent.append((first, count, 100 + number))
+        events = plan.take(seen_before + len(reqs), 10.0)
+        out = {"tag": plan.tag, "check": check_events(events, reqs, seen_before + 1)}
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=16)
+    out, fin, counters = with_kernel(session, args, body, depth=16)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
-    out["group_mismatch"], out["first_mismatch"] = check_groups(cnt, core_count, sent)
+    out["cores"] = core_report(counters, core_count, out["tag"])
+    out["group_mismatch"], out["first_mismatch"] = check_groups(
+        counters, core_count, sent
+    )
     blk = fin["block"]
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
@@ -730,24 +751,26 @@ def case_exit_busy(session, args):
         nonlocal core_count
         core_count = plan.grid_x * plan.grid_y
         out = {"tag": plan.tag}
-        s0 = plan.seen
+        seen_before = plan.seen
         out["delay_req"] = plan.submit(
             command(HANDLER_DELAY, 0, core_count // 2, 1, cycles)
         )
         out["exit_req"] = plan.submit(command(HANDLER_EXIT, 0, 1))
-        out["events"] = plan.take(s0 + 2, 10.0)
+        out["events"] = plan.take(seen_before + 2, 10.0)
         plan.submit(kernel_command(HANDLER_STOP))
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=16)
+    out, fin, counters = with_kernel(session, args, body, depth=16)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
-    out["exit_per_core"] = int((cnt[:core_count, C["exit"]] != 0).sum())
-    order = [e[1] for e in out["events"]]
+    out["cores"] = core_report(counters, core_count, out["tag"])
+    out["exit_per_core"] = int(
+        (counters[:core_count, COUNTER_COLUMNS["exit"]] != 0).sum()
+    )
+    order = [event[1] for event in out["events"]]
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
         and order == [out["delay_req"], out["exit_req"]]
-        and all(kind(e[2])[0] == EVENT_DONE for e in out["events"])
+        and all(kind(event[2])[0] == EVENT_DONE for event in out["events"])
         and fin["block"]["held"] == 1
         and fin["block"]["max_busy"] == 1
         and out["exit_per_core"] == core_count
@@ -767,27 +790,27 @@ def case_after_exit(session, args):
         out = {"tag": plan.tag}
         plan.submit(command(HANDLER_EXIT, 0, core_count))
         out["exit"] = plan.take(plan.seen + 1, 10.0)
-        s0 = plan.seen
+        seen_before = plan.seen
         out["late_req"] = plan.submit(command(HANDLER_CHECK, 0, core_count, 5, 5))
         out["ping_req"] = plan.submit(kernel_command(HANDLER_PING))
-        out["events"] = plan.take(s0 + 2, 5.0)
+        out["events"] = plan.take(seen_before + 2, 5.0)
         plan.submit(kernel_command(HANDLER_STOP))
         return out
 
-    out, fin, cnt = with_kernel(session, args, body)
+    out, fin, counters = with_kernel(session, args, body)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     event = out["events"]
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
-        and [(e[1], kind(e[2])) for e in event]
+        and [(entry[1], kind(entry[2])) for entry in event]
         == [
             (out["late_req"], (EVENT_REJECTED, REJECT_EXITED)),
             (out["ping_req"], (EVENT_PONG, 0)),
         ]
         and fin["block"]["rejected"] == 1
         and out["cores"]["gave"] == {"none": core_count}
-        and int(cnt[:core_count, C["run"]].sum()) == 0
+        and int(counters[:core_count, COUNTER_COLUMNS["run"]].sum()) == 0
     )
     return out
 
@@ -809,23 +832,23 @@ def case_malformed(session, args):
             (command(HANDLER_CHECK, core_count - 1, 2, 7, 7), REJECT_GROUP),
         ]
         first_event = plan.seen + 1
-        want = [(plan.submit(rec), (EVENT_REJECTED, why)) for rec, why in bad]
+        want = [(plan.submit(record), (EVENT_REJECTED, why)) for record, why in bad]
         good = plan.submit(command(HANDLER_CHECK, 0, core_count, 11, 3))
         want.append((good, (EVENT_DONE, 0)))
         events = plan.take(first_event + len(want) - 1, 5.0)
         out = {"tag": plan.tag, "want": want, "events": events}
-        out["indices_ok"] = [e[0] for e in events] == list(
+        out["indices_ok"] = [event[0] for event in events] == list(
             range(first_event, first_event + len(want))
         )
-        got = sorted((e[1], kind(e[2])) for e in events)
+        got = sorted((event[1], kind(event[2])) for event in events)
         out["kinds_ok"] = got == sorted(want)
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body)
+    out, fin, counters = with_kernel(session, args, body)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
-    out["group_mismatch"], _ = check_groups(cnt, core_count, [(0, core_count, 11)])
+    out["cores"] = core_report(counters, core_count, out["tag"])
+    out["group_mismatch"], _ = check_groups(counters, core_count, [(0, core_count, 11)])
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
         and out["indices_ok"]
@@ -850,9 +873,9 @@ def case_stop_busy(session, args):
         out["stop_req"] = plan.submit(kernel_command(HANDLER_STOP))
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4)
+    out, fin, counters = with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     blk = fin["block"]
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"], ERROR_STOP_BUSY)
@@ -875,15 +898,15 @@ def case_runtime_stop(session, args):
         core_count = plan.grid_x * plan.grid_y
         out = {"tag": plan.tag}
         out["delay_req"] = plan.submit(command(HANDLER_DELAY, 0, core_count, 1, cycles))
-        by = time.monotonic() + 5.0
-        while plan.host_word(1) < out["delay_req"] and time.monotonic() < by:
+        deadline = time.monotonic() + 5.0
+        while plan.host_word(1) < out["delay_req"] and time.monotonic() < deadline:
             pass
         out["taken"] = plan.host_word(1)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4, stop=True)
+    out, fin, counters = with_kernel(session, args, body, depth=4, stop=True)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     blk = fin["block"]
     out["ok"] = bool(
         fin["cleaned"]
@@ -912,15 +935,15 @@ def case_trap(session, args):
         out = {"tag": plan.tag}
         out["delay_req"] = plan.submit(command(HANDLER_DELAY, 0, core_count, 1, cycles))
         out["trap_req"] = plan.submit(kernel_command(HANDLER_TRAP, 8))
-        by = time.monotonic() + 5.0
-        while plan.host_word(0) < STATE_DONE and time.monotonic() < by:
+        deadline = time.monotonic() + 5.0
+        while plan.host_word(0) < STATE_DONE and time.monotonic() < deadline:
             pass
         out["host"] = [plan.host_word(0), plan.host_word(3)]
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4)
+    out, fin, counters = with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     blk = fin["block"]
     out["after"] = case_ping(session, args)
     out["ok"] = bool(
@@ -950,29 +973,31 @@ def case_excl(session, args):
         b_rec = command(HANDLER_CHECK, half - 1, 2, 2, 2)
         b_rec[1] |= FLAG_EXCLUSIVE << 8
         out = {"tag": plan.tag}
-        s0 = plan.seen
+        seen_before = plan.seen
         out["a"] = plan.submit(command(HANDLER_DELAY, 0, half, 1, cycles))
         out["c"] = plan.submit(
             command(HANDLER_DELAY, half + 1, half - 1, 3, 2 * cycles)
         )
         out["b"] = plan.submit(b_rec)
-        out["events"] = plan.take(s0 + 3, 10.0)
+        out["events"] = plan.take(seen_before + 3, 10.0)
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=16)
+    out, fin, counters = with_kernel(session, args, body, depth=16)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     half = core_count // 2
     sent = [(0, half, 1), (half - 1, 2, 2), (half + 1, half - 1, 3)]
-    out["group_mismatch"], out["first_mismatch"] = check_groups(cnt, core_count, sent)
-    order = [e[1] for e in out["events"]]
+    out["group_mismatch"], out["first_mismatch"] = check_groups(
+        counters, core_count, sent
+    )
+    order = [event[1] for event in out["events"]]
     out["order"] = order
-    b_ticks = [e[3] for e in out["events"] if e[1] == out["b"]]
+    b_ticks = [event[3] for event in out["events"] if event[1] == out["b"]]
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
         and order == [out["a"], out["b"], out["c"]]
-        and all(kind(e[2])[0] == EVENT_DONE for e in out["events"])
+        and all(kind(event[2])[0] == EVENT_DONE for event in out["events"])
         and fin["block"]["held"] == 1
         and fin["block"]["max_busy"] >= 2
         and b_ticks
@@ -1011,8 +1036,8 @@ def case_verify(session, args):
         recs = np.array([made[i][0] for i in reqs], dtype=np.uint32)
         for i in reqs:
             if made[i][1][0] == EVENT_DONE:
-                r = made[i][0]
-                sent.append((r[2] & 0xFFFF, r[2] >> 16, r[3]))
+                record = made[i][0]
+                sent.append((record[2] & 0xFFFF, record[2] >> 16, record[3]))
         command_count = len(sent)
         n_rejected = sum(1 for i in reqs if made[i][1][0] == EVENT_REJECTED)
         events, times = plan.stream(
@@ -1023,22 +1048,26 @@ def case_verify(session, args):
             events, reqs, first_event, kinds=(EVENT_DONE, EVENT_PONG, EVENT_REJECTED)
         )
         limit = 50 * 1_000_000  # the default command deadline, 1 s in ticks
-        wrong, by_index = [], {e[0]: e for e in events}
-        for e in events:
-            k, auxiliary, timed = made.get(e[1], (None, (None, None, None)))[1]
-            ticks_ok = (0 < e[3] <= limit) if timed else e[3] == 0
-            if kind(e[2]) != (k, auxiliary) or not ticks_ok:
+        wrong, by_index = [], {event[0]: event for event in events}
+        for event in events:
+            expected_kind, auxiliary, timed = made.get(
+                event[1], (None, (None, None, None))
+            )[1]
+            ticks_ok = (0 < event[3] <= limit) if timed else event[3] == 0
+            if kind(event[2]) != (expected_kind, auxiliary) or not ticks_ok:
                 # with the event that used the same ring slot before it
-                before = by_index.get(e[0] - plan.event_depth)
-                wrong.append([list(e), list(before) if before else None])
+                before = by_index.get(event[0] - plan.event_depth)
+                wrong.append([list(event), list(before) if before else None])
         out["event_errors"], out["first_event_errors"] = len(wrong), wrong[:8]
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=args.depth)
+    out, fin, counters = with_kernel(session, args, body, depth=args.depth)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
-    out["group_mismatch"], out["first_mismatch"] = check_groups(cnt, core_count, sent)
+    out["cores"] = core_report(counters, core_count, out["tag"])
+    out["group_mismatch"], out["first_mismatch"] = check_groups(
+        counters, core_count, sent
+    )
     blk = fin["block"]
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
@@ -1065,33 +1094,34 @@ def case_result(session, args):
         out = {"tag": plan.tag, "events": 0, "wrong": 0, "first_wrong": []}
         total_s, done = 0.0, 0
         while done < args.n:
-            k = min(args.n - done, 1_000_000)
-            times, wrong = plan.result_run(k, count, args.seed, 30.0, args.batch)
+            chunk = min(args.n - done, 1_000_000)
+            times, wrong = plan.result_run(chunk, count, args.seed, 30.0, args.batch)
             out["events"] += int(times["events"])
             out["wrong"] += int(times["wrong"])
-            out["first_wrong"] += [list(e) for e in wrong][
+            out["first_wrong"] += [list(entry) for entry in wrong][
                 : 8 - len(out["first_wrong"])
             ]
             total_s += times["total_s"]
-            done += k
+            done += chunk
             log(f"result: {done} of {args.n}, wrong {out['wrong']}")
         out["microseconds_per_command"] = round(total_s / args.n * 1e6, 4)
         runs, sums, mixes = plan.expected()
         out["expect"] = [
-            np.array(v[:core_count], dtype=np.int64) for v in (runs, sums, mixes)
+            np.array(array[:core_count], dtype=np.int64)
+            for array in (runs, sums, mixes)
         ]
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=args.depth)
+    out, fin, counters = with_kernel(session, args, body, depth=args.depth)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     runs, sums, mixes = out.pop("expect")
-    got = cnt[:core_count]
+    got = counters[:core_count]
     differ = (
-        (got[:, C["run"]] != runs)
-        | (got[:, C["key_sum"]] != sums)
-        | (got[:, C["key_mix"]] != mixes)
+        (got[:, COUNTER_COLUMNS["run"]] != runs)
+        | (got[:, COUNTER_COLUMNS["key_sum"]] != sums)
+        | (got[:, COUNTER_COLUMNS["key_mix"]] != mixes)
     )
     out["cores_differ"] = int(differ.sum())
     blk = fin["block"]
@@ -1121,21 +1151,21 @@ def case_upload(session, args):
         args.image = VERIFY_IMAGE
 
     def body(plan):
-        n = plan.upload_bytes
-        ready = [plan.host_word(HOST_READY + w) for w in range(4)]
-        out = {"tag": plan.tag, "ready": ready, "upload_bytes": n}
+        upload_bytes = plan.upload_bytes
+        ready = [plan.host_word(HOST_READY + word) for word in range(4)]
+        out = {"tag": plan.tag, "ready": ready, "upload_bytes": upload_bytes}
         out["ready_ok"] = ready == [
             READY_MARK,
             plan.lim_base + LIM_UPLOAD,
-            n,
+            upload_bytes,
             LIM_UPLOAD,
         ]
-        line = 64 * (n // 128)  # a line in the middle
+        line = 64 * (upload_bytes // 128)  # a line in the middle
 
         def run(name, offset, size, seed, want):
-            t0 = time.perf_counter()
+            started = time.perf_counter()
             i = plan.submit(check_upload(offset, size, seed))
-            event = [e for e in plan.take(i, 10.0) if e[1] == i]
+            event = [entry for entry in plan.take(i, 10.0) if entry[1] == i]
             got = [kind(event[0][2]), event[0][3]] if event else None
             log(f"upload {name}: {got}")
             checks.append(
@@ -1143,7 +1173,7 @@ def case_upload(session, args):
                     "name": name,
                     "got": got,
                     "ok": got == want,
-                    "ms": round((time.perf_counter() - t0) * 1e3, 3),
+                    "ms": round((time.perf_counter() - started) * 1e3, 3),
                 }
             )
 
@@ -1151,38 +1181,44 @@ def case_upload(session, args):
         uploads = []
         none = M32
         for seed in (args.seed, args.seed + 1):
-            data = upload_words(seed, 0, n // 4)
-            t0 = time.perf_counter()
+            data = upload_words(seed, 0, upload_bytes // 4)
+            started = time.perf_counter()
             plan.upload(0, data.view(np.uint8))
-            uploads.append(round(time.perf_counter() - t0, 6))
-            run(f"whole {seed}", 0, n, seed, [(EVENT_PONG, 0), none])
+            uploads.append(round(time.perf_counter() - started, 6))
+            run(f"whole {seed}", 0, upload_bytes, seed, [(EVENT_PONG, 0), none])
         seed = args.seed + 1
         run("first line", 0, 64, seed, [(EVENT_PONG, 0), none])
-        run("last line", n - 64, 64, seed, [(EVENT_PONG, 0), none])
+        run("last line", upload_bytes - 64, 64, seed, [(EVENT_PONG, 0), none])
         run("middle 4 KiB", line, 4096, seed, [(EVENT_PONG, 0), none])
         run("other seed", line, 64, seed + 1, [(EVENT_PONG, 16), 0])
         bad = upload_words(seed, line // 4, 16)
         bad[5] ^= 1
         plan.upload(line, bad.view(np.uint8))
-        run("one word", 0, n, seed, [(EVENT_PONG, 1), line // 4 + 5])
+        run("one word", 0, upload_bytes, seed, [(EVENT_PONG, 1), line // 4 + 5])
         plan.upload(line, upload_words(seed, line // 4, 16).view(np.uint8))
-        run("restored", 0, n, seed, [(EVENT_PONG, 0), none])
-        run("past the end", n - 64, 128, seed, [(EVENT_REJECTED, REJECT_REGION), 0])
+        run("restored", 0, upload_bytes, seed, [(EVENT_PONG, 0), none])
+        run(
+            "past the end",
+            upload_bytes - 64,
+            128,
+            seed,
+            [(EVENT_REJECTED, REJECT_REGION), 0],
+        )
         run("half line", 32, 64, seed, [(EVENT_REJECTED, REJECT_REGION), 0])
         out["checks"] = checks
         out["upload_s"] = uploads
-        out["upload_mb_s"] = round(n / min(uploads) / 1e6, 1)
+        out["upload_mb_s"] = round(upload_bytes / min(uploads) / 1e6, 1)
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=args.depth)
+    out, fin, counters = with_kernel(session, args, body, depth=args.depth)
     out["finish"] = fin
-    core_count = cnt.shape[0]
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    core_count = counters.shape[0]
+    out["cores"] = core_report(counters, core_count, out["tag"])
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
         and out["ready_ok"]
-        and all(c["ok"] for c in out["checks"])
+        and all(check["ok"] for check in out["checks"])
         and fin["block"]["rejected"] == 2
     )
     return out
@@ -1192,7 +1228,9 @@ def alloc(busy, count, core_count):
     """The lowest first whose cores [first, first + count) overlap no busy group
     ((first, count) pairs), or None: the kernel's group allocator."""
     for first in range(core_count - count + 1):
-        if all(first + count <= f or f + c <= first for f, c in busy):
+        if all(
+            first + count <= start or start + width <= first for start, width in busy
+        ):
             return first
     return None
 
@@ -1201,21 +1239,23 @@ def read_trace(plan):
     """The KMD_TRACE image's trace from the upload region: (header, entries), each
     entry (kind, slot, req, first, count, low 32 bits of the timer, source)."""
     head = np.frombuffer(plan.upload_read(0, 64), dtype=np.uint32)
-    n = int(head[1]) if head[0] == TRACE_MARK else 0
-    raw = np.frombuffer(plan.upload_read(64, 16 * n), dtype=np.uint32).reshape(n, 4)
+    entry_count = int(head[1]) if head[0] == TRACE_MARK else 0
+    raw = np.frombuffer(
+        plan.upload_read(64, 16 * entry_count), dtype=np.uint32
+    ).reshape(entry_count, 4)
     entries = [
         (
-            int(w & 0xFF),
-            int(w >> 8 & 0xFF),
-            int(r),
-            int(t & 0xFFFF),
-            int(t >> 16),
-            int(p),
-            int(w >> 16 & 0xFF),
+            int(word & 0xFF),
+            int(word >> 8 & 0xFF),
+            int(request),
+            int(ticks & 0xFFFF),
+            int(ticks >> 16),
+            int(payload),
+            int(word >> 16 & 0xFF),
         )
-        for w, r, t, p in raw
+        for word, request, ticks, payload in raw
     ]
-    return [int(v) for v in head[:3]], entries
+    return [int(head_value) for head_value in head[:3]], entries
 
 
 def replay_trace(entries, sent, core_count):
@@ -1223,17 +1263,17 @@ def replay_trace(entries, sent, core_count):
     first, count)}, kind "queue", "excl" or "plain"); returns the faults found, the
     groups each command ran on and the most queued commands in flight at once."""
     busy, groups, faults, most = {}, {}, [], 0
-    for kind_, slot, req, first, count, p, _ in entries:
+    for kind_, slot, req, first, count, payload, _ in entries:
         if kind_ == TRACE_FREE:
             if busy.get(slot, (None,))[0] != req:
-                faults.append(["free of a slot not busy with it", slot, req, p])
+                faults.append(["free of a slot not busy with it", slot, req, payload])
             busy.pop(slot, None)
             continue
         if kind_ not in (TRACE_SUBMIT, TRACE_QUEUED) or slot in busy or req in groups:
-            faults.append(["bad submit", kind_, slot, req, p])
+            faults.append(["bad submit", kind_, slot, req, payload])
             continue
         what, want_first, want_count = sent.get(req, ("exit", 0, core_count))
-        others = [(f, c) for _, f, c in busy.values()]
+        others = [(start, width) for _, start, width in busy.values()]
         if what == "queue":
             ok = (
                 kind_ == TRACE_QUEUED
@@ -1242,15 +1282,20 @@ def replay_trace(entries, sent, core_count):
             )
         elif what == "excl":
             ok = (first, count) == (want_first, want_count) and all(
-                first + count <= f or f + c <= first for f, c in others
+                first + count <= start or start + width <= first
+                for start, width in others
             )
         else:
             ok = (first, count) == (want_first, want_count)
         if not ok:
-            faults.append([what, req, first, count, others, p])
+            faults.append([what, req, first, count, others, payload])
         busy[slot] = (req, first, count)
         groups[req] = (first, count)
-        queued = [r for r, _, _ in busy.values() if sent.get(r, ("",))[0] == "queue"]
+        queued = [
+            request
+            for request, _, _ in busy.values()
+            if sent.get(request, ("",))[0] == "queue"
+        ]
         most = max(most, len(queued))
     if busy:
         faults.append(["still busy", sorted(busy.items())])
@@ -1280,25 +1325,25 @@ def case_queue(session, args):
             pick = rng.random()
             if i < 2:
                 count = 0 if i == 0 else core_count + 1
-                rec = command(HANDLER_DELAY, 0, 0, key, delay)
-                rec[2] = int(rng.integers(0, 1 << 16)) | count << 16
-                rec[1] |= FLAG_QUEUE << 8
+                record = command(HANDLER_DELAY, 0, 0, key, delay)
+                record[2] = int(rng.integers(0, 1 << 16)) | count << 16
+                record[1] |= FLAG_QUEUE << 8
                 rejected.append(req + i)
             elif pick < 0.7:
                 count = int(rng.choice([1, 2, 3, 4, 6, 8, 12, 20, 40, 60, core_count]))
-                rec = command(HANDLER_DELAY, 0, count, key, delay)
-                rec[2] = int(rng.integers(0, 1 << 16)) | count << 16
-                rec[1] |= FLAG_QUEUE << 8
+                record = command(HANDLER_DELAY, 0, count, key, delay)
+                record[2] = int(rng.integers(0, 1 << 16)) | count << 16
+                record[1] |= FLAG_QUEUE << 8
                 sent[req + i] = ("queue", None, count)
             else:
                 count = int(rng.integers(1, 17))
                 first = int(rng.integers(0, core_count - count + 1))
-                rec = command(HANDLER_DELAY, first, count, key, delay)
+                record = command(HANDLER_DELAY, first, count, key, delay)
                 what = "excl" if pick < 0.85 else "plain"
-                rec[1] |= (FLAG_EXCLUSIVE << 8) if what == "excl" else 0
+                record[1] |= (FLAG_EXCLUSIVE << 8) if what == "excl" else 0
                 sent[req + i] = (what, first, count)
-            recs.append(rec)
-        keys = {req + i: r[3] for i, r in enumerate(recs)}
+            recs.append(record)
+        keys = {req + i: request[3] for i, request in enumerate(recs)}
         first_event = plan.seen + 1
         reqs = list(range(req, req + len(recs)))
         events, times = plan.stream(
@@ -1310,26 +1355,34 @@ def case_queue(session, args):
         )
         # A queued command may find the queue full: rejected, not run (the host would
         # retry it).
-        full = [e[1] for e in events if kind(e[2]) == (EVENT_REJECTED, REJECT_QUEUE)]
-        full_ok = all(sent.get(r, ("",))[0] == "queue" for r in full)
-        for r in full:
-            sent.pop(r, None)
+        full = [
+            event[1]
+            for event in events
+            if kind(event[2]) == (EVENT_REJECTED, REJECT_QUEUE)
+        ]
+        full_ok = all(sent.get(request, ("",))[0] == "queue" for request in full)
+        for request in full:
+            sent.pop(request, None)
         out["queue_full"] = len(full)
         out["rejected_ok"] = (
             full_ok
             and sorted(
-                e[1] for e in events if kind(e[2]) == (EVENT_REJECTED, REJECT_GROUP)
+                event[1]
+                for event in events
+                if kind(event[2]) == (EVENT_REJECTED, REJECT_GROUP)
             )
             == rejected
             and all(
-                kind(e[2])[0] == EVENT_DONE
-                for e in events
-                if e[1] not in rejected and e[1] not in full
+                kind(event[2])[0] == EVENT_DONE
+                for event in events
+                if event[1] not in rejected and event[1] not in full
             )
         )
         out["keys"] = keys
         out["done_first"] = {
-            e[1]: kind(e[2])[1] for e in events if kind(e[2])[0] == EVENT_DONE
+            event[1]: kind(event[2])[1]
+            for event in events
+            if kind(event[2])[0] == EVENT_DONE
         }
         out["exit"] = exit_and_stop(plan)
         return out
@@ -1337,22 +1390,34 @@ def case_queue(session, args):
     def after(plan, fin):
         trace["head"], trace["entries"] = read_trace(plan)
 
-    out, fin, cnt = with_kernel(session, args, body, depth=args.depth, after=after)
+    out, fin, counters = with_kernel(session, args, body, depth=args.depth, after=after)
     keys, done_first = out.pop("keys"), out.pop("done_first")
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     head, entries = trace["head"], trace["entries"]
     faults, groups, most = replay_trace(entries, sent, core_count)
     out["trace"] = {"head": head, "entries": len(entries), "most_in_flight": most}
     out["faults"], out["first_faults"] = len(faults), faults[:8]
-    ran = [(groups[r][0], groups[r][1], keys[r]) for r in sent if r in groups]
-    out["group_mismatch"], out["first_mismatch"] = check_groups(cnt, core_count, ran)
+    ran = [
+        (groups[request][0], groups[request][1], keys[request])
+        for request in sent
+        if request in groups
+    ]
+    out["group_mismatch"], out["first_mismatch"] = check_groups(
+        counters, core_count, ran
+    )
     # Every DONE names the first core its command ran on (the allocator's, if queued).
     out["done_first_ok"] = all(
-        done_first.get(r) == groups[r][0] for r in sent if r in groups
+        done_first.get(request) == groups[request][0]
+        for request in sent
+        if request in groups
     )
     out["queued_firsts"] = sorted(
-        {groups[r][0] for r, v in sent.items() if v[0] == "queue" and r in groups}
+        {
+            groups[request][0]
+            for request, value in sent.items()
+            if value[0] == "queue" and request in groups
+        }
     )[:16]
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
@@ -1408,9 +1473,10 @@ def stream_events(plan, reqs, timeout_s=20.0):
         if batch:
             log(f"{len(batch)} events, {len(out)} in all")
         ended = {
-            e[1]
-            for e in out
-            if e[1] in reqs and kind(e[2])[0] in (EVENT_STREAM_END, EVENT_STREAM_ERROR)
+            event[1]
+            for event in out
+            if event[1] in reqs
+            and kind(event[2])[0] in (EVENT_STREAM_END, EVENT_STREAM_ERROR)
         }
         if plan.host_word(0) >= STATE_DONE:
             break
@@ -1420,13 +1486,17 @@ def stream_events(plan, reqs, timeout_s=20.0):
     return out
 
 
-def expected_events(sim):
+def expected_events(simulation):
     """The simulator's events as (kind, req, auxiliary)."""
-    return [(e.kind, e.req, e.auxiliary) for e in sim.events]
+    return [(event.kind, event.req, event.auxiliary) for event in simulation.events]
 
 
 def got_events(events, req):
-    return [(kind(e[2])[0], e[1], kind(e[2])[1]) for e in events if e[1] == req]
+    return [
+        (kind(event[2])[0], event[1], kind(event[2])[1])
+        for event in events
+        if event[1] == req
+    ]
 
 
 def references():
@@ -1435,42 +1505,42 @@ def references():
     for name in sorted(os.listdir(STREAMS)):
         if name.endswith(".json"):
             stem = name[:-5]
-            with open(os.path.join(STREAMS, stem + ".bin"), "rb") as f:
-                data = f.read()
-            with open(os.path.join(STREAMS, name)) as f:
-                out.append((stem, data, json.load(f)))
+            with open(os.path.join(STREAMS, stem + ".bin"), "rb") as file:
+                data = file.read()
+            with open(os.path.join(STREAMS, name)) as file:
+                out.append((stem, data, json.load(file)))
     return out
 
 
-def result_stream(n, core_count, req, seed):
+def result_stream(iterations, core_count, req, seed):
     """n commands one at a time on random groups (DK_HANDLER_RESULT with KM_FLAG_RESULT,
     key i); after each, its result goes out as a KM_EVENT_STREAM event."""
-    s = ks.Stream(req=req, seed=seed)
-    i, count, first, room, res = s.registers(5)
-    s.set(i, 0)
-    top = s.label()
-    s.rand(count)
-    s.mod(count, count, s.const(core_count))
-    s.addi(count, count, 1)
-    s.sub(room, s.const(core_count + 1), count)
-    s.rand(first)
-    s.mod(first, first, room)
-    s.submit(HANDLER_RESULT, (first, count), args=[i, 77], result=True)
-    s.wait(0)
-    s.result(res)
-    s.event(res)
-    s.addi(i, i, 1)
-    s.jlt(i, s.const(n), top)
-    s.halt(s.const(0xABCDEF12))
-    return s
+    stream = stream_engine.Stream(req=req, seed=seed)
+    i, count, first, room, result = stream.registers(5)
+    stream.set(i, 0)
+    top = stream.label()
+    stream.rand(count)
+    stream.mod(count, count, stream.const(core_count))
+    stream.addi(count, count, 1)
+    stream.sub(room, stream.const(core_count + 1), count)
+    stream.rand(first)
+    stream.mod(first, first, room)
+    stream.submit(HANDLER_RESULT, (first, count), args=[i, 77], result=True)
+    stream.wait(0)
+    stream.result(result)
+    stream.event(result)
+    stream.addi(i, i, 1)
+    stream.jlt(i, stream.const(iterations), top)
+    stream.halt(stream.const(0xABCDEF12))
+    return stream
 
 
 def loop_stream(req):
     """A stream that never terminates: JMP to itself."""
-    s = ks.Stream(req=req, max_steps=0xFFFFFFFF)
-    top = s.label()
-    s.jmp(top)
-    return s
+    stream = stream_engine.Stream(req=req, max_steps=0xFFFFFFFF)
+    top = stream.label()
+    stream.jmp(top)
+    return stream
 
 
 def case_streams(session, args):
@@ -1484,18 +1554,18 @@ def case_streams(session, args):
 
     def ping(plan, name, out):
         i = plan.submit(kernel_command(HANDLER_PING))
-        event = [e for e in plan.take(plan.seen + 1, 5.0) if e[1] == i]
+        event = [entry for entry in plan.take(plan.seen + 1, 5.0) if entry[1] == i]
         out["pings"][name] = bool(event and kind(event[0][2])[0] == EVENT_PONG)
 
-    def one(plan, name, data, sim, out, offset=0):
+    def one(plan, name, data, simulation, out, offset=0):
         put_upload(plan, offset, data)
         plan.submit(run_command(offset, len(data)))
-        req = sim.events[0].req if sim.events else 0
+        req = simulation.events[0].req if simulation.events else 0
         events = stream_events(plan, req)
         got = got_events(events, req)
-        want = expected_events(sim)
-        ends = [e[3] for e in events if kind(e[2])[0] == EVENT_STREAM_END]
-        ok = got == want and (sim.halt is None or ends == [sim.halt])
+        want = expected_events(simulation)
+        ends = [entry[3] for entry in events if kind(entry[2])[0] == EVENT_STREAM_END]
+        ok = got == want and (simulation.halt is None or ends == [simulation.halt])
         out["streams"][name] = ok
         if not ok:
             out["wrong"].append({"name": name, "got": got[:6], "want": want[:6]})
@@ -1519,7 +1589,7 @@ def case_streams(session, args):
         def expect(name, words, want):
             i = plan.submit(words)
             event = plan.take(plan.seen + 1, 5.0)
-            got = [(kind(e[2])[0], e[1], kind(e[2])[1]) for e in event]
+            got = [(kind(entry[2])[0], entry[1], kind(entry[2])[1]) for entry in event]
             checks.append({"name": name, "got": got, "ok": got == [want(i)]})
 
         put_upload(plan, base + 4096 * 6, bytes(64))
@@ -1529,23 +1599,23 @@ def case_streams(session, args):
         expect(
             "overlap",
             run_command(base + 4096, size),
-            lambda i: (EVENT_STREAM_ERROR, hdr_req, ks.ERROR_HEADER),
+            lambda i: (EVENT_STREAM_ERROR, hdr_req, stream_engine.ERROR_HEADER),
         )
         expect(
             "unaligned",
             run_command(base + 4096 * 6 + 32, size),
-            lambda i: (EVENT_STREAM_ERROR, 0, ks.ERROR_HEADER),
+            lambda i: (EVENT_STREAM_ERROR, 0, stream_engine.ERROR_HEADER),
         )
         expect(
             "outside",
             run_command(base + 4096, region),
-            lambda i: (EVENT_STREAM_ERROR, hdr_req, ks.ERROR_HEADER),
+            lambda i: (EVENT_STREAM_ERROR, hdr_req, stream_engine.ERROR_HEADER),
         )
         put_upload(plan, base + 4096 * 6, loop_stream(101).encode())
         expect(
             "active req",
             run_command(base + 4096 * 6, size),
-            lambda i: (EVENT_STREAM_ERROR, 101, ks.ERROR_HEADER),
+            lambda i: (EVENT_STREAM_ERROR, 101, stream_engine.ERROR_HEADER),
         )
         plan.submit(run_command(base + 4096 * 4, size))
         expect(
@@ -1567,30 +1637,36 @@ def case_streams(session, args):
             expect(
                 f"cancel {100 + j}",
                 kernel_command(HANDLER_CANCEL, 100 + j),
-                lambda i, j=j: (EVENT_STREAM_ERROR, 100 + j, ks.ERROR_CANCELLED),
+                lambda i, j=j: (
+                    EVENT_STREAM_ERROR,
+                    100 + j,
+                    stream_engine.ERROR_CANCELLED,
+                ),
             )
         out["run"] = checks
         ping(plan, "after run", out)
 
         # Saved references that submit no command, against the simulator on this grid.
         for name, data, saved in references():
-            sim = ks.simulate(data, core_count=core_count, region_size=region - base)
-            if saved["expect"]["commands"] or sim.commands:
+            simulation = stream_engine.simulate(
+                data, core_count=core_count, region_size=region - base
+            )
+            if saved["expect"]["commands"] or simulation.commands:
                 continue
-            sims[name] = sim
-            one(plan, name, data, sim, out, base)
+            sims[name] = simulation
+            one(plan, name, data, simulation, out, base)
         ping(plan, "after references", out)
 
         # Commands one at a time from a stream.
-        s = result_stream(args.n, core_count, 7, args.seed)
-        data = s.encode()
-        sim = s.simulate(
+        stream = result_stream(args.n, core_count, 7, args.seed)
+        data = stream.encode()
+        simulation = stream.simulate(
             core_count=core_count,
-            result=lambda r: dk_result(r.args[0], r.args[1]),
+            result=lambda issued: dk_result(issued.args[0], issued.args[1]),
             region_size=region - base,
         )
-        sims["commands"] = sim
-        one(plan, "commands", data, sim, out, base)
+        sims["commands"] = simulation
+        one(plan, "commands", data, simulation, out, base)
         ping(plan, "after commands", out)
         out["exit"] = exit_and_stop(plan)
         return out
@@ -1598,19 +1674,26 @@ def case_streams(session, args):
     def after(plan, fin):
         trace["head"], trace["entries"] = read_trace(plan)
 
-    out, fin, cnt = with_kernel(session, args, body, depth=16, after=after)
+    out, fin, counters = with_kernel(session, args, body, depth=16, after=after)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     submitted = [
-        e for e in trace["entries"] if e[0] == TRACE_SUBMIT and e[6] == SOURCE_ENGINE
+        entry
+        for entry in trace["entries"]
+        if entry[0] == TRACE_SUBMIT and entry[6] == SOURCE_ENGINE
     ]
-    want = [(r.first, r.count) for r in sims["commands"].commands]
-    out["commands_in_order"] = [(e[3], e[4]) for e in submitted] == want
-    ran = [(r.first, r.count, r.args[0]) for r in sims["commands"].commands]
-    out["group_mismatch"], out["first_mismatch"] = check_groups(cnt, core_count, ran)
+    want = [(issued.first, issued.count) for issued in sims["commands"].commands]
+    out["commands_in_order"] = [(entry[3], entry[4]) for entry in submitted] == want
+    ran = [
+        (issued.first, issued.count, issued.args[0])
+        for issued in sims["commands"].commands
+    ]
+    out["group_mismatch"], out["first_mismatch"] = check_groups(
+        counters, core_count, ran
+    )
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
-        and all(c["ok"] for c in out["run"])
+        and all(check["ok"] for check in out["run"])
         and all(out["pings"].values())
         and all(out["streams"].values())
         and out["commands_in_order"]
@@ -1623,26 +1706,26 @@ def case_streams(session, args):
 def replay_upload(data):
     """A reference upload with every template's handler set to the stand-in worker's
     DK_HANDLER_RESULT, which runs on any group and answers dk_result(a0, a1)."""
-    b = bytearray(data)
-    if len(b) < 64:
-        return bytes(b)
+    buffer = bytearray(data)
+    if len(buffer) < 64:
+        return bytes(buffer)
     op_count, command_count = (
-        int(v) for v in np.frombuffer(bytes(b[8:16]), dtype=np.uint32)
+        int(value) for value in np.frombuffer(bytes(buffer[8:16]), dtype=np.uint32)
     )
     templates = 64 + -(-op_count * 16 // 64) * 64
-    for t in range(command_count):
-        at = templates + 80 * t + 4
-        if at < len(b) and 1 <= b[at] <= 239:
-            b[at] = HANDLER_RESULT
-    return bytes(b)
+    for template in range(command_count):
+        position = templates + 80 * template + 4
+        if position < len(buffer) and 1 <= buffer[position] <= 239:
+            buffer[position] = HANDLER_RESULT
+    return bytes(buffer)
 
 
 def pass_timed(params):
     """Whether a reference's answer rests on the simulator's passes (a deadline or a
     cancel in passes, a command never acknowledged, a pass limit)."""
-    d = params["delay"]
-    never = d is None or (
-        isinstance(d, dict) and None in d.get("by_sequence", {}).values()
+    delay = params["delay"]
+    never = delay is None or (
+        isinstance(delay, dict) and None in delay.get("by_sequence", {}).values()
     )
     return bool(
         params["deadline_passes"] is not None
@@ -1661,15 +1744,15 @@ REPLAY_DELAYS = [0, 1, 4, 16, lambda r: r.sequence % 5, lambda r: 7 * (r.sequenc
 def replay_sims(data, core_count, region):
     """The reference simulated on this grid under every model of REPLAY_DELAYS."""
     return [
-        ks.simulate(
+        stream_engine.simulate(
             data,
             core_count=core_count,
-            delay=d,
-            result=lambda r: dk_result(*(list(r.args) + [0, 0])[:2]),
+            delay=delay,
+            result=lambda submitted: dk_result(*(list(submitted.args) + [0, 0])[:2]),
             region_size=region,
             ticks_per_pass=tpp,
         )
-        for d in REPLAY_DELAYS
+        for delay in REPLAY_DELAYS
         for tpp in (1000, 37)
     ]
 
@@ -1678,15 +1761,15 @@ def queue_faults(entries, core_count):
     """Replays the trace's slots: every queued submit must take the lowest group that
     overlaps no busy one. Returns the faults and the most queued commands in flight."""
     busy, faults, most = {}, [], 0
-    for kind_, slot, req, first, count, p, src in entries:
+    for kind_, slot, req, first, count, payload, source in entries:
         if kind_ == TRACE_FREE:
             busy.pop(slot, None)
             continue
-        others = [(f, c) for f, c, _ in busy.values()]
+        others = [(start, width) for start, width, _ in busy.values()]
         if kind_ == TRACE_QUEUED and first != alloc(others, count, core_count):
-            faults.append([src, req, first, count, others, p])
+            faults.append([source, req, first, count, others, payload])
         busy[slot] = (first, count, kind_ == TRACE_QUEUED)
-        most = max(most, sum(q for _, _, q in busy.values()))
+        most = max(most, sum(queued for _, _, queued in busy.values()))
     return faults, most
 
 
@@ -1712,9 +1795,16 @@ def case_replay(session, args):
             sims = replay_sims(data, core_count, plan.upload_bytes - base)
             if not sims[0].commands:
                 continue
-            commands = {tuple((r.first, r.count) for r in s.commands) for s in sims}
+            commands = {
+                tuple((issued.first, issued.count) for issued in candidate.commands)
+                for candidate in sims
+            }
             events = {
-                tuple((e.kind, e.req, e.auxiliary) for e in s.events) for s in sims
+                tuple(
+                    (entry.kind, entry.req, entry.auxiliary)
+                    for entry in candidate.events
+                )
+                for candidate in sims
             }
             exact = len(commands) == 1 and len(events) == 1
             out["exact" if exact else "sets"] += 1
@@ -1725,7 +1815,7 @@ def case_replay(session, args):
             # An ended stream's commands may still run: a ping after a short wait.
             time.sleep(0.005)
             i = plan.submit(kernel_command(HANDLER_PING))
-            pong = [e for e in plan.take(plan.seen + 1, 5.0) if e[1] == i]
+            pong = [entry for entry in plan.take(plan.seen + 1, 5.0) if entry[1] == i]
             plans.append((name, exact, sims[0], got, len(events) == 1, bool(pong)))
         out["exit"] = exit_and_stop(plan)
         return out
@@ -1733,22 +1823,30 @@ def case_replay(session, args):
     def after(plan, fin):
         trace["head"], trace["entries"] = read_trace(plan)
 
-    out, fin, cnt = with_kernel(session, args, body, depth=16, after=after)
+    out, fin, counters = with_kernel(session, args, body, depth=16, after=after)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
-    submits = [e for e in trace["entries"] if e[0] in (TRACE_SUBMIT, TRACE_QUEUED)]
-    engine = [e for e in submits if e[6] == SOURCE_ENGINE]
-    wrong, at = [], 0
-    for name, exact, sim, got, events_fixed, pong in plans:
-        mine = engine[at : at + len(sim.commands)]
-        at += len(sim.commands)
-        want_events = [(e.kind, e.req, e.auxiliary) for e in sim.events]
-        groups = [(e[3], e[4]) for e in mine]
+    out["cores"] = core_report(counters, core_count, out["tag"])
+    submits = [
+        entry for entry in trace["entries"] if entry[0] in (TRACE_SUBMIT, TRACE_QUEUED)
+    ]
+    engine = [entry for entry in submits if entry[6] == SOURCE_ENGINE]
+    wrong, consumed = [], 0
+    for name, exact, simulation, got, events_fixed, pong in plans:
+        mine = engine[consumed : consumed + len(simulation.commands)]
+        consumed += len(simulation.commands)
+        want_events = [
+            (entry.kind, entry.req, entry.auxiliary) for entry in simulation.events
+        ]
+        groups = [(entry[3], entry[4]) for entry in mine]
         if exact:
-            ok = groups == [(r.first, r.count) for r in sim.commands]
+            ok = groups == [
+                (issued.first, issued.count) for issued in simulation.commands
+            ]
             ok = ok and got == want_events
         else:
-            ok = sorted(c for _, c in groups) == sorted(r.count for r in sim.commands)
+            ok = sorted(check for _, check in groups) == sorted(
+                issued.count for issued in simulation.commands
+            )
             ok = ok and got[-1:] == want_events[-1:]
             ok = ok and (got == want_events or not events_fixed)
         ok = ok and pong
@@ -1758,16 +1856,16 @@ def case_replay(session, args):
     runs = np.zeros(
         core_count, dtype=np.int64
     )  # EXIT, the host's one command, is no run
-    for e in engine:
-        runs[e[3] : e[3] + e[4]] += 1
+    for entry in engine:
+        runs[entry[3] : entry[3] + entry[4]] += 1
     out["wrong"], out["faults"] = wrong, faults[:8]
     out["most_queued_in_flight"] = most
-    out["runs_ok"] = bool((cnt[:core_count, C["run"]] == runs).all())
+    out["runs_ok"] = bool((counters[:core_count, COUNTER_COLUMNS["run"]] == runs).all())
     out["ok"] = bool(
         finished_clean(fin, core_count, out["cores"])
         and not wrong
         and not faults
-        and at == len(engine)
+        and consumed == len(engine)
         and out["runs_ok"]
         and trace["head"][2] == 0
     )
@@ -1784,30 +1882,43 @@ def case_stream_deadline(session, args):
     def body(plan):
         nonlocal core_count
         core_count = plan.grid_x * plan.grid_y
-        s = ks.Stream(req=55, deadline_microseconds=args.deadline_microseconds)
-        check_args = [3, 4] + [dk_arg(3, 4, w) for w in range(2, 10)]
-        s.submit(HANDLER_CHECK, (0, core_count), args=check_args)
-        s.wait(0)
-        s.submit(HANDLER_STALL, (0, core_count), args=[9, args.core])
-        s.wait(0)
-        s.halt(s.const(0))
-        data = s.encode()
+        stream = stream_engine.Stream(
+            req=55, deadline_microseconds=args.deadline_microseconds
+        )
+        check_args = [3, 4] + [dk_arg(3, 4, word) for word in range(2, 10)]
+        stream.submit(HANDLER_CHECK, (0, core_count), args=check_args)
+        stream.wait(0)
+        stream.submit(HANDLER_STALL, (0, core_count), args=[9, args.core])
+        stream.wait(0)
+        stream.halt(stream.const(0))
+        data = stream.encode()
         put_upload(plan, stream_base(plan), data)
         plan.submit(run_command(stream_base(plan), len(data)))
-        submits = [pc for pc, o in enumerate(s.uops()) if o.op == ks.OP_SUBMIT]
+        submits = [
+            uop_index
+            for uop_index, uop in enumerate(stream.uops())
+            if uop.op == stream_engine.OP_SUBMIT
+        ]
         out = {"tag": plan.tag, "stall_pc": submits[1]}
         log("stream started")
         out["events"] = stream_events(plan, 55)
         log("stream ended")
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4)
+    out, fin, counters = with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     blk = fin["block"]
-    got = [(kind(e[2])[0], e[1], kind(e[2])[1]) for e in out["events"]]
+    got = [(kind(event[2])[0], event[1], kind(event[2])[1]) for event in out["events"]]
     out["ok"] = bool(
-        got == [(EVENT_STREAM_ERROR, 55, ks.ERROR_DEADLINE | out["stall_pc"] << 8)]
+        got
+        == [
+            (
+                EVENT_STREAM_ERROR,
+                55,
+                stream_engine.ERROR_DEADLINE | out["stall_pc"] << 8,
+            )
+        ]
         and blk["error"] == ERROR_DEADLINE
         and blk["source"] == SOURCE_ENGINE
         and blk["engine"] == ENGINE_STOPPED
@@ -1829,11 +1940,11 @@ def case_engine_busy(session, args):
         core_count = plan.grid_x * plan.grid_y
         half, base = core_count // 2, stream_base(plan)
         cycles = int(args.delay_microseconds * 1e-6 * AICLK_HZ)
-        blocked = ks.Stream(req=61)
+        blocked = stream_engine.Stream(req=61)
         blocked.submit(HANDLER_DELAY, (0, half), args=[2, 0], exclusive=True)
         blocked.wait(0)
         blocked.halt(blocked.const(7))
-        flowing = ks.Stream(req=62)
+        flowing = stream_engine.Stream(req=62)
         i = flowing.registers(1)[0]
         flowing.set(i, 0)
         top = flowing.label()
@@ -1844,27 +1955,27 @@ def case_engine_busy(session, args):
         flowing.halt(i)
         out = {"tag": plan.tag}
         out["delay_req"] = plan.submit(command(HANDLER_DELAY, 0, half, 1, cycles))
-        for j, st in enumerate((blocked, flowing)):
-            data = st.encode()
+        for j, stream in enumerate((blocked, flowing)):
+            data = stream.encode()
             put_upload(plan, base + 4096 * j, data)
             plan.submit(run_command(base + 4096 * j, len(data)))
         out["events"] = stream_events(plan, {61, 62})
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4)
+    out, fin, counters = with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     event, blk = out.pop("events"), fin["block"]
-    at = {}
-    for j, e in enumerate(event):
-        what = kind(e[2])
-        if e[1] == out["delay_req"] and what[0] == EVENT_DONE:
-            at["delay"] = j
-        elif e[1] in (61, 62) and what[0] in (EVENT_STREAM_END, EVENT_STREAM_ERROR):
-            at[e[1]] = j
-            out[f"end_{e[1]}"] = [what[0], what[1], e[3]]
-    out["order"] = sorted(at, key=at.get)
+    order_at = {}
+    for j, entry in enumerate(event):
+        what = kind(entry[2])
+        if entry[1] == out["delay_req"] and what[0] == EVENT_DONE:
+            order_at["delay"] = j
+        elif entry[1] in (61, 62) and what[0] in (EVENT_STREAM_END, EVENT_STREAM_ERROR):
+            order_at[entry[1]] = j
+            out[f"end_{entry[1]}"] = [what[0], what[1], entry[3]]
+    out["order"] = sorted(order_at, key=order_at.get)
     out["ok"] = bool(
         out["order"] == [62, "delay", 61]
         and out.get("end_61") == [EVENT_STREAM_END, 7, 7]
@@ -1884,32 +1995,45 @@ def case_sequence_events(session, args):
     def body(plan):
         nonlocal core_count
         core_count = plan.grid_x * plan.grid_y
-        s = ks.Stream(req=91)
-        i = s.registers(1)[0]
-        s.set(i, 0)
-        top = s.label()
-        s.submit(HANDLER_DELAY, (0, 1), args=[i, 0])
-        s.wait(0)
-        s.addi(i, i, 1)
-        s.jlt(i, s.const(args.n), top)
-        s.halt(i)
+        stream = stream_engine.Stream(req=91)
+        i = stream.registers(1)[0]
+        stream.set(i, 0)
+        top = stream.label()
+        stream.submit(HANDLER_DELAY, (0, 1), args=[i, 0])
+        stream.wait(0)
+        stream.addi(i, i, 1)
+        stream.jlt(i, stream.const(args.n), top)
+        stream.halt(i)
         out = {"tag": plan.tag}
-        a = plan.submit(command(HANDLER_DELAY, 5, 3, 1, 0))
-        got = [e for e in plan.take(a, 5.0) if e[1] == a]
-        data, base = s.encode(), stream_base(plan)
+        first_request = plan.submit(command(HANDLER_DELAY, 5, 3, 1, 0))
+        got = [
+            entry
+            for entry in plan.take(first_request, 5.0)
+            if entry[1] == first_request
+        ]
+        data, base = stream.encode(), stream_base(plan)
         put_upload(plan, base, data)
         plan.submit(run_command(base, len(data)))
         ended = stream_events(plan, 91)
-        b = plan.submit(command(HANDLER_DELAY, 7, 2, 2, 0))
-        got += [e for e in plan.take(b, 5.0) if e[1] == b]
-        out["host"] = [[kind(e[2])[0], kind(e[2])[1], sequence_low(e[2])] for e in got]
-        out["stream_end"] = [list(kind(e[2])) for e in ended if e[1] == 91][-1:]
+        second_request = plan.submit(command(HANDLER_DELAY, 7, 2, 2, 0))
+        got += [
+            entry
+            for entry in plan.take(second_request, 5.0)
+            if entry[1] == second_request
+        ]
+        out["host"] = [
+            [kind(entry[2])[0], kind(entry[2])[1], sequence_low(entry[2])]
+            for entry in got
+        ]
+        out["stream_end"] = [list(kind(entry[2])) for entry in ended if entry[1] == 91][
+            -1:
+        ]
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4)
+    out, fin, counters = with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     want = [[EVENT_DONE, 5, 1], [EVENT_DONE, 7, (args.n + 2) & 0xFFFF]]
     out["ok"] = bool(
         out["host"] == want
@@ -1927,25 +2051,25 @@ def case_engine_cost(session, args):
     cycles = int(args.delay_microseconds * 1e-6 * AICLK_HZ)
 
     def timed(req, form):
-        s = ks.Stream(req=req)
-        i, one, t0, t1 = s.registers(4)
-        s.set(i, 0)
-        s.set(one, 1)
-        s.time(t0)
-        top = s.label()
+        stream = stream_engine.Stream(req=req)
+        i, one, started, finished = stream.registers(4)
+        stream.set(i, 0)
+        stream.set(one, 1)
+        stream.time(started)
+        top = stream.label()
         if form == "enqueue":
-            s.enqueue(HANDLER_DELAY, one, args=[i, 0])
+            stream.enqueue(HANDLER_DELAY, one, args=[i, 0])
         else:
-            s.submit(HANDLER_DELAY, (0, 1), args=[i, cycles], exclusive=True)
+            stream.submit(HANDLER_DELAY, (0, 1), args=[i, cycles], exclusive=True)
         if form == "wait":
-            s.wait(0)
-        s.addi(i, i, 1)
-        s.jlt(i, s.const(args.n), top)
-        s.wait(0)
-        s.time(t1)
-        s.sub(t1, t1, t0)
-        s.halt(t1)
-        return s
+            stream.wait(0)
+        stream.addi(i, i, 1)
+        stream.jlt(i, stream.const(args.n), top)
+        stream.wait(0)
+        stream.time(finished)
+        stream.sub(finished, finished, started)
+        stream.halt(finished)
+        return stream
 
     forms = {81: "wait", 82: "rejected", 83: "enqueue"}
     core_count = 0
@@ -1961,20 +2085,24 @@ def case_engine_cost(session, args):
             plan.submit(run_command(base + 4096 * j, len(data)))
             event = stream_events(plan, req)
             end = [
-                e for e in event if e[1] == req and kind(e[2])[0] == EVENT_STREAM_END
+                entry
+                for entry in event
+                if entry[1] == req and kind(entry[2])[0] == EVENT_STREAM_END
             ]
             out[form] = round(end[0][3] / 50.0 / args.n, 3) if end else None
             out[f"{form}_events"] = plan.seen - before
         out["exit"] = exit_and_stop(plan)
         return out
 
-    out, fin, cnt = with_kernel(session, args, body, depth=4)
+    out, fin, counters = with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = core_report(cnt, core_count, out["tag"])
+    out["cores"] = core_report(counters, core_count, out["tag"])
     out["rejections"] = fin["block"]["rejected"]
-    out["microseconds_per_command"] = {f: out.pop(f) for f in forms.values()}
+    out["microseconds_per_command"] = {
+        form_name: out.pop(form_name) for form_name in forms.values()
+    }
     out["ok"] = bool(
-        all(v is not None for v in out["microseconds_per_command"].values())
+        all(value is not None for value in out["microseconds_per_command"].values())
         and finished_clean(fin, core_count, out["cores"])
     )
     return out
@@ -1991,7 +2119,7 @@ def case_exit_flush(session, args):
         nonlocal core_count
         core_count = plan.grid_x * plan.grid_y
         base = stream_base(plan)
-        submitting = ks.Stream(req=71)
+        submitting = stream_engine.Stream(req=71)
         i = submitting.registers(1)[0]
         submitting.set(i, 0)
         top = submitting.label()
@@ -2000,17 +2128,22 @@ def case_exit_flush(session, args):
         submitting.addi(i, i, 1)
         submitting.jlt(i, submitting.const(args.n), top)
         submitting.halt(i)
-        for j, st in enumerate((submitting, loop_stream(72))):
-            data = st.encode()
+        for j, stream in enumerate((submitting, loop_stream(72))):
+            data = stream.encode()
             put_upload(plan, base + 4096 * j, data)
             plan.submit(run_command(base + 4096 * j, len(data)))
         events = stream_events(plan, 71)
-        out = {"tag": plan.tag, "ended": [kind(e[2])[0] for e in events if e[1] == 71]}
+        out = {
+            "tag": plan.tag,
+            "ended": [kind(entry[2])[0] for entry in events if entry[1] == 71],
+        }
         plan.submit(kernel_command(HANDLER_STOP))
         return out
 
     out, fin, _ = with_kernel(session, args, first, depth=4)
-    out["finish"] = {k: fin["block"][k] for k in ("error", "engine", "engine_commands")}
+    out["finish"] = {
+        name: fin["block"][name] for name in ("error", "engine", "engine_commands")
+    }
     # The host writes a pattern over the first run's state buffer, in place.
     state = DRAM_KEEP[-1]
     shape = tuple(state.shape)
@@ -2020,7 +2153,7 @@ def case_exit_flush(session, args):
 
     def second(plan):
         i = plan.submit(kernel_command(HANDLER_PING))
-        got = [e for e in plan.take(plan.seen + 1, 5.0) if e[1] == i]
+        got = [entry for entry in plan.take(plan.seen + 1, 5.0) if entry[1] == i]
         return {"pong": bool(got), "exit": exit_and_stop(plan)}
 
     out["second"], fin2, _ = with_kernel(session, args, second, depth=4)
@@ -2068,8 +2201,8 @@ CASES = {
 }
 
 # The regression set: one behaviour per case on a small input, in one device open.
-FED = {"host_depth": 64, "batch": 64}
-SET = [
+FED_OPTIONS = {"host_depth": 64, "batch": 64}
+SUITE = [
     ("ping", {}),
     ("groups", {"n": 200}),
     ("disjoint", {"n": 8}),
@@ -2082,9 +2215,9 @@ SET = [
     ("stop-busy", {}),
     ("trap", {}),
     ("excl", {}),
-    ("queue", {"n": 200, "delay_microseconds": 20.0, **FED}),
-    ("verify", {"n": 2000, "settle_microseconds": 1.0, **FED}),
-    ("result", {"n": 1000, **FED}),
+    ("queue", {"n": 200, "delay_microseconds": 20.0, **FED_OPTIONS}),
+    ("verify", {"n": 2000, "settle_microseconds": 1.0, **FED_OPTIONS}),
+    ("result", {"n": 1000, **FED_OPTIONS}),
     ("upload", {}),
     ("streams", {"n": 100}),
     ("replay", {}),
@@ -2098,7 +2231,7 @@ SET = [
 def case_set(session, args):
     """Every case of SET in turn; a JSON line per case."""
     oks = {}
-    for name, changes in SET:
+    for name, changes in SUITE:
         log(f"case {name}")
         out = CASES[name](session, argparse.Namespace(**{**vars(args), **changes}))
         print(json.dumps({"case": name, **out}, default=str), flush=True)
@@ -2108,29 +2241,41 @@ def case_set(session, args):
 
 def parser(cases):
     """The options of every case in `cases`."""
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("case", choices=sorted(cases))
-    p.add_argument("--n", type=int, default=1000)
-    p.add_argument("--depth", type=int, default=16)
-    p.add_argument("--group", type=int, default=0, help="group size, 0 = all cores")
-    p.add_argument("--host-depth", type=int, default=16)
-    p.add_argument("--event-depth", type=int, default=128)
-    p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--delay-microseconds", type=float, default=2000.0)
-    p.add_argument("--core", type=int, default=37, help="the stalling core")
-    p.add_argument("--deadline-microseconds", type=int, default=50000)
-    p.add_argument("--limit", type=float, default=20.0, help="worker wait limit, s")
-    p.add_argument(
+    argument_parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    argument_parser.add_argument("case", choices=sorted(cases))
+    argument_parser.add_argument("--n", type=int, default=1000)
+    argument_parser.add_argument("--depth", type=int, default=16)
+    argument_parser.add_argument(
+        "--group", type=int, default=0, help="group size, 0 = all cores"
+    )
+    argument_parser.add_argument("--host-depth", type=int, default=16)
+    argument_parser.add_argument("--event-depth", type=int, default=128)
+    argument_parser.add_argument("--seed", type=int, default=1)
+    argument_parser.add_argument("--delay-microseconds", type=float, default=2000.0)
+    argument_parser.add_argument(
+        "--core", type=int, default=37, help="the stalling core"
+    )
+    argument_parser.add_argument("--deadline-microseconds", type=int, default=50000)
+    argument_parser.add_argument(
+        "--limit", type=float, default=20.0, help="worker wait limit, s"
+    )
+    argument_parser.add_argument(
         "--idle-s", type=float, default=0.0, help="kernel idle limit, 0 = none"
     )
-    p.add_argument("--pll", type=int, default=1000, help="X280 clock, MHz")
-    p.add_argument("--image-first", action="store_true")
-    p.add_argument("--batch", type=int, default=1, help="commands per store batch")
-    p.add_argument(
+    argument_parser.add_argument(
+        "--pll", type=int, default=1000, help="X280 clock, MHz"
+    )
+    argument_parser.add_argument("--image-first", action="store_true")
+    argument_parser.add_argument(
+        "--batch", type=int, default=1, help="commands per store batch"
+    )
+    argument_parser.add_argument(
         "--settle-microseconds", type=float, default=0.0, help="fence to next store"
     )
-    p.add_argument("--image", default=IMAGE, type=os.path.abspath, help="kernel image")
-    return p
+    argument_parser.add_argument(
+        "--image", default=IMAGE, type=os.path.abspath, help="kernel image"
+    )
+    return argument_parser
 
 
 def main(cases, args):

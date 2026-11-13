@@ -55,7 +55,7 @@ def main():
         "--wrap", default="", help="command before pytest; {name}: file"
     )
     args = parser.parse_args()
-    files = [f if f.exists() else HERE / f for f in args.files]
+    files = [file if file.exists() else HERE / file for file in args.files]
     files = files or sorted(HERE.glob("test_*.py"))
     failed = []
     for path in files:

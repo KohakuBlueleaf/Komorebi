@@ -13,7 +13,7 @@ if os.environ.get("KMR_CARD") != "1":
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "feeder"))
 
-import mapcollect_fed as mf
+import mapcollect_fed
 
 import komorebi as km
 
@@ -24,8 +24,8 @@ CYCLES_300MS = 405_000_000  # at 1350 MHz
 
 @pytest.fixture(scope="module")
 def session():
-    with km.Session() as s:
-        yield s
+    with km.Session() as opened_session:
+        yield opened_session
 
 
 @pytest.fixture
@@ -33,8 +33,10 @@ def run(session):
     """Runs the example with these command-line arguments; returns its summary."""
 
     def go(*args):
-        a = mf.parse([str(x) for x in ("--out-pages", 256, *args)])
-        return mf.run(session, a, np.random.default_rng(a.seed))
+        arguments = mapcollect_fed.parse([str(x) for x in ("--out-pages", 256, *args)])
+        return mapcollect_fed.run(
+            session, arguments, np.random.default_rng(arguments.seed)
+        )
 
     return go
 
@@ -51,10 +53,10 @@ def ran_as_ranks(out):
 def waiting(out, where):
     """Cores named by their state words as waiting in `where`, with the sequence."""
     return sorted(
-        (n["core"], n[k]["sequence"])
-        for n in out["named"]
-        for k in ("reader", "writer")
-        if n.get(k, {}).get("where") == where
+        (entry["core"], entry[role]["sequence"])
+        for entry in out["named"]
+        for role in ("reader", "writer")
+        if entry.get(role, {}).get("where") == where
     )
 
 
@@ -76,7 +78,7 @@ def test_a_group_across_rows_completes_through_row_leaders(run):
 def test_records_past_the_trace_capacity_are_counted(run):
     out = run("--jobs", 12, "--count", 8, "--trace", "--trace-cap", 8)
     assert out["feeder"]["status"] == "done"
-    assert out["trace_dropped"] == {c: 4 for c in range(8)}  # sequence 9 to 12
+    assert out["trace_dropped"] == {core: 4 for core in range(8)}  # sequence 9 to 12
     assert every_kernel_returned(out) and ran_as_ranks(out)
 
 
@@ -122,7 +124,7 @@ def test_a_command_naming_another_slot_is_not_run(run):
     raw = ["--handler", "nop", "--raw", 0, "--raw-slot", 3, "--deadline", 0.02]
     out = run("--jobs", 2, "--depth", 1, "--first", 10, "--count", 8, *raw)  # slot 0
     assert out["feeder"]["status"] == "timeout" and out["feeder"]["index"] == 0
-    assert out["slot_wrong"] == {c: 1 for c in range(10, 18)}
+    assert out["slot_wrong"] == {core: 1 for core in range(10, 18)}
     assert out["runs"] == 0 and every_kernel_returned(out)
 
 
@@ -133,7 +135,7 @@ def test_slow_compute_gives_up_and_acknowledges_nothing(run):
     assert out["feeder"]["status"] == "timeout" and out["timed_out"]["sequence"] == 1
     assert out["feeder"]["done"] == 0 and out["not_reported"] == [0]
     assert every_kernel_returned(out)
-    writer = {g["core"]: g for g in out["gave_up_busy"]}[0]["writer"]
+    writer = {entry["core"]: entry for entry in out["gave_up_busy"]}[0]["writer"]
     assert (writer["code"], writer["where"]) == ("limit", "data")
 
 
@@ -144,7 +146,7 @@ def test_a_leader_whose_rank_is_late_acknowledges_nothing(run):
     assert out["feeder"]["status"] == "timeout" and out["timed_out"]["sequence"] == 1
     assert out["feeder"]["done"] == 0 and out["not_reported"] == [0]
     assert every_kernel_returned(out)
-    leader = {g["core"]: g for g in out["named"]}[0]["writer"]
+    leader = {entry["core"]: entry for entry in out["named"]}[0]["writer"]
     assert leader == {"code": "limit", "where": "complete", "slot": 0, "sequence": 1}
 
 
@@ -156,7 +158,7 @@ def test_an_item_past_the_buffer_end_gives_up_before_any_access(run):
     assert out["feeder"]["status"] == "timeout" and out["timed_out"]["sequence"] == 2
     assert out["feeder"]["done"] == 1 and out["not_reported"] == [0]
     assert every_kernel_returned(out)
-    core0 = {g["core"]: g for g in out["gave_up_busy"]}[0]
+    core0 = {entry["core"]: entry for entry in out["gave_up_busy"]}[0]
     assert core0["writer"] == {
         "code": "bad_item",
         "where": "data",

@@ -21,11 +21,13 @@ def load(name, path):
 
 
 def main():
-    mc = load("mapcollect", ROOT / "examples" / "01_mapcollect" / "mapcollect.py")
-    with km.Session(log=mc.log, kernel_bytes=KERNEL_BYTES) as session:
+    mapcollect_module = load(
+        "mapcollect", ROOT / "examples" / "01_mapcollect" / "mapcollect.py"
+    )
+    with km.Session(log=mapcollect_module.log, kernel_bytes=KERNEL_BYTES) as session:
         kernel, free = session.l1()
-        args = mc.parse(["--jobs", "20", "--count", "8"])
-        out = mc.run(session, args, np.random.default_rng(args.seed))
+        args = mapcollect_module.parse(["--jobs", "20", "--count", "8"])
+        out = mapcollect_module.run(session, args, np.random.default_rng(args.seed))
     out.update(kernel_buffer=kernel, l1_free=free)
     out["ok"] = out["ok"] and kernel == KERNEL_BYTES
     print(json.dumps(out), flush=True)

@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 
 from komorebi import layout
-from projects.dense import plan as pl
+from projects.dense import plan as dense_plan
 from ref import dense as ref
 
-CONSTANTS = pl.K
+CONSTANTS = dense_plan.K
 T = ref.TILE
 
 
@@ -28,7 +28,7 @@ def emulate(plan, activations, weights):
     indices into the A and W buffers, the writer's output pages."""
     activation_tiles, weight_tiles = tiles(activations), tiles(weights)
     y = [None] * (plan.mt * plan.nt)
-    count = pl.group_size(plan, 120)
+    count = dense_plan.group_size(plan, 120)
     for i in range(count):
         for tile_row in layout.partition(range(plan.mt), i, count):
             row = (
@@ -88,7 +88,7 @@ def test_errors_are_relative_to_the_reference():
 
 
 def test_chunk_and_block():
-    assert [pl.chunk(depth) for depth in (1, 12, 28, 32, 64, 96, 37)] == [
+    assert [dense_plan.chunk(depth) for depth in (1, 12, 28, 32, 64, 96, 37)] == [
         1,
         12,
         28,
@@ -97,7 +97,7 @@ def test_chunk_and_block():
         32,
         1,
     ]
-    assert [pl.block(count) for count in (1, 2, 3, 4, 6, 12, 7)] == [
+    assert [dense_plan.block(count) for count in (1, 2, 3, 4, 6, 12, 7)] == [
         1,
         2,
         3,
@@ -109,20 +109,24 @@ def test_chunk_and_block():
 
 
 def test_plan_resident_until_w_overflows():
-    plan = pl.plan(512, 12, 12)
+    plan = dense_plan.plan(512, 12, 12)
     assert plan.resident and (plan.kc, plan.ct) == (12, 4) and plan.row_item
-    assert plan.l1_bytes() == (24 + 144 + 8) * pl.TILE_BYTES + CONSTANTS["kProfBytes"]
-    big = pl.plan(512, 32, 32, budget=1_000_000)
-    assert not big.resident and big.ws_pages == 2 * 32 * 4 and big.a_pages == 64
-    assert pl.plan(512, 32, 32, budget=100_000) is None
     assert (
-        pl.plan(4, 4, 4, form=CONSTANTS["kFormStream"]).form == CONSTANTS["kFormStream"]
+        plan.l1_bytes()
+        == (24 + 144 + 8) * dense_plan.TILE_BYTES + CONSTANTS["kProfBytes"]
+    )
+    big = dense_plan.plan(512, 32, 32, budget=1_000_000)
+    assert not big.resident and big.ws_pages == 2 * 32 * 4 and big.a_pages == 64
+    assert dense_plan.plan(512, 32, 32, budget=100_000) is None
+    assert (
+        dense_plan.plan(4, 4, 4, form=CONSTANTS["kFormStream"]).form
+        == CONSTANTS["kFormStream"]
     )
 
 
 def test_product_args_follow_the_header():
-    plan = pl.plan(8, 4, 8)
-    words = pl.product_args(plan, 100, 200, 300, CONSTANTS["kModeReadOnly"])
+    plan = dense_plan.plan(8, 4, 8)
+    words = dense_plan.product_args(plan, 100, 200, 300, CONSTANTS["kModeReadOnly"])
     assert len(words) == 10
     assert words[:2] == [100, 200] and words[9] == 300
     assert words[2:9] == [
@@ -134,8 +138,10 @@ def test_product_args_follow_the_header():
         CONSTANTS["kModeReadOnly"],
         plan.form,
     ]
-    assert pl.load_args(plan, 300)[0] == 300 and pl.load_args(plan, 300)[3:] == [4, 8]
-    assert pl.flops(plan) == 2 * 8 * 4 * 8 * 32**3
+    assert dense_plan.load_args(plan, 300)[0] == 300 and dense_plan.load_args(
+        plan, 300
+    )[3:] == [4, 8]
+    assert dense_plan.flops(plan) == 2 * 8 * 4 * 8 * 32**3
 
 
 @pytest.mark.parametrize(
@@ -149,7 +155,7 @@ def test_product_args_follow_the_header():
 )
 def test_kernel_tile_order_gives_the_product(shape, form):
     mt, kt, nt = shape
-    plan = pl.plan(mt, kt, nt, form=CONSTANTS[form])
+    plan = dense_plan.plan(mt, kt, nt, form=CONSTANTS[form])
     rng = np.random.default_rng(1)
     activations = rng.standard_normal((mt * T, kt * T))
     weights = rng.standard_normal((kt * T, nt * T))
@@ -202,10 +208,12 @@ def emulate_grid(plan, activations, weights, grid=(12, 10)):
     return y.transpose(0, 2, 1, 3).reshape(plan.mt * T, plan.nt * T)
 
 
-@pytest.mark.parametrize("layout", pl.LAYOUTS)
+@pytest.mark.parametrize("layout", dense_plan.LAYOUTS)
 def test_grid_tile_order_gives_the_product(layout):
-    plan = pl.grid_plan(13, 5, 14, layout=layout)
-    plan = pl.Grid(**(plan.__dict__ | {"bm": 2, "bn": 2, "kb": 2, "sh": 1, "sw": 2}))
+    plan = dense_plan.grid_plan(13, 5, 14, layout=layout)
+    plan = dense_plan.Grid(
+        **(plan.__dict__ | {"bm": 2, "bn": 2, "kb": 2, "sh": 1, "sw": 2})
+    )
     rng = np.random.default_rng(1)
     activations = rng.integers(-2, 3, (plan.mt * T, plan.kt * T)).astype(np.float64)
     weights = rng.integers(-2, 3, (plan.kt * T, plan.nt * T)).astype(np.float64)
@@ -217,10 +225,10 @@ def test_grid_tile_order_gives_the_product(layout):
 def test_grid_rule_layouts_fit():
     shapes = {(128, 128, 128): "2d", (512, 32, 32): "rows", (1, 128, 128): "cols"}
     for (mt, kt, nt), lay in shapes.items():
-        plan = pl.grid_plan(mt, kt, nt)
-        assert plan.layout == lay and plan.l1_bytes() <= pl.L1_BUDGET
+        plan = dense_plan.grid_plan(mt, kt, nt)
+        assert plan.layout == lay and plan.l1_bytes() <= dense_plan.L1_BUDGET
         plan.check((12, 10))
-    plan = pl.grid_plan(128, 128, 128)
+    plan = dense_plan.grid_plan(128, 128, 128)
     assert (plan.rows, plan.cols, plan.pcm, plan.pcn, plan.sh, plan.sw) == (
         10,
         11,
@@ -288,10 +296,10 @@ def emulate_split(split, activations, weights, form):
     return y.transpose(0, 2, 1, 3).reshape(split.mt * T, split.nt * T)
 
 
-@pytest.mark.parametrize("form", list(pl.REDUCE_FORMS))
+@pytest.mark.parametrize("form", list(dense_plan.REDUCE_FORMS))
 @pytest.mark.parametrize("s, oh, ow, kc", [(3, 2, 2, 2), (5, 1, 3, 1), (1, 3, 1, 4)])
 def test_split_tile_order_gives_the_product(form, s, oh, ow, kc):
-    split = pl.split_plan(5, 7, 4, s, oh, ow, kc)
+    split = dense_plan.split_plan(5, 7, 4, s, oh, ow, kc)
     rng = np.random.default_rng(1)
     activations = rng.integers(-2, 3, (split.mt * T, split.kt * T)).astype(np.float64)
     weights = rng.integers(-2, 3, (split.kt * T, split.nt * T)).astype(np.float64)
@@ -305,8 +313,8 @@ def test_split_plans_of_the_narrow_shapes_fit():
         (128, 896, 128): (7, 1, 4),
         (32, 4096, 4096): (7, 1, 8),
     }.items():
-        split = pl.split_plan(m // T, k // T, n // T, s, oh, ow)
-        assert split.cores() <= 120 and split.l1_bytes() <= pl.L1_BUDGET
-        assert len(split.words()) == pl.S["kSplitWords"]
+        split = dense_plan.split_plan(m // T, k // T, n // T, s, oh, ow)
+        assert split.cores() <= 120 and split.l1_bytes() <= dense_plan.L1_BUDGET
+        assert len(split.words()) == dense_plan.S["kSplitWords"]
     with pytest.raises(ValueError):
-        pl.split_plan(1, 4, 128, 5, 1, 8)  # a group larger than K's tiles
+        dense_plan.split_plan(1, 4, 128, 5, 1, 8)  # a group larger than K's tiles

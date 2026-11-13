@@ -9,11 +9,11 @@ from pathlib import Path
 import komorebi as km
 
 HERE = Path(__file__).resolve().parent
-T0 = time.monotonic()
+STARTED = time.monotonic()
 
 
-def log(msg):
-    print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
+def log(message):
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def main():
@@ -23,7 +23,7 @@ def main():
         run = session.load(prog)
         log("loaded")
         time.sleep(0.2)  # the thread fills its ring meanwhile
-        handles = [run.submit(1, (c % run.cores, 1)) for c in range(200)]
+        handles = [run.submit(1, (core % run.cores, 1)) for core in range(200)]
         events = run.wait(handles, timeout=5.0)
         log("host commands done")
         result = run.thread_result(timeout=0.3)
@@ -31,7 +31,7 @@ def main():
         stop = run.stop()
         log("run stopped")
     out = {
-        "host_done": sum(e.kind == "done" for e in events),
+        "host_done": sum(event.kind == "done" for event in events),
         "thread": result._asdict(),
         "kernel_error": stop["error_name"],
     }

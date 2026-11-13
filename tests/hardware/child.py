@@ -22,21 +22,22 @@ def run_text(script, *args, timeout=120.0, grace=GRACE):
         text=True,
     )
     try:
-        out, err = child.communicate(timeout=timeout)
+        out, stderr = child.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         child.terminate()
         try:
-            _, err = child.communicate(timeout=grace)
+            _, stderr = child.communicate(timeout=grace)
             how = f"SIGTERM, exit {child.returncode}"
         except subprocess.TimeoutExpired:
             child.kill()
-            _, err = child.communicate()
+            _, stderr = child.communicate()
             how = f"SIGKILL after {grace} s"
         pytest.fail(
-            f"{Path(script).name} did not return in {timeout} s ({how})\n{err[-2000:]}"
+            f"{Path(script).name} did not return in {timeout} s ({how})\n"
+            f"{stderr[-2000:]}"
         )
     if child.returncode != 0:
-        pytest.fail(f"{Path(script).name} exited {child.returncode}\n{err[-2000:]}")
+        pytest.fail(f"{Path(script).name} exited {child.returncode}\n{stderr[-2000:]}")
     return out
 
 
