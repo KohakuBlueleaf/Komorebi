@@ -331,7 +331,7 @@ namespace {
         tile_regs_acquire_math_clear();
         math_vector_begin();
         MATH((math::clear_dst_reg_addr()));
-        MATH((flash::const_broadcasts()));
+        MATH((flash::const_lanes()));
         MATH((flash::const_tile(flash::Const::Ones, 0, 0)));
 #ifdef FLASH_CAUSAL
         MATH((flash::const_tile(flash::Const::Causal, 1, 0)));
