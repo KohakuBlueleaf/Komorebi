@@ -4,28 +4,29 @@ The deciding is done by a micro-op stream: 1,000 `MAP` jobs, each on a group who
 the stream draws at random, run three ways that must give the same tiles.
 
 ```python
-s = ks.Stream(seed=seed)
-j, x, count, first, room, base, page = s.registers(7)
-top = s.label()
-s.rand(x)
-s.mod(count, x, core_count)
-s.addi(count, count, 1)  # 1 to every core
+stream = micro_ops.Stream(seed=seed)
+job, random_word, count, first, room, base, page = stream.registers(7)
+top = stream.label()
+stream.rand(random_word)
+stream.mod(count, random_word, core_count)
+stream.addi(count, count, 1)  # 1 to every core
+map_args = [addresses["in"], tiles, addresses["out"], base, page]
 if form == "submit":  # the stream picks the first core too
-    s.sub(room, core_count, count)
-    s.addi(room, room, 1)
-    s.shr(first, x, 8)
-    s.mod(first, first, room)
-    s.submit(MAP, (first, count), args=[inp, T, out, base, page])
-    s.wait(0)  # one command in flight
+    stream.sub(room, core_count, count)
+    stream.addi(room, room, 1)
+    stream.shr(first, random_word, 8)
+    stream.mod(first, first, room)
+    stream.submit(addresses["map"], (first, count), args=map_args)
+    stream.wait(0)  # one command in flight
 else:  # the dispatcher's queue picks it
-    s.enqueue(MAP, count, args=[inp, T, out, base, page])
-s.add(base, base, count)  # the next job's output tiles
-s.addi(page, page, 61)  # the input window moves (modulo W)
+    stream.enqueue(addresses["map"], count, args=map_args)
+stream.add(base, base, count)  # the next job's output tiles
+stream.addi(page, page, STEP)  # the input window moves (modulo the window)
 ...
-s.addi(j, j, 1)
-s.jlt(j, n_jobs, top)
-s.wait(0)
-s.halt(j)
+stream.addi(job, job, 1)
+stream.jlt(job, job_count, top)
+stream.wait(0)
+stream.halt(job)
 ```
 
 | Way | Who decides | How the commands go |
@@ -35,8 +36,9 @@ s.halt(j)
 | `enqueue` | the X280 and the dispatcher's job queue | the same calls with the ENQUEUE stream; the queue gives each job the lowest free group of its size, so several jobs are in flight |
 | `errors` | - | three streams that end in an error event, then 20 jobs of the SUBMIT stream on the same run |
 
-`MAP` (`kernels/`): rank m of a job adds its partition of the job's T input tiles (from
-tile a4) into one tile and stores it at output page a3 + m. Groups differ between the ways
+`MAP` (`kernels/`): each rank of a job adds its partition of the job's T input tiles
+(`tiles`, a1, from tile `first_tile`, a4) into one tile and stores it at output page
+`first_page` (a3) plus its rank. Groups differ between the ways
 (only `submit` and `hostfed` pick the same ones), but every job writes the same tiles. The
 inputs are integers in [-2, 2], so every sum is exact in bf16, and the host compares every
 output tile of every way bit for bit with numpy. It also checks each core's command count
