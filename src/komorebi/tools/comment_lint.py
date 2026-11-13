@@ -38,14 +38,14 @@ class Comment:
     text: str
 
 
-def joins(prev, item):
-    """True when `item` continues the comment block that ends with `prev`: it is
-    alone on its lines and starts on or right after `prev`'s last line; a comment
+def joins(previous, item):
+    """True when `item` continues the comment block that ends with `previous`: it is
+    alone on its lines and starts on or right after `previous`'s last line; a comment
     after code is continued only by comments at its own column."""
     return (
         item.pure
-        and item.first <= prev.last + 1
-        and (prev.pure or prev.col == item.col)
+        and item.first <= previous.last + 1
+        and (previous.pure or previous.col == item.col)
     )
 
 
@@ -63,7 +63,7 @@ def blocks(comments):
 def span(run):
     """(first line, line count) of a block."""
     first = run[0].first
-    return first, max(c.last for c in run) - first + 1
+    return first, max(comment.last for comment in run) - first + 1
 
 
 def comment_findings(comments, skip=None):
@@ -167,25 +167,25 @@ def c_comments(text):
     comments, code_lines = [], set()
     i, line, start = 0, 1, 0
     while i < len(text):
-        c = text[i]
+        character = text[i]
         end = i + 1
         comment = False
-        if c.isspace():
+        if character.isspace():
             pass
         elif text.startswith("//", i):
             end, comment = skip_line_comment(text, i), True
         elif text.startswith("/*", i):
             close = text.find("*/", i + 2)
             end, comment = (len(text) if close < 0 else close + 2), True
-        elif c == '"':
+        elif character == '"':
             end = skip_string(text, i, raw_string_start(text, i))
         else:
-            literal = CHAR_LITERAL.match(text, i) if c == "'" else None
+            literal = CHAR_LITERAL.match(text, i) if character == "'" else None
             end = literal.end() if literal else end
         lines = text.count("\n", i, end)
         if comment:
             comments.append(Comment(line, line + lines, i - start, True, text[i:end]))
-        elif not c.isspace():
+        elif not character.isspace():
             code_lines.update(range(line, line + lines + 1))
         if lines:
             line, start = line + lines, text.rfind("\n", i, end) + 1
@@ -197,13 +197,16 @@ def mark_code(comments, code_lines):
     """The comments with `pure` cleared when code shares a line with them."""
     return [
         Comment(
-            c.first,
-            c.last,
-            c.col,
-            not any(n in code_lines for n in range(c.first, c.last + 1)),
-            c.text,
+            comment.first,
+            comment.last,
+            comment.col,
+            not any(
+                number in code_lines
+                for number in range(comment.first, comment.last + 1)
+            ),
+            comment.text,
         )
-        for c in comments
+        for comment in comments
     ]
 
 
@@ -212,7 +215,9 @@ def licence_block(comments, code_lines):
     if not comments or comments[0].first > min(code_lines, default=comments[0].first):
         return None
     run = blocks(comments)[0]
-    if comments[0].pure and any(m in c.text for c in run for m in LICENCE_MARKERS):
+    if comments[0].pure and any(
+        marker in comment.text for comment in run for marker in LICENCE_MARKERS
+    ):
         return run
     return None
 
@@ -252,12 +257,12 @@ def under(directory, root):
         cwd=directory,
     )
     if done.returncode == 0:
-        return sorted(directory / f for f in done.stdout.split("\0") if f)
+        return sorted(directory / name for name in done.stdout.split("\0") if name)
     skipped = {".git", ".venv", "__pycache__"}
     return sorted(
-        f
-        for f in directory.rglob("*")
-        if f.is_file() and not skipped & set(f.relative_to(directory).parts)
+        path
+        for path in directory.rglob("*")
+        if path.is_file() and not skipped & set(path.relative_to(directory).parts)
     )
 
 
@@ -268,11 +273,15 @@ def sources(paths):
     root = repo_root()
     if paths:
         found = []
-        for p in map(Path, paths):
-            if p.is_dir():
-                found += [f for f in under(p, root) if wanted(f) and listed(f, root)]
-            elif wanted(p):
-                found.append(p)
+        for path in map(Path, paths):
+            if path.is_dir():
+                found += [
+                    file
+                    for file in under(path, root)
+                    if wanted(file) and listed(file, root)
+                ]
+            elif wanted(path):
+                found.append(path)
         return found
     tracked = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -281,8 +290,10 @@ def sources(paths):
         check=True,
         cwd=root,
     ).stdout.split("\0")
-    files = [root / f for f in tracked if f]
-    return [f for f in files if wanted(f) and f.is_file() and listed(f, root)]
+    files = [root / name for name in tracked if name]
+    return [
+        file for file in files if wanted(file) and file.is_file() and listed(file, root)
+    ]
 
 
 def listed(path, root):

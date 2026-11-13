@@ -51,16 +51,16 @@ def scan(line):
     """(code, has_comment): the line with literals and a // comment blanked."""
     out, quote, i = [], None, 0
     while i < len(line):
-        c = line[i]
+        character = line[i]
         if quote:
             out.append(" ")
-            if c == "\\" and i + 1 < len(line):
+            if character == "\\" and i + 1 < len(line):
                 out.append(" ")
                 i += 1
-            elif c == quote:
+            elif character == quote:
                 quote = None
-        elif c in "\"'":
-            quote = c
+        elif character in "\"'":
+            quote = character
             out.append(" ")
         elif line.startswith("//", i):
             # The comment blanked; a trailing newline kept (positions line up).
@@ -69,7 +69,7 @@ def scan(line):
             out.append(" " * (len(tail) - len(newline)) + newline)
             return "".join(out), True
         else:
-            out.append(c)
+            out.append(character)
         i += 1
     return "".join(out), False
 
@@ -84,12 +84,12 @@ def statement_end(lines, start):
         # A /* */ comment too: after a ; it hides that ; from the test below.
         if comment or "/*" in code or code.endswith("\\"):
             return None
-        for c in code:
-            if c in "([":
+        for character in code:
+            if character in "([":
                 depth += 1
-            elif c in ")]":
+            elif character in ")]":
                 depth -= 1
-            elif c in "{}":
+            elif character in "{}":
                 return None
         if depth == 0 and code.endswith(";"):
             return i
@@ -113,12 +113,12 @@ def join(parts):
 def top_level_comma(text):
     """True when `text` has a comma outside brackets (several declarators)."""
     depth = 0
-    for c in scan(text)[0]:
-        if c in "([{":
+    for character in scan(text)[0]:
+        if character in "([{":
             depth += 1
-        elif c in ")]}":
+        elif character in ")]}":
             depth -= 1
-        elif c == "," and depth == 0:
+        elif character == "," and depth == 0:
             return True
     return False
 
@@ -128,9 +128,9 @@ def strip_outer_parens(text):
     if not (text.startswith("(") and text.endswith(")")):
         return text
     depth = 0
-    for i, c in enumerate(scan(text)[0]):
-        depth += c == "("
-        depth -= c == ")"
+    for i, character in enumerate(scan(text)[0]):
+        depth += character == "("
+        depth -= character == ")"
         if depth == 0 and i < len(text) - 1:
             return text
     return text[1:-1].strip()
@@ -208,16 +208,16 @@ def unwrap_braced_values(lines):
     text = "".join(lines)
     code = "".join(scan(line)[0] for line in text.splitlines(keepends=True))
     out, last = [], 0
-    for m in re.finditer(r"(?:\breturn|[^=!<>]=)\s*\(", code):
-        open_at = m.end() - 1
+    for matched in re.finditer(r"(?:\breturn|[^=!<>]=)\s*\(", code):
+        open_at = matched.end() - 1
         depth, close_at, braced = 0, None, False
-        for k in range(open_at, len(code)):
-            c = code[k]
-            depth += c == "("
-            depth -= c == ")"
-            braced |= c == "{"
+        for position in range(open_at, len(code)):
+            character = code[position]
+            depth += character == "("
+            depth -= character == ")"
+            braced |= character == "{"
             if depth == 0:
-                close_at = k
+                close_at = position
                 break
         after = code[close_at + 1 :].lstrip() if close_at else ""
         if close_at and braced and after.startswith(";") and open_at >= last:
@@ -232,9 +232,9 @@ def merge_split_declarations(lines):
     out, i = [], 0
     while i < len(lines):
         line = lines[i].rstrip("\n")
-        nxt = lines[i + 1] if i + 1 < len(lines) else ""
-        if TYPE_ONLY.match(line) and NAMED_VALUE.match(nxt):
-            out.append(f"{line} {nxt.lstrip()}")
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        if TYPE_ONLY.match(line) and NAMED_VALUE.match(next_line):
+            out.append(f"{line} {next_line.lstrip()}")
             i += 2
             continue
         out.append(lines[i])
@@ -245,15 +245,15 @@ def merge_split_declarations(lines):
 def split_declarators(indent, head, value):
     """``type a = x, b = y;`` that wraps as one declaration per line (the lines, or None
     when the statement is not a plain declaration of values)."""
-    m = re.fullmatch(r"((?:[\w:<>]+\s+)+)(\w+)\s*=", head)
-    if not m or any(c in m[1] for c in "*&[("):
+    declaration = re.fullmatch(r"((?:[\w:<>]+\s+)+)(\w+)\s*=", head)
+    if not declaration or any(character in declaration[1] for character in "*&[("):
         return None
     items = split_items(value)
     if len(items) < 2 or not all(
         re.fullmatch(r"\w+(\s*=\s*\S.*)?", x) for x in items[1:]
     ):
         return None
-    prefix = m[1].strip()
+    prefix = declaration[1].strip()
     return [
         f"{indent}{head} {items[0]};\n",
         *(f"{indent}{prefix} {item};\n" for item in items[1:]),
@@ -266,18 +266,20 @@ def wrap_values(lines, binary):
     lines = merge_split_declarations(unwrap_braced_values(lines))
     out, i = [], 0
     while i < len(lines):
-        m = ASSIGN.match(lines[i].rstrip("\n"))
-        if m and re.match(r"(using|typedef|template|namespace)\b", m[2]):
-            m = None  # a type alias or declaration, not a value
-        end = statement_end(lines, i) if m else None
+        assignment = ASSIGN.match(lines[i].rstrip("\n"))
+        if assignment and re.match(
+            r"(using|typedef|template|namespace)\b", assignment[2]
+        ):
+            assignment = None  # a type alias or declaration, not a value
+        end = statement_end(lines, i) if assignment else None
         fits = len(lines[i].rstrip("\n")) <= COLUMNS
         if end is None or (end == i and fits):
             out.append(lines[i])
             i += 1
             continue
-        indent, head, first = m.groups()
+        indent, head, first = assignment.groups()
         first = first or ""
-        rest = (lines[k].rstrip("\n") for k in range(i + 1, end + 1))
+        rest = (lines[number].rstrip("\n") for number in range(i + 1, end + 1))
         value = strip_outer_parens(join([first, *rest])[:-1].rstrip())
         if value.startswith(("[", "{")) or top_level_comma(value):
             out.extend(split_declarators(indent, head, value) or lines[i : end + 1])
@@ -297,12 +299,12 @@ def wrap_values(lines, binary):
 def split_items(text):
     """`text` split at commas outside brackets, items stripped."""
     items, depth, start = [], 0, 0
-    for i, c in enumerate(scan(text)[0]):
-        if c in "([{":
+    for i, character in enumerate(scan(text)[0]):
+        if character in "([{":
             depth += 1
-        elif c in ")]}":
+        elif character in ")]}":
             depth -= 1
-        elif c == "," and depth == 0:
+        elif character == "," and depth == 0:
             items.append(text[start:i].strip())
             start = i + 1
     items.append(text[start:].strip())
@@ -315,9 +317,11 @@ def hug_braced_lists(lines):
     out, i = [], 0
     while i < len(lines):
         line = lines[i].rstrip("\n")
-        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
         if not (
-            line.endswith("(") and not line.endswith("= (") and nxt.startswith("{")
+            line.endswith("(")
+            and not line.endswith("= (")
+            and next_line.startswith("{")
         ):
             out.append(lines[i])
             i += 1
@@ -354,9 +358,9 @@ def hug_braced_lists(lines):
 def matching_brace(text):
     """Index of the brace closing `text`'s opening brace (text[0] == "{"), or -1."""
     depth = 0
-    for i, c in enumerate(scan(text)[0]):
-        depth += c == "{"
-        depth -= c == "}"
+    for i, character in enumerate(scan(text)[0]):
+        depth += character == "{"
+        depth -= character == "}"
         if depth == 0:
             return i
     return -1
@@ -416,7 +420,7 @@ def blank_code(lines):
             continue
         code, quote, i = [], None, 0
         while i < len(text):
-            c = text[i]
+            character = text[i]
             if in_block:
                 end = text.find("*/", i)
                 stop = len(text) if end < 0 else end + 2
@@ -426,13 +430,13 @@ def blank_code(lines):
                 continue
             if quote:
                 code.append(" ")
-                if c == "\\" and i + 1 < len(text):
+                if character == "\\" and i + 1 < len(text):
                     code.append(" ")
                     i += 1
-                elif c == quote:
+                elif character == quote:
                     quote = None
-            elif c in "\"'":
-                quote = c
+            elif character in "\"'":
+                quote = character
                 code.append(" ")
             elif text.startswith("//", i):
                 code.append(" " * (len(text) - i))
@@ -442,7 +446,7 @@ def blank_code(lines):
                 code.append("  ")
                 i += 1
             else:
-                code.append(c)
+                code.append(character)
             i += 1
         code = "".join(code)
         kind = "code" if code.strip() else ("comment" if text.strip() else "blank")
@@ -461,46 +465,50 @@ def reindent_brackets(lines):
     anchor = [0] * len(lines)  # by how much the line starting its statement moved
     # A bracket: [line, character, wraps, contents' move, after ',', inside another]
     out, stack = [], []
-    for k, line in enumerate(lines):
+    for number, line in enumerate(lines):
         text = line.rstrip("\n")
-        cod, kind = code[k]
+        blanked, kind = code[number]
         indent = len(text) - len(text.lstrip(" "))
-        new[k] = indent
+        new[number] = indent
         if kind in ("blank", "preprocessor"):
             out.append(line)
             continue
-        first = cod.lstrip()[:1]
+        first = blanked.lstrip()[:1]
         if stack:
             entry = stack[-1]
-            at, bracket, wraps, shift, comma, inside = entry
+            opener_line, bracket, wraps, shift, comma, inside = entry
             if bracket == "{" and not inside:
-                shift = anchor[at]
+                shift = anchor[opener_line]
             elif first in (")", "]", "}"):
-                shift = new[at] - indent
+                shift = new[opener_line] - indent
             elif not wraps:
-                shift = moved[at]
+                shift = moved[opener_line]
             elif shift is None or (comma and bracket != "{"):
-                shift = new[at] + INDENT - indent
+                shift = new[opener_line] + INDENT - indent
                 entry[3] = shift
-            moved[k] = shift
-            new[k] = max(indent + shift, 0)
+            moved[number] = shift
+            new[number] = max(indent + shift, 0)
         # A line of closing brackets (``)) {``) starts nothing: its statement does
         closes = first in (")", "]", "}")
-        anchor[k] = anchor[stack[-1][0]] if stack and closes else moved[k]
-        out.append(" " * new[k] + text.lstrip(" ") + "\n")
-        for j, c in enumerate(cod):
-            rest = not cod[j + 1 :].strip()
-            template = c == "<" and rest and j and re.match(r"[\w:>]", cod[j - 1])
-            if c in "([{" or template:
+        anchor[number] = anchor[stack[-1][0]] if stack and closes else moved[number]
+        out.append(" " * new[number] + text.lstrip(" ") + "\n")
+        for j, character in enumerate(blanked):
+            rest = not blanked[j + 1 :].strip()
+            template = (
+                character == "<" and rest and j and re.match(r"[\w:>]", blanked[j - 1])
+            )
+            if character in "([{" or template:
                 inside = bool(stack) and stack[-1][1] in "([<"
-                stack.append([k, c, rest, None, False, inside])
-            elif c in ")]}" or (c == ">" and stack and stack[-1][1] == "<"):
-                while stack and c != ">" and stack[-1][1] == "<":
+                stack.append([number, character, rest, None, False, inside])
+            elif character in ")]}" or (
+                character == ">" and stack and stack[-1][1] == "<"
+            ):
+                while stack and character != ">" and stack[-1][1] == "<":
                     stack.pop()
                 if stack:
                     stack.pop()
         if stack and kind == "code":
-            stack[-1][4] = cod.rstrip().endswith(",")
+            stack[-1][4] = blanked.rstrip().endswith(",")
     return out
 
 
@@ -529,30 +537,30 @@ def hugged(code, lines, i):
     there is none or it cannot be laid out safely."""
     here = code[i][0].rstrip()
     stack = []
-    for j, c in enumerate(here):
-        if c in "([{":
+    for j, character in enumerate(here):
+        if character in "([{":
             stack.append(j)
-        elif c in ")]}" and stack:
+        elif character in ")]}" and stack:
             stack.pop()
     if not stack or here[-1] in "([{" or any(here[j] == "{" for j in stack):
         return None
-    pos, depth = stack[0], 1
-    for k in range(i, min(i + 60, len(lines))):
-        part, kind = code[k]
-        raw = lines[k].rstrip("\n")
+    open_column, depth = stack[0], 1
+    for number in range(i, min(i + 60, len(lines))):
+        part, kind = code[number]
+        raw = lines[number].rstrip("\n")
         if kind != "code" or "/*" in raw:
             return None
-        for m in range(pos + 1 if k == i else 0, len(part)):
+        for column in range(open_column + 1 if number == i else 0, len(part)):
             if (
-                part[m] in "{};"
-                and part[m : m + 2] != "{}"
-                and part[m - 1 : m + 1] != "{}"
+                part[column] in "{};"
+                and part[column : column + 2] != "{}"
+                and part[column - 1 : column + 1] != "{}"
             ):
                 return None
-            depth += part[m] in "(["
-            depth -= part[m] in ")]"
+            depth += part[column] in "(["
+            depth -= part[column] in ")]"
             if depth == 0:
-                return pos, k, m
+                return open_column, number, column
         if scan(raw)[1]:
             return None
     return None
@@ -572,9 +580,12 @@ def block_hugged_brackets(lines, binary):
             out.append(lines[i])
             i += 1
             continue
-        pos, end, close = found
+        open_column, end, close = found
         last = lines[end].rstrip("\n")
-        pieces = [text[pos + 1 :], *(line.rstrip("\n") for line in lines[i + 1 : end])]
+        pieces = [
+            text[open_column + 1 :],
+            *(line.rstrip("\n") for line in lines[i + 1 : end]),
+        ]
         contents = join([*pieces, last[:close]])
         indent = len(text) - len(text.lstrip(" "))
         inner = indent + INDENT
@@ -582,7 +593,11 @@ def block_hugged_brackets(lines, binary):
             body = [" " * inner + contents + "\n"]
         else:
             body = format_value(contents, inner, binary)
-        out += [text[: pos + 1] + "\n", *body, " " * indent + last[close:] + "\n"]
+        out += [
+            text[: open_column + 1] + "\n",
+            *body,
+            " " * indent + last[close:] + "\n",
+        ]
         i = end + 1
     return out
 
@@ -591,16 +606,16 @@ def ternary_parts(text):
     """(condition, then, else) of `text` when it is one conditional expression (a ``?``
     outside brackets with its ``:``), else None."""
     code, depth, nested, found = scan(text)[0], 0, 0, None
-    for i, c in enumerate(code):
-        if c in "([{":
+    for i, character in enumerate(code):
+        if character in "([{":
             depth += 1
-        elif c in ")]}":
+        elif character in ")]}":
             depth -= 1
-        elif depth or c not in "?:" or code[i - 1 : i + 2].count(":") == 2:
+        elif depth or character not in "?:" or code[i - 1 : i + 2].count(":") == 2:
             continue
-        elif c == "?" and found is None:
+        elif character == "?" and found is None:
             found = i
-        elif c == "?":
+        elif character == "?":
             nested += 1
         elif found is not None and nested == 0:
             return (
@@ -616,18 +631,18 @@ def ternary_parts(text):
 def ternary_lines(text, indent, binary, prefix=""):
     """A conditional expression, one part per line: the condition, then ``? value`` and
     ``: value`` one level in; a chain of them one level in again for each link."""
-    cond, then, other = ternary_parts(text)
+    condition, then, other = ternary_parts(text)
     inner = indent + INDENT
 
-    def piece(value, at, lead):
-        if at + len(lead) + len(value) <= COLUMNS:
-            return [" " * at + lead + value]
-        lines = format_value(value, at + len(lead), binary)
-        shift = at + INDENT - (len(lines[0]) - len(lines[0].lstrip(" ")))
+    def piece(value, column, lead):
+        if column + len(lead) + len(value) <= COLUMNS:
+            return [" " * column + lead + value]
+        lines = format_value(value, column + len(lead), binary)
+        shift = column + INDENT - (len(lines[0]) - len(lines[0].lstrip(" ")))
         rest = [" " * shift + line.rstrip("\n") for line in lines[1:]]
-        return [" " * at + lead + lines[0].strip(), *rest]
+        return [" " * column + lead + lines[0].strip(), *rest]
 
-    out = piece(cond, indent, prefix) + piece(then, inner, "? ")
+    out = piece(condition, indent, prefix) + piece(then, inner, "? ")
     if ternary_parts(other):
         return out + ternary_lines(other, inner, binary, ": ")
     return out + piece(other, inner, ": ")
@@ -638,16 +653,18 @@ def wrap_ternaries(lines, binary):
     part per line (see ternary_lines) instead of ``?`` and ``:`` under operands."""
     code = blank_code(lines)
     stack, context = [], []  # per line: the line of the wrapped bracket that holds it
-    for k, (cod, _) in enumerate(code):
+    for number, (blanked, _) in enumerate(code):
         context.append(stack[-1][0] if stack and stack[-1][1] else -1)
-        for j, c in enumerate(cod):
-            if c in "([{":
-                stack.append((k, c != "{" and not cod[j + 1 :].strip()))
-            elif c in ")]}" and stack:
+        for j, character in enumerate(blanked):
+            if character in "([{":
+                stack.append(
+                    (number, character != "{" and not blanked[j + 1 :].strip())
+                )
+            elif character in ")]}" and stack:
                 stack.pop()
 
-    def last_char(k):
-        return code[k][0].rstrip()[-1:]
+    def last_char(number):
+        return code[number][0].rstrip()[-1:]
 
     out, i = [], 0
     while i < len(lines):
@@ -672,11 +689,11 @@ def wrap_ternaries(lines, binary):
         text = join([line.rstrip("\n") for line in item])
         trailing = text.endswith(",")
         body = text[:-1].rstrip() if trailing else text
-        own = [k for k in range(i, end + 1) if context[k] == owner]
-        marked = any(code[k][0].lstrip()[:2] in ("? ", ": ") for k in own[1:])
+        own = [number for number in range(i, end + 1) if context[number] == owner]
+        marked = any(code[number][0].lstrip()[:2] in ("? ", ": ") for number in own[1:])
         plain = all(
-            code[k][1] == "code" and not set("{};") & set(code[k][0])
-            for k in range(i, end + 1)
+            code[number][1] == "code" and not set("{};") & set(code[number][0])
+            for number in range(i, end + 1)
         )
         if not (marked and plain and ternary_parts(body)):
             out.append(lines[i])  # an item inside it may still be one
@@ -695,26 +712,30 @@ def wrap_lambda_values(lines):
     out, i = [], 0
     while i < len(lines):
         head = lines[i].rstrip("\n")
-        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
-        m = re.fullmatch(r"(\s*)(.*[^=!<>\s])\s*=", head)
-        lam = re.fullmatch(r"(\[[^\]]*\])\((.*)\)((?:\s+\w+)*) \{", nxt)
-        if not (m and lam and scan(nxt)[0].count("(") == scan(nxt)[0].count(")")):
+        next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        assignment = re.fullmatch(r"(\s*)(.*[^=!<>\s])\s*=", head)
+        lambda_match = re.fullmatch(r"(\[[^\]]*\])\((.*)\)((?:\s+\w+)*) \{", next_line)
+        if not (
+            assignment
+            and lambda_match
+            and scan(next_line)[0].count("(") == scan(next_line)[0].count(")")
+        ):
             out.append(lines[i])
             i += 1
             continue
-        indent = m.group(1)
-        at = len(lines[i + 1]) - len(lines[i + 1].lstrip(" "))
+        indent = assignment.group(1)
+        lambda_indent = len(lines[i + 1]) - len(lines[i + 1].lstrip(" "))
         end = i + 2
         while end < len(lines) and not (
-            lines[end].startswith(" " * at + "}")
-            and len(lines[end]) - len(lines[end].lstrip(" ")) == at
+            lines[end].startswith(" " * lambda_indent + "}")
+            and len(lines[end]) - len(lines[end].lstrip(" ")) == lambda_indent
         ):
             end += 1
         if end >= len(lines):
             out.append(lines[i])
             i += 1
             continue
-        params = lam.group(2)
+        params = lambda_match.group(2)
         inner = len(indent) + INDENT
         if inner + len(params) <= COLUMNS:
             body = [" " * inner + params + "\n"]
@@ -722,8 +743,8 @@ def wrap_lambda_values(lines):
             items = split_items(params)
             body = [" " * inner + item + ",\n" for item in items[:-1]]
             body.append(" " * inner + items[-1] + "\n")
-        out += [f"{head} {lam.group(1)}(\n", *body]
-        out.append(f"{indent}){lam.group(3)} {{\n")
+        out += [f"{head} {lambda_match.group(1)}(\n", *body]
+        out.append(f"{indent}){lambda_match.group(3)} {{\n")
         out += [
             line[INDENT:] if line.strip() else line for line in lines[i + 2 : end + 1]
         ]
@@ -762,7 +783,8 @@ def hoist_define_comments(lines):
         )
         wrapped[0] = "/* " + wrapped[0]
         out += [
-            f"{line}\n" if k == 0 else f"   {line}\n" for k, line in enumerate(wrapped)
+            f"{line}\n" if number == 0 else f"   {line}\n"
+            for number, line in enumerate(wrapped)
         ]
         out[-1] = out[-1].rstrip("\n") + " */\n"
         out.append(f"#define {head.group(1)} {found['value'].strip()}\n")
@@ -776,9 +798,9 @@ def house_rules(lines, binary):
     fixed = []
     lines = hoist_define_comments(lines)
     for i, line in enumerate(lines):
-        m = OWN_LINE_ARG.match(line)
-        if m:
-            indent, name, value, comma = m.groups()
+        argument_line = OWN_LINE_ARG.match(line)
+        if argument_line:
+            indent, name, value, comma = argument_line.groups()
             line = f"{indent}{value}{comma}  // {name}\n"
         fixed.append(line)
         loop = EMPTY_LOOP.match(line)
@@ -832,15 +854,15 @@ def sources(paths):
     root = repo_root()
     if paths:
         found = []
-        for p in map(Path, paths):
-            if p.is_dir():
+        for path in map(Path, paths):
+            if path.is_dir():
                 found += sorted(
-                    f
-                    for f in p.rglob("*")
-                    if f.suffix in SUFFIXES and not is_ignored(f, root)
+                    file
+                    for file in path.rglob("*")
+                    if file.suffix in SUFFIXES and not is_ignored(file, root)
                 )
             else:
-                found.append(p)
+                found.append(path)
         return found
     listed = subprocess.run(
         ["git", "ls-files", "-z", "-co", "--exclude-standard"],
@@ -850,12 +872,12 @@ def sources(paths):
         cwd=root,
     ).stdout.split("\0")
     return [
-        root / f
-        for f in listed
-        if Path(f).suffix in SUFFIXES
-        and not f.startswith("out/")
-        and (root / f).is_file()
-        and not is_ignored(root / f, root)
+        root / name
+        for name in listed
+        if Path(name).suffix in SUFFIXES
+        and not name.startswith("out/")
+        and (root / name).is_file()
+        and not is_ignored(root / name, root)
     ]
 
 
