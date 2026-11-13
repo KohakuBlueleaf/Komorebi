@@ -4,7 +4,7 @@
 
 void kernel_main() {
     km::Writer wr;
-    wr.run([&](const km_record_t& r) {
+    wr.run([&](const km_command_t& r) {
         // There is nothing to write for any command. Return true to report it done.
         return true;
     });

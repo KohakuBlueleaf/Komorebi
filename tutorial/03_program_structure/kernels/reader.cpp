@@ -4,5 +4,5 @@
 
 void kernel_main() {
     km::Reader rd;
-    rd.run([&](const km_record_t& r) {});
+    rd.run([&](const km_command_t& r) {});
 }

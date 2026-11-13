@@ -34,7 +34,7 @@ what is new is one handler with a body.
 ## The idea
 
 A **handler** is one named piece of kernel code. You give it a number in a header
-(`kSegAdd = 1`), the host names it in a command (`run.issue("add", ...)`), and in the
+(`kHandlerAdd = 1`), the host names it in a command (`run.submit("add", ...)`), and in the
 kernel a `switch` or an `if` on the command's handler number picks the code. A command
 can carry ten 32-bit **words** (`r.a0` to `r.a9` in the kernel, the list `args=[...]`
 in Python). If the command is submitted with `result=True`, the core that leads its
@@ -48,11 +48,11 @@ because a program always has the three kernels.
 
 | What | Where | Meaning |
 |---|---|---|
-| `constexpr uint32_t kSegAdd = 1;` | `kernels/handlers.h` | the handler's number; the host name is `"add"` |
-| `km::seg(r)` | kernel | the handler number of the command `r` |
+| `constexpr uint32_t kHandlerAdd = 1;` | `kernels/handlers.h` | the handler's number; the host name is `"add"` |
+| `km::handler(r)` | kernel | the handler number of the command `r` |
 | `r.a0` ... `r.a9` | kernel | the ten argument words of the command |
 | `wr.result(value)` | writer kernel | the result word, sent with the report of a command submitted with `result=True` |
-| `run.issue("add", team=(5, 1), args=[a, b], result=True)` | host | submits the command to core group `(first=5, count=1)`; returns a handle |
+| `run.submit("add", group=(5, 1), args=[a, b], result=True)` | host | submits the command to core group `(first=5, count=1)`; returns a handle |
 | `run.wait(handle, timeout=10.0)` | host | waits for the report; returns the event |
 | `event.result` | host | the result word; `event.us` is the time from submit to report in microseconds, but only for a command without `result=True` (the result word is sent in place of the time) |
 
@@ -60,7 +60,7 @@ because a program always has the three kernels.
 
 The handler, in the writer kernel:
 
-```cpp title="kernels/writer.cpp" callouts="wr.run|km::seg(r) == kSegAdd|wr.result|return true"
+```cpp title="kernels/writer.cpp" callouts="wr.run|km::handler(r) == kHandlerAdd|wr.result|return true"
 --8<-- "tutorial/04_first_kernel/kernels/writer.cpp:body"
 ```
 
@@ -93,7 +93,7 @@ The header and the other two kernels:
 
 The host:
 
-``` { .python title="add.py" callouts="session.load|run.issue|run.wait|assert event.result" }
+``` { .python title="add.py" callouts="session.load|run.submit|run.wait|assert event.result" }
 --8<-- "tutorial/04_first_kernel/add.py:run"
 ```
 

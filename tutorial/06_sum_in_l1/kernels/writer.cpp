@@ -6,8 +6,8 @@
 void kernel_main() {
     km::Writer wr;
     // --8<-- [start:body]
-    wr.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegSum) {
+    wr.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerSum) {
             return true;
         }
         uint32_t sum = 0;

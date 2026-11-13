@@ -45,7 +45,7 @@ makes it wait until the first has reported (chapter 7).
 
 | Call | Arguments | What it does and returns |
 |---|---|---|
-| `run.issue(handler, team=None, args=(), exclusive=False, result=False)` | `handler`: a name from the header or a number. `team`: `(first, count)`, default every core. `args`: up to ten integers | Queues one command, returns its **handle**. Raises `KeyError` for an unknown handler name, `ValueError` for a core group outside the grid or more than ten words, before anything is sent |
+| `run.submit(handler, group=None, args=(), exclusive=False, result=False)` | `handler`: a name from the header or a number. `group`: `(first, count)`, default every core. `args`: up to ten integers | Queues one command, returns its **handle**. Raises `KeyError` for an unknown handler name, `ValueError` for a core group outside the grid or more than ten words, before anything is sent |
 | `run.wait(handles, timeout=10.0)` | one handle or a list | Sends what is queued, waits until each command has reported, returns the event (a list of events for a list of handles) |
 | `run.wait_any(handles, timeout=10.0)` | a list | Returns the first event that arrives |
 | `run.drain(timeout=10.0)` | | Waits for everything submitted; returns how many events it saw |
@@ -55,9 +55,9 @@ makes it wait until the first has reported (chapter 7).
 ## The example
 
 Three handlers, one body each, in the writer kernel. In `kernels/handlers.h` they are
-`kSegAdd = 1`, `kSegDot = 2` and `kSegWho = 3`.
+`kHandlerAdd = 1`, `kHandlerDot = 2` and `kHandlerWho = 3`.
 
-```cpp title="kernels/writer.cpp" callouts="switch (km::seg(r))|r.a0 * r.a3|wr.me()|default:|return true"
+```cpp title="kernels/writer.cpp" callouts="switch (km::handler(r))|r.a0 * r.a3|wr.me()|default:|return true"
 --8<-- "tutorial/05_handlers_and_commands/kernels/writer.cpp:body"
 ```
 
@@ -73,11 +73,11 @@ Three handlers, one body each, in the writer kernel. In `kernels/handlers.h` the
 The reader and the compute kernel are the empty bodies of chapter 4. The host submits all
 three commands before it waits for any:
 
-``` { .python title="commands.py" callouts="handles = [|args=[1, 2, 3, 10, 20, 30]|team=(119, 1)|events = run.wait|assert" }
+``` { .python title="commands.py" callouts="handles = [|args=[1, 2, 3, 10, 20, 30]|group=(119, 1)|events = run.wait|assert" }
 --8<-- "tutorial/05_handlers_and_commands/commands.py:submit"
 ```
 
-1.  Each `run.issue` returns at once; the command is only queued on the host.
+1.  Each `run.submit` returns at once; the command is only queued on the host.
 2.  The ten words are plain integers. A command may pass fewer than ten.
 3.  Three different cores, three different handlers.
 4.  `wait` sends all three commands, then waits for the three reports. The events come
@@ -110,12 +110,12 @@ Both lines are the same on every card.
 
 ## Notes
 
-- A handler name in Python must be in the header's `kSeg...` lines, written in snake
-  case: `kSegBigStep` is `"big_step"`. A number works too.
+- A handler name in Python must be in the header's `kHandler...` lines, written in snake
+  case: `kHandlerBigStep` is `"big_step"`. A number works too.
 - Only the leader of a core group sends a result word. A command for cores 3 to 6
   with `result=True` returns the answer of core 3 (chapter 7).
 - Ten words is all a command has. Bigger data goes in DRAM, and the command carries
   its address ([chapter 6](06-buffers-and-data.md)).
 - `wait` has a time limit. If a core does not report in time, the run stops with an
   error that names the core (chapter 21).
-- Reference: [host API: Run](../reference/host.md#run), [runtime: the record](../reference/runtime.md#the-record).
+- Reference: [host API: Run](../reference/host.md#run), [runtime: the command](../reference/runtime.md#the-command).

@@ -18,10 +18,10 @@ with km.Session() as session:
         kernels=KERNELS,
         buffers=[km.Buffer(index=0, format="uint32", page_bytes=1024, pages=4)],
         compile_args={"reader": src.accessor_args()},
-        segments=KERNELS / "handlers.h",
+        handlers=KERNELS / "handlers.h",
     )
     run = session.load(program)
-    handle = run.issue("sum", team=(0, 1), args=[src.address, src.pages], result=True)
+    handle = run.submit("sum", group=(0, 1), args=[src.address, src.pages], result=True)
     event = run.wait(handle, timeout=10.0)
     run.stop()
     want = int(x.sum(dtype=np.uint64) % (1 << 32))  # the card adds modulo 2^32

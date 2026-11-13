@@ -7,8 +7,8 @@ void kernel_main() {
     constexpr auto in_args = TensorAccessorArgs<0>();
     km::Reader rd;
     // --8<-- [start:body]
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegCopy) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerCopy) {
             return;
         }
         const auto in = TensorAccessor(in_args, r.a0);  // tile t of the input tensor

@@ -5,15 +5,15 @@
 void kernel_main() {
     km::Writer wr;
     // --8<-- [start:body]
-    wr.run([&](const km_record_t& r) {
-        switch (km::seg(r)) {
-            case kSegAdd:
+    wr.run([&](const km_command_t& r) {
+        switch (km::handler(r)) {
+            case kHandlerAdd:
                 wr.result(r.a0 + r.a1);
                 break;
-            case kSegDot:
+            case kHandlerDot:
                 wr.result(r.a0 * r.a3 + r.a1 * r.a4 + r.a2 * r.a5);
                 break;
-            case kSegWho:
+            case kHandlerWho:
                 wr.result(wr.me() + r.a0);
                 break;
             default:

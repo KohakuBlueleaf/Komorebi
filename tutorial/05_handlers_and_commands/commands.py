@@ -11,16 +11,16 @@ HERE = Path(__file__).resolve().parent
 program = km.Program(
     "commands",
     kernels=HERE / "kernels",
-    segments=HERE / "kernels" / "handlers.h",
+    handlers=HERE / "kernels" / "handlers.h",
 )
 
 # --8<-- [start:submit]
 with km.Session() as session:
     run = session.load(program)
     handles = [
-        run.issue("add", team=(0, 1), args=[40, 2], result=True),
-        run.issue("dot", team=(1, 1), args=[1, 2, 3, 10, 20, 30], result=True),
-        run.issue("who", team=(119, 1), args=[1000], result=True),
+        run.submit("add", group=(0, 1), args=[40, 2], result=True),
+        run.submit("dot", group=(1, 1), args=[1, 2, 3, 10, 20, 30], result=True),
+        run.submit("who", group=(119, 1), args=[1000], result=True),
     ]
     events = run.wait(handles, timeout=10.0)
     print([event.result for event in events])
@@ -31,7 +31,7 @@ with km.Session() as session:
     rng = np.random.default_rng(1)
     pairs = [(int(a), int(b)) for a, b in rng.integers(0, 1 << 20, (100, 2))]
     handles = [
-        run.issue("add", team=(i % 120, 1), args=[a, b], result=True)
+        run.submit("add", group=(i % 120, 1), args=[a, b], result=True)
         for i, (a, b) in enumerate(pairs)
     ]
     events = run.wait(handles, timeout=10.0)

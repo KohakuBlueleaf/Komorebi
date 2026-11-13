@@ -33,18 +33,18 @@ the folder is named as you like.
 
 === "hello.py"
 
-    ``` { .python title="hello.py" callouts="program = km.Program|kernels=HERE|segments=|with km.Session|session.load|run.issue|run.wait|run.stop" }
+    ``` { .python title="hello.py" callouts="program = km.Program|kernels=HERE|handlers=|with km.Session|session.load|run.submit|run.wait|run.stop" }
     --8<-- "tutorial/03_program_structure/hello.py"
     ```
 
     1.  `Program` only describes. Nothing is opened or compiled here.
     2.  The folder that holds `reader.cpp`, `compute.cpp` and `writer.cpp`.
     3.  The header that names the handlers. Here it names one, `hello`, taken from
-        `kSegHello` in `handlers.h`.
+        `kHandlerHello` in `handlers.h`.
     4.  Opens the card. The `with` block closes it again, also when the code inside fails.
     5.  Compiles and loads the kernels on all 120 cores and starts the dispatcher. It
         returns when every core is ready.
-    6.  Queues one command for handler `hello`. No `team=`, so the core group is every
+    6.  Queues one command for handler `hello`. No `group=`, so the core group is every
         core. The call returns a handle.
     7.  Blocks until the whole group has reported, at most ten seconds, and returns the
         event of the command.
@@ -96,7 +96,7 @@ that gave up waiting returns `false` (chapter 21).
 |---|---|---|
 | `name` | a label, for logs and for the compile cache | this page |
 | `kernels` | the folder with `reader.cpp`, `compute.cpp`, `writer.cpp` | this page |
-| `segments` | the handlers: a dict `{name: number}` or a header whose `constexpr uint32_t kSegName = n;` lines give them. `kSegBigStep` becomes `"big_step"`. Numbers are 1 to 239 | chapter 4 |
+| `handlers` | the handlers: a dict `{name: number}` or a header whose `constexpr uint32_t kHandlerName = n;` lines give them. `kHandlerBigStep` becomes `"big_step"`. Numbers are 1 to 239 | chapter 4 |
 | `buffers` | `km.Buffer(index, format, page_bytes, pages)`: the circular buffers, made on every core | chapter 6 |
 | `compile_args` | numbers given to a kernel at compile time, such as the layout of a DRAM tensor | chapter 6 |
 | `compute` | options of the compute kernel: `math_fidelity`, `fp32_dest_acc_en` and more | chapter 9 |
@@ -112,13 +112,13 @@ The full list is in the [host API reference](../reference/host.md#program).
 |---|---|
 | `km.Session(card=None)` | Opens the card in slow dispatch mode, which is the mode Komorebi needs. Use it in a `with` block: leaving the block stops the program and closes the card cleanly. |
 | `session.load(program)` | Compiles the three kernels (a few seconds the first time, cached after), checks that they fit L1 and that they use no instruction the cores lack, loads them on every Tensix core, starts the dispatcher on X280 cluster 0 and waits until every core says it is ready. Returns a `Run`. |
-| `run.issue(handler, team=..., args=...)` | Queues one command and returns its **handle** (a ticket number). `handler` is the name or the number. The core group is `team=(first, count)`; the default is every core. |
+| `run.submit(handler, group=..., args=...)` | Queues one command and returns its **handle** (a handle number). `handler` is the name or the number. The core group is `group=(first, count)`; the default is every core. |
 | `run.wait(handle, timeout=...)` | Sends what is queued, waits until the group has reported, returns the event. |
 | `run.stop()` | Tells every core to leave its kernels, stops the dispatcher and closes the X280 runtime. |
 | `session.grid` | The Tensix grid as `(x, y)`: `(12, 10)` here. |
 
 !!! note "Call names in the tutorial"
-    The calls keep the names the code has today. `run.issue`, `team=` and `segments=` name
+    The calls keep the names the code has today. `run.submit`, `group=` and `handlers=` name
     what this tutorial calls submit, core group and handler.
 
 ## Run it

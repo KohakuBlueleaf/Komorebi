@@ -24,4 +24,4 @@ def test_a_folder_has_a_script_that_parses_and_three_kernels(folder):
             "compute",
             "writer",
         }
-        assert km.Program(folder.name, kernels, segments=kernels / "handlers.h")
+        assert km.Program(folder.name, kernels, handlers=kernels / "handlers.h")

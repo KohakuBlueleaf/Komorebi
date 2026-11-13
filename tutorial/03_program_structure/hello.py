@@ -9,12 +9,12 @@ HERE = Path(__file__).resolve().parent
 program = km.Program(
     "hello",
     kernels=HERE / "kernels",
-    segments=HERE / "kernels" / "handlers.h",
+    handlers=HERE / "kernels" / "handlers.h",
 )
 
 with km.Session() as session:
     run = session.load(program)
-    handle = run.issue("hello")
+    handle = run.submit("hello")
     event = run.wait(handle, timeout=10.0)
     run.stop()
     print(f"cores: {session.grid[0] * session.grid[1]}, event: {event.kind}")

@@ -6,8 +6,8 @@
 void kernel_main() {
     constexpr auto in_args = TensorAccessorArgs<0>();
     km::Reader rd;
-    rd.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegSum) {
+    rd.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerSum) {
             return;
         }
         const auto in = TensorAccessor(in_args, r.a0);  // row p of the input tensor

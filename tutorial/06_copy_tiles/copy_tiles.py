@@ -21,11 +21,11 @@ with km.Session() as session:
         kernels=KERNELS,
         buffers=[km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=4)],
         compile_args={"reader": src.accessor_args(), "writer": dst.accessor_args()},
-        segments=KERNELS / "handlers.h",
+        handlers=KERNELS / "handlers.h",
     )
     run = session.load(program)
     args = [src.address, dst.address, src.pages]
-    run.wait(run.issue("copy", team=(0, 1), args=args), timeout=10.0)
+    run.wait(run.submit("copy", group=(0, 1), args=args), timeout=10.0)
     run.stop()
     same = np.array_equal(dst.read(), x)
     print(f"{src.pages} tiles copied, identical: {same}")

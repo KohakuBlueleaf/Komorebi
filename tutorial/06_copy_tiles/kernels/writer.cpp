@@ -7,8 +7,8 @@ void kernel_main() {
     constexpr auto out_args = TensorAccessorArgs<0>();
     km::Writer wr;
     // --8<-- [start:body]
-    wr.run([&](const km_record_t& r) {
-        if (km::seg(r) != kSegCopy) {
+    wr.run([&](const km_command_t& r) {
+        if (km::handler(r) != kHandlerCopy) {
             return true;
         }
         const auto out = TensorAccessor(out_args, r.a1);

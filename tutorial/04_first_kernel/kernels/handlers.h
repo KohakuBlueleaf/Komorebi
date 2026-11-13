@@ -3,4 +3,4 @@
 
 #include <stdint.h>
 
-constexpr uint32_t kSegAdd = 1;  // a0 + a1, returned as the result word
+constexpr uint32_t kHandlerAdd = 1;  // a0 + a1, returned as the result word

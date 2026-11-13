@@ -4,5 +4,5 @@
 
 void kernel_main() {
     km::Compute cp;
-    cp.run([&](const km_record_t& r) {});
+    cp.run([&](const km_command_t& r) {});
 }

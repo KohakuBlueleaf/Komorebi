@@ -72,7 +72,7 @@ TT_LOGGER_LEVEL=error python mapcollect.py --jobs 4 --count 8 --out-pages 64
 [   3.99] kernel buffer: 17792 of 70656 B (text: BRISC 5648, NCRISC 4336, TRISC0 3304, TRISC1 1624, TRISC2 2188)
 [   4.04] kernels built and checked (0.87 s)
 [   4.04] launch
-[   4.12] dispatch kernel started
+[   4.12] dispatcher started
 [   4.12] ready
 [   4.12] loaded: 120 cores, depth 4
 [   4.12] 4 events
@@ -81,7 +81,7 @@ TT_LOGGER_LEVEL=error python mapcollect.py --jobs 4 --count 8 --out-pages 64
 [   4.49] state and trace read back
 [   4.58] output 0: 64 of 64 pages read
 [   4.58] 1 outputs read back
-{"jobs": 4, "seg": "map", "teams": "fixed", "cores": 120, "depth": 4, "count": 8, "tiles": 64, "kernel": {"error_name": "none", "records": 5, "events": 5, "max_busy": 4}, "us_per_job_kernel": 62.476, "us_per_job_host": 153.33, "issue": "many", "host_us_per_record": {"issue": 93.341, "wait_python": 46.193, "wait_native": 19.688}, "latency_us": {"mean": 5.41, "max": 6.24}, "cores_magic_ok": 120, "cores_ended": {"reader_end": 120, "writer_end": 120, "compute_end": 120}, "compute_wrong": 0, "gave_up_cores": 0, "member_records": 32, "core_counts_bad": 0, "first_bad_cores": [], "jobs_checked": 4, "jobs_overwritten": 0, "exact_jobs_checked": 2, "jobs_bad": 0, "first_bad": [], "random_total_rel_rms_max": 0.001701, "tiles_same_as_before": 0, "tiles_without_input": 0, "ok": true, "wall_s": 4.6}
+{"jobs": 4, "handler": "map", "groups": "fixed", "cores": 120, "depth": 4, "count": 8, "tiles": 64, "kernel": {"error_name": "none", "commands": 5, "events": 5, "max_busy": 4}, "us_per_job_kernel": 62.476, "us_per_job_host": 153.33, "submit": "many", "host_us_per_command": {"submit": 93.341, "wait_python": 46.193, "wait_native": 19.688}, "latency_us": {"mean": 5.41, "max": 6.24}, "cores_magic_ok": 120, "cores_ended": {"reader_end": 120, "writer_end": 120, "compute_end": 120}, "compute_wrong": 0, "gave_up_cores": 0, "rank_commands": 32, "core_counts_bad": 0, "first_bad_cores": [], "jobs_checked": 4, "jobs_overwritten": 0, "exact_jobs_checked": 2, "jobs_bad": 0, "first_bad": [], "random_total_rel_rms_max": 0.001701, "tiles_same_as_before": 0, "tiles_without_input": 0, "ok": true, "wall_s": 4.6}
 ```
 
 Each line before the last is the program's progress log. The time in brackets is

@@ -105,7 +105,7 @@ nav:
       - reference/host.md
       - reference/runtime.md
       - reference/ports.md
-      - reference/lanes.md
+      - reference/broadcast.md
       - reference/dynamic.md
       - reference/threads.md
   - Examples:
@@ -114,7 +114,7 @@ nav:
       - examples/02_merge_tree/README.md
       - examples/03_broadcast/README.md
       - examples/04_uop_stream/README.md
-      - examples/05_hop/README.md
+      - examples/05_forward/README.md
       - examples/06_graph/README.md
       - examples/07_work_cluster/README.md
       - examples/08_parallel_thread/README.md
