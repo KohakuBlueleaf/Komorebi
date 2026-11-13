@@ -114,6 +114,7 @@ python mapcollect.py --jobs 1000 --teams random --out-tensors 32
 completion 4.2 µs per record on average (13.3 at most); every one of the 1,000 jobs
 checked against numpy, 0 wrong (500 bit-exact, the others within a relative RMS error
 of 0.0019 of the total); every core ended cleanly. The wall time, 74 s, is mostly the
-outputs' read-back in slow dispatch. At the 1750 MHz opt-in (host load 8 to 14): 1.655
+outputs' read-back in slow dispatch: 32 outputs of 4 MB, about 71 s, read in chunks of
+2 MB with a line per chunk (about one a second). At the 1750 MHz opt-in (host load 8 to 14): 1.655
 µs per job by the kernel's clock, 1.985 by the host's, 4.5 µs per record (14.5 at
 most).

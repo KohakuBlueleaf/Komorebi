@@ -59,7 +59,8 @@ right, and the stop is clean.
 Options: `--jobs` (1,000), `--tiles` T (64), `--seed` (the stream's xorshift seed),
 `--depth` (ring slots, 16), `--deadline` (per record, seconds), `--no-trace`. It prints
 one JSON line with `ok`, true only when every check above holds, and exits non-zero
-without it. Reading the 59,456 output tiles back takes about a minute per way.
+without it. Reading the 59,456 output tiles (116 MB) back takes 65 to 80 s per way, in
+chunks of 2 MB with a line per chunk (one every 1 to 2 s).
 
 On a p150a (card 0, 120 cores, default arguments, X280 at the session's 1000 MHz;
 the 1750 MHz opt-in's figures in the last column): 1,000 jobs, 59,456 tiles, 0 wrong
