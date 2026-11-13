@@ -1,5 +1,4 @@
-/* An X280 thread that sends one command to core 0 of the grid and returns its answer.
- */
+/* An X280 thread that sends one command to core 0 and returns the answer. */
 #include "kmx.h"
 
 int kmx_main(int core) {

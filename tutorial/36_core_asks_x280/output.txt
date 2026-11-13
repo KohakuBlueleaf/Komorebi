@@ -1,0 +1,2 @@
+core 0 asked for the square of 12
+it told the X280 145, which is the answer plus one

@@ -21,7 +21,7 @@ Press **Next** to see each part in turn.
   "lit": ["core:0", "core:11", "core:12"]},
  {"label": "DRAM: the card's big memory, in the two grey columns. Your data lives here when no core is working on it. A core cannot compute on data in DRAM; it has to copy it into its own memory first.",
   "lit": ["dram:0", "dram:9"]},
- {"label": "The X280 cores: four clusters of four, in the middle. They are bigger computers than the Tensix cores. Komorebi runs a program of its own on one of them, and a later part of this tutorial lets you run yours.",
+ {"label": "The X280 cores: four clusters of four, numbered 0 to 3, in the middle. They are bigger computers than the Tensix cores. Komorebi runs a program of its own on cluster 0. A later part of this tutorial lets you run yours on clusters 1 to 3.",
   "lit": ["x280:0", "x280:1", "x280:2", "x280:3"]},
  {"label": "The host: your computer, joined to the card by a cable (PCIe). Your Python program runs here.",
   "lit": ["host"],

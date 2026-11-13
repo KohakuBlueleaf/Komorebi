@@ -97,7 +97,7 @@ value, modulo the 6 cores. The squares of 0 to 11 modulo 6 can only be 0, 1, 3 a
 the destinations change, with no change to anything else.
 
 The `while` loop is the same on every core, including rank 0. It takes packets, counts each
-message, adds its value, and consumes it. At the end, one thread of the compute kernel stores
+message, adds its value, and consumes it. At the end, the compute kernel stores
 the count and the sum in the core's L1, where Python reads them ([[why-cores-talk]]).
 
 ```{ .python }

@@ -1,2 +1,3 @@
 the thread ended with state done, code 0
-it returned 42 = 20 + 22 in 10 microseconds
+it returned 42 = 20 + 22
+the thread ran for 10 microseconds

@@ -1,6 +1,8 @@
-"""Four cores: an X280 thread adds up squares on one core, then on all four."""
+"""Four cores: an X280 thread adds up numbers on one core, then on all four."""
 
 from pathlib import Path
+
+import numpy as np
 
 import komorebi as km
 
@@ -22,12 +24,16 @@ with km.Session() as session:
     run.stop()
 
 # --8<-- [start:check]
-expected = sum(i * i for i in range(N)) % 2**32
-alone, together, one_microseconds, four_microseconds = result.words
-print(f"squares of 0 to {N - 1}, modulo 2**32: {expected}")
-print(f"one core:   {alone} in {one_microseconds} microseconds")
-print(f"four cores: {together} in {four_microseconds} microseconds")
-print(f"four cores took {one_microseconds / four_microseconds:.1f} times less time")
+numbers = np.arange(N, dtype=np.uint32)
+numbers ^= numbers >> 15
+numbers *= np.uint32(2246822519)
+numbers ^= numbers >> 13
+expected = int(numbers.sum(dtype=np.uint64)) % 2**32
+alone, together, one_us, four_us = result.words
+print(f"scrambled numbers 0 to {N - 1}, modulo 2**32: {expected}")
+print(f"one core:   {alone} in {one_us} microseconds")
+print(f"four cores: {together} in {four_us} microseconds")
+print(f"four cores took {one_us / four_us:.1f} times less time")
 # --8<-- [end:check]
 
 assert result.code == 0 and alone == together == expected

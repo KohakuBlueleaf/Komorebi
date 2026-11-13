@@ -1,5 +1,5 @@
-/* An X280 thread that adds up the squares of 0 to n - 1, first on core 0, then on all
- * four. */
+/* An X280 thread that adds up scrambled numbers for 0 to n - 1: on core 0 alone, then
+ * on all four cores. */
 #include "kmx.h"
 
 #define LINE_WORDS 16 /* a 64-byte cache line holds 16 words */
@@ -9,19 +9,30 @@
 __attribute__((section(".data"))) static uint32_t partial[4 * LINE_WORDS] = {1};
 // --8<-- [end:partials]
 
-static uint32_t squares(uint32_t first, uint32_t last) {
+// --8<-- [start:sum]
+// A number made from i that has no formula for its sum, so that the loop is real work.
+static uint32_t scramble(uint32_t i) {
+    i ^= i >> 15;
+    i *= 2246822519u;
+    i ^= i >> 13;
+    return i;
+}
+
+static uint32_t scrambled_sum(uint32_t first, uint32_t last) {
     uint32_t sum = 0;
     for (uint32_t i = first; i < last; i++) {
-        sum += i * i;
+        sum += scramble(i);
     }
     return sum;
 }
+
+// --8<-- [end:sum]
 
 // --8<-- [start:piece]
 static void piece(int core, void* argument) {
     const uint32_t n = *(const uint32_t*)argument;
     const uint32_t share = n / 4;
-    partial[core * LINE_WORDS] = squares(core * share, (core + 1) * share);
+    partial[core * LINE_WORDS] = scrambled_sum(core * share, (core + 1) * share);
 }
 
 // --8<-- [end:piece]
@@ -31,7 +42,7 @@ int kmx_main(int core) {
     uint32_t n = kmx_args_get()->words[0];
 
     const uint64_t one_start = kmx_time();
-    const uint32_t alone = squares(0, n);
+    const uint32_t alone = scrambled_sum(0, n);
     const uint64_t one_ticks = kmx_time() - one_start;
 
     // --8<-- [start:parallel]

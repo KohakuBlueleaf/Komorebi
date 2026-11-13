@@ -1,0 +1,3 @@
+the thread went through 1024 numbers
+first five tripled: [0, 3, 6, 9, 12]
+last five tripled:  [3057, 3060, 3063, 3066, 3069]

@@ -46,6 +46,12 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("28_forward_and_consume/forward_and_consume.py", "as the replay says"),
         ("29_full_buffers/full_buffers.py", "rank 0 asked 20 times and 10 sends"),
         ("30_streams_and_graphs/streams_and_graphs.py", "the same rounds in Python"),
+        ("31_hello_thread/hello_thread.py", "it returned 42 = 20 + 22"),
+        ("32_thread_submits/thread_submits.py", "core 0 answered the thread with 42"),
+        ("33_four_cores/four_cores.py", "four cores took"),
+        ("34_sharing_memory/sharing_memory.py", "the thread went through 1024 numbers"),
+        ("35_twelve_cores/twelve_cores.py", "their sum, modulo 2**32"),
+        ("36_core_asks_x280/core_asks_x280.py", "it told the X280 145"),
     ],
 )
 def test_a_tutorial_program_runs_and_prints_its_line(script, line):
