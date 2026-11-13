@@ -39,65 +39,77 @@ and a third or less (the ray tracer).
 
 ## A kernel
 
-The merge-tree example adds up a job's input tiles over a core group. Each core of the group
-runs three kernels: the reader brings the core's partition of the tiles from DRAM into
-L1 and waits for the parts other cores of the group send it; the compute kernel below adds them;
-the writer sends the core's part to its receiver, or, on rank 0, writes the total.
-The parts meet either at one owner or along a tree
-([02_merge_tree/kernels/compute.cpp](examples/02_merge_tree/kernels/compute.cpp),
-lines 36 to 81; above them are the includes and two helpers: `add_page` adds one tile
-of a buffer into a sum in DST, `clear_sums` sets the sums to zero):
+A kernel is loaded once on its core and stays there: `run` calls the function below for
+every command the core receives, and the command's handler says which piece of work it
+asks for. Two kernels show how cores talk to each other.
+
+A reader kernel that broadcasts along a row. The host lays the rows out, and each core
+finds its place in its row in its own arguments. One core of the row reads a block from
+DRAM and sends it to the whole row in one multicast; the others wait for it in L1
+(reduced from [03_broadcast](examples/03_broadcast/kernels/reader.cpp)):
 
 ```cpp
 void kernel_main() {
-    km::Compute cp;
-    compute_kernel_hw_startup(kCbIn, kCbOut);
-    // The runtime's loop: the body runs once per command whose group holds this core.
-    cp.run([&](const km_command_t& r) {
-        if (km::handler(r) != kHandlerMerge) {  // this program answers MERGE commands only
+    constexpr auto source_args = TensorAccessorArgs<0>();
+    km::Reader reader;  // stays loaded; runs once per command
+    reader.run([&](const km_command_t& command) {
+        if (km::handler(command) != kHandlerBroadcast) {
             return;
         }
-        const uint32_t tiles = r.a1;  // input tiles T of the job
-        const uint32_t form = r.a4;   // 0: merge at one owner, 1: along a tree
-        const uint32_t part = r.a7;   // tiles per part P (1 to 3), one sum each in DST
-        // The group is the command's range of cores; my rank in it gives my partition of T.
-        const km::Group g = km::group_of(r, cp.me());
-        const km::Partition s = km::partition(tiles, g.rank, g.size);
-        const km::Arrival arrival = {kCbArrive, kArrivePages, part};
-        tile_regs_acquire();  // DST, the vector unit's registers, until the release
-        clear_sums(part);     // the P sums start at zero
-        // My own tiles, as the reader brings them from DRAM: tile t into sum t mod P.
-        bool ok = true;  // the same on all three threads (wait_front tells them)
-        for (uint32_t i = 0; ok && i < s.len; i++) {
-            ok = cp.wait_front(kCbIn, 1);
-            if (ok) {
-                add_page(kCbIn, 0, (s.start + i) % part);
-                cb_pop_front(kCbIn, 1);
+        // This core's row, and whether it sends or receives, from its arguments.
+        km::Broadcast broadcast(reader, command, kArgBroadcast);
+        const auto source = TensorAccessor(source_args, command.a0);
+        const uint32_t blocks = command.a1;
+        for (uint32_t block = 0; block < blocks; block++) {
+            if (!broadcast.sender()) {
+                broadcast.arrive(block);  // wait until the block is in my L1
+                continue;
             }
+            const uint32_t address = broadcast.reserve(block);
+            noc_async_read_page(block, source, address);
+            broadcast.cast(block);  // one multicast to the whole row
         }
-        // The reduce: wait for the parts other cores of the group send me, add them in rank
-        // order (by owner: rank 0 takes all; by tree: one partner a round).
-        ok = ok && km::reduce(cp, arrival, g, form, [&](uint32_t k) {
-                 for (uint32_t d = 0; d < part; d++) {
-                     add_page(kCbArrive, km::slot_page(arrival, k) + d, d);
-                 }
-             });
-        tile_regs_commit();
-        tile_regs_wait();
-        // The P sums to the writer, which sends them on or (rank 0) writes the total.
-        // After a give-up (a wait ran out, or the run was stopped) nothing is packed.
-        if (ok && cp.reserve_back(kCbOut, part)) {
-            for (uint32_t d = 0; d < part; d++) {
-                pack_tile(d, kCbOut);
-            }
-            cb_push_back(kCbOut, part);
-        }
-        tile_regs_release();
+        broadcast.finish();
     });
 }
 ```
 
-The host declares the program (`program()` in
+A compute kernel whose messages choose their next core at run time. Every core first
+sends its own messages, then handles whatever arrives: a message is either finished
+here or forwarded to the core it names (reduced from
+[05_forward](examples/05_forward/kernels/compute.cpp); `visit` stands for the
+program's own work on a message):
+
+```cpp
+void kernel_main() {
+    km::Compute compute;
+    compute.run([&](const km_command_t& command) {
+        km::Dyn messages(compute, command);  // routed messages for this command
+        uint32_t message[kMessageWords] = {};
+        if (messages.seeding()) {  // first, every core sends its own
+            messages.send(messages.rank(), message);
+            messages.seeded();
+        }
+        while (km::Packet packet = messages.next()) {  // then whatever arrives
+            for (uint32_t index = 0; index < packet.n; index++) {
+                const uint32_t next_core = visit(packet[index], message);
+                if (next_core == kFinished) {
+                    messages.consume();  // the message ends here
+                } else {
+                    messages.forward(next_core, message);
+                }
+            }
+            messages.done(packet);
+        }
+    });
+}
+```
+
+A third kind of kernel only computes. The merge-tree example adds up a job's input
+tiles over a core group, the parts meeting at one owner or along a tree
+([02_merge_tree/kernels/compute.cpp](examples/02_merge_tree/kernels/compute.cpp)).
+
+For that example the host declares the program (`program()` in
 [merge.py](examples/02_merge_tree/merge.py): the three kernels, three circular buffers,
 the handler header) and submits one `MERGE` command per job to its group (`launch()`,
 lines 103 to 107 and 123 to 127):
