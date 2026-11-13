@@ -15,7 +15,7 @@ is one of those sources. `km_dispatch.h` holds the exact layouts;
 | `completion.h` | busy slots, acknowledgement sweep, deadlines, team overlap, team allocator |
 | `queue.h` | the job queue: jobs from every source until a slot and a team are free |
 | `engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
-| `work_port.h` | core 0's side of a work cluster's ring: its window, the refusal of a record that would wait |
+| `work_port.h` | core 0's side of a work cluster's ring: its window onto the thread's events |
 | `engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
 | `graph_port.h` | core 0's side of the graphs: the graph table, admitting `RUN`, `CANCEL`, their ends |
 | `graph.h` | core 1: up to two graphs on the plain-C executor (`../engines/km_graph_engine.c`) |
@@ -114,7 +114,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   ignores `first` (and `KM_F_EXCL`). It is taken into the job queue, which holds up to
   `KM_QUEUE_JOBS` (64) jobs of every source in arrival order, and answered with its
   `KM_EV_DONE` once it has run; a full queue refuses the host's (reason 9) and the
-  engine's (reason 11, below). Each pass ends with the queue's turn: of the first `KM_QUEUE_LOOK` (16) jobs
+  engine's and a work cluster's (reason 11, below). Each pass ends with the queue's turn: of the first `KM_QUEUE_LOOK` (16) jobs
   as they are at its start, each that finds a free slot and room is issued, the team
   allocator giving it the lowest `first` whose cores overlap no busy slot's team (the
   overlap test of `KM_F_EXCL`). A job that does not fit does not hold up the ones
@@ -204,6 +204,17 @@ These rules are part of the protocol; a host that relies on anything else is wro
   Hart block words `KMD_H_DYN_GAVE` (1 + the core that gave up), `KMD_H_DYN_CHECKS`
   (two-pass checks) and `KMD_H_DYN_QUIET` (mtime of the last quiet end, low word)
   report it; the host's `finish` returns the hart block.
+- **What a record costs a stream.** The harness's `engine-cost` case, 1,000 records on
+  one core timed by the stream itself (`TIME`), p150a, depth 4:
+
+  | Stream | Microseconds per record |
+  |---|---|
+  | `ISSUE`, then `WAIT 0`, a record of 5 us | 7.16 |
+  | `ISSUE` with `KM_F_EXCL` and no wait, a record of 5 us: refused busy while the one before runs (999 refusals), sent again after the wake | 7.01 |
+  | `SUBMIT` of 1-core jobs of `DELAY 0`, then one `WAIT 0` | 1.46 |
+
+  A busy refusal and its wake cost no more than waiting for the record's event: both
+  add about 2.1 microseconds to the record's run.
 - **Finish.** `KM_SEG_STOP`, the runtime's stop, a missed deadline or a start-up failure
   ends the loop. Core 0 then sets the engine's stop word and waits for core 1 to leave
   its loop (`KMD_ENGINE_STOP_TICKS`, 10 ms), forwarding its last posts; if it does not,

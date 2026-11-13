@@ -87,8 +87,9 @@ waits. A missed deadline or a stop while waiting ends the thread's run as `late`
 
 The kernel never makes a thread's record wait: one that cannot be issued now (an
 exclusive record whose team overlaps one in flight, a full job queue, no free slot) is
-refused at once with reason 11, and the thread issues it again later or waits for the
-record it depends on first. A round of two records issued and waited for in turn takes
+refused at once with reason 11, and the kernel then sends the thread one wake event
+(`KMX_EV_WAKE`, ticket 0) when a slot frees or the queue issues a job: the thread issues
+the record again after it (`kmx_poll` returns the wake; `kmx_wait` passes it over). A round of two records issued and waited for in turn takes
 about 50 microseconds; the kernel's loop looks at the ring every fourth pass.
 
 ## Writing one
