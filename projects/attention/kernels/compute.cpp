@@ -467,7 +467,7 @@ void kernel_main() {
         uint32_t blocks = 0;
         bool ok = jobs <= kJobsMax;
         for (uint32_t pass = 0; ok && pass < passes; ++pass) {
-            for (uint32_t j = 0; ok && j < jobs; ++j) {
+            for (uint32_t j = r.a7; ok && j < jobs_end(r, jobs); ++j) {
                 const volatile tt_l1_ptr uint32_t* w = (
                     km::l1(table + 4 * (kTabFirst + kJobWords * j))
                 );

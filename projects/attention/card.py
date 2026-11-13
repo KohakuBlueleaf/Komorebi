@@ -49,9 +49,9 @@ def prof_tensor(device, cores):
     return table_tensor(device, np.zeros((cores, K["kProfBytes"] // 4), np.uint32))
 
 
-def lane_words(nocs, p, team):
+def lane_words(nocs, p, team, noc=0):
     """Each core's km::LaneArgs words: lanes of p.length cores down every grid column
-    (the sender on top, NoC0), one band of rows after the other."""
+    on NoC `noc` (the sender first in its order), one band of rows after the other."""
     gx, gy = nocs.grid
     buffer = (LANE_ID, K["kCbKv"], p.window, p.block_pages())
     out = {}
@@ -63,7 +63,7 @@ def lane_words(nocs, p, team):
             team,
             rect,
             "column",
-            0,
+            noc,
             nocs.noc0,
             nocs.noc_xy,
             buffer,
@@ -72,19 +72,24 @@ def lane_words(nocs, p, team):
     return {c: [a[f] for f in LANE_FIELDS] for c, a in out.items()}
 
 
-def program(p, q_tensor, o_tensor, scale, approx=False, fidelity="HiFi2", lanes=None):
+def program(
+    p, q_tensor, o_tensor, scale, approx=False, fidelity="HiFi2", lanes=None, noc=0
+):
     """The resident program of plan p: the three kernels, the plan's buffers, each
-    core's lane words (`lanes`, by core) and the compute's window."""
+    core's lane words (`lanes`, by core) for the kernel on NoC `noc` (0: the reader, 1:
+    the writer) and the compute's window."""
     s = p.dims
     a_bits, thr_bits = pl.exp_constants(scale, approx)
     shape = [s.dt, s.dvt, p.r, p.kb]
-    defines = {}
+    defines = {"LANE_ON_WRITER": "1"} if noc == 1 else {}
     if s.causal:
         defines["FLASH_CAUSAL"] = "1"
     if approx:
         defines["FLASH_APPROX"] = "1"
 
     def args(core):
+        if noc == 1:
+            return [], lanes[core], [p.window]
         return lanes[core], [], [p.window]
 
     return km.Program(
@@ -93,8 +98,11 @@ def program(p, q_tensor, o_tensor, scale, approx=False, fidelity="HiFi2", lanes=
         buffers=[km.Buffer(*b) for b in p.buffers()],
         args=args,
         compile_args={
-            "reader": shape + ttnn.TensorAccessorArgs(q_tensor).get_compile_time_args(),
-            "writer": [s.dvt]
+            "reader": shape
+            + [p.window]
+            + ttnn.TensorAccessorArgs(q_tensor).get_compile_time_args(),
+            "writer": shape
+            + [p.window]
             + ttnn.TensorAccessorArgs(o_tensor).get_compile_time_args(),
             "compute": shape + [a_bits, thr_bits],
         },
@@ -118,15 +126,17 @@ class Attention:
     ATTEND records on the team of every core."""
 
     def __init__(
-        self, session, p, tensors, scale, approx=False, deadline=2.0, wait=2.0
+        self, session, p, tensors, scale, approx=False, deadline=2.0, wait=2.0, noc=0
     ):
         nocs = session.nocs()
         cores = len(nocs.words)
         if len(p.jobs) != cores:
             raise ValueError(f"plan for {len(p.jobs)} cores, grid has {cores}")
         self.p, self.t, self.team = p, tensors, (0, cores)
-        lanes = lane_words(nocs, p, layout.Team(0, cores))
-        prog = program(p, tensors["q"], tensors["o"], scale, approx, lanes=lanes)
+        lanes = lane_words(nocs, p, layout.Team(0, cores), noc)
+        prog = program(
+            p, tensors["q"], tensors["o"], scale, approx, lanes=lanes, noc=noc
+        )
         self.run = session.load(prog, deadline=deadline, wait=wait)
 
     def words(self, mode=K["kModeFull"], passes=1):

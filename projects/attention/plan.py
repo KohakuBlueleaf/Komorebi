@@ -327,9 +327,10 @@ def exp_constants(scale, approx=False):
     return float_bits(a), float_bits(thr)
 
 
-def call_args(q, k, v, o, table, mode=K["kModeFull"], passes=1):
-    """Record words a0..a6 of ATTEND."""
-    return [q, k, v, o, table, mode, passes]
+def call_args(q, k, v, o, table, mode=K["kModeFull"], passes=1, first=0, count=0):
+    """Record words a0..a8 of ATTEND: jobs [first, first + count) of every member's
+    table (count 0: to the end)."""
+    return [q, k, v, o, table, mode, passes, first, count]
 
 
 def flops(s):

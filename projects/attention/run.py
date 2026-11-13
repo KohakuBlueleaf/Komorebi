@@ -38,6 +38,7 @@ def parse():
     p.add_argument("--calls", type=int, default=1)
     p.add_argument("--lane", type=int, default=None, help="lane length (default: plan)")
     p.add_argument("--approx", action="store_true", help="approximate exponential")
+    p.add_argument("--noc", type=int, choices=[0, 1], default=0, help="lane's NoC")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--json", default=None)
     return p.parse_args()
@@ -73,7 +74,7 @@ def main():
     q, k, v = sdpa.inputs(b, h, hk, sq, sq, d, d, args.seed)
     scale = 1.0 / np.sqrt(d)
     out = {"shape": args.shape, "b": b, "h": h, "hk": hk, "s": sq, "d": d}
-    out["causal"], out["approx"] = causal, args.approx
+    out["causal"], out["approx"], out["noc"] = causal, args.approx, args.noc
     with km.Session(log=log) as session:
         nocs = session.nocs()
         p = pl.make(s, nocs.grid, length=args.lane)
@@ -89,7 +90,7 @@ def main():
         }
         out["upload_s"] = round(time.perf_counter() - t0, 3)
         log(f"uploaded, plan {out['plan']}")
-        att = card.Attention(session, p, tensors, scale, args.approx)
+        att = card.Attention(session, p, tensors, scale, args.approx, noc=args.noc)
         log("loaded")
         host_s, us = att.calls(args.calls)
         log(f"{args.calls} calls in {host_s:.4f} s")

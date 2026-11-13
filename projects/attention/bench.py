@@ -132,6 +132,7 @@ def main():
     a.add_argument("--lane", type=int, default=None, help="lane length (default: plan)")
     a.add_argument("--seconds", type=float, default=4.0, help="power loop length")
     a.add_argument("--cuts", action="store_true", help="also the cut-down runs")
+    a.add_argument("--noc", type=int, choices=[0, 1], default=0, help="lane's NoC")
     a.add_argument("--seed", type=int, default=1)
     a.add_argument("--json", default=None)
     args = a.parse_args()
@@ -145,7 +146,7 @@ def main():
         nocs = session.nocs()
         p = pl.make(s, nocs.grid, length=args.lane)
         out["plan"] = p.summary()
-        out["x280_mhz"] = session.pll_mhz
+        out["x280_mhz"], out["noc"] = session.pll_mhz, args.noc
         device = session.device
         tensors = {
             "q": card.bf16_tensor(device, q),
@@ -157,7 +158,7 @@ def main():
         }
         # Load 1: single records, records back to back (5, then `n`: the second
         # batch's time less the first's is the per-record time), the profile.
-        att = card.Attention(session, p, tensors, scale, args.approx)
+        att = card.Attention(session, p, tensors, scale, args.approx, noc=args.noc)
         log(f"loaded, plan {out['plan']}")
         single = np.concatenate([att.calls(1)[1] for _ in range(6)])
         one = float(np.median(single[1:]))
@@ -173,7 +174,7 @@ def main():
         out["runs"] = [att.stop()]
         log(f"single {one:.1f} us, back to back {out['us_per_call']} us per call")
         # Load 2: the power loop, then the cut-down runs.
-        att = card.Attention(session, p, tensors, scale, args.approx)
+        att = card.Attention(session, p, tensors, scale, args.approx, noc=args.noc)
         each = out["us_per_call"]
         passes = min(p.passes_max(), max(1, math.ceil(0.1e6 / each)))
         cuts = 11 if args.cuts else 0

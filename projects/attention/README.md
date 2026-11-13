@@ -47,7 +47,7 @@ in flight per lane. The lanes and their senders come from `komorebi.layout.lane_
 
 | Segment | Arguments |
 |---|---|
-| `ATTEND` | a0 Q, a1 K, a2 V, a3 O, a4 the job tables, a5 mode (0: the full call, 1: cast only, 2: compute only), a6 passes over the jobs (0: one) |
+| `ATTEND` | a0 Q, a1 K, a2 V, a3 O, a4 the job tables, a5 mode (0: the full call, 1: cast only, 2: compute only), a6 passes over the jobs (0: one), a7 the first job, a8 jobs from it (0: to the end) |
 | `PROF` | a0 the profile tensor, a1 nonzero: zero the pages after storing them |
 
 The cut-down modes are for the benchmark: cast only reads Q and casts every K / V block
@@ -77,6 +77,8 @@ lengths, statistics for the backward, ragged lengths).
 python projects/attention/run.py --shape t1
 python projects/attention/run.py --shape long64 --calls 4
 python projects/attention/bench.py --shape long64 --cuts            # time, power, profile
+python projects/attention/bench.py --shape wide128 --noc 1 --lane 5  # the lane's NoC, length
+python projects/attention/graph.py --shape short64 --rounds 40       # records and graphs
 KMR_CARD=1 python -m pytest tests/hardware/test_attention_host.py
 python projects/attention/reference/ktt_bench.py --shape long64   # Kohaku-TT's env
 ```
@@ -174,6 +176,46 @@ branch more often than real inputs do; it is an upper bound on the compute. The 
 short rows (both exponentials) are ahead of Kohaku-TT per pass and behind per call: what
 is behind is the cost of a record, not the kernel.
 
+### The broadcast's NoC, the lane length, records and graphs
+
+Measured on 2026-11-13 as above (X280 at 1,000 MHz), `wide128` (1 x 24 x 4096 x 128);
+the JSON in `results/`: `noc0-wide128.json`, `noc1-wide128.json`, `lane-wide128-L<L>.json`
+(`bench.py --json`) and `graph-<preset>.json` (`graph.py --json`).
+NoC1: `--noc 1` builds the program with `LANE_ON_WRITER`, so that the writer runs the
+lane (K / V reads and casts before each job's rows) and the reader reads only Q. The
+lane length is `--lane L` (L = 1: every core reads its own K / V).
+
+| `wide128` | Single record (us) | Per call (us) | Per pass (us) | Cast only / compute only (us) | MHz | W |
+|---|---|---|---|---|---|---|
+| NoC0, L 10 | 2312.3 | 2330.3 | 2337.3 | 310 / 2393 | 1321 | 152 |
+| NoC1, L 10 | 2276.5 | 2358.0 | 2309.6 | 597 / 2447 | 1315 | 153 |
+| NoC0, L 5 | 2300.1 | 2315.3 | 2318.5 | 384 / 2352 | 1318 | 154 |
+| NoC0, L 2 | 2322.4 | 2338.6 | 2333.5 | 773 / 2504 | 1307 | 149 |
+| NoC0, L 1 | 2404.8 | 2418.0 | 2381.8 | 1533 / 2642 | 1289 | 153 |
+
+The broadcast alone takes twice as long from the writer on NoC1 as from the reader on
+NoC0, and five times as long with no lane (L 1) as with lanes of 10; the call, bound by
+compute, moves by at most 4 %.
+
+`graph.py` issues the same call, rounds back to back: one record walking the job table,
+or one record per job index (a7, a8: each core's job j in record j); each from the host
+(records back to back, the time from the first issue to the last event over the rounds)
+and from a kept graph (the call's records in a chain, then a CPU node that goes round
+again; the engine on the X280 issues each next record; the time of a restart over its
+rounds, the median of three).
+
+| Shape | Rounds | Records per call | Host, table | Graph, table | Host, per job | Graph, per job |
+|---|---|---|---|---|---|---|
+| 8x16x256x64 | 40 | 3 | 97.4 | 85.1 | 210.2 | 134.5 |
+| 1x8x1024x64 causal | 40 | 1 | 79.5 | 66.4 | 90.6 | 65.7 |
+| 1x32x4096x64 | 8 | 4 | 2701.5 | 2685.4 | 3430.5 | 3331.2 |
+
+Times are us per call. From the kept graph a call comes 12 to 13 us sooner than from
+the host (part of that is the host's first issue, spread over the rounds). A record per
+job costs 25 us per extra record on the short shape and 215 us on the long one: each
+record starts its lanes with no block in flight and ends them with every core drained,
+which the job table inside one record overlaps.
+
 ## Limits
 
 Bounded waits (a give-up is recorded with its code and place, stops the core's three
@@ -216,6 +258,7 @@ variable-length batches, masks, ragged lengths.
 | `card.py` | the program, its lane words and its records on a session |
 | `run.py` | one shape run and checked |
 | `bench.py` | time, power, clock, the profile and the cut-down runs of one shape |
-| `results/` | the JSON behind the time and power table, ours and Kohaku-TT's per row |
+| `graph.py` | the same call as one record or one record per job, from the host and from a kept graph |
+| `results/` | the JSON behind the tables of results |
 | `reference/sdpa.py` | the float64 attention, inputs, sampled rows |
 | `reference/ktt_bench.py` | Kohaku-TT's kernel on the same inputs, checked the same way |

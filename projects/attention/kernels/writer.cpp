@@ -1,14 +1,92 @@
-// Attention writer: reads its own copy of the member's job table, then stores each
-// finished output row (DV tiles) of every job at O's pages. PROF: the profile page out.
+// Attention writer (NoC1): its copy of the job table, each job's rows to O, and with
+// LANE_ON_WRITER first the job's K / V blocks (lane). PROF: the profile page out.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
 #include "attention.h"
+#include "komorebi/device/km_lane.hpp"
 #include "komorebi/device/km_worker.hpp"
 
+namespace {
+
+    constexpr uint32_t DT = get_compile_time_arg_val(0);
+    constexpr uint32_t DV = get_compile_time_arg_val(1);
+    constexpr uint32_t KB = get_compile_time_arg_val(3);
+
+    // The record's jobs, `passes` times: each job's blocks through `ln` (null: none),
+    // then its rows written (full), popped (compute only) or none. False: gave up.
+    template <typename Accessor>
+    bool run_jobs(
+        const km::Writer& wr,
+        const km_record_t& r,
+        uint32_t table,
+        const Accessor& o,
+        const Accessor& k,
+        const Accessor& v,
+        km::Lane* ln,
+        volatile tt_l1_ptr uint32_t* prof,
+        uint32_t t0
+    ) {
+        const uint32_t jobs = km::l1(table)[kTabJobs];
+        const uint32_t passes = r.a6 == 0 ? 1 : r.a6;
+        if (jobs > kJobsMax) {
+            return false;
+        }
+        const uint32_t each = r.a5 == kModeCastOnly ? 0 : 1;
+        const bool writes = r.a5 == kModeFull;
+        uint32_t c[kProfWords] = {};
+        uint32_t n = 0;  // lane blocks of this record so far
+        for (uint32_t pass = 0; pass < passes; ++pass) {
+            for (uint32_t j = r.a7; j < jobs_end(r, jobs); ++j) {
+                const volatile tt_l1_ptr uint32_t* w = (
+                    km::l1(table + 4 * (kTabFirst + kJobWords * j))
+                );
+                if (ln != nullptr && !lane_job<DT, DV, KB>(*ln, k, v, w, n, c)) {
+                    return false;
+                }
+                const uint32_t o0 = w[kJobO], rows = w[kJobRows] * each;
+                const uint32_t stride = w[kJobStride];
+                for (uint32_t i = 0; i < rows; ++i) {
+                    const uint32_t t1 = km::wall();
+                    if (!wr.wait_front(kCbOut, DV)) {
+                        return false;  // nothing to report: the tile is stopping
+                    }
+                    const uint32_t t2 = km::wall();
+                    const uint32_t src = get_read_ptr(kCbOut);
+                    for (uint32_t col = 0; writes && col < DV; ++col) {
+                        noc_async_write_page(
+                            o0 + i * stride * DV + col, o, src + col * kTileBytes
+                        );
+                    }
+                    if (!flushed(wr, km::kStWriter, km::kFlushSent)) {
+                        return false;
+                    }
+                    cb_pop_front(kCbOut, DV);
+                    c[kPrWrWait] += t2 - t1;
+                    c[kPrWrWrite] += km::wall() - t2;
+                }
+            }
+        }
+        if (ln != nullptr) {
+            const uint32_t t1 = km::wall();
+            ln->finish();
+            c[kPrRdFinish] += km::wall() - t1;
+            for (uint32_t i = kPrRdKvFree; i <= kPrRdFinish; ++i) {
+                km::add_sat(
+                    prof + i, c[i]
+                );  // the lane's words, the reader's otherwise
+            }
+        }
+        km::add_sat(prof + kPrWrWait, c[kPrWrWait]);
+        km::add_sat(prof + kPrWrWrite, c[kPrWrWrite]);
+        km::add_sat(prof + kPrWrBody, km::wall() - t0);
+        return true;
+    }
+
+}  // namespace
+
 void kernel_main() {
-    constexpr uint32_t DV = get_compile_time_arg_val(0);
-    constexpr auto tiles = TensorAccessorArgs<1>();  // O: bf16 tiles in DRAM
+    constexpr auto tiles = TensorAccessorArgs<5>();  // K, V, O: bf16 tiles in DRAM
     km::Writer wr;
     // The table copy's page: reserved once, used in place, never pushed.
     cb_reserve_back(kCbWriterJobs, 1);
@@ -38,47 +116,17 @@ void kernel_main() {
         if (!read_table(wr, km::kStWriter, r.a4, wr.me() - km::first(r), table)) {
             return false;
         }
-        const uint32_t jobs = km::l1(table)[kTabJobs];
-        const uint32_t passes = r.a6 == 0 ? 1 : r.a6;
-        if (jobs > kJobsMax) {
-            return false;
-        }
-        // Cast only: compute finishes no row. Compute only: rows popped, not written.
-        const uint32_t each = r.a5 == kModeCastOnly ? 0 : 1;
-        const bool writes = r.a5 == kModeFull;
+        const auto k = TensorAccessor(tiles, r.a1);
+        const auto v = TensorAccessor(tiles, r.a2);
         const auto o = TensorAccessor(tiles, r.a3);
-        uint32_t waited = 0, wrote = 0;
-        for (uint32_t pass = 0; pass < passes; ++pass) {
-            for (uint32_t j = 0; j < jobs; ++j) {
-                const volatile tt_l1_ptr uint32_t* w = (
-                    km::l1(table + 4 * (kTabFirst + kJobWords * j))
-                );
-                const uint32_t o0 = w[kJobO], rows = w[kJobRows] * each;
-                const uint32_t stride = w[kJobStride];
-                for (uint32_t i = 0; i < rows; ++i) {
-                    const uint32_t t1 = km::wall();
-                    if (!wr.wait_front(kCbOut, DV)) {
-                        return false;  // nothing to report: the tile is stopping
-                    }
-                    const uint32_t t2 = km::wall();
-                    const uint32_t src = get_read_ptr(kCbOut);
-                    for (uint32_t c = 0; writes && c < DV; ++c) {
-                        noc_async_write_page(
-                            o0 + i * stride * DV + c, o, src + c * kTileBytes
-                        );
-                    }
-                    if (!flushed(wr, km::kStWriter, km::kFlushSent)) {
-                        return false;
-                    }
-                    cb_pop_front(kCbOut, DV);
-                    waited += t2 - t1;
-                    wrote += km::wall() - t2;
-                }
-            }
+#ifdef LANE_ON_WRITER
+        if (r.a5 != kModeComputeOnly) {
+            km::Lane ln(wr, r, kArgLane);
+            return (
+                ln.ok() && ln.member() && run_jobs(wr, r, table, o, k, v, &ln, prof, t0)
+            );
         }
-        km::add_sat(prof + kPrWrWait, waited);
-        km::add_sat(prof + kPrWrWrite, wrote);
-        km::add_sat(prof + kPrWrBody, km::wall() - t0);
-        return true;
+#endif
+        return run_jobs(wr, r, table, o, k, v, nullptr, prof, t0);
     });
 }

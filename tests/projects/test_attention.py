@@ -56,7 +56,7 @@ def test_buffers_and_profile_words_do_not_collide():
     prof = [v for name, v in K.items() if name.startswith("kPr") and "Prof" not in name]
     assert len(set(prof)) == len(prof) and max(prof) < K["kProfWords"]
     assert K["kProfWords"] * 4 <= K["kProfBytes"]
-    assert len(pl.call_args(1, 2, 3, 4, 5, passes=7)) == 7
+    assert len(pl.call_args(1, 2, 3, 4, 5, passes=7)) == 9
 
 
 def test_exp_constants():

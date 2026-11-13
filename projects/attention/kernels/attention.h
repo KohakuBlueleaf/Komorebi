@@ -6,8 +6,8 @@
 
 #include "komorebi/device/km_lane.hpp"
 
-// ATTEND: a0 Q, a1 K, a2 V, a3 O (bf16 tiles, [B, H, S, D] in tile order), a4 the job
-// tables (a page per member), a5 mode, a6 passes over the table (0: one).
+// ATTEND: a0 Q, a1 K, a2 V, a3 O (bf16 tiles, [B, H, S, D]), a4 job tables (a page per
+// member), a5 mode, a6 passes (0: one), a7 first job, a8 jobs from it (0: to the end).
 constexpr uint32_t kSegAttend = 1;
 // PROF: a0 profile tensor; the writer stores this core's profile page at the member's
 // page, then (a1 != 0) zeroes it.
@@ -92,7 +92,13 @@ constexpr uint32_t kPrWrBody = 24;
 constexpr uint32_t kPrWrWait = 25;
 constexpr uint32_t kPrWrWrite = 26;
 
-// Program arguments. Reader: the lane's words. Compute: the lane window B.
+// The record's end in the member's `jobs` jobs (it starts at job a7).
+inline uint32_t jobs_end(const km_record_t& r, uint32_t jobs) {
+    return r.a8 == 0 || r.a7 + r.a8 > jobs ? jobs : r.a7 + r.a8;
+}
+
+// Program arguments. The kernel that runs the lane (the reader on NoC0, the writer with
+// LANE_ON_WRITER on NoC1): the lane's words. Compute: the lane window B.
 constexpr uint32_t kArgLane = 0;
 constexpr uint32_t kArgWindow = 0;
 
@@ -136,6 +142,75 @@ inline bool read_table(
     };
     noc_async_read(get_noc_addr(member, pages), dst, kTableBytes);
     return flushed(c, word, km::kFlushReads);
+}
+
+// Sender: K tiles [k_start, k_start + kb) of every head-dim tile (d-major) and their V
+// rows (key-major) into the block at `addr`.
+template <uint32_t DT, uint32_t DV, uint32_t KB, typename Accessor>
+void read_kv(
+    const Accessor& k,
+    const Accessor& v,
+    uint32_t k0,
+    uint32_t v0,
+    uint32_t k_start,
+    uint32_t kb,
+    uint32_t addr
+) {
+    for (uint32_t j = 0; j < kb; ++j) {
+        for (uint32_t d = 0; d < DT; ++d) {
+            noc_async_read_page(
+                k0 + (k_start + j) * DT + d, k, addr + (d * KB + j) * kTileBytes
+            );
+        }
+    }
+    for (uint32_t j = 0; j < kb; ++j) {
+        for (uint32_t c = 0; c < DV; ++c) {
+            noc_async_read_page(
+                v0 + (k_start + j) * DV + c,
+                v,
+                addr + (DT * KB + j * DV + c) * kTileBytes
+            );
+        }
+    }
+}
+
+// One job's K / V blocks through the lane (job words `w`; `n` counts the record's, `c`
+// the profile): the sender reads and casts each, a receiver waits. False: gave up.
+template <uint32_t DT, uint32_t DV, uint32_t KB, typename Accessor>
+bool lane_job(
+    km::Lane& ln,
+    const Accessor& k,
+    const Accessor& v,
+    const volatile tt_l1_ptr uint32_t* w,
+    uint32_t& n,
+    uint32_t* c
+) {
+    const uint32_t k0 = w[kJobK], v0 = w[kJobV], nk = w[kJobKeys];
+    for (uint32_t k_start = 0; k_start < nk; k_start += KB, ++n) {
+        const uint32_t t1 = km::wall();
+        if (!ln.sender()) {
+            if (!ln.arrive(n)) {
+                return false;
+            }
+            c[kPrRdArrive] += km::wall() - t1;
+            continue;
+        }
+        const uint32_t addr = ln.reserve(n);
+        if (addr == 0) {
+            return false;
+        }
+        const uint32_t t2 = km::wall();
+        const uint32_t kb = nk - k_start < KB ? nk - k_start : KB;
+        read_kv<DT, DV, KB>(k, v, k0, v0, k_start, kb, addr);
+        const uint32_t t3 = km::wall();
+        if (!ln.cast(n)) {
+            return false;
+        }
+        c[kPrRdKvFree] += t2 - t1;
+        c[kPrRdKvRead] += t3 - t2;
+        c[kPrRdCast] += km::wall() - t3;
+    }
+    return true;
 }
 
 #endif
