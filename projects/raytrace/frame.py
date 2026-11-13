@@ -16,6 +16,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 from komorebi import session as km_session  # noqa: E402
 from projects.raytrace import card, packets  # noqa: E402
+from projects.raytrace import ties as ties_mod  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
 from projects.raytrace.run import reference_frame  # noqa: E402
 from ref import bvh, native, png, raytrace, scenes  # noqa: E402
@@ -290,9 +291,10 @@ def main():
     else:
         name, want = "numpy", raytrace.render(scene, tree, flat)["image"]
     report["image_check"] = {"against": name, "pixels": len(flat)}
-    report["image_check"]["differs"] = differ(colour, want)
-    report["image_check"]["max_abs_error"] = float(np.abs(colour - want).max())
     bad = (packets.bits(colour) != packets.bits(want)).any(axis=1)
+    ties, wrong = ties_mod.classify(scene, tree, flat[bad], colour[bad])
+    report["image_check"]["differs"], report["image_check"]["ties"] = wrong, ties
+    report["image_check"]["max_abs_error"] = float(np.abs(colour - want).max())
     report["image_check"]["first_pixels"] = flat[bad][:64].tolist()
     if args.stages:
         report["stages"] = check_stages(got, scene, tree, flat)

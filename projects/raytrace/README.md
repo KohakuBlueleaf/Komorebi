@@ -147,8 +147,15 @@ tested differs from the reference (packets walk together), the hits do not.
 
 With treelets the walk visits the tree in another order than the reference's, and a
 ray whose two nearest triangles lie at equal distances (rounded to float32) may keep a
-different one: on the public scenes below, every hit that differs from numpy's is such
-a tie (the same `t`, or within 1e-5 of it), and the pixels it changes are counted.
+different one. The image check counts such pixels apart as ties: a pixel whose colour
+is the one the reference computes with a triangle within 1e-5 of the nearest
+distance, for the primary or the bounce ray (`ties.py`, every triangle tested against
+those rays). Ties pass the check; every other differing pixel fails it. Per scene,
+one frame with treelets of 128 KiB: 10^4 and 10^5 none, 10^6 1, Sponza 192 (close)
+and 221 (overview), Bistro interior 1 and 1. Bistro interior also has 1 (close) and
+2 (overview) pixels that differ otherwise: a bounce ray keeps a hit 3e-5 to 1.3e-4
+farther than the nearest, which it finds when traced in another packet; the check
+fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128`).
 
 ## Limits
 
@@ -232,10 +239,7 @@ results of the same frame.
 | Bistro interior, close | 1024 | 0.54 | 97.66 | 2.23 | 73.80 | 678.77 | 1.57 | 411.59 | 0.56 | 1266.72 | 3.3 | 395.61 | 211.44 | 73.6 | 2 |
 | Bistro interior, overview | 1024 | 0.54 | 74.68 | 2.23 | 54.16 | 631.55 | 1.57 | 345.49 | 0.57 | 1110.77 | 3.7 | 344.46 | 154.04 | 70.9 | 3 |
 
-The differing pixels are the ties of "What is exact": on the 37 tiles that hold
-Sponza's first 64, `run.py --treelets 128` finds 28 primary and 36 bounce hits on
-another triangle, every one at the same `t` or within 1e-5 of it, and no shadow ray
-differing. The four traces take 93 % (s10k) to over 99 % (Sponza, Bistro) of the
+Ties and the Bistro misses: "What is exact". The four traces take 93 % (s10k) to over 99 % (Sponza, Bistro) of the
 frame, the bounce trace alone half or more: rays stay with their core and every core
 reads the treelets its rays need from DRAM.
 
