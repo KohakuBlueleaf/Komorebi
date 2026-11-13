@@ -1,6 +1,6 @@
 """Lane broadcast on a card through the dispatch kernel (KMR_CARD=1): a stalled
 receiver ends in the host's timeout, then the next run is exact; a record that casts
-no block finishes."""
+no block finishes; a record of 65,600 pages per lane, then a short one, are exact."""
 
 from pathlib import Path
 
@@ -39,3 +39,13 @@ def test_a_record_that_casts_no_block_finishes_and_the_next_is_exact():
     assert run["kernel"]["error_name"] == "none" and run["kernel"]["records"] == 4
     assert run["core_gave_up"] == [] and run["lane_gave_up"] == []
     assert run["members_checked"] == 36 and run["members_bad"] == 0
+
+
+def test_a_record_of_65600_pages_per_lane_then_a_short_one_are_exact():
+    args = ["--rect", "4,0,2,2", "--blocks", 4, "--pages", 16, "--window", 2]
+    out = run_json(SCRIPT, *args, "--jobs", 2, "--first-blocks", 4100)
+    (run,) = out["runs"]
+    assert run["kernel"]["error_name"] == "none" and run["kernel"]["records"] == 3
+    assert run["core_gave_up"] == [] and run["lane_gave_up"] == []
+    assert run["lane_blocks"] == 4 * (4100 + 4) * 2
+    assert run["members_checked"] == 8 and run["members_bad"] == 0

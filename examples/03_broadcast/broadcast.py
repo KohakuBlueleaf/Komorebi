@@ -51,6 +51,9 @@ def parse():
     p.add_argument("--stall-block", type=int, default=0)
     p.add_argument("--again", action="store_true", help="then a clean run")
     p.add_argument("--empty-job", type=int, default=-1, help="a job casting 0 blocks")
+    p.add_argument(
+        "--first-blocks", type=int, default=0, help="job 0 casts these, cycling"
+    )
     p.add_argument("--wait", type=float, default=2.0, help="wait limit, seconds")
     p.add_argument("--deadline", type=float, default=1.0, help="per record, seconds")
     p.add_argument("--feeder", action="store_true", help="run on the test feeder")
@@ -146,6 +149,14 @@ def make_data(device, rng, team, rect, args):
     return sets, inputs, out
 
 
+def job_blocks(args, j):
+    """Blocks job j casts per lane: 0 for the empty job, `--first-blocks` for job 0
+    (block k is data block k mod `--blocks`), else `--blocks`."""
+    if j == args.empty_job:
+        return 0
+    return args.first_blocks if j == 0 and args.first_blocks else args.blocks
+
+
 def job_args(args, inputs, out, team, j, stall_job):
     """CAST / READ arguments of job j."""
     a_t, w_t = inputs[j % 2]
@@ -155,9 +166,10 @@ def job_args(args, inputs, out, team, j, stall_job):
         a_t.buffer_address(),
         w_t.buffer_address(),
         out.buffer_address(),
-        0 if j == args.empty_job else args.blocks,
+        job_blocks(args, j),
         *stall,
         j * team.count,
+        args.blocks,
     ]
 
 
@@ -167,10 +179,12 @@ def check(args, sets, out, team, place):
     log("outputs read back")
     bad = []
     for j in range(args.jobs):
-        a, b = sets[j % 2]
-        a_sum, w_sum = a.sum((1, 2)), b.sum((1, 2))
+        times, rest = divmod(job_blocks(args, j), args.blocks)
+        a_sum, w_sum = (
+            times * x.sum((1, 2)) + x[:, :rest].sum((1, 2)) for x in sets[j % 2]
+        )
         for core, (row, col) in place.items():
-            want = (a_sum[row] + w_sum[col]) * (j != args.empty_job)  # 0 blocks: 0
+            want = a_sum[row] + w_sum[col]
             mine = got[j, core - team.first]
             if not np.array_equal(mine, want):
                 wrong = int((mine != want).sum())
@@ -187,6 +201,7 @@ def describe(args, rect, team):
         "rect": rect,
         "team": [team.first, team.count],
         "blocks": args.blocks,
+        "first_blocks": args.first_blocks,
         "pages": args.pages,
         "window": args.window,
         "jobs": args.jobs,

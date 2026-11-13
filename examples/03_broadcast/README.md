@@ -40,7 +40,7 @@ and passes each core its lane words as program arguments.
 
 | Segment | Arguments | What a member does |
 |---|---|---|
-| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 member that stalls (a test), a5 its block, a6 output page of member 0 | as the thread program; members outside the rectangle only report |
+| `CAST` | a0 A, a1 W, a2 output, a3 blocks n, a4 member that stalls (a test), a5 its block, a6 output page of member 0, a7 blocks of data per lane (block k reads data block k mod a7) | as the thread program; members outside the rectangle only report |
 | `READ` | the same | every member reads its own blocks from DRAM (the comparison) |
 
 ## Run
@@ -58,6 +58,7 @@ python broadcast.py --rect 0,0,12,10 --blocks 16 --pages 4 --window 2 --read
 python broadcast.py --rect 4,0,4,3 --blocks 6 --pages 2 --jobs 2 --stall-job 0 \
     --stall-member 13 --stall-block 2 --wait 0.05 --deadline 0.5 --again
 python broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --jobs 3 --empty-job 1
+python broadcast.py --rect 4,0,2,2 --blocks 4 --pages 16 --jobs 2 --first-blocks 4100
 ```
 
 `--rect x0,y0,columns,rows` places the rectangle; its team is the smallest range of the
@@ -70,7 +71,9 @@ the record's deadline and the host raises `RecordTimeout`, which names the ticke
 the members that did not report. Every kernel returns; `lane_gave_up` names, per core,
 the lane, where it waited and the block. `--again` then loads the program again in the
 same session and runs the clean case. With `--empty-job`, that job casts zero blocks on
-every lane (every checksum is zero) between jobs that cast the full count.
+every lane (every checksum is zero) between jobs that cast the full count. With
+`--first-blocks N`, job 0 casts N blocks per lane, block k being data block k mod
+`--blocks`: a record that moves many pages through a lane from little host data.
 
 The JSON line reports, per run, the dispatch kernel's error and record count, the
 host's microseconds per job, the blocks every lane handed over, every core's end

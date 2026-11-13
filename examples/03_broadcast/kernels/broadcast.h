@@ -6,8 +6,8 @@
 
 #include "komorebi/device/km_lane.hpp"
 
-// CAST: a0 A (rows), a1 W (columns), a2 output, a3 blocks n per lane, a4 member that
-// stalls at row block a5 (a test; kNone: none), a6 output page of member 0.
+// CAST: a0 A (rows), a1 W (columns), a2 output, a3 blocks n, a4 member that stalls at
+// row block a5 (a test; kNone: none), a6 output page of member 0, a7 data blocks d.
 constexpr uint32_t kSegCast = 1;
 // READ: as CAST, but every member reads both of its blocks from DRAM itself.
 constexpr uint32_t kSegRead = 2;
@@ -40,11 +40,11 @@ inline bool reads_landed(const km::Core& c, uint32_t word, const km_record_t& r)
     return code == km::kGaveNone;
 }
 
-// Blocks 0 to n - 1 through the lane: the sender reads block k (tiles first + k P
+// Blocks 0 to n - 1 through the lane: the sender reads block k (tiles first + k % d * P
 // onwards) into its slot and casts it; a receiver takes it. Stops at block `stall`.
 template <typename Src, typename Stall>
 bool cast_blocks(
-    km::Lane& ln, const Src& src, uint32_t first, uint32_t n, Stall stall
+    km::Lane& ln, const Src& src, uint32_t first, uint32_t n, uint32_t d, Stall stall
 ) {
     const uint32_t p = ln.pages();
     for (uint32_t k = 0; k < n; k++) {
@@ -62,7 +62,7 @@ bool cast_blocks(
             return false;
         }
         for (uint32_t i = 0; i < p; i++) {
-            noc_async_read_page(first + k * p + i, src, addr + i * kTileBytes);
+            noc_async_read_page(first + k % d * p + i, src, addr + i * kTileBytes);
         }
         if (!ln.cast(k)) {
             return false;
@@ -82,7 +82,8 @@ bool read_blocks(
     uint32_t cb,
     const Src& src,
     uint32_t first,
-    uint32_t n
+    uint32_t n,
+    uint32_t d
 ) {
     const uint32_t p = ln.pages(), w = ln.window();
     const uint32_t pad = (w - n % w) % w * p;
@@ -105,7 +106,7 @@ bool read_blocks(
         cb_reserve_back(cb, pages);
         const uint32_t dst = get_write_ptr(cb);
         for (uint32_t i = 0; k < n && i < p; i++) {
-            noc_async_read_page(first + k * p + i, src, dst + i * kTileBytes);
+            noc_async_read_page(first + k % d * p + i, src, dst + i * kTileBytes);
         }
         if (!reads_landed(c, word, r)) {
             return false;

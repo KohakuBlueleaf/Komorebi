@@ -26,10 +26,10 @@ void kernel_main() {
             return true;
         }
         const auto w = TensorAccessor(w_args, r.a1);
-        const uint32_t first = wr.arg(kArgIndex) * r.a3 * ln.pages();
+        const uint32_t first = wr.arg(kArgIndex) * r.a7 * ln.pages();
         const bool got = seg == kSegRead
-            ? read_blocks(wr, km::kStWriter, r, ln, kCbCol, w, first, r.a3)
-            : cast_blocks(ln, w, first, r.a3, [](uint32_t) {
+            ? read_blocks(wr, km::kStWriter, r, ln, kCbCol, w, first, r.a3, r.a7)
+            : cast_blocks(ln, w, first, r.a3, r.a7, [](uint32_t) {
                   return false;
               });
         if (!got || !wr.wait_front(kCbOut, 1)) {

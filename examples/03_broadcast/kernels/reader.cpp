@@ -20,13 +20,13 @@ void kernel_main() {
             return;
         }
         const auto a = TensorAccessor(a_args, r.a0);
-        const uint32_t first = rd.arg(kArgIndex) * r.a3 * ln.pages();
+        const uint32_t first = rd.arg(kArgIndex) * r.a7 * ln.pages();
         if (seg == kSegRead) {
-            read_blocks(rd, km::kStReader, r, ln, kCbRow, a, first, r.a3);
+            read_blocks(rd, km::kStReader, r, ln, kCbRow, a, first, r.a3, r.a7);
             return;
         }
         const bool stalls = rd.me() - km::first(r) == r.a4;
-        cast_blocks(ln, a, first, r.a3, [&](uint32_t k) {
+        cast_blocks(ln, a, first, r.a3, r.a7, [&](uint32_t k) {
             if (!stalls || k != r.a5) {
                 return false;
             }
