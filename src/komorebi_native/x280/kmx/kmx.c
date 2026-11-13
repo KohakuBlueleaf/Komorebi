@@ -1314,7 +1314,9 @@ static int ring_open(const volatile kmx_ring_descriptor* descriptor) {
     local.flags = descriptor->flags;
     if (local.flags & KMX_RING_REMOTE) {
         const uint64_t base = local.cmd & ~(NOC_2M_WINDOW_STRIDE - 1u);
-        const uint32_t xy = descriptor->reserved[0], x = xy & 0xFFFFu, y = xy >> 16;
+        const uint32_t tile = descriptor->reserved[0];
+        const uint32_t x = tile & 0xFFFFu;
+        const uint32_t y = tile >> 16;
         if (
             (local.read & ~(NOC_2M_WINDOW_STRIDE - 1u)) != base || (local.flags & 1u) ||
             local.read + 64u > base + NOC_2M_WINDOW_STRIDE

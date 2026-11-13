@@ -55,10 +55,10 @@ static uint32_t bad_template(const km_template_t* template_entry) {
     if (template_entry->patch_count > KM_TEMPLATE_PATCHES) {
         return 1u;
     }
-    for (uint32_t k = 0; k < template_entry->patch_count; k++) {
+    for (uint32_t patch = 0; patch < template_entry->patch_count; patch++) {
         if (
-            template_entry->arg[k] >= KM_TEMPLATE_ARGS ||
-            template_entry->registers[k] >= KM_STREAM_REGISTERS
+            template_entry->arg[patch] >= KM_TEMPLATE_ARGS ||
+            template_entry->registers[patch] >= KM_STREAM_REGISTERS
         ) {
             return 1u;
         }
