@@ -7,17 +7,16 @@ from komorebi import KomorebiError, dram
 
 PAGES, BANKS, PAGE_BYTES, ALIGNED, BASE = 11, 4, 6, 8, 0x1000
 DATA = np.arange(PAGES * PAGE_BYTES, dtype=np.uint8).reshape(PAGES, PAGE_BYTES)
+# the banks holding DATA: page p in bank p % BANKS at BASE + p // BANKS * ALIGNED
+MEMORY = np.zeros((BANKS, BASE + PAGES * ALIGNED), np.uint8)
+for p in range(PAGES):
+    MEMORY[p % BANKS, BASE + p // BANKS * ALIGNED :][:PAGE_BYTES] = DATA[p]
 
 
 def read(first, pages):
-    """Pages read at bank_spans from banks that hold DATA (page p in bank p % BANKS
-    at BASE + p // BANKS * ALIGNED), put in order by pages_in_order."""
-    memory = np.zeros((BANKS, BASE + PAGES * ALIGNED), np.uint8)
-    for p in range(PAGES):
-        at = BASE + p // BANKS * ALIGNED
-        memory[p % BANKS, at : at + PAGE_BYTES] = DATA[p]
+    """Pages read at bank_spans from MEMORY, put in order by pages_in_order."""
     spans = dram.bank_spans(BASE, ALIGNED, pages, BANKS, first)
-    chunks = [memory[bank, at : at + size] for bank, at, size in spans]
+    chunks = [MEMORY[bank, at : at + size] for bank, at, size in spans]
     return dram.pages_in_order(chunks, PAGE_BYTES, ALIGNED, pages, BANKS)
 
 
@@ -38,3 +37,17 @@ def test_a_range_outside_the_tensor_names_its_page_count():
     for first, pages in [(-1, 2), (10, 2), (11, None), (0, 0)]:
         with pytest.raises(KomorebiError, match="has 11 pages"):
             dram.page_range(first, pages, PAGES)
+
+
+def test_a_region_reads_its_own_pages_of_one_bank_only():
+    assert dram.bank_chunks(BASE, ALIGNED, 1, 0, 3, 2) == [
+        (1, BASE, 16),
+        (1, BASE + 16, 8),
+    ]
+    # bank 1 holds pages 1, 5, 9; a region of n bytes takes -(-n // ALIGNED) of them
+    for first, size in [(0, 3), (1, 8), (1, 13), (0, 24)]:  # start, middle, end
+        pages = -(-size // ALIGNED)
+        spans = dram.bank_chunks(BASE, ALIGNED, 1, first, pages, 2)
+        got = np.concatenate([MEMORY[b, at : at + n] for b, at, n in spans])
+        want = DATA[1 + BANKS * first :: BANKS][:pages]
+        assert (got.reshape(pages, ALIGNED)[:, :PAGE_BYTES] == want).all()

@@ -23,6 +23,15 @@ def bank_spans(base, aligned, pages, banks, first=0):
     ]
 
 
+def bank_chunks(base, aligned, bank, first, pages, chunk_pages):
+    """(bank, address, bytes) reads of one bank's own pages first .. first + pages - 1
+    (its page k at base + k * aligned), at most `chunk_pages` pages each."""
+    return [
+        (bank, base + k * aligned, min(chunk_pages, first + pages - k) * aligned)
+        for k in range(first, first + pages, chunk_pages)
+    ]
+
+
 def page_range(first, pages, total, name="the tensor"):
     """(first, pages) of a read of pages first .. first + pages - 1 (pages=None: to
     the end); KomorebiError, naming the page count, when it is outside the buffer."""

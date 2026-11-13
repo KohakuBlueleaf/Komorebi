@@ -35,6 +35,8 @@ CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 PROBE_GAP_S = 0.02  # core 0's pass stamp moves every 1,024 passes (about 33 us)
 ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop word, before the close
+REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
+REGION_CHUNK = 2 << 20  # of this size, with a log line each
 
 
 def compute_config(options):
@@ -517,7 +519,7 @@ def _pages(data, pages):
 class _Regions:
     """A thread's regions in one DRAM tensor whose pages of the work cluster's bank
     hold them (page 0: the check line). Written before the grid starts; read(name)
-    only once the grid has stopped (a tensor read waits for idle cores)."""
+    only once the grid has stopped, from that bank's pages of the region alone."""
 
     def __init__(self, session, work):
         self.session = session
@@ -549,11 +551,16 @@ class _Regions:
         """The region's bytes, as uint8."""
         if not self.readable:
             raise RuntimeError("regions are read after run.stop()")
-        p = self.placed[name]
-        s = self.session
-        rows = _read_uint32(self.tensor, s.device, s._module).astype(np.uint32)
-        mine = rows[self.bank :: DRAM_BANKS][p.page : p.page + p.pages]
-        return mine.reshape(-1).view(np.uint8)[: p.bytes].copy()
+        p, s = self.placed[name], self.session
+        per = p.pages if p.pages * kt.PAGE <= REGION_WHOLE else REGION_CHUNK // kt.PAGE
+        spans = dram.bank_chunks(self.base, kt.PAGE, self.bank, p.page, p.pages, per)
+        out = np.empty(p.pages * kt.PAGE, np.uint8)
+        for at, span in zip(range(0, out.size, per * kt.PAGE), spans):
+            (chunk,) = s._module.read_dram(s.device, [span])
+            out[at : at + span[2]] = np.asarray(chunk, np.uint8)
+            if len(spans) > 1:
+                s.log(f"region {name}: {at + span[2]} of {out.size} bytes read")
+        return out[: p.bytes].copy()
 
 
 class _Backend:
