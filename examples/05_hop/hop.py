@@ -86,7 +86,11 @@ def main():
         if a.engine:
             runs.append(run_engine(session, a))
             log("engine run done")
-    print(json.dumps({"runs": runs, "wall_s": round(time.monotonic() - T0, 1)}))
+    ok = all(r["ok"] for r in runs)
+    print(
+        json.dumps({"ok": ok, "runs": runs, "wall_s": round(time.monotonic() - T0, 1)})
+    )
+    sys.exit(0 if ok else 1)
 
 
 def l1_blocks(device, grid, words):
@@ -160,6 +164,10 @@ def run_once(session, a, stall):
         a, run, (ev, seq), program.dyn, (count, cores), stall, res_t, timed_out
     )
     out["host_s"] = round(host_s, 4)
+    if stall < 0:  # exact, ended by the kernel at the quiet end
+        out["ok"] = out["exact"] and out["event"] == "done" and out["gave_core"] == -1
+    else:  # the stalled member named, the run ended by its timeout
+        out["ok"] = out["event"] == "timeout" and out["gave_core"] == stall
     return out
 
 
@@ -190,6 +198,7 @@ def run_engine(session, a):
     h = abi.headers()
     harts = result.get("harts") or [0] * h["KMD_H_WORDS"]
     return {
+        "ok": ev.kind == "end" and all(exact) and result["error_name"] == "none",
         "engine": ev.kind,
         "halt": ev.value,
         "halves_exact": exact,
