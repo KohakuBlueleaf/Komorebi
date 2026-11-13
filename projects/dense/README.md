@@ -93,6 +93,51 @@ reloaded for the last K block; subblocks of up to 4 tiles).
 | `GRID` | a0 A, a1 W, a2 Y, a3 mode: 0 full, 1 lanes only (blocks handed over and taken, no product, no writes), 2 product only (blocks from L1 as they are, no reads, no lanes, packed but not written) |
 | `GRID_PROF` | a0 the profile tensor |
 
+## The K split
+
+When the output has few tiles (M of one or a few row tiles), the lane form leaves
+most cores idle or each reading a long column of W. The K split puts a group of S
+cores on each output block and gives each core 1/S of K:
+
+```
+thread part(g, d):                             # core d of group g, S cores to a group
+    block = output tiles of group g (oh x ow)
+    acc = 0                                    # fp32 in L1 (kCbSum)
+    for k in chunks(share(K tiles, d, S), kc): # time: K chunks of this core's share
+        acc += read_dram(A[block rows, k]) @ read_dram(W[k, block columns])
+    acc = reduce(acc, group g)                 # owner: every core sends its part to
+                                               #   core 0; tree: halves in log2 S rounds
+    if d == 0: write Y[block] = acc            # breakpoint: a part is sent when its
+                                               #   receiver has a free arrival slot
+```
+
+The parts travel over the cores' ports (`km::reduce`, `komorebi/device/km_port.hpp`):
+the reader takes arrivals into `kCbArrive` (fp32, a slot per sender), compute adds them
+in rank order into `kCbSum` by packer accumulation, the writer sends a member's part
+to its receiver or writes the root's sum to Y. Records carry `KM_F_EXCL` (the ports).
+Plans are named by hand: `--split s,oh,ow[,kc]` (`plan.split_plan`; K chunk default:
+the whole share, at most 32 tiles) and `--reduce owner|tree`.
+
+| Segment | Arguments |
+|---|---|
+| `SPLIT` | a0 A, a1 W, a2 Y, a3 reduce (0 owner, 1 tree), a4 mode: 0 full, 1 parts only (each core's part packed and dropped: no reduce, no writes) |
+
+Measured on 2026-11-13 at 13:00 to 13:06 (X280 at 1,000 MHz, card clock 1,350 MHz
+throughout), each against Kohaku-TT's best route in the same session, every check
+passed (`results/<preset>-split-*.json`, Kohaku-TT's as `-split-ktt-<route>`):
+
+| Preset | Ours: K split, us per call (single call) | Parts only | Kohaku-TT best, us | Lane or resident form, us |
+|---|---|---|---|---|
+| `kvproj` | 7,1,4 tree: 25.5 (9.3) | 20.1 | auto, 28.6 | resident, 6.3 |
+| `dec4096` | 14,1,16,5 tree: 121.7 (101.9); owner 131.2 | 107.0 | own, 81.0 (gemm 81.0, auto 81.0) | `cols`, 197.8 |
+
+Bounds: each record costs about 16 us more back to back when exclusive. A probe of
+parts-only records (no ports, so allowed without the flag) on the 7,1,8 plan:
+98.8 us single either way, back to back 115 to 116 us exclusive against 95.4 us not;
+on `kvproj` 21 to 23 us against 5.0 to 5.1 us. Without that cost `dec4096` is bound by
+W read from DRAM: 32 MiB in 95.4 us is 352 GB/s, against Kohaku-TT's 414 GB/s; each
+core reads its chunks on NoC0 only.
+
 ## Run
 
 ```
@@ -101,6 +146,7 @@ python projects/dense/run.py --m 256 --k 64 --n 128 --inputs int --form stream
 python projects/dense/bench.py --shape lin384 --json lin384.json
 python projects/dense/run.py --m 512 --k 64 --n 384 --inputs int --form grid --grid rows
 python projects/dense/bench.py --shape sq4096 --form grid
+python projects/dense/bench.py --shape dec4096 --split 14,1,16,5 --reduce tree
 KTT_GEMM=1 python projects/dense/reference/ktt_bench.py --shape lin384
 python -m projects.dense.reference.gpu_bench --shape lin384
 ```
@@ -213,7 +259,7 @@ follow a long loop run at a throttled clock.
 - `dec4096` (`cols`, behind): W from DRAM. 32 MB of W are read by 72 cores, 512 KB
   each with one block in flight per lane sender: the slowest core spends 97% reading
   W, 2.9 GB/s per core, 170 GB/s in all against Kohaku-TT's 414 GB/s; lanes only
-  195.8 us, product only 26.1 us.
+  195.8 us, product only 26.1 us. The K split (above) takes it to 121.7 us.
 
 ## Files
 
@@ -224,6 +270,7 @@ follow a long loop run at a throttled clock.
 | `plan.py` | the plan as pure functions |
 | `card.py` | the program and its records on a session |
 | `kernels/grid/grid.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the lane form: arguments, row lane and A, the product, column lane and Y |
+| `kernels/split/split.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the K split: arguments, A and W and arrivals, the part and the sum, sending and Y |
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `results/` | the runs behind the results table |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
