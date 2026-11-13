@@ -29,6 +29,7 @@ src/komorebi_native/           the native layer (README inside)
 examples/  projects/           runnable examples; larger programs (README inside)
 experiments/  ref/             standalone proofs; CPU references (README inside)
 tests/core/                    tests that need no card
+tests/projects/                CPU tests of the programs under projects/
 tests/ref/                     reference renderers compared (README inside)
 docs/                          concepts, install, this page
 packaging/                     tt-metal.pin: the tt-metal version Komorebi is developed against
@@ -42,6 +43,7 @@ except by code that is asked to.
 
 ```
 python -m pytest tests/core                     # CPU tests
+python -m pytest tests/projects                 # the programs' CPU tests
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
@@ -65,7 +67,12 @@ the numpy rasterizer and ray tracer with the box tree. The comparisons of the C+
 CUDA versions with numpy, and a slow rasterizer case, are in `tests/ref`, run by hand
 ([README](../tests/ref/README.md)); the CUDA ones only with `KMR_GPU=1`.
 
-The continuous-integration workflow runs ruff, black and the CPU tests.
+The CPU tests of a program under `projects/` live in
+`tests/projects/test_<project>_*.py`, not in `tests/core`, which is the framework's
+suite. They run as a step of their own, in about 5 s for all programs together.
+
+The continuous-integration workflow runs ruff, black, the CPU tests and the
+programs' CPU tests.
 
 ## The runtime on the CPU
 

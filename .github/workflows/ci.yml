@@ -31,5 +31,8 @@ jobs:
       - name: CPU tests
         run: python -m pytest -q tests/core
 
+      - name: Programs' CPU tests
+        run: python -m pytest -q tests/projects
+
       - name: Version agrees with the package
         run: python packaging/version.py read
