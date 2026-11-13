@@ -59,8 +59,8 @@ void kernel_main() {
     MATH((k = 1));
     PACK((k = 2));
     compute_kernel_hw_startup(kCbIn, kCbOut);
-    volatile tt_l1_ptr uint32_t* t = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
-        ctl + 4 * kTrisc
+    volatile tt_l1_ptr uint32_t* t = (
+        reinterpret_cast<volatile tt_l1_ptr uint32_t*>(ctl + 4 * kTrisc)
     );
     const ov::Entry entry = reinterpret_cast<ov::Entry>(tslots + k * tslot_bytes);
     ov::Args args{};

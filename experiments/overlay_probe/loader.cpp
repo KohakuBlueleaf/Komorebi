@@ -46,12 +46,16 @@ namespace {
 
     inline uint64_t wall64() {
         volatile tt_reg_ptr uint32_t*
-            lo = reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                RISCV_DEBUG_REG_WALL_CLOCK_L
+            lo = (
+                reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
+                    RISCV_DEBUG_REG_WALL_CLOCK_L
+                )
             );
         volatile tt_reg_ptr uint32_t*
-            hi = reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                RISCV_DEBUG_REG_WALL_CLOCK_1
+            hi = (
+                reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
+                    RISCV_DEBUG_REG_WALL_CLOCK_1
+                )
             );
         for (;;) {
             const uint32_t h = *hi, l = *lo;
@@ -114,8 +118,8 @@ void kernel_main() {
     const uint32_t tslots = get_arg_val<uint32_t>(6);  // compute slots: 3 x tslot bytes
     const uint32_t tslot_bytes = get_arg_val<uint32_t>(7);
     const uint64_t read_limit = 50000000;  // cycles (about 37 ms) for one load
-    volatile tt_l1_ptr uint32_t* c = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
-        ctl
+    volatile tt_l1_ptr uint32_t* c = (
+        reinterpret_cast<volatile tt_l1_ptr uint32_t*>(ctl)
     );
     volatile tt_l1_ptr uint32_t* r = c + kResp;
     const uint64_t resp_noc = get_noc_addr_from_bank_id<true>(resp_bank, resp_addr);
@@ -249,8 +253,10 @@ void kernel_main() {
                 const uint64_t t1 = wall64();
                 cb_reserve_back(kCbIn, 1);
                 volatile tt_l1_ptr uint16_t*
-                    in = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(
-                        get_write_ptr(kCbIn)
+                    in = (
+                        reinterpret_cast<volatile tt_l1_ptr uint16_t*>(
+                            get_write_ptr(kCbIn)
+                        )
                     );
                 for (uint32_t j = 0; j < kTileValues; j++) {
                     in[j] = kBf16Small[j % 16];
@@ -263,8 +269,10 @@ void kernel_main() {
                     cb_wait_front(kCbOut, 1);
                     invalidate_l1_cache();
                     volatile tt_l1_ptr uint16_t*
-                        out = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(
-                            get_read_ptr(kCbOut)
+                        out = (
+                            reinterpret_cast<volatile tt_l1_ptr uint16_t*>(
+                                get_read_ptr(kCbOut)
+                            )
                         );
                     uint32_t sum = 0;
                     for (uint32_t j = 0; j < kTileValues; j++) {
