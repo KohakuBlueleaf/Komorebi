@@ -385,7 +385,12 @@ groups the core's instruction set documents as absent: float divide and square r
 (`fdiv`, `fsqrt`), vector integer divide and remainder (`vdiv`, `vrem`), and vector
 float divide, square root and their estimates (`vfdiv`, `vfrdiv`, `vfsqrt`,
 `vfrsqrt7`, `vfrec7`). The result is kept with the build, so a cached build is not
-checked again (the first check costs about 0.1 s per program). A `/` on floats is the
+checked again. The check itself runs objdump once per thread ELF the first time that
+build is seen, about 11 ms each (some 0.06 s for a program's five); the runtime's
+compile of a new kernel, which now runs just before it, is most of a first load
+(about 0.9 s for example 01). Without the toolchain's objdump, or when the build left
+no ELF, the load raises `ProgramError`; without its addr2line, a finding is still
+refused, without its source line. A `/` on floats is the
 usual cause: divide by an integer (`div`/`divu` are implemented), multiply by a
 reciprocal computed on the host, or, on the vector unit, use a reciprocal with Newton
 steps as the projects do ([`recip`](../../projects/raytrace/kernels/sfpu.hpp), exact
