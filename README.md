@@ -26,12 +26,12 @@ program's page and its committed results.
 | Attention | 2 x 8 x 1024 x 128, 2 K / V heads | 163.3 µs | Kohaku-TT, same card: 261.8 µs | 1.60 |
 | Attention | 1 x 8 x 1024 x 64, causal | 73.6 µs | Kohaku-TT, same card: 53.7 µs | 0.73 |
 | Rasterizer, whole frame | 10^6 triangles, 1024 x 1024 | 12.13 ms | CUDA on a V100: 4.42 ms | 0.36 |
-| Ray tracer, whole frame | Sponza close, 1024 x 1024 | 681.40 ms | CUDA on a V100: 101.34 ms | 0.15 |
+| Ray tracer, whole frame | Sponza close, 1024 x 1024 | 359.86 ms | CUDA on a V100: 102.00 ms | 0.28 |
 
 Above 1, Komorebi takes less time. The neural workloads are on par with or ahead of
 Kohaku-TT on most shapes; the rasterizer and the ray tracer run whole frames on the
 card, bit-exact against numpy, today at a third of the V100's speed (the rasterizer)
-and a sixth or less (the ray tracer).
+and a third or less (the ray tracer).
 
 ## A kernel
 
@@ -282,27 +282,29 @@ The **ray tracer**: ray generation, four traces and shading are eight records on
 
 | Scene | Card frame, ms | Card W | C++ all threads, ms | V100, ms | V100 / card | Pixels differing from numpy |
 |---|---|---|---|---|---|---|
-| tiny (tree in L1) | 23.21 | 61.0 | 36.52 | 2.59 | 0.11 | 0 |
-| 10^4 | 66.95 | 61.0 | 36.92 | 4.19 | 0.06 | 0 |
-| 10^5 | 116.96 | 60.0 | 39.91 | 6.59 | 0.06 | 0 |
-| 10^6 | 256.32 | 61.0 | 48.04 | 11.57 | 0.05 | 1 |
-| Sponza, close | 681.40 | 70.7 | 262.31 | 101.34 | 0.15 | 192 |
-| Sponza, overview | 678.53 | 61.0 | 252.45 | 94.91 | 0.14 | 221 |
-| Bistro interior, close | 1266.72 | 73.6 | 395.61 | 211.44 | 0.17 | 2 |
-| Bistro interior, overview | 1110.77 | 70.9 | 344.46 | 154.04 | 0.14 | 3 |
+| tiny (tree in L1) | 23.20 | 63.0 | 20.59 | 2.59 | 0.11 | 0 |
+| 10^4 | 57.91 | 63.0 | 26.44 | 4.16 | 0.07 | 0 |
+| 10^5 | 81.51 | 63.0 | 35.47 | 6.57 | 0.08 | 0 |
+| 10^6 | 154.21 | 63.0 | 53.66 | 11.61 | 0.08 | 1 |
+| Sponza, close | 359.86 | 63.0 | 264.78 | 102.00 | 0.28 | 244 |
+| Sponza, overview | 348.53 | 69.2 | 230.36 | 95.52 | 0.27 | 234 |
+| Bistro interior, close | 596.97 | 61.0 | 401.87 | 211.42 | 0.35 | 2 |
+| Bistro interior, overview | 523.72 | 73.1 | 336.80 | 153.94 | 0.29 | 2 |
 
-Where the time goes: the four traces take 93 % (10^4) to over 99 % (Sponza, Bistro) of
-the frame, the bounce trace alone half or more; rays stay on their core and every core
-reads the treelets its rays need from DRAM. The differing pixels are ties between two
-triangles at the same float32 distance.
+Where the time goes: the four traces take 67 % (10^4) to 97 % (Bistro) of the frame,
+the bounce trace alone 36 to 59 %; each core sorts its bounce and second-shadow rays
+(about 15 ms a frame) and reads the treelets its rays need from DRAM. In the traces,
+box tests on packets with few live lanes come first (61 % on Sponza's overview), then
+the wait for each record's slowest core. The differing pixels are ties between two
+triangles at the same float32 distance, but for one on each Bistro view.
 
 <img src="docs/images/raster-sponza.jpg" width="256" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card">
 <img src="docs/images/raytrace-sponza.jpg" width="256" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="256" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. Top: rasterized,
 both bit-exact against numpy, Sponza overview (7.22 ms a frame above) and Bistro interior
-overview (15.37 ms). Bottom: ray traced, Sponza close (681.40 ms a frame
-above) and Bistro interior close (1266.72 ms). Crytek Sponza, (c) 2010 Frank Meinl,
+overview (15.37 ms). Bottom: ray traced, Sponza close (359.86 ms a frame
+above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
 

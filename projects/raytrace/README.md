@@ -36,13 +36,15 @@ thread trace(core, mode):                       # one per core of the grid
 records) from DRAM into every core's L1 once. A scene whose tree does not fit in L1
 runs `TREELETS` instead: each packet first walks the top tree (in L1) and lists the
 treelets it reaches, nearer first; the reader then reads treelets from DRAM into a few
-L1 slots and hands compute the packets that listed the treelet in the slot, and the
-packet states stay in L1 between visits.
+L1 slots and hands compute the packets that listed the treelet in the slot. Packet
+states stay in L1 between visits as Dst tile images: at each visit the unpacker loads
+one into Dst and the packer stores it back, about 270 cycles where copying it word by
+word took 3,400.
 
 | Kernel | What it does |
 |---|---|
 | `reader.cpp` | LOAD: the tree image into the tree buffer. TRACE: this core's packet pages from DRAM to compute. TREELETS: also bins packets by treelet, reads treelets into slots (least recently used replaced), writes work pages. SORT and UNSORT: this core's rays into a new order and their hits back (below) |
-| `compute.cpp` | the pack thread walks each packet on the vector unit (`walk.hpp`): slab test and triangle test in the reference's operation order, with an exact reciprocal (`sfpu.hpp`); the stages' arithmetic (`shade.hpp`); the unpack thread hands it the pages |
+| `compute.cpp` | the pack thread walks each packet on the vector unit (`walk.hpp`): slab test and triangle test in the reference's operation order, with an exact reciprocal (`sfpu.hpp`); the stages' arithmetic (`shade.hpp`); the unpack thread hands it the pages and, at treelet visits, loads each packet's state into Dst with the math thread; the packer stores it back |
 | `writer.cpp` | 64 packets' output pages of each stream to one DRAM page (the host reads per page); the profile page |
 
 | Record word | Meaning |
@@ -236,7 +238,7 @@ Reading it against the V100: below half everywhere, room left, in three places.
 ### The whole frame on larger scenes
 
 Treelets of at most 128 KiB from DRAM with each core's bounce and second-shadow rays
-sorted (the tiny row: the whole tree in L1, not sorted); 2026-11-13 15:36 to 15:50,
+sorted (the tiny row: the whole tree in L1, not sorted, the run above); 2026-11-13 16:20 to 16:28,
 card 1, AICLK 1350 MHz, X280 1000 MHz, one frame each;
 `python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --json
 frame.json` (tiny: neither flag), the JSON of every row in [`results/`](results/).
@@ -250,19 +252,23 @@ C++ and V100 number in this README.
 | scene | treelets | GEN | primary | SHADE1 | shadow | SORT bounce | bounce | UNSORT bounce | SHADE2 | SORT shadow 2 | shadow 2 | UNSORT shadow 2 | IMAGE | frame ms | Mray/s | C++ ms | V100 ms | V100 / card | W | ties | pixels differing |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | tiny | (L1) | 0.54 | 3.40 | 2.23 | 2.23 | - | 8.79 | - | 1.57 | - | 3.88 | - | 0.57 | 23.20 | 108.7 | 20.59 | 2.59 | 0.112 | 63.0 | 0 | 0 |
-| 10^4 | 16 | 0.54 | 9.14 | 2.23 | 5.62 | 4.91 | 23.55 | 3.32 | 1.56 | 4.85 | 5.09 | 1.25 | 0.57 | 62.63 | 41.2 | 26.44 | 4.16 | 0.066 | 63.0 | 0 | 0 |
-| 10^5 | 128 | 0.54 | 13.33 | 2.23 | 8.32 | 4.94 | 43.35 | 3.42 | 1.57 | 4.85 | 10.18 | 1.27 | 0.57 | 94.57 | 28.4 | 35.47 | 6.57 | 0.069 | 61.0 | 0 | 0 |
-| 10^6 | 1024 | 0.54 | 23.37 | 2.23 | 15.06 | 4.93 | 104.66 | 3.33 | 1.57 | 4.87 | 26.97 | 1.29 | 0.57 | 189.38 | 15.1 | 53.66 | 11.61 | 0.061 | 63.0 | 1 | 0 |
-| Sponza, close | 256 | 0.54 | 57.43 | 2.23 | 40.13 | 5.00 | 266.11 | 3.40 | 1.57 | 4.98 | 75.80 | 1.25 | 0.57 | 458.99 | 9.0 | 264.78 | 102.00 | 0.222 | 61.0 | 244 | 0 |
-| Sponza, overview | 256 | 0.54 | 67.80 | 2.23 | 37.65 | 4.98 | 250.93 | 3.38 | 1.57 | 5.05 | 74.82 | 1.22 | 0.57 | 450.73 | 9.1 | 230.36 | 95.52 | 0.212 | 61.0 | 234 | 0 |
-| Bistro interior, close | 1024 | 0.54 | 97.64 | 2.23 | 73.80 | 4.96 | 434.25 | 3.31 | 1.57 | 4.96 | 138.93 | 1.24 | 0.57 | 764.00 | 5.4 | 401.87 | 211.42 | 0.277 | 72.0 | 1 | 1 |
-| Bistro interior, overview | 1024 | 0.54 | 74.68 | 2.23 | 54.16 | 4.95 | 366.21 | 3.40 | 1.57 | 4.95 | 118.05 | 1.29 | 0.57 | 632.58 | 6.4 | 336.80 | 153.94 | 0.243 | 63.0 | 1 | 1 |
+| 10^4 | 16 | 0.55 | 8.19 | 2.22 | 4.83 | 4.91 | 20.99 | 3.39 | 1.57 | 4.85 | 4.57 | 1.27 | 0.57 | 57.91 | 44.5 | 26.44 | 4.16 | 0.072 | 63.0 | 0 | 0 |
+| 10^5 | 128 | 0.55 | 11.57 | 2.22 | 7.34 | 4.94 | 34.48 | 3.45 | 1.57 | 4.85 | 8.72 | 1.26 | 0.56 | 81.51 | 32.9 | 35.47 | 6.57 | 0.081 | 63.0 | 0 | 0 |
+| 10^6 | 1024 | 0.55 | 17.42 | 2.23 | 11.44 | 4.95 | 83.44 | 3.34 | 1.57 | 4.85 | 22.58 | 1.28 | 0.57 | 154.21 | 18.5 | 53.66 | 11.61 | 0.075 | 63.0 | 1 | 0 |
+| Sponza, close | 256 | 0.55 | 42.07 | 2.22 | 27.07 | 4.98 | 213.34 | 3.40 | 1.57 | 5.01 | 57.82 | 1.26 | 0.57 | 359.86 | 11.5 | 264.78 | 102.00 | 0.283 | 63.0 | 244 | 0 |
+| Sponza, overview | 256 | 0.55 | 50.10 | 2.23 | 27.86 | 4.96 | 194.64 | 3.48 | 1.57 | 4.96 | 56.38 | 1.25 | 0.57 | 348.53 | 11.8 | 230.36 | 95.52 | 0.274 | 69.2 | 234 | 0 |
+| Bistro interior, close | 1024 | 0.55 | 66.01 | 2.23 | 52.68 | 4.95 | 347.66 | 3.39 | 1.57 | 4.95 | 111.15 | 1.27 | 0.57 | 596.97 | 7.0 | 401.87 | 211.42 | 0.354 | 61.0 | 1 | 1 |
+| Bistro interior, overview | 1024 | 0.55 | 56.76 | 2.23 | 41.36 | 4.95 | 307.96 | 3.30 | 1.57 | 4.95 | 98.34 | 1.19 | 0.56 | 523.72 | 7.8 | 336.80 | 153.94 | 0.294 | 73.1 | 1 | 1 |
 
 Ties and the Bistro misses: "What is exact". Sorting took the bounce trace from 359 to
 251 ms and the second shadow from 209 to 75 ms on Sponza's overview (Bistro's
 overview: 632 to 366 and 346 to 118), for 5 ms per SORT and 1 to 3.4 ms per UNSORT on
 every scene: a packet of sorted rays shares more of the tree (live lanes per inner
-node visit of the bounce trace, Sponza overview: 4.2 of 32 before, 6.0 after). The
+node visit of the bounce trace, Sponza overview: 4.2 of 32 before, 6.0 after). Moving
+the packet states through the unpacker and packer took Sponza's overview from 451 to
+349 ms and Bistro's from 633 to 524. What is left in the traces (Sponza overview, mean
+core): box tests 61 %, stack pops 13 %, triangle tests 11 %, state moves 3 %; and the
+slowest core of each record against the mean: 71 of the 349 ms (Bistro: 147 of 524). The
 host issues one 64-byte command per record and waits for one event each; nothing is
 read back inside the frame. The X280 work cluster is not used.
 
