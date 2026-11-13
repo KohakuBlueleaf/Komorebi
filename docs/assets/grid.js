@@ -9,9 +9,10 @@
  *   </figure>
  *
  * Places: host, x280:K (K = 0 to 3), core:N (N = 0 to 119, row by row), cores:A-B,
- * dram:C (C = 0 or 9, the column), dram:C:R (one DRAM tile of it, R = 0 to 9). An arrow has "kind": "command" (solid, the accent
- * colour), "data" (dashed, the text colour) or "reply" (dotted, the primary colour).
- * No library, no network; the colours are the theme's variables.
+ * dram:C (C = 0 or 9, the column), dram:C:R (one DRAM tile of it, R = 0 to 9).
+ * An arrow has a "kind": "command" (solid), "data" (dashed), "reply" (dotted),
+ * "broadcast", "routed" or "error"; each takes the gem of its kind, set in
+ * assets/tutorial.css from assets/gem.css. No library, no network.
  */
 (function () {
   "use strict";
@@ -144,7 +145,7 @@
 
   function markers(svg) {
     var defs = el("defs", {}, svg);
-    ["command", "data", "reply"].forEach(function (kind) {
+    ["command", "data", "reply", "broadcast", "routed", "error"].forEach(function (kind) {
       var m = el("marker", { id: "km-head-" + kind, viewBox: "0 0 10 10", refX: 9, refY: 5,
                              markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" }, defs);
       el("path", { d: "M0,0 L10,5 L0,10 z", "class": "km-head km-" + kind }, m);

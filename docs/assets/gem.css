@@ -1,0 +1,546 @@
+/* The site's colours and shapes. Every colour of the site is written in this file and
+ * nowhere else: seven gems in three shades each, warm stone surfaces for the light and
+ * the dark scheme, then Material's variables set from them.
+ *
+ * Shapes: cards 12 px with a 1 px border and no shadow; buttons, inputs, navigation
+ * items and inline code 8 px; chips and badges full pills. No bars, no gradients.
+ */
+
+/* ---- Gems: three shades each, the only accent colours ---- */
+:root {
+  --gem-iolite-light: #ddd0f0;
+  --gem-iolite: #5a4fcf;
+  --gem-iolite-shadow: #312a7a;
+  --gem-sapphire-light: #d6e3f8;
+  --gem-sapphire: #0f52ba;
+  --gem-sapphire-shadow: #082567;
+  --gem-aquamarine-light: #d4ede8;
+  --gem-aquamarine: #4c9989;
+  --gem-aquamarine-shadow: #1b6b5a;
+  --gem-taaffeite-light: #e8d5ed;
+  --gem-taaffeite: #a57eae;
+  --gem-taaffeite-shadow: #6b4670;
+  --gem-amber-light: #f5e6c8;
+  --gem-amber: #d4920a;
+  --gem-amber-shadow: #8b5e00;
+  --gem-coral-light: #f5d5d5;
+  --gem-coral: #d46b6b;
+  --gem-coral-shadow: #8b3a3a;
+  --gem-sage-light: #d5e8da;
+  --gem-sage: #5a9e6f;
+  --gem-sage-shadow: #3a6b48;
+
+  /* Shapes and type, set once. */
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --radius-pill: 9999px;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --fs-chip: 0.55rem;
+  --fs-small: 0.65rem;
+  --fs-body: 0.8rem;
+  /* Text on a solid gem fill, the same in both schemes. */
+  --ink-on-gem: #2e2a26;
+}
+
+/* ---- Stone surfaces and the gems as text, light ---- */
+[data-md-color-scheme="default"] {
+  --st-page: #f2eee8;
+  --st-card: #ffffff;
+  --st-alt: #efebe5;
+  --st-border: #e5dfd7;
+  --st-text: #2e2a26;
+  --st-muted: #6c655d;
+  --st-shell: #e3ddd5;
+  --st-shell-nav: #dcd5cb;
+
+  /* A gem as text on a light surface: the default shade where it reads, else shadow. */
+  --gt-iolite: var(--gem-iolite);
+  --gt-sapphire: var(--gem-sapphire);
+  --gt-aquamarine: var(--gem-aquamarine-shadow);
+  --gt-taaffeite: var(--gem-taaffeite-shadow);
+  --gt-amber: var(--gem-amber-shadow);
+  --gt-coral: var(--gem-coral-shadow);
+  --gt-sage: var(--gem-sage-shadow);
+  /* The gem as a solid fill behind text (the light shade in light mode). */
+  --gf-amber: var(--gem-amber-light);
+  --gf-sapphire: var(--gem-sapphire-light);
+  --gf-iolite: var(--gem-iolite-light);
+}
+
+/* ---- Stone surfaces and the gems as text, dark ---- */
+[data-md-color-scheme="slate"] {
+  --st-page: #1a1816;
+  --st-card: #252220;
+  --st-alt: #1e1c1a;
+  --st-border: #3d3835;
+  --st-text: #e8e0d8;
+  --st-muted: #8a8078;
+  --st-shell: #1a1816;
+  --st-shell-nav: #1a1816;
+
+  --gt-iolite: var(--gem-iolite-light);
+  --gt-sapphire: var(--gem-sapphire-light);
+  --gt-aquamarine: var(--gem-aquamarine-light);
+  --gt-taaffeite: var(--gem-taaffeite-light);
+  --gt-amber: var(--gem-amber-light);
+  --gt-coral: var(--gem-coral-light);
+  --gt-sage: var(--gem-sage-light);
+  --gf-amber: var(--gem-amber-shadow);
+  --gf-sapphire: var(--gem-sapphire-shadow);
+  --gf-iolite: var(--gem-iolite-shadow);
+}
+
+/* ---- Material's variables, from the tokens ---- */
+[data-md-color-scheme="default"],
+[data-md-color-scheme="slate"] {
+  --md-text-font-family: var(--font-sans);
+  --md-code-font-family: var(--font-mono);
+
+  --md-default-fg-color: var(--st-text);
+  --md-default-fg-color--light: var(--st-muted);
+  --md-default-fg-color--lighter: color-mix(in srgb, var(--st-muted) 60%, transparent);
+  --md-default-fg-color--lightest: var(--st-border);
+  --md-default-bg-color: var(--st-page);
+  --md-default-bg-color--light: color-mix(in srgb, var(--st-page) 70%, transparent);
+  --md-default-bg-color--lighter: color-mix(in srgb, var(--st-page) 30%, transparent);
+  --md-default-bg-color--lightest: color-mix(in srgb, var(--st-page) 12%, transparent);
+
+  --md-primary-fg-color: var(--st-shell);
+  --md-primary-fg-color--light: var(--st-shell-nav);
+  --md-primary-fg-color--dark: var(--st-shell);
+  --md-primary-bg-color: var(--st-text);
+  --md-primary-bg-color--light: var(--st-muted);
+
+  --md-accent-fg-color: var(--gt-iolite);
+  --md-accent-fg-color--transparent: color-mix(in srgb, var(--gt-iolite) 10%, transparent);
+  --md-accent-bg-color: var(--st-card);
+  --md-accent-bg-color--light: var(--st-card);
+
+  --md-typeset-color: var(--st-text);
+  --md-typeset-a-color: var(--gt-iolite);
+  --md-typeset-mark-color: color-mix(in srgb, var(--gem-amber) 25%, transparent);
+  --md-typeset-kbd-color: var(--st-alt);
+  --md-typeset-kbd-accent-color: var(--st-card);
+  --md-typeset-kbd-border-color: var(--st-border);
+  --md-typeset-table-color: var(--st-border);
+  --md-typeset-table-color--light: var(--st-alt);
+
+  --md-code-bg-color: var(--st-alt);
+  --md-code-fg-color: var(--st-text);
+  --md-code-bg-color--light: var(--st-alt);
+  --md-code-bg-color--lighter: var(--st-alt);
+  --md-code-hl-color: color-mix(in srgb, var(--gem-iolite) 10%, transparent);
+  --md-code-hl-color--light: color-mix(in srgb, var(--gem-iolite) 10%, transparent);
+  --md-code-hl-keyword-color: var(--gt-iolite);
+  --md-code-hl-function-color: var(--gt-sapphire);
+  --md-code-hl-string-color: var(--gt-aquamarine);
+  --md-code-hl-number-color: var(--gt-amber);
+  --md-code-hl-constant-color: var(--gt-amber);
+  --md-code-hl-special-color: var(--gt-taaffeite);
+  --md-code-hl-name-color: var(--st-text);
+  --md-code-hl-variable-color: var(--st-text);
+  --md-code-hl-generic-color: var(--st-text);
+  --md-code-hl-operator-color: var(--st-muted);
+  --md-code-hl-punctuation-color: var(--st-muted);
+  --md-code-hl-comment-color: var(--st-muted);
+
+  --md-admonition-fg-color: var(--st-text);
+  --md-admonition-bg-color: var(--st-card);
+
+  --md-footer-fg-color: var(--st-text);
+  --md-footer-fg-color--light: var(--st-muted);
+  --md-footer-fg-color--lighter: var(--st-muted);
+  --md-footer-bg-color: var(--st-shell);
+  --md-footer-bg-color--dark: var(--st-shell);
+
+  --md-shadow-z1: none;
+  --md-shadow-z2: none;
+  --md-shadow-z3: none;
+}
+
+body,
+.md-typeset {
+  font-family: var(--font-sans);
+}
+
+.md-typeset code,
+.md-typeset pre,
+.md-typeset kbd {
+  font-family: var(--font-mono);
+}
+
+/* ---- The shell: header and side navigation ---- */
+.md-header {
+  background-color: var(--st-shell);
+  color: var(--st-text);
+  border-bottom: 1px solid var(--st-border);
+  box-shadow: none;
+}
+
+.md-header__button,
+.md-header__title,
+.md-header .md-icon {
+  color: var(--st-text);
+}
+
+.md-search__form {
+  background-color: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--radius-control);
+  box-shadow: none;
+}
+
+.md-search__input,
+.md-search__input::placeholder,
+.md-search__icon {
+  color: var(--st-muted);
+}
+
+.md-search__output {
+  border-radius: 0 0 var(--radius-control) var(--radius-control);
+}
+
+.md-search__scrollwrap,
+.md-search-result .md-search-result__meta {
+  background-color: var(--st-card);
+}
+
+.md-search-result__article--document .md-search-result__title,
+.md-search-result__link:hover,
+.md-search-result__link:focus {
+  color: var(--st-text);
+}
+
+.md-search-result__link:hover,
+.md-search-result__link:focus {
+  background-color: var(--md-accent-fg-color--transparent);
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--primary .md-nav--primary {
+    background-color: var(--st-shell-nav);
+    border: 1px solid var(--st-border);
+    border-radius: var(--radius-card);
+    padding: 0.6rem 0.4rem;
+    margin-bottom: 0.4rem;
+  }
+}
+
+.md-nav--primary .md-nav__title,
+.md-nav__title {
+  color: var(--st-muted);
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.md-nav__link {
+  border-radius: var(--radius-control);
+  color: var(--st-muted);
+}
+
+.md-nav__link:hover,
+.md-nav__link:focus {
+  color: var(--st-text);
+}
+
+.md-nav__item .md-nav__link--active,
+.md-nav__item--active > .md-nav__link {
+  color: var(--gt-iolite);
+}
+
+.md-nav__item .md-nav__link--active {
+  background-color: var(--md-accent-fg-color--transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--gem-iolite) 40%, transparent);
+  padding: 0.1rem 0.4rem;
+}
+
+.md-nav--primary .md-nav__item--section > .md-nav__link {
+  color: var(--st-text);
+}
+
+@media screen and (max-width: 76.24em) {
+  [data-md-toggle="drawer"]:checked ~ .md-container .md-sidebar--primary,
+  .md-nav--primary {
+    background-color: var(--st-shell-nav);
+  }
+}
+
+/* ---- Cards: code blocks, tables, figures, notes ---- */
+.md-typeset .highlight,
+.md-typeset pre > code,
+.md-typeset .highlighttable {
+  border-radius: var(--radius-card);
+}
+
+.md-typeset .highlight pre,
+.md-typeset pre {
+  background-color: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--radius-card);
+}
+
+.md-typeset .highlight pre > code,
+.md-typeset pre > code {
+  background-color: transparent;
+  border-radius: var(--radius-card);
+}
+
+.md-typeset .highlight .filename,
+.md-typeset .filename {
+  background-color: var(--st-alt);
+  border: 1px solid var(--st-border);
+  border-bottom: none;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  color: var(--st-muted);
+  font-size: var(--fs-small);
+}
+
+.md-typeset .highlight .filename + pre,
+.md-typeset .highlight span.filename + pre {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.md-typeset .highlight .linenos,
+.md-typeset .highlight .md-code__nav,
+.md-typeset .linenodiv pre {
+  color: var(--st-muted);
+}
+
+.md-typeset :not(pre) > code {
+  background-color: var(--st-alt);
+  border: 1px solid var(--st-border);
+  border-radius: var(--radius-control);
+  color: var(--st-text);
+  padding: 0 0.3em;
+}
+
+.md-typeset a > code {
+  color: var(--gt-iolite);
+}
+
+.md-code__button,
+.md-clipboard {
+  border-radius: var(--radius-control);
+  color: var(--st-muted);
+}
+
+.md-code__button:hover,
+.md-clipboard:hover,
+.md-clipboard:focus {
+  background-color: var(--md-accent-fg-color--transparent);
+  color: var(--gt-iolite);
+}
+
+.md-typeset table:not([class]) {
+  background-color: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-collapse: separate;
+  border-radius: var(--radius-card);
+  border-spacing: 0;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--st-alt);
+  color: var(--st-text);
+}
+
+.md-typeset table:not([class]) td,
+.md-typeset table:not([class]) th {
+  border-top: 1px solid var(--st-border);
+}
+
+.md-typeset table:not([class]) tr:first-child th {
+  border-top: none;
+}
+
+.md-typeset table:not([class]) tbody tr:hover {
+  background-color: var(--st-alt);
+  box-shadow: none;
+}
+
+/* Admonitions: a card with a pill for its title, one gem per kind. The
+   selectors repeat the theme's own so that no stock hue is left. */
+.md-typeset :is(.admonition, details) {
+  --kind: var(--gem-iolite);
+  --kind-text: var(--gt-iolite);
+  background-color: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--radius-card);
+  box-shadow: none;
+  color: var(--st-text);
+  padding: 0 0.8rem 0.5rem;
+}
+
+.md-typeset :is(.admonition, details):is(.tip, .success) {
+  --kind: var(--gem-sage);
+  --kind-text: var(--gt-sage);
+}
+
+.md-typeset :is(.admonition, details):is(.warning) {
+  --kind: var(--gem-amber);
+  --kind-text: var(--gt-amber);
+}
+
+.md-typeset :is(.admonition, details):is(.danger, .failure) {
+  --kind: var(--gem-coral);
+  --kind-text: var(--gt-coral);
+}
+
+.md-typeset :is(.admonition, details):is(.note, .tip, .success, .warning, .danger, .failure) {
+  border-color: var(--st-border);
+}
+
+.md-typeset :is(.admonition, details) > :is(.admonition-title, summary),
+.md-typeset :is(.admonition, details):is(.note, .tip, .success, .warning, .danger, .failure) > :is(.admonition-title, summary) {
+  background-color: color-mix(in srgb, var(--kind) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--kind) 40%, transparent);
+  border-radius: var(--radius-pill);
+  color: var(--kind-text);
+  display: inline-block;
+  font-size: var(--fs-small);
+  font-weight: 600;
+  margin: 0.6rem 0 0.2rem;
+  padding: 0.1rem 0.8rem 0.1rem 1.9rem;
+}
+
+.md-typeset :is(.admonition, details) > :is(.admonition-title, summary)::before,
+.md-typeset :is(.admonition, details):is(.note, .tip, .success, .warning, .danger, .failure) > :is(.admonition-title, summary)::before {
+  background-color: var(--kind-text);
+  left: 0.7rem;
+  top: 0.3rem;
+}
+
+.md-typeset :is(.admonition, details) > :is(.admonition-title, summary)::after,
+.md-typeset :is(.admonition, details):is(.note, .tip, .success, .warning, .danger, .failure) > :is(.admonition-title, summary)::after {
+  color: var(--kind-text);
+}
+
+/* Content tabs and the active marks. */
+.md-typeset .tabbed-set {
+  border-radius: var(--radius-card);
+}
+
+.md-typeset .tabbed-labels > label {
+  color: var(--st-muted);
+}
+
+.md-typeset .tabbed-labels > label:hover,
+.md-typeset .tabbed-set > input:nth-child(1):checked ~ .tabbed-labels > :nth-child(1),
+.md-typeset .tabbed-set > input:nth-child(2):checked ~ .tabbed-labels > :nth-child(2),
+.md-typeset .tabbed-set > input:nth-child(3):checked ~ .tabbed-labels > :nth-child(3),
+.md-typeset .tabbed-set > input:nth-child(4):checked ~ .tabbed-labels > :nth-child(4),
+.md-typeset .tabbed-set > input:nth-child(5):checked ~ .tabbed-labels > :nth-child(5),
+.md-typeset .tabbed-set > input:nth-child(6):checked ~ .tabbed-labels > :nth-child(6) {
+  color: var(--gt-iolite);
+}
+
+.md-typeset .tabbed-labels::before {
+  background: var(--gt-iolite);
+}
+
+.md-typeset .tabbed-labels {
+  box-shadow: 0 -1px 0 var(--st-border) inset;
+}
+
+/* A code annotation's mark and its popup. */
+.md-typeset .md-annotation__index {
+  border-radius: var(--radius-pill);
+}
+
+.md-annotation__index::after {
+  background-color: var(--gt-iolite);
+}
+
+.md-tooltip,
+.md-annotation .md-tooltip {
+  background-color: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--radius-card);
+  box-shadow: none;
+  color: var(--st-text);
+}
+
+/* Footer and the previous / next links. */
+.md-footer {
+  background-color: var(--st-shell);
+  border-top: 1px solid var(--st-border);
+  color: var(--st-text);
+}
+
+.md-footer-meta {
+  background-color: var(--st-shell);
+}
+
+.md-footer__link:hover,
+.md-footer__link:focus {
+  color: var(--gt-iolite);
+}
+
+.md-footer__title,
+.md-footer__direction {
+  color: var(--st-text);
+}
+
+.md-top {
+  background-color: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--radius-pill);
+  box-shadow: none;
+  color: var(--st-text);
+}
+
+/* Keyboard focus is iolite everywhere. */
+a:focus-visible,
+button:focus-visible,
+label:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--gt-iolite);
+  outline-offset: 2px;
+}
+
+/* A chip: a small pill for a kind or a tag, in the gem of its kind. */
+.chip {
+  background-color: color-mix(in srgb, var(--chip, var(--gem-iolite)) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chip, var(--gem-iolite)) 40%, transparent);
+  border-radius: var(--radius-pill);
+  color: var(--chip-text, var(--gt-iolite));
+  display: inline-block;
+  font-size: var(--fs-chip);
+  line-height: 1;
+  padding: 0.2rem 0.5rem;
+}
+
+.chip.tensix {
+  --chip: var(--gem-amber);
+  --chip-text: var(--gt-amber);
+}
+
+.chip.x280 {
+  --chip: var(--gem-sapphire);
+  --chip-text: var(--gt-sapphire);
+}
+
+.chip.broadcast {
+  --chip: var(--gem-aquamarine);
+  --chip-text: var(--gt-aquamarine);
+}
+
+.chip.routed {
+  --chip: var(--gem-taaffeite);
+  --chip-text: var(--gt-taaffeite);
+}
+
+.chip.error {
+  --chip: var(--gem-coral);
+  --chip-text: var(--gt-coral);
+}
+
+.chip.exact {
+  --chip: var(--gem-sage);
+  --chip-text: var(--gt-sage);
+}
