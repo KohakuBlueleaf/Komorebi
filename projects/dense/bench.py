@@ -162,24 +162,25 @@ def main():
     p = run.make_plan(args.form, (m, k, n), args.grid)
     form = "grid" if isinstance(p, pl.Grid) else "plain"
     out = {"shape": args.shape, "m": m, "k": k, "n": n, "plan": run.describe(p)}
+    log("building the inputs")
     x, w = ref.inputs(m, k, n)
+    log("inputs built")
     index = visible_card()
     with km.Session(log=log) as session:
         device = session.device
         cores = len(session.nocs().words)
         t0 = time.perf_counter()
-        tensors = {
-            "a": card.bf16_tensor(device, x),
-            "w": card.bf16_tensor(device, w),
-            "y": card.bf16_tensor(device, np.zeros((m, n), np.float32)),
-        }
+        tensors = {}
+        for name, value in (("a", x), ("w", w), ("y", np.zeros((m, n), np.float32))):
+            tensors[name] = card.bf16_tensor(device, value)
+            log(f"{name.upper()} uploaded")
         out["upload_s"] = round(time.perf_counter() - t0, 3)
         log(f"operands uploaded in {out['upload_s']} s")
         prof_t = card.prof_tensor(device, cores)
         out["x280_mhz"] = session.pll_mhz
         out["deadline_s"] = args.deadline or deadline(p)
         product = run.load(session, p, tensors, deadline=out["deadline_s"])
-        mhz = aiclk_mhz(index)
+        mhz = out["profile_mhz"] = aiclk_mhz(index)
         out["load_us"] = product.load_us
         try:
             measure(product, p, args, out)
@@ -203,6 +204,7 @@ def main():
         out["profile"] = profile_summary(prof, mhz, form == "grid")
         product.stop()
         log("profile read")
+    log("checking the sampled rows")
     out["check"] = run.check(got[:, :n], rows, x, w, "uniform")
     out["ok"] = out["check"]["ok"] and run.clean(out["run"])
     out["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])

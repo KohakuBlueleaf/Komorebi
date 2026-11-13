@@ -61,17 +61,24 @@ def main():
     p.add_argument("--json", default=None)
     args = p.parse_args()
     m, k, n = pl.SHAPES[args.shape]
+    print("building the inputs", flush=True)
     a, w = ref.inputs(m, k, n)
+    print("inputs built", flush=True)
     dev = kohakutt.device(0)
     ta = torch.from_numpy(a).bfloat16().to(dev)
+    print("A uploaded", flush=True)
     tw = torch.from_numpy(w).bfloat16().to(dev)
+    print("W uploaded", flush=True)
     y = ta @ tw
     kohakutt.synchronize(dev)
+    print("first product done", flush=True)
     out = {"shape": args.shape, "m": m, "k": k, "n": n}
     out["env"] = {v: os.environ.get(v) for v in ROUTE_VARIABLES}
     out["kohakutt"] = version()
     rows = ref.sampled_rows(m)
-    out["check"] = ref.errors(read_rows(y, rows), ref.matmul(a[rows], w))
+    got = read_rows(y, rows)
+    print("checking the sampled rows", flush=True)
+    out["check"] = ref.errors(got, ref.matmul(a[rows], w))
     synced = []
     for _ in range(args.calls):
         t0 = time.perf_counter()
