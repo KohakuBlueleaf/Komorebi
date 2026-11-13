@@ -31,6 +31,18 @@ constexpr uint32_t kProbeFast = 4;   // fused multiply-add, no exactness (report
 constexpr uint32_t kProbeSync = 5;   // the entry test and lane read-back alone
 // MATH: as ARITH; division and square root on per-lane inputs (their check).
 constexpr uint32_t kSegMath = 7;
+// Stages of a frame, each core its own packets: a0 directory, a3 constant page, a4
+// profile; per-packet streams (inputs, then outputs) in a1, a2, a5, a6, ...
+
+// GEN: packet descriptors in; primary ray packets out.
+constexpr uint32_t kSegGen = 8;
+// SHADE1: primary packets and hits in; shadow and bounce packets and state 1 out.
+constexpr uint32_t kSegShade1 = 9;
+// SHADE2: state 1, shadow hits, bounce packets and hits in; shadow packets of the
+// bounce hits and state 2 out.
+constexpr uint32_t kSegShade2 = 10;
+// IMAGE: state 2 and the second shadow hits in; colour pages out.
+constexpr uint32_t kSegImage = 11;
 
 constexpr uint32_t kModeNearest = 0;
 constexpr uint32_t kModeAny = 1;
@@ -70,14 +82,19 @@ constexpr uint32_t kPkO = 0;      // origin x, y, z
 constexpr uint32_t kPkD = 3;      // direction x, y, z
 constexpr uint32_t kPkInv = 6;    // 1 / direction as the reference clamps it
 constexpr uint32_t kPkBest = 9;   // tmax, or -1.0 for a lane without a ray
-constexpr uint32_t kPkHead = 10;  // header vector: word 0 the direction signs
+constexpr uint32_t kPkHead = 10;  // header vector: direction signs, first pixel
 constexpr uint32_t kPkVectors = 11;
 constexpr uint32_t kPacketBytes = kPkVectors * kVec * 4;
-// Direction signs: bit k set when the packet's rays point to negative k on the whole.
+// Direction signs: bit k set when more of the packet's rays point to negative k than
+// not. First pixel: the pixel number of lane 0 (primary packets).
 constexpr uint32_t kHeadSigns = 0;
+constexpr uint32_t kHeadPixel = 1;
+// Packet pages, hit pages and the stages' pages go kPagePackets to a DRAM page: host
+// reads are per page.
+constexpr uint32_t kPagePackets = 64;
 
-// Hit page of a packet: t (tmax on a miss), scene triangle index (-1: none), u, v,
-// box tests and triangle tests per ray; word 0 of the last vector the packet's cycles.
+// Hit page: t (tmax on a miss), scene triangle (-1: none), u, v, box and triangle
+// tests per ray, the packet's cycles (word 0); a nearest hit's, then its attributes.
 constexpr uint32_t kHitT = 0;
 constexpr uint32_t kHitTri = 1;
 constexpr uint32_t kHitU = 2;
@@ -85,19 +102,25 @@ constexpr uint32_t kHitV = 3;
 constexpr uint32_t kHitNodes = 4;
 constexpr uint32_t kHitLeaves = 5;
 constexpr uint32_t kHitCycles = 6;
-constexpr uint32_t kHitVectors = 7;
+constexpr uint32_t kHitAnyVectors = 7;
+constexpr uint32_t kHitN = 7;     // normal x, y, z
+constexpr uint32_t kHitCol = 10;  // colour of vertex 0 (r, g, b), 1, 2
+constexpr uint32_t kHitVectors = 19;
 constexpr uint32_t kHitBytes = kHitVectors * kVec * 4;
-constexpr uint32_t kHitPagePackets = 64;  // packets per DRAM page: host reads are per page
+constexpr uint32_t kHitAnyBytes = kHitAnyVectors * kVec * 4;
 
 // Tree image (32-bit words): header, the reference tree's nodes (box min, max, child
-// words), an order word per node, triangle records (v0, e1, e2, scene index).
+// words), an order word per node, triangle records (v0, e1, e2, index, attributes).
 constexpr uint32_t kTreeNodes = 0;     // header: node count
 constexpr uint32_t kTreeNodeOff = 1;   // word offset of the nodes
 constexpr uint32_t kTreeOrderOff = 2;  // word offset of the order words
 constexpr uint32_t kTreeTriOff = 3;    // word offset of the triangle records
 constexpr uint32_t kTreeHeadWords = 8;
 constexpr uint32_t kNodeWords = 8;
-constexpr uint32_t kTriWords = 10;
+constexpr uint32_t kTriIndex = 9;
+constexpr uint32_t kTriAttr = 10;  // normal, colours: kHitN onwards of a hit page
+constexpr uint32_t kTriAttrWords = 12;
+constexpr uint32_t kTriWords = kTriAttr + kTriAttrWords;
 constexpr uint32_t kLeafBit = 0x80000000;
 // Order word of an inner node: axis in bits 0-1; bit 2 set when child 1 is the nearer
 // child for rays pointing to positive axis.
@@ -118,12 +141,12 @@ constexpr uint32_t kWorkMax = (kWorkBytes / 4 - kWorkIds) * 2;
 constexpr uint32_t kWorkEnd = 0xFFFFFFFF;
 constexpr uint32_t kWorkNext = 0xFFFFFFFE;
 
-// Packet state in L1: Dst slots 0 to 14 (ray, results, counts), then a header vector
-// (signs, cycles so far, kStDeferred: waiting for list room).
-constexpr uint32_t kStHead = 15;
+// Packet state in L1: Dst slots 0 to 26 (ray, results, counts, hit attributes), then
+// a header vector (signs, cycles so far, kStDeferred: waiting for list room).
+constexpr uint32_t kStHead = 27;
 constexpr uint32_t kStCycles = 1;  // header word: the packet's cycles so far
 constexpr uint32_t kStDeferred = 2;
-constexpr uint32_t kStVectors = 16;
+constexpr uint32_t kStVectors = 28;
 constexpr uint32_t kStWords = kStVectors * kVec;
 // Lists region: header words, then per packet its first list entry and entry count,
 // then the 16-bit list entries (treelets in walk order), then the reader's scratch.
@@ -171,6 +194,67 @@ constexpr uint32_t kMaOutVectors = 2;
 // RECIP: an output page holds this many reciprocals.
 constexpr uint32_t kRecipPerPage = 1024;
 
+// The frame's constant page (stages): scalars, then the lane ramp of a packet.
+constexpr uint32_t kCnCamera = 0;  // the scene's 15 camera words
+constexpr uint32_t kCnLight = 15;  // light x, y, z
+constexpr uint32_t kCnEps = 18;    // offset of a secondary ray's origin
+constexpr uint32_t kCnSky = 19;    // horizon r, g, b, then zenith - horizon r, g, b
+constexpr uint32_t kCnWidth = 25;  // image width in pixels (an integer)
+constexpr uint32_t kCnWords = 32;
+constexpr uint32_t kCnDx = 1;     // vector: x of each lane from the first, as a float
+constexpr uint32_t kCnDy = 2;     // vector: y likewise
+constexpr uint32_t kCnPixel = 3;  // vector: pixel number of each lane from the first
+constexpr uint32_t kCnVectors = 4;
+// Packet descriptor (GEN): word 0 the pixel number of lane 0.
+constexpr uint32_t kDescVectors = 1;
+// State 1 (SHADE1 to SHADE2): primary hit flag (-1.0 hit, 0 not), colour (albedo of a
+// hit, sky of a miss), cosine to the light.
+constexpr uint32_t kS1Hit = 0;
+constexpr uint32_t kS1Col = 1;
+constexpr uint32_t kS1Cos = 4;
+constexpr uint32_t kS1Vectors = 5;
+// State 2 (SHADE2 to IMAGE): flags (primary hit, bounce hit), colour, ambient plus
+// direct light, radiance of a missed bounce (sky), albedo and cosine at the bounce hit.
+constexpr uint32_t kS2Hit = 0;
+constexpr uint32_t kS2Hit1 = 1;
+constexpr uint32_t kS2Col = 2;
+constexpr uint32_t kS2Light = 5;
+constexpr uint32_t kS2Rad = 6;
+constexpr uint32_t kS2Alb1 = 9;
+constexpr uint32_t kS2Cos1 = 12;
+constexpr uint32_t kS2Vectors = 13;
+// Colour page (IMAGE): r, g, b.
+constexpr uint32_t kColVectors = 3;
+
+// A stage's streams: inputs, then outputs, each a page per packet of these vectors.
+constexpr uint32_t kMaxStreams = 7;
+
+struct Stage {
+    uint32_t inputs, outputs;
+    uint32_t vectors[kMaxStreams];
+};
+
+constexpr Stage stage_of(uint32_t seg) {
+    return seg == kSegGen ? Stage{1, 1, {kDescVectors, kPkVectors}}
+        : seg == kSegShade1
+        ? Stage{2, 3, {kPkVectors, kHitVectors, kPkVectors, kPkVectors, kS1Vectors}}
+        : seg == kSegShade2
+        ? Stage{4, 2, {kS1Vectors, kHitAnyVectors, kPkVectors, kHitVectors, kPkVectors, kS2Vectors}}
+        : seg == kSegImage ? Stage{2, 1, {kS2Vectors, kHitAnyVectors, kColVectors}}
+                           : Stage{0, 0, {}};
+}
+
+constexpr bool is_stage(uint32_t seg) {
+    return seg >= kSegGen && seg <= kSegImage;
+}
+
+// Record word of stream k: a1, a2, a5, a6, ...
+template <typename Record>
+inline uint32_t stream_arg(const Record& r, uint32_t k) {
+    const uint32_t w[kMaxStreams] = {r.a1, r.a2, r.a5, r.a6, r.a7, r.a8, r.a9};
+    return w[k];
+}
+
 // Profile page of a core (a4, one 4096-byte page per core): the pack thread's counters
 // from word 0, the reader's at kProfReader, the writer's at kProfWriter.
 constexpr uint32_t kProfReader = 32;
@@ -194,6 +278,7 @@ constexpr uint32_t kRdGroups = 15;  // treelet groups (one per treelet and round
 // Every FIFO buffer moves one page at a time and each item fits its page; the tree
 // buffer takes the whole image in one push and is sized to it by the host.
 static_assert(kPacketBytes <= kInPageBytes && kArInVectors * kVec * 4 <= kInPageBytes);
+static_assert(kS2Vectors * kVec * 4 <= kInPageBytes && kHitBytes <= kInPageBytes);
 static_assert(kHitBytes <= kOutPageBytes && kArOutVectors * kVec * 4 <= kOutPageBytes);
 static_assert(kRecipPerPage * 4 <= kOutPageBytes && 32 * 4 <= kOutPageBytes);
 static_assert(

@@ -9,9 +9,13 @@
 
 namespace {
 
-    uint32_t out_page_bytes(uint32_t seg) {
-        if (seg == kSegTrace || seg == kSegTreelets || seg == kSegProbe) {
-            return kHitBytes;
+    // Hit pages: a nearest hit's with the attributes; the probe's as any hit's.
+    uint32_t out_page_bytes(const km_record_t& r, uint32_t seg) {
+        if (seg == kSegTrace || seg == kSegTreelets) {
+            return r.a3 == kModeAny ? kHitAnyBytes : kHitBytes;
+        }
+        if (seg == kSegProbe) {
+            return kHitAnyBytes;
         }
         if (seg == kSegMath) {
             return kMaOutVectors * kVec * 4;
@@ -21,7 +25,35 @@ namespace {
 
     uint32_t out_per_page(uint32_t seg) {
         const bool hits = seg == kSegTrace || seg == kSegTreelets || seg == kSegProbe;
-        return hits ? kHitPagePackets : 1;
+        return hits ? kPagePackets : 1;
+    }
+
+    // The front output page to page g of a stream, popped; the wait for it is added to
+    // `wait`.
+    bool write_page(
+        km::Writer& wr,
+        uint32_t base,
+        uint32_t bytes,
+        uint32_t per,
+        uint32_t g,
+        uint32_t& wait
+    ) {
+        const uint32_t a = km::wall();
+        if (!wr.wait_front(kCbOut, 1)) {
+            return false;
+        }
+        wait += km::wall() - a;
+        const InterleavedAddrGen<true> out = {
+            .bank_base_address = base, .page_size = bytes * per
+        };
+        noc_async_write(
+            get_read_ptr(kCbOut), get_noc_addr(g / per, out, (g % per) * bytes), bytes
+        );
+        if (!bounded::writes_sent(wr, km::kStWriter)) {
+            return false;
+        }
+        cb_pop_front(kCbOut, 1);
+        return true;
     }
 
 }  // namespace
@@ -31,7 +63,8 @@ void kernel_main() {
     wr.run([&](const km_record_t& r) {
         const uint32_t seg = km::seg(r);
         if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath) {
+            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath &&
+            !is_stage(seg)) {
             return true;
         }
         const uint32_t t0 = km::wall();
@@ -45,27 +78,33 @@ void kernel_main() {
             return true;
         }
         const uint32_t first = d[kDirFirst], count = d[kDirCount];
-        const uint32_t bytes = out_page_bytes(seg), per = out_per_page(seg);
-        const InterleavedAddrGen<true> out = {
-            .bank_base_address = r.a2, .page_size = bytes * per
-        };
         uint32_t wait = 0, write = 0;
-        for (uint32_t p = 0; p < count; ++p) {
-            const uint32_t a = km::wall();
-            if (!wr.wait_front(kCbOut, 1)) {
-                return true;
+        if (is_stage(seg)) {
+            // Each packet's page of every output stream, in stream order.
+            const Stage st = stage_of(seg);
+            for (uint32_t p = 0; p < count; ++p) {
+                for (uint32_t s = st.inputs; s < st.inputs + st.outputs; ++s) {
+                    const uint32_t a = km::wall();
+                    const uint32_t bytes = st.vectors[s] * kVec * 4;
+                    if (!write_page(
+                            wr, stream_arg(r, s), bytes, kPagePackets, first + p, wait
+                        )) {
+                        return true;
+                    }
+                    write += km::wall() - a;
+                }
             }
-            const uint32_t b = km::wall();
-            const uint32_t g = first + p;
-            const uint64_t at = get_noc_addr(g / per, out, (g % per) * bytes);
-            noc_async_write(get_read_ptr(kCbOut), at, bytes);
-            if (!bounded::writes_sent(wr, km::kStWriter)) {
-                return true;
+        } else {
+            const uint32_t bytes = out_page_bytes(r, seg), per = out_per_page(seg);
+            for (uint32_t p = 0; p < count; ++p) {
+                const uint32_t a = km::wall();
+                if (!write_page(wr, r.a2, bytes, per, first + p, wait)) {
+                    return true;
+                }
+                write += km::wall() - a;
             }
-            cb_pop_front(kCbOut, 1);
-            wait += b - a;
-            write += km::wall() - b;
         }
+        write -= wait;
         // The profile page: compute filled words [0, 32); reader and writer follow.
         if (!wr.wait_front(kCbOut, 1)) {
             return true;

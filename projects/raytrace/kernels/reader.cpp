@@ -27,6 +27,41 @@ namespace {
         return seg == kSegArith ? kArInVectors * kVec * 4 : kPacketBytes;
     }
 
+    // Packet pages go kPagePackets to a DRAM page; the check pages one to a page.
+    uint32_t per_page(uint32_t seg) {
+        return (
+            seg == kSegArith || seg == kSegMath || seg == kSegRecip ? 1 : kPagePackets
+        );
+    }
+
+    // Page g of a stream of `bytes` pages into the input buffer, pushed; the wait for
+    // room is added to `wait`.
+    bool read_page(
+        km::Reader& rd,
+        uint32_t base,
+        uint32_t bytes,
+        uint32_t per,
+        uint32_t g,
+        uint32_t& wait
+    ) {
+        const uint32_t a = km::wall();
+        if (!rd.reserve(kCbIn, 1)) {
+            return false;
+        }
+        wait += km::wall() - a;
+        const InterleavedAddrGen<true> pages = {
+            .bank_base_address = base, .page_size = bytes * per
+        };
+        noc_async_read(
+            get_noc_addr(g / per, pages, (g % per) * bytes), get_write_ptr(kCbIn), bytes
+        );
+        if (!bounded::reads_done(rd, km::kStReader)) {
+            return false;
+        }
+        cb_push_back(kCbIn, 1);
+        return true;
+    }
+
     // Treelets in L1 slots, least recently used replaced; a slot is free again once
     // compute has finished the last work page that names it.
     struct Slots {
@@ -317,7 +352,8 @@ void kernel_main() {
             return;
         }
         if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath) {
+            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath &&
+            !is_stage(seg)) {
             return;
         }
         const uint32_t t0 = km::wall();
@@ -341,26 +377,41 @@ void kernel_main() {
         h[kDirFirst] = first;
         h[kDirCount] = count;
         cb_push_back(kCbIn, 1);
-        const uint32_t bytes = in_page_bytes(seg);
-        const InterleavedAddrGen<true> pages = {
-            .bank_base_address = r.a1, .page_size = bytes
-        };
         uint32_t wait = 0, read = 0;
+        if (is_stage(seg)) {
+            // The constant page, then each packet's page of every input stream.
+            const Stage st = stage_of(seg);
+            if (!read_page(rd, r.a3, kCnVectors * kVec * 4, 1, 0, wait)) {
+                return;
+            }
+            for (uint32_t p = 0; p < count; ++p) {
+                for (uint32_t s = 0; s < st.inputs; ++s) {
+                    const uint32_t a = km::wall();
+                    const uint32_t bytes = st.vectors[s] * kVec * 4;
+                    if (!read_page(
+                            rd, stream_arg(r, s), bytes, kPagePackets, first + p, wait
+                        )) {
+                        return;
+                    }
+                    read += km::wall() - a;
+                }
+            }
+            d[kRdWords + 0] = wait;
+            d[kRdWords + 1] = read - wait;
+            d[kRdWords + 3] = count * st.inputs;
+            d[kRdWords + 2] = km::wall() - t0;
+            return;
+        }
+        const uint32_t bytes = in_page_bytes(seg), per = per_page(seg);
         const uint32_t n = seg == kSegRecip ? 0 : count;
         for (uint32_t p = 0; p < n; ++p) {
             const uint32_t a = km::wall();
-            if (!rd.reserve(kCbIn, 1)) {
+            if (!read_page(rd, r.a1, bytes, per, first + p, wait)) {
                 return;
             }
-            const uint32_t b = km::wall();
-            noc_async_read(get_noc_addr(first + p, pages), get_write_ptr(kCbIn), bytes);
-            if (!bounded::reads_done(rd, km::kStReader)) {
-                return;
-            }
-            cb_push_back(kCbIn, 1);
-            wait += b - a;
-            read += km::wall() - b;
+            read += km::wall() - a;
         }
+        read -= wait;
         d[kRdWords + 0] = wait;
         d[kRdWords + 1] = read;
         d[kRdWords + 3] = n;

@@ -20,7 +20,9 @@ def tiny():
 
 def test_page_sizes_follow_the_vectors():
     assert K["kPacketBytes"] == K["kPkVectors"] * VEC * 4
-    assert VEC == 32 and K["kHitVectors"] == len(packets.HIT_KEYS) + 1
+    assert VEC == 32 and K["kHitAnyVectors"] == len(packets.HIT_KEYS) + 1
+    assert K["kHitVectors"] == K["kHitAnyVectors"] + K["kTriAttrWords"]
+    assert K["kTriWords"] == K["kTriAttr"] + K["kTriAttrWords"] == 22
 
 
 def test_constants_are_evaluated_in_order(tmp_path):
@@ -35,8 +37,8 @@ def test_constants_are_evaluated_in_order(tmp_path):
 
 
 def test_tree_image_holds_nodes_order_and_triangles(tiny):
-    _, tree = tiny
-    image = packets.tree_image(tree)
+    scene, tree = tiny
+    image = packets.tree_image(tree, scene)
     assert image.shape[1] == K["kTreePageBytes"] // 4
     w = image.ravel()
     n = len(tree["nodes"])
@@ -49,6 +51,12 @@ def test_tree_image_holds_nodes_order_and_triangles(tiny):
     tris = w[w[K["kTreeTriOff"]] :][: m * K["kTriWords"]].reshape(m, -1)
     assert np.array_equal(tris[:, :9].view(np.float32), tree["tris"])
     assert np.array_equal(tris[:, 9], tree["leaf_tri"])
+    attrs = tris[:, K["kTriAttr"] :].view(np.float32)
+    colours = scene["colors"][scene["indices"][tree["leaf_tri"]]].reshape(m, 9)
+    assert np.array_equal(attrs[:, 3:], colours)
+    hit = {"leaf": np.arange(m), "u": np.zeros(m, np.float32), "v": np.zeros(m)}
+    n, _ = raytrace.surface(scene, tree, hit, -attrs[:, :3])
+    assert np.array_equal(n, attrs[:, :3])  # facing -n: not flipped
 
 
 def test_child_order_names_the_lower_child(tiny):
@@ -193,16 +201,28 @@ def test_packet_pages_and_hits_round_trip():
         )
     best = pk[:, K["kPkBest"]].view(np.float32)
     assert np.all(best[valid] == raytrace.TMAX) and np.all(best[~valid] == -1)
-    total = np.where(valid[:, :, None], d[np.maximum(lanes, 0)], 0).sum(axis=1)
-    signs = ((total < 0) * [1, 2, 4]).sum(axis=1)
+    neg = np.where(valid[:, :, None], d[np.maximum(lanes, 0)] < 0, False).sum(axis=1)
+    signs = ((2 * neg > valid.sum(axis=1)[:, None]) * [1, 2, 4]).sum(axis=1)
     assert np.array_equal(pk[:, K["kPkHead"], K["kHeadSigns"]], signs)
+    pix = packets.packet_pages(lanes, o, d, raytrace.TMAX, np.arange(n) + 7)
+    head = pix.reshape(5, K["kPkVectors"], VEC)[:, K["kPkHead"], K["kHeadPixel"]]
+    assert np.array_equal(head[:3], lanes[:3, 0] + 7)
+    rows = packets.group(pages)
+    assert rows.shape == (1, K["kPagePackets"] * K["kPacketBytes"] // 4)
+    assert np.array_equal(packets.ungroup(rows, K["kPkVectors"], 5), pages)
     hits = np.zeros((5, K["kHitVectors"], VEC), dtype=np.uint32)
     hits[:, 0] = np.where(valid, lanes, 0).astype(np.float32).view(np.uint32)
     hits[:, 1] = np.where(valid, lanes * 3, 0)
+    hits[:, K["kHitN"] + 11] = (
+        np.where(valid, lanes, 0).astype(np.float32).view(np.uint32)
+    )
     out = packets.decode_hits(hits.reshape(5, -1), lanes, n)
     assert np.array_equal(out["t"], np.arange(n, dtype=np.float32))
     assert np.array_equal(out["tri"], np.arange(n) * 3)
     assert np.array_equal(out["packet_cycles"], np.zeros(5))
+    assert np.array_equal(out["attrs"][:, 11], np.arange(n, dtype=np.float32))
+    any_hits = hits[:, : K["kHitAnyVectors"]].reshape(5, -1)
+    assert "attrs" not in packets.decode_hits(any_hits, lanes, n)
 
 
 def test_treelet_images_hold_their_part_of_the_tree(tiny):
@@ -269,3 +289,17 @@ def test_det_range_is_checked(tiny):
     huge = np.array([[2.0**120, 0.0, 0.0]], dtype=np.float32)
     with pytest.raises(ValueError, match="2\\^103"):
         packets.check_det_range(tree["tris"], huge)
+
+
+def test_frame_layout_and_constants_describe_whole_blocks(tiny):
+    scene, _ = tiny
+    pix, directory, desc = packets.frame_layout([0, 33], 4)
+    assert pix.shape == (64, VEC) and np.array_equal(desc[:, 0], pix[:, 0])
+    assert directory[:2, K["kDirCount"]].tolist() == [32, 32]
+    x, y = pix % 1024, pix // 1024
+    assert np.array_equal(x - x[:, :1], np.tile(np.arange(VEC) % 8, (64, 1)))
+    assert np.array_equal(y - y[:, :1], np.tile(np.arange(VEC) // 8, (64, 1)))
+    page = packets.frame_constants(scene).reshape(K["kCnVectors"], VEC)
+    assert np.array_equal(page[0, :15].view(np.float32), scene["camera"][:15])
+    assert np.array_equal(page[K["kCnPixel"]], pix[0] - pix[0, 0])
+    assert page[0, K["kCnWidth"]] == 1024

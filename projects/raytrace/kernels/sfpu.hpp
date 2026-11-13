@@ -8,6 +8,7 @@
 #include "ckernel_addrmod.h"
 #include "ckernel_dest.h"
 #include "ckernel_ops.h"
+#include "raytrace.h"
 
 #if defined(__riscv_vector)
 #include <riscv_vector.h>
@@ -33,12 +34,12 @@ namespace rt {
     constexpr uint32_t kWallClock = 0xFFB121F0;
     constexpr uint32_t kDstWindow = 0xFFBD8000;
 
-    // Packet slots in Dst (a slot is 32 lanes): the ray, the results, scratch, then the
-    // stack of entry distances (one slot per depth).
+    // Packet slots in Dst (a slot is 32 lanes): the ray, the results, the hit's normal
+    // and colours, scratch, then the stack of entry distances (one slot per depth).
     constexpr uint32_t kSO = 0, kSD = 3, kSInv = 6, kSBest = 9, kSTri = 10, kSU = 11,
-                       kSV = 12, kSNodes = 13, kSLeaves = 14;
-    constexpr uint32_t kSPv = 15, kSDet = 18, kSDetInv = 19, kSUt = 20, kSQ = 21;
-    constexpr uint32_t kSStack = 24;
+                       kSV = 12, kSNodes = 13, kSLeaves = 14, kSAttr = 15;
+    constexpr uint32_t kSPv = 27, kSDet = 30, kSDetInv = 31, kSUt = 32, kSQ = 33;
+    constexpr uint32_t kSStack = 36;
     constexpr uint32_t kSlots = 256;
 
     inline uint32_t wall() {
@@ -231,8 +232,19 @@ namespace rt {
         TTI_SFPPOPC(0, 0, 0, 0);
     }
 
-    // Triangle test of words tri(r, k) (v0, e1, e2, index) and the update of slots
-    // best, tri, u, v; any: a hit sets best = -1. Leaves L0 = v, L1 = t, L3 = u.
+    // The hit's attribute words (tri words kTriAttr on) to slots kSAttr on, for the
+    // enabled lanes. Uses L5.
+    template <typename Tri>
+    inline void store_attr(Tri tri) {
+#pragma GCC unroll 12
+        for (uint32_t k = 0; k < kTriAttrWords; ++k) {
+            tri(L5, kTriAttr + k);
+            store(L5, kSAttr + k);
+        }
+    }
+
+    // Triangle test of words tri(r, k) and the update of best, tri, u, v (attr: and the
+    // attributes); any: a hit sets best = -1. Leaves L0 = v, L1 = t, L3 = u.
     template <typename Tri>
     inline void tri_test(
         Tri tri,
@@ -242,7 +254,8 @@ namespace rt {
         uint32_t cur,
         uint32_t u,
         uint32_t v,
-        bool any
+        bool any,
+        bool attr = false
     ) {
         // pv = cross(d, e2)
         tri(L0, 6);
@@ -354,7 +367,7 @@ namespace rt {
         TTI_SFPLE(0, ONE, L5, kSetCC);
         TTI_SFPGT(0, ZERO, L1, kSetCC);
         load(L2, best);
-        tri(L4, 9);
+        tri(L4, kTriIndex);
         if (any) {
             TTI_SFPGT(0, L1, L2, kSetCC);  // best > t
             TT_SFPSTORE(L4, kInt32, kAm, addr(cur));
@@ -367,6 +380,9 @@ namespace rt {
             TT_SFPSTORE(L4, kInt32, kAm, addr(cur));
             TT_SFPSTORE(L3, kInt32, kAm, addr(u));
             TT_SFPSTORE(L0, kInt32, kAm, addr(v));
+            if (attr) {
+                store_attr(tri);
+            }
             TTI_SFPPOPC(0, 0, 0, 0);
             TTI_SFPPUSHC(0, 0, 0, 0);
             TT_SFPIADD(0, L1, L2, kTwos | kCcNone);  // t - best (bits)
@@ -376,6 +392,9 @@ namespace rt {
             TT_SFPSTORE(L4, kInt32, kAm, addr(cur));
             TT_SFPSTORE(L3, kInt32, kAm, addr(u));
             TT_SFPSTORE(L0, kInt32, kAm, addr(v));
+            if (attr) {
+                store_attr(tri);
+            }
             TTI_SFPPOPC(0, 0, 0, 0);
         }
         TTI_SFPPOPC(0, 0, 0, 0);

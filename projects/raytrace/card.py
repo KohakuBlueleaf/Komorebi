@@ -281,6 +281,38 @@ def run_segment(
     return out[:out_rows], prof, res, times, meter.samples
 
 
+READ_LIMIT = 4 << 20  # bytes per read-back call; larger results are read by sample
+
+
+def read_each(session, tensors, names):
+    """Tensors read back one call each, with a progress line per tensor; a tensor
+    over READ_LIMIT is refused."""
+    out = []
+    for t, name in zip(tensors, names):
+        size = t.buffer_num_pages() * t.buffer_page_size()
+        if size > READ_LIMIT:
+            raise ValueError(f"{name}: {size} bytes; read back {READ_LIMIT} at most")
+        t0 = time.perf_counter()
+        out += read(session, t)
+        log(f"read back {name}: {size / 1e6:.2f} MB in {time.perf_counter() - t0:.1f}s")
+    return out
+
+
+def run_records(session, records, tree_pages, deadline_s=5.0, power=None):
+    """One program load: the records (segment, words) issued in order, one at a time,
+    each waited for; returns the Ran and the host seconds from issue to the last."""
+    meter = power if power is not None else Power()
+    with meter:
+        run = session.load(program(tree_pages), deadline=deadline_s)
+        t0 = time.perf_counter()
+        tickets = [run.issue(seg, args=words) for seg, words in records]
+        events = run.wait(tickets, timeout=10.0 + deadline_s * len(records))
+        host_s = time.perf_counter() - t0
+        run.stop()
+    events = events if isinstance(events, list) else [events]
+    return Ran(events, run.result(), run.state(), host_s), meter.samples
+
+
 PROF = (
     "wait_in",
     "load",

@@ -125,7 +125,8 @@ namespace walk {
                     kSTri,
                     kSU,
                     kSV,
-                    any
+                    any,
+                    !any
                 );
                 pf.tri += wall() - b;
                 pf.leaves++;
@@ -158,7 +159,7 @@ namespace walk {
     }
 
     // A packet page into Dst: the ray, best from the page, index -1, u = v = 0, one box
-    // test (the root) and no triangle test per ray.
+    // test (the root) and no triangle test per ray; the hit attributes zero.
     inline void load_packet(const uint32_t* pk) {
         for (uint32_t k = 0; k < 10; ++k) {
             to_slot(kSO + k, pk + kVec * (kPkO + k));
@@ -169,9 +170,14 @@ namespace walk {
         fill_slot(kSNodes, 1);
         fill_slot(kSLeaves, 0);
         order(word(kSLeaves) + 62);
+        all_lanes();
+        TTI_SFPLOADI(L5, kFloatB, 0);
+        for (uint32_t k = 0; k < kTriAttrWords; ++k) {
+            store(L5, kSAttr + k);
+        }
     }
 
-    // A packet state from L1 into Dst (slots 0 to 14), and its results back.
+    // A packet state from L1 into Dst (slots 0 to kStHead - 1), and its results back.
     inline void load_state(const uint32_t* st) {
         for (uint32_t s = 0; s < kStHead; ++s) {
             to_slot(s, st + kVec * s);
@@ -194,12 +200,20 @@ namespace walk {
         }
     }
 
-    // The results of the packet in Dst to a hit page (after tensix_sync).
-    inline void store_hits(uint32_t* out, uint32_t cycles) {
+    // The results of the packet in Dst to a hit page (after tensix_sync); a nearest
+    // hit's page with the attributes. Returns the page's words.
+    inline uint32_t store_hits(uint32_t* out, uint32_t cycles, bool any) {
         for (uint32_t k = 0; k < kHitCycles; ++k) {
             from_slot(kSBest + k, out + kVec * k);
         }
         store_cycles(out, cycles);
+        if (any) {
+            return kHitAnyVectors * kVec;
+        }
+        for (uint32_t k = 0; k < kTriAttrWords; ++k) {
+            from_slot(kSAttr + k, out + kVec * (kHitN + k));
+        }
+        return kHitVectors * kVec;
     }
 
 }  // namespace walk

@@ -55,7 +55,7 @@ def summary(info, mhz):
 
 def passes_ok(passes, n_workers):
     """Every pass ran cleanly, with no walk error, and agrees with the reference
-    where it was checked (no hit, distance or (u, v) differs)."""
+    where it was checked (no hit, distance, (u, v) or carried attribute differs)."""
     ok = True
     for info in passes:
         ok &= card.ran_cleanly(info["run"], n_workers) and info["walk_errors"] == 0
@@ -66,7 +66,7 @@ def passes_ok(passes, n_workers):
             ok &= check["differ"] == 0
         else:
             ok &= check["tri_differs"] == check["t_differs"] == 0
-            ok &= check["uv_differs"] == 0
+            ok &= check["uv_differs"] == check.get("attr_differs", 0) == 0
     return bool(ok)
 
 
@@ -133,6 +133,7 @@ def main():
             per_record=args.per_record,
             balance=args.balance,
             sort=args.sort,
+            scene=scene,
         )
         mhz = card.aiclk_mhz()
         t0 = time.perf_counter()

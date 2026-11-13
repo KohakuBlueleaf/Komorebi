@@ -40,9 +40,9 @@ def main():
                 session,
                 packets.K["kSegProbe"],
                 full,
-                pages,
+                packets.group(pages),
                 1,
-                packets.K["kHitPagePackets"] * packets.K["kHitVectors"] * packets.VEC,
+                packets.K["kPagePackets"] * packets.K["kHitAnyVectors"] * packets.VEC,
                 tree=packets.tree_image(tree),
                 args=[k, args.passes],
             )

@@ -11,6 +11,7 @@
 #include "raytrace.h"
 #ifdef TRISC_PACK
 #include "divsqrt.hpp"
+#include "shade.hpp"
 #include "walk.hpp"
 #endif
 
@@ -109,8 +110,9 @@ namespace {
                 return false;
             }
             a = wall();
-            walk::store_hits(reinterpret_cast<uint32_t*>(dst), b - start);
-            push_out(dst, kHitVectors * kVec);
+            push_out(
+                dst, walk::store_hits(reinterpret_cast<uint32_t*>(dst), b - start, any)
+            );
             pf.out += wall() - a;
             pf.packets++;
         }
@@ -268,8 +270,9 @@ namespace {
         }
     }
 
-    // The results of every packet (state vectors best to leaves) to hit pages.
-    bool results_out(uint32_t count, walk::Prof& pf) {
+    // The results of every packet (state vectors best to leaves, then the attributes of
+    // a nearest hit) to hit pages.
+    bool results_out(uint32_t count, bool any, walk::Prof& pf) {
         const uint32_t* st = raw(kCbState);
         for (uint32_t i = 0; i < count; ++i) {
             const uint32_t dst = reserve_out(pf);
@@ -283,7 +286,10 @@ namespace {
                 o[k] = me[kVec * kSBest + k];
             }
             walk::store_cycles(o, me[kVec * kStHead + kStCycles]);
-            push_out(dst, kHitVectors * kVec);
+            for (uint32_t k = 0; !any && k < kTriAttrWords * kVec; ++k) {
+                o[kVec * kHitN + k] = me[kVec * kSAttr + k];
+            }
+            push_out(dst, (any ? kHitAnyVectors : kHitVectors) * kVec);
             pf.out += wall() - a;
         }
         return true;
@@ -429,8 +435,7 @@ namespace {
             if (dst == 0) {
                 return false;
             }
-            walk::store_hits(reinterpret_cast<uint32_t*>(dst), 0);
-            push_out(dst, kHitVectors * kVec);
+            push_out(dst, walk::store_hits(reinterpret_cast<uint32_t*>(dst), 0, true));
             pf.packets++;
         }
         return true;
@@ -571,6 +576,104 @@ namespace {
         return true;
     }
 
+    // Header of a packet page in L1: direction signs over the lanes with a ray (best
+    // not -1), the first pixel.
+    void packet_head(uint32_t* pg, uint32_t pixel) {
+        uint32_t valid = 0, neg[3] = {0, 0, 0};
+        for (uint32_t l = 0; l < kVec; ++l) {
+            if (pg[kVec * kPkBest + l] == shade::kMinusOne) {
+                continue;
+            }
+            valid++;
+            for (uint32_t k = 0; k < 3; ++k) {
+                neg[k] += pg[kVec * (kPkD + k) + l] >> 31;
+            }
+        }
+        uint32_t* h = pg + kVec * kPkHead;
+        h[kHeadSigns] = 0;
+        for (uint32_t k = 0; k < 3; ++k) {
+            h[kHeadSigns] |= (2 * neg[k] > valid ? 1u : 0u) << k;
+        }
+        h[kHeadPixel] = pixel;
+        for (uint32_t l = 2; l < kVec; ++l) {
+            h[l] = 0;
+        }
+    }
+
+    // A stage over the core's packets: the constant page first, then per packet its
+    // input pages into Dst from shade::kIn, the stage, its output pages from kOut.
+    bool stage_list(uint32_t seg, uint32_t count, walk::Prof& pf) {
+        const Stage st = stage_of(seg);
+        const uint32_t* c = next_page(pf);
+        if (c == nullptr) {
+            return false;
+        }
+        uint32_t cn[kCnWords];
+        for (uint32_t k = 0; k < kCnWords; ++k) {
+            cn[k] = c[k];
+        }
+        for (uint32_t k = 0; k < 3; ++k) {
+            to_slot(shade::kRamp + k, c + kVec * (kCnDx + k));
+        }
+        order(word(shade::kRamp + 2) + 62);
+        mbox_release();
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t slot = shade::kIn, pixel = 0;
+            for (uint32_t s = 0; s < st.inputs; ++s) {
+                const uint32_t* pg = next_page(pf);
+                if (pg == nullptr) {
+                    return false;
+                }
+                const uint32_t b = wall();
+                for (uint32_t k = 0; k < st.vectors[s]; ++k) {
+                    to_slot(slot + k, pg + kVec * k);
+                }
+                if (s == 0) {
+                    pixel = seg == kSegGen ? pg[0] : pg[kVec * kPkHead + kHeadPixel];
+                }
+                slot += st.vectors[s];
+                order(word(slot - 1) + 62);
+                mbox_release();
+                pf.load += wall() - b;
+            }
+            uint32_t a = wall();
+            all_lanes();
+            if (seg == kSegGen) {
+                shade::gen(cn, pixel % cn[kCnWidth], pixel / cn[kCnWidth]);
+            } else if (seg == kSegShade1) {
+                shade::shade1(cn, pixel);
+            } else if (seg == kSegShade2) {
+                shade::shade2(cn);
+            } else {
+                shade::image();
+            }
+            tensix_sync();
+            uint32_t b = wall();
+            pf.box += b - a;
+            slot = shade::kOut;
+            for (uint32_t s = st.inputs; s < st.inputs + st.outputs; ++s) {
+                const uint32_t dst = reserve_out(pf);
+                if (dst == 0) {
+                    return false;
+                }
+                a = wall();
+                uint32_t* w = reinterpret_cast<uint32_t*>(dst);
+                const uint32_t n = st.vectors[s];
+                for (uint32_t k = 0; k < n; ++k) {
+                    from_slot(slot + k, w + kVec * k);
+                }
+                if (n == kPkVectors) {
+                    packet_head(w, pixel);
+                }
+                slot += n;
+                push_out(dst, n * kVec);
+                pf.out += wall() - a;
+            }
+            pf.packets++;
+        }
+        return true;
+    }
+
     // The profile page: the pack thread's counters at words 0 to kProfWords - 1.
     void profile(const walk::Prof& pf) {
         if (!bounded::back(kCbOut, 1)) {
@@ -616,7 +719,11 @@ namespace {
         ckernel::mailbox_write(kPack, first);
         ckernel::mailbox_write(kPack, count);
         cb_pop_front(kCbIn, 1);
-        const uint32_t pages = seg == kSegRecip ? 0 : count;
+        const Stage st = stage_of(seg);
+        const uint32_t pages =
+            (seg == kSegRecip    ? 0
+                 : is_stage(seg) ? 1 + count * st.inputs
+                                 : count);
         for (uint32_t i = 0; i < pages; ++i) {
             if (!bounded::front(kCbIn, 1)) {
                 ckernel::mailbox_write(kPack, bounded::kAbort);
@@ -669,7 +776,8 @@ void kernel_main() {
             return;
         }
         if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath) {
+            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath &&
+            !is_stage(seg)) {
             return;
         }
 #ifdef TRISC_UNPACK
@@ -705,7 +813,7 @@ void kernel_main() {
                 pf.phase2 += wall() - b;
             }
             const uint32_t a = wall();
-            ok = ok && end == kWorkEnd && results_out(count, pf);
+            ok = ok && end == kWorkEnd && results_out(count, any, pf);
             pf.phase3 = wall() - a;
             (void)ok;
         } else if (seg == kSegProbe) {
@@ -714,6 +822,8 @@ void kernel_main() {
             arith_list(count, pf);
         } else if (seg == kSegMath) {
             math_list(count, pf);
+        } else if (is_stage(seg)) {
+            stage_list(seg, count, pf);
         } else {
             recip_list(first, count, r.a3, pf);
         }

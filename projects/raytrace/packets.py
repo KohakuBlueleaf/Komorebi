@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from ref import bvh, raytrace
-from ref.scenes import WIDTH
+from ref.scenes import HEIGHT, WIDTH
 
 HERE = Path(__file__).resolve().parent
 HEADER = HERE / "kernels" / "raytrace.h"
@@ -89,8 +89,20 @@ def pages_of(words):
     return words.reshape(-1, page)
 
 
-def image_words(nodes, tris=None, index=None, table=None):
-    """Header, nodes, order words, then triangle records or the treelet table."""
+def tri_attrs(scene, tree, leaves):
+    """What shading needs of each leaf's triangle, as float32 (L, 12): the unit normal
+    as the reference's surface() computes it, then the three vertex colours."""
+    g = tree["tris"][leaves]
+    n = raytrace.cross(g[:, 3:6], g[:, 6:9])
+    n = n / np.sqrt(raytrace.dot(n, n))[:, None]
+    tri = tree["leaf_tri"][leaves]
+    colours = scene["colors"][scene["indices"][tri]].reshape(len(tri), 9)
+    return np.concatenate([n, colours], axis=1).astype(np.float32)
+
+
+def image_words(nodes, tris=None, index=None, table=None, attrs=None):
+    """Header, nodes, order words, then triangle records (with their attributes, or
+    zeros) or the treelet table."""
     nodes = np.ascontiguousarray(nodes, dtype=np.uint32)
     n = len(nodes)
     head = np.zeros(K["kTreeHeadWords"], dtype=np.uint32)
@@ -102,7 +114,9 @@ def image_words(nodes, tris=None, index=None, table=None):
     if tris is not None:
         records = np.zeros((len(tris), K["kTriWords"]), dtype=np.uint32)
         records[:, :9] = bits(tris)
-        records[:, 9] = np.asarray(index).astype(np.uint32)
+        records[:, K["kTriIndex"]] = np.asarray(index).astype(np.uint32)
+        if attrs is not None:
+            records[:, K["kTriAttr"] :] = bits(attrs)
         head[K["kTreeTriOff"]] = tail_off
         parts.append(records.ravel())
     if table is not None:
@@ -112,12 +126,17 @@ def image_words(nodes, tris=None, index=None, table=None):
     return np.concatenate(parts)
 
 
-def tree_image(tree):
-    """The tree as the card's L1 image: (pages, 1024) uint32."""
-    return pages_of(image_words(tree["nodes"], tree["tris"], tree["leaf_tri"]))
+def tree_image(tree, scene=None):
+    """The tree as the card's L1 image: (pages, 1024) uint32; with the scene, the
+    triangles carry their shading attributes."""
+    leaves = np.arange(len(tree["tris"]))
+    attrs = None if scene is None else tri_attrs(scene, tree, leaves)
+    return pages_of(
+        image_words(tree["nodes"], tree["tris"], tree["leaf_tri"], None, attrs)
+    )
 
 
-def treelet_images(tree, cut):
+def treelet_images(tree, cut, scene=None):
     """Every treelet as an L1 image, one after the other in whole pages: the pages
     (P, 1024) and a table of (first page, pages) per treelet."""
     off, leaf_off = cut["treelet_node_off"], cut["treelet_leaf_off"]
@@ -126,8 +145,11 @@ def treelet_images(tree, cut):
         nodes = cut["treelet_nodes"][off[t] : off[t + 1]]
         tris = cut["treelet_tris"][leaf_off[t] : leaf_off[t + 1]]
         lead = cut["treelet_leaf_first"][t]
-        index = tree["leaf_tri"][lead : lead + len(tris)]
-        images.append(pages_of(image_words(nodes, tris, index)))
+        leaves = np.arange(lead, lead + len(tris))
+        attrs = None if scene is None else tri_attrs(scene, tree, leaves)
+        images.append(
+            pages_of(image_words(nodes, tris, tree["leaf_tri"][leaves], None, attrs))
+        )
         table.append((first, len(images[-1])))
         first += len(images[-1])
     return np.concatenate(images), np.array(table, dtype=np.uint32)
@@ -227,8 +249,17 @@ def split(pixels, cores, cost=None, key=None, within_tile=True):
     return lanes, directory, np.asarray(tile_of, dtype=np.int64)
 
 
-def packet_pages(lanes, o, d, tmax):
-    """Packet pages (P, kPkVectors * 32) uint32 of rays (o, d) placed by `lanes`."""
+def head_signs(d, valid):
+    """Direction signs of packets (P, 32, 3) over their valid lanes: bit k set when
+    more of them have the sign bit of d[k] set than not (the kernels' rule)."""
+    neg = (np.signbit(d) & valid[:, :, None]).sum(axis=1)
+    more = 2 * neg > valid.sum(axis=1)[:, None]
+    return (more * np.array([1, 2, 4])).sum(axis=1).astype(np.uint32)
+
+
+def packet_pages(lanes, o, d, tmax, pixels=None):
+    """Packet pages (P, kPkVectors * 32) uint32 of rays (o, d) placed by `lanes`;
+    `pixels` (per ray) gives each header the pixel of lane 0."""
     o = np.asarray(o, dtype=np.float32)
     d = np.asarray(d, dtype=np.float32)
     valid = lanes >= 0
@@ -240,10 +271,64 @@ def packet_pages(lanes, o, d, tmax):
         page[:, K["kPkD"] + k] = np.where(valid, bits(d[idx, k]), 0)
         page[:, K["kPkInv"] + k] = np.where(valid, bits(inv[idx, k]), 0)
     page[:, K["kPkBest"]] = np.where(valid, bits(np.float32(tmax)), NEG_ONE)
-    total = np.where(valid[:, :, None], d[idx].astype(np.float64), 0).sum(axis=1)
-    signs = ((total < 0) * np.array([1, 2, 4])).sum(axis=1)
-    page[:, K["kPkHead"], K["kHeadSigns"]] = signs
+    page[:, K["kPkHead"], K["kHeadSigns"]] = head_signs(d[idx], valid)
+    if pixels is not None:
+        page[:, K["kPkHead"], K["kHeadPixel"]] = np.asarray(pixels)[idx[:, 0]]
     return page.reshape(len(lanes), -1)
+
+
+def group(pages):
+    """Per-packet pages (P, W) as DRAM rows of kPagePackets packets (zero padded)."""
+    per = K["kPagePackets"]
+    pages = np.asarray(pages, dtype=np.uint32)
+    pad = np.zeros((-len(pages) % per, pages.shape[1]), dtype=np.uint32)
+    return np.concatenate([pages, pad]).reshape(-1, per * pages.shape[1])
+
+
+def ungroup(rows, vectors, n):
+    """The first n per-packet pages of `vectors` vectors from grouped DRAM rows."""
+    return np.asarray(rows, dtype=np.uint32).reshape(-1, vectors * VEC)[:n]
+
+
+def frame_constants(scene):
+    """The frame's constant page (1, kCnVectors * 32): camera, light, offset, sky,
+    width; the lane ramp of an 8 x 4 packet (dx, dy as floats, pixel offsets)."""
+    page = np.zeros((K["kCnVectors"], VEC), dtype=np.uint32)
+    cam = scene["camera"]
+    if not cam[12] > 0:
+        raise ValueError("the camera's scale (word 12) must be positive")
+    page[0, K["kCnCamera"] : K["kCnCamera"] + 15] = bits(cam[:15])
+    page[0, K["kCnLight"] : K["kCnLight"] + 3] = bits(scene["light"])
+    page[0, K["kCnEps"]] = bits(scene["eps"][:1])[0]
+    sky = np.concatenate([raytrace.HORIZON, raytrace.ZENITH - raytrace.HORIZON])
+    page[0, K["kCnSky"] : K["kCnSky"] + 6] = bits(sky)
+    page[0, K["kCnWidth"]] = WIDTH
+    lane = np.arange(VEC)
+    page[K["kCnDx"]] = bits((lane % BLOCK_W).astype(np.float32))
+    page[K["kCnDy"]] = bits((lane // BLOCK_W).astype(np.float32))
+    page[K["kCnPixel"]] = lane_ramp()
+    return page.reshape(1, -1)
+
+
+def frame_layout(tiles, workers):
+    """Packets of whole tiles over the cores: the pixel of every lane (P, 32), the
+    directory and the descriptor pages (P, 32)."""
+    every = np.arange(WIDTH * HEIGHT)
+    _, tile = ray_order(every)
+    pixels = every if tiles is None else every[np.isin(tile, tiles)]
+    lanes, directory, _ = split(pixels, workers)
+    pix = pixels[lanes]
+    if (lanes < 0).any() or not (pix == pix[:, :1] + lane_ramp()).all():
+        raise ValueError("packets are not whole 8 x 4 blocks")
+    desc = np.zeros((len(pix), K["kDescVectors"] * VEC), dtype=np.uint32)
+    desc[:, 0] = pix[:, 0]
+    return pix, directory, desc
+
+
+def lane_ramp():
+    """Pixel offset of each lane from lane 0."""
+    lane = np.arange(VEC)
+    return (lane // BLOCK_W) * WIDTH + lane % BLOCK_W
 
 
 L1_BUDGET = 1100 * 1024  # bytes of circular buffers per core the planner may use
@@ -355,12 +440,17 @@ def check_det_range(tris, d):
 HIT_KEYS = ("t", "tri", "u", "v", "nodes", "leaves")
 
 
+def hit_vectors(any_hit):
+    """Vectors of a hit page: an any-hit page has no attributes."""
+    return K["kHitAnyVectors"] if any_hit else K["kHitVectors"]
+
+
 def decode_hits(pages, lanes, n_rays):
-    """Per-ray arrays (t, tri, u, v, nodes, leaves) from hit pages (P, 7 * 32), and
-    the cycles of each packet (packet_cycles, per packet)."""
-    pages = np.asarray(pages, dtype=np.uint32).reshape(
-        len(lanes), K["kHitVectors"], VEC
-    )
+    """Per-ray arrays (t, tri, u, v, nodes, leaves; with a nearest hit's pages also
+    attrs, (n, 12)) from hit pages (P, vectors * 32), and the cycles of each packet
+    (packet_cycles, per packet)."""
+    pages = np.asarray(pages, dtype=np.uint32)
+    pages = pages.reshape(len(lanes), pages.shape[1] // VEC, VEC)
     valid = lanes >= 0
     rays = lanes[valid]
     out = {}
@@ -370,4 +460,9 @@ def decode_hits(pages, lanes, n_rays):
         values[rays] = pages[:, k][valid].view(kind)
         out[key] = values
     out["packet_cycles"] = pages[:, K["kHitCycles"], 0].astype(np.int64)
+    if pages.shape[1] == K["kHitVectors"]:
+        attrs = np.zeros((n_rays, K["kTriAttrWords"]), dtype=np.float32)
+        a = pages[:, K["kHitN"] :].transpose(0, 2, 1)
+        attrs[rays] = a[valid].view(np.float32)
+        out["attrs"] = attrs
     return out

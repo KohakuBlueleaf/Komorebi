@@ -29,3 +29,9 @@ def test_slab_and_triangle_arithmetic_is_exact():
 def test_four_passes_agree_on_tiles(scene):
     out = run_json(HERE / "run.py", "--scene", *scene, *TILES, timeout=300.0)
     assert out["ok"] and out["passes"] == ["primary", "shadow", "bounce", "shadow2"]
+
+
+def test_frame_stages_on_the_card_agree_on_tiles():
+    out = run_json(HERE / "frame.py", *TILES, "--stages", timeout=300.0)
+    assert out["ok"] and out["image_check"]["differs"] == 0
+    assert set(out["stages"].values()) == {0}

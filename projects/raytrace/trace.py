@@ -39,14 +39,16 @@ class CardTracer:
         balance=False,
         sort="none",
         per_record=0,
+        scene=None,
     ):
         self.session = session
         self.tree = tree
         self.cut = cut
+        self.scene = scene  # the triangles carry their shading attributes when given
         if cut is None:
-            self.image = packets.tree_image(tree)
+            self.image = packets.tree_image(tree, scene)
         else:
-            self.treelets, table = packets.treelet_images(tree, cut)
+            self.treelets, table = packets.treelet_images(tree, cut, scene)
             self.image = packets.top_image(cut, table)
             self.slot_bytes = int(table[:, 1].max()) * K["kTreePageBytes"]
             self.n_treelets = len(table)
@@ -112,13 +114,14 @@ class CardTracer:
             info["l1"] = {**sizes, "packets_per_record": per, "slot_count": slots}
             full = packets.chunks(full, per)
             info["records_per_trace"] = len(full)
+        vectors = packets.hit_vectors(any_hit)
         out, prof, res, times, power = card.run_segment(
             self.session,
             seg,
             full,
-            pages,
-            -(-len(pages) // K["kHitPagePackets"]),
-            K["kHitPagePackets"] * K["kHitVectors"] * packets.VEC,
+            packets.group(pages),
+            -(-len(pages) // K["kPagePackets"]),
+            K["kPagePackets"] * vectors * packets.VEC,
             tree=self.image,
             args=args,
             reps=self.reps,
@@ -137,8 +140,9 @@ class CardTracer:
         info["trace_us"] = [float(x) for x in us[1:].reshape(-1, per_trace).sum(axis=1)]
         info["packets"] = len(pages)
         t0 = time.perf_counter()
-        out = out.reshape(-1, K["kHitVectors"] * packets.VEC)[: len(pages)]
+        out = packets.ungroup(out, vectors, len(pages))
         hits = packets.decode_hits(out, lanes, len(o))
+        attrs = hits.pop("attrs", None)
         info["host_decode_s"] = time.perf_counter() - t0
         cycles = hits.pop("packet_cycles")
         self.tile_cost[name] = np.bincount(tiles, cycles, minlength=packets.TILES)
@@ -160,9 +164,20 @@ class CardTracer:
             ref = raytrace.trace(self.tree, o, d, tmax, any_hit)
             info["ref_s"] = time.perf_counter() - t0
             info["check"] = agreement(ref, hit, self.tree, any_hit)
+            if attrs is not None and self.scene is not None:
+                info["check"]["attr_differs"] = attr_differs(
+                    self.scene, self.tree, hit, attrs
+                )
         self.passes.append(info)
         card.log(f"{name}: {len(o)} rays, card {us[-1]:.1f} us, {info.get('check')}")
         return hit
+
+
+def attr_differs(scene, tree, hit, attrs):
+    """Hits whose carried normal and colours are not their triangle's, bit for bit."""
+    h = hit["leaf"] >= 0
+    want = packets.tri_attrs(scene, tree, hit["leaf"][h])
+    return int((packets.bits(attrs[h]) != packets.bits(want)).any(axis=1).sum())
 
 
 def agreement(ref, got, tree, any_hit):
