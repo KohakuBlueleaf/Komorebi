@@ -11,6 +11,13 @@ tags:
 Status: implemented on one Blackhole card, through a `Session` (the dispatch kernel reads
 the status lines and ends the run) and under the test feeder. One dynamic run at a time.
 
+**Open defect.** A reservation's answer can be lost: the atomic add is counted as
+answered and the destination's tail moves, but the returned position never lands in the
+writer's L1. About 1 run in 5 of 10^6 hops on 119 cores ends this way: the run stops
+with reason 32 (`lost`) or with a wait it blocked (24, 28), reported and named like any
+give-up, never a hang. The runs of 10^5 hops and fewer measured so far were exact. The cause is being
+investigated; until it is fixed, a program must expect such a run to fail and rerun it.
+
 A static crossing is known before the run: who sends what to whom and how many arrive.
 A dynamic crossing is known only from the data: a ray goes to the core that holds the
 next part of the scene, a finished ray to the core that owns its film tile. In a
@@ -149,9 +156,12 @@ queue or on the way: the issuer sends an end record (`KM_SEG_DYN_END`) to the te
 the usual team completion. Under a `Session` the issuer is the dispatch kernel: the
 lines are in its local memory (`KMD_LIM_DYN`), it checks them on every pass of its loop
 while the run is in flight, and the end record goes out under the `RUN` record's
-command, so the host sees only the `RUN` record's done event. A second `RUN` of the
-dynamic segment waits until the first has ended; a queued one (`KM_F_QUEUE`) is refused
-with reason 12.
+command, so the host sees only the `RUN` record's done event. One dynamic run is in
+flight at a time: a second `RUN` of the dynamic segment from the host waits until the
+first has ended; from the stream engine or a work cluster it is refused busy (reason
+11) and sent again after the kernel's wake, like any record of those sources that
+cannot go now. A queued one (`KM_F_QUEUE`) is refused with reason 12. The status lines
+take 2 KiB of the kernel's local memory (`KMD_LIM_DYN`).
 
 ## When something goes wrong
 

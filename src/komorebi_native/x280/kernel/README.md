@@ -19,6 +19,7 @@ is one of those sources. `km_dispatch.h` holds the exact layouts;
 | `engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
 | `graph_port.h` | core 0's side of the graphs: the graph table, admitting `RUN`, `CANCEL`, their ends |
 | `graph.h` | core 1: up to two graphs on the plain-C executor (`../engines/km_graph_engine.c`) |
+| `dynamic.h` | dynamic runs: the two passes over the status lines, the end record |
 | `result.h` | the result block in LIM |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
 
@@ -81,8 +82,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   range of the upload region that is not whole lines inside it; 6 `KM_SEG_RUN` while
   four streams run; 7 `KM_SEG_CANCEL` of a req no running stream has; 8
   `KM_SEG_DEADLINE` of 0; 9 a `KM_F_QUEUE` record while the queue is full (the host
-  may retry it); 11 a work cluster's record that would wait. A refused command's event
-  has ticks 0.
+  may retry it); 11 a work cluster's record that would wait; 12 a `KM_F_QUEUE` record
+  of the program's dynamic segment. A refused command's event has ticks 0.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
   word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
@@ -187,6 +188,22 @@ These rules are part of the protocol; a host that relies on anything else is wro
   record, 1.34 microseconds (median) from a record's free to the stream's next issue
   over the ring; with three looping streams beside it, 12.8. A host record at depth 16
   to one core costs 0.641 microseconds (host-fed; 0.669 with all 64 commands preloaded).
+- **Dynamic runs.** The argument block's `dyn_seg` names the program's dynamic
+  segment (0: none). A record of it is a dynamic run's `RUN`; one runs at a time. A
+  second one from the host waits until the first and its end record have completed;
+  from the engine or a work cluster it is refused busy (reason 11) with the wake. Each
+  core of the run writes its 16-byte status line `{run, state, sent, consumed}` into
+  LIM at `KMD_LIM_DYN` + 16 x core (the layout grew by these 2 KiB: `KMD_LIM_BYTES` is
+  0x2000). While the run is in flight, every pass of core 0 reads the team's lines;
+  once two passes, the second after the first, find every line idle and unchanged and
+  the sums of sent and consumed equal, core 0 issues the end record
+  (`KM_SEG_DYN_END`, a0 the run's sequence) to the team in a free slot under the
+  `RUN`'s command and source. The end record's completion has no event: the source
+  sees only the `RUN`'s `KM_EV_DONE`, which comes first. A line that says gave up sets
+  the `RUN`'s deadline to now, so the session ends with `KMD_ERR_DEADLINE` naming it.
+  Hart block words `KMD_H_DYN_GAVE` (1 + the core that gave up), `KMD_H_DYN_CHECKS`
+  (two-pass checks) and `KMD_H_DYN_QUIET` (mtime of the last quiet end, low word)
+  report it; the host's `finish` returns the hart block.
 - **Finish.** `KM_SEG_STOP`, the runtime's stop, a missed deadline or a start-up failure
   ends the loop. Core 0 then sets the engine's stop word and waits for core 1 to leave
   its loop (`KMD_ENGINE_STOP_TICKS`, 10 ms), forwarding its last posts; if it does not,

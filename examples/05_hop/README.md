@@ -72,12 +72,13 @@ Under the test feeder (`hop_fed.py`), card 0, AICLK 1350 MHz, team of cores 0 to
 | member 2 stalls in its body (8 cores) | the run stopped; core 2 named, its reader gave up waiting for a free packet page; the next run on the card exact, no reset |
 | `max_live` 1000000 with queues of 65536 | refused before any device opened |
 
-Not every run passes yet: of 22 runs of 10^6 hops, two stopped with reason 32 (`lost`) and
-two in a packet wait (24, 28). A writer's atomic add is counted as answered and the
-destination's tail has moved, but the returned position never lands in the writer's L1,
-so the reserved positions are never written and the destination reports the gap. The
-packet waits are, as far as read so far, the same stall seen first by another wait. The
-cause is open.
+**Open defect:** a reservation's answer can be lost, and about 1 run in 5 of 10^6 hops
+fails because of it, with the reason reported, never a hang. Of 22 runs of 10^6 hops
+under the feeder, two stopped with reason 32 (`lost`) and two in a packet wait (24, 28).
+A writer's atomic add is counted as answered and the destination's tail has moved, but
+the returned position never lands in the writer's L1, so the reserved positions are
+never written and the destination reports the gap. The packet waits are, as far as read
+so far, the same stall seen first by another wait. The cause is open.
 
 A reserved position that is never written (a gap) cannot be made on the card; the CPU
 harness (`experiments/runtime_harness`, case `dyn_gap`) shows it reported with the core
