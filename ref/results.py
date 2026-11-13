@@ -1,15 +1,7 @@
-"""The files an implementation hands to the comparison, picture and timing scripts.
-
-For every implementation (a folder name, e.g. `cpu`, `v100`, or a card version) and
-scene `<scene>`, the folder holds `<scene>.npz` (arrays below) and `<scene>.json`:
-{"name": ..., "scene": ..., "seconds_per_frame": ..., "timings_ms": {stage: ms},
-"power": {"gpu_idle_w", "gpu_mean_w", "gpu_peak_w", "gpu_joules_per_frame",
-"cpu_package_joules_per_frame": ...}} (everything but "name" and "scene" is optional).
-Arrays: rasterization colour (1024, 1024, 3) float32, depth (1024, 1024) float32 (the
-stored 1/z, 0 where empty), tile_counts (32, 32) int32 and, optionally, tri (1024, 1024)
-int32; ray tracing t (1024, 1024) float32, tri (1024, 1024) int32, image (1024, 1024, 3)
-float32 and, optionally, nodes (1024, 1024) int32.
-"""
+"""The files an implementation hands to the comparison, picture and timing scripts: per
+implementation folder and scene, `<scene>.npz` (raster: colour, depth, tile_counts, tri;
+ray tracing: t, tri, image, nodes) and `<scene>.json` (name, scene, timings, power), as
+projects/raster/reference/README.md and projects/raytrace/reference/README.md show."""
 
 import json
 from pathlib import Path

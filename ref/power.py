@@ -1,8 +1,6 @@
 """Power beside a timing: GPU draw from nvidia-smi, CPU package energy if readable.
-
 A binary prints LOOP_START and LOOP_END on stderr around its timed loop; the samples
-inside that window give the mean and peak. Nothing here needs root; what the host does
-not expose is reported as None.
+inside give the mean and peak. No root needed; what the host does not expose is None.
 """
 
 import contextlib

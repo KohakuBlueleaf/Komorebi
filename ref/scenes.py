@@ -1,12 +1,7 @@
-"""Deterministic scenes: spheres of mixed size over a ground, one camera, one light.
-
-A scene is a dict of numpy arrays (saved as .npz): positions (V, 3) float32, colors
-(V, 3) float32, indices (T, 3) int32, camera (16,) float32, light (3,) float32,
-eps (1,) float32 and meta (5,) int32. Only +, -, *, / and sqrt are used for
-geometry and the hash of rng.py for every random number, so the arrays are the same
-on every host. Camera layout: eye (0:3), right (3:6), up (6:9), forward (9:12), then
-focal length in pixels, the principal point x and y, the near distance.
-"""
+"""Deterministic scenes: spheres of mixed size over a ground, one camera, one light; a
+dict of numpy arrays (saved as .npz), equal on every host (+, -, *, / and sqrt only in
+the geometry, rng.py's hash for every random number). The arrays and the camera layout
+are in ref/README.md "Scenes"."""
 
 import argparse
 import hashlib

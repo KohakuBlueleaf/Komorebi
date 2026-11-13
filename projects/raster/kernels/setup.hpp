@@ -1,6 +1,5 @@
-// The vector unit's part of COUNT and SETUP, issued by the pack thread as raw Tensix
-// instructions: camera space, screen, box and records for 32 triangles, in the
-// reference's order of float32 operations (ref/raster.py).
+// The vector unit's part of COUNT and SETUP, raw instructions from the pack thread:
+// camera space, screen, box, records of 32 triangles in ref/raster.py's float32 order.
 #pragma once
 
 #include <stdint.h>
@@ -33,9 +32,8 @@ namespace su {
     constexpr uint32_t kWallClock = 0xFFB121F0;
     constexpr uint32_t kDstWindow = 0xFFBD8000;
 
-    // Dst slots (32 lanes each): the block (kBlockSlots), the camera's 16 numbers
-    // copied to every lane, camera space x, y, z of each corner, the records (slot
-    // kSRec + w is word w), screen x, y, 1/z of each corner, the area and 1/area.
+    // Dst slots of 32 lanes: block, camera (16 in every lane), camera-space corners,
+    // records (kSRec + w: word w), screen x, y, 1/z per corner, area, 1/area.
     constexpr uint32_t kSCol = 9;
     constexpr uint32_t kSCam = 32;
     constexpr uint32_t kSCs = 48;
@@ -177,9 +175,8 @@ namespace su {
         tensix_sync();
     }
 
-    // y = 1 / a rounded to nearest (|a| in [2^-126, 2^103)): the approximate
-    // reciprocal, two Newton steps, then the rounding fixed by an exact integer test
-    // (the ray tracer's, projects/raytrace/kernels/sfpu.hpp).
+    // y = 1 / a to nearest (|a| in [2^-126, 2^103)): estimate, two Newton steps, an
+    // exact integer test for the rounding (as projects/raytrace/kernels/sfpu.hpp).
     inline void recip(
         uint32_t a, uint32_t y, uint32_t t0, uint32_t t1, uint32_t t2, uint32_t t3
     ) {
@@ -235,9 +232,8 @@ namespace su {
         }
     }
 
-    // Screen x, y and 1/z of every corner: inv = 1 / z, x = c13 + c12 (x inv), y = c14
-    // - c12 (y inv). Lanes with a corner short of the near distance get numbers that
-    // are not used.
+    // Screen x, y, 1/z per corner: inv = 1/z, x = c13 + c12 x inv, y = c14 - c12 y inv;
+    // a lane with a corner short of the near distance gets numbers nobody uses.
     inline void screen() {
         for (uint32_t k = 0; k < 3; ++k) {
             load(L0, kSCs + 3 * k + 2);
@@ -281,9 +277,8 @@ namespace su {
         store(L5, s);
     }
 
-    // The box of coordinate c (0: x, 1: y) of the three corners, to record words
-    // kRawX0 + 2 c and kRawX1 + 2 c: ceil(lo - 0.5) in [0, size], floor(hi - 0.5) in
-    // [-1, size - 1].
+    // Box of coordinate c (0: x, 1: y) to words kRawX0 + 2 c, kRawX1 + 2 c:
+    // ceil(lo - 0.5) in [0, size], floor(hi - 0.5) in [-1, size - 1].
     inline void box(uint32_t c, uint32_t size_bits, uint32_t last_bits) {
         load(L0, kSScr + c);
         load(L1, kSScr + 3 + c);

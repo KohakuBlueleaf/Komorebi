@@ -1,12 +1,7 @@
-"""Pictures of the rasterization: colour, depth, binning load, where outputs differ.
-
-    python -m projects.raster.reference.pictures --out DIR [--scenes ...] [--small DIR]
-        [--external DIR ...]
-
-Every implementation found (also in --external folders, see ref/results.py) gets its
-colour image and a map of where it differs from numpy. --small writes the 256 x 256
-colour images of the tiny and 10^4 scenes for the README.
-"""
+"""Pictures of the rasterization: colour, depth, binning load, where outputs differ, for
+every implementation found (also in --external folders); --small writes 256 x 256 colour
+images of the tiny and 10^4 scenes for the README.
+`python -m projects.raster.reference.pictures --out DIR [--scenes ...] [--small DIR]`"""
 
 import argparse
 import json

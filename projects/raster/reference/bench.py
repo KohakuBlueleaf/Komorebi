@@ -1,15 +1,7 @@
-"""Timing and power table of the C++ (1 thread, all threads) and CUDA rasterizers.
-
-Stage cells: median of RUNS processes x REPS timed repetitions (after one untimed
-warm-up per process), min and max in brackets. Timed: triangle setup, binning and fill
-(CPU: threads over triangles, then tiles; GPU: kernels, with the list size read back).
-Not timed: scene load, upload, output readback. Seconds per frame and energy come from
-one more run of at least 3 s: wall time of the loop over frames; the GPU's draw from
-nvidia-smi sampled every 100 ms inside the loop (idle: the second before); the CPU
-package energy only where the host lets a user read it.
-
-    python -m projects.raster.reference.bench [--scenes ...] [--runs 3] [--json FILE]
-"""
+"""Timing and power table of the C++ (1 thread, all threads) and CUDA rasterizers:
+setup, binning and fill, median of RUNS processes x REPS repetitions; seconds per frame
+and power from one more run of at least 3 s (the README's "Timings and power" says what
+is timed). `python -m projects.raster.reference.bench [--scenes ...] [--json FILE]`"""
 
 import argparse
 import json

@@ -1,14 +1,7 @@
-"""Compares rasterizers: differing pixels, where, error statistics.
-
-Runs numpy, C++ and CUDA on each scene and compares every implementation found (also
-those in --external folders, see ref/results.py) with numpy, and C++ with CUDA.
-
-    python -m projects.raster.reference.agree [--scenes ...] [--external DIR ...]
-        [--numpy-max N] [--fresh]
-
-Results already stored in the data folder are reused (with their timings and power);
---fresh runs everything again.
-"""
+"""Compares rasterizers: differing pixels, where, error statistics. Runs numpy, C++ and
+CUDA on each scene and compares every implementation found (also in --external folders,
+see ref/results.py) with numpy, and C++ with CUDA; stored results are reused (--fresh:
+run again). `python -m projects.raster.reference.agree [--scenes ...] [--fresh]`"""
 
 import argparse
 import json
