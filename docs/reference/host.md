@@ -75,6 +75,14 @@ grid_timeout=10.0)`.
   the run loaded and the device open, so the next of these paths tries again; each try
   is bounded (5 s in the runtime). SIGKILL cannot be caught: after one, reset the card.
   With `device=`, close the session before the device.
+- What an abort (an exception inside `with`, `session.close()` of a loaded run, the
+  exit hooks) does: it writes the stop word into every core and waits up to 2 s for
+  the grid, then asks the X280 runtime to stop the dispatch kernel, which finishes
+  whatever is in flight (5 s bound); `run.result()` then holds its result block, with
+  `abandoned` the records left without their `KM_EV_DONE`. The card needs no reset
+  after it. A reset is still needed when the kernel's core 0 has stopped running its
+  loop (a `WaitTimeout` says so): the runtime cannot restore cluster 0, and
+  `KernelFailed` carries the runtime's account of each hart.
 - `grid_timeout` bounds every wait for the grid's kernels to return (seconds). When
   it passes, `km.GridTimeout` is raised and the device is left open: closing it would
   wait for the grid without a bound. The card may then need a reset.
@@ -163,7 +171,7 @@ result by sample: the pages of a few rows or tiles, from `read` or `read_tiles_b
 | `forget(tickets)` | releases what the run keeps for tickets whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps teams and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
-| `abort()` | the failure path: stops the kernel through the runtime, closes it, stops the grid from the host, reads back; raises `KernelFailed` if the runtime could not restore cluster 0, with the runtime's account of each hart (phase, stage, trap cause and address) in its message and the session log |
+| `abort()` | the failure path: stops the grid from the host (bounded), then the kernel through the runtime, closes it, reads back; `result()` then has `abandoned`; raises `KernelFailed` if the runtime could not restore cluster 0, with the runtime's account of each hart (phase, stage, trap cause and address) in its message and the session log |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict (with `ports`: count and wanted count of every port slot, and `lanes`: each lane's VALID word, first give-up, blocks, wait cycles and DONE-BY words; a reader or writer that gave up waiting on a port or an emit names its `port`), the raw state words, the trace |
 
 `run.issue_s` adds up the host's time in `issue` and `issue_many`; `run.wait_s` the

@@ -97,6 +97,7 @@ H_NAMES = {
     7: "engine_runs",
     8: "lost",
     9: "source",
+    13: "abandoned",
 }
 ENGINE_STOPPED = 3  # KMD_ENGINE_STOPPED
 SOURCE_ENGINE = 1  # KMD_SRC_ENGINE: the stream engine on core 1
@@ -874,6 +875,7 @@ def case_stop_busy(device, args):
         finished_clean(fin, n_cores, out["cores"], ERR_STOP_BUSY)
         and blk["req"] == out["stop_req"]
         and blk["busy"] != 0
+        and blk["abandoned"] == 1
         and out["cores"]["gave"] == {"stop": n_cores}
     )
     return out
@@ -905,6 +907,7 @@ def case_runtime_stop(device, args):
         and finished_clean(fin, n_cores, out["cores"], ERR_STOPPED)
         and blk["state"] == STATE_FAILED
         and blk["busy"] != 0
+        and blk["abandoned"] == 1
         and out["cores"]["gave"] == {"stop": n_cores}
     )
     return out

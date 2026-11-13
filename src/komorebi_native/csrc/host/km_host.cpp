@@ -454,6 +454,7 @@ namespace {
                 throw std::runtime_error("X280 enqueue failed: " + x280::describe(enq));
             }
             session_ = enq.session;
+            aborted_.reset();
         }
 
         // Stores whole 64-byte lines at `offset` of the upload region, then a fence.
@@ -723,8 +724,8 @@ namespace {
             return out;
         }
 
-        // Stops the session now if one runs (any failure path). Returns whether the
-        // runtime restored the tile; if not, close_failed holds the runtime's account.
+        // Stops the session now if one runs (any failure path): whether the runtime
+        // restored the tile (else close_failed says why); aborted() keeps the blocks.
         bool abort() {
             if (!session_ || !opened_) {
                 session_.reset();
@@ -733,7 +734,26 @@ namespace {
             const auto done = rt().cleanup(*session_, std::chrono::seconds(5));
             session_.reset();
             note_failed("cluster 0", done);
+            try {
+                aborted_ = {
+                    lim_words(KMD_LIM_RESULT, KMD_R_WORDS),
+                    lim_words(KMD_LIM_HARTS, KMD_H_WORDS)
+                };
+            } catch (const std::exception& error) {
+                note_failed("cluster 0's blocks", error.what());
+            }
             return done.cleaned_up();
+        }
+
+        // After abort() stopped a kernel: {words, harts} as it left them, or None.
+        nb::object aborted() const {
+            if (!aborted_) {
+                return nb::none();
+            }
+            nb::dict out;
+            out["words"] = aborted_->first;
+            out["harts"] = aborted_->second;  // the hart block (KMD_H_*)
+            return out;
         }
 
         // While the kernel runs: the result and hart blocks (core 0's pass stamp) read
@@ -934,16 +954,19 @@ namespace {
 
     private:
         std::string close_failed_;
+        std::optional<std::pair<std::vector<uint32_t>, std::vector<uint32_t>>> aborted_;
 
         x280::X280Runtime& rt() const {
             return *opened_->runtime;
         }
 
+        void note_failed(const std::string& what, const std::string& why) {
+            close_failed_ += (close_failed_.empty() ? "" : "; ") + what + ": " + why;
+        }
+
         void note_failed(const std::string& what, const x280::CleanupResult& done) {
             if (!done.cleaned_up()) {
-                close_failed_ +=
-                    ((close_failed_.empty() ? "" : "; ") + what + ": " +
-                     x280::describe(done));
+                note_failed(what, x280::describe(done));
             }
         }
 
@@ -1371,6 +1394,7 @@ NB_MODULE(_km_host, m) {
         .def("abort", &Dispatch::abort)
         .def("close", &Dispatch::close)
         .def_prop_ro("close_failed", &Dispatch::close_failed)
+        .def("aborted", &Dispatch::aborted)
         .def("probe", &Dispatch::probe, nb::arg("gap_s"))
         .def("clusters", &Dispatch::clusters)
         .def("work_info", &Dispatch::work_info, nb::arg("cluster"))

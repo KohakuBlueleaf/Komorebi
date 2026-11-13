@@ -167,6 +167,7 @@ enum {
     KMD_H_DYN_GAVE = 10,   /* core 0: 1 + the core whose status line said gave up */
     KMD_H_DYN_CHECKS = 11, /* core 0: two-pass checks of dynamic runs */
     KMD_H_DYN_QUIET = 12,  /* core 0: mtime, low word, of the last quiet end */
+    KMD_H_ABANDONED = 13,  /* core 0: records in flight or queued at the finish */
     KMD_H_WORDS = 16
 };
 

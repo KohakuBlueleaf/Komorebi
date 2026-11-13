@@ -159,7 +159,10 @@ def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_account(
     backend.port.stamps = (7, 9)
     assert "core 0 is running its loop" in backend.kernel_report()
     backend.port.cleaned = False
+    log.clear()
     assert not backend.abort() and "stage=4" in backend.close_failed
+    assert [e[0] for e in log[:120]] == ["write_l1"] * 120  # the grid first
+    assert log[120:] == ["wait_grid", "close"] and backend.aborted["harts"][13] == 2
 
 
 def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path):

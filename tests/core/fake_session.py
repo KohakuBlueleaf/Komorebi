@@ -58,6 +58,11 @@ class FakeDispatch(FakePort):
             self.close_failed = "cluster 0: hart 0 phase=0x2 stage=4"
         return self.cleaned
 
+    def aborted(self):
+        harts = [0] * 16
+        harts[K["KMD_H_ABANDONED"]] = 2
+        return {"words": [0] * K["KMD_R_WORDS"], "harts": harts}
+
     def probe(self, gap_s):
         words = [0] * K["KMD_R_WORDS"]
         words[K["KMD_R_STATE"]] = K["KMD_STATE_READY"]

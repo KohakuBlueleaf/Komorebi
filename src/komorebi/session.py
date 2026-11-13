@@ -32,6 +32,7 @@ CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per car
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 PROBE_GAP_S = 0.02  # core 0's pass stamp moves every 1,024 passes (about 33 us)
+ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop word, before the close
 
 
 def compute_config(options):
@@ -570,6 +571,7 @@ class _Backend:
         self.state_t = None
         self.read = False
         self.close_failed = ""  # the runtime's account when an abort did not restore
+        self.aborted = None  # {words, harts}: what the kernel left at an abort
 
     def _control_blocks(self, cores, grid):
         """Zeroed control blocks, one shard per core, padded so that the block can
@@ -746,9 +748,23 @@ class _Backend:
             self.session.log("x280 runtime closed")
 
     def abort(self):
+        """The failure path: the stop word to every core, a bounded wait for the grid,
+        then the runtime's close, so core 0 is not held behind a grid that runs on.
+        Returns whether cluster 0 was restored; `aborted` holds what the kernel left."""
+        gx, gy = self.port.grid_x, self.port.grid_y
+        try:
+            self.stop_grid()
+            back = self.session._module.wait_grid(self.device, gx, gy, ABORT_GRID_S)
+            self.session.log("grid returned" if back else "grid still running")
+        except Exception as err:  # noqa: BLE001 (the close below runs whatever happens)
+            self.session.log(f"stopping the grid raised {type(err).__name__}: {err}")
         cleaned = self.port.close()
         self.close_failed = "" if cleaned else self.port.close_failed
+        self.aborted = self.port.aborted()
         why = f": {self.close_failed}" if self.close_failed else ""
+        if self.aborted is not None:
+            n = self.aborted["harts"][abi.headers()["KMD_H_ABANDONED"]]
+            why += f"; {n} records abandoned"
         self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned}){why}")
         return cleaned
 

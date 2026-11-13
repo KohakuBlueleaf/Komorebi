@@ -728,8 +728,9 @@ class Run:
                 self._take(rows)
 
     def abort(self):
-        """Stops the kernel through the runtime and reads back what the cores left;
-        for failure paths. Errors while reading back are suppressed."""
+        """Stops the grid, then the kernel through the runtime, and reads back what the
+        cores left; for failure paths. result() then holds the kernel's result block
+        with `abandoned`, the records left without their DONE event."""
         if self._stopped:
             return
         if self.thread is not None:
@@ -738,12 +739,27 @@ class Run:
         # (Session.close, the exit hooks) closes it again
         cleaned = self.backend.abort()
         self._stopped = True
+        left = self.backend.aborted
+        if left is not None:
+            harts = [int(w) for w in left["harts"]]
+            self._result = st.result_block(left["words"], self.h) | {
+                "harts": harts,
+                "abandoned": harts[self.h["KMD_H_ABANDONED"]],
+            }
         self._read_back(stop_grid=True)
         if not cleaned:
+            r = self._result
+            kernel = (
+                f"; the kernel left state {r['state_name']}, {r['abandoned']} records "
+                "abandoned"
+                if r is not None
+                else ""
+            )
             raise self._remember(
                 KernelFailed(
                     "the X280 runtime could not restore cluster 0 after the stop; "
-                    f"the card may need a reset: {self.backend.close_failed}"
+                    f"the card may need a reset: {self.backend.close_failed}{kernel}",
+                    result=r,
                 )
             )
 

@@ -447,6 +447,11 @@ static void loop(kmd_t* k) {
  * completed EXIT the cores have left and their L1 is no longer the program's. */
 static void finish(kmd_t* k) {
     result_where(k, KMD_WHERE_FINISH);
+    uint32_t abandoned = k->queued; /* no DONE event for these: dropped or cut off */
+    for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
+        abandoned += (k->busy >> j) & 1u;
+    }
+    k->harts[KMD_H_ABANDONED] = abandoned;
     if (k->ctl[0] != 0 && (k->busy || !k->exited)) {
         grid_stop(k);
     }

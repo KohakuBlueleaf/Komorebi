@@ -271,6 +271,7 @@ class FakeBackend:
         self.answer = {}  # finish() fields to answer instead (result_ready, ...)
         self.cleaned = True  # what abort() answers
         self.close_failed = ""  # the runtime's account when not cleaned
+        self.aborted = None  # {words, harts} the kernel left at abort()
         self.report = "the fake kernel's report"  # what kernel_report() answers
 
     def finish(self, timeout):

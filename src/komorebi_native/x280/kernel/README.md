@@ -227,4 +227,10 @@ These rules are part of the protocol; a host that relies on anything else is wro
   word goes to the grid only while a slot is busy or before EXIT was issued. The state
   and error words in the host buffer, the result block and the hart block in LIM
   (`KMD_LIM_HARTS`: each core's progress stamp, the engine's state and counts) then
-  hold the outcome.
+  hold the outcome. `KMD_H_ABANDONED` counts the records in flight (`KMD_R_BUSY`) and
+  the jobs still queued at the finish: none of them gets its `KM_EV_DONE`.
+- **Abort.** The runtime's stop is the abort: core 0 looks for it every 1,024 passes
+  (tens of microseconds), the poll that also checks deadlines, and finishes as
+  above whatever is in flight. Only a core that has stopped running its loop (a trap,
+  or an access that never completes) does not answer it; the runtime then cannot
+  restore the cluster and the card needs a reset.

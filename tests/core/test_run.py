@@ -230,9 +230,13 @@ def test_abort_raises_when_the_runtime_could_not_restore_the_tile():
     run, _, backend = make_run()
     backend.cleaned = False
     backend.close_failed = "hart 0 phase=0x2 trap(mcause=0x7)"
-    with pytest.raises(KernelFailed, match=r"reset: hart 0 .*mcause=0x7"):
+    words, harts = [0] * K["KMD_R_WORDS"], [0] * 16
+    words[K["KMD_R_STATE"]], harts[K["KMD_H_ABANDONED"]] = K["KMD_STATE_FAILED"], 3
+    backend.aborted = {"words": words, "harts": harts}
+    with pytest.raises(KernelFailed, match=r"mcause=0x7.*failed, 3 records aband"):
         run.abort()
     assert backend.calls == ["abort", "read_back"] and backend.grid_stopped
+    assert run.result()["abandoned"] == 3
 
 
 def test_a_wait_that_runs_out_says_what_the_kernel_is_doing():
