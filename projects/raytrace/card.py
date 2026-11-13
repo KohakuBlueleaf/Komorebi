@@ -134,18 +134,30 @@ def program(tree_pages=1, sizes=None):
         (K["kCbOut"], K["kOutPageBytes"], K["kOutPages"]),
         (K["kCbWork"], K["kWorkBytes"], K["kWorkPages"]),
         (K["kCbSignal"], K["kSignalBytes"], 1),
-        (K["kCbState"], sizes.get("state", 64), 1),
+        (
+            K["kCbState"],
+            K["kStTileBytes"],
+            sizes.get("state", 0) // K["kStTileBytes"] or 1,
+        ),
         (K["kCbLists"], sizes.get("lists", 64), 1),
         (K["kCbSlots"], sizes.get("slots", 64), 1),
     ]
+    # Packet states are unpacked into Dst and packed back as float32 tiles (Dst held
+    # whole); the input and output pages share the packer's and unpacker's format.
+    tiles = (K["kCbIn"], K["kCbOut"], K["kCbState"])
     return km.Program(
         "raytrace",
         kernels=KERNELS,
-        buffers=[km.Buffer(i, "uint32", page, n) for i, page, n in pages],
+        buffers=[
+            km.Buffer(i, "float32" if i in tiles else "uint32", page, n)
+            for i, page, n in pages
+        ],
         compute={
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
             "enable_trisc2_rvv": True,
+            "dst_full_sync_en": True,
+            "unpack_to_dest_mode": {K["kCbState"]: "UnpackToDestFp32"},
         },
         segments=packets.HEADER,
         depth=1,

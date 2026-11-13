@@ -177,18 +177,22 @@ namespace walk {
         }
     }
 
-    // A packet state from L1 into Dst (slots 0 to kStHead - 1), and its results back.
-    inline void load_state(const uint32_t* st) {
-        for (uint32_t s = 0; s < kStHead; ++s) {
-            to_slot(s, st + kVec * s);
-        }
-        order(word(kSLeaves) + 62);
+    // A packet state image (Dst tile 0 in window order) into Dst through the window,
+    // and back: the window words of slots 0 to kStSlots - 1.
+    constexpr uint32_t kStImageWords = word(kStSlots - 1) + 2 * kVec;
+
+    inline void load_image(const uint32_t* img) {
+        copy_words(win(), img, kStImageWords);
+        order(kStImageWords - 2);
     }
 
-    inline void store_state(uint32_t* st, uint32_t first) {
-        for (uint32_t s = first; s < kStHead; ++s) {
-            from_slot(s, st + kVec * s);
-        }
+    inline void store_image(uint32_t* img) {
+        copy_words(img, win(), kStImageWords);
+    }
+
+    // Lane l of slot s in a state image.
+    inline uint32_t image_lane(const uint32_t* img, uint32_t s, uint32_t l) {
+        return img[word(s) + 2 * l];
     }
 
     // The packet's cycles as the hit page's last vector.

@@ -102,6 +102,27 @@ namespace rt {
 #endif
     }
 
+    // n words (a multiple of 32), contiguous on both sides (window or L1).
+    inline void copy_words(
+        volatile uint32_t* dst, const volatile uint32_t* src, uint32_t n
+    ) {
+#if defined(__riscv_vector)
+        for (uint32_t i = 0; i < n; i += 32) {
+            const size_t vl = __riscv_vsetvl_e32m8(32);
+            __riscv_vse32_v_u32m8(
+                const_cast<uint32_t*>(dst + i),
+                __riscv_vle32_v_u32m8(const_cast<const uint32_t*>(src + i), vl),
+                vl
+            );
+        }
+        asm volatile("" ::: "memory");
+#else
+        for (uint32_t i = 0; i < n; ++i) {
+            dst[i] = src[i];
+        }
+#endif
+    }
+
     inline void fill_slot(uint32_t s, uint32_t v) {
         volatile uint32_t* w = win() + word(s);
         for (uint32_t l = 0; l < 32; ++l) {

@@ -157,7 +157,7 @@ def test_plan_keeps_slots_and_fits_the_budget():
 
 
 def test_plan_drops_slots_before_packets_and_lists_hold_every_treelet():
-    per, slots, sizes = packets.plan_records(50, 20_000, 400 * 1024, 2)
+    per, slots, sizes = packets.plan_records(50, 20_000, 390 * 1024, 2)
     assert slots == 2 and per >= 16 and sizes["entries"] >= 20_000
     assert packets.plan_records(5, 10, 4096, 1, slots=12)[1] == packets.MAX_SLOTS
     with pytest.raises(ValueError, match="cut smaller"):

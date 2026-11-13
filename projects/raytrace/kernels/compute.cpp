@@ -1,11 +1,14 @@
-// Ray tracing compute: the unpack thread hands each input page to the pack thread,
-// which walks packets (or runs the arithmetic check) on the vector unit.
+// Ray tracing compute: unpack hands input pages to pack, which walks packets on the
+// vector unit; at treelet visits unpack and math load states, the packer stores them.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
 #include "api/compute/common.h"
 #include "api/compute/compute_kernel_api.h"
 #include "api/compute/compute_kernel_hw_startup.h"
+#include "api/compute/pack.h"
+#include "api/compute/reg_api.h"
+#include "api/compute/tile_move_copy.h"
 #include "bounded.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "raytrace.h"
@@ -132,12 +135,43 @@ namespace {
     }
 
     constexpr uint32_t kErrList = 256;  // a packet's list did not fit an empty pool
+    constexpr uint32_t kErrDst = 512;   // no state in Dst in time
+
+    // Packet i's state image and its header (after every image of the record).
+    uint32_t* image_of(uint32_t* st, uint32_t i) {
+        return st + kStTileBytes / 4 * i;
+    }
+
+    uint32_t* head_of(uint32_t* st, uint32_t count, uint32_t i) {
+        return st + kStTileBytes / 4 * count + kStHeadWords * i;
+    }
+
+    // Math has put a state into Dst (its section committed), within the bound.
+    bool dst_ready(walk::Prof& pf) {
+        const bool ok = bounded::poll([] {
+            return ckernel::semaphore_read(ckernel::semaphore::MATH_PACK) > 0;
+        });
+        pf.error |= ok ? 0 : kErrDst;
+        if (ok) {
+            tile_regs_wait();
+        }
+        return ok;
+    }
+
+    // Packet id's state from Dst tile 0 to its image; Dst back to math, not cleared
+    // (the walk's other slots stay).
+    void state_out(uint32_t id) {
+        tensix_sync();
+        pack_tile<true>(0, kCbState, id);
+        tensix_sync();
+        ::_llk_pack_dest_section_done_<DST_SYNC_MODE, DST_ACCUM_MODE, false>();
+    }
 
     // Top walks to the lists, states to L1, then the reader is told: first every packet
     // from its page, then those deferred (list did not fit) from their state.
     bool top_walks(uint32_t count, bool any, uint32_t cap, bool first, walk::Prof& pf) {
         const uint32_t list_bytes = 4 * (kLsHead + 2 * count) + 2 * cap;
-        if (bounded::room(kCbState) < count * kStWords * 4 ||
+        if (bounded::room(kCbState) < count * (kStTileBytes + 4 * kStHeadWords) ||
             bounded::room(kCbLists) < list_bytes) {
             pf.error |= kErrRoom;
             return false;
@@ -150,10 +184,11 @@ namespace {
         uint16_t* pool = reinterpret_cast<uint16_t*>(ls + kLsHead + 2 * count);
         uint32_t used = 0, deferred = 0, admitted = 0;
         for (uint32_t i = 0; i < count; ++i) {
-            uint32_t* me = st + kStWords * i;
+            uint32_t* me = image_of(st, i);
+            uint32_t* hd = head_of(st, count, i);
             ls[kLsHead + 2 * i] = used;
             ls[kLsHead + 2 * i + 1] = 0;
-            if (!first && me[kVec * kStHead + kStDeferred] == 0) {
+            if (!first && hd[kStDeferred] == 0) {
                 continue;
             }
             uint32_t a = wall();
@@ -168,8 +203,8 @@ namespace {
                 walk::load_packet(pk);
                 signs = pk[kVec * kPkHead + kHeadSigns];
             } else {
-                signs = me[kVec * kStHead];
-                walk::load_state(me);
+                signs = hd[kStSigns];
+                walk::load_image(me);
             }
             pf.load += wall() - a;
             const uint32_t start = used;
@@ -186,7 +221,7 @@ namespace {
                 if (first) {
                     walk::load_packet(pk);
                 } else {
-                    walk::load_state(me);
+                    walk::load_image(me);
                 }
             }
             if (first) {
@@ -198,12 +233,11 @@ namespace {
             pf.deferred += fits ? 0 : 1;
             a = wall();
             tensix_sync();
-            walk::store_state(me, 0);
-            me[kVec * kStHead] = signs;
-            me[kVec * kStHead + kStDeferred] = fits ? 0 : 1;
+            walk::store_image(me);
+            hd[kStSigns] = signs;
+            hd[kStDeferred] = fits ? 0 : 1;
             const uint32_t end = wall();
-            me[kVec * kStHead + kStCycles] =
-                ((first ? 0 : me[kVec * kStHead + kStCycles]) + end - begin);
+            hd[kStCycles] = (first ? 0 : hd[kStCycles]) + end - begin;
             pf.st_store += end - a;
             pf.packets += first ? 1 : 0;
         }
@@ -229,7 +263,7 @@ namespace {
 
     // Work pages up to a batch's end page (returns its word, 0: gave up): each listed
     // packet walks the page's treelet; finished pages (over batches) go to the lists.
-    uint32_t treelet_visits(bool any, uint32_t& done, walk::Prof& pf) {
+    uint32_t treelet_visits(uint32_t count, bool any, uint32_t& done, walk::Prof& pf) {
         uint32_t* ls = raw(kCbLists);
         uint32_t* st = raw(kCbState);
         for (;;) {
@@ -249,19 +283,21 @@ namespace {
             const uint32_t* order = t + t[kTreeOrderOff];
             const uint32_t* tris = t + t[kTreeTriOff];
             const uint16_t* ids = reinterpret_cast<const uint16_t*>(w + kWorkIds);
+            // Unpack and math put each listed packet's state into Dst tile 0.
             for (uint32_t j = 0; j < n; ++j) {
-                uint32_t* me = st + kStWords * ids[j];
+                uint32_t* hd = head_of(st, count, ids[j]);
                 const uint32_t v0 = wall();
-                uint32_t b = v0;
-                walk::load_state(me);
-                pf.st_load += wall() - b;
-                walk::packet(nodes, order, tris, me[kVec * kStHead], any, pf);
+                if (!dst_ready(pf)) {
+                    return 0;
+                }
+                uint32_t b = wall();
+                pf.st_load += b - v0;
+                walk::packet(nodes, order, tris, hd[kStSigns], any, pf);
                 b = wall();
-                tensix_sync();
-                walk::store_state(me, kSBest);
+                state_out(ids[j]);
                 const uint32_t e = wall();
                 pf.st_store += e - b;
-                me[kVec * kStHead + kStCycles] += e - v0;
+                hd[kStCycles] += e - v0;
                 pf.visits++;
             }
             publish(ls + kLsDone, ++done);
@@ -281,13 +317,15 @@ namespace {
             }
             const uint32_t a = wall();
             uint32_t* o = reinterpret_cast<uint32_t*>(dst);
-            const uint32_t* me = st + kStWords * i;
+            const uint32_t* me = image_of(const_cast<uint32_t*>(st), i);
             for (uint32_t k = 0; k < kHitCycles * kVec; ++k) {
-                o[k] = me[kVec * kSBest + k];
+                o[k] = walk::image_lane(me, kSBest + k / kVec, k % kVec);
             }
-            walk::store_cycles(o, me[kVec * kStHead + kStCycles]);
+            walk::store_cycles(
+                o, head_of(const_cast<uint32_t*>(st), count, i)[kStCycles]
+            );
             for (uint32_t k = 0; !any && k < kTriAttrWords * kVec; ++k) {
-                o[kVec * kHitN + k] = me[kVec * kSAttr + k];
+                o[kVec * kHitN + k] = walk::image_lane(me, kSAttr + k / kVec, k % kVec);
             }
             push_out(dst, (any ? kHitAnyVectors : kHitVectors) * kVec);
             pf.out += wall() - a;
@@ -736,6 +774,8 @@ namespace {
         return bounded::mail(ckernel::ThreadId::PackThreadId, v);
     }
 
+    void treelet_states();
+
     // The reader's header page (first page, count) and every page after it to pack,
     // then (treelets) the work pages up to the end page. On a give-up pack gets kAbort.
     void unpack_pages(uint32_t seg) {
@@ -770,18 +810,79 @@ namespace {
                 return;
             }
         }
-        for (bool more = seg == kSegTreelets; more;) {
+        if (seg == kSegTreelets) {
+            copy_init(kCbState);
+            treelet_states();
+        }
+    }
+
+    // TREELETS: each work page to pack; with it, math the count and each listed
+    // packet's state into Dst tile 0; math gets kAbort at the end.
+    void treelet_states() {
+        constexpr uint32_t kPack = ckernel::ThreadId::PackThreadId;
+        constexpr uint32_t kMath = ckernel::ThreadId::MathThreadId;
+        for (bool more = true; more;) {
             if (!bounded::front(kCbWork, 1)) {
                 ckernel::mailbox_write(kPack, bounded::kAbort);
-                return;
+                break;
             }
             const uint32_t w = get_tile_l1_byte_address(kCbWork, 0);
             asm volatile("fence" ::: "memory");
-            more =
-                (reinterpret_cast<const volatile uint32_t*>(w)[kWorkCount] != kWorkEnd);
-            const bool ok = hand(w);
+            const volatile uint32_t* page = (
+                reinterpret_cast<const volatile uint32_t*>(w)
+            );
+            const uint32_t n = page[kWorkCount];
+            more = n != kWorkEnd;
+            bool ok = true;
+            if (n == kWorkEnd || n == kWorkNext || n > kWorkMax) {
+                ok = hand(w);
+            } else {
+                ckernel::mailbox_write(kPack, w);
+                ckernel::mailbox_write(kMath, n);
+                const volatile uint16_t*
+                    ids = reinterpret_cast<const volatile uint16_t*>(page + kWorkIds);
+                for (uint32_t j = 0; j < n; ++j) {
+                    tile_regs_acquire();
+                    copy_tile(kCbState, ids[j], 0);
+                    tile_regs_commit();
+                }
+                uint32_t v = 0;
+                ok = bounded::mail(kPack, v);
+            }
             cb_pop_front(kCbWork, 1);
             more = more && ok;
+        }
+        ckernel::mailbox_write(kMath, bounded::kAbort);
+    }
+
+}  // namespace
+#endif
+
+#ifdef TRISC_MATH
+namespace {
+
+    // TREELETS on math: per count from unpack, each state's copy into Dst tile 0, the
+    // section given to pack once it is free (bounded); kAbort ends it.
+    void math_states() {
+        copy_init(kCbState);
+        for (uint32_t pages = 0; pages < (1u << 20); ++pages) {
+            uint32_t n = 0;
+            if (!bounded::mail(ckernel::ThreadId::UnpackThreadId, n) ||
+                n == bounded::kAbort) {
+                return;
+            }
+            for (uint32_t j = 0; j < n; ++j) {
+                if (!bounded::poll([] {
+                        return (
+                            ckernel::semaphore_read(ckernel::semaphore::MATH_PACK) == 0
+                        );
+                    })) {
+                    return;
+                }
+                tile_regs_acquire();
+                copy_tile(kCbState, 0, 0);
+                tile_regs_commit();
+            }
         }
     }
 
@@ -790,7 +891,7 @@ namespace {
 
 void kernel_main() {
     km::Compute cp;
-    compute_kernel_hw_startup(kCbIn, kCbOut);
+    compute_kernel_hw_startup(kCbState, kCbOut);
     cp.run([&](const km_record_t& r) {
         const uint32_t seg = km::seg(r);
         if (seg == kSegLoad) {
@@ -818,6 +919,11 @@ void kernel_main() {
 #ifdef TRISC_UNPACK
         unpack_pages(seg);
 #endif
+#ifdef TRISC_MATH
+        if (seg == kSegTreelets) {
+            math_states();
+        }
+#endif
 #ifdef TRISC_PACK
         walk::Prof pf;
         const uint32_t t0 = wall();
@@ -843,7 +949,7 @@ void kernel_main() {
                 ok = top_walks(count, any, r.a6, k == 0, pf);
                 uint32_t b = wall();
                 pf.phase1 += b - a;
-                end = ok ? treelet_visits(any, done, pf) : 0;
+                end = ok ? treelet_visits(count, any, done, pf) : 0;
                 ok = end != 0;
                 pf.phase2 += wall() - b;
             }

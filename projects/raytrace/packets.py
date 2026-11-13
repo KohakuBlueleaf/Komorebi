@@ -339,13 +339,21 @@ MIN_SLOTS = 2  # a fetch can overlap the walk of the other slot
 MAX_SLOTS = 8  # the reader's slot table
 
 
+def state_bytes(packets):
+    """Bytes of the state buffer: a Dst tile image per packet, then the headers, in
+    whole tiles."""
+    tile = K["kStTileBytes"]
+    total = packets * (tile + 4 * K["kStHeadWords"])
+    return max(total + -total % tile, tile)
+
+
 def treelet_buffers(packets, entries, n_treelets, slots, slot_bytes):
     """Bytes of the state, lists and slot buffers for a record of `packets` packets
     with room for `entries` list entries (the reader's layout after the lists)."""
     lists = 4 * (K["kLsHead"] + 2 * packets) + 2 * entries + 6 * n_treelets
     lists += 2 * max(entries, packets)
     return {
-        "state": max(packets * K["kStWords"] * 4, 64),
+        "state": state_bytes(packets),
         "lists": lists + -lists % 16,
         "slots": slots * slot_bytes,
         "entries": entries,

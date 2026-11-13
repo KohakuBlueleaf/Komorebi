@@ -147,13 +147,16 @@ constexpr uint32_t kWorkMax = (kWorkBytes / 4 - kWorkIds) * 2;
 constexpr uint32_t kWorkEnd = 0xFFFFFFFF;
 constexpr uint32_t kWorkNext = 0xFFFFFFFE;
 
-// Packet state in L1: Dst slots 0 to 26 (ray, results, counts, hit attributes), then
-// a header vector (signs, cycles so far, kStDeferred: waiting for list room).
-constexpr uint32_t kStHead = 27;
-constexpr uint32_t kStCycles = 1;  // header word: the packet's cycles so far
+// Packet state in L1: per packet the image of Dst tile 0 in window order (slots 0 to
+// 26: ray, results, counts, hit attributes), which the unpacker and packer move.
+constexpr uint32_t kStTileBytes = 4096;
+constexpr uint32_t kStSlots = 27;
+// After every packet's image, its header: signs, cycles so far, kStDeferred (waiting
+// for list room).
+constexpr uint32_t kStHeadWords = 4;
+constexpr uint32_t kStSigns = 0;
+constexpr uint32_t kStCycles = 1;
 constexpr uint32_t kStDeferred = 2;
-constexpr uint32_t kStVectors = 28;
-constexpr uint32_t kStWords = kStVectors * kVec;
 // Lists region: header words, then per packet its first list entry and entry count,
 // then the 16-bit list entries (treelets in walk order), then the reader's scratch.
 constexpr uint32_t kLsDone = 0;  // work pages compute has finished
