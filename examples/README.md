@@ -14,3 +14,4 @@ checked, and does not depend on another example.
 | [05_hop](05_hop/) | a dynamic segment: items hop between cores through per-core queues in DRAM until they retire, the run ends by itself, and every core's totals match a numpy replay |
 | [06_graph](06_graph/) | a graph host-fed and on the X280: two branches in flight together, a loop that ends on a result word computed on the card, a kept graph run again with other bindings |
 | [07_work_cluster](07_work_cluster/) | a control loop that issues records to changing teams until a result word from the card ends it; one C decision run by an X280 thread, host-fed, and on the CPU against a fake ring |
+| [08_parallel_thread](08_parallel_thread/) | parallel code in an X280 thread: a map, a reduction and a two-pass prefix sum on one hart and on four with `kmx_par`, exact against numpy and timed, and the rules the numbers give |

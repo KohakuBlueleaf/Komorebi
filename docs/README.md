@@ -25,7 +25,7 @@ between cores, deciding on the card and the thread language are planned.
 | **Trying to build it** | [install](install.md) |
 | **Learning the model** | [the programming model](concepts/model.md) |
 | **Running a program on a card** | [host API](reference/host.md) · [01_mapcollect](../examples/01_mapcollect/) |
-| **Writing an X280 thread** | [X280 threads](threads.md) · [reference](reference/threads.md) · [07_work_cluster](../examples/07_work_cluster/) |
+| **Writing an X280 thread** | [X280 threads](threads.md) · [reference](reference/threads.md) · [07_work_cluster](../examples/07_work_cluster/) · [08_parallel_thread](../examples/08_parallel_thread/) |
 | **Reading the design of the card side** | [dispatch kernel](concepts/dispatch.md) · [Tensix runtime](concepts/runtime.md) · [reference](reference/runtime.md) |
 | **Changing the code** | [development](development.md) |
 
