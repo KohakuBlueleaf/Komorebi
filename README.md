@@ -2,36 +2,47 @@
 
 **Move the data, move the thread, or move the code.**
 
-A programming model for the Tensix grid in which a thread reads what it needs or goes
-to where it is.
+A programming model for a network of independently programmable processors, in which a
+thread reads what it needs or goes to where it is. Today it runs on the Tensix grid and
+the X280 cores of a Tenstorrent Blackhole card.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
   <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code: a command runs a handler (reader.run and km::handler), broadcast to a row or column (km::Broadcast with cast and arrive), a message finds its core (km::Messages with send, forward and consume), a core asks an X280 core (km::X280Port and next), and an X280 thread decides (kmx_submit, kmx_parallel and kmx_pull_run in C). Centre, under the heading the card runs it by itself: two panels of 6 by 10 Tensix cores with persistent kernels, X280 cluster 0 submitting commands to both panels, X280 clusters 1 to 3 running the program's threads, a broadcast along a row and down a column, routed messages between cores and ports between X280 cores and Tensix cores; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.80 ms of sort and merge on 4 cores between passes, seven commands, the Tensix passes COUNT 3.8, SETUP 5.1 and FILL 2.1 ms, 12.1 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (7.2 and 15.4 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.3 us (7.7 times) and 7.99 ms (1.5 times), SwiGLU 42.6 us (6.2 times), attention 163 us (1.3 times).">
 </picture>
 
-Komorebi is a programming model and framework for the Tensix grid and the X280 cores of
-a Tenstorrent Blackhole card (developed on a P150A). It sees a program as threads, and a
-thread meets its data in one of two ways:
+Komorebi explores how to program a network of independently programmable processors,
+where computation, communication, code placement and execution control are all the
+program's own concern. It sees a program as threads, and a thread meets its data in one
+of two ways:
 
-- **The data comes to the thread.** A core reads tiles from DRAM, or receives them from
-  other cores through a port, a reduce or a broadcast.
-- **The thread goes to the data.** A routed message carries a thread's state to the core
-  that holds what it needs next, and that core is chosen while the program runs, from
-  the data.
+- **The data comes to the thread.** A processor reads what it needs from shared memory,
+  or receives it from other processors.
+- **The thread goes to the data.** A message carries a thread's state to the processor
+  that holds what it needs next, and that processor is chosen while the program runs,
+  from the data.
 
-A thread needs its code where it arrives. Today the code is placed there in advance:
-a program is a set of persistent kernels on every Tensix core; each command they receive names a handler of code and a
-core group, and every core of the group works on its partition. Cores send each other messages, a
-dispatcher on one X280 cluster submits the commands and runs streams and graphs of
-them on the card, and C threads on the other three X280 clusters run the irregular part
-of a program. Code can also travel: a core loading a kernel body into itself
-([overlay_probe](experiments/overlay_probe/README.md)) or into another core
-([remote_load](experiments/remote_load/README.md)) works as an experiment; a thread
-that carries its own code is not built yet.
+A thread needs its code where it arrives: placed there in advance, or loaded when it is
+needed. Nothing in this asks for one particular chip. It asks for processors with their
+own memory and a network on which any of them can reach any other, so other grids of
+this kind, and several cards joined together, fit the same description. None of those
+has been tried.
+
+## On a Blackhole card, today
+
+This repository is the model built for one machine, a Tenstorrent Blackhole card
+(developed on a P150A): 120 Tensix cores in a grid, 16 X280 cores in four clusters, and
+the card's network between them.
+
+| Concern | On the card |
+|---|---|
+| Computation | A program is a set of persistent kernels on every Tensix core. Each command they receive names a handler of code and a core group, and every core of the group works on its partition. |
+| Communication | Cores read and write DRAM, and send each other data through ports, reduces and broadcasts. A routed message goes to a core chosen at run time. |
+| Code placement | The same kernels are loaded on every core in advance. A core loading a kernel body into itself ([overlay_probe](experiments/overlay_probe/README.md)) or into another core ([remote_load](experiments/remote_load/README.md)) works as an experiment; a thread that carries its own code is not built yet. |
+| Execution control | A dispatcher on one X280 cluster submits the commands and runs streams and graphs of them on the card. C threads on the other three X280 clusters run the irregular part of a program. |
 
 **Status: early development; nothing is released.** Everything below runs on one
-P150A, from a clone, against a tt-metal source tree.
+P150A, from a clone, against a tt-metal source tree. It has run on no other hardware.
 
 ## At a glance
 
