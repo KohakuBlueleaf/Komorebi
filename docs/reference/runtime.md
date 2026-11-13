@@ -73,6 +73,7 @@ void kernel_main() {           // compute.cpp: the body runs on all three thread
 | `device/km_group.hpp` | groups of a group, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
 | `device/km_port.hpp` | emit, arrive, take, reduce ([ports](ports.md)) | yes |
 | `device/km_broadcast.hpp` | broadcast ([broadcasts](broadcast.md)) | yes |
+| `device/km_movement.hpp` | both data movers on one stream: patterns, buffer pairs, streams, `km::move`, `km::Movement` ([movement](movement.md)) | yes |
 
 The headers without tt-metal can be compiled on the host; the CPU tests do so.
 

@@ -105,6 +105,7 @@ nav:
       - reference/runtime.md
       - reference/ports.md
       - reference/broadcast.md
+      - reference/movement.md
       - reference/dynamic.md
       - reference/threads.md
   - Releases:
@@ -120,3 +121,4 @@ nav:
       - examples/07_work_cluster/README.md
       - examples/08_parallel_thread/README.md
       - examples/10_x280_ports/README.md
+      - examples/11_movement/README.md
