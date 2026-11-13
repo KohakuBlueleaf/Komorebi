@@ -78,7 +78,8 @@ it in its three kernels.
 job with `Run.issue(..., exclusive=True, result=True)`: the records reach the grid
 through the dispatch kernel on X280 cluster 0. Member 0 returns the total's checksum
 (its float32 words summed in 32 bits) as the record's result word, which arrives as
-`Event.result`. The driver checks every total against numpy (bit-equal on integer
+`Event.result`; it sums only when the record asks for a result (`KM_F_RESULT`), since
+the pass over the total costs about 7.6 µs per output tile. The driver checks every total against numpy (bit-equal on integer
 inputs, by relative RMS on uniform random ones) and every result word against the
 checksum of numpy's total (integer inputs) or of the total read back (random ones).
 One JSON line, with `ok`: every job and result word right, no core given up, no port
@@ -104,17 +105,27 @@ The second load runs the same jobs clean.
 
 A team is at most 119 cores by owner (one arrival slot per other member); by tree it
 may cover the whole grid. `merge_fed.py` takes the same options and runs the jobs
-under the test feeder on core 119 instead (no X280; cores 0 to 118). The timings
-below were taken that way.
+under the test feeder on core 119 instead (no X280; cores 0 to 118); its records ask
+for no result word, so member 0 computes no checksum.
 
-Measured on a Blackhole p150a at 1350 MHz, T = 64, records issued four at a time:
+Measured on a Blackhole p150a (card 1, 2026-11-13) at 1350 MHz, T = 64, records issued
+four at a time, `--form both`, 100 jobs each run by both forms:
 
-| Members | µs per job |
-|---|---|
-| 8 | 7.3 |
-| 32 | 10.2 |
-| 60 | 14.5 |
-| 119 | 24.0 |
+```
+python merge_fed.py --jobs 100 --count N        # the test feeder
+python merge.py --jobs 100 --count N            # through a session
+```
+
+| Members | µs per job, test feeder | µs per job, session (host's clock, with the checksum) |
+|---|---|---|
+| 8 | 7.3 | 36.7 |
+| 32 | 10.2 | |
+| 60 | 14.5 | |
+| 119 | 24.0 | 51.8 |
+
+The session's times are the host's, from the first issue to the last event, through
+the dispatch kernel (X280 at 1000 MHz), and every record asks for its result word: the checksum is about 7.6 µs of every
+job (the test feeder's 8 members took 15.0 µs per job while its records summed too).
 
 1,000 jobs on random teams with random forms: 1,000 checked, 0 wrong. 500 random
 teams, each by both forms: 250 integer-input pairs, all bit-equal. Parts of 2 tiles
