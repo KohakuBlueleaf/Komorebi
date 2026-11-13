@@ -63,7 +63,7 @@ namespace km {
     constexpr uint32_t kWhereCToken = 8;    // compute (unpack) waiting for a token
     constexpr uint32_t kWhereCInput = 9;    // compute (unpack) waiting for input pages
     constexpr uint32_t kWhereCOutput = 10;  // compute (pack) waiting for output space
-    constexpr uint32_t kWhereCDone = 11;    // writer waiting for compute's body
+    constexpr uint32_t kWhereCDone = 11;    // writer: compute's and reader's bodies
     constexpr uint32_t kEndExit = 1;        // left on an EXIT record
     constexpr uint32_t kEndGaveUp = 2;      // left after its own wait gave up
     constexpr uint32_t kEndAbort = 3;       // left on the EXIT handed after a give-up

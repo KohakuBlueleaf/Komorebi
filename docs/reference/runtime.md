@@ -204,7 +204,9 @@ Every wait of the runtime is a `km::poll_stop(stop, ready, limit, grace)`. It po
 `limit` units (0: no limit). It returns `kGaveStop` when the stop word is set: at once
 with `grace` 0, otherwise after `grace` more units, so a wait already about to end
 can still end. A wait that gives up records its first give-up and sets the tile's stop
-word, so all three kernels leave.
+word, so all three kernels leave. The writer reports a record only after the
+reader's and compute's bodies for it have returned, so a give-up in any of a member's
+three kernels fails the record it happens in.
 
 | Kernel | Wait | Limit | Where |
 |---|---|---|---|
@@ -216,7 +218,7 @@ word, so all three kernels leave.
 | reader | after a give-up: token pages for the EXIT it hands on (not recorded) | wait | - |
 | writer | the next token | idle; wait after a stop | `writer` |
 | writer | `wait_front` | wait x `times` | `data` |
-| writer | compute has left its body for this record | wait | `cdone` |
+| writer | compute and the reader have left their bodies for this record | wait | `cdone` |
 | writer | its members' completion reports | wait | `complete` |
 | compute | the next token (unpack) | idle; wait after a stop | `ctoken` |
 | compute | `wait_front` (unpack) | wait x `times` | `cinput` |
@@ -259,7 +261,7 @@ of each kernel is kept, because it names the cause. The host decodes the words w
 | 8 | `ctoken` | compute (unpack): a token |
 | 9 | `cinput` | compute (unpack): input pages |
 | 10 | `coutput` | compute (pack): output space |
-| 11 | `cdone` | writer: compute's body to return |
+| 11 | `cdone` | writer: compute's and the reader's bodies to return |
 | 12 | `lanebegin` | lane: arguments or buffer at a record |
 | 13 | `lanedone` | lane sender: DONE stamps, its NoC flushes |
 | 14 | `lanevalid` | lane receiver: VALID |
@@ -302,7 +304,7 @@ a multiple of 16). Offsets are in bytes, and every offset has a static assert in
 | 0x000 | `KM_CTL_RING` | 16 ring slots of one record each (64 bytes) |
 | 0x400 | `KM_CTL_RSVD` | reserved, 16 bytes |
 | 0x410 | `KM_CTL_STOP` | stop word: nonzero makes every wait give up |
-| 0x440 | `KM_CTL_DONE` | 16 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned |
+| 0x440 | `KM_CTL_DONE` | 16 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned, word 2 (`kDoneReader`) the last whose reader body returned |
 | 0x540 | `KM_CTL_BOOT` | start-up check-ins at a leader, one 16-byte slot per rank |
 | 0x640 | `KM_CTL_STATE` | 48 state words |
 | 0x700 | `KM_CTL_JOB` | the record being run, copied by the reader for compute and writer |
