@@ -48,7 +48,7 @@
 
 typedef struct {
     uint32_t sequence; /* chunk 0: sequence number, starts at 1, increases */
-    uint32_t hdr;      /* handler | flags << 8 | slot << 16 */
+    uint32_t hdr;      /* handler | flags << 8 | slot << 16 | program << 24 */
     uint32_t
         group; /* first | count << 16: cores [first, first + count) in core order */
     uint32_t a0;

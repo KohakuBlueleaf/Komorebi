@@ -84,13 +84,15 @@
 #define KMD_REJECT_DROPPED 10u  /* to the engine: a queued job of its stream dropped */
 #define KMD_REJECT_BUSY 11u     /* engine, work cluster: the command cannot go now */
 #define KMD_REJECT_MESSAGES 12u /* a dynamic run with KM_FLAG_QUEUE */
+/* the group's cores do not hold the command's program (header bits 24 to 31) */
+#define KMD_REJECT_PROGRAM 13u
 /* the host's command to a work cluster whose thread has KMD_WORK_IN_DEPTH unanswered */
 #define KMD_REJECT_THREAD 14u
 
 /* Engine to kernel: POST host event {a0 request, a1 status, a2 ticks}. Kernel to
  * engine: RUN {request offset, ticks bytes} of an upload, CANCEL {ticks request}. */
 #define KMD_HANDLER_POST 248u
-/* Engine to kernel: drop its queued jobs of stream tag a0 (the header's slot bits). */
+/* Engine to kernel: drop its queued jobs of stream tag a0 (the group's first half). */
 #define KMD_HANDLER_DROP 247u
 /* Work cluster to kernel: its thread's answer to command line a0, a1 the word that
  * kmx_program returned; no event. */

@@ -170,7 +170,7 @@ work_command(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         sequence = ++dispatcher->sequence;
     }
     uint64_t* kept = thread->line[slot];
-    kept[0] = number | (uint64_t)(header & 0xFFFFu) << 32;
+    kept[0] = number | (uint64_t)(header & 0xFF00FFFFu) << 32;
     for (uint32_t word = 1; word < 8; word++) {
         kept[word] = (
             word % 2 == 0 ? (line[word] & ~(uint64_t)0xFFFFFFFFu) | number : line[word]

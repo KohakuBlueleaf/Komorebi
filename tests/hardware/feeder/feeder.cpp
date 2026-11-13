@@ -177,7 +177,7 @@ void kernel_main() {
             slot_command->land1 = slot_command->land2 = slot_command->land3 = sequence
         );
         if (!raw) {  // a raw command keeps the slot it names (test only)
-            slot_command->hdr = (slot_command->hdr & 0xFFFFu) | slot << 16;
+            slot_command->hdr = (slot_command->hdr & 0xFF00FFFFu) | slot << 16;
         }
         const uint64_t started = km::wall64();
         if (arg(kFdRelease) != 0) {  // one release time for every core (test only)

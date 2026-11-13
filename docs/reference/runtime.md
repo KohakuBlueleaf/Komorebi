@@ -86,7 +86,7 @@ carries the sequence number. The command has landed when all four agree
 | Word | Field | Read with |
 |---|---|---|
 | `sequence` | sequence number, from 1, increasing (compared across the wrap) | `km::newer(sequence, other)` |
-| `hdr` | `handler \| flags << 8 \| slot << 16` | `km::handler(command)`, `km::flags(command)`, `km::slot(command)` |
+| `hdr` | `handler \| flags << 8 \| slot << 16 \| program << 24` (the program field: 0 is the run's first program) | `km::handler(command)`, `km::flags(command)`, `km::slot(command)`, `km::program(command)` |
 | `group` | `first \| count << 16`: cores `first` to `first + count - 1` in core order | `km::first(command)`, `km::count(command)`, `km::in_group(command, me)` |
 | `a0` to `a9` | the handler's ten argument words | `command.a0` ... `command.a9` |
 | `land1` to `land3` | copies of `sequence` (landing) | `KM_LANDED(&command)` |

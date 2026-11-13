@@ -190,9 +190,10 @@ static uint32_t graph_submit(void* context, uint32_t node, const km_command_t* r
         destination_words[word] = source_words[word];
     }
     if (job) {
-        /* The run's tag in the slot bits, as a stream's job carries its own. */
+        /* The run's tag in the group's first half, as a stream's job has its own. */
+        destination_words[1] &= 0xFF00FFFFu;
         destination_words
-            [1] = ((destination_words[1] & 0xFFFFu) | (run->order & 0xFFFFu) << 16);
+            [2] = ((destination_words[2] & 0xFFFF0000u) | (run->order & 0xFFFFu));
         engine->jobs++;
         run->jobs++;
     }

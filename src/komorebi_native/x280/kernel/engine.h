@@ -596,10 +596,10 @@ static kmd_uop_t stream_command(
     uint32_t* words = (uint32_t*)line;
     words[2] = first | count << 16;
     if (job != 0) {
-        /* The kernel's queue: KM_FLAG_QUEUE, and the stream's tag in the slot bits. */
-        words[1] = (
-            (words[1] & 0xFFFFu) | KM_FLAG_QUEUE << 8 | (stream->order & 0xFFFFu) << 16
-        );
+        /* The kernel's queue: KM_FLAG_QUEUE, and the stream's tag in the group's first
+         * half (a queued job's first is the kernel's to choose). */
+        words[1] = (words[1] & 0xFF00FFFFu) | KM_FLAG_QUEUE << 8;
+        words[2] = (stream->order & 0xFFFFu) | count << 16;
         engine->jobs++;
         stream->jobs++;
     }

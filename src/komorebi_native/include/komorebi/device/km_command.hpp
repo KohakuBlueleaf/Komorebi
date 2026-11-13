@@ -25,6 +25,11 @@ namespace km {
         return (command.hdr >> 16) & 0xFFu;
     }
 
+    // The command's program: 0 the run's own (first, or only) program.
+    inline uint32_t program(const km_command_t& command) {
+        return command.hdr >> 24;
+    }
+
     inline uint32_t first(const km_command_t& command) {
         return command.group & 0xFFFFu;
     }
@@ -33,8 +38,10 @@ namespace km {
         return command.group >> 16;
     }
 
-    inline uint32_t make_hdr(uint32_t handler, uint32_t flags, uint32_t slot) {
-        return handler | flags << 8 | slot << 16;
+    inline uint32_t make_hdr(
+        uint32_t handler, uint32_t flags, uint32_t slot, uint32_t program = 0
+    ) {
+        return handler | flags << 8 | slot << 16 | program << 24;
     }
 
     inline uint32_t make_group(uint32_t first, uint32_t count) {

@@ -236,6 +236,11 @@ int main() {
         km::in_group(make(1, 1, 10, 5), 9), KM_ACK(0x12345678u));
     km::Partition s = km::partition(64, 2, 60);
     std::printf("%u %u\n", s.start, s.len);
+    km_command_t p = make(1, 9, 0, 1);
+    p.hdr = km::make_hdr(9, KM_FLAG_RESULT, 3, 200);  // the program field: bits 24-31
+    std::printf(
+        "%u %u %u %u %u\n", km::handler(p), km::flags(p), km::slot(p), km::program(p),
+        km::program(make(1, 9, 0, 1)));
     return 0;
 }
 """
@@ -249,7 +254,7 @@ def test_command_header_logic_on_the_host(tmp_path):
     command = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(rec.INCLUDE)]
     subprocess.run([*command, str(source_file), "-o", str(exe)], check=True)
     lines = subprocess.run([str(exe)], capture_output=True, text=True, check=True)
-    first, second = lines.stdout.splitlines()
+    first, second, third = lines.stdout.splitlines()
     got = json.loads(first)
     assert got["a"] == [5, 7, 0]  # smallest own sequence, nothing part-landed
     assert got["last1"] == 8  # not mine: consumed
@@ -261,6 +266,8 @@ def test_command_header_logic_on_the_host(tmp_path):
     assert got["in_group"] == [1, 0, 0]
     assert got["ack"] == 0x12345678  # the whole sequence number
     assert tuple(map(int, second.split())) == rec.partition(64, 2, 60) == (4, 2)
+    flag = CONSTANTS["KM_FLAG_RESULT"]
+    assert tuple(map(int, third.split())) == (9, flag, 3, 200, 0)
 
 
 REPORT_CHECK = r"""

@@ -90,7 +90,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
   four streams run; 7 `KM_HANDLER_CANCEL` of a req no running stream has; 8
   `KM_HANDLER_DEADLINE` of 0; 9 a `KM_FLAG_QUEUE` command while the queue is full (the host
   may retry it); 11 a work cluster's command that would wait; 12 a `KM_FLAG_QUEUE` command
-  of the program's dynamic handler. A rejected command's event has ticks 0.
+  of the program's dynamic handler. Reason 13 (`KMD_REJECT_PROGRAM`, a group whose cores do
+  not hold the command's program) is named, not used yet: the host refuses such a command
+  before it sends it. A rejected command's event has ticks 0.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
   word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
@@ -154,7 +156,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   command (in a later engine pass), so its commands reach core 0 in its own order. `KM_EVENT_STREAM`, `_END` and `_ERROR` carry the stream's req,
   the auxiliary `reason | pc << 8` for an error; the engine sends them to core 0 as
   `KMD_HANDLER_POST` commands, which core 0 forwards to the host. A ENQUEUE sends the command
-  with `KM_FLAG_QUEUE` and the stream's tag in the header's slot bits; it waits while the
+  with `KM_FLAG_QUEUE` and the stream's tag in the group's `first` half (the kernel
+  chooses `first`; such a command never goes to a work cluster); it waits while the
   queue's length (`KMD_ERING_QUEUED`) and the engine's jobs not yet taken in
   (`KMD_ERING_TAKEN`) fill the queue. At a stream's error or cancel the engine sends
   `KMD_HANDLER_DROP` (247) with the tag, and core 0 drops that stream's queued jobs, each

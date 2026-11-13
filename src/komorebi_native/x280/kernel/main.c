@@ -321,7 +321,11 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         return KMD_TAKEN;
     }
 #endif
-    if (first >= KM_GROUP_CLUSTER_BASE && handler <= KM_HANDLER_USER_MAX) {
+    /* An engine's queued job carries its stream's tag in `first`: never a cluster. */
+    if (
+        first >= KM_GROUP_CLUSTER_BASE && handler <= KM_HANDLER_USER_MAX &&
+        !(queued && source == KMD_SRC_ENGINE)
+    ) {
         return work_command(dispatcher, source, now); /* to a work cluster's thread */
     }
     uint32_t reject = 0;
@@ -363,7 +367,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
             dispatcher->rejected++;
             return KMD_TAKEN;
         }
-        queue_put(dispatcher, line, source, request, count, host ? 0u : header >> 16);
+        queue_put(dispatcher, line, source, request, count, host ? 0u : first);
         ring_consumed(ring);
         return KMD_TAKEN;
     }

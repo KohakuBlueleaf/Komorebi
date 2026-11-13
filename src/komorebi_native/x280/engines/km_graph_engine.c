@@ -483,7 +483,7 @@ static uint32_t submit_command(
     const km_command_t* template_command = &template_entry->rec;
     km_command_t command;
     command.sequence = command.land1 = command.land2 = command.land3 = 0;
-    command.hdr = template_command->hdr & 0xFFFFu;
+    command.hdr = template_command->hdr & 0xFF00FFFFu;
     command.a0 = template_command->a0;
     command.a1 = template_command->a1;
     command.a2 = template_command->a2;

@@ -310,14 +310,15 @@ def headers():
     return Headers(include, kernel)
 
 
-def command(handler, first, count, args=(), flags=0, abi_headers=None):
-    """The 16 words of a command; the dispatcher fills sequence, slot, landing words."""
+def command(handler, first, count, args=(), flags=0, abi_headers=None, program=0):
+    """The 16 words of a command; the dispatcher fills sequence, slot, landing words.
+    `program`: the program field (0: the run's first program)."""
     abi_headers = abi_headers or headers()
     header_word, group, arg_at = abi_headers.positions
     if len(args) > len(arg_at):
         raise ValueError(f"{len(args)} arguments; a command has {len(arg_at)}")
     words = [0] * 16
-    words[header_word] = (handler & 0xFF) | (flags & 0xFF) << 8
+    words[header_word] = (handler & 0xFF) | (flags & 0xFF) << 8 | (program & 0xFF) << 24
     words[group] = (first & 0xFFFF) | (count & 0xFFFF) << 16
     for word, value in zip(arg_at, args):
         words[word] = int(value) & M32

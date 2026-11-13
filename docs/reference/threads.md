@@ -62,7 +62,8 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 Ring calls, `kmx_spawn`, `kmx_join`, `kmx_parallel`, `kmx_parallel_all`, `kmx_port_run` and
 `kmx_serve` from X280 cores 1 to 3 command the library error `parallel` and return `KMX_STOPPED`.
 `kmx_message`: `sequence`, `w[3]`. A command for `kmx_submit` is a `km_command_t` (`komorebi/abi/km_abi.h`):
-`hdr = handler | flags << 8`, `group = first | count << 16`, arguments `a0` to `a9`; the
+`hdr = handler | flags << 8 | program << 24` (the program field, 0 for the run's first
+program), `group = first | count << 16`, arguments `a0` to `a9`; the
 library writes `sequence` and the landing words. Flags: `KM_FLAG_EXCLUSIVE` (submitted only when no
 group in flight overlaps it), `KM_FLAG_RESULT` (the group leader's `writer.result(value)`
 is returned in the event's `ticks`), `KM_FLAG_QUEUE` (the kernel chooses `first`). A

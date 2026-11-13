@@ -332,7 +332,7 @@ def ok_ignored_bytes():
     t = _templates_at(bytes(data))
     for offset in (0, 16, 32, 48):  # sequence and landing words
         data[t + offset : t + offset + 4] = b"\x5a\x5a\x5a\x5a"
-    data[t + 6 : t + 8] = b"\xff\xff"  # slot bits of hdr
+    data[t + 6] = 0xFF  # slot bits of hdr (bits 24 to 31 are the program field)
     data[t + 65 : t + 68] = b"\x63" * 3  # patch entries past patch_count
     data[t + 69 : t + 72] = b"\xc8" * 3
     data[t + 75 : t + 80] = b"\x42" * 5  # template padding

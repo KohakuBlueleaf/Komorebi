@@ -149,7 +149,8 @@ ignores `first_register` and `count_register`; the submitted command never carri
 
 Every byte the layout does not name (the padding, the header's last 32 bytes, unused
 operand fields, `imm2`, the command's sequence and landing words and the slot bits of its
-`hdr` word, the template's last 5 bytes, patch entries past `patch_count`) is ignored.
+`hdr` word, the template's last 5 bytes, patch entries past `patch_count`) is ignored. The
+`hdr` word's bits 24 to 31, the program field, go with the command.
 
 Opcodes: SET 1, MOV 2, ADD 3, ADDI 4, SUB 5, MUL 6, AND 7, SHR 8, MOD 9, RAND 10,
 JMP 16, JLT 17, JEQ 18, JNZ 19, HALT 20, SUBMIT 32, ENQUEUE 33, WAIT 40, RESULT 41,
