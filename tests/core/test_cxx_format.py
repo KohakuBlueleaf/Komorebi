@@ -33,8 +33,9 @@ CLEAN = """int f(int a) {
     if (a) {
         return 1;
     }
-    int long_name_of_a_value =
-        (some_function_name(argument_one, argument_two, argument_three) + 1);
+    int long_name_of_a_value = (
+        some_function_name(argument_one, argument_two, argument_three) + 1
+    );
     return 0;
 }
 """
@@ -44,6 +45,31 @@ CLEAN = """int f(int a) {
 def test_format_text_applies_style_braces_and_value_wrap():
     assert cxx_format.format_text(MESSY, BINARY) == CLEAN
     assert cxx_format.format_text(CLEAN, BINARY) == CLEAN
+
+
+WRAPPED_ARGUMENTS = """void f() {
+    switch (x) {
+        case 1:
+            return wr.poll(
+                [&] {
+                    return static_cast<int32_t>(km::wall() - r.a9) >= 0;
+                },
+                wr.args().wait_limit
+            ) == km::kGaveNone;
+    }
+}
+"""
+
+
+@needs_clang_format
+def test_wrapped_arguments_are_one_level_from_the_line_that_opens_them():
+    messy = (
+        "void f() { switch (x) { case 1: return wr.poll([&] { return"
+        " static_cast<int32_t>(km::wall() - r.a9) >= 0; }, wr.args().wait_limit)"
+        " == km::kGaveNone; } }"
+    )
+    assert cxx_format.format_text(messy, BINARY) == WRAPPED_ARGUMENTS
+    assert cxx_format.format_text(WRAPPED_ARGUMENTS, BINARY) == WRAPPED_ARGUMENTS
 
 
 @needs_clang_format

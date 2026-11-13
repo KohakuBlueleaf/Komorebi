@@ -18,6 +18,7 @@ AllowShortLoopsOnASingleLine: false
 AllowShortLambdasOnASingleLine: Empty
 AlwaysBreakTemplateDeclarations: Yes
 BreakBeforeBraces: Attach
+BreakConstructorInitializers: AfterColon
 DerivePointerAlignment: false
 PointerAlignment: Left
 IncludeBlocks: Preserve

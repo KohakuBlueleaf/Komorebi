@@ -1,5 +1,6 @@
-"""C / C++ formatter: clang-format, then rules it cannot express (overlong values as
-``= (`` / value / ``);``, ``;`` in empty loops, ``value,  // name`` arguments).
+"""C / C++ formatter: clang-format, then rules it cannot express (wrapped brackets
+indented one level from the line that opens them, overlong values as ``= (`` / value /
+``);``, ``;`` in empty loops, ``value,  // name`` arguments).
 Usage: python -m komorebi.tools.cxx_format [--check] [--config FILE] [paths...]
 """
 
@@ -28,7 +29,7 @@ atexit.register(_TEMP.close)
 # A statement assigning (or returning) a value: indent, head (target and operator).
 ASSIGN = re.compile(
     r"^(\s*)(return|(?!(?:if|for|while|switch|case)\b)[^=;\"'({]*?[^=!<>\s(]\s*"
-    r"(?:<<|>>|[-+*/%&|^])?=)\s+(\S.*)$"
+    r"(?:<<|>>|[-+*/%&|^])?=)(?:\s+(\S.*))?$"
 )
 # A declaration clang-format split after its type, and the line naming it.
 TYPE_ONLY = re.compile(
@@ -240,6 +241,24 @@ def merge_split_declarations(lines):
     return out
 
 
+def split_declarators(indent, head, value):
+    """``type a = x, b = y;`` that wraps as one declaration per line (the lines, or None
+    when the statement is not a plain declaration of values)."""
+    m = re.fullmatch(r"((?:[\w:<>]+\s+)+)(\w+)\s*=", head)
+    if not m or any(c in m[1] for c in "*&[("):
+        return None
+    items = split_items(value)
+    if len(items) < 2 or not all(
+        re.fullmatch(r"\w+(\s*=\s*\S.*)?", x) for x in items[1:]
+    ):
+        return None
+    prefix = m[1].strip()
+    return [
+        f"{indent}{head} {items[0]};\n",
+        *(f"{indent}{prefix} {item};\n" for item in items[1:]),
+    ]
+
+
 def wrap_values(lines, binary):
     """Assigned / returned values that span lines or overflow the line as ``= (`` /
     value / ``);``."""
@@ -256,10 +275,11 @@ def wrap_values(lines, binary):
             i += 1
             continue
         indent, head, first = m.groups()
+        first = first or ""
         rest = (lines[k].rstrip("\n") for k in range(i + 1, end + 1))
         value = strip_outer_parens(join([first, *rest])[:-1].rstrip())
         if value.startswith(("[", "{")) or top_level_comma(value):
-            out.extend(lines[i : end + 1])
+            out.extend(split_declarators(indent, head, value) or lines[i : end + 1])
         elif len(indent) + len(head) + len(value) + 2 <= COLUMNS:
             out.append(f"{indent}{head} {value};\n")
         else:
@@ -383,6 +403,333 @@ def block_braced_lists(lines):
     return out
 
 
+def blank_code(lines):
+    """Per line (code, kind): the line with literals and comments blanked, and its kind:
+    "blank", "preprocessor", "comment" (only a comment) or "code"."""
+    out, in_block, continued = [], False, False
+    for line in lines:
+        text = line.rstrip("\n")
+        if not in_block and (continued or text.lstrip().startswith("#")):
+            continued = text.rstrip().endswith("\\")
+            out.append(("", "preprocessor"))
+            continue
+        code, quote, i = [], None, 0
+        while i < len(text):
+            c = text[i]
+            if in_block:
+                end = text.find("*/", i)
+                stop = len(text) if end < 0 else end + 2
+                code.append(" " * (stop - i))
+                in_block = end < 0
+                i = stop
+                continue
+            if quote:
+                code.append(" ")
+                if c == "\\" and i + 1 < len(text):
+                    code.append(" ")
+                    i += 1
+                elif c == quote:
+                    quote = None
+            elif c in "\"'":
+                quote = c
+                code.append(" ")
+            elif text.startswith("//", i):
+                code.append(" " * (len(text) - i))
+                break
+            elif text.startswith("/*", i):
+                in_block = True
+                code.append("  ")
+                i += 1
+            else:
+                code.append(c)
+            i += 1
+        code = "".join(code)
+        kind = "code" if code.strip() else ("comment" if text.strip() else "blank")
+        out.append((code, kind))
+    return out
+
+
+def reindent_brackets(lines):
+    """Wrapped bracket contents one level in from the line that opens the bracket, the
+    closing bracket at that line's indent: nothing aligned under an operand, under
+    ``return`` or under the bracket's column. A line continuing an item keeps its indent
+    relative to it; contents on the bracket's own line move with it."""
+    code = blank_code(lines)
+    new = [0] * len(lines)  # the indent each line ends up with
+    moved = [0] * len(lines)  # by how much it moved
+    anchor = [0] * len(lines)  # by how much the line starting its statement moved
+    # A bracket: [line, character, wraps, contents' move, after ',', inside another]
+    out, stack = [], []
+    for k, line in enumerate(lines):
+        text = line.rstrip("\n")
+        cod, kind = code[k]
+        indent = len(text) - len(text.lstrip(" "))
+        new[k] = indent
+        if kind in ("blank", "preprocessor"):
+            out.append(line)
+            continue
+        first = cod.lstrip()[:1]
+        if stack:
+            entry = stack[-1]
+            at, bracket, wraps, shift, comma, inside = entry
+            if bracket == "{" and not inside:
+                shift = anchor[at]
+            elif first in (")", "]", "}"):
+                shift = new[at] - indent
+            elif not wraps:
+                shift = moved[at]
+            elif shift is None or (comma and bracket != "{"):
+                shift = new[at] + INDENT - indent
+                entry[3] = shift
+            moved[k] = shift
+            new[k] = max(indent + shift, 0)
+        # A line of closing brackets (``)) {``) starts nothing: its statement does
+        closes = first in (")", "]", "}")
+        anchor[k] = anchor[stack[-1][0]] if stack and closes else moved[k]
+        out.append(" " * new[k] + text.lstrip(" ") + "\n")
+        for j, c in enumerate(cod):
+            rest = not cod[j + 1 :].strip()
+            template = c == "<" and rest and j and re.match(r"[\w:>]", cod[j - 1])
+            if c in "([{" or template:
+                inside = bool(stack) and stack[-1][1] in "([<"
+                stack.append([k, c, rest, None, False, inside])
+            elif c in ")]}" or (c == ">" and stack and stack[-1][1] == "<"):
+                while stack and c != ">" and stack[-1][1] == "<":
+                    stack.pop()
+                if stack:
+                    stack.pop()
+        if stack and kind == "code":
+            stack[-1][4] = cod.rstrip().endswith(",")
+    return out
+
+
+def join_member_calls(lines):
+    """``)`` and the member call clang-format put on the line after it (``.count();``)
+    joined, when they fit on one line."""
+    out = []
+    for line in lines:
+        text = line.strip()
+        joined = out[-1].rstrip("\n") + text if out else ""
+        if (
+            out
+            and text.startswith((".", "->"))
+            and out[-1].strip().startswith(")")
+            and len(joined) <= COLUMNS
+        ):
+            out[-1] = joined + "\n"
+        else:
+            out.append(line)
+    return out
+
+
+def hugged(code, lines, i):
+    """(column of the bracket, line, column of its closing bracket) for the first
+    bracket left open at the end of line `i` that has more text after it; None when
+    there is none or it cannot be laid out safely."""
+    here = code[i][0].rstrip()
+    stack = []
+    for j, c in enumerate(here):
+        if c in "([{":
+            stack.append(j)
+        elif c in ")]}" and stack:
+            stack.pop()
+    if not stack or here[-1] in "([{" or any(here[j] == "{" for j in stack):
+        return None
+    pos, depth = stack[0], 1
+    for k in range(i, min(i + 60, len(lines))):
+        part, kind = code[k]
+        raw = lines[k].rstrip("\n")
+        if kind != "code" or "/*" in raw:
+            return None
+        for m in range(pos + 1 if k == i else 0, len(part)):
+            if (
+                part[m] in "{};"
+                and part[m : m + 2] != "{}"
+                and part[m - 1 : m + 1] != "{}"
+            ):
+                return None
+            depth += part[m] in "(["
+            depth -= part[m] in ")]"
+            if depth == 0:
+                return pos, k, m
+        if scan(raw)[1]:
+            return None
+    return None
+
+
+def block_hugged_brackets(lines, binary):
+    """A bracket clang-format opened without breaking after it and whose contents wrap
+    (``f(a,`` / ``  b)``, ``if (a &&`` / ``    b) {``) laid out as ``f(`` / the
+    contents, indented / ``)``. A bracket with a brace, a comment or a ``;`` inside
+    stays as it is."""
+    code = blank_code(lines)
+    out, i = [], 0
+    while i < len(lines):
+        text = lines[i].rstrip("\n")
+        found = hugged(code, lines, i) if code[i][1] == "code" else None
+        if found is None:
+            out.append(lines[i])
+            i += 1
+            continue
+        pos, end, close = found
+        last = lines[end].rstrip("\n")
+        pieces = [text[pos + 1 :], *(line.rstrip("\n") for line in lines[i + 1 : end])]
+        contents = join([*pieces, last[:close]])
+        indent = len(text) - len(text.lstrip(" "))
+        inner = indent + INDENT
+        if inner + len(contents) <= COLUMNS and not top_level_comma(contents):
+            body = [" " * inner + contents + "\n"]
+        else:
+            body = format_value(contents, inner, binary)
+        out += [text[: pos + 1] + "\n", *body, " " * indent + last[close:] + "\n"]
+        i = end + 1
+    return out
+
+
+def ternary_parts(text):
+    """(condition, then, else) of `text` when it is one conditional expression (a ``?``
+    outside brackets with its ``:``), else None."""
+    code, depth, nested, found = scan(text)[0], 0, 0, None
+    for i, c in enumerate(code):
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth or c not in "?:" or code[i - 1 : i + 2].count(":") == 2:
+            continue
+        elif c == "?" and found is None:
+            found = i
+        elif c == "?":
+            nested += 1
+        elif found is not None and nested == 0:
+            return (
+                text[:found].strip(),
+                text[found + 1 : i].strip(),
+                text[i + 1 :].strip(),
+            )
+        elif found is not None:
+            nested -= 1
+    return None
+
+
+def ternary_lines(text, indent, binary, prefix=""):
+    """A conditional expression, one part per line: the condition, then ``? value`` and
+    ``: value`` one level in; a chain of them one level in again for each link."""
+    cond, then, other = ternary_parts(text)
+    inner = indent + INDENT
+
+    def piece(value, at, lead):
+        if at + len(lead) + len(value) <= COLUMNS:
+            return [" " * at + lead + value]
+        lines = format_value(value, at + len(lead), binary)
+        shift = at + INDENT - (len(lines[0]) - len(lines[0].lstrip(" ")))
+        rest = [" " * shift + line.rstrip("\n") for line in lines[1:]]
+        return [" " * at + lead + lines[0].strip(), *rest]
+
+    out = piece(cond, indent, prefix) + piece(then, inner, "? ")
+    if ternary_parts(other):
+        return out + ternary_lines(other, inner, binary, ": ")
+    return out + piece(other, inner, ": ")
+
+
+def wrap_ternaries(lines, binary):
+    """A conditional expression among the contents of a wrapped bracket laid out one
+    part per line (see ternary_lines) instead of ``?`` and ``:`` under operands."""
+    code = blank_code(lines)
+    stack, context = [], []  # per line: the line of the wrapped bracket that holds it
+    for k, (cod, _) in enumerate(code):
+        context.append(stack[-1][0] if stack and stack[-1][1] else -1)
+        for j, c in enumerate(cod):
+            if c in "([{":
+                stack.append((k, c != "{" and not cod[j + 1 :].strip()))
+            elif c in ")]}" and stack:
+                stack.pop()
+
+    def last_char(k):
+        return code[k][0].rstrip()[-1:]
+
+    out, i = [], 0
+    while i < len(lines):
+        owner = context[i]
+        if owner < 0 or code[i][1] != "code" or last_char(i - 1) not in (",", "(", "["):
+            out.append(lines[i])
+            i += 1
+            continue
+        # An item: from here to the line before the next one in the same bracket.
+        end = i
+        while end + 1 < len(lines) and (
+            context[end + 1] > owner
+            or (
+                context[end + 1] == owner
+                and code[end + 1][1] == "code"
+                and last_char(end) != ","
+                and code[end + 1][0].lstrip()[:1] not in (")", "]")
+            )
+        ):
+            end += 1
+        item = lines[i : end + 1]
+        text = join([line.rstrip("\n") for line in item])
+        trailing = text.endswith(",")
+        body = text[:-1].rstrip() if trailing else text
+        own = [k for k in range(i, end + 1) if context[k] == owner]
+        marked = any(code[k][0].lstrip()[:2] in ("? ", ": ") for k in own[1:])
+        plain = all(
+            code[k][1] == "code" and not set("{};") & set(code[k][0])
+            for k in range(i, end + 1)
+        )
+        if not (marked and plain and ternary_parts(body)):
+            out.append(lines[i])  # an item inside it may still be one
+            i += 1
+            continue
+        i = end + 1
+        indent = len(item[0]) - len(item[0].lstrip(" "))
+        laid = [line + "\n" for line in ternary_lines(body, indent, binary)]
+        out += laid[:-1] + [laid[-1].rstrip("\n") + (",\n" if trailing else "\n")]
+    return out
+
+
+def wrap_lambda_values(lines):
+    """A lambda assigned on the line after ``=`` laid out on that line, its parameters
+    wrapped: ``f = [&](`` / the parameters / ``) {`` / the body / ``};``."""
+    out, i = [], 0
+    while i < len(lines):
+        head = lines[i].rstrip("\n")
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        m = re.fullmatch(r"(\s*)(.*[^=!<>\s])\s*=", head)
+        lam = re.fullmatch(r"(\[[^\]]*\])\((.*)\)((?:\s+\w+)*) \{", nxt)
+        if not (m and lam and scan(nxt)[0].count("(") == scan(nxt)[0].count(")")):
+            out.append(lines[i])
+            i += 1
+            continue
+        indent = m.group(1)
+        at = len(lines[i + 1]) - len(lines[i + 1].lstrip(" "))
+        end = i + 2
+        while end < len(lines) and not (
+            lines[end].startswith(" " * at + "}")
+            and len(lines[end]) - len(lines[end].lstrip(" ")) == at
+        ):
+            end += 1
+        if end >= len(lines):
+            out.append(lines[i])
+            i += 1
+            continue
+        params = lam.group(2)
+        inner = len(indent) + INDENT
+        if inner + len(params) <= COLUMNS:
+            body = [" " * inner + params + "\n"]
+        else:
+            items = split_items(params)
+            body = [" " * inner + item + ",\n" for item in items[:-1]]
+            body.append(" " * inner + items[-1] + "\n")
+        out += [f"{head} {lam.group(1)}(\n", *body]
+        out.append(f"{indent}){lam.group(3)} {{\n")
+        out += [
+            line[INDENT:] if line.strip() else line for line in lines[i + 2 : end + 1]
+        ]
+        i = end + 1
+    return out
+
+
 def house_rules(lines, binary):
     """Argument comments, empty loops, braced lists and value wraps on clang-format's
     output."""
@@ -396,7 +743,16 @@ def house_rules(lines, binary):
         loop = EMPTY_LOOP.match(line)
         if loop and i + 1 < len(lines) and lines[i + 1].strip() == "}":
             fixed.append(f"{loop.group(1)}{' ' * INDENT};\n")
-    return wrap_values(block_braced_lists(hug_braced_lists(fixed)), binary)
+    lines = wrap_lambda_values(reindent_brackets(join_member_calls(fixed)))
+    lines = block_hugged_brackets(lines, binary)
+    lines = wrap_values(block_braced_lists(hug_braced_lists(lines)), binary)
+    for _ in range(8):
+        lines = reindent_brackets(lines)
+        laid = wrap_ternaries(block_hugged_brackets(lines, binary), binary)
+        if laid == lines:
+            break
+        lines = laid
+    return reindent_brackets(lines)
 
 
 def format_text(text, binary, passes=4):
