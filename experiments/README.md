@@ -94,3 +94,9 @@ place to ask a question and to be wrong.
   Tensix core stores bodies into 119 others in 29 µs; an X280 core decides each core's
   next body (3.5 µs a swap), stores it, or patches a template's constant; the target
   must invalidate its own i-cache: a NoC write to that register wedges the card.
+- [movement_probe](movement_probe/README.md): both data-movement CPUs of a core on one
+  stream, each taking the blocks a pattern gives it through its own half of a paired
+  buffer. One core doubles its reads (1.92 to 1.98x); across cores the ratio must follow
+  the routes (AAAB reads +18%, BBBBBAAA writes +47% on 120 cores); the K-split matrix
+  product gains 10.5% with its chunk reads split AB; attention, the rasterizer and the
+  ray tracer are compute-bound.
