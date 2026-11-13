@@ -12,9 +12,9 @@ import pytest
 GRACE = 30.0  # seconds a script has to close its session after SIGTERM
 
 
-def run_json(script, *args, timeout=120.0, grace=GRACE):
-    """Runs `python script args...`; returns the last stdout line that starts with "{",
-    parsed. Fails the test on a timeout or a non-zero exit, with the child's stderr."""
+def run_text(script, *args, timeout=120.0, grace=GRACE):
+    """Runs `python script args...`; returns its stdout. Fails the test on a timeout or
+    a non-zero exit, with the child's stderr."""
     child = subprocess.Popen(
         [sys.executable, str(script), *map(str, args)],
         stdout=subprocess.PIPE,
@@ -37,5 +37,11 @@ def run_json(script, *args, timeout=120.0, grace=GRACE):
         )
     if child.returncode != 0:
         pytest.fail(f"{Path(script).name} exited {child.returncode}\n{err[-2000:]}")
+    return out
+
+
+def run_json(script, *args, timeout=120.0, grace=GRACE):
+    """run_text, then the last stdout line that starts with "{", parsed."""
+    out = run_text(script, *args, timeout=timeout, grace=grace)
     lines = [line for line in out.splitlines() if line.startswith("{")]
     return json.loads(lines[-1])
