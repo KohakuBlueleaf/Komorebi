@@ -9,6 +9,7 @@ import contextlib
 import os
 import signal
 import time
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -52,7 +53,9 @@ def compute_config(options):
     return config
 
 
-_LIVE = set()  # sessions holding a device they opened or an X280 runtime
+# sessions holding a device they opened or an X280 runtime; weak, so that the exit
+# hooks never keep a session alive
+_LIVE = weakref.WeakSet()
 _HOOKED = []  # [True] once the exit hooks are installed
 
 
@@ -297,7 +300,8 @@ class Session:
     def _release(self, why, close_device):
         """The exit hooks' bounded clean-up of this session: closes the X280 runtime of
         a load in progress or a loaded run, then (`close_device`) closes the session.
-        Errors are logged, not raised: the process is ending."""
+        Errors are logged, not raised: the process is ending. The close runs even when
+        the stop raised."""
         try:
             if self._starting is not None:
                 self.log(f"{why}: closing the X280 runtime of the load in progress")
@@ -305,10 +309,14 @@ class Session:
             if self.run is not None and not self.run.stopped:
                 self.log(f"{why}: stopping the loaded run through the X280 runtime")
                 self.run.abort()
-            if close_device:
-                self.close()
         except Exception as err:  # noqa: BLE001 (the process ends; logged, not raised)
             self.log(f"{why}: clean-up raised {type(err).__name__}: {err}")
+        finally:
+            if close_device:
+                try:
+                    self.close()
+                except Exception as err:  # noqa: BLE001 (as above)
+                    self.log(f"{why}: close raised {type(err).__name__}: {err}")
 
     def nocs(self):
         """The grid's NoC coordinates by core (a layout.Nocs), from the open device:

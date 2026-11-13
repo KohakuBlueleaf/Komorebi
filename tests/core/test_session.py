@@ -1,5 +1,6 @@
 """Session.load and its failure paths over a stub ttnn and the fake kernel."""
 
+import gc
 import os
 import signal
 import subprocess
@@ -227,3 +228,37 @@ def test_the_chip_lock_holder_is_another_live_process(card, tmp_path):
     ended = subprocess.Popen(["true"])
     ended.wait()  # its PID left in a lock word by a process that died
     assert session.chip_holder(0, lock(ended.pid)) is None
+
+
+def test_the_exit_hook_closes_the_device_when_the_stop_raises(
+    card, tmp_path, monkeypatch
+):
+    session, log, ttnn, module = card
+    ttnn.MeshShape = lambda rows, cols: (rows, cols)
+    ttnn.open_mesh_device = lambda shape: types.SimpleNamespace(
+        disable_and_clear_program_cache=lambda: None
+    )
+    monkeypatch.setattr(session, "_hook_exit", lambda: None)  # not this process's
+    said = []
+    s = session.Session(log=said.append)
+    s.open()
+    s.load(program(tmp_path))
+    closed = s.run.backend.abort
+    s.run.backend.abort = (
+        lambda: closed() and False
+    )  # closed, but cluster 0 not restored
+    log.clear()
+    session._release_all("exit")  # the stop raises KernelFailed once the run is stopped
+    assert said[-1].startswith("exit: clean-up raised KernelFailed")
+    assert log == ["abort", "close", "read_back, grid stopped", "close_device"]
+    assert s.run.stopped and s.device is None and s not in session._LIVE
+
+
+def test_the_live_sessions_are_held_weakly(card):
+    session = card[0]
+    s = session.Session(log=lambda line: None)
+    session._LIVE.add(s)
+    assert s in session._LIVE
+    del s
+    gc.collect()
+    assert len(session._LIVE) == 0
