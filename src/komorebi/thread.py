@@ -7,6 +7,7 @@ regions through `regions` (see ThreadRun).
 import functools
 import random
 import struct
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -297,15 +298,19 @@ class ThreadRun:
         self.result = parse_result(raw, ran=ran)
         return self.result
 
-    def stop(self):
-        """Stops a thread still running (any exit path); the result stays unread."""
+    def stop(self, timeout=3.0):
+        """Stops a thread still running (any exit path) within `timeout`: up to a third
+        of it, at most 1 s, for the thread to return, the rest for the runtime's stop.
+        The result stays unread."""
         if self.running:
+            by = time.monotonic() + timeout
             self._ask_stop()
             try:
-                self.port.work_wait(self.thread.cluster, 1.0)
+                self.port.work_wait(self.thread.cluster, min(1.0, timeout / 3))
             finally:
                 self.running = False
-                self.port.work_stop(self.thread.cluster, 2.0)
+                left = max(by - time.monotonic(), 0.0)
+                self.port.work_stop(self.thread.cluster, left)
 
     def read(self, name):
         """A region's bytes (uint8) after the run: read from the card once the grid

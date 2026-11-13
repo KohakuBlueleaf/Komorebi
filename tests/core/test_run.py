@@ -323,8 +323,8 @@ class CardThread:
 
     on_card, ring, running = True, object(), False
 
-    def stop(self):
-        pass
+    def stop(self, timeout):
+        assert 0 < timeout <= 10.0  # inside the run's stop deadline
 
     def grid_stopped(self):
         pass

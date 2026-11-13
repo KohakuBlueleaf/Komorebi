@@ -169,3 +169,19 @@ def test_a_thread_past_its_timeout_is_asked_to_stop_then_stopped():
 def test_prefetch_keep_is_a_flag_in_the_argument_block():
     block = kt.args_block(a_thread(prefetch="keep"), base=0, check_value=1)
     assert struct.unpack_from("<Q", block, 48)[0] == K["KMX_FLAG_KEEP_PREFETCH"]
+
+
+def test_a_thread_stop_stays_inside_the_time_it_is_given():
+    port = FakePort()
+    given = []
+    port.work_wait = lambda c, timeout: given.append(("wait", timeout)) or {}
+    port.work_stop = lambda c, timeout: given.append(("stop", timeout)) or {}
+    run = kt.ThreadRun(a_thread(), port, None, image="t.bin")
+    run.start()
+    run.stop(0.6)
+    (_, wait), (_, stop) = given
+    assert wait == pytest.approx(0.2) and 0.5 < stop <= 0.6 and not run.running
+    given.clear()
+    run.running = True
+    run.stop(30.0)  # the thread's own wait stays at most 1 s
+    assert given[0] == ("wait", 1.0) and 29.0 < given[1][1] <= 30.0

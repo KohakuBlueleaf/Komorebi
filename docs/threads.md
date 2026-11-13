@@ -184,7 +184,8 @@ with km.Session() as session:
   tensor read waits for idle cores too). `run.thread.regions.address(name)` gives
   `(bank, bank address)` for a Tensix kernel, which reaches the region with
   `get_noc_addr_from_bank_id<true>(bank, address)`.
-- `run.stop()` stops a thread still running before it stops the kernel.
+- `run.stop(timeout)` stops a thread still running before it stops the kernel, inside
+  the same deadline.
 
 **The host fallback.** `session.load(prog, thread="host")` loads the same program
 without the image: `run.thread_result()` then calls

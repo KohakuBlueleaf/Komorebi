@@ -614,7 +614,7 @@ class Run:
         by = time.monotonic() + timeout
         try:
             if self.thread is not None:
-                self.thread.stop()
+                self.thread.stop(_left(by))  # the thread's stop is inside the deadline
             if self._engine_state is not None:
                 self._engine_state.stop(_left(by))  # EXIT waits for running engines
             self.drain(_left(by))
