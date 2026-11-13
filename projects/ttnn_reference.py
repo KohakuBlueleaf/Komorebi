@@ -26,20 +26,20 @@ HEARTBEAT_S = 10.0
 AICLK = "/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk"
 
 
-def log(msg):
+def log(message):
     """One progress line, flushed (the watcher reads the log's growth)."""
-    print(msg, flush=True)
+    print(message, flush=True)
 
 
 @contextlib.contextmanager
 def heartbeat(what, every=HEARTBEAT_S):
     """Prints a line every `every` seconds while a host-side step runs, so a long
     build, upload or read-back is not mistaken for a hang."""
-    stop, t0 = threading.Event(), time.monotonic()
+    stop, started = threading.Event(), time.monotonic()
 
     def beat():
         while not stop.wait(every):
-            log(f"{what}: {time.monotonic() - t0:.0f} s")
+            log(f"{what}: {time.monotonic() - started:.0f} s")
 
     thread = threading.Thread(target=beat, daemon=True)
     thread.start()
@@ -59,16 +59,16 @@ def calls_for(per_call_s, target_s=TARGET_S, minimum=MIN_CALLS):
 def size_loop(call, sync, target_s=TARGET_S, probe_s=PROBE_S):
     """The calls per loop: probes of 3, 12, 48, ... calls back to back until one takes
     `probe_s`, then that probe's rate scaled to `target_s`."""
-    n = MIN_CALLS
+    calls = MIN_CALLS
     while True:
-        t0 = time.perf_counter()
-        for _ in range(n):
+        started = time.perf_counter()
+        for _ in range(calls):
             call()
         sync()
-        elapsed = time.perf_counter() - t0
-        if elapsed >= probe_s or n >= 1 << 20:
-            return calls_for(elapsed / n, target_s)
-        n *= 4
+        elapsed = time.perf_counter() - started
+        if elapsed >= probe_s or calls >= 1 << 20:
+            return calls_for(elapsed / calls, target_s)
+        calls *= 4
 
 
 def sample_clock(card, samples, stop):
@@ -95,60 +95,77 @@ def spread(values):
 def summarize(loops):
     """One config's figures from its loops, each {"microseconds", "w", "peak_w",
     "temp_c", "aiclk"}: the median time and the means of power and temperature."""
-    watts = [x["w"] for x in loops if x["w"] is not None]
-    temps = [x["temp_c"] for x in loops if x["temp_c"] is not None]
-    clocks = [c for x in loops for c in x["aiclk"]]
+    watts = [loop["w"] for loop in loops if loop["w"] is not None]
+    temps = [loop["temp_c"] for loop in loops if loop["temp_c"] is not None]
+    clocks = [clock for loop in loops for clock in loop["aiclk"]]
     return {
-        "microseconds_per_call": statistics.median(x["microseconds"] for x in loops),
-        "microseconds_per_loop": [x["microseconds"] for x in loops],
+        "microseconds_per_call": statistics.median(
+            loop["microseconds"] for loop in loops
+        ),
+        "microseconds_per_loop": [loop["microseconds"] for loop in loops],
         "mean_w": statistics.mean(watts) if watts else None,
-        "w_per_loop": [x["w"] for x in loops],
-        "peak_w": max((x["peak_w"] for x in loops if x["peak_w"]), default=None),
+        "w_per_loop": [loop["w"] for loop in loops],
+        "peak_w": max(
+            (loop["peak_w"] for loop in loops if loop["peak_w"]), default=None
+        ),
         "temp_c": statistics.mean(temps) if temps else None,
         "aiclk_mhz": spread(clocks),
     }
 
 
-def measure(call, sync, card, loops=LOOPS, target_s=TARGET_S):
+def measure(call, sync, card_index, loops=LOOPS, target_s=TARGET_S):
     """The loops of `call`: the first two calls (compile, program cache) and the
-    sizing probes are outside; each loop is n calls and one `sync`. Returns the
-    summary with n and the first call's time; sleeps as long as the loops took."""
-    t0 = time.perf_counter()
+    sizing probes are outside; each loop is `calls_per_loop` calls and one `sync`.
+    Returns the summary with the calls per loop and the first call's time; sleeps as
+    long as the loops took."""
+    started = time.perf_counter()
     call()
     sync()
-    first_ms = (time.perf_counter() - t0) * 1e3
+    first_ms = (time.perf_counter() - started) * 1e3
     call()
     sync()
-    n = size_loop(call, sync, target_s)
-    log(f"first call {first_ms:.1f} ms; {loops} loops of {n} calls")
-    meter, rows = power.PowerSampler(card), []
+    calls_per_loop = size_loop(call, sync, target_s)
+    log(f"first call {first_ms:.1f} ms; {loops} loops of {calls_per_loop} calls")
+    meter, measurements = power.PowerSampler(card_index), []
     with meter:
-        for i in range(loops):
-            clock, stop = [], threading.Event()
-            sampler = threading.Thread(target=sample_clock, args=(card, clock, stop))
-            meter.mark(f"loop{i}")
+        for loop_index in range(loops):
+            clock_samples, stop = [], threading.Event()
+            sampler = threading.Thread(
+                target=sample_clock, args=(card_index, clock_samples, stop)
+            )
+            meter.mark(f"loop{loop_index}")
             sampler.start()
-            t0 = time.perf_counter()
-            for _ in range(n):
+            started = time.perf_counter()
+            for _ in range(calls_per_loop):
                 call()
             sync()
-            seconds = time.perf_counter() - t0
+            seconds = time.perf_counter() - started
             stop.set()
             sampler.join()
-            rows.append(
-                {"seconds": seconds, "microseconds": seconds / n * 1e6, "aiclk": clock}
+            measurements.append(
+                {
+                    "seconds": seconds,
+                    "microseconds": seconds / calls_per_loop * 1e6,
+                    "aiclk": clock_samples,
+                }
             )
-            log(f"loop {i}: {rows[-1]['microseconds']:.2f} us per call")
+            log(
+                f"loop {loop_index}: {measurements[-1]['microseconds']:.2f} us per call"
+            )
         meter.mark("after")
-    for i, row in enumerate(rows):
-        phase = meter.result.phases[f"loop{i}"]
-        row.update(w=phase.mean_w, peak_w=phase.peak_w, temp_c=phase.mean_temp_c)
-    out = summarize(rows)
-    out.update(calls_per_loop=n, first_call_ms=first_ms, loops=loops)
-    out["open_w"] = meter.result.idle_mean_w
-    log(f"cool-down {sum(r['seconds'] for r in rows):.0f} s")
-    time.sleep(sum(r["seconds"] for r in rows))
-    return out
+    for loop_index, measurement in enumerate(measurements):
+        phase = meter.result.phases[f"loop{loop_index}"]
+        measurement.update(
+            w=phase.mean_w, peak_w=phase.peak_w, temp_c=phase.mean_temp_c
+        )
+    summary = summarize(measurements)
+    summary.update(calls_per_loop=calls_per_loop, first_call_ms=first_ms, loops=loops)
+    summary["open_w"] = meter.result.idle_mean_w
+    log(
+        f"cool-down {sum(measurement['seconds'] for measurement in measurements):.0f} s"
+    )
+    time.sleep(sum(measurement["seconds"] for measurement in measurements))
+    return summary
 
 
 def command(argv):
@@ -156,8 +173,8 @@ def command(argv):
     without the output path."""
     args = list(argv[1:])
     if "--json" in args:
-        i = args.index("--json")
-        del args[i : i + 2]
+        index = args.index("--json")
+        del args[index : index + 2]
     return [Path(argv[0]).name, *args]
 
 
