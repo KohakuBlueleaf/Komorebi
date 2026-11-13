@@ -87,13 +87,17 @@ def tools(tree):
 
 
 def where(addr2line, elf, address):
-    """(function, file:line) from the ELF's debug info, or (None, "")."""
-    run = subprocess.run(
-        [str(addr2line), "-f", "-C", "-e", str(elf), f"{address:#x}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """(function, file:line) from the ELF's debug info, or (None, "") (also without
+    addr2line: a finding is reported without its line rather than hidden)."""
+    try:
+        run = subprocess.run(
+            [str(addr2line), "-f", "-C", "-e", str(elf), f"{address:#x}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None, ""
     lines = run.stdout.splitlines()
     if run.returncode or len(lines) < 2:
         return None, ""
@@ -105,6 +109,11 @@ def where(addr2line, elf, address):
 def check_elf(elf, source, tree):
     """The findings of one thread's ELF."""
     objdump, addr2line = tools(tree)
+    if not objdump.is_file():
+        raise ProgramError(
+            f"{objdump} not found: the instruction check needs the toolchain that "
+            f"built the kernels ({SWITCH}=0 turns the check off)"
+        )
     run = subprocess.run(
         [str(objdump), "-d", "--no-show-raw-insn", str(elf)],
         capture_output=True,
@@ -138,6 +147,8 @@ def check_kernels(program, kernels, tree, cache):
         for elf in elves:
             if not elf:
                 continue
+            if not Path(elf).is_file():
+                raise ProgramError(f"{program}: {source} built no ELF at {elf}")
             marker = _marker(cache, elf)
             if marker.exists():
                 continue
