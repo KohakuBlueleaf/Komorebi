@@ -82,6 +82,30 @@ namespace km {
     constexpr uint32_t kWherePort = 17;
     constexpr uint32_t kWhereEmit = 18;
 
+    // Where codes of a dynamic run (km_dyn.hpp), KM_DYN_GAVE word 0; word 1 position,
+    // word 2 run, word 3 the word 0 at a gap or a lost answer's destination.
+    constexpr uint32_t kWhereDynGap = 19;       // a reserved item did not land in time
+    constexpr uint32_t kWhereDynOverflow = 20;  // IN_TAIL - IN_HEAD passed the capacity
+    constexpr uint32_t kWhereDynAtomic = 21;   // a reservation was not answered in time
+    constexpr uint32_t kWhereDynFlush = 22;    // the writer's item writes did not leave
+    constexpr uint32_t kWhereDynRead = 23;     // the reader's item reads did not land
+    constexpr uint32_t kWhereDynInPage = 24;   // reader: no free packet page
+    constexpr uint32_t kWhereDynLine = 25;     // the status line write did not leave
+    constexpr uint32_t kWhereDynBadDest = 26;  // hop or spawn outside the team
+    constexpr uint32_t kWhereDynNext = 27;     // compute's wait for a packet
+    constexpr uint32_t kWhereDynOutPage = 28;  // compute's wait for an outgoing page
+    constexpr uint32_t kWhereDynOutbox = 29;   // the writer's wait for an outgoing item
+    constexpr uint32_t kWhereDynStopped = 30;  // the stop word ended the run
+    constexpr uint32_t kWhereDynAlign = 31;    // pages or items not 64-B aligned
+    constexpr uint32_t kWhereDynLost = 32;     // a reservation's answer never landed
+    constexpr uint32_t kWhereDynFill = 33;     // the start-up zero fill of the queue
+    constexpr uint32_t kWhereDynFull = 34;  // positions reached 2^30: reload the program
+    static_assert(
+        kWhereDynGap == kWhereEmit + 1 && kWhereDynFull == kWhereDynGap + 15 &&
+            kWhereDynFull < 256,
+        "dynamic where codes: 19 to 34, after the runtime's, one byte"
+    );
+
     // Slots of KM_CTL_OUT (16 bytes each), the sources of small NoC writes: check-in,
     // READY, hello (reader); acknowledgement (writer).
     constexpr uint32_t kOutCheckin = 0;

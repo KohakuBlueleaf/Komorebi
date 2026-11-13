@@ -267,7 +267,7 @@ namespace {
         common(s, o.check);
         uint32_t gaps = 0;
         for (uint32_t m = 0; m < h.cores; m++) {
-            gaps += gave_where(s, m) == km::kDynGap;
+            gaps += gave_where(s, m) == km::kWhereDynGap;
         }
         o.check.expect(gaps == 1, fmt("one core reported a gap, %u did", gaps));
         o.check.expect(s.dyn.gave != 0, "the dispatcher saw the line that gave up");
@@ -300,7 +300,7 @@ namespace {
         s.run();
         common(s, o.check);
         o.check.expect(
-            gave_where(s, 0) == km::kDynOverflow,
+            gave_where(s, 0) == km::kWhereDynOverflow,
             fmt("core 0 gave up: %u", gave_where(s, 0))
         );
         o.check.expect(s.timed_out, "the grid was stopped");
@@ -327,7 +327,8 @@ namespace {
             fmt("core 1 named: gave %u, status %u", s.dyn.gave, s.jobs[0].status)
         );
         o.check.expect(
-            gave_where(s, 1) == km::kDynInPage || gave_where(s, 1) == km::kDynStopped,
+            gave_where(s, 1) == km::kWhereDynInPage ||
+                gave_where(s, 1) == km::kWhereDynStopped,
             fmt("core 1's reader: where %u", gave_where(s, 1))
         );
         finish(s, o);

@@ -44,25 +44,6 @@ namespace km {
     constexpr uint32_t kDynFlagCompute = 0x10;  // waiting in next() | items pushed
     constexpr uint32_t kDynFlagWriter = 0x20;   // every bin sent | items taken
 
-    // Where a dynamic run gave up (KM_DYN_GAVE word 0, after the runtime's codes 0-18);
-    // word 1 position, word 2 run, word 3 the word 0 at a gap or a lost answer's core.
-    constexpr uint32_t kDynGap = 19;       // a reserved item did not land in time
-    constexpr uint32_t kDynOverflow = 20;  // IN_TAIL - IN_HEAD passed the capacity
-    constexpr uint32_t kDynAtomic = 21;    // a reservation was not answered in time
-    constexpr uint32_t kDynFlush = 22;     // the writer's item writes did not leave
-    constexpr uint32_t kDynRead = 23;      // the reader's item reads did not land
-    constexpr uint32_t kDynInPage = 24;    // the reader waited for a free packet page
-    constexpr uint32_t kDynLine = 25;      // the status line write did not leave
-    constexpr uint32_t kDynBadDest = 26;   // hop or spawn to a core outside the team
-    constexpr uint32_t kDynNext = 27;      // compute's wait for a packet
-    constexpr uint32_t kDynOutPage = 28;   // compute's wait for an outgoing page
-    constexpr uint32_t kDynOutbox = 29;    // the writer's wait for an outgoing item
-    constexpr uint32_t kDynStopped = 30;   // the stop word ended the run
-    constexpr uint32_t kDynAlign = 31;     // packet pages or items not 64-byte aligned
-    constexpr uint32_t kDynLost = 32;      // a reservation's answer never landed
-    constexpr uint32_t kDynFill = 33;      // the start-up zero fill of the queue
-    constexpr uint32_t kDynFull = 34;      // positions reached 2^30: reload the program
-
     // Word 0 of the item at queue position `pos` once valid; 0 is empty. Queues are
     // zero-filled at start-up and positions never restart, so no stale mark matches.
     constexpr uint32_t kDynPosMax = 1u << 30;  // positions per core and session
@@ -170,12 +151,13 @@ namespace km {
         const uint64_t wait = static_cast<uint64_t>(a.wait_limit) << 10;
         rf[1] = 0;
         rf[0] = run;
-        uint32_t head = *head_w, where = filled ? 0 : kDynFill;
+        uint32_t head = *head_w, where = filled ? 0 : kWhereDynFill;
         if ((get_write_ptr(kCbDynIn) | d.item_bytes) % 64 != 0) {
-            where = kDynAlign;  // a DRAM read lands 64-byte aligned or not as asked
+            where = kWhereDynAlign;  // a DRAM read lands 64-byte aligned or not as
+                                     // asked
         }
         if (*tail >= kDynPosMax) {
-            where = kDynFull;  // marks stay unique below 2^31 positions
+            where = kWhereDynFull;  // marks stay unique below 2^31 positions
         }
         bool idle_shown = false, busy = true, armed = false;
         uint32_t key[3] = {0, 0, 0};
@@ -229,12 +211,12 @@ namespace km {
         while (where == 0) {
             invalidate_l1_cache();
             if (rd.stop()) {
-                where = kDynStopped;
+                where = kWhereDynStopped;
                 break;
             }
             const uint32_t t = *tail;
             if (t - head > d.cap) {
-                where = kDynOverflow;
+                where = kWhereDynOverflow;
                 break;
             }
             if (t == head) {
@@ -267,7 +249,7 @@ namespace km {
                     continue;
                 }
                 if (!status(KM_DYN_IDLE, sent, consumed)) {
-                    where = kDynLine;
+                    where = kWhereDynLine;
                     break;
                 }
                 rf[1] = 1;
@@ -279,7 +261,7 @@ namespace km {
             armed = false;
             if (idle_shown) {  // busy has landed before the first item is taken
                 if (!status(KM_DYN_BUSY, 0, 0)) {
-                    where = kDynLine;
+                    where = kWhereDynLine;
                     break;
                 }
                 rf[1] = 0;
@@ -291,7 +273,7 @@ namespace km {
                     },
                     a.wait_limit
                 ) != kGaveNone) {
-                where = kDynInPage;
+                where = kWhereDynInPage;
                 break;
             }
             cb_reserve_back(kCbDynIn, 1);
@@ -312,7 +294,7 @@ namespace km {
             if (!noc_bounded(rd, [] {
                     return ncrisc_noc_reads_flushed(noc_index);
                 })) {
-                where = kDynRead;
+                where = kWhereDynRead;
                 break;
             }
             invalidate_l1_cache();
@@ -330,7 +312,7 @@ namespace km {
                 if (waiting_from == 0) {
                     waiting_from = now;
                 } else if (now - waiting_from > wait) {
-                    where = kDynGap;
+                    where = kWhereDynGap;
                     break;
                 }
                 continue;
@@ -412,7 +394,7 @@ namespace km {
             if (!noc_bounded(wr, [] {
                     return ncrisc_noc_nonposted_atomics_flushed(noc_index);
                 })) {
-                where = kDynAtomic;
+                where = kWhereDynAtomic;
                 return false;
             }
             // On the card the answer can stay away although its count moved.
@@ -420,7 +402,7 @@ namespace km {
                     invalidate_l1_cache();
                     return ret[0] != kDynEnd;
                 })) {
-                where = kDynLost;
+                where = kWhereDynLost;
                 lost_to = dest[b];
                 return false;
             }
@@ -449,7 +431,7 @@ namespace km {
             if (!noc_bounded(wr, [] {
                     return ncrisc_noc_nonposted_writes_flushed(noc_index);
                 })) {
-                where = kDynFlush;
+                where = kWhereDynFlush;
                 return false;
             }
             l1(base)[0] = dyn_mark(p);
@@ -466,7 +448,7 @@ namespace km {
             if (!noc_bounded(wr, [] {
                     return ncrisc_noc_nonposted_writes_flushed(noc_index);
                 })) {
-                where = kDynFlush;
+                where = kWhereDynFlush;
                 return false;
             }
             sent += n;
@@ -492,7 +474,7 @@ namespace km {
         for (uint32_t loop = 0; where == 0 && !ended; loop++) {
             invalidate_l1_cache();
             if (wr.stop()) {
-                where = kDynStopped;
+                where = kWhereDynStopped;
                 break;
             }
             if (!cb_pages_available_at_front(kCbDynOut, 1)) {
@@ -506,7 +488,7 @@ namespace km {
                     wf[1] = f;
                 }
                 if ((loop & 15) == 15 && wall64() - quiet_from > limit) {
-                    where = kDynOutbox;
+                    where = kWhereDynOutbox;
                 }
                 continue;
             }
@@ -661,7 +643,10 @@ namespace km {
                         }
                     } else {
                         dyn_gave_up(
-                            ctl_, code == kGaveStop ? kDynStopped : kDynNext, 0, run_
+                            ctl_,
+                            code == kGaveStop ? kWhereDynStopped : kWhereDynNext,
+                            0,
+                            run_
                         );
                         record_gave_up(ctl_, kStCompute, code, kWhereCToken, 0, run_);
                     }
@@ -691,7 +676,7 @@ namespace km {
         void hop(uint32_t dest, const uint32_t* item) {
             if (dest >= count_) {
                 failed_ = true;
-                PACK((dyn_gave_up(ctl_, kDynBadDest, dest, run_)));
+                PACK((dyn_gave_up(ctl_, kWhereDynBadDest, dest, run_)));
                 PACK((
                     record_gave_up(ctl_, kStCompute, kGaveStop, kWhereCOutput, 0, run_)
                 ));
@@ -798,7 +783,7 @@ namespace km {
             );
             if (code != kGaveNone) {
                 failed_ = true;
-                dyn_gave_up(ctl_, kDynOutPage, pushed_, run_);
+                dyn_gave_up(ctl_, kWhereDynOutPage, pushed_, run_);
                 record_gave_up(ctl_, kStCompute, code, kWhereCOutput, 0, run_);
                 return false;
             }
