@@ -350,6 +350,20 @@ namespace {
         Out out;
         bool succeeded = true;
         uint32_t kept_count = 0, clipped = 0;  // the profile's counts
+        uint32_t block_cost = 0;  // COUNT: the block's predicted cost (setup.h kCostBlock)
+        // COUNT with ranges: the costs summed after j x blocks / kCostKnots blocks
+        uint32_t* knots = nullptr;
+        uint32_t blocks = 0, block = 0, next_knot = 1, cost_sum = 0;
+
+        // knot j once j x blocks / kCostKnots (rounded down) blocks are summed
+        void advance() {
+            while (
+                next_knot <= kCostKnots &&
+                next_knot * blocks <= kCostKnots * block + kCostKnots - 1
+            ) {
+                knots[next_knot++] = cost_sum;
+            }
+        }
 
         // A finished record that touches `box` (inside the image, or a give-up); COUNT
         // reads no word of it.
@@ -370,6 +384,14 @@ namespace {
                 static_cast<uint32_t>(box.first_row) << 10 |
                 static_cast<uint32_t>(box.last_row) << 20
             );
+            if (knots != nullptr) {
+                block_cost += (
+                    kCostKept +
+                    kCostEntry *
+                        ((box.last_column >> 5) - (box.first_column >> 5) + 1) *
+                        ((box.last_row >> 5) - (box.first_row >> 5) + 1)
+                );
+            }
             const bool handed = (
                 handler == kHandlerCount
                     ? out.add_word(compute, box_word)
@@ -510,6 +532,16 @@ namespace {
                 ++kept_count;
                 record(work + 32 * lane, box, first_triangle + lane);
             }
+            // COUNT: the block's cost, for the next frame's ranges
+            if (knots != nullptr) {
+                cost_sum += (
+                    block_cost + kCostBlock +
+                    kCostClipped * static_cast<uint32_t>(__builtin_popcount(crossing))
+                );
+                ++block;
+                advance();
+            }
+            block_cost = 0;
         }
     };
 
@@ -583,6 +615,11 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
             if (ranged) {
                 first_block = mesh_words[kCamWords];
                 pages = 1 + (mesh_words[kCamWords + 1] - first_block);
+                if (handler == kHandlerCount) {
+                    pass.knots = work + kWorkCostsAt / 4;
+                    pass.blocks = pages - 1;
+                    pass.advance();
+                }
             }
             // the camera: each number to every lane of its slot
             for (uint32_t i = 0; i < kCamWords; ++i) {
@@ -645,6 +682,11 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
         profile[kSProfPack + 5] = pass.clipped;
         profile[kSProfPack + 6] = pass.out.entries;
         profile[kSProfPack + 7] = pass.out.wait;
+        asm volatile("fence" ::: "memory");
+    }
+    if (pass.knots != nullptr) {
+        // the blocks summed: the thread uses the costs only when they are the range's
+        pass.knots[0] = pass.block;
         asm volatile("fence" ::: "memory");
     }
     if ((handler == kHandlerSetup || handler == kHandlerCount) && pass.succeeded) {

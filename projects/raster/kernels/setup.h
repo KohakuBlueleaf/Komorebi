@@ -29,10 +29,17 @@ constexpr uint32_t kHandlerHsum = 17;
 // small arrays are then bank addresses (pages contiguous); mesh and lists stay tensors.
 
 // blocks_word (a2) with kRanges (COUNT, SETUP; bank): blocks [first_block, end_block)
-// at kRangesAt + 64 x core of the camera's region; ticks go to kCostsAt + 128 x core.
+// at kRangesAt + 64 x core of the camera's region; costs at kCostsAt + 128 x core.
 constexpr uint32_t kRanges = 0x80000000;
 constexpr uint32_t kRangesAt = 64;
 constexpr uint32_t kCostsAt = 16384;
+// COUNT's costs: the range's blocks, then the cost summed after j x blocks / 31, j 1-31
+constexpr uint32_t kCostKnots = 31;
+// A block's predicted cost: per block, kept triangle or piece, entry, clipped one
+constexpr uint32_t kCostBlock = 6347;
+constexpr uint32_t kCostKept = 408;
+constexpr uint32_t kCostEntry = 22;
+constexpr uint32_t kCostClipped = 19433;
 
 // Buffers, apart from the fill's (raster.h) so that one program can hold both.
 constexpr uint32_t kCbMesh = 4;    // mesh pages in, the camera's page first
@@ -40,10 +47,10 @@ constexpr uint32_t kCbSlots = 5;   // SETUP: the list slot of each item's next r
 constexpr uint32_t kCbWork = 6;    // the pack thread's own space
 constexpr uint32_t kCbRec = 17;    // record pages out
 constexpr uint32_t kCbCount = 18;  // COUNT's counters
-constexpr uint32_t kCbOut = 19;  // entries out: slot 0 the count and slots, then records
-constexpr uint32_t kCbHist = 7;   // COUNT to HIST: per tile 16 uint16 counts of starts
-                                  // in each 2-row group, then 16 of ends
-constexpr uint32_t kCbItems = 8;  // SETUP's items page
+constexpr uint32_t kCbOut = 19;    // to the writer: the count, box words, then records
+constexpr uint32_t kCbHist = 7;    // COUNT to HIST: per tile 16 uint16 counts of starts
+                                   // in each 2-row group, then 16 of ends
+constexpr uint32_t kCbItems = 8;   // SETUP's items page
 constexpr uint32_t kMeshPages = 4;
 constexpr uint32_t kRecPages = 2;
 constexpr uint32_t kSlotsBytes = 8192;  // at most 2,048 items
@@ -80,6 +87,7 @@ constexpr uint32_t kLayHdrRow0 = 3;
 constexpr uint32_t kLayHdrRow1 = 4;
 constexpr uint32_t kCountBytes = 8192;
 constexpr uint32_t kWorkBytes = 12288;  // records of a block, of pieces, crossing corners
+constexpr uint32_t kWorkCostsAt = 11776;  // then COUNT's costs (kCostsAt), 128 bytes
 constexpr uint32_t kOutBytes = 4096;
 constexpr uint32_t kHistBytes = 65536;  // kTiles x 64
 constexpr uint32_t kHeavyBytes = 4096;  // HIST's heavy tiles: at most 1,023

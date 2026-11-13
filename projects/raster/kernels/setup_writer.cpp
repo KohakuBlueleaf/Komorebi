@@ -198,7 +198,8 @@ namespace {
         WriterProfile& profile,
         Flushed flushed
     ) {
-        const uint32_t counters_address = command.a1;
+        const uint32_t counters_address = command.a1, blocks_word = command.a2;
+        const uint32_t camera_address = command.a3, bank = command.a8;
         volatile tt_l1_ptr uint32_t* counters = km::l1(get_read_ptr(kCbCount));
         volatile tt_l1_ptr uint32_t* histogram_words = km::l1(get_read_ptr(kCbHist));
         volatile tt_l1_ptr uint16_t*
@@ -276,6 +277,16 @@ namespace {
             setup_pass::noc_address(0, counters_address, writer.me(), kCountBytes),
             kCountBytes
         );
+        if ((blocks_word & kRanges) != 0 && bank != 0) {
+            // the pack thread's costs, final with its last page (setup_compute.cpp)
+            noc_async_write(
+                get_write_ptr(kCbWork) + kWorkCostsAt,
+                setup_pass::noc_address(
+                    bank, camera_address, 0, 0, kCostsAt + 128 * writer.me()
+                ),
+                128
+            );
+        }
         const bool succeeded = flushed();
         profile.write += km::wall() - send_started;
         return succeeded;
@@ -402,8 +413,7 @@ bool setup_writer_pass(
 // With profile_address (a9), the threads' counters go to the core's profile page.
 bool setup_writer_command(const km::Writer& writer, const km_command_t& command) {
     const uint32_t handler = km::handler(command);
-    const uint32_t blocks_word = command.a2, camera_address = command.a3;
-    const uint32_t cores = command.a5, bank = command.a8, profile_address = command.a9;
+    const uint32_t cores = command.a5, profile_address = command.a9;
     if (
         (
             handler != kHandlerLanes && handler != kHandlerCount &&
@@ -418,34 +428,6 @@ bool setup_writer_command(const km::Writer& writer, const km_command_t& command)
     const uint32_t started = km::wall();
     WriterProfile profile;
     const bool succeeded = setup_writer_pass(writer, command, profile);
-    if (
-        succeeded && (handler == kHandlerCount || handler == kHandlerSetup) &&
-        (blocks_word & kRanges) != 0
-    ) {
-        // the pass's ticks on this core, for the next frame's ranges
-        const uint32_t line = get_write_ptr(kCbSProf) + 128;
-        km::l1(line)[0] = km::wall() - started;
-        invalidate_l1_cache();
-        noc_async_write(
-            line,
-            setup_pass::noc_address(
-                bank,
-                camera_address,
-                0,
-                0,
-                kCostsAt + 128 * writer.me() + 64 * (handler - kHandlerCount)
-            ),
-            64
-        );
-        if (writer.poll(
-            [] {
-                return ncrisc_noc_nonposted_writes_flushed(noc_index);
-            },
-            writer.args().wait_limit
-        ) != km::kGaveNone) {
-            return false;
-        }
-    }
     if (
         !succeeded || profile_address == 0 || handler < kHandlerCount ||
         handler > kHandlerPlace

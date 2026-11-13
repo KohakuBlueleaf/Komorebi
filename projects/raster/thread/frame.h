@@ -35,7 +35,8 @@
 /* COUNT's and SETUP's blocks from the camera's region (kernels/setup.h, kRanges) */
 #define RF_RANGES 0x80000000u
 #define RF_RANGES_AT 64u   /* each core's first and end block, 64 bytes a core */
-#define RF_COSTS_AT 16384u /* each core's COUNT and SETUP ticks, 128 bytes a core */
+#define RF_COSTS_AT 16384u /* each core's COUNT costs, 128 bytes a core */
+#define RF_COST_KNOTS 31u  /* the range's blocks, then its summed costs at 31 places */
 #define RF_CAMERA_BYTES 49152u
 #define RF_MAX_CORES 248u
 

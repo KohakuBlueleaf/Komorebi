@@ -14,7 +14,7 @@ typedef struct {
     uint32_t tile_item[RM_TILES + 1];
     uint32_t heavy[RM_MAX_HEAVY], bands[RM_MAX_HEAVY];
     uint32_t ranges[RF_MAX_CORES + 1]; /* COUNT's and SETUP's blocks of each core */
-    uint32_t costs[RF_MAX_CORES], cuts[RF_MAX_CORES + 1];
+    uint32_t cuts[RF_MAX_CORES + 1];
 } work_t;
 
 typedef struct {
@@ -23,6 +23,7 @@ typedef struct {
     uint32_t address[RF_REGIONS];
     uint32_t result[RF_OUT_WORDS];
     uint32_t ranged; /* frames run with ranges: the costs of the last are in */
+    uint32_t ready;  /* the next frame's ranges are in (set during FILL) */
 } frame_t;
 
 /* The middle pass's parts on the four cores: each a quarter of the tiles or items. */
@@ -84,22 +85,30 @@ static void new_command(km_command_t* command, uint32_t handler, const frame_t* 
     command->a8 = frame->bank_plus_one;     /* bank */
 }
 
-/* Submits `command` and waits for its event: 0, or the code to report. */
-static uint32_t run(const km_command_t* command) {
+/* Submits `command`: 0 with its handle, or the code to report. */
+static uint32_t submit(const km_command_t* command, uint32_t* handle) {
     const uint64_t until = kmx_time() + WAIT_TICKS;
-    uint32_t handle;
-    int error = kmx_submit(command, &handle);
+    int error = kmx_submit(command, handle);
     while (error == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
-        error = kmx_submit(command, &handle);
+        error = kmx_submit(command, handle);
     }
-    if (error != KMX_OK) {
-        return RF_RING;
-    }
+    return error == KMX_OK ? 0u : RF_RING;
+}
+
+/* Waits for a submitted command's event: 0, or the code to report. */
+static uint32_t wait_for(uint32_t handle) {
     kmx_event event;
     if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &event) != KMX_OK) {
         return RF_RING;
     }
     return event.kind == KM_EVENT_DONE ? 0u : RF_COMMAND;
+}
+
+/* Submits `command` and waits for its event: 0, or the code to report. */
+static uint32_t run(const km_command_t* command) {
+    uint32_t handle;
+    const uint32_t code = submit(command, &handle);
+    return code ? code : wait_for(handle);
 }
 
 static int finish(uint32_t code, frame_t* frame) {
@@ -115,7 +124,7 @@ static uint32_t elapsed(uint64_t* mark) {
 }
 
 /* Each core's blocks for COUNT and SETUP, into the camera's region: equal partitions,
- * then equal parts of the last frame's ticks (spread evenly over its blocks). */
+ * then equal parts of the last frame's predicted cost (kernels/setup.h kCostKnots). */
 static void set_ranges(frame_t* frame, work_t* work, void* const* regions) {
     const uint32_t cores = frame->words[RF_W_CORES], blocks = frame->words[RF_W_BLOCKS];
     uint32_t* block_ranges = work->ranges;
@@ -125,8 +134,11 @@ static void set_ranges(frame_t* frame, work_t* work, void* const* regions) {
         kmx_invalidate_at(RF_R_CAMERA, RF_COSTS_AT, 128u * cores);
         for (uint32_t core = 0; core < cores; core++) {
             const uint32_t word = (RF_COSTS_AT + 128u * core) / 4;
-            work->costs[core] = camera[word] + camera[word + 16];
-            total += work->costs[core];
+            if (camera[word] != block_ranges[core + 1] - block_ranges[core]) {
+                total = 0; /* not the last frame's ranges: equal partitions */
+                break;
+            }
+            total += camera[word + RF_COST_KNOTS];
         }
     }
     if (total == 0) {
@@ -135,28 +147,51 @@ static void set_ranges(frame_t* frame, work_t* work, void* const* regions) {
         }
     } else {
         uint32_t* cut_blocks = work->cuts;
-        uint32_t core = 0;
-        uint64_t before = 0; /* ticks of the cores before `core` */
+        uint32_t cut_index = 1;
+        uint64_t want = total / cores; /* the cost before cut `cut_index` */
+        uint64_t base = 0;             /* the cost of the cores before `core` */
         cut_blocks[0] = 0;
-        for (uint32_t cut_index = 1; cut_index < cores; cut_index++) {
-            const uint64_t want = total * cut_index / cores;
-            while (core < cores && before + work->costs[core] <= want) {
-                before += work->costs[core];
-                core++;
-            }
-            uint32_t block = blocks;
-            if (core < cores) {
-                const uint32_t blocks_here = (
-                    block_ranges[core + 1] - block_ranges[core]
+        /* each region word read costs about 30 ns: a cut's knots found by halves */
+        for (uint32_t core = 0; core < cores && cut_index < cores; core++) {
+            const uint32_t word = (RF_COSTS_AT + 128u * core) / 4;
+            const uint64_t core_end = base + camera[word + RF_COST_KNOTS];
+            const uint32_t first = block_ranges[core];
+            const uint32_t count = block_ranges[core + 1] - first;
+            while (cut_index < cores && want <= core_end) {
+                uint32_t low = 1, high = RF_COST_KNOTS; /* the first knot >= want */
+                while (low < high) {
+                    const uint32_t middle = (low + high) / 2;
+                    if (base + camera[word + middle] >= want) {
+                        high = middle;
+                    } else {
+                        low = middle + 1;
+                    }
+                }
+                const uint64_t cost = base + camera[word + low];
+                const uint64_t last_cost = (
+                    base + (low > 1 ? camera[word + low - 1] : 0)
                 );
-                block = (
-                    block_ranges[core] +
-                    (uint32_t)((want - before) * blocks_here / work->costs[core])
+                const uint32_t place = first + low * count / RF_COST_KNOTS;
+                uint32_t block = first + (low - 1) * count / RF_COST_KNOTS;
+                if (want > last_cost) {
+                    block += (
+                        (uint32_t)(
+                            (want - last_cost) * (place - block) / (cost - last_cost)
+                        )
+                    );
+                }
+                cut_blocks[cut_index] = (
+                    block > cut_blocks[cut_index - 1]
+                        ? block
+                        : cut_blocks[cut_index - 1]
                 );
+                cut_index++;
+                want = total * cut_index / cores;
             }
-            cut_blocks[cut_index] = (
-                block > cut_blocks[cut_index - 1] ? block : cut_blocks[cut_index - 1]
-            );
+            base = core_end;
+        }
+        for (; cut_index < cores; cut_index++) {
+            cut_blocks[cut_index] = blocks;
         }
         cut_blocks[cores] = blocks;
         for (uint32_t cut_index = 0; cut_index <= cores; cut_index++) {
@@ -188,9 +223,10 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
             ? RF_RANGES
             : 0
     );
-    if (ranges) {
+    if (ranges && !frame->ready) {
         set_ranges(frame, work, regions);
     }
+    frame->ready = 0;
     new_command(&command, RF_HANDLER_COUNT, frame);
     command.a0 = frame->words[RF_W_MESH];            /* mesh_address */
     command.a1 = frame->words[RF_W_COUNTERS];        /* counters_address */
@@ -395,7 +431,16 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     command.a1 = frame->words[RF_W_LISTS]; /* lists_address */
     command.a3 = RF_PAGES_PER_ITEM;        /* pages_per_item */
     command.a4 = frame->words[RF_W_PROF];  /* profile_address */
-    code = run(&command);
+    uint32_t handle;
+    code = submit(&command, &handle);
+    if (code == 0) {
+        /* the next frame's ranges while the grid fills: COUNT and SETUP are done */
+        if (ranges) {
+            set_ranges(frame, work, regions);
+            frame->ready = 1;
+        }
+        code = wait_for(handle);
+    }
     frame->result[RF_O_FILL] += elapsed(&mark);
     kmx_progress(8);
     return code;
@@ -414,7 +459,7 @@ int kmx_main(int core) {
     frame.words = arguments->words;
     frame.bank_plus_one = 1 + frame.words[RF_W_BANK];
     const uint32_t cores = frame.words[RF_W_CORES], workers = frame.words[RF_W_WORKERS];
-    frame.ranged = 0;
+    frame.ranged = frame.ready = 0;
     const uint32_t need[RF_REGIONS] = {
         frame.words[RF_W_BALANCE] ? RF_CAMERA_BYTES : 4 * 16,
         RF_HEAVY_BYTES,

@@ -66,6 +66,7 @@ def same_numbers():
         "RF_ITEMS_REGION_BYTES": S["kCoreWordsAt"] + 16 * S["kMaxFillCores"],
         "RF_RANGES_AT": S["kRangesAt"],
         "RF_COSTS_AT": S["kCostsAt"],
+        "RF_COST_KNOTS": S["kCostKnots"],
         "RF_MAX_CORES": S["kMaxFillCores"],
         # PLACE's list and directory words against the fill's
         "kLayDirIds": (S["kLayDirIds"], K["kDirIds"]),
