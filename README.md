@@ -1,6 +1,6 @@
 # Komorebi
 
-[![Tutorial: 41 lessons](https://img.shields.io/badge/tutorial-41%20lessons-5A4FCF)](https://kohakublueleaf.github.io/Komorebi/tutorial/)
+[![Tutorial: 42 lessons](https://img.shields.io/badge/tutorial-42%20lessons-5A4FCF)](https://kohakublueleaf.github.io/Komorebi/tutorial/)
 [![Documentation](https://img.shields.io/badge/docs-website-0F52BA)](https://kohakublueleaf.github.io/Komorebi/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-4C9989)](LICENSE)
 
@@ -41,7 +41,7 @@ the card's network between them.
 | Concern | On the card |
 |---|---|
 | Computation | A program is a set of persistent kernels on every Tensix core. Each command they receive names a handler of code and a core group, and every core of the group works on its partition. |
-| Communication | Cores read and write DRAM, and send each other data through ports, reduces and broadcasts. A routed message goes to a core chosen at run time. |
+| Communication | Cores read and write DRAM, and send each other data through ports, reduces and broadcasts. A routed message goes to a core chosen at run time. Both data-movement CPUs of a core can carry one stream ([Movement](docs/reference/movement.md)). |
 | Code placement | The same kernels are loaded on every core in advance. A core loading a kernel body into itself ([overlay_probe](experiments/overlay_probe/README.md)) or into another core ([remote_load](experiments/remote_load/README.md)) works as an experiment; a thread that carries its own code is not built yet. |
 | Execution control | A dispatcher on one X280 cluster submits the commands and runs streams and graphs of them on the card. C threads on the other three X280 clusters run the irregular part of a program. |
 

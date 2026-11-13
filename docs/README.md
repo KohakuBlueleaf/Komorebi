@@ -22,7 +22,7 @@ Nothing is released yet. Programs run on one P150A card, and every example in th
 
 ## Where things are
 
-- **[Tutorial](tutorial/index.md)**: 41 lessons in six parts, from one core to a whole program.
+- **[Tutorial](tutorial/index.md)**: 42 lessons in six parts, from one core to a whole program.
 - **Concepts**: why the framework is the way it is. [The thread language, planned](concepts/model.md),
   [the dispatcher](concepts/dispatch.md) and [the Tensix runtime](concepts/runtime.md), then the
   longer design pages on [micro-op streams](streams.md), [graphs](graphs.md) and [X280 threads](threads.md).
