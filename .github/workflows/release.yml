@@ -183,10 +183,15 @@ jobs:
           tag="v${VERSION}"
           flag=()
           if [ "${PRERELEASE}" = "true" ]; then flag=(--prerelease); fi
+          # The written release notes when the version has them, else generated ones.
+          notes="docs/releases/${VERSION}.md"
+          body=(--generate-notes)
+          if [ -f "${notes}" ]; then body=(--notes-file "${notes}"); fi
           if ! gh release view "${tag}" > /dev/null 2>&1; then
-            gh release create "${tag}" --title "${NAME} ${VERSION}" --generate-notes \
+            gh release create "${tag}" --title "${NAME} ${VERSION}" "${body[@]}" \
               "${flag[@]}" --target "$(git rev-parse HEAD)"
           else
+            if [ -f "${notes}" ]; then flag+=(--notes-file "${notes}"); fi
             gh release edit "${tag}" --title "${NAME} ${VERSION}" "${flag[@]}"
           fi
           for f in dist/*.whl; do gh release upload "${tag}" "$f" --clobber; done

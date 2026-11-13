@@ -26,7 +26,7 @@ jobs:
       - name: C/C++ format and comment lengths
         run: |
           python -m komorebi.tools.cxx_format --check
-          python -m komorebi.tools.comment_lint --check src tests examples experiments packaging
+          python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 
       - name: Documentation site
         run: NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d "$RUNNER_TEMP/site"

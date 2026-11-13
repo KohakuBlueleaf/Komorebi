@@ -68,6 +68,9 @@ def test_the_publish_jobs_have_the_gate_and_no_secret():
     assert "outputs.runtime_wheel" in jobs["publish-pypi-runtime"]
     assert "skip-existing: true" in jobs["publish-pypi-runtime"]
     assert "skip-existing" not in jobs["publish-pypi"]
+    # The release's body: the version's written notes when they exist.
+    assert 'notes="docs/releases/${VERSION}.md"' in jobs["publish-github"]
+    assert '--notes-file "${notes}"' in jobs["publish-github"]
 
 
 def test_the_release_workflow_does_not_name_a_distribution():
