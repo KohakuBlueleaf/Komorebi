@@ -277,3 +277,46 @@ def compare(rows, got, edge):
     )
     report["ties_tested"] = int((want["ok"] & (want["t"] == rows["best"])).sum())
     return report
+
+
+def math_inputs(rng, n):
+    """Rows of the division and square root check: a (any sign, zeros among them), b
+    positive and x positive, mantissas random, near one or short, exponents within the
+    kernels' ranges; quotients stay normal. Returns (a, b, x) float32 arrays."""
+    exp = rng.integers(-60, 61, size=(3, n))
+    man = rng.integers(0, 1 << 23, size=(3, n))
+    kind = rng.integers(0, 4, size=(3, n))
+    man = np.where(kind == 1, man & 0xF, man)  # short mantissas
+    man = np.where(kind == 2, (1 << 23) - 1 - (man & 0xF), man)  # just below a power
+    word = ((exp + 127) << 23 | man).astype(np.uint32)
+    a, b, x = word.view(np.float32)
+    a = np.where(rng.random(n) < 0.5, -a, a)
+    a[rng.random(n) < 0.01] = F(0.0)
+    x = np.where(rng.random(n) < 0.3, np.abs(a) + F(1e-30), x).astype(np.float32)
+    return a.astype(np.float32), b.astype(np.float32), x
+
+
+def math_pages(a, b, x):
+    """Input pages (P, kMaInVectors * 32) of the check; n a multiple of 32."""
+    cols = np.stack([packets.bits(a), packets.bits(b), packets.bits(x)], axis=1)
+    n = len(a)
+    return cols.reshape(n // VEC, VEC, 3).transpose(0, 2, 1).reshape(n // VEC, -1)
+
+
+def math_compare(a, b, x, out):
+    """Bits that differ from numpy's float32 a / b and sqrt(x)."""
+    out = out.reshape(-1, K["kMaOutVectors"], VEC).transpose(1, 0, 2)
+    q, s = out[K["kMaQ"]].reshape(-1), out[K["kMaS"]].reshape(-1)
+    want_q, want_s = packets.bits(a / b), packets.bits(np.sqrt(x))
+    report = {}
+    for name, got, want in (("divide", q, want_q), ("sqrt", s, want_s)):
+        bad = got != want
+        idx = np.nonzero(bad)[0][:5]
+        report[name] = {
+            "compared": int(got.size),
+            "differ_bits": int(bad.sum()),
+            "examples": [
+                {"row": int(i), "got": int(got[i]), "want": int(want[i])} for i in idx
+            ],
+        }
+    return report

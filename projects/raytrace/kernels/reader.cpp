@@ -21,6 +21,9 @@ namespace {
     }
 
     uint32_t in_page_bytes(uint32_t seg) {
+        if (seg == kSegMath) {
+            return kMaInVectors * kVec * 4;
+        }
         return seg == kSegArith ? kArInVectors * kVec * 4 : kPacketBytes;
     }
 
@@ -314,7 +317,7 @@ void kernel_main() {
             return;
         }
         if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe) {
+            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath) {
             return;
         }
         const uint32_t t0 = km::wall();

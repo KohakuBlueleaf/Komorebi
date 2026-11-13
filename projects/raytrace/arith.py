@@ -48,12 +48,29 @@ def recip_check(session, exponent, n_workers):
     }
 
 
+def math_check(session, rng, n, n_workers):
+    """a / b and sqrt(x) on the card against numpy, bit for bit."""
+    n = (n + VEC - 1) // VEC * VEC
+    a, b, x = arithmetic.math_inputs(rng, n)
+    pages = arithmetic.math_pages(a, b, x)
+    directory = arithmetic.contiguous(len(pages), n_workers)
+    out, prof, res, times, _ = card.run_segment(
+        session, K["kSegMath"], directory, pages, len(pages),
+        K["kMaOutVectors"] * VEC, deadline_s=20.0,
+    )  # fmt: skip
+    report = arithmetic.math_compare(a, b, x, out)
+    report["run"] = card.check_run(res, n_workers)
+    report["us"] = float(card.record_us(res)[-1])
+    return report
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--n", type=int, default=1 << 20)
     p.add_argument("--scene", default="s10k")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--recip", type=int, nargs="*", default=[])
+    p.add_argument("--math", type=int, default=0, help="rows of division and sqrt")
     p.add_argument("--json", default=None)
     args = p.parse_args()
     rng = np.random.default_rng(args.seed)
@@ -75,6 +92,8 @@ def main():
         report["run"] = card.check_run(res, workers)
         report["times"] = times
         report["recip"] = [recip_check(session, e, workers) for e in args.recip]
+        if args.math:
+            report["math"] = math_check(session, rng, args.math, workers)
     got = out.reshape(len(pages), K["kArOutVectors"], VEC).transpose(1, 0, 2)
     got = {name: got[k].reshape(-1) for k, name in enumerate(OUT_NAMES)}
     got = {
@@ -101,6 +120,10 @@ def exact(report, workers):
     ok &= check["box_hit_flag_differs"] == 0
     for r in report["recip"]:
         ok &= card.ran_cleanly(r["run"], workers) and r["differ_normal_results"] == 0
+    if "math" in report:
+        m = report["math"]
+        ok &= card.ran_cleanly(m["run"], workers)
+        ok &= m["divide"]["differ_bits"] == m["sqrt"]["differ_bits"] == 0
     return bool(ok)
 
 

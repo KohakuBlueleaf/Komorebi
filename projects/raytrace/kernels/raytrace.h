@@ -28,8 +28,9 @@ constexpr uint32_t kProbeData = 1;  // the same, box words loaded from Dst
 constexpr uint32_t kProbeMask = 2;  // immediates, plus the entry test and lane read-back
 constexpr uint32_t kProbeStack = 3;  // plus the stack and counters of the walk
 constexpr uint32_t kProbeFast = 4;   // fused multiply-add, no exactness (report only)
-constexpr uint32_t kProbeSync = 5;   // the entry test and lane read-back alone  // each
-                                     // treelet once, with every packet listing it
+constexpr uint32_t kProbeSync = 5;   // the entry test and lane read-back alone
+// MATH: as ARITH; division and square root on per-lane inputs (their check).
+constexpr uint32_t kSegMath = 7;
 
 constexpr uint32_t kModeNearest = 0;
 constexpr uint32_t kModeAny = 1;
@@ -159,6 +160,14 @@ constexpr uint32_t kArNewTri = 9;
 constexpr uint32_t kArNewU = 10;
 constexpr uint32_t kArNewV = 11;
 constexpr uint32_t kArOutVectors = 12;
+// Division and square root check pages: a, b, x in; a / b and sqrt(x) out.
+constexpr uint32_t kMaA = 0;
+constexpr uint32_t kMaB = 1;
+constexpr uint32_t kMaX = 2;
+constexpr uint32_t kMaInVectors = 3;
+constexpr uint32_t kMaQ = 0;
+constexpr uint32_t kMaS = 1;
+constexpr uint32_t kMaOutVectors = 2;
 // RECIP: an output page holds this many reciprocals.
 constexpr uint32_t kRecipPerPage = 1024;
 

@@ -1,6 +1,7 @@
 """The ray tracer on a card through the dispatch kernel (KMR_CARD=1): the vector unit's
-arithmetic bit for bit, then the four passes on tiles of the tiny scene (tree in L1)
-and of the 10^4 scene (treelets from DRAM), against numpy pass by pass."""
+arithmetic, division and square root bit for bit, then the four passes on tiles of the
+tiny scene (tree in L1) and of the 10^4 scene (treelets from DRAM), against numpy pass
+by pass."""
 
 from pathlib import Path
 
@@ -13,8 +14,13 @@ TILES = ("--tiles", "0", "300", "528", "1000")
 
 
 def test_slab_and_triangle_arithmetic_is_exact():
-    out = run_json(HERE / "arith.py", "--n", "4096", "--scene", "tiny")
+    out = run_json(
+        HERE / "arith.py", "--n", "4096", "--scene", "tiny", "--math", "4096"
+    )
     assert out["ok"] and out["check"]["box_hit_flag_differs"] == 0
+    assert (
+        out["math"]["divide"]["differ_bits"] == out["math"]["sqrt"]["differ_bits"] == 0
+    )
 
 
 @pytest.mark.parametrize(

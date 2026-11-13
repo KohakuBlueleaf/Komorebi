@@ -10,6 +10,7 @@
 #include "komorebi/device/km_worker.hpp"
 #include "raytrace.h"
 #ifdef TRISC_PACK
+#include "divsqrt.hpp"
 #include "walk.hpp"
 #endif
 
@@ -503,6 +504,41 @@ namespace {
         return true;
     }
 
+    // Division and square root of each page's lanes: a / b and sqrt(x).
+    bool math_list(uint32_t count, walk::Prof& pf) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t* p = next_page(pf);
+            if (p == nullptr) {
+                return false;
+            }
+            for (uint32_t k = 0; k < kMaInVectors; ++k) {
+                to_slot(kArIn + k, p + kVec * k);
+            }
+            order(word(kArIn + kMaInVectors - 1) + 62);
+            mbox_release();
+            all_lanes();
+            load(L0, kArIn + kMaA);
+            load(L1, kArIn + kMaB);
+            divide();
+            store(L2, kArOut + kMaQ);
+            load(L0, kArIn + kMaX);
+            square_root();
+            store(L1, kArOut + kMaS);
+            tensix_sync();
+            const uint32_t dst = reserve_out(pf);
+            if (dst == 0) {
+                return false;
+            }
+            uint32_t* w = reinterpret_cast<uint32_t*>(dst);
+            for (uint32_t k = 0; k < kMaOutVectors; ++k) {
+                from_slot(kArOut + k, w + kVec * k);
+            }
+            push_out(dst, kMaOutVectors * kVec);
+            pf.packets++;
+        }
+        return true;
+    }
+
     // Reciprocals of a = exponent | mantissa, mantissa = 1024 page + 32 j + lane.
     bool recip_list(uint32_t first, uint32_t count, uint32_t exponent, walk::Prof& pf) {
         constexpr uint32_t kLaneSlot = 100;
@@ -633,7 +669,7 @@ void kernel_main() {
             return;
         }
         if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe) {
+            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath) {
             return;
         }
 #ifdef TRISC_UNPACK
@@ -676,6 +712,8 @@ void kernel_main() {
             probe(count, r.a3, r.a5, pf);
         } else if (seg == kSegArith) {
             arith_list(count, pf);
+        } else if (seg == kSegMath) {
+            math_list(count, pf);
         } else {
             recip_list(first, count, r.a3, pf);
         }

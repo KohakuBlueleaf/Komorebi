@@ -13,6 +13,9 @@ namespace {
         if (seg == kSegTrace || seg == kSegTreelets || seg == kSegProbe) {
             return kHitBytes;
         }
+        if (seg == kSegMath) {
+            return kMaOutVectors * kVec * 4;
+        }
         return seg == kSegArith ? kArOutVectors * kVec * 4 : kRecipPerPage * 4;
     }
 
@@ -28,7 +31,7 @@ void kernel_main() {
     wr.run([&](const km_record_t& r) {
         const uint32_t seg = km::seg(r);
         if (seg != kSegTrace && seg != kSegArith && seg != kSegRecip &&
-            seg != kSegTreelets && seg != kSegProbe) {
+            seg != kSegTreelets && seg != kSegProbe && seg != kSegMath) {
             return true;
         }
         const uint32_t t0 = km::wall();

@@ -68,3 +68,13 @@ def test_pages_hold_the_rows(rows):
     assert pages.shape == (len(r["o"]) // 32, k["kArInVectors"] * 32)
     v = pages.reshape(-1, k["kArInVectors"], 32)
     assert np.array_equal(v[:, k["kArO"]].ravel().view(F), r["o"][:, 0])
+
+
+def test_math_inputs_stay_in_range_and_fill_pages():
+    a, b, x = arithmetic.math_inputs(np.random.default_rng(3), 4096)
+    q = a / b
+    assert (b > 0).all() and (x > 0).all() and (a == 0).any() and (a < 0).any()
+    normal = np.abs(q[a != 0]) >= np.finfo(F).tiny
+    assert normal.all() and np.isfinite(q).all()
+    v = arithmetic.math_pages(a, b, x).reshape(-1, packets.K["kMaInVectors"], 32)
+    assert np.array_equal(v[:, packets.K["kMaB"]].ravel().view(F), b)
