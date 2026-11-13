@@ -128,6 +128,16 @@ broadcast that casts words alone. Its casts are `cast(block, word)` with no `res
 `finish` is still called on every core. Each cast waits until every receiver took the
 last word, so one cast costs a round trip to the farthest receiver.
 
+## Casting an overlay
+
+The word can name an overlay ([Overlays](overlays.md)): the leader picks the code its
+group runs next, and every core of the broadcast loads that overlay when it does not hold
+it and calls it. A receiver takes the word in `arrive`, before its own load and call, so
+the leader's next cast does not wait for them and the leader runs up to one round ahead.
+From the cast to the last call done this took 2.26 µs down a column of 10 when every
+core loaded the overlay and 1.67 µs when every core held it
+([17_leader_overlay](../../examples/17_leader_overlay/README.md)).
+
 ## Rules for a program
 
 1. Blocks of a command go in order, block 0 to the last, on every core of the broadcast,

@@ -152,6 +152,18 @@ math core resets it again after each call.
 The area is part of the control L1 tensor only when the program has overlays. The host writes
 the header and table at load; after that, the cores write the records and lines.
 
+## A leader casts the overlay
+
+A group's leader can pick the overlay its group runs from data it reads while the run is
+live, and cast its number as a broadcast's word ([Broadcast](broadcast.md)): every core of
+the broadcast reads the word with `broadcast.word()`, then names, loads and calls that
+overlay on its reader. Compute does not see the word; the reader hands it to its own
+compute through a small buffer, and compute's `load()` meets the reader's as above. On
+one card, from the leader's cast to the last call done, an overlay every core loads cost
+2.15 to 2.26 µs, one every core holds 1.55 to 1.67 µs, and the same code compiled in 1.00
+to 1.12 µs, on a row, a column of 10 and the whole grid
+([17_leader_overlay](../../examples/17_leader_overlay/README.md)).
+
 ## Costs
 
 On one Blackhole card, AICLK 1,350 MHz, medians over cores and commands
