@@ -14,7 +14,8 @@ if os.environ.get("KMR_CARD") != "1":
 sys.path.insert(0, str(Path(__file__).resolve().parent / "feeder"))
 
 import mapcollect_fed as mf
-import ttnn
+
+import komorebi as km
 
 pytestmark = pytest.mark.card
 CARD_IN_PROCESS = True  # opens the card in this process
@@ -22,20 +23,18 @@ CYCLES_300MS = 405_000_000  # at 1350 MHz
 
 
 @pytest.fixture(scope="module")
-def device():
-    dev = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    dev.disable_and_clear_program_cache()
-    yield dev
-    ttnn.close_mesh_device(dev)
+def session():
+    with km.Session() as s:
+        yield s
 
 
 @pytest.fixture
-def run(device):
+def run(session):
     """Runs the example with these command-line arguments; returns its summary."""
 
     def go(*args):
         a = mf.parse([str(x) for x in ("--out-pages", 256, *args)])
-        return mf.run(device, a, np.random.default_rng(a.seed))
+        return mf.run(session, a, np.random.default_rng(a.seed))
 
     return go
 

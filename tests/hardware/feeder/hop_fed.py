@@ -17,8 +17,8 @@ sys.path[:0] = [str(HERE), str(EXAMPLE), str(ROOT / "src")]
 import fed  # noqa: E402
 import records as rec  # noqa: E402
 import replay  # noqa: E402
-import ttnn  # noqa: E402
 
+import komorebi as km  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
@@ -65,7 +65,7 @@ def main():
         reader=KERNELS / "dyn_reader.cpp",
         compute=EXAMPLE / "kernels" / "compute.cpp",
         writer=KERNELS / "dyn_writer.cpp",
-        cbs=[(b.index, ttnn.uint32, b.page_bytes, b.pages) for b in dyn.buffers()],
+        cbs=[(b.index, "uint32", b.page_bytes, b.pages) for b in dyn.buffers()],
     )
     run = rec.record(
         HOP["kSegHop"],
@@ -81,15 +81,14 @@ def main():
         ],
         flags=K["KM_F_EXCL"],
     )
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    fed.log("device open")
-    try:
-        f = fed.Fed(device)
+    with km.Session(log=fed.log) as session:
+        fed.log("device open")
+        f = fed.Fed(session)
         res_t = f.l1_blocks(HOP["kResWords"])
         result = f.run(
             kernels,
             [run],
-            program_args=lambda core: ([], [], [res_t.buffer_address()]),
+            program_args=lambda core: ([], [], [res_t.address]),
             tensors=[res_t],
             depth=4,
             deadline_s=a.deadline,
@@ -98,8 +97,6 @@ def main():
         )
         res = rec.as_uint32(fed.read_int32(res_t))[: a.count]
         fed.log("results read back")
-    finally:
-        ttnn.close_mesh_device(device)
     print(json.dumps(report(a, dyn, result, res)), flush=True)
 
 

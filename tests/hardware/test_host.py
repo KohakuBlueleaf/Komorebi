@@ -11,8 +11,6 @@ import pytest
 import komorebi as km
 from komorebi import dram
 
-pytest.importorskip("ttnn")
-
 pytestmark = pytest.mark.card
 CARD_IN_PROCESS = True  # opens the card in this process
 ROOT = Path(__file__).resolve().parents[2]
@@ -102,7 +100,7 @@ def test_a_page_range_and_the_chunks_equal_slices_of_the_whole_read(session):
     """A bfloat16 tile tensor of 300 pages: a range from the middle, the chunks of
     64 KB and two tiles equal the whole read; the read times go to the log."""
     x = np.random.default_rng(5).integers(-8, 9, (640, 480)).astype(np.float32)
-    t = cases.bf16_tiles(session.device, x)
+    t = cases.bf16_tiles(session, x)
     t0 = time.monotonic()
     (whole,) = session.read(t)
     mapcollect.log(f"{whole.nbytes} bytes read whole in {time.monotonic() - t0:.2f} s")

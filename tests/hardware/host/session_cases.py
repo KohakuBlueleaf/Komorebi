@@ -9,11 +9,8 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
-from komorebi import session as km_session
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect"
 T0 = time.monotonic()
@@ -95,7 +92,7 @@ def case_queue_order(session, rounds=1000, jobs=32, count=8, busy=200):
     pages that hold it. SUM must wait for every queued job: `jobs` each round."""
     prog, pages = queue_program(session)
     run = session.load(prog)
-    at, counts, t0 = pages.buffer_address(), [], time.monotonic()
+    at, counts, t0 = pages.address, [], time.monotonic()
     for k in range(rounds):
         run.issue(3, None, args=[at, busy])
         for j in range(jobs):
@@ -114,18 +111,12 @@ def case_queue_order(session, rounds=1000, jobs=32, count=8, busy=200):
 
 def queue_program(session):
     """The queue cases' program and its tensor: 64 pages of 64 bytes, uint32."""
-    rows = np.zeros((64, 16), np.uint32)
-    pages = ttnn.from_torch(
-        torch.from_numpy(rows.view(np.int32)),
-        dtype=ttnn.uint32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=session.device,
-    )
+    pages = session.tensor(np.zeros((64, 16), np.uint32), "uint32")
     prog = km.Program(
         "queue_order",
         kernels=Path(__file__).resolve().parent / "queue_kernels",
         buffers=[km.Buffer(index=16, format="uint32", page_bytes=64, pages=1)],
-        compile_args={"writer": ttnn.TensorAccessorArgs(pages).get_compile_time_args()},
+        compile_args={"writer": pages.accessor_args()},
     )
     return prog, pages
 
@@ -135,7 +126,7 @@ def case_queue_cost(session, windows=10, window=48, count=8, reads=(0, 100)):
     queued or on fixed disjoint teams, each window issued and waited for at once: PUTs,
     or BUSY records whose leader reads a page `reads` times."""
     prog, pages = queue_program(session)
-    at, out = pages.buffer_address(), {}
+    at, out = pages.address, {}
     for mode in [(m, r) for r in reads for m in ("plain", "queued")]:
         run = session.load(prog)
         events, t0 = [], time.monotonic()
@@ -167,27 +158,25 @@ def case_queue_cost(session, windows=10, window=48, count=8, reads=(0, 100)):
     return out
 
 
-def bf16_tiles(device, x):
-    return ttnn.from_torch(
-        torch.from_numpy(x), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
-    )
+def bf16_tiles(session, x):
+    return session.tensor(x, "bfloat16", "tile")
 
 
 def case_read(session):
-    """Tensors read by banks equal what was written and what ttnn reads (an int32
+    """Tensors read by banks equal what was written and a whole-buffer read (a uint32
     row-major one of 37 pages over every bank, two bfloat16 ones of 6 tiles, one
     barrier), also while a run is loaded. The read's speed is an experiment
     (experiments/dram_read)."""
     rng = np.random.default_rng(3)
     words = rng.integers(0, 1 << 32, (37, 24), dtype=np.uint64).astype(np.uint32)
     x = rng.integers(-4, 5, (96, 64)).astype(np.float32)  # exact in bfloat16
-    w = km_session._int32_tensor(session.device, words)
-    a, b = bf16_tiles(session.device, x), bf16_tiles(session.device, 2 * x)
+    w = session.tensor(words, "uint32")
+    a, b = bf16_tiles(session, x), bf16_tiles(session, 2 * x)
     raw, got_a, got_b = session.read(w)[0], *session.read_bf16(a, b)
     out = {
         "words": bool((raw.reshape(-1).view(np.uint32) == words.reshape(-1)).all()),
         "tiles": bool((got_a == x).all() and (got_b == 2 * x).all()),
-        "as_ttnn": bool((got_a == ttnn.to_torch(a).float().numpy()).all()),
+        "as_whole": bool((got_a == a.read()).all()),
     }
     run = session.load(program(EXAMPLE / "kernels"))
     run.wait(run.issue(0, (0, 8)))
@@ -195,7 +184,7 @@ def case_read(session):
     (during,) = session.read_bf16(a)
     out["during_run"] = bool((during == x).all())
     run.stop()
-    out["ok"] = all(out[k] for k in ("words", "tiles", "as_ttnn"))
+    out["ok"] = all(out[k] for k in ("words", "tiles", "as_whole"))
     out["ok"] = out["ok"] and out["during_run"] and run.result()["error"] == 0
     return out
 

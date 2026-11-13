@@ -10,8 +10,6 @@ import komorebi as km
 from komorebi.engines.graph import Graph
 from komorebi.engines.stream import Stream
 
-pytest.importorskip("ttnn")
-
 pytestmark = pytest.mark.card
 CARD_IN_PROCESS = True  # opens the card in this process
 KERNELS = Path(__file__).resolve().parents[2] / "examples" / "01_mapcollect" / "kernels"

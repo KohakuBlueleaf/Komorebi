@@ -11,8 +11,8 @@ from pathlib import Path
 
 import numpy as np
 import records as rec
-import torch
-import ttnn
+
+from komorebi.session import compute_config
 
 K = rec.K
 FEEDER_KERNEL = rec.HERE / "feeder.cpp"
@@ -34,26 +34,18 @@ def aiclk_mhz():
 
 
 def core_set(cores):
-    """A CoreRangeSet of single cores [(x, y), ...]."""
-    return ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(x, y), ttnn.CoreCoord(x, y)) for x, y in cores]
-    )
+    """Single cores [(x, y), ...] as (x0, y0, x1, y1) rectangles."""
+    return [(x, y, x, y) for x, y in cores]
 
 
-def int32_tensor(device, rows, memory_config=None):
+def int32_tensor(session, rows, shard_grid=None):
     """A row-major int32 tensor with the bits of the uint32 rows (one page a row)."""
-    return ttnn.from_torch(
-        torch.from_numpy(rec.as_int32(rows)),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=memory_config or ttnn.DRAM_MEMORY_CONFIG,
-    )
+    return session.tensor(rec.as_int32(rows), "int32", shard_grid=shard_grid)
 
 
 def read_int32(tensor):
     """A tensor read back as a numpy int32 array."""
-    return ttnn.to_torch(tensor).numpy().astype(np.int32)
+    return tensor.read()
 
 
 @dataclass
@@ -65,8 +57,8 @@ class Kernels:
     writer: Path
     reader_ct: list = field(default_factory=list)
     writer_ct: list = field(default_factory=list)
-    compute_config: object = None
-    cbs: list = field(default_factory=list)  # (index, data format, page bytes, pages)
+    compute_options: dict = field(default_factory=dict)  # as Program.compute
+    cbs: list = field(default_factory=list)  # (index, format name, page bytes, pages)
     defines: list = field(default_factory=list)
 
 
@@ -87,19 +79,20 @@ class Result:
 
 
 class Fed:
-    """A device's grid split into workers (cores 0 to n - 2) and the feeder (last)."""
+    """An open session's grid split into workers (cores 0 to n - 2) and the feeder
+    (last); the session runs no program of its own."""
 
-    def __init__(self, device):
-        self.device = device
-        g = device.compute_with_storage_grid_size()
-        self.grid = (g.x, g.y)
-        self.n_cores = g.x * g.y
+    def __init__(self, session):
+        self.session = session
+        gx, gy = session.grid
+        self.grid = (gx, gy)
+        self.n_cores = gx * gy
         self.workers = self.n_cores - 1
-        self.logical = [(i % g.x, i // g.x) for i in range(self.n_cores)]
+        self.logical = [(i % gx, i // gx) for i in range(self.n_cores)]
         self.noc = []
         for x, y in self.logical:
-            c = device.worker_core_from_logical_core(ttnn.CoreCoord(x, y))
-            self.noc.append(c.x | c.y << 16)
+            cx, cy = session.device.worker_core(x, y)
+            self.noc.append(cx | cy << 16)
         self.worker_set = core_set(self.logical[: self.workers])
         self.feeder_set = core_set(self.logical[self.workers :])
         self.mhz = aiclk_mhz()
@@ -110,15 +103,7 @@ class Fed:
 
     def l1_blocks(self, words):
         """A zeroed L1 area of `words` words on every core, at one address."""
-        gx, gy = self.grid
-        config = ttnn.create_sharded_memory_config(
-            (1, words),
-            ttnn.CoreGrid(y=gy, x=gx),
-            ttnn.ShardStrategy.HEIGHT,
-            ttnn.ShardOrientation.ROW_MAJOR,
-            use_height_and_width_as_shard_shape=True,
-        )
-        return int32_tensor(self.device, np.zeros((self.n_cores, words)), config)
+        return int32_tensor(self.session, np.zeros((self.n_cores, words)), self.grid)
 
     def run(
         self,
@@ -142,35 +127,32 @@ class Fed:
         (reader, writer, compute) arguments after the start-up ones. `dynamic`
         (komorebi.program.Dynamic): its segment runs dynamic, queues in DRAM (at most
         queue_bytes), status lines on the feeder, its arguments before the program's."""
-        dev, mhz = self.device, self.mhz
+        session, mhz = self.session, self.mhz
         n = len(records)
         tag = (random.getrandbits(16) | 1) & 0xFFFF
         ctl = self.control_blocks()
-        ctl_addr = ctl.buffer_address()
+        ctl_addr = ctl.address
         core_table = np.zeros((1, K["KM_CORES_MAX"]), dtype=np.uint64)
         core_table[0, : self.n_cores] = self.noc
-        cores_t = int32_tensor(dev, core_table)
-        table_t = int32_tensor(dev, np.asarray(records, dtype=np.uint64).reshape(n, 16))
-        results_t = int32_tensor(dev, np.zeros((n + 2, 16)))  # + EXIT, end record
+        cores_t = int32_tensor(session, core_table)
+        table_t = int32_tensor(
+            session, np.asarray(records, dtype=np.uint64).reshape(n, 16)
+        )
+        results_t = int32_tensor(session, np.zeros((n + 2, 16)))  # + EXIT, end record
         if trace_cap % 4:  # the kernel writes cap * 16 bytes as one page
             raise ValueError(f"trace_cap {trace_cap} is not a multiple of 4")
         trace_t = None
         if trace_cap:
             words = trace_cap * K["kTraceWords"]
-            trace_t = int32_tensor(dev, np.zeros((self.workers, words)))
+            trace_t = int32_tensor(session, np.zeros((self.workers, words)))
         dyn_rw, dyn_c, queue_t, lines_t = [], [], None, None
         if dynamic is not None:
             dynamic.check(self.workers, queue_bytes, depth)
             page = 32 * dynamic.item_bytes  # kDynPageItems items a page
-            queue_t = ttnn.empty(
-                (self.workers * dynamic.queue_items // 32, page // 4),
-                dtype=ttnn.int32,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-                device=dev,
-                memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            )
+            shape = (self.workers * dynamic.queue_items // 32, page // 4)
+            queue_t = session.empty(shape, "int32")
             lines_t = self.l1_blocks(2 * K["KM_CORES_MAX"] * 4)  # lines, first pass
-            dyn_rw = dynamic.args(queue_t.buffer_address(), lines_t.buffer_address())
+            dyn_rw = dynamic.args(queue_t.address, lines_t.address)
             dyn_c = dynamic.compute_args(self.workers)
             log(f"dynamic: {dynamic.queue_bytes(self.workers) >> 20} MiB of queues")
         log(f"tensors: ctl at {ctl_addr:#x}, {n} records, tag {tag:#06x}")
@@ -179,7 +161,7 @@ class Fed:
         feeder = self.workers
         base = {
             "ctl": ctl_addr,
-            "cores": cores_t.buffer_address(),
+            "cores": cores_t.address,
             "disp_xy": self.noc[feeder],
             "ack_base": ctl_addr + K["KM_CTL_DONE"],
             "ready_base": ctl_addr + K["KM_CTL_BOOT"],
@@ -189,18 +171,14 @@ class Fed:
             "row": self.grid[0] if row is None else row,
             "wait_limit": rec.limit_units(wait_s, mhz),
             "idle_limit": rec.limit_units(idle_s, mhz) if idle_s else 0,  # 0: none
-            "trace": trace_t.buffer_address() if trace_t is not None else 0,
+            "trace": trace_t.address if trace_t is not None else 0,
             "trace_cap": trace_cap,
         }
         mailbox = ctl_addr + K["KM_CTL_JOB"]
         aligned = [ctl_addr, base["ack_base"], base["ready_base"], mailbox]
         if any(addr % 16 for addr in aligned):  # small writes go slot to slot
             raise ValueError(f"bases not 16-byte aligned: {[hex(a) for a in aligned]}")
-        reader_args, writer_args, compute_args = (
-            ttnn.RuntimeArgs(),
-            ttnn.RuntimeArgs(),
-            ttnn.RuntimeArgs(),
-        )
+        reader_args, writer_args, compute_args = [], [], []
         for core in range(self.workers):
             x, y = self.logical[core]
             leader, rank, members, ready_slot = grp[core]
@@ -216,105 +194,72 @@ class Fed:
                 }
             )
             extra = program_args(core) if program_args else ([], [], [])
-            reader_args[x][y] = start + dyn_rw + list(extra[0])
-            writer_args[x][y] = start + dyn_rw + list(extra[1])
+            reader_args.append((x, y, start + dyn_rw + list(extra[0])))
+            writer_args.append((x, y, start + dyn_rw + list(extra[1])))
             compute = [ctl_addr, core, base["wait_limit"], base["idle_limit"]]
-            compute_args[x][y] = compute + dyn_c + list(extra[2])
-        feeder_args = ttnn.RuntimeArgs()
+            compute_args.append((x, y, compute + dyn_c + list(extra[2])))
         fx, fy = self.logical[feeder]
         fd = {
             "kFdCtl": ctl_addr,
             "kFdWorkers": self.workers,
-            "kFdCores": cores_t.buffer_address(),
-            "kFdTable": table_t.buffer_address(),
+            "kFdCores": cores_t.address,
+            "kFdTable": table_t.address,
             "kFdRecords": n,
             "kFdDepth": depth,
             "kFdDeadline": rec.limit_units(deadline_s, mhz),
-            "kFdResults": results_t.buffer_address(),
+            "kFdResults": results_t.address,
             "kFdGroups": n_groups,
             "kFdBootLimit": rec.limit_units(wait_s, mhz),
             "kFdExit": int(send_exit),
             "kFdRelease": release,
             "kFdRaw": raw,
             "kFdDynSeg": dynamic.seg if dynamic is not None else 0,
-            "kFdLines": lines_t.buffer_address() if lines_t is not None else 0,
+            "kFdLines": lines_t.address if lines_t is not None else 0,
         }
         words = [0] * K["kFdArgs"]
         for name, value in fd.items():
             words[K[name]] = value
-        feeder_args[fx][fy] = words
+        feeder_args = [(fx, fy, words)]
 
-        include = [rec.INCLUDE]
-        u32 = ttnn.uint32
-
-        def cb(index, fmt, page, pages, cores):
-            return ttnn.CBDescriptor(
-                total_size=page * pages,
-                core_ranges=cores,
-                format_descriptors=[
-                    ttnn.CBFormatDescriptor(
-                        buffer_index=index, data_format=fmt, page_size=page
-                    )
-                ],
-            )
-
+        include = [str(rec.INCLUDE)]
+        launch = session.launch()
         tok = K["kTokenBytes"]
-        cbs = [cb(i, f, p, c, self.worker_set) for i, f, p, c in kernels.cbs]
+        cbs = [(i, f, p, c, self.worker_set) for i, f, p, c in kernels.cbs]
         cbs += [
-            cb(K["kCbTokenCompute"], u32, tok, 1, self.worker_set),
-            cb(K["kCbTokenWriter"], u32, tok, 1, self.worker_set),
-            cb(K["kFdCbTable"], u32, 64 * (n + 2), 1, self.feeder_set),
-            cb(K["kFdCbResults"], u32, 64 * (n + 2), 1, self.feeder_set),
+            (K["kCbTokenCompute"], "uint32", tok, 1, self.worker_set),
+            (K["kCbTokenWriter"], "uint32", tok, 1, self.worker_set),
+            (K["kFdCbTable"], "uint32", 64 * (n + 2), 1, self.feeder_set),
+            (K["kFdCbResults"], "uint32", 64 * (n + 2), 1, self.feeder_set),
         ]
         if trace_cap:
             page = trace_cap * K["kTraceWords"] * 4
-            cbs.append(cb(K["kCbTrace"], u32, page, 1, self.worker_set))
-
-        def dm(source, cores, args, riscv, ct=()):
-            processor, noc = (
-                (ttnn.DataMovementProcessor.RISCV_0, ttnn.NOC.RISCV_0_default)
-                if riscv == 0
-                else (ttnn.DataMovementProcessor.RISCV_1, ttnn.NOC.RISCV_1_default)
-            )
-            return ttnn.KernelDescriptor(
-                kernel_source=str(source),
-                source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-                core_ranges=cores,
-                compile_time_args=list(ct),
-                defines=list(kernels.defines),
-                runtime_args=args,
-                config=ttnn.DataMovementConfigDescriptor(processor=processor, noc=noc),
-                compiler_include_paths=include,
-            )
-
-        descriptor = ttnn.ProgramDescriptor(
-            kernels=[
-                dm(kernels.reader, self.worker_set, reader_args, 0, kernels.reader_ct),
-                dm(kernels.writer, self.worker_set, writer_args, 1, kernels.writer_ct),
-                ttnn.KernelDescriptor(
-                    kernel_source=str(kernels.compute),
-                    source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-                    core_ranges=self.worker_set,
-                    compile_time_args=[],
-                    defines=list(kernels.defines),
-                    runtime_args=compute_args,
-                    config=kernels.compute_config or ttnn.ComputeConfigDescriptor(),
-                    compiler_include_paths=include,
-                ),
-                dm(FEEDER_KERNEL, self.feeder_set, feeder_args, 0),
-            ],
-            semaphores=[],
-            cbs=cbs,
+            cbs.append((K["kCbTrace"], "uint32", page, 1, self.worker_set))
+        for index, fmt, page, pages, cores in cbs:
+            launch.cb(cores, index, fmt, page, page * pages)
+        defines = list(kernels.defines)
+        worker = [
+            (kernels.reader, reader_args, 0, kernels.reader_ct, {}),
+            (kernels.writer, writer_args, 1, kernels.writer_ct, {}),
+            (
+                kernels.compute,
+                compute_args,
+                2,
+                [],
+                compute_config(kernels.compute_options),
+            ),
+        ]
+        for source, args, processor, ct, config in worker:
+            launch.kernel(
+                str(source), self.worker_set, processor, list(ct), defines, include,
+                args, **config,
+            )  # fmt: skip
+        launch.kernel(
+            str(FEEDER_KERNEL), self.feeder_set, 0, [], defines, include, feeder_args
         )
-        io = [ctl, cores_t, table_t, *tensors, results_t]
-        if dynamic is not None:
-            io[3:3] = [queue_t, lines_t]
-        if trace_t is not None:
-            io.insert(-1, trace_t)
         log("launch")
         t0 = time.perf_counter()
-        ttnn.generic_op(io, descriptor)
-        ttnn.synchronize_device(dev)
+        launch.run()
+        session.device.finish()
         host_s = time.perf_counter() - t0
         log(f"program done in {host_s:.2f}s")
         rows = read_int32(results_t)

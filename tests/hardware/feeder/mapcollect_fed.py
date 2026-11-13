@@ -16,8 +16,9 @@ sys.path.insert(0, str(HERE))
 
 import fed  # noqa: E402
 import records as rec  # noqa: E402
-import torch  # noqa: E402
-import ttnn  # noqa: E402
+
+import komorebi as km  # noqa: E402
+from komorebi import formats  # noqa: E402
 
 K = rec.K
 KERNELS = HERE.parents[2] / "examples" / "01_mapcollect" / "kernels"
@@ -264,19 +265,15 @@ def main():
     args = parse()
     rng = np.random.default_rng(args.seed)
     t_start = time.time()
-    device = ttnn.open_mesh_device(ttnn.MeshShape(1, 1))
-    device.disable_and_clear_program_cache()
-    fed.log(f"device open {time.time() - t_start:.1f}s")
-    try:
-        out = run(device, args, rng)
-    finally:
-        ttnn.close_mesh_device(device)
+    with km.Session(log=fed.log) as session:
+        fed.log(f"device open {time.time() - t_start:.1f}s")
+        out = run(session, args, rng)
     out["wall_s"] = round(time.time() - t_start, 1)
     print(json.dumps(out), flush=True)
 
 
-def run(device, args, rng):
-    runner = fed.Fed(device)
+def run(session, args, rng):
+    runner = fed.Fed(session)
     teams = make_teams(args, runner.workers, rng)
     workers, n, tiles = runner.workers, args.jobs, args.tiles
     fed.log(f"grid {runner.grid}, {workers} workers, aiclk {runner.mhz} MHz")
@@ -284,18 +281,11 @@ def run(device, args, rng):
     # Exact: integers in [-2, 2] (sums exact in bf16 for T <= 64). Random: uniform in
     # [-1, 1], rounded to bf16. Job j reads tiles j to j + T - 1 (outputs all differ).
     x_exact = rng.integers(-2, 3, ((tiles + n) * TILE, TILE)).astype(np.float32)
-    x_rand = torch.from_numpy(
-        rng.uniform(-1, 1, ((tiles + n) * TILE, TILE)).astype(np.float32)
-    )
-    x_rand = x_rand.bfloat16().float().numpy()
+    x_rand = rng.uniform(-1, 1, ((tiles + n) * TILE, TILE)).astype(np.float32)
+    x_rand = formats.bf16_values(formats.bf16_bits(x_rand))
 
     def tile_tensor(a):
-        return ttnn.from_torch(
-            torch.from_numpy(a),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
+        return session.tensor(a, "bfloat16", "tile")
 
     inputs = [tile_tensor(x_exact), tile_tensor(x_rand)]
     pages = args.out_pages
@@ -326,9 +316,9 @@ def run(device, args, rng):
             records.append(rec.record(K["KM_SEG_NOP"], first, count))
         else:
             words = [
-                inputs[j % 2].buffer_address(),
+                inputs[j % 2].address,
                 tiles,
-                outs[base[j] // pages].buffer_address(),
+                outs[base[j] // pages].address,
                 base[j] % pages,
                 args.slow_cycles if j == args.slow else 0,
                 args.slow_member if j == args.slow else 0xFFFFFFFF,
@@ -338,19 +328,16 @@ def run(device, args, rng):
         if j == args.raw:  # issued as built: the slot it names and its team kept
             records[-1][rec.RECORD_FIELDS.index("hdr")] |= args.raw_slot << 16
 
-    accessor = ttnn.TensorAccessorArgs(inputs[0]).get_compile_time_args()
     kernels = fed.Kernels(
         reader=KERNELS / "reader.cpp",
         compute=KERNELS / "compute.cpp",
         writer=KERNELS / "writer.cpp",
-        reader_ct=accessor,
-        writer_ct=ttnn.TensorAccessorArgs(outs[0]).get_compile_time_args(),
-        compute_config=ttnn.ComputeConfigDescriptor(
-            math_fidelity=ttnn.MathFidelity.HiFi4, fp32_dest_acc_en=True
-        ),
+        reader_ct=inputs[0].accessor_args(),
+        writer_ct=outs[0].accessor_args(),
+        compute_options={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         cbs=[
-            (SEGMENTS["kCbIn"], ttnn.bfloat16, 2048, SEGMENTS["kInPages"]),
-            (SEGMENTS["kCbOut"], ttnn.bfloat16, 2048, 2),
+            (SEGMENTS["kCbIn"], "bfloat16", 2048, SEGMENTS["kInPages"]),
+            (SEGMENTS["kCbOut"], "bfloat16", 2048, 2),
         ],
     )
     trace_cap = (n + 4) // 4 * 4 if args.trace else 0  # 64-byte pages
@@ -481,7 +468,7 @@ def check(args, teams, base, outs, xs):
     pages = args.out_pages * len(outs)
     got = []
     for i, t in enumerate(outs):
-        got.append(ttnn.to_torch(t).float().numpy())
+        got.append(t.read())
         fed.log(f"output {i + 1} of {len(outs)} read back")
     got = np.concatenate(got)
     got = got.reshape(pages, TILE, TILE)
