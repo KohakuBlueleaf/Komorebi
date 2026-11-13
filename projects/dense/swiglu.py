@@ -57,7 +57,7 @@ class Layer:
         self.session = session
         prog = card.program(s, t["x"], fidelity)
         self.run = session.load(prog, deadline=deadline, wait=1.0)
-        a = {k: v.buffer_address() for k, v in t.items()}
+        a = {k: v.address for k, v in t.items()}
         loads = sp.loads(s, a["w1"], a["w3"], a["w2"])
         tickets = [self.run.issue("load", self.team, w) for w in loads]
         self.load_us = [e.us for e in self.run.wait(tickets, timeout=10.0)]
@@ -86,7 +86,7 @@ class Layer:
     def profile(self, timeout=10.0):
         """Each member's profile page, summed over the records so far."""
         prof = self.t["prof"]
-        ticket = self.run.issue("prof", self.team, [prof.buffer_address()])
+        ticket = self.run.issue("prof", self.team, [prof.address])
         self.run.wait(ticket, timeout=timeout)
         (pages,) = self.session.read(prof)
         words = pages.reshape(-1).view(np.uint32).reshape(-1, K["kProfBytes"] // 4)
@@ -211,14 +211,13 @@ def main():
             raise SystemExit(f"does not fit L1: {s.l1_bytes()} bytes")
         out["plan"] = s.__dict__ | {"l1": s.l1_bytes(), "rows": s.rows()}
         out["x280_mhz"] = session.pll_mhz
-        device = session.device
         log("uploading")
         t = {
-            n: card.bf16_tensor(device, v)
+            n: card.bf16_tensor(session, v)
             for n, v in zip(("x", "w1", "w3", "w2"), (x, w1, w3, w2))
         }
-        t["y"] = card.bf16_tensor(device, np.zeros((m, d), np.float32))
-        t["prof"] = card.prof_tensor(device, cores)
+        t["y"] = card.bf16_tensor(session, np.zeros((m, d), np.float32))
+        t["prof"] = card.prof_tensor(session, cores)
         log("uploaded")
         layer = Layer(session, s, t, args.fidelity)
         out["load_us"] = layer.load_us

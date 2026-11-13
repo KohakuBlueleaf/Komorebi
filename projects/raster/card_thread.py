@@ -130,7 +130,7 @@ def program(scene, words, workers):
     return prog
 
 
-def tensors(dev, blocks, workers, list_slots):
+def tensors(session, blocks, workers, list_slots):
     """The DRAM tensors: mesh (once per scene), lists, directory, frame, profiles, and
     the pages only the cores read and write."""
     pages = -(-list_slots // lists.PAGE_SLOTS)
@@ -138,25 +138,29 @@ def tensors(dev, blocks, workers, list_slots):
     chunks = -(-out_pages // card.CHUNK_PAGES)
     frame = [
         card.tensor(
-            dev,
+            session,
             np.zeros((min(card.CHUNK_PAGES, out_pages - i * card.CHUNK_PAGES), 1024)),
         )
         for i in range(chunks)
     ]
     up = {
-        "mesh": card.tensor(dev, blocks),
-        "lists": card.tensor(dev, np.zeros((pages, lists.PAGE_WORDS))),
-        "dir": card.tensor(dev, np.zeros((workers, K["kDirBytes"] // 4))),
+        "mesh": card.tensor(session, blocks),
+        "lists": card.tensor(session, np.zeros((pages, lists.PAGE_WORDS))),
+        "dir": card.tensor(session, np.zeros((workers, K["kDirBytes"] // 4))),
         "frame": frame,
-        "prof": card.tensor(dev, np.zeros((workers, 1024))),
-        "sprof": card.tensor(dev, np.zeros((workers, S["kSProfPageBytes"] // 4))),
-        "counters": card.tensor(dev, np.zeros((workers, F["RF_COUNTER_BYTES"] // 4))),
-        "hist": card.tensor(dev, np.zeros((workers, F["RF_HIST_BYTES"] // 4))),
-        "slots": card.tensor(dev, np.zeros((workers, F["RF_SLOTS_BYTES"] // 4))),
-        "hprefix": card.tensor(dev, np.zeros((workers, F["RF_HPREFIX_BYTES"] // 4))),
+        "prof": card.tensor(session, np.zeros((workers, 1024))),
+        "sprof": card.tensor(session, np.zeros((workers, S["kSProfPageBytes"] // 4))),
+        "counters": card.tensor(
+            session, np.zeros((workers, F["RF_COUNTER_BYTES"] // 4))
+        ),
+        "hist": card.tensor(session, np.zeros((workers, F["RF_HIST_BYTES"] // 4))),
+        "slots": card.tensor(session, np.zeros((workers, F["RF_SLOTS_BYTES"] // 4))),
+        "hprefix": card.tensor(
+            session, np.zeros((workers, F["RF_HPREFIX_BYTES"] // 4))
+        ),
         "list_slots": pages * lists.PAGE_SLOTS,
     }
-    card.ttnn.synchronize_device(dev)  # the uploads land before any frame runs
+    session.device.finish()  # the uploads land before any frame runs
     return up
 
 
@@ -166,20 +170,20 @@ def words(up, blocks, cores, workers, steps, balance=True):
     w[F["RF_W_CORES"]] = cores
     w[F["RF_W_WORKERS"]] = workers
     w[F["RF_W_BANK"]] = BANK_OF_CLUSTER[CLUSTER]
-    w[F["RF_W_MESH"]] = up["mesh"].buffer_address()
+    w[F["RF_W_MESH"]] = up["mesh"].address
     w[F["RF_W_BLOCKS"]] = blocks
-    w[F["RF_W_LISTS"]] = up["lists"].buffer_address()
+    w[F["RF_W_LISTS"]] = up["lists"].address
     w[F["RF_W_LIST_SLOTS"]] = up["list_slots"]
-    w[F["RF_W_DIR"]] = up["dir"].buffer_address()
+    w[F["RF_W_DIR"]] = up["dir"].address
     w[F["RF_W_STEPS"]] = steps
     w[F["RF_W_FRAME_PAGES"]] = card.CHUNK_PAGES
     w[F["RF_W_FRAMES"]] = len(up["frame"])
     for i, t in enumerate(up["frame"]):
-        w[F["RF_W_FRAME"] + i] = t.buffer_address()
-    w[F["RF_W_PROF"]] = up["prof"].buffer_address()
-    w[F["RF_W_SPROF"]] = up["sprof"].buffer_address()
+        w[F["RF_W_FRAME"] + i] = t.address
+    w[F["RF_W_PROF"]] = up["prof"].address
+    w[F["RF_W_SPROF"]] = up["sprof"].address
     for name in ("counters", "hist", "slots", "hprefix"):
-        w[F[f"RF_W_{name.upper()}"]] = up[name].buffer_address()
+        w[F[f"RF_W_{name.upper()}"]] = up[name].address
     return w
 
 
@@ -291,10 +295,9 @@ def frame(args, session=None):
     with own as session:
         workers = card.workers(session)
         cores = args.cores or workers
-        dev = session.device
         t0 = time.perf_counter()
         slots = args.list_slots or 2 * len(scene["indices"]) + 65536
-        up = tensors(dev, blocks, workers, slots)
+        up = tensors(session, blocks, workers, slots)
         tm["upload_s"] = time.perf_counter() - t0
         w = words(up, len(blocks), cores, workers, args.steps, args.balance)
         w[F["RF_W_REPEAT"]] = args.repeat
@@ -344,7 +347,7 @@ def frame(args, session=None):
             frame_words = dirs[:, K["kDirFrame"] :].copy()
             dirs[:, K["kDirFrame"] :] = 0
             out["dir_equal"] = bool(np.array_equal(dirs, mid["directory"]))
-            want = [card.CHUNK_PAGES] + [t.buffer_address() for t in up["frame"]]
+            want = [card.CHUNK_PAGES] + [t.address for t in up["frame"]]
             out["dir_frame_equal"] = bool(
                 (frame_words[:, : len(want)] == want).all()
                 and not frame_words[:, len(want) :].any()

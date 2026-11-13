@@ -5,8 +5,6 @@ to every core under the dispatch kernel, one in flight at a time."""
 import time
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 from projects.raster import lists
@@ -46,20 +44,13 @@ def program():
 
 def workers(session):
     """The cores of the open card's grid; core c is (c % x, c // x)."""
-    grid = session.device.compute_with_storage_grid_size()
-    return grid.x * grid.y
+    x, y = session.grid
+    return x * y
 
 
-def tensor(device, rows):
-    """A row-major uint32 array as an int32 DRAM tensor (one page per row)."""
-    data = np.ascontiguousarray(np.asarray(rows, dtype=np.uint32)).view(np.int32)
-    return ttnn.from_torch(
-        torch.from_numpy(data),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+def tensor(session, rows):
+    """A row-major uint32 array as a DRAM tensor (one page per row)."""
+    return session.tensor(np.asarray(rows, dtype=np.uint32), "uint32")
 
 
 def read(session, *tensors):
@@ -82,36 +73,36 @@ def read_frame(session, up):
 CHUNK_PAGES = 510
 
 
-def upload(device, pages, directory, out_pages):
+def upload(session, pages, directory, out_pages):
     """The DRAM tensors of a run: lists, directory (naming the frame's tensors), the
     frame in tensors of CHUNK_PAGES pages, and the profile pages."""
     chunks = -(-out_pages // CHUNK_PAGES)
     if chunks > K["kDirFrameMax"]:
         raise ValueError(f"a frame of {out_pages} pages needs {chunks} tensors")
     frame = [
-        tensor(device, np.zeros((min(CHUNK_PAGES, out_pages - i * CHUNK_PAGES), 1024)))
+        tensor(session, np.zeros((min(CHUNK_PAGES, out_pages - i * CHUNK_PAGES), 1024)))
         for i in range(chunks)
     ]
     directory = np.array(directory, dtype=np.uint32)
     at = K["kDirFrame"]
     directory[:, at] = CHUNK_PAGES
-    directory[:, at + 1 : at + 1 + chunks] = [t.buffer_address() for t in frame]
+    directory[:, at + 1 : at + 1 + chunks] = [t.address for t in frame]
     return {
-        "lists": tensor(device, pages),
-        "dir": tensor(device, directory),
+        "lists": tensor(session, pages),
+        "dir": tensor(session, directory),
         "frame": frame,
-        "prof": tensor(device, np.zeros((len(directory), 1024), dtype=np.uint32)),
+        "prof": tensor(session, np.zeros((len(directory), 1024), dtype=np.uint32)),
     }
 
 
 def words(up, per_item):
     """FILL's arguments: directory, lists, (unused), pages per item, profile."""
     return [
-        up["dir"].buffer_address(),
-        up["lists"].buffer_address(),
+        up["dir"].address,
+        up["lists"].address,
         0,
         per_item,
-        up["prof"].buffer_address(),
+        up["prof"].address,
     ]
 
 
@@ -127,7 +118,7 @@ def run_lists(
         raise ValueError(f"{len(directory)} directory pages for {workers(session)}")
     times = {}
     t0 = time.perf_counter()
-    up = upload(session.device, pages, directory, out_pages)
+    up = upload(session, pages, directory, out_pages)
     times["upload_s"] = time.perf_counter() - t0
     t0 = time.perf_counter()
     run = session.load(program(), deadline=1.0)

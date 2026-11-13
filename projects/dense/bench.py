@@ -170,16 +170,15 @@ def main():
     log("inputs built")
     index = visible_card()
     with km.Session(log=log) as session:
-        device = session.device
         cores = len(session.nocs().words)
         t0 = time.perf_counter()
         tensors = {}
         for name, value in (("a", x), ("w", w), ("y", np.zeros((m, n), np.float32))):
-            tensors[name] = card.bf16_tensor(device, value)
+            tensors[name] = card.bf16_tensor(session, value)
             log(f"{name.upper()} uploaded")
         out["upload_s"] = round(time.perf_counter() - t0, 3)
         log(f"operands uploaded in {out['upload_s']} s")
-        prof_t = card.prof_tensor(device, cores)
+        prof_t = card.prof_tensor(session, cores)
         out["x280_mhz"] = session.pll_mhz
         out["deadline_s"] = args.deadline or deadline(p)
         out["reduce"] = args.reduce

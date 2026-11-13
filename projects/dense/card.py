@@ -6,8 +6,6 @@ dispatch kernel on X280 cluster 0. Needs tt-metal's Python environment.
 import time
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 from komorebi import _env, abi, layout
@@ -23,20 +21,15 @@ LANE_FIELDS = abi.struct_fields(
 )
 
 
-def bf16_tensor(device, x):
+def bf16_tensor(session, x):
     """A float array (bf16 values) as a bf16 tile tensor in DRAM."""
-    return ttnn.from_torch(
-        torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)).bfloat16(),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-    )
+    return session.tensor(np.asarray(x, dtype=np.float32), "bfloat16", "tile")
 
 
 def read_rows(session, y, rows, log=None):
     """Rows `rows` of the bf16 tile tensor Y as float32, read one row tile at a time
     (only the tiles holding them, at most 1 MB each), after the run's stop."""
-    nc = tuple(y.padded_shape)[1] // ref.TILE
+    nc = y.shape[1] // ref.TILE
     tiles = np.unique(np.asarray(rows) // ref.TILE)
     got = {}
     for i, t in enumerate(tiles):
@@ -47,20 +40,14 @@ def read_rows(session, y, rows, log=None):
     return np.stack([got[r // ref.TILE][r % ref.TILE] for r in rows])
 
 
-def prof_tensor(device, cores):
+def prof_tensor(session, cores):
     """Zeroed profile pages in DRAM, one page of kProfBytes per core (row-major)."""
-    return ttnn.from_torch(
-        torch.zeros((cores, K["kProfBytes"] // 4), dtype=torch.int32),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    return session.tensor(np.zeros((cores, K["kProfBytes"] // 4), np.int32), "int32")
 
 
 def program(p, a_tensor, fidelity="HiFi2"):
     """The resident program of plan p: the three kernels and the plan's buffers."""
-    ct = ttnn.TensorAccessorArgs(a_tensor).get_compile_time_args()
+    ct = a_tensor.accessor_args()
     buffers = [km.Buffer(i, "bfloat16", pl.TILE_BYTES, n) for i, n in p.buffers()]
     buffers += [
         km.Buffer(K["kCbProf"], "uint32", K["kProfBytes"], 1),
@@ -87,7 +74,7 @@ class Product:
         )
         self.load_us = None
         if p.resident:
-            w = tensors["w"].buffer_address()
+            w = tensors["w"].address
             ticket = self.run.issue("load", self.team, pl.load_args(p, w))
             self.load_us = self.run.wait(ticket, timeout=10.0).us
 
@@ -95,9 +82,9 @@ class Product:
         t = self.t
         return pl.product_args(
             self.p,
-            t["a"].buffer_address(),
-            t["y"].buffer_address(),
-            t["w"].buffer_address(),
+            t["a"].address,
+            t["y"].address,
+            t["w"].address,
             mode,
         )
 
@@ -124,7 +111,7 @@ class Product:
 
     def profile(self, session, prof):
         """Each core's profile page (summed over the records so far): [cores, words]."""
-        ticket = self.run.issue("prof", self.team, [prof.buffer_address()])
+        ticket = self.run.issue("prof", self.team, [prof.address])
         self.run.wait(ticket, timeout=10.0)
         (pages,) = session.read(prof)
         words = pages.reshape(-1).view(np.uint32).reshape(-1, K["kProfBytes"] // 4)
@@ -235,16 +222,14 @@ def grid_program(g, nocs, tensors, fidelity="HiFi2"):
         lanes = [[words[core][f] for f in LANE_FIELDS] for words in (row, col)]
         return lanes[0] + mine, lanes[1] + mine, mine + [g.wa, g.ww]
 
-    accessor = ttnn.TensorAccessorArgs
     return km.Program(
         "dense_grid",
         kernels=GRID_KERNELS,
         buffers=[km.Buffer(*b) for b in g.buffers()],
         args=args,
         compile_args={
-            "reader": accessor(tensors["a"]).get_compile_time_args(),
-            "writer": accessor(tensors["w"]).get_compile_time_args()
-            + accessor(tensors["y"]).get_compile_time_args(),
+            "reader": tensors["a"].accessor_args(),
+            "writer": tensors["w"].accessor_args() + tensors["y"].accessor_args(),
         },
         compute={
             "math_fidelity": fidelity,
@@ -276,7 +261,7 @@ class GridProduct:
 
     def words(self, mode):
         t = self.t
-        addr = [t[k].buffer_address() for k in ("a", "w", "y")]
+        addr = [t[k].address for k in ("a", "w", "y")]
         return pl.grid_args(self.g, *addr, mode)
 
     def calls(self, n, mode=G["kGridFull"], timeout=60.0):
@@ -305,7 +290,7 @@ class GridProduct:
 
     def profile(self, session, prof):
         """Each core's profile page (summed over the records so far): [cores, words]."""
-        ticket = self.run.issue("grid_prof", self.team, [prof.buffer_address()])
+        ticket = self.run.issue("grid_prof", self.team, [prof.address])
         self.run.wait(ticket, timeout=10.0)
         (pages,) = session.read(prof)
         words = pages.reshape(-1).view(np.uint32).reshape(-1, K["kProfBytes"] // 4)
@@ -317,7 +302,6 @@ class GridProduct:
 def split_program(sp, tensors, fidelity="HiFi2"):
     """The K-split form's program for plan sp: every core gets the plan words."""
     words = sp.words()
-    accessor = ttnn.TensorAccessorArgs
     fp32 = "UnpackToDestFp32"
     return km.Program(
         "dense_split",
@@ -325,9 +309,8 @@ def split_program(sp, tensors, fidelity="HiFi2"):
         buffers=[km.Buffer(*b) for b in sp.buffers()],
         args=lambda core: (words, words, words),
         compile_args={
-            "reader": accessor(tensors["a"]).get_compile_time_args()
-            + accessor(tensors["w"]).get_compile_time_args(),
-            "writer": accessor(tensors["y"]).get_compile_time_args(),
+            "reader": tensors["a"].accessor_args() + tensors["w"].accessor_args(),
+            "writer": tensors["y"].accessor_args(),
         },
         compute={
             "math_fidelity": fidelity,
@@ -362,5 +345,5 @@ class SplitProduct(GridProduct):
         self.load_us = None
 
     def words(self, mode):
-        addr = [self.t[k].buffer_address() for k in ("a", "w", "y")]
+        addr = [self.t[k].address for k in ("a", "w", "y")]
         return pl.split_args(self.g, *addr, self.form, mode)

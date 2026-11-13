@@ -78,7 +78,7 @@ def main():
         workers = card.workers(session)
         t0 = time.perf_counter()
         slots = 2 * len(scene["indices"]) + 65536
-        up = card_thread.tensors(session.device, blocks, workers, slots)
+        up = card_thread.tensors(session, blocks, workers, slots)
         out["upload_s"] = time.perf_counter() - t0
         w = card_thread.words(up, len(blocks), workers, workers, 4, args.balance)
         out["x280_mhz"] = session.pll_mhz

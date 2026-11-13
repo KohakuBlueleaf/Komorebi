@@ -82,13 +82,12 @@ def main():
     with km.Session(log=log) as session:
         p = pl.make(s, session.nocs().grid)
         out["plan"], out["x280_mhz"] = p.summary(), session.pll_mhz
-        device = session.device
         tensors = {
-            "q": card.bf16_tensor(device, q),
-            "k": card.bf16_tensor(device, k),
-            "v": card.bf16_tensor(device, v),
-            "o": card.bf16_tensor(device, np.zeros((b, h, sq, d), np.float32)),
-            "tables": card.table_tensor(device, pl.tables(p)),
+            "q": card.bf16_tensor(session, q),
+            "k": card.bf16_tensor(session, k),
+            "v": card.bf16_tensor(session, v),
+            "o": card.bf16_tensor(session, np.zeros((b, h, sq, d), np.float32)),
+            "tables": card.table_tensor(session, pl.tables(p)),
         }
         att = card.Attention(session, p, tensors, 1.0 / np.sqrt(d))
         seg = att.run.program.seg("attend")

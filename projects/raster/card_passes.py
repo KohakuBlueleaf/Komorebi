@@ -153,13 +153,12 @@ def count_only(args):
     with km.Session(log=card.log) as session:
         workers = card.workers(session)
         cores = args.cores or workers
-        dev = session.device
-        mesh = card.tensor(dev, blocks)
-        cam = card.tensor(dev, camera_page(scene))
-        counters = card.tensor(dev, np.zeros((workers, S["kCountBytes"] // 4)))
+        mesh = card.tensor(session, blocks)
+        cam = card.tensor(session, camera_page(scene))
+        counters = card.tensor(session, np.zeros((workers, S["kCountBytes"] // 4)))
         prog = session.load(program(), deadline=1.0)
-        a = [mesh.buffer_address(), counters.buffer_address(), len(blocks)]
-        a += [cam.buffer_address(), 0, cores]
+        a = [mesh.address, counters.address, len(blocks)]
+        a += [cam.address, 0, cores]
         ev = prog.wait(prog.issue(S["kSegCount"], team=(0, workers), args=a), 10.0)
         out["event"] = {"kind": ev.kind, "us": ev.us}
         prog.stop()
@@ -175,7 +174,7 @@ def count_only(args):
         heavy = passes.heavy_tiles(cnt, rows, workers)
         out["heavy"] = len(heavy)
         some = heavy or [(int(t), 1) for t in np.flatnonzero(cnt.sum(0))[:256]]
-        base = [mesh.buffer_address(), 0, len(blocks), cam.buffer_address(), 0, cores]
+        base = [mesh.address, 0, len(blocks), cam.address, 0, cores]
         hf, hl = hist(session, base, some, cores, {})
         want_f, want_l = passes.histograms(recs, len(scene["indices"]), cores)
         ht = [t for t, _ in some]
@@ -204,20 +203,19 @@ def frame(args, session=None):
     with own as session:
         workers = card.workers(session)
         cores = args.cores or workers
-        dev = session.device
         t0 = time.perf_counter()
-        mesh = card.tensor(dev, blocks)
-        cam = card.tensor(dev, camera_page(scene))
-        counters = card.tensor(dev, np.zeros((workers, S["kCountBytes"] // 4)))
+        mesh = card.tensor(session, blocks)
+        cam = card.tensor(session, camera_page(scene))
+        counters = card.tensor(session, np.zeros((workers, S["kCountBytes"] // 4)))
         tm["upload_mesh_s"] = time.perf_counter() - t0
         team = (0, workers)
-        base = [mesh.buffer_address(), 0, len(blocks), cam.buffer_address(), 0, cores]
+        base = [mesh.address, 0, len(blocks), cam.address, 0, cores]
 
         t0 = time.perf_counter()
         prog = session.load(program(), deadline=1.0)
         tm["load_passes_s"] = time.perf_counter() - t0
         a = list(base)
-        a[1] = counters.buffer_address()
+        a[1] = counters.address
         ev = prog.wait(prog.issue(S["kSegCount"], team=team, args=a), timeout=10.0)
         out["count_us"] = ev.us
         prog.stop()
@@ -250,11 +248,11 @@ def frame(args, session=None):
         tm["middle_s"] = time.perf_counter() - t0
         out["items"] = len(mid["items"])
         t0 = time.perf_counter()
-        up = card.upload(dev, mid["pages"], mid["directory"], lists.TILES * 5)
+        up = card.upload(session, mid["pages"], mid["directory"], lists.TILES * 5)
         nxt = np.zeros((workers, S["kSlotsBytes"] // 4), dtype=np.uint32)
         nxt[:cores, : len(mid["items"])] = mid["next"]
-        slots_t = card.tensor(dev, nxt)
-        items_t = card.tensor(dev, passes.item_table(mid["items"])[None, :])
+        slots_t = card.tensor(session, nxt)
+        items_t = card.tensor(session, passes.item_table(mid["items"])[None, :])
         tm["upload_lists_s"] = time.perf_counter() - t0
         out["list_pages"] = len(mid["pages"])
 
@@ -262,9 +260,9 @@ def frame(args, session=None):
         prog = session.load(program(), deadline=1.0)
         tm["load_passes2_s"] = time.perf_counter() - t0
         a = list(base)
-        a[1] = up["lists"].buffer_address()
-        a[4] = slots_t.buffer_address()
-        a += [mid["slots"], items_t.buffer_address()]
+        a[1] = up["lists"].address
+        a[4] = slots_t.address
+        a += [mid["slots"], items_t.address]
         ev = prog.wait(prog.issue(S["kSegSetup"], team=team, args=a), timeout=10.0)
         out["setup_us"] = ev.us
         prog.stop()
@@ -293,18 +291,17 @@ def hist(session, base, heavy, cores, tm):
     """HIST: the heavy tiles' start and end counts COUNT kept on every core, as
     (cores, heavy, GROUPS) twice."""
     workers = card.workers(session)
-    dev = session.device
     page = np.zeros((1, S["kHeavyBytes"] // 4), dtype=np.uint32)
     page[0, 0] = len(heavy)
     page[0, 1 : 1 + len(heavy)] = [t for t, _ in heavy]
     t0 = time.perf_counter()
-    lst = card.tensor(dev, page)
-    res = card.tensor(dev, np.zeros((workers, 16 * len(heavy))))
+    lst = card.tensor(session, page)
+    res = card.tensor(session, np.zeros((workers, 16 * len(heavy))))
     tm["upload_heavy_s"] = time.perf_counter() - t0
     t0 = time.perf_counter()
     prog = session.load(program(), deadline=1.0)
     tm["load_hist_s"] = time.perf_counter() - t0
-    a = [lst.buffer_address(), res.buffer_address(), 0, 0, 64 * len(heavy), cores]
+    a = [lst.address, res.address, 0, 0, 64 * len(heavy), cores]
     ev = prog.wait(prog.issue(S["kSegHist"], team=(0, workers), args=a), timeout=10.0)
     prog.stop()
     status = card.check_run(prog, workers, 1, [ev.us])
@@ -376,16 +373,15 @@ def main():
     with km.Session(log=card.log) as session:
         workers = card.workers(session)
         cores = args.cores or workers
-        dev = session.device
-        mesh = card.tensor(dev, blocks)
-        cam = card.tensor(dev, camera_page(scene))
-        res = card.tensor(dev, np.zeros((WINDOW, S["kRecBytes"] // 4)))
+        mesh = card.tensor(session, blocks)
+        cam = card.tensor(session, camera_page(scene))
+        res = card.tensor(session, np.zeros((WINDOW, S["kRecBytes"] // 4)))
         run_ = session.load(program(), deadline=1.0)
         us, ok = [], True
         for w0 in starts:
             n = min(WINDOW, len(blocks) - w0)
-            a = [mesh.buffer_address(), res.buffer_address(), len(blocks)]
-            a += [cam.buffer_address(), w0, cores, n]
+            a = [mesh.address, res.address, len(blocks)]
+            a += [cam.address, w0, cores, n]
             t = run_.issue(S["kSegLanes"], team=(0, workers), args=a)
             ev = run_.wait(t, timeout=10.0)
             us.append(ev.us)

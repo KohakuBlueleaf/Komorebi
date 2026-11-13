@@ -133,12 +133,11 @@ def main():
     out = {"m": m, "k": k, "n": n, "plan": describe(plan), "reduce": args.reduce}
     a, w = ref.inputs(m, k, n, args.seed, args.inputs)
     with km.Session(log=log) as session:
-        device = session.device
         t0 = time.perf_counter()
         tensors = {
-            "a": card.bf16_tensor(device, a),
-            "w": card.bf16_tensor(device, w),
-            "y": card.bf16_tensor(device, np.zeros((m, n), np.float32)),
+            "a": card.bf16_tensor(session, a),
+            "w": card.bf16_tensor(session, w),
+            "y": card.bf16_tensor(session, np.zeros((m, n), np.float32)),
         }
         out["upload_s"] = round(time.perf_counter() - t0, 3)
         product = load(session, plan, tensors, args.team, reduce=args.reduce)

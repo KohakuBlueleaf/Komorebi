@@ -80,14 +80,13 @@ def main():
         nocs = session.nocs()
         p = pl.make(s, nocs.grid, length=args.lane, chunks=args.chunks)
         out["plan"] = p.summary()
-        device = session.device
         t0 = time.perf_counter()
         tensors = {
-            "q": card.bf16_tensor(device, q),
-            "k": card.bf16_tensor(device, k),
-            "v": card.bf16_tensor(device, v),
-            "o": card.bf16_tensor(device, np.zeros((b, h, sq, d), np.float32)),
-            "tables": card.table_tensor(device, pl.tables(p)),
+            "q": card.bf16_tensor(session, q),
+            "k": card.bf16_tensor(session, k),
+            "v": card.bf16_tensor(session, v),
+            "o": card.bf16_tensor(session, np.zeros((b, h, sq, d), np.float32)),
+            "tables": card.table_tensor(session, pl.tables(p)),
         }
         out["upload_s"] = round(time.perf_counter() - t0, 3)
         log(f"uploaded, plan {out['plan']}")

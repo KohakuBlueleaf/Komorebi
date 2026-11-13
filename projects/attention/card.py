@@ -6,8 +6,6 @@ the dispatch kernel on X280 cluster 0. Needs tt-metal's Python environment.
 import time
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 from komorebi import abi, layout
@@ -19,34 +17,23 @@ LANE_FIELDS = abi.struct_fields(abi.headers().device[-1], "LaneArgs")
 LANE_ID = 0
 
 
-def bf16_tensor(device, x):
+def bf16_tensor(session, x):
     """A float array of bf16 values [..., rows, cols] as a bf16 tile tensor in DRAM,
     flattened to [rows of all leading axes, cols] (the same page order)."""
-    x = np.ascontiguousarray(x, dtype=np.float32).reshape(-1, x.shape[-1])
-    return ttnn.from_torch(
-        torch.from_numpy(x).bfloat16(),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-    )
+    x = np.asarray(x, dtype=np.float32).reshape(-1, x.shape[-1])
+    return session.tensor(x, "bfloat16", "tile")
 
 
-def table_tensor(device, words):
+def table_tensor(session, words):
     """Job tables [cores, kTableBytes / 4] uint32 as a row-major DRAM tensor, one page
     per core."""
-    return ttnn.from_torch(
-        torch.from_numpy(words.view(np.int32).copy()),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    return session.tensor(words, "uint32")
 
 
-def prof_tensor(device, cores):
+def prof_tensor(session, cores):
     """Profile pages [cores, kProfBytes / 4] uint32, zero, as a row-major DRAM tensor
     (one page of kProfBytes per core)."""
-    return table_tensor(device, np.zeros((cores, K["kProfBytes"] // 4), np.uint32))
+    return table_tensor(session, np.zeros((cores, K["kProfBytes"] // 4), np.uint32))
 
 
 def lane_words(nocs, p, team, noc=0):
@@ -98,12 +85,8 @@ def program(
         buffers=[km.Buffer(*b) for b in p.buffers()],
         args=args,
         compile_args={
-            "reader": shape
-            + [p.window]
-            + ttnn.TensorAccessorArgs(q_tensor).get_compile_time_args(),
-            "writer": shape
-            + [p.window]
-            + ttnn.TensorAccessorArgs(o_tensor).get_compile_time_args(),
+            "reader": shape + [p.window] + q_tensor.accessor_args(),
+            "writer": shape + [p.window] + o_tensor.accessor_args(),
             "compute": shape + [a_bits, thr_bits],
         },
         compute={
@@ -142,7 +125,7 @@ class Attention:
     def words(self, mode=K["kModeFull"], passes=1):
         t = self.t
         return pl.call_args(
-            *(t[n].buffer_address() for n in ("q", "k", "v", "o", "tables")),
+            *(t[n].address for n in ("q", "k", "v", "o", "tables")),
             mode,
             passes,
         )
@@ -167,7 +150,7 @@ class Attention:
         uint32, attention.h kPr*), stored by a PROF record into tensors["prof"] (made
         before the load); the pages are zeroed after (`zero`)."""
         prof = self.t["prof"]
-        words = [prof.buffer_address(), 1 if zero else 0]
+        words = [prof.address, 1 if zero else 0]
         ticket = self.run.issue("prof", self.team, words)
         self.run.wait(ticket, timeout=timeout)
         (pages,) = session.read(prof)

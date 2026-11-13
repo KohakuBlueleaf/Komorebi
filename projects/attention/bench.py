@@ -148,14 +148,13 @@ def main():
         p = pl.make(s, nocs.grid, length=args.lane, chunks=args.chunks)
         out["plan"] = p.summary()
         out["x280_mhz"], out["noc"] = session.pll_mhz, args.noc
-        device = session.device
         tensors = {
-            "q": card.bf16_tensor(device, q),
-            "k": card.bf16_tensor(device, k),
-            "v": card.bf16_tensor(device, v),
-            "o": card.bf16_tensor(device, np.zeros((b, h, sq, d), np.float32)),
-            "tables": card.table_tensor(device, pl.tables(p)),
-            "prof": card.prof_tensor(device, len(nocs.words)),
+            "q": card.bf16_tensor(session, q),
+            "k": card.bf16_tensor(session, k),
+            "v": card.bf16_tensor(session, v),
+            "o": card.bf16_tensor(session, np.zeros((b, h, sq, d), np.float32)),
+            "tables": card.table_tensor(session, pl.tables(p)),
+            "prof": card.prof_tensor(session, len(nocs.words)),
         }
         # Load 1: single records, records back to back (5, then `n`: the second
         # batch's time less the first's is the per-record time), the profile.

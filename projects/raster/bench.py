@@ -172,7 +172,7 @@ def main():
             scene, workers, args.assign, args.host_reps, args.split
         )
         n_out = len(h["tiles"]) * K["kPlanes"]
-        up = card.upload(session.device, h["pages"], h["directory"], n_out)
+        up = card.upload(session, h["pages"], h["directory"], n_out)
         words = card.words(up, K["kPlanes"])
         run_ = session.load(card.program(), deadline=1.0)
         first = card.loop(run_, K["kSegFill"], words, 1)

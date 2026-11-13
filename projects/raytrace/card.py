@@ -9,8 +9,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
-import ttnn
 
 import komorebi as km
 from komorebi import session as km_session
@@ -91,16 +89,9 @@ class Power:
             self._thread.join()
 
 
-def tensor(device, rows):
-    """A row-major uint32 array as an int32 DRAM tensor (one page per row)."""
-    rows = np.ascontiguousarray(rows, dtype=np.uint32)
-    return ttnn.from_torch(
-        torch.from_numpy(rows.view(np.int32)),
-        dtype=ttnn.int32,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+def tensor(session, rows):
+    """A row-major uint32 array as a DRAM tensor (one page per row)."""
+    return session.tensor(np.asarray(rows, dtype=np.uint32), "uint32")
 
 
 def read(session, *tensors):
@@ -232,7 +223,6 @@ def run_segment(
     (workers, 16) or a list of them (a record each per round) and input pages, into
     out_rows pages of out_words; args[0] is a3, extra tensors and args[1:] follow a4.
     Returns (outputs, profiles summed over directories, Ran, times, power)."""
-    device = session.device
     n = workers(session)
     chunks = directory if isinstance(directory, list) else [directory]
     for d in chunks:
@@ -240,12 +230,12 @@ def run_segment(
             raise ValueError(f"{len(d)} directory entries for {n} workers")
     times = {}
     t0 = time.perf_counter()
-    dir_ts = [tensor(device, d) for d in chunks]
-    in_t = tensor(device, inputs if inputs is not None else np.zeros((1, 32)))
-    out_t = tensor(device, np.zeros((max(out_rows, 1), out_words), dtype=np.uint32))
+    dir_ts = [tensor(session, d) for d in chunks]
+    in_t = tensor(session, inputs if inputs is not None else np.zeros((1, 32)))
+    out_t = tensor(session, np.zeros((max(out_rows, 1), out_words), dtype=np.uint32))
     prof_rows = np.zeros((n, K["kOutPageBytes"] // 4), dtype=np.uint32)
-    prof_ts = [tensor(device, prof_rows) for _ in chunks]
-    extra_t = [tensor(device, rows) for rows in extra]
+    prof_ts = [tensor(session, prof_rows) for _ in chunks]
+    extra_t = [tensor(session, rows) for rows in extra]
     records = []
     tree_pages = 0
     tree_t = None
@@ -253,16 +243,16 @@ def run_segment(
         # One push of the whole image into a buffer of exactly its pages.
         if tree.ndim != 2 or tree.shape[1] * 4 != K["kTreePageBytes"]:
             raise ValueError(f"tree image {tree.shape} is not whole tree pages")
-        tree_t = tensor(device, tree)
+        tree_t = tensor(session, tree)
         tree_pages = len(tree)
-        records.append((K["kSegLoad"], [tree_t.buffer_address(), tree.nbytes]))
+        records.append((K["kSegLoad"], [tree_t.address, tree.nbytes]))
     times["upload_s"] = time.perf_counter() - t0
     a3 = list(args)[:1] or [0]
-    tail = [t.buffer_address() for t in extra_t] + list(args)[1:]
+    tail = [t.address for t in extra_t] + list(args)[1:]
     for _ in range(reps):
         for dir_t, prof_t in zip(dir_ts, prof_ts):
-            words = [dir_t.buffer_address(), in_t.buffer_address()]
-            words += [out_t.buffer_address(), *a3, prof_t.buffer_address(), *tail]
+            words = [dir_t.address, in_t.address]
+            words += [out_t.address, *a3, prof_t.address, *tail]
             records.append((seg, words))
     log(f"run: segment {seg}, {len(records)} records, {out_rows} output pages")
     meter = power if power is not None else Power()
@@ -302,7 +292,7 @@ CHUNK = 2 << 20  # bytes per chunk
 def read_rows(session, tensor, name):
     """A tensor read back as uint32 rows: in one call up to READ_LIMIT, else in chunks
     of CHUNK with a progress line per chunk."""
-    size = tensor.buffer_num_pages() * tensor.buffer_page_size()
+    size = tensor.pages * tensor.page_bytes
     t0 = time.perf_counter()
     if size <= READ_LIMIT:
         (rows,) = read(session, tensor)

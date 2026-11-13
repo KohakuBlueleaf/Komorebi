@@ -63,7 +63,7 @@ def run_modes(session, g, image, tree_t, cases, modes, deadline_s):
     seconds]}, the kernel check, the host-fed records per frame)."""
     run = session.load(card.program(len(image)), deadline=deadline_s)
     try:
-        ticket = run.issue(K["kSegLoad"], args=[tree_t.buffer_address(), image.nbytes])
+        ticket = run.issue(K["kSegLoad"], args=[tree_t.address, image.nbytes])
         run.wait([ticket], timeout=10.0 + deadline_s)
         seconds, issued = {m: [] for m in modes}, []
         if "graph" in modes:
@@ -108,33 +108,32 @@ def main():
         workers = card.workers(session)
         pix, directory, desc = packets.frame_layout(args.tiles, workers)
         n = len(pix)
-        dev = session.device
         names = {s for _, _, ins, outs in frame.STEPS for s in ins + outs} - {"colour"}
         zeros = {s: np.zeros((n, frame.vectors(s) * VEC)) for s in names}
-        tensors = {s: card.tensor(dev, packets.group(z)) for s, z in zeros.items()}
-        tensors["desc"] = card.tensor(dev, packets.group(desc))
-        dir_t = card.tensor(dev, directory)
-        tree_t = card.tensor(dev, image)
-        consts = [card.tensor(dev, packets.frame_constants(v)) for v in views]
+        tensors = {s: card.tensor(session, packets.group(z)) for s, z in zeros.items()}
+        tensors["desc"] = card.tensor(session, packets.group(desc))
+        dir_t = card.tensor(session, directory)
+        tree_t = card.tensor(session, image)
+        consts = [card.tensor(session, packets.frame_constants(v)) for v in views]
         blank = packets.group(np.zeros((n, frame.vectors("colour") * VEC)))
         colours = {
-            (m, k): card.tensor(dev, blank)
+            (m, k): card.tensor(session, blank)
             for m in args.modes
             for k in range(len(views))
         }
         prof_rows = np.zeros((workers, K["kOutPageBytes"] // 4), dtype=np.uint32)
-        profs = [card.tensor(dev, prof_rows) for _ in frame.STEPS]
-        addr = {s: t.buffer_address() for s, t in tensors.items()}
+        profs = [card.tensor(session, prof_rows) for _ in frame.STEPS]
+        addr = {s: t.address for s, t in tensors.items()}
         g = build(
             addr,
-            dir_t.buffer_address(),
-            [t.buffer_address() for t in profs],
+            dir_t.address,
+            [t.address for t in profs],
             workers,
             args.deadline,
         )
         cases = {
             m: [
-                {"const": c.buffer_address(), "colour": colours[m, k].buffer_address()}
+                {"const": c.address, "colour": colours[m, k].address}
                 for k, c in enumerate(consts)
             ]
             for m in args.modes

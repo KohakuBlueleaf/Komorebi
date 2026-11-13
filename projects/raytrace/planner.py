@@ -67,7 +67,7 @@ def table(entries, directory, prof_ts, workers):
     t[P["RP_T_BASE"] : P["RP_T_BASE"] + len(base)] = base
     for tr, ts in enumerate(prof_ts):
         for k, pt in enumerate(ts):
-            t[P["RP_T_PROF"] + tr * P["RP_CHUNKS"] + k] = pt.buffer_address()
+            t[P["RP_T_PROF"] + tr * P["RP_CHUNKS"] + k] = pt.address
     return t
 
 

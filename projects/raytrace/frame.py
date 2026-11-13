@@ -117,17 +117,17 @@ def records(tensors, dir_ts, const_t, profs, treelets=None, steps=STEPS, key=())
     """Every step's records (segment, ten words), in issue order. With treelets (the
     tensor and four words) a trace has a record per chunk dir_ts[1:], others dir_ts[0].
     """
-    addr = {s: t.buffer_address() for s, t in tensors.items()}
-    c = const_t.buffer_address()
+    addr = {s: t.address for s, t in tensors.items()}
+    c = const_t.address
     out = []
     for step, step_profs in zip(steps, profs):
         chunks = dir_ts[1:] if treelets and step[1] == "kSegTrace" else dir_ts[:1]
         for d, prof in zip(chunks, step_profs):
-            words = step_words(step, addr, d.buffer_address(), c, prof.buffer_address())
+            words = step_words(step, addr, d.address, c, prof.address)
             seg = K[step[1]]
             if treelets and step[1] == "kSegTrace":
                 seg = K["kSegTreelets"]
-                words[5:10] = [treelets[0].buffer_address(), *treelets[1]]
+                words[5:10] = [treelets[0].address, *treelets[1]]
             if step[1] == "kSegSort":
                 words[6:10] = key
             out.append((seg, words))
@@ -358,13 +358,12 @@ def main():
         pix, directory, desc = packets.frame_layout(args.tiles, workers)
         n = len(pix)
         report["packets"] = n
-        dev = session.device
         names = {s for _, _, ins, outs in steps for s in ins + outs}
         tensors = {
-            s: card.tensor(dev, packets.group(np.zeros((n, vectors(s) * VEC))))
+            s: card.tensor(session, packets.group(np.zeros((n, vectors(s) * VEC))))
             for s in sorted(names)
         }
-        tensors["desc"] = card.tensor(dev, packets.group(desc))
+        tensors["desc"] = card.tensor(session, packets.group(desc))
         dirs, sizes, treelets = [directory], None, None
         if cut is not None:
             most = int(directory[:, K["kDirCount"]].max())
@@ -384,24 +383,25 @@ def main():
                 short = sort_bytes - sizes["slots"]
             sizes["slots"] = max(sizes["slots"], sort_bytes)
             dirs = packets.chunks(directory, per)
-            tl_t = card.tensor(dev, treelet_pages)
+            tl_t = card.tensor(session, treelet_pages)
             tl_words = [sizes["entries"], slot_bytes, slots, K["kPolicyOnce"]]
             treelets = (tl_t, tl_words)
             report["treelets"] = {"count": len(table), "packets_per_record": per}
             report["treelets"].update(sizes, slot_count=slots, chunks=len(dirs))
         dir_ts = [
-            card.tensor(dev, d) for d in [directory] + dirs[1 if cut is None else 0 :]
+            card.tensor(session, d)
+            for d in [directory] + dirs[1 if cut is None else 0 :]
         ]
-        const_t = card.tensor(dev, packets.frame_constants(scene))
-        tree_t = card.tensor(dev, image)
+        const_t = card.tensor(session, packets.frame_constants(scene))
+        tree_t = card.tensor(session, image)
         prof_rows = np.zeros((workers, K["kOutPageBytes"] // 4), dtype=np.uint32)
         per_step = [
             len(dirs) if cut is not None and s[1] == "kSegTrace" else 1 for s in steps
         ]
         most = [planner.P["RP_CHUNKS"] if args.plan else k for k in per_step]
         most = [m if s[1] == "kSegTrace" else 1 for m, s in zip(most, steps)]
-        profs = [[card.tensor(dev, prof_rows) for _ in range(k)] for k in most]
-        recs = [(K["kSegLoad"], [tree_t.buffer_address(), image.nbytes])]
+        profs = [[card.tensor(session, prof_rows) for _ in range(k)] for k in most]
+        recs = [(K["kSegLoad"], [tree_t.address, image.nbytes])]
         key = sort_key(tree) if args.sort else ()
         one = records(tensors, dir_ts, const_t, profs, treelets, steps, key)
         meter = card.Power()

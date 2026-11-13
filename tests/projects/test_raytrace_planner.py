@@ -13,9 +13,6 @@ class Tensor:
     def __init__(self, address):
         self.address = address
 
-    def buffer_address(self):
-        return self.address
-
 
 def test_plan_h_agrees_with_the_kernels():
     assert planner.same_numbers() == {}
