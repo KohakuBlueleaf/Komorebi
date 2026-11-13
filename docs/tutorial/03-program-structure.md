@@ -112,14 +112,10 @@ The full list is in the [host API reference](../reference/host.md#program).
 |---|---|
 | `km.Session(card=None)` | Opens the card in slow dispatch mode, which is the mode Komorebi needs. Use it in a `with` block: leaving the block stops the program and closes the card cleanly. |
 | `session.load(program)` | Compiles the three kernels (a few seconds the first time, cached after), checks that they fit L1 and that they use no instruction the cores lack, loads them on every Tensix core, starts the dispatcher on X280 cluster 0 and waits until every core says it is ready. Returns a `Run`. |
-| `run.submit(handler, group=..., args=...)` | Queues one command and returns its **handle** (a handle number). `handler` is the name or the number. The core group is `group=(first, count)`; the default is every core. |
+| `run.submit(handler, group=..., args=...)` | Queues one command and returns its **handle** (a number). `handler` is the name or the number. The core group is `group=(first, count)`; the default is every core. |
 | `run.wait(handle, timeout=...)` | Sends what is queued, waits until the group has reported, returns the event. |
 | `run.stop()` | Tells every core to leave its kernels, stops the dispatcher and closes the X280 runtime. |
 | `session.grid` | The Tensix grid as `(x, y)`: `(12, 10)` here. |
-
-!!! note "Call names in the tutorial"
-    The calls keep the names the code has today. `run.submit`, `group=` and `handlers=` name
-    what this tutorial calls submit, core group and handler.
 
 ## Run it
 
