@@ -309,13 +309,13 @@ class SlowBackend(FakeBackend):
 
 
 def test_stop_ends_within_its_timeout_when_every_part_is_slow():
-    port = SlowPort(delay=0.15)  # drain, EXIT and finish: 0.45 s in all
+    port = SlowPort(delay=0.06)  # drain, EXIT and finish: 0.18 s in all
     run = Run(SlowBackend(port), GRID)
     run.issue(1, (0, 2))
     t0 = time.monotonic()
     with pytest.raises(KernelFailed, match="never became ready"):
-        run.stop(timeout=0.35)
-    assert time.monotonic() - t0 < 0.35 + 0.05 and run.stopped
+        run.stop(timeout=0.14)
+    assert time.monotonic() - t0 < 0.14 + 0.05 and run.stopped
 
 
 class CardThread:
