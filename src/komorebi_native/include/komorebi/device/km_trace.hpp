@@ -14,7 +14,7 @@ namespace km {
             dram_(a.trace),
             cap_(a.trace_cap),
             base_(a.trace ? get_write_ptr(kCbTrace) : 0),
-            state_(a.ctl + KM_CTL_STATE) {
+            state_(a.control + KM_CONTROL_STATE) {
         }
 
         bool on() const {
@@ -33,16 +33,16 @@ namespace km {
 
         // A sequence past the capacity is dropped; kStTraceDropped counts the commands
         // (the writer's kTraceDone timestamp, so one kernel alone writes the count).
-        void put(uint32_t seq, uint32_t field, uint32_t value) const {
-            if (on() && seq - 1 < cap_) {
-                l1(base_)[(seq - 1) * kTraceWords + field] = value;
+        void put(uint32_t sequence, uint32_t field, uint32_t value) const {
+            if (on() && sequence - 1 < cap_) {
+                l1(base_)[(sequence - 1) * kTraceWords + field] = value;
             } else if (on() && field == kTraceDone) {
                 add_sat(l1(state_) + kStTraceDropped, 1);
             }
         }
 
-        void timestamp(uint32_t seq, uint32_t field) const {
-            put(seq, field, wall());
+        void timestamp(uint32_t sequence, uint32_t field) const {
+            put(sequence, field, wall());
         }
 
         // Writes this core's commands to page `page` of the trace (writer, at exit).

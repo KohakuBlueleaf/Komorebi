@@ -1,0 +1,18 @@
+{
+ "name": "error_patch_argument_bad",
+ "description": "reason 5: argument 10",
+ "notes": "Commands, events, status, error, halt and stopped_grid are the binding answer; `passes` is the simulator's own count and is advisory. Completion: a command submitted in pass p is acknowledged by the sweep of pass p + 1 + delay (null: never); delay is an integer, {base, mod} (base + sequence % mod) or {by_sequence: {sequence: delay}, rest: delay}, where sequence is the stream's own count of submitted commands from 1 (the `sequence` of each command). A KM_FLAG_RESULT command's result is (a0 + count) mod 2^32. Commands list a0 to a9 with trailing zeros left out. Events are [kind, req, auxiliary, pass]. Pass order and the other rules: docs/streams.md.",
+ "params": {"core_count": 119, "delay": 0, "deadline_passes": null, "default_deadline_passes": 1000000, "cancel_pass": null, "max_passes": 100000, "ticks_per_pass": 1000, "region_size": 1048576},
+ "expect": {
+  "check": [5, 1],
+  "status": "error",
+  "error": [5, 1],
+  "halt": null,
+  "stopped_grid": false,
+  "passes": 1,
+  "commands": [],
+  "events": [
+   [6, 1, 261, 0]
+  ]
+ }
+}

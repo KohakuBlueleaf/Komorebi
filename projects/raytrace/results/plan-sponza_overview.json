@@ -31,13 +31,13 @@
     0,
     23808
    ],
-   "thread_us": 978153.5,
+   "thread_microseconds": 978153.5,
    "kernel": {
     "state": 3,
     "error": 0,
     "where": 5,
     "slot": 0,
-    "seq": 0,
+    "sequence": 0,
     "req": 0,
     "seen": 0,
     "commands": 2,
@@ -45,7 +45,7 @@
     "events": 1,
     "busy": 0,
     "max_busy": 1,
-    "ctl": 1567296,
+    "control": 1567296,
     "ticks": 49968767,
     "idle": 788372,
     "full": 10332547,
@@ -216,13 +216,13 @@
   "command_bytes": 0,
   "wall_s": 1.8675284639466554
  },
- "frame_us_median": 310090.6,
+ "frame_microseconds_median": 310090.6,
  "frame_ms": 347.06226000000004,
  "power_mean_w": 68.24778761061947,
  "steps": [
   {
    "step": "gen",
-   "us": 549.94,
+   "microseconds": 549.94,
    "errors": 0,
    "busy_max": 738885,
    "load_per_packet": 130.0,
@@ -234,7 +234,7 @@
   },
   {
    "step": "primary",
-   "us": 39504.6,
+   "microseconds": 39504.6,
    "errors": 0,
    "busy_max": 45389664,
    "load_per_packet": 1251.6,
@@ -246,7 +246,7 @@
   },
   {
    "step": "shade1",
-   "us": 2226.48,
+   "microseconds": 2226.48,
    "errors": 0,
    "busy_max": 3002075,
    "load_per_packet": 2006.0,
@@ -258,7 +258,7 @@
   },
   {
    "step": "shadow",
-   "us": 20642.7,
+   "microseconds": 20642.7,
    "errors": 0,
    "busy_max": 24300091,
    "load_per_packet": 1258.2,
@@ -270,7 +270,7 @@
   },
   {
    "step": "sort_bounce",
-   "us": 4965.68,
+   "microseconds": 4965.68,
    "errors": 0,
    "busy_max": 0,
    "load_per_packet": 0.0,
@@ -282,7 +282,7 @@
   },
   {
    "step": "bounce",
-   "us": 181370.66,
+   "microseconds": 181370.66,
    "errors": 0,
    "busy_max": 221625871,
    "load_per_packet": 1251.3,
@@ -294,7 +294,7 @@
   },
   {
    "step": "unsort_bounce",
-   "us": 3330.08,
+   "microseconds": 3330.08,
    "errors": 0,
    "busy_max": 0,
    "load_per_packet": 0.0,
@@ -306,7 +306,7 @@
   },
   {
    "step": "shade2",
-   "us": 1564.0,
+   "microseconds": 1564.0,
    "errors": 0,
    "busy_max": 2107993,
    "load_per_packet": 2639.9,
@@ -318,7 +318,7 @@
   },
   {
    "step": "sort_shadow2",
-   "us": 4998.54,
+   "microseconds": 4998.54,
    "errors": 0,
    "busy_max": 0,
    "load_per_packet": 0.0,
@@ -330,7 +330,7 @@
   },
   {
    "step": "shadow2",
-   "us": 50898.24,
+   "microseconds": 50898.24,
    "errors": 0,
    "busy_max": 65261294,
    "load_per_packet": 1248.6,
@@ -342,7 +342,7 @@
   },
   {
    "step": "unsort_shadow2",
-   "us": 1238.84,
+   "microseconds": 1238.84,
    "errors": 0,
    "busy_max": 0,
    "load_per_packet": 0.0,
@@ -354,7 +354,7 @@
   },
   {
    "step": "image",
-   "us": 566.3000000000001,
+   "microseconds": 566.3000000000001,
    "errors": 0,
    "busy_max": 763207,
    "load_per_packet": 1295.0,

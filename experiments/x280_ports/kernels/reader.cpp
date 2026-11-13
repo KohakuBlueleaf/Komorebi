@@ -72,7 +72,7 @@ void kernel_main() {
             rd.args().wait_limit
         );
         if (code != km::kGaveNone) {
-            rd.gave_up(km::kStReader, code, km::kWhereData, km::slot(r), r.seq);
+            rd.gave_up(km::kStReader, code, km::kWhereData, km::slot(r), r.sequence);
             return false;
         }
         return true;
@@ -83,12 +83,14 @@ void kernel_main() {
         if (reads) {
             const uint32_t code = rd.poll(
                 [&] {
-                    return flags[4] == r.seq;
+                    return flags[4] == r.sequence;
                 },
                 rd.args().wait_limit
             );
             if (code != km::kGaveNone) {
-                rd.gave_up(km::kStReader, code, km::kWhereData, km::slot(r), r.seq);
+                rd.gave_up(
+                    km::kStReader, code, km::kWhereData, km::slot(r), r.sequence
+                );
                 return;
             }
             st.w[XP_ST_READS] = flags[3];
@@ -104,7 +106,7 @@ void kernel_main() {
         if (handler == XP_HANDLER_TELL) {
             if (port.wait_told(m)) {
                 flags[1] = m.w[0];
-                flags[0] = r.seq;
+                flags[0] = r.sequence;
             }
             return;
         }
@@ -125,7 +127,7 @@ void kernel_main() {
                     st.w[XP_ST_BAD] = st.w[XP_ST_BAD] + 1;
                 }
             }
-            flags[2] = r.seq;  // the writer's reads may end
+            flags[2] = r.sequence;  // the writer's reads may end
             if (st.w[XP_ST_GAVE] == 0 && (r.a2 & XP_F_DONE)) {
                 port.tell(XP_DONE, r.a7, st.w[XP_ST_COUNT]);
             }

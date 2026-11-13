@@ -19,12 +19,14 @@ void kernel_main() {
         if (handler == XP_HANDLER_TELL) {
             const uint32_t code = wr.poll(
                 [&] {
-                    return flags[0] == r.seq;
+                    return flags[0] == r.sequence;
                 },
                 wr.args().wait_limit
             );
             if (code != km::kGaveNone) {
-                wr.gave_up(km::kStWriter, code, km::kWhereData, km::slot(r), r.seq);
+                wr.gave_up(
+                    km::kStWriter, code, km::kWhereData, km::slot(r), r.sequence
+                );
                 return false;
             }
             wr.result(flags[1]);
@@ -39,7 +41,7 @@ void kernel_main() {
         uint32_t n = 0;
         for (; n < kReadsMax; n++) {
             invalidate_l1_cache();
-            if (flags[2] == r.seq || wr.stop()) {
+            if (flags[2] == r.sequence || wr.stop()) {
                 break;
             }
             noc_async_read_page(
@@ -52,12 +54,14 @@ void kernel_main() {
                 wr.args().wait_limit
             );
             if (code != km::kGaveNone) {
-                wr.gave_up(km::kStWriter, code, km::kWhereData, km::slot(r), r.seq);
+                wr.gave_up(
+                    km::kStWriter, code, km::kWhereData, km::slot(r), r.sequence
+                );
                 return false;
             }
         }
         flags[3] = n;
-        flags[4] = r.seq;
+        flags[4] = r.sequence;
         return true;
     });
 }

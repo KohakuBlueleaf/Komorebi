@@ -62,16 +62,16 @@ from pathlib import Path
 from komorebi import _env, abi, native
 
 site = Path(sys.argv[1]).resolve()
-assert _env.package_dir().is_relative_to(site), _env.package_dir()
+assert _env.package_directory().is_relative_to(site), _env.package_directory()
 assert abi.headers().abi.is_relative_to(site), abi.headers().abi
 image = native.image_path()
-assert image == _env.package_dir() / native.IMAGE, image
+assert image == _env.package_directory() / native.IMAGE, image
 print(f"headers and image from the install: {image} ({image.stat().st_size} bytes)")
 if sys.argv[2]:
     import komorebi_runtime
 
     assert Path(komorebi_runtime.__file__).resolve().is_relative_to(site)
-    module = _env.package_dir() / native.MODULE_FILE
+    module = _env.package_directory() / native.MODULE_FILE
     assert module.is_file(), module
     print(f"host module from the install: {module} ({module.stat().st_size} bytes)")
 EOF

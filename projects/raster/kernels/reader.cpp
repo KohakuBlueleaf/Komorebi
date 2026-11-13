@@ -7,7 +7,7 @@
 #include "raster.h"
 
 // Timed noc_async_read_barrier. False: gave up (recorded in the reader's word).
-bool read_done(const km::Reader& rd, uint32_t seq) {
+bool read_done(const km::Reader& rd, uint32_t sequence) {
     const uint32_t code = rd.poll(
         [] {
             return ncrisc_noc_reads_flushed(noc_index);
@@ -17,7 +17,7 @@ bool read_done(const km::Reader& rd, uint32_t seq) {
     if (code == km::kGaveNone) {
         return true;
     }
-    rd.gave_up(km::kStReader, code, kWhereReadDone, 0, seq);
+    rd.gave_up(km::kStReader, code, kWhereReadDone, 0, sequence);
     return false;
 }
 
@@ -33,7 +33,7 @@ void fill_reader_command(const km::Reader& rd, const km_command_t& r) {
         .bank_base_address = r.a0, .page_size = kDirBytes
     };
     noc_async_read(get_noc_addr(rd.me(), dirs), dir, kDirBytes);
-    if (!read_done(rd, r.seq)) {
+    if (!read_done(rd, r.sequence)) {
         return;
     }
     invalidate_l1_cache();
@@ -51,7 +51,7 @@ void fill_reader_command(const km::Reader& rd, const km_command_t& r) {
         noc_async_read(
             get_noc_addr(first + p, lists), get_write_ptr(kCbIn), kInPageBytes
         );
-        if (!read_done(rd, r.seq)) {
+        if (!read_done(rd, r.sequence)) {
             return;
         }
         cb_push_back(kCbIn, 1);

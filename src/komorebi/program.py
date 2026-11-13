@@ -70,7 +70,7 @@ class Program:
     handlers: object = field(default_factory=dict)
     threads: dict = field(default_factory=dict)  # work cluster -> Thread
     shared: dict = field(default_factory=dict)  # shared region name -> size or array
-    dyn: "Dynamic | None" = None
+    messages: "Dynamic | None" = None
     opt: dict = field(default_factory=dict)  # kernel -> optimisation level
     x280_ports: dict | None = None  # Program.ports(): {"serve": ..., "noc": ...}
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
@@ -176,10 +176,10 @@ class Program:
     def dynamic(self, handler, **options):
         """Makes handler `handler` a dynamic handler (options: those of Dynamic) and
         adds its buffers. Returns the program."""
-        if self.dyn is not None:
+        if self.messages is not None:
             raise ValueError(f"{self.name} already has a dynamic handler")
-        self.dyn = Dynamic(handler=self.handler(handler), **options)
-        self.buffers = [*self.buffers, *self.dyn.buffers()]
+        self.messages = Dynamic(handler=self.handler(handler), **options)
+        self.buffers = [*self.buffers, *self.messages.buffers()]
         return self
 
     def core_args(self, core):
@@ -191,11 +191,11 @@ class Program:
 
 
 @functools.cache
-def dyn_header():
-    """The constants and the argument order of km_dyn.hpp beside the package."""
-    path = _env.include_dir() / "komorebi" / "device" / "km_dyn.hpp"
-    fields = abi.struct_fields(path, "DynArgs")
-    return abi.constants(path, sizes={"DynArgs": 4 * len(fields)}), fields
+def messages_header():
+    """The constants and the argument order of km_messages.hpp beside the package."""
+    path = _env.include_directory() / "komorebi" / "device" / "km_messages.hpp"
+    fields = abi.struct_fields(path, "MessagesArgs")
+    return abi.constants(path, sizes={"MessagesArgs": 4 * len(fields)}), fields
 
 
 @dataclass(frozen=True)
@@ -214,11 +214,11 @@ class Dynamic:
     counters: int = 2
 
     def __post_init__(self):
-        k, _ = dyn_header()
-        page = k["kDynPageMessages"]
+        k, _ = messages_header()
+        page = k["kMessagesPageMessages"]
         if (
             self.message_bytes % 64
-            or not 64 <= self.message_bytes <= k["kDynMessageMax"]
+            or not 64 <= self.message_bytes <= k["kMessagesMessageMax"]
         ):
             raise ValueError(
                 f"message_bytes {self.message_bytes}: a multiple of 64 to 256"
@@ -226,8 +226,8 @@ class Dynamic:
         q = self.queue_messages
         if q < page or q & (q - 1) or q > 1 << 31:
             raise ValueError(f"queue_messages {q}: a power of two from {page} to 2**31")
-        if not 1 <= self.bins <= k["kDynBinsMax"]:
-            raise ValueError(f"bins {self.bins}: not in 1..{k['kDynBinsMax']}")
+        if not 1 <= self.bins <= k["kMessagesBinsMax"]:
+            raise ValueError(f"bins {self.bins}: not in 1..{k['kMessagesBinsMax']}")
         most = abi.headers()["KM_COUNTERS_MAX"]
         if not 1 <= self.counters <= most:
             raise ValueError(f"counters {self.counters}: not in 1..{most}")
@@ -236,14 +236,19 @@ class Dynamic:
 
     def buffers(self):
         """Runtime buffers of a dynamic handler: packets, outgoing messages, bins."""
-        k, _ = dyn_header()
-        n = k["kDynPacket"]
+        k, _ = messages_header()
+        n = k["kMessagesPacket"]
         return [
             Buffer(
-                k["kCbDynIn"], "uint32", k["kDynHeader"] + n * self.message_bytes, 2
+                k["kCbMessagesIn"],
+                "uint32",
+                k["kMessagesHeader"] + n * self.message_bytes,
+                2,
             ),
-            Buffer(k["kCbDynOut"], "uint32", self.message_bytes, 2 * n),
-            Buffer(k["kCbDynBins"], "uint32", self.bins * n * self.message_bytes, 1),
+            Buffer(k["kCbMessagesOut"], "uint32", self.message_bytes, 2 * n),
+            Buffer(
+                k["kCbMessagesBins"], "uint32", self.bins * n * self.message_bytes, 1
+            ),
         ]
 
     def queue_bytes(self, cores):
@@ -279,8 +284,8 @@ class Dynamic:
         return self.max_live // max(cores - self.counters, 1)
 
     def args(self, queue, lines):
-        """Reader and writer words of km::DynArgs (they precede the program's)."""
-        _, fields = dyn_header()
+        """Reader and writer words of km::MessagesArgs (they precede the program's)."""
+        _, fields = messages_header()
         values = {
             "handler": self.handler,
             "queue": queue,

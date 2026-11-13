@@ -118,7 +118,7 @@ namespace su {
     }
 
     // A float32 (or integer) bit pattern into an LReg as two immediates.
-    inline void imm(uint32_t r, uint32_t bits) {
+    inline void immediate(uint32_t r, uint32_t bits) {
         TT_SFPLOADI(r, kFloatB, bits >> 16);
         TT_SFPLOADI(r, kLower, bits & 0xFFFF);
     }
@@ -257,11 +257,11 @@ namespace su {
 
     // ceil or floor of L0 (clamped to [lo, hi] first) as 1.5 x 2^23 + n, to slot s.
     inline void round_box(uint32_t lo, uint32_t hi, bool up, uint32_t s) {
-        imm(L3, lo);
+        immediate(L3, lo);
         order_pair(L0, L3);
-        imm(L3, hi);
+        immediate(L3, hi);
         order_pair(L3, L0);
-        imm(L4, kMagic);
+        immediate(L4, kMagic);
         add(L0, L4, L5);  // to the nearest integer
         sub(L5, L4, L6);
         TTI_SFPNOP;
@@ -286,7 +286,7 @@ namespace su {
         order_pair(L1, L0);
         order_pair(L2, L0);
         order_pair(L1, L2);
-        imm(L7, 0x3F000000);  // 0.5
+        immediate(L7, 0x3F000000);  // 0.5
         sub(L0, L7, L0);
         sub(L1, L7, L2);
         round_box(0xBF000000, size_bits, true, kSRec + kRawX0 + 2 * c);

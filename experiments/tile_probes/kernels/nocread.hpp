@@ -8,7 +8,7 @@
 
 namespace nocread {
 
-    constexpr uint32_t kNocRegs = 0xFFB20000;  // NoC 0, command buffer 0
+    constexpr uint32_t kNocRegisters = 0xFFB20000;  // NoC 0, command buffer 0
     constexpr uint32_t kCmdBufStride = 0x800;
     constexpr uint32_t kTargLo = 0x0, kTargMid = 0x4, kTargHi = 0x8;
     constexpr uint32_t kRetLo = 0xC, kRetMid = 0x10, kRetHi = 0x14;
@@ -40,7 +40,9 @@ namespace nocread {
 
     inline volatile uint32_t& reg(uint32_t buf, uint32_t off) {
         return (
-            *reinterpret_cast<volatile uint32_t*>(kNocRegs + buf * kCmdBufStride + off)
+            *reinterpret_cast<volatile uint32_t*>(
+                kNocRegisters + buf * kCmdBufStride + off
+            )
         );
     }
 

@@ -208,8 +208,8 @@ def build(commands, name, source, header, slot, size, loader_elf, out, resets=()
     obj, elf, script = work / "body.o", work / "overlay.elf", work / "overlay.ld"
     script.write_text(SCRIPT.format(slot=slot, size=size))
     if not elf.exists():
-        build_dir = str(Path(loader_elf).parent)
-        flags = [a.replace(BUILD_DIR, build_dir) for a in commands.compile]
+        build_directory = str(Path(loader_elf).parent)
+        flags = [a.replace(BUILD_DIR, build_directory) for a in commands.compile]
         run(
             [*flags, f"-I{work}", f"-I{HERE}", "-c", str(source), "-o", str(obj)],
             cwd=work,

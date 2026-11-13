@@ -23,9 +23,9 @@ import numpy as np  # noqa: E402
 import komorebi as km  # noqa: E402
 
 KERNEL = os.path.join(HERE, "kernels", "worker.cpp")
-IMAGE = os.path.join(BUILD, "landing-seq.bin")
-CTL_CB, CTL_BYTES, CNT_CB = 8, 1024, 9  # template kCtlCb; worker.cpp kCntCb
-N_CORES = 120
+IMAGE = os.path.join(BUILD, "landing-sequence.bin")
+CONTROL_CB, CONTROL_BYTES, CNT_CB = 8, 1024, 9  # template kControlCb; worker.cpp kCntCb
+CORE_COUNT = 120
 
 # Counter word indices (kernels/landing.h LC_*).
 LC_NAMES = [
@@ -40,16 +40,16 @@ LC_NAMES = [
     "check_max",
     "check_min",
     "checks",
-    "torn_seq",
+    "torn_sequence",
     "torn_word",
     "torn_value",
     "healed",
     "heal_polls",
     "lost",
-    "lost_seq",
+    "lost_sequence",
     "marker_cost",
     "tag",
-    "last_seq",
+    "last_sequence",
 ]
 LC = {name: i for i, name in enumerate(LC_NAMES)}
 LC_WORDS = 32
@@ -76,7 +76,7 @@ def program(card, plan, cnt_addr, n, defines):
     ]
     launch = card.launch()
     launch.kernel(KERNEL, cores, 0, [], defines, [], args)
-    launch.cb(cores, CTL_CB, "uint32", CTL_BYTES, CTL_BYTES)
+    launch.cb(cores, CONTROL_CB, "uint32", CONTROL_BYTES, CONTROL_BYTES)
     launch.cb(cores, CNT_CB, "uint32", LC_WORDS * 4, LC_WORDS * 4)
     return launch
 
@@ -91,7 +91,7 @@ def summarize(cnt, n, mhz):
         {
             "core": i,
             "torn": int(c["torn"][i]),
-            "first_seq": int(c["torn_seq"][i]),
+            "first_sequence": int(c["torn_sequence"][i]),
             "word": int(c["torn_word"][i]),
             "value": hex(int(c["torn_value"][i])),
             "healed": int(c["healed"][i]),
@@ -101,7 +101,7 @@ def summarize(cnt, n, mhz):
         if c["torn"][i]
     ]
     lost_cores = [
-        {"core": i, "seq": int(c["lost_seq"][i])}
+        {"core": i, "sequence": int(c["lost_sequence"][i])}
         for i in range(cnt.shape[0])
         if c["lost"][i]
     ]
@@ -160,10 +160,10 @@ def run(card, args, n):
     runtime = x280mod.Runtime(card.device.mesh_capsule(), pll_mhz=args.pll)
     plan = runtime.plan(IMAGE, args.depth, 1 if args.proto == "b" else 0)
     gx, gy = plan.grid_x, plan.grid_y
-    assert gx * gy == N_CORES, (gx, gy)
+    assert gx * gy == CORE_COUNT, (gx, gy)
     log(f"plan: grid {gx}x{gy} panels {plan.panels} depth {plan.depth}")
 
-    cnt = card.tensor(np.zeros((N_CORES, LC_WORDS), np.uint32), "uint32")
+    cnt = card.tensor(np.zeros((CORE_COUNT, LC_WORDS), np.uint32), "uint32")
     defines = [("PROTO_B", "1")] if args.proto == "b" else []
     if args.timestamp:
         defines.append(("TIMESTAMP", "1"))
@@ -193,7 +193,7 @@ def run(card, args, n):
     log("counters read back")
     out = {
         "ticks": ticks,
-        "us_per_command": (
+        "microseconds_per_command": (
             round(ticks / x280mod.MTIME_HZ * 1e6 / n, 4) if ticks else None
         ),
         "host_wall_s": round(wall, 2),
@@ -202,8 +202,8 @@ def run(card, args, n):
     out.update(summarize(counters, n, mhz))
     out["ok"] = bool(
         ticks
-        and out["cores_finished"] == N_CORES
-        and out["cores_all_accepted"] == N_CORES
+        and out["cores_finished"] == CORE_COUNT
+        and out["cores_all_accepted"] == CORE_COUNT
         and out["lost"] == 0
         and out["tag_ok"]
     )

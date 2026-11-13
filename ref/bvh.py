@@ -53,9 +53,9 @@ def build(scene):
     """The tree of a scene as a dict of the arrays named in KEYS."""
     p, tris, centroid = triangle_arrays(scene)
     levels, perm = split_levels(centroid)
-    n_nodes = 2 * len(perm) - 1
-    box = np.empty((n_nodes, 6), dtype=np.float32)
-    nodes = np.empty((n_nodes, 8), dtype=np.uint32)
+    node_count = 2 * len(perm) - 1
+    box = np.empty((node_count, 6), dtype=np.float32)
+    nodes = np.empty((node_count, 8), dtype=np.uint32)
     leaf_node = np.empty(len(perm), dtype=np.int32)
     first_child = []
     for base, start, count in levels:
@@ -76,7 +76,7 @@ def build(scene):
         box[ids, :3] = np.minimum(box[child, :3], box[child + 1, :3])
         box[ids, 3:] = np.maximum(box[child, 3:], box[child + 1, 3:])
     nodes[:, :6] = box.view(np.uint32)
-    meta = np.array([n_nodes, len(perm), len(levels) - 1], dtype=np.int32)
+    meta = np.array([node_count, len(perm), len(levels) - 1], dtype=np.int32)
     return {
         "nodes": nodes,
         "tris": tris[perm],
@@ -112,10 +112,10 @@ def cut_treelets(tree, max_bytes):
     of treelet_root, node_treelet, treelet_node_off, treelet_leaf_first/off,
     treelet_nodes (local), treelet_tris, top_nodes (child: top node or 0x40000000 |
     treelet) and top_root (the word to start from)."""
-    nodes, n_nodes = tree["nodes"], len(tree["nodes"])
+    nodes, node_count = tree["nodes"], len(tree["nodes"])
     levels = levels_of(tree)
-    size = np.zeros(n_nodes, dtype=np.int64)
-    leaves = np.zeros(n_nodes, dtype=np.int64)
+    size = np.zeros(node_count, dtype=np.int64)
+    leaves = np.zeros(node_count, dtype=np.int64)
     for ids in levels[::-1]:
         leaf = is_leaf(nodes[ids, 6])
         size[ids[leaf]], leaves[ids[leaf]] = NODE_BYTES + TRIANGLE_BYTES, 1
@@ -124,7 +124,7 @@ def cut_treelets(tree, max_bytes):
         size[inner] = NODE_BYTES + size[c0] + size[c1]
         leaves[inner] = leaves[c0] + leaves[c1]
     top = size > max_bytes
-    node_treelet = np.full(n_nodes, -1, dtype=np.int32)
+    node_treelet = np.full(node_count, -1, dtype=np.int32)
     roots = [0] if not top[0] else []
     for ids in levels:
         inner = ids[~is_leaf(nodes[ids, 6])]
@@ -143,7 +143,7 @@ def cut_treelets(tree, max_bytes):
     node_off = np.concatenate(
         [[0], np.cumsum(np.bincount(node_treelet[members], minlength=k))]
     )
-    local = np.full(n_nodes, -1, dtype=np.int64)
+    local = np.full(node_count, -1, dtype=np.int64)
     local[members] = np.arange(len(members)) - node_off[node_treelet[members]]
     leaf_first = np.array(
         [nodes[leaf_range_node(nodes, r)[0], 6] & ~LEAF for r in roots], dtype=np.int64
@@ -162,7 +162,7 @@ def cut_treelets(tree, max_bytes):
         [tree["tris"][a : a + n] for a, n in zip(leaf_first, leaves[roots])]
     )
     top_ids = np.nonzero(node_treelet < 0)[0]
-    top_local = np.full(n_nodes, -1, dtype=np.int64)
+    top_local = np.full(node_count, -1, dtype=np.int64)
     top_local[top_ids] = np.arange(len(top_ids))
     top_nodes = nodes[top_ids].copy()
     for col in (6, 7):

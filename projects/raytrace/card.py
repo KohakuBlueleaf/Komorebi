@@ -170,7 +170,7 @@ def check_run(res, n_workers):
     """Events, kernel result and kernel ends as a dict; raises nothing."""
     states = res.state[:n_workers]
     return {
-        "done": sum(ev.kind == "done" for ev in res.events),
+        "done": sum(event.kind == "done" for event in res.events),
         "commands": len(res.events),
         "kernel_error": res.result["error"],
         "cores_ended": {
@@ -199,9 +199,9 @@ def ran_cleanly(run, n_workers):
     )
 
 
-def command_us(res):
+def command_microseconds(res):
     """Submit to completion of each command, in microseconds (the X280's timer)."""
-    return np.array([ev.us for ev in res.events], dtype=np.float64)
+    return np.array([event.microseconds for event in res.events], dtype=np.float64)
 
 
 def run_handler(

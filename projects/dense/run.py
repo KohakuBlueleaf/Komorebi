@@ -142,7 +142,7 @@ def main():
         out["upload_s"] = round(time.perf_counter() - t0, 3)
         product = load(session, plan, tensors, args.group, reduce=args.reduce)
         log(f"loaded, group {product.group}")
-        out["load_us"] = product.load_us
+        out["load_microseconds"] = product.load_microseconds
         try:
             host_s, us = product.calls(args.calls)
         except km.KomorebiError as err:
@@ -151,8 +151,8 @@ def main():
             print(json.dumps(out, default=str), flush=True)
             sys.exit(1)
         log(f"{args.calls} calls in {host_s:.4f} s")
-        out["us_per_call_host"] = round(host_s * 1e6 / args.calls, 3)
-        out["command_us_median"] = float(np.median(us))
+        out["microseconds_per_call_host"] = round(host_s * 1e6 / args.calls, 3)
+        out["command_microseconds_median"] = float(np.median(us))
         out["run"] = product.stop()
         t0 = time.perf_counter()
         rows = ref.sampled_rows(m)

@@ -134,7 +134,7 @@ def launch(session, args, jobs, inputs, out, stall=-1, stall_rank=NONE):
     summary = {
         "kernel": {k: run.result()[k] for k in ("error_name", "commands", "events")},
         "done": sum(e is not None and e.kind == "done" for e in events),
-        "us_per_job_host": round(host_s * 1e6 / len(jobs), 3),
+        "microseconds_per_job_host": round(host_s * 1e6 / len(jobs), 3),
         "cores_ended": {
             k: sum(c[k] != 0 for c in states)
             for k in ("reader_end", "writer_end", "compute_end")

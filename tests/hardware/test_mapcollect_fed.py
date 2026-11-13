@@ -51,7 +51,7 @@ def ran_as_ranks(out):
 def waiting(out, where):
     """Cores named by their state words as waiting in `where`, with the sequence."""
     return sorted(
-        (n["core"], n[k]["seq"])
+        (n["core"], n[k]["sequence"])
         for n in out["named"]
         for k in ("reader", "writer")
         if n.get(k, {}).get("where") == where
@@ -76,7 +76,7 @@ def test_a_group_across_rows_completes_through_row_leaders(run):
 def test_records_past_the_trace_capacity_are_counted(run):
     out = run("--jobs", 12, "--count", 8, "--trace", "--trace-cap", 8)
     assert out["feeder"]["status"] == "done"
-    assert out["trace_dropped"] == {c: 4 for c in range(8)}  # seq 9 to 12
+    assert out["trace_dropped"] == {c: 4 for c in range(8)}  # sequence 9 to 12
     assert every_kernel_returned(out) and ran_as_ranks(out)
 
 
@@ -91,16 +91,19 @@ def test_a_stalled_rank_is_named_after_the_feeder_timeout(run):
     # Core group 4 to 23 (row leaders 4 and 12); rank 10 (core 14) stalls job 3.
     stall = ["--stall", 3, "--stall-rank", 10, "--deadline", 0.02]
     out = run("--jobs", 6, "--count", 20, "--first", 4, "--row", 12, *stall)
-    seq = out["feeder"]["seq"]
-    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == seq
+    sequence = out["feeder"]["sequence"]
+    assert (
+        out["feeder"]["status"] == "timeout"
+        and out["timed_out"]["sequence"] == sequence
+    )
     assert every_kernel_returned(out)
-    assert waiting(out, "stall") == [(14, seq)]
-    assert waiting(out, "complete") == [(4, seq), (12, seq)]
+    assert waiting(out, "stall") == [(14, sequence)]
+    assert waiting(out, "complete") == [(4, sequence), (12, sequence)]
     assert sorted(out["not_reported"]) == [4, 12, 14]
 
 
 def test_excl_commands_on_overlapping_groups_are_never_in_flight_together(run):
-    out = run("--jobs", 12, "--groups", "overlap", "--trace", "--excl")
+    out = run("--jobs", 12, "--groups", "overlap", "--trace", "--exclusive")
     assert out["feeder"]["status"] == "done" and out["jobs_bad"] == 0
     seen = out["overlapping_groups"]
     assert seen["pairs"] > 0 and seen["together"] == 0 and out["held"] > 0
@@ -127,7 +130,7 @@ def test_slow_compute_gives_up_and_acknowledges_nothing(run):
     # Core 0's compute holds job 0's tile 0.3 s; the writer's wait limit is 0.1 s.
     slow = ["--slow", 0, "--slow-rank", 0, "--slow-cycles", CYCLES_300MS]
     out = run("--group-list", "0:1,0:1", *slow, "--wait", 0.1, "--deadline", 1.0)
-    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 1
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["sequence"] == 1
     assert out["feeder"]["done"] == 0 and out["not_reported"] == [0]
     assert every_kernel_returned(out)
     writer = {g["core"]: g for g in out["gave_up_busy"]}[0]["writer"]
@@ -138,11 +141,11 @@ def test_a_leader_whose_rank_is_late_acknowledges_nothing(run):
     # Rank 1 reports job 0 after 0.3 s; leader 0 waits 0.1 s, gives up, stops.
     late = ["--late", 0, "--late-rank", 1, "--late-cycles", CYCLES_300MS]
     out = run("--group-list", "0:2,0:2", *late, "--wait", 0.1, "--deadline", 1.0)
-    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 1
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["sequence"] == 1
     assert out["feeder"]["done"] == 0 and out["not_reported"] == [0]
     assert every_kernel_returned(out)
     leader = {g["core"]: g for g in out["named"]}[0]["writer"]
-    assert leader == {"code": "limit", "where": "complete", "slot": 0, "seq": 1}
+    assert leader == {"code": "limit", "where": "complete", "slot": 0, "sequence": 1}
 
 
 def test_an_item_past_the_buffer_end_gives_up_before_any_access(run):
@@ -150,8 +153,13 @@ def test_an_item_past_the_buffer_end_gives_up_before_any_access(run):
     # job 1 asks rank 0 for 2 output pages from there.
     bad = ["--bad-item", 1, "--bad-side", "writer", "--tiles", 65, "--deadline", 0.05]
     out = run("--group-list", "0:1,0:1,0:1", "--depth", 1, *bad)  # job 0 acked first
-    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["seq"] == 2
+    assert out["feeder"]["status"] == "timeout" and out["timed_out"]["sequence"] == 2
     assert out["feeder"]["done"] == 1 and out["not_reported"] == [0]
     assert every_kernel_returned(out)
     core0 = {g["core"]: g for g in out["gave_up_busy"]}[0]
-    assert core0["writer"] == {"code": "bad_item", "where": "data", "slot": 0, "seq": 0}
+    assert core0["writer"] == {
+        "code": "bad_item",
+        "where": "data",
+        "slot": 0,
+        "sequence": 0,
+    }

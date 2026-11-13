@@ -30,9 +30,9 @@ from komorebi.errors import (
 from komorebi.program import KernelSizes
 from komorebi.run import Run
 
-CTL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
+CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
-DYN_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may take
+MESSAGES_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may take
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
@@ -521,7 +521,7 @@ class Session:
         host_depth=64,
         event_depth=128,
         batch=64,
-        settle_us=1.0,
+        settle_microseconds=1.0,
         image=None,
         thread="card",
     ):
@@ -566,7 +566,7 @@ class Session:
         _hook_exit()
         _LIVE.add(self)
         self._starting = dispatch
-        dispatch.settle_us = settle_us
+        dispatch.settle_microseconds = settle_microseconds
         backend, launched = None, False
         try:
             if not dispatch.idle:
@@ -583,7 +583,9 @@ class Session:
                 kernel_idle,
                 state_t.address,
                 **kt.kernel_work_args(ends),
-                dyn_handler=program.dyn.handler if program.dyn is not None else 0,
+                messages_handler=(
+                    program.messages.handler if program.messages is not None else 0
+                ),
             )
             check_bases(lim_bases(dispatch.lim_base))
             plan, port_lines = _port_lines(program, dispatch, rings)
@@ -610,7 +612,7 @@ class Session:
                     program.name,
                     elves,
                     native.metal_tree(self.tree),
-                    native.cache_dir() / "insn-check",
+                    native.cache_directory() / "insn-check",
                 )
                 self.log(
                     f"kernels built and checked ({time.perf_counter() - t0:.2f} s)"
@@ -659,7 +661,7 @@ class Session:
                     t.peers = peers.get(c)
                     if plan is not None:
                         t.ports = kt.Ports(
-                            backend.ctl_addr,
+                            backend.control_addr,
                             len(port_lines.cores),
                             port_lines.cores,
                             plan,
@@ -871,9 +873,9 @@ class _Backend:
         self.mhz = mhz
         self.trace_cap = (trace + 3) // 4 * 4 if trace else 0  # whole 64-byte pages
         self.io = []
-        self.ctl = None
-        self.ctl_addr = 0
-        self.ctl_offset = 0
+        self.control = None
+        self.control_addr = 0
+        self.control_offset = 0
         self.trace_t = None
         self.state_t = None
         self.read = False
@@ -887,36 +889,36 @@ class _Backend:
         start on a 64-byte line: the same L1 address on every core. `port_lines`: the
         KM_X280_TO line of each served core, written once the address is known."""
         h = abi.headers()
-        words = (h["KM_CTL_BYTES"] + CTL_ALIGN) // 4
-        self.ctl = _words(self.session, np.zeros((cores, words)), grid)
-        base = self.ctl.address
-        self.ctl_addr = (base + CTL_ALIGN - 1) // CTL_ALIGN * CTL_ALIGN
-        self.ctl_offset = (self.ctl_addr - base) // 4
-        check_bases({"control block": self.ctl_addr})
+        words = (h["KM_CONTROL_BYTES"] + CONTROL_ALIGN) // 4
+        self.control = _words(self.session, np.zeros((cores, words)), grid)
+        base = self.control.address
+        self.control_addr = (base + CONTROL_ALIGN - 1) // CONTROL_ALIGN * CONTROL_ALIGN
+        self.control_offset = (self.control_addr - base) // 4
+        check_bases({"control block": self.control_addr})
         if port_lines is not None:
             rows = np.zeros((cores, words), dtype=np.uint32)
-            to = self.ctl_offset + (h["KM_CTL_X280"] + h["KM_X280_TO"]) // 4
+            to = self.control_offset + (h["KM_CONTROL_X280"] + h["KM_X280_TO"]) // 4
             for core, (tile, box) in port_lines.lines.items():
                 rows[core, to + h["KM_X280_TO_TILE"]] = tile
                 rows[core, to + h["KM_X280_TO_BOX"]] = box
-            self.ctl.write(rows)
-        return self.ctl_addr
+            self.control.write(rows)
+        return self.control_addr
 
     def _dynamic(self, program, cores, depth, base):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
         reader / writer and compute words; status lines in the kernel's LIM."""
-        dyn = program.dyn
-        if dyn is None:
+        messages = program.messages
+        if messages is None:
             return [], []
         h = abi.headers()
-        dyn.check(cores, DYN_DRAM_BYTES, depth)
-        page = 32 * dyn.message_bytes  # kDynPageMessages messages a page
+        messages.check(cores, MESSAGES_DRAM_BYTES, depth)
+        page = 32 * messages.message_bytes  # kMessagesPageMessages messages a page
         queue = self.session.empty(
-            (cores * dyn.queue_messages // 32, page // 4), "int32"
+            (cores * messages.queue_messages // 32, page // 4), "int32"
         )
         self.io.append(queue)
-        lines = base + h["KMD_LIM_DYN"]
-        return dyn.args(queue.address, lines), dyn.compute_args(cores)
+        lines = base + h["KMD_LIM_MESSAGES"]
+        return messages.args(queue.address, lines), messages.compute_args(cores)
 
     def describe(
         self, program, sources, tag, depth, wait, idle, trace, port_lines=None
@@ -926,11 +928,11 @@ class _Backend:
         d = self.port
         grid = (d.grid_x, d.grid_y)
         cores = grid[0] * grid[1]
-        ctl = self._control_blocks(cores, grid, port_lines)
+        control = self._control_blocks(cores, grid, port_lines)
         table = np.zeros((1, h["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = d.core_table()
         cores_t = _words(self.session, table)
-        self.io = [self.ctl, cores_t]
+        self.io = [self.control, cores_t]
         if self.trace_cap:
             self.trace_t = _words(
                 self.session, np.zeros((cores, self.trace_cap * h["kTraceWords"]))
@@ -939,9 +941,9 @@ class _Backend:
         base = d.lim_base
         groups = abi.column_groups(grid, cores)
         common = {
-            "ctl": ctl,
+            "control": control,
             "cores": cores_t.address,
-            "disp_xy": d.l2_x | d.l2_y << 16,
+            "dispatcher_coordinates": d.l2_x | d.l2_y << 16,
             "ack_base": base + h["KMD_LIM_ACKS"],
             "ready_base": base + h["KMD_LIM_READY"],
             "tag": tag,
@@ -953,7 +955,7 @@ class _Backend:
             "trace": self.trace_t.address if self.trace_t else 0,
             "trace_cap": self.trace_cap,
         }
-        dyn_rw, dyn_c = self._dynamic(program, cores, depth, base)
+        messages_rw, messages_c = self._dynamic(program, cores, depth, base)
         reader_args, writer_args, compute_args = [], [], []
         for core in range(cores):
             x, y = core % grid[0], core // grid[0]
@@ -970,10 +972,10 @@ class _Backend:
                 }
             )
             reader, writer, compute = program.core_args(core)
-            reader_args.append((x, y, start + dyn_rw + list(reader)))
-            writer_args.append((x, y, start + dyn_rw + list(writer)))
+            reader_args.append((x, y, start + messages_rw + list(reader)))
+            writer_args.append((x, y, start + messages_rw + list(writer)))
             limits = [common["wait_limit"], common["idle_limit"]]
-            compute_args.append((x, y, [ctl, core, *limits, *dyn_c, *compute]))
+            compute_args.append((x, y, [control, core, *limits, *messages_c, *compute]))
         all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
         include = [str(abi.headers().abi.parents[2])]
         defines = [(k, str(v)) for k, v in program.defines.items()]
@@ -1083,15 +1085,15 @@ class _Backend:
         h = abi.headers()
         module, gx, gy = self.session._module, self.port.grid_x, self.port.grid_y
         for core in range(gx * gy):
-            at = self.ctl_addr + h["KM_CTL_STOP"]
+            at = self.control_addr + h["KM_CONTROL_STOP"]
             module.write_l1(self.device, core % gx, core // gx, at, [1])
         self.session.log("stop flag written by the host")
 
     def read_back(self, stop_grid=False):
         """After the X280 runtime is closed: waits (with a timeout) for the grid's
-        kernels, then reads the control blocks ([cores, KM_CTL_BYTES / 4] uint32) and
-        the trace. `stop_grid`: the dispatcher was not there to stop the grid, so the
-        host first writes the stop flag into every core through the device API."""
+        kernels, then reads the control blocks ([cores, KM_CONTROL_BYTES / 4] uint32)
+        and the trace. `stop_grid`: the dispatcher was not there to stop the grid, so
+        the host first writes the stop flag into every core through the device API."""
         if self.port.is_open:
             raise RuntimeError("close the X280 runtime before reading back")
         h = abi.headers()
@@ -1112,9 +1114,9 @@ class _Backend:
             )
         self.device.finish()  # returns at once: every core is done
         self.session.log(f"grid returned ({time.monotonic() - t0:.1f} s)")
-        rows = _read_uint32(self.ctl)
-        start = self.ctl_offset
-        blocks = rows[:, start : start + h["KM_CTL_BYTES"] // 4].astype(np.uint32)
+        rows = _read_uint32(self.control)
+        start = self.control_offset
+        blocks = rows[:, start : start + h["KM_CONTROL_BYTES"] // 4].astype(np.uint32)
         trace = None
         if self.trace_t is not None:
             words = _read_uint32(self.trace_t, self.device, module).astype(np.uint32)

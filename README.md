@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
-  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code: a command runs a handler (reader.run and km::handler), broadcast to a row or column (km::Broadcast with cast and arrive), a message finds its core (km::Dyn with send, forward and consume), a core asks an X280 core (km::X280Port and next), and an X280 thread decides (kmx_submit, kmx_par and kmx_pull_run in C). Centre, under the heading the card runs it by itself: two panels of 6 by 10 Tensix cores with persistent kernels, X280 cluster 0 submitting commands to both panels, X280 clusters 1 to 3 running the program's threads, a broadcast along a row and down a column, routed messages between cores and ports between X280 cores and Tensix cores; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.80 ms of sort and merge on 4 cores between passes, seven commands, the Tensix passes COUNT 3.8, SETUP 5.1 and FILL 2.1 ms, 12.1 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (7.2 and 15.4 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.3 us (7.7 times) and 7.99 ms (1.5 times), SwiGLU 42.6 us (6.2 times), attention 163 us (1.3 times).">
+  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code: a command runs a handler (reader.run and km::handler), broadcast to a row or column (km::Broadcast with cast and arrive), a message finds its core (km::Messages with send, forward and consume), a core asks an X280 core (km::X280Port and next), and an X280 thread decides (kmx_submit, kmx_parallel and kmx_pull_run in C). Centre, under the heading the card runs it by itself: two panels of 6 by 10 Tensix cores with persistent kernels, X280 cluster 0 submitting commands to both panels, X280 clusters 1 to 3 running the program's threads, a broadcast along a row and down a column, routed messages between cores and ports between X280 cores and Tensix cores; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.80 ms of sort and merge on 4 cores between passes, seven commands, the Tensix passes COUNT 3.8, SETUP 5.1 and FILL 2.1 ms, 12.1 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (7.2 and 15.4 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.3 us (7.7 times) and 7.99 ms (1.5 times), SwiGLU 42.6 us (6.2 times), attention 163 us (1.3 times).">
 </picture>
 
 A programming model and framework for the Tensix grid and the X280 cores of a
@@ -32,7 +32,7 @@ program's page and its committed results.
 | Rasterizer, whole frame | 10^6 triangles, 1024 x 1024 | 12.13 ms | CUDA on a V100: 4.42 ms | 0.36 |
 | Ray tracer, whole frame | Sponza close, 1024 x 1024 | 359.86 ms | CUDA on a V100: 102.00 ms | 0.28 |
 
-Above 1, Komorebi takes less time. The neural workloads are on par with or ahead of
+Above 1, Komorebi takes less time. The neural workloads are on parallel with or ahead of
 Kohaku-TT on most shapes; the rasterizer and the ray tracer run whole frames on the
 card, bit-exact against numpy, today at a third of the V100's speed (the rasterizer)
 and a third or less (the ray tracer).
@@ -84,14 +84,14 @@ program's own work on a message):
 void kernel_main() {
     km::Compute compute;
     compute.run([&](const km_command_t& command) {
-        km::Dyn messages(compute, command);  // routed messages for this command
+        km::Messages messages(compute, command);  // routed messages for this command
         uint32_t message[kMessageWords] = {};
         if (messages.seeding()) {  // first, every core sends its own
             messages.send(messages.rank(), message);
             messages.seeded();
         }
         while (km::Packet packet = messages.next()) {  // then whatever arrives
-            for (uint32_t index = 0; index < packet.n; index++) {
+            for (uint32_t index = 0; index < packet.count; index++) {
                 const uint32_t next_core = visit(packet[index], message);
                 if (next_core == kFinished) {
                     messages.consume();  // the message ends here
@@ -133,11 +133,11 @@ random groups, 0 wrong; 36.7 µs a job on 8 cores and 51.8 µs on 119, each comm
 returning a checksum of its total
 ([02_merge_tree](examples/02_merge_tree/README.md)).
 
-The irregular part of a program is C on an X280 work cluster, where `kmx_par` runs a
+The irregular part of a program is C on an X280 work cluster, where `kmx_parallel` runs a
 function on the cluster's four cores (cores). A two-pass prefix sum over chunks of the
 input, 2.48 ms for 262,144 words on four cores, exact against numpy
 ([08_parallel_thread/thread/parallel.c](examples/08_parallel_thread/thread/parallel.c),
-lines 148 to 198 without `nothing`, an empty function for timing `kmx_par`; the job
+lines 148 to 198 without `nothing`, an empty function for timing `kmx_parallel`; the job
 struct and the chunk helpers are above them):
 
 ```c
@@ -166,13 +166,13 @@ static void chunk_prefix(int core, void* arg) {
     }
 }
 
-/* Runs fn on core 0 alone or on all four; KMX_OK, or kmx_par's error. */
+/* Runs fn on core 0 alone or on all four; KMX_OK, or kmx_parallel's error. */
 static int on(void (*fn)(int, void*), job_t* j) {
     if (j->parts == 1) {
         fn(0, j);
         return KMX_OK;
     }
-    return kmx_par(fn, j);
+    return kmx_parallel(fn, j);
 }
 
 /* The two-pass exclusive prefix sum (mod 2^32); between the passes core 0 turns the
@@ -195,7 +195,7 @@ static int prefix(job_t* j) {
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/card-dark.svg">
-  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM tiles in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. The host declares the program and its thread and submits commands; commands and events pass through PCIe to X280 0 at (8, 3), which runs the dispatcher. Its command goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each. A core group 26 to 55 is filled; its leader, core 26 at (3, 4), acknowledges on NoC1. X280 1 at (8, 9), X280 2 at (8, 5) and X280 3 at (8, 7), drawn in their own colour, each run a C thread of the program on four cores (kmx_main, kmx_par); a ring joins each to X280 0, commands going to the dispatcher and events with result words returning, so commands have up to four sources. Each cluster's regions lie in the DRAM bank beside it, D6 for X280 1 and D7 for X280 2 and 3, which Tensix cores reach over the NoC; kmx_invalidate and kmx_flush keep the caches coherent with the grid. Boxes below list what the dispatcher, each Tensix core and the work clusters do.">
+  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM tiles in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. The host declares the program and its thread and submits commands; commands and events pass through PCIe to X280 0 at (8, 3), which runs the dispatcher. Its command goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each. A core group 26 to 55 is filled; its leader, core 26 at (3, 4), acknowledges on NoC1. X280 1 at (8, 9), X280 2 at (8, 5) and X280 3 at (8, 7), drawn in their own colour, each run a C thread of the program on four cores (kmx_main, kmx_parallel); a ring joins each to X280 0, commands going to the dispatcher and events with result words returning, so commands have up to four sources. Each cluster's regions lie in the DRAM bank beside it, D6 for X280 1 and D7 for X280 2 and 3, which Tensix cores reach over the NoC; kmx_invalidate and kmx_flush keep the caches coherent with the grid. Boxes below list what the dispatcher, each Tensix core and the work clusters do.">
 </picture>
 
 The grid is the card's real one in NoC0 coordinates; the numbers in the Tensix cores
@@ -252,7 +252,7 @@ on overlapping cores is submitted with `run.submit(..., exclusive=True)`.
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
-| X280 threads: `kmx_par`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_par_all` over twelve cores and `kmx_push` across banks | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
+| X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, an exit with a timeout | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
 | The thread language; homes declared | planned | [manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md) | |

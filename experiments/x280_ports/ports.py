@@ -89,15 +89,15 @@ def latency(pages, mhz):
         "count": count,
         "bad": int(used[:, XP["XP_ST_BAD"]].sum()),
         "gave": int((pages[:, XP["XP_ST_GAVE"]] != 0).sum()),
-        "mean_us": round(int(total.sum()) / count / mhz, 3),
-        "min_us": round(int(used[:, XP["XP_ST_MIN"]].min()) / mhz, 3),
-        "p50_us": pct(0.5),
-        "p90_us": pct(0.9),
-        "p99_us": pct(0.99),
-        "p999_us": pct(0.999),
-        "max_us": round(top / mhz, 3),
+        "mean_microseconds": round(int(total.sum()) / count / mhz, 3),
+        "min_microseconds": round(int(used[:, XP["XP_ST_MIN"]].min()) / mhz, 3),
+        "p50_microseconds": pct(0.5),
+        "p90_microseconds": pct(0.9),
+        "p99_microseconds": pct(0.99),
+        "p999_microseconds": pct(0.999),
+        "max_microseconds": round(top / mhz, 3),
         "over_hist": int(hist[-1]),
-        "core_mean_us_max": round(
+        "core_mean_microseconds_max": round(
             float((total / used[:, XP["XP_ST_COUNT"]]).max()) / mhz, 3
         ),
     }

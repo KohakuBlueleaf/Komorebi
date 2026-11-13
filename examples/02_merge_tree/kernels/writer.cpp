@@ -22,7 +22,7 @@ void kernel_main() {
                 },
                 wr.args().idle_limit
             );
-            wr.gave_up(km::kStWriter, code, km::kWhereStall, km::slot(r), r.seq);
+            wr.gave_up(km::kStWriter, code, km::kWhereStall, km::slot(r), r.sequence);
             return false;
         }
         if (g.rank != 0) {
@@ -33,7 +33,7 @@ void kernel_main() {
         }
         // The command's result word, only when it asks for one: the total's 32-bit
         // words summed (a checksum: one more pass over the total, so only if asked).
-        if (km::flags(r) & KM_F_RESULT) {
+        if (km::flags(r) & KM_FLAG_RESULT) {
             const volatile tt_l1_ptr uint32_t*
                 words = (
                     reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(kCbOut))

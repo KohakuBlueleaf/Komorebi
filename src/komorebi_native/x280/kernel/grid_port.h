@@ -4,9 +4,9 @@
 
 #include "kernel.h"
 
-/* Programs one posted window per panel aimed at the control block `ctl` of every core
- * in the panel's rectangle. Returns KMD_ERR_NONE or KMD_ERR_WINDOW. */
-static inline uint32_t grid_open(kmd_t* k, uint32_t ctl) {
+/* Programs one posted window per panel aimed at the control block `control` of every
+ * core in the panel's rectangle. Returns KMD_ERROR_NONE or KMD_ERROR_WINDOW. */
+static inline uint32_t grid_open(kmd_t* k, uint32_t control) {
     for (uint32_t r = 0; r < k->panels; r++) {
         const volatile uint32_t* q = k->args->rect[r];
         const uint32_t x0 = q[0], y0 = q[1], x1 = q[2], y1 = q[3];
@@ -27,23 +27,23 @@ static inline uint32_t grid_open(kmd_t* k, uint32_t ctl) {
             )
         );
         if (win == 0) {
-            return KMD_ERR_WINDOW;
+            return KMD_ERROR_WINDOW;
         }
         k->opened |= 1u << r;
         if (noc_verify_tlb_2m(KMD_WIN_PANEL0 + r, &programmed) != 0) {
-            return KMD_ERR_WINDOW;
+            return KMD_ERROR_WINDOW;
         }
-        k->ctl[r] = (volatile uint8_t*)win + ctl;
+        k->control[r] = (volatile uint8_t*)win + control;
     }
-    return KMD_ERR_NONE;
+    return KMD_ERROR_NONE;
 }
 
 /* Stores the command `line` into mailbox slot `slot` of every core: one 64-byte vector
  * store per panel, then a fence so the stores leave now. */
 KMD_HOT void grid_store_command(kmd_t* k, uint32_t slot, const uint64_t* line) {
-    const uint32_t off = KM_CTL_RING + slot * (uint32_t)sizeof(km_command_t);
+    const uint32_t off = KM_CONTROL_RING + slot * (uint32_t)sizeof(km_command_t);
     for (uint32_t r = 0; r < k->panels; r++) {
-        kmd_store_line(k->ctl[r] + off, line);
+        kmd_store_line(k->control[r] + off, line);
     }
     x280_fence_ow();
 }
@@ -52,8 +52,8 @@ KMD_HOT void grid_store_command(kmd_t* k, uint32_t slot, const uint64_t* line) {
  * opened: every wait on the grid gives up. */
 static inline void grid_stop(kmd_t* k) {
     for (uint32_t r = 0; r < k->panels; r++) {
-        if (k->ctl[r] != 0) {
-            *(volatile uint32_t*)(k->ctl[r] + KM_CTL_STOP) = 1u;
+        if (k->control[r] != 0) {
+            *(volatile uint32_t*)(k->control[r] + KM_CONTROL_STOP) = 1u;
         }
     }
     x280_fence_ow();

@@ -36,7 +36,7 @@ static void command(
     uint32_t flags,
     const uint32_t* a
 ) {
-    r->seq = r->land1 = r->land2 = r->land3 = 0;
+    r->sequence = r->land1 = r->land2 = r->land3 = 0;
     r->hdr = handler | flags << 8;
     r->group = first | count << 16;
     r->a0 = a[0];
@@ -50,7 +50,7 @@ static void command(
     r->a8 = r->a9 = 0;
 }
 
-/* Submits r and waits for its event: KMX_OK and ev, or the error. */
+/* Submits r and waits for its event: KMX_OK and event, or the error. */
 static int submit(const km_command_t* r, uint32_t* handle) {
     const uint64_t until = kmx_time() + WAIT_TICKS;
     int e = kmx_submit(r, handle);
@@ -67,9 +67,9 @@ static uint32_t tile_of(int core) {
     return ((const uint32_t*)(lim + p->at + KMX_PORTS_TILES))[core];
 }
 
-static uint32_t ctl_of(void) {
+static uint32_t control_of(void) {
     const uint8_t* lim = (const uint8_t*)kmx_args_get();
-    return ((const kmx_ports*)(lim + KMX_LIM_PORTS))->ctl;
+    return ((const kmx_ports*)(lim + KMX_LIM_PORTS))->control;
 }
 
 /* 64-byte vector copy into a window (n a multiple of 64). */
@@ -172,7 +172,7 @@ static void serve(int cluster, int cpu, uint64_t arg) {
             if (done[c / 32] >> (c % 32) & 1u) {
                 continue;
             }
-            kmx_msg m;
+            kmx_message m;
             if (tell) {
                 kmx_port_tell(c, tells++, round, 0);
             }
@@ -190,9 +190,9 @@ static void serve(int cluster, int cpu, uint64_t arg) {
                         (uint32_t)a->region[0].offset + c * XP_BLOCK_BYTES
                     );
                     const uint32_t tile = a->words[cluster == 1 ? 5 : 6];
-                    kmx_port_answer(c, m.seq, at, tile, 0);
+                    kmx_port_answer(c, m.sequence, at, tile, 0);
                 } else {
-                    kmx_port_answer(c, m.seq, XP_ANSWER(m.w[1], m.w[2]), 0, 0);
+                    kmx_port_answer(c, m.sequence, XP_ANSWER(m.w[1], m.w[2]), 0, 0);
                 }
                 answered++;
             }
@@ -256,7 +256,7 @@ static uint32_t one_core(const uint32_t* a, uint32_t* w) {
         const uint32_t handler = (
             mode == XP_MODE_TELL ? XP_HANDLER_TELL : XP_HANDLER_SEND
         );
-        command(&r, handler, core, 1, mode == XP_MODE_TELL ? KM_F_RESULT : 0, args);
+        command(&r, handler, core, 1, mode == XP_MODE_TELL ? KM_FLAG_RESULT : 0, args);
         uint32_t handle;
         if (submit(&r, &handle) != KMX_OK) {
             return 3;
@@ -265,7 +265,7 @@ static uint32_t one_core(const uint32_t* a, uint32_t* w) {
         if (mode == XP_MODE_TELL) {
             kmx_port_tell((int)core, value, k, 0);
         } else {
-            kmx_msg m;
+            kmx_message m;
             int e = KMX_NONE;
             const uint64_t until = kmx_time() + WAIT_TICKS;
             while (
@@ -275,15 +275,15 @@ static uint32_t one_core(const uint32_t* a, uint32_t* w) {
             }
             ok = e == KMX_OK && m.w[0] == k * 1000u + core && m.w[1] == k;
         }
-        kmx_event ev;
-        if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
+        kmx_event event;
+        if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &event) != KMX_OK) {
             return 3;
         }
-        if (ev.kind != KM_EV_DONE) {
+        if (event.kind != KM_EVENT_DONE) {
             return 4;
         }
         if (mode == XP_MODE_TELL) {
-            ok = ev.ticks == value;
+            ok = event.ticks == value;
         }
         if (!ok) {
             bad++;
@@ -302,7 +302,8 @@ static uint32_t all_cores(const uint32_t* a, uint32_t* w) {
     const uint32_t mode = a[0], rounds = a[1], cores = a[2];
     uint32_t kinds[4] = {0, 0, 0, 0};
     uint64_t ticks = 0;
-    if (kmx_par_all(nothing, 0) != KMX_OK) { /* every cluster serves before round 1 */
+    if (kmx_parallel_all(nothing, 0) !=
+        KMX_OK) { /* every cluster serves before round 1 */
         return 3;
     }
     for (uint32_t k = 1; k <= rounds; k++) {
@@ -326,22 +327,22 @@ static uint32_t all_cores(const uint32_t* a, uint32_t* w) {
         command(&r, handler, 0, cores, 0, args);
         const uint64_t t0 = kmx_time(), until = t0 + WAIT_TICKS;
         const uint64_t arg = k | (uint64_t)tell << 24 | (uint64_t)stop << 32;
-        kmx_event ev;
-        int e = kmx_port_run(&r, serve, arg, &ev);
+        kmx_event event;
+        int e = kmx_port_run(&r, serve, arg, &event);
         while (e == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
-            e = kmx_port_run(&r, serve, arg, &ev);
+            e = kmx_port_run(&r, serve, arg, &event);
         }
         if (e != KMX_OK) {
             return 3;
         }
         ticks += kmx_time() - t0;
-        kinds[ev.kind & 3u]++;
-        if (ev.kind != KM_EV_DONE) {
+        kinds[event.kind & 3u]++;
+        if (event.kind != KM_EVENT_DONE) {
             break;
         }
     }
-    w[0] = kinds[KM_EV_DONE];
-    w[1] = kinds[KM_EV_TIMEOUT];
+    w[0] = kinds[KM_EVENT_DONE];
+    w[1] = kinds[KM_EVENT_TIMEOUT];
     w[2] = (uint32_t)ticks;
     return 0;
 }
@@ -350,7 +351,7 @@ static uint32_t all_cores(const uint32_t* a, uint32_t* w) {
 static uint32_t windows(const uint32_t* a, uint32_t* w) {
     const uint32_t repeats = a[1], core = a[2];
     const uint32_t xy = tile_of((int)core), x = xy & 0xFFFFu, y = xy >> 16;
-    const uint32_t at = ctl_of() + KM_CTL_RSVD;
+    const uint32_t at = control_of() + KM_CONTROL_RESERVED;
     const uint32_t line[4] = {0, 0, 0, 0};
     noc_tlb_2m_t prog;
     uint64_t t = cycles();
@@ -434,7 +435,7 @@ static uint32_t windows(const uint32_t* a, uint32_t* w) {
     }
     w[4] = held;
     /* the serve loop's parts, each `repeats` times on core `core` */
-    kmx_msg m;
+    kmx_message m;
     t = cycles();
     for (uint32_t i = 0; i < repeats; i++) {
         kmx_port_asked((int)core, &m);

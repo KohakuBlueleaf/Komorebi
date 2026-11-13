@@ -282,7 +282,7 @@ def struct_fields(path, name):
 @functools.cache
 def headers():
     """The headers beside the package (a checkout)."""
-    include = _env.include_dir()
+    include = _env.include_directory()
     if include is None:
         raise FileNotFoundError("the native headers are not beside the package")
     kernel = include.parent / "x280" / "kernel"
@@ -290,7 +290,7 @@ def headers():
 
 
 def command(handler, first, count, args=(), flags=0, h=None):
-    """The 16 words of a command; the dispatcher fills seq, slot and landing words."""
+    """The 16 words of a command; the dispatcher fills sequence, slot, landing words."""
     h = h or headers()
     hdr, group, arg_at = h.positions
     if len(args) > len(arg_at):

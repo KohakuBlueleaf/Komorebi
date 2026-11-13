@@ -16,16 +16,16 @@ Longer runs are run by hand: `experiments/feeder_runs/`.
 ## The feeder's rules
 
 - A command goes to every worker; only its group runs it. The feeder writes the ring slot
-  into bits 16 to 23 of `hdr`, and a sequence number into `seq` and the landing words.
+  into bits 16 to 23 of `hdr`, and a sequence number into `sequence` and the landing words.
   A worker does not run a command whose header names another slot.
-- A command with `KM_F_EXCL` waits until no command in flight has a group that overlaps
+- A command with `KM_FLAG_EXCLUSIVE` waits until no command in flight has a group that overlaps
   its own.
 - An EXIT command waits until no slot is busy and goes out with a group of every worker.
   Nothing after it is submitted. Without one in the table the feeder sends one at the end.
 - A command that is not acknowledged within the deadline (from its submit) stops the run:
   the feeder writes the stop flag of every core and commands the slot, sequence number
   and table index.
-- A command with `KM_F_RESULT` is acknowledged with `{ack, result}` in one 8-byte write;
+- A command with `KM_FLAG_RESULT` is acknowledged with `{ack, result}` in one 8-byte write;
   the feeder keeps the result word in the command's row.
 
 ## mapcollect_fed.py
@@ -40,12 +40,12 @@ Longer runs are run by hand: `experiments/feeder_runs/`.
 | `--stall J --stall-rank M` | Job J: rank M waits for the stop flag. |
 | `--late J --late-rank M --late-cycles C` | Job J: rank M reports C cycles late. |
 | `--bad-item J --bad-side writer\|reader` | Job J: rank 0 asks for an item past the end of its buffer. |
-| `--result J --result-value V` | Job J is a RESULT command with `KM_F_RESULT`: the leader acknowledges it with the result word V, shown as `result`. |
+| `--result J --result-value V` | Job J is a RESULT command with `KM_FLAG_RESULT`: the leader acknowledges it with the result word V, shown as `result`. |
 | `--slow J --slow-rank M --slow-cycles C` | MAP job J: rank M's compute holds its tile C cycles. |
 | `--exit-at J`, `--exit-group f:c` | Job J is an EXIT (with that group in the table). |
 | `--raw J`, `--raw-slot S` | Job J is submitted as built: the header names slot S and the group is kept (tests of commands that name the wrong slot, or an EXIT with a partial group). |
 | `--row N` | Cores per grid row for completion; 0: one level. |
-| `--excl` | `KM_F_EXCL` on every MAP command. |
+| `--exclusive` | `KM_FLAG_EXCLUSIVE` on every MAP command. |
 | `--trace`, `--dump FILE` | Per-command timestamps; save rows, state and trace (npz). |
 
 The JSON line holds the feeder summary, per-job checks (`jobs_checked`, `jobs_bad`),

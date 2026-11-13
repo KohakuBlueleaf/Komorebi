@@ -30,7 +30,7 @@ RING_EVENTS = 64  # its events, in its own LIM after the kmx block
 @functools.cache
 def layout():
     """The KMX_* constants of kmx_layout.h."""
-    return abi.constants(native.kmx_dir() / "kmx_layout.h")
+    return abi.constants(native.kmx_directory() / "kmx_layout.h")
 
 
 @dataclass
@@ -131,7 +131,7 @@ class RingPlacement(NamedTuple):
     consumed: int
     events: int
     read: int
-    cmd_depth: int
+    command_depth: int
     event_depth: int
     cached: bool = False
     remote: int | None = None
@@ -157,7 +157,7 @@ class Ports(NamedTuple):
     address, the grid's cores, each core's tile (x | y << 16, by core index), the
     serving X280 cores ({core: (cluster, cpu)}) and the NoC of the windows (0 or 1)."""
 
-    ctl: int
+    control: int
     cores: int
     tiles: list
     serve: dict
@@ -187,7 +187,7 @@ def port_plan(serve, cores, clusters):
 
 def ports_at(ring):
     """LIM offset of the ports area in the thread's block: after the block, a remote
-    ring's events and the kmx_par_all lines."""
+    ring's events and the kmx_parallel_all lines."""
     k = layout()
     n = k["KMX_LIM_BYTES"] + k["KMX_ALL_BYTES"]
     return n + (ring_area_bytes(ring) if ring is not None and ring.remote else 0)
@@ -211,7 +211,7 @@ def ring_bytes():
     return RING_DEPTH * 64 + 64
 
 
-def work_ring(kernel_lim, kernel_xy, work_lim, work_xy, cluster=1):
+def work_ring(kernel_lim, kernel_coordinates, work_lim, work_coordinates, cluster=1):
     """The ring between work cluster `cluster` and the dispatcher: commands and
     the read line in the kernel's LIM after its layout, cluster c's after those of
     clusters 1 to c - 1 (each side writes the other's LIM and reads its own). Returns
@@ -220,7 +220,7 @@ def work_ring(kernel_lim, kernel_xy, work_lim, work_xy, cluster=1):
     # after the layout (the host gives no upload region), one ring per cluster
     cmds = d["KMD_LIM_BYTES"] + (cluster - 1) * ring_bytes()
     area = work_lim + k["KMX_LIM_BYTES"]
-    x0, y0 = kernel_xy
+    x0, y0 = kernel_coordinates
     ring = RingPlacement(
         kernel_lim + cmds,
         area + d["KMD_WORK_CONSUMED"],
@@ -230,7 +230,7 @@ def work_ring(kernel_lim, kernel_xy, work_lim, work_xy, cluster=1):
         RING_EVENTS,
         remote=x0 | y0 << 16,
     )
-    x1, y1 = work_xy
+    x1, y1 = work_coordinates
     return ring, (x1 | y1 << 16, area)
 
 
@@ -269,8 +269,8 @@ def args_block(
 ):
     """The thread's LIM block (KMX_LIM_BYTES, a remote ring's events zeroed): argument
     block, check line at bank address `base`, region table (`table`: [(bank address,
-    bytes)], else place() from `base`), the lines of `ring` (RingPlacement), `peers`
-    (Peers; kmx_par_all lines after) and `ports` (Ports; area after, see ports_area)."""
+    bytes)], else place() from `base`), lines of `ring` (RingPlacement), `peers` (Peers;
+    kmx_parallel_all lines after) and `ports` (Ports; area after, see ports_area)."""
     k = layout()
     if table is None:
         table = [(base + p.page * PAGE, p.bytes) for p in place(thread)[0]]
@@ -303,7 +303,7 @@ def args_block(
         line = struct.pack(
             "<4Q3I5I",
             *ring[:4],
-            ring.cmd_depth,
+            ring.command_depth,
             ring.event_depth,
             flags,
             tile,
@@ -322,7 +322,7 @@ def args_block(
         block[k["KMX_LIM_PEERS"] : k["KMX_LIM_PEERS"] + 64] = line
     if ports is not None:
         flags = k["KMX_PORTS_NOC1"] if ports.noc == 1 else 0
-        line = struct.pack("<4I48x", ports_at(ring), ports.ctl, ports.cores, flags)
+        line = struct.pack("<4I48x", ports_at(ring), ports.control, ports.cores, flags)
         block[k["KMX_LIM_PORTS"] : k["KMX_LIM_PORTS"] + 64] = line
     return bytes(block)
 
@@ -358,8 +358,8 @@ class ThreadResult(NamedTuple):
     code: int
     words: list
     where: int
-    where_us: float
-    us: float
+    where_microseconds: float
+    microseconds: float
     stuck: bool = False
     detail: str = ""
 
@@ -378,12 +378,12 @@ def parse_result(raw, ran=True, stuck=False, detail=""):
     return ThreadResult(
         ran=ran,
         state=_names("KMX_STATE_").get(w[0], f"unknown {w[0]}"),
-        error=_names("KMX_ERR_").get(w[1], f"unknown {w[1]}"),
+        error=_names("KMX_ERROR_").get(w[1], f"unknown {w[1]}"),
         code=w[2],
         words=list(w[16 : 16 + n]),
         where=w[4],
-        where_us=w[5] / 50.0,
-        us=w[6] / 50.0,
+        where_microseconds=w[5] / 50.0,
+        microseconds=w[6] / 50.0,
         stuck=stuck,
         detail=detail,
     )

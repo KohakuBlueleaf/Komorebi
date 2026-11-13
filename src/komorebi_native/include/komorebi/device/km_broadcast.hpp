@@ -37,14 +37,14 @@ namespace km {
     constexpr uint32_t kBroadcastArgs = sizeof(BroadcastArgs) / 4;
 
     // A marker: the command's sequence number (low 16 bits) and a count of blocks.
-    inline uint32_t broadcast_marker(uint32_t seq, uint32_t blocks) {
-        return (seq & 0xFFFFu) << 16 | (blocks & 0xFFFFu);
+    inline uint32_t broadcast_marker(uint32_t sequence, uint32_t blocks) {
+        return (sequence & 0xFFFFu) << 16 | (blocks & 0xFFFFu);
     }
 
-    // True when marker v belongs to command `seq` and counts at least `blocks`.
-    inline bool broadcast_reached(uint32_t v, uint32_t seq, uint32_t blocks) {
+    // True when marker v belongs to command `sequence` and counts at least `blocks`.
+    inline bool broadcast_reached(uint32_t v, uint32_t sequence, uint32_t blocks) {
         return (
-            (v >> 16) == (seq & 0xFFFFu) &&
+            (v >> 16) == (sequence & 0xFFFFu) &&
             static_cast<int16_t>(static_cast<uint16_t>(v - blocks)) >= 0
         );
     }
@@ -144,7 +144,7 @@ namespace km {
                 )) {  // block k landed before its VALID
                     return false;
                 }
-                *at(KM_BROADCAST_OUT) = broadcast_marker(seq_, k + 1);
+                *at(KM_BROADCAST_OUT) = broadcast_marker(sequence_, k + 1);
                 noc_semaphore_set_multicast(
                     area_ + KM_BROADCAST_OUT,
                     mc(area_ + KM_BROADCAST_VALID),
@@ -168,7 +168,7 @@ namespace km {
             const uint32_t code = c_.poll(
                 [&] {
                     marker_freed();
-                    return broadcast_reached(*valid, seq_, k + 1);
+                    return broadcast_reached(*valid, sequence_, k + 1);
                 },
                 c_.args().wait_limit
             );
@@ -243,13 +243,13 @@ namespace km {
 
     private:
         Broadcast(const Core& c, uint32_t word, const km_command_t& r, uint32_t arg0) :
-            c_(c), word_(word), seq_(r.seq), slot_(km::slot(r)) {
+            c_(c), word_(word), sequence_(r.sequence), slot_(km::slot(r)) {
             uint32_t* f = &a_.broadcast;
             for (uint32_t i = 0; i < kBroadcastArgs; i++) {
                 f[i] = c.arg(arg0 + i);
             }
             area_ = (
-                c.args().ctl + KM_CTL_BROADCAST +
+                c.args().control + KM_CONTROL_BROADCAST +
                 (a_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES
             );
             ok_ = begin(r);
@@ -333,7 +333,7 @@ namespace km {
             )) {  // the last marker has left KM_BROADCAST_OUT
                 return;
             }
-            *at(KM_BROADCAST_OUT) = broadcast_marker(seq_, b);
+            *at(KM_BROADCAST_OUT) = broadcast_marker(sequence_, b);
             noc_async_write(
                 area_ + KM_BROADCAST_OUT,
                 c_.core_noc(a_.sender, area_ + KM_BROADCAST_DONE + 16 * a_.rank),
@@ -350,7 +350,9 @@ namespace km {
                 [&] {
                     while (
                         q <= a_.receivers &&
-                        broadcast_reached(*at(KM_BROADCAST_DONE + 16 * q), seq_, blocks)
+                        broadcast_reached(
+                            *at(KM_BROADCAST_DONE + 16 * q), sequence_, blocks
+                        )
                     ) {
                         q++;
                     }
@@ -441,15 +443,15 @@ namespace km {
             if (g[0] == 0) {
                 g[0] = where | a_.broadcast << 8;
                 g[1] = k;
-                g[2] = seq_;
+                g[2] = sequence_;
             }
-            c_.gave_up(word_, code, where, slot_, seq_);
+            c_.gave_up(word_, code, where, slot_, sequence_);
             ok_ = false;
         }
 
         const Core& c_;
         const uint32_t word_;
-        const uint32_t seq_;
+        const uint32_t sequence_;
         const uint32_t slot_;
         BroadcastArgs a_;
         uint32_t area_ = 0;

@@ -23,7 +23,7 @@ GRID = (12, 10)
 
 def test_command_fields_follow_the_abi_header():
     assert rec.COMMAND_FIELDS == [
-        "seq",
+        "sequence",
         "hdr",
         "group",
         "a0",
@@ -43,21 +43,21 @@ def test_command_fields_follow_the_abi_header():
 
 
 def test_constants_come_from_the_headers():
-    assert K["KM_RING_SLOTS"] == 16 and K["KM_CTL_BYTES"] == 0x15C0
+    assert K["KM_RING_SLOTS"] == 16 and K["KM_CONTROL_BYTES"] == 0x15C0
     assert K["KM_READY"] == 0xFFFFFFFF and K["KM_HANDLER_EXIT"] == 255
-    assert K["KM_HANDLER_USER_MAX"] == 239 and "KM_F_ACK" not in K
-    assert K["kStateWords"] * 4 <= K["KM_CTL_JOB"] - K["KM_CTL_STATE"]
+    assert K["KM_HANDLER_USER_MAX"] == 239 and "KM_FLAG_ACK" not in K
+    assert K["kStateWords"] * 4 <= K["KM_CONTROL_JOB"] - K["KM_CONTROL_STATE"]
     assert K["kFdArgs"] == 15 and K["kFeederMagic"] == 0xFEED0000
 
 
 def test_start_up_arguments_are_in_header_order():
-    assert rec.ARG_FIELDS[:3] == ["ctl", "me", "cores"]
+    assert rec.ARG_FIELDS[:3] == ["control", "me", "cores"]
     assert len(rec.ARG_FIELDS) == 19
     assert {"ready_base", "row", "workers"} <= set(rec.ARG_FIELDS)
     values = {name: i for i, name in enumerate(rec.ARG_FIELDS)}
     assert rec.start_args(values) == list(range(19))
     with pytest.raises(ValueError, match="missing"):
-        rec.start_args({"ctl": 1})
+        rec.start_args({"control": 1})
 
 
 def test_command_encoding():
@@ -66,7 +66,7 @@ def test_command_encoding():
     assert w["hdr"] == 7  # flags zero: every command completes
     assert w["group"] == 5 | 60 << 16
     assert [w[f"a{i}"] for i in range(10)] == list(range(1, 11))
-    assert w["seq"] == w["land1"] == w["land2"] == w["land3"] == 0
+    assert w["sequence"] == w["land1"] == w["land2"] == w["land3"] == 0
     with pytest.raises(ValueError):
         rec.command(1, 0, 1, list(range(11)))
 
@@ -114,30 +114,33 @@ def test_feeder_rows_decode():
     rows = np.zeros((3, 16), dtype=np.uint64)
     rows[0, K["kFrMagic"]] = K["kFeederMagic"]
     rows[0, K["kFrStatus"]] = K["kFsTimeout"]
-    rows[0, K["kFrSlot"]], rows[0, K["kFrSeq"]] = 3, 41
+    rows[0, K["kFrSlot"]], rows[0, K["kFrSequence"]] = 3, 41
     rows[0, K["kFrSpanLo"]], rows[0, K["kFrSpanHi"]] = 5, 1
-    rows[2, K["kFrRecSeq"]] = 2
+    rows[2, K["kFrRecSequence"]] = 2
     rows[2, K["kFrRecAcked"]] = 0xFFFFFFF0
     s = rec.feeder_summary(rec.as_int32(rows))
     assert s["magic_ok"] and s["status"] == "timeout"
-    assert (s["slot"], s["seq"], s["span_cycles"]) == (3, 41, (1 << 32) + 5)
+    assert (s["slot"], s["sequence"], s["span_cycles"]) == (3, 41, (1 << 32) + 5)
     r = rec.feeder_commands(rec.as_int32(rows))
-    assert r["seq"].tolist() == [0, 2] and r["acked"][1] == 0xFFFFFFF0
+    assert r["sequence"].tolist() == [0, 2] and r["acked"][1] == 0xFFFFFFF0
     assert rec.wrap(np.int64(3) - np.int64(0xFFFFFFFE)) == 5
 
 
 def test_state_words_decode():
-    ctl = np.zeros((2, K["KM_CTL_BYTES"] // 4), dtype=np.uint64)
-    base = K["KM_CTL_STATE"] // 4
-    ctl[1, base + K["kStMagic"]] = K["kStateMagic"] | 0xBEEF << 8 | 1
+    control = np.zeros((2, K["KM_CONTROL_BYTES"] // 4), dtype=np.uint64)
+    base = K["KM_CONTROL_STATE"] // 4
+    control[1, base + K["kStMagic"]] = K["kStateMagic"] | 0xBEEF << 8 | 1
     word = K["kGaveStop"] | K["kWhereStall"] << 8 | 4 << 16
-    ctl[1, base + K["kStReader"]], ctl[1, base + K["kStReaderSeq"]] = word, 77
-    ctl[1, base + K["kStEnds"]] = K["kEndExit"] | K["kEndAbort"] << 8 | 2 << 16
-    ctl[1, base + K["kStWrong"]] = 3 << 16
-    st = rec.state_words(rec.as_int32(ctl))
+    control[1, base + K["kStReader"]], control[1, base + K["kStReaderSequence"]] = (
+        word,
+        77,
+    )
+    control[1, base + K["kStEnds"]] = K["kEndExit"] | K["kEndAbort"] << 8 | 2 << 16
+    control[1, base + K["kStWrong"]] = 3 << 16
+    st = rec.state_words(rec.as_int32(control))
     c = rec.core_state(st, 1, tag=0xBEEF)
     assert c["magic_ok"] and c["writer"] is None and c["compute"] is None
-    assert c["reader"] == {"code": "stop", "where": "stall", "slot": 4, "seq": 77}
+    assert c["reader"] == {"code": "stop", "where": "stall", "slot": 4, "sequence": 77}
     assert (c["reader_end"], c["writer_end"], c["compute_end"]) == (1, 3, 2)
     assert c["compute_wrong"] == [0, 0, 3]
     assert not rec.core_state(st, 1, tag=0xBEEE)["magic_ok"]
@@ -160,10 +163,10 @@ HOST_CHECK = r"""
 #include "komorebi/device/km_command.hpp"
 
 static km_command_t make(
-    uint32_t seq, uint32_t handler, uint32_t first, uint32_t count
+    uint32_t sequence, uint32_t handler, uint32_t first, uint32_t count
 ) {
     km_command_t r = {};
-    r.seq = r.land1 = r.land2 = r.land3 = seq;
+    r.sequence = r.land1 = r.land2 = r.land3 = sequence;
     r.hdr = km::make_hdr(handler, 0, 0);
     r.group = km::make_group(first, count);
     return r;
@@ -186,8 +189,9 @@ int main() {
     std::printf(
         "{\"a\": [%d, %u, %d], \"b\": [%d, %u, %d], \"c\": [%d, %u, %d], "
         "\"d\": [%d, %u, %d], \"last1\": %u, \"last5\": %u, ",
-        a.pick, a.pick_seq, a.partial, b.pick, b.pick_seq, b.partial, c.pick,
-        c.pick_seq, c.partial, d.pick, d.pick_seq, d.partial, last[1], last[5]);
+        a.pick, a.pick_sequence, a.partial, b.pick, b.pick_sequence, b.partial, c.pick,
+        c.pick_sequence, c.partial, d.pick, d.pick_sequence, d.partial, last[1],
+        last[5]);
     std::printf(
         "\"newer\": [%d, %d, %d], \"in_group\": [%d, %d, %d], \"ack\": %u}\n",
         km::newer(1u, 0xFFFFFFFFu), km::newer(5u, 5u), km::newer(4u, 5u),
@@ -339,7 +343,7 @@ int main() {
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
 def test_excl_overlap_is_a_shared_core(tmp_path):
-    assert rec.K["KM_F_EXCL"] == 2  # flag bit 1; bit 0 stays reserved
+    assert rec.K["KM_FLAG_EXCLUSIVE"] == 2  # flag bit 1; bit 0 stays reserved
     src = tmp_path / "overlap.cpp"
     src.write_text(OVERLAP_CHECK)
     exe = tmp_path / "overlap"

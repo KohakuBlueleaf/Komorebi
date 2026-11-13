@@ -18,7 +18,7 @@ static uint32_t* lines(void) {
 /* Fills c field by field (a struct assignment may call memset, which does not link). */
 static void command(km_command_t* c, uint32_t handler, uint32_t a0, uint32_t a1) {
     const uint32_t* w = kmx_args_get()->words;
-    c->seq = c->land1 = c->land2 = c->land3 = 0;
+    c->sequence = c->land1 = c->land2 = c->land3 = 0;
     c->hdr = handler;
     c->group = 0 | (uint32_t)kmx_port_cores() << 16;
     c->a0 = a0;
@@ -65,7 +65,7 @@ static void collect(int cluster, int cpu, uint64_t arg) {
     int left = n;
     while (left > 0 && kmx_port_open()) {
         for (int i = 0; i < n; i++) {
-            kmx_msg m;
+            kmx_message m;
             if (mine[i] != 0xFFu && kmx_port_told(mine[i], &m) == KMX_OK) {
                 uint32_t* l = out + HP_LINE * mine[i];
                 l[at] = m.w[0];
@@ -105,13 +105,13 @@ static int run(
     uint32_t* dt
 ) {
     const uint64_t t0 = kmx_time(), until = t0 + FULL_TICKS;
-    kmx_event ev;
+    kmx_event event;
     int e;
     do {
-        e = p ? kmx_pull_run(c, p, &ev) : kmx_port_run(c, fn, arg, &ev);
+        e = p ? kmx_pull_run(c, p, &event) : kmx_port_run(c, fn, arg, &event);
     } while (e == KMX_FULL && kmx_time() < until && !kmx_stop_requested());
     *dt = (uint32_t)(kmx_time() - t0);
-    return e == KMX_OK && ev.kind != KM_EV_DONE ? KMX_LATE : e;
+    return e == KMX_OK && event.kind != KM_EVENT_DONE ? KMX_LATE : e;
 }
 
 int kmx_main(int cpu) {
@@ -132,7 +132,7 @@ int kmx_main(int cpu) {
     }
     const uint64_t ranges = ((uint64_t)w[HP_W_UNITS] + w[HP_W_PER] - 1) / w[HP_W_PER];
     uint32_t ticks[HP_KINDS] = {0, 0, 0, 0, 0};
-    if (kmx_par_all(clear, 0) != KMX_OK) {
+    if (kmx_parallel_all(clear, 0) != KMX_OK) {
         return CODE_LATE;
     }
     for (uint32_t k = 0; k < HP_KINDS; k++) {
@@ -154,7 +154,7 @@ int kmx_main(int cpu) {
             return e == KMX_BAD ? CODE_BAD : CODE_LATE;
         }
     }
-    if (kmx_par_all(flush_out, 0) != KMX_OK) {
+    if (kmx_parallel_all(flush_out, 0) != KMX_OK) {
         return CODE_LATE;
     }
     kmx_result(0, ticks, HP_KINDS);

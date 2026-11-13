@@ -13,7 +13,7 @@ has finished, the group's first core tells the dispatcher, which tells the host.
 | `LATE` (a test) | a0 rank, a1 cycles | rank a0 reports a1 cycles after it took the command; the others report at once |
 | `NOP` | none | reports |
 | `BAD_ITEM` (a test) | a0 rank, a1 side (0 writer, 1 reader) | rank a0 asks for an item that passes the end of its buffer and gives up with `bad_item`; the others report |
-| `RESULT` (a test) | a0 value | each core of the group gives a0 plus its index as the result word; with `KM_F_RESULT` the command is acknowledged with the leader's, a0 |
+| `RESULT` (a test) | a0 value | each core of the group gives a0 plus its index as the result word; with `KM_FLAG_RESULT` the command is acknowledged with the leader's, a0 |
 
 The host checks every core's tile against numpy: bit-exact on integer inputs (even
 jobs), and the relative RMS error of the total on uniform random inputs (odd jobs).

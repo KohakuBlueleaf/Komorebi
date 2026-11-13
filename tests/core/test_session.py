@@ -135,7 +135,7 @@ def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch
 
 def test_a_start_error_carries_the_kernels_result(card, tmp_path, monkeypatch):
     session, log, _ = card
-    monkeypatch.setattr(FakeDispatch, "boot_error", K["KMD_ERR_START"])
+    monkeypatch.setattr(FakeDispatch, "boot_error", K["KMD_ERROR_START"])
     with pytest.raises(StartError, match="error start") as caught:
         session.Session(device=object()).load(program(tmp_path))
     assert caught.value.result["error_name"] == "start"
@@ -189,8 +189,8 @@ def backend_over(session, log, tmp_path, monkeypatch):
     port = sess._module.Dispatch("dev", 1750)
     port.close()
     backend = sess._module.card_backend(sess, port, 1350, 0)
-    backend.ctl, backend.ctl_addr = "ctl", 0x20000
-    words = (K["KM_CTL_BYTES"] + 64) // 4
+    backend.control, backend.control_addr = "control", 0x20000
+    words = (K["KM_CONTROL_BYTES"] + 64) // 4
     rows = np.zeros((120, words), np.int64)
     monkeypatch.setattr(session, "_read_uint32", lambda t: rows)
     log.clear()
@@ -204,13 +204,13 @@ def test_the_host_writes_the_stop_flag_into_every_core_then_waits_with_a_timeout
     sess, backend = backend_over(session, log, tmp_path, monkeypatch)
     state, trace = backend.read_back(stop_grid=True)
     writes = [e for e in log if e[0] == "write_l1"]
-    stop = 0x20000 + K["KM_CTL_STOP"]
+    stop = 0x20000 + K["KM_CONTROL_STOP"]
     assert sorted((x, y) for _, _, x, y, _, _ in writes) == sorted(
         (x, y) for x in range(12) for y in range(10)
     )
     assert {(addr, tuple(w)) for _, _, _, _, addr, w in writes} == {(stop, (1,))}
     assert log[len(writes) :] == ["wait_grid", "synchronize"]
-    assert state.shape == (120, K["KM_CTL_BYTES"] // 4) and trace is None
+    assert state.shape == (120, K["KM_CONTROL_BYTES"] // 4) and trace is None
 
 
 def test_a_grid_that_does_not_return_raises_and_leaves_the_device_open(

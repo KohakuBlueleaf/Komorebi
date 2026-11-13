@@ -93,14 +93,14 @@ def spread(values):
 
 
 def summarize(loops):
-    """One config's figures from its loops, each {"us", "w", "peak_w", "temp_c",
-    "aiclk"}: the median time and the means of power and temperature."""
+    """One config's figures from its loops, each {"microseconds", "w", "peak_w",
+    "temp_c", "aiclk"}: the median time and the means of power and temperature."""
     watts = [x["w"] for x in loops if x["w"] is not None]
     temps = [x["temp_c"] for x in loops if x["temp_c"] is not None]
     clocks = [c for x in loops for c in x["aiclk"]]
     return {
-        "us_per_call": statistics.median(x["us"] for x in loops),
-        "us_per_loop": [x["us"] for x in loops],
+        "microseconds_per_call": statistics.median(x["microseconds"] for x in loops),
+        "microseconds_per_loop": [x["microseconds"] for x in loops],
         "mean_w": statistics.mean(watts) if watts else None,
         "w_per_loop": [x["w"] for x in loops],
         "peak_w": max((x["peak_w"] for x in loops if x["peak_w"]), default=None),
@@ -135,8 +135,10 @@ def measure(call, sync, card, loops=LOOPS, target_s=TARGET_S):
             seconds = time.perf_counter() - t0
             stop.set()
             sampler.join()
-            rows.append({"seconds": seconds, "us": seconds / n * 1e6, "aiclk": clock})
-            log(f"loop {i}: {rows[-1]['us']:.2f} us per call")
+            rows.append(
+                {"seconds": seconds, "microseconds": seconds / n * 1e6, "aiclk": clock}
+            )
+            log(f"loop {i}: {rows[-1]['microseconds']:.2f} us per call")
         meter.mark("after")
     for i, row in enumerate(rows):
         phase = meter.result.phases[f"loop{i}"]

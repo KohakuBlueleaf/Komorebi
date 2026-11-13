@@ -153,7 +153,7 @@ def loop(run, handler, args, reps, batch=512):
         n = min(batch, reps - len(us))
         handles = run.submit_many(handler, 0, run.cores, np.tile(args, (n, 1)))
         events = run.wait(list(handles), timeout=10.0 + n * 0.01)
-        us += [e.us for e in events]
+        us += [e.microseconds for e in events]
         if any(e.kind != "done" for e in events):
             break
     return np.array(us)

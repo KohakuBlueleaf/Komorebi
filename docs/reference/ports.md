@@ -53,7 +53,7 @@ if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
 | take | compute | `km::take`, `km::untake` | waits for the arrival buffer, reads slots by page index, pops it whole |
 
 - **Ports.** Every core has `KM_PORTS` (8) port slots of 16 bytes in its control block
-  at `KM_CTL_PORT`: the count senders increment, and the count a wait wants. Ports are
+  at `KM_CONTROL_PORT`: the count senders increment, and the count a wait wants. Ports are
   cleared at start-up and by the wait that consumed them. A sender counts the atomic's
   acknowledgement and never reads its returned value, so a lost answer
   ([atomic_answers](../../experiments/atomic_answers/)) cannot affect a port.
@@ -63,7 +63,7 @@ if (!km::reduce_result(wr, kCbOut, 1)) return false;  // then write the result
   runs the same program, so slot k has the same L1 address everywhere (taken from the
   buffer's configuration). It is always passed to compute whole, S pages pushed and S popped,
   so its addresses never drift.
-- **`KM_F_EXCL`.** A command that uses ports must carry it: two commands whose groups
+- **`KM_FLAG_EXCLUSIVE`.** A command that uses ports must carry it: two commands whose groups
   overlap are then never in flight together, so nothing of one command lands in the
   next one's slots or ports.
 
@@ -126,8 +126,8 @@ if (port.told(m)) { ... }    // the X280 core's newest tell, if newer; never wai
 | `wait_told(m)` | timed | the same, waiting for one; false: gave up (recorded) |
 | `tell(a, b, c)` | for the last store to leave | false: gave up (recorded) |
 | `ask(a, b, c)` | as `tell` | the ask's sequence number, 0: gave up |
-| `answered(seq, m)` | no | true and the answer to ask `seq`, if it landed |
-| `wait_answer(seq, m)` | timed | the same, waiting; false: gave up (recorded) |
+| `answered(sequence, m)` | no | true and the answer to ask `sequence`, if it landed |
+| `wait_answer(sequence, m)` | timed | the same, waiting; false: gave up (recorded) |
 | `call(a, b, c, m)` | timed | `ask`, then `wait_answer` |
 | `next(first)` | timed | the next range of a pull (`kmx_pull_run`): its count and `first`, 0 when none is left or a wait gave up (`pull_gave_up()`); asks for the range after it before returning |
 
@@ -136,7 +136,7 @@ than the other tells sees only the newest, and tells in between are lost. Ask an
 answer are paired by the sequence number, one ask outstanding at a time; between the
 first `next()` of a pull and the one that returns 0, that ask is the pull's.
 
-**On the wire.** The core's `KM_CTL_X280` area (64 bytes): the X280 core's tell at
+**On the wire.** The core's `KM_CONTROL_X280` area (64 bytes): the X280 core's tell at
 `KM_X280_TELL` (`+ 0x00`) and answer at `KM_X280_ANSWER` (`+ 0x10`), stored by the X280 core
 through its window; the core's out slot `KM_X280_OUT` (`+ 0x20`), the source of its
 writes; `KM_X280_TO` (`+ 0x30`): the X280 core's tile (`x | y << 16`) and the mailbox

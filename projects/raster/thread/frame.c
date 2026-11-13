@@ -63,7 +63,7 @@ static void merge_part(int core, void* arg) {
 
 /* Fills r field by field (a struct assignment may call memset, which does not link). */
 static void command(km_command_t* r, uint32_t handler, const frame_t* f) {
-    r->seq = r->land1 = r->land2 = r->land3 = 0;
+    r->sequence = r->land1 = r->land2 = r->land3 = 0;
     r->hdr = handler;
     r->group = f->w[RF_W_WORKERS] << 16;
     r->a0 = r->a1 = r->a2 = r->a3 = r->a4 = r->a6 = r->a7 = 0;
@@ -83,11 +83,11 @@ static uint32_t run(const km_command_t* r) {
     if (e != KMX_OK) {
         return RF_RING;
     }
-    kmx_event ev;
-    if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
+    kmx_event event;
+    if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &event) != KMX_OK) {
         return RF_RING;
     }
-    return ev.kind == KM_EV_DONE ? 0u : RF_COMMAND;
+    return event.kind == KM_EVENT_DONE ? 0u : RF_COMMAND;
 }
 
 static int finish(uint32_t code, frame_t* f) {
@@ -204,15 +204,15 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     p.cores = 1;
     p.workers = workers;
     p.wk = wk;
-    if (kmx_par(costs_part, &p) != KMX_OK) {
-        return RF_PAR;
+    if (kmx_parallel(costs_part, &p) != KMX_OK) {
+        return RF_PARALLEL;
     }
     const uint32_t nh = rm_pick(&wk->s, workers, wk->heavy, wk->bands);
     f->out[RF_O_HEAVY] = nh;
     if (nh > RF_HIST_MAX) {
         return RF_TOO_MANY_HEAVY;
     }
-    f->out[RF_O_HEAVY_US] += elapsed(&t);
+    f->out[RF_O_HEAVY_MICROSECONDS] += elapsed(&t);
     if (nh) {
         volatile uint32_t* hv = (volatile uint32_t*)reg[RF_R_HEAVY];
         hv[0] = nh;
@@ -260,8 +260,10 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     }
     f->out[RF_O_CUT] += elapsed(&t);
     p.ni = ni;
-    if (kmx_par(sort_part, &p) != KMX_OK || kmx_par(merge_part, &p) != KMX_OK) {
-        return RF_PAR;
+    if (
+        kmx_parallel(sort_part, &p) != KMX_OK || kmx_parallel(merge_part, &p) != KMX_OK
+    ) {
+        return RF_PARALLEL;
     }
     rm_merge(&wk->s, 0, ni / 2, ni);
     f->out[RF_O_SORT] += elapsed(&t);
@@ -313,7 +315,7 @@ static uint32_t frame_once(frame_t* f, work_t* wk, void* const* reg) {
     kmx_flush(RF_R_ITEMS);
     f->out[RF_O_GIVE] += elapsed(&t);
     f->out[RF_O_MIDDLE] = (
-        f->out[RF_O_TAKE] + f->out[RF_O_HEAVY_US] + f->out[RF_O_CUT] +
+        f->out[RF_O_TAKE] + f->out[RF_O_HEAVY_MICROSECONDS] + f->out[RF_O_CUT] +
         f->out[RF_O_SORT] + f->out[RF_O_ASSIGN] + f->out[RF_O_COMPACT] +
         f->out[RF_O_PAGES] + f->out[RF_O_GIVE]
     );

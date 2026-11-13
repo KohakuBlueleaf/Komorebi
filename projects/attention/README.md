@@ -38,7 +38,7 @@ the triangle's work spreads over the broadcast.
 | `score`, `merge` | `kernels/compute.cpp`, `kernels/sfpu.hpp` | Kohaku-TT's `ktt_flash` compute body: S = Q K^T into Dst with the row state, the row reference and the exponential on the vector unit, P V and the row sum in column groups accumulated in L1 (fp32), steps in pairs of rows; `km::broadcast_receive` / `broadcast_done` / `broadcast_end` around each block |
 | `write out[rows]` | `kernels/writer.cpp` (NoC1) | each finished row's DV tiles to O |
 
-One call is one `ATTEND` command on the group of every core, with `KM_F_EXCL` (a command
+One call is one `ATTEND` command on the group of every core, with `KM_FLAG_EXCLUSIVE` (a command
 with broadcasts is never in flight beside an overlapping group). A K / V block is one broadcast
 block: K's tiles head-dim-major `[DT][KB]`, then V's key-major `[KB][DV]`, two blocks
 in flight per broadcast. The broadcasts and their senders come from `komorebi.layout.broadcast_args`

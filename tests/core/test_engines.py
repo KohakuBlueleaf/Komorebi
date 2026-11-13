@@ -67,12 +67,14 @@ class EngineKernel(FakePort):
     def run(self, cmd, words):
         a0, a1, form, bind, n = (words[i] for i in (3, 5, 6, 7, 9))
         if self.reject:
-            self._event(cmd, K["KM_EV_REJECTED"], aux=self.reject)
+            self._event(cmd, K["KM_EVENT_REJECTED"], auxiliary=self.reject)
             self.reject = 0
             return
-        if form == K["KM_GRUN_KEPT"]:
+        if form == K["KM_GRAPH_RUN_KEPT"]:
             if a0 not in self.kept:
-                self._event(cmd, K["KM_EV_REJECTED"], aux=K["KMD_REJECT_UNKNOWN"])
+                self._event(
+                    cmd, K["KM_EVENT_REJECTED"], auxiliary=K["KMD_REJECT_UNKNOWN"]
+                )
                 return
             a0, a1 = self.kept[a0]
         data = bytes(self.region[a0 : a0 + a1])
@@ -85,28 +87,30 @@ class EngineKernel(FakePort):
             ticks = [e.extra for e in sim.events]
             if sim.kept:
                 self.kept[sim.events[0].req] = (a0, a1)
-        self.seq += len(sim.commands)  # an engine's commands take sequence numbers
+        self.sequence += len(sim.commands)  # an engine's commands take sequence numbers
         at = AT["stream" if form == 0 else "graph"]
         req = sim.events[0].req if sim.events else struct.unpack_from("<I", data, at)[0]
         if sim.status == "stuck":
             self.running[req] = K[
-                "KM_EV_STREAM_ERROR" if form == 0 else "KM_EV_GRAPH_ERROR"
+                "KM_EVENT_STREAM_ERROR" if form == 0 else "KM_EVENT_GRAPH_ERROR"
             ]
             return
         for e, t in zip(sim.events, ticks):
-            self._event(e.req, e.kind, aux=e.aux, ticks=t)
+            self._event(e.req, e.kind, auxiliary=e.auxiliary, ticks=t)
 
     def cancel(self, cmd, words):
         req = words[3]
         if self.deaf:
             return
         if req in self.running:
-            self._event(req, self.running.pop(req), aux=K["KM_SERR_CANCELLED"])
+            self._event(
+                req, self.running.pop(req), auxiliary=K["KM_STREAM_ERROR_CANCELLED"]
+            )
         elif self.kept.pop(req, None):
-            no_node = K["KM_SERR_CANCELLED"] | K["KM_GRAPH_NO_NODE"] << 8
-            self._event(req, K["KM_EV_GRAPH_ERROR"], aux=no_node)
+            no_node = K["KM_STREAM_ERROR_CANCELLED"] | K["KM_GRAPH_NO_NODE"] << 8
+            self._event(req, K["KM_EVENT_GRAPH_ERROR"], auxiliary=no_node)
         else:
-            self._event(cmd, K["KM_EV_REJECTED"], aux=K["KMD_REJECT_UNKNOWN"])
+            self._event(cmd, K["KM_EVENT_REJECTED"], auxiliary=K["KMD_REJECT_UNKNOWN"])
 
 
 def make_run():
@@ -117,7 +121,7 @@ def make_run():
 def sum_stream(req=7, n=8):
     """n commands with result words one at a time on groups of 8; HALT their sum."""
     s = st.Stream(req=req)
-    i, acc, got = s.regs(3)
+    i, acc, got = s.registers(3)
     top = s.label()
     s.submit(1, (0, 8), args=[i], result=True)
     s.wait(0)
@@ -132,7 +136,7 @@ def sum_stream(req=7, n=8):
 def two_branches(keep=False):
     """Two branches on disjoint halves, then register 0 = the result word + 5."""
     g = gr.Graph(req=9, keep=keep)
-    it, r = g.bindings("it"), g.reg()
+    it, r = g.bindings("it"), g.register()
     a = g.command(1, group=(0, 60), args=[it])
     b = g.command(1, group=(0, 30), args=[it], after=[a])
     c = g.command(1, group=(30, 30), args=[it], after=[a], result=r)
@@ -163,16 +167,18 @@ def test_a_stream_ends_with_its_halt_status_beside_host_commands():
     s = sum_stream()
     command = run.submit(0, (0, 8))
     t = run.start(run.upload(s))
-    ev = run.wait_engine(t, timeout=1.0)
-    assert ev.kind == "end" and ev.value == s.simulate(result=leader_a0).halt == 84
-    assert run.wait(command).kind == "done" and t.events == [ev]
+    event = run.wait_engine(t, timeout=1.0)
+    assert (
+        event.kind == "end" and event.value == s.simulate(result=leader_a0).halt == 84
+    )
+    assert run.wait(command).kind == "done" and t.events == [event]
     assert t.upload.state == "idle"
 
 
 def test_an_error_names_the_reason_and_the_pc_or_the_node():
     run, _ = make_run()
     s = st.Stream(req=3)
-    x = s.regs(1)[0]
+    x = s.registers(1)[0]
     s.set(x, 4)
     s.mod(x, x, s.const(0))
     s.halt(x)
@@ -182,7 +188,7 @@ def test_an_error_names_the_reason_and_the_pc_or_the_node():
     g = gr.Graph(req=4)
     g.join()
     cpu = g.cpu(after=[g.nodes[0]])
-    r = g.reg()
+    r = g.register()
     cpu.mod(r, r, r)
     with pytest.raises(EngineError) as err:
         run.wait_engine(run.start(run.upload(g)), timeout=1.0)
@@ -208,10 +214,10 @@ def test_a_kept_graph_runs_again_with_other_bindings_then_is_dropped():
     g = two_branches(keep=True)
     up = run.upload(g)
     first = run.wait_engine(run.start(up, {"it": 2}), timeout=1.0)
-    assert first.regs == (7, 2) and up.state == "kept"
+    assert first.registers == (7, 2) and up.state == "kept"
     again = run.wait_engine(run.restart(9, {"it": 40}), timeout=1.0)
-    want = g.simulate({"it": 40}, result=leader_a0).regs
-    assert again.regs == (want[0] & 0xFFFFFF, want[1]) == (45, 40)
+    want = g.simulate({"it": 40}, result=leader_a0).registers
+    assert again.registers == (want[0] & 0xFFFFFF, want[1]) == (45, 40)
     run.release(up)
     assert port.kept == {} and run.upload(sum_stream()).offset == 0
 
@@ -282,7 +288,7 @@ def test_host_commands_after_an_engine_have_the_kernels_sequence_numbers():
     after = run.submit(0, (8, 8))
     run.wait([before, after])
     assert port.submitted[-1][1] == 10  # 8 were the stream's
-    assert run.seq(before) == 1 and run.seq(after) == 10
+    assert run.sequence(before) == 1 and run.sequence(after) == 10
     run.stop()
     assert run.trace().command(before) is not None
     assert run.trace().command(after).shape == (8, 4)
@@ -297,6 +303,6 @@ def test_a_stream_host_fed_submits_the_simulated_commands_and_ends_alike():
     assert got.status == "ended" and got.events[-1].extra == want.halt == 84
     groups = [(r.first, r.count, r.args) for r in want.commands]
     assert [(r.first, r.count, r.args) for r in got.commands] == groups
-    assert [(e.kind, e.aux) for e in got.events] == [
-        (e.kind, e.aux) for e in want.events
+    assert [(e.kind, e.auxiliary) for e in got.events] == [
+        (e.kind, e.auxiliary) for e in want.events
     ]

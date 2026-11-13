@@ -123,7 +123,7 @@ def launch(runner, args, jobs, inputs, out, stall=-1, stall_rank=NONE):
             args.part,
         ]
         commands.append(
-            rec.command(M["kHandlerMerge"], first, count, words, K["KM_F_EXCL"])
+            rec.command(M["kHandlerMerge"], first, count, words, K["KM_FLAG_EXCLUSIVE"])
         )
     return runner.run(
         kernels(inputs[0], out),
@@ -255,7 +255,7 @@ def run(session, args, rng):
         "part": args.part,
         "form": args.form,
         "aiclk_mhz": res.mhz,
-        "us_per_job": round(
+        "microseconds_per_job": round(
             res.summary["span_cycles"] / res.mhz / max(res.summary["done"], 1), 3
         ),
         **summary(res, jobs),

@@ -1,5 +1,5 @@
 // _collision_x280: the landing experiment's host module under another name, starting
-// x280/command_seq.c, plus Plan.translated(x, y) for the broadcast rectangles.
+// x280/command_sequence.c, plus Plan.translated(x, y) for the broadcast rectangles.
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/shared_ptr.h>
@@ -30,7 +30,7 @@ namespace {
         return *static_cast<std::shared_ptr<MeshDevice>*>(device.data());
     }
 
-    // Must match landing_args_t in x280/command_seq.c.
+    // Must match landing_args_t in x280/command_sequence.c.
     struct LandingArgs {
         uint64_t run_value, mailbox, acks, n, k, nrect;
         uint32_t rect[2][4];
@@ -85,12 +85,12 @@ namespace {
         std::string image;
         uint32_t proto = 0;
 
-        x280::SessionId start(uint64_t n_commands) {
+        x280::SessionId start(uint64_t command_count) {
             run = (
                 0x6c616e6400000000ull ^
                 (static_cast<uint64_t>(std::random_device{}()) << 8)
             ) +
-                n_commands;
+                command_count;
             tag = ((std::random_device{}() ^ static_cast<uint32_t>(run)) & 0xFFFFu) |
                 1u;
             tile->write_available_lim(mailbox, std::vector<uint8_t>(64, 0));
@@ -99,7 +99,7 @@ namespace {
             a.run_value = run;
             a.mailbox = mailbox;
             a.acks = acks;
-            a.n = n_commands;
+            a.n = command_count;
             a.k = gx;
             a.nrect = panels.size();
             for (size_t r = 0; r < panels.size(); r++) {
@@ -180,7 +180,7 @@ NB_MODULE(_collision_x280, m) {
         .def("aiclk_mhz", &Plan::aiclk_mhz)
         .def("translated", &Plan::translated, nb::arg("x"), nb::arg("y"))
         .def("worker_args", &Plan::worker_args, nb::arg("x"), nb::arg("y"))
-        .def("start", &Plan::start, nb::arg("n_commands"))
+        .def("start", &Plan::start, nb::arg("command_count"))
         .def(
             "finish",
             [](Plan& p, const x280::SessionId& session, double timeout_s) {

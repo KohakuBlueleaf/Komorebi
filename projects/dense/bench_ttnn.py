@@ -79,19 +79,19 @@ def swiglu_call(route, tx, w1, w3, w2, cfg):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--op", choices=("matmul", "swiglu"), required=True)
+    p.add_argument("--operation", choices=("matmul", "swiglu"), required=True)
     p.add_argument("--shape", required=True)
     p.add_argument("--configs", nargs="*", default=list(CONFIGS), choices=CONFIGS)
     p.add_argument("--loops", type=int, default=tr.LOOPS)
     p.add_argument("--target", type=float, default=tr.TARGET_S)
     p.add_argument("--json", default=None)
     args = p.parse_args()
-    swiglu = args.op == "swiglu"
+    swiglu = args.operation == "swiglu"
     shapes = sp.SHAPES if swiglu else pl.SHAPES
     if args.shape not in shapes:
         p.error(f"--shape: one of {', '.join(shapes)}")
     m, k, n = shapes[args.shape]
-    out = {"op": args.op, "shape": args.shape, "m": m, "k": k, "n": n}
+    out = {"op": args.operation, "shape": args.shape, "m": m, "k": k, "n": n}
     out["command"] = tr.command(sys.argv)
     with tr.heartbeat("building the inputs"):
         if swiglu:
@@ -145,7 +145,8 @@ def main():
                 with tr.heartbeat("check"):
                     got = read_rows(y, rows)
                     res["check"] = ref.errors(got, want)
-                tr.log(f"{key}: {res['us_per_call']:.2f} us, check {res['check']}")
+                microseconds = res["microseconds_per_call"]
+                tr.log(f"{key}: {microseconds:.2f} us, check {res['check']}")
                 out["results"][key] = res
         out["program_cache_entries"] = dev.num_program_cache_entries()
     finally:

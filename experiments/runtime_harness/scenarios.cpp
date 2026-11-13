@@ -71,7 +71,7 @@ namespace {
         sp = &s;
         s.run();
         common(s, o.check);
-        silent_from(s, o.check, 1, s.jobs[0].seq);
+        silent_from(s, o.check, 1, s.jobs[0].sequence);
         o.check.expect(
             s.jobs[0].status != kDone, "the command without output is not acked"
         );
@@ -100,7 +100,7 @@ namespace {
         sp = &s;
         s.run();
         common(s, o.check);
-        silent_from(s, o.check, 0, s.jobs[0].seq);
+        silent_from(s, o.check, 0, s.jobs[0].sequence);
         o.check.expect(s.jobs[0].status != kDone, "the command is not acknowledged");
         o.check.expect(s.state(0, km::kStWriter) != 0, "the leader recorded a give-up");
         finish(s, o);
@@ -126,7 +126,7 @@ namespace {
         sp = &s;
         s.run();
         common(s, o.check);
-        silent_from(s, o.check, 1, s.jobs[0].seq);
+        silent_from(s, o.check, 1, s.jobs[0].sequence);
         o.check.expect(s.jobs[0].status != kDone, "the short-fed command is not acked");
         o.check.expect(
             s.state(1, km::kStReader) != 0, "core 1's reader recorded a give-up"
@@ -196,7 +196,7 @@ namespace {
         common(s, o.check);
         for (const Event& e : s.events) {
             o.check.expect(
-                e.kind != kEvTake || e.a != s.jobs[0].seq,
+                e.kind != kEventTake || e.a != s.jobs[0].sequence,
                 fmt("core %u ran the command with slot field 20", e.core)
             );
         }
@@ -215,7 +215,7 @@ namespace {
         common(s, o.check);
         for (const Event& e : s.events) {
             o.check.expect(
-                e.kind != kEvTake || e.a != s.jobs[0].seq,
+                e.kind != kEventTake || e.a != s.jobs[0].sequence,
                 fmt("core %u ran a command whose slot field is not its slot", e.core)
             );
         }
@@ -232,8 +232,8 @@ namespace {
         cfg.idle_limit = 4096;
         cfg.deadline = 400000;
         cfg.timeout = 1ull << 26;
-        cfg.first_seq = 0x100;
-        cfg.next_seq = [](uint32_t s) -> uint32_t {
+        cfg.first_sequence = 0x100;
+        cfg.next_sequence = [](uint32_t s) -> uint32_t {
             if (s == 0x103) {
                 return 0x70000000u;
             }
@@ -255,7 +255,7 @@ namespace {
         o.check.expect(all_done(s), "every command and the EXIT acknowledged");
         bool wrapped = false;
         for (size_t k = 1; k < s.jobs.size(); k++) {
-            wrapped = wrapped || s.jobs[k].seq < s.jobs[k - 1].seq;
+            wrapped = wrapped || s.jobs[k].sequence < s.jobs[k - 1].sequence;
         }
         o.check.expect(wrapped, "the sequence wrapped during the run");
         finish(s, o);
@@ -276,12 +276,13 @@ namespace {
         o.check.expect(all_done(s), "every command and the EXIT acknowledged");
         std::vector<uint32_t> order;
         for (const Event& e : s.events) {
-            if (e.kind == kEvTake && e.core == 1) {
+            if (e.kind == kEventTake && e.core == 1) {
                 order.push_back(e.a);
             }
         }
         o.check.expect(
-            order.size() >= 2 && order[0] == s.jobs[0].seq && order[1] == s.jobs[1].seq,
+            order.size() >= 2 && order[0] == s.jobs[0].sequence &&
+                order[1] == s.jobs[1].sequence,
             "core 1 ran the smaller sequence first"
         );
         o.check.expect(
@@ -403,7 +404,7 @@ namespace {
         }
         for (const Event& e : s.events) {
             o.check.expect(
-                e.kind != kEvTake || e.a != s.jobs[1].seq,
+                e.kind != kEventTake || e.a != s.jobs[1].sequence,
                 fmt("core %u ran a command after its idle give-up", e.core)
             );
         }
@@ -459,7 +460,7 @@ namespace {
 
     // Unpack is held after its "ok" for a token and before the sequence, and the stop
     // word is set there: math and pack wait for the sequence, then all leave.
-    void mb_stop_between_ok_and_seq(Outcome& o) {
+    void mb_stop_between_ok_and_sequence(Outcome& o) {
         mailbox_case(o, [](Config& cfg, Sim*& sp, bool& fired, Check&, bool after) {
             if (after) {
                 return;
@@ -539,7 +540,7 @@ namespace {
             if (after) {
                 c.expect(!sp->jobs.empty(), "the grid started");
                 if (!sp->jobs.empty()) {
-                    silent_from(*sp, c, 1, sp->jobs[0].seq);
+                    silent_from(*sp, c, 1, sp->jobs[0].sequence);
                 }
                 return;
             }
@@ -695,7 +696,7 @@ int main(int argc, char** argv) {
             {"dropped_chunk_times_out", dropped_chunk_times_out},
             {"idle_zero_means_no_limit", idle_zero_means_no_limit},
             {"idle_expiry_is_a_give_up", idle_expiry_is_a_give_up},
-            {"mb_stop_between_ok_and_seq", mb_stop_between_ok_and_seq},
+            {"mb_stop_between_ok_and_sequence", mb_stop_between_ok_and_sequence},
             {"mb_math_held_while_unpack_aborts", mb_math_held_while_unpack_aborts},
             {
                 "mb_pack_held_while_input_wait_aborts",
@@ -708,6 +709,6 @@ int main(int argc, char** argv) {
             {"random_jobs", random_jobs},
         }
     );
-    cases.insert(cases.end(), dyn_cases().begin(), dyn_cases().end());
+    cases.insert(cases.end(), messages_cases().begin(), messages_cases().end());
     return run_cases(cases, argc, argv);
 }

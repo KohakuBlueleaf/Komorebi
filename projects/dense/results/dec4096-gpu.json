@@ -13,9 +13,9 @@
    "synced_ms_min": 0.11981,
    "reps_n": 32825,
    "loop_ms": 3618.3357,
-   "us_per_call": 110.2311,
+   "microseconds_per_call": 110.2311,
    "tflops": 9.741,
-   "sample_max_err_over_max": 3.2e-07,
+   "sample_max_error_over_max": 3.2e-07,
    "power": {
     "seconds_per_frame": 0.00011023109520182789,
     "cpu_package_joules_per_frame": null,
@@ -41,9 +41,9 @@
    "synced_ms_min": 0.08397,
    "reps_n": 47063,
    "loop_ms": 3644.4539,
-   "us_per_call": 77.4378,
+   "microseconds_per_call": 77.4378,
    "tflops": 13.866,
-   "sample_max_err_over_max": 0.00037,
+   "sample_max_error_over_max": 0.00037,
    "power": {
     "seconds_per_frame": 7.743777277266643e-05,
     "cpu_package_joules_per_frame": null,

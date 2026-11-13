@@ -1,5 +1,5 @@
-/* One cluster: kmx_spawn and kmx_join with their rejections, kmx_par beside a busy
- * core, kmx_par_all with no other cluster, a kmx_push into the thread's own bank. */
+/* One cluster: kmx_spawn and kmx_join with their rejections, kmx_parallel beside a busy
+ * core, kmx_parallel_all with no other cluster, a kmx_push into its own bank. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -31,7 +31,7 @@ int kmx_main(int core) {
     uint32_t n = 0;
     w[n++] = (uint32_t)kmx_spawn(1, wait_go, 0); /* OK */
     w[n++] = (uint32_t)kmx_spawn(1, mark, 0);    /* FULL: core 1 is busy */
-    w[n++] = (uint32_t)kmx_par(mark, 0);         /* FULL */
+    w[n++] = (uint32_t)kmx_parallel(mark, 0);    /* FULL */
     w[n++] = (uint32_t)kmx_spawn(0, mark, 0);    /* BAD */
     w[n++] = (uint32_t)kmx_join(4);              /* BAD */
     g_go = 1;
@@ -43,12 +43,12 @@ int kmx_main(int core) {
     w[n++] = (uint32_t)kmx_join(3);
     w[n++] = g_mark[2][0]; /* 202 */
     w[n++] = g_mark[3][0]; /* 303 */
-    w[n++] = (uint32_t)kmx_par(mark, (void*)400);
+    w[n++] = (uint32_t)kmx_parallel(mark, (void*)400);
     w[n++] = g_mark[0][0] + g_mark[1][0] + g_mark[2][0] + g_mark[3][0]; /* 1606 */
     w[n++] = kmx_clusters();                                            /* 2 */
     w[n++] = (uint32_t)kmx_lead();                                      /* 1 */
     w[n++] = (uint32_t)kmx_serve();                                     /* NONE */
-    w[n++] = (uint32_t)kmx_par_all(mark_all, 500);
+    w[n++] = (uint32_t)kmx_parallel_all(mark_all, 500);
     w[n++] = g_mark[0][0] + g_mark[3][0]; /* 510 + 513 */
     for (uint32_t i = 0; i < 1024; i++) {
         g_src[i] = i * 2654435761u + 7u;

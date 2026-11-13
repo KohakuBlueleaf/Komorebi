@@ -40,7 +40,7 @@ namespace kmsim {
 
     // The command the calling kernel works on, for violation reports (the stub also
     // takes it from the tokens; only a case's own kernels need to say it).
-    void note_command(uint32_t seq);
+    void note_command(uint32_t sequence);
 
     // The buffer as the kernel APIs' local interface shows it, and the two counter
     // registers (pages pushed, pages popped) as words in the core's L1 image.

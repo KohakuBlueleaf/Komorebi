@@ -45,7 +45,7 @@ namespace kmsim {
     }
 
     uint32_t Sim::Impl::submit(const Job& job, int32_t k, uint32_t j) {
-        const uint32_t s = next_seq();
+        const uint32_t s = next_sequence();
         uint32_t w[16] = {};
         w[0] = w[4] = w[8] = w[12] = s;
         w[1] = (
@@ -61,7 +61,7 @@ namespace kmsim {
                 n,
                 self,
                 c,
-                kCtlOff + KM_CTL_RING + j * 64,
+                kControlOff + KM_CONTROL_RING + j * 64,
                 reinterpret_cast<const uint8_t*>(w),
                 64,
                 k,
@@ -96,7 +96,7 @@ namespace kmsim {
     bool Sim::Impl::held(
         const std::vector<Job>& jobs, size_t k, const int32_t* busy, uint32_t d
     ) {
-        if ((jobs[k].flags & KM_F_EXCL) == 0) {
+        if ((jobs[k].flags & KM_FLAG_EXCLUSIVE) == 0) {
             return false;
         }
         const uint32_t group = km::make_group(jobs[k].first, jobs[k].count);
@@ -140,7 +140,7 @@ namespace kmsim {
                     continue;
                 }
                 JobResult& r = sim.jobs[busy[j]];
-                if (disp_word(kDispAck + j * 16) == KM_ACK(r.seq)) {
+                if (disp_word(kDispAck + j * 16) == KM_ACK(r.sequence)) {
                     r.acked = clock;
                     r.result = disp_word(kDispAck + j * 16 + 4);
                     r.status = kDone;
@@ -156,8 +156,8 @@ namespace kmsim {
                     return;
                 }
             }
-            dyn_watch(jobs);
-            if (sim.dyn.gave != 0) {
+            messages_watch(jobs);
+            if (sim.messages.gave != 0) {
                 return;
             }
             const uint64_t last = next ? sim.jobs[next - 1].submitted : 0;
@@ -178,8 +178,8 @@ namespace kmsim {
                     r.slot = j;
                     r.submitted = clock;
                     r.status = kSubmitted;
-                    r.seq = submit(job, static_cast<int32_t>(next), j);
-                    dyn_submitted(job, next, r.seq);
+                    r.sequence = submit(job, static_cast<int32_t>(next), j);
+                    messages_submitted(job, next, r.sequence);
                     busy[j] = static_cast<int32_t>(next);
                     next++;
                 }
@@ -197,9 +197,9 @@ namespace kmsim {
         r.slot = 0;
         r.submitted = clock;
         r.status = kSubmitted;
-        r.seq = submit(x, -1, 0);
+        r.sequence = submit(x, -1, 0);
         for (;;) {
-            if (disp_word(kDispAck) == KM_ACK(r.seq)) {
+            if (disp_word(kDispAck) == KM_ACK(r.sequence)) {
                 r.acked = clock;
                 r.status = kDone;
                 return;
@@ -269,10 +269,10 @@ namespace kmsim {
             const uint32_t leader = c / cfg.row * cfg.row;
             const uint32_t row_end = leader + cfg.row < n ? leader + cfg.row : n;
             km::Args a = {};
-            a.ctl = s.base + kCtlOff;
+            a.control = s.base + kControlOff;
             a.me = c;
             a.cores = kDramTable;
-            a.disp_xy = d.x | d.y << 16;
+            a.dispatcher_coordinates = d.x | d.y << 16;
             a.ack_base = d.base + kDispAck;
             a.mailbox = c == 0 ? d.base + kDispMailbox : 0;
             a.leader = leader;
@@ -286,9 +286,9 @@ namespace kmsim {
             a.idle_limit = cfg.idle_limit;
             a.row = cfg.tree_row;
             a.workers = n;
-            const uint32_t* f = &a.ctl;
+            const uint32_t* f = &a.control;
             s.args.assign(f, f + km::kArgs);
-            s.compute_args = {a.ctl, a.me, a.wait_limit, a.idle_limit};
+            s.compute_args = {a.control, a.me, a.wait_limit, a.idle_limit};
             if (cfg.program_args) {
                 cfg.program_args(c, s.args, s.compute_args);
             }

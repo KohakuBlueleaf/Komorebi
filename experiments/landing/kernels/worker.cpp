@@ -1,5 +1,5 @@
-// Landing experiment: the kernel on every core; for seq = 1..n it waits for command
-// seq (protocol A, or B with PROTO_B), verifies its payload, counts and completes it.
+// Landing kernel on every core: for sequence = 1..n it waits for command sequence
+// (protocol A, or B with PROTO_B), checks its payload, counts, completes it.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -25,16 +25,18 @@ namespace {
         );
     }
 
-    // Index of the first payload word of `rec` that is not command seq's, or 16 if all
-    // match. Protocol A's echo words are not payload.
-    uint32_t first_bad(volatile tt_l1_ptr uint32_t* rec, uint32_t seq, uint32_t tag) {
+    // Index of the first payload word of `rec` that is not command sequence's, or 16 if
+    // all match. Protocol A's echo words are not payload.
+    uint32_t first_bad(
+        volatile tt_l1_ptr uint32_t* rec, uint32_t sequence, uint32_t tag
+    ) {
         for (uint32_t w = 0; w < 16; w++) {
 #ifndef PROTO_B
             if ((w & 3u) == 0) {
                 continue;
             }
 #endif
-            if (rec[w] != landing_word(seq, w, tag)) {
+            if (rec[w] != landing_word(sequence, w, tag)) {
                 return w;
             }
         }
@@ -54,16 +56,16 @@ void kernel_main() {
 
     // L1 survives processes: clear the command slots and the sequence word before the
     // check-in, so nothing from an earlier run is accepted.
-    volatile tt_l1_ptr uint32_t* ctl = words(get_write_ptr(ttx::kCtlCb));
+    volatile tt_l1_ptr uint32_t* control = words(get_write_ptr(ttx::kControlCb));
     for (uint32_t w = 0; w < LANDING_SLOTS * LANDING_SLOT_BYTES / 4; w++) {
-        ctl[w] = 0;
+        control[w] = 0;
     }
-    volatile tt_l1_ptr uint32_t* seq_word = ctl + LANDING_SEQ_OFF / 4;
-    *seq_word = 0;
+    volatile tt_l1_ptr uint32_t* sequence_word = control + LANDING_SEQUENCE_OFF / 4;
+    *sequence_word = 0;
 
-    uint32_t accepted = 0, torn = 0, early = 0, torn_seq = 0, torn_word = 0;
-    uint32_t torn_value = 0, healed = 0, heal_polls = 0, lost = 0, lost_seq = 0;
-    uint32_t check_max = 0, check_min = 0xFFFFFFFFu, checks = 0, last_seq = 0;
+    uint32_t accepted = 0, torn = 0, early = 0, torn_sequence = 0, torn_word = 0;
+    uint32_t torn_value = 0, healed = 0, heal_polls = 0, lost = 0, lost_sequence = 0;
+    uint32_t check_max = 0, check_min = 0xFFFFFFFFu, checks = 0, last_sequence = 0;
     uint64_t idle = 0, check_sum = 0;
     const uint32_t s0 = wall();
     const uint32_t marker_cost = wall() - s0;
@@ -71,10 +73,10 @@ void kernel_main() {
     ttx::Worker worker(disp);
     worker.start();
 
-    for (uint32_t seq = 1; seq <= n; seq++) {
-        const uint32_t slot = depth > 1 ? seq % depth : 0;
-        volatile tt_l1_ptr uint32_t* rec = ctl + slot * (LANDING_SLOT_BYTES / 4);
-        [[maybe_unused]] const uint32_t echo = landing_echo(seq, tag);
+    for (uint32_t sequence = 1; sequence <= n; sequence++) {
+        const uint32_t slot = depth > 1 ? sequence % depth : 0;
+        volatile tt_l1_ptr uint32_t* rec = control + slot * (LANDING_SLOT_BYTES / 4);
+        [[maybe_unused]] const uint32_t echo = landing_echo(sequence, tag);
         bool ok = false;
         for (uint32_t spins = 0; spins < kSpinLimit; spins++) {
 #ifdef TIMESTAMP
@@ -82,11 +84,11 @@ void kernel_main() {
 #endif
             invalidate_l1_cache();
 #ifdef PROTO_B
-            const uint32_t v = *seq_word;
+            const uint32_t v = *sequence_word;
             ok = (
                 (v >> 16) == tag &&
                 static_cast<int16_t>(
-                    static_cast<uint16_t>(v) - static_cast<uint16_t>(seq)
+                    static_cast<uint16_t>(v) - static_cast<uint16_t>(sequence)
                 ) >= 0
             );
 #else
@@ -115,17 +117,17 @@ void kernel_main() {
             idle++;
         }
         if (!ok) {
-            // Never accepted: count it and complete the last seq at once, so the
+            // Never accepted: count it and complete the last sequence at once, so the
             // leaders and the X280 finish instead of waiting for this core.
             lost++;
-            lost_seq = seq;
+            lost_sequence = sequence;
             worker.complete(n);
             break;
         }
-        const uint32_t bad = first_bad(rec, seq, tag);
+        const uint32_t bad = first_bad(rec, sequence, tag);
         if (bad < 16) {
             if (torn == 0) {
-                torn_seq = seq;
+                torn_sequence = sequence;
                 torn_word = bad;
                 torn_value = rec[bad];
             }
@@ -133,7 +135,7 @@ void kernel_main() {
             // Diagnosis only (the command stays counted as torn): does it verify later?
             for (uint32_t k = 1; k <= kHealLimit; k++) {
                 invalidate_l1_cache();
-                if (first_bad(rec, seq, tag) == 16) {
+                if (first_bad(rec, sequence, tag) == 16) {
                     healed++;
                     heal_polls = k > heal_polls ? k : heal_polls;
                     break;
@@ -141,12 +143,12 @@ void kernel_main() {
             }
         }
         accepted++;
-        if (!worker.complete(seq)) {
+        if (!worker.complete(sequence)) {
             lost++;
-            lost_seq = seq;
+            lost_sequence = sequence;
             break;
         }
-        last_seq = seq;
+        last_sequence = sequence;
     }
 
     volatile tt_l1_ptr uint32_t* c = words(get_write_ptr(kCntCb));
@@ -163,16 +165,16 @@ void kernel_main() {
     c[LC_CHECK_MAX] = check_max;
     c[LC_CHECK_MIN] = checks ? check_min : 0;
     c[LC_CHECKS] = checks;
-    c[LC_TORN_SEQ] = torn_seq;
+    c[LC_TORN_SEQUENCE] = torn_sequence;
     c[LC_TORN_WORD] = torn_word;
     c[LC_TORN_VALUE] = torn_value;
     c[LC_HEALED] = healed;
     c[LC_HEAL_POLLS] = heal_polls;
     c[LC_LOST] = lost;
-    c[LC_LOST_SEQ] = lost_seq;
+    c[LC_LOST_SEQUENCE] = lost_sequence;
     c[LC_MARKER_COST] = marker_cost;
     c[LC_TAG] = tag;
-    c[LC_LAST_SEQ] = last_seq;
+    c[LC_LAST_SEQUENCE] = last_sequence;
     c[LC_MAGIC] = LANDING_MAGIC | me;
     const InterleavedAddrGen<true> dst = {
         .bank_base_address = cnt_dram, .page_size = LC_WORDS * 4

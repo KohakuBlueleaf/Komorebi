@@ -421,7 +421,7 @@ namespace walk {
                 load_packet(in, pk, 0, best0);
                 st[kSetup] += c.lap();
                 if (!form_a_packet(table, scratch, node, p[2] == 0, st)) {
-                    err |= probe::kErrLoop;
+                    err |= probe::kErrorLoop;
                 }
                 tensix_sync();
                 Clock c2;

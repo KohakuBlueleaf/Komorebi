@@ -101,7 +101,7 @@ CARDS = [
         "m",
         "dash",
         [
-            ("km::Dyn messages(compute, command);", 0),
+            ("km::Messages messages(compute, command);", 0),
             ("messages.send(rank, message);", 1),
             ("messages.forward(next_core, message);", 1),
             ("messages.consume();", 0),
@@ -125,7 +125,7 @@ CARDS = [
         "box",
         [
             ("int error = kmx_submit(command, &handle);", 1),
-            ("kmx_par(sort_partition, &partitions);", 0),
+            ("kmx_parallel(sort_partition, &partitions);", 0),
             ("...", 2),
             ("error = kmx_pull_run(command, &pull, &event);", 1),
         ],
@@ -145,8 +145,8 @@ PASSES = [
     ("SETUP", 5060, True, 1),
     ("FILL", 2108, True, 1),
 ]
-FRAME_US = 12125
-V100_US = 4420
+FRAME_MICROSECONDS = 12125
+V100_MICROSECONDS = 4420
 
 PICTURES = [
     ("raster-sponza", "Sponza, rasterized", "7.2 ms · 0.32× V100"),
@@ -349,7 +349,7 @@ def timeline(s, x, y, w):
     label, pre, post = 118, 48, 48
     x0 = x + label + pre + 6
     span = w - label - pre - post - 12
-    scale = span / FRAME_US
+    scale = span / FRAME_MICROSECONDS
     lane = 26
     names = ["host", "X280 thread", "dispatcher", "Tensix cores"]
     ys = [y, y + 44, y + 106, y + 150]
@@ -416,9 +416,13 @@ def timeline(s, x, y, w):
     # the reference's whole frame, at the same scale
     vy = ys[3] + lane + 36
     s.text(x, vy + 18, "V100 (CUDA)", 14, weight=600)
-    s.rect(x0 + 0.5, vy + 2, V100_US * scale, lane - 4, c["rule"], rx=2)
+    s.rect(x0 + 0.5, vy + 2, V100_MICROSECONDS * scale, lane - 4, c["rule"], rx=2)
     s.text(
-        x0 + V100_US * scale + 10, vy + 18, f"{V100_US / 1000:.1f} ms", 14, weight=600
+        x0 + V100_MICROSECONDS * scale + 10,
+        vy + 18,
+        f"{V100_MICROSECONDS / 1000:.1f} ms",
+        14,
+        weight=600,
     )
     return vy + lane
 
@@ -470,7 +474,7 @@ def draw(theme, repo):
     s.text(
         mx + mw - 16,
         ty + 14,
-        f"{FRAME_US / 1000:.1f} ms",
+        f"{FRAME_MICROSECONDS / 1000:.1f} ms",
         16,
         c["a"],
         700,

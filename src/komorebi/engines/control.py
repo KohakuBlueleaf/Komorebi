@@ -110,13 +110,13 @@ class EngineHandle:
 class EngineEvent(NamedTuple):
     """An engine's event. `kind`: "event" (a stream's EVENT, `value` its register),
     "round" (a graph's round ended, `value` rounds done), "end" (a stream: `value`
-    HALT's register; a graph: `regs` = (register 0's low 24 bits, register 1)) or
+    HALT's register; a graph: `registers` = (register 0's low 24 bits, register 1)) or
     "error" (`reason`, `reason_name`, and the stream's `pc` or the graph's `node`)."""
 
     handle: EngineHandle
     kind: str
     value: int | None = None
-    regs: tuple | None = None
+    registers: tuple | None = None
     reason: int | None = None
     reason_name: str | None = None
     pc: int | None = None
@@ -160,19 +160,21 @@ class Engines:
         self.c = c
         self.at = offsets(run.h)
         self.reasons = {
-            v: n[len("KM_SERR_") :].lower() for n, v in c.items() if "_SERR_" in n
+            v: n[len("KM_STREAM_ERROR_") :].lower()
+            for n, v in c.items()
+            if "_STREAM_ERROR_" in n
         }
         self.kinds = {
-            c["KM_EV_STREAM"]: ("stream", "event"),
-            c["KM_EV_STREAM_END"]: ("stream", "end"),
-            c["KM_EV_STREAM_ERROR"]: ("stream", "error"),
-            c["KM_EV_GRAPH"]: ("graph", "round"),
-            c["KM_EV_GRAPH_END"]: ("graph", "end"),
-            c["KM_EV_GRAPH_ERROR"]: ("graph", "error"),
+            c["KM_EVENT_STREAM"]: ("stream", "event"),
+            c["KM_EVENT_STREAM_END"]: ("stream", "end"),
+            c["KM_EVENT_STREAM_ERROR"]: ("stream", "error"),
+            c["KM_EVENT_GRAPH"]: ("graph", "round"),
+            c["KM_EVENT_GRAPH_END"]: ("graph", "end"),
+            c["KM_EVENT_GRAPH_ERROR"]: ("graph", "error"),
         }
         self.lo, self.hi = min(self.kinds), max(self.kinds)
-        host = [c[k] for k in ("KM_EV_DONE", "KM_EV_TIMEOUT", "KM_EV_PONG")]
-        host.append(c["KM_EV_REJECTED"])
+        host = [c[k] for k in ("KM_EVENT_DONE", "KM_EVENT_TIMEOUT", "KM_EVENT_PONG")]
+        host.append(c["KM_EVENT_REJECTED"])
         if any(self.lo <= k <= self.hi for k in host):
             raise KomorebiError("an engine's event kind is also a command's")
         self.region = None
@@ -273,7 +275,7 @@ class Engines:
         if kept is not None and bool(kept) != up.keep:
             self._set_keep(up, bool(kept))
         t = EngineHandle("graph", up.req, up)
-        args = [up.offset, up.bytes, self.c["KM_GRUN_UPLOAD"]]
+        args = [up.offset, up.bytes, self.c["KM_GRAPH_RUN_UPLOAD"]]
         return self._run(t, args + self._bindings(t, bindings), timeout)
 
     def restart(self, req, bindings, timeout):
@@ -281,7 +283,7 @@ class Engines:
         if up is None:
             raise ValueError(f"no kept graph that is not running has req {req}")
         t = EngineHandle("graph", req, up, restart=True)
-        args = [req, 0, self.c["KM_GRUN_KEPT"]]
+        args = [req, 0, self.c["KM_GRAPH_RUN_KEPT"]]
         return self._run(t, args + self._bindings(t, bindings), timeout)
 
     def cancel(self, t, timeout):
@@ -412,11 +414,11 @@ class Engines:
         """Settles a command that was answered (a later PONG came): EngineRejected if
         the kernel rejected it."""
         run = self.run
-        ev = run.event(handle)
+        event = run.event(handle)
         run._settle(handle)
         run.forget([handle])
-        if ev is not None and ev.kind == "rejected":
-            raise EngineRejected(handle, ev.aux, run._rejections)
+        if event is not None and event.kind == "rejected":
+            raise EngineRejected(handle, event.auxiliary, run._rejections)
 
     # Events ---------------------------------------------------------------------
 
@@ -437,39 +439,39 @@ class Engines:
         if t is None:
             self.unclaimed.append((family, req, status, ticks))
             return
-        aux = status >> 8
+        auxiliary = status >> 8
         if kind == "error":
-            reason, where = aux & 0xFF, aux >> 8
-            ev = EngineEvent(t, kind, reason=reason, reason_name=self._name(reason))
+            reason, where = auxiliary & 0xFF, auxiliary >> 8
+            event = EngineEvent(t, kind, reason=reason, reason_name=self._name(reason))
             if family == "stream":
-                ev = ev._replace(pc=where)
+                event = event._replace(pc=where)
             else:
-                ev = ev._replace(
+                event = event._replace(
                     node=None if where == self.c["KM_GRAPH_NO_NODE"] else where
                 )
         elif kind == "end" and family == "graph":
-            ev = EngineEvent(t, kind, regs=(aux, ticks))
+            event = EngineEvent(t, kind, registers=(auxiliary, ticks))
         else:
-            ev = EngineEvent(t, kind, value=aux if kind == "round" else ticks)
-        t.events.append(ev)
+            event = EngineEvent(t, kind, value=auxiliary if kind == "round" else ticks)
+        t.events.append(event)
         if kind in ("end", "error"):
-            t.end = ev
+            t.end = event
             del self.active[(family, req)]
-            self._ended(t, ev)
+            self._ended(t, event)
 
     def _name(self, reason):
         return self.reasons.get(reason, "unknown")
 
-    def _ended(self, t, ev):
+    def _ended(self, t, event):
         """The upload is idle again, or kept: a graph started from an upload that
         passes the check with the keep bit is kept whatever its end, unless the
         kernel did not take it in (a bad range or binding block, a full kept table),
         and a restarted one stays kept."""
         self._free_bind(t)
         up = t.upload
-        rejected = ev.kind == "error" and ev.reason in (
-            self.c["KM_SERR_HEADER"],
-            self.c["KM_SERR_KEPT_FULL"],
+        rejected = event.kind == "error" and event.reason in (
+            self.c["KM_STREAM_ERROR_HEADER"],
+            self.c["KM_STREAM_ERROR_KEPT_FULL"],
         )
         kept = t.kind == "graph" and not t.drop
         kept = kept and (t.restart or (up.keep and up.valid and not rejected))
@@ -482,10 +484,10 @@ class Engines:
 
     def wait(self, t, timeout):
         """The end event of `t`; EngineError for an error, EngineTimeout."""
-        ev = self._wait(t, timeout)
-        if ev.kind == "error":
-            raise EngineError(ev)
-        return ev
+        event = self._wait(t, timeout)
+        if event.kind == "error":
+            raise EngineError(event)
+        return event
 
     def _wait(self, t, timeout):
         run = self.run

@@ -482,14 +482,14 @@ namespace {
                     return n;
                 }
                 _mm_lfence();
-                const Event ev{i, e[1], e[2], e[3]};
+                const Event event{i, e[1], e[2], e[3]};
                 _mm_lfence();
                 if (e[0] != i) {
                     throw std::runtime_error(
                         "event " + std::to_string(i) + " changed while read"
                     );
                 }
-                pending.push_back(ev);
+                pending.push_back(event);
                 seen = i;
                 n++;
             }
@@ -539,8 +539,8 @@ namespace {
             }
         }
 
-        // Stores command `i` (the command `rec` with i in seq and the landing words)
-        // into its host ring slot, without a fence.
+        // Stores command `i` (the command `rec` with i in sequence and the landing
+        // words) into its host ring slot, without a fence.
         void store_command(uint32_t i, const uint32_t* rec) {
             alignas(64) uint32_t w[16];
             std::memcpy(w, rec, sizeof(w));
@@ -589,16 +589,16 @@ namespace {
         }
 
         // Submits `recs` as commands next.. in batches of up to `batch` plus the read
-        // count, one fence each, a batch no sooner than settle_us after a fence.
+        // count, one fence each, no sooner than settle_microseconds after one.
         std::map<std::string, double> stream(
             const uint32_t* recs,
             size_t n,
             double timeout_s,
             size_t batch,
-            double settle_us,
+            double settle_microseconds,
             std::vector<Event>& events
         ) {
-            const auto settle = static_cast<uint64_t>(settle_us * 1e-6 * hz);
+            const auto settle = static_cast<uint64_t>(settle_microseconds * 1e-6 * hz);
             uint64_t store = 0;
             const uint32_t first_event = seen + 1;
             const auto t0 = Clock::now();
@@ -656,8 +656,8 @@ namespace {
             };
         }
 
-        // Streams n DK_HANDLER_RESULT commands with KM_F_RESULT (key = command number,
-        // groups of `count` cores); counts events other than DONE {first, dk_result}.
+        // Streams n DK_HANDLER_RESULT commands with KM_FLAG_RESULT (key = command
+        // number, groups of `count` cores); counts events but DONE {first, dk_result}.
         std::pair<std::map<std::string, double>, std::vector<Event>> result_run(
             uint32_t n, uint32_t count, uint32_t param, double timeout_s, size_t batch
         ) {
@@ -669,7 +669,7 @@ namespace {
             for (uint32_t j = 0; j < n; j++) {
                 const uint32_t key = next + j, first = key % (cores - count + 1);
                 uint32_t* w = recs.data() + 16 * static_cast<size_t>(j);
-                w[1] = DK_HANDLER_RESULT | (KM_F_RESULT << 8);
+                w[1] = DK_HANDLER_RESULT | (KM_FLAG_RESULT << 8);
                 w[2] = first | (count << 16);
                 w[3] = key;
                 w[5] = param;
@@ -685,9 +685,9 @@ namespace {
             for (const auto& e : events) {
                 const uint32_t first = e.req % (cores - count + 1);
                 const uint32_t low = (e.status >> 8) &
-                    KM_EV_AUX_LOW; /* not the seq bits */
+                    KM_EVENT_AUXILIARY_LOW; /* not the sequence bits */
                 if (
-                    (e.status & 0xFFu) != KM_EV_DONE || low != first ||
+                    (e.status & 0xFFu) != KM_EVENT_DONE || low != first ||
                     e.ticks != dk_result(e.req, param)
                 ) {
                     if (bad++ < 8) {
@@ -776,8 +776,8 @@ namespace {
             uint32_t n,
             uint32_t lines,
             uint32_t spread,
-            double gap_us,
-            double busy_us,
+            double gap_microseconds,
+            double busy_microseconds,
             bool read,
             int target
         ) {
@@ -802,11 +802,12 @@ namespace {
             const auto ticks = [hz](double us) {
                 return static_cast<uint64_t>(us * 1e-6 * hz);
             };
-            // Keep-busy thread: one line and an sfence every busy_us until the end.
+            // Keep-busy thread: one line and an sfence every busy_microseconds until
+            // the end.
             std::atomic<bool> stop{false};
             std::thread busy;
-            if (busy_us > 0) {
-                busy = std::thread([&, period = ticks(busy_us)] {
+            if (busy_microseconds > 0) {
+                busy = std::thread([&, period = ticks(busy_microseconds)] {
                     alignas(64) uint32_t line[16] = {};
                     uint64_t at = __rdtsc();
                     while (!stop.load(std::memory_order_relaxed)) {
@@ -822,7 +823,7 @@ namespace {
             }
             alignas(64) uint32_t line[16] = {};
             std::vector<double> t(2 * n);
-            const uint64_t gap = ticks(gap_us);
+            const uint64_t gap = ticks(gap_microseconds);
             uint64_t end = __rdtsc();
             for (uint32_t i = 0; i < n; i++) {
                 while (__rdtsc() - end < gap) {
@@ -1037,7 +1038,7 @@ NB_MODULE(_km_dispatch_test, m) {
                     recs,
                 double timeout_s,
                 size_t batch,
-                double settle_us
+                double settle_microseconds
             ) {
                 if (recs.shape(1) != 16) {
                     throw std::runtime_error("recs is [n, 16]");
@@ -1045,7 +1046,12 @@ NB_MODULE(_km_dispatch_test, m) {
                 std::vector<Event> events;
                 auto times = (
                     p.stream(
-                        recs.data(), recs.shape(0), timeout_s, batch, settle_us, events
+                        recs.data(),
+                        recs.shape(0),
+                        timeout_s,
+                        batch,
+                        settle_microseconds,
+                        events
                     )
                 );
                 return nb::make_tuple(events_list(events), times);
@@ -1053,7 +1059,7 @@ NB_MODULE(_km_dispatch_test, m) {
             nb::arg("recs"),
             nb::arg("timeout_s") = 10.0,
             nb::arg("batch") = 1,
-            nb::arg("settle_us") = 0.0
+            nb::arg("settle_microseconds") = 0.0
         ).def(
             "finish",
             [](Plan& p, double timeout_s, bool wait) {
@@ -1103,21 +1109,29 @@ NB_MODULE(_km_dispatch_test, m) {
                 uint32_t n,
                 uint32_t lines,
                 uint32_t spread,
-                double gap_us,
-                double busy_us,
+                double gap_microseconds,
+                double busy_microseconds,
                 bool read,
                 int target
             ) {
                 nb::gil_scoped_release release;
                 return (
-                    p.store_probe(n, lines, spread, gap_us, busy_us, read, target)
+                    p.store_probe(
+                        n,
+                        lines,
+                        spread,
+                        gap_microseconds,
+                        busy_microseconds,
+                        read,
+                        target
+                    )
                 );
             },
             nb::arg("n"),
             nb::arg("lines") = 2,
             nb::arg("spread") = 1,
-            nb::arg("gap_us") = 0.0,
-            nb::arg("busy_us") = 0.0,
+            nb::arg("gap_microseconds") = 0.0,
+            nb::arg("busy_microseconds") = 0.0,
             nb::arg("read") = false,
             nb::arg("target") = 0
         ).def(

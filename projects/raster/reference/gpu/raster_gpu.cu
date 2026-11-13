@@ -195,8 +195,8 @@ struct Times {
 
 static Times run(const Mesh& mesh, Device& d, bool grow) {
     cudaEvent_t e[4];
-    for (auto& ev : e) {
-        CHECK(cudaEventCreate(&ev));
+    for (auto& event : e) {
+        CHECK(cudaEventCreate(&event));
     }
     const int blocks = (mesh.n_tris + 255) / 256;
     CHECK(cudaEventRecord(e[0]));
@@ -229,8 +229,8 @@ static Times run(const Mesh& mesh, Device& d, bool grow) {
     CHECK(cudaEventElapsedTime(&t.setup, e[0], e[1]));
     CHECK(cudaEventElapsedTime(&t.bin, e[1], e[2]));
     CHECK(cudaEventElapsedTime(&t.fill, e[2], e[3]));
-    for (auto& ev : e) {
-        CHECK(cudaEventDestroy(ev));
+    for (auto& event : e) {
+        CHECK(cudaEventDestroy(event));
     }
     return t;
 }

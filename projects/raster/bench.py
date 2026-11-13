@@ -105,11 +105,11 @@ def power_figures(meter, windows, frames, idle_w):
     }
 
 
-def plan_loop(seconds, first_us, max_reps, budget_s):
-    """Commands for `seconds` of commands of `first_us` each, at most `max_reps`. Exits
-    when the loop would take longer than `budget_s`."""
-    reps = int(min(max_reps, max(1, math.ceil(seconds * 1e6 / first_us))))
-    planned = reps * first_us * 1e-6
+def plan_loop(seconds, first_microseconds, max_reps, budget_s):
+    """Commands for `seconds` of commands of `first_microseconds` each, at most
+    `max_reps`. Exits when the loop would take longer than `budget_s`."""
+    reps = int(min(max_reps, max(1, math.ceil(seconds * 1e6 / first_microseconds))))
+    planned = reps * first_microseconds * 1e-6
     card.log(f"plan: {reps} commands, about {planned:.1f} s on the card")
     if planned > budget_s:
         raise SystemExit(f"plan of {planned:.0f} s exceeds the budget of {budget_s} s")
@@ -138,9 +138,9 @@ def loop_stats(windows, lat):
     card_s = sum(b - a for a, b in windows)
     return {
         "frames": int(len(lat)),
-        "frame_us_median": float(np.median(lat)),
-        "frame_us_min": float(lat.min()),
-        "frame_us_max": float(lat.max()),
+        "frame_microseconds_median": float(np.median(lat)),
+        "frame_microseconds_min": float(lat.min()),
+        "frame_microseconds_max": float(lat.max()),
         "frames_per_s": len(lat) / card_s,
         "card_s": card_s,
         "commands_s": float(lat.sum()) * 1e-6,
@@ -188,11 +188,11 @@ def main():
     out["loop"] = loop_stats(windows, lat)
     out["power"] = power_figures(meter, windows, out["loop"]["frames"], idle_w)
     out["power"].update(clock.figures())
-    out["frame_us"] = {
+    out["frame_microseconds"] = {
         "first": float(first[0]),
-        "median": out["loop"]["frame_us_median"],
-        "min": out["loop"]["frame_us_min"],
-        "max": out["loop"]["frame_us_max"],
+        "median": out["loop"]["frame_microseconds_median"],
+        "min": out["loop"]["frame_microseconds_min"],
+        "max": out["loop"]["frame_microseconds_max"],
     }
     check = run.check(args.scene, None, *(h[k] for k in run.ARGS), frame)
     out["check"] = check

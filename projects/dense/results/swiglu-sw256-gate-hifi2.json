@@ -15,16 +15,16 @@
   "rows": 1
  },
  "x280_mhz": 1000,
- "load_us": [
+ "load_microseconds": [
   8.62,
   13.96,
   19.76
  ],
- "first_calls_us": 211.718,
+ "first_calls_microseconds": 211.718,
  "profile_single": {
   "slowest_rank": 7,
   "mean_busy_over_slowest": 0.999,
-  "us": {
+  "microseconds": {
    "read_x": 1.501,
    "reader_waits_for_space": 0.135,
    "unpack_waits_for_a": 0.814,
@@ -42,7 +42,7 @@
    "writer_body": 3.708
   }
  },
- "single_us": {
+ "single_microseconds": {
   "median": 239.2635215073824,
   "min": 234.0130740776658
  },
@@ -57,8 +57,8 @@
   ],
   "calls": 69785,
   "seconds": 3.23,
-  "us_per_call": 46.282,
-  "command_us_median": [
+  "microseconds_per_call": 46.282,
+  "command_microseconds_median": [
    34.46,
    34.48,
    34.38,
@@ -68,7 +68,7 @@
  "profile_host": {
   "slowest_rank": 6,
   "mean_busy_over_slowest": 1.0,
-  "us": {
+  "microseconds": {
    "read_x": 1.393,
    "reader_waits_for_space": 0.134,
    "unpack_waits_for_a": 0.162,
@@ -86,7 +86,7 @@
    "writer_body": 3.713
   }
  },
- "host_exclusive_us_per_call": 102.769,
+ "host_exclusive_microseconds_per_call": 102.769,
  "tflops": 4.349997666479409,
  "run": {
   "kernel": "none",

@@ -7,7 +7,7 @@ parameters, what it shows). `stream_reference` merges `MORE` into its table.
 import struct
 
 from komorebi.engines import stream as st
-from komorebi.engines.stream import Reg, Stream
+from komorebi.engines.stream import Register, Stream
 
 HANDLER_A, HANDLER_B = 1, 7
 
@@ -28,13 +28,13 @@ def _op_at(index):
 
 
 def _templates_at(data):
-    n_ops = struct.unpack_from("<I", data, 8)[0]
-    return st.HEADER_BYTES + (n_ops * st.UOP_BYTES + 63 & -64)
+    op_count = struct.unpack_from("<I", data, 8)[0]
+    return st.HEADER_BYTES + (op_count * st.UOP_BYTES + 63 & -64)
 
 
 def _group(first, count):
     s = Stream()
-    f, c = s.regs(2)
+    f, c = s.registers(2)
     s.set(f, first)
     s.set(c, count)
     s.submit(HANDLER_A, group=(f, c))
@@ -68,7 +68,7 @@ def group_count0_submit():
 
 def submit_count0():
     s = Stream()
-    c = s.regs(1)[0]
+    c = s.registers(1)[0]
     s.enqueue(HANDLER_A, c)
     return _halt_with(s, 0)
 
@@ -104,7 +104,7 @@ def deadline_before_cancel():
 
 def orphan_late():
     s = Stream()
-    a = s.regs(1)[0]
+    a = s.registers(1)[0]
     s.submit(HANDLER_A, group=(0, 2))
     s.submit(HANDLER_A, group=(2, 2))
     s.mod(a, a, a)
@@ -112,7 +112,7 @@ def orphan_late():
 
 
 def default_deadline():
-    s = Stream(deadline_us=0)
+    s = Stream(deadline_microseconds=0)
     s.submit(HANDLER_A, group=(0, 2))
     s.wait(0)
     return _halt_with(s, 0)
@@ -120,7 +120,7 @@ def default_deadline():
 
 def submit_group_before_slot_wait():
     s = Stream()
-    i, c = s.regs(2)
+    i, c = s.registers(2)
     top = s.label()
     s.submit(HANDLER_A, group=(i, 1))
     s.addi(i, i, 1)
@@ -131,7 +131,7 @@ def submit_group_before_slot_wait():
 
 def submit_count_before_queue_full():
     s = Stream()
-    i, c = s.regs(2)
+    i, c = s.registers(2)
     top = s.label()
     s.enqueue(HANDLER_A, 119, args=[i])
     s.addi(i, i, 1)
@@ -154,9 +154,9 @@ def step_limit_at_halt():
     return _halt_with(s, 0)
 
 
-def err_off_end_at_step_limit():
+def error_off_end_at_step_limit():
     s = Stream(max_steps=2)
-    a = s.regs(1)[0]
+    a = s.registers(1)[0]
     s.set(a, 1)
     s.addi(a, a, 1)
     return s
@@ -164,7 +164,7 @@ def err_off_end_at_step_limit():
 
 def result_tie_highest_slot():
     s = Stream()
-    r = s.regs(1)[0]
+    r = s.registers(1)[0]
     s.submit(HANDLER_A, group=(0, 2), args=[10], result=True)
     s.submit(HANDLER_A, group=(2, 3), args=[20], result=True)
     s.wait(0)
@@ -175,7 +175,7 @@ def result_tie_highest_slot():
 
 def result_ignores_plain_commands():
     s = Stream()
-    r = s.regs(1)[0]
+    r = s.registers(1)[0]
     s.submit(HANDLER_A, group=(0, 2), args=[10], result=True)
     s.submit(HANDLER_A, group=(2, 3), args=[20])
     s.wait(0)
@@ -185,7 +185,7 @@ def result_ignores_plain_commands():
 
 
 def header_deadline_has_no_default():
-    s = Stream(deadline_us=5000)
+    s = Stream(deadline_microseconds=5000)
     s.submit(HANDLER_A, group=(0, 2))
     s.wait(0)
     return _halt_with(s, 0)
@@ -193,7 +193,7 @@ def header_deadline_has_no_default():
 
 def result_before_any():
     s = Stream()
-    r = s.regs(1)[0]
+    r = s.registers(1)[0]
     s.addi(r, r, 1)
     s.result(r)
     s.halt(r)
@@ -202,7 +202,7 @@ def result_before_any():
 
 def jlt_unsigned():
     s = Stream()
-    a, b, out = s.regs(3)
+    a, b, out = s.registers(3)
     skip = s.forward()
     s.set(a, 0x80000000)
     s.set(b, 1)
@@ -216,7 +216,7 @@ def jlt_unsigned():
 
 def add_wraps():
     s = Stream()
-    a, b = s.regs(2)
+    a, b = s.registers(2)
     s.set(a, 0xFFFFFFFF)
     s.set(b, 2)
     s.add(a, a, b)
@@ -226,7 +226,7 @@ def add_wraps():
 
 def sub_wraps():
     s = Stream()
-    a, b = s.regs(2)
+    a, b = s.registers(2)
     s.set(a, 1)
     s.set(b, 2)
     s.sub(a, a, b)
@@ -236,7 +236,7 @@ def sub_wraps():
 
 def mul_overflow():
     s = Stream()
-    a, b = s.regs(2)
+    a, b = s.registers(2)
     s.set(a, 0xFFFFFFFF)
     s.set(b, 0xFFFFFFFF)
     s.mul(a, a, b)
@@ -262,7 +262,7 @@ def excl_adjacent():
 
 def patch_later_wins():
     s = Stream()
-    x, y = s.regs(2)
+    x, y = s.registers(2)
     s.set(x, 1)
     s.set(y, 2)
     s.submit(HANDLER_A, group=(0, 1), args=[x, y])
@@ -274,7 +274,7 @@ def patch_later_wins():
 
 def enqueue_among_submits():
     s = Stream()
-    i = s.regs(1)[0]
+    i = s.registers(1)[0]
     s.enqueue(HANDLER_B, 1, args=[999])
     top = s.label()
     s.submit(HANDLER_A, group=(10, 1), args=[i])
@@ -286,7 +286,7 @@ def enqueue_among_submits():
 
 def enqueue_overtake_limit():
     s = Stream(max_steps=100_000)
-    i = s.regs(1)[0]
+    i = s.registers(1)[0]
     s.enqueue(HANDLER_A, 1, args=[0])
     s.enqueue(HANDLER_B, 119, args=[1])
     top = s.label()
@@ -299,27 +299,27 @@ def enqueue_overtake_limit():
 
 def ok_ignored_bytes():
     s = Stream()
-    a, b = s.regs(2)
+    a, b = s.registers(2)
     s.set(a, 3)
     s.submit(HANDLER_A, group=(0, 2), args=[a, 5])
     s.addi(b, b, 0)
     s.wait(0)
     s.halt(a)
     data = bytearray(s.encode())
-    n_ops = len(s.uops())
+    op_count = len(s.uops())
     data[32:64] = bytes(range(1, 33))  # header padding
-    for i in range(n_ops):
+    for i in range(op_count):
         data[_op_at(i) + 8 : _op_at(i) + 16] = b"\xaa" * 8  # imm2 and pad
     data[_op_at(0) + 2 : _op_at(0) + 4] = b"\xc8\xc9"  # SET: b and c unused
     data[_op_at(1) + 1 : _op_at(1) + 4] = b"\xc8\xc9\xca"  # SUBMIT: no register
     data[_op_at(3) + 1 : _op_at(3) + 4] = b"\xc8\xc9\xca"  # WAIT: no register
-    end = _op_at(n_ops)
-    data[end : end + (-n_ops * 16 % 64)] = b"\x77" * (-n_ops * 16 % 64)
+    end = _op_at(op_count)
+    data[end : end + (-op_count * 16 % 64)] = b"\x77" * (-op_count * 16 % 64)
     t = _templates_at(bytes(data))
     for offset in (0, 16, 32, 48):  # sequence and landing words
         data[t + offset : t + offset + 4] = b"\x5a\x5a\x5a\x5a"
     data[t + 6 : t + 8] = b"\xff\xff"  # slot bits of hdr
-    data[t + 65 : t + 68] = b"\x63" * 3  # patch entries past n_patch
+    data[t + 65 : t + 68] = b"\x63" * 3  # patch entries past patch_count
     data[t + 69 : t + 72] = b"\xc8" * 3
     data[t + 75 : t + 80] = b"\x42" * 5  # template padding
     data[t + 80 :] = b"\x33" * (len(data) - t - 80)  # line padding
@@ -328,14 +328,14 @@ def ok_ignored_bytes():
 
 def _tiny():
     s = Stream()
-    a = s.regs(1)[0]
+    a = s.registers(1)[0]
     s.set(a, 1)
     s.submit(HANDLER_A, group=(0, 1))
     s.halt(a)
     return s.encode()
 
 
-def err_no_micro_ops():
+def error_no_micro_ops():
     return struct.pack("<8I32x", st.MAGIC, st.VERSION, 0, 0, 10, 0, 1, 1)
 
 
@@ -343,23 +343,23 @@ def ok_fills_region():
     return _tiny()
 
 
-def err_patch_count():
+def error_patch_count():
     data = _tiny()
     return _poke(data, _templates_at(data) + 74, "<B", 5)
 
 
-def err_patch_register_bad():
+def error_patch_register_bad():
     data = _tiny()
     data = _poke(data, _templates_at(data) + 74, "<B", 1)
     return _poke(data, _templates_at(data) + 68, "<B", 16)
 
 
-def err_handler_zero():
+def error_handler_zero():
     data = _tiny()
     return _poke(data, _templates_at(data) + 4, "<I", 0)
 
 
-def err_template_first_user():
+def error_template_first_user():
     s = Stream()
     s.submit(HANDLER_A, group=(0, 1))
     s.submit(HANDLER_A, group=(1, 1))
@@ -368,37 +368,37 @@ def err_template_first_user():
     return _poke(data, _templates_at(data) + 4, "<I", 0)
 
 
-def err_bad_version():
+def error_bad_version():
     return _poke(_tiny(), 4, "<I", 2)
 
 
-def err_n_ops_zero():
+def error_op_count_zero():
     return _poke(_tiny(), 8, "<I", 0)
 
 
-def err_n_ops_too_many():
+def error_op_count_too_many():
     return _poke(_tiny(), 8, "<I", 65536)
 
 
-def err_n_commands_too_many():
+def error_command_count_too_many():
     return _poke(_tiny(), 12, "<I", 65536)
 
 
-def err_max_steps_zero():
+def error_max_steps_zero():
     return _poke(_tiny(), 16, "<I", 0)
 
 
-def err_longer_upload():
+def error_longer_upload():
     return _tiny() + bytes(64)
 
 
-def err_above_region():
+def error_above_region():
     return _tiny()
 
 
-def err_enqueue_bad_register():
+def error_enqueue_bad_register():
     s = Stream()
-    c = s.regs(1)[0]
+    c = s.registers(1)[0]
     s.set(c, 3)
     s.enqueue(HANDLER_A, c)
     s.halt(c)
@@ -406,47 +406,47 @@ def err_enqueue_bad_register():
     return _poke(data, _op_at(1) + 1, "<B", 16)
 
 
-def err_two_faults_first_wins():
+def error_two_faults_first_wins():
     data = _tiny()
     data = _poke(data, _op_at(0) + 1, "<B", 200)
     return _poke(data, _op_at(1), "<B", 99)
 
 
-def err_micro_op_before_template():
+def error_micro_op_before_template():
     data = _tiny()
     data = _poke(data, _templates_at(data) + 4, "<I", 250)
     return _poke(data, _op_at(2) + 1, "<B", 200)
 
 
-def err_first_reg_bad():
+def error_first_register_bad():
     data = _tiny()
     return _poke(data, _templates_at(data) + 72, "<B", 16)
 
 
-def err_count_reg_bad():
+def error_count_register_bad():
     data = _tiny()
     return _poke(data, _templates_at(data) + 73, "<B", 40)
 
 
-def err_patch_argument_bad():
+def error_patch_argument_bad():
     data = _tiny()
     data = _poke(data, _templates_at(data) + 74, "<B", 1)
     return _poke(data, _templates_at(data) + 64, "<B", 10)
 
 
-def err_template_flags():
+def error_template_flags():
     data = _tiny()
-    return _poke(data, _templates_at(data) + 4, "<I", HANDLER_A | st.F_QUEUE << 8)
+    return _poke(data, _templates_at(data) + 4, "<I", HANDLER_A | st.FLAG_QUEUE << 8)
 
 
-def err_template_index():
+def error_template_index():
     data = _tiny()
     return _poke(data, _op_at(1) + 4, "<I", 1)
 
 
-def err_bad_register_in_use():
+def error_bad_register_in_use():
     s = Stream()
-    a = s.regs(1)[0]
+    a = s.registers(1)[0]
     s.add(a, a, a)
     s.halt(a)
     return _poke(s.encode(), _op_at(0) + 3, "<B", 16)
@@ -483,7 +483,7 @@ MORE = {
     ),
     "orphan_late": (
         orphan_late,
-        {"delay": {"by_seq": {"2": None}, "rest": 1}, "deadline_passes": 4},
+        {"delay": {"by_sequence": {"2": None}, "rest": 1}, "deadline_passes": 4},
         "after an error a late command posts a timeout event for its slot",
     ),
     "orphan_acked": (
@@ -494,7 +494,7 @@ MORE = {
     "default_deadline": (
         default_deadline,
         {"delay": None, "default_deadline_passes": 6},
-        "deadline_us 0 uses the default deadline",
+        "deadline_microseconds 0 uses the default deadline",
     ),
     "submit_group_before_slot_wait": (
         submit_group_before_slot_wait,
@@ -508,8 +508,8 @@ MORE = {
     ),
     "stall_not_a_step": (stall_not_a_step, {"delay": 30}, "waiting costs no steps"),
     "step_limit_at_halt": (step_limit_at_halt, {}, "reason 6 at the HALT"),
-    "err_off_end_at_step_limit": (
-        err_off_end_at_step_limit,
+    "error_off_end_at_step_limit": (
+        error_off_end_at_step_limit,
         {},
         "reason 3 wins over reason 6 at the end of the program",
     ),
@@ -520,7 +520,7 @@ MORE = {
     ),
     "result_ignores_plain_commands": (
         result_ignores_plain_commands,
-        {"delay": {"by_seq": {"2": 3}, "rest": 0}},
+        {"delay": {"by_sequence": {"2": 3}, "rest": 0}},
         "a command without result=True never changes RESULT",
     ),
     "header_deadline_has_no_default": (
@@ -555,7 +555,7 @@ MORE = {
     ),
     "enqueue_overtake_limit": (
         enqueue_overtake_limit,
-        {"delay": {"by_seq": {"1": 3000}, "rest": 0}},
+        {"delay": {"by_sequence": {"1": 3000}, "rest": 0}},
         "1,024 jobs overtake a 119-core job, then it is waited for",
     ),
     "ok_ignored_bytes": (
@@ -563,56 +563,72 @@ MORE = {
         {},
         "bytes the format does not name are ignored",
     ),
-    "err_no_micro_ops": (err_no_micro_ops, {}, "reason 1: a header and nothing else"),
+    "error_no_micro_ops": (
+        error_no_micro_ops,
+        {},
+        "reason 1: a header and nothing else",
+    ),
     "ok_fills_region": (
         ok_fills_region,
         {"region_size": 256},
         "an upload as big as the region",
     ),
-    "err_patch_count": (err_patch_count, {}, "reason 5: five patches"),
-    "err_patch_register_bad": (err_patch_register_bad, {}, "reason 5: register 16"),
-    "err_handler_zero": (err_handler_zero, {}, "reason 5: handler 0"),
-    "err_template_first_user": (
-        err_template_first_user,
+    "error_patch_count": (error_patch_count, {}, "reason 5: five patches"),
+    "error_patch_register_bad": (error_patch_register_bad, {}, "reason 5: register 16"),
+    "error_handler_zero": (error_handler_zero, {}, "reason 5: handler 0"),
+    "error_template_first_user": (
+        error_template_first_user,
         {},
         "reason 5 at the first of two micro-ops using one bad template",
     ),
-    "err_bad_version": (err_bad_version, {}, "reason 1: version 2"),
-    "err_n_ops_zero": (err_n_ops_zero, {}, "reason 1: no micro-ops"),
-    "err_n_ops_too_many": (err_n_ops_too_many, {}, "reason 1: 65,536 micro-ops"),
-    "err_n_commands_too_many": (
-        err_n_commands_too_many,
+    "error_bad_version": (error_bad_version, {}, "reason 1: version 2"),
+    "error_op_count_zero": (error_op_count_zero, {}, "reason 1: no micro-ops"),
+    "error_op_count_too_many": (
+        error_op_count_too_many,
+        {},
+        "reason 1: 65,536 micro-ops",
+    ),
+    "error_command_count_too_many": (
+        error_command_count_too_many,
         {},
         "reason 1: 65,536 templates",
     ),
-    "err_max_steps_zero": (err_max_steps_zero, {}, "reason 1: max_steps 0"),
-    "err_longer_upload": (err_longer_upload, {}, "reason 1: a line too long"),
-    "err_above_region": (
-        err_above_region,
+    "error_max_steps_zero": (error_max_steps_zero, {}, "reason 1: max_steps 0"),
+    "error_longer_upload": (error_longer_upload, {}, "reason 1: a line too long"),
+    "error_above_region": (
+        error_above_region,
         {"region_size": 128},
         "reason 1: region of 128 bytes",
     ),
-    "err_enqueue_bad_register": (
-        err_enqueue_bad_register,
+    "error_enqueue_bad_register": (
+        error_enqueue_bad_register,
         {},
         "reason 4 in ENQUEUE's register",
     ),
-    "err_two_faults_first_wins": (
-        err_two_faults_first_wins,
+    "error_two_faults_first_wins": (
+        error_two_faults_first_wins,
         {},
         "reason 4 at pc 0 although pc 1 has a bad opcode",
     ),
-    "err_micro_op_before_template": (
-        err_micro_op_before_template,
+    "error_micro_op_before_template": (
+        error_micro_op_before_template,
         {},
         "a micro-op fault is reported before a template fault",
     ),
-    "err_first_reg_bad": (err_first_reg_bad, {}, "reason 5: first_reg 16"),
-    "err_count_reg_bad": (err_count_reg_bad, {}, "reason 5: count_reg 40"),
-    "err_patch_argument_bad": (err_patch_argument_bad, {}, "reason 5: argument 10"),
-    "err_template_flags": (err_template_flags, {}, "reason 5: the queue flag"),
-    "err_template_index": (err_template_index, {}, "reason 5 at the SUBMIT"),
-    "err_bad_register_in_use": (err_bad_register_in_use, {}, "reason 4 in field c"),
+    "error_first_register_bad": (
+        error_first_register_bad,
+        {},
+        "reason 5: first_register 16",
+    ),
+    "error_count_register_bad": (
+        error_count_register_bad,
+        {},
+        "reason 5: count_register 40",
+    ),
+    "error_patch_argument_bad": (error_patch_argument_bad, {}, "reason 5: argument 10"),
+    "error_template_flags": (error_template_flags, {}, "reason 5: the queue flag"),
+    "error_template_index": (error_template_index, {}, "reason 5 at the SUBMIT"),
+    "error_bad_register_in_use": (error_bad_register_in_use, {}, "reason 4 in field c"),
 }
 
-__all__ = ["MORE", "Reg"]
+__all__ = ["MORE", "Register"]

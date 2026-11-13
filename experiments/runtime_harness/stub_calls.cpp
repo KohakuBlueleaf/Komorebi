@@ -78,11 +78,11 @@ namespace kmsim {
             const CoreState& c = g->me();
             switch (self->role) {
                 case kReader:
-                    return c.reader_seq;
+                    return c.reader_sequence;
                 case kWriter:
-                    return c.writer_seq;
+                    return c.writer_sequence;
                 default:
-                    return c.compute_seq;
+                    return c.compute_sequence;
             }
         }
 
@@ -122,15 +122,15 @@ namespace kmsim {
 
     }  // namespace
 
-    void note_command(uint32_t seq) {
+    void note_command(uint32_t sequence) {
         CoreState& c = g->me();
         (
             self->role == kReader
-                ? c.reader_seq
+                ? c.reader_sequence
                 : self->role == kWriter
-                    ? c.writer_seq
-                    : c.compute_seq
-        ) = seq;
+                    ? c.writer_sequence
+                    : c.compute_sequence
+        ) = sequence;
     }
 
     void cb_reserve(uint32_t cb, uint32_t pages) {
@@ -157,8 +157,8 @@ namespace kmsim {
         }
         b.reserved = pages > b.reserved ? 0 : b.reserved - pages;
         if (cb == km::kCbTokenCompute && self->role == kReader) {
-            g->me().reader_seq = first_word(b.base + b.wr * b.page);
-            g->log(self->core, kEvTake, g->me().reader_seq, 0);
+            g->me().reader_sequence = first_word(b.base + b.wr * b.page);
+            g->log(self->core, kEventTake, g->me().reader_sequence, 0);
         }
         b.received += pages;
         *cb_received_word(cb) = b.received;
@@ -190,11 +190,11 @@ namespace kmsim {
             return;
         }
         if (cb == km::kCbTokenWriter && self->role == kWriter) {
-            g->me().writer_seq = first_word(b.base + b.rd * b.page);
-            g->log(self->core, kEvWriterTake, g->me().writer_seq, 0);
+            g->me().writer_sequence = first_word(b.base + b.rd * b.page);
+            g->log(self->core, kEventWriterTake, g->me().writer_sequence, 0);
         }
         if (cb == km::kCbTokenCompute && self->role == kUnpack) {
-            g->me().compute_seq = first_word(b.base + b.rd * b.page);
+            g->me().compute_sequence = first_word(b.base + b.rd * b.page);
         }
         b.acked += pages;
         *cb_acked_word(cb) = b.acked;
@@ -227,11 +227,13 @@ namespace kmsim {
     }
 
     volatile uint32_t* cb_received_word(uint32_t cb) {
-        return reinterpret_cast<uint32_t*>(g->me().mem + kCbRegs + (cb & 31) * 8);
+        return reinterpret_cast<uint32_t*>(g->me().mem + kCbRegisters + (cb & 31) * 8);
     }
 
     volatile uint32_t* cb_acked_word(uint32_t cb) {
-        return reinterpret_cast<uint32_t*>(g->me().mem + kCbRegs + (cb & 31) * 8 + 4);
+        return (
+            reinterpret_cast<uint32_t*>(g->me().mem + kCbRegisters + (cb & 31) * 8 + 4)
+        );
     }
 
     uint32_t cb_page(uint32_t cb) {
@@ -310,16 +312,16 @@ namespace kmsim {
         if (bytes == 0 || !target(dst, bytes, core, off) || !own(src, bytes)) {
             return;
         }
-        uint32_t kind = 0, seq = 0;
+        uint32_t kind = 0, sequence = 0;
         if (
             self->role == kWriter && core == g->n && off >= kDispAck &&
             off < kDispAck + 16 * KM_RING_SLOTS
         ) {
             kind = 2;
-            seq = first_word(src);
-            g->log(self->core, kEvAck, seq, (off - kDispAck) / 16);
+            sequence = first_word(src);
+            g->log(self->core, kEventAck, sequence, (off - kDispAck) / 16);
         }
-        g->send(self->core, self, core, off, g->host(src), bytes, -1, kind, seq);
+        g->send(self->core, self, core, off, g->host(src), bytes, -1, kind, sequence);
     }
 
     void noc_inc(uint64_t dst, uint32_t value) {
@@ -330,10 +332,10 @@ namespace kmsim {
         Pending q = {};
         const Chunk c = {self->core, core, off, 4, 0, 1, true, -1};
         const int64_t d = g->cfg.delay ? g->cfg.delay(c) : 32 + (g->rng() & 63);
-        uint32_t seq = 0;
+        uint32_t sequence = 0;
         if (self->role == kWriter) {
-            seq = g->me().writer_seq;
-            g->log(self->core, kEvReport, seq, core);
+            sequence = g->me().writer_sequence;
+            g->log(self->core, kEventReport, sequence, core);
         }
         if (d < 0) {
             return;
@@ -348,7 +350,7 @@ namespace kmsim {
         q.value = value;
         q.from = self;
         q.kind = self->role == kWriter ? 1 : 0;
-        q.seq = seq;
+        q.sequence = sequence;
         self->atomics++;
         g->pending.push(q);
     }

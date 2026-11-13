@@ -19,7 +19,9 @@ namespace timed {
     template <typename Ready>
     bool poll(Ready ready) {
         const volatile uint32_t* stop = (
-            reinterpret_cast<volatile uint32_t*>(get_arg_val<uint32_t>(0) + KM_CTL_STOP)
+            reinterpret_cast<volatile uint32_t*>(
+                get_arg_val<uint32_t>(0) + KM_CONTROL_STOP
+            )
         );
         const uint32_t t0 = clock();
         for (uint32_t i = 0;; ++i) {

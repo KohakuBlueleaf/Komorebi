@@ -43,7 +43,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--scene", default="tiny")
     p.add_argument("--card", type=Path, required=True, help="the card's result folder")
-    p.add_argument("--prof", type=Path, required=True)
+    p.add_argument("--profile", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     args = p.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -54,7 +54,7 @@ def main():
     png.write_png(
         args.out / f"{s}_card_diff.png", png.diff_picture(got["colour"], mask)
     )
-    rgb, info = busy_picture(args.prof)
+    rgb, info = busy_picture(args.profile)
     png.write_png(args.out / f"{s}_card_busy.png", rgb)
     info["differing_pixels"] = int(mask.sum())
     print(info)

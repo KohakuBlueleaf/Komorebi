@@ -49,7 +49,7 @@
 /* Scratch page (the program's buffer 16): block, stats, flags, writer's reads. */
 #define XP_SCRATCH_BLOCK 0u
 #define XP_SCRATCH_STATS 4096u
-/* words: result seq, value; reader done; writer reads */
+/* words: result sequence, value; reader done; writer reads */
 #define XP_SCRATCH_FLAGS 5120u
 #define XP_SCRATCH_READ 6144u
 #define XP_READ_BYTES 2048u

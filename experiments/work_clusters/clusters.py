@@ -1,6 +1,6 @@
 """Probes of X280 work clusters 1 to 3 beside the dispatcher: one probe image
-(x280/probe.c) on several clusters at once, in modes sum, rates, push, ping and par.
-One JSON line per run; README.md gives the commands."""
+(x280/probe.c) on several clusters at once, in modes sum, rates, push, ping and
+parallel. One JSON line per run; README.md gives the commands."""
 
 import argparse
 import json
@@ -23,11 +23,11 @@ from komorebi import thread as kt  # noqa: E402
 
 KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"
 GO_LIM = 0x480
-M_SUM, M_RATE, M_PUSH, M_PING, M_PAR = 1, 2, 3, 4, 5
+M_SUM, M_RATE, M_PUSH, M_PING, M_PARALLEL = 1, 2, 3, 4, 5
 KINDS = {"shared": 0, "dram": 1, "lim": 2}
 PING_LIM = 0x4C0  # a flag line in each cluster's LIM after the go line
 T0 = time.monotonic()
-TICK_US = 1 / 50.0
+TICK_MICROSECONDS = 1 / 50.0
 
 
 def log(msg):
@@ -109,7 +109,7 @@ class Clusters:
                 "error": res.error,
                 "code": res.code,
                 "words": res.words,
-                "us": res.us,
+                "microseconds": res.microseconds,
                 "where": res.where,
                 "cleaned": done["cleaned"],
                 "failed": w["failed"] or done["failed"],
@@ -148,7 +148,9 @@ def cmd_sum(args, session, out):
         got = r["words"][0] | r["words"][1] << 32 if len(r["words"]) >= 2 else None
         want = int(data[c].view(np.uint64).sum(dtype=np.uint64))
         r["sum_exact"] = got == want and r["words"][3] == c  # and kmx_cluster()
-        r["sum_us"] = round(r["words"][2] * TICK_US, 1) if len(r["words"]) > 2 else None
+        r["sum_microseconds"] = (
+            round(r["words"][2] * TICK_MICROSECONDS, 1) if len(r["words"]) > 2 else None
+        )
     out["result"] = res
     return all(r["sum_exact"] and r["code"] == 0 and r["cleaned"] for r in res.values())
 
@@ -170,7 +172,7 @@ def cmd_rates(args, session, out):
             reps.append(
                 {
                     n: {
-                        "us": round(x * TICK_US, 1),
+                        "microseconds": round(x * TICK_MICROSECONDS, 1),
                         "GBps": round(args.bytes / (x * 20e-9) / 1e9, 3),
                     }
                     for n, x in zip(names, t)
@@ -192,8 +194,8 @@ def cmd_push(args, session, out):
     w = [M_PUSH, k.go]
     th = thread(args.cluster, w, {"data": 4096})
     tgt = thread(target, [0], {"target": args.bytes})
-    regs = {args.cluster: th}
-    k.threads = regs
+    registers = {args.cluster: th}
+    k.threads = registers
     k.regions = {args.cluster: regions(session, th)}
     treg = regions(session, tgt)
     dest = treg.address("target")[1]
@@ -211,9 +213,9 @@ def cmd_push(args, session, out):
     out["clusters"] = k.info
     out["target"] = {"bank": args.bank, "tile": [noc & 0xFFFF, noc >> 16], "addr": dest}
     words = r.pop("words")
-    r["push_us"] = round(words[0] * TICK_US, 1)
+    r["push_microseconds"] = round(words[0] * TICK_MICROSECONDS, 1)
     r["push_GBps"] = round(args.bytes / (words[0] * 20e-9) / 1e9, 3)
-    r["pull_us"] = round(words[1] * TICK_US, 1)
+    r["pull_microseconds"] = round(words[1] * TICK_MICROSECONDS, 1)
     r["pull_GBps"] = (
         round(args.pull / (words[1] * 20e-9) / 1e9, 3) if args.pull else None
     )
@@ -268,7 +270,9 @@ def cmd_ping(args, session, out):
     ok = all(r["code"] == 0 and r["cleaned"] for r in res.values())
     wa = res[a]["words"]
     wb = res[b]["words"]
-    out["round_trip_us"] = round(wa[0] * TICK_US / max(args.rounds, 1), 3)
+    out["round_trip_microseconds"] = round(
+        wa[0] * TICK_MICROSECONDS / max(args.rounds, 1), 3
+    )
     if xbytes:
         want = int(pattern(seed, 0, xbytes // 8).sum(dtype=np.uint64))
         out["exchange_exact"] = (wb[2] | wb[3] << 32) == want
@@ -277,16 +281,20 @@ def cmd_ping(args, session, out):
     return ok
 
 
-def cmd_par(args, session, out):
+def cmd_parallel(args, session, out):
     k = Clusters(session)
     k.start(
-        {args.cluster: thread(args.cluster, [M_PAR, k.go, args.calls], {"data": 4096})}
+        {
+            args.cluster: thread(
+                args.cluster, [M_PARALLEL, k.go, args.calls], {"data": 4096}
+            )
+        }
     )
     res = k.go_all(30.0)
     k.stop()
     r = res[args.cluster]
     w = r.pop("words")
-    r["par_us"] = round(w[0] * TICK_US / max(args.calls, 1), 3)
+    r["parallel_microseconds"] = round(w[0] * TICK_MICROSECONDS / max(args.calls, 1), 3)
     out["result"] = res
     return r["code"] == 0 and r["cleaned"]
 
@@ -311,7 +319,7 @@ def main():
     s.add_argument("--kind", choices=list(KINDS), default="shared")
     s.add_argument("--rounds", type=int, default=1000)
     s.add_argument("--xbytes", type=int, default=65536)
-    s = sub.add_parser("par")
+    s = sub.add_parser("parallel")
     s.add_argument("--cluster", type=int, default=1)
     s.add_argument("--calls", type=int, default=10000)
     args = p.parse_args()

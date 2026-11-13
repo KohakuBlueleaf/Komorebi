@@ -33,14 +33,14 @@ def error_stats(result, reference):
         raise ValueError("error_stats needs at least one value")
     err = result - reference
     ref_rms = float(np.sqrt(np.mean(reference**2)))
-    err_rms = float(np.sqrt(np.mean(err**2)))
+    error_rms = float(np.sqrt(np.mean(err**2)))
     bias = float(err.mean())
 
     # Against a zero reference the error is 0.0 when exact and inf otherwise.
     if ref_rms == 0:
-        rel_rms, mean_bias = (0.0, 0.0) if err_rms == 0 else (np.inf, np.inf)
+        rel_rms, mean_bias = (0.0, 0.0) if error_rms == 0 else (np.inf, np.inf)
     else:
-        rel_rms, mean_bias = err_rms / ref_rms, bias / ref_rms
+        rel_rms, mean_bias = error_rms / ref_rms, bias / ref_rms
 
     # Pearson correlation of the centred vectors; undefined for a constant vector.
     pcc = None

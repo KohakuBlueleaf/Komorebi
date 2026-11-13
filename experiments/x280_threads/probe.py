@@ -463,12 +463,17 @@ def rates(args):
                 continue
             ticks = w[8 + 6 * i : 14 + 6 * i]
             out[f"pass_{size >> 20}MB{tag}"] = {
-                n: {"us": round(t / 50, 1), "GBps": round(size / (t / 50e6) / 1e9, 2)}
+                n: {
+                    "microseconds": round(t / 50, 1),
+                    "GBps": round(size / (t / 50e6) / 1e9, 2),
+                }
                 for n, t in zip(names, ticks)
                 if t
             }
-        out[f"job_us{tag}"] = [round(t / 50, 1) for t in w[32 : 32 + args.reps]]
-        out[f"job_invalidate_us{tag}"] = [
+        out[f"job_microseconds{tag}"] = [
+            round(t / 50, 1) for t in w[32 : 32 + args.reps]
+        ]
+        out[f"job_invalidate_microseconds{tag}"] = [
             round(t / 50, 1) for t in w[40 : 40 + args.reps]
         ]
     out["wayenable"] = hex(got[160])

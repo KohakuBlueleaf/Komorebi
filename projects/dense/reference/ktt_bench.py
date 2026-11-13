@@ -85,7 +85,7 @@ def main():
         y = ta @ tw
         kohakutt.synchronize(dev)
         synced.append(time.perf_counter() - t0)
-    out["synced_us_median"] = statistics.median(synced) * 1e6
+    out["synced_microseconds_median"] = statistics.median(synced) * 1e6
     reps = max(10, int(args.seconds / statistics.median(synced)))
     card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
     clock, stop = [], threading.Event()
@@ -107,7 +107,7 @@ def main():
     phase = meter.result.phases["loop"]
     out["loop"] = {
         "reps": reps,
-        "us_per_call": loop_s / reps * 1e6,
+        "microseconds_per_call": loop_s / reps * 1e6,
         "mean_w": phase.mean_w,
         "peak_w": phase.peak_w,
         "open_w": meter.result.phases["open"].mean_w,

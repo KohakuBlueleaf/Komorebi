@@ -104,7 +104,10 @@ def main():
             tracer.trace(args.name, o, d, rays["tmax"], any_hit, pixels, layout)
             info = tracer.passes[-1]
             busy = info["profile"]["total"][:count].astype(np.float64)
-            run = {"cores": count, "trace_us": float(np.median(info["trace_us"]))}
+            run = {
+                "cores": count,
+                "trace_microseconds": float(np.median(info["trace_microseconds"])),
+            }
             run.update(busy_first=float(busy[0]), busy_mean=float(busy.mean()))
             run.update(busy_max=float(busy.max()), busy_min=float(busy.min()))
             run.update(check=info["check"], run=info["run"])

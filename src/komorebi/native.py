@@ -23,13 +23,13 @@ CACHE_VARIABLE = "KMR_CACHE"
 PLACEHOLDER = Path("/OUT")  # the output directory in the commands that are hashed
 
 
-def native_dir():
+def native_directory():
     """The native layer's source directory beside the package in a checkout, or None."""
-    path = _env.package_dir().parent / "komorebi_native"
+    path = _env.package_directory().parent / "komorebi_native"
     return path if path.is_dir() else None
 
 
-def kernel_dir():
+def kernel_directory():
     """The dispatcher's sources (and its host interface, km_dispatch.h)."""
     return _require_native() / "x280" / "kernel"
 
@@ -39,12 +39,12 @@ def module_source():
     return _require_native() / "csrc" / "host" / "km_host.cpp"
 
 
-def engines_dir():
+def engines_directory():
     """The engines' plain-C sources, compiled into the dispatcher image."""
     return _require_native() / "x280" / "engines"
 
 
-def kmx_dir():
+def kmx_directory():
     """The kmx library: start-up, kmx.h and the layout it shares with the host."""
     return _require_native() / "x280" / "kmx"
 
@@ -52,15 +52,15 @@ def kmx_dir():
 def includes():
     """The include directories of the image and the module: the ABI, the kernel, the
     engines."""
-    return [_require_native() / "include", kernel_dir(), engines_dir()]
+    return [_require_native() / "include", kernel_directory(), engines_directory()]
 
 
-def cache_dir(environ=None):
+def cache_directory(environ=None):
     """KMR_CACHE if set, else build/komorebi in a checkout, else ~/.cache/komorebi."""
     value = (os.environ if environ is None else environ).get(CACHE_VARIABLE)
     if value:
         return Path(value).expanduser()
-    checkout = _env.package_dir().parents[1]
+    checkout = _env.package_directory().parents[1]
     if (checkout / "pyproject.toml").is_file():
         return checkout / "build" / "komorebi"
     return Path.home() / ".cache" / "komorebi"
@@ -107,7 +107,7 @@ def build_whole(out, make):
 
 
 def _require_native():
-    found = native_dir()
+    found = native_directory()
     if found is None:
         raise build.BuildError("the native sources are not beside the package")
     return found
@@ -133,16 +133,16 @@ def image_path(tree=None, defines=()):
 
     `defines` always builds (a variant image is never shipped prebuilt).
     """
-    prebuilt = _env.package_dir() / IMAGE
+    prebuilt = _env.package_directory() / IMAGE
     if prebuilt.is_file() and not defines:
         return prebuilt
     tree = _tree(tree)
-    sources = [kernel_dir() / "main.c", engines_dir() / "km_graph_engine.c"]
+    sources = [kernel_directory() / "main.c", engines_directory() / "km_graph_engine.c"]
     defines = list(defines)
     commands = build.image_commands(
         tree, PLACEHOLDER / IMAGE, sources, includes(), defines
     )
-    out = cache_dir() / f"image-{inputs_key(commands, includes())}" / IMAGE
+    out = cache_directory() / f"image-{inputs_key(commands, includes())}" / IMAGE
     if not out.is_file():
         build_whole(
             out,
@@ -157,18 +157,18 @@ def thread_image(thread, tree=None):
     """The image of a program's X280 thread (`komorebi.thread.Thread`): its sources
     linked with the kmx library, built once into the cache."""
     tree = _tree(tree)
-    sources = [*thread.source_paths(), kmx_dir() / "kmx.c"]
+    sources = [*thread.source_paths(), kmx_directory() / "kmx.c"]
     extra = [Path(i) for i in thread.includes]
     defines = [f"{k}={v}" for k, v in sorted(thread.defines.items())]
-    key = source_key([*sources, kmx_dir(), *includes(), *extra], tree)
+    key = source_key([*sources, kmx_directory(), *includes(), *extra], tree)
     key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]
-    out = cache_dir() / f"thread-{key}" / "thread.bin"
+    out = cache_directory() / f"thread-{key}" / "thread.bin"
     if not out.is_file():
         build.build_image(
             tree,
             out,
             sources,
-            includes=[kmx_dir(), *includes(), *extra],
+            includes=[kmx_directory(), *includes(), *extra],
             defines=defines,
         )
     return out
@@ -177,7 +177,7 @@ def thread_image(thread, tree=None):
 def module_path(tree=None):
     """The native host module: prebuilt beside the package when the tree is the
     runtime package's (it links that runtime), else built in the cache."""
-    prebuilt = _env.package_dir() / MODULE_FILE
+    prebuilt = _env.package_directory() / MODULE_FILE
     runtime = tree is None and _env.find_tree()[1] == _env.RUNTIME_SOURCE
     if prebuilt.is_file() and runtime:
         return prebuilt
@@ -187,7 +187,7 @@ def module_path(tree=None):
         "pymodule", tree, PLACEHOLDER / MODULE_FILE, module_source(), paths
     )
     key = inputs_key(commands, [*includes(), module_source()])
-    out = cache_dir() / f"module-{key}" / MODULE_FILE
+    out = cache_directory() / f"module-{key}" / MODULE_FILE
     if not out.is_file():
         build_whole(
             out,

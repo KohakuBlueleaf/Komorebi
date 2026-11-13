@@ -13,14 +13,16 @@ from komorebi.engines import graph as gr
 LIBRARY = "libkm_graph.so"
 CFLAGS = ["-std=c11", "-O2", "-ffreestanding", "-fPIC", "-shared", "-Wall", "-Werror"]
 U32P = ctypes.POINTER(ctypes.c_uint32)
-SUBMIT_FN = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, U32P)
+SUBMIT_FUNCTION = ctypes.CFUNCTYPE(
+    ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, U32P
+)
 STATE_WORDS = 20  # registers, runs, phase, error reason, error node
 
 _loaded = {}
 
 
 def engine_source():
-    return native.native_dir() / "x280" / "engines" / "km_graph_engine.c"
+    return native.native_directory() / "x280" / "engines" / "km_graph_engine.c"
 
 
 def library_path(cc=None):
@@ -29,9 +31,9 @@ def library_path(cc=None):
     if cc is None:
         raise native.build.BuildError("building the graph engine needs a C compiler")
     src = engine_source()
-    include = native.native_dir() / "include"
+    include = native.native_directory() / "include"
     key = native.source_key([src.parent, include / "komorebi" / "abi"], cc)
-    out = native.cache_dir() / f"graph-engine-{key}" / LIBRARY
+    out = native.cache_directory() / f"graph-engine-{key}" / LIBRARY
     if not out.is_file():
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(f".{os.getpid()}.tmp")
@@ -53,7 +55,7 @@ def load(cc=None):
         lib.kmg_check.argtypes, lib.kmg_check.restype = [vp, u32], u32
         lib.kmg_start.argtypes = [vp, vp, U32P, u32, u32]
         lib.kmg_start.restype = u32
-        lib.kmg_step.argtypes, lib.kmg_step.restype = [vp, SUBMIT_FN, vp], u32
+        lib.kmg_step.argtypes, lib.kmg_step.restype = [vp, SUBMIT_FUNCTION, vp], u32
         lib.kmg_complete.argtypes, lib.kmg_complete.restype = [vp, u32, u32], u32
         lib.kmg_retry.argtypes, lib.kmg_retry.restype = [vp, u32], u32
         lib.kmg_stop.argtypes, lib.kmg_stop.restype = [vp, u32, u32], None
@@ -82,8 +84,8 @@ class NativeExecutor:
         return ctypes.cast(self._state, U32P)[:STATE_WORDS]
 
     @property
-    def regs(self):
-        return self._words()[: gr.REGS]
+    def registers(self):
+        return self._words()[: gr.REGISTERS]
 
     @property
     def runs(self):
@@ -98,11 +100,11 @@ class NativeExecutor:
         w = self._words()
         return gr.GraphError(w[18], w[19]) if w[17] == gr.ERROR else None
 
-    def start(self, data, bindings=(), n_cores=119):
+    def start(self, data, bindings=(), core_count=119):
         self._upload = ctypes.create_string_buffer(bytes(data), len(data))
         values = (ctypes.c_uint32 * max(len(bindings), 1))(*bindings)
         return self.lib.kmg_start(
-            self._state, self._upload, values, len(bindings), n_cores
+            self._state, self._upload, values, len(bindings), core_count
         )
 
     def step(self, submit):
@@ -119,7 +121,7 @@ class NativeExecutor:
                 raised.append(err)
                 return gr.BUSY
 
-        code = self.lib.kmg_step(self._state, SUBMIT_FN(call), None)
+        code = self.lib.kmg_step(self._state, SUBMIT_FUNCTION(call), None)
         if raised:
             raise raised[0]
         return code

@@ -28,12 +28,12 @@ import komorebi as km  # noqa: E402
 COMMANDS_KERNEL = os.path.join(HERE, "kernels", "commands.cpp")
 BROADCAST_KERNEL = os.path.join(HERE, "kernels", "broadcast.cpp")
 STREAM_KERNEL = os.path.join(HERE, "kernels", "stream.cpp")
-IMAGE = os.path.join(BUILD, "command-seq.bin")
-N_CORES = 120
+IMAGE = os.path.join(BUILD, "command-sequence.bin")
+CORE_COUNT = 120
 WORDS = 32  # counter words per core, both kernels
 
 # CB indices (kernels/broadcast.h; the template's control block is 8).
-CTL_CB, CTL_BYTES = 8, 1024
+CONTROL_CB, CONTROL_BYTES = 8, 1024
 REC_CNT_CB, SHARE_CB, BROADCAST_CNT_CB, BROADCAST_CB = 9, 11, 12, 13
 BROADCAST_HEAD = 512  # broadcast buffer bytes before the block
 
@@ -45,15 +45,15 @@ LC = {
     "early": 3,
     "idle_lo": 4,
     "idle_hi": 5,
-    "torn_seq": 11,
+    "torn_sequence": 11,
     "torn_word": 12,
     "torn_value": 13,
     "healed": 14,
     "heal_polls": 15,
     "lost": 16,
-    "lost_seq": 17,
+    "lost_sequence": 17,
     "tag": 19,
-    "last_seq": 20,
+    "last_sequence": 20,
 }
 LANDING_MAGIC = 0x1A4D0000
 
@@ -226,7 +226,7 @@ def program(card, plan, rec_cnt, broadcast_cnt, args, roles, wait_cycles):
     ):
         launch.kernel(source, cores, riscv, [], [], [], rt_args, noc=noc)
     for index, size in (
-        (CTL_CB, CTL_BYTES),
+        (CONTROL_CB, CONTROL_BYTES),
         (REC_CNT_CB, WORDS * 4),
         (SHARE_CB, 64),
         (BROADCAST_CNT_CB, WORDS * 4),
@@ -241,7 +241,7 @@ def summarize_commands(cnt, n):
     idle = c["idle_lo"] + (c["idle_hi"] << 32)
     out = {
         "rec_cores_finished": int(
-            sum(int(c["magic"][i]) == (LANDING_MAGIC | i) for i in range(N_CORES))
+            sum(int(c["magic"][i]) == (LANDING_MAGIC | i) for i in range(CORE_COUNT))
         ),
         "rec_cores_all_accepted": int((c["accepted"] == n).sum()),
         "accepted": int(c["accepted"].sum()),
@@ -255,16 +255,16 @@ def summarize_commands(cnt, n):
         {
             "core": i,
             "torn": int(c["torn"][i]),
-            "seq": int(c["torn_seq"][i]),
+            "sequence": int(c["torn_sequence"][i]),
             "word": int(c["torn_word"][i]),
             "value": hex(int(c["torn_value"][i])),
         }
-        for i in range(N_CORES)
+        for i in range(CORE_COUNT)
         if c["torn"][i]
     ]
     lost = [
-        {"core": i, "seq": int(c["lost_seq"][i])}
-        for i in range(N_CORES)
+        {"core": i, "sequence": int(c["lost_sequence"][i])}
+        for i in range(CORE_COUNT)
         if c["lost"][i]
     ]
     if torn:
@@ -277,10 +277,10 @@ def summarize_commands(cnt, n):
 def summarize_broadcasts(cnt, roles, gx, mhz):
     c = {k: cnt[:, i] for k, i in LN.items()}
     span = c["t_lo"] + (c["t_hi"] << 32)
-    senders = [i for i in range(N_CORES) if int(c["role"][i]) == 1]
+    senders = [i for i in range(CORE_COUNT) if int(c["role"][i]) == 1]
     out = {
         "broadcast_cores_finished": int(
-            sum(int(c["magic"][i]) == (BROADCAST_MAGIC | i) for i in range(N_CORES))
+            sum(int(c["magic"][i]) == (BROADCAST_MAGIC | i) for i in range(CORE_COUNT))
         ),
         "senders": len(senders),
         "receivers": int((c["role"] == 2).sum()),
@@ -292,15 +292,15 @@ def summarize_broadcasts(cnt, roles, gx, mhz):
         "markers_missing": int(c["missing"].sum()),
         "gave_up": int((c["where"] != 0).sum()),
         "stopped": int(c["stopped"].sum()),
-        "wait_max_us": round(int(c["wait_max"].max()) / mhz, 2),
+        "wait_max_microseconds": round(int(c["wait_max"].max()) / mhz, 2),
     }
     if senders:
         blocks = [int(c["blocks"][i]) for i in senders]
         out["blocks_min"], out["blocks_max"] = min(blocks), max(blocks)
         out["blocks_total"] = sum(blocks)
         per = [int(span[i]) / max(int(c["blocks"][i]), 1) / mhz for i in senders]
-        out["us_per_block_mean"] = round(sum(per) / len(per), 4)
-        out["us_per_block_max"] = round(max(per), 4)
+        out["microseconds_per_block_mean"] = round(sum(per) / len(per), 4)
+        out["microseconds_per_block_max"] = round(max(per), 4)
         out["broadcast_span_ms_max"] = round(
             max(int(span[i]) for i in senders) / mhz / 1e3, 3
         )
@@ -308,7 +308,7 @@ def summarize_broadcasts(cnt, roles, gx, mhz):
         duty = [int(busy[i]) / max(int(span[i]), 1) for i in senders]
         out["duty_mean"] = round(sum(duty) / len(duty), 4)
         out["duty_min"] = round(min(duty), 4)
-    recv = [i for i in range(N_CORES) if int(c["role"][i]) == 2]
+    recv = [i for i in range(CORE_COUNT) if int(c["role"][i]) == 2]
     if recv:
         check = c["check_lo"] + (c["check_hi"] << 32)
         frac = [int(check[i]) / max(int(span[i]), 1) for i in recv]
@@ -331,7 +331,7 @@ def summarize_broadcasts(cnt, roles, gx, mhz):
             "word": int(c["bad_w"][i]),
             "value": hex(int(c["bad_v"][i])),
         }
-        for i in range(N_CORES)
+        for i in range(CORE_COUNT)
         if c["bad_words"][i]
     ]
     gave = [
@@ -344,7 +344,7 @@ def summarize_broadcasts(cnt, roles, gx, mhz):
             "peer_phase": PHASES.get(int(c["peer_phase"][i]), int(c["peer_phase"][i])),
             "peer_k": int(c["peer_k"][i]),
         }
-        for i in range(N_CORES)
+        for i in range(CORE_COUNT)
         if c["where"][i]
     ]
     if bad:
@@ -424,7 +424,7 @@ def run(card, args):
     log("counters read back")
     out = {
         "ticks": ticks,
-        "us_per_command": (
+        "microseconds_per_command": (
             round(ticks / x280mod.MTIME_HZ * 1e6 / n, 4) if ticks and n else None
         ),
         "host_wall_s": round(wall, 2),
@@ -434,13 +434,13 @@ def run(card, args):
     out.update(summarize_broadcasts(lc, roles, gx, mhz))
     rec_ok = (
         (bool(ticks) or n == 0)
-        and out["rec_cores_finished"] == N_CORES
-        and out["rec_cores_all_accepted"] == N_CORES
+        and out["rec_cores_finished"] == CORE_COUNT
+        and out["rec_cores_all_accepted"] == CORE_COUNT
         and out["lost"] == 0
         and out["torn"] == 0
     )
     broadcast_ok = (
-        out["broadcast_cores_finished"] == N_CORES
+        out["broadcast_cores_finished"] == CORE_COUNT
         and out["roles_ok"]
         and out["bad_words"] == 0
         and out["gave_up"] == 0
@@ -456,14 +456,14 @@ def x280_phase(card, args, runtime):
     n = args.commands
     plan = runtime.plan(IMAGE, args.depth, 0)
     gx, gy = plan.grid_x, plan.grid_y
-    assert gx * gy == N_CORES, (gx, gy)
+    assert gx * gy == CORE_COUNT, (gx, gy)
     mhz = plan.aiclk_mhz()
     log(f"plan: grid {gx}x{gy} panels {plan.panels} depth {plan.depth} aiclk {mhz}")
 
     def zeros(rows):
         return card.tensor(np.zeros((rows, WORDS), np.uint32), "uint32")
 
-    rec_cnt, broadcast_cnt = zeros(N_CORES), zeros(N_CORES)
+    rec_cnt, broadcast_cnt = zeros(CORE_COUNT), zeros(CORE_COUNT)
     wait_cycles = int(args.wait_ms * 1e3 * mhz)
     assert wait_cycles < 1 << 32
 

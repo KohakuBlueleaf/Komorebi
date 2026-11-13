@@ -27,7 +27,7 @@ namespace rt {
     constexpr uint32_t kFloatB = 0, kUShort = 2, kUpper = 8, kLower = 10;
     constexpr uint32_t kNegA = 1, kNegC = 2;                     // SFPMAD
     constexpr uint32_t kSetCC = 1;                               // SFPLE / SFPGT
-    constexpr uint32_t kImm = 1, kCcNone = 4, kTwos = 2;         // SFPIADD
+    constexpr uint32_t kImmediate = 1, kCcNone = 4, kTwos = 2;   // SFPIADD
     constexpr uint32_t kLt0 = 0, kNe0 = 2, kGte0 = 4, kEq0 = 6;  // SFPSETCC
     constexpr uint32_t kScaleBits = 0x3F800003;                  // float32(1.0000004)
     constexpr uint32_t kInfBits = 0x7F800000;
@@ -139,7 +139,7 @@ namespace rt {
     }
 
     // A float32 (or integer) bit pattern into an LReg as two immediates.
-    inline void imm(uint32_t r, uint32_t bits) {
+    inline void immediate(uint32_t r, uint32_t bits) {
         TT_SFPLOADI(r, kFloatB, bits >> 16);
         TT_SFPLOADI(r, kLower, bits & 0xFFFF);
     }
@@ -181,9 +181,9 @@ namespace rt {
         TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, p_setrwc::SET_D);
         configure_dest_access<ThreadId::PackThreadId>(DataFormat::Float32, true);
         all_lanes();
-        imm(L0, kScaleBits);
+        immediate(L0, kScaleBits);
         TTI_SFPCONFIG(0, SCALE, 0);
-        imm(L0, kInfBits);
+        immediate(L0, kInfBits);
         TTI_SFPCONFIG(0, INF, 0);
         TTI_SFPNOP;
         tensix_sync();
@@ -253,11 +253,11 @@ namespace rt {
         TT_SFPMOV(0, t2, t3, 0);
         TTI_SFPPUSHC(0, 0, 0, 0);
         TT_SFPIADD(0, t0, t2, kLt0);  // 32 A - 64 R < 0: one up
-        TT_SFPIADD(1, y, y, kImm | kCcNone);
+        TT_SFPIADD(1, y, y, kImmediate | kCcNone);
         TTI_SFPPOPC(0, 0, 0, 0);
         TTI_SFPPUSHC(0, 0, 0, 0);
         TT_SFPIADD(0, t0, t3, kTwos | kLt0);  // 32 A + 64 R < 0: one down
-        TT_SFPIADD(0xFFF, y, y, kImm | kCcNone);
+        TT_SFPIADD(0xFFF, y, y, kImmediate | kCcNone);
         TTI_SFPPOPC(0, 0, 0, 0);
     }
 
@@ -432,7 +432,7 @@ namespace rt {
     // Box-test and triangle-test counters: slot s += n on the enabled lanes.
     inline void count(uint32_t s, uint32_t n) {
         load(L6, s);
-        TT_SFPIADD(n, L6, L6, kImm | kCcNone);
+        TT_SFPIADD(n, L6, L6, kImmediate | kCcNone);
         store(L6, s);
     }
 

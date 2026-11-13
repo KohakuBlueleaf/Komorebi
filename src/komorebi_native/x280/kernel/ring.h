@@ -4,8 +4,8 @@
 
 #include "kernel.h"
 
-/* Copies command r->next into r->line if the source has stored it whole: 64-bit loads,
- * the rest of the line after a second load fence once seq shows it. Returns 1 or 0. */
+/* Copies command r->next into r->line if the source stored it whole: 64-bit loads, the
+ * rest of the line after a second load fence once sequence shows it. 1 or 0. */
 static inline int ring_take(kmd_ring_t* r) {
     const uint32_t i = r->next;
     volatile const uint64_t* w = (
@@ -40,13 +40,13 @@ KMD_HOT void ring_push(kmd_ring_t* r, uint32_t req, uint32_t status, uint32_t ti
         return;
     }
     const uint32_t index = ++r->pushed;
-    uint32_t ev[4] __attribute__((aligned(16)));
-    ev[0] = index;
-    ev[1] = req;
-    ev[2] = status;
-    ev[3] = ticks;
+    uint32_t event[4] __attribute__((aligned(16)));
+    event[0] = index;
+    event[1] = req;
+    event[2] = status;
+    event[3] = ticks;
     kmd_store_chunk(
-        r->events + (index & (r->event_depth - 1u)) * sizeof(km_event_t), ev
+        r->events + (index & (r->event_depth - 1u)) * sizeof(km_event_t), event
     );
 }
 

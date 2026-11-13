@@ -62,11 +62,11 @@ def doctor():
     lines = [
         f"komorebi-runtime {info['version']} (tt-metal {info['pin']}, "
         f"build {info['build']}, patches {', '.join(info['patches'])})",
-        f"package   {kr.package_dir()}",
+        f"package   {kr.package_directory()}",
     ]
     problems = 0
     missing = [
-        name for name in info["files"] if not (kr.package_dir() / name).is_file()
+        name for name in info["files"] if not (kr.package_directory() / name).is_file()
     ]
     if missing:
         problems += 1

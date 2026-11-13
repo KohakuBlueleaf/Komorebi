@@ -116,11 +116,11 @@ def run(session, prog, frames, meter, log, deadline_s=5.0):
         n = int(f[P["RP_L_SUBMITTED"]])
         out.append(
             {
-                "wall_us": float(f[P["RP_L_FRAME"]]) * us,
-                "plan_us": [float(x) * us for x in f[1:5]],
+                "wall_microseconds": float(f[P["RP_L_FRAME"]]) * us,
+                "plan_microseconds": [float(x) * us for x in f[1:5]],
                 "chunks": [int(x) for x in f[5:9]],
-                "plan_parts_us": [float(x) * us for x in f[10:14]],
-                "command_us": (
+                "plan_parts_microseconds": [float(x) * us for x in f[10:14]],
+                "command_microseconds": (
                     f[P["RP_L_COMMAND"] : P["RP_L_COMMAND"] + n] * us
                 ).tolist(),
             }
@@ -130,7 +130,7 @@ def run(session, prog, frames, meter, log, deadline_s=5.0):
         "ran": res.ran,
         "error": res.error,
         "words": list(res.words),
-        "thread_us": res.us,
+        "thread_microseconds": res.microseconds,
         "kernel": r.result(),
         "host_s": host_s,
     }

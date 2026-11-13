@@ -68,7 +68,7 @@ Nothing runs at import.
 | `lib_dir()`, `tree()` | the libraries; the kernel runtime tree inside the package |
 | `x280()` | the X280 runtime objects in link order, the linker script, the include directory, the idle image |
 | `sfpi_dir()`, `sfpi_bin()` | where the compiler is fetched to; its `bin` directory, or None before the fetch |
-| `cache_dir()` | `KMR_CACHE`, else `$XDG_CACHE_HOME/komorebi`, else `~/.cache/komorebi` |
+| `cache_directory()` | `KMR_CACHE`, else `$XDG_CACHE_HOME/komorebi`, else `~/.cache/komorebi` |
 | `root()` | the runtime root: `<cache>/runtime-<version>/`, a directory of links to the tree's entries plus `runtime/sfpi` once the compiler is fetched. It has a tt-metal tree's layout, so it serves as `TT_METAL_RUNTIME_ROOT` and as the tree Komorebi builds X280 images against |
 | `activate()` | sets `TT_METAL_RUNTIME_ROOT` to `root()` unless it is set |
 

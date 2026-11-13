@@ -25,11 +25,11 @@ OUT_NAMES = (
 
 def parents(nodes):
     """Parent of every node (-1 for the root)."""
-    par = np.full(len(nodes), -1, dtype=np.int64)
+    parallel = np.full(len(nodes), -1, dtype=np.int64)
     inner = np.nonzero(~bvh.is_leaf(nodes[:, 6]))[0]
-    par[nodes[inner, 6].astype(np.int64)] = inner
-    par[nodes[inner, 7].astype(np.int64)] = inner
-    return par
+    parallel[nodes[inner, 6].astype(np.int64)] = inner
+    parallel[nodes[inner, 7].astype(np.int64)] = inner
+    return parallel
 
 
 def ray_pool(scene_name, rng, n_pixels):
@@ -67,7 +67,7 @@ def scene_inputs(rng, n, scene_name):
     _, tree, o, d, tmax, leaf = ray_pool(scene_name, rng, 4096)
     nodes, tris = tree["nodes"], tree["tris"]
     n_leaves = len(tris)
-    par = parents(nodes)
+    parallel = parents(nodes)
     r = rng.integers(0, len(o), n)
     hit_leaf = leaf[r]
     # Triangles: the hit one, its neighbours in leaf order, or a random one.
@@ -79,7 +79,7 @@ def scene_inputs(rng, n, scene_name):
     # Boxes: the hit leaf's node or one of its ancestors, or a random node.
     node = tree["leaf_node"][np.maximum(hit_leaf, 0)].astype(np.int64)
     for _ in range(int(rng.integers(0, 6))):
-        up = par[node]
+        up = parallel[node]
         node = np.where((up >= 0) & (rng.random(n) < 0.6), up, node)
     node = np.where(
         (hit_leaf < 0) | (rng.random(n) < 0.3), rng.integers(0, len(nodes), n), node

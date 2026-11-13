@@ -51,7 +51,8 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    const uint32_t ctl = get_arg_val<uint32_t>(0), tslots = get_arg_val<uint32_t>(1);
+    const uint32_t control = get_arg_val<uint32_t>(0);
+    const uint32_t tslots = get_arg_val<uint32_t>(1);
     const uint32_t tslot_bytes = get_arg_val<uint32_t>(2);
     const uint64_t idle = static_cast<uint64_t>(get_arg_val<uint32_t>(3)) << 20;
     uint32_t k = 0;
@@ -60,7 +61,7 @@ void kernel_main() {
     PACK((k = 2));
     compute_kernel_hw_startup(kCbIn, kCbOut);
     volatile tt_l1_ptr uint32_t* t = (
-        reinterpret_cast<volatile tt_l1_ptr uint32_t*>(ctl + 4 * kTrisc)
+        reinterpret_cast<volatile tt_l1_ptr uint32_t*>(control + 4 * kTrisc)
     );
     const ov::Entry entry = reinterpret_cast<ov::Entry>(tslots + k * tslot_bytes);
     ov::Args args{};

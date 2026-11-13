@@ -17,7 +17,7 @@ constexpr uint32_t kHandlerLate = 4;
 // 2 pages of kCbOut (after an odd number of pages); 1: reader, kInPages of kCbIn.
 constexpr uint32_t kHandlerBadItem = 5;
 // RESULT (a test): every core's writer gives a0 + its index as the result; with
-// KM_F_RESULT the command is acknowledged with the leader's, a0.
+// KM_FLAG_RESULT the command is acknowledged with the leader's, a0.
 constexpr uint32_t kHandlerResult = 6;
 
 constexpr uint32_t kCbIn = 0;

@@ -22,8 +22,8 @@
  "deadline_s": 0.05,
  "reduce": "tree",
  "profile_mhz": 1350,
- "load_us": null,
- "single_us": {
+ "load_microseconds": null,
+ "single_microseconds": {
   "median": 101.9,
   "min": 100.22
  },
@@ -32,8 +32,8 @@
   "batch": 39255,
   "seconds": 4.778,
   "wall_seconds": 4.787,
-  "us_per_call": 121.709,
-  "command_us_median": 101.6,
+  "microseconds_per_call": 121.709,
+  "command_microseconds_median": 101.6,
   "mean_w": 79.39364746200984,
   "peak_w": 83.0,
   "open_w": 62.34865785648405,
@@ -45,7 +45,7 @@
   ]
  },
  "tflops": 8.822205621605633,
- "cut_us_per_call": {
+ "cut_microseconds_per_call": {
   "parts_only": 106.976
  },
  "run": {

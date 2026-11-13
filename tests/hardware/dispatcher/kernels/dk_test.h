@@ -8,7 +8,7 @@
 #define DK_HANDLER_CHECK 1u /* check a2..a9 against a0 (key) and a1 (parameter) */
 #define DK_HANDLER_DELAY 2u /* wait a1 Tensix clock cycles */
 #define DK_HANDLER_STALL 3u /* core a1 waits for the stop flag; the rest run a NOP */
-/* result dk_result(a0, a1); with KM_F_RESULT the leader sends it */
+/* result dk_result(a0, a1); with KM_FLAG_RESULT the leader sends it */
 #define DK_HANDLER_RESULT 4u
 #define DK_HANDLER_SUM 5u /* result a0 + count (the graph references' result word) */
 
@@ -46,10 +46,10 @@ static inline uint32_t dk_mix(uint32_t key) {
 #define DK_WHERE_NOC_WRITE 8u  /* waiting for writes to be acknowledged */
 #define DK_WHERE_NOC_ATOMIC 9u /* waiting for atomics to be acknowledged */
 
-/* State words at KM_CTL_STATE: last sequence consumed per slot, then these. */
+/* State words at KM_CONTROL_STATE: last sequence consumed per slot, then these. */
 #define DK_S_GAVE 16u
 #define DK_S_WHERE 17u
-#define DK_S_SEQ 18u /* the command being run, or the last one */
+#define DK_S_SEQUENCE 18u /* the command being run, or the last one */
 
 /* Per-core counters: DK_WORDS words, page `me` of the output tensor. */
 enum {

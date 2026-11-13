@@ -22,14 +22,14 @@ _X280_OBJECTS = ("entry_active.o", "x280_active_start.o")
 _X280_IDLE_IMAGE = Path("build/x280/firmware-lim-idle.bin")
 
 
-def package_dir():
+def package_directory():
     """The directory of the installed `komorebi` package."""
     return Path(__file__).resolve().parent
 
 
-def include_dir():
+def include_directory():
     """The native include directory beside the package in a checkout, else None."""
-    path = package_dir().parent / "komorebi_native" / "include"
+    path = package_directory().parent / "komorebi_native" / "include"
     return path if path.is_dir() else None
 
 
@@ -72,20 +72,20 @@ def runtime_version():
     return komorebi_runtime.version()
 
 
-def build_dir(tree):
+def build_directory(tree):
     """`tree`'s build directory (the one holding build.ninja), or None."""
     path = Path(tree) / "build"
     return path if (path / "build.ninja").is_file() else None
 
 
-def x280_source_dir(tree):
+def x280_source_directory(tree):
     """The directory of tt-metal's X280 runtime sources inside `tree`."""
     return Path(tree) / _X280_SOURCE
 
 
 def x280_linker_script(tree):
     """The linker script of X280 images."""
-    return x280_source_dir(tree) / "ld" / "x280.ld"
+    return x280_source_directory(tree) / "ld" / "x280.ld"
 
 
 def x280_objects(tree):

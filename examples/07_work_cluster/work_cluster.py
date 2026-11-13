@@ -78,9 +78,9 @@ def build(name, sources, shared):
     cc = shutil.which("cc")
     if cc is None:
         raise SystemExit("this path needs a C compiler (cc)")
-    includes = [HERE, native.kmx_dir(), native.includes()[0]]
+    includes = [HERE, native.kmx_directory(), native.includes()[0]]
     key = native.source_key([*sources, *includes], "/")
-    out = native.cache_dir() / "examples" / f"{name}-{key}" / name
+    out = native.cache_directory() / "examples" / f"{name}-{key}" / name
 
     def make(path):
         flags = ["-shared", "-fPIC", "-ffreestanding"] if shared else []
@@ -231,7 +231,7 @@ def card_paths(args, loops, which):
             results = run.thread_results(timeout=15.0)
             took = time.monotonic() - t
             for c, r in results.items():
-                loop_s = took if path == "hostfed" else r.us / 1e6
+                loop_s = took if path == "hostfed" else r.microseconds / 1e6
                 ms.setdefault(path, {})[c] = round(loop_s * 1e3, 2)
                 log(f"{path} on cluster {c}: {r.state}, code {r.code}, "
                     f"{ms[path][c]} ms")  # fmt: skip
@@ -260,8 +260,8 @@ def send_run(run):
                 r.handler,
                 group=(r.first, r.count),
                 args=[r.a0, r.a1],
-                exclusive=bool(r.flags & k["KM_F_EXCL"]),
-                result=bool(r.flags & k["KM_F_RESULT"]),
+                exclusive=bool(r.flags & k["KM_FLAG_EXCLUSIVE"]),
+                result=bool(r.flags & k["KM_FLAG_RESULT"]),
             )
             for r in recs
         ]

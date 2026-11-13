@@ -16,7 +16,7 @@ from komorebi.session import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 T0 = time.monotonic()
-TICKS_PER_US = 50  # kmx_time() counts the 50 MHz timer
+TICKS_PER_MICROSECOND = 50  # kmx_time() counts the 50 MHz timer
 LINE = 16  # words of a core's line in region `out` (x280_ports.h)
 HASH, ROUNDS, CALLS, SUM_LO, SUM_HI, MAX, WHO = range(7)
 CODES = {0: "ok", 1: "bad words or region", 2: "late or stopped"}
@@ -163,8 +163,8 @@ def pull_main(args):
         "cores": cores,
         "x280_cores": args.x280_cores,
         "aiclk_mhz": mhz,
-        "unit_us_mean": round(float(unit_cost.mean()) / mhz, 2),
-        "range_us_mean": round(float(unit_cost.mean()) * args.per / mhz, 1),
+        "unit_microseconds_mean": round(float(unit_cost.mean()) / mhz, 2),
+        "range_microseconds_mean": round(float(unit_cost.mean()) * args.per / mhz, 1),
         "equal_model_slowest_over_mean": round(float(model.max() / model.mean()), 3),
         "codes": {c: r.code for c, r in results.items()},
     }
@@ -192,11 +192,11 @@ def pull_main(args):
             )
         exact = exact and ok
         out[name] = {
-            "pass_us": round(ticks[k] / TICKS_PER_US, 1),
+            "pass_microseconds": round(ticks[k] / TICKS_PER_MICROSECOND, 1),
             "slowest_over_mean": round(float(work.max() / max(work.mean(), 1)), 3),
-            "span_us_max": round(float(lines[:, P_SPAN].max()) / mhz, 1),
+            "span_microseconds_max": round(float(lines[:, P_SPAN].max()) / mhz, 1),
             "pulls": pulls,
-            "wait_us_per_pull": round(
+            "wait_microseconds_per_pull": round(
                 float(lines[:, P_WAITED].sum()) / max(pulls + cores, 1) / mhz, 2
             ),
             "exact": bool(ok),
@@ -250,14 +250,18 @@ def main():
             (lines[:, HASH] == expected(cores, args.rounds, args.asks)).all()
             and (lines[:, ROUNDS] == args.rounds).all()
         ),
-        "ask_us_mean": round(float(cycles.sum()) / max(calls.sum(), 1) / mhz, 3),
-        "ask_us_max": round(float(lines[:, MAX].max(initial=0)) / mhz, 3),
-        "round_us_mean": round(((w[3] << 32) + w[2]) / max(w[0], 1) / TICKS_PER_US, 1),
-        "round_us_best": round(w[4] / TICKS_PER_US, 1),
+        "ask_microseconds_mean": round(
+            float(cycles.sum()) / max(calls.sum(), 1) / mhz, 3
+        ),
+        "ask_microseconds_max": round(float(lines[:, MAX].max(initial=0)) / mhz, 3),
+        "round_microseconds_mean": round(
+            ((w[3] << 32) + w[2]) / max(w[0], 1) / TICKS_PER_MICROSECOND, 1
+        ),
+        "round_microseconds_best": round(w[4] / TICKS_PER_MICROSECOND, 1),
         "asks_per_s": 0,
     }
     if w[2] or w[3]:
-        total_s = ((w[3] << 32) + w[2]) / (TICKS_PER_US * 1e6)
+        total_s = ((w[3] << 32) + w[2]) / (TICKS_PER_MICROSECOND * 1e6)
         out["asks_per_s"] = round(int(calls.sum()) / total_s)
     out["ok"] = (
         all(r.ran and r.code == 0 and r.error == "none" for r in results.values())

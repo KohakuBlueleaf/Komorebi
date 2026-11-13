@@ -23,8 +23,8 @@ FORMS = {
     "tsan": ["-O1", "-g", "-fsanitize=thread"],
     "pinned": ["-O0"],
 }
-HARNESS = ["sim", "stub_calls", "dispatcher", "dyn_dispatch", "checks", "pinned"]
-SIM_FAMILY = ["sim", "stub_calls", "dispatcher", "dyn_dispatch"]
+HARNESS = ["sim", "stub_calls", "dispatcher", "messages_dispatch", "checks", "pinned"]
+SIM_FAMILY = ["sim", "stub_calls", "dispatcher", "messages_dispatch"]
 ROWS = ["smoke", "exit_partial_group", "completion_every_group"]
 PARTS = ("unpack", "math", "pack")
 
@@ -68,11 +68,11 @@ def units(tree, main):
             for p in PARTS
         ],
         *[(u, HERE / f"{u}.cpp", ["-std=c++17", "-Werror"]) for u in [*HARNESS, main]],
-        *dyn_units(tree),
+        *messages_units(tree),
     ]
 
 
-def dyn_units(tree):
+def messages_units(tree):
     """The dynamic handler's generic reader and writer, the forward example's compute
     (per thread), and the scenarios that run them."""
     kernels = tree / "src" / "komorebi_native" / "kernels"
@@ -80,14 +80,14 @@ def dyn_units(tree):
     trisc = ["-std=c++17", "-DCOMPILE_FOR_TRISC"]
     return [
         (
-            "dyn_reader",
-            kernels / "dyn_reader.cpp",
-            ["-std=c++17", "-Dkernel_main=kmsim_dyn_reader_main"],
+            "messages_reader",
+            kernels / "messages_reader.cpp",
+            ["-std=c++17", "-Dkernel_main=kmsim_messages_reader_main"],
         ),
         (
-            "dyn_writer",
-            kernels / "dyn_writer.cpp",
-            ["-std=c++17", "-Dkernel_main=kmsim_dyn_writer_main"],
+            "messages_writer",
+            kernels / "messages_writer.cpp",
+            ["-std=c++17", "-Dkernel_main=kmsim_messages_writer_main"],
         ),
         *[
             (
@@ -102,7 +102,11 @@ def dyn_units(tree):
             )
             for p in PARTS
         ],
-        ("dyn_scenarios", HERE / "dyn_scenarios.cpp", ["-std=c++17", "-Werror"]),
+        (
+            "messages_scenarios",
+            HERE / "messages_scenarios.cpp",
+            ["-std=c++17", "-Werror"],
+        ),
     ]
 
 

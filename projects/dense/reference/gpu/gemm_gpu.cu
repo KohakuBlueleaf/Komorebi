@@ -168,8 +168,8 @@ int main(int argc, char** argv) {
     std::printf(
         "{\"device\": \"%s\", \"type\": \"%s\", \"m\": %d, \"k\": %d, \"n\": %d, "
         "\"first_ms\": %.4f, \"synced_ms_median\": %.5f, \"synced_ms_min\": %.5f, "
-        "\"reps_n\": %d, \"loop_ms\": %.4f, \"us_per_call\": %.4f, \"tflops\": %.3f, "
-        "\"sample_max_err_over_max\": %.3g}\n",
+        "\"reps_n\": %d, \"loop_ms\": %.4f, \"microseconds_per_call\": %.4f, \"tflops\": %.3f, "
+        "\"sample_max_error_over_max\": %.3g}\n",
         prop.name, type.c_str(), m, k, n, first_ms, one_ms,
         *std::min_element(synced.begin(), synced.end()), reps, ms, ms * 1e3 / reps,
         2.0 * m * k * n / (ms * 1e-3 / reps) / 1e12, err / scale

@@ -850,7 +850,7 @@ namespace {
             const std::vector<uint64_t>& work_noc,
             const std::vector<uint64_t>& work_noc_addr,
             int64_t upload_bytes,
-            uint64_t dyn_handler
+            uint64_t messages_handler
         ) {
             require_open();
             if (session_) {
@@ -962,7 +962,7 @@ namespace {
             }
             a.version = KMD_ARGS_VERSION;
             a.upload_bytes = upload_bytes_;
-            a.dyn_handler = dyn_handler;
+            a.messages_handler = messages_handler;
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &a, sizeof(a));
             tile_->write_available_lim(base_ + KMD_LIM_ARGS, block);
@@ -1076,8 +1076,8 @@ namespace {
             }
         }
 
-        // Spins until settle_us_ passed since the last fence: a store that follows a
-        // fence too closely often stalls about 12 us.
+        // Spins until settle_microseconds_ passed since the last fence: a store that
+        // follows a fence too closely often stalls about 12 us.
         void settle() const {
             const auto until = settled();
             while (Clock::now() < until) {
@@ -1089,13 +1089,13 @@ namespace {
             return (
                 fenced_ +
                 std::chrono::duration_cast<Clock::duration>(
-                    std::chrono::duration<double, std::micro>(settle_us_)
+                    std::chrono::duration<double, std::micro>(settle_microseconds_)
                 )
             );
         }
 
         // Stores the first k commands that fit as commands next .. next + k - 1 (number
-        // in seq and the landing words), the read count, one fence. Returns k.
+        // in sequence and the landing words), the read count, one fence. Returns k.
         uint32_t push(const uint32_t* recs, size_t n) {
             const uint32_t k = static_cast<uint32_t>(std::min<size_t>(n, room()));
             store(recs, k);
@@ -1103,7 +1103,7 @@ namespace {
         }
 
         // Queues n commands for wait(), stored in order as the ring has room (the
-        // kernel orders KM_F_EXCL ones). Returns the number queued.
+        // kernel orders KM_FLAG_EXCLUSIVE ones). Returns the number queued.
         size_t enqueue(const uint32_t* recs, size_t n) {
             require_open();
             queue_.insert(queue_.end(), recs, recs + 16 * n);
@@ -1142,7 +1142,7 @@ namespace {
                         need[off] = 0;
                         left--;
                     }
-                    other = other || (out[e + 2] & 0xFFu) != KM_EV_DONE;
+                    other = other || (out[e + 2] & 0xFFu) != KM_EVENT_DONE;
                 }
                 if (
                     left == 0 || other || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
@@ -1482,10 +1482,10 @@ namespace {
         uint64_t base_ = 0;  // LIM address of the layout (the argument block)
         std::vector<std::array<uint32_t, 2>> panels_;  // logical column ranges
         uint32_t tag_ = 0, depth_ = 1, host_depth_ = 1, event_depth_ = 1;
-        uint32_t next_ = 1;       // number of the next command
-        uint32_t seen_ = 0;       // events read from the ring
-        uint32_t published_ = 0;  // the read count last stored into LIM
-        double settle_us_ = 1.0;  // pause between a fence and the next store
+        uint32_t next_ = 1;                 // number of the next command
+        uint32_t seen_ = 0;                 // events read from the ring
+        uint32_t published_ = 0;            // the read count last stored into LIM
+        double settle_microseconds_ = 1.0;  // pause between a fence and the next store
         Clock::time_point fenced_{};
         uint64_t upload_bytes_ = 0;  // the upload region's size
 
@@ -1539,8 +1539,8 @@ namespace {
             next_ += k;
         }
 
-        // One batch from the queue: the commands up to upto that fit. An exclusive
-        // command is stored like any other; the kernel's KM_F_EXCL check orders it.
+        // One batch from the queue: the commands up to upto that fit. An exclusive one
+        // is stored as any other; the kernel's KM_FLAG_EXCLUSIVE check orders it.
         void store_queued(uint32_t upto) {
             const int64_t due = static_cast<int32_t>(upto - next_) + int64_t{1};
             size_t k = std::min<size_t>({queued(), batch_, room()});
@@ -1877,7 +1877,7 @@ NB_MODULE(_km_host, m) {
         .def_ro("event_depth", &Dispatch::event_depth_)
         .def_ro("next", &Dispatch::next_)
         .def_ro("seen", &Dispatch::seen_)
-        .def_rw("settle_us", &Dispatch::settle_us_)
+        .def_rw("settle_microseconds", &Dispatch::settle_microseconds_)
         .def_rw("batch", &Dispatch::batch_)
         .def_prop_ro("queued", &Dispatch::queued)
         .def_prop_ro("is_open", &Dispatch::is_open)
@@ -1900,7 +1900,7 @@ NB_MODULE(_km_host, m) {
             nb::arg("work_noc") = std::vector<uint64_t>{},
             nb::arg("work_noc_addr") = std::vector<uint64_t>{},
             nb::arg("upload_bytes") = -1,
-            nb::arg("dyn_handler") = 0
+            nb::arg("messages_handler") = 0
         ).def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
         .def_ro("upload_bytes", &Dispatch::upload_bytes_)

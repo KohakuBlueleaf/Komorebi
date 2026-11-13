@@ -51,7 +51,7 @@ def parse():
 def main():
     a = parse()
     try:
-        dyn = Dynamic(
+        messages = Dynamic(
             handler=FORWARD["kHandlerForward"],
             max_live=a.max_live,
             queue_messages=a.queue_messages,
@@ -59,16 +59,16 @@ def main():
             idle_cycles=a.idle_cycles,
             counters=a.counters,
         )
-        dyn.check(119, 4 << 30, 4)
-        dyn.check(a.count, 4 << 30, 4)
+        messages.check(119, 4 << 30, 4)
+        messages.check(a.count, 4 << 30, 4)
     except ValueError as err:  # the launcher's rejection, before any device opens
         print(json.dumps({"ok": False, "rejected": str(err)}), flush=True)
         sys.exit(1)
     kernels = fed.Kernels(
-        reader=KERNELS / "dyn_reader.cpp",
+        reader=KERNELS / "messages_reader.cpp",
         compute=EXAMPLE / "kernels" / "compute.cpp",
-        writer=KERNELS / "dyn_writer.cpp",
-        cbs=[(b.index, "uint32", b.page_bytes, b.pages) for b in dyn.buffers()],
+        writer=KERNELS / "messages_writer.cpp",
+        cbs=[(b.index, "uint32", b.page_bytes, b.pages) for b in messages.buffers()],
     )
     run = rec.command(
         FORWARD["kHandlerForward"],
@@ -82,7 +82,7 @@ def main():
             a.stall + 1,
             a.probe + 1,
         ],
-        flags=K["KM_F_EXCL"],
+        flags=K["KM_FLAG_EXCLUSIVE"],
     )
     with km.Session(log=fed.log) as session:
         fed.log("device open")
@@ -96,22 +96,22 @@ def main():
             depth=4,
             deadline_s=a.deadline,
             wait_s=a.wait,
-            dynamic=dyn,
+            dynamic=messages,
         )
         res = rec.as_uint32(fed.read_int32(res_t))[: a.count]
         fed.log("results read back")
-    print(json.dumps(report(a, dyn, result, res)), flush=True)
+    print(json.dumps(report(a, messages, result, res)), flush=True)
 
 
-def report(a, dyn, result, res):
+def report(a, messages, result, res):
     """The checks and numbers of one run as a dict."""
-    seq = int(result.commands["seq"][0])
+    sequence = int(result.commands["sequence"][0])
     lines = result.lines[: a.count]
-    gave_at = (K["KM_CTL_DYN"] + K["KM_DYN_GAVE"]) // 4
+    gave_at = (K["KM_CONTROL_MESSAGES"] + K["KM_MESSAGES_GAVE"]) // 4
     gave = {
-        c: [int(v) for v in result.ctl[c, gave_at : gave_at + 4]]
+        c: [int(v) for v in result.control[c, gave_at : gave_at + 4]]
         for c in range(a.count)
-        if result.ctl[c, gave_at]
+        if result.control[c, gave_at]
     }
     m = len(counter_tiles(0, a.count, a.counters).workers)  # the rest: counter tiles
     one = a.one_core if a.one_core >= 0 else None
@@ -124,8 +124,8 @@ def report(a, dyn, result, res):
     out = {
         "feeder": result.summary,
         "run_status": int(result.commands["status"][0]),
-        "run_seq": seq,
-        "exact": bool((res[:, FORWARD["kResRun"]] == seq).all())
+        "run_sequence": sequence,
+        "exact": bool((res[:, FORWARD["kResRun"]] == sequence).all())
         and bool((res[:m, FORWARD["kResConsumed"]] == consumed).all())
         and bool((totals == total).all())
         and bool((res[:m, FORWARD["kResVisits"]] == visits).all())
@@ -136,17 +136,17 @@ def report(a, dyn, result, res):
         "nulls": int(res[:, FORWARD["kResNull"]].sum()),
         "probe_sent": int(res[:, FORWARD["kResSent"]].sum()),
         "rejected": int(res[:, FORWARD["kResRejected"]].sum()),
-        "quota_start": dyn.quota(result.lines.shape[0]),
+        "quota_start": messages.quota(result.lines.shape[0]),
         "quota_left_min": int(res[:m, FORWARD["kResQuota"]].min()),
         "lines_not_idle": [
             c
             for c in range(a.count)
-            if lines[c, K["KM_DYN_LINE_RUN"]] != seq
-            or lines[c, K["KM_DYN_LINE_STATE"]] != K["KM_DYN_IDLE"]
+            if lines[c, K["KM_MESSAGES_LINE_RUN"]] != sequence
+            or lines[c, K["KM_MESSAGES_LINE_STATE"]] != K["KM_MESSAGES_IDLE"]
         ],
-        "sent": int(lines[:, K["KM_DYN_LINE_SENT"]].sum()),
-        "consumed": int(lines[:, K["KM_DYN_LINE_CONSUMED"]].sum()),
-        "dyn_gave": gave,
+        "sent": int(lines[:, K["KM_MESSAGES_LINE_SENT"]].sum()),
+        "consumed": int(lines[:, K["KM_MESSAGES_LINE_CONSUMED"]].sum()),
+        "messages_gave": gave,
         "state_gave": {
             c: {k: s[k] for k in ("reader", "writer", "compute") if s[k]}
             for c in range(a.count)
@@ -165,18 +165,22 @@ def timing(result, res):
     run = result.rows[1]  # the RUN command is command 0
     submit = int(result.commands["submit"][0])
     out = {
-        "checks": int(run[K["kFrRecDynChecks"]]),
-        "submitter_sent": int(run[K["kFrRecDynSent"]]),
-        "gave_core": int(run[K["kFrRecDynGave"]]) - 1,
+        "checks": int(run[K["kFrRecMessagesChecks"]]),
+        "submitter_sent": int(run[K["kFrRecMessagesSent"]]),
+        "gave_core": int(run[K["kFrRecMessagesGave"]]) - 1,
     }
-    quiet, ack = int(run[K["kFrRecDynEnd"]]), int(run[K["kFrRecDynEndAck"]])
+    quiet, ack = int(run[K["kFrRecMessagesEnd"]]), int(run[K["kFrRecMessagesEndAck"]])
     last = max(int(v) for v in res[:, FORWARD["kResLastConsume"]])
     if quiet:
-        out["run_to_quiet_us"] = float(rec.wrap(quiet - submit)) / result.mhz
+        out["run_to_quiet_microseconds"] = float(rec.wrap(quiet - submit)) / result.mhz
         if last:
-            out["last_consume_to_quiet_us"] = float(rec.wrap(quiet - last)) / result.mhz
+            out["last_consume_to_quiet_microseconds"] = (
+                float(rec.wrap(quiet - last)) / result.mhz
+            )
         if ack:
-            out["quiet_to_end_ack_us"] = float(rec.wrap(ack - quiet)) / result.mhz
+            out["quiet_to_end_ack_microseconds"] = (
+                float(rec.wrap(ack - quiet)) / result.mhz
+            )
     return out
 
 

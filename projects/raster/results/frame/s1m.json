@@ -5,7 +5,7 @@
  "upload_s": 3.3340958108892664,
  "x280_mhz": 1000,
  "thread": {
-  "us": {
+  "microseconds": {
    "count": 3825.496790123457,
    "sum": 59.10493827160494,
    "hist": 23.84172839506173,
@@ -15,9 +15,9 @@
    "setup": 5059.996543209877,
    "fill": 2107.7446913580247
   },
-  "middle_us": {
+  "middle_microseconds": {
    "TAKE": 73.4925925925926,
-   "HEAVY_US": 88.97308641975309,
+   "HEAVY_MICROSECONDS": 88.97308641975309,
    "CUT": 206.2962962962963,
    "SORT": 118.29234567901234,
    "ASSIGN": 188.5814814814815,
@@ -25,19 +25,19 @@
    "PAGES": 18.108641975308643,
    "GIVE": 33.379753086419754
   },
-  "frame_us": 12125.016296296295,
+  "frame_microseconds": 12125.016296296295,
   "first_run": {
    "ran": true,
    "state": "done",
    "error": "none",
    "code": 0,
    "where": 8,
-   "thread_us": 982126.32,
+   "thread_microseconds": 982126.32,
    "slots": 656432,
    "items": 1204,
    "marks": 1054,
    "heavy": 130,
-   "us": {
+   "microseconds": {
     "count": 309859.56,
     "sum": 4791.18,
     "hist": 1931.18,
@@ -47,9 +47,9 @@
     "setup": 409859.02,
     "fill": 170722.44
    },
-   "middle_us": {
+   "middle_microseconds": {
     "TAKE": 6002.96,
-    "HEAVY_US": 7248.26,
+    "HEAVY_MICROSECONDS": 7248.26,
     "CUT": 16690.48,
     "SORT": 9562.82,
     "ASSIGN": 15271.56,

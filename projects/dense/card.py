@@ -17,7 +17,8 @@ KERNELS = pl.HERE / "kernels"
 GRID_KERNELS = KERNELS / "grid"
 SPLIT_KERNELS = KERNELS / "split"
 BROADCAST_FIELDS = abi.struct_fields(
-    _env.include_dir() / "komorebi" / "device" / "km_broadcast.hpp", "BroadcastArgs"
+    _env.include_directory() / "komorebi" / "device" / "km_broadcast.hpp",
+    "BroadcastArgs",
 )
 
 
@@ -72,11 +73,11 @@ class Product:
         self.run = session.load(
             program(p, tensors["a"], fidelity), deadline=deadline, wait=1.0
         )
-        self.load_us = None
+        self.load_microseconds = None
         if p.resident:
             w = tensors["w"].address
             handle = self.run.submit("load", self.group, pl.load_args(p, w))
-            self.load_us = self.run.wait(handle, timeout=10.0).us
+            self.load_microseconds = self.run.wait(handle, timeout=10.0).us
 
     def words(self, mode):
         t = self.t
@@ -99,7 +100,7 @@ class Product:
         bad = [e for e in events if e.kind != "done"]
         if bad:
             raise km.KomorebiError(f"{len(bad)} commands not done: {bad[0]}")
-        return host_s, np.array([e.us for e in events])
+        return host_s, np.array([e.microseconds for e in events])
 
     def single(self, n, mode=K["kModeFull"]):
         """n PRODUCT commands one at a time (each waited for): microseconds each."""
@@ -129,13 +130,13 @@ class Product:
         out = {"error": f"{type(err).__name__}: {err}"}
         try:
             self.run.stop()
-        except km.KomorebiError as stop_err:
-            out["stop"] = f"{type(stop_err).__name__}: {stop_err}"
+        except km.KomorebiError as stop_error:
+            out["stop"] = f"{type(stop_error).__name__}: {stop_error}"
         try:
             out["broadcasts"] = broadcasts_at_stall(self.run.state())
             out |= self.summary()
-        except km.KomorebiError as state_err:
-            out["state"] = f"{type(state_err).__name__}: {state_err}"
+        except km.KomorebiError as state_error:
+            out["state"] = f"{type(state_error).__name__}: {state_error}"
         return out
 
     def summary(self):
@@ -269,7 +270,7 @@ class GridProduct:
         self.group = g.group(nocs.grid)
         program = grid_program(g, nocs, tensors, fidelity)
         self.run = session.load(program, deadline=deadline, wait=wait)
-        self.load_us = None
+        self.load_microseconds = None
 
     def words(self, mode):
         t = self.t
@@ -290,7 +291,7 @@ class GridProduct:
         bad = [e for e in events if e.kind != "done"]
         if bad:
             raise km.KomorebiError(f"{len(bad)} commands not done: {bad[0]}")
-        return host_s, np.array([e.us for e in events])
+        return host_s, np.array([e.microseconds for e in events])
 
     def single(self, n, mode=G["kGridFull"]):
         """n GRID commands one at a time (each waited for): microseconds each."""
@@ -357,7 +358,7 @@ class SplitProduct(GridProduct):
         self.group = (0, sp.cores())
         program = split_program(sp, tensors, fidelity)
         self.run = session.load(program, deadline=deadline, wait=wait)
-        self.load_us = None
+        self.load_microseconds = None
 
     def words(self, mode):
         addr = [self.t[k].address for k in ("a", "w", "y")]

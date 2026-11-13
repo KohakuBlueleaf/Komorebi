@@ -105,7 +105,7 @@ grid_timeout=10.0, kernel_bytes=None)`.
   exit hooks) does: it writes the stop flag into every core and waits up to 2 s for
   the grid, then asks the X280 runtime to stop the dispatcher, which finishes
   whatever is in flight (5 s timeout); `run.result()` then holds its result block, with
-  `abandoned` the commands left without their `KM_EV_DONE`. The card needs no reset
+  `abandoned` the commands left without their `KM_EVENT_DONE`. The card needs no reset
   after it. An exception in the kernel needs none either: the kernel finishes on its
   own and the run raises `KernelFailed` with error `trap`, naming the X280 core,
   `mcause`, `mepc` and `mtval`. After an abort or a kernel failure the session log
@@ -134,7 +134,7 @@ grid_timeout=10.0, kernel_bytes=None)`.
   L1 left)` of the open device, from the runtime's layout.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
-kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_us=1.0,
+kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
 image=None, thread="card")` returns a `Run`:
 
 1. finds or builds the dispatcher image and the native module (see below), and
@@ -160,7 +160,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `kernel_idle` | the dispatcher's own idle timeout; 0 turns it off |
 | `host_depth`, `event_depth` | the command ring in the X280's memory and the event ring in host memory; powers of two, at most 64 and 128 |
 | `batch` | commands stored per batch: every line, then one fence |
-| `settle_us` | the host's pause between a fence and its next store into the card |
+| `settle_microseconds` | the host's pause between a fence and its next store into the card |
 | `thread` | for a program with an X280 thread: `"card"` builds and starts it after READY, `"host"` runs its `host_fallback` instead |
 
 Event room. The dispatcher takes a command that ends in an event only while the
@@ -171,7 +171,7 @@ without an event fit the event ring. It writes its read count with every batch, 
 while it waits whenever the kernel could be holding a command for it, so the kernel
 waits for room only while that count is on its way.
 
-Exclusive commands. The host stores a command with `KM_F_EXCL` like any other; the
+Exclusive commands. The host stores a command with `KM_FLAG_EXCLUSIVE` like any other; the
 dispatcher holds it at the head of its command ring while a busy command's group
 shares a core with it, and submits it once that command's leader has acknowledged. Host
 commands behind a held one wait with it, whatever their groups. Its deadline counts from
@@ -257,14 +257,14 @@ range.
 
 | Call | What it does |
 |---|---|
-| `submit(handler, group=None, args=(), exclusive=False, result=False, queued=False)` | queues one command and returns its handle (1, 2, ...). `handler` is a name or a number (`0` is NOP); `group` is `(first, count)`, default every core; `args` up to ten 32-bit words. Groups and handlers are checked here. With `exclusive` (`KM_F_EXCL`), the dispatcher submits the command only once every queued command sent before it has left the kernel's job queue and no command in flight has a group that overlaps it; the host stores it as soon as the ring has room, like any other command (below, "Exclusive commands"). With `result` (`KM_F_RESULT`), its done event carries the group leader's 32-bit result word. With `queued` (`KM_F_QUEUE`), `group` is a count: the kernel gives the command the lowest first core whose group overlaps no busy one, and waits until there is one (nothing is rejected for a full grid); `group(handle)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). The kernel's job queue holds 64 commands waiting for room; one more is rejected (`CommandRejected`, reason 9), so with at most 64 queued commands unfinished none is rejected. Queued commands share the program's `depth` completion slots with every other command: at most `depth` (16 at most) run at once over the whole grid. A queued command cannot be exclusive |
+| `submit(handler, group=None, args=(), exclusive=False, result=False, queued=False)` | queues one command and returns its handle (1, 2, ...). `handler` is a name or a number (`0` is NOP); `group` is `(first, count)`, default every core; `args` up to ten 32-bit words. Groups and handlers are checked here. With `exclusive` (`KM_FLAG_EXCLUSIVE`), the dispatcher submits the command only once every queued command sent before it has left the kernel's job queue and no command in flight has a group that overlaps it; the host stores it as soon as the ring has room, like any other command (below, "Exclusive commands"). With `result` (`KM_FLAG_RESULT`), its done event carries the group leader's 32-bit result word. With `queued` (`KM_FLAG_QUEUE`), `group` is a count: the kernel gives the command the lowest first core whose group overlaps no busy one, and waits until there is one (nothing is rejected for a full grid); `group(handle)` is then `(None, count)` until its done event names the first core (8 bits: at most 256 cores; `KM_CORES_MAX` is 128). The kernel's job queue holds 64 commands waiting for room; one more is rejected (`CommandRejected`, reason 9), so with at most 64 queued commands unfinished none is rejected. Queued commands share the program's `depth` completion slots with every other command: at most `depth` (16 at most) run at once over the whole grid. A queued command cannot be exclusive |
 | `submit_many(handler, firsts, counts, args=None, exclusive=False)` | queues n commands at once and returns their handles as a `range`. `handler`, `firsts` and `counts` are one value or n each; `args` is an `[n, m]` integer matrix (m at most 10) or None. Checked as `submit` checks, all before any is queued |
-| `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a [graph](../graphs.md) host-fed: its executor on the host, its commands through this run; returns `HostfedResult(status, error, regs, runs, commands, events)` |
+| `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a [graph](../graphs.md) host-fed: its executor on the host, its commands through this run; returns `HostfedResult(status, error, registers, runs, commands, events)` |
 | `wait(handles, timeout=10.0)` | stores queued commands up to the handles in batches, reads events until each handle has one; returns the `Event` (or a list) and forgets those handles. The stores and the event reads run in the native module with the GIL released |
 | `wait_any(handles, timeout=10.0)` | stores what is queued and waits until one of the handles has its event; returns that `Event` (the lowest handle if several arrived) and forgets only that handle. Raises as `wait` does |
 | `drain(timeout=10.0)` | the same for everything submitted; returns how many events it waited for |
-| `event(handle)` | `Event(handle, kind, aux, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `rejected`; `aux` is the first core of the group that ran the command (done; for a queued command, the one the kernel chose), the slot (timeout) or the reason (rejected): the low 8 bits of the event's aux, whose next 16 bits, the low bits of the command's sequence number, `seq(handle)` reads (layout: the kernel README, "Sources"); `ticks` is submit to completion in the X280's 50 MHz timer, `us` the same in microseconds; for a command submitted with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `us` then hold it too), else None |
-| `seq(handle)`, `group(handle)` | the sequence number the kernel gave the command (the trace's index), from its done or timeout event (None before it, and for a rejected command); its group, whose first core for a queued command comes from its done event (None before it) |
+| `event(handle)` | `Event(handle, kind, auxiliary, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `rejected`; `auxiliary` is the first core of the group that ran the command (done; for a queued command, the one the kernel chose), the slot (timeout) or the reason (rejected): the low 8 bits of the event's auxiliary, whose next 16 bits, the low bits of the command's sequence number, `sequence(handle)` reads (layout: the kernel README, "Sources"); `ticks` is submit to completion in the X280's 50 MHz timer, `microseconds` the same in microseconds; for a command submitted with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `microseconds` then hold it too), else None |
+| `sequence(handle)`, `group(handle)` | the sequence number the kernel gave the command (the trace's index), from its done or timeout event (None before it, and for a rejected command); its group, whose first core for a queued command comes from its done event (None before it) |
 | `forget(handles)` | releases what the run keeps for handles whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps groups and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
@@ -292,9 +292,9 @@ from komorebi.engines.graph import Graph
 step, left, right, norm = (
     program.handler(n) for n in ("step", "left", "right", "norm")
 )
-g = Graph(deadline_us=200_000, max_runs=50, req=6, keep=True)
+g = Graph(deadline_microseconds=200_000, max_runs=50, req=6, keep=True)
 state, it, limit = g.bindings("state", "it", "limit")
-err = g.reg()
+err = g.register()
 a = g.command(step, group=(0, 60), args=[state, it])
 b = g.command(left, group=(0, 30), args=[state], after=[a])
 c = g.command(right, group=(30, 30), args=[state], after=[a])  # in flight with b
@@ -304,9 +304,9 @@ e.addi(it, it, 1)
 e.lt(g.again, err, limit)  # go round again while err < limit
 
 up = run.upload(g)
-ev = run.wait_engine(run.start(up, {"state": x, "it": 0, "limit": 10**6}), 10.0)
-ev = run.wait_engine(run.restart(6, {"state": y, "it": 3, "limit": 10**7}), 10.0)
-r0, r1 = ev.regs  # register 0 (its low 24 bits) and register 1 at the end
+event = run.wait_engine(run.start(up, {"state": x, "it": 0, "limit": 10**6}), 10.0)
+event = run.wait_engine(run.restart(6, {"state": y, "it": 3, "limit": 10**7}), 10.0)
+r0, r1 = event.registers  # register 0 (its low 24 bits) and register 1 at the end
 run.release(up)  # the kept graph is dropped, its lines are free again
 ```
 
@@ -330,14 +330,14 @@ when it rejects it, and that event comes first. A rejection raises `EngineReject
 `CommandRejected`: `reason`, `reason_name`); the host does not retry.
 
 An `EngineHandle` has `kind`, `req`, `upload`, `events` (every event so far) and `end`.
-An `EngineEvent(handle, kind, value, regs, reason, reason_name, pc, node)` is one of:
+An `EngineEvent(handle, kind, value, registers, reason, reason_name, pc, node)` is one of:
 
 | `kind` | From | Fields |
 |---|---|---|
 | `event` | a stream's `EVENT a` | `value`: register `a`, 32 bits |
 | `round` | a graph's round ended and another starts | `value`: rounds done |
-| `end` | `HALT`, or a graph's last node | a stream's `value`: the halt register, 32 bits; a graph's `regs`: register 0's low 24 bits, register 1 |
-| `error` | any error | `reason`, `reason_name` (the `KM_SERR_*` name in lower case, read from the headers), the stream's `pc` or the graph's `node` (None when the error has no node) |
+| `end` | `HALT`, or a graph's last node | a stream's `value`: the halt register, 32 bits; a graph's `registers`: register 0's low 24 bits, register 1 |
+| `error` | any error | `reason`, `reason_name` (the `KM_STREAM_ERROR_*` name in lower case, read from the headers), the stream's `pc` or the graph's `node` (None when the error has no node) |
 
 The engines' events carry the upload's `req`, not a command number: they go to their
 handles, so `wait` and `wait_any` of the host's own commands see none of them, and
@@ -354,7 +354,7 @@ runs, so `stop` cancels the engines still running first.
 
 The kernel numbers the commands of every source (the host, an engine, a work-cluster
 thread) in one sequence. A command's done or timeout event carries the low 16 bits of its
-number, and the host takes the rest from its previous command's: `seq(handle)` and the
+number, and the host takes the rest from its previous command's: `sequence(handle)` and the
 trace's `command(handle)` are exact while fewer than 32,768 commands of other sources are
 submitted between two host commands. When the host sees a longer gap it raises
 `KomorebiError` for that handle instead of giving another command's number; it cannot
@@ -375,7 +375,7 @@ All derive from `km.KomorebiError`.
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
 | `CommandRejected` | the kernel consumed the command and submitted nothing (a reserved handler or flag, a group outside the grid, a command after EXIT); the run goes on | `handle`, `reason` (`KMD_REJECT_*`), `reason_name` |
-| `CommandTimeout` | a group missed its deadline; the kernel stopped the grid, the run is stopped and read back | `handle`, `slot`, `seq`, `group`, `cores`: each core of the group that did not report, with where its reader and writer gave up |
+| `CommandTimeout` | a group missed its deadline; the kernel stopped the grid, the run is stopped and read back | `handle`, `slot`, `sequence`, `group`, `cores`: each core of the group that did not report, with where its reader and writer gave up |
 | `KernelFailed` | the dispatcher finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |
 | `EngineRejected` | the kernel rejected a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `CommandRejected` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `handle`, `reason`, `reason_name`, `pc`, `node` |
@@ -451,6 +451,6 @@ found.
   closed before any readback, on every failure path, at the process's exit and on
   SIGTERM, always before the device.
 - Host stores into the card go in batches: every line, one fence, then a pause of
-  `settle_us` before the next store.
+  `settle_microseconds` before the next store.
 - Unread events plus commands in flight never exceed the event ring.
 - EXIT goes to every core, after everything in flight has completed.

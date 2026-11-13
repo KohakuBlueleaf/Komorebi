@@ -14,12 +14,12 @@ def doctor_report(environ=None):
     return {
         "version": __version__,
         "python": f"{platform.python_version()} ({sys.executable})",
-        "package_dir": str(_env.package_dir()),
-        "include_dir": _env.include_dir(),
+        "package_directory": str(_env.package_directory()),
+        "include_directory": _env.include_directory(),
         "tt_metal": tree,
         "source": source,
         "runtime": _env.runtime_version(),
-        "build_dir": tree and _env.build_dir(tree),
+        "build_directory": tree and _env.build_directory(tree),
         "x280_runtime": bool(tree and _env.has_x280_runtime(tree)),
         "x280_compiler": tree and _env.x280_compiler(tree),
     }
@@ -47,11 +47,11 @@ def format_report(report):
     rows = [
         ("komorebi", report["version"]),
         ("python", report["python"]),
-        ("package", report["package_dir"]),
-        ("include", found(report["include_dir"], "not found")),
+        ("package", report["package_directory"]),
+        ("include", found(report["include_directory"], "not found")),
         ("tt-metal", found(tree, unset)),
         ("from", source),
-        ("build", found(report["build_dir"], "not found" if home else "-")),
+        ("build", found(report["build_directory"], "not found" if home else "-")),
         ("x280 runtime", runtime if tree else "-"),
         ("x280 compiler", found(report["x280_compiler"], "not found" if tree else "-")),
     ]

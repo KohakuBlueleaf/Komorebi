@@ -28,8 +28,8 @@ namespace probe {
     constexpr uint32_t kInWords = 8192;
 
     // Error codes (bit set per failure; 0 is a clean run).
-    constexpr uint32_t kErrSpin = 1;  // a timed wait gave up
-    constexpr uint32_t kErrLoop = 2;  // a data-dependent loop hit its bound
+    constexpr uint32_t kErrorSpin = 1;  // a timed wait gave up
+    constexpr uint32_t kErrorLoop = 2;  // a data-dependent loop hit its bound
 
     // CBs: the input page, the output page, scratch L1 for the RISC-V loops.
     constexpr uint32_t kCbIn = 0, kCbOut = 16, kCbScratch = 24;

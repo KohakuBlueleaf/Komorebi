@@ -500,7 +500,7 @@
 <rect x="552" y="664" width="16" height="16" rx="3" class="edge"/>
 <text x="576" y="677" class="s" xml:space="preserve">Eth, PCIe, ARC, SEC</text>
 <rect x="52" y="688" width="16" height="16" rx="3" class="wbox"/>
-<text x="76" y="701" class="s" xml:space="preserve">X280 1 to 3: a thread each (kmx_main, kmx_par)</text>
+<text x="76" y="701" class="s" xml:space="preserve">X280 1 to 3: a thread each (kmx_main, kmx_parallel)</text>
 <line x1="52" y1="720" x2="82" y2="720" class="wl" marker-start="url(#hw)" marker-end="url(#hw)"/>
 <text x="92" y="724" class="s" xml:space="preserve">a ring each: commands to X280 0; events, result words back</text>
 <line x1="452" y1="720" x2="482" y2="720" class="wd" marker-start="url(#hw)" marker-end="url(#hw)"/>

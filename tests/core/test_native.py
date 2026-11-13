@@ -8,9 +8,9 @@ from komorebi import _env, build, native
 
 def test_cache_dir_and_source_key(tmp_path, monkeypatch):
     monkeypatch.setenv(native.CACHE_VARIABLE, str(tmp_path / "c"))
-    assert native.cache_dir() == tmp_path / "c"
+    assert native.cache_directory() == tmp_path / "c"
     monkeypatch.delenv(native.CACHE_VARIABLE)
-    assert native.cache_dir().parts[-2:] == ("build", "komorebi")
+    assert native.cache_directory().parts[-2:] == ("build", "komorebi")
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "x.h").write_text("1")
     key = native.source_key([tmp_path / "a"], tmp_path)
@@ -40,8 +40,8 @@ def test_image_and_module_are_built_once_into_the_cache(tmp_path, monkeypatch):
     assert (
         image == native.image_path(tree) and image.parent.parent == tmp_path / "cache"
     )
-    engine = native.engines_dir() / "km_graph_engine.c"
-    assert built[0][1] == [native.kernel_dir() / "main.c", engine]
+    engine = native.engines_directory() / "km_graph_engine.c"
+    assert built[0][1] == [native.kernel_directory() / "main.c", engine]
     module = native.module_path(tree)
     assert module.name == native.MODULE_FILE and module == native.module_path(tree)
     assert [b[0] for b in built] == ["image", "pymodule"]
@@ -52,13 +52,13 @@ def test_image_and_module_are_built_once_into_the_cache(tmp_path, monkeypatch):
 def test_without_a_tree_the_build_says_so(tmp_path, monkeypatch):
     monkeypatch.setenv(native.CACHE_VARIABLE, str(tmp_path / "cache"))
     monkeypatch.delenv("TT_METAL_HOME", raising=False)
-    monkeypatch.setattr(_env, "package_dir", lambda: tmp_path / "pkg")
+    monkeypatch.setattr(_env, "package_directory", lambda: tmp_path / "pkg")
     with pytest.raises(build.BuildError, match="TT_METAL_HOME"):
         native.module_path()
 
 
 def test_the_prebuilt_module_serves_only_the_runtime_package(tmp_path, monkeypatch):
-    monkeypatch.setattr(_env, "package_dir", lambda: tmp_path)
+    monkeypatch.setattr(_env, "package_directory", lambda: tmp_path)
     (tmp_path / native.MODULE_FILE).write_bytes(b"x")
     source = []
     monkeypatch.setattr(_env, "find_tree", lambda: (tmp_path / "rt", source[0]))

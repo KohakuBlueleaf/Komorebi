@@ -1,5 +1,5 @@
-/* Three patterns on the four cores with kmx_par, each run with one partition and with
- * four, timed: a map, a reduction, a two-pass prefix sum. See README.md. */
+/* Three patterns on the four cores with kmx_parallel, each run with one partition and
+ * with four, timed: a map, a reduction, a two-pass prefix sum. See README.md. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -16,7 +16,7 @@ enum {
     R_VMAP4,
     R_HEAVY1,
     R_HEAVY4,
-    R_SEQ,
+    R_SEQUENCE,
     R_PRE1,
     R_PRE4,
     R_COUNTERS,
@@ -38,21 +38,21 @@ enum {
     T_SUM4,
     T_PACKED,
     T_PADDED,
-    T_SEQ,
+    T_SEQUENCE,
     T_PRE1,
     T_PRE4,
     T_INVALIDATE1,
     T_INVALIDATE4,
     T_FLUSH1,
     T_FLUSH4,
-    T_PAR,
+    T_PARALLEL,
     S_SUM1,
     N_WORDS = S_SUM1 + 8
 };
 
 #define CHUNK 1024u /* words of one partition: 4 KiB, whole 64-byte lines */
 #define CHUNKS_MAX 4096u
-#define PAR_CALLS 1000u
+#define PARALLEL_CALLS 1000u
 /* The cluster's L3 is one 128 KiB way: the aliased map writes this far into its
  * region, which then starts a whole number of ways from the input. */
 #define HALF_WAY_WORDS ((64u << 10) / 4u)
@@ -175,13 +175,13 @@ static void nothing(int core, void* arg) {
     (void)arg;
 }
 
-/* Runs fn on core 0 alone or on all four; KMX_OK, or kmx_par's error. */
+/* Runs fn on core 0 alone or on all four; KMX_OK, or kmx_parallel's error. */
 static int on(void (*fn)(int, void*), job_t* j) {
     if (j->parts == 1) {
         fn(0, j);
         return KMX_OK;
     }
-    return kmx_par(fn, j);
+    return kmx_parallel(fn, j);
 }
 
 /* The two-pass exclusive prefix sum (mod 2^32); between the passes core 0 turns the
@@ -198,7 +198,7 @@ static int prefix(job_t* j) {
 }
 
 /* The one-pass prefix sum on core 0: the baseline two passes are measured against. */
-static void prefix_seq(job_t* j) {
+static void prefix_sequence(job_t* j) {
     uint32_t run = 0;
     for (uint64_t i = 0; i < j->n; i++) {
         j->out[i] = run;
@@ -213,14 +213,14 @@ static int g_sweep __attribute__((section(".data"))) = -1;
 static void sweep_alone(int core, void* arg) {
     (void)arg;
     if (core == 0) {
-        kmx_invalidate(g_sweep); /* inside kmx_par: this core alone */
+        kmx_invalidate(g_sweep); /* inside kmx_parallel: this core alone */
     }
 }
 
-typedef enum { MAP, VMAP, SUM, PREFIX, SEQ } kind_t;
+typedef enum { MAP, VMAP, SUM, PREFIX, SEQUENCE } kind_t;
 
 /* Best of `repeats` runs of one pattern, each from a cold cache (input and output
- * swept first); the output is flushed after. KMX_OK, or kmx_par's error. */
+ * swept first); the output is flushed after. KMX_OK, or kmx_parallel's error. */
 static int timed(kind_t k, job_t* j, int out, uint32_t repeats, uint32_t* best) {
     *best = 0xFFFFFFFFu;
     for (uint32_t r = 0; r < repeats; r++) {
@@ -237,7 +237,7 @@ static int timed(kind_t k, job_t* j, int out, uint32_t repeats, uint32_t* best) 
         } else if (k == PREFIX) {
             e = prefix(j);
         } else {
-            prefix_seq(j);
+            prefix_sequence(j);
         }
         const uint32_t t = (uint32_t)(kmx_time() - t0);
         if (e != KMX_OK) {
@@ -325,12 +325,14 @@ int kmx_main(int core) {
         put64(&w[S_SUM1 + 2 * m], m < 2 ? s : s / repeats); /* counters kept adding */
     }
     j.ctr = 0;
-    static const int pre_out[3] = {R_SEQ, R_PRE1, R_PRE4};
+    static const int pre_out[3] = {R_SEQUENCE, R_PRE1, R_PRE4};
     for (int m = 0; m < 3; m++) {
         kmx_progress(13 + m);
         j.out = (uint32_t*)r[pre_out[m]];
         j.parts = m == 2 ? 4 : 1;
-        if (timed(m == 0 ? SEQ : PREFIX, &j, pre_out[m], repeats, &w[T_SEQ + m])) {
+        if (timed(
+            m == 0 ? SEQUENCE : PREFIX, &j, pre_out[m], repeats, &w[T_SEQUENCE + m]
+        )) {
             return 2;
         }
     }
@@ -351,7 +353,7 @@ int kmx_main(int core) {
                 kmx_invalidate(id);
             } else {
                 g_sweep = id;
-                if (kmx_par(sweep_alone, 0) != KMX_OK) {
+                if (kmx_parallel(sweep_alone, 0) != KMX_OK) {
                     return 2;
                 }
             }
@@ -362,12 +364,12 @@ int kmx_main(int core) {
     }
     kmx_progress(17);
     const uint64_t t0 = kmx_time();
-    for (uint32_t i = 0; i < PAR_CALLS; i++) {
-        if (kmx_par(nothing, 0) != KMX_OK) {
+    for (uint32_t i = 0; i < PARALLEL_CALLS; i++) {
+        if (kmx_parallel(nothing, 0) != KMX_OK) {
             return 2;
         }
     }
-    w[T_PAR] = (uint32_t)(kmx_time() - t0);
+    w[T_PARALLEL] = (uint32_t)(kmx_time() - t0);
     kmx_result(0, w, N_WORDS);
     return 0;
 }

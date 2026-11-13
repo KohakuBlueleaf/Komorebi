@@ -136,7 +136,9 @@ def main():
             with tr.heartbeat("check"):
                 res["check"] = check(y, host, s, causal, args.rows)
             res["exact_exp"] = ROUTES[route][2]
-            tr.log(f"{route}: {res['us_per_call']:.2f} us, check {res['check']}")
+            tr.log(
+                f"{route}: {res['microseconds_per_call']:.2f} us, check {res['check']}"
+            )
             out["results"][route] = res
         out["program_cache_entries"] = dev.num_program_cache_entries()
     finally:

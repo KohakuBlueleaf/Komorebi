@@ -21,11 +21,16 @@ static inline void result_where(kmd_t* k, uint32_t where) {
 
 /* Commands an error with the slot, sequence, request and value it concerns. */
 static inline void result_error(
-    kmd_t* k, uint32_t error, uint32_t slot, uint32_t seq, uint32_t req, uint32_t seen
+    kmd_t* k,
+    uint32_t error,
+    uint32_t slot,
+    uint32_t sequence,
+    uint32_t req,
+    uint32_t seen
 ) {
     k->error = error;
     k->result[KMD_R_SLOT] = slot;
-    k->result[KMD_R_SEQ] = seq;
+    k->result[KMD_R_SEQUENCE] = sequence;
     k->result[KMD_R_REQ] = req;
     k->result[KMD_R_SEEN] = seen;
     k->result[KMD_R_ERROR] = error;

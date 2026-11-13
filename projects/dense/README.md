@@ -73,7 +73,7 @@ The breakpoints are the broadcasts' (`km::Broadcast`, `komorebi/device/km_broadc
 sender of block k waits until every receiver's compute has freed block k minus the window
 (two blocks here), and a receiver waits for block k's VALID word. Every wait between
 cores is timed; compute's waits on its own threads' registers (`tile_regs_wait`) are not.
-The commands carry `KM_F_EXCL` (no two commands with broadcasts in flight together).
+The commands carry `KM_FLAG_EXCLUSIVE` (no two commands with broadcasts in flight together).
 
 | Layout | Cores | A | W | Chosen when (`plan.layout_of`) |
 |---|---|---|---|---|
@@ -113,7 +113,7 @@ thread part(g, d):                             # core d of group g, S cores to a
 The parts travel over the cores' ports (`km::reduce`, `komorebi/device/km_port.hpp`):
 the reader takes arrivals into `kCbArrive` (fp32, a slot per sender), compute adds them
 in rank order into `kCbSum` by packer accumulation, the writer sends a core's part
-to its receiver or writes the root's sum to Y. Commands carry `KM_F_EXCL` (the ports).
+to its receiver or writes the root's sum to Y. Commands carry `KM_FLAG_EXCLUSIVE` (the ports).
 Plans are named by hand: `--split s,oh,ow[,kc]` (`plan.split_plan`; K chunk default:
 the whole partition, at most 32 tiles) and `--reduce owner|tree`.
 
@@ -212,7 +212,7 @@ passed (relative RMS 3.96e-3 to 3.98e-3, the same on both sides).
 | `dec4096` | 32 x 4096 x 4096 | cols, 197.8 | 75 W, 1343 / 1350 | own, 81.0 (gemm 105.2, auto 81.0) | 91 W, 1350 / 1350 | 77.4 (183 W) |
 
 Behind: `sq16384` (11%) and `dec4096` (2.4 times). Single calls, waited for, against
-the loop, from the same JSON (Kohaku-TT's `synced_us_median`), in us:
+the loop, from the same JSON (Kohaku-TT's `synced_microseconds_median`), in us:
 
 | Preset | Ours single / loop | Kohaku-TT best route single / loop |
 |---|---|---|
@@ -225,7 +225,7 @@ From 4096 cubed up both sides are bound in a loop by the card's power limit (133
 form under its current limit), so time per call follows energy per call: 16,384 cubed
 takes 11.2 J per call here and 10.7 J in Kohaku-TT's gemm.
 
-Bounds of our rows, from the cut-down runs (`cut_us_per_call` in each JSON) and the
+Bounds of our rows, from the cut-down runs (`cut_microseconds_per_call` in each JSON) and the
 profile of one call (`profile`: shares of the slowest core's cycles; cycles per tile
 product from its matrix-unit share, at the 1,350 MHz read at load). Cut-down runs that
 follow a long loop run at a throttled clock.
@@ -235,12 +235,12 @@ follow a long loop run at a throttled clock.
 - `lin384` (resident): DRAM writes. A in and Y out are 25 MB per call (410 GB/s);
   the slowest core spends 82% of its cycles writing Y and its packer waits for space
   77%; reads only 32.9 us, compute only 21.4 us.
-- `lin1024` (`rows`, on par): the W broadcast. W is handed along to all 110 cores: broadcasts only
+- `lin1024` (`rows`, on parallel): the W broadcast. W is handed along to all 110 cores: broadcasts only
   284.9 us, product only 173.4 us; the slowest core spends 77% on the broadcast and its
   unpacker waits for W 45%; the matrix unit takes 46.2 cycles per tile product
   against the probe's 34.4. A single call takes 355.7 us at 1,350 MHz, 382.6 at the
   loop's mean 1,255 MHz; the other 11 us of the loop's 393.5 are between commands.
-- `sq4096` (`2d`, on par): the matrix unit, then power. The matrix unit is 81% of the
+- `sq4096` (`2d`, on parallel): the matrix unit, then power. The matrix unit is 81% of the
   slowest core at 36.2 cycles per tile product (19,968 on that core, 4.7% above an
   even partition over 110 cores); a single call takes 660.0 us at 1,350 MHz. In the loop the
   clock falls to a mean of 1,008 MHz (884 us at that clock); both sides end at 957

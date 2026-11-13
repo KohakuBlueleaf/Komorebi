@@ -14,12 +14,12 @@ typedef struct {
 int main(uint64_t core_id) {
     pr_t p;
     if (!pr_open(&p, core_id, sizeof(beat_args_t))) {
-        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERROR_ARGS);
         return 0;
     }
     const volatile beat_args_t* a = (const volatile beat_args_t*)p.lim;
     if (a->ticks > BEAT_TICKS_MAX) {
-        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERROR_ARGS);
         return 0;
     }
     pr_marker(&p, 1);

@@ -29,7 +29,7 @@ void wc_round(const wc_state* s, wc_command out[2]) {
     out[0].a0 = s->word[WC_ADDR];
     out[0].a1 = s->round + 1;
     out[1].handler = WC_HANDLER_SUM;
-    out[1].flags = KM_F_EXCL | KM_F_RESULT;
+    out[1].flags = KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT;
     out[1].first = s->word[WC_BASE];
     out[1].count = s->word[WC_CORES];
     out[1].a0 = s->word[WC_ADDR];

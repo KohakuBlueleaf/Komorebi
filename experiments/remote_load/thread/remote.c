@@ -13,9 +13,9 @@
 #define FULL_TICKS KMX_TICKS_PER_SECOND
 /* The window an X280 core stores through: after the ports' windows, one per core. */
 #define RL_WINDOW (KMX_PORT_WINDOW + KMX_PORTS_CORES)
-#define REG_CFG 0
-#define REG_BODIES 1
-#define REG_OUT 2
+#define REGISTER_CFG 0
+#define REGISTER_BODIES 1
+#define REGISTER_OUT 2
 
 /* Result words. */
 enum { R_SWAPS, R_FAILS, R_TICKS_LO, R_TICKS_HI, R_COUNT };
@@ -115,14 +115,16 @@ static int patch(uint32_t win, uint32_t xy, uint32_t at, uint32_t rd, uint32_t v
 /* Swap k of core c: the body from the X280 core's schedule, the bytes moved by mode,
  * the message; body, argument, store ticks into its line. 0, or 1: a store failed. */
 static int submit(int cluster, int cpu, int c, uint32_t k, uint32_t* line) {
-    const uint32_t* cfg = region(REG_CFG);
+    const uint32_t* cfg = region(REGISTER_CFG);
     const uint32_t mode = word(RL_W_MODE), slot = word(RL_W_SLOT);
     const uint32_t b = (
         word(RL_W_FIRST) +
         cfg[RL_CFG_SCHED + (4u * cluster + cpu) * RL_SCHED + k % RL_SCHED]
     );
     const uint32_t bytes = cfg[RL_CFG_BYTES + b], xy = cfg[RL_CFG_NOC + c];
-    const uint8_t* src = (const uint8_t*)region(REG_BODIES) + cfg[RL_CFG_OFFSET + b];
+    const uint8_t* src = (
+        (const uint8_t*)region(REGISTER_BODIES) + cfg[RL_CFG_OFFSET + b]
+    );
     const uint32_t win = RL_WINDOW + (uint32_t)cpu, arg = RL_ARG(c, k);
     line[RL_L_BODY] = b;
     line[RL_L_ARG] = arg;
@@ -156,7 +158,7 @@ static int submit(int cluster, int cpu, int c, uint32_t k, uint32_t* line) {
 static void serve(int cluster, int cpu, uint64_t arg) {
     (void)arg;
     const uint32_t swaps = word(RL_W_SWAPS), cores = word(RL_W_CORES);
-    uint32_t* out = region(REG_OUT);
+    uint32_t* out = region(REGISTER_OUT);
     uint8_t* mine = g_mine[cpu];
     uint32_t* k = g_k[cpu];
     uint64_t* t0 = g_t0[cpu];
@@ -180,7 +182,7 @@ static void serve(int cluster, int cpu, uint64_t arg) {
     while (left > 0 && kmx_port_open()) {
         for (int i = 0; i < n; i++) {
             const int c = mine[i];
-            kmx_msg m;
+            kmx_message m;
             if (k[i] >= swaps || kmx_port_told(c, &m) != KMX_OK) {
                 continue;
             }
@@ -216,7 +218,7 @@ static void flush_out(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
-        kmx_flush(REG_OUT);
+        kmx_flush(REGISTER_OUT);
     }
 }
 
@@ -225,8 +227,8 @@ static void invalidate_in(int cluster, int cpu, uint64_t arg) {
     (void)cluster;
     (void)arg;
     if (cpu == 0) {
-        kmx_invalidate(REG_CFG);
-        kmx_invalidate(REG_BODIES);
+        kmx_invalidate(REGISTER_CFG);
+        kmx_invalidate(REGISTER_BODIES);
     }
 }
 
@@ -239,35 +241,36 @@ int kmx_main(int cpu) {
     uint64_t cfg_bytes = 0, out_bytes = 0, bodies_bytes = 0;
     const uint32_t cores = a->nwords >= RL_WORDS ? a->words[RL_W_CORES] : 0;
     if (
-        a->nwords < RL_WORDS || kmx_region(REG_CFG, &cfg_bytes) == 0 ||
-        cfg_bytes < 4u * RL_CFG_WORDS || kmx_region(REG_BODIES, &bodies_bytes) == 0 ||
-        kmx_region(REG_OUT, &out_bytes) == 0 || cores == 0 ||
+        a->nwords < RL_WORDS || kmx_region(REGISTER_CFG, &cfg_bytes) == 0 ||
+        cfg_bytes < 4u * RL_CFG_WORDS ||
+        kmx_region(REGISTER_BODIES, &bodies_bytes) == 0 ||
+        kmx_region(REGISTER_OUT, &out_bytes) == 0 || cores == 0 ||
         cores > (uint32_t)kmx_port_cores() ||
         (uint64_t)cores * a->words[RL_W_SWAPS] > RL_LINES_MAX ||
         out_bytes < 4u * RL_LINE * RL_LINES_MAX
     ) {
         return CODE_BAD;
     }
-    if (kmx_par_all(invalidate_in, 0) != KMX_OK) {
+    if (kmx_parallel_all(invalidate_in, 0) != KMX_OK) {
         return CODE_LATE;
     }
     km_command_t r;
-    r.seq = r.land1 = r.land2 = r.land3 = 0;
+    r.sequence = r.land1 = r.land2 = r.land3 = 0;
     r.hdr = RL_HANDLER_SWAP;
     r.group = 0 | cores << 16;
     r.a0 = r.a1 = r.a2 = r.a3 = r.a4 = r.a5 = r.a6 = r.a7 = r.a8 = r.a9 = 0;
-    kmx_event ev = {0, 0, 0, 0};
+    kmx_event event = {0, 0, 0, 0};
     const uint64_t t0 = kmx_time(), until = t0 + FULL_TICKS;
-    int e = kmx_port_run(&r, serve, 0, &ev);
+    int e = kmx_port_run(&r, serve, 0, &event);
     while (e == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
-        e = kmx_port_run(&r, serve, 0, &ev);
+        e = kmx_port_run(&r, serve, 0, &event);
     }
     const uint64_t ticks = kmx_time() - t0;
-    if (kmx_par_all(flush_out, 0) != KMX_OK) {
+    if (kmx_parallel_all(flush_out, 0) != KMX_OK) {
         return CODE_LATE;
     }
     uint32_t w[R_COUNT] = {0, g_fails, (uint32_t)ticks, (uint32_t)(ticks >> 32)};
-    w[R_SWAPS] = ev.kind == KM_EV_DONE ? cores * a->words[RL_W_SWAPS] : 0;
+    w[R_SWAPS] = event.kind == KM_EVENT_DONE ? cores * a->words[RL_W_SWAPS] : 0;
     kmx_result(e != KMX_OK ? CODE_LATE : g_fails ? CODE_FAIL : 0, w, R_COUNT);
     return 0;
 }

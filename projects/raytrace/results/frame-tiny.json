@@ -28,13 +28,13 @@
   "command_bytes": 576,
   "wall_s": 0.0237870680866763
  },
- "frame_us_median": 23203.84,
+ "frame_microseconds_median": 23203.84,
  "frame_ms": 23.20384,
  "power_mean_w": 63.0,
  "steps": [
   {
    "step": "gen",
-   "us": 542.54,
+   "microseconds": 542.54,
    "errors": 0,
    "busy_max": 728999,
    "load_per_packet": 130.0,
@@ -46,7 +46,7 @@
   },
   {
    "step": "primary",
-   "us": 3402.14,
+   "microseconds": 3402.14,
    "errors": 0,
    "busy_max": 4589537,
    "load_per_packet": 1149.3,
@@ -58,7 +58,7 @@
   },
   {
    "step": "shade1",
-   "us": 2226.22,
+   "microseconds": 2226.22,
    "errors": 0,
    "busy_max": 3002073,
    "load_per_packet": 2005.2,
@@ -70,7 +70,7 @@
   },
   {
    "step": "shadow",
-   "us": 2225.12,
+   "microseconds": 2225.12,
    "errors": 0,
    "busy_max": 3000466,
    "load_per_packet": 1145.4,
@@ -82,7 +82,7 @@
   },
   {
    "step": "bounce",
-   "us": 8793.9,
+   "microseconds": 8793.9,
    "errors": 0,
    "busy_max": 11868208,
    "load_per_packet": 1146.0,
@@ -94,7 +94,7 @@
   },
   {
    "step": "shade2",
-   "us": 1565.28,
+   "microseconds": 1565.28,
    "errors": 0,
    "busy_max": 2109774,
    "load_per_packet": 2639.8,
@@ -106,7 +106,7 @@
   },
   {
    "step": "shadow2",
-   "us": 3882.92,
+   "microseconds": 3882.92,
    "errors": 0,
    "busy_max": 5238425,
    "load_per_packet": 1143.9,
@@ -118,7 +118,7 @@
   },
   {
    "step": "image",
-   "us": 565.72,
+   "microseconds": 565.72,
    "errors": 0,
    "busy_max": 760337,
    "load_per_packet": 1295.0,

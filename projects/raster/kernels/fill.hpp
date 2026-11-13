@@ -190,7 +190,7 @@ namespace fill {
     }
 
     // A float32 bit pattern into an LReg: upper half (lower half zeroed), lower half.
-    inline void imm(uint32_t lreg, uint32_t bits) {
+    inline void immediate(uint32_t lreg, uint32_t bits) {
         push(TT_OP_SFPLOADI(lreg, kFloatB, bits >> 16));
         push(TT_OP_SFPLOADI(lreg, kLower, bits & 0xFFFF));
     }
@@ -214,7 +214,7 @@ namespace fill {
     // Edge k of record w: a px into K[kKA + k] (through LReg R), b, c and T broadcast.
     // The box columns are float16 immediates, masked to the 16-bit field.
 #define FILL_TRI_EDGE(k, R)                                    \
-    imm(R, w[kRecA + k]);                                      \
+    immediate(R, w[kRecA + k]);                                \
     TTI_SFPMAD(R, L5, NZ, R, 0);                               \
     if (k == 0) {                                              \
         push(TT_OP_SFPLOADI(L2, kFloatA, w[kRecX0] & 0xFFFF)); \
@@ -227,17 +227,17 @@ namespace fill {
         TTI_SFPMAD(R, ONE, L3, R, 0);                          \
     }                                                          \
     TTI_SFPSTORE(R, kInt32, kAm, kaddr(kKA + k));              \
-    imm(L2, w[kRecB + k]);                                     \
+    immediate(L2, w[kRecB + k]);                               \
     TTI_SFPSTORE(L2, kInt32, kAm, kaddr(kKB + k));             \
-    imm(L3, w[kRecC + k]);                                     \
+    immediate(L3, w[kRecC + k]);                               \
     TTI_SFPSTORE(L3, kInt32, kAm, kaddr(kKC + k))
 
 #define FILL_TRI_COLOUR(c, R)                         \
-    imm(R, w[kRecCol + 3 * c]);                       \
+    immediate(R, w[kRecCol + 3 * c]);                 \
     TTI_SFPMAD(R, L5, NZ, R, 0);                      \
-    imm(L2, w[kRecCol + 3 * c + 1]);                  \
+    immediate(L2, w[kRecCol + 3 * c + 1]);            \
     TTI_SFPSTORE(L2, kInt32, kAm, kaddr(kKColB + c)); \
-    imm(L3, w[kRecCol + 3 * c + 2]);                  \
+    immediate(L3, w[kRecCol + 3 * c + 2]);            \
     TTI_SFPSTORE(L3, kInt32, kAm, kaddr(kKColC + c)); \
     TTI_SFPSTORE(R, kInt32, kAm, kaddr(kKColA + c))
 
@@ -248,11 +248,11 @@ namespace fill {
         FILL_TRI_EDGE(0, L1);
         FILL_TRI_EDGE(1, L0);
         FILL_TRI_EDGE(2, L1);
-        imm(L0, w[kRecW]);
+        immediate(L0, w[kRecW]);
         TTI_SFPMAD(L0, L5, NZ, L0, 0);
-        imm(L2, w[kRecW + 1]);
+        immediate(L2, w[kRecW + 1]);
         TTI_SFPSTORE(L2, kInt32, kAm, kaddr(kKW + 1));
-        imm(L3, w[kRecW + 2]);
+        immediate(L3, w[kRecW + 2]);
         TTI_SFPSTORE(L3, kInt32, kAm, kaddr(kKW + 2));
         TTI_SFPSTORE(L0, kInt32, kAm, kaddr(kKW));
         FILL_TRI_COLOUR(0, L1);
@@ -261,7 +261,7 @@ namespace fill {
         for (uint32_t k = 0; k < 3; ++k) {
             push(TT_OP_SFPMOV(0, w[kRecT + k] != 0 ? TNEG : ZERO, L2 + k, 0));
         }
-        imm(L5, w[kRecTri]);
+        immediate(L5, w[kRecTri]);
     }
 
     // value = (A + B py) + C into L0, the constants at K vectors ka, kb, kc.

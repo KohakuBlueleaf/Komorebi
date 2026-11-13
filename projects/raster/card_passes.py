@@ -159,12 +159,12 @@ def count_only(args):
         prog = session.load(program(), deadline=1.0)
         a = [mesh.address, counters.address, len(blocks)]
         a += [cam.address, 0, cores]
-        ev = prog.wait(
+        event = prog.wait(
             prog.submit(S["kHandlerCount"], group=(0, workers), args=a), 10.0
         )
-        out["event"] = {"kind": ev.kind, "us": ev.us}
+        out["event"] = {"kind": event.kind, "microseconds": event.microseconds}
         prog.stop()
-        out["status"] = card.check_run(prog, workers, 1, [ev.us])
+        out["status"] = card.check_run(prog, workers, 1, [event.microseconds])
         (raw,) = card.read(session, counters)
         raw = raw.view(np.uint32).reshape(workers, 2, lists.TILES)[:cores]
         want_cnt, want_rows = passes.counters(recs, len(scene["indices"]), cores)
@@ -218,12 +218,12 @@ def frame(args, session=None):
         tm["load_passes_s"] = time.perf_counter() - t0
         a = list(base)
         a[1] = counters.address
-        ev = prog.wait(
+        event = prog.wait(
             prog.submit(S["kHandlerCount"], group=group, args=a), timeout=10.0
         )
-        out["count_us"] = ev.us
+        out["count_microseconds"] = event.microseconds
         prog.stop()
-        out["count_status"] = card.check_run(prog, workers, 1, [ev.us])
+        out["count_status"] = card.check_run(prog, workers, 1, [event.microseconds])
         t0 = time.perf_counter()
         (raw,) = card.read(session, counters)
         tm["read_counters_s"] = time.perf_counter() - t0
@@ -267,12 +267,12 @@ def frame(args, session=None):
         a[1] = up["lists"].address
         a[4] = slots_t.address
         a += [mid["slots"], items_t.address]
-        ev = prog.wait(
+        event = prog.wait(
             prog.submit(S["kHandlerSetup"], group=group, args=a), timeout=10.0
         )
-        out["setup_us"] = ev.us
+        out["setup_microseconds"] = event.microseconds
         prog.stop()
-        out["setup_status"] = card.check_run(prog, workers, 1, [ev.us])
+        out["setup_status"] = card.check_run(prog, workers, 1, [event.microseconds])
         if args.lists >= 0:
             out["lists"] = lists_check(session, up, scene, recs, mid, args.lists)
 
@@ -308,11 +308,11 @@ def hist(session, base, heavy, cores, tm):
     prog = session.load(program(), deadline=1.0)
     tm["load_hist_s"] = time.perf_counter() - t0
     a = [lst.address, res.address, 0, 0, 64 * len(heavy), cores]
-    ev = prog.wait(
+    event = prog.wait(
         prog.submit(S["kHandlerHist"], group=(0, workers), args=a), timeout=10.0
     )
     prog.stop()
-    status = card.check_run(prog, workers, 1, [ev.us])
+    status = card.check_run(prog, workers, 1, [event.microseconds])
     if not status["ok"]:
         raise RuntimeError(f"HIST: {status}")
     t0 = time.perf_counter()
@@ -331,7 +331,7 @@ def fill_frame(session, up, out):
     fill = session.load(card.program(), deadline=1.0)
     tm["load_fill_s"] = time.perf_counter() - t0
     us = card.loop(fill, lists.K["kHandlerFill"], card.words(up, 5), 1)
-    out["fill_us"] = float(us[0]) if len(us) else None
+    out["fill_microseconds"] = float(us[0]) if len(us) else None
     fill.stop()
     out["fill_status"] = card.check_run(fill, workers, 1, us)
     t0 = time.perf_counter()
@@ -391,9 +391,9 @@ def main():
             a = [mesh.address, res.address, len(blocks)]
             a += [cam.address, w0, cores, n]
             t = run_.submit(S["kHandlerLanes"], group=(0, workers), args=a)
-            ev = run_.wait(t, timeout=10.0)
-            us.append(ev.us)
-            if ev.kind != "done":
+            event = run_.wait(t, timeout=10.0)
+            us.append(event.microseconds)
+            if event.kind != "done":
                 ok = False
                 break
             (page,) = session.read(res, first=0, pages=n)
@@ -402,7 +402,7 @@ def main():
             card.log(f"window {w0} of {len(blocks)}: {n} blocks")
         run_.stop()
         status = card.check_run(run_, workers, len(us), us)
-    out["event_us"] = us
+    out["event_microseconds"] = us
     out["status"] = status
     if args.dump:
         np.save(args.dump, got)

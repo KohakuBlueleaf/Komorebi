@@ -80,11 +80,11 @@ carries the sequence number. The command has landed when all four agree
 
 | Word | Field | Read with |
 |---|---|---|
-| `seq` | sequence number, from 1, increasing (compared across the wrap) | `km::newer(a, b)` |
+| `sequence` | sequence number, from 1, increasing (compared across the wrap) | `km::newer(a, b)` |
 | `hdr` | `handler \| flags << 8 \| slot << 16` | `km::handler(r)`, `km::flags(r)`, `km::slot(r)` |
 | `group` | `first \| count << 16`: cores `first` to `first + count - 1` in core order | `km::first(r)`, `km::count(r)`, `km::in_group(r, me)` |
 | `a0` to `a9` | the handler's ten argument words | `r.a0` ... `r.a9` |
-| `land1` to `land3` | copies of `seq` (landing) | `KM_LANDED(&r)` |
+| `land1` to `land3` | copies of `sequence` (landing) | `KM_LANDED(&r)` |
 
 | Handler | Meaning |
 |---|---|
@@ -95,9 +95,9 @@ carries the sequence number. The command has landed when all four agree
 
 | Flag | Meaning |
 |---|---|
-| `KM_F_EXCL` (2) | never in flight together with a command whose group overlaps (`km::groups_overlap`). Required for commands that use ports or broadcasts |
-| `KM_F_RESULT` (4) | the leader acknowledges with `{ack, result}`; see `Writer::result` |
-| `KM_F_QUEUE` (8) | dispatcher: the group allocator chooses `first` |
+| `KM_FLAG_EXCLUSIVE` (2) | never in flight together with a command whose group overlaps (`km::groups_overlap`). Required for commands that use ports or broadcasts |
+| `KM_FLAG_RESULT` (4) | the leader acknowledges with `{ack, result}`; see `Writer::result` |
+| `KM_FLAG_QUEUE` (8) | dispatcher: the group allocator chooses `first` |
 
 A command's header names its ring slot. A command found in another slot is not run and
 is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
@@ -115,12 +115,12 @@ is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
 | `args()` | the start-up arguments (`km::Args`, below) |
 | `me()` | this core's index in the core order |
 | `arg(i)` | the program's start-up argument i (runtime argument `kArgs + i`) |
-| `ctl(off)`, `state()` | a word of the control block, the state words |
+| `control(off)`, `state()` | a word of the control block, the state words |
 | `stop()` | the tile's stop flag is set (call `invalidate_l1_cache()` first) |
 | `core_noc(index, addr)` | the NoC address of `addr` on core `index` of the core table |
 | `disp_noc(addr)` | the NoC address of `addr` at the dispatcher |
 | `poll(ready, limit, grace = 0)` | `km::poll_stop` on this tile's stop flag |
-| `gave_up(word, code, where, slot, seq)` | `km::command_gave_up` for this tile (`kStReader` or `kStWriter`) |
+| `gave_up(word, code, where, slot, sequence)` | `km::command_gave_up` for this tile (`kStReader` or `kStWriter`) |
 
 ### `km::Reader`
 
@@ -137,7 +137,7 @@ The reader's start-up runs once and in this order:
 4. Sends the hello, if a mailbox is given.
 
 Then for each command it waits for the two token pages and scans the ring. It copies
-the command into `KM_CTL_JOB` and hands a token to compute and to the writer.
+the command into `KM_CONTROL_JOB` and hands a token to compute and to the writer.
 
 ### `km::Writer`
 
@@ -145,7 +145,7 @@ the command into `KM_CTL_JOB` and hands a token to compute and to the writer.
 |---|---|
 | `run(body)` | per command: `body(command)` returns whether to report. The writer then waits for its writes (`noc_async_write_barrier`), waits until compute has left its body for this command, and runs `km::complete`. An EXIT command completes, then the writer leaves |
 | `wait_front(cb, pages, times = 1)` | timed `cb_wait_front` of a contiguous item, timeout `times` wait limits. False: gave up (recorded) |
-| `result(value)` | the command's result word: sent with the leader's ack when the command has `KM_F_RESULT`, 0 if never called. On other cores of the group it is not sent |
+| `result(value)` | the command's result word: sent with the leader's ack when the command has `KM_FLAG_RESULT`, 0 if never called. On other cores of the group it is not sent |
 
 A body that returns false reports nothing, so the command does not complete. A body
 returns false only after a give-up, when the tile is stopping anyway. A handler the
@@ -168,7 +168,7 @@ rows, cores report to their row's leader, and row leaders report to the first
 core. A core that receives reports waits (with a timeout) for `want` of them in
 `DONE[slot]` and clears it. A core other than the first then increments its parent's
 `DONE[slot]` with an atomic. The first core writes the ack word, and with
-`KM_F_RESULT` also the result, into the dispatcher's ack line of the slot. Nothing is
+`KM_FLAG_RESULT` also the result, into the dispatcher's ack line of the slot. Nothing is
 acknowledged once the tile's stop flag is set.
 
 ### Start-up arguments
@@ -178,10 +178,10 @@ the program's own.
 
 | Word | Meaning |
 |---|---|
-| `ctl` | control block address, the same on every core (a multiple of 16) |
+| `control` | control block address, the same on every core (a multiple of 16) |
 | `me` | this core's index in the core order |
 | `cores` | DRAM address of the core table: core index to NoC `x \| y << 16` |
-| `disp_xy`, `ack_base` | the dispatcher's NoC x, y and its ack words (slot j at `ack_base + 16 j`) |
+| `dispatcher_coordinates`, `ack_base` | the dispatcher's NoC x, y and its ack words (slot j at `ack_base + 16 j`) |
 | `mailbox` | the hello's address at the dispatcher; 0 sends none |
 | `leader`, `rank`, `peers` | start-up group: leader's index, this core's check-in slot, cores the leader waits for |
 | `ready_slot`, `ready_base` | the leader's READY word at the dispatcher |
@@ -193,7 +193,7 @@ the program's own.
 | `idle_limit` | timeout of a wait for the next command, in 1024-cycle units; 0: none |
 | `trace`, `trace_cap` | DRAM address of the trace (a page per core; 0: none), sequences traced |
 
-Compute: `kCArgCtl`, `kCArgMe`, `kCArgWait`, `kCArgIdle` (4 words), then the
+Compute: `kCArgControl`, `kCArgMe`, `kCArgWait`, `kCArgIdle` (4 words), then the
 program's. The host gives the limits in seconds: `session.load(..., wait=2.0,
 idle=120.0)` becomes `abi.limit_units(seconds, mhz)`.
 
@@ -276,7 +276,7 @@ How each kernel left is one byte of `kStEnds` (reader, writer, compute):
 
 ### State words
 
-48 words from `KM_CTL_STATE`, read back after the stop (`komorebi.state`). Counters
+48 words from `KM_CONTROL_STATE`, read back after the stop (`komorebi.state`). Counters
 saturate.
 
 | Word | Meaning |
@@ -294,27 +294,27 @@ saturate.
 
 ## Control block
 
-Every core has one control block in L1, at the same address everywhere (`args().ctl`,
+Every core has one control block in L1, at the same address everywhere (`args().control`,
 a multiple of 16). Offsets are in bytes, and every offset has a static assert in
 `km_abi.h`.
 
 | Offset | Name | Contents |
 |---|---|---|
-| 0x000 | `KM_CTL_RING` | 16 ring slots of one command each (64 bytes) |
-| 0x400 | `KM_CTL_RSVD` | reserved, 16 bytes |
-| 0x410 | `KM_CTL_STOP` | stop flag: nonzero makes every wait give up |
-| 0x440 | `KM_CTL_DONE` | 16 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned, word 2 (`kDoneReader`) the last whose reader body returned |
-| 0x540 | `KM_CTL_BOOT` | start-up check-ins at a leader, one 16-byte slot per rank |
-| 0x640 | `KM_CTL_STATE` | 48 state words |
-| 0x700 | `KM_CTL_JOB` | the command being run, copied by the reader for compute and writer |
-| 0x740 | `KM_CTL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
-| 0x780 | `KM_CTL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
-| 0x980 | `KM_CTL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
-| 0xA00 | `KM_CTL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
-| 0xC80 | `KM_CTL_DYN` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
-| 0xD40 | `KM_CTL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
-| 0x1580 | `KM_CTL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
-| 0x15C0 | `KM_CTL_BYTES` | size of the block |
+| 0x000 | `KM_CONTROL_RING` | 16 ring slots of one command each (64 bytes) |
+| 0x400 | `KM_CONTROL_RESERVED` | reserved, 16 bytes |
+| 0x410 | `KM_CONTROL_STOP` | stop flag: nonzero makes every wait give up |
+| 0x440 | `KM_CONTROL_DONE` | 16 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned, word 2 (`kDoneReader`) the last whose reader body returned |
+| 0x540 | `KM_CONTROL_BOOT` | start-up check-ins at a leader, one 16-byte slot per rank |
+| 0x640 | `KM_CONTROL_STATE` | 48 state words |
+| 0x700 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
+| 0x740 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
+| 0x780 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
+| 0x980 | `KM_CONTROL_PORT` | 8 ports of 16 bytes: count, wanted count ([ports](ports.md)) |
+| 0xA00 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
+| 0xC80 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
+| 0xD40 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
+| 0x1580 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
+| 0x15C0 | `KM_CONTROL_BYTES` | size of the block |
 
 Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing
@@ -342,7 +342,7 @@ A program may:
   give-up with `gave_up(...)`, under a where code of the runtime (`kWhereData`,
   `kWhereStall`) or of a call it uses;
 - write to DRAM and to other cores' L1 through the NoC from the reader and the writer;
-- send a result word with `wr.result(value)` on a `KM_F_RESULT` command.
+- send a result word with `wr.result(value)` on a `KM_FLAG_RESULT` command.
 
 A program must:
 - take and release pages of its buffers only through the wrappers (`Reader::reserve`,
@@ -356,7 +356,7 @@ A program must:
   on what `wait_front` returned;
 - send a small write between two cores' L1 only with `km::small_write`, slot to slot.
   The two addresses must share their low four bits, or the write is silently wrong;
-- give commands that use ports or broadcasts `KM_F_EXCL`;
+- give commands that use ports or broadcasts `KM_FLAG_EXCLUSIVE`;
 - fence (`invalidate_l1_cache()`) between the stores that build data in L1 and the
   `cb_push_back` or NoC send that hands it on: the core's stores pass through a small
   write-through cache, and a send that starts before they land carries old bytes.

@@ -38,13 +38,13 @@
   "command_bytes": 1600,
   "wall_s": 0.5977002260042354
  },
- "frame_us_median": 596965.04,
+ "frame_microseconds_median": 596965.04,
  "frame_ms": 596.96504,
  "power_mean_w": 61.0,
  "steps": [
   {
    "step": "gen",
-   "us": 549.98,
+   "microseconds": 549.98,
    "errors": 0,
    "busy_max": 738901,
    "load_per_packet": 130.0,
@@ -56,7 +56,7 @@
   },
   {
    "step": "primary",
-   "us": 66012.20000000001,
+   "microseconds": 66012.20000000001,
    "errors": 0,
    "busy_max": 82019357,
    "load_per_packet": 1251.3,
@@ -68,7 +68,7 @@
   },
   {
    "step": "shade1",
-   "us": 2225.42,
+   "microseconds": 2225.42,
    "errors": 0,
    "busy_max": 3001026,
    "load_per_packet": 2005.9,
@@ -80,7 +80,7 @@
   },
   {
    "step": "shadow",
-   "us": 52677.18,
+   "microseconds": 52677.18,
    "errors": 0,
    "busy_max": 63500124,
    "load_per_packet": 1251.1,
@@ -92,7 +92,7 @@
   },
   {
    "step": "sort_bounce",
-   "us": 4951.62,
+   "microseconds": 4951.62,
    "errors": 0,
    "busy_max": 0,
    "load_per_packet": 0.0,
@@ -104,7 +104,7 @@
   },
   {
    "step": "bounce",
-   "us": 347656.64,
+   "microseconds": 347656.64,
    "errors": 0,
    "busy_max": 434742466,
    "load_per_packet": 1594.0,
@@ -116,7 +116,7 @@
   },
   {
    "step": "unsort_bounce",
-   "us": 3387.28,
+   "microseconds": 3387.28,
    "errors": 0,
    "busy_max": 0,
    "load_per_packet": 0.0,
@@ -128,7 +128,7 @@
   },
   {
    "step": "shade2",
-   "us": 1567.94,
+   "microseconds": 1567.94,
    "errors": 0,
    "busy_max": 2113355,
    "load_per_packet": 2639.7,
@@ -140,7 +140,7 @@
   },
   {
    "step": "sort_shadow2",
-   "us": 4951.68,
+   "microseconds": 4951.68,
    "errors": 0,
    "busy_max": 0,
    "load_per_packet": 0.0,
@@ -152,7 +152,7 @@
   },
   {
    "step": "shadow2",
-   "us": 111151.84000000001,
+   "microseconds": 111151.84000000001,
    "errors": 0,
    "busy_max": 143570994,
    "load_per_packet": 1250.9,
@@ -164,7 +164,7 @@
   },
   {
    "step": "unsort_shadow2",
-   "us": 1267.86,
+   "microseconds": 1267.86,
    "errors": 0,
    "busy_max": 0,
    "load_per_packet": 0.0,
@@ -176,7 +176,7 @@
   },
   {
    "step": "image",
-   "us": 565.4,
+   "microseconds": 565.4,
    "errors": 0,
    "busy_max": 760009,
    "load_per_packet": 1295.0,

@@ -18,10 +18,10 @@
 #define PR_BYTES 0x600u
 
 /* Core results: 0 for a core with nothing to do, else one of these or a count. */
-#define PR_ERR_ARGS 0xE0u  /* the argument block is not this run's or out of range */
-#define PR_ERR_LATE 0xE1u  /* a timed wait ran out */
-#define PR_ERR_STOP 0xE2u  /* the runtime asked for a stop */
-#define PR_ERR_FAULT 0xE3u /* a probed instruction faulted (and was skipped) */
+#define PR_ERROR_ARGS 0xE0u  /* the argument block is not this run's or out of range */
+#define PR_ERROR_LATE 0xE1u  /* a timed wait ran out */
+#define PR_ERROR_STOP 0xE2u  /* the runtime asked for a stop */
+#define PR_ERROR_FAULT 0xE3u /* a probed instruction faulted (and was skipped) */
 
 /* The cluster's L2 cache controller: Flush64 writes back and invalidates the line
  * holding the physical address stored into it (rt/x280_pinned_input.h). */
@@ -60,13 +60,13 @@ static inline void pr_marker(const pr_t* p, uint32_t where) {
     x280_fence_ow();
 }
 
-/* 0 while the run may go on, else PR_ERR_STOP or PR_ERR_LATE. */
+/* 0 while the run may go on, else PR_ERROR_STOP or PR_ERROR_LATE. */
 static inline uint32_t pr_check(const pr_t* p) {
     if (x280_hart_stop_requested(p->core, p->run)) {
-        return PR_ERR_STOP;
+        return PR_ERROR_STOP;
     }
     if (x280_mtime() > p->deadline) {
-        return PR_ERR_LATE;
+        return PR_ERROR_LATE;
     }
     return 0;
 }

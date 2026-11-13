@@ -68,28 +68,28 @@ namespace shade {
     // d = a * c, d = c + a, d = c - a, d = a - c with c a constant (bits).
     inline void smul_c(uint32_t a, uint32_t c, uint32_t d) {
         load(L0, a);
-        imm(L1, c);
+        immediate(L1, c);
         mul(L0, L1, L2);
         store(L2, d);
     }
 
     inline void sadd_c(uint32_t a, uint32_t c, uint32_t d) {
         load(L0, a);
-        imm(L1, c);
+        immediate(L1, c);
         add(L1, L0, L2);
         store(L2, d);
     }
 
     inline void ssub_from_c(uint32_t a, uint32_t c, uint32_t d) {
         load(L0, a);
-        imm(L1, c);
+        immediate(L1, c);
         sub(L1, L0, L2);
         store(L2, d);
     }
 
     inline void ssub_c(uint32_t a, uint32_t c, uint32_t d) {
         load(L0, a);
-        imm(L1, c);
+        immediate(L1, c);
         sub(L0, L1, L2);
         store(L2, d);
     }
@@ -119,7 +119,7 @@ namespace shade {
     }
 
     inline void fill(uint32_t d, uint32_t bits) {
-        imm(L0, bits);
+        immediate(L0, bits);
         store(L0, d);
     }
 
@@ -151,7 +151,7 @@ namespace shade {
     inline void clamp01(uint32_t a, uint32_t d) {
         max0(a, d);
         load(L0, d);
-        imm(L1, kOne);
+        immediate(L1, kOne);
         TTI_SFPNOP;
         TTI_SFPSWAP(0, L1, L0, 1);  // L0 = min
         store(L0, d);
@@ -181,7 +181,7 @@ namespace shade {
         for (uint32_t k = 0; k < 3; ++k) {
             load(L0, d + k);
             TTI_SFPABS(0, L0, L1, kFloatAbs);
-            imm(L2, kMinDir);
+            immediate(L2, kMinDir);
             TTI_SFPPUSHC(0, 0, 0, 0);
             TTI_SFPGT(0, L1, L2, kSetCC);  // 1e-12 > |d|
             TT_SFPMOV(0, L0, L3, 0);
@@ -258,12 +258,12 @@ namespace shade {
 
     // L0 = L0 * c mod 2^32 (c a constant), from 16-bit halves and 23-bit products.
     inline void mul32(uint32_t c) {
-        imm(L1, 0xFFFF);
+        immediate(L1, 0xFFFF);
         TTI_SFPAND(0, L0, L1, 0);  // x low
         TT_SFPMOV(0, L0, L2, 0);
         TT_SFPSHFT(0xFF0, 0, L2, 1);  // x high (x >> 16)
-        imm(L3, c & 0xFFFF);
-        imm(L4, c >> 16);
+        immediate(L3, c & 0xFFFF);
+        immediate(L4, c >> 16);
         TT_SFPMUL24(L1, L3, ZERO, L5, 0);  // low 23 bits of xl cl
         TT_SFPMUL24(L1, L3, ZERO, L6, 1);  // bits 23 on
         TT_SFPMUL24(L1, L4, ZERO, L7, 0);  // xl ch (its low 16 bits count)
@@ -295,7 +295,7 @@ namespace shade {
     // Slot u = uniform(pixel, stream, seed) from slot h = golden(pixel) (ref rng.py).
     inline void uniform(uint32_t h, uint32_t stream, uint32_t u) {
         load(L0, h);
-        imm(L1, (stream + 1) * kStream + kSeed);
+        immediate(L1, (stream + 1) * kStream + kSeed);
         TT_SFPIADD(0, L1, L0, kCcNone);
         xorshift(16);
         mul32(kMul1);
@@ -305,7 +305,7 @@ namespace shade {
         TT_SFPSHFT(0xFF8, 0, L0, 1);  // >> 8: 24 bits
         TT_SFPCAST(L0, L0, 0);
         TTI_SFPNOP;
-        imm(L1, kUnit24);
+        immediate(L1, kUnit24);
         mul(L0, L1, L2);
         store(L2, u);
     }
@@ -328,7 +328,7 @@ namespace shade {
         }
         TTI_SFPPUSHC(0, 0, 0, 0);
         load(L0, kT1);
-        imm(L1, kMinG2);
+        immediate(L1, kMinG2);
         TTI_SFPGT(0, L0, L1, kSetCC);  // 1e-12 > g2
         for (uint32_t k = 0; k < 3; ++k) {
             copy(n + k, kG + k);
@@ -344,7 +344,7 @@ namespace shade {
         }
         TTI_SFPPUSHC(0, 0, 0, 0);
         load(L0, kT1);
-        imm(L1, kMinB2);
+        immediate(L1, kMinB2);
         TTI_SFPGT(0, L0, L1, kSetCC);  // 1e-6 > b2
         for (uint32_t k = 0; k < 3; ++k) {
             copy(n + k, db + k);
@@ -385,7 +385,7 @@ namespace shade {
     // Slot d = the integer c plus the slot a as integers (pixel numbers).
     inline void iadd_c(uint32_t a, uint32_t c, uint32_t d) {
         load(L0, a);
-        imm(L1, c);
+        immediate(L1, c);
         TT_SFPIADD(0, L1, L0, kCcNone);
         store(L0, d);
     }

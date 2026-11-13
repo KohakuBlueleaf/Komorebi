@@ -14,8 +14,8 @@
 /* The core's reply: w0 the result, w1 its call counter, w2 load << 16 | run cycles
  * (each at most 0xFFFF); on an error w1 is RL_FAIL and w2 the reason. */
 #define RL_FAIL 0xFFFFFFFFu
-#define RL_ERR_SIZE 1u
-#define RL_ERR_READ 2u
+#define RL_ERROR_SIZE 1u
+#define RL_ERROR_READ 2u
 
 /* Thread modes: who moves the bytes. */
 enum {

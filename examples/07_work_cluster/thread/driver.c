@@ -9,7 +9,7 @@
 
 /* Fills r field by field (a struct assignment may call memset, which does not link). */
 static void command(const wc_command* w, km_command_t* r) {
-    r->seq = r->land1 = r->land2 = r->land3 = 0;
+    r->sequence = r->land1 = r->land2 = r->land3 = 0;
     r->hdr = w->handler | w->flags << 8;
     r->group = w->first | w->count << 16;
     r->a0 = w->a0;
@@ -53,7 +53,7 @@ int kmx_main(int core) {
         wc_command w[2];
         km_command_t r;
         uint32_t handle[2];
-        kmx_event ev[2];
+        kmx_event event[2];
         wc_round(&s, w);
         groups[s.round] = w[0].first;
         kmx_progress(s.round * 4 + 1);
@@ -66,18 +66,18 @@ int kmx_main(int core) {
                 return 0;
             }
             kmx_progress(s.round * 4 + 2);
-            const int e = kmx_wait(handle[i], kmx_time() + WAIT_TICKS, &ev[i]);
+            const int e = kmx_wait(handle[i], kmx_time() + WAIT_TICKS, &event[i]);
             if (e != KMX_OK) {
                 finish(3, &s);
                 return 0;
             }
-            if (ev[i].kind != KM_EV_DONE) {
+            if (event[i].kind != KM_EVENT_DONE) {
                 finish(4, &s);
                 return 0;
             }
         }
         kmx_progress(s.round * 4 + 3);
-        const uint32_t next = wc_result(&s, ev[1].ticks);
+        const uint32_t next = wc_result(&s, event[1].ticks);
         if (next != WC_AGAIN) {
             finish(next == WC_END ? 0u : 2u, &s);
             return 0;

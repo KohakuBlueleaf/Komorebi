@@ -18,7 +18,7 @@ hand. Seven of its scenarios pin known behaviour in
 | `checks.hpp`, `checks.cpp` | the checks every scenario ends with, and the runner |
 | `pinned.cpp`, `pinned_main.cpp` | the scenarios the tests run: seven here, four of the dynamic ones |
 | `scenarios.cpp`, `item_kernels.cpp` | the other scenarios, and a scenario's own compute kernels |
-| `dyn_dispatch.cpp`, `dyn_scenarios.cpp` | the submitter's two-pass end of a dynamic run, and the scenarios that run the generic dynamic kernels with the hop example |
+| `messages_dispatch.cpp`, `messages_scenarios.cpp` | the submitter's two-pass end of a dynamic run, and the scenarios that run the generic dynamic kernels with the hop example |
 | `run.py` | builds the programs and runs the scenarios |
 
 ## Running it
@@ -47,7 +47,7 @@ headers and example kernels against this harness.
 - A grid of 1 to 16 cores. Each core has its own L1 image and a thread for each of its
   five kernels (reader, writer, unpack, math, pack).
 - A dispatcher that submits commands the way the dispatcher does:
-  - it holds a `KM_F_EXCL` command while an overlapping group is in flight;
+  - it holds a `KM_FLAG_EXCLUSIVE` command while an overlapping group is in flight;
   - it sweeps the acknowledgements;
   - it stops the grid on a missed deadline.
 - NoC writes delivered in 16-byte chunks, each with its own delay, or dropped.
@@ -90,7 +90,7 @@ between kernels.
 | `token_wait_after_stop` | the stop flag is set while the reader waits for a token page |
 | `no_output_waits_for_compute` | pack held as it takes a command with no output |
 | `wall_clock_across_a_carry` | a clock that moves at every register read, across the low word's carry |
-| `result_word_from_the_leader` | `KM_F_RESULT` commands, with and without a result given, and one without the flag |
+| `result_word_from_the_leader` | `KM_FLAG_RESULT` commands, with and without a result given, and one without the flag |
 | `slot_out_of_range` | a command's header names slot 20 |
 | `slot_not_ring_slot` | a command in ring slot 0 whose header names slot 3 |
 | `exit_partial_group` | an EXIT naming two of four cores, with late increments |
@@ -99,24 +99,24 @@ between kernels.
 | `dropped_chunk_times_out` | a command chunk is lost: the deadline stops the grid |
 | `idle_zero_means_no_limit` | a long gap between commands with idle limit 0 |
 | `idle_expiry_is_a_give_up` | a long gap with a nonzero idle limit |
-| `mb_stop_between_ok_and_seq` | the stop flag set between the two mailbox words of a token |
+| `mb_stop_between_ok_and_sequence` | the stop flag set between the two mailbox words of a token |
 | `mb_math_held_while_unpack_aborts` | math held while unpack's token wait gives up |
 | `mb_pack_held_while_input_wait_aborts` | pack held while unpack's input wait gives up |
 | `mb_abort_then_good_token` | an input wait gives up, then a good token arrives |
 | `mb_exit_during_input_wait` | the EXIT token arrives while unpack waits for input |
 | `items_straddle_the_end` | 5 or 6 items of 5 pages plus one of 1 page per command, in 15 pages |
 | `wrappers_reject_straddling_items` | each timed buffer wrapper asked for an item past the end |
-| `excl_waits_for_overlapping_group` | `KM_F_EXCL` commands on a disjoint and an overlapping group |
+| `excl_waits_for_overlapping_group` | `KM_FLAG_EXCLUSIVE` commands on a disjoint and an overlapping group |
 | `completion_every_group` | every group of an 8-core grid, rows of 3, random chunk delays |
 | `random_jobs` | 10^4 commands with random groups, sizes and delays on 6 cores |
-| `dyn_smoke` | one message is forwarded once between two cores; the run ends quiet |
-| `dyn_random` | 60 messages of 12 forwards on 4 cores with two bins: bins evicted, packets filled and split; against the replay |
-| `dyn_idle_flapping` | an idle time of 50 cycles and chunk delays up to 3000: lines go idle and busy again many times, the end comes only after the last consume |
-| `dyn_one_core` | every forward of every message to rank 0, whose queue holds the whole population |
-| `dyn_quota` | one core sends until `send` returns false |
-| `dyn_gap` | the first packet commit to DRAM is lost: the reader reports the gap with core and position, the grid stops |
-| `dyn_overflow` | more messages than the queue holds: the overflow is reported |
-| `dyn_stall` | a core stalls in its body: the run stops and names it |
+| `messages_smoke` | one message is forwarded once between two cores; the run ends quiet |
+| `messages_random` | 60 messages of 12 forwards on 4 cores with two bins: bins evicted, packets filled and split; against the replay |
+| `messages_idle_flapping` | an idle time of 50 cycles and chunk delays up to 3000: lines go idle and busy again many times, the end comes only after the last consume |
+| `messages_one_core` | every forward of every message to rank 0, whose queue holds the whole population |
+| `messages_quota` | one core sends until `send` returns false |
+| `messages_gap` | the first packet commit to DRAM is lost: the reader reports the gap with core and position, the grid stops |
+| `messages_overflow` | more messages than the queue holds: the overflow is reported |
+| `messages_stall` | a core stalls in its body: the run stops and names it |
 
 The `mb_` scenarios run at mailbox depths 1 and 4.
 

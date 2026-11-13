@@ -69,7 +69,7 @@ def test_the_ports_line_and_area_name_the_tiles_and_x280_cores():
 
 
 def test_the_port_lines_end_the_control_block_and_fit_the_library():
-    assert H["KM_CTL_X280"] + H["KM_X280_BYTES"] == H["KM_CTL_BYTES"]
+    assert H["KM_CONTROL_X280"] + H["KM_X280_BYTES"] == H["KM_CONTROL_BYTES"]
     assert H["KM_X280_TO"] + 16 <= H["KM_X280_BYTES"]
     assert K["KMX_PORT_WINDOW"] + K["KMX_PORTS_CORES"] <= 192
     assert K["KMX_PORTS_CORES"] == H["KM_CORES_MAX"]

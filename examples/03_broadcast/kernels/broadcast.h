@@ -35,7 +35,7 @@ inline bool reads_landed(const km::Core& c, uint32_t word, const km_command_t& r
         c.args().wait_limit
     );
     if (code != km::kGaveNone) {
-        c.gave_up(word, code, km::kWhereData, km::slot(r), r.seq);
+        c.gave_up(word, code, km::kWhereData, km::slot(r), r.sequence);
     }
     return code == km::kGaveNone;
 }
@@ -105,7 +105,7 @@ bool read_blocks(
         );
         if (code != km::kGaveNone || !km::item_fits(cb, get_write_ptr(cb), pages)) {
             const uint32_t why = code != km::kGaveNone ? code : km::kGaveBadItem;
-            c.gave_up(word, why, km::kWhereData, km::slot(r), r.seq);
+            c.gave_up(word, why, km::kWhereData, km::slot(r), r.sequence);
             return false;
         }
         cb_reserve_back(cb, pages);

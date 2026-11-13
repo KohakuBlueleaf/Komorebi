@@ -12,7 +12,7 @@
 #define KMD_STATE_GRAPH 0x3400u
 #define KMD_STATE_GTABLE 0x5A00u
 /* Kernel to engine: {req table entry, ticks command}: run that entry's graph. */
-#define KMD_EV_GRUN 0x18u
+#define KMD_EVENT_GRAPH_RUN 0x18u
 /* Table entries: every kept graph and every running one. */
 #define KMD_GRAPH_ENTRIES (KM_GRAPH_MAX_KEPT + KM_GRAPH_MAX_ACTIVE)
 
@@ -21,8 +21,8 @@
 #define KMD_GT_RUNNING 1u
 #define KMD_GT_KEPT 2u /* kept and not running */
 
-/* A graph of the table, one line. Core 0 writes it; core 1 reads it after KMD_EV_GRUN.
- */
+/* A graph of the table, one line. Core 0 writes it; core 1 reads it after
+ * KMD_EVENT_GRAPH_RUN. */
 typedef struct {
     uint32_t state; /* KMD_GT_* */
     uint32_t req, off, bytes;
@@ -83,18 +83,18 @@ static uint32_t upload_word(const kmd_t* k, uint32_t at) {
 }
 
 static inline void graph_reject(kmd_t* k, uint32_t cmd, uint32_t why) {
-    host_push(k, cmd, KM_EV_REJECTED | (why << 8), 0);
+    host_push(k, cmd, KM_EVENT_REJECTED | (why << 8), 0);
     k->rejected++;
 }
 
-/* KM_HANDLER_RUN with a2 != 0, host command `cmd` in line `l`: rejected, ended at once
- * with KM_EV_GRAPH_ERROR reason 1, or handed to core 1. Returns 1 to wait for room. */
+/* KM_HANDLER_RUN with a2 != 0, host command `cmd` in line `l`: rejected, ended with
+ * KM_EVENT_GRAPH_ERROR reason 1, or handed to core 1. 1: wait for room. */
 static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
     const uint32_t a0 = (uint32_t)(l[1] >> 32), a1 = (uint32_t)(l[2] >> 32);
     const uint32_t form = (uint32_t)l[3], bind_off = (uint32_t)(l[3] >> 32);
     const uint32_t n_bind = (uint32_t)(l[4] >> 32), region = k->upload_bytes;
     kmd_gtable_t* t = gtable(k);
-    if (form > KM_GRUN_KEPT) {
+    if (form > KM_GRAPH_RUN_KEPT) {
         graph_reject(k, cmd, KMD_REJECT_HANDLER);
         return 0;
     }
@@ -111,7 +111,7 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
             (y->state == KMD_GT_RUNNING && (y->again || (y->keep && !y->full)))
         );
     }
-    if (form == KM_GRUN_KEPT) {
+    if (form == KM_GRAPH_RUN_KEPT) {
         for (uint32_t i = 0; i < KMD_GRAPH_ENTRIES && x == 0; i++) {
             kmd_gentry_t* y = &t->entry[i];
             x = y->state == KMD_GT_KEPT && y->req == a0 ? y : 0;
@@ -135,8 +135,8 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
             x = t->entry[i].state == KMD_GT_FREE ? &t->entry[i] : 0;
         }
         if (bad || x == 0) {
-            const uint32_t why = KM_SERR_HEADER | KM_GRAPH_NO_NODE << 8;
-            host_push(k, req, KM_EV_GRAPH_ERROR | why << 8, 0);
+            const uint32_t why = KM_STREAM_ERROR_HEADER | KM_GRAPH_NO_NODE << 8;
+            host_push(k, req, KM_EVENT_GRAPH_ERROR | why << 8, 0);
             return 0;
         }
     }
@@ -144,7 +144,7 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
     if (!ring_room(e)) {
         return 1;
     }
-    if (form == KM_GRUN_KEPT) {
+    if (form == KM_GRAPH_RUN_KEPT) {
         x->again = 1;
         x->full = 0;
     } else {
@@ -165,15 +165,15 @@ static int graph_run(kmd_t* k, uint32_t cmd, const uint64_t* l) {
     x->state = KMD_GT_RUNNING;
     /* Core 1 reads the entry once the event shows. */
     x280_fence_ow();
-    ring_push(e, (uint32_t)(x - t->entry), KMD_EV_GRUN, cmd);
+    ring_push(e, (uint32_t)(x - t->entry), KMD_EVENT_GRAPH_RUN, cmd);
     t->running++;
     k->engine_on = 1;
     k->ring[KMD_SRC_HOST].owed++;
     return 0;
 }
 
-/* KM_HANDLER_CANCEL of `req`: core 1 cancels a running graph, a kept one not running is
- * dropped (KM_EV_GRAPH_ERROR 10). 0, 1 to wait for room, -1 if no graph has `req`. */
+/* KM_HANDLER_CANCEL of `req`: core 1 cancels a running graph, a kept one is dropped
+ * (KM_EVENT_GRAPH_ERROR 10). 0, 1: wait for room, -1: no graph has `req`. */
 static int graph_cancel(kmd_t* k, uint32_t cmd, uint32_t req) {
     kmd_gtable_t* t = gtable(k);
     for (uint32_t i = 0; i < KMD_GRAPH_ENTRIES; i++) {
@@ -183,15 +183,15 @@ static int graph_cancel(kmd_t* k, uint32_t cmd, uint32_t req) {
         }
         if (x->state == KMD_GT_KEPT) {
             x->state = KMD_GT_FREE;
-            const uint32_t why = KM_SERR_CANCELLED | KM_GRAPH_NO_NODE << 8;
-            host_push(k, req, KM_EV_GRAPH_ERROR | why << 8, 0);
+            const uint32_t why = KM_STREAM_ERROR_CANCELLED | KM_GRAPH_NO_NODE << 8;
+            host_push(k, req, KM_EVENT_GRAPH_ERROR | why << 8, 0);
             return 0;
         }
         kmd_ring_t* e = &k->ring[KMD_SRC_ENGINE];
         if (!ring_room(e)) {
             return 1;
         }
-        ring_push(e, cmd, KMD_EV_CANCEL, req);
+        ring_push(e, cmd, KMD_EVENT_CANCEL, req);
         return 0;
     }
     return -1;
@@ -202,7 +202,7 @@ static int graph_cancel(kmd_t* k, uint32_t cmd, uint32_t req) {
 static int graph_post(kmd_t* k, const uint64_t* l) {
     const uint32_t req = (uint32_t)(l[1] >> 32), status = (uint32_t)(l[2] >> 32);
     const uint32_t kind = status & 0xFFu;
-    if (kind != KM_EV_GRAPH_END && kind != KM_EV_GRAPH_ERROR) {
+    if (kind != KM_EVENT_GRAPH_END && kind != KM_EVENT_GRAPH_ERROR) {
         return 0;
     }
     kmd_gtable_t* t = gtable(k);

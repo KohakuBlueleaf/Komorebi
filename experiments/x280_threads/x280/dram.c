@@ -18,7 +18,7 @@ typedef struct {
 
 /* Result words. */
 enum {
-    DR_STATUS = 0,    /* 0, or PR_ERR_* */
+    DR_STATUS = 0,    /* 0, or PR_ERROR_* */
     DR_SEEN_BANK = 1, /* the bank whose host pattern page 0 of A held, or 0xFF */
     DR_A1_HOST = 2,   /* words of A equal to the host pattern, first read */
     DR_A2_TENSIX = 3, /* after the Tensix write, no invalidate: new words */
@@ -94,7 +94,7 @@ static uint32_t probe(pr_t* p, const volatile dram_args_t* a, volatile uint32_t*
     out[DR_FAULT] = pr_unprobe(p->core);
     out[DR_FLUSH_LINES] = (uint32_t)(na * page / 64);
     if (out[DR_FAULT]) {
-        return PR_ERR_FAULT;
+        return PR_ERROR_FAULT;
     }
     out[DR_A3_TENSIX] = count(ra, na, page, (uint32_t)a->seed_tensix);
     out[DR_A3_HOST] = count(ra, na, page, mine);
@@ -132,7 +132,7 @@ int main(uint64_t core_id) {
     }
     pr_t p;
     if (!pr_open(&p, core_id, sizeof(dram_args_t))) {
-        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERROR_ARGS);
         return 0;
     }
     const volatile dram_args_t* a = (const volatile dram_args_t*)p.lim;
@@ -145,8 +145,8 @@ int main(uint64_t core_id) {
         (a->a & 63) || (a->b & 63) || a->bank > 7 || a->timeout == 0 ||
         a->timeout > 30ull * X280_MTIME_HZ
     ) {
-        out[DR_STATUS] = PR_ERR_ARGS;
-        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
+        out[DR_STATUS] = PR_ERROR_ARGS;
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERROR_ARGS);
         return 0;
     }
     p.deadline = x280_mtime() + a->timeout;

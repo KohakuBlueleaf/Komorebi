@@ -3,18 +3,18 @@
 #include <stdint.h>
 
 #include "api/compute/common.h"
-#include "komorebi/device/km_dyn.hpp"
+#include "komorebi/device/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "forward.h"
 
 void kernel_main() {
     km::Compute cp;
-    const uint32_t results = cp.arg(km::kDynCArgs);
+    const uint32_t results = cp.arg(km::kMessagesCArgs);
     cp.run([&](const km_command_t& r) {
         if (km::handler(r) != kHandlerForward) {
             return;
         }
-        km::Dyn dy(cp, r);
+        km::Messages dy(cp, r);
         const uint32_t rank = dy.rank(), count = dy.count();  // counter tiles: none
         uint32_t consumed = 0, visits = 0, nulls = 0, sent = 0, rejected = 0, last = 0;
         uint64_t total = 0;
@@ -44,7 +44,7 @@ void kernel_main() {
                 dy.wait_stop();
                 stall = false;
             }
-            for (uint32_t i = 0; i < pk.n; i++) {
+            for (uint32_t i = 0; i < pk.count; i++) {
                 const volatile tt_l1_ptr uint32_t* in = pk[i];
                 for (uint32_t w = 1; w < kMessageWords; w++) {
                     message[w] = in[w];
@@ -82,7 +82,7 @@ void kernel_main() {
             o[kResSent] = sent;
             o[kResRejected] = rejected;
             o[kResQuota] = dy.quota();
-            o[kResRun] = r.seq;
+            o[kResRun] = r.sequence;
         }));
     });
 }

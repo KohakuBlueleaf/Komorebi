@@ -58,9 +58,9 @@ namespace walk {
     }
 
     // Box word k of the node record at b, as immediates.
-    inline auto box_imm(const uint32_t* b) {
+    inline auto box_immediate(const uint32_t* b) {
         return [b](uint32_t r, uint32_t k) {
-            imm(r, b[k]);
+            immediate(r, b[k]);
         };
     }
 
@@ -91,7 +91,7 @@ namespace walk {
         uint32_t a = wall();
         // Root: every lane; slot kSStack holds its entry distance or +inf.
         all_lanes();
-        box_test(box_imm(nodes), kSO, kSInv, kSBest);
+        box_test(box_immediate(nodes), kSO, kSInv, kSBest);
         store(L7, kSStack);
         stack[sp++] = 0;
         uint32_t b = wall();
@@ -117,7 +117,7 @@ namespace walk {
                 const uint32_t* w = tris + kTriWords * (c0 & ~kLeafBit);
                 tri_test(
                     [w](uint32_t r, uint32_t k) {
-                        imm(r, w[k]);
+                        immediate(r, w[k]);
                     },
                     kSO,
                     kSD,
@@ -147,9 +147,9 @@ namespace walk {
             const uint32_t near = second ? nd[7] : c0;
             const uint32_t far = second ? c0 : nd[7];
             count(kSNodes, 2);
-            box_test(box_imm(nodes + kNodeWords * far), kSO, kSInv, kSBest);
+            box_test(box_immediate(nodes + kNodeWords * far), kSO, kSInv, kSBest);
             store(L7, s);
-            box_test(box_imm(nodes + kNodeWords * near), kSO, kSInv, kSBest);
+            box_test(box_immediate(nodes + kNodeWords * near), kSO, kSInv, kSBest);
             store(L7, s + 1);
             stack[sp++] = far;
             stack[sp++] = near;

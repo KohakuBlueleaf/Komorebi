@@ -96,7 +96,7 @@ class Counters:
 
 def counter_tiles(first, count, k):
     """The counter tiles of a dynamic run of group (`first`, `count`) with `k` of them:
-    core c reserves on counter tile c mod k (as km::dyn_counter)."""
+    core c reserves on counter tile c mod k (as km::messages_counter)."""
     most = abi.headers()["KM_COUNTERS_MAX"]
     if not 1 <= k <= most:
         raise ValueError(f"counters {k}: not in 1..{most}")

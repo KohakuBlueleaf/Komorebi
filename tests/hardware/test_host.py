@@ -134,7 +134,8 @@ def test_a_stalled_rank_ends_in_the_timeout_exception(session):
     named = {c["core"]: c for c in t["not_reported"]}
     assert sorted(named) == [4, 6]
     assert (
-        named[6]["reader"]["where"] == "stall" and named[6]["reader"]["seq"] == t["seq"]
+        named[6]["reader"]["where"] == "stall"
+        and named[6]["reader"]["sequence"] == t["sequence"]
     )
     assert named[4]["writer"]["where"] == "complete"
     assert every_kernel_returned(out)

@@ -93,7 +93,7 @@ def stats(cycles, mhz):
     q = np.percentile(c, [0, 50, 99])
     return {
         "cycles": [int(v) for v in q],
-        "us": [round(v / mhz, 3) for v in q],
+        "microseconds": [round(v / mhz, 3) for v in q],
         "n": len(c),
     }
 
@@ -177,7 +177,7 @@ def run_hops(session, grid, args, mhz):
             fits[f"noc{noc}_{size}"] = {
                 "fixed_cycles": round(float(a), 1),
                 "per_hop_cycles": round(float(b), 2),
-                "fixed_us": round(float(a) / mhz, 3),
+                "fixed_microseconds": round(float(a) / mhz, 3),
                 "per_hop_ns": round(float(b) / mhz * 1e3, 2),
             }
     return {"sender": list(SENDER), "fits": fits, "rows": rows}
@@ -188,7 +188,7 @@ def run_bumps(session, grid, args, mhz):
     logical = [(i % gx, i // gx) for i in range(gx * gy)]
     reps = args.reps
     limit = int(mhz * 1e6 * 0.01)
-    lead = int(mhz * args.lead_us)
+    lead = int(mhz * args.lead_microseconds)
     results = {}
     for n in args.group_sizes:
         out = uint32_rows(session, 2, reps)
@@ -222,7 +222,7 @@ def run_bumps(session, grid, args, mhz):
         }
     return {
         "receiver": list(logical[0]),
-        "lead_us": args.lead_us,
+        "lead_microseconds": args.lead_microseconds,
         "group_sizes": results,
     }
 
@@ -232,7 +232,9 @@ def main():
     p.add_argument("what", choices=["hops", "bumps"])
     p.add_argument("--reps", type=int, default=1024, help="a multiple of 16")
     p.add_argument("--group-sizes", type=int, nargs="+", default=[1, 8, 32, 60, 118])
-    p.add_argument("--lead-us", type=float, default=40.0, help="bumps: release lead")
+    p.add_argument(
+        "--lead-microseconds", type=float, default=40.0, help="bumps: release lead"
+    )
     args = p.parse_args()
     if args.reps % 16:  # a result row is whole 64-byte DRAM lines
         p.error("--reps must be a multiple of 16")

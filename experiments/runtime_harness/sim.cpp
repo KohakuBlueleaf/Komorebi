@@ -36,9 +36,9 @@ namespace kmsim {
 
     void Sim::set_stop(uint32_t core) {
         *reinterpret_cast<uint32_t*>(
-            impl_->cores[core].mem + kCtlOff + KM_CTL_STOP
+            impl_->cores[core].mem + kControlOff + KM_CONTROL_STOP
         ) = 1;
-        impl_->log(core, kEvStop, 0, ~0u);
+        impl_->log(core, kEventStop, 0, ~0u);
     }
 
     uint64_t Sim::now() const {
@@ -47,7 +47,7 @@ namespace kmsim {
 
     uint32_t Sim::word(uint32_t core, uint32_t off) const {
         uint32_t v;
-        std::memcpy(&v, impl_->cores[core].mem + kCtlOff + off, 4);
+        std::memcpy(&v, impl_->cores[core].mem + kControlOff + off, 4);
         return v;
     }
 
@@ -68,7 +68,7 @@ namespace kmsim {
     }
 
     uint32_t Sim::state(uint32_t core, uint32_t index) const {
-        return word(core, KM_CTL_STATE + 4 * index);
+        return word(core, KM_CONTROL_STATE + 4 * index);
     }
 
 }  // namespace kmsim

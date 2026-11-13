@@ -53,18 +53,18 @@ def case_bench(device, args):
     random first core, then EXIT; microseconds per command. --preload stores every
     command before the kernel starts (kernel only); else the host feeds in batches."""
     rng = np.random.default_rng(args.seed)
-    n_cores, sent, recs = 0, [], []
+    core_count, sent, recs = 0, [], []
 
     def commands(plan):
-        nonlocal n_cores
-        n_cores = plan.grid_x * plan.grid_y
-        group = args.group or n_cores
-        firsts = rng.integers(0, n_cores - group + 1, size=args.n)
+        nonlocal core_count
+        core_count = plan.grid_x * plan.grid_y
+        group = args.group or core_count
+        firsts = rng.integers(0, core_count - group + 1, size=args.n)
         r = np.zeros((args.n + 1, 16), dtype=np.uint32)
         r[:, 1] = dc.HANDLER_NOP
         r[:-1, 2] = firsts.astype(np.uint32) | (group << 16)
         r[:, 3] = np.arange(1, args.n + 2, dtype=np.uint32)
-        r[-1] = dc.command(dc.HANDLER_EXIT, 0, n_cores)
+        r[-1] = dc.command(dc.HANDLER_EXIT, 0, core_count)
         recs.append(r)
         sent.extend(zip(firsts.tolist(), [group] * args.n, r[:-1, 3].tolist()))
         if args.preload:
@@ -76,13 +76,13 @@ def case_bench(device, args):
             events, times = plan.take(args.n + 1, dc.HOST_WAIT_S), {}
         else:
             events, times = plan.stream(
-                recs[0], dc.HOST_WAIT_S, args.batch, args.settle_us
+                recs[0], dc.HOST_WAIT_S, args.batch, args.settle_microseconds
             )
         plan.submit(dc.kernel_command(dc.HANDLER_STOP))
         out = {"tag": plan.tag, "times": times}
         out["check"] = dc.check_events(events, list(range(1, args.n + 2)), 1)
         ticks = np.array([e[3] for e in events[:-1]], dtype=np.float64)
-        out["latency_us"] = {
+        out["latency_microseconds"] = {
             "mean": round(float(ticks.mean()) / 50, 3),
             "p50": round(float(np.median(ticks)) / 50, 3),
             "max": round(float(ticks.max()) / 50, 3),
@@ -98,16 +98,18 @@ def case_bench(device, args):
     n = args.n
     t = out["times"]
     out["finish"] = fin
-    out["cores"] = dc.core_report(cnt, n_cores, out["tag"])
-    out["group_mismatch"], out["first_mismatch"] = dc.check_groups(cnt, n_cores, sent)
+    out["cores"] = dc.core_report(cnt, core_count, out["tag"])
+    out["group_mismatch"], out["first_mismatch"] = dc.check_groups(
+        cnt, core_count, sent
+    )
     # The kernel's span runs from the first command taken to the EXIT's event, over
     # n + 1 commands; the host's from the first store to the last event read.
-    out["us_per_command_kernel"] = round(
+    out["microseconds_per_command_kernel"] = round(
         blk["last"] / dc.dk.MTIME_HZ * 1e6 / (n + 1), 4
     )
     if t:
-        out["us_per_command_host"] = round(t["total_s"] * 1e6 / (n + 1), 4)
-        out["us_store_per_command"] = round(t["store_s"] * 1e6 / (n + 1), 4)
+        out["microseconds_per_command_host"] = round(t["total_s"] * 1e6 / (n + 1), 4)
+        out["microseconds_store_per_command"] = round(t["store_s"] * 1e6 / (n + 1), 4)
     out["idle_pass_fraction"] = round(blk["idle_passes"] / max(blk["passes"], 1), 4)
     out["full_pass_fraction"] = round(blk["full_passes"] / max(blk["passes"], 1), 4)
     out["no_room"] = blk["no_room"]
@@ -116,7 +118,7 @@ def case_bench(device, args):
         and blk["error"] == 0
         and all(out["check"].values())
         and out["group_mismatch"] == 0
-        and out["cores"]["cores_finished"] == n_cores
+        and out["cores"]["cores_finished"] == core_count
     )
     return out
 
@@ -130,14 +132,17 @@ def percentiles(us):
 
 def case_store(device, args):
     """Host store cost, no kernel running: --n bursts of --lines 64-byte stores and a
-    fence, per idle gap (--gaps-us), keep-busy period (--busy-us, 0 = none), burst
-    positions (--spread), a read before each burst (--read); LIM or a Tensix L1."""
+    fence, per idle gap (--gaps-microseconds), keep-busy period (--busy-microseconds, 0
+    = none), burst positions (--spread), a read before each burst (--read); LIM or a
+    Tensix L1."""
     runtime = dc.dk.Runtime(device, pll_mhz=args.pll)
     dc.log(f"X280 clock set: {args.pll} MHz")
     plan = runtime.plan()
     configs = []
     try:
-        grid = itertools.product(args.busy_us, args.spread, args.lines, args.gaps_us)
+        grid = itertools.product(
+            args.busy_microseconds, args.spread, args.lines, args.gaps_microseconds
+        )
         for busy, spread, lines, gap in grid:
             target = TARGETS[args.target]
             dc.log(f"store: busy {busy} lines {lines} gap {gap}")
@@ -150,15 +155,15 @@ def case_store(device, args):
             )
             configs.append(
                 {
-                    "busy_us": busy,
+                    "busy_microseconds": busy,
                     "lines": lines,
                     "spread": spread,
-                    "gap_us": gap,
-                    "pct_us": percentiles(us),
-                    "store_pct_us": percentiles(t[:, 0] * 1e6),
-                    "fence_pct_us": percentiles(t[:, 1] * 1e6),
-                    "over_5us": round(float((us > 5).mean()), 4),
-                    "raw_store_fence_us": np.round(t * 1e6, 2).tolist(),
+                    "gap_microseconds": gap,
+                    "pct_microseconds": percentiles(us),
+                    "store_pct_microseconds": percentiles(t[:, 0] * 1e6),
+                    "fence_pct_microseconds": percentiles(t[:, 1] * 1e6),
+                    "over_5_microseconds": round(float((us > 5).mean()), 4),
+                    "raw_store_fence_microseconds": np.round(t * 1e6, 2).tolist(),
                 }
             )
     finally:
@@ -193,7 +198,7 @@ def timed_stream(n, first, group, req):
     i), timed by the stream itself: its end carries the ticks from the first SUBMIT to
     the last acknowledgement."""
     s = dc.ks.Stream(req=req)
-    i, t0, t1 = s.regs(3)
+    i, t0, t1 = s.registers(3)
     s.set(i, 0)
     s.time(t0)
     top = s.label()
@@ -210,7 +215,7 @@ def timed_stream(n, first, group, req):
 def compute_stream(n, req):
     """n rounds of ADDI and JLT, no command, timed by the stream (ticks in its end)."""
     s = dc.ks.Stream(max_steps=2 * n + 16, req=req)
-    i, t0, t1 = s.regs(3)
+    i, t0, t1 = s.registers(3)
     s.set(i, 0)
     s.time(t0)
     top = s.label()
@@ -249,12 +254,12 @@ def case_stream_bench(device, args):
             for j in range(args.submitters):
                 plan.submit(dc.run_command(base + 65536 * (j + 1), len(data)))
             dc.log(f"{args.submitters} streams of {args.n} commands started")
-            ev = dc.stream_events(plan, range(9, 9 + args.submitters))
+            event = dc.stream_events(plan, range(9, 9 + args.submitters))
             dc.log("streams ended")
             out["host_s"] = round(time.perf_counter() - t, 4)
-            ends = [e[3] for e in ev if dc.kind(e[2])[0] == dc.EV_STREAM_END]
-            out["us_per_command"] = [round(e / 50 / args.n, 4) for e in ends]
-            out["stream_events"] = [list(e) for e in ev]
+            ends = [e[3] for e in event if dc.kind(e[2])[0] == dc.EVENT_STREAM_END]
+            out["microseconds_per_command"] = [round(e / 50 / args.n, 4) for e in ends]
+            out["stream_events"] = [list(e) for e in event]
         else:
             dc.log(f"idle {min(args.seconds, dc.HOST_WAIT_S)} s")
             time.sleep(min(args.seconds, dc.HOST_WAIT_S))
@@ -267,12 +272,12 @@ def case_stream_bench(device, args):
             dc.put_upload(plan, base, data)
             plan.submit(dc.run_command(base, len(data)))
             dc.log("compute stream started")
-            ev = dc.stream_events(plan, 11)
+            event = dc.stream_events(plan, 11)
             dc.log("compute stream ended")
-            ends = [e[3] for e in ev if dc.kind(e[2])[0] == dc.EV_STREAM_END]
+            ends = [e[3] for e in event if dc.kind(e[2])[0] == dc.EVENT_STREAM_END]
             ops = 2 * args.compute
             out["uops_per_s"] = round(ops * 50e6 / ends[0]) if ends else None
-            out["compute_events"] = [list(e) for e in ev]
+            out["compute_events"] = [list(e) for e in event]
         out["exit"] = dc.exit_and_stop(plan)
         return out
 
@@ -281,8 +286,8 @@ def case_stream_bench(device, args):
 
     out, fin, cnt = dc.with_kernel(device, args, body, depth=16, after=after)
     out["finish"] = fin
-    n_cores = cnt.shape[0]
-    out["cores"] = dc.core_report(cnt, n_cores, out["tag"])
+    core_count = cnt.shape[0]
+    out["cores"] = dc.core_report(cnt, core_count, out["tag"])
     blk = fin["block"]
     out["pass_ns"] = round(blk["ticks"] * 20 / max(1, blk["passes"]), 2)
     out["engine"] = {k: blk[k] for k in dc.H_NAMES.values()}
@@ -302,11 +307,11 @@ def case_stream_bench(device, args):
             freed[j] = t
             latency.append((t - busy.pop(slot)) & dc.M32)
     if resubmit:
-        out["free_to_reissue_us"] = percentiles(np.array(resubmit) / 50)
-        out["submit_to_free_us"] = percentiles(np.array(latency) / 50)
+        out["free_to_reissue_microseconds"] = percentiles(np.array(resubmit) / 50)
+        out["submit_to_free_microseconds"] = percentiles(np.array(latency) / 50)
     out["ok"] = bool(
-        dc.finished_clean(fin, n_cores, out["cores"])
-        and (not args.n or len(out["us_per_command"]) == args.submitters)
+        dc.finished_clean(fin, core_count, out["cores"])
+        and (not args.n or len(out["microseconds_per_command"]) == args.submitters)
         and (not args.compute or out["uops_per_s"])
     )
     return out
@@ -324,8 +329,12 @@ CASES = {
 if __name__ == "__main__":
     p = dc.parser(CASES)
     p.add_argument("--preload", action="store_true", help="bench: every command first")
-    p.add_argument("--gaps-us", type=float, nargs="+", default=[0.0], help="store")
-    p.add_argument("--busy-us", type=float, nargs="+", default=[0.0], help="store")
+    p.add_argument(
+        "--gaps-microseconds", type=float, nargs="+", default=[0.0], help="store"
+    )
+    p.add_argument(
+        "--busy-microseconds", type=float, nargs="+", default=[0.0], help="store"
+    )
     p.add_argument("--lines", type=int, nargs="+", default=[2], help="store")
     p.add_argument("--spread", type=int, nargs="+", default=[1], help="store")
     p.add_argument("--read", action="store_true", help="store: read before a burst")

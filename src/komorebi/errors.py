@@ -116,18 +116,18 @@ class CommandTimeout(KernelFailed):
     """A command's group missed its deadline: the command, slot, sequence and group, and
     after the stop the cores that did not report and where each was waiting."""
 
-    def __init__(self, handle, slot, seq, group, cores, result=None):
+    def __init__(self, handle, slot, sequence, group, cores, result=None):
         named = "; ".join(describe_core(c) for c in cores) or "none named"
         first, count = group if group else (None, None)
         super().__init__(
-            f"command {handle} timed out: slot {slot}, sequence {seq}, "
+            f"command {handle} timed out: slot {slot}, sequence {sequence}, "
             f"group first {first} count {count}; not reported: {named}",
             result=result,
             cores=cores,
         )
         self.handle = handle
         self.slot = slot
-        self.seq = seq
+        self.sequence = sequence
         self.group = group
 
 

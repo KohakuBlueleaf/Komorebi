@@ -17,14 +17,16 @@ namespace {
         return reinterpret_cast<volatile tt_l1_ptr uint32_t*>(addr);
     }
 
-    // Index of the first payload word of `rec` that is not command seq's, or 16 if all
-    // match. The echo words are not payload.
-    uint32_t first_bad(volatile tt_l1_ptr uint32_t* rec, uint32_t seq, uint32_t tag) {
+    // Index of the first payload word of `rec` that is not command sequence's, or 16 if
+    // all match. The echo words are not payload.
+    uint32_t first_bad(
+        volatile tt_l1_ptr uint32_t* rec, uint32_t sequence, uint32_t tag
+    ) {
         for (uint32_t w = 0; w < 16; w++) {
             if ((w & 3u) == 0) {
                 continue;
             }
-            if (rec[w] != landing_word(seq, w, tag)) {
+            if (rec[w] != landing_word(sequence, w, tag)) {
                 return w;
             }
         }
@@ -44,23 +46,23 @@ void kernel_main() {
 
     // L1 survives processes: clear the command slots before the check-in, so nothing
     // from an earlier run is accepted.
-    volatile tt_l1_ptr uint32_t* ctl = words(get_write_ptr(ttx::kCtlCb));
+    volatile tt_l1_ptr uint32_t* control = words(get_write_ptr(ttx::kControlCb));
     for (uint32_t w = 0; w < LANDING_SLOTS * LANDING_SLOT_BYTES / 4; w++) {
-        ctl[w] = 0;
+        control[w] = 0;
     }
 
-    uint32_t accepted = 0, torn = 0, early = 0, torn_seq = 0, torn_word = 0;
-    uint32_t torn_value = 0, healed = 0, heal_polls = 0, lost = 0, lost_seq = 0;
-    uint32_t last_seq = 0;
+    uint32_t accepted = 0, torn = 0, early = 0, torn_sequence = 0, torn_word = 0;
+    uint32_t torn_value = 0, healed = 0, heal_polls = 0, lost = 0, lost_sequence = 0;
+    uint32_t last_sequence = 0;
     uint64_t idle = 0;
 
     ttx::Worker worker(disp);
     worker.start();
 
-    for (uint32_t seq = 1; seq <= n; seq++) {
-        const uint32_t slot = depth > 1 ? seq % depth : 0;
-        volatile tt_l1_ptr uint32_t* rec = ctl + slot * (LANDING_SLOT_BYTES / 4);
-        const uint32_t echo = landing_echo(seq, tag);
+    for (uint32_t sequence = 1; sequence <= n; sequence++) {
+        const uint32_t slot = depth > 1 ? sequence % depth : 0;
+        volatile tt_l1_ptr uint32_t* rec = control + slot * (LANDING_SLOT_BYTES / 4);
+        const uint32_t echo = landing_echo(sequence, tag);
         bool ok = false;
         for (uint32_t spins = 0; spins < kSpinLimit; spins++) {
             invalidate_l1_cache();
@@ -79,17 +81,17 @@ void kernel_main() {
             idle++;
         }
         if (!ok) {
-            // Never accepted: count it and complete the last seq at once, so the
+            // Never accepted: count it and complete the last sequence at once, so the
             // leaders and the X280 finish instead of waiting for this core.
             lost++;
-            lost_seq = seq;
+            lost_sequence = sequence;
             worker.complete(n);
             break;
         }
-        const uint32_t bad = first_bad(rec, seq, tag);
+        const uint32_t bad = first_bad(rec, sequence, tag);
         if (bad < 16) {
             if (torn == 0) {
-                torn_seq = seq;
+                torn_sequence = sequence;
                 torn_word = bad;
                 torn_value = rec[bad];
             }
@@ -97,7 +99,7 @@ void kernel_main() {
             // Diagnosis only (the command stays counted as torn): does it verify later?
             for (uint32_t k = 1; k <= kHealLimit; k++) {
                 invalidate_l1_cache();
-                if (first_bad(rec, seq, tag) == 16) {
+                if (first_bad(rec, sequence, tag) == 16) {
                     healed++;
                     heal_polls = k > heal_polls ? k : heal_polls;
                     break;
@@ -105,12 +107,12 @@ void kernel_main() {
             }
         }
         accepted++;
-        if (!worker.complete(seq)) {
+        if (!worker.complete(sequence)) {
             lost++;
-            lost_seq = seq;
+            lost_sequence = sequence;
             break;
         }
-        last_seq = seq;
+        last_sequence = sequence;
     }
 
     // The broadcast kernel of this core may stop its broadcasts now.
@@ -125,15 +127,15 @@ void kernel_main() {
     c[LC_EARLY] = early;
     c[LC_IDLE_LO] = static_cast<uint32_t>(idle);
     c[LC_IDLE_HI] = static_cast<uint32_t>(idle >> 32);
-    c[LC_TORN_SEQ] = torn_seq;
+    c[LC_TORN_SEQUENCE] = torn_sequence;
     c[LC_TORN_WORD] = torn_word;
     c[LC_TORN_VALUE] = torn_value;
     c[LC_HEALED] = healed;
     c[LC_HEAL_POLLS] = heal_polls;
     c[LC_LOST] = lost;
-    c[LC_LOST_SEQ] = lost_seq;
+    c[LC_LOST_SEQUENCE] = lost_sequence;
     c[LC_TAG] = tag;
-    c[LC_LAST_SEQ] = last_seq;
+    c[LC_LAST_SEQUENCE] = last_sequence;
     c[LC_MAGIC] = LANDING_MAGIC | me;
     const InterleavedAddrGen<true> dst = {
         .bank_base_address = cnt_dram, .page_size = LC_WORDS * 4

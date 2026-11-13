@@ -65,7 +65,7 @@ it in its three kernels.
 - **The arrival buffer** (`kCbArrive`, 118 float32 tiles, P to a slot: by owner, a slot
   for every other core of a group of 118 / P + 1) is passed to compute whole, so its slot addresses are the same on every
   core and never drift. Compute reads the pages it needs by index.
-- **Commands carry `KM_F_EXCL`**: two commands whose groups overlap are never in flight
+- **Commands carry `KM_FLAG_EXCLUSIVE`**: two commands whose groups overlap are never in flight
   together, so nothing of one command can land in the next one's slots or ports.
 - **A core that does not send.** Every wait has a timeout. The receiver's wait on the
   port gives up first and its state names the port; the port keeps the count it
@@ -78,7 +78,7 @@ it in its three kernels.
 job with `Run.submit(..., exclusive=True, result=True)`: the commands reach the grid
 through the dispatcher on X280 cluster 0. Rank 0 returns the total's checksum
 (its float32 words summed in 32 bits) as the command's result word, which arrives as
-`Event.result`; it sums only when the command asks for a result (`KM_F_RESULT`), since
+`Event.result`; it sums only when the command asks for a result (`KM_FLAG_RESULT`), since
 the pass over the total costs about 7.6 µs per output tile. The driver checks every total against numpy (bit-equal on integer
 inputs, by relative RMS on uniform random ones) and every result word against the
 checksum of numpy's total (integer inputs) or of the total read back (random ones).

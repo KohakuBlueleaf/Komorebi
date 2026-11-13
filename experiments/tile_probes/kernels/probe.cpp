@@ -46,7 +46,7 @@ namespace {
                     break;
                 }
                 if (++n >= probe::kSpinLimit) {
-                    return probe::kErrSpin;
+                    return probe::kErrorSpin;
                 }
             }
         }

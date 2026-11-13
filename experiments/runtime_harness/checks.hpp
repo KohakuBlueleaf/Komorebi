@@ -58,13 +58,13 @@ namespace scen {
     Config fault_config(uint32_t cores);  // short bounds: a stranded kernel shows fast
     bool all_done(const Sim& s);
     void common(const Sim& s, Check& c);  // what every scenario ends with
-    void silent_from(const Sim& s, Check& c, uint32_t core, uint32_t seq);
+    void silent_from(const Sim& s, Check& c, uint32_t core, uint32_t sequence);
     void finish(const Sim& s, Outcome& o);
     void items_none();  // a kernel that does nothing
 
     // The scenarios that pin known behaviour (pinned.cpp), and the runner of a table.
     const std::vector<Case>& pinned();
-    const std::vector<Case>& dyn_cases();  // dyn_scenarios.cpp
+    const std::vector<Case>& messages_cases();  // messages_scenarios.cpp
     int run_cases(const std::vector<Case>& cases, int argc, char** argv);
 
 }  // namespace scen

@@ -134,7 +134,7 @@ def test_the_read_count_lets_the_kernel_go_on_past_a_full_event_ring():
     run, port, _ = make_run(port)
     handles = [run.submit(0, (i % 100, 4)) for i in range(200)]
     events = run.wait(handles, timeout=1.0)
-    assert all(ev.kind == "done" for ev in events)
+    assert all(event.kind == "done" for event in events)
     # the host's own room (unread plus in flight) is the tighter bound
     assert port.held_for_room == 0 and 0 < port.published <= port.seen
 
@@ -160,7 +160,7 @@ def test_sequences_follow_commands_and_skip_kernel_commands():
     run, port, _ = make_run()
     handles = [run.submit(0, (0, 1)) for _ in range(3)]
     run.drain()
-    assert [run.seq(t) for t in handles] == [s for _, s, _, _, _ in port.submitted]
+    assert [run.sequence(t) for t in handles] == [s for _, s, _, _, _ in port.submitted]
 
 
 def test_a_rejected_command_raises_for_its_handle_and_the_run_goes_on():
@@ -173,16 +173,16 @@ def test_a_rejected_command_raises_for_its_handle_and_the_run_goes_on():
     assert caught.value.handle == bad
     assert caught.value.reason == K["KMD_REJECT_GROUP"]
     assert run.event(after).kind == "done"
-    assert run.seq(after) == 2 and run.seq(bad) is None
+    assert run.sequence(after) == 2 and run.sequence(bad) is None
     assert run.wait(run.submit(1, (0, 4))).kind == "done"
 
 
 def test_sequences_skip_0_at_the_wrap_as_the_kernel_numbers_them():
     run, port, _ = make_run()
-    run._next_seq, port.seq = abi.M32 - 1, abi.M32 - 2
+    run._next_sequence, port.sequence = abi.M32 - 1, abi.M32 - 2
     handles = [run.submit(0, (0, 1)) for _ in range(3)]
     run.drain()
-    assert [run.seq(t) for t in handles] == [abi.M32 - 1, abi.M32, 1]
+    assert [run.sequence(t) for t in handles] == [abi.M32 - 1, abi.M32, 1]
     assert [s for _, s, _, _, _ in port.submitted] == [abi.M32 - 1, abi.M32, 1]
 
 
@@ -282,7 +282,7 @@ def test_stop_waits_for_commands_in_flight_before_exit():
 
 def stray_event(port, req):
     port.pushed_events += 1
-    port.events.append([port.pushed_events, req, K["KM_EV_DONE"], 7])
+    port.events.append([port.pushed_events, req, K["KM_EVENT_DONE"], 7])
 
 
 @pytest.mark.parametrize("req", [9, 1])  # never stored; already filed
@@ -302,16 +302,18 @@ def test_a_handle_is_released_once_its_event_was_returned(monkeypatch):
     for _ in range(10):
         run.wait([run.submit(0, (i, 1)) for i in range(100)])
     assert len(run._has) < 2 * run_mod.COMPACT_ROWS and run._base > 500
-    assert run.event(1) is None and run.seq(1) is None and len(port.submitted) == 1000
+    assert (
+        run.event(1) is None and run.sequence(1) is None and len(port.submitted) == 1000
+    )
 
 
 def test_forget_releases_handles_read_after_a_drain():
     run, _, _ = make_run()
     handles = [run.submit(0, (0, 1)) for _ in range(5)]
     run.drain()
-    assert run.event(handles[0]).kind == "done" and run.seq(handles[4]) == 5
+    assert run.event(handles[0]).kind == "done" and run.sequence(handles[4]) == 5
     run.forget(handles)
-    assert run.event(handles[0]) is None and run.seq(handles[4]) is None
+    assert run.event(handles[0]) is None and run.sequence(handles[4]) is None
     assert run._gone[:5].all()
 
 
@@ -324,10 +326,10 @@ class SlowPort(FakePort):
 
     def _complete(self):
         now = time.monotonic()
-        for slot, (seq, req, _) in sorted(self.busy.items()):
-            if now - self.since.setdefault(seq, now) >= self.delay:
+        for slot, (sequence, req, _) in sorted(self.busy.items()):
+            if now - self.since.setdefault(sequence, now) >= self.delay:
                 del self.busy[slot]
-                self._event(req, K["KM_EV_DONE"])
+                self._event(req, K["KM_EVENT_DONE"])
 
 
 class SlowBackend(FakeBackend):
@@ -366,11 +368,13 @@ def test_sequences_are_exact_while_a_card_thread_submits_commands_between():
     run.thread = CardThread()  # started at the load, before any host command
     a = run.submit(1, (0, 2))
     run.wait(a)
-    port.seq += 700  # the thread's commands, numbered by the same kernel
+    port.sequence += 700  # the thread's commands, numbered by the same kernel
     b = run.submit(1, (2, 2))
     run.wait(b)
     assert run.group(b) == (2, 2)
-    assert [run.seq(t) for t in (a, b)] == [1, 702] == [x[1] for x in port.submitted]
+    assert (
+        [run.sequence(t) for t in (a, b)] == [1, 702] == [x[1] for x in port.submitted]
+    )
     run.stop()
     assert run.trace().phases(b)["count"] == 2
 
@@ -378,11 +382,11 @@ def test_sequences_are_exact_while_a_card_thread_submits_commands_between():
 def test_a_gap_of_other_sources_too_long_to_tell_raises():
     run, port, _ = make_run(trace_cap=8)  # keeps the sequences of waited handles
     a = run.wait(run.submit(1, (0, 2))).handle
-    port.seq += 40_000
+    port.sequence += 40_000
     b = run.wait(run.submit(1, (0, 2))).handle
-    assert run.seq(a) == 1
+    assert run.sequence(a) == 1
     with pytest.raises(KomorebiError, match="other sources"):
-        run.seq(b)
+        run.sequence(b)
 
 
 def test_a_queued_command_gets_its_first_core_and_sequence_from_its_event():
@@ -391,7 +395,7 @@ def test_a_queued_command_gets_its_first_core_and_sequence_from_its_event():
     queued = run.submit(1, 3, queued=True)
     run.wait([busy, queued])
     assert run.group(queued) == (port.submitted[-1][4][0], 3)
-    assert run.seq(queued) == port.submitted[-1][1] == 2
+    assert run.sequence(queued) == port.submitted[-1][1] == 2
     run.stop()
     assert run.trace().command(queued).shape == (3, 4)
 
@@ -400,7 +404,7 @@ def test_a_traced_run_keeps_groups_and_sequences_for_the_trace():
     run, _, _ = make_run(trace_cap=8)
     handles = [run.submit(1, (i, 2)) for i in range(3)]
     run.wait(handles)
-    assert run.event(handles[0]) is None and run.seq(handles[2]) == 3
+    assert run.event(handles[0]) is None and run.sequence(handles[2]) == 3
     assert run.group(handles[1]) == (1, 2)
     run.stop()
     assert run.trace().phases(handles[1])["count"] == 2
@@ -425,7 +429,7 @@ def test_a_timeout_names_command_slot_sequence_and_cores():
         run.wait(stalled)
     err = caught.value
     assert err.handle == stalled and err.group == (4, 8)
-    assert err.seq == run.seq(stalled) == 3
+    assert err.sequence == run.sequence(stalled) == 3
     assert err.slot == port.submitted[-1][2]
     assert [c["core"] for c in err.cores] == [4, 6]
     assert err.cores[1]["reader"]["where"] == "stall"
@@ -440,7 +444,7 @@ def test_a_timeout_names_command_slot_sequence_and_cores():
 def test_a_kernel_that_ends_on_its_own_raises_kernel_failed():
     run, port, _ = make_run()
     run.wait(run.submit(1, (0, 1)))
-    port._finish(K["KMD_ERR_IDLE"])
+    port._finish(K["KMD_ERROR_IDLE"])
     with pytest.raises(KernelFailed, match="idle"):
         run.wait(run.submit(1, (0, 1)), timeout=1.0)
     assert run.stopped
@@ -449,7 +453,7 @@ def test_a_kernel_that_ends_on_its_own_raises_kernel_failed():
 def test_a_trap_in_the_kernel_names_the_core_and_the_exception():
     run, port, _ = make_run()
     run.wait(run.submit(1, (0, 1)))
-    port._finish(K["KMD_ERR_TRAP"], slot=5, seq=0x8003A40, req=0)
+    port._finish(K["KMD_ERROR_TRAP"], slot=5, sequence=0x8003A40, req=0)
     port.result["seen"] = 0x6C8
     want = r"trap in .*core 0 \(mcause 0x5, mepc 0x8003a40, mtval 0x6c8\)"
     with pytest.raises(KernelFailed, match=want):
@@ -480,7 +484,7 @@ def test_handles_map_onto_command_numbers_across_the_32_bit_wrap():
     assert run.drain() == 25
     assert [run.event(t).handle for t in handles] == handles
     assert [r for r, _, _, _, _ in port.submitted] == handles
-    assert [run.seq(t) for t in handles] == list(range(1, 26))
+    assert [run.sequence(t) for t in handles] == list(range(1, 26))
 
 
 def test_python_cost_counters_add_up():
@@ -539,7 +543,7 @@ def test_submit_many_and_submit_keep_one_order():
     run.drain()
     assert [i[0] for i in port.submitted] == [a, *b, c]
     assert [i[4][0] for i in port.submitted] == [0, 1, 2, 3]
-    assert [run.seq(t) for t in [a, *b, c]] == [1, 2, 3, 4]
+    assert [run.sequence(t) for t in [a, *b, c]] == [1, 2, 3, 4]
 
 
 def test_a_drain_of_many_commands_is_one_native_loop_per_slice():
@@ -572,7 +576,7 @@ def test_a_result_command_returns_the_leaders_word_on_its_done_event():
     port.results[with_result] = 0xBEEF
     one, other = run.wait([with_result, plain])
     assert one.result == 0xBEEF and other.result is None
-    assert port.ring[with_result][1] >> 8 == K["KM_F_RESULT"]
+    assert port.ring[with_result][1] >> 8 == K["KM_FLAG_RESULT"]
 
 
 def test_a_queued_command_takes_its_count_and_the_kernel_picks_the_group():

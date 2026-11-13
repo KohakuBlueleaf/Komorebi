@@ -74,4 +74,5 @@
 #define RP_RING 2u
 #define RP_COMMAND 3u
 #define RP_PLAN 4u
-#define RP_OUT_WORDS 4u /* frames done, failing command, its event kind, its aux */
+/* frames done, failing command, its event kind, its auxiliary */
+#define RP_OUT_WORDS 4u

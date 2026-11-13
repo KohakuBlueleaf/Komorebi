@@ -5,8 +5,8 @@
 #include "kernel.h"
 #include "ring.h"
 
-/* Programs the host window and points the host's rings at it. Returns KMD_ERR_NONE or
- * KMD_ERR_WINDOW. */
+/* Programs the host window and points the host's rings at it. Returns KMD_ERROR_NONE or
+ * KMD_ERROR_WINDOW. */
 static inline uint32_t events_open(kmd_t* k) {
     const volatile kmd_args_t* a = k->args;
     noc_tlb_2m_t programmed;
@@ -21,18 +21,18 @@ static inline uint32_t events_open(kmd_t* k) {
         )
     );
     if (win == 0) {
-        return KMD_ERR_WINDOW;
+        return KMD_ERROR_WINDOW;
     }
     k->opened |= 1u << 2;
     if (noc_verify_tlb_2m(KMD_WIN_HOST, &programmed) != 0) {
-        return KMD_ERR_WINDOW;
+        return KMD_ERROR_WINDOW;
     }
     k->host = (volatile uint32_t*)win;
     kmd_ring_t* r = &k->ring[KMD_SRC_HOST];
     r->consumed = &k->host[KMD_HOST_CONSUMED];
     r->events = (volatile uint8_t*)k->host + KMD_HOST_RING;
     r->told = &k->host[KMD_HOST_EVENTS];
-    return KMD_ERR_NONE;
+    return KMD_ERROR_NONE;
 }
 
 /* Stores one state word of the host buffer. */

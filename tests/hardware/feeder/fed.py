@@ -73,7 +73,7 @@ class Result:
     trace: np.ndarray | None
     mhz: int
     host_s: float
-    ctl: np.ndarray | None = None  # every core's control block, uint32 words
+    control: np.ndarray | None = None  # every core's control block, uint32 words
     lines: np.ndarray | None = None  # dynamic run: [workers, 4] status lines
     rows: np.ndarray | None = None  # the feeder's result rows, uint32
 
@@ -86,9 +86,9 @@ class Fed:
         self.session = session
         gx, gy = session.grid
         self.grid = (gx, gy)
-        self.n_cores = gx * gy
-        self.workers = self.n_cores - 1
-        self.logical = [(i % gx, i // gx) for i in range(self.n_cores)]
+        self.core_count = gx * gy
+        self.workers = self.core_count - 1
+        self.logical = [(i % gx, i // gx) for i in range(self.core_count)]
         self.noc = []
         for x, y in self.logical:
             cx, cy = session.device.worker_core(x, y)
@@ -99,11 +99,11 @@ class Fed:
 
     def control_blocks(self):
         """Zeroed control blocks, one shard per core: the same L1 address everywhere."""
-        return self.l1_blocks(K["KM_CTL_BYTES"] // 4)
+        return self.l1_blocks(K["KM_CONTROL_BYTES"] // 4)
 
     def l1_blocks(self, words):
         """A zeroed L1 area of `words` words on every core, at one address."""
-        return int32_tensor(self.session, np.zeros((self.n_cores, words)), self.grid)
+        return int32_tensor(self.session, np.zeros((self.core_count, words)), self.grid)
 
     def run(
         self,
@@ -130,10 +130,10 @@ class Fed:
         session, mhz = self.session, self.mhz
         n = len(commands)
         tag = (random.getrandbits(16) | 1) & 0xFFFF
-        ctl = self.control_blocks()
-        ctl_addr = ctl.address
+        control = self.control_blocks()
+        control_addr = control.address
         core_table = np.zeros((1, K["KM_CORES_MAX"]), dtype=np.uint64)
-        core_table[0, : self.n_cores] = self.noc
+        core_table[0, : self.core_count] = self.noc
         cores_t = int32_tensor(session, core_table)
         table_t = int32_tensor(
             session, np.asarray(commands, dtype=np.uint64).reshape(n, 16)
@@ -145,26 +145,26 @@ class Fed:
         if trace_cap:
             words = trace_cap * K["kTraceWords"]
             trace_t = int32_tensor(session, np.zeros((self.workers, words)))
-        dyn_rw, dyn_c, queue_t, lines_t = [], [], None, None
+        messages_rw, messages_c, queue_t, lines_t = [], [], None, None
         if dynamic is not None:
             dynamic.check(self.workers, queue_bytes, depth)
-            page = 32 * dynamic.message_bytes  # kDynPageMessages messages a page
+            page = 32 * dynamic.message_bytes  # kMessagesPageMessages messages a page
             shape = (self.workers * dynamic.queue_messages // 32, page // 4)
             queue_t = session.empty(shape, "int32")
             lines_t = self.l1_blocks(2 * K["KM_CORES_MAX"] * 4)  # lines, first pass
-            dyn_rw = dynamic.args(queue_t.address, lines_t.address)
-            dyn_c = dynamic.compute_args(self.workers)
+            messages_rw = dynamic.args(queue_t.address, lines_t.address)
+            messages_c = dynamic.compute_args(self.workers)
             log(f"dynamic: {dynamic.queue_bytes(self.workers) >> 20} MiB of queues")
-        log(f"tensors: ctl at {ctl_addr:#x}, {n} commands, tag {tag:#06x}")
+        log(f"tensors: control at {control_addr:#x}, {n} commands, tag {tag:#06x}")
 
         grp, n_groups = rec.groups(self.grid, self.workers)
         feeder = self.workers
         base = {
-            "ctl": ctl_addr,
+            "control": control_addr,
             "cores": cores_t.address,
-            "disp_xy": self.noc[feeder],
-            "ack_base": ctl_addr + K["KM_CTL_DONE"],
-            "ready_base": ctl_addr + K["KM_CTL_BOOT"],
+            "dispatcher_coordinates": self.noc[feeder],
+            "ack_base": control_addr + K["KM_CONTROL_DONE"],
+            "ready_base": control_addr + K["KM_CONTROL_BOOT"],
             "tag": tag,
             "depth": depth,
             "workers": self.workers,
@@ -174,8 +174,8 @@ class Fed:
             "trace": trace_t.address if trace_t is not None else 0,
             "trace_cap": trace_cap,
         }
-        mailbox = ctl_addr + K["KM_CTL_JOB"]
-        aligned = [ctl_addr, base["ack_base"], base["ready_base"], mailbox]
+        mailbox = control_addr + K["KM_CONTROL_JOB"]
+        aligned = [control_addr, base["ack_base"], base["ready_base"], mailbox]
         if any(addr % 16 for addr in aligned):  # small writes go slot to slot
             raise ValueError(f"bases not 16-byte aligned: {[hex(a) for a in aligned]}")
         reader_args, writer_args, compute_args = [], [], []
@@ -194,13 +194,13 @@ class Fed:
                 }
             )
             extra = program_args(core) if program_args else ([], [], [])
-            reader_args.append((x, y, start + dyn_rw + list(extra[0])))
-            writer_args.append((x, y, start + dyn_rw + list(extra[1])))
-            compute = [ctl_addr, core, base["wait_limit"], base["idle_limit"]]
-            compute_args.append((x, y, compute + dyn_c + list(extra[2])))
+            reader_args.append((x, y, start + messages_rw + list(extra[0])))
+            writer_args.append((x, y, start + messages_rw + list(extra[1])))
+            compute = [control_addr, core, base["wait_limit"], base["idle_limit"]]
+            compute_args.append((x, y, compute + messages_c + list(extra[2])))
         fx, fy = self.logical[feeder]
         fd = {
-            "kFdCtl": ctl_addr,
+            "kFdControl": control_addr,
             "kFdWorkers": self.workers,
             "kFdCores": cores_t.address,
             "kFdTable": table_t.address,
@@ -213,7 +213,7 @@ class Fed:
             "kFdExit": int(send_exit),
             "kFdRelease": release,
             "kFdRaw": raw,
-            "kFdDynHandler": dynamic.handler if dynamic is not None else 0,
+            "kFdMessagesHandler": dynamic.handler if dynamic is not None else 0,
             "kFdLines": lines_t.address if lines_t is not None else 0,
         }
         words = [0] * K["kFdArgs"]
@@ -263,8 +263,8 @@ class Fed:
         host_s = time.perf_counter() - t0
         log(f"program done in {host_s:.2f}s")
         rows = read_int32(results_t)
-        ctl_words = read_int32(ctl)
-        state, ports = rec.state_words(ctl_words), rec.port_words(ctl_words)
+        control_words = read_int32(control)
+        state, ports = rec.state_words(control_words), rec.port_words(control_words)
         lines = None
         if lines_t is not None:  # the feeder's shard holds the lines
             shard = rec.as_uint32(read_int32(lines_t))[feeder]
@@ -281,7 +281,7 @@ class Fed:
             trace=trace,
             mhz=mhz,
             host_s=host_s,
-            ctl=rec.as_uint32(ctl_words),
+            control=rec.as_uint32(control_words),
             lines=lines,
             rows=rec.as_uint32(rows),
         )

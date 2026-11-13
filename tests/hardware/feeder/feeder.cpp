@@ -15,16 +15,16 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    const uint32_t ctl = arg(kFdCtl);
+    const uint32_t control = arg(kFdControl);
     const uint32_t workers = arg(kFdWorkers), n = arg(kFdCommands);
     uint32_t depth = arg(kFdDepth);
     depth = depth == 0 || depth > KM_RING_SLOTS ? KM_RING_SLOTS : depth;
     const uint64_t deadline = static_cast<uint64_t>(arg(kFdDeadline)) << 10;
     const uint64_t boot_limit = static_cast<uint64_t>(arg(kFdBootLimit)) << 10;
     const uint32_t tab = get_write_ptr(kFdCbTable), res = get_write_ptr(kFdCbResults);
-    volatile tt_l1_ptr uint32_t* cores = km::l1(ctl + KM_CTL_CORES);
+    volatile tt_l1_ptr uint32_t* cores = km::l1(control + KM_CONTROL_CORES);
     volatile tt_l1_ptr uint32_t* ack = km::l1(
-        ctl + KM_CTL_DONE
+        control + KM_CONTROL_DONE
     );  // ack word j: ack[j * 4]
     volatile tt_l1_ptr uint32_t* out = km::l1(res);
     auto row = [&](uint32_t r) {
@@ -38,7 +38,9 @@ void kernel_main() {
     const InterleavedAddrGen<true> core_tab = {
         .bank_base_address = arg(kFdCores), .page_size = KM_CORES_MAX * 4
     };
-    noc_async_read(get_noc_addr(0, core_tab), ctl + KM_CTL_CORES, KM_CORES_MAX * 4);
+    noc_async_read(
+        get_noc_addr(0, core_tab), control + KM_CONTROL_CORES, KM_CORES_MAX * 4
+    );
     const InterleavedAddrGen<true> rec_tab = {
         .bank_base_address = arg(kFdTable), .page_size = 64
     };
@@ -58,18 +60,18 @@ void kernel_main() {
     // Ends the run: commands `status` and writes 1 to the stop flag of every worker.
     auto stop_all = [&](uint32_t status) {
         row(0)[kFrStatus] = status;
-        *km::out_slot(ctl, 0) = 1;
+        *km::out_slot(control, 0) = 1;
         for (uint32_t w = 0; w < workers; w++) {
-            km::small_write<0, 4>(ctl, core(w, ctl + KM_CTL_STOP), 0);
+            km::small_write<0, 4>(control, core(w, control + KM_CONTROL_STOP), 0);
         }
         noc_async_write_barrier();
     };
 
-    // Start-up: every group's READY (KM_CTL_BOOT) and the hello {1, ctl} (KM_CTL_JOB).
-    // The ack words are zero from the host and only the grid writes them.
+    // Start-up: each group's READY (KM_CONTROL_BOOT) and the hello {1, control}
+    // (KM_CONTROL_JOB). Ack words are zero from the host, only the grid writes them.
     const uint32_t groups = arg(kFdGroups);
-    volatile tt_l1_ptr uint32_t* ready_words = km::l1(ctl + KM_CTL_BOOT);
-    volatile tt_l1_ptr uint32_t* mailbox = km::l1(ctl + KM_CTL_JOB);
+    volatile tt_l1_ptr uint32_t* ready_words = km::l1(control + KM_CONTROL_BOOT);
+    volatile tt_l1_ptr uint32_t* mailbox = km::l1(control + KM_CONTROL_JOB);
     const uint64_t t_boot = km::wall64();
     uint32_t ready = 0;
     bool booted = false;
@@ -79,7 +81,7 @@ void kernel_main() {
         for (uint32_t g = 0; g < groups; g++) {
             ready |= (ready_words[g * 4] == KM_READY) << g;
         }
-        if (ready == (1u << groups) - 1 && mailbox[0] == 1 && mailbox[1] == ctl) {
+        if (ready == (1u << groups) - 1 && mailbox[0] == 1 && mailbox[1] == control) {
             booted = true;
             break;
         }
@@ -88,20 +90,20 @@ void kernel_main() {
     row(0)[kFrReady] = ready;
 
     int32_t busy[KM_RING_SLOTS];
-    uint32_t busy_seq[KM_RING_SLOTS];
+    uint32_t busy_sequence[KM_RING_SLOTS];
     uint32_t busy_group[KM_RING_SLOTS];
     bool busy_result[KM_RING_SLOTS];
     uint64_t t_submit[KM_RING_SLOTS];
     for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
         busy[j] = -1;
     }
-    uint32_t seq = 0, next = 0, done = 0, in_flight = 0, max_busy = 0;
+    uint32_t sequence = 0, next = 0, done = 0, in_flight = 0, max_busy = 0;
     bool exited = false;  // an EXIT command of the table was submitted: nothing after it
     // The dynamic run in flight (one at a time): its table index, sequence and group.
-    const uint32_t dyn_handler = arg(kFdDynHandler);
-    int32_t dyn_index = -1;
-    uint32_t dyn_seq = 0, dyn_group = 0;
-    bool dyn_ended = true;
+    const uint32_t messages_handler = arg(kFdMessagesHandler);
+    int32_t messages_index = -1;
+    uint32_t messages_sequence = 0, messages_group = 0;
+    bool messages_ended = true;
     auto busy_slot_of = [&](int32_t index) {
         uint32_t j = 0;
         while (j < depth && busy[j] != index) {
@@ -114,20 +116,20 @@ void kernel_main() {
     volatile tt_l1_ptr uint32_t* lines = km::l1(arg(kFdLines));
     volatile tt_l1_ptr uint32_t* first_pass = lines + KM_CORES_MAX * 4;
     auto quiet = [&](volatile tt_l1_ptr uint32_t* dr) -> int32_t {
-        dr[kFrRecDynChecks] = dr[kFrRecDynChecks] + 1;
-        const uint32_t f = dyn_group & 0xFFFFu, end = f + (dyn_group >> 16);
+        dr[kFrRecMessagesChecks] = dr[kFrRecMessagesChecks] + 1;
+        const uint32_t f = messages_group & 0xFFFFu, end = f + (messages_group >> 16);
         invalidate_l1_cache();
         bool idle = true;
         for (uint32_t k = f; k < end; k++) {
             for (uint32_t w = 0; w < 4; w++) {
                 first_pass[k * 4 + w] = lines[k * 4 + w];
             }
-            const uint32_t state = first_pass[k * 4 + KM_DYN_LINE_STATE];
-            if (first_pass[k * 4 + KM_DYN_LINE_RUN] != dyn_seq) {
+            const uint32_t state = first_pass[k * 4 + KM_MESSAGES_LINE_STATE];
+            if (first_pass[k * 4 + KM_MESSAGES_LINE_RUN] != messages_sequence) {
                 idle = false;
-            } else if (state == KM_DYN_GAVE_UP) {
+            } else if (state == KM_MESSAGES_GAVE_UP) {
                 return -static_cast<int32_t>(k + 1);
-            } else if (state != KM_DYN_IDLE) {
+            } else if (state != KM_MESSAGES_IDLE) {
                 idle = false;
             }
         }
@@ -142,10 +144,10 @@ void kernel_main() {
                     return 0;
                 }
             }
-            sent += first_pass[k * 4 + KM_DYN_LINE_SENT];
-            consumed += first_pass[k * 4 + KM_DYN_LINE_CONSUMED];
+            sent += first_pass[k * 4 + KM_MESSAGES_LINE_SENT];
+            consumed += first_pass[k * 4 + KM_MESSAGES_LINE_CONSUMED];
         }
-        dr[kFrRecDynSent] = static_cast<uint32_t>(sent);
+        dr[kFrRecMessagesSent] = static_cast<uint32_t>(sent);
         return sent == consumed ? 1 : 0;
     };
     uint64_t t_first = 0, t_last = 0, submit_cycles = 0;
@@ -155,12 +157,12 @@ void kernel_main() {
         volatile tt_l1_ptr km_command_t*
             st = (
                 reinterpret_cast<volatile tt_l1_ptr km_command_t*>(
-                    ctl + KM_CTL_RING + j * 64
+                    control + KM_CONTROL_RING + j * 64
                 )
             );
         km::copy_command(reinterpret_cast<volatile tt_l1_ptr km_command_t*>(src), st);
-        seq++;
-        st->seq = st->land1 = st->land2 = st->land3 = seq;
+        sequence++;
+        st->sequence = st->land1 = st->land2 = st->land3 = sequence;
         if (!raw) {  // a raw command keeps the slot it names (test only)
             st->hdr = (st->hdr & 0xFFFFu) | j << 16;
         }
@@ -170,7 +172,9 @@ void kernel_main() {
         }
         for (uint32_t w = 0; w < workers; w++) {
             noc_async_write(
-                ctl + KM_CTL_RING + j * 64, core(w, ctl + KM_CTL_RING + j * 64), 64
+                control + KM_CONTROL_RING + j * 64,
+                core(w, control + KM_CONTROL_RING + j * 64),
+                64
             );
         }
         noc_async_writes_flushed();
@@ -192,11 +196,11 @@ void kernel_main() {
                     continue;
                 }
                 volatile tt_l1_ptr uint32_t* r = row(1 + busy[j]);
-                if (ack[j * 4] == KM_ACK(busy_seq[j])) {
+                if (ack[j * 4] == KM_ACK(busy_sequence[j])) {
                     if (static_cast<uint32_t>(busy[j]) == n) {  // a dynamic run's end
                         row(
-                            1 + dyn_index
-                        )[kFrRecDynEndAck] = static_cast<uint32_t>(now);
+                            1 + messages_index
+                        )[kFrRecMessagesEndAck] = static_cast<uint32_t>(now);
                         busy[j] = -1;
                         in_flight--;
                         continue;
@@ -213,7 +217,7 @@ void kernel_main() {
                 } else if (now - t_submit[j] > deadline) {
                     r[kFrRecStatus] = kFsTimeout;
                     row(0)[kFrSlot] = j;
-                    row(0)[kFrSeq] = busy_seq[j];
+                    row(0)[kFrSequence] = busy_sequence[j];
                     row(0)[kFrIndex] = busy[j];
                     stop_all(kFsTimeout);
                     failed = true;
@@ -222,15 +226,15 @@ void kernel_main() {
             }
             // A dynamic run in flight: its end command goes out once the lines are
             // quiet.
-            if (!failed && dyn_index >= 0 && !dyn_ended) {
-                volatile tt_l1_ptr uint32_t* dr = row(1 + dyn_index);
+            if (!failed && messages_index >= 0 && !messages_ended) {
+                volatile tt_l1_ptr uint32_t* dr = row(1 + messages_index);
                 const int32_t q = quiet(dr);
                 if (q < 0) {
-                    dr[kFrRecDynGave] = static_cast<uint32_t>(-q);
-                    row(0)[kFrSlot] = busy_slot_of(dyn_index);
-                    row(0)[kFrSeq] = dyn_seq;
-                    row(0)[kFrIndex] = dyn_index;
-                    stop_all(kFsDynGave);
+                    dr[kFrRecMessagesGave] = static_cast<uint32_t>(-q);
+                    row(0)[kFrSlot] = busy_slot_of(messages_index);
+                    row(0)[kFrSequence] = messages_sequence;
+                    row(0)[kFrIndex] = messages_index;
+                    stop_all(kFsMessagesGave);
                     failed = true;
                     continue;
                 }
@@ -239,21 +243,21 @@ void kernel_main() {
                     j++;
                 }
                 if (q > 0 && j < depth) {
-                    dr[kFrRecDynEnd] = km::wall();
+                    dr[kFrRecMessagesEnd] = km::wall();
                     volatile tt_l1_ptr uint32_t* e = km::l1(tab + (n + 1) * 64);
                     for (uint32_t w = 0; w < 16; w++) {
                         e[w] = 0;
                     }
-                    e[1] = km::make_hdr(KM_HANDLER_DYN_END, 0, 0);
-                    e[2] = dyn_group;
-                    e[3] = dyn_seq;  // a0: the run it ends
+                    e[1] = km::make_hdr(KM_HANDLER_MESSAGES_END, 0, 0);
+                    e[2] = messages_group;
+                    e[3] = messages_sequence;  // a0: the run it ends
                     t_submit[j] = submit(j, tab + (n + 1) * 64, false);
                     busy[j] = static_cast<int32_t>(n);
-                    busy_seq[j] = seq;
-                    busy_group[j] = dyn_group;
+                    busy_sequence[j] = sequence;
+                    busy_group[j] = messages_group;
                     in_flight++;
-                    dr[kFrRecDynEndSeq] = seq;
-                    dyn_ended = true;
+                    dr[kFrRecMessagesEndSequence] = sequence;
+                    messages_ended = true;
                 }
             }
             if (failed || next >= n || exited) {
@@ -271,7 +275,9 @@ void kernel_main() {
                     continue;
                 }
             }
-            if ((w[1] >> 8) & KM_F_EXCL) {  // held while an overlapping group is busy
+            if (
+                (w[1] >> 8) & KM_FLAG_EXCLUSIVE
+            ) {  // held while an overlapping group is busy
                 bool held = false;
                 for (uint32_t k = 0; k < depth; k++) {
                     held |= busy[k] >= 0 && km::groups_overlap(busy_group[k], w[2]);
@@ -290,25 +296,25 @@ void kernel_main() {
             }
             const uint64_t t0 = submit(j, src, raw);
             t_first = next == 0 ? t0 : t_first;
-            r[kFrRecSeq] = seq;
+            r[kFrRecSequence] = sequence;
             r[kFrRecSlot] = j;
             r[kFrCmdSubmit] = static_cast<uint32_t>(t0);
             r[kFrCmdSubmitted] = km::wall();
             busy[j] = static_cast<int32_t>(next);
-            busy_seq[j] = seq;
+            busy_sequence[j] = sequence;
             busy_group[j] = w[2];
-            busy_result[j] = (w[1] >> 8) & KM_F_RESULT;
+            busy_result[j] = (w[1] >> 8) & KM_FLAG_RESULT;
             t_submit[j] = t0;
             in_flight++;
             max_busy = in_flight > max_busy ? in_flight : max_busy;
             r[kFrRecBusy] = in_flight;
             if (
-                dyn_handler != 0 && (w[1] & 0xFFu) == dyn_handler
+                messages_handler != 0 && (w[1] & 0xFFu) == messages_handler
             ) {  // a dynamic run starts
-                dyn_index = static_cast<int32_t>(next);
-                dyn_seq = seq;
-                dyn_group = w[2];
-                dyn_ended = false;
+                messages_index = static_cast<int32_t>(next);
+                messages_sequence = sequence;
+                messages_group = w[2];
+                messages_ended = false;
             }
             next++;
             exited = is_exit;
@@ -325,13 +331,13 @@ void kernel_main() {
             const uint64_t t0 = submit(0, tab + n * 64, false);  // every slot is free
             for (;;) {  // EXIT completes like any command
                 invalidate_l1_cache();
-                if (ack[0] == KM_ACK(seq)) {
+                if (ack[0] == KM_ACK(sequence)) {
                     row(0)[kFrExitAcked] = 1;
                     break;
                 }
                 if (km::wall64() - t0 > deadline) {
                     row(0)[kFrSlot] = 0;
-                    row(0)[kFrSeq] = seq;
+                    row(0)[kFrSequence] = sequence;
                     row(0)[kFrIndex] = n;
                     stop_all(kFsTimeout);
                     break;

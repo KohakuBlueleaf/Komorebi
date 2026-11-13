@@ -78,8 +78,8 @@ def case_exclusive(session):
     trace = run.trace()
     leads = [(excl, trace.lead(a, b)) for a, b, excl in pairs]
     out = {
-        "exclusive_leads_us": [round(v, 3) for e, v in leads if e],
-        "plain_leads_us": [round(v, 3) for e, v in leads if not e],
+        "exclusive_leads_microseconds": [round(v, 3) for e, v in leads if e],
+        "plain_leads_microseconds": [round(v, 3) for e, v in leads if not e],
     }
     out["ok"] = all(v < 0 for e, v in leads if e)
     return out
@@ -144,10 +144,10 @@ def case_queue_cost(session, windows=10, window=48, count=8, reads=(0, 100)):
         run.stop()
         res, n = run.result(), windows * window
         out[f"{mode[0]}_{mode[1]}_reads"] = {
-            "host_us_per_command": round(wall / n * 1e6, 2),
-            "host_submit_us": round(run.submit_s / n * 1e6, 2),
-            "kernel_us_per_command": round(res["last"] / 50 / n, 2),
-            "submit_to_done_us": round(
+            "host_microseconds_per_command": round(wall / n * 1e6, 2),
+            "host_submit_microseconds": round(run.submit_s / n * 1e6, 2),
+            "kernel_microseconds_per_command": round(res["last"] / 50 / n, 2),
+            "submit_to_done_microseconds": round(
                 float(np.mean([e.ticks for e in events])) / 50, 2
             ),
             "passes_per_command": round(res["passes"] / n, 1),

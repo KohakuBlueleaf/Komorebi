@@ -7,10 +7,10 @@ see a partly written command. This experiment compares two ways for a core to kn
 command has landed completely:
 
 - **Protocol A, echo words.** Words 0, 4, 8 and 12 (one per 16-byte chunk) carry the
-  echo word `tag << 16 | seq`. A core accepts the command when all four equal the
+  echo word `tag << 16 | sequence`. A core accepts the command when all four equal the
   sequence number it waits for.
 - **Protocol B, command then sequence word.** The X280 stores the 64-byte body, then
-  (after a `fence ow, ow`) one 32-bit sequence word `tag << 16 | seq` at a separate
+  (after a `fence ow, ow`) one 32-bit sequence word `tag << 16 | sequence` at a separate
   address of the same control block, through the same multicast window. A core waits
   only on the sequence word, then reads the body.
 
@@ -20,21 +20,21 @@ There is no work per command, so the protocol itself is what is measured.
 
 | part | file |
 |---|---|
-| X280 image (core 0): writes commands 1..n, paces on the column leaders' acks | `x280/landing_seq.c` |
+| X280 image (core 0): writes commands 1..n, paces on the column leaders' acks | `x280/landing_sequence.c` |
 | Tensix kernel, one per core (RISCV_0): waits, verifies, counts, completes | `kernels/worker.cpp` |
 | Layout, payload function and counter indices shared by both | `kernels/landing.h` |
 | Device template of tt-x280-dispatch (unchanged copy, see below): check-in, column-leader acks | `kernels/ttx_dispatch.hpp` |
 | Host module: X280 runtime, tt-x280-dispatch's `DispatchPlan` with its own `start()` | `host/landing_x280.cpp` |
 | Driver: builds the program, runs, closes the X280 runtime, reads the counters | `landing.py` |
 
-- **Command contents.** Every payload word is `landing_word(seq, w, tag)`, a mix of the
+- **Command contents.** Every payload word is `landing_word(sequence, w, tag)`, a mix of the
   sequence number, the word index and the run's random tag, so every core recomputes
   and checks every payload word of every command it accepts, and a command left in L1 by
   an earlier process never verifies.
 - **Pacing.** Depth 1: the X280 waits until every column leader acknowledged command i
   before it writes command i + 1 (slot 0 only). Depth 4: command i goes to slot i % 4 once
   every acknowledgement is at least i - 4 (an independent stream). Protocol B uses four
-  body slots and one sequence word; a core accepts when the word is at least its seq.
+  body slots and one sequence word; a core accepts when the word is at least its sequence.
 - **Counters per core**, kept by the kernel and written to L1 and then to one DRAM page
   per core at the end; the host reads them after the X280 runtime is closed:
   - *accepted*: commands accepted (must be n on every core);
@@ -120,7 +120,7 @@ What was observed:
 - Neither protocol produced a torn command in 7.3 x 10^8 core-commands each.
 - Partly landed commands are common: under protocol A, unstamped, there were 0.108 early
   polls per core-command at depth 1 and 0.052 at depth 4 (a poll that saw some but not
-  all of the four echo words). A single word checked alone (for example only `seq` in
+  all of the four echo words). A single word checked alone (for example only `sequence` in
   word 0) could have accepted some of these commands before they were complete.
 - Protocol B's check is about 10 cycles (7 ns) cheaper per command. End to end, B is
   0.025 us slower than A at depth 1 (presumably the extra store and fence per command on

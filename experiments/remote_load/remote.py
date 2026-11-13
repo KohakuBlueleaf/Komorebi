@@ -29,7 +29,7 @@ from komorebi import native  # noqa: E402
 from komorebi.session import KERNEL_BUFFER_BASE, Session, aiclk_mhz  # noqa: E402
 
 T0 = time.monotonic()
-CTL_WORDS = 128  # remote.cpp: control words per core
+CONTROL_WORDS = 128  # remote.cpp: control words per core
 RESP_WORDS = 16
 MSG, REPLY = 64, 68  # remote.cpp: the message words, the reply address words
 OP_FETCH, OP_FEED, OP_EXIT, OP_CLOCK, OP_STALE = 1, 2, 3, 5, 6
@@ -87,7 +87,7 @@ class Rig:
     def __init__(self, session, cores):
         self.s, self.dev, self.cores = session, session.device, cores
         self.module = native.load_module()
-        self.ctl = l1_rows(session, cores, CTL_WORDS)
+        self.control = l1_rows(session, cores, CONTROL_WORDS)
         self.slot = l1_rows(session, cores, SLOT_BYTES // 4)
         self.store = l1_rows(session, cores, 2 * SLOT_BYTES // 4)
         self.table = l1_rows(session, cores, TABLE_WORDS)
@@ -101,10 +101,10 @@ class Rig:
         kernel, _, _ = self.module.kernel_buffer(self.dev)
         self.l1_base = int(kernel) + KERNEL_BUFFER_BASE
         self.commands = builder.parse_commands(COMMANDS.read_text(), "remote", "brisc")
-        ctl = self.ctl.address
+        control = self.control.address
         reserved = [
             ("firmware, mailboxes and the kernel buffer", 0, self.l1_base),
-            ("the control words", ctl, ctl + 4 * CTL_WORDS),
+            ("the control words", control, control + 4 * CONTROL_WORDS),
         ]
         for name, buf, words in (
             ("the store", self.store, 2 * SLOT_BYTES // 4),
@@ -113,12 +113,12 @@ class Rig:
             at = buf.address
             reserved.append((name, at, at + 4 * words))
         builder.check_slot(self.slot.address, SLOT_BYTES, reserved)
-        self.seq = [0] * len(cores)
+        self.sequence = [0] * len(cores)
         log(
             f"remote {self.elf.parent.parent.name}: slot "
             f"{self.slot.address:#x} + {SLOT_BYTES}, store "
             f"{self.store.address:#x}, table {self.table.address:#x}"
-            f", control {ctl:#x}, L1 buffers from {self.l1_base:#x}"
+            f", control {control:#x}, L1 buffers from {self.l1_base:#x}"
         )
 
     def launcher(self):
@@ -127,7 +127,7 @@ class Rig:
         tbank, tat = page_place(self.dram_table, 0)
         for i, (x, y) in enumerate(self.cores):
             bank, at = page_place(self.results, i)
-            words = [self.ctl.address, bank, at, self.slot.address, SLOT_BYTES]
+            words = [self.control.address, bank, at, self.slot.address, SLOT_BYTES]
             words += [IDLE_UNITS, self.store.address, self.table.address, tbank, tat]
             args.append((x, y, words))
         launch = self.s.launch()
@@ -180,7 +180,7 @@ class Rig:
         self.module.write_l1(self.dev, x, y, table + 4 * TABLE_TARGETS, words)
         for k, i in enumerate(targets):
             tx, ty = self.cores[i]
-            at = self.ctl.address + 4 * REPLY
+            at = self.control.address + 4 * REPLY
             self.module.write_l1(
                 self.dev, tx, ty, at, [self.xy(writer), table + 64 * k]
             )
@@ -195,27 +195,27 @@ class Rig:
         expect=(0, 0),
     ):  # fmt: skip
         x, y = self.cores[i]
-        self.seq[i] += 1
+        self.sequence[i] += 1
         words = [op, flags, arg & 0xFFFFFFFF, count, *a, *b, which, 0, *expect]
-        at = self.ctl.address
+        at = self.control.address
         self.module.write_l1(self.dev, x, y, at + 16, [int(w) for w in words])
-        self.module.write_l1(self.dev, x, y, at, [self.seq[i]])
-        return self.seq[i]
+        self.module.write_l1(self.dev, x, y, at, [self.sequence[i]])
+        return self.sequence[i]
 
-    def response(self, i, seq, timeout=5.0):
-        """Core i's response line to `seq` (16 words), polled from DRAM."""
+    def response(self, i, sequence, timeout=5.0):
+        """Core i's response line to `sequence` (16 words), polled from DRAM."""
         by = time.monotonic() + timeout
         while True:
             (page,) = self.s.read(self.results, first=i, pages=1)
             words = page.reshape(-1).view(np.uint32)[:RESP_WORDS].astype(np.int64)
-            if words[0] == seq:
+            if words[0] == sequence:
                 if words[1]:
                     raise RuntimeError(
                         f"core {i}: {STATUS.get(int(words[1]))}: {words}"
                     )
                 return words
             if time.monotonic() > by:
-                raise TimeoutError(f"core {i}: no response to {seq}: {words}")
+                raise TimeoutError(f"core {i}: no response to {sequence}: {words}")
 
     def call(self, i, *args, timeout=5.0, **kwargs):
         return self.response(i, self.send(i, *args, **kwargs), timeout)
@@ -231,7 +231,7 @@ class Rig:
         for i in range(len(self.cores)):
             self.send(i, OP_EXIT)
         for i in range(len(self.cores)):
-            self.response(i, self.seq[i])
+            self.response(i, self.sequence[i])
         gx, gy = self.s.grid
         done = self.module.wait_grid(self.dev, gx, gy, 10.0)
         log(f"kernel left: {done}")
@@ -256,7 +256,7 @@ def stats(cycles, mhz):
         "median_cycles": float(np.median(a)),
         "min": float(a.min()),
         "max": float(a.max()),
-        "median_us": round(float(np.median(a)) / mhz, 3),
+        "median_microseconds": round(float(np.median(a)) / mhz, 3),
     }
 
 
@@ -447,14 +447,14 @@ def fan(args):
                     {
                         "body": "ab"[w],
                         "wrong": wrong,
-                        "store_us": round(int(r[5]) / mhz, 3),
-                        "messages_sent_us": round(int(r[8]) / mhz, 3),
-                        "command_to_last_reply_us": round(int(r[7]) / mhz, 3),
+                        "store_microseconds": round(int(r[5]) / mhz, 3),
+                        "messages_sent_microseconds": round(int(r[8]) / mhz, 3),
+                        "command_to_last_reply_microseconds": round(int(r[7]) / mhz, 3),
                         "target_run": stats(lines[:, 2], mhz),
-                        "message_seen_spread_us": round(
+                        "message_seen_spread_microseconds": round(
                             float((seen - seen.min()).max()) / mhz, 3
                         ),
-                        "done_spread_us": round(
+                        "done_spread_microseconds": round(
                             float((done - done.min()).max()) / mhz, 3
                         ),
                     }
@@ -545,7 +545,7 @@ RL_LINE, RL_LINES_MAX, RL_SCHED, RL_BODIES_MAX = 8, 12800, 8, 8
 OUT_BYTES = 4 * RL_LINE * RL_LINES_MAX
 MODES = {"self": 1, "store": 2, "patch": 3}
 RESULT, CALLS, CYCLES, TICKS, STORE, BODY, ARG, WHO = range(8)
-TICKS_PER_US = 50  # kmx_time() counts the 50 MHz timer
+TICKS_PER_MICROSECOND = 50  # kmx_time() counts the 50 MHz timer
 MARK = 0x2468ACE7  # the template's constant as built: bit 11 set (addi negative)
 M32 = 0xFFFFFFFF
 
@@ -649,7 +649,9 @@ def x280_job(args):
         for kib in sizes:
             n = steps_for(kib * 1024) if kib else 120
             if mode == MODES["patch"]:
-                o, st, mark = build_body(slot, f"tpl{kib}", n, 900 + kib, mark=True)
+                o, st, mark = build_body(
+                    slot, f"template{kib}", n, 900 + kib, mark=True
+                )
                 bodies.append((o, st))
             else:
                 for j in range(2):
@@ -775,19 +777,21 @@ def check(lines, cores, swaps, bodies, sched, first, mode, mhz, kib, results):
         "missing": missing,
         "codes": {c: r.code for c, r in results.items()},
         "aiclk_mhz": mhz,
-        "swap_us_x280": {
-            "median": round(float(np.median(ticks)) / TICKS_PER_US, 3),
-            "min": round(float(ticks.min()) / TICKS_PER_US, 3),
-            "max": round(float(ticks.max()) / TICKS_PER_US, 3),
+        "swap_microseconds_x280": {
+            "median": round(float(np.median(ticks)) / TICKS_PER_MICROSECOND, 3),
+            "min": round(float(ticks.min()) / TICKS_PER_MICROSECOND, 3),
+            "max": round(float(ticks.max()) / TICKS_PER_MICROSECOND, 3),
         },
-        "store_us_x280": {
-            "median": round(float(np.median(lines[:, STORE])) / TICKS_PER_US, 3),
-            "min": round(float(lines[:, STORE].min()) / TICKS_PER_US, 3),
-            "max": round(float(lines[:, STORE].max()) / TICKS_PER_US, 3),
+        "store_microseconds_x280": {
+            "median": round(
+                float(np.median(lines[:, STORE])) / TICKS_PER_MICROSECOND, 3
+            ),
+            "min": round(float(lines[:, STORE].min()) / TICKS_PER_MICROSECOND, 3),
+            "max": round(float(lines[:, STORE].max()) / TICKS_PER_MICROSECOND, 3),
         },
         "load_cycles": stats(lines[:, CYCLES] >> 16, mhz),
         "run_cycles": stats(lines[:, CYCLES] & 0xFFFF, mhz),
-        "command_us": round(((w[3] << 32) + w[2]) / TICKS_PER_US, 1),
+        "command_microseconds": round(((w[3] << 32) + w[2]) / TICKS_PER_MICROSECOND, 1),
     }
 
 

@@ -44,44 +44,52 @@ class _Hostfed(st._Sim):
         self.flight = {}  # handle -> (pc, wants the result)
         self.hostfed = []
 
-    def post(self, kind, aux):
+    def post(self, kind, auxiliary):
         """An event as the kernel posts it: an EVENT's or HALT's full register in
         `extra`, as the kernel's ticks."""
         extra = 0
-        if kind in (st.EV_STREAM, st.EV_STREAM_END):
-            extra = self.regs[self.ops[self.pc].a]
-        self.events.append(gr.Event(kind, self.h["req"], aux, extra, None))
+        if kind in (st.EVENT_STREAM, st.EVENT_STREAM_END):
+            extra = self.registers[self.ops[self.pc].a]
+        self.events.append(gr.Event(kind, self.h["req"], auxiliary, extra, None))
 
     def do_submit(self, o):
-        t, regs = self.templates[o.imm], self.regs
-        first = t.rec[2] & 0xFFFF if t.first_reg == st.TPL_NONE else regs[t.first_reg]
-        count = t.rec[2] >> 16 if t.count_reg == st.TPL_NONE else regs[t.count_reg]
-        if st.group_outside(first, count, self.n_cores):
-            return self.fail(st.ERR_GROUP, self.pc)
+        t, registers = self.templates[o.immediate], self.registers
+        first = (
+            t.rec[2] & 0xFFFF
+            if t.first_register == st.TEMPLATE_NONE
+            else registers[t.first_register]
+        )
+        count = (
+            t.rec[2] >> 16
+            if t.count_register == st.TEMPLATE_NONE
+            else registers[t.count_register]
+        )
+        if st.group_outside(first, count, self.core_count):
+            return self.fail(st.ERROR_GROUP, self.pc)
         self._send(self.patched(t), first, count, False)
         return "ok"
 
     def do_enqueue(self, o):
-        count = self.regs[o.a]
-        if count == 0 or count > self.n_cores:
-            return self.fail(st.ERR_NEVER_FITS, self.pc)
-        self._send(self.patched(self.templates[o.imm]), None, count, True)
+        count = self.registers[o.a]
+        if count == 0 or count > self.core_count:
+            return self.fail(st.ERROR_NEVER_FITS, self.pc)
+        self._send(self.patched(self.templates[o.immediate]), None, count, True)
         return "ok"
 
     def _send(self, words, first, count, queued):
         handler, flags = words[1] & 0xFF, words[1] >> 8 & 0xFF
         args = [words[i] for i in st.ARG_WORD]
-        result = bool(flags & st.F_RESULT)
+        result = bool(flags & st.FLAG_RESULT)
         if queued:
             handle = self.run.submit(handler, count, args, result=result, queued=True)
         else:
-            excl = bool(flags & st.F_EXCL)
+            excl = bool(flags & st.FLAG_EXCLUSIVE)
             handle = self.run.submit(handler, (first, count), args, excl, result=result)
         self.flight[handle] = (self.pc, result)
         self.pending += 1
         rec = HostfedCommand(
-            self.pc, 1, handle, handler, first, count, flags & ~st.F_QUEUE, tuple(args),
-            queued,
+            self.pc, 1, handle, handler, first, count, flags & ~st.FLAG_QUEUE,
+            tuple(args), queued,
         )  # fmt: skip
         self.hostfed.append(rec)
 
@@ -105,28 +113,28 @@ class _Hostfed(st._Sim):
         already seen."""
         left = deadline - time.monotonic()
         try:
-            ev = self.run.wait_any(self.flight, timeout=max(left, 0.0))
+            event = self.run.wait_any(self.flight, timeout=max(left, 0.0))
         except CommandTimeout as err:
             pc = self.flight.pop(err.handle, (self.pc,))[0]
-            self.fail(st.ERR_DEADLINE, pc)
+            self.fail(st.ERROR_DEADLINE, pc)
             return
-        self.done(ev.handle, ev)
+        self.done(event.handle, event)
         for handle in sorted(self.flight):
-            ev = self.run.event(handle)
-            if ev is not None:
+            event = self.run.event(handle)
+            if event is not None:
                 self.run.forget([handle])
-                self.done(handle, ev)
+                self.done(handle, event)
 
-    def done(self, handle, ev):
+    def done(self, handle, event):
         _, result = self.flight.pop(handle)
         self.pending -= 1
         if result:
-            self.last_result = ev.result
+            self.last_result = event.result
 
     def finish(self, deadline):
         status = "ended" if self.error is None else "error"
-        if self.error and self.error.reason != st.ERR_DEADLINE and self.flight:
+        if self.error and self.error.reason != st.ERROR_DEADLINE and self.flight:
             self.run.drain(timeout=max(deadline - time.monotonic(), 0.0))
         return HostfedResult(
-            status, self.error, list(self.regs), 1, self.hostfed, self.events
+            status, self.error, list(self.registers), 1, self.hostfed, self.events
         )

@@ -41,14 +41,14 @@ class X280(NamedTuple):
     idle_image: Path
 
 
-def package_dir(base=None):
+def package_directory(base=None):
     """The directory of the installed package (or `base`, for a layout elsewhere)."""
     return Path(base) if base is not None else HERE
 
 
 def manifest(base=None):
     """The build's manifest: pin, patches, build number, version, file count."""
-    path = package_dir(base) / MANIFEST
+    path = package_directory(base) / MANIFEST
     if not path.is_file():
         raise RuntimeMissing(f"{path} not found: this package holds no built runtime")
     return json.loads(path.read_text())
@@ -56,7 +56,7 @@ def manifest(base=None):
 
 def installed(base=None):
     """True when the package holds a built runtime."""
-    return (package_dir(base) / MANIFEST).is_file()
+    return (package_directory(base) / MANIFEST).is_file()
 
 
 def pin(base=None):
@@ -71,12 +71,12 @@ def version(base=None):
 
 def tree(base=None):
     """The kernel runtime tree inside the package (read only)."""
-    return package_dir(base) / TREE
+    return package_directory(base) / TREE
 
 
 def lib_dir(base=None):
     """The directory of the tt-metal libraries."""
-    return package_dir(base) / LIB
+    return package_directory(base) / LIB
 
 
 def x280(base=None):
@@ -88,7 +88,7 @@ def x280(base=None):
     return X280(objects, script, source / "include", tree(base) / X280_IDLE_IMAGE)
 
 
-def cache_dir(environ=None):
+def cache_directory(environ=None):
     """KMR_CACHE if set, else the user's cache directory (XDG) under komorebi."""
     environ = os.environ if environ is None else environ
     if environ.get(CACHE_VARIABLE):
@@ -106,7 +106,7 @@ def sfpi_release(base=None):
 
 def sfpi_dir(environ=None, base=None):
     """Where `python -m komorebi_runtime sfpi` puts the compiler (it may be absent)."""
-    return cache_dir(environ) / f"sfpi-{sfpi_release(base)['version']}" / "sfpi"
+    return cache_directory(environ) / f"sfpi-{sfpi_release(base)['version']}" / "sfpi"
 
 
 def sfpi_bin(environ=None, base=None):
@@ -121,7 +121,7 @@ def root(environ=None, base=None):
 
     It has a tt-metal tree's layout, so it serves as TT_METAL_RUNTIME_ROOT.
     """
-    out = cache_dir(environ) / f"runtime-{version(base)}"
+    out = cache_directory(environ) / f"runtime-{version(base)}"
     source = tree(base)
     for entry in source.iterdir():
         if entry.name != "runtime":

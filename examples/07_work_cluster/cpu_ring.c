@@ -17,10 +17,10 @@ static uint64_t now;
 #define KMX_RING_END() fake_kernel()
 #include "kmx_ring.h"
 
-#define CMD_DEPTH 4u
+#define COMMAND_DEPTH 4u
 #define EVENT_DEPTH 8u
 
-static _Alignas(64) uint8_t cmd[CMD_DEPTH * 64], events[EVENT_DEPTH * 16];
+static _Alignas(64) uint8_t cmd[COMMAND_DEPTH * 64], events[EVENT_DEPTH * 16];
 static _Alignas(64) uint64_t read_line[8];
 static uint32_t consumed, sent;
 static uint32_t x[KM_CORES_MAX]; /* page p of the state tensor: core p's word */
@@ -33,8 +33,8 @@ static int fake_kernel(void) {
     for (;;) {
         const uint32_t i = consumed + 1;
         km_command_t r;
-        memcpy(&r, cmd + (i % CMD_DEPTH) * 64, 64);
-        if (r.seq != i || !KM_LANDED(&r)) {
+        memcpy(&r, cmd + (i % COMMAND_DEPTH) * 64, 64);
+        if (r.sequence != i || !KM_LANDED(&r)) {
             return KMX_OK;
         }
         if (sent - (uint32_t)read_line[0] >= EVENT_DEPTH) {
@@ -54,7 +54,9 @@ static int fake_kernel(void) {
             }
         }
         printf("command %u %u %u %u %u %u\n", handler, flags, first, count, r.a0, r.a1);
-        const uint32_t e[4] = {++sent, i, KM_EV_DONE, flags & KM_F_RESULT ? result : 1};
+        const uint32_t e[4] = {
+            ++sent, i, KM_EVENT_DONE, flags & KM_FLAG_RESULT ? result : 1
+        };
         memcpy(events + (sent % EVENT_DEPTH) * 16, e, 16);
     }
 }
@@ -76,8 +78,8 @@ int kmx_submit(const km_command_t* r, uint32_t* handle) {
     return kmx_ring_submit(&ring, r, handle);
 }
 
-int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* ev) {
-    return kmx_ring_wait(&ring, handle, deadline, ev);
+int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event) {
+    return kmx_ring_wait(&ring, handle, deadline, event);
 }
 
 uint64_t kmx_time(void) {
@@ -103,12 +105,12 @@ void kmx_result(uint32_t code, const void* words, uint32_t n) {
 }
 
 int main(int argc, char** argv) {
-    kmx_ring_desc d = {0};
+    kmx_ring_descriptor d = {0};
     d.cmd = (uintptr_t)cmd;
     d.consumed = (uintptr_t)&consumed;
     d.events = (uintptr_t)events;
     d.read = (uintptr_t)read_line;
-    d.cmd_depth = CMD_DEPTH;
+    d.command_depth = COMMAND_DEPTH;
     d.event_depth = EVENT_DEPTH;
     if (!kmx_ring_open(&ring, &d) || argc - 1 > KMX_WORDS_MAX) {
         return 2;

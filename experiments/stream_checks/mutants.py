@@ -20,8 +20,8 @@ from komorebi.engines import stream as st
 SOURCE = Path(st.__file__).read_text()
 SLOT_LOOP = "        for slot, busy in enumerate(self.table):\n"
 LATE = "                and self.now >= busy.deadline_pass\n"
-GROUP = "        if group_outside(first, count, self.n_cores):\n"
-SUBMIT_COUNT = "        if count == 0 or count > self.n_cores:\n"
+GROUP = "        if group_outside(first, count, self.core_count):\n"
+SUBMIT_COUNT = "        if count == 0 or count > self.core_count:\n"
 QUEUE_FULL = '        if len(self.queue) >= QUEUE_JOBS:\n            return "stall"\n'
 
 MUTANTS = {
@@ -61,8 +61,8 @@ MUTANTS = {
     # allocator and slots
     "alloc_last_fit": [
         (
-            "    for first in range(n_cores - count + 1):",
-            "    for first in range(n_cores - count, -1, -1):",
+            "    for first in range(core_count - count + 1):",
+            "    for first in range(core_count - count, -1, -1):",
         )
     ],
     "slot_highest_free": [
@@ -104,13 +104,13 @@ MUTANTS = {
     "step_limit_before_end_of_program": [
         (
             "            if self.pc >= len(self.ops):\n"
-            "                return self.fail(ERR_JUMP, self.pc)\n"
+            "                return self.fail(ERROR_JUMP, self.pc)\n"
             '            if self.steps >= self.h["max_steps"]:\n'
-            "                return self.fail(ERR_STEPS, self.pc)\n",
+            "                return self.fail(ERROR_STEPS, self.pc)\n",
             '            if self.steps >= self.h["max_steps"]:\n'
-            "                return self.fail(ERR_STEPS, self.pc)\n"
+            "                return self.fail(ERROR_STEPS, self.pc)\n"
             "            if self.pc >= len(self.ops):\n"
-            "                return self.fail(ERR_JUMP, self.pc)\n",
+            "                return self.fail(ERROR_JUMP, self.pc)\n",
         )
     ],
     # deadlines, cancel, orphans
@@ -134,161 +134,171 @@ MUTANTS = {
     "cancel_before_deadline": [
         (
             "        self.check_deadlines()\n        if cancel and self.error is None:\n"
-            "            self.fail(ERR_CANCELLED, self.pc)\n",
+            "            self.fail(ERROR_CANCELLED, self.pc)\n",
             "        if cancel and self.error is None:\n"
-            "            self.fail(ERR_CANCELLED, self.pc)\n"
+            "            self.fail(ERROR_CANCELLED, self.pc)\n"
             "        self.check_deadlines()\n",
         )
     ],
     "cancel_pc_zero": [
-        ("self.fail(ERR_CANCELLED, self.pc)", "self.fail(ERR_CANCELLED, 0)")
+        ("self.fail(ERROR_CANCELLED, self.pc)", "self.fail(ERROR_CANCELLED, 0)")
     ],
     "orphans_not_drained": [
         ("                sim.drain(p + 1, max_passes)\n", "                pass\n")
     ],
     "orphans_have_no_deadline": [
         (
-            "                else:\n                    self.post(EV_TIMEOUT, slot)\n",
+            "                else:\n                    self.post(EVENT_TIMEOUT, slot)\n",
             "                else:\n                    self.stopped = False\n",
         )
     ],
     "orphan_timeout_names_pc": [
-        ("self.post(EV_TIMEOUT, slot)", "self.post(EV_TIMEOUT, busy.command.pc)")
+        ("self.post(EVENT_TIMEOUT, slot)", "self.post(EVENT_TIMEOUT, busy.command.pc)")
     ],
     "orphan_event_has_no_req": [
         (
-            "                    self.post(EV_TIMEOUT, slot)\n",
-            "                    self.events.append(Event(EV_TIMEOUT, 0, slot, self.now))\n",
+            "                    self.post(EVENT_TIMEOUT, slot)\n",
+            "                    self.events.append(Event(EVENT_TIMEOUT, 0, slot, self.now))\n",
         )
     ],
     "deadline_does_not_stop_the_grid": [("                self.stopped = True\n", "")],
     "default_deadline_ignored": [
         (
-            'if deadline_passes is None and h["deadline_us"] == 0:',
-            'if False and deadline_passes is None and h["deadline_us"] == 0:',
+            'if deadline_passes is None and h["deadline_microseconds"] == 0:',
+            'if False and deadline_passes is None and h["deadline_microseconds"] == 0:',
         )
     ],
     "default_deadline_for_every_header": [
         (
-            'if deadline_passes is None and h["deadline_us"] == 0:',
+            'if deadline_passes is None and h["deadline_microseconds"] == 0:',
             "if deadline_passes is None:",
         )
     ],
     # failure checks: which first
     "group_check_after_slot_wait": [
         (
-            GROUP + "            return self.fail(ERR_GROUP, self.pc)\n"
+            GROUP + "            return self.fail(ERROR_GROUP, self.pc)\n"
             "        slot = self.free_slot()\n"
             '        if slot is None:\n            return "stall"\n',
             "        slot = self.free_slot()\n"
             '        if slot is None:\n            return "stall"\n'
             + GROUP
-            + "            return self.fail(ERR_GROUP, self.pc)\n",
+            + "            return self.fail(ERROR_GROUP, self.pc)\n",
         )
     ],
     "count_check_after_queue_full": [
         (
             SUBMIT_COUNT
-            + "            return self.fail(ERR_NEVER_FITS, self.pc)\n"
+            + "            return self.fail(ERROR_NEVER_FITS, self.pc)\n"
             + QUEUE_FULL,
             QUEUE_FULL
             + SUBMIT_COUNT
-            + "            return self.fail(ERR_NEVER_FITS, self.pc)\n",
+            + "            return self.fail(ERROR_NEVER_FITS, self.pc)\n",
         )
     ],
     "group_sum_wraps": [
         (
-            "    return count == 0 or first > n_cores or count > n_cores - first",
-            "    return count == 0 or (first + count) & MASK > n_cores",
+            "    return count == 0 or first > core_count or count > core_count - first",
+            "    return count == 0 or (first + count) & MASK > core_count",
         )
     ],
-    "group_off_by_one_count": [("count > n_cores - first", "count >= n_cores - first")],
+    "group_off_by_one_count": [
+        ("count > core_count - first", "count >= core_count - first")
+    ],
     "group_empty_allowed": [("return count == 0 or first", "return first")],
-    "job_of_zero_allowed": [(SUBMIT_COUNT, "        if count > self.n_cores:\n")],
+    "job_of_zero_allowed": [(SUBMIT_COUNT, "        if count > self.core_count:\n")],
     "job_of_whole_grid_rejected": [
-        (SUBMIT_COUNT, "        if count == 0 or count >= self.n_cores:\n")
+        (SUBMIT_COUNT, "        if count == 0 or count >= self.core_count:\n")
     ],
     # micro-op semantics
     "jlt_signed": [
         (
-            "nxt = o.imm if regs[o.a] < regs[o.b] else nxt",
-            "nxt = o.imm if regs[o.a] ^ 0x80000000 < regs[o.b] ^ 0x80000000 else nxt",
+            "nxt = o.immediate if registers[o.a] < registers[o.b] else nxt",
+            "nxt = o.immediate if registers[o.a] ^ 0x80000000 < registers[o.b] ^ 0x80000000 else nxt",
         )
     ],
     "mul_not_wrapped": [
         (
-            "regs[o.a] = regs[o.b] * regs[o.c] & MASK",
-            "regs[o.a] = regs[o.b] * regs[o.c]",
+            "registers[o.a] = registers[o.b] * registers[o.c] & MASK",
+            "registers[o.a] = registers[o.b] * registers[o.c]",
         )
     ],
-    "shr_amount_unmasked": [("regs[o.b] >> (o.imm & 31)", "regs[o.b] >> o.imm")],
+    "shr_amount_unmasked": [
+        ("registers[o.b] >> (o.immediate & 31)", "registers[o.b] >> o.immediate")
+    ],
     "shr_arithmetic": [
         (
-            "regs[o.a] = regs[o.b] >> (o.imm & 31)",
-            "regs[o.a] = ((regs[o.b] ^ 0x80000000) - 0x80000000 >> (o.imm & 31)) & MASK",
+            "registers[o.a] = registers[o.b] >> (o.immediate & 31)",
+            "registers[o.a] = ((registers[o.b] ^ 0x80000000) - 0x80000000 >> (o.immediate & 31)) & MASK",
         )
     ],
     "mod_signed": [
         (
-            "regs[o.a] = regs[o.b] % regs[o.c]",
-            "regs[o.a] = ((regs[o.b] ^ 0x80000000) - 0x80000000) % regs[o.c] & MASK",
+            "registers[o.a] = registers[o.b] % registers[o.c]",
+            "registers[o.a] = ((registers[o.b] ^ 0x80000000) - 0x80000000) % registers[o.c] & MASK",
         )
     ],
     "sub_not_wrapped": [
         (
-            "regs[o.a] = regs[o.b] - regs[o.c] & MASK",
-            "regs[o.a] = regs[o.b] - regs[o.c]",
+            "registers[o.a] = registers[o.b] - registers[o.c] & MASK",
+            "registers[o.a] = registers[o.b] - registers[o.c]",
         )
     ],
     "addi_not_wrapped": [
-        ("regs[o.a] = regs[o.b] + o.imm & MASK", "regs[o.a] = regs[o.b] + o.imm")
+        (
+            "registers[o.a] = registers[o.b] + o.immediate & MASK",
+            "registers[o.a] = registers[o.b] + o.immediate",
+        )
     ],
     "add_not_wrapped": [
         (
-            "regs[o.a] = regs[o.b] + regs[o.c] & MASK",
-            "regs[o.a] = regs[o.b] + regs[o.c]",
+            "registers[o.a] = registers[o.b] + registers[o.c] & MASK",
+            "registers[o.a] = registers[o.b] + registers[o.c]",
         )
     ],
     "and_is_or": [
-        ("regs[o.a] = regs[o.b] & regs[o.c]", "regs[o.a] = regs[o.b] | regs[o.c]")
+        (
+            "registers[o.a] = registers[o.b] & registers[o.c]",
+            "registers[o.a] = registers[o.b] | registers[o.c]",
+        )
     ],
     "jeq_is_jne": [
         (
-            "nxt = o.imm if regs[o.a] == regs[o.b] else nxt",
-            "nxt = o.imm if regs[o.a] != regs[o.b] else nxt",
+            "nxt = o.immediate if registers[o.a] == registers[o.b] else nxt",
+            "nxt = o.immediate if registers[o.a] != registers[o.b] else nxt",
         )
     ],
     "jnz_is_jz": [
         (
-            "nxt = o.imm if regs[o.a] != 0 else nxt",
-            "nxt = o.imm if regs[o.a] == 0 else nxt",
+            "nxt = o.immediate if registers[o.a] != 0 else nxt",
+            "nxt = o.immediate if registers[o.a] == 0 else nxt",
         )
     ],
     "rand_leaves_seed": [
         (
-            "                regs[SEED_REG] = xorshift32(regs[SEED_REG])\n"
-            "                regs[o.a] = regs[SEED_REG]\n",
-            "                regs[o.a] = xorshift32(regs[SEED_REG])\n",
+            "                registers[SEED_REGISTER] = xorshift32(registers[SEED_REGISTER])\n"
+            "                registers[o.a] = registers[SEED_REGISTER]\n",
+            "                registers[o.a] = xorshift32(registers[SEED_REGISTER])\n",
         )
     ],
     "rand_wrong_shift": [("x ^= x << 5 & MASK", "x ^= x << 7 & MASK")],
     "mod_zero_gives_zero": [
         (
-            "                if regs[o.c] == 0:\n                    return self.fail(ERR_MOD_ZERO, self.pc)\n"
-            "                regs[o.a] = regs[o.b] % regs[o.c]\n",
-            "                regs[o.a] = regs[o.b] % regs[o.c] if regs[o.c] else 0\n",
+            "                if registers[o.c] == 0:\n                    return self.fail(ERROR_MOD_ZERO, self.pc)\n"
+            "                registers[o.a] = registers[o.b] % registers[o.c]\n",
+            "                registers[o.a] = registers[o.b] % registers[o.c] if registers[o.c] else 0\n",
         )
     ],
-    "event_aux_not_masked": [
+    "event_auxiliary_not_masked": [
         (
-            "self.post(EV_STREAM, regs[o.a] & 0xFFFFFF)",
-            "self.post(EV_STREAM, regs[o.a])",
+            "self.post(EVENT_STREAM, registers[o.a] & 0xFFFFFF)",
+            "self.post(EVENT_STREAM, registers[o.a])",
         )
     ],
-    "end_aux_not_masked": [
+    "end_auxiliary_not_masked": [
         (
-            "self.post(EV_STREAM_END, self.halt & 0xFFFFFF)",
-            "self.post(EV_STREAM_END, self.halt)",
+            "self.post(EVENT_STREAM_END, self.halt & 0xFFFFFF)",
+            "self.post(EVENT_STREAM_END, self.halt)",
         )
     ],
     # waiting, results, templates
@@ -310,7 +320,9 @@ MUTANTS = {
             "            self.halt",
         )
     ],
-    "wait_is_off_by_one": [("self.pending > o.imm", "self.pending >= o.imm")],
+    "wait_is_off_by_one": [
+        ("self.pending > o.immediate", "self.pending >= o.immediate")
+    ],
     "ack_in_the_same_pass": [
         (
             "done = None if delay is None else self.now + 1 + delay",
@@ -319,18 +331,18 @@ MUTANTS = {
     ],
     "result_starts_nonzero": [
         (
-            "self.pc = self.steps = self.seq = self.pending = self.last_result = 0",
-            "self.pc = self.steps = self.seq = self.pending = 0\n        self.last_result = 7",
+            "self.pc = self.steps = self.sequence = self.pending = self.last_result = 0",
+            "self.pc = self.steps = self.sequence = self.pending = 0\n        self.last_result = 7",
         )
     ],
     "result_of_unflagged_commands": [
         (
-            "                if busy.command.flags & F_RESULT:\n                    self.last_result = busy.result\n",
+            "                if busy.command.flags & FLAG_RESULT:\n                    self.last_result = busy.result\n",
             "                self.last_result = busy.result\n",
         )
     ],
     "excl_ignored": [
-        ("        if t.flags & F_EXCL and any(", "        if False and any(")
+        ("        if t.flags & FLAG_EXCLUSIVE and any(", "        if False and any(")
     ],
     "excl_touching_groups_wait": [
         (
@@ -340,26 +352,26 @@ MUTANTS = {
     ],
     "queue_flag_kept": [
         (
-            "flags = words[1] >> 8 & 0xFF & ~F_QUEUE",
-            "flags = words[1] >> 8 & 0xFF | (F_QUEUE if queued else 0)",
+            "flags = words[1] >> 8 & 0xFF & ~FLAG_QUEUE",
+            "flags = words[1] >> 8 & 0xFF | (FLAG_QUEUE if queued else 0)",
         )
     ],
     "earlier_patch_wins": [
         (
-            "        for i in range(t.n_patch):\n            words[ARG_WORD[t.arg[i]]]",
-            "        for i in reversed(range(t.n_patch)):\n            words[ARG_WORD[t.arg[i]]]",
+            "        for i in range(t.patch_count):\n            words[ARG_WORD[t.arg[i]]]",
+            "        for i in reversed(range(t.patch_count)):\n            words[ARG_WORD[t.arg[i]]]",
         )
     ],
-    "patch_list_ignores_n_patch": [
+    "patch_list_ignores_patch_count": [
         (
-            "        for i in range(t.n_patch):\n            words[ARG_WORD[t.arg[i]]]",
+            "        for i in range(t.patch_count):\n            words[ARG_WORD[t.arg[i]]]",
             "        for i in range(PATCHES):\n            words[ARG_WORD[t.arg[i]]]",
         )
     ],
     "queued_job_reads_registers_at_submit": [
         (
-            "job = _Job(self.patched(self.templates[o.imm]), count, self.pc)",
-            "job = _Job(self.templates[o.imm], count, self.pc)",
+            "job = _Job(self.patched(self.templates[o.immediate]), count, self.pc)",
+            "job = _Job(self.templates[o.immediate], count, self.pc)",
         ),
         (
             "self.put(slot, job.words, first",
@@ -371,10 +383,12 @@ MUTANTS = {
     "check_ignores_magic": [('h["magic"] != MAGIC or ', "")],
     "check_accepts_zero_seed": [(' or h["seed"] == 0', "")],
     "check_accepts_no_micro_ops": [
-        ('1 <= h["n_ops"] <= MAX_OPS', 'h["n_ops"] <= MAX_OPS')
+        ('1 <= h["op_count"] <= MAX_OPS', 'h["op_count"] <= MAX_OPS')
     ],
-    "check_ignores_n_ops_limit": [('1 <= h["n_ops"] <= MAX_OPS', '1 <= h["n_ops"]')],
-    "check_ignores_n_commands_limit": [(' or h["n_commands"] > MAX_OPS', "")],
+    "check_ignores_op_count_limit": [
+        ('1 <= h["op_count"] <= MAX_OPS', '1 <= h["op_count"]')
+    ],
+    "check_ignores_command_count_limit": [(' or h["command_count"] > MAX_OPS', "")],
     "check_accepts_zero_max_steps": [('h["max_steps"] == 0 or ', "")],
     "check_accepts_longer_uploads": [
         (" or len(data) != _size(h)", " or len(data) < _size(h)")
@@ -385,34 +399,36 @@ MUTANTS = {
     ],
     "check_ignores_unknown_opcodes": [
         (
-            "        if o.op not in OPS:\n            return StreamError(ERR_OPCODE, pc)\n",
+            "        if o.op not in OPS:\n            return StreamError(ERROR_OPCODE, pc)\n",
             "        if o.op not in OPS:\n            continue\n",
         )
     ],
     "check_looks_at_unused_registers": [
         (
-            "        if any(getattr(o, f) >= REGS for f in fields):",
-            "        if any(getattr(o, f) >= REGS for f in 'abc'):",
+            "        if any(getattr(o, f) >= REGISTERS for f in fields):",
+            "        if any(getattr(o, f) >= REGISTERS for f in 'abc'):",
         )
     ],
     "check_ignores_register_c": [
         ("for f in fields", "for f in fields.replace('c', '')")
     ],
-    "check_jump_target_equal_allowed": [('o.imm >= h["n_ops"]', 'o.imm > h["n_ops"]')],
+    "check_jump_target_equal_allowed": [
+        ('o.immediate >= h["op_count"]', 'o.immediate > h["op_count"]')
+    ],
     "check_template_index_equal_allowed": [
-        ('o.imm >= h["n_commands"]', 'o.imm > h["n_commands"]')
+        ('o.immediate >= h["command_count"]', 'o.immediate > h["command_count"]')
     ],
     "check_templates_before_micro_ops": [
         (
             "    first_use = {}\n    for pc, o in enumerate(ops):",
             "    first_use = {}\n    for index, t in enumerate(templates):\n"
-            "        if _bad_template(t):\n            return StreamError(ERR_TEMPLATE, 0)\n"
+            "        if _bad_template(t):\n            return StreamError(ERROR_TEMPLATE, 0)\n"
             "    for pc, o in enumerate(ops):",
         )
     ],
     "check_template_pc_zero": [("first_use.get(index, 0)", "0")],
     "check_template_pc_is_last_user": [
-        ("first_use.setdefault(o.imm, pc)", "first_use[o.imm] = pc")
+        ("first_use.setdefault(o.immediate, pc)", "first_use[o.immediate] = pc")
     ],
     "check_ignores_handler_zero": [
         ("not 1 <= t.handler <= HANDLER_USER_MAX", "t.handler > HANDLER_USER_MAX")
@@ -420,24 +436,35 @@ MUTANTS = {
     "check_allows_host_handlers": [
         ("not 1 <= t.handler <= HANDLER_USER_MAX", "not 1 <= t.handler <= 255")
     ],
-    "check_ignores_flag_bits": [(" or t.flags & ~(F_EXCL | F_RESULT)", "")],
+    "check_ignores_flag_bits": [(" or t.flags & ~(FLAG_EXCLUSIVE | FLAG_RESULT)", "")],
     "check_allows_queue_flag": [
-        ("~(F_EXCL | F_RESULT)", "~(F_EXCL | F_RESULT | F_QUEUE)")
-    ],
-    "check_five_patches_allowed": [("t.n_patch > PATCHES", "t.n_patch > PATCHES + 1")],
-    "check_ignores_patch_argument": [("t.arg[i] >= ARGS or ", "")],
-    "check_ignores_patch_register": [(" or t.reg[i] >= REGS", "")],
-    "check_checks_unused_patches": [
         (
-            "any(t.arg[i] >= ARGS or t.reg[i] >= REGS for i in range(t.n_patch))",
-            "any(t.arg[i] >= ARGS or t.reg[i] >= REGS for i in range(PATCHES))",
+            "~(FLAG_EXCLUSIVE | FLAG_RESULT)",
+            "~(FLAG_EXCLUSIVE | FLAG_RESULT | FLAG_QUEUE)",
         )
     ],
-    "check_ignores_first_reg": [
-        ("for r in (t.first_reg, t.count_reg)", "for r in (t.count_reg,)")
+    "check_five_patches_allowed": [
+        ("t.patch_count > PATCHES", "t.patch_count > PATCHES + 1")
     ],
-    "check_ignores_count_reg": [
-        ("for r in (t.first_reg, t.count_reg)", "for r in (t.first_reg,)")
+    "check_ignores_patch_argument": [("t.arg[i] >= ARGS or ", "")],
+    "check_ignores_patch_register": [(" or t.register[i] >= REGISTERS", "")],
+    "check_checks_unused_patches": [
+        (
+            "any(t.arg[i] >= ARGS or t.register[i] >= REGISTERS for i in range(t.patch_count))",
+            "any(t.arg[i] >= ARGS or t.register[i] >= REGISTERS for i in range(PATCHES))",
+        )
+    ],
+    "check_ignores_first_register": [
+        (
+            "for r in (t.first_register, t.count_register)",
+            "for r in (t.count_register,)",
+        )
+    ],
+    "check_ignores_count_register": [
+        (
+            "for r in (t.first_register, t.count_register)",
+            "for r in (t.first_register,)",
+        )
     ],
     "check_demands_zero_padding": [
         ('    if h["max_steps"] == 0', '    if any(data[32:64]) or h["max_steps"] == 0')
@@ -475,20 +502,23 @@ def too_big_uploads_are_rejected(module):
     Uploads that size are too big to save as files, so these two limits are probed here.
     """
     big = 1 << 23
-    for n_ops, n_commands in ((65536, 0), (1, 65536)):
+    for op_count, command_count in ((65536, 0), (1, 65536)):
         head = struct.pack(
-            "<8I32x", st.MAGIC, st.VERSION, n_ops, n_commands, 9, 0, 1, 1
+            "<8I32x", st.MAGIC, st.VERSION, op_count, command_count, 9, 0, 1, 1
         )
-        ops = struct.pack("<4B3I", st.OP_JMP, 0, 0, 0, 0, 0, 0) * n_ops
-        tpl = struct.pack("<16I", 0, 1, 0, *[0] * 13) + bytes(16)
-        data = head + ops + bytes(-len(ops) % 64) + tpl * n_commands
+        ops = struct.pack("<4B3I", st.OP_JMP, 0, 0, 0, 0, 0, 0) * op_count
+        template = struct.pack("<16I", 0, 1, 0, *[0] * 13) + bytes(16)
+        data = head + ops + bytes(-len(ops) % 64) + template * command_count
         data += bytes(-len(data) % 64)
-        if module.check(data, big) != (st.ERR_HEADER, 0):
+        if module.check(data, big) != (st.ERROR_HEADER, 0):
             return False
     return True
 
 
-BIG_UPLOAD_MUTANTS = {"check_ignores_n_ops_limit", "check_ignores_n_commands_limit"}
+BIG_UPLOAD_MUTANTS = {
+    "check_ignores_op_count_limit",
+    "check_ignores_command_count_limit",
+}
 
 
 def killed_by(module):

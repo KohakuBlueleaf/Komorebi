@@ -19,7 +19,7 @@ namespace km {
 namespace km {
 
     inline volatile tt_l1_ptr uint32_t* port_words(const Core& c, uint32_t port) {
-        return c.ctl(KM_CTL_PORT + port * KM_PORT_STRIDE);
+        return c.control(KM_CONTROL_PORT + port * KM_PORT_STRIDE);
     }
 
     // L1 address of slot k: the buffer's base from its configuration, not from its
@@ -45,7 +45,7 @@ namespace km {
         const uint32_t bytes = pages * get_local_cb_interface(cb).fifo_page_size;
         const uint32_t room = arr.per * get_local_cb_interface(arr.cb).fifo_page_size;
         if (port >= KM_PORTS || k >= arrival_slots(arr) || bytes > room) {
-            wr.gave_up(kStWriter, kGaveBadItem, kWhereEmit, named, r.seq);
+            wr.gave_up(kStWriter, kGaveBadItem, kWhereEmit, named, r.sequence);
             return false;
         }
         if (!wr.wait_front(cb, pages, kBehindPort)) {
@@ -60,7 +60,9 @@ namespace km {
             limit
         );
         if (code == kGaveNone) {
-            const uint32_t at = wr.args().ctl + KM_CTL_PORT + port * KM_PORT_STRIDE;
+            const uint32_t at = (
+                wr.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE
+            );
             noc_semaphore_inc(wr.core_noc(to, at), 1);
             code = wr.poll(
                 [] {
@@ -70,7 +72,7 @@ namespace km {
             );
         }
         if (code != kGaveNone) {
-            wr.gave_up(kStWriter, code, kWhereEmit, named, r.seq);
+            wr.gave_up(kStWriter, code, kWhereEmit, named, r.sequence);
             return false;
         }
         cb_pop_front(cb, pages);
@@ -88,7 +90,7 @@ namespace km {
     ) {
         const uint32_t named = slot(r) | port << 8;
         if (port >= KM_PORTS) {
-            rd.gave_up(kStReader, kGaveBadItem, kWherePort, named, r.seq);
+            rd.gave_up(kStReader, kGaveBadItem, kWherePort, named, r.sequence);
             return false;
         }
         volatile tt_l1_ptr uint32_t* p = port_words(rd, port);
@@ -100,7 +102,7 @@ namespace km {
             rd.args().wait_limit
         );
         if (code != kGaveNone) {
-            rd.gave_up(kStReader, code, kWherePort, named, r.seq);
+            rd.gave_up(kStReader, code, kWherePort, named, r.sequence);
             return false;
         }
         p[KM_PORT_COUNT] = 0;  // every sender of this command has bumped it
@@ -121,7 +123,7 @@ namespace km {
         uint32_t form
     ) {
         if (reduce_slots(g, form) > arrival_slots(arr)) {  // a slot per sender
-            rd.gave_up(kStReader, kGaveBadItem, kWherePort, slot(r), r.seq);
+            rd.gave_up(kStReader, kGaveBadItem, kWherePort, slot(r), r.sequence);
             return false;
         }
         for (uint32_t port = 0; port < KM_PORTS; port++) {

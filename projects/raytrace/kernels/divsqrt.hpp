@@ -33,7 +33,7 @@ namespace rt {
         TT_SFPMOV(0, rg, lo, 0);
         TTI_SFPPUSHC(0, 0, 0, 0);
         TT_SFPIADD(0, half, lo, kTwos);  // half - rg < 0: one up
-        TT_SFPIADD(1, r, r, kImm | kCcNone);
+        TT_SFPIADD(1, r, r, kImmediate | kCcNone);
         TTI_SFPPOPC(0, 0, 0, 0);
         // The lower neighbour of a power of two is half an ulp away.
         TTI_SFPPUSHC(0, 0, 0, 0);
@@ -59,7 +59,7 @@ namespace rt {
         TT_SFPIADD(0, L3, L5, kTwos | kCcNone);  // ea - eb
         TT_SFPEXEXP(0, L2, L3, kNoBias);
         TT_SFPIADD(0, L5, L3, kTwos | kCcNone);  // - eq
-        TT_SFPIADD(29, L3, L3, kImm | kCcNone);
+        TT_SFPIADD(29, L3, L3, kImmediate | kCcNone);
         TT_SFPEXMAN(0, L4, L5, 0);
         TT_SFPSHFT(0, L3, L5, 0);  // A << (k + 6)
         TT_SFPEXMAN(0, L2, L3, 0);
@@ -70,7 +70,7 @@ namespace rt {
         round_fix(L2, L6, L4, L7);
         TTI_SFPPUSHC(0, 0, 0, 0);
         TT_SFPIADD(0, L6, L4, 0);  // 64 R + below < 0: one down
-        TT_SFPIADD(0xFFF, L2, L2, kImm | kCcNone);
+        TT_SFPIADD(0xFFF, L2, L2, kImmediate | kCcNone);
         TTI_SFPPOPC(0, 0, 0, 0);
         TTI_SFPPOPC(0, 0, 0, 0);
         TT_SFPMOV(0, L0, L3, 0);
@@ -83,7 +83,7 @@ namespace rt {
     inline void square_root() {
         TT_SFPMOV(0, L0, L2, 0);
         TT_SFPSHFT(0xFFF, 0, L2, 1);  // x >> 1
-        imm(L3, kMagicRsqrt);
+        immediate(L3, kMagicRsqrt);
         TT_SFPIADD(0, L3, L2, kTwos | kCcNone);  // y = magic - (x >> 1)
         TTI_SFPLOADI(L4, kFloatB, kHalfB);
         TTI_SFPLOADI(L5, kFloatB, kThreeHalvesB);
@@ -105,7 +105,7 @@ namespace rt {
         TT_SFPIADD(0, L2, L3, kTwos | kCcNone);
         TT_SFPEXEXP(0, L1, L2, kNoBias);
         TT_SFPIADD(0, L3, L2, kTwos | kCcNone);
-        TT_SFPIADD(28, L2, L2, kImm | kCcNone);
+        TT_SFPIADD(28, L2, L2, kImmediate | kCcNone);
         TT_SFPEXMAN(0, L0, L3, 0);
         TT_SFPSHFT(0, L2, L3, 0);  // X << (k + 6)
         TT_SFPEXMAN(0, L1, L4, 0);
@@ -116,8 +116,8 @@ namespace rt {
         round_fix(L1, L5, L4, L6);
         TTI_SFPPUSHC(0, 0, 0, 0);
         TT_SFPIADD(0, L5, L4, kCcNone);  // 32 R + below - 1 < 0: one down
-        TT_SFPIADD(0xFFF, L4, L4, kImm);
-        TT_SFPIADD(0xFFF, L1, L1, kImm | kCcNone);
+        TT_SFPIADD(0xFFF, L4, L4, kImmediate);
+        TT_SFPIADD(0xFFF, L1, L1, kImmediate | kCcNone);
         TTI_SFPPOPC(0, 0, 0, 0);
     }
 

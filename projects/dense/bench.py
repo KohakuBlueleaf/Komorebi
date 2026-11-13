@@ -104,7 +104,7 @@ def profile_summary(prof, mhz, grid):
     total = busy[slow]
     return {
         "slowest_core": slow,
-        "slowest_us": round(total / mhz, 3),
+        "slowest_microseconds": round(total / mhz, 3),
         "mean_busy_over_slowest": round(float(busy.mean() / total), 3),
         "partitions_of_slowest": {
             name: round(float(pr[slow, words[key]] / total), 3)
@@ -113,7 +113,7 @@ def profile_summary(prof, mhz, grid):
     }
 
 
-def loop(product, reps, index, one_us, batch):
+def loop(product, reps, index, one_microseconds, batch):
     """`reps` commands in runs of at most `batch` back to back (each waited for), with
     power and clock sampled; each wait's timeout 3 x their single-call time + 5 s."""
     meter = power.PowerSampler(index)
@@ -125,7 +125,7 @@ def loop(product, reps, index, one_us, batch):
         t0 = time.perf_counter()
         for first in range(0, reps, batch):
             n = min(batch, reps - first)
-            s, u = product.calls(n, timeout=3 * n * one_us / 1e6 + 5)
+            s, u = product.calls(n, timeout=3 * n * one_microseconds / 1e6 + 5)
             host_s, us = host_s + s, us + list(u)
         wall_s = time.perf_counter() - t0
         meter.mark("after")
@@ -135,8 +135,8 @@ def loop(product, reps, index, one_us, batch):
         "batch": batch,
         "seconds": round(host_s, 3),
         "wall_seconds": round(wall_s, 3),
-        "us_per_call": round(host_s * 1e6 / reps, 3),
-        "command_us_median": float(np.median(us)),
+        "microseconds_per_call": round(host_s * 1e6 / reps, 3),
+        "command_microseconds_median": float(np.median(us)),
         "mean_w": phase.mean_w,
         "peak_w": phase.peak_w,
         "open_w": meter.result.phases["open"].mean_w,
@@ -185,7 +185,7 @@ def main():
         load = dict(deadline=out["deadline_s"], reduce=args.reduce)
         product = run.load(session, p, tensors, **load)
         mhz = out["profile_mhz"] = aiclk_mhz(index)
-        out["load_us"] = product.load_us
+        out["load_microseconds"] = product.load_microseconds
         try:
             measure(product, p, args, out)
         except km.KomorebiError as err:
@@ -233,19 +233,22 @@ def measure(product, p, args, out):
     index = visible_card()
     form = form_of(p)
     single = product.single(21)
-    out["single_us"] = {"median": float(np.median(single)), "min": single.min()}
+    out["single_microseconds"] = {
+        "median": float(np.median(single)),
+        "min": single.min(),
+    }
     one = float(np.median(single))
     log(f"single call {one:.2f} us")
     reps = int(min(args.max_reps, max(2, math.ceil(args.seconds * 1e6 / one))))
     out["loop"] = loop(product, reps, index, one, args.batch or reps)
-    log(f"loop: {out['loop']['us_per_call']} us per call")
-    out["tflops"] = pl.flops(p) / out["loop"]["us_per_call"] / 1e6
+    log(f"loop: {out['loop']['microseconds_per_call']} us per call")
+    out["tflops"] = pl.flops(p) / out["loop"]["microseconds_per_call"] / 1e6
     cut = {}
     for name, mode in CUTS[form]:
         r2 = int(min(args.max_reps, max(2, args.cut_seconds * 1e6 / one)))
         host_s, _ = product.calls(r2, mode=mode)
         cut[name] = round(host_s * 1e6 / r2, 3)
-    out["cut_us_per_call"] = cut
+    out["cut_microseconds_per_call"] = cut
     # the cut-down runs left Y as it was: one more full call before the check
     product.calls(1)
 

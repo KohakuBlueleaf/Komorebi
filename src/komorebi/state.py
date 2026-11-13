@@ -31,7 +31,7 @@ WHERES = (
     "Port",
     "Emit",
 )
-KMD_PREFIXES = {"error": "KMD_ERR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
+KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 
 
 def code_name(kind, value, h=None):
@@ -64,18 +64,18 @@ def result_block(words, h=None):
     return out
 
 
-def state_words(ctl_rows, ctl_offset=0, h=None):
+def state_words(control_rows, control_offset=0, h=None):
     """[cores, kStateWords] uint32 state words from the control blocks read back.
 
-    `ctl_offset` is the control block's word offset inside each row.
+    `control_offset` is the control block's word offset inside each row.
     """
     h = h or abi.headers()
-    rows = np.asarray(ctl_rows).astype(np.int64) & abi.M32
-    start = ctl_offset + h["KM_CTL_STATE"] // 4
+    rows = np.asarray(control_rows).astype(np.int64) & abi.M32
+    start = control_offset + h["KM_CONTROL_STATE"] // 4
     return rows[:, start : start + h["kStateWords"]].astype(np.uint32)
 
 
-def gave_up(word, seq, h=None):
+def gave_up(word, sequence, h=None):
     """A gave-up word pair as a dict, or None when the kernel did not give up."""
     h = h or abi.headers()
     word = int(word)
@@ -88,7 +88,7 @@ def gave_up(word, seq, h=None):
         "code": gaves.get(code, code),
         "where": wheres.get((word >> 8) & 0xFF, (word >> 8) & 0xFF),
         "slot": (word >> 16) & 0xFF,
-        "seq": int(seq),
+        "sequence": int(sequence),
     }
     if out["where"] in ("port", "emit"):
         out["port"] = word >> h["KM_GAVE_PORT_SHIFT"]  # the port a wait named
@@ -98,7 +98,7 @@ def gave_up(word, seq, h=None):
 def ports(block, h=None):
     """A core's port slots from its control block words: [{count, want}] by port."""
     h = h or abi.headers()
-    at, stride = h["KM_CTL_PORT"] // 4, h["KM_PORT_STRIDE"] // 4
+    at, stride = h["KM_CONTROL_PORT"] // 4, h["KM_PORT_STRIDE"] // 4
     return [
         {
             "count": int(block[at + p * stride + h["KM_PORT_COUNT"]]),
@@ -110,13 +110,13 @@ def ports(block, h=None):
 
 def broadcasts(block, h=None):
     """A core's broadcast areas from its control block words, by broadcast: the VALID
-    word, the first give-up (where, broadcast, block, seq; None if none), the blocks
-    delivered, the wait cycles and the DONE-BY words of ranks 1 to 15."""
+    word, the first give-up (where, broadcast, block, sequence; None if none), the
+    blocks delivered, the wait cycles and the DONE-BY words of ranks 1 to 15."""
     h = h or abi.headers()
     wheres = {h[f"kWhere{w}"]: w.lower() for w in WHERES}
     out = []
     for broadcast in range(h["KM_BROADCASTS"]):
-        a = (h["KM_CTL_BROADCAST"] + broadcast * h["KM_BROADCAST_BYTES"]) // 4
+        a = (h["KM_CONTROL_BROADCAST"] + broadcast * h["KM_BROADCAST_BYTES"]) // 4
         gave = h["KM_BROADCAST_GAVE"] // 4 + a
         gave = [int(v) for v in block[gave : gave + h["KM_BROADCAST_GAVE_WORDS"]]]
         stats = h["KM_BROADCAST_STATS"] // 4 + a
@@ -130,7 +130,7 @@ def broadcasts(block, h=None):
                         "where": wheres.get(gave[0] & 0xFF, gave[0] & 0xFF),
                         "broadcast": (gave[0] >> 8) & 0xFF,
                         "block": gave[1],
-                        "seq": gave[2],
+                        "sequence": gave[2],
                     }
                     if gave[0]
                     else None
@@ -148,7 +148,7 @@ def broadcasts(block, h=None):
 
 # Dynamic runs -------------------------------------------------------------------
 
-DYN_WHERES = {
+MESSAGES_WHERES = {
     "Gap": "gap",
     "Overflow": "overflow",
     "Atomic": "atomic",
@@ -166,7 +166,7 @@ DYN_WHERES = {
     "Fill": "fill",
     "Full": "full",
     "Counter": "counter",
-}  # kWhereDyn*
+}  # kWhereMessages*
 
 
 def dynamic(block, h=None):
@@ -174,22 +174,23 @@ def dynamic(block, h=None):
     sent and consumed, quota left, the first give-up (where named, position, run, the
     word seen; None if none), and as a counter tile its last run and cores served."""
     h = h or abi.headers()
-    at = h["KM_CTL_DYN"] // 4
+    at = h["KM_CONTROL_MESSAGES"] // 4
 
     def word(offset):
         return int(block[at + offset // 4])
 
-    gave = [word(h["KM_DYN_GAVE"] + 4 * i) for i in range(4)]
+    gave = [word(h["KM_MESSAGES_GAVE"] + 4 * i) for i in range(4)]
     ready = [
-        int(block[(h["KM_CTL_TAILS"] + h["KM_TAILS_READY"]) // 4 + i]) for i in range(4)
+        int(block[(h["KM_CONTROL_TAILS"] + h["KM_TAILS_READY"]) // 4 + i])
+        for i in range(4)
     ]
-    names = {h[f"kWhereDyn{k}"]: v for k, v in DYN_WHERES.items()}
+    names = {h[f"kWhereMessages{k}"]: v for k, v in MESSAGES_WHERES.items()}
     return {
-        "head": word(h["KM_DYN_IN_HEAD"]),
-        "tail": word(h["KM_DYN_IN_TAIL"]),
-        "sent": word(h["KM_DYN_SENT"]),
-        "consumed": word(h["KM_DYN_CONSUMED"]),
-        "quota": word(h["KM_DYN_QUOTA"]),
+        "head": word(h["KM_MESSAGES_IN_HEAD"]),
+        "tail": word(h["KM_MESSAGES_IN_TAIL"]),
+        "sent": word(h["KM_MESSAGES_SENT"]),
+        "consumed": word(h["KM_MESSAGES_CONSUMED"]),
+        "quota": word(h["KM_MESSAGES_QUOTA"]),
         "gave_up": (
             {
                 "where": names.get(gave[0], gave[0]),
@@ -224,23 +225,23 @@ def core_state(st, core, h=None):
         "compute_end": (ends >> 16) & 0xFF,
         "slot_wrong": s[h["kStSlotWrong"]],
         "trace_dropped": s[h["kStTraceDropped"]],
-        "reader": gave_up(s[h["kStReader"]], s[h["kStReaderSeq"]], h),
-        "writer": gave_up(s[h["kStWriter"]], s[h["kStWriterSeq"]], h),
-        "compute": gave_up(s[h["kStCompute"]], s[h["kStComputeSeq"]], h),
+        "reader": gave_up(s[h["kStReader"]], s[h["kStReaderSequence"]], h),
+        "writer": gave_up(s[h["kStWriter"]], s[h["kStWriterSequence"]], h),
+        "compute": gave_up(s[h["kStCompute"]], s[h["kStComputeSequence"]], h),
         "last": s[h["kStLast"] : h["kStLast"] + 16],
         "reported": s[h["kStReported"] : h["kStReported"] + 16],
     }
 
 
-def not_reported(st, group, slot, seq, h=None):
-    """The cores of `group` whose reported word for `slot` is not `seq`, with where
+def not_reported(st, group, slot, sequence, h=None):
+    """The cores of `group` whose reported word for `slot` is not `sequence`, with where
     each kernel gave up."""
     h = h or abi.headers()
     first, count = group
     out = []
     for core in range(first, first + count):
         c = core_state(st, core, h)
-        if c["reported"][slot] != seq:
+        if c["reported"][slot] != sequence:
             out.append(
                 {"core": core, **{k: c[k] for k in ("reader", "writer", "compute")}}
             )
@@ -273,11 +274,11 @@ class Trace:
     def command(self, handle):
         """[count, 4] words (seen, done, sent, extra) of the handle's cores, or None
         when the handle was not traced."""
-        seq = self.seqs.get(handle)
-        if seq is None or not 1 <= seq <= self.capacity:
+        sequence = self.seqs.get(handle)
+        if sequence is None or not 1 <= sequence <= self.capacity:
             return None
         first, count = self.groups[handle]
-        return self.rows[first : first + count, seq - 1]
+        return self.rows[first : first + count, sequence - 1]
 
     def phases(self, handle):
         """Microseconds after the first core took the command: last core took it,

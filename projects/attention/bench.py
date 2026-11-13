@@ -115,7 +115,7 @@ def loop(att, n, passes, index):
         "commands": n,
         "passes": passes,
         "seconds": round(host_s, 3),
-        "us_per_call": round(host_s * 1e6 / calls, 3),
+        "microseconds_per_call": round(host_s * 1e6 / calls, 3),
         "mean_w": phase.mean_w,
         "peak_w": phase.peak_w,
         "open_w": meter.result.phases["open"].mean_w,
@@ -164,27 +164,28 @@ def main():
         log(f"loaded, plan {out['plan']}")
         single = np.concatenate([att.calls(1)[1] for _ in range(6)])
         one = float(np.median(single[1:]))
-        out["single_us"] = {"median": one, "min": float(single[1:].min())}
+        out["single_microseconds"] = {"median": one, "min": float(single[1:].min())}
         att.profile(session)  # zeroes the pages
         n = int(min(60, max(10, math.ceil(0.2e6 / one))))
         first_s, _ = att.calls(5)
         host_s, us = att.calls(n)
-        out["us_per_call"] = round((host_s - first_s) * 1e6 / (n - 5), 3)
-        out["command_us_median"] = float(np.median(us))
+        out["microseconds_per_call"] = round((host_s - first_s) * 1e6 / (n - 5), 3)
+        out["command_microseconds_median"] = float(np.median(us))
         out["profile"] = profile_summary(att.profile(session), n + 5)
         out["commands_submitted"] = [6 + 1 + 5 + n + 1]
         out["runs"] = [att.stop()]
-        log(f"single {one:.1f} us, back to back {out['us_per_call']} us per call")
+        back_to_back = out["microseconds_per_call"]
+        log(f"single {one:.1f} us, back to back {back_to_back} us per call")
         # Load 2: the power loop, then the cut-down runs.
         att = card.Attention(session, p, tensors, scale, args.approx, noc=args.noc)
-        each = out["us_per_call"]
+        each = out["microseconds_per_call"]
         passes = max(1, math.ceil(0.1e6 / each))
         cuts = 11 if args.cuts else 0
         commands = math.ceil(args.seconds * 1e6 / (each * passes))
         commands = max(2, min(commands, COMMANDS_MAX - cuts))
         out["loop"] = loop(att, commands, passes, index)
         log(f"loop: {out['loop']}")
-        out["tflops"] = pl.flops(s) / out["loop"]["us_per_call"] / 1e6
+        out["tflops"] = pl.flops(s) / out["loop"]["microseconds_per_call"] / 1e6
         if args.cuts:
             att.profile(session)  # zeroes the loop's
             cut = {}

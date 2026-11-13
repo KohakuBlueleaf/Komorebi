@@ -13,9 +13,7 @@ from komorebi.engines.stream import Stream
 pytestmark = pytest.mark.card
 CARD_IN_PROCESS = True  # opens the card in this process
 KERNELS = Path(__file__).resolve().parents[2] / "examples" / "01_mapcollect" / "kernels"
-RESULT = (
-    6  # kHandlerResult: with KM_F_RESULT the command's result word is the leader's a0
-)
+RESULT = 6  # kHandlerResult: with KM_FLAG_RESULT the result word is the leader's a0
 CORES = 120
 
 
@@ -45,8 +43,8 @@ def leader_a0(command):
 def commands_stream(n, req=11):
     """n commands one at a time, command k on cores [8k mod 120, + 8) with a0 = 7k + 3
     and a result word; HALT the sum of the results."""
-    s = Stream(req=req, deadline_us=500_000)
-    k, first, key, got, acc = s.regs(5)
+    s = Stream(req=req, deadline_microseconds=500_000)
+    k, first, key, got, acc = s.registers(5)
     top = s.label()
     s.mul(first, k, s.const(8))
     s.mod(first, first, s.const(CORES))
@@ -65,8 +63,8 @@ def commands_stream(n, req=11):
 def branches_graph():
     """Two branches on disjoint halves after a command on both, the right one's result
     word into r; then register 0 = r * 3 + 1, register 1 = r."""
-    g = Graph(req=12, keep=True, deadline_us=500_000)
-    it, r = g.bindings("it"), g.reg()
+    g = Graph(req=12, keep=True, deadline_microseconds=500_000)
+    it, r = g.bindings("it"), g.register()
     a = g.command(RESULT, group=(0, 60), args=[it])
     b = g.command(RESULT, group=(0, 30), args=[it], after=[a])
     c = g.command(RESULT, group=(30, 30), args=[it], after=[a], result=r)
@@ -91,9 +89,9 @@ def run():
 def test_a_stream_of_eight_commands_ends_alike_uploaded_and_host_fed(run):
     s = commands_stream(8)
     up = run.upload(s)
-    ev = run.wait_engine(run.start(up), timeout=5.0)
-    want = s.simulate(n_cores=CORES, result=leader_a0)
-    assert ev.kind == "end" and ev.value == want.halt == 220
+    event = run.wait_engine(run.start(up), timeout=5.0)
+    want = s.simulate(core_count=CORES, result=leader_a0)
+    assert event.kind == "end" and event.value == want.halt == 220
     run.release(up)
     fed = run.run_hostfed(s, timeout=5.0)
     assert fed.status == "ended" and fed.events[-1].extra == want.halt
@@ -106,10 +104,14 @@ def test_a_graph_runs_then_runs_again_kept_with_another_binding(run):
     up = run.upload(g)
     for it, again in ((5, False), (1000, True)):
         t = run.restart(12, {"it": it}) if again else run.start(up, {"it": it})
-        ev = run.wait_engine(t, timeout=5.0)
-        want = g.simulate({"it": it}, n_cores=CORES, result=leader_a0)
+        event = run.wait_engine(t, timeout=5.0)
+        want = g.simulate({"it": it}, core_count=CORES, result=leader_a0)
         assert want.status == "ended" and len(want.commands) == 3
-        assert ev.regs == (want.regs[0] & 0xFFFFFF, want.regs[1]) == (3 * it + 1, it)
+        assert (
+            event.registers
+            == (want.registers[0] & 0xFFFFFF, want.registers[1])
+            == (3 * it + 1, it)
+        )
         assert up.state == "kept"
     run.release(up)
     assert up.state == "idle"  # the kernel dropped it

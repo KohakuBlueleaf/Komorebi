@@ -13,9 +13,9 @@ K = abi.headers().constants
 def test_result_block_joins_wide_counts_and_names_codes():
     words = [0] * K["KMD_R_WORDS"]
     words[K["KMD_R_STATE"]] = K["KMD_STATE_FAILED"]
-    words[K["KMD_R_ERROR"]] = K["KMD_ERR_DEADLINE"]
+    words[K["KMD_R_ERROR"]] = K["KMD_ERROR_DEADLINE"]
     words[K["KMD_R_WHERE"]] = K["KMD_WHERE_LOOP"]
-    words[K["KMD_R_SLOT"]], words[K["KMD_R_SEQ"]] = 3, 77
+    words[K["KMD_R_SLOT"]], words[K["KMD_R_SEQUENCE"]] = 3, 77
     words[K["KMD_R_LAST_LO"]], words[K["KMD_R_LAST_HI"]] = 5, 2
     r = st.result_block(words)
     assert (r["state_name"], r["error_name"], r["where_name"]) == (
@@ -23,7 +23,7 @@ def test_result_block_joins_wide_counts_and_names_codes():
         "deadline",
         "loop",
     )
-    assert r["slot"] == 3 and r["seq"] == 77 and r["last"] == 5 | 2 << 32
+    assert r["slot"] == 3 and r["sequence"] == 77 and r["last"] == 5 | 2 << 32
     assert "last_lo" not in r and "last_hi" not in r
 
 
@@ -36,14 +36,14 @@ def state_rows(cores=4):
 def test_core_state_and_gave_up_words():
     rows = state_rows()
     rows[2, K["kStReader"]] = K["kGaveStop"] | K["kWhereStall"] << 8 | 5 << 16
-    rows[2, K["kStReaderSeq"]] = 9
+    rows[2, K["kStReaderSequence"]] = 9
     rows[1, K["kStWrong"]] = 2 << 8
     rows[1, K["kStEnds"]] = K["kEndExit"] | K["kEndAbort"] << 16
     rows[3, K["kStCompute"]] = K["kGaveStop"] | K["kWhereCInput"] << 8
-    rows[3, K["kStComputeSeq"]] = 6
+    rows[3, K["kStComputeSequence"]] = 6
     c = st.core_state(rows, 2)
     assert c["magic_ok"] and c["writer"] is None
-    assert c["reader"] == {"code": "stop", "where": "stall", "slot": 5, "seq": 9}
+    assert c["reader"] == {"code": "stop", "where": "stall", "slot": 5, "sequence": 9}
     c1 = st.core_state(rows, 1)
     assert c1["compute_wrong"] == [0, 2, 0] and c1["tag"] == 0xBEEF
     assert (c1["reader_end"], c1["writer_end"], c1["compute_end"]) == (1, 0, 3)
@@ -51,7 +51,7 @@ def test_core_state_and_gave_up_words():
         "code": "stop",
         "where": "cinput",
         "slot": 0,
-        "seq": 6,
+        "sequence": 6,
     }
     limit = K["kGaveLimit"] | K["kWhereComplete"] << 8
     assert st.gave_up(limit, 4)["code"] == "limit"
@@ -69,26 +69,28 @@ def test_not_reported_names_the_ranks_that_did_not_report():
     rows = state_rows(8)
     for core in (2, 3, 5):
         rows[core, K["kStReported"] + 1] = 40
-    out = st.not_reported(rows, (2, 5), slot=1, seq=40)
+    out = st.not_reported(rows, (2, 5), slot=1, sequence=40)
     assert [c["core"] for c in out] == [4, 6]
 
 
 def test_state_words_from_padded_control_blocks():
-    width = K["KM_CTL_BYTES"] // 4 + 16
+    width = K["KM_CONTROL_BYTES"] // 4 + 16
     rows = np.zeros((3, width), dtype=np.int64)
-    start = 4 + K["KM_CTL_STATE"] // 4
+    start = 4 + K["KM_CONTROL_STATE"] // 4
     rows[:, start] = [10, 11, 12]
     rows[1, start + 1] = -1  # read back as int32
-    words = st.state_words(rows, ctl_offset=4)
+    words = st.state_words(rows, control_offset=4)
     assert words.shape == (3, K["kStateWords"]) and words.dtype == np.uint32
     assert list(words[:, 0]) == [10, 11, 12] and words[1, 1] == 0xFFFFFFFF
 
 
 def test_port_slots_broadcast_areas_and_the_port_a_wait_named():
-    block = np.zeros(K["KM_CTL_BYTES"] // 4, np.uint32)
-    port = (K["KM_CTL_PORT"] + 3 * K["KM_PORT_STRIDE"]) // 4
+    block = np.zeros(K["KM_CONTROL_BYTES"] // 4, np.uint32)
+    port = (K["KM_CONTROL_PORT"] + 3 * K["KM_PORT_STRIDE"]) // 4
     block[port + K["KM_PORT_COUNT"]], block[port + K["KM_PORT_WANT"]] = 7, 9
-    broadcast = (K["KM_CTL_BROADCAST"] + K["KM_BROADCAST_BYTES"]) // 4  # broadcast 1
+    broadcast = (
+        K["KM_CONTROL_BROADCAST"] + K["KM_BROADCAST_BYTES"]
+    ) // 4  # broadcast 1
     block[broadcast + K["KM_BROADCAST_VALID"] // 4] = 5 << 16 | 4
     gave = broadcast + K["KM_BROADCAST_GAVE"] // 4
     block[gave : gave + 3] = [K["kWhereBroadcastValid"] | 1 << 8, 2, 5]
@@ -107,7 +109,7 @@ def test_port_slots_broadcast_areas_and_the_port_a_wait_named():
         "where": "broadcastvalid",
         "broadcast": 1,
         "block": 2,
-        "seq": 5,
+        "sequence": 5,
     }
     assert (broadcasts[1]["blocks"], broadcasts[1]["wait_cycles"]) == (4, 10 | 1 << 32)
     word = K["kGaveLimit"] | K["kWherePort"] << 8 | 6 << 16 | 3 << 24
@@ -115,14 +117,14 @@ def test_port_slots_broadcast_areas_and_the_port_a_wait_named():
         "code": "limit",
         "where": "port",
         "slot": 6,
-        "seq": 11,
+        "sequence": 11,
         "port": 3,
     }
 
 
 def test_trace_phases_and_overlap():
     rows = np.zeros((6, 8, 4), dtype=np.uint32)
-    # handle 1: seq 1 on cores 0..2; handle 2: seq 2 on cores 3..5
+    # handle 1: sequence 1 on cores 0..2; handle 2: sequence 2 on cores 3..5
     rows[0:3, 0] = [[1000, 2000, 2700, 5], [1100, 2100, 2600, 5], [1200, 2400, 2650, 5]]
     rows[3:6, 1] = [[2500, 2900, 3000, 1]] * 3
     trace = st.Trace(rows, {1: 1, 2: 2, 3: 99}, {1: (0, 3), 2: (3, 3), 3: (0, 1)}, 100)
@@ -165,14 +167,14 @@ def test_program_reads_handlers_and_checks_its_parts(tmp_path):
 
 
 def test_dynamic_words_and_a_named_dynamic_give_up():
-    block = np.zeros(K["KM_CTL_BYTES"] // 4, np.uint32)
-    dyn = K["KM_CTL_DYN"] // 4
+    block = np.zeros(K["KM_CONTROL_BYTES"] // 4, np.uint32)
+    messages = K["KM_CONTROL_MESSAGES"] // 4
     for name, value in (("IN_TAIL", 40), ("IN_HEAD", 33), ("SENT", 9), ("QUOTA", 7)):
-        block[dyn + K[f"KM_DYN_{name}"] // 4] = value
-    block[dyn + K["KM_DYN_CONSUMED"] // 4] = 8
+        block[messages + K[f"KM_MESSAGES_{name}"] // 4] = value
+    block[messages + K["KM_MESSAGES_CONSUMED"] // 4] = 8
     assert st.dynamic(block)["gave_up"] is None
-    gave = dyn + K["KM_DYN_GAVE"] // 4
-    block[gave : gave + 4] = [K["kWhereDynLost"], 21, 3, 17]
+    gave = messages + K["KM_MESSAGES_GAVE"] // 4
+    block[gave : gave + 4] = [K["kWhereMessagesLost"], 21, 3, 17]
     assert st.dynamic(block) == {
         "head": 33,
         "tail": 40,
@@ -182,10 +184,10 @@ def test_dynamic_words_and_a_named_dynamic_give_up():
         "gave_up": {"where": "lost", "position": 21, "run": 3, "seen": 17},
         "counter": None,
     }
-    ready = (K["KM_CTL_TAILS"] + K["KM_TAILS_READY"]) // 4
+    ready = (K["KM_CONTROL_TAILS"] + K["KM_TAILS_READY"]) // 4
     block[ready : ready + 4] = [3, 1, 59, 0]
     assert st.dynamic(block)["counter"] == {"run": 3, "serves": 59}
-    codes = [K[f"kWhereDyn{k}"] for k in st.DYN_WHERES]
+    codes = [K[f"kWhereMessages{k}"] for k in st.MESSAGES_WHERES]
     assert codes == list(range(19, 19 + len(codes)))  # after the runtime's 1 to 18
 
 

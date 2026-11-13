@@ -10,16 +10,16 @@ __attribute__((used)) volatile uint32_t ov_calls = 0;  // C linkage: overlay.h
 namespace {
 
     // Control words (the host writes 4..19, then the sequence word 0).
-    constexpr uint32_t kSeq = 0, kOp = 4, kFlags = 5, kArg = 6, kCount = 7;
-    constexpr uint32_t kA = 8, kB = 12;  // id, bank, address, bytes of bodies 0, 1
-    constexpr uint32_t kWhich = 16;      // feed: body 0 or 1
-    constexpr uint32_t kExpect = 18;     // stale: the results of bodies 0 and 1
-    constexpr uint32_t kRegValue = 97;   // stale: the invalidate value, 16 B + 4 like
-                                         // the register's address
-    constexpr uint32_t kResp = 32;       // response line to the host, 16 words
-    constexpr uint32_t kMsg = 64;        // message from a writer: id, bytes, arg, go
-    constexpr uint32_t kReply = 68;      // the host's: writer x, y, reply line address
-    constexpr uint32_t kOut = 80;        // the reply line as built, 16 words
+    constexpr uint32_t kSequence = 0, kOp = 4, kFlags = 5, kArg = 6, kCount = 7;
+    constexpr uint32_t kA = 8, kB = 12;      // id, bank, address, bytes of bodies 0, 1
+    constexpr uint32_t kWhich = 16;          // feed: body 0 or 1
+    constexpr uint32_t kExpect = 18;         // stale: the results of bodies 0 and 1
+    constexpr uint32_t kRegisterValue = 97;  // stale: the invalidate value, 16 B + 4
+                                             // like the register's address
+    constexpr uint32_t kResp = 32;           // response line to the host, 16 words
+    constexpr uint32_t kMsg = 64;    // message from a writer: id, bytes, arg, go
+    constexpr uint32_t kReply = 68;  // the host's: writer x, y, reply line address
+    constexpr uint32_t kOut = 80;    // the reply line as built, 16 words
     constexpr uint32_t kOpFetch = 1, kOpFeed = 2, kOpExit = 3, kOpClock = 5;
     constexpr uint32_t kOpStale = 6;
     constexpr uint32_t kFlagTable = 1;   // feed: the reply lines to DRAM afterwards
@@ -99,7 +99,7 @@ namespace {
 }  // namespace
 
 void kernel_main() {
-    const uint32_t ctl = get_arg_val<uint32_t>(0);
+    const uint32_t control = get_arg_val<uint32_t>(0);
     const uint32_t resp_bank = get_arg_val<uint32_t>(1);
     const uint32_t resp_addr = get_arg_val<uint32_t>(2);
     const uint32_t slot = get_arg_val<uint32_t>(3);
@@ -111,7 +111,7 @@ void kernel_main() {
     const uint32_t table_addr = get_arg_val<uint32_t>(9);
     const uint64_t limit = 50000000;  // cycles (about 37 ms) for one wait
     volatile tt_l1_ptr uint32_t* c = (
-        reinterpret_cast<volatile tt_l1_ptr uint32_t*>(ctl)
+        reinterpret_cast<volatile tt_l1_ptr uint32_t*>(control)
     );
     volatile tt_l1_ptr uint32_t* r = c + kResp;
     volatile tt_l1_ptr uint32_t* t = (
@@ -154,16 +154,16 @@ void kernel_main() {
             o[5] = status;
             o[6] = id;
             o[kLineGo] = last_go;
-            noc_async_write(ctl + 4 * kOut, at_core(c[kReply], c[kReply + 1]), 64);
+            noc_async_write(control + 4 * kOut, at_core(c[kReply], c[kReply + 1]), 64);
             writes_flushed(limit);
             continue;
         }
-        const uint32_t seq = c[kSeq];
-        if (seq == last) {
+        const uint32_t sequence = c[kSequence];
+        if (sequence == last) {
             if (wall64() - seen_at > idle) {
                 r[0] = last;
                 r[1] = kIdle;
-                noc_async_write(ctl + 4 * kResp, resp_noc, 64);
+                noc_async_write(control + 4 * kResp, resp_noc, 64);
                 noc_async_write_barrier();
                 return;
             }
@@ -171,7 +171,7 @@ void kernel_main() {
         }
         const uint64_t t_seen = wall64();
         seen_at = t_seen;
-        last = seq;
+        last = sequence;
         for (uint32_t i = 1; i < 16; i++) {
             r[i] = 0;
         }
@@ -240,7 +240,7 @@ void kernel_main() {
                     m[3] = m[3] + 1;  // the go word, last in the 16-byte message
                     noc_async_write(
                         table + 4 * (kTableSent + 4 * i),
-                        at_core(t[kTableTargets + i], ctl + 4 * kMsg),
+                        at_core(t[kTableTargets + i], control + 4 * kMsg),
                         16
                     );
                 }
@@ -283,7 +283,7 @@ void kernel_main() {
             const uint32_t reg = (
                 TENSIX_CFG_BASE + 4 * RISCV_IC_INVALIDATE_InvalidateAll_ADDR32
             );
-            c[kRegValue] = kIcBrisc;
+            c[kRegisterValue] = kIcBrisc;
             const uint64_t t0 = wall64();
             uint32_t wrong = 0, stale = 0, runs = 0, last_wrong = 0;
             for (uint32_t i = 0; i < c[kCount] && status == kOk; i++) {
@@ -310,7 +310,9 @@ void kernel_main() {
                         break;
                     }
                     if (flags & kFlagRemote) {
-                        noc_async_write(ctl + 4 * kRegValue, at_core(xy, reg), 4);
+                        noc_async_write(
+                            control + 4 * kRegisterValue, at_core(xy, reg), 4
+                        );
                         if (!writes_flushed(limit)) {
                             status = kWriteTimeout;
                             break;
@@ -321,7 +323,7 @@ void kernel_main() {
                     sent[2] = c[kArg];
                     sent[3] = sent[3] + 1;
                     noc_async_write(
-                        table + 4 * kTableSent, at_core(xy, ctl + 4 * kMsg), 16
+                        table + 4 * kTableSent, at_core(xy, control + 4 * kMsg), 16
                     );
                     const uint64_t tr = wall64();
                     for (;;) {
@@ -362,8 +364,8 @@ void kernel_main() {
         }
         r[14] = static_cast<uint32_t>(t_seen);
         r[15] = ov_calls;
-        r[0] = seq;
-        noc_async_write(ctl + 4 * kResp, resp_noc, 64);
+        r[0] = sequence;
+        noc_async_write(control + 4 * kResp, resp_noc, 64);
         writes_flushed(limit);
         if (op == kOpExit) {
             return;

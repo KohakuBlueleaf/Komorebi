@@ -54,7 +54,7 @@ ARG_WORDS = [f"a{i}" for i in range(10)]
 
 
 def command(handler, first, count, args=(), flags=0):
-    """The 16 words of a command; the feeder fills seq, slot and the landing words."""
+    """The 16 words of a command; the feeder fills sequence, slot and landing words."""
     if len(args) > len(ARG_WORDS):
         raise ValueError(f"{len(args)} arguments, a command has {len(ARG_WORDS)}")
     words = dict.fromkeys(COMMAND_FIELDS, 0)
@@ -131,13 +131,13 @@ def feeder_summary(rows):
         K["kFsDone"]: "done",
         K["kFsTimeout"]: "timeout",
         K["kFsBoot"]: "boot",
-        K["kFsDynGave"]: "dyn_gave",
+        K["kFsMessagesGave"]: "messages_gave",
     }
     return {
         "magic_ok": int(r[K["kFrMagic"]]) == K["kFeederMagic"],
         "status": status.get(int(r[K["kFrStatus"]]), int(r[K["kFrStatus"]])),
         "slot": int(r[K["kFrSlot"]]),
-        "seq": int(r[K["kFrSeq"]]),
+        "sequence": int(r[K["kFrSequence"]]),
         "index": int(r[K["kFrIndex"]]),
         "submitted": int(r[K["kFrSubmitted"]]),
         "done": int(r[K["kFrDone"]]),
@@ -151,10 +151,17 @@ def feeder_summary(rows):
 
 
 def feeder_commands(rows):
-    """Per command (rows 1 to n): seq, slot, status, submit, submitted, acked, busy,
-    held, result."""
+    """Per command (rows 1 to n): sequence, slot, status, submit, submitted, acked,
+    busy, held, result."""
     r = as_uint32(rows)[1:]
-    names = ("RecSeq", "RecSlot", "RecStatus", "CmdSubmit", "CmdSubmitted", "RecAcked")
+    names = (
+        "RecSequence",
+        "RecSlot",
+        "RecStatus",
+        "CmdSubmit",
+        "CmdSubmitted",
+        "RecAcked",
+    )
     out = {n[3:].lower(): r[:, K[f"kFr{n}"]].astype(np.int64) for n in names}
     out["busy"] = r[:, K["kFrRecBusy"]].astype(np.int64)
     out["held"] = r[:, K["kFrRecHeld"]].astype(np.int64)
@@ -162,16 +169,16 @@ def feeder_commands(rows):
     return out
 
 
-def state_words(ctl_rows):
+def state_words(control_rows):
     """[cores, kStateWords] uint32 state words from the control blocks read back."""
-    start = K["KM_CTL_STATE"] // 4
-    return as_uint32(ctl_rows)[:, start : start + K["kStateWords"]]
+    start = K["KM_CONTROL_STATE"] // 4
+    return as_uint32(control_rows)[:, start : start + K["kStateWords"]]
 
 
-def port_words(ctl_rows):
+def port_words(control_rows):
     """[cores, KM_PORTS, 2] uint32 (count, wanted) of every port, from the blocks."""
-    start, stride = K["KM_CTL_PORT"] // 4, K["KM_PORT_STRIDE"] // 4
-    words = as_uint32(ctl_rows)[:, start : start + K["KM_PORTS"] * stride]
+    start, stride = K["KM_CONTROL_PORT"] // 4, K["KM_PORT_STRIDE"] // 4
+    words = as_uint32(control_rows)[:, start : start + K["KM_PORTS"] * stride]
     words = words.reshape(len(words), K["KM_PORTS"], stride)
     return words[:, :, [K["KM_PORT_COUNT"], K["KM_PORT_WANT"]]]
 
@@ -192,7 +199,7 @@ GAVES = {
 }
 
 
-def gave_up(word, seq):
+def gave_up(word, sequence):
     """A gave-up word pair as a dict, or None when the kernel did not give up."""
     code = word & 0xFF
     if code == K["kGaveNone"]:
@@ -203,7 +210,7 @@ def gave_up(word, seq):
         "code": GAVES.get(code, code),
         "where": wheres.get(where, where),
         "slot": (word >> 16) & 0xFF,
-        "seq": int(seq),
+        "sequence": int(sequence),
     }
     if where in (K["kWherePort"], K["kWhereEmit"]):  # the top byte names the port
         out["port"] = word >> 24
@@ -231,9 +238,9 @@ def core_state(st, core, tag=None):
         "compute_end": (ends >> 16) & 0xFF,
         "slot_wrong": s[K["kStSlotWrong"]],
         "trace_dropped": s[K["kStTraceDropped"]],
-        "reader": gave_up(s[K["kStReader"]], s[K["kStReaderSeq"]]),
-        "writer": gave_up(s[K["kStWriter"]], s[K["kStWriterSeq"]]),
-        "compute": gave_up(s[K["kStCompute"]], s[K["kStComputeSeq"]]),
+        "reader": gave_up(s[K["kStReader"]], s[K["kStReaderSequence"]]),
+        "writer": gave_up(s[K["kStWriter"]], s[K["kStWriterSequence"]]),
+        "compute": gave_up(s[K["kStCompute"]], s[K["kStComputeSequence"]]),
         "last": s[K["kStLast"] : K["kStLast"] + 16],
         "reported": s[K["kStReported"] : K["kStReported"] + 16],
     }

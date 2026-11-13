@@ -77,7 +77,7 @@ place to ask a question and to be wrong.
   cores on each X280 core, 13.1 M a second over 12), exact over a million round trips
   under DRAM load and across a command that times out, and 4 KiB into L1 at 8.1 GB/s
   against 2.1 through DRAM.
-- [dyn_probes](dyn_probes/README.md): whether one core can reserve positions in another
+- [messages_probes](messages_probes/README.md): whether one core can reserve positions in another
   core's queue with one atomic add (yes: 119 cores, exact cover, 266 to 2596 cycles),
   the round trip of a message through DRAM (0.93 µs) and the rate between cores (up to
   1211 M messages/s, 120 cores in packets of 32).

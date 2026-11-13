@@ -14,7 +14,9 @@ from komorebi.errors import CommandTimeout, WaitTimeout
 HostfedCommand = namedtuple(
     "HostfedCommand", "node run handle handler first count flags args queued"
 )
-HostfedResult = namedtuple("HostfedResult", "status error regs runs commands events")
+HostfedResult = namedtuple(
+    "HostfedResult", "status error registers runs commands events"
+)
 
 
 def run_hostfed(run, graph, bindings=None, timeout=10.0, engine=None):
@@ -50,18 +52,18 @@ class _Hostfed:
         its group, so its `first` is None here)."""
         handler, flags = words[1] & 0xFF, words[1] >> 8 & 0xFF
         first, count = words[2] & 0xFFFF, words[2] >> 16
-        queued = bool(flags & st.F_QUEUE)
+        queued = bool(flags & st.FLAG_QUEUE)
         args = [words[i] for i in st.ARG_WORD]
-        result = bool(flags & st.F_RESULT)
+        result = bool(flags & st.FLAG_RESULT)
         if queued:
             first = None
             handle = self.run.submit(handler, count, args, result=result, queued=True)
         else:
-            excl = bool(flags & st.F_EXCL)
+            excl = bool(flags & st.FLAG_EXCLUSIVE)
             handle = self.run.submit(handler, (first, count), args, excl, result=result)
         self.flight[handle] = (node, result)
         rec = HostfedCommand(
-            node, self.eng.runs, handle, handler, first, count, flags & ~st.F_QUEUE,
+            node, self.eng.runs, handle, handler, first, count, flags & ~st.FLAG_QUEUE,
             tuple(args), queued,
         )  # fmt: skip
         self.commands.append(rec)
@@ -73,7 +75,7 @@ class _Hostfed:
             code = eng.step(self.submit)
             if code == gr.ROUND:
                 self.events.append(
-                    gr.Event(gr.EV_GRAPH, self.req, eng.runs - 1, 0, None)
+                    gr.Event(gr.EVENT_GRAPH, self.req, eng.runs - 1, 0, None)
                 )
             elif code in (gr.END, gr.ERROR):
                 return self.finish(code, deadline)
@@ -87,35 +89,43 @@ class _Hostfed:
         completion already seen."""
         left = deadline - time.monotonic()
         try:
-            ev = self.run.wait_any(self.flight, timeout=max(left, 0.0))
+            event = self.run.wait_any(self.flight, timeout=max(left, 0.0))
         except CommandTimeout as err:
             node = self.flight.pop(err.handle, (gr.NO_NODE,))[0]
-            self.eng.stop(st.ERR_DEADLINE, node)
+            self.eng.stop(st.ERROR_DEADLINE, node)
             return
-        self.done(ev.handle, ev)
+        self.done(event.handle, event)
         for handle in sorted(self.flight):
-            ev = self.run.event(handle)
-            if ev is not None:
+            event = self.run.event(handle)
+            if event is not None:
                 self.run.forget([handle])
-                self.done(handle, ev)
+                self.done(handle, event)
 
-    def done(self, handle, ev):
+    def done(self, handle, event):
         node, result = self.flight.pop(handle)
-        self.eng.complete(node, ev.result if result else 0)
+        self.eng.complete(node, event.result if result else 0)
 
     def finish(self, code, deadline):
         eng = self.eng
-        regs = list(eng.regs)
+        registers = list(eng.registers)
         if code == gr.END:
             self.events.append(
-                gr.Event(gr.EV_GRAPH_END, self.req, regs[0] & 0xFFFFFF, regs[1], None)
+                gr.Event(
+                    gr.EVENT_GRAPH_END,
+                    self.req,
+                    registers[0] & 0xFFFFFF,
+                    registers[1],
+                    None,
+                )
             )
             return HostfedResult(
-                "ended", None, regs, eng.runs, self.commands, self.events
+                "ended", None, registers, eng.runs, self.commands, self.events
             )
         error = gr.GraphError(*eng.error)
-        aux = error.reason | error.node << 8
-        self.events.append(gr.Event(gr.EV_GRAPH_ERROR, self.req, aux, 0, None))
-        if error.reason != st.ERR_DEADLINE and self.flight:
+        auxiliary = error.reason | error.node << 8
+        self.events.append(gr.Event(gr.EVENT_GRAPH_ERROR, self.req, auxiliary, 0, None))
+        if error.reason != st.ERROR_DEADLINE and self.flight:
             self.run.drain(timeout=max(deadline - time.monotonic(), 0.0))
-        return HostfedResult("error", error, regs, eng.runs, self.commands, self.events)
+        return HostfedResult(
+            "error", error, registers, eng.runs, self.commands, self.events
+        )

@@ -37,7 +37,7 @@ namespace kmsim {
     namespace detail {
 
         // Image offset of the buffers' counter registers (8 bytes per buffer).
-        constexpr uint32_t kCbRegs = 0x200;
+        constexpr uint32_t kCbRegisters = 0x200;
 
         struct Abort {};
 
@@ -91,8 +91,9 @@ namespace kmsim {
             std::deque<std::vector<float>> src;
             std::vector<float> dst[16];
             int dst_state = 0;  // 0 free, 1 math, 2 committed, 3 pack
-            uint32_t writer_seq = 0;
-            uint32_t reader_seq = 0, compute_seq = 0;  // command each side works on
+            uint32_t writer_sequence = 0;
+            uint32_t reader_sequence = 0,
+                     compute_sequence = 0;  // command each side works on
             std::vector<uint32_t> args, compute_args;
         };
 
@@ -104,7 +105,7 @@ namespace kmsim {
             uint32_t value;
             Thread* from;
             uint32_t kind;  // 0 plain, 1 report, 2 ack, 3 stop
-            uint32_t seq;
+            uint32_t sequence;
             uint32_t ret = ~0u;  // atomic: image offset of the value before the add
 
             bool operator>(const Pending& o) const {
@@ -292,7 +293,7 @@ namespace kmsim {
             uint32_t bytes,
             int32_t job,
             uint32_t kind,
-            uint32_t seq
+            uint32_t sequence
         ) {
             const uint32_t first = off / 16, last = (off + bytes - 1) / 16;
             const uint32_t parts = last - first + 1;
@@ -314,7 +315,7 @@ namespace kmsim {
                 std::memcpy(q.data, data + (lo - off), hi - lo);
                 q.from = from;
                 q.kind = kind;
-                q.seq = seq;
+                q.sequence = sequence;
                 from->writes++;
                 pending.push(q);
             }
@@ -325,7 +326,7 @@ namespace kmsim {
             if (q.dst == kDram) {
                 return true;
             }
-            const uint32_t at = q.off - kCtlOff;
+            const uint32_t at = q.off - kControlOff;
             if (q.dst == n) {
                 const auto in = [&](uint32_t base, uint32_t count, uint32_t bytes) {
                     return (
@@ -342,7 +343,7 @@ namespace kmsim {
                     )
                 );
             }
-            if (q.off < kCtlOff) {
+            if (q.off < kControlOff) {
                 return false;
             }
             if (q.atomic) {
@@ -350,25 +351,26 @@ namespace kmsim {
                     q.src < n &&
                     (
                         (
-                            at >= KM_CTL_DONE && at < KM_CTL_DONE + 16 * 16 &&
-                            (at - KM_CTL_DONE) % 16 == 0
+                            at >= KM_CONTROL_DONE && at < KM_CONTROL_DONE + 16 * 16 &&
+                            (at - KM_CONTROL_DONE) % 16 == 0
                         ) ||
                         (
-                            at >= KM_CTL_TAILS + KM_TAILS_LINE &&
-                            at < KM_CTL_TAILS + KM_TAILS_BYTES &&
-                            (at - KM_CTL_TAILS - KM_TAILS_LINE) % 16 == 0
+                            at >= KM_CONTROL_TAILS + KM_TAILS_LINE &&
+                            at < KM_CONTROL_TAILS + KM_TAILS_BYTES &&
+                            (at - KM_CONTROL_TAILS - KM_TAILS_LINE) % 16 == 0
                         )
                     )
                 );
             }
             if (q.src == n) {
                 return (
-                    at + q.bytes <= KM_CTL_RSVD || (at == KM_CTL_STOP && q.bytes == 4)
+                    at + q.bytes <= KM_CONTROL_RESERVED ||
+                    (at == KM_CONTROL_STOP && q.bytes == 4)
                 );
             }
             return (
-                !booted && at >= KM_CTL_BOOT && at < KM_CTL_STATE &&
-                (at - KM_CTL_BOOT) % 16 == 0 && q.bytes == 4
+                !booted && at >= KM_CONTROL_BOOT && at < KM_CONTROL_STATE &&
+                (at - KM_CONTROL_BOOT) % 16 == 0 && q.bytes == 4
             );
         }
 
@@ -408,11 +410,11 @@ namespace kmsim {
                     q.from->writes--;
                 }
                 if (q.kind == 1) {
-                    log(q.src, kEvReportLand, q.seq, q.dst);
+                    log(q.src, kEventReportLand, q.sequence, q.dst);
                 } else if (q.kind == 2) {
-                    log(q.src, kEvAckLand, q.seq, (q.off - kDispAck) / 16);
+                    log(q.src, kEventAckLand, q.sequence, (q.off - kDispAck) / 16);
                 } else if (q.kind == 3) {
-                    log(q.dst, kEvStop, 0, q.src);
+                    log(q.dst, kEventStop, 0, q.src);
                 }
             }
         }
@@ -443,7 +445,7 @@ namespace kmsim {
                     n,
                     self,
                     w,
-                    kCtlOff + KM_CTL_STOP,
+                    kControlOff + KM_CONTROL_STOP,
                     reinterpret_cast<const uint8_t*>(&one),
                     4,
                     -1,
@@ -453,13 +455,15 @@ namespace kmsim {
             }
         }
 
-        uint32_t seq = 0;
+        uint32_t sequence = 0;
 
-        uint32_t next_seq() {
-            seq = (
-                seq == 0 ? cfg.first_seq : (cfg.next_seq ? cfg.next_seq(seq) : seq + 1)
+        uint32_t next_sequence() {
+            sequence = (
+                sequence == 0
+                    ? cfg.first_sequence
+                    : (cfg.next_sequence ? cfg.next_sequence(sequence) : sequence + 1)
             );
-            return seq;
+            return sequence;
         }
 
         void prepare_map(Job& job, uint32_t k, uint32_t j);
@@ -470,19 +474,19 @@ namespace kmsim {
 
         bool booting();
 
-        // True when a KM_F_EXCL command's group overlaps a group in flight, as the
-        // dispatcher holds it.
+        // True when a KM_FLAG_EXCLUSIVE command's group overlaps a group in flight, as
+        // the dispatcher holds it.
         bool held(
             const std::vector<Job>& jobs, size_t k, const int32_t* busy, uint32_t d
         );
 
-        // A dynamic run in flight (dyn_dispatch.cpp): job k was submitted with sequence
-        // seq; the end command is appended to `jobs` once the status lines are quiet.
-        int32_t dyn_k = -1;
-        uint32_t dyn_seq = 0;
-        bool dyn_ended = true;
-        void dyn_submitted(const Job& job, size_t k, uint32_t seq);
-        void dyn_watch(std::vector<Job>& jobs);
+        // A dynamic run in flight (messages_dispatch.cpp): job k has sequence sequence;
+        // the end command goes to `jobs` once status lines are quiet.
+        int32_t messages_k = -1;
+        uint32_t messages_sequence = 0;
+        bool messages_ended = true;
+        void messages_submitted(const Job& job, size_t k, uint32_t sequence);
+        void messages_watch(std::vector<Job>& jobs);
 
         void dispatcher();
 

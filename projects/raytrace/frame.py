@@ -200,10 +200,12 @@ def pictures(out, scene, flat, colour, want, report):
 SAMPLE_CORES = (0, 40, 80, 119)  # cores whose trace hit pages --profile keeps
 
 
-def save_profile(path, session, raw, command_us, directory, tensors, steps=STEPS):
+def save_profile(
+    path, session, raw, command_microseconds, directory, tensors, steps=STEPS
+):
     """Every command's counters per core, the command times, the directory and the hit
     pages of SAMPLE_CORES' packets for each trace (first kHitAnyVectors vectors)."""
-    out = {"command_us": command_us, "directory": directory}
+    out = {"command_microseconds": command_microseconds, "directory": directory}
     for (name, *_), rows in zip(steps, raw):
         out[f"prof_{name}"] = np.stack(rows)
     per = K["kPagePackets"]
@@ -287,20 +289,25 @@ def planned(
     for i, f in enumerate(frames):
         chunks = [f["chunks"][k - 1] if k else 1 for k in kinds]
         chunks[0] = 1 if i == 0 else 0  # LOAD: the cold frame only
-        rec = np.asarray(f["command_us"], dtype=np.float64)
+        rec = np.asarray(f["command_microseconds"], dtype=np.float64)
         if len(rec) != sum(chunks):
             break
-        step_us = np.bincount(np.repeat(np.arange(len(kinds)), chunks), rec)[1:]
-        us.append(step_us)
+        step_microseconds = np.bincount(np.repeat(np.arange(len(kinds)), chunks), rec)[
+            1:
+        ]
+        us.append(step_microseconds)
         last = f["chunks"]
     report["frames"] = [
         {
             "frame_ms": float(u.sum()) / 1000,
             "step_ms": (u / 1000).tolist(),
-            "wall_ms": (f["wall_us"] - (f["command_us"][0] if i == 0 else 0)) / 1000,
-            "plan_ms": [x / 1000 for x in f["plan_us"]],
+            "wall_ms": (
+                f["wall_microseconds"] - (f["command_microseconds"][0] if i == 0 else 0)
+            )
+            / 1000,
+            "plan_ms": [x / 1000 for x in f["plan_microseconds"]],
             "chunks": f["chunks"],
-            "plan_parts_ms": [x / 1000 for x in f["plan_parts_us"]],
+            "plan_parts_ms": [x / 1000 for x in f["plan_parts_microseconds"]],
         }
         for i, (u, f) in enumerate(zip(us, frames))
     ]
@@ -316,8 +323,10 @@ def planned(
     for s, ps in zip(steps, profs):
         read.append(ps[: last[next(kind_of) - 1]] if s[1] == "kHandlerTrace" else ps)
     us = np.stack(us) if us else np.zeros((1, len(steps)))
-    last_us = np.asarray(frames[-1]["command_us"]) if frames else np.zeros(0)
-    return us, read, status["host_s"], samples, last_us
+    last_microseconds = (
+        np.asarray(frames[-1]["command_microseconds"]) if frames else np.zeros(0)
+    )
+    return us, read, status["host_s"], samples, last_microseconds
 
 
 def main():
@@ -411,7 +420,7 @@ def main():
         report["x280_mhz"] = km_session.X280_MHZ
         report["load_avg"] = os.getloadavg()[0]
         if args.plan:
-            us, read_profs, host_s, samples, command_us = planned(
+            us, read_profs, host_s, samples, command_microseconds = planned(
                 args,
                 session,
                 recs + one,
@@ -432,14 +441,16 @@ def main():
             report["run"] = card.check_run(res, workers)
             # A step's time is its commands' (one per directory chunk) summed.
             step_of = np.repeat(np.arange(len(steps)), per_step)
-            per_rep = card.command_us(res)[1:].reshape(args.reps, len(step_of))
+            per_rep = card.command_microseconds(res)[1:].reshape(
+                args.reps, len(step_of)
+            )
             us = np.stack([np.bincount(step_of, r, len(steps)) for r in per_rep])
             report["host"] = {**res.host, "wall_s": res.host_s}
             host_s, read_profs = res.host_s, profs
-            command_us = card.command_us(res)
+            command_microseconds = card.command_microseconds(res)
         run = report["run"]
-        report["frame_us_median"] = float(np.median(us.sum(axis=1)))
-        report["frame_ms"] = report["frame_us_median"] / 1000
+        report["frame_microseconds_median"] = float(np.median(us.sum(axis=1)))
+        report["frame_ms"] = report["frame_microseconds_median"] / 1000
         if args.plan:
             report["frame_ms"] = float(us[0].sum()) / 1000
         watts = [w for t, w in samples if t >= samples[-1][0] - host_s]
@@ -455,14 +466,14 @@ def main():
                 args.profile,
                 session,
                 raw,
-                command_us,
+                command_microseconds,
                 directory,
                 tensors,
                 steps,
             )
-        for (name, *_), ev_us, prof in zip(steps, us.T, rows):
+        for (name, *_), event_microseconds, prof in zip(steps, us.T, rows):
             pr = card.profile_rows(prof.astype(np.uint64), workers)
-            step = {"step": name, "us": float(np.median(ev_us))}
+            step = {"step": name, "microseconds": float(np.median(event_microseconds))}
             step["errors"] = int((pr["error"] != 0).sum())
             step["busy_max"] = int(pr["total"].max())
             used = pr["packets"] > 0
@@ -470,7 +481,9 @@ def main():
                 per = pr[key][used].sum() / max(pr["packets"][used].sum(), 1)
                 step[f"{key}_per_packet"] = round(float(per), 1)
             report["steps"].append(step)
-        report["command_ms"] = {s["step"]: s["us"] / 1000 for s in report["steps"]}
+        report["command_ms"] = {
+            s["step"]: s["microseconds"] / 1000 for s in report["steps"]
+        }
         wanted = sorted(names) if args.stages else ["colour"]
         got = card.read_each(session, [tensors[s] for s in wanted], wanted)
         got = {s: packets.ungroup(g, vectors(s), n) for s, g in zip(wanted, got)}

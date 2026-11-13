@@ -8,7 +8,7 @@ step itself). The loop it contains ends on a value computed on the card.
 ```python
 g = Graph(max_runs=50, req=6)
 it = g.bindings("it")  # register 0
-err = g.reg()  # register 1: the two an X280 run's end event carries
+err = g.register()  # register 1: the two an X280 run's end event carries
 addr, limit = g.bindings("state", "limit")
 a = g.command(STEP, group=(0, 60), args=[addr, it])
 b = g.command(LEFT, group=(0, 30), args=[addr], after=[a])
@@ -25,11 +25,11 @@ up = run.upload(g)  # on the X280: uploaded once, kept, restarted by its req
 t = run.start(up, {"state": x2, "it": 0, "limit": 1_000_000}, kept=True)
 end = run.wait_engine(t)
 end = run.wait_engine(run.restart(6, {"state": y2, "it": 3, "limit": 10_000_000}))
-run.release(up)  # end.regs: (it, err)
+run.release(up)  # end.registers: (it, err)
 ```
 
 The NORM leader's writer kernel gives the result word with `wr.result(sum)` before it
-reports; the command carries `KM_F_RESULT`, so its acknowledgement brings the value.
+reports; the command carries `KM_FLAG_RESULT`, so its acknowledgement brings the value.
 
 The state is one 32-bit word per core (word 0 of a 64-byte page of a DRAM tensor).
 Each round:

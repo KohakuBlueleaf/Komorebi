@@ -157,7 +157,7 @@ def main():
             reps=args.reps,
             frame=not args.no_frame,
         )
-    out["frame_us"] = frame_stats(us)
+    out["frame_microseconds"] = frame_stats(us)
     pr = profile_rows(prof, workers)
     busy = pr["total"]
     out["busy_cycles"] = {
@@ -178,7 +178,7 @@ def main():
         np.savez(
             args.json.replace(".json", "_prof.npz"),
             prof=prof[:workers],
-            us=us,
+            microseconds=us,
             tiles_of=np.array(
                 [t[0] for ts in tiles_of for t in ts] or [0], dtype=np.int64
             ),
@@ -228,7 +228,7 @@ def save_result(folder, out, frame, counts, power=None):
     arrays = lists.decode_frame(frame)
     arrays["tile_counts"] = np.asarray(counts, np.int32).reshape(32, 32)
     host = out["host"]
-    fill = out["frame_us"]["median"] / 1e3
+    fill = out["frame_microseconds"]["median"] / 1e3
     stages = {
         "setup_ms": 1e3 * host["setup_s"],
         "bin_ms": 1e3 * host["bin_s"],

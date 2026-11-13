@@ -31,7 +31,7 @@ MODES = ("graph", "hostfed")
 def build(addr, directory, profs, workers, deadline_s):
     """The frame's commands as a kept graph, each after the commands that write its
     inputs (SHADOW and BOUNCE may run together); bindings `const` and `colour`."""
-    g = Graph(deadline_us=round(deadline_s * 1e6), keep=True, req=REQ)
+    g = Graph(deadline_microseconds=round(deadline_s * 1e6), keep=True, req=REQ)
     const, colour = g.bindings("const", "colour")
     addr = dict(addr, colour=colour)
     made = {}
@@ -71,9 +71,11 @@ def run_modes(session, g, image, tree_t, cases, modes, deadline_s):
             for k, b in enumerate(cases["graph"]):
                 t0 = time.perf_counter()
                 t = run.start(up, b) if k == 0 else run.restart(REQ, b)
-                ev = run.wait_engine(t, timeout=10.0 + 8 * deadline_s)
+                event = run.wait_engine(t, timeout=10.0 + 8 * deadline_s)
                 seconds["graph"].append(time.perf_counter() - t0)
-                card.log(f"graph camera {k}: {ev.kind} in {seconds['graph'][-1]:.4f}s")
+                card.log(
+                    f"graph camera {k}: {event.kind} in {seconds['graph'][-1]:.4f}s"
+                )
             run.release(up)
         for k, b in enumerate(cases.get("hostfed", [])):
             t0 = time.perf_counter()

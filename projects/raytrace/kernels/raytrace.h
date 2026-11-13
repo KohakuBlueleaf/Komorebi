@@ -24,8 +24,8 @@ constexpr uint32_t kBankShift = 8;
 // PROBE: as TRACE (one packet per page), a3 the form, a5 passes; each pass tests the
 // packet against both children of every inner node of the loaded tree.
 constexpr uint32_t kHandlerProbe = 6;
-constexpr uint32_t kProbeImm = 0;   // the slab tests, box words as immediates
-constexpr uint32_t kProbeData = 1;  // the same, box words loaded from Dst
+constexpr uint32_t kProbeImmediate = 0;  // the slab tests, box words as immediates
+constexpr uint32_t kProbeData = 1;       // the same, box words loaded from Dst
 constexpr uint32_t kProbeMask = 2;  // immediates, plus the entry test and lane read-back
 constexpr uint32_t kProbeStack = 3;  // plus the stack and counters of the walk
 constexpr uint32_t kProbeFast = 4;   // fused multiply-add, no exactness (report only)

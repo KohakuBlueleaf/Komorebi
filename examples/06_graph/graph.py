@@ -76,9 +76,9 @@ def build(n, max_runs, deadline):
     """The graph; the state tensor's address is a binding, so the kept graph runs on
     another tensor without a new upload. `it` and `err` are registers 0 and 1, the two
     an X280 run's end event carries."""
-    g = Graph(max_runs=max_runs, deadline_us=round(deadline * 1e6), req=6)
+    g = Graph(max_runs=max_runs, deadline_microseconds=round(deadline * 1e6), req=6)
     it = g.bindings("it")
-    err = g.reg()
+    err = g.register()
     addr, limit = g.bindings("state", "limit")
     half = n // 2
     a = g.command(1, group=(0, n), args=[addr, it])
@@ -129,7 +129,7 @@ def run(session, args):
         compile_args={"writer": accessor},
         handlers=KERNELS / "graph.h",
     )
-    g, (it_reg, err_reg) = build(n, args.max_runs, args.deadline)
+    g, (it_register, error_register) = build(n, args.max_runs, args.deadline)
     out, ok = {}, True
     if args.stall:
         load = session.load(program, deadline=args.deadline)
@@ -145,7 +145,7 @@ def run(session, args):
         if "bad_uploads" not in out:  # engines started before the traced commands
             out["bad_uploads"] = rejections(load)
         out["paths"][mode] = path = one_path(
-            load, mode, g, (it_reg, err_reg), states, cases
+            load, mode, g, (it_register, error_register), states, cases
         )
         path.update(card_counts(load))
         if mode == "host" and "first" in path:
@@ -182,10 +182,10 @@ def run(session, args):
     return out
 
 
-def one_path(load, mode, g, regs, states, cases):
+def one_path(load, mode, g, registers, states, cases):
     """Both cases on one path, then the stop; a failure stops the run too. {case:
     {status, rounds, it, err}, "got": the first host-fed result (for its trace)}."""
-    it_reg, err_reg = regs
+    it_register, error_register = registers
     path = {}
     try:
         if mode == "host":
@@ -199,8 +199,8 @@ def one_path(load, mode, g, regs, states, cases):
                 path[name] = {
                     "status": got.status,
                     "rounds": got.runs,
-                    "it": got.regs[it_reg.index],
-                    "err": got.regs[err_reg.index],
+                    "it": got.registers[it_register.index],
+                    "err": got.registers[error_register.index],
                 }
         else:
             path.update(on_x280(load, g, states, cases))
@@ -241,7 +241,7 @@ def simulated(g, n, cases, max_runs, cores):
         errs = replay(n, it, limit, max_runs)[2]
         sim = g.simulate(
             {"state": 0, "it": it, "limit": limit},
-            n_cores=cores,
+            core_count=cores,
             result=lambda r, errs=errs: errs[r.run - 1],
         )
         count += len(sim.commands)
@@ -262,9 +262,9 @@ def on_x280(load, g, states, cases):
         log(f"x280 {name}: it {it}, limit {limit}")
         t = load.start(up, b, kept=True) if k == 0 else load.restart(up.req, b)
         end = load.wait_engine(t, timeout=30.0)
-        rounds = 1 + sum(ev.kind == "round" for ev in t.events)
+        rounds = 1 + sum(event.kind == "round" for event in t.events)
         log(f"x280 {name}: {end.kind} after {rounds} rounds")
-        it_end, err = end.regs
+        it_end, err = end.registers
         path[name] = {"status": "ended", "rounds": rounds, "it": it_end, "err": err}
     load.release(up)
     return path
@@ -273,7 +273,7 @@ def on_x280(load, g, states, cases):
 def stall(load, deadline, x280):
     """A graph whose command never completes, in a run of its own: its deadline ends the
     graph with reason 8 and the kernel with its deadline error (4). Stops the run."""
-    g = Graph(deadline_us=round(deadline * 1e6), req=7)
+    g = Graph(deadline_microseconds=round(deadline * 1e6), req=7)
     g.command(5, group=(0, 4), args=[1])
     out = {"on": "x280" if x280 else "host"}
     try:
@@ -299,23 +299,23 @@ def bad_uploads():
     """One upload per class the kernel rejects, each a fault put into a good graph (a
     command, then a CPU node): {class: (bytes, [reason, node] of its error event)}."""
     g = Graph(req=8)
-    r = g.reg()
+    r = g.register()
     g.cpu(after=[g.command(1, group=(0, 4), args=[0])]).addi(r, r, 1)
     good = g.encode()
     assert gr.check(good) is None
     h = dict(zip(gr.HEADER_FIELDS, gr.HEADER.unpack_from(good)))
-    edges = gr.HEADER.size + -(-h["n_nodes"] * gr.NODE_BYTES // gr.LINE) * gr.LINE
-    ops = edges + -(-h["n_edges"] * 2 // gr.LINE) * gr.LINE
+    edges = gr.HEADER.size + -(-h["node_count"] * gr.NODE_BYTES // gr.LINE) * gr.LINE
+    ops = edges + -(-h["edge_count"] * 2 // gr.LINE) * gr.LINE
     faults = {
-        "header_size": [st.ERR_HEADER, None],  # one line more than the header says
-        "edge_order": [gr.ERR_EDGE, 0],  # node 0's successor is node 0
-        "index_range": [st.ERR_TEMPLATE, 0],  # node 0's template is past the last
-        "cpu_opcode": [st.ERR_OPCODE, 1],  # the CPU node's micro-op is an SUBMIT
+        "header_size": [st.ERROR_HEADER, None],  # one line more than the header says
+        "edge_order": [gr.ERROR_EDGE, 0],  # node 0's successor is node 0
+        "index_range": [st.ERROR_TEMPLATE, 0],  # node 0's template is past the last
+        "cpu_opcode": [st.ERROR_OPCODE, 1],  # the CPU node's micro-op is an SUBMIT
     }
     data = {name: bytearray(good) for name in faults}
     data["header_size"] += bytes(gr.LINE)
     struct.pack_into("<H", data["edge_order"], edges, 0)
-    struct.pack_into("<H", data["index_range"], gr.HEADER.size + 4, h["n_commands"])
+    struct.pack_into("<H", data["index_range"], gr.HEADER.size + 4, h["command_count"])
     struct.pack_into("<B", data["cpu_opcode"], ops, st.OP_SUBMIT)
     return {name: (bytes(data[name]), want) for name, want in faults.items()}
 

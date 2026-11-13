@@ -24,7 +24,8 @@ typedef struct {
     uint32_t trail; /* a hash of every finished round's STEP group */
 } wc_state;
 
-/* One command: handler, flags (KM_F_EXCL, KM_F_RESULT), group, two arguments. */
+/* One command: handler, flags (KM_FLAG_EXCLUSIVE, KM_FLAG_RESULT), group, two
+ * arguments. */
 typedef struct {
     uint32_t handler, flags, first, count, a0, a1;
 } wc_command;

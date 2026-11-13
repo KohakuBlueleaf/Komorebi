@@ -56,8 +56,8 @@ struct Times {
 
 static Times run(const Scene& s, const Frame& f) {
     cudaEvent_t e[6];
-    for (auto& ev : e) {
-        CHECK(cudaEventCreate(&ev));
+    for (auto& event : e) {
+        CHECK(cudaEventCreate(&event));
     }
     const int blocks = PIXELS / BLOCK;
     CHECK(cudaEventRecord(e[0]));
@@ -77,8 +77,8 @@ static Times run(const Scene& s, const Frame& f) {
     for (int i = 0; i < 5; i++) {
         CHECK(cudaEventElapsedTime(&t.stage[i], e[i], e[i + 1]));
     }
-    for (auto& ev : e) {
-        CHECK(cudaEventDestroy(ev));
+    for (auto& event : e) {
+        CHECK(cudaEventDestroy(event));
     }
     return t;
 }

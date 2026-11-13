@@ -118,12 +118,12 @@ namespace scen {
             Job res = nop_job(1, 3);
             res.handler = kHandlerResult;
             res.a[0] = 0x5EED;
-            res.flags = KM_F_RESULT;
+            res.flags = KM_FLAG_RESULT;
             Job plain = res;
             plain.a[0] = 0x1234;
             plain.flags = 0;
             Job nop = nop_job(1, 3);
-            nop.flags = KM_F_RESULT;
+            nop.flags = KM_FLAG_RESULT;
             cfg.jobs = {res, plain, nop};
             Sim s(cfg);
             s.run();
@@ -160,7 +160,8 @@ namespace scen {
                 std::string(w) + " recorded the bad-item give-up"
             );
             c.expect(
-                s.word(core, KM_CTL_STOP) != 0, std::string(w) + " set the stop flag"
+                s.word(core, KM_CONTROL_STOP) != 0,
+                std::string(w) + " set the stop flag"
             );
             c.expect(s.all_returned, std::string(w) + ": every thread returned");
         }
@@ -225,14 +226,14 @@ namespace scen {
             }
         }
 
-        // ---- KM_F_EXCL ----
+        // ---- KM_FLAG_EXCLUSIVE ----
 
         // An EXCL command on a group disjoint from the one in flight is submitted at
         // once; one that overlaps either waits until both are acknowledged.
         void excl_waits_for_overlapping_group(Outcome& o) {
             Config cfg = fault_config(4);
             cfg.jobs = {map_job(0, 2, 24), map_job(2, 2, 4), map_job(1, 2, 4)};
-            cfg.jobs[1].flags = cfg.jobs[2].flags = KM_F_EXCL;
+            cfg.jobs[1].flags = cfg.jobs[2].flags = KM_FLAG_EXCLUSIVE;
             Sim s(cfg);
             s.run();
             common(s, o.check);

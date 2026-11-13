@@ -17,7 +17,7 @@ from komorebi.errors import ThreadFailed
 from komorebi.program import Program
 from komorebi.run import Run
 
-KMX = kt.native.kmx_dir()
+KMX = kt.native.kmx_directory()
 K = kt.layout()
 
 
@@ -37,7 +37,7 @@ def test_ring_calls_against_a_fake_kernel(tmp_path):
 
 
 def test_the_threads_wake_is_the_kernels():
-    assert K["KMX_EV_WAKE"] == kt.abi.headers()["KMD_EV_WAKE"]
+    assert K["KMX_EVENT_WAKE"] == kt.abi.headers()["KMD_EVENT_WAKE"]
 
 
 def test_ring_line_names_the_placement():
@@ -84,7 +84,12 @@ def test_threads_of_one_image_are_peers_led_by_the_lowest_cluster():
     ring, _ = kt.work_ring(0x8100000, (8, 3), 0x8120000, (8, 7), cluster=3)
     block = kt.args_block(a_thread(cluster=3), 0, 1, ring=ring, peers=peers)
     line = struct.unpack_from("<12I", block, K["KMX_LIM_PEERS"])
-    assert line[:4] == (0x1234, 1, 0b1010, len(block))  # par_all lines after the block
+    assert line[:4] == (
+        0x1234,
+        1,
+        0b1010,
+        len(block),
+    )  # parallel_all lines after the block
     assert line[4:] == (0, 8 | 9 << 16, 0, 8 | 7 << 16, 0, 6, 0, 7)
     assert len(block) % 64 == 0
 
@@ -111,7 +116,7 @@ def test_argument_block_holds_the_region_table_and_words():
 
 
 def test_result_block_is_read_with_names():
-    words = [K["KMX_STATE_DONE"], K["KMX_ERR_NONE"], 5, 2, 3, 100, 500] + [0] * 9
+    words = [K["KMX_STATE_DONE"], K["KMX_ERROR_NONE"], 5, 2, 3, 100, 500] + [0] * 9
     raw = struct.pack("<64I", *words, 11, 12, *([0] * 46))
     r = kt.parse_result(raw)
     assert (r.state, r.error, r.code, r.words, r.where) == (
@@ -121,7 +126,7 @@ def test_result_block_is_read_with_names():
         [11, 12],
         3,
     )
-    assert (r.where_us, r.us) == (2.0, 10.0)
+    assert (r.where_microseconds, r.microseconds) == (2.0, 10.0)
 
 
 def test_host_fallback_gets_the_initial_regions_and_its_writes_are_kept():
@@ -149,7 +154,7 @@ def test_host_fallback_submits_commands_through_the_run_and_gets_result_words():
     fallback = a_thread(host_fallback=leader_says)
     thread = kt.ThreadRun(fallback, None, None, on_card=False, run=run)
     assert thread.wait(1.0).words == [0xBEEF]
-    assert kernel.ring[1][1] >> 8 == kt.abi.headers()["KM_F_RESULT"]
+    assert kernel.ring[1][1] >> 8 == kt.abi.headers()["KM_FLAG_RESULT"]
 
 
 class FakePort:
@@ -242,7 +247,9 @@ class TwoClusters(FakePort):
 
     def work_read(self, c, offset, n):
         state = K["KMX_STATE_FAILED"] if c == 2 else K["KMX_STATE_RUNNING"]
-        return struct.pack("<64I", state, K["KMX_ERR_LATE"] if c == 2 else 0, *[0] * 62)
+        return struct.pack(
+            "<64I", state, K["KMX_ERROR_LATE"] if c == 2 else 0, *[0] * 62
+        )
 
 
 def test_one_threads_failure_stops_the_others_and_names_it():

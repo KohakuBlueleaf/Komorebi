@@ -16,7 +16,7 @@ IDLE_MIB = 100
 IDLE_UTIL = 10
 
 
-def build_dir():
+def build_directory():
     """Where binaries go: $KR_BUILD_DIR, else <repository>/build."""
     path = Path(os.environ.get("KR_BUILD_DIR", ROOT / "build"))
     path.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,7 @@ def build(source, name, gpu=False, includes=()):
     compiler = find_nvcc() if gpu else find_cxx()
     if compiler is None:
         return None
-    out = build_dir() / name
+    out = build_directory() / name
     deps = [source, *NATIVE.glob("*.hpp"), *Path(source).parents[1].glob("*.hpp")]
     deps += [h for i in includes for h in Path(i).glob("*.hpp")]
     if stale(out, deps):

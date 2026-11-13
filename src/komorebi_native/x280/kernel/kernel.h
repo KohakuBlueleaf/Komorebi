@@ -73,13 +73,13 @@ typedef struct {
 /* The dynamic run in flight (dynamic.h): its RUN command, and its end command's slot.
  */
 typedef struct {
-    uint32_t handler;                    /* the program's dynamic handler; 0: none */
-    uint32_t active;                     /* a RUN is in flight and not yet quiet */
-    uint32_t slot, seq, group, req, src; /* the RUN command */
-    uint32_t end;                        /* 1 + the end command's slot while busy; 0 */
+    uint32_t handler; /* the program's dynamic handler; 0: none */
+    uint32_t active;  /* a RUN is in flight and not yet quiet */
+    uint32_t slot, sequence, group, req, src; /* the RUN command */
+    uint32_t end; /* 1 + the end command's slot while busy; 0 */
     uint32_t checks;
     uint32_t first[2u * KM_CORES_MAX]; /* the first pass: sent, consumed per core */
-} kmd_dyn_t;
+} kmd_messages_t;
 
 /* A stream the kernel admitted and the engine runs: its range and req. */
 typedef struct {
@@ -95,11 +95,11 @@ typedef struct {
     volatile uint32_t* x280_cores;  /* the core block */
     volatile const uint8_t* upload; /* the upload region, upload_bytes long */
     uint32_t upload_bytes;
-    uint32_t error, where; /* KMD_ERR_*, KMD_WHERE_* */
+    uint32_t error, where; /* KMD_ERROR_*, KMD_WHERE_* */
     uint64_t t_boot;       /* mtime at the start */
     /* grid port */
     uint32_t panels, opened; /* windows programmed: bits 0, 1 panels, 2 host, 3+ work */
-    volatile uint8_t* ctl[2]; /* every core's control block, through each panel */
+    volatile uint8_t* control[2]; /* every core's control block, through each panel */
     /* sources and the host buffer */
     volatile uint32_t* host; /* the host buffer, through the host window */
     kmd_ring_t ring[KMD_SOURCES];
@@ -107,15 +107,15 @@ typedef struct {
     kmd_queue_t* queue;      /* the job queue, in the state area */
     /* completion table */
     uint32_t depth, full, busy, nbusy, cores;
-    uint32_t seq;                     /* last sequence number submitted */
-    uint32_t exited;                  /* an EXIT command was submitted */
-    uint32_t slot_seq[KM_RING_SLOTS]; /* last sequence: the ack word once free */
+    uint32_t sequence;                     /* last sequence number submitted */
+    uint32_t exited;                       /* an EXIT command was submitted */
+    uint32_t slot_sequence[KM_RING_SLOTS]; /* last sequence: the ack word once free */
     uint32_t slot_req[KM_RING_SLOTS];
     uint32_t slot_group[KM_RING_SLOTS];
     uint8_t slot_src[KM_RING_SLOTS]; /* the source the command came from */
-    uint32_t result_busy;            /* busy slots whose command has KM_F_RESULT */
-    uint32_t last_result; /* the latest KM_F_RESULT command's result (0: none yet) */
-    uint32_t results;     /* KM_F_RESULT commands completed */
+    uint32_t result_busy;            /* busy slots whose command has KM_FLAG_RESULT */
+    uint32_t last_result; /* the latest KM_FLAG_RESULT command's result (0: none yet) */
+    uint32_t results;     /* KM_FLAG_RESULT commands completed */
     uint64_t slot_t0[KM_RING_SLOTS];
     uint64_t slot_deadline[KM_RING_SLOTS];
     /* streams the engine runs */
@@ -123,8 +123,8 @@ typedef struct {
     uint32_t nstreams;  /* admitted and not yet ended */
     uint32_t engine_on; /* engine_active() after its last turn; a RUN sets it */
     uint32_t queued;    /* the queue's length, for the loop */
-    uint32_t waits;     /* bit src: a busy rejection to it, KMD_EV_WAKE owed */
-    kmd_dyn_t dyn;
+    uint32_t waits;     /* bit src: a busy rejection to it, KMD_EVENT_WAKE owed */
+    kmd_messages_t messages;
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */

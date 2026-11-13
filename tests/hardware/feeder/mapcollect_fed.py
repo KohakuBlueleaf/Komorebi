@@ -76,7 +76,11 @@ def parse(argv=None):
     )
     p.add_argument("--trace", action="store_true")
     p.add_argument("--trace-cap", type=int, help="commands traced (default: all)")
-    p.add_argument("--excl", action="store_true", help="KM_F_EXCL on every MAP command")
+    p.add_argument(
+        "--exclusive",
+        action="store_true",
+        help="KM_FLAG_EXCLUSIVE on every MAP command",
+    )
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--dump", type=Path, help="save commands, trace and state (npz)")
     return p.parse_args(argv)
@@ -135,16 +139,16 @@ def rank_errors(args, groups, res, states):
     workers, recs, s = len(states), res.commands, res.summary
     runs, done = np.zeros((2, workers), int), np.zeros((2, workers), int)  # low, high
     rejected = np.zeros(workers, int)
-    last = {}  # slot: (seq, cores reporting) of the last command submitted there
+    last = {}  # slot: (sequence, cores reporting) of the last command submitted there
     for j, (first, count) in enumerate(groups):
-        seq, slot, acked = (
-            int(recs["seq"][j]),
+        sequence, slot, acked = (
+            int(recs["sequence"][j]),
             int(recs["slot"][j]),
             recs["status"][j] == 1,
         )
         is_exit = j == args.exit_at
         group = slice(0, workers) if is_exit else slice(first, first + count)
-        if seq == 0:
+        if sequence == 0:
             continue
         if j == args.raw and args.raw_slot != slot:  # not run by the cores that see it
             rejected[group] += 1
@@ -154,7 +158,7 @@ def rank_errors(args, groups, res, states):
         done[1, group] += not is_exit
         done[0, group] += acked and not is_exit
         if acked:
-            last[slot] = (seq, group)
+            last[slot] = (sequence, group)
     if s["status"] == "done" and not 0 <= args.exit_at < len(groups):
         runs[1] += 1  # the feeder's own EXIT, on slot 0
         runs[0] += bool(s["exit_acked"])
@@ -166,10 +170,11 @@ def rank_errors(args, groups, res, states):
         ok &= done[0, k] <= c["completed"] <= done[1, k]
         ok &= c["slot_wrong"] == rejected[k]
         if s["status"] == "done":
-            for slot, (seq, group) in last.items():
+            for slot, (sequence, group) in last.items():
                 included = group.start <= k < group.stop
                 ok &= (
-                    c["last"][slot] == seq and (c["reported"][slot] == seq) == included
+                    c["last"][slot] == sequence
+                    and (c["reported"][slot] == sequence) == included
                 )
         if not ok:
             bad.append(k)
@@ -194,10 +199,10 @@ def trace_phases(res, groups, n):
     out = []
     for j in range(n):
         first, count = groups[j]
-        seq = int(rows["seq"][j])
-        if seq == 0 or seq > tr.shape[1]:
+        sequence = int(rows["sequence"][j])
+        if sequence == 0 or sequence > tr.shape[1]:
             continue
-        t = tr[first : first + count, seq - 1]
+        t = tr[first : first + count, sequence - 1]
         submit = int(rows["submit"][j])
         rel = rec.wrap(t - submit)
         seen, done, sent = rel[:, 0], rel[:, 1], rel[:, 2]
@@ -221,7 +226,7 @@ def overlaps(res, groups, n):
     """Consecutive jobs on disjoint groups where a core of the second took its command
     before the first job's leader pushed its completion (wall clock, from the trace)."""
     tr = res.trace.astype(np.int64)
-    seqs = res.commands["seq"]
+    seqs = res.commands["sequence"]
     found = []
     for j in range(n - 1):
         (fa, ca), (fb, cb) = groups[j], groups[j + 1]
@@ -237,7 +242,7 @@ def overlaps(res, groups, n):
     return {
         "pairs": n - 1,
         "overlapping": len(found),
-        "lead_us_mean": round(float(np.mean(found)) if found else 0.0, 3),
+        "lead_microseconds_mean": round(float(np.mean(found)) if found else 0.0, 3),
     }
 
 
@@ -245,7 +250,7 @@ def in_flight_together(res, groups, n, window=K["KM_RING_SLOTS"]):
     """Pairs of jobs on overlapping groups (at most `window` apart) where a core of
     the later one took it before the earlier one's leader pushed (from the trace)."""
     tr = res.trace.astype(np.int64)
-    seqs = res.commands["seq"]
+    seqs = res.commands["sequence"]
     pairs = together = 0
     for a in range(n):
         for b in range(a + 1, min(n, a + 1 + window)):
@@ -299,7 +304,7 @@ def run(session, args, rng):
     base = place_outputs(groups, pages, args.out_tensors)
 
     commands = []
-    flags = K["KM_F_EXCL"] if args.excl else 0
+    flags = K["KM_FLAG_EXCLUSIVE"] if args.exclusive else 0
     for j, (first, count) in enumerate(groups):
         if j == args.stall:
             commands.append(rec.command(HANDLER_STALL, first, count, [args.stall_rank]))
@@ -307,7 +312,7 @@ def run(session, args, rng):
             side = [0, int(args.bad_side == "reader")]
             commands.append(rec.command(HANDLER_BAD_ITEM, first, count, side))
         elif j == args.result:
-            value, flag = [args.result_value], K["KM_F_RESULT"]
+            value, flag = [args.result_value], K["KM_FLAG_RESULT"]
             commands.append(rec.command(HANDLER_RESULT, first, count, value, flag))
         elif j == args.late:
             late = [args.late_rank, args.late_cycles]
@@ -368,7 +373,7 @@ def run(session, args, rng):
             args.dump,
             groups=np.asarray(groups),
             base=np.asarray(base),
-            seq=res.commands["seq"],
+            sequence=res.commands["sequence"],
             slot=res.commands["slot"],
             submit=res.commands["submit"],
             acked=res.commands["acked"],
@@ -383,15 +388,17 @@ def run(session, args, rng):
         "count": args.count if args.groups == "fixed" else None,
         "tiles": tiles,
         "depth": args.depth,
-        "excl": args.excl,
+        "excl": args.exclusive,
         "held": int(res.commands["held"].sum()),
         "result": (
             int(res.commands["result"][args.result]) if args.result >= 0 else None
         ),
         "aiclk_mhz": res.mhz,
         "feeder": s,
-        "us_per_command": round(s["span_cycles"] / res.mhz / max(s["done"], 1), 3),
-        "submit_us_mean": round(
+        "microseconds_per_command": round(
+            s["span_cycles"] / res.mhz / max(s["done"], 1), 3
+        ),
+        "submit_microseconds_mean": round(
             s["submit_cycles"] / res.mhz / max(s["submitted"], 1), 3
         ),
         "host_program_s": round(res.host_s, 2),
@@ -400,7 +407,7 @@ def run(session, args, rng):
         res.commands["status"] == 1
     ]
     if len(lat):
-        out["latency_us"] = {
+        out["latency_microseconds"] = {
             "mean": round(float(lat.mean()) / res.mhz, 3),
             "min": round(float(lat.min()) / res.mhz, 3),
             "max": round(float(lat.max()) / res.mhz, 3),
@@ -416,10 +423,12 @@ def run(session, args, rng):
     states = [rec.core_state(res.state, c) for c in range(workers)]
     out["runs"] = sum(c["runs"] for c in states)
     if "exit" in out:  # cores whose report of the EXIT landed
-        slot, seq = int(res.commands["slot"][args.exit_at]), int(
-            res.commands["seq"][args.exit_at]
+        slot, sequence = int(res.commands["slot"][args.exit_at]), int(
+            res.commands["sequence"][args.exit_at]
         )
-        out["exit"]["reported_by"] = sum(c["reported"][slot] == seq for c in states)
+        out["exit"]["reported_by"] = sum(
+            c["reported"][slot] == sequence for c in states
+        )
     out["slot_wrong"] = {c["core"]: c["slot_wrong"] for c in states if c["slot_wrong"]}
     out["trace_dropped"] = {
         c["core"]: c["trace_dropped"] for c in states if c["trace_dropped"]
@@ -454,9 +463,13 @@ def run(session, args, rng):
     if s["status"] == "timeout":
         first, count = groups[s["index"]]
         group = range(first, first + count)
-        out["timed_out"] = {"slot": s["slot"], "seq": s["seq"], "group": [first, count]}
+        out["timed_out"] = {
+            "slot": s["slot"],
+            "sequence": s["sequence"],
+            "group": [first, count],
+        }
         out["not_reported"] = [
-            c for c in group if states[c]["reported"][s["slot"]] != s["seq"]
+            c for c in group if states[c]["reported"][s["slot"]] != s["sequence"]
         ]
         out["named"] = [
             {"core": g["core"], **{k: g[k] for k in parts if g[k]}}
@@ -468,7 +481,7 @@ def run(session, args, rng):
         if args.handler == "align":  # release at submit + args.release cycles
             for p in phases:
                 p["push_after_release"] = p["leader_sent"] - args.release / res.mhz
-        out["trace_us"] = summarize_phases(phases)
+        out["trace_microseconds"] = summarize_phases(phases)
         out["overlap"] = overlaps(res, groups, n)
         out["overlapping_groups"] = in_flight_together(res, groups, n)
 

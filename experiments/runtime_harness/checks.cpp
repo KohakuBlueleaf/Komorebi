@@ -29,13 +29,15 @@ namespace scen {
                 const JobResult& r = s.jobs[k];
                 if (r.status != kNotSubmitted) {
                     const Job& j = s.cfg.jobs[k];
-                    m[r.seq] = {j.first, j.count, r.slot, false, r.status == kDone};
+                    m[r.sequence] = {
+                        j.first, j.count, r.slot, false, r.status == kDone
+                    };
                 }
             }
             if (s.exit_job.status != kNotSubmitted) {
                 // EXIT is completed as a group of every core, whatever its group field
                 // says.
-                m[s.exit_job.seq] = {
+                m[s.exit_job.sequence] = {
                     0, s.cfg.cores, 0, true, s.exit_job.status == kDone
                 };
             }
@@ -126,17 +128,17 @@ namespace scen {
         const auto recs = submitted(s);
         std::map<uint32_t, std::map<uint32_t, uint32_t>> takes, reports, acks;
         std::map<uint32_t, uint32_t> runs;
-        std::map<uint32_t, std::vector<Event>> by_seq;
+        std::map<uint32_t, std::vector<Event>> by_sequence;
         for (const Event& e : s.events) {
-            if (e.kind != kEvStop) {
-                by_seq[e.a].push_back(e);
+            if (e.kind != kEventStop) {
+                by_sequence[e.a].push_back(e);
             }
-            if (e.kind == kEvTake && e.a != 0) {
+            if (e.kind == kEventTake && e.a != 0) {
                 takes[e.a][e.core]++;
                 runs[e.core]++;
-            } else if (e.kind == kEvReport) {
+            } else if (e.kind == kEventReport) {
                 reports[e.a][e.core]++;
-            } else if (e.kind == kEvAck) {
+            } else if (e.kind == kEventAck) {
                 acks[e.a][e.core]++;
                 const auto it = recs.find(e.a);
                 c.expect(
@@ -164,42 +166,44 @@ namespace scen {
                 )
             );
         }
-        for (const auto& [seq, r] : recs) {
+        for (const auto& [sequence, r] : recs) {
             if (!r.done) {
                 continue;
             }
             for (uint32_t core = 0; core < s.cfg.cores; core++) {
                 const bool included = core - r.first < r.count;
-                const uint32_t t = takes[seq][core];
+                const uint32_t t = takes[sequence][core];
                 c.expect(
                     t == (included ? 1u : 0u),
-                    fmt("command %u taken %u times by core %u", seq, t, core)
+                    fmt("command %u taken %u times by core %u", sequence, t, core)
                 );
                 if (included) {
                     const uint32_t want = core == r.first ? 0 : 1;
                     c.expect(
-                        reports[seq][core] == want,
+                        reports[sequence][core] == want,
                         fmt(
                             "command %u: core %u sent %u reports",
-                            seq,
+                            sequence,
                             core,
-                            reports[seq][core]
+                            reports[sequence][core]
                         )
                     );
                     c.expect(
-                        acks[seq][core] == (core == r.first ? 1u : 0u),
+                        acks[sequence][core] == (core == r.first ? 1u : 0u),
                         fmt(
                             "command %u: core %u sent %u acks",
-                            seq,
+                            sequence,
                             core,
-                            acks[seq][core]
+                            acks[sequence][core]
                         )
                     );
                 } else {
                     c.expect(
-                        reports[seq][core] + acks[seq][core] == 0,
+                        reports[sequence][core] + acks[sequence][core] == 0,
                         fmt(
-                            "command %u: core %u, not in the group, reported", seq, core
+                            "command %u: core %u, not in the group, reported",
+                            sequence,
+                            core
                         )
                     );
                 }
@@ -209,13 +213,13 @@ namespace scen {
             km_command_t rec = {};
             rec.group = km::make_group(r.first, r.count);
             std::map<uint32_t, std::vector<uint64_t>> landed;
-            for (const Event& e : by_seq[seq]) {
-                if (e.kind == kEvReportLand) {
+            for (const Event& e : by_sequence[sequence]) {
+                if (e.kind == kEventReportLand) {
                     landed[e.b].push_back(e.t);
                 }
             }
-            for (const Event& e : by_seq[seq]) {
-                if (e.kind != kEvReport && e.kind != kEvAck) {
+            for (const Event& e : by_sequence[sequence]) {
+                if (e.kind != kEventReport && e.kind != kEventAck) {
                     continue;
                 }
                 const uint32_t want = km::report_to(rec, e.core, s.cfg.tree_row).want;
@@ -227,7 +231,7 @@ namespace scen {
                     before == want,
                     fmt("command %u: core %u sent its report after %u of the "
                         "reports to it landed",
-                        seq,
+                        sequence,
                         e.core,
                         before) +
                         fmt(", not %u", want)
@@ -244,7 +248,7 @@ namespace scen {
             for (uint32_t core = 0; core < s.cfg.cores; core++) {
                 for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
                     c.expect(
-                        s.word(core, KM_CTL_DONE + j * 16) == 0,
+                        s.word(core, KM_CONTROL_DONE + j * 16) == 0,
                         fmt(
                             "core %u: completion counter %u is zero at the end", core, j
                         )
@@ -255,12 +259,12 @@ namespace scen {
     }
 
     // A tile that gave up acknowledges nothing afterwards: no report or ack from `core`
-    // for command `seq` or any later one.
-    void silent_from(const Sim& s, Check& c, uint32_t core, uint32_t seq) {
+    // for command `sequence` or any later one.
+    void silent_from(const Sim& s, Check& c, uint32_t core, uint32_t sequence) {
         for (const Event& e : s.events) {
             if (
-                (e.kind == kEvReport || e.kind == kEvAck) && e.core == core &&
-                km::newer(e.a + 1, seq)
+                (e.kind == kEventReport || e.kind == kEventAck) && e.core == core &&
+                km::newer(e.a + 1, sequence)
             ) {
                 c.expect(
                     false,
@@ -268,7 +272,7 @@ namespace scen {
                         "core %u reported command %u after giving up on %u",
                         core,
                         e.a,
-                        seq
+                        sequence
                     )
                 );
             }

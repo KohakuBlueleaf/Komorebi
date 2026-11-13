@@ -65,17 +65,17 @@ def job_stream(form, jobs, cores, window, addr, tiles, seed):
     the previous job's, the input window moved by STEP. `form` "submit": a computed
     first core, SUBMIT and WAIT 0; "enqueue": ENQUEUE, the queue picks the group."""
     s = ks.Stream(req=40 if form == "submit" else 41, seed=seed)
-    j, x, count, first, room, base, page = s.regs(7)
-    n_cores, n_jobs, wrap = s.const(cores), s.const(jobs), s.const(window)
+    j, x, count, first, room, base, page = s.registers(7)
+    core_count, n_jobs, wrap = s.const(cores), s.const(jobs), s.const(window)
     for r in (j, base, page):
         s.set(r, 0)
     top = s.label()
     s.rand(x)
-    s.mod(count, x, n_cores)
+    s.mod(count, x, core_count)
     s.addi(count, count, 1)  # 1 to every core
     map_args = [addr["in"], tiles, addr["out"], base, page]
     if form == "submit":
-        s.sub(room, n_cores, count)
+        s.sub(room, core_count, count)
         s.addi(room, room, 1)
         s.shr(first, x, 8)
         s.mod(first, first, room)
@@ -99,7 +99,7 @@ def job_stream(form, jobs, cores, window, addr, tiles, seed):
 def simulated(stream, cores):
     """The commands the kernel submits for `stream`, from the package's simulator:
     [(first, count, output page, first input tile)]."""
-    sim = stream.simulate(n_cores=cores, max_passes=1_000_000)
+    sim = stream.simulate(core_count=cores, max_passes=1_000_000)
     if sim.status != "ended":
         raise SystemExit(f"the simulator ends the stream with {sim.status}")
     return [(r.first, r.count, r.args[3], r.args[4]) for r in sim.commands]
@@ -285,9 +285,9 @@ def one_way(session, program, args, way, addr, jobs, cores, window):
         end = run.wait_engine(handle, timeout=60.0)
         out["status"], out["halt"] = end.kind, end.value
         run.release(up)
-    out["us_per_job"] = round((time.perf_counter() - t0) * 1e6 / n, 3)
+    out["microseconds_per_job"] = round((time.perf_counter() - t0) * 1e6 / n, 3)
     run.stop()
-    log(f"{way}: {out['us_per_job']} us per job")
+    log(f"{way}: {out['microseconds_per_job']} us per job")
     if trace:
         recs = traced(run.trace())[:n]  # the stop's EXIT may follow in the trace
         out["traced"] = len(recs)
@@ -319,12 +319,12 @@ def error_cases(session, program, args, inp, out_t, want, jobs, cores, window):
     )
     bad[64] = 0xEE  # the first micro-op's opcode
     steps = ks.Stream(req=42, max_steps=1000)
-    (i,) = steps.regs(1)
+    (i,) = steps.registers(1)
     top = steps.label()
     steps.addi(i, i, 1)
     steps.jmp(top)
     big = ks.Stream(req=43)
-    (n,) = big.regs(1)
+    (n,) = big.registers(1)
     big.set(n, cores + 1)
     big.enqueue(addr["map"], n, args=[addr["in"], args.tiles, addr["out"], 0, 0])
     big.wait(0)

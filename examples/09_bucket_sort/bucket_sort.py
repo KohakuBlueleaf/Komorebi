@@ -21,7 +21,7 @@ WORDS = ("keys_n", "log2_b", "cores", "keys", "out", "x280_cores", "repeats", "b
 TIMES = ("count", "plan", "place", "whole")
 CHUNK, BUCKETS_MAX, KEYS_PER_PAGE, SLOTS = 16, 16384, 1024, 64
 WAY = 128 << 10  # an X280 cluster's L3: one cache way of 128 KiB
-CODES = {0: "ok", 1: "bad words or regions", 2: "a kmx_par call failed"}
+CODES = {0: "ok", 1: "bad words or regions", 2: "a kmx_parallel call failed"}
 CODES.update({3: "a push failed", 4: "the ring failed", 5: "a command did not finish"})
 
 
@@ -133,7 +133,7 @@ def main():
     out["codes"] = {c: CODES.get(r.code, r.code) for c, r in results.items()}
     out["ms"] = {k: round(w[i] * 1e3 / TIMER_HZ, 3) for i, k in enumerate(TIMES)}
     out["placed"], out["rounds"] = w[4], w[5]
-    out["thread_ms"] = round(lead.us / 1e3, 2)
+    out["thread_ms"] = round(lead.microseconds / 1e3, 2)
     want = reference.output(values, log2_b)
     out["wrong"] = int((got != want).sum())
     out["ok"] = (

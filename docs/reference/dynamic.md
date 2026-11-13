@@ -24,24 +24,24 @@ the number of arrivals at a core and the end of the run are all decided by the d
 
 The program writes one handler body in its compute kernel. The reader and writer
 kernels of a dynamic handler are generic and ship with the runtime
-(`src/komorebi_native/kernels/dyn_reader.cpp` and `dyn_writer.cpp`).
+(`src/komorebi_native/kernels/messages_reader.cpp` and `messages_writer.cpp`).
 
 ## The calls
 
-Compute kernel, inside the runtime's loop (`#include "komorebi/device/km_dyn.hpp"`):
+Compute kernel, inside the runtime's loop (`#include "komorebi/device/km_messages.hpp"`):
 
 ```c++
 cp.run([&](const km_command_t& r) {
     if (km::handler(r) != kHandlerForward) {
         return;
     }
-    km::Dyn dy(cp, r);  // r: the RUN command of the dynamic handler
+    km::Messages dy(cp, r);  // r: the RUN command of the dynamic handler
     if (dy.seeding()) {  // once per run and core: the first messages
         ... dy.send(dest, message) ...
         dy.seeded();
     }
     while (km::Packet pk = dy.next()) {  // up to 32 messages; empty when the run ended
-        for (uint32_t i = 0; i < pk.n; i++) {
+        for (uint32_t i = 0; i < pk.count; i++) {
             const volatile tt_l1_ptr uint32_t* in = pk[i];  // the message, in L1
             ... the body, then exactly one of:
             dy.forward(dest, message);  // the message goes on at rank dest
@@ -56,10 +56,10 @@ cp.run([&](const km_command_t& r) {
 
 | Call | What it does |
 |---|---|
-| `Dyn(cp, r)` | starts the dynamic part of the run on this core; all three compute threads construct it |
+| `Messages(cp, r)` | starts the dynamic part of the run on this core; all three compute threads construct it |
 | `seeding()`, `seeded()` | true until `seeded()` or the first `next()`: the place for the run's first sends |
 | `next()` | the next packet of up to 32 messages; empty when the run has ended, the stop flag was set or a wait gave up. Every wait inside it is timed |
-| `pk.n`, `pk[i]` | the number of messages, and the L1 address of message `i` |
+| `pk.count`, `pk[i]` | the number of messages, and the L1 address of message `i` |
 | `forward(dest, message)` | the message joins the queue of rank `dest` of the run's group (a rank, not a core index); a forward to the core itself takes the same path |
 | `consume()` | the message ends; one unit of quota returns to this core |
 | `send(dest, message)` | a new message at rank `dest`; false, and nothing is sent, when this core has no quota left |
@@ -101,7 +101,7 @@ The launcher rejects, before any device opens:
 - `max_live` smaller than the number of cores (some core would start without quota);
 - a ring depth below 2 (the end of a run is a second command in flight).
 
-A run is one `RUN` command of the dynamic handler to a group, with `KM_F_EXCL`. The command
+A run is one `RUN` command of the dynamic handler to a group, with `KM_FLAG_EXCLUSIVE`. The command
 stays in flight for the whole run; its deadline is the run's deadline. Its argument
 words are the program's.
 
@@ -148,7 +148,7 @@ sends on some cores and consumes on others runs those cores dry.
 
 The tails do not live on the receivers. The last K cores of a run's group (`counters`,
 2 by default; `komorebi.layout.counter_tiles` gives the layout) are counter tiles: core
-core c's tail is a 16-byte line on counter tile c mod K, at `KM_CTL_TAILS`. Every
+core c's tail is a 16-byte line on counter tile c mod K, at `KM_CONTROL_TAILS`. Every
 reservation is an atomic add on that line; a core learns its tail by a timed
 16-byte read of it. A counter tile runs the same three kernels: at the start of a run it
 sets the tails of the cores it serves to their heads and shows READY (cores wait
@@ -186,25 +186,25 @@ busy line and waits until that write has landed.
 
 The submitter reads every line of the group twice. When both passes show every core idle
 with the same counters, and the total sent equals the total consumed, no message is in a
-queue or on the way: the submitter sends an end command (`KM_HANDLER_DYN_END`) to the group,
+queue or on the way: the submitter sends an end command (`KM_HANDLER_MESSAGES_END`) to the group,
 `next()` returns an empty packet on every core, and the `RUN` command completes through
 the usual group completion. Under a `Session` the submitter is the dispatcher: the
-lines are in its local memory (`KMD_LIM_DYN`), it checks them on every pass of its loop
+lines are in its local memory (`KMD_LIM_MESSAGES`), it checks them on every pass of its loop
 while the run is in flight, and the end command goes out under the `RUN` command's
 command, so the host sees only the `RUN` command's done event. One dynamic run is in
 flight at a time: a second `RUN` of the dynamic handler from the host waits until the
 first has ended; from the stream engine or a work cluster it is rejected busy (reason
 11) and sent again after the kernel's wake, like any command of those sources that
-cannot go now. A queued one (`KM_F_QUEUE`) is rejected with reason 12. The status lines
-take 2 KiB of the kernel's local memory (`KMD_LIM_DYN`).
+cannot go now. A queued one (`KM_FLAG_QUEUE`) is rejected with reason 12. The status lines
+take 2 KiB of the kernel's local memory (`KMD_LIM_MESSAGES`).
 
 ## When something goes wrong
 
 Every wait has a timeout and watches the stop flag. A core that gives up writes its first
-reason, the queue position and the run into its control block (`KM_CTL_DYN +
-KM_DYN_GAVE`), writes a `gave up` status line, and the submitter stops the run on every
+reason, the queue position and the run into its control block (`KM_CONTROL_MESSAGES +
+KM_MESSAGES_GAVE`), writes a `gave up` status line, and the submitter stops the run on every
 core. Under a `Session` the dispatcher ends the session with the `RUN` command's
-timeout and names the core in its core block (`KMD_H_DYN_GAVE`, 1 + core). No reset is needed: the next run starts on
+timeout and names the core in its core block (`KMD_H_MESSAGES_GAVE`, 1 + core). No reset is needed: the next run starts on
 the same loaded program.
 
 | Code | Reason | Meaning |
@@ -222,7 +222,7 @@ the same loaded program.
 | 34 | full | this core's queue positions reached 2^30 in this load |
 | 35 | counter | a counter tile did not show READY within the wait limit, or the group has no core beside them |
 
-The codes follow the runtime's where codes (0 to 18) and are `kWhereDyn*` in `km_core.hpp`.
+The codes follow the runtime's where codes (0 to 18) and are `kWhereMessages*` in `km_core.hpp`.
 
 ## Not in this version
 

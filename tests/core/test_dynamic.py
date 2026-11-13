@@ -3,7 +3,7 @@
 import pytest
 
 from komorebi.layout import counter_tiles, queue_pages
-from komorebi.program import Dynamic, dyn_header
+from komorebi.program import Dynamic, messages_header
 
 
 def test_queue_pages_are_consecutive_per_core():
@@ -50,14 +50,14 @@ def test_queues_beyond_the_dram_given_and_a_shallow_ring_are_rejected():
 
 
 def test_packet_pages_keep_items_64_byte_aligned():
-    k, _ = dyn_header()
+    k, _ = messages_header()
     for b in Dynamic(handler=1, message_bytes=128).buffers():
         assert b.page_bytes % 64 == 0, b
-    assert k["kDynHeader"] % 64 == 0
+    assert k["kMessagesHeader"] % 64 == 0
 
 
 def test_words_follow_the_device_struct():
-    _, fields = dyn_header()
+    _, fields = messages_header()
     d = Dynamic(handler=7, bins=4, idle_cycles=99)
     words = dict(zip(fields, d.args(0x1000, 0x2000)))
     assert words == {

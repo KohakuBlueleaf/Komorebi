@@ -24,7 +24,7 @@
 #define KMX_LIM_STOP 0x240u   /* line from the host: word 0 = KMX_STOP_WORD */
 #define KMX_LIM_RESULT 0x280u /* kmx_result_block (the thread) */
 #define KMX_LIM_CORES 0x380u  /* core h's spawn line at + 64 * h (KMX_SPAWN_*) */
-/* kmx_ring_desc (host, before the start); zero: no ring */
+/* kmx_ring_descriptor (host, before the start); zero: no ring */
 #define KMX_LIM_RING 0x480u
 #define KMX_LIM_PEERS 0x4C0u /* kmx_peers (host, before the start) */
 #define KMX_LIM_PORTS 0x500u /* kmx_ports (host, before the start) */
@@ -34,7 +34,7 @@
 /* A spawn line's 64-bit words: the call's number, fn and arg (core 0 writes them), the
  * last number core h finished (core h). Core 0's own line: word 0 ends the service. */
 #define KMX_SPAWN_GEN 0u
-#define KMX_SPAWN_FN 1u
+#define KMX_SPAWN_FUNCTION 1u
 #define KMX_SPAWN_ARG 2u
 #define KMX_SPAWN_DONE 3u
 #define KMX_SPAWN_EXIT 0u
@@ -71,27 +71,27 @@ typedef struct {
     uint32_t words[KMX_WORDS_MAX];
 } kmx_args;
 
-/* The clusters running the same image in one program (kmx_par_all, kmx_push). Tiles
- * are NoC coordinates, x | y << 16, indexed by cluster; lead 0: no others. */
+/* The clusters running the same image in one program (kmx_parallel_all, kmx_push).
+ * Tiles are NoC coordinates, x | y << 16, indexed by cluster; lead 0: no others. */
 typedef struct {
     uint32_t nonce;   /* this load's value: lines left from another load differ */
-    uint32_t lead;    /* the cluster that calls kmx_par_all */
+    uint32_t lead;    /* the cluster that calls kmx_parallel_all */
     uint32_t mask;    /* bit c: cluster c runs this image */
-    uint32_t all;     /* LIM offset of the kmx_par_all lines, the same on each */
+    uint32_t all;     /* LIM offset of the kmx_parallel_all lines, the same on each */
     uint32_t tile[4]; /* [c]: cluster c's tile */
     uint32_t bank[4]; /* [c]: the DRAM tile of cluster c's bank */
     uint32_t reserved[4];
 } kmx_peers;
 
-/* The kmx_par_all lines at `all`, outside the host's block: the lead's call (32-bit
- * words KMX_CALL_*), and in the lead's LIM cluster c's done line at + 64 * c. */
+/* The kmx_parallel_all lines at `all`, outside the host's block: the lead's call
+ * (32-bit words KMX_CALL_*), in the lead's LIM cluster c's done line at + 64 * c. */
 #define KMX_ALL_CALL 0x00u
 #define KMX_ALL_DONE 0x00u
 #define KMX_ALL_BYTES 0x100u
 #define KMX_CALL_NONCE 0u
-#define KMX_CALL_GEN 1u /* the call's number; done lines: the last one finished */
-#define KMX_CALL_FN 2u  /* 64 bits */
-#define KMX_CALL_ARG 4u /* 64 bits */
+#define KMX_CALL_GEN 1u      /* the call's number; done lines: the last one finished */
+#define KMX_CALL_FUNCTION 2u /* 64 bits */
+#define KMX_CALL_ARG 4u      /* 64 bits */
 #define KMX_CALL_EXIT 6u
 /* cluster c's LIM through window KMX_PEER_WINDOW + c - 1 */
 #define KMX_PEER_WINDOW 17u
@@ -101,7 +101,7 @@ typedef struct {
  * at `at`: each core's tile, X280 core and mailbox line (KM_BOX_*, the core's). */
 typedef struct {
     uint32_t at;      /* LIM offset of the area, a multiple of 64 */
-    uint32_t ctl;     /* the cores' control block address in L1 */
+    uint32_t control; /* the cores' control block address in L1 */
     uint32_t cores;   /* entries of the tables, 1 to KMX_PORTS_CORES */
     uint32_t flags;   /* KMX_PORTS_* */
     uint32_t state;   /* kmx_port_run's: n << 1 while run n serves, | 1 once it ended */
@@ -132,15 +132,15 @@ typedef struct {
 #define KMX_RING_WINDOW 16u /* the window slot it uses */
 
 typedef struct {
-    uint64_t cmd;      /* cmd_depth 64-byte slots, 64-byte aligned */
+    uint64_t cmd;      /* command_depth 64-byte slots, 64-byte aligned */
     uint64_t consumed; /* a 32-bit word the kernel writes */
     uint64_t events;   /* event_depth 16-byte events (km_event_t) */
     uint64_t read;     /* a 64-byte line: word 0 the number of events the thread took */
-    uint32_t cmd_depth;
+    uint32_t command_depth;
     uint32_t event_depth;
     uint32_t flags; /* KMX_RING_* */
     uint32_t reserved[5];
-} kmx_ring_desc;
+} kmx_ring_descriptor;
 
 /* Return codes of the calls that can fail. */
 #define KMX_OK 0
@@ -150,15 +150,15 @@ typedef struct {
 #define KMX_NONE 4    /* kmx_poll: no event yet; kmx_serve: this cluster leads */
 #define KMX_BAD 5     /* an argument out of range: a core, cluster, region or size */
 
-/* An event of a command the thread submitted: its handle, kind (KM_EV_*), aux and ticks
- * (for KM_F_RESULT commands: the group leader's result word). */
+/* An event of a command the thread submitted: its handle, kind (KM_EVENT_*), auxiliary
+ * and ticks (for KM_FLAG_RESULT commands: the group leader's result word). */
 typedef struct {
-    uint32_t handle, kind, aux, ticks;
+    uint32_t handle, kind, auxiliary, ticks;
 } kmx_event;
 
-/* The kernel's wake (handle 0): room again after a rejection with aux 11. kmx_wait
- * passes it over; kmx_poll returns it. */
-#define KMX_EV_WAKE 0x12u
+/* The kernel's wake (handle 0): room again after a rejection with auxiliary 11.
+ * kmx_wait passes it over; kmx_poll returns it. */
+#define KMX_EVENT_WAKE 0x12u
 
 /* States, in the result block. */
 #define KMX_STATE_BOOT 1u    /* start-up, before kmx_main */
@@ -167,17 +167,17 @@ typedef struct {
 #define KMX_STATE_FAILED 4u  /* a library error: see error */
 
 /* Library errors, in the result block (the thread's own code is separate). */
-#define KMX_ERR_NONE 0u
-#define KMX_ERR_ARGS 1u    /* the argument block is not this run's, or out of range */
-#define KMX_ERR_BANK 2u    /* the check line does not hold check_value: wrong bank */
-#define KMX_ERR_LATE 3u    /* a wait reached the run's deadline */
-#define KMX_ERR_STOPPED 4u /* the host or the runtime asked for a stop */
-#define KMX_ERR_PAR 5u     /* kmx_par called from a core other than 0 */
-#define KMX_ERR_RESULT 6u  /* kmx_result with more than KMX_RESULT_WORDS_MAX words */
+#define KMX_ERROR_NONE 0u
+#define KMX_ERROR_ARGS 1u    /* the argument block is not this run's, or out of range */
+#define KMX_ERROR_BANK 2u    /* the check line does not hold check_value: wrong bank */
+#define KMX_ERROR_LATE 3u    /* a wait reached the run's deadline */
+#define KMX_ERROR_STOPPED 4u /* the host or the runtime asked for a stop */
+#define KMX_ERROR_PARALLEL 5u /* kmx_parallel called from a core other than 0 */
+#define KMX_ERROR_RESULT 6u   /* kmx_result with more than KMX_RESULT_WORDS_MAX words */
 
 typedef struct {
     uint32_t state;   /* KMX_STATE_* */
-    uint32_t error;   /* KMX_ERR_* (the first one) */
+    uint32_t error;   /* KMX_ERROR_* (the first one) */
     uint32_t code;    /* the thread's code: kmx_result's, else kmx_main's return */
     uint32_t n;       /* result words */
     uint32_t where;   /* the last kmx_progress marker */
@@ -201,7 +201,7 @@ KMX_STATIC_ASSERT(KMX_LIM_RESULT + 256 <= KMX_LIM_CORES, "LIM: result");
 KMX_STATIC_ASSERT(KMX_LIM_CORES + 4 * 64 <= KMX_LIM_RING, "LIM: spawn lines");
 KMX_STATIC_ASSERT(sizeof(kmx_peers) == 64, "kmx_peers is one line");
 KMX_STATIC_ASSERT(KMX_LIM_PEERS + 64 <= KMX_LIM_BYTES, "LIM: peers");
-KMX_STATIC_ASSERT(sizeof(kmx_ring_desc) == 64, "kmx_ring_desc is one line");
+KMX_STATIC_ASSERT(sizeof(kmx_ring_descriptor) == 64, "kmx_ring_descriptor is one line");
 KMX_STATIC_ASSERT(KMX_LIM_RING + 64 <= KMX_LIM_BYTES, "LIM: ring");
 KMX_STATIC_ASSERT(sizeof(kmx_ports) == 64, "kmx_ports is one line");
 KMX_STATIC_ASSERT(KMX_LIM_PORTS + 64 <= KMX_LIM_BYTES, "LIM: ports");

@@ -146,7 +146,7 @@ class Attention:
         bad = [e for e in events if e.kind != "done"]
         if bad:
             raise km.KomorebiError(f"{len(bad)} commands not done: {bad[0]}")
-        return host_s, np.array([e.us for e in events])
+        return host_s, np.array([e.microseconds for e in events])
 
     def profile(self, session, zero=True, timeout=10.0):
         """Every core's profile page since the last zeroing ([cores, kProfWords]

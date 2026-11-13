@@ -93,10 +93,14 @@ def main():
             runs.append(run_engine(session, a))
             log("engine run done")
     ok = all(r["ok"] for r in runs)
-    timed = [r["run_us"] for r in runs if r.get("run_us")]
+    timed = [r["run_microseconds"] for r in runs if r.get("run_microseconds")]
     summary = {"exact": sum(bool(r.get("exact")) for r in runs), "runs": len(runs)}
     if timed:
-        summary["run_us"] = [min(timed), round(float(np.median(timed)), 1), max(timed)]
+        summary["run_microseconds"] = [
+            min(timed),
+            round(float(np.median(timed)), 1),
+            max(timed),
+        ]
     out = {"ok": ok, "summary": summary, "runs": runs}
     print(json.dumps(out | {"wall_s": round(time.monotonic() - T0, 1)}))
     sys.exit(0 if ok else 1)
@@ -115,9 +119,9 @@ def load(session, a):
     program = km.Program(
         "forward",
         kernels={
-            "reader": RUNTIME / "dyn_reader.cpp",
+            "reader": RUNTIME / "messages_reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "dyn_writer.cpp",
+            "writer": RUNTIME / "messages_writer.cpp",
         },
         args=lambda core: ([], [], [res_t.address]),
         handlers={"forward": FORWARD["kHandlerForward"]},
@@ -154,9 +158,16 @@ def run_once(session, a, stall):
         host_s = time.perf_counter() - t0
         timed_out = err
         log(f"timeout: {err}")
-    ev, seq = run.event(handle), run.seq(handle)
+    event, sequence = run.event(handle), run.sequence(handle)
     out = report(
-        a, run, (ev, seq), program.dyn, (count, cores), stall, res_t, timed_out
+        a,
+        run,
+        (event, sequence),
+        program.messages,
+        (count, cores),
+        stall,
+        res_t,
+        timed_out,
     )
     out["host_s"] = round(host_s, 4)
     if stall < 0:  # exact, ended by the kernel at the quiet end
@@ -172,7 +183,7 @@ def run_engine(session, a):
     """
     run, res_t, program, cores = load(session, a)
     half = cores // 2
-    s = Stream(req=21, deadline_us=int(a.deadline * 1e6))
+    s = Stream(req=21, deadline_microseconds=int(a.deadline * 1e6))
     for first in (0, half):
         s.submit(
             FORWARD["kHandlerForward"],
@@ -183,7 +194,7 @@ def run_engine(session, a):
     s.wait(0)
     s.halt(s.const(7))
     t = run.start(run.upload(s))
-    ev = run.wait_engine(t, timeout=2 * a.deadline + 5.0)
+    event = run.wait_engine(t, timeout=2 * a.deadline + 5.0)
     run.stop()
     result = run.result()
     res = (res_t.read().astype(np.int64) & 0xFFFFFFFF)[: 2 * half]
@@ -191,13 +202,13 @@ def run_engine(session, a):
     h = abi.headers()
     x280_cores = result.get("x280_cores") or [0] * h["KMD_H_WORDS"]
     return {
-        "ok": ev.kind == "end" and all(exact) and result["error_name"] == "none",
-        "engine": ev.kind,
-        "halt": ev.value,
+        "ok": event.kind == "end" and all(exact) and result["error_name"] == "none",
+        "engine": event.kind,
+        "halt": event.value,
         "halves_exact": exact,
         "runs": [int(res[0, FORWARD["kResRun"]]), int(res[half, FORWARD["kResRun"]])],
         "kernel": {k: result[k] for k in ("error_name", "commands", "rejected")},
-        "checks": int(x280_cores[h["KMD_H_DYN_CHECKS"]]),
+        "checks": int(x280_cores[h["KMD_H_MESSAGES_CHECKS"]]),
     }
 
 
@@ -218,10 +229,10 @@ def exact_rows(a, res, count):
     )
 
 
-def report(a, run, event, dyn, group, stall, res_t, timed_out):
+def report(a, run, event, messages, group, stall, res_t, timed_out):
     """The checks and numbers of one run as a dict: `event` (the RUN's event, its
     sequence), `group` (count, cores in the grid)."""
-    (ev, seq), (count, cores) = event, group
+    (event, sequence), (count, cores) = event, group
     h = abi.headers()
     result = run.result()
     x280_cores = result.get("x280_cores") or [0] * h["KMD_H_WORDS"]
@@ -238,32 +249,34 @@ def report(a, run, event, dyn, group, stall, res_t, timed_out):
         "counters": [
             c["core"]
             for c in states[:count]
-            if (c["dynamic"]["counter"] or {}).get("run") == seq
+            if (c["dynamic"]["counter"] or {}).get("run") == sequence
         ],
         "counters_expected": list(ctr.counters),
         "messages": a.messages,
         "forwards_per_message": a.forwards,
         "stall": stall,
         "kernel": {k: result[k] for k in ("error_name", "commands", "events")},
-        "event": ev.kind if ev else None,
-        "run_us": round(ev.us, 1) if ev and ev.kind == "done" else None,
-        "exact": bool((res[:, FORWARD["kResRun"]] == seq).all())
+        "event": event.kind if event else None,
+        "run_microseconds": (
+            round(event.microseconds, 1) if event and event.kind == "done" else None
+        ),
+        "exact": bool((res[:, FORWARD["kResRun"]] == sequence).all())
         and exact_rows(a, res, count),
         "consumed_by_compute": int(res[:, FORWARD["kResConsumed"]].sum()),
         "expected_consumed": a.messages,
         "forwards": int(res[:, FORWARD["kResVisits"]].sum()) - a.messages,
         "probe_sent": int(res[:, FORWARD["kResSent"]].sum()),
         "rejected": int(res[:, FORWARD["kResRejected"]].sum()),
-        "quota_start": dyn.quota(cores),
+        "quota_start": messages.quota(cores),
         "quota_left_min": int(res[: len(ctr.workers), FORWARD["kResQuota"]].min()),
-        "checks": int(x280_cores[h["KMD_H_DYN_CHECKS"]]),
-        "gave_core": int(x280_cores[h["KMD_H_DYN_GAVE"]]) - 1,
-        "dyn_gave": gave,
+        "checks": int(x280_cores[h["KMD_H_MESSAGES_CHECKS"]]),
+        "gave_core": int(x280_cores[h["KMD_H_MESSAGES_GAVE"]]) - 1,
+        "messages_gave": gave,
     }
     if timed_out is not None:
         out["timed_out"] = {
             "handle": timed_out.handle,
-            "seq": timed_out.seq,
+            "sequence": timed_out.sequence,
             "group": list(timed_out.group),
             "not_reported": timed_out.cores[:16],
         }

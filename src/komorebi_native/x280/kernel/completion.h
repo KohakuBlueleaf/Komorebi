@@ -45,12 +45,12 @@ static inline void trace(kmd_t* k, uint32_t kind, uint32_t slot, uint32_t req) {
 #define trace(k, kind, slot, req) ((void)0)
 #endif
 
-/* Marks `slot` busy with command `seq` of command `req` of source `src` for `group`,
- * submitted at `now` (trace entry `how`); `result`: the command has KM_F_RESULT. */
+/* Marks `slot` busy with command `sequence` of `req` of source `src` for `group`,
+ * submitted at `now` (trace entry `how`); `result`: it has KM_FLAG_RESULT. */
 static inline void slot_take(
     kmd_t* k,
     uint32_t slot,
-    uint32_t seq,
+    uint32_t sequence,
     uint32_t req,
     uint32_t src,
     uint32_t group,
@@ -59,7 +59,7 @@ static inline void slot_take(
     uint32_t result,
     uint32_t how
 ) {
-    k->slot_seq[slot] = seq;
+    k->slot_sequence[slot] = sequence;
     k->slot_req[slot] = req;
     k->slot_group[slot] = group;
     k->slot_src[slot] = (uint8_t)src;
@@ -113,14 +113,14 @@ static inline void sources_wake(kmd_t* k) {
     for (uint32_t src = 0; src < KMD_SOURCES; src++) {
         if (k->waits & (1u << src)) {
             k->ring[src].owed--;
-            ring_push(&k->ring[src], 0, KMD_EV_WAKE, 0);
+            ring_push(&k->ring[src], 0, KMD_EVENT_WAKE, 0);
         }
     }
     k->waits = 0;
 }
 
-/* Sweeps busy slots' ack lines (one 8-byte load each); a slot showing its sequence is
- * freed with KM_EV_DONE {aux first core | seq low 16 << 8, ticks time or result}. */
+/* Sweeps busy slots' ack lines (8-byte loads); a slot showing its sequence is freed:
+ * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */
 static inline void slots_sweep(kmd_t* k) {
     x280_fence_ir();
     uint64_t now = 0;
@@ -129,7 +129,7 @@ static inline void slots_sweep(kmd_t* k) {
             continue;
         }
         const uint64_t line = *slot_ack(k, j);
-        if ((uint32_t)line != KM_ACK(k->slot_seq[j])) {
+        if ((uint32_t)line != KM_ACK(k->slot_sequence[j])) {
             continue;
         }
         if (now == 0) {
@@ -147,14 +147,15 @@ static inline void slots_sweep(kmd_t* k) {
         trace(k, KMD_TRACE_FREE, j, k->slot_req[j]);
         kmd_ring_t* r = &k->ring[k->slot_src[j]];
         r->nbusy--;
-        if (k->dyn.end == j + 1u) { /* a dynamic run's end command: no event */
-            k->dyn.end = 0;
+        if (k->messages.end == j + 1u) { /* a dynamic run's end command: no event */
+            k->messages.end = 0;
         } else {
-            const uint32_t aux = (
-                (k->slot_group[j] & KM_EV_AUX_LOW) |
-                (k->slot_seq[j] & KM_EV_SEQ_MASK) << KM_EV_SEQ_SHIFT
+            const uint32_t auxiliary = (
+                (k->slot_group[j] & KM_EVENT_AUXILIARY_LOW) |
+                (k->slot_sequence[j] & KM_EVENT_SEQUENCE_MASK)
+                    << KM_EVENT_SEQUENCE_SHIFT
             );
-            ring_push(r, k->slot_req[j], KM_EV_DONE | aux << 8, ticks);
+            ring_push(r, k->slot_req[j], KM_EVENT_DONE | auxiliary << 8, ticks);
         }
         k->t_last_event = now;
         if (k->waits) {
@@ -179,7 +180,7 @@ static inline uint32_t slots_late(const kmd_t* k, uint64_t now) {
 }
 
 /* Submits `l` into free `slot` for command `req` of source `src` (trace entry `how`):
- * the next sequence (not 0, not the slot's last) in seq and the landing words. */
+ * the next sequence (not 0, not the slot's last) in sequence and the landing words. */
 KMD_HOT void command_submit(
     kmd_t* k,
     uint64_t* l,
@@ -191,16 +192,16 @@ KMD_HOT void command_submit(
     uint32_t how
 ) {
     const uint32_t hdr = (uint32_t)(l[0] >> 32);
-    uint32_t seq = ++k->seq;
-    while (seq == 0 || seq == k->slot_seq[slot]) {
-        seq = ++k->seq;
+    uint32_t sequence = ++k->sequence;
+    while (sequence == 0 || sequence == k->slot_sequence[slot]) {
+        sequence = ++k->sequence;
     }
-    l[0] = seq | ((uint64_t)((hdr & 0xFFFFu) | (slot << 16)) << 32);
+    l[0] = sequence | ((uint64_t)((hdr & 0xFFFFu) | (slot << 16)) << 32);
     for (uint32_t j = 2; j < 8; j += 2) {
-        l[j] = (l[j] & ~(uint64_t)0xFFFFFFFFu) | seq;
+        l[j] = (l[j] & ~(uint64_t)0xFFFFFFFFu) | sequence;
     }
     grid_store_command(k, slot, l);
     k->commands++;
-    const uint32_t result = (hdr >> 8) & KM_F_RESULT;
-    slot_take(k, slot, seq, req, src, (uint32_t)l[1], now, ticks, result, how);
+    const uint32_t result = (hdr >> 8) & KM_FLAG_RESULT;
+    slot_take(k, slot, sequence, req, src, (uint32_t)l[1], now, ticks, result, how);
 }

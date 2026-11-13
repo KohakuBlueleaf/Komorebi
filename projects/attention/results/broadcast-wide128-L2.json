@@ -17,12 +17,12 @@
   "l1_bytes": 915776
  },
  "x280_mhz": 1000,
- "single_us": {
+ "single_microseconds": {
   "median": 2322.38,
   "min": 2319.4
  },
- "us_per_call": 2338.561,
- "command_us_median": 2323.81,
+ "microseconds_per_call": 2338.561,
+ "command_microseconds_median": 2323.81,
  "profile": {
   "slowest_core": 2,
   "slowest_cycles_per_command": 3131839,
@@ -112,7 +112,7 @@
   "commands": 28,
   "passes": 31,
   "seconds": 2.025,
-  "us_per_call": 2333.487,
+  "microseconds_per_call": 2333.487,
   "mean_w": 149.22745417617605,
   "peak_w": 170.0,
   "open_w": 67.22616079140285,

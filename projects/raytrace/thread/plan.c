@@ -156,17 +156,17 @@ static void sum_part(int xcore, void* arg) {
 /* pred for trace t: from the source's blocks, by owner, or equal packets */
 static int predict(plan_t* p, part_t* a) {
     if (a->src >= RP_TRACES) {
-        return kmx_par(equal_part, a) == KMX_OK ? 0 : -1;
+        return kmx_parallel(equal_part, a) == KMX_OK ? 0 : -1;
     }
     kmx_invalidate_at(
         RP_R_COST,
         block_at(p, a->src, 0, 0),
         (uint64_t)p->used[a->src] * p->workers * RP_COST_BYTES
     );
-    if (kmx_par(gather_part, a) != KMX_OK) {
+    if (kmx_parallel(gather_part, a) != KMX_OK) {
         return -1;
     }
-    if ((a->owner & 1) && kmx_par(spread_part, a) != KMX_OK) {
+    if ((a->owner & 1) && kmx_parallel(spread_part, a) != KMX_OK) {
         return -1;
     }
     return (a->bad[0] | a->bad[1] | a->bad[2] | a->bad[3]) ? -1 : 0;
@@ -223,7 +223,7 @@ static void cut_part(int xcore, void* arg) {
 static uint32_t cut(plan_t* p, part_t* a) {
     work_t* wk = p->wk;
     const uint32_t per = p->workers * p->cap;
-    if (kmx_par(sum_part, a) != KMX_OK) {
+    if (kmx_parallel(sum_part, a) != KMX_OK) {
         return 0;
     }
     uint32_t m = (p->packets + per - 1) / per;
@@ -231,7 +231,7 @@ static uint32_t cut(plan_t* p, part_t* a) {
         a->pieces = p->workers * m;
         wk->bound[0] = 0;
         wk->bound[a->pieces] = p->packets;
-        if (kmx_par(cut_part, a) != KMX_OK) {
+        if (kmx_parallel(cut_part, a) != KMX_OK) {
             return 0;
         }
         uint32_t big = 0;
@@ -360,19 +360,19 @@ static uint32_t run(plan_t* p, const km_command_t* r, uint32_t* ticks) {
     if (e != KMX_OK) {
         return RP_RING;
     }
-    kmx_event ev;
-    if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
+    kmx_event event;
+    if (kmx_wait(handle, kmx_time() + WAIT_TICKS, &event) != KMX_OK) {
         return RP_RING;
     }
-    *ticks = ev.ticks;
-    p->out[2] = ev.kind;
-    p->out[3] = ev.aux;
-    return ev.kind == KM_EV_DONE ? 0u : RP_COMMAND;
+    *ticks = event.ticks;
+    p->out[2] = event.kind;
+    p->out[3] = event.auxiliary;
+    return event.kind == KM_EVENT_DONE ? 0u : RP_COMMAND;
 }
 
 /* Fills r field by field (a struct assignment may call memset, which does not link) */
 static void command(km_command_t* r, const uint32_t* e) {
-    r->seq = r->land1 = r->land2 = r->land3 = 0;
+    r->sequence = r->land1 = r->land2 = r->land3 = 0;
     r->hdr = e[1];
     r->group = e[2];
     r->a0 = e[3];

@@ -49,7 +49,7 @@ addressed by multicast, each rectangle must be a physically contiguous, Tensix-o
 span in NoC0 coordinates, so a group is cut at panel boundaries. The layout module of
 the Python package computes these rectangles.
 
-A command with `KM_F_RESULT` carries one 32-bit result word back with its
+A command with `KM_FLAG_RESULT` carries one 32-bit result word back with its
 acknowledgement. The leader's writer gives it with `wr.result(value)` before the command
 completes, and the leader acknowledges with `{ack, result}` as one 8-byte write into
 the slot's acknowledgement line, so the result is there whenever the acknowledgement
@@ -66,7 +66,7 @@ increment of a port the receiver waits on; there is no header and no queue
 ([ports](../reference/ports.md)). A block to many cores is a broadcast: one sender
 multicasts it along a row or down a column of the group, with a window of blocks in
 flight, and each receiver writes a progress marker to the sender when its compute is done with a block
-([broadcasts](../reference/broadcast.md)). Commands that use either carry `KM_F_EXCL`, so two
+([broadcasts](../reference/broadcast.md)). Commands that use either carry `KM_FLAG_EXCLUSIVE`, so two
 commands whose groups overlap are never in flight together.
 
 A dynamic breakpoint depends on data. Each receiver has a queue in DRAM large enough

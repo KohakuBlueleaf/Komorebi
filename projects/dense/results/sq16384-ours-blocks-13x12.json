@@ -35,8 +35,8 @@
  "x280_mhz": 1000,
  "deadline_s": 1.369,
  "profile_mhz": 1350,
- "load_us": null,
- "single_us": {
+ "load_microseconds": null,
+ "single_microseconds": {
   "median": 36297.04,
   "min": 35692.02
  },
@@ -45,8 +45,8 @@
   "batch": 111,
   "seconds": 11.013,
   "wall_seconds": 11.013,
-  "us_per_call": 99212.738,
-  "command_us_median": 115863.26,
+  "microseconds_per_call": 99212.738,
+  "command_microseconds_median": 115863.26,
   "mean_w": 142.55570914754753,
   "peak_w": 293.0,
   "open_w": 59.61706852349678,
@@ -58,7 +58,7 @@
   ]
  },
  "tflops": 88.65890811528658,
- "cut_us_per_call": {
+ "cut_microseconds_per_call": {
   "broadcasts_only": 29297.512,
   "product_only": 107117.128
  },
@@ -80,7 +80,7 @@
  "readback_s": 3.62,
  "profile": {
   "slowest_core": 117,
-  "slowest_us": 35631.294,
+  "slowest_microseconds": 35631.294,
   "mean_busy_over_slowest": 0.999,
   "partitions_of_slowest": {
    "read_A_dram": 0.0,

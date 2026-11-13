@@ -281,7 +281,7 @@ def run_host(session, args, rng, stall_job):
     states = run.state()
     out_json = describe(args, rect, group) | {
         "kernel": {k: result[k] for k in ("error_name", "commands", "events")},
-        "us_per_job_host": round(host_s * 1e6 / args.jobs, 2),
+        "microseconds_per_job_host": round(host_s * 1e6 / args.jobs, 2),
         "cores_magic_ok": sum(c["magic_ok"] for c in states),
         "cores_ended": kernel_ends(states),
         **broadcast_summary([c["broadcasts"] for c in states], group, place),
@@ -290,7 +290,7 @@ def run_host(session, args, rng, stall_job):
     if timed_out is not None:
         out_json["timed_out"] = {
             "handle": timed_out.handle,
-            "seq": timed_out.seq,
+            "sequence": timed_out.sequence,
             "group": list(timed_out.group),
             "not_reported": timed_out.cores,
         }
@@ -317,7 +317,7 @@ def run_fed(session, runner, args, rng, stall_job):
             group.first,
             group.count,
             job_args(args, inputs, out, group, j, stall_job),
-            K["KM_F_EXCL"],
+            K["KM_FLAG_EXCLUSIVE"],
         )
         for j in range(args.jobs)
     ]
@@ -347,10 +347,14 @@ def run_fed(session, runner, args, rng, stall_job):
     states = [rec.core_state(res.state, c) for c in range(runner.workers)]
     result = describe(args, rect, group) | {
         "aiclk_mhz": res.mhz,
-        "feeder": {k: s[k] for k in ("status", "slot", "seq", "index", "done")},
-        "us_per_job": round(s["span_cycles"] / res.mhz / max(s["done"], 1), 2),
+        "feeder": {k: s[k] for k in ("status", "slot", "sequence", "index", "done")},
+        "microseconds_per_job": round(
+            s["span_cycles"] / res.mhz / max(s["done"], 1), 2
+        ),
         "cores_ended": kernel_ends(states),
-        **broadcast_summary([state.broadcasts(row) for row in res.ctl], group, place),
+        **broadcast_summary(
+            [state.broadcasts(row) for row in res.control], group, place
+        ),
         "core_gave_up": core_gave_up(states),
     }
     if s["status"] == "done" and not args.no_check:

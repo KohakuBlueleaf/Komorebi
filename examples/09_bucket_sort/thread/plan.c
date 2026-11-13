@@ -12,7 +12,7 @@ enum { R_COUNTS, R_PLAN, R_TOTALS, R_PEERS, R_COUNT };
 enum { P_HELLO, P_TOTALS, P_SEND, P_PLAN };
 
 /* The thread's codes (0: done). */
-enum { CODE_BAD = 1, CODE_PAR, CODE_PUSH, CODE_RING, CODE_COMMAND };
+enum { CODE_BAD = 1, CODE_PARALLEL, CODE_PUSH, CODE_RING, CODE_COMMAND };
 
 #define WAIT_TICKS KMX_TICKS_PER_SECOND /* per command: longer than its deadline */
 #define LINE 64u                        /* bytes: one cache line, one chunk of a row */
@@ -168,8 +168,8 @@ static void local_step(int core, void* arg) {
     step(kmx_lead(), core, ((const local_t*)arg)->arg);
 }
 
-/* One phase of step 2 on the cores the host asked for: core 0 alone, cluster 1's four
- * (kmx_par), or all twelve of clusters 1 to 3 (kmx_par_all). Each call is timed. */
+/* A phase of step 2 on the cores asked for: core 0 alone, cluster 1's four
+ * (kmx_parallel), or all twelve (clusters 1 to 3) (kmx_parallel_all). All timed. */
 static int phase(uint32_t p) {
     const uint32_t x280_cores = word(BS_W_X280_CORES);
     const uint64_t arg = p | (uint64_t)(x280_cores == 1 ? 1u : 4u) << 8;
@@ -179,9 +179,9 @@ static int phase(uint32_t p) {
     }
     if (x280_cores == 4) {
         local_t l = {arg};
-        return kmx_par(local_step, &l);
+        return kmx_parallel(local_step, &l);
     }
-    return kmx_par_all(step, arg);
+    return kmx_parallel_all(step, arg);
 }
 
 /* Step 2c, on the lead's core 0 alone: every bucket's total becomes its start, a
@@ -231,7 +231,7 @@ static void command(
     for (uint32_t k = 0; k < blocks(); k++) {
         banks |= ((word(BS_W_BANKS) >> (8 * (cluster_of(k) - 1))) & 0xFFu) << (8 * k);
     }
-    r->seq = r->land1 = r->land2 = r->land3 = 0;
+    r->sequence = r->land1 = r->land2 = r->land3 = 0;
     r->hdr = handler;
     r->group = 0u | word(BS_W_CORES) << 16; /* cores 0 to cores - 1 */
     r->a0 = word(BS_W_KEYS);
@@ -254,20 +254,21 @@ static uint32_t run_command(const km_command_t* r) {
     while (e == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
         e = kmx_submit(r, &handle);
     }
-    kmx_event ev;
-    if (e != KMX_OK || kmx_wait(handle, kmx_time() + WAIT_TICKS, &ev) != KMX_OK) {
+    kmx_event event;
+    if (e != KMX_OK || kmx_wait(handle, kmx_time() + WAIT_TICKS, &event) != KMX_OK) {
         return CODE_RING;
     }
-    return ev.kind == KM_EV_DONE ? 0u : CODE_COMMAND; /* a timeout or a rejection */
+    return event.kind == KM_EVENT_DONE ? 0u
+                                       : CODE_COMMAND; /* a timeout or a rejection */
 }
 
 int kmx_main(int core) {
     (void)core;
     if (kmx_cluster() != kmx_lead()) {
-        /* Clusters 2 and 3: run the lead's kmx_par_all calls until its kmx_main ends.
-         */
+        /* Clusters 2 and 3: run the lead's kmx_parallel_all calls until its kmx_main
+         * ends. */
         const int e = kmx_serve();
-        return e != KMX_OK ? CODE_PAR : g_bad ? CODE_PUSH : 0;
+        return e != KMX_OK ? CODE_PARALLEL : g_bad ? CODE_PUSH : 0;
     }
     /* From here on: core 0 of the lead, cluster 1. Check the words and regions first.
      */
@@ -292,13 +293,13 @@ int kmx_main(int core) {
     }
 
     /* Step 0: where each block's tables are. Block 0's are my own regions; with twelve
-     * cores, clusters 2 and 3 push theirs to me in a first kmx_par_all call. */
+     * cores, clusters 2 and 3 push theirs to me in a first kmx_parallel_all call. */
     uint32_t counts_at[BS_BLOCKS_MAX] = {0, 0, 0}, plan_at[BS_BLOCKS_MAX] = {0, 0, 0};
     counts_at[0] = (uint32_t)a->region[R_COUNTS].offset;
     plan_at[0] = (uint32_t)a->region[R_PLAN].offset;
     if (blocks() > 1) {
         if (phase(P_HELLO) != KMX_OK || g_bad) {
-            return CODE_PAR;
+            return CODE_PARALLEL;
         }
         kmx_invalidate(R_PEERS);
         const uint32_t* peers = (const uint32_t*)kmx_region(R_PEERS, 0);
@@ -331,11 +332,11 @@ int kmx_main(int core) {
             e = phase(P_SEND);
         }
         if (e != KMX_OK) {
-            return CODE_PAR;
+            return CODE_PARALLEL;
         }
         out[BS_O_PLACED] = starts();
         if (phase(P_PLAN) != KMX_OK) {
-            return CODE_PAR;
+            return CODE_PARALLEL;
         }
         if (g_bad) {
             return CODE_PUSH;

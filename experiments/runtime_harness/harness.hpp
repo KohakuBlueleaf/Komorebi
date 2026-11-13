@@ -25,11 +25,11 @@ void kmsim_pack_main();
 
 namespace kmsim {
 
-    constexpr uint32_t kL1Bytes = 0x10000;  // one core's L1 image
-    constexpr uint32_t kCtlOff = 0x1000;    // the control block in every image
-    constexpr uint32_t kDram = 0xFFFFu;     // Chunk::dst of a DRAM write
-    constexpr int64_t kDrop = -1;           // a delay that drops the chunk
-    constexpr uint32_t kTileBytes = 2048;   // a page of the example's buffers
+    constexpr uint32_t kL1Bytes = 0x10000;    // one core's L1 image
+    constexpr uint32_t kControlOff = 0x1000;  // the control block in every image
+    constexpr uint32_t kDram = 0xFFFFu;       // Chunk::dst of a DRAM write
+    constexpr int64_t kDrop = -1;             // a delay that drops the chunk
+    constexpr uint32_t kTileBytes = 2048;     // a page of the example's buffers
 
     // Dispatcher image: ack word j, READY word g (16 bytes apart), the hello mailbox.
     constexpr uint32_t kDispAck = 0x100;
@@ -69,14 +69,14 @@ namespace kmsim {
     };
 
     // Log entries: a is a sequence number unless said otherwise.
-    enum Ev : uint32_t {
-        kEvTake,        // reader handed command a to compute and writer
-        kEvWriterTake,  // writer took the token of command a
-        kEvReport,      // writer sent its increment for a to core b
-        kEvReportLand,  // that increment landed on core b
-        kEvAck,         // writer wrote ack word b with value a
-        kEvAckLand,     // that ack landed
-        kEvStop,        // the stop flag of the core was set (landed)
+    enum EventKind : uint32_t {
+        kEventTake,        // reader handed command a to compute and writer
+        kEventWriterTake,  // writer took the token of command a
+        kEventReport,      // writer sent its increment for a to core b
+        kEventReportLand,  // that increment landed on core b
+        kEventAck,         // writer wrote ack word b with value a
+        kEventAckLand,     // that ack landed
+        kEventStop,        // the stop flag of the core was set (landed)
     };
 
     struct Event {
@@ -94,7 +94,7 @@ namespace kmsim {
         uint32_t first = 0;
         uint32_t count = 1;
         uint32_t a[10] = {};
-        uint32_t flags = 0;  // header flags: KM_F_EXCL
+        uint32_t flags = 0;  // header flags: KM_FLAG_EXCLUSIVE
         bool map = false;
         int32_t hdr_slot = -1;
         uint64_t gap = 0;  // cycles after the previous submit before this one
@@ -103,7 +103,7 @@ namespace kmsim {
     enum JobStatus : uint32_t { kNotSubmitted, kSubmitted, kDone, kTimedOut };
 
     struct JobResult {
-        uint32_t seq = 0;
+        uint32_t sequence = 0;
         uint32_t slot = 0;
         uint64_t submitted = 0;
         uint64_t acked = 0;
@@ -142,20 +142,21 @@ namespace kmsim {
         };
         bool exit = true;         // EXIT after the last job
         uint32_t exit_group = 0;  // its group field; 0: every core
-        uint32_t first_seq = 1;
-        std::function<uint32_t(uint32_t)> next_seq;  // default: + 1
-        std::function<int64_t(const Chunk&)> delay;  // default: 32 to 95 cycles
+        uint32_t first_sequence = 1;
+        std::function<uint32_t(uint32_t)> next_sequence;  // default: + 1
+        std::function<int64_t(const Chunk&)> delay;       // default: 32 to 95 cycles
         std::vector<std::function<void(const Probe&)>> triggers;
-        std::function<void(uint32_t job, uint32_t seq, uint32_t slot)> on_submit;
+        std::function<void(uint32_t job, uint32_t sequence, uint32_t slot)> on_submit;
         // Program arguments after the start-up ones: reader and writer, compute.
         std::function<
             void(uint32_t core, std::vector<uint32_t>&, std::vector<uint32_t>&)>
             program_args;
-        uint32_t dyn_handler = 0;  // commands of this handler are dynamic runs (quiet end)
+        uint32_t messages_handler = 0;  // commands of this handler are dynamic runs
+                                        // (quiet end)
     };
 
     // What the dispatcher saw of a dynamic run.
-    struct DynResult {
+    struct MessagesResult {
         uint64_t quiet_at = 0;  // the two passes agreed: the end command is submitted
         uint32_t checks = 0;    // two-pass checks made
         uint32_t gave = 0;      // 1 + the core whose line said it gave up
@@ -174,7 +175,7 @@ namespace kmsim {
         uint64_t now() const;
 
         // After run().
-        uint32_t word(uint32_t core, uint32_t off) const;  // ctl-relative, 32-bit
+        uint32_t word(uint32_t core, uint32_t off) const;  // control-relative, 32-bit
         uint32_t state(uint32_t core, uint32_t index) const;
         uint32_t mailbox_words() const;  // words left in compute mailboxes, all cores
         uint32_t mailbox_peak = 0;       // most words ever queued in one mailbox
@@ -187,7 +188,7 @@ namespace kmsim {
         std::vector<Event> events;
         std::vector<JobResult> jobs;
         JobResult exit_job;
-        DynResult dyn;
+        MessagesResult messages;
         bool booted = false;
         bool timed_out = false;
         uint64_t end_cycles = 0;

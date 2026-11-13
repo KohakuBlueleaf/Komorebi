@@ -26,7 +26,7 @@ from komorebi import native  # noqa: E402
 from komorebi.session import KERNEL_BUFFER_BASE, Session, aiclk_mhz  # noqa: E402
 
 T0 = time.monotonic()
-CTL_WORDS = 64  # control words per core (overlay.h, loader.cpp)
+CONTROL_WORDS = 64  # control words per core (overlay.h, loader.cpp)
 RESP_WORDS = 16
 OP_RUN, OP_ALT, OP_EXIT, OP_COMPUTE, OP_CLOCK = 1, 2, 3, 4, 5
 FLAG_INVALIDATE, FLAG_AT = 1, 2
@@ -78,20 +78,20 @@ def page_place(tensor, page):
     return page % 8, tensor.address + (page // 8) * tensor.aligned_page_bytes
 
 
-def loader_launch(session, cores, ctl, slot, tslots, results):
+def loader_launch(session, cores, control, slot, tslots, results):
     """The loader (and with `tslots` the persistent compute kernel) on `cores`."""
     args = []
     for i, (x, y) in enumerate(cores):
         bank, at = page_place(results, i)
         tslot = tslots.address if tslots is not None else 0
-        words = [ctl.address, bank, at, slot.address, SLOT_BYTES, IDLE_UNITS]
+        words = [control.address, bank, at, slot.address, SLOT_BYTES, IDLE_UNITS]
         args.append((x, y, words + [tslot, TSLOT_BYTES]))
     launch = session.launch()
     where = core_set(cores)
     launch.kernel(str(HERE / "loader.cpp"), where, 0, [], [], [str(HERE)], args)
     if tslots is None:
         return launch
-    words = [ctl.address, tslots.address, TSLOT_BYTES, IDLE_UNITS]
+    words = [control.address, tslots.address, TSLOT_BYTES, IDLE_UNITS]
     targs = [(x, y, words) for x, y in cores]
     launch.kernel(str(HERE / "compute.cpp"), where, 2, [], [], [str(HERE)], targs)
     for i in (CB_IN, CB_OUT):
@@ -105,11 +105,11 @@ def capture(args):
     if args.child:
         with Session(card=args.card, log=log) as s:
             cores = [(0, 0)]
-            ctl = l1_rows(s, cores, CTL_WORDS)
+            control = l1_rows(s, cores, CONTROL_WORDS)
             slot = l1_rows(s, cores, SLOT_BYTES // 4)
             tslots = l1_rows(s, cores, 3 * TSLOT_BYTES // 4)
             results = dram_rows(s, np.zeros((1, RESP_WORDS)))
-            built = loader_launch(s, cores, ctl, slot, tslots, results).build()
+            built = loader_launch(s, cores, control, slot, tslots, results).build()
             log(f"built: {built[0]}")
         return
     OUT.mkdir(parents=True, exist_ok=True)
@@ -140,12 +140,12 @@ class Rig:
     def __init__(self, session, cores, compute=False):
         self.s, self.dev, self.cores = session, session.device, cores
         self.module = native.load_module()
-        self.ctl = l1_rows(session, cores, CTL_WORDS)
+        self.control = l1_rows(session, cores, CONTROL_WORDS)
         self.slot = l1_rows(session, cores, SLOT_BYTES // 4)
         self.tslots = l1_rows(session, cores, 3 * TSLOT_BYTES // 4) if compute else None
         self.results = dram_rows(session, np.zeros((len(cores), RESP_WORDS)))
         self.loader = loader_launch(
-            session, cores, self.ctl, self.slot, self.tslots, self.results
+            session, cores, self.control, self.slot, self.tslots, self.results
         )
         built = self.loader.build()
         elves = {Path(src).name: [Path(e) for e in es if e] for src, es in built[0]}
@@ -164,20 +164,20 @@ class Rig:
             ("firmware, mailboxes and the kernel buffer", 0, self.l1_base),
             (
                 "the control words",
-                self.ctl.address,
-                self.ctl.address + 4 * CTL_WORDS,
+                self.control.address,
+                self.control.address + 4 * CONTROL_WORDS,
             ),
         ]
         if self.tslots is not None:
             at = self.tslots.address
             self.reserved.append(("the compute slots", at, at + 3 * TSLOT_BYTES))
         builder.check_slot(self.slot.address, SLOT_BYTES, self.reserved)
-        self.seq = [0] * len(cores)
+        self.sequence = [0] * len(cores)
         self.images = None
         log(
             f"loader {self.loader_elf.parent.parent.name}: slot "
             f"{self.slot.address:#x} + {SLOT_BYTES}, control "
-            f"{self.ctl.address:#x}, L1 buffers from {self.l1_base:#x}"
+            f"{self.control.address:#x}, L1 buffers from {self.l1_base:#x}"
         )
 
     def build(self, name, source, header=None):
@@ -242,34 +242,34 @@ class Rig:
         self, i, op, flags=0, arg=0, reps=0, a=(0,) * 4, b=(0,) * 4, expect=(0, 0)
     ):
         x, y = self.cores[i]
-        self.seq[i] += 1
+        self.sequence[i] += 1
         words = [op, flags, arg & 0xFFFFFFFF, reps, *a, *b, *expect]
-        at = self.ctl.address
+        at = self.control.address
         self.module.write_l1(self.dev, x, y, at + 16, [int(w) for w in words])
-        self.module.write_l1(self.dev, x, y, at, [self.seq[i]])
-        return self.seq[i]
+        self.module.write_l1(self.dev, x, y, at, [self.sequence[i]])
+        return self.sequence[i]
 
-    def response(self, i, seq, timeout=5.0):
-        """Core i's response line to `seq` (16 words), polled from DRAM."""
+    def response(self, i, sequence, timeout=5.0):
+        """Core i's response line to `sequence` (16 words), polled from DRAM."""
         by = time.monotonic() + timeout
         while True:
             (page,) = self.s.read(self.results, first=i, pages=1)
             words = page.reshape(-1).view(np.uint32)[:RESP_WORDS].astype(np.int64)
-            if words[0] == seq:
+            if words[0] == sequence:
                 if words[1]:
                     raise RuntimeError(
                         f"core {i}: {STATUS.get(int(words[1]))}: {words}"
                     )
                 return words
             if time.monotonic() > by:
-                raise TimeoutError(f"core {i}: no response to {seq}: {words}")
+                raise TimeoutError(f"core {i}: no response to {sequence}: {words}")
 
     def broadcast(self, overlays, args, mhz, timeout=10.0):
         """OP_RUN of overlays[i] with argument args[i] on every core i, all
         starting at one wall-clock count LEAD_S after core 0's clock was read: the
         command words to all, then the sequence words in one pass. (Seconds of
         that pass, the start count, the response lines in core order.)"""
-        at = self.ctl.address
+        at = self.control.address
         now = int(self.call(0, OP_CLOCK)[2])
         start = (now + int(LEAD_S * mhz * 1e6)) % (1 << 32)
         for i, (x, y) in enumerate(self.cores):
@@ -284,14 +284,16 @@ class Rig:
             self.module.write_l1(self.dev, x, y, at + 16, [int(w) for w in words])
         t = time.perf_counter()
         for i, (x, y) in enumerate(self.cores):
-            self.seq[i] += 1
-            self.module.write_l1(self.dev, x, y, at, [self.seq[i]])
+            self.sequence[i] += 1
+            self.module.write_l1(self.dev, x, y, at, [self.sequence[i]])
         host = time.perf_counter() - t
         by = time.monotonic() + timeout
         while True:
             (pages,) = self.s.read(self.results)
             words = pages.reshape(len(self.cores), -1).view(np.uint32)[:, :RESP_WORDS]
-            if all(int(words[i, 0]) == self.seq[i] for i in range(len(self.cores))):
+            if all(
+                int(words[i, 0]) == self.sequence[i] for i in range(len(self.cores))
+            ):
                 bad = [i for i in range(len(self.cores)) if words[i, 1]]
                 if bad:
                     raise RuntimeError(f"cores {bad[:8]}: status {words[bad[0]]}")
@@ -306,7 +308,7 @@ class Rig:
         for i in range(len(self.cores)):
             self.send(i, OP_EXIT)
         for i in range(len(self.cores)):
-            self.response(i, self.seq[i])
+            self.response(i, self.sequence[i])
         gx, gy = self.s.grid
         done = self.module.wait_grid(self.dev, gx, gy, 10.0)
         log(f"loader left: {done}")
@@ -342,7 +344,7 @@ def stats(cycles, mhz):
         "median_cycles": float(np.median(a)),
         "min": float(a.min()),
         "max": float(a.max()),
-        "median_us": round(float(np.median(a)) / mhz, 3),
+        "median_microseconds": round(float(np.median(a)) / mhz, 3),
     }
 
 
@@ -653,10 +655,10 @@ def grid(args):
                             "held": held,
                             "wrong": wrong,
                             "loaded": loaded,
-                            "start_to_last_done_us": round(
+                            "start_to_last_done_microseconds": round(
                                 float(((done - start) % (1 << 32)).max()) / mhz, 3
                             ),
-                            "start_spread_us": round(
+                            "start_spread_microseconds": round(
                                 float(((began - start) % (1 << 32)).max()) / mhz, 3
                             ),
                             "seen_after_start": late,

@@ -30,7 +30,7 @@ needs_cc = pytest.mark.skipif(shutil.which("cc") is None, reason="needs a C comp
 def loop(max_runs=100):
     """The documented example: round after round while the result word is under 65."""
     g = Graph(max_runs=max_runs)
-    it, err = g.bindings("it"), g.reg()
+    it, err = g.bindings("it"), g.register()
     a = g.command(1, group=(0, 60), args=[it])
     b = g.command(2, group=(0, 30), args=[it], after=[a])
     c = g.command(3, group=(30, 30), args=[it], after=[a])
@@ -51,8 +51,8 @@ def trimmed(args):
     return args
 
 
-def seq_mod(command, m):
-    return command.seq % m
+def sequence_mod(command, m):
+    return command.sequence % m
 
 
 def a0_plus_count(command):
@@ -65,7 +65,7 @@ def test_constants_match_the_header():
         "VERSION": "KM_GRAPH_VERSION",
         "MAX_NODES": "KM_GRAPH_MAX_NODES",
         "MAX_EDGES": "KM_GRAPH_MAX_EDGES",
-        "MAX_PRED": "KM_GRAPH_MAX_PRED",
+        "MAX_PREDECESSORS": "KM_GRAPH_MAX_PREDECESSORS",
         "MAX_TEMPLATES": "KM_GRAPH_MAX_TEMPLATES",
         "MAX_OPS": "KM_GRAPH_MAX_OPS",
         "MAX_STEPS": "KM_GRAPH_MAX_STEPS",
@@ -79,15 +79,15 @@ def test_constants_match_the_header():
         "NODE_COMMAND": "KM_NODE_COMMAND",
         "NODE_CPU": "KM_NODE_CPU",
         "NODE_JOIN": "KM_NODE_JOIN",
-        "GRUN_UPLOAD": "KM_GRUN_UPLOAD",
-        "GRUN_KEPT": "KM_GRUN_KEPT",
-        "EV_GRAPH": "KM_EV_GRAPH",
-        "EV_GRAPH_END": "KM_EV_GRAPH_END",
-        "EV_GRAPH_ERROR": "KM_EV_GRAPH_ERROR",
-        "ERR_NODE": "KM_SERR_NODE",
-        "ERR_EDGE": "KM_SERR_EDGE",
-        "ERR_RUNS": "KM_SERR_RUNS",
-        "ERR_KEPT_FULL": "KM_SERR_KEPT_FULL",
+        "GRAPH_RUN_UPLOAD": "KM_GRAPH_RUN_UPLOAD",
+        "GRAPH_RUN_KEPT": "KM_GRAPH_RUN_KEPT",
+        "EVENT_GRAPH": "KM_EVENT_GRAPH",
+        "EVENT_GRAPH_END": "KM_EVENT_GRAPH_END",
+        "EVENT_GRAPH_ERROR": "KM_EVENT_GRAPH_ERROR",
+        "ERROR_NODE": "KM_STREAM_ERROR_NODE",
+        "ERROR_EDGE": "KM_STREAM_ERROR_EDGE",
+        "ERROR_RUNS": "KM_STREAM_ERROR_RUNS",
+        "ERROR_KEPT_FULL": "KM_STREAM_ERROR_KEPT_FULL",
         "KEEP": "KM_GRAPH_KEEP",
     }
     for name, header_name in pairs.items():
@@ -121,7 +121,7 @@ def test_the_builder_rejects_what_the_check_would():
 def test_bindings_fill_registers_from_zero_constants_included():
     g = Graph()
     x = g.bindings("x")
-    g.reg()
+    g.register()
     k = g.const(7)
     assert (x.index, k.index) == (0, 2)
     assert g.binding_values(x=5) == [5, 0, 7]
@@ -138,11 +138,11 @@ def test_the_loop_ends_on_the_result_word_and_a_kept_graph_takes_new_bindings():
     g = loop()
     first = g.simulate({"it": 0}, result=a0_plus_count)
     again = g.simulate({"it": 2}, result=a0_plus_count)
-    assert (first.runs, first.regs[0]) == (6, 6)
-    assert (again.runs, again.regs[0]) == (4, 6)
-    rounds = [e.aux for e in first.events if e.kind == gr.EV_GRAPH]
+    assert (first.runs, first.registers[0]) == (6, 6)
+    assert (again.runs, again.registers[0]) == (4, 6)
+    rounds = [e.auxiliary for e in first.events if e.kind == gr.EVENT_GRAPH]
     assert rounds == [1, 2, 3, 4, 5]
-    assert first.events[-1][:4] == (gr.EV_GRAPH_END, 1, 6, 65)
+    assert first.events[-1][:4] == (gr.EVENT_GRAPH_END, 1, 6, 65)
 
 
 def test_a_skipped_node_counts_as_done_and_submits_nothing():
@@ -158,7 +158,7 @@ def test_again_still_set_after_max_runs_is_an_error():
     g = Graph(max_runs=3)
     g.cpu().set(g.again, 1)
     r = g.simulate()
-    assert r.error == (gr.ERR_RUNS, gr.NO_NODE) and r.runs == 3
+    assert r.error == (gr.ERROR_RUNS, gr.NO_NODE) and r.runs == 3
 
 
 def test_more_ready_commands_than_slots_wait_their_turn():
@@ -173,11 +173,11 @@ def test_more_ready_commands_than_slots_wait_their_turn():
 def test_check_names_the_node_of_a_slice_with_a_non_compute_opcode():
     g = Graph()
     g.join()
-    g.cpu().set(g.reg(), 1)
+    g.cpu().set(g.register(), 1)
     data = bytearray(g.encode())
     at = gr._layout(dict(zip(gr.HEADER_FIELDS, gr.HEADER.unpack_from(data))))[1]
     data[at] = st.OP_HALT
-    assert check(bytes(data)) == (st.ERR_OPCODE, 1)
+    assert check(bytes(data)) == (st.ERROR_OPCODE, 1)
 
 
 @needs_cc
@@ -221,13 +221,13 @@ def test_both_executors_give_every_saved_reference_answer():
         p, want = ref["params"], ref["expect"]
         delay = p["delay"]
         if isinstance(delay, dict):
-            delay = functools.partial(seq_mod, m=delay["mod"])
+            delay = functools.partial(sequence_mod, m=delay["mod"])
         assert gn.native_check(upload, lib) == check(upload), path.name
         for engine in (gr.Executor(), gn.NativeExecutor(lib)):
             r = gr.simulate(
                 upload,
                 bindings=ref["bindings"],
-                n_cores=p["n_cores"],
+                core_count=p["core_count"],
                 delay=delay,
                 result=a0_plus_count,
                 deadline_passes=p["deadline_passes"],
@@ -243,9 +243,9 @@ def test_both_executors_give_every_saved_reference_answer():
             ]
             assert submitted == want["submitted"], path.name
             assert [list(e[:4]) for e in r.events] == want["events"], path.name
-            assert [r.status, r.regs, r.runs, r.kept] == [
+            assert [r.status, r.registers, r.runs, r.kept] == [
                 want["status"],
-                want["regs"],
+                want["registers"],
                 want["runs"],
                 want["kept"],
             ], path.name

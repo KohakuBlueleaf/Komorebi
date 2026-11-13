@@ -18,20 +18,21 @@ DATA = Path(__file__).resolve().parent / "graphs"
 HANDLER_A, HANDLER_B, HANDLER_C, HANDLER_D = 1, 2, 3, 4
 
 NOTES = (
-    "Binding: check, status, error, regs, runs, stopped_grid, the submit set and the"
-    " events without their pass. The submit set lists every command submitted, sorted"
-    " by (run, node): handler, first (null for a queued command, the allocator places"
-    " it), count, flags as the grid sees them, a0 to a9 with trailing zeros left out."
-    " `order` (seq, slot, pass per command) and the event passes are the simulator's"
-    " and are advisory. Completion: a command submitted in pass p is acknowledged by"
-    " the sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m}"
-    " (seq % m, seq counted from 1 over the whole graph). A command's result word is"
-    " (a0 + count) mod 2^32. Events are [kind, req, aux, extra]: extra is register 1"
-    " for KM_EV_GRAPH_END, else 0. Rules: docs/graphs.md."
+    "Binding: check, status, error, registers, runs, stopped_grid, the submit set and"
+    " the events without their pass. The submit set lists every command submitted,"
+    " sorted by (run, node): handler, first (null for a queued command, the allocator"
+    " places it), count, flags as the grid sees them, a0 to a9 with trailing zeros left"
+    " out. `order` (sequence, slot, pass per command) and the event passes are the"
+    " simulator's and are advisory. Completion: a command submitted in pass p is"
+    " acknowledged by the sweep of pass p + 1 + delay; delay is an integer, null"
+    " (never) or {mod: m}"
+    " (sequence % m, sequence counted from 1 over the whole graph). A command's result"
+    " word is (a0 + count) mod 2^32. Events are [kind, req, auxiliary, extra]: extra is"
+    " register 1 for KM_EVENT_GRAPH_END, else 0. Rules: docs/graphs.md."
 )
 
 DEFAULTS = {
-    "n_cores": 119,
+    "core_count": 119,
     "delay": 0,
     "deadline_passes": None,
     "cancel_pass": None,
@@ -46,7 +47,7 @@ def result_of(command):
 
 def completion(spec):
     if isinstance(spec, dict):
-        return lambda r: r.seq % spec["mod"]
+        return lambda r: r.sequence % spec["mod"]
     return spec
 
 
@@ -55,7 +56,7 @@ def run(upload, bindings, params, engine=None):
     return gr.simulate(
         upload,
         bindings=bindings,
-        n_cores=p["n_cores"],
+        core_count=p["core_count"],
         delay=completion(p["delay"]),
         result=result_of,
         deadline_passes=p["deadline_passes"],
@@ -81,7 +82,7 @@ def expected(upload, bindings, params, engine=None):
         "check": list(bad) if bad else None,
         "status": r.status,
         "error": list(r.error) if r.error else None,
-        "regs": r.regs,
+        "registers": r.registers,
         "runs": r.runs,
         "stopped_grid": r.stopped,
         "kept": r.kept,
@@ -98,7 +99,7 @@ def expected(upload, bindings, params, engine=None):
             for x in commands
         ],
         "events": [list(e[:4]) for e in r.events],
-        "order": [[x.seq, x.slot, x.pass_index] for x in commands],
+        "order": [[x.sequence, x.slot, x.pass_index] for x in commands],
         "event_passes": [e.pass_index for e in r.events],
         "passes": r.passes,
     }
@@ -128,7 +129,7 @@ def branches():
 def example_loop(it=0):
     """The documented example: the loop ends on a result word computed per round."""
     g = Graph(max_runs=100)
-    i, err = g.bindings("it"), g.reg()
+    i, err = g.bindings("it"), g.register()
     a = g.command(HANDLER_A, group=(0, 60), args=[i])
     b = g.command(HANDLER_B, group=(0, 30), args=[i], after=[a])
     c = g.command(HANDLER_C, group=(30, 30), args=[i], after=[a])
@@ -156,7 +157,7 @@ def skip_if_zero():
 
 def cpu_arith():
     g = Graph()
-    r = g.regs(8)
+    r = g.registers(8)
     e = g.cpu()
     e.set(r[0], 0xFFFFFFFF)
     e.set(r[1], 3)
@@ -190,7 +191,7 @@ def args_and_group_from_registers():
 
 def result_feeds_command():
     g = Graph()
-    v = g.reg()
+    v = g.register()
     a = g.command(HANDLER_A, group=(0, 2), args=[40], result=v)
     g.command(HANDLER_B, group=(0, 2), args=[v], after=[a])
     return g, [], {}
@@ -223,9 +224,9 @@ def more_ready_than_slots():
 
 
 def round_events():
-    """Three rounds of a CPU-only graph: two KM_EV_GRAPH events, then the end."""
+    """Three rounds of a CPU-only graph: two KM_EVENT_GRAPH events, then the end."""
     g = Graph(max_runs=3)
-    k = g.reg()
+    k = g.register()
     e = g.cpu()
     e.addi(k, k, 1)
     e.lt(g.again, k, g.const(3))
@@ -251,7 +252,7 @@ def never_fits():
 
 def mod_zero():
     g = Graph()
-    a, b = g.regs(2)
+    a, b = g.registers(2)
     e = g.cpu()
     e.mod(a, a, b)
     return g, [], {}
@@ -259,7 +260,7 @@ def mod_zero():
 
 def step_limit():
     g = Graph(step_limit=10)
-    a = g.reg()
+    a = g.register()
     e = g.cpu()
     top = e.label()
     e.addi(a, a, 1)
@@ -312,7 +313,7 @@ def too_many_bindings():
 
 def _base():
     g = Graph()
-    r = g.reg()
+    r = g.register()
     a = g.command(HANDLER_A, group=(0, 1), result=r)
     e = g.cpu(after=[a])
     e.addi(r, r, 1)
@@ -323,7 +324,10 @@ def _base():
 def _patch_node(data, index, **fields):
     at = gr.HEADER.size + index * gr.NODE_BYTES
     w = list(gr.NODE.unpack_from(data, at))
-    names = "kind flags n_pred skip_reg arg n_ops result_reg pad0 succ_off succ_n pad1"
+    names = (
+        "kind flags predecessor_count skip_register arg op_count result_register pad0"
+        " successor_offset successor_count pad1"
+    )
     for name, value in fields.items():
         w[names.split().index(name)] = value
     return data[:at] + gr.NODE.pack(*w) + data[at + gr.NODE_BYTES :]
@@ -345,8 +349,8 @@ BAD = {
     "bad_header_flags": lambda d: _patch_word(d, 44, "<I", 2),
     "bad_kind": lambda d: _patch_node(d, 2, kind=0),
     "bad_flags": lambda d: _patch_node(d, 2, flags=1),
-    "bad_skip_reg": lambda d: _patch_node(d, 1, skip_reg=16),
-    "bad_result_on_cpu": lambda d: _patch_node(d, 1, result_reg=0),
+    "bad_skip_register": lambda d: _patch_node(d, 1, skip_register=16),
+    "bad_result_on_cpu": lambda d: _patch_node(d, 1, result_register=0),
     "bad_template_index": lambda d: _patch_node(d, 0, arg=1),
     "bad_template_handler": lambda d: _patch_word(d, _layout(d)[2] + 4, "<I", 240),
     "bad_opcode": lambda d: _patch_word(d, _layout(d)[1], "<B", st.OP_HALT),
@@ -355,9 +359,9 @@ BAD = {
     ),
     "bad_register": lambda d: _patch_word(d, _layout(d)[1] + 1, "<B", 16),
     "bad_slice": lambda d: _patch_node(d, 1, arg=1),
-    "bad_pred_count": lambda d: _patch_node(d, 2, n_pred=1),
+    "bad_pred_count": lambda d: _patch_node(d, 2, predecessor_count=1),
     "bad_successor_order": lambda d: _patch_word(d, _layout(d)[0] + 2, "<H", 0),
-    "bad_successor_offset": lambda d: _patch_node(d, 1, succ_off=0),
+    "bad_successor_offset": lambda d: _patch_node(d, 1, successor_offset=0),
 }
 
 GOOD = [

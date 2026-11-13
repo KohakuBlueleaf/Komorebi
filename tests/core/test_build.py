@@ -46,17 +46,17 @@ def test_cxx_commands_follow_the_borrowed_flags(tmp_path):
     assert not any("KERNEL_DIR" in tok for tok in compile_cmd)
 
     flags = build.TEMPLATES[kind][2]
-    build_dir = tree / "build"
+    build_directory = tree / "build"
     assert link_cmd == [
         "clang++-20",
         *flags,
         str(out.with_suffix(".o")),
         "-o",
         str(out),
-        str(build_dir / "lib/libone.so"),
+        str(build_directory / "lib/libone.so"),
         "-lpthread",
         "/usr/lib/libz.so",
-        str(build_dir / "lib/libtwo.a"),
+        str(build_directory / "lib/libtwo.a"),
     ]
 
 
@@ -99,7 +99,7 @@ def test_image_commands_compile_link_and_convert(tmp_path):
     assert commands[0][-4:] == ["-c", "x/a.c", "-o", str(out.parent / "a.x280.o")]
     assert commands[1][-4:] == ["-c", "y/b.c", "-o", str(out.parent / "b.x280.o")]
     assert "-Werror" in commands[0] and "-mcpu=sifive-x280" in commands[0]
-    assert f"-I{_env.x280_source_dir(tree) / 'include'}" in commands[0]
+    assert f"-I{_env.x280_source_directory(tree) / 'include'}" in commands[0]
 
     link = commands[2]
     elf = str(out.with_suffix(".elf"))
@@ -118,7 +118,7 @@ def test_image_commands_pass_includes_and_defines_to_every_compile(tmp_path):
     commands = build.image_commands(
         tree, out, ["a.c", "b.c"], includes=["inc/one", "inc/two"], defines=["N=4", "V"]
     )
-    runtime = f"-I{_env.x280_source_dir(tree) / 'include'}"
+    runtime = f"-I{_env.x280_source_directory(tree) / 'include'}"
     for compile_cmd in commands[:2]:
         flags = compile_cmd[: compile_cmd.index("-c")]
         assert "-DN=4" in flags and "-DV" in flags

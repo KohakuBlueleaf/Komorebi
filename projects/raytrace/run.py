@@ -39,9 +39,9 @@ def summary(info, mhz):
     info.pop("tiles")
     busy = prof["total"]
     used = busy > 0
-    us = info["trace_us"]
+    us = info["trace_microseconds"]
     out = dict(info)
-    out["trace_us_median"] = float(np.median(us))
+    out["trace_microseconds_median"] = float(np.median(us))
     out["mrays_per_s"] = info["rays"] / float(np.median(us))
     out["busy_cycles"] = {
         "max": int(busy.max()),
@@ -171,7 +171,7 @@ def main():
         report["image_check"] = {"against": name, **stats}
         if args.save:
             stage_ms = {
-                f"{s}_ms": p["trace_us_median"] / 1000
+                f"{s}_ms": p["trace_microseconds_median"] / 1000
                 for s, p in zip(STAGES, report["passes"][-len(STAGES) :])
             }
             stage_ms["total_ms"] = sum(stage_ms.values())
@@ -190,7 +190,15 @@ def main():
         and report.get("image_check", {}).get("any_differs", 0) == 0
     )
     for pinfo in report["passes"]:
-        keys = ("frame", "split", "sort", "pass", "rays", "packets", "trace_us_median")
+        keys = (
+            "frame",
+            "split",
+            "sort",
+            "pass",
+            "rays",
+            "packets",
+            "trace_microseconds_median",
+        )
         keys += ("walk_errors", "busy_max_over_mean")
         brief = {k: pinfo[k] for k in keys}
         print(json.dumps({**brief, "check": pinfo.get("check"), "run": pinfo["run"]}))

@@ -1,10 +1,10 @@
 {
  "name": "bad_magic",
  "description": "bad magic",
- "notes": "Binding: check, status, error, regs, runs, stopped_grid, the submit set and the events without their pass. The submit set lists every command submitted, sorted by (run, node): handler, first (null for a queued command, the allocator places it), count, flags as the grid sees them, a0 to a9 with trailing zeros left out. `order` (seq, slot, pass per command) and the event passes are the simulator's and are advisory. Completion: a command submitted in pass p is acknowledged by the sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m} (seq % m, seq counted from 1 over the whole graph). A command's result word is (a0 + count) mod 2^32. Events are [kind, req, aux, extra]: extra is register 1 for KM_EV_GRAPH_END, else 0. Rules: docs/graphs.md.",
+ "notes": "Binding: check, status, error, registers, runs, stopped_grid, the submit set and the events without their pass. The submit set lists every command submitted, sorted by (run, node): handler, first (null for a queued command, the allocator places it), count, flags as the grid sees them, a0 to a9 with trailing zeros left out. `order` (sequence, slot, pass per command) and the event passes are the simulator's and are advisory. Completion: a command submitted in pass p is acknowledged by the sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m} (sequence % m, sequence counted from 1 over the whole graph). A command's result word is (a0 + count) mod 2^32. Events are [kind, req, auxiliary, extra]: extra is register 1 for KM_EVENT_GRAPH_END, else 0. Rules: docs/graphs.md.",
  "bindings": [],
  "params": {
-  "n_cores": 119,
+  "core_count": 119,
   "delay": 0,
   "deadline_passes": null,
   "cancel_pass": null,
@@ -21,7 +21,7 @@
    1,
    65535
   ],
-  "regs": [
+  "registers": [
    0,
    0,
    0,

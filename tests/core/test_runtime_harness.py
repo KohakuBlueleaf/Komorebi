@@ -64,20 +64,20 @@ def test_an_excl_command_waits_for_an_overlapping_group(scenario):
 
 
 def test_a_dynamic_run_ends_quiet_with_every_message_consumed(scenario):
-    got = scenario("dyn_smoke")
+    got = scenario("messages_smoke")
     assert got["ok"], got
 
 
 def test_a_missing_queue_item_is_a_gap_give_up(scenario):
-    got = scenario("dyn_gap")
+    got = scenario("messages_gap")
     assert got["ok"], got
 
 
 def test_a_queue_past_its_capacity_is_an_overflow_give_up(scenario):
-    got = scenario("dyn_overflow")
+    got = scenario("messages_overflow")
     assert got["ok"], got
 
 
 def test_idle_lines_that_flap_never_end_a_run_early(scenario):
-    got = scenario("dyn_idle_flapping")
+    got = scenario("messages_idle_flapping")
     assert got["ok"], got

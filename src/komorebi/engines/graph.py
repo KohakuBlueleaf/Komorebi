@@ -9,13 +9,13 @@ from collections import namedtuple
 from dataclasses import dataclass, field
 
 from komorebi.engines import stream as st
-from komorebi.engines.stream import Label, Reg, Template, Uop, alloc
+from komorebi.engines.stream import Label, Register, Template, Uop, alloc
 
 MAGIC = 0x4B4D4752
 VERSION = 1
 MAX_NODES = 256
 MAX_EDGES = 1024
-MAX_PRED = 4
+MAX_PREDECESSORS = 4
 MAX_TEMPLATES = 64
 MAX_OPS = 4096
 MAX_STEPS = 4096
@@ -29,12 +29,12 @@ NONE = 0xFF
 NO_NODE = 0xFFFF
 LINE = st.LINE
 MASK = st.MASK
-REGS = st.REGS
+REGISTERS = st.REGISTERS
 
 NODE_COMMAND, NODE_CPU, NODE_JOIN = 1, 2, 3
-GRUN_UPLOAD, GRUN_KEPT = 1, 2
-EV_GRAPH, EV_GRAPH_END, EV_GRAPH_ERROR = 7, 8, 9
-ERR_NODE, ERR_EDGE, ERR_RUNS, ERR_KEPT_FULL = 12, 13, 14, 15
+GRAPH_RUN_UPLOAD, GRAPH_RUN_KEPT = 1, 2
+EVENT_GRAPH, EVENT_GRAPH_END, EVENT_GRAPH_ERROR = 7, 8, 9
+ERROR_NODE, ERROR_EDGE, ERROR_RUNS, ERROR_KEPT_FULL = 12, 13, 14, 15
 
 # kmg_step's answers (RUNNING, END and ERROR are also the phase) and the node states
 RUNNING, ROUND, END, ERROR = 0, 1, 2, 3
@@ -45,14 +45,14 @@ HEADER = struct.Struct("<12I16x")
 HEADER_FIELDS = (
     "magic",
     "version",
-    "n_nodes",
-    "n_edges",
-    "n_ops",
-    "n_commands",
+    "node_count",
+    "edge_count",
+    "op_count",
+    "command_count",
     "req",
-    "again_reg",
+    "again_register",
     "max_runs",
-    "deadline_us",
+    "deadline_microseconds",
     "step_limit",
     "flags",
 )
@@ -80,14 +80,17 @@ CPU_OPS = {
 
 GraphError = namedtuple("GraphError", "reason node")
 NodeRow = namedtuple(
-    "NodeRow", "kind flags n_pred skip_reg arg n_ops result_reg succ_off succ_n"
+    "NodeRow",
+    "kind flags predecessor_count skip_register arg op_count result_register"
+    " successor_offset successor_count",
 )
-Event = namedtuple("Event", "kind req aux extra pass_index")
+Event = namedtuple("Event", "kind req auxiliary extra pass_index")
 GraphCommand = namedtuple(
-    "GraphCommand", "node run seq slot handler first count flags args pass_index queued"
+    "GraphCommand",
+    "node run sequence slot handler first count flags args pass_index queued",
 )
 GraphSimResult = namedtuple(
-    "GraphSimResult", "commands events status error regs runs passes stopped kept"
+    "GraphSimResult", "commands events status error registers runs passes stopped kept"
 )
 
 
@@ -103,10 +106,10 @@ def _line_up(n):
     return n + (-n % LINE)
 
 
-def _reg_or_none(value, what):
+def _register_or_none(value, what):
     if value is None:
         return NONE
-    if not isinstance(value, Reg):
+    if not isinstance(value, Register):
         raise TypeError(f"{what} must be a register, got {value!r}")
     return value.index
 
@@ -131,17 +134,17 @@ class Node:
 class CpuNode(Node):
     """A CPU node: its micro-ops are added with the methods below; labels are local."""
 
-    def _add(self, op, a=0, b=0, c=0, imm=0):
-        self.ops.append(Uop(op, a, b, c, imm, 0))
+    def _add(self, op, a=0, b=0, c=0, immediate=0):
+        self.ops.append(Uop(op, a, b, c, immediate, 0))
 
     def set(self, a, value):
-        self._add(st.OP_SET, st._reg(a, "a"), imm=st._u32(value, "value"))
+        self._add(st.OP_SET, st._register(a, "a"), immediate=st._u32(value, "value"))
 
     def mov(self, a, b):
-        self._add(st.OP_MOV, st._reg(a, "a"), st._reg(b, "b"))
+        self._add(st.OP_MOV, st._register(a, "a"), st._register(b, "b"))
 
     def _three(self, op, a, b, c):
-        self._add(op, st._reg(a, "a"), st._reg(b, "b"), st._reg(c, "c"))
+        self._add(op, st._register(a, "a"), st._register(b, "b"), st._register(c, "c"))
 
     def add(self, a, b, c):
         self._three(st.OP_ADD, a, b, c)
@@ -159,15 +162,19 @@ class CpuNode(Node):
         self._three(st.OP_MOD, a, b, c)
 
     def addi(self, a, b, value):
-        imm = st._u32(value, "value")
-        self._add(st.OP_ADDI, st._reg(a, "a"), st._reg(b, "b"), imm=imm)
+        immediate = st._u32(value, "value")
+        self._add(
+            st.OP_ADDI, st._register(a, "a"), st._register(b, "b"), immediate=immediate
+        )
 
     def shr(self, a, b, amount):
-        imm = st._u32(amount, "amount")
-        self._add(st.OP_SHR, st._reg(a, "a"), st._reg(b, "b"), imm=imm)
+        immediate = st._u32(amount, "amount")
+        self._add(
+            st.OP_SHR, st._register(a, "a"), st._register(b, "b"), immediate=immediate
+        )
 
     def rand(self, a):
-        self._add(st.OP_RAND, st._reg(a, "a"))
+        self._add(st.OP_RAND, st._register(a, "a"))
 
     def label(self):
         """A label at the next micro-op of this node."""
@@ -182,18 +189,18 @@ class CpuNode(Node):
         label.position = len(self.ops)
 
     def jmp(self, target):
-        self._add(st.OP_JMP, imm=st.Stream._target(target))
+        self._add(st.OP_JMP, immediate=st.Stream._target(target))
 
     def jlt(self, a, b, target):
-        a, b = st._reg(a, "a"), st._reg(b, "b")
-        self._add(st.OP_JLT, a, b, imm=st.Stream._target(target))
+        a, b = st._register(a, "a"), st._register(b, "b")
+        self._add(st.OP_JLT, a, b, immediate=st.Stream._target(target))
 
     def jeq(self, a, b, target):
-        a, b = st._reg(a, "a"), st._reg(b, "b")
-        self._add(st.OP_JEQ, a, b, imm=st.Stream._target(target))
+        a, b = st._register(a, "a"), st._register(b, "b")
+        self._add(st.OP_JEQ, a, b, immediate=st.Stream._target(target))
 
     def jnz(self, a, target):
-        self._add(st.OP_JNZ, st._reg(a, "a"), imm=st.Stream._target(target))
+        self._add(st.OP_JNZ, st._register(a, "a"), immediate=st.Stream._target(target))
 
     def lt(self, d, a, b):
         """d = 1 if a < b (unsigned), else 0."""
@@ -217,22 +224,27 @@ class Graph:
     """A graph under construction, or one decoded from an upload."""
 
     def __init__(
-        self, deadline_us=0, max_runs=1, step_limit=MAX_STEPS, req=1, keep=False
+        self,
+        deadline_microseconds=0,
+        max_runs=1,
+        step_limit=MAX_STEPS,
+        req=1,
+        keep=False,
     ):
-        self.deadline_us, self.max_runs = deadline_us, max_runs
+        self.deadline_microseconds, self.max_runs = deadline_microseconds, max_runs
         self.step_limit, self.req, self.keep = step_limit, req, bool(keep)
         self._check_fields()
         self.nodes = []
         self._templates = []
-        self._tpl_index = {}
+        self._template_index = {}
         self._names = {}
         self._consts = {}
-        self._next_reg = 0
+        self._next_register = 0
         self._again = None
 
     def _check_fields(self):
         for name, low, high in (
-            ("deadline_us", 0, MASK),
+            ("deadline_microseconds", 0, MASK),
             ("max_runs", 1, MASK),
             ("step_limit", 1, MAX_STEPS),
             ("req", 0, MASK),
@@ -243,17 +255,19 @@ class Graph:
 
     # registers
 
-    def regs(self, n):
+    def registers(self, n):
         """Allocate n registers."""
-        if n < 0 or self._next_reg + n > REGS:
-            free = REGS - self._next_reg
-            raise ValueError(f"out of registers: {n} requested, {free} free of {REGS}")
-        out = [Reg(self._next_reg + i) for i in range(n)]
-        self._next_reg += n
+        if n < 0 or self._next_register + n > REGISTERS:
+            free = REGISTERS - self._next_register
+            raise ValueError(
+                f"out of registers: {n} requested, {free} free of {REGISTERS}"
+            )
+        out = [Register(self._next_register + i) for i in range(n)]
+        self._next_register += n
         return out
 
-    def reg(self):
-        return self.regs(1)[0]
+    def register(self):
+        return self.registers(1)[0]
 
     def bindings(self, *names):
         """Registers set from the values given with each run, by name."""
@@ -261,7 +275,7 @@ class Graph:
         for name in names:
             if name in self._names:
                 raise ValueError(f"binding {name!r} declared twice")
-            self._names[name] = self.reg()
+            self._names[name] = self.register()
             out.append(self._names[name])
         return out[0] if len(out) == 1 else tuple(out)
 
@@ -269,14 +283,14 @@ class Graph:
         """A register given `value` with the bindings at each run."""
         value = st._u32(value, "constant")
         if value not in self._consts:
-            self._consts[value] = self.reg()
+            self._consts[value] = self.register()
         return self._consts[value]
 
     @property
     def again(self):
         """The register that, nonzero when a round ends, starts another round."""
         if self._again is None:
-            self._again = self.reg()
+            self._again = self.register()
         return self._again
 
     def binding_values(self, **values):
@@ -300,8 +314,8 @@ class Graph:
         if len(self.nodes) >= MAX_NODES:
             raise ValueError(f"more than {MAX_NODES} nodes")
         after = tuple(after)
-        if len(after) > MAX_PRED:
-            raise ValueError(f"{len(after)} predecessors, at most {MAX_PRED}")
+        if len(after) > MAX_PREDECESSORS:
+            raise ValueError(f"{len(after)} predecessors, at most {MAX_PREDECESSORS}")
         for p in after:
             if not isinstance(p, Node) or p.graph is not self:
                 raise TypeError(
@@ -309,7 +323,7 @@ class Graph:
                 )
         if len({p.index for p in after}) != len(after):
             raise ValueError("a predecessor is named twice")
-        skip = _reg_or_none(skip_if_zero, "skip_if_zero")
+        skip = _register_or_none(skip_if_zero, "skip_if_zero")
         node = cls(self, len(self.nodes), kind, after, skip, **fields)
         self.nodes.append(node)
         return node
@@ -329,10 +343,17 @@ class Graph:
         places; `result` is a register for the record's result word."""
         if (group is None) == (count is None):
             raise ValueError("give either group=(first, count) or count")
-        result_reg = _reg_or_none(result, "result")
-        index = self._template(handler, group, count, list(args), exclusive, result_reg)
+        result_register = _register_or_none(result, "result")
+        index = self._template(
+            handler, group, count, list(args), exclusive, result_register
+        )
         return self._node(
-            Node, NODE_COMMAND, after, skip_if_zero, template=index, result=result_reg
+            Node,
+            NODE_COMMAND,
+            after,
+            skip_if_zero,
+            template=index,
+            result=result_register,
         )
 
     def cpu(self, after=(), skip_if_zero=None):
@@ -343,31 +364,33 @@ class Graph:
         """A node with no work."""
         return self._node(Node, NODE_JOIN, after, skip_if_zero)
 
-    def _template(self, handler, group, count, args, exclusive, result_reg):
+    def _template(self, handler, group, count, args, exclusive, result_register):
         if not 1 <= handler <= st.HANDLER_USER_MAX:
             raise ValueError(f"handler {handler} is not a program handler (1 to 239)")
         if len(args) > st.ARGS:
             raise ValueError(f"{len(args)} arguments, a command has {st.ARGS}")
-        flags = (st.F_EXCL if exclusive else 0) | (0 if group else st.F_QUEUE)
-        flags |= st.F_RESULT if result_reg != NONE else 0
+        flags = (st.FLAG_EXCLUSIVE if exclusive else 0) | (
+            0 if group else st.FLAG_QUEUE
+        )
+        flags |= st.FLAG_RESULT if result_register != NONE else 0
         words = [0] * st.COMMAND_WORDS
         words[1] = handler | flags << 8
         patch = []
         for i, value in enumerate(args):
-            if isinstance(value, Reg):
+            if isinstance(value, Register):
                 patch.append((i, value.index))
             else:
                 words[st.ARG_WORD[i]] = st._u32(value, "argument")
         if len(patch) > st.PATCHES:
             raise ValueError(f"{len(patch)} register arguments, at most {st.PATCHES}")
         first, cnt = group if group else (0, count)
-        first_reg = count_reg = NONE
-        if isinstance(first, Reg):
-            first_reg = first.index
+        first_register = count_register = NONE
+        if isinstance(first, Register):
+            first_register = first.index
         else:
             words[2] |= st._group_field(first, "first")
-        if isinstance(cnt, Reg):
-            count_reg = cnt.index
+        if isinstance(cnt, Register):
+            count_register = cnt.index
         else:
             words[2] |= st._group_field(cnt, "count") << 16
         pad = [0] * (st.PATCHES - len(patch))
@@ -375,16 +398,16 @@ class Graph:
             tuple(words),
             tuple([p[0] for p in patch] + pad),
             tuple([p[1] for p in patch] + pad),
-            first_reg,
-            count_reg,
+            first_register,
+            count_register,
             len(patch),
         )
-        if t not in self._tpl_index:
+        if t not in self._template_index:
             if len(self._templates) >= MAX_TEMPLATES:
                 raise ValueError(f"more than {MAX_TEMPLATES} distinct templates")
-            self._tpl_index[t] = len(self._templates)
+            self._template_index[t] = len(self._templates)
             self._templates.append(t)
-        return self._tpl_index[t]
+        return self._template_index[t]
 
     # encoding
 
@@ -399,14 +422,14 @@ class Graph:
                 succ[p.index].append(n.index)
         rows, edges, ops = [], [], []
         for n in self.nodes:
-            arg, n_ops = n.template if n.kind == NODE_COMMAND else 0, 0
+            arg, op_count = n.template if n.kind == NODE_COMMAND else 0, 0
             if n.kind == NODE_CPU:
                 if not n.ops:
                     raise ValueError(f"CPU node {n.index} has no micro-ops")
-                arg, n_ops = len(ops), len(n.ops)
-                ops += [_resolve(o, arg, n_ops) for o in n.ops]
+                arg, op_count = len(ops), len(n.ops)
+                ops += [_resolve(o, arg, op_count) for o in n.ops]
             row = NodeRow(
-                n.kind, 0, len(n.after), n.skip, arg, n_ops, n.result, len(edges),
+                n.kind, 0, len(n.after), n.skip, arg, op_count, n.result, len(edges),
                 len(succ[n.index]),
             )  # fmt: skip
             rows.append(row)
@@ -424,21 +447,34 @@ class Graph:
         rows, edges, ops = self.rows()
         again = NONE if self._again is None else self._again.index
         head = [MAGIC, VERSION, len(rows), len(edges), len(ops), len(self._templates)]
-        head += [self.req, again, self.max_runs, self.deadline_us, self.step_limit]
+        head += [
+            self.req,
+            again,
+            self.max_runs,
+            self.deadline_microseconds,
+            self.step_limit,
+        ]
         head += [KEEP if self.keep else 0]
         data = HEADER.pack(*head)
-        data += b"".join(NODE.pack(*r[:7], 0, r.succ_off, r.succ_n, 0) for r in rows)
+        data += b"".join(
+            NODE.pack(*r[:7], 0, r.successor_offset, r.successor_count, 0) for r in rows
+        )
         data += bytes(-len(rows) * NODE_BYTES % LINE)
         data += struct.pack(f"<{len(edges)}H", *edges)
         data += bytes(-len(edges) * 2 % LINE)
         data += b"".join(
-            st.UOP.pack(o.op, o.a, o.b, o.c, o.imm, o.imm2, 0) for o in ops
+            st.UOP.pack(o.op, o.a, o.b, o.c, o.immediate, o.imm2, 0) for o in ops
         )
         data += bytes(-len(ops) * st.UOP_BYTES % LINE)
         for t in self._templates:
             data += struct.pack("<16I", *t.rec)
             data += st.TAIL.pack(
-                *t.arg, *t.reg, t.first_reg, t.count_reg, t.n_patch, *[0] * 5
+                *t.arg,
+                *t.register,
+                t.first_register,
+                t.count_register,
+                t.patch_count,
+                *[0] * 5,
             )
         return data + bytes(-len(self._templates) * TEMPLATE_BYTES % LINE)
 
@@ -450,25 +486,27 @@ class Graph:
         if error:
             raise GraphFormatError(error)
         h, rows, edges, ops, templates = _parse(data)
-        g = cls(h["deadline_us"], h["max_runs"], h["step_limit"], h["req"])
+        g = cls(h["deadline_microseconds"], h["max_runs"], h["step_limit"], h["req"])
         g.keep = bool(h["flags"] & KEEP)
-        g._next_reg = REGS
-        if h["again_reg"] != NONE:
-            g._again = Reg(h["again_reg"])
+        g._next_register = REGISTERS
+        if h["again_register"] != NONE:
+            g._again = Register(h["again_register"])
         g._templates = list(templates)
-        g._tpl_index = {t: i for i, t in enumerate(templates)}
+        g._template_index = {t: i for i, t in enumerate(templates)}
         preds = [[] for _ in rows]
         for p, r in enumerate(rows):
-            for s in edges[r.succ_off : r.succ_off + r.succ_n]:
+            for s in edges[r.successor_offset : r.successor_offset + r.successor_count]:
                 preds[s].append(p)
         for i, r in enumerate(rows):
             kind_cls = CpuNode if r.kind == NODE_CPU else Node
             after = tuple(g.nodes[p] for p in preds[i])
-            node = kind_cls(g, i, r.kind, after, r.skip_reg)
+            node = kind_cls(g, i, r.kind, after, r.skip_register)
             if r.kind == NODE_COMMAND:
-                node.template, node.result = r.arg, r.result_reg
+                node.template, node.result = r.arg, r.result_register
             if r.kind == NODE_CPU:
-                node.ops = [_relative(o, r.arg) for o in ops[r.arg : r.arg + r.n_ops]]
+                node.ops = [
+                    _relative(o, r.arg) for o in ops[r.arg : r.arg + r.op_count]
+                ]
             g.nodes.append(node)
         return g
 
@@ -483,17 +521,17 @@ class Graph:
         return simulate(self.encode(), bindings=bindings, **options)
 
 
-def _resolve(o, start, n_ops):
-    if not isinstance(o.imm, Label):
+def _resolve(o, start, op_count):
+    if not isinstance(o.immediate, Label):
         return o
-    if o.imm.position is None:
+    if o.immediate.position is None:
         raise ValueError("a label was never bound")
-    return o._replace(imm=start + o.imm.position)
+    return o._replace(immediate=start + o.immediate.position)
 
 
 def _relative(o, start):
     if CPU_OPS.get(o.op, ("", False))[1]:
-        return o._replace(imm=Label(o.imm - start))
+        return o._replace(immediate=Label(o.immediate - start))
     return o
 
 
@@ -502,80 +540,92 @@ def _relative(o, start):
 
 def _layout(h):
     """Byte offsets of the edges, micro-ops and templates, and the upload's size."""
-    edges = HEADER.size + _line_up(h["n_nodes"] * NODE_BYTES)
-    ops = edges + _line_up(h["n_edges"] * 2)
-    tpl = ops + _line_up(h["n_ops"] * st.UOP_BYTES)
-    return edges, ops, tpl, tpl + _line_up(h["n_commands"] * TEMPLATE_BYTES)
+    edges = HEADER.size + _line_up(h["node_count"] * NODE_BYTES)
+    ops = edges + _line_up(h["edge_count"] * 2)
+    template = ops + _line_up(h["op_count"] * st.UOP_BYTES)
+    return (
+        edges,
+        ops,
+        template,
+        template + _line_up(h["command_count"] * TEMPLATE_BYTES),
+    )
 
 
 def _parse(data):
     h = dict(zip(HEADER_FIELDS, HEADER.unpack_from(data)))
-    at_edges, at_ops, at_tpl, _ = _layout(h)
+    at_edges, at_ops, at_template, _ = _layout(h)
     rows = []
-    for i in range(h["n_nodes"]):
+    for i in range(h["node_count"]):
         w = NODE.unpack_from(data, HEADER.size + i * NODE_BYTES)
         rows.append(NodeRow(*w[:7], w[8], w[9]))
-    edges = list(struct.unpack_from(f"<{h['n_edges']}H", data, at_edges))
+    edges = list(struct.unpack_from(f"<{h['edge_count']}H", data, at_edges))
     ops = []
-    for i in range(h["n_ops"]):
-        op, a, b, c, imm, imm2, _ = st.UOP.unpack_from(data, at_ops + i * st.UOP_BYTES)
-        ops.append(Uop(op, a, b, c, imm, imm2))
+    for i in range(h["op_count"]):
+        op, a, b, c, immediate, imm2, _ = st.UOP.unpack_from(
+            data, at_ops + i * st.UOP_BYTES
+        )
+        ops.append(Uop(op, a, b, c, immediate, imm2))
     templates = []
-    for i in range(h["n_commands"]):
-        at = at_tpl + i * TEMPLATE_BYTES
+    for i in range(h["command_count"]):
+        at = at_template + i * TEMPLATE_BYTES
         rec = struct.unpack_from("<16I", data, at)
         tail = st.TAIL.unpack_from(data, at + 64)
         templates.append(Template(rec, tail[0:4], tail[4:8], *tail[8:11]))
     return h, rows, edges, ops, templates
 
 
-def _bad_reg(r):
-    return r != NONE and r >= REGS
+def _bad_register(r):
+    return r != NONE and r >= REGISTERS
 
 
 def _bad_template(t):
     if not 1 <= t.handler <= st.HANDLER_USER_MAX:
         return True
-    if t.flags & ~(st.F_EXCL | st.F_RESULT | st.F_QUEUE) or t.n_patch > st.PATCHES:
+    if (
+        t.flags & ~(st.FLAG_EXCLUSIVE | st.FLAG_RESULT | st.FLAG_QUEUE)
+        or t.patch_count > st.PATCHES
+    ):
         return True
-    if any(t.arg[k] >= st.ARGS or t.reg[k] >= REGS for k in range(t.n_patch)):
+    if any(
+        t.arg[k] >= st.ARGS or t.register[k] >= REGISTERS for k in range(t.patch_count)
+    ):
         return True
-    return _bad_reg(t.first_reg) or _bad_reg(t.count_reg)
+    return _bad_register(t.first_register) or _bad_register(t.count_register)
 
 
 def _check_slice(ops, first, end):
     for o in ops[first:end]:
         if o.op not in CPU_OPS:
-            return st.ERR_OPCODE
+            return st.ERROR_OPCODE
         fields, jump = CPU_OPS[o.op]
-        if any(getattr(o, f) >= REGS for f in fields):
-            return st.ERR_REGISTER
-        if jump and not first <= o.imm <= end:
-            return st.ERR_JUMP
+        if any(getattr(o, f) >= REGISTERS for f in fields):
+            return st.ERROR_REGISTER
+        if jump and not first <= o.immediate <= end:
+            return st.ERROR_JUMP
     return 0
 
 
 def _check_node(h, n, ops, templates, cpu_next):
     if not NODE_COMMAND <= n.kind <= NODE_JOIN or n.flags:
-        return ERR_NODE
-    if n.n_pred > MAX_PRED:
-        return ERR_EDGE
-    if _bad_reg(n.skip_reg) or _bad_reg(n.result_reg):
-        return st.ERR_REGISTER
+        return ERROR_NODE
+    if n.predecessor_count > MAX_PREDECESSORS:
+        return ERROR_EDGE
+    if _bad_register(n.skip_register) or _bad_register(n.result_register):
+        return st.ERROR_REGISTER
     if n.kind == NODE_COMMAND:
-        if n.arg >= h["n_commands"] or _bad_template(templates[n.arg]):
-            return st.ERR_TEMPLATE
-        no_result = not templates[n.arg].flags & st.F_RESULT
-        if n.n_ops or (n.result_reg != NONE and no_result):
-            return ERR_NODE
+        if n.arg >= h["command_count"] or _bad_template(templates[n.arg]):
+            return st.ERROR_TEMPLATE
+        no_result = not templates[n.arg].flags & st.FLAG_RESULT
+        if n.op_count or (n.result_register != NONE and no_result):
+            return ERROR_NODE
         return 0
-    if n.result_reg != NONE:
-        return ERR_NODE
+    if n.result_register != NONE:
+        return ERROR_NODE
     if n.kind == NODE_JOIN:
-        return ERR_NODE if n.arg or n.n_ops else 0
-    if n.arg != cpu_next or n.n_ops == 0 or n.n_ops > h["n_ops"] - cpu_next:
-        return ERR_NODE
-    return _check_slice(ops, n.arg, n.arg + n.n_ops)
+        return ERROR_NODE if n.arg or n.op_count else 0
+    if n.arg != cpu_next or n.op_count == 0 or n.op_count > h["op_count"] - cpu_next:
+        return ERROR_NODE
+    return _check_slice(ops, n.arg, n.arg + n.op_count)
 
 
 def check(data):
@@ -583,49 +633,52 @@ def check(data):
 
     The order of the checks is that of `kmg_check`; the first fault wins.
     """
-    header = GraphError(st.ERR_HEADER, NO_NODE)
+    header = GraphError(st.ERROR_HEADER, NO_NODE)
     if len(data) < HEADER.size or len(data) % LINE:
         return header
     h = dict(zip(HEADER_FIELDS, HEADER.unpack_from(data)))
     if h["magic"] != MAGIC or h["version"] != VERSION:
         return header
-    if not 1 <= h["n_nodes"] <= MAX_NODES or h["n_edges"] > MAX_EDGES:
+    if not 1 <= h["node_count"] <= MAX_NODES or h["edge_count"] > MAX_EDGES:
         return header
-    if h["n_ops"] > MAX_OPS or h["n_commands"] > MAX_TEMPLATES:
+    if h["op_count"] > MAX_OPS or h["command_count"] > MAX_TEMPLATES:
         return header
-    if _bad_reg(h["again_reg"]) or h["max_runs"] == 0:
+    if _bad_register(h["again_register"]) or h["max_runs"] == 0:
         return header
     if not 1 <= h["step_limit"] <= MAX_STEPS or h["flags"] & ~KEEP:
         return header
     if len(data) != _layout(h)[3]:
         return header
     h, rows, edges, ops, templates = _parse(data)
-    seen = [0] * h["n_nodes"]
+    seen = [0] * h["node_count"]
     cpu_next = edge_next = 0
     for i, n in enumerate(rows):
         why = _check_node(h, n, ops, templates, cpu_next)
         if why:
             return GraphError(why, i)
         if n.kind == NODE_CPU:
-            cpu_next += n.n_ops
-        if n.succ_off != edge_next or n.succ_n > h["n_edges"] - edge_next:
-            return GraphError(ERR_EDGE, i)
+            cpu_next += n.op_count
+        if (
+            n.successor_offset != edge_next
+            or n.successor_count > h["edge_count"] - edge_next
+        ):
+            return GraphError(ERROR_EDGE, i)
         prev = i
-        for s in edges[edge_next : edge_next + n.succ_n]:
-            if s <= prev or s >= h["n_nodes"] or seen[s] >= MAX_PRED:
-                return GraphError(ERR_EDGE, i)
+        for s in edges[edge_next : edge_next + n.successor_count]:
+            if s <= prev or s >= h["node_count"] or seen[s] >= MAX_PREDECESSORS:
+                return GraphError(ERROR_EDGE, i)
             seen[s] += 1
             prev = s
-        edge_next += n.succ_n
-    if edge_next != h["n_edges"]:
-        return GraphError(ERR_EDGE, NO_NODE)
-    if cpu_next != h["n_ops"]:
-        return GraphError(ERR_NODE, NO_NODE)
+        edge_next += n.successor_count
+    if edge_next != h["edge_count"]:
+        return GraphError(ERROR_EDGE, NO_NODE)
+    if cpu_next != h["op_count"]:
+        return GraphError(ERROR_NODE, NO_NODE)
     for i, n in enumerate(rows):
-        if seen[i] != n.n_pred:
-            return GraphError(ERR_EDGE, i)
+        if seen[i] != n.predecessor_count:
+            return GraphError(ERROR_EDGE, i)
     if any(_bad_template(t) for t in templates):
-        return GraphError(st.ERR_TEMPLATE, NO_NODE)
+        return GraphError(st.ERROR_TEMPLATE, NO_NODE)
     return None
 
 
@@ -638,23 +691,25 @@ class Executor:
     `submit(node, words)` gets the command's 16 words and returns SUBMITTED or BUSY.
     """
 
-    def start(self, data, bindings=(), n_cores=119):
+    def start(self, data, bindings=(), core_count=119):
         if len(bindings) > BINDINGS:
-            return st.ERR_HEADER
-        self.h, self.rows, self.edges, self.ops, self.tpl = _parse(data)
-        self.regs = [b & MASK for b in bindings] + [0] * (REGS - len(bindings))
+            return st.ERROR_HEADER
+        self.h, self.rows, self.edges, self.ops, self.template = _parse(data)
+        self.registers = [b & MASK for b in bindings] + [0] * (
+            REGISTERS - len(bindings)
+        )
         self.runs, self.phase, self.error = 1, RUNNING, None
-        self.in_flight, self.n_cores = 0, n_cores
+        self.in_flight, self.core_count = 0, core_count
         self._reset()
         return 0
 
     def _reset(self):
-        n = self.h["n_nodes"]
-        self.left = [r.n_pred for r in self.rows]
+        n = self.h["node_count"]
+        self.left = [r.predecessor_count for r in self.rows]
         self.status = [WAITING] * n
         self.ready, self.done = [], 0
         for i, r in enumerate(self.rows):
-            if r.n_pred == 0:
+            if r.predecessor_count == 0:
                 self._push(i)
 
     def _push(self, node):
@@ -669,7 +724,9 @@ class Executor:
         r = self.rows[node]
         self.status[node] = DONE
         self.done += 1
-        for s in self.edges[r.succ_off : r.succ_off + r.succ_n]:
+        for s in self.edges[
+            r.successor_offset : r.successor_offset + r.successor_count
+        ]:
             self.left[s] -= 1
             if self.left[s] == 0:
                 self._push(s)
@@ -679,12 +736,12 @@ class Executor:
         if self.phase != RUNNING:
             return self.phase
         taken = busy = ops = 0
-        n = self.h["n_nodes"]
+        n = self.h["node_count"]
         while self.done < n and taken < STEP and self.ready and busy < len(self.ready):
             node = self.ready.pop(0)
             r = self.rows[node]
             taken += 1
-            if r.skip_reg != NONE and self.regs[r.skip_reg] == 0:
+            if r.skip_register != NONE and self.registers[r.skip_register] == 0:
                 self._finish(node)
                 busy = 0
                 continue
@@ -705,58 +762,58 @@ class Executor:
         return self._round_end() if self.done == n else RUNNING
 
     def _round_end(self):
-        again = self.h["again_reg"]
-        if again == NONE or self.regs[again] == 0:
+        again = self.h["again_register"]
+        if again == NONE or self.registers[again] == 0:
             self.phase = END
             return END
         if self.runs >= self.h["max_runs"]:
-            self._fail(ERR_RUNS, NO_NODE)
+            self._fail(ERROR_RUNS, NO_NODE)
             return ERROR
         self.runs += 1
         self._reset()
         return ROUND
 
     def _run_cpu(self, node):
-        r, regs = self.rows[node], self.regs
-        pc, end, steps = r.arg, r.arg + r.n_ops, 0
+        r, registers = self.rows[node], self.registers
+        pc, end, steps = r.arg, r.arg + r.op_count, 0
         while pc != end:
             if steps >= self.h["step_limit"]:
-                self._fail(st.ERR_STEPS, node)
+                self._fail(st.ERROR_STEPS, node)
                 return steps
             o = self.ops[pc]
             nxt = pc + 1
             if o.op == st.OP_SET:
-                regs[o.a] = o.imm
+                registers[o.a] = o.immediate
             elif o.op == st.OP_MOV:
-                regs[o.a] = regs[o.b]
+                registers[o.a] = registers[o.b]
             elif o.op == st.OP_ADD:
-                regs[o.a] = regs[o.b] + regs[o.c] & MASK
+                registers[o.a] = registers[o.b] + registers[o.c] & MASK
             elif o.op == st.OP_ADDI:
-                regs[o.a] = regs[o.b] + o.imm & MASK
+                registers[o.a] = registers[o.b] + o.immediate & MASK
             elif o.op == st.OP_SUB:
-                regs[o.a] = regs[o.b] - regs[o.c] & MASK
+                registers[o.a] = registers[o.b] - registers[o.c] & MASK
             elif o.op == st.OP_MUL:
-                regs[o.a] = regs[o.b] * regs[o.c] & MASK
+                registers[o.a] = registers[o.b] * registers[o.c] & MASK
             elif o.op == st.OP_AND:
-                regs[o.a] = regs[o.b] & regs[o.c]
+                registers[o.a] = registers[o.b] & registers[o.c]
             elif o.op == st.OP_SHR:
-                regs[o.a] = regs[o.b] >> (o.imm & 31)
+                registers[o.a] = registers[o.b] >> (o.immediate & 31)
             elif o.op == st.OP_MOD:
-                if regs[o.c] == 0:
-                    self._fail(st.ERR_MOD_ZERO, node)
+                if registers[o.c] == 0:
+                    self._fail(st.ERROR_MOD_ZERO, node)
                     return steps
-                regs[o.a] = regs[o.b] % regs[o.c]
+                registers[o.a] = registers[o.b] % registers[o.c]
             elif o.op == st.OP_RAND:
-                regs[st.SEED_REG] = st.xorshift32(regs[st.SEED_REG])
-                regs[o.a] = regs[st.SEED_REG]
+                registers[st.SEED_REGISTER] = st.xorshift32(registers[st.SEED_REGISTER])
+                registers[o.a] = registers[st.SEED_REGISTER]
             elif o.op == st.OP_JMP:
-                nxt = o.imm
+                nxt = o.immediate
             elif o.op == st.OP_JLT:
-                nxt = o.imm if regs[o.a] < regs[o.b] else nxt
+                nxt = o.immediate if registers[o.a] < registers[o.b] else nxt
             elif o.op == st.OP_JEQ:
-                nxt = o.imm if regs[o.a] == regs[o.b] else nxt
+                nxt = o.immediate if registers[o.a] == registers[o.b] else nxt
             elif o.op == st.OP_JNZ:
-                nxt = o.imm if regs[o.a] != 0 else nxt
+                nxt = o.immediate if registers[o.a] != 0 else nxt
             steps += 1
             pc = nxt
         return steps
@@ -764,28 +821,28 @@ class Executor:
     def command_words(self, node):
         """The command of a COMMAND node with the registers as they are: (words, first,
         count) before the group check."""
-        t = self.tpl[self.rows[node].arg]
+        t = self.template[self.rows[node].arg]
         words = list(t.rec)
         words[0] = words[4] = words[8] = words[12] = 0
         words[1] &= 0xFFFF
-        for k in range(t.n_patch):
-            words[st.ARG_WORD[t.arg[k]]] = self.regs[t.reg[k]]
+        for k in range(t.patch_count):
+            words[st.ARG_WORD[t.arg[k]]] = self.registers[t.register[k]]
         first, count = words[2] & 0xFFFF, words[2] >> 16
-        if t.first_reg != NONE:
-            first = self.regs[t.first_reg]
-        if t.count_reg != NONE:
-            count = self.regs[t.count_reg]
+        if t.first_register != NONE:
+            first = self.registers[t.first_register]
+        if t.count_register != NONE:
+            count = self.registers[t.count_register]
         return words, first, count
 
     def _submit(self, node, submit):
         words, first, count = self.command_words(node)
-        if words[1] >> 8 & st.F_QUEUE:
+        if words[1] >> 8 & st.FLAG_QUEUE:
             first = 0
-            if count == 0 or count > self.n_cores:
-                self._fail(st.ERR_NEVER_FITS, node)
+            if count == 0 or count > self.core_count:
+                self._fail(st.ERROR_NEVER_FITS, node)
                 return ERROR
-        elif st.group_outside(first, count, self.n_cores):
-            self._fail(st.ERR_GROUP, node)
+        elif st.group_outside(first, count, self.core_count):
+            self._fail(st.ERROR_GROUP, node)
             return ERROR
         words[2] = first | count << 16
         if submit(node, words) != SUBMITTED:
@@ -797,13 +854,13 @@ class Executor:
 
     def complete(self, node, result):
         """The command of `node` completed; 1 if it was not in flight, else 0."""
-        if self.phase != RUNNING or not 0 <= node < self.h["n_nodes"]:
+        if self.phase != RUNNING or not 0 <= node < self.h["node_count"]:
             return 1
         if self.status[node] != FLIGHT:
             return 1
-        reg = self.rows[node].result_reg
-        if reg != NONE:
-            self.regs[reg] = result & MASK
+        register = self.rows[node].result_register
+        if register != NONE:
+            self.registers[register] = result & MASK
         self.in_flight -= 1
         self._finish(node)
         return 0
@@ -811,7 +868,7 @@ class Executor:
     def retry(self, node):
         """The command of `node` was rejected after its submit: back to the ring's
         tail."""
-        if self.phase != RUNNING or not 0 <= node < self.h["n_nodes"]:
+        if self.phase != RUNNING or not 0 <= node < self.h["node_count"]:
             return 1
         if self.status[node] != FLIGHT:
             return 1
@@ -839,7 +896,7 @@ def simulate(
     data,
     *,
     bindings=(),
-    n_cores=119,
+    core_count=119,
     delay=0,
     result=None,
     deadline_passes=None,
@@ -856,41 +913,55 @@ def simulate(
     req = struct.unpack_from("<I", data, 24)[0] if len(data) >= 28 else 0
     keep = not bad and bool(HEADER.unpack_from(data)[11] & KEEP)
     if not bad and keep and kept >= MAX_KEPT:
-        bad = GraphError(ERR_KEPT_FULL, NO_NODE)
+        bad = GraphError(ERROR_KEPT_FULL, NO_NODE)
     eng = engine if engine is not None else Executor()
-    if not bad and eng.start(data, list(bindings), n_cores):
-        bad = GraphError(st.ERR_HEADER, NO_NODE)
+    if not bad and eng.start(data, list(bindings), core_count):
+        bad = GraphError(st.ERROR_HEADER, NO_NODE)
     if bad:
-        events = [Event(EV_GRAPH_ERROR, req, bad.reason | bad.node << 8, 0, 0)]
-        return GraphSimResult([], events, "error", bad, [0] * REGS, 0, 1, False, False)
-    sim = _Sim(eng, n_cores, delay, result, deadline_passes, req)
+        events = [Event(EVENT_GRAPH_ERROR, req, bad.reason | bad.node << 8, 0, 0)]
+        return GraphSimResult(
+            [], events, "error", bad, [0] * REGISTERS, 0, 1, False, False
+        )
+    sim = _Sim(eng, core_count, delay, result, deadline_passes, req)
     for p in range(max_passes):
         status = sim.run_pass(p, cancel_pass == p)
         if status:
             err = GraphError(*eng.error) if status == "error" else None
             return GraphSimResult(
-                sim.commands, sim.events, status, err, list(eng.regs), eng.runs, p + 1,
-                sim.stopped, keep,
+                sim.commands, sim.events, status, err, list(eng.registers), eng.runs,
+                p + 1, sim.stopped, keep,
             )  # fmt: skip
-    regs = list(eng.regs)
+    registers = list(eng.registers)
     return GraphSimResult(
-        sim.commands, sim.events, "stuck", None, regs, eng.runs, max_passes, False, keep
+        sim.commands,
+        sim.events,
+        "stuck",
+        None,
+        registers,
+        eng.runs,
+        max_passes,
+        False,
+        keep,
     )
 
 
 class _Sim:
     """The completion table around one graph: 16 slots, groups, a model of the queue."""
 
-    def __init__(self, eng, n_cores, delay, result, deadline_passes, req):
-        self.eng, self.n_cores, self.delay = eng, n_cores, delay
-        self.result_fn, self.deadline_passes, self.req = result, deadline_passes, req
+    def __init__(self, eng, core_count, delay, result, deadline_passes, req):
+        self.eng, self.core_count, self.delay = eng, core_count, delay
+        self.result_function, self.deadline_passes, self.req = (
+            result,
+            deadline_passes,
+            req,
+        )
         self.table = [None] * st.RING_SLOTS
         self.commands, self.events = [], []
-        self.seq = self.now = 0
+        self.sequence = self.now = 0
         self.stopped = False
 
-    def post(self, kind, aux, extra=0):
-        self.events.append(Event(kind, self.req, aux, extra, self.now))
+    def post(self, kind, auxiliary, extra=0):
+        self.events.append(Event(kind, self.req, auxiliary, extra, self.now))
 
     def run_pass(self, p, cancel):
         """Sweep, deadlines, cancel, one engine step; "ended", "error" or None."""
@@ -903,19 +974,19 @@ class _Sim:
         for busy in self.table:
             if busy and busy.deadline_pass is not None and p >= busy.deadline_pass:
                 self.stopped = True
-                eng.stop(st.ERR_DEADLINE, busy.command.node)
+                eng.stop(st.ERROR_DEADLINE, busy.command.node)
                 break
         if cancel:
-            eng.stop(st.ERR_CANCELLED, NO_NODE)
+            eng.stop(st.ERROR_CANCELLED, NO_NODE)
         code = eng.phase if eng.phase != RUNNING else eng.step(self.submit)
         if code == ROUND:
-            self.post(EV_GRAPH, (eng.runs - 1) & 0xFFFFFF)
+            self.post(EVENT_GRAPH, (eng.runs - 1) & 0xFFFFFF)
         elif code == END:
-            self.post(EV_GRAPH_END, eng.regs[0] & 0xFFFFFF, eng.regs[1])
+            self.post(EVENT_GRAPH_END, eng.registers[0] & 0xFFFFFF, eng.registers[1])
             return "ended"
         elif code == ERROR:
             reason, node = eng.error
-            self.post(EV_GRAPH_ERROR, reason | node << 8)
+            self.post(EVENT_GRAPH_ERROR, reason | node << 8)
             return "error"
         return None
 
@@ -926,24 +997,25 @@ class _Sim:
         busy = [(b.command.first, b.command.count) for b in self.table if b]
         first, count = words[2] & 0xFFFF, words[2] >> 16
         flags = words[1] >> 8 & 0xFF
-        queued = bool(flags & st.F_QUEUE)
+        queued = bool(flags & st.FLAG_QUEUE)
         if queued:
-            first = alloc(busy, count, self.n_cores)
+            first = alloc(busy, count, self.core_count)
             if first is None:
                 return BUSY
-        elif flags & st.F_EXCL and any(
+        elif flags & st.FLAG_EXCLUSIVE and any(
             first < f + c and f < first + count for f, c in busy
         ):
             return BUSY
-        self.seq += 1
+        self.sequence += 1
         rec = GraphCommand(
-            node, self.eng.runs, self.seq, slot, words[1] & 0xFF, first, count,
-            flags & ~st.F_QUEUE, tuple(words[i] for i in st.ARG_WORD), self.now, queued,
+            node, self.eng.runs, self.sequence, slot, words[1] & 0xFF, first, count,
+            flags & ~st.FLAG_QUEUE, tuple(words[i] for i in st.ARG_WORD), self.now,
+            queued,
         )  # fmt: skip
         self.commands.append(rec)
         delay = self.delay(rec) if callable(self.delay) else self.delay
         done = None if delay is None else self.now + 1 + delay
-        value = self.result_fn(rec) & MASK if self.result_fn else 0
+        value = self.result_function(rec) & MASK if self.result_function else 0
         limit = (
             None if self.deadline_passes is None else self.now + self.deadline_passes
         )

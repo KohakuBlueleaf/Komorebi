@@ -57,9 +57,11 @@ def main():
         )
         report["frame_exact"] = bool(ok)
         tracer.check = False
-        frame_us = {i["pass"]: np.median(i["trace_us"]) for i in tracer.passes[-4:]}
+        frame_microseconds = {
+            i["pass"]: np.median(i["trace_microseconds"]) for i in tracer.passes[-4:]
+        }
         for name in args.passes.split(","):
-            us = frame_us[name]
+            us = frame_microseconds[name]
             reps = min(args.most, max(1, math.ceil(args.seconds * 1e6 / us)))
             tracer.reps = reps
             tracer.power = PowerSampler(index)
@@ -71,8 +73,10 @@ def main():
             pw["block_s"] = info["power"]["seconds"]
             pw["block_mean_w"] = info["power"]["mean_w"]
             loop = {"pass": name, "commands": reps, "rays": info["rays"]}
-            loop["trace_us_median"] = float(np.median(info["trace_us"]))
-            loop["card_s"] = float(np.sum(info["trace_us"])) / 1e6
+            loop["trace_microseconds_median"] = float(
+                np.median(info["trace_microseconds"])
+            )
+            loop["card_s"] = float(np.sum(info["trace_microseconds"])) / 1e6
             loop["program_s"] = info["times"]["program_s"]
             loop.update({k: pw[k] for k in ("seconds", "mean_w", "peak_w", "joules")})
             loop.update(idle_w=pw["idle_mean_w"], too_short=pw["too_short"])
@@ -80,7 +84,7 @@ def main():
             loop["walk_errors"] = info["walk_errors"]
             loop["run"] = info["run"]
             if pw["mean_w"] is not None:
-                ray_s = info["rays"] / (loop["trace_us_median"] / 1e6)
+                ray_s = info["rays"] / (loop["trace_microseconds_median"] / 1e6)
                 loop["mrays_per_s"] = ray_s / 1e6
                 loop["nj_per_ray"] = pw["mean_w"] / ray_s * 1e9
             report["loops"].append(loop)

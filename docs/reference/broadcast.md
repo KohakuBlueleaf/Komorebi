@@ -80,7 +80,7 @@ that returns false or 0 has recorded the give-up; the kernel leaves the body.
    these calls. `finish` pads it to whole windows, so every command starts at slot 0
    and slot addresses are the same on every core.
 3. A command with broadcasts names exactly the group the broadcast words were built for, and
-   carries `KM_F_EXCL`: overlapping groups are never in flight together.
+   carries `KM_FLAG_EXCLUSIVE`: overlapping groups are never in flight together.
 4. Window B: 1 to 8. Receivers per broadcast: up to 15. Blocks per command: 0 to 32,767,
    with no limit on the pages they carry in all; the buffer, B * P pages, holds at
    most 65,535. A broadcast that multicasts no block in a command still calls `finish` on every
@@ -118,7 +118,7 @@ reset is needed.
 
 ## Control block
 
-Two broadcast areas of 0x140 bytes from `KM_CTL_BROADCAST` (0xA00), in 16-byte slots: VALID,
+Two broadcast areas of 0x140 bytes from `KM_CONTROL_BROADCAST` (0xA00), in 16-byte slots: VALID,
 the source slot of this core's outgoing marker, the first give-up (where | broadcast << 8,
 block, sequence number), statistics (blocks, wait cycles), and the DONE-BY words of
 ranks 1 to 15. Markers carry the command's sequence number in the high half, so a word

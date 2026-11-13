@@ -37,7 +37,7 @@ def main():
                         {
                             "k": k,
                             "to": "math+pack" if both else "math",
-                            "write_us": round(int(r[0]) / mhz, 2),
+                            "write_microseconds": round(int(r[0]) / mhz, 2),
                             "readers_done": [int(r[1]), int(r[15])],
                             "read": [int(v) for v in r[2 : 2 + k]],
                         }

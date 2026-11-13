@@ -133,11 +133,13 @@ class CardTracer:
             info["power"] = self.power.result.as_dict()
         info["run"] = card.check_run(res, self.workers)
         info["times"] = times
-        us = card.command_us(res)
-        info["load_us"] = float(us[0])
+        us = card.command_microseconds(res)
+        info["load_microseconds"] = float(us[0])
         # A trace is its commands in a row: their card times summed per round.
         per_trace = len(full) if isinstance(full, list) else 1
-        info["trace_us"] = [float(x) for x in us[1:].reshape(-1, per_trace).sum(axis=1)]
+        info["trace_microseconds"] = [
+            float(x) for x in us[1:].reshape(-1, per_trace).sum(axis=1)
+        ]
         info["packets"] = len(pages)
         t0 = time.perf_counter()
         out = packets.ungroup(out, vectors, len(pages))

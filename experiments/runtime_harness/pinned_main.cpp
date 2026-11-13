@@ -7,10 +7,15 @@
 int main(int argc, char** argv) {
     // and the routed messages' end, gap, overflow and idle cases
     std::vector<scen::Case> cases = scen::pinned();
-    for (const scen::Case& c : scen::dyn_cases()) {
+    for (const scen::Case& c : scen::messages_cases()) {
         for (
             const char* name :
-            {"dyn_smoke", "dyn_gap", "dyn_overflow", "dyn_idle_flapping"}
+            {
+                "messages_smoke",
+                "messages_gap",
+                "messages_overflow",
+                "messages_idle_flapping"
+            }
         ) {
             if (std::strcmp(c.name, name) == 0) {
                 cases.push_back(c);

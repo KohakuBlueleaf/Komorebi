@@ -33,8 +33,8 @@ def calls(p, att, per_job):
 
 def graph(handler, group, words, rounds, req):
     """A kept graph: the call's commands one after the other, `rounds` times."""
-    g = Graph(deadline_us=2_000_000, max_runs=rounds, req=req, keep=True)
-    it = g.reg()
+    g = Graph(deadline_microseconds=2_000_000, max_runs=rounds, req=req, keep=True)
+    it = g.register()
     last = []
     for w in words:
         last = [g.command(handler, group=group, args=w, after=last, exclusive=True)]
@@ -102,7 +102,7 @@ def main():
             us[f"graph_{name}"] = from_graph(att, g, 3)
             out[f"commands_per_call_{name}"] = len(words)
             log(f"{name}: {us}")
-        out["us_per_call"] = {n: round(v, 1) for n, v in us.items()}
+        out["microseconds_per_call"] = {n: round(v, 1) for n, v in us.items()}
         out["run"] = att.stop()
         out["check"] = run.check(session, tensors["o"], q, k, v, s, causal)
     out["ok"] = out["check"]["ok"] and out["run"]["ok"]

@@ -1,5 +1,5 @@
-/* Work-cluster probe thread (kmx): sums, DRAM rates, pushes to another bank through a
- * NoC window, wakes between clusters, kmx_par round trips. Word 0 picks the mode. */
+/* Work-cluster probe (kmx): sums, DRAM rates, pushes to another bank through a NoC
+ * window, wakes between clusters, kmx_parallel round trips. Word 0 picks the mode. */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -7,7 +7,7 @@
 #include "rt/x280_hw.h"
 #include "x280_address_map.h"
 
-enum { M_SUM = 1, M_RATE = 2, M_PUSH = 3, M_PING = 4, M_PAR = 5 };
+enum { M_SUM = 1, M_RATE = 2, M_PUSH = 3, M_PING = 4, M_PARALLEL = 5 };
 
 /* Words common to every mode. */
 enum { W_MODE = 0, W_GO = 1 };
@@ -118,28 +118,28 @@ static void vfill(uintptr_t dst, uint64_t n, uint64_t first, uint64_t seed) {
     }
 }
 
-static void par_sum(int h, void* arg) {
+static void parallel_sum(int h, void* arg) {
     job_t* j = (job_t*)arg;
     uint64_t p, n;
     quarter(j, h, &p, &n);
     j->out[h] = vsum((uintptr_t)p, n);
 }
 
-static void par_fill(int h, void* arg) {
+static void parallel_fill(int h, void* arg) {
     job_t* j = (job_t*)arg;
     uint64_t p, n;
     quarter(j, h, &p, &n);
     vfill((uintptr_t)p, n, (p - j->addr) / 8, j->seed);
 }
 
-static void par_none(int h, void* arg) {
+static void parallel_none(int h, void* arg) {
     (void)h;
     (void)arg;
 }
 
 /* Core h pushes its quarter of the pattern to [dest, dest + bytes) of tile `noc`
  * through its own window, re-aimed at each 2 MiB; out[h] = 1 if a window failed. */
-static void par_push(int h, void* arg) {
+static void parallel_push(int h, void* arg) {
     job_t* j = (job_t*)arg;
     const job_t at = {.addr = j->dest, .bytes = j->bytes};
     uint64_t p, n;
@@ -301,12 +301,12 @@ static uint32_t ping(const kmx_args* a, uint32_t* r) {
         /* A: the exchange region, then wake 0x80000000 */
         if (q.kind == K_SHARED) {
             x.addr += X280_LOCAL_DDR_TILE_BASE;
-            e = kmx_par(par_fill, &x) == KMX_OK ? 0 : CODE_STOPPED;
+            e = kmx_parallel(parallel_fill, &x) == KMX_OK ? 0 : CODE_STOPPED;
             flush_range(x.addr, x.bytes);
         } else {
             x.dest = x.addr;
             x.noc = a->words[P_NOC];
-            e = kmx_par(par_push, &x) == KMX_OK ? 0 : CODE_STOPPED;
+            e = kmx_parallel(parallel_push, &x) == KMX_OK ? 0 : CODE_STOPPED;
             e = e ? e : (uint32_t)(x.out[0] | x.out[1] | x.out[2] | x.out[3]) * 4u;
         }
         kmx_progress(2);
@@ -321,7 +321,7 @@ static uint32_t ping(const kmx_args* a, uint32_t* r) {
         x.addr += X280_LOCAL_DDR_TILE_BASE;
         flush_range(x.addr, x.bytes);
         if (e == 0) {
-            e = kmx_par(par_sum, &x) == KMX_OK ? 0 : CODE_STOPPED;
+            e = kmx_parallel(parallel_sum, &x) == KMX_OK ? 0 : CODE_STOPPED;
             const uint64_t s = x.out[0] + x.out[1] + x.out[2] + x.out[3];
             r[2] = (uint32_t)s;
             r[3] = (uint32_t)(s >> 32);
@@ -361,7 +361,7 @@ int kmx_main(int core) {
         job_t j = {.addr = (uint64_t)(uintptr_t)data, .bytes = bytes & ~511ull};
         const uint64_t t0 = kmx_time();
         kmx_invalidate(0);
-        code = kmx_par(par_sum, &j) == KMX_OK ? 0 : CODE_STOPPED;
+        code = kmx_parallel(parallel_sum, &j) == KMX_OK ? 0 : CODE_STOPPED;
         const uint64_t s = j.out[0] + j.out[1] + j.out[2] + j.out[3];
         r[0] = (uint32_t)s;
         r[1] = (uint32_t)(s >> 32);
@@ -380,10 +380,14 @@ int kmx_main(int core) {
             kmx_invalidate(0);
             r[4 * i] = (uint32_t)(kmx_time() - t);
             t = kmx_time();
-            code = kmx_par(par_sum, &j) == KMX_OK ? 0 : CODE_STOPPED;
+            code = kmx_parallel(parallel_sum, &j) == KMX_OK ? 0 : CODE_STOPPED;
             r[4 * i + 1] = (uint32_t)(kmx_time() - t);
             t = kmx_time();
-            code = code ? code : (kmx_par(par_fill, &j) == KMX_OK ? 0 : CODE_STOPPED);
+            code = (
+                code
+                    ? code
+                    : (kmx_parallel(parallel_fill, &j) == KMX_OK ? 0 : CODE_STOPPED)
+            );
             r[4 * i + 2] = (uint32_t)(kmx_time() - t);
             t = kmx_time();
             kmx_flush(0);
@@ -401,7 +405,7 @@ int kmx_main(int core) {
         code = wait_go();
         uint64_t t = kmx_time();
         if (code == 0) {
-            code = kmx_par(par_push, &j) == KMX_OK ? 0 : CODE_STOPPED;
+            code = kmx_parallel(parallel_push, &j) == KMX_OK ? 0 : CODE_STOPPED;
             code = (
                 code ? code : (uint32_t)(j.out[0] | j.out[1] | j.out[2] | j.out[3]) * 4u
             );
@@ -419,11 +423,11 @@ int kmx_main(int core) {
     } else if (mode == M_PING) {
         code = ping(a, r);
         n = 4;
-    } else if (mode == M_PAR) {
+    } else if (mode == M_PARALLEL) {
         const uint32_t calls = a->words[2];
         const uint64_t t = kmx_time();
         for (uint32_t i = 0; code == 0 && i < calls; i++) {
-            code = kmx_par(par_none, 0) == KMX_OK ? 0 : CODE_STOPPED;
+            code = kmx_parallel(parallel_none, 0) == KMX_OK ? 0 : CODE_STOPPED;
         }
         r[0] = (uint32_t)(kmx_time() - t);
         r[1] = calls;

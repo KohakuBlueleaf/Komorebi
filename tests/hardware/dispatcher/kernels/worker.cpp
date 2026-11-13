@@ -13,13 +13,17 @@
 
 namespace {
 
-    constexpr uint32_t kCtlCb = 8;
+    constexpr uint32_t kControlCb = 8;
     constexpr uint32_t kOutCb = 9;
     constexpr uint32_t kPollEvery = 256;
 
     // A NoC write's source and destination share their low 4 address bits.
-    static_assert(KM_CTL_OUT % 16 == 0 && KM_CTL_BOOT % 16 == 0, "16-byte slots");
-    static_assert(KM_CTL_CORES % 16 == 0 && KM_ACK_STRIDE % 16 == 0, "16-byte slots");
+    static_assert(
+        KM_CONTROL_OUT % 16 == 0 && KM_CONTROL_BOOT % 16 == 0, "16-byte slots"
+    );
+    static_assert(
+        KM_CONTROL_CORES % 16 == 0 && KM_ACK_STRIDE % 16 == 0, "16-byte slots"
+    );
     static_assert(noc_mode != DM_DYNAMIC_NOC, "the timed NoC waits use the static NoC");
 
     // Runtime arguments (host module: Plan::worker_args).
@@ -30,14 +34,14 @@ namespace {
 
     struct Worker {
         Args a;
-        uint32_t ctl;
+        uint32_t control;
         uint32_t result;  // of the command just run
         uint64_t limit;   // cycles
         volatile tt_l1_ptr uint32_t* state;
         uint32_t cnt[DK_WORDS];
 
         volatile tt_l1_ptr uint32_t* at(uint32_t off) const {
-            return reinterpret_cast<volatile tt_l1_ptr uint32_t*>(ctl + off);
+            return reinterpret_cast<volatile tt_l1_ptr uint32_t*>(control + off);
         }
 
         static uint64_t now() {
@@ -45,7 +49,7 @@ namespace {
         }
 
         bool stopped() const {
-            return *at(KM_CTL_STOP) != 0;
+            return *at(KM_CONTROL_STOP) != 0;
         }
 
         // Commands why and where a wait gave up.
@@ -123,7 +127,7 @@ namespace {
         // gave-up command).
         bool aligned() {
             const uint32_t any = (
-                ctl | a.mailbox | a.ready | a.ack_base | a.table | a.out |
+                control | a.mailbox | a.ready | a.ack_base | a.table | a.out |
                 get_write_ptr(kOutCb)
             );
             if (any & 15u) {
@@ -136,38 +140,38 @@ namespace {
         // Writes the 4-byte word `v` to NoC address `dst` (16-byte aligned) and waits
         // for it, at most `limit` cycles.
         bool send_word(uint64_t dst, uint32_t v) {
-            *at(KM_CTL_OUT) = v;
-            noc_async_write(ctl + KM_CTL_OUT, dst, 4);
+            *at(KM_CONTROL_OUT) = v;
+            noc_async_write(control + KM_CONTROL_OUT, dst, 4);
             return writes_done();
         }
 
         // Writes {v, w} as one 8-byte write to NoC address `dst` (16-byte aligned) and
         // waits for it, at most `limit` cycles.
         bool send_pair(uint64_t dst, uint32_t v, uint32_t w) {
-            *at(KM_CTL_OUT) = v;
-            *at(KM_CTL_OUT + 4) = w;
-            noc_async_write(ctl + KM_CTL_OUT, dst, 8);
+            *at(KM_CONTROL_OUT) = v;
+            *at(KM_CONTROL_OUT + 4) = w;
+            noc_async_write(control + KM_CONTROL_OUT, dst, 8);
             return writes_done();
         }
 
         // Clears the ring, stop flag, counters and state, loads the core table, checks
         // in.
         bool start() {
-            for (uint32_t off = KM_CTL_RING; off < KM_CTL_RSVD; off += 4) {
+            for (uint32_t off = KM_CONTROL_RING; off < KM_CONTROL_RESERVED; off += 4) {
                 *at(off) = 0;
             }
-            *at(KM_CTL_STOP) = 0;
+            *at(KM_CONTROL_STOP) = 0;
             for (uint32_t j = 0; j < KM_RING_SLOTS; j++) {
-                *at(KM_CTL_DONE + 16 * j) = 0;
+                *at(KM_CONTROL_DONE + 16 * j) = 0;
             }
-            for (uint32_t w = 0; w <= DK_S_SEQ; w++) {
+            for (uint32_t w = 0; w <= DK_S_SEQUENCE; w++) {
                 state[w] = 0;
             }
             const InterleavedAddrGen<true> table = {
                 .bank_base_address = a.table, .page_size = KM_CORES_MAX * 4
             };
             noc_async_read(
-                get_noc_addr(0, table), ctl + KM_CTL_CORES, KM_CORES_MAX * 4
+                get_noc_addr(0, table), control + KM_CONTROL_CORES, KM_CORES_MAX * 4
             );
             if (!reads_done()) {
                 return false;
@@ -175,7 +179,9 @@ namespace {
             if (!a.is_leader) {
                 if (!send_word(
                     get_noc_addr(
-                        a.leader_x, a.leader_y, ctl + KM_CTL_BOOT + 16 * a.rank
+                        a.leader_x,
+                        a.leader_y,
+                        control + KM_CONTROL_BOOT + 16 * a.rank
                     ),
                     a.tag << 16
                 )) {
@@ -186,7 +192,7 @@ namespace {
                 uint32_t spins = 0;
                 for (uint32_t r = 0; r < a.peers;) {
                     invalidate_l1_cache();
-                    if ((*at(KM_CTL_BOOT + 16 * r) >> 16) == a.tag) {
+                    if ((*at(KM_CONTROL_BOOT + 16 * r) >> 16) == a.tag) {
                         r++;
                     } else if (!keep_waiting(spins, by, DK_WHERE_BOOT)) {
                         return false;
@@ -197,10 +203,10 @@ namespace {
                 }
             }
             if (a.is_hello) {
-                *at(KM_CTL_OUT) = 1;
-                *at(KM_CTL_OUT + 4) = ctl;
+                *at(KM_CONTROL_OUT) = 1;
+                *at(KM_CONTROL_OUT + 4) = control;
                 noc_async_write(
-                    ctl + KM_CTL_OUT, get_noc_addr(a.l2_x, a.l2_y, a.mailbox), 8
+                    control + KM_CONTROL_OUT, get_noc_addr(a.l2_x, a.l2_y, a.mailbox), 8
                 );
                 return writes_done();
             }
@@ -216,21 +222,21 @@ namespace {
             return a.me >= first && a.me < first + count;
         }
 
-        // Takes into KM_CTL_JOB the oldest new landed command that is this core's or
-        // EXIT (others are consumed). False if the stop flag or limit ends the wait.
+        // Takes into KM_CONTROL_JOB the oldest new landed command that is this core's
+        // or EXIT (others are consumed). False if the stop flag or limit ends the wait.
         bool next(uint32_t& slot) {
             const uint64_t by = now() + limit;
             uint32_t spins = 0;
             for (;;) {
                 invalidate_l1_cache();
-                uint32_t best = KM_RING_SLOTS, best_seq = 0;
+                uint32_t best = KM_RING_SLOTS, best_sequence = 0;
                 for (uint32_t j = 0; j < a.depth; j++) {
                     auto* r = (
                         reinterpret_cast<volatile tt_l1_ptr km_command_t*>(
-                            ctl + KM_CTL_RING + 64 * j
+                            control + KM_CONTROL_RING + 64 * j
                         )
                     );
-                    const uint32_t s = r->seq;
+                    const uint32_t s = r->sequence;
                     if (static_cast<int32_t>(s - state[j]) <= 0 || !landed(r)) {
                         continue;
                     }
@@ -240,24 +246,25 @@ namespace {
                         continue;
                     }
                     if (
-                        best == KM_RING_SLOTS || static_cast<int32_t>(s - best_seq) < 0
+                        best == KM_RING_SLOTS ||
+                        static_cast<int32_t>(s - best_sequence) < 0
                     ) {
                         best = j;
-                        best_seq = s;
+                        best_sequence = s;
                     }
                 }
                 if (best != KM_RING_SLOTS) {
-                    auto* r = at(KM_CTL_RING + 64 * best);
-                    auto* job = at(KM_CTL_JOB);
+                    auto* r = at(KM_CONTROL_RING + 64 * best);
+                    auto* job = at(KM_CONTROL_JOB);
                     for (uint32_t w = 0; w < 16; w++) {
                         job[w] = r[w];
                     }
                     auto* copy = (
                         reinterpret_cast<volatile tt_l1_ptr km_command_t*>(job)
                     );
-                    if (landed(copy) && copy->seq == best_seq) {
-                        state[best] = best_seq;
-                        state[DK_S_SEQ] = best_seq;
+                    if (landed(copy) && copy->sequence == best_sequence) {
+                        state[best] = best_sequence;
+                        state[DK_S_SEQUENCE] = best_sequence;
                         slot = best;
                         return true;
                     }
@@ -294,8 +301,8 @@ namespace {
             }
         }
 
-        // Runs the handler of the command in KM_CTL_JOB. Returns false if a wait ended
-        // on the stop flag or its limit.
+        // Runs the handler of the command in KM_CONTROL_JOB. Returns false if a wait
+        // ended on the stop flag or its limit.
         bool run(const volatile tt_l1_ptr km_command_t* r, uint32_t slot) {
             const uint32_t handler = r->hdr & 0xFFu;
             if (((r->hdr >> 16) & 0xFFu) != slot) {
@@ -342,13 +349,15 @@ namespace {
         }
 
         // Reports completion: cores increment the leader's slot counter; the leader
-        // waits for count - 1, then sends the ack ({ack, result} with KM_F_RESULT).
+        // waits for count - 1, then sends the ack ({ack, result} with KM_FLAG_RESULT).
         bool complete(const volatile tt_l1_ptr km_command_t* r, uint32_t slot) {
             const uint32_t first = r->group & 0xFFFFu, count = r->group >> 16;
             if (a.me != first) {
-                const uint32_t xy = *at(KM_CTL_CORES + 4 * first);
+                const uint32_t xy = *at(KM_CONTROL_CORES + 4 * first);
                 noc_semaphore_inc(
-                    get_noc_addr(xy & 0xFFFFu, xy >> 16, ctl + KM_CTL_DONE + 16 * slot),
+                    get_noc_addr(
+                        xy & 0xFFFFu, xy >> 16, control + KM_CONTROL_DONE + 16 * slot
+                    ),
                     1
                 );
                 if (!atomics_done()) {
@@ -357,7 +366,7 @@ namespace {
                 cnt[DK_C_INCS]++;
                 return true;
             }
-            volatile tt_l1_ptr uint32_t* done = at(KM_CTL_DONE + 16 * slot);
+            volatile tt_l1_ptr uint32_t* done = at(KM_CONTROL_DONE + 16 * slot);
             const uint64_t by = now() + limit;
             uint32_t spins = 0;
             for (;;) {
@@ -378,9 +387,9 @@ namespace {
                 get_noc_addr(a.l2_x, a.l2_y, a.ack_base + slot * KM_ACK_STRIDE)
             );
             const bool sent = (
-                ((r->hdr >> 8) & KM_F_RESULT)
-                    ? send_pair(ack, KM_ACK(r->seq), result)
-                    : send_word(ack, KM_ACK(r->seq))
+                ((r->hdr >> 8) & KM_FLAG_RESULT)
+                    ? send_pair(ack, KM_ACK(r->sequence), result)
+                    : send_word(ack, KM_ACK(r->sequence))
             );
             if (!sent) {
                 return false;
@@ -393,7 +402,7 @@ namespace {
         void flush() {
             cnt[DK_C_MAGIC] = DK_MAGIC | a.me;
             cnt[DK_C_TAG] = a.tag;
-            for (uint32_t w = 0; w <= DK_S_SEQ; w++) {
+            for (uint32_t w = 0; w <= DK_S_SEQUENCE; w++) {
                 cnt[DK_C_STATE + w] = state[w];
             }
             volatile tt_l1_ptr uint32_t*
@@ -423,9 +432,9 @@ void kernel_main() {
     for (uint32_t i = 0; i < sizeof(Args) / 4; i++) {
         f[i] = get_arg_val<uint32_t>(i);
     }
-    k.ctl = get_write_ptr(kCtlCb);
+    k.control = get_write_ptr(kControlCb);
     k.limit = static_cast<uint64_t>(k.a.limit) << 20;
-    k.state = k.at(KM_CTL_STATE);
+    k.state = k.at(KM_CONTROL_STATE);
     for (uint32_t w = 0; w < DK_WORDS; w++) {
         k.cnt[w] = 0;
     }
@@ -434,11 +443,11 @@ void kernel_main() {
         uint32_t slot = 0;
         while (k.next(slot)) {
             auto* r = (
-                reinterpret_cast<volatile tt_l1_ptr km_command_t*>(k.at(KM_CTL_JOB))
+                reinterpret_cast<volatile tt_l1_ptr km_command_t*>(k.at(KM_CONTROL_JOB))
             );
             const bool exit = (r->hdr & 0xFFu) == KM_HANDLER_EXIT;
             if (exit) {
-                k.cnt[DK_C_EXIT] = r->seq;
+                k.cnt[DK_C_EXIT] = r->sequence;
             } else if (!k.run(r, slot)) {
                 break;
             }

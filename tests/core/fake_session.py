@@ -19,13 +19,13 @@ class FakeDispatch(FakePort):
 
     grid_x, grid_y = 12, 10
     lim_base = 0x10000
-    boot_error = None  # a KMD_ERR_* the kernel ends with before READY
+    boot_error = None  # a KMD_ERROR_* the kernel ends with before READY
 
     def __init__(self, log, device, pll_mhz):
         super().__init__()
         self.log = log
         self.is_open = True
-        self.settle_us = 1.0
+        self.settle_microseconds = 1.0
         self.ready_state = K["KMD_STATE_READY"]
         self.idle = True
         self.fail = {}  # call name -> exception it raises

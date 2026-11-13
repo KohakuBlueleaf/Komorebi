@@ -37,9 +37,9 @@ _DROPPED_DEFINE = re.compile(r"-DTTX_KERNEL_DIR=\S+")
 _X280_TARGET = ["-mcpu=sifive-x280", "-march=rv64gc", "-mabi=lp64d"]
 
 
-def ninja_block(build_dir, header_prefix):
+def ninja_block(build_directory, header_prefix):
     """The variables of the first build.ninja statement starting with header_prefix."""
-    path = Path(build_dir) / "build.ninja"
+    path = Path(build_directory) / "build.ninja"
     if not path.is_file():
         raise BuildError(f"{path} not found: the tree is not built")
     lines = path.read_text().splitlines()
@@ -64,10 +64,10 @@ def required(block, name, header_prefix):
 
 def cxx_commands(kind, tree, out, source, includes=(), defines=()):
     """The compile and link commands of one C++ host or Python module, as lists."""
-    build_dir = Path(tree) / "build"
+    build_directory = Path(tree) / "build"
     compile_prefix, link_prefix, link_flags = TEMPLATES[kind]
-    compile_vars = ninja_block(build_dir, compile_prefix)
-    link_vars = ninja_block(build_dir, link_prefix)
+    compile_vars = ninja_block(build_directory, compile_prefix)
+    link_vars = ninja_block(build_directory, link_prefix)
     out = Path(out)
     obj = out.with_suffix(".o")
     compile_cmd = (
@@ -82,7 +82,7 @@ def cxx_commands(kind, tree, out, source, includes=(), defines=()):
 
     # Library names in the link statement are relative to the build directory.
     libs = [
-        str(build_dir / tok) if not tok.startswith(("-", "/")) else tok
+        str(build_directory / tok) if not tok.startswith(("-", "/")) else tok
         for tok in shlex.split(required(link_vars, "LINK_LIBRARIES", link_prefix))
     ]
     link_cmd = ["clang++-20", *link_flags, str(obj), "-o", str(out), *libs]
@@ -97,7 +97,7 @@ def image_commands(tree, out, sources, includes=(), defines=()):
     """
     gcc = _env.sfpi_bin(tree) / "riscv-tt-elf-gcc"
     objcopy = _env.sfpi_bin(tree) / "riscv-tt-elf-objcopy"
-    include = _env.x280_source_dir(tree) / "include"
+    include = _env.x280_source_directory(tree) / "include"
     cflags = _X280_TARGET + [
         "-nostdlib", "-nostartfiles", "-ffreestanding", "-O2", "-g", "-Wall",
         "-Werror", "-mcmodel=medany",

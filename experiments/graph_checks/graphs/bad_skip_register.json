@@ -1,0 +1,60 @@
+{
+ "name": "bad_skip_register",
+ "description": "bad skip register",
+ "notes": "Binding: check, status, error, registers, runs, stopped_grid, the submit set and the events without their pass. The submit set lists every command submitted, sorted by (run, node): handler, first (null for a queued command, the allocator places it), count, flags as the grid sees them, a0 to a9 with trailing zeros left out. `order` (sequence, slot, pass per command) and the event passes are the simulator's and are advisory. Completion: a command submitted in pass p is acknowledged by the sweep of pass p + 1 + delay; delay is an integer, null (never) or {mod: m} (sequence % m, sequence counted from 1 over the whole graph). A command's result word is (a0 + count) mod 2^32. Events are [kind, req, auxiliary, extra]: extra is register 1 for KM_EVENT_GRAPH_END, else 0. Rules: docs/graphs.md.",
+ "bindings": [],
+ "params": {
+  "core_count": 119,
+  "delay": 0,
+  "deadline_passes": null,
+  "cancel_pass": null,
+  "max_passes": 100000,
+  "kept": 0
+ },
+ "expect": {
+  "check": [
+   4,
+   1
+  ],
+  "status": "error",
+  "error": [
+   4,
+   1
+  ],
+  "registers": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "runs": 0,
+  "stopped_grid": false,
+  "kept": false,
+  "submitted": [],
+  "events": [
+   [
+    9,
+    1,
+    260,
+    0
+   ]
+  ],
+  "order": [],
+  "event_passes": [
+   0
+  ],
+  "passes": 1
+ }
+}

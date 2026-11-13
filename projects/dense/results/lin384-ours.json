@@ -19,8 +19,8 @@
  "upload_s": 0.271,
  "x280_mhz": 1000,
  "deadline_s": 0.051,
- "load_us": 87.68,
- "single_us": {
+ "load_microseconds": 87.68,
+ "single_microseconds": {
   "median": 65.08,
   "min": 64.0
  },
@@ -29,8 +29,8 @@
   "batch": 61463,
   "seconds": 3.759,
   "wall_seconds": 3.773,
-  "us_per_call": 61.164,
-  "command_us_median": 235.38,
+  "microseconds_per_call": 61.164,
+  "command_microseconds_median": 235.38,
   "mean_w": 129.69040976716,
   "peak_w": 141.0,
   "open_w": 61.95162107021221,
@@ -42,7 +42,7 @@
   ]
  },
  "tflops": 78.99807416127133,
- "cut_us_per_call": {
+ "cut_microseconds_per_call": {
   "reads_only": 32.947,
   "compute_only": 21.352
  },
@@ -63,7 +63,7 @@
  "readback_s": 0.118,
  "profile": {
   "slowest_core": 94,
-  "slowest_us": 64.506,
+  "slowest_microseconds": 64.506,
   "mean_busy_over_slowest": 0.684,
   "partitions_of_slowest": {
    "read_A": 0.236,

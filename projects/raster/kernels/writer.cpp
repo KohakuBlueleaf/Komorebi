@@ -8,48 +8,48 @@
 
 // An item of `per` pages at the read pointer must end inside the output buffer;
 // otherwise the give-up is recorded and the stop flag set.
-bool item_fits(const km::Writer& wr, uint32_t per, uint32_t seq) {
+bool item_fits(const km::Writer& wr, uint32_t per, uint32_t sequence) {
     if (
         get_read_ptr(kCbOut) + per * kOutPageBytes <=
         get_local_cb_interface(kCbOut).fifo_limit
     ) {
         return true;
     }
-    wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, seq);
-    *wr.ctl(KM_CTL_STOP) = 1;
+    wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, sequence);
+    *wr.control(KM_CONTROL_STOP) = 1;
     return false;
 }
 
 // Timed NoC waits: reads arrived, or writes sent. False: gave up (recorded).
 template <typename Ready>
-bool noc_done(const km::Writer& wr, Ready ready, uint32_t where, uint32_t seq) {
+bool noc_done(const km::Writer& wr, Ready ready, uint32_t where, uint32_t sequence) {
     const uint32_t code = wr.poll(ready, wr.args().wait_limit);
     if (code == km::kGaveNone) {
         return true;
     }
-    wr.gave_up(km::kStWriter, code, where, 0, seq);
+    wr.gave_up(km::kStWriter, code, where, 0, sequence);
     return false;
 }
 
-bool read_done(const km::Writer& wr, uint32_t seq) {
+bool read_done(const km::Writer& wr, uint32_t sequence) {
     return noc_done(
         wr,
         [] {
             return ncrisc_noc_reads_flushed(noc_index);
         },
         kWhereReadDone,
-        seq
+        sequence
     );
 }
 
-bool writes_sent(const km::Writer& wr, uint32_t seq) {
+bool writes_sent(const km::Writer& wr, uint32_t sequence) {
     return noc_done(
         wr,
         [] {
             return ncrisc_noc_nonposted_writes_sent(noc_index);
         },
         kWhereFlush,
-        seq
+        sequence
     );
 }
 
@@ -65,15 +65,15 @@ bool fill_writer_command(const km::Writer& wr, const km_command_t& r) {
         .bank_base_address = r.a0, .page_size = kDirBytes
     };
     noc_async_read(get_noc_addr(wr.me(), dirs), dir, kDirBytes);
-    if (!read_done(wr, r.seq)) {
+    if (!read_done(wr, r.sequence)) {
         return false;
     }
     invalidate_l1_cache();
     const uint32_t items = d[kDirItems], per = r.a3, chunk = d[kDirFrame];
     // An item's pages lie in one of the frame's tensors, each named in the table.
     if (chunk == 0 || chunk % per != 0 || items > kDirMaxItems) {
-        wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, r.seq);
-        *wr.ctl(KM_CTL_STOP) = 1;
+        wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, r.sequence);
+        *wr.control(KM_CONTROL_STOP) = 1;
         return false;
     }
     auto frame_noc = [&](uint32_t page, uint32_t at) {
@@ -102,14 +102,14 @@ bool fill_writer_command(const km::Writer& wr, const km_command_t& r) {
         if (!none && !wr.wait_front(kCbOut, per)) {
             return true;
         }
-        if (!none && !item_fits(wr, per, r.seq)) {
+        if (!none && !item_fits(wr, per, r.sequence)) {
             return false;
         }
         const uint32_t b = km::wall();
         const uint32_t page = (id & kItemSlot) * per;
         if (page / chunk >= kDirFrameMax) {
-            wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, r.seq);
-            *wr.ctl(KM_CTL_STOP) = 1;
+            wr.gave_up(km::kStWriter, kGaveBadItem, kWhereBadSend, 0, r.sequence);
+            *wr.control(KM_CONTROL_STOP) = 1;
             return false;
         }
         const uint32_t row0 = id >> kItemRow0Shift & kItemRowMask;
@@ -121,7 +121,7 @@ bool fill_writer_command(const km::Writer& wr, const km_command_t& r) {
             noc_async_write(src, frame_noc(page + p, at), bytes);
             src += kOutPageBytes;
         }
-        if (!writes_sent(wr, r.seq)) {
+        if (!writes_sent(wr, r.sequence)) {
             return false;
         }
         if (!none) {
@@ -134,7 +134,7 @@ bool fill_writer_command(const km::Writer& wr, const km_command_t& r) {
     if (!wr.wait_front(kCbOut, per)) {
         return true;
     }
-    if (!item_fits(wr, per, r.seq)) {
+    if (!item_fits(wr, per, r.sequence)) {
         return false;
     }
     invalidate_l1_cache();
@@ -151,7 +151,7 @@ bool fill_writer_command(const km::Writer& wr, const km_command_t& r) {
         .bank_base_address = r.a4, .page_size = kOutPageBytes
     };
     noc_async_write(get_read_ptr(kCbOut), get_noc_addr(wr.me(), profs), kOutPageBytes);
-    if (!writes_sent(wr, r.seq)) {
+    if (!writes_sent(wr, r.sequence)) {
         return false;
     }
     cb_pop_front(kCbOut, per);

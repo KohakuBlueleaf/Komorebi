@@ -199,17 +199,17 @@ def result_dict(r):
         "error": r.error,
         "code": r.code,
         "where": r.where,
-        "thread_us": r.us,
+        "thread_microseconds": r.microseconds,
         "slots": o[F["RF_O_SLOTS"]],
         "items": o[F["RF_O_ITEMS"]],
         "marks": o[F["RF_O_MARKS"]],
         "heavy": o[F["RF_O_HEAVY"]],
-        "us": {n: o[F[f"RF_O_{n.upper()}"]] * us for n in names},
-        "middle_us": {
+        "microseconds": {n: o[F[f"RF_O_{n.upper()}"]] * us for n in names},
+        "middle_microseconds": {
             n: o[F[f"RF_O_{n}"]] * us
             for n in (
                 "TAKE",
-                "HEAVY_US",
+                "HEAVY_MICROSECONDS",
                 "CUT",
                 "SORT",
                 "ASSIGN",

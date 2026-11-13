@@ -17,14 +17,14 @@ namespace {
     // A give-up into the writer's gave-up word (the first one is kept) and the stop
     // word.
     void give_up(uint32_t code, uint32_t where) {
-        const uint32_t ctl = get_arg_val<uint32_t>(0);
+        const uint32_t control = get_arg_val<uint32_t>(0);
         volatile uint32_t* st = (
-            reinterpret_cast<volatile uint32_t*>(ctl + KM_CTL_STATE)
+            reinterpret_cast<volatile uint32_t*>(control + KM_CONTROL_STATE)
         );
         if (st[km::kStWriter] == 0) {
             st[km::kStWriter] = code | where << 8;
         }
-        *reinterpret_cast<volatile uint32_t*>(ctl + KM_CTL_STOP) = 1;
+        *reinterpret_cast<volatile uint32_t*>(control + KM_CONTROL_STOP) = 1;
     }
 
     // Polls ready() for at most kWaitCycles. False: gave up (recorded at `where`).

@@ -1,6 +1,6 @@
 """Parallel thread: a map, a reduction and a two-pass prefix sum on the work cluster's
-four cores with kmx_par (thread/parallel.c), each run with one partition and with four,
-or (--twelve) the map and prefix sum on 1, 4, 8 and 12 cores of the three clusters
+four cores with kmx_parallel (thread/parallel.c), each run with one partition and with
+four, or (--twelve) the map and prefix sum on 1, 4, 8 and 12 cores of the three clusters
 (thread/clusters.c), checked against numpy and timed. One JSON line; see README.md."""
 
 import argparse
@@ -15,20 +15,24 @@ import komorebi as km
 
 HERE = Path(__file__).resolve().parent
 T0 = time.monotonic()
-TICKS_PER_US = 50  # kmx_time() counts the 50 MHz timer
+TICKS_PER_MICROSECOND = 50  # kmx_time() counts the 50 MHz timer
 REGIONS = (
     "in", "map_1", "map_4", "map_quarters", "map_aliased", "vmap_1", "vmap_4",
-    "heavy_1", "heavy_4", "seq", "prefix_1", "prefix_4", "counters",
+    "heavy_1", "heavy_4", "sequence", "prefix_1", "prefix_4", "counters",
 )  # fmt: skip
 TIMES = (
     "map_1", "map_4", "map_quarters", "map_aliased", "vmap_1", "vmap_4", "heavy_1",
-    "heavy_4", "sum_1", "sum_4", "sum_4_packed", "sum_4_padded", "prefix_seq",
+    "heavy_4", "sum_1", "sum_4", "sum_4_packed", "sum_4_padded", "prefix_sequence",
     "prefix_1", "prefix_4", "invalidate_1", "invalidate_4", "flush_1", "flush_4",
-    "par_1000",
+    "parallel_1000",
 )  # fmt: skip
 SUMS = ("sum_1", "sum_4", "sum_4_packed", "sum_4_padded")
 WAY = 128 << 10  # the cluster's L3: one way of 128 KiB (README.md, "The rules")
-CODES = {0: "ok", 1: "bad words or regions", 2: "a kmx_par call was late or stopped"}
+CODES = {
+    0: "ok",
+    1: "bad words or regions",
+    2: "a kmx_parallel call was late or stopped",
+}
 TWELVE_REGIONS = (
     "in", "ref_map", "ref_heavy", "ref_pre", "map", "heavy", "pre", "sums",
 )  # fmt: skip
@@ -98,9 +102,12 @@ def program_twelve(data, repeats, rounds, deadline):
     return prog
 
 
-def times_us(words, at):
+def times_microseconds(words, at):
     """{cores: microseconds} of four result words from `at`."""
-    return {h: round(words[at + i] / TICKS_PER_US, 1) for i, h in enumerate(X280_CORES)}
+    return {
+        h: round(words[at + i] / TICKS_PER_MICROSECOND, 1)
+        for i, h in enumerate(X280_CORES)
+    }
 
 
 def run_twelve(args, data):
@@ -128,10 +135,10 @@ def run_twelve(args, data):
     want["prefix"] = exclusive_prefix(data)
     out = {"words": args.words, "rounds": args.rounds}
     out["codes"] = {c: TWELVE_CODES.get(r.code, r.code) for c, r in results.items()}
-    out["us"], out["exact"] = {}, {}
+    out["microseconds"], out["exact"] = {}, {}
     for p, k in enumerate(PATTERNS):
         region = "pre" if k == "prefix" else k
-        out["us"][k] = times_us(w, 4 * p)
+        out["microseconds"][k] = times_microseconds(w, 4 * p)
         differ = dict(zip(X280_CORES, w[12 + 4 * p : 16 + 4 * p]))  # words that differ
         out["exact"][f"{k}_1"] = bool((got[f"ref_{region}"] == want[k]).all())
         out["exact"][f"{k}_4"] = differ[4] == 0
@@ -139,7 +146,7 @@ def run_twelve(args, data):
         out["exact"][f"{k}_12"] = (
             bool((got[region] == want[k]).all()) and not differ[12]
         )
-    out["us"]["push_in"] = times_us(w, 24)
+    out["microseconds"]["push_in"] = times_microseconds(w, 24)
     out["ok"] = all(
         r.ran and r.code == 0 and r.error == "none" for r in results.values()
     ) and all(out["exact"].values())
@@ -152,7 +159,7 @@ def check(data, rounds, got, words):
     want = {"map_1": light, "map_4": light, "map_quarters": light, "vmap_1": light}
     want["map_aliased"] = light
     want.update({"vmap_4": light, "heavy_1": heavy, "heavy_4": heavy})
-    want.update({"seq": pre, "prefix_1": pre, "prefix_4": pre})
+    want.update({"sequence": pre, "prefix_1": pre, "prefix_4": pre})
     exact = {k: bool((got[k] == v).all()) for k, v in want.items()}
     total, at = int(data.astype(np.uint64).sum()), len(TIMES)
     for i, name in enumerate(SUMS):
@@ -196,13 +203,15 @@ def main():
         "code": CODES.get(r.code, r.code),
     }
     out["error"] = r.error
-    out["thread_ms"] = round(r.us / 1e3, 1)
-    out["us"] = {k: round(words[i] / TICKS_PER_US, 1) for i, k in enumerate(TIMES)}
+    out["thread_ms"] = round(r.microseconds / 1e3, 1)
+    out["microseconds"] = {
+        k: round(words[i] / TICKS_PER_MICROSECOND, 1) for i, k in enumerate(TIMES)
+    }
     out["exact"] = check(data, args.rounds, got, words)
-    us = out["us"]
+    us = out["microseconds"]
     pairs = {"map": ("map_1", "map_4"), "vmap": ("vmap_1", "vmap_4")}
     pairs.update({"heavy": ("heavy_1", "heavy_4"), "sum": ("sum_1", "sum_4")})
-    pairs.update({"prefix": ("prefix_seq", "prefix_4")})
+    pairs.update({"prefix": ("prefix_sequence", "prefix_4")})
     out["four_cores_x"] = {
         k: round(us[a] / us[b], 2) if us[b] else None for k, (a, b) in pairs.items()
     }

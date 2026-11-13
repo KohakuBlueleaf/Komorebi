@@ -1,5 +1,5 @@
-// A core's port to the X280 core that serves it: the X280 core's tells and answers land
-// in this core's KM_CTL_X280 lines; the core's asks and tells go to its mailbox line.
+// A core's port to the X280 core that serves it: its tells and answers land in this
+// core's KM_CONTROL_X280 lines; the core's asks and tells go to its mailbox.
 #pragma once
 
 #include <stdint.h>
@@ -13,7 +13,9 @@ namespace km {
     constexpr uint32_t kWhereX280Answer = 37;  // no answer to an ask in time
     constexpr uint32_t kWhereX280Tell = 38;    // no tell from the X280 core in time
     constexpr uint32_t kWhereX280None = 39;  // the program gave this core no X280 core
-    static_assert(kWhereX280Send > kWhereDynCounter, "after the dynamic where codes");
+    static_assert(
+        kWhereX280Send > kWhereMessagesCounter, "after the dynamic where codes"
+    );
 
 }  // namespace km
 
@@ -22,7 +24,7 @@ namespace km {
 
     // One message: a sequence number and three words.
     struct X280Msg {
-        uint32_t seq;
+        uint32_t sequence;
         uint32_t w[3];
     };
 
@@ -36,17 +38,17 @@ namespace km {
 
         // Whether the program gave this core an X280 core.
         bool served() const {
-            return c_.ctl(KM_CTL_X280 + KM_X280_TO)[KM_X280_TO_BOX] != 0;
+            return c_.control(KM_CONTROL_X280 + KM_X280_TO)[KM_X280_TO_BOX] != 0;
         }
 
         // The X280 core's newest tell, if it is newer than the last one looked at: true
         // and `m`. Never waits; tells in between are lost (latest wins).
         bool told(X280Msg& m) {
             invalidate_l1_cache();
-            if (!read(KM_X280_TELL, m) || m.seq == told_) {
+            if (!read(KM_X280_TELL, m) || m.sequence == told_) {
                 return false;
             }
-            told_ = m.seq;
+            told_ = m.sequence;
             return true;
         }
 
@@ -55,7 +57,7 @@ namespace km {
         bool wait_told(X280Msg& m) {
             const uint32_t code = c_.poll(
                 [&] {
-                    return read(KM_X280_TELL, m) && m.seq != told_;
+                    return read(KM_X280_TELL, m) && m.sequence != told_;
                 },
                 c_.args().wait_limit
             );
@@ -63,7 +65,7 @@ namespace km {
                 c_.gave_up(word_, code, kWhereX280Tell, 0, told_);
                 return false;
             }
-            told_ = m.seq;
+            told_ = m.sequence;
             return true;
         }
 
@@ -78,23 +80,23 @@ namespace km {
             return send(KM_BOX_ASK, ++asks_, a, b, d) ? asks_ : 0;
         }
 
-        // The answer to ask `seq`, if it landed: true and `m`. Never waits.
-        bool answered(uint32_t seq, X280Msg& m) const {
+        // The answer to ask `sequence`, if it landed: true and `m`. Never waits.
+        bool answered(uint32_t sequence, X280Msg& m) const {
             invalidate_l1_cache();
-            return read(KM_X280_ANSWER, m) && m.seq == seq;
+            return read(KM_X280_ANSWER, m) && m.sequence == sequence;
         }
 
-        // Waits (with a timeout) for the answer to ask `seq`. False: gave up
+        // Waits (with a timeout) for the answer to ask `sequence`. False: gave up
         // (recorded).
-        bool wait_answer(uint32_t seq, X280Msg& m) const {
+        bool wait_answer(uint32_t sequence, X280Msg& m) const {
             const uint32_t code = c_.poll(
                 [&] {
-                    return read(KM_X280_ANSWER, m) && m.seq == seq;
+                    return read(KM_X280_ANSWER, m) && m.sequence == sequence;
                 },
                 c_.args().wait_limit
             );
             if (code != kGaveNone) {
-                c_.gave_up(word_, code, kWhereX280Answer, 0, seq);
+                c_.gave_up(word_, code, kWhereX280Answer, 0, sequence);
                 return false;
             }
             return true;
@@ -107,9 +109,9 @@ namespace km {
                 pull_ = ask(KM_PULL_ASK, 0, 0);
             }
             X280Msg m;
-            const uint32_t seq = pull_;
+            const uint32_t sequence = pull_;
             pull_ = 0;
-            if (seq == 0 || !wait_answer(seq, m)) {
+            if (sequence == 0 || !wait_answer(sequence, m)) {
                 gave_ = true;
                 return 0;
             }
@@ -129,28 +131,28 @@ namespace km {
 
         // ask, then wait_answer. False: gave up (recorded).
         bool call(uint32_t a, uint32_t b, uint32_t d, X280Msg& m) {
-            const uint32_t seq = ask(a, b, d);
-            return seq != 0 && wait_answer(seq, m);
+            const uint32_t sequence = ask(a, b, d);
+            return sequence != 0 && wait_answer(sequence, m);
         }
 
     private:
-        // A 16-byte line of KM_CTL_X280 as one message; false while seq is 0.
+        // A 16-byte line of KM_CONTROL_X280 as one message; false while sequence is 0.
         bool read(uint32_t at, X280Msg& m) const {
-            volatile tt_l1_ptr uint32_t* p = c_.ctl(KM_CTL_X280 + at);
-            m.seq = p[0];
+            volatile tt_l1_ptr uint32_t* p = c_.control(KM_CONTROL_X280 + at);
+            m.sequence = p[0];
             m.w[0] = p[1];
             m.w[1] = p[2];
             m.w[2] = p[3];
-            return m.seq != 0;
+            return m.sequence != 0;
         }
 
-        // Stores {seq, a, b, d} into line `at` of the mailbox: the last store must
+        // Stores {sequence, a, b, d} into line `at` of the mailbox: the last store must
         // have left before KM_X280_OUT is written again.
-        bool send(uint32_t at, uint32_t seq, uint32_t a, uint32_t b, uint32_t d) {
-            volatile tt_l1_ptr uint32_t* to = c_.ctl(KM_CTL_X280 + KM_X280_TO);
+        bool send(uint32_t at, uint32_t sequence, uint32_t a, uint32_t b, uint32_t d) {
+            volatile tt_l1_ptr uint32_t* to = c_.control(KM_CONTROL_X280 + KM_X280_TO);
             const uint32_t xy = to[KM_X280_TO_TILE], box = to[KM_X280_TO_BOX];
             if (box == 0) {
-                c_.gave_up(word_, kGaveBadItem, kWhereX280None, 0, seq);
+                c_.gave_up(word_, kGaveBadItem, kWhereX280None, 0, sequence);
                 return false;
             }
             const uint32_t code = c_.poll(
@@ -160,16 +162,18 @@ namespace km {
                 c_.args().wait_limit
             );
             if (code != kGaveNone) {
-                c_.gave_up(word_, code, kWhereX280Send, 0, seq);
+                c_.gave_up(word_, code, kWhereX280Send, 0, sequence);
                 return false;
             }
-            volatile tt_l1_ptr uint32_t* out = c_.ctl(KM_CTL_X280 + KM_X280_OUT);
-            out[0] = seq;
+            volatile tt_l1_ptr uint32_t* out = (
+                c_.control(KM_CONTROL_X280 + KM_X280_OUT)
+            );
+            out[0] = sequence;
             out[1] = a;
             out[2] = b;
             out[3] = d;
             noc_async_write(
-                c_.args().ctl + KM_CTL_X280 + KM_X280_OUT,
+                c_.args().control + KM_CONTROL_X280 + KM_X280_OUT,
                 get_noc_addr(xy & 0xFFFFu, xy >> 16, box + at),
                 16
             );

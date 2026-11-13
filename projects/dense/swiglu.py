@@ -60,7 +60,9 @@ class Layer:
         a = {k: v.address for k, v in t.items()}
         loads = sp.loads(s, a["w1"], a["w3"], a["w2"])
         handles = [self.run.submit("load", self.group, w) for w in loads]
-        self.load_us = [e.us for e in self.run.wait(handles, timeout=10.0)]
+        self.load_microseconds = [
+            e.microseconds for e in self.run.wait(handles, timeout=10.0)
+        ]
         self.words = sp.commands(s, a["x"], a["y"])
         self.handler = self.run.program.handler("layer")
 
@@ -78,7 +80,7 @@ class Layer:
         bad = [e for e in events if e.kind != "done"]
         if bad:
             raise km.KomorebiError(f"{len(bad)} commands not done: {bad[0]}")
-        return host_s, np.array([e.us for e in events]).reshape(n, -1)
+        return host_s, np.array([e.microseconds for e in events]).reshape(n, -1)
 
     def single(self, n):
         """n calls one at a time, each waited for: host microseconds each."""
@@ -125,7 +127,7 @@ def profile_per_call(before, after, calls, mhz):
     return {
         "slowest_rank": slow,
         "mean_busy_over_slowest": round(float(busy.mean() / busy[slow]), 3),
-        "us": {n: round(pr[slow, K[k]] / mhz, 3) for n, k in SHARES.items()},
+        "microseconds": {n: round(pr[slow, K[k]] / mhz, 3) for n, k in SHARES.items()},
     }
 
 
@@ -178,7 +180,7 @@ def timed(layer, args, index, out):
     mhz = aiclk_mhz(index)
     out["profile_single"] = profile_per_call(p0, layer.profile(), 20, mhz)
     one = float(np.median(single))
-    out["single_us"] = {"median": one, "min": float(single.min())}
+    out["single_microseconds"] = {"median": one, "min": float(single.min())}
     log(f"single call {one:.2f} us")
     host_s, _ = layer.calls(200)  # back to back: the loop's length from this rate
     rate = host_s * 1e6 / 200
@@ -186,15 +188,16 @@ def timed(layer, args, index, out):
     p0 = layer.profile()
     (host_s, us), out["host"] = measured(index, lambda: layer.calls(n))
     out["host"] |= {"calls": n, "seconds": round(host_s, 3)}
-    out["host"]["us_per_call"] = round(host_s * 1e6 / n, 3)
-    out["host"]["command_us_median"] = np.median(us, axis=0).round(2).tolist()
+    out["host"]["microseconds_per_call"] = round(host_s * 1e6 / n, 3)
+    out["host"]["command_microseconds_median"] = np.median(us, axis=0).round(2).tolist()
     out["profile_host"] = profile_per_call(p0, layer.profile(), n, mhz)
-    log(f"host-fed: {out['host']['us_per_call']} us per call")
+    log(f"host-fed: {out['host']['microseconds_per_call']} us per call")
     n2 = int(min(args.max_calls, max(2, args.cut_seconds * 1e6 / rate)))
     host_s, _ = layer.calls(n2, exclusive=True)
-    out["host_exclusive_us_per_call"] = round(host_s * 1e6 / n2, 3)
-    log(f"host-fed, exclusive: {out['host_exclusive_us_per_call']} us per call")
-    out["tflops"] = sp.flops(layer.s) / out["host"]["us_per_call"] / 1e6
+    out["host_exclusive_microseconds_per_call"] = round(host_s * 1e6 / n2, 3)
+    exclusive = out["host_exclusive_microseconds_per_call"]
+    log(f"host-fed, exclusive: {exclusive} us per call")
+    out["tflops"] = sp.flops(layer.s) / out["host"]["microseconds_per_call"] / 1e6
 
 
 def main():
@@ -221,10 +224,10 @@ def main():
         t["prof"] = card.prof_tensor(session, cores)
         log("uploaded")
         layer = Layer(session, s, t, args.fidelity)
-        out["load_us"] = layer.load_us
+        out["load_microseconds"] = layer.load_microseconds
         log(f"loaded, group {s.group}, {len(layer.words)} commands per call")
         host_s, _ = layer.calls(args.calls)
-        out["first_calls_us"] = round(host_s * 1e6 / args.calls, 3)
+        out["first_calls_microseconds"] = round(host_s * 1e6 / args.calls, 3)
         log(f"{args.calls} calls in {host_s:.4f} s")
         if args.seconds:
             timed(layer, args, index, out)

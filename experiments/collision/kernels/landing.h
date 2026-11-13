@@ -4,16 +4,16 @@
 
 #include <stdint.h>
 
-/* Control block (CB kCtlCb, 1024 B, same L1 address on every core): bytes 0..255 are
- * four 64 B command slots; protocol B's sequence word is at LANDING_SEQ_OFF. */
+/* Control block (CB kControlCb, 1024 B, same L1 address everywhere): bytes 0..255 are
+ * four 64 B command slots; protocol B's sequence word is at LANDING_SEQUENCE_OFF. */
 #define LANDING_SLOT_BYTES 64u
 #define LANDING_SLOTS 4u
-#define LANDING_SEQ_OFF 0x280u
+#define LANDING_SEQUENCE_OFF 0x280u
 
-/* Payload word w (0..15) of command seq: a mix of seq, w and the run tag, so a core can
- * recompute every word and a command left in L1 by an earlier run never verifies. */
-static inline uint32_t landing_word(uint32_t seq, uint32_t w, uint32_t tag) {
-    uint32_t x = seq * 0x9E3779B1u ^ (w + 1u) * 0x85EBCA77u ^ tag * 0xC2B2AE3Du;
+/* Word w (0..15) of command sequence: a mix of sequence, w and the run tag, so a core
+ * recomputes every word and a stale command from an earlier run never verifies. */
+static inline uint32_t landing_word(uint32_t sequence, uint32_t w, uint32_t tag) {
+    uint32_t x = sequence * 0x9E3779B1u ^ (w + 1u) * 0x85EBCA77u ^ tag * 0xC2B2AE3Du;
     x ^= x >> 15;
     x *= 0x2C1B3C6Du;
     x ^= x >> 12;
@@ -21,8 +21,8 @@ static inline uint32_t landing_word(uint32_t seq, uint32_t w, uint32_t tag) {
 }
 
 /* Echo word (protocol A, words 0, 4, 8, 12) and sequence word (protocol B). */
-static inline uint32_t landing_echo(uint32_t seq, uint32_t tag) {
-    return (tag << 16) | (seq & 0xFFFFu);
+static inline uint32_t landing_echo(uint32_t sequence, uint32_t tag) {
+    return (tag << 16) | (sequence & 0xFFFFu);
 }
 
 /* Per-core counters: 32 words, written to L1 and then to page `me` of a DRAM tensor. */
@@ -37,17 +37,17 @@ enum {
     LC_CHECK_HI = 7,
     LC_CHECK_MAX = 8,
     LC_CHECK_MIN = 9,
-    LC_CHECKS = 10,   /* number of timestamped checks */
-    LC_TORN_SEQ = 11, /* first torn command: seq, word index, value seen */
+    LC_CHECKS = 10,        /* number of timestamped checks */
+    LC_TORN_SEQUENCE = 11, /* first torn command: sequence, word index, value seen */
     LC_TORN_WORD = 12,
     LC_TORN_VALUE = 13,
     LC_HEALED = 14,     /* torn commands whose payload verified on a later look */
     LC_HEAL_POLLS = 15, /* most looks a torn command needed to verify */
     LC_LOST = 16,       /* timed wait gave up (command never accepted) */
-    LC_LOST_SEQ = 17,
+    LC_LOST_SEQUENCE = 17,
     LC_MARKER_COST = 18, /* cycles between two back-to-back wall-clock reads */
     LC_TAG = 19,
-    LC_LAST_SEQ = 20, /* last seq completed */
+    LC_LAST_SEQUENCE = 20, /* last sequence completed */
     LC_WORDS = 32
 };
 

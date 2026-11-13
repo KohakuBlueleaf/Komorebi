@@ -62,7 +62,9 @@ def parse(argv=None):
     p.add_argument("--deadline", type=float, default=1.0, help="per command, seconds")
     p.add_argument("--trace", action="store_true")
     p.add_argument("--batch", type=int, default=64, help="commands per host store")
-    p.add_argument("--settle-us", type=float, default=1.0, help="pause after a fence")
+    p.add_argument(
+        "--settle-microseconds", type=float, default=1.0, help="pause after a fence"
+    )
     p.add_argument("--no-check", action="store_true", help="skip reading outputs")
     p.add_argument("--seed", type=int, default=1)
     return p.parse_args(argv)
@@ -195,7 +197,7 @@ def run(session, args, rng):
         trace=n + 1 if args.trace else 0,
         deadline=args.deadline,
         batch=args.batch,
-        settle_us=args.settle_us,
+        settle_microseconds=args.settle_microseconds,
     )
     log(f"loaded: {cores} cores, depth {args.depth}")
 
@@ -243,10 +245,12 @@ def run(session, args, rng):
         "kernel": {
             k: result[k] for k in ("error_name", "commands", "events", "max_busy")
         },
-        "us_per_job_kernel": round(result["last"] / 50 / max(result["commands"], 1), 3),
-        "us_per_job_host": round(host_s * 1e6 / n, 3),
+        "microseconds_per_job_kernel": round(
+            result["last"] / 50 / max(result["commands"], 1), 3
+        ),
+        "microseconds_per_job_host": round(host_s * 1e6 / n, 3),
         "submit": args.submit,
-        "host_us_per_command": {
+        "host_microseconds_per_command": {
             "submit": round(run.submit_s * 1e6 / n, 3),
             "wait_python": round((run.wait_s - run.native_s) * 1e6 / n, 3),
             "wait_native": round(run.native_s * 1e6 / n, 3),
@@ -256,8 +260,8 @@ def run(session, args, rng):
         run.event(t) for t in handles if run.event(t) and run.event(t).kind == "done"
     ]
     if done:
-        us = np.array([e.us for e in done])
-        out["latency_us"] = {
+        us = np.array([e.microseconds for e in done])
+        out["latency_microseconds"] = {
             "mean": round(float(us.mean()), 3),
             "max": round(float(us.max()), 3),
         }
@@ -275,7 +279,7 @@ def run(session, args, rng):
         out["timed_out"] = {
             "handle": timed_out.handle,
             "slot": timed_out.slot,
-            "seq": timed_out.seq,
+            "sequence": timed_out.sequence,
             "group": list(timed_out.group),
             "not_reported": timed_out.cores,
         }
@@ -336,11 +340,13 @@ def trace_summary(trace, handles, groups):
             if lead is not None and lead > 0:
                 leads.append(lead)
     return {
-        "trace_us": {k: round(float(np.mean([p[k] for p in phases])), 3) for k in keys},
+        "trace_microseconds": {
+            k: round(float(np.mean([p[k] for p in phases])), 3) for k in keys
+        },
         "overlap": {
             "pairs": len(handles) - 1,
             "overlapping": len(leads),
-            "lead_us_mean": round(float(np.mean(leads)), 3) if leads else 0.0,
+            "lead_microseconds_mean": round(float(np.mean(leads)), 3) if leads else 0.0,
         },
     }
 

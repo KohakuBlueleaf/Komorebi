@@ -24,14 +24,16 @@
 #define KMD_LIM_CORES 0x300u  /* core block, KMD_H_WORDS words */
 #define KMD_LIM_ACKS 0x400u   /* ack word of slot j at + j * KM_ACK_STRIDE */
 #define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_command_t */
-#define KMD_LIM_DYN 0x1800u   /* status line of core c in a dynamic run at + c * 16 */
+/* status line of core c in a dynamic run at + c * 16 */
+#define KMD_LIM_MESSAGES 0x1800u
 #define KMD_LIM_BYTES 0x2000u
 /* upload region: args upload_bytes, not zeroed */
 #define KMD_LIM_UPLOAD KMD_LIM_BYTES
 #define KMD_READY_MAX 16u
-/* A hello's control block lies in [KMD_CTL_FLOOR, KMD_L1_BYTES - KM_CTL_BYTES]. */
-#define KMD_CTL_FLOOR 0x10000u /* below: the Tensix firmware and its mailboxes */
-#define KMD_L1_BYTES 0x180000u /* Blackhole Tensix L1, 1536 KiB */
+/* A hello's control block lies in [KMD_CONTROL_FLOOR, KMD_L1_BYTES - KM_CONTROL_BYTES].
+ */
+#define KMD_CONTROL_FLOOR 0x10000u /* below: the Tensix firmware and its mailboxes */
+#define KMD_L1_BYTES 0x180000u     /* Blackhole Tensix L1, 1536 KiB */
 #define KMD_HOST_DEPTH_MAX 64u
 
 /* Host buffer (pinned host memory the kernel writes through a posted window): four
@@ -40,7 +42,7 @@
 #define KMD_HOST_CONSUMED 1u /* word: commands taken from the host ring */
 /* word: events pushed (a hint; the event's index decides) */
 #define KMD_HOST_EVENTS 2u
-#define KMD_HOST_ERROR 3u /* word: KMD_ERR_* once the state is final */
+#define KMD_HOST_ERROR 3u /* word: KMD_ERROR_* once the state is final */
 #define KMD_HOST_READY 4u /* words 4 to 7: kmd_ready_t, one 16-byte store at READY */
 #define KMD_HOST_RING 64u /* byte offset of the event ring */
 
@@ -51,21 +53,22 @@
 #define KMD_STATE_FAILED 4u /* finished with an error: see the result block */
 
 /* Error codes. The core result is the ticks of the run, or ~code. */
-#define KMD_ERR_NONE 0u
-#define KMD_ERR_ARGS 1u      /* the argument block is not this run's or out of range */
-#define KMD_ERR_WINDOW 2u    /* a window did not read back as programmed */
-#define KMD_ERR_ALIGN 3u     /* control block address unaligned or outside L1 */
-#define KMD_ERR_DEADLINE 4u  /* a command's group missed its deadline */
-#define KMD_ERR_START 5u     /* the hello or a READY did not arrive in time */
-#define KMD_ERR_IDLE 6u      /* no command and nothing in flight for t_idle */
-#define KMD_ERR_STOPPED 7u   /* the runtime asked the kernel to stop */
-#define KMD_ERR_STOP_BUSY 9u /* a STOP command arrived with commands in flight */
-#define KMD_ERR_ENGINE 10u   /* core 1 did not stop within KMD_ENGINE_STOP_TICKS */
-/* An exception on core `req` (0 or 1): slot = mcause, seq = mepc, seen = mtval (low
- * words). The kernel finished without its state's pointers; the cluster restores. */
-#define KMD_ERR_TRAP 11u
+#define KMD_ERROR_NONE 0u
+#define KMD_ERROR_ARGS 1u     /* the argument block is not this run's or out of range */
+#define KMD_ERROR_WINDOW 2u   /* a window did not read back as programmed */
+#define KMD_ERROR_ALIGN 3u    /* control block address unaligned or outside L1 */
+#define KMD_ERROR_DEADLINE 4u /* a command's group missed its deadline */
+#define KMD_ERROR_START 5u    /* the hello or a READY did not arrive in time */
+#define KMD_ERROR_IDLE 6u     /* no command and nothing in flight for t_idle */
+#define KMD_ERROR_STOPPED 7u  /* the runtime asked the kernel to stop */
+#define KMD_ERROR_STOP_BUSY 9u /* a STOP command arrived with commands in flight */
+#define KMD_ERROR_ENGINE 10u   /* core 1 did not stop within KMD_ENGINE_STOP_TICKS */
+/* Exception on core `req` (0 or 1): slot = mcause, sequence = mepc, seen = mtval (low
+ * words). The kernel ended without its state's pointers; the cluster restores. */
+#define KMD_ERROR_TRAP 11u
 
-/* Reasons of a KM_EV_REJECTED event (its aux): the command was consumed, not run. */
+/* Reasons of a KM_EVENT_REJECTED event (its auxiliary): the command was consumed, not
+ * run. */
 #define KMD_REJECT_HANDLER 1u /* handler 240 to 249 */
 #define KMD_REJECT_FLAGS 2u   /* reserved flag bit 0 set */
 #define KMD_REJECT_GROUP 3u   /* count 0, or the group does not lie inside the cores */
@@ -75,20 +78,21 @@
 #define KMD_REJECT_STREAMS 6u  /* KM_HANDLER_RUN beyond KM_STREAM_MAX_ACTIVE streams */
 #define KMD_REJECT_UNKNOWN 7u  /* KM_HANDLER_CANCEL of a req no active stream has */
 #define KMD_REJECT_DEADLINE 8u /* KM_HANDLER_DEADLINE of 0 (a deadline is never 0) */
-#define KMD_REJECT_QUEUE 9u    /* a KM_F_QUEUE command while KM_QUEUE_JOBS jobs wait */
-#define KMD_REJECT_DROPPED 10u /* to the engine: a queued job of its stream dropped */
-#define KMD_REJECT_BUSY 11u    /* engine, work cluster: the command cannot go now */
-#define KMD_REJECT_DYN 12u     /* a dynamic run with KM_F_QUEUE */
+/* a KM_FLAG_QUEUE command while KM_QUEUE_JOBS jobs wait */
+#define KMD_REJECT_QUEUE 9u
+#define KMD_REJECT_DROPPED 10u  /* to the engine: a queued job of its stream dropped */
+#define KMD_REJECT_BUSY 11u     /* engine, work cluster: the command cannot go now */
+#define KMD_REJECT_MESSAGES 12u /* a dynamic run with KM_FLAG_QUEUE */
 
 /* Engine to kernel: POST host event {a0 req, a1 status, a2 ticks}. Kernel to engine
  * events: RUN {req offset, ticks bytes} of an admitted upload, CANCEL {ticks req}. */
 #define KMD_HANDLER_POST 248u
 /* Engine to kernel: drop its queued jobs of stream tag a0 (the header's slot bits). */
 #define KMD_HANDLER_DROP 247u
-#define KMD_EV_RUN 0x10u
-#define KMD_EV_CANCEL 0x11u
+#define KMD_EVENT_RUN 0x10u
+#define KMD_EVENT_CANCEL 0x11u
 /* Kernel to engine, once after a KMD_REJECT_BUSY: a slot or the queue has room. */
-#define KMD_EV_WAKE 0x12u
+#define KMD_EVENT_WAKE 0x12u
 
 /* Test builds with KMD_VERIFY_LINES: a0 = offset, a1 = bytes of the upload region to
  * check against kmd_verify_word(a2, word index from the region's start). */
@@ -121,10 +125,10 @@ typedef struct {
 /* Result block words. Pairs named _LO / _HI hold a 64-bit count. */
 enum {
     KMD_R_STATE = 0,         /* KMD_STATE_* */
-    KMD_R_ERROR = 1,         /* KMD_ERR_* */
+    KMD_R_ERROR = 1,         /* KMD_ERROR_* */
     KMD_R_WHERE = 2,         /* KMD_WHERE_* */
     KMD_R_SLOT = 3,          /* the slot of a missed deadline */
-    KMD_R_SEQ = 4,           /* its sequence number */
+    KMD_R_SEQUENCE = 4,      /* its sequence number */
     KMD_R_REQ = 5,           /* its host command number */
     KMD_R_SEEN = 6,          /* the column that had not reported READY, or a bad word */
     KMD_R_HOST_COMMANDS = 7, /* commands taken from the host ring */
@@ -132,7 +136,7 @@ enum {
     KMD_R_EVENTS = 9,        /* events pushed to the host */
     KMD_R_BUSY = 10,         /* busy slots when the kernel finished (bit j = slot j) */
     KMD_R_MAX_BUSY = 11,     /* most slots busy at once */
-    KMD_R_CTL = 12,          /* control block address from the hello */
+    KMD_R_CONTROL = 12,      /* control block address from the hello */
     KMD_R_TICKS_LO = 13,     /* ticks from the first command taken to the finish */
     KMD_R_TICKS_HI = 14,
     KMD_R_IDLE_LO = 15, /* loop passes with a free slot and no command */
@@ -144,35 +148,36 @@ enum {
     KMD_R_BOOT_TICKS = 21, /* ticks from the start to READY */
     KMD_R_LAST_LO = 22,    /* ticks from the first command taken to the last event */
     KMD_R_LAST_HI = 23,
-    KMD_R_REJECTED = 24, /* commands answered with KM_EV_REJECTED */
-    KMD_R_HELD = 25,     /* commands that waited at least one pass (EXIT, KM_F_EXCL) */
-    KMD_R_NO_ROOM = 26,  /* commands that waited for room in the event ring */
+    KMD_R_REJECTED = 24, /* commands answered with KM_EVENT_REJECTED */
+    KMD_R_HELD = 25, /* commands that waited at least one pass (EXIT, KM_FLAG_EXCLUSIVE)
+                      */
+    KMD_R_NO_ROOM = 26, /* commands that waited for room in the event ring */
     KMD_R_CHECKED = 27, /* KMD_VERIFY_LINES builds: commands whose words were checked */
     KMD_R_BAD_LINES = 28, /* of those, commands with a word that did not match */
     KMD_R_BAD_FIRST = 29, /* the first such command's number */
-    KMD_R_RESULTS = 30,   /* KM_F_RESULT commands completed */
+    KMD_R_RESULTS = 30,   /* KM_FLAG_RESULT commands completed */
     KMD_R_RESULT = 31,    /* the latest one's result */
     KMD_R_WORDS = 32
 };
 
 /* Core block in LIM: each word has one writer, the core it names. */
 enum {
-    KMD_H_MARKER0 = 0,     /* core 0: its loop passes / 1024, every 1024 passes */
-    KMD_H_MARKER1 = 1,     /* core 1: the same for the engine's loop */
-    KMD_H_ENGINE = 2,      /* core 1: KMD_ENGINE_* */
-    KMD_H_PASSES = 3,      /* core 1: engine loop passes, low word, at its end */
-    KMD_H_COMMANDS = 4,    /* core 1: commands it sent */
-    KMD_H_POSTS = 5,       /* core 1: host events it posted */
-    KMD_H_EVENTS = 6,      /* core 1: events it read */
-    KMD_H_RUNS = 7,        /* core 1: streams it started */
-    KMD_H_LOST = 8,        /* core 0: posts dropped at the finish for lack of room */
-    KMD_H_SOURCE = 9,      /* core 0: the source of the error's command (KMD_R_REQ) */
-    KMD_H_DYN_GAVE = 10,   /* core 0: 1 + the core whose status line said gave up */
-    KMD_H_DYN_CHECKS = 11, /* core 0: two-pass checks of dynamic runs */
-    KMD_H_DYN_QUIET = 12,  /* core 0: mtime, low word, of the last quiet end */
-    KMD_H_ABANDONED = 13,  /* core 0: commands in flight or queued at the finish */
-    KMD_H_TRAP_CAUSE = 14, /* core 1, after a trap: mcause */
-    KMD_H_TRAP_PC = 15,    /* core 1, after a trap: mepc, low word */
+    KMD_H_MARKER0 = 0,  /* core 0: its loop passes / 1024, every 1024 passes */
+    KMD_H_MARKER1 = 1,  /* core 1: the same for the engine's loop */
+    KMD_H_ENGINE = 2,   /* core 1: KMD_ENGINE_* */
+    KMD_H_PASSES = 3,   /* core 1: engine loop passes, low word, at its end */
+    KMD_H_COMMANDS = 4, /* core 1: commands it sent */
+    KMD_H_POSTS = 5,    /* core 1: host events it posted */
+    KMD_H_EVENTS = 6,   /* core 1: events it read */
+    KMD_H_RUNS = 7,     /* core 1: streams it started */
+    KMD_H_LOST = 8,     /* core 0: posts dropped at the finish for lack of room */
+    KMD_H_SOURCE = 9,   /* core 0: the source of the error's command (KMD_R_REQ) */
+    KMD_H_MESSAGES_GAVE = 10, /* core 0: 1 + the core whose status line said gave up */
+    KMD_H_MESSAGES_CHECKS = 11, /* core 0: two-pass checks of dynamic runs */
+    KMD_H_MESSAGES_QUIET = 12,  /* core 0: mtime, low word, of the last quiet end */
+    KMD_H_ABANDONED = 13,       /* core 0: commands in flight or queued at the finish */
+    KMD_H_TRAP_CAUSE = 14,      /* core 1, after a trap: mcause */
+    KMD_H_TRAP_PC = 15,         /* core 1, after a trap: mepc, low word */
     KMD_H_WORDS = 16
 };
 
@@ -219,8 +224,8 @@ typedef struct {
     uint64_t work_event_depth; /* events per ring, a power of two, at most 1024 */
     uint64_t work_noc[KMD_WORK_CLUSTERS];      /* each cluster's tile: x | y << 16 */
     uint64_t work_noc_addr[KMD_WORK_CLUSTERS]; /* NoC address there of KMD_WORK_* */
-    uint64_t dyn_handler; /* the program's dynamic handler (dynamic.h); 0: none */
-    uint64_t version;     /* KMD_ARGS_VERSION */
+    uint64_t messages_handler; /* the program's dynamic handler (dynamic.h); 0: none */
+    uint64_t version;          /* KMD_ARGS_VERSION */
 } kmd_args_t;
 
 /* The ready block: the host waits for `mark` (its buffer is zeroed before the run), as
@@ -311,7 +316,7 @@ KMD_STATIC_ASSERT(
     KMD_LIM_ACKS + KM_RING_SLOTS * KM_ACK_STRIDE <= KMD_LIM_HRING, "LIM: ack words"
 );
 KMD_STATIC_ASSERT(
-    KMD_LIM_HRING + KMD_HOST_DEPTH_MAX * 64u <= KMD_LIM_DYN, "LIM: host ring"
+    KMD_LIM_HRING + KMD_HOST_DEPTH_MAX * 64u <= KMD_LIM_MESSAGES, "LIM: host ring"
 );
-KMD_STATIC_ASSERT(KMD_LIM_DYN + 16u * KM_CORES_MAX <= KMD_LIM_BYTES, "LIM: lines");
+KMD_STATIC_ASSERT(KMD_LIM_MESSAGES + 16u * KM_CORES_MAX <= KMD_LIM_BYTES, "LIM: lines");
 KMD_STATIC_ASSERT((KMD_HOST_DEPTH_MAX & (KMD_HOST_DEPTH_MAX - 1u)) == 0, "power of 2");

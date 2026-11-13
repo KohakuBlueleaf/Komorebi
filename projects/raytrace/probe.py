@@ -14,7 +14,7 @@ from projects.raytrace import card, packets
 from projects.raytrace.reference import harness
 from ref import native, raytrace, scenes
 
-FORMS = ("imm", "data", "mask", "stack", "fast", "sync")
+FORMS = ("immediate", "data", "mask", "stack", "fast", "sync")
 
 
 def main():

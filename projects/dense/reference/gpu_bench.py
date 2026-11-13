@@ -22,7 +22,7 @@ def build():
     nvcc = native.find_nvcc()
     if nvcc is None:
         return None
-    out = native.build_dir() / "gemm_gpu"
+    out = native.build_directory() / "gemm_gpu"
     if native.stale(out, [SOURCE]):
         arch = os.environ.get("KR_CUDA_ARCH", "sm_70")
         cmd = [nvcc, "-std=c++17", "-O3", f"-arch={arch}", "-o", out, SOURCE]
@@ -47,7 +47,7 @@ def main():
         row = power.run_with_power([str(c) for c in cmd], gpu=gpu)
         p = row["power"]
         if "gpu_mean_w" in p:
-            p["joules_per_call"] = p["gpu_mean_w"] * row["us_per_call"] * 1e-6
+            p["joules_per_call"] = p["gpu_mean_w"] * row["microseconds_per_call"] * 1e-6
         out["rows"].append(row)
         print(json.dumps(row), flush=True)
     if args.json:

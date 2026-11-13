@@ -5,13 +5,13 @@ the stream draws at random, run three ways that must give the same tiles.
 
 ```python
 s = ks.Stream(seed=seed)
-j, x, count, first, room, base, page = s.regs(7)
+j, x, count, first, room, base, page = s.registers(7)
 top = s.label()
 s.rand(x)
-s.mod(count, x, n_cores)
+s.mod(count, x, core_count)
 s.addi(count, count, 1)  # 1 to every core
 if form == "submit":  # the stream picks the first core too
-    s.sub(room, n_cores, count)
+    s.sub(room, core_count, count)
     s.addi(room, room, 1)
     s.shr(first, x, 8)
     s.mod(first, first, room)

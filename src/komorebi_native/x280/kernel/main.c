@@ -58,16 +58,16 @@ static int args_valid(const volatile kmd_args_t* a, uint64_t run) {
         (a->state_ddr & 63u) == 0 && (a->host_noc_addr & 63u) == 0 &&
         (a->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE &&
-        work_args_valid(a) && a->dyn_handler <= KM_HANDLER_USER_MAX
+        work_args_valid(a) && a->messages_handler <= KM_HANDLER_USER_MAX
     );
 }
 
 /* Start-up: host window, hello, panels (so a failed READY wait can stop the grid),
- * READY. Returns KMD_ERR_NONE or an error. */
+ * READY. Returns KMD_ERROR_NONE or an error. */
 static uint32_t boot(kmd_t* k) {
     const volatile kmd_args_t* a = k->args;
-    if (events_open(k) != KMD_ERR_NONE) {
-        result_error(k, KMD_ERR_WINDOW, 0, 0, 0, 0);
+    if (events_open(k) != KMD_ERROR_NONE) {
+        result_error(k, KMD_ERROR_WINDOW, 0, 0, 0, 0);
         return k->error;
     }
     events_word(k, KMD_HOST_STATE, KMD_STATE_BOOT);
@@ -76,18 +76,23 @@ static uint32_t boot(kmd_t* k) {
     result_where(k, KMD_WHERE_HELLO);
     kmd_wait_t w = wait_word(k, mb, 1u, by);
     if (w != KMD_OK) {
-        result_error(k, w == KMD_STOP ? KMD_ERR_STOPPED : KMD_ERR_START, 0, 0, 0, 0);
+        result_error(
+            k, w == KMD_STOP ? KMD_ERROR_STOPPED : KMD_ERROR_START, 0, 0, 0, 0
+        );
         return k->error;
     }
     x280_fence_ir();
-    const uint32_t ctl = mb[1];
-    result_word(k, KMD_R_CTL, ctl);
-    if ((ctl & 63u) || ctl < KMD_CTL_FLOOR || ctl > KMD_L1_BYTES - KM_CTL_BYTES) {
-        result_error(k, KMD_ERR_ALIGN, 0, 0, 0, ctl);
+    const uint32_t control = mb[1];
+    result_word(k, KMD_R_CONTROL, control);
+    if (
+        (control & 63u) || control < KMD_CONTROL_FLOOR ||
+        control > KMD_L1_BYTES - KM_CONTROL_BYTES
+    ) {
+        result_error(k, KMD_ERROR_ALIGN, 0, 0, 0, control);
         return k->error;
     }
-    if (grid_open(k, ctl) != KMD_ERR_NONE) {
-        result_error(k, KMD_ERR_WINDOW, 0, 0, 0, 0);
+    if (grid_open(k, control) != KMD_ERROR_NONE) {
+        result_error(k, KMD_ERROR_WINDOW, 0, 0, 0, 0);
         return k->error;
     }
     result_where(k, KMD_WHERE_READY);
@@ -101,12 +106,12 @@ static uint32_t boot(kmd_t* k) {
             )
         );
         if (w != KMD_OK) {
-            const uint32_t e = w == KMD_STOP ? KMD_ERR_STOPPED : KMD_ERR_START;
+            const uint32_t e = w == KMD_STOP ? KMD_ERROR_STOPPED : KMD_ERROR_START;
             result_error(k, e, 0, 0, 0, c);
             return k->error;
         }
     }
-    return KMD_ERR_NONE;
+    return KMD_ERROR_NONE;
 }
 
 #ifdef KMD_VERIFY_LINES
@@ -143,15 +148,15 @@ static void verify_line(kmd_t* k) {
     }
 }
 
-/* Test build: KMD_HANDLER_CHECK_UPLOAD. Answers PONG with aux = words that differ (at
- * most 0xFFFFFF) and ticks = the first one's index from `off` (~0: none). */
+/* Test build: KMD_HANDLER_CHECK_UPLOAD. Answers PONG with auxiliary = words that differ
+ * (at most 0xFFFFFF) and ticks = the first one's index from `off` (~0: none). */
 static void upload_check(
     kmd_t* k, uint32_t req, uint32_t off, uint32_t bytes, uint32_t seed
 ) {
     if (
         ((off | bytes) & 63u) || off > k->upload_bytes || bytes > k->upload_bytes - off
     ) {
-        host_push(k, req, KM_EV_REJECTED | (KMD_REJECT_REGION << 8), 0);
+        host_push(k, req, KM_EVENT_REJECTED | (KMD_REJECT_REGION << 8), 0);
         k->rejected++;
         return;
     }
@@ -168,7 +173,9 @@ static void upload_check(
         }
         bad += lo + hi;
     }
-    host_push(k, req, KM_EV_PONG | ((bad < 0xFFFFFFu ? bad : 0xFFFFFFu) << 8), first);
+    host_push(
+        k, req, KM_EVENT_PONG | ((bad < 0xFFFFFFu ? bad : 0xFFFFFFu) << 8), first
+    );
 }
 #endif
 
@@ -182,7 +189,7 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     const uint32_t handler = hdr & 0xFFu, flags = (hdr >> 8) & 0xFFu;
     const uint32_t group = (uint32_t)l[1], a0 = (uint32_t)(l[1] >> 32);
     const uint32_t first = group & 0xFFFFu, count = group >> 16;
-    const uint32_t queued = handler != KM_HANDLER_EXIT && (flags & KM_F_QUEUE);
+    const uint32_t queued = handler != KM_HANDLER_EXIT && (flags & KM_FLAG_QUEUE);
     if (handler == KM_HANDLER_DEADLINE && a0 != 0) {
         ring_consumed(r);
         r->t_command = (uint64_t)a0 * 50u;
@@ -191,7 +198,7 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     if (handler == KM_HANDLER_STOP && host) {
         ring_consumed(r);
         if (k->busy) {
-            result_error(k, KMD_ERR_STOP_BUSY, 0, k->seq, req, k->busy);
+            result_error(k, KMD_ERROR_STOP_BUSY, 0, k->sequence, req, k->busy);
         }
         return KMD_FINISH;
     }
@@ -214,7 +221,7 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     }
     if (handler == KM_HANDLER_PING) {
         ring_consumed(r);
-        ring_push(r, req, KM_EV_PONG, 0);
+        ring_push(r, req, KM_EVENT_PONG, 0);
         k->t_last_event = now;
         return KMD_TAKEN;
     }
@@ -247,7 +254,9 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     if (host && handler == KMD_HANDLER_TRAP) {
         ring_consumed(r);
         const uint64_t v = *(volatile const uint64_t*)(uintptr_t)a0;
-        ring_push(r, req, KM_EV_PONG, (uint32_t)v); /* only if the load did not trap */
+        ring_push(
+            r, req, KM_EVENT_PONG, (uint32_t)v
+        ); /* only if the load did not trap */
         return KMD_TAKEN;
     }
 #endif
@@ -267,12 +276,12 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         handler != KM_HANDLER_EXIT && group_outside(k, queued ? 0 : first, count)
     ) {
         reject = KMD_REJECT_GROUP;
-    } else if (queued && k->dyn.handler != 0 && handler == k->dyn.handler) {
-        reject = KMD_REJECT_DYN;
+    } else if (queued && k->messages.handler != 0 && handler == k->messages.handler) {
+        reject = KMD_REJECT_MESSAGES;
     }
     if (reject != 0) {
         ring_consumed(r);
-        ring_push(r, req, KM_EV_REJECTED | (reject << 8), 0);
+        ring_push(r, req, KM_EVENT_REJECTED | (reject << 8), 0);
         k->t_last_event = now;
         k->rejected++;
         return KMD_TAKEN;
@@ -284,7 +293,7 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
                 return KMD_HELD;
             }
             ring_consumed(r);
-            ring_push(r, req, KM_EV_REJECTED | (KMD_REJECT_QUEUE << 8), 0);
+            ring_push(r, req, KM_EVENT_REJECTED | (KMD_REJECT_QUEUE << 8), 0);
             k->t_last_event = now;
             k->rejected++;
             return KMD_TAKEN;
@@ -301,8 +310,10 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
         }
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | KM_GROUP_ALL(k->cores);
     } else if (
-        ((flags & KM_F_EXCL) && (r->before || slots_overlap(k, first, count))) ||
-        dyn_held(k, handler)
+        (
+            (flags & KM_FLAG_EXCLUSIVE) && (r->before || slots_overlap(k, first, count))
+        ) ||
+        messages_held(k, handler)
     ) {
         return KMD_HELD; /* exclusive: every job queued before it placed, no overlap */
     }
@@ -312,14 +323,14 @@ KMD_HOT kmd_take_t take(kmd_t* k, uint32_t src, uint64_t now) {
     }
     l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
     command_submit(k, l, slot, req, src, now, r->t_command, KMD_TRACE_SUBMIT);
-    dyn_submitted(k, l, slot, req, src);
+    messages_submitted(k, l, slot, req, src);
     ring_consumed(r);
     k->exited = handler == KM_HANDLER_EXIT;
     return KMD_TAKEN;
 }
 
 /* A command of the engine or a work cluster that cannot go now (no free slot, an
- * overlapping exclusive group, a full queue): rejected at once, KMD_EV_WAKE owed. */
+ * overlapping exclusive group, a full queue): rejected at once, KMD_EVENT_WAKE owed. */
 static int source_busy(kmd_t* k, uint32_t src, uint64_t now) {
     kmd_ring_t* r = &k->ring[src];
     if (!(k->waits & (1u << src))) {
@@ -331,11 +342,11 @@ static int source_busy(kmd_t* k, uint32_t src, uint64_t now) {
         k->waits |= 1u << src;
     }
     const uint32_t hdr = (uint32_t)(r->line[0] >> 32);
-    if (src == KMD_SRC_ENGINE && ((hdr >> 8) & KM_F_QUEUE)) {
+    if (src == KMD_SRC_ENGINE && ((hdr >> 8) & KM_FLAG_QUEUE)) {
         /* A rejected job counts as taken in, as the engine counts every job sent. */
         *(volatile uint32_t*)(k->ering + KMD_ERING_TAKEN) = ++k->queue->taken;
     }
-    ring_push(r, r->next, KM_EV_REJECTED | (KMD_REJECT_BUSY << 8), 0);
+    ring_push(r, r->next, KM_EVENT_REJECTED | (KMD_REJECT_BUSY << 8), 0);
     x280_fence_ow(); /* the rejection lands before the consumed count passes it */
     ring_consumed(r);
     k->t_last_event = now;
@@ -403,8 +414,8 @@ static void loop(kmd_t* k) {
         if (k->busy) {
             slots_sweep(k);
         }
-        if (k->dyn.active) {
-            dyn_turn(k);
+        if (k->messages.active) {
+            messages_turn(k);
         }
         if (source_turn(k, KMD_SRC_HOST, &activity)) {
             return;
@@ -431,7 +442,7 @@ static void loop(kmd_t* k) {
         spins = 0;
         k->x280_cores[KMD_H_MARKER0] = (uint32_t)(k->passes >> 10);
         if (x280_hart_stop_requested(k->core, k->run)) {
-            result_error(k, KMD_ERR_STOPPED, 0, k->seq, 0, k->busy);
+            result_error(k, KMD_ERROR_STOPPED, 0, k->sequence, 0, k->busy);
             return;
         }
         const uint64_t now = x280_mtime();
@@ -442,13 +453,25 @@ static void loop(kmd_t* k) {
             const uint32_t took = (uint32_t)(now - k->slot_t0[late]);
             const uint32_t src = k->slot_src[late];
             result_error(
-                k, KMD_ERR_DEADLINE, late, k->slot_seq[late], k->slot_req[late], took
+                k,
+                KMD_ERROR_DEADLINE,
+                late,
+                k->slot_sequence[late],
+                k->slot_req[late],
+                took
             );
             k->x280_cores[KMD_H_SOURCE] = src;
-            const uint32_t aux = (
-                late | (k->slot_seq[late] & KM_EV_SEQ_MASK) << KM_EV_SEQ_SHIFT
+            const uint32_t auxiliary = (
+                late |
+                (k->slot_sequence[late] & KM_EVENT_SEQUENCE_MASK)
+                    << KM_EVENT_SEQUENCE_SHIFT
             );
-            ring_push(&k->ring[src], k->slot_req[late], KM_EV_TIMEOUT | aux << 8, took);
+            ring_push(
+                &k->ring[src],
+                k->slot_req[late],
+                KM_EVENT_TIMEOUT | auxiliary << 8,
+                took
+            );
             return;
         }
         if (
@@ -458,7 +481,7 @@ static void loop(kmd_t* k) {
             seen_activity = activity;
             t_active = now;
         } else if (a->t_idle != 0 && now - t_active > a->t_idle) {
-            result_error(k, KMD_ERR_IDLE, 0, k->seq, 0, 0);
+            result_error(k, KMD_ERROR_IDLE, 0, k->sequence, 0, 0);
             return;
         }
     }
@@ -473,7 +496,7 @@ static void finish(kmd_t* k) {
         abandoned += (k->busy >> j) & 1u;
     }
     k->x280_cores[KMD_H_ABANDONED] = abandoned;
-    if (k->ctl[0] != 0 && (k->busy || !k->exited)) {
+    if (k->control[0] != 0 && (k->busy || !k->exited)) {
         grid_stop(k);
     }
     engine_stop(k);
@@ -505,7 +528,7 @@ __attribute__((used, noinline)) void kmd_trapped(
 ) {
     const uint64_t run_value = x280_hart_control(core)->run_value;
     const volatile kmd_args_t* a = (const volatile kmd_args_t*)x280_hart_args(core);
-    x280_hart_set_result(core, ~(uint64_t)KMD_ERR_TRAP);
+    x280_hart_set_result(core, ~(uint64_t)KMD_ERROR_TRAP);
     if (a == 0 || !args_valid(a, run_value) || core > 1) {
         return;
     }
@@ -533,16 +556,16 @@ __attribute__((used, noinline)) void kmd_trapped(
     t->x280_cores = x280_cores;
     t->panels = (uint32_t)a->panels;
     const uint32_t where = t->result[KMD_R_WHERE];
-    result_error(t, KMD_ERR_TRAP, (uint32_t)cause, (uint32_t)epc, 0, (uint32_t)tval);
+    result_error(t, KMD_ERROR_TRAP, (uint32_t)cause, (uint32_t)epc, 0, (uint32_t)tval);
     /* The old state's words, read but never followed: whether EXIT left the grid. */
     volatile uint8_t* state = (
         (volatile uint8_t*)(X280_LOCAL_DDR_TILE_BASE + a->state_ddr)
     );
     const volatile kmd_t* old = (const volatile kmd_t*)state;
-    const uint32_t ctl = ((volatile const uint32_t*)(lim + KMD_LIM_MAILBOX))[1];
+    const uint32_t control = ((volatile const uint32_t*)(lim + KMD_LIM_MAILBOX))[1];
     if (
         where >= KMD_WHERE_READY && (old->busy || !old->exited) &&
-        grid_open(t, ctl) == KMD_ERR_NONE
+        grid_open(t, control) == KMD_ERROR_NONE
     ) {
         grid_stop(t);
     }
@@ -565,8 +588,8 @@ __attribute__((used, noinline)) void kmd_trapped(
     ) {
         x280_fence_ir();
     }
-    if (where >= KMD_WHERE_HELLO && events_open(t) == KMD_ERR_NONE) {
-        events_word(t, KMD_HOST_ERROR, KMD_ERR_TRAP);
+    if (where >= KMD_WHERE_HELLO && events_open(t) == KMD_ERROR_NONE) {
+        events_word(t, KMD_HOST_ERROR, KMD_ERROR_TRAP);
         events_word(t, KMD_HOST_STATE, KMD_STATE_FAILED);
     }
     grid_close(t);
@@ -586,7 +609,7 @@ static __attribute__((noinline)) void run(uint64_t core) {
     const uint64_t t_boot = x280_mtime();
     const volatile kmd_args_t* a = (const volatile kmd_args_t*)x280_hart_args(core);
     if (a == 0 || !args_valid(a, run_value)) {
-        x280_hart_set_result(core, ~(uint64_t)KMD_ERR_ARGS);
+        x280_hart_set_result(core, ~(uint64_t)KMD_ERROR_ARGS);
         return;
     }
     kmd_t* k = (kmd_t*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + a->state_ddr);
@@ -609,7 +632,7 @@ static __attribute__((noinline)) void run(uint64_t core) {
     k->depth = (uint32_t)a->depth;
     k->full = (1u << k->depth) - 1u;
     k->cores = (uint32_t)a->cores;
-    k->dyn.handler = (uint32_t)a->dyn_handler;
+    k->messages.handler = (uint32_t)a->messages_handler;
     k->ering = (volatile uint8_t*)k + KMD_STATE_RING;
     k->queue = (kmd_queue_t*)((uint8_t*)k + KMD_STATE_QUEUE);
     kmd_ring_t* h = &k->ring[KMD_SRC_HOST];
@@ -622,10 +645,10 @@ static __attribute__((noinline)) void run(uint64_t core) {
     h->line = (uint64_t*)(((uintptr_t)host_line + 63u) & ~(uintptr_t)63u);
     result_word(k, KMD_R_STATE, KMD_STATE_BOOT);
     uint64_t* wl = (uint64_t*)(((uintptr_t)work_lines + 63u) & ~(uintptr_t)63u);
-    if (boot(k) == KMD_ERR_NONE && work_open(k, wl) != KMD_ERR_NONE) {
-        result_error(k, KMD_ERR_WINDOW, 0, 0, 0, 0);
+    if (boot(k) == KMD_ERROR_NONE && work_open(k, wl) != KMD_ERROR_NONE) {
+        result_error(k, KMD_ERROR_WINDOW, 0, 0, 0, 0);
     }
-    if (k->error == KMD_ERR_NONE) {
+    if (k->error == KMD_ERROR_NONE) {
         engine_open(k, (uint64_t*)(((uintptr_t)engine_line + 63u) & ~(uintptr_t)63u));
         engine_go(k, 1u);
         result_word(k, KMD_R_BOOT_TICKS, (uint32_t)(x280_mtime() - k->t_boot));

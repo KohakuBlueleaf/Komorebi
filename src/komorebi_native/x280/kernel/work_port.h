@@ -43,11 +43,11 @@ static inline int work_args_valid(const volatile kmd_args_t* a) {
 }
 
 /* Programs ring w's window onto its cluster's area and points source KMD_SRC_WORK + w
- * at both parts. Returns KMD_ERR_NONE (also with no ring) or KMD_ERR_WINDOW. */
+ * at both parts. Returns KMD_ERROR_NONE (also with no ring) or KMD_ERROR_WINDOW. */
 static inline uint32_t work_open_one(kmd_t* k, uint32_t w, uint64_t* line) {
     const volatile kmd_args_t* a = k->args;
     if (a->work_cmds == 0 || a->work_noc_addr[w] == 0) {
-        return KMD_ERR_NONE;
+        return KMD_ERROR_NONE;
     }
     noc_tlb_2m_t programmed;
     volatile uint8_t* win = (
@@ -61,11 +61,11 @@ static inline uint32_t work_open_one(kmd_t* k, uint32_t w, uint64_t* line) {
         )
     );
     if (win == 0) {
-        return KMD_ERR_WINDOW;
+        return KMD_ERROR_WINDOW;
     }
     k->opened |= 1u << (3u + w);
     if (noc_verify_tlb_2m(KMD_WIN_WORK + w, &programmed) != 0) {
-        return KMD_ERR_WINDOW;
+        return KMD_ERROR_WINDOW;
     }
     kmd_ring_t* r = &k->ring[KMD_SRC_WORK + w];
     r->depth = (uint32_t)a->work_depth;
@@ -78,17 +78,17 @@ static inline uint32_t work_open_one(kmd_t* k, uint32_t w, uint64_t* line) {
     r->next = 1;
     r->t_command = k->ring[KMD_SRC_HOST].t_command;
     r->line = line;
-    return KMD_ERR_NONE;
+    return KMD_ERROR_NONE;
 }
 
 /* Every ring in use; `lines` holds one 64-byte aligned command line per ring. */
 static inline uint32_t work_open(kmd_t* k, uint64_t* lines) {
     for (uint32_t w = 0; w < KMD_WORK_CLUSTERS; w++) {
-        if (work_open_one(k, w, lines + 8u * w) != KMD_ERR_NONE) {
-            return KMD_ERR_WINDOW;
+        if (work_open_one(k, w, lines + 8u * w) != KMD_ERROR_NONE) {
+            return KMD_ERROR_WINDOW;
         }
     }
-    return KMD_ERR_NONE;
+    return KMD_ERROR_NONE;
 }
 
 /* Finish: each ring's last event count goes out, then its window is cleared. */

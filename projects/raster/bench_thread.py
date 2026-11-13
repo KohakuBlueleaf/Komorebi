@@ -34,8 +34,11 @@ def thread_runs(session, scene, up, w, workers, args, index):
             res["frames"] = (list(r.words) + [0] * F["RF_OUT_WORDS"])[F["RF_O_FRAMES"]]
             res["status_ok"] = status["ok"]
             results.append(res)
-            windows.append((end - r.us * 1e-6, end))
-            card.log(f"run {i}: code {r.code}, {res['frames']} frames, {r.us:.0f} us")
+            windows.append((end - r.microseconds * 1e-6, end))
+            card.log(
+                f"run {i}: code {r.code}, {res['frames']} frames,"
+                f" {r.microseconds:.0f} us"
+            )
             if r.code or not status["ok"]:
                 break
     return results, windows, meter, clock
@@ -44,14 +47,14 @@ def thread_runs(session, scene, up, w, workers, args, index):
 def per_frame(results):
     """Median over the runs of each part's microseconds per frame."""
     out = {}
-    for key in ("us", "middle_us"):
+    for key in ("microseconds", "middle_microseconds"):
         names = results[0][key].keys()
         out[key] = {
             n: float(np.median([r[key][n] / max(r["frames"], 1) for r in results]))
             for n in names
         }
-    out["frame_us"] = float(
-        np.median([r["thread_us"] / max(r["frames"], 1) for r in results])
+    out["frame_microseconds"] = float(
+        np.median([r["thread_microseconds"] / max(r["frames"], 1) for r in results])
     )
     return out
 
@@ -91,7 +94,7 @@ def main():
             prog.stop()
             if first.code:
                 raise SystemExit(f"the cold frame ended with code {first.code}")
-            args.frames = max(1, round(args.seconds * 1e6 / first.us))
+            args.frames = max(1, round(args.seconds * 1e6 / first.microseconds))
             out["frames_per_run"] = args.frames
             card.log(f"{args.frames} frames a run of about {args.seconds} s")
         results, windows, meter, clock = thread_runs(
@@ -118,7 +121,14 @@ def main():
                 host = card_passes.frame(hargs, session)
             out["host"] = {
                 k: host[k]
-                for k in ("times", "count_us", "setup_us", "fill_us", "heavy", "items")
+                for k in (
+                    "times",
+                    "count_microseconds",
+                    "setup_microseconds",
+                    "fill_microseconds",
+                    "heavy",
+                    "items",
+                )
                 if k in host
             }
             out["host"]["clock"] = hclock.figures()

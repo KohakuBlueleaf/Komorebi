@@ -1,5 +1,5 @@
 /* A map, a heavy map and a two-pass prefix sum on 1, 4, 8 and 12 cores: one image on
- * every work cluster, the lead's kmx_par_all, data pushed across banks (README.md). */
+ * every cluster, the lead's kmx_parallel_all, data pushed across banks (README.md). */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -174,9 +174,9 @@ static int phase(uint32_t x280_cores, uint32_t p, int region) {
     }
     if (x280_cores == 4) {
         local_t l = {arg};
-        return kmx_par(local_step, &l);
+        return kmx_parallel(local_step, &l);
     }
-    return kmx_par_all(step, arg);
+    return kmx_parallel_all(step, arg);
 }
 
 /* The lead's pushes of region r's blocks (in `unit` words per chunk) to the others in

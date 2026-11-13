@@ -10,32 +10,39 @@ H = abi.headers()
 
 def test_command_and_event_fields_follow_the_abi_header():
     assert H.command_fields == [
-        "seq", "hdr", "group", "a0", "land1", "a1", "a2", "a3",
+        "sequence", "hdr", "group", "a0", "land1", "a1", "a2", "a3",
         "land2", "a4", "a5", "a6", "land3", "a7", "a8", "a9",
     ]  # fmt: skip
     assert H.event_fields == ["index", "req", "status", "ticks"]
 
 
 def test_start_up_arguments_are_in_header_order():
-    assert H.arg_fields[:6] == ["ctl", "me", "cores", "disp_xy", "ack_base", "mailbox"]
+    assert H.arg_fields[:6] == [
+        "control",
+        "me",
+        "cores",
+        "dispatcher_coordinates",
+        "ack_base",
+        "mailbox",
+    ]
     assert len(H.arg_fields) == H["kArgs"] == 19
     assert {"row", "workers"} <= set(H.arg_fields)
     values = {name: i for i, name in enumerate(H.arg_fields)}
     assert abi.start_args(values) == list(range(19))
     with pytest.raises(ValueError, match="missing"):
-        abi.start_args({"ctl": 1})
+        abi.start_args({"control": 1})
     with pytest.raises(ValueError, match="unknown"):
         abi.start_args(values | {"extra": 1})
 
 
 def test_constants_of_all_three_headers():
-    assert H["KM_RING_SLOTS"] == 16 and H["KM_CTL_BYTES"] == 0x15C0
+    assert H["KM_RING_SLOTS"] == 16 and H["KM_CONTROL_BYTES"] == 0x15C0
     assert H["KM_READY"] == 0xFFFFFFFF and H["KM_HANDLER_EXIT"] == 255
     assert H["KMD_LIM_MAILBOX"] == 0x100 and H["KMD_HOST_EVENTS"] == 2
     assert H["KMD_R_WORDS"] == 32 and H["KMD_R_LAST_HI"] == 23
     assert (
         H["kOutReady"] == 1
-        and H["kOutSlots"] == (H["KM_CTL_CORES"] - H["KM_CTL_OUT"]) // 16
+        and H["kOutSlots"] == (H["KM_CONTROL_CORES"] - H["KM_CONTROL_OUT"]) // 16
     )
     assert "KM_GROUP_ALL" not in H.constants  # a function-like macro
 
@@ -45,7 +52,7 @@ def test_command_encoding_puts_fields_where_the_header_says():
     named = dict(zip(H.command_fields, words))
     assert named["hdr"] == 7 and named["group"] == 3 | 9 << 16
     assert [named[f"a{i}"] for i in range(10)] == list(range(10, 20))
-    assert named["seq"] == named["land1"] == named["land2"] == named["land3"] == 0
+    assert named["sequence"] == named["land1"] == named["land2"] == named["land3"] == 0
     assert abi.command(1, 0, 1, [0xFFFFFFFF])[3] == 0xFFFFFFFF
     with pytest.raises(ValueError, match="11 arguments"):
         abi.command(1, 0, 1, range(11))

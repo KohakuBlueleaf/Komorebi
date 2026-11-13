@@ -25,7 +25,7 @@ static uint32_t* lines(void) {
 
 /* Fills r field by field (a struct assignment may call memset, which does not link). */
 static void command(km_command_t* r, uint32_t n, uint32_t asks) {
-    r->seq = r->land1 = r->land2 = r->land3 = 0;
+    r->sequence = r->land1 = r->land2 = r->land3 = 0;
     r->hdr = HX_HANDLER_WORK;
     r->group = 0 | n << 16;
     r->a0 = asks;
@@ -63,9 +63,9 @@ static void serve(int cluster, int cpu, uint64_t round) {
     while (left > 0 && kmx_port_open()) {
         for (int i = 0; i < n; i++) {
             const int c = mine[i];
-            kmx_msg m;
+            kmx_message m;
             if (kmx_port_asked(c, &m) == KMX_OK) {
-                kmx_port_answer(c, m.seq, HX_VALUE(m.w[0], (uint32_t)c), 0, 0);
+                kmx_port_answer(c, m.sequence, HX_VALUE(m.w[0], (uint32_t)c), 0, 0);
             }
             if (!told[i] && kmx_port_told(c, &m) == KMX_OK) {
                 uint32_t* l = out + HX_LINE * c;
@@ -111,17 +111,17 @@ int kmx_main(int cpu) {
     }
     uint32_t w[R_COUNT] = {0, 0, 0, 0, 0xFFFFFFFFu, 0};
     uint64_t ticks = 0;
-    if (kmx_par_all(clear, 0) != KMX_OK) {
+    if (kmx_parallel_all(clear, 0) != KMX_OK) {
         return CODE_LATE;
     }
     for (uint32_t k = 1; k <= a->words[HX_W_ROUNDS]; k++) {
         km_command_t r;
         command(&r, cores(), a->words[HX_W_ASKS]);
-        kmx_event ev;
+        kmx_event event;
         const uint64_t t0 = kmx_time(), until = t0 + FULL_TICKS;
-        int e = kmx_port_run(&r, serve, k, &ev);
+        int e = kmx_port_run(&r, serve, k, &event);
         while (e == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
-            e = kmx_port_run(&r, serve, k, &ev);
+            e = kmx_port_run(&r, serve, k, &event);
         }
         if (e != KMX_OK) {
             return CODE_LATE;
@@ -130,7 +130,7 @@ int kmx_main(int cpu) {
         ticks += dt;
         w[R_BEST] = dt < w[R_BEST] ? dt : w[R_BEST];
         w[R_WORST] = dt > w[R_WORST] ? dt : w[R_WORST];
-        if (ev.kind != KM_EV_DONE) {
+        if (event.kind != KM_EVENT_DONE) {
             w[R_TIMEOUTS]++;
             break;
         }
@@ -138,7 +138,7 @@ int kmx_main(int cpu) {
     }
     w[R_TICKS_LO] = (uint32_t)ticks;
     w[R_TICKS_HI] = (uint32_t)(ticks >> 32);
-    if (kmx_par_all(flush_lines, 0) != KMX_OK) {
+    if (kmx_parallel_all(flush_lines, 0) != KMX_OK) {
         return CODE_LATE;
     }
     kmx_result(0, w, R_COUNT);

@@ -44,8 +44,8 @@ static inline int engine_active(const kmd_t* k) {
     );
 }
 
-/* KM_HANDLER_RUN, host command `cmd`: rejected, ended with KM_EV_STREAM_ERROR (req from
- * the header if in the region, else 0) or forwarded. Returns 1 to wait for room. */
+/* KM_HANDLER_RUN, host command `cmd`: rejected, ended with KM_EVENT_STREAM_ERROR (req
+ * from the header if in the region, else 0) or forwarded. 1: wait for room. */
 static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
     const uint32_t region = k->upload_bytes;
     uint32_t req = 0;
@@ -60,7 +60,7 @@ static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
     }
     if (k->exited || k->nstreams == KM_STREAM_MAX_ACTIVE) {
         const uint32_t why = k->exited ? KMD_REJECT_EXITED : KMD_REJECT_STREAMS;
-        host_push(k, cmd, KM_EV_REJECTED | (why << 8), 0);
+        host_push(k, cmd, KM_EVENT_REJECTED | (why << 8), 0);
         k->rejected++;
         return 0;
     }
@@ -76,14 +76,14 @@ static int engine_run(kmd_t* k, uint32_t cmd, uint32_t off, uint32_t bytes) {
     }
     bad |= graph_claims(k, off, bytes, req);
     if (bad) {
-        host_push(k, req, KM_EV_STREAM_ERROR | (KM_SERR_HEADER << 8), 0);
+        host_push(k, req, KM_EVENT_STREAM_ERROR | (KM_STREAM_ERROR_HEADER << 8), 0);
         return 0;
     }
     kmd_ring_t* e = &k->ring[KMD_SRC_ENGINE];
     if (!ring_room(e)) {
         return 1;
     }
-    ring_push(e, off, KMD_EV_RUN, bytes);
+    ring_push(e, off, KMD_EVENT_RUN, bytes);
     free_run->active = 1;
     free_run->req = req;
     free_run->off = off;
@@ -103,11 +103,11 @@ static int engine_cancel(kmd_t* k, uint32_t cmd, uint32_t req) {
             if (!ring_room(e)) {
                 return 1;
             }
-            ring_push(e, cmd, KMD_EV_CANCEL, req);
+            ring_push(e, cmd, KMD_EVENT_CANCEL, req);
             return 0;
         }
     }
-    host_push(k, cmd, KM_EV_REJECTED | (KMD_REJECT_UNKNOWN << 8), 0);
+    host_push(k, cmd, KM_EVENT_REJECTED | (KMD_REJECT_UNKNOWN << 8), 0);
     k->rejected++;
     return 0;
 }
@@ -121,7 +121,7 @@ static int engine_post(kmd_t* k, const uint64_t* l, int finishing) {
     if (graph_post(k, l)) {
         return 0;
     }
-    if (kind == KM_EV_STREAM_END || kind == KM_EV_STREAM_ERROR) {
+    if (kind == KM_EVENT_STREAM_END || kind == KM_EVENT_STREAM_ERROR) {
         for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE; i++) {
             kmd_run_t* s = &k->runs[i];
             if (s->active && s->req == req) {
@@ -172,11 +172,11 @@ static void engine_stop(kmd_t* k) {
             ring_consumed(r);
         }
     }
-    if (state == KMD_ENGINE_RUNNING && k->error == KMD_ERR_NONE) {
-        result_error(k, KMD_ERR_ENGINE, 0, 0, 0, state);
+    if (state == KMD_ENGINE_RUNNING && k->error == KMD_ERROR_NONE) {
+        result_error(k, KMD_ERROR_ENGINE, 0, 0, 0, state);
     }
-    if (state == KMD_ENGINE_TRAPPED && k->error == KMD_ERR_NONE) {
+    if (state == KMD_ENGINE_TRAPPED && k->error == KMD_ERROR_NONE) {
         const uint32_t cause = k->x280_cores[KMD_H_TRAP_CAUSE];
-        result_error(k, KMD_ERR_TRAP, cause, k->x280_cores[KMD_H_TRAP_PC], 1, 0);
+        result_error(k, KMD_ERROR_TRAP, cause, k->x280_cores[KMD_H_TRAP_PC], 1, 0);
     }
 }

@@ -21,21 +21,21 @@ GRAPHS = os.path.join(
 )
 HANDLER_SUM = 5  # kernels/dk_test.h DK_HANDLER_SUM: result a0 + count
 REJECT_HANDLER = dc.REJECT_HANDLER
-GRAPH_ENDS = (gr.EV_GRAPH_END, gr.EV_GRAPH_ERROR)
+GRAPH_ENDS = (gr.EVENT_GRAPH_END, gr.EVENT_GRAPH_ERROR)
 
 
 def graph_run(offset, size, bind_off=0, n_bind=0):
     """KM_HANDLER_RUN of an upload: a0 offset, a1 bytes, a2 = 1, a3 / a4 the
     bindings."""
     words = dc.run_command(offset, size)
-    words[6], words[7], words[9] = gr.GRUN_UPLOAD, bind_off, n_bind
+    words[6], words[7], words[9] = gr.GRAPH_RUN_UPLOAD, bind_off, n_bind
     return words
 
 
 def kept_run(req, bind_off=0, n_bind=0):
     """KM_HANDLER_RUN of a kept graph: a0 its req, a2 = 2, a3 / a4 the bindings."""
     words = dc.kernel_command(dc.HANDLER_RUN, req)
-    words[6], words[7], words[9] = gr.GRUN_KEPT, bind_off, n_bind
+    words[6], words[7], words[9] = gr.GRAPH_RUN_KEPT, bind_off, n_bind
     return words
 
 
@@ -46,9 +46,9 @@ def on_sum(data):
     if len(data) < gr.HEADER.size:
         return bytes(data)
     h = dict(zip(gr.HEADER_FIELDS, gr.HEADER.unpack_from(data)))
-    tpl = gr._layout(h)[2]
-    for i in range(min(h["n_commands"], gr.MAX_TEMPLATES)):
-        at = tpl + i * gr.TEMPLATE_BYTES + 4
+    template = gr._layout(h)[2]
+    for i in range(min(h["command_count"], gr.MAX_TEMPLATES)):
+        at = template + i * gr.TEMPLATE_BYTES + 4
         if at < len(data) and 1 <= data[at] <= 239:
             data[at] = HANDLER_SUM
     return bytes(data)
@@ -72,7 +72,7 @@ def references():
 
 
 def graph_events(plan, reqs, timeout_s=20.0):
-    """Every event until each graph in `reqs` has ended (KM_EV_GRAPH_END or _ERROR),
+    """Every event until each graph in `reqs` has ended (KM_EVENT_GRAPH_END or _ERROR),
     the kernel finished or timeout_s passed; a line per batch and every 5 s."""
     reqs = {reqs} if isinstance(reqs, int) else set(reqs)
     out, start = [], time.time()
@@ -94,17 +94,17 @@ def graph_events(plan, reqs, timeout_s=20.0):
 
 
 def as_tuples(events, req):
-    """(kind, req, aux, ticks of an end event else 0) of the events with `req`."""
+    """(kind, req, auxiliary, ticks of an end event else 0) of the events with `req`."""
     out = []
     for e in events:
-        k, aux = dc.kind(e[2])
+        k, auxiliary = dc.kind(e[2])
         if e[1] == req:
-            out.append((k, e[1], aux, e[3] if k == gr.EV_GRAPH_END else 0))
+            out.append((k, e[1], auxiliary, e[3] if k == gr.EVENT_GRAPH_END else 0))
     return out
 
 
 def wanted(sim):
-    return [(e.kind, e.req, e.aux, e.extra) for e in sim.events]
+    return [(e.kind, e.req, e.auxiliary, e.extra) for e in sim.events]
 
 
 def put_bindings(plan, offset, values):
@@ -129,7 +129,7 @@ def delay_graph(req, cycles):
 def loop_graph(req, keep):
     """The documented loop (docs/graphs.md) on DK_HANDLER_SUM: rounds while r < 65."""
     g = Graph(max_runs=100, req=req, keep=keep)
-    i, err = g.bindings("it"), g.reg()
+    i, err = g.bindings("it"), g.register()
     a = g.command(HANDLER_SUM, group=(0, 60), args=[i])
     b = g.command(HANDLER_SUM, group=(0, 30), args=[i], after=[a])
     c = g.command(HANDLER_SUM, group=(30, 30), args=[i], after=[a])
@@ -151,7 +151,7 @@ def match_groups(entries, commands):
         if not r.queued and (r.first, r.count) in left:
             left.remove((r.first, r.count))
             groups.append((r.first, r.count, r.args[0]))
-    for r in sorted((r for r in commands if r.queued), key=lambda r: r.seq):
+    for r in sorted((r for r in commands if r.queued), key=lambda r: r.sequence):
         first = next((f for f, c in left if c == r.count), None)
         if first is not None:
             left.remove((first, r.count))
@@ -180,24 +180,28 @@ def case_graphs(session, args):
     engine's commands reach the grid with the simulated groups, every core ran them."""
     if args.image == dc.IMAGE:
         args.image = dc.VERIFY_IMAGE
-    n_cores, trace, submitted = 0, {}, []
+    core_count, trace, submitted = 0, {}, []
 
     def ping(plan, name, out):
         i = plan.submit(dc.kernel_command(dc.HANDLER_PING))
-        ev = [e for e in plan.take(plan.seen + 1, 5.0) if e[1] == i]
-        out["pings"][name] = bool(ev and dc.kind(ev[0][2])[0] == dc.EV_PONG)
+        event = [e for e in plan.take(plan.seen + 1, 5.0) if e[1] == i]
+        out["pings"][name] = bool(event and dc.kind(event[0][2])[0] == dc.EVENT_PONG)
 
     def expect(plan, out, name, words, want):
         """One command and the events it gives at once (rejections, drops, errors)."""
         i = plan.submit(words)
-        ev = plan.take(plan.seen + 1, 5.0)
-        got = [(dc.kind(e[2])[0], e[1], dc.kind(e[2])[1]) for e in ev]
+        event = plan.take(plan.seen + 1, 5.0)
+        got = [(dc.kind(e[2])[0], e[1], dc.kind(e[2])[1]) for e in event]
         out["run"].append({"name": name, "got": got, "ok": got == [want(i)]})
 
     def one(plan, out, name, data, bindings, lay, kept=0, words=None):
         """Upload (unless `words` names the RUN), run, compare with the simulator."""
         sim = gr.simulate(
-            data, bindings=bindings, n_cores=n_cores, result=a0_plus_count, kept=kept
+            data,
+            bindings=bindings,
+            core_count=core_count,
+            result=a0_plus_count,
+            kept=kept,
         )
         req = sim.events[0].req
         put_bindings(plan, lay.at(1), bindings or [0])
@@ -214,13 +218,13 @@ def case_graphs(session, args):
         dc.log(f"graph {name}: {'ok' if ok else 'WRONG'}")
 
     def body(plan):
-        nonlocal n_cores
-        n_cores = plan.grid_x * plan.grid_y
+        nonlocal core_count
+        core_count = plan.grid_x * plan.grid_y
         lay = Layout(plan)
         out = {"tag": plan.tag, "pings": {}, "graphs": {}, "wrong": [], "run": []}
         ping(plan, "start", out)
-        err_hdr = st.ERR_HEADER | gr.NO_NODE << 8
-        cancelled = st.ERR_CANCELLED | gr.NO_NODE << 8
+        error_hdr = st.ERROR_HEADER | gr.NO_NODE << 8
+        cancelled = st.ERROR_CANCELLED | gr.NO_NODE << 8
         cycles = int(0.3 * dc.AICLK_HZ)
 
         # Forms, rejections and range errors, with two graphs running (long DELAYs).
@@ -235,12 +239,12 @@ def case_graphs(session, args):
             out,
             "third graph",
             graph_run(lay.at(12), len(data)),
-            lambda i: (dc.EV_REJECTED, i, dc.REJECT_STREAMS),
+            lambda i: (dc.EVENT_REJECTED, i, dc.REJECT_STREAMS),
         )
         words = graph_run(lay.at(12), len(data))
         words[6] = 3
         expect(
-            plan, out, "form 3", words, lambda i: (dc.EV_REJECTED, i, REJECT_HANDLER)
+            plan, out, "form 3", words, lambda i: (dc.EVENT_REJECTED, i, REJECT_HANDLER)
         )
         for req in (300, 301):
             plan.submit(dc.kernel_command(dc.HANDLER_CANCEL, req))
@@ -249,7 +253,7 @@ def case_graphs(session, args):
                 {
                     "name": f"cancel {req}",
                     "got": got,
-                    "ok": got == [(gr.EV_GRAPH_ERROR, req, cancelled, 0)],
+                    "ok": got == [(gr.EVENT_GRAPH_ERROR, req, cancelled, 0)],
                 }
             )
         time.sleep(0.5)  # the cancelled graphs' commands complete meanwhile
@@ -258,7 +262,7 @@ def case_graphs(session, args):
             out,
             "kept unknown",
             kept_run(999),
-            lambda i: (dc.EV_REJECTED, i, dc.REJECT_UNKNOWN),
+            lambda i: (dc.EVENT_REJECTED, i, dc.REJECT_UNKNOWN),
         )
         stream = dc.loop_stream(400).encode()
         dc.put_upload(plan, lay.at(13), stream)
@@ -268,21 +272,21 @@ def case_graphs(session, args):
             out,
             "overlaps a stream",
             graph_run(lay.at(13), len(stream)),
-            lambda i: (gr.EV_GRAPH_ERROR, 400, err_hdr),
+            lambda i: (gr.EVENT_GRAPH_ERROR, 400, error_hdr),
         )
         expect(
             plan,
             out,
             "unaligned",
             graph_run(lay.at(12) + 32, len(data)),
-            lambda i: (gr.EV_GRAPH_ERROR, 0, err_hdr),
+            lambda i: (gr.EVENT_GRAPH_ERROR, 0, error_hdr),
         )
         expect(
             plan,
             out,
             "cancel the stream",
             dc.kernel_command(dc.HANDLER_CANCEL, 400),
-            lambda i: (dc.EV_STREAM_ERROR, 400, st.ERR_CANCELLED),
+            lambda i: (dc.EVENT_STREAM_ERROR, 400, st.ERROR_CANCELLED),
         )
         ping(plan, "after forms", out)
 
@@ -303,7 +307,7 @@ def case_graphs(session, args):
             out,
             "drop kept_graph",
             dc.kernel_command(dc.HANDLER_CANCEL, req),
-            lambda i: (gr.EV_GRAPH_ERROR, req, cancelled),
+            lambda i: (gr.EVENT_GRAPH_ERROR, req, cancelled),
         )
         plan.submit(graph_run(lay.at(27), len(fill[707])))
         graph_events(plan, 707)
@@ -315,7 +319,7 @@ def case_graphs(session, args):
                 out,
                 f"drop {req}",
                 dc.kernel_command(dc.HANDLER_CANCEL, req),
-                lambda i, req=req: (gr.EV_GRAPH_ERROR, req, cancelled),
+                lambda i, req=req: (gr.EVENT_GRAPH_ERROR, req, cancelled),
             )
         ping(plan, "after kept", out)
 
@@ -338,7 +342,7 @@ def case_graphs(session, args):
             out,
             "drop the loop",
             dc.kernel_command(dc.HANDLER_CANCEL, 500),
-            lambda i: (gr.EV_GRAPH_ERROR, 500, cancelled),
+            lambda i: (gr.EVENT_GRAPH_ERROR, 500, cancelled),
         )
         ping(plan, "after the loop", out)
         out["exit"] = dc.exit_and_stop(plan)
@@ -349,7 +353,7 @@ def case_graphs(session, args):
 
     out, fin, cnt = dc.with_kernel(session, args, body, depth=16, after=after)
     out["finish"] = fin
-    out["cores"] = dc.core_report(cnt, n_cores, out["tag"])
+    out["cores"] = dc.core_report(cnt, core_count, out["tag"])
     submits = (dc.TRACE_SUBMIT, dc.TRACE_QUEUED)
     engine = [e for e in trace["entries"] if e[0] in submits and e[6] == 1]
     # The two cancelled DELAY graphs' commands come first, then each graph's in turn.
@@ -364,9 +368,9 @@ def case_graphs(session, args):
         ran += groups
     out["engine_commands"] = [len(engine), k]
     out["group_faults"] = faults
-    out["group_mismatch"], out["first_mismatch"] = dc.check_groups(cnt, n_cores, ran)
+    out["group_mismatch"], out["first_mismatch"] = dc.check_groups(cnt, core_count, ran)
     out["ok"] = bool(
-        dc.finished_clean(fin, n_cores, out["cores"])
+        dc.finished_clean(fin, core_count, out["cores"])
         and all(c["ok"] for c in out["run"])
         and all(out["pings"].values())
         and all(out["graphs"].values())
@@ -380,16 +384,18 @@ def case_graphs(session, args):
 
 def case_graph_deadline(session, args):
     """A graph's second command has rank --core waiting for the stop flag, header
-    deadline --deadline-us: KM_EV_GRAPH_ERROR reason 8 at that node, the kernel ends
-    with the deadline error, every core gives up on the stop flag."""
-    n_cores = 0
+    deadline --deadline-microseconds: KM_EVENT_GRAPH_ERROR reason 8 at that node, the
+    kernel ends with the deadline error, every core gives up on the stop flag."""
+    core_count = 0
 
     def body(plan):
-        nonlocal n_cores
-        n_cores = plan.grid_x * plan.grid_y
-        g = Graph(req=56, deadline_us=args.deadline_us)
-        a = g.command(HANDLER_SUM, group=(0, n_cores), args=[3])
-        g.command(dc.HANDLER_STALL, group=(0, n_cores), args=[9, args.core], after=[a])
+        nonlocal core_count
+        core_count = plan.grid_x * plan.grid_y
+        g = Graph(req=56, deadline_microseconds=args.deadline_microseconds)
+        a = g.command(HANDLER_SUM, group=(0, core_count), args=[3])
+        g.command(
+            dc.HANDLER_STALL, group=(0, core_count), args=[9, args.core], after=[a]
+        )
         data = g.encode()
         dc.put_upload(plan, dc.stream_base(plan), data)
         plan.submit(graph_run(dc.stream_base(plan), len(data)))
@@ -400,16 +406,16 @@ def case_graph_deadline(session, args):
 
     out, fin, cnt = dc.with_kernel(session, args, body, depth=4)
     out["finish"] = fin
-    out["cores"] = dc.core_report(cnt, n_cores, out["tag"])
+    out["cores"] = dc.core_report(cnt, core_count, out["tag"])
     blk = fin["block"]
     got = as_tuples(out["events"], 56)
     out["ok"] = bool(
-        got == [(gr.EV_GRAPH_ERROR, 56, st.ERR_DEADLINE | 1 << 8, 0)]
-        and blk["error"] == dc.ERR_DEADLINE
+        got == [(gr.EVENT_GRAPH_ERROR, 56, st.ERROR_DEADLINE | 1 << 8, 0)]
+        and blk["error"] == dc.ERROR_DEADLINE
         and blk["source"] == dc.SOURCE_ENGINE
         and blk["engine"] == dc.ENGINE_STOPPED
-        and out["cores"]["cores_finished"] == n_cores
-        and out["cores"]["gave"] == {"stop": n_cores}
+        and out["cores"]["cores_finished"] == core_count
+        and out["cores"]["gave"] == {"stop": core_count}
     )
     return out
 

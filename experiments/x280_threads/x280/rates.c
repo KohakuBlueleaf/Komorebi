@@ -292,7 +292,7 @@ static uint32_t job(
 int main(uint64_t core_id) {
     pr_t p;
     if (!pr_open(&p, core_id, sizeof(rates_args_t))) {
-        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERROR_ARGS);
         return 0;
     }
     pr_enable_fpv();
@@ -306,9 +306,9 @@ int main(uint64_t core_id) {
         a->prefetch > 1
     ) {
         if (core_id == 0) {
-            out[RT_STATUS] = PR_ERR_ARGS;
+            out[RT_STATUS] = PR_ERROR_ARGS;
         }
-        x280_hart_set_result(core_id, ~(uint64_t)PR_ERR_ARGS);
+        x280_hart_set_result(core_id, ~(uint64_t)PR_ERROR_ARGS);
         return 0;
     }
     p.deadline = x280_mtime() + a->timeout;

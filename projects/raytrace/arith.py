@@ -48,7 +48,7 @@ def recip_check(session, exponent, n_workers):
             {"a": int(a.view(np.uint32)[i]), "got": int(got[i]), "want": int(want[i])}
             for i in idx
         ],
-        "us": float(card.command_us(res)[-1]),
+        "microseconds": float(card.command_microseconds(res)[-1]),
     }
 
 
@@ -64,7 +64,7 @@ def math_check(session, rng, n, n_workers):
     )  # fmt: skip
     report = arithmetic.math_compare(a, b, x, out)
     report["run"] = card.check_run(res, n_workers)
-    report["us"] = float(card.command_us(res)[-1])
+    report["microseconds"] = float(card.command_microseconds(res)[-1])
     return report
 
 

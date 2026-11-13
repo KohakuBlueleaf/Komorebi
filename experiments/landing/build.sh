@@ -7,7 +7,7 @@
 set -euo pipefail
 : "${TT_METAL_TREE:?set TT_METAL_TREE}" "${TTX_DISPATCH:?set TTX_DISPATCH}"
 here=$(cd "$(dirname "$0")" && pwd)
-kmr build image "$here/build/landing-seq.bin" "$here/x280/landing_seq.c" \
+kmr build image "$here/build/landing-sequence.bin" "$here/x280/landing_sequence.c" \
     --tree "$TT_METAL_TREE"
 kmr build pymodule "$here/build/_landing_x280.abi3.so" "$here/host/landing_x280.cpp" \
     --tree "$TT_METAL_TREE" -I "$TTX_DISPATCH/src/dispatcher/host"

@@ -26,12 +26,12 @@ namespace {
     const uint32_t* g_tree = nullptr;  // the tree image, after LOAD
 
     // Profile error bits (besides the walk's 1 and 2): what gave up.
-    constexpr uint32_t kErrUnpack = 4;   // unpack gave up and said so
-    constexpr uint32_t kErrMail = 8;     // no word from unpack in time
-    constexpr uint32_t kErrOut = 16;     // no output page in time
-    constexpr uint32_t kErrSignal = 32;  // no signal page in time
-    constexpr uint32_t kErrRoom = 64;    // a raw buffer too small
-    constexpr uint32_t kErrTree = 128;   // no tree loaded
+    constexpr uint32_t kErrorUnpack = 4;   // unpack gave up and said so
+    constexpr uint32_t kErrorMail = 8;     // no word from unpack in time
+    constexpr uint32_t kErrorOut = 16;     // no output page in time
+    constexpr uint32_t kErrorSignal = 32;  // no signal page in time
+    constexpr uint32_t kErrorRoom = 64;    // a raw buffer too small
+    constexpr uint32_t kErrorTree = 128;   // no tree loaded
 
     // A word from unpack, kAbort if none came in time.
     uint32_t mbox_read() {
@@ -58,10 +58,10 @@ namespace {
     // A word from unpack; on kAbort the reason goes to the profile.
     bool mail(uint32_t& v, walk::Prof& pf) {
         if (!timed::mail(ckernel::ThreadId::UnpackThreadId, v)) {
-            pf.error |= kErrMail;
+            pf.error |= kErrorMail;
             return false;
         }
-        pf.error |= v == timed::kAbort ? kErrUnpack : 0;
+        pf.error |= v == timed::kAbort ? kErrorUnpack : 0;
         return v != timed::kAbort;
     }
 
@@ -80,7 +80,7 @@ namespace {
         const uint32_t a = wall();
         const bool ok = timed::back(kCbOut, 1);
         pf.wait_out += wall() - a;
-        pf.error |= ok ? 0 : kErrOut;
+        pf.error |= ok ? 0 : kErrorOut;
         return ok ? out_ptr() : 0;
     }
 
@@ -132,8 +132,8 @@ namespace {
         asm volatile("fence" ::: "memory");
     }
 
-    constexpr uint32_t kErrList = 256;  // a packet's list did not fit an empty pool
-    constexpr uint32_t kErrDst = 512;   // no state in Dst in time
+    constexpr uint32_t kErrorList = 256;  // a packet's list did not fit an empty pool
+    constexpr uint32_t kErrorDst = 512;   // no state in Dst in time
 
     // Packet i's state image and its header (after every image of the command).
     uint32_t* image_of(uint32_t* st, uint32_t i) {
@@ -149,7 +149,7 @@ namespace {
         const bool ok = timed::poll([] {
             return ckernel::semaphore_read(ckernel::semaphore::MATH_PACK) > 0;
         });
-        pf.error |= ok ? 0 : kErrDst;
+        pf.error |= ok ? 0 : kErrorDst;
         if (ok) {
             tile_regs_wait();
         }
@@ -173,7 +173,7 @@ namespace {
             timed::room(kCbState) < count * (kStTileBytes + 4 * kStHeadWords) ||
             timed::room(kCbLists) < list_bytes
         ) {
-            pf.error |= kErrRoom;
+            pf.error |= kErrorRoom;
             return false;
         }
         const uint32_t* t = g_tree;
@@ -243,7 +243,7 @@ namespace {
         }
         if (deferred > 0 && admitted == 0) {
             // Cannot happen when the lists hold every treelet (the host sees to it).
-            pf.error |= kErrList;
+            pf.error |= kErrorList;
             deferred = 0;
         }
         ls[kLsMore] = deferred;
@@ -254,7 +254,7 @@ namespace {
         }
         pf.batches++;
         if (!timed::back(kCbSignal, 1)) {
-            pf.error |= kErrSignal;
+            pf.error |= kErrorSignal;
             return false;
         }
         cb_push_back(kCbSignal, 1);
@@ -393,14 +393,14 @@ namespace {
             return;
         }
         if (form == kProbeFast) {
-            fast_box(walk::box_imm(nodes + kNodeWords * c0), kSPv, kSInv, kSBest);
+            fast_box(walk::box_immediate(nodes + kNodeWords * c0), kSPv, kSInv, kSBest);
             store(L7, kSStack);
-            fast_box(walk::box_imm(nodes + kNodeWords * c1), kSPv, kSInv, kSBest);
+            fast_box(walk::box_immediate(nodes + kNodeWords * c1), kSPv, kSInv, kSBest);
             store(L7, kSStack + 1);
             return;
         }
         uint32_t s = kSStack, near = c0, far = c1;
-        if (form != kProbeImm) {
+        if (form != kProbeImmediate) {
             s = kSStack + 2 * (i & 15);
             walk::pop_lanes(s);
             stack[i & 31] = walk::any_lane();
@@ -417,9 +417,9 @@ namespace {
             stack[(i + 1) & 31] = far;
             stack[(i + 2) & 31] = near;
         }
-        box_test(walk::box_imm(nodes + kNodeWords * far), kSO, kSInv, kSBest);
+        box_test(walk::box_immediate(nodes + kNodeWords * far), kSO, kSInv, kSBest);
         store(L7, s);
-        box_test(walk::box_imm(nodes + kNodeWords * near), kSO, kSInv, kSBest);
+        box_test(walk::box_immediate(nodes + kNodeWords * near), kSO, kSInv, kSBest);
         store(L7, s + 1);
     }
 
@@ -429,7 +429,7 @@ namespace {
         const uint32_t* t = g_tree;
         const uint32_t* nodes = t + t[kTreeNodeOff];
         const uint32_t* order = t + t[kTreeOrderOff];
-        const uint32_t n_nodes = t[kTreeNodes];
+        const uint32_t node_count = t[kTreeNodes];
         volatile uint32_t stack[32];
         for (uint32_t p = 0; p < count; ++p) {
             const uint32_t* pk = next_page(pf);
@@ -458,7 +458,7 @@ namespace {
             const uint32_t a = wall();
             uint32_t i = 0;
             for (uint32_t pass = 0; pass < passes; ++pass) {
-                for (uint32_t n = 0; n < n_nodes; ++n) {
+                for (uint32_t n = 0; n < node_count; ++n) {
                     const uint32_t w = nodes[kNodeWords * n + 6];
                     if ((w & (kLeafBit | kTreeletBit)) == 0) {
                         probe_visit(form, nodes, order, n, i++, signs, stack);
@@ -593,7 +593,7 @@ namespace {
                 const uint32_t base = (
                     (exponent << 23) + kRecipPerPage * (first + i) + 32 * j
                 );
-                imm(L1, base);
+                immediate(L1, base);
                 load(L0, kLaneSlot);
                 TT_SFPIADD(0, L1, L0, kCcNone);
                 recip(L0, L3, L1, L2, L4, L5);
@@ -970,7 +970,7 @@ void kernel_main() {
             handler == kHandlerProbe
         );
         if (trees && g_tree == nullptr) {
-            pf.error |= kErrTree;
+            pf.error |= kErrorTree;
         } else if (handler == kHandlerTrace) {
             trace_list(count, r.a3 == kModeAny, pf);
         } else if (handler == kHandlerTreelets) {

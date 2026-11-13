@@ -52,7 +52,7 @@ namespace km {
     }
 
     // True when groups `a` and `b` (first | count << 16) share a core: the test that
-    // holds a KM_F_EXCL command while an overlapping group is in flight.
+    // holds a KM_FLAG_EXCLUSIVE command while an overlapping group is in flight.
     inline bool groups_overlap(uint32_t a, uint32_t b) {
         const uint32_t fa = a & 0xFFFFu, na = a >> 16, fb = b & 0xFFFFu, nb = b >> 16;
         return na != 0 && nb != 0 && fa < fb + nb && fb < fa + na;
@@ -104,9 +104,9 @@ namespace km {
 
     // What one pass over the ring found.
     struct Pass {
-        int32_t pick;       // slot of the command to run (smallest sequence), -1: none
-        uint32_t pick_seq;  // its sequence number
-        bool partial;       // a newer command was seen that has not fully landed
+        int32_t pick;  // slot of the command to run (smallest sequence), -1: none
+        uint32_t pick_sequence;  // its sequence number
+        bool partial;            // a newer command was seen that has not fully landed
     };
 
     // One pass over slots [0, depth): newer commands not for `me` are consumed; the
@@ -117,13 +117,13 @@ namespace km {
     ) {
         Pass p = {-1, 0, false};
         for (uint32_t j = 0; j < depth; j++) {
-            const uint32_t s = ring[j].seq;
+            const uint32_t s = ring[j].sequence;
             if (!newer(s, last[j])) {
                 continue;
             }
             km_command_t r;
             copy_command(&ring[j], &r);
-            if (r.seq != s || !KM_LANDED(&r)) {
+            if (r.sequence != s || !KM_LANDED(&r)) {
                 p.partial = true;
                 continue;
             }
@@ -131,9 +131,9 @@ namespace km {
                 last[j] = s;
                 continue;
             }
-            if (p.pick < 0 || newer(p.pick_seq, s)) {
+            if (p.pick < 0 || newer(p.pick_sequence, s)) {
                 p.pick = static_cast<int32_t>(j);
-                p.pick_seq = s;
+                p.pick_sequence = s;
             }
         }
         return p;

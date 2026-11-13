@@ -31,28 +31,31 @@ WAIT_SLICE_S = 0.05  # longest single native wait, so Python stays responsive
 THREAD_POLL_S = 0.002  # one look at a thread while several are waited for
 COMPACT_ROWS = 4096  # released handles kept before the columns are shifted
 COLUMNS = (
-    "_first", "_count", "_flags", "_seq", "_kseq", "_status", "_ticks", "_has", "_gone"
+    "_first", "_count", "_flags", "_sequence", "_kseq", "_status", "_ticks", "_has",
+    "_gone",
 )  # fmt: skip
-SEQ_LOW = (
+SEQUENCE_LOW = (
     1 << 16
-)  # a DONE or TIMEOUT event carries the low 16 bits of the command's seq
-SEQ_BACK = 2048  # how far a queued command's seq may fall behind the host's order
+)  # a DONE or TIMEOUT event carries the low 16 bits of the command's sequence
+SEQUENCE_BACK = (
+    2048  # how far a queued command's sequence may fall behind the host's order
+)
 
 
 class Event(NamedTuple):
-    """A finished command: its handle, kind (done, timeout, pong, rejected), the aux
-    (done: the group's first core; timeout: the slot; rejected: the reason),
+    """A finished command: its handle, kind (done, timeout, pong, rejected), the
+    auxiliary (done: the group's first core; timeout: the slot; rejected: the reason),
     submit-to-completion time in X280 timer ticks, and for a command submitted with
     `result=True` the leader's result word (sent as the ticks)."""
 
     handle: int
     kind: str
-    aux: int
+    auxiliary: int
     ticks: int
     result: int | None = None
 
     @property
-    def us(self):
+    def microseconds(self):
         return self.ticks / 50.0  # the X280 timer runs at 50 MHz
 
 
@@ -75,7 +78,7 @@ def _left(by):
     return max(by - time.monotonic(), 0.0)
 
 
-def _seq_number(n):
+def _sequence_number(n):
     """The kernel's sequence number of the n-th command: it counts in 32 bits and skips
     0 (it also skips a slot's last value, which only a wrap can repeat)."""
     return (n - 1) % M32 + 1
@@ -100,16 +103,22 @@ class Run:
         self.batch = batch
         k = self.h.constants
         self._kinds = {
-            k["KM_EV_DONE"]: "done",
-            k["KM_EV_TIMEOUT"]: "timeout",
-            k["KM_EV_PONG"]: "pong",
-            k.get("KM_EV_REJECTED", 3): "rejected",
+            k["KM_EVENT_DONE"]: "done",
+            k["KM_EVENT_TIMEOUT"]: "timeout",
+            k["KM_EVENT_PONG"]: "pong",
+            k.get("KM_EVENT_REJECTED", 3): "rejected",
         }
-        self._done = k["KM_EV_DONE"]
-        self._numbered = (k["KM_EV_DONE"], k["KM_EV_TIMEOUT"])  # aux holds seq bits
-        self._aux_low, self._seq_shift = k["KM_EV_AUX_LOW"], k["KM_EV_SEQ_SHIFT"]
-        self._f_result, self._f_queue = k["KM_F_RESULT"], k["KM_F_QUEUE"]
-        self._f_excl = k["KM_F_EXCL"]
+        self._done = k["KM_EVENT_DONE"]
+        self._numbered = (
+            k["KM_EVENT_DONE"],
+            k["KM_EVENT_TIMEOUT"],
+        )  # auxiliary holds sequence bits
+        self._auxiliary_low, self._sequence_shift = (
+            k["KM_EVENT_AUXILIARY_LOW"],
+            k["KM_EVENT_SEQUENCE_SHIFT"],
+        )
+        self._flag_result, self._flag_queue = k["KM_FLAG_RESULT"], k["KM_FLAG_QUEUE"]
+        self._flag_exclusive = k["KM_FLAG_EXCLUSIVE"]
         self._rejections = {
             v: n[len("KMD_REJECT_") :].lower()
             for n, v in k.items()
@@ -121,7 +130,7 @@ class Run:
         )
         self._hdr, self._group_at, self._arg_at = self.h.positions
         self._next = 1  # the next handle; command number = handle mod 2**32
-        self._next_seq = 1  # the kernel's sequence of the next command
+        self._next_sequence = 1  # the kernel's sequence of the next command
         self._new_handles(1)
         self._rejected = {}
         self._failure = None
@@ -144,7 +153,9 @@ class Run:
         self._first = np.zeros(0, np.int32)
         self._count = np.zeros(0, np.int32)  # 0: a command to the kernel itself
         self._flags = np.zeros(0, np.uint8)  # the command's KM_F_* flags
-        self._seq = np.zeros(0, np.int64)  # host commands up to this one; 0: no command
+        self._sequence = np.zeros(
+            0, np.int64
+        )  # host commands up to this one; 0: no command
         self._kseq = np.zeros(
             0, np.int64
         )  # the kernel's count, from the event; 0: not yet
@@ -190,7 +201,9 @@ class Run:
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(a) <= M32 for a in args):
             raise ValueError("arguments are 32-bit unsigned words")
-        flags = (self._f_result if result else 0) | (self._f_queue if queued else 0)
+        flags = (self._flag_result if result else 0) | (
+            self._flag_queue if queued else 0
+        )
         handle = self._queue_command(handler, group, args, exclusive, flags)
         self.submit_s += time.perf_counter() - t0
         return handle
@@ -248,7 +261,7 @@ class Run:
         start = self._next
         self._next += n[0]
         if exclusive:
-            words[:, self._hdr] |= self._f_excl << 8
+            words[:, self._hdr] |= self._flag_exclusive << 8
         self._send_block(words, first, count, np.zeros(n[0], np.uint8))
         self.submit_s += time.perf_counter() - t0
         return range(start, self._next)
@@ -266,14 +279,14 @@ class Run:
     def _queue_command(self, handler, group, args=(), exclusive=False, flags=0):
         self._check_alive()
         first, count = group if group else (0, 0)
-        flags |= self._f_excl if exclusive else 0  # the kernel orders it
+        flags |= self._flag_exclusive if exclusive else 0  # the kernel orders it
         w = [0] * 16
         w[self._hdr] = handler & 0xFF | flags << 8
         w[self._group_at] = first | count << 16
         for at, value in zip(self._arg_at, args):
             w[at] = int(value) & M32
         self._words.extend(w)
-        self._firsts.append(-1 if flags & self._f_queue else first)
+        self._firsts.append(-1 if flags & self._flag_queue else first)
         self._counts.append(count)
         self._fl.append(flags)
         handle = self._next
@@ -302,8 +315,10 @@ class Run:
         self._first[lo : lo + n] = first
         self._count[lo : lo + n] = count
         self._flags[lo : lo + n] = flags
-        self._seq[lo : lo + n] = np.where(rec, self._next_seq + np.cumsum(rec) - 1, 0)
-        self._next_seq += int(rec.sum())
+        self._sequence[lo : lo + n] = np.where(
+            rec, self._next_sequence + np.cumsum(rec) - 1, 0
+        )
+        self._next_sequence += int(rec.sum())
         self.port.enqueue(np.ascontiguousarray(words))
         self._handed += n
 
@@ -348,23 +363,23 @@ class Run:
         self._oldest += int(np.argmax(waiting)) if waiting.any() else end - at
         timeout = None
         for handle in handles[(rows[:, 2] & 0xFF) != self._done].tolist():
-            ev = self.event(handle)
-            if ev.kind == "rejected":
-                self._rejected[handle] = ev.aux
+            event = self.event(handle)
+            if event.kind == "rejected":
+                self._rejected[handle] = event.auxiliary
                 if self.group(handle) is not None:
                     self._unsequence(handle)
-            elif ev.kind == "timeout":
-                timeout = ev
+            elif event.kind == "timeout":
+                timeout = event
         if timeout is not None:
             self._fail_timeout(timeout)
 
     def _unsequence(self, handle):
         """A rejected command took no sequence number: later commands move down one."""
         i = handle - self._base
-        self._seq[i] = 0
-        later = self._seq[i + 1 : self._handed - self._base]
+        self._sequence[i] = 0
+        later = self._sequence[i + 1 : self._handed - self._base]
         later[later > 0] -= 1
-        self._next_seq -= 1
+        self._next_sequence -= 1
 
     def _arrived(self, handles):
         return self._has[handles - self._base]
@@ -420,11 +435,11 @@ class Run:
         finally:
             self.wait_s += time.perf_counter() - t0
         handle = int(wanted[self._arrived(wanted)][0])
-        ev = self.event(handle)
+        event = self.event(handle)
         self.forget([handle])
-        if ev.kind == "rejected":
-            raise CommandRejected(handle, ev.aux, self._rejections)
-        return ev
+        if event.kind == "rejected":
+            raise CommandRejected(handle, event.auxiliary, self._rejections)
+        return event
 
     def forget(self, handles):
         """Releases what the run keeps for handles whose events arrived (the event,
@@ -455,21 +470,24 @@ class Run:
         self._base += done
 
     def _count_after(self, rows, ref):
-        """`ref` moved past the first `rows` rows by their events' seq bits, each
+        """`ref` moved past the first `rows` rows by their events' sequence bits, each
         against the one before; None once a gap is too long to tell."""
         at = np.arange(rows)
         status = self._status[:rows].astype(np.int64)
-        on = (self._seq[:rows] > 0) & self._has[:rows]
+        on = (self._sequence[:rows] > 0) & self._has[:rows]
         at = at[on & np.isin(status & 0xFF, self._numbered)]
         if not at.size:
             return ref
-        host = np.concatenate([[ref[1]], self._seq[at]])
+        host = np.concatenate([[ref[1]], self._sequence[at]])
         low = np.concatenate(
-            [[ref[0] % SEQ_LOW], status[at] >> (8 + self._seq_shift) & (SEQ_LOW - 1)]
+            [
+                [ref[0] % SEQUENCE_LOW],
+                status[at] >> (8 + self._sequence_shift) & (SEQUENCE_LOW - 1),
+            ]
         )
-        gap = (np.diff(low) - np.diff(host)) % SEQ_LOW
-        gap = np.where(gap >= SEQ_LOW - SEQ_BACK, gap - SEQ_LOW, gap)
-        if (gap >= SEQ_LOW // 2).any():
+        gap = (np.diff(low) - np.diff(host)) % SEQUENCE_LOW
+        gap = np.where(gap >= SEQUENCE_LOW - SEQUENCE_BACK, gap - SEQUENCE_LOW, gap)
+        if (gap >= SEQUENCE_LOW // 2).any():
             return None
         return (ref[0] + int((np.diff(host) + gap).sum()), int(host[-1]))
 
@@ -609,23 +627,23 @@ class Run:
             return None
         status, ticks = int(self._status[i]), int(self._ticks[i])
         kind = self._kinds.get(status & 0xFF, str(status & 0xFF))
-        wanted = self._flags[i] & self._f_result and kind == "done"
-        aux = status >> 8
+        wanted = self._flags[i] & self._flag_result and kind == "done"
+        auxiliary = status >> 8
         if status & 0xFF in self._numbered:
-            aux &= self._aux_low
-        return Event(handle, kind, aux, ticks, ticks if wanted else None)
+            auxiliary &= self._auxiliary_low
+        return Event(handle, kind, auxiliary, ticks, ticks if wanted else None)
 
-    def seq(self, handle):
+    def sequence(self, handle):
         """The sequence number the kernel gave a command (the trace's index), from its
         done or timeout event; None before that event or for a rejected command."""
         self._hand()
         i = handle - self._base
-        if not 0 <= i < self._handed - self._base or self._seq[i] == 0:
+        if not 0 <= i < self._handed - self._base or self._sequence[i] == 0:
             return None
         if self._gone[i] and not self._keep:
             return None
         n = self._kernel_count(i)
-        return None if n is None else _seq_number(n)
+        return None if n is None else _sequence_number(n)
 
     def _kernel_count(self, i, ref=None):
         """Row i's place in the kernel's count of commands (every source), from the low
@@ -634,29 +652,39 @@ class Run:
         if self._kseq[i]:
             return int(self._kseq[i])
         status = int(self._status[i])
-        if self._seq[i] == 0 or not self._has[i] or status & 0xFF not in self._numbered:
+        if (
+            self._sequence[i] == 0
+            or not self._has[i]
+            or status & 0xFF not in self._numbered
+        ):
             return None
         if ref is None:
             known = np.flatnonzero(self._kseq[:i])
             j = int(known[-1]) if known.size else None
-            ref = self._ref if j is None else (int(self._kseq[j]), int(self._seq[j]))
+            ref = (
+                self._ref if j is None else (int(self._kseq[j]), int(self._sequence[j]))
+            )
         if ref is None:
             raise KomorebiError(
                 f"handle {i + self._base}: its sequence number is not known (an "
                 f"earlier gap of other sources' commands was too long to tell)"
             )
-        near = ref[0] + int(self._seq[i]) - ref[1]  # as if no other source submitted
-        low = status >> (8 + self._seq_shift) & (SEQ_LOW - 1)
-        gap = (low - _seq_number(near)) % SEQ_LOW
-        gap -= SEQ_LOW if gap >= SEQ_LOW - SEQ_BACK else 0
-        if gap >= SEQ_LOW // 2:
+        near = (
+            ref[0] + int(self._sequence[i]) - ref[1]
+        )  # as if no other source submitted
+        low = status >> (8 + self._sequence_shift) & (SEQUENCE_LOW - 1)
+        gap = (low - _sequence_number(near)) % SEQUENCE_LOW
+        gap -= SEQUENCE_LOW if gap >= SEQUENCE_LOW - SEQUENCE_BACK else 0
+        if gap >= SEQUENCE_LOW // 2:
             raise KomorebiError(
                 f"handle {i + self._base}: {gap} or more commands of other sources "
                 f"since the host's previous command; its sequence number is not known "
                 f"(an event carries its low 16 bits)"
             )
         n = near + gap
-        n += next(d for d in (0, 1, -1) if _seq_number(n + d) % SEQ_LOW == low)
+        n += next(
+            d for d in (0, 1, -1) if _sequence_number(n + d) % SEQUENCE_LOW == low
+        )
         self._kseq[i] = n
         return n
 
@@ -669,7 +697,9 @@ class Run:
             return None
         first = int(self._first[i])
         if first < 0 and self._has[i] and self._status[i] & 0xFF == self._done:
-            first = int(self._status[i]) >> 8 & self._aux_low  # the queue's choice
+            first = (
+                int(self._status[i]) >> 8 & self._auxiliary_low
+            )  # the queue's choice
         return (first if first >= 0 else None, int(self._count[i]))
 
     @property
@@ -681,7 +711,7 @@ class Run:
 
     def run_hostfed(self, graph, bindings=None, timeout=10.0, engine=None):
         """Runs a graph or a stream host-fed: its executor on the host, its commands
-        through this run's host ring. Returns a HostfedResult (status, error, regs,
+        through this run's host ring. Returns a HostfedResult (status, error, registers,
         runs, commands, events); see `komorebi.engines.graph_hostfed`."""
         if stream_hostfed.is_stream(graph):
             return stream_hostfed.run_hostfed(self, graph, bindings, timeout)
@@ -896,29 +926,33 @@ class Run:
                     continue
                 if n is None:
                     continue
-                ref = (n, int(self._seq[i]))
+                ref = (n, int(self._sequence[i]))
                 handle = i + self._base
                 group = self.group(handle)
                 if group is not None and group[0] is not None:
-                    seqs[handle], groups[handle] = _seq_number(n), group
+                    seqs[handle], groups[handle] = _sequence_number(n), group
             self._trace = st.Trace(trace_rows, seqs, groups, self.backend.mhz, self.h)
 
     def _remember(self, error):
         self._failure = error
         return error
 
-    def _fail_timeout(self, ev):
+    def _fail_timeout(self, event):
         self._finish(10.0)
         r = self._result
-        group = self.group(ev.handle)
-        seq = r["seq"] if r["error"] == self.h["KMD_ERR_DEADLINE"] else None
-        if seq is None:
-            seq = self.seq(ev.handle)
+        group = self.group(event.handle)
+        sequence = r["sequence"] if r["error"] == self.h["KMD_ERROR_DEADLINE"] else None
+        if sequence is None:
+            sequence = self.sequence(event.handle)
         known = group and group[0] is not None
         cores = (
-            st.not_reported(self._state, group, ev.aux, seq, self.h) if known else []
+            st.not_reported(self._state, group, event.auxiliary, sequence, self.h)
+            if known
+            else []
         )
-        raise self._remember(CommandTimeout(ev.handle, ev.aux, seq, group, cores, r))
+        raise self._remember(
+            CommandTimeout(event.handle, event.auxiliary, sequence, group, cores, r)
+        )
 
     def _fail_kernel(self, why):
         self._finish(10.0)
@@ -926,9 +960,9 @@ class Run:
         r = self._result
         where = (
             f"exception on X280 core {r['req']} (mcause {r['slot']:#x}, mepc "
-            f"{r['seq']:#x}, mtval {r['seen']:#x})"
-            if r["error"] == self.h["KMD_ERR_TRAP"]
-            else f"slot {r['slot']}, sequence {r['seq']}, command {r['req']}"
+            f"{r['sequence']:#x}, mtval {r['seen']:#x})"
+            if r["error"] == self.h["KMD_ERROR_TRAP"]
+            else f"slot {r['slot']}, sequence {r['sequence']}, command {r['req']}"
         )
         raise self._remember(
             KernelFailed(

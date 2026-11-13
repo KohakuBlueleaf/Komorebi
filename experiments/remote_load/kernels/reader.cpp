@@ -44,7 +44,7 @@ void kernel_main() {
             }
             const uint32_t bytes = m.w[1] & RL_BYTES;
             if (bytes > slot_bytes) {
-                port.tell(0, RL_FAIL, RL_ERR_SIZE);
+                port.tell(0, RL_FAIL, RL_ERROR_SIZE);
                 continue;
             }
             uint32_t load = 0;
@@ -62,7 +62,7 @@ void kernel_main() {
                 }
                 load = km::wall() - t0;
                 if (!landed) {
-                    port.tell(0, RL_FAIL, RL_ERR_READ);
+                    port.tell(0, RL_FAIL, RL_ERROR_READ);
                     continue;
                 }
             }

@@ -189,7 +189,7 @@
   "sponza_overview-primary": {
    "packets": 32768,
    "busy_ms_per_core": 28.2,
-   "packet_us_p50_p99_max": [
+   "packet_microseconds_p50_p99_max": [
     94.2,
     234.0,
     385.4
@@ -240,7 +240,7 @@
   "sponza_overview-shadow": {
    "packets": 32768,
    "busy_ms_per_core": 16.24,
-   "packet_us_p50_p99_max": [
+   "packet_microseconds_p50_p99_max": [
     54.6,
     137.6,
     298.3
@@ -291,7 +291,7 @@
   "sponza_overview-bounce": {
    "packets": 32768,
    "busy_ms_per_core": 153.92,
-   "packet_us_p50_p99_max": [
+   "packet_microseconds_p50_p99_max": [
     567.0,
     965.7,
     1442.4
@@ -342,7 +342,7 @@
   "sponza_overview-shadow2": {
    "packets": 32768,
    "busy_ms_per_core": 44.27,
-   "packet_us_p50_p99_max": [
+   "packet_microseconds_p50_p99_max": [
     159.0,
     359.5,
     447.9
@@ -393,7 +393,7 @@
   "bistro_interior_overview-primary": {
    "packets": 32768,
    "busy_ms_per_core": 33.79,
-   "packet_us_p50_p99_max": [
+   "packet_microseconds_p50_p99_max": [
     110.4,
     337.1,
     776.5
@@ -444,7 +444,7 @@
   "bistro_interior_overview-shadow": {
    "packets": 32768,
    "busy_ms_per_core": 23.34,
-   "packet_us_p50_p99_max": [
+   "packet_microseconds_p50_p99_max": [
     69.4,
     259.3,
     480.5
@@ -495,7 +495,7 @@
   "bistro_interior_overview-bounce": {
    "packets": 32768,
    "busy_ms_per_core": 206.48,
-   "packet_us_p50_p99_max": [
+   "packet_microseconds_p50_p99_max": [
     706.2,
     1691.2,
     2379.0
@@ -546,7 +546,7 @@
   "bistro_interior_overview-shadow2": {
    "packets": 32768,
    "busy_ms_per_core": 61.8,
-   "packet_us_p50_p99_max": [
+   "packet_microseconds_p50_p99_max": [
     189.2,
     726.5,
     1182.2

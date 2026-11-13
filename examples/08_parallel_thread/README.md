@@ -1,7 +1,7 @@
 # 08 parallel thread
 
 Parallel code in an X280 thread: the work cluster's four cores run one function each
-through `kmx_par`, on three patterns. Each pattern runs with one core and with four
+through `kmx_parallel`, on three patterns. Each pattern runs with one core and with four
 (the same function, given one partition or four), is timed on the card, and is checked
 exactly against numpy:
 
@@ -20,7 +20,7 @@ The grid takes no part: its kernels do nothing. The thread is
 `--twelve` runs the map, the heavy map and the prefix sum on 1, 4, 8 and 12 cores of
 the three work clusters instead ([Twelve cores](#twelve-cores)).
 
-Prints one JSON line: the times in microseconds (`us`, the best of `--repeats` runs,
+Prints one JSON line: the times in microseconds (`microseconds`, the best of `--repeats` runs,
 each from a cold cache), the thread's whole time (`thread_ms`), whether each output is
 exact (`exact`), four cores against one (`four_cores_x`), and `ok`: the thread
 returned code 0 without a library error and every output is exact. The script
@@ -46,27 +46,27 @@ is the limit, and one core with the vector loop reaches it alone.
 
 ## The rules
 
-**Who calls what.** `kmx_main` and `kmx_par` run on core 0; `kmx_par(fn, arg)` spawns
+**Who calls what.** `kmx_main` and `kmx_parallel` run on core 0; `kmx_parallel(fn, arg)` spawns
 `fn(core, arg)` on cores 1 to 3, runs it on core 0 and joins the three (`kmx.c`):
 
 | Call | Core 0 | Cores 1 to 3 (inside `fn`) |
 |---|---|---|
 | `kmx_args_get`, `kmx_region`, `kmx_time`, `kmx_stop_requested` | yes | yes |
-| `kmx_invalidate`, `kmx_flush` | yes: outside `kmx_par` the sweep is split over the four cores; inside, this core alone | yes, this core alone |
-| `kmx_par`, `kmx_spawn`, `kmx_join` | yes, not inside `fn` | no: the library error `par`, `KMX_STOPPED`, and the run ends failed |
-| `kmx_submit`, `kmx_wait`, `kmx_poll` | yes | no: as `kmx_par` |
+| `kmx_invalidate`, `kmx_flush` | yes: outside `kmx_parallel` the sweep is split over the four cores; inside, this core alone | yes, this core alone |
+| `kmx_parallel`, `kmx_spawn`, `kmx_join` | yes, not inside `fn` | no: the library error `parallel`, `KMX_STOPPED`, and the run ends failed |
+| `kmx_submit`, `kmx_wait`, `kmx_poll` | yes | no: as `kmx_parallel` |
 | `kmx_progress`, `kmx_result` | yes | best not: they write the one result block, without a lock |
 
 The calls across clusters are in [X280 threads](../../docs/threads.md#twelve-cores).
 `fn` runs on core 0 too, as partition 0: core 0 does a quarter of the work and then waits.
-A call to `kmx_par` with an empty `fn` costs 0.71 microseconds (1,000 calls in 709;
-0.59 before `kmx_par` was built on spawn and join), so a partition should be worth tens
+A call to `kmx_parallel` with an empty `fn` costs 0.71 microseconds (1,000 calls in 709;
+0.59 before `kmx_parallel` was built on spawn and join), so a partition should be worth tens
 of microseconds at least.
 
 **Partitions and results.** Pass one argument; every core computes its partition from its
 number. `arg` points into core 0's memory (here a struct on its stack), which all four
 cores address alike. A result is returned in a slot of its own per core (here
-`g_part[core]`, a global), which core 0 reads after `kmx_par` returned: `kmx_par`
+`g_part[core]`, a global), which core 0 reads after `kmx_parallel` returned: `kmx_parallel`
 fences, so what `fn` stored is visible then. Read the argument's fields into locals
 before the loop: a `uint32_t` store into the output may alias a `uint32_t` field, and
 the compiler then reads the field again on every word (the map took 2.46 ms instead
@@ -101,7 +101,7 @@ need neither. Both sweep every line of the region through the cluster's flush
 register, about 18 ns per line of region, clean or dirty: 312 microseconds
 for the 1.06 MiB input, 296 for a 1 MiB output just written, the same on one core as
 split over four (`invalidate_1`, `invalidate_4`, `flush_1`, `flush_4`). Call them once per region and
-direction, from core 0 outside `kmx_par`; the example sweeps before every timed run
+direction, from core 0 outside `kmx_parallel`; the example sweeps before every timed run
 only to start it cold.
 
 **Vector.** The library's start-up turns the vector unit on, but the thread build's
@@ -114,7 +114,7 @@ on one core (1.66 ms) is as fast as four scalar cores, and four vector cores gai
 nothing more: the bank is the limit.
 
 **The deadline.** `deadline=` (seconds, at most 60) counts from the thread's start.
-`kmx_par` checks it while it waits and returns `KMX_LATE`, with the library error
+`kmx_parallel` checks it while it waits and returns `KMX_LATE`, with the library error
 `late`; cores 1 to 3 stop serving at it. Neither interrupts a running `fn`: a loop in
 `fn` that may be long polls `kmx_stop_requested()`, which cores 1 to 3 may call. The
 whole thread takes 0.55 s of a 30 s deadline (`thread_ms`).
@@ -128,7 +128,7 @@ cores take chunks in turn. Each cluster reads and writes its own copy of the reg
 in its own bank, so data moves between banks by `kmx_push` only:
 
 - map: cluster 1 pushes each other block's input into that cluster's `in`;
-  `kmx_par_all` maps (each cluster invalidates its block of `in` first); a second call has
+  `kmx_parallel_all` maps (each cluster invalidates its block of `in` first); a second call has
   clusters 2 and 3 push their outputs into cluster 1's, which invalidates them;
 - prefix sum: the input out as for the map; pass 1 (chunk sums, one 64-byte line per
   chunk so each block's sums push whole); clusters 2 and 3 push their sums to cluster
@@ -159,7 +159,7 @@ times in ms, pushes included:
 | | prefix sum | 19.70 | 10.21 | 9.18 | 7.79 |
 | | the map's input push | - | - | 1.71 | 2.34 |
 
-Four cores are one cluster and `kmx_par`; eight and twelve pay for the pushes: the
+Four cores are one cluster and `kmx_parallel`; eight and twelve pay for the pushes: the
 lead's input push reads its bank through the cache, at about 1.2 GB/s. Twelve cores
 lose to four on small inputs (at 16,384 words the map and the prefix sum; the heavy
 map still gains), and where the work only moves memory they gain little at any size (the map: 6.42 against
@@ -171,10 +171,10 @@ more per byte it moves, or find its input already in each bank.
 
 | Words | `n, repeats, rounds` (the heavy map's `f` count) |
 |---|---|
-| Regions | `in`, `map_1`, `map_4`, `map_quarters`, `map_aliased` (written 64 KiB in), `vmap_1`, `vmap_4`, `heavy_1`, `heavy_4`, `seq`, `prefix_1`, `prefix_4`, `counters` |
-| Codes | 0 done; 1 bad words or regions; 2 a `kmx_par` call was late or stopped |
+| Regions | `in`, `map_1`, `map_4`, `map_quarters`, `map_aliased` (written 64 KiB in), `vmap_1`, `vmap_4`, `heavy_1`, `heavy_4`, `sequence`, `prefix_1`, `prefix_4`, `counters` |
+| Codes | 0 done; 1 bad words or regions; 2 a `kmx_parallel` call was late or stopped |
 | Result words | the 20 times of `TIMES` in `parallel_thread.py`, in timer ticks (50 per microsecond), then the four sums as 64-bit pairs |
-| Progress | 1 to 8 the maps, 9 to 12 the reductions, 13 to 15 the prefix sums, 16 the flushes and invalidates, 17 the `kmx_par` calls |
+| Progress | 1 to 8 the maps, 9 to 12 the reductions, 13 to 15 the prefix sums, 16 the flushes and invalidates, 17 the `kmx_parallel` calls |
 
 ## Files
 

@@ -305,7 +305,7 @@ def bf16_bits(x):
     return (np.asarray(x, dtype=np.float32).view(np.uint32) >> 16).astype(np.uint32)
 
 
-def slab_data(rng, n_nodes, exact):
+def slab_data(rng, node_count, exact):
     """Rays (inv, ob = -o inv, tmax) and boxes; exact: all values multiples of 1/4."""
     # Rays start in [-6, 6]^3 and head towards the origin on every axis; boxes lie
     # around the origin, so about a fifth of the ray-box pairs hit.
@@ -313,15 +313,15 @@ def slab_data(rng, n_nodes, exact):
         o = rng.integers(-24, 25, (32, 3)).astype(np.float32) / 4
         inv = rng.choice(EXACT_INV, (32, 3)).astype(np.float32)
         tmax = rng.integers(16, 129, 32).astype(np.float32) / 4
-        lo = rng.integers(-16, 9, (n_nodes, 3)).astype(np.float32) / 4
-        hi = lo + rng.integers(4, 25, (n_nodes, 3)).astype(np.float32) / 4
+        lo = rng.integers(-16, 9, (node_count, 3)).astype(np.float32) / 4
+        hi = lo + rng.integers(4, 25, (node_count, 3)).astype(np.float32) / 4
     else:
         o = rng.uniform(-6, 6, (32, 3)).astype(np.float32)
         d = (-o + rng.normal(scale=2.0, size=(32, 3))).astype(np.float32)
         inv = (1 / d).astype(np.float32)
         tmax = rng.uniform(4, 32, 32).astype(np.float32)
-        lo = rng.uniform(-4, 2, (n_nodes, 3)).astype(np.float32)
-        hi = (lo + rng.uniform(1, 6, (n_nodes, 3))).astype(np.float32)
+        lo = rng.uniform(-4, 2, (node_count, 3)).astype(np.float32)
+        hi = (lo + rng.uniform(1, 6, (node_count, 3))).astype(np.float32)
     inv = np.where(o * inv > 0, -inv, inv).astype(np.float32)
     ob = (-o * inv).astype(np.float32)
     return inv, ob, tmax, lo, hi
@@ -345,8 +345,8 @@ def slab_ref(inv, ob, tmax, lo, hi, fp64):
 
 def slab(session, args):
     rng = np.random.default_rng(args.seed)
-    n_nodes, exact = args.nodes, not args.random_data
-    inv, ob, tmax, lo, hi = slab_data(rng, n_nodes, exact)
+    node_count, exact = args.nodes, not args.random_data
+    inv, ob, tmax, lo, hi = slab_data(rng, node_count, exact)
     mode = {"f32": 0, "bf16": 1, "const": 2}[args.slab_mode]
     if mode == 2:  # every node is node 0, fixed at compile time
         lo[:] = lo[0]
@@ -359,7 +359,7 @@ def slab(session, args):
         if not exact:
             raise SystemExit("bf16 and const modes need exact (bf16) boxes")
         node_words = bf16_bits(nodes).reshape(-1)
-    words = np.zeros(512 + 6 * n_nodes, dtype=np.uint32)
+    words = np.zeros(512 + 6 * node_count, dtype=np.uint32)
     words[: 7 * 32] = rays.view(np.uint32).reshape(-1)
     words[512:] = node_words
     defines = []
@@ -371,36 +371,38 @@ def slab(session, args):
         session,
         "slab",
         words,
-        [n_nodes, args.reps, mode, readout],
+        [node_count, args.reps, mode, readout],
         defines,
         readout == 2,
     )
     t = times_of(out)
     sweep, read_t = t[0::2], t[1::2]
-    got = [int(v) for v in out[DATA : DATA + n_nodes]]
+    got = [int(v) for v in out[DATA : DATA + node_count]]
     want, gaps = slab_ref(inv, ob, tmax, lo, hi, fp64=not exact)
     bad_bits = 0
     near = 0
-    for n in range(n_nodes):
+    for n in range(node_count):
         diff = got[n] ^ want[n]
         for i in range(32):
             if (diff >> i) & 1:
                 bad_bits += 1
                 near += int(gaps[n][i] < 1e-5 * max(1.0, float(tmax[i])))
     raw = (
-        out[DATA + 64 : DATA + 64 + 32 * n_nodes].view(np.float32).reshape(n_nodes, 32)
+        out[DATA + 64 : DATA + 64 + 32 * node_count]
+        .view(np.float32)
+        .reshape(node_count, 32)
     )
     return (
         {
-            "nodes": n_nodes,
+            "nodes": node_count,
             "reps": args.reps,
             "mode": args.slab_mode,
             "readout": ["plain", "scheduled", "rvv"][readout],
             "exact_data": exact,
             "sweep_cycles": stats(sweep),
-            "per_node": stats([c / n_nodes for c in sweep]),
+            "per_node": stats([c / node_count for c in sweep]),
             "readout_cycles": stats(read_t),
-            "readout_per_node": stats([c / n_nodes for c in read_t]),
+            "readout_per_node": stats([c / node_count for c in read_t]),
             "hit_fraction": float(np.mean([m.bit_count() / 32 for m in want])),
             "flags_bad": bad_bits,
             "flags_bad_near_boundary": near,
@@ -600,7 +602,7 @@ def walk(session, args):
             "ref_hits": int(ref_hit.sum()),
             "hit_disagree": int((ref_hit != dev_hit).sum()),
             "best_exact": int((diff == 0).sum()),
-            "best_max_abs_err": float(diff.max()) if diff.size else 0.0,
+            "best_max_abs_error": float(diff.max()) if diff.size else 0.0,
             "leaf_wrong": leaf_bad,
             "leaf_tie_ok": leaf_tie,
             "ref_rays_with_ties": int(sum(len(t) > 1 for t in ties)),

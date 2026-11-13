@@ -27,23 +27,25 @@ extern "C" {
 #define KMG_FLIGHT 2u  /* a command submitted, its completion not seen */
 #define KMG_DONE 3u
 
-/* Submits `rec` for `node` (seq, landing and slot bits are 0; a queued command keeps
-   KM_F_QUEUE and first 0). Returns KMG_SUBMITTED or KMG_BUSY. */
-typedef uint32_t (*kmg_submit_fn)(void* ctx, uint32_t node, const km_command_t* rec);
+/* Submits `rec` for `node` (sequence, landing and slot bits are 0; a queued command
+   keeps KM_FLAG_QUEUE and first 0). Returns KMG_SUBMITTED or KMG_BUSY. */
+typedef uint32_t (*kmg_submit_function)(
+    void* ctx, uint32_t node, const km_command_t* rec
+);
 
 /* All engine state, in a block the caller gives. The first 20 words are fixed: the
    registers, then runs, phase, error reason and error node. */
 typedef struct {
-    uint32_t regs[KM_STREAM_REGS];
+    uint32_t registers[KM_STREAM_REGISTERS];
     uint32_t runs; /* the round being run, from 1 */
     uint32_t phase;
     uint32_t error_reason, error_node;
-    uint32_t done, in_flight, head, ready_n, n_cores;
+    uint32_t done, in_flight, head, ready_n, core_count;
     const km_graph_t* hdr;
     const km_node_t* nodes;
     const uint16_t* edges;
     const km_uop_t* ops;
-    const km_template_t* tpl;
+    const km_template_t* template;
     uint8_t left[KM_GRAPH_MAX_NODES];
     uint8_t status[KM_GRAPH_MAX_NODES];
     uint16_t ready[KM_GRAPH_MAX_NODES];
@@ -57,17 +59,17 @@ uint32_t kmg_state_bytes(void);
 uint32_t kmg_check(const void* upload, uint32_t bytes);
 
 /* Starts a checked upload, which stays in place and unchanged while the graph runs.
-   Returns 0, or KM_SERR_HEADER for more than KM_GRAPH_BINDINGS bindings. */
+   Returns 0, or KM_STREAM_ERROR_HEADER for more than KM_GRAPH_BINDINGS bindings. */
 uint32_t kmg_start(
     kmg_state_t* s,
     const void* upload,
     const uint32_t* bindings,
     uint32_t n_bindings,
-    uint32_t n_cores
+    uint32_t core_count
 );
 
 /* One step: at most KM_GRAPH_STEP ready nodes. */
-uint32_t kmg_step(kmg_state_t* s, kmg_submit_fn submit, void* ctx);
+uint32_t kmg_step(kmg_state_t* s, kmg_submit_function submit, void* ctx);
 
 /* The command of `node` completed with `result`. Returns 0, or 1 if the graph is not
    running or the node has no command in flight (nothing changes). */

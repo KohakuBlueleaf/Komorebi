@@ -18,11 +18,11 @@ pytestmark = pytest.mark.skipif(shutil.which("cc") is None, reason="needs cc")
 class ResultPort(FakePort):
     """Completes at once; every done event carries a0 + count as the result word."""
 
-    def _event(self, req, kind, aux=0, ticks=100):
+    def _event(self, req, kind, auxiliary=0, ticks=100):
         words = self.ring.get(req)
-        if kind == K["KM_EV_DONE"] and words:
+        if kind == K["KM_EVENT_DONE"] and words:
             ticks = words[3] + (words[2] >> 16)
-        super()._event(req, kind, aux, ticks)
+        super()._event(req, kind, auxiliary, ticks)
 
 
 def make_run():
@@ -32,7 +32,7 @@ def make_run():
 
 def loop():
     g = Graph(max_runs=100)
-    it, err = g.bindings("it"), g.reg()
+    it, err = g.bindings("it"), g.register()
     a = g.command(1, group=(0, 60), args=[it])
     b = g.command(2, group=(0, 30), args=[it], after=[a])
     c = g.command(3, group=(30, 30), args=[it], after=[a])
@@ -49,7 +49,11 @@ def test_hostfed_gives_the_simulated_commands_and_registers_and_takes_new_bindin
     for it, rounds in ((0, 6), (2, 4)):
         got = run.run_hostfed(g, {"it": it})
         want = g.simulate({"it": it}, result=lambda r: r.args[0] + r.count)
-        assert (got.status, got.runs, got.regs) == ("ended", rounds, want.regs)
+        assert (got.status, got.runs, got.registers) == (
+            "ended",
+            rounds,
+            want.registers,
+        )
         key = sorted((r.run, r.node, r.first, r.count, r.args) for r in got.commands)
         assert key == sorted(
             (r.run, r.node, r.first, r.count, r.args) for r in want.commands

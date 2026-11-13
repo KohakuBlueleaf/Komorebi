@@ -192,7 +192,7 @@ namespace vec {
     enum Mask : uint32_t { kAll = 0, kOne = 1, kNone = 2, kNest8 = 3 };
 
     // L0-L3 = float(2 x lane) with every lane enabled.
-    inline void pred_regs() {
+    inline void pred_registers() {
         TTI_SFPENCC(3, 0, 0, 10);
         TTI_SFPCAST(LANE, L4, 0);
         TTI_SFPNOP;
@@ -232,7 +232,7 @@ namespace vec {
         uint32_t len = 32
     ) {
         for (uint32_t k = 0; k < k_runs; ++k) {
-            pred_regs();
+            pred_registers();
             pred_mask(m);
             tensix_sync();
             const uint32_t a = wall();
@@ -337,7 +337,7 @@ namespace vec {
         }
         if (c == kBusy || c == kFenceBusy) {
             if (wait_sfpu_idle() >= probe::kSpinLimit) {
-                err |= probe::kErrSpin;
+                err |= probe::kErrorSpin;
             }
         }
         if (c != kOrWindow) {
@@ -780,7 +780,7 @@ namespace vec {
     [[gnu::noinline]] void slab(
         const volatile uint32_t* in,
         volatile uint32_t* out,
-        uint32_t n_nodes,
+        uint32_t node_count,
         uint32_t reps,
         SlabMode mode,
         uint32_t readout,
@@ -795,7 +795,7 @@ namespace vec {
         for (uint32_t r = 0; r < reps; ++r) {
             tensix_sync();
             const uint32_t t0 = wall();
-            for (uint32_t n = 0; n < n_nodes; ++n) {
+            for (uint32_t n = 0; n < node_count; ++n) {
                 if (mode == kF32) {
                     slab_node_f32(nodes + 6 * n, n);
                 } else if (mode == kBf16) {
@@ -806,14 +806,14 @@ namespace vec {
             }
             tensix_sync();
             const uint32_t t1 = wall();
-            for (uint32_t n = 0; n < n_nodes; ++n) {
+            for (uint32_t n = 0; n < node_count; ++n) {
                 d[n] = hit_mask(64 + 4 * n, readout);
             }
             const uint32_t t2 = wall();
             t.add(t1 - t0);
             t.add(t2 - t1);
         }
-        for (uint32_t n = 0; n < n_nodes; ++n) {
+        for (uint32_t n = 0; n < node_count; ++n) {
             read_lanes(64 + 4 * n, d + 64 + 32 * n);
         }
     }

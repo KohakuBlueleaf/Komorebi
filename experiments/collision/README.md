@@ -18,7 +18,7 @@ cannot share a NoC in tt-metal's dedicated mode).
 
 | part | file |
 |---|---|
-| X280 image (core 0): the landing image, its two multicast windows moved to slots 16 and 17 | `x280/command_seq.c` |
+| X280 image (core 0): the landing image, its two multicast windows moved to slots 16 and 17 | `x280/command_sequence.c` |
 | Command kernel: accepts every command (echo words, protocol A of the landing experiment), checks every payload word, completes it through the column leaders, then raises a commands-done word | `kernels/commands.cpp` |
 | Broadcast kernel: stop-and-wait block broadcast down its broadcast, every word checked | `kernels/broadcast.cpp` |
 | Broadcast kernel, stream mode: a fixed body multicast back to back with a window | `kernels/stream.cpp` |

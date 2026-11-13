@@ -41,10 +41,10 @@ int kmx_submit(const km_command_t* r, uint32_t* handle);
 
 /* The event of `handle`, by kmx_time() == `deadline` at the latest (KMX_LATE), or a
  * stop; events of other handles are kept for kmx_poll, up to KMX_STASH (KMX_FULL). */
-int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* ev);
+int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event);
 
 /* One event if any (a kept one first): KMX_OK, or KMX_NONE. Never waits. */
-int kmx_poll(kmx_event* ev);
+int kmx_poll(kmx_event* event);
 
 /* Core 0: starts fn(core, arg) on core 1, 2 or 3 and returns. KMX_OK; KMX_FULL while
  * that core has not finished its last spawn; KMX_BAD for another core. */
@@ -56,19 +56,19 @@ int kmx_join(int core);
 
 /* Core 0, not nested: spawns fn on cores 1 to 3, runs fn(0, arg), joins the three:
  * KMX_OK, KMX_FULL if one of them is still busy, or KMX_LATE / KMX_STOPPED. */
-int kmx_par(void (*fn)(int core, void* arg), void* arg);
+int kmx_parallel(void (*fn)(int core, void* arg), void* arg);
 
 /* The clusters running this image in the program (bit c for cluster c), and the one
- * that leads them: it calls kmx_par_all, the others kmx_serve. */
+ * that leads them: it calls kmx_parallel_all, the others kmx_serve. */
 uint32_t kmx_clusters(void);
 int kmx_lead(void);
 
 /* The lead's core 0, not nested: runs fn(cluster, core, arg) on every core of every
  * cluster of kmx_clusters() and waits for all. KMX_OK, or KMX_LATE / KMX_STOPPED. */
-int kmx_par_all(void (*fn)(int cluster, int core, uint64_t arg), uint64_t arg);
+int kmx_parallel_all(void (*fn)(int cluster, int core, uint64_t arg), uint64_t arg);
 
-/* Core 0 of a cluster that does not lead: runs the lead's kmx_par_all calls until the
- * lead's kmx_main returns (KMX_OK), or KMX_LATE / KMX_STOPPED; KMX_NONE on the lead. */
+/* Core 0 of a non-lead cluster: runs the lead's kmx_parallel_all calls until the lead's
+ * kmx_main returns (KMX_OK), or KMX_LATE / KMX_STOPPED; KMX_NONE on the lead. */
 int kmx_serve(void);
 
 /* Any core: stores `bytes` from `src` at `offset` of `cluster`'s region `id` (64-byte
@@ -78,8 +78,8 @@ int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t byt
 /* X280 ports: a sequence number and three words with the grid's cores, fixed to X280
  * cores at load. A call names a core the calling X280 core serves (else KMX_BAD). */
 typedef struct {
-    uint32_t seq, w[3];
-} kmx_msg;
+    uint32_t sequence, w[3];
+} kmx_message;
 
 /* Entries of the port tables, the grid's cores (0: the program declared no ports). */
 int kmx_port_cores(void);
@@ -92,22 +92,22 @@ int kmx_port_owner(int core);
 int kmx_port_tell(int core, uint32_t a, uint32_t b, uint32_t c);
 
 /* `core`'s newest ask if it is not answered yet: KMX_OK and `m`, else KMX_NONE. */
-int kmx_port_asked(int core, kmx_msg* m);
+int kmx_port_asked(int core, kmx_message* m);
 
-/* Answers `core`'s ask `seq` with three words. Never waits. */
-int kmx_port_answer(int core, uint32_t seq, uint32_t a, uint32_t b, uint32_t c);
+/* Answers `core`'s ask `sequence` with three words. Never waits. */
+int kmx_port_answer(int core, uint32_t sequence, uint32_t a, uint32_t b, uint32_t c);
 
 /* `core`'s newest tell if it is newer than the last one looked at: KMX_OK and `m`,
  * else KMX_NONE (tells in between are lost: latest wins). */
-int kmx_port_told(int core, kmx_msg* m);
+int kmx_port_told(int core, kmx_message* m);
 
-/* X280 core 0 of the lead: submits r, runs fn as kmx_par_all does until r's event:
- * KMX_OK and `ev` once all returned; KMX_FULL, KMX_LATE, KMX_STOPPED; KMX_BAD. */
+/* X280 core 0 of the lead: submits r, runs fn as kmx_parallel_all does until r's event:
+ * KMX_OK and `event` once all returned; KMX_FULL, KMX_LATE, KMX_STOPPED; KMX_BAD. */
 int kmx_port_run(
     const km_command_t* r,
     void (*fn)(int cluster, int cpu, uint64_t arg),
     uint64_t arg,
-    kmx_event* ev
+    kmx_event* event
 );
 
 /* Inside kmx_port_run's fn: 1 while its command runs, 0 once its event came (or a
@@ -134,7 +134,7 @@ typedef struct {
 
 /* X280 core 0 of the lead: submits command r, serves its pulls on every X280 core until
  * its event, as kmx_port_run; KMX_BAD also when it ran but a log ran out of room. */
-int kmx_pull_run(const km_command_t* r, const kmx_pull* p, kmx_event* ev);
+int kmx_pull_run(const km_command_t* r, const kmx_pull* p, kmx_event* event);
 
 /* Timer ticks since an arbitrary point (KMX_TICKS_PER_SECOND per second). */
 uint64_t kmx_time(void);

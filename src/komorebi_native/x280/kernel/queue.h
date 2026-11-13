@@ -1,5 +1,5 @@
-/* The job queue on core 0: commands with KM_F_QUEUE from any source wait here until a
- * slot is free and the group allocator finds room (README.md, "Job queue"). */
+/* The job queue on core 0: commands with KM_FLAG_QUEUE from any source wait here until
+ * a slot is free and the group allocator finds room (README.md, "Job queue"). */
 #pragma once
 
 #include "completion.h"
@@ -84,7 +84,7 @@ static __attribute__((noinline)) void queue_turn(kmd_t* k, uint64_t now) {
             blocked |= ++q->job[q->order[i]].passed >= KM_QUEUE_PASSES;
         }
         uint64_t* l = j->line;
-        const uint32_t hdr = (uint32_t)(l[0] >> 32) & ~(KM_F_QUEUE << 8);
+        const uint32_t hdr = (uint32_t)(l[0] >> 32) & ~(KM_FLAG_QUEUE << 8);
         l[0] = (l[0] & 0xFFFFFFFFu) | (uint64_t)hdr << 32;
         l[1] = (l[1] & ~(uint64_t)0xFFFFFFFFu) | first | j->count << 16;
         const uint32_t src = j->src, req = j->req;
@@ -102,7 +102,7 @@ static __attribute__((noinline)) void queue_turn(kmd_t* k, uint64_t now) {
 }
 
 /* KMD_HANDLER_DROP: the engine's queued jobs of stream `tag` leave the queue, each
- * answered to the engine with KM_EV_REJECTED, reason KMD_REJECT_DROPPED. */
+ * answered to the engine with KM_EVENT_REJECTED, reason KMD_REJECT_DROPPED. */
 static inline void queue_drop(kmd_t* k, uint32_t tag) {
     kmd_queue_t* q = k->queue;
     kmd_ring_t* r = &k->ring[KMD_SRC_ENGINE];
@@ -112,7 +112,7 @@ static inline void queue_drop(kmd_t* k, uint32_t tag) {
             pos++;
             continue;
         }
-        ring_push(r, j->req, KM_EV_REJECTED | (KMD_REJECT_DROPPED << 8), 0);
+        ring_push(r, j->req, KM_EVENT_REJECTED | (KMD_REJECT_DROPPED << 8), 0);
         r->nqueued--;
         queue_remove(k, pos);
     }

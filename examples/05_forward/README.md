@@ -68,7 +68,7 @@ changed, in brackets (the stall, quota and rejection rows were not re-run).
 | the same with one counter tile (`--counters 1 --repeat 10`, 119 cores) | exact in 10 of 10; median 11.6 ms [11.6] |
 | 10000 messages, 10 forwards each, every forward to rank 0 | exact; 23.6 ms [23.6] |
 | rank 3 sends until its quota is gone (8 cores) | 3 seeded messages and 135 sends, then `send` returned false; exact |
-| rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_DYN_GAVE`), whose reader gave up waiting for a free packet page (24); the next run in the same session exact |
+| rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_MESSAGES_GAVE`), whose reader gave up waiting for a free packet page (24); the next run in the same session exact |
 | `max_live` 1000000 with queues of 65536 | rejected before any device opened; `ok` false, exit code 1 |
 
 Under the test feeder (`forward_fed.py`), card 0, AICLK 1350 MHz, core group 0 to 118
@@ -89,7 +89,7 @@ under the feeder ended with a reported reason: a reservation's answer was lost (
 packet wait ran out (24, 28). See [atomic_answers](../../experiments/atomic_answers/).
 
 A reserved position that is never written (a gap) cannot be made on the card; the CPU
-harness (`experiments/runtime_harness`, case `dyn_gap`) shows it reported with the core
+harness (`experiments/runtime_harness`, case `messages_gap`) shows it reported with the core
 and the position.
 
 ## Files
