@@ -1,0 +1,5 @@
+cores 5 to 8 all answer; Python receives 5
+only rank 0 answers; Python receives 5
+only rank 1 answers; Python receives 0
+only rank 2 answers; Python receives 0
+only rank 3 answers; Python receives 0

@@ -23,6 +23,10 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("08_handlers/handlers.py", "6 multiply 7 = 42"),
         ("09_many_commands/many_commands.py", "squares: [1, 4, 9, 16, 25, 36, 49, 64]"),
         ("10_when_it_goes_wrong/when_it_goes_wrong.py", "the card stopped the command"),
+        ("11_core_group/core_group.py", "group of 12: the command took"),
+        ("12_partitions/partitions.py", "together they cover items 0 to 9"),
+        ("13_the_leader/the_leader.py", "only rank 3 answers; Python receives 0"),
+        ("14_placing_groups/placing_groups.py", "right panel of rows 2 to 4"),
     ],
 )
 def test_a_tutorial_program_runs_and_prints_its_line(script, line):

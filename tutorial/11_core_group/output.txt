@@ -1,0 +1,3 @@
+group of  1: the command took   0.0 milliseconds
+group of  4: the command took  17.8 milliseconds
+group of 12: the command took  65.2 milliseconds

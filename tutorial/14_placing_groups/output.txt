@@ -1,0 +1,5 @@
+row 2                       1 group(s), leader cores [24]
+rows 2 and 3                1 group(s), leader cores [24]
+left panel of row 2         1 group(s), leader cores [24]
+right panel of row 2        1 group(s), leader cores [30]
+right panel of rows 2 to 4  3 group(s), leader cores [30, 42, 54]
