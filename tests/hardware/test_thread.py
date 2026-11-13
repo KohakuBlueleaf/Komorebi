@@ -1,7 +1,7 @@
-"""X280 threads on a card: the work-cluster loop host-fed and through the ring against
-numpy, on cluster 1 and on 1 to 3 at once, a region shared by clusters 2 and 3, the
-parallel patterns on 1 and 4 harts and on 1 to 12, spawn and join, a thread stopped at
-the host's timeout (its region read back), a stalled ring (KMR_CARD=1)."""
+"""X280 threads on a card: the work-cluster loop host-fed and through the ring, on
+cluster 1 and on 1 to 3, a region shared by clusters 2 and 3, the parallel patterns and
+X280 ports on 1 to 12 X280 cores, spawn and join, a thread stopped at the host's
+timeout (its region read back), a stalled ring (KMR_CARD=1)."""
 
 from pathlib import Path
 
@@ -12,6 +12,7 @@ pytestmark = pytest.mark.card
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples" / "07_work_cluster" / "work_cluster.py"
 PARALLEL = ROOT / "examples" / "08_parallel_thread" / "parallel_thread.py"
+PORTS = ROOT / "examples" / "10_x280_ports" / "x280_ports.py"
 STOP = Path(__file__).resolve().parent / "thread" / "stop_case.py"
 STALL = Path(__file__).resolve().parent / "thread" / "ring_stall_case.py"
 SHARED = Path(__file__).resolve().parent / "thread" / "shared_case.py"
@@ -53,6 +54,11 @@ def test_the_patterns_are_exact_on_one_to_twelve_harts_of_three_clusters():
 def test_spawned_harts_run_beside_hart_0_and_refusals_are_as_documented():
     out = run_json(SPAWN)
     assert out["ok"], out
+
+
+def test_twelve_x280_cores_answer_every_core_through_its_port_exactly():
+    out = run_json(PORTS, "--rounds", 3, "--asks", 20)
+    assert out["ok"] and out["exact"] and out["x280_cores"] == 12, out
 
 
 def test_a_thread_past_the_timeout_is_stopped_and_reports_where_it_was():
