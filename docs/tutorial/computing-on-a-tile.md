@@ -22,9 +22,9 @@ from 0.
 
 <figure class="km-diagram">
 <script type="application/json">
-{"kind": "boxes", "boxes": [{"id": "a", "x": 0, "y": 0, "w": 120, "h": 40, "t": "buffer 0\ntile A", "small": true, "gem": "amber"}, {"id": "b", "x": 0, "y": 56, "w": 120, "h": 40, "t": "buffer 1\ntile B", "small": true, "gem": "amber"}, {"id": "un", "x": 170, "y": 24, "w": 110, "h": 48, "t": "unpack\nCPU 3", "small": true}, {"id": "dst", "x": 330, "y": 24, "w": 130, "h": 48, "t": "math, CPU 4\nA + B in\nregister 0", "small": true}, {"id": "pk", "x": 510, "y": 24, "w": 100, "h": 48, "t": "pack\nCPU 5", "small": true}, {"id": "o", "x": 660, "y": 24, "w": 120, "h": 48, "t": "buffer 16\nthe sum", "small": true, "gem": "amber"}], "arrows": [{"from": "a", "to": "un", "kind": "data"}, {"from": "b", "to": "un", "kind": "data"}, {"from": "un", "to": "dst", "kind": "data"}, {"from": "dst", "to": "pk", "kind": "data"}, {"from": "pk", "to": "o", "kind": "data"}]}
+{"kind": "flow", "steps": [{"t": "buffers 0 and 1 hold tile A and tile B", "gem": "amber"}, {"t": "unpack (CPU 3): A and B go to the unit"}, {"t": "math (CPU 4): A + B, left in register 0"}, {"t": "pack (CPU 5): register 0 goes to buffer 16"}, {"t": "buffer 16 holds the sum", "gem": "amber"}]}
 </script>
-<figcaption>Two tiles in, one tile out. Unpack and pack touch the buffers; math works on the register between them.</figcaption>
+<figcaption>Two tiles in, one tile out: unpack and pack touch the buffers; math works on the register between them.</figcaption>
 </figure>
 
 ## The general form

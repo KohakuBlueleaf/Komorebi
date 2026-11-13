@@ -36,6 +36,8 @@ TUTORIAL = Path(__file__).resolve().parents[2] / "tutorial"
         ("18_three_kernels/three_kernels.py", "all 8 tiles of the destination"),
         ("19_circular_buffers/circular_buffers.py", "buffer pages 8:"),
         ("20_computing_on_a_tile/computing_on_a_tile.py", "is the sum of tile 1"),
+        ("21_the_matrix_unit/the_matrix_unit.py", "is the matrix product of tile 1"),
+        ("22_a_whole_map/a_whole_map.py", "all three results are the sum"),
     ],
 )
 def test_a_tutorial_program_runs_and_prints_its_line(script, line):
