@@ -235,10 +235,10 @@ on overlapping cores is issued with `run.issue(..., exclusive=True)`.
 | The dispatch kernel on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatch kernel](src/komorebi_native/x280/kernel/README.md) | all |
 | Micro-op streams and the job queue in the dispatch kernel | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatch kernel: record nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
-| X280 threads: `kmx_par`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
+| X280 threads: `kmx_par`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_par_all` over twelve harts and `kmx_push` across banks | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, a bounded exit | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
-| `kmx_par` over all twelve harts; the thread language; homes declared | planned | [manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md) | |
+| The thread language; homes declared | planned | [manifest](src/komorebi/manifest/README.md), [lang](src/komorebi/lang/README.md) | |
 
 ## Measured
 
@@ -419,7 +419,8 @@ docs/                          concepts, references, install, development
   multicast panels; one harvesting pattern has been run.
 - One thread per X280 work cluster, three at most. A cluster reads only its own DRAM
   bank (6 for cluster 1, 7 for clusters 2 and 3); data for the other bank is pushed
-  through a NoC window, for which the thread library has no call yet.
+  (`kmx_push`), so twelve harts gain over four only where the work computes more than
+  it moves.
 - Dynamic segments: one dynamic run at a time; items travel through queues in DRAM,
   also to a core's own queue; an item cannot ask for a DRAM fetch; no order between
   items ([dynamic segments](docs/reference/dynamic.md#not-in-this-version)).
@@ -449,9 +450,8 @@ Planned, in order:
 
 1. The rasterizer and the ray tracer faster on the card, where their pages say the
    time goes.
-2. `kmx_par` over the twelve harts of the three work clusters.
-3. A first release: the wheel published, with its prebuilt dispatch image.
-4. The manifest and the thread language.
+2. A first release: the wheel published, with its prebuilt dispatch image.
+3. The manifest and the thread language.
 
 ## Documentation
 

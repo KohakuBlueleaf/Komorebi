@@ -21,7 +21,10 @@ write its regions, run on all four cores, return a result, and be replaced by it
 fallback, and issue records to the grid through its command ring to the dispatch
 kernel (`kmx_issue`, `kmx_wait`, `kmx_poll`), which the session sets up at load. A
 program may run threads on all three work clusters at once, each with its own ring, and
-two threads on one bank may share regions.
+two threads on one bank may share regions. Inside a cluster, hart 0 starts a function
+on another hart and joins it later (`kmx_spawn`, `kmx_join`; `kmx_par` is both); across
+clusters, one image runs a function on all twelve harts (`kmx_par_all`) and pushes data
+into another cluster's bank (`kmx_push`).
 
 ## What a thread can touch
 
@@ -30,7 +33,7 @@ two threads on one bank may share regions.
 | its argument block | read: the region table and the program's own words |
 | its regions | read and write, as memory: pages of its cluster's DRAM bank, which Tensix cores reach through the NoC |
 | shared regions | the same, for regions the program shares between threads on one bank |
-| other clusters | none through the library; data crossing banks is pushed by its producer (see [Clusters and banks](#clusters-and-banks)) |
+| other clusters | write only: `kmx_push` stores into another cluster's region (see [Clusters and banks](#clusters-and-banks)) |
 | its result block | write: a code, up to 48 words, a progress stamp |
 | the Tensix grid | none: everything goes through DRAM regions |
 | the host | none while it runs: the host starts it, may ask it to stop, reads its result |
@@ -74,10 +77,9 @@ check fails with the error `bank` otherwise), so a program's regions follow the 
   in both threads' `shared=` is one region for both; it changes hands between them with
   `kmx_give` by the writer and `kmx_take` by the reader, as with the grid. The host
   refuses a shared region named by threads on two banks.
-- **Data crossing banks is pushed by its producer** through a NoC window (stores into
-  the other bank or the other cluster's local memory), never pulled: a push runs at
-  2.3 GB/s, a pull at 0.024 GB/s. The library has no call for it yet;
-  `experiments/work_clusters/x280/probe.c` does it with the runtime's NoC windows.
+- **Data crossing banks is pushed by its producer**, never pulled: `kmx_push` stores
+  into another cluster's region through NoC windows (a push of generated data runs at
+  2.3 GB/s, a pull at 0.024 GB/s). See [Twelve harts](#twelve-harts).
 - **A region a Tensix team and a thread share lives in the thread's bank.** Tensix
   cores reach every bank over the NoC; the thread reaches only its own.
 
@@ -156,8 +158,10 @@ sets each core's L2 prefetcher to the values the chip's documentation recommends
 vector writes lose 20 to 40 %; `prefetch="keep"` on the host leaves them as they are),
 checks that the argument block is this run's and every region lies in range, checks
 that the cluster sees the bank the host wrote (a line with a value only this run
-knows), then calls `kmx_main` on hart 0. Harts 1 to 3 wait for `kmx_par` calls until
-`kmx_main` returns. Every call is listed in the
+knows), then calls `kmx_main` on hart 0. Harts 1 to 3 wait for what `kmx_spawn` gives
+them until `kmx_main` returns; then the library gives back every region (a dirty line
+left in the cluster's cache would be written over a later load's data when it is
+evicted: it once failed the next load's bank check). Every call is listed in the
 [reference](reference/threads.md).
 
 [08_parallel_thread](../examples/08_parallel_thread/) is a whole thread built on
@@ -172,7 +176,8 @@ back. That is why every loop in a thread is bounded:
 
 - **Every loop ends by itself.** Bound it by a count, or poll `kmx_stop_requested()`,
   which is true once the host or the runtime asked for a stop or the thread's deadline
-  passed. The library's own waits (`kmx_par`) are bounded by that deadline.
+  passed. The library's own waits (`kmx_par`, `kmx_join`, `kmx_par_all`, `kmx_serve`)
+  are bounded by that deadline.
 - **Pointers come from `kmx_region`.** Write nowhere else. Globals need a non-zero
   initialiser and `__attribute__((section(".data")))` (the image has no `.bss`).
 - **No libc.** The image links without one; a struct assignment can become a `memset`
@@ -190,6 +195,79 @@ about 1.3 GB/s and writes it at about 1.3 to 1.8 GB/s with four cores, and a han
 sweep runs at 5 to 8 GB/s of region. Prefix sums over 119 x 1,024 counters take about
 1.7 ms on four cores (a decision per frame, not per segment); see
 `experiments/x280_threads/`.
+
+## Twelve harts
+
+**Spawn and join, on one cluster.** `kmx_spawn(hart, fn, arg)` starts `fn(hart, arg)`
+on hart 1, 2 or 3 and returns at once; `kmx_join(hart)` waits (bounded) until it has
+returned. Hart 0 goes on meanwhile, with the ring calls, which stay hart 0's. A hart
+still running its last spawn refuses another (`KMX_FULL`), and so does `kmx_par`,
+which is spawn on harts 1 to 3, `fn(0, arg)` on hart 0, and join: one mechanism, 0.71
+µs per empty call. Three clusters whose mains each spawn three are twelve independent
+threads.
+
+| Call | Hart 0 | A spawned hart, or harts 1 to 3 in a `kmx_par` or `kmx_par_all` |
+|---|---|---|
+| `kmx_args_get`, `kmx_region`, `kmx_cluster`, `kmx_clusters`, `kmx_lead`, `kmx_time`, `kmx_stop_requested` | yes | yes |
+| `kmx_take`, `kmx_give`, `kmx_take_at`, `kmx_give_at`, `kmx_push` | yes: outside `kmx_par` spread over the four harts | yes, this hart alone |
+| `kmx_spawn`, `kmx_join`, `kmx_par`, `kmx_par_all`, `kmx_serve`, `kmx_issue`, `kmx_wait`, `kmx_poll` | yes (not inside `kmx_par`'s `fn`) | no: the library error `par`, `KMX_STOPPED` |
+| `kmx_progress`, `kmx_result` | yes | best not: one result block, no lock |
+
+**All three clusters.** Put the same image on the clusters
+(`prog.thread(clusters=(1, 2, 3), ...)`). The lowest, `kmx_lead()`, runs the program;
+the others serve it:
+
+```c
+static void part(int cluster, int hart, uint64_t arg) {
+    /* this cluster's share, from its own copy of the regions (kmx_region) */
+}
+
+int kmx_main(int hart) {
+    if (kmx_cluster() != kmx_lead()) {
+        return kmx_serve() == KMX_OK ? 0 : 2; /* until the lead's kmx_main returns */
+    }
+    /* push each cluster's input into its bank, then: */
+    if (kmx_par_all(part, 0) != KMX_OK) {     /* all twelve harts, bounded */
+        return 2;
+    }
+    return 0;                                 /* the others' kmx_serve returns */
+}
+```
+
+`kmx_par_all(fn, arg)` writes the call into each other cluster's local memory through
+a NoC window, runs `fn` on its own four harts, and waits for each cluster's done line
+in its own local memory; the first call waits until every cluster serves. `arg` is a
+64-bit word, the same on every cluster; data lives in each cluster's own copy of the
+regions, which have the same ids.
+
+**Pushing.** `kmx_push(cluster, id, offset, src, bytes)` stores into region `id` of
+`cluster`'s thread (64-byte multiples), in posted 512-byte vector stores per 2 MiB
+window, then the last line once more through a non-posted window, and returns when that
+store is acknowledged (one hart's stores to one tile arrive in order). The receiver:
+
+- holds no dirty line of the range when the push lands (it gave it, or never wrote
+  it): a dirty line written back later would overwrite the pushed bytes;
+- takes the range (`kmx_take_at`) before reading it.
+
+The cluster that leads pushes once the others serve; the others push inside a
+`kmx_par_all` call (`KMX_BAD` before the first). The source is read through the
+cluster's cache, so a push from data in the bank moves at the bank's read rate, about
+1.2 GB/s.
+
+What it gives ([08_parallel_thread](../examples/08_parallel_thread/), `--twelve`,
+1,000 MHz, best of 3, every output exact): eight and twelve harts include pushing the
+input out and the outputs back.
+
+| 262,144 words (1 MiB) | 1 hart | 4 | 8 | 12 |
+|---|---|---|---|---|
+| map, ms | 2.89 | 1.66 | 1.94 | 1.61 |
+| map, `f` 16 times, ms | 26.44 | 6.68 | 4.46 | 3.38 |
+| prefix sum, two passes, ms | 4.90 | 2.57 | 2.46 | 2.07 |
+
+Twelve harts lose to four on small inputs: at 16,384 words the map takes 0.13 ms on
+twelve and 0.11 on four, the prefix sum 0.18 and 0.13; work that only moves memory
+gains little at any size (each cluster reads its bank at 1.2 GB/s and the input must
+be pushed first), and work that computes gains most (the heavy map runs 2.0 times faster than on four).
 
 ## From the host
 
@@ -266,7 +344,10 @@ can give the fallback the same file through ctypes, so both run one program
   never changes it.
 - One thread per work cluster, three at most. A thread's regions and the shared regions
   it names are at most 16 in all. Threads on banks 6 and 7 share data only by pushing
-  it; the library has no call for that yet.
+  it.
+- `kmx_par_all` runs on the clusters that run the same image, led by the lowest; every
+  other one must call `kmx_serve`, or the lead's first `kmx_par_all` waits until its
+  deadline.
 - A thread that never returns and polls nothing cannot be stopped: the runtime marks
   the cluster unhealthy, the other clusters go on until the process closes the card,
   and the next process needs a card reset.
