@@ -270,6 +270,8 @@ class FakeBackend:
         self.calls = []
         self.answer = {}  # finish() fields to answer instead (result_ready, ...)
         self.cleaned = True  # what abort() answers
+        self.close_failed = ""  # the runtime's account when not cleaned
+        self.report = "the fake kernel's report"  # what kernel_report() answers
 
     def finish(self, timeout):
         self.calls.append("finish")
@@ -296,6 +298,10 @@ class FakeBackend:
     def abort(self):
         self.calls.append("abort")
         return self.cleaned
+
+    def kernel_report(self):
+        self.calls.append("kernel_report")
+        return self.report
 
     def read_back(self, stop_grid=False):
         """Control blocks whose state words say every member reported its records'

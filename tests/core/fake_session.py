@@ -28,6 +28,9 @@ class FakeDispatch(FakePort):
         self.ready_state = K["KMD_STATE_READY"]
         self.idle = True
         self.fail = {}  # call name -> exception it raises
+        self.cleaned = True  # what close() answers
+        self.close_failed = ""
+        self.stamps = (7, 7)  # core 0's pass stamp before and after a probe's gap
 
     def _call(self, name):
         self.log.append(name)
@@ -51,7 +54,18 @@ class FakeDispatch(FakePort):
     def close(self):
         self._call("close")
         self.is_open = False
-        return True
+        if not self.cleaned:
+            self.close_failed = "cluster 0: hart 0 phase=0x2 stage=4"
+        return self.cleaned
+
+    def probe(self, gap_s):
+        words = [0] * K["KMD_R_WORDS"]
+        words[K["KMD_R_STATE"]] = K["KMD_STATE_READY"]
+        words[K["KMD_R_WHERE"]] = K["KMD_WHERE_LOOP"]
+        before, after = self.stamps
+        harts = "hart 0 phase=0x2 trap(mcause=0x7)"
+        out = {"running": True, "failed": "", "harts": harts, "words": words}
+        return out | {"stamp_before": before, "stamp_after": after}
 
 
 class SessionBackend(FakeBackend):

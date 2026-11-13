@@ -229,9 +229,21 @@ def test_stop_raises_unless_the_kernel_finished_cleanly(answer, says):
 def test_abort_raises_when_the_runtime_could_not_restore_the_tile():
     run, _, backend = make_run()
     backend.cleaned = False
-    with pytest.raises(KernelFailed, match="reset"):
+    backend.close_failed = "hart 0 phase=0x2 trap(mcause=0x7)"
+    with pytest.raises(KernelFailed, match=r"reset: hart 0 .*mcause=0x7"):
         run.abort()
     assert backend.calls == ["abort", "read_back"] and backend.grid_stopped
+
+
+def test_a_wait_that_runs_out_says_what_the_kernel_is_doing():
+    run, port, backend = make_run()
+    port.auto = False
+    ticket = run.issue(1, (0, 1))
+    with pytest.raises(WaitTimeout, match="1 of 1 .*; the fake kernel's report"):
+        run.wait(ticket, timeout=0.02)
+    with pytest.raises(WaitTimeout, match="none of 1 .*; the fake kernel's report"):
+        run.wait_any([ticket], timeout=0.02)
+    assert backend.calls == ["kernel_report"] * 2
 
 
 def test_stop_waits_for_records_in_flight_before_exit():
@@ -421,8 +433,8 @@ def test_an_error_while_stopping_aborts_through_the_runtime():
     run, port, backend = make_run(port)
     run.issue(1, (0, 1))
     with pytest.raises(WaitTimeout):
-        run.stop(timeout=0.05)
-    assert backend.calls == ["abort", "read_back"] and run.stopped
+        run.stop(timeout=0.05)  # the kernel is probed before the abort ends it
+    assert backend.calls == ["kernel_report", "abort", "read_back"] and run.stopped
 
 
 def test_tickets_map_onto_command_numbers_across_the_32_bit_wrap():

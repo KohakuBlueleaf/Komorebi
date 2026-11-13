@@ -17,6 +17,7 @@ import torch
 import ttnn
 
 from komorebi import abi, dram, layout, native
+from komorebi import state as st
 from komorebi import thread as kt
 from komorebi.errors import CardBusy, GridTimeout, ProgramError, StartError
 from komorebi.run import Run
@@ -30,6 +31,7 @@ DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
 CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
+PROBE_GAP_S = 0.02  # core 0's pass stamp moves every 1,024 passes (about 33 us)
 
 
 def compute_config(options):
@@ -311,7 +313,8 @@ class Session:
         try:
             if self._starting is not None:
                 self.log(f"{why}: closing the X280 runtime of the load in progress")
-                self._starting.close()
+                if not self._starting.close():
+                    self.log(f"{why}: not restored: {self._starting.close_failed}")
             if self.run is not None and not self.run.stopped:
                 self.log(f"{why}: stopping the loaded run through the X280 runtime")
                 self.run.abort()
@@ -452,7 +455,8 @@ class Session:
             state = dispatch.wait_ready(start + 1.0)
         except BaseException:
             try:
-                dispatch.close()
+                if not dispatch.close():
+                    self.log(f"x280 runtime not restored: {dispatch.close_failed}")
             except BaseException:
                 if launched:  # the runtime stays open: the exit hooks close it again
                     backend.stop_grid()
@@ -565,6 +569,7 @@ class _Backend:
         self.trace_t = None
         self.state_t = None
         self.read = False
+        self.close_failed = ""  # the runtime's account when an abort did not restore
 
     def _control_blocks(self, cores, grid):
         """Zeroed control blocks, one shard per core, padded so that the block can
@@ -742,8 +747,29 @@ class _Backend:
 
     def abort(self):
         cleaned = self.port.close()
-        self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned})")
+        self.close_failed = "" if cleaned else self.port.close_failed
+        why = f": {self.close_failed}" if self.close_failed else ""
+        self.session.log(f"x280 runtime closed after a stop (cleaned {cleaned}){why}")
         return cleaned
+
+    def kernel_report(self):
+        """While the kernel runs: whether core 0 still runs its loop (its pass stamp
+        over PROBE_GAP_S), its state and where, and the runtime's view of each hart."""
+        p = self.port.probe(PROBE_GAP_S)
+        if not p["running"]:
+            return "no dispatch kernel is running"
+        if p["failed"]:
+            return f"the dispatch kernel's {p['failed']}; harts: {p['harts']}"
+        r = st.result_block(p["words"])
+        before, after = p["stamp_before"], p["stamp_after"]
+        doing = "is running its loop" if after != before else "is not running its loop"
+        report = (
+            f"the dispatch kernel's core 0 {doing} (pass stamp {before} -> {after} "
+            f"in {PROBE_GAP_S} s; state {r['state_name']}, in {r['where_name']}); "
+            f"harts: {p['harts']}"
+        )
+        self.session.log(report)
+        return report
 
     def stop_grid(self):
         """Writes the stop word into every core through the device API."""

@@ -380,7 +380,8 @@ class Run:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise WaitTimeout(
-                        f"none of {wanted.size} tickets done in {timeout} s",
+                        f"none of {wanted.size} tickets done in {timeout} s; "
+                        f"{self._kernel_report()}",
                         wanted.tolist(),
                     )
                 self._step_any(wanted, left)
@@ -454,7 +455,7 @@ class Run:
                     raise WaitTimeout(
                         f"{pending.size} of {wanted.size} tickets not done in "
                         f"{timeout} s (first {int(pending[0])}; "
-                        f"{self.port.queued} not stored)",
+                        f"{self.port.queued} not stored); {self._kernel_report()}",
                         pending.tolist(),
                     )
                 self._step(pending, int(pending[-1]), left)
@@ -465,6 +466,13 @@ class Run:
                         raise RecordRefused(t, self._refused[t], self._refusals)
         finally:
             self.wait_s += time.perf_counter() - t0
+
+    def _kernel_report(self):
+        """What the backend tells of the kernel after a wait ran out (never raises)."""
+        try:
+            return self.backend.kernel_report()
+        except Exception as err:  # noqa: BLE001 (a failure path: reported, not raised)
+            return f"the kernel could not be probed ({type(err).__name__}: {err})"
 
     def _step(self, pending, upto, left):
         """One native round: store up to ticket `upto`, read events until those of
@@ -735,7 +743,7 @@ class Run:
             raise self._remember(
                 KernelFailed(
                     "the X280 runtime could not restore cluster 0 after the stop; "
-                    "the card may need a reset"
+                    f"the card may need a reset: {self.backend.close_failed}"
                 )
             )
 

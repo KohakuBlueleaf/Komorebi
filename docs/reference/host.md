@@ -163,7 +163,7 @@ result by sample: the pages of a few rows or tiles, from `read` or `read_tiles_b
 | `forget(tickets)` | releases what the run keeps for tickets whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps teams and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
-| `abort()` | the failure path: stops the kernel through the runtime, closes it, stops the grid from the host, reads back; raises `KernelFailed` if the runtime could not restore cluster 0 |
+| `abort()` | the failure path: stops the kernel through the runtime, closes it, stops the grid from the host, reads back; raises `KernelFailed` if the runtime could not restore cluster 0, with the runtime's account of each hart (phase, stage, trap cause and address) in its message and the session log |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict (with `ports`: count and wanted count of every port slot, and `lanes`: each lane's VALID word, first give-up, blocks, wait cycles and DONE-BY words; a reader or writer that gave up waiting on a port or an emit names its `port`), the raw state words, the trace |
 
 `run.issue_s` adds up the host's time in `issue` and `issue_many`; `run.wait_s` the
@@ -264,7 +264,7 @@ All derive from `km.KomorebiError`.
 | `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
 | `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatch kernel did not report READY | `result` (the kernel's result block, when it ran) |
-| `WaitTimeout` | a host-side wait ran out; the run is still loaded | `pending` tickets |
+| `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass stamp, read twice 20 ms apart), its state and where, and the runtime's account of each hart | `pending` tickets |
 | `RecordRefused` | the kernel consumed the command and issued nothing (a reserved segment or flag, a team outside the grid, a record after EXIT); the run goes on | `ticket`, `reason` (`KMD_REFUSE_*`), `reason_name` |
 | `RecordTimeout` | a team missed its deadline; the kernel stopped the grid, the run is stopped and read back | `ticket`, `slot`, `seq`, `team`, `cores`: each member that did not report, with where its reader and writer gave up |
 | `KernelFailed` | the dispatch kernel finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |

@@ -148,6 +148,20 @@ def test_a_grid_that_does_not_return_raises_and_leaves_the_device_open(
     assert "close_device" not in log
 
 
+def test_the_backend_reports_a_stopped_core_0_and_the_runtimes_account(
+    card, tmp_path, monkeypatch
+):
+    session, log, _, _ = card
+    sess, backend = backend_over(session, log, tmp_path, monkeypatch)
+    report = backend.kernel_report()
+    assert report.startswith("the dispatch kernel's core 0 is not running its loop")
+    assert "state ready, in loop" in report and "mcause=0x7" in report
+    backend.port.stamps = (7, 9)
+    assert "core 0 is running its loop" in backend.kernel_report()
+    backend.port.cleaned = False
+    assert not backend.abort() and "stage=4" in backend.close_failed
+
+
 def test_a_base_off_the_16_byte_grid_is_refused_before_the_launch(card, tmp_path):
     session, log, _, module = card
     FakeDispatch.lim_base = 0x10008

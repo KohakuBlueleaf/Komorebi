@@ -20,6 +20,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
@@ -295,6 +296,7 @@ namespace {
         // Stops a running kernel, releases the host buffer and the window, closes the
         // X280 runtime. Returns whether a running kernel was stopped cleanly.
         bool close() {
+            close_failed_.clear();
             bool cleaned = true;
             for (uint32_t c = 1; c < work_.size(); c++) {
                 cleaned = work_abort(c) && cleaned;
@@ -722,7 +724,7 @@ namespace {
         }
 
         // Stops the session now if one runs (any failure path). Returns whether the
-        // runtime restored the tile.
+        // runtime restored the tile; if not, close_failed holds the runtime's account.
         bool abort() {
             if (!session_ || !opened_) {
                 session_.reset();
@@ -730,7 +732,47 @@ namespace {
             }
             const auto done = rt().cleanup(*session_, std::chrono::seconds(5));
             session_.reset();
+            note_failed("cluster 0", done);
             return done.cleaned_up();
+        }
+
+        // While the kernel runs: the result and hart blocks (core 0's pass stamp) read
+        // twice gap_s apart, and the runtime's view of each hart.
+        nb::dict probe(double gap_s) {
+            require_open();
+            nb::dict out;
+            out["running"] = session_.has_value();
+            if (!session_) {
+                return out;
+            }
+            std::vector<uint32_t> before, after, words;
+            std::string harts, failed;
+            {
+                nb::gil_scoped_release release;
+                try {
+                    before = lim_words(KMD_LIM_HARTS, KMD_H_WORDS);
+                    std::this_thread::sleep_for(
+                        std::chrono::duration<double>(std::clamp(gap_s, 0.0, 1.0))
+                    );
+                    after = lim_words(KMD_LIM_HARTS, KMD_H_WORDS);
+                    words = lim_words(KMD_LIM_RESULT, KMD_R_WORDS);
+                } catch (const std::exception& error) {
+                    failed = std::string("LIM not readable: ") + error.what();
+                }
+                try {
+                    harts = x280::describe(rt().session(*session_).inspect());
+                } catch (const std::exception& error) {
+                    harts = std::string("hart states not readable: ") + error.what();
+                }
+            }
+            if (failed.empty()) {
+                out["stamp_before"] = before[KMD_H_STAMP0];
+                out["stamp_after"] = after[KMD_H_STAMP0];
+                out["words"] = words;
+            }
+            out["failed"] = failed;
+            out["harts"] = harts;
+            return out;
         }
 
         // Work clusters 1 to 3: one image each, started with an argument block at the
@@ -868,7 +910,14 @@ namespace {
             }
             const auto done = rt().cleanup(*work_[c].session, std::chrono::seconds(5));
             work_[c].session.reset();
+            note_failed("cluster " + std::to_string(c), done);
             return done.cleaned_up();
+        }
+
+        // The runtime's account of every clean-up since the last close() that did not
+        // restore its cluster ("" when all did).
+        const std::string& close_failed() const {
+            return close_failed_;
         }
 
         uint32_t batch_ = 64;  // commands per store: every line, then one fence
@@ -884,8 +933,25 @@ namespace {
         uint64_t upload_bytes_ = 0;  // the upload region's size
 
     private:
+        std::string close_failed_;
+
         x280::X280Runtime& rt() const {
             return *opened_->runtime;
+        }
+
+        void note_failed(const std::string& what, const x280::CleanupResult& done) {
+            if (!done.cleaned_up()) {
+                close_failed_ +=
+                    ((close_failed_.empty() ? "" : "; ") + what + ": " +
+                     x280::describe(done));
+            }
+        }
+
+        std::vector<uint32_t> lim_words(uint64_t offset, uint32_t n) const {
+            const auto block = tile_->read_available_lim(base_ + offset, 4 * n);
+            std::vector<uint32_t> words(n);
+            std::memcpy(words.data(), block.data(), 4 * n);
+            return words;
         }
 
         void require_open() const {
@@ -1304,6 +1370,8 @@ NB_MODULE(_km_host, m) {
         .def("finish", &Dispatch::finish, nb::arg("timeout_s"))
         .def("abort", &Dispatch::abort)
         .def("close", &Dispatch::close)
+        .def_prop_ro("close_failed", &Dispatch::close_failed)
+        .def("probe", &Dispatch::probe, nb::arg("gap_s"))
         .def("clusters", &Dispatch::clusters)
         .def("work_info", &Dispatch::work_info, nb::arg("cluster"))
         .def(
