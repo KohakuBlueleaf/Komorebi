@@ -1,0 +1,141 @@
+{
+ "scene": "tiny",
+ "tiles": null,
+ "treelets_kib": 0,
+ "packets": 32768,
+ "power_idle_w": 60.71098265895954,
+ "aiclk_mhz": 1350,
+ "x280_mhz": 1000,
+ "load_avg": 2.84716796875,
+ "run": {
+  "done": 9,
+  "records": 9,
+  "kernel_error": 0,
+  "cores_ended": {
+   "reader_end": 120,
+   "writer_end": 120,
+   "compute_end": 120
+  },
+  "compute_wrong": 0,
+  "gave_up": []
+ },
+ "frame_us_median": 23204.22,
+ "frame_ms": 23.20422,
+ "power_mean_w": 61.0,
+ "steps": [
+  {
+   "step": "gen",
+   "us": 542.48,
+   "errors": 0,
+   "busy_max": 728686,
+   "load_per_packet": 130.1,
+   "box_per_packet": 966.4,
+   "out_per_packet": 1193.5,
+   "wait_in_per_packet": 42.2,
+   "wait_out_per_packet": 31.6,
+   "total_per_packet": 2527.1
+  },
+  {
+   "step": "primary",
+   "us": 3399.8,
+   "errors": 0,
+   "busy_max": 4586389,
+   "load_per_packet": 1139.6,
+   "box_per_packet": 6678.5,
+   "out_per_packet": 1539.0,
+   "wait_in_per_packet": 41.6,
+   "wait_out_per_packet": 52.7,
+   "total_per_packet": 13679.4
+  },
+  {
+   "step": "shade1",
+   "us": 2230.9,
+   "errors": 0,
+   "busy_max": 3008213,
+   "load_per_packet": 2005.6,
+   "box_per_packet": 4977.0,
+   "out_per_packet": 2907.0,
+   "wait_in_per_packet": 128.3,
+   "wait_out_per_packet": 102.4,
+   "total_per_packet": 10429.6
+  },
+  {
+   "step": "shadow",
+   "us": 2224.84,
+   "errors": 0,
+   "busy_max": 2999969,
+   "load_per_packet": 1139.0,
+   "box_per_packet": 4761.6,
+   "out_per_packet": 563.5,
+   "wait_in_per_packet": 41.8,
+   "wait_out_per_packet": 30.7,
+   "total_per_packet": 8889.1
+  },
+  {
+   "step": "bounce",
+   "us": 8791.78,
+   "errors": 0,
+   "busy_max": 11865507,
+   "load_per_packet": 1139.5,
+   "box_per_packet": 16212.6,
+   "out_per_packet": 1538.9,
+   "wait_in_per_packet": 41.7,
+   "wait_out_per_packet": 52.5,
+   "total_per_packet": 34334.6
+  },
+  {
+   "step": "shade2",
+   "us": 1565.24,
+   "errors": 0,
+   "busy_max": 2109627,
+   "load_per_packet": 2640.2,
+   "box_per_packet": 1550.9,
+   "out_per_packet": 2399.2,
+   "wait_in_per_packet": 279.6,
+   "wait_out_per_packet": 66.3,
+   "total_per_packet": 7317.0
+  },
+  {
+   "step": "shadow2",
+   "us": 3882.38,
+   "errors": 0,
+   "busy_max": 5237748,
+   "load_per_packet": 1139.3,
+   "box_per_packet": 7500.3,
+   "out_per_packet": 563.7,
+   "wait_in_per_packet": 42.0,
+   "wait_out_per_packet": 30.4,
+   "total_per_packet": 14062.0
+  },
+  {
+   "step": "image",
+   "us": 566.8,
+   "errors": 0,
+   "busy_max": 761814,
+   "load_per_packet": 1295.0,
+   "box_per_packet": 181.3,
+   "out_per_packet": 340.1,
+   "wait_in_per_packet": 368.1,
+   "wait_out_per_packet": 33.8,
+   "total_per_packet": 2445.8
+  }
+ ],
+ "record_ms": {
+  "gen": 0.5424800000000001,
+  "primary": 3.3998000000000004,
+  "shade1": 2.2309,
+  "shadow": 2.22484,
+  "bounce": 8.791780000000001,
+  "shade2": 1.56524,
+  "shadow2": 3.88238,
+  "image": 0.5668
+ },
+ "image_check": {
+  "against": "numpy",
+  "pixels": 1048576,
+  "differs": 0,
+  "max_abs_error": 0.0,
+  "first_pixels": []
+ },
+ "ok": true
+}

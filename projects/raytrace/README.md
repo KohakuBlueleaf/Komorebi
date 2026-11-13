@@ -195,12 +195,13 @@ mean over the 4.6 s of records (66.2 W idle before), 1.68 J per frame.
 
 | | card | C++ 96 threads | V100 | card / V100 |
 |---|---|---|---|---|
-| frame ms | 23.20 | 22.22 | 2.59 | 0.11 |
-| Mray/s, all rays over the frame | 108.8 | 113.54 | 972.85 | 0.11 |
-| primary Mray/s (GEN + trace) | 266.1 | 154.19 | 1258.04 | 0.21 |
-| bounce Mray/s (trace) | 74.9 | 95.28 | 583.14 | 0.13 |
-| J per frame | 1.68 (card) | n/a | 0.51 (GPU board) | |
+| frame ms | 23.20 | 20.59 | 2.59 | 0.11 |
+| Mray/s, all rays over the frame | 108.8 | 122.57 | 972.85 | 0.11 |
+| primary Mray/s (GEN + trace) | 266.1 | 166.90 | 1251.88 | 0.21 |
+| bounce Mray/s (trace) | 74.9 | 104.47 | 582.57 | 0.13 |
+| J per frame | 1.68 (card) | n/a | 0.50 (GPU board) | |
 
+C++ and V100: the benchmark run of the next table ([`results/reference-bench.json`](results/reference-bench.json)).
 The C++ and V100 frame is the reference's five stages, ray generation and shading
 inside them; neither counts loading or building the scene and tree, copying them to
 the GPU or copying the image back ([reference](reference/README.md#timings-and-power)).
@@ -224,22 +225,26 @@ Reading it against the V100: below half everywhere, room left, in three places.
 ### The whole frame on larger scenes
 
 Treelets of at most 128 KiB from DRAM (the tiny row: the whole tree in L1); 2026-11-13
-14:27 to 14:50, card 1, AICLK 1350 MHz, X280 1000 MHz, one frame each;
-`python -m projects.raytrace.frame --scene SCENE --treelets 128` (tiny: no
-`--treelets`). Card ms per record; Mray/s counts the reference's rays of the four
-traces over the card's frame; C++ (all threads) and V100 are the stored reference
-results of the same frame.
+14:27 to 15:00, card 1, AICLK 1350 MHz, X280 1000 MHz, one frame each;
+`python -m projects.raytrace.frame --scene SCENE --treelets 128 --json frame.json`
+(tiny: no `--treelets`), the JSON of every row in [`results/`](results/). Card ms per
+record; Mray/s counts the reference's rays of the four traces over the card's frame.
+C++ (96 threads of the host's 48-core EPYC 7K62) and V100 are the reference's five
+stages, median of 3 processes x 3 frames, from one run of `python -m
+projects.raytrace.reference.bench` on 2026-11-13 14:57 to 15:20
+([`results/reference-bench.json`](results/reference-bench.json)), the source of every
+C++ and V100 number in this README.
 
-| scene | treelets | GEN | primary | SHADE1 | shadow | bounce | SHADE2 | shadow 2 | IMAGE | frame ms | Mray/s | C++ ms | V100 ms | W | pixels differing |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| tiny | (L1) | 0.54 | 3.40 | 2.23 | 2.22 | 8.79 | 1.57 | 3.88 | 0.57 | 23.21 | 108.7 | 36.52 | 2.59 | 61.0 | 0 |
-| s10k | 16 | 0.54 | 9.14 | 2.23 | 5.62 | 33.68 | 1.56 | 13.61 | 0.57 | 66.95 | 38.5 | 36.92 | 4.19 | 61.0 | 0 |
-| s100k | 128 | 0.54 | 13.33 | 2.23 | 8.33 | 66.70 | 1.57 | 23.70 | 0.56 | 116.96 | 22.9 | 39.91 | 6.59 | 60.0 | 0 |
-| s1m | 1024 | 0.54 | 23.37 | 2.23 | 15.07 | 157.31 | 1.57 | 55.67 | 0.57 | 256.32 | 11.1 | 48.04 | 11.57 | 61.0 | 1 |
-| Sponza, close | 256 | 0.54 | 57.42 | 2.23 | 40.13 | 367.25 | 1.57 | 211.69 | 0.57 | 681.40 | 6.1 | 262.31 | 101.34 | 70.7 | 192 |
-| Sponza, overview | 256 | 0.54 | 67.81 | 2.23 | 37.66 | 359.48 | 1.57 | 208.68 | 0.56 | 678.53 | 6.0 | 252.45 | 94.91 | 61.0 | 221 |
-| Bistro interior, close | 1024 | 0.54 | 97.66 | 2.23 | 73.80 | 678.77 | 1.57 | 411.59 | 0.56 | 1266.72 | 3.3 | 395.61 | 211.44 | 73.6 | 2 |
-| Bistro interior, overview | 1024 | 0.54 | 74.68 | 2.23 | 54.16 | 631.55 | 1.57 | 345.49 | 0.57 | 1110.77 | 3.7 | 344.46 | 154.04 | 70.9 | 3 |
+| scene | treelets | GEN | primary | SHADE1 | shadow | bounce | SHADE2 | shadow 2 | IMAGE | frame ms | Mray/s | C++ ms | V100 ms | V100 / card | W | ties | pixels differing |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| tiny | (L1) | 0.54 | 3.40 | 2.23 | 2.22 | 8.79 | 1.57 | 3.88 | 0.57 | 23.20 | 108.7 | 20.59 | 2.59 | 0.112 | 61.0 | 0 | 0 |
+| 10^4 | 16 | 0.54 | 9.14 | 2.23 | 5.62 | 33.67 | 1.57 | 13.61 | 0.57 | 66.95 | 38.5 | 26.44 | 4.16 | 0.062 | 63.0 | 0 | 0 |
+| 10^5 | 128 | 0.54 | 13.33 | 2.23 | 8.33 | 66.70 | 1.57 | 23.70 | 0.56 | 116.96 | 22.9 | 35.47 | 6.57 | 0.056 | 60.0 | 0 | 0 |
+| 10^6 | 1024 | 0.54 | 23.39 | 2.23 | 15.07 | 157.38 | 1.57 | 55.68 | 0.56 | 256.42 | 11.1 | 53.66 | 11.61 | 0.045 | 63.0 | 1 | 0 |
+| Sponza, close | 256 | 0.54 | 57.43 | 2.23 | 40.12 | 367.22 | 1.57 | 211.67 | 0.57 | 681.35 | 6.1 | 264.78 | 102.00 | 0.150 | 68.1 | 192 | 0 |
+| Sponza, overview | 256 | 0.54 | 67.80 | 2.23 | 37.65 | 359.49 | 1.57 | 208.69 | 0.57 | 678.54 | 6.0 | 230.36 | 95.52 | 0.141 | 60.0 | 221 | 0 |
+| Bistro interior, close | 1024 | 0.54 | 97.65 | 2.23 | 73.81 | 678.64 | 1.57 | 411.70 | 0.57 | 1266.71 | 3.3 | 401.87 | 211.42 | 0.167 | 73.0 | 1 | 1 |
+| Bistro interior, overview | 1024 | 0.54 | 74.68 | 2.23 | 54.16 | 631.52 | 1.57 | 345.53 | 0.57 | 1110.81 | 3.7 | 336.80 | 153.94 | 0.139 | 70.3 | 1 | 2 |
 
 Ties and the Bistro misses: "What is exact". The four traces take 93 % (s10k) to over 99 % (Sponza, Bistro) of the
 frame, the bounce trace alone half or more: rays stay with their core and every core
@@ -270,16 +275,16 @@ differing. Power was not sampled in this run.
 
 | pass | rays | card ms | card Mray/s | C++ 96 threads Mray/s | V100 Mray/s | card / V100 |
 |---|---|---|---|---|---|---|
-| primary | 1,048,576 | 3.007 | 348.7 | 154.19 | 1258.04 | 0.28 |
-| shadow | 658,018 | 2.111 | 311.8 | 119.45 | 1488.33 | 0.21 |
-| bounce | 658,018 | 7.683 | 85.6 | 95.28 | 583.14 | 0.15 |
+| primary | 1,048,576 | 3.007 | 348.7 | 166.90 | 1251.88 | 0.28 |
+| shadow | 658,018 | 2.111 | 311.8 | 125.57 | 1482.66 | 0.21 |
+| bounce | 658,018 | 7.683 | 85.6 | 104.47 | 582.57 | 0.15 |
 | shadow at bounce hits | 158,779 | 1.602 | 99.1 | - | - | - |
 | four traces | 2,523,391 | 14.403 | | | | |
 
-C++ and V100 rates are the medians of the reference's table
-([reference](reference/README.md#timings-and-power)); the reference gives no separate
-rate for the second shadow rays. Its whole frame, shading included, takes 22.22 ms on
-96 CPU threads and 2.59 ms on the V100.
+C++ and V100 rates are the medians of the benchmark run above
+([`results/reference-bench.json`](results/reference-bench.json)); the reference gives
+no separate rate for the second shadow rays. Its whole frame, shading included, takes
+20.59 ms on 96 CPU threads and 2.59 ms on the V100.
 
 Reading it: every pass is below half of the V100's rate, so there is room left.
 - Where the cycles go (primary, summed over cores): box tests 56 %, the entry test
