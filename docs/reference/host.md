@@ -147,7 +147,7 @@ through ttnn after the stop.
 | `event(ticket)` | `Event(ticket, kind, aux, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `refused`; `ticks` is issue to completion in the X280's 50 MHz timer, `us` the same in microseconds; for a record issued with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `us` then hold it too), else None |
 | `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index), its team |
 | `forget(tickets)` | releases what the run keeps for tickets whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps teams and sequences for the trace |
-| `stop(timeout=10.0)` | drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0 |
+| `stop(timeout=10.0)` | cancels every engine still running (or `unknown`) and waits for their ends within `timeout`, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
 | `abort()` | the failure path: stops the kernel through the runtime, closes it, stops the grid from the host, reads back; raises `KernelFailed` if the runtime could not restore cluster 0 |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict (with `ports`: count and wanted count of every port slot, and `lanes`: each lane's VALID word, first give-up, blocks, wait cycles and DONE-BY words; a reader or writer that gave up waiting on a port or an emit names its `port`), the raw state words, the trace |
@@ -228,8 +228,8 @@ engine's posts wait for event room.
 The region is the one the kernel's ready block names: what is left of X280 cluster 0's
 local memory after the kernel's layout (707,840 bytes on a p150a), none for a program
 with an X280 thread, whose ring lies there. The host never writes into the range of a
-running stream or graph, or of a kept graph. `stop` sends EXIT, which waits until no
-engine runs: wait for or cancel every engine before it.
+running stream or graph, or of a kept graph. The kernel's EXIT waits until no engine
+runs, so `stop` cancels the engines still running first.
 
 The kernel numbers the records an engine issues in the same sequence as the host's,
 which the host does not see: after an engine has issued records, `seq(ticket)` and the

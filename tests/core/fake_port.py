@@ -196,7 +196,7 @@ class FakePort:
                 self._event(req, K["KM_EV_REFUSED"], aux=reason)
                 continue
             if seg == K["KM_SEG_EXIT"]:
-                if self.busy:  # held until no slot is busy
+                if self._exit_waits():  # held until no slot is busy
                     self.held_exit += 1
                     return
                 first, count = 0, self.cores  # to every core
@@ -226,6 +226,9 @@ class FakePort:
             self.max_busy = max(self.max_busy, len(self.busy))
             self.issued.append((req, self.seq, free[0], seg, (first, count)))
             self.consumed = req
+
+    def _exit_waits(self):
+        return bool(self.busy)
 
     def _refusal(self, seg, flags, first, count):
         """The README's reasons a command is consumed with KM_EV_REFUSED, or 0."""

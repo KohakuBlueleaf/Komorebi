@@ -581,13 +581,16 @@ class Run:
             raise KomorebiError("the run is stopped")
 
     def stop(self, timeout=10.0):
-        """Drains, sends EXIT to every core, stops the kernel, closes the X280
-        runtime, then reads back the state words and the trace."""
+        """Cancels running engines, drains, sends EXIT to every core, stops the
+        kernel, closes the X280 runtime, then reads back the state words and the
+        trace. On any error it still closes (abort) and raises."""
         if self._stopped:
             return self._result
         try:
             if self.thread is not None:
                 self.thread.stop()
+            if self._engine_state is not None:
+                self._engine_state.stop(timeout)  # EXIT waits for running engines
             self.drain(timeout)
             exit_ticket = self._queue_command(self.h["KM_SEG_EXIT"], (0, self.cores))
             self.wait(exit_ticket, timeout)

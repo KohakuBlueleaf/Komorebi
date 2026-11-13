@@ -299,6 +299,22 @@ class Engines:
         if t.unknown:
             self._settle_unknown(t)
 
+    def stop(self, timeout):
+        """Cancels every engine still running or unknown and waits for its end, all
+        within `timeout` (the kernel's EXIT waits for them); EngineTimeout if not."""
+        by = time.monotonic() + timeout
+        for t in list(self.active.values()):
+            if t.drop or t.end is not None:
+                continue  # a kept graph's drop is on its way
+            unknown = t.unknown
+            try:
+                self.cancel(t, max(by - time.monotonic(), 0.0))
+            except EngineRefused:
+                if not unknown:
+                    raise  # an unknown one's RUN was refused: it never ran
+        for t in list(self.active.values()):
+            self._wait(t, max(by - time.monotonic(), 0.0))
+
     def _settle_unknown(self, t):
         """The RUN of `t` was answered before the command answered now: raises its
         refusal (it never ran) or leaves `t` running or ended."""

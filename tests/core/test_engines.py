@@ -23,10 +23,10 @@ def leader_a0(record):
 
 
 class EngineKernel(FakePort):
-    """The fake kernel with an upload region, the ready block and RUN / CANCEL: a
-    stream or graph that ends in the simulator posts its events at once, one that
-    does not runs until cancelled; `refuse` answers the next RUN with that reason;
-    `hold` leaves the commands in the ring (a kernel that is late to take them)."""
+    """The fake kernel with an upload region, the ready block and RUN / CANCEL: an
+    upload that ends in the simulator posts its events at once, one that does not
+    runs until cancelled; EXIT waits for the engines. Controls: `refuse` (the next
+    RUN), `hold` (take no command), `deaf` (take a CANCEL and do nothing)."""
 
     def __init__(self):
         super().__init__(event_depth=64)
@@ -34,6 +34,7 @@ class EngineKernel(FakePort):
         self.writes = []
         self.refuse = 0
         self.hold = False
+        self.deaf = False
         self.running = {}  # req -> event kind of its cancel
         self.kept = {}  # req -> (offset, bytes) of a kept graph
         self.handlers = {K["KM_SEG_RUN"]: self.run, K["KM_SEG_CANCEL"]: self.cancel}
@@ -48,6 +49,9 @@ class EngineKernel(FakePort):
     def _take(self):
         if not self.hold:
             super()._take()
+
+    def _exit_waits(self):
+        return bool(self.busy or self.running)
 
     def upload(self, offset, data):
         assert offset % 64 == 0 and len(data) % 64 == 0
@@ -90,6 +94,8 @@ class EngineKernel(FakePort):
 
     def cancel(self, cmd, words):
         req = words[3]
+        if self.deaf:
+            return
         if req in self.running:
             self._event(req, self.running.pop(req), aux=K["KM_SERR_CANCELLED"])
         elif self.kept.pop(req, None):
@@ -244,6 +250,24 @@ def test_a_run_not_answered_in_time_is_unknown_until_cancel_settles_it():
         run.cancel(err.value.ticket)  # the RUN was refused: it never ran
     assert up.state == "idle" and not run._engine_state.active
     assert run.wait(run.issue(0, (0, 8))).kind == "done"
+
+
+def test_stop_cancels_a_running_engine_before_exit():
+    run, port = make_run()
+    t = run.start(run.upload(looping_stream()))
+    result = run.stop(timeout=1.0)
+    assert result["error"] == 0 and port.exited and not port.running
+    assert t.end.reason_name == "cancelled" and run._engine_state.active == {}
+
+
+def test_stop_raises_the_timeout_of_an_unanswered_cancel_and_still_closes():
+    run, port = make_run()
+    t = run.start(run.upload(looping_stream()))
+    port.deaf = True
+    with pytest.raises(EngineTimeout) as err:
+        run.stop(timeout=0.05)
+    assert err.value.ticket is t and run.stopped
+    assert run.backend.calls == ["abort", "read_back"] and not port.exited
 
 
 def test_a_stream_host_fed_issues_the_simulated_records_and_ends_alike():
