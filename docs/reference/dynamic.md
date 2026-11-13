@@ -166,9 +166,10 @@ count acknowledgements and never use a returned value.
 
 **Cost.** K cores of the team take no item. Every core's control block grows from
 0xD40 to 0x1580 bytes for the tail lines: 2,112 bytes of L1 on every core for every
-program, dynamic or not. Card 0, 120 cores, 10000 items of 100 hops
-(10^6 hops), issue to completion: 11.8 ms with K = 2 (median of 91 runs, 11.6 to
-12.0 ms), 11.6 ms with K = 1 (10 runs); 10^5 hops 3.44 ms, 10^3 hops 158 µs. In the probe
+program, dynamic or not. Card 0, 120 cores, X280 at the session's 1000 MHz, 10000 items
+of 100 hops (10^6 hops), issue to completion: 11.8 ms with K = 2 (median of 30 runs,
+11.6 to 12.0 ms), 11.6 ms with K = 1 (10 runs); 10^5 hops 3.43 ms, 10^3 hops 172 µs.
+At the 1750 MHz opt-in: 11.8 ms (median of 91 runs), 11.6, 3.44 ms and 158 µs. In the probe
 one counter tile answered 126 M reservations a second (one per 10.7 cycles) and two
 answered 229 M: a program that reserves more often than the example may need K = 2 or
 more.

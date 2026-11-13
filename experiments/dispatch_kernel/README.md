@@ -36,13 +36,22 @@ from the first store to the last event read, divided the same way.
 
 ## Results
 
-One p150a, AICLK 1,350 MHz, X280 timer at 50 MHz; host load 3 to 13.
+One p150a, AICLK 1,350 MHz, X280 timer at 50 MHz, host load 4 to 11, 2026-11-13. The
+X280 runs at 1000 MHz, the session's and this script's default (`--pll`); the last
+column is the same measurement at the 1750 MHz opt-in (`--pll 1750`), taken earlier
+with the same command unless the row says otherwise. Every `measure.py` line logs the
+clock it set.
 
-| what | result |
-|---|---|
-| `limit` | 126,976 bytes; the kernel image is 12,016 bytes |
-| `bench` host-fed, depth 16, team 1, 100,000 records, batch 64 | 0.641 microseconds per record (kernel only, 63 preloaded: 0.669); 0.669 and 0.675 while the stream interpreter shared core 0's loop |
-| `memcost`, nanoseconds per operation | uncached local memory load 17.6, store 3.7, store and fence 17.1; cached DRAM load 2.9, store 2.3; `fence ir` or `fence ow` with nothing outstanding 1.1; timer read 10.3 |
-| `store` | a 64-byte store into the window issued less than about 0.5 microseconds after a fence stalls for about 12 microseconds in most bursts; after a longer gap, or a read, a line costs about 0.18 microseconds |
-| `stream-bench`, pass period of core 0 (streams on core 1) | 32 ns with no stream; 49 ns with one or four looping streams; 89 ns with one issuing stream, 159 ns with four. One issuing stream: 2.3 microseconds per record, free to next issue 1.34 microseconds (median; 12.8 with three looping streams beside it). A stream that only computes runs 18 million micro-ops a second |
-| `stream-bench` before the engine moved to core 1 (one loop) | 34 ns with no stream; 316 ns with one issuing stream, 525 ns with four; 3.1 microseconds with one looping stream, 11.7 with four |
+| what | command | 1000 MHz | 1750 MHz (opt-in) |
+|---|---|---|---|
+| `limit` | `limit` | not a timing: 126,976 bytes; the kernel image is 27,664 bytes | |
+| `bench` host-fed, depth 16, team 1, 100,000 records, batch 64 | `bench --n 100000 --depth 16 --team 1 --batch 64 --host-depth 64` | 1.239 microseconds per record (1.228 in a run beside the 1750 one) | 0.641 (0.726 in that run) |
+| `bench` kernel only, 63 preloaded | `bench --preload --n 63 --depth 16 --team 1 --host-depth 64` | 1.263 | 0.669 |
+| `memcost`, nanoseconds per operation | `memcost` | uncached local memory load 30.0, store 6.4, store and fence 30.0; cached DRAM load 5.0, store 4.0; `fence ir` or `fence ow` with nothing outstanding 2.0; timer read 18.0 | 17.6, 3.7, 17.1; 2.9, 2.3; 1.1; 10.3 |
+| `store` (the host's stores; the X280 clock plays no part) | `store --gaps-us 0 1 --n 200` | a 64-byte store into the window issued right after a fence stalls for about 12 microseconds in most bursts (median 12.5 per burst of 2); after a 1 microsecond gap a line costs about 0.18 microseconds | the same |
+| `stream-bench`, pass period of core 0, no stream | `stream-bench --n 0 --seconds 1` | 60 ns | 32 |
+| the same with one or four streams that only loop | `stream-bench --n 0 --streams 1` (or `4`) `--seconds 1` | 86 ns | 49 |
+| one or four issuing streams, 1,000 records each on its own core | `stream-bench --n 1000 --issuers 1` (or `4`) `--team 1` | pass 76 / 279 ns; 3.5 / 7.7 microseconds per record; free to next issue 2.4 microseconds (median, one stream) | pass 89 / 159 ns; 2.3 microseconds per record (one stream); 1.34 |
+| one issuing stream beside three looping ones | `stream-bench --n 1000 --issuers 1 --streams 3 --team 1` | free to next issue 23.9 microseconds (median) | 12.8 |
+| a stream that only computes | `stream-bench --n 0 --compute 1000000` | 7.6 million micro-ops a second (the same with `--compute 100000`) | 18 million (rounds not recorded) |
+| `stream-bench` before the engine moved to core 1 (one loop) | an earlier kernel | not re-measured | `bench` as above: 0.669 and 0.675 microseconds per record while the stream interpreter shared core 0's loop; 34 ns with no stream; 316 ns with one issuing stream, 525 ns with four; 3.1 microseconds with one looping stream, 11.7 with four |

@@ -63,8 +63,12 @@ grid_timeout=10.0)`.
   clocks all four X280 clusters, so the work clusters' threads run at it too. 1750 is an
   opt-in: it loses loads when the Tensix grid is under full matrix load (the card lowers
   its core voltage; the dispatch kernel trapped in 9 of 18 such runs, and in 0 of 23 at
-  1000 MHz); safe use is the caller's claim. A host-fed record costs about 1.2
-  microseconds at 1000 MHz, 0.7 at 1750.
+  1000 MHz); safe use is the caller's claim. A host-fed record at depth 16 costs 1.228
+  microseconds at 1000 MHz and 0.726 at 1750, one after the other on one card
+  (`experiments/dispatch_kernel/measure.py bench --n 100000 --depth 16 --team 1
+  --batch 64 --host-depth 64 --pll 1000`, then `--pll 1750`). Before the session sets
+  the clock, the runtime that opens the cluster leaves it at its safe 200 MHz; 1750
+  was never the card's own choice. The session's log names the clock it set.
 
 - `card` selects the card through `TT_VISIBLE_DEVICES` (an error if that variable
   already names another card); `device` uses a mesh device the caller opened and

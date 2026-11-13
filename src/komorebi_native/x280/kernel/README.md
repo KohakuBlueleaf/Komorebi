@@ -183,16 +183,19 @@ These rules are part of the protocol; a host that relies on anything else is wro
   returns them); a thread that stops
   reading its events stops having its commands taken once its event ring is full, and
   nothing else waits for it. Looking at the ring every fourth pass costs core 0's idle
-  pass 32 to 41 ns (the experiment `x280_threads/ring_cost.py`); a STEP and SUM round of
-  `examples/07_work_cluster`, two records issued and waited for in turn, takes about
-  50 microseconds from the thread.
-- **What streams cost the sweep.** Measured on a p150a (pass period of core 0 = run
-  time / passes): 32 ns with no
-  stream, 49 ns with one or four streams that only loop, 89 ns with one stream issuing
-  one record at a time, 159 ns with four. One issuing stream takes 2.3 microseconds per
-  record, 1.34 microseconds (median) from a record's free to the stream's next issue
-  over the ring; with three looping streams beside it, 12.8. A host record at depth 16
-  to one core costs 0.641 microseconds (host-fed; 0.669 with all 64 commands preloaded).
+  pass 59 to 73 ns at 1000 MHz (32 to 41 ns at the 1750 opt-in; the experiment
+  `x280_threads/ring_cost.py`); a STEP and SUM round of `examples/07_work_cluster`, two
+  records issued and waited for in turn, takes about 53 microseconds from the thread
+  (50 at 1750).
+- **What streams cost the sweep.** Measured on a p150a at 1000 MHz (pass period of
+  core 0 = run time / passes; the 1750 opt-in's figures in brackets): 60 ns with no
+  stream [32], 86 ns with one or four streams that only loop [49], 76 ns with one
+  stream issuing one record at a time [89], 279 ns with four [159]. One issuing stream
+  takes 3.5 microseconds per record [2.3], 2.4 microseconds (median) from a record's
+  free to the stream's next issue over the ring [1.34]; with three looping streams
+  beside it, 23.9 [12.8]. A host record at depth 16 to one core costs 1.24
+  microseconds host-fed [0.641], 1.26 with all 64 commands preloaded [0.669]. The
+  commands are in `experiments/dispatch_kernel/README.md`.
 - **Dynamic runs.** The argument block's `dyn_seg` names the program's dynamic
   segment (0: none). A record of it is a dynamic run's `RUN`; one runs at a time. A
   second one from the host waits until the first and its end record have completed;
@@ -209,17 +212,18 @@ These rules are part of the protocol; a host that relies on anything else is wro
   Hart block words `KMD_H_DYN_GAVE` (1 + the core that gave up), `KMD_H_DYN_CHECKS`
   (two-pass checks) and `KMD_H_DYN_QUIET` (mtime of the last quiet end, low word)
   report it; the host's `finish` returns the hart block.
-- **What a record costs a stream.** The harness's `engine-cost` case, 1,000 records on
-  one core timed by the stream itself (`TIME`), p150a, depth 4:
+- **What a record costs a stream.** The harness's `engine-cost` case
+  (`dispatch_card.py engine-cost --delay-us 5 --n 1000`), 1,000 records on one core
+  timed by the stream itself (`TIME`), p150a, depth 4:
 
-  | Stream | Microseconds per record |
-  |---|---|
-  | `ISSUE`, then `WAIT 0`, a record of 5 us | 7.16 |
-  | `ISSUE` with `KM_F_EXCL` and no wait, a record of 5 us: refused busy while the one before runs (999 refusals), sent again after the wake | 7.01 |
-  | `SUBMIT` of 1-core jobs of `DELAY 0`, then one `WAIT 0` | 1.46 |
+  | Stream | Microseconds per record, 1000 MHz | 1750 MHz (opt-in) |
+  |---|---|---|
+  | `ISSUE`, then `WAIT 0`, a record of 5 us | 8.34 | 7.16 |
+  | `ISSUE` with `KM_F_EXCL` and no wait, a record of 5 us: refused busy while the one before runs (999 refusals), sent again after the wake | 8.07 | 7.01 |
+  | `SUBMIT` of 1-core jobs of `DELAY 0`, then one `WAIT 0` | 2.58 | 1.46 |
 
   A busy refusal and its wake cost no more than waiting for the record's event: both
-  add about 2.1 microseconds to the record's run.
+  add about 3.3 microseconds to the record's run at 1000 MHz (2.1 at 1750).
 - **Finish.** `KM_SEG_STOP`, the runtime's stop, a missed deadline or a start-up failure
   ends the loop. Core 0 then sets the engine's stop word and waits for core 1 to leave
   its loop (`KMD_ENGINE_STOP_TICKS`, 10 ms), forwarding its last posts; if it does not,
@@ -251,7 +255,10 @@ These rules are part of the protocol; a host that relies on anything else is wro
   loads returned wrong values (a pointer of the host ring read as 0, its base off by 12
   bytes) and the kernel trapped within seconds: 9 of 18 runs of the 8192-cubed matrix
   product, against 0 of 23 at 1000 MHz (the bisect below). One PLL clocks all four
-  clusters, so thread programs on the work clusters run at the same clock.
+  clusters, so thread programs on the work clusters run at the same clock. Before a
+  session sets it, the runtime that opens the cluster leaves that PLL at its safe
+  200 MHz; 1750 was never the card's own setting, only the session's earlier default.
+  The session's log names the clock it set (`X280 clock set: 1000 MHz`).
 
   | Variant of the 8192-cubed run (a profile record, then 300 calls) | 1750 MHz | 1000 MHz |
   |---|---|---|

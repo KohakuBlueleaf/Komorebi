@@ -15,10 +15,10 @@ writes it, and what the host can do about a thread that does not return.
 | How fast does the X280 read and write its bank? | About 1.3 GB/s read and 1.8 GB/s write with four cores, the same for 1 MB and 64 MB; Flush64 sweeps run at 5 to 8 GB/s of region |
 | What does a decision over every core's data cost? | Prefix sums over 119 x 1,024 counters: 2.13 ms on four cores, take and give included, exact; 1.70 ms with the L2 prefetchers set as documented |
 | A thread that ignores its deadline? | The host asks it to stop; if it polls nothing, the cluster stays stuck until a card reset (from the runtime's sources, not run) |
-| What does a thread's ring cost the dispatch kernel's core 0 when it is empty? | Its idle pass from 32.1 ns to 40.8 ns (1.27 times) with a look at the ring every fourth pass; 63.5 ns (1.98 times) when it looked every pass (`ring_cost.py`) |
+| What does a thread's ring cost the dispatch kernel's core 0 when it is empty? | At the session's 1000 MHz its idle pass from 59.1 ns to 73.0 ns (1.23 times) with a look at the ring every fourth pass; at 1750 MHz, 32.1 to 40.8 ns (1.27 times), and 63.5 ns (1.98 times) when it looked every pass (`ring_cost.py`) |
 
-All card numbers: one Blackhole p150a, slow dispatch, the X280 at the runtime's
-1,750 MHz PLL setting, Tensix clock 1,350 MHz throughout, the host's load average
+All card numbers but `ring_cost.py`'s first: one Blackhole p150a, slow dispatch, the
+X280 at the 1,750 MHz PLL setting (the probes pass it; a session defaults to 1,000), Tensix clock 1,350 MHz throughout, the host's load average
 between 2.7 and 9.2. The X280 timer counts 50 MHz; times are from it.
 
 ## Two images (`probe.py two`)
@@ -153,11 +153,12 @@ one-way until a card reset and takes local memory from the runtime's images.
 
 Loads a program whose records do nothing, once without a thread and once with one that
 only waits for its stop, issues one record, leaves the kernel idle for a second and
-stops; the pass period is the kernel's ticks over its passes. Three runs each, card 0:
-32.1 ns without a thread, 40.7 to 40.9 ns with one. One look at the ring's line, a read
-of this cluster's LIM that a thread's write keeps changing, costs about 31 ns, so the
-loop looks every fourth pass; a thread's command then waits at most four passes
-(about 160 ns) longer.
+stops; the pass period is the kernel's ticks over its passes. Three runs each, card 0,
+at the session's 1000 MHz: 59.0 to 59.1 ns without a thread, 72.7 to 73.3 ns with one
+(at 1750 MHz: 32.1 ns, 40.7 to 40.9 ns). One look at the ring's line, a read
+of this cluster's LIM that a thread's write keeps changing, costs about 31 ns at 1750 MHz
+(about 56 ns at 1000), so the loop looks every fourth pass; a thread's command then
+waits at most four passes (about 160 ns at 1750, 290 ns at 1000) longer.
 
     python ring_cost.py --idle 1.0 --reps 3
 

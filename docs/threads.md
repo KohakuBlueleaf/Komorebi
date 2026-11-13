@@ -90,7 +90,8 @@ exclusive record whose team overlaps one in flight, a full job queue, no free sl
 refused at once with reason 11, and the kernel then sends the thread one wake event
 (`KMX_EV_WAKE`, ticket 0) when a slot frees or the queue issues a job: the thread issues
 the record again after it (`kmx_poll` returns the wake; `kmx_wait` passes it over). A round of two records issued and waited for in turn takes
-about 50 microseconds; the kernel's loop looks at the ring every fourth pass.
+about 53 microseconds at the session's 1000 MHz (50 at the 1750 MHz opt-in); the
+kernel's loop looks at the ring every fourth pass.
 
 ## Writing one
 
@@ -143,10 +144,12 @@ back. That is why every loop in a thread is bounded:
 
 `kmx_time()` counts the 50 MHz timer (`KMX_TICKS_PER_SECOND`).
 
-What it costs: the cluster reads its bank at about 1.3 GB/s and writes it at about
-1.3 to 1.8 GB/s with four cores, and a hand-over sweep runs at 5 to 8 GB/s of region.
-Prefix sums over 119 x 1,024 counters take about 1.7 ms on four cores (a decision per
-frame, not per segment); see `experiments/x280_threads/`.
+What it costs, measured at 1750 MHz (the experiment sets it; the session's default,
+1000 MHz, is slower; one PLL clocks all four clusters): the cluster reads its bank at
+about 1.3 GB/s and writes it at about 1.3 to 1.8 GB/s with four cores, and a hand-over
+sweep runs at 5 to 8 GB/s of region. Prefix sums over 119 x 1,024 counters take about
+1.7 ms on four cores (a decision per frame, not per segment); see
+`experiments/x280_threads/`.
 
 ## From the host
 
