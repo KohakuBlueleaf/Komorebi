@@ -6,8 +6,10 @@ usage: python docs/images/teaser.py    (needs Pillow, for the four thumbnails)
 The numbers are copied from committed results: the frame's passes and the pictures'
 frame times from projects/raster/README.md and projects/raytrace/README.md (cold
 frames), the neural rows from projects/dense and projects/attention against the TT-NN
-result files beside them. The code panes quote projects/raster, lines left out:
-kernels/frame_compute.cpp, thread/frame.c, card_thread.py.
+result files beside them. The code cards are shortened from lines of
+examples/01_mapcollect, projects/attention, examples/05_forward, examples/10_x280_ports
+and projects/raster/thread: one card for each thing a program says, and the grid draws
+each card's traffic in the card's colour.
 """
 
 import base64
@@ -36,6 +38,10 @@ THEMES = {
         "wsoft": "#ddf4ff",
         "rule": "#818b98",
         "g": "#1a7f37",
+        "b": "#1b7c83",
+        "bsoft": "#dff5f5",
+        "m": "#8250df",
+        "msoft": "#f1e8ff",
     },
     "dark": {
         "bg": "#0d1117",
@@ -52,47 +58,81 @@ THEMES = {
         "wsoft": "#0c2d6b",
         "rule": "#6e7681",
         "g": "#3fb950",
+        "b": "#39c5cf",
+        "bsoft": "#0b2f33",
+        "m": "#a371f7",
+        "msoft": "#2a1a4d",
     },
 }
 
 SANS = "-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif"
 MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace"
 
-# (line, flag): 1 a line the figure points at, 2 lines left out.
-KERNEL = [
-    ("void kernel_main() {", 0),
-    ("    km::Compute cp;", 0),
-    ("    cp.run([&](const km_command_t& r) {", 1),
-    ("        if (km::handler(r) >=", 0),
-    ("            pass_k::kHandlerLanes) {", 0),
-    ("            pass_k::setup_compute_command(cp, r);", 0),
-    ("        } else {", 0),
-    ("            fill_k::fill_compute_command(r);", 0),
-    ("        }", 0),
-    ("    });", 0),
-    ("}", 0),
+# What a program says, one card each: (title, language, colour, mark, lines). A line's
+# flag: 1 the line the card is about, 2 lines left out. The mark is the arrow the grid
+# draws for the card.
+CARDS = [
+    (
+        "a command runs a handler",
+        "C++",
+        "a",
+        "solid",
+        [
+            ("km::Reader reader;", 0),
+            ("reader.run([&](const km_command_t& command) {", 1),
+            ("    switch (km::handler(command)) {", 0),
+        ],
+    ),
+    (
+        "broadcast to a row or column",
+        "C++",
+        "b",
+        "solid",
+        [
+            ("km::Broadcast broadcast(", 0),
+            ("    reader, command, kArgBroadcast);", 0),
+            ("if (broadcast.sender()) broadcast.cast(tiles);", 1),
+            ("else broadcast.arrive(tiles);", 1),
+        ],
+    ),
+    (
+        "a message finds its core",
+        "C++",
+        "m",
+        "dash",
+        [
+            ("km::Dyn messages(compute, command);", 0),
+            ("messages.send(rank, message);", 1),
+            ("messages.forward(next_core, message);", 1),
+            ("messages.consume();", 0),
+        ],
+    ),
+    (
+        "a core asks an X280 core",
+        "C++",
+        "w",
+        "both",
+        [
+            ("km::X280Port port(reader);", 0),
+            ("const uint32_t count = port.next(first);", 1),
+            ("run(first, count);", 0),
+        ],
+    ),
+    (
+        "an X280 thread decides",
+        "C",
+        "w",
+        "box",
+        [
+            ("int error = kmx_submit(command, &handle);", 1),
+            ("kmx_par(sort_partition, &partitions);", 0),
+            ("...", 2),
+            ("error = kmx_pull_run(command, &pull, &event);", 1),
+        ],
+    ),
 ]
-THREAD = [
-    ("command(&r, RF_HANDLER_COUNT, f);", 1),
-    ("uint32_t code = run(&r);", 0),
-    ("...", 2),
-    ("if (kmx_par(sort_part, &p) != KMX_OK ||", 1),
-    ("    kmx_par(merge_part, &p) != KMX_OK) {", 0),
-    ("...", 2),
-    ("command(&r, RF_HANDLER_FILL, f);", 1),
-]
-HOST = [
-    ("prog = km.Program(", 1),
-    ('    "raster_frame",', 0),
-    ("    kernels={...}, buffers=[...],", 0),
-    (")", 0),
-    ("prog.thread(", 1),
-    ("    cluster=CLUSTER,", 0),
-    ('    sources=[THREAD / "frame.c", ...],', 0),
-    ("    regions=regions(scene, workers),", 0),
-    ("    deadline=10.0,", 0),
-    (")", 0),
-]
+SOFT = {"a": "asoft", "b": "bsoft", "m": "msoft", "w": "wsoft"}
+HEAD = {"a": "ha", "b": "hb", "m": "hp", "w": "hw"}
 
 # One cold frame of 10^6 triangles, microseconds: (name, time, on the Tensix cores,
 # commands it takes). The step is the X280 thread's own work. The V100's whole frame.
@@ -152,31 +192,55 @@ class Svg:
             f'xml:space="preserve">{escape(s)}</text>'
         )
 
-    def line(self, x1, y1, x2, y2, stroke, sw=1.5, dash=None, head=None):
+    def line(self, x1, y1, x2, y2, stroke, sw=1.5, dash=None, head=None, tail=None):
         extra = f' stroke-dasharray="{dash}"' if dash else ""
         extra += f' marker-end="url(#{head})"' if head else ""
+        extra += f' marker-start="url(#{tail})"' if tail else ""
         self.add(
             f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
             f'stroke="{stroke}" stroke-width="{sw}"{extra}/>'
         )
 
 
-def code(s, x, y, w, title, language, lines):
-    """A code pane with its language as a badge; returns its bottom."""
+def mark(s, x, y, colour, kind):
+    """The card's arrow, as the grid draws it."""
     c = s.c
-    h = 36 + 16 * len(lines) + 8
+    if kind == "box":
+        s.rect(x, y - 8, 26, 16, c[SOFT[colour]], c[colour], rx=3, sw=1.5)
+        return
+    dash = "4 3" if kind == "dash" else None
+    both = kind == "both"
+    s.line(
+        x,
+        y,
+        x + (26 if both else 24),
+        y,
+        c[colour],
+        1.7 if both else 2.2,
+        dash=dash,
+        head=HEAD[colour],
+        tail=HEAD[colour] if both else None,
+    )
+
+
+def card(s, x, y, w, title, language, colour, kind, lines):
+    """One card: its mark, what it says, its language, the lines; returns its bottom."""
+    c = s.c
+    step = 19
+    h = 36 + step * len(lines) + 8
     s.rect(x, y, w, h, c["box"], c["line"])
-    s.text(x + 14, y + 23, title, 15, weight=700)
+    mark(s, x + 14, y + 19, colour, kind)
+    s.text(x + 50, y + 24, title, 15.5, weight=700)
     bw = 16 + 8.2 * len(language)
     s.rect(x + w - 12 - bw, y + 8, bw, 21, c["bg"], c["rule"], rx=10)
     s.text(x + w - 12 - bw / 2, y + 23, language, 12.5, weight=600, anchor="middle")
     for i, (text, flag) in enumerate(lines):
-        ly = y + 36 + 16 * i
+        ly = y + 36 + step * i
         if flag == 1:
-            s.rect(x + 1, ly, w - 2, 16, c["asoft"], rx=0)
-            s.rect(x + 1, ly, 3, 16, c["a"], rx=0)
+            s.rect(x + 1, ly, w - 2, step, c[SOFT[colour]], rx=0)
+            s.rect(x + 1, ly, 3, step, c[colour], rx=0)
         fill = c["mute"] if flag == 2 else c["fg"]
-        s.text(x + 14, ly + 12, text, 12, fill, mono=True)
+        s.text(x + 14, ly + 14, text, 13, fill, mono=True)
     return y + h
 
 
@@ -216,26 +280,46 @@ def grid(s, x, y):
     ym = y + 1 * ph + 7
     s.line(xs + 3, ym, cols[6] + cw + 3, ym, c["a"], 2.2, head="ha")
     s.line(xs + 47, ym, cols[11] - 3, ym, c["a"], 2.2, head="ha")
-    # messages from core to core
+    # a broadcast along a row of panel 0 and down a column of panel 1
+    yb = y + 8 * ph + 7
+    s.line(cols[1] + 11, yb, cols[6] + cw - 2, yb, c["b"], 2.2, head="hb")
+    xb = cols[16] + 11
+    s.line(xb, y + 2 * ph + 7, xb, y + 9 * ph + 9, c["b"], 2.2, head="hb")
+    # a routed message: sent, forwarded, consumed
+    hops = [
+        (cols[2] + 11, y + 3 * ph + 7),
+        (cols[5] + 11, y + 5 * ph + 7),
+        (cols[3] + 11, y + 6 * ph + 7),
+    ]
+    for (x1, y1), (x2, y2) in zip(hops, hops[1:]):
+        s.line(x1, y1, x2, y2, c["m"], 2, dash="4 3", head="hp")
+    hops = [
+        (cols[14] + 11, y + 7 * ph + 7),
+        (cols[12] + 11, y + 5 * ph + 7),
+        (cols[14] + 11, y + 4 * ph + 7),
+    ]
+    for (x1, y1), (x2, y2) in zip(hops, hops[1:]):
+        s.line(x1, y1, x2, y2, c["m"], 2, dash="4 3", head="hp")
+    # Tensix cores ask the threads' X280 cores, and are answered
     s.line(
-        cols[2] + 11,
-        y + 4 * ph + 8,
-        cols[5] + 6,
-        y + 7 * ph + 5,
-        c["fg"],
-        1.8,
-        dash="4 3",
-        head="hf",
+        xs + 50,
+        y + 3 * ph + 7,
+        cols[13] + 8,
+        y + 3 * ph + 7,
+        c["w"],
+        2,
+        head="hw",
+        tail="hw",
     )
     s.line(
-        cols[15] + 11,
-        y + 7 * ph + 8,
-        cols[12] + 16,
-        y + 4 * ph + 11,
-        c["fg"],
-        1.8,
-        dash="4 3",
-        head="hf",
+        xs,
+        y + 5 * ph + 9,
+        cols[4] + 14,
+        y + 6 * ph + 9,
+        c["w"],
+        2,
+        head="hw",
+        tail="hw",
     )
 
 
@@ -244,7 +328,7 @@ def legend(s, x, y, w):
     rows = [
         ("t", "Tensix cores, 120"),
         ("a", "dispatcher, X280 cluster 0"),
-        ("v", "messages, core to core"),
+        ("d", "DRAM"),
         ("w", "threads, X280 clusters 1 to 3"),
     ]
     for i, (kind, head) in enumerate(rows):
@@ -256,7 +340,7 @@ def legend(s, x, y, w):
         elif kind == "w":
             s.rect(px, py + 1, 22, 15, c["wsoft"], c["w"], rx=3, sw=1.5)
         else:
-            s.line(px, py + 9, px + 20, py + 9, c["fg"], 1.8, dash="4 3", head="hf")
+            s.rect(px, py + 1, 22, 15, c["dram"], rx=2)
         s.text(px + 32, py + 14, head, 14, weight=600)
 
 
@@ -349,7 +433,8 @@ def draw(theme, repo):
         "program by itself, and what comes out</title>"
     )
     s.add("<defs>")
-    for name, colour in (("ha", c["a"]), ("hf", c["fg"]), ("hm", c["rule"])):
+    heads = (("ha", "a"), ("hb", "b"), ("hp", "m"), ("hw", "w"), ("hm", "rule"))
+    for name, colour in ((n, c[k]) for n, k in heads):
         s.add(
             f'<marker id="{name}" viewBox="0 0 10 10" refX="9" refY="5" '
             f'markerWidth="5" markerHeight="5" orient="auto-start-reverse">'
@@ -366,10 +451,10 @@ def draw(theme, repo):
     s.text(mx, 36, "the card runs it by itself", 22, c["a"], 700)
     s.text(rx_, 36, "what comes out", 22, weight=700)
 
-    # left: the three things a user writes
-    y = code(s, lx, top, lw, "Tensix kernel", "C++", KERNEL)
-    y = code(s, lx, y + 12, lw, "X280 thread", "C", THREAD)
-    code(s, lx, y + 12, lw, "program", "Python", HOST)
+    # left: what a program says, one card each
+    y = top
+    for title, language, colour, kind, lines in CARDS:
+        y = card(s, lx, y, lw, title, language, colour, kind, lines) + 10
 
     # arrows between the columns
     s.line(lx + lw + 6, 330, mx - 8, 330, c["rule"], 2, head="hm")

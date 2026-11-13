@@ -1,65 +1,74 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="676" viewBox="0 0 1280 676" role="img"><title>Komorebi: kernels and threads you write, a card that runs the whole program by itself, and what comes out</title>
 <defs>
 <marker id="ha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f0883e"/></marker>
-<marker id="hf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker>
+<marker id="hb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#39c5cf"/></marker>
+<marker id="hp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a371f7"/></marker>
+<marker id="hw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
 <marker id="hm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6e7681"/></marker>
 </defs>
 <rect x="0.0" y="0.0" width="1280.0" height="676.0" rx="8" fill="#0d1117" stroke="none" stroke-width="1"/>
 <text x="16.0" y="36.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">you write</text>
 <text x="428.0" y="36.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#f0883e" text-anchor="start" xml:space="preserve">the card runs it by itself</text>
 <text x="1000.0" y="36.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">what comes out</text>
-<rect x="16.0" y="56.0" width="376.0" height="220.0" rx="4" fill="#161b22" stroke="#3d444d" stroke-width="1"/>
-<text x="30.0" y="79.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">Tensix kernel</text>
+<rect x="16.0" y="56.0" width="376.0" height="101.0" rx="4" fill="#161b22" stroke="#3d444d" stroke-width="1"/>
+<line x1="30.0" y1="75.0" x2="54.0" y2="75.0" stroke="#f0883e" stroke-width="2.2" marker-end="url(#ha)"/>
+<text x="66.0" y="80.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">a command runs a handler</text>
 <rect x="339.4" y="64.0" width="40.6" height="21.0" rx="10" fill="#0d1117" stroke="#6e7681" stroke-width="1"/>
 <text x="359.7" y="79.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3" text-anchor="middle" xml:space="preserve">C++</text>
-<text x="30.0" y="104.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">void kernel_main() {</text>
-<text x="30.0" y="120.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    km::Compute cp;</text>
-<rect x="17.0" y="124.0" width="374.0" height="16.0" rx="0" fill="#2d1a0c" stroke="none" stroke-width="1"/>
-<rect x="17.0" y="124.0" width="3.0" height="16.0" rx="0" fill="#f0883e" stroke="none" stroke-width="1"/>
-<text x="30.0" y="136.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    cp.run([&amp;](const km_command_t&amp; r) {</text>
-<text x="30.0" y="152.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">        if (km::handler(r) &gt;=</text>
-<text x="30.0" y="168.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">            pass_k::kHandlerLanes) {</text>
-<text x="30.0" y="184.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">            pass_k::setup_compute_command(cp, r);</text>
-<text x="30.0" y="200.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">        } else {</text>
-<text x="30.0" y="216.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">            fill_k::fill_compute_command(r);</text>
-<text x="30.0" y="232.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">        }</text>
-<text x="30.0" y="248.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    });</text>
-<text x="30.0" y="264.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">}</text>
-<rect x="16.0" y="288.0" width="376.0" height="156.0" rx="4" fill="#161b22" stroke="#3d444d" stroke-width="1"/>
-<text x="30.0" y="311.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">X280 thread</text>
-<rect x="355.8" y="296.0" width="24.2" height="21.0" rx="10" fill="#0d1117" stroke="#6e7681" stroke-width="1"/>
-<text x="367.9" y="311.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3" text-anchor="middle" xml:space="preserve">C</text>
-<rect x="17.0" y="324.0" width="374.0" height="16.0" rx="0" fill="#2d1a0c" stroke="none" stroke-width="1"/>
-<rect x="17.0" y="324.0" width="3.0" height="16.0" rx="0" fill="#f0883e" stroke="none" stroke-width="1"/>
-<text x="30.0" y="336.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">command(&amp;r, RF_HANDLER_COUNT, f);</text>
-<text x="30.0" y="352.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">uint32_t code = run(&amp;r);</text>
-<text x="30.0" y="368.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#9198a1" text-anchor="start" xml:space="preserve">...</text>
-<rect x="17.0" y="372.0" width="374.0" height="16.0" rx="0" fill="#2d1a0c" stroke="none" stroke-width="1"/>
-<rect x="17.0" y="372.0" width="3.0" height="16.0" rx="0" fill="#f0883e" stroke="none" stroke-width="1"/>
-<text x="30.0" y="384.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">if (kmx_par(sort_part, &amp;p) != KMX_OK ||</text>
-<text x="30.0" y="400.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    kmx_par(merge_part, &amp;p) != KMX_OK) {</text>
-<text x="30.0" y="416.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#9198a1" text-anchor="start" xml:space="preserve">...</text>
-<rect x="17.0" y="420.0" width="374.0" height="16.0" rx="0" fill="#2d1a0c" stroke="none" stroke-width="1"/>
-<rect x="17.0" y="420.0" width="3.0" height="16.0" rx="0" fill="#f0883e" stroke="none" stroke-width="1"/>
-<text x="30.0" y="432.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">command(&amp;r, RF_HANDLER_FILL, f);</text>
-<rect x="16.0" y="456.0" width="376.0" height="204.0" rx="4" fill="#161b22" stroke="#3d444d" stroke-width="1"/>
-<text x="30.0" y="479.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">program</text>
-<rect x="314.8" y="464.0" width="65.2" height="21.0" rx="10" fill="#0d1117" stroke="#6e7681" stroke-width="1"/>
-<text x="347.4" y="479.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3" text-anchor="middle" xml:space="preserve">Python</text>
-<rect x="17.0" y="492.0" width="374.0" height="16.0" rx="0" fill="#2d1a0c" stroke="none" stroke-width="1"/>
-<rect x="17.0" y="492.0" width="3.0" height="16.0" rx="0" fill="#f0883e" stroke="none" stroke-width="1"/>
-<text x="30.0" y="504.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">prog = km.Program(</text>
-<text x="30.0" y="520.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    "raster_frame",</text>
-<text x="30.0" y="536.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    kernels={...}, buffers=[...],</text>
-<text x="30.0" y="552.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">)</text>
-<rect x="17.0" y="556.0" width="374.0" height="16.0" rx="0" fill="#2d1a0c" stroke="none" stroke-width="1"/>
-<rect x="17.0" y="556.0" width="3.0" height="16.0" rx="0" fill="#f0883e" stroke="none" stroke-width="1"/>
-<text x="30.0" y="568.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">prog.thread(</text>
-<text x="30.0" y="584.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    cluster=CLUSTER,</text>
-<text x="30.0" y="600.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    sources=[THREAD / "frame.c", ...],</text>
-<text x="30.0" y="616.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    regions=regions(scene, workers),</text>
-<text x="30.0" y="632.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    deadline=10.0,</text>
-<text x="30.0" y="648.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">)</text>
+<text x="30.0" y="106.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">km::Reader reader;</text>
+<rect x="17.0" y="111.0" width="374.0" height="19.0" rx="0" fill="#2d1a0c" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="111.0" width="3.0" height="19.0" rx="0" fill="#f0883e" stroke="none" stroke-width="1"/>
+<text x="30.0" y="125.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">reader.run([&amp;](const km_command_t&amp; command) {</text>
+<text x="30.0" y="144.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    switch (km::handler(command)) {</text>
+<rect x="16.0" y="167.0" width="376.0" height="120.0" rx="4" fill="#161b22" stroke="#3d444d" stroke-width="1"/>
+<line x1="30.0" y1="186.0" x2="54.0" y2="186.0" stroke="#39c5cf" stroke-width="2.2" marker-end="url(#hb)"/>
+<text x="66.0" y="191.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">broadcast to a row or column</text>
+<rect x="339.4" y="175.0" width="40.6" height="21.0" rx="10" fill="#0d1117" stroke="#6e7681" stroke-width="1"/>
+<text x="359.7" y="190.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3" text-anchor="middle" xml:space="preserve">C++</text>
+<text x="30.0" y="217.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">km::Broadcast broadcast(</text>
+<text x="30.0" y="236.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">    reader, command, kArgBroadcast);</text>
+<rect x="17.0" y="241.0" width="374.0" height="19.0" rx="0" fill="#0b2f33" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="241.0" width="3.0" height="19.0" rx="0" fill="#39c5cf" stroke="none" stroke-width="1"/>
+<text x="30.0" y="255.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">if (broadcast.sender()) broadcast.cast(tiles);</text>
+<rect x="17.0" y="260.0" width="374.0" height="19.0" rx="0" fill="#0b2f33" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="260.0" width="3.0" height="19.0" rx="0" fill="#39c5cf" stroke="none" stroke-width="1"/>
+<text x="30.0" y="274.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">else broadcast.arrive(tiles);</text>
+<rect x="16.0" y="297.0" width="376.0" height="120.0" rx="4" fill="#161b22" stroke="#3d444d" stroke-width="1"/>
+<line x1="30.0" y1="316.0" x2="54.0" y2="316.0" stroke="#a371f7" stroke-width="2.2" stroke-dasharray="4 3" marker-end="url(#hp)"/>
+<text x="66.0" y="321.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">a message finds its core</text>
+<rect x="339.4" y="305.0" width="40.6" height="21.0" rx="10" fill="#0d1117" stroke="#6e7681" stroke-width="1"/>
+<text x="359.7" y="320.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3" text-anchor="middle" xml:space="preserve">C++</text>
+<text x="30.0" y="347.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">km::Dyn messages(compute, command);</text>
+<rect x="17.0" y="352.0" width="374.0" height="19.0" rx="0" fill="#2a1a4d" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="352.0" width="3.0" height="19.0" rx="0" fill="#a371f7" stroke="none" stroke-width="1"/>
+<text x="30.0" y="366.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">messages.send(rank, message);</text>
+<rect x="17.0" y="371.0" width="374.0" height="19.0" rx="0" fill="#2a1a4d" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="371.0" width="3.0" height="19.0" rx="0" fill="#a371f7" stroke="none" stroke-width="1"/>
+<text x="30.0" y="385.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">messages.forward(next_core, message);</text>
+<text x="30.0" y="404.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">messages.consume();</text>
+<rect x="16.0" y="427.0" width="376.0" height="101.0" rx="4" fill="#161b22" stroke="#3d444d" stroke-width="1"/>
+<line x1="30.0" y1="446.0" x2="56.0" y2="446.0" stroke="#4493f8" stroke-width="1.7" marker-end="url(#hw)" marker-start="url(#hw)"/>
+<text x="66.0" y="451.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">a core asks an X280 core</text>
+<rect x="339.4" y="435.0" width="40.6" height="21.0" rx="10" fill="#0d1117" stroke="#6e7681" stroke-width="1"/>
+<text x="359.7" y="450.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3" text-anchor="middle" xml:space="preserve">C++</text>
+<text x="30.0" y="477.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">km::X280Port port(reader);</text>
+<rect x="17.0" y="482.0" width="374.0" height="19.0" rx="0" fill="#0c2d6b" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="482.0" width="3.0" height="19.0" rx="0" fill="#4493f8" stroke="none" stroke-width="1"/>
+<text x="30.0" y="496.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">const uint32_t count = port.next(first);</text>
+<text x="30.0" y="515.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">run(first, count);</text>
+<rect x="16.0" y="538.0" width="376.0" height="120.0" rx="4" fill="#161b22" stroke="#3d444d" stroke-width="1"/>
+<rect x="30.0" y="549.0" width="26.0" height="16.0" rx="3" fill="#0c2d6b" stroke="#4493f8" stroke-width="1.5"/>
+<text x="66.0" y="562.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15.5" font-weight="700" fill="#e6edf3" text-anchor="start" xml:space="preserve">an X280 thread decides</text>
+<rect x="355.8" y="546.0" width="24.2" height="21.0" rx="10" fill="#0d1117" stroke="#6e7681" stroke-width="1"/>
+<text x="367.9" y="561.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#e6edf3" text-anchor="middle" xml:space="preserve">C</text>
+<rect x="17.0" y="574.0" width="374.0" height="19.0" rx="0" fill="#0c2d6b" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="574.0" width="3.0" height="19.0" rx="0" fill="#4493f8" stroke="none" stroke-width="1"/>
+<text x="30.0" y="588.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">int error = kmx_submit(command, &amp;handle);</text>
+<text x="30.0" y="607.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">kmx_par(sort_partition, &amp;partitions);</text>
+<text x="30.0" y="626.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#9198a1" text-anchor="start" xml:space="preserve">...</text>
+<rect x="17.0" y="631.0" width="374.0" height="19.0" rx="0" fill="#0c2d6b" stroke="none" stroke-width="1"/>
+<rect x="17.0" y="631.0" width="3.0" height="19.0" rx="0" fill="#4493f8" stroke="none" stroke-width="1"/>
+<text x="30.0" y="645.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" font-weight="400" fill="#e6edf3" text-anchor="start" xml:space="preserve">error = kmx_pull_run(command, &amp;pull, &amp;event);</text>
 <line x1="398.0" y1="330.0" x2="420.0" y2="330.0" stroke="#6e7681" stroke-width="2" marker-end="url(#hm)"/>
 <line x1="970.0" y1="330.0" x2="992.0" y2="330.0" stroke="#6e7681" stroke-width="2" marker-end="url(#hm)"/>
 <rect x="428.0" y="56.0" width="536.0" height="604.0" rx="6" fill="#0d1117" stroke="#f0883e" stroke-width="1.8"/>
@@ -219,14 +228,20 @@
 <line x1="669.0" y1="200.0" x2="673.0" y2="200.0" stroke="#4493f8" stroke-width="1.6"/>
 <line x1="673.0" y1="98.0" x2="663.0" y2="98.0" stroke="#f0883e" stroke-width="2.2" marker-end="url(#ha)"/>
 <line x1="717.0" y1="98.0" x2="751.0" y2="98.0" stroke="#f0883e" stroke-width="2.2" marker-end="url(#ha)"/>
-<line x1="553.0" y1="150.0" x2="620.0" y2="198.0" stroke="#e6edf3" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#hf)"/>
-<line x1="861.0" y1="201.0" x2="794.0" y2="153.0" stroke="#e6edf3" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#hf)"/>
+<line x1="529.0" y1="217.0" x2="658.0" y2="217.0" stroke="#39c5cf" stroke-width="2.2" marker-end="url(#hb)"/>
+<line x1="885.0" y1="115.0" x2="885.0" y2="236.0" stroke="#39c5cf" stroke-width="2.2" marker-end="url(#hb)"/>
+<line x1="553.0" y1="132.0" x2="625.0" y2="166.0" stroke="#a371f7" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#hp)"/>
+<line x1="625.0" y1="166.0" x2="577.0" y2="183.0" stroke="#a371f7" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#hp)"/>
+<line x1="837.0" y1="200.0" x2="789.0" y2="166.0" stroke="#a371f7" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#hp)"/>
+<line x1="789.0" y1="166.0" x2="837.0" y2="149.0" stroke="#a371f7" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#hp)"/>
+<line x1="720.0" y1="132.0" x2="810.0" y2="132.0" stroke="#4493f8" stroke-width="2" marker-end="url(#hw)" marker-start="url(#hw)"/>
+<line x1="670.0" y1="168.0" x2="604.0" y2="185.0" stroke="#4493f8" stroke-width="2" marker-end="url(#hw)" marker-start="url(#hw)"/>
 <rect x="462.0" y="259.0" width="22.0" height="15.0" rx="2" fill="#6b3a14" stroke="#f0883e" stroke-width="0.8"/>
 <text x="494.0" y="272.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e6edf3" text-anchor="start" xml:space="preserve">Tensix cores, 120</text>
 <rect x="701.0" y="259.0" width="22.0" height="15.0" rx="3" fill="#2d1a0c" stroke="#f0883e" stroke-width="1.5"/>
 <text x="733.0" y="272.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e6edf3" text-anchor="start" xml:space="preserve">dispatcher, X280 cluster 0</text>
-<line x1="462.0" y1="297.0" x2="482.0" y2="297.0" stroke="#e6edf3" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#hf)"/>
-<text x="494.0" y="302.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e6edf3" text-anchor="start" xml:space="preserve">messages, core to core</text>
+<rect x="462.0" y="289.0" width="22.0" height="15.0" rx="2" fill="#2d3540" stroke="none" stroke-width="1"/>
+<text x="494.0" y="302.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e6edf3" text-anchor="start" xml:space="preserve">DRAM</text>
 <rect x="701.0" y="289.0" width="22.0" height="15.0" rx="3" fill="#0c2d6b" stroke="#4493f8" stroke-width="1.5"/>
 <text x="733.0" y="302.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e6edf3" text-anchor="start" xml:space="preserve">threads, X280 clusters 1 to 3</text>
 <line x1="444.0" y1="326.0" x2="948.0" y2="326.0" stroke="#3d444d" stroke-width="1"/>
