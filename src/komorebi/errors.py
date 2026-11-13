@@ -47,8 +47,9 @@ class StartError(KomorebiError):
 
 class GridTimeout(KomorebiError):
     """The Tensix grid's kernels did not return within the session's bound after the
-    stop word. The device is left open (closing it would wait for the grid); the card
-    may need a reset."""
+    stop word. The session does not close the device; the runtime closes it at the
+    process's exit (a bounded wait for the cores, then their reset). A stuck thread is
+    recovered by the next open; a compute unit left running is not (a card reset)."""
 
 
 class WaitTimeout(KomorebiError):

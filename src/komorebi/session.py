@@ -39,6 +39,10 @@ PROBE_GAP_S = 0.02  # core 0's pass stamp moves every 1,024 passes (about 33 us)
 ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop word, before the close
 REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
 REGION_CHUNK = 2 << 20  # of this size, with a log line each
+# The runtime's bound on its waits for the cores, the one at device close included;
+# unset, it is 0, which means no bound. Read when the process first opens a device.
+OP_TIMEOUT = "TT_METAL_OPERATION_TIMEOUT_SECONDS"
+OP_TIMEOUT_DEFAULT = 30.0  # the runtime's own example value
 
 
 def compute_config(options):
@@ -114,6 +118,30 @@ def aiclk_mhz(card=None):
     card = card if card is not None else visible_card()
     path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
     return int(path.read_text().split()[0])
+
+
+def bound_exit(environ, log):
+    """Sets OP_TIMEOUT to its default in `environ` when unset or empty and logs it; a
+    value already there is kept. The bound in seconds (0: none; None: not a number)."""
+    value = environ.get(OP_TIMEOUT, "")
+    if value.strip():
+        try:
+            return max(float(value), 0.0)
+        except ValueError:
+            return None  # the runtime refuses it at the open
+    environ[OP_TIMEOUT] = f"{OP_TIMEOUT_DEFAULT:g}"
+    log(f"{OP_TIMEOUT} unset: set to {OP_TIMEOUT_DEFAULT:g} s (bounds the exit)")
+    return OP_TIMEOUT_DEFAULT
+
+
+def exit_wait(environ=None):
+    """How long the device's close waits for the cores, as a phrase."""
+    value = (os.environ if environ is None else environ).get(OP_TIMEOUT, "")
+    try:
+        seconds = float(value)
+    except ValueError:
+        seconds = 0.0
+    return f"up to {seconds:g} s" if seconds > 0 else "without a bound"
 
 
 def visible_card():
@@ -252,7 +280,7 @@ class Session:
         self.log = log or (lambda msg: None)
         self.grid_timeout = grid_timeout
         self.run = None
-        self.stuck = False  # the grid did not return: the device stays open
+        self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
         self._starting = None  # the Dispatch of a load before its Run exists
 
@@ -279,6 +307,8 @@ class Session:
                 raise ValueError(f"card {self.card} is not visible ({visible})")
             os.environ["TT_VISIBLE_DEVICES"] = str(self.card)
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
+        if bound_exit(os.environ, self.log) == 0:
+            self.log(f"{OP_TIMEOUT}=0: an exit after a grid that did not return hangs")
         card = self.card if self.card is not None else visible_card()
         holder = chip_holder(card)
         if holder is not None:
@@ -305,7 +335,12 @@ class Session:
 
     def _close_device(self):
         if self.stuck:
-            self.log("device left open: the grid did not return")
+            self.log(
+                "device not closed by the session: the grid did not return; at the "
+                f"process's exit the runtime waits {exit_wait()} for the cores, then "
+                "puts them in reset (a stuck thread recovers at the next open, a "
+                "compute unit left running does not)"
+            )
             return
         if self.device is not None and self._own_device:
             ttnn.close_mesh_device(self.device)
@@ -866,8 +901,12 @@ class _Backend:
         if not module.wait_grid(self.device, gx, gy, bound):
             self.session.stuck = True
             raise GridTimeout(
-                f"the grid's kernels did not return within {bound} s after the stop; "
-                "the device is left open and the card may need a reset"
+                f"the grid's kernels did not return within {bound} s after the stop. "
+                "The session does not close the device; at the process's exit the "
+                f"runtime waits {exit_wait()} for the cores, then puts them in reset. "
+                "A thread that is only stuck is recovered by the next open; a kernel "
+                "that left a compute unit running is not, and if the next open fails "
+                "the card needs a reset"
             )
         ttnn.synchronize_device(self.device)  # returns at once: every core is done
         self.session.log(f"grid returned ({time.monotonic() - t0:.1f} s)")
