@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 COLUMNS = 88
@@ -730,10 +731,50 @@ def wrap_lambda_values(lines):
     return out
 
 
+DEFINE_VALUE = re.compile(r"(?P<value>[^;{}/]*?)\s*/\*(?P<note>.*?)\*/")
+
+
+def hoist_define_comments(lines):
+    """A constant whose value and trailing comment clang-format had to wrap
+    (``#define NAME \\`` / ``value /* note */``) written as the comment, then the
+    ``#define NAME value`` on one line: the line stays whole for tools that read it."""
+    out, i = [], 0
+    while i < len(lines):
+        head = re.fullmatch(r"#define\s+(\w+(?:\([^)]*\))?)\s*\\\n", lines[i])
+        end = i
+        while head and lines[end].rstrip("\n").endswith("\\") and end + 1 < len(lines):
+            end += 1
+        if not head or end == i:
+            out.append(lines[i])
+            i += 1
+            continue
+        body = " ".join(
+            part.rstrip("\n").rstrip("\\").strip() for part in lines[i + 1 : end + 1]
+        )
+        found = DEFINE_VALUE.fullmatch(body)
+        if not found or not found["value"].strip():
+            out.append(lines[i])
+            i += 1
+            continue
+        note = " ".join(found["note"].split())
+        wrapped = textwrap.wrap(
+            note, COLUMNS - 6, break_long_words=False, break_on_hyphens=False
+        )
+        wrapped[0] = "/* " + wrapped[0]
+        out += [
+            f"{line}\n" if k == 0 else f"   {line}\n" for k, line in enumerate(wrapped)
+        ]
+        out[-1] = out[-1].rstrip("\n") + " */\n"
+        out.append(f"#define {head.group(1)} {found['value'].strip()}\n")
+        i = end + 1
+    return out
+
+
 def house_rules(lines, binary):
     """Argument comments, empty loops, braced lists and value wraps on clang-format's
     output."""
     fixed = []
+    lines = hoist_define_comments(lines)
     for i, line in enumerate(lines):
         m = OWN_LINE_ARG.match(line)
         if m:

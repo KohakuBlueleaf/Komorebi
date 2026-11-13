@@ -3,9 +3,8 @@
 
 #include <stdint.h>
 
-#define HX_HANDLER_WORK                                                   \
-    1u /* a0 asks per core; the core first waits for its X280 core's salt \
-        */
+/* a0 asks per core; the core first waits for its X280 core's salt */
+#define HX_HANDLER_WORK 1u
 
 /* The salt an X280 core tells core c in round r, and its answer to the core's ask k. */
 #define HX_SALT(r, c) (((r) * 0x9E3779B1u) ^ ((c) * 0x85EBCA77u))
@@ -30,9 +29,7 @@ enum {
 
 /* The pull mode (pull.c): a pass over units 0 to a0 - 1, unit u busy for HX_COST cycles
  * (a1: 0 equal ranges, 1 pulled ranges); a report tells the pass's numbers back. */
-#define HX_HANDLER_PASS                                           \
-    2u /* a0 units, a1 how, a2 base, a3 extra, a4 centre, a5 half \
-        */
+#define HX_HANDLER_PASS 2u   /* a0 to a5: units, how, base, extra, centre, half */
 #define HX_HANDLER_REPORT 3u /* a0 0: units, work, span; 1: hash, pulls, waited */
 
 /* Unit u's cycles: `base`, plus up to `extra` in a triangle of half-width `half` about

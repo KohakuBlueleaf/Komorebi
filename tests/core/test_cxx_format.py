@@ -72,6 +72,21 @@ def test_wrapped_arguments_are_one_level_from_the_line_that_opens_them():
     assert cxx_format.format_text(WRAPPED_ARGUMENTS, BINARY) == WRAPPED_ARGUMENTS
 
 
+WRAPPED_CONSTANT = """/* auxiliary = first core | sequence low 16 << 8 */
+#define KM_EVENT_DONE_OF_THE_RUNNING_GROUP 0u
+"""
+
+
+@needs_clang_format
+def test_a_constant_too_long_with_its_comment_keeps_its_value_on_one_line():
+    text = (
+        "#define KM_EVENT_DONE_OF_THE_RUNNING_GROUP 0u"
+        " /* auxiliary = first core | sequence low 16 << 8 */\n"
+    )
+    assert cxx_format.format_text(text, BINARY) == WRAPPED_CONSTANT
+    assert cxx_format.format_text(WRAPPED_CONSTANT, BINARY) == WRAPPED_CONSTANT
+
+
 @needs_clang_format
 def test_argument_comment_on_its_own_line_becomes_a_trailing_comment():
     text = "void g() {\n    f(\n        /*count=*/3\n    );\n}\n"

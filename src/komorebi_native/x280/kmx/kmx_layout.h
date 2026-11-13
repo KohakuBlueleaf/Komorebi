@@ -24,9 +24,8 @@
 #define KMX_LIM_STOP 0x240u   /* line from the host: word 0 = KMX_STOP_WORD */
 #define KMX_LIM_RESULT 0x280u /* kmx_result_block (the thread) */
 #define KMX_LIM_CORES 0x380u  /* core h's spawn line at + 64 * h (KMX_SPAWN_*) */
-#define KMX_LIM_RING                                                                  \
-    0x480u                   /* kmx_ring_desc (host, before the start); zero: no ring \
-                              */
+/* kmx_ring_desc (host, before the start); zero: no ring */
+#define KMX_LIM_RING 0x480u
 #define KMX_LIM_PEERS 0x4C0u /* kmx_peers (host, before the start) */
 #define KMX_LIM_PORTS 0x500u /* kmx_ports (host, before the start) */
 #define KMX_LIM_BYTES 0x540u
@@ -94,9 +93,8 @@ typedef struct {
 #define KMX_CALL_FN 2u  /* 64 bits */
 #define KMX_CALL_ARG 4u /* 64 bits */
 #define KMX_CALL_EXIT 6u
-#define KMX_PEER_WINDOW                                                               \
-    17u                     /* cluster c's LIM through window KMX_PEER_WINDOW + c - 1 \
-                             */
+/* cluster c's LIM through window KMX_PEER_WINDOW + c - 1 */
+#define KMX_PEER_WINDOW 17u
 #define KMX_PUSH_WINDOW 20u /* core h pushes through window KMX_PUSH_WINDOW + h */
 
 /* X280 ports (at 0: none). The host writes the line, and before any start the area
@@ -116,18 +114,18 @@ typedef struct {
 #define KMX_PORTS_CORES 128u /* table entries: KM_CORES_MAX */
 #define KMX_PORTS_NOC1 1u    /* flags: the windows onto the cores use NoC 1 */
 #define KMX_PORTS_TILES 0x0u /* + 4 i: core i's tile, x | y << 16 */
-#define KMX_PORTS_OWNER \
-    0x200u                   /* + i: cluster << 2 | X280 core serving core i; 0: none */
+/* + i: cluster << 2 | X280 core serving core i; 0: none */
+#define KMX_PORTS_OWNER 0x200u
 #define KMX_PORTS_BOX 0x280u /* + 64 i: core i's mailbox line */
 #define KMX_PORTS_BYTES (KMX_PORTS_BOX + 64u * KMX_PORTS_CORES)
-#define KMX_PORT_WINDOW \
-    24u /* core i's control block through window KMX_PORT_WINDOW + i */
+/* core i's control block through window KMX_PORT_WINDOW + i */
+#define KMX_PORT_WINDOW 24u
 
 /* The command ring as the thread's cluster addresses it: command slots, the kernel's
  * consumed word, the events, the read-count line. Depths: powers of two. */
 #define KMX_RING_DEPTH_MAX 1024u
-#define KMX_RING_CACHED \
-    1u /* flags: the ring is in cached memory, sweep on each flush or invalidate */
+/* flags: the ring is in cached memory, sweep on each flush or invalidate */
+#define KMX_RING_CACHED 1u
 /* flags: cmd and read are NoC addresses in the tile reserved[0] names (x | y << 16),
  * inside one 2 MiB window the start-up opens; consumed and events are local. */
 #define KMX_RING_REMOTE 2u

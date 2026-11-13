@@ -8,8 +8,8 @@
 #define DK_HANDLER_CHECK 1u /* check a2..a9 against a0 (key) and a1 (parameter) */
 #define DK_HANDLER_DELAY 2u /* wait a1 Tensix clock cycles */
 #define DK_HANDLER_STALL 3u /* core a1 waits for the stop flag; the rest run a NOP */
-#define DK_HANDLER_RESULT \
-    4u /* result dk_result(a0, a1); with KM_F_RESULT the leader sends it */
+/* result dk_result(a0, a1); with KM_F_RESULT the leader sends it */
+#define DK_HANDLER_RESULT 4u
 #define DK_HANDLER_SUM 5u /* result a0 + count (the graph references' result word) */
 
 /* Argument word w (2..9) of a command with key a0 and parameter a1. */

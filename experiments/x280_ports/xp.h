@@ -4,10 +4,10 @@
 #include <stdint.h>
 
 /* Handlers. */
-#define XP_HANDLER_TELL \
-    1u /* an X280 core's tell: the core gives its word 0 as the result */
-#define XP_HANDLER_SEND \
-    2u /* the core tells its X280 core a0 + its index, a1 the command's */
+/* an X280 core's tell: the core gives its word 0 as the result */
+#define XP_HANDLER_TELL 1u
+/* the core tells its X280 core a0 + its index, a1 the command's */
+#define XP_HANDLER_SEND 2u
 #define XP_HANDLER_ASK 3u   /* a0 asks per core, each answered; a2 XP_F_*; stats page */
 #define XP_HANDLER_BLOCK 4u /* a0 4 KiB blocks: a1 XP_BLOCK_L1 or _DRAM; a2 stats */
 #define XP_HANDLER_RATE 5u  /* a0 1024-cycle units of tells both ways and timed asks */
@@ -49,9 +49,8 @@
 /* Scratch page (the program's buffer 16): block, stats, flags, writer's reads. */
 #define XP_SCRATCH_BLOCK 0u
 #define XP_SCRATCH_STATS 4096u
-#define XP_SCRATCH_FLAGS                                         \
-    5120u /* words: result seq, value; reader done; writer reads \
-           */
+/* words: result seq, value; reader done; writer reads */
+#define XP_SCRATCH_FLAGS 5120u
 #define XP_SCRATCH_READ 6144u
 #define XP_READ_BYTES 2048u
 #define XP_SCRATCH_BYTES 8192u

@@ -5,9 +5,8 @@
 #include "x280_ports.h"
 #include "kmx.h"
 
-#define CODE_BAD                                                                      \
-    1u               /* words or the regions out of range, or the log ran out of room \
-                      */
+/* words or the regions out of range, or the log ran out of room */
+#define CODE_BAD 1u
 #define CODE_LATE 2u /* a run was late or stopped, or the ring stayed full */
 #define FULL_TICKS KMX_TICKS_PER_SECOND /* how long a full ring is retried */
 

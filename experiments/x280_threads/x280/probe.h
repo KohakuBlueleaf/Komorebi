@@ -10,9 +10,8 @@
 
 /* LIM layout, in bytes from the cluster's available LIM base (all 64-byte lines). */
 #define PR_ARGS 0x000u /* argument block: run value, then the probe's own words */
-#define PR_MARKER                                                                      \
-    0x100u               /* word h: core h's last progress marker, word 4 + h its time \
-                          */
+/* word h: core h's last progress marker, word 4 + h its time */
+#define PR_MARKER 0x100u
 #define PR_GO 0x140u     /* line from the host: word 0 = the step it allows */
 #define PR_RESULT 0x200u /* the probe's result words */
 #define PR_RESULT_WORDS 256u

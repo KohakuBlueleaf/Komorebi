@@ -25,8 +25,8 @@ enum { T_TIME = 0, T_DIFFER = 12, T_PUSH = 24, N_WORDS = 28 };
 
 #define CHUNK 1024u /* words of one partition: 4 KiB */
 #define CHUNKS_MAX 4096u
-#define LINE \
-    16u /* words: a chunk's sum has a line of its own, so each block's sums push */
+/* words: a chunk's sum has a line of its own, so each block's sums push */
+#define LINE 16u
 #define CODE_BAD 1u
 #define CODE_LATE 2u
 #define CODE_PUSH 3u

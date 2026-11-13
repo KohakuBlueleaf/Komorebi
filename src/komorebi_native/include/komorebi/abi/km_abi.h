@@ -116,9 +116,8 @@ KM_STATIC_ASSERT(
 
 #define KM_CTL_DYN 0xC80u   /* routed messages: queue counters, idle words, status */
 #define KM_CTL_TAILS 0xD40u /* routed messages: a counter tile's tail lines */
-#define KM_CTL_X280                                                   \
-    0x1580u /* X280 port: the lines shared with the serving X280 core \
-             */
+/* X280 port: the lines shared with the serving X280 core */
+#define KM_CTL_X280 0x1580u
 #define KM_CTL_BYTES 0x15C0u
 
 /* Routed messages: offsets inside KM_CTL_DYN, each word in its own 16-byte slot. */
@@ -168,14 +167,11 @@ KM_STATIC_ASSERT(KM_HANDLER_DYN_END > KM_HANDLER_USER_MAX, "not a program handle
 
 /* X280 port: 16-byte lines {seq, w0, w1, w2}, each with one writer, offsets inside
    KM_CTL_X280. A line lands whole; seq names it (a tell's latest wins). */
-#define KM_X280_TELL                                                 \
-    0x00u /* the X280 core's tell: seq counts its tells to this core \
-           */
+#define KM_X280_TELL 0x00u   /* the X280 core's tell: seq counts its tells here */
 #define KM_X280_ANSWER 0x10u /* the X280 core's answer: seq repeats the ask's */
 #define KM_X280_OUT 0x20u    /* source of this core's stores to its X280 core */
-#define KM_X280_TO                                                    \
-    0x30u /* the host's, at load: X280 core tile x | y << 16, mailbox \
-           */
+/* the host's, at load: X280 core tile x | y << 16, mailbox */
+#define KM_X280_TO 0x30u
 #define KM_X280_BYTES 0x40u
 #define KM_X280_TO_TILE 0u /* word offsets of the KM_X280_TO line */
 #define KM_X280_TO_BOX 1u  /* LIM address of this core's mailbox line; 0: not served */

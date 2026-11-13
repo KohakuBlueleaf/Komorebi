@@ -12,9 +12,8 @@
 /* All bands number at most about 2 * fill cores / RM_SPLIT (1,503 at 248 cores)
  * besides the whole tiles. */
 #define RM_MAX_ITEMS 2048u
-#define RM_COUNTERS                                                  \
-    (2 * RM_TILES) /* a core's counters: entries per tile, then rows \
-                    */
+/* a core's counters: entries per tile, then rows */
+#define RM_COUNTERS (2 * RM_TILES)
 #define RM_MAX_CORES 248u
 #define RM_DIR_WORDS 1024u /* a directory page (raster.h) */
 #define RM_DIR_FIRST 0u

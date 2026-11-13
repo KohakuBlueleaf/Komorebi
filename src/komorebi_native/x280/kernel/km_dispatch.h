@@ -16,8 +16,8 @@
 /* LIM layout, in bytes from the argument block (64-byte aligned, written by the host).
  * The host zeroes the whole layout before every run. */
 #define KMD_LIM_ARGS 0x000u /* kmd_args_t */
-#define KMD_LIM_MAILBOX \
-    0x100u /* hello from core 0: word 0 = 1, word 1 = control block */
+/* hello from core 0: word 0 = 1, word 1 = control block */
+#define KMD_LIM_MAILBOX 0x100u
 #define KMD_LIM_RESULT 0x140u /* result block, KMD_R_WORDS words */
 #define KMD_LIM_READ 0x1C0u   /* line from the host: word 0 = events it has read */
 #define KMD_LIM_READY 0x200u  /* KM_READY of column leader c at + c * 16 */
@@ -26,9 +26,8 @@
 #define KMD_LIM_HRING 0x800u  /* host command ring: host_depth km_command_t */
 #define KMD_LIM_DYN 0x1800u   /* status line of core c in a dynamic run at + c * 16 */
 #define KMD_LIM_BYTES 0x2000u
-#define KMD_LIM_UPLOAD                                            \
-    KMD_LIM_BYTES /* upload region: args upload_bytes, not zeroed \
-                   */
+/* upload region: args upload_bytes, not zeroed */
+#define KMD_LIM_UPLOAD KMD_LIM_BYTES
 #define KMD_READY_MAX 16u
 /* A hello's control block lies in [KMD_CTL_FLOOR, KMD_L1_BYTES - KM_CTL_BYTES]. */
 #define KMD_CTL_FLOOR 0x10000u /* below: the Tensix firmware and its mailboxes */
@@ -39,9 +38,8 @@
  * state words, then the event ring of event_depth km_event_t. */
 #define KMD_HOST_STATE 0u    /* word: KMD_STATE_* */
 #define KMD_HOST_CONSUMED 1u /* word: commands taken from the host ring */
-#define KMD_HOST_EVENTS                                                              \
-    2u                    /* word: events pushed (a hint; the event's index decides) \
-                           */
+/* word: events pushed (a hint; the event's index decides) */
+#define KMD_HOST_EVENTS 2u
 #define KMD_HOST_ERROR 3u /* word: KMD_ERR_* once the state is final */
 #define KMD_HOST_READY 4u /* words 4 to 7: kmd_ready_t, one 16-byte store at READY */
 #define KMD_HOST_RING 64u /* byte offset of the event ring */
@@ -72,8 +70,8 @@
 #define KMD_REJECT_FLAGS 2u   /* reserved flag bit 0 set */
 #define KMD_REJECT_GROUP 3u   /* count 0, or the group does not lie inside the cores */
 #define KMD_REJECT_EXITED 4u  /* a command after EXIT */
-#define KMD_REJECT_REGION \
-    5u /* a range not 64-byte aligned or outside the upload region */
+/* a range not 64-byte aligned or outside the upload region */
+#define KMD_REJECT_REGION 5u
 #define KMD_REJECT_STREAMS 6u  /* KM_HANDLER_RUN beyond KM_STREAM_MAX_ACTIVE streams */
 #define KMD_REJECT_UNKNOWN 7u  /* KM_HANDLER_CANCEL of a req no active stream has */
 #define KMD_REJECT_DEADLINE 8u /* KM_HANDLER_DEADLINE of 0 (a deadline is never 0) */

@@ -48,8 +48,8 @@ typedef struct {
 /* Sources, served in this order (the numbers are in km_dispatch.h's core block). */
 #define KMD_SRC_HOST 0u
 #define KMD_SRC_ENGINE 1u
-#define KMD_SRC_WORK \
-    2u /* work cluster c's thread: KMD_SRC_WORK + c - 1 (work_port.h) */
+/* work cluster c's thread: KMD_SRC_WORK + c - 1 (work_port.h) */
+#define KMD_SRC_WORK 2u
 #define KMD_SOURCES (KMD_SRC_WORK + KMD_WORK_CLUSTERS)
 
 /* A job waiting in the queue: its command, with its source's deadline at the time. */
