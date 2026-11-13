@@ -72,6 +72,8 @@ KM_STATIC_ASSERT(sizeof(km_record_t) == 64, "a record is one 64-byte line");
 #define KM_PORT_STRIDE 16u
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u
+/* a port or emit give-up: the gave-up word's top byte names the port */
+#define KM_GAVE_PORT_SHIFT 24u
 
 KM_STATIC_ASSERT(KM_CTL_PORT == KM_CTL_CORES + 4u * KM_CORES_MAX, "ports after cores");
 KM_STATIC_ASSERT(KM_CTL_PORT + KM_PORTS * KM_PORT_STRIDE == KM_CTL_LANE, "ports end");
@@ -86,9 +88,18 @@ KM_STATIC_ASSERT(KM_CTL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte slots
 #define KM_LANE_STATS 0x30u /* blocks, wait cycles low and high words */
 #define KM_LANE_DONE 0x40u  /* DONE-BY word of rank r at KM_LANE_DONE + 16 r */
 #define KM_LANE_BYTES 0x140u
+#define KM_LANE_GAVE_WORDS 3u   /* words of the KM_LANE_GAVE slot in use */
+#define KM_LANE_STATS_WORDS 3u  /* words of the KM_LANE_STATS slot in use */
+#define KM_LANE_DONE_STRIDE 16u /* bytes between the DONE-BY words of two ranks */
 
 KM_STATIC_ASSERT(KM_CTL_LANE == KM_CTL_CORES + 4u * KM_CORES_MAX + 0x80u, "ports room");
-KM_STATIC_ASSERT(KM_LANE_DONE + 16u * KM_LANE_RANKS == KM_LANE_BYTES, "lane area");
+KM_STATIC_ASSERT(
+    KM_LANE_DONE + KM_LANE_DONE_STRIDE * KM_LANE_RANKS == KM_LANE_BYTES, "lane area"
+);
+KM_STATIC_ASSERT(KM_LANE_GAVE_WORDS * 4u <= KM_LANE_STATS - KM_LANE_GAVE, "gave slot");
+KM_STATIC_ASSERT(
+    KM_LANE_STATS_WORDS * 4u <= KM_LANE_DONE - KM_LANE_STATS, "stats slot"
+);
 KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte slots");
 
 #define KM_CTL_DYN 0xC80u /* dynamic crossing: queue counters, idle words, status */

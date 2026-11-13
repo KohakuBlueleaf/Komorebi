@@ -92,7 +92,7 @@ def gave_up(word, seq, h=None):
         "seq": int(seq),
     }
     if out["where"] in ("port", "emit"):
-        out["port"] = word >> 24  # the port a reader or writer waited on
+        out["port"] = word >> h["KM_GAVE_PORT_SHIFT"]  # the port a wait named
     return out
 
 
@@ -118,9 +118,11 @@ def lanes(block, h=None):
     out = []
     for lane in range(h["KM_LANES"]):
         a = (h["KM_CTL_LANE"] + lane * h["KM_LANE_BYTES"]) // 4
-        gave = [int(v) for v in block[a + h["KM_LANE_GAVE"] // 4 :][:3]]
-        stats = [int(v) for v in block[a + h["KM_LANE_STATS"] // 4 :][:3]]
-        done = a + h["KM_LANE_DONE"] // 4
+        gave = h["KM_LANE_GAVE"] // 4 + a
+        gave = [int(v) for v in block[gave : gave + h["KM_LANE_GAVE_WORDS"]]]
+        stats = h["KM_LANE_STATS"] // 4 + a
+        stats = [int(v) for v in block[stats : stats + h["KM_LANE_STATS_WORDS"]]]
+        done, step = a + h["KM_LANE_DONE"] // 4, h["KM_LANE_DONE_STRIDE"] // 4
         out.append(
             {
                 "valid": int(block[a + h["KM_LANE_VALID"] // 4]),
@@ -137,7 +139,7 @@ def lanes(block, h=None):
                 "blocks": stats[0],
                 "wait_cycles": stats[1] | stats[2] << 32,
                 "done": [
-                    int(block[done + 4 * r]) for r in range(1, h["KM_LANE_RANKS"])
+                    int(block[done + step * r]) for r in range(1, h["KM_LANE_RANKS"])
                 ],
             }
         )
