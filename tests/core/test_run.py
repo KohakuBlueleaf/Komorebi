@@ -282,6 +282,31 @@ def test_forget_releases_tickets_read_after_a_drain():
     assert run._gone[:5].all()
 
 
+class CardThread:
+    """A run's work-cluster thread on the card, as far as Run looks at it."""
+
+    on_card, ring, running = True, object(), False
+
+    def stop(self):
+        pass
+
+    def grid_stopped(self):
+        pass
+
+
+def test_sequences_are_refused_while_a_card_thread_may_issue_records():
+    run, _, _ = make_run(trace_cap=8)
+    run.thread = CardThread()  # started at the load, before any host record
+    ticket = run.issue(1, (0, 2))
+    run.wait(ticket)
+    assert run.team(ticket) == (0, 2)
+    with pytest.raises(KomorebiError, match="work-cluster thread"):
+        run.seq(ticket)
+    run.stop()
+    with pytest.raises(KomorebiError, match="work-cluster thread"):
+        run.trace().phases(ticket)
+
+
 def test_a_traced_run_keeps_teams_and_sequences_for_the_trace():
     run, _, _ = make_run(trace_cap=8)
     tickets = [run.issue(1, (i, 2)) for i in range(3)]

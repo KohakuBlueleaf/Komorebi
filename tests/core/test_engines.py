@@ -279,11 +279,11 @@ def test_sequence_numbers_of_host_records_after_an_engine_raise_not_mislead():
     after = run.issue(0, (8, 8))
     run.wait([before, after])
     assert run.seq(before) == 1 and port.issued[-1][1] == 10  # 8 were the stream's
-    with pytest.raises(KomorebiError, match="after an engine started"):
+    with pytest.raises(KomorebiError, match="after an engine or"):
         run.seq(after)
     run.stop()
     assert run.trace().record(before) is not None
-    with pytest.raises(KomorebiError, match="after an engine started"):
+    with pytest.raises(KomorebiError, match="after an engine or"):
         run.trace().record(after)
 
 

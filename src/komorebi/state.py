@@ -193,8 +193,8 @@ def wrap(delta):
 
 
 UNKNOWN_SEQ = (
-    "issued after an engine started; the kernel numbers the engine's records in "
-    "the same sequence and no event tells the host its number"
+    "issued after an engine or a work-cluster thread started; the kernel numbers "
+    "their records in the same sequence and no event tells the host its number"
 )
 
 

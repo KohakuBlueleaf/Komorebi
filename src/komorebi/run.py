@@ -486,14 +486,22 @@ class Run:
 
     def seq(self, ticket):
         """The sequence number the kernel gave a record (the trace's index). Raises
-        KomorebiError for a record issued after an engine started (not known)."""
+        KomorebiError after an engine or a card thread started (not known)."""
         n = self._seq_of(ticket)
-        if n is not None and self._after_engine(ticket):
+        if n is not None and self._seq_unknown(ticket):
             raise KomorebiError(f"ticket {ticket}: {st.UNKNOWN_SEQ}")
         return n
 
-    def _after_engine(self, ticket):
-        return self._engine_from is not None and ticket > self._engine_from
+    def _unknown_from(self):
+        """The first ticket whose sequence number the host does not know, or None."""
+        t = self.thread
+        if t is not None and t.on_card and t.ring is not None:
+            return 1  # the thread starts at the load and may issue records
+        return None if self._engine_from is None else self._engine_from + 1
+
+    def _seq_unknown(self, ticket):
+        u = self._unknown_from()
+        return u is not None and ticket >= u
 
     def _seq_of(self, ticket):
         self._hand()
@@ -712,9 +720,9 @@ class Run:
             n = self._handed - self._base
             tickets = np.arange(n) + self._base
             rec = (self._seq[:n] > 0) & (self._first[:n] >= 0)  # queued: team unknown
-            late = np.zeros(n, bool)  # issued after an engine started: not mapped
-            if self._engine_from is not None:
-                late = rec & (tickets > self._engine_from)
+            late = np.zeros(n, bool)  # after an engine or a card thread: not mapped
+            if (u := self._unknown_from()) is not None:
+                late = rec & (tickets >= u)
             rec &= ~late
             numbers = (self._seq[:n][rec] - 1) % M32 + 1  # skips 0, as the kernel
             seqs = dict(zip(tickets[rec].tolist(), numbers.tolist()))
@@ -744,7 +752,7 @@ class Run:
         r = self._result
         team = self.team(ev.ticket)
         seq = r["seq"] if r["error"] == self.h["KMD_ERR_DEADLINE"] else None
-        if seq is None and not self._after_engine(ev.ticket):
+        if seq is None and not self._seq_unknown(ev.ticket):
             seq = self._seq_of(ev.ticket)
         known = team and team[0] is not None
         cores = st.not_reported(self._state, team, ev.aux, seq, self.h) if known else []

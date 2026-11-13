@@ -145,7 +145,7 @@ through ttnn after the stop.
 | `wait_any(tickets, timeout=10.0)` | stores what is queued and waits until one of the tickets has its event; returns that `Event` (the lowest ticket if several arrived) and forgets only that ticket. Raises as `wait` does |
 | `drain(timeout=10.0)` | the same for everything issued; returns how many events it waited for |
 | `event(ticket)` | `Event(ticket, kind, aux, ticks, result)` or None; `kind` is `done`, `timeout`, `pong` or `refused`; `ticks` is issue to completion in the X280's 50 MHz timer, `us` the same in microseconds; for a record issued with `result=True`, `result` is the leader's word (the kernel sends it in place of the time, so `ticks` and `us` then hold it too), else None |
-| `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index; not known, and raises, for a record issued after an engine started), its team |
+| `seq(ticket)`, `team(ticket)` | the sequence number the kernel gave the record (the trace's index; not known, and raises, for a record issued after an engine started or in a run whose work-cluster thread is on the card), its team |
 | `forget(tickets)` | releases what the run keeps for tickets whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps teams and sequences for the trace |
 | `stop(timeout=10.0)` | cancels every engine still running (or `unknown`) and waits for their ends within `timeout`, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
@@ -235,7 +235,8 @@ The kernel numbers the records an engine issues in the same sequence as the host
 and no event tells the host a record's number. So for a host record issued after the
 run's first `start`, `seq(ticket)` and the trace's `record(ticket)` (and what is built
 on it) raise `KomorebiError` instead of giving another record's number; records issued
-before it keep theirs.
+before it keep theirs. A program with a work-cluster thread on the card is the same
+from its first record, since the thread starts at the load and may issue records.
 
 ## Errors
 
