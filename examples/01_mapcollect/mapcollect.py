@@ -18,12 +18,12 @@ from komorebi.layout import partition
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
 TILE = 32
-T0 = time.monotonic()
+STARTED = time.monotonic()
 
 
 def log(message):
     """A progress line with seconds since start, flushed."""
-    print(f"[{time.monotonic() - T0:7.2f}] {message}", flush=True)
+    print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
 def read_bf16_chunked(session, tensor, name):
@@ -155,7 +155,7 @@ def main():
     with km.Session(log=log) as session:
         log("device open")
         report.update(run(session, args, generator))
-    report["wall_s"] = round(time.monotonic() - T0, 1)
+    report["wall_s"] = round(time.monotonic() - STARTED, 1)
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
@@ -390,7 +390,7 @@ def trace_summary(trace, handles, groups):
     }
 
 
-def check(session, args, groups, first_pages, first_tiles, outputs, inputs):
+def check(session, args, groups, first_pages, first_tiles, outputs, input_arrays):
     """Every core's tile of every job not overwritten: bit-exact on exact inputs,
     relative RMS of the total on random inputs. Counts the tiles that equal what the
     page held before (zeros or an earlier job's): there a stale tile would pass."""
@@ -401,7 +401,7 @@ def check(session, args, groups, first_pages, first_tiles, outputs, inputs):
     got = np.concatenate(got).reshape(-1, TILE, TILE)
     log(f"{len(outputs)} outputs read back")
     prefix = []
-    for values in inputs:
+    for values in input_arrays:
         sums = np.cumsum(values.reshape(-1, TILE, TILE).astype(np.float64), 0)
         prefix.append(np.concatenate([np.zeros((1, TILE, TILE)), sums]))
     tiles = args.tiles

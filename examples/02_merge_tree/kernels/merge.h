@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-// MERGE: a0 input, a1 tiles T from tile a6, a2 output, a3 first output page, a4 form
-// (0 owner, 1 tree), a5 rank that stalls (a test; none: 0xFFFFFFFF), a7 part tiles P.
+// MERGE: a0 input_address, a1 tiles (T), a2 output_address, a3 first_page, a4 form (0
+// owner, 1 tree), a5 stalled_rank (none: 0xFFFFFFFF), a6 first_tile, a7 part_tiles.
 constexpr uint32_t kHandlerMerge = 1;
 
 constexpr uint32_t kCbIn = 0;

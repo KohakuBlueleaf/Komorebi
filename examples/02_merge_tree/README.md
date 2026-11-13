@@ -37,15 +37,15 @@ it in its three kernels.
 |---|---|
 | `reader.cpp` | reads its partition of the input tiles; then, for each arrival this core receives, `km::arrive`: waits until the port has counted its arrivals and hands the whole arrival buffer to compute (`km::reduce_arrive` does the rounds) |
 | `compute.cpp` | adds its tiles into P float32 tiles in DST; `km::reduce` takes each arrival and calls the program's combine step for its slots (here: copy the page, add it); packs the result |
-| `writer.cpp` | rank 0 writes the result to `out[a3]` to `out[a3 + P - 1]`; every other core of the group emits its part: put into the receiver's arrival slot, write flush, bump the receiver's port, atomic flush (`km::reduce_emit`) |
+| `writer.cpp` | rank 0 writes the result to `output[first_page]` to `output[first_page + P - 1]`; every other core of the group emits its part: put into the receiver's arrival slot, write flush, bump the receiver's port, atomic flush (`km::reduce_emit`) |
 
 | Command word | Meaning |
 |---|---|
-| a0, a1, a6 | input tensor, tiles T, first input tile |
-| a2, a3 | output tensor, output page |
-| a4 | form: 0 by owner, 1 by tree |
-| a5 | a test: this core stalls instead of sending (none: 0xFFFFFFFF) |
-| a7 | tiles per part P (1 to 3): input tile t is added into tile t mod P of the part |
+| a0, a1, a6 | `input_address`, `tiles` (T), `first_tile` |
+| a2, a3 | `output_address`, `first_page` |
+| a4 | `form`: 0 by owner, 1 by tree |
+| a5 | `stalled_rank` (a test: this rank stalls instead of sending; none: 0xFFFFFFFF) |
+| a7 | `part_tiles` P (1 to 3): input tile t is added into tile t mod P of the part |
 
 - **Ports and slots.** By owner, rank k sends into slot k - 1 of rank 0 and bumps
   its port 0, and rank 0 waits for n - 1. By tree, the core of round r sends into
