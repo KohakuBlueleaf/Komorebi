@@ -85,3 +85,8 @@ place to ask a question and to be wrong.
   atomic add is lost: only when the asked tile issues atomics of its own on the same NoC
   with a changing return address (11 to 35 of 2.38 M); none from tiles that only answer.
   Decision: the dynamic crossing's tails live on counter tiles.
+- [overlay_probe](overlay_probe/README.md): a persistent kernel as a loader of kernel
+  bodies linked for a fixed L1 slot and kept in DRAM. Loads cost 540 cycles plus 21 a
+  KiB; the i-cache must be invalidated after each load (else stale code runs); the
+  compute cores are parked in a wait loop outside the slots; 120 cores swap a 20 KiB
+  overlay in 11.5 µs with a copy in every DRAM bank.
