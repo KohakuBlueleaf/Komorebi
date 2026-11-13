@@ -197,9 +197,9 @@ and no new upload.
 |---|---|
 | `upload(obj, kind=None)` | encodes a `Stream` or a `Graph` (or takes its encoded bytes, with `kind` `"stream"` or `"graph"`) and writes it into the upload region as whole lines, at the first free place; returns an `Upload` (`offset`, `bytes`, `kind`, `req`, `keep`, `state`). Several uploads live side by side. An upload that does not fit raises `ValueError` before anything is written. The host checks nothing else: a bad upload is the kernel's to refuse, with its error event |
 | `release(upload, timeout=10.0)` | frees an upload's lines. A running one is refused; a kept graph is first dropped (`CANCEL`, then its cancelled event) |
-| `start(upload, bindings=(), kept=None, timeout=10.0)` | sends `KM_SEG_RUN` and returns an `EngineTicket`. A graph takes `bindings`: a dict by name for a graph uploaded from a `Graph` (its constants are added, as `binding_values` does), or a list of up to 16 words; they go to one line of the region, freed at the end. `kept=True` or `False` rewrites the header's keep bit first; None leaves it. Another running or kept engine with the same `req` raises `ValueError` |
+| `start(upload, bindings=(), kept=None, timeout=10.0)` | sends `KM_SEG_RUN` and returns an `EngineTicket`. A graph takes `bindings`: a dict by name for a graph uploaded from a `Graph` (its constants are added, as `binding_values` does), or a list of up to 16 words; they go to one line of the region, freed at the end. `kept=True` or `False` rewrites the header's keep bit first; None leaves it. Another running or kept engine with the same `req` raises `ValueError`. When the kernel does not answer the RUN within `timeout` it raises `EngineTimeout` with the ticket marked `unknown`: the engine may have started, and `cancel` (or `stop`) settles it |
 | `restart(req, bindings=(), timeout=10.0)` | runs the kept graph with `req` again with new bindings (`KM_SEG_RUN`, `a2 = 2`) |
-| `cancel(ticket, timeout=10.0)` | sends `KM_SEG_CANCEL`; the engine then ends with its error event, reason `cancelled`. Nothing is sent for an engine that has ended |
+| `cancel(ticket, timeout=10.0)` | sends `KM_SEG_CANCEL`; the engine then ends with its error event, reason `cancelled`. Nothing is sent for an engine that has ended. For an `unknown` ticket it also learns the RUN's answer: raises `EngineRefused` if the RUN was refused (it never ran); otherwise the engine runs or has ended as usual. `EngineTimeout` if the CANCEL is not answered |
 | `wait_engine(ticket, timeout=10.0)` | waits for the engine's end and returns its `EngineEvent`; raises `EngineError` for an error event, `EngineTimeout` when `timeout` passes (the engine may still run), `KernelFailed` if the kernel finished |
 | `run_hostfed(obj, bindings=None, timeout=10.0)` | runs a graph or a stream on the host instead, its records through the host ring: the same records and registers as in the kernel ([graphs](../graphs.md#host-fed)); for a stream, the simulator's interpreter, `records[i].node` the program counter of the `ISSUE` or `SUBMIT`, `runs` 1 |
 
@@ -249,7 +249,7 @@ All derive from `km.KomorebiError`.
 | `KernelFailed` | the dispatch kernel finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |
 | `EngineRefused` | the kernel refused a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `RecordRefused` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `ticket`, `reason`, `reason_name`, `pc`, `node` |
-| `EngineTimeout` | `wait_engine` ran out; a `WaitTimeout` | `ticket` |
+| `EngineTimeout` | `wait_engine` ran out, or a RUN or CANCEL was not answered; a `WaitTimeout` | `ticket` |
 | `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the device is left open | |
 
 The kernel's reasons for a refusal (`RecordRefused.reason`, from `KMD_REFUSE_*` in

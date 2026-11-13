@@ -25,13 +25,15 @@ def leader_a0(record):
 class EngineKernel(FakePort):
     """The fake kernel with an upload region, the ready block and RUN / CANCEL: a
     stream or graph that ends in the simulator posts its events at once, one that
-    does not runs until cancelled; `refuse` answers the next RUN with that reason."""
+    does not runs until cancelled; `refuse` answers the next RUN with that reason;
+    `hold` leaves the commands in the ring (a kernel that is late to take them)."""
 
     def __init__(self):
         super().__init__(event_depth=64)
         self.region = bytearray(REGION)
         self.writes = []
         self.refuse = 0
+        self.hold = False
         self.running = {}  # req -> event kind of its cancel
         self.kept = {}  # req -> (offset, bytes) of a kept graph
         self.handlers = {K["KM_SEG_RUN"]: self.run, K["KM_SEG_CANCEL"]: self.cancel}
@@ -42,6 +44,10 @@ class EngineKernel(FakePort):
             K["KMD_HOST_READY"] + AT["ready_bytes"]: REGION,
         }
         return ready.get(word, super().host_word(word))
+
+    def _take(self):
+        if not self.hold:
+            super()._take()
 
     def upload(self, offset, data):
         assert offset % 64 == 0 and len(data) % 64 == 0
@@ -202,15 +208,42 @@ def test_a_kept_graph_runs_again_with_other_bindings_then_is_dropped():
 
 def test_wait_engine_times_out_and_cancel_ends_the_stream():
     run, _ = make_run()
-    s = st.Stream(req=5, max_steps=abi.M32)
-    s.jmp(s.label())
-    t = run.start(run.upload(s))
+    t = run.start(run.upload(looping_stream()))
     with pytest.raises(EngineTimeout):
         run.wait_engine(t, timeout=0.02)
     run.cancel(t)
     with pytest.raises(EngineError) as err:
         run.wait_engine(t, timeout=1.0)
     assert err.value.reason_name == "cancelled" and t.upload.state == "idle"
+
+
+def looping_stream(req=5):
+    s = st.Stream(req=req, max_steps=abi.M32)
+    s.jmp(s.label())
+    return s
+
+
+def test_a_run_not_answered_in_time_is_unknown_until_cancel_settles_it():
+    run, port = make_run()
+    up = run.upload(looping_stream())
+    port.hold = True
+    with pytest.raises(EngineTimeout) as err:
+        run.start(up, timeout=0.02)
+    t = err.value.ticket
+    assert t.unknown and up.state == "running"
+    port.hold = False
+    run.cancel(t)  # the RUN started it, the CANCEL behind it ends it
+    with pytest.raises(EngineError, match="cancelled"):
+        run.wait_engine(t, timeout=1.0)
+    assert not t.unknown and up.state == "idle"
+    port.hold, port.refuse = True, K["KMD_REFUSE_BUSY"]
+    with pytest.raises(EngineTimeout) as err:
+        run.start(up, timeout=0.02)
+    port.hold = False
+    with pytest.raises(EngineRefused, match="busy"):
+        run.cancel(err.value.ticket)  # the RUN was refused: it never ran
+    assert up.state == "idle" and not run._engine_state.active
+    assert run.wait(run.issue(0, (0, 8))).kind == "done"
 
 
 def test_a_stream_host_fed_issues_the_simulated_records_and_ends_alike():

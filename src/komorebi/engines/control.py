@@ -21,6 +21,7 @@ from komorebi.errors import (
     EngineRefused,
     EngineTimeout,
     KomorebiError,
+    WaitTimeout,
 )
 
 LINE = 64
@@ -91,7 +92,8 @@ class Upload:
 @dataclass(eq=False)
 class EngineTicket:
     """One start of an engine: `kind`, the `req` of its events, the `upload`, every
-    event so far (`events`) and the end or error event once it came (`end`)."""
+    event so far (`events`) and the end or error event once it came (`end`).
+    `unknown`: its RUN was not answered in time, so it may run; cancel settles it."""
 
     kind: str
     req: int
@@ -101,6 +103,8 @@ class EngineTicket:
     events: list = field(default_factory=list, repr=False)
     end: object = field(default=None, repr=False)
     bind: int | None = field(default=None, repr=False)  # its binding line
+    unknown: bool = False
+    commands: tuple = field(default=(), repr=False)  # tickets of its RUN and PING
 
 
 class EngineEvent(NamedTuple):
@@ -280,13 +284,32 @@ class Engines:
         return self._run(t, args + self._bindings(t, bindings), timeout)
 
     def cancel(self, t, timeout):
-        if t.end is not None:
+        if t.end is not None and not t.unknown:
             return  # it has ended: nothing to cancel
         try:
             self._command(self.c["KM_SEG_CANCEL"], [t.req], timeout)
         except EngineRefused as err:
-            if t.end is None or err.reason != self.c["KMD_REFUSE_UNKNOWN"]:
+            ended = t.end is not None or t.unknown  # or its RUN was refused
+            if not ended or err.reason != self.c["KMD_REFUSE_UNKNOWN"]:
                 raise  # unless it ended while the command was on its way
+        except WaitTimeout as err:
+            raise EngineTimeout(
+                f"{t.kind} {t.req}: CANCEL not answered in {timeout} s", t
+            ) from err
+        if t.unknown:
+            self._settle_unknown(t)
+
+    def _settle_unknown(self, t):
+        """The RUN of `t` was answered before the command answered now: raises its
+        refusal (it never ran) or leaves `t` running or ended."""
+        t.unknown = False
+        command, ping = t.commands
+        self.run.forget([ping])
+        try:
+            self._answer(command)
+        except EngineRefused:
+            self._not_started(t)
+            raise
 
     def _free_req(self, req):
         busy = {r for _, r in self.active}
@@ -334,27 +357,44 @@ class Engines:
 
     def _run(self, t, args, timeout):
         """KM_SEG_RUN for ticket `t`; its events are routed to it from now on."""
-        key = (t.kind, t.req)
-        self.active[key] = t
-        state = t.upload.state
+        self.active[(t.kind, t.req)] = t
         t.upload.state = "running"
         try:
-            self._command(self.c["KM_SEG_RUN"], args, timeout)
+            self._command(self.c["KM_SEG_RUN"], args, timeout, t)
+        except WaitTimeout as err:
+            t.unknown = True  # the kernel may have started it
+            raise EngineTimeout(
+                f"{t.kind} {t.req}: RUN not answered in {timeout} s; it may run "
+                "until cancelled",
+                t,
+            ) from err
         except BaseException:
-            if self.active.get(key) is t and t.end is None:
-                del self.active[key]
-                t.upload.state = state
-                self._free_bind(t)
+            self._not_started(t)
             raise
         return t
 
-    def _command(self, seg, args, timeout):
+    def _not_started(self, t):
+        if self.active.get((t.kind, t.req)) is t and t.end is None:
+            del self.active[(t.kind, t.req)]
+            t.upload.state = "kept" if t.restart else "idle"
+            self._free_bind(t)
+
+    def _command(self, seg, args, timeout, t=None):
         """Sends a RUN or CANCEL and a PING behind it, and waits for the PONG: the
         kernel answers the command before the PING, with an event only to refuse it.
         """
         run = self.run
         ticket = run._queue_command(seg, None, args)
-        run.wait(run._queue_command(self.c["KM_SEG_PING"], None), timeout)
+        ping = run._queue_command(self.c["KM_SEG_PING"], None)
+        if t is not None:
+            t.commands = (ticket, ping)
+        run.wait(ping, timeout)
+        self._answer(ticket)
+
+    def _answer(self, ticket):
+        """Settles a command that was answered (a later PONG came): EngineRefused if
+        the kernel refused it."""
+        run = self.run
         ev = run.event(ticket)
         run._settle(ticket)
         run.forget([ticket])
