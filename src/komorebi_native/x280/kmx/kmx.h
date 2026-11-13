@@ -75,6 +75,45 @@ int kmx_serve(void);
  * multiples; else KMX_BAD); the receiver takes them (kmx_take_at) before reading. */
 int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t bytes);
 
+/* X280 ports: a sequence number and three words with the grid's cores, fixed to X280
+ * cores at load. A call names a core the calling X280 core serves (else KMX_BAD). */
+typedef struct {
+    uint32_t seq, w[3];
+} kmx_msg;
+
+/* Entries of the port tables, the grid's cores (0: the program declared no ports). */
+int kmx_port_cores(void);
+
+/* The X280 core of this cluster that serves `core`, or -1 (another cluster's, or none).
+ */
+int kmx_port_owner(int core);
+
+/* Tells `core` three words; the core sees the newest (latest wins). Never waits. */
+int kmx_port_tell(int core, uint32_t a, uint32_t b, uint32_t c);
+
+/* `core`'s newest ask if it is not answered yet: KMX_OK and `m`, else KMX_NONE. */
+int kmx_port_asked(int core, kmx_msg* m);
+
+/* Answers `core`'s ask `seq` with three words. Never waits. */
+int kmx_port_answer(int core, uint32_t seq, uint32_t a, uint32_t b, uint32_t c);
+
+/* `core`'s newest tell if it is newer than the last one looked at: KMX_OK and `m`,
+ * else KMX_NONE (tells in between are lost: latest wins). */
+int kmx_port_told(int core, kmx_msg* m);
+
+/* X280 core 0 of the lead: issues r, runs fn as kmx_par_all does until r's event:
+ * KMX_OK and `ev` once all returned; KMX_FULL, KMX_LATE, KMX_STOPPED; KMX_BAD. */
+int kmx_port_run(
+    const km_record_t* r,
+    void (*fn)(int cluster, int cpu, uint64_t arg),
+    uint64_t arg,
+    kmx_event* ev
+);
+
+/* Inside kmx_port_run's fn: 1 while its record runs, 0 once its event came (or a
+ * stop, or the deadline). fn then returns and stores into no core any more. */
+int kmx_port_open(void);
+
 /* Timer ticks since an arbitrary point (KMX_TICKS_PER_SECOND per second). */
 uint64_t kmx_time(void);
 

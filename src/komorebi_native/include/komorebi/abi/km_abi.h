@@ -104,7 +104,10 @@ KM_STATIC_ASSERT(KM_CTL_LANE % 16u == 0 && KM_LANE_BYTES % 16u == 0, "16-byte sl
 
 #define KM_CTL_DYN 0xC80u   /* dynamic crossing: queue counters, idle words, status */
 #define KM_CTL_TAILS 0xD40u /* dynamic crossing: a counter tile's tail lines */
-#define KM_CTL_BYTES 0x1580u
+#define KM_CTL_X280                                                   \
+    0x1580u /* X280 port: the lines shared with the serving X280 core \
+             */
+#define KM_CTL_BYTES 0x15C0u
 
 /* Dynamic crossing: offsets inside KM_CTL_DYN, each word in its own 16-byte slot. */
 #define KM_DYN_IN_TAIL 0x00u  /* reader: its tail as last read from its counter tile */
@@ -148,6 +151,30 @@ KM_STATIC_ASSERT(
 KM_STATIC_ASSERT(KM_CTL_DYN % 16u == 0 && KM_DYN_RET + 16u <= KM_DYN_BYTES, "slots");
 KM_STATIC_ASSERT(KM_DYN_IN_TAIL % 16u == 0 && KM_DYN_OUT % 16u == 0, "16-byte slots");
 KM_STATIC_ASSERT(KM_SEG_DYN_END > KM_SEG_USER_MAX, "not a program segment");
+
+/* X280 port: 16-byte lines {seq, w0, w1, w2}, each with one writer, offsets inside
+   KM_CTL_X280. A line lands whole; seq names it (a tell's latest wins). */
+#define KM_X280_TELL                                                 \
+    0x00u /* the X280 core's tell: seq counts its tells to this core \
+           */
+#define KM_X280_ANSWER 0x10u /* the X280 core's answer: seq repeats the ask's */
+#define KM_X280_OUT 0x20u    /* source of this core's stores to its X280 core */
+#define KM_X280_TO                                                    \
+    0x30u /* the host's, at load: X280 core tile x | y << 16, mailbox \
+           */
+#define KM_X280_BYTES 0x40u
+#define KM_X280_TO_TILE 0u /* word offsets of the KM_X280_TO line */
+#define KM_X280_TO_BOX 1u  /* LIM address of this core's mailbox line; 0: not served */
+/* A core's mailbox line in its X280 core's LIM (64 bytes, the core writes it). */
+#define KM_BOX_ASK 0x00u  /* the core's ask: seq counts its asks */
+#define KM_BOX_TELL 0x10u /* the core's tell: seq counts its tells */
+#define KM_BOX_BYTES 0x40u
+
+KM_STATIC_ASSERT(KM_CTL_TAILS + KM_TAILS_BYTES <= KM_CTL_X280, "tails end");
+KM_STATIC_ASSERT(
+    KM_CTL_X280 % 64u == 0 && KM_CTL_X280 + KM_X280_BYTES == KM_CTL_BYTES,
+    "X280 core lines"
+);
 
 /* Words the Tensix grid pushes into the X280's local memory. */
 #define KM_ACK_STRIDE 16u /* ack word of slot j at ack_base + j * KM_ACK_STRIDE */

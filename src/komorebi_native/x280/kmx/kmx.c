@@ -13,6 +13,10 @@
  * that holds the physical address stored into it. */
 #define KMX_CCACHE_FLUSH64 0x02010200ull
 #define KMX_POLL_EVERY 256u
+/* kmx_port_open looks for the event every KMX_PORT_LOOK calls on the lead's X280 core
+ * 0, for a stop or the deadline every KMX_PORT_CHECK calls. */
+#define KMX_PORT_LOOK 4u
+#define KMX_PORT_CHECK 16u
 /* Hart h's L2 prefetcher (BASIC_CONTROL, USER_CONTROL) and the documented values,
  * set unless the host asks to keep them: scalar code that walks memory runs faster. */
 #define KMX_L2PF_BASE 0x02030000ull
@@ -418,11 +422,20 @@ static int all_ready(void) {
     return KMX_OK;
 }
 
-int kmx_par_all(void (*fn)(int cluster, int hart, uint64_t arg), uint64_t arg) {
+/* The lead's X280 core 0, not nested: KMX_OK, or KMX_STOPPED (library error) elsewhere.
+ */
+static int all_lead(void) {
     if (hart_id() != 0 || g_in_par || kmx_lead() != kmx_cluster()) {
         fail(KMX_ERR_PAR);
         return KMX_STOPPED;
     }
+    return KMX_OK;
+}
+
+/* kmx_par_all with `part` (given an all_call_t) as the lead cluster's kmx_par part. */
+static int all_run(
+    void (*fn)(int, int, uint64_t), uint64_t arg, void (*part)(int, void*)
+) {
     const uint32_t rest = others();
     int e = all_ready();
     if (e != KMX_OK) {
@@ -435,11 +448,16 @@ int kmx_par_all(void (*fn)(int cluster, int hart, uint64_t arg), uint64_t arg) {
         }
     }
     all_call_t mine = {fn, arg, kmx_cluster()};
-    e = kmx_par(all_part, &mine);
+    e = kmx_par(part, &mine);
     for (uint32_t c = 1; c < 4 && e == KMX_OK; c++) {
         e = (rest >> c & 1u) ? wait_done(c, gen) : KMX_OK;
     }
     return e;
+}
+
+int kmx_par_all(void (*fn)(int cluster, int hart, uint64_t arg), uint64_t arg) {
+    const int e = all_lead();
+    return e != KMX_OK ? e : all_run(fn, arg, all_part);
 }
 
 int kmx_serve(void) {
@@ -621,6 +639,280 @@ int kmx_push(int cluster, int id, uint64_t offset, const void* src, uint64_t byt
         return p.bad[0] | p.bad[1] | p.bad[2] | p.bad[3] ? KMX_BAD : KMX_OK;
     }
     return push_range(h, p.tile, p.at, p.src, bytes) ? KMX_BAD : KMX_OK;
+}
+
+/* X280 ports, per core: KM_CTL_X280 through its window, serving X280 core + 1, last ask
+ * answered, tell seen, tell sent; few words read (LIM data costs ~30 cycles a load). */
+#define KMX_L1_BYTES 0x180000u /* a Tensix core's L1 */
+KMX_STATIC_ASSERT(KMX_PORTS_CORES == KM_CORES_MAX, "ports: one entry per core");
+static volatile uint8_t* g_port[KMX_PORTS_CORES]
+    __attribute__((section(".data"))) = {0};
+static uint32_t g_port_who[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
+static const volatile uint8_t* g_box __attribute__((section(".data"))) = 0;
+static uint32_t g_answered[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
+static uint32_t g_told[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
+static uint32_t g_tells[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
+static uint32_t g_port_cores __attribute__((section(".data"))) = 0;
+
+static inline const volatile kmx_ports* ports(void) {
+    return (const volatile kmx_ports*)(lim() + KMX_LIM_PORTS);
+}
+
+/* Opens a window per core this cluster serves (the area was written before any
+ * start): 1, or 0 for a line out of range or a window that did not read back. */
+static int ports_open(void) {
+    const volatile kmx_ports* p = ports();
+    const uint32_t at = p->at, ctl = p->ctl, cores = p->cores;
+    if (at == 0) {
+        return 1;
+    }
+    if ((at & 63u) || at < x280_hart_args_bytes() ||
+        (uint64_t)(uintptr_t)lim() + at + KMX_PORTS_BYTES > X280_LIM_END ||
+        cores == 0 || cores > KMX_PORTS_CORES || (ctl & 63u) ||
+        ctl + KM_CTL_BYTES > KMX_L1_BYTES || (p->flags & ~KMX_PORTS_NOC1)) {
+        return 0;
+    }
+    const volatile uint8_t* area = lim() + at;
+    const uint32_t me = (uint32_t)kmx_cluster();
+    for (uint32_t i = 0; i < cores; i++) {
+        const uint32_t owner = area[KMX_PORTS_OWNER + i];
+        if (owner >> 2 != me) {
+            continue;
+        }
+        const uint32_t xy = ((const volatile uint32_t*)(area + KMX_PORTS_TILES))[i];
+        const uint32_t x = xy & 0xFFFFu, y = xy >> 16;
+        if (x > NOC_MAX_COORD || y > NOC_MAX_COORD) {
+            return 0;
+        }
+        noc_tlb_2m_t prog;
+        prog.data[0] = prog.data[1] = prog.data[2] = prog.data[3] = 0;
+        noc_fill_tlb_2m(&prog, x, y, x, y, 0, NOC_ORDER_POSTED, 0, 0u);
+        prog.noc_sel = (p->flags & KMX_PORTS_NOC1) ? 1u : 0u;
+        volatile uint8_t* w = (
+            (volatile uint8_t*)noc_configure_tlb_2m_ext(KMX_PORT_WINDOW + i, &prog, 0)
+        );
+        g_port[i] = w + ctl + KM_CTL_X280;
+        g_port_who[i] = (owner & 3u) + 1u;
+        if (noc_verify_tlb_2m(KMX_PORT_WINDOW + i, &prog) != 0) {
+            return 0;
+        }
+    }
+    g_box = area + KMX_PORTS_BOX;
+    g_port_cores = cores;
+    x280_fence_ow();
+    return 1;
+}
+
+/* Every port window this cluster opened is cleared. */
+static void ports_close(void) {
+    x280_fence_ow();
+    for (uint32_t i = 0; i < KMX_PORTS_CORES; i++) {
+        if (g_port[i] != 0) {
+            noc_clear_tlb_2m(KMX_PORT_WINDOW + i);
+            g_port[i] = 0;
+        }
+        g_port_who[i] = 0;
+    }
+    g_port_cores = 0;
+}
+
+/* Whether the calling X280 core serves `core`. */
+static inline int port_mine(int core) {
+    return (uint32_t)core < KMX_PORTS_CORES && g_port_who[core] == hart_id() + 1u;
+}
+
+/* One 16-byte store of {seq, a, b, c} into line `at` of the core's KM_CTL_X280. */
+static void port_store(int core, uint32_t at, const uint32_t* line) {
+    __asm__ volatile(
+        ".option push\n.option arch, +v\n"
+        "vsetivli zero, 4, e32, m1, ta, ma\n"
+        "vle32.v v8, (%0)\n"
+        "vse32.v v8, (%1)\n"
+        ".option pop\n"
+        :
+        : "r"(line), "r"(g_port[core] + at)
+        : "memory", "v8"
+    );
+    x280_fence_ow();
+}
+
+/* Line `at` of the core's mailbox as one 16-byte load, and its seq again: the two
+ * must agree (the core's 16 bytes land whole). Torn on every try: no message. */
+static void box_read(int core, uint32_t at, kmx_msg* m) {
+    const volatile uint32_t* b = (const volatile uint32_t*)(g_box + 64u * core + at);
+    for (int i = 0; i < 4; i++) {
+        x280_fence_ir();
+        __asm__ volatile(
+            ".option push\n.option arch, +v\n"
+            "vsetivli zero, 4, e32, m1, ta, ma\n"
+            "vle32.v v8, (%0)\n"
+            "vse32.v v8, (%1)\n"
+            ".option pop\n"
+            :
+            : "r"(b), "r"(m)
+            : "memory", "v8"
+        );
+        if (b[0] == m->seq) {
+            return;
+        }
+    }
+    m->seq = 0;
+}
+
+int kmx_port_cores(void) {
+    return (int)g_port_cores;
+}
+
+int kmx_port_owner(int core) {
+    return (uint32_t)core < KMX_PORTS_CORES ? (int)g_port_who[core] - 1 : -1;
+}
+
+int kmx_port_tell(int core, uint32_t a, uint32_t b, uint32_t c) {
+    if (!port_mine(core)) {
+        return KMX_BAD;
+    }
+    const uint32_t line[4] = {++g_tells[core], a, b, c};
+    port_store(core, KM_X280_TELL, line);
+    return KMX_OK;
+}
+
+int kmx_port_asked(int core, kmx_msg* m) {
+    if (!port_mine(core)) {
+        return KMX_BAD;
+    }
+    box_read(core, KM_BOX_ASK, m);
+    return m->seq != 0 && m->seq != g_answered[core] ? KMX_OK : KMX_NONE;
+}
+
+int kmx_port_answer(int core, uint32_t seq, uint32_t a, uint32_t b, uint32_t c) {
+    if (!port_mine(core) || seq == 0) {
+        return KMX_BAD;
+    }
+    const uint32_t line[4] = {seq, a, b, c};
+    port_store(core, KM_X280_ANSWER, line);
+    g_answered[core] = seq;
+    return KMX_OK;
+}
+
+int kmx_port_told(int core, kmx_msg* m) {
+    if (!port_mine(core)) {
+        return KMX_BAD;
+    }
+    box_read(core, KM_BOX_TELL, m);
+    if (m->seq == 0 || m->seq == g_told[core]) {
+        return KMX_NONE;
+    }
+    g_told[core] = m->seq;
+    return KMX_OK;
+}
+
+/* kmx_port_run on the lead's X280 core 0: inside one, its ticket, the run's number,
+ * whether it ended and why (KMX_OK: its event, in g_port_ev). */
+static uint32_t g_port_live __attribute__((section(".data"))) = 0;
+static uint32_t g_port_ticket __attribute__((section(".data"))) = 0;
+static uint32_t g_port_n __attribute__((section(".data"))) = 0;
+static uint32_t g_port_ended __attribute__((section(".data"))) = 0;
+static int g_port_why __attribute__((section(".data"))) = KMX_OK;
+static kmx_event g_port_ev __attribute__((section(".data"))) = {0, 0, 0, 0};
+static uint32_t g_open_calls[4] __attribute__((section(".data"))) = {0, 0, 0, 0};
+
+/* The run state into the ports line of every cluster of the group. */
+static void port_state(uint32_t v) {
+    const uint32_t at = KMX_LIM_PORTS + offsetof(kmx_ports, state);
+    *(volatile uint32_t*)(lim() + at) = v;
+    const uint32_t rest = others();
+    for (uint32_t c = 1; c < 4; c++) {
+        if ((rest >> c & 1u) && g_peer[c] != 0) {
+            *(volatile uint32_t*)(g_peer[c] + at) = v;
+        }
+    }
+    x280_fence_ow();
+}
+
+/* The lead's X280 core 0: the run ends, for `why`, on every X280 core of the group. */
+static void port_end(int why) {
+    g_port_why = why;
+    g_port_ended = 1;
+    port_state(g_port_n << 1 | 1u);
+}
+
+int kmx_port_open(void) {
+    const uint64_t h = hart_id();
+    const uint32_t n = ++g_open_calls[h], check = n % KMX_PORT_CHECK == 0;
+    if (h == 0 && g_port_live) {
+        if (g_port_ended) {
+            return 0;
+        }
+        if (n % KMX_PORT_LOOK != 0) {
+            return 1;
+        }
+        const int e = kmx_ring_look(&g_ring, g_port_ticket, &g_port_ev);
+        if (e != KMX_NONE) {
+            port_end(e);
+            return 0;
+        }
+        const int end = check ? must_end(0) : KMX_OK;
+        if (end != KMX_OK) {
+            port_end(end);
+            return 0;
+        }
+        return 1;
+    }
+    x280_fence_ir();
+    const uint32_t state = ports()->state;
+    if (state == 0 || (state & 1u) || (check && must_end(h) != KMX_OK)) {
+        return 0;
+    }
+    return 1;
+}
+
+/* The lead cluster's part of a kmx_port_run: fn, then on X280 core 0 the end. */
+static void port_part(int cpu, void* arg) {
+    all_part(cpu, arg);
+    while (cpu == 0 && kmx_port_open()) {
+        ;
+    }
+}
+
+int kmx_port_run(
+    const km_record_t* r,
+    void (*fn)(int cluster, int cpu, uint64_t arg),
+    uint64_t arg,
+    kmx_event* ev
+) {
+    int e = all_lead();
+    if (e != KMX_OK) {
+        return e;
+    }
+    if (g_port_cores == 0) {
+        return KMX_BAD;
+    }
+    e = all_ready();
+    uint32_t ticket = 0;
+    e = e == KMX_OK ? kmx_issue(r, &ticket) : e;
+    if (e != KMX_OK) {
+        return e;
+    }
+    g_port_ticket = ticket;
+    g_port_ended = 0;
+    g_port_why = KMX_OK;
+    g_port_live = 1;
+    port_state(++g_port_n << 1);
+    e = all_run(fn, arg, port_part);
+    g_port_live = 0;
+    if (!g_port_ended) {
+        port_end(e);
+    }
+    if (e != KMX_OK) {
+        return e;
+    }
+    if (g_port_why == KMX_LATE || g_port_why == KMX_STOPPED) {
+        return ended(g_port_why);
+    }
+    if (g_port_why == KMX_OK) {
+        *ev = g_port_ev;
+    }
+    return g_port_why;
 }
 
 uint64_t kmx_time(void) {
@@ -815,6 +1107,9 @@ static uint64_t run_main(const volatile kmx_args* a) {
     if (!peers_open()) {
         fail(KMX_ERR_ARGS); /* the peers line is out of range */
     }
+    if (!ports_open()) {
+        fail(KMX_ERR_ARGS); /* the ports line is out of range, or a window failed */
+    }
     const uint64_t check = X280_LOCAL_DDR_TILE_BASE + a->check;
     flush(check, 64);
     if (*(volatile uint64_t*)(uintptr_t)check != a->check_value) {
@@ -832,6 +1127,7 @@ static uint64_t run_main(const volatile kmx_args* a) {
         noc_clear_tlb_2m(KMX_RING_WINDOW);
     }
     peers_close();
+    ports_close();
     const uint64_t ticks = x280_mtime() - g_start;
     r->ticks = (uint32_t)ticks;
     /* every region given back: a dirty line left in the cluster's cache would be

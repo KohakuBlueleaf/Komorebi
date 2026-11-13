@@ -140,6 +140,36 @@ static inline int kmx_ring_poll(kmx_ring_t* r, kmx_event* ev) {
     return kmx_ring_take(r, ev) ? KMX_OK : KMX_NONE;
 }
 
+/* The event of `ticket` if it came (KMX_OK), else KMX_NONE, or KMX_FULL as for
+ * kmx_ring_wait; events of other tickets are set aside. Never waits. */
+static inline int kmx_ring_look(kmx_ring_t* r, uint32_t ticket, kmx_event* ev) {
+    if (r->cmd == 0) {
+        return KMX_STOPPED;
+    }
+    for (uint32_t j = 0; j < r->stashed; j++) {
+        if (r->stash[j].ticket == ticket) {
+            *ev = r->stash[j];
+            r->stashed--;
+            for (uint32_t m = j; m < r->stashed; m++) {
+                r->stash[m] = r->stash[m + 1];
+            }
+            return KMX_OK;
+        }
+    }
+    kmx_event got;
+    while (r->stashed < KMX_STASH && kmx_ring_take(r, &got)) {
+        if (got.kind == KMX_EV_WAKE) {
+            continue;
+        }
+        if (got.ticket == ticket) {
+            *ev = got;
+            return KMX_OK;
+        }
+        r->stash[r->stashed++] = got;
+    }
+    return r->stashed == KMX_STASH ? KMX_FULL : KMX_NONE;
+}
+
 /* The event of `ticket`, waiting until the timer passes `deadline`; events of other
  * tickets are set aside for kmx_poll (KMX_FULL while KMX_STASH are set aside). */
 static inline int kmx_ring_wait(

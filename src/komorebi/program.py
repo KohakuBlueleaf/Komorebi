@@ -70,6 +70,7 @@ class Program:
     shared: dict = field(default_factory=dict)  # shared region name -> size or array
     dyn: "Dynamic | None" = None
     opt: dict = field(default_factory=dict)  # kernel -> optimisation level
+    x280_ports: dict | None = None  # Program.ports(): {"serve": ..., "noc": ...}
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
 
     def __post_init__(self):
@@ -107,6 +108,21 @@ class Program:
         for t in made:
             self.threads[t.cluster] = t
         return made[0] if single else made
+
+    def ports(self, serve=None, noc=0):
+        """Declares X280 ports: each served Tensix core gets one X280 core of the
+        threads for the run. `serve`: {core: (cluster, cpu)}, or None for every core
+        dealt over the threads' X280 cores in grid order. `noc`: the NoC of the X280
+        cores' stores into the Tensix cores (0 or 1)."""
+        if self.x280_ports is not None:
+            raise ValueError(f"{self.name} already declares its X280 ports")
+        if noc not in (0, 1):
+            raise ValueError(f"noc={noc!r}: 0 or 1")
+        if serve is not None:
+            serve = {int(core): (int(c), int(h)) for core, (c, h) in serve.items()}
+            if not serve:
+                raise ValueError("serve names no core")
+        self.x280_ports = {"serve": serve, "noc": noc}
 
     def region(self, name, value):
         """Declares a shared region: `value` a size in bytes or an array of initial

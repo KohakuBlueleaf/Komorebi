@@ -152,6 +152,52 @@ class Peers(NamedTuple):
         return sum(1 << c for c in self.tiles)
 
 
+class Ports(NamedTuple):
+    """A program's X280 ports as one thread's block names them: the control block
+    address, the grid's cores, each core's tile (x | y << 16, by core index), the
+    serving X280 cores ({core: (cluster, cpu)}) and the NoC of the windows (0 or 1)."""
+
+    ctl: int
+    cores: int
+    tiles: list
+    serve: dict
+    noc: int = 0
+
+
+def port_plan(serve, cores, clusters):
+    """{core: (cluster, cpu)}: `serve` checked against the grid's `cores` and the
+    program's thread `clusters`, or (None) cores 0 to cores - 1 dealt in grid order
+    over the four X280 cores of each thread, cluster by cluster, about as many each."""
+    if serve is None:
+        cpus = [(c, h) for c in sorted(clusters) for h in range(4)]
+        if not cpus:
+            raise ValueError("X280 ports need an X280 thread")
+        return {i: cpus[i * len(cpus) // cores] for i in range(cores)}
+    for core, (c, h) in serve.items():
+        if not 0 <= core < cores:
+            raise ValueError(
+                f"port of core {core}: the grid has cores 0 to {cores - 1}"
+            )
+        if c not in clusters:
+            raise ValueError(f"port of core {core}: no thread on cluster {c}")
+        if not 0 <= h <= 3:
+            raise ValueError(f"port of core {core}: X280 core {h} is not 0 to 3")
+    return dict(serve)
+
+
+def ports_at(ring):
+    """LIM offset of the ports area in the thread's block: after the block, a remote
+    ring's events and the kmx_par_all lines."""
+    k = layout()
+    n = k["KMX_LIM_BYTES"] + k["KMX_ALL_BYTES"]
+    return n + (ring_area_bytes(ring) if ring is not None and ring.remote else 0)
+
+
+def port_box(lim_base, ring, core):
+    """LIM address of `core`'s mailbox line in its serving thread's block."""
+    return lim_base + ports_at(ring) + layout()["KMX_PORTS_BOX"] + 64 * core
+
+
 def peer_groups(images):
     """{cluster: [clusters running the same image]} from {cluster: image path}."""
     by = {}
@@ -212,12 +258,19 @@ def ring_area_bytes(ring):
 
 
 def args_block(
-    thread, base, check_value, run_value=0, ring=None, table=None, peers=None
+    thread,
+    base,
+    check_value,
+    run_value=0,
+    ring=None,
+    table=None,
+    peers=None,
+    ports=None,
 ):
-    """The thread's LIM block (KMX_LIM_BYTES, a remote ring's event area zeroed): the
-    argument block, check line at bank address `base`, region table (`table`: [(bank
-    address, bytes)], else place() from `base`), the ring's line (`ring`, a
-    RingPlacement) and the peers line (`peers`, Peers; kmx_par_all lines after)."""
+    """The thread's LIM block (KMX_LIM_BYTES, a remote ring's events zeroed): argument
+    block, check line at bank address `base`, region table (`table`: [(bank address,
+    bytes)], else place() from `base`), the lines of `ring` (RingPlacement), `peers`
+    (Peers; kmx_par_all lines after) and `ports` (Ports; area after, see ports_area)."""
     k = layout()
     if table is None:
         table = [(base + p.page * PAGE, p.bytes) for p in place(thread)[0]]
@@ -267,7 +320,24 @@ def args_block(
             *[0] * 4,
         )  # fmt: skip
         block[k["KMX_LIM_PEERS"] : k["KMX_LIM_PEERS"] + 64] = line
+    if ports is not None:
+        flags = k["KMX_PORTS_NOC1"] if ports.noc == 1 else 0
+        line = struct.pack("<4I48x", ports_at(ring), ports.ctl, ports.cores, flags)
+        block[k["KMX_LIM_PORTS"] : k["KMX_LIM_PORTS"] + 64] = line
     return bytes(block)
+
+
+def ports_area(ports):
+    """The ports area (Ports): each core's tile and serving X280 core, the mailbox lines
+    zeroed. Written before any thread of the program starts: a core may write its
+    mailbox line once the first thread issues a record."""
+    k = layout()
+    area = bytearray(k["KMX_PORTS_BYTES"])
+    tiles = struct.pack(f"<{len(ports.tiles)}I", *ports.tiles)
+    area[k["KMX_PORTS_TILES"] : k["KMX_PORTS_TILES"] + len(tiles)] = tiles
+    for core, (c, h) in ports.serve.items():
+        area[k["KMX_PORTS_OWNER"] + core] = c << 2 | h
+    return bytes(area)
 
 
 def new_check_value():
@@ -350,6 +420,14 @@ class ThreadRun:
         self.arrays = None  # the host fallback's regions, uint32, once it ran
         self.ring = None  # RingPlacement of the command ring, when the kernel has one
         self.peers = None  # Peers: the clusters running the same image
+        self.ports = None  # Ports: the program's X280 ports, when it declares them
+
+    def write_ports(self):
+        """Writes the ports area into the cluster's LIM (Ports; before any start)."""
+        if self.on_card and self.ports is not None:
+            self.port.work_write(
+                self.thread.cluster, ports_at(self.ring), ports_area(self.ports)
+            )
 
     def start(self):
         """Starts the image on the card (no-op for the host fallback)."""
@@ -365,6 +443,7 @@ class ThreadRun:
             ring=self.ring,
             table=table,
             peers=self.peers,
+            ports=self.ports,
         )
         self.port.work_start(self.thread.cluster, str(self.image), block)
         self.running = True

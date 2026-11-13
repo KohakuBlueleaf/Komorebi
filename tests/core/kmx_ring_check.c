@@ -81,6 +81,14 @@ int main(void) {
     /* a torn event (index not yet written) is not taken */
     memcpy(events + 6 * 16 + 4, (uint32_t[]){3, 0, 9}, 12);
     CHECK(kmx_ring_poll(&r, &ev) == KMX_NONE);
+    /* look never waits: another ticket's event is kept, a wake passed over */
+    CHECK(kmx_ring_look(&r, 5, &ev) == KMX_NONE);
+    send_event(4, KM_EV_DONE, 1);
+    send_event(0, KMX_EV_WAKE, 0);
+    CHECK(kmx_ring_look(&r, 5, &ev) == KMX_NONE && r.stashed == 1);
+    send_event(5, KM_EV_TIMEOUT, 2);
+    CHECK(kmx_ring_look(&r, 5, &ev) == KMX_OK && ev.kind == KM_EV_TIMEOUT);
+    CHECK(kmx_ring_look(&r, 4, &ev) == KMX_OK && ev.ticks == 1 && r.stashed == 0);
     /* no event by the deadline, then a stop */
     CHECK(kmx_ring_wait(&r, 3, now + 5000, &ev) == KMX_LATE);
     end_code = KMX_STOPPED;

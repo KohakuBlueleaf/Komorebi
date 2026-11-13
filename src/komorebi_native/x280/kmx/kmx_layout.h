@@ -12,7 +12,7 @@
 #endif
 
 #define KMX_MAGIC 0x31786D6Bu /* "kmx1" */
-#define KMX_VERSION 3u
+#define KMX_VERSION 4u
 #define KMX_REGIONS_MAX 16u
 #define KMX_WORDS_MAX 64u              /* the program's own argument words */
 #define KMX_RESULT_WORDS_MAX 48u       /* words a thread returns */
@@ -28,7 +28,8 @@
     0x480u                   /* kmx_ring_desc (host, before the start); zero: no ring \
                               */
 #define KMX_LIM_PEERS 0x4C0u /* kmx_peers (host, before the start) */
-#define KMX_LIM_BYTES 0x500u
+#define KMX_LIM_PORTS 0x500u /* kmx_ports (host, before the start) */
+#define KMX_LIM_BYTES 0x540u
 #define KMX_STOP_WORD 0x53544F50u /* "STOP" */
 
 /* A spawn line's 64-bit words: the call's number, fn and arg (hart 0 writes them), the
@@ -97,6 +98,27 @@ typedef struct {
     17u                     /* cluster c's LIM through window KMX_PEER_WINDOW + c - 1 \
                              */
 #define KMX_PUSH_WINDOW 20u /* hart h pushes through window KMX_PUSH_WINDOW + h */
+
+/* X280 ports (at 0: none). The host writes the line, and before any start the area
+ * at `at`: each core's tile, X280 core and mailbox line (KM_BOX_*, the core's). */
+typedef struct {
+    uint32_t at;    /* LIM offset of the area, a multiple of 64 */
+    uint32_t ctl;   /* the cores' control block address in L1 */
+    uint32_t cores; /* entries of the tables, 1 to KMX_PORTS_CORES */
+    uint32_t flags; /* KMX_PORTS_* */
+    uint32_t state; /* kmx_port_run's: n << 1 while run n serves, | 1 once it ended */
+    uint32_t reserved[11];
+} kmx_ports;
+
+#define KMX_PORTS_CORES 128u /* table entries: KM_CORES_MAX */
+#define KMX_PORTS_NOC1 1u    /* flags: the windows onto the cores use NoC 1 */
+#define KMX_PORTS_TILES 0x0u /* + 4 i: core i's tile, x | y << 16 */
+#define KMX_PORTS_OWNER \
+    0x200u                   /* + i: cluster << 2 | X280 core serving core i; 0: none */
+#define KMX_PORTS_BOX 0x280u /* + 64 i: core i's mailbox line */
+#define KMX_PORTS_BYTES (KMX_PORTS_BOX + 64u * KMX_PORTS_CORES)
+#define KMX_PORT_WINDOW \
+    24u /* core i's control block through window KMX_PORT_WINDOW + i */
 
 /* The command ring as the thread's cluster addresses it: command slots, the kernel's
  * consumed word, the events, the read-count line. Depths: powers of two. */
@@ -180,3 +202,10 @@ KMX_STATIC_ASSERT(sizeof(kmx_peers) == 64, "kmx_peers is one line");
 KMX_STATIC_ASSERT(KMX_LIM_PEERS + 64 <= KMX_LIM_BYTES, "LIM: peers");
 KMX_STATIC_ASSERT(sizeof(kmx_ring_desc) == 64, "kmx_ring_desc is one line");
 KMX_STATIC_ASSERT(KMX_LIM_RING + 64 <= KMX_LIM_BYTES, "LIM: ring");
+KMX_STATIC_ASSERT(sizeof(kmx_ports) == 64, "kmx_ports is one line");
+KMX_STATIC_ASSERT(KMX_LIM_PORTS + 64 <= KMX_LIM_BYTES, "LIM: ports");
+KMX_STATIC_ASSERT(KMX_PORTS_OWNER == 4u * KMX_PORTS_CORES, "ports: tiles, then owners");
+KMX_STATIC_ASSERT(KMX_PORTS_BOX >= KMX_PORTS_OWNER + KMX_PORTS_CORES, "ports: owners");
+KMX_STATIC_ASSERT(
+    KMX_PORT_WINDOW + KMX_PORTS_CORES <= 192u, "ports: below the host's windows"
+);

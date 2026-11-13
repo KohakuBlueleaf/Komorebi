@@ -12,6 +12,7 @@ import signal
 import time
 import weakref
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -515,6 +516,10 @@ class Session:
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
         works = [program.threads[c] for c in sorted(program.threads)]
         program.check_threads()
+        if program.x280_ports is not None and (not works or thread != "card"):
+            raise ValueError(
+                f"{program.name}: X280 ports need its X280 threads on the card"
+            )
         for work in works:
             if thread == "host" and work.host_fallback is None:
                 raise ValueError(
@@ -562,10 +567,11 @@ class Session:
                 dyn_seg=program.dyn.seg if program.dyn is not None else 0,
             )
             check_bases(lim_bases(dispatch.lim_base))
+            plan, port_lines = _port_lines(program, dispatch, rings)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_t = state_t  # kept while the kernel may use it
             descriptor = backend.describe(
-                program, sources, tag, depth, wait, idle, trace
+                program, sources, tag, depth, wait, idle, trace, port_lines
             )
             t0 = time.perf_counter()
             try:
@@ -632,7 +638,17 @@ class Session:
                     )  # fmt: skip
                     t.ring = rings[c][0] if on_card else None
                     t.peers = peers.get(c)
+                    if plan is not None:
+                        t.ports = kt.Ports(
+                            backend.ctl_addr,
+                            len(port_lines.cores),
+                            port_lines.cores,
+                            plan,
+                            program.x280_ports["noc"],
+                        )
+                        t.write_ports()
                     run.threads[c] = t
+                for t in run.threads.values():  # every ports area is written first
                     t.start()
             except BaseException:
                 run.abort()
@@ -657,6 +673,28 @@ def _peers(session, dispatch, images):
             banks[g] = int(dram.x) | int(dram.y) << 16
         out[c] = kt.Peers(nonce, min(group), tiles, banks)
     return out
+
+
+class _PortLines(NamedTuple):
+    """Each core's tile by core index, and {core: (X280 tile, mailbox address)}."""
+
+    cores: list
+    lines: dict
+
+
+def _port_lines(program, dispatch, rings):
+    """The program's X280 ports: ({core: (cluster, cpu)}, _PortLines), or (None,
+    None) when it declares none."""
+    if program.x280_ports is None:
+        return None, None
+    cores = dispatch.grid_x * dispatch.grid_y
+    plan = kt.port_plan(program.x280_ports["serve"], cores, set(rings))
+    lines = {}
+    for core, (c, _) in plan.items():
+        info = dispatch.work_info(c)
+        tile = info["virtual_x"] | info["virtual_y"] << 16
+        lines[core] = (tile, kt.port_box(info["lim_base"], rings[c][0], core))
+    return plan, _PortLines([int(t) for t in dispatch.core_table()[:cores]], lines)
 
 
 def _region_bytes(value):
@@ -825,9 +863,10 @@ class _Backend:
         self.close_failed = ""  # the runtime's account when an abort did not restore
         self.aborted = None  # {words, harts}: what the kernel left at an abort
 
-    def _control_blocks(self, cores, grid):
+    def _control_blocks(self, cores, grid, port_lines=None):
         """Zeroed control blocks, one shard per core, padded so that the block can
-        start on a 64-byte line: the same L1 address on every core."""
+        start on a 64-byte line: the same L1 address on every core. `port_lines`: the
+        KM_X280_TO line of each served core, written once the address is known."""
         h = abi.headers()
         words = (h["KM_CTL_BYTES"] + CTL_ALIGN) // 4
         config = ttnn.create_sharded_memory_config(
@@ -842,6 +881,18 @@ class _Backend:
         self.ctl_addr = (base + CTL_ALIGN - 1) // CTL_ALIGN * CTL_ALIGN
         self.ctl_offset = (self.ctl_addr - base) // 4
         check_bases({"control block": self.ctl_addr})
+        if port_lines is not None:
+            rows = np.zeros((cores, words), dtype=np.uint32)
+            to = self.ctl_offset + (h["KM_CTL_X280"] + h["KM_X280_TO"]) // 4
+            for core, (tile, box) in port_lines.lines.items():
+                rows[core, to + h["KM_X280_TO_TILE"]] = tile
+                rows[core, to + h["KM_X280_TO_BOX"]] = box
+            host = ttnn.from_torch(
+                torch.from_numpy(rows.view(np.int32)),
+                dtype=ttnn.int32,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+            )
+            ttnn.copy_host_to_device_tensor(host, self.ctl)
         return self.ctl_addr
 
     def _dynamic(self, program, cores, depth, base):
@@ -864,13 +915,15 @@ class _Backend:
         lines = base + h["KMD_LIM_DYN"]
         return dyn.args(queue.buffer_address(), lines), dyn.compute_args(cores)
 
-    def describe(self, program, sources, tag, depth, wait, idle, trace):
+    def describe(
+        self, program, sources, tag, depth, wait, idle, trace, port_lines=None
+    ):
         """The program descriptor for every core, with the start-up arguments."""
         h = abi.headers()
         d = self.port
         grid = (d.grid_x, d.grid_y)
         cores = grid[0] * grid[1]
-        ctl = self._control_blocks(cores, grid)
+        ctl = self._control_blocks(cores, grid, port_lines)
         table = np.zeros((1, h["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = d.core_table()
         cores_t = _int32_tensor(self.device, table)
