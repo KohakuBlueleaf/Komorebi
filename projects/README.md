@@ -7,5 +7,7 @@ rather than staying in the project.
 
 - [raster/reference](raster/reference/README.md): rasterization in numpy, threaded C++
   and CUDA, with the scenes, timings and pictures the card versions are compared with.
+- [raytrace](raytrace/README.md): the ray tracer on the card, its four traces walked by
+  every Tensix core bit for bit as numpy, with the tiny scene's timings.
 - [raytrace/reference](raytrace/reference/README.md): ray tracing over a saved box tree
   in numpy, threaded C++ and CUDA, with the treelet cuts, timings and pictures.
