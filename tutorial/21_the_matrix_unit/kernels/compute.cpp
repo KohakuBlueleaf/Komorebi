@@ -18,8 +18,9 @@ void kernel_main() {
         if (km::handler(command) != kHandlerMultiply) {
             return;
         }
-        if (!compute.wait_front(kFirstInput, 1) ||
-            !compute.wait_front(kSecondInput, 1)) {
+        if (
+            !compute.wait_front(kFirstInput, 1) || !compute.wait_front(kSecondInput, 1)
+        ) {
             return;
         }
         tile_regs_acquire();

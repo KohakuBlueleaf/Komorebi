@@ -21,7 +21,8 @@ with km.Session() as session:
     # --8<-- [start:result]
     result = run.thread_result(timeout=10.0)
     print(f"the thread ended with state {result.state}, code {result.code}")
-    print(f"it returned {result.words[0]} = 20 + 22 in {result.us:.0f} microseconds")
+    print(f"it returned {result.words[0]} = 20 + 22")
+    print(f"the thread ran for {result.microseconds:.0f} microseconds")
     # --8<-- [end:result]
     run.stop()
 

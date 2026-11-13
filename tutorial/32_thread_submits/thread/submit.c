@@ -8,8 +8,8 @@ int kmx_main(int core) {
 
     // --8<-- [start:command]
     km_command_t command;
-    command.seq = command.land1 = command.land2 = command.land3 = 0;
-    command.hdr = KM_F_RESULT << 8;
+    command.sequence = command.land1 = command.land2 = command.land3 = 0;
+    command.hdr = KM_FLAG_RESULT << 8;
     command.group = 0 | 1 << 16;
     command.a0 = arguments->words[0];
     command.a1 = arguments->words[1];

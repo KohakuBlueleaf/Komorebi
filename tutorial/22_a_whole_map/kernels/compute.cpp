@@ -20,8 +20,10 @@ void kernel_main() {
         const uint32_t rank = compute.me() - km::first(command);
         const km::Partition share = km::partition(command.a1, rank, km::count(command));
         for (uint32_t index = 0; index < share.len; index++) {
-            if (!compute.wait_front(kFirstInput, 1) ||
-                !compute.wait_front(kSecondInput, 1)) {
+            if (
+                !compute.wait_front(kFirstInput, 1) ||
+                !compute.wait_front(kSecondInput, 1)
+            ) {
                 return;
             }
             tile_regs_acquire();

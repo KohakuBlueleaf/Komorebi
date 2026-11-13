@@ -43,19 +43,19 @@ more than it started with.
 ## The general form
 
 ```cpp
-if (!dyn.send(DESTINATION, message)) {
+if (!messages.send(DESTINATION, message)) {
     ...  // no quota left: do something else
 }
-const uint32_t left = dyn.quota();
+const uint32_t left = messages.quota();
 ```
 
 ```python
 program.dynamic(HANDLER, message_bytes=64, max_live=LIVE, queue_messages=QUEUE)
 ```
 
-- `dyn.send` returns `true` when the message was sent and `false` when this core has no
+- `messages.send` returns `true` when the message was sent and `false` when this core has no
   quota. When it returns false, nothing was sent.
-- `dyn.quota()` is the sends this core has left.
+- `messages.quota()` is the sends this core has left.
 - `LIVE` is `max_live`, the most messages alive at once on the card. Each core starts with
   `LIVE / 118`: 120 cores less 2 counter tiles. `LIVE` must be at least 118.
 - `QUEUE` is `queue_messages`, the room for messages in each core's inbox, a power of two. It

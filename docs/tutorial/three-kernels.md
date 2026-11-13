@@ -75,7 +75,7 @@ count is argument 4, the same count as the reader's.
 ```
 
 `copy(first_tile, tile_count)` is a small function of the program that sends the command
-and returns the microseconds the command took, from the event's `us`. The first line sums
+and returns the microseconds the command took, from the event's `microseconds`. The first line sums
 eight commands of one tile each. The second sends one command of eight tiles.
 
 ## The whole program

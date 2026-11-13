@@ -41,7 +41,7 @@ with km.Session() as session:
                 tile_count,
             ],
         )
-        return run.wait(handle, timeout=10.0).us
+        return run.wait(handle, timeout=10.0).microseconds
 
     # --8<-- [start:copy]
     one_by_one = sum(copy(tile, 1) for tile in range(TILES))

@@ -28,11 +28,11 @@ void kernel_main() {
             cb_pop_front(kOwnTile, 1);
         }
         ok = ok && km::reduce(compute, arrival, group, form, [&](uint32_t slot) {
-                 copy_init(kArrival);
-                 copy_tile(kArrival, km::slot_page(arrival, slot), 1);
-                 add_binary_tile_init();
-                 add_binary_tile(0, 1, 0);
-             });
+            copy_init(kArrival);
+            copy_tile(kArrival, km::slot_page(arrival, slot), 1);
+            add_binary_tile_init();
+            add_binary_tile(0, 1, 0);
+        });
         tile_regs_commit();
         tile_regs_wait();
         if (ok && compute.reserve_back(kOutput, 1)) {

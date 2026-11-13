@@ -18,7 +18,7 @@ program = km.Program(
 graph = Graph(max_runs=20)
 value = graph.bindings("value")  # a register that Python fills in at the start
 limit = graph.const(LIMIT)  # a register that holds 100
-sum_register, doubled = graph.reg(), graph.reg()
+sum_register, doubled = graph.register(), graph.register()
 add = graph.command(
     program.handler("add"), group=(0, 1), args=[value, 3], result=sum_register
 )
@@ -38,7 +38,7 @@ with km.Session() as session:
     run = session.load(program)
     # --8<-- [start:run]
     result = run.run_hostfed(graph, {"value": 1})
-    print(f"the graph went round {result.runs} times, ended with {result.regs[0]}")
+    print(f"the graph went round {result.runs} times, ended with {result.registers[0]}")
     # --8<-- [end:run]
     run.stop()
 
@@ -48,6 +48,6 @@ while True:
     expected, rounds = (expected + 3) * 2, rounds + 1
     if expected >= LIMIT:
         break
-assert (result.runs, result.regs[0]) == (rounds, expected)
+assert (result.runs, result.registers[0]) == (rounds, expected)
 print(f"the same rounds in Python: {rounds} rounds, value {expected}")
 # --8<-- [end:check]

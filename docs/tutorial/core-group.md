@@ -69,7 +69,7 @@ rank 3 gets three times the first argument. The `while` loop counts up to the li
 
 The same command, with the argument 1,000,000, goes to a group of 1 core, then of 4, then
 of 12, each starting at core 0. The loop prints how long each command took from `submit` to
-the report, from the event's `us`, the time in microseconds. `took` is a dictionary made
+the report, from the event's `microseconds`, the time in microseconds. `took` is a dictionary made
 before the loop; the program keeps each time in it to check them at the end.
 
 A command is done when **every** core of its group has reported. The group of 12 contains

@@ -99,8 +99,8 @@ The next lesson sends numbers the other way.
 
 - Forgetting `result=True`. The command works and the event arrives, but `event.result`
   is `None`.
-- Reading `event.us` of a command that asked for a result. The card sends the result in
-  the place where it would send the time, so `event.us` is not a time then. For a time,
+- Reading `event.microseconds` of a command that asked for a result. The card sends the result in
+  the place where it would send the time, so `event.microseconds` is not a time then. For a time,
   use a command without `result=True`.
 - Setting the result in the reader or the compute kernel. Only the writer has
   `result`.

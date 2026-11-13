@@ -19,8 +19,9 @@ void kernel_main() {
             const auto source = TensorAccessor(source_arguments, source_address);
             for (uint32_t index = 0; index < share.len; index++) {
                 const uint32_t tile = share.start + index;
-                if (!reader.reserve(kFirstInput, 1) ||
-                    !reader.reserve(kSecondInput, 1)) {
+                if (
+                    !reader.reserve(kFirstInput, 1) || !reader.reserve(kSecondInput, 1)
+                ) {
                     return;
                 }
                 noc_async_read_page(tile, source, get_write_ptr(kFirstInput));

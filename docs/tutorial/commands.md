@@ -72,7 +72,7 @@ three times. It uses the kernels of lesson 4 unchanged; only the Python file is 
 --8<-- "tutorial/05_commands/commands.py:commands"
 ```
 
-Three commands, one after the other: send, wait for the event, print. `event.us` is how
+Three commands, one after the other: send, wait for the event, print. `event.microseconds` is how
 long the command took, in microseconds, from the moment it was submitted until the event
 was ready, measured on the card.
 

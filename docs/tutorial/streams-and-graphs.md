@@ -43,7 +43,7 @@ from komorebi.engines.graph import Graph
 graph = Graph(max_runs=ROUNDS)
 name = graph.bindings("name")
 constant = graph.const(NUMBER)
-register = graph.reg()
+register = graph.register()
 first = graph.command(HANDLER, group=(FIRST, COUNT), args=[...], result=register)
 second = graph.command(HANDLER, group=(...), args=[register], after=[first])
 step = graph.cpu(after=[second])
@@ -55,7 +55,7 @@ result = run.run_hostfed(graph, {"name": START})
 
 - `Graph(max_runs=ROUNDS)` makes an empty graph, and `ROUNDS` is the most rounds it may go;
   more is an error.
-- A **register** is a 32-bit number that the graph keeps between its nodes. `graph.reg()`
+- A **register** is a 32-bit number that the graph keeps between its nodes. `graph.register()`
   makes one that starts at 0; `graph.bindings("name")` makes one that Python fills in when
   the graph starts; `graph.const(NUMBER)` makes one that holds `NUMBER`.
 - `graph.command(...)` adds a command node. `args` may hold numbers and registers, and
@@ -67,7 +67,7 @@ result = run.run_hostfed(graph, {"name": START})
 - `run.run_hostfed(graph, bindings)` runs the graph: the **executor**, the part that sends a
   command when its predecessors are done, runs on your computer and uses the loaded
   program. The same graph can be uploaded to run on the X280 core, with the same result.
-- `result.runs` is the number of rounds, and `result.regs` the registers at the end.
+- `result.runs` is the number of rounds, and `result.registers` the registers at the end.
 
 ## One line at a time
 

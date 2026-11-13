@@ -34,9 +34,9 @@ Inside the `while` loop of [[routed-message]], for each message of the packet:
 message[WORD] = packet[index][WORD];
 ...
 if (DONE) {
-    dyn.consume();
+    messages.consume();
 } else {
-    dyn.forward(DESTINATION, message);
+    messages.forward(DESTINATION, message);
 }
 ```
 
@@ -44,7 +44,7 @@ if (DONE) {
   `packet[index]`; the one that goes on is the local array, so the core can change it first.
 - Every message that arrives ends in exactly one of two ways: `consume()` or `forward(...)`.
   A core that does neither leaves the message in limbo and the run does not end.
-- `dyn.forward(DESTINATION, message)` sends `message` on to the core of rank `DESTINATION`.
+- `messages.forward(DESTINATION, message)` sends `message` on to the core of rank `DESTINATION`.
   A forward to the core itself works the same way.
 - `DONE` is the program's rule for when a message ends. Here it is a count of hops left,
   carried in the message.

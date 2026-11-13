@@ -42,21 +42,21 @@ run.submit(HANDLER, group=(FIRST, COUNT), args=[...], exclusive=True)
 In the compute kernel, inside the function you give to `run`:
 
 ```cpp
-km::Dyn dyn(compute, command);
-if (dyn.seeding()) {
-    dyn.send(DESTINATION, message);
-    dyn.seeded();
+km::Messages messages(compute, command);
+if (messages.seeding()) {
+    messages.send(DESTINATION, message);
+    messages.seeded();
 }
-while (km::Packet packet = dyn.next()) {
-    for (uint32_t index = 0; index < packet.n; index++) {
+while (km::Packet packet = messages.next()) {
+    for (uint32_t index = 0; index < packet.count; index++) {
         ... packet[index][WORD] ...
-        dyn.consume();
+        messages.consume();
     }
-    dyn.done(packet);
+    messages.done(packet);
 }
 ```
 
-- `READER` and `WRITER` are Komorebi's own: `dyn_reader.cpp` and `dyn_writer.cpp`, in the
+- `READER` and `WRITER` are Komorebi's own: `messages_reader.cpp` and `messages_writer.cpp`, in the
   runtime's kernel folder. Only the compute kernel is yours.
 - `.dynamic(HANDLER, ...)` marks the handler as dynamic. `message_bytes` is the size of a
   message. `max_live` is how many messages may exist at once in the whole group;
@@ -65,17 +65,17 @@ while (km::Packet packet = dyn.next()) {
 - The last 2 cores of the group are **counter tiles**: they keep the inboxes' counters and
   take no messages. A group of 8 has 6 cores that take messages, ranks 0 to 5.
 - `message` is an array of 16 numbers. Word 0 is Komorebi's; the others are yours.
-- `dyn.seeding()` is true once, at the start, and is the place for the first sends.
-  `dyn.seeded()` ends it.
-- `dyn.send(DESTINATION, message)` sends a copy of `message` to the core of rank
+- `messages.seeding()` is true once, at the start, and is the place for the first sends.
+  `messages.seeded()` ends it.
+- `messages.send(DESTINATION, message)` sends a copy of `message` to the core of rank
   `DESTINATION` of the group. It returns false when this core has used up its quota
   ([[full-buffers]]).
-- `dyn.next()` waits for the next **packet**: up to 32 messages that arrived. It returns an
+- `messages.next()` waits for the next **packet**: up to 32 messages that arrived. It returns an
   empty packet when the run has ended.
 - `packet[index]` is the address in L1 of message number `index`; `packet[index][WORD]` is
   one of its numbers.
-- `dyn.consume()` says that a message ends here. `dyn.done(packet)` frees the packet.
-- `dyn.rank()` is this core's rank, and `dyn.count()` the cores that take messages.
+- `messages.consume()` says that a message ends here. `messages.done(packet)` frees the packet.
+- `messages.rank()` is this core's rank, and `messages.count()` the cores that take messages.
 
 ## One line at a time
 
@@ -91,7 +91,7 @@ folder, and declares the handler dynamic with room for 4096 messages.
 ```
 
 The first part is seeding: rank 0 sends one message for each value from 0 to 11. The value
-goes in word 1, and the destination is `value * value % dyn.count()`: the square of the
+goes in word 1, and the destination is `value * value % messages.count()`: the square of the
 value, modulo the 6 cores. The squares of 0 to 11 modulo 6 can only be 0, 1, 3 and 4, so cores
 2 and 5 will receive nothing. The destination comes from the data: change the values and
 the destinations change, with no change to anything else.

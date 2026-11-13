@@ -23,11 +23,11 @@ with km.Session() as session:
 
 # --8<-- [start:check]
 expected = sum(i * i for i in range(N)) % 2**32
-alone, together, one_us, four_us = result.words
+alone, together, one_microseconds, four_microseconds = result.words
 print(f"squares of 0 to {N - 1}, modulo 2**32: {expected}")
-print(f"one core:   {alone} in {one_us} microseconds")
-print(f"four cores: {together} in {four_us} microseconds")
-print(f"four cores took {one_us / four_us:.1f} times less time")
+print(f"one core:   {alone} in {one_microseconds} microseconds")
+print(f"four cores: {together} in {four_microseconds} microseconds")
+print(f"four cores took {one_microseconds / four_microseconds:.1f} times less time")
 # --8<-- [end:check]
 
 assert result.code == 0 and alone == together == expected

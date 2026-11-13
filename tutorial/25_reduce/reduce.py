@@ -36,7 +36,7 @@ with km.Session() as session:
     for form in (0, 1):
         arguments = [source.address, 0, destination.address, form, form]
         handle = run.submit("reduce", group=(0, CORES), args=arguments, exclusive=True)
-        microseconds = run.wait(handle, timeout=10.0).us
+        microseconds = run.wait(handle, timeout=10.0).microseconds
         print(f"form {form}: {CORES} tiles added into one in {microseconds:5.1f} us")
     # --8<-- [end:reduce]
     run.stop()

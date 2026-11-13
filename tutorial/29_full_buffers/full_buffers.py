@@ -22,9 +22,9 @@ with km.Session() as session:
     program = km.Program(
         "full_buffers",
         kernels={
-            "reader": RUNTIME / "dyn_reader.cpp",
+            "reader": RUNTIME / "messages_reader.cpp",
             "compute": KERNELS / "compute.cpp",
-            "writer": RUNTIME / "dyn_writer.cpp",
+            "writer": RUNTIME / "messages_writer.cpp",
         },
         handlers=KERNELS / "handlers.h",
     ).dynamic("flood", message_bytes=64, max_live=MAX_LIVE, queue_messages=2048)

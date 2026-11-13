@@ -19,7 +19,7 @@ with km.Session() as session:
     for count in (1, 4, 12):
         handle = run.submit("work", group=(0, count), args=[1_000_000])
         event = run.wait(handle, timeout=10.0)
-        took[count] = event.us / 1000
+        took[count] = event.microseconds / 1000
         print(f"group of {count:2}: the command took {took[count]:5.1f} milliseconds")
     # --8<-- [end:groups]
     run.stop()

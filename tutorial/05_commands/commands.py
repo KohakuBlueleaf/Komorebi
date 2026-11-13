@@ -19,6 +19,7 @@ with km.Session() as session:
     for number in (1, 2, 3):
         handle = run.submit(0, group=(0, 1))
         event = run.wait(handle, timeout=10.0)
-        print(f"command {number}: {event.kind} after {event.us:.1f} microseconds")
+        micros = event.microseconds
+        print(f"command {number}: {event.kind} after {micros:.1f} microseconds")
     # --8<-- [end:commands]
     run.stop()

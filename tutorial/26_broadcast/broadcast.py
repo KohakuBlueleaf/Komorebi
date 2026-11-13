@@ -56,7 +56,7 @@ with km.Session() as session:
     arguments = [source.address, BLOCKS, destination.address]
     handle = run.submit("broadcast", group=(0, CORES), args=arguments, exclusive=True)
     event = run.wait(handle, timeout=10.0)
-    print(f"{BLOCKS} blocks to {CORES} cores in {event.us:.1f} microseconds")
+    print(f"{BLOCKS} blocks to {CORES} cores in {event.microseconds:.1f} microseconds")
     # --8<-- [end:cast]
     run.stop()
 

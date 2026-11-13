@@ -1,4 +1,5 @@
-/* An X280 thread that adds up the squares of 0 to n - 1, first on core 0, then on all four. */
+/* An X280 thread that adds up the squares of 0 to n - 1, first on core 0, then on all
+ * four. */
 #include "kmx.h"
 
 #define LINE_WORDS 16 /* a 64-byte cache line holds 16 words */
@@ -22,6 +23,7 @@ static void piece(int core, void* argument) {
     const uint32_t share = n / 4;
     partial[core * LINE_WORDS] = squares(core * share, (core + 1) * share);
 }
+
 // --8<-- [end:piece]
 
 int kmx_main(int core) {
@@ -32,20 +34,21 @@ int kmx_main(int core) {
     const uint32_t alone = squares(0, n);
     const uint64_t one_ticks = kmx_time() - one_start;
 
-    // --8<-- [start:par]
+    // --8<-- [start:parallel]
     const uint64_t four_start = kmx_time();
-    if (kmx_par(piece, &n) != KMX_OK) {
+    if (kmx_parallel(piece, &n) != KMX_OK) {
         return 1;
     }
     const uint64_t four_ticks = kmx_time() - four_start;
-    // --8<-- [end:par]
+    // --8<-- [end:parallel]
 
     uint32_t total = 0;
     for (int h = 0; h < 4; h++) {
         total += partial[h * LINE_WORDS];
     }
     const uint32_t words[4] = {
-        alone, total, (uint32_t)(one_ticks / 50), (uint32_t)(four_ticks / 50)};
+        alone, total, (uint32_t)(one_ticks / 50), (uint32_t)(four_ticks / 50)
+    };
     kmx_result(0, words, 4);
     return 0;
 }
