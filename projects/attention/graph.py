@@ -121,7 +121,7 @@ def main():
             words = calls(plan, attention, per_job)
             microseconds[f"host_{name}"] = from_host(attention, words, arguments.rounds)
             kept_graph = graph(
-                handler, group, words, arguments.rounds, req=10 + per_job
+                handler, group, words, arguments.rounds, request=10 + per_job
             )
             microseconds[f"graph_{name}"] = from_graph(attention, kept_graph, 3)
             report[f"commands_per_call_{name}"] = len(words)
