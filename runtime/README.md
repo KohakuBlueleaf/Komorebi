@@ -51,9 +51,11 @@ Everything is under `komorebi_runtime/`:
 - `python/`: **interim**. tt-metal's `ttnn` Python package with `_ttnn.so` (rpath
   `$ORIGIN/../../lib`), and the two packages it imports as it initialises, `tracy` and
   `tt_llk_perf` (with the perf-counter headers beside `ttnn`, where tt-metal's own
-  wheel puts them). Carried only while Komorebi's host still imports `ttnn`; on the
-  path only after `komorebi_runtime.activate()` or `python -m komorebi_runtime env`.
-  The extra `ttnn` names the Python packages they import (`torch` is not among them);
+  wheel puts them). Komorebi no longer imports `ttnn` (its host goes through tt-metal's
+  C++ API in the native module), so this folder serves only a program that imports
+  `ttnn` itself; on the path only after `komorebi_runtime.activate()` or
+  `python -m komorebi_runtime env`. The extra `ttnn` names the Python packages they
+  import (`torch` is not among them);
 - `manifest.json`: the pin, the tt-metal commit, the patches and their sha256, the build
   number, the version, the libraries and every file of the package.
 
@@ -83,9 +85,9 @@ python -m komorebi_runtime root     # print the runtime root
 eval "$(python -m komorebi_runtime env)"   # TT_METAL_RUNTIME_ROOT, ttnn on PYTHONPATH
 ```
 
-`env` is for programs that import `ttnn` themselves before Komorebi does, such as the
-examples. A program that only uses `komorebi.Session` needs nothing: Komorebi
-activates the runtime before it imports `ttnn`.
+`env` is for programs that import `ttnn` themselves. A program that uses
+`komorebi.Session`, the examples among them, needs nothing: Komorebi activates the
+runtime before it opens the card.
 
 `doctor` exits with status 1 when a file is missing, a library does not load or the
 compiler is not fetched.

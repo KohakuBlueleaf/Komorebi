@@ -71,9 +71,8 @@ kmr doctor
 
 The wheel needs nothing else to install and to run `kmr doctor`. To run on a card it
 needs what a clone needs ([running on a card](#running-on-a-card)): the tt-metal tree
-with the X280 runtime and the tt-x280-dispatch targets in `TT_METAL_HOME`, `ttnn` from
-that tree and `torch` in the same environment (for a source tree's `ttnn`, three of its
-directories on the path: `ttnn`, the tree and `tools`), and `clang++-20`. The native
+with the X280 runtime and the tt-x280-dispatch targets in `TT_METAL_HOME`, and
+`clang++-20`; neither `ttnn` nor `torch`. The native
 host module is built from the sources in the wheel on first use, into `KMR_CACHE`
 (default `~/.cache/komorebi`). The examples are not in the wheel; a copy of `examples/`
 runs from anywhere with the wheel's environment active, and finds the headers, the X280
@@ -94,18 +93,20 @@ Both are built locally ([runtime](../runtime/README.md),
 runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
-pip install "dist/komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl[ttnn]" \
-    dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl torch
+pip install dist/komorebi_runtime-0.81.1.1-py3-none-manylinux_2_38_x86_64.whl \
+    dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl
 python -m komorebi_runtime sfpi                # the RISC-V compiler, into KMR_CACHE
 python -m komorebi_runtime doctor
 kmr doctor                                     # "from komorebi-runtime 0.81.1.1"
-eval "$(python -m komorebi_runtime env)"       # for programs that import ttnn first
 ```
+
+The two wheels need `numpy` and nothing else: no `ttnn`, no `torch`. When they are
+published, the install is `pip install "komorebi-tt[runtime]"`.
 
 When `TT_METAL_HOME` is unset and the package is installed, Komorebi takes its tree from
 it: `kmr doctor`, `kmr build image`, the dispatcher's image and thread images use the
-runtime's X280 pieces and compiler, a session loads the prebuilt native module and
-activates the runtime (`TT_METAL_RUNTIME_ROOT`) before it imports `ttnn`.
+runtime's X280 pieces and compiler, a session activates the runtime
+(`TT_METAL_RUNTIME_ROOT`) and loads the prebuilt native module.
 `TT_METAL_HOME` set always means that tree, and the module is built against it. The
 card is prepared once as in [running on a card](#running-on-a-card), step 3.
 
@@ -157,8 +158,8 @@ into it, and a card whose X280 memory is prepared once. Step by step:
    env -u TT_VISIBLE_DEVICES tt-smi -r 0
    ```
 
-4. **The Python environment.** `ttnn` from that tree and `torch` in the same environment
-   as the package, and `TT_METAL_HOME` naming the tree:
+4. **The Python environment.** `numpy` beside the package (neither `ttnn` nor `torch`
+   is needed), and `TT_METAL_HOME` naming the tree:
 
    ```
    export TT_METAL_HOME=$PWD TT_METAL_RUNTIME_ROOT=$PWD
