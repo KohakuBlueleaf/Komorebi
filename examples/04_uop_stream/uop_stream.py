@@ -1,11 +1,11 @@
-"""MAP jobs with a random team size each, decided three ways: host-fed (one command per
-job), by a micro-op stream on the X280 that issues each record and waits for it, and by
-one that submits them to the dispatch kernel's job queue. Every way must give the same
-tiles, bit-exact against numpy; prints one JSON line. See README.md.
-"""
+"""MAP jobs with random team sizes decided by a micro-op stream: run on the host, on
+the X280 issuing each record, and on the X280 submitting them to the job queue, each
+bit-exact against numpy; then three streams that end in their error events. Prints one
+JSON line with `ok` and exits non-zero without it. See README.md."""
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -14,13 +14,16 @@ import torch
 import ttnn
 
 import komorebi as km
+from komorebi import native
 from komorebi.engines import stream as ks
 from komorebi.layout import share
+from komorebi.state import wrap
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
 TILE = 32
 STEP = 61  # the input window moves this many tiles per job
+AFTER = 20  # jobs of the clean stream after the error cases
 T0 = time.monotonic()
 
 
@@ -36,13 +39,15 @@ def parse(argv=None):
     p.add_argument("--in-tiles", type=int, default=512, help="tiles of the input")
     p.add_argument(
         "--ways",
-        default="hostfed,issue,submit",
-        help="comma-separated: hostfed, issue (X280, depth 1), submit (X280, queued)",
+        default="hostfed,issue,submit,errors",
+        help="comma-separated: hostfed, issue (X280, depth 1), submit (X280, queued), "
+        "errors (three streams that end in an error, then a clean one)",
     )
     p.add_argument("--depth", type=int, default=16, help="ring slots used")
     p.add_argument("--deadline", type=float, default=1.0, help="per record, seconds")
     p.add_argument("--seed", type=int, default=1, help="the stream's xorshift seed")
     p.add_argument("--card", type=int, default=None)
+    p.add_argument("--no-trace", action="store_true", help="no per-record trace")
     return p.parse_args(argv)
 
 
@@ -114,14 +119,69 @@ def membership(jobs, cores):
     return np.cumsum(edge)[:cores]
 
 
+def traced(trace):
+    """Each traced record in sequence order: (first, count, took, done) with took the
+    first member's reader time and done the last member's writer time, in us."""
+    h = trace.h
+    seen = trace.rows[:, :, h["kTraceSeen"]]
+    done = trace.rows[:, :, h["kTraceDone"]]
+    at = np.flatnonzero(seen.any(0))
+    if not at.size:
+        return []
+    zero = seen[:, at][seen[:, at] != 0].min()
+    out = []
+    for s in at:
+        cores = np.flatnonzero(seen[:, s])
+        took = wrap(seen[cores, s] - zero).min() / trace.mhz
+        end = wrap(done[cores, s] - zero).max() / trace.mhz
+        out.append((int(cores[0]), len(cores), float(took), float(end)))
+    return out
+
+
+def most_in_flight(records):
+    """The most records whose (took, done) intervals overlap at one time."""
+    edges = sorted([(r[2], 1) for r in records] + [(r[3], -1) for r in records])
+    now = most = 0
+    for _, d in edges:
+        now += d
+        most = max(most, now)
+    return most
+
+
 def main():
     args = parse()
     out = {"jobs": args.jobs, "tiles": args.tiles, "seed": args.seed}
+    out["image_bytes"] = native.image_path().stat().st_size
     with km.Session(card=args.card, log=log) as session:
         log("device open")
         out.update(run_ways(session, args))
+    out["ok"] = verdict(out, args)
     out["wall_s"] = round(time.monotonic() - T0, 1)
     print(json.dumps(out), flush=True)
+    sys.exit(0 if out["ok"] else 1)
+
+
+def verdict(out, args):
+    """Every way exact with every core's count right, as simulated and ended with
+    its halt value; the queue with more than one record in flight; each error stream
+    ended with its reason and the jobs after them exact."""
+    ok = out["same_jobs_issue_submit"]
+    for way, got in out["ways"].items():
+        ok &= got["tiles_wrong"] == 0 and got["cores_bad"] == 0
+        ok &= got["status"] == ("ended" if way == "hostfed" else "end")
+        ok &= got.get("halt", args.jobs) == args.jobs
+        if way != "submit":
+            ok &= got.get("as_simulated", True)
+        elif "traced" in got:
+            ok &= got["most_in_flight"] > 1
+    if "errors" in out:
+        e = out["errors"]
+        reasons = [e[k].get("reason") for k in ("bad_opcode", "steps", "never_fits")]
+        after = e["after"]
+        ok &= reasons == ["opcode", "steps", "never_fits"]
+        ok &= after["halt"] == min(AFTER, args.jobs) and after["kernel_error"] == 0
+        ok &= after["cores_bad"] == 0 and after["tiles_wrong"] == 0
+    return bool(ok)
 
 
 def run_ways(session, args):
@@ -159,7 +219,10 @@ def run_ways(session, args):
 
     # Tensors before any load: a tensor write waits for idle cores.
     inp = tile_tensor(x)
-    outs = {w: tile_tensor(np.zeros((pages * TILE, TILE), np.float32)) for w in ways}
+    size = {w: pages for w in ways}
+    if "errors" in ways:  # only the clean stream's pages
+        size["errors"] = sum(c for _, c, _, _ in issue_jobs[: min(AFTER, args.jobs)])
+    outs = {w: tile_tensor(np.zeros((size[w] * TILE, TILE), np.float32)) for w in ways}
     program = km.Program(
         "uop_stream",
         kernels=KERNELS,
@@ -177,6 +240,11 @@ def run_ways(session, args):
     )
     result = {"cores": cores, "same_jobs_issue_submit": same, "ways": {}}
     for way in ways:
+        if way == "errors":
+            result["errors"] = error_cases(
+                session, program, args, inp, outs[way], want, issue_jobs, cores, window
+            )
+            continue
         addr = {
             "in": inp.buffer_address(),
             "out": outs[way].buffer_address(),
@@ -194,30 +262,35 @@ def run_ways(session, args):
 
 def one_way(session, program, args, way, addr, jobs, cores, window):
     """Loads the program, runs the jobs one way, stops; times and core counts."""
-    run = session.load(program, deadline=args.deadline)
+    trace = 0 if args.no_trace else len(jobs)
+    run = session.load(program, deadline=args.deadline, trace=trace)
     log(f"{way}: loaded")
     n = len(jobs)
     out = {}
+    form = "submit" if way == "submit" else "issue"
+    stream = job_stream(form, args.jobs, cores, window, addr, args.tiles, args.seed)
     t0 = time.perf_counter()
     if way == "hostfed":
-        firsts = np.array([f for f, _, _, _ in jobs])
-        counts = np.array([c for _, c, _, _ in jobs])
-        words = np.array(
-            [[addr["in"], args.tiles, addr["out"], b, p] for _, _, b, p in jobs],
-            np.int64,
-        )
-        run.issue_many(np.full(n, addr["map"]), firsts, counts, words)
-        run.drain(timeout=60.0)
+        res = run.run_hostfed(stream, timeout=60.0)
+        out["status"] = res.status
+        sent = [(r.first, r.count, r.args[3], r.args[4]) for r in res.records]
+        out["as_simulated"] = sent == jobs
     else:
-        stream = job_stream(way, args.jobs, cores, window, addr, args.tiles, args.seed)
         up = run.upload(stream)
+        out["upload_bytes"] = up.bytes
         ticket = run.start(up)
         end = run.wait_engine(ticket, timeout=60.0)
-        out["halt"] = end.value
+        out["status"], out["halt"] = end.kind, end.value
         run.release(up)
     out["us_per_job"] = round((time.perf_counter() - t0) * 1e6 / n, 3)
     run.stop()
     log(f"{way}: {out['us_per_job']} us per job")
+    if trace:
+        recs = traced(run.trace())[:n]  # the stop's EXIT may follow in the trace
+        out["traced"] = len(recs)
+        if way == "issue":  # one record in flight: the order is the simulator's
+            out["as_simulated"] = [r[:2] for r in recs] == [j[:2] for j in jobs]
+        out["most_in_flight"] = most_in_flight(recs)
     states = run.state()
     runs = np.array([c["runs"] for c in states])
     done = np.array([c["completed"] for c in states])
@@ -230,6 +303,60 @@ def one_way(session, program, args, way, addr, jobs, cores, window):
         )
     else:
         out["cores_bad"] = int(done.sum() != sum(c for _, c, _, _ in jobs))
+    return out
+
+
+def error_cases(session, program, args, inp, out_t, want, jobs, cores, window):
+    """An upload with a bad opcode, a stream past its step limit and a job larger than
+    the grid, each ending in its error event; then the first jobs of the ISSUE stream
+    on the same run, exact, and a clean stop."""
+    addr = {"in": inp.buffer_address(), "out": out_t.buffer_address()}
+    addr["map"] = program.seg("map")
+    run = session.load(program, deadline=args.deadline)
+    bad = bytearray(job_stream("issue", 4, cores, window, addr, args.tiles, 1).encode())
+    bad[64] = 0xEE  # the first micro-op's opcode
+    steps = ks.Stream(req=42, max_steps=1000)
+    (i,) = steps.regs(1)
+    top = steps.label()
+    steps.addi(i, i, 1)
+    steps.jmp(top)
+    big = ks.Stream(req=43)
+    (n,) = big.regs(1)
+    big.set(n, cores + 1)
+    big.submit(addr["map"], n, args=[addr["in"], args.tiles, addr["out"], 0, 0])
+    big.wait(0)
+    big.halt(n)
+    out = {}
+    for name, obj in (
+        ("bad_opcode", bytes(bad)),
+        ("steps", steps),
+        ("never_fits", big),
+    ):
+        up = run.upload(obj, kind="stream")
+        try:
+            end = run.wait_engine(run.start(up), timeout=10.0)
+            out[name] = {"ended": end.kind}
+        except km.EngineError as e:
+            out[name] = {"reason": e.event.reason_name, "pc": e.event.pc}
+        except km.EngineRefused as e:
+            out[name] = {"refused": e.reason_name}
+        run.release(up)
+        log(f"errors: {name} {out[name]}")
+    k = min(AFTER, len(jobs))
+    clean = job_stream("issue", k, cores, window, addr, args.tiles, args.seed)
+    up = run.upload(clean)
+    out["after"] = {"halt": run.wait_engine(run.start(up), timeout=10.0).value}
+    run.release(up)
+    result = run.stop()
+    out["after"]["kernel_error"] = result["error"]
+    done = np.array([c["completed"] for c in run.state()])
+    out["after"]["cores_bad"] = int(
+        np.count_nonzero(done != membership(jobs[:k], cores))
+    )
+    pages = sum(c for _, c, _, _ in jobs[:k])
+    got = np.concatenate(session.read_bf16(out_t)).reshape(-1, TILE, TILE)
+    wrong = (got.astype(np.float64) != want[:pages]).any((1, 2))
+    out["after"]["tiles_wrong"] = int(np.count_nonzero(wrong))
     return out
 
 

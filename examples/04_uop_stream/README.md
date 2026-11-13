@@ -30,9 +30,10 @@ s.halt(j)
 
 | Way | Who decides | How the records go |
 |---|---|---|
-| `hostfed` | the host | the package's stream simulator runs the ISSUE stream; its records go to the dispatch kernel one command per job (`Run.issue_many`) |
-| `issue` | the X280 (core 1 of cluster 0) | the ISSUE stream is uploaded and started; it issues each record and waits for it |
-| `submit` | the X280 and the dispatch kernel's job queue | the SUBMIT stream is uploaded and started; the queue gives each job the lowest free team of its size, so several jobs are in flight |
+| `hostfed` | the host | `run.run_hostfed(stream)`: the package's stream interpreter runs the ISSUE stream on the host and sends its records through the host ring, each waited for as the stream says |
+| `issue` | the X280 (core 1 of cluster 0) | `run.upload(stream)`, `run.start`, `run.wait_engine`: the ISSUE stream issues each record and waits for it |
+| `submit` | the X280 and the dispatch kernel's job queue | the same calls with the SUBMIT stream; the queue gives each job the lowest free team of its size, so several jobs are in flight |
+| `errors` | - | three streams that end in an error event, then 20 jobs of the ISSUE stream on the same run |
 
 `MAP` (`kernels/`): member m of a job adds its share of the job's T input tiles (from
 tile a4) into one tile and stores it at output page a3 + m. Teams differ between the ways
@@ -40,15 +41,36 @@ tile a4) into one tile and stores it at output page a3 + m. Teams differ between
 inputs are integers in [-2, 2], so every sum is exact in bf16, and the host compares every
 output tile of every way bit for bit with numpy. It also checks each core's record count
 against the simulated teams (`hostfed`, `issue`) or the total of member records
-(`submit`), and gives microseconds per job, from the first command to the last event.
+(`submit`), and gives microseconds per job, from the start to the stream's end. Each run
+is traced: the teams the grid saw must be the simulator's in order for `issue` (one
+record in flight), and the trace gives the most records in flight at once.
+
+The `errors` way uploads a stream whose first micro-op has a bad opcode (the kernel's
+check ends it with reason `opcode`), one that loops past its step limit (`steps`) and one
+that submits a job larger than the grid (`never_fits`). Each ends in its error event; the
+run goes on, and 20 jobs of the ISSUE stream after them are exact, every core's count is
+right, and the stop is clean.
 
 ## Running it
 
-    python uop_stream.py --card 0                   # all three ways
+    python uop_stream.py --card 0                   # every way
     python uop_stream.py --card 0 --ways hostfed    # one way
 
 Options: `--jobs` (1,000), `--tiles` T (64), `--seed` (the stream's xorshift seed),
-`--depth` (ring slots, 16), `--deadline` (per record, seconds). It prints one JSON line.
+`--depth` (ring slots, 16), `--deadline` (per record, seconds), `--no-trace`. It prints
+one JSON line. Reading the 59,456 output tiles back takes about a minute per way.
 
-On a p150a (card 0, 120 cores, default arguments), host-fed: 1,000 jobs, 59,456 tiles,
-0 wrong, every core's count right, 3.4 microseconds per job.
+On a p150a (card 0, 120 cores, default arguments): 1,000 jobs, 59,456 tiles, 0 wrong
+and every core's count right in every way; the ISSUE and SUBMIT streams give the same
+jobs, and the grid saw the simulator's teams in order.
+
+| Way | Microseconds per job | Most records in flight | Upload |
+|---|---|---|---|
+| `hostfed` | 163 | 1 | - |
+| `issue` | 11.0 | 1 | 576 bytes |
+| `submit` | 7.8 | 4 | 512 bytes |
+
+Host-fed, every job is a round trip to the host; on the X280 it is a round trip to the
+dispatch kernel on the same cluster. The three error streams ended with `opcode`,
+`steps` and `never_fits`. The dispatch kernel's image with both engines is 22,864
+bytes.
