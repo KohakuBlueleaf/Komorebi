@@ -55,16 +55,18 @@ issue and from the last retire to the quiet end.
 Through a session (`hop.py`), card 0, 2026-11-13, every core (120: 118 members and the
 counter tiles 118 and 119) unless named, 64-byte items, queues of 16384 items,
 `max_live` 16384 (quota 138 per member). Times are the `RUN` record's, from its issue by
-the dispatch kernel to its completion, which follows the quiet end.
+the dispatch kernel to its completion, which follows the quiet end. X280 at the
+session's 1000 MHz; the 1750 MHz opt-in's times, from the runs before the default
+changed, in brackets (the stall, quota and refusal rows were not re-run).
 
 | Case | Result |
 |---|---|
-| 3 cores (2 members, 1 counter tile), 1 item, 1 hop | exact; 23 µs |
-| 100 items, 10 hops each (10^3 hops) | exact; 158 µs; the kernel checked the lines 1109 times |
-| 1000 items, 100 hops each (10^5 hops) | exact; 3.44 ms |
-| 10000 items, 100 hops each (10^6 hops) | exact in 91 of 91 runs: 30 in a row in one session, 10 in each of 5 more sessions, 11 more; median 11.8 ms (11.6 to 12.0) |
-| the same with one counter tile (`--counters 1`, 119 members) | exact in 10 of 10; median 11.6 ms |
-| 10000 items, 10 hops each, every hop to member 0 | exact; 23.6 ms |
+| 3 cores (2 members, 1 counter tile), 1 item, 1 hop | exact; 24 µs [23] |
+| 100 items, 10 hops each (10^3 hops) | exact; 172 µs; the kernel checked the lines 487 times [158 µs, 1109 checks] |
+| 1000 items, 100 hops each (10^5 hops) | exact; 3.43 ms [3.44] |
+| 10000 items, 100 hops each (10^6 hops) | exact in 30 of 30 runs in one session (`--repeat 30`), median 11.8 ms (11.6 to 12.0); [exact in 91 of 91 runs: 30 in a row in one session, 10 in each of 5 more sessions, 11 more; median 11.8 ms (11.6 to 12.0)] |
+| the same with one counter tile (`--counters 1 --repeat 10`, 119 members) | exact in 10 of 10; median 11.6 ms [11.6] |
+| 10000 items, 10 hops each, every hop to member 0 | exact; 23.6 ms [23.6] |
 | member 3 spawns until its quota is gone (8 cores) | 3 seeded items and 135 spawns, then `spawn` returned false; exact |
 | member 2 stalls in its body (8 cores) | the `RUN` record's timeout names its ticket; the kernel names core 2 (`KMD_H_DYN_GAVE`), whose reader gave up waiting for a free packet page (24); the next run in the same session exact |
 | `max_live` 1000000 with queues of 65536 | refused before any device opened; `ok` false, exit code 1 |

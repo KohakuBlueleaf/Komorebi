@@ -34,9 +34,10 @@ Prints one JSON line: the replay's code, rounds and sum, and for each path wheth
 matched (`same_as_numpy`, `same_records`, `state_wrong`), and `ok`: every path asked
 for ran and matched. The script exits non-zero without it.
 
-On a Blackhole p150a with the defaults: 204 rounds (408 records), final sum 1,004,917;
-the thread on the card took 10.3 ms (about 50 microseconds per round, two records
-issued and waited for in turn over its ring); host-fed 50 ms (about 0.24 ms per round);
+On a Blackhole p150a with the defaults (X280 at the session's 1000 MHz): 204 rounds
+(408 records), final sum 1,004,917; the thread on the card took 10.8 ms (about 53
+microseconds per round, two records issued and waited for in turn over its ring);
+host-fed 48 ms (about 0.23 ms per round); at the 1750 MHz opt-in, 10.3 and 50 ms;
 records, teams, sums and the state tensor exact on every path.
 
 ## The thread

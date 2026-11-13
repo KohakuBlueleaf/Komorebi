@@ -61,15 +61,16 @@ Options: `--jobs` (1,000), `--tiles` T (64), `--seed` (the stream's xorshift see
 one JSON line with `ok`, true only when every check above holds, and exits non-zero
 without it. Reading the 59,456 output tiles back takes about a minute per way.
 
-On a p150a (card 0, 120 cores, default arguments): 1,000 jobs, 59,456 tiles, 0 wrong
+On a p150a (card 0, 120 cores, default arguments, X280 at the session's 1000 MHz;
+the 1750 MHz opt-in's figures in the last column): 1,000 jobs, 59,456 tiles, 0 wrong
 and every core's count right in every way; the ISSUE and SUBMIT streams give the same
 jobs, and the grid saw the simulator's teams in order.
 
-| Way | Microseconds per job | Most records in flight | Upload |
-|---|---|---|---|
-| `hostfed` | 161 | 1 | - |
-| `issue` | 11.5 | 1 | 576 bytes |
-| `submit` | 8.4 | 3 | 512 bytes |
+| Way | Microseconds per job | Most records in flight | Upload | 1750 MHz |
+|---|---|---|---|---|
+| `hostfed` | 163 | 1 | - | 161 |
+| `issue` | 13.4 | 1 | 576 bytes | 11.5 |
+| `submit` | 9.3 | 2 | 512 bytes | 8.4 (3 in flight) |
 
 Host-fed, every job is a round trip to the host; on the X280 it is a round trip to the
 dispatch kernel on the same cluster. The three error streams ended with `opcode`,

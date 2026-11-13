@@ -102,16 +102,18 @@ deadline, naming the stalled core); the script exits non-zero without it.
 
 ## Measured
 
-On one p150a, 2026-11-13, AICLK 1350 MHz, X280 at 1750 MHz, host load 8 to 14
-(one-minute average), with
+On one p150a (card 0), 2026-11-13, AICLK 1350 MHz, X280 at 1000 MHz (the session's
+default), with
 
 ```
 python mapcollect.py --jobs 1000 --teams random --out-tensors 32
 ```
 
 1,000 jobs of 64 input tiles on random teams, 61,720 member records, up to 4 in flight:
-1.655 µs per job by the dispatch kernel's clock and 1.985 by the host's; from issue to
-completion 4.5 µs per record on average (14.5 at most); every one of the 1,000 jobs
+1.751 µs per job by the dispatch kernel's clock and 2.078 by the host's; from issue to
+completion 4.2 µs per record on average (13.3 at most); every one of the 1,000 jobs
 checked against numpy, 0 wrong (500 bit-exact, the others within a relative RMS error
-of 0.0019 of the total); every core ended cleanly. The wall time, 111 s, is mostly the
-outputs' read-back in slow dispatch.
+of 0.0019 of the total); every core ended cleanly. The wall time, 74 s, is mostly the
+outputs' read-back in slow dispatch. At the 1750 MHz opt-in (host load 8 to 14): 1.655
+µs per job by the kernel's clock, 1.985 by the host's, 4.5 µs per record (14.5 at
+most).

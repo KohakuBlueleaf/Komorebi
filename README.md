@@ -215,20 +215,21 @@ vector unit, and writes its own output tile.
 
 ## Measured
 
-The examples on one p150a, AICLK 1350 MHz, X280 at 1750 MHz, every output checked
-against numpy; each run, with its command, is in the example's README:
+The examples on one p150a, AICLK 1350 MHz, X280 at 1000 MHz (the session's default;
+the 1750 MHz opt-in's figure in brackets), every output checked against numpy; each
+run, with its command, is in the example's README. The test feeder's rows use no X280:
 
 | Example | What runs | Result |
 |---|---|---|
-| [01_mapcollect](examples/01_mapcollect/) | 1,000 jobs of 64 input tiles on random teams (61,720 member records), up to 4 in flight, issued from Python through the dispatch kernel | 1.655 µs per job by the kernel's clock, 1.985 by the host's; a record from issue to completion 4.5 µs (mean); 0 of 1,000 jobs wrong |
+| [01_mapcollect](examples/01_mapcollect/) | 1,000 jobs of 64 input tiles on random teams (61,720 member records), up to 4 in flight, issued from Python through the dispatch kernel | 1.751 µs per job by the kernel's clock [1.655], 2.078 by the host's [1.985]; a record from issue to completion 4.2 µs (mean) [4.5]; 0 of 1,000 jobs wrong |
 | [02_merge_tree](examples/02_merge_tree/) | parts merged by owner or by tree, under the test feeder | 7.3 µs per job on 8 cores, 24.0 on 119; 1,000 random jobs exact; both forms bit-equal |
 | [03_broadcast](examples/03_broadcast/) | 24 KiB blocks to a 12 x 9 team along 27 lanes, under the test feeder | 1,355 GB/s delivered from 169 GB/s read from DRAM; every member reading DRAM itself: 457 GB/s |
-| [04_uop_stream](examples/04_uop_stream/) | 1,000 jobs of 64 input tiles on teams whose size a micro-op stream draws at random, decided on the host (`run_hostfed`), by a stream that issues each record on the X280, or by one that submits to the dispatch kernel's job queue | 161 µs per job host-fed, 11.5 issued on the X280, 8.4 submitted (up to 3 in flight); 59,456 output tiles bit-exact each way |
-| [07_work_cluster](examples/07_work_cluster/) | a loop of 204 rounds of two records, each round's team chosen from the last result word | an X280 thread on cluster 1: 10.3 ms (about 50 µs per round); host-fed: 50 ms |
+| [04_uop_stream](examples/04_uop_stream/) | 1,000 jobs of 64 input tiles on teams whose size a micro-op stream draws at random, decided on the host (`run_hostfed`), by a stream that issues each record on the X280, or by one that submits to the dispatch kernel's job queue | 163 µs per job host-fed [161], 13.4 issued on the X280 [11.5], 9.3 submitted [8.4] (up to 3 in flight); 59,456 output tiles bit-exact each way |
+| [07_work_cluster](examples/07_work_cluster/) | a loop of 204 rounds of two records, each round's team chosen from the last result word | an X280 thread on cluster 1: 10.8 ms (about 53 µs per round) [10.3]; host-fed: 48 ms [50] |
 
 Landing a 64-byte record multicast by one X280 core to every Tensix core: p150a, 120
-Tensix cores (12 x 10) at AICLK 1350 MHz, X280 at 1750 MHz, slow dispatch, two
-multicast panels; the experiment's own X280 image and a Tensix kernel that checks every
+Tensix cores (12 x 10) at AICLK 1350 MHz, X280 at 1750 MHz (these experiments' own
+setting; a session defaults to 1000), slow dispatch, two multicast panels; the experiment's own X280 image and a Tensix kernel that checks every
 payload word and does no work; microseconds per record by the X280's tick counter over
 10^6 records, issue to the last acknowledgement. Komorebi's records use echo words
 ([landing](experiments/landing/README.md)).
