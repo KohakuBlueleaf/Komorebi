@@ -40,8 +40,8 @@ def parse():
     parser.add_argument(
         "--links",
         type=int,
-        default=None,
-        help="links between the cards (default: every one)",
+        default=1,
+        help="links between the cards (1 to 4)",
     )
     parser.add_argument("--threads", type=int, default=1, help="at most the ranks")
     parser.add_argument("--hops", type=int, default=1200, help="arrivals per thread")

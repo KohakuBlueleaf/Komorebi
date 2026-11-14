@@ -48,8 +48,8 @@ def parse():
     parser.add_argument(
         "--links",
         type=int,
-        default=None,
-        help="links between the cards (default: every one)",
+        default=1,
+        help="links between the cards (1 to 4)",
     )
     parser.add_argument("--messages", type=int, default=16)
     parser.add_argument("--forwards", type=int, default=4, help="forwards per message")
