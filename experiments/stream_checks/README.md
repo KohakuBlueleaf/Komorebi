@@ -18,5 +18,7 @@ Run from this directory with the package on the path:
     PYTHONPATH=../../src python mutants.py
     PYTHONPATH=../../src python stream_reference.py --check
 
-Result on the commit that added this folder: 104 of 104 mutants killed, 0 of 89
-streams differing, about nine seconds for the mutants.
+Result: 104 of 104 mutants killed, 0 of 91 streams differing, about nine seconds
+for the mutants. A change to the simulator's source that renames or reflows a line
+makes the patches that name it fail to apply (`load` asserts each matches once): the
+patches then follow the source.

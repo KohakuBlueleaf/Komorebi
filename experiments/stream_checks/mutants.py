@@ -20,7 +20,7 @@ from komorebi.engines import stream as st
 SOURCE = Path(st.__file__).read_text()
 SLOT_LOOP = "        for slot, busy in enumerate(self.table):\n"
 LATE = "                and self.now >= busy.deadline_pass\n"
-GROUP = "        if group_outside(first, count, self.core_count):\n"
+GROUP = "        if group_outside(first, count, self.core_count, template.flags):\n"
 SUBMIT_COUNT = "        if count == 0 or count > self.core_count:\n"
 QUEUE_FULL = '        if len(self.queue) >= QUEUE_JOBS:\n            return "stall"\n'
 
@@ -67,7 +67,7 @@ MUTANTS = {
     ],
     "slot_highest_free": [
         (
-            "return next((i for i, b in enumerate(self.table) if b is None), None)",
+            "return next((i for i, entry in enumerate(self.table) if entry is None), None)",
             "return next((i for i in range(15, -1, -1) if self.table[i] is None), None)",
         )
     ],
@@ -80,12 +80,20 @@ MUTANTS = {
     ],
     "only_15_slots": [("RING_SLOTS = 16", "RING_SLOTS = 15")],
     "alloc_ignores_touching": [
-        ("first + count <= f or f + c <= first", "first + count < f or f + c < first")
+        (
+            "first + count <= busy_first or busy_first + busy_count <= first",
+            "first + count < busy_first or busy_first + busy_count < first",
+        )
     ],
     # submitter turns
-    "turns_stream_first": [("start = p % len(turns)", "start = 0")],
-    "turns_queue_first": [("start = p % len(turns)", "start = 1")],
-    "turns_offset_by_one": [("start = p % len(turns)", "start = (p + 1) % len(turns)")],
+    "turns_stream_first": [("start = pass_index % len(turns)", "start = 0")],
+    "turns_queue_first": [("start = pass_index % len(turns)", "start = 1")],
+    "turns_offset_by_one": [
+        (
+            "start = pass_index % len(turns)",
+            "start = (pass_index + 1) % len(turns)",
+        )
+    ],
     # micro-ops per pass and the step limit
     "step_ops_63": [("STEP_OPS = 64", "STEP_OPS = 63")],
     "step_ops_65": [("STEP_OPS = 64", "STEP_OPS = 65")],
@@ -144,7 +152,10 @@ MUTANTS = {
         ("self.fail(ERROR_CANCELLED, self.pc)", "self.fail(ERROR_CANCELLED, 0)")
     ],
     "orphans_not_drained": [
-        ("                sim.drain(p + 1, max_passes)\n", "                pass\n")
+        (
+            "                simulation.drain(pass_index + 1, max_passes)\n",
+            "                pass\n",
+        )
     ],
     "orphans_have_no_deadline": [
         (
@@ -164,13 +175,13 @@ MUTANTS = {
     "deadline_does_not_stop_the_grid": [("                self.stopped = True\n", "")],
     "default_deadline_ignored": [
         (
-            'if deadline_passes is None and h["deadline_microseconds"] == 0:',
-            'if False and deadline_passes is None and h["deadline_microseconds"] == 0:',
+            'if deadline_passes is None and header["deadline_microseconds"] == 0:',
+            'if False and deadline_passes is None and header["deadline_microseconds"] == 0:',
         )
     ],
     "default_deadline_for_every_header": [
         (
-            'if deadline_passes is None and h["deadline_microseconds"] == 0:',
+            'if deadline_passes is None and header["deadline_microseconds"] == 0:',
             "if deadline_passes is None:",
         )
     ],
@@ -213,86 +224,91 @@ MUTANTS = {
     # micro-op semantics
     "jlt_signed": [
         (
-            "nxt = o.immediate if registers[o.a] < registers[o.b] else nxt",
-            "nxt = o.immediate if registers[o.a] ^ 0x80000000 < registers[o.b] ^ 0x80000000 else nxt",
+            "if registers[operation.a] < registers[operation.b]\n",
+            "if registers[operation.a] ^ 0x80000000 < registers[operation.b] ^ 0x80000000\n",
         )
     ],
     "mul_not_wrapped": [
         (
-            "registers[o.a] = registers[o.b] * registers[o.c] & MASK",
-            "registers[o.a] = registers[o.b] * registers[o.c]",
+            "registers[operation.b] * registers[operation.c] & MASK",
+            "registers[operation.b] * registers[operation.c]",
         )
     ],
     "shr_amount_unmasked": [
-        ("registers[o.b] >> (o.immediate & 31)", "registers[o.b] >> o.immediate")
+        (
+            "registers[operation.b] >> (\n                    operation.immediate & 31\n                )",
+            "registers[operation.b] >> operation.immediate",
+        )
     ],
     "shr_arithmetic": [
         (
-            "registers[o.a] = registers[o.b] >> (o.immediate & 31)",
-            "registers[o.a] = ((registers[o.b] ^ 0x80000000) - 0x80000000 >> (o.immediate & 31)) & MASK",
+            "registers[operation.a] = registers[operation.b] >> (\n"
+            "                    operation.immediate & 31\n"
+            "                )",
+            "registers[operation.a] = ((registers[operation.b] ^ 0x80000000) - 0x80000000 >> (operation.immediate & 31)) & MASK",
         )
     ],
     "mod_signed": [
         (
-            "registers[o.a] = registers[o.b] % registers[o.c]",
-            "registers[o.a] = ((registers[o.b] ^ 0x80000000) - 0x80000000) % registers[o.c] & MASK",
+            "registers[operation.a] = registers[operation.b] % registers[operation.c]",
+            "registers[operation.a] = ((registers[operation.b] ^ 0x80000000) - 0x80000000) % registers[operation.c] & MASK",
         )
     ],
     "sub_not_wrapped": [
         (
-            "registers[o.a] = registers[o.b] - registers[o.c] & MASK",
-            "registers[o.a] = registers[o.b] - registers[o.c]",
+            "registers[operation.b] - registers[operation.c] & MASK",
+            "registers[operation.b] - registers[operation.c]",
         )
     ],
     "addi_not_wrapped": [
         (
-            "registers[o.a] = registers[o.b] + o.immediate & MASK",
-            "registers[o.a] = registers[o.b] + o.immediate",
+            "registers[operation.b] + operation.immediate & MASK",
+            "registers[operation.b] + operation.immediate",
         )
     ],
     "add_not_wrapped": [
         (
-            "registers[o.a] = registers[o.b] + registers[o.c] & MASK",
-            "registers[o.a] = registers[o.b] + registers[o.c]",
+            "registers[operation.b] + registers[operation.c] & MASK",
+            "registers[operation.b] + registers[operation.c]",
         )
     ],
     "and_is_or": [
         (
-            "registers[o.a] = registers[o.b] & registers[o.c]",
-            "registers[o.a] = registers[o.b] | registers[o.c]",
+            "registers[operation.a] = registers[operation.b] & registers[operation.c]",
+            "registers[operation.a] = registers[operation.b] | registers[operation.c]",
         )
     ],
     "jeq_is_jne": [
         (
-            "nxt = o.immediate if registers[o.a] == registers[o.b] else nxt",
-            "nxt = o.immediate if registers[o.a] != registers[o.b] else nxt",
+            "if registers[operation.a] == registers[operation.b]\n",
+            "if registers[operation.a] != registers[operation.b]\n",
         )
     ],
     "jnz_is_jz": [
         (
-            "nxt = o.immediate if registers[o.a] != 0 else nxt",
-            "nxt = o.immediate if registers[o.a] == 0 else nxt",
+            "operation.immediate if registers[operation.a] != 0 else next_pc",
+            "operation.immediate if registers[operation.a] == 0 else next_pc",
         )
     ],
     "rand_leaves_seed": [
         (
             "                registers[SEED_REGISTER] = xorshift32(registers[SEED_REGISTER])\n"
-            "                registers[o.a] = registers[SEED_REGISTER]\n",
-            "                registers[o.a] = xorshift32(registers[SEED_REGISTER])\n",
+            "                registers[operation.a] = registers[SEED_REGISTER]\n",
+            "                registers[operation.a] = xorshift32(registers[SEED_REGISTER])\n",
         )
     ],
     "rand_wrong_shift": [("x ^= x << 5 & MASK", "x ^= x << 7 & MASK")],
     "mod_zero_gives_zero": [
         (
-            "                if registers[o.c] == 0:\n                    return self.fail(ERROR_MOD_ZERO, self.pc)\n"
-            "                registers[o.a] = registers[o.b] % registers[o.c]\n",
-            "                registers[o.a] = registers[o.b] % registers[o.c] if registers[o.c] else 0\n",
+            "                if registers[operation.c] == 0:\n                    return self.fail(ERROR_MOD_ZERO, self.pc)\n"
+            "                registers[operation.a] = registers[operation.b] % registers[operation.c]\n",
+            "                registers[operation.a] = registers[operation.b] % registers[operation.c] if registers[operation.c] else 0\n",
         )
     ],
     "event_auxiliary_not_masked": [
         (
-            "self.post(EVENT_STREAM, registers[o.a] & 0xFFFFFF)",
-            "self.post(EVENT_STREAM, registers[o.a])",
+            "self.post(EVENT_STREAM, registers[operation.a] & 0xFFFFFF)",
+            "self.post(EVENT_STREAM, registers[operation.a])",
         )
     ],
     "end_auxiliary_not_masked": [
@@ -321,7 +337,7 @@ MUTANTS = {
         )
     ],
     "wait_is_off_by_one": [
-        ("self.pending > o.immediate", "self.pending >= o.immediate")
+        ("self.pending > operation.immediate", "self.pending >= operation.immediate")
     ],
     "ack_in_the_same_pass": [
         (
@@ -342,12 +358,12 @@ MUTANTS = {
         )
     ],
     "excl_ignored": [
-        ("        if t.flags & FLAG_EXCLUSIVE and any(", "        if False and any(")
+        ("        if template.flags & FLAG_EXCLUSIVE and (", "        if False and (")
     ],
     "excl_touching_groups_wait": [
         (
-            "first < f + c and f < first + count for f, c in self.busy_groups()",
-            "first <= f + c and f <= first + count for f, c in self.busy_groups()",
+            "first < busy_first + busy_count and busy_first < first + count",
+            "first <= busy_first + busy_count and busy_first <= first + count",
         )
     ],
     "queue_flag_kept": [
@@ -358,20 +374,20 @@ MUTANTS = {
     ],
     "earlier_patch_wins": [
         (
-            "        for i in range(t.patch_count):\n            words[ARG_WORD[t.arg[i]]]",
-            "        for i in reversed(range(t.patch_count)):\n            words[ARG_WORD[t.arg[i]]]",
+            "        for i in range(template.patch_count):\n            words[ARG_WORD[template.arg[i]]]",
+            "        for i in reversed(range(template.patch_count)):\n            words[ARG_WORD[template.arg[i]]]",
         )
     ],
     "patch_list_ignores_patch_count": [
         (
-            "        for i in range(t.patch_count):\n            words[ARG_WORD[t.arg[i]]]",
-            "        for i in range(PATCHES):\n            words[ARG_WORD[t.arg[i]]]",
+            "        for i in range(template.patch_count):\n            words[ARG_WORD[template.arg[i]]]",
+            "        for i in range(PATCHES):\n            words[ARG_WORD[template.arg[i]]]",
         )
     ],
     "queued_job_reads_registers_at_submit": [
         (
-            "job = _Job(self.patched(self.templates[o.immediate]), count, self.pc)",
-            "job = _Job(self.templates[o.immediate], count, self.pc)",
+            "job = _Job(self.patched(self.templates[operation.immediate]), count, self.pc)",
+            "job = _Job(self.templates[operation.immediate], count, self.pc)",
         ),
         (
             "self.put(slot, job.words, first",
@@ -379,19 +395,21 @@ MUTANTS = {
         ),
     ],
     # the check
-    "check_ignores_version": [('or h["version"] != VERSION', "")],
-    "check_ignores_magic": [('h["magic"] != MAGIC or ', "")],
-    "check_accepts_zero_seed": [(' or h["seed"] == 0', "")],
+    "check_ignores_version": [('or header["version"] != VERSION', "")],
+    "check_ignores_magic": [('header["magic"] != MAGIC or ', "")],
+    "check_accepts_zero_seed": [(' or header["seed"] == 0', "")],
     "check_accepts_no_micro_ops": [
-        ('1 <= h["op_count"] <= MAX_OPS', 'h["op_count"] <= MAX_OPS')
+        ('1 <= header["op_count"] <= MAX_OPS', 'header["op_count"] <= MAX_OPS')
     ],
     "check_ignores_op_count_limit": [
-        ('1 <= h["op_count"] <= MAX_OPS', '1 <= h["op_count"]')
+        ('1 <= header["op_count"] <= MAX_OPS', '1 <= header["op_count"]')
     ],
-    "check_ignores_command_count_limit": [(' or h["command_count"] > MAX_OPS', "")],
-    "check_accepts_zero_max_steps": [('h["max_steps"] == 0 or ', "")],
+    "check_ignores_command_count_limit": [
+        (' or header["command_count"] > MAX_OPS', "")
+    ],
+    "check_accepts_zero_max_steps": [('header["max_steps"] == 0 or ', "")],
     "check_accepts_longer_uploads": [
-        (" or len(data) != _size(h)", " or len(data) < _size(h)")
+        (" or len(data) != _size(header)", " or len(data) < _size(header)")
     ],
     "check_ignores_the_region": [("or len(data) > region_size ", "")],
     "check_region_off_by_one": [
@@ -399,75 +417,95 @@ MUTANTS = {
     ],
     "check_ignores_unknown_opcodes": [
         (
-            "        if o.op not in OPS:\n            return StreamError(ERROR_OPCODE, pc)\n",
-            "        if o.op not in OPS:\n            continue\n",
+            "        if operation.op not in OPS:\n            return StreamError(ERROR_OPCODE, pc)\n",
+            "        if operation.op not in OPS:\n            continue\n",
         )
     ],
     "check_looks_at_unused_registers": [
         (
-            "        if any(getattr(o, f) >= REGISTERS for f in fields):",
-            "        if any(getattr(o, f) >= REGISTERS for f in 'abc'):",
+            "        if any(getattr(operation, operand) >= REGISTERS for operand in fields):",
+            "        if any(getattr(operation, operand) >= REGISTERS for f in 'abc'):",
         )
     ],
     "check_ignores_register_c": [
-        ("for f in fields", "for f in fields.replace('c', '')")
+        ("for operand in fields", "for operand in fields.replace('c', '')")
     ],
     "check_jump_target_equal_allowed": [
-        ('o.immediate >= h["op_count"]', 'o.immediate > h["op_count"]')
+        (
+            'operation.immediate >= header["op_count"]',
+            'operation.immediate > header["op_count"]',
+        )
     ],
     "check_template_index_equal_allowed": [
-        ('o.immediate >= h["command_count"]', 'o.immediate > h["command_count"]')
+        (
+            'operation.immediate >= header["command_count"]',
+            'operation.immediate > header["command_count"]',
+        )
     ],
     "check_templates_before_micro_ops": [
         (
-            "    first_use = {}\n    for pc, o in enumerate(ops):",
-            "    first_use = {}\n    for index, t in enumerate(templates):\n"
-            "        if _bad_template(t):\n            return StreamError(ERROR_TEMPLATE, 0)\n"
-            "    for pc, o in enumerate(ops):",
+            "    first_use = {}\n    for pc, operation in enumerate(ops):",
+            "    first_use = {}\n    for index, template in enumerate(templates):\n"
+            "        if _bad_template(template):\n            return StreamError(ERROR_TEMPLATE, 0)\n"
+            "    for pc, operation in enumerate(ops):",
         )
     ],
     "check_template_pc_zero": [("first_use.get(index, 0)", "0")],
     "check_template_pc_is_last_user": [
-        ("first_use.setdefault(o.immediate, pc)", "first_use[o.immediate] = pc")
+        (
+            "first_use.setdefault(operation.immediate, pc)",
+            "first_use[operation.immediate] = pc",
+        )
     ],
     "check_ignores_handler_zero": [
-        ("not 1 <= t.handler <= HANDLER_USER_MAX", "t.handler > HANDLER_USER_MAX")
+        (
+            "not 1 <= template.handler <= HANDLER_USER_MAX",
+            "template.handler > HANDLER_USER_MAX",
+        )
     ],
     "check_allows_host_handlers": [
-        ("not 1 <= t.handler <= HANDLER_USER_MAX", "not 1 <= t.handler <= 255")
+        (
+            "not 1 <= template.handler <= HANDLER_USER_MAX",
+            "not 1 <= template.handler <= 255",
+        )
     ],
-    "check_ignores_flag_bits": [(" or t.flags & ~(FLAG_EXCLUSIVE | FLAG_RESULT)", "")],
+    "check_ignores_flag_bits": [
+        (" or template.flags & ~(\n        FLAG_EXCLUSIVE | FLAG_RESULT\n    ):", ":")
+    ],
     "check_allows_queue_flag": [
         (
-            "~(FLAG_EXCLUSIVE | FLAG_RESULT)",
-            "~(FLAG_EXCLUSIVE | FLAG_RESULT | FLAG_QUEUE)",
+            "template.flags & ~(\n        FLAG_EXCLUSIVE | FLAG_RESULT\n    )",
+            "template.flags & ~(\n        FLAG_EXCLUSIVE | FLAG_RESULT | FLAG_QUEUE\n    )",
         )
     ],
     "check_five_patches_allowed": [
-        ("t.patch_count > PATCHES", "t.patch_count > PATCHES + 1")
+        ("template.patch_count > PATCHES", "template.patch_count > PATCHES + 1")
     ],
-    "check_ignores_patch_argument": [("t.arg[i] >= ARGS or ", "")],
-    "check_ignores_patch_register": [(" or t.register[i] >= REGISTERS", "")],
+    "check_ignores_patch_argument": [("template.arg[i] >= ARGS or ", "")],
+    "check_ignores_patch_register": [(" or template.register[i] >= REGISTERS", "")],
     "check_checks_unused_patches": [
         (
-            "any(t.arg[i] >= ARGS or t.register[i] >= REGISTERS for i in range(t.patch_count))",
-            "any(t.arg[i] >= ARGS or t.register[i] >= REGISTERS for i in range(PATCHES))",
+            "for i in range(template.patch_count)\n    ):",
+            "for i in range(PATCHES)\n    ):",
         )
     ],
     "check_ignores_first_register": [
         (
-            "for r in (t.first_register, t.count_register)",
-            "for r in (t.count_register,)",
+            "for register in (template.first_register, template.count_register)",
+            "for register in (template.count_register,)",
         )
     ],
     "check_ignores_count_register": [
         (
-            "for r in (t.first_register, t.count_register)",
-            "for r in (t.first_register,)",
+            "for register in (template.first_register, template.count_register)",
+            "for register in (template.first_register,)",
         )
     ],
     "check_demands_zero_padding": [
-        ('    if h["max_steps"] == 0', '    if any(data[32:64]) or h["max_steps"] == 0')
+        (
+            '    if header["max_steps"] == 0',
+            '    if any(data[32:64]) or header["max_steps"] == 0',
+        )
     ],
     "bad_upload_req_always_zero": [
         (
