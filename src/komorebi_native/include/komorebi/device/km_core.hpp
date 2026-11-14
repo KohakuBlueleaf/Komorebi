@@ -111,6 +111,10 @@ namespace km {
         kWhereOverlayFind == kWhereMessagesCounter + 1 && kWhereOverlayMeet < 40,
         "overlay where codes: 36 to 38, after the dynamic ones"
     );
+    // A dynamic run whose handlers are overlay parts: a message names a handler (or a
+    // program) that is not the program's; a handler's part did not load.
+    constexpr uint32_t kWhereMessagesHandler = 40;
+    constexpr uint32_t kWhereMessagesLoad = 41;
     static_assert(
         kWhereMessagesGap == kWhereEmit + 1 &&
             kWhereMessagesCounter == kWhereMessagesGap + 16 &&

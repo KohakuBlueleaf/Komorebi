@@ -7,6 +7,12 @@
 #include "km_core.hpp"
 #include "km_command.hpp"
 
+#if defined(KM_MESSAGE_PARTS)
+#include "km_overlay.hpp"
+#elif defined(KM_MESSAGE_HANDLERS)
+#error "the runtime's messages kernels of handlers as parts define KM_MESSAGE_PARTS"
+#endif
+
 namespace km {
 
     // Arguments of a dynamic program: reader and writer program arguments 0 to
@@ -72,6 +78,37 @@ namespace km {
     inline uint32_t messages_handler(uint32_t word) {
         return word >> kMessagesHandlerShift & 0xFF;
     }
+
+    // Handlers as overlay parts (km_message): a RUN names one of the first four. The
+    // packet header's groups by handler: their count, each one's end, the messages.
+    constexpr uint32_t kMessagesHandlersMax = 16;
+    constexpr uint32_t kMessagesGroups = 2;      // header word: groups in the packet
+    constexpr uint32_t kMessagesGroupEnds = 16;  // header byte: a byte per group
+    constexpr uint32_t kMessagesOrder = 32;      // header byte: a byte per message
+    static_assert(
+        kMessagesGroupEnds + kMessagesHandlersMax <= kMessagesOrder &&
+            kMessagesOrder + kMessagesPacket <= kMessagesHeader,
+        "a packet's groups fit its header"
+    );
+
+#if defined(KM_MESSAGE_HANDLERS)
+    // The overlay of the handler of a message with word 0 `word`: 1 + the handler's
+    // place in the program's list (KM_MESSAGE_HANDLERS, from the host); 0: none.
+    inline uint32_t message_overlay(uint32_t word) {
+        static const uint8_t handlers[] = {KM_MESSAGE_HANDLERS};
+        static_assert(sizeof(handlers) <= kMessagesHandlersMax, "too many handlers");
+        if (word >> kMessagesProgramShift != 0) {
+            return 0;  // another program's
+        }
+        const uint32_t handler = messages_handler(word);
+        for (uint32_t index = 0; index < sizeof(handlers); index++) {
+            if (handlers[index] == handler) {
+                return index + 1;
+            }
+        }
+        return 0;
+    }
+#endif
 
     // Queue position `position` of core `core`: DRAM page and byte offset in it.
     inline uint32_t messages_page(uint32_t core, uint32_t position, uint32_t capacity) {
@@ -215,6 +252,79 @@ namespace km {
         return true;
     }
 
+#if defined(KM_MESSAGE_HANDLERS)
+    // Groups the packet's `count` messages by handler into its header, held handlers
+    // first. 0, or the word 0 of a message whose handler is not the program's.
+    inline uint32_t message_groups(
+        uint32_t control, uint32_t page, uint32_t count, uint32_t message_bytes
+    ) {
+        uint8_t numbers[kMessagesPacket];
+        uint8_t sizes[kMessagesHandlersMax + 1] = {};
+        uint8_t starts[kMessagesHandlersMax + 1];
+        for (uint32_t index = 0; index < count; index++) {
+            const uint32_t word = l1(page + kMessagesHeader + index * message_bytes)[0];
+            const uint32_t number = message_overlay(word);
+            if (number == 0) {
+                return word;
+            }
+            numbers[index] = number;
+            sizes[number]++;
+        }
+        volatile tt_l1_ptr uint8_t*
+            header = (reinterpret_cast<volatile tt_l1_ptr uint8_t*>(page));
+        uint32_t groups = 0, at = 0;
+        for (uint32_t held = 2; held-- > 0;) {
+            for (uint32_t number = 1; number <= kMessagesHandlersMax; number++) {
+                if (
+                    sizes[number] != 0 &&
+                    overlay_members_held(control, number) == (held != 0)
+                ) {
+                    starts[number] = at;
+                    at += sizes[number];
+                    header[kMessagesGroupEnds + groups++] = at;
+                }
+            }
+        }
+        for (uint32_t index = 0; index < count; index++) {
+            header[kMessagesOrder + starts[numbers[index]]++] = index;
+        }
+        l1(page)[kMessagesGroups] = groups;
+        return 0;
+    }
+
+    // The overlay of group `group` of the packet at `page`: its first message's.
+    inline uint32_t message_group_overlay(
+        uint32_t page, uint32_t group, uint32_t message_bytes
+    ) {
+        volatile tt_l1_ptr uint8_t*
+            header = (reinterpret_cast<volatile tt_l1_ptr uint8_t*>(page));
+        const uint32_t first = group == 0 ? 0 : header[kMessagesGroupEnds + group - 1];
+        return (
+            message_overlay(l1(
+                page + kMessagesHeader + header[kMessagesOrder + first] * message_bytes
+            )[0])
+        );
+    }
+
+    // The reader loads the part of every group of a packet it has pushed, in order:
+    // compute meets it there when the tile does not hold one. False: gave up.
+    template <typename ReaderType>
+    inline bool message_loads(
+        ReaderType& reader, uint32_t page, uint32_t message_bytes
+    ) {
+        const uint32_t groups = l1(page)[kMessagesGroups];
+        for (uint32_t group = 0; group < groups; group++) {
+            Overlay<ReaderType> part(
+                reader, message_group_overlay(page, group, message_bytes)
+            );
+            if (!part.load()) {
+                return false;
+            }
+        }
+        return true;
+    }
+#endif
+
     // Generic reader: this core's queue in order, to compute in packets; idle and busy
     // lines to the submitter; leaves on the run's end, the stop flag or an error.
     template <typename ReaderType>
@@ -305,6 +415,16 @@ namespace km {
         ) {
             where = kWhereMessagesCounter;
         }
+#if defined(KM_MESSAGE_HANDLERS)
+        // The RUN command's handler seeds: its part, met by compute before the seeds.
+        uint32_t refused = 0;
+        if (where == 0 && !counter) {
+            Overlay<ReaderType> seeds(
+                reader, message_overlay(handler(command) << kMessagesHandlerShift)
+            );
+            where = seeds.load() ? 0 : kWhereMessagesLoad;
+        }
+#endif
         const uint64_t tail_line = (
             counter
                 ? 0
@@ -528,21 +648,39 @@ namespace km {
                 continue;
             }
             waiting_from = 0;
+#if defined(KM_MESSAGE_HANDLERS)
+            refused = (
+                message_groups(
+                    arguments.control, page, valid, messages_arguments.message_bytes
+                )
+            );
+            if (refused != 0) {
+                where = kWhereMessagesHandler;
+                break;
+            }
+#endif
             l1(page)[0] = valid;
             l1(page)[1] = head;
             cb_push_back(kCbMessagesIn, 1);
             head += valid;
             *head_word = head;
+#if defined(KM_MESSAGE_HANDLERS)
+            if (!message_loads(reader, page, messages_arguments.message_bytes)) {
+                where = kWhereMessagesLoad;
+                break;
+            }
+#endif
         }
         if (where != 0) {
             // a gap: word 0 of the message found at the head, for the report
+            const uint32_t seen = l1(get_write_ptr(kCbMessagesIn))[kMessagesHeader / 4];
+#if defined(KM_MESSAGE_HANDLERS)
             messages_gave_up(
-                arguments.control,
-                where,
-                head,
-                run,
-                l1(get_write_ptr(kCbMessagesIn))[kMessagesHeader / 4]
+                arguments.control, where, head, run, refused != 0 ? refused : seen
             );
+#else
+            messages_gave_up(arguments.control, where, head, run, seen);
+#endif
             status(KM_MESSAGES_GAVE_UP, head, where);
             reader.gave_up(kStReader, kGaveStop, kWhereData, slot(command), run);
         }
@@ -824,6 +962,10 @@ namespace km {
         uint32_t base;  // byte address of message 0
         uint32_t message_bytes;
         uint32_t* current = nullptr;  // Messages: the handler of the message taken last
+#if defined(KM_MESSAGE_PARTS)
+        // A handler's group: its messages' places in the packet (the header's order).
+        const volatile tt_l1_ptr uint8_t* order = nullptr;
+#endif
 
         explicit operator bool() const {
             return count != 0;
@@ -831,6 +973,9 @@ namespace km {
 
         // Message `index`; its handler becomes the one forward() and send() keep.
         const volatile tt_l1_ptr uint32_t* operator[](uint32_t index) const {
+#if defined(KM_MESSAGE_PARTS)
+            index = order != nullptr ? order[index] : index;
+#endif
             const volatile tt_l1_ptr uint32_t* message = (
                 l1(base + index * message_bytes)
             );
@@ -857,6 +1002,9 @@ namespace km {
             message_bytes_(compute.arg(kMessagesCArgMessage)),
             quota_(compute.arg(kMessagesCArgQuota)),
             handler_(km::handler(command)),
+#if defined(KM_MESSAGE_PARTS)
+            command_(command),
+#endif
             seeded_(rank_ >= count_) {
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* messages = (
@@ -901,6 +1049,18 @@ namespace km {
         uint32_t handler() const {
             return handler_;
         }
+
+#if defined(KM_MESSAGE_PARTS)
+        // The run's RUN command (its argument words are the program's).
+        const km_command_t& command() const {
+            return command_;
+        }
+
+        // The program's compute argument `index` (after the runtime's dynamic ones).
+        uint32_t arg(uint32_t index) const {
+            return get_arg_val<uint32_t>(kComputeArgs + kMessagesCArgs + index);
+        }
+#endif
 
         // The next packet; empty when the run ended, the stop flag was set or a wait
         // gave up. Unpack waits and tells math and pack.
@@ -1146,11 +1306,22 @@ namespace km {
         uint32_t message_bytes_;
         uint32_t quota_;
         uint32_t handler_;
+#if defined(KM_MESSAGE_PARTS)
+        const km_command_t& command_;
+#endif
         bool seeded_;
         uint32_t pushed_ = 0;
         uint32_t consumed_ = 0;
         bool failed_ = false;
     };
+
+#if defined(KM_MESSAGE_PARTS)
+    // What the runtime's compute hands a handler's part: km_message(messages, packet).
+    struct MessageCall {
+        Messages* messages;
+        Packet* packet;
+    };
+#endif
 
 }  // namespace km
 #endif

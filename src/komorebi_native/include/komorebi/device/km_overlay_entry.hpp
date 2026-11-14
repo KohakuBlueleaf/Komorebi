@@ -69,6 +69,13 @@ static uint32_t km_program_part(
 }
 #endif
 
+#if defined(KM_MESSAGE_PART)
+// The function the entry calls (KM_OVERLAY_FUNCTION): the handler's km_message.
+static void km_message_part(KM_OVERLAY_KERNEL&, const km::MessageCall& call) {
+    km_message(*call.messages, *call.packet);
+}
+#endif
+
 // The builder's linker script: the part's .bss, hidden so that a position-independent
 // build reaches them without a table entry.
 extern "C" uint32_t __km_overlay_bss_start[] __attribute__((visibility("hidden")));

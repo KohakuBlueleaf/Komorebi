@@ -225,7 +225,8 @@ def test_dynamic_words_and_a_named_dynamic_give_up():
     codes = [
         CONSTANTS[f"kWhereMessages{where}"] for where in device_state.MESSAGES_WHERES
     ]
-    assert codes == list(range(19, 19 + len(codes)))  # after the runtime's 1 to 18
+    # after the runtime's 1 to 18; handler and load follow the overlays' 36 to 38
+    assert codes == [*range(19, 36), 40, 41]
 
 
 def test_where_codes_are_one_list_without_repeats():

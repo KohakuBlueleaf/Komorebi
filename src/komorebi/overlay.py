@@ -39,6 +39,7 @@ KERNEL_CLASSES = {
 }
 FUNCTION = "km_overlay"  # the part's function: (kernel object, const argument&)
 PROGRAM_FUNCTION = "km_program_part"  # a program's part: its km_program (entry hpp)
+MESSAGE_FUNCTION = "km_message_part"  # a handler's part: its km_message (entry hpp)
 COMPILE_ARGS = "-DKERNEL_COMPILE_TIME_ARGS="  # a program's part gives its own
 OVERLAY = re.compile(
     r"constexpr\s+uint32_t\s+kOverlay(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;"
@@ -109,7 +110,8 @@ def overlays_from_header(path):
 class Overlay:
     """An overlay of a program: its number (1 to 63) and a source per kernel that has a
     part ("reader", "writer", "compute"); `defines` go to its parts' builds only. A
-    program's overlay (`program`) calls km_program with its own `compile_args`."""
+    program's overlay (`program`) calls km_program with its own `compile_args`; a
+    dynamic handler's (`message`, a compute part) calls km_message."""
 
     name: str
     number: int
@@ -117,6 +119,7 @@ class Overlay:
     defines: dict = field(default_factory=dict)
     program: bool = False
     compile_args: dict = field(default_factory=dict)  # kernel -> [words]
+    message: bool = False
 
     def __post_init__(self):
         most = constants()["kOverlaysMax"] - 1
@@ -131,6 +134,8 @@ class Overlay:
         missing = [str(p) for p in self.sources.values() if not Path(p).is_file()]
         if missing:
             raise FileNotFoundError(f"overlay {self.name}: no source {missing}")
+        if self.message and set(self.sources) != {"compute"}:
+            raise ValueError(f"handler {self.name}: its body is one compute part")
 
     def parts(self):
         """[(kernel, part)] of the overlay, in the area's part order."""
@@ -384,11 +389,17 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None):
     stem = f"{re.sub(r'[^\w.-]', '_', overlay.name)}-{part}"
     scratch = Path(cache) / "sources"
     scratch.mkdir(parents=True, exist_ok=True)
+    function = FUNCTION
+    if overlay.program:
+        function = PROGRAM_FUNCTION
+    elif overlay.message:
+        function = MESSAGE_FUNCTION
     defines = {
         "KM_OVERLAY_PART": 1,
         "KM_OVERLAY_KERNEL": KERNEL_CLASSES[kernel],
-        "KM_OVERLAY_FUNCTION": PROGRAM_FUNCTION if overlay.program else FUNCTION,
+        "KM_OVERLAY_FUNCTION": function,
         **({"KM_PROGRAM_PART": 1} if overlay.program else {}),
+        **({"KM_MESSAGE_PART": 1, "KM_MESSAGE_PARTS": 1} if overlay.message else {}),
         **overlay.defines,
     }
     compile_args = overlay.compile_args.get(kernel, []) if overlay.program else None

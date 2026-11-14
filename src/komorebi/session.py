@@ -1138,6 +1138,8 @@ class _Backend:
         all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
         include = [str(abi.headers().abi.parents[2])]
         defines = [(name, str(value)) for name, value in program.defines.items()]
+        if program.messages is not None:
+            defines += program.messages.defines()
         for index, fmt, page, pages in self._cbs(program.buffers):
             launch.cb(all_cores, index, fmt, page, page * pages)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]

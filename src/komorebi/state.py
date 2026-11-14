@@ -197,6 +197,8 @@ MESSAGES_WHERES = {
     "Fill": "fill",
     "Full": "full",
     "Counter": "counter",
+    "Handler": "handler",
+    "Load": "load",
 }  # kWhereMessages*
 
 

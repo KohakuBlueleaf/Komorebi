@@ -1,10 +1,12 @@
-"""A message names its handler: word 0's packing (lap mark, handler, program) and the
-host's declaration of several dynamic handlers."""
+"""A message names its handler: word 0's packing (lap mark, handler, program), the
+host's declaration of several dynamic handlers, and of handlers as overlay parts."""
 
 import pytest
 
 import komorebi as km
 from komorebi import abi
+from komorebi.errors import ProgramError
+from komorebi.overlay import Overlay
 from komorebi.program import Dynamic, message_word, messages_header
 
 
@@ -68,3 +70,62 @@ def test_a_program_declares_its_dynamic_handlers_by_name():
     assert one.messages.handlers == (2,) and one.messages.word() == 2
     with pytest.raises(KeyError):
         km.Program("missing", ".", handlers=names).dynamic("lookup", "nothing")
+
+
+def parts_folder(tmp_path, names):
+    for name in names:
+        (tmp_path / f"{name}.cpp").write_text("// a handler's part\n")
+    return tmp_path
+
+
+def test_handlers_as_parts_are_overlays_under_the_runtimes_kernels(tmp_path):
+    names = {"lookup": 1, "value": 2, "report": 3}
+    folder = parts_folder(tmp_path, names)
+    program = km.Program("parts", None, handlers=names)
+    program.dynamic("value", "lookup", "report", parts=folder)
+    assert [(o.name, o.number, o.message) for o in program.overlays.values()] == [
+        ("value", 1, True),
+        ("lookup", 2, True),
+        ("report", 3, True),
+    ]
+    assert program.overlays["lookup"].sources == {"compute": folder / "lookup.cpp"}
+    assert {path.name for path in program.sources().values()} == {
+        "messages_reader.cpp",
+        "messages_compute.cpp",
+        "messages_writer.cpp",
+    }
+    assert program.messages.defines() == [
+        ("KM_MESSAGE_PARTS", "1"),
+        ("KM_MESSAGE_HANDLERS", "2,1,3"),
+    ]
+    assert program.overlay_slots.of("compute", program.overlays.values()) == (3, None)
+
+
+def test_parts_allow_sixteen_handlers_and_a_run_names_one_of_the_first_four():
+    most = messages_header()[0]["kMessagesHandlersMax"]
+    dynamic = Dynamic(handler=1, handlers=tuple(range(1, most + 1)), parts=True)
+    assert dynamic.word() == 1 | 2 << 8 | 3 << 16 | 4 << 24
+    with pytest.raises(ValueError, match="dynamic handlers"):
+        Dynamic(handler=1, handlers=tuple(range(1, most + 2)), parts=True)
+
+
+def test_parts_and_a_programs_own_overlays_are_refused_together(tmp_path):
+    names = {"lookup": 1, "value": 2}
+    folder = parts_folder(tmp_path, ["lookup", "value", "reader"])
+    program = km.Program("both", None, handlers=names)
+    program.overlay("own", {"reader": folder / "reader.cpp"}, number=5)
+    with pytest.raises(ProgramError, match="overlays of its own"):
+        program.dynamic("lookup", "value", parts=folder)
+    program = km.Program("parts", None, handlers=names)
+    program.dynamic("lookup", "value", parts=folder)
+    with pytest.raises(ProgramError, match="no overlays of its own"):
+        program.overlay("own", {"reader": folder / "reader.cpp"}, number=5)
+
+
+def test_a_missing_part_is_refused(tmp_path):
+    names = {"lookup": 1, "value": 2}
+    folder = parts_folder(tmp_path, ["lookup"])
+    with pytest.raises(FileNotFoundError, match="value"):
+        km.Program("p", None, handlers=names).dynamic("lookup", "value", parts=folder)
+    with pytest.raises(ValueError, match="one compute part"):
+        Overlay("lookup", 1, {"reader": folder / "lookup.cpp"}, message=True)

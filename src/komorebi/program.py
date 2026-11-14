@@ -15,7 +15,7 @@ from komorebi import _env, abi
 from komorebi.abi import handlers_from_header
 from komorebi.errors import ProgramError
 from komorebi.movement import check_pairs
-from komorebi.overlay import Slots, declare, overlays_from_header
+from komorebi.overlay import Overlay, Slots, declare, overlays_from_header
 from komorebi.thread import Thread
 
 KERNELS = ("reader", "compute", "writer")
@@ -258,6 +258,11 @@ class Program:
         kOverlay<Name> of the handlers' header. Returns the program."""
         if name in self.overlays:
             raise ValueError(f"{self.name} already has an overlay {name!r}")
+        if self.messages is not None and self.messages.parts:
+            raise ProgramError(
+                f"{self.name}: its handlers are parts, which take the overlay numbers; "
+                "it has no overlays of its own"
+            )
         if number is None:
             numbers = overlays_from_header(self.header) if self.header else {}
             if name not in numbers:
@@ -306,6 +311,8 @@ class Program:
         """{"reader": path, "compute": path, "writer": path}, each an existing file (a
         movement program: its movement source for reader and writer); checks the pairs.
         """
+        if self.messages is not None and self.messages.parts:
+            return message_kernels()
         movement = self.movement()
         names = MOVEMENT_KERNELS if movement else KERNELS
         if isinstance(self.kernels, dict):
@@ -372,13 +379,35 @@ class Program:
             )
         return form
 
-    def dynamic(self, handler, *handlers, **options):
+    def dynamic(self, handler, *handlers, parts=None, **options):
         """Makes `handler`, and each of `handlers`, a dynamic handler of one message
-        loop (options: those of Dynamic) and adds its buffers. Returns the program."""
+        loop (options: those of Dynamic) and adds its buffers. `parts`: each body as an
+        overlay part, a folder of <name>.cpp or {name: source}. Returns the program."""
         if self.messages is not None:
             raise ValueError(f"{self.name} already has a dynamic handler")
+        if parts is not None and self.overlays:
+            raise ProgramError(
+                f"{self.name}: handlers as parts take the overlay numbers; a program "
+                "with overlays of its own keeps its handlers in its compute kernel"
+            )
         numbers = tuple(int(self.handler(each)) for each in (handler, *handlers))
-        self.messages = Dynamic(handler=numbers[0], handlers=numbers, **options)
+        messages = Dynamic(
+            handler=numbers[0], handlers=numbers, parts=parts is not None, **options
+        )
+        if parts is not None:
+            names = {number: name for name, number in self.handlers.items()}
+            for index, number in enumerate(numbers):
+                name = names.get(number, str(number))
+                if isinstance(parts, dict):
+                    source = parts.get(name, parts.get(number))
+                    if source is None:
+                        raise ValueError(f"{self.name}: no part for handler {name}")
+                else:
+                    source = Path(parts) / f"{name}.cpp"
+                self.overlays[name] = Overlay(
+                    name, index + 1, {"compute": Path(source)}, message=True
+                )
+        self.messages = messages
         self.buffers = [*self.buffers, *self.messages.buffers()]
         return self
 
@@ -388,6 +417,13 @@ class Program:
             return [], [], []
         reader, writer, compute = self.args(core)
         return list(reader), list(writer), list(compute)
+
+
+def message_kernels():
+    """{"reader", "compute", "writer"}: the runtime's kernels of a dynamic program
+    whose handlers are overlay parts."""
+    folder = _env.include_directory().parent / "kernels"
+    return {kernel: folder / f"messages_{kernel}.cpp" for kernel in KERNELS}
 
 
 @functools.cache
@@ -413,10 +449,10 @@ def message_word(position, queue_messages, handler, program=0):
 
 @dataclass(frozen=True)
 class Dynamic:
-    """Dynamic `handlers` (default: `handler` alone): messages of `message_bytes` move
-    between the group's queues (`queue_messages` each), at most `max_live` alive; `bins`
-    open bins per writer; a line says idle after `idle_cycles`. The last `counters`
-    cores of a run's group are counter tiles (layout.counter_tiles)."""
+    """Dynamic `handlers` (default: `handler` alone; `parts`: bodies as overlay parts)
+    with messages of `message_bytes` in the group's queues (`queue_messages` each), at
+    most `max_live` alive; `bins` open bins per writer; idle after `idle_cycles`; the
+    last `counters` cores of a run's group are counter tiles (layout.counter_tiles)."""
 
     handler: int
     message_bytes: int = 64
@@ -426,13 +462,18 @@ class Dynamic:
     idle_cycles: int = 20000
     counters: int = 2
     handlers: tuple = ()
+    parts: bool = False
 
     def __post_init__(self):
         constants, _ = messages_header()
         handlers = tuple(int(number) for number in self.handlers) or (self.handler,)
         object.__setattr__(self, "handlers", handlers)
         user_max = abi.headers()["KM_HANDLER_USER_MAX"]
-        most = abi.headers()["KM_DYNAMIC_MAX"]
+        most = (
+            constants["kMessagesHandlersMax"]
+            if self.parts
+            else abi.headers()["KM_DYNAMIC_MAX"]
+        )
         if self.handler not in handlers or len(set(handlers)) < len(handlers):
             raise ValueError(
                 f"dynamic handlers {handlers}: distinct, with {self.handler}"
@@ -515,9 +556,19 @@ class Dynamic:
             raise ValueError("a dynamic run needs ring depth 2 for its end command")
 
     def word(self):
-        """The dynamic handlers as the kernels and the dispatcher read them, one a byte
-        (KM_IS_DYNAMIC); one handler's word is its number."""
-        return sum(number << 8 * index for index, number in enumerate(self.handlers))
+        """The handlers a RUN command may name (the first KM_DYNAMIC_MAX) as the
+        kernels and the dispatcher read them, one a byte; one handler's is its number.
+        """
+        runs = self.handlers[: abi.headers()["KM_DYNAMIC_MAX"]]
+        return sum(number << 8 * index for index, number in enumerate(runs))
+
+    def defines(self):
+        """The defines of the runtime's kernels of handlers as parts: the program's
+        handlers in order (handler i is overlay i + 1)."""
+        if not self.parts:
+            return []
+        handlers = ",".join(str(number) for number in self.handlers)
+        return [("KM_MESSAGE_PARTS", "1"), ("KM_MESSAGE_HANDLERS", handlers)]
 
     def quota(self, cores):
         """Sends each core starts a run with, for a group of `cores` cores."""
