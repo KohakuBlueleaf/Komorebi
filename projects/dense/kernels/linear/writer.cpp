@@ -167,7 +167,13 @@ void kernel_main() {
         const uint32_t islands = km::islands();
         invalidate_l1_cache();  // the tensor table
         const Span mine = k_part(w, here, k_whole, n_whole);
-        bool sync = exchanging(w, y, m_tiles, k_whole, n_whole);
+        const uint32_t x = command.a0;
+        bool sync = exchanging(x, w, y, m_tiles, k_whole, n_whole);
+        // the rows this island makes: the plan's rows start at its first
+        const Span made = made_rows(x, here, m_tiles, k_whole);
+        const auto window_of = [&](uint32_t to) {
+            return window(x, y, here, to, m_tiles, k_whole, n_whole);
+        };
         const Holding y_here = holding(y, here, m_tiles * n_whole);
         const auto y_matrix = TensorAccessor(y_args, y_here.address);
         // this core's put not yet counted (its tiles still held)
@@ -196,9 +202,13 @@ void kernel_main() {
             const uint32_t subblock_height = plan(kPlSh);
             const uint32_t subblock_width = plan(kPlSw);
             const uint32_t subblock_tiles = subblock_height * subblock_width;
-            const uint32_t first_row = core(kCoreM0), first_column = core(kCoreN0);
+            const uint32_t first_row = made.first + core(kCoreM0);
+            const uint32_t first_column = core(kCoreN0);
+            const uint32_t made_end = made.first + made.count;
             const uint32_t row_end = (
-                first_row + plan(kPlPcM) < m_tiles ? first_row + plan(kPlPcM) : m_tiles
+                first_row + plan(kPlPcM) < made_end
+                    ? first_row + plan(kPlPcM)
+                    : made_end
             );
             const Sent sent = {core(kCoreSetPages), core(kCoreSent)};
             const Holding w_here = holding(w, here, k_whole * n_whole);
@@ -206,7 +216,7 @@ void kernel_main() {
             uint32_t step = 0;
             for (uint32_t turn = 1; turn <= islands; ++turn) {
                 const uint32_t to = island_at(here, turn);
-                const Span window = columns(y, to, m_tiles, n_whole);
+                const Span window = window_of(to);
                 if (window.count == 0) {
                     continue;
                 }
