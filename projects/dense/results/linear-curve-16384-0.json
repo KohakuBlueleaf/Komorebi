@@ -1,0 +1,139 @@
+{
+ "m": 16384,
+ "k": 16384,
+ "n": 16384,
+ "cards": [
+  0
+ ],
+ "links": 0,
+ "split_w": 0,
+ "split_x": 0,
+ "upload_s": 2.332,
+ "placements": {
+  "x": [
+   [
+    0,
+    512
+   ]
+  ],
+  "w": [
+   [
+    0,
+    512
+   ]
+  ],
+  "y": [
+   [
+    0,
+    512
+   ]
+  ],
+  "p": [
+   [
+    0,
+    1
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 512,
+   "kt": 512,
+   "nt": 512,
+   "rows": 10,
+   "cols": 12,
+   "pcm": 52,
+   "pcn": 44,
+   "bm": 4,
+   "bn": 44,
+   "kb": 2,
+   "sh": 1,
+   "sw": 4,
+   "wa": 2,
+   "ww": 2,
+   "layout": "2d",
+   "l1": 1131520,
+   "form": "grid",
+   "nk": 256,
+   "nbh": 13,
+   "nbw": 1,
+   "rect": [
+    0,
+    0,
+    12,
+    10
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 28232,
+    "NCRISC": 32488,
+    "TRISC0": 12584,
+    "TRISC1": 6400,
+    "TRISC2": 7156
+   },
+   "total": 87888
+  },
+  "crossed_bytes": {
+   "x": 0,
+   "y": 0,
+   "partials": 0,
+   "all": 0
+  },
+  "loop": {
+   "single_microseconds": [
+    76240.54,
+    76289.32,
+    76312.62
+   ],
+   "reps": 40,
+   "seconds": 3.601,
+   "microseconds_per_call": 90030.641,
+   "part_microseconds_median": [
+    94807.51000000001
+   ],
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 0.0,
+    "pages": 0.0,
+    "parts": 0.0,
+    "puts": 0.0,
+    "bytes": 0.0
+   },
+   "aiclk_mhz": {
+    "0": [
+     1068,
+     1137.2,
+     1343
+    ]
+   }
+  },
+  "run": {
+   "cores": 120,
+   "kernel": [
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "check": {
+   "max_rel": 0.0055574524070737255,
+   "rms_rel": 0.00396046160629658,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 1.994
+  },
+  "tflops": 97.7,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "3.70",
+  "3.83",
+  "4.39"
+ ]
+}

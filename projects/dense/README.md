@@ -335,7 +335,7 @@ one card through the card's own session. The runs' JSON lines are in `results/`
 | Preset | Cards | Row tiles per island | Loop, us per call | TFLOP/s | Single call, us | AICLK mean, MHz | Upload, s | Read-back, s |
 |---|---|---|---|---|---|---|---|---|
 | `sq8192` | 0 | 256 | 13,562.5 | 81.1 | 5,788 | 1039 | 2.94 | 0.51 |
-| `sq8192` | 0, 1 | 128 / 128 | 4,269.2 | 257.5 | 2,931 | 925 / 980 | 1.23 | 0.27 |
+| `sq8192`, W copied on both islands: no crossing | 0, 1 | 128 / 128 | 4,269.2 | 257.5 | 2,931 | 925 / 980 | 1.23 | 0.27 |
 | `sq8192`, B moved once a call | 0, 1 | 128 / 128 | 27,196.9 | 40.4 | 2,942 | 1350 / 1350 | 1.12 | 0.27 |
 | `sq8192`, by rank | 0 | 256 | 13,192.0 | 83.3 | 5,717 | 1034 | 0.85 | 0.28 |
 | `sq8192`, by rank | 0, 1 | 136 / 120 | 5,242.3 | 209.7 | 4,686 | 970 / 1208 | 1.12 | 0.27 |
@@ -343,9 +343,10 @@ one card through the card's own session. The runs' JSON lines are in `results/`
 | `sq16384`, by rank | 0, 1 | 272 / 240 | 48,306.7 | 182.1 | 42,259 | 1170 / 1173 | 3.99 | 0.28 |
 
 Every check passed (relative RMS 3.96e-3 to 3.97e-3, largest 5.6e-3 to 6.5e-3).
-Placed by island, both islands of `sq8192` get 128 row tiles and the same plan (bands
-of 13 x 24, blocks of 7 x 24, K blocks of 4): 4,269.2 us per call, 0.50 of the best
-one-card run (8,608.3 above) and 0.81 of the by-rank split, whose island 1 got blocks
+Placed by island, with W copied on both islands (nothing crosses; not the
+linear layer of the next section, which holds W once), both islands of `sq8192` get
+128 row tiles and the same plan (bands of 13 x 24, blocks of 7 x 24, K blocks of 4):
+4,269.2 us per call, 0.50 of the best one-card run (8,608.3 above) and 0.81 of the by-rank split, whose island 1 got blocks
 of 12 x 24 with K blocks of 1 tile and was the slower part. Both one-card `sq8192` loops
 ran in the slower of the two modes described above (13,192 and 13,562 us): the same
 plan and kernels as `bench.py`, which runs 21 single calls, then waits 1 s and runs
@@ -446,6 +447,134 @@ hint keeps A's rows home and those cubes have only the unhinted row. Over island
 script's command deadline is three times the call at 2 TFLOP/s (the project's 20 TFLOP/s
 gave the 16,384 cubed call 1.37 s, short of its 1.61 s).
 
+## A linear layer written for islands
+
+`linear.py` and `kernels/linear/` are one set of kernels for Y = X x W that runs
+unchanged on one island or several: one program, one LINEAR command a call on every
+rank of the session, X, W and Y placed by a split hint (`--split-w 0`: W and Y split
+along their rows, so W along K; `--split-w 1`: along their columns, so W along N; X by
+`--split-x`, default its rows), W never copied. The script places and submits; it
+never names an island, and the kernels hold no island count. Every decision comes
+from the tensors' reference words (`km::page_at` and the tensor table: the part of W
+each island holds) and from `km::island()`, `km::islands()` and the command's group:
+
+- **Each island computes with the part of W it holds**: a block of W's [K, N] tiles,
+  whole rows (K tiles k0 to k0 + k, all of N) or whole columns (all of K, N tiles n0
+  to n0 + n). Its ranks run the grid form above over that block (the project's plan
+  for the largest part and its two broadcasts, both inside the island).
+- **X through `km::read_pages`**: the row broadcast's sender reads each row of an X
+  block where it lives; a row another island holds is asked of it.
+- **The output follows from what the parts cover** (every island reads all of W's
+  entry, so all agree). Each holder holds all of K (W split along N, or all of W on
+  one island): its product is its columns of Y, written where Y's pages are (here, or
+  put across with `km::write_pages`), and an island holding none of W does nothing.
+  Else each island holding part of K writes its fp32 partial sums of all of Y into P
+  (scratch on every island, `copy=True`); a barrier (a binary tree of `km::emit` inside
+  the island, its leader to the other leaders through `km::to_island(i).put`, the
+  tree back down) says every island's are written; then each core takes its share
+  (`km::partition` of the Y pages its island holds over the island's ranks): each
+  holder's partial sums of them, its own island's read here, every other's asked
+  (`km::ask_pages`, the page path), added in fp32 and written as Y.
+
+The reduce over islands is not used for the sums: its relay carries at most 16 KiB a
+send, from one leader a command, where a call's partial sums are the whole of Y
+(64 MiB an island at 8192 cubed). Here the sums travel as pages asked of their holder
+(the page path's packets) and the relay carries only the barrier's 32-byte tokens.
+
+On one island every part is the whole: W's part is all of K, so the kernels run the
+grid form and write Y, and nothing is asked. Beside the project's own grid kernels
+(`kernels/grid`), the same plan in the same session (card 0, `--beside`):
+
+| Cube | Kernels | Text, B (BRISC / NCRISC / TRISC 0, 1, 2) | Kernel buffer, B | Single call, us | Loop, us per call | TFLOP/s | AICLK min / mean, MHz |
+|---|---|---|---|---|---|---|---|
+| 1024 | linear | 26,348 / 26,340 / 13,288, 5,588, 6,264 | 78,848 | 40.4 to 41.6 | 43.76 | 49.07 | 1343 / 1349 |
+| 8192 | linear | 26,348 / 26,340 / 13,288, 5,588, 6,264 | 78,848 | 5,757 to 5,805 | 12,506.7 | 87.91 | 800 / 1048 |
+| 8192 | grid (the project's) | 20,168 / 18,796 / 11,976, 4,436, 5,540 | 61,936 | 5,780 to 5,807 | 12,802.5 | 85.88 | 800 / 1020 |
+
+```
+python projects/dense/linear.py --cube 8192 --cards 0 --kernel-bytes 81920 --beside
+```
+
+Measured on 2026-11-14 at 23:30 and 23:34, one run each (three single calls, then
+calls back to back for about three seconds; at 8192 the grid kernels after a
+three-second cool-down); X280 at 1,350 MHz. Both checks passed (relative RMS 3.96e-3 to
+3.97e-3, largest 5.3e-3 to 6.5e-3). The 8192 loops ran with the AI clock falling to
+800 MHz (the slow mode of the results above; the best loop there is 8,608.3 us); in
+the single calls the two sets of kernels take the same time. The linear kernels need
+`--kernel-bytes 81920` (their text is 78,848 B against the default 70,656). JSON lines:
+`results/linear-<cube>-0.json`. These two runs are of the first version of the
+kernels, whose form came from the island's own part of W alone; the curve below is of
+the version described above, whose text on one card is 87,888 B (`--kernel-bytes
+90112`).
+
+### One card and two, 128 to 16384 cubed
+
+The same script and kernels on card 0 and on cards 0 and 1, in both forms: W split
+along K (`--split-w 0`, X and Y split along their rows) and W split along N
+(`--split-w 1`, Y split along its columns, X along its rows: every island needs all of
+X). The split follows the session's ranks (138 of 256 on island 0), so small tensors
+sit on island 0 whole. One run a point (three single calls, then calls back to back
+for about three seconds), on 2026-11-15 between 00:45 and 01:12; every check passed
+(relative RMS 3.94e-3 to 3.97e-3). On one card the hint changes nothing (one island
+holds all of every tensor), so one row serves both forms.
+
+| Cube | W by island (two cards) | One card, us per call (single) | TFLOP/s | Two cards, W split along K, us per call (single) | TFLOP/s | Crossed a call, rate | Two / one | Two cards, W split along N, us per call (single) | TFLOP/s | Crossed a call, rate | Two / one |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 128 | 4 / 0 tiles | 15.6 (7.5) | 0.27 | 26.9 (8.5) | 0.16 | 0 | 0.58 | the K form's run: all on island 0 | | | |
+| 256 | 8 / 0 | 16.4 (13.0) | 2.05 | 23.7 (17.7) | 1.42 | 0 | 0.69 | the K form's run | | | |
+| 512 | 16 / 0 | 19.2 (15.7) | 13.97 | 22.8 (16.1) | 11.78 | 0 | 0.84 | the K form's run | | | |
+| 1024 | 32 / 0 | 44.2 (41.0) | 48.57 | 47.1 (41.6) | 45.63 | 0 | 0.94 | the K form's run | | | |
+| 2048 | 64 / 0 | 169.7 (144.4) | 101.23 | 181.4 (155.3) | 94.72 | 0 | 0.94 | the K form's run | | | |
+| 4096 | 118 / 10 | 1,475.2 (661.1) | 93.17 | 15,541.6 (15,526) | 8.84 | 77.2 MB, 4.97 GB/s | 0.095 | 23,342.2 (23,273) | 5.89 | 67.6 MB, 2.90 GB/s | 0.063 |
+| 8192 | 138 / 118 | 8,906.5 (6,269) | 123.45 | 78,319.4 (78,331) | 14.04 | 417.7 MB, 5.33 GB/s | 0.114 | 110,614.0 (110,583) | 9.94 | 281.1 MB, 2.54 GB/s | 0.081 |
+| 16384 | 276 / 236 | 90,030.6 (76,241) | 97.70 | 249,358.5 (248,660) | 35.27 | 1.645 GB, 6.60 GB/s | 0.361 | 473,437.4 (473,822) | 18.58 | 1.210 GB, 2.56 GB/s | 0.190 |
+
+"W by island" is the split dimension's tiles each island holds (K's rows, or N's
+columns, the same counts). "Two / one" is one card's time a call over two cards' (above
+1: two cards are faster). Crossed is `run.crossings()` over the loop, both ways and
+every link, a call; it equals the count from the placements and the plan
+(`Linear.crossed`) to within 2%: in the K form X's rows the other island holds, read
+by the row senders, and every Y page's partial sums from the other holder (4 KiB a
+page); in the N form X's rows the other island holds, read by every row sender for
+every column block; no Y page crosses in either.
+
+What the curve says:
+
+- Up to 2048 the hint puts all of W, X and Y on island 0 (64 tiles over 256 ranks go
+  to ranks 0 to 63, all on island 0). One island holds all of K and of N, its product
+  is Y, nothing crosses, and two cards take one card's time plus the host's cost of
+  submitting to two islands (the 128 to 512 loops are the host's: single calls are 8
+  to 18 us). Both forms run the same path there, so the N form has no run of its own.
+- From 4096 every point is bound by the crossing. The K form crosses each island's fp32
+  partial sums of the other island's Y pages (two thirds of the bytes or more) and X's
+  rows;
+  the N form crosses only X, fewer bytes, but in smaller asks. The rates reached are
+  4.97 to 6.60 GB/s (K form) and 2.54 to 2.90 GB/s (N form) against 28 to 32 GB/s the
+  page path carries with large asks: each ask here is one X row of one K block (2 to 4
+  pages, 4 to 8 KiB) or one chunk of four 4 KiB pages, and a reader waits for its own
+  asks before the next, so the ask's round trip bounds the rate, not the link. The 8192
+  points run once more on the earlier page path took the same time to within 0.02%.
+- At 28 GB/s the crossing alone would take, a call, 2.8 / 14.9 / 59 ms (K form) and 2.4 /
+  10.0 / 43 ms (N form) at 4096 / 8192 / 16384 (computed from the bytes, not measured):
+  with each island's product about half of one card's single call (38 ms at 16384),
+  16384 would come out faster on two cards than on one in either form, 8192 not.
+- The one-card loops from 2048 up ran with the AI clock falling to 800 to 1,100 MHz;
+  the two-card loops stayed at 1,350 MHz on both cards (each card works less, and
+  waits on the link). Single calls compare the cards at the same clock.
+
+Two cards open with the session's defaults (every link found: 4, two link cores an
+island, 118 ranks) and `--kernel-bytes 147456`: with the link services the kernels'
+text is 143,440 B, past the two-card default of 114,688. The plan is the project's
+rule on the island's 118 ranks for the largest part of W (K rows or N columns), on the
+L1 the larger kernel buffer leaves (`l1_budget`: rows of cores dropped until the rect
+lies inside the ranks), so the two-card plans differ from one card's from 2048 up.
+JSON lines: `results/linear-curve-<cube>-<0|0x1|0x1-n>.json` (`-n`: W split along N).
+
+```
+python projects/dense/linear.py --cube 16384 --cards 0 --kernel-bytes 90112
+python projects/dense/linear.py --cube 16384 --cards 0,1 --kernel-bytes 147456 --split-w 1
+```
+
 ## Files
 
 | File | What it is |
@@ -458,6 +587,7 @@ gave the 16,384 cubed call 1.37 s, short of its 1.61 s).
 | `kernels/split/split.h`, `chunks.hpp`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the K split: arguments, the K chunks as two streams on both movers, chunks and arrivals, the part and the sum, chunks and sending and Y |
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `islands.py` | the grid form over the islands of a session, A and Y placed by island, W a copy on each |
+| `linear.py`, `kernels/linear/linear.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the linear layer written for islands: W's part, X read where it lives, Y or the partial sums, their sum |
 | `flat.py` | the grid form, kernels unchanged, on one flat group over the islands: one plan for the islands' grids one below the other, every tensor held once |
 | `results/` | the runs behind the results table |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
