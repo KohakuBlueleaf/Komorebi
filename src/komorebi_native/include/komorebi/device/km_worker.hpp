@@ -56,6 +56,12 @@ namespace km {
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
+        // The command's block (run.submit(block=)), in the reader's copy: once per
+        // command.
+        Block block(const km_command_t& command) const {
+            return block_in(command, 0);
+        }
+
         // A wait only the stop flag ends (the idle limit its timeout). Returns true on
         // stop.
         bool wait_stop(const km_command_t& command) const {
@@ -134,6 +140,8 @@ namespace km {
             for (uint32_t word = 0; word < kStateWords; word++) {
                 state()[word] = 0;
             }
+            control(KM_CONTROL_BLOCK)[0] = 0;  // no command's block read in yet
+            control(KM_CONTROL_BLOCK + KM_BLOCK_AREA_BYTES)[0] = 0;
             *control(KM_CONTROL_STOP) = 0;
             for (
                 uint32_t word = 0; word < KM_BROADCASTS * KM_BROADCAST_BYTES / 4; word++
@@ -385,6 +393,12 @@ namespace km {
         // KM_FLAG_RESULT (0 if never called). Elsewhere it is not sent.
         void result(uint32_t value) {
             result_ = value;
+        }
+
+        // The command's block (run.submit(block=)), in the writer's copy: once per
+        // command.
+        Block block(const km_command_t& command) const {
+            return block_in(command, 1);
         }
 
         // Timed (`times` wait limits) cb_wait_front of a contiguous item: buffer,

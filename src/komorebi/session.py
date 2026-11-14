@@ -1322,6 +1322,23 @@ class _Backend:
         self.aborted = None  # {words, cores}: what the kernel left at an abort
         self.transfer = None  # a _TransferBuffer when the session has the host channel
 
+    def block(self, data):
+        """A command's block (uint8 data) in DRAM: a copy at the same address of every
+        bank, written while the grid runs; fence() before the command is sent. The
+        tensor; free it after the command."""
+        words = -(-len(data) // 64) * 16  # whole 64-byte lines: a core reads lines
+        tensor = self.session.empty((DRAM_BANKS, words), "uint32")
+        padded = np.zeros(4 * words, np.uint8)
+        padded[: len(data)] = data
+        self.session._module.write_dram(
+            self.device, list(range(DRAM_BANKS)), tensor.address, padded
+        )
+        return tensor
+
+    def fence(self):
+        """Returns once every block written so far is in DRAM."""
+        self.session._module.dram_barrier(self.device)
+
     def _control_blocks(self, cores, grid, port_lines=None, area_bytes=0):
         """Zeroed control blocks, one shard per core, padded so that the block can
         start on a 64-byte line: the same L1 address on every core. `port_lines`: the

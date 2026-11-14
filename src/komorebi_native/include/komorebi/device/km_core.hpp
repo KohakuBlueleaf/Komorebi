@@ -320,6 +320,12 @@ namespace km {
         );
     }
 
+    // A command's block as read into L1: its words and its bytes (0: none).
+    struct Block {
+        const volatile tt_l1_ptr uint32_t* words;
+        uint32_t bytes;
+    };
+
     // A data-movement kernel's view of the control block and of its start-up arguments.
     class Core {
     public:
@@ -380,6 +386,37 @@ namespace km {
         template <typename Ready>
         uint32_t poll(Ready ready, uint32_t limit, uint32_t grace = 0) const {
             return poll_stop(control(KM_CONTROL_STOP), ready, limit, grace);
+        }
+
+        // The command's block in copy area `area` (0 reader, 1 writer), read once per
+        // command; 0 bytes for none, one over KM_BLOCK_BYTES, a bad address or bank.
+        Block block_in(const km_command_t& command, uint32_t area) const {
+            const uint32_t bytes = command.a8 & KM_BLOCK_BYTES_MASK;
+            const uint32_t field = command.a8 >> KM_BLOCK_BANK_SHIFT;
+            if (
+                bytes == 0 || bytes > KM_BLOCK_BYTES || command.a7 % 64 != 0 ||
+                field > KM_BLOCK_BANKS
+            ) {
+                return {nullptr, 0};
+            }
+            const uint32_t at = (
+                args_.control + KM_CONTROL_BLOCK + area * KM_BLOCK_AREA_BYTES
+            );
+            volatile tt_l1_ptr uint32_t* line = l1(at);
+            if (line[0] != command.sequence) {
+                const uint32_t bank = (
+                    field != 0 ? field - 1 : args_.me % KM_BLOCK_BANKS
+                );
+                noc_async_read(
+                    get_noc_addr_from_bank_id<true>(bank, command.a7),
+                    at + 64,
+                    (bytes + 63) / 64 * 64
+                );
+                noc_async_read_barrier();
+                invalidate_l1_cache();
+                line[0] = command.sequence;
+            }
+            return {line + 16, bytes};
         }
 
         // command_gave_up for this tile (kStReader or kStWriter).

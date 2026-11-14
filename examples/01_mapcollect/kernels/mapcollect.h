@@ -21,6 +21,9 @@ constexpr uint32_t kHandlerBadItem = 5;
 // RESULT (a test): every core's writer gives a0 result_base + its index as the result;
 // with KM_FLAG_RESULT the command is acknowledged with the leader's, a0.
 constexpr uint32_t kHandlerResult = 6;
+// DOT: the block is words w; the writer gives sum w[i] * (a0 x0 + i) mod 2^32 as the
+// result, the reader gives up (bad_item) unless the words sum to a1 word_sum.
+constexpr uint32_t kHandlerDot = 7;
 
 constexpr uint32_t kCbIn = 0;
 constexpr uint32_t kCbOut = 16;

@@ -371,6 +371,40 @@ namespace {
         return out;
     }
 
+    // Writes `data` at `address` of every DRAM bank in `banks`, with no wait for idle
+    // cores (a live run's block); on the card only after dram_barrier().
+    void write_dram(
+        const MeshDevice& mesh,
+        const std::vector<uint32_t>& banks,
+        uint64_t address,
+        const Numbers8& data
+    ) {
+        auto* dev = chip(mesh);
+        const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+        for (const uint32_t bank : banks) {
+            if (bank >= dram_banks(mesh) || data.size() > UINT32_MAX) {
+                throw std::runtime_error("a DRAM write outside the banks or over 4 GB");
+            }
+        }
+        nb::gil_scoped_release release;
+        for (const uint32_t bank : banks) {
+            cluster.write_dram_vec(
+                data.data(),
+                static_cast<uint32_t>(data.size()),
+                dev->id(),
+                static_cast<int>(bank),
+                address
+            );
+        }
+    }
+
+    // Returns once every earlier write_dram() of the device is in DRAM.
+    void dram_barrier(const MeshDevice& mesh) {
+        auto* dev = chip(mesh);
+        nb::gil_scoped_release release;
+        tt::tt_metal::MetalContext::instance().get_cluster().dram_barrier(dev->id());
+    }
+
     // Waits up to timeout_s for the kernels of the worker grid to return, in slices of
     // at most a second, signals checked between them. True: returned.
     bool wait_grid(
@@ -2024,6 +2058,28 @@ NB_MODULE(_km_host, m) {
         },
         nb::arg("device"),
         nb::arg("spans")
+    );
+    m.def(
+        "write_dram",
+        [](
+            const Device& device,
+            std::vector<uint32_t> banks,
+            uint64_t address,
+            const Numbers8& data
+        ) {
+            write_dram(device.mesh(), banks, address, data);
+        },
+        nb::arg("device"),
+        nb::arg("banks"),
+        nb::arg("address"),
+        nb::arg("data")
+    );
+    m.def(
+        "dram_barrier",
+        [](const Device& device) {
+            dram_barrier(device.mesh());
+        },
+        nb::arg("device")
     );
     m.def(
         "wait_grid",

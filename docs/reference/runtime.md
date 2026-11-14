@@ -88,7 +88,7 @@ carries the sequence number. The command has landed when all four agree
 | `sequence` | sequence number, from 1, increasing (compared across the wrap) | `km::newer(sequence, other)` |
 | `hdr` | `handler \| flags << 8 \| slot << 16 \| program << 24` (the program field: 0 is the run's first program) | `km::handler(command)`, `km::flags(command)`, `km::slot(command)`, `km::program(command)` |
 | `group` | `first \| count << 16`: cores `first` to `first + count - 1` in core order | `km::first(command)`, `km::count(command)`, `km::in_group(command, me)` |
-| `a0` to `a9` | the handler's ten argument words | `command.a0` ... `command.a9` |
+| `a0` to `a9` | the handler's ten argument words; with a block, `a7` and `a8` name it ([the block](#the-block)) | `command.a0` ... `command.a9` |
 | `land1` to `land3` | copies of `sequence` (landing) | `KM_LANDED(&command)` |
 
 | Handler | Meaning |
@@ -111,6 +111,30 @@ is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
   part of `items` items. The first `items % count` cores take one item more.
 - `km::report_to(command, me, row)` gives `{parent, want}`, the completion tree described below.
 
+## The block
+
+A command has ten argument words. For more, it carries a block: up to 1,024 bytes
+(`KM_BLOCK_BYTES`) in DRAM that its handlers read into L1, once per command and
+kernel. Two argument words name it:
+
+| Word | Meaning |
+|---|---|
+| `a7` (`KM_BLOCK_ADDRESS_WORD`) | its address in a DRAM bank, a multiple of 64 |
+| `a8` (`KM_BLOCK_SIZE_WORD`) | its bytes \| bank field << 16 (`KM_BLOCK_BANK_SHIFT`). Field 0: a copy at that address in every bank, and a core reads bank `me % 8`; field b + 1: one copy, in bank b |
+
+The host's `run.submit(..., block=)` writes a copy to every bank (field 0,
+[host](host.md#run)); an X280 thread names bytes of its own region with `kmx_block`
+(one copy, in its cluster's bank, [threads](threads.md#the-block-of-a-command)).
+`reader.block(command)` and `writer.block(command)` return a `km::Block`: `words`, the
+block in that kernel's area of `KM_CONTROL_BLOCK`, and `bytes`. The first call for a
+command reads the block (whole 64-byte lines) and waits for it; later calls for the
+same command return it at once. `bytes` is 0 for a command without a block (`a8` 0),
+and also for one over 1,024 bytes, an address off a 64-byte line or a field over 8:
+the handler decides what that means. Compute has no block; the reader passes what it
+needs through a buffer. A read costs about 1 microsecond per command (64 words, a
+command alone on 2 to 120 cores: 2.7 to 3.0 against 1.8 to 2.0 microseconds from
+submit to acknowledgement).
+
 ## The three kernels
 
 ### `km::Core` (reader and writer)
@@ -126,6 +150,7 @@ is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
 | `disp_noc(address)` | the NoC address of `address` at the dispatcher |
 | `poll(ready, limit, grace = 0)` | `km::poll_stop` on this tile's stop flag |
 | `gave_up(word, code, where, slot, sequence)` | `km::command_gave_up` for this tile (`kStReader` or `kStWriter`) |
+| `block(command)` | the command's block in this kernel's L1 (`km::Block`: `words`, `bytes`), read from DRAM at the first call for the command ([the block](#the-block)) |
 
 ### `km::Reader`
 
@@ -136,7 +161,7 @@ is counted in `kStSlotWrong`. Other helpers in `km_command.hpp`:
 | `wait_stop(command)` | waits only for the stop flag, up to the idle limit, and commands a give-up at `stall`. True on stop. For tests that make a core stall |
 
 The reader's start-up runs once and in this order:
-1. Clears the ring, the DONE counters, the state words, the stop flag, the broadcast areas and the ports.
+1. Clears the ring, the DONE counters, the state words, the stop flag, the broadcast areas, the ports and the two block areas.
 2. Loads the core table.
 3. Checks in: each core of the group writes to its leader. A leader waits for its cores, then writes READY to the dispatcher.
 4. Sends the hello, if a mailbox is given.
@@ -321,7 +346,8 @@ after them is derived from the one before.
 | 0x1D00 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
 | 0x1DC0 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
 | 0x2600 | `KM_CONTROL_X280` | X280 port: the X280 core's tell and answer, the core's out slot, its X280 core's tile and mailbox ([X280 ports](ports.md#x280-ports)) |
-| 0x2640 | `KM_CONTROL_BYTES` | size of the control block |
+| 0x2640 | `KM_CONTROL_BLOCK` | 2 block areas of 1,088 bytes (`KM_BLOCK_AREA_BYTES`), the reader's then the writer's: a line whose word 0 is the sequence of the command read in, then up to 1,024 bytes of its block ([the block](#the-block)) |
+| 0x2EC0 | `KM_CONTROL_BYTES` | size of the control block |
 
 Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing

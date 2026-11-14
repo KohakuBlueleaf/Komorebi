@@ -64,6 +64,16 @@ void kernel_main() {
                     writer.wait_front(kCbOut, 2)
                 );
             }
+            case kHandlerDot: {
+                const uint32_t x0 = command.a0;
+                const km::Block block = writer.block(command);
+                uint32_t sum = 0;
+                for (uint32_t word = 0; word < block.bytes / 4; word++) {
+                    sum += block.words[word] * (x0 + word);
+                }
+                writer.result(sum);
+                return true;
+            }
             default:
                 return true;
         }

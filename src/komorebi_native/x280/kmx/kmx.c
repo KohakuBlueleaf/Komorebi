@@ -1284,6 +1284,25 @@ void kmx_command(
     command->a5 = command->a6 = command->a7 = command->a8 = command->a9 = 0;
 }
 
+int kmx_block(km_command_t* command, int id, uint64_t offset, uint32_t bytes) {
+    uint64_t region_bytes;
+    const uint64_t address = region_of((uint32_t)kmx_cluster(), id, &region_bytes);
+    if (
+        region_bytes == 0 || bytes == 0 || bytes > KM_BLOCK_BYTES ||
+        offset % 64u != 0 || offset > region_bytes ||
+        (bytes + 63u) / 64u * 64u > region_bytes - offset ||
+        address + offset > UINT32_MAX
+    ) {
+        return KMX_BAD;
+    }
+    command->a7 = (uint32_t)(address + offset);
+    command->a8 = (
+        bytes |
+        (KMX_BANK_OF_CLUSTER((uint32_t)kmx_cluster()) + 1u) << KM_BLOCK_BANK_SHIFT
+    );
+    return KMX_OK;
+}
+
 void kmx_result(uint32_t code, const void* words, uint32_t word_count) {
     volatile kmx_result_block* block = result();
     if (word_count > KMX_RESULT_WORDS_MAX) {

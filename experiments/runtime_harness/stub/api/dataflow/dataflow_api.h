@@ -42,6 +42,12 @@ inline uint64_t get_noc_addr(
     return kmsim::noc_dram(g.bank_base_address + page * g.page_size + offset);
 }
 
+// An address in a DRAM bank: one flat DRAM, so every bank's copy is the same bytes.
+template <bool DRAM>
+inline uint64_t get_noc_addr_from_bank_id(uint32_t, uint32_t addr) {
+    return kmsim::noc_dram(addr);
+}
+
 // Tensor accessor: compile-time argument Index holds the page size; flat DRAM as above.
 template <uint32_t Index>
 struct TensorAccessorArgs {

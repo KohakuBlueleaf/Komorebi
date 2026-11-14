@@ -14,6 +14,8 @@
 #define KMX_MAGIC 0x31786D6Bu /* "kmx1" */
 #define KMX_VERSION 4u
 #define KMX_REGIONS_MAX 16u
+/* The DRAM bank of work cluster c (1 to 3), where its regions live. */
+#define KMX_BANK_OF_CLUSTER(c) ((c) == 1u ? 6u : 7u)
 #define KMX_WORDS_MAX 64u              /* the program's own argument words */
 #define KMX_RESULT_WORDS_MAX 48u       /* words a thread returns */
 #define KMX_DEADLINE_MAX 3000000000ull /* 60 s of the 50 MHz timer */

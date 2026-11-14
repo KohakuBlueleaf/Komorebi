@@ -160,6 +160,8 @@ class Run:
         self._next = 1  # the next handle; command number = handle mod 2**32
         self._next_sequence = 1  # the kernel's sequence of the next command
         self._new_handles(1)
+        self._kept = {}  # handle -> the DRAM tensor of its block, until its event
+        self._unfenced = False  # a block written since the last fence
         self._rejected = {}
         self._failure = None
         self._stopped = False
@@ -210,11 +212,12 @@ class Run:
         result=False,
         queued=False,
         cluster=None,
+        block=None,
     ):
-        """Queues a command for handler `handler` (name or number) on cores [first,
-        first + count) (default every core), or on work cluster `cluster`'s X280 thread;
-        returns its handle. Nothing is sent until a wait. `result`: the event carries
-        the result word. `queued`: `group` is a count and the kernel picks the cores."""
+        """Queues a command for handler `handler` on cores [first, first + count)
+        (default every core), or on work cluster `cluster`'s X280 thread; returns its
+        handle. `result`: the event carries the result word; `queued`: the kernel picks
+        the cores; `block`: bytes or an array its handlers read (a7, a8)."""
         started = time.perf_counter()
         program_field = 0
         if cluster is not None:
@@ -237,14 +240,49 @@ class Run:
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(word) <= M32 for word in args):
             raise ValueError("arguments are 32-bit unsigned words")
+        kept = None
+        if block is not None:
+            args, kept = self._block_words(block, args, cluster)
         flags = (self._flag_result if result else 0) | (
             self._flag_queue if queued else 0
         )
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
         )
+        if kept is not None:
+            self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
         return handle
+
+    def _block_words(self, block, args, cluster):
+        """The arguments with a block's address and bytes in a7 and a8, and the block
+        written to DRAM (kept until the command's event)."""
+        at = self.h["KM_BLOCK_ADDRESS_WORD"]
+        if cluster is not None:
+            raise ValueError("a block goes to Tensix cores, not to an X280 thread")
+        if len(args) > at:
+            raise ValueError(
+                f"{len(args)} arguments: a command with a block has {at}, "
+                f"a{at} and a{at + 1} carry the block"
+            )
+        if isinstance(block, bytes | bytearray | memoryview):
+            data = np.frombuffer(block, np.uint8)
+        else:
+            data = np.ascontiguousarray(block).view(np.uint8).reshape(-1)
+        if not 1 <= len(data) <= self.h["KM_BLOCK_BYTES"]:
+            raise ValueError(
+                f"a block of {len(data)} bytes: 1 to {self.h['KM_BLOCK_BYTES']}"
+            )
+        kept = self.backend.block(data)
+        self._unfenced = True
+        args = [*args, *[0] * (at - len(args)), kept.address, len(data)]
+        return args, kept
+
+    def _release_blocks(self):
+        """Frees the blocks of the commands whose event arrived."""
+        for handle in list(self._kept):
+            if handle < self._base or self._has[handle - self._base]:
+                self._kept.pop(handle).free()
 
     def _handler(self, handler):
         """(number, program field) of `handler`: a Handler names its program; a name
@@ -467,6 +505,9 @@ class Run:
         """Gives the commands submitted one by one to the port, as one block."""
         if not self._counts:
             return
+        if self._unfenced:  # one DRAM barrier for every block of these commands
+            self.backend.fence()
+            self._unfenced = False
         rows = len(self._counts)
         words = np.frombuffer(self._words, np.uint32).reshape(rows, 16)
         first = np.frombuffer(self._firsts, np.int32)
@@ -530,6 +571,8 @@ class Run:
         self._status[i] = rows[:, 2]
         self._ticks[i] = rows[:, 3]
         self._has[i] = True
+        if self._kept:
+            self._release_blocks()
         oldest_row, end = self._oldest - self._base, self._handed - self._base
         waiting = ~self._has[oldest_row:end]
         self._oldest += int(np.argmax(waiting)) if waiting.any() else end - oldest_row

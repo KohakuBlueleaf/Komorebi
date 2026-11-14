@@ -54,6 +54,10 @@ void kmx_command(
     uint32_t count
 );
 
+/* Makes `bytes` (to KM_BLOCK_BYTES) of region `id` at `offset` (64-aligned) the block
+ * of `command` (a7, a8): KMX_OK, or KMX_BAD outside it. Flush before submitting. */
+int kmx_block(km_command_t* command, int id, uint64_t offset, uint32_t bytes);
+
 /* Core 0: cores [first, first + count) hold `program` once KMX_OK (sent again after a
  * busy rejection, by `deadline`); KMX_BAD: refused (`event`, may be 0) or no record. */
 int kmx_load(

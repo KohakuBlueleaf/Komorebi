@@ -565,9 +565,10 @@ property of the model.
 10. **Debugging on the card.** Today tt-metal's watcher cannot run while the X280
     runtime is open; debugging is by the cores' state words, "where" codes and the
     per-core trace, read after the stop.
-11. **Sizes.** Today at most 64 commands in flight, ten 32-bit argument words per
-    command, handlers 1 to 239; grids of up to 128 cores in at most two multicast
-    panels; one harvesting pattern has been run.
+11. **Sizes.** Today one card's grid: up to 128 cores in at most two multicast panels;
+    one harvesting pattern has been run. A command carries ten 32-bit argument words,
+    two of which can name a block of up to 1,024 bytes; at most 64 commands are in
+    flight; handlers 1 to 239.
 12. **The build.** Today `kmr build host` and `kmr build pymodule` take their compile
     flags from two targets that the
     [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project adds

@@ -59,6 +59,24 @@ void kernel_main() {
                 }
                 break;
             }
+            case kHandlerDot: {
+                const uint32_t word_sum = command.a1;
+                const km::Block block = reader.block(command);
+                uint32_t sum = 0;
+                for (uint32_t word = 0; word < block.bytes / 4; word++) {
+                    sum += block.words[word];
+                }
+                if (sum != word_sum) {
+                    reader.gave_up(
+                        km::kStReader,
+                        km::kGaveBadItem,
+                        km::kWhereData,
+                        km::slot(command),
+                        command.sequence
+                    );
+                }
+                break;
+            }
             case kHandlerStall: {
                 const uint32_t stalled_rank = command.a0;
                 if (index == stalled_rank) {

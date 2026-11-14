@@ -51,6 +51,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `function` | whether the command still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
 | `int kmx_pull_run(const km_command_t* command, const kmx_pull* settings, kmx_event* event)` | the lead's 0, not nested | submits `command` and serves its pulls on every X280 core until its event: units 0 to `settings->units - 1` in ranges of `settings->per`, by `settings->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `settings->log`), `settings->pick` (the range) or `settings->pick_word` (the range and a word the core gets with it, [the pull's word](#the-pulls-word)) | as `kmx_port_run`; `KMX_BAD` also for a bad mode, both `pick` and `pick_word` set, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
 | `void kmx_command(km_command_t* command, uint32_t program, uint32_t handler, uint32_t first, uint32_t count)` | any | fills `command`: `hdr = handler \| program << 24`, `group = first \| count << 16`, every other word 0 ([several programs](#a-thread-in-a-run-of-several-programs)) | - |
+| `int kmx_block(km_command_t* command, int id, uint64_t offset, uint32_t bytes)` | any | makes `bytes` (1 to 1,024) of region `id` from `offset` (a multiple of 64) the command's block: `a7` and `a8` ([the block of a command](#the-block-of-a-command)) | `KMX_OK`; `KMX_BAD` outside the region or for a bad size or offset |
 | `int kmx_load(uint32_t program, uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event)` | 0 | in a run loaded with a dict, makes cores `[first, first + count)` hold `program` (its field, `kProgram<Name>`): submits the load, waits for its event and, while the dispatcher rejects it busy, waits for the wake and sends it again, all by `deadline` ([a thread gives a group another program](#a-thread-gives-a-group-another-program)) | `KMX_OK` and `event` (may be 0) once the load is done; `KMX_BAD` when the dispatcher refused it or its timeout came (`event` says which) or the run has no record for `program`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
 | `int kmx_submit(const km_command_t* command, uint32_t* handle)` | 0 | stores `command` as the next command of the ring | `KMX_OK` and the handle (1, 2, ...); `KMX_FULL` when no slot is free; `KMX_STOPPED` without a ring |
 | `int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event)` | 0 | waits for the handle's event until `kmx_time()` passes `deadline`; other handles' events are kept for `kmx_poll`, wake events are passed over | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED` (library error `late` / `stopped`); `KMX_FULL` when 32 events are kept |
@@ -81,6 +82,25 @@ in timer ticks, or the result word of a `KM_FLAG_RESULT` command).
 
 Return codes (`kmx_layout.h`): `KMX_OK` 0, `KMX_FULL` 1, `KMX_STOPPED` 2,
 `KMX_LATE` 3, `KMX_NONE` 4, `KMX_BAD` 5.
+
+### The block of a command
+
+A command from a thread carries a block as one from the host does
+([runtime](runtime.md#the-block)): `kmx_block` puts the region's bank address in `a7`
+and `bytes | (bank + 1) << 16` in `a8`, the bank being the cluster's (6 for cluster 1,
+7 for clusters 2 and 3), where the region's one copy lies. Every core of the group then
+reads it from that bank with `reader.block(command)` or `writer.block(command)`. The
+thread writes the bytes and flushes them (`kmx_flush_at`) before `kmx_submit`, and
+leaves them until the command's event; arguments `a0` to `a6` stay its own.
+
+```c
+kmx_command(&command, 0, kHandlerDot, 0, 12);
+command.a0 = x0;
+kmx_flush_at(WEIGHTS, 0, 64 * 4);
+if (kmx_block(&command, WEIGHTS, 0, 64 * 4) == KMX_OK) {
+    kmx_submit(&command, &handle);
+}
+```
 
 ### The pull's word
 

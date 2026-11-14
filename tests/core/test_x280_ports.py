@@ -80,10 +80,10 @@ def test_the_ports_line_and_area_name_the_tiles_and_x280_cores():
     assert box == 0x8000000 + area_offset + CONSTANTS["KMX_PORTS_BOX"] + 128
 
 
-def test_the_port_lines_end_the_control_block_and_fit_the_library():
+def test_the_port_lines_end_before_the_block_and_fit_the_library():
     assert (
         HEADERS["KM_CONTROL_X280"] + HEADERS["KM_X280_BYTES"]
-        == HEADERS["KM_CONTROL_BYTES"]
+        == HEADERS["KM_CONTROL_BLOCK"]
     )
     assert HEADERS["KM_X280_TO"] + 16 <= HEADERS["KM_X280_BYTES"]
     assert CONSTANTS["KMX_PORT_WINDOW"] + CONSTANTS["KMX_PORTS_CORES"] <= 192

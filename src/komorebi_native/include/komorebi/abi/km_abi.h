@@ -260,6 +260,17 @@ KM_STATIC_ASSERT(
     KM_HANDLER_MESSAGES_END > KM_HANDLER_USER_MAX, "not a program handler"
 );
 
+/* A command's block: a7 its DRAM bank address (64-byte aligned), a8 bytes | field << 16
+   (field 0: a copy in every bank, a core reads bank core % 8; b + 1: bank b only). */
+#define KM_BLOCK_ADDRESS_WORD 7u /* a7 */
+#define KM_BLOCK_SIZE_WORD 8u    /* a8 */
+#define KM_BLOCK_BYTES 1024u     /* the largest block */
+#define KM_BLOCK_BYTES_MASK 0xFFFFu
+#define KM_BLOCK_BANK_SHIFT 16u
+#define KM_BLOCK_BANKS 8u
+/* an area: a line (word 0: the sequence read in), then the block */
+#define KM_BLOCK_AREA_BYTES (64u + KM_BLOCK_BYTES)
+
 /* X280 port: 16-byte lines {sequence, w0, w1, w2}, each with one writer, offsets inside
    KM_CONTROL_X280. A line lands whole; sequence names it (a tell's latest wins). */
 #define KM_X280_TELL 0x00u   /* the X280 core's tell: sequence counts its tells here */
@@ -270,7 +281,9 @@ KM_STATIC_ASSERT(
 #define KM_X280_BYTES 0x40u
 /* X280 port: the lines shared with the serving X280 core, on a 64-byte line */
 #define KM_CONTROL_X280 ((KM_CONTROL_TAILS + KM_TAILS_BYTES + 63u) / 64u * 64u)
-#define KM_CONTROL_BYTES (KM_CONTROL_X280 + KM_X280_BYTES)
+/* a command's block: the reader's copy, then the writer's (KM_BLOCK_AREA_BYTES each) */
+#define KM_CONTROL_BLOCK (KM_CONTROL_X280 + KM_X280_BYTES)
+#define KM_CONTROL_BYTES (KM_CONTROL_BLOCK + 2u * KM_BLOCK_AREA_BYTES)
 #define KM_X280_TO_TILE 0u /* word offsets of the KM_X280_TO line */
 #define KM_X280_TO_BOX 1u  /* LIM address of this core's mailbox line; 0: not served */
 /* A core's mailbox line in its X280 core's LIM (64 bytes, the core writes it). */
@@ -282,8 +295,14 @@ KM_STATIC_ASSERT(
 
 KM_STATIC_ASSERT(KM_CONTROL_TAILS + KM_TAILS_BYTES <= KM_CONTROL_X280, "tails end");
 KM_STATIC_ASSERT(
-    KM_CONTROL_X280 % 64u == 0 && KM_CONTROL_X280 + KM_X280_BYTES == KM_CONTROL_BYTES,
+    KM_CONTROL_X280 % 64u == 0 && KM_CONTROL_X280 + KM_X280_BYTES == KM_CONTROL_BLOCK,
     "X280 core lines"
+);
+KM_STATIC_ASSERT(
+    KM_CONTROL_BLOCK % 64u == 0 && KM_BLOCK_BYTES % 64u == 0 &&
+        KM_BLOCK_BYTES <= KM_BLOCK_BYTES_MASK &&
+        KM_CONTROL_BLOCK + 2u * KM_BLOCK_AREA_BYTES == KM_CONTROL_BYTES,
+    "block areas: whole lines, the last part of the block"
 );
 
 /* Words the Tensix grid pushes into the X280's local memory. */

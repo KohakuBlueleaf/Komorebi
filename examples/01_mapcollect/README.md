@@ -63,6 +63,7 @@ with where each was waiting. The session is already closed cleanly by then.
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | the program's three kernels: a switch on the handler inside the runtime's loops (`komorebi/device/km_worker.hpp`) |
 | `kernels/mapcollect.h` | handlers, buffers and command arguments shared by the kernels |
 | `mapcollect.py` | builds the commands, runs them, checks the outputs, prints one JSON line |
+| `block.py` | DOT commands that each carry a block of weights (below, "More than ten words") |
 
 ## What it needs
 
@@ -100,6 +101,26 @@ host's, the submit-to-completion latency, the Python time per command in `submit
 the batched stores, and every core's end state. Its `ok` is true when every core ended,
 no job and no compute check is wrong, and the run ended cleanly (with `--stall`: in the
 deadline, naming the stalled core); the script exits non-zero without it.
+
+## More than ten words
+
+A command has ten argument words; `block.py` gives each DOT command a table of
+`--words` (default 64) random 32-bit weights w as its block
+(`run.submit(..., block=weights)`, [host](../../docs/reference/host.md#a-commands-block)).
+Every core of the group reads the table with `reader.block(command)` and
+`writer.block(command)`. The writer gives sum of w[i] * (x0 + i), mod 2^32, as the
+result (x0 in `a0`); the reader gives up unless the words sum to `a1`. The host checks
+every leader's result against numpy, then times 200 commands with and without a block,
+submitted before one wait and one at a time.
+
+```
+python block.py --jobs 200 --words 64 --count 12
+```
+
+Card 0, 2026-11-14, X280 at 1000 MHz, 200 commands on 2, 12 and 120 cores: every
+result right; a block costs the host 160 to 210 µs a command when 200 are submitted
+before one wait, and 2.0 to 3.0 ms when each is waited for (the DRAM barrier), and the
+cores about 1 µs (submit to acknowledgement 2.7 to 3.0 µs, against 1.8 to 2.0 without).
 
 ## Measured
 
