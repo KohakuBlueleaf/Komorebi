@@ -259,10 +259,13 @@ Each island's dispatcher holds its own island's reset lists. A command given up 
 island i resets and loads again that island's cores still in it, or whose kernels
 ended at a wait's own limit; the time-out says `island i:` and names them by flat
 rank and the island's own core number, and the run goes on on both islands
-([recovery](../guides/recovery.md)). A link core is reset by the host
-(`run.reset_link(island, k)`): its connections are closed at their routers, the
-core is loaded again and opens them again, and reads and commands across are exact
-after it. The far link core needs nothing.
+([recovery](../guides/recovery.md)). A link core is recovered by the host, not by
+the dispatcher: a link core that does not leave a given-up command is named in the
+time-out (`link core k`), the commands whose traffic it held are given up at once
+naming it, and `run.links_hung` lists it. `run.reset_link(island, k)` then closes its
+connections at their routers, drops link core 0's asks and puts not yet sent, loads
+the core again and opens them again; reads and commands across are exact after it.
+The far link core needs nothing.
 
 ## What is not built
 
@@ -283,5 +286,5 @@ after it. The far link core needs nothing.
   fetches and stores tensors the other holds.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.
 - **A link core reset by its dispatcher.** A give-up resets only ranks; a link core
-  is reset by the host, between commands. A line or an ask in flight on it is lost,
-  and the command that waits for it times out at its deadline.
+  that hangs is named by its dispatcher and reset by the host (`run.reset_link`).
+  Its lost traffic is given up and named, not sent again.
