@@ -51,6 +51,7 @@ EVENT_DONE, EVENT_TIMEOUT, EVENT_PONG, EVENT_REJECTED = 0, 1, 2, 3
 EVENT_STREAM, EVENT_STREAM_END, EVENT_STREAM_ERROR = 4, 5, 6
 REJECT_HANDLER, REJECT_FLAGS, REJECT_GROUP, REJECT_EXITED, REJECT_REGION = 1, 2, 3, 4, 5
 REJECT_STREAMS, REJECT_UNKNOWN, REJECT_DEADLINE, REJECT_QUEUE = 6, 7, 8, 9
+REJECT_PROGRAM = 13
 STREAMS = os.path.join(
     HERE, "..", "..", "..", "experiments", "stream_checks", "streams"
 )
@@ -819,8 +820,9 @@ def case_after_exit(session, args):
 
 
 def case_malformed(session, args):
-    """Four bad commands (handler 240, flag bit 0, count 0, a group past the last core)
-    are rejected with their reasons; a good CHECK after them runs; then EXIT."""
+    """Four bad commands (a load, handler 240, in a run without the program table; flag
+    bit 0; count 0; a group past the last core) are rejected with their reasons; a
+    good CHECK after them runs; then EXIT."""
     core_count = 0
 
     def body(plan):
@@ -829,7 +831,7 @@ def case_malformed(session, args):
         bad_flag = command(HANDLER_CHECK, 0, core_count, 7, 7)
         bad_flag[1] |= 1 << 8
         bad = [
-            (command(240, 0, core_count), REJECT_HANDLER),
+            (command(240, 0, core_count), REJECT_PROGRAM),
             (bad_flag, REJECT_FLAGS),
             (command(HANDLER_CHECK, 0, 0, 7, 7), REJECT_GROUP),
             (command(HANDLER_CHECK, core_count - 1, 2, 7, 7), REJECT_GROUP),
