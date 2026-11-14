@@ -80,12 +80,23 @@ void soak(km::Reader& reader, const km_command_t& command, const Args& args) {
 template <typename Args>
 void runs(km::Reader& reader, const km_command_t& command, const Args& args) {
     const uint32_t from = command.a0, to = command.a1;
-    const uint32_t length = command.a3, piece = command.a4;
+    const uint32_t length = command.a3, piece = command.a4, report = command.a5;
     const uint32_t buffer = get_write_ptr(kCbMove);
     const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+    const uint32_t rank = reader.me() - km::first(command);
     const km::Partition share = (
-        km::partition(command.a2, reader.me() - km::first(command), km::count(command))
+        km::partition(command.a2, rank, km::count(command))
     );
+    // cycles in each step (kRuns* words), the clock read around each call
+    uint32_t spent[kRunsSteps] = {};
+    uint32_t pieces = 0, turn = 0, write = 0;
+    const uint32_t started = km::wall();
+    uint32_t at_clock = started;
+    const auto lap = [&](uint32_t step) {
+        const uint32_t now = km::wall();
+        spent[step] += now - at_clock;
+        at_clock = now;
+    };
     km::PutRun run;
     uint32_t put = 0, holder = 0;
     for (uint32_t done = 0; done < share.len;) {
@@ -98,22 +109,46 @@ void runs(km::Reader& reader, const km_command_t& command, const Args& args) {
             )) {
             return;
         }
+        lap(kRunsLine);
         for (uint32_t k = 0; k < n;) {
             const uint32_t m = n - k < piece ? n - k : piece;
             if (!km::read_pages(reader, command, args, from, first + k, m, buffer)) {
                 return;
             }
             noc_async_read_barrier();
+            lap(kRunsRead);
             if (!km::put_piece(reader, command, run, buffer, m)) {
                 return;
             }
+            lap(kRunsPiece);
+            pieces++;
             k += m;
         }
+        turn += run.turn;  // the run's pieces' (put_pages starts them at 0)
+        write += run.write;
         put += n;
         holder = at.island;
         done += n;
     }
     km::put_wait(reader, command, put, holder);  // one wait for every run
+    lap(kRunsWait);
+    if (report == 0) {
+        return;
+    }
+    volatile tt_l1_ptr uint32_t* l1 = (
+        reinterpret_cast<volatile tt_l1_ptr uint32_t*>(buffer)
+    );
+    l1[0] = kRunsMagic;
+    l1[1] = rank;
+    l1[2] = at_clock - started;
+    l1[3] = pieces;
+    for (uint32_t w = 0; w < kRunsSteps; w++) {
+        l1[4 + w] = spent[w];
+    }
+    l1[4 + kRunsSteps] = turn;
+    l1[5 + kRunsSteps] = write;
+    km::write_pages(reader, command, args, report, rank, 1, buffer);
+    noc_async_write_barrier();
 }
 
 void kernel_main() {

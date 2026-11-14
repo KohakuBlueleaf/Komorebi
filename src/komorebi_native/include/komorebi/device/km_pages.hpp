@@ -50,7 +50,12 @@ namespace km {
     constexpr uint32_t kRingMark = 16;
     constexpr uint32_t kRingBytes = 17;
     constexpr uint32_t kRingNoAnswer = 0xFFFFFFFFu;  // the tail's atomic not yet in
-    constexpr uint32_t kRingBursts = 64;  // bursts a turn of the ring at most
+    constexpr uint32_t kRingBursts = 4;  // bursts a turn of the ring at most
+    // a putting core waiting for ring room reads the ring's words again after the
+    // slots before its own could have been sent: a packet's cycles each (8 KiB at
+    // 40 GB/s, 1.35 GHz), for kRingPollMost packets at most
+    constexpr uint32_t kRingPollCycles = 270;
+    constexpr uint32_t kRingPollMost = 64;
     static_assert(
         sizeof(LinkHeader) <= kRingMark * 4 &&
             kRingPiece * kRingHeader <= KM_PUT_BUILD_BYTES,
@@ -60,6 +65,19 @@ namespace km {
     // The payload bytes of a packet on this island's links (the session's; 0: none).
     inline uint32_t pages_packet() {
         return Islands(island_area()).packet();
+    }
+
+    // The put queue's L1 address on a link core (its own L1, KM_LINK_CB; the same on
+    // every link core and island), 0: none.
+#if defined(KM_LINK_CHUNK) && !defined(KM_LINK_QUEUE)
+#error "a link core's own chunks follow its put queue: KM_LINK_QUEUE"
+#endif
+    inline uint32_t link_queue() {
+#if defined(KM_LINK_QUEUE)
+        return get_write_ptr(KM_LINK_CB);
+#else
+        return 0;
+#endif
     }
 
     // The slots of the ring of a chunk of `chunk` bytes, slots of `packet` bytes (0:
@@ -569,9 +587,9 @@ namespace km {
         }
 #if defined(KM_LINK_CHUNK)
         // a link core's own chunks (the session's buffer KM_LINK_CB, on link cores
-        // alone), not the run's transfer buffer every core has
+        // alone, after the put queue), not the run's transfer buffer every core has
         const uint32_t chunk = KM_LINK_CHUNK;
-        const uint32_t buffer = get_write_ptr(KM_LINK_CB);
+        const uint32_t buffer = link_queue() + KM_QUEUE_BYTES;
 #else
         const uint32_t chunk = r.chunk;
         const uint32_t buffer = r.buffer;
@@ -588,6 +606,18 @@ namespace km {
         sender.connect((r.links >> 8 * link) & 0xFFu, area);
         sender.open();
         pages_held = {1, area, chunk, r.hops, link, pages_links(r)};
+        const uint32_t queue = link_queue();
+        if (link == 0 && queue != 0) {
+            // link core 0's put queue empty (no line in either ring, no page landed,
+            // none pending) before the hello: no far line comes before it
+            for (uint32_t n = 0; n < 2 * KM_QUEUE_LINES; n++) {
+                l1(queue + KM_QUEUE_PUTS + n * 64)[KM_ASK_NUMBER] = 0;
+            }
+            for (uint32_t n = 0; n < KM_QUEUE_LINES; n++) {
+                l1(queue + KM_QUEUE_ARRIVED)[n] = 0;
+            }
+            l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_PENDING_COUNT] = 0;
+        }
         const uint32_t links_area = islands_at(kernel.args().control).link_area();
         const uint32_t row = links_area + KM_LINK_CROSS + (link & 1u) * KM_CROSS_ROW;
         forward_held = {
@@ -724,7 +754,8 @@ namespace km {
     }
 
     // COUNTS: CPU `cpu` of link core `rank` writes its row of what crossed into page
-    // 2 rank + cpu of the DRAM tensor at r.to, then waits for the write. kGave* code.
+    // 2 rank + cpu of the DRAM tensor at r.to (a page of 48 bytes or more: its ring's
+    // words after it), then waits for the write. kGave* code.
     template <typename Kernel>
     inline uint32_t pages_counts(
         const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
@@ -744,6 +775,13 @@ namespace km {
             to.get_noc_addr(2 * rank + cpu),
             KM_CROSS_ROW
         );
+        if (r.page >= KM_CROSS_ROW + 16) {  // then its ring's words
+            noc_async_write(
+                area + KM_PUT_RING_WORDS + 16 * cpu,
+                to.get_noc_addr(2 * rank + cpu) + KM_CROSS_ROW,
+                16
+            );
+        }
         return kernel.poll_at(
             kWherePages,
             [] {
@@ -932,11 +970,18 @@ namespace km {
         volatile tt_l1_ptr uint32_t* words = l1(links + KM_PUT_RING_WORDS + 16 * cpu);
         words[KM_PUT_RING_TAIL / 4] = 0;
         words[KM_PUT_RING_SENT / 4] = 0;
+        words[KM_PUT_RING_SENDING / 4] = 0;
+        words[KM_PUT_RING_ROUTER / 4] = 0;
+        const uint32_t home = link_core0(kernel);
+        const uint32_t queue = link_queue();
+        if (kernel.args().me == home && cpu == 0 && queue != 0) {
+            // the put queue (emptied before the hello), where the putting cores read
+            l1(links)[KM_PUT_QUEUE / 4] = queue;
+        }
         if (!page_cpu(links)) {
             return kGaveNone;
         }
         const uint32_t j = page_index(links);
-        const uint32_t home = link_core0(kernel);
         if (kernel.args().me == home) {
             l1(links)[KM_PUT_RING_FAR / 4] = island_area()[KM_ISLAND_RELAY_TILE];
         }
@@ -983,6 +1028,9 @@ namespace km {
         const uint32_t packet = pages_packet();
         const uint32_t limit = kernel.args().wait_limit;
         uint32_t code = kGaveNone;
+        const uint32_t started = wall();
+        uint32_t router = 0;  // cycles waiting for the router's slots
+        bool sending = false;
         for (uint32_t bursts = 0; bursts < kRingBursts; bursts++) {
             uint32_t packets = 0, bytes = 0;
             invalidate_l1_cache();
@@ -994,6 +1042,7 @@ namespace km {
                 }
                 const uint32_t size = l1(header)[kRingBytes];
                 if (!sender.space()) {
+                    const uint32_t waiting = wall();
                     code = kernel.poll_at(
                         kWherePages,
                         [&] {
@@ -1001,6 +1050,7 @@ namespace km {
                         },
                         limit
                     );
+                    router += wall() - waiting;
                     if (code != kGaveNone) {
                         return code;
                     }
@@ -1020,6 +1070,7 @@ namespace km {
             if (packets == 0) {
                 break;  // nothing ready: the CPU's other services
             }
+            sending = true;
             ring.mark = noc_nonposted_writes_num_issued[noc_index];
             cross_count(area, KM_CROSS_PAGES, packets, bytes);
             // the burst's slots free as soon as its packets left L1
@@ -1034,6 +1085,10 @@ namespace km {
                 return code;
             }
             words[KM_PUT_RING_SENT / 4] = ring.issued;
+        }
+        if (sending) {  // the turn's cycles sending, and of them waiting for the router
+            words[KM_PUT_RING_SENDING / 4] += wall() - started;
+            words[KM_PUT_RING_ROUTER / 4] += router;
         }
         return code;
     }
@@ -1324,15 +1379,16 @@ namespace km {
     }
 
     // Page CPU j (CPU `cpu` of its core): its island's next put line (in link core 0's
-    // link area at `area`), once landed. The lead page CPU, while the far island has
-    // room for it, sends the line into the far link core 0's puts; every page CPU then
-    // sends share j of its pages from the asking core's L1 or DRAM into the holder's
-    // DRAM (pages_push), each batch's last packet adding its pages, once all it
-    // carried are written, to the far link core 0's count of the line's pages landed
-    // (KM_PUT_ARRIVED); a line whose pages the asker wrote into the rings itself
-    // (KM_ASK_RING) has no share. Then its count of lines taken (on link core 0: the
-    // line is free again once every page CPU took it). A put this island cannot send
-    // goes across with no pages (the asker's wait names the island). kGave* code.
+    // put queue; its counts in the link area at `area`), once landed. The lead page
+    // CPU sends the line into the far link core 0's arrivals (the same place there);
+    // every page CPU then sends share j of its pages from the asking core's L1 or DRAM
+    // into the holder's DRAM (pages_push), each batch's last packet adding its pages,
+    // once all it carried are written, to the far link core 0's count of the line's
+    // owner (KM_QUEUE_ARRIVED); a line whose pages the asker wrote into the rings
+    // itself (KM_ASK_RING) has no share. Then its count of lines taken (on link core
+    // 0: the line's place is free again once every page CPU took it). A put this
+    // island cannot send goes across with no pages (the asker's wait names the
+    // island). kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_put(
         const Kernel& kernel, uint32_t cpu, uint32_t area
@@ -1342,10 +1398,12 @@ namespace km {
         const uint32_t j = page_index(area);
         const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;
         const uint32_t taken = words[KM_PUT_TAKEN / 4 + j];
-        const uint32_t slot = area + KM_PUT_LINES + taken % KM_ASK_SLOTS * 64;
+        const uint32_t queue = link_queue();
+        const uint32_t place_at = taken % KM_QUEUE_LINES * 64;
+        const uint32_t slot = queue + KM_QUEUE_PUTS + place_at;
         const bool lead = j == page_lead(area);
-        if (lead && taken - words[KM_PUT_DONE / 4] >= KM_ASK_SLOTS) {
-            return kGaveNone;  // the far puts are full
+        if (queue == 0) {
+            return kGaveNone;  // no put queue: no put line
         }
         uint32_t code = kGaveNone;
         const uint32_t at = pages_line_at(kernel, slot, own + KM_PAGE_CPU_PUT, code);
@@ -1370,7 +1428,7 @@ namespace km {
             line[KM_ASK_TENSOR],
             KM_PAGES_DRAM,
             pages_held.chunk,
-            area + KM_PUT_ARRIVED(taken % KM_ASK_SLOTS),
+            queue + KM_QUEUE_ARRIVED + line[KM_ASK_OWNER] % KM_QUEUE_LINES * 4,
             place,
             pages_held.hops,
             KM_PAGES_SEND,
@@ -1393,11 +1451,7 @@ namespace km {
             auto* header = pages_header(area + KM_PUT_HEADERS);
             link_write(
                 header,
-                link_noc(
-                    xy & 0xFFFFu,
-                    xy >> 16,
-                    area + KM_PUT_INBOX + taken % KM_ASK_SLOTS * 64
-                ),
+                link_noc(xy & 0xFFFFu, xy >> 16, queue + KM_QUEUE_ARRIVALS + place_at),
                 64
             );
             code = pages_packet(kernel, header, at, 64);
@@ -1429,88 +1483,143 @@ namespace km {
         return code;
     }
 
-    // The lead page CPU: the far island's next put, once its line and all its pages
-    // have landed here (written; KM_PUT_ARRIVED of its line): its pages onto the
-    // asker's port, then the count of puts confirmed into the far link core 0, which
-    // may then send the next, and its cores reserve the line KM_ASK_SLOTS after this
-    // one (whose pages count at the same word, taken off here first). kGave* code.
+    // The lead page CPU: the far island's put lines as they arrive (in order, into
+    // the pending ones), then each pending line on its own once all its pages have
+    // landed here (written; KM_QUEUE_ARRIVED of its owner): its pages onto the asker's
+    // port, then its number into the asker's word of the line's parity, so the asker
+    // may send its next line on that parity (whose pages count at the same word,
+    // taken off here first). A line never waits for another. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_confirm(
         const Kernel& kernel, uint32_t area
     ) {
-        volatile tt_l1_ptr uint32_t* words = l1(area);
-        invalidate_l1_cache();
-        const uint32_t confirmed = words[KM_PUT_CONFIRMED / 4];
-        const volatile tt_l1_ptr uint32_t* line = (
-            l1(area + KM_PUT_INBOX + confirmed % KM_ASK_SLOTS * 64)
-        );
-        const uint32_t pages = line[KM_ASK_PAGES];
-        if (line[KM_ASK_NUMBER] != confirmed + 1 || line[KM_ASK_END] != confirmed + 1) {
+        const uint32_t queue = link_queue();
+        if (queue == 0) {
             return kGaveNone;
         }
-        volatile tt_l1_ptr uint32_t* arrived = (
-            l1(area + KM_PUT_ARRIVED(confirmed % KM_ASK_SLOTS))
+        volatile tt_l1_ptr uint32_t* words = l1(area);
+        volatile tt_l1_ptr uint32_t* count = (
+            l1(queue + KM_QUEUE_WORDS) + KM_QUEUE_PENDING_COUNT
         );
-        if (static_cast<int32_t>(arrived[0] - pages) < 0) {
-            return kGaveNone;  // not all written yet
-        }
-        uint32_t code = kGaveNone;
-        if (pages != 0) {
-            const uint32_t asker = line[KM_ASK_CORE];
-            auto* header = pages_header(area + KM_PUT_HEADERS + 64);
-            link_increment(
-                header,
-                link_noc(asker & 0xFFFFu, asker >> 16, line[KM_ASK_COUNT]),
-                pages
+        invalidate_l1_cache();
+        // the arrivals, in order (KM_PUT_CONFIRMED: the far lines taken); never more
+        // pending than places: a CPU's two lines at most
+        for (uint32_t n = 0; n < KM_ASK_SLOTS && count[0] < KM_QUEUE_LINES; n++) {
+            const uint32_t taken = words[KM_PUT_CONFIRMED / 4];
+            const volatile tt_l1_ptr uint32_t* line = (
+                l1(queue + KM_QUEUE_ARRIVALS + taken % KM_QUEUE_LINES * 64)
             );
-            code = pages_packet(kernel, header, 0, 0);
+            if (line[KM_ASK_NUMBER] != taken + 1 || line[KM_ASK_END] != taken + 1) {
+                break;
+            }
+            volatile tt_l1_ptr uint32_t* entry = (
+                l1(queue + KM_QUEUE_PENDING + count[0] * KM_QUEUE_ENTRY)
+            );
+            entry[KM_QUEUE_E_OWNER] = line[KM_ASK_OWNER] % KM_QUEUE_LINES;
+            entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES];
+            entry[KM_QUEUE_E_CORE] = line[KM_ASK_CORE];
+            entry[KM_QUEUE_E_COUNT] = line[KM_ASK_COUNT];
+            entry[KM_QUEUE_E_NUMBER] = line[KM_ASK_NUMBER];
+            count[0] = count[0] + 1;
+            words[KM_PUT_CONFIRMED / 4] = taken + 1;
         }
-        if (code != kGaveNone) {
-            return code;
-        }
-        // the line's count back to 0 before its line is free again: the next line on
-        // this word adds to it by the NoC's atomics, which a store after would lose
-        arrived[0] -= pages;
-        const uint32_t xy = island_area()[KM_ISLAND_RELAY_TILE];  // the far link core
-        auto* done = pages_header(area + KM_PUT_HEADERS + 128);
-        link_inline(
-            done, link_noc(xy & 0xFFFFu, xy >> 16, area + KM_PUT_DONE), confirmed + 1
-        );
-        code = pages_packet(kernel, done, 0, 0);
-        if (code == kGaveNone) {
-            words[KM_PUT_CONFIRMED / 4] = confirmed + 1;
+        // each pending line whose pages have all landed, the last moved into its place
+        for (uint32_t i = 0; i < count[0];) {
+            volatile tt_l1_ptr uint32_t* entry = (
+                l1(queue + KM_QUEUE_PENDING + i * KM_QUEUE_ENTRY)
+            );
+            const uint32_t owner = entry[KM_QUEUE_E_OWNER];
+            const uint32_t pages = entry[KM_QUEUE_E_PAGES];
+            volatile tt_l1_ptr uint32_t* arrived = (
+                l1(queue + KM_QUEUE_ARRIVED) + owner
+            );
+            if (static_cast<int32_t>(arrived[0] - pages) < 0) {
+                i++;
+                continue;  // not all written yet
+            }
+            const uint32_t asker = entry[KM_QUEUE_E_CORE];
+            uint32_t code = kGaveNone;
+            if (pages != 0) {
+                auto* header = pages_header(area + KM_PUT_HEADERS + 64);
+                link_increment(
+                    header,
+                    link_noc(asker & 0xFFFFu, asker >> 16, entry[KM_QUEUE_E_COUNT]),
+                    pages
+                );
+                code = pages_packet(kernel, header, 0, 0);
+            }
+            if (code != kGaveNone) {
+                return code;
+            }
+            // the owner's count back to 0 before its next line on this parity may
+            // come: that line's pages add to it by the NoC's atomics, which a store
+            // after would lose
+            arrived[0] -= pages;
+            // the asker's CPU (owner / 2 % 2: 1 the writer) and parity (owner % 2)
+            const uint32_t own = (
+                KM_PUT_OWN + (owner / 2 % 2 == 1 ? 0 : KM_PUT_OWN_BYTES)
+            );
+            auto* done = pages_header(area + KM_PUT_HEADERS + 128);
+            link_inline(
+                done,
+                link_noc(
+                    asker & 0xFFFFu,
+                    asker >> 16,
+                    area + own + KM_PUT_OWN_CONFIRMED + owner % 2 * 4
+                ),
+                entry[KM_QUEUE_E_NUMBER]
+            );
+            code = pages_packet(kernel, done, 0, 0);
+            if (code != kGaveNone) {
+                return code;
+            }
             cross_count(area, KM_CROSS_PUTS, 1, pages != 0 ? 8 : 4);
+            count[0] = count[0] - 1;
+            if (i != count[0]) {
+                volatile tt_l1_ptr uint32_t* last = (
+                    l1(queue + KM_QUEUE_PENDING + count[0] * KM_QUEUE_ENTRY)
+                );
+                for (uint32_t w = 0; w <= KM_QUEUE_E_NUMBER; w++) {
+                    entry[w] = last[w];
+                }
+            }
         }
-        return code;
+        return kGaveNone;
     }
 
     // A putting core's view of its island's rings (link core 0's put block, read a
     // put: an overlay part keeps no runtime state of its own): page CPUs, slots a ring
-    // (0: none), the far link core 0 (x | y << 16), each page CPU's ring and core (its
-    // number | its CPU << 16).
+    // (0: none), the far link core 0 (x | y << 16), the put queue's address (the same
+    // on both islands), each page CPU's ring and core (its number | its CPU << 16).
     struct PutRings {
         uint32_t read;
         uint32_t cpus;
         uint32_t slots;
         uint32_t far;
+        uint32_t queue;
         uint32_t ring[KM_PAGE_CPUS];
         uint32_t core[KM_PAGE_CPUS];
     };
 
+    constexpr uint32_t kPutNoLine = 0xFFFFFFFFu;
+
     // Reads `rings` from link core `link0`'s link area at `area` (the same address on
     // every core) into L1 `room` (KM_PUT_RING_READ bytes), until every page CPU has
-    // said its ring (bounded). kGave* code.
+    // said its ring and the queue its address, and (with `number`, a put line's
+    // reserved count) until every page CPU took the line KM_QUEUE_LINES before it, so
+    // the line's place in the queue is free (bounded). kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t put_rings_read(
         const Kernel& core,
         uint32_t link0,
         uint32_t area,
         uint32_t room,
-        PutRings& rings
+        PutRings& rings,
+        uint32_t number = kPutNoLine
     ) {
         const volatile tt_l1_ptr uint32_t* words = l1(room);
         const auto at = [&](uint32_t offset) {
-            return words[(offset - KM_PUT_DONE) / 4];
+            return words[(offset - KM_PUT_TAKEN) / 4];
         };
         bool reading = false;
         const uint32_t code = core.poll_at(
@@ -1524,16 +1633,23 @@ namespace km {
                     invalidate_l1_cache();
                     const uint32_t cpus = at(KM_PUT_CPUS);
                     const uint32_t slots = at(KM_PUT_RING_SLOTS);
-                    bool said = slots != 0 && cpus != 0 && cpus <= KM_PAGE_CPUS;
+                    bool said = (
+                        slots != 0 && cpus != 0 && cpus <= KM_PAGE_CPUS &&
+                        at(KM_PUT_QUEUE) != 0
+                    );
                     for (uint32_t j = 0; said && j < cpus; j++) {
                         said = at(KM_PUT_RING_CORE + 4 * j) != 0;
+                        said = said && (
+                            number == kPutNoLine ||
+                            number - at(KM_PUT_TAKEN + 4 * j) < KM_QUEUE_LINES
+                        );
                     }
                     if (said) {
                         return true;
                     }
                 }
                 noc_async_read(
-                    core.core_noc(link0, area + KM_PUT_DONE), room, KM_PUT_RING_READ
+                    core.core_noc(link0, area + KM_PUT_TAKEN), room, KM_PUT_RING_READ
                 );
                 reading = true;
                 return false;
@@ -1544,7 +1660,11 @@ namespace km {
             return code;
         }
         rings = {
-            1, at(KM_PUT_CPUS), at(KM_PUT_RING_SLOTS) & ~(1u << 31), at(KM_PUT_RING_FAR)
+            1,
+            at(KM_PUT_CPUS),
+            at(KM_PUT_RING_SLOTS) & ~(1u << 31),
+            at(KM_PUT_RING_FAR),
+            at(KM_PUT_QUEUE)
         };
         for (uint32_t j = 0; j < rings.cpus; j++) {
             rings.ring[j] = at(KM_PUT_RING + 4 * j);
@@ -1575,6 +1695,9 @@ namespace km {
         uint32_t pages;
         uint32_t done;
         uint32_t piece;
+        uint32_t owner;  // its line's KM_ASK_OWNER: where the far island counts it
+        uint32_t turn;   // cycles its pieces waited for their slots (atomic, room)
+        uint32_t write;  // cycles they wrote pages and headers into the slots
     };
 
     // The next `count` pages of `run` from L1 `from` (one after another) into the page
@@ -1584,7 +1707,8 @@ namespace km {
     // packet holds, at most kPacketPages; the piece's last, counted, kCountedPages at
     // most), then the headers made in L1 (each page into the holder's DRAM; the last
     // adds the piece's pages, once written, to the far link core 0's count of the
-    // line, KM_PUT_ARRIVED) with their marks. On return `from` is free. kGave* code.
+    // line's owner, KM_QUEUE_ARRIVED) with their marks. On return `from` is free.
+    // kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t put_ring_pieces(
         const Kernel& core, PutRun& run, uint32_t from, uint32_t count
@@ -1609,7 +1733,7 @@ namespace km {
         const uint64_t counter = link_noc(
             rings.far & 0xFFFFu,
             rings.far >> 16,
-            run.area + KM_PUT_ARRIVED(run.number % KM_ASK_SLOTS)
+            rings.queue + KM_QUEUE_ARRIVED + run.owner * 4
         );
         volatile tt_l1_ptr uint32_t* words = l1(run.answer);
         const auto written = [] {
@@ -1633,6 +1757,7 @@ namespace km {
             const uint32_t tail = (
                 run.area + KM_PUT_RING_WORDS + 16 * (rings.core[j] >> 16)
             );
+            const uint32_t asked = wall();
             words[0] = kRingNoAnswer;
             invalidate_l1_cache();  // a fence: the store lands before the answer can
             noc_fast_atomic_increment<noc_mode, true>(
@@ -1648,11 +1773,19 @@ namespace km {
             );
             // the atomic's answer (the piece's first slot, a sequence), then the
             // ring's words read until it has room
-            uint32_t slot = 0;
-            bool reserved = false;
+            uint32_t slot = 0, until = 0;
+            bool reserved = false, pausing = false;
             code = core.poll_at(
                 kWhereAsk,
                 [&] {
+                    if (pausing) {  // the ring sends the slots before ours meanwhile
+                        if (static_cast<int32_t>(wall() - until) < 0) {
+                            return false;
+                        }
+                        pausing = false;
+                        noc_async_read(core.core_noc(server, tail), run.answer, 16);
+                        return false;
+                    }
                     invalidate_l1_cache();
                     if (!reserved) {
                         if (
@@ -1663,14 +1796,25 @@ namespace km {
                         }
                         reserved = true;
                         slot = words[0];
-                        words[KM_PUT_RING_SENT / 4] = slot - rings.slots;  // none read
-                    } else if (!ncrisc_noc_reads_flushed(noc_index)) {
+                        // the ring's words read at once
+                        noc_async_read(core.core_noc(server, tail), run.answer, 16);
                         return false;
                     }
-                    if (slot + packets - words[KM_PUT_RING_SENT / 4] <= rings.slots) {
+                    if (!ncrisc_noc_reads_flushed(noc_index)) {
+                        return false;
+                    }
+                    const uint32_t ahead = (
+                        slot + packets - words[KM_PUT_RING_SENT / 4] - rings.slots
+                    );
+                    if (static_cast<int32_t>(ahead) <= 0) {
                         return true;
                     }
-                    noc_async_read(core.core_noc(server, tail), run.answer, 16);
+                    // read again once the ring could have sent the slots before ours
+                    // (a packet's time each, kRingPollCycles), not at once: a read
+                    // of every putting core at once would hold the link core's NoC
+                    const uint32_t wait = ahead < kRingPollMost ? ahead : kRingPollMost;
+                    until = wall() + wait * kRingPollCycles;
+                    pausing = true;
                     return false;
                 },
                 limit
@@ -1678,6 +1822,8 @@ namespace km {
             if (code != kGaveNone) {
                 break;
             }
+            const uint32_t roomy = wall();
+            run.turn += roomy - asked;
             const uint32_t payloads = ring + rings.slots * kRingHeader;
             for (uint32_t k = 0, at = 0; k < packets; k++) {
                 const uint32_t has = packet_pages(k, at);
@@ -1742,10 +1888,13 @@ namespace km {
                 );
                 k += span;
             }
+            run.write += wall() - roomy;
             done += n;
         }
         run.done += done;
+        const uint32_t flushing = wall();
         const uint32_t sent = core.poll_at(kWhereAsk, written, limit);
+        run.write += wall() - flushing;
         return code != kGaveNone ? code : sent;
     }
 

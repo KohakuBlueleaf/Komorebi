@@ -251,7 +251,7 @@ def _core_args(program, placed, core):
 
 # A link CPU's own chunk on the link cores (Run._link_chunk): at most, at least (the
 # put rings' least, km_pages.hpp kRingChunkMin), and what is left besides.
-LINK_CHUNK_MOST = 256 << 10
+LINK_CHUNK_MOST = 512 << 10
 LINK_CHUNK_LEAST = 128 << 10
 LINK_CHUNK_MARGIN = 64 << 10
 
@@ -2111,6 +2111,9 @@ class _Backend:
         for index, fmt, page, pages in self._cbs(program.buffers):
             launch.cb(all_cores, index, fmt, page, page * pages)
             self.cb_indices.add(index)
+        if "KM_PAGE_LINKS" in program.defines and not links:
+            # its link cores' put queue, on them alone (the program's kernels there)
+            defines += self._link_queue(launch, program, grid, 0)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
         kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
         held = programs.rectangles(0, ranks, grid[0]) if links else all_cores
@@ -2133,13 +2136,9 @@ class _Backend:
                 if name in LINK_DEFINES
             ] + [("KM_LINK_SERVICES", "1")]
             chunk = self._link_chunk(program, cores)
-            if chunk:  # the link cores' own chunks, on them alone
-                index = abi.headers()["KM_LINK_CB"]
-                if index in self.cb_indices:
-                    raise ValueError(
-                        f"{program.name}: buffer index {index} is the link cores' own"
-                    )
-                launch.cb(served, index, "uint32", chunk, 2 * chunk)
+            # the link cores' own L1, on them alone: the put queue, the chunks
+            link_defines += self._link_queue(launch, program, grid, chunk)
+            if chunk:
                 link_defines.append(("KM_LINK_CHUNK", str(chunk)))
                 self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
             for kernel, args, processor, _ in kernels:
@@ -2205,11 +2204,44 @@ class _Backend:
             channel_module.chunk_for(page, spare // 2) or channel_module.CHUNK_DEFAULT
         )
 
+    def _link_cores(self, grid):
+        """The rectangles of this load's link cores (two cards: its island's; a split
+        card: every island's), [] for none."""
+        if self.split is not None:
+            graph, mine = self.split[0], range(len(self.split[0].islands))
+        elif self.session.island is not None:
+            graph, here = self.session.island
+            mine = [here]
+        else:
+            return []
+        rects = []
+        for island in mine:
+            cores = graph.link_cores[island]
+            if cores:
+                rects += programs.rectangles(cores[0], len(cores), grid[0])
+        return rects
+
+    def _link_queue(self, launch, program, grid, chunk):
+        """The link cores' own L1 (KM_LINK_CB, on them alone): the put queue, then
+        two chunks of `chunk` bytes (0: none); the kernels' defines that say so."""
+        rects = self._link_cores(grid)
+        if not rects:
+            return []
+        h = abi.headers()
+        index = h["KM_LINK_CB"]
+        if index in self.cb_indices:
+            raise ValueError(
+                f"{program.name}: buffer index {index} is the link cores' own"
+            )
+        size = h["KM_QUEUE_BYTES"] + 2 * chunk
+        launch.cb(rects, index, "uint32", size, size)
+        return [("KM_LINK_QUEUE", "1")]
+
     def _link_chunk(self, program, cores):
         """A link CPU's own chunk on the link cores (bytes; 0: none, the run's transfer
         chunk serves): LINK_CHUNK_MOST, else the most whole 64 KiB that two of fit in
-        what a link core has left after the program's buffers, the transfer buffer and
-        what the session keeps, LINK_CHUNK_LEAST at least."""
+        what a link core has left after the program's buffers, the transfer buffer,
+        what the session keeps and the put queue, LINK_CHUNK_LEAST at least."""
         buffers = sum(buffer.page_bytes * buffer.pages for buffer in program.buffers)
         buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
         buffers += self.transfer.bytes if self.transfer is not None else 0
@@ -2218,6 +2250,7 @@ class _Backend:
             - buffers
             - self.control.nbytes // cores
             - self._held_bytes()
+            - abi.headers()["KM_QUEUE_BYTES"]
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
@@ -2287,6 +2320,9 @@ class _Backend:
         self.cb_indices = {  # a switch may give any core any program's buffers
             buffer.index for program in placed.programs for buffer in program.buffers
         }
+        queue = []  # the link cores' put queue, when a program puts across
+        if any("KM_PAGE_LINKS" in program.defines for program in placed.programs):
+            queue = self._link_queue(launch, placed.programs[0], grid, 0)
         align = programs.CB_ALIGN
         if placed.switch:  # the runtime's buffers first, then room for the largest
             reserve = -(-self._switch_layouts(placed) // align) * align
@@ -2312,11 +2348,13 @@ class _Backend:
                 ("KM_PROGRAM_GROUP", str(number)),
                 ("KM_PROGRAM_CB_IN", str(cb_in)),
                 ("KM_PROGRAM_CB_OUT", str(cb_out)),
+                *queue,
             ]
             if placed.switch:  # the kernels do not depend on the group's buffers
                 defines = [
                     ("KM_PROGRAM_GROUP", str(number)),
                     ("KM_PROGRAM_SWITCH", "1"),
+                    *queue,
                 ]
             first = held[0] if held else None
             if placed.switch and first is None:

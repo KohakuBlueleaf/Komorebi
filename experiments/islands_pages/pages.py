@@ -263,6 +263,9 @@ def runs(session, args, data, own, log):
     targets = [
         session.empty(data.shape, "uint32", group=own[1 - i]) for i in islands_putting
     ]
+    reports = [
+        session.empty(data.shape, "uint32", group=own[i]) for i in islands_putting
+    ]
     program = km.Program(
         "pages",
         kernels=KERNELS,
@@ -281,8 +284,16 @@ def runs(session, args, data, own, log):
     pages = data.shape[0]
     out = {"mode": f"runs-{args.runs}", "chunk": chunk, "rows": [], "error": None}
     submitted = []
-    for i, source, target in zip(islands_putting, sources, targets):
-        words = [source.address, target.address, pages, args.run_pages, args.piece]
+    before = run.crossings()
+    for i, source, target, report in zip(islands_putting, sources, targets, reports):
+        words = [
+            source.address,
+            target.address,
+            pages,
+            args.run_pages,
+            args.piece,
+            report.address,
+        ]
         submitted.append(
             (i, run.island(i), run.island(i).submit(handler, own[i], words))
         )
@@ -300,7 +311,11 @@ def runs(session, args, data, own, log):
             "gb_s": round(pages * args.page / seconds / 1e9, 2),
         }
         log(f"RUNS {args.mib} MiB from island {i}: {row['ms']} ms, {row['gb_s']} GB/s")
+        row.update(steps(session, reports[islands_putting.index(i)], own[i][1], log))
         out["rows"].append(row)
+    moved = run.crossings() - before
+    for row in out["rows"]:
+        row["links"] = ring_shares(moved, row["from"], row["ms"], log)
     wrong = 0
     for target in targets:
         (got,) = session.read(target)
@@ -316,6 +331,71 @@ def runs(session, args, data, own, log):
         out["kernel_errors"] = str(error)[:300]
     out["ok"] = bool(
         out["error"] is None and wrong == 0 and out["kernel_errors"] == ["none", "none"]
+    )
+    return out
+
+
+RUNS_STEPS = ("line", "read", "piece", "wait")  # pages.h kRuns*, in order
+
+
+def steps(session, reports, ranks, log):
+    """Each rank's RUNS report (pages.h): the share of its cycles in each step, the
+    mean over the ranks (and the least and most), and its pieces."""
+    (got,) = session.read(reports, first=0, pages=ranks)
+    words = got.view(np.uint32).reshape(ranks, -1)[:, : 6 + len(RUNS_STEPS)]
+    good = words[:, 0] == 0x52554E53
+    if not good.all():
+        log(f"RUNS reports: {int((~good).sum())} of {ranks} missing")
+        return {"reports_missing": int((~good).sum())}
+    total = words[:, 2].astype(np.float64)
+    shares = {}
+    for k, name in enumerate(RUNS_STEPS):
+        share = words[:, 4 + k] / total
+        shares[name] = [
+            round(float(share.mean()), 3),
+            round(float(share.min()), 3),
+            round(float(share.max()), 3),
+        ]
+    for k, name in enumerate(("ring turn", "ring write")):
+        share = words[:, 4 + len(RUNS_STEPS) + k] / total
+        shares[name] = [
+            round(float(share.mean()), 3),
+            round(float(share.min()), 3),
+            round(float(share.max()), 3),
+        ]
+    pieces = words[:, 3]
+    per_piece = float((words[:, 4 + RUNS_STEPS.index("piece")] / pieces).mean())
+    log(
+        "RUNS steps, share of a rank's cycles (mean, least, most): "
+        + ", ".join(f"{name} {v[0]} ({v[1]}..{v[2]})" for name, v in shares.items())
+        + f"; {int(pieces.mean())} pieces a rank, {per_piece:,.0f} cycles a put_piece,"
+        + f" {float(total.mean()):,.0f} cycles a rank"
+    )
+    return {"steps": shares, "pieces": int(pieces.mean()), "piece_cycles": per_piece}
+
+
+AICLK_HZ = 1.35e9  # the cores' clock (the wall clock the counters read)
+
+
+def ring_shares(moved, source, ms, log):
+    """Each link CPU's put ring from island `source`: the share of the command's time
+    it sent (its own send, then waiting for the router's slots)."""
+    cycles = ms * 1e-3 * AICLK_HZ
+    out = {}
+    for (link, here, _), row in sorted(moved.rows.items()):
+        if here != source or not row["ring_sending"]:
+            continue
+        sending, router = row["ring_sending"], row["ring_router"]
+        out[link] = {
+            "send": round((sending - router) / cycles, 3),
+            "router": round(router / cycles, 3),
+            "pages": row["pages"],
+        }
+    log(
+        f"RUNS link CPUs from island {source}, share of the command's time: "
+        + ", ".join(
+            f"link {k} send {v['send']} router {v['router']}" for k, v in out.items()
+        )
     )
     return out
 

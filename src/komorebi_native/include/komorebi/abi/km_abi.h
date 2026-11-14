@@ -150,9 +150,33 @@
  * of them, the last links); each serves its share of every ask and put
  * (partition(pages, j, page CPUs)). */
 #define KM_PAGE_CPUS 4u
-/* the circular buffer index of a link core's own chunks (link cores alone; its
- * kernels built with KM_LINK_CHUNK, a CPU's bytes) */
+/* the circular buffer index of a link core's own L1 (link cores alone; its kernels
+ * built with KM_LINK_QUEUE): the put queue (KM_QUEUE_*), then, built with
+ * KM_LINK_CHUNK (a CPU's bytes), two chunks */
 #define KM_LINK_CB 31u
+/* The put queue, on link core 0 (its own L1, KM_LINK_CB; its address in KM_PUT_QUEUE,
+ * the same on every island): a put line a core's CPU may have two of in flight, so
+ * at most KM_QUEUE_LINES lines are unconfirmed and neither ring below wraps onto a
+ * line not yet taken. Its words (the pending lines' count), this island's put lines
+ * (line n at n % KM_QUEUE_LINES, its page CPUs take them in order), the far island's
+ * lines as they arrive (the same places), the pages landed of each owner (a core's
+ * CPU and parity, KM_ASK_OWNER: one line at a time each), and the lines taken from
+ * the arrivals and not yet confirmed (KM_QUEUE_ENTRY bytes each: KM_QUEUE_E_*), each
+ * confirmed on its own once its pages have landed. */
+#define KM_QUEUE_LINES (4u * KM_CORES_MAX) /* a core's two CPUs, two lines each */
+#define KM_QUEUE_WORDS 0u
+#define KM_QUEUE_PENDING_COUNT 0u /* a word of KM_QUEUE_WORDS */
+#define KM_QUEUE_PUTS 0x40u
+#define KM_QUEUE_ARRIVALS (KM_QUEUE_PUTS + KM_QUEUE_LINES * 64u)
+#define KM_QUEUE_ARRIVED (KM_QUEUE_ARRIVALS + KM_QUEUE_LINES * 64u)
+#define KM_QUEUE_PENDING (KM_QUEUE_ARRIVED + KM_QUEUE_LINES * 4u)
+#define KM_QUEUE_ENTRY 32u
+#define KM_QUEUE_E_OWNER 0u
+#define KM_QUEUE_E_PAGES 1u
+#define KM_QUEUE_E_CORE 2u   /* the asker, x | y << 16 */
+#define KM_QUEUE_E_COUNT 3u  /* its port count's L1 address */
+#define KM_QUEUE_E_NUMBER 4u /* the line's number word */
+#define KM_QUEUE_BYTES (KM_QUEUE_PENDING + KM_QUEUE_LINES * KM_QUEUE_ENTRY)
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
 #define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */
@@ -186,6 +210,7 @@
 #define KM_ASK_DRAM 10u
 #define KM_ASK_DRAM_FIRST 11u
 #define KM_ASK_RING 12u
+#define KM_ASK_OWNER 13u /* a put: (core * 2 + its CPU) * 2 + parity, the asker's */
 #define KM_ASK_END 15u
 /* Then what crossed, a row a CPU of the core, counted only on a link core by that CPU:
  * messages, command lines, asks, pages, relayed parts, bytes (low, high) it sent */
@@ -223,12 +248,20 @@
 #define KM_PUT_RING_CORE (KM_PUT_TAIL + 0x40u) /* + 4 j */
 #define KM_PUT_RING_SLOTS (KM_PUT_TAIL + 0x50u) /* | 1 << 31 once published */
 #define KM_PUT_RING_FAR (KM_PUT_TAIL + 0x54u)   /* the far link core 0, x | y << 16 */
-#define KM_PUT_RING_READ 64u /* what a putting core reads, from KM_PUT_DONE */
+#define KM_PUT_QUEUE (KM_PUT_TAIL + 0x58u) /* the put queue's L1 address, 0: none yet */
+#define KM_PUT_RING_READ 0x50u /* what a putting core reads, from KM_PUT_TAKEN */
 #define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x80 the second CPU's */
-#define KM_PUT_OWN_BYTES 0x80u /* a line, two answer words, 32 bytes read */
+#define KM_PUT_OWN_BYTES 0x80u /* a line, two answer words, then its lines' words */
+/* a CPU's put lines (offsets in its KM_PUT_OWN): its lines sent, the number word of
+ * its last line on each parity and the one the far island confirmed (+ 4 parity) */
+#define KM_PUT_OWN_SENT 0x50u
+#define KM_PUT_OWN_NUMBER 0x54u
+#define KM_PUT_OWN_CONFIRMED 0x5Cu
 #define KM_PUT_RING_WORDS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES) /* + 16 a CPU */
 #define KM_PUT_RING_TAIL 0u
 #define KM_PUT_RING_SENT 4u
+#define KM_PUT_RING_SENDING 8u /* cycles its turns sent (COUNTS reads them) */
+#define KM_PUT_RING_ROUTER 12u /* of them, cycles waiting for the router's slots */
 #define KM_PUT_HEADERS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES + 0x40u)
 #define KM_PUT_LINES (KM_PUT_HEADERS + 0xC0u)
 #define KM_PUT_INBOX (KM_PUT_LINES + KM_ASK_SLOTS * 64u)
@@ -651,8 +684,10 @@ KM_STATIC_ASSERT(
     KM_ISLAND_LINK_AREA + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
         KM_ASK_READ + 16u <= KM_ASK_HEADERS && KM_PUT_HEADERS % 64u == 0 &&
         KM_PUT_LINES % 64u == 0 && KM_ASK_SLOTS == 32u &&
-        KM_PUT_RING_FAR + 4u <= KM_PUT_DONE + KM_PUT_RING_READ &&
-        KM_PUT_DONE + KM_PUT_RING_READ <= KM_PUT_OWN &&
+        KM_PUT_QUEUE + 4u <= KM_PUT_TAKEN + KM_PUT_RING_READ &&
+        KM_PUT_TAKEN + KM_PUT_RING_READ <= KM_PUT_OWN && KM_PUT_TAKEN % 16u == 0 &&
+        KM_PUT_OWN_CONFIRMED + 8u <= KM_PUT_OWN_BYTES && KM_ASK_OWNER < KM_ASK_END &&
+        KM_QUEUE_PUTS % 64u == 0 && KM_QUEUE_BYTES % 64u == 0 &&
         KM_PUT_RING_WORDS + 32u <= KM_PUT_HEADERS &&
         2u * KM_PUT_BUILD_BYTES <= 2u * KM_ASK_SLOTS * 64u && KM_ASK_RING < KM_ASK_END,
     "the link area word after the island table; the ask lines whole lines; the rings"

@@ -35,7 +35,16 @@ constexpr uint32_t kSoakWords = 8;
 // RUNS (reader): the rank's share of pages 0 .. a2 - 1 of tensor a0 (this island's)
 // put into the same pages of tensor a1 (another island's) in runs of a3 pages, each
 // named by km::put_pages and its bytes following by km::put_piece, a4 pages a piece
-// (read from a0 into L1 just before), then one km::put_wait for all its runs.
+// (read from a0 into L1 just before), then one km::put_wait for all its runs. With
+// a5 (a tensor of this island's) the rank's report into its page `rank`: magic,
+// rank, cycles in all, pieces, the cycles in each step (kRuns*), then of put_piece's
+// the cycles its pieces waited for ring slots and wrote into them (km::PutRun).
 constexpr uint32_t kHandlerRuns = 4;
+constexpr uint32_t kRunsMagic = 0x52554E53u;  // "RUNS": word 0 of a report
+constexpr uint32_t kRunsLine = 0;   // km::put_pages: the run's line
+constexpr uint32_t kRunsRead = 1;   // the piece read from a0 into L1
+constexpr uint32_t kRunsPiece = 2;  // km::put_piece
+constexpr uint32_t kRunsWait = 3;   // the last km::put_wait
+constexpr uint32_t kRunsSteps = 4;
 // The L1 buffer (a circular buffer index; only its address is used).
 constexpr uint32_t kCbMove = 0;

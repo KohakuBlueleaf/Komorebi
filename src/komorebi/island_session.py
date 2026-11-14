@@ -73,6 +73,9 @@ class Crossings:
     `after - before` is what crossed between two reads; `total` sums links."""
 
     FIELDS = ("messages", "lines", "asks", "pages", "parts", "puts", "bytes")
+    # the link CPU's put ring: cycles its turns sent, of them waiting for the router's
+    # slots (32-bit counts: a difference is taken modulo 2 ** 32)
+    CYCLES = ("ring_sending", "ring_router")
 
     def __init__(self, rows):
         self.rows = dict(rows)
@@ -81,10 +84,16 @@ class Crossings:
         return self.rows[key]
 
     def __sub__(self, other):
-        zero = dict.fromkeys(self.FIELDS, 0)
+        zero = dict.fromkeys(self.FIELDS + self.CYCLES, 0)
         return Crossings(
             {
-                key: {f: row[f] - other.rows.get(key, zero)[f] for f in self.FIELDS}
+                key: {
+                    **{f: row[f] - other.rows.get(key, zero)[f] for f in self.FIELDS},
+                    **{
+                        f: (row[f] - other.rows.get(key, zero)[f]) % 2**32
+                        for f in self.CYCLES
+                    },
+                }
                 for key, row in self.rows.items()
             }
         )
@@ -1446,9 +1455,12 @@ class IslandSession:
                     continue
                 row = words[at]
                 low = h["KM_CROSS_BYTES"]
+                ring = h["KM_CROSS_ROW"] // 4  # the ring's words after the row
                 rows[(link, island, there)] = {
                     **dict(zip(Crossings.FIELDS, (int(row[f]) for f in fields))),
                     "bytes": int(row[low]) | int(row[low + 1]) << 32,
+                    "ring_sending": int(row[ring + h["KM_PUT_RING_SENDING"] // 4]),
+                    "ring_router": int(row[ring + h["KM_PUT_RING_ROUTER"] // 4]),
                 }
         return Crossings(rows)
 
