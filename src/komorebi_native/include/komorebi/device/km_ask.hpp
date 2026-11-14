@@ -364,6 +364,48 @@ namespace km {
         );
     }
 
+    // Reader or writer: one put line, returned once sent (island `holder` writes pages
+    // first .. at bank address `address`); L1 `from` kept until put_wait has counted.
+    template <typename Kernel>
+    inline bool put_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t holder,
+        uint32_t address,
+        uint32_t bytes,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t from
+    ) {
+        return (
+            ask_line(
+                core,
+                command,
+                ask_puts(core.role()),
+                holder,
+                address,
+                bytes,
+                first,
+                pages,
+                from,
+                pages_port(core)
+            )
+        );
+    }
+
+    // Reader or writer: waits until its page port has counted all `pages` of this
+    // CPU's puts sent since the last wait (the last to island `holder`), clears it.
+    template <typename Kernel>
+    inline bool put_wait(
+        const Kernel& core, const km_command_t& command, uint32_t pages, uint32_t holder
+    ) {
+        return (
+            ask_wait(
+                core, slot(command), command.sequence, pages_port(core), pages, holder
+            )
+        );
+    }
+
     // Reader or writer: pages first .. of tensor `tensor` (its word; `args`: its
     // accessor's) into L1 `to`; another island's runs asked for. One card: a read.
     template <typename Kernel, typename Args>

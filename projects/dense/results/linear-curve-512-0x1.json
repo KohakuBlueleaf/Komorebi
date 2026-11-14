@@ -7,48 +7,36 @@
   1
  ],
  "links": 0,
- "split_w": 0,
- "split_x": 0,
- "upload_s": 0.151,
+ "upload_s": 0.142,
  "placements": {
   "x": [
    [
     0,
-    16
+    8
    ],
    [
-    16,
-    0
+    8,
+    8
    ]
   ],
   "w": [
    [
     0,
-    16
+    8
    ],
    [
-    16,
-    0
+    8,
+    8
    ]
   ],
   "y": [
    [
     0,
-    16
+    8
    ],
    [
-    16,
-    0
-   ]
-  ],
-  "p": [
-   [
-    0,
-    1
-   ],
-   [
-    0,
-    1
+    8,
+    8
    ]
   ]
  },
@@ -59,21 +47,21 @@
  "linear": {
   "plan": {
    "mt": 16,
-   "kt": 16,
-   "nt": 16,
+   "kt": 8,
+   "nt": 8,
    "rows": 8,
    "cols": 8,
    "pcm": 2,
-   "pcn": 2,
+   "pcn": 1,
    "bm": 2,
-   "bn": 2,
-   "kb": 16,
+   "bn": 1,
+   "kb": 8,
    "sh": 2,
-   "sw": 2,
+   "sw": 1,
    "wa": 2,
    "ww": 2,
    "layout": "2d",
-   "l1": 283648,
+   "l1": 111616,
    "form": "grid",
    "nk": 1,
    "nbh": 1,
@@ -87,46 +75,45 @@
   },
   "kernel_sizes": {
    "text": {
-    "BRISC": 59276,
-    "NCRISC": 56996,
-    "TRISC0": 12584,
-    "TRISC1": 6400,
-    "TRISC2": 7156
+    "BRISC": 55884,
+    "NCRISC": 56416,
+    "TRISC0": 14456,
+    "TRISC1": 5388,
+    "TRISC2": 5784
    },
-   "total": 143440
+   "total": 138944
   },
   "crossed_bytes": {
-   "x": 0,
-   "y": 524288,
-   "partials": 0,
-   "all": 524288
+   "blocks": 524288,
+   "tiles": 524288,
+   "put_bytes": 4096
   },
   "loop": {
    "single_microseconds": [
-    16.6,
-    16.1,
-    16.12
+    264.16,
+    265.96,
+    266.0
    ],
-   "reps": 186105,
-   "seconds": 4.239,
-   "microseconds_per_call": 22.78,
+   "reps": 11280,
+   "seconds": 2.885,
+   "microseconds_per_call": 255.773,
    "part_microseconds_median": [
-    16.16,
-    2.72
+    251.54,
+    251.56
    ],
    "crossed_a_call": {
     "messages": 0.0,
     "lines": 0.0,
     "asks": 0.0,
-    "pages": 0.0,
-    "parts": 0.0,
-    "puts": 0.0,
-    "bytes": 0.0
+    "pages": 256.0,
+    "parts": 2.0,
+    "puts": 256.0,
+    "bytes": 533568.0
    },
    "aiclk_mhz": {
     "0": [
-     1343,
-     1349.8,
+     1350,
+     1350.0,
      1350
     ],
     "1": [
@@ -145,20 +132,49 @@
    "gave_up": [],
    "broadcast_gave_up": []
   },
+  "passes": [
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 153794,
+     "sync": 175281,
+     "own": 6929
+    },
+    "microseconds_at_mhz": {
+     "put": 113.9,
+     "sync": 129.8,
+     "own": 5.1
+    }
+   },
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 152744,
+     "sync": 176592,
+     "own": 6739
+    },
+    "microseconds_at_mhz": {
+     "put": 113.1,
+     "sync": 130.8,
+     "own": 5.0
+    }
+   }
+  ],
   "check": {
-   "max_rel": 0.005024971237582053,
-   "rms_rel": 0.003948469498100073,
+   "max_rel": 0.006108931018858651,
+   "rms_rel": 0.0041211970999827765,
    "rows": 256,
    "ok": true,
-   "readback_s": 0.402
+   "readback_s": 0.173
   },
-  "tflops": 11.78,
+  "tflops": 1.05,
+  "crossed_gb_per_s": 2.09,
   "ok": true
  },
  "ok": true,
  "load_avg": [
-  "5.79",
-  "5.71",
-  "5.06"
+  "6.06",
+  "5.49",
+  "4.60"
  ]
 }

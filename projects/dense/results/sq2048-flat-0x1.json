@@ -8,7 +8,7 @@
   1
  ],
  "stack": "below",
- "upload_s": 0.415,
+ "upload_s": 0.33,
  "hints": {
   "a": {
    "split": 0,
@@ -74,17 +74,17 @@
   187
  ],
  "single_microseconds": [
-  3099.6,
-  3093.84,
-  3092.88
+  739.8,
+  751.06,
+  751.36
  ],
  "loop": {
-  "reps": 1293,
-  "seconds": 3.984,
-  "microseconds_per_call": 3080.982,
+  "reps": 5326,
+  "seconds": 3.933,
+  "microseconds_per_call": 738.42,
   "island_microseconds_median": [
-   3076.28,
-   3076.3
+   734.04,
+   734.1
   ],
   "aiclk_mhz": {
    "0": [
@@ -104,8 +104,9 @@
   "lines": 0.0,
   "asks": 0.0,
   "pages": 0.0,
-  "parts": 576.0,
-  "bytes": 8426496.0
+  "parts": 96.0,
+  "puts": 0.0,
+  "bytes": 8389632.0
  },
  "run": {
   "cores": 238,
@@ -121,7 +122,7 @@
   "gave_up": [],
   "broadcast_gave_up": []
  },
- "tflops": 5.58,
+ "tflops": 23.27,
  "sampled_row_tiles": [
   25,
   27,
@@ -140,8 +141,8 @@
  },
  "ok": true,
  "load_avg": [
-  "4.16",
-  "5.24",
-  "5.10"
+  "3.52",
+  "4.31",
+  "4.31"
  ]
 }

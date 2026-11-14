@@ -1,5 +1,5 @@
-// Linear compute: the grid product over this island's K, bf16 when that K is all of
-// it, else fp32 partial sums; then this core's share of Y summed over the islands.
+// Linear compute: the grid product over this island's K a window of columns, bf16; in
+// its own window the tiles other islands put here start DST of the K blocks they join.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -39,24 +39,36 @@ void kernel_main() {
         }
         const uint32_t w = command.a1, y = command.a2;
         const uint32_t k_whole = command.a4, n_whole = command.a5;
-        const Cover mine = cover(w, km::island(), k_whole, n_whole);
-        const Parts held_by = parts(w, k_whole, n_whole);
-        const bool whole = held_by.whole;
-        const uint32_t out = whole ? kCbYOut : kCbPartOut;
-        const uint32_t k_blocks = blocks_of(mine.k_tiles, k_block_tiles);
-        const uint32_t last_k_block_tiles = (
-            mine.k_tiles - (k_blocks - 1) * k_block_tiles
-        );
+        const uint32_t here = km::island(), islands = km::islands();
+        const uint32_t m_tiles = plan(kPlMt);
+        const Span mine = k_part(w, here, k_whole, n_whole);
+        const uint32_t k_blocks = blocks_of(mine.count, k_block_tiles);
+        const uint32_t last_k_block_tiles = mine.count - (k_blocks - 1) * k_block_tiles;
+        // the other islands that put here: sender j's tiles join at K block j
+        uint32_t senders = 0;
+        for (uint32_t turn = 1; turn < islands; ++turn) {
+            senders += k_part(w, island_at(here, turn), k_whole, n_whole).count != 0;
+        }
+        if (!included || mine.count == 0) {
+            return;
+        }
         bool ok = true;  // the same on all three threads (wait_front tells them)
-        if (included && mine.k_tiles != 0) {
-            matmul_block_init(
-                kCbRow, kCbCol, 0, subblock_width, subblock_height, k_block_tiles
-            );
-            uint32_t taken = 0;
+        matmul_block_init(
+            kCbRow, kCbCol, 0, subblock_width, subblock_height, k_block_tiles
+        );
+        uint32_t taken = 0;
+        for (uint32_t turn = 1; ok && turn <= islands; ++turn) {
+            const uint32_t to = island_at(here, turn);
+            if (columns(y, to, m_tiles, n_whole).count == 0) {
+                continue;
+            }
+            const bool own = to == here;
+            const uint32_t out = own ? kCbYOut : kCbSend;
             for (uint32_t block = 0; ok && block < block_count; ++block) {
                 pack_reconfig_data_format(k_blocks > 1 ? kCbPart : out);
                 for (uint32_t k_block = 0; ok && k_block < k_blocks; ++k_block) {
                     const bool last = k_block == k_blocks - 1;
+                    const bool joined = own && k_block < senders;
                     const uint32_t inner = last ? last_k_block_tiles : k_block_tiles;
                     ok = (
                         km::broadcast_receive(compute, kCbRow, a_block_tiles) &&
@@ -75,17 +87,27 @@ void kernel_main() {
                             const bool reload = last && k_blocks > 1;
                             if (reload) {
                                 ok = compute.wait_front(kCbPart, subblock_tiles);
-                                if (!ok) {
-                                    break;
-                                }
+                            }
+                            if (ok && joined) {
+                                ok = (
+                                    compute.wait_front(
+                                        kCbSent, subblock_tiles, km::kBehindPort
+                                    )
+                                );
+                            }
+                            if (!ok) {
+                                break;
                             }
                             tile_regs_acquire();
-                            if (reload) {
-                                reconfig_data_format_srca(kCbCol, kCbPart);
-                                copy_init(kCbPart);
-                                copy_block(kCbPart, 0, 0, subblock_tiles);
-                                cb_pop_front(kCbPart, subblock_tiles);
-                                reconfig_data_format_srca(kCbPart, kCbCol);
+                            if (reload || joined) {
+                                // DST starts from the sums so far, or another
+                                // island's tiles of this subblock
+                                const uint32_t from = reload ? kCbPart : kCbSent;
+                                reconfig_data_format_srca(kCbCol, from);
+                                copy_init(from);
+                                copy_block(from, 0, 0, subblock_tiles);
+                                cb_pop_front(from, subblock_tiles);
+                                reconfig_data_format_srca(from, kCbCol);
                                 matmul_block_init(
                                     kCbRow,
                                     kCbCol,
@@ -148,59 +170,13 @@ void kernel_main() {
                     pack_reconfig_l1_acc(0);
                 }
             }
-            ok = (
-                ok &&
-                (
-                    km::broadcast_end(
-                        compute, kCbRow, a_block_tiles, row_window, taken
-                    ) &&
-                    km::broadcast_end(
-                        compute, kCbCol, w_block_tiles, column_window, taken
-                    )
-                )
-            );
         }
-        if (!ok || whole) {
-            return;
-        }
-        // This core's share of Y: each holder's partial sum of a tile in fp32 (the
-        // first in DST 0, the next in DST 1, added), packed bf16.
-        const km::Group local = km::group_of(command, compute.me()).local();
-        const Holding y_here = holding(y, km::island(), plan(kPlMt) * n_whole);
-        const km::Partition share = km::partition(y_here.pages, local.rank, local.size);
-        const uint32_t sums = __builtin_popcount(held_by.holders);
-        reconfig_data_format_srca(kCbCol, kCbSums);
-        pack_reconfig_data_format(kCbYOut);
-        for (uint32_t done = 0; ok && done < share.len; done += kChunk) {
-            const uint32_t count = (
-                share.len - done < kChunk ? share.len - done : kChunk
-            );
-            ok = compute.wait_front(kCbSums, kChunk * sums, km::kBehindPort);
-            for (uint32_t tile = 0; ok && tile < count; ++tile) {
-                tile_regs_acquire();
-                copy_init(kCbSums);
-                copy_tile(kCbSums, tile, 0);
-                for (uint32_t sum = 1; sum < sums; ++sum) {
-                    copy_init(kCbSums);
-                    copy_tile(kCbSums, sum * kChunk + tile, 1);
-                    add_binary_tile_init();
-                    add_binary_tile(0, 1, 0);
-                }
-                tile_regs_commit();
-                ok = compute.reserve_back(kCbYOut, 1);
-                tile_regs_wait();
-                if (ok) {
-                    pack_tile(0, kCbYOut);
-                }
-                tile_regs_release();
-                if (ok) {
-                    cb_push_back(kCbYOut, 1);
-                }
-            }
-            if (ok) {
-                cb_pop_front(kCbSums, kChunk * sums);
-            }
-        }
-        reconfig_data_format_srca(kCbSums, kCbCol);
+        ok = (
+            ok &&
+            (
+                km::broadcast_end(compute, kCbRow, a_block_tiles, row_window, taken) &&
+                km::broadcast_end(compute, kCbCol, w_block_tiles, column_window, taken)
+            )
+        );
     });
 }

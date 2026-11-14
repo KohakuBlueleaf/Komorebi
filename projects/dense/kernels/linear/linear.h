@@ -1,5 +1,5 @@
-// Linear layer Y = X x W written for islands: each island computes with the part of W
-// it holds, the grid plan inside it. Handlers, buffers, arguments and ports follow.
+// Linear layer Y = X x W for islands: X, W split along K, Y along N; an island puts the
+// columns others keep, then makes its own with theirs added. Words, buffers, ports.
 #pragma once
 
 #include <stdint.h>
@@ -7,29 +7,36 @@
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_placement.hpp"
 
-// LINEAR, the tensors' reference words: a0 X ([M, K] tiles), a1 W ([K, N]), a2 Y ([M,
-// N]), a3 P ([M, N] fp32 on every island: its partial sums); a4 K, a5 N tiles.
+// LINEAR, reference words a0 X ([M, K] tiles), a1 W ([K, N]), a2 Y ([M, N]), a3 S (a
+// copy: tiles put here, below), a6 T (0: none; a 64 B row a rank); a4 K, a5 N tiles.
 constexpr uint32_t kHandlerLinear = 1;
 
 // Buffers: the grid plan's (row and column broadcasts, bf16 output subblocks, fp32
-// partial sums), then fp32 output subblocks of a partial product, and the shares.
+// partial sums), then a block of the columns put across, the subblocks put here.
 constexpr uint32_t kCbRow = 0;
 constexpr uint32_t kCbCol = 1;
 constexpr uint32_t kCbYOut = 16;
 constexpr uint32_t kCbPart = 24;
-constexpr uint32_t kCbPartOut = 17;
-constexpr uint32_t kCbSums = 5;  // a share's chunk of each holder's partial sums, in order
+constexpr uint32_t kCbSend = 17;  // bf16, one output block (pages consecutive)
+constexpr uint32_t kCbSent = 5;   // bf16, an output subblock from one other island
 constexpr uint32_t kCbToken = 6;
 constexpr uint32_t kCbArrive = 7;
+constexpr uint32_t kCbStamp = 8;  // the writer's row of T
 constexpr uint32_t kBf16Bytes = 2048;
 constexpr uint32_t kPartBytes = 4096;  // fp32
 constexpr uint32_t kSignalBytes = 32;
-constexpr uint32_t kChunk = 4;  // tiles of a share read (and asked) at once
+constexpr uint32_t kStampBytes = 64;
+// T's words: the command taken, the other islands' columns put (sent), the sync done,
+// its own columns written (the wall clock, AICLK cycles).
+constexpr uint32_t kStampStart = 0;
+constexpr uint32_t kStampPut = 1;
+constexpr uint32_t kStampSynced = 2;
+constexpr uint32_t kStampEnd = 3;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
 // Ports: the island's tree up and down, the leaders' crossing, the writer's go to its
-// own reader (pages asked or put across count at the page calls' own ports).
+// own reader (the writer's puts count at its page port, km::pages_port).
 constexpr uint32_t kPortUp = 2;
 constexpr uint32_t kPortCross = 3;
 constexpr uint32_t kPortDown = 4;
@@ -78,6 +85,16 @@ struct Holding {
         const uint32_t block = page / (all * inner), step = page / inner % all;
         return (block * steps + step - first) * inner + page % inner;
     }
+
+    // Whether pages page .. page + count - 1 are all of the part, so at consecutive
+    // indices from index(page).
+    bool holds(uint32_t page, uint32_t count) const {
+        const uint32_t last = page + count - 1, span = all * inner;
+        return (
+            page / span == last / span && page / inner % all - first < steps &&
+            last / inner % all - first < steps
+        );
+    }
 };
 
 inline Holding holding(uint32_t tensor, uint32_t at, uint32_t pages) {
@@ -97,45 +114,75 @@ inline Holding holding(uint32_t tensor, uint32_t at, uint32_t pages) {
     };
 }
 
-// The block of W's [K, N] tiles island `at` holds: K tiles k0 .., N tiles n0 ...
-struct Cover {
-    uint32_t k0;
-    uint32_t k_tiles;
-    uint32_t n0;
-    uint32_t n_tiles;
+// Tiles first .. first + count - 1 of a dimension.
+struct Span {
+    uint32_t first;
+    uint32_t count;
 };
 
-inline Cover cover(uint32_t w, uint32_t at, uint32_t k_whole, uint32_t n_whole) {
+// The K tiles of W island `at` holds: whole rows of W ([K, N] tiles, split along K),
+// or all of it.
+inline Span k_part(uint32_t w, uint32_t at, uint32_t k_whole, uint32_t n_whole) {
     const Holding part = holding(w, at, k_whole * n_whole);
-    if (part.pages == 0 || part.pages == k_whole * n_whole) {  // none, or all of W
-        return {0, part.pages != 0 ? k_whole : 0, 0, part.pages != 0 ? n_whole : 0};
+    if (part.pages == k_whole * n_whole) {
+        return {0, k_whole};
     }
-    if (part.all * part.inner == k_whole * n_whole && part.inner == n_whole) {
-        return {part.first, part.steps, 0, n_whole};  // whole rows: part of K
+    if (part.pages != 0 && part.all == k_whole && part.inner == n_whole) {
+        return {part.first, part.steps};
     }
-    if (part.all == n_whole && part.inner == 1) {
-        return {0, k_whole, part.first, part.steps};  // whole columns: part of N
-    }
-    return {0, 0, 0, 0};  // no block of W's tiles: nothing computed here
+    return {0, 0};
 }
 
-// The islands whose part of W holds some of K, a bit each; `whole`: each holds all of
-// it (its product is its columns of Y), else each a partial sum of all of Y.
-struct Parts {
-    uint32_t holders;
-    bool whole;
-};
-
-inline Parts parts(uint32_t w, uint32_t k_whole, uint32_t n_whole) {
-    Parts found = {0, true};
-    for (uint32_t at = 0; at < km::islands(); ++at) {
-        const uint32_t k_tiles = cover(w, at, k_whole, n_whole).k_tiles;
-        found.holders |= (k_tiles != 0 ? 1u : 0u) << at;
-        found.whole = found.whole && (k_tiles == 0 || k_tiles == k_whole);
+// The columns of Y ([M, N] tiles, split along N, or all of it) island `at` keeps.
+inline Span columns(uint32_t y, uint32_t at, uint32_t m_tiles, uint32_t n_whole) {
+    const Holding part = holding(y, at, m_tiles * n_whole);
+    if (part.pages == m_tiles * n_whole) {
+        return {0, n_whole};
     }
-    return found;
+    if (part.pages != 0 && part.all == n_whole && part.inner == 1) {
+        return {part.first, part.steps};
+    }
+    return {0, 0};
+}
+
+// The islands in the order an island computes their columns: the next one first, its
+// own last (`turn` 1 .. islands).
+inline uint32_t island_at(uint32_t here, uint32_t turn) {
+    return (here + turn) % km::islands();
+}
+
+// Whether any island puts to another: one holds part of K and another keeps columns.
+// The same answer on every island (no sync when false).
+inline bool exchanging(uint32_t w, uint32_t y, uint32_t m, uint32_t k, uint32_t n) {
+    for (uint32_t from = 0; from < km::islands(); ++from) {
+        if (k_part(w, from, k, n).count == 0) {
+            continue;
+        }
+        for (uint32_t to = 0; to < km::islands(); ++to) {
+            if (to != from && columns(y, to, m, n).count != 0) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 inline uint32_t blocks_of(uint32_t numerator, uint32_t denominator) {
     return (numerator + denominator - 1) / denominator;
+}
+
+// S: a set a sending island (sent_set), in a set each plan core's output blocks in the
+// order it makes them (core m0 / pcm x blocks_of(nt, pcn) + n0 / pcn), tiles as packed.
+struct Sent {
+    uint32_t cores;
+    uint32_t blocks;
+    uint32_t block_tiles;
+
+    uint32_t page(uint32_t set, uint32_t core, uint32_t block) const {
+        return ((set * cores + core) * blocks + block) * block_tiles;
+    }
+};
+
+inline uint32_t sent_set(uint32_t from, uint32_t to) {
+    return (from + km::islands() - to - 1) % km::islands();
 }
