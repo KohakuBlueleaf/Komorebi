@@ -1,5 +1,5 @@
-"""Broadcast on a card through the dispatcher (KMR_CARD=1): a stalled receiver ends in
-the host's timeout, then the next run is exact;
+"""Broadcast on a card through the dispatcher (KMR_CARD=1): a stalled receiver is
+reset and loaded again, the next job and the next run are exact;
 back-to-back commands on all 120 cores, every second multicasting no block, are exact; a
 command of 65,600 pages per broadcast, then a short one, are exact."""
 
@@ -14,18 +14,19 @@ SCRIPT = (
 )
 
 
-def test_a_stalled_receiver_times_out_then_the_next_run_is_exact():
+def test_a_stalled_receiver_is_recovered_then_the_next_job_and_run_are_exact():
     args = ["--rect", "4,0,4,3", "--blocks", 6, "--pages", 2, "--window", 2]
     args += ["--jobs", 2, "--stall-job", 0, "--stall-rank", 13, "--stall-block", 2]
     args += ["--wait", 0.05, "--deadline", 0.5, "--again"]
     out = run_json(SCRIPT, *args)
     stalled, clean = out["runs"]
-    timed_out = stalled["timed_out"]
-    assert stalled["kernel"]["error_name"] == "deadline"
-    assert timed_out["group"] == [0, 120]  # the last command, on every core
-    named = {core["core"]: core for core in timed_out["not_reported"]}
-    assert named[0]["writer"]["where"] == "complete"  # the leader waits for the rest
+    assert stalled["kernel"]["error_name"] == "none" and "timed_out" not in stalled
+    assert stalled["kernel"]["commands"] == 3  # the reset lists' command, two jobs
+    (recovery,) = stalled["recoveries"]  # job 0 only: job 1 was not given up
+    assert recovery["handle"] == 2 and 17 in recovery["cores"]  # rank 13 of 4:28
+    assert stalled["ranks_checked"] == 12 and stalled["ranks_bad"] == 0  # job 1
     assert clean["kernel"]["error_name"] == "none" and clean["core_gave_up"] == []
+    assert clean["recoveries"] == []
     assert clean["ranks_checked"] == 24 and clean["ranks_bad"] == 0
     for run in (stalled, clean):
         assert set(run["cores_ended"].values()) == {120}

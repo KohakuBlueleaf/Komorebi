@@ -205,12 +205,14 @@ def job_args(args, inputs, output, group, job, stall_job):
     ]
 
 
-def check(args, sets, output, group, cells):
-    """Every core's checksum tile of every job against numpy, bit for bit."""
+def check(args, sets, output, group, cells, stall_job=-1):
+    """Every core's checksum tile of every job but the stalled one against numpy, bit
+    for bit."""
     got = output.read().reshape(args.jobs, group.count, TILE, TILE)
     log("outputs read back")
     bad = []
-    for job in range(args.jobs):
+    jobs = [job for job in range(args.jobs) if job != stall_job]
+    for job in jobs:
         times, rest = divmod(job_blocks(args, job), args.blocks)
         row_sums, column_sums = (
             times * values.sum((1, 2)) + values[:, :rest].sum((1, 2))
@@ -223,7 +225,7 @@ def check(args, sets, output, group, cells):
                 wrong = int((got_tile != want).sum())
                 bad.append({"job": job, "core": core, "values_wrong": wrong})
     return {
-        "ranks_checked": args.jobs * len(cells),
+        "ranks_checked": len(jobs) * len(cells),
         "ranks_bad": len(bad),
         "first_bad": bad[:8],
     }
@@ -261,13 +263,12 @@ def core_gave_up(states):
 
 
 def verdict(run, cores, stalled, end_ok):
-    """Every core ended and the run ended as it should (`end_ok`: the deadline for a
-    stalled job, else a clean end); a clean run with no core and no broadcast given up
-    and every core's values right."""
+    """Every core ended and the run ended as it should (`end_ok`), every job checked
+    right; a clean run with no core and no broadcast given up."""
     ok = set(run["cores_ended"].values()) == {cores} and end_ok
+    ok &= run.get("ranks_bad", 0) == 0
     if not stalled:
         ok &= not run["core_gave_up"] and not run["broadcast_gave_up"]
-        ok &= run.get("ranks_bad", 0) == 0
     return bool(ok)
 
 
@@ -333,6 +334,11 @@ def run_host(session, args, generator, stall_job):
         "cores_ended": kernel_ends(states),
         **broadcast_summary([core["broadcasts"] for core in states], group, cells),
         "core_gave_up": core_gave_up(states),
+        "recovery_refused": run.recovery_refused,
+        "recoveries": [
+            {key: recovery[key] for key in ("handle", "cores", "text")}
+            for recovery in run.recoveries
+        ],
     }
     if timed_out is not None:
         report["timed_out"] = {
@@ -342,10 +348,18 @@ def run_host(session, args, generator, stall_job):
             "not_reported": timed_out.cores,
         }
     elif not args.no_check:
-        report.update(check(args, sets, output, group, cells))
+        report.update(check(args, sets, output, group, cells, stall_job))
     stalled = 0 <= stall_job < args.jobs
-    end = ("deadline", True) if stalled else ("none", False)
+    # A stall: the timeout without the reset lists, else the stalled core recovered.
+    end = ("none", False)
+    if stalled and run.recovery is None:
+        end = ("deadline", True)
     end_ok = (result["error_name"], timed_out is not None) == end
+    if stalled and run.recovery is not None:
+        end_ok &= any(
+            group.first + args.stall_rank in recovery["cores"]
+            for recovery in run.recoveries
+        )
     report["ok"] = verdict(report, len(states), stalled, end_ok)
     return report
 

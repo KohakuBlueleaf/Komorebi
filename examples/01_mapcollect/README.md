@@ -105,8 +105,9 @@ through row leaders (the runtime chooses per command).
 The JSON line reports microseconds per job by the dispatcher's clock and by the
 host's, the submit-to-completion latency, the Python time per command in `submit` and in
 the batched stores, and every core's end state. Its `ok` is true when every core ended,
-no job and no compute check is wrong, and the run ended cleanly (with `--stall`: in the
-deadline, naming the stalled core); the script exits non-zero without it.
+no job and no compute check is wrong, and the run ended cleanly (with `--stall`: the
+stalled core reset and loaded again, named in `recoveries`; without the reset lists, in
+the deadline naming it); the script exits non-zero without it.
 
 ## More than ten words
 

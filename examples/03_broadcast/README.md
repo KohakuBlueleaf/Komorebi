@@ -64,10 +64,12 @@ core order that covers it. Inputs are integers in [-2, 2], so every checksum is 
 and the driver compares each core's tile with numpy bit for bit. With
 `--stall-job`, that job's core (group index) stops taking row blocks at the given block
 and waits for the stop flag: the broadcast's sender gives up waiting for its marker, the
-other cores of the broadcast give up waiting for the next block, the dispatcher reports
-the command's deadline and the host raises `CommandTimeout`, which names the handle and
-the cores that did not report. Every kernel returns; `broadcast_gave_up` names, per core,
-the broadcast, where it waited and the block. `--again` then loads the program again in the
+other cores of the broadcast give up waiting for the next block, and at the command's
+deadline the dispatcher gives it up, resets the cores still in it or whose kernels ended
+and loads them again (`recoveries` in the JSON names them); the next job runs on them.
+A run without the reset lists (`recovery_refused` says why) ends in `CommandTimeout`
+instead, which names the handle and the cores that did not report. Every kernel returns;
+`broadcast_gave_up` names, per core, the broadcast, where it waited and the block. `--again` then loads the program again in the
 same session and runs the clean case. With `--empty-job`, that job multicasts zero blocks on
 every broadcast (every checksum is zero) between jobs that multicast the full count;
 `--empty-every n` does that for every nth job. With
@@ -76,9 +78,10 @@ every broadcast (every checksum is zero) between jobs that multicast the full co
 
 The JSON line reports, per run, the dispatcher's error and command count, the
 host's microseconds per job, the blocks every broadcast delivered, every core's end
-state, `ranks_bad`, and `ok` per run and for all of them: every core ended, a run
-with a stalled job ended in the deadline, a clean one with no core and no broadcast given up
-and every core of the group right. The script exits non-zero without it.
+state, `ranks_bad`, and `ok` per run and for all of them: every core ended, every job
+but the stalled one right on every core of the group, a run with a stalled job recovered
+the stalled core (without the reset lists: ended in the deadline), a clean one with no
+core and no broadcast given up. The script exits non-zero without it.
 
 `--feeder` runs the same commands on the test feeder (`tests/hardware/feeder/`): the
 last core of the grid submits them and no X280 is involved, so the rectangle must leave
