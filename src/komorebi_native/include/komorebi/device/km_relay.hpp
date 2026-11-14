@@ -1,5 +1,5 @@
 // The relay: a core's pages into L1 of a rank of another island and 1 on its port, by
-// its island's link core 0 over link 0 to the far link core 0, which puts them there.
+// its link core toward that island to the far link core across, which puts them there.
 #pragma once
 
 #include <stdint.h>
@@ -61,7 +61,10 @@ namespace km {
         const uint32_t ask = area + KM_RELAY_ASK + line * 64;
         volatile tt_l1_ptr uint32_t* done = l1(area + KM_RELAY_DONE + noc_index * 16);
         volatile tt_l1_ptr uint32_t* words = l1(ask);
-        const uint32_t link = view.ranks();  // link core 0: the first after the ranks
+        // the link core toward the rank's island: the table's next link after the ranks
+        const uint32_t link = (
+            view.base() + view.ranks() + view.link(view.island_of(rank))
+        );
         for (uint32_t off = 0; off < bytes; off += KM_RELAY_MAX) {
             const uint32_t n = bytes - off < KM_RELAY_MAX ? bytes - off : KM_RELAY_MAX;
             words[kAskSource] = writer.args().me;
@@ -119,8 +122,8 @@ namespace km {
         template <typename Kernel>
         static void turn(const Kernel& kernel) {
             const uint32_t area = relay_area();
-            if (area == 0 || pages_held.open == 0) {
-                return;
+            if (area == 0 || pages_held.open == 0 || pages_held.link != 0) {
+                return;  // the CPU that holds its pair's first link relays
             }
             Relay relay(area);
             invalidate_l1_cache();
@@ -143,11 +146,8 @@ namespace km {
         uint64_t far(uint32_t offset) const {
             const uint32_t tile = island_area()[KM_ISLAND_RELAY_TILE];
             return (
-                safe_get_noc_addr(
-                    tile & 0xFFFFu,
-                    tile >> 16,
-                    island_area()[KM_ISLAND_RELAY_FAR] + offset,
-                    tt::tt_fabric::edm_to_local_chip_noc
+                link_noc(
+                    tile & 0xFFFFu, tile >> 16, island_area()[KM_ISLAND_RELAY_FAR] + offset
                 )
             );
         }
@@ -166,51 +166,34 @@ namespace km {
 
         // Header `which`, routed one chip on: a write of `bytes` to `to`, or (bytes 0)
         // an increment of the word at `to`.
-        uint32_t header(uint32_t which, uint64_t to, uint32_t bytes) const {
-            const uint32_t at = area_ + KM_RELAY_HEADERS + which * 64;
-            for (uint32_t w = 0; w < sizeof(PACKET_HEADER_TYPE) / 4; w++) {
-                l1(at)[w] = 0;
-            }
-            auto* made = reinterpret_cast<volatile tt_l1_ptr PACKET_HEADER_TYPE*>(at);
-            made->to_chip_unicast(1);
+        LinkHeaderAt header(uint32_t which, uint64_t to, uint32_t bytes) const {
+            const LinkHeaderAt made = (
+                link_header(area_ + KM_RELAY_HEADERS + which * 64, 1)
+            );
             if (bytes != 0) {
-                made->to_noc_unicast_write(
-                    tt::tt_fabric::NocUnicastCommandHeader{to}, bytes
-                );
+                link_write(made, to, bytes);
             } else {
-                made->to_noc_unicast_atomic_inc(
-                    tt::tt_fabric::NocUnicastAtomicIncCommandHeader(to, 1, true)
-                );
+                link_increment(made, to, 1);
             }
-            return at;
+            return made;
         }
 
         // One packet over the held connection: space, payload, header, sent.
         template <typename Kernel>
         static bool packet(
-            const Kernel& kernel, uint32_t header, uint32_t from, uint32_t bytes
+            const Kernel& kernel, LinkHeaderAt header, uint32_t from, uint32_t bytes
         ) {
-            auto& sender = pages_sender();
+            auto& sender = link_sender();
             if (!wait(kernel, [&] {
-                return sender.edm_has_space_for_packet<1>();
+                return sender.space();
             })) {
                 return false;
             }
-            if (bytes != 0) {
-                sender.send_payload_without_header_non_blocking_from_address(
-                    from, bytes
-                );
+            if (!sender.send(header, from, bytes)) {
+                return false;
             }
-            sender.send_payload_flush_non_blocking_from_address(
-                header, sizeof(PACKET_HEADER_TYPE)
-            );
             return wait(kernel, [] {
-                return (
-                    ncrisc_noc_nonposted_writes_sent(noc_index) &&
-                    ncrisc_noc_nonposted_writes_sent(
-                        tt::tt_fabric::get_fabric_worker_noc()
-                    )
-                );
+                return link_sent();
             });
         }
 
@@ -218,7 +201,10 @@ namespace km {
         // inbox, the ask, one count, the done word; it places what lands meanwhile.
         template <typename Kernel>
         void send(const Kernel& kernel) {
-            const uint32_t lines = Islands(island_area()).ranks() * 2;
+            // a core's two lines at 2 me: its core of the card (a split card's island
+            // starts at its base)
+            const Islands view(island_area());
+            const uint32_t lines = (view.base() + view.ranks()) * 2;
             const uint32_t start = state(kRelayNext);
             uint32_t ask = 0;
             for (uint32_t n = 0; n < lines && ask == 0; n++) {
@@ -294,7 +280,7 @@ namespace km {
         void place(const Kernel& kernel) {
             const Islands view(island_area());
             volatile tt_l1_ptr uint32_t* a = l1(area_ + KM_RELAY_INBOX);
-            const uint32_t core = a[kAskRank] - view.first();
+            const uint32_t core = a[kAskRank] - view.offset();  // its core of the card
             const uint32_t bytes = a[kAskBytes];
             const uint32_t port_index = a[kAskPort];
             const bool fits = (
