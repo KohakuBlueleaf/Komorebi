@@ -175,8 +175,11 @@ chain did not return and its command passed its deadline. Two had commands witho
 the flag (full, window 1; parts, window 4) and one had commands with the flag (parts,
 56 cores). All three started 9.8 to 11.7 s after the thread started; every thread
 chain that passed started within 9 s of it. The same commands from a stream passed.
-The cause is not known; the thread chains without the flag, and part D's parts-only
-pair, were not run again.
+The cause was in the library, not in the chains: one of the thread's X280 cores 1 to 3
+kept the thread's 10 s deadline (of `kmx_main`, which this thread does not have) and
+left its serve loop when it passed, so the chain's first `kmx_invalidate`, which runs on
+all four cores, never returned. That is fixed; the thread chains without the flag, and
+part D's parts-only pair, were not run again.
 
 ## What this says for a real decode
 
@@ -190,5 +193,4 @@ pair, were not run again.
 - Two chains on halves of the grid share the DRAM read; they gain 12% by hiding each
   other's per-command time, not by reading faster.
 - The framework lacks for it: one run holding several plans of the kernel form (the
-  MLP's D x 8192 and 8192 x D beside D x D), the gate at this width, and thread
-  chains that run past 10 s after the thread's start.
+  MLP's D x 8192 and 8192 x D beside D x D) and the gate at this width.

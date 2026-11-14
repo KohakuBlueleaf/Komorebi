@@ -27,6 +27,9 @@
 #define KMX_UNSET 0xFFFFFFFFu
 
 static uint64_t g_deadline[4] __attribute__((section(".data"))) = {1, 1, 1, 1};
+/* Set once core 0 serves commands: no core has a deadline from then on. A flag, not a
+ * lifted deadline: a core that boots after core 0 stores its own deadline. */
+static uint32_t g_serving __attribute__((section(".data"))) = 0;
 static int must_end(uint64_t core);
 static void flush(uint64_t address, uint64_t bytes);
 static inline uint64_t core_id(void);
@@ -99,6 +102,9 @@ static int must_end(uint64_t core) {
         x280_hart_stop_requested(core, x280_hart_control(core)->run_value)
     ) {
         return KMX_STOPPED;
+    }
+    if (*(volatile const uint32_t*)&g_serving) {
+        return KMX_OK;
     }
     const uint64_t deadline = ((volatile const uint64_t*)g_deadline)[core];
     return x280_mtime() > deadline ? KMX_LATE : KMX_OK;
@@ -1328,16 +1334,14 @@ static int answer(uint32_t number, uint32_t word) {
     return status;
 }
 
-/* Core 0 with kmx_program, by its deadline: lifts every core's deadline (a command has
+/* Core 0 with kmx_program, by its deadline: ends every core's deadline (a command has
  * the dispatcher's), answers line 0 (it serves), then each line until a stop. */
 static int serve_commands(void) {
     int status = must_end(0);
     if (status != KMX_OK) {
         return status;
     }
-    for (uint32_t core = 0; core < 4; core++) {
-        ((volatile uint64_t*)g_deadline)[core] = UINT64_MAX;
-    }
+    *(volatile uint32_t*)&g_serving = 1;
     x280_fence_ow();
     status = answer(0, 0);
     for (uint32_t spins = 1; status == KMX_OK; spins++) {

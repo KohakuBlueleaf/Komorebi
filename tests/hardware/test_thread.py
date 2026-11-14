@@ -1,7 +1,7 @@
 """X280 threads on a card: the work-cluster loop host-fed and through the ring, on
 cluster 1 and on 1 to 3, a region shared by clusters 2 and 3, the parallel patterns and
 X280 ports on 1 to 12 X280 cores, spawn and join, a thread stopped at the host's
-timeout (its region read back), a stalled ring (KMR_CARD=1)."""
+timeout, a stalled ring, a thread past its deadline (KMR_CARD=1)."""
 
 from pathlib import Path
 
@@ -17,6 +17,7 @@ STOP = Path(__file__).resolve().parent / "thread" / "stop_case.py"
 STALL = Path(__file__).resolve().parent / "thread" / "ring_stall_case.py"
 SHARED = Path(__file__).resolve().parent / "thread" / "shared_case.py"
 SPAWN = Path(__file__).resolve().parent / "thread" / "spawn_case.py"
+SERVING = Path(__file__).resolve().parent / "thread" / "serving_case.py"
 
 
 def test_the_work_cluster_loop_host_fed_ends_on_the_card_sum():
@@ -76,4 +77,9 @@ def test_a_thread_past_the_timeout_is_stopped_and_reports_where_it_was():
 
 def test_a_thread_that_stops_taking_events_holds_up_no_host_command():
     out = run_json(STALL)
+    assert out["ok"], out
+
+
+def test_a_serving_thread_keeps_all_four_cores_past_its_deadline():
+    out = run_json(SERVING)
     assert out["ok"], out
