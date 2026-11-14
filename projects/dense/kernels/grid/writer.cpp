@@ -103,8 +103,7 @@ void kernel_main() {
                                     y_matrix,
                                     row * n_tiles + column,
                                     1,
-                                    source,
-                                    kAskPortWriter
+                                    source
                                 )
                             ) {
                                 return false;
@@ -165,13 +164,7 @@ void kernel_main() {
                         );
                         const uint32_t to = base + k_tile * block_width * kTileBytes;
                         if (!km::read_pages(
-                            writer,
-                            command,
-                            w_matrix,
-                            page,
-                            columns,
-                            to,
-                            kAskPortWriter
+                            writer, command, w_matrix, page, columns, to
                         )) {
                             return false;
                         }

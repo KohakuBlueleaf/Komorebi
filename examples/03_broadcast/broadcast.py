@@ -301,8 +301,8 @@ def run_host(session, args, generator, stall_job):
         ],
         args=program_args,
         compile_args={
-            "reader": inputs[0][0].accessor_args(),
-            "writer": inputs[0][1].accessor_args() + output.accessor_args(),
+            "reader": inputs[0][0].tensor_args(),
+            "writer": inputs[0][1].tensor_args() + output.tensor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         handlers=KERNELS / "broadcast.h",
@@ -374,8 +374,8 @@ def run_fed(session, runner, args, generator, stall_job):
         reader=KERNELS / "reader.cpp",
         compute=KERNELS / "compute.cpp",
         writer=KERNELS / "writer.cpp",
-        reader_ct=inputs[0][0].accessor_args(),
-        writer_ct=inputs[0][1].accessor_args() + output.accessor_args(),
+        reader_ct=inputs[0][0].tensor_args(),
+        writer_ct=inputs[0][1].tensor_args() + output.tensor_args(),
         compute_options={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         cbs=[
             (

@@ -8,7 +8,7 @@
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    constexpr auto row_args = TensorAccessorArgs<0>();
+    using Row = km::Tensor<0>;  // A
     km::Reader reader;
     reader.run([&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
@@ -24,7 +24,7 @@ void kernel_main() {
         if (!broadcast.ok() || !broadcast.included()) {
             return;
         }
-        const auto row_source = TensorAccessor(row_args, row_address);
+        const Row row_source(row_address);  // its reference word
         const uint32_t first_tile = (
             reader.arg(kArgIndex) * data_blocks * broadcast.pages()
         );
@@ -44,6 +44,8 @@ void kernel_main() {
         }
         const bool stalls = reader.me() - km::first(command) == stalled_rank;
         broadcast_blocks(
+            reader,
+            command,
             broadcast,
             row_source,
             first_tile,

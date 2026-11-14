@@ -42,8 +42,7 @@ namespace {
                 queries,
                 first_tile + row * stride * HEAD_TILES,
                 HEAD_TILES,
-                destination + row * HEAD_TILES * kTileBytes,
-                kAskPortReader
+                destination + row * HEAD_TILES * kTileBytes
             )) {
                 return false;
             }
@@ -116,7 +115,6 @@ namespace {
                     !broadcast_job<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
                         reader,
                         command,
-                        kAskPortReader,
                         *broadcast,
                         keys,
                         values,

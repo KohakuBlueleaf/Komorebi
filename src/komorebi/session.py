@@ -22,6 +22,7 @@ from typing import NamedTuple
 import numpy as np
 
 from komorebi import (
+    _env,
     abi,
     dram,
     formats,
@@ -246,6 +247,27 @@ def _core_args(program, placed, core):
         if group.first <= core < group.first + group.count and group.programs:
             return placed.programs[group.programs[0]].core_args(core)
     return [], [], []
+
+
+# The defines of an island run that the link cores' own kernels are built with too.
+LINK_DEFINES = ("KM_PAGE_LINKS", "KM_TENSOR_TABLE", "KM_ASKS_BY_HOST")
+
+
+def _link_kernels(island, program, split, cores):
+    """(ranks, link cores) of a load whose link cores get the runtime's link kernels
+    (the link services) and its ranks the program's (their client side): a program
+    built with page links on an island of its own card, not dynamic (its link cores
+    carry its messages); else (cores, 0): every core the program's kernels."""
+    if (
+        island is None
+        or split is not None
+        or program.messages is not None
+        or "KM_PAGE_LINKS" not in program.defines
+    ):
+        return cores, 0
+    graph, here = island
+    links = len(graph.link_cores[here])
+    return (cores - links, links) if links else (cores, 0)
 
 
 def kernel_build(program, kernel, defines):
@@ -2073,23 +2095,49 @@ class _Backend:
         defines = [(name, str(value)) for name, value in program.defines.items()]
         if program.messages is not None:
             defines += program.messages.defines()
+        ranks, links = _link_kernels(self.session.island, program, self.split, cores)
+        if "KM_PAGE_LINKS" in program.defines and not links:
+            defines.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
         self.cb_indices = set()  # every buffer index of the launch, the slots' apart
         for index, fmt, page, pages in self._cbs(program.buffers):
             launch.cb(all_cores, index, fmt, page, page * pages)
             self.cb_indices.add(index)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
         kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
+        held = programs.rectangles(0, ranks, grid[0]) if links else all_cores
         for kernel, args, processor, config in kernels:
             launch.kernel(
                 str(sources[kernel]),
-                all_cores,
+                held,
                 processor,
                 program.kernel_compile_args(kernel),
                 includes=include,
-                args=args,
+                args=args[:ranks],
                 **kernel_build(program, kernel, defines),
                 **config,
             )
+        if links:  # the island's link cores: the runtime's link kernels, its services
+            served = programs.rectangles(ranks, links, grid[0])
+            link_defines = [
+                (name, str(value))
+                for name, value in program.defines.items()
+                if name in LINK_DEFINES
+            ] + [("KM_LINK_SERVICES", "1")]
+            for kernel, args, processor, _ in kernels:
+                launch.kernel(
+                    str(
+                        _env.include_directory().parent
+                        / "kernels"
+                        / f"link_{kernel}.cpp"
+                    ),
+                    served,
+                    processor,
+                    [],
+                    includes=include,
+                    args=args[ranks:],
+                    defines=link_defines,
+                    **(compute_config({}) if kernel == "compute" else {}),
+                )
         return launch
 
     def _split_owners(self, common, grid):

@@ -64,8 +64,7 @@ void kernel_main() {
                     y_matrix,
                     (first_row + tile_row) * n_tiles + first_column + tile_column,
                     1,
-                    source + (tile_row * block_width + tile_column) * kTileBytes,
-                    kAskPort + 1
+                    source + (tile_row * block_width + tile_column) * kTileBytes
                 )) {
                     return false;
                 }

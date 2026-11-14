@@ -48,9 +48,7 @@ void kernel_main() {
             }
             uint32_t total = 0;
             for (uint32_t state_page = 0; state_page < pages; state_page++) {
-                if (!km::read_pages(
-                    writer, command, state, state_page, 1, scratch, kAskPort
-                )) {
+                if (!km::read_pages(writer, command, state, state_page, 1, scratch)) {
                     return false;
                 }
                 if (!reads_done()) {
@@ -68,7 +66,7 @@ void kernel_main() {
             return true;
         }
         const uint32_t round = command.a1;
-        if (!km::read_pages(writer, command, state, page, 1, scratch, kAskPort)) {
+        if (!km::read_pages(writer, command, state, page, 1, scratch)) {
             return false;
         }
         if (!reads_done()) {
@@ -83,8 +81,7 @@ void kernel_main() {
                     : value * 3u
         );
         return (
-            km::write_pages(writer, command, state, page, 1, scratch, kAskPort) &&
-            writes_done()
+            km::write_pages(writer, command, state, page, 1, scratch) && writes_done()
         );
     });
 }

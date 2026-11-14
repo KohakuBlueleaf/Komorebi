@@ -31,8 +31,7 @@ void kernel_main() {
             tiles_per_block,
             copy ? 1 : command.a5,
             kInput,
-            pattern,
-            kAskPort
+            pattern
         );
         if (!copy) {
             return movement.move(read);

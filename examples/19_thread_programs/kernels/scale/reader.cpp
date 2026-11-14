@@ -19,9 +19,7 @@ void km_program(km::Reader& reader, const km_command_t& command) {
             return;
         }
         const uint32_t page = command.a6 + partition.start + tile;
-        if (!km::read_pages(
-            reader, command, input, page, 1, get_write_ptr(TP_CB_IN), TP_ASK_PORT
-        )) {
+        if (!km::read_pages(reader, command, input, page, 1, get_write_ptr(TP_CB_IN))) {
             return;
         }
         noc_async_read_barrier();

@@ -31,8 +31,8 @@ with km.Session() as session:
         ],
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         compile_args={
-            "reader": source.accessor_args(),
-            "writer": destinations[0].accessor_args(),
+            "reader": source.tensor_args(),
+            "writer": destinations[0].tensor_args(),
         },
     )
     # --8<-- [end:program]

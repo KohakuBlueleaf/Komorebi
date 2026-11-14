@@ -256,8 +256,8 @@ def run_ways(session, args):
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),  # kCbOut
         ],
         compile_args={
-            "reader": input_tensor.accessor_args(),
-            "writer": output_tensors[ways[0]].accessor_args(),
+            "reader": input_tensor.tensor_args(),
+            "writer": output_tensors[ways[0]].tensor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         depth=args.depth,

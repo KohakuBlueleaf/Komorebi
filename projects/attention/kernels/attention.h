@@ -105,11 +105,6 @@ inline uint32_t jobs_end(const km_command_t& command, uint32_t jobs) {
 constexpr uint32_t kArgBroadcast = 0;
 constexpr uint32_t kArgWindow = 0;
 
-// The ports operand pages another island holds are counted at: the reader's, the
-// writer's.
-constexpr uint32_t kAskPortReader = 0;
-constexpr uint32_t kAskPortWriter = 1;
-
 #if !defined(COMPILE_FOR_TRISC)
 
 #include "komorebi/device/km_ask.hpp"
@@ -165,7 +160,6 @@ template <
 bool read_kv(
     const km::Core& core,
     const km_command_t& command,
-    uint32_t port,
     const Keys& keys,
     const Values& values,
     uint32_t first_key_page,
@@ -182,8 +176,7 @@ bool read_kv(
                 keys,
                 first_key_page + (block_start + key) * HEAD_TILES + head_tile,
                 1,
-                address + (head_tile * BLOCK_KEYS + key) * kTileBytes,
-                port
+                address + (head_tile * BLOCK_KEYS + key) * kTileBytes
             )) {
                 return false;
             }
@@ -196,8 +189,7 @@ bool read_kv(
             values,
             first_value_page + (block_start + key) * VALUE_TILES,
             VALUE_TILES,
-            address + (HEAD_TILES * BLOCK_KEYS + key * VALUE_TILES) * kTileBytes,
-            port
+            address + (HEAD_TILES * BLOCK_KEYS + key * VALUE_TILES) * kTileBytes
         )) {
             return false;
         }
@@ -206,7 +198,7 @@ bool read_kv(
 }
 
 // One job's K / V blocks through the broadcast (`job_words`; `blocks`, `counters`):
-// the sender reads (asks at `port`) and multicasts, a receiver waits. False: gave up.
+// the sender reads and multicasts, a receiver waits. False: gave up.
 template <
     uint32_t HEAD_TILES,
     uint32_t VALUE_TILES,
@@ -216,7 +208,6 @@ template <
 bool broadcast_job(
     const km::Core& core,
     const km_command_t& command,
-    uint32_t port,
     km::Broadcast& broadcast,
     const Keys& keys,
     const Values& values,
@@ -250,7 +241,6 @@ bool broadcast_job(
         if (!read_kv<HEAD_TILES, VALUE_TILES, BLOCK_KEYS>(
             core,
             command,
-            port,
             keys,
             values,
             first_key_page,

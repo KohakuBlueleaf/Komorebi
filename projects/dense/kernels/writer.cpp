@@ -4,10 +4,11 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "dense.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
-    constexpr auto tile_args = TensorAccessorArgs<0>();
+    using Tile = km::Tensor<0>;  // Y: bf16 tiles in DRAM, by its word
     km::Writer writer;
     volatile tt_l1_ptr uint32_t* profile = km::l1(get_write_ptr(kCbProf));
     writer.run([&](const km_command_t& command) {
@@ -48,7 +49,7 @@ void kernel_main() {
             km::partition(m_tiles, writer.me() - km::first(command), km::count(command))
         );
         const bool store = layer || mode == kModeFull;
-        const auto y_matrix = TensorAccessor(tile_args, y_address);
+        const Tile y_matrix(y_address);
         uint32_t wait = 0, write = 0, tiles_written = 0;
         for (
             uint32_t row = owned_rows.start; row < owned_rows.start + owned_rows.len;
@@ -61,14 +62,15 @@ void kernel_main() {
                 }
                 const uint32_t ready = km::wall();
                 if (store) {
-                    uint32_t source = get_read_ptr(kCbOut);
-                    for (uint32_t tile = 0; tile < block_width; ++tile) {
-                        noc_async_write_page(
-                            row * n_tiles + column + tile, y_matrix, source
-                        );
-                        source += kTileBytes;
-                    }
-                    if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
+                    if (!km::write_pages(
+                        writer,
+                        command,
+                        y_matrix,
+                        row * n_tiles + column,
+                        block_width,
+                        get_read_ptr(kCbOut)
+                    ) ||
+                        !flushed(writer, km::kStWriter, km::kFlushSent)) {
                         return false;
                     }
                     tiles_written += block_width;

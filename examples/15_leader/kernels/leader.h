@@ -20,8 +20,6 @@ constexpr uint32_t kCbSum = 16;    // one fp32 tile: the sum of the tiles receiv
 constexpr uint32_t kValuesPage = 256;  // values (uint32) per page
 constexpr uint32_t kResultWords = 16;  // words of a result row: state, wrong, first wrong
 constexpr uint32_t kNone = 0xFFFFFFFFu;
-constexpr uint32_t kAskPort = 0;  // the reader's pages of another island count here
-constexpr uint32_t kAskPortWriter = 1;  // the writer's
 
 // Reader arguments: broadcast 0's words, then broadcast 1's. Compute: B.
 constexpr uint32_t kArgWords = 0;

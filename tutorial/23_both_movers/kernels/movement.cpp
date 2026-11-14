@@ -5,7 +5,7 @@
 #include "handlers.h"
 
 void kernel_main() {
-    constexpr auto arguments = TensorAccessorArgs<0>();  // source and destination alike
+    using Tile = km::Tensor<0>;  // source and destination alike
     constexpr km::BufferPair halves = {kHalfA, kHalfB};
     km::Movement movement;
     // --8<-- [start:run]
@@ -19,7 +19,7 @@ void kernel_main() {
             const km::Pattern pattern = km::Pattern::of(command.a5);
             const km::Stream read(
                 km::kMoveRead,
-                TensorAccessor(arguments, source_address),
+                Tile(source_address),
                 first_tile,
                 tile_count,
                 kBlockTiles,
@@ -29,7 +29,7 @@ void kernel_main() {
             );
             const km::Stream write(
                 km::kMoveWrite,
-                TensorAccessor(arguments, destination_address),
+                Tile(destination_address),
                 first_destination_tile,
                 tile_count,
                 kBlockTiles,

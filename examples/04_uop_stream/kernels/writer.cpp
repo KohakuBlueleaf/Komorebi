@@ -2,11 +2,12 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "uop_stream.h"
 
 void kernel_main() {
-    constexpr auto output_args = TensorAccessorArgs<0>();
+    using Output = km::Tensor<0>;
     km::Writer writer;
     writer.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerMap) {
@@ -17,10 +18,17 @@ void kernel_main() {
         if (!writer.wait_front(kCbOut, 1)) {
             return false;  // nothing to report: the tile is stopping
         }
-        const auto output = TensorAccessor(output_args, output_address);
-        noc_async_write_page(
-            first_page + writer.me() - km::first(command), output, get_read_ptr(kCbOut)
-        );
+        const Output output(output_address);  // its reference word
+        if (!km::write_pages(
+            writer,
+            command,
+            output,
+            first_page + writer.me() - km::first(command),
+            1,
+            get_read_ptr(kCbOut)
+        )) {
+            return false;
+        }
         noc_async_writes_flushed();
         cb_pop_front(kCbOut, 1);
         return true;

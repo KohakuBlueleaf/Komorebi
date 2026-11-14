@@ -55,7 +55,9 @@ if (!km::reduce_result(writer, kCbOut, 1)) return false;  // then write the resu
 | take | compute | `km::take`, `km::untake` | waits for the arrival buffer, reads slots by page index, pops it whole |
 
 - **Ports.** Every core has `KM_PORTS` (8) port slots of 16 bytes in its control block
-  at `KM_CONTROL_PORT`: the count senders increment, and the count a wait wants. Ports are
+  at `KM_CONTROL_PORT`: the count senders increment, and the count a wait wants. Two
+  more follow (`KM_PORT_PAGES`, the reader's and the writer's), which only the page
+  calls count at ([islands](islands.md)), so a reduce never shares a count with them. Ports are
   cleared at start-up and by the wait that consumed them. A sender counts the atomic's
   acknowledgement and never reads its returned value, so a lost answer
   ([atomic_answers](../../experiments/atomic_answers/)) cannot affect a port.

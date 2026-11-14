@@ -61,13 +61,7 @@ void kernel_main() {
                 if (cast == 0 || index % kValuesPage == 0) {
                     const uint32_t to = get_write_ptr(kCbValues);
                     if (!km::read_pages(
-                        reader,
-                        command,
-                        values,
-                        index / kValuesPage,
-                        1,
-                        to,
-                        kAskPort
+                        reader, command, values, index / kValuesPage, 1, to
                     ) ||
                         !landed(reader, command, false)) {
                         return;
@@ -81,13 +75,7 @@ void kernel_main() {
                         return;
                     }
                     if (!km::read_pages(
-                        reader,
-                        command,
-                        tiles,
-                        index % command.a6,
-                        1,
-                        address,
-                        kAskPort
+                        reader, command, tiles, index % command.a6, 1, address
                     )) {
                         return;
                     }
@@ -118,13 +106,7 @@ void kernel_main() {
         const Results results(command.a2);
         const uint32_t rank = reader.me() - km::first(command);
         if (km::write_pages(
-            reader,
-            command,
-            results,
-            command.a4 + rank,
-            1,
-            get_write_ptr(kCbResult),
-            kAskPort
+            reader, command, results, command.a4 + rank, 1, get_write_ptr(kCbResult)
         )) {
             landed(reader, command, true);
         }

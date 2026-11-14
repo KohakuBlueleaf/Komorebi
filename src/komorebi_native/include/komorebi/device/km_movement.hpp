@@ -171,7 +171,7 @@ namespace km {
     }
 
     // One stream: direction, tensor (a km::Tensor or a local accessor), blocks,
-    // repetitions, pair, pattern; asks count at `port` (mover A) and port + 1 (B).
+    // repetitions, pair, pattern.
     template <typename Accessor>
     struct Stream {
         uint32_t direction;
@@ -180,7 +180,6 @@ namespace km {
         uint32_t repetitions;
         BufferPair pair;
         Pattern pattern;
-        uint32_t port;
 
         template <typename T>
         Stream(
@@ -189,16 +188,14 @@ namespace km {
             const Walk& walk,
             uint32_t repetitions,
             BufferPair pair,
-            Pattern pattern,
-            uint32_t port = 0
+            Pattern pattern
         ) :
             direction(direction),
             tensor(kept_tensor<Accessor>(tensor)),
             walk(walk),
             repetitions(repetitions),
             pair(pair),
-            pattern(pattern),
-            port(port) {
+            pattern(pattern) {
         }
 
         // The plain case: `tiles` pages from `first_page`, `repetitions` times.
@@ -211,8 +208,7 @@ namespace km {
             uint32_t tiles_per_block,
             uint32_t repetitions,
             BufferPair pair,
-            Pattern pattern,
-            uint32_t port = 0
+            Pattern pattern
         ) :
             Stream(
                 direction,
@@ -220,8 +216,7 @@ namespace km {
                 Walk::run(first_page, tiles, tiles_per_block),
                 repetitions,
                 pair,
-                pattern,
-                port
+                pattern
             ) {
         }
     };
@@ -328,7 +323,6 @@ namespace km {
         if constexpr (kMayCross<Accessor>) {
             const uint32_t slot = core.running_slot();
             const uint32_t sequence = core.running_sequence();
-            const uint32_t port = stream.port + kMover;
             // a row of consecutive pages is one call; else one call a page
             const uint32_t run = walk.column_step == 1 ? columns : 1;
             for (uint32_t row = 0; row < rows; row++) {
@@ -342,8 +336,7 @@ namespace km {
                         stream.tensor,
                         page,
                         run,
-                        address,
-                        port
+                        address
                     )
                                : write_pages_at(
                                    core,
@@ -352,8 +345,7 @@ namespace km {
                                    stream.tensor,
                                    page,
                                    run,
-                                   address,
-                                   port
+                                   address
                                ))) {
                         return false;
                     }

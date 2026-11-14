@@ -150,7 +150,7 @@
 #define KM_PAGE_CPUS 4u
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
-#define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u) /* + 4 j: page CPU j's */
+#define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */
 #define KM_ASK_ANSWERED (KM_ASK_TAIL + 0x30u) /* + 4 cpu: the core's CPU's */
 #define KM_ASK_BAD (KM_ASK_TAIL + 0x38u)
 #define KM_ASK_OWN (KM_ASK_TAIL + 0x40u)
@@ -206,10 +206,10 @@
 #define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)
 #define KM_PUT_CONFIRMED (KM_PUT_TAIL + 0x24u)
 #define KM_PUT_BAD (KM_PUT_TAIL + 0x28u)
-#define KM_PUT_CPUS (KM_PUT_TAIL + 0x2Cu) /* read with the counts taken: 32 bytes */
+#define KM_PUT_CPUS (KM_PUT_TAIL + 0x2Cu)   /* read with the counts taken: 32 bytes */
 #define KM_PUT_LANDED (KM_PUT_TAIL + 0x30u) /* + 4 j: page CPU j's */
 #define KM_PUT_USED (KM_PUT_TAIL + 0x40u)   /* + 4 j */
-#define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x60 the second CPU's */
+#define KM_PUT_OWN (KM_PUT_TAIL + 0x80u)    /* + 0x60 the second CPU's */
 #define KM_PUT_OWN_BYTES 0x80u /* a line, two answer words, 32 bytes read */
 #define KM_PUT_HEADERS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES + 0x40u)
 #define KM_PUT_LINES (KM_PUT_HEADERS + 0xC0u)
@@ -291,8 +291,8 @@ KM_STATIC_ASSERT(
 #define KM_CONTROL_OUT (KM_CONTROL_JOB + 0x40u)
 /* core index -> NoC x | y << 16, KM_CORES_MAX words */
 #define KM_CONTROL_CORES (KM_CONTROL_OUT + 0x40u)
-/* KM_PORTS port slots of 16 bytes: count (bumped by senders), then the count a wait
-   wants (nonzero only while waiting, or after the wait gave up) */
+/* KM_PORT_SLOTS port slots of 16 bytes: count (bumped by senders), then the count a
+   wait wants (nonzero only while waiting, or after the wait gave up) */
 #define KM_CONTROL_PORT (KM_CONTROL_CORES + 4u * KM_CORES_MAX)
 
 KM_STATIC_ASSERT(
@@ -311,21 +311,26 @@ KM_STATIC_ASSERT(
     "16-byte slots, the job copy on a line"
 );
 
-/* Ports: the receiving side of a value sent to one core. */
+/* Ports: what one core receives; a kernel names 0 to KM_PORTS - 1, the page calls
+   alone count at the reader's KM_PORT_PAGES and at the writer's, the one after. */
 #define KM_PORTS 8u
+#define KM_PORT_PAGES KM_PORTS
+#define KM_PORT_SLOTS (KM_PORTS + 2u)
 #define KM_PORT_STRIDE 16u
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
-/* KM_BROADCASTS areas, KM_BROADCAST_BYTES each */
-#define KM_CONTROL_BROADCAST (KM_CONTROL_PORT + KM_PORTS * KM_PORT_STRIDE)
+/* KM_BROADCASTS areas, KM_BROADCAST_BYTES each; on a 64-byte line after the ports */
+#define KM_CONTROL_BROADCAST \
+    (KM_CONTROL_PORT + (KM_PORT_SLOTS * KM_PORT_STRIDE + 63u) / 64u * 64u)
 
 KM_STATIC_ASSERT(
     KM_CONTROL_PORT == KM_CONTROL_CORES + 4u * KM_CORES_MAX, "ports after cores"
 );
 KM_STATIC_ASSERT(
-    KM_CONTROL_PORT + KM_PORTS * KM_PORT_STRIDE == KM_CONTROL_BROADCAST, "ports end"
+    KM_CONTROL_PORT + KM_PORT_SLOTS * KM_PORT_STRIDE <= KM_CONTROL_BROADCAST,
+    "ports end"
 );
 KM_STATIC_ASSERT(KM_CONTROL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte slots");
 
@@ -349,7 +354,7 @@ KM_STATIC_ASSERT(KM_CONTROL_PORT % 16u == 0 && KM_PORT_STRIDE == 16u, "16-byte s
 #define KM_BROADCAST_ARRIVED 1u
 
 KM_STATIC_ASSERT(
-    KM_CONTROL_BROADCAST == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0x80u, "ports room"
+    KM_CONTROL_BROADCAST == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0xC0u, "ports room"
 );
 KM_STATIC_ASSERT(
     KM_BROADCAST_DONE + KM_BROADCAST_DONE_STRIDE * KM_BROADCAST_RANKS ==
@@ -451,7 +456,7 @@ KM_STATIC_ASSERT(
 );
 
 KM_STATIC_ASSERT(
-    KM_CONTROL_MESSAGES == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0x300u,
+    KM_CONTROL_MESSAGES == KM_CONTROL_CORES + 4u * KM_CORES_MAX + 0x340u,
     "after broadcasts"
 );
 KM_STATIC_ASSERT(

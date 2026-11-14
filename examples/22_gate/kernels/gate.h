@@ -19,6 +19,3 @@ constexpr uint32_t kBMoverA = 2;
 constexpr uint32_t kBMoverB = 3;
 constexpr uint32_t kOutMoverA = 16;
 constexpr uint32_t kOutMoverB = 17;
-// The ports a stream's asks for pages another island holds count at: mover A's,
-// then mover B's.
-constexpr uint32_t kAskPort = 0;
