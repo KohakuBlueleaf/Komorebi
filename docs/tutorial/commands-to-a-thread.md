@@ -146,4 +146,5 @@ argument
 - A `kmx_program` that never returns. Its command ends at its deadline with a
   `"timeout"` event, and the thread answers nothing else while it is stuck.
 
-Next: [[measuring]] starts Part 6 with how long things take.
+Next: [[a-word-with-each-range]] lets cores take their work from an X280 core a range
+at a time.

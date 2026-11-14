@@ -52,6 +52,7 @@ sharing-memory
 twelve-cores
 core-asks-x280
 commands-to-a-thread
+a-word-with-each-range
 
 # Part 6. Practice
 > You end this part able to measure, debug and design a program of your own.

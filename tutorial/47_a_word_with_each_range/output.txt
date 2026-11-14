@@ -1,0 +1,5 @@
+core 0 added up 408
+core 1 added up 19064
+core 2 added up 536
+core 3 added up 27640
+the same as Python: True
