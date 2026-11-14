@@ -423,7 +423,13 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
 /* The group word of a LINK command: the link core alone. Here a rank of the island
  * (its flat rank); the one place that names it. */
 static inline uint32_t link_core_group(const kmd_t* dispatcher) {
-    return (dispatcher->island_first + link_state((kmd_t*)dispatcher)->core) | 1u << 16;
+    return (
+        (
+            dispatcher->island_first - dispatcher->island_base +
+            link_state((kmd_t*)dispatcher)->core
+        ) |
+        1u << 16
+    );
 }
 
 /* Hands queued packets to the link core: each staged in a free stage of its area

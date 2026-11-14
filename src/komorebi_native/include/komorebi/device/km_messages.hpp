@@ -195,15 +195,15 @@ namespace km {
     }
 
     // The counter tile that holds the tail of flat rank `rank`, as this island's core
-    // (`island_first`: the island's first rank).
+    // (`rank_offset`: the rank of core 0, Islands::offset).
     inline uint32_t messages_counter(
         const km_command_t& command,
         uint32_t counter_tiles,
         uint32_t rank,
-        uint32_t island_first
+        uint32_t rank_offset
     ) {
         return (
-            first(command) - island_first + messages_ranks(command, counter_tiles) +
+            first(command) - rank_offset + messages_ranks(command, counter_tiles) +
             (rank - first(command)) % counter_tiles
         );
     }
@@ -447,8 +447,8 @@ namespace km {
         const uint32_t counter_tiles = messages_arguments.counters;
         const uint32_t ranks = messages_ranks(command, counter_tiles);
         // This core's flat rank (arguments.me: its core, for queues and lines).
-        const uint32_t island_first = islands_at(arguments.control).first();
-        const uint32_t me = island_first + arguments.me;
+        const uint32_t rank_offset = islands_at(arguments.control).offset();
+        const uint32_t me = rank_offset + arguments.me;
         const bool counter = me - first(command) >= ranks;
         if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
             where = where != 0 ? where : kWhereMessagesCounter;
@@ -459,7 +459,7 @@ namespace km {
                 uint32_t rank = me - first(command) - ranks; rank < ranks;
                 rank += counter_tiles
             ) {
-                const uint32_t core = first(command) + rank - island_first;
+                const uint32_t core = first(command) + rank - rank_offset;
                 noc_async_read(
                     reader.core_noc(
                         core,
@@ -487,7 +487,7 @@ namespace km {
             where == 0 &&
             !messages_ready(
                 reader,
-                messages_counter(command, counter_tiles, me, island_first),
+                messages_counter(command, counter_tiles, me, rank_offset),
                 KM_TAILS_READER,
                 run
             )
@@ -512,7 +512,7 @@ namespace km {
                         command,
                         counter_tiles == 0 ? 1 : counter_tiles,
                         me,
-                        island_first
+                        rank_offset
                     ),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * arguments.me
@@ -937,7 +937,7 @@ namespace km {
             .page_size = messages_arguments.body_bytes
         };
         const uint32_t store = get_write_ptr(kCbMessagesBins);
-        const uint32_t island_first = islands_at(arguments.control).first();
+        const uint32_t rank_offset = islands_at(arguments.control).offset();
         uint32_t bin_destination[kMessagesBinsMax], bin_fill[kMessagesBinsMax];
         // A bin's body (its last message's; a body is sent at once): L1 address, bytes.
         uint32_t bin_body[kMessagesBinsMax], bin_body_bytes[kMessagesBinsMax];
@@ -957,14 +957,14 @@ namespace km {
         const uint32_t ranks = messages_ranks(command, counter_tiles);
         if (counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX || ranks == 0) {
             where = kWhereMessagesCounter;
-        } else if (island_first + arguments.me - first(command) < ranks) {
+        } else if (rank_offset + arguments.me - first(command) < ranks) {
             for (
                 uint32_t counter_tile = 0; counter_tile < counter_tiles && where == 0;
                 counter_tile++
             ) {
                 if (!messages_ready(
                     writer,
-                    first(command) - island_first + ranks + counter_tile,
+                    first(command) - rank_offset + ranks + counter_tile,
                     KM_TAILS_WRITER,
                     run
                 )) {
@@ -1011,8 +1011,8 @@ namespace km {
                     messages_counter(
                         command,
                         counter_tiles,
-                        island_first + bin_destination[bin],
-                        island_first
+                        rank_offset + bin_destination[bin],
+                        rank_offset
                     ),
                     arguments.control + KM_CONTROL_TAILS + KM_TAILS_LINE +
                         16 * bin_destination[bin]
@@ -1155,7 +1155,7 @@ namespace km {
             // this island's local core of the rank (a rank on another island goes to
             // its link in a later version)
             const uint32_t destination = (
-                (outgoing_word & kMessagesOutDestination) - island_first
+                (outgoing_word & kMessagesOutDestination) - rank_offset
             );
             const uint32_t bin = destination % bins;
             if (
@@ -1470,7 +1470,7 @@ namespace km {
                     push_out(
                         (destination < count_
                              ? first_ + destination
-                             : islands_at(control_).first() +
+                             : islands_at(control_).offset() +
                                    KM_X280_RANK_CORE(destination - count_)) |
                             (handler & 0xFF) << kMessagesOutHandlerShift,
                         message,

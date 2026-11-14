@@ -286,8 +286,10 @@ namespace km {
             uint32_t passes = 0, gave = kGaveNone, sequence = 0;
             const Islands view = islands_at(arguments.control);
             const uint32_t island_first = view.first();
-            const uint32_t rank = island_first + arguments.me;
-            const uint32_t link = KM_GROUP_LINK_BASE + (arguments.me - view.ranks());
+            const uint32_t rank = view.offset() + arguments.me;
+            const uint32_t link = (
+                KM_GROUP_LINK_BASE + (arguments.me - view.base() - view.ranks())
+            );
             control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
             for (;;) {
                 invalidate_l1_cache();
@@ -538,7 +540,7 @@ namespace km {
     public:
         Compute() :
             control_(get_arg_val<uint32_t>(kCArgControl)),
-            me_(islands_at(control_).first() + get_arg_val<uint32_t>(kCArgMe)),
+            me_(islands_at(control_).offset() + get_arg_val<uint32_t>(kCArgMe)),
             wait_(get_arg_val<uint32_t>(kCArgWait)),
             idle_(get_arg_val<uint32_t>(kCArgIdle)) {
             UNPACK((role_ = kRoleUnpack));

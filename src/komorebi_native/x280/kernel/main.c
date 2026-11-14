@@ -100,9 +100,13 @@ static int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
         (
             arguments->island == 0 ||
             (
-                (arguments->island >> 16) >= 1u &&
-                (arguments->island >> 16) <= arguments->cores &&
-                (arguments->island & 0xFFFFu) + (arguments->island >> 16) <= 0xFFFFu
+                (arguments->island >> 48) == 0u &&
+                ((arguments->island >> 16) & 0xFFFFu) >= 1u &&
+                ((arguments->island >> 32) & 0xFFFFu) +
+                        ((arguments->island >> 16) & 0xFFFFu) <=
+                    arguments->cores &&
+                (arguments->island & 0xFFFFu) + ((arguments->island >> 16) & 0xFFFFu) <=
+                    0xFFFFu
             )
         )
     );
@@ -940,7 +944,8 @@ static __attribute__((noinline)) void run(uint64_t core) {
     dispatcher->full = ~0ull >> (64u - dispatcher->depth);
     dispatcher->cores = (uint32_t)arguments->cores;
     dispatcher->island_first = (uint32_t)arguments->island & 0xFFFFu;
-    dispatcher->island_count = (uint32_t)(arguments->island >> 16);
+    dispatcher->island_count = (uint32_t)(arguments->island >> 16) & 0xFFFFu;
+    dispatcher->island_base = (uint32_t)(arguments->island >> 32) & 0xFFFFu;
     dispatcher->messages.handler = (uint32_t)arguments->messages_handler;
     dispatcher->messages.x280_cluster = (
         KMD_X280_RANKS_CLUSTER(arguments->messages_handler)

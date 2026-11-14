@@ -47,6 +47,16 @@ namespace km {
             return area_[KM_ISLAND_RANKS];
         }
 
+        // Its first core of the card (a card split into islands); 0 on a whole card.
+        uint32_t base() const {
+            return area_[KM_ISLAND_BASE];
+        }
+
+        // The flat rank of core 0 (first - base, modulo 2^32): rank = this + core.
+        uint32_t offset() const {
+            return first() - base();
+        }
+
         uint32_t entry_first(uint32_t island) const {
             return half(island, kIslandEntryFirst);
         }
@@ -112,34 +122,40 @@ namespace km {
         );
     }
 
-    // The part of the command's group on this island, in its local cores (the core
-    // table's indices): what this island's cores run and complete.
+    // The part of the command's group on this island, in its cores (the core table's
+    // indices, from its base): what this island's cores run and complete.
     struct Part {
         uint32_t first;
         uint32_t count;
     };
 
     inline Part local_part(const Islands& view, const km_command_t& command) {
-        if (KM_GROUP_IS_LINK(first(command))) {  // link cores: the cores after the ranks
-            return {view.ranks() + first(command) - KM_GROUP_LINK_BASE, count(command)};
+        if (KM_GROUP_IS_LINK(
+            first(command)
+        )) {  // link cores: the cores after the ranks
+            return {
+                view.base() + view.ranks() + first(command) - KM_GROUP_LINK_BASE,
+                count(command)
+            };
         }
         const uint32_t low = view.first();
         const uint32_t high = view.ranks() == 0 ? 0xFFFFFFFFu : low + view.ranks();
         const uint32_t start = first(command) > low ? first(command) : low;
         uint32_t end = first(command) + count(command);
         end = end < high ? end : high;
-        return {start - low, end > start ? end - start : 0};
+        return {start - low + view.base(), end > start ? end - start : 0};
     }
 
-    // The name local core `me` has in `command`'s group: in a group of link cores,
+    // The name core `me` has in `command`'s group: in a group of link cores,
     // KM_GROUP_LINK_BASE + its link-core index (a rank core's is in no such group);
     // else its flat rank. Its rank in the group: this less the group's first.
     inline uint32_t name_in(
         const Islands& view, uint32_t me, const km_command_t& command
     ) {
         return (
-            KM_GROUP_IS_LINK(first(command)) ? KM_GROUP_LINK_BASE + (me - view.ranks())
-                                             : view.first() + me
+            KM_GROUP_IS_LINK(first(command))
+                ? KM_GROUP_LINK_BASE + (me - view.base() - view.ranks())
+                : view.offset() + me
         );
     }
 
@@ -148,14 +164,14 @@ namespace km {
     struct Resolved {
         uint32_t island;
         bool here;
-        uint32_t core;  // here: rank - this island's first rank
+        uint32_t core;  // here: its base + rank - this island's first rank
         uint32_t link;  // not here: the next link
     };
 
     inline Resolved resolve(const Islands& islands, uint32_t rank) {
         const uint32_t island = islands.island_of(rank);
         if (island == islands.here()) {
-            return {island, true, rank - islands.first(), KM_ISLAND_NO_LINK};
+            return {island, true, rank - islands.offset(), KM_ISLAND_NO_LINK};
         }
         return {island, false, 0, islands.link(island)};
     }
