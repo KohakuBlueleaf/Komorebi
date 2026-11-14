@@ -6,6 +6,7 @@
 #include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "split.h"
+#include "split_op.hpp"
 
 void kernel_main() {
     using Y = km::Tensor<0>;
@@ -24,6 +25,9 @@ void kernel_main() {
         const auto plan = [&](uint32_t word) {
             return writer.arg(plan_words(command) + word);
         };
+        if (mode == kSplitOp) {
+            return !split_op_part(command, kOpWriter) || split_op(writer, command);
+        }
         if (!move_chunks(writer, command, A(command.a0), W(command.a1))) {
             return false;
         }
@@ -42,6 +46,9 @@ void kernel_main() {
                     writer, command, arrival, group, reduce_form, kCbSum, block_tiles
                 )
             );
+        }
+        if (split_op_part(command, kOpWriter)) {  // the operation writes the block
+            return split_op(writer, command);
         }
         if (!km::reduce_result(writer, kCbSplitOut, block_tiles)) {
             return false;

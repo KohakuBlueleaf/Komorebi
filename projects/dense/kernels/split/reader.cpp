@@ -6,6 +6,7 @@
 #include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "split.h"
+#include "split_op.hpp"
 
 void kernel_main() {
     using A = km::Tensor<0>;
@@ -21,17 +22,23 @@ void kernel_main() {
         const uint32_t reduce_form = command.a3, mode = command.a4;
         const uint32_t block_height = plan(kSpOh), block_width = plan(kSpOw);
         const km::Group group = km::digit_group(command, reader.me(), 1, plan(kSpS));
+        if (mode == kSplitOp) {
+            split_op(reader, command);
+            return;
+        }
         if (!move_chunks(reader, command, A(command.a0), W(command.a1))) {
             return;
         }
-        if (mode == kSplitFull) {
+        if (mode == kSplitFull &&
             km::reduce_arrive(
                 reader,
                 command,
                 {kCbArrive, plan(kSpArrive), block_height * block_width},
                 group,
                 reduce_form
-            );
+            ) &&
+            group.rank == 0) {
+            split_op(reader, command);
         }
     });
 }

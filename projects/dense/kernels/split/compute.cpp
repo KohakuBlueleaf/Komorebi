@@ -13,6 +13,7 @@
 #include "chunks.hpp"
 #include "komorebi/device/km_port.hpp"
 #include "split.h"
+#include "split_op.hpp"
 
 namespace {
 
@@ -47,6 +48,12 @@ void kernel_main() {
         const uint32_t subblock_width = plan(kSpSw), group_size = plan(kSpS);
         const uint32_t block_tiles = block_height * block_width;
         const uint32_t reduce_form = command.a3, mode = command.a4;
+        if (mode == kSplitOp) {
+            if (split_op_part(command, kOpCompute)) {
+                split_op(compute, command);
+            }
+            return;
+        }
         const km::Group group = km::digit_group(command, compute.me(), 1, group_size);
         const km::Partition k_part = km::partition(k_tiles, group.rank, group.size);
         const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
@@ -136,9 +143,10 @@ void kernel_main() {
         if (ok && full && room) {
             cb_push_back(kCbSum, block_tiles);
         }
-        if (
-            ok && full && group.rank == 0
-        ) {  // the group's sum, in bf16, for the writer
+        if (ok && full && group.rank == 0 && split_op_part(command, kOpCompute)) {
+            ok = split_op(compute, command);         // the operation takes the sum
+        } else if (ok && full && group.rank == 0) {  // the group's sum, in bf16, for
+                                                     // the writer
             ok = compute.wait_front(kCbSum, block_tiles);
             const bool out = compute.reserve_back(kCbSplitOut, block_tiles);
             pack_reconfig_data_format(kCbSplitOut);

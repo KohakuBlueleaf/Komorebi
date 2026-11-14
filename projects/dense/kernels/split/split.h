@@ -6,14 +6,15 @@
 
 #include "../dense.h"
 
-// SPLIT: a0 a_address (A, [M, K] tiles), a1 w_address (W, [K, N]), a2 y_address (Y,
-// [M, N]), a3 reduce_form (0 owner, 1 tree), a4 mode, a5 the plan (0 the first).
+// SPLIT: a0 A, a1 W, a2 Y (tile tensors), a3 reduce_form (0 owner, 1 tree), a4 mode, a5
+// the plan (0 the first), a6 the operation after the sum (split_op.hpp), a7 to a9 its.
 constexpr uint32_t kHandlerSplit = 1;
 
 // SPLIT modes: the full call; the parts only (no reduce: each core packs its part and
-// drops it, nothing written).
+// drops it, nothing written); the operation only (no product: every core calls it).
 constexpr uint32_t kSplitFull = 0;
 constexpr uint32_t kSplitParts = 1;
+constexpr uint32_t kSplitOp = 2;
 
 // A and W chunks in two pairs (chunks.hpp): each half holds one chunk of its mover.
 constexpr uint32_t kCbSa = 0;        // mover A's A chunks: oh x kc tiles
