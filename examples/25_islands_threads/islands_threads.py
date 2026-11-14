@@ -21,9 +21,10 @@ from mapcollect import rank_sums  # noqa: E402 (example 01's sums, beside it)
 KERNELS = MAPCOLLECT / "kernels"
 TILE = 32
 TICKS_PER_US = 50  # the X280 timer, 50 MHz
-THREAD_HANDLERS = {"maps": 1, "ask": 2, "fold": 3, "hang": 4}  # across.c
+THREAD_HANDLERS = {"maps": 1, "ask": 2, "fold": 3, "hang": 4, "counts": 5}  # across.c
 EVENT_TIMEOUT, EVENT_ISLAND = 1, 0x80  # KM_EVENT_TIMEOUT, KM_EVENT_ISLAND
 BAD = 0xFFFFFFFF
+NO_RANK = 0xFFFFFFFF  # MAP's slow_rank: none
 STARTED = time.monotonic()
 
 
@@ -39,12 +40,17 @@ def parse():
         "--links", type=int, default=0, help="the session's page links (0: link 0)"
     )
     parser.add_argument(
-        "--steps", default="nop,map,ask,hang", help="of nop, map, ask, hang"
+        "--steps",
+        default="nop,map,ask,hang,count",
+        help="of nop, map, ask, hang, count, host-hang (not by default)",
     )
     parser.add_argument("--nop-jobs", type=int, default=2000, help="per round")
     parser.add_argument("--rounds", type=int, default=3, help="NOP rounds")
     parser.add_argument("--maps", type=int, default=500, help="MAPs a thread sends")
     parser.add_argument("--asks", type=int, default=500, help="FOLDs a thread asks")
+    parser.add_argument(
+        "--counts", type=int, default=1000, help="COUNTs from the host, then a thread"
+    )
     return parser.parse_args()
 
 
@@ -58,7 +64,8 @@ def program(source, output, threads):
             km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
         ],
         compile_args={
-            "reader": source.accessor_args(),
+            # MAP's input placements (example 01's reader reads two): both the input
+            "reader": source.accessor_args() + 2 * source.placement_args(),
             "writer": output.accessor_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
@@ -73,6 +80,7 @@ def program(source, output, threads):
             defines={
                 "kMap": f"{int(made.handler('map'))}u",
                 "kHang": f"{int(made.handler('hang'))}u",
+                "kCount": f"{int(made.handler('count'))}u",
             },
         )
     return made
@@ -98,6 +106,122 @@ def ask_thread(run, handler, args, timeout=20.0):
     return event.result
 
 
+def counted(run, own):
+    """Every flat rank's count of COUNTs, as its writer gives it (COUNT a0 1 with
+    the result, one rank a command on its island's own run, in flat ranks)."""
+    handles = []
+    for island, (low, cores) in enumerate(own):
+        part = run.island(island)
+        handles.append(
+            [
+                part.submit("count", (rank, 1), [1], result=True)
+                for rank in range(low, low + cores)
+            ]
+        )
+    counts = []
+    for island, mine in enumerate(handles):
+        for event in run.island(island).wait(mine, timeout=30.0):
+            if event.kind != "done":
+                raise RuntimeError(f"COUNT read on island {island}: {event.kind}")
+            counts.append(event.result)
+    return np.asarray(counts, np.int64)
+
+
+def count_check(run, own, ranks, group, rounds):
+    """COUNT `rounds` times on one flat `group` over both islands from the host (its
+    split, every line a part), one EXCLUSIVE COUNT on it from the host, then `rounds`
+    from island 0's thread (crossed): every rank of the group counts each once."""
+    inside = np.zeros(ranks, bool)
+    inside[group[0] : group[0] + group[1]] = True
+    report = {"count_group": list(group), "counts": rounds}
+    started = time.perf_counter()
+    tickets = run.submit_many(
+        "count", [group[0]], [group[1]], np.zeros((rounds, 1), np.uint32)
+    )
+    events = run.wait(list(tickets), timeout=30.0)
+    report["host_count_us"] = round((time.perf_counter() - started) * 1e6 / rounds, 3)
+    kinds = {event.kind for parts in events for event in parts}
+    exclusive = run.wait(run.submit("count", group, [0], exclusive=True), 10.0)
+    report["exclusive_done"] = all(event.kind == "done" for event in exclusive)
+    after_host = counted(run, own)
+    want = np.where(inside, rounds + 1, 0)
+    report["host_counts_exact"] = bool(kinds == {"done"}) and bool(
+        (after_host == want).all()
+    )
+    log(
+        f"host: {rounds} COUNTs on {group}, {report['host_count_us']} us a command;"
+        f" exclusive {report['exclusive_done']}; counts {sorted(set(after_host))}"
+    )
+    ticks = ask_thread(run.island(0), "counts", [*group, rounds], timeout=60.0)
+    report["thread_count_us"] = per_command_us(ticks, rounds)
+    after_thread = counted(run, own)
+    want = np.where(inside, 2 * rounds + 1, 0)
+    report["thread_counts_exact"] = bool((after_thread == want).all())
+    log(
+        f"thread: {rounds} COUNTs on {group}, {report['thread_count_us']} us a"
+        f" command; counts {sorted(set(after_thread))}"
+    )
+    return report
+
+
+def gave_up(run):
+    """Each island's dispatcher's count of the host's commands it gave up, as the host
+    reads it."""
+    return [run.island(i).backend.inspect(0)["given_up"] for i in range(2)]
+
+
+def host_hang(run, group, hung, before):
+    """After the thread's HANG (no host command given up on either island), the same
+    HANG from the host on island 0's run alone (no part mark: it crosses): given up
+    naming island 1, island 0 counting it once and island 1 not, and the run goes on."""
+    after_thread = gave_up(run)
+    first = run.island(0)
+    handle = first.submit("hang", group, [hung, 1])
+    try:
+        event = first.wait(handle, timeout=20.0)
+        named, given = event.kind, False
+    except km.CommandTimeout as error:
+        named, given = error.slot & 0xFF, error.given_up
+    after_host = gave_up(run)
+    log(
+        f"host HANG on {group} to island 0 alone: given up {given}, auxiliary"
+        f" {named}; give-ups before {before}, after the thread's {after_thread},"
+        f" after the host's {after_host}"
+    )
+    return {
+        "host_hang_given_up": bool(given and named == EVENT_ISLAND + 1),
+        "gave_up_counts": [before, after_thread, after_host],
+        "gave_up_counts_agree": after_thread == before
+        and after_host == [before[0] + 1, before[1]],
+    }
+
+
+def healthy_after(run, own, hung, words):
+    """After the HANGs (their core still hung: no recovery yet on islands), commands
+    on the other ranks: a NOP on each island's own ring, example 01's MAP from the host
+    on each island's healthy ranks (its split), and a MAP from island 0's thread on
+    island 1's healthy ranks (it crosses). Each answered: the dispatchers go on taking
+    lines for every rank but the hung one."""
+    source, output = words
+    low1, cores1 = own[1]
+    after = hung + 10  # island 1's ranks past the hung one's HANG group
+    groups = [own[0], (after, low1 + cores1 - after)]
+    answered = {}
+    for island, rank in ((0, own[0][0] + 10), (1, low1 + cores1 - 1)):
+        part = run.island(island)
+        event = part.wait(part.submit(0, (rank, 1)), timeout=10.0)
+        answered[f"nop_island_{island}"] = event.kind == "done"
+    for first, count in groups:
+        args = [source, 2 * count, output, first, 0, NO_RANK, 2 * first]
+        events = run.wait(run.submit("map", (first, count), args), timeout=10.0)
+        answered[f"map_{first}_{count}"] = all(e.kind == "done" for e in events)
+    first, count = groups[1]
+    ticks = ask_thread(run.island(0), "maps", [first, count, 1, source, output])
+    answered[f"thread_map_{first}_{count}"] = ticks != BAD
+    log(f"after the HANGs, other ranks: {answered}")
+    return {"healthy_after": answered, "healthy_answered": all(answered.values())}
+
+
 def per_command_us(ticks, count):
     return None if ticks == BAD else round(ticks / TICKS_PER_US / count, 3)
 
@@ -106,7 +230,9 @@ def main():
     args = parse()
     steps = args.steps.split(",")
     cards = [int(card) for card in args.cards.split(",")]
-    threads = any(step in steps for step in ("map", "ask", "hang"))
+    threads = any(
+        step in steps for step in ("map", "ask", "hang", "count", "host-hang")
+    )
     report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
     with km.Session(cards=cards, links=args.links, log=log) as session:
@@ -166,6 +292,15 @@ def main():
             report["map_after_hang"] = after != BAD
             log(f"a MAP on all ranks after it: {report['map_after_hang']}")
             wrong = "map"
+        if "count" in steps:
+            report.update(count_check(run, own, ranks, (60, 120), args.counts))
+        if "host-hang" in steps:
+            before = gave_up(run)
+            word = ask_thread(first, "hang", [100, 40, 30, 300000, 2000000])
+            log(f"thread HANG on (100, 40): word {word:#x}")
+            report.update(host_hang(run, (100, 40), 30, before))
+            words = (source.address, output.address)
+            report.update(healthy_after(run, own, 130, words))
         log("stopping")
         results = run.stop()
         report["kernel_errors"] = [result["error_name"] for result in results]
@@ -182,6 +317,12 @@ def main():
         and report.get("thread_ask_us", 0) is not None
         and report.get("hang_named_island", True)
         and report.get("map_after_hang", True)
+        and report.get("host_hang_given_up", True)
+        and report.get("gave_up_counts_agree", True)
+        and report.get("healthy_answered", True)
+        and report.get("exclusive_done", True)
+        and report.get("host_counts_exact", True)
+        and report.get("thread_counts_exact", True)
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)

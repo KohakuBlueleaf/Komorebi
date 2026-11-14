@@ -50,6 +50,9 @@ class LinkPlan:
     def __init__(self, graph, island, far, core, area):
         self.graph, self.island, self.far = graph, island, far
         self.core, self.area = core, area
+        # the relay words of the island area (km_relay.hpp): this island's relay
+        # area, the far island's, the far link core 0's NoC tile x | y << 16
+        self.relay = [0, 0, 0]
 
     def line(self, dispatch):
         """The dispatcher's link line and island table (KMD_LIM_LINK). The far island's
@@ -122,7 +125,7 @@ class IslandTensor:
         return out
 
     def free(self):
-        for part in self.parts:
+        for part in {id(part): part for part in self.parts}.values():  # once each
             part.free()
 
 
@@ -163,9 +166,10 @@ class IslandRun:
         self._grow(1)
         ticket = self._next
         for island, _first, _count in parts:
-            try:  # the flat group word unchanged: the dispatcher cuts its part
+            try:  # the flat group word unchanged, marked a part: the dispatcher cuts
+                # its part and does not cross the line (the other parts went as well)
                 handle = self.runs[island].submit(
-                    handler, group, args, exclusive=exclusive, result=result
+                    handler, group, args, exclusive=exclusive, result=result, part=True
                 )
             except KomorebiError as error:
                 raise _named(error, island) from None
@@ -213,13 +217,14 @@ class IslandRun:
             if not mine.any():
                 continue
             named = handler if scalar else handlers[mine]
-            try:  # the flat group words unchanged: the dispatcher cuts its part
+            try:  # the flat group words unchanged, marked parts (as in submit)
                 handles = run.submit_many(
                     named,
                     first[mine],
                     count[mine],
                     None if args is None else args[mine],
                     exclusive,
+                    part=True,
                 )
             except KomorebiError as error:
                 raise _named(error, island) from None
@@ -419,21 +424,23 @@ class IslandRun:
 
 
 class IslandSession:
-    """Cards `cards` as islands of one 1 x n fabric mesh in this process: the X280
-    runtime once over the mesh, then per island a Session given its device (one card:
-    its own Session, no mesh). `links` 1 to 4 (two islands): links pages cross on, a
-    link core (the island's last cores, not ranks) a pair; 0: every core is a rank. A
-    context manager."""
+    """Cards as islands of one 1 x n fabric mesh, the X280 runtime once over it, a
+    Session an island (one card: its own; `islands` 2 to 4: it split into islands of
+    whole rows). `links` 1 to 4 (two cards): links pages cross on, a link core (the last
+    cores) a pair; 0: every core a rank. A context manager."""
 
     LINKS_MAX = 4  # a byte each in a PAGES command's link word
-    # How a core's ask for pages another island holds reaches the holder: "host" (the
-    # host queues the holder's send); "message" (the asker's own message) is not built.
-    ASKS_BY = "host"
+    # How a core's ask for pages another island holds reaches the holder: "core" (its
+    # own read call, km::read_pages, puts an ask line into its link core 0, sent on
+    # link 0); "host" (the host queues the holder's send: ask, ask_range; the read call
+    # only waits for the pages).
+    ASKS_BY = "core"
 
     def __init__(
         self,
         cards,
         links=0,
+        islands=None,
         pll_mhz=None,
         tree=None,
         log=None,
@@ -451,6 +458,9 @@ class IslandSession:
             )
         # two islands always have link 0 (commands across ride it): links 0 is 1
         self.links = links or (1 if len(self.cards) == 2 else 0)
+        self.split = islands or 1  # the islands one card is split into
+        if self.split > 1 and (len(self.cards) != 1 or links):
+            raise ValueError(f"islands={islands}: one card, without links")
         self.log = log or (lambda message: None)
         self._options = {
             "pll_mhz": pll_mhz,
@@ -497,9 +507,15 @@ class IslandSession:
                 **self._options,
             )
             session.open()
-            self.chips, self.sessions = [self.cards[0]], (session,)
+            self.chips, self.sessions = [self.cards[0]], (session,) * self.split
             columns, rows = session.grid
             self.graph = islands.one(columns * rows, columns)
+            if self.split > 1:  # one device, a dispatcher an island
+                self.graph = islands.split_card(
+                    columns * rows, columns, self.split, rows=True, reserve=False
+                )
+                session_module._LIVE.add(self)
+                self.log(f"card {self.cards[0]} as {self.split} islands")
             return
         listed = ",".join(str(card) for card in self.cards)
         visible = os.environ.get("TT_VISIBLE_DEVICES")
@@ -603,6 +619,9 @@ class IslandSession:
         raw, shape = formats.to_bytes(data, dtype, layout)
         tensor = self.empty(shape, dtype, layout, like, copy, by)
         rows = raw.reshape(tensor.pages, tensor.page_bytes)
+        if self.split > 1:  # one tensor in the card's DRAM
+            self.sessions[0].write(tensor.parts[0], rows)
+            return tensor
         for island, part in enumerate(tensor.parts):
             if tensor.placement.copy:
                 mine = rows
@@ -615,7 +634,10 @@ class IslandSession:
 
     def empty(self, shape, dtype, layout="row", like=None, copy=False, by="rank"):
         """A tensor as tensor() places it, not written."""
-        parts = [session.empty(shape, dtype, layout) for session in self.sessions]
+        if self.split > 1:
+            parts = [self.sessions[0].empty(shape, dtype, layout)] * self.split
+        else:
+            parts = [session.empty(shape, dtype, layout) for session in self.sessions]
         first = parts[0]
         placement = islands.place(
             self.graph,
@@ -694,6 +716,10 @@ class IslandSession:
         X280 threads."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
+        if self.split > 1:  # one launch on the card, a dispatcher an island
+            runs = self.sessions[0].load_islands(program, self.graph, **options)
+            self.run = IslandRun(self.graph, runs)
+            return self.run
         programs = list(program) if isinstance(program, list | tuple) else [program]
         if len(programs) == 1:
             programs *= len(self.sessions)
@@ -704,12 +730,15 @@ class IslandSession:
                 f"an island session loads one Program or a list of "
                 f"{len(self.sessions)}, one an island"
             )
+        if self.ASKS_BY not in ("core", "host"):
+            raise ValueError(f"ASKS_BY={self.ASKS_BY!r}: 'core' or 'host'")
         if self.links:
             programs = self._linked(programs)
         defines = [one.defines for one in programs]
         if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
+            asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
             for one, own in zip(programs, defines):
-                one.defines = {**own, "KM_PAGE_LINKS": 1}
+                one.defines = {**own, "KM_PAGE_LINKS": 1, **asks}
         plans = self._links()
         runs = []
         try:
@@ -846,7 +875,9 @@ class IslandSession:
         local core `core` of `island`, counted at its port `port`: what that core waits
         on (km::port_wait). Returns (holder, handle) of the holder's send."""
         if self.ASKS_BY != "host":
-            raise KomorebiError(f"asks by {self.ASKS_BY!r}: not built (only 'host')")
+            raise KomorebiError(
+                f"asks by {self.ASKS_BY!r}: the host asks only with ASKS_BY = 'host'"
+            )
         holder = tensor.holders(first, pages)[0][0]
         if holder == island:
             raise ValueError(f"pages {first} + {pages}: island {island} holds them")
@@ -860,7 +891,9 @@ class IslandSession:
         Returns (holder, handle)."""
         h = abi.headers()
         if self.ASKS_BY != "host":
-            raise KomorebiError(f"asks by {self.ASKS_BY!r}: not built (only 'host')")
+            raise KomorebiError(
+                f"asks by {self.ASKS_BY!r}: the host asks only with ASKS_BY = 'host'"
+            )
         rank, ranks = group
         island, local = self.graph.resolve(rank)
         if ranks < 1 or self.graph.resolve(rank + ranks - 1)[0] != island:
@@ -1038,25 +1071,50 @@ class IslandSession:
 
     def _links(self):
         """Each island's LinkPlan for commands across (two islands), else None each:
-        its link core 0, a link area on every core."""
+        its link core 0, a link area on every core (zeroed: the asks' counts start at
+        0), at one address on both islands (a link core writes the far one's)."""
         if len(self.sessions) != 2:
             return [None] * len(self.sessions)
-        bytes_ = abi.headers()["KM_LINK_AREA_BYTES"]
+        h = abi.headers()
+        bytes_ = h["KM_LINK_AREA_BYTES"]
         plans = []
         self._link_areas = []
+        relays = []
         for island, session in enumerate(self.sessions):
             far = 1 - island
             columns, rows = session.grid
-            area = session.empty(
-                (columns * rows, bytes_ // 4), "uint32", shard_grid=(columns, rows)
+            area = session.tensor(
+                np.zeros((columns * rows, bytes_ // 4), np.uint32),
+                "uint32",
+                shard_grid=(columns, rows),
             )
             self._link_areas.append(area)
+            if area.address != self._link_areas[0].address:
+                raise KomorebiError(
+                    f"island {island}: the link area is at {area.address:#x}, "
+                    f"island 0's at {self._link_areas[0].address:#x}"
+                )
+            relay = session.tensor(  # zeros: no ask, no count, no done word
+                np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),
+                "uint32",
+                shard_grid=(columns, rows),
+            )
+            self._link_areas.append(relay)
+            relays.append(relay.address)
             core = self.link_cores[island][0]
             plans.append(LinkPlan(self.graph, island, far, core, area.address))
+            place = self.noc_of(far, self.link_cores[far][0])
+            plans[-1].relay = [
+                relays[island],
+                0,
+                (place & 0xFF) | (place >> 8) << 16,
+            ]
             self.log(
                 f"island {island}: commands across on link core {core}, channel "
                 f"{self.channels[island][0]}, area {area.address:#x}"
             )
+        for plan in plans:
+            plan.relay[1] = relays[plan.far]
         return plans
 
     def _check_links(self, runs, plans):
@@ -1075,6 +1133,8 @@ class IslandSession:
         """Stops every island's run through the X280 runtime, closes the islands'
         sessions, then the mesh (not while a grid did not return)."""
         try:
+            if self.split > 1 and self.run is not None and not self.run.stopped:
+                self.run.abort()
             for session in self.sessions:
                 session.close()
         finally:
@@ -1086,9 +1146,16 @@ class IslandSession:
                 session_module._LIVE.discard(self)
             elif stuck and self.mesh is not None:
                 self.log(f"mesh not closed: the grid of islands {stuck} did not return")
+            if self.mesh is None and not stuck:
+                session_module._LIVE.discard(self)
 
     def _release(self, why, close_device):
         """The exit hooks' clean-up: every island's session first, then the mesh."""
+        if self.split > 1 and self.run is not None and not self.run.stopped:
+            try:
+                self.run.abort()
+            except Exception as error:  # noqa: BLE001 (the process ends: logged)
+                self.log(f"{why}: abort raised {type(error).__name__}: {error}")
         for session in self.sessions:
             session._release(why, False)
         if close_device:

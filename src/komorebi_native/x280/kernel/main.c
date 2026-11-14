@@ -100,9 +100,13 @@ static int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
         (
             arguments->island == 0 ||
             (
-                (arguments->island >> 16) >= 1u &&
-                (arguments->island >> 16) <= arguments->cores &&
-                (arguments->island & 0xFFFFu) + (arguments->island >> 16) <= 0xFFFFu
+                (arguments->island >> 48) == 0u &&
+                ((arguments->island >> 16) & 0xFFFFu) >= 1u &&
+                ((arguments->island >> 32) & 0xFFFFu) +
+                        ((arguments->island >> 16) & 0xFFFFu) <=
+                    arguments->cores &&
+                (arguments->island & 0xFFFFu) + ((arguments->island >> 16) & 0xFFFFu) <=
+                    0xFFFFu
             )
         )
     );
@@ -406,11 +410,13 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     }
 #endif
     /* A group or thread on another island: its parts cross (link.h). A command from
-     * there, or the host's part of a dynamic run (its messages cross), runs here. */
+     * there, or a part of a split its submitter made (KM_FLAG_PART: the host's
+     * parts of a group over islands, a dynamic RUN's among them, whose messages cross
+     * on their own), runs only its part here. */
     if (
         dispatcher->link_on && source != KMD_SRC_LINK && !queued &&
-        handler != KM_HANDLER_EXIT && link_reaches_out(dispatcher, group) &&
-        !(host && KM_IS_DYNAMIC(dispatcher->messages.handler, handler))
+        !(flags & KM_FLAG_PART) && handler != KM_HANDLER_EXIT &&
+        link_reaches_out(dispatcher, group)
     ) {
         return link_cross(dispatcher, source, now);
     }
@@ -941,7 +947,8 @@ static __attribute__((noinline)) void run(uint64_t core) {
     dispatcher->full = ~0ull >> (64u - dispatcher->depth);
     dispatcher->cores = (uint32_t)arguments->cores;
     dispatcher->island_first = (uint32_t)arguments->island & 0xFFFFu;
-    dispatcher->island_count = (uint32_t)(arguments->island >> 16);
+    dispatcher->island_count = (uint32_t)(arguments->island >> 16) & 0xFFFFu;
+    dispatcher->island_base = (uint32_t)(arguments->island >> 32) & 0xFFFFu;
     dispatcher->messages.handler = (uint32_t)arguments->messages_handler;
     dispatcher->messages.x280_cluster = (
         KMD_X280_RANKS_CLUSTER(arguments->messages_handler)

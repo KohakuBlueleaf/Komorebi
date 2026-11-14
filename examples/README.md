@@ -8,7 +8,7 @@ checked, and does not depend on another example.
 | Example | What it shows |
 |---|---|
 | [01_mapcollect](01_mapcollect/) | persistent kernels under the dispatcher, groups named per command, per-group completion, a timeout that names the core |
-| [02_merge_tree](02_merge_tree/) | a value sent to one other core: each core's part merged at one owner or along a tree, bit-exact either way; a core that does not send ends in a timeout that names the port |
+| [02_merge_tree](02_merge_tree/) | a value sent to one other core: each core's part merged at one owner or along a tree, bit-exact either way; a core that does not send ends in a timeout that names the port; over two cards the kernels unchanged (each island folds, then crosses once) |
 | [03_broadcast](03_broadcast/) | broadcast: blocks along the rows and down the columns of a rectangle group, a stalled receiver that times out with its broadcast and block named |
 | [04_uop_stream](04_uop_stream/) | a micro-op stream decides the groups: random group sizes host-fed, submitted one at a time by the X280, and queued by it, with the same tiles every way |
 | [05_forward](05_forward/) | a dynamic handler: messages are forwarded between cores through per-core queues in DRAM until they are consumed, the dispatcher finds the run's quiet end, and every core's totals match a numpy replay |
@@ -32,3 +32,4 @@ checked, and does not depend on another example.
 | [23_message_body](23_message_body/) | a message carries a body: one thread's 4 KiB body is forwarded from rank to rank and changed at every hop, over 12 cores and the grid, every word against a numpy replay, a hop timed beside the 64-byte message alone |
 | [24_thread_rank](24_thread_rank/) | X280 cores as ranks of a dynamic run: 12 cores and four X280 cores of one cluster's thread pass messages both ways, each stepped at every visit, until their hops are used up; the run ends by itself, every consumer exact against the numpy replay |
 | [25_islands_threads](25_islands_threads/) | commands across two cards: NOPs for island 1's ranks through island 0's dispatcher alone, island 0's thread sending MAP to all 240 ranks and FOLD to island 1's thread, and a HANG on island 1 given up at its deadline naming the island |
+| [26_islands_sum](26_islands_sum/) | a sum written for islands: each island folds its part (`km::local`), its leader (`group.leaders()`) sends it to the first leader (`km::to_island(i).put`); the same script and kernels on two cards and on one, the total exact on both |

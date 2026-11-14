@@ -15,9 +15,9 @@
 #define W_STORE_ADDRESS 10u
 #define COUNTS_MAX 3u
 /* the ways, each with its best call's ticks at R_WAY + 3 way and its hash after it */
-#define WAY_CALL 0u   /* kmx_fetch: one sweep, the zeroed region's lines dirty */
+#define WAY_CALL 0u   /* kmx_fetch, the zeroed region's lines dirty */
 #define WAY_CLEAN 1u  /* kmx_fetch_clean after a flush of the range: no sweep */
-#define WAY_BEFORE 2u /* kmx_fetch then kmx_invalidate_at: the earlier call's work */
+#define WAY_BEFORE 2u /* kmx_fetch then kmx_invalidate_at, a sweep after it */
 #define WAYS 3u
 /* result words: per count i at 12 i, then the store's at 36 and the sweeps' at 38 */
 /* the call's best event ticks, the dispatcher's submit to completion */

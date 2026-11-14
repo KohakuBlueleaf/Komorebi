@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "km_group.hpp"
+#include "km_relay.hpp"
 #include "km_worker.hpp"
 
 namespace km {
@@ -60,6 +61,25 @@ namespace km {
         if (!writer.wait_front(cb, pages, kBehindPort)) {
             return false;
         }
+        if (crosses(destination)) {  // another island's rank: through the relay
+            const uint32_t code = (
+                relay_put(
+                    writer,
+                    command,
+                    get_read_ptr(cb),
+                    bytes,
+                    destination,
+                    slot_addr(arrival, arrival_slot),
+                    port
+                )
+            );
+            if (code != kGaveNone) {
+                writer.gave_up(kStWriter, code, kWhereEmit, named, command.sequence);
+                return false;
+            }
+            cb_pop_front(cb, pages);
+            return true;
+        }
         const uint32_t limit = writer.args().wait_limit;
         noc_async_write(
             get_read_ptr(cb),
@@ -99,36 +119,48 @@ namespace km {
     }
 
     // Reader: waits until the port has counted `wanted` (pages another island sent
-    // count there), then clears it. False: gave up; the port keeps the count wanted.
-    inline bool port_wait(
+    // count there), then clears it; a give-up at `where`, `named` its top half. False:
+    // gave up; the port keeps the count wanted.
+    inline bool port_wait_at(
         const Reader& reader,
         const km_command_t& command,
         uint32_t port,
-        uint32_t wanted
+        uint32_t wanted,
+        uint32_t where,
+        uint32_t named
     ) {
-        const uint32_t named = slot(command) | port << 8;
         if (port >= KM_PORTS) {
-            reader.gave_up(
-                kStReader, kGaveBadItem, kWherePort, named, command.sequence
-            );
+            reader.gave_up(kStReader, kGaveBadItem, where, named, command.sequence);
             return false;
         }
         volatile tt_l1_ptr uint32_t* words = port_words(reader, port);
         words[KM_PORT_WANT] = wanted;
         const uint32_t code = reader.poll_at(
-            kWherePort,
+            where,
             [&] {
                 return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
             },
             reader.args().wait_limit
         );
         if (code != kGaveNone) {
-            reader.gave_up(kStReader, code, kWherePort, named, command.sequence);
+            reader.gave_up(kStReader, code, where, named, command.sequence);
             return false;
         }
         words[KM_PORT_COUNT] = 0;
         words[KM_PORT_WANT] = 0;
         return true;
+    }
+
+    // port_wait_at in the port's own words: a give-up names the port.
+    inline bool port_wait(
+        const Reader& reader,
+        const km_command_t& command,
+        uint32_t port,
+        uint32_t wanted
+    ) {
+        return port_wait_at(
+            reader, command, port, wanted, kWherePort, slot(command) | port << 8
+        );
     }
 
     // Reader: waits until the port has counted `wanted` arrivals, clears it, hands all
@@ -192,6 +224,18 @@ namespace km {
         return true;
     }
 
+    // The same inside this core's island (scope km::local).
+    inline bool reduce_arrive(
+        const Reader& reader,
+        const km_command_t& command,
+        const Arrival& arrival,
+        const Group& group,
+        uint32_t form,
+        Local
+    ) {
+        return reduce_arrive(reader, command, arrival, group.local(), form);
+    }
+
     // Writer side of a reduce: a core other than the root emits its `pages` pages
     // of `cb` to its receiver. The root sends nothing.
     inline bool reduce_emit(
@@ -208,6 +252,49 @@ namespace km {
             step.root ||
             emit(writer, command, arrival, cb, pages, step.to, step.port, step.slot)
         );
+    }
+
+    // The same inside this core's island (scope km::local).
+    inline bool reduce_emit(
+        const Writer& writer,
+        const km_command_t& command,
+        const Arrival& arrival,
+        const Group& group,
+        uint32_t form,
+        uint32_t cb,
+        uint32_t pages,
+        Local
+    ) {
+        return reduce_emit(writer, command, arrival, group.local(), form, cb, pages);
+    }
+
+    // A send to a rank of island `island`: put() is emit() after a check that the rank
+    // is there (on this island a local emit, on another the relay).
+    struct ToIsland {
+        uint32_t island;
+
+        bool put(
+            const Writer& writer,
+            const km_command_t& command,
+            const Arrival& arrival,
+            uint32_t cb,
+            uint32_t pages,
+            uint32_t rank,
+            uint32_t port,
+            uint32_t arrival_slot
+        ) const {
+            if (island_of(rank) != island) {
+                writer.gave_up(
+                    kStWriter, kGaveBadItem, kWhereEmit, slot(command), command.sequence
+                );
+                return false;
+            }
+            return emit(writer, command, arrival, cb, pages, rank, port, arrival_slot);
+        }
+    };
+
+    inline ToIsland to_island(uint32_t island) {
+        return {island};
     }
 
     // Writer at the root of a reduce: waits for the result's `pages` pages of `cb`
@@ -260,6 +347,19 @@ namespace km {
             untake(arrival);
         }
         return true;
+    }
+
+    // The same inside this core's island (scope km::local).
+    template <typename Combine>
+    inline bool reduce(
+        const Compute& compute,
+        const Arrival& arrival,
+        const Group& group,
+        uint32_t form,
+        Local,
+        Combine combine
+    ) {
+        return reduce(compute, arrival, group.local(), form, combine);
     }
 
 }  // namespace km

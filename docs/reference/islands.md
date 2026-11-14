@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: A session over several cards, each card's chip an island with its own grid and dispatcher; ranks flat and contiguous by island, commands split by island on the host, tensors placed by island. What it does today and what it does not yet.
+summary: A session over several cards, each card's chip an island with its own grid and dispatcher, or one card split into islands; ranks flat and contiguous by island, commands split by island on the host, tensors placed by island. What it does today and what it does not yet.
 tags:
   - reference
   - host
@@ -8,10 +8,11 @@ tags:
 
 # Islands
 
-Status: implemented over two Blackhole p150a cards. A group that spans islands runs
-as one part on each island, and every core sees its flat rank in the whole group, so
-an existing program runs unchanged. Commands cross between the cards on link 0 and
-pages on the session's links, through each island's link cores.
+Status: implemented over two Blackhole p150a cards, and over one card split into two
+to four islands. A group that spans islands runs as one part on each island, and every
+core sees its flat rank in the whole group, so an existing program runs unchanged.
+Commands cross between the cards on link 0 and pages on the session's links, through
+each island's link cores; nothing crosses between the islands of a split card.
 
 An island is a set of cores that reach the others only through links: here one card's
 chip, with its own Tensix grid and its own dispatcher on its own X280 cluster 0. The
@@ -83,6 +84,20 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   first of its cores in the group, and a core's rank is its flat rank less the group's
   first, its count the whole group's. The call returns a ticket. `run.submit_many` does the same for n commands, one `submit_many` an
   island.
+- Every line of such a split carries `KM_FLAG_PART` (`km_abi.h`): its dispatcher runs
+  its own part and never sends the line across, since the host gave each other island
+  its part itself. A line whose group reaches past its dispatcher's island without the
+  mark (a thread's `kmx_submit`, or a line the host gives one island's own
+  `run.island(i)`) crosses: that dispatcher sends the other part over the link and
+  completes the command when every part is back
+  ([commands across islands](threads.md#commands-across-islands)). So every rank runs
+  each command once either way: measured with example 01's COUNT (every core adds one
+  to its count) on flat ranks (60, 120) of 238, 1,000 times from the host and 1,000
+  times from island 0's thread, each rank in the group counting exactly 1,000 for
+  each and the others 0 (`examples/25_islands_threads --steps count`); 7.46 µs a
+  command from the host (split, pipelined), 10.89 µs from the thread (crossed, one at
+  a time). `exclusive=True` on a split is allowed, each island exclusive on its part;
+  an EXCLUSIVE line that would cross is rejected with reason 2 (`flags`).
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within
@@ -173,31 +188,98 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
 - 64 MiB from island 0 into a tensor of island 1 over four links: 2.09 ms, 32.1 GB/s,
   every page exact (`experiments/islands_pages`; measured when pages took all four
   links, before link 0 became the lines link: pages now take three of four).
-- A core reads pages another island holds by asking: `session.ask(tensor, first,
-  pages, island, core, to, port)` has the holder's link cores send them into L1
-  address `to` of the asking core, counted at its port; the core waits on that count,
-  bounded, with `km::port_wait(reader, command, port, pages)` and reads them from its
-  L1. The ask travels as a command from the host (`IslandSession.ASKS_BY = "host"`);
-  a core's own message to the holder is the other setting, not built yet.
-- `session.ask_range(tensor, first, pages, group, to, port)` is one ask for the ranks
-  of `group` (one island's): rank `group[0] + i` gets pages `first + i * pages` on into
-  L1 address `to` of its core, counted at its port. One `PAGES` range command to the
-  holder's link cores; their page CPUs split the ranks, and each rank's last packet
-  adds its pages to its count.
+- A kernel reads a tensor's pages wherever they live with one call (`km_ask.hpp`):
+  `km::read_pages(reader, command, placement, tensor, address, first, pages, to,
+  port)`, with the tensor's `km::Placement`, its accessor, its bank address (the same
+  on every island), and L1 address `to` of the core, page k at `to` + k aligned pages.
+  The pages its island holds are read as `noc_async_read_page` reads them (the
+  caller's read barrier waits for them); on one island that is all the call does.
+  Each run of pages another island holds is one ask line of 64 bytes: the core
+  reserves a line in its island's link core 0 with a local atomic, waits until that
+  line is free, and writes it; link core 0's link 0 CPU sends it, between commands,
+  over its held connection into the far link core 0, whose page CPU (link 1, or link
+  0 when there is one link) reads the pages from its DRAM, pushes them into the
+  asker's L1, adds them to the asker's port, and sends back the count of asks it
+  answered. The asker waits on its port, bounded; a miss gives the command up at
+  `ask` with the island asked in the word's top byte. 32 lines are in flight an
+  island. A tensor of one card has `placement_args()` too (one island holding every
+  page), so the same kernel builds on one card.
+- `IslandSession.ASKS_BY` is `"core"` (the call asks itself) by default; with
+  `"host"` (the define `KM_ASKS_BY_HOST`) the call only waits on the port, and the host
+  sends: `session.ask(tensor, first, pages, island, core, to, port)` has the holder's
+  link cores send the pages into L1 address `to` of the asking core, counted at its
+  port, and `session.ask_range(tensor, first, pages, group, to, port)` is one ask for
+  the ranks of `group` (one island's): rank `group[0] + i` gets pages
+  `first + i * pages` on into L1 address `to` of its core, counted at its port; one
+  `PAGES` range command to the holder's link cores, whose page CPUs split the ranks.
 - `session.wait_together([(island, handle), ...], timeout)` waits for handles of
   several islands' own runs at once. A host's commands reach an island's ring only
   while the host waits on that island, so two sides that wait on each other are
   waited together.
 - Example 01's MAP on island 0's 118 ranks reading an input island 1 holds alone
-  (`islands.py --across 4`, each rank's two tiles pushed into its transfer buffer,
-  2026-11-14, every tile exact):
+  (`islands.py --across 4`, 2026-11-14, every tile exact; the rows after the first
+  pushed each rank's two tiles into its transfer buffer, the first into its input
+  buffer):
 
   | Ask | µs a round | Reading its own DRAM |
   |---|---|---|
+  | Each rank's own `km::read_pages`, no ask from the host | 434.3 | 183.8 |
   | One `ask_range` a round, one native round an island in `wait_together` | 355.9 | 181.0 |
   | One `ask_range` a round, 1 ms an island in `wait_together` | 1,340.4 | 171.2 |
   | 118 asks a round (one a rank), connections held | 3,009.1 | 170.5 |
   | 118 asks a round, a connection opened and closed by each command | 3,132.5 | 169.9 |
+
+## A card split into islands
+
+`km.Session(card=a, islands=n)`, n 2 to 4, returns the same `IslandSession` over one
+card described as n islands: the same calls, the same `IslandRun`, so a program for
+islands is developed and checked with one card. One device and one open; the graph is
+`islands.split_card(cores, columns, n, rows=True, reserve=False)`.
+
+- **Cores.** An island's ranks run on a contiguous range of the card's cores from its
+  base: core = base + (rank - the island's first rank). The base is in the island
+  header of every core (`KM_ISLAND_BASE`) and in the dispatcher's island word; on a
+  whole card it is 0. With no link cores, rank and core are the same number.
+- **Dispatchers.** Island i's dispatcher runs on X280 cluster i of the card, the same
+  image as cluster 0's, with its own ring from the host, its own state area and its own
+  LIM; each island's cores report to their own dispatcher. So a card splits into at
+  most four islands, and each island past the first takes a work cluster: a split
+  card runs no X280 threads (the session refuses them).
+- **Load.** `session.load(program)` builds and launches one `Program` once on every
+  core, each core given its island's table, base and dispatcher, then starts every
+  dispatcher. Each dispatcher sends commands over its island's rows only, so an island
+  is whole rows of the grid: on the 12 x 10 grid of a p150a, 2 islands of 5 rows (60
+  cores each), 3 of 4, 3 and 3 rows (48, 36, 36), 4 of 3, 3, 2 and 2 rows (36, 36,
+  24, 24).
+- **Commands.** As on two cards: the host sends a flat group's word to each island it
+  touches, and each dispatcher runs its part. `run.inspect(island, cores)` takes the
+  card's core numbers; a give-up names its island and the run goes on.
+- **Stop.** Each island stops alone: the host waits for its rows and reads its cores'
+  control blocks from L1, since a buffer read would wait for the whole launch.
+- **Tensors.** One tensor in the card's DRAM; its placement by island is kept, so a
+  kernel's `km::island_of(placement, page)` answers as on two cards.
+- **Not on a split card.** A list or dict of programs, dynamic handlers, X280 threads
+  and ports, links, a reset list for a core (a given-up command is not recovered by
+  a reset), queued commands (the dispatcher places them over the whole card), and
+  engine streams and graphs (not checked on a split card).
+
+Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,
+then with `--islands 2`), 2026-11-14, X280 at 1350 MHz, host load about 3, the median
+of 3 rounds of 20,000 NOP or 2,000 MAP, microseconds a command, submit to event,
+pipelined:
+
+| What | The whole card | Split in 2 |
+|---|---|---|
+| NOP on each island's own ranks | 1.190 (0, 120) | 1.218 (0, 60), 1.249 (60, 60) |
+| NOP on all 120 ranks | 1.218 | 2.537 (a part on each island, joined) |
+| MAP on (0, 120), the input split over the islands | 2.651 | 4.674 |
+
+A NOP on one island of the split card costs what it costs on the whole card; a group
+over both islands costs two commands of host work, as on two cards. MAP on (0, 120):
+120 tiles bit-exact on both. With `--hang`: an inspect of island 1's core 70 during a
+HANG on ranks 40 to 119 named its reader waiting for a port arrival; the deadline gave
+the command up, `CommandTimeout` named island 1, and the run went on; 16 pages of
+island 1 read inside the run were exact.
 
 ## Measured
 
@@ -232,8 +314,11 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
 - Links: a dynamic run's messages cross only in a RUN of every rank;
   `collect` and `broadcast` over islands are not built, and while the run's messages
-  are served link 0 carries nothing else. Pages cross on the host's command
-  (`send_pages`, `ask`, `ask_range`), not yet on a kernel's own request.
+  are served link 0 carries nothing else (a core's ask waits too). A kernel's own ask
+  (`km::read_pages`) is answered by one page CPU, on one link; asks of more than two
+  islands are not built.
 - A dict of programs, X280 threads and ports, engines and uploads over islands;
   tensors in L1.
 - More than two cards: the mesh opens 1 x n; tried with two.
+- Between the islands of a split card: no link (a NoC write with a settable rate).
+  Three and four islands on one card were not run.

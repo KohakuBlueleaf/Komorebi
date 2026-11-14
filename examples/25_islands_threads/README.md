@@ -8,7 +8,7 @@ rank, so island 0 holds ranks 0 to 118 and island 1 ranks 119 to 237 (`--links 4
 link cores an island, 236 ranks). Each island runs example 01's kernels, unchanged, and
 a thread on work cluster 1 (`thread/across.c`).
 
-The steps (`--steps`, all four by default):
+The steps (`--steps`, all five by default):
 
 | Step | What it does | What it checks |
 |---|---|---|
@@ -16,6 +16,8 @@ The steps (`--steps`, all four by default):
 | `map` | island 0's thread sends example 01's MAP to island 0's ranks, then to all its ranks | every tile of the last MAP exact against example 01's sums; the µs a MAP of each |
 | `ask` | island 0's thread sends FOLD to island 1's thread (`KMX_THREAD(1, 1)`, number 4) with its result | `kmx_island_of(4) == 1`; every answer is island 1's (`x * 0x9E3779B1 + 1`); the µs a FOLD |
 | `hang` | island 0's thread sends example 01's HANG to ranks 100 to 139; rank 130 (island 1) waits forever | the thread gets `KM_EVENT_TIMEOUT` whose auxiliary names island 1 (`KM_EVENT_ISLAND + 1`), then a MAP on all ranks is exact |
+| `count` | example 01's COUNT (each core adds one to its count) on flat ranks 60 to 179: `--counts` times from the host (its split, each line marked a part), one EXCLUSIVE from the host, then `--counts` times from island 0's thread (crossed) | every rank of the group counts each command once (`--counts` + 1, then 2 x `--counts` + 1), the others 0; the µs a command each way |
+| `host-hang` (only when named) | the thread's HANG as in `hang`, then the same HANG from the host to island 0's run alone (no part mark: it crosses), then a NOP on each island's own ring, example 01's MAP from the host on island 0's ranks and on island 1's ranks past the HANG group (140 on), and a MAP from island 0's thread on those (it crosses) | the host's HANG is given up naming island 1 and the run goes on: island 0's count of the host's give-ups grows by one, island 1's not, and the thread's HANG counts on neither; every command on the other ranks is answered. The hung core stays hung (islands do not reset a core yet): a command that includes rank 130 waits its whole deadline before it is given up, and the stop's EXIT, which needs every core, times out on island 1, so the step exits non-zero and is not a default step |
 
 A command whose group reaches past the dispatcher's island is split by the island table:
 the dispatcher runs its own part and sends the other part to the other island's
@@ -37,7 +39,7 @@ A Komorebi install and two cards joined by a link, prepared as in
 
 ```
 python islands_threads.py --steps nop        # step 1 alone
-python islands_threads.py                     # all four
+python islands_threads.py                     # all five
 ```
 
 `--cards` (0,1), `--links` (0: link 0 alone), `--nop-jobs` (2,000 a round), `--rounds` (3), `--maps` (500),

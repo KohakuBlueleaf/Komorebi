@@ -13,6 +13,18 @@
 /* The cluster's L2 cache controller: Flush64 writes back and invalidates the line
  * that holds the physical address stored into it. */
 #define KMX_CCACHE_FLUSH64 0x02010200ull
+/* The cluster cache's one way (WayEnable 0): 4 banks of 512 sets of 64-byte lines. The
+ * cached Zero Device from its second 128 KiB, past the runtime's pinned input. */
+#define KMX_CACHE_WAY_BYTES 0x20000ull
+#define KMX_EVICT_PAD 0x0A020000ull
+/* A fetch or store of 160 KiB or more evicts instead of sweeping: a sweep of its 2,560
+ * lines costs 26.6 µs, an eviction of a cache full of dirty lines 26.4 µs. */
+#define KMX_EVICT_FROM 0x28000ull
+/* Read at the start (only read): ways enabled - 1, and each master's way mask (core
+ * n's L2 is master 34 + n). */
+#define KMX_CCACHE_WAYENABLE 0x02010008ull
+#define KMX_CCACHE_WAYMASK 0x02010800ull
+#define KMX_CCACHE_MASTER_CORE0 34ull
 #define KMX_POLL_EVERY 256u
 /* kmx_port_open looks for the event every KMX_PORT_LOOK calls on the lead's X280 core
  * 0, for a stop or the deadline every KMX_PORT_CHECK calls. */
@@ -46,6 +58,9 @@ static kmx_ring_t g_ring __attribute__((section(".data"))) = {.next = 1};
 
 /* Image globals live in .data (the image has no .bss): non-zero initialisers. */
 static uint64_t g_start __attribute__((section(".data"))) = 1;
+/* Set at the start when the cache is the one way kmx_evict empties: fetches and stores
+ * of KMX_EVICT_FROM bytes or more then evict, else they sweep. */
+static uint32_t g_one_way __attribute__((section(".data"))) = 0;
 static uint32_t g_code __attribute__((section(".data"))) = KMX_UNSET;
 static uint32_t g_in_parallel
     __attribute__((section(".data"))) = 0; /* core 0 in kmx_parallel */
@@ -215,6 +230,18 @@ void kmx_flush(int id) {
 
 void kmx_flush_at(int id, uint64_t offset, uint64_t bytes) {
     kmx_invalidate_at(id, offset, bytes);
+}
+
+void kmx_evict(void) {
+    x280_fence_iorw();
+    for (
+        uint64_t line_address = KMX_EVICT_PAD;
+        line_address < KMX_EVICT_PAD + KMX_CACHE_WAY_BYTES;
+        line_address += 64
+    ) {
+        (void)*(volatile const uint64_t*)(uintptr_t)line_address;
+    }
+    x280_fence_iorw();
 }
 
 /* KMX_OK on core 0; elsewhere the error is recorded and the call rejected. */
@@ -1397,8 +1424,8 @@ static int copy_command(
     return KMX_OK;
 }
 
-/* Core 0: the copy's command, the range's lines dropped first unless `clean` (a
- * store's written back), then submitted and waited for or only submitted (`handle`). */
+/* Core 0: the copy's command, the range's lines dropped (or evicted) first unless
+ * `clean`, a store's written back; then submitted and waited for or not. */
 static int copy_run(
     int id,
     uint64_t offset,
@@ -1420,7 +1447,9 @@ static int copy_run(
     if (status != KMX_OK) {
         return status;
     }
-    if (!clean) {
+    if (!clean && g_one_way && bytes >= KMX_EVICT_FROM) {
+        kmx_evict();
+    } else if (!clean) {
         kmx_flush_at(id, offset, bytes);
     }
     if (handle != 0) {
@@ -2155,6 +2184,18 @@ static int ring_open(const volatile kmx_ring_descriptor* descriptor) {
     return 1;
 }
 
+/* Whether the cluster's cache is one way that core 0 evicts from: WayEnable 0 and bit 0
+ * of core 0's way mask (reads only; all ones is a tile that does not answer). */
+static uint32_t one_way(void) {
+    const uint32_t ways = *(volatile const uint32_t*)(uintptr_t)KMX_CCACHE_WAYENABLE;
+    const uint64_t mask = (
+        *(volatile const uint64_t*)(uintptr_t)(
+            KMX_CCACHE_WAYMASK + 8ull * KMX_CCACHE_MASTER_CORE0
+        )
+    );
+    return ways != 0xFFFFFFFFu && (ways & 0xFu) == 0 && mask != ~0ull && (mask & 1u);
+}
+
 /* Core 0: the bank check, kmx_main, the result block. */
 static uint64_t run_main(const volatile kmx_args* arguments) {
     volatile kmx_result_block* block = result();
@@ -2171,6 +2212,7 @@ static uint64_t run_main(const volatile kmx_args* arguments) {
     if (!ports_open()) {
         fail(KMX_ERROR_ARGS); /* the ports line is out of range, or a window failed */
     }
+    g_one_way = one_way();
     const uint64_t check = X280_LOCAL_DDR_TILE_BASE + arguments->check;
     flush(check, 64);
     if (*(volatile uint64_t*)(uintptr_t)check != arguments->check_value) {

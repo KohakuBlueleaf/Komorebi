@@ -148,6 +148,7 @@ typedef struct {
     /* completion table */
     uint32_t depth, busy_count, cores;
     uint32_t island_first, island_count;   /* this island's flat ranks; count 0: none */
+    uint32_t island_base;                  /* its first core: rank first is core base */
     uint64_t full, busy;                   /* bit k: slot k */
     uint32_t sequence;                     /* last sequence number submitted */
     uint32_t exited;                       /* an EXIT command was submitted */
@@ -176,7 +177,7 @@ typedef struct {
     /* inspect: the control block's address on every core, the inspect being read */
     uint32_t control_address;
     kmd_inspect_t inspect;
-    uint32_t given_up; /* commands given up at their deadline, the run going on */
+    uint32_t given_up; /* the host's commands given up at their deadline (link_gave) */
     /* commands across islands (link.h): the host's link line had its mark; bit k:
      * slot k is a crossing's local part or a LINK command; the island's first thread */
     uint32_t link_on, thread_first;

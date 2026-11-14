@@ -221,7 +221,7 @@ threads.
 
 | Call | Core 0 | A spawned core, or cores 1 to 3 in a `kmx_parallel` or `kmx_parallel_all` |
 |---|---|---|
-| `kmx_args_get`, `kmx_region`, `kmx_cluster`, `kmx_clusters`, `kmx_lead`, `kmx_time`, `kmx_stop_requested` | yes | yes |
+| `kmx_args_get`, `kmx_region`, `kmx_cluster`, `kmx_clusters`, `kmx_lead`, `kmx_time`, `kmx_stop_requested`, `kmx_evict` | yes | yes |
 | `kmx_invalidate`, `kmx_flush`, `kmx_invalidate_at`, `kmx_flush_at`, `kmx_push` | yes: outside `kmx_parallel` spread over the four cores | yes, this core alone |
 | `kmx_spawn`, `kmx_join`, `kmx_parallel`, `kmx_parallel_all`, `kmx_serve`, `kmx_submit`, `kmx_wait`, `kmx_poll` | yes (not inside `kmx_parallel`'s `function`) | no: the library error `parallel`, `KMX_STOPPED` |
 | `kmx_progress`, `kmx_result` | yes | best not: one result block, no lock |

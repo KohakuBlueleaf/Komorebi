@@ -369,7 +369,7 @@ at small offsets.
 | 0x1640 | `KM_CONTROL_BLOCK` | 2 block areas of 1,088 bytes (`KM_BLOCK_AREA_BYTES`), the reader's then the writer's: a line whose word 0 is the sequence of the command read in, then up to 1,024 bytes of its block ([the block](#the-block)) |
 | 0x1EC0 | `KM_CONTROL_ABORT` | 64 abort words, one per slot: the sequence of the slot's command the dispatcher gave up |
 | 0x1FC0 | `KM_CONTROL_LIVE` | live words (`km::kLv*`, 512 bytes): per kernel its wait's where code, its command's sequence and slot, the commands it has left; the trace's address and capacity, the commands given up; then what a give-up clears ([live words](#live-words)) |
-| 0x21C0 | `KM_CONTROL_ISLANDS` | the island area, 192 bytes: a header line (this island, the islands, its first rank, its ranks), then the island table ([islands](#islands)) |
+| 0x21C0 | `KM_CONTROL_ISLANDS` | the island area, 192 bytes: a 32-byte header (this island, the islands, its first rank, its ranks, its first core of the card), then the island table ([islands](#islands)) |
 | 0x2280 | `KM_CONTROL_RING` | 64 ring slots of one command each (64 bytes) |
 | 0x3280 | `KM_CONTROL_BYTES` | size of the control block |
 
@@ -399,13 +399,16 @@ is on.
 An island is a set of cores that reach the others only through links; its table entry
 names its ranks. Ranks are flat and contiguous by island, so a group word `first |
 count << 16` names flat ranks, and a core's rank is its island's first rank plus its
-local core (the core table's index). `me()` of `km::Core` (reader, writer, movement)
+local core, its index in the core table less the island's base (`KM_ISLAND_BASE`: the
+island's first core of the card, 0 unless the card is split into islands; `Islands::offset()`
+is the rank of core 0). `me()` of `km::Core` (reader, writer, movement)
 and of `km::Compute` is that flat rank, so `me() - km::first(command)` is the rank in
-the group on every island; the core table and every NoC lookup take the local core
+the group on every island; the core table and every NoC lookup take the core
 (`core_of(rank)` turns a rank of this island into it). The dispatcher holds its island's
-first rank and count (`kmd_args.island`, 0 on one island) and cuts each group by them:
-it takes a group with a part on its island, places the line unchanged, and keeps the
-part (in local cores) for its overlap, program and completion checks; a group with no
+first rank, count and base (`kmd_args.island`: first | count << 16 | base << 32, 0 on one
+island) and cuts each group by them: it takes a group with a part on its island, places
+the line unchanged over its island's rows, and keeps the part (in cores, from the base)
+for its overlap, program and completion checks; a group with no
 part there is rejected as outside (reason 3). A command reaches every core of the
 island; the cores of the group's part there run it, and the part completes through the
 first of its cores in the group (`km::local_part`), so an event's first core is a local
@@ -432,6 +435,30 @@ A table entry is 8 bytes, little-endian: first rank (16 bits), ranks (16), next 
 `KM_ISLAND_NO_LINK` 0xFF in the holder's own entry), hops (8), zero (16), as the host's
 `komorebi.islands.ENTRY`; `KM_ISLANDS_MAX` (16) entries. On an X280 thread,
 `kmx_island()` and `kmx_islands()` answer the same (0 and 1 on one island).
+
+The calls that act by island (`km_group.hpp`, `km_port.hpp`):
+
+| Call | What it does | On one island |
+|---|---|---|
+| `km::reduce_arrive`, `km::reduce_emit`, `km::reduce` on a group over islands | each island's part reduces as a group of its own (owner or tree), then each part's first rank sends its fold once to the group's rank 0: by owner into the slot after its island's (port 0), by tree into the round after its island's (port and slot); the calls do not change | the flat schedule |
+| the same with `km::local` (`reduce_emit(..., km::local)`, `reduce_arrive(..., km::local)`, `reduce(compute, arrival, group, form, km::local, combine)`) | the reduce over `group.local()`: it stays in this island | the whole group |
+| `group.leader(j)` | the first rank of island part `j` of the group | `group.leader(0)`: its first rank |
+| `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | `km::emit` to `rank` after a check that island `i` holds it (else a give-up, bad item) | a local emit |
+| `km::emit` to a rank of another island | through the relay: the pages reach the rank's arrival slot and its port counts 1, so its `arrive` waits as for a local sender | never crosses |
+
+The relay (`km_relay.hpp`): the sender writes an ask (its core, the pages' L1 address,
+bytes, the rank, the arrival slot's address, the port) into the relay area of its
+island's link core 0, one ask a ring slot, and adds 1 to that core's ask count. Link core
+0's link 0 CPU serves asks between commands, from its loop: it reads the pages, sends them
+and the ask over link 0 into the far link core 0's inbox with one count, and writes a done
+word back to the sender, which then frees its pages; the far link core 0 writes the pages
+into the rank's L1, adds 1 to its port, and returns a credit. One ask crosses at a time,
+of at most `KM_RELAY_MAX` (16 KiB) bytes. The session gives every core of two islands a
+relay area of `KM_RELAY_BYTES` and writes its address, the far island's and the far link
+core 0's place into the island area (`KM_ISLAND_RELAY`, `KM_ISLAND_RELAY_FAR`,
+`KM_ISLAND_RELAY_TILE`). While link 0's CPU serves a command (a dynamic run's messages, a
+command line, pages), asks wait; a sender's wait is bounded and gives its command up
+(`emit`).
 
 ## Trace
 

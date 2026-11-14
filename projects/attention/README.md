@@ -6,39 +6,34 @@ row i sees keys up to i), bf16 operands, fp32 accumulation, bf16 output, HiFi2, 
 persistent kernels of one Blackhole p150a. Commands reach the grid through the dispatcher on X280 cluster 0 (`komorebi.Session`, `Run.submit`). The compute body is
 Kohaku-TT's `ktt_flash` kernel's.
 
-## The thread program
+## What each core does
 
-```
-thread attend(broadcast, rank):                     # one thread per core: broadcast, place in broadcast
-    for job in jobs(broadcast):                     # time: (batch, head, row range)
-        rows = partition(job.rows, rank)           # space: query rows over the broadcast's cores
-        for block in key_blocks(job.head, BLOCK_KEYS):  # time: keys, BLOCK_KEYS tiles per block
-            if rank == 0:  kv = read_dram(block);  emit kv -> threads(broadcast, *)    # breakpoint
-            else:          kv = wait(1)                                     # breakpoint
-            for chunk in chunks(kv, 3):        # time: 3 key tiles per step
-                for row in rows:               # time: my rows, paired
-                    accumulator[row] = merge(accumulator[row], score(Q[row], chunk))   # D summed inside score
-        write out[rows]
-```
+One call is one `ATTEND` command on every core. Each core works through its job table
+(one DRAM page per core, named by the command: `job_tables`), a job being a
+(batch, head, row range) of query rows:
+
+1. `kernels/reader.cpp` (NoC0): reads the core's job table and hands it to compute
+   (the writer reads its own copy). Per job it reads the job's query rows into the Q
+   buffer, then, for each block of `BLOCK_KEYS` key tiles of the job's head, takes part
+   in the broadcast (`km::Broadcast`): the sender (rank 0) reserves the slot, reads K
+   and V of the block from DRAM into it and `cast`s it; every other core of the
+   broadcast `arrive`s. After the last block, `finish`.
+2. `kernels/compute.cpp` and `kernels/sfpu.hpp`: Kohaku-TT's `ktt_flash` compute body.
+   For each block taken from the broadcast (`km::broadcast_receive`), in chunks of 3 key
+   tiles and, within a chunk, for the core's query rows two rows at a time: S = Q K^T
+   into Dst with the row state, the row's reference and the exponential on the vector
+   unit, P V and the row sum accumulated in L1 (fp32) in column groups. The block is
+   handed back (`km::broadcast_done`, and `km::broadcast_end` after the last).
+3. `kernels/writer.cpp` (NoC1): writes each finished row's `VALUE_TILES` tiles to O.
 
 A broadcast is L cores down one grid column; the core on top (rank == 0) reads each K / V
-block from DRAM once and multicasts it to the others. `merge` is the running softmax: the
-row's reference, P = exp(scale s - reference), O += P V and the row sum, both scaled
+block from DRAM once and multicasts it to the others. The compute is a running softmax:
+the row's reference, P = exp(scale s - reference), O += P V and the row sum, both scaled
 when the reference moves. Nothing is merged across cores: each core finishes its own
 output rows. Rows are shared contiguously, or for a causal call L rows apart, so that
 the triangle's work spreads over the broadcast.
 
-## How it maps onto the runtime
-
-| Thread program | Kernel | What it does |
-|---|---|---|
-| `jobs(broadcast)` | all three | the core's job table: one DRAM page per core named by the command (job_tables), read by the reader (handed to compute) and by the writer |
-| `emit kv -> threads(broadcast, *)`, `wait(1)` | `kernels/reader.cpp` (NoC0) | `km::Broadcast`: the sender `reserve`, reads K and V of block k into the slot, `cast`; a receiver `arrive`; `finish` |
-| `Q[row]` | `kernels/reader.cpp` | the job's query rows into the Q buffer |
-| `score`, `merge` | `kernels/compute.cpp`, `kernels/sfpu.hpp` | Kohaku-TT's `ktt_flash` compute body: S = Q K^T into Dst with the row state, the row reference and the exponential on the vector unit, P V and the row sum in column groups accumulated in L1 (fp32), steps in pairs of rows; `km::broadcast_receive` / `broadcast_done` / `broadcast_end` around each block |
-| `write out[rows]` | `kernels/writer.cpp` (NoC1) | each finished row's VALUE_TILES tiles to O |
-
-One call is one `ATTEND` command on the group of every core, with `KM_FLAG_EXCLUSIVE` (a command
+The command goes to the group of every core, with `KM_FLAG_EXCLUSIVE` (a command
 with broadcasts is never in flight beside an overlapping group). A K / V block is one broadcast
 block: K's tiles head-dim-major `[HEAD_TILES][BLOCK_KEYS]`, then V's key-major `[BLOCK_KEYS][VALUE_TILES]`, two blocks
 in flight per broadcast. The broadcasts and their senders come from `komorebi.layout.broadcast_args`

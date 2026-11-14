@@ -580,9 +580,9 @@ property of the model.
    ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
 7. **A work cluster reading every DRAM bank at the cores' rate.** Today a thread reads
    or writes any bank or tensor with `kmx_fetch` and `kmx_store`: four Tensix cores of
-   the loaded run copy 64 MiB in 1.06 ms, and the blocking `kmx_fetch` takes 11.9 ms, one
-   sweep of the region's cache lines before the copy; `kmx_fetch_clean`, for a range the
-   cache holds no line of, takes 1.07 ms
+   the loaded run copy 64 MiB in 1.06 ms, and the blocking `kmx_fetch` takes 1.08 ms, the
+   cluster's cache emptied (`kmx_evict`) before the copy; `kmx_fetch_clean`, for a range
+   the cache holds no line of, takes 1.07 ms
    ([bank_fetch](experiments/bank_fetch/README.md)). The X280's own reads of another
    bank stay at 0.024 GB/s, and the cores that copy run no other command meanwhile.
 8. **The X280's clock.** Today 1,350 MHz by default; a runtime whose table lacks that
