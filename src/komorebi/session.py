@@ -2326,12 +2326,15 @@ class _Backend:
         return [("KM_LINK_QUEUE", "1")]
 
     def _link_chunk(self, program, cores, apart=0):
-        """A link CPU's own chunk on the link cores (bytes; 0: none, the run's transfer
-        chunk serves): LINK_CHUNK_MOST, else the most whole 64 KiB that two of fit in
-        what a link core has left after the program's buffers, the transfer buffer,
-        what the session keeps, the link area and relay they hold alone (`apart`
-        bytes) and the put queue, LINK_CHUNK_LEAST at least."""
-        buffers = sum(buffer.page_bytes * buffer.pages for buffer in program.buffers)
+        """A link CPU's own chunk (bytes; 0: none, the transfer chunk serves): at most
+        LINK_CHUNK_MOST, whole 64 KiB, two in what a link core has left after the
+        program's buffers (unless `apart` bytes of link area and relay are its alone),
+        the transfer buffer, what the session keeps and the put queue."""
+        buffers = 0
+        if not apart:  # else launched on the ranks only (buffers per core range)
+            buffers = sum(
+                buffer.page_bytes * buffer.pages for buffer in program.buffers
+            )
         buffers += 2 * abi.headers()["kTokenBytes"] + self.trace_cap * 16
         buffers += self.transfer.bytes if self.transfer is not None else 0
         spare = (
