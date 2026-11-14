@@ -20,7 +20,17 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import abi, dram, formats, insn_check, layout, native, overlay, programs
+from komorebi import (
+    abi,
+    dram,
+    formats,
+    insn_check,
+    island_session,
+    layout,
+    native,
+    overlay,
+    programs,
+)
 from komorebi import channel as channel_module
 from komorebi import state as device_state
 from komorebi import tensor as tensor_module
@@ -394,11 +404,17 @@ def _read_uint32(tensor, device=None, module=None):
 
 
 class Session:
-    """One card: `card` selects it, `device` uses an open one; `grid_timeout` is the
-    timeout of every grid wait. As a context manager it stops a loaded run at
-    the exit (through the runtime on an exception) and closes the device it opened.
-    A session left open is closed the same way at the process's exit and on SIGTERM.
-    """
+    """One card: `card` selects it, `device` uses an open one (`cards` of two or more:
+    an IslandSession); `grid_timeout` is the timeout of every grid wait. As a context
+    manager it stops a loaded run at the exit (through the runtime on an exception) and
+    closes the device it opened; so do the process's exit and SIGTERM."""
+
+    def __new__(cls, *args, cards=None, **options):
+        if cards is not None and len(cards) > 1:
+            if args or "card" in options or "device" in options:
+                raise ValueError("cards= is given alone, without card or device")
+            return island_session.IslandSession(cards, **options)
+        return super().__new__(cls)
 
     def __init__(
         self,
@@ -410,7 +426,12 @@ class Session:
         grid_timeout=10.0,
         kernel_bytes=None,
         channel=channel_module.REGION_DEFAULT,
+        cards=None,
     ):
+        if cards is not None:
+            if card is not None and [card] != list(cards):
+                raise ValueError(f"card {card} and cards {cards}")
+            card = next(iter(cards))
         self.card = card
         self.device = device
         self._own_device = device is None
