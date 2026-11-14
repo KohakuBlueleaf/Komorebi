@@ -165,7 +165,36 @@
 #define KM_CROSS_PAGES 3u
 #define KM_CROSS_PARTS 4u
 #define KM_CROSS_BYTES 5u /* the low word; the high word after it */
-#define KM_LINK_AREA_BYTES (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
+/* Then a core's puts of pages into DRAM another island holds (km::write_pages), the
+ * same way the other direction: on link core 0 the count its cores reserve put lines
+ * with, the put lines its page CPU took, the far island's count of puts confirmed
+ * written; the pages the far island's puts wrote here (their last packets add them
+ * once written), the puts confirmed here, their pages; a core's own put line and two
+ * answer words for each of its two data-movement CPUs; the page CPU's three headers
+ * (a put line across, a confirmation's count and its done word); the put lines, then
+ * the far island's (an ask line each: KM_ASK_TO the asker's L1, KM_ASK_TENSOR the
+ * holder's tensor) */
+#define KM_PUT_TAIL (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
+#define KM_PUT_TAKEN (KM_PUT_TAIL + 0x10u)
+#define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)
+#define KM_PUT_LANDED (KM_PUT_TAIL + 0x30u)
+#define KM_PUT_CONFIRMED (KM_PUT_TAIL + 0x34u)
+#define KM_PUT_USED (KM_PUT_TAIL + 0x38u)
+#define KM_PUT_BAD (KM_PUT_TAIL + 0x3Cu)
+#define KM_PUT_OWN (KM_PUT_TAIL + 0x40u) /* + 0x60 the second CPU's */
+#define KM_PUT_OWN_BYTES 0x60u
+#define KM_PUT_HEADERS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES + 0x40u)
+#define KM_PUT_LINES (KM_PUT_HEADERS + 0xC0u)
+#define KM_PUT_INBOX (KM_PUT_LINES + KM_ASK_SLOTS * 64u)
+/* Then the island tensors the session knew at the load, newest first, for a copy
+ * (KM_HANDLER_COPY) that names a tensor by its bank address alone: an entry each,
+ * {bank address (0: the end), copy, then first page and pages of island 0 and of
+ * island 1} (km_ask.hpp) */
+#define KM_PLACE_TABLE (KM_PUT_INBOX + KM_ASK_SLOTS * 64u)
+#define KM_PLACE_ENTRIES 16u
+#define KM_PLACE_ENTRY_BYTES 32u
+#define KM_LINK_AREA_BYTES \
+    (KM_PLACE_TABLE + KM_PLACE_ENTRIES * KM_PLACE_ENTRY_BYTES)
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u
@@ -186,7 +215,7 @@
    KM_GROUP_LINK_BASE + k, count n; never cut by island, never crossing. A rank is
    below KM_GROUP_LINK_BASE; a link core's rank in it is its link-core index - k. */
 #define KM_GROUP_LINK_BASE 0xFE00u
-#define KM_GROUP_IS_LINK(first) \
+#define KM_GROUP_IS_LINK(first)               \
     ((uint32_t)(first) - KM_GROUP_LINK_BASE < \
      KM_GROUP_CLUSTER_BASE - KM_GROUP_LINK_BASE)
 /* Whether a group (first, count) names a work cluster's thread, cluster 1 to 3. */
@@ -478,18 +507,19 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_RELAY (KM_ISLAND_LINK_AREA / 4u + 1u)
 #define KM_ISLAND_RELAY_FAR (KM_ISLAND_RELAY + 1u)
 #define KM_ISLAND_RELAY_TILE (KM_ISLAND_RELAY + 2u)
-/* The relay area, on every core: a leader's ask to link core 0 (64 bytes a ring slot),
- * the link core's done word back to the leader (16 bytes a slot), then link core 0's */
+/* The relay area, on every core: an ask to link core 0 (64 bytes at line 2 core + NoC),
+ * the done word back to the core (16 bytes a NoC), then link core 0's own words */
+#define KM_RELAY_ASKS 256u /* ask lines: 2 a core */
 #define KM_RELAY_ASK 0x0000u
-#define KM_RELAY_DONE 0x1000u
-#define KM_RELAY_ASKED 0x1400u  /* link core: asks posted (leaders add 1) */
-#define KM_RELAY_CREDIT 0x1410u /* link core: the far side's taken count */
-#define KM_RELAY_LANDED 0x1420u /* link core: requests landed from the far side */
-#define KM_RELAY_STATE 0x1430u  /* link core: served, sent, taken, failed */
-#define KM_RELAY_LINES 0x1440u  /* link core: 16-byte sources (taken, a done word) */
-#define KM_RELAY_HEADERS 0x1480u /* link core: four packet headers, 64 bytes each */
-#define KM_RELAY_DESC 0x1580u    /* link core: an ask as it crosses, 64 bytes */
-#define KM_RELAY_STAGE 0x1600u   /* link core: one chunk on its way out */
+#define KM_RELAY_DONE 0x4000u
+#define KM_RELAY_ASKED 0x4020u   /* link core: asks posted (asking cores add 1) */
+#define KM_RELAY_CREDIT 0x4030u  /* link core: the far side's taken count */
+#define KM_RELAY_LANDED 0x4040u  /* link core: requests landed from the far side */
+#define KM_RELAY_STATE 0x4050u   /* link core: served, sent, taken, failed, next line */
+#define KM_RELAY_LINES 0x4070u   /* link core: 16-byte sources (taken, a done word) */
+#define KM_RELAY_HEADERS 0x40C0u /* link core: four packet headers, 64 bytes each */
+#define KM_RELAY_DESC 0x41C0u    /* link core: an ask as it crosses, 64 bytes */
+#define KM_RELAY_STAGE 0x4200u   /* link core: one chunk on its way out */
 #define KM_RELAY_CHUNK 4096u
 #define KM_RELAY_INBOX (KM_RELAY_STAGE + KM_RELAY_CHUNK) /* the far ask, its bytes */
 #define KM_RELAY_MAX 16384u /* the most bytes one ask carries */
@@ -531,15 +561,18 @@ KM_STATIC_ASSERT(
 );
 KM_STATIC_ASSERT(
     KM_ISLAND_LINK_AREA + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
-        KM_ASK_READ + 16u <= KM_ASK_HEADERS,
+        KM_ASK_READ + 16u <= KM_ASK_HEADERS && KM_PUT_HEADERS % 64u == 0 &&
+        KM_PUT_LINES % 64u == 0,
     "the link area word after the island table; the ask lines whole lines"
 );
 KM_STATIC_ASSERT(
     KM_ISLAND_RELAY * 4u >= KM_ISLAND_LINK_AREA + 4u &&
         (KM_ISLAND_RELAY_TILE + 1u) * 4u <= KM_ISLANDS_BYTES &&
-        KM_RELAY_DONE >= KM_RELAY_ASK + 64u * KM_RING_SLOTS &&
-        KM_RELAY_ASKED >= KM_RELAY_DONE + 16u * KM_RING_SLOTS,
-    "the relay words after the island table; an ask and a done word a ring slot"
+        KM_RELAY_DONE >= KM_RELAY_ASK + 64u * KM_RELAY_ASKS &&
+        KM_RELAY_ASKED >= KM_RELAY_DONE + 16u * 2u &&
+        KM_RELAY_LINES >= KM_RELAY_STATE + 4u * 5u &&
+        KM_RELAY_HEADERS >= KM_RELAY_LINES + 32u,
+    "the relay words after the island table; an ask a core and NoC, a done word a NoC"
 );
 KM_STATIC_ASSERT(
     KM_CONTROL_RING % 64u == 0 &&

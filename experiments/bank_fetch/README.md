@@ -53,6 +53,32 @@ cluster 2's region (bank 7) on four X280 cores 477 µs (2.20 GB/s): rows from
 `experiments/work_clusters/clusters.py push --cluster 1 --bank 7 --bytes 1048576 --pull
 1048576` (its pull) and example 08's `--twelve` run (its input push to cluster 2).
 
+## Over islands
+
+`islands.py` opens one session over cards 0 and 1 (two islands, four links) and makes a
+64 MiB tensor of 4 KiB pages held by island 0 and the same bytes held by island 1.
+Island 0's work cluster 1 thread (`thread/islands.c`) fetches each size from both into
+its region with `kmx_fetch` on 16 cores (best of 3), then stores the region with
+`kmx_store` into a tensor of each island. The thread names the tensor and the range
+only: the copy finds where the pages are. Every word is checked: the region's hash in
+the thread, the region and all four stored tensors read back whole. Cards 0 and 1,
+2026-11-14, one run:
+
+| Way | 1 MiB | 64 MiB |
+|---|---|---|
+| `kmx_fetch` of island 0's tensor | 51 µs, 20.7 GB/s | 1.30 ms, 51.6 GB/s |
+| `kmx_fetch` of island 1's tensor | 204 µs, 5.15 GB/s | 11.0 ms, 6.10 GB/s |
+| `kmx_store` into island 0's tensor | 47 µs | 1.30 ms |
+| `kmx_store` into island 1's tensor | 197 µs | 10.7 ms |
+
+The local rows are the table's `kmx_fetch` above (40.2 µs and 1.08 ms on four cores).
+Across, each copy core asks link core 0 for its chunk's pages (a get line, or a put
+line for a store), and one CPU on one link (island 1's page CPU for a fetch, island
+0's for a store) moves them all: about 6 GB/s. Pages crossing are at most one fabric
+packet (4352 bytes); the tensors are made before the load (the load writes the table
+of where each tensor's pages are). On one island the copy is what it was: the check
+for a placed tensor ends at the island count.
+
 ## The cluster's cache
 
 `python evict.py shape` has work cluster 1's thread read the cache controller's
@@ -152,6 +178,8 @@ python fetch.py --bytes 67108864 --cores 1 4 12 --repeats 3 --store 1048576
 python fetch.py --bytes 1048576 --cores 4 --repeats 5
 python fetch.py --bytes 16777216 --cores 4 --repeats 3
 python fetch.py --bytes 67108864 --cores 4 --repeats 3
+# over islands (cards 0 and 1): 1 MiB and 64 MiB, 16 cores, best of 3
+python islands.py
 python evict.py shape
 python evict.py time --repeats 20
 python evict.py proof --bytes 4096 --repeats 300 --variants 0 1 2 3

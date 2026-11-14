@@ -62,6 +62,11 @@ def parse():
         metavar="ISLAND",
         help="with --across: reset that island's link core 0, then read across again",
     )
+    parser.add_argument(
+        "--put",
+        action="store_true",
+        help="MAP on every rank storing into an output island 0 holds",
+    )
     return parser.parse_args()
 
 
@@ -101,7 +106,9 @@ def open_session(args, cards):
     if args.islands:
         (card,) = cards
         return km.Session(card=card, islands=args.islands, log=log)
-    return km.Session(cards=cards, log=log)
+    # the write call's put path takes the kernels past the runtime's 69 KiB buffer
+    kernel_bytes = 96 * 1024 if args.put else None
+    return km.Session(cards=cards, log=log, kernel_bytes=kernel_bytes)
 
 
 def main():
@@ -131,6 +138,15 @@ def main():
         if args.across:
             far = session.tensor(exact, "bfloat16", "tile", like=report["islands"][1])
             log(f"input held by island 1 alone: {list(far.placement.parts)}")
+        held = output
+        if args.put:
+            held = session.tensor(
+                np.zeros((ranks * TILE, TILE), np.float32),
+                "bfloat16",
+                "tile",
+                like=report["islands"][0],
+            )
+            log(f"output held by island 0 alone: {list(held.placement.parts)}")
         program = km.Program(
             "mapcollect",
             kernels=KERNELS,
@@ -143,7 +159,10 @@ def main():
                 "reader": source.accessor_args()
                 + source.placement_args()
                 + far.placement_args(),
-                "writer": output.accessor_args(),
+                # the placements of MAP's outputs (a8): the split one, the held one
+                "writer": output.accessor_args()
+                + output.placement_args()
+                + held.placement_args(),
             },
             compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
             handlers=KERNELS / "mapcollect.h",
@@ -152,6 +171,9 @@ def main():
         log("loaded on every island")
         if args.across:
             report.update(across(session, run, args, source, far, output, exact))
+        elif args.put:
+            report.update(put(session, run, args, source, output, held, ranks))
+            output = held  # the last round's
         else:
             report.update(commands(session, run, args, source, output, ranks))
         if args.hang:
@@ -313,6 +335,29 @@ def across(session, run, args, local, far, output, exact):
         }
         out["map_across_after_reset_us"] = round(one_round(far, 1), 3)
         log(f"after the reset, MAP across: {out['map_across_after_reset_us']} us")
+    return out
+
+
+def put(session, run, args, source, output, held, ranks):
+    """Rounds of one MAP on every rank (one flat group over the islands) storing into
+    `output` (split: each rank's page on its own island), then into `held` (island 0
+    holds every page): island 1's ranks put theirs across with the same writer's
+    write call, which returns once the page is written there. The last round is
+    checked."""
+    group = (0, ranks)
+    handler = run.program.handler("map")
+
+    def one_round(target, placed):
+        words = map_words(source, target, [group])[0].tolist() + [0, placed]
+        started = time.perf_counter()
+        run.wait(run.submit(handler, group, words), timeout=10.0)
+        return (time.perf_counter() - started) * 1e6
+
+    out = {"map_groups": [list(group)], "links": session.links}
+    for name, target, placed in (("split", output, 0), ("put", held, 1)):
+        spent = median([one_round(target, placed) for _ in range(args.map_rounds)])
+        out[f"map_{name}_us"] = spent
+        log(f"MAP on {group} storing {name}: {spent} us a round")
     return out
 
 

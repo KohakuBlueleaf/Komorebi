@@ -2,6 +2,7 @@
 // COPY; a failed bound or a timed-out wait gives up (its where code).
 #include <stdint.h>
 
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_transfer.hpp"
 #include "komorebi/device/km_worker.hpp"
 
@@ -40,7 +41,12 @@ void km_overlay(km::Reader& reader, const km_command_t& command) {
             command.a8,
             command.a9
         };
-        status = km::copy_pages(km_copy_of(a), rank, count, wait);
+        const km_copy_t c = km_copy_of(a);
+        if (km::copy_crosses(c)) {  // a tensor placed over islands: its give-up named
+            km::copy_across(reader, command, c, rank, count);
+            return;
+        }
+        status = km::copy_pages(c, rank, count, wait);
     } else {
         const km::Transfer t = km::transfer_of(command);
         status = (
