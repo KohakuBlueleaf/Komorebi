@@ -91,40 +91,22 @@ two data-movement CPUs, the movers, bring that share of `a` and `b` from DRAM in
 and take `out` back, sharing every stream by a pattern (`AAAB`: mover A three of every
 four blocks, mover B the fourth). Its compute kernel does the math in the vector unit,
 a block of tiles at a time (`kBlock`, 8: the tiles its registers hold). Both files take
-the three buffer pairs and `kBlock` from a header that the host reads too
-([22_gate](examples/22_gate/README.md) has the whole example, run against numpy):
+the three buffer pairs and `kBlock` from a header that the host reads too. The two
+kernels below are reduced from [22_gate](examples/22_gate/README.md), which also checks
+every wait and is run against numpy:
 
 ```cpp
 // ---- kernels/movement.cpp: one file, built for both data-movement CPUs of a core ----
-// Moves this core's share of the tiles: a and b from DRAM into L1, out back to DRAM.
-constexpr km::BufferPair kA = {kAMoverA, kAMoverB};
-constexpr km::BufferPair kB = {kBMoverA, kBMoverB};
-constexpr km::BufferPair kOut = {kOutMoverA, kOutMoverB};
-
 void kernel_main() {
-    // a, b and out share one layout
-    constexpr auto tensors = TensorAccessorArgs<0>();
-    // stays loaded; runs once per command
-    km::Movement movement;
+    constexpr auto tensors = TensorAccessorArgs<0>();  // a, b and out share one layout
+    km::Movement movement;  // stays loaded; runs once per command
     movement.run([&](const km_command_t& command) {
-        // tiles a core, and where this core's share starts
-        const uint32_t tiles = command.a3;
+        const uint32_t tiles = command.a3;  // tiles a core
         const uint32_t first = (movement.me() - km::first(command)) * tiles;
-        // which mover moves which block
         const km::Pattern pattern = km::Pattern::of(command.a4);
-        const auto stream = [&](
-            uint32_t direction, uint32_t address, km::BufferPair pair
-        ) {
-            return km::Stream(
-                direction,
-                TensorAccessor(tensors, address),
-                first,
-                tiles,
-                kBlock,
-                1,
-                pair,
-                pattern
-            );
+        const auto stream = [&](uint32_t direction, uint32_t address, km::BufferPair pair) {
+            const TensorAccessor tensor(tensors, address);
+            return km::Stream(direction, tensor, first, tiles, kBlock, 1, pair, pattern);
         };
         return movement.move(
             stream(km::kMoveRead, command.a0, kA),
@@ -134,9 +116,7 @@ void kernel_main() {
     });
 }
 
-// ---- kernels/compute.cpp: another file, the core's compute kernel ----
-// out = silu(a) * b, a block of tiles at a time, in the vector unit (the same three
-// pairs; kDestToSourceA is EltwiseBinaryReuseDestType::DEST_TO_SRCA).
+// ---- kernels/compute.cpp: out = silu(a) * b in the vector unit, a block at a time ----
 void kernel_main() {
     km::Compute compute;
     compute_kernel_hw_startup(kAMoverA, kOutMoverA);
@@ -147,33 +127,22 @@ void kernel_main() {
             const uint32_t a = km::block_half(kA, pattern, block);
             const uint32_t b = km::block_half(kB, pattern, block);
             const uint32_t out = km::block_half(kOut, pattern, block);
-            if (!compute.wait_front(a, kBlock) || !compute.wait_front(b, kBlock)) {
-                return;
-            }
-            // one pass over the block for each step: each step's init sets the unit up
+            compute.wait_front(a, kBlock);
+            compute.wait_front(b, kBlock);
             tile_regs_acquire();
             copy_init(a);
-            for (uint32_t tile = 0; tile < kBlock; tile++) {
-                copy_tile(a, tile, tile);  // a into the vector unit's registers
-            }
+            for (uint32_t tile = 0; tile < kBlock; tile++) copy_tile(a, tile, tile);
             silu_tile_init();
-            for (uint32_t tile = 0; tile < kBlock; tile++) {
-                silu_tile(tile);  // silu(a)
-            }
+            for (uint32_t tile = 0; tile < kBlock; tile++) silu_tile(tile);
             mul_reuse_dest_init<kDestToSourceA>(b);
             for (uint32_t tile = 0; tile < kBlock; tile++) {
-                mul_reuse_dest_tiles<kDestToSourceA>(b, tile, tile);  // * b
+                mul_reuse_dest_tiles<kDestToSourceA>(b, tile, tile);
             }
             tile_regs_commit();
             tile_regs_wait();
-            const bool room = compute.reserve_back(out, kBlock);
-            for (uint32_t tile = 0; room && tile < kBlock; tile++) {
-                pack_tile(tile, out);
-            }
+            compute.reserve_back(out, kBlock);
+            for (uint32_t tile = 0; tile < kBlock; tile++) pack_tile(tile, out);
             tile_regs_release();
-            if (!room) {
-                return;
-            }
             cb_push_back(out, kBlock);
             cb_pop_front(a, kBlock);
             cb_pop_front(b, kBlock);
