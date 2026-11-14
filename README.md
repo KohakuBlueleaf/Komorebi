@@ -252,7 +252,7 @@ static int prefix(job_t* job) {
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/card-dark.svg">
-  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM tiles in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. The host declares the program and its thread and submits commands; commands and events pass through PCIe to X280 0 at (8, 3), which runs the dispatcher. Its command goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each. A core group 26 to 55 is filled; its leader, core 26 at (3, 4), acknowledges on NoC1. X280 1 at (8, 9), X280 2 at (8, 5) and X280 3 at (8, 7), drawn in their own colour, each run a C thread of the program on four cores (kmx_main, kmx_parallel); a ring joins each to X280 0, commands going to the dispatcher and events with result words returning, so commands have up to four sources. Each cluster's regions lie in the DRAM bank beside it, D6 for X280 1 and D7 for X280 2 and 3, which Tensix cores reach over the NoC; kmx_invalidate and kmx_flush keep the caches coherent with the grid. Boxes below list what the dispatcher, each Tensix core and the work clusters do.">
+  <img src="docs/images/card-light.svg" width="830" alt="The P150A tile grid in NoC0 coordinates, 17 columns by 12 rows: DRAM banks in columns 0 and 9, Ethernet in row 1, PCIe and ARC in row 0, the security tile and four X280 tiles in column 8, Tensix cores in columns 1 to 6 and 11 to 16 of rows 2 to 11 (columns 7 and 10 fused off on this card), each numbered with its Komorebi core index 0 to 119. Every way cores talk is drawn once, in the colour it has in the next two figures. Commands: the host loads the program, submits commands of 64 bytes and waits for events of 16 bytes; they pass to X280 0 at (8, 3), the dispatcher, whose command goes out to two panels, columns 1 to 6 and 11 to 16, one multicast window each; the group of one command, cores 24 to 35, is filled and its leader, core 24, outlined. Rings join X280 1 at (8, 9), X280 2 at (8, 5) and X280 3 at (8, 7) to the dispatcher: commands to it, events back. A thread moves: a message goes from core 12 to core 3 and on to core 17. Movement: both data-movement CPUs of core 6 read one stream from the DRAM bank beside it. Reduce: cores 61 to 63 send their parts into three slots of core 60. Broadcast: core 78 casts along its row to core 83, core 92 down its column to core 116. X280 ports: core 90 and X280 1 talk both ways. Overlays: core 114 loads code from the DRAM bank beside it. Each work cluster's regions are outlined in the bank beside it. A key under the grid names the seven ways with their examples: commands 01, 13, 19; a thread moves 05, 14; reduce 02; broadcast 03, 15; X280 ports 10, 18; movement 11; overlays 12, 16 to 20. Three boxes list what the dispatcher, every Tensix core and the work clusters do.">
 </picture>
 
 The grid is the card's real one in NoC0 coordinates; the numbers in the Tensix cores
@@ -262,16 +262,21 @@ argument words. Every core sees every command and skips those whose group does n
 it; cores report to the leader, which acknowledges to the dispatcher, with a
 result word when the command asks for one.
 
+Commands are one way cores talk. The figure draws each of the others once, in its own
+colour; the next two figures take them one at a time, with the code that does each.
+
 ### A thread has a program counter and a place
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/breakpoints-dark.svg">
-  <img src="docs/images/breakpoints-light.svg" width="830" alt="Two listings of real code with line numbers. First, a dynamic handler from examples/05_forward/kernels/compute.cpp: while (km::Packet packet = messages.next()) takes the messages that landed on this core; for each message the generator advances and is added to the sum; when no forwards are left messages.consume() ends the message there; otherwise messages.forward(...) sends its 64 bytes to the core its state names; messages.done(packet) frees the packet. The next, consume and forward lines are marked. Second, the merge tree from examples/02_merge_tree/kernels: the writer's km::reduce_emit sends a core's part into a fixed slot (marked emit), the reader's km::reduce_arrive waits for the senders' parts (marked wait), and the compute kernel's km::reduce adds them in rank order. Below, on a schematic grid of cores, two programs run one at a time: one message starts on a core, is forwarded twice to the core its state names and is consumed there; and in a group of four merging by owner, ranks 1 to 3 emit their parts to rank 0, which waits for them and adds them.">
+  <img src="docs/images/breakpoints-light.svg" width="830" alt="Six panels, one for each way cores talk, each a piece of the P150A tile grid in NoC0 coordinates beside lines of the example that does it. The thread moves (05_forward, 14_message_handlers): a message starts on core 48 at (1, 6), is forwarded as 64 bytes to core 26 at (3, 4) and, with a handler, on to core 52 at (5, 6), where it is consumed; the lines are messages.forward(...) with the core it names and messages.forward(destination, message, handler). Values go to a fixed slot and are reduced (02_merge_tree): ranks 1 to 3 of a group of four, cores 39 to 41, each send a part into its slot of rank 0, core 38; the lines are km::reduce_emit(, km::reduce_arrive( and km::reduce(. One core to a row or a column (03_broadcast, 15_leader): core 24 casts a block along row 4 and core 36 casts a word of 4 bytes along row 5, the core at the row's start sending, a column the same way; the lines are broadcast.cast(block), broadcast.cast(cast, choice_word(choice, index)) and broadcast.word(). A core and its X280 core (10_x280_ports, 18_thread_split): core 41 at (6, 5) tells and asks X280 2 at (8, 5) and is answered, 16 bytes each way; the lines are port.tell, port.call, port.next(first) for the next range and port.next(first, word) for a range and a word with it. Commands (13_thread_commands, 19_thread_programs): the host sends a command of 64 bytes to X280 0 at (8, 3), the dispatcher, which sends it to a core group (cores 16 and 17 are drawn) or to the thread on X280 1 at (8, 9), and the thread submits commands back; the lines are run.submit to a core group, run.submit to an X280 thread, kmx_submit and kmx_program. Both data-movement CPUs of a core on one stream (11_movement): mover A on NoC 0 and mover B on NoC 1 move the blocks between DRAM bank D1 and core 0, eight blocks in the pattern AAAB; the lines are km::Movement movement;, km::Pattern::of(command.a4) and movement.move(read).">
 </picture>
 
-A **breakpoint** is a point where a thread must deal with another core; between two
-breakpoints it runs on its core. Today a program is written as the handler bodies of
-its kernels, as above; the thread language in the first column is planned:
+Each panel is one way cores talk, on the piece of the grid it uses, with lines of the
+example that does it (the example's name is in the panel's corner). A **breakpoint** is
+a point where a thread must deal with another core; between two breakpoints it runs on
+its core. Today a program is written as the handler bodies of its kernels, as above; the
+thread language in the first column is planned:
 
 | Planned thread language | What is sent | On the card today |
 |---|---|---|
@@ -279,23 +284,62 @@ its kernels, as above; the thread language in the first column is planned:
 | `emit v -> thread(j)` | the value | `km::emit` into a fixed slot, reduce by owner or by tree ([ports](docs/reference/ports.md), [02_merge_tree](examples/02_merge_tree/)) |
 | `v = wait(n)` | nothing | `km::arrive`: a timed wait until `n` values have landed |
 | a block to a row or a column | the block, once per broadcast | a broadcast ([broadcasts](docs/reference/broadcast.md), [03_broadcast](examples/03_broadcast/)) |
+| - | a word, the same on every core of a row or a column | a cast of a word, `broadcast.cast(block, word)`, read with `broadcast.word()` ([broadcasts](docs/reference/broadcast.md#a-word), [15_leader](examples/15_leader/)) |
+| - | a tell, an ask and its answer, 16 bytes each; a pull's range and word | an X280 port: `tell`, `ask`, `next` ([X280 ports](docs/reference/ports.md#x280-ports), [10_x280_ports](examples/10_x280_ports/), [18_thread_split](examples/18_thread_split/)) |
+| - | a command, one 64-byte line | `run.submit` from the host or `kmx_submit` from an X280 thread, to a core group or to an X280 thread ([commands to a thread](docs/reference/threads.md#commands-to-a-thread), [13_thread_commands](examples/13_thread_commands/), [19_thread_programs](examples/19_thread_programs/)) |
+| - | the blocks of a stream | both data-movement CPUs of a core on one stream under a pattern, `km::Movement` ([movement](docs/reference/movement.md), [11_movement](examples/11_movement/)) |
+
+### Code goes where the work is
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/placement-dark.svg">
+  <img src="docs/images/placement-light.svg" width="830" alt="Code goes where the work is, in three panels. A core loads an overlay into a slot and calls it (12_overlays): in the first command core 0 at (1, 2) loads the overlay scale from DRAM bank D1 at (0, 2) into a slot of its L1, which takes 998 cycles, and calls it; in the next command the slot holds it, load() moves nothing and takes 72 cycles, and the overlay is called; the lines are km::Overlay overlay(reader, command.a0);, overlay.load() and overlay.call(...). A message names its handler and the handler is loaded where the message arrives (20_message_overlays): a 64-byte message naming the handler value goes from core 38 at (3, 5) to core 36 at (1, 5), whose L1 holds the part lookup in one slot, and the part value is loaded from DRAM bank D3 at (0, 5) into another; the lines are the program's .dynamic(lookup, value, report, parts=KERNELS), km_message and messages.forward(..., kHandlerValue). Another party decides the code: a leader, core 24 at (1, 4), casts a word that is an overlay's number along its row, and every core names, loads and calls that overlay (17_leader_overlay); an X280 core's answer to a pull, a range and a word that is the overlay's number, makes the core load and call it (18_thread_split); run.load makes a group of cores hold another program, in 2.3 to 2.6 microseconds (16_two_programs).">
+</picture>
+
+An **overlay** is kernel code that is not in the kernels when the run starts: the host
+builds it, and a core **loads** it into a **slot** of its L1 and **calls** it; a held
+overlay is called again without a load ([overlays](docs/reference/overlays.md),
+[12_overlays](examples/12_overlays/)). The code can be decided where the work is: a
+message names its handler and the core it reaches loads that handler's part if it does
+not hold it ([20_message_overlays](examples/20_message_overlays/)), or another party
+decides, a leader casting the overlay's number
+([17_leader_overlay](examples/17_leader_overlay/)), an X280 core's answer to a pull
+naming it ([18_thread_split](examples/18_thread_split/)), `run.load` making a group hold
+another program ([16_two_programs](examples/16_two_programs/)). The cycles in the figure
+are those of [the overlay costs](docs/reference/overlays.md#costs) and of
+[a group switching program](docs/reference/overlays.md#a-group-switches-program); the
+numbers measured on one card are [below](#code-placement).
 
 ### Groups and commands in time
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/groups-dark.svg">
-  <img src="docs/images/groups-light.svg" width="830" alt="Time runs left to right over cores 0 to 11, the first row of the grid (NoC0 row 2, columns 1 to 6 in panel 0 and 11 to 16 in panel 1). The dispatcher submits R1 to cores 0 to 4 and R2 to cores 6 to 11; each command lands on every core, the cores work at the same time, report to their leader, and each leader acknowledges its own command, so R1 and R2 are in flight together. R3, for cores 3 to 8, overlaps both groups. In the drawn case it lands after cores 3, 4 and 6 to 8 have begun R1 or R2, so they take it next, while core 5, in neither group, takes it at once; each core's report ends on the row of the leader, core 3, which acknowledges after the last report. A note says this order is the drawn case, not a guarantee: a shared core may run two commands in flight in either order unless the later one is submitted exclusive.">
+  <img src="docs/images/groups-light.svg" width="830" alt="Three timelines, time running left to right. First, commands on groups that overlap, over three of the dispatcher's slots and twelve cores drawn as five rows (cores 0 to 2, 3 and 4, 5, 6 to 8, 9 to 11): R1 for cores 0 to 4 and R2 for cores 6 to 11 are in flight together because their groups share no core; each lands on every core, the cores work, and each leader acknowledges its own command. R3, for cores 3 to 8, overlaps both: in the drawn case the cores it shares with R1 or R2 take it after their first command and core 5 at once. A note says this order is the drawn case, not a guarantee: a shared core may run two commands in flight in either order unless the later one is exclusive. Second, an X280 thread runs the rounds (19_thread_programs): the host sends one command; each round the thread on X280 1 chooses k, 40 then 64 in the drawing, and submits spin to cores 0 to k - 1 and scale to cores k to 119, with the line of rounds.c that does it; 24 rounds on 120 cores take 1,023 microseconds against 7,521 with the host feeding every command. Third, a leader decides the code (17_leader_overlay): the leader casts a word that names an overlay, and cores 25 to 27 each load it if they do not hold it and call it; in three rounds the word names scale, then scale again, which is held so nothing is loaded, then turn, which is loaded.">
 </picture>
 
 Up to 16 commands are in flight at once. A command that must run after an earlier one
 on overlapping cores is submitted with `run.submit(..., exclusive=True)`.
 
+A command need not come from the host, and the code it runs need not be fixed when the
+run starts. In the second panel the host sends one command and an X280 thread splits
+the grid between two programs every round
+([19_thread_programs](examples/19_thread_programs/)); in the third a group's leader
+casts which overlay every core runs next
+([17_leader_overlay](examples/17_leader_overlay/)).
+
 ### One program on the grid
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/mapcollect-dark.svg">
-  <img src="docs/images/mapcollect-light.svg" width="830" alt="The map/collect example on the real tile grid: the core group 0 to 7 sits at NoC0 (1, 2) to (6, 2), (11, 2) and (12, 2); core 3 at (4, 2) is highlighted. A table lists each rank's partition: core m reads tiles 8m to 8m+7 and writes output page a3 + m. Cores report to core 0, which acknowledges to X280 0. Inside core 3: the reader reads tiles 24 to 31 from DRAM on NoC0 into circular buffer 0 in L1, compute copies each tile to DST and the vector unit adds them in fp32, pack writes the sum to circular buffer 16, the writer writes it to DRAM on NoC1, and the core reports to core 0.">
+  <img src="docs/images/mapcollect-light.svg" width="830" alt="Four panels. First, the simplest program, a command to a core group (01_mapcollect): run.submit of the handler map to the group of cores 0 to 7, drawn on rows 2 and 3 of the grid; each core reports to core 0, which acknowledges to X280 0. Second, the thread split (18_thread_split) on the whole card: every core pulls ranges of work from its X280 core, whose answer is a range and a word naming one of three overlays, plain, sparse or dense; the cores are tinted by the overlay they hold in a drawn case, and the steps are listed beside the grid. Third, one core of it in time, in three rows (its X280 core, the core's reader, compute and writer): the reader pulls, gets a range and a word, loads the named overlay when it does not hold it, calls it, and tells its X280 core the kinds its range held, with the lines of reader.cpp that do each step. Fourth, what choosing the code gains, five passes over the same work: plain 4,888 microseconds, sparse 4,222, dense 4,820, the host's split 3,934, the thread's choice 3,158.">
 </picture>
+
+The first panel is the simplest program, one command to a core group
+([01_mapcollect](examples/01_mapcollect/)). The others are one program that uses most
+of the model ([18_thread_split](examples/18_thread_split/)): every core pulls ranges
+of work from its X280 core, the answer names the overlay for that range, and the core
+loads it when it does not hold it and calls it. Choosing the code where the work is
+takes 3,158 µs where the best single overlay takes 4,222 µs.
 
 ## What exists
 

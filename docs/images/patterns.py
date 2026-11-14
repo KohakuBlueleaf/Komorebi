@@ -1,9 +1,10 @@
-"""Draws two figures of the programming model from one description each:
-docs/images/breakpoints-{light,dark}.svg ("A thread has a program counter and a
-place": six ways cores talk, each on a piece of the P150A tile grid with the lines of
-the example that does it) and docs/images/placement-{light,dark}.svg ("Code goes where
-the work is": an overlay loaded and called, a handler loaded where a message arrives,
-and the code another party decides).
+"""Draws the five figures of the programming model, each from one description, as
+docs/images/<name>-{light,dark}.svg: card ("The card as Komorebi runs it": the tile
+grid with every way cores talk drawn once), breakpoints ("A thread has a program
+counter and a place": six ways cores talk, each on a piece of the grid with the lines
+of the example that does it), placement ("Code goes where the work is": overlays),
+groups ("Groups and commands in time": three timelines) and mapcollect ("One program
+on the grid": a command to a core group, then the thread split).
 
 usage: python docs/images/patterns.py [output folder]    (needs Pillow; Noto Sans, if
 it is installed, measures the labels)
@@ -44,6 +45,7 @@ THEMES = {
         "p": ("#bf3989", "#f7c0de", "#ffeff7"),
         "y": ("#9a6700", "#ffe27a", "#fff8c5"),
         "ys": ("#9a6700", "#fff8c5", "#fff8c5"),
+        "g": ("#818b98", "#eaeef2", "#f6f8fa"),
     },
     "dark": {
         "bg": "#0d1117",
@@ -63,6 +65,7 @@ THEMES = {
         "p": ("#db61a2", "#7a2a57", "#3a1229"),
         "y": ("#d29922", "#6b4e0a", "#3a2d0a"),
         "ys": ("#d29922", "#3a2d0a", "#3a2d0a"),
+        "g": ("#6e7681", "#21262d", "#161b22"),
     },
 }
 
@@ -224,6 +227,21 @@ class Svg:
                 )
             )
         self.geom.append(points)
+
+    def poly(self, points, colour, sw=2.2, dash=None, tail=False):
+        """Straight pieces through the points, an arrowhead at the end (and the start)."""
+        d = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in points)
+        extra = f' stroke-dasharray="{dash}"' if dash else ""
+        extra += f' marker-start="url(#h{colour})"' if tail else ""
+        self.add(
+            f'<path d="{d}" fill="none" stroke="{self.c[colour][0]}" '
+            f'stroke-width="{sw}" marker-end="url(#h{colour})"{extra}/>',
+            2,
+        )
+        for (x1, y1), (x2, y2) in zip(points, points[1:]):
+            self.geom.append(
+                [(x1 + (x2 - x1) * k / 40, y1 + (y2 - y1) * k / 40) for k in range(41)]
+            )
 
     def chip(self, cx, cy, s, colour):
         """A pill: white text on the colour, over an arrow."""
@@ -478,9 +496,7 @@ def panel_frame(s, y, height, title, examples, colour):
 def panel_move(s, y):
     """1. A thread moves: the message goes to the core it names."""
     c, col = s.c, "m"
-    forward = lines_of(
-        "05_forward/kernels/compute.cpp", [76, ELLIPSIS, 78, 79], joint=True
-    )
+    forward = lines_of("05_forward/kernels/compute.cpp", [76, 77, 78, 79], joint=True)
     handler = lines_of("14_message_handlers/kernels/compute.cpp", [39])
     rows = [
         ("head", "05_forward · compute.cpp 76-79", "forward", "to the core it names")
@@ -493,30 +509,25 @@ def panel_move(s, y):
         ("head", "14_message_handlers · compute.cpp 39", "forward", "with a handler"),
         ("code", handler[0], True),
     ]
-    frag = Frag(s, BOX_X + 34, y + 52, [1, 2, 3, 4, 5, 6], [4, 5, 6])
-    height = max(code_height(rows), frag.bottom + 30 - y)
+    x = BOX_X + 262
+    frag = Frag(s, BOX_X + 34, y + 52, [1, 2, 3, 4, 5], [4, 5, 6])
+    height = max(code_height(rows, x), frag.bottom + 70 - y)
     panel_frame(
         s, y, height, "the thread moves", "05_forward, 14_message_handlers", col
     )
-    a, b, d = frag.box(1, 6), frag.box(3, 4), frag.box(6, 6)
+    a, b, d = frag.box(1, 6), frag.box(3, 4), frag.box(5, 6)
     arrow(s, a, b, col, dash="5 3")
-    arrow(s, b, d, col, dash="5 3")
-    s.chip(
-        (centre(a)[0] + centre(b)[0]) / 2,
-        (centre(a)[1] + centre(b)[1]) / 2,
-        "64 B",
-        col,
-    )
-    s.chip(
-        (centre(b)[0] + centre(d)[0]) / 2 - 4,
-        (centre(b)[1] + centre(d)[1]) / 2 + 6,
-        "64 B, with a handler",
-        col,
-    )
-    frag.draw({(1, 6): col, (3, 4): col, (6, 6): col})
+    arrow(s, b, d, col)
+    frag.draw({(1, 6): col, (3, 4): col, (5, 6): col})
     s.text(centre(a)[0], frag.bottom + 16, "start", 12, c["mute"], anchor="middle")
     s.text(centre(d)[0], frag.bottom + 16, "consume", 12, c["mute"], anchor="middle")
-    code_rows(s, BOX_X + 322, y + 36, col, rows)
+    for k, (dash, label) in enumerate(
+        (("5 3", "forward: the message, 64 B"), (None, "forward with a handler"))
+    ):
+        ky = frag.bottom + 38 + 18 * k
+        s.line(frag.x, ky, frag.x + 28, ky, col, dash=dash)
+        s.text(frag.x + 36, ky + 4, label, 12, c["mute"])
+    code_rows(s, x, y + 36, col, rows)
     return height
 
 
@@ -539,7 +550,9 @@ def panel_reduce(s, y):
         ),
     ]
     x = BOX_X + 262
-    frag = Frag(s, BOX_X + 44, y + 52, [3, 4, 5, 6], [4, 5], pitch=44, tile=40)
+    frag = Frag(
+        s, BOX_X + 44, y + 92, [3, 4, 5, 6], [5], pitch=44, tile=40, heads="rows"
+    )
     height = max(code_height(rows, x), frag.bottom + 30 - y)
     panel_frame(
         s, y, height, "values go to a fixed slot and are reduced", "02_merge_tree", col
@@ -550,7 +563,7 @@ def panel_reduce(s, y):
         x1, y1 = sender[0] + sender[2] / 2, sender[1] - 1
         x2, y2 = owner[0] + 8.5 + (rank - 1) * 12, owner[1] - 2
         s.curve(x1, y1, (x1 + x2) / 2, y1 - 2 * rise, x2, y2, col, 2.2, dash="5 3")
-    s.chip(frag.cx(5) + 4, frag.cy(4) - 6, "part", col)
+    s.chip((frag.cx(6) + owner[0] + 32.5) / 2, owner[1] - 40, "a part", col)
     frag.draw({(3 + k, 5): col for k in range(4)})
     for k in range(3):  # the owner's slots, one for each sender
         s.rect(
@@ -583,20 +596,27 @@ def panel_cast(s, y):
         ("code", word[0], True),
         ("code", word[1], False),
     ]
-    frag = Frag(s, BOX_X + 34, y + 52, [1, 2, 3, 4, 5, 6], [4, 5, 6])
-    height = max(code_height(rows), frag.bottom + 30 - y)
+    c = s.c
+    frag = Frag(s, BOX_X + 34, y + 52, [1, 2, 3, 4, 5, 6], [4, ("gap", 26, None), 5])
+    height = max(code_height(rows), frag.bottom + 62 - y)
     panel_frame(
         s, y, height, "one core to a row or a column", "03_broadcast, 15_leader", col
     )
-    first, last, top = frag.box(1, 6), frag.box(6, 6), frag.box(3, 4)
-    yb = first[1] + first[3] - 6
-    s.line(first[0] + first[2] - 8, yb, last[0] + 10, yb, col, 2.4)
-    xc = top[0] + top[2] - 6
-    s.line(xc, top[1] + top[3] - 8, xc, frag.box(3, 6)[1] + 6, col, 2.0, dash="5 3")
-    s.chip(frag.cx(4), frag.cy(5) + 2, "word, 4 B", col)
-    s.chip(frag.cx(4), yb - 15, "block", col)
-    frag.draw(
-        {(1, 6): col, (3, 4): col, **{(k, 6): col for k in range(2, 7)}, (3, 5): col}
+    for row, label, dash in ((4, "a block", None), (5, "a word, 4 B", "5 3")):
+        first, last = frag.box(1, row), frag.box(6, row)
+        ya = first[1] + first[3] + 13
+        s.line(centre(first)[0], ya, centre(last)[0], ya, col, 2.4, dash=dash)
+        s.chip(frag.cx(3) + frag.pitch / 2, ya, label, col)
+    frag.draw({(k, row): col for k in range(1, 7) for row in (4, 5)})
+    for row in (4, 5):  # the sender of each row
+        px, py, w, h = frag.box(1, row)
+        s.rect(px, py, w, h, "none", c[col][0], rx=3, sw=2.2)
+    s.text(
+        frag.x,
+        frag.bottom + 46,
+        "the core at the row's start sends; a column the same way",
+        12,
+        c["mute"],
     )
     code_rows(s, BOX_X + 322, y + 36, col, rows)
     return height
@@ -698,9 +718,11 @@ def panel_commands(s, y):
     s.line(xa, d0[1] + d0[3] + 3, xa, d1[1] - 3, col)
     s.line(xb, d1[1] - 3, xb, d0[1] + d0[3] + 3, "w")
     frag.draw({(5, 3): col, (6, 3): col, (8, 3): col, (8, 9): "w"})
-    s.text(x0 + 20, hy + host_h + 17, "64 B", 12, c[col][0], True)
+    s.text(
+        x0 + 8 - host_w / 2 - 8, hy + 15, "a command, 64 B", 12, c[col][0], True,
+        anchor="end",
+    )
     ty = d0[1] + d0[3] + 20
-    s.text(frag.x - 8, ty + 8, "4 to 8", 12, c["mute"], anchor="end")
     s.text(x0 + 26, d0[1] + d0[3] / 2 + 4, "dispatcher", 12, c["mute"])
     s.text(x0 + 26, d1[1] + d1[3] / 2 + 4, "a thread", 12, c["mute"])
     s.text(xa - 8, ty + 8, "to the thread", 12, c[col][0], True, anchor="end")
@@ -800,9 +822,8 @@ def figure_patterns(theme):
         ("off", "fused off"),
     ]
     note = [
-        "Column and row numbers are NoC0 coordinates. A line of dots is a line left "
-        "out; code is copied from the",
-        "named file and line, its indentation removed.",
+        "Column and row numbers are NoC0 coordinates. Code is copied from the named "
+        "file and line, its indentation removed.",
     ]
     end = legend(s, bottom + 2, items, note)
     return s.finish(int(end + 10))
@@ -1105,12 +1126,823 @@ def figure_placement(theme):
     return s.finish(int(end + 10))
 
 
+# ---------------------------------------------------------------------------
+# The whole card, commands in time, one program on the grid.
+# ---------------------------------------------------------------------------
+
+OTHER = {(2, 0): "PCIe", (11, 0): "PCIe", (8, 0): "ARC", (8, 2): "SEC"}
+
+
+def card_tiles(s, frag, hot=None, strong=(), soft=(), compact=False):
+    """Every tile of the card in frag: DRAM banks, Tensix cores with their index (hot:
+    {(col, row): colour}; strong: cores drawn in the full colour), the X280 tiles,
+    Ethernet, PCIe, ARC and the security tile, and dashed tiles for the rest. A label
+    is left out where an arrow or a chip lies over it."""
+    c = s.c
+    hot = hot or {}
+    for row in frag.ypos:
+        for col in frag.cols:
+            px, py, w, h = frag.box(col, row)
+            cx, cy = px + w / 2, py + h / 2
+
+            def label(text, ink, bold=False):
+                half = width(text, 12, bold) / 2
+                if compact and (text.isdigit() or text in ("Eth", "PCIe", "ARC", "SEC")):
+                    return
+                if s.clear_of_marks((cx - half, cy - 7, 2 * half, 13)):
+                    s.text(cx, cy + 4, text, 12, ink, bold, anchor="middle")
+
+            name = OTHER.get((col, row))
+            if name is None and row == 1 and col not in (0, 8, 9):
+                name = "Eth"
+            index = core_index(col, row)
+            if col in DRAM_BANK:
+                s.rect(px, py, w, h, c["dram"], rx=3)
+                label(dram_name(col, row), c["mute"])
+            elif name:
+                s.rect(px, py, w, h, c["bg"], c["line"], rx=3)
+                label(name, c["mute"])
+            elif col == 8 and row in X280_ROW:
+                edge = c[hot.get((col, row), "w")][0]
+                s.rect(px, py, w, h, c[hot.get((col, row), "w")][2], edge, rx=3, sw=1.5)
+                if compact:
+                    s.text(cx, cy + 4, "X" + X280_ROW[row], 12, edge, True, anchor="middle")
+                else:
+                    s.text(cx, cy - 2, "X280", 12, edge, True, anchor="middle")
+                    s.text(cx, cy + 12, X280_ROW[row], 12, edge, True, anchor="middle")
+            elif index is not None and (col, row) in soft:
+                edge, _, pale = c[hot[(col, row)]]
+                s.rect(px, py, w, h, pale, edge, rx=3)
+                label(str(index), c["fg"])
+            elif index is not None and (col, row) in strong:
+                edge = c[hot[(col, row)]][0]
+                s.rect(px, py, w, h, edge, edge, rx=3)
+                label(str(index), c["ink"], True)
+            elif index is not None and (col, row) in hot:
+                edge, fill, _ = c[hot[(col, row)]]
+                s.rect(px, py, w, h, fill, edge, rx=3)
+                label(str(index), c["fg"])
+            elif index is not None:
+                s.rect(px, py, w, h, c["cell"], rx=3)
+                label(str(index), c["mute"])
+            else:
+                s.rect(px, py, w, h, "none", c["line"], rx=3, dash="3 3")
+
+
+def core_at(index):
+    """(col, row) of a core index."""
+    row, offset = divmod(index, 12)
+    return (1 + offset if offset < 6 else 5 + offset), row + 2
+
+
+def key_row(s, y, items, note=()):
+    """A key that wraps: (kind, text) pairs, then lines of note; returns its end."""
+    c = s.c
+    x = BOX_X + 4
+    for kind, text in items:
+        need = 30 + width(text) + 22
+        if x + need - 22 > RIGHT - 4:
+            x, y = BOX_X + 4, y + 24
+        fills = {
+            "tile": (c["cell"], "none", None, 1),
+            "dram": (c["dram"], "none", None, 1),
+            "x280": (c["w"][2], c["w"][0], None, 1.5),
+            "x280d": (c["a"][2], c["a"][0], None, 1.5),
+            "group": (c["a"][1], c["a"][0], None, 1),
+            "strong": (c["a"][0], c["a"][0], None, 1),
+            "other": (c["bg"], c["line"], None, 1),
+            "off": ("none", c["line"], "3 3", 1),
+            "panel": ("none", c["a"][0], "5 3", 1.6),
+            "region": (c["dram"], c["w"][0], "4 3", 1.6),
+            "wait": (c["bg"], c["rule"], None, 1),
+            "part": (c["y"][1], c["y"][0], None, 1),
+            "loading": (c["y"][2], c["y"][0], "4 3", 1.5),
+            "pale": (c["y"][2], c["y"][0], None, 1),
+            "full": (c["y"][0], c["y"][0], None, 1),
+            "decide": (c["w"][1], c["w"][0], None, 1),
+        }
+        if kind in fills:
+            fill, stroke, dash, sw = fills[kind]
+            s.rect(x, y, 22, 16, fill, stroke, rx=3, sw=sw, dash=dash)
+        elif kind == "lands":
+            s.add(
+                f'<line x1="{x:.1f}" y1="{y + 8:.1f}" x2="{x + 22:.1f}" '
+                f'y2="{y + 8:.1f}" stroke="{c["rule"]}" stroke-width="1.2" '
+                f'stroke-dasharray="3 3"/>'
+            )
+        else:  # an arrow in the colour kind names, "ring" with two heads
+            colour = "w" if kind == "ring" else kind
+            s.line(x, y + 8, x + 22, y + 8, colour, tail=kind == "ring")
+        s.text(x + 30, y + 13, text, 12)
+        x += need
+    for i, line in enumerate(note):
+        s.text(BOX_X + 4, y + 38 + 18 * i, line, 12, c["mute"])
+    return y + 38 + 18 * len(note) - 8
+
+
+def panel_card(s, y):
+    """The tile grid with the host and the dispatcher, and every way of talking once,
+    each in the colour of its panel in the next two figures."""
+    c = s.c
+    frag = Frag(
+        s, BOX_X + 40, y + 104, list(range(17)), list(range(12)), pitch=44, tile=40
+    )
+    height = frag.bottom + 16 - y
+    panel_frame(
+        s,
+        y,
+        height,
+        "120 Tensix cores, four X280 clusters, eight DRAM banks",
+        "one P150A, NoC0 coordinates",
+        "a",
+    )
+
+    def box(index):
+        return frag.box(*core_at(index))
+
+    # commands: the host, the dispatcher, the two panels, a group
+    d0 = frag.box(8, 3)
+    mid = d0[0] + d0[2] / 2
+    s.rect(mid - 200, y + 36, 400, 24, c["bg"], c["rule"], rx=4, sw=1.5)
+    s.text(mid - 188, y + 52, "host", 12, c["fg"], True)
+    s.text(
+        mid - 188 + width("host", bold=True) + 10,
+        y + 52,
+        "loads the program, submits commands, waits for events",
+        12,
+        c["mute"],
+    )
+    xl, xr = d0[0] - 2, d0[0] + d0[2] + 2
+    s.line(xl, y + 62, xl, d0[1] - 2, "a")
+    s.line(xr, d0[1] - 2, xr, y + 62, "g")
+    s.text(xl - 8, y + 80, "commands, 64 B each", 12, c["a"][0], True, anchor="end")
+    s.text(xr + 8, y + 80, "events, 16 B each", 12, c["mute"])
+    for first, last in ((1, 6), (11, 16)):  # the two panels
+        a, b = frag.box(first, 2), frag.box(last, 11)
+        s.rect(
+            a[0] - 2,
+            a[1] - 2,
+            b[0] + b[2] - a[0] + 4,
+            b[1] + b[3] - a[1] + 4,
+            "none",
+            c["a"][0],
+            rx=5,
+            sw=1.6,
+            dash="6 4",
+            layer=2,
+        )
+    cy = d0[1] + d0[3] / 2
+    s.line(d0[0] - 3, cy, frag.box(6, 3)[0] + 40 + 5, cy, "a", 3)
+    s.line(d0[0] + d0[2] + 3, cy, frag.box(11, 3)[0] - 5, cy, "a", 3)
+    hot = {core_at(k): "a" for k in range(24, 36)}
+    hot[(8, 3)] = "a"
+
+    # the rings of the three work clusters
+    below = d0[1] + d0[3] + 3
+    s.line(d0[0] + 30, below, d0[0] + 30, frag.box(8, 5)[1] - 3, "w", tail=True)
+    for row, start, turn, lane in ((7, 20, 7, 9), (9, 8, -7, -9)):
+        x1, ym, xm = d0[0] + start, frag.cy(4) + turn, frag.cx(7) + lane
+        end = (frag.box(8, row)[0] - 3, frag.cy(row))
+        s.poly([(x1, below), (x1, ym), (xm, ym), (xm, end[1]), end], "w", tail=True)
+
+    # a thread moves: a message forwarded twice
+    for a, b, dash in ((12, 3, "5 3"), (3, 17, None)):
+        arrow(s, box(a), box(b), "m", dash=dash)
+    hot.update({core_at(k): "m" for k in (12, 3, 17)})
+
+    # both data-movement CPUs of core 6 on one stream from its DRAM bank
+    bank, core = frag.box(9, 2), box(6)
+    x1, x2 = bank[0] + bank[2] + 2, core[0] - 3
+    for side, dash in ((-1, None), (1, "5 3")):
+        ya = frag.cy(2) + side * 7
+        s.curve(x1, ya, (x1 + x2) / 2, ya + side * 18, x2, ya, "p", dash=dash)
+    hot[core_at(6)] = "p"
+
+    # values to a fixed slot of rank 0, reduced there
+    owner = box(60)
+    for rank, rise in ((1, 4), (2, 8), (3, 12)):
+        sender = box(60 + rank)
+        x1, x2 = sender[0] + sender[2] / 2, owner[0] + 8.5 + (rank - 1) * 12
+        top = owner[1] - 2
+        s.curve(x1, top, (x1 + x2) / 2, top - 2 * rise, x2, top, "r", 2.0, dash="5 3")
+    hot.update({core_at(k): "r" for k in range(60, 64)})
+
+    # a broadcast along a row and down a column
+    first, last = box(78), box(83)
+    yb = first[1] + first[3] - 6
+    s.line(first[0] + 20, yb, last[0] + last[2] - 5, yb, "b", 2.4)
+    top, end = box(92), box(116)
+    xb = top[0] + top[2] - 4
+    s.line(xb, top[1] + 20, xb, end[1] + end[3] - 5, "b", 2.4, dash="5 3")
+    hot.update({core_at(k): "b" for k in (*range(78, 84), 92, 104, 116)})
+
+    # a core and its X280 core
+    core, x280 = box(90), frag.box(8, 9)
+    x1, x2 = core[0] - 3, x280[0] + x280[2] + 3
+    s.line(x1, frag.cy(9) - 7, x2, frag.cy(9) - 7, "w")
+    s.line(x2, frag.cy(9) + 7, x1, frag.cy(9) + 7, "w")
+    hot[core_at(90)] = "w"
+
+    # an overlay loaded from DRAM into a slot of core 114
+    bank, core = frag.box(9, 11), box(114)
+    s.line(bank[0] + bank[2] + 2, frag.cy(11), core[0] - 3, frag.cy(11), "y", 2.6)
+    hot[core_at(114)] = "y"
+
+    card_tiles(s, frag, hot)
+    for index, colour in ((24, "a"), (78, "b"), (92, "b")):  # who sends
+        px, py, w, h = box(index)
+        s.rect(px, py, w, h, "none", c[colour][0], rx=3, sw=2.4)
+    for k in range(3):  # rank 0's slots, one for each sender
+        s.rect(
+            owner[0] + 4 + k * 12, owner[1] + 3, 9, 9, c["bg"], c["r"][0], rx=1, sw=1.2
+        )
+    for row in (5, 7, 9):  # each cluster's regions, in the bank beside it
+        px, py, w, h = frag.box(9, row)
+        s.rect(px, py, w, h, "none", c["w"][0], rx=3, sw=1.6, dash="4 3")
+    return height
+
+
+def panel_ways(s, y):
+    """The key of the card's arrows: each way of talking, its colour, its examples."""
+    c = s.c
+    ways = [
+        ("a", "commands", "host or X280 thread to a core group", "01, 13, 19"),
+        ("m", "a thread moves", "a message forwarded to the core it names", "05, 14"),
+        ("r", "reduce", "parts into a fixed slot of rank 0, added there", "02"),
+        ("b", "broadcast", "a block or a word along a row or a column", "03, 15"),
+        ("w", "X280 ports", "tell, ask and pull between a core and its X280 core", "10, 18"),
+        ("p", "movement", "both data-movement CPUs on one stream from DRAM", "11"),
+        ("y", "overlays", "code loaded from DRAM into a slot of a core's L1", "12, 16 to 20"),
+    ]
+    height = 36 + len(ways) * 20 + 10
+    panel_frame(s, y, height, "every way cores talk, once", "examples", "a")
+    for k, (colour, name, text, examples) in enumerate(ways):
+        yy = y + 50 + 20 * k
+        s.line(BOX_X + 14, yy - 4, BOX_X + 42, yy - 4, colour)
+        s.text(BOX_X + 52, yy, name, 12, c[colour][0], True)
+        s.text(BOX_X + 164, yy, text, 12, c["fg"])
+        s.text(BOX_X + BOX_W - 14, yy, examples, 12, c["mute"], anchor="end")
+    return height
+
+
+def panel_roles(s, y):
+    """What the dispatcher, a Tensix core and a work cluster do."""
+    c = s.c
+    roles = [
+        (
+            "a",
+            "X280 0: the dispatcher",
+            [
+                "commands from the host and three rings",
+                "streams, graphs and a job queue",
+                "16 commands in flight, a deadline each",
+                "which program each core holds",
+            ],
+        ),
+        (
+            "fg",
+            "every Tensix core",
+            [
+                "reader (NoC0): the next command",
+                "compute: the handler",
+                "writer (NoC1): reports",
+                "ports, broadcasts, messages",
+                "overlays, in slots of its L1",
+            ],
+        ),
+        (
+            "w",
+            "X280 1 to 3: work clusters",
+            [
+                "a C thread on four cores (kmx_main)",
+                "kmx_submit, kmx_wait: its commands",
+                "answers its cores' tells, asks and pulls",
+                "takes commands itself (kmx_program)",
+            ],
+        ),
+    ]
+    height = 64 + 5 * 18
+    panel_frame(s, y, height, "who does what", "", "a")
+    third = (BOX_W - 28) / 3
+    for k, (colour, title, lines) in enumerate(roles):
+        x = BOX_X + 14 + k * third
+        ink = c["fg"] if colour == "fg" else c[colour][0]
+        s.text(x, y + 46, title, 12, ink, True)
+        for i, line in enumerate(lines):
+            s.text(x, y + 64 + 18 * i, line, 12, c["mute"])
+            check(x + width(line), x + third - 8, line)
+    return height
+
+
+def figure_card(theme):
+    s = Svg(theme, "The card as Komorebi runs it", markers="abmwrpyg")
+    bottom = stack(s, [panel_card, panel_ways, panel_roles])
+    items = [
+        ("tile", "Tensix core, with its core index"),
+        ("group", "a command's group, cores 24 to 35; core 24 leads it"),
+        ("dram", "DRAM bank"),
+        ("x280d", "X280 0, the dispatcher"),
+        ("x280", "X280 1 to 3, a thread each"),
+        ("region", "a cluster's regions, in the bank beside it"),
+        ("other", "Ethernet, PCIe, ARC, security"),
+        ("off", "fused off, or a router only"),
+        ("panel", "a panel: one multicast window"),
+        ("ring", "a ring: commands to X280 0, events back"),
+    ]
+    note = [
+        "Measured: 0.77 µs a command with 4 in flight to all 120 cores (the landing "
+        "experiment). Columns 7 and 10 are the",
+        "Tensix columns fused off on the card used here. The leader acknowledges its "
+        "command to X280 0 on NoC1.",
+    ]
+    end = key_row(s, bottom + 2, items, note)
+    return s.finish(int(end + 10))
+
+
+class Lanes:
+    """Rows in time: a name and a line each, bars on them and arrows between them."""
+
+    def __init__(self, s, y, names, x0, x1=RIGHT - 24, pitch=32):
+        self.s, self.x0, self.x1 = s, x0, x1
+        self.top = {name: y + k * pitch for k, name in enumerate(names)}
+        self.bottom = y + len(names) * pitch - (pitch - 16)
+        for name in names:
+            cy = self.top[name] + 8
+            s.text(x0 - 12, cy + 4, name, 12, s.c["mute"], anchor="end")
+            s.add(
+                f'<line x1="{x0:.1f}" y1="{cy:.1f}" x2="{x1:.1f}" y2="{cy:.1f}" '
+                f'stroke="{s.c["line"]}" stroke-width="1"/>'
+            )
+
+    def tx(self, t):
+        return self.x0 + (self.x1 - self.x0) * t / 100
+
+    def bar(self, name, begin, end, text, colour, style="fill"):
+        s, c = self.s, self.s.c
+        edge, fill, pale = c[colour]
+        x, yy, w = self.tx(begin), self.top[name], self.tx(end) - self.tx(begin)
+        if style == "loading":
+            s.rect(x, yy, w, 16, pale, edge, rx=3, sw=1.5, dash="4 3")
+        elif style == "plain":
+            s.rect(x, yy, w, 16, c["bg"], c["rule"], rx=3)
+        else:
+            s.rect(x, yy, w, 16, fill, edge, rx=3)
+        if text and width(text) + 10 <= w:
+            s.text(x + 6, yy + 12, text, 12, c["fg"])
+
+    def hop(self, start, end, t, colour, dash=None, sw=2.0):
+        """An arrow at time t from one row to another."""
+        down = self.top[end] > self.top[start]
+        y1 = self.top[start] + (17 if down else -1)
+        y2 = self.top[end] + (-2 if down else 18)
+        self.s.line(self.tx(t), y1, self.tx(t), y2, colour, sw, dash=dash)
+
+    def note(self, name, t, text, colour=None):
+        ink = self.s.c[colour][0] if colour else self.s.c["mute"]
+        self.s.text(self.tx(t), self.top[name] - 5, text, 12, ink, bool(colour))
+
+    def axis(self):
+        s = self.s
+        s.line(self.x0, self.bottom + 10, self.x1, self.bottom + 10, "g", 1.6)
+        s.text(
+            self.x1, self.bottom + 28, "time (schematic)", 12, s.c["mute"], anchor="end"
+        )
+        return self.bottom + 28
+
+
+def panel_time(s, y):
+    """Three commands on twelve cores: two at once, one overlapping both. Cores that
+    do the same share a row."""
+    c, col = s.c, "a"
+    slots = ["slot 2", "slot 1", "slot 0"]
+    cores = ["cores 0 to 2", "cores 3 and 4", "core 5", "cores 6 to 8", "cores 9 to 11"]
+    lanes = Lanes(s, y + 70, slots + cores, BOX_X + 176, pitch=24)
+    end = lanes.axis()
+    height = end + 62 - y
+    panel_frame(
+        s, y, height, "commands on groups that overlap", "the dispatcher's slots", col
+    )
+    # (name, slot, submitted, lands, acknowledged, its leader's row)
+    commands = [
+        ("R1: cores 0 to 4", "slot 0", 2, 4, 43.5, "cores 0 to 2"),
+        ("R2: cores 6 to 11", "slot 1", 5, 7, 60, "cores 6 to 8"),
+        ("R3: cores 3 to 8", "slot 2", 8, 10, 83, "cores 3 and 4"),
+    ]
+    for name, slot, sent, lands, acked, leader in commands:
+        s.add(  # the command lands on every core
+            f'<line x1="{lanes.tx(lands):.1f}" y1="{lanes.top[slot] + 16:.1f}" '
+            f'x2="{lanes.tx(lands):.1f}" y2="{lanes.bottom:.1f}" stroke="{c["rule"]}" '
+            f'stroke-width="1.2" stroke-dasharray="3 3"/>'
+        )
+    for name, slot, sent, lands, acked, leader in commands:
+        third = name.startswith("R3")
+        lanes.bar(slot, sent, acked, name, col, "plain" if third else "fill")
+        lanes.hop(leader, slot, acked, "g" if third else col)
+    work = [
+        ("cores 0 to 2", "R1", 4, 40),
+        ("cores 3 and 4", "R1", 4, 41.5),
+        ("cores 3 and 4", "R3", 44.5, 56),
+        ("core 5", "R3", 10, 33),
+        ("cores 6 to 8", "R2", 7, 56),
+        ("cores 6 to 8", "R3", 61, 81),
+        ("cores 9 to 11", "R2", 7, 57.5),
+    ]
+    for row, name, begin, finish in work:
+        lanes.bar(row, begin, finish, name, col, "plain" if name == "R3" else "fill")
+    by = y + 52  # R1 and R2 are in flight together
+    s.line(lanes.tx(5), by, lanes.tx(43.5), by, col, head=False)
+    for moment in (5, 43.5):
+        s.line(lanes.tx(moment), by - 4, lanes.tx(moment), by + 4, col, head=False)
+    s.text(
+        lanes.tx(43.5) + 10,
+        by + 4,
+        "R1 and R2 in flight together: their groups share no core",
+        12,
+        c[col][0],
+        True,
+    )
+    notes = [
+        "R3's group overlaps both: the cores it shares with R1 or R2 take it after "
+        "their first command, core 5 at once. This order is",
+        "the drawn case, not a guarantee: a shared core may run two commands in "
+        "flight in either order, unless the later is exclusive.",
+    ]
+    for i, line in enumerate(notes):
+        s.text(BOX_X + 14, end + 24 + 18 * i, line, 12, c["mute"])
+        check(BOX_X + 14 + width(line), LIMIT, line)
+    return height
+
+
+def panel_rounds(s, y):
+    """An X280 thread splits the grid between two programs each round."""
+    c, col = s.c, "a"
+    code = lines_of("19_thread_programs/thread/rounds.c", [105])
+    rows = [
+        (
+            "code",
+            code[0],
+            True,
+            "submit",
+            "to the cores this round gives spin",
+            "rounds.c 105",
+        )
+    ]
+    host, thread = "host", "X280 1, the thread"
+    spin, scale = "cores 0 to k - 1: spin", "cores k to 119: scale"
+    lanes = Lanes(s, y + 66, [host, thread, spin, scale], BOX_X + 176)
+    end = lanes.axis()
+    height = end + 16 + len(plan_rows(rows, BOX_X + 24, LIMIT)) * ROW + 50 - y
+    panel_frame(
+        s,
+        y,
+        height,
+        "an X280 thread runs the rounds; the host sends one command",
+        "19_thread_programs",
+        col,
+    )
+    lanes.hop(host, thread, 3, col)
+    lanes.note(host, 4.5, "one command, ROUNDS", col)
+    for begin, k, spin_end, scale_end in ((7, 40, 40, 44), (50, 64, 84, 88)):
+        lanes.bar(thread, begin, begin + 5, "", "w")
+        lanes.note(thread, begin, f"k = {k}", "w")
+        lanes.hop(thread, scale, begin + 6, col)
+        lanes.hop(thread, spin, begin + 7.2, col)
+        lanes.bar(spin, begin + 8, spin_end, f"SPIN, cores 0 to {k - 1}", col)
+        lanes.bar(scale, begin + 7, scale_end, f"SCALE, cores {k} to 119", col)
+        lanes.hop(spin, thread, spin_end + 0.6, "g")
+        lanes.hop(scale, thread, scale_end + 0.6, "g")
+    lanes.hop(thread, host, 93, "g")
+    lanes.note(host, 80, "its result word", None)
+    top = code_rows(s, BOX_X + 24, end + 16, col, rows)
+    notes = [
+        "Each round the thread reads the round's amounts, chooses k, submits both "
+        "commands and waits. 24 rounds on 120 cores:",
+        "1,023 µs with the thread's split, 7,521 µs with the host feeding a fixed "
+        "split round by round.",
+    ]
+    for i, line in enumerate(notes):
+        s.text(BOX_X + 14, top + 20 + 18 * i, line, 12, c["mute"])
+        check(BOX_X + 14 + width(line), LIMIT, line)
+    return height
+
+
+def panel_cast_time(s, y):
+    """A leader casts the overlay's number; each core loads it when it must."""
+    c = s.c
+    code = lines_of("17_leader_overlay/kernels/reader.cpp", [155])
+    rows = [
+        ("code", code[0], True, "cast", "the overlay's number", "reader.cpp 155"),
+    ]
+    names = ["core 24, the leader", "core 25", "core 26", "core 27"]
+    lanes = Lanes(s, y + 66, names, BOX_X + 176, pitch=26)
+    end = lanes.axis()
+    height = end + 16 + len(plan_rows(rows, BOX_X + 24, LIMIT)) * ROW + 32 - y
+    panel_frame(
+        s,
+        y,
+        height,
+        "a leader casts which code its group runs next",
+        "17_leader_overlay",
+        "b",
+    )
+    for begin, name, load in ((3, "scale", True), (37, "scale", False), (65, "turn", True)):
+        lanes.bar(names[0], begin, begin + 4, "", "g")
+        text = f"the word names {name}" if load else f"{name} again: held, no load"
+        lanes.note(names[0], begin, text, "b")
+        for k, core in enumerate(names[1:]):
+            lanes.hop(names[0], core, begin + 5 + 0.9 * k, "b", sw=1.8)
+        start = begin + 9
+        for core in names:
+            if load:
+                lanes.bar(core, start, start + 8, "load", "y", "loading")
+            first = start + (8 if load else 0)
+            lanes.bar(core, first, first + 13, name, "y")
+    top = code_rows(s, BOX_X + 24, end + 16, "b", rows)
+    s.text(
+        BOX_X + 14,
+        top + 20,
+        "The leader picks from a value it reads; every core of the broadcast, the "
+        "leader too, loads the overlay if it does not hold it, and calls it.",
+        12,
+        c["mute"],
+    )
+    return height
+
+
+def figure_groups(theme):
+    s = Svg(theme, "Groups and commands in time", markers="abwyg")
+    bottom = stack(s, [panel_time, panel_rounds, panel_cast_time])
+    items = [
+        ("lands", "a command lands on every core; cores outside its group skip it"),
+        ("group", "cores work on a command"),
+        ("wait", "R3, the third command"),
+        ("a", "a command submitted, or acknowledged by its leader"),
+        ("g", "an event back"),
+        ("decide", "the thread decides"),
+        ("b", "a cast of a word"),
+        ("loading", "an overlay being loaded"),
+        ("part", "an overlay called"),
+    ]
+    end = key_row(s, bottom + 2, items)
+    return s.finish(int(end + 2))
+
+
+def panel_submit(s, y):
+    """The command, its group on the grid, the reports and the acknowledgement."""
+    col = "a"
+    code = lines_of("01_mapcollect/README.md", [40, 41, 42], joint=True)
+    rows = [
+        ("head", "01_mapcollect · README.md 40-42", "submit", "a handler, a group, arguments"),
+        ("code", code[0], False),
+        ("code", code[1], True),
+        ("code", code[2], False),
+    ]
+    x = BOX_X + 24
+    top = code_rows(s, x, y + 36, col, rows)
+    frag = Frag(
+        s,
+        BOX_X + 40,
+        top + 30,
+        list(range(17)),
+        [2, ("gap", 32, None), 3],
+        pitch=44,
+        tile=40,
+    )
+    height = frag.bottom + 18 - y
+    panel_frame(
+        s, y, height, "the simplest program: a command to a core group", "01_mapcollect", col
+    )
+    low = frag.box(1, 2)[1] + 40
+    first = frag.cx(1)
+    s.poly([(frag.cx(12), low + 11), (first + 8, low + 11), (first + 8, low + 2)], col, 1.8)
+    s.chip(frag.cx(9), low + 11, "each core reports to core 0", col)
+    s.poly(
+        [
+            (first - 8, low + 2),
+            (first - 8, low + 25),
+            (frag.cx(8), low + 25),
+            (frag.cx(8), frag.box(8, 3)[1] - 3),
+        ],
+        col,
+    )
+    s.chip(frag.cx(4) + 22, low + 25, "core 0 acknowledges to X280 0", col)
+    group = {core_at(k): col for k in range(8)}
+    card_tiles(s, frag, {**group, (8, 3): col})
+    return height
+
+
+def held_kind(index):
+    """The overlay core `index` holds in the drawn case: 0 plain, 1 sparse, 2 dense."""
+    return (index // 3 + index // 12) % 3
+
+
+def panel_split_card(s, y):
+    """The thread split on the whole card: who talks to whom, which code where."""
+    c = s.c
+    frag = Frag(
+        s, BOX_X + 40, y + 62, list(range(17)), list(range(12)), pitch=28, tile=24
+    )
+    height = frag.bottom + 16 - y
+    panel_frame(
+        s,
+        y,
+        height,
+        "a richer program: every core pulls its work and its code",
+        "18_thread_split",
+        "y",
+    )
+
+    def box(index):
+        return frag.box(*core_at(index))
+
+    for first, last in ((1, 6), (11, 16)):
+        a, b = frag.box(first, 2), frag.box(last, 11)
+        s.rect(
+            a[0] - 2,
+            a[1] - 2,
+            b[0] + b[2] - a[0] + 4,
+            b[1] + b[3] - a[1] + 4,
+            "none",
+            c["a"][0],
+            rx=4,
+            sw=1.4,
+            dash="6 4",
+            layer=2,
+        )
+    d0, x1 = frag.box(8, 3), frag.box(8, 9)
+    cy = frag.cy(3)
+    s.line(d0[0] - 3, cy, frag.box(6, 3)[0] + 24 + 4, cy, "a", 2.6)
+    s.line(d0[0] + d0[2] + 3, cy, frag.box(11, 3)[0] - 4, cy, "a", 2.6)
+    lane = frag.cx(7)
+    s.poly(
+        [
+            (d0[0] + 6, d0[1] + d0[3] + 3),
+            (d0[0] + 6, frag.cy(4)),
+            (lane - 6, frag.cy(4)),
+            (lane - 6, frag.cy(9) - 6),
+            (x1[0] - 3, frag.cy(9) - 6),
+        ],
+        "w",
+        1.8,
+        tail=True,
+    )
+    left, right = box(89), box(90)
+    s.line(left[0] + left[2] + 2, frag.cy(9) + 5, x1[0] - 3, frag.cy(9) + 5, "w", 1.8, tail=True)
+    s.line(right[0] - 2, frag.cy(9), x1[0] + x1[2] + 3, frag.cy(9), "w", 1.8, tail=True)
+    bank, core = frag.box(9, 11), box(114)
+    s.line(bank[0] + bank[2] + 2, frag.cy(11), core[0] - 3, frag.cy(11), "y", 2.2)
+    hot = {core_at(k): "y" for k in range(120)}
+    hot[(8, 3)] = "a"
+    card_tiles(
+        s,
+        frag,
+        hot,
+        strong=[core_at(k) for k in range(120) if held_kind(k) == 2],
+        soft=[core_at(k) for k in range(120) if held_kind(k) == 0],
+        compact=True,
+    )
+    x = frag.right + 22
+    steps = [
+        ("a", ["PASS: one command to all 120", "cores, sent by the thread on X280 1"]),
+        ("w", ["each core pulls its ranges from its", "X280 core; an answer is a range", "and a word"]),
+        ("y", ["the word names an overlay; the", "core loads it from DRAM if no slot", "holds it"]),
+        ("w", ["the core tells the kinds its range", "held; the thread picks the next", "word from them"]),
+    ]
+    yy = y + 64
+    for colour, lines in steps:
+        s.line(x, yy - 4, x + 24, yy - 4, colour, tail=colour == "w")
+        for i, line in enumerate(lines):
+            s.text(x + 34, yy + 18 * i, line, 12, c["fg"])
+            check(x + 34 + width(line), LIMIT, line)
+        yy += 18 * len(lines) + 10
+    for k, (kind, name) in enumerate((("pale", "plain"), ("part", "sparse"), ("full", "dense"))):
+        fill = {"pale": c["y"][2], "part": c["y"][1], "full": c["y"][0]}[kind]
+        s.rect(x, yy + 8 + 26 * k, 22, 16, fill, c["y"][0], rx=3)
+        s.text(x + 34, yy + 21 + 26 * k, f"a core that holds {name}", 12, c["fg"])
+    s.text(x, yy + 8 + 26 * 3 + 12, "(a drawn case; the reader has two slots)", 12, c["mute"])
+    return height
+
+
+def panel_split_time(s, y):
+    """One core of the thread split in time: pull, load, call, tell."""
+    c = s.c
+    code = lines_of(
+        "18_thread_split/kernels/reader.cpp", [47, 64, 66, 72, 79], drop_comment=(47, 66)
+    )
+    labels = [
+        ("pull", "a range, and a word with it"),
+        ("names it", "the word is the overlay"),
+        ("load", "nothing moves when a slot holds it"),
+        ("call", "on the range"),
+        ("tell", "the kinds the range held"),
+    ]
+    rows = [("head", "18_thread_split · reader.cpp 47, 64, 66, 72, 79")]
+    rows += [
+        ("code", text, k in (0, 2, 3, 4), *labels[k]) for k, text in enumerate(code)
+    ]
+    x280, reader, rest = "its X280 core", "the core's reader", "compute and writer"
+    lanes = Lanes(s, y + 66, [x280, reader, rest], BOX_X + 150, pitch=42)
+    end = lanes.axis()
+    height = end + 16 + len(plan_rows(rows, BOX_X + 24, LIMIT)) * ROW + 14 - y
+    panel_frame(
+        s, y, height, "one core in time: pull, load, call, tell", "18_thread_split", "w"
+    )
+    t = 2
+    for word, load in (("sparse", True), ("sparse", False), ("dense", True)):
+        lanes.hop(reader, x280, t, "w")
+        lanes.hop(x280, reader, t + 2.2, "w")
+        lanes.note(x280, t + 3.4, word, "y")
+        start = t + 4
+        if load:
+            lanes.bar(reader, start, start + 7, "load", "y", "loading")
+            if word == "dense":
+                lanes.bar(rest, start + 1, start + 7, "load", "y", "loading")
+            start += 7
+        if word == "dense":
+            lanes.bar(reader, start, start + 8, "dense", "y")
+            lanes.hop(reader, rest, start + 8.8, "g")
+            lanes.bar(rest, start + 9.6, start + 22, "dense", "y")
+            start += 22
+        else:
+            lanes.bar(reader, start, start + 14, word, "y")
+            start += 14
+        lanes.hop(reader, x280, start + 1.2, "w", dash="3 3")
+        t = start + 4
+    lanes.hop(reader, x280, t, "w")
+    lanes.hop(x280, reader, t + 2.2, "w")
+    lanes.note(x280, t - 9, "none: done", None)
+    code_rows(s, BOX_X + 24, end + 16, "w", rows)
+    return height
+
+
+def panel_gain(s, y):
+    """What choosing the code for each range gains: the example's own table."""
+    c = s.c
+    passes = [
+        ("plain for everything", 4888, False),
+        ("sparse for everything (the best single)", 4222, False),
+        ("dense for everything", 4820, False),
+        ("the host's split, fixed per core", 3934, False),
+        ("the thread's choice per range", 3158, True),
+    ]
+    x0, x1 = BOX_X + 290, RIGHT - 110
+    height = 44 + len(passes) * 24 + 36
+    panel_frame(
+        s, y, height, "what choosing the code gains", "18_thread_split, 120 cores", "y"
+    )
+    for k, (name, micros, chosen) in enumerate(passes):
+        yy = y + 44 + 24 * k
+        w = (x1 - x0) * micros / 5000
+        s.text(x0 - 12, yy + 13, name, 12, c["fg"], chosen, anchor="end")
+        if chosen:
+            s.rect(x0, yy, w, 18, c["y"][1], c["y"][0], rx=3)
+        else:
+            s.rect(x0, yy, w, 18, c["cell"], c["rule"], rx=3)
+        s.text(x0 + w + 8, yy + 13, f"{micros:,} µs", 12, c["fg"], chosen)
+    s.text(
+        BOX_X + 14,
+        y + height - 14,
+        "A whole pass by the thread's clock. The thread's choice loads 173 overlays in "
+        "all, at most 4 on a core.",
+        12,
+        c["mute"],
+    )
+    return height
+
+
+def figure_mapcollect(theme):
+    s = Svg(theme, "One program on the grid", markers="awyg")
+    bottom = stack(s, [panel_submit, panel_split_card, panel_split_time, panel_gain])
+    items = [
+        ("group", "a command's group"),
+        ("tile", "another core: it skips the command"),
+        ("dram", "DRAM bank"),
+        ("x280d", "X280 0 (X0), the dispatcher"),
+        ("x280", "X280 1 (X1), the thread"),
+        ("off", "fused off"),
+        ("loading", "an overlay being loaded"),
+        ("part", "an overlay called"),
+        ("a", "a command"),
+        ("ring", "a port, or the thread's ring"),
+        ("g", "a job handed on"),
+    ]
+    end = key_row(s, bottom + 2, items)
+    return s.finish(int(end + 2))
+
+
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "docs" / "images"
     out.mkdir(parents=True, exist_ok=True)
+    figures = {
+        "card": figure_card,
+        "breakpoints": figure_patterns,
+        "placement": figure_placement,
+        "groups": figure_groups,
+        "mapcollect": figure_mapcollect,
+    }
     for theme in THEMES:
-        (out / f"breakpoints-{theme}.svg").write_text(figure_patterns(theme) + "\n")
-        (out / f"placement-{theme}.svg").write_text(figure_placement(theme) + "\n")
+        for name, draw in figures.items():
+            (out / f"{name}-{theme}.svg").write_text(draw(theme) + "\n")
 
 
 if __name__ == "__main__":
