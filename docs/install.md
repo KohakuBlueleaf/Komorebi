@@ -1,6 +1,6 @@
 ---
 title: Install
-summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels on PyPI (komorebi-tt and komorebi-runtime, 0.1.0), and checking the host with kmr doctor.
+summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels on PyPI (komorebi-tt 0.2.0 and komorebi-runtime 0.81.1.4), and checking the host with kmr doctor.
 tags:
   - overview
   - install
@@ -8,19 +8,20 @@ tags:
 
 # Install
 
-Komorebi 0.1.0 is on PyPI as `komorebi-tt` and `komorebi-runtime`, a first release for one
-card model, the Blackhole P150A. Komorebi runs in two ways:
+Komorebi 0.2.0 is on PyPI as `komorebi-tt` and `komorebi-runtime`, for one card model, the
+Blackhole P150A: one card, or two joined by their Ethernet links ([two cards](#two-cards)).
+Komorebi runs in two ways:
 
 - **from a clone** against a tt-metal source tree you build ([from a clone](#from-a-clone),
   [running on a card](#running-on-a-card)): the way to develop Komorebi itself;
 - **from the two wheels**, `komorebi-tt` and `komorebi-runtime`, with no tt-metal tree:
-  installed from PyPI ([from 0.1.0: the two wheels](#from-010-the-two-wheels)) or built
-  locally ([the runtime package](#the-runtime-package)).
+  installed from PyPI ([from 0.1.0: the two wheels](#from-010-the-two-wheels), which is
+  also how 0.2.0 is installed) or built locally ([the runtime package](#the-runtime-package)).
 
 What works is the Python package
 (`kmr doctor`, `kmr build`, the layout helpers), the host API that runs a program on a
-card under the dispatcher ([host API](reference/host.md)), the example
-`examples/01_mapcollect`, and the tests.
+card under the dispatcher ([host API](reference/host.md)), the X280 threads, the
+examples and the programs of `projects/`, and the tests.
 
 ## Requirements
 
@@ -101,7 +102,7 @@ packaging/runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 packaging/runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
 pip install dist/komorebi_runtime-0.81.1.4-py3-none-manylinux_2_38_x86_64.whl \
-    dist/komorebi_tt-0.1.0-cp312-abi3-manylinux_2_32_x86_64.whl
+    dist/komorebi_tt-0.2.0-cp312-abi3-manylinux_2_32_x86_64.whl
 kmr setup                                      # the RISC-V compiler, then the card
 kmr doctor                                     # "from komorebi-runtime 0.81.1.4"
 ```
@@ -118,7 +119,7 @@ card is prepared once with `kmr setup` ([below](#setting-up-once)).
 
 ## From 0.1.0: the two wheels
 
-From the 0.1.0 release, both wheels are installed from PyPI. Wheels built as in
+From the 0.1.0 release on, both wheels are installed from PyPI, 0.2.0 among them. Wheels built as in
 [the runtime package](#the-runtime-package) take the same steps, with the two files in
 place of the `pip install` line. You need Linux on x86-64, Python 3.13 and a Blackhole
 P150A; no tt-metal tree, no compiler of your own, neither `ttnn` nor `torch`.
@@ -132,7 +133,30 @@ kmr doctor                                     # "from komorebi-runtime 0.81.1.4
 
 `pip install komorebi-tt` without `[runtime]` installs the framework alone, which
 needs a tt-metal tree as from a clone. Leave `TT_METAL_HOME` unset: when it is set,
-Komorebi uses that tree instead of the runtime package.
+Komorebi uses that tree instead of the runtime package. The other extras are `dev`
+(the checks of [development](development.md)) and `scenes` (pillow, only to decode the
+public scenes' textures).
+
+### What 0.2.0 asks for
+
+- **The runtime wheel `komorebi-runtime` 0.81.1.4.** The extra `runtime` names
+  `komorebi-runtime>=0.81.1.3,<0.81.2`, and `pip install -U "komorebi-tt[runtime]"` takes
+  the newest build. Build 4 is the first with 1250, 1350 and 1500 MHz in the X280 clock
+  table, and the session's clock is 1350 MHz unless it is given one
+  ([host API](reference/host.md#session)). With build 3 (0.81.1.3, the runtime of 0.1.0)
+  the session finds that 1350 is not offered, says so in its log, and runs the X280 at
+  1000 MHz. `kmr doctor` says `from komorebi-runtime 0.81.1.4`.
+- **The card's preparation is as above:** `kmr setup` once for each card.
+
+### Two cards
+
+A session over two cards, `km.Session(cards=[0, 1])` ([islands](reference/islands.md)),
+needs two Blackhole P150A cards in one machine, joined by their Ethernet links (four, on
+the pair it has run on), and `kmr setup --card N` for each card. The session sets
+`TT_VISIBLE_DEVICES` to the cards it is given, and raises `ValueError` if the variable
+already names others. Two cards have been run from a clone against a tt-metal tree
+([from a clone](#from-a-clone), [running on a card](#running-on-a-card)); the wheels have
+been run on one card.
 
 ### Setting up once
 
@@ -158,7 +182,7 @@ the repository at the release's tag, as a clone or as the source archive of the 
 release:
 
 ```
-git clone --depth 1 --branch v0.1.0 <this repository> komorebi-src
+git clone --depth 1 --branch v0.2.0 <this repository> komorebi-src
 cp -r komorebi-src/examples komorebi-src/tutorial .
 cd tutorial/04_hello_core && python hello.py        # the command is done
 ```

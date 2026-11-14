@@ -88,7 +88,7 @@ check fails with the error `bank` otherwise), so a program's regions follow the 
 - **A region a Tensix group and a thread share lives in the thread's bank.** Tensix
   cores reach every bank over the NoC; the thread reaches only its own.
 
-Measured at the session's 1,000 MHz, four cores per cluster: each cluster reads and
+Measured with the X280 at 1,000 MHz, four cores per cluster: each cluster reads and
 writes its bank at about 1.2 GB/s, alone or with the others (the limit is per cluster,
 not per bank: clusters 2 and 3 together move 2.3 GB/s of bank 7, all three 3.5 GB/s);
 one cluster wakes another and gets an answer in 0.66 µs through a flag in the other's
@@ -131,7 +131,7 @@ exclusive command whose group overlaps one in flight, a full job queue, no free 
 rejected at once with reason 11, and the kernel then sends the thread one wake event
 (`KMX_EVENT_WAKE`, handle 0) when a slot frees or the queue submits a job: the thread submits
 the command again after it (`kmx_poll` returns the wake; `kmx_wait` passes it over). A round of two commands submitted and waited for in turn takes
-about 53 microseconds at the session's 1000 MHz (50 at the 1750 MHz opt-in); the
+about 53 microseconds at 1000 MHz (50 at the 1750 MHz opt-in); the
 kernel's loop looks at one work cluster's ring per pass, each every fourth pass.
 
 ## Writing one
@@ -197,7 +197,7 @@ back. That is why every loop in a thread terminates:
 `kmx_time()` counts the 50 MHz timer (`KMX_TICKS_PER_SECOND`).
 
 What it costs, measured at 1750 MHz (the experiment sets it; the session's default,
-1000 MHz, is slower; one PLL clocks all four clusters): the cluster reads its bank at
+1350 MHz, is slower; one PLL clocks all four clusters): the cluster reads its bank at
 about 1.3 GB/s and writes it at about 1.3 to 1.8 GB/s with four cores, and a flush or invalidate
 sweep runs at 5 to 8 GB/s of region. Prefix sums over 119 x 1,024 counters take about
 1.7 ms on four cores (a decision per frame, not per handler); see

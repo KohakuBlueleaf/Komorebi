@@ -507,9 +507,11 @@ Each core's dict holds what `komorebi.state.core_state` gives (the gave-up words
 counters). `live` has, per kernel (`reader`, `writer`, `unpack`, `math`, `pack`), the
 runtime wait it is in (a where code's name, or None), the sequence and slot of the
 command it runs, and the commands it has left; `given_up` is the core's count of
-commands given up. `trace` holds the entries the trace has (empty without a trace). A
-core the dispatcher could not reach is `{"core": i, "read": False}`. `run.inspect_ticks`
-is how long the read took, in the X280's 50 MHz timer.
+commands given up. `trace` holds the entries the trace has (empty without a trace).
+`read` is True for a core that was read, and `reset` is a bool, True for a core the
+dispatcher reset when a give-up ended. A core the dispatcher could not reach is
+`{"core": i, "read": False, "reset": reset}`. `run.inspect_ticks` is how long the read
+took, in the X280's 50 MHz timer.
 
 ```python
 handle = run.submit("hang", (0, 2))

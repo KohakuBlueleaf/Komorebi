@@ -584,7 +584,7 @@ clusters' tiles and their banks' DRAM tiles for every thread on the card.
 
 On work cluster 1 of a p150a at 1,750 MHz: the bank read at about 1.3 GB/s and written
 at 1.3 to 1.8 GB/s with four cores; a flush or invalidate sweep at 5 to 8 GB/s of region
-(`experiments/x280_threads/`). At the session's 1,000 MHz on each of clusters 1 to 3:
+(`experiments/x280_threads/`). At 1,000 MHz on each of clusters 1 to 3:
 about 1.2 GB/s read and written per cluster, alone or together (three at once 3.5 GB/s);
 a push into the other bank 2.3 GB/s, a pull 0.024 GB/s; invalidate 4.6 GB/s, flush 4.3 GB/s
 (`experiments/work_clusters/`).

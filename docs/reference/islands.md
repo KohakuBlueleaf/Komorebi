@@ -123,7 +123,7 @@ written for islands runs on one card unchanged.
   session tensors on every core, rows of the table too.
 - A link core is named outside the ranks: a command's group with first
   `KM_GROUP_LINK_BASE + k` and count n names link cores k to k + n - 1 of the island
-  that takes it (`graph.link_group(island, k, n)`). Such a group is never cut by
+  that takes it (`graph.link_group(island, k, count)`). Such a group is never cut by
   island and never crosses; on a core, its rank is its link-core index less k. A link
   core is in no group of ranks. A timed-out command to link cores names them as
   `link core k (island i, core c)`.
@@ -326,7 +326,7 @@ answers the core's own island. `tensor.accessor_args()` is the same on every isl
 A part's fourth word is its bytes in each bank (an interleaved buffer's pages over the
 8 banks, rounded up, times the aligned page bytes), the bound of `km::SizedTensor`.
 
-`session.bank_range(island, bank, address, bytes)` names `bytes` of one DRAM bank of
+`session.bank_range(island, bank, address, size)` names `size` bytes of one DRAM bank of
 one island from bank address `address` (a multiple of 64), such as an X280 thread's
 region (`run.island(i).threads[cluster].regions.address(name)` gives its bank and
 address): it takes an entry of the table as a tensor does and returns an object whose

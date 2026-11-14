@@ -393,7 +393,7 @@ count acknowledgements and never use a returned value.
 
 **Cost.** K cores of the group take no message. Every core's control block grows by the
 tail lines (`KM_CONTROL_TAILS`): 2,112 bytes of L1 on every core for every
-program, dynamic or not. Card 0, 120 cores, X280 at the session's 1000 MHz, 10000 messages
+program, dynamic or not. Card 0, 120 cores, X280 at 1000 MHz, 10000 messages
 of 100 forwards (10^6 forwards), submit to completion: 11.8 ms with K = 2 (median of 30 runs,
 11.6 to 12.0 ms), 11.6 ms with K = 1 (10 runs); 10^5 forwards 3.43 ms, 10^3 forwards 172 µs.
 At the 1750 MHz opt-in: 11.8 ms (median of 91 runs), 11.6, 3.44 ms and 158 µs. In the probe
