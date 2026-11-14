@@ -164,10 +164,14 @@ def main():
         log("loaded on every island")
         if args.across:
             report.update(across(session, run, args, source, far, output))
-        elif args.put:
+            if args.put:  # both: the far read's last round checked now
+                (got,) = session.read_bf16(output)
+                report["across_check"] = check(exact, got, report["map_groups"])
+                log(f"far read's last round: {report['across_check']}")
+        if args.put:
             report.update(put(session, run, args, source, output, held, ranks))
             output = held  # the last round's
-        else:
+        elif not args.across:
             report.update(commands(session, run, args, source, output, ranks))
         if args.hang:
             report.update(hang(session, run, source, ranks, exact))
@@ -190,6 +194,8 @@ def main():
         and report.get("hang_named_island", True)
         and report.get("read_island1_in_run_exact", True)
         and report.get("crossings_agree", True)
+        and report.get("across_check", {}).get("wrong_tiles", 0) == 0
+        and report.get("put_crossings_agree", True)
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
@@ -337,9 +343,22 @@ def put(session, run, args, source, output, held, ranks):
 
     out = {"map_groups": [list(group)], "links": session.links}
     for name, target, placed in (("split", output, 0), ("put", held, 1)):
+        before = run.crossings()
         spent = median([one_round(target, placed) for _ in range(args.map_rounds)])
+        moved = run.crossings() - before
         out[f"map_{name}_us"] = spent
         log(f"MAP on {group} storing {name}: {spent} us a round")
+        log(f"crossed while storing {name}:\n{moved}")
+        out[f"crossed_{name}"] = {
+            f"{a}->{b}": moved.total(a, b) for a, b in ((0, 1), (1, 0))
+        }
+    # island 1's ranks put one page each a round across; nothing crosses for split
+    pages = args.map_rounds * session.graph.count(1)
+    came = out["crossed_put"]["1->0"]
+    out["put_crossings_agree"] = came["pages"] == pages and not any(
+        out["crossed_split"][way]["pages"] for way in ("0->1", "1->0")
+    )
+    log(f"put pages {came['pages']} of {pages}")
     return out
 
 
