@@ -239,7 +239,7 @@ def hang(session, run, source, ranks, exact):
         out["hang"] = str(error)[:400]
         out["hang_recovered"] = error.recovered
         out["hang_named_island"] = (
-            error.island == 1 and error.given_up and named in out["hang"]
+            error.island == 1 and error.given_up and named in str(error)
         )
     log(f"HANG on group {group}: {out['hang']}")
     out["hang_named_island"] = out.get("hang_named_island", False) and (
@@ -304,12 +304,23 @@ def check(exact, got, groups):
     sums = np.cumsum(exact.reshape(-1, TILE, TILE).astype(np.float64), 0)
     prefix = np.concatenate([np.zeros((1, TILE, TILE)), sums])
     got = got.reshape(-1, TILE, TILE)
-    wrong, checked = 0, 0
+    wrong, checked, ranks = 0, 0, []
     for first, count in groups:
         want = rank_sums(prefix, 2 * first, 2 * count, count)
-        wrong += int((got[first : first + count] != want).any(axis=(1, 2)).sum())
+        bad = (got[first : first + count] != want).any(axis=(1, 2))
+        wrong += int(bad.sum())
+        ranks += (first + np.flatnonzero(bad)).tolist()
         checked += count
-    return {"tiles_checked": checked, "wrong_tiles": wrong}
+    out = {"tiles_checked": checked, "wrong_tiles": wrong, "wrong_ranks": ranks[:8]}
+    if ranks:  # the first wrong tile: how far off, and whether it is zeros
+        first = ranks[0]
+        want = rank_sums(prefix, 2 * first, 2, 1)[0]
+        out["first_wrong"] = {
+            "max_error": float(np.abs(got[first] - want).max()),
+            "zeros": bool(not got[first].any()),
+            "rows_wrong": int((got[first] != want).any(axis=1).sum()),
+        }
+    return out
 
 
 if __name__ == "__main__":
