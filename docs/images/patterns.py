@@ -534,12 +534,12 @@ def panel_move(s, y):
 def panel_reduce(s, y):
     """2. Values move to a fixed slot and are reduced."""
     c, col = s.c, "r"
-    emit = lines_of("02_merge_tree/kernels/writer.cpp", [43])
-    arrive = lines_of("02_merge_tree/kernels/reader.cpp", [50])
+    emit = lines_of("02_merge_tree/kernels/writer.cpp", [44])
+    arrive = lines_of("02_merge_tree/kernels/reader.cpp", [55])
     reduce = lines_of("02_merge_tree/kernels/compute.cpp", [69])
     rows = [
-        ("code", emit[0], True, "emit", "into a fixed slot", "writer.cpp 43"),
-        ("code", arrive[0], True, "wait", "for the senders' parts", "reader.cpp 50"),
+        ("code", emit[0], True, "emit", "into a fixed slot", "writer.cpp 44"),
+        ("code", arrive[0], True, "wait", "for the senders' parts", "reader.cpp 55"),
         (
             "code",
             reduce[0],
@@ -582,14 +582,14 @@ def panel_reduce(s, y):
 def panel_cast(s, y):
     """3. One core to a row or a column: a block, and a word."""
     col = "b"
-    send = lines_of("03_broadcast/kernels/broadcast.h", [78])
-    word = lines_of("15_leader/kernels/reader.cpp", [87, 93], drop_comment=(93,))
+    send = lines_of("03_broadcast/kernels/broadcast.h", [85])
+    word = lines_of("15_leader/kernels/reader.cpp", [83, 89], drop_comment=(89,))
     rows = [
-        ("head", "03_broadcast · broadcast.h 78", "cast", "a block to the row"),
+        ("head", "03_broadcast · broadcast.h 85", "cast", "a block to the row"),
         ("code", send[0], True),
         (
             "head",
-            "15_leader · reader.cpp 87, 93",
+            "15_leader · reader.cpp 83, 89",
             "cast",
             "a word, the same on every core",
         ),
@@ -628,7 +628,7 @@ def panel_x280(s, y):
     tell = lines_of("10_x280_ports/kernels/reader.cpp", [96])
     ask = lines_of("10_x280_ports/kernels/reader.cpp", [88])
     pull = lines_of("10_x280_ports/kernels/reader.cpp", [64])
-    both = lines_of("18_thread_split/kernels/reader.cpp", [47], drop_comment=(47,))
+    both = lines_of("18_thread_split/kernels/reader.cpp", [55], drop_comment=(55,))
     rows = [
         ("head", "10_x280_ports · reader.cpp 96, 88, 64"),
         ("code", tell[0], True, "tell", "latest wins"),
@@ -636,7 +636,7 @@ def panel_x280(s, y):
         ("code", pull[0], True, "pull", "the next range"),
         (
             "head",
-            "18_thread_split · reader.cpp 47",
+            "18_thread_split · reader.cpp 55",
             "pull",
             "a range, and a word with it",
         ),
@@ -739,9 +739,9 @@ def panel_commands(s, y):
 def panel_both(s, y):
     """6. Both data-movement CPUs of a core on one stream between DRAM and L1."""
     c, col = s.c, "p"
-    code = lines_of("11_movement/kernels/movement.cpp", [16, 25, 39])
+    code = lines_of("11_movement/kernels/movement.cpp", [15, 24, 37])
     rows = [
-        ("head", "movement.cpp 16, 25, 39"),
+        ("head", "movement.cpp 15, 24, 37"),
         ("code", code[0], True, "movers", "one source runs on both"),
         ("code", code[1], False, "pattern"),
         ("code", code[2], True, "move", "this mover's blocks"),
@@ -884,10 +884,10 @@ def panel_load_call(s, y):
     """1. A core loads an overlay from DRAM into a slot of its L1 and calls it."""
     col = "y"
     code = lines_of(
-        "12_overlays/kernels/reader.cpp", [14, 17, 25], drop_comment=(14, 17)
+        "12_overlays/kernels/reader.cpp", [15, 18, 26], drop_comment=(15, 18)
     )
     rows = [
-        ("head", "12_overlays · reader.cpp 14, 17, 25"),
+        ("head", "12_overlays · reader.cpp 15, 18, 26"),
         ("code", code[0], False, "names it", "nothing moves"),
         (
             "code",
@@ -1005,25 +1005,25 @@ def panel_decided(s, y):
     """3. Another party decides the code: a leader, an X280 core, run.load."""
     c, col = s.c, "y"
     cast = lines_of(
-        "17_leader_overlay/kernels/reader.cpp", [157, 167, 77, 78], drop_comment=(167,)
+        "17_leader_overlay/kernels/reader.cpp", [155, 165, 77, 78], drop_comment=(165,)
     )
-    pull = lines_of("18_thread_split/kernels/reader.cpp", [47, 64], drop_comment=(47,))
-    load = lines_of("16_two_programs/two_programs.py", [354], drop_comment=(354,))
+    pull = lines_of("18_thread_split/kernels/reader.cpp", [55, 72], drop_comment=(55,))
+    load = lines_of("16_two_programs/two_programs.py", [358], drop_comment=(358,))
     x = BOX_X + 322
     rows_a = [
-        ("head", "17_leader_overlay · reader.cpp 157, 167, 77, 78"),
+        ("head", "17_leader_overlay · reader.cpp 155, 165, 77, 78"),
         ("code", cast[0], True, "cast"),
         ("code", cast[1], False),
         ("code", cast[2], False),
         ("code", cast[3], True, "load", "and call it"),
     ]
     rows_b = [
-        ("head", "18_thread_split · reader.cpp 47, 64"),
+        ("head", "18_thread_split · reader.cpp 55, 72"),
         ("code", pull[0], True, "pull"),
         ("code", pull[1], True, "names it"),
     ]
     rows_c = [
-        ("head", "16_two_programs · two_programs.py 354"),
+        ("head", "16_two_programs · two_programs.py 358"),
         ("code", load[0], True, "run.load", "another program"),
     ]
     heights = [
@@ -1357,6 +1357,29 @@ def panel_card(s, y):
     s.line(bank[0] + bank[2] + 2, frag.cy(11), core[0] - 3, frag.cy(11), "y", 2.6)
     hot[core_at(114)] = "y"
 
+    # tensor pages between a core and the host's memory, through the PCIe tile
+    core, pcie = box(1), frag.box(2, 0)
+    xc = pcie[0] + pcie[2] / 2
+    s.line(xc, core[1] - 3, xc, pcie[1] + pcie[3] + 3, "g", 2.4, tail=True)
+    s.poly([(xc, pcie[1] - 3), (xc, y + 48), (mid - 203, y + 48)], "g", 2.4, tail=True)
+    s.text(xc - 8, y + 80, "tensor pages", 12, c["mute"], anchor="end")
+    hot[core_at(1)] = "g"
+
+    # the Ethernet tiles: links to another card
+    for col in (15, 16):
+        eth = frag.box(col, 1)
+        xe = eth[0] + eth[2] / 2
+        s.line(xe, eth[1] - 3, xe, y + 66, "g", 2.4, tail=True)
+    last = frag.box(16, 1)
+    s.text(
+        last[0] + last[2],
+        y + 52,
+        "links to another card",
+        12,
+        c["mute"],
+        anchor="end",
+    )
+
     card_tiles(s, frag, hot)
     for index, colour in ((24, "a"), (78, "b"), (92, "b")):  # who sends
         px, py, w, h = box(index)
@@ -1391,6 +1414,18 @@ def panel_ways(s, y):
             "overlays",
             "code loaded from DRAM into a slot of a core's L1",
             "12, 16 to 20",
+        ),
+        (
+            "g",
+            "host channel",
+            "tensor pages between cores and the host's memory, by PCIe",
+            "session.write",
+        ),
+        (
+            "g",
+            "links",
+            "commands, pages and messages to another card, by Ethernet",
+            "25, 26",
         ),
     ]
     height = 36 + len(ways) * 20 + 10
@@ -1473,6 +1508,8 @@ def figure_card(theme):
         "experiment). Columns 7 and 10 are the",
         "Tensix columns fused off on the card used here. The leader acknowledges its "
         "command to X280 0 on NoC1.",
+        "A thread reaches the other banks with kmx_fetch, and another card's cores "
+        "over the links: each has a figure of its own below.",
     ]
     end = key_row(s, bottom + 2, items, note)
     return s.finish(int(end + 10))
@@ -1648,9 +1685,9 @@ def panel_rounds(s, y):
 def panel_cast_time(s, y):
     """A leader casts the overlay's number; each core loads it when it must."""
     c = s.c
-    code = lines_of("17_leader_overlay/kernels/reader.cpp", [157])
+    code = lines_of("17_leader_overlay/kernels/reader.cpp", [155])
     rows = [
-        ("code", code[0], True, "cast", "the overlay's number", "reader.cpp 157"),
+        ("code", code[0], True, "cast", "the overlay's number", "reader.cpp 155"),
     ]
     names = ["core 24, the leader", "core 25", "core 26", "core 27"]
     lanes = Lanes(s, y + 66, names, BOX_X + 176, pitch=26)
@@ -1713,11 +1750,11 @@ def figure_groups(theme):
 def panel_submit(s, y):
     """The command, its group on the grid, the reports and the acknowledgement."""
     col = "a"
-    code = lines_of("01_mapcollect/README.md", [40, 41, 42], joint=True)
+    code = lines_of("01_mapcollect/README.md", [41, 42, 43], joint=True)
     rows = [
         (
             "head",
-            "01_mapcollect · README.md 40-42",
+            "01_mapcollect · README.md 41-43",
             "submit",
             "a handler, a group, arguments",
         ),
@@ -1899,8 +1936,8 @@ def panel_split_time(s, y):
     """One core of the thread split in time: pull, load, call, tell."""
     code = lines_of(
         "18_thread_split/kernels/reader.cpp",
-        [47, 64, 66, 72, 79],
-        drop_comment=(47, 66),
+        [55, 72, 74, 80, 87],
+        drop_comment=(55, 74),
     )
     labels = [
         ("pull", "a range, and a word with it"),
@@ -1909,7 +1946,7 @@ def panel_split_time(s, y):
         ("call", "on the range"),
         ("tell", "the kinds the range held"),
     ]
-    rows = [("head", "18_thread_split · reader.cpp 47, 64, 66, 72, 79")]
+    rows = [("head", "18_thread_split · reader.cpp 55, 72, 74, 80, 87")]
     rows += [
         ("code", text, k in (0, 2, 3, 4), *labels[k]) for k, text in enumerate(code)
     ]

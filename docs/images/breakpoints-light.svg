@@ -89,13 +89,13 @@
 <text x="278.0" y="302.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::reduce_emit(</text>
 <text x="407.6" y="302.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">emit</text>
 <text x="444.2" y="302.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">into a fixed slot</text>
-<text x="804.0" y="302.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">writer.cpp 43</text>
+<text x="804.0" y="302.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">writer.cpp 44</text>
 <rect x="268.0" y="307.0" width="545.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
 <rect x="268.0" y="307.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
 <text x="278.0" y="321.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::reduce_arrive(</text>
 <text x="422.0" y="321.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">wait</text>
 <text x="457.2" y="321.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">for the senders' parts</text>
-<text x="804.0" y="321.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">reader.cpp 50</text>
+<text x="804.0" y="321.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">reader.cpp 55</text>
 <text x="278.0" y="339.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">compute.cpp 69</text>
 <text x="383.4" y="339.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">reduce</text>
 <text x="433.7" y="339.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">adds them in rank order</text>
@@ -139,13 +139,13 @@
 <rect x="50.0" y="476.0" width="34.0" height="34.0" rx="3" fill="none" stroke="#1b7c83" stroke-width="2.2"/>
 <rect x="50.0" y="540.0" width="34.0" height="34.0" rx="3" fill="none" stroke="#1b7c83" stroke-width="2.2"/>
 <text x="50.0" y="620.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the core at the row's start sends; a column the same way</text>
-<text x="338.0" y="473.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">03_broadcast · broadcast.h 78</text>
+<text x="338.0" y="473.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">03_broadcast · broadcast.h 85</text>
 <text x="523.1" y="473.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1b7c83" text-anchor="start" xml:space="preserve">cast</text>
 <text x="556.4" y="473.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a block to the row</text>
 <rect x="328.0" y="479.0" width="485.0" height="19.0" rx="0" fill="#dff5f5" stroke="none" stroke-width="1"/>
 <rect x="328.0" y="479.0" width="3.0" height="19.0" rx="0" fill="#1b7c83" stroke="none" stroke-width="1"/>
 <text x="338.0" y="493.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">if (!broadcast.cast(block)) {</text>
-<text x="338.0" y="511.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">15_leader · reader.cpp 79, 85</text>
+<text x="338.0" y="511.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">15_leader · reader.cpp 83, 89</text>
 <text x="515.1" y="511.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1b7c83" text-anchor="start" xml:space="preserve">cast</text>
 <text x="548.4" y="511.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a word, the same on every core</text>
 <rect x="328.0" y="517.0" width="485.0" height="19.0" rx="0" fill="#dff5f5" stroke="none" stroke-width="1"/>
@@ -192,7 +192,7 @@
 <text x="338.0" y="753.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">const uint32_t count = port.next(first);</text>
 <text x="641.0" y="753.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">pull</text>
 <text x="672.4" y="753.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the next range</text>
-<text x="338.0" y="771.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">18_thread_split · reader.cpp 47</text>
+<text x="338.0" y="771.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">18_thread_split · reader.cpp 55</text>
 <text x="525.9" y="771.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">pull</text>
 <text x="557.4" y="771.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a range, and a word with it</text>
 <rect x="328.0" y="777.0" width="485.0" height="19.0" rx="0" fill="#ddf4ff" stroke="none" stroke-width="1"/>
@@ -277,7 +277,7 @@
 <rect x="204.0" y="1192.0" width="18.0" height="18.0" rx="3" fill="#ffeff7" stroke="#bf3989" stroke-width="1.5"/>
 <text x="213.0" y="1205.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">B</text>
 <text x="232.0" y="1205.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">pattern AAAB</text>
-<text x="338.0" y="1095.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">movement.cpp 14, 23, 36</text>
+<text x="338.0" y="1095.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">movement.cpp 15, 24, 37</text>
 <rect x="328.0" y="1101.0" width="485.0" height="19.0" rx="0" fill="#ffeff7" stroke="none" stroke-width="1"/>
 <rect x="328.0" y="1101.0" width="3.0" height="19.0" rx="0" fill="#bf3989" stroke="none" stroke-width="1"/>
 <text x="338.0" y="1115.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::Movement movement;</text>
