@@ -29,12 +29,12 @@
 /* host only: the group's cores hold the program in header bits 24 to 31 from now on;
  * a0 = the DRAM address of its record (its table entries and buffers) */
 #define KM_HANDLER_LOAD 240u
-/* host only, served by the runtime's kernels: the group's cores push their slices of
+/* host only, served by the runtime's service overlay: the group's cores push slices of
  * DRAM pages into the session's region of the host channel, or pull them into DRAM */
 #define KM_HANDLER_PUSH 241u
 #define KM_HANDLER_PULL 242u
-/* Handlers 241 to 248 are the runtime's: its reader serves them, and neither the
- * writer nor the compute kernel runs a body for one (one range check in each loop). */
+/* Handlers 241 to 248 are the runtime's: the reader's service overlay serves them, and
+ * no writer or compute kernel runs a body for one (one range check in each loop). */
 #define KM_HANDLER_SERVED_FIRST 241u
 #define KM_HANDLER_SERVED_LAST 248u
 /* A transfer's words a0 to a9: the tensor (bank address, aligned page bytes, first
@@ -56,7 +56,7 @@
 #define KM_CHANNEL_BYTES 0x40000000u /* the host channel: no offset reaches past it */
 /* each of a run's two L1 chunks on every core */
 #define KM_TRANSFER_CHUNK_BYTES 16384u
-/* host or a work cluster's thread, served by the runtime's kernels: the group's cores
+/* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */

@@ -87,10 +87,13 @@ namespace km {
         "the overlay area's lines do not overlap and end before its table"
     );
 
+    // The runtime's service overlay (PUSH, PULL, COPY: a reader part), in every run.
+    constexpr uint32_t kOverlayService = kOverlaysMax - 1;
+
     // The overlay that holds program `program` of the run (a command's program field):
-    // numbers from 63 down, below them the programs' own overlays.
+    // numbers from 62 down, below them the programs' own overlays.
     inline uint32_t program_overlay(uint32_t program) {
-        return kOverlaysMax - 1 - program;
+        return kOverlayService - 1 - program;
     }
 
     // An overlay's entry, at its slot's first byte: the kernel's object, the argument.
@@ -737,6 +740,18 @@ namespace km {
         uint32_t slot_ = 0;
         volatile tt_l1_ptr uint32_t* record_ = nullptr;
     };
+
+#if !defined(COMPILE_FOR_NCRISC)
+    // A PUSH, PULL or COPY: loads the service overlay unless a slot holds it, then
+    // calls it with the command. A failed load gives up (recorded).
+    template <typename Kernel>
+    void serve(Kernel& reader, const km_command_t& command) {
+        Overlay<Kernel> service(reader, kOverlayService);
+        if (service.load()) {
+            service.call(command);
+        }
+    }
+#endif
 
 }  // namespace km
 #else

@@ -944,7 +944,7 @@ class Session:
                 )
             if placed is not None:
                 backend.load_programs(placed, descriptor)
-            elif program.overlays:
+            else:
                 backend.load_overlays(program, descriptor)
             self.log("launch")
             # From here the grid may run: an interrupt is delivered when the launch
@@ -1077,18 +1077,20 @@ def _start_loads(run, placed):
 
 def _common_slots(placed, declared, built):
     """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most kOverlaySlotsMax) of the largest part any program has there."""
+    program, the reader one more for the service overlay, at most kOverlaySlotsMax) of
+    the largest part any program has there."""
     most = overlay.constants()["kOverlaySlotsMax"]
     slots = {}
     for made in built:
-        for part, (_, size) in (made.slots if made else {}).items():
+        for part, (_, size) in made.slots.items():
             slots[part] = max(slots.get(part, 0), size)
     count = declared.count
     out = {}
     for part, size in slots.items():
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
-        out[part] = (wanted or min(len(placed.programs), most), size)
+        service = part == "reader"  # the service overlay's slot beside them
+        out[part] = (wanted or min(len(placed.programs) + service, most), size)
     return overlay.Built({}, out)
 
 
@@ -1430,11 +1432,7 @@ class _Backend:
         port = self.port
         grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
-        area = (
-            overlay.constants()["kOverlayAreaBytes"]
-            if program.overlays or placed is not None
-            else 0
-        )
+        area = overlay.constants()["kOverlayAreaBytes"]  # the service overlay's too
         control = self._control_blocks(cores, grid, port_lines, area)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
@@ -1631,9 +1629,9 @@ class _Backend:
                 )
 
     def load_overlays(self, program, descriptor):
-        """Builds the program's overlays against the kernels just built, puts each
-        part in every DRAM bank, places the slots in L1 (refused, with the L1 budget
-        table, when they do not fit) and writes the overlay area beside each block."""
+        """Builds the program's overlays and the service overlay against the kernels
+        just built, puts each part in every DRAM bank, places the slots in L1 (refused,
+        with the L1 budget table, when they do not fit), writes each overlay area."""
         session, abi_headers = self.session, abi.headers()
         started = time.perf_counter()
         recipes = {}
@@ -1641,8 +1639,12 @@ class _Backend:
             for row in builds:
                 recipe = overlay.Recipe.from_native(row)
                 recipes[recipe.target] = recipe
-        built = overlay.build(
-            program, recipes, native.cache_directory() / "overlays", session.log
+        built = overlay.build_overlays(
+            [*program.overlays.values(), overlay.service()],
+            program.overlay_slots,
+            recipes,
+            native.cache_directory() / "overlays",
+            session.log,
         )
         program.overlays_built = built
         grid = (self.port.grid_x, self.port.grid_y)
@@ -1682,7 +1684,7 @@ class _Backend:
         self.control_rows[:, at : at + len(area)] = area
         self.control.write(self.control_rows)
         session.log(
-            f"overlays {list(program.overlays)} built and placed: slots from "
+            f"overlays {[*program.overlays, 'service']} built and placed: slots from "
             f"{slot_base:#x}, {image.nbytes:,} B of DRAM "
             f"({time.perf_counter() - started:.2f} s)"
         )
@@ -1708,7 +1710,7 @@ class _Backend:
         c = overlay.constants()
         records = {}
         for program in placed.programs:
-            number = c["kOverlaysMax"] - 1 - program.program_field
+            number = c["kOverlayService"] - 1 - program.program_field
             table = []
             for part in overlay.PARTS:
                 row, size = placed_rows.get((number, part), (None, 0))
@@ -1770,13 +1772,13 @@ class _Backend:
                     }
                 )
             held = [placed.programs[index] for index in group.programs]
-            if not held:
-                built.append(None)
-                continue
             made = overlay.build_overlays(
                 [
-                    programs.program_overlay(program, switch=placed.switch)
-                    for program in held
+                    *(
+                        programs.program_overlay(program, switch=placed.switch)
+                        for program in held
+                    ),
+                    overlay.service(),
                 ],
                 declared,
                 recipes,
@@ -1806,16 +1808,21 @@ class _Backend:
             session.log(f"L1 budget of a core of {names}:\n{table}")
             if not fits:
                 raise L1BudgetError(names, table)
-        images = {}
+        images, stored = {}, []
+        service = overlay.constants()["kOverlayService"]
         for made in built:
-            if made is not None:
-                images.update(made.images)
+            mine = {}
+            for key, image in made.images.items():
+                at = key
+                if key[0] == service:  # a copy for each different build of it
+                    same = [k for k, v in images.items() if k[:2] == key and v == image]
+                    at = same[0] if same else (*key, len(images))
+                images[at] = image
+                mine[key] = at
+            stored.append(mine)
         if placed.switch:  # one set of slots, every program's parts fit any core's
             common = _common_slots(placed, declared, built)
-            built = [
-                overlay.Built(made.images if made else {}, common.slots)
-                for made in built
-            ]
+            built = [overlay.Built(made.images, common.slots) for made in built]
             buffers = largest = self.switch_reserve  # the runtime's buffers included
             rows = [
                 ("circular buffers (the largest program)", buffers),
@@ -1832,7 +1839,7 @@ class _Backend:
                 raise L1BudgetError(", ".join(p.name for p in placed.programs), table)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}))
         image = _words(session, image_rows)
-        slot_bytes = max(made.slot_bytes for made in built if made is not None)
+        slot_bytes = max(made.slot_bytes for made in built)
         words = (slot_bytes + overlay.ALIGN) // 4
         floor = L1_BYTES - session.l1()[1] + largest + SLOT_MARGIN
         at = slot_address(4 * words, floor)
@@ -1845,10 +1852,8 @@ class _Backend:
         self.io += [image, slots]
         slot_base = -(-slots.address // overlay.ALIGN) * overlay.ALIGN
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
-        for group, made in zip(placed.groups, built, strict=True):
-            if made is None:
-                continue
-            mine = {key: placed_rows[key] for key in made.images}
+        for group, made, keys in zip(placed.groups, built, stored, strict=True):
+            mine = {key: placed_rows[at] for key, at in keys.items()}
             area = overlay.area_words(
                 made, mine, image.address, image.aligned_page_bytes, slot_base
             )

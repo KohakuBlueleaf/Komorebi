@@ -29,7 +29,7 @@ run = session.load(program)  # builds, checks and places every part
 
 | Call | What it does |
 |---|---|
-| `Program.overlay(name, parts, number=None, defines=None)` | declares an overlay. `parts` is a folder holding any of `reader.cpp`, `writer.cpp`, `compute.cpp`, or a dict `{kernel: source}`. `number` (1 to 63) defaults to the constant `kOverlay<Name>` of the handlers header (`scale_tiles` is `kOverlayScaleTiles`), the way a handler's number does. `defines` go to this overlay's parts only. Returns the program |
+| `Program.overlay(name, parts, number=None, defines=None)` | declares an overlay. `parts` is a folder holding any of `reader.cpp`, `writer.cpp`, `compute.cpp`, or a dict `{kernel: source}`. `number` (1 to 62; 63 is the runtime's service overlay) defaults to the constant `kOverlay<Name>` of the handlers header (`scale_tiles` is `kOverlayScaleTiles`), the way a handler's number does. `defines` go to this overlay's parts only. Returns the program |
 | `Program.slots(count=None, bytes=None)` | the slots of each kernel that has parts: `count` 1 to 4, `bytes` a multiple of 64, each an int or `{"reader"\|"writer"\|"compute": value}`. By default, one slot for each overlay with a part there (at most 4), each as large as the largest part. Returns the program |
 | `run.program.overlays_built` | after `load`: `images` `{(number, part): bytes}` and `slots` `{part: (count, bytes)}` |
 | `km.OverlayError` | the builder refused a part (below); nothing was loaded |
@@ -196,8 +196,8 @@ On one Blackhole card, AICLK 1,350 MHz, medians over cores and commands
 
 A program in the runtime's form ([host](host.md#several-programs-in-one-run)) is an
 overlay under kernels the runtime owns (`src/komorebi_native/kernels/program_reader.cpp`,
-`program_writer.cpp`, `program_compute.cpp`). Program field `p` is overlay number `63 - p`
-(`km::program_overlay(p)`). For each command the runtime's kernels run
+`program_writer.cpp`, `program_compute.cpp`). Program field `p` is overlay number `62 - p`
+(`km::program_overlay(p)`); 63 is the service overlay ([below](#transfers-to-and-from-the-host)). For each command the runtime's kernels run
 
 ```c++
 km::Overlay program(reader, km::program_overlay(km::program(command)));
@@ -303,13 +303,18 @@ host), and `kmx_load` returns 6.1 to 6.2 µs after it is called, where the host'
 
 Two more reserved handlers move pages between a DRAM tensor and the session's region of
 the host channel while a run is loaded ([host](host.md#the-host-channel)): 241
-(`KM_HANDLER_PUSH`, card to host) and 242 (`KM_HANDLER_PULL`, host to card). They are
-not overlays. Their code is compiled into the runtime's loop of every program
-(`komorebi/device/km_transfer.hpp`), as EXIT's is, so a program declares nothing and
-holds no slot for them. The cost is a larger reader kernel, about 4.4 KB of its text in
-the ray tracer. Handlers 241 to 248 are the runtime's for this: the writer and the
+(`KM_HANDLER_PUSH`, card to host) and 242 (`KM_HANDLER_PULL`, host to card). Their code
+(`komorebi/device/km_transfer.hpp`) is the reader part of the runtime's **service
+overlay**, number 63 (`km::kOverlayService`, source
+`src/komorebi_native/kernels/service_reader.cpp`), which every run builds and places
+beside the program's own overlays: a program declares nothing. A core's reader loads it
+on the first such command (`km::serve`) and holds it while no other reader overlay
+needs its slot. The run's reader slots number one more by default, and are at least
+the service part's size (7,424 bytes); the L1 budget table shows them. In the reader
+kernel only the load stays, about 3.7 KB less text in the ray tracer than with the
+code compiled in. Handlers 241 to 248 are the runtime's for this: the writer and the
 compute kernel skip them with one range check, so a later handler of the runtime in
-that range adds nothing to them, only to the reader.
+that range adds nothing to them.
 
 - **Who may issue one.** The host only: the session itself, for a read or a write. The
   dispatcher rejects them from a thread, a stream or a graph (reason 1), as `submit`
@@ -330,10 +335,10 @@ that range adds nothing to them, only to the reader.
 
 A third, 245 (`KM_HANDLER_COPY`), copies pages from DRAM to DRAM through the same two
 chunks: from a range of one bank or a tensor's pages into another range or tensor
-(`komorebi/abi/km_copy.h`). It is compiled in beside the two, and the dispatcher
+(`komorebi/abi/km_copy.h`). It is in the service overlay beside the two, and the dispatcher
 accepts it from the host and from a work cluster's thread, which sends it with
 `kmx_fetch` and `kmx_store` ([X280 threads](threads.md#reading-and-writing-another-bank)).
-The runtime's loop of every program serves it, so it needs no program field: the
+The service overlay of every run serves it, so it needs no program field: the
 dispatcher does not check which program its cores hold. A failed bound gives up with
 where `copy`.
 

@@ -380,7 +380,7 @@ transfer larger than the region's data goes in rounds, one transfer at a time.
 
 | The session | A read (`read`, `read_chunks`) or a write (`write`, `tensor`) goes |
 |---|---|
-| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's loop ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms |
+| a run is loaded and its cores live | through the run: a command with a reserved handler to cores that hold one program, served by the runtime's service overlay ([overlays](overlays.md#transfers-to-and-from-the-host)); its cost on the host is about 0.2 ms |
 | no run, 80 KiB or more | through a one-shot transfer kernel on row 0; its launch costs about 30 ms, as the device API's read of some 76 KiB does |
 | no run and less than 80 KiB, a page over 16 KiB, a tensor in L1, no channel | through the device API, as before |
 

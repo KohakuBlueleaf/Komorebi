@@ -143,7 +143,7 @@ def test_a_program_is_an_overlay_numbered_from_63_down(tmp_path):
     second.compile_args = {"reader": [3, 4]}
     programs.plan([first, second], 120)
     made_overlay = programs.program_overlay(second)
-    assert made_overlay.number == overlay.constants()["kOverlaysMax"] - 2
+    assert made_overlay.number == overlay.constants()["kOverlayService"] - 2
     assert made_overlay.program and made_overlay.compile_args["reader"] == [3, 4]
     assert programs.start_buffers(BUFFERS) == (0, 16)
     assert programs.start_buffers([]) == (0, 16)

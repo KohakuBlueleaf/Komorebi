@@ -9,8 +9,8 @@
 
 namespace km {
 
-    // A command the runtime's reader serves (a transfer between DRAM and the host
-    // channel, or a copy between DRAM pages), not a body: one range check.
+    // A command the runtime's service overlay serves (a transfer between DRAM and the
+    // host channel, or a copy between DRAM pages), not a body: one range check.
     inline bool served(const km_command_t& command) {
         return (
             static_cast<uint32_t>(handler(command)) - KM_HANDLER_SERVED_FIRST <=
@@ -23,9 +23,13 @@ namespace km {
 #if !defined(COMPILE_FOR_TRISC)
 #include "km_completion.hpp"
 #include "km_trace.hpp"
-#include "km_transfer.hpp"
 
 namespace km {
+
+    // A command the runtime serves (served()): the reader loads the runtime's service
+    // overlay on first use and calls it (km_overlay.hpp).
+    template <typename Kernel>
+    void serve(Kernel& reader, const km_command_t& command);
 
     // Word of each DONE slot: the last sequence whose reader body returned in that
     // slot (a broadcast's finish() included), read by the writer before it reports.
@@ -52,7 +56,7 @@ namespace km {
                 }
                 begin(*command);
                 if (served(*command)) {
-                    serve_transfer(*command);
+                    serve(*this, *command);
                 } else {
                     body(*command);
                 }
@@ -110,68 +114,6 @@ namespace km {
         }
 
     private:
-        // This core's slice of a PUSH, PULL or COPY (a template: only the reader builds
-        // it); a failed bound or a timed-out wait gives up (its where code).
-        template <typename Command>
-        void serve_transfer(const Command& command) const {
-            const bool push = handler(command) == KM_HANDLER_PUSH;
-            const bool copy = handler(command) == KM_HANDLER_COPY;
-            if (
-                !push && !copy && handler(command) != KM_HANDLER_PULL
-            ) {  // not assigned yet
-                gave_up(
-                    kStReader,
-                    kGaveBadTransfer,
-                    kWhereFromHost,
-                    slot(command),
-                    command.sequence
-                );
-                return;
-            }
-            uint32_t code = kGaveNone;
-            const auto wait = [&](bool (*ready)()) __attribute__((noinline)) {
-                code = poll(ready, args().wait_limit);
-                return code == kGaveNone;
-            };
-            const uint32_t rank = me() - first(command);
-            uint32_t status = kTransferDone;
-            if (copy) {
-                const uint32_t a[10] = {
-                    command.a0,
-                    command.a1,
-                    command.a2,
-                    command.a3,
-                    command.a4,
-                    command.a5,
-                    command.a6,
-                    command.a7,
-                    command.a8,
-                    command.a9
-                };
-                status = copy_pages(km_copy_of(a), rank, count(command), wait);
-            } else {
-                const Transfer t = transfer_of(command);
-                status = (
-                    push
-                        ? push_to_host(t, rank, count(command), wait)
-                        : pull_from_host(t, rank, count(command), wait)
-                );
-            }
-            if (status != kTransferDone) {
-                gave_up(
-                    kStReader,
-                    code != kGaveNone ? code : kGaveBadTransfer,
-                    copy
-                        ? kWhereCopy
-                        : push
-                            ? kWhereToHost
-                            : kWhereFromHost,
-                    slot(command),
-                    command.sequence
-                );
-            }
-        }
-
         // Clears ring, counters, state and stop flags, loads the core table, checks in
         // (leaders report READY, one core sends the hello). False: a leader gave up.
         bool start() {
@@ -880,4 +822,8 @@ namespace km {
     };
 
 }  // namespace km
+#endif
+
+#if !defined(COMPILE_FOR_TRISC) && !defined(COMPILE_FOR_NCRISC)
+#include "km_overlay.hpp"  // serve(): the reader's load of the service overlay
 #endif

@@ -16,6 +16,7 @@ from komorebi.abi import handlers_from_header
 from komorebi.errors import ProgramError
 from komorebi.movement import check_pairs
 from komorebi.overlay import Overlay, Slots, declare, overlays_from_header
+from komorebi.overlay import constants as overlay_constants
 from komorebi.thread import Thread
 
 KERNELS = ("reader", "compute", "writer")
@@ -272,6 +273,10 @@ class Program:
                 )
             number = numbers[name]
         made = declare(name, parts, number, defines)
+        if made.number == overlay_constants()["kOverlayService"]:
+            raise ValueError(
+                f"overlay {name}: number {made.number} is the runtime's service overlay"
+            )
         taken = {o.number: o.name for o in self.overlays.values()}
         if made.number in taken:
             raise ValueError(
