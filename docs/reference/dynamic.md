@@ -233,15 +233,17 @@ as parts ([20_message_overlays](../../examples/20_message_overlays/README.md#mea
 
 | | 120 cores, 1,013,360 messages | 1 core, 82,938 messages |
 |---|---|---|
-| bodies in the compute kernel (example 14) | 10.83 ms, 93.6 M messages a second | 21.92 ms, 357 cycles a message |
-| as parts, 3 slots | 10.76 ms, 94.2 M a second; 3 loads a core (the first messages) | 21.92 ms, 357 cycles; 3 loads |
-| as parts, 2 slots | 10.77 ms, 94.1 M a second; 13,230 loads, 112 a core, one per 77 messages | 21.92 ms; 3 loads |
-| as parts, 1 slot | 11.40 ms, 88.9 M a second; 97,394 loads | 22.21 ms, 362 cycles; 601 loads, 0.49 µs each |
+| bodies in the compute kernel (example 14) | 10.83 ms, 93.6 M messages a second | 20.90 ms, 340 cycles a message |
+| as parts, 3 slots | 10.76 ms, 94.2 M a second; 3 loads a core (the first messages) | 21.69 ms, 353 cycles; 3 loads |
+| as parts, 2 slots | 10.77 ms, 94.1 M a second; 13,230 loads, 112 a core, one per 77 messages | 21.67 ms; 3 loads |
+| as parts, 1 slot | 11.40 ms, 88.9 M a second; 97,394 loads | 22.20 ms, 361 cycles; 601 loads, 0.85 µs each |
 
 Medians of 10 runs (3 for one slot); the run time is the `RUN` command's, submit to
-completion. A load stops the core's message loop while compute finishes the packet before
-it and the parts are read: about 0.5 µs of the run's time on one core, 0.8 µs on the grid,
-where the loads of 118 cores share the DRAM banks. The grid's run is bound by its queues in
+completion. The one-core column is from card 1 on the same day (host load 4 to 5, three
+runs each), after the writer's mark change. A load stops the core's message loop while
+compute finishes the packet before it and the parts are read: about 0.8 µs of the run's
+time on one core and on the grid, where the loads of 118 cores share the DRAM banks. The
+grid's run is bound by its queues in
 DRAM, not by compute, so 112 loads a core cost it nothing measurable. Serving the held
 handlers of a packet first (the order above) is what keeps loads few: without it, a packet
 with all three handlers and two slots loads three times, and the same runs loaded 20,249

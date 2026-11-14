@@ -54,7 +54,7 @@ quiet end; a message is one handling (a lookup, a value or a report).
 |---|---|
 | 120 cores, 10000 threads of 43 steps: 1,013,360 messages (573,360 lookup, 430,000 value, 10,000 report; 7,292 to their own core) | exact in 10 of 10 runs; median 10.80 ms (10.68 to 10.90), 93.9 M messages a second |
 | 120 cores, 1000 threads of 10 steps: 24,280 messages | exact; 1.30 ms, 18.7 M messages a second |
-| 6 cores (4 ranks), 400 threads of 100 steps: 93,626 messages, 19,993 to their own core | exact in 3 of 3; 6.52 ms, 14.4 M messages a second |
+| 6 cores (4 ranks), 400 threads of 100 steps: 93,626 messages, 19,993 to their own core | exact in 3 of 3; 6.24 ms, 15.0 M messages a second (card 1) |
 
 The [forward example](../05_forward/README.md#measured), with one handler, moves 10^6
 messages in 11.9 ms on the same card.

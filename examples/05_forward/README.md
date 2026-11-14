@@ -68,7 +68,7 @@ changed, in brackets (the stall, quota and rejection rows were not re-run).
 | 10000 messages, 100 forwards each (10^6 forwards) | exact in 30 of 30 runs in one session (`--repeat 30`), median 11.8 ms (11.6 to 12.0); [exact in 91 of 91 runs: 30 in a row in one session, 10 in each of 5 more sessions, 11 more; median 11.8 ms (11.6 to 12.0)] |
 | the same with one counter tile (`--counters 1 --repeat 10`, 119 cores) | exact in 10 of 10; median 11.6 ms [11.6] |
 | 10000 messages, 10 forwards each, every forward to rank 0 | exact; 23.6 ms [23.6] |
-| 118 messages, 72000 forwards each, every forward to rank 0, queues of 128 and `max_live` 128 (2026-11-14): 8,496,001 positions of rank 0's queue, 66,375 laps, so its lap mark wrapped once | exact; 2.27 s |
+| 118 messages, 72000 forwards each, every forward to rank 0, queues of 128 and `max_live` 128 (2026-11-14): 8,496,001 positions of rank 0's queue, 66,375 laps, so its lap mark wrapped once | exact; 2.17 s (card 1) |
 | rank 3 sends until its quota is gone (8 cores) | 3 seeded messages and 135 sends, then `send` returned false; exact |
 | rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_MESSAGES_GAVE`), whose reader gave up waiting for a free packet page (24); the next run in the same session exact |
 | `max_live` 1000000 with queues of 65536 | rejected before any device opened; `ok` false, exit code 1 |

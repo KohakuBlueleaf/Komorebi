@@ -73,7 +73,7 @@ rank and two counter tiles).
 | Case | Example 14 (bodies compiled in) | As parts, 3 slots | 2 slots | 1 slot |
 |---|---|---|---|---|
 | 120 cores, 10000 threads of 43 steps: 1,013,360 messages (7,292 to their own core), median of 10 (1 slot: of 3) | 10.83 ms, 93.6 M messages a second | 10.76 ms, 94.2 M a second, 354 loads | 10.77 ms, 94.1 M a second, 13,230 loads | 11.40 ms, 88.9 M a second, 97,394 loads |
-| 1 core, 138 threads of 300 steps: 82,938 messages, median of 3 | 21.92 ms, 357 cycles a message | 21.92 ms, 357 cycles, 3 loads | 21.92 ms, 3 loads | 22.21 ms, 362 cycles, 601 loads |
+| 1 core, 138 threads of 300 steps: 82,938 messages, median of 3 (card 1, load 4 to 5) | 20.90 ms, 340 cycles a message | 21.69 ms, 353 cycles, 3 loads | 21.67 ms, 3 loads | 22.20 ms, 361 cycles, 601 loads |
 
 ```
 python ../14_message_handlers/message_handlers.py --threads 10000 --steps 43 --repeat 10
@@ -83,13 +83,14 @@ python message_overlays.py --count 3 --threads 138 --steps 300 --repeat 3 --load
 python ../14_message_handlers/message_handlers.py --count 3 --threads 138 --steps 300 --repeat 3
 ```
 
-- With a slot for each handler, the handlers as parts cost nothing measurable: a core
-  loads each once, and a held handler costs one look at the slots' records per packet.
+- With a slot for each handler, the handlers as parts cost nothing measurable on the
+  grid, and 0.8 ms (3.8 %) on one core, where compute bounds the run: a core loads each
+  once, and a held handler costs one look at the slots' records per packet.
 - With two slots on the grid, a core loads 112 times in the run (one load per 77 messages
   it handles) and the run takes the same time: it is bound by the queues in DRAM. On one
   core with two slots the core loaded three times in the run, no more: no load replaced
   a handler that a later packet needed.
-- With one slot, a load costs the run about 0.5 µs on one core (601 loads, +0.29 ms) and
+- With one slot, a load costs the run about 0.85 µs on one core (601 loads, +0.51 ms) and
   0.8 µs a core on the grid.
 - A packet's handlers that the core holds go first. Without that order, the same runs
   loaded 20,249 times (two slots, grid) and 5,137 times (one slot, one core, 28.70 ms).
