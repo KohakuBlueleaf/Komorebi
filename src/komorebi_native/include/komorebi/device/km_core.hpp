@@ -573,14 +573,22 @@ namespace km {
             if (args_.depth == 0 || args_.depth > KM_RING_SLOTS) {
                 args_.depth = KM_RING_SLOTS;
             }
+            invalidate_l1_cache();
+            island_first_ = islands_at(args_.control).first();
         }
 
         const Args& args() const {
             return args_;
         }
 
+        // This core's flat rank: its island's first rank plus its index (args().me).
         uint32_t me() const {
-            return args_.me;
+            return island_first_ + args_.me;
+        }
+
+        // This island's core index of flat rank `rank` (for the core table).
+        uint32_t core_of(uint32_t rank) const {
+            return rank - island_first_;
         }
 
         // The program's argument `index` (after the start-up arguments).
@@ -809,6 +817,7 @@ namespace km {
 
     private:
         Args args_;
+        uint32_t island_first_;
         uint32_t role_;
         uint32_t index_ = 0;             // commands this kernel took (EXIT aside)
         mutable uint32_t produces_ = 0;  // bit cb: filled through a timed wait

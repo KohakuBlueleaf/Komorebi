@@ -87,7 +87,10 @@ static __attribute__((noinline)) void queue_turn(kmd_t* dispatcher, uint64_t now
         uint64_t* line = job->line;
         const uint32_t header = (uint32_t)(line[0] >> 32) & ~(KM_FLAG_QUEUE << 8);
         line[0] = (line[0] & 0xFFFFFFFFu) | (uint64_t)header << 32;
-        line[1] = (line[1] & ~(uint64_t)0xFFFFFFFFu) | first | job->count << 16;
+        line[1] = (
+            (line[1] & ~(uint64_t)0xFFFFFFFFu) | (dispatcher->island_first + first) |
+            job->count << 16
+        );
         const uint32_t source = job->source, request = job->request;
         queue_remove(dispatcher, position);
         dispatcher->ring[source].queued_count--;

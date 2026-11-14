@@ -1747,7 +1747,8 @@ namespace {
             const std::vector<uint64_t>& work_noc_addr,
             int64_t upload_bytes,
             uint64_t messages_handler,
-            const std::vector<uint8_t>& programs
+            const std::vector<uint8_t>& programs,
+            uint64_t island
         ) {
             require_open();
             if (programs.size() > KM_CORES_MAX) {
@@ -1873,6 +1874,7 @@ namespace {
             arguments.upload_bytes = upload_bytes_;
             arguments.messages_handler = messages_handler;
             arguments.programs = programs.empty() ? 0 : 1;
+            arguments.island = island;
             if (!programs.empty()) {
                 std::vector<uint8_t> held(KM_CORES_MAX, 0xFF);
                 std::copy(programs.begin(), programs.end(), held.begin());
@@ -2972,7 +2974,8 @@ NB_MODULE(_km_host, m) {
             nb::arg("work_noc_addr") = std::vector<uint64_t>{},
             nb::arg("upload_bytes") = -1,
             nb::arg("messages_handler") = 0,
-            nb::arg("programs") = std::vector<uint8_t>{}
+            nb::arg("programs") = std::vector<uint8_t>{},
+            nb::arg("island") = 0
         ).def("start", &Dispatch::start, nb::arg("image"))
         .def("host_word", &Dispatch::host_word, nb::arg("word"))
         .def_ro("upload_bytes", &Dispatch::upload_bytes_)

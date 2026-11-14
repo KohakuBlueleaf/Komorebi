@@ -281,7 +281,7 @@ enum {
 #define KMD_WIN_RESET_REGISTER 24u
 
 /* The argument block's layout; the kernel rejects a block of another version. */
-#define KMD_ARGS_VERSION 3u
+#define KMD_ARGS_VERSION 4u
 /* Work clusters with a ring to the kernel (clusters 1 to 3). */
 #define KMD_WORK_CLUSTERS 3u
 
@@ -314,6 +314,9 @@ typedef struct {
     uint64_t messages_handler; /* dynamic handlers, one per byte (dynamic.h); 0: none */
     uint64_t version;          /* KMD_ARGS_VERSION */
     uint64_t programs; /* 1: KMD_LIM_PROGRAMS holds each core's program; 0: none */
+    /* Groups in flat ranks: this island's, first | count << 16 (rank first + core i is
+     * core i). 0: one island, a rank is its core. */
+    uint64_t island;
 } kmd_args_t;
 
 /* The ready block: the host waits for `mark` (its buffer is zeroed before the run), as
@@ -378,7 +381,8 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u
 
-KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 248, "kmd_args_t is 248 bytes");
+KMD_STATIC_ASSERT(sizeof(kmd_args_t) == 256, "kmd_args_t is 256 bytes");
+KMD_STATIC_ASSERT(offsetof(kmd_args_t, island) == 248, "island at 248");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, work_cmds) == 152, "work_cmds at 152");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, version) == 232, "version at 232");
 KMD_STATIC_ASSERT(offsetof(kmd_args_t, upload_bytes) == 144, "upload_bytes at 144");

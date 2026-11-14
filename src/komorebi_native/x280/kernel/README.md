@@ -114,6 +114,13 @@ These rules are part of the protocol; a host that relies on anything else is wro
   held), whichever source sent it. A load with a program field of 64 or more, a queued
   one, or one in a run without the table is rejected with 13; from a stream or a graph
   with 1.
+- **Islands.** The argument block's `island` (`KMD_ARGS_VERSION` 4) is this island's
+  flat ranks, `first | count << 16`; 0: one island, a rank is its core. Groups are flat:
+  `take()` cuts a command's group by the island's range (`island_part`) and checks,
+  places and completes that part in local cores (`slot_group`, the done event's first
+  core), while the line keeps the flat group the cores test. A group with no part here
+  is rejected as outside (3). EXIT goes to `island_first | cores << 16`; a queued job's
+  first core is placed as `island_first` plus the core it gets.
 - **Ready block.** Before the state word turns READY, the kernel writes `kmd_ready_t`
   into 32-bit words 4 to 7 of the host buffer (`KMD_HOST_READY`) as one 16-byte store:
   word 4 the mark `KMD_READY_MARK` (0x594452), word 5 the upload region's LIM address,
