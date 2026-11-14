@@ -261,31 +261,16 @@ static int wake(uint64_t deadline) {
     }
 }
 
-int kmx_load(
-    uint32_t program,
-    uint32_t first,
-    uint32_t count,
-    uint64_t deadline,
-    kmx_event* event
+/* Core 0: submits `command` (again after each busy rejection) and waits for its event
+ * by `deadline`. KMX_OK once done; KMX_BAD when refused or timed out (`event` says). */
+static int until_done(
+    const km_command_t* command, uint64_t deadline, kmx_event* event
 ) {
-    const volatile kmx_ring_descriptor*
-        descriptor = ((const volatile kmx_ring_descriptor*)(lim() + KMX_LIM_RING));
-    kmx_event own;
-    event = event != 0 ? event : &own;
-    int status = ring_core();
-    if (status != KMX_OK) {
-        return status;
-    }
-    if (program >= descriptor->programs) {
-        return KMX_BAD;
-    }
-    km_command_t command;
-    kmx_command(&command, program, KM_HANDLER_LOAD, first, count);
-    command.a0 = descriptor->records + program * descriptor->record_step;
+    int status = KMX_OK;
     for (;;) {
         uint32_t handle = 0;
         for (uint32_t spins = 1;; spins++) {
-            status = kmx_ring_submit(&g_ring, &command, &handle);
+            status = kmx_ring_submit(&g_ring, command, &handle);
             if (status != KMX_FULL) {
                 break;
             }
@@ -313,6 +298,30 @@ int kmx_load(
             return status;
         }
     }
+}
+
+int kmx_load(
+    uint32_t program,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+) {
+    const volatile kmx_ring_descriptor*
+        descriptor = ((const volatile kmx_ring_descriptor*)(lim() + KMX_LIM_RING));
+    kmx_event own;
+    event = event != 0 ? event : &own;
+    const int status = ring_core();
+    if (status != KMX_OK) {
+        return status;
+    }
+    if (program >= descriptor->programs) {
+        return KMX_BAD;
+    }
+    km_command_t command;
+    kmx_command(&command, program, KM_HANDLER_LOAD, first, count);
+    command.a0 = descriptor->records + program * descriptor->record_step;
+    return until_done(&command, deadline, event);
 }
 
 /* Core 0: the spawns started on each core (as its line's GEN word holds), and the
@@ -1301,6 +1310,169 @@ int kmx_block(km_command_t* command, int id, uint64_t offset, uint32_t bytes) {
         (KMX_BANK_OF_CLUSTER((uint32_t)kmx_cluster()) + 1u) << KM_BLOCK_BANK_SHIFT
     );
     return KMX_OK;
+}
+
+/* A copy between region `id` at `offset` and `other`, its command filled: KMX_OK, or
+ * KMX_BAD for a bound (km_copy_fits on the library's side, with the region's size). */
+#define KMX_DRAM_BANKS 8u /* the p150a's DRAM banks */
+
+static int copy_command(
+    km_command_t* command,
+    int id,
+    uint64_t offset,
+    const kmx_dram* other,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    int fetch
+) {
+    const volatile kmx_ring_descriptor*
+        descriptor = ((const volatile kmx_ring_descriptor*)(lim() + KMX_LIM_RING));
+    const kmx_args* arguments = kmx_args_get();
+    if (
+        id < 0 || (uint32_t)id >= arguments->nregions || other == 0 ||
+        descriptor->buffer == 0 || bytes == 0 || ((offset | bytes) % KM_COPY_ALIGN)
+    ) {
+        return KMX_BAD;
+    }
+    const kmx_region_t* region = &arguments->region[id];
+    uint32_t page = other->page;
+    if (page == 0 && other->bank != KM_COPY_INTERLEAVED) {
+        page = KM_TRANSFER_CHUNK_BYTES; /* a range's: the largest power of two */
+        while (bytes % page) {
+            page >>= 1;
+        }
+    }
+    if (
+        offset > region->bytes || bytes > region->bytes - offset || page == 0 ||
+        page > KM_TRANSFER_CHUNK_BYTES || bytes % page || bytes / page > 0xFFFFFFFFull
+    ) {
+        return KMX_BAD;
+    }
+    /* field by field: a struct assignment may call memcpy, which does not link */
+    km_copy_t copy;
+    km_copy_side_t* mine = fetch ? &copy.to : &copy.from;
+    km_copy_side_t* theirs = fetch ? &copy.from : &copy.to;
+    mine->address = (uint32_t)(region->offset + offset);
+    mine->bank = KMX_BANK_OF_CLUSTER((uint32_t)kmx_cluster());
+    mine->first = 0;
+    theirs->address = other->address;
+    theirs->bank = other->bank;
+    theirs->first = other->first;
+    copy.page = page;
+    copy.pages = (uint32_t)(bytes / page);
+    copy.buffer = descriptor->buffer;
+    copy.chunk = KM_TRANSFER_CHUNK_BYTES / page * page;
+    if (
+        region->offset + region->bytes > KM_COPY_BANK_END ||
+        !km_copy_fits(&copy, count, KMX_L1_BYTES, KMX_DRAM_BANKS)
+    ) {
+        return KMX_BAD;
+    }
+    kmx_command(command, 0, KM_HANDLER_COPY, first, count);
+    command->a0 = copy.from.address;
+    command->a1 = copy.from.bank;
+    command->a2 = copy.from.first;
+    command->a3 = copy.to.address;
+    command->a4 = copy.to.bank;
+    command->a5 = copy.to.first;
+    command->a6 = copy.page;
+    command->a7 = copy.pages;
+    command->a8 = copy.buffer;
+    command->a9 = copy.chunk;
+    return KMX_OK;
+}
+
+/* Core 0: the copy's command, the region's lines dropped first (a store's written
+ * back), then submitted and waited for (`deadline`) or only submitted (`handle`). */
+static int copy_run(
+    int id,
+    uint64_t offset,
+    const kmx_dram* other,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    int fetch,
+    uint64_t deadline,
+    kmx_event* event,
+    uint32_t* handle
+) {
+    km_command_t command;
+    int status = ring_core();
+    if (status == KMX_OK) {
+        status = copy_command(&command, id, offset, other, bytes, first, count, fetch);
+    }
+    if (status != KMX_OK) {
+        return status;
+    }
+    kmx_flush_at(id, offset, bytes);
+    if (handle != 0) {
+        return kmx_ring_submit(&g_ring, &command, handle);
+    }
+    kmx_event own;
+    status = until_done(&command, deadline, event != 0 ? event : &own);
+    if (status == KMX_OK && fetch) {
+        kmx_invalidate_at(id, offset, bytes); /* lines the cache took meanwhile */
+    }
+    return status;
+}
+
+int kmx_fetch(
+    int id,
+    uint64_t offset,
+    const kmx_dram* from,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+) {
+    return copy_run(id, offset, from, bytes, first, count, 1, deadline, event, 0);
+}
+
+int kmx_store(
+    int id,
+    uint64_t offset,
+    const kmx_dram* to,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+) {
+    return copy_run(id, offset, to, bytes, first, count, 0, deadline, event, 0);
+}
+
+int kmx_fetch_submit(
+    int id,
+    uint64_t offset,
+    const kmx_dram* from,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint32_t* handle
+) {
+    return (
+        handle == 0
+            ? KMX_BAD
+            : copy_run(id, offset, from, bytes, first, count, 1, 0, 0, handle)
+    );
+}
+
+int kmx_store_submit(
+    int id,
+    uint64_t offset,
+    const kmx_dram* to,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint32_t* handle
+) {
+    return (
+        handle == 0
+            ? KMX_BAD
+            : copy_run(id, offset, to, bytes, first, count, 0, 0, 0, handle)
+    );
 }
 
 void kmx_result(uint32_t code, const void* words, uint32_t word_count) {

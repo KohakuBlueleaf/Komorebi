@@ -335,7 +335,10 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     } else if (
         (
             handler > KM_HANDLER_USER_MAX && handler != KM_HANDLER_EXIT &&
-            !((host || source >= KMD_SRC_WORK) && handler == KM_HANDLER_LOAD) &&
+            !(
+                (host || source >= KMD_SRC_WORK) &&
+                (handler == KM_HANDLER_LOAD || handler == KM_HANDLER_COPY)
+            ) &&
             !(host && (handler == KM_HANDLER_PUSH || handler == KM_HANDLER_PULL))
         ) ||
         (!host && handler == KM_HANDLER_EXIT)
@@ -354,7 +357,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         reject = KMD_REJECT_MESSAGES;
     } else if (
         dispatcher->programs && handler != KM_HANDLER_NOP &&
-        handler != KM_HANDLER_EXIT &&
+        handler != KM_HANDLER_EXIT && handler != KM_HANDLER_COPY &&
         (
             handler == KM_HANDLER_LOAD
                 ? (header >> 24) >= KMD_PROGRAMS_MAX || queued

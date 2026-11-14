@@ -39,6 +39,7 @@ WHERES = (
     "ProgramStart",
     "ToHost",
     "FromHost",
+    "Copy",
 )
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 

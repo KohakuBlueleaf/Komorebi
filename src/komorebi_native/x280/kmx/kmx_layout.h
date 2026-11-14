@@ -148,7 +148,8 @@ typedef struct {
     uint32_t command_depth;
     uint32_t event_depth;
     uint32_t flags; /* KMX_RING_* */
-    uint32_t reserved[2];
+    uint32_t reserved[1];
+    uint32_t buffer; /* kmx_fetch, kmx_store: the cores' L1 for a copy (0: none) */
     /* kmx_load: field p's record in DRAM at records + p * record_step, p < programs
      * (programs 0: the run's groups do not switch) */
     uint32_t records, record_step, programs;

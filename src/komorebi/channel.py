@@ -16,7 +16,7 @@ CHANNEL_BYTES = 1 << 30  # the driver's hugepage channel of one card
 REGION_DEFAULT = 256 << 20  # the session's region: channel offsets [0, region)
 REGION_ALIGN = 64 << 10
 WORDS_BYTES = 64 << 10  # the region's last bytes: a sequence word a rank
-CHUNK_DEFAULT = 16 << 10  # bytes of each of a core's two L1 chunks
+CHUNK_DEFAULT = 16 << 10  # each of a core's two L1 chunks: KM_TRANSFER_CHUNK_BYTES
 CORES_DEFAULT = 16  # cores of a transfer at most
 # What the driver logs at the open when the channel is not where the cores write
 WARNINGS = ("does not match the expected address", "already holding the sysmem")

@@ -1,9 +1,10 @@
-// Transfers between DRAM and the session's region of the host channel, one rank's
-// slice through two L1 chunks, with tt-metal's PCIe-aware calls only (data movement).
+// Transfers between DRAM and the session's region of the host channel, and copies
+// between DRAM pages, one rank's slice through two L1 chunks (data movement).
 #pragma once
 
 #include <stdint.h>
 
+#include "../abi/km_copy.h"
 #include "api/dataflow/dataflow_api.h"
 #include "km_command.hpp"
 #include "km_core.hpp"
@@ -249,6 +250,84 @@ namespace km {
         }
         if (!noc_cmd_bufs_mid_clear()) {
             status = kTransferRouting;
+        }
+        return status;
+    }
+
+    // The NoC address of page `index` of a copy's side (a bank range or a tensor).
+    inline uint64_t copy_noc(
+        const km_copy_side_t& side, uint32_t page, uint32_t index
+    ) {
+        if (side.bank == KM_COPY_INTERLEAVED) {
+            const InterleavedAddrGen<true> tensor = {
+                .bank_base_address = side.address, .page_size = page
+            };
+            return tensor.get_noc_addr(index);
+        }
+        uint32_t bank = 0;
+        const uint64_t address = km_copy_at(&side, page, index, NUM_DRAM_BANKS, &bank);
+        return get_noc_addr_from_bank_id<true>(bank, static_cast<uint32_t>(address));
+    }
+
+    // Rank `rank` of `count` copies its pages through the two chunks: chunk k is read
+    // while chunk k - 1 is written. wait(ready) polls with a bound: false on timeout.
+    template <typename Wait>
+    inline uint32_t copy_pages(
+        const km_copy_t& c, uint32_t rank, uint32_t count, Wait wait
+    ) {
+        if (rank >= count || !km_copy_fits(&c, count, MEM_L1_SIZE, NUM_DRAM_BANKS)) {
+            return kTransferRefused;
+        }
+        const auto reads_landed = [] {
+            return ncrisc_noc_reads_flushed(noc_index);
+        };
+        const Partition share = partition(c.pages, rank, count);
+        const uint32_t chunk_pages = c.chunk / c.page;
+        const uint32_t chunks = (share.len + chunk_pages - 1) / chunk_pages;
+        // Pages of chunk k, and its reads into its buffer (no wait).
+        const auto pages_of = [&](uint32_t k) {
+            const uint32_t left = share.len - k * chunk_pages;
+            return left < chunk_pages ? left : chunk_pages;
+        };
+        const auto read_chunk = [&](uint32_t k) {
+            const uint32_t into = c.buffer + (k & 1) * c.chunk;
+            const uint32_t from = share.start + k * chunk_pages;
+            for (uint32_t p = 0; p < pages_of(k); ++p) {
+                noc_async_read(
+                    copy_noc(c.from, c.page, c.from.first + from + p),
+                    into + p * c.page,
+                    c.page
+                );
+            }
+        };
+        uint32_t status = kTransferDone;
+        if (chunks > 0) {
+            read_chunk(0);
+            if (!wait(reads_landed)) {
+                return kTransferRead;
+            }
+        }
+        for (uint32_t k = 0; k < chunks; ++k) {
+            const uint32_t at = c.buffer + (k & 1) * c.chunk;
+            const uint32_t to = share.start + k * chunk_pages;
+            for (uint32_t p = 0; p < pages_of(k); ++p) {
+                noc_async_write(
+                    at + p * c.page, copy_noc(c.to, c.page, c.to.first + to + p), c.page
+                );
+            }
+            if (k + 1 < chunks) {
+                read_chunk(k + 1);
+                if (!wait(reads_landed)) {
+                    status = kTransferRead;
+                }
+            }
+            // A buffer is refilled only after its writes were acknowledged.
+            if (!wait(writes_acked)) {
+                status = kTransferWrite;
+            }
+            if (status != kTransferDone) {
+                break;
+            }
         }
         return status;
     }

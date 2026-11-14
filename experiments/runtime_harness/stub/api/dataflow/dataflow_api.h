@@ -259,3 +259,8 @@ inline void noc_async_read_clear_pcie_state() {
 inline bool noc_cmd_bufs_mid_clear() {
     return true;
 }
+
+// The banks a copy's bounds name (no scenario copies).
+#ifndef NUM_DRAM_BANKS
+#define NUM_DRAM_BANKS 8
+#endif

@@ -83,8 +83,9 @@ These rules are part of the protocol; a host that relies on anything else is wro
   both reads give its number.
 - **Rejected commands.** A bad command is consumed and answered with `KM_EVENT_REJECTED`, its
   reason (`KMD_REJECT_*`) in the status's auxiliary; the session goes on. Reasons: 1 a handler
-  from 240 to 249, which this kernel does not serve (`KM_HANDLER_LOAD`, 240, from the host
-  or a work cluster excepted, below); 2 flag bit 0 set; 3 a group outside
+  from 240 to 249, which this kernel does not serve (`KM_HANDLER_LOAD`, 240, and
+  `KM_HANDLER_COPY`, 245, from the host or a work cluster excepted, below; 241 and 242
+  from the host); 2 flag bit 0 set; 3 a group outside
   the grid (`count == 0 || first > cores || count > cores - first`, with no sum that
   could wrap; with `KM_FLAG_QUEUE` only the count is checked); 4 any command after EXIT; 5 a
   range of the upload region that is not whole lines inside it; 6 `KM_HANDLER_RUN` while
@@ -93,7 +94,8 @@ These rules are part of the protocol; a host that relies on anything else is wro
   may retry it); 11 a work cluster's command that would wait; 12 a `KM_FLAG_QUEUE` command
   of the program's dynamic handler; 13 (`KMD_REJECT_PROGRAM`) a command, from any source,
   whose group has a core that does not hold its program (a queued one: unless every core
-  holds it), in a run with the program table (below), and a bad `KM_HANDLER_LOAD`. A
+  holds it; never a COPY, which every program's loop serves), in a run with the program
+  table (below), and a bad `KM_HANDLER_LOAD`. A
   rejected command's event has ticks 0.
 - **The program table.** With `programs` 1 in the argument block (`KMD_ARGS_VERSION` 3),
   LIM at `KMD_LIM_PROGRAMS` holds a byte per core: the program field it holds (0xFF none;

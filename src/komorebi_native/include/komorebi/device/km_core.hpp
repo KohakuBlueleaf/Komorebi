@@ -122,6 +122,7 @@ namespace km {
     // A transfer to or from the host channel (km_transfer.hpp), on the reader.
     constexpr uint32_t kWhereToHost = 43;
     constexpr uint32_t kWhereFromHost = 44;
+    constexpr uint32_t kWhereCopy = 45;  // a copy between DRAM pages
     static_assert(
         kWhereMessagesGap == kWhereEmit + 1 &&
             kWhereMessagesCounter == kWhereMessagesGap + 16 &&

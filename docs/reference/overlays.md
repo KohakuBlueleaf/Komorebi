@@ -328,6 +328,15 @@ that range adds nothing to them, only to the reader.
   them, clear. Then it writes its sequence word. Each wait is bounded by the run's wait
   limit. The writer only completes the command, and compute skips it.
 
+A third, 245 (`KM_HANDLER_COPY`), copies pages from DRAM to DRAM through the same two
+chunks: from a range of one bank or a tensor's pages into another range or tensor
+(`komorebi/abi/km_copy.h`). It is compiled in beside the two, and the dispatcher
+accepts it from the host and from a work cluster's thread, which sends it with
+`kmx_fetch` and `kmx_store` ([X280 threads](threads.md#reading-and-writing-another-bank)).
+The runtime's loop of every program serves it, so it needs no program field: the
+dispatcher does not check which program its cores hold. A failed bound gives up with
+where `copy`.
+
 The experiments these numbers stand beside are
 [overlay_costs](../../experiments/overlay_costs/README.md),
 [overlay_probe](../../experiments/overlay_probe/README.md) and

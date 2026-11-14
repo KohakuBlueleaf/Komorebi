@@ -77,9 +77,14 @@ check fails with the error `bank` otherwise), so a program's regions follow the 
   in both threads' `shared=` is one region for both; it changes hands between them with
   `kmx_flush` by the writer and `kmx_invalidate` by the reader, as with the grid. The host
   rejects a shared region named by threads on two banks.
-- **Data for another bank is pushed by its producer**, never pulled: `kmx_push` stores
-  into another cluster's region through NoC windows (a push of generated data runs at
-  2.3 GB/s, a pull at 0.024 GB/s). See [Twelve cores](#twelve-cores).
+- **Data for another bank is pushed by its producer**, never pulled by the X280 cores:
+  `kmx_push` stores into another cluster's region through NoC windows (a push of
+  generated data runs at 2.3 GB/s, a pull at 0.024 GB/s). See
+  [Twelve cores](#twelve-cores).
+- **Or Tensix cores fetch it**: `kmx_fetch` has cores of the grid copy a range of any
+  bank, or a tensor, into the thread's region (64 MiB in 1.06 ms on four cores), and
+  `kmx_store` copies a region out
+  ([reference](reference/threads.md#reading-and-writing-another-bank)).
 - **A region a Tensix group and a thread share lives in the thread's bank.** Tensix
   cores reach every bank over the NoC; the thread reaches only its own.
 

@@ -986,6 +986,8 @@ class Session:
                     thread_run.ring = rings[cluster][0] if on_card else None
                     thread_run.peers = peers.get(cluster)
                     thread_run.records = records
+                    if backend.transfer is not None:
+                        thread_run.buffer = backend.transfer.address
                     if plan is not None:
                         thread_run.ports = thread_module.Ports(
                             backend.control_addr,
@@ -1322,7 +1324,7 @@ class _Backend:
             ""  # the runtime's error message when an abort did not restore
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
-        self.transfer = None  # a _TransferBuffer when the session has the host channel
+        self.transfer = None  # a _TransferBuffer: with the host channel, or threads
 
     def block(self, data):
         """A command's block (uint8 data) in DRAM: a copy at the same address of every
@@ -1410,8 +1412,8 @@ class _Backend:
         table[0] = port.core_table()
         cores_tensor = _words(self.session, table)
         self.io = [self.control, cores_tensor]
-        if self.session.channel is not None:
-            self.transfer = self._transfer_buffer(cores, grid)
+        if self.session.channel is not None or program.threads:
+            self.transfer = self._transfer_buffer(cores, grid)  # threads' copies too
         if self.trace_cap:
             self.trace_tensor = _words(
                 self.session,

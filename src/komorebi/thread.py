@@ -356,11 +356,12 @@ def args_block(
     peers=None,
     ports=None,
     records=None,
+    buffer=0,
 ):
     """The thread's LIM block (KMX_LIM_BYTES, a remote ring's events zeroed): argument
     block, check line at `base`, region table (`table`, else place()), the lines of
-    `ring` (RingPlacement; `records` from load_records into it), `peers` (Peers;
-    kmx_parallel_all lines after) and `ports` (Ports; area after, see ports_area)."""
+    `ring` (RingPlacement; `records` from load_records and the copies' L1 `buffer` into
+    it), `peers` (Peers; parallel_all lines after), `ports` (Ports; area after)."""
     constants = layout()
     if table is None:
         table = [
@@ -400,7 +401,7 @@ def args_block(
             ring.event_depth,
             flags,
             tile,
-            0,
+            buffer,
             *(records or (0, 0, 0)),
         )
         block[constants["KMX_LIM_RING"] : constants["KMX_LIM_RING"] + 64] = line
@@ -521,6 +522,7 @@ class ThreadRun:
         self.peers = None  # Peers: the clusters running the same image
         self.ports = None  # Ports: the program's X280 ports, when it declares them
         self.records = None  # load_records(): the programs kmx_load can load
+        self.buffer = 0  # the cores' L1 for kmx_fetch and kmx_store (0: none)
 
     def write_ports(self):
         """Writes the ports area into the cluster's LIM (Ports; before any start)."""
@@ -545,6 +547,7 @@ class ThreadRun:
             peers=self.peers,
             ports=self.ports,
             records=self.records,
+            buffer=self.buffer,
         )
         self.port.work_start(self.thread.cluster, str(self.image), block)
         self.running = True

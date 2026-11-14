@@ -10,7 +10,7 @@
 namespace km {
 
     // A command the runtime's reader serves (a transfer between DRAM and the host
-    // channel, KM_HANDLER_PUSH and KM_HANDLER_PULL), not a body: one range check.
+    // channel, or a copy between DRAM pages), not a body: one range check.
     inline bool served(const km_command_t& command) {
         return (
             static_cast<uint32_t>(handler(command)) - KM_HANDLER_SERVED_FIRST <=
@@ -103,12 +103,15 @@ namespace km {
         }
 
     private:
-        // This core's slice of a PUSH or PULL (a template: only the reader builds it);
-        // a failed bound or a timed-out wait gives up (kWhereToHost or kWhereFromHost).
+        // This core's slice of a PUSH, PULL or COPY (a template: only the reader builds
+        // it); a failed bound or a timed-out wait gives up (its where code).
         template <typename Command>
         void serve_transfer(const Command& command) const {
             const bool push = handler(command) == KM_HANDLER_PUSH;
-            if (!push && handler(command) != KM_HANDLER_PULL) {  // not assigned yet
+            const bool copy = handler(command) == KM_HANDLER_COPY;
+            if (
+                !push && !copy && handler(command) != KM_HANDLER_PULL
+            ) {  // not assigned yet
                 gave_up(
                     kStReader,
                     kGaveBadTransfer,
@@ -123,18 +126,39 @@ namespace km {
                 code = poll(ready, args().wait_limit);
                 return code == kGaveNone;
             };
-            const Transfer t = transfer_of(command);
             const uint32_t rank = me() - first(command);
-            const uint32_t status = (
-                push
-                    ? push_to_host(t, rank, count(command), wait)
-                    : pull_from_host(t, rank, count(command), wait)
-            );
+            uint32_t status = kTransferDone;
+            if (copy) {
+                const uint32_t a[10] = {
+                    command.a0,
+                    command.a1,
+                    command.a2,
+                    command.a3,
+                    command.a4,
+                    command.a5,
+                    command.a6,
+                    command.a7,
+                    command.a8,
+                    command.a9
+                };
+                status = copy_pages(km_copy_of(a), rank, count(command), wait);
+            } else {
+                const Transfer t = transfer_of(command);
+                status = (
+                    push
+                        ? push_to_host(t, rank, count(command), wait)
+                        : pull_from_host(t, rank, count(command), wait)
+                );
+            }
             if (status != kTransferDone) {
                 gave_up(
                     kStReader,
                     code != kGaveNone ? code : kGaveBadTransfer,
-                    push ? kWhereToHost : kWhereFromHost,
+                    copy
+                        ? kWhereCopy
+                        : push
+                            ? kWhereToHost
+                            : kWhereFromHost,
                     slot(command),
                     command.sequence
                 );

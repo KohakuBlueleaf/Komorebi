@@ -6,6 +6,7 @@
 
 #include "kmx_layout.h"
 #include "komorebi/abi/km_abi.h"
+#include "komorebi/abi/km_copy.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -109,6 +110,62 @@ int kmx_serve(void);
 /* Any core: stores `bytes` from `source` at `offset` of `cluster`'s region `id`
  * (64-byte multiples, else KMX_BAD); the receiver calls kmx_invalidate_at first. */
 int kmx_push(int cluster, int id, uint64_t offset, const void* source, uint64_t bytes);
+
+/* Pages in DRAM a copy names: a range of one bank (`bank` 0 to 7, `page` 0 and `first`
+ * 0 for the library's choice) or a tensor's pages (`bank` KM_COPY_INTERLEAVED). */
+typedef struct {
+    uint32_t address; /* a range's bank address; a tensor's address */
+    uint32_t bank;
+    uint32_t page;  /* a tensor's aligned page bytes */
+    uint32_t first; /* the first page */
+} kmx_dram;
+
+/* Core 0: cores [first, first + count) copy `bytes` from `from` to region `id` at
+ * `offset` (64-byte multiples) by `deadline`; the region's lines dropped around it. */
+int kmx_fetch(
+    int id,
+    uint64_t offset,
+    const kmx_dram* from,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+);
+
+/* Core 0: the region's lines written back, then copied out to `to`. KMX_OK; KMX_BAD (a
+ * bound, a refusal, a timeout: `event`, may be 0); KMX_LATE / KMX_STOPPED. */
+int kmx_store(
+    int id,
+    uint64_t offset,
+    const kmx_dram* to,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint64_t deadline,
+    kmx_event* event
+);
+
+/* The same, submitted and not waited for: KMX_OK and the handle for kmx_wait (after a
+ * fetch's event, kmx_invalidate_at of the range); KMX_FULL; KMX_BAD for a bound. */
+int kmx_fetch_submit(
+    int id,
+    uint64_t offset,
+    const kmx_dram* from,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint32_t* handle
+);
+int kmx_store_submit(
+    int id,
+    uint64_t offset,
+    const kmx_dram* to,
+    uint64_t bytes,
+    uint32_t first,
+    uint32_t count,
+    uint32_t* handle
+);
 
 /* X280 ports: a sequence number and three words with the grid's cores, fixed to X280
  * cores at load. A call names a core the calling X280 core serves (else KMX_BAD). */

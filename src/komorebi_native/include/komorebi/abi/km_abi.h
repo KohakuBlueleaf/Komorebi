@@ -54,6 +54,11 @@
 #define KM_TRANSFER_WORD_BYTES 64u
 #define KM_TRANSFER_MARK 0x50555348u
 #define KM_CHANNEL_BYTES 0x40000000u /* the host channel: no offset reaches past it */
+/* each of a run's two L1 chunks on every core */
+#define KM_TRANSFER_CHUNK_BYTES 16384u
+/* host or a work cluster's thread, served by the runtime's kernels: the group's cores
+ * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
+#define KM_HANDLER_COPY 245u
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u
