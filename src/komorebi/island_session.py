@@ -4,17 +4,19 @@ and contiguous by island; a command's group is split by island on the host, a te
 is placed by island. `Session(cards=[...])` with more than one card returns this."""
 
 import os
+import struct
 import time
 
 import numpy as np
 
+from komorebi import abi, dram, formats, islands, native
 from komorebi import channel as channel_module
-from komorebi import dram, formats, islands, native
 from komorebi import session as session_module
 from komorebi.errors import CardBusy, KomorebiError, WaitTimeout
 from komorebi.program import Program
 
 M32 = 0xFFFFFFFF
+THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
 
 
 def _named(error, island):
@@ -29,6 +31,65 @@ def _named(error, island):
 
 def _left(deadline):
     return max(deadline - time.monotonic(), 0.0)
+
+
+class LinkPlan:
+    """Island `island`'s link toward island `far` for commands across: its link core
+    (`core`, an index of its cores and a rank like any other), the core's link area
+    in L1 (`area`) and the fabric's Ethernet channel toward `far`."""
+
+    def __init__(self, graph, island, far, core, area, channel):
+        self.graph, self.island, self.far = graph, island, far
+        self.core, self.area, self.channel = core, area, channel
+
+    def connection(self):
+        """The link core writer's last runtime arguments: the connection's channel,
+        teardown and cursor words."""
+        headers = abi.headers()
+        return [
+            self.channel,
+            self.area + headers["KM_LINK_TEARDOWN"],
+            self.area + headers["KM_LINK_CURSOR"],
+        ]
+
+    def defines(self, arg):
+        """The kernels' defines: the link core, its area, the connection's arguments
+        at runtime argument `arg` of its writer."""
+        return [
+            ("KM_LINK_CORE", str(self.core)),
+            ("KM_LINK_AREA", str(self.area)),
+            ("KM_LINK_ARG", str(arg)),
+        ]
+
+    def line(self, dispatch):
+        """The dispatcher's link line and island table (KMD_LIM_LINK). The far island's
+        dispatcher tile and link block are taken as this one's (checked after load)."""
+        headers = abi.headers()
+        words = [0] * (headers["KMD_LINK_COUNT"] // 4)
+        words[headers["KMD_L_MARK"]] = headers["KMD_LINK_MARK"]
+        words[headers["KMD_L_ISLAND"]] = self.island
+        words[headers["KMD_L_ISLANDS"]] = len(self.graph.islands)
+        words[headers["KMD_L_CORE"]] = self.core
+        words[headers["KMD_L_AREA"]] = self.area
+        words[headers["KMD_L_FAR"]] = self.far
+        words[headers["KMD_L_FAR_TILE"]] = dispatch.l2_x | dispatch.l2_y << 16
+        words[headers["KMD_L_FAR_BLOCK"]] = dispatch.lim_base + headers["KMD_LIM_LINK"]
+        table = headers["KMD_LINK_TABLE"] // 4
+        for island in range(len(self.graph.islands)):
+            threads = self.graph.thread_numbers(island)
+            words[table + 2 * island] = (
+                self.graph.first(island) | self.graph.count(island) << 16
+            )
+            words[table + 2 * island + 1] = threads.start | len(threads) << 16
+        return struct.pack(f"<{len(words)}I", *words)
+
+
+def link_core(device, columns, eth_x):
+    """The row-0 core nearest at or right of the link's Ethernet core (x): its index."""
+    right = [x for x in range(columns) if device.worker_core(x, 0)[0] >= eth_x]
+    if right:
+        return min(right, key=lambda x: device.worker_core(x, 0)[0])
+    return max(range(columns), key=lambda x: device.worker_core(x, 0)[0])
 
 
 class IslandTensor:
@@ -381,7 +442,9 @@ class IslandSession:
             parts = []
             for session in self.sessions:
                 columns, rows = session.grid
-                parts.append(islands.Island(tuple(range(columns * rows)), columns))
+                parts.append(
+                    islands.Island(tuple(range(columns * rows)), columns, THREADS)
+                )
             links = [islands.Link(i, i + 1) for i in range(len(parts) - 1)]
             self.graph = islands.Graph(parts, links, reserve=self.links > 0)
         except BaseException:
@@ -482,29 +545,80 @@ class IslandSession:
 
     def load(self, program, **options):
         """Loads `program` on every island in turn (its grid, then its dispatcher),
-        with Session.load's options; returns an IslandRun over flat ranks."""
+        with Session.load's options; returns an IslandRun over flat ranks. `program`
+        may be one Program an island (the same kernels; each its own X280 threads)."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
-        if not isinstance(program, Program):
-            raise ValueError("an island session loads one Program (not yet a list)")
-        if program.threads:
+        programs = (
+            [program] * len(self.sessions)
+            if isinstance(program, Program)
+            else list(program)
+        )
+        if len(programs) != len(self.sessions) or not all(
+            isinstance(one, Program) for one in programs
+        ):
             raise ValueError(
-                f"{program.name}: X280 threads over islands are not done yet"
+                f"one Program, or one for each of the {len(self.sessions)} islands"
             )
+        plans = self._links()
         runs = []
         try:
             for island, session in enumerate(self.sessions):
                 try:
                     island_of = (self.graph, island)
-                    runs.append(session.load(program, island=island_of, **options))
+                    runs.append(
+                        session.load(
+                            programs[island],
+                            island=island_of,
+                            link=plans[island],
+                            **options,
+                        )
+                    )
                 except KomorebiError as error:
                     raise _named(error, island) from None
+            self._check_links(runs, plans)
         except BaseException:
             for run in runs:
                 run.abort()
             raise
         self.run = IslandRun(self.graph, runs)
         return self.run
+
+    def _links(self):
+        """Each island's LinkPlan for commands across (two islands), else None each:
+        its link core under link 0's Ethernet core, a link area on every core."""
+        if len(self.sessions) != 2:
+            return [None] * len(self.sessions)
+        bytes_ = abi.headers()["KM_LINK_AREA_BYTES"]
+        plans = []
+        self._link_areas = []
+        for island, session in enumerate(self.sessions):
+            far = 1 - island
+            _links, channel, eth_x, _eth_y = self.mesh.link(island, far, 0)
+            columns, rows = session.grid
+            area = session.empty(
+                (columns * rows, bytes_ // 4), "uint32", shard_grid=(columns, rows)
+            )
+            self._link_areas.append(area)
+            core = link_core(session.device, columns, eth_x)
+            plans.append(LinkPlan(self.graph, island, far, core, area.address, channel))
+            self.log(
+                f"island {island}: link core {core}, channel {channel}, area "
+                f"{area.address:#x}"
+            )
+        return plans
+
+    def _check_links(self, runs, plans):
+        """Every island's dispatcher has the tile and LIM base its link line took for
+        the far one's (its own)."""
+        if plans[0] is None:
+            return
+        ports = [run.backend.port for run in runs]
+        seen = {(port.l2_x, port.l2_y, port.lim_base) for port in ports}
+        if len(seen) != 1:
+            raise KomorebiError(
+                f"the islands' dispatchers differ in tile or LIM base: {sorted(seen)}"
+            )
 
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'

@@ -22,6 +22,7 @@ namespace km {
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "km_completion.hpp"
+#include "km_link_send.hpp"
 #include "km_trace.hpp"
 
 namespace km {
@@ -56,7 +57,9 @@ namespace km {
                 }
                 begin(*command);
                 if (served(*command)) {
-                    serve(*this, *command);
+                    if (handler(*command) != KM_HANDLER_LINK) {  // the writer's
+                        serve(*this, *command);
+                    }
                 } else {
                     body(*command);
                 }
@@ -389,9 +392,18 @@ namespace km {
                 }
                 begin(command);
                 result_ = 0;
+#if defined(KM_LINK_CORE)
+                const bool report = (
+                    __builtin_expect(served(command), 0)
+                        ? handler(command) != KM_HANDLER_LINK ||
+                            link_.send(*this, command)
+                        : body(command)
+                );
+#else
                 const bool report = (
                     __builtin_expect(served(command), 0) || body(command)
                 );
+#endif
                 const bool written = flushed(kFlushWrites, kStWriter);
                 trace_.timestamp(command.sequence, kTraceDone);
                 if (
@@ -407,6 +419,9 @@ namespace km {
                 finish(command, kStWriter);
             }
             flushed(kFlushWrites, kStWriter);  // the last acknowledgement has landed
+#if defined(KM_LINK_CORE)
+            link_.close(*this);
+#endif
             trace_.flush(arguments.me, *this);
             put_byte(state(), kStEnds, kEndWriter, end);
         }
@@ -475,6 +490,9 @@ namespace km {
 
         Trace trace_;
         uint32_t result_ = 0;
+#if defined(KM_LINK_CORE)
+        LinkSender link_;
+#endif
     };
 
 }  // namespace km

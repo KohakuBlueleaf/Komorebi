@@ -375,11 +375,13 @@ def args_block(
     records=None,
     buffer=0,
     ranks=None,
+    island=0,
 ):
     """The thread's LIM block (KMX_LIM_BYTES, a remote ring's events zeroed): argument
     block, check line, region table (`table`, else place()), the lines of `ring`
     (RingPlacement, with `records` and `buffer`), `peers` (Peers), `ports` (Ports) and
-    `ranks` (Ranks), the areas of the last three after the block."""
+    `ranks` (Ranks), the areas of the last three after the block; `island` its island
+    | islands << 16 (0: island 0 of one)."""
     constants = layout()
     if table is None:
         table = [
@@ -389,7 +391,7 @@ def args_block(
     block = bytearray(constants["KMX_LIM_BYTES"])
     flags = constants["KMX_FLAG_KEEP_PREFETCH"] if thread.prefetch == "keep" else 0
     head = struct.pack(
-        "<QIIQIIQQQI",
+        "<QIIQIIQQQII",
         run_value,
         constants["KMX_MAGIC"],
         constants["KMX_VERSION"],
@@ -400,6 +402,7 @@ def args_block(
         check_value,
         flags,
         thread.cluster,
+        island,
     )
     block[: len(head)] = head
     for i, (address, size) in enumerate(table):
@@ -560,6 +563,7 @@ class ThreadRun:
         self.ranks = None  # Ranks: the dynamic program's X280 ranks on this cluster
         self.records = None  # load_records(): the programs kmx_load can load
         self.buffer = 0  # the cores' L1 for kmx_fetch and kmx_store (0: none)
+        self.island = 0  # its island | islands << 16 (0: island 0 of one)
 
     def write_ports(self):
         """Writes the ports area into the cluster's LIM (Ports; before any start)."""
@@ -596,6 +600,7 @@ class ThreadRun:
             records=self.records,
             buffer=self.buffer,
             ranks=self.ranks,
+            island=self.island,
         )
         self.port.work_start(self.thread.cluster, str(self.image), block)
         self.running = True
