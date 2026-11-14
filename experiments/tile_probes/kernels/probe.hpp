@@ -15,10 +15,18 @@ namespace probe {
     constexpr uint32_t kRiscv = 5;
     constexpr uint32_t kWalk = 6;
     constexpr uint32_t kNocRead = 7;
+    constexpr uint32_t kPush = 8;     // instruction push forms, replay and MOP loops
+    constexpr uint32_t kMacro = 9;    // load-macro chain
+    constexpr uint32_t kSfpcfg = 10;  // SFPCONFIG combine modes
+    constexpr uint32_t kFpu = 11;     // matrix-unit issue cost, K blocks in rotation
+    constexpr uint32_t kIcache = 12;  // loop bodies around the instruction cache size
+    constexpr uint32_t kSfpi = 13;    // what the SFPI compiler emits
+    constexpr uint32_t kRound = 14;   // ties of the matrix unit and the packer
 
     // Output words. kNonce is written last: the host sees a finished run by it.
     constexpr uint32_t kNonce = 0, kError = 1, kNumTimes = 2;
-    constexpr uint32_t kDone0 = 4;   // kDone0 + t: done word of TRISC t (probe 5)
+    constexpr uint32_t kDone0 = 4;   // kDone0 + t: done word of TRISC t (probes 5, 11, 12, 14)
+    constexpr uint32_t kAuxError = 8;  // error bits of TRISC 0 and 1 (probes 11, 14)
     constexpr uint32_t kTimes = 16;  // timing words (wall-clock cycles)
     constexpr uint32_t kMaxTimes = 2032;
     constexpr uint32_t kData = 2048;  // probe data
@@ -33,6 +41,7 @@ namespace probe {
 
     // CBs: the input page, the output page, scratch L1 for the RISC-V loops.
     constexpr uint32_t kCbIn = 0, kCbOut = 16, kCbScratch = 24;
+    constexpr uint32_t kCbRne = 17, kCbSr = 18;  // BF16 tiles packed by probe 14
     constexpr uint32_t kScratchWords = 4096;
 
     // Timeout of every wait of this kernel: about 2^24 x 20 cycles, under a second.

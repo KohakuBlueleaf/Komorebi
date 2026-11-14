@@ -6,10 +6,16 @@
 #include "api/compute/common.h"
 #include "api/compute/compute_kernel_api.h"
 #include "api/compute/compute_kernel_hw_startup.h"
+#include "api/compute/eltwise_binary.h"
+#include "api/compute/pack.h"
+#include "api/compute/reg_api.h"
+#include "fpu.hpp"
+#include "icache.hpp"
 #include "probe.hpp"
 #include "rv.hpp"
 #ifdef TRISC_PACK
 #include "vec.hpp"
+#include "costs.hpp"
 #include "nocread.hpp"
 #include "walk.hpp"
 #endif
@@ -62,7 +68,15 @@ void kernel_main() {
     for (uint32_t i = 0; i < 7; ++i) {
         p[i] = get_arg_val<uint32_t>(1 + i);
     }
+#if PROBE == 14
+    compute_kernel_hw_startup(probe::kCbIn, probe::kCbRne);
+    const uint32_t rne_addr = get_tile_address(probe::kCbRne, 0);
+    const uint32_t sr_addr = get_tile_address(probe::kCbSr, 0);
+    (void)rne_addr;
+    (void)sr_addr;
+#else
     compute_kernel_hw_startup(probe::kCbIn, probe::kCbOut);
+#endif
     cb_wait_front(probe::kCbIn, 1);
     const uint32_t in_addr = get_tile_address(probe::kCbIn, 0);
     const uint32_t out_addr = get_tile_address(probe::kCbOut, 0);
@@ -82,6 +96,34 @@ void kernel_main() {
     l1_fence();
     out[probe::kDone0 + kThread] = nonce;
     l1_fence();
+#endif
+#endif
+
+#if PROBE == 11 || PROBE == 14
+    // TRISC 0 fills SrcA and SrcB; TRISC 1 runs the matrix unit once they are full.
+#if defined(TRISC_UNPACK)
+    fpu::unpack(out, nonce);
+#elif defined(TRISC_MATH)
+    if (fpu::wait_word(out, probe::kDone0, nonce)) {
+#if PROBE == 11
+        fpu::issue(out);
+#else
+        fpu::ties_math();
+#endif
+    } else {
+        out[probe::kAuxError] = probe::kErrorSpin;
+    }
+    fpu::post_word(out, probe::kDone0 + 1, nonce);
+#endif
+#endif
+
+#if PROBE == 12
+    // p0 run mask, p1 loop passes.
+    if ((p[0] >> kThread) & 1) {
+        icache::run(kThread, out, p[1]);
+    }
+#ifndef TRISC_PACK
+    fpu::post_word(out, probe::kDone0 + kThread, nonce);
 #endif
 #endif
 
@@ -124,6 +166,37 @@ void kernel_main() {
 #elif PROBE == 7
     // p0 peer NoC-0 coordinate, p1 wait cycles; the peer's input CB is at in_addr.
     nocread::run(out, scratch, p[0], in_addr, p[1]);
+#elif PROBE == 8
+    vec::setup();
+    costs::push(out, scratch, p[0], p[1], t);  // reps, K
+    vec::finish();
+#elif PROBE == 9
+    vec::setup();
+    costs::macro(in, out, p[0], p[1], t);  // passes, K
+    vec::finish();
+#elif PROBE == 10
+    vec::setup();
+    costs::sfpcfg(out);
+    vec::finish();
+#elif PROBE == 11
+    err |= wait_done(out, 3, nonce);
+    err |= out[probe::kAuxError];
+#elif PROBE == 12
+    err |= wait_done(out, p[0] & 3, nonce);
+#elif PROBE == 13
+    vec::setup();
+    costs::sfpi_run(in, out);
+    vec::finish();
+#elif PROBE == 14
+    err |= wait_done(out, 3, nonce);
+    err |= out[probe::kAuxError];
+    if (err == 0) {
+        fpu::ties_pack(
+            in, out, probe::kCbRne, probe::kCbSr,
+            reinterpret_cast<const volatile uint32_t*>(rne_addr),
+            reinterpret_cast<const volatile uint32_t*>(sr_addr)
+        );
+    }
 #endif
     out[probe::kError] = err;
     l1_fence();
