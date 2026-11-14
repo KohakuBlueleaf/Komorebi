@@ -21,6 +21,7 @@ class Tensor:
         self.dtype = dtype
         self.layout = layout
         self.shard_grid = shard_grid
+        self.freed = False
 
     def __repr__(self):
         where = "DRAM" if self.shard_grid is None else f"L1 of {self.shard_grid}"
@@ -83,6 +84,7 @@ class Tensor:
     def free(self):
         """Gives the buffer's memory back; the tensor is not used after this."""
         self.buffer.free()
+        self.freed = True
 
 
 def empty(module, device, shape, dtype, layout="row", shard_grid=None, address=None):

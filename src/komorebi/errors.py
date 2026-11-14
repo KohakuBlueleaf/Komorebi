@@ -48,13 +48,20 @@ class L1BudgetError(ProgramError):
     """A program's buffers, control blocks and overlay slots do not fit a core's L1;
     nothing was loaded. `table` is the L1 budget table of one core."""
 
-    def __init__(self, program, table):
+    def __init__(self, program, table, held=0):
+        kept = (
+            f" The session keeps {held:,} B of every core's L1 at the top (counted in "
+            "the table)."
+            if held
+            else ""
+        )
         super().__init__(
             f"{program}: its buffers and slots do not fit a core's L1. Fewer or "
             "smaller slots (Program.slots(count=..., bytes=...)), fewer buffer pages, "
-            f"or a smaller kernel buffer. The L1 budget of a core:\n{table}"
+            f"or a smaller kernel buffer.{kept} The L1 budget of a core:\n{table}"
         )
         self.table = table
+        self.held = held
 
 
 class L1LayoutError(L1BudgetError):
