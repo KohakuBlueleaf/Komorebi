@@ -83,6 +83,20 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   first of its cores in the group, and a core's rank is its flat rank less the group's
   first, its count the whole group's. The call returns a ticket. `run.submit_many` does the same for n commands, one `submit_many` an
   island.
+- Every line of such a split carries `KM_FLAG_PART` (`km_abi.h`): its dispatcher runs
+  its own part and never sends the line across, since the host gave each other island
+  its part itself. A line whose group reaches past its dispatcher's island without the
+  mark (a thread's `kmx_submit`, or a line the host gives one island's own
+  `run.island(i)`) crosses: that dispatcher sends the other part over the link and
+  completes the command when every part is back
+  ([commands across islands](threads.md#commands-across-islands)). So every rank runs
+  each command once either way: measured with example 01's COUNT (every core adds one
+  to its count) on flat ranks (60, 120) of 238, 1,000 times from the host and 1,000
+  times from island 0's thread, each rank in the group counting exactly 1,000 for
+  each and the others 0 (`examples/25_islands_threads --steps count`); 7.46 µs a
+  command from the host (split, pipelined), 10.89 µs from the thread (crossed, one at
+  a time). `exclusive=True` on a split is allowed, each island exclusive on its part;
+  an EXCLUSIVE line that would cross is rejected with reason 2 (`flags`).
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within

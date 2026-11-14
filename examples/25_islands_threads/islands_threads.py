@@ -41,7 +41,7 @@ def parse():
     parser.add_argument(
         "--steps",
         default="nop,map,ask,hang,count",
-        help="of nop, map, ask, hang, count",
+        help="of nop, map, ask, hang, count, host-hang (not by default)",
     )
     parser.add_argument("--nop-jobs", type=int, default=2000, help="per round")
     parser.add_argument("--rounds", type=int, default=3, help="NOP rounds")
@@ -106,12 +106,15 @@ def ask_thread(run, handler, args, timeout=20.0):
 
 def counted(run, own):
     """Every flat rank's count of COUNTs, as its writer gives it (COUNT a0 1 with
-    the result, one rank a command on its island's own run)."""
+    the result, one rank a command on its island's own run, in flat ranks)."""
     handles = []
-    for island, (_first, cores) in enumerate(own):
+    for island, (low, cores) in enumerate(own):
         part = run.island(island)
         handles.append(
-            [part.submit("count", (r, 1), [1], result=True) for r in range(cores)]
+            [
+                part.submit("count", (rank, 1), [1], result=True)
+                for rank in range(low, low + cores)
+            ]
         )
     counts = []
     for island, mine in enumerate(handles):
@@ -159,6 +162,38 @@ def count_check(run, own, ranks, group, rounds):
     return report
 
 
+def gave_up(run):
+    """Each island's dispatcher's count of the host's commands it gave up, as the host
+    reads it."""
+    return [run.island(i).backend.inspect(0)["given_up"] for i in range(2)]
+
+
+def host_hang(run, group, hung, before):
+    """After the thread's HANG (no host command given up on either island), the same
+    HANG from the host on island 0's run alone (no part mark: it crosses): given up
+    naming island 1, island 0 counting it once and island 1 not, and the run goes on."""
+    after_thread = gave_up(run)
+    first = run.island(0)
+    handle = first.submit("hang", group, [hung, 1])
+    try:
+        event = first.wait(handle, timeout=20.0)
+        named, given = event.kind, False
+    except km.CommandTimeout as error:
+        named, given = error.slot & 0xFF, error.given_up
+    after_host = gave_up(run)
+    log(
+        f"host HANG on {group} to island 0 alone: given up {given}, auxiliary"
+        f" {named}; give-ups before {before}, after the thread's {after_thread},"
+        f" after the host's {after_host}"
+    )
+    return {
+        "host_hang_given_up": bool(given and named == EVENT_ISLAND + 1),
+        "gave_up_counts": [before, after_thread, after_host],
+        "gave_up_counts_agree": after_thread == before
+        and after_host == [before[0] + 1, before[1]],
+    }
+
+
 def per_command_us(ticks, count):
     return None if ticks == BAD else round(ticks / TICKS_PER_US / count, 3)
 
@@ -167,7 +202,9 @@ def main():
     args = parse()
     steps = args.steps.split(",")
     cards = [int(card) for card in args.cards.split(",")]
-    threads = any(step in steps for step in ("map", "ask", "hang", "count"))
+    threads = any(
+        step in steps for step in ("map", "ask", "hang", "count", "host-hang")
+    )
     report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
     with km.Session(cards=cards, links=args.links, log=log) as session:
@@ -229,6 +266,11 @@ def main():
             wrong = "map"
         if "count" in steps:
             report.update(count_check(run, own, ranks, (60, 120), args.counts))
+        if "host-hang" in steps:
+            before = gave_up(run)
+            word = ask_thread(first, "hang", [100, 40, 30, 300000, 2000000])
+            log(f"thread HANG on (100, 40): word {word:#x}")
+            report.update(host_hang(run, (100, 40), 30, before))
         log("stopping")
         results = run.stop()
         report["kernel_errors"] = [result["error_name"] for result in results]
@@ -245,6 +287,8 @@ def main():
         and report.get("thread_ask_us", 0) is not None
         and report.get("hang_named_island", True)
         and report.get("map_after_hang", True)
+        and report.get("host_hang_given_up", True)
+        and report.get("gave_up_counts_agree", True)
         and report.get("exclusive_done", True)
         and report.get("host_counts_exact", True)
         and report.get("thread_counts_exact", True)

@@ -206,11 +206,15 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     dispatcher->result_busy &= ~(1ull << slot);
     dispatcher->busy_count--;
     trace(dispatcher, KMD_TRACE_FREE, slot, dispatcher->slot_request[slot]);
-    kmd_ring_t* ring = &dispatcher->ring[dispatcher->slot_source[slot]];
+    const uint32_t source = dispatcher->slot_source[slot];
+    kmd_ring_t* ring = &dispatcher->ring[source];
     ring->busy_count--;
     const uint32_t auxiliary = (
         slot | (sequence & KM_EVENT_SEQUENCE_MASK) << KM_EVENT_SEQUENCE_SHIFT
     );
+    /* A crossing's part sends no event of its own: the crossing's one event counts
+     * (link_gave); a part from the other island's dispatcher goes back to its origin.
+     */
     if (
         !(dispatcher->link_slots & (1ull << slot)) ||
         !link_freed(dispatcher, slot, KM_EVENT_TIMEOUT | auxiliary << 8, took, now)
@@ -221,8 +225,8 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
             KM_EVENT_TIMEOUT | auxiliary << 8,
             took
         );
+        link_gave(dispatcher, source);
     }
-    dispatcher->x280_cores[KMD_H_GIVEN_UP] = ++dispatcher->given_up;
     dispatcher->last_event_mtime = now;
     if (dispatcher->waits) {
         sources_wake(dispatcher);

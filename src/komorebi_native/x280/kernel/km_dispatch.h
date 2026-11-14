@@ -274,7 +274,7 @@ enum {
     KMD_H_TRAP_CAUSE = 14,      /* core 1, after a trap: mcause */
     KMD_H_TRAP_PC = 15,         /* core 1, after a trap: mepc, low word */
     KMD_H_BUSY_HIGH = 16,       /* core 0: busy slots 32 to 63 at the finish */
-    KMD_H_GIVEN_UP = 17,        /* core 0: commands given up at their deadline */
+    KMD_H_GIVEN_UP = 17,        /* core 0: the host's commands given up */
     KMD_H_WATCH = 18,           /* core 0, then core 2 at a loss: KMD_WATCH_* */
     KMD_H_STALLS = 19,          /* core 2: stalls of core 0 it saw */
     KMD_H_BACK = 20,            /* core 0: times it re-entered its loop */
@@ -284,7 +284,7 @@ enum {
     KMD_H_LINK_SENT = 24,       /* core 0: packets handed to the link core */
     KMD_H_LINK_TAKEN = 25,      /* core 0: packets read from its link inbox */
     KMD_H_LINK_CROSSED = 26,    /* core 0: commands with a part across */
-    KMD_H_LINK_GAVE_UP = 27,    /* core 0: of those, timed out naming the far island */
+    KMD_H_LINK_GAVE_UP = 27,    /* core 0: crossings timed out naming the far island */
     KMD_H_WORDS = 28
 };
 
