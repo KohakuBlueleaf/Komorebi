@@ -102,10 +102,10 @@ calls, from the [dense page](projects/dense/README.md#one-card-and-two-128-to-16
 
 | Linear layer | Cube | One card | Two cards | Speed-up | Kohaku-TT, two cards, same form |
 |---|---|---|---|---|---|
-| W copied on both cards | 8192 | 4,488.1 µs | 2,357.6 µs | 1.90 | 2,482.8 µs (1.83) |
-| W copied on both cards | 16,384 | 34,544.8 µs | 17,731.5 µs | 1.95 | 17,067.8 µs (1.90) |
-| W sharded along K, held once | 8192 | 4,488.1 µs | 5,397.1 µs | 0.83 | 3,930.1 µs (1.16) |
-| W sharded along K, held once | 16,384 | 34,544.8 µs | 29,151.7 µs | 1.18 | 32,970.6 µs (0.99) |
+| W gathered on both cards | 8192 | 4,488.1 µs | 2,357.6 µs | 1.90 | 2,482.8 µs (1.83) |
+| W gathered on both cards | 16,384 | 34,544.8 µs | 17,731.5 µs | 1.95 | 17,067.8 µs (1.90) |
+| W sharded along K (row-parallel) | 8192 | 4,488.1 µs | 4,992.6 µs | 0.90 | 3,930.1 µs (1.16) |
+| W sharded along K (row-parallel) | 16,384 | 34,544.8 µs | 27,151.6 µs | 1.27 | 32,970.6 µs (0.99) |
 
 Above 1, Komorebi takes less time. The neural workloads are on parallel with or ahead of
 Kohaku-TT on most shapes; the rasterizer and the ray tracer run whole frames on the
@@ -513,22 +513,22 @@ the same script and kernels on one card and on two
 ([dense](projects/dense/README.md#one-card-and-two-128-to-16384-cubed)); median single
 call in microseconds, "x" one card's time over two cards':
 
-| Cube | One card | Two cards, W sharded along K | x | Two cards, W copied | x | Kohaku-TT: one card / two cards (W copied) / two cards (K split) |
+| Cube | One card | Two cards, W sharded along K (row-parallel) | x | Two cards, W gathered | x | Kohaku-TT: one card / two cards (W gathered) / two cards (K split) |
 |---|---|---|---|---|---|---|
-| 128 | 7.2 | 71.5 | 0.10 | 7.6 | 0.95 | |
-| 256 | 11.6 | 79.7 | 0.15 | 10.0 | 1.16 | |
-| 512 | 15.9 | 179.9 | 0.09 | 19.8 | 0.80 | |
-| 1024 | 43.8 | 180.2 | 0.24 | 40.6 | 1.08 | |
-| 2048 | 167.1 | 368.8 | 0.45 | 125.4 | 1.33 | |
-| 4096 | 655.0 | 1,278.6 | 0.51 | 420.7 | 1.56 | 819.8 / 487.3 / 868.8 |
-| 8192 | 4,488.1 | 5,397.1 | 0.83 | 2,357.6 | 1.90 | 4,549.5 / 2,482.8 / 3,930.1 |
-| 16,384 | 34,544.8 | 29,151.7 | 1.18 | 17,731.5 | 1.95 | 32,489.3 / 17,067.8 / 32,970.6 |
+| 128 | 7.2 | 72.7 | 0.10 | 7.6 | 0.95 | |
+| 256 | 11.6 | 79.0 | 0.15 | 10.0 | 1.16 | |
+| 512 | 15.9 | 179.8 | 0.09 | 19.8 | 0.80 | |
+| 1024 | 43.8 | 154.8 | 0.28 | 40.6 | 1.08 | |
+| 2048 | 167.1 | 356.0 | 0.47 | 125.4 | 1.33 | |
+| 4096 | 655.0 | 1,312.9 | 0.50 | 420.7 | 1.56 | 819.8 / 487.3 / 868.8 |
+| 8192 | 4,488.1 | 4,992.6 | 0.90 | 2,357.6 | 1.90 | 4,549.5 / 2,482.8 / 3,930.1 |
+| 16,384 | 34,544.8 | 27,151.6 | 1.27 | 17,731.5 | 1.95 | 32,489.3 / 17,067.8 / 32,970.6 |
 
-With the weight copied on both cards nothing crosses in a call, and two cards take half
-of one card's time from 8192 up, as Kohaku-TT's default two-card form does. With the
-weight held once and sharded along K, each card's partial product has to cross and be
-added, so two cards pass one only at 16,384. Below 2048 a call is mostly the command
-over two islands and the sync.
+With the weight gathered on both cards nothing crosses in a call, and two cards take
+half of one card's time from 8192 up, as Kohaku-TT's default two-card form does. With
+the weight sharded along K (the row-parallel form) each card's partial product is
+all-reduced, and that all-reduce is slow today: two cards pass one only at 16,384, and
+below 2048 a call is mostly the sync (TODO item 2).
 
 What crosses a link, and what it costs ([islands](docs/reference/islands.md)):
 
@@ -637,8 +637,8 @@ docs/                          concepts, references, install, development
 
 ## Sizes a program works within
 
-These are fixed sizes of the runtime. They are not on the TODO list: a program is
-written to fit them, and what has been built so far (matrix product, attention, a
+These are fixed sizes of the runtime and limits of the card. They are not on the TODO
+list: a program is written to fit them, and what has been built so far (matrix product, attention, a
 rasterizer, a ray tracer) fits.
 
 - **A command is one 64-byte line.** It carries ten 32-bit argument words. Anything
@@ -654,6 +654,15 @@ rasterizer, a ray tracer) fits.
   above it costs about 4 cycles more): the kernels and slots sit at the bottom, the
   buffers above them, and a load whose code would reach past 1 MB raises
   `SlowCodeError` unless the session allows it (`slow_code=True`).
+- **A link is slower than the NoC.** What crosses between islands is bound by the
+  links, so a program over islands is placed to cross little: a tensor split along the
+  dimension its work is split along, or gathered where every island reads all of it,
+  and what must cross sent as one gather or one reduce.
+- **A message is one line.** 64 bytes, with a body of at most one 4 KiB page beside
+  it. Messages have no order between them, and a message cannot ask for a DRAM fetch.
+- **What costs a card reset.** A core stuck inside a compute unit, a dispatcher whose
+  first core stopped executing, an X280 thread that never returns and polls nothing,
+  and a process killed with SIGKILL ([recovery](docs/guides/recovery.md)).
 - **One clock for the four X280 clusters.** 1,350 MHz by default; the session takes
   1,000, 1,250, 1,350 or 1,500 (`pll_mhz`). 1,750 MHz is an opt-in that is not stable
   under full matrix load: the card lowers its core voltage there, and the dispatcher
@@ -664,32 +673,30 @@ rasterizer, a ray tracer) fits.
 
 ## TODO
 
-What Komorebi does not do yet. None of these is a property of the model.
+What Komorebi does not do yet. None of these is a property of the model; what a
+program has to be written around is under
+[sizes](#sizes-a-program-works-within).
 
 1. **More than two cards.** Two P150A run as two islands; three or four islands have
    run only as one card split into islands. Not yet over a link: X280 cores as ranks, a
    dynamic run on part of the ranks, a put to an island two links away.
-2. **Tensors an island cannot hold yet.** A tensor is placed by pages of one size set
+2. **Collectives across islands as calls.** An all-gather and an all-reduce are made by
+   a program from puts today, and a small one costs 144 to 331 µs where a message
+   crosses in 4.7 µs. They should be calls of the runtime, at a message's latency and
+   the links' rate.
+3. **Tensors an island cannot hold yet.** A tensor is placed by pages of one size set
    at build. A range of one DRAM bank (an X280 thread's region) and a stream whose page
    size is set by the command are named by bank address, so only their own island
    reads them.
-3. **Sharing a tensor without copying it.** A program that keeps one copy of a tensor,
-   split over the islands, has to move partial results across a link, and passes one
-   island only on large problems (1.27 times one island at the largest size measured,
-   0.90 at half of it). With the tensor copied on every island nothing crosses and two
-   islands run 1.90 to 1.95 times one.
 4. **Messages over every link by default.** A message service on each of the four links
    carried a run's messages across in about a quarter of one link's time (80 ms against
    302 ms), but one run of three stalled; until that is explained one link carries the
    messages and the rest is an option.
 5. **Dynamic handlers.** One dynamic run at a time, and not the dynamic handlers of two
-   programs in one run. A body is at most one 4 KiB page; a message cannot ask for a
-   DRAM fetch; there is no order between messages
-   ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
-6. **What still costs a card reset.** A core stuck inside a compute unit; a
-   dispatcher whose first core stopped executing; an X280 thread that never returns and
-   polls nothing; a process killed with SIGKILL. A link core that hangs is reset by the
-   host, not by its dispatcher ([recovery](docs/guides/recovery.md)).
+   programs in one run ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
+6. **A link core reset by its dispatcher.** A dispatcher resets and loads again the
+   cores of its own island; a link core that hangs is named by it and reset by the
+   host ([recovery](docs/guides/recovery.md)).
 7. **Debugging on the card.** `run.inspect` shows each core's state, the wait it is in
    and its trace. Nothing reads a core's registers, its buffers' contents or a
    program's own variables, and tt-metal's watcher cannot run beside the X280 runtime.
