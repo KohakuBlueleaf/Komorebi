@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import layout  # noqa: E402
+from komorebi import channel, layout  # noqa: E402
 from projects.dense import bench, card, islands, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -40,12 +40,12 @@ class Flat:
         self.plan = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.grid)
         if self.plan is None:
             raise SystemExit(f"no grid plan fits L1 for {dimensions}")
-        self.y0 = 0
+        self.y0, self.aligned = 0, False
         plan = self.plan
         if self.islands > 1 and plan.layout == "2d" and split % plan.pcm == 0:
             above = split // plan.pcm  # bands on island 0
             if above <= self.rows and plan.rows - above <= self.rows:
-                self.y0 = self.rows - above
+                self.y0, self.aligned = self.rows - above, True
         x0, y0, width, height = plan.rect(self.grid)
         self.rect = (x0, y0 + self.y0, width, height)
         self.places = {}  # flat rank: (first row tile, first column tile)
@@ -54,6 +54,23 @@ class Flat:
             self.places[self.rank(x, y + self.y0)] = place
         ranks = sorted(self.places)
         self.group = layout.Group(ranks[0], ranks[-1] - ranks[0] + 1)
+        self.touched = sorted({y // self.rows for y in range(y0, y0 + height)})
+
+    def placements(self):
+        """Where A, W and Y are held so that no page crosses: on the one island the
+        rect lies on; or A and Y by island (the bands aligned) and W by the bottom
+        island, whose cores send the columns' blocks. None when pages would cross."""
+        graph = self.graph
+        if len(self.touched) == 1:
+            ranks = {
+                "like": (graph.first(self.touched[0]), graph.count(self.touched[0]))
+            }
+            return {"a": ranks, "w": ranks, "y": ranks}
+        if not self.aligned:
+            return None
+        last = self.islands - 1
+        bottom = {"like": (graph.first(last), graph.count(last))}
+        return {"a": {"by": "island"}, "w": bottom, "y": {"by": "island"}}
 
     def rank(self, x, y):
         """The flat rank of cell (x, y) of the whole grid."""
@@ -203,16 +220,15 @@ def main():
     options = {"links": 1, "kernel_bytes": 120 * 1024} if len(cards) > 1 else {}
     with km.Session(cards=cards, log=log, **options) as session:
         graph = session.graph
-        last = len(session.sessions) - 1
+        nocs = [one.nocs() for one in session.sessions]
+        m_tiles = m_rows // pl.TILE
+        split = channel.partition(m_tiles, 0, len(nocs))[1] if len(nocs) > 1 else 0
+        flat = Flat(graph, nocs, dimensions, split)
+        placements = flat.placements()
+        if placements is None:  # a kernel reads its pages itself: the page calls
+            raise SystemExit(f"{dimensions}: pages of A or Y would cross islands")
         started = time.perf_counter()
         y_matrix = np.zeros((m_rows, n_columns), np.float32)
-        # A and Y by row tiles, half an island; W held once, by the island at the
-        # columns' bottom (their senders)
-        placements = {
-            "a": {"by": "island"},
-            "w": {"like": (graph.first(last), graph.count(last))},
-            "y": {"by": "island"},
-        }
         tensors = {}
         for name, value in (("a", a_matrix), ("w", w_matrix), ("y", y_matrix)):
             tensors[name] = session.tensor(
@@ -224,9 +240,7 @@ def main():
             (first // k_tiles, pages // k_tiles)
             for first, pages in tensors["a"].placement.parts
         ]
-        split = parts[0][1] if len(parts) > 1 else 0
-        nocs = [one.nocs() for one in session.sessions]
-        flat = Flat(graph, nocs, dimensions, split)
+        report["placements"] = placements
         report["a_rows_by_island"] = [list(part) for part in parts]
         report["plan"] = run.describe(flat.plan) | {"rect": list(flat.rect)}
         report["group"] = [flat.group.first, flat.group.count]
