@@ -58,6 +58,17 @@ void kernel_main() {
         const km::Partition k_part = km::partition(k_tiles, group.rank, group.size);
         const km::Arrival arrival = {kCbArrive, plan(kSpArrive), block_tiles};
         const bool full = mode == kSplitFull;
+        // The sum's pops: a root's unpack writes its own count, a sender's writer adds
+        // to the shared one; a core's role changes with the plan, so unpack takes it.
+        UNPACK(
+            (get_local_cb_interface(kCbSum).tiles_acked = static_cast<uint16_t>(
+                ckernel::reg_read(
+                    static_cast<uint32_t>(
+                        reinterpret_cast<uintptr_t>(get_cb_tiles_acked_ptr(kCbSum))
+                    )
+                )
+            ))
+        );
         const bool room = compute.reserve_back(kCbSum, block_tiles);
         bool ok = true;  // the same on all three threads (wait_front tells them)
         matmul_block_init(
