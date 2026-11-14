@@ -23,7 +23,7 @@ Komorebi 0.1.0 is on PyPI (`pip install "komorebi-tt[runtime]"`), a first releas
 ## Where things are
 
 - **Getting started**: [install](install.md) Komorebi and check the host and the card.
-- **[Tutorial](tutorial/index.md)**: 42 lessons in six parts, from one core to a whole program.
+- **[Tutorial](tutorial/index.md)**: 50 lessons in six parts, from one core to a whole program.
 - **Concepts**: why the framework is the way it is. [The thread language, planned](concepts/model.md),
   [the dispatcher](concepts/dispatch.md) and [the Tensix runtime](concepts/runtime.md), then the
   longer design pages on [micro-op streams](streams.md), [graphs](graphs.md) and [X280 threads](threads.md).
@@ -33,8 +33,10 @@ Komorebi 0.1.0 is on PyPI (`pip install "komorebi-tt[runtime]"`), a first releas
   [broadcast](reference/broadcast.md), [Movement](reference/movement.md),
   [dynamic handlers](reference/dynamic.md), the
   [X280 threads](reference/threads.md) and [overlays](reference/overlays.md).
-- **Examples**: ten programs of the repository, each with its own page, from the
-  [first one](../examples/01_mapcollect/README.md) on.
+- **Examples**: twenty programs of the repository, each with its own page, from the
+  [first one](../examples/01_mapcollect/README.md) on; the
+  [list](../examples/README.md) says what each one shows.
+- **Releases**: [0.1.0](releases/0.1.0.md).
 
 The repository map is in the [README](../README.md#repository-map); the full layout and the
 checks are in [development](development.md). Measurements are in the
