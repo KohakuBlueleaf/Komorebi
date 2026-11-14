@@ -4,6 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/km_ask.hpp"
 
 #define RASTER_NO_ENTRY
 

@@ -120,6 +120,7 @@ def program(scene, words, workers):
             for role in ("reader", "compute", "writer")
         },
         buffers=[*fill_program.buffers, *passes_program.buffers],
+        compile_args=card.compile_args(),  # the fill's tensors: DRAM tensors' args
         compute=fill_program.compute,
         depth=1,
         handlers={**fill_program.handlers, **passes_program.handlers},

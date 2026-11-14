@@ -59,12 +59,23 @@ reference's comparison, picture and table scripts take it with `--external`.
 ```
 python -m projects.raster.arith --n 1000000          # arithmetic check, bit for bit
 python -m projects.raster.run --scene tiny --tiles 367 --cores 1
+python -m projects.raster.run --scene tiny --cards 0,1 [--far] --save frame.npy  # two cards
 python -m projects.raster.run --scene s1m --out results/card --json s1m.json
 python -m projects.raster.bench --scene s10k --seconds 5 --out results/card
 python -m projects.raster.pictures --scene s1m --card results/card --prof s1m_prof.npz \
     --out pictures
 python -m projects.raster.reference.agree --scenes s1m --external results
 ```
+
+**Two cards.** The host-binned fill reads its directory and list pages and writes its
+frame and profile pages with the page calls (`km::read_pages`, `km::write_pages`), so
+`--cards 0,1` runs the same kernels over every flat rank of a session of two cards,
+a page another card holds crossing; `--far` puts the frame on card 1 alone. A band (an
+item of some rows of a tile) writes a part of each of its pages, which no call does
+across cards yet: on two cards a band gives up (`kWhereBandFar`), on one it is written
+by address as before. The scene `tiny` on cards 0 and 1, the frame split or on card 1,
+gave the frame of one card bit for bit (2026-11-15). The passes and the frame program's
+own steps (COUNT, SETUP, PLACE and the X280 thread's regions) run on one card only.
 
 ## Decisions, each with its measurement
 

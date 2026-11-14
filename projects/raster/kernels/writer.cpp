@@ -4,6 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/km_ask.hpp"
 #include "raster.h"
 
 // An item of `pages` pages at the read pointer must end inside the output buffer;
@@ -55,6 +56,12 @@ bool writes_sent(const km::Writer& writer, uint32_t sequence) {
     );
 }
 
+// The directory pages, the frame's tensors (one accessor: each tensor's word is in the
+// directory) and the profile pages (km::Tensor): compile arguments from 0.
+using Directories = km::Tensor<0>;
+using Frame = km::Tensor<Directories::next_compile_time_args_offset()>;
+using Profiles = km::Tensor<Frame::next_compile_time_args_offset()>;
+
 // FILL and ARITH of one command; the frame program's writer calls it as well.
 bool fill_writer_command(const km::Writer& writer, const km_command_t& command) {
     if (km::handler(command) != kHandlerFill && km::handler(command) != kHandlerArith) {
@@ -65,11 +72,12 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
     const uint32_t started = km::wall();
     const uint32_t scratch = get_write_ptr(kCbDirWriter);
     volatile tt_l1_ptr uint32_t* directory = km::l1(scratch);
-    const InterleavedAddrGen<true> directories = {
-        .bank_base_address = directory_address, .page_size = kDirBytes
-    };
-    noc_async_read(get_noc_addr(writer.me(), directories), scratch, kDirBytes);
-    if (!read_done(writer, command.sequence)) {
+    if (
+        !km::read_pages(
+            writer, command, Directories(directory_address), writer.me(), 1, scratch
+        ) ||
+        !read_done(writer, command.sequence)
+    ) {
         return false;
     }
     invalidate_l1_cache();
@@ -127,9 +135,27 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
             end_row > 0 ? (end_row - first_row) * kRowBytes : kOutPageBytes
         );
         uint32_t source = (is_empty ? empty : get_read_ptr(kCbOut)) + byte_offset;
-        for (uint32_t plane = 0; plane < pages_per_item; ++plane) {
-            noc_async_write(source, frame_noc(page + plane, byte_offset), bytes);
-            source += kOutPageBytes;
+        if (bytes == kOutPageBytes) {  // whole pages: the page calls
+            const Frame frame(directory[kDirFrame + 1 + page / tensor_pages]);
+            for (uint32_t plane = 0; plane < pages_per_item; ++plane) {
+                if (!km::write_pages(
+                    writer, command, frame, (page + plane) % tensor_pages, 1, source
+                )) {
+                    return false;
+                }
+                source += kOutPageBytes;
+            }
+        } else if constexpr (Frame::kLocal) {  // a band: part of each page, by address
+            for (uint32_t plane = 0; plane < pages_per_item; ++plane) {
+                noc_async_write(source, frame_noc(page + plane, byte_offset), bytes);
+                source += kOutPageBytes;
+            }
+        } else {  // a band over islands: no call writes part of a page (yet)
+            writer.gave_up(
+                km::kStWriter, kGaveBadItem, kWhereBandFar, 0, command.sequence
+            );
+            *writer.control(KM_CONTROL_STOP) = 1;
+            return false;
         }
         if (!writes_sent(writer, command.sequence)) {
             return false;
@@ -157,13 +183,17 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
     profile[kProfWriter + 1] = write;
     profile[kProfWriter + 2] = km::wall() - started;
     profile[kProfWriter + 3] = items;
-    const InterleavedAddrGen<true> profile_pages = {
-        .bank_base_address = profile_address, .page_size = kOutPageBytes
-    };
-    noc_async_write(
-        get_read_ptr(kCbOut), get_noc_addr(writer.me(), profile_pages), kOutPageBytes
-    );
-    if (!writes_sent(writer, command.sequence)) {
+    if (
+        !km::write_pages(
+            writer,
+            command,
+            Profiles(profile_address),
+            writer.me(),
+            1,
+            get_read_ptr(kCbOut)
+        ) ||
+        !writes_sent(writer, command.sequence)
+    ) {
         return false;
     }
     cb_pop_front(kCbOut, pages_per_item);

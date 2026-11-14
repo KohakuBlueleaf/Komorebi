@@ -188,7 +188,7 @@ def main():
             session, prepared["pages"], prepared["directory"], output_pages
         )
         words = card.words(uploaded, K["kPlanes"])
-        running = session.load(card.program(), deadline=1.0)
+        running = session.load(card.program(uploaded), deadline=1.0)
         first = card.loop(running, K["kHandlerFill"], words, 1)
         repetitions = plan_loop(
             args.seconds, float(first[0]), args.max_reps, args.budget
