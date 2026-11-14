@@ -35,6 +35,10 @@ L1_RUNTIME = 17_024 + 21_568
 # rows form or one card (no puts) 78,672 B; the K form on two cards 97,824 B.
 KERNEL_BYTES = {"one": 88 * 1024, "two": 96 * 1024}
 log = run.log
+# (height, width) of every piece's subblock in place of the plan's (--subblock)
+SUBBLOCK = None
+# one island: the plan on the grid's first columns only (--columns)
+COLUMNS = None
 # Placements by hint (X, W, Y): "k", W sharded (split along K, Y along N); "rows", W
 # replicated (X and Y split along M, W a copy: Kohaku-TT's default form).
 PLACES = {
@@ -131,13 +135,13 @@ def extra_bytes(plan, exchange):
 
 
 def l1_budget(session, islands, extra=0):
-    """L1 for the buffers: the project's budget on one island; on more, the L1 the
-    session gives buffers (Session.l1) less the other rows of the load's budget (what
-    the session keeps, with `extra` tensors more than it holds now), and the two
-    tokens it counts with the buffers."""
-    if islands == 1:
-        return pl.L1_BUDGET
+    """L1 for the buffers: the L1 the session gives buffers (Session.l1) less the
+    other rows of the load's budget (on more islands also what the session keeps, with
+    `extra` tensors more than it holds now, and the two tokens it counts with the
+    buffers), at most the project's budget."""
     free = session.sessions[0].l1()[1]
+    if islands == 1:  # the host transfer buffer, control block and a slot
+        return min(pl.L1_BUDGET, free - L1_TRANSFER - L1_RUNTIME)
     tokens = 2 * abi.headers()["kTokenBytes"]
     held = session.held_bytes(extra=extra)
     return min(pl.L1_BUDGET, free - held - L1_TRANSFER - L1_RUNTIME - tokens)
@@ -191,14 +195,24 @@ class Piece:
         }
 
 
-# ns a tile product a core: the compute's own, or the broadcasts' feed over the block's
-# intensity bm bn / (bm + bn); fitted to the one-card plans measured
-TILE_NS = 37
-FED_NS = 225
+# A K block's ns on a core: its products and subblock turns, or its slower feed (a fixed
+# cost, then tiles read and multicast), fitted to the one-card calls (see the README).
+PRODUCT_NS = 24.5
+SUBBLOCK_NS = 51
+FEED_BLOCK_NS = 4_750
+FEED_TILE_NS = 203
 
 
-def block_ns(bm, bn):
-    return max(TILE_NS, FED_NS * (bm + bn) / (bm * bn))
+def k_block_ns(bm, bn, kb):
+    sh, sw = pl.subblock(bm, bn)
+    compute = bm * bn * kb * PRODUCT_NS + bm * bn // (sh * sw) * SUBBLOCK_NS
+    feed = FEED_BLOCK_NS + max(bm, bn) * kb * FEED_TILE_NS
+    return max(compute, feed)
+
+
+def plan_ns(plan):
+    """A core's time for its blocks of `plan` by k_block_ns."""
+    return plan.nbh * plan.nbw * plan.nk * k_block_ns(plan.bm, plan.bn, plan.kb)
 
 
 def piece_plan(m_tiles, k_tiles, n_tiles, rect_size, block):
@@ -252,18 +266,18 @@ def island_pieces(
 ):
     """The pieces of the island's ranks: the old single rect (fitting_plan), or the
     whole grid, or two rectangles sharing one block, in bands of whole blocks: the
-    cheapest by block_ns (then the larger block, the larger K block). The K block is
-    `kb`, lower only when nothing fits; `every`: any K block up to `kb`."""
+    cheapest by plan_ns (then the larger block, the larger K block). The K block is
+    `kb`, lower only when nothing fits; `every`: any K block size up to `kb`."""
     single = fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange)
     best = None
     if single is not None:
-        blocks = single.nbh * single.nbw
-        cost = blocks * single.bm * single.bn * block_ns(single.bm, single.bn)
+        cost = plan_ns(single)
         best = ((cost, -single.bm * single.bn, -single.kb), [Piece(single)])
     rects = two_rects(grid, ranks)
     if not rects or single is None or single.layout != "2d":
         return None if best is None else best[1]
-    for k_block in [value for value in pl.K_BLOCKS if value <= kb] or [1]:
+    k_blocks = range(kb, 0, -1) if every else pl.K_BLOCKS
+    for k_block in [value for value in k_blocks if value <= kb] or [1]:
         found = False
         for bm in range(1, m_tiles + 1):
             for bn in range(1, n_tiles + 1):
@@ -280,9 +294,8 @@ def island_pieces(
                         form, a, b, m_tiles, k_tiles, n_tiles, (bm, bn, k_block)
                     ):
                         found = True
-                        blocks = max(p.plan.nbh * p.plan.nbw for p in pieces)
                         cost = (
-                            blocks * bm * bn * block_ns(bm, bn),
+                            max(plan_ns(p.plan) for p in pieces),
                             -bm * bn,
                             -k_block,
                         )
@@ -460,12 +473,17 @@ class Linear:
         )
         one_card = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.nocs.grid)
         self.budget = l1_budget(session, self.islands, extra=2)  # S and T
+        grid, planned = self.nocs.grid, ranks  # the grid and ranks planned on
+        if COLUMNS is not None:
+            if self.islands != 1 or not 0 < COLUMNS <= grid[0]:
+                raise SystemExit(f"--columns {COLUMNS}: one island, 1 to {grid[0]}")
+            grid, planned = (COLUMNS, grid[1]), COLUMNS * grid[1]
         self.pieces = island_pieces(
             part_m,
             part_k,
             part_n,
-            self.nocs.grid,
-            ranks,
+            grid,
+            planned,
             self.budget,
             self.exchange,
             # nothing put: any K block the model likes; puts: the one-card plan's
@@ -474,6 +492,14 @@ class Linear:
         )
         if self.pieces is None:
             raise SystemExit(f"no grid plan fits L1 and {ranks} ranks: {dimensions}")
+        if SUBBLOCK is not None:  # the script's --subblock, in every piece
+            sh, sw = SUBBLOCK
+            if any(p.plan.bm % sh or p.plan.bn % sw for p in self.pieces):
+                raise SystemExit(f"subblock {sh} x {sw} of {self.pieces[0].plan}")
+            self.pieces = [
+                dataclasses.replace(p, plan=dataclasses.replace(p.plan, sh=sh, sw=sw))
+                for p in self.pieces
+            ]
         self.plan = self.pieces[0].plan  # the block, K block and buffers of all
         for name in ("kCbRow", "kCbCol", "kCbPart"):
             assert L[name] == G[name], name
@@ -687,6 +713,16 @@ class Linear:
                 for area in state["broadcasts"]
                 if area["gave_up"]
             ][:8],
+            # each core's AICLK cycles waited in the row and the column broadcast since
+            # the load (a sender for its receivers, a receiver for VALID), and blocks
+            "broadcast_waits": [
+                [state["core"]]
+                + [
+                    [area["wait_cycles"], area["blocks"]]
+                    for area in state["broadcasts"][:2]
+                ]
+                for state in states
+            ],
         }
 
 
@@ -893,6 +929,12 @@ def main():
     parser.add_argument(
         "--beside", action="store_true", help="then the project's grid kernels"
     )
+    parser.add_argument(
+        "--subblock", default=None, help="HxW: the subblock in place of the plan's"
+    )
+    parser.add_argument(
+        "--columns", type=int, default=None, help="one card: the grid's first columns"
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     if args.dims:
@@ -908,6 +950,10 @@ def main():
     if any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
+    global SUBBLOCK, COLUMNS
+    if args.subblock:
+        SUBBLOCK = tuple(int(value) for value in args.subblock.split("x"))
+    COLUMNS = args.columns
     report = {"m": dimensions[0], "k": dimensions[1], "n": dimensions[2]}
     report |= {"cards": cards, "links": args.links, "place": args.place}
     log("building the inputs")
