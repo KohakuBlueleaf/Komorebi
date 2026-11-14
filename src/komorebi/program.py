@@ -451,9 +451,9 @@ def message_word(position, queue_messages, handler, program=0):
 @dataclass(frozen=True)
 class Dynamic:
     """Dynamic `handlers` (default: `handler` alone; `parts`: bodies as overlay parts)
-    with messages of `message_bytes` in the group's queues (`queue_messages` each), at
-    most `max_live` alive; `bins` open bins per writer; idle after `idle_cycles`; the
-    last `counters` cores of a run's group are counter tiles (layout.counter_tiles)."""
+    with messages of `message_bytes` (and a body of up to `body_bytes`) in the group's
+    queues (`queue_messages` each), at most `max_live` alive; `bins` open bins a writer;
+    idle after `idle_cycles`; the last `counters` cores are counter tiles."""
 
     handler: int
     message_bytes: int = 64
@@ -464,6 +464,7 @@ class Dynamic:
     counters: int = 2
     handlers: tuple = ()
     parts: bool = False
+    body_bytes: int = 0
 
     def __post_init__(self):
         constants, _ = messages_header()
@@ -505,16 +506,27 @@ class Dynamic:
             raise ValueError(f"counters {self.counters}: not in 1..{most}")
         if self.max_live < 1 or self.idle_cycles < 1:
             raise ValueError("max_live and idle_cycles must be at least 1")
+        if (
+            self.body_bytes % 64
+            or not 0 <= self.body_bytes <= constants["kMessagesBodyMax"]
+        ):
+            raise ValueError(
+                f"body_bytes {self.body_bytes}: 0 or a multiple of 64 to "
+                f"{constants['kMessagesBodyMax']}"
+            )
 
     def buffers(self):
         """Runtime buffers of a dynamic handler: packets, outgoing messages, bins."""
         constants, _ = messages_header()
         packet = constants["kMessagesPacket"]
+        bodies = constants["kMessagesBodyPacket"]  # a packet's bodies, after its lines
         return [
             Buffer(
                 constants["kCbMessagesIn"],
                 "uint32",
-                constants["kMessagesHeader"] + packet * self.message_bytes,
+                constants["kMessagesHeader"]
+                + packet * self.message_bytes
+                + bodies * self.body_bytes,
                 2,
             ),
             Buffer(
@@ -529,8 +541,8 @@ class Dynamic:
         ]
 
     def queue_bytes(self, cores):
-        """DRAM bytes of the queues of `cores` cores."""
-        return cores * self.queue_messages * self.message_bytes
+        """DRAM bytes of the queues of `cores` cores, their bodies included."""
+        return cores * self.queue_messages * (self.message_bytes + self.body_bytes)
 
     def check(self, cores, dram_bytes, depth):
         """The launcher's rejections for a group of `cores` cores, `dram_bytes` of DRAM
@@ -575,8 +587,9 @@ class Dynamic:
         """Sends each core starts a run with, for a group of `cores` cores."""
         return self.max_live // max(cores - self.counters, 1)
 
-    def args(self, queue, lines):
-        """Reader and writer words of km::MessagesArgs (they precede the program's)."""
+    def args(self, queue, lines, body=0):
+        """Reader and writer words of km::MessagesArgs (they precede the program's);
+        `body`: the DRAM address of the bodies."""
         _, fields = messages_header()
         values = {
             "handler": self.word(),
@@ -587,9 +600,16 @@ class Dynamic:
             "idle": self.idle_cycles,
             "bins": self.bins,
             "counters": self.counters,
+            "body": body,
+            "body_bytes": self.body_bytes,
         }
         return [int(values[field]) & abi.M32 for field in fields]
 
     def compute_args(self, cores):
-        """Compute's words (message bytes, quota, counters) before the program's."""
-        return [self.message_bytes, self.quota(cores), self.counters]
+        """Compute's words (message and body bytes, quota, counters) before the
+        program's."""
+        constants, _ = messages_header()
+        sizes = (
+            self.message_bytes | self.body_bytes << constants["kMessagesCArgBodyShift"]
+        )
+        return [sizes, self.quota(cores), self.counters]

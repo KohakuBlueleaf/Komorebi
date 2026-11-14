@@ -132,6 +132,8 @@ namespace km {
     constexpr uint32_t kWhereCMailbox = 47;  // math or pack waiting for unpack's word
     constexpr uint32_t kWhereCConfirm = 48;  // unpack waiting for math's and pack's
     constexpr uint32_t kWhereClear = 49;
+    // A message's body: too long, not aligned, or not written in time.
+    constexpr uint32_t kWhereMessagesBody = 50;
 
     // What Core::flushed waits for: reads landed, writes sent from L1, writes or
     // atomics acknowledged.
