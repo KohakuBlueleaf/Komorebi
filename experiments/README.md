@@ -156,6 +156,12 @@ place to ask a question and to be wrong.
   Tensix core writes into the other card's L1 over tt-metal's 1-D fabric in slow
   dispatch, exact both ways; 10.03 GB/s a link a direction from one sending core, 40.1
   GB/s over four links, the same each way at once.
+- [islands_mesh](islands_mesh/README.md): both cards as islands of one run. One
+  process opens them as one 1 x 2 fabric mesh with one X280 runtime over it, a
+  dispatcher on each card and example 01 on each grid: 1.13 and 1.16 µs a NOP command,
+  1.20 and 1.21 with both at once, every tile exact. A handler holds a fabric
+  connection across commands and writes 64 bytes into the other island's L1, exact
+  both ways, 1.6 to 1.7 µs a write command.
 - [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
   bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and
