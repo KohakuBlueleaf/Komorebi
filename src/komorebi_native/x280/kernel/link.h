@@ -70,8 +70,11 @@ typedef struct {
     uint32_t taken;  /* packets read from the inbox */
     uint32_t sent;   /* packets handed to the link core */
     uint32_t out_head, out_tail;
-    uint32_t stages;      /* bit s: stage s holds a packet in flight */
-    uint32_t busy;        /* bit e: crossing e in flight */
+    uint32_t stages;                       /* bit s: stage s holds a packet in flight */
+    uint32_t stage_number[KM_LINK_STAGES]; /* each stage's packet number */
+    uint32_t stage_to[KM_LINK_STAGES];     /* and the island it goes to */
+    uint32_t stage_ticket[KM_LINK_STAGES]; /* 1 + its command crossing's ticket */
+    uint32_t busy;                         /* bit e: crossing e in flight */
     uint32_t events_read; /* link ring events turned into DONE packets */
     /* counters */
     uint32_t crossed, received, answered, gave_up;
@@ -363,6 +366,42 @@ static void link_part(
     }
 }
 
+/* Stage `stage`'s LINE given up (lost on hung link core `lost` - 1, if not 0): its
+ * number taken again next, its command's crossing ended at link_late's next look. */
+static void link_lost(
+    kmd_t* dispatcher, uint32_t stage, uint32_t lost, uint32_t ticks
+) {
+    kmd_link_t* link = link_state(dispatcher);
+    const uint32_t number = link->stage_number[stage];
+    const uint32_t to = link->stage_to[stage];
+    if (number != 0 && number - 1u < link->sent_to[to]) {
+        link->sent_to[to] = number - 1u; /* never landed: that island waits for it */
+    }
+    const uint32_t ticket = link->stage_ticket[stage];
+    link->stage_ticket[stage] = 0;
+    const uint32_t index = (ticket - 1u) & 0xFFu;
+    if (ticket == 0 || index >= KMD_CROSSINGS) {
+        return; /* a DONE for the other island: its crossing ends at its deadline */
+    }
+    kmd_crossing_t* crossing = &link->crossing[index];
+    if (
+        !(link->busy & (1u << index)) || crossing->late ||
+        crossing->generation != (ticket - 1u) >> 8
+    ) {
+        return;
+    }
+    if (lost != 0) {
+        link_event(
+            dispatcher,
+            crossing->source == KMD_SRC_HOST ? crossing->request : 0u,
+            lost - 1u,
+            KMD_LINK_LOST,
+            ticks
+        );
+    }
+    crossing->deadline = 0;
+}
+
 /* A busy slot of the link freed (its ack, or a give-up): a crossing's local part, or a
  * LINK command whose stage is free again. Returns 1 if the slot was the link's. */
 static int link_freed(
@@ -371,8 +410,12 @@ static int link_freed(
     kmd_link_t* link = link_state(dispatcher);
     dispatcher->link_slots &= ~(1ull << slot);
     if (link->slot_stage[slot] != 0) {
-        link->stages &= ~(1u << (link->slot_stage[slot] - 1u));
+        const uint32_t stage = link->slot_stage[slot] - 1u;
+        link->stages &= ~(1u << stage);
         link->slot_stage[slot] = 0;
+        if ((status & 0xFFu) != KM_EVENT_DONE) {
+            link_lost(dispatcher, stage, dispatcher->slot_lost[slot], ticks);
+        }
         return 1;
     }
     if (link->slot_crossing[slot] != 0) {
@@ -580,6 +623,13 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
             KMD_TRACE_SUBMIT
         );
         link->stages |= 1u << stage;
+        link->stage_number[stage] = number;
+        link->stage_to[stage] = to;
+        link->stage_ticket[stage] = (
+            (link_word(&packet->line[8], KMD_X_KIND) & 0xFFu) == KMD_CROSS_COMMAND
+                ? link_word(&packet->line[8], KMD_X_TICKET) + 1u
+                : 0u
+        );
         link->slot_stage[slot] = (uint8_t)(stage + 1u);
         dispatcher->link_slots |= 1ull << slot;
     }
@@ -731,6 +781,16 @@ static void link_late(kmd_t* dispatcher, uint64_t now) {
             !(link->busy & (1u << index)) || crossing->late || now <= crossing->deadline
         ) {
             continue;
+        }
+        const uint32_t ticket = (index | crossing->generation << 8) + 1u;
+        uint32_t staged = 0;
+        for (uint32_t stage = 0; stage < KM_LINK_STAGES; stage++) {
+            staged |= (
+                (link->stages >> stage & 1u) && link->stage_ticket[stage] == ticket
+            );
+        }
+        if (staged) {
+            continue; /* its LINE's give-up ends it, naming the link (link_lost) */
         }
         crossing->late = 1;
         link->gave_up++;

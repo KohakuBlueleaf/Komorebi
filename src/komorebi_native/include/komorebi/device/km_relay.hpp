@@ -33,6 +33,20 @@ namespace km {
     constexpr uint32_t kRelayFailed = 3;
     constexpr uint32_t kRelayNext = 4;  // the ask line the next scan starts at
     constexpr uint32_t kRelayNoPort = 0xFFFFFFFFu;
+#if !defined(KM_WIRE)
+    // Two cards: link core 0 writes an ask's bytes straight into the far rank's L1, a
+    // packet a slot (its stage: kRelaySlots and a header each; no far inbox).
+    constexpr uint32_t kRelayPacket = KM_PAGES_PACKET_MAX;
+    constexpr uint32_t kRelaySlots = 4;
+    constexpr uint32_t kRelaySlotAt = KM_RELAY_STAGE + 512;
+    static_assert(
+        kRelaySlots * 64 <= 512 &&
+            kRelaySlotAt + kRelaySlots * kRelayPacket <= KM_RELAY_BYTES &&
+            kRelayPacket % 16 == 0,
+        "the relay's slots fit its stage and inbox"
+    );
+    constexpr uint32_t kRelayTurnAsks = 16;  // asks served a turn at most
+#endif
 
     // The relay area of this island (0: none).
     inline uint32_t relay_area() {
@@ -65,8 +79,13 @@ namespace km {
         const uint32_t link = (
             view.base() + view.ranks() + view.link(view.island_of(rank))
         );
-        for (uint32_t off = 0; off < bytes; off += KM_RELAY_MAX) {
-            const uint32_t n = bytes - off < KM_RELAY_MAX ? bytes - off : KM_RELAY_MAX;
+#if defined(KM_WIRE)
+        const uint32_t most = KM_RELAY_MAX;  // the far inbox's
+#else
+        const uint32_t most = bytes;  // streamed from this L1: one ask
+#endif
+        for (uint32_t off = 0; off < bytes; off += most) {
+            const uint32_t n = bytes - off < most ? bytes - off : most;
             words[kAskSource] = writer.args().me;
             words[kAskAddress] = from + off;
             words[kAskBytes] = n;
@@ -127,12 +146,24 @@ namespace km {
             }
             Relay relay(area);
             invalidate_l1_cache();
+#if defined(KM_WIRE)
             if (l1(area + KM_RELAY_ASKED)[0] != relay.state(kRelayServed)) {
                 relay.send(kernel);
             }
             if (l1(area + KM_RELAY_LANDED)[0] != relay.state(kRelayTaken)) {
                 relay.place(kernel);
             }
+#else
+            uint32_t served = 0;
+            while (
+                served < kRelayTurnAsks &&
+                l1(area + KM_RELAY_ASKED)[0] != relay.state(kRelayServed) &&
+                relay.stream(kernel)
+            ) {
+                served++;
+                invalidate_l1_cache();
+            }
+#endif
         }
 
     private:
@@ -162,6 +193,12 @@ namespace km {
                 },
                 kernel.args().wait_limit
             ) == kGaveNone;
+        }
+
+        // `ready` at once, else waited for as wait() does.
+        template <typename Kernel, typename Ready>
+        static bool soon(const Kernel& kernel, Ready ready) {
+            return ready() || wait(kernel, ready);
         }
 
         // Header `which`, routed one chip on: a write of `bytes` to `to`, or (bytes 0)
@@ -197,10 +234,8 @@ namespace km {
             });
         }
 
-        // The next valid ask after the last: its pages chunk by chunk into the far
-        // inbox, the ask, one count, the done word; it places what lands meanwhile.
-        template <typename Kernel>
-        void send(const Kernel& kernel) {
+        // The next valid ask line after the last served, round robin; 0: none landed.
+        uint32_t next_ask() const {
             // a core's two lines at 2 me: its core of the card (a split card's island
             // starts at its base)
             const Islands view(island_area());
@@ -213,6 +248,164 @@ namespace km {
                 ask = (l1(at)[kAskValid] & 1u) != 0 ? at : 0;
                 state(kRelayNext) = line + 1;
             }
+            return ask;
+        }
+
+        // The asking core's done word: its ask's bytes have left its L1.
+        template <typename Kernel>
+        void done(const Kernel& kernel, volatile tt_l1_ptr uint32_t* a) {
+            const uint32_t token = a[kAskValid], source = a[kAskSource];
+            const uint32_t at = area_ + KM_RELAY_DONE + (a[kAskSlot] & 1u) * 16;
+            a[kAskValid] = 0;
+            volatile tt_l1_ptr uint32_t* line = l1(area_ + KM_RELAY_LINES + 16);
+            line[0] = token;
+            noc_async_write(
+                area_ + KM_RELAY_LINES + 16, kernel.core_noc(source, at), 4
+            );
+            noc_async_write_barrier();
+        }
+
+#if !defined(KM_WIRE)
+        // The next ask's bytes into the far rank's L1, a count once all landed (its
+        // port, else a spare word), so its next ask lands after; false: none.
+        template <typename Kernel>
+        bool stream(const Kernel& kernel) {
+            const uint32_t ask = next_ask();
+            if (ask == 0) {
+                return false;
+            }
+            volatile tt_l1_ptr uint32_t* a = l1(ask);
+            const Islands view(island_area());
+            const uint32_t bytes = a[kAskBytes], from = a[kAskAddress];
+            const uint32_t source = a[kAskSource], rank = a[kAskRank];
+            const uint32_t to = a[kAskTo], port = a[kAskPort];
+            const uint32_t island = view.island_of(rank);
+            const uint32_t core = rank -
+                view.entry_first(island);  // both cards' tables
+            bool ok = (
+                island != view.here() && core < view.entry_count(island) &&
+                core < KM_CORES_MAX && (port < KM_PORTS || port == kRelayNoPort)
+            );
+            const uint32_t xy = l1(kernel.args().control + KM_CONTROL_CORES)[core];
+            const uint64_t counter = (
+                port == kRelayNoPort
+                    ? far(KM_RELAY_CREDIT)
+                    : link_noc(
+                        xy & 0xFFFFu,
+                        xy >> 16,
+                        kernel.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE
+                    )
+            );
+            auto& sender = link_sender();
+            // the slots: this CPU's page chunk (free between its PAGES commands), else
+            // the relay's stage
+            const uint32_t fit = (
+                pages_held.chunk > kPagesSlots
+                    ? (pages_held.chunk - kPagesSlots) / kRelayPacket
+                    : 0
+            );
+            const bool paged = fit >= kRelaySlots;
+            const uint32_t slots = (
+                paged ? (fit < kPagesSlotsMax ? fit : kPagesSlotsMax) : kRelaySlots
+            );
+            const uint32_t slot_at = (
+                paged ? pages_held.area + kPagesSlots : area_ + kRelaySlotAt
+            );
+            const uint32_t header_at = (
+                paged ? pages_held.area + kPagesHeaders : area_ + KM_RELAY_STAGE
+            );
+            uint32_t sent_mark[kPagesSlotsMax] = {};
+            const uint32_t chunks = (bytes + kRelayPacket - 1) / kRelayPacket;
+            const uint32_t tail = bytes - (chunks - 1) * kRelayPacket;
+            // Slot r's read carries transaction id 1 + r: reads run ahead in the slots.
+            uint32_t ahead = 0, r = 0;
+            const auto read = [&] {
+                noc_async_read_set_trid(1 + r);
+                noc_async_read(
+                    kernel.core_noc(source, from + ahead * kRelayPacket),
+                    slot_at + r * kRelayPacket,
+                    ahead + 1 == chunks ? tail : kRelayPacket
+                );
+                ahead++;
+                r = r + 1 == slots ? 0 : r + 1;
+            };
+            while (ok && ahead < chunks && ahead < slots) {
+                read();
+            }
+            uint32_t s = 0, last = slots - 1;
+            for (uint32_t k = 0; ok && k < chunks; k++) {
+                const uint32_t n = k + 1 == chunks ? tail : kRelayPacket;
+                const uint32_t slot = slot_at + s * kRelayPacket;
+                if (k != 0 && ahead < chunks) {  // the last packet's slot, once it left
+                    ok = soon(kernel, [&] {
+                        return (
+                            noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, sent_mark[last])
+                        );
+                    });
+                    if (ok) {
+                        read();
+                    }
+                }
+                ok = ok && soon(kernel, [&] {
+                    return (
+                        ncrisc_noc_read_with_transaction_id_flushed(noc_index, 1 + s)
+                    );
+                });
+                if (!ok) {
+                    break;
+                }
+                // a slot's header made once an ask; then its command alone
+                const LinkHeaderAt made = (
+                    k < slots
+                        ? link_header(header_at + s * kPagesHeaderStride, 1)
+                        : reinterpret_cast<LinkHeaderAt>(
+                            header_at + s * kPagesHeaderStride
+                        )
+                );
+                const uint64_t at = (
+                    link_noc(xy & 0xFFFFu, xy >> 16, to + k * kRelayPacket)
+                );
+                if (k + 1 == chunks) {
+                    link_counted_write(made, at, counter, 1, n);
+                } else {
+                    link_write(made, at, n);
+                }
+                ok = soon(
+                    kernel,
+                    [&] {
+                        return sender.space();
+                    }
+                ) &&
+                    sender.send(made, slot, n);
+                sent_mark[s] = noc_nonposted_writes_num_issued[noc_index];
+                last = s;
+                s = s + 1 == slots ? 0 : s + 1;
+            }
+            noc_async_read_set_trid(0);
+            ok = ok && wait(kernel, [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            });
+            ok = ok && wait(kernel, [] {
+                return link_sent();
+            });  // the slots and headers free for the next ask
+            state(kRelayServed) = state(kRelayServed) + 1;
+            if (!ok) {
+                a[kAskValid] = 0;
+                state(kRelayFailed) = state(kRelayFailed) + 1;
+                return true;  // the asking core's wait gives its command up
+            }
+            state(kRelaySent) = state(kRelaySent) + 1;
+            cross_count(view.link_area(), KM_CROSS_PARTS, 1, bytes);
+            done(kernel, a);
+            return true;
+        }
+#endif
+
+        // The next valid ask after the last: its pages chunk by chunk into the far
+        // inbox, the ask, one count, the done word; it places what lands meanwhile.
+        template <typename Kernel>
+        void send(const Kernel& kernel) {
+            const uint32_t ask = next_ask();
             if (ask == 0) {
                 return;  // its valid word has not landed yet
             }

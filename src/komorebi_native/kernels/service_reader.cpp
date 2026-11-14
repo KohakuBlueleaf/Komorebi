@@ -41,7 +41,7 @@ void km_overlay(km::Reader& reader, const km_command_t& command) {
             command.a8,
             command.a9
         };
-        const km_copy_t c = km_copy_of(a);
+        const km_copy_t c = km::copy_resolved(km_copy_of(a));
         if (km::copy_crosses(c)) {  // a tensor placed over islands: its give-up named
             km::copy_across(reader, command, c, rank, count);
             return;

@@ -1,0 +1,164 @@
+{
+ "m": 256,
+ "k": 256,
+ "n": 256,
+ "cards": [
+  0,
+  1
+ ],
+ "links": 0,
+ "split_w": 0,
+ "split_x": 0,
+ "upload_s": 0.095,
+ "placements": {
+  "x": [
+   [
+    0,
+    8
+   ],
+   [
+    8,
+    0
+   ]
+  ],
+  "w": [
+   [
+    0,
+    8
+   ],
+   [
+    8,
+    0
+   ]
+  ],
+  "y": [
+   [
+    0,
+    8
+   ],
+   [
+    8,
+    0
+   ]
+  ],
+  "p": [
+   [
+    0,
+    1
+   ],
+   [
+    0,
+    1
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350,
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 8,
+   "kt": 8,
+   "nt": 8,
+   "rows": 1,
+   "cols": 12,
+   "pcm": 8,
+   "pcn": 1,
+   "bm": 8,
+   "bn": 1,
+   "kb": 8,
+   "sh": 4,
+   "sw": 1,
+   "wa": 2,
+   "ww": 2,
+   "layout": "cols",
+   "l1": 316416,
+   "form": "grid",
+   "nk": 1,
+   "nbh": 1,
+   "nbw": 1,
+   "rect": [
+    0,
+    0,
+    12,
+    1
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 59276,
+    "NCRISC": 56996,
+    "TRISC0": 12584,
+    "TRISC1": 6400,
+    "TRISC2": 7156
+   },
+   "total": 143440
+  },
+  "crossed_bytes": {
+   "x": 0,
+   "y": 131072,
+   "partials": 0,
+   "all": 131072
+  },
+  "loop": {
+   "single_microseconds": [
+    18.24,
+    17.76,
+    17.7
+   ],
+   "reps": 168919,
+   "seconds": 4.001,
+   "microseconds_per_call": 23.684,
+   "part_microseconds_median": [
+    17.54,
+    2.72
+   ],
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 0.0,
+    "pages": 0.0,
+    "parts": 0.0,
+    "puts": 0.0,
+    "bytes": 0.0
+   },
+   "aiclk_mhz": {
+    "0": [
+     1350,
+     1350.0,
+     1350
+    ],
+    "1": [
+     1350,
+     1350.0,
+     1350
+    ]
+   }
+  },
+  "run": {
+   "cores": 236,
+   "kernel": [
+    "none",
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "check": {
+   "max_rel": 0.006570684042705604,
+   "rms_rel": 0.00395746658058924,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 0.065
+  },
+  "tflops": 1.42,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "6.84",
+  "5.43",
+  "4.91"
+ ]
+}

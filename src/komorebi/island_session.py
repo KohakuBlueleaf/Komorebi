@@ -215,6 +215,7 @@ class IslandRun:
         # core 0 of each island serves it (a PAGES command of mode MESSAGES)
         self.linked = linked
         self.session = None  # the IslandSession with links: a link core's reset
+        self._links_reset = {}  # (island, k) -> its run's link events at its reset
         self.cores = graph.ranks
         self.program = self.runs[0].program
         self._next = 1  # the next ticket
@@ -441,7 +442,25 @@ class IslandRun:
         again (the session's reset_link): {island, core, by, seconds, ...}."""
         if self.session is None:
             raise ValueError("a run without links has no link core to reset")
-        return self.session.reset_link(island, k, timeout)
+        done = self.session.reset_link(island, k, timeout)
+        self._links_reset[island, k] = len(self.runs[island].link_events)
+        return done
+
+    @property
+    def links_hung(self):
+        """(island, link core) of each link core a give-up found hung (its dispatcher's
+        KMD_EVENT_LINK) and not reset since: run.reset_link(island, k) recovers it."""
+        out = []
+        for island, run in enumerate(self.runs):
+            for at, event in enumerate(run.link_events):
+                key = (island, event["link"])
+                if (
+                    event["what"] in ("hung", "lost")
+                    and at >= self._links_reset.get(key, 0)
+                    and key not in out
+                ):
+                    out.append(key)
+        return out
 
     def _ranked(self, island, cores):
         """Core dicts of island `island` (its own core numbers in `core`) with their
@@ -476,6 +495,7 @@ class IslandRun:
                 error.given_up,
                 [ranks.get(core, core) for core in error.recovered],
                 ranks=True,
+                links=error.links,
             )
         return _named(error, island)
 
@@ -1282,10 +1302,24 @@ class IslandSession:
         held = [
             2 * k + cpu for cpu in range(2) if 2 * k + cpu < len(self.channels[island])
         ]
+        drops = []
+        areas = getattr(self, "_link_areas", None)
+        if k == 0 and areas:  # lines given up with their commands: never sent
+            area = areas[0].address
+            for name in ("ASK", "PUT"):
+                drops += [
+                    area + h[f"KM_{name}_TAIL"],
+                    area + h[f"KM_{name}_TAKEN"],
+                    area + h[f"KM_{name}_LINES"],
+                    h["KM_ASK_SLOTS"],
+                ]
         started = time.perf_counter()
         try:
             reset = run.reset_core(
-                core, timeout, channels=[self.channels[island][link] for link in held]
+                core,
+                timeout,
+                channels=[self.channels[island][link] for link in held],
+                drops=drops,
             )
             group = self.graph.link_group(island, k, 1)
             run.wait(run._queue_command(h["KM_HANDLER_NOP"], group), timeout)
@@ -1385,12 +1419,22 @@ class IslandSession:
         return transfer.address, transfer.chunk
 
     def send_pages(
-        self, source, first, pages, to, core=None, counted=None, port=None, there=None
+        self,
+        source,
+        first,
+        pages,
+        to,
+        core=None,
+        counted=None,
+        port=None,
+        there=None,
+        shape=0,
     ):
         """Sends pages first .. of `source` by its holder's link cores into island
         `there` (default: its one neighbour): the same pages of tensor `to`, or (`core`:
         a local core) L1 from address `to`; each batch adds its pages to port `port` of
-        `counted` (default `core`, else the link core across). (island, handle)."""
+        `counted` (default `core`, else the link core across). `shape`: the push's
+        (KM_PAGES_SHAPE_*, a measurement's; 0 the loop's own). (island, handle)."""
         if not self.links:
             raise KomorebiError(
                 "no page links: pages cross in a session over two cards"
@@ -1427,6 +1471,7 @@ class IslandSession:
             core,
             counted,
             port,
+            shape,
         )
 
     def _send(
@@ -1441,6 +1486,7 @@ class IslandSession:
         core=None,
         counted=None,
         port=None,
+        shape=0,
     ):
         """Queues the send by `here`'s link cores toward `there` of pages first .. of
         the DRAM buffer at `start` (aligned `page` bytes): into the same pages of the
@@ -1465,7 +1511,9 @@ class IslandSession:
             self.noc_of(there, counted) | 1 << 16 | h["KM_PAGES_SEND"] << 24
         )
         words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
-        words[h["KM_PAGES_BUFFER"]] = buffer
+        if not self._regions:  # no message service holds link 0: it carries pages too
+            shape |= h["KM_PAGES_SHAPE_LINK0"]
+        words[h["KM_PAGES_BUFFER"]] = buffer | shape << h["KM_PAGES_SHAPE_SHIFT"]
         handle = self.run.island(here)._queue_command(
             h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, cores), words
         )
@@ -1605,11 +1653,11 @@ class IslandSession:
             events.update({(island, h): e for h, e in zip(handles, got)})
         return [events[(island, handle)] for island, handle in waits]
 
-    def cross(self, source, target, first=0, pages=None, timeout=10.0):
+    def cross(self, source, target, first=0, pages=None, timeout=10.0, shape=0):
         """Writes pages first .. of `source` into the same pages of `target` where
         another island holds them (a copy target: every other island's copy), sent
-        over the links, waited for on the far island. Returns pages, bytes and
-        seconds, the submit to the last count."""
+        over the links, waited for on the far island; `shape` as send_pages. Returns
+        pages, bytes and seconds, the submit to the last count."""
         start, count = dram.page_range(first, pages, source.pages)
         sends = []
         for here, low, length, _ in source.holders(start, count):
@@ -1628,7 +1676,9 @@ class IslandSession:
             here = source.holders(low, length)[0][0]
             counted = self.pair(here, self._toward(here, there)[0])[2]
             far.append((there, self.wait_pages(there, counted, length)))
-            waits.append(self.send_pages(source, low, length, target, there=there))
+            waits.append(
+                self.send_pages(source, low, length, target, there=there, shape=shape)
+            )
         # the senders first: a failure names the side that failed
         self.wait_together(waits + far, timeout)
         seconds = time.perf_counter() - started
@@ -1732,8 +1782,10 @@ class IslandSession:
                 area, relay = self._link_areas[:2]
             else:
                 words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
-                # the page CPUs a put line waits for (links 1 on, or link 0 alone)
-                words[:, h["KM_PUT_CPUS"] // 4] = max(self.links - 1, 1)
+                # the page CPUs (the last links): every link when no message service
+                # holds link 0, else links 1 on (link 0 alone)
+                cpus = self.links if not self._regions else max(self.links - 1, 1)
+                words[:, h["KM_PUT_CPUS"] // 4] = cpus
                 area = session.tensor(words, "uint32", shard_grid=(columns, rows))
                 relay = session.tensor(  # zeros: no ask, no count, no done word
                     np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),
