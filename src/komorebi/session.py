@@ -2509,9 +2509,8 @@ class _Backend:
         if not probe["running"]:
             return "no dispatcher is running"
         if probe["failed"]:
-            return (
-                f"the dispatcher's {probe['failed']}; X280 cores: {probe['x280_cores']}"
-            )
+            states = probe["x280_states"]
+            return f"the dispatcher's {probe['failed']}; X280 cores: {states}"
         result = device_state.result_block(probe["words"])
         before, after = probe["marker_before"], probe["marker_after"]
         doing = "is running its loop" if after != before else "is not running its loop"
@@ -2519,7 +2518,7 @@ class _Backend:
             f"the dispatcher's core 0 {doing} (pass marker {before} -> {after} "
             f"in {PROBE_GAP_S} s; state {result['state_name']}, "
             f"in {result['where_name']}); "
-            f"X280 cores: {probe['x280_cores']}"
+            f"X280 cores: {probe['x280_states']}"
         )
         self.session.log(report)
         return report
