@@ -16,6 +16,10 @@
 #include "komorebi/device/km_worker.hpp"
 #include "linear.h"
 
+#if defined(LINEAR_SPLIT)  // the K-split plan (linear.h): its own body
+#include "ksplit_compute.hpp"
+#else
+
 void kernel_main() {
     km::Compute compute;
     const auto plan = [&](uint32_t word) {
@@ -53,6 +57,10 @@ void kernel_main() {
             return;
         }
         bool ok = true;  // the same on all three threads (wait_front tells them)
+        // the account: each thread its own counts, its words stored at the end
+        LINEAR_ACCOUNT_DO(uint32_t account[kAcComputeStart - kAcInputWait + 1] = {});
+        LINEAR_ACCOUNT_DO(account[kAcComputeStart - kAcInputWait] = km::wall());
+        LINEAR_ACCOUNT_DO(uint32_t since = 0);
         matmul_block_init(
             kCbRow, kCbCol, 0, subblock_width, subblock_height, k_block_tiles
         );
@@ -80,10 +88,12 @@ void kernel_main() {
                     const bool last = k_block == k_blocks - 1;
                     const bool joined = own && k_block < senders;
                     const uint32_t inner = last ? last_k_block_tiles : k_block_tiles;
+                    LINEAR_ACCOUNT_DO(since = km::wall());
                     ok = (
                         km::broadcast_receive(compute, kCbRow, a_block_tiles) &&
                         km::broadcast_receive(compute, kCbCol, w_block_tiles)
                     );
+                    LINEAR_ACCOUNT_DO(lap(account[0], since));
                     taken += ok;
                     if (k_block == 1) {
                         pack_reconfig_l1_acc(1);
@@ -126,6 +136,7 @@ void kernel_main() {
                                     k_block_tiles
                                 );
                             }
+                            LINEAR_ACCOUNT_DO(since = km::wall());
                             uint32_t a_index = subblock_row * k_block_tiles;
                             uint32_t w_index = subblock_column;
                             for (uint32_t k_tile = 0; k_tile < inner; ++k_tile) {
@@ -144,8 +155,16 @@ void kernel_main() {
                                 w_index += block_width;
                             }
                             tile_regs_commit();
+                            LINEAR_ACCOUNT_DO(
+                                account[kAcProducts - kAcInputWait] += (
+                                    inner * subblock_tiles
+                                )
+                            );
                             if (partial) {
                                 tile_regs_wait();
+                                LINEAR_ACCOUNT_DO(
+                                    lap(account[kAcMath - kAcInputWait], since)
+                                );
                                 for (
                                     uint32_t tile = 0; held && tile < subblock_tiles;
                                     ++tile
@@ -153,11 +172,17 @@ void kernel_main() {
                                     pack_tile<true>(tile, kCbPart, at + tile);
                                 }
                                 tile_regs_release();
+                                LINEAR_ACCOUNT_DO(
+                                    lap(account[kAcPack - kAcInputWait], since)
+                                );
                             } else {
                                 const bool room = (
                                     compute.reserve_back(out, subblock_tiles)
                                 );
                                 tile_regs_wait();
+                                LINEAR_ACCOUNT_DO(
+                                    lap(account[kAcMath - kAcInputWait], since)
+                                );
                                 for (
                                     uint32_t tile = 0; room && tile < subblock_tiles;
                                     ++tile
@@ -165,6 +190,9 @@ void kernel_main() {
                                     pack_tile(tile, out);
                                 }
                                 tile_regs_release();
+                                LINEAR_ACCOUNT_DO(
+                                    lap(account[kAcPack - kAcInputWait], since)
+                                );
                                 if (room) {
                                     cb_push_back(out, subblock_tiles);
                                 }
@@ -192,6 +220,7 @@ void kernel_main() {
                 copy_init(kCbPart);
                 pack_reconfig_data_format(out);
                 for (uint32_t tile = 0; tile < block_tiles; tile += subblock_tiles) {
+                    LINEAR_ACCOUNT_DO(since = km::wall());
                     tile_regs_acquire();
                     copy_block(kCbPart, tile, 0, subblock_tiles);
                     tile_regs_commit();
@@ -201,6 +230,7 @@ void kernel_main() {
                         pack_tile(index, out);
                     }
                     tile_regs_release();
+                    LINEAR_ACCOUNT_DO(lap(account[kAcPack - kAcInputWait], since));
                     if (room) {
                         cb_push_back(out, subblock_tiles);
                     }
@@ -219,5 +249,18 @@ void kernel_main() {
                 km::broadcast_end(compute, kCbCol, w_block_tiles, column_window, taken)
             )
         );
+#if defined(LINEAR_ACCOUNT) && !defined(TRISC_MATH)  // the math thread: no buffers
+        account[kAcComputeEnd - kAcInputWait] = km::wall();
+        volatile uint32_t* stamps = reinterpret_cast<volatile uint32_t*>(
+            get_local_cb_interface(kCbStamp).fifo_wr_ptr << 4
+        );
+        UNPACK((stamps[kAcInputWait] = account[0]));
+        PACK((stamps[kAcMath] = account[kAcMath - kAcInputWait]));
+        PACK((stamps[kAcProducts] = account[kAcProducts - kAcInputWait]));
+        PACK((stamps[kAcPack] = account[kAcPack - kAcInputWait]));
+        PACK((stamps[kAcComputeEnd] = account[kAcComputeEnd - kAcInputWait]));
+        PACK((stamps[kAcComputeStart] = account[kAcComputeStart - kAcInputWait]));
+#endif
     });
 }
+#endif  // LINEAR_SPLIT

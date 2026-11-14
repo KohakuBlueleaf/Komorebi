@@ -9,6 +9,10 @@
 #include "komorebi/device/km_port.hpp"
 #include "linear.h"
 
+#if defined(LINEAR_SPLIT)  // the K-split plan (linear.h): its own body
+#include "ksplit_writer.hpp"
+#else
+
 namespace {
 
     // Waits until port `port` of this core has counted `wanted` arrivals, then clears
@@ -161,6 +165,7 @@ void kernel_main() {
         stamps[kStampSettled] = 0;
         stamps[kStampUp] = 0;
         stamps[kStampDown] = 0;
+        LINEAR_ACCOUNT_DO(uint32_t account[kAcYWrite - kAcWFree + 1] = {});
         for (uint32_t word = kStampFed; word <= kStampPieces; ++word) {
             stamps[word] = 0;
         }
@@ -335,9 +340,11 @@ void kernel_main() {
                             uint32_t subblock_column = 0; subblock_column < block_width;
                             subblock_column += subblock_width
                         ) {
+                            LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
                             if (!writer.wait_front(kCbYOut, subblock_tiles)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcYWait - 16], since));
                             uint32_t source = get_read_ptr(kCbYOut);
                             const uint32_t column = block_column + subblock_column;
                             const uint32_t left = (
@@ -381,6 +388,7 @@ void kernel_main() {
                             if (!flushed(writer, km::kStWriter, km::kFlushSent)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcYWrite - 16], since));
                             cb_pop_front(kCbYOut, subblock_tiles);
                         }
                     }
@@ -406,15 +414,18 @@ void kernel_main() {
                         left < block_width ? left : block_width
                     );
                     for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
+                        LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
                         if (!broadcast.sender()) {
                             if (!broadcast.arrive(step)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcWCast - 16], since));
                         } else {
                             const uint32_t base = broadcast.reserve(step);
                             if (base == 0) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcWFree - 16], since));
                             const uint32_t k_start = k_block * k_block_tiles;
                             const uint32_t k_length = (
                                 mine.count - k_start < k_block_tiles
@@ -444,9 +455,14 @@ void kernel_main() {
                             if (!flushed(writer, km::kStWriter, km::kFlushReads)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcWRead - 16], since));
+                            LINEAR_ACCOUNT_DO(
+                                account[kAcWTiles - 16] += k_length * columns_read
+                            );
                             if (!broadcast.cast(step)) {
                                 return false;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcWCast - 16], since));
                         }
                         if (k_block == 0 && pending) {
                             if (!put(pending_block, pending_row, pending_column)) {
@@ -477,6 +493,9 @@ void kernel_main() {
             stamps[kStampSynced] = km::wall();
         }
         stamps[kStampEnd] = km::wall();
+        LINEAR_ACCOUNT_DO(for (uint32_t word = kAcWFree; word <= kAcYWrite; ++word) {
+            stamps[word] = account[word - kAcWFree];
+        });
         if (command.a6 == 0) {
             return true;
         }
@@ -489,3 +508,4 @@ void kernel_main() {
         return flushed(writer, km::kStWriter, km::kFlushSent);
     });
 }
+#endif  // LINEAR_SPLIT

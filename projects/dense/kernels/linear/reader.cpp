@@ -8,6 +8,10 @@
 #include "komorebi/device/km_port.hpp"
 #include "linear.h"
 
+#if defined(LINEAR_SPLIT)  // the K-split plan (linear.h): its own body
+#include "ksplit_reader.hpp"
+#else
+
 void kernel_main() {
     constexpr auto x_args = TensorAccessorArgs<0>();
     constexpr auto s_args = (
@@ -69,6 +73,7 @@ void kernel_main() {
             );
             return;
         }
+        LINEAR_ACCOUNT_DO(uint32_t account[kAcReaderEnd - kAcXFree + 1] = {});
         const Holding x_here = holding(x, here, m_tiles * k_whole);
         const auto x_matrix = TensorAccessor(x_args, x_here.address);
         const auto s_matrix = TensorAccessor(s_args, holding(s, here, 1).address);
@@ -114,15 +119,18 @@ void kernel_main() {
                         block_row < row_end && block_column < column_end
                     );
                     for (uint32_t k_block = 0; k_block < k_blocks; ++k_block, ++step) {
+                        LINEAR_ACCOUNT_DO(uint32_t since = km::wall());
                         if (!broadcast.sender()) {
                             if (!broadcast.arrive(step)) {
                                 return;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcXCast - kAcXFree], since));
                         } else {
                             const uint32_t base = broadcast.reserve(step);
                             if (base == 0) {
                                 return;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[0], since));
                             const uint32_t k_start = k_block * k_block_tiles;
                             const uint32_t k_length = (
                                 mine.count - k_start < k_block_tiles
@@ -165,9 +173,11 @@ void kernel_main() {
                             if (!flushed(reader, km::kStReader, km::kFlushReads)) {
                                 return;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcXRead - kAcXFree], since));
                             if (!broadcast.cast(step)) {
                                 return;
                             }
+                            LINEAR_ACCOUNT_DO(lap(account[kAcXCast - kAcXFree], since));
                         }
                         if (!own || k_block >= senders) {
                             continue;
@@ -205,5 +215,13 @@ void kernel_main() {
         if (!waited) {
             km::port_wait(reader, command, kPortGo, 1);
         }
+        LINEAR_ACCOUNT_DO({
+            account[kAcReaderEnd - kAcXFree] = km::wall();
+            volatile tt_l1_ptr uint32_t* stamps = km::l1(get_write_ptr(kCbStamp));
+            for (uint32_t word = kAcXFree; word <= kAcReaderEnd; ++word) {
+                stamps[word] = account[word - kAcXFree];
+            }
+        });
     });
 }
+#endif  // LINEAR_SPLIT

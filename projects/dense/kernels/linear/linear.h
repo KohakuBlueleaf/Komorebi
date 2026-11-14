@@ -33,7 +33,7 @@ constexpr uint32_t kCbStamp = 8;  // the writer's row of T
 constexpr uint32_t kBf16Bytes = 2048;
 constexpr uint32_t kPartBytes = 4096;  // fp32
 constexpr uint32_t kSignalBytes = 32;
-constexpr uint32_t kStampBytes = 64;
+constexpr uint32_t kStampBytes = 128;
 // A put's tiles at least (64 KiB): a chunk is the smallest whole number of subblocks
 // at or over it.
 constexpr uint32_t kPutTiles = 32;
@@ -56,6 +56,71 @@ constexpr uint32_t kStampPiece = 9;
 constexpr uint32_t kStampTurn = 10;
 constexpr uint32_t kStampWrite = 11;
 constexpr uint32_t kStampPieces = 12;
+// The account (built with LINEAR_ACCOUNT; else not kept): AICLK cycles a command of
+// each CPU's phases, each CPU its own words, written once at its command's end. The
+// writer: W's slot freed, W read (reads issued to landed), W cast (multicast or its
+// arrival), W's tiles read, Y's subblocks waited for, Y written. The reader: the same
+// for X, and its end. Compute: the unpacker's wait for both blocks, the matrix unit
+// (Dst acquired to committed), the packer (Dst waited to released, the out room
+// included), tile products, its start and end.
+constexpr uint32_t kAcWFree = 16;
+constexpr uint32_t kAcWRead = 17;
+constexpr uint32_t kAcWCast = 18;
+constexpr uint32_t kAcWTiles = 19;
+constexpr uint32_t kAcYWait = 20;
+constexpr uint32_t kAcYWrite = 21;
+constexpr uint32_t kAcXFree = 22;
+constexpr uint32_t kAcXRead = 23;
+constexpr uint32_t kAcXCast = 24;
+constexpr uint32_t kAcReaderEnd = 25;
+constexpr uint32_t kAcInputWait = 26;
+constexpr uint32_t kAcMath = 27;
+constexpr uint32_t kAcPack = 28;
+constexpr uint32_t kAcProducts = 29;
+constexpr uint32_t kAcComputeEnd = 30;
+constexpr uint32_t kAcComputeStart = 31;
+#if defined(LINEAR_ACCOUNT)
+#define LINEAR_ACCOUNT_DO(statement) statement
+#else
+#define LINEAR_ACCOUNT_DO(statement)
+#endif
+// A phase's cycles into `counter`: from `since` to now, `since` then now.
+inline void lap(uint32_t& counter, uint32_t& since) {
+    const uint32_t now = km::wall();
+    counter += now - since;
+    since = now;
+}
+// The K-split plan (built with LINEAR_SPLIT, for a few rows of X): groups of S
+// consecutive ranks, one oh x ow block of the island's window a group, each rank 1/S
+// of the island's K in chunks of kc on both movers, the parts summed into the group's
+// first rank over the ranks' ports (owner or tree), which writes the block to Y.
+constexpr uint32_t kCbKa = 2;       // the reader's X chunks: oh x kc tiles
+constexpr uint32_t kCbKw = 3;       // the reader's W chunks: kc x ow tiles
+constexpr uint32_t kCbKaB = 9;      // the writer's X chunks
+constexpr uint32_t kCbKwB = 10;     // the writer's W chunks
+constexpr uint32_t kCbKArrive = 11;  // fp32, a slot of oh x ow tiles a sender
+constexpr uint32_t kCbKSum = 25;     // fp32, this rank's part: oh x ow tiles
+constexpr uint32_t kCbKOut = 18;     // bf16, the group's sum at its first rank
+// Its words (every CPU's, from 0): S, oh, ow, kc, subblock sh x sw, blocks a row of the
+// window, the arrival buffer's pages, the reduce form, M tiles.
+constexpr uint32_t kKsS = 0;
+constexpr uint32_t kKsOh = 1;
+constexpr uint32_t kKsOw = 2;
+constexpr uint32_t kKsKc = 3;
+constexpr uint32_t kKsSh = 4;
+constexpr uint32_t kKsSw = 5;
+constexpr uint32_t kKsNbw = 6;
+constexpr uint32_t kKsArrive = 7;
+constexpr uint32_t kKsForm = 8;
+constexpr uint32_t kKsMt = 9;
+constexpr uint32_t kKsWords = 10;
+// T's words of the K-split plan (with the account): the movers' chunks moved (reader,
+// writer), the reduce (writer: its part sent, or the sum taken), Y written.
+constexpr uint32_t kAcKMoveA = 16;
+constexpr uint32_t kAcKMoveB = 17;
+constexpr uint32_t kAcKReduce = 18;
+constexpr uint32_t kAcKWrite = 19;
+constexpr uint32_t kAcKReaderReduce = 20;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 
@@ -218,8 +283,16 @@ inline Span made_rows(uint32_t x, uint32_t at, uint32_t m_tiles, uint32_t k_whol
     return {0, part.pages != 0 ? m_tiles : 0};
 }
 
+// Whether tensor `tensor` (its reference word) is a copy on every island.
+inline bool copied(uint32_t tensor) {
+    const km::Islands view(km::island_area());
+    const volatile uint32_t* entry = km::tensor_entry(view, tensor);
+    return entry != nullptr && (entry[3] & 1u) != 0;
+}
+
 // The columns island `to` keeps of the rows island `from` makes: none unless `to`
-// keeps every one of those rows, and `from` holds W's columns of them.
+// keeps every one of those rows, and `from` holds W's columns of them; of a Y copied
+// on every island (each island its own partial), its own only.
 [[gnu::noinline]] inline Span window(
     uint32_t x,
     uint32_t w,
@@ -232,7 +305,7 @@ inline Span made_rows(uint32_t x, uint32_t at, uint32_t m_tiles, uint32_t k_whol
 ) {
     const Span made = made_rows(x, from, m, k), kept = kept_rows(y, to, m, n);
     if (
-        made.count == 0 || made.first < kept.first ||
+        (to != from && copied(y)) || made.count == 0 || made.first < kept.first ||
         made.first + made.count > kept.first + kept.count
     ) {
         return {0, 0};
