@@ -34,7 +34,7 @@ program as one workload. Options (`--name value`):
 | `--fused` | 1: every packet is a fused write and increment of the receiver's counter. 0: plain writes, and only the last packet of each batch (and the last packet) is fused |
 | `--batch` | packets a count in plain mode (64 here) |
 | `--wait-every` | the sender waits until its NoC writes have left every this many packets (0: never) |
-| `--place` | the sending cores: `under` (the Tensix core of row 0 or 1 nearest at or right of the link's Ethernet tile), `row` (along row 0), `spread` (over rows and columns) |
+| `--place` | the sending cores: `under` (the Tensix core of row 0 or 1 nearest at or right of the link's Ethernet tile), `row` (along row 0), `spread` (over rows and columns), `at:x,y;x,y` (the given logical cores in order, a core a link, or a pair of links with `--dual`) |
 | `--rx-place` | the receiving cores: `top` (the top rows) or as `--place` |
 | `--noc` | the sender kernels' NoC |
 | `--target` | `l1` (a receiver kernel counts and checks), `bare` (a core's L1, no kernel there) or `dram` (a DRAM bank, no kernel there) |
@@ -200,6 +200,44 @@ router's channel (which has 16 slots) of its 3.3 million:
   is not supported (it hangs): that takes tt-metal's mux cores or a cheaper packet
   loop, neither run here.
 
+## 6. Where the sender sits
+
+Does the place of a sending core cost rate? Sender C unchanged, plain writes, 16384
+packets of 4352 bytes a link, batch 64, card 0 to card 1, receiver kernels on card 1,
+every slot exact; then the session's page path (`experiments/islands_pages`,
+`pages.py --links 4 --mib 64`, 4096-byte pages read from DRAM through three L1 slots
+a CPU, a count every 64), with its two link cores in the far corner (the default) and
+in the row under the Ethernet tiles (`IslandSession(link_cores="first")`), both on the
+same commit. The NoC is a torus of 17 x 12 places: NoC0 runs toward higher x and y,
+NoC1 toward lower, both wrapping; CPU 0 sends on NoC0, CPU 1 on NoC1. The routers of
+links 0 to 3 sit at NoC0 (3, 1), (4, 1), (13, 1), (12, 1); Tensix row 0 is NoC y = 2.
+
+| Path | Sender cores, logical (NoC0) | Links | Hops a link (its NoC) | GB/s | Million packets a second | Checked |
+|---|---|---|---|---|---|---|
+| link rate | (11, 9) (16, 11), the corner | 0 | 6 (NoC0) | 27.78 | 6.38 | every slot and count |
+| link rate | (2, 4) (3, 6), the router's column, a middle row | 0 | 7 (NoC0) | 27.78 | 6.38 | every slot and count |
+| link rate (section 1, sender C) | (0, 1) | 0 | - | 27.78 | 6.38 | every slot and count |
+| link rate, two links a core | (10, 9) (15, 11) and (11, 9) (16, 11), the corner | 0 to 3 | 7, 21, 16, 14 | 27.77, 27.28, 27.75, 27.27: 110.07 | 25.3 | every slot and count |
+| link rate (section 2, sender C) | spread, a core a link | 0 to 3 | - | 111.10 | 25.5 | every slot and count |
+| page path, the default | (10, 9) (15, 11) and (11, 9) (16, 11), the corner | 0 to 3 | 7, 21, 16, 14 | 28.25 | 6.90 (pages) | 16,384 of 16,384 pages |
+| page path, link cores first | (0, 0) (1, 2) and (1, 0) (2, 2), under the Ethernet row | 0 to 3 | 13, 15, 22, 8 | 28.32 | 6.91 (pages) | 16,384 of 16,384 pages |
+
+The link-rate GB/s are over the receiver's span, the page path's over the host's,
+submit to the last count (as in `experiments/islands_pages`). Every packet carries
+4352 bytes, every page 4096.
+
+- The place costs nothing: from the corner, a middle row or (0, 1), at 6 to 21 hops,
+  one sender sends 27.78 GB/s, the same 6.38 million packets a second; the 1.7 % less
+  on links 1 and 3 is NoC1's, at 21 hops and at 14 alike. The page path's link cores
+  under the Ethernet row run at the rate of the corner (28.32 against 28.25).
+- The row under the Ethernet tiles is not near on the NoC: NoC0 runs down, so from
+  y = 2 to the routers at y = 1 it wraps through every row (13 hops to link 0), while
+  the corner at y = 11 is 6 hops away.
+- The page path's four CPUs send 7.1 GB/s each against 27.8 from L1: the gap is its
+  DRAM read, three reads in flight a CPU, and not where the link cores sit. Its count,
+  one fused write a batch of 64, is the plain sender's own (every plain rate above
+  counts so), so it is inside the 27.8; a count every packet would cost 10.56.
+
 ## Running it
 
 Every job runs through a hang watcher and holds both cards. Build the host program
@@ -213,6 +251,7 @@ against a configured tt-metal source tree with `kmr build`, naming this folder's
     build/link_rate --from both --links 4 --packets 16384            # question 2
     build/link_rate --from 0 --target dram --packets 16384           # question 3
     build/link_rate --from 0 --links 4 --dual 1 --packets 16384      # question 4
+    build/link_rate --from 0 --links 1 --packets 16384 --place at:11,9   # question 6
     python rates.py <the logs of the runs>
 
 Each run prints one JSON line with every pair's status and the host's checks;
