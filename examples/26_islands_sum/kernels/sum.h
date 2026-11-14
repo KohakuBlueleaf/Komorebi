@@ -16,7 +16,11 @@ constexpr uint32_t kOutPages = 6;      // a part of P tiles never wraps (P <= 3)
 constexpr uint32_t kPartMax = 3;       // P sums and one scratch tile in DST (fp32)
 constexpr uint32_t kBlock = 8;         // input tiles per read barrier
 constexpr uint32_t kTileBytes = 4096;  // float32 tiles everywhere
-constexpr uint32_t kCrossPort = 7;     // the leaders' parts at the first leader
+// Pages another island holds: the input's asked for at kAskPort, the total's put at
+// kPutPort; rank 0 also counts the reduce's last rounds there (README).
+constexpr uint32_t kAskPort = 6;
+constexpr uint32_t kPutPort = 7;
+constexpr uint32_t kCrossPort = 7;  // the leaders' parts at the first leader
 
 // The arrival slot of the part of island part j > 0 at the first leader: from the end.
 inline uint32_t cross_slot(uint32_t part_tiles, uint32_t j) {

@@ -102,8 +102,8 @@ def kernels(input_tensor, output_tensor):
         reader=KERNELS / "reader.cpp",
         compute=KERNELS / "compute.cpp",
         writer=KERNELS / "writer.cpp",
-        reader_ct=input_tensor.accessor_args(),
-        writer_ct=output_tensor.accessor_args(),
+        reader_ct=input_tensor.tensor_args(),
+        writer_ct=output_tensor.tensor_args(),
         compute_options=compute_options,
         cbs=[
             (CONSTANTS["kCbIn"], "float32", page, CONSTANTS["kInPages"]),
