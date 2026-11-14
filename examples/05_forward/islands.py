@@ -27,6 +27,7 @@ import komorebi as km  # noqa: E402
 FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 LINK_WORDS = 52  # the link region's words before its packet headers (km_link.hpp)
+LINK_MESSAGE_BYTES = 64  # the forward example's messages
 STARTED = time.monotonic()
 
 
@@ -191,7 +192,7 @@ def main():
             report["stop_error"] = str(error)[:400]
         if not done:
             run.abort()
-            report["link"] = [link_words(session, i).tolist() for i in range(islands)]
+            report["link"] = [link_words(session, i) for i in range(islands)]
         report.update(check(args, session, island_rows(session, results)))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["crossings_agree"] = (
@@ -208,18 +209,28 @@ def main():
 
 
 def link_words(session, island):
-    """The link core's region words on `island` (counts, give-ups, stamps)."""
+    """Each message service's region words on `island` (counts, give-ups, stamps), then
+    its state line: one row a service, link core 0's first CPU first."""
     region = session._regions[island]
     one = session.island(island)
     columns, rows = one.grid
-    view = one.empty(
-        (columns * rows, LINK_WORDS),
-        "uint32",
-        shard_grid=one.grid,
-        address=region.address,
-    )
-    got = view.read().astype(np.int64) & 0xFFFFFFFF
-    return got.reshape(columns * rows, LINK_WORDS)[session.link_cores[island][0]]
+    stride = getattr(session, "_stride", 0)
+    entry = 16 + LINK_MESSAGE_BYTES
+    state = 0x190 + 128 * entry + 5 * 4352 + 0x20 + 2 * 16 * 256 + 16 * 16 + 16
+    out = []
+    for cpu in range(2 if stride else 1):
+        for offset, words in ((0, LINK_WORDS), (state, 4)):
+            view = one.empty(
+                (columns * rows, words),
+                "uint32",
+                shard_grid=one.grid,
+                address=region.address + cpu * stride + offset,
+            )
+            got = view.read().astype(np.int64) & 0xFFFFFFFF
+            got = got.reshape(columns * rows, words)
+            for k, core in enumerate(session.link_cores[island]):
+                out.append([k, cpu, offset, *got[core].tolist()])
+    return out
 
 
 def check(args, session, rows):
