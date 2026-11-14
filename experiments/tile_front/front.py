@@ -1,9 +1,7 @@
 """SiLU body experiment: the compute body komorebi.dsl.tile emits for `x * sigmoid(x)`
-against the hand body (tt-metal's silu_tile) on one core; see README.md.
-
-Usage: python front.py build   (mock device: both bodies built, their words compared)
-       python front.py card [--tiles 16] [--seed 1]   (one core: bits, cycles of both)
-"""
+against the hand body (tt-metal's silu_tile) on one core; see README.md. Usage:
+`python front.py build` (mock device: both bodies built, their words compared) or
+`python front.py card [--tiles 16] [--seed 1]` (one core: bits, cycles of both)."""
 
 import argparse
 import difflib
