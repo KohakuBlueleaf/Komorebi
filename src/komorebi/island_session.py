@@ -396,9 +396,11 @@ class IslandSession:
     cores) a pair; 0: every core a rank. A context manager."""
 
     LINKS_MAX = 4  # a byte each in a PAGES command's link word
-    # How a core's ask for pages another island holds reaches the holder: "host" (the
-    # host queues the holder's send); "message" (the asker's own message) is not built.
-    ASKS_BY = "host"
+    # How a core's ask for pages another island holds reaches the holder: "core" (its
+    # own read call, km::read_pages, puts an ask line into its link core 0, sent on
+    # link 0); "host" (the host queues the holder's send: ask, ask_range; the read call
+    # only waits for the pages).
+    ASKS_BY = "core"
 
     def __init__(
         self,
@@ -694,12 +696,15 @@ class IslandSession:
                 f"an island session loads one Program or a list of "
                 f"{len(self.sessions)}, one an island"
             )
+        if self.ASKS_BY not in ("core", "host"):
+            raise ValueError(f"ASKS_BY={self.ASKS_BY!r}: 'core' or 'host'")
         if self.links:
             programs = self._linked(programs)
         defines = [one.defines for one in programs]
         if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
+            asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
             for one, own in zip(programs, defines):
-                one.defines = {**own, "KM_PAGE_LINKS": 1}
+                one.defines = {**own, "KM_PAGE_LINKS": 1, **asks}
         plans = self._links()
         runs = []
         try:
@@ -836,7 +841,9 @@ class IslandSession:
         local core `core` of `island`, counted at its port `port`: what that core waits
         on (km::port_wait). Returns (holder, handle) of the holder's send."""
         if self.ASKS_BY != "host":
-            raise KomorebiError(f"asks by {self.ASKS_BY!r}: not built (only 'host')")
+            raise KomorebiError(
+                f"asks by {self.ASKS_BY!r}: the host asks only with ASKS_BY = 'host'"
+            )
         holder = tensor.holders(first, pages)[0][0]
         if holder == island:
             raise ValueError(f"pages {first} + {pages}: island {island} holds them")
@@ -850,7 +857,9 @@ class IslandSession:
         Returns (holder, handle)."""
         h = abi.headers()
         if self.ASKS_BY != "host":
-            raise KomorebiError(f"asks by {self.ASKS_BY!r}: not built (only 'host')")
+            raise KomorebiError(
+                f"asks by {self.ASKS_BY!r}: the host asks only with ASKS_BY = 'host'"
+            )
         rank, ranks = group
         island, local = self.graph.resolve(rank)
         if ranks < 1 or self.graph.resolve(rank + ranks - 1)[0] != island:
@@ -1028,7 +1037,8 @@ class IslandSession:
 
     def _links(self):
         """Each island's LinkPlan for commands across (two islands), else None each:
-        its link core 0, a link area on every core."""
+        its link core 0, a link area on every core (zeroed: the asks' counts start at
+        0), at one address on both islands (a link core writes the far one's)."""
         if len(self.sessions) != 2:
             return [None] * len(self.sessions)
         bytes_ = abi.headers()["KM_LINK_AREA_BYTES"]
@@ -1037,10 +1047,17 @@ class IslandSession:
         for island, session in enumerate(self.sessions):
             far = 1 - island
             columns, rows = session.grid
-            area = session.empty(
-                (columns * rows, bytes_ // 4), "uint32", shard_grid=(columns, rows)
+            area = session.tensor(
+                np.zeros((columns * rows, bytes_ // 4), np.uint32),
+                "uint32",
+                shard_grid=(columns, rows),
             )
             self._link_areas.append(area)
+            if area.address != self._link_areas[0].address:
+                raise KomorebiError(
+                    f"island {island}: the link area is at {area.address:#x}, "
+                    f"island 0's at {self._link_areas[0].address:#x}"
+                )
             core = self.link_cores[island][0]
             plans.append(LinkPlan(self.graph, island, far, core, area.address))
             self.log(

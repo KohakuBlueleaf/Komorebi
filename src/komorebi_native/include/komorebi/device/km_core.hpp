@@ -148,6 +148,9 @@ namespace km {
     constexpr uint32_t kWhereMessagesBody = 50;
     // Pages across a link: a bound, a read, the router's room, its teardown, a count.
     constexpr uint32_t kWherePages = 51;
+    // A core's ask for pages another island holds (km_ask.hpp): its line, the answer;
+    // the gave-up word's top byte is the island asked.
+    constexpr uint32_t kWhereAsk = 52;
 
     // What Core::flushed waits for: reads landed, writes sent from L1, writes or
     // atomics acknowledged.

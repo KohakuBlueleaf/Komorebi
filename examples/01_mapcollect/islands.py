@@ -122,6 +122,10 @@ def main():
         (back,) = session.read_bf16(source)
         report["source_read_exact"] = bool(np.array_equal(back, exact))
         log(f"input read back from every island: {report['source_read_exact']}")
+        far = source
+        if args.across:
+            far = session.tensor(exact, "bfloat16", "tile", like=report["islands"][1])
+            log(f"input held by island 1 alone: {list(far.placement.parts)}")
         program = km.Program(
             "mapcollect",
             kernels=KERNELS,
@@ -130,7 +134,10 @@ def main():
                 km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
             ],
             compile_args={
-                "reader": source.accessor_args(),
+                # the placements of MAP's inputs (a7): the split one, the far one
+                "reader": source.accessor_args()
+                + source.placement_args()
+                + far.placement_args(),
                 "writer": output.accessor_args(),
             },
             compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
@@ -139,8 +146,6 @@ def main():
         run = session.load(program, deadline=1.0)
         log("loaded on every island")
         if args.across:
-            far = session.tensor(exact, "bfloat16", "tile", like=report["islands"][1])
-            log(f"input held by island 1 alone: {list(far.placement.parts)}")
             report.update(across(session, run, args, source, far, output))
         else:
             report.update(commands(session, run, args, source, output, ranks, exact))
@@ -237,36 +242,27 @@ def commands(session, run, args, source, output, ranks, exact):
     return out
 
 
-ACROSS_PORT = 1  # the port island 0's ranks count the tiles island 1 sent at
-
-
 def across(session, run, args, local, far, output):
     """Rounds of one MAP on island 0's ranks (its own run: island 0 starts at rank 0)
-    reading `local` (their own DRAM), then `far` (island 1 holds it): every rank's
-    tiles asked of island 1's link cores at once (one ask for the range of ranks), sent
-    into each rank's L1. The last round is checked."""
+    reading `local` (their own DRAM), then `far` (island 1 holds it): the same reader,
+    whose read call asks island 1 for the tiles itself (no ask from the host). The
+    last round is checked."""
     graph = session.graph
     group = (graph.first(0), graph.count(0))
     handler = run.program.handler("map")
-    landing, _ = session.staging(0)
-    first, count = group
-    port = ACROSS_PORT
+    count = group[1]
 
-    def one_round(source, asked):
-        words = map_words(source, output, [group])[0].tolist()
-        asks = []
+    def one_round(source, placed):
+        words = map_words(source, output, [group])[0].tolist() + [placed]
         started = time.perf_counter()
-        if asked:  # rank r's two tiles are 2r and 2r + 1 (partition of 2 * count)
-            words += [port + 1, landing]
-            asks.append(session.ask_range(far, 2 * first, 2, group, landing, port)[1])
         mapped = run.island(0).submit(handler, group, words)
-        session.wait_together([(0, mapped)] + [(1, ask) for ask in asks])
+        session.wait_together([(0, mapped)])
         return (time.perf_counter() - started) * 1e6
 
     out = {"map_groups": [list(group)], "across_links": args.across}
     tile_bytes = 2 * count * 2048
-    for name, source, asked in (("local", local, False), ("across", far, True)):
-        spent = median([one_round(source, asked) for _ in range(args.map_rounds)])
+    for name, source, placed in (("local", local, 0), ("across", far, 1)):
+        spent = median([one_round(source, placed) for _ in range(args.map_rounds)])
         out[f"map_{name}_us"] = spent
         out[f"map_{name}_gb_s"] = round(tile_bytes / spent / 1e3, 3)
         log(f"MAP on {group} reading {name}: {spent} us a round, {tile_bytes:,} B")
