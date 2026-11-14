@@ -1,5 +1,5 @@
-"""The matrix product over the islands of a session: A and Y split by row tiles as the
-session places them, W a copy on every island; each island runs the grid plan of its
+"""The matrix product over the islands of a session: A and Y split by row tiles into
+even parts by island, W a copy on every island; each island runs the grid plan of its
 own rows, one GRID command a call over every island's cores (one card: every row).
 Prints one JSON line; exits 1 when the check fails. Usage in README.md."""
 
@@ -17,8 +17,6 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import islands  # noqa: E402
-from komorebi.island_session import IslandSession  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -27,25 +25,12 @@ G = pl.G
 log = run.log
 
 
-def on_islands(session):
-    """(graph, each island's session, W's placement): an island session's, or one
-    island for a card's session, which holds every page of every tensor."""
-    if isinstance(session, IslandSession):
-        return session.graph, session.sessions, {"copy": True}
-    columns, rows = session.grid
-    return islands.one(columns * rows, columns), (session,), {}
-
-
-def parts_of(event):
-    """A ticket's events, one an island (a card's run gives one event)."""
-    return (event,) if hasattr(event, "kind") else event
-
-
-def island_rows(graph, m_tiles, k_tiles):
-    """[(first row tile, row tiles)] of each island: its part of A as the session
-    places a [m_tiles, k_tiles] tile tensor by default (islands.place)."""
-    placement = islands.place(graph, m_tiles * k_tiles, m_tiles)
-    return [(first // k_tiles, pages // k_tiles) for first, pages in placement.parts]
+def island_rows(a_tensor, k_tiles):
+    """[(first row tile, row tiles)] of each island: its part of A's pages."""
+    return [
+        (first // k_tiles, pages // k_tiles)
+        for first, pages in a_tensor.placement.parts
+    ]
 
 
 class Rows:
@@ -54,10 +39,10 @@ class Rows:
     exclusive (its broadcasts)."""
 
     def __init__(self, session, dimensions, tensors, wait=1.0):
-        graph, sessions, _ = on_islands(session)
+        graph, sessions = session.graph, session.sessions
         m_tiles, k_tiles, n_tiles = (value // pl.TILE for value in dimensions)
         self.tensors = tensors
-        self.rows = island_rows(graph, m_tiles, k_tiles)
+        self.rows = island_rows(tensors["a"], k_tiles)
         if any(rows == 0 for _, rows in self.rows):
             raise SystemExit(f"{m_tiles} row tiles leave an island without rows")
         nocs = [one.nocs() for one in sessions]
@@ -84,7 +69,7 @@ class Rows:
         ]
         self.deadline = max(bench.deadline(plan) for plan in self.plans)
         self.run = session.load(
-            programs[0] if len(programs) == 1 else programs,
+            programs,
             deadline=self.deadline,
             wait=wait,
         )
@@ -103,13 +88,11 @@ class Rows:
         )
         events = self.run.wait(list(handles), timeout=timeout)
         host_s = time.perf_counter() - started
-        unfinished = [
-            part for event in events for part in parts_of(event) if part.kind != "done"
-        ]
+        unfinished = [part for event in events for part in event if part.kind != "done"]
         if unfinished:
             raise km.KomorebiError(f"{len(unfinished)} parts not done: {unfinished[0]}")
         return host_s, np.array(
-            [[part.microseconds for part in parts_of(event)] for event in events]
+            [[part.microseconds for part in event] for event in events]
         )
 
     def single(self, commands):
@@ -222,15 +205,16 @@ def main():
     a_matrix, w_matrix = ref.inputs(m_rows, k_depth, n_columns, kind=args.inputs)
     log("inputs built")
     with km.Session(cards=cards, log=log) as session:
-        _, _, w_placement = on_islands(session)
         started = time.perf_counter()
-        tensors = {"a": card.bf16_tensor(session, a_matrix)}
-        log("A uploaded")
-        tensors["w"] = session.tensor(w_matrix, "bfloat16", "tile", **w_placement)
-        log("W uploaded")
-        tensors["y"] = card.bf16_tensor(
-            session, np.zeros((m_rows, n_columns), np.float32)
-        )
+        y_matrix = np.zeros((m_rows, n_columns), np.float32)
+        tensors = {}
+        for name, value, placement in (
+            ("a", a_matrix, {"by": "island"}),
+            ("w", w_matrix, {"copy": True}),
+            ("y", y_matrix, {"by": "island"}),
+        ):
+            tensors[name] = session.tensor(value, "bfloat16", "tile", **placement)
+            log(f"{name.upper()} uploaded")
         report["upload_s"] = round(time.perf_counter() - started, 3)
         log(f"operands uploaded in {report['upload_s']} s")
         product = Rows(session, dimensions, tensors)
@@ -239,9 +223,7 @@ def main():
             for rows, plan in zip(product.rows, product.plans)
         ]
         report["group"] = list(product.group)
-        report["x280_mhz"] = getattr(session, "pll_mhz", None) or [
-            one.pll_mhz for one in on_islands(session)[1]
-        ]
+        report["x280_mhz"] = [one.pll_mhz for one in session.sessions]
         log(f"loaded on {len(product.plans)} islands, group {product.group}")
         try:
             measure(product, cards, args.seconds, report)
