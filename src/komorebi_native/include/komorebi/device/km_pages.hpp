@@ -47,6 +47,7 @@ namespace km {
         uint32_t buffer;
         uint32_t from_core;  // KM_PAGES_DRAM: from DRAM; else x | y << 16, from its L1
         uint32_t shape;  // KM_PAGES_SHAPE_*: 0, the loop's own
+        uint32_t to_first;  // KM_PAGES_DRAM: the target's page for the share's first
     };
 
     inline PagesRequest pages_of(const km_command_t& command) {
@@ -79,7 +80,8 @@ namespace km {
             a[KM_PAGES_LINKS],
             a[KM_PAGES_BUFFER] & ((1u << KM_PAGES_SHAPE_SHIFT) - 1u),
             KM_PAGES_DRAM,
-            a[KM_PAGES_BUFFER] >> KM_PAGES_SHAPE_SHIFT
+            a[KM_PAGES_BUFFER] >> KM_PAGES_SHAPE_SHIFT,
+            a[KM_PAGES_FIRST]
         };
     }
 
@@ -126,15 +128,30 @@ namespace km {
         row[KM_CROSS_BYTES + 1] += low + bytes < low ? 1u : 0u;
     }
 
-    // The far NoC address of target page `p` (`k` pages after the request's first).
-    inline uint64_t pages_target(
-        const PagesRequest& r,
-        const InterleavedAddrGen<true>& to,
-        uint32_t p,
-        uint32_t k
+    // Whether a side's core word names DRAM: KM_PAGES_DRAM or KM_PAGES_BANK | b.
+    inline bool pages_in_dram(uint32_t where) {
+        return where == KM_PAGES_DRAM || (where & 0xFFFFFF00u) == KM_PAGES_BANK;
+    }
+
+    // This chip's NoC address of page `index` of a DRAM side at bank address
+    // `address` (`page` bytes): interleaved (KM_PAGES_DRAM) or bank b's range.
+    inline uint64_t pages_dram(
+        uint32_t where, uint32_t address, uint32_t page, uint32_t index
     ) {
-        if (r.to_core == KM_PAGES_DRAM) {
-            const uint64_t at = to.get_noc_addr(p);
+        if (where == KM_PAGES_DRAM) {
+            const InterleavedAddrGen<true> tensor = {
+                .bank_base_address = address, .page_size = page
+            };
+            return tensor.get_noc_addr(index);
+        }
+        return get_noc_addr_from_bank_id<true>(where & 0xFFu, address + index * page);
+    }
+
+    // The far NoC address of the target of the page `k` pages after the request's
+    // first: page to_first + k of the DRAM side, or L1 at k pages after `to`.
+    inline uint64_t pages_target(const PagesRequest& r, uint32_t k) {
+        if (pages_in_dram(r.to_core)) {
+            const uint64_t at = pages_dram(r.to_core, r.to, r.page, r.to_first + k);
             return (
                 link_noc(
                     NOC_UNICAST_ADDR_X(at),
@@ -165,7 +182,8 @@ namespace km {
         }
         const uint32_t area = r.buffer + cpu * r.chunk;
         const bool range = r.mode == KM_PAGES_RANGE;
-        const bool dram = r.from_core == KM_PAGES_DRAM;
+        const bool dram = r.from_core == KM_PAGES_DRAM;  // interleaved: by banks
+        const bool in_dram = pages_in_dram(r.from_core);
         const uint32_t shape = range ? 0 : r.shape & KM_PAGES_SHAPE_MEASURE;
         // the lines link's CPU: its island's lines first, between two reads
         const uint32_t lines = (
@@ -264,12 +282,6 @@ namespace km {
             );
             return code == kGaveNone;
         };
-        const InterleavedAddrGen<true> from = {
-            .bank_base_address = r.from, .page_size = r.page
-        };
-        const InterleavedAddrGen<true> to = {
-            .bank_base_address = r.to, .page_size = r.page
-        };
         uint64_t counter = link_noc(r.counter & 0xFFu, r.counter >> 8, r.count);
         for (uint32_t s = 0; s < groups * per_read; s++) {
             link_header(area + kPagesHeaders + s * kPagesHeaderStride, r.hops);
@@ -289,13 +301,14 @@ namespace km {
             const Read one = read_of(g);
             const uint32_t group = g % groups;
             noc_async_read_set_trid(id_of(group));
+            const uint32_t index = r.first + base + one.k;
             noc_async_read(
-                dram ? from.get_noc_addr(r.first + base + one.k)
-                     : get_noc_addr(
-                           r.from_core & 0xFFFFu,
-                           r.from_core >> 16,
-                           r.from + (base + one.k) * r.page
-                       ),
+                in_dram ? pages_dram(r.from_core, r.from, r.page, index)
+                        : get_noc_addr(
+                              r.from_core & 0xFFFFu,
+                              r.from_core >> 16,
+                              r.from + (base + one.k) * r.page
+                          ),
                 area + kPagesSlots + group * per_read * r.page,
                 one.n * r.page
             );
@@ -332,7 +345,7 @@ namespace km {
                 const uint32_t q = range ? share.start + k / r.pages : 0;
                 const uint32_t j = range ? k % r.pages : 0;
                 const uint64_t at = (
-                    range ? far(q, r.to + j * r.page) : pages_target(r, to, p, base + k)
+                    range ? far(q, r.to + j * r.page) : pages_target(r, base + k)
                 );
                 if (range) {
                     counter = far(q, r.count);
@@ -871,13 +884,16 @@ namespace km {
         }
         const uint32_t asker = line[KM_ASK_CORE];
         const uint32_t place = (asker & 0xFFu) | (asker >> 16 & 0xFFu) << 8;
+        // into the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
+        const uint32_t dram = line[KM_ASK_DRAM];
+        const uint32_t into = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
         const PagesRequest r = {
             line[KM_ASK_TENSOR],
             line[KM_ASK_PAGE],
             line[KM_ASK_FIRST],
             line[KM_ASK_PAGES],
             line[KM_ASK_TO],
-            place,
+            dram != 0 ? into : place,
             pages_held.chunk,
             line[KM_ASK_COUNT],
             place,
@@ -885,7 +901,9 @@ namespace km {
             KM_PAGES_SEND,
             0,
             pages_held.area - cpu * pages_held.chunk,
-            KM_PAGES_DRAM
+            KM_PAGES_DRAM,
+            0,
+            line[KM_ASK_DRAM_FIRST]
         };
         const bool good = (
             line[KM_ASK_HOLDER] == islands_at(kernel.args().control).here() &&
@@ -952,10 +970,13 @@ namespace km {
         const uint32_t home = link_core0(kernel);
         const uint32_t xy = pages_far0;  // the far link core 0
         const uint32_t place = (xy & 0xFFu) | (xy >> 16 & 0xFFu) << 8;
+        // from the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
+        const uint32_t dram = line[KM_ASK_DRAM];
+        const uint32_t out = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
         const PagesRequest r = {
             line[KM_ASK_TO],
             line[KM_ASK_PAGE],
-            line[KM_ASK_FIRST],
+            dram != 0 ? line[KM_ASK_DRAM_FIRST] : line[KM_ASK_FIRST],
             line[KM_ASK_PAGES],
             line[KM_ASK_TENSOR],
             KM_PAGES_DRAM,
@@ -966,7 +987,9 @@ namespace km {
             KM_PAGES_SEND,
             0,
             pages_held.area - cpu * pages_held.chunk,
-            line[KM_ASK_CORE]
+            dram != 0 ? out : line[KM_ASK_CORE],
+            0,
+            line[KM_ASK_FIRST]
         };
         const bool good = (
             line[KM_ASK_HOLDER] != islands_at(kernel.args().control).here() &&

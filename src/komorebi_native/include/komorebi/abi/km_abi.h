@@ -96,6 +96,8 @@
 #define KM_PAGES_SHAPE_LINK0 0x40u
 #define KM_PAGES_SHAPE_MEASURE 0x3Fu /* the bits that measure the loop */
 #define KM_PAGES_DRAM 0xFFFFu /* page p into page p of the tensor at KM_PAGES_TO */
+/* a page CPU's DRAM side in bank b's range (page i at address + i * page): b | this */
+#define KM_PAGES_BANK 0xFF00u
 #define KM_PAGES_NO_LINK 0xFFu
 #define KM_PAGES_SEND 0u
 #define KM_PAGES_WAIT 1u
@@ -160,7 +162,10 @@
 /* An ask line's words (64 bytes; words 0 and 15 its number, the reserved count + 1):
  * the tensor's bank address (the same on every island), its aligned page bytes, the
  * first page, pages, the asker's x | y << 16 (core table), its L1 address, its port
- * count's L1 address, the holder island, the asker's island */
+ * count's L1 address, the holder island, the asker's island; the asker's side in its
+ * island's DRAM instead (KM_ASK_TO a bank address, from its page KM_ASK_DRAM_FIRST: a
+ * get's pages pushed into it, a put's read from it): 1 an interleaved buffer of the
+ * same pages, 2 + b bank b's range; 0: L1 */
 #define KM_ASK_NUMBER 0u
 #define KM_ASK_TENSOR 1u
 #define KM_ASK_PAGE 2u
@@ -171,6 +176,8 @@
 #define KM_ASK_COUNT 7u
 #define KM_ASK_HOLDER 8u
 #define KM_ASK_FROM 9u
+#define KM_ASK_DRAM 10u
+#define KM_ASK_DRAM_FIRST 11u
 #define KM_ASK_END 15u
 /* Then what crossed, a row a CPU of the core, counted only on a link core by that CPU:
  * messages, command lines, asks, pages, relayed parts, bytes (low, high) it sent */
