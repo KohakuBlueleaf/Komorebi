@@ -82,6 +82,7 @@ def extra_buffers(plan, islands):
         (L["kCbSent"], "bfloat16", L["kBf16Bytes"], 2 * subblock),
         (L["kCbToken"], "uint32", L["kSignalBytes"], 1),
         (L["kCbArrive"], "uint32", L["kSignalBytes"], 1),
+        (L["kCbStamp"], "uint32", L["kStampBytes"], 1),
     ]
 
 
@@ -157,7 +158,11 @@ class Linear:
         tensors["s"] = session.empty(
             (pages * pl.TILE, pl.TILE), "bfloat16", "tile", copy=True
         )
+        tensors["t"] = session.empty(
+            (ranks, L["kStampBytes"] // 4), "uint32", "row", copy=True
+        )
         self.tensors = tensors
+        self.session = session
         self.group = (0, session.ranks)
         word = self.group[0] | self.group[1] << 16
         program = card.grid_program(
@@ -178,7 +183,9 @@ class Linear:
             ],
             compile_args={
                 "reader": x.accessor_args() + s.accessor_args(),
-                "writer": w.accessor_args() + y.accessor_args(),
+                "writer": w.accessor_args()
+                + y.accessor_args()
+                + tensors["t"].accessor_args(),
                 "compute": [],
             },
             compute={
@@ -192,7 +199,37 @@ class Linear:
 
     def words(self):
         addresses = [self.tensors[name].address for name in "xwys"]
-        return addresses + [self.k_tiles, self.n_tiles]
+        return addresses + [self.k_tiles, self.n_tiles, self.tensors["t"].address]
+
+    def passes(self, mhz=1350.0):
+        """The last call's passes on each island from the writers' wall clocks (AICLK
+        cycles, and microseconds at `mhz`): the puts sent, the sync, its own columns."""
+        out = []
+        for island, one in enumerate(self.session.sessions):
+            (raw,) = one.read(self.tensors["t"].parts[island])
+            words = (
+                raw.view(np.uint32).reshape(-1, L["kStampBytes"] // 4).astype(np.int64)
+            )
+            ran = words[words[:, L["kStampEnd"]] != 0]
+            stamped = ran[:, L["kStampPut"]].all()
+            # the 32-bit clock as signed cycles from the first core's start
+            ran = (ran - ran[0, L["kStampStart"]] + 2**31) % 2**32 - 2**31
+            start = ran[:, L["kStampStart"]].min()
+            put = ran[:, L["kStampPut"]].max() if stamped else start
+            synced = ran[:, L["kStampSynced"]].max() if put != start else start
+            end = ran[:, L["kStampEnd"]].max()
+            cycles = {"put": put - start, "sync": synced - put, "own": end - synced}
+            out.append(
+                {
+                    "cores": len(ran),
+                    "cycles": {key: int(value) for key, value in cycles.items()},
+                    "microseconds_at_mhz": {
+                        key: round(float(value) / mhz, 1)
+                        for key, value in cycles.items()
+                    },
+                }
+            )
+        return out
 
     def calls(self, commands, timeout=60.0):
         """`commands` LINEAR commands back to back: (host seconds from the first
@@ -402,6 +439,9 @@ def attempt(product_class, session, dimensions, tensors, cards, args, matrices):
         report["ok"] = False
         return report
     report["run"] = product.stop()
+    if isinstance(product, Linear):
+        report["passes"] = product.passes()
+        log(f"passes: {report['passes']}")
     report["check"] = checked(session, tensors, dimensions, matrices, args.inputs)
     per_call = report["loop"]["microseconds_per_call"]
     report["tflops"] = round(flops / per_call / 1e6, 2)

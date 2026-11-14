@@ -7,8 +7,8 @@
 #include "komorebi/device/km_broadcast.hpp"
 #include "komorebi/device/km_placement.hpp"
 
-// LINEAR, the tensors' reference words: a0 X ([M, K] tiles), a1 W ([K, N]), a2 Y ([M,
-// N]), a3 S (a copy: the bf16 tiles other islands put here, below); a4 K, a5 N tiles.
+// LINEAR, reference words a0 X ([M, K] tiles), a1 W ([K, N]), a2 Y ([M, N]), a3 S (a
+// copy: tiles put here, below), a6 T (0: none; a 64 B row a rank); a4 K, a5 N tiles.
 constexpr uint32_t kHandlerLinear = 1;
 
 // Buffers: the grid plan's (row and column broadcasts, bf16 output subblocks, fp32
@@ -21,9 +21,17 @@ constexpr uint32_t kCbSend = 17;  // bf16, one output block (pages consecutive)
 constexpr uint32_t kCbSent = 5;   // bf16, an output subblock from one other island
 constexpr uint32_t kCbToken = 6;
 constexpr uint32_t kCbArrive = 7;
+constexpr uint32_t kCbStamp = 8;  // the writer's row of T
 constexpr uint32_t kBf16Bytes = 2048;
 constexpr uint32_t kPartBytes = 4096;  // fp32
 constexpr uint32_t kSignalBytes = 32;
+constexpr uint32_t kStampBytes = 64;
+// T's words: the command taken, the other islands' columns put (sent), the sync done,
+// its own columns written (the wall clock, AICLK cycles).
+constexpr uint32_t kStampStart = 0;
+constexpr uint32_t kStampPut = 1;
+constexpr uint32_t kStampSynced = 2;
+constexpr uint32_t kStampEnd = 3;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 

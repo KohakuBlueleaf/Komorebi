@@ -129,6 +129,9 @@ void kernel_main() {
     constexpr auto y_args = (
         TensorAccessorArgs<w_args.next_compile_time_args_offset()>()
     );
+    constexpr auto t_args = (
+        TensorAccessorArgs<y_args.next_compile_time_args_offset()>()
+    );
     km::Writer writer;
     const auto core = [&](uint32_t word) {
         return writer.arg(kArgCore + word);
@@ -140,6 +143,10 @@ void kernel_main() {
         if (km::handler(command) != kHandlerLinear) {
             return true;
         }
+        volatile tt_l1_ptr uint32_t* stamps = km::l1(get_write_ptr(kCbStamp));
+        stamps[kStampStart] = km::wall();
+        stamps[kStampPut] = 0;  // 0: no sync this command
+        stamps[kStampSynced] = 0;
         const uint32_t w = command.a1, y = command.a2, s = command.a3;
         const uint32_t k_whole = command.a4, n_whole = command.a5;
         const uint32_t m_tiles = plan(kPlMt), here = km::island();
@@ -199,9 +206,11 @@ void kernel_main() {
                 }
                 const bool own = to == here;
                 if (own && sync) {  // every put counted, then every island's
+                    stamps[kStampPut] = km::wall();
                     if (!settle() || !everywhere(writer, command)) {
                         return false;
                     }
+                    stamps[kStampSynced] = km::wall();
                     sync = false;
                 }
                 const uint32_t column_end = (
@@ -383,6 +392,23 @@ void kernel_main() {
                 return false;
             }
         }
-        return !sync || everywhere(writer, command);
+        if (sync) {
+            stamps[kStampPut] = km::wall();
+            if (!everywhere(writer, command)) {
+                return false;
+            }
+            stamps[kStampSynced] = km::wall();
+        }
+        stamps[kStampEnd] = km::wall();
+        if (command.a6 == 0) {
+            return true;
+        }
+        const uint32_t rank = km::group_of(command, writer.me()).local().rank;
+        noc_async_write_page(
+            rank,
+            TensorAccessor(t_args, holding(command.a6, km::island(), 1).address),
+            get_write_ptr(kCbStamp)
+        );
+        return flushed(writer, km::kStWriter, km::kFlushSent);
     });
 }
