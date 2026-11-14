@@ -367,6 +367,56 @@ are computed from the crossed B.
 The integer case above (7680 x 64 x 128, 120 row tiles each) is bit for bit on two
 cards and on one (by rank, the first version).
 
+## One flat group over two cards (naive)
+
+`flat.py` runs the grid form's kernels, unchanged, on ONE flat group of both cards'
+ranks, every tensor held once. The project's rule makes one plan for the islands' grids
+stood one below the other (each less the column of its link core: 11 x 20 on two
+p150a), so the rule sees one tall grid. "Below", not "beside": rows then stay inside
+an island, so A (read by each row's first core) and Y (written by each core) split along
+their rows never cross, and W is read only by each column's bottom core, all on the
+bottom island; side by side, W and Y would have to be split along their columns and
+every column's sender would read W on its own island. A column that spans the islands
+is a broadcast an island part: its bottom part's first core sends each block through
+the relay to the first core of the part above (`layout.island_broadcast_args`). The
+plan sits so island 0's bands end where its half of A's rows ends. With `--hints` the
+tensors are placed so no page crosses: A and Y split along their rows over the two
+ranks at the islands' edge (half an island), W over the bottom island's ranks; a rect
+on one island holds all three there. On one card the same script makes the card's own
+plan.
+
+```
+python projects/dense/flat.py --m 1024 --k 1024 --n 1024 --cards 0,1 --hints
+python projects/dense/flat.py --m 1024 --k 1024 --n 1024 --cards 0
+```
+
+Cubes, the loop's host time per call (about four seconds of calls back to back), the
+check of `run.py` on 256 sampled rows passed on every row. One card: `bench.py --form
+grid` on card 0 (128 to 2048 cubed measured on 2026-11-14 between 23:48 and 23:56; 4096 to
+16,384 the results table above). Two cards: `flat.py --cards 0,1`, X280 and card
+clocks 1,350 MHz; "crossed" is what `run.crossings()` counted a call.
+
+| Cube | One card: layout, us, TFLOP/s | Two cards, flat: layout, us, TFLOP/s | Crossed a call | Two / one |
+|---|---|---|---|---|
+| 128 | cols, 9.3, 0.45 | not run | | |
+| 256 | cols, 13.4, 2.51 | not run | | |
+| 512 | 2d, 17.8, 15.07 | not run | | |
+| 1024 | 2d, 43.0, 49.96 | 2d 16 x 8 bands of 2 x 4 tiles, 811.3, 2.65 | 2.11 MB in 160 relay asks (W, each block once) | 18.9 |
+| 2048 | 2d, 172.2, 99.77 | not run | | |
+| 4096 | 2d, 958.3, 143.4 | not run | | |
+| 8192 | 2d, 8,608.3, 127.7 | not run | | |
+| 16,384 | 2d, 87,944.5, 100.0 | not run | | |
+
+At 1024 cubed the two-card call is bound by the relay: 2.11 MB a call in 811.3 us is
+2.60 GB/s through link core 0's one CPU, one ask a way at a time, against 43.0 us for
+the whole product on one card. The same script on card 0 alone takes 43.9 us a call
+(48.9 TFLOP/s; single calls 41.0 us against `bench.py`'s 40.8): the flat plan costs one
+card nothing but the script's loop. The 1024 cubed two-card row ran before the host's
+placement hints reached the tree, with A and Y in even halves by island and W held by
+island 1: the placement `--hints` now gives. The other two-card rows wait for the
+kernels' page calls: with tensors placed over islands a kernel's tensor address is the
+tensor's reference word, which the grid kernels' own reads do not take yet.
+
 ## Files
 
 | File | What it is |
@@ -379,6 +429,7 @@ cards and on one (by rank, the first version).
 | `kernels/split/split.h`, `chunks.hpp`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the K split: arguments, the K chunks as two streams on both movers, chunks and arrivals, the part and the sum, chunks and sending and Y |
 | `run.py`, `bench.py` | one shape run and checked; one shape measured |
 | `islands.py` | the grid form over the islands of a session, A and Y placed by island, W a copy on each |
+| `flat.py` | the grid form, kernels unchanged, on one flat group over the islands: one plan for the islands' grids one below the other, every tensor held once |
 | `results/` | the runs behind the results table |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
 | `bench_ttnn.py` | TT-NN's product and SwiGLU on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |

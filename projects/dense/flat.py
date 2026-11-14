@@ -56,21 +56,22 @@ class Flat:
         self.group = layout.Group(ranks[0], ranks[-1] - ranks[0] + 1)
         self.touched = sorted({y // self.rows for y in range(y0, y0 + height)})
 
-    def placements(self):
-        """Where A, W and Y are held so that no page crosses: on the one island the
-        rect lies on; or A and Y by island (the bands aligned) and W by the bottom
-        island, whose cores send the columns' blocks. None when pages would cross."""
+    def hints(self):
+        """Split hints under which no page crosses: every tensor over the ranks of
+        the one island the rect lies on; or A and Y split along their rows over the
+        two ranks at the islands' edge (half an island, where the bands meet) and W
+        over the bottom island, whose cores send the columns' blocks. None else."""
         graph = self.graph
         if len(self.touched) == 1:
-            ranks = {
-                "like": (graph.first(self.touched[0]), graph.count(self.touched[0]))
-            }
+            island = self.touched[0]
+            ranks = {"group": (graph.first(island), graph.count(island))}
             return {"a": ranks, "w": ranks, "y": ranks}
         if not self.aligned:
             return None
         last = self.islands - 1
-        bottom = {"like": (graph.first(last), graph.count(last))}
-        return {"a": {"by": "island"}, "w": bottom, "y": {"by": "island"}}
+        edge = {"split": 0, "group": (graph.first(1) - 1, 2)}
+        bottom = {"group": (graph.first(last), graph.count(last))}
+        return {"a": edge, "w": bottom, "y": edge}
 
     def rank(self, x, y):
         """The flat rank of cell (x, y) of the whole grid."""
@@ -203,6 +204,11 @@ def main():
     parser.add_argument("--cards", default="0,1")
     parser.add_argument("--inputs", choices=["uniform", "int"], default="uniform")
     parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument(
+        "--hints",
+        action="store_true",
+        help="split hints that keep pages home (else none: pages may cross)",
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     dimensions = run.SHAPES[args.shape] if args.shape else (args.m, args.k, args.n)
@@ -224,9 +230,9 @@ def main():
         m_tiles = m_rows // pl.TILE
         split = channel.partition(m_tiles, 0, len(nocs))[1] if len(nocs) > 1 else 0
         flat = Flat(graph, nocs, dimensions, split)
-        placements = flat.placements()
-        if placements is None:  # a kernel reads its pages itself: the page calls
-            raise SystemExit(f"{dimensions}: pages of A or Y would cross islands")
+        placements = flat.hints() if args.hints else {"a": {}, "w": {}, "y": {}}
+        if placements is None:
+            raise SystemExit(f"{dimensions}: no hints keep A's and Y's pages home")
         started = time.perf_counter()
         y_matrix = np.zeros((m_rows, n_columns), np.float32)
         tensors = {}
@@ -235,13 +241,10 @@ def main():
                 value, "bfloat16", "tile", **placements[name]
             )
         report["upload_s"] = round(time.perf_counter() - started, 3)
-        k_tiles = k_depth // pl.TILE
-        parts = [
-            (first // k_tiles, pages // k_tiles)
-            for first, pages in tensors["a"].placement.parts
+        report["hints"] = placements
+        report["a_rows_by_island"] = [
+            list(part) for part in tensors["a"].placement.parts
         ]
-        report["placements"] = placements
-        report["a_rows_by_island"] = [list(part) for part in parts]
         report["plan"] = run.describe(flat.plan) | {"rect": list(flat.rect)}
         report["group"] = [flat.group.first, flat.group.count]
         log(f"plan {report['plan']}, group {report['group']}")
