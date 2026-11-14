@@ -70,8 +70,8 @@ message, as a local send does. A body over a link is at most 4,224 bytes (a 64-b
 message and its body in one packet of 4,352 bytes); the load refuses a larger one.
 
 ```
-python islands.py --threads 8                # one link; 0 and 4 KiB, 1200 hops each
-python islands.py --threads 8 --links 4 --kernel-bytes 163840  # a service a link
+python islands.py --threads 8                # every link, a service each; 0 and 4 KiB
+python islands.py --threads 8 --links 1      # link 0 alone
 ```
 
 Cards 0 and 1 (Blackhole p150a, one link), 2026-11-15, 8 threads of 1200 hops over 234

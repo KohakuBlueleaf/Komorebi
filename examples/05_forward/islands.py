@@ -46,7 +46,10 @@ def parse():
         "--line", action="store_true", help="the islands in a line (neighbours only)"
     )
     parser.add_argument(
-        "--links", type=int, default=1, help="links between two cards (a service each)"
+        "--links",
+        type=int,
+        default=None,
+        help="links between the cards (default: every one)",
     )
     parser.add_argument("--messages", type=int, default=16)
     parser.add_argument("--forwards", type=int, default=4, help="forwards per message")

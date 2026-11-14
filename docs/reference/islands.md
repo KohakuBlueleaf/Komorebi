@@ -211,12 +211,17 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   second CPUs; built with `KM_MESSAGE_SERVICES`): a rank's messages take link
   `rank % links`, so one rank's stay in order; with less, link 0's alone (logged).
   Example 05's 10^6 forwards over four links: 80.1 ms against 302.0 ms on link 0 alone,
-  every link about 62,500 messages each way. Link 0's service alone decides the island quiet: its own outbox
+  every link about 62,500 messages each way. Link 0's service alone decides the island
+  quiet: its own outbox
   empty, then two passes alike over the RUN's cores and the other services' state lines
   (each empty in this run), balanced over every service's counts; the two islands'
   reports carry those sums. The other services write no status line; one that gives up
-  makes link 0's give up. The services grow the kernels (the forward example's two-card
-  build to about 160,000 bytes).
+  makes link 0's give up. A body crosses in its message's packet (at most 4,224 bytes
+  for 64-byte messages; the load refuses more): example 23 over four links, 2.990 µs a
+  hop with the message alone, 6.056 µs with a 4 KiB body. The services grow the kernels,
+  built off the card: the forward example's two-card build 159,568 bytes, example 23's
+  161,296 (on the card 157,632 and 159,360), the forward example on a split card 139,136,
+  each inside the 160 KiB buffer; one card's builds do not change (44,880 and 43,040).
 
 ## What crossed
 

@@ -37,7 +37,12 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
-    parser.add_argument("--links", type=int, default=1, help="links between the cards")
+    parser.add_argument(
+        "--links",
+        type=int,
+        default=None,
+        help="links between the cards (default: every one)",
+    )
     parser.add_argument("--threads", type=int, default=1, help="at most the ranks")
     parser.add_argument("--hops", type=int, default=1200, help="arrivals per thread")
     parser.add_argument(
@@ -189,6 +194,7 @@ def main():
         cards=cards, links=args.links, kernel_bytes=args.kernel_bytes, log=log
     ) as session:
         area = areas(session)
+        links = session.links
         for body_bytes in args.bodies:
             runs.append(run_once(session, args, area, body_bytes))
             one = runs[-1]
@@ -198,7 +204,7 @@ def main():
             )
     result = {
         "cards": cards,
-        "links": args.links,
+        "links": links,
         "ok": all(one["ok"] for one in runs),
         "runs": runs,
         "wall_s": round(time.monotonic() - STARTED, 1),

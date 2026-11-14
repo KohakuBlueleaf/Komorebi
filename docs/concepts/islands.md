@@ -219,11 +219,16 @@ stay in order. A service sends its outbox across, many messages to a packet (at 
 4352 bytes) and one count a packet, and issues what landed from the far island to its
 ranks. A message's body crosses in its message's packet, right after it (at most 4,224
 bytes for 64-byte messages), and is written into the rank's body page before the
-message. Every wait is bounded and the link has credits, so a full far inbox holds the
-sender. The run ends when both islands are quiet: link 0's service decides for its
+message: example 23 takes 2.990 µs a hop over four links with the message alone, 6.056
+µs with a 4 KiB body. Every wait is bounded and the link has credits, so a full far
+inbox holds the sender. The run ends when both islands are quiet: link 0's service decides for its
 island over the run's cores and the other services' state lines, sends its island's
 quiet report across, and the dispatcher's quiet test counts link core 0's line (sent:
-messages issued again here; consumed: messages sent across, every link's).
+messages issued again here; consumed: messages sent across, every link's). Link 0's
+service calls its island quiet once two passes alike find every core idle and every
+other service empty in this run, with every service's counts balanced; both islands
+quiet with the sums sent across one way equal to those issued the other, nothing is in
+flight on any link.
 
 [05_forward](../../examples/05_forward/README.md) runs this on two Blackhole p150a cards,
 one link: 16 messages of 4 forwards over 234 message ranks of 238, exact against its
