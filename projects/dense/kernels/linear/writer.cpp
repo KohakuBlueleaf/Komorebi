@@ -1,5 +1,5 @@
-// Linear writer, NoC1: W's column broadcast a window of columns; other islands' blocks
-// put to them whole (not waited for), one sync over the islands, its own Y written.
+// Linear writer, NoC1: W's column broadcast a window of columns; other islands' tiles
+// put to them in chunks (one in flight), one sync over the islands, its own Y written.
 #include <stdint.h>
 
 #include "../dense.h"
@@ -64,7 +64,11 @@ namespace {
 
     // Every island's partial sums are in its DRAM once this returns on every core:
     // up the island's tree, its leader to the other leaders, down the tree.
-    bool everywhere(const km::Writer& writer, const km_command_t& command) {
+    bool everywhere(
+        const km::Writer& writer,
+        const km_command_t& command,
+        volatile tt_l1_ptr uint32_t* stamps
+    ) {
         const uint32_t code = writer.poll_at(
             km::kWhereData,
             [] {
@@ -87,6 +91,7 @@ namespace {
         if (children != 0 && !counted(writer, command, kPortUp, children)) {
             return false;
         }
+        stamps[kStampUp] = km::wall();
         if (rank != 0) {
             if (!tell(writer, command, km::core_of(local, (rank - 1) / 2), kPortUp)) {
                 return false;
@@ -94,6 +99,7 @@ namespace {
             if (!counted(writer, command, kPortDown, 1)) {
                 return false;
             }
+            stamps[kStampDown] = km::wall();
         } else {
             const km::Group leaders = group.leaders();
             for (uint32_t part = 0; part < leaders.size; ++part) {
@@ -110,6 +116,7 @@ namespace {
             ) {
                 return false;
             }
+            stamps[kStampDown] = km::wall();
         }
         for (uint32_t child = 2 * rank + 1; child < 2 * rank + 3; ++child) {
             if (
@@ -139,6 +146,10 @@ void kernel_main() {
     const auto plan = [&](uint32_t word) {
         return core(kCorePlan + word);
     };
+    // the tiles put: chunks from a buffer of two, its place kept across commands (a
+    // put never crosses the buffer's end)
+    const uint32_t chunk = put_chunk(plan(kPlSh) * plan(kPlSw));
+    uint32_t ring_at = 0;
     writer.run([&](const km_command_t& command) {
         if (km::handler(command) != kHandlerLinear) {
             return true;
@@ -147,6 +158,9 @@ void kernel_main() {
         stamps[kStampStart] = km::wall();
         stamps[kStampPut] = 0;  // 0: no sync this command
         stamps[kStampSynced] = 0;
+        stamps[kStampSettled] = 0;
+        stamps[kStampUp] = 0;
+        stamps[kStampDown] = 0;
         const uint32_t w = command.a1, y = command.a2, s = command.a3;
         const uint32_t k_whole = command.a4, n_whole = command.a5;
         const uint32_t m_tiles = plan(kPlMt), here = km::island();
@@ -156,7 +170,7 @@ void kernel_main() {
         bool sync = exchanging(w, y, m_tiles, k_whole, n_whole);
         const Holding y_here = holding(y, here, m_tiles * n_whole);
         const auto y_matrix = TensorAccessor(y_args, y_here.address);
-        // this core's puts not yet counted (the block they came from still held)
+        // this core's put not yet counted (its tiles still held)
         uint32_t outstanding = 0, holder = here;
         const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
         const uint32_t block_tiles = block_height * block_width;
@@ -167,7 +181,7 @@ void kernel_main() {
             if (!km::put_wait(writer, command, outstanding, holder)) {
                 return false;
             }
-            cb_pop_front(kCbSend, block_tiles);
+            cb_pop_front(kCbSend, outstanding);
             outstanding = 0;
             return true;
         };
@@ -186,15 +200,7 @@ void kernel_main() {
             const uint32_t row_end = (
                 first_row + plan(kPlPcM) < m_tiles ? first_row + plan(kPlPcM) : m_tiles
             );
-            const Sent sent = {
-                blocks_of(m_tiles, plan(kPlPcM)) * blocks_of(plan(kPlNt), plan(kPlPcN)),
-                blocks_high * blocks_wide,
-                block_tiles
-            };
-            const uint32_t me = (
-                first_row / plan(kPlPcM) * blocks_of(plan(kPlNt), plan(kPlPcN)) +
-                first_column / plan(kPlPcN)
-            );
+            const Sent sent = {core(kCoreSetPages), core(kCoreSent)};
             const Holding w_here = holding(w, here, k_whole * n_whole);
             const auto w_matrix = TensorAccessor(w_args, w_here.address);
             uint32_t step = 0;
@@ -207,7 +213,11 @@ void kernel_main() {
                 const bool own = to == here;
                 if (own && sync) {  // every put counted, then every island's
                     stamps[kStampPut] = km::wall();
-                    if (!settle() || !everywhere(writer, command)) {
+                    if (!settle()) {
+                        return false;
+                    }
+                    stamps[kStampSettled] = km::wall();
+                    if (!everywhere(writer, command, stamps)) {
                         return false;
                     }
                     stamps[kStampSynced] = km::wall();
@@ -221,18 +231,17 @@ void kernel_main() {
                 const uint32_t s_address = holding(s, to, 1).address;
                 const uint32_t s_set = sent_set(here, to);
 
-                // Output block `block` at (block_row, block_column): its own window's
-                // Y written by subblock, another island's put whole to its S, one line.
-                const auto put = [&](
-                    uint32_t block, uint32_t block_row, uint32_t block_column
-                ) {
-                    if (!own) {
-                        if (!settle() || !writer.wait_front(kCbSend, block_tiles)) {
-                            return false;
+                // Another island's tiles handed .. `upto` - 1 of this core's stream
+                // (its blocks in order) put to S in chunks; `rest`: a last shorter one.
+                uint32_t handed = 0;
+                const auto send = [&](uint32_t upto, bool rest) {
+                    while (handed < upto && (upto - handed >= chunk || rest)) {
+                        uint32_t count = upto - handed < chunk ? upto - handed : chunk;
+                        if (count > 2 * chunk - ring_at) {
+                            count = 2 * chunk - ring_at;  // to the buffer's end
                         }
-                        if (block_row >= row_end || block_column >= column_end) {
-                            cb_pop_front(kCbSend, block_tiles);  // no column of Y
-                            return true;
+                        if (!settle() || !writer.wait_front(kCbSend, count)) {
+                            return false;
                         }
                         if (!km::put_pages(
                             writer,
@@ -240,15 +249,48 @@ void kernel_main() {
                             to,
                             s_address,
                             kBf16Bytes,
-                            sent.page(s_set, me, block),
-                            block_tiles,
+                            sent.page(s_set, handed),
+                            count,
                             get_read_ptr(kCbSend)
                         )) {
                             return false;
                         }
-                        outstanding = block_tiles;
+                        outstanding = count;
                         holder = to;
-                        return true;
+                        handed += count;
+                        ring_at = (ring_at + count) % (2 * chunk);
+                    }
+                    return true;
+                };
+                // Tiles handed .. `upto` - 1 freed unput (a block outside the window).
+                const auto drop = [&](uint32_t upto) {
+                    while (handed < upto) {
+                        uint32_t count = upto - handed < chunk ? upto - handed : chunk;
+                        if (count > 2 * chunk - ring_at) {
+                            count = 2 * chunk - ring_at;
+                        }
+                        if (!settle() || !writer.wait_front(kCbSend, count)) {
+                            return false;
+                        }
+                        cb_pop_front(kCbSend, count);
+                        handed += count;
+                        ring_at = (ring_at + count) % (2 * chunk);
+                    }
+                    return true;
+                };
+
+                // Output block `block` at (block_row, block_column) made: its own
+                // window's Y written by subblock; another island's tiles to S.
+                const auto put = [&](
+                    uint32_t block, uint32_t block_row, uint32_t block_column
+                ) {
+                    if (!own) {
+                        const uint32_t made = (block + 1) * block_tiles;
+                        const bool last = block + 1 == blocks_high * blocks_wide;
+                        if (block_row < row_end && block_column < column_end) {
+                            return send(made, last);
+                        }
+                        return send(made - block_tiles, true) && drop(made);
                     }
                     for (
                         uint32_t subblock_row = 0; subblock_row < block_height;
@@ -393,7 +435,8 @@ void kernel_main() {
         }
         if (sync) {
             stamps[kStampPut] = km::wall();
-            if (!everywhere(writer, command)) {
+            stamps[kStampSettled] = stamps[kStampPut];
+            if (!everywhere(writer, command, stamps)) {
                 return false;
             }
             stamps[kStampSynced] = km::wall();

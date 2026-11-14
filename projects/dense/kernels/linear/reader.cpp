@@ -42,15 +42,7 @@ void kernel_main() {
         );
         const uint32_t subblock_tiles = plan(kPlSh) * plan(kPlSw);
         const uint32_t block_tiles = block_height * block_width;
-        const Sent sent = {
-            blocks_of(m_tiles, plan(kPlPcM)) * blocks_of(plan(kPlNt), plan(kPlPcN)),
-            blocks_high * blocks_wide,
-            block_tiles
-        };
-        const uint32_t me = (
-            first_row / plan(kPlPcM) * blocks_of(plan(kPlNt), plan(kPlPcN)) +
-            first_column / plan(kPlPcN)
-        );
+        const Sent sent = {core(kCoreSetPages), core(kCoreSent)};
         // the other islands that put here, a K block of a block each: k blocks 0 ..
         uint32_t senders = 0;
         for (uint32_t turn = 1; turn < islands; ++turn) {
@@ -170,7 +162,9 @@ void kernel_main() {
                         }
                         // sender k_block's tiles of this block, a subblock at a time
                         // (a block wholly outside the columns: none were put)
-                        const uint32_t first_page = sent.page(k_block, me, block);
+                        const uint32_t first_page = (
+                            sent.page(k_block, block * block_tiles)
+                        );
                         for (
                             uint32_t tile = 0; tile < block_tiles;
                             tile += subblock_tiles
