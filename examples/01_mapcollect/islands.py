@@ -111,7 +111,8 @@ def open_session(args, cards):
     if args.islands:
         (card,) = cards
         return km.Session(card=card, islands=args.islands, log=log)
-    return km.Session(cards=cards, links=args.across, log=log)
+    # the page calls' code over islands takes more than the default kernel buffer
+    return km.Session(cards=cards, links=args.across, kernel_bytes=80 * 1024, log=log)
 
 
 def main():
