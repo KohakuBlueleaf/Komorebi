@@ -208,13 +208,14 @@ def commands(session, run, args, source, output, ranks, exact):
     out["map_groups"] = [list(group) for group in groups]
     log(f"MAP on groups {groups} in turn: {out['map_groups_us']} us")
     if args.hang:
-        # Flat rank 130 of a group over both islands: island 1's core 10. Its reader
-        # waits for a port arrival (hang_mode 1) until the deadline gives it up.
+        # Island 1's rank 10 in a group over both islands (its core: graph.core_of). Its
+        # reader waits for a port arrival (hang_mode 1) until the deadline gives it up.
+        rank = graph.first(1) + 10
         group = (graph.first(1) - 20, graph.count(1) + 20)
-        hang = run.submit("hang", group, [130 - group[0], 1])
+        hang = run.submit("hang", group, [rank - group[0], 1])
         run.send()
         time.sleep(0.25)  # a quarter of the deadline
-        (core,) = run.inspect(1, (130 - graph.first(1), 1))
+        (core,) = run.inspect(1, (graph.core_of(rank)[1], 1))
         out["inspect_island1"] = describe_core(core)
         log(f"inspect of island 1: {out['inspect_island1']}")
         try:
