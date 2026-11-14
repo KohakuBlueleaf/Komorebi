@@ -45,6 +45,24 @@ cluster 2's region (bank 7) on four X280 cores 477 µs (2.20 GB/s): rows from
 `experiments/work_clusters/clusters.py push --cluster 1 --bank 7 --bytes 1048576 --pull
 1048576` (its pull) and example 08's `--twelve` run (its input push to cluster 2).
 
+## The cluster's cache
+
+`python evict.py shape` has work cluster 1's thread read the cache controller's
+registers (reads only) and the cached Zero Device. On card 1, 2026-11-14:
+
+- `CCACHE0_CONFIG` 0x06091004: 4 banks, 16 ways, 512 sets, 64-byte lines, so 128 KiB a
+  way. `CCACHE0_WAYENABLE` 0: one way is cache, the other fifteen pieces are the
+  uncached scratchpad the image runs from.
+- Every one of the 38 way masks is 0xffff, the four cores' L2s (masters 34 to 37)
+  included: they evict from way 0, the only cache way. The cache is inclusive of the
+  cores' L2 (each 2 banks, 8 ways, 256 sets: 128 KiB) and L1 data caches, so a line
+  that leaves way 0 leaves the cluster.
+- The cached Zero Device spans 0x0A00_0000 to 0x0A1F_FFFF. The runtime keeps its first
+  0x10C0 bytes for pinned input; the 2,092,864 bytes after them read as zeros.
+
+So reading 2,048 lines that fill every set of the one way, 128 KiB of contiguous
+addresses, removes every other line from the cluster's caches.
+
 ## Running it
 
 ```sh
@@ -52,6 +70,7 @@ python fetch.py --bytes 4096 --cores 1
 python fetch.py --bytes 1048576 --cores 1 4 12 --repeats 5 --store 1048576
 python fetch.py --bytes 16777216 --cores 1 4 12 --repeats 3 --store 1048576
 python fetch.py --bytes 67108864 --cores 1 4 12 --repeats 3 --store 1048576
+python evict.py shape
 ```
 
 `fetch.py` writes the source as a DRAM tensor of 16 KiB pages whose pages in bank
