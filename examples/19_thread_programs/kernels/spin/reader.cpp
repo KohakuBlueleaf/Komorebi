@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_program.hpp"
 #include "../../programs.h"
 
@@ -13,12 +14,9 @@ void km_program(km::Reader& reader, const km_command_t& command) {
     const km::Partition partition = (
         km::partition(command.a1, reader.me() - km::first(command), km::count(command))
     );
-    const InterleavedAddrGen<true> costs = {
-        .bank_base_address = command.a2, .page_size = TP_LINE_BYTES
-    };
-    const InterleavedAddrGen<true> outs = {
-        .bank_base_address = command.a3, .page_size = TP_LINE_BYTES
-    };
+    using Costs = km::Tensor<0>;
+    const Costs costs(command.a2);
+    const km::Tensor<Costs::next_compile_time_args_offset()> outs(command.a3);
     if (!reader.reserve(TP_CB_LINE, 1)) {
         return;
     }
@@ -26,7 +24,9 @@ void km_program(km::Reader& reader, const km_command_t& command) {
     volatile tt_l1_ptr uint32_t* line = km::l1(buffer);
     for (uint32_t index = 0; index < partition.len; index++) {
         const uint32_t unit = command.a0 + partition.start + index;
-        noc_async_read(get_noc_addr(unit, costs), buffer, TP_LINE_BYTES);
+        if (!km::read_pages(reader, command, costs, unit, 1, buffer)) {
+            return;
+        }
         noc_async_read_barrier();
         invalidate_l1_cache();
         const uint32_t cost = line[0];
@@ -37,7 +37,9 @@ void km_program(km::Reader& reader, const km_command_t& command) {
         line[0] = TP_MARK(unit, cost, command.a4);
         line[1] = unit;
         line[2] = command.a4;
-        noc_async_write(buffer, get_noc_addr(unit, outs), TP_LINE_BYTES);
+        if (!km::write_pages(reader, command, outs, unit, 1, buffer)) {
+            return;
+        }
         noc_async_write_barrier();
     }
 }

@@ -1,0 +1,77 @@
+{
+ "m": 8192,
+ "k": 2048,
+ "n": 8192,
+ "cards": [
+  0,
+  1
+ ],
+ "variant": "default",
+ "kohakutt": "ac81ff2",
+ "env": {
+  "KTT_GEMM": null,
+  "KTT_OWN_MATMUL_MIN_ROWS": null
+ },
+ "placements": {
+  "x": "Sharded(dim=0)",
+  "w": "Sharded(dim=0)",
+  "y": "Sharded(dim=0)",
+  "decision": {
+   "op": "mm",
+   "inputs": [
+    "[R, S(0)]",
+    "[R, S(0)]"
+   ],
+   "output": "[R, S(0)]",
+   "conversions": [
+    {
+     "input": 1,
+     "from": "[R, S(0)]",
+     "to": "[R, R]",
+     "kind": "all-gather",
+     "reused": false
+    }
+   ],
+   "reason": "shard"
+  }
+ },
+ "check": {
+  "max_rel": 0.00577987325173535,
+  "rms_rel": 0.003969904882106135
+ },
+ "synced_microseconds": [
+  1097.4530596286058,
+  2673.793933354318,
+  2997.717005200684
+ ],
+ "synced_microseconds_median": 2673.793933354318,
+ "loop": {
+  "reps": 1122,
+  "microseconds_per_call": 778.1192192180272,
+  "power": {
+   "0": {
+    "mean_w": 231.4371702765448,
+    "peak_w": 283.0,
+    "mean_temp_c": 77.2446221936472
+   },
+   "1": {
+    "mean_w": 211.1353887350302,
+    "peak_w": 276.0,
+    "mean_temp_c": 68.98304579447193
+   }
+  },
+  "aiclk_mhz": {
+   "0": [
+    1225,
+    1314.5,
+    1350
+   ],
+   "1": [
+    1218,
+    1322.7,
+    1350
+   ]
+  }
+ },
+ "load_avg": 13.5576171875
+}

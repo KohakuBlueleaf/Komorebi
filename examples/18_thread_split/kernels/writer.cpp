@@ -18,7 +18,12 @@ void kernel_main() {
             }
             volatile tt_l1_ptr uint32_t* job = km::l1(get_read_ptr(TS_CB_JOB_WRITER));
             const ts_drain drain = {
-                job[TS_JOB_FIRST], job[TS_JOB_COUNT], command.a1, command.a2
+                job[TS_JOB_FIRST],
+                job[TS_JOB_COUNT],
+                command.a1,
+                command.a2,
+                km::slot(command),
+                command.sequence
             };
             const uint32_t overlay = job[TS_JOB_OVERLAY];
             cb_pop_front(TS_CB_JOB_WRITER, 1);

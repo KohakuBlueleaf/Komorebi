@@ -1593,9 +1593,11 @@ namespace km {
             // come: that line's pages add to it by the NoC's atomics, which a store
             // after would lose
             arrived[0] -= pages;
-            // the asker's CPU (owner / 2 % 2: 1 the writer) and parity (owner % 2)
+            // the asker's CPU (owner / 2 % 2: 1 the writer) and parity (owner % 2), in
+            // its core's own words (one address on every island, the session's)
             const uint32_t own = (
-                KM_PUT_OWN + (owner / 2 % 2 == 1 ? 0 : KM_PUT_OWN_BYTES)
+                islands_at(kernel.args().control).own_words() +
+                (owner / 2 % 2 == 1 ? KM_OWN_CPU_BYTES : 0)
             );
             auto* done = pages_header(area + KM_PUT_HEADERS + 128);
             link_inline(
@@ -1603,7 +1605,7 @@ namespace km {
                 link_noc(
                     asker & 0xFFFFu,
                     asker >> 16,
-                    area + own + KM_PUT_OWN_CONFIRMED + owner % 2 * 4
+                    own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
                 ),
                 entry[KM_QUEUE_E_NUMBER]
             );
@@ -1737,6 +1739,19 @@ namespace km {
         uint32_t turn;   // cycles its pieces waited for their slots (atomic, room)
         uint32_t write;  // cycles they wrote pages and headers into the slots
     };
+
+    // `run` all zero, a field at a time: a block clear of the struct (`run = {}`, an
+    // aggregate's) may compile to a memset call, which an overlay part cannot make.
+    inline void put_run_clear(PutRun& run) {
+        run.rings.read = run.rings.cpus = run.rings.slots = 0;
+        run.rings.far = run.rings.queue = 0;
+        for (uint32_t j = 0; j < KM_PAGE_CPUS; ++j) {
+            run.rings.ring[j] = run.rings.core[j] = 0;
+        }
+        run.holder = run.waited = run.area = run.build = run.answer = 0;
+        run.number = run.hops = run.address = run.bytes = run.first = 0;
+        run.pages = run.done = run.piece = run.owner = run.turn = run.write = 0;
+    }
 
     // The next `count` pages of `run` from L1 `from` (one after another) into the page
     // CPUs' rings, a piece at a time, the pieces from page CPU number % cpus on in

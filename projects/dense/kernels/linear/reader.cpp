@@ -30,7 +30,9 @@ void kernel_main() {
         const uint32_t m_tiles = plan(kPlMt);
         invalidate_l1_cache();  // the tensor table
         const Span mine = k_part(w, here, k_whole, n_whole);
-        const bool exchange = exchanging(x, w, y, m_tiles, k_whole, n_whole);
+        const bool exchange = (
+            LINEAR_EXCHANGES && exchanging(x, w, y, m_tiles, k_whole, n_whole)
+        );
         // the rows this island makes: the plan's rows start at its first
         const Span made = made_rows(x, here, m_tiles, k_whole);
         const bool included = core(kCoreRank) != 0;
@@ -48,7 +50,9 @@ void kernel_main() {
         const uint32_t block_tiles = block_height * block_width;
         const Sent sent = {core(kCoreSetPages), core(kCoreSent)};
         // the other islands that put here, a K block of a block each: k blocks 0 ..
-        const uint32_t senders = senders_to(x, w, y, here, m_tiles, k_whole, n_whole);
+        const uint32_t senders = (
+            LINEAR_EXCHANGES ? senders_to(x, w, y, here, m_tiles, k_whole, n_whole) : 0
+        );
         const uint32_t kept = window(x, y, here, here, m_tiles, k_whole, n_whole).count;
         if (
             included && mine.count != 0 && kept != 0 && senders > 1 &&
@@ -79,10 +83,10 @@ void kernel_main() {
                 const uint32_t width = (
                     window(x, y, here, to, m_tiles, k_whole, n_whole).count
                 );
-                if (width == 0) {
+                if (width == 0 || (!LINEAR_EXCHANGES && to != here)) {
                     continue;
                 }
-                const bool own = to == here;
+                const bool own = !LINEAR_EXCHANGES || to == here;
                 if (own && !waited) {
                     if (!km::port_wait(reader, command, kPortGo, 1)) {
                         return;

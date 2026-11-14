@@ -1,0 +1,145 @@
+{
+ "m": 4096,
+ "k": 8192,
+ "n": 4096,
+ "cards": [
+  0
+ ],
+ "links": 0,
+ "upload_s": 0.416,
+ "placements": {
+  "x": [
+   [
+    0,
+    256
+   ]
+  ],
+  "w": [
+   [
+    0,
+    256
+   ]
+  ],
+  "y": [
+   [
+    0,
+    128
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 128,
+   "kt": 256,
+   "nt": 128,
+   "rows": 10,
+   "cols": 11,
+   "pcm": 13,
+   "pcn": 12,
+   "bm": 13,
+   "bn": 12,
+   "kb": 4,
+   "sh": 1,
+   "sw": 4,
+   "wa": 2,
+   "ww": 2,
+   "layout": "2d",
+   "l1": 1065984,
+   "form": "grid",
+   "nk": 64,
+   "nbh": 1,
+   "nbw": 1,
+   "rect": [
+    0,
+    0,
+    11,
+    10
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 24556,
+    "NCRISC": 31976,
+    "TRISC0": 14420,
+    "TRISC1": 5360,
+    "TRISC2": 5668
+   },
+   "total": 83008
+  },
+  "crossed_bytes": {
+   "blocks": 0,
+   "tiles": 0,
+   "put_bytes": 319488
+  },
+  "loop": {
+   "single_microseconds": [
+    1199.26,
+    1199.78,
+    1202.36
+   ],
+   "reps": 2501,
+   "seconds": 7.407,
+   "microseconds_per_call": 2961.592,
+   "part_microseconds_median": [
+    3789.76
+   ],
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 0.0,
+    "pages": 0.0,
+    "parts": 0.0,
+    "puts": 0.0,
+    "bytes": 0.0
+   },
+   "aiclk_mhz": {
+    "0": [
+     800,
+     1047.8,
+     1350
+    ]
+   }
+  },
+  "run": {
+   "cores": 120,
+   "kernel": [
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "passes": [
+   {
+    "cores": 120,
+    "cycles": {
+     "put": 0,
+     "sync": 0,
+     "own": 4142278
+    },
+    "microseconds_at_mhz": {
+     "put": 0.0,
+     "sync": 0.0,
+     "own": 3068.4
+    }
+   }
+  ],
+  "check": {
+   "max_rel": 0.0068555469924881625,
+   "rms_rel": 0.003968478198783499,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 0.525
+  },
+  "tflops": 92.81,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "2.38",
+  "2.91",
+  "5.32"
+ ]
+}

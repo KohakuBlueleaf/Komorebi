@@ -1,7 +1,7 @@
 """Thread programs: an X280 thread splits the grid between spin (a unit costs what its
 data says) and scale (tiles times a scalar) every round, after one command from the
 host; against fixed splits run by the thread and fed by the host. Every unit checked;
-one JSON line. See README.md."""
+--far: island 0 of two cards runs, island 1 holds the tensors. One JSON line."""
 
 import argparse
 import json
@@ -33,6 +33,11 @@ def parse():
     parser.add_argument("--rounds", type=int, default=24)
     parser.add_argument("--splits", type=int, default=8, help="fixed splits tried")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--far",
+        action="store_true",
+        help="cards 0 and 1: island 0's ranks and thread, the tensors on island 1",
+    )
     return parser.parse_args()
 
 
@@ -102,6 +107,9 @@ def programs(tensors, work):
         "spin",
         kernels=KERNELS / "spin",
         buffers=[km.Buffer(C["TP_CB_LINE"], "uint32", C["TP_LINE_BYTES"], 1)],
+        compile_args={
+            "reader": tensors["costs"].tensor_args() + tensors["outs"].tensor_args()
+        },
         handlers={"spin": C["TP_HANDLER_SPIN"]},
     )
     tile = dict(format="bfloat16", page_bytes=C["TP_TILE_BYTES"], pages=2)
@@ -144,13 +152,14 @@ def float_bits(value):
     return int(np.float32(value).view(np.uint32))
 
 
-def job(session, work, tensors, cores, number, split=None, host=False):
+def job(session, work, tensors, cores, number, split=None, host=False, far=False):
     """One load, one job: the thread's split (split None), a fixed split run by the
-    thread, or a fixed split fed by the host one round at a time. Its rounds' log
-    lines, wrong units and the host's seconds."""
+    thread, or a fixed split fed by the host one round at a time (`far`: on island
+    0). Its rounds' log lines, wrong units and the host's seconds."""
     scalar = float(2 + number % 3)  # differs from the job before: none is stale
     spin, scale = programs(tensors, work)
-    run = session.load([spin, scale])
+    loaded = session.load([spin, scale])
+    run = loaded.island(0) if far else loaded
     try:
         started = time.perf_counter()
         if host:
@@ -167,7 +176,7 @@ def job(session, work, tensors, cores, number, split=None, host=False):
             lines = None
         seconds = time.perf_counter() - started
     finally:
-        run.stop()
+        loaded.stop()
     if lines is None:
         raw = run.threads[CLUSTER].read("log").view(np.uint32)
         lines = raw.reshape(work.rounds, C["TP_LOG"])
@@ -221,25 +230,43 @@ def summary(lines):
     }
 
 
+def opened(args):
+    """The session: one card, or (--far) cards 0 and 1 with a link."""
+    if args.far:
+        return km.Session(cards=[0, 1], links=1, log=log)
+    return km.Session(log=log)
+
+
 def main():
     args = parse()
-    with km.Session(log=log) as session:
-        grid = session.grid
-        cores = args.cores or grid[0] * grid[1]
+    with opened(args) as session:
+        held = {}
+        if args.far:  # island 0's ranks and thread run; island 1's ranks hold the data
+            graph = session.graph
+            cores = args.cores or graph.count(0)
+            held = {"group": (graph.first(1), graph.count(1))}
+            card = session.sessions[0].card
+        else:
+            grid = session.grid
+            cores = args.cores or grid[0] * grid[1]
+            card = session.card
         work = Work(cores, args.rounds, np.random.default_rng(args.seed))
+        rows_of = work.rounds * work.max_tiles
         tensors = {  # one set for every job: each job's scalar differs
-            "costs": session.tensor(work.cost_lines(), "uint32"),
-            "outs": session.empty((work.cost.size, 16), "uint32"),
-            "input": session.tensor(work.input_pages(), "uint16"),
-            "output": session.empty((work.rounds * work.max_tiles, PAGE), "uint16"),
+            "costs": session.tensor(work.cost_lines(), "uint32", **held),
+            "outs": session.empty((work.cost.size, 16), "uint32", **held),
+            "input": session.tensor(work.input_pages(), "uint16", **held),
+            "output": session.empty((rows_of, PAGE), "uint16", **held),
         }
-        mhz = aiclk_mhz(session.card)
+        mhz = aiclk_mhz(card)
         log(f"{cores} cores, {args.rounds} rounds, aiclk {mhz} MHz")
         number, rows, wrong = 0, {}, 0
 
         def one(name, **options):
             nonlocal number, wrong
-            lines, bad, seconds = job(session, work, tensors, cores, number, **options)
+            lines, bad, seconds = job(
+                session, work, tensors, cores, number, far=args.far, **options
+            )
             number, wrong = number + 1, wrong + bad
             rows[name] = {**summary(lines), "wrong": bad, "host_seconds": seconds}
             log(f"{name}: {rows[name]['job_us']} us, {bad} wrong")
@@ -263,6 +290,7 @@ def main():
         print(f"{name:34}: {value:10.1f} us")
     out = {
         "cores": cores,
+        "far": args.far,
         "rounds": args.rounds,
         "aiclk_mhz": mhz,
         "table_us": table,

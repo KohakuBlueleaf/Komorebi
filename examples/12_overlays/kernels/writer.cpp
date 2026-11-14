@@ -14,7 +14,9 @@ void kernel_main() {
         if (!scale.load()) {  // meets the reader's load(), which reads this part
             return false;
         }
-        return scale.call(DrainArgument{writer.me(), command.a3, command.a6}) ==
-            command.a3;
+        const DrainArgument drain = {
+            writer.me(), command.a3, command.a6, km::slot(command), command.sequence
+        };
+        return scale.call(drain) == command.a3;
     });
 }

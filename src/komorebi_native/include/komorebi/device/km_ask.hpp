@@ -22,7 +22,7 @@ namespace km {
     // A queue of lines in link core 0's link area (offsets): the count its island's
     // cores reserve lines with, the count it took (`cursors`: a count each page CPU
     // took, the page CPUs in the eighth word), its lines; and the asking CPU's own
-    // line and its two answer words, on its own core.
+    // line and its two answer words, in its own core's own words (KM_OWN_*).
     struct AskQueue {
         uint32_t tail;
         uint32_t taken;
@@ -40,29 +40,40 @@ namespace km {
             KM_ASK_TAIL,
             KM_ASK_TAKEN,
             KM_ASK_LINES,
-            KM_ASK_OWN,
-            KM_ASK_RETURNED,
-            KM_ASK_READ,
+            KM_OWN_LINE,
+            KM_OWN_RETURNED,
+            KM_OWN_READ,
             false
         };
     }
 
     constexpr AskQueue ask_puts(uint32_t role) {
-        const uint32_t own = KM_PUT_OWN + (role == kRoleWriter ? 0 : KM_PUT_OWN_BYTES);
+        const uint32_t own = role == kRoleWriter ? KM_OWN_CPU_BYTES : 0;
         return {
-            KM_PUT_TAIL, KM_PUT_TAKEN, KM_PUT_LINES, own, own + 0x40, own + 0x50, true
+            KM_PUT_TAIL,
+            KM_PUT_TAKEN,
+            KM_PUT_LINES,
+            own + KM_OWN_LINE,
+            own + KM_OWN_RETURNED,
+            own + KM_OWN_READ,
+            true
         };
     }
 
-    // The get queue of CPU `role`: the writer's own line and answer words at its
-    // area's ask lines, which only link core 0 holds lines in.
+    // The get queue of CPU `role`: the writer's own block after the reader's.
     constexpr AskQueue ask_gets(uint32_t role) {
         if (role != kRoleWriter) {
             return ask_gets();
         }
-        constexpr uint32_t own = KM_ASK_LINES;
+        constexpr uint32_t own = KM_OWN_CPU_BYTES;
         return {
-            KM_ASK_TAIL, KM_ASK_TAKEN, KM_ASK_LINES, own, own + 0x40, own + 0x50, false
+            KM_ASK_TAIL,
+            KM_ASK_TAKEN,
+            KM_ASK_LINES,
+            own + KM_OWN_LINE,
+            own + KM_OWN_RETURNED,
+            own + KM_OWN_READ,
+            false
         };
     }
 
@@ -151,6 +162,7 @@ namespace km {
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
+        const uint32_t mine = view.own_words();
         const uint32_t named = slot | holder << 8;
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
         const auto give_up = [&](uint32_t code) {
@@ -159,7 +171,7 @@ namespace km {
         };
         const uint32_t hops = view.hops(holder);
         if (
-            area == 0 || hops == 0 || (queue.cursors && hops != 1) ||
+            area == 0 || mine == 0 || hops == 0 || (queue.cursors && hops != 1) ||
             port >= KM_PORT_SLOTS || bytes == 0 || bytes % 16 != 0 ||
             bytes > view.packet() || at % 16 != 0
         ) {
@@ -170,8 +182,12 @@ namespace km {
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
         // a put: this CPU's own line (its owner: core, CPU, parity) on the parity after
-        // its last, once the far island confirmed the line it last sent on it
-        volatile tt_l1_ptr uint32_t* mine = l1(area + queue.own);
+        // its last, once the far island confirmed the line it last sent on it (its
+        // block of the core's own words)
+        const uint32_t block = (
+            mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0)
+        );
+        volatile tt_l1_ptr uint32_t* own = l1(block);
         uint32_t owner = 0, parity = 0;
         if (queue.cursors) {
             const uint32_t index = core.args().me - view.base();
@@ -179,15 +195,15 @@ namespace km {
                 return give_up(kGaveBadItem);
             }
             invalidate_l1_cache();
-            parity = mine[KM_PUT_OWN_SENT / 4] & 1u;
+            parity = own[KM_OWN_PUT_SENT / 4] & 1u;
             owner = (index * 2 + (core.role() == kRoleWriter ? 1 : 0)) * 2 + parity;
             const uint32_t code = core.poll_at(
                 kWhereAsk,
                 [&] {
                     invalidate_l1_cache();
                     return (
-                        mine[KM_PUT_OWN_NUMBER / 4 + parity] ==
-                        mine[KM_PUT_OWN_CONFIRMED / 4 + parity]
+                        own[KM_OWN_PUT_NUMBER / 4 + parity] ==
+                        own[KM_OWN_PUT_CONFIRMED / 4 + parity]
                     );
                 },
                 limit
@@ -196,7 +212,7 @@ namespace km {
                 return give_up(code);
             }
         }
-        volatile tt_l1_ptr uint32_t* returned = l1(area + queue.returned);
+        volatile tt_l1_ptr uint32_t* returned = l1(mine + queue.returned);
         returned[0] = kAskNoAnswer;
         invalidate_l1_cache();  // a fence: the store lands before the answer can
         noc_fast_atomic_increment<noc_mode, true>(
@@ -208,7 +224,7 @@ namespace km {
             31,
             false,
             false,
-            area + queue.returned
+            mine + queue.returned
         );
         uint32_t code = core.poll_at(
             kWhereAsk,
@@ -228,9 +244,7 @@ namespace km {
         // a put: its place in the put queue free (every page CPU took the line
         // KM_QUEUE_LINES before), read with the rings (put_rings_read); a get: the
         // line free once link core 0 took the one KM_ASK_SLOTS before
-        const uint32_t build = (
-            area + KM_PUT_BUILD + (core.role() == kRoleWriter ? KM_PUT_BUILD_BYTES : 0)
-        );
+        const uint32_t build = block + KM_OWN_BUILD;
         bool ring = false;
         PutRings rings{};
         uint32_t to_line = area + queue.lines + number % KM_ASK_SLOTS * 64;
@@ -242,7 +256,7 @@ namespace km {
             ring = dram == 0 && rings.slots != 0;
             to_line = rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64;
         } else {
-            volatile tt_l1_ptr uint32_t* taken = l1(area + queue.read);
+            volatile tt_l1_ptr uint32_t* taken = l1(mine + queue.read);
             bool reading = false;
             code = core.poll_at(
                 kWhereAsk,
@@ -258,7 +272,7 @@ namespace km {
                         }
                     }
                     noc_async_read(
-                        core.core_noc(link, area + queue.taken), area + queue.read, 16
+                        core.core_noc(link, area + queue.taken), mine + queue.read, 16
                     );
                     reading = true;
                     return false;
@@ -272,7 +286,7 @@ namespace km {
         if (run != nullptr && !ring) {
             return give_up(kGaveBadItem);  // a run's bytes follow only into rings
         }
-        volatile tt_l1_ptr uint32_t* line = l1(area + queue.own);
+        volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
         for (uint32_t w = 0; w < 16; w++) {
             line[w] = 0;
         }
@@ -294,7 +308,7 @@ namespace km {
         line[KM_ASK_OWNER] = owner;
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
-        noc_async_write(area + queue.own, core.core_noc(link, to_line), 64);
+        noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
         code = core.poll_at(
             kWhereAsk,
             [] {
@@ -303,32 +317,26 @@ namespace km {
             limit
         );
         if (queue.cursors) {  // its line on this parity, until the far island's word
-            mine[KM_PUT_OWN_SENT / 4] = mine[KM_PUT_OWN_SENT / 4] + 1;
-            mine[KM_PUT_OWN_NUMBER / 4 + parity] = number + 1;
+            own[KM_OWN_PUT_SENT / 4] = own[KM_OWN_PUT_SENT / 4] + 1;
+            own[KM_OWN_PUT_NUMBER / 4 + parity] = number + 1;
         }
         if (code == kGaveNone && ring) {
-            PutRun one = {
-                rings,
-                holder,
-                0,
-                area,
-                build,
-                area + queue.returned,
-                number,
-                view.hops(holder),
-                address,
-                bytes,
-                first,
-                pages,
-                0,
-                0,
-                owner,
-                0,
-                0
-            };
-            if (run != nullptr) {
-                *run = one;  // the bytes follow (put_piece)
-            } else {
+            PutRun local;
+            PutRun& one = run != nullptr ? *run : local;  // run: put_piece sends
+            put_run_clear(one);  // not an aggregate: its block clear calls memset
+            one.rings = rings;
+            one.holder = holder;
+            one.area = area;
+            one.build = build;
+            one.answer = mine + queue.returned;
+            one.number = number;
+            one.hops = view.hops(holder);
+            one.address = address;
+            one.bytes = bytes;
+            one.first = first;
+            one.pages = pages;
+            one.owner = owner;
+            if (run == nullptr) {
                 code = put_ring_pieces(core, one, at, pages);
             }
         }
@@ -476,13 +484,14 @@ namespace km {
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
-        run = {};
+        put_run_clear(run);
         run.holder = holder;
         run.address = address;
         run.bytes = bytes;
         run.first = first;
         run.pages = pages;
-        if (area == 0 || view.hops(holder) != 1) {
+        const uint32_t mine = view.own_words();
+        if (area == 0 || mine == 0 || view.hops(holder) != 1) {
             core.gave_up(
                 core.role() == kRoleWriter ? kStWriter : kStReader,
                 kGaveBadItem,
@@ -493,8 +502,8 @@ namespace km {
             return false;
         }
         const AskQueue& queue = ask_puts(core.role());
-        const uint32_t build = (
-            area + KM_PUT_BUILD + (core.role() == kRoleWriter ? KM_PUT_BUILD_BYTES : 0)
+        const uint32_t build = (  // its CPU's block of the own words
+            mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0) + KM_OWN_BUILD
         );
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t code = put_rings_read(core, link, area, build, run.rings);

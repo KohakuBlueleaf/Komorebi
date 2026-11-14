@@ -143,7 +143,8 @@
  * of the area: on link core 0 the count its island's cores reserve lines with (a local
  * atomic), the lines it took, the asks each far page CPU answered (a word each, at
  * most KM_PAGE_CPUS), the bad ones; on a page CPU's core the far asks it answered
- * (a word a CPU of the core); a core's own line and two answer words; the two headers
+ * (a word a CPU of the core); a link core's own line and two answer words (a rank's
+ * in its own words, KM_OWN_*); the two headers
  * of link core 0's CPUs (the far ask, the answer's count); the lines, then the far
  * asks. A page CPU is a CPU that holds a page link (every link when no message
  * service holds link 0, else links 1 on, link 0 when it is the only one: KM_PUT_CPUS
@@ -230,14 +231,13 @@
  * (the session writes it, on every core); on link core 0 each page CPU's ring (its L1
  * address, 0: none; its core's number | its CPU << 16), the slots a ring and the far
  * link core 0 (the page CPUs write them at their open);
- * a core's own put line and two answer words for each of its two data-movement CPUs;
- * on a link core each CPU's ring words (the slots reserved, a putting core's atomic;
- * the slots sent and left); page CPU 0's three headers (a put line across, a
- * confirmation's count and its done word); the put lines, then the far island's (an
- * ask line each: KM_ASK_TO the asker's L1, KM_ASK_TENSOR the holder's tensor). On a
- * core that is not a link core the room of the put lines and the far island's holds
- * what each of its CPUs builds for a put into the rings (KM_PUT_BUILD_BYTES a CPU, the
- * reader's first). */
+ * room for a core's own put lines (unused: a core's own put lines, answer words, line
+ * words and the headers it builds for a put into the rings are in its own words,
+ * KM_OWN_*); on a link core each CPU's ring words (the slots reserved, a putting
+ * core's atomic; the slots sent and left); page CPU 0's three headers (a put line
+ * across, a confirmation's count and its done word); the put lines, then the far
+ * island's (an ask line each: KM_ASK_TO the asker's L1, KM_ASK_TENSOR the holder's
+ * tensor). */
 #define KM_PUT_TAIL (KM_LINK_CROSS + 2u * KM_CROSS_ROW)
 #define KM_PUT_TAKEN (KM_PUT_TAIL + 0x10u) /* + 4 j: page CPU j's */
 #define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)
@@ -251,12 +251,7 @@
 #define KM_PUT_QUEUE (KM_PUT_TAIL + 0x58u) /* the put queue's L1 address, 0: none yet */
 #define KM_PUT_RING_READ 0x50u /* what a putting core reads, from KM_PUT_TAKEN */
 #define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x80 the second CPU's */
-#define KM_PUT_OWN_BYTES 0x80u /* a line, two answer words, then its lines' words */
-/* a CPU's put lines (offsets in its KM_PUT_OWN): its lines sent, the number word of
- * its last line on each parity and the one the far island confirmed (+ 4 parity) */
-#define KM_PUT_OWN_SENT 0x50u
-#define KM_PUT_OWN_NUMBER 0x54u
-#define KM_PUT_OWN_CONFIRMED 0x5Cu
+#define KM_PUT_OWN_BYTES 0x80u /* unused (a core's own words, KM_OWN_*) */
 #define KM_PUT_RING_WORDS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES) /* + 16 a CPU */
 #define KM_PUT_RING_TAIL 0u
 #define KM_PUT_RING_SENT 4u
@@ -271,8 +266,8 @@
 #define KM_PUT_HEADERS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES + 0x40u)
 #define KM_PUT_LINES (KM_PUT_HEADERS + 0xC0u)
 #define KM_PUT_INBOX (KM_PUT_LINES + KM_ASK_SLOTS * 64u)
-#define KM_PUT_BUILD KM_PUT_LINES
-#define KM_PUT_BUILD_BYTES 0x800u /* the put lines and the far ones' room */
+/* the headers a CPU builds for a put into the rings (KM_OWN_BUILD) */
+#define KM_PUT_BUILD_BYTES 0x800u
 /* Then a page CPU's own (0x100 a CPU of the core): its copy of an ask line, of a put
  * line (read from link core 0 when it is on another core), the header of its answer's
  * count; in their last 64 bytes, on link core 0, the pages of the far island's put
@@ -606,8 +601,9 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_RELAY (KM_ISLAND_LINK_AREA / 4u + 1u)
 #define KM_ISLAND_RELAY_FAR (KM_ISLAND_RELAY + 1u)
 #define KM_ISLAND_RELAY_TILE (KM_ISLAND_RELAY + 2u)
-/* The relay area, on every core: an ask to link core 0 (64 bytes at line 2 core + NoC),
- * the done word back to the core (16 bytes a NoC), then link core 0's own words */
+/* The relay area, on link cores (on every core when they run the program's kernels):
+ * a core's ask to link core 0 (64 bytes at line 2 core + NoC; its done word comes
+ * back to its own words' KM_OWN_DONE; DONE here unused), then link core 0's words */
 #define KM_RELAY_ASKS 256u /* ask lines: 2 a core */
 #define KM_RELAY_ASK 0x0000u
 #define KM_RELAY_DONE 0x4000u
@@ -627,13 +623,35 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_TENSORS ((KM_ISLAND_RELAY_TILE + 1u) * 4u)
 /* then a word (byte offset): the forward area's L1 address on this island (0: none) */
 #define KM_ISLAND_FORWARD (KM_ISLAND_TENSORS + 4u)
+/* then a word (byte offset): the own words' L1 address on this island (0: none) */
+#define KM_ISLAND_OWN (KM_ISLAND_FORWARD + 4u)
+/* A core's own words (every core of an island run with page links, the session's, at
+ * one address on every island): a block a data-movement CPU (the reader's, then the
+ * writer's), the scratch of its get, put and relay asks (one at a time a CPU): the
+ * line as written to the link core, the atomic's answer, the counts read back (32
+ * bytes), the relay's done word; its put lines: those it sent, the number word of its
+ * last line on each parity and the one the far island confirmed (+ 4 parity, the far
+ * lead page CPU writes it); the headers it builds for a put into the rings (and
+ * there first the rings read, KM_PUT_RING_READ bytes) */
+#define KM_OWN_LINE 0x00u
+#define KM_OWN_RETURNED 0x40u
+#define KM_OWN_READ 0x50u
+#define KM_OWN_DONE 0x70u
+#define KM_OWN_PUT_SENT 0x80u
+#define KM_OWN_PUT_NUMBER 0x84u
+#define KM_OWN_PUT_CONFIRMED 0x8Cu
+#define KM_OWN_BUILD 0xC0u
+#define KM_OWN_CPU_BYTES (KM_OWN_BUILD + KM_PUT_BUILD_BYTES)
+#define KM_OWN_BYTES (2u * KM_OWN_CPU_BYTES)
 /* The forward area (km_transport.hpp), a link core's: packets for an island not its
  * own, sent on by its next link toward it. Part 0's writer: the far link core */
-#define KM_FORWARD_PARTS 3u /* part 1 + i: link core i (i + 1 when not below this one) */
+/* part 1 + i: link core i (i + 1 when not below this one) */
+#define KM_FORWARD_PARTS 3u
 #define KM_FORWARD_SLOTS 2u
 #define KM_FORWARD_LANDED 0x00u /* 16 bytes a part: its packets landed */
-#define KM_FORWARD_CREDIT 0x30u /* 16 bytes a destination (0 across): packets it took */
-#define KM_FORWARD_STATE 0x60u  /* taken a part, sent a destination, failed */
+/* 16 bytes a destination (0 across): packets it took */
+#define KM_FORWARD_CREDIT 0x30u
+#define KM_FORWARD_STATE 0x60u /* taken a part, sent a destination, failed */
 #define KM_FORWARD_FAILED (2u * KM_FORWARD_PARTS) /* state word */
 #define KM_FORWARD_HEADERS 0x80u /* two packet headers */
 #define KM_FORWARD_STAGE 0x100u  /* the head of a packet this core starts */
@@ -692,7 +710,7 @@ KM_STATIC_ASSERT(
         KM_PUT_LINES % 64u == 0 && KM_ASK_SLOTS == 32u &&
         KM_PUT_QUEUE + 4u <= KM_PUT_TAKEN + KM_PUT_RING_READ &&
         KM_PUT_TAKEN + KM_PUT_RING_READ <= KM_PUT_OWN && KM_PUT_TAKEN % 16u == 0 &&
-        KM_PUT_OWN_CONFIRMED + 8u <= KM_PUT_OWN_BYTES && KM_ASK_OWNER < KM_ASK_END &&
+        KM_ASK_OWNER < KM_ASK_END && KM_PUT_RING_READ <= KM_PUT_BUILD_BYTES &&
         KM_QUEUE_PUTS % 64u == 0 && KM_QUEUE_BYTES % 64u == 0 &&
         KM_PUT_RING_IDLE + 32u <= KM_PUT_HEADERS &&
         2u * KM_PUT_BUILD_BYTES <= 2u * KM_ASK_SLOTS * 64u && KM_ASK_RING < KM_ASK_END,
@@ -701,7 +719,13 @@ KM_STATIC_ASSERT(
 KM_STATIC_ASSERT(
     KM_ISLAND_RELAY * 4u >= KM_ISLAND_LINK_AREA + 4u &&
         KM_ISLAND_TENSORS == (KM_ISLAND_RELAY_TILE + 1u) * 4u &&
-        KM_ISLAND_FORWARD + 4u <= KM_ISLANDS_BYTES &&
+        KM_ISLAND_OWN + 4u <= KM_ISLANDS_BYTES &&
+        KM_OWN_RETURNED >= KM_OWN_LINE + 64u && KM_OWN_READ >= KM_OWN_RETURNED + 16u &&
+        KM_OWN_DONE >= KM_OWN_READ + 32u && KM_OWN_PUT_SENT >= KM_OWN_DONE + 16u &&
+        KM_OWN_PUT_NUMBER >= KM_OWN_PUT_SENT + 4u &&
+        KM_OWN_PUT_CONFIRMED >= KM_OWN_PUT_NUMBER + 8u &&
+        KM_OWN_BUILD >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_BUILD % 64u == 0 &&
+        KM_OWN_CPU_BYTES % 64u == 0 &&
         KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_PARTS &&
         KM_FORWARD_HEADERS >= KM_FORWARD_STATE + 4u * (KM_FORWARD_FAILED + 1u) &&
         KM_FORWARD_SLOT % 64u == 0 && KM_FORWARD_SLOT_BYTES % 64u == 0 &&

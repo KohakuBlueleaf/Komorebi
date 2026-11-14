@@ -95,6 +95,7 @@ nav:
       - concepts/dispatch.md
       - concepts/runtime.md
       - concepts/islands.md
+      - concepts/reset.md
       - streams.md
       - graphs.md
       - threads.md

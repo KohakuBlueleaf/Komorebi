@@ -21,7 +21,7 @@ The reader has two slots, fewer than the overlays, so changing overlays loads.
 
 | Handler | Arguments | What a core does |
 |---|---|---|
-| `PASS` | a0 units, a1 the tiles' DRAM address, a2 the pass's first page, a3 the run, a4 the penalty, a5 the lines' DRAM address, a6 the pass, a7 1 for a pass that only pulls | pulls ranges until none is left; loads and calls the overlay each word names, hands dense ranges to compute and the writer, tells the X280 core the range's kinds; writes its line (units per overlay, loads, pulls, cycles in `next()`, its span) |
+| `PASS` | a0 units, a1 the tiles tensor, a2 the pass's first page, a3 the run, a4 the penalty, a5 the lines tensor (each its reference word), a6 the pass, a7 1 for a pass that only pulls | pulls ranges until none is left; loads and calls the overlay each word names, hands dense ranges to compute and the writer, tells the X280 core the range's kinds; writes its line (units per overlay, loads, pulls, cycles in `next()`, its span) |
 
 The thread (`thread/split.c`, on cluster 1, every core's port dealt over its four X280
 cores) runs seven passes, each a `kmx_pull_run` with a `pick_word`; every core pulls
@@ -85,7 +85,14 @@ A Komorebi install and a card prepared as in [Running on a card](../../docs/inst
 ```
 python thread_split.py --units 16384 --per 4 --run 64   # the numbers below
 python thread_split.py --units 256 --pull-units 1024     # a quick check
+python thread_split.py --far   # cards 0 and 1: island 0 runs, island 1 holds the pages
 ```
+
+The overlays write the tiles and the reader its line with `km::write_pages_at` and
+`km::write_pages`: with `--far` the same kernels put every page across the link, the
+thread and the ports on island 0 only. The thread is then built with
+`TS_STARTED_BY_HOST`: it runs the passes on the host's command (`passes`) once both
+islands are loaded, not at its start, and leaves their ticks in its region.
 
 `--penalty` (cycles a unit costs off its overlay's kind, default 20,000), `--slots` (the
 reader's, default 2). The script exits non-zero if a tile or a line is wrong.

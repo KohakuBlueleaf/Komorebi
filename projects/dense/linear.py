@@ -27,13 +27,12 @@ KERNELS = pl.HERE / "kernels" / "linear"
 LINEAR_H = KERNELS / "linear.h"
 L = abi.constants(LINEAR_H, known=abi.headers().constants)
 G = pl.G
-# Two cards, the load's L1 table rows past the buffers: the session's own (link area,
-# relay, tensor table), the host transfer buffer, control block and overlay, slot.
-L1_HELD = 10_752 + 37_440 + 1_536
+# Two cards, the load's L1 table rows past the buffers and the session's own
+# (IslandSession.held_bytes): the host transfer buffer, control block and overlay, slot.
 L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
-# The kernel buffer the linear kernels' code takes (all five CPUs): one card 83,008 B;
-# two cards (a rank's kernels: the page calls' client side) 94,224 B.
+# The kernel buffer the linear kernels' code takes (all five CPUs, mock builds): the
+# rows form or one card (no puts) 78,672 B; the K form on two cards 97,824 B.
 KERNEL_BYTES = {"one": 88 * 1024, "two": 96 * 1024}
 log = run.log
 # Placements by hint (X, W, Y): "k", W sharded (split along K, Y along N); "rows", W
@@ -131,15 +130,17 @@ def extra_bytes(plan, exchange):
     return sum(page * pages for _, _, page, pages in extra_buffers(plan, exchange))
 
 
-def l1_budget(session, islands):
+def l1_budget(session, islands, extra=0):
     """L1 for the buffers: the project's budget on one island; on more, the L1 the
-    session gives buffers (Session.l1) less the other rows of the load's budget, and
-    the two tokens it counts with the buffers."""
+    session gives buffers (Session.l1) less the other rows of the load's budget (what
+    the session keeps, with `extra` tensors more than it holds now), and the two
+    tokens it counts with the buffers."""
     if islands == 1:
         return pl.L1_BUDGET
     free = session.sessions[0].l1()[1]
     tokens = 2 * abi.headers()["kTokenBytes"]
-    return min(pl.L1_BUDGET, free - L1_HELD - L1_TRANSFER - L1_RUNTIME - tokens)
+    held = session.held_bytes(extra=extra)
+    return min(pl.L1_BUDGET, free - held - L1_TRANSFER - L1_RUNTIME - tokens)
 
 
 def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange):
@@ -409,11 +410,15 @@ def pieces_args(pieces, nocs, ranks, m_tiles, group_word):
             )
             first += plan.nbh * plan.nbw * plan.bm * plan.bn
     windows = (pieces[0].plan.wa, pieces[0].plan.ww)
-    idle = [0] * (len(card.BROADCAST_FIELDS) + L["kCoreWords"])
+    # a core of no piece: no broadcast, its rank word 0, and M, so that it finds the
+    # exchange its island's pieces find and joins the sync's tree with them
+    idle_core = [0] * L["kCoreWords"]
+    idle_core[L["kCorePlan"] + L["kPlMt"]] = m_tiles
+    idle = [0] * len(card.BROADCAST_FIELDS) + idle_core
 
     def args(core):
         if core not in words:
-            return idle, idle, idle[: L["kCoreWords"]] + list(windows)
+            return idle, idle, idle_core + list(windows)
         (row, column), mine, window = words[core]
         return row + mine, column + mine, mine + list(window)
 
@@ -454,7 +459,7 @@ class Linear:
             if to != here
         )
         one_card = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.nocs.grid)
-        self.budget = l1_budget(session, self.islands)
+        self.budget = l1_budget(session, self.islands, extra=2)  # S and T
         self.pieces = island_pieces(
             part_m,
             part_k,
@@ -516,15 +521,18 @@ class Linear:
                 "unpack_to_dest_mode": {L["kCbPart"]: "UnpackToDestFp32"},
             },
             handlers=LINEAR_H,
+            # nothing exchanged: kernels without the puts and the sync (smaller)
+            defines={} if self.exchange else {"LINEAR_OWN": 1},
         )
         self.run = session.load(self.program, deadline=deadline, wait=wait)
         # what each island's session keeps in every core, by its own count (the
-        # plan's budget took L1_HELD before the load made it)
+        # plan's budget took held_bytes before the load made it)
         self.l1_held = [
             sum(size for _, size in one.l1_held()) for one in session.sessions
         ]
-        if self.islands > 1 and max(self.l1_held) > L1_HELD:
-            log(f"the session keeps {self.l1_held} B a core, the plan took {L1_HELD}")
+        planned = session.held_bytes() if self.islands > 1 else 0
+        if self.islands > 1 and max(self.l1_held) > planned:
+            log(f"the session keeps {self.l1_held} B a core, the plan took {planned}")
 
     def words(self):
         addresses = [self.tensors[name].address for name in "xwys"]
@@ -797,6 +805,28 @@ def sizes(program):
     return None if found is None else {"text": found.text, "total": found.total}
 
 
+def at_error(product):
+    """After a call gave up, while the run goes on: what crossed the links, and every
+    core of each island as its dispatcher reads it (link cores too)."""
+    out = {}
+    runs = getattr(product.run, "runs", [product.run])
+    try:
+        out["crossings"] = {
+            str(key): row for key, row in product.run.crossings().rows.items()
+        }
+    except (km.KomorebiError, AttributeError) as error:
+        out["crossings"] = f"{type(error).__name__}: {error}"
+    for island, one in enumerate(runs):
+        try:
+            out[f"island {island}"] = one.inspect()
+        except km.KomorebiError as error:
+            out[f"island {island}"] = f"{type(error).__name__}: {error}"
+    plain = json.dumps(
+        out, default=lambda v: v.tolist() if hasattr(v, "tolist") else str(v)
+    )
+    return json.loads(plain)
+
+
 def attempt(product_class, session, dimensions, tensors, cards, args, matrices):
     """Loads, measures, stops and checks one product; its report."""
     flops = 2 * math.prod(dimensions)
@@ -818,6 +848,7 @@ def attempt(product_class, session, dimensions, tensors, cards, args, matrices):
         report["loop"] = measure(product, cards, args.seconds)
     except km.KomorebiError as error:
         report["error"] = f"{type(error).__name__}: {error}"
+        report["at_error"] = at_error(product)
         with contextlib.suppress(km.KomorebiError):
             product.run.stop()
         report["ok"] = False
@@ -842,6 +873,8 @@ def main():
     parser.add_argument("--shape", choices=run.SHAPES, default=None)
     parser.add_argument("--cube", type=int, default=None, help="M = K = N")
     parser.add_argument("--dims", default=None, help="M,K,N")
+    for name in ("m", "k", "n"):
+        parser.add_argument(f"--{name}", type=int, default=None)
     parser.add_argument(
         "--place",
         choices=list(PLACES),
@@ -864,8 +897,14 @@ def main():
     args = parser.parse_args()
     if args.dims:
         dimensions = tuple(int(value) for value in args.dims.split(","))
+    elif args.cube:
+        dimensions = (args.cube,) * 3
+    elif args.shape:
+        dimensions = run.SHAPES[args.shape]
+    elif None in (args.m, args.k, args.n):
+        raise SystemExit("name --shape, --cube, --dims, or all of --m, --k and --n")
     else:
-        dimensions = (args.cube,) * 3 if args.cube else run.SHAPES[args.shape]
+        dimensions = (args.m, args.k, args.n)
     if any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
@@ -874,7 +913,10 @@ def main():
     log("building the inputs")
     x_matrix, w_matrix = ref.inputs(*dimensions, kind=args.inputs)
     log("inputs built")
-    kernel_bytes = args.kernel_bytes or KERNEL_BYTES["two" if len(cards) > 1 else "one"]
+    # the puts' build (the K form on two cards) is the larger one; the rows form
+    # puts nothing (LINEAR_OWN) and fits the one-card buffer
+    puts = len(cards) > 1 and args.place == "k"
+    kernel_bytes = args.kernel_bytes or KERNEL_BYTES["two" if puts else "one"]
     options = {"links": args.links, "kernel_bytes": kernel_bytes}
     options = {key: value for key, value in options.items() if value}
     with km.Session(cards=cards, log=log, **options) as session:

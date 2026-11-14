@@ -1,0 +1,76 @@
+{
+ "m": 16384,
+ "k": 16384,
+ "n": 16384,
+ "cards": [
+  0,
+  1
+ ],
+ "variant": "ksplit",
+ "kohakutt": "ac81ff2",
+ "env": {
+  "KTT_GEMM": null,
+  "KTT_OWN_MATMUL_MIN_ROWS": null
+ },
+ "placements": {
+  "x": "Sharded(dim=1)",
+  "w": "Sharded(dim=0)",
+  "y": "Sharded(dim=1)",
+  "decision": {
+   "op": "ktt::distribute",
+   "inputs": [
+    "[R, P(sum)]"
+   ],
+   "output": "[R, S(1)]",
+   "conversions": [
+    {
+     "input": 0,
+     "from": "[R, P(sum)]",
+     "to": "[R, S(1)]",
+     "kind": "reduce-scatter",
+     "reused": false
+    }
+   ],
+   "reason": "mark"
+  }
+ },
+ "check": {
+  "max_rel": 0.005280913754249888,
+  "rms_rel": 0.003855912563262648
+ },
+ "synced_microseconds": [
+  35686.20199803263,
+  32765.696989372373,
+  32970.639993436635
+ ],
+ "synced_microseconds_median": 32970.639993436635,
+ "loop": {
+  "reps": 90,
+  "microseconds_per_call": 43996.09821072469,
+  "power": {
+   "0": {
+    "mean_w": 136.9467812708874,
+    "peak_w": 243.0,
+    "mean_temp_c": 74.71895933704452
+   },
+   "1": {
+    "mean_w": 135.11329977064113,
+    "peak_w": 239.0,
+    "mean_temp_c": 71.5276693661315
+   }
+  },
+  "aiclk_mhz": {
+   "0": [
+    843,
+    986.7,
+    1350
+   ],
+   "1": [
+    956,
+    1078.2,
+    1350
+   ]
+  }
+ },
+ "load_avg": 16.087890625
+}

@@ -79,11 +79,8 @@ static int run_pass(
     return error == KMX_OK && event.kind != KM_EVENT_DONE ? KMX_LATE : error;
 }
 
-int kmx_main(int x280_core) {
-    (void)x280_core;
-    if (kmx_cluster() != kmx_lead()) {
-        return kmx_serve() == KMX_OK ? 0 : (int)CODE_LATE;
-    }
+/* The seven passes, their ticks into ticks[]; the result code. */
+static uint32_t passes(uint32_t ticks[TS_PASSES]) {
     const kmx_args* arguments = kmx_args_get();
     const uint32_t* words = arguments->words;
     if (
@@ -92,7 +89,6 @@ int kmx_main(int x280_core) {
     ) {
         return CODE_BAD;
     }
-    uint32_t ticks[TS_PASSES];
     for (uint32_t pass = 0; pass < TS_PASSES; pass++) {
         const int work = pass < TS_WORK_PASSES;
         const uint32_t units = work ? words[TS_WORD_UNITS] : words[TS_WORD_PULL_UNITS];
@@ -128,6 +124,38 @@ int kmx_main(int x280_core) {
             return error == KMX_BAD ? CODE_BAD : CODE_LATE;
         }
     }
-    kmx_result(0, ticks, TS_PASSES);
     return 0;
 }
+
+int kmx_main(int x280_core) {
+    (void)x280_core;
+    if (kmx_cluster() != kmx_lead()) {
+        return kmx_serve() == KMX_OK ? 0 : (int)CODE_LATE;
+    }
+#if defined(TS_STARTED_BY_HOST)
+    return 0; /* the far island and the links run only once the load returns */
+#else
+    uint32_t ticks[TS_PASSES];
+    const uint32_t code = passes(ticks);
+    if (code == 0) {
+        kmx_result(0, ticks, TS_PASSES);
+    }
+    return (int)code;
+#endif
+}
+
+#if defined(TS_STARTED_BY_HOST)
+uint32_t kmx_program(const km_command_t* command) {
+    if (kmx_handler(command) != TS_THREAD_PASSES) {
+        return CODE_BAD;
+    }
+    uint64_t bytes = 0;
+    uint32_t* ticks = (uint32_t*)kmx_region(0, &bytes);
+    if (ticks == 0 || bytes < 4 * TS_PASSES) {
+        return CODE_BAD;
+    }
+    const uint32_t code = passes(ticks);
+    kmx_flush(0); /* the host reads the ticks */
+    return code;
+}
+#endif
