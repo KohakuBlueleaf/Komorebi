@@ -584,6 +584,43 @@ python projects/dense/linear.py --cube 16384 --cards 0
 python projects/dense/linear.py --cube 16384 --cards 0,1
 ```
 
+### The rows form: W replicated (Kohaku-TT's default form)
+
+`--place rows` places X and Y split along M (each island half the rows) and W as a
+copy on every island: the replicated weight, Kohaku-TT's default two-card form, not
+this kernel's weight-sharded answer (`--place k`, above). The same kernels take it
+from the placements alone: an island makes the rows of X it holds, no other island
+keeps columns of those rows, so the puts' pass is empty and there is no sync; each
+island runs the product of its rows with its own plan. Nothing crosses in a call (the
+crossings count 0 bytes). Against it, the half product (M/2 x K x N) on card 0 with a
+one-card session, the same kernels; single calls, medians of three, on 2026-11-15 at
+02:45, every check passed. The island's and the call's times are each island's part
+by its dispatcher's ticks (the call: the later island); the product is the kernels'
+span (the first core taking the command to the last ending, the writers' clocks);
+host is the host's time from submit to the event.
+
+| Shape (M x K x N) | Half on one card: plan, part / product / host, us | Two cards, an island: plan; island 0, 1 part, us | Two-card call / host, us | Call / half |
+|---|---|---|---|---|
+| 4096 x 32768 x 4096 | 8 x 11, K block 8, 12 x 8 cores; 2,816.6 / 2,811.1 / 3,189.4 | the same block, 10 x 8 + 2 x 8 cores; 2,877.5, 2,890.2 | 2,916.5 / 3,381.0 | 1.035 |
+| 8192 cubed | 13 x 12, K block 4, 11 x 10; 2,350.1 / 2,346.1 / 2,669.9 | the same block, 10 x 10 + 2 x 5; 2,357.6, 2,357.4 | 2,357.6 / 2,873.6 | 1.003 |
+| 16384 cubed | 13 x 16, K block 4, 11 x 10; 17,725.5 / 17,696.4 / 18,067.2 | 13 x 16, K block 2, 10 x 10 + 2 x 7; 20,208.4, 20,309.6 | 20,674.5 / 21,267.5 | 1.166 |
+
+The differences, named: at 16384 the plan: an island's buffers may use 1,312,176 B
+(the two-card session keeps 49,728 B in every core, a host transfer buffer of 32,848
+and a 96 KiB kernel buffer) where one card's use 1,380,000, and 13 x 16 blocks with
+K block 4 need 1,369,216, so the island takes K block 2: its product is 2.4 to 3.3 ms
+longer; at 4096 x 32768 x 4096 the island's two rectangles where one 12 x 8 would
+fit (the picker's tie), 2 % longer products. The command's way in and its completion
+on an island (part less product) are 3 to 35 us on either side, the same on one card
+and two. The host's time from submit to the event is 320 to 340 us past the part on
+one card and 470 to 520 on two. JSON lines: `results/linear-half-<shape>.json`,
+`results/linear-rows-<shape>.json`.
+
+```
+python projects/dense/linear.py --dims 4096,32768,4096 --place rows --cards 0,1 --seconds 0
+python projects/dense/linear.py --dims 2048,32768,4096 --cards 0 --seconds 0
+```
+
 ### Measured before: W split along N
 
 The earlier form with W split along N (Y along N, X held by island 0 and read across

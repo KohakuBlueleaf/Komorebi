@@ -1,0 +1,365 @@
+{
+ "m": 4096,
+ "k": 32768,
+ "n": 4096,
+ "cards": [
+  0,
+  1
+ ],
+ "links": 0,
+ "place": "rows",
+ "upload_s": 1.279,
+ "placements": {
+  "x": [
+   [
+    0,
+    64
+   ],
+   [
+    64,
+    64
+   ]
+  ],
+  "w": [
+   [
+    0,
+    1
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "y": [
+   [
+    0,
+    64
+   ],
+   [
+    64,
+    64
+   ]
+  ]
+ },
+ "x280_mhz": [
+  1350,
+  1350
+ ],
+ "linear": {
+  "plan": {
+   "mt": 64,
+   "kt": 1024,
+   "nt": 110,
+   "rows": 8,
+   "cols": 10,
+   "pcm": 8,
+   "pcn": 11,
+   "bm": 8,
+   "bn": 11,
+   "kb": 8,
+   "sh": 4,
+   "sw": 1,
+   "wa": 2,
+   "ww": 2,
+   "layout": "2d",
+   "l1": 1000448,
+   "form": "grid",
+   "nk": 128,
+   "nbh": 1,
+   "nbw": 1,
+   "rect": [
+    0,
+    0,
+    10,
+    8
+   ]
+  },
+  "kernel_sizes": {
+   "text": {
+    "BRISC": 37716,
+    "NCRISC": 38960,
+    "TRISC0": 14892,
+    "TRISC1": 5920,
+    "TRISC2": 6448
+   },
+   "total": 97488
+  },
+  "pieces": [
+   {
+    "rect": [
+     0,
+     0,
+     10,
+     8
+    ],
+    "m0": 0,
+    "n0": 0,
+    "bands": [
+     8,
+     11
+    ],
+    "blocks": [
+     1,
+     1
+    ],
+    "cores": 80
+   },
+   {
+    "rect": [
+     10,
+     0,
+     2,
+     8
+    ],
+    "m0": 0,
+    "n0": 110,
+    "bands": [
+     8,
+     11
+    ],
+    "blocks": [
+     1,
+     1
+    ],
+    "cores": 16
+   }
+  ],
+  "exchange": false,
+  "l1_budget": 1312176,
+  "l1_held": [
+   49728,
+   49728
+  ],
+  "crossed_bytes": {
+   "blocks": 0,
+   "tiles": 0,
+   "put_bytes": 0
+  },
+  "loop": {
+   "single_microseconds": [
+    2916.48,
+    2920.5,
+    2890.22
+   ],
+   "reps": 0,
+   "microseconds_per_call": 2916.48,
+   "crossed_a_call": {
+    "messages": 0.0,
+    "lines": 0.0,
+    "asks": 0.0,
+    "pages": 0.0,
+    "parts": 0.0,
+    "puts": 0.0,
+    "bytes": 0.0
+   },
+   "aiclk_mhz": {}
+  },
+  "single_detail": [
+   {
+    "host_us": 3522.0,
+    "parts_us": [
+     2877.5,
+     2916.5
+    ],
+    "passes": [
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 3881141,
+       "span": 3881141,
+       "start_spread": 269,
+       "end_spread": 3879714
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 2874.9,
+       "span": 2874.9,
+       "start_spread": 0.2,
+       "end_spread": 2873.9
+      }
+     },
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 3933176,
+       "span": 3933176,
+       "start_spread": 271,
+       "end_spread": 3931706
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 2913.5,
+       "span": 2913.5,
+       "start_spread": 0.2,
+       "end_spread": 2912.4
+      }
+     }
+    ]
+   },
+   {
+    "host_us": 3381.0,
+    "parts_us": [
+     2920.5,
+     2798.1
+    ],
+    "passes": [
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 3933237,
+       "span": 3933237,
+       "start_spread": 260,
+       "end_spread": 3931993
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 2913.5,
+       "span": 2913.5,
+       "start_spread": 0.2,
+       "end_spread": 2912.6
+      }
+     },
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 3774172,
+       "span": 3774172,
+       "start_spread": 279,
+       "end_spread": 3772941
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 2795.7,
+       "span": 2795.7,
+       "start_spread": 0.2,
+       "end_spread": 2794.8
+      }
+     }
+    ]
+   },
+   {
+    "host_us": 3357.3,
+    "parts_us": [
+     2767.3,
+     2890.2
+    ],
+    "passes": [
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 3729411,
+       "span": 3729411,
+       "start_spread": 296,
+       "end_spread": 3728165
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 2762.5,
+       "span": 2762.5,
+       "start_spread": 0.2,
+       "end_spread": 2761.6
+      }
+     },
+     {
+      "cores": 118,
+      "cycles": {
+       "put": 0,
+       "sync": 0,
+       "own": 3891988,
+       "span": 3891988,
+       "start_spread": 253,
+       "end_spread": 3890730
+      },
+      "microseconds_at_mhz": {
+       "put": 0.0,
+       "sync": 0.0,
+       "own": 2883.0,
+       "span": 2883.0,
+       "start_spread": 0.2,
+       "end_spread": 2882.0
+      }
+     }
+    ]
+   }
+  ],
+  "run": {
+   "cores": 236,
+   "kernel": [
+    "none",
+    "none"
+   ],
+   "gave_up": [],
+   "broadcast_gave_up": []
+  },
+  "passes": [
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 0,
+     "sync": 0,
+     "own": 3729411,
+     "span": 3729411,
+     "start_spread": 296,
+     "end_spread": 3728165
+    },
+    "microseconds_at_mhz": {
+     "put": 0.0,
+     "sync": 0.0,
+     "own": 2762.5,
+     "span": 2762.5,
+     "start_spread": 0.2,
+     "end_spread": 2761.6
+    }
+   },
+   {
+    "cores": 118,
+    "cycles": {
+     "put": 0,
+     "sync": 0,
+     "own": 3891988,
+     "span": 3891988,
+     "start_spread": 253,
+     "end_spread": 3890730
+    },
+    "microseconds_at_mhz": {
+     "put": 0.0,
+     "sync": 0.0,
+     "own": 2883.0,
+     "span": 2883.0,
+     "start_spread": 0.2,
+     "end_spread": 2882.0
+    }
+   }
+  ],
+  "check": {
+   "max_rel": 0.006065766016560204,
+   "rms_rel": 0.0039631123402956705,
+   "rows": 256,
+   "ok": true,
+   "readback_s": 1.035
+  },
+  "tflops": 377.0,
+  "ok": true
+ },
+ "ok": true,
+ "load_avg": [
+  "13.64",
+  "9.88",
+  "9.20"
+ ]
+}
