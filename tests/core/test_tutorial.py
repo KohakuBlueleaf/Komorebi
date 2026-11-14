@@ -35,6 +35,9 @@ def test_a_folder_has_a_script_that_parses_three_kernels_and_its_output(folder):
         if stems == {"compute"}:  # a dynamic handler: Komorebi's own reader and writer
             assert ".dynamic(" in scripts[0].read_text()
             return
+        if "parts=" in scripts[0].read_text():  # handlers as parts: Komorebi's kernels
+            assert ".dynamic(" in scripts[0].read_text()
+            return
         assert stems in ({"reader", "compute", "writer"}, {"movement", "compute"})
         header = kernels / "handlers.h"
         assert km.Program(

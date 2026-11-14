@@ -116,4 +116,4 @@ starts at rank 0 with the value 1 and lands at rank 3 with 1 + 0 + 1 + 2 + 3 = 7
 - A handler the program did not declare as dynamic. Komorebi carries any number, but the
   `switch` has no case for it.
 
-Next: [[full-buffers]] is about a core with too many messages to send.
+Next: [[handlers-as-overlays]] keeps each handler's code out of the kernel.
