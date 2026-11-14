@@ -1,6 +1,5 @@
-// The start handler as an overlay part (--send): the RUN's handler, so every core
-// loads it; rank 0 seeds the thread and sends it to itself as chain, which a rank then
-// loads on the thread's first arrival.
+// The start handler as an overlay part (--send): the RUN's handler, so every core loads
+// it; rank 0 seeds the thread and sends itself chain, loaded on first arrival.
 #include <stdint.h>
 
 #include "komorebi/device/km_messages.hpp"

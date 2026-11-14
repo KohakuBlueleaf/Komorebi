@@ -1,9 +1,5 @@
-/* Commands across islands: a command of this island's sources whose group (or thread)
- * has a part on the island at the link's other end crosses as a packet; that island's
- * dispatcher runs it as a command of its own source KMD_SRC_LINK and sends DONE back.
- * Packets go out through link core 0 of the island (a PAGES LINE to the CPU that holds
- * link 0) and land in the far dispatcher's link inbox, one writer an inbox part
- * (link_inbox): the lines, then the count word. */
+/* Commands across islands: a far part of a group or thread crosses as a packet; the far
+ * dispatcher runs it as source KMD_SRC_LINK and sends DONE back (link_inbox). */
 #pragma once
 
 #include "completion.h"
@@ -135,9 +131,8 @@ static inline void link_inbox(
     *slots = part - 1u;
 }
 
-/* Reads the host's link line; with its mark, the window onto the link core's area and
- * the link ring (the link core: link core 0, the card's core after the island's ranks).
- * KMD_ERROR_NONE also with no link; KMD_ERROR_WINDOW. */
+/* Reads the host's link line and, with its mark, the window onto link core 0's area and
+ * ring. KMD_ERROR_NONE also with no link; KMD_ERROR_WINDOW. */
 static inline uint32_t link_open(kmd_t* dispatcher) {
     volatile const uint32_t* words = (
         (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_LINK)
@@ -302,9 +297,8 @@ static inline void link_queue(
     link->out_tail++;
 }
 
-/* A TIMEOUT that gives a command up goes to `source`: the host's count of give-ups
- * (KMD_H_GIVEN_UP) grows by one first, so that the host goes on past exactly the
- * TIMEOUTs it is sent of commands given up. */
+/* A TIMEOUT that gives a command up goes to `source`: the host's give-up count
+ * (KMD_H_GIVEN_UP) grows first, so the host goes on past exactly those TIMEOUTs. */
 static inline void link_gave(kmd_t* dispatcher, uint32_t source) {
     if (source == KMD_SRC_HOST) {
         dispatcher->x280_cores[KMD_H_GIVEN_UP] = ++dispatcher->given_up;
@@ -562,8 +556,7 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
 }
 
 /* Hands queued packets to link core 0: each staged in a free stage of its area (three
- * lines through the window), then a PAGES LINE command to that core, named outside the
- * ranks (KM_GROUP_LINK_BASE). */
+ * window lines), then a PAGES LINE command (KM_GROUP_LINK_BASE). */
 static void link_send(kmd_t* dispatcher, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
     while (link->out_head != link->out_tail) {

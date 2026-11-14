@@ -9,9 +9,8 @@
 #include "komorebi/device/km_ask.hpp"
 #include "raytrace.h"
 
-// Starts the read of this core's entry into L1 `destination`: from the thread's plan by
-// bank address, or the directory tensor's page (km::read_pages, `Directories` its
-// km::Tensor). False: the page call gave up (recorded).
+// Starts the read of this core's entry into L1 `destination`: by bank address from the
+// thread's plan, or the directory tensor's page (km::read_pages). False: gave up.
 template <typename Directories, typename Kernel>
 inline bool read_directory(
     const Kernel& core,
@@ -31,7 +30,9 @@ inline bool read_directory(
         );
         return true;
     }
-    return km::read_pages(
-        core, command, Directories(directory_address), core.me(), 1, destination
+    return (
+        km::read_pages(
+            core, command, Directories(directory_address), core.me(), 1, destination
+        )
     );
 }

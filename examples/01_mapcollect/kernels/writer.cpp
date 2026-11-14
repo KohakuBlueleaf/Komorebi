@@ -1,6 +1,5 @@
 // Map/collect writer: MAP stores the core's tile at output page a3 first_page + rank;
-// STALL reports for every core but a0 stalled_rank; HANG waits on purpose; COUNT
-// counts.
+// STALL: every core but a0 stalled_rank reports; HANG waits; COUNT counts.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

@@ -134,9 +134,8 @@ namespace km {
         bool partial;            // a newer command was seen that has not fully landed
     };
 
-    // One pass over slots [0, depth): newer commands not for `me` (a group of link
-    // cores: not for `link`) are consumed; the landed EXIT or own command with the
-    // smallest sequence is picked (from a copy).
+    // One pass over slots [0, depth): newer commands not for `me` (or `link`) are
+    // consumed; the landed EXIT or own command of the smallest sequence is picked.
     template <typename Word>
     inline Pass scan(
         const volatile km_command_t* ring,

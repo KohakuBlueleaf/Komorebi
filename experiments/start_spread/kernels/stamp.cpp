@@ -1,6 +1,5 @@
-// Writes the wall clock at its start into its report row, then does one thing chosen
-// by the host (nothing, spin, a 16-byte write to the host channel, a block write) and
-// returns.
+// Writes the wall clock at its start into its report row, then does one thing the host
+// chose (nothing, spin, a 16-byte write to the host channel, a block write).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -34,10 +33,8 @@ namespace {
 
 }  // namespace
 
-// Arguments: 0 report address (a row of 2048 words); 1 what to do (0 nothing, 1 spin,
-// 2 one 16-byte write, 3 a block write); 2 cycles to spin; 3 bytes; 4 channel offset.
-// Report words: 0 status (1 done, 2 refused, 3 timeout), 1 and 2 start stamp, 64 on the
-// source bytes of a write.
+// Arguments: 0 report address, 1 what (0 none, 1 spin, 2 16-byte write, 3 block write),
+// 2 spin cycles, 3 bytes, 4 offset. Report: 0 status (1 done), 1-2 start stamp.
 void kernel_main() {
     volatile uint32_t* report = (
         reinterpret_cast<volatile uint32_t*>(get_arg_val<uint32_t>(0))

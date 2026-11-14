@@ -1,5 +1,5 @@
-// Example 24, compute: a core seeds messages to the X280 ranks; each message that comes
-// back is stepped and goes on to an X280 rank, or is consumed when its hops are used up.
+// Example 24, compute: a core seeds messages to the X280 ranks; each that comes back is
+// stepped and goes on, or is consumed when its hops are used up.
 #include <stdint.h>
 
 #include "api/compute/common.h"
@@ -26,8 +26,10 @@ void kernel_main() {
                 message[kMsgId] = id;
                 message[kMsgHops] = command.a1 + (id & 1);
                 message[kMsgValue] = seed_value(id);
-                const bool sent = messages.send(
-                    count + message[kMsgValue] % x280, message, kHandlerX280
+                const bool sent = (
+                    messages.send(
+                        count + message[kMsgValue] % x280, message, kHandlerX280
+                    )
                 );
                 rejected += sent ? 0 : 1;
                 to_x280 += sent ? 1 : 0;

@@ -1,10 +1,5 @@
-// A kernel's read and write of a tensor's pages wherever they live: the local read or
-// write for the pages its island holds; for pages another island holds, a line into
-// its island's link core 0. A get: its link 0 CPU sends it to the holder's link core
-// 0, whose page CPU pushes the pages into this core's L1 and counts them at its port.
-// A put: its page CPU reads the pages from this core into the holder's DRAM, and the
-// holder's link core 0 counts them at this core's page port (KM_PORT_PAGES, no kernel
-// names it) once written. On one island: the local read or write. Takes a km::Tensor.
+// A kernel's read and write of a tensor's pages wherever they live: this island's
+// locally, others by a line into link core 0 (get or put). Takes a km::Tensor.
 #pragma once
 
 #include <stdint.h>
@@ -19,10 +14,8 @@ namespace km {
 
     constexpr uint32_t kAskNoAnswer = 0xFFFFFFFFu;  // the atomic's answer not yet in
 
-    // A queue of lines in link core 0's link area (offsets): the count its island's
-    // cores reserve lines with, the count it took (`cursors`: a count each page CPU
-    // took, the page CPUs in the eighth word), its lines; and the asking CPU's own
-    // line and its two answer words, in its own core's own words (KM_OWN_*).
+    // A queue of lines in link core 0's link area: reserve count, count taken (one per
+    // page CPU), lines; and the asking CPU's own line and answer words (KM_OWN_*).
     struct AskQueue {
         uint32_t tail;
         uint32_t taken;
@@ -136,13 +129,8 @@ namespace km {
         return KM_PORT_PAGES + (core.role() == kRoleWriter ? 1 : 0);
     }
 
-    // One line into `queue` for pages first .. first + pages - 1 of the tensor at bank
-    // address `address` (`bytes` aligned page bytes), held by island `holder`, and L1
-    // `at` of this core (`dram`, KM_ASK_DRAM's: bank address `at` of this island's
-    // DRAM, from its page `dram_first`), counted at port `port`, for command (`slot`,
-    // `sequence`): a line reserved on link core 0 with a local atomic. A put from L1,
-    // when the page CPUs have rings: its pages written into them here after the line
-    // (pages_into_rings; `at` free on return). False: gave up (recorded).
+    // One line into `queue` for pages first .. first + pages - 1 at bank `address` of
+    // island `holder`, into L1 `at` (or `dram`), counted at `port`. False: gave up.
     template <typename Kernel>
     inline bool ask_line_at(
         const Kernel& core,
@@ -181,9 +169,8 @@ namespace km {
         // the link core toward the holder: the table's next link after the ranks
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
-        // a put: this CPU's own line (its owner: core, CPU, parity) on the parity after
-        // its last, once the far island confirmed the line it last sent on it (its
-        // block of the core's own words)
+        // a put: this CPU's own line on the parity after its last, once the far island
+        // confirmed the line last sent on it (its block of the core's own words)
         const uint32_t block = (
             mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0)
         );
@@ -241,9 +228,8 @@ namespace km {
             return give_up(code);
         }
         const uint32_t number = returned[0];
-        // a put: its place in the put queue free (every page CPU took the line
-        // KM_QUEUE_LINES before), read with the rings (put_rings_read); a get: the
-        // line free once link core 0 took the one KM_ASK_SLOTS before
+        // a put: its put queue place free (every page CPU took line KM_QUEUE_LINES
+        // before); a get: free once link core 0 took line KM_ASK_SLOTS before
         const uint32_t build = block + KM_OWN_BUILD;
         bool ring = false;
         PutRings rings{};
@@ -464,13 +450,8 @@ namespace km {
         );
     }
 
-    // Reader or writer: names a run of puts, pages first .. first + pages - 1 at bank
-    // address `address` of island `holder` (`bytes` aligned page bytes), with one put
-    // line, and returns; its bytes follow by put_piece, a piece at a time, as they are
-    // made; put_wait(run) counts it. Where the page CPUs have rings (the link cores'
-    // chunk large enough), the line names the whole run and each piece goes into the
-    // rings; else nothing is sent here and each piece is a put line of its own,
-    // waited for. False: gave up (recorded).
+    // Names a run of puts (`pages` from `first`, bank `address` of `holder`) in one
+    // line; put_piece sends the bytes, put_wait(run) counts. False: gave up.
     template <typename Kernel>
     inline bool put_pages(
         const Kernel& core,
@@ -502,9 +483,11 @@ namespace km {
             return false;
         }
         const AskQueue& queue = ask_puts(core.role());
-        const uint32_t build = (  // its CPU's block of the own words
-            mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0) + KM_OWN_BUILD
-        );
+        const uint32_t build =
+            (  // its CPU's block of the own words
+                mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0) +
+                KM_OWN_BUILD
+            );
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t code = put_rings_read(core, link, area, build, run.rings);
         if (code != kGaveNone) {
@@ -553,19 +536,18 @@ namespace km {
     ) {
         if (run.rings.slots == 0) {  // no rings: its own line, waited for
             const uint32_t first = run.first + run.done;
-            if (
-                !ask_line(
-                    core,
-                    command,
-                    ask_puts(core.role()),
-                    run.holder,
-                    run.address,
-                    run.bytes,
-                    first,
-                    count,
-                    from,
-                    pages_port(core)
-                ) ||
+            if (!ask_line(
+                core,
+                command,
+                ask_puts(core.role()),
+                run.holder,
+                run.address,
+                run.bytes,
+                first,
+                count,
+                from,
+                pages_port(core)
+            ) ||
                 !ask_wait(
                     core,
                     slot(command),
@@ -573,8 +555,7 @@ namespace km {
                     pages_port(core),
                     count,
                     run.holder
-                )
-            ) {
+                )) {
                 return false;
             }
             run.done += count;
@@ -1482,9 +1463,8 @@ namespace km {
         return side.bank == KM_COPY_INTERLEAVED && held_elsewhere(side.address);
     }
 
-    // The copy with each side a tensor's reference word names, and of which no other
-    // island holds pages, at its bank address on this island (its pages at their own
-    // indices there); a side placed over islands keeps its word (copy_across).
+    // The copy of two tensors no other island holds pages of, by their bank addresses
+    // here; a side placed over islands keeps its word (copy_across).
     inline km_copy_t copy_resolved(km_copy_t c) {
         invalidate_l1_cache();  // the table may have grown since the last read
         const auto resolve = [](km_copy_side_t& side) {
@@ -1506,14 +1486,8 @@ namespace km {
         return copy_placed(c.from) || copy_placed(c.to);
     }
 
-    // Reader: rank `rank` of `count` copies its pages a chunk at a time, a side whose
-    // tensor is placed over islands page by page by its holder: this island's pages
-    // read or written as copy_pages does, each run another island holds one get
-    // (into the chunk) or put (from it) line, counted at the reader's page port and
-    // waited for before the chunk goes on. When one side is placed and the other is
-    // not, each run another island holds is one line of the whole run straight between
-    // the two DRAMs, all in flight, waited for once at the end. False: gave up
-    // (recorded).
+    // Reader: rank `rank` of `count` copies by chunks; each run a placed side holds on
+    // another island is one get or put line, waited per chunk. False: gave up.
     inline bool copy_across(
         const Reader& reader,
         const km_command_t& command,
@@ -1622,9 +1596,8 @@ namespace km {
             }
             return lined == 0 || copy_wait(holder, lined);
         }
-        // One side of `n` pages from index `start` of the share: local pages by
-        // `local(noc, k)`, runs held elsewhere by one line each from L1 `at`. The
-        // pages asked for or put, and the island of the last run.
+        // One side of `n` pages from `start`: local ones by `local(noc, k)`, runs held
+        // elsewhere one line each from L1 `at`. Returns pages done, last run's island.
         const auto side = [&](
             const km_copy_side_t& s,
             bool placed,

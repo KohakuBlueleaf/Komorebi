@@ -15,9 +15,7 @@ void soak(km::Reader& reader, const km_command_t& command, const Args& args) {
     const uint32_t buffer = get_write_ptr(kCbMove);
     const uint32_t page = command.a6;  // aligned page bytes: the last word's place
     const uint32_t rank = reader.me() - km::first(command);
-    const km::Partition share = (
-        km::partition(command.a2, rank, km::count(command))
-    );
+    const km::Partition share = (km::partition(command.a2, rank, km::count(command)));
     const bool asks = km::island_of(from, 0) != km::island_of(report, 0);
     volatile tt_l1_ptr uint32_t* l1 = (
         reinterpret_cast<volatile tt_l1_ptr uint32_t*>(buffer)
@@ -84,9 +82,7 @@ void runs(km::Reader& reader, const km_command_t& command, const Args& args) {
     const uint32_t buffer = get_write_ptr(kCbMove);
     const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
     const uint32_t rank = reader.me() - km::first(command);
-    const km::Partition share = (
-        km::partition(command.a2, rank, km::count(command))
-    );
+    const km::Partition share = (km::partition(command.a2, rank, km::count(command)));
     // cycles in each step (kRuns* words), the clock read around each call
     uint32_t spent[kRunsSteps] = {};
     uint32_t pieces = 0, turn = 0, write = 0;
@@ -105,8 +101,8 @@ void runs(km::Reader& reader, const km_command_t& command, const Args& args) {
         uint32_t n = share.len - done < length ? share.len - done : length;
         n = km::page_run(to, first, n, at);
         if (!km::put_pages(
-                reader, command, at.island, at.address, bytes, at.index, n, run
-            )) {
+            reader, command, at.island, at.address, bytes, at.index, n, run
+        )) {
             return;
         }
         lap(kRunsLine);

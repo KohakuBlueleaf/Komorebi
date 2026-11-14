@@ -129,20 +129,20 @@ typedef struct {
 /* X280 ranks of a dynamic run (at 0: none). The host writes the line, and before any
  * start the area at `at`: each core's tile, the cores' credit lines, inbox places. */
 typedef struct {
-    uint32_t at;     /* LIM offset of the area, a multiple of 64 */
-    uint32_t ranks;  /* X280 cores 0 to ranks - 1 are ranks, 1 to KM_X280_RANKS_MAX */
-    uint32_t cores;  /* entries of the tile table, the grid's cores */
-    uint32_t queue;  /* bank address of X280 rank 0's queue; rank r's r queues on */
-    uint32_t cap;    /* messages a queue, a power of two */
+    uint32_t at;    /* LIM offset of the area, a multiple of 64 */
+    uint32_t ranks; /* X280 cores 0 to ranks - 1 are ranks, 1 to KM_X280_RANKS_MAX */
+    uint32_t cores; /* entries of the tile table, the grid's cores */
+    uint32_t queue; /* bank address of X280 rank 0's queue; rank r's r queues on */
+    uint32_t cap;   /* messages a queue, a power of two */
     uint32_t message_bytes; /* 64 to 256, a multiple of 64 */
     uint32_t quota;         /* sends each X280 rank starts a run with */
-    uint32_t counters;      /* the run group's last `counters` cores are counter tiles */
-    uint32_t idle;          /* ticks with nothing to take before its line says idle */
-    uint32_t inbox;         /* L1 address of every core's inbox */
-    uint32_t inbox_messages; /* messages an inbox holds, a power of two */
-    uint32_t lines;          /* the dispatcher's LIM address of core 0's status line */
-    uint32_t lines_tile;     /* the dispatcher's tile, x | y << 16 */
-    uint32_t wait;           /* ticks a wait for an inbox's room may take */
+    uint32_t counters; /* the run group's last `counters` cores are counter tiles */
+    uint32_t idle;     /* ticks with nothing to take before its line says idle */
+    uint32_t inbox;    /* L1 address of every core's inbox */
+    uint32_t inbox_messages;  /* messages an inbox holds, a power of two */
+    uint32_t lines;           /* the dispatcher's LIM address of core 0's status line */
+    uint32_t lines_tile;      /* the dispatcher's tile, x | y << 16 */
+    uint32_t wait;            /* ticks a wait for an inbox's room may take */
     uint32_t reserved, spare; /* zero */
 } kmx_ranks_line;
 
@@ -261,7 +261,8 @@ KMX_STATIC_ASSERT(sizeof(kmx_ranks_line) == 64, "kmx_ranks_line is one line");
 KMX_STATIC_ASSERT(KMX_LIM_RANKS + 64 <= KMX_LIM_BYTES, "LIM: ranks");
 KMX_STATIC_ASSERT(
     KMX_RANKS_CREDITS == 4u * KMX_PORTS_CORES &&
-        KMX_RANKS_PLACES == KMX_RANKS_CREDITS + KM_X280_CREDIT_BYTES * KMX_PORTS_CORES &&
+        KMX_RANKS_PLACES ==
+            KMX_RANKS_CREDITS + KM_X280_CREDIT_BYTES * KMX_PORTS_CORES &&
         KMX_RANKS_BYTES == KMX_RANKS_PLACES + 4u * KMX_PORTS_CORES,
     "ranks: tiles, credit lines, places"
 );

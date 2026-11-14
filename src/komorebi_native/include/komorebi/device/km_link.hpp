@@ -43,7 +43,8 @@ namespace km {
     constexpr uint32_t kLinkOutboxMin = kMessagesPacket * 2;
     constexpr uint32_t kLinkInboxMax = 16;
     constexpr uint32_t kLinkServicesMax = 4;  // two islands: one a link, four at most
-    // Built with a service a link (KM_MESSAGE_SERVICES, two cards); else link 0's alone.
+    // Built with a service a link (KM_MESSAGE_SERVICES, two cards); else link 0's
+    // alone.
 #if defined(KM_MESSAGE_SERVICES)
     constexpr bool kLinkServicesBuilt = true;
 #else
@@ -182,9 +183,13 @@ namespace km {
             link.inbox >= 1 && link.inbox <= kLinkInboxMax && link.packet >= 1 &&
             link.packet <= link_packet_max(message_bytes) && message_bytes % 16 == 0 &&
             link.token != 0 &&
-            (!kLinkServicesBuilt ||
-             (link.services <= kLinkServicesMax && link.stride % 16 == 0 &&
-              (link.services <= 1 || link.stride != 0)))
+            (
+                !kLinkServicesBuilt ||
+                (
+                    link.services <= kLinkServicesMax && link.stride % 16 == 0 &&
+                    (link.services <= 1 || link.stride != 0)
+                )
+            )
         );
     }
 
@@ -411,8 +416,9 @@ namespace km {
                 link_service(link, view, view.offset() + writer.args().me)
             );
             const uint32_t to = (
-                service != 0 ? link.core + service / 2
-                             : link_toward(link, view, view.island_of(flat))
+                service != 0
+                    ? link.core + service / 2
+                    : link_toward(link, view, view.island_of(flat))
             );
             const uint32_t outbox = service != 0 ? service : to - link.core;
             if (outbox >= kLinkServicesMax || to - link.core >= KM_FORWARD_PARTS) {
@@ -545,7 +551,6 @@ namespace km {
         }
         return 0;
     }
-
 
     // The first give-up of one side of a link (0 issuing, 1 sending): its words in the
     // region and the run's.
@@ -767,8 +772,9 @@ namespace km {
         bool start() {
             const uint32_t counters = messages_arguments_.counters;
             const bool held = (
-                view_.count() > 2 ? index_ < links_
-                                  : service_ < services() && index_ == service_ / 2
+                view_.count() > 2
+                    ? index_ < links_
+                    : service_ < services() && index_ == service_ / 2
             );
             if (
                 !link_valid(link_, messages_arguments_.message_bytes) || !held ||
@@ -789,7 +795,10 @@ namespace km {
                     link_.region + kLinkFound,
                     16
                 );
-                for (uint32_t polls = 0; !ncrisc_noc_reads_flushed(noc_index); polls++) {
+                for (
+                    uint32_t polls = 0; !ncrisc_noc_reads_flushed(noc_index);
+                    polls++
+                ) {
                     if (polls > (1u << 20)) {
                         return false;
                     }
@@ -803,9 +812,7 @@ namespace km {
             run_ = found[0];
             l1(link_.region + kLinkServed)[0] = run_;
             // the CPU's own scratch: a link core's two CPUs may both serve
-            const uint32_t tails = (
-                cpu() != 0 ? KM_TAILS_WRITER : KM_TAILS_READER
-            );
+            const uint32_t tails = (cpu() != 0 ? KM_TAILS_WRITER : KM_TAILS_READER);
             for (uint32_t tile = 0; tile < counters; tile++) {
                 if (!messages_ready(core_, ranks_.tile_core(tile), tails, run_)) {
                     where_ = kWhereMessagesCounter;
@@ -815,7 +822,8 @@ namespace km {
             mine()[kLinkRunCount] = 0;
             mine()[kLinkRun] = run_;
             sending()[kLinkRunCount] = 0;
-            invalidate_l1_cache();  // a fence: the count is zero before the run names it
+            invalidate_l1_cache();  // a fence: the count is zero before the run names
+                                    // it
             sending()[kLinkRun] = run_;
             run_index_ = ((report()[0] & ~kLinkQuietBit) + 1) & ~kLinkQuietBit;
             publish(false, 0, 0);
@@ -924,8 +932,8 @@ namespace km {
                 const uint32_t extra = (
                     body_bytes != 0
                         ? link_body_entries(
-                              body_bytes, messages_arguments_.message_bytes
-                          )
+                            body_bytes, messages_arguments_.message_bytes
+                        )
                         : 0
                 );
                 const uint32_t body = packet + (index + row) * entry_;
@@ -934,39 +942,38 @@ namespace km {
                     return;
                 }
                 const uint32_t message = packet + index * entry_ + kLinkPrefix;
-                const uint32_t where = (
-                    onward
-                        ? link_out_put(
-                            core_,
-                            link_,
-                            messages_arguments_.message_bytes,
-                            link_.core + link,
-                            heads_[link],
-                            reports_ + kLinkScratch,
-                            flat,
-                            message,
-                            entry_,
-                            row,
-                            [this] {
-                                send();  // this outbox drains while the next one is full
-                                return where_ == 0;
-                            },
-                            body,
-                            body_bytes
-                        )
-                        : link_put(
-                            core_,
-                            messages_arguments_,
-                            ranks_.counter_core(flat),
-                            flat - view_.offset(),
-                            message,
-                            entry_,
-                            row,
-                            returned_address,
-                            body,
-                            body_bytes
-                        )
-                );
+                const uint32_t where = onward
+                    ? link_out_put(
+                        core_,
+                        link_,
+                        messages_arguments_.message_bytes,
+                        link_.core + link,
+                        heads_[link],
+                        reports_ + kLinkScratch,
+                        flat,
+                        message,
+                        entry_,
+                        row,
+                        [this] {
+                            send();  // this outbox drains while the next one
+                                     // is full
+                            return where_ == 0;
+                        },
+                        body,
+                        body_bytes
+                    )
+                    : link_put(
+                        core_,
+                        messages_arguments_,
+                        ranks_.counter_core(flat),
+                        flat - view_.offset(),
+                        message,
+                        entry_,
+                        row,
+                        returned_address,
+                        body,
+                        body_bytes
+                    );
                 if (where != 0) {
                     fail(0, where, flat);
                     return;
@@ -1007,9 +1014,7 @@ namespace km {
             }
             bool moved = false;
             uint32_t blocked = 0;
-            if (
-                !follower() && report()[3] != reported_ && LinkWire::sender().space()
-            ) {
+            if (!follower() && report()[3] != reported_ && LinkWire::sender().space()) {
                 if (!send_report()) {
                     fail(1, kWhereLinkSent, 0);
                     return;
@@ -1049,12 +1054,15 @@ namespace km {
                     *message_mark_half(entry_at(count) + kLinkPrefix) == marks(count)
                 ) {
                     const uint32_t body_bytes = l1(entry_at(count))[kLinkPrefixBody];
-                    const uint32_t take = 1 + (
-                        body_bytes != 0
-                            ? link_body_entries(
-                                  body_bytes, messages_arguments_.message_bytes
-                              )
-                            : 0
+                    const uint32_t take = (
+                        1 +
+                        (
+                            body_bytes != 0
+                                ? link_body_entries(
+                                    body_bytes, messages_arguments_.message_bytes
+                                )
+                                : 0
+                        )
                     );
                     if (count + take > most) {
                         break;  // in the next packet, whole
@@ -1138,8 +1146,7 @@ namespace km {
                 return kGaveNone;
             }
             if (
-                !follower() && where_ != kWhereLinkArgs &&
-                where_ != kWhereLinkRunFound
+                !follower() && where_ != kWhereLinkArgs && where_ != kWhereLinkRunFound
             ) {
                 status(KM_MESSAGES_GAVE_UP, mine()[kLinkTaken], where_);
             }
@@ -1173,7 +1180,13 @@ namespace km {
             if (where_ == 0) {
                 where_ = where;
                 link_gave_up(
-                    arguments_.control, link_, side, where, mine()[kLinkTaken], run_, seen
+                    arguments_.control,
+                    link_,
+                    side,
+                    where,
+                    mine()[kLinkTaken],
+                    run_,
+                    seen
                 );
                 if (follower()) {
                     state(false);  // service 0 gives up on it (follower_lines)
@@ -1222,8 +1235,8 @@ namespace km {
             return true;
         }
 
-        // The followers' lines at `at`: all of this run, empty, none given up (else this
-        // gives up with its where); their counts summed. False: one busy or given up.
+        // The followers' lines at `at`: all this run's, empty, none given up (else give
+        // up with its where); counts summed. False: one busy or given up.
         bool follower_lines(uint32_t at, uint32_t& issued, uint32_t& across) {
             invalidate_l1_cache();
             issued = 0;
@@ -1256,9 +1269,8 @@ namespace km {
 
         // One 16-byte store of {run, state, sent, consumed} at the submitter.
         bool status(uint32_t state, uint32_t sent, uint32_t consumed) {
-            volatile tt_l1_ptr uint32_t* out = (
-                core_.control(KM_CONTROL_MESSAGES) + KM_MESSAGES_OUT / 4
-            );
+            volatile tt_l1_ptr uint32_t*
+                out = (core_.control(KM_CONTROL_MESSAGES) + KM_MESSAGES_OUT / 4);
             out[0] = run_;
             out[1] = state;
             out[2] = sent;
@@ -1354,8 +1366,8 @@ namespace km {
             uint64_t consumed = static_cast<uint64_t>(across) + out[0];
             for (uint32_t core = 0; core < part_.count; core++) {
                 volatile tt_l1_ptr uint32_t* one = l1(lines + core * 16);
-                volatile tt_l1_ptr uint32_t* two = l1(
-                    lines + (kLinkLinesMax + core) * 16
+                volatile tt_l1_ptr uint32_t* two = (
+                    l1(lines + (kLinkLinesMax + core) * 16)
                 );
                 if (
                     one[0] != run_ || one[1] != KM_MESSAGES_IDLE || two[0] != one[0] ||
@@ -1425,7 +1437,9 @@ namespace km {
                 }
                 return;
             }
-            if (!armed_ || key_[0] != taken || key_[1] != tail || key_[2] != sent_across) {
+            if (
+                !armed_ || key_[0] != taken || key_[1] != tail || key_[2] != sent_across
+            ) {
                 armed_ = true;
                 key_[0] = taken;
                 key_[1] = tail;
@@ -1714,9 +1728,8 @@ namespace km {
     // A PAGES command of mode KM_PAGES_MESSAGES on each CPU link_serves names: the
     // link's service of the RUN (a0) until it ends.
     template <typename Core>
-    __attribute__((noinline)) uint32_t link_messages(
-        const Core& core, const km_command_t& command
-    ) {
+    __attribute__((noinline)) uint32_t
+    link_messages(const Core& core, const km_command_t& command) {
         LinkService<Core> service(core, command);
         if (service.start()) {
             while (service.where() == 0) {

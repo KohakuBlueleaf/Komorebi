@@ -212,10 +212,8 @@ namespace km {
 #endif
     }
 
-    // The name core `me` has in `command`'s group: a link core's is always
-    // KM_GROUP_LINK_BASE + its link-core index (in no group of ranks), a rank core's
-    // its flat rank (in no group of link cores). Its rank in the group: this less the
-    // group's first.
+    // Core `me`'s name in `command`'s group: KM_GROUP_LINK_BASE + link-core index for a
+    // link core, else its flat rank; its group rank: this less the first.
     inline uint32_t name_in(
         const Islands& view, uint32_t me, const km_command_t& command
     ) {

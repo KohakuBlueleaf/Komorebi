@@ -160,7 +160,8 @@ namespace {
             const auto comma = item.find(',');
             out.push_back(
                 CoreCoord{
-                    std::stoul(item.substr(0, comma)), std::stoul(item.substr(comma + 1))
+                    std::stoul(item.substr(0, comma)),
+                    std::stoul(item.substr(comma + 1))
                 }
             );
         }
@@ -172,13 +173,17 @@ namespace {
         tt::tt_metal::IDevice* chip, CoreCoord translated, tt::CoreType type
     ) {
         const auto& soc = (
-            tt::tt_metal::MetalContext::instance().get_cluster().get_soc_desc(chip->id())
+            tt::tt_metal::MetalContext::instance().get_cluster().get_soc_desc(
+                chip->id()
+            )
         );
-        const auto core = soc.translate_coord_to(
-            tt::umd::CoreCoord(
-                translated.x, translated.y, type, tt::CoordSystem::TRANSLATED
-            ),
-            tt::CoordSystem::NOC0
+        const auto core = (
+            soc.translate_coord_to(
+                tt::umd::CoreCoord(
+                    translated.x, translated.y, type, tt::CoordSystem::TRANSLATED
+                ),
+                tt::CoordSystem::NOC0
+            )
         );
         return {static_cast<uint32_t>(core.x), static_cast<uint32_t>(core.y)};
     }
@@ -711,7 +716,8 @@ int main(int argc, char** argv) {
             )
         );
         const std::pair<uint32_t, uint32_t> noc_size{
-            static_cast<uint32_t>(soc0.grid_size.x), static_cast<uint32_t>(soc0.grid_size.y)
+            static_cast<uint32_t>(soc0.grid_size.x),
+            static_cast<uint32_t>(soc0.grid_size.y)
         };
         std::ostringstream report;
         report << "{\"options\": {\"from\": \"" << o.from
@@ -724,8 +730,8 @@ int main(int argc, char** argv) {
                << "\", \"rx_place\": \"" << o.rx_place << "\", \"noc\": " << o.noc
                << ", \"target\": \"" << o.target << "\", \"dual\": " << o.dual
                << ", \"send\": " << o.send
-               << ", \"router_payload\": " << o.router_payload
-               << "}, \"noc_size\": [" << noc_size.first << ", " << noc_size.second
+               << ", \"router_payload\": " << o.router_payload << "}, \"noc_size\": ["
+               << noc_size.first << ", " << noc_size.second
                << "], \"expect\": " << expect << ", \"aiclk_mhz\": [" << clocks.str()
                << "], \"pairs\": [";
         for (const auto& pair : pairs) {
@@ -794,15 +800,19 @@ int main(int argc, char** argv) {
             );
             ok &= pair_ok;
             bytes += static_cast<uint64_t>(sent[kWordPackets]) * o.payload;
-            const auto sender_noc0 = noc0_of(
-                chips[pair.from],
-                chips[pair.from]->worker_core_from_logical_core(pair.sender),
-                tt::CoreType::TENSIX
+            const auto sender_noc0 = (
+                noc0_of(
+                    chips[pair.from],
+                    chips[pair.from]->worker_core_from_logical_core(pair.sender),
+                    tt::CoreType::TENSIX
+                )
             );
-            const auto eth_noc0 = noc0_of(
-                chips[pair.from],
-                chips[pair.from]->ethernet_core_from_logical_core(pair.eth),
-                tt::CoreType::ETH
+            const auto eth_noc0 = (
+                noc0_of(
+                    chips[pair.from],
+                    chips[pair.from]->ethernet_core_from_logical_core(pair.eth),
+                    tt::CoreType::ETH
+                )
             );
             report << (pair.index ? ", " : "") << "{\"from\": " << pair.from
                    << ", \"to\": " << to << ", \"link\": " << pair.link

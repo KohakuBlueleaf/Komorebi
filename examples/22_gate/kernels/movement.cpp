@@ -1,6 +1,5 @@
 // The example's data-movement kernel, built for both movers: a core's share of a and b
-// from DRAM into L1 and of out back to DRAM, each mover taking the blocks of the
-// pattern.
+// from DRAM into L1 and of out back, each mover taking its pattern's blocks.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

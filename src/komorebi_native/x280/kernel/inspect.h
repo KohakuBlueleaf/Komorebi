@@ -338,8 +338,7 @@ static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
         );
     }
     /* A crossing's part sends no event of its own: the crossing's one event counts
-     * (link_gave); a part from the other island's dispatcher goes back to its origin.
-     */
+     * (link_gave); a part from the far dispatcher goes back to its origin. */
     if (
         !(dispatcher->link_slots & (1ull << slot)) ||
         !link_freed(dispatcher, slot, KM_EVENT_TIMEOUT | auxiliary << 8, took, now)
