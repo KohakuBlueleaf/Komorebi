@@ -540,7 +540,13 @@ moved and the link cores got kernels of their own; every check passed (relative 
 | 2048 | 170.6 (144.3) | 100.69 | 607.1 (615.5) | 28.30 | 9.2 MB, 15.13 GB/s | 56 | 318.9 / 207.9 / 75.2 | 0.28 (0.23) |
 | 4096 | 1,539.5 (664.6) | 89.28 | 1,601.2 (1,611.6) | 85.83 | 34.1 MB, 21.29 GB/s | 208 | 850.5 / 452.5 / 291.0 | 0.96 (0.41) |
 | 8192 | 12,463.3 (5,716.0) | 88.22 | 8,478.3 (8,145.2) | 129.68 | 146.0 MB, 17.22 GB/s | 360 | 4,601.0 / 1,155.7 / 3,010.3 | 1.47 (0.70) |
-| 16384 | 90,231.8 (75,169.4) | 97.48 | 52,854.2 (49,002.8) | 166.42 | 579.8 MB, 10.97 GB/s | 192 | 27,000.9 / 2,920.6 / 23,107.4 | 1.71 (1.53) |
+| 16384 | not run (35,401.8) | 248.47 (single) | 52,854.2 (49,002.8) | 166.42 | 579.8 MB, 10.97 GB/s | 192 | 27,000.9 / 2,920.6 / 23,107.4 | (0.72) |
+
+At 16384 the one-card single call is the linear plan picker's (`island_pieces`: 13 x 16
+blocks, K block 4, 11 x 10 cores; 35,401.8 us against the old rule's 75,169.4, whose
+loop the row had); at 4096 the picker keeps the old plan, and at 8192 the old rule's
+plan is the faster (5,716.0 us against the picker's 26 x 8, K block 2: 5,974.5), so
+those rows stay; the picker's 16384 loop was not run.
 
 "Two / one" is one card's time a call over two cards' (above 1: two cards are faster).
 Crossed is `run.crossings()` over the loop, both ways and every link, a call: its
