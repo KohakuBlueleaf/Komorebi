@@ -68,11 +68,16 @@ out of it. `--ask`: island 1 holds the source, island 0 the target, so every pag
 asked for across; `--put`: island 0 holds the source, island 1 the target, so every page
 is put across. The time is the command's event (the dispatcher's span, submit to
 completion), the rate payload over it; each target is read back and every page
-compared. Every page CPU of the holder (asks) or of island 0 (puts) serves a third of
-each line. Four links, 4 KiB pages, 2026-11-15, each row one run:
+compared. Every page CPU of the holder (asks) or of island 0 (puts) serves its share
+of each line: four of them, 32 pages each of a 128-page line, read four pages a
+transaction (the first three rows); before, the CPUs of links 1 to 3 read a page a
+transaction (the others). Four links, 4 KiB pages, 2026-11-15, each row one run:
 
 | Move | Pages a call | 64 MiB | 512 MiB | Pages wrong |
 |---|---|---|---|---|
+| ask | 128 | 1.747 ms, 38.42 GB/s | 11.347 ms, 47.31 GB/s | 0 |
+| put | 128 | 1.752 ms, 38.31 GB/s | 11.089 ms, 48.42 GB/s | 0 |
+| ask, a page a read and 32-page shares | 128 | 2.321 ms, 28.91 GB/s | 16.456 ms, 32.62 GB/s | 0 |
 | ask | 32 | 3.044 ms, 22.05 GB/s | 22.694 ms, 23.66 GB/s | 0 |
 | ask | 128 | 2.368 ms, 28.34 GB/s | 16.732 ms, 32.09 GB/s | 0 |
 | put | 128 | 2.363 ms, 28.40 GB/s | 16.610 ms, 32.32 GB/s | 0 |
@@ -82,13 +87,35 @@ each line. Four links, 4 KiB pages, 2026-11-15, each row one run:
 named tensors by their reference word.) Before every page CPU served, one page CPU on
 link 1 with three slots moved a thread's 64 MiB across in 11.0 ms (6.1 GB/s).
 
-What bounds it: about 10.7 GB/s a page CPU, the same with lines of 128 pages as with
-the host's `cross` (one push of a third of the tensor a CPU, no line at all), so the
-push loop sets the rate, not the lines; at 32 pages a line the line's round trip adds
-a quarter. A CPU sending from L1 alone reaches 27.8 GB/s on one link, from the grid's
-far corner (these link cores, the island's last cores) as from under the Ethernet row
-(`experiments/link_rate`), so the place is not it. What is left is the DRAM read: each
-4 KiB read's round trip with 15 in flight holds a CPU at 10.7.
+## What bounds a page CPU: the push's shapes
+
+`pages.py --mib 128 --shapes SHAPE...` has the host cross the source into island 1
+once a shape of the push (`KM_PAGES_SHAPE_*`: pages a read 4 ** bits 0-1, slots 15 <<
+bits 2-3 - 1, bit 4 no read, bit 5 no wait for a slot's packets to leave L1, bit 6
+link 0 too), each into a target of its own read back after all (a shape with no read
+writes garbage into a target of its own, not checked). The time is the send
+command's own ticks (its X280's 50 MHz count, submit to completion), beside the host's
+wall time, which waits far longer (62 ms at 128 MiB, 246 ms at 512 MiB). `--chunk
+KIB` asks a CPU's L1 chunk. 2026-11-15, four links, links 1 to 3 sending, 256 KiB
+chunk, one run, every read shape exact:
+
+| Shape | Reads | Slots | GB/s (three CPUs) |
+|---|---|---|---|
+| 0x30 | none, no wait | 15 | 55.18 |
+| 0x10 | none | 15 | 42.85 |
+| 0x00 (then) | 1 page | 15 | 27.74 |
+| 0x08, 0x0C | 1 page | 30, 60 | 27.58, 27.74 |
+| 0x05, 0x09, 0x0D | 4 pages | 12, 28, 60 | 48.05, 48.16, 48.13 |
+| 0x0A, 0x0E | 16 pages | 16, 48 | 44.19, 62.16 |
+
+Slots beyond 15 give a page a read nothing (15 transaction ids; a wait on a shared id
+waits for both reads), and 4 pages a read the same at 12, 28 or 60 slots: not the
+DRAM read's latency. What a CPU does a read and a packet bounds it (a read's wait,
+the slot's wait, a header and two NoC commands a packet): 16 pages a read in three
+groups gives 20.7 GB/s a CPU. With link 0 sending too (bit 6), 128 MiB took 1.678 ms,
+79.98 GB/s at 16 pages a read and 2.189 ms, 61.31 GB/s at 4. The default push reads 4
+pages a transaction in a 64 KiB chunk, 16 in a 256 KiB one; at the default chunk 512
+MiB crossed in 8.932 ms, 60.1 GB/s (four links).
 
 ## Which island holds a page, asked on a core
 

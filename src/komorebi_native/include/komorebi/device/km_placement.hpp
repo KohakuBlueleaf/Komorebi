@@ -60,19 +60,27 @@ namespace km {
     }
 
     // How many pages from `page` on (at most `most`) the island of `at`, page `page`'s
-    // place, holds at consecutive indices of its part.
+    // place, holds at consecutive indices of its part: from the entry, to the end of
+    // its part's steps in this block (all of them: to the end).
     inline uint32_t page_run(
         uint32_t tensor, uint32_t page, uint32_t most, const PageAt& at
     ) {
-        uint32_t run = 1;
-        while (run < most) {
-            const PageAt next = page_at(tensor, page + run);
-            if (next.island != at.island || next.index != at.index + run) {
-                break;
-            }
-            run++;
+        const Islands view(island_area());
+        const volatile uint32_t* entry = tensor_entry(view, tensor);
+        if (entry == nullptr || (entry[3] & 1u) || at.address == 0) {
+            return most;  // one buffer: every page at its own index
         }
-        return run;
+        const uint32_t steps = entry[1];
+        const uint32_t inner = entry[2];
+        const volatile uint32_t* part = (
+            entry + KM_TENSOR_HEADER_BYTES / 4 + at.island * kPartWords
+        );
+        if (part[1] == 0 && part[2] == steps) {
+            return most;
+        }
+        const uint32_t step = page / inner % steps;
+        const uint32_t left = (part[1] + part[2] - step) * inner - page % inner;
+        return left < most ? left : most;
     }
 
     // Whether word `tensor` names a split tensor of which another island holds pages;

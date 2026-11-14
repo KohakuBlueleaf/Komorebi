@@ -20,7 +20,7 @@ namespace km {
 
     // A queue of lines in link core 0's link area (offsets): the count its island's
     // cores reserve lines with, the count it took (`cursors`: a count each page CPU
-    // took, the page CPUs in the fourth word), its lines; and the asking CPU's own
+    // took, the page CPUs in the eighth word), its lines; and the asking CPU's own
     // line and its two answer words, on its own core.
     struct AskQueue {
         uint32_t tail;
@@ -119,8 +119,10 @@ namespace km {
 
     // One line into `queue` for pages first .. first + pages - 1 of the tensor at bank
     // address `address` (`bytes` aligned page bytes), held by island `holder`, and L1
-    // `at` of this core, counted at port `port`, for command (`slot`, `sequence`): a
-    // line reserved on link core 0 with a local atomic. False: gave up (recorded).
+    // `at` of this core (`dram`, KM_ASK_DRAM's: bank address `at` of this island's
+    // DRAM, from its page `dram_first`), counted at port `port`, for command (`slot`,
+    // `sequence`): a line reserved on link core 0 with a local atomic. False: gave up
+    // (recorded).
     template <typename Kernel>
     inline bool ask_line_at(
         const Kernel& core,
@@ -133,7 +135,9 @@ namespace km {
         uint32_t first,
         uint32_t pages,
         uint32_t at,
-        uint32_t port
+        uint32_t port,
+        uint32_t dram = 0,
+        uint32_t dram_first = 0
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
@@ -188,9 +192,13 @@ namespace km {
         // before
         volatile tt_l1_ptr uint32_t* taken = l1(area + queue.read);
         const auto oldest = [&] {
-            const uint32_t cpus = queue.cursors && taken[3] != 0 ? taken[3] : 1;
+            const uint32_t cpus = (
+                queue.cursors && taken[(KM_PUT_CPUS - KM_PUT_TAKEN) / 4] != 0
+                    ? taken[(KM_PUT_CPUS - KM_PUT_TAKEN) / 4]
+                    : 1
+            );
             uint32_t behind = 0;
-            for (uint32_t j = 0; j < cpus && j < 3; j++) {
+            for (uint32_t j = 0; j < cpus && j < KM_PAGE_CPUS; j++) {
                 behind = number - taken[j] > behind ? number - taken[j] : behind;
             }
             return behind;
@@ -210,7 +218,9 @@ namespace km {
                     }
                 }
                 noc_async_read(
-                    core.core_noc(link, area + queue.taken), area + queue.read, 16
+                    core.core_noc(link, area + queue.taken),
+                    area + queue.read,
+                    queue.cursors ? 32 : 16
                 );
                 reading = true;
                 return false;
@@ -236,6 +246,8 @@ namespace km {
         );
         line[KM_ASK_HOLDER] = holder;
         line[KM_ASK_FROM] = view.here();
+        line[KM_ASK_DRAM] = dram;
+        line[KM_ASK_DRAM_FIRST] = dram_first;
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
         noc_async_write(
@@ -603,6 +615,24 @@ namespace km {
         return side.bank == KM_COPY_INTERLEAVED && held_elsewhere(side.address);
     }
 
+    // The copy with each side a tensor's reference word names, and of which no other
+    // island holds pages, at its bank address on this island (its pages at their own
+    // indices there); a side placed over islands keeps its word (copy_across).
+    inline km_copy_t copy_resolved(km_copy_t c) {
+        invalidate_l1_cache();  // the table may have grown since the last read
+        const auto resolve = [](km_copy_side_t& side) {
+            if (
+                side.bank == KM_COPY_INTERLEAVED && side.address < KM_TENSORS_MAX &&
+                !held_elsewhere(side.address)
+            ) {
+                side.address = page_at(side.address, side.first).address;
+            }
+        };
+        resolve(c.from);
+        resolve(c.to);
+        return c;
+    }
+
     // Whether a copy has a side with pages another island holds.
     inline bool copy_crosses(const km_copy_t& c) {
         invalidate_l1_cache();  // the table may have grown since the last read
@@ -613,7 +643,10 @@ namespace km {
     // tensor is placed over islands page by page by its holder: this island's pages
     // read or written as copy_pages does, each run another island holds one get
     // (into the chunk) or put (from it) line, counted at kCopyPort and waited for
-    // before the chunk goes on. False: gave up (recorded).
+    // before the chunk goes on. When one side is placed and the other is not, each
+    // run another island holds is one line of the
+    // whole run straight between the two DRAMs, all in flight, waited for once at the
+    // end. False: gave up (recorded).
     inline bool copy_across(
         const Reader& reader,
         const km_command_t& command,
@@ -649,6 +682,71 @@ namespace km {
         const bool to = copy_placed(c.to);
         const Partition share = partition(c.pages, rank, count);
         const uint32_t chunk_pages = c.chunk / c.page;
+        if (from != to) {
+            // the placed side's runs: elsewhere one line each, DRAM to DRAM; here
+            // through the chunk
+            const km_copy_side_t& placed = from ? c.from : c.to;
+            const km_copy_side_t& mine = from ? c.to : c.from;
+            const AskQueue queue = from ? ask_gets() : ask_puts(kRoleReader);
+            uint32_t lined = 0, holder = here;
+            for (uint32_t k = 0; k < share.len;) {
+                const uint32_t page = placed.first + share.start + k;
+                const PageAt where = page_at(placed.address, page);
+                const uint32_t run = (
+                    page_run(placed.address, page, share.len - k, where)
+                );
+                if (where.island != here) {
+                    if (
+                        !ask_line_at(
+                            reader,
+                            slot(command),
+                            command.sequence,
+                            queue,
+                            where.island,
+                            where.address,
+                            c.page,
+                            where.index,
+                            run,
+                            mine.address,
+                            kCopyPort,
+                            mine.bank == KM_COPY_INTERLEAVED ? 1 : 2 + mine.bank,
+                            mine.first + share.start + k
+                        )
+                    ) {
+                        return false;
+                    }
+                    lined += run;
+                    holder = where.island;
+                    k += run;
+                    continue;
+                }
+                const uint32_t n = run < chunk_pages ? run : chunk_pages;
+                km_copy_side_t local = placed;
+                local.address = where.address;
+                for (uint32_t m = 0; m < n; m++) {
+                    const uint64_t at = (
+                        from ? copy_noc(local, c.page, where.index + m)
+                             : copy_noc(mine, c.page, mine.first + share.start + k + m)
+                    );
+                    noc_async_read(at, c.buffer + m * c.page, c.page);
+                }
+                if (!wait(read_done)) {
+                    return give_up(code);
+                }
+                for (uint32_t m = 0; m < n; m++) {
+                    const uint64_t at = (
+                        from ? copy_noc(mine, c.page, mine.first + share.start + k + m)
+                             : copy_noc(local, c.page, where.index + m)
+                    );
+                    noc_async_write(c.buffer + m * c.page, at, c.page);
+                }
+                if (!wait(write_done)) {
+                    return give_up(code);
+                }
+                k += n;
+            }
+            return lined == 0 || copy_wait(holder, lined);
+        }
         // One side of `n` pages from index `start` of the share: local pages by
         // `local(noc, k)`, runs held elsewhere by one line each from L1 `at`. The
         // pages asked for or put, and the island of the last run.

@@ -18,11 +18,20 @@ namespace km {
     // a slot, then the slots the pages pass through.
     constexpr uint32_t kPagesHeaders = 64;
     constexpr uint32_t kPagesHeaderStride = 64;
-    constexpr uint32_t kPagesSlotsMax = 15;
+    constexpr uint32_t kPagesSlotsMax = 60;
+    constexpr uint32_t kPagesSlotsDefault = 15;
+    constexpr uint32_t kPagesReadIds = NOC_MAX_TRANSACTION_ID;  // ids 1 .. 15
     constexpr uint32_t kPagesSlots = (
         kPagesHeaders + kPagesSlotsMax * kPagesHeaderStride
     );
     constexpr uint32_t kPagesBatch = 64;  // packets a count
+    // A line of this many pages or more is a bulk one: on link 0 too where it is a
+    // page CPU.
+    constexpr uint32_t kPagesBulk = 64;
+    // A CPU's share of this many pages or more reads several a transaction (a block
+    // of the banks); a smaller one a page a read (measured: example 01's one page a
+    // line crossed a fifth slower four pages a read).
+    constexpr uint32_t kPagesBulkShare = 32;
     constexpr uint32_t kPagesHelloEvery = 4096;  // hello polls between two hellos
 
     struct PagesRequest {
@@ -40,6 +49,8 @@ namespace km {
         uint32_t links;
         uint32_t buffer;
         uint32_t from_core;  // KM_PAGES_DRAM: from DRAM; else x | y << 16, from its L1
+        uint32_t shape;  // KM_PAGES_SHAPE_*: 0, the loop's own
+        uint32_t to_first;  // KM_PAGES_DRAM: the target's page for the share's first
     };
 
     inline PagesRequest pages_of(const km_command_t& command) {
@@ -70,8 +81,10 @@ namespace km {
             (counter >> 16) & 0xFFu,
             counter >> 24,
             a[KM_PAGES_LINKS],
-            a[KM_PAGES_BUFFER],
-            KM_PAGES_DRAM
+            a[KM_PAGES_BUFFER] & ((1u << KM_PAGES_SHAPE_SHIFT) - 1u),
+            KM_PAGES_DRAM,
+            a[KM_PAGES_BUFFER] >> KM_PAGES_SHAPE_SHIFT,
+            a[KM_PAGES_FIRST]
         };
     }
 
@@ -118,15 +131,30 @@ namespace km {
         row[KM_CROSS_BYTES + 1] += low + bytes < low ? 1u : 0u;
     }
 
-    // The far NoC address of target page `p` (`k` pages after the request's first).
-    inline uint64_t pages_target(
-        const PagesRequest& r,
-        const InterleavedAddrGen<true>& to,
-        uint32_t p,
-        uint32_t k
+    // Whether a side's core word names DRAM: KM_PAGES_DRAM or KM_PAGES_BANK | b.
+    inline bool pages_in_dram(uint32_t where) {
+        return where == KM_PAGES_DRAM || (where & 0xFFFFFF00u) == KM_PAGES_BANK;
+    }
+
+    // This chip's NoC address of page `index` of a DRAM side at bank address
+    // `address` (`page` bytes): interleaved (KM_PAGES_DRAM) or bank b's range.
+    inline uint64_t pages_dram(
+        uint32_t where, uint32_t address, uint32_t page, uint32_t index
     ) {
-        if (r.to_core == KM_PAGES_DRAM) {
-            const uint64_t at = to.get_noc_addr(p);
+        if (where == KM_PAGES_DRAM) {
+            const InterleavedAddrGen<true> tensor = {
+                .bank_base_address = address, .page_size = page
+            };
+            return tensor.get_noc_addr(index);
+        }
+        return get_noc_addr_from_bank_id<true>(where & 0xFFu, address + index * page);
+    }
+
+    // The far NoC address of the target of the page `k` pages after the request's
+    // first: page to_first + k of the DRAM side, or L1 at k pages after `to`.
+    inline uint64_t pages_target(const PagesRequest& r, uint32_t k) {
+        if (pages_in_dram(r.to_core)) {
+            const uint64_t at = pages_dram(r.to_core, r.to, r.page, r.to_first + k);
             return (
                 link_noc(
                     NOC_UNICAST_ADDR_X(at),
@@ -138,10 +166,16 @@ namespace km {
         return link_noc(r.to_core & 0xFFu, r.to_core >> 8, r.to + k * r.page);
     }
 
+    template <typename Kernel>
+    uint32_t pages_forward(const Kernel& kernel, uint32_t area);  // below
+
     // CPU `cpu` sends `share` over its held connection, reads run ahead in the slots;
     // each batch's last packet adds its pages to the count. A range: `share` is ranks,
     // each rank's pages into its core's L1, each rank's last packet adding to its
-    // count. kGave* code.
+    // count. A send's shape (KM_PAGES_SHAPE_*) may read several pages a transaction:
+    // pages of one DRAM bank (p, p + banks, ..), or pages one after another in L1,
+    // a group of slots a read. The lines link's CPU (link 0) sends its island's next
+    // ask line, if one waits, after each read's packets. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_push(
         const Kernel& kernel, const PagesRequest& r, uint32_t cpu, Partition share
@@ -150,25 +184,85 @@ namespace km {
             return kGaveBadTransfer;  // the counters below are the dedicated mode's
         }
         const uint32_t area = r.buffer + cpu * r.chunk;
+        const bool range = r.mode == KM_PAGES_RANGE;
+        const bool dram = r.from_core == KM_PAGES_DRAM;  // interleaved: by banks
+        const bool in_dram = pages_in_dram(r.from_core);
+        const uint32_t shape = range ? 0 : r.shape & KM_PAGES_SHAPE_MEASURE;
+        // the lines link's CPU: its island's lines first, between two reads
+        const uint32_t lines = (
+            pages_held.link == 0 && pages_held.links > 1
+                ? islands_at(kernel.args().control).link_area()
+                : 0
+        );
+        const bool no_read = (shape & KM_PAGES_SHAPE_NO_READ) != 0;
+        const bool no_wait = no_read && (shape & KM_PAGES_SHAPE_NO_WAIT) != 0;
         const uint32_t slots_fit = (
             r.chunk > kPagesSlots && r.page > 0 ? (r.chunk - kPagesSlots) / r.page : 0
         );
-        const uint32_t slots = slots_fit < kPagesSlotsMax ? slots_fit : kPagesSlotsMax;
+        // pages a read and slots: the shape's, else the loop's own (measured: 16 pages
+        // a read in three groups or more, else 4 in groups as many as fit)
+        uint32_t per_read = 1u << 2 * (shape & 3u);
+        uint32_t asked = (
+            (shape >> 2 & 3u) != 0 ? kPagesSlotsDefault << ((shape >> 2 & 3u) - 1)
+                                   : kPagesSlotsDefault
+        );
+        const uint32_t mine = range ? share.len * r.pages : share.len;
+        if (shape == 0 && mine >= kPagesBulkShare) {
+            per_read = slots_fit >= 3 * 16 ? 16 : slots_fit >= 2 * 4 ? 4 : 1;
+            asked = per_read == 1 ? kPagesSlotsDefault : kPagesSlotsMax;
+        }
+        // from DRAM only where a bank's pages lie one after another; a range's pages
+        // in order (each rank's last page counts the rank's)
+        if (range || (dram && r.page % 64 != 0)) {
+            per_read = 1;
+            asked = asked < kPagesSlotsDefault ? asked : kPagesSlotsDefault;
+        }
+        uint32_t slots = slots_fit < asked ? slots_fit : asked;
+        slots = slots < kPagesSlotsMax ? slots : kPagesSlotsMax;
+        const uint32_t groups = slots / per_read;  // a read's slots each
         if (
-            slots == 0 || r.page % 16 != 0 || r.page > KM_PAGES_PACKET_MAX ||
+            groups == 0 || r.page % 16 != 0 || r.page > KM_PAGES_PACKET_MAX ||
             area % 16 != 0 || r.chunk % 64 != 0 || r.hops == 0 ||
             static_cast<uint64_t>(r.buffer) + 2ull * r.chunk > MEM_L1_SIZE ||
             pages_held.open == 0 || pages_held.area != area
         ) {
             return kGaveBadTransfer;
         }
-        const bool range = r.mode == KM_PAGES_RANGE;
         // its pages: those of its ranks (a range), else its share of the pages
         const uint32_t base = range ? share.start * r.pages : share.start;
         const uint32_t total = range ? share.len * r.pages : share.len;
         if (total == 0) {
             return kGaveNone;
         }
+        // read g's pages: from DRAM, per_read pages of one bank for each bank in a
+        // block of banks * per_read pages, then the pages after the last whole block
+        // one a read; from L1, per_read pages one after another
+        const uint32_t banks = dram ? NUM_DRAM_BANKS : 1;
+        const uint32_t block = banks * per_read;
+        const uint32_t whole = per_read == 1 ? 0 : total / block * banks;
+        const uint32_t reads = (
+            per_read == 1 ? total
+            : dram        ? whole + (total - whole * per_read)
+                          : (total + per_read - 1) / per_read
+        );
+        struct Read {
+            uint32_t k;  // its first page, after the share's first
+            uint32_t n;  // pages
+            uint32_t stride;  // pages from one of its pages to the next
+        };
+        const auto read_of = [&](uint32_t g) -> Read {
+            if (per_read == 1) {
+                return {g, 1, 1};
+            }
+            if (!dram) {
+                const uint32_t k = g * per_read;
+                return {k, total - k < per_read ? total - k : per_read, 1};
+            }
+            if (g < whole) {
+                return {g / banks * block + g % banks, per_read, banks};
+            }
+            return {whole * per_read + (g - whole), 1, 1};
+        };
         const volatile tt_l1_ptr uint32_t* cores = (
             l1(kernel.args().control + KM_CONTROL_CORES)
         );
@@ -191,93 +285,116 @@ namespace km {
             );
             return code == kGaveNone;
         };
-        const InterleavedAddrGen<true> from = {
-            .bank_base_address = r.from, .page_size = r.page
-        };
-        const InterleavedAddrGen<true> to = {
-            .bank_base_address = r.to, .page_size = r.page
-        };
         uint64_t counter = link_noc(r.counter & 0xFFu, r.counter >> 8, r.count);
-        for (uint32_t s = 0; s < slots; s++) {
+        for (uint32_t s = 0; s < groups * per_read; s++) {
             link_header(area + kPagesHeaders + s * kPagesHeaderStride, r.hops);
         }
         auto& sender = link_sender();
-        uint32_t sent_mark[kPagesSlotsMax];
-        // Slot s's read carries transaction id 1 + s: reads from several banks land out
-        // of order, so a count of responses does not say which slot is full.
-        const auto read = [&](uint32_t k) {
-            const uint32_t s = k % slots;
-            noc_async_read_set_trid(1 + s);
+        // Read g goes into group g % groups and carries transaction id 1 + its group
+        // (modulo the ids): reads from several banks land out of order, so a count of
+        // responses does not say which group is full. More groups than ids share an
+        // id, and a wait on it waits for both.
+        const auto id_of = [](uint32_t group) {
+            return 1 + group % kPagesReadIds;
+        };
+        const auto read = [&](uint32_t g) {
+            if (no_read) {
+                return;
+            }
+            const Read one = read_of(g);
+            const uint32_t group = g % groups;
+            noc_async_read_set_trid(id_of(group));
+            const uint32_t index = r.first + base + one.k;
             noc_async_read(
-                r.from_core == KM_PAGES_DRAM
-                    ? from.get_noc_addr(r.first + base + k)
-                    : get_noc_addr(
-                        r.from_core & 0xFFFFu,
-                        r.from_core >> 16,
-                        r.from + (base + k) * r.page
-                    ),
-                area + kPagesSlots + s * r.page,
-                r.page
+                in_dram ? pages_dram(r.from_core, r.from, r.page, index)
+                        : get_noc_addr(
+                              r.from_core & 0xFFFFu,
+                              r.from_core >> 16,
+                              r.from + (base + one.k) * r.page
+                          ),
+                area + kPagesSlots + group * per_read * r.page,
+                one.n * r.page
             );
         };
-        uint32_t ahead = total < slots ? total : slots;
-        for (uint32_t k = 0; k < ahead; k++) {
-            read(k);
+        uint32_t ahead = reads < groups ? reads : groups;
+        for (uint32_t g = 0; g < ahead; g++) {
+            read(g);
         }
         uint32_t batch = 0, sent = 0;
-        for (uint32_t k = 0; k < total; k++) {
-            const uint32_t s = k % slots;
-            const uint32_t slot = area + kPagesSlots + s * r.page;
-            if (!wait([&] {
-                return ncrisc_noc_read_with_transaction_id_flushed(noc_index, 1 + s);
-            })) {
-                break;
-            }
-            const uint32_t p = r.first + base + k;
-            const LinkHeaderAt header = (
-                reinterpret_cast<LinkHeaderAt>(
-                    area + kPagesHeaders + s * kPagesHeaderStride
-                )
-            );
-            // a range: page j of rank q of the share
-            const uint32_t q = range ? share.start + k / r.pages : 0;
-            const uint32_t j = range ? k % r.pages : 0;
-            const uint64_t at = (
-                range ? far(q, r.to + j * r.page) : pages_target(r, to, p, base + k)
-            );
-            if (range) {
-                counter = far(q, r.count);
-            }
-            batch++;
-            if (
-                batch == kPagesBatch || k + 1 == total ||
-                (range && j + 1 == r.pages)
-            ) {
-                link_counted_write(
-                    header, at, counter, static_cast<uint16_t>(batch), r.page
+        // the issued count after the group before's last packet: that group is read
+        // again once its packets left L1, a group later, so no send waits for it
+        uint32_t before = 0;
+        for (uint32_t g = 0; g < reads && code == kGaveNone; g++) {
+            const uint32_t group = g % groups;
+            if (!no_read && !wait([&] {
+                return (
+                    ncrisc_noc_read_with_transaction_id_flushed(noc_index, id_of(group))
                 );
-                batch = 0;
-            } else {
-                link_write(header, at, r.page);
-            }
-            if (!sender.space() && !wait([&] {
-                return sender.space();
             })) {
                 break;
             }
-            if (!sender.send(header, slot, r.page)) {
-                code = kGaveLimit;
+            const Read one = read_of(g);
+            for (uint32_t m = 0; m < one.n; m++) {
+                const uint32_t k = one.k + m * one.stride;
+                const uint32_t s = group * per_read + m;
+                const uint32_t slot = area + kPagesSlots + s * r.page;
+                const uint32_t p = r.first + base + k;
+                const LinkHeaderAt header = (
+                    reinterpret_cast<LinkHeaderAt>(
+                        area + kPagesHeaders + s * kPagesHeaderStride
+                    )
+                );
+                // a range: page j of rank q of the share
+                const uint32_t q = range ? share.start + k / r.pages : 0;
+                const uint32_t j = range ? k % r.pages : 0;
+                const uint64_t at = (
+                    range ? far(q, r.to + j * r.page) : pages_target(r, base + k)
+                );
+                if (range) {
+                    counter = far(q, r.count);
+                }
+                batch++;
+                if (
+                    batch == kPagesBatch || sent + 1 == total ||
+                    (range && j + 1 == r.pages)
+                ) {
+                    link_counted_write(
+                        header, at, counter, static_cast<uint16_t>(batch), r.page
+                    );
+                    batch = 0;
+                } else {
+                    link_write(header, at, r.page);
+                }
+                if (!sender.space() && !wait([&] {
+                    return sender.space();
+                })) {
+                    break;
+                }
+                if (!sender.send(header, slot, r.page)) {
+                    code = kGaveLimit;
+                    break;
+                }
+                sent++;
+            }
+            if (code != kGaveNone) {
                 break;
             }
-            sent_mark[s] = noc_nonposted_writes_num_issued[noc_index];
-            sent++;
-            if (ahead < total) {  // the slot again, once its packet left L1
-                if (!wait([&] {
-                    return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, sent_mark[s]);
+            // the group before again (this one's, with one group), once its packets
+            // left L1
+            const uint32_t mark = noc_nonposted_writes_num_issued[noc_index];
+            const bool alone = groups == 1;
+            if ((alone || g > 0) && ahead < reads) {
+                const uint32_t left = alone ? mark : before;
+                if (!no_wait && !wait([&] {
+                    return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, left);
                 })) {
                     break;
                 }
                 read(ahead++);
+            }
+            before = mark;
+            if (lines != 0) {
+                code = pages_forward(kernel, lines);
             }
         }
         const uint32_t sending = code;
@@ -300,14 +417,16 @@ namespace km {
     }
 
     // CPU `cpu` of link core `rank` sends its share on link 2 rank + cpu (pages_push):
-    // link 0 carries the lines; with more links, pages go on links 1 on. kGave* code.
+    // link 0 carries the lines; with more links, pages go on links 1 on, and on link 0
+    // too when the request says so (KM_PAGES_SHAPE_LINK0). kGave* code.
     template <typename Kernel>
     inline uint32_t pages_send(
         const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
     ) {
         const uint32_t cpus = pages_links(r);
         const uint32_t link = 2 * rank + cpu;
-        const uint32_t first_link = cpus > 1 ? 1 : 0;
+        const bool all = (r.shape & KM_PAGES_SHAPE_LINK0) != 0;
+        const uint32_t first_link = cpus > 1 && !all ? 1 : 0;
         if (link >= cpus || link < first_link) {
             return kGaveNone;  // no link of this CPU, or the lines link: no share
         }
@@ -567,17 +686,43 @@ namespace km {
         return code;
     }
 
-    // The island's page CPUs: those holding links 1 on, or link 0 when it is the only
-    // link; page CPU j holds link j + 1 (or link 0) and serves share j of every ask
-    // and put (partition(pages, j, page_cpus())).
-    inline uint32_t page_cpus() {
-        return pages_held.links > 1 ? pages_held.links - 1 : 1;
+    // The island's page CPUs (KM_PUT_CPUS in the link area at `area`, the session's):
+    // those holding the last links, every link when no message service holds link 0,
+    // else links 1 on (link 0 when it is the only link). Page CPU j holds link
+    // first + j and serves share j of every ask and put (partition(pages, j, cpus)).
+    inline uint32_t page_cpus(uint32_t area) {
+        const uint32_t cpus = l1(area)[KM_PUT_CPUS / 4];
+        const uint32_t links = pages_held.links;
+        if (cpus != 0 && cpus <= links) {
+            return cpus;
+        }
+        return links > 1 ? links - 1 : 1;
     }
-    inline bool page_cpu() {
-        return pages_held.links > 1 ? pages_held.link >= 1 : pages_held.link == 0;
+    inline uint32_t page_first(uint32_t area) {
+        const uint32_t cpus = page_cpus(area);
+        return pages_held.links > cpus ? pages_held.links - cpus : 0;
     }
-    inline uint32_t page_index() {
-        return pages_held.links > 1 ? pages_held.link - 1 : 0;
+    inline bool page_cpu(uint32_t area) {
+        return pages_held.link >= page_first(area);
+    }
+    inline uint32_t page_index(uint32_t area) {
+        return pages_held.link - page_first(area);
+    }
+
+    // The page CPU that sends a put line across, confirms and counts the bad ones: the
+    // one holding link 1 (link 0 when alone).
+    inline uint32_t page_lead(uint32_t area) {
+        return page_first(area) == 0 && pages_held.links > 1 ? 1 : 0;
+    }
+
+    // Page CPU j's share of a line of `pages` pages: link 0's CPU only in a bulk line,
+    // a smaller one on the others (its CPU kept for its lines).
+    inline Partition page_share(uint32_t area, uint32_t pages, uint32_t j) {
+        const uint32_t cpus = page_cpus(area);
+        if (page_lead(area) == 0 || pages >= kPagesBulk) {
+            return partition(pages, j, cpus);
+        }
+        return j == 0 ? Partition{0, 0} : partition(pages, j - 1, cpus - 1);
     }
 
     // The first link core of this core's pair (the island's link cores toward one
@@ -660,7 +805,7 @@ namespace km {
         if (l1(line)[KM_ASK_NUMBER] != taken + 1 || l1(line)[KM_ASK_END] != taken + 1) {
             return kGaveNone;  // no line yet
         }
-        for (uint32_t j = 0; j < page_cpus(); j++) {
+        for (uint32_t j = 0; j < page_cpus(area); j++) {
             if (taken - words[KM_ASK_SERVED / 4 + j] >= KM_ASK_SLOTS) {
                 return kGaveNone;  // the far asks are full
             }
@@ -855,13 +1000,16 @@ namespace km {
         }
         const uint32_t asker = line[KM_ASK_CORE];
         const uint32_t place = (asker & 0xFFu) | (asker >> 16 & 0xFFu) << 8;
+        // into the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
+        const uint32_t dram = line[KM_ASK_DRAM];
+        const uint32_t into = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
         const PagesRequest r = {
             line[KM_ASK_TENSOR],
             line[KM_ASK_PAGE],
             line[KM_ASK_FIRST],
             line[KM_ASK_PAGES],
             line[KM_ASK_TO],
-            place,
+            dram != 0 ? into : place,
             pages_held.chunk,
             line[KM_ASK_COUNT],
             place,
@@ -869,7 +1017,9 @@ namespace km {
             KM_PAGES_SEND,
             0,
             pages_held.area - cpu * pages_held.chunk,
-            KM_PAGES_DRAM
+            KM_PAGES_DRAM,
+            0,
+            line[KM_ASK_DRAM_FIRST]
         };
         const Islands view = islands_at(kernel.args().control);
         const uint32_t holder = line[KM_ASK_HOLDER];
@@ -881,12 +1031,12 @@ namespace km {
         // page CPU a link)
         const uint32_t toward = holder < view.count() ? view.link(holder) : 0xFFu;
         const bool onward = (
-            holder != view.here() && fits && page_cpus() == 1 &&
+            holder != view.here() && fits && page_cpus(area) == 1 &&
             toward != KM_ISLAND_NO_LINK && toward != forward_index(view)
         );
         const bool good = holder == view.here() && fits;
-        const uint32_t j = page_index();
-        const Partition share = partition(r.pages, j, page_cpus());
+        const uint32_t j = page_index(area);
+        const Partition share = page_share(area, r.pages, j);
         if (onward) {
             bool later = false;
             const uint32_t core = view.base() + view.ranks() + toward;
@@ -902,7 +1052,7 @@ namespace km {
         if (code != kGaveNone) {
             return code;
         }
-        if (!good && !onward && j == 0) {
+        if (!good && !onward && j == page_lead(area)) {
             words[KM_ASK_BAD / 4] += 1;
         }
         const uint32_t xy = pages_far0;  // the far link core 0
@@ -934,11 +1084,12 @@ namespace km {
     ) {
         volatile tt_l1_ptr uint32_t* words = l1(area);
         invalidate_l1_cache();
-        const uint32_t j = page_index();
+        const uint32_t j = page_index(area);
         const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;
         const uint32_t taken = words[KM_PUT_TAKEN / 4 + j];
         const uint32_t slot = area + KM_PUT_LINES + taken % KM_ASK_SLOTS * 64;
-        if (j == 0 && taken - words[KM_PUT_DONE / 4] >= KM_ASK_SLOTS) {
+        const bool lead = j == page_lead(area);
+        if (lead && taken - words[KM_PUT_DONE / 4] >= KM_ASK_SLOTS) {
             return kGaveNone;  // the far puts are full
         }
         uint32_t code = kGaveNone;
@@ -953,10 +1104,13 @@ namespace km {
         const uint32_t home = link_core0(kernel);
         const uint32_t xy = pages_far0;  // the far link core 0
         const uint32_t place = (xy & 0xFFu) | (xy >> 16 & 0xFFu) << 8;
+        // from the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
+        const uint32_t dram = line[KM_ASK_DRAM];
+        const uint32_t out = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
         const PagesRequest r = {
             line[KM_ASK_TO],
             line[KM_ASK_PAGE],
-            line[KM_ASK_FIRST],
+            dram != 0 ? line[KM_ASK_DRAM_FIRST] : line[KM_ASK_FIRST],
             line[KM_ASK_PAGES],
             line[KM_ASK_TENSOR],
             KM_PAGES_DRAM,
@@ -967,14 +1121,16 @@ namespace km {
             KM_PAGES_SEND,
             0,
             pages_held.area - cpu * pages_held.chunk,
-            line[KM_ASK_CORE]
+            dram != 0 ? out : line[KM_ASK_CORE],
+            0,
+            line[KM_ASK_FIRST]
         };
         const bool good = (
             line[KM_ASK_HOLDER] != islands_at(kernel.args().control).here() &&
             r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
             r.page <= KM_PAGES_PACKET_MAX && r.from % 16 == 0
         );
-        if (j == 0) {  // on link core 0: the line is its own
+        if (lead) {  // on link core 0: the line is its own
             if (!good) {
                 line[KM_ASK_PAGES] = 0;
                 words[KM_PUT_BAD / 4] += 1;
@@ -994,7 +1150,7 @@ namespace km {
                 cross_count(area, KM_CROSS_PUTS, 1, 64);
             }
         }
-        const Partition share = partition(r.pages, j, page_cpus());
+        const Partition share = page_share(area, r.pages, j);
         if (code == kGaveNone && good && share.len != 0) {
             code = pages_push(kernel, r, cpu, share);
         }
@@ -1035,9 +1191,9 @@ namespace km {
         if (line[KM_ASK_NUMBER] != confirmed + 1 || line[KM_ASK_END] != confirmed + 1) {
             return kGaveNone;
         }
-        const uint32_t cpus = page_cpus();
+        const uint32_t cpus = page_cpus(area);
         for (uint32_t j = 0; j < cpus; j++) {
-            const uint32_t share = partition(pages, j, cpus).len;
+            const uint32_t share = page_share(area, pages, j).len;
             if (
                 static_cast<int32_t>(
                     words[KM_PUT_LANDED / 4 + j] - words[KM_PUT_USED / 4 + j] - share
@@ -1068,7 +1224,7 @@ namespace km {
         code = pages_packet(kernel, done, 0, 0);
         if (code == kGaveNone) {
             for (uint32_t j = 0; j < cpus; j++) {
-                words[KM_PUT_USED / 4 + j] += partition(pages, j, cpus).len;
+                words[KM_PUT_USED / 4 + j] += page_share(area, pages, j).len;
             }
             words[KM_PUT_CONFIRMED / 4] = confirmed + 1;
             cross_count(area, KM_CROSS_PUTS, 1, pages != 0 ? 8 : 4);
@@ -1149,7 +1305,7 @@ namespace km {
             forward_turn();
             code = pages_forward(kernel, area);
         }
-        if (page_cpu()) {
+        if (page_cpu(area)) {
             if (code == kGaveNone) {
                 const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;
                 code = pages_far_core0(kernel, own + KM_PAGE_CPU_HEADER);
@@ -1160,7 +1316,7 @@ namespace km {
             if (code == kGaveNone) {
                 code = pages_put(kernel, cpu, area);
             }
-            if (code == kGaveNone && page_index() == 0) {
+            if (code == kGaveNone && page_index(area) == page_lead(area)) {
                 code = pages_confirm(kernel, area);
             }
         }
