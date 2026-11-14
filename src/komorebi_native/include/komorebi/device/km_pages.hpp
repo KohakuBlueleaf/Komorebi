@@ -161,18 +161,26 @@ namespace km {
         const uint32_t shape = range ? 0 : r.shape;
         const bool no_read = (shape & KM_PAGES_SHAPE_NO_READ) != 0;
         const bool no_wait = no_read && (shape & KM_PAGES_SHAPE_NO_WAIT) != 0;
-        // pages a read: from DRAM only where a bank's pages lie one after another
-        uint32_t per_read = 1u << 2 * (shape & 3u);
-        if (dram && r.page % 64 != 0) {
-            per_read = 1;
-        }
         const uint32_t slots_fit = (
             r.chunk > kPagesSlots && r.page > 0 ? (r.chunk - kPagesSlots) / r.page : 0
         );
-        const uint32_t asked = (
+        // pages a read and slots: the shape's, else the loop's own (measured: 16 pages
+        // a read in three groups or more, else 4 in groups as many as fit)
+        uint32_t per_read = 1u << 2 * (shape & 3u);
+        uint32_t asked = (
             (shape >> 2 & 3u) != 0 ? kPagesSlotsDefault << ((shape >> 2 & 3u) - 1)
                                    : kPagesSlotsDefault
         );
+        if (shape == 0) {
+            per_read = slots_fit >= 3 * 16 ? 16 : slots_fit >= 2 * 4 ? 4 : 1;
+            asked = per_read == 1 ? kPagesSlotsDefault : kPagesSlotsMax;
+        }
+        // from DRAM only where a bank's pages lie one after another; a range's pages
+        // in order (each rank's last page counts the rank's)
+        if (range || (dram && r.page % 64 != 0)) {
+            per_read = 1;
+            asked = asked < kPagesSlotsDefault ? asked : kPagesSlotsDefault;
+        }
         uint32_t slots = slots_fit < asked ? slots_fit : asked;
         slots = slots < kPagesSlotsMax ? slots : kPagesSlotsMax;
         const uint32_t groups = slots / per_read;  // a read's slots each
@@ -282,6 +290,9 @@ namespace km {
             read(g);
         }
         uint32_t batch = 0, sent = 0;
+        // the issued count after the group before's last packet: that group is read
+        // again once its packets left L1, a group later, so no send waits for it
+        uint32_t before = 0;
         for (uint32_t g = 0; g < reads && code == kGaveNone; g++) {
             const uint32_t group = g % groups;
             if (!no_read && !wait([&] {
@@ -337,15 +348,20 @@ namespace km {
             if (code != kGaveNone) {
                 break;
             }
-            if (ahead < reads) {  // the group again, once its packets left L1
-                const uint32_t mark = noc_nonposted_writes_num_issued[noc_index];
+            // the group before again (this one's, with one group), once its packets
+            // left L1
+            const uint32_t mark = noc_nonposted_writes_num_issued[noc_index];
+            const bool alone = groups == 1;
+            if ((alone || g > 0) && ahead < reads) {
+                const uint32_t left = alone ? mark : before;
                 if (!no_wait && !wait([&] {
-                    return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, mark);
+                    return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, left);
                 })) {
                     break;
                 }
                 read(ahead++);
             }
+            before = mark;
         }
         const uint32_t sending = code;
         noc_async_read_set_trid(0);
