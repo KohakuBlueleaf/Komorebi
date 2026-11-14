@@ -6,7 +6,7 @@
 <rect x="16.0" y="296.0" width="798.0" height="410.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <rect x="16.0" y="716.0" width="798.0" height="338.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <rect x="16.0" y="1064.0" width="798.0" height="200.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
-<text x="40.0" y="59.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">01_mapcollect · README.md 40-42</text>
+<text x="40.0" y="59.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">01_mapcollect · README.md 41-43</text>
 <text x="252.1" y="59.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">submit</text>
 <text x="303.5" y="59.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a handler, a group, arguments</text>
 <text x="40.0" y="79.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">handle = run.submit(</text>
@@ -406,7 +406,7 @@
 <rect x="625.3" y="866.0" width="77.4" height="16.0" rx="3" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
 <text x="631.3" y="878.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">dense</text>
 <text x="671.4" y="777.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">none: done</text>
-<text x="40.0" y="939.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">18_thread_split · reader.cpp 47, 64, 66, 72, 79</text>
+<text x="40.0" y="939.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">18_thread_split · reader.cpp 55, 72, 74, 80, 87</text>
 <rect x="30.0" y="945.0" width="783.0" height="19.0" rx="0" fill="#ddf4ff" stroke="none" stroke-width="1"/>
 <rect x="30.0" y="945.0" width="3.0" height="19.0" rx="0" fill="#0969da" stroke="none" stroke-width="1"/>
 <text x="40.0" y="959.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">const uint32_t count = port.next(first, word);</text>

@@ -1,10 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="830" height="1174" viewBox="0 0 830 1174" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="830" height="1232" viewBox="0 0 830 1232" role="img">
 <title>The card as Komorebi runs it</title>
 <defs><marker id="ha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#bc4c00"/></marker><marker id="hb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1b7c83"/></marker><marker id="hm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8250df"/></marker><marker id="hw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0969da"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/></marker><marker id="hp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#bf3989"/></marker><marker id="hy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9a6700"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#818b98"/></marker></defs>
-<rect width="830" height="1174" fill="#ffffff"/>
+<rect width="830" height="1232" fill="#ffffff"/>
 <rect x="16.0" y="10.0" width="798.0" height="644.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
-<rect x="16.0" y="664.0" width="798.0" height="186.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
-<rect x="16.0" y="860.0" width="798.0" height="154.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<rect x="16.0" y="664.0" width="798.0" height="226.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<rect x="16.0" y="900.0" width="798.0" height="154.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="76.0" y="108.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">0</text>
 <text x="120.0" y="108.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">1</text>
 <text x="164.0" y="108.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">2</text>
@@ -41,6 +41,8 @@
 <text x="277.3" y="62.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">loads the program, submits commands, waits for events</text>
 <text x="398.0" y="90.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bc4c00" text-anchor="end" xml:space="preserve">commands, 64 B each</text>
 <text x="458.0" y="90.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">events, 16 B each</text>
+<text x="156.0" y="90.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">tensor pages</text>
+<text x="800.0" y="62.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">links to another card</text>
 <rect x="56.0" y="114.0" width="40.0" height="40.0" rx="3" fill="#d5dde6" stroke="none" stroke-width="1"/>
 <text x="76.0" y="138.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">D0</text>
 <rect x="100.0" y="114.0" width="40.0" height="40.0" rx="3" fill="none" stroke="#d1d9e0" stroke-width="1" stroke-dasharray="3 3"/>
@@ -68,7 +70,6 @@
 <rect x="100.0" y="158.0" width="40.0" height="40.0" rx="3" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
 <text x="120.0" y="182.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">Eth</text>
 <rect x="144.0" y="158.0" width="40.0" height="40.0" rx="3" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
-<text x="164.0" y="182.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">Eth</text>
 <rect x="188.0" y="158.0" width="40.0" height="40.0" rx="3" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
 <text x="208.0" y="182.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">Eth</text>
 <rect x="232.0" y="158.0" width="40.0" height="40.0" rx="3" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
@@ -100,8 +101,8 @@
 <text x="76.0" y="226.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">D1</text>
 <rect x="100.0" y="202.0" width="40.0" height="40.0" rx="3" fill="#eaeef2" stroke="none" stroke-width="1"/>
 <text x="120.0" y="226.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">0</text>
-<rect x="144.0" y="202.0" width="40.0" height="40.0" rx="3" fill="#eaeef2" stroke="none" stroke-width="1"/>
-<text x="164.0" y="226.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">1</text>
+<rect x="144.0" y="202.0" width="40.0" height="40.0" rx="3" fill="#eaeef2" stroke="#818b98" stroke-width="1"/>
+<text x="164.0" y="226.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">1</text>
 <rect x="188.0" y="202.0" width="40.0" height="40.0" rx="3" fill="#eaeef2" stroke="none" stroke-width="1"/>
 <text x="208.0" y="226.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">2</text>
 <rect x="232.0" y="202.0" width="40.0" height="40.0" rx="3" fill="#d8c5fb" stroke="#8250df" stroke-width="1"/>
@@ -445,45 +446,52 @@
 <text x="68.0" y="834.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#9a6700" text-anchor="start" xml:space="preserve">overlays</text>
 <text x="180.0" y="834.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">code loaded from DRAM into a slot of a core's L1</text>
 <text x="800.0" y="834.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">12, 16 to 20</text>
-<text x="30.0" y="882.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">who does what</text>
-<text x="800.0" y="882.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve"></text>
-<text x="30.0" y="906.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">X280 0: the dispatcher</text>
-<text x="30.0" y="924.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">commands from the host and three rings</text>
-<text x="30.0" y="942.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">streams, graphs and a job queue</text>
-<text x="30.0" y="960.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">64 commands in flight, a deadline each</text>
-<text x="30.0" y="978.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">which program each core holds</text>
-<text x="286.7" y="906.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">every Tensix core</text>
-<text x="286.7" y="924.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">reader (NoC0): the next command</text>
-<text x="286.7" y="942.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">compute: the handler</text>
-<text x="286.7" y="960.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">writer (NoC1): reports</text>
-<text x="286.7" y="978.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">ports, broadcasts, messages</text>
-<text x="286.7" y="996.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">overlays, in slots of its L1</text>
-<text x="543.3" y="906.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">X280 1 to 3: work clusters</text>
-<text x="543.3" y="924.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a C thread on four cores (kmx_main)</text>
-<text x="543.3" y="942.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">kmx_submit, kmx_wait: its commands</text>
-<text x="543.3" y="960.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">answers its cores' tells, asks and pulls</text>
-<text x="543.3" y="978.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">takes commands itself (kmx_program)</text>
-<rect x="20.0" y="1026.0" width="22.0" height="16.0" rx="3" fill="#eaeef2" stroke="none" stroke-width="1"/>
-<text x="50.0" y="1039.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">Tensix core, with its core index</text>
-<rect x="248.4" y="1026.0" width="22.0" height="16.0" rx="3" fill="#ffc999" stroke="#bc4c00" stroke-width="1"/>
-<text x="278.4" y="1039.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a command's group, cores 24 to 35; core 24 leads it</text>
-<rect x="597.3" y="1026.0" width="22.0" height="16.0" rx="3" fill="#d5dde6" stroke="none" stroke-width="1"/>
-<text x="627.3" y="1039.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">DRAM bank</text>
-<rect x="20.0" y="1050.0" width="22.0" height="16.0" rx="3" fill="#fff1e5" stroke="#bc4c00" stroke-width="1.5"/>
-<text x="50.0" y="1063.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">X280 0, the dispatcher</text>
-<rect x="200.9" y="1050.0" width="22.0" height="16.0" rx="3" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
-<text x="230.9" y="1063.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">X280 1 to 3, a thread each</text>
-<rect x="402.9" y="1050.0" width="22.0" height="16.0" rx="3" fill="#d5dde6" stroke="#0969da" stroke-width="1.6" stroke-dasharray="4 3"/>
-<text x="432.9" y="1063.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a cluster's regions, in the bank beside it</text>
-<rect x="20.0" y="1074.0" width="22.0" height="16.0" rx="3" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
-<text x="50.0" y="1087.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">Ethernet, PCIe, ARC, security</text>
-<rect x="237.1" y="1074.0" width="22.0" height="16.0" rx="3" fill="none" stroke="#d1d9e0" stroke-width="1" stroke-dasharray="3 3"/>
-<text x="267.1" y="1087.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">fused off, or a router only</text>
-<rect x="437.2" y="1074.0" width="22.0" height="16.0" rx="3" fill="none" stroke="#bc4c00" stroke-width="1.6" stroke-dasharray="5 3"/>
-<text x="467.2" y="1087.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a panel: one multicast window</text>
-<text x="50.0" y="1111.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a ring: commands to X280 0, events back</text>
-<text x="20.0" y="1136.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">Measured: 0.77 µs a command with 4 in flight to all 120 cores (the landing experiment). Columns 7 and 10 are the</text>
-<text x="20.0" y="1154.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">Tensix columns fused off on the card used here. The leader acknowledges its command to X280 0 on NoC1.</text>
+<text x="68.0" y="854.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#818b98" text-anchor="start" xml:space="preserve">host channel</text>
+<text x="180.0" y="854.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">tensor pages between cores and the host's memory, by PCIe</text>
+<text x="800.0" y="854.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">session.write</text>
+<text x="68.0" y="874.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#818b98" text-anchor="start" xml:space="preserve">links</text>
+<text x="180.0" y="874.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">commands, pages and messages to another card, by Ethernet</text>
+<text x="800.0" y="874.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">25, 26</text>
+<text x="30.0" y="922.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">who does what</text>
+<text x="800.0" y="922.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve"></text>
+<text x="30.0" y="946.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">X280 0: the dispatcher</text>
+<text x="30.0" y="964.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">commands from the host and three rings</text>
+<text x="30.0" y="982.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">streams, graphs and a job queue</text>
+<text x="30.0" y="1000.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">64 commands in flight, a deadline each</text>
+<text x="30.0" y="1018.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">which program each core holds</text>
+<text x="286.7" y="946.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">every Tensix core</text>
+<text x="286.7" y="964.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">reader (NoC0): the next command</text>
+<text x="286.7" y="982.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">compute: the handler</text>
+<text x="286.7" y="1000.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">writer (NoC1): reports</text>
+<text x="286.7" y="1018.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">ports, broadcasts, messages</text>
+<text x="286.7" y="1036.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">overlays, in slots of its L1</text>
+<text x="543.3" y="946.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">X280 1 to 3: work clusters</text>
+<text x="543.3" y="964.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a C thread on four cores (kmx_main)</text>
+<text x="543.3" y="982.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">kmx_submit, kmx_wait: its commands</text>
+<text x="543.3" y="1000.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">answers its cores' tells, asks and pulls</text>
+<text x="543.3" y="1018.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">takes commands itself (kmx_program)</text>
+<rect x="20.0" y="1066.0" width="22.0" height="16.0" rx="3" fill="#eaeef2" stroke="none" stroke-width="1"/>
+<text x="50.0" y="1079.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">Tensix core, with its core index</text>
+<rect x="248.4" y="1066.0" width="22.0" height="16.0" rx="3" fill="#ffc999" stroke="#bc4c00" stroke-width="1"/>
+<text x="278.4" y="1079.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a command's group, cores 24 to 35; core 24 leads it</text>
+<rect x="597.3" y="1066.0" width="22.0" height="16.0" rx="3" fill="#d5dde6" stroke="none" stroke-width="1"/>
+<text x="627.3" y="1079.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">DRAM bank</text>
+<rect x="20.0" y="1090.0" width="22.0" height="16.0" rx="3" fill="#fff1e5" stroke="#bc4c00" stroke-width="1.5"/>
+<text x="50.0" y="1103.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">X280 0, the dispatcher</text>
+<rect x="200.9" y="1090.0" width="22.0" height="16.0" rx="3" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5"/>
+<text x="230.9" y="1103.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">X280 1 to 3, a thread each</text>
+<rect x="402.9" y="1090.0" width="22.0" height="16.0" rx="3" fill="#d5dde6" stroke="#0969da" stroke-width="1.6" stroke-dasharray="4 3"/>
+<text x="432.9" y="1103.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a cluster's regions, in the bank beside it</text>
+<rect x="20.0" y="1114.0" width="22.0" height="16.0" rx="3" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+<text x="50.0" y="1127.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">Ethernet, PCIe, ARC, security</text>
+<rect x="237.1" y="1114.0" width="22.0" height="16.0" rx="3" fill="none" stroke="#d1d9e0" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="267.1" y="1127.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">fused off, or a router only</text>
+<rect x="437.2" y="1114.0" width="22.0" height="16.0" rx="3" fill="none" stroke="#bc4c00" stroke-width="1.6" stroke-dasharray="5 3"/>
+<text x="467.2" y="1127.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a panel: one multicast window</text>
+<text x="50.0" y="1151.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a ring: commands to X280 0, events back</text>
+<text x="20.0" y="1176.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">Measured: 0.77 µs a command with 4 in flight to all 120 cores (the landing experiment). Columns 7 and 10 are the</text>
+<text x="20.0" y="1194.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">Tensix columns fused off on the card used here. The leader acknowledges its command to X280 0 on NoC1.</text>
+<text x="20.0" y="1212.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">A thread reaches the other banks with kmx_fetch, and another card's cores over the links: each has a figure of its own below.</text>
 <line x1="406.0" y1="72.0" x2="406.0" y2="244.0" stroke="#bc4c00" stroke-width="2.2" marker-end="url(#ha)"/>
 <line x1="450.0" y1="244.0" x2="450.0" y2="72.0" stroke="#818b98" stroke-width="2.2" marker-end="url(#hg)"/>
 <rect x="98.0" y="200.0" width="264.0" height="440.0" rx="5" fill="none" stroke="#bc4c00" stroke-width="1.6" stroke-dasharray="6 4"/>
@@ -505,6 +513,10 @@
 <line x1="537.0" y1="523.0" x2="451.0" y2="523.0" stroke="#0969da" stroke-width="2.2" marker-end="url(#hw)"/>
 <line x1="451.0" y1="537.0" x2="537.0" y2="537.0" stroke="#0969da" stroke-width="2.2" marker-end="url(#hw)"/>
 <line x1="494.0" y1="618.0" x2="537.0" y2="618.0" stroke="#9a6700" stroke-width="2.6" marker-end="url(#hy)"/>
+<line x1="164.0" y1="199.0" x2="164.0" y2="157.0" stroke="#818b98" stroke-width="2.4" marker-end="url(#hg)" marker-start="url(#hg)"/>
+<path d="M164.0,111.0 L164.0,58.0 L225.0,58.0" fill="none" stroke="#818b98" stroke-width="2.4" marker-end="url(#hg)" marker-start="url(#hg)"/>
+<line x1="736.0" y1="155.0" x2="736.0" y2="76.0" stroke="#818b98" stroke-width="2.4" marker-end="url(#hg)" marker-start="url(#hg)"/>
+<line x1="780.0" y1="155.0" x2="780.0" y2="76.0" stroke="#818b98" stroke-width="2.4" marker-end="url(#hg)" marker-start="url(#hg)"/>
 <line x1="30.0" y1="710.0" x2="58.0" y2="710.0" stroke="#bc4c00" stroke-width="2.2" marker-end="url(#ha)"/>
 <line x1="30.0" y1="730.0" x2="58.0" y2="730.0" stroke="#8250df" stroke-width="2.2" marker-end="url(#hm)"/>
 <line x1="30.0" y1="750.0" x2="58.0" y2="750.0" stroke="#1a7f37" stroke-width="2.2" marker-end="url(#hr)"/>
@@ -512,5 +524,7 @@
 <line x1="30.0" y1="790.0" x2="58.0" y2="790.0" stroke="#0969da" stroke-width="2.2" marker-end="url(#hw)"/>
 <line x1="30.0" y1="810.0" x2="58.0" y2="810.0" stroke="#bf3989" stroke-width="2.2" marker-end="url(#hp)"/>
 <line x1="30.0" y1="830.0" x2="58.0" y2="830.0" stroke="#9a6700" stroke-width="2.2" marker-end="url(#hy)"/>
-<line x1="20.0" y1="1106.0" x2="42.0" y2="1106.0" stroke="#0969da" stroke-width="2.2" marker-end="url(#hw)" marker-start="url(#hw)"/>
+<line x1="30.0" y1="850.0" x2="58.0" y2="850.0" stroke="#818b98" stroke-width="2.2" marker-end="url(#hg)"/>
+<line x1="30.0" y1="870.0" x2="58.0" y2="870.0" stroke="#818b98" stroke-width="2.2" marker-end="url(#hg)"/>
+<line x1="20.0" y1="1146.0" x2="42.0" y2="1146.0" stroke="#0969da" stroke-width="2.2" marker-end="url(#hw)" marker-start="url(#hw)"/>
 </svg>
