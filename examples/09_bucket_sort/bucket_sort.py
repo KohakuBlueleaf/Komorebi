@@ -34,17 +34,19 @@ def log(message):
     print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
-def keys_tensor(session, values):
+def keys_tensor(session, values, **hint):
     """Step 0 (host): a DRAM tensor of 4 KiB pages, 1,024 keys a page, interleaved
-    over the banks; the last page padded with zeros the kernels never read."""
+    over the banks; the last page padded with zeros the kernels never read. `hint`:
+    where an island session places it (islands.py)."""
     rows = np.zeros((-(-values.size // KEYS_PER_PAGE), KEYS_PER_PAGE), np.uint32)
     rows.reshape(-1)[: values.size] = values
-    return session.tensor(rows, "uint32")
+    return session.tensor(rows, "uint32", **hint)
 
 
-def program(keys, output, words, x280_cores):
+def program(keys, output, words, x280_cores, thread=True, by_host=False):
     """The Tensix side (kernels/, its two circular buffers) and the X280 thread
-    (thread/plan.c) on cluster 1, or on clusters 1 to 3 for twelve cores."""
+    (thread/plan.c) on cluster 1, or on clusters 1 to 3 for twelve cores; `by_host`:
+    the thread sorts on the host's command `sort` (islands.py), not at its start."""
     sort_program = km.Program(
         "bucket_sort",
         kernels=HERE / "kernels",
@@ -62,6 +64,8 @@ def program(keys, output, words, x280_cores):
             "writer": output.tensor_args(),
         },
     )
+    if not thread:
+        return sort_program
     table = words[2] * 4 << words[1]  # cores x buckets counters of 4 bytes
     # The counts region is whole cache ways plus half a way, so that the plan, after
     # it, never sits a whole number of ways from the counts the cores read beside it.
@@ -69,6 +73,10 @@ def program(keys, output, words, x280_cores):
     # A total per bucket, room for two rows: the thread starts them half a row off
     # (thread/plan.c).
     regions = {"counts": padded, "plan": table, "totals": 8 << words[1], "peers": 256}
+    started = {}
+    if by_host:  # bucket_sort.h: BS_THREAD_SORT; the result words in a region
+        regions["results"] = 64
+        started = {"handlers": {"sort": 1}, "defines": {"BS_STARTED_BY_HOST": "1"}}
     sort_program.thread(
         clusters=(1, 2, 3) if x280_cores == 12 else (1,),
         sources=[HERE / "thread" / "plan.c"],
@@ -76,6 +84,7 @@ def program(keys, output, words, x280_cores):
         regions=regions,
         words=words,
         deadline=20.0,
+        **started,
     )
     return sort_program
 

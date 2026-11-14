@@ -213,6 +213,9 @@
 #define KM_ASK_RING 12u
 #define KM_ASK_OWNER 13u /* a put: (core * 2 + its CPU) * 2 + parity, the asker's */
 #define KM_ASK_END 15u
+/* A batch line (km::put_bytes): its batch, page KM_ASK_FIRST of the landing, follows
+ * in the rings; the far lead page CPU writes its records, then confirms (no page) */
+#define KM_ASK_RING_BATCH 3u
 /* Then what crossed, a row a CPU of the core, counted only on a link core by that CPU:
  * messages, command lines, asks, pages, relayed parts, bytes (low, high) it sent */
 #define KM_LINK_CROSS (KM_ASK_INBOX + KM_ASK_SLOTS * 64u)
@@ -249,6 +252,17 @@
 #define KM_PUT_RING_SLOTS (KM_PUT_TAIL + 0x50u) /* | 1 << 31 once published */
 #define KM_PUT_RING_FAR (KM_PUT_TAIL + 0x54u)   /* the far link core 0, x | y << 16 */
 #define KM_PUT_QUEUE (KM_PUT_TAIL + 0x58u) /* the put queue's L1 address, 0: none yet */
+#define KM_PUT_LANDING (KM_PUT_TAIL + 0x5Cu) /* the host's: the far landing */
+#define KM_PUT_LANDED (KM_PUT_TAIL + 0x60u)  /* the host's: this island's */
+/* A CPU's batch: used, records, island, sequence; records of address, page, page
+ * bytes, offset | bytes << 20, the bytes at offset % 16. Landing: island*lines+owner */
+#define KM_PUT_BATCH_BYTES 0x800u
+#define KM_BATCH_USED 0u
+#define KM_BATCH_RECORDS 1u
+#define KM_BATCH_HOLDER 2u
+#define KM_BATCH_SEQUENCE 3u
+#define KM_BATCH_HEAD 16u /* the batch's header and a record's */
+#define KM_BATCH_SPAN_SHIFT 20u
 #define KM_PUT_RING_READ 0x50u /* what a putting core reads, from KM_PUT_TAKEN */
 #define KM_PUT_OWN (KM_PUT_TAIL + 0x80u) /* + 0x80 the second CPU's */
 #define KM_PUT_OWN_BYTES 0x80u /* unused (a core's own words, KM_OWN_*) */
@@ -643,6 +657,10 @@ KM_STATIC_ASSERT(
 #define KM_OWN_BUILD 0xC0u
 #define KM_OWN_CPU_BYTES (KM_OWN_BUILD + KM_PUT_BUILD_BYTES)
 #define KM_OWN_BYTES (2u * KM_OWN_CPU_BYTES)
+/* then the reader's batch of byte records and the writer's (KM_BATCH_*), from the
+ * next 64-byte boundary on: what the session's own words hold in all */
+#define KM_OWN_BATCH KM_OWN_BYTES
+#define KM_OWN_ALL_BYTES (KM_OWN_BATCH + 2u * KM_PUT_BATCH_BYTES + 64u)
 /* The forward area (km_transport.hpp), a link core's: packets for an island not its
  * own, sent on by its next link toward it. Part 0's writer: the far link core */
 /* part 1 + i: link core i (i + 1 when not below this one) */
@@ -715,6 +733,14 @@ KM_STATIC_ASSERT(
         KM_PUT_RING_IDLE + 32u <= KM_PUT_HEADERS &&
         2u * KM_PUT_BUILD_BYTES <= 2u * KM_ASK_SLOTS * 64u && KM_ASK_RING < KM_ASK_END,
     "the link area word after the island table; the ask lines whole lines; the rings"
+);
+KM_STATIC_ASSERT(
+    KM_PUT_LANDING > KM_PUT_QUEUE &&
+        KM_PUT_LANDING + 4u <= KM_PUT_TAKEN + KM_PUT_RING_READ &&
+        KM_PUT_LANDED >= KM_PUT_TAKEN + KM_PUT_RING_READ &&
+        KM_PUT_LANDED + 4u <= KM_PUT_OWN && KM_PUT_BATCH_BYTES % 64u == 0 &&
+        KM_PUT_BATCH_BYTES - 3u * KM_BATCH_HEAD < (1u << (32u - KM_BATCH_SPAN_SHIFT)),
+    "the batches' landing in the block a putting core reads; a record's bytes fit"
 );
 KM_STATIC_ASSERT(
     KM_ISLAND_RELAY * 4u >= KM_ISLAND_LINK_AREA + 4u &&
