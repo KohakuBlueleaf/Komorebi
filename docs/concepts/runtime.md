@@ -20,8 +20,7 @@ names, runs that handler and reports completion. Code that is not in the kernels
 run starts is an [overlay](../reference/overlays.md): a core loads it into a slot of its own
 L1 while the run lives, and calls it. [Dispatch](dispatch.md) is what sends
 the commands, from the host, from its own engines or from an X280 thread
-([threads reference](../reference/threads.md)). The [model](model.md) is what the
-handlers and breakpoints mean.
+([threads reference](../reference/threads.md)).
 
 | Part | As built | Reference |
 |---|---|---|

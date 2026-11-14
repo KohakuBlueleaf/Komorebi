@@ -92,7 +92,6 @@ nav:
   - Tutorial:
       - tutorial/index.md
   - Concepts:
-      - concepts/model.md
       - concepts/dispatch.md
       - concepts/runtime.md
       - streams.md

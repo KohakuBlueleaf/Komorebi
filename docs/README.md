@@ -24,8 +24,8 @@ Komorebi 0.1.0 is on PyPI (`pip install "komorebi-tt[runtime]"`), a first releas
 
 - **Getting started**: [install](install.md) Komorebi and check the host and the card.
 - **[Tutorial](tutorial/index.md)**: 50 lessons in six parts, from one core to a whole program.
-- **Concepts**: why the framework is the way it is. [The thread language, planned](concepts/model.md),
-  [the dispatcher](concepts/dispatch.md) and [the Tensix runtime](concepts/runtime.md), then the
+- **Concepts**: why the framework is the way it is.
+  [The dispatcher](concepts/dispatch.md) and [the Tensix runtime](concepts/runtime.md), then the
   longer design pages on [micro-op streams](streams.md), [graphs](graphs.md) and [X280 threads](threads.md).
 - **Guides**: how to do one thing. [Debug a command that does not finish](guides/debug-a-command-that-does-not-finish.md), [measure a command](guides/measure-a-command.md) and [development](development.md).
 - **Reference**: exact descriptions of what is built: the [host API](reference/host.md), the
