@@ -8,9 +8,10 @@ tags:
 
 # Islands
 
-Status: the host side is implemented over two Blackhole p150a cards. Nothing crosses
-between the cards inside a run yet: a group that spans islands runs as one part on
-each island, and each part's cores see the ranks of their own part.
+Status: implemented over two Blackhole p150a cards. A group that spans islands runs
+as one part on each island, and every core sees its flat rank in the whole group, so
+an existing program runs unchanged. Nothing crosses between the cards inside a run
+yet (no links).
 
 An island is a set of cores that reach the others only through links: here one card's
 chip, with its own Tensix grid and its own dispatcher on its own X280 cluster 0. The
@@ -53,11 +54,15 @@ returns an `IslandSession`; with one card it is the card's `Session` as before.
 ## The run
 
 `session.load(program, **options)` loads one `Program` on every island in turn (its
-grid, then its dispatcher), with `Session.load`'s options, and returns an `IslandRun`.
+grid, then its dispatcher), with `Session.load`'s options and `island=(graph, i)`: each
+core gets the island table and each dispatcher its island's range of ranks. It returns
+an `IslandRun`.
 
-- `run.submit(handler, group, args)` takes a group of flat ranks. The host splits it
-  with `Graph.split` and submits each part to its island's dispatcher; the call returns
-  a ticket. `run.submit_many` does the same for n commands, one `submit_many` an
+- `run.submit(handler, group, args)` takes a group of flat ranks. The host finds the
+  islands it touches with `Graph.split` and sends each of them the group's word
+  unchanged; each island's dispatcher cuts its own part and completes it through the
+  first of its cores in the group, and a core's rank is its flat rank less the group's
+  first, its count the whole group's. The call returns a ticket. `run.submit_many` does the same for n commands, one `submit_many` an
   island.
 - `run.wait(tickets, timeout)` sends every island's queued commands first, so the
   islands run their parts at once, then waits for every part within the one timeout.
@@ -66,8 +71,13 @@ grid, then its dispatcher), with `Session.load`'s options, and returns an `Islan
   one timeout; `run.state()` lists every rank in flat order, `run.result()` every
   island's result block.
 - An error from an island names it: the message starts `island i:` and the exception
-  carries `error.island`. A `WaitTimeout`'s `pending` lists tickets.
-- `run.island(i)` is island i's own `Run`, in its own ranks.
+  carries `error.island`; the cores a timeout lists (where each waited, those reset
+  and loaded again) are that island's own core numbers. A `WaitTimeout`'s `pending`
+  lists tickets.
+- `run.inspect(island, cores=None)` asks island `island`'s dispatcher to read its cores
+  `(first, count)` in its own core numbers (default all), as `Run.inspect` does.
+- `run.send()` hands every island's queued commands to its dispatcher without waiting.
+- `run.island(i)` is island i's own `Run`.
 
 ## Tensors
 
@@ -86,38 +96,34 @@ the island that holds it (a copy: into every island).
 ## Measured
 
 Two Blackhole p150a cards joined by four Ethernet links, one process, example 01's
-program and kernels unchanged (`examples/01_mapcollect/islands.py --hang`):
-
-2026-11-14, X280 at 1350 MHz, host load about 3 (AICLK not sampled),
+program and kernels unchanged (`examples/01_mapcollect/islands.py --whole`, and
+without `--whole` for the rows of one island's groups),
+2026-11-14, X280 at 1350 MHz, host load about 2 to 3 (AICLK not sampled),
 microseconds a command, submit to event, pipelined (the median of 3 rounds of 20,000
 NOP or 2,000 MAP, one host thread submitting to both islands):
 
 | What | µs a command |
 |---|---|
-| NOP on island 0's 120 ranks | 1.192 |
-| NOP on all 240 ranks (a part on each island, joined) | 2.427 |
-| MAP on group (0, 120) | 2.623 |
-| MAP on (0, 120) and (120, 120) in turn | 2.695 |
+| NOP on island 0's 120 ranks | 1.195 |
+| NOP on all 240 ranks (a part on each island, joined) | 2.410 |
+| MAP on all 240 ranks, the input split over both islands | 5.215 |
+| MAP on group (0, 120) | 2.553 |
+| MAP on (0, 120) and (120, 120) in turn | 2.691 |
 
 A NOP on one island costs what it costs on a card opened alone (1.131 to 1.159 µs
 in `experiments/islands_mesh`). A 240-rank ticket costs two commands of host work, one
 an island, from one host thread: 1.21 µs a part. MAP commands alternating between the
-islands cost what MAP on one island costs, so the islands run at once. The last MAP
-round's 240 tiles (each island's group reading its own part of the split input) were
-bit-exact against `mapcollect.py`'s sums; the input read back from both islands was
-exact; a HANG given up on island 1 raised `CommandTimeout` naming island 1 and the run
-went on; both kernels ended with no error (129,006 and 63,006 commands). Open to close
-in 14 s (the mesh with the fabric 5 s; the tensors and both loads 6 s).
+islands cost what MAP on one island costs, so the islands run at once. MAP on one
+group of all 240 ranks (rank r adds input tiles 2r and 2r + 1, which lie in its own
+island's part of the input): the last round's 240 tiles bit-exact against
+`mapcollect.py`'s sums, both kernels ended with no error. With `--hang`: an inspect of
+island 1's core 10 during a HANG on ranks 100 to 239 named its reader waiting for a
+port arrival; the deadline gave the command up, `CommandTimeout` named island 1 and its
+cores, and the run went on; 16 pages of island 1 read inside the run were exact. Open
+to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
 ## Not yet
 
-- **A group across islands with the whole group's ranks.** A part's cores see the
-  ranks of their part (`me - first`, `count` of the part), so example 01's MAP over a
-  group that spans islands partitions over each part, not over the group. The
-  encoding is decided: every island of the split is sent the group's word unchanged in
-  flat ranks, its dispatcher cuts its own part and a core's rank is its island's first
-  rank plus its own index less the group's first. It needs the island table on the
-  cores; the host side has the switch (`IslandRun.flat_groups`).
 - Links: no message, page or command crosses between islands inside a run; `forward`
   to another island's rank, `collect` and `broadcast` over islands, and a read of a
   page another island holds need the link service.
