@@ -281,13 +281,15 @@ takes 3,158 µs where the best single overlay takes 4,222 µs.
 | Groups per command, several in flight, completion per group, a result word per command | implemented | [Tensix runtime](docs/concepts/runtime.md) | [01_mapcollect](examples/01_mapcollect/) |
 | Channels: `emit`, `arrive`, `take`, groups, reduce by owner and by tree | implemented | [ports](docs/reference/ports.md) | [02_merge_tree](examples/02_merge_tree/) |
 | Channels: broadcast along a row or a column, two broadcasts at once | implemented | [broadcasts](docs/reference/broadcast.md) | [03_broadcast](examples/03_broadcast/) |
-| Routed messages: messages through per-core queues in DRAM, a send quota, the quiet end found by the dispatcher | implemented; one dynamic run at a time | [dynamic handlers](docs/reference/dynamic.md) | [05_forward](examples/05_forward/) |
+| Routed messages: messages through per-core queues in DRAM, a send quota, the quiet end found by the dispatcher; a body of up to 4 KiB beside a message; a handler as an overlay; X280 cores as ranks | implemented; one dynamic run at a time | [dynamic handlers](docs/reference/dynamic.md) | [05_forward](examples/05_forward/), [23_message_body](examples/23_message_body/), [24_thread_rank](examples/24_thread_rank/) |
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
-| X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks; `kmx_fetch` / `kmx_store` of any bank through Tensix cores | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
+| X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks; `kmx_fetch` / `kmx_fetch_clean` / `kmx_store` of any bank through Tensix cores | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, an exit with a timeout | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
+| Recovery without a card reset: `run.inspect` of a running core, the give-up of one command at its deadline, the reset and reload of one core by the host and by the dispatcher (by itself at a give-up), the watch on the dispatcher's own loop | implemented; the session does not yet hand the dispatcher the reset lists by itself | [recovery](docs/guides/recovery.md) | [01_mapcollect](examples/01_mapcollect/) (`give_up.py`) |
+| Islands: two cards as one session, each card's chip an island with its own grid and dispatcher; one flat group of 240 cores from the host, a tensor split over the islands, inspect and time-outs by island | implemented over two P150A cards; nothing crosses between the cards inside a run | [islands](docs/concepts/islands.md) | [01_mapcollect](examples/01_mapcollect/) (`islands.py`) |
 
 ## Measured
 
@@ -539,16 +541,19 @@ rasterizer, a ray tracer) fits.
   does not fit is refused at load with the budget table; the answer is smaller buffers,
   or code moved into overlays.
 - **One card's grid.** Up to 128 cores in at most two multicast panels; one harvesting
-  pattern has been run.
+  pattern has been run. Two cards run as two such grids (240 ranks on the two P150A).
 
 ## TODO
 
 What Komorebi does not do yet. Each item says what holds today; none of them is a
 property of the model.
 
-1. **More than one card.** Today a session drives one Blackhole P150A. The model has no
-   notion of a card: a second card is more cores, DRAM banks and X280 clusters behind a
-   slower link.
+1. **More than one card.** Today a session drives two Blackhole P150A cards joined by
+   four Ethernet links, each card's chip an island: one flat group of 240 cores from the
+   host, a tensor split over the islands, inspect and time-outs by island
+   ([islands](docs/concepts/islands.md)). Not yet: messages and pages between islands
+   from kernels, commands across from a thread, a card split into islands; more than
+   two cards have not been tried.
 2. **Wormhole.** Today only Blackhole. A Wormhole card has the Tensix grid and no X280
    cores, so the dispatcher and the threads need another home there.
 3. **Loading TT-NN's kernels.** A TT-NN operation is a tt-metal program (kernels,
@@ -556,34 +561,42 @@ property of the model.
    is written for Komorebi; nothing loads an operation's kernels as they are.
 4. **Host transfers at the link's speed, everywhere.** Today reads and writes go
    through the host channel (a 20 MiB frame read in 30 ms without a run, 7 ms inside
-   one) for interleaved DRAM tensors with pages of at most 16 KiB, on one card. Tensors
-   in L1, larger pages and a session without the channel still go through the device
-   API at about 2 MB per second ([host](docs/reference/host.md#the-host-channel)).
+   one) for interleaved DRAM tensors, on each card. Tensors in L1, reads under 80 KiB
+   without a run, pages the L1 or the channel cannot hold and a session without the
+   channel still go through the device API at about 2 MB per second
+   ([host](docs/reference/host.md#the-host-channel)).
 5. **Starting without tt-metal's launch.** Today the session opens the card in slow
    dispatch and tt-metal launches the kernels once, core by core. Everything after that
    (commands, programs, overlays) is Komorebi's own and runs from the card.
-6. **Dynamic handlers.** Today one dynamic run at a time; messages travel through
-   queues in DRAM, also to a core's own queue; a message cannot ask for a DRAM fetch;
-   there is no order between messages
+6. **Dynamic handlers.** Today one dynamic run at a time; a message can carry a body of
+   up to 4 KiB, a handler can be an overlay, and X280 cores of one work cluster can be
+   ranks (on one island, sending only to core ranks, not in a program with bodies).
+   Messages travel through queues in DRAM, also to a core's own queue; a message cannot
+   ask for a DRAM fetch; there is no order between messages
    ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
 7. **A work cluster reading every DRAM bank at the cores' rate.** Today a thread reads
-   or writes any bank or tensor with `kmx_fetch` and `kmx_store`: Tensix cores of the
-   loaded run copy 64 MiB in 1.06 ms, but the blocking call takes 30 ms, two sweeps of
-   the region's cache lines around the copy
+   or writes any bank or tensor with `kmx_fetch` and `kmx_store`: four Tensix cores of
+   the loaded run copy 64 MiB in 1.06 ms, and the blocking `kmx_fetch` takes 11.9 ms, one
+   sweep of the region's cache lines before the copy; `kmx_fetch_clean`, for a range the
+   cache holds no line of, takes 1.07 ms
    ([bank_fetch](experiments/bank_fetch/README.md)). The X280's own reads of another
    bank stay at 0.024 GB/s, and the cores that copy run no other command meanwhile.
-8. **The X280's clock.** Today 1,000 MHz by default: at the 1,750 MHz opt-in the
-   dispatcher trapped in 9 of 18 runs under full matrix load (the card lowers its core
-   voltage), and in 0 of 23 at 1,000 MHz. The runtime offers no setting between the
-   two; one PLL clocks all four clusters.
+8. **The X280's clock.** Today 1,350 MHz by default; a runtime whose table lacks that
+   row answers "no PLL solution", and the session opens at 1,000 MHz and logs it once.
+   At the 1,750 MHz opt-in the dispatcher trapped in 9 of 18 runs under full matrix
+   load (the card lowers its core voltage), and in 0 of 23 at 1,000 MHz. One PLL clocks
+   all four clusters ([host](docs/reference/host.md#session)).
 9. **Recovery without a reset.** Today a command that misses its deadline in one of the
    runtime's waits is given up and the run goes on
-   ([giving up one command](docs/reference/runtime.md#giving-up-one-command)). A wait
-   that polls nothing still ends the run: a program's own loop or NoC barrier, the DST
-   hand-over between math and pack, a dynamic run's waits. A kernel that leaves a
-   compute unit running, a packer that writes past its buffer, an X280 thread that
-   never returns and polls nothing, or a dispatcher whose loop has stopped costs a card
-   reset.
+   ([giving up one command](docs/reference/runtime.md#giving-up-one-command)), and one
+   core of a run can be reset and loaded with its kernels again, by the host or by the
+   dispatcher, which does it by itself for the cores that do not leave a given-up
+   command once it holds the write lists. The session does not hand it the lists yet
+   (the [experiment](experiments/core_reset/ladder.py) does). A dynamic run's waits and
+   a thread's own command are not given up. A dispatcher whose loop stops making passes
+   is brought back after 100 ms by another X280 core. A dispatcher that stopped
+   executing, an X280 thread that never returns and polls nothing, and a packer that
+   writes past its buffer still cost a card reset ([recovery](docs/guides/recovery.md)).
 10. **Debugging on the card.** Today tt-metal's watcher cannot run while the X280
     runtime is open. `run.inspect` reads each core's state words, the wait each kernel
     is in and its latest trace entries while the run goes on
@@ -594,7 +607,7 @@ property of the model.
     [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project adds
     to a tt-metal build ([development](docs/development.md#known-limitations)).
 
-Komorebi has run on one Blackhole P150A and on no other hardware.
+Komorebi has run on Blackhole P150A cards, one and two together, and on no other hardware.
 
 ## Documentation
 
@@ -604,6 +617,7 @@ Komorebi has run on one Blackhole P150A and on no other hardware.
 | [Tensix runtime](docs/reference/runtime.md) | the device headers, the command, timed waits, the control block |
 | [ports](docs/reference/ports.md), [broadcasts](docs/reference/broadcast.md), [dynamic handlers](docs/reference/dynamic.md) | messages between cores |
 | [streams](docs/streams.md), [graphs](docs/graphs.md) | deciding on the card in the dispatcher |
+| [islands](docs/concepts/islands.md), [recovery](docs/guides/recovery.md) | two cards as one session; a command that does not return |
 | [X280 threads](docs/threads.md) | C on a work cluster with kmx |
 | [host API](docs/reference/host.md) | `Program`, `Session`, `Run`, errors, builds |
 | [examples](examples/README.md), [projects](projects/README.md) | runnable examples; the five programs and their results |
