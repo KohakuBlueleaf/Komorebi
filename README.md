@@ -1,6 +1,6 @@
 # Komorebi
 
-[![Tutorial: 51 lessons](https://img.shields.io/badge/tutorial-51%20lessons-5A4FCF)](https://kohakublueleaf.github.io/Komorebi/tutorial/)
+[![Tutorial: 52 lessons](https://img.shields.io/badge/tutorial-52%20lessons-5A4FCF)](https://kohakublueleaf.github.io/Komorebi/tutorial/)
 [![Documentation](https://img.shields.io/badge/docs-website-0F52BA)](https://kohakublueleaf.github.io/Komorebi/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-4C9989)](LICENSE)
 
