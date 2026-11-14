@@ -6,7 +6,12 @@
 #include "timed.hpp"
 #include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/km_ask.hpp"
 #include "raytrace.h"
+
+// The directory's pages, then the profile pages (km::Tensor): compile arguments from 0.
+using Directories = km::Tensor<0>;
+using Profiles = km::Tensor<Directories::next_compile_time_args_offset()>;
 
 namespace {
 
@@ -83,12 +88,10 @@ void kernel_main() {
         const uint32_t started = km::wall();
         const uint32_t directory_space = get_write_ptr(kCbDirWriter);
         volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
-        noc_async_read(
-            directory_noc_address(command, handler, writer.me()),
-            directory_space,
-            kDirBytes
-        );
-        if (!timed::reads_done(writer, km::kStWriter)) {
+        if (
+            !read_directory<Directories>(writer, command, handler, directory_space) ||
+            !timed::reads_done(writer, km::kStWriter)
+        ) {
             return true;
         }
         const uint32_t first = directory[kDirFirst], count = directory[kDirCount];
@@ -150,14 +153,16 @@ void kernel_main() {
         profile[kProfWriter + 1] = write;
         profile[kProfWriter + 2] = km::wall() - started;
         profile[kProfWriter + 3] = count;
-        const InterleavedAddrGen<true> profile_pages = {
-            .bank_base_address = profile_address, .page_size = kOutPageBytes
-        };
-        noc_async_write(
-            get_read_ptr(kCbOut),
-            get_noc_addr(writer.me(), profile_pages),
-            kOutPageBytes
-        );
+        if (!km::write_pages(
+            writer,
+            command,
+            Profiles(profile_address),
+            writer.me(),
+            1,
+            get_read_ptr(kCbOut)
+        )) {
+            return true;
+        }
         const uint32_t bank = (
             handler == kHandlerTreelets ? policy_word >> kBankShift : 0
         );

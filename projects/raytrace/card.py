@@ -115,6 +115,20 @@ def workers(session):
     return x * y
 
 
+# The accessor arguments of a DRAM tensor of interleaved pages, as Session.tensor makes
+# them (its configuration word, then its page bytes).
+DRAM_ARGS = 2
+
+
+def compile_args():
+    """The reader's and the writer's km::Tensor arguments (from 0): the tree's and the
+    treelets' pages, the directory's; the directory's, the profile pages'."""
+    tree = [DRAM_ARGS, K["kTreePageBytes"]]
+    directory = [DRAM_ARGS, K["kDirBytes"]]
+    profile = [DRAM_ARGS, K["kOutPageBytes"]]
+    return {"reader": tree + directory, "writer": directory + profile}
+
+
 def program(tree_pages=1, sizes=None):
     """The ray tracer's program; sizes: bytes of the treelet buffers (state, lists,
     slots), small when absent. One command at a time: its event time is its own."""
@@ -147,6 +161,7 @@ def program(tree_pages=1, sizes=None):
             )
             for index, page_bytes, count in specs
         ],
+        compile_args=compile_args(),
         compute={
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
