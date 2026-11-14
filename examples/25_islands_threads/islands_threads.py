@@ -197,7 +197,7 @@ def host_hang(run, group, hung, before):
 
 
 def healthy_after(run, own, hung, words):
-    """After the HANGs (their core still hung: no recovery yet on islands), commands
+    """After the HANGs (their cores reset at the give-ups), commands
     on the other ranks: a NOP on each island's own ring, example 01's MAP from the host
     on each island's healthy ranks (its split), and a MAP from island 0's thread on
     island 1's healthy ranks (it crosses). Each answered: the dispatchers go on taking
@@ -235,7 +235,9 @@ def main():
     )
     report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
-    with km.Session(cards=cards, links=args.links, log=log) as session:
+    with km.Session(
+        cards=cards, links=args.links, log=log, kernel_bytes=84 * 1024
+    ) as session:
         ranks = session.ranks
         graph = session.graph
         own = [(graph.first(i), graph.count(i)) for i in range(2)]

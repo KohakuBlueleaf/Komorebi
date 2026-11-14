@@ -117,8 +117,9 @@ A step is tried only when the one before it was not enough.
    tables, the kernels and each core's arguments) and which list each core takes, held
    at the start of the upload region for the run: 68,864 bytes and about 4 ms of the
    load for the map/collect example. At the end of the wait of any give-up the
-   dispatcher resets each core of the group still in the command and loads it again,
-   and the run goes on; `run.recoveries` keeps each such give-up's text. With a list of
+   dispatcher resets each core of the group still in the command, or whose kernels
+   ended at a wait's own limit, and loads it again, and the run goes on;
+   `run.recoveries` keeps each such give-up's text. With a list of
    programs, each core gets the list of the program it holds. The lists are refused
    for a program with semaphores and not made for program switches: `run.recovery` is
    then None and `run.recovery_refused` says why. `session.load(..., recover=False)`
