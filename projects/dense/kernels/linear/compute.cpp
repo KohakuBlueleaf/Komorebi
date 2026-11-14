@@ -63,7 +63,15 @@ void kernel_main() {
             const bool own = to == here;
             const uint32_t out = own ? kCbYOut : kCbSend;
             for (uint32_t block = 0; ok && block < block_count; ++block) {
-                pack_reconfig_data_format(k_blocks > 1 ? kCbPart : out);
+                // K blocks over one: every K block's products packed into the fp32
+                // partials, reserved once a block, added in L1 from the second on;
+                // after the last, the partials to bf16 a subblock at a time
+                const bool partial = k_blocks > 1;
+                pack_reconfig_data_format(partial ? kCbPart : out);
+                pack_reconfig_l1_acc(0);
+                const bool held = (
+                    !partial || compute.reserve_back(kCbPart, block_tiles)
+                );
                 for (uint32_t k_block = 0; ok && k_block < k_blocks; ++k_block) {
                     const bool last = k_block == k_blocks - 1;
                     const bool joined = own && k_block < senders;
@@ -73,6 +81,10 @@ void kernel_main() {
                         km::broadcast_receive(compute, kCbCol, w_block_tiles)
                     );
                     taken += ok;
+                    if (k_block == 1) {
+                        pack_reconfig_l1_acc(1);
+                    }
+                    uint32_t at = 0;  // the subblock's first tile in the partials
                     for (
                         uint32_t subblock_row = 0; ok && subblock_row < block_height;
                         subblock_row += subblock_height
@@ -82,11 +94,7 @@ void kernel_main() {
                             ok && subblock_column < block_width;
                             subblock_column += subblock_width
                         ) {
-                            const bool reload = last && k_blocks > 1;
-                            if (reload) {
-                                ok = compute.wait_front(kCbPart, subblock_tiles);
-                            }
-                            if (ok && joined) {
+                            if (joined) {
                                 ok = (
                                     compute.wait_front(
                                         kCbSent, subblock_tiles, km::kBehindPort
@@ -97,15 +105,14 @@ void kernel_main() {
                                 break;
                             }
                             tile_regs_acquire();
-                            if (reload || joined) {
-                                // DST starts from the sums so far, or another
-                                // island's tiles of this subblock
-                                const uint32_t from = reload ? kCbPart : kCbSent;
-                                reconfig_data_format_srca(kCbCol, from);
-                                copy_init(from);
-                                copy_block(from, 0, 0, subblock_tiles);
-                                cb_pop_front(from, subblock_tiles);
-                                reconfig_data_format_srca(from, kCbCol);
+                            if (joined) {
+                                // DST starts from another island's tiles of this
+                                // subblock
+                                reconfig_data_format_srca(kCbCol, kCbSent);
+                                copy_init(kCbSent);
+                                copy_block(kCbSent, 0, 0, subblock_tiles);
+                                cb_pop_front(kCbSent, subblock_tiles);
+                                reconfig_data_format_srca(kCbSent, kCbCol);
                                 matmul_block_init(
                                     kCbRow,
                                     kCbCol,
@@ -133,30 +140,32 @@ void kernel_main() {
                                 w_index += block_width;
                             }
                             tile_regs_commit();
-                            const uint32_t cb = last ? out : kCbPart;
-                            const bool room = compute.reserve_back(cb, subblock_tiles);
-                            tile_regs_wait();
-                            if (room) {
-                                if (last && k_blocks > 1) {
-                                    pack_reconfig_data_format(out);
-                                    pack_reconfig_l1_acc(0);
-                                } else if (!last) {
-                                    pack_reconfig_l1_acc(k_block > 0 ? 1 : 0);
+                            if (partial) {
+                                tile_regs_wait();
+                                for (
+                                    uint32_t tile = 0; held && tile < subblock_tiles;
+                                    ++tile
+                                ) {
+                                    pack_tile<true>(tile, kCbPart, at + tile);
                                 }
-                                for (uint32_t tile = 0; tile < subblock_tiles; ++tile) {
-                                    pack_tile(tile, cb);
+                                tile_regs_release();
+                            } else {
+                                const bool room = (
+                                    compute.reserve_back(out, subblock_tiles)
+                                );
+                                tile_regs_wait();
+                                for (
+                                    uint32_t tile = 0; room && tile < subblock_tiles;
+                                    ++tile
+                                ) {
+                                    pack_tile(tile, out);
+                                }
+                                tile_regs_release();
+                                if (room) {
+                                    cb_push_back(out, subblock_tiles);
                                 }
                             }
-                            tile_regs_release();
-                            if (room) {
-                                cb_push_back(cb, subblock_tiles);
-                            }
-                        }
-                    }
-                    if (ok && !last && k_block + 2 < k_blocks) {
-                        ok = compute.wait_front(kCbPart, block_tiles);
-                        if (ok) {
-                            cb_pop_front(kCbPart, block_tiles);
+                            at += subblock_tiles;
                         }
                     }
                     if (ok) {
@@ -164,9 +173,39 @@ void kernel_main() {
                         km::broadcast_done(kCbCol, w_block_tiles);
                     }
                 }
-                if (k_blocks > 1) {
-                    pack_reconfig_l1_acc(0);
+                if (!ok || !partial) {
+                    continue;
                 }
+                pack_reconfig_l1_acc(0);
+                if (held) {
+                    cb_push_back(kCbPart, block_tiles);
+                }
+                ok = compute.wait_front(kCbPart, block_tiles);
+                if (!ok) {
+                    break;
+                }
+                reconfig_data_format_srca(kCbCol, kCbPart);
+                copy_init(kCbPart);
+                pack_reconfig_data_format(out);
+                for (uint32_t tile = 0; tile < block_tiles; tile += subblock_tiles) {
+                    tile_regs_acquire();
+                    copy_block(kCbPart, tile, 0, subblock_tiles);
+                    tile_regs_commit();
+                    const bool room = compute.reserve_back(out, subblock_tiles);
+                    tile_regs_wait();
+                    for (uint32_t index = 0; room && index < subblock_tiles; ++index) {
+                        pack_tile(index, out);
+                    }
+                    tile_regs_release();
+                    if (room) {
+                        cb_push_back(out, subblock_tiles);
+                    }
+                }
+                cb_pop_front(kCbPart, block_tiles);
+                reconfig_data_format_srca(kCbPart, kCbCol);
+                matmul_block_init(
+                    kCbRow, kCbCol, 0, subblock_width, subblock_height, k_block_tiles
+                );
             }
         }
         ok = (
