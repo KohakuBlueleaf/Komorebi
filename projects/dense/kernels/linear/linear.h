@@ -47,6 +47,15 @@ constexpr uint32_t kStampEnd = 3;
 constexpr uint32_t kStampSettled = 4;
 constexpr uint32_t kStampUp = 5;
 constexpr uint32_t kStampDown = 6;
+// The puts' cycles a command (counts, not clock times): waiting for compute's tiles,
+// in put_pages (rings read, line taken), in put_piece, its pieces' slot waits and
+// writes (PutRun turn, write), and the pieces.
+constexpr uint32_t kStampFed = 7;
+constexpr uint32_t kStampLine = 8;
+constexpr uint32_t kStampPiece = 9;
+constexpr uint32_t kStampTurn = 10;
+constexpr uint32_t kStampWrite = 11;
+constexpr uint32_t kStampPieces = 12;
 constexpr uint32_t kBroadcastRow = 0;
 constexpr uint32_t kBroadcastCol = 1;
 

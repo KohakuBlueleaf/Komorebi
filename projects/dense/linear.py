@@ -32,8 +32,8 @@ G = pl.G
 L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
 # The kernel buffer the linear kernels' code takes (all five CPUs, mock builds): the
-# rows form or one card (no puts) 78,672 B; the K form on two cards 97,824 B.
-KERNEL_BYTES = {"one": 88 * 1024, "two": 96 * 1024}
+# rows form on two cards (no puts) 79,936 B; the K form on two cards 106,784 B.
+KERNEL_BYTES = {"one": 88 * 1024, "two": 108 * 1024}
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
 SUBBLOCK = None
@@ -43,6 +43,9 @@ COLUMNS = None
 NOCS = (0, 1)
 # both broadcasts mark a block valid once it is sent, not acknowledged (--valid sent)
 VALID_SENT = False
+# Two cards, the K form: the bytes a link CPU's own chunk the plan leaves the link
+# cores (--link-chunk; a ring for the puts needs 192 KiB or more: 8 slots of 8 KiB)
+LINK_CHUNK = 192 << 10
 # Placements by hint (X, W, Y): "k", W sharded (split along K, Y along N); "rows", W
 # replicated (X and Y split along M, W a copy: Kohaku-TT's default form).
 PLACES = {
@@ -149,6 +152,29 @@ def l1_budget(session, islands, extra=0):
     tokens = 2 * abi.headers()["kTokenBytes"]
     held = session.held_bytes(extra=extra)
     return min(pl.L1_BUDGET, free - held - L1_TRANSFER - L1_RUNTIME - tokens)
+
+
+# The writers' put counters in T (kernels/linear/linear.h kStampFed ..), by name
+PUT_COUNTS = (
+    ("fed", "kStampFed"),
+    ("line", "kStampLine"),
+    ("piece", "kStampPiece"),
+    ("turn", "kStampTurn"),
+    ("write", "kStampWrite"),
+    ("pieces", "kStampPieces"),
+)
+
+
+def link_room(chunk, transfer):
+    """L1 the plan leaves for the link cores' own use beside a two-card program's
+    buffers: two chunks of `chunk` bytes, the put queue, the link area and relay, the
+    session's margin, and the transfer buffer's growth to two `transfer` chunks where
+    there is room (Session._link_chunk counts the program's buffers there)."""
+    h = abi.headers()
+    relay = -(-h["KM_RELAY_BYTES"] // 64) * 64
+    link = h["KM_QUEUE_BYTES"] + h["KM_LINK_AREA_BYTES"] + relay
+    grown = max(0, 2 * (transfer or 0) + h["KM_TRANSFER_WORD_BYTES"] + 64 - L1_TRANSFER)
+    return 2 * chunk + link + (64 << 10) + grown
 
 
 def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget, exchange):
@@ -491,6 +517,8 @@ class Linear:
         )
         one_card = pl.grid_plan(m_tiles, k_tiles, n_tiles, grid=self.nocs.grid)
         self.budget = l1_budget(session, self.islands, extra=2)  # S and T
+        if self.exchange and LINK_CHUNK:  # the link cores' rings for the puts
+            self.budget -= link_room(LINK_CHUNK, session.sessions[0].transfer_chunk)
         grid, planned = self.nocs.grid, ranks  # the grid and ranks planned on
         if COLUMNS is not None:
             if self.islands != 1 or not 0 < COLUMNS <= grid[0]:
@@ -595,6 +623,11 @@ class Linear:
                 raw.view(np.uint32).reshape(-1, L["kStampBytes"] // 4).astype(np.int64)
             )
             ran = words[words[:, L["kStampEnd"]] != 0]
+            counts = {  # the puts' cycles (pieces: a count): mean and most a core
+                name: ran[:, L[stamp]]
+                for name, stamp in PUT_COUNTS
+                if ran[:, L["kStampPieces"]].any()
+            }
             stamped = ran[:, L["kStampPut"]].all()
             # the 32-bit clock as signed cycles from the first core's start
             ran = (ran - ran[0, L["kStampStart"]] + 2**31) % 2**32 - 2**31
@@ -627,6 +660,10 @@ class Linear:
                 cycles["settle_median"] = int(np.median(waits))
             out.append(
                 {
+                    "put_counts": {
+                        name: [round(float(value.mean()), 1), int(value.max())]
+                        for name, value in counts.items()
+                    },
                     "cores": len(ran),
                     "cycles": {key: int(value) for key, value in cycles.items()},
                     "microseconds_at_mhz": {
@@ -965,6 +1002,12 @@ def main():
         default="acked",
         help="a broadcast block is valid once acknowledged, or once sent",
     )
+    parser.add_argument(
+        "--link-chunk",
+        type=int,
+        default=192,
+        help="two cards, K form: KiB a link CPU's chunk the plan leaves room for",
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     if args.dims:
@@ -980,9 +1023,10 @@ def main():
     if any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
-    global SUBBLOCK, COLUMNS, NOCS, VALID_SENT
+    global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, LINK_CHUNK
     NOCS = tuple(int(value) for value in args.nocs.split(","))
     VALID_SENT = args.valid == "sent"
+    LINK_CHUNK = args.link_chunk << 10
     if args.subblock:
         SUBBLOCK = tuple(int(value) for value in args.subblock.split("x"))
     COLUMNS = args.columns
