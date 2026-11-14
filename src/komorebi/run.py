@@ -108,6 +108,7 @@ class Run:
         thread_program=None,
         switch=None,
         ranks=None,
+        first_rank=0,
     ):
         self.h = abi_headers or abi.headers()
         self.backend = backend
@@ -118,6 +119,7 @@ class Run:
         self.cores = grid[0] * grid[1]
         # groups are in flat ranks, of all islands (one island: rank = core)
         self.ranks = ranks or self.cores
+        self.first_rank = first_rank  # this island's first rank (one island: 0)
         self.program = program
         # the run's programs by program field; holds[field]: the cores holding it
         self.programs = list(programs or ([program] if program is not None else []))
@@ -620,13 +622,20 @@ class Run:
         if timeout is not None:
             self._fail_timeout(timeout)
 
+    def _local(self, group):
+        """The part of a flat group on this island, (first core, count) in its own
+        cores; count 0 when it has none (one island: the group)."""
+        low = max(group[0], self.first_rank)
+        high = min(group[0] + group[1], self.first_rank + self.cores)
+        return low - self.first_rank, max(high - low, 0)
+
     def _gave_up(self, event):
         """Whether the dispatcher gave the timed-out command up, the run going on (its
         count of give-ups passed the one seen); keeps the inspect of the deadline."""
         if not hasattr(self.backend, "inspect"):
             return False
         group = self.group(event.handle)
-        count = group[1] if group and group[0] is not None else 0
+        count = self._local(group)[1] if group and group[0] is not None else 0
         read = self.backend.inspect(count)
         if read["given_up"] == self._given_up_seen:
             return False
@@ -1261,7 +1270,7 @@ class Run:
         known = group and group[0] is not None
         cores = (
             device_state.not_reported(
-                self._state, group, event.auxiliary, sequence, self.h
+                self._state, self._local(group), event.auxiliary, sequence, self.h
             )
             if known
             else []
