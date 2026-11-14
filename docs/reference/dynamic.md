@@ -452,8 +452,13 @@ and all are `kWhereMessages*` in `km_core.hpp`.
 - Quota moving between cores; dynamic handlers with different message sizes in one
   program; more than four handlers with the bodies in the program's compute kernel.
 - Dynamic handlers of two programs in one run: the program field of a message is 0.
-- A body larger than one page (4 KiB); a cast of a body to a group; an overlay sent as a
-  body (`overlay.send`) that the target copies into its slot.
+- A body larger than one page (4 KiB). A cast of a body to a group is a broadcast whose
+  block is one 4 KiB page
+  ([23_message_body](../../examples/23_message_body/README.md#a-cast-of-a-body)).
+- An overlay sent as a body (`overlay.send`) that the target copies into its slot: a
+  handler that forwards its own code with its thread does not fit one page (example
+  23's chain handler is 7,104 bytes of parts, 4,608 of them pack's), and the loader
+  reads parts from DRAM only.
 - Priorities or ordering between messages: a program that needs an order sorts at the
   receiver.
 
