@@ -34,6 +34,14 @@ KERNEL_BYTES = 112 * 1024
 CROSS_PAGE = 64  # bytes of a link CPU's row of what crossed, as COUNTS writes it
 
 
+def _rows(indices):
+    """Ascending row indices as a slice when they are one run (a view of the rows, no
+    copy), else as they are."""
+    if indices[-1] - indices[0] == len(indices) - 1:
+        return slice(int(indices[0]), int(indices[-1]) + 1)
+    return indices
+
+
 def _named(error, island):
     """`error` with the island it came from: its message starts "island i: " and
     `error.island` is i (once: an error raised again keeps its first island)."""
@@ -923,10 +931,15 @@ class IslandSession:
             rows = np.empty((count, tensor.page_bytes), np.uint8)
 
             def gather(island, at, low, high, tensor=tensor, rows=rows, start=start):
-                (got,) = self.sessions[island].read(
-                    tensor.parts[island], first=low, pages=high - low
-                )
-                rows[at[low:high] - start] = got
+                part = tensor.parts[island]
+                mine = _rows(at[low:high] - start)
+                if isinstance(mine, slice):  # straight into the rows: no second copy
+                    self.sessions[island].read(
+                        part, first=low, pages=high - low, out=rows[mine]
+                    )
+                    return
+                (got,) = self.sessions[island].read(part, first=low, pages=high - low)
+                rows[mine] = got
 
             self._each_island(gather, self._spans(tensor, start, count, reading=True))
             out.append(rows)
@@ -992,10 +1005,9 @@ class IslandSession:
             return
         start, count = dram.page_range(first, len(pages), tensor.pages)
 
-        def scatter(island, at, low, high):
-            self.sessions[island].write(
-                tensor.parts[island], pages[at[low:high] - start], low
-            )
+        def scatter(island, at, low, high):  # a run of rows: a view, not a copy
+            mine = pages[_rows(at[low:high] - start)]
+            self.sessions[island].write(tensor.parts[island], mine, low)
 
         self._each_island(scatter, self._spans(tensor, start, count))
 
