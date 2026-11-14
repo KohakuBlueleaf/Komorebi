@@ -3,7 +3,6 @@ runtime over it, a dispatcher and the persistent grid on every island. Ranks are
 and contiguous by island; a command's group is split by island on the host, a tensor
 is placed by island. `Session(cards=[...])` with more than one card returns this."""
 
-import copy
 import os
 import time
 
@@ -54,6 +53,12 @@ class IslandTensor:
         self.aligned_page_bytes = first.aligned_page_bytes
         self.address = first.address
         self.in_dram = True
+
+    def placement_args(self):
+        """What km::Placement reads (compile arguments, after the accessor's): the
+        islands, copy, then (first page, pages) of each island."""
+        parts = [word for part in self.placement.parts for word in part]
+        return [len(self.placement.parts), int(self.placement.copy), *parts]
 
     def accessor_args(self):
         """The tensor accessor arguments, the same on every island."""
@@ -533,9 +538,9 @@ class IslandSession:
             raise ValueError(
                 f"{program.name}: X280 threads over islands are not done yet"
             )
-        if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp)
-            program = copy.copy(program)
-            program.defines = {**program.defines, "KM_PAGE_LINKS": 1}
+        defines = program.defines
+        if self.links:  # the link cores' CPUs serve PAGES (km_pages.hpp), while built
+            program.defines = {**defines, "KM_PAGE_LINKS": 1}
         runs = []
         try:
             for island, session in enumerate(self.sessions):
@@ -548,6 +553,8 @@ class IslandSession:
             for run in runs:
                 run.abort()
             raise
+        finally:
+            program.defines = defines
         self.run = IslandRun(self.graph, runs)
         return self.run
 

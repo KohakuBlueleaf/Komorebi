@@ -45,7 +45,18 @@ The time is the host's, from the submit of both commands to the wait's event. Th
 1 MiB run is the host's command time; 64 MiB over four links is 8.0 GB/s a CPU, a
 quarter of what one CPU sends from L1 alone (28.9 GB/s, `experiments/link_rate`). With
 three slots a CPU has at most three DRAM reads in flight, so the read latency sets the
-rate; more L1 a CPU, more reads in flight, is the next step.
+rate; more L1 a CPU, more reads in flight, is the next step. (Both rows ran before the
+writer took the `WHERE` handler below, which the page sender does not use.)
+
+## Which island holds a page, asked on a core
+
+`pages.py --where` makes four tensors before the load (every page on island 0, every
+page on island 1, split by rank, a copy), gives the writer their placements as
+compile arguments (`placement_args()`), and asks the first and the last rank core of
+each island, with the handler `WHERE`, `km::island_of(placement, page)` for the first
+and last page of every part. 2026-11-14, links 4, 1 MiB tensors (256 pages; the split
+one 138 and 118): 40 answers, 0 differ from `islands.island_of` on the host; the copy
+answers 0 on island 0 and 1 on island 1.
 
 ## Running it
 
@@ -53,6 +64,7 @@ Both cards in one job, through the hang watcher, with tt-metal's environment set
 the repository's `src` on the path:
 
     python pages.py --links 4 --mib 64
+    python pages.py --links 4 --mib 1 --where
 
 It prints one JSON line and exits nonzero if a page is wrong or a kernel ended with an
 error.

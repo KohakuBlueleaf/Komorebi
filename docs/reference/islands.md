@@ -92,6 +92,15 @@ follows; default every rank), so a rank that partitions the tensor by rank finds
 part in its own island's DRAM; `copy=True` puts every page on every island. A split
 tensor's pages that another island holds are zeros on this one.
 
+A kernel asks where a page lives with `km::island_of(placement, page)`
+(`km_placement.hpp`): the session writes a tensor's placement as compile arguments
+after its accessor's (`tensor.placement_args()`: the islands, copy, then each
+island's first page and pages), which `km::Placement<offset>()` reads; a copy's page
+answers the core's own island. Each island's session writes its island number into
+its cores' island table (`km::island()`). On both islands' cores, for four tensors
+(all on island 0, all on island 1, split, a copy): 40 answers, all as
+`islands.island_of` gives them (`experiments/islands_pages/pages.py --where`).
+
 `session.read` and `session.read_bf16` assemble a tensor from the island that holds
 each page, through that island's host channel; `session.write` writes each page into
 the island that holds it (a copy: into every island).

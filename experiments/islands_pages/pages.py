@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import islands
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 STARTED = time.monotonic()
@@ -27,6 +28,11 @@ def parse():
     parser.add_argument("--links", type=int, default=4)
     parser.add_argument("--mib", type=int, default=64, help="MiB written across")
     parser.add_argument("--page", type=int, default=4096, help="bytes a page")
+    parser.add_argument(
+        "--where",
+        action="store_true",
+        help="no crossing: ask cores of both islands which island holds pages",
+    )
     return parser.parse_args()
 
 
@@ -46,10 +52,27 @@ def main():
         report["channels"] = [list(channels) for channels in session.channels]
         source = session.tensor(data, "uint32", like=own[0])
         target = session.empty(data.shape, "uint32", like=own[1])
-        report["parts"] = [list(source.placement.parts), list(target.placement.parts)]
+        split = session.empty(data.shape, "uint32")
+        copy = session.empty(data.shape, "uint32", copy=True)
+        tensors = (source, target, split, copy)
+        report["parts"] = [list(tensor.placement.parts) for tensor in tensors]
         log(f"source {source.placement.parts}, target {target.placement.parts}")
-        run = session.load(km.Program("pages", kernels=KERNELS), deadline=2.0)
+        program = km.Program(
+            "pages",
+            kernels=KERNELS,
+            handlers=KERNELS / "pages.h",
+            compile_args={
+                "writer": [w for tensor in tensors for w in tensor.placement_args()]
+            },
+        )
+        run = session.load(program, deadline=2.0)
         log("loaded on both islands")
+        if args.where:
+            report.update(where(session, program, tensors))
+            run.stop()
+            report["ok"] = report["wrong_answers"] == 0
+            print(json.dumps(report), flush=True)
+            sys.exit(0 if report["ok"] else 1)
         timeout = 5.0 + pages * args.page / 1e9
         try:
             crossed = session.cross(source, target, timeout=timeout)
@@ -77,6 +100,30 @@ def main():
     )
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
+
+
+def where(session, program, tensors):
+    """km::island_of(tensor, page) on the first and the last core of each island, for
+    the first and last page of every part, against islands.island_of on the host."""
+    asked, wrong = [], 0
+    handler = program.handler("where")
+    for island in range(2):
+        run = session.run.island(island)
+        cores = (0, session.graph.count(island) - 1)
+        for index, tensor in enumerate(tensors):
+            pages = {0, tensor.pages - 1}
+            for start, length in tensor.placement.parts:
+                pages |= {start, start + length - 1} if length else set()
+            for core in cores:
+                for page in sorted(pages):
+                    event = run.wait(
+                        run.submit(handler, (core, 1), [index, page], result=True)
+                    )
+                    want = islands.island_of(tensor.placement, page, island)
+                    asked.append([island, core, index, page, event.result, want])
+                    wrong += int(event.result != want)
+    log(f"{len(asked)} answers of km::island_of, {wrong} wrong")
+    return {"answers": asked, "wrong_answers": wrong}
 
 
 def links(session, report):
