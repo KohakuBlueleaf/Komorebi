@@ -239,6 +239,17 @@ across the islands (the rows inside), 535.5 µs with its 4 row broadcasts across
 columns inside), against 186.1 µs on card 0 alone. Each block that crosses costs two
 relay asks and a marker back, one ask a way at a time.
 
+## When a core stops
+
+Each island's dispatcher holds its own island's reset lists. A command given up on
+island i resets and loads again that island's cores still in it, or whose kernels
+ended at a wait's own limit; the time-out says `island i:` and names them by flat
+rank and the island's own core number, and the run goes on on both islands
+([recovery](../guides/recovery.md)). A link core is reset by the host
+(`run.reset_link(island, k)`): its connections are closed at their routers, the
+core is loaded again and opens them again, and reads and commands across are exact
+after it. The far link core needs nothing.
+
 ## What is not built
 
 - **Over a link:** a reduce or a broadcast over more than two islands (a part crosses
@@ -255,3 +266,6 @@ relay asks and a marker back, one ask a way at a time.
   tensors in L1.** A list of programs, one an island, loads; a thread of one island
   fetches and stores tensors the other holds.
 - **More than two cards.** The mesh opens as 1 x n; two were tried.
+- **A link core reset by its dispatcher.** A give-up resets only ranks; a link core
+  is reset by the host, between commands. A line or an ask in flight on it is lost,
+  and the command that waits for it times out at its deadline.

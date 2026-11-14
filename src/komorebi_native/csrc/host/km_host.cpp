@@ -34,6 +34,9 @@
 #include <tt-metalium/buffer_distribution_spec.hpp>
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/experimental/fabric/fabric.hpp>
+#include <tt-metalium/experimental/fabric/fabric_edm_types.hpp>
+
+#include <hostdevcommon/fabric_common.h>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/mesh_device.hpp>
 #include <tt-metalium/mesh_buffer.hpp>
@@ -142,6 +145,86 @@ namespace {
             chip(mesh), tt::tt_metal::CoreCoord{x, y}, address, count * 4, words
         );
         return words;
+    }
+
+    // The router's connection words (the fabric's connection_interface): unused, close.
+    constexpr uint32_t kConnectionUnused = 0;
+    constexpr uint32_t kConnectionClose = 2;
+
+    // Closes core `where`'s (in reset) fabric connection on each of `channels` as its
+    // close would, the cursor at the router's read counter. False: no teardown in time.
+    bool close_connections(
+        tt::tt_metal::IDevice* dev,
+        const tt_cxy_pair& where,
+        const std::vector<uint32_t>& channels,
+        double timeout_s
+    ) {
+        namespace tf = tt::tt_fabric;
+        if (channels.empty()) {
+            return true;
+        }
+        auto& context = tt::tt_metal::MetalContext::instance();
+        const auto& cluster = context.get_cluster();
+        tf::tensix_fabric_connections_l1_info_t table{};
+        cluster.read_core(
+            &table,
+            sizeof(table),
+            where,
+            context.hal().get_dev_addr(
+                tt::tt_metal::HalProgrammableCoreType::TENSIX,
+                tt::tt_metal::HalL1MemAddrType::TENSIX_FABRIC_CONNECTIONS
+            )
+        );
+        for (const uint32_t channel : channels) {
+            if (
+                channel >=
+                    tf::tensix_fabric_connections_l1_info_t::MAX_FABRIC_ENDPOINTS ||
+                !(table.valid_connections_mask >> channel & 1u)
+            ) {
+                throw std::invalid_argument("reset_core: no fabric connection there");
+            }
+            const auto& connection = table.read_only[channel];
+            const tt_cxy_pair router(
+                dev->id(),
+                tt::tt_metal::CoreCoord{connection.edm_noc_x, connection.edm_noc_y}
+            );
+            const uint32_t close = kConnectionClose;
+            cluster.write_core_immediate(
+                &close, sizeof(close), router, connection.edm_connection_handshake_addr
+            );
+            const auto until = Clock::now() + std::chrono::duration<double>(timeout_s);
+            uint32_t state = close;
+            while (state != kConnectionUnused) {
+                if (Clock::now() > until) {
+                    return false;
+                }
+                cluster.read_core(
+                    &state,
+                    sizeof(state),
+                    router,
+                    connection.edm_connection_handshake_addr
+                );
+            }
+            uint32_t counter = 0;
+            cluster.read_core(
+                &counter,
+                sizeof(counter),
+                router,
+                connection.edm_worker_location_info_addr +
+                    offsetof(tf::EDMChannelWorkerLocationInfo, edm_read_counter)
+            );
+            const std::array<uint32_t, 4> cursor{
+                counter, counter % connection.num_buffers_per_channel, 0u, 0u
+            };
+            cluster.write_core(
+                cursor.data(),
+                sizeof(cursor),
+                router,
+                connection.buffer_index_semaphore_id
+            );
+        }
+        cluster.l1_barrier(dev->id());
+        return true;
     }
 
     // The grid (x, y), then per core in core order its translated NoC address (the
@@ -1207,9 +1290,14 @@ namespace {
             );
         }
 
-        // Resets core (x, y) alone, restarts its firmware, reloads its kernels as the
-        // launch did. Seconds of reset, firmware, load; firmware -1: never ready.
-        std::array<double, 3> reset_core(uint32_t x, uint32_t y, double timeout_s) {
+        // Resets core (x, y), its connections on `channels` closed; restarts, reloads.
+        // Seconds of reset, firmware (-1: not ready, -2: not closed), load.
+        std::array<double, 3> reset_core(
+            uint32_t x,
+            uint32_t y,
+            double timeout_s,
+            const std::vector<uint32_t>& channels = {}
+        ) {
             namespace tm = tt::tt_metal;
             if (!workload_) {
                 throw std::runtime_error("reset_core: the program was not launched");
@@ -1242,6 +1330,10 @@ namespace {
             // The open's firmware start, for this core: firmware images, initial launch
             // messages, go INIT, read pointers 0, BRISC's boot jump, BRISC released.
             cluster.assert_risc_reset_at_core(where, tt::umd::RiscType::ALL);
+            if (!close_connections(dev, where, channels, timeout_s)) {
+                lap(0);
+                return {took[0], -2.0, 0.0};
+            }
             lap(0);
             auto& builds = (
                 tm::BuildEnvManager::get_instance(tm::extract_context_id(dev))
@@ -2982,7 +3074,8 @@ NB_MODULE(_km_host, m) {
             &Launch::reset_core,
             nb::arg("x"),
             nb::arg("y"),
-            nb::arg("timeout_s")
+            nb::arg("timeout_s"),
+            nb::arg("channels") = std::vector<uint32_t>{}
         ).def("reset_groups", &Launch::reset_groups).def(
             "reset_list",
             &Launch::reset_list,

@@ -479,18 +479,25 @@ class Run:
         self.recovery_refused = None
         return True
 
-    def reset_core(self, core, timeout=10.0):
+    def reset_core(self, core, timeout=10.0, channels=()):
         """Resets core `core` (this card's core number) and loads its kernels again
         while the other cores run: by the dispatcher from its kept list (`recovery`),
-        else by the host. Returns {core, by, seconds, x280_seconds}; KomorebiError if
-        the core did not come back."""
+        else by the host, which first closes its fabric connections on `channels`.
+        Returns {core, by, seconds, x280_seconds}; KomorebiError if it did not return.
+        """
         if not 0 <= core < self.cores:
             raise ValueError(f"core {core}: the grid has {self.cores}")
         started = time.perf_counter()
         number = NO_LIST if self.recovery is None else self._core_list[core]
-        if number == NO_LIST:
+        if number == NO_LIST or channels:
             x, y = core % self.grid[0], core // self.grid[0]
-            parts = self.backend.launch.reset_core(x, y, min(timeout, 2.0))
+            parts = self.backend.launch.reset_core(
+                x, y, min(timeout, 2.0), [int(channel) for channel in channels]
+            )
+            if parts[1] == -2:
+                raise KomorebiError(
+                    f"core {core}: a router did not close its connection"
+                )
             if parts[1] < 0:
                 raise KomorebiError(f"core {core}: its firmware did not start again")
             return {
@@ -498,6 +505,7 @@ class Run:
                 "by": "host",
                 "seconds": time.perf_counter() - started,
                 "x280_seconds": None,
+                "parts": list(parts),  # reset (and close), firmware, load
             }
         offset, size = self.recovery["lists"][number]
         handle = self._queue_command(

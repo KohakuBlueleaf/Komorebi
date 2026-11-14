@@ -120,8 +120,9 @@ A step is tried only when the one before it was not enough.
    tables, the kernels and each core's arguments) and which list each core takes, held
    at the start of the upload region for the run: 68,864 bytes and about 4 ms of the
    load for the map/collect example. At the end of the wait of any give-up the
-   dispatcher resets each core of the group still in the command and loads it again,
-   and the run goes on; `run.recoveries` keeps each such give-up's text. With a list of
+   dispatcher resets each core of the group still in the command, or whose kernels
+   ended at a wait's own limit, and loads it again, and the run goes on;
+   `run.recoveries` keeps each such give-up's text. With a list of
    programs, each core gets the list of the program it holds. The lists are refused
    for a program with semaphores and not made for program switches: `run.recovery` is
    then None and `run.recovery_refused` says why. `session.load(..., recover=False)`
@@ -130,9 +131,8 @@ A step is tried only when the one before it was not enough.
     On several cards each island's dispatcher holds its own island's lists, and the
     give-up's text starts `island i:` and names flat ranks, `rank 128 (island 1, core
     10)`; `run.reset_core(rank)` and `run.recoveries` (with each give-up's ranks) are
-    the calls ([islands](../reference/islands.md#the-run)). Link cores get no list: a reset
-    link core would lose the connection it holds open, so a give-up on one still ends
-    the run.
+    the calls ([islands](../reference/islands.md#the-run)). Link cores get no list, so
+    the dispatcher never resets one at a give-up.
 
 6. **The dispatcher's own loop.** Core 2 of the dispatcher's cluster watches the loop on
    core 0. A loop that makes no pass for 100 ms is reported to the host (`run.stalls`,
@@ -140,6 +140,14 @@ A step is tried only when the one before it was not enough.
    state kept ("back", about 1.2 microseconds later in the experiment); the commands after
    it run as before. If core 0 is not back 50 ms later, the host gets "lost" and stops the
    run with `km.KernelFailed`. Nothing has to be called for this to work.
+
+7. **A link core, by the host.** `run.reset_link(island, k)` closes link core k's
+   fabric connections at their routers, resets the core and loads it again, then
+   opens its connections again; the far link core needs nothing. On two p150a cards
+   with two links on the core: 95 to 98 ms for the reset, 0.24 ms to open again, and the next reads across (example 01's islands script with `--reset-link
+   1`) and the next commands that cross (example 25 with `--reset-link`) are exact.
+   Use it between commands: a line or an ask in flight on that core is lost, and the
+   command waiting for it times out at its deadline.
 
 ## When a card reset is still the only way
 
