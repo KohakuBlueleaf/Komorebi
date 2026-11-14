@@ -113,11 +113,14 @@ def plan(spec, cores):
         held = [programs[index] for index in group.programs]
         _same(held, "compute", "compute options")
         _same(held, "opt", "opt levels")
+        _same_nocs(held, "programs that share cores")
         if len(held) > 1 and any(program.args is not None for program in held):
             raise ProgramError(
                 f"{', '.join(p.name for p in held)}: programs that share cores take no "
                 "per-core args"
             )
+    if ranges is not None:  # one build of the runtime's kernels serves every group
+        _same_nocs(programs, "programs whose groups switch")
     for program in programs if ranges is not None else ():
         if any(buffer.index >= SWITCH_BUFFERS for buffer in program.buffers):
             raise ProgramError(
@@ -172,6 +175,15 @@ def _same(programs, attribute, what):
         raise ProgramError(
             f"{', '.join(p.name for p in programs)}: programs that share cores share "
             f"one set of {what}"
+        )
+
+
+def _same_nocs(programs, who):
+    nocs = {(p.kernel_noc("reader"), p.kernel_noc("writer")) for p in programs}
+    if len(nocs) > 1:
+        raise ProgramError(
+            f"{', '.join(p.name for p in programs)}: {who} put their reader and "
+            "writer on the same NoCs (Program noc)"
         )
 
 

@@ -86,6 +86,13 @@ namespace km {
         return ok && (words_end <= t.offset || t.words >= end);
     }
 
+#if defined(ARCH_BLACKHOLE)
+    // PCIE_NOC_X / Y are translated, (19, 24): the same PCIe tile on either NoC.
+    constexpr bool kPcieEitherNoc = true;
+#else
+    constexpr bool kPcieEitherNoc = false;
+#endif
+
     inline uint64_t pcie_noc() {
         return static_cast<uint64_t>(NOC_XY_PCIE_ENCODING(PCIE_NOC_X, PCIE_NOC_Y));
     }
@@ -158,7 +165,10 @@ namespace km {
     template <typename Wait>
     __attribute__((noinline)) uint32_t
     push_to_host(const Transfer& t, uint32_t rank, uint32_t count, Wait wait) {
-        static_assert(sizeof(Wait) > 0 && NOC_INDEX == 0, "PCIe coordinates of NoC 0");
+        static_assert(
+            sizeof(Wait) > 0 && (NOC_INDEX == 0 || kPcieEitherNoc),
+            "PCIe coordinates of NoC 0"
+        );
         if (rank >= count || !transfer_fits(t, count)) {
             return kTransferRefused;
         }
@@ -233,7 +243,10 @@ namespace km {
     template <typename Wait>
     __attribute__((noinline)) uint32_t
     pull_from_host(const Transfer& t, uint32_t rank, uint32_t count, Wait wait) {
-        static_assert(sizeof(Wait) > 0 && NOC_INDEX == 0, "PCIe coordinates of NoC 0");
+        static_assert(
+            sizeof(Wait) > 0 && (NOC_INDEX == 0 || kPcieEitherNoc),
+            "PCIe coordinates of NoC 0"
+        );
         if (rank >= count || !transfer_fits(t, count)) {
             return kTransferRefused;
         }

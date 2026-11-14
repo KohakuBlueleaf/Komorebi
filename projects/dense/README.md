@@ -758,16 +758,19 @@ multicast along core rows inside a panel and W down core columns, each on its ow
 data-movement core and NoC, blocks of bm x bn tiles, K blocks of up to 16 tiles, fp32
 partials added by the packer in L1, the last K block reloading them, HiFi2, bf16 out,
 a block's Y written after the next block's first K block. Every piece is said with
-`km::Broadcast`, the grid plan and the tensor accessors, except two:
+`km::Broadcast`, the grid plan and the tensor accessors, and so are the two it once
+lacked, each an option of `linear.py`:
 
-- which data-movement core carries which stream. Kohaku-TT puts X and Y on RISCV_0 over
-  NoC 1 and W on RISCV_1 over NoC 0; a program here has no field for a data-movement
-  kernel's NoC (the reader is RISCV_0 on NoC 0, the writer RISCV_1 on NoC 1). Swapping
-  the streams between our reader and writer would give its NoCs and directions but not
-  its cores; the counters below show both feeds idle a third or more of a call, so that
-  placement is not what sets the time, and it was not done;
-- the VALID word after a block's multicast is sent rather than acknowledged:
-  `km::Broadcast::cast` always waits for the multicast's acknowledgements.
+- which NoC each data-movement core uses (`--nocs 1,0`, `km.Program(noc=...)`): the
+  reader (RISCV_0, X) on NoC 1 and the writer (RISCV_1, W and Y) on NoC 0, as Kohaku-TT
+  places them, the broadcasts' senders and directions following. Exact, and slower:
+  4,978.6 us at 8192 cubed, 36,489.1 at 16384 cubed;
+- the VALID word after a block's multicast once it is sent, not acknowledged
+  (`--valid sent`, `km::Broadcast::valid_when_sent`, see the broadcast reference for
+  what it rests on). Exact, and no faster: 4,480.4 and 34,522.4 us. Both options at
+  once: 4,959.4 and 36,430.2 us.
+
+The plan picker keeps the defaults (NoC 0 for the reader, acknowledged VALIDs).
 
 What set our time was the plan and the compute, measured one change at a time (single
 calls, card 0, median of three):
@@ -778,6 +781,13 @@ calls, card 0, median of three):
 | the plan's cost model: 13 x 12 blocks, K block 4 | 4,660.6 | |
 | K blocks of any size: K block 6 | 4,586.0 | 35,229.5 |
 | the partials added in L1 by every K block | **4,488.1** | **34,544.8** |
+| then the reader on NoC 1, the writer on NoC 0 (`--nocs 1,0`) | 4,978.6 | 36,489.1 |
+| then the VALID once sent (`--valid sent`), NoCs as before | 4,480.4 | 34,522.4 |
+
+The last two rows: 2026-11-15 05:19 to 05:24, host load 4.8 to 6.9, each the median of
+three single calls before a 3 s loop whose last output was checked (AICLK, sampled in
+the loops, fell to 800 MHz there); `linear.py --cube N --cards 0 --nocs 1,0` and
+`--valid sent`, each form in one session a cube.
 
 - **The plan.** A K block now costs the larger of its compute (24.5 ns a tile product, 51
   ns a subblock's turn) and its slower feed (4.75 us a block, then 203 ns a tile of the

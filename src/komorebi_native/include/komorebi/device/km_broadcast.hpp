@@ -161,6 +161,16 @@ namespace km {
             return slot(block);
         }
 
+        // Valid when sent: from now on each block's VALID ends one linked transaction
+        // with the block's multicast, not waiting for the block's acknowledgements.
+        void valid_when_sent() {
+            static_assert(
+                noc_mode != DM_DYNAMIC_NOC,
+                "valid when sent: the block and its VALID go out on this CPU's one NoC"
+            );
+            sent_ = true;
+        }
+
         // Sender, `block` filled: timed wait for every receiver to be done with block
         // `block - window`, multicasts it, barrier, VALID, push to compute.
         bool cast(uint32_t block) {
@@ -329,15 +339,28 @@ namespace km {
                 word_blocks_ = 0;
             }
             if (args_.receivers != 0) {
+                const bool linked = tiles && sent_;
+                if (
+                    linked && !flushed(kFlushWrites, kWhereBroadcastDone, block)
+                ) {  // one transaction in flight: the last one acknowledged
+                    return false;
+                }
                 if (tiles) {
                     const uint32_t source = slot(block);
                     noc_async_write_multicast(
-                        source, multicast_address(source), block_bytes_, args_.receivers
+                        source,
+                        multicast_address(source),
+                        block_bytes_,
+                        args_.receivers,
+                        linked
                     );
                 }
-                if (!flushed(
-                    tiles ? kFlushWrites : kFlushSent, kWhereBroadcastDone, block
-                )) {  // the block landed before its VALID; the last VALID left
+                if (
+                    !linked &&
+                    !flushed(
+                        tiles ? kFlushWrites : kFlushSent, kWhereBroadcastDone, block
+                    )
+                ) {  // the block landed before its VALID; the last VALID left
                     return false;
                 }
                 volatile tt_l1_ptr uint32_t* out = area_word(KM_BROADCAST_OUT);
@@ -840,6 +863,7 @@ namespace km {
         uint32_t block_bytes_ = 0;
         uint32_t block_count_ = 0;
         bool reserved_ = false;
+        bool sent_ = false;  // valid when sent
         uint32_t marked_ = 0;
         uint32_t word_blocks_ = 0;  // sender: blocks up to the last word cast, 0: taken
         uint32_t took_ = 0;  // a fed first core: blocks up to the last word taken

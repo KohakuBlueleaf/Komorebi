@@ -39,6 +39,10 @@ log = run.log
 SUBBLOCK = None
 # one island: the plan on the grid's first columns only (--columns)
 COLUMNS = None
+# the reader's and the writer's NoC, X's and W's broadcasts with them (--nocs)
+NOCS = (0, 1)
+# both broadcasts mark a block valid once it is sent, not acknowledged (--valid sent)
+VALID_SENT = False
 # Placements by hint (X, W, Y): "k", W sharded (split along K, Y along N); "rows", W
 # replicated (X and Y split along M, W a copy: Kohaku-TT's default form).
 PLACES = {
@@ -383,11 +387,11 @@ def piece_blocks(piece, grid, width):
     return blocks
 
 
-def pieces_args(pieces, nocs, ranks, m_tiles, group_word):
-    """Each core's argument function: the broadcast words of its piece (row broadcast
-    on NoC0, column broadcast on NoC1, `group_word` the command's), then its core
-    words (in a piece, first row and column, its first page of a set of S, a set's
-    pages, plan words with M whole); compute: core words, then the broadcast windows."""
+def pieces_args(pieces, nocs, ranks, m_tiles, group_word, movers=(0, 1)):
+    """Each core's argument function: its piece's broadcast words (row on movers[0],
+    the reader's NoC, column on movers[1], the writer's; `group_word` the command's),
+    then its core words (first row and column, first page of a set of S, a set's pages,
+    plan words with M whole); compute: core words, then the broadcast windows."""
     group = layout.Group(0, ranks)
     set_pages = sent_pages(pieces, nocs.grid)
     words, first = {}, 0
@@ -403,8 +407,22 @@ def pieces_args(pieces, nocs, ranks, m_tiles, group_word):
                 (G[broadcast], G[cb], window, pages),
             )
             for along, noc, broadcast, cb, window, pages in (
-                ("row", 0, "kBroadcastRow", "kCbRow", plan.wa, plan.bm * plan.kb),
-                ("column", 1, "kBroadcastCol", "kCbCol", plan.ww, plan.kb * plan.bn),
+                (
+                    "row",
+                    movers[0],
+                    "kBroadcastRow",
+                    "kCbRow",
+                    plan.wa,
+                    plan.bm * plan.kb,
+                ),
+                (
+                    "column",
+                    movers[1],
+                    "kBroadcastCol",
+                    "kCbCol",
+                    plan.ww,
+                    plan.kb * plan.bn,
+                ),
             )
         ]
         plan_words = [m_tiles, *plan.words()[1:]]
@@ -533,6 +551,7 @@ class Linear:
                 ranks,
                 m_tiles,
                 self.group[0] | self.group[1] << 16,
+                NOCS,
             ),
             compile_args={
                 "reader": x.accessor_args() + s.accessor_args(),
@@ -547,8 +566,10 @@ class Linear:
                 "unpack_to_dest_mode": {L["kCbPart"]: "UnpackToDestFp32"},
             },
             handlers=LINEAR_H,
+            noc=dict(zip(("reader", "writer"), NOCS, strict=True)),
             # nothing exchanged: kernels without the puts and the sync (smaller)
-            defines={} if self.exchange else {"LINEAR_OWN": 1},
+            defines=({} if self.exchange else {"LINEAR_OWN": 1})
+            | ({"LINEAR_VALID_SENT": 1} if VALID_SENT else {}),
         )
         self.run = session.load(self.program, deadline=deadline, wait=wait)
         # what each island's session keeps in every core, by its own count (the
@@ -935,6 +956,15 @@ def main():
     parser.add_argument(
         "--columns", type=int, default=None, help="one card: the grid's first columns"
     )
+    parser.add_argument(
+        "--nocs", default="0,1", help="R,W: the reader's and the writer's NoC"
+    )
+    parser.add_argument(
+        "--valid",
+        choices=["acked", "sent"],
+        default="acked",
+        help="a broadcast block is valid once acknowledged, or once sent",
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     if args.dims:
@@ -950,12 +980,15 @@ def main():
     if any(value % pl.TILE for value in dimensions):
         raise SystemExit(f"M, K and N are whole tiles of {pl.TILE}: {dimensions}")
     cards = [int(value) for value in args.cards.split(",")]
-    global SUBBLOCK, COLUMNS
+    global SUBBLOCK, COLUMNS, NOCS, VALID_SENT
+    NOCS = tuple(int(value) for value in args.nocs.split(","))
+    VALID_SENT = args.valid == "sent"
     if args.subblock:
         SUBBLOCK = tuple(int(value) for value in args.subblock.split("x"))
     COLUMNS = args.columns
     report = {"m": dimensions[0], "k": dimensions[1], "n": dimensions[2]}
     report |= {"cards": cards, "links": args.links, "place": args.place}
+    report["nocs"], report["valid"] = list(NOCS), args.valid
     log("building the inputs")
     x_matrix, w_matrix = ref.inputs(*dimensions, kind=args.inputs)
     log("inputs built")

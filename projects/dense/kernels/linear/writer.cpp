@@ -1,5 +1,5 @@
-// Linear writer, NoC1: W's column broadcast a window of columns; other islands' tiles
-// put to them in chunks (one in flight), one sync over the islands, its own Y written.
+// Linear writer (NoC1 by default): W's column broadcast a window of columns; other
+// islands' tiles put to them in chunks (one in flight), one sync, its own Y written.
 #include <stdint.h>
 
 #include "../dense.h"
@@ -193,6 +193,9 @@ void kernel_main() {
         };
         if (mine.count != 0 && core(kCoreRank) != 0) {
             km::Broadcast broadcast(writer, command, kArgBroadcast);
+#if defined(LINEAR_VALID_SENT)
+            broadcast.valid_when_sent();
+#endif
             if (!broadcast.ok()) {
                 return false;
             }
