@@ -14,6 +14,11 @@ core sees its flat rank in the whole group, so an existing program runs unchange
 Commands cross between the cards on link 0 and pages on the session's links, through
 each island's link cores; between the islands of a split card they cross on wires.
 
+One card as one island is the way to run, and the recommendation. A card split into
+islands is for developing and checking programs written for islands. X280 threads on a
+split card are not supported (the session refuses them), and two cards as a line of four
+islands is not in this release.
+
 An island is a set of cores that reach the others only through links: here one card's
 chip, with its own Tensix grid and its own dispatcher on its own X280 cluster 0. The
 host values (the graph of islands, ranks, the split of a group, placement) are in
@@ -571,8 +576,8 @@ and one open.
 - **Dispatchers.** Island i's dispatcher runs on X280 cluster i of the card, the same
   image as cluster 0's, with its own ring from the host, its own state area and its own
   LIM; each island's cores report to their own dispatcher. So a card splits into at
-  most four islands, and each island past the first takes a work cluster: a split
-  card runs no X280 threads (the session refuses them).
+  most four islands, and each island past the first takes a work cluster: X280 threads
+  on a split card are not supported (the session refuses them).
 - **Load.** `session.load(program)` builds and launches one `Program` once on every
   core, each core given its island's table, base and dispatcher, then starts every
   dispatcher. Each dispatcher sends commands over its island's rows only, so an island
@@ -637,10 +642,13 @@ and one open.
   reaches; each island writes its own part of a far dispatcher's inbox (the 16 slots
   cut in islands - 1 parts), so with three islands a dispatcher keeps 3 commands
   across in flight and with four 2 (8 with two).
-- **Not on a split card.** A dict of programs, X280 threads and ports, a reset list
-  for a core (a given-up command is not recovered by a reset), queued commands (the
-  dispatcher places them over the whole card), and engine streams and graphs (not
-  checked on a split card).
+- **Not on a split card.** More than one `Program` (a list or a dict of programs, and
+  programs in the runtime's form: the load refuses them), X280 threads, ports and ranks
+  (not supported: the load refuses them), a reset list for a core (`run.recovery_refused`
+  says `a card split into islands`: a given-up command is not recovered by a reset and
+  a core that does not leave it ends the run), queued commands (the dispatcher places
+  them over the whole card), and engine streams and graphs (not checked on a split
+  card).
 
 Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,
 then with `--islands 2`), 2026-11-14, X280 at 1350 MHz, host load about 3, the median
@@ -728,12 +736,13 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
 
 ## Not yet
 
-- Links: a dynamic run's messages cross only in a RUN of every rank;
-  `collect` and `broadcast` over islands are not built, and while the run's messages
-  are served link 0 carries nothing else (a core's ask waits too). A kernel's own ask
-  (`km::read_pages`) and put (`km::write_pages`) are carried by every page CPU; over
-  more than two islands an ask is forwarded but carried by one page CPU a link, and a
-  put goes one link only. A copy across asks 16 KiB a line, one line a core in flight.
+- Links: a dynamic run's messages cross only in a RUN of every rank, and while the
+  run's messages are served link 0 carries nothing else (a core's ask waits too). A
+  kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
+  page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
+  link, and a put goes one link only. A copy with both sides placed moves a chunk at a
+  time, a line a run of the chunk; a copy that asks pages another island holds sends a
+  line a run, all in flight ([pages across a link](#pages-across-a-link)).
 - A dict of programs switching groups over islands (`run.load`), engines and uploads
   over islands; tensors in L1. Programs of the runtime's form load as on one card: a
   list, or a dict of groups in flat ranks, is planned over every rank and each island
@@ -746,5 +755,10 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
 - More than two cards: the mesh opens 1 x n; tried with two.
 - A split card: a copy across and a put over more than one link; more than one wire a
-  pair with more than two islands; two cards each split (fabric links and wires in one
-  graph), so forwarding has run over wires only.
+  pair with more than two islands; X280 threads (not supported, by decision: a split card
+  is for developing and checking island programs).
+- Two cards each split into islands, as a line of four (fabric links and wires in one
+  graph): not in this release, so forwarding has run over wires only.
+- A link core reset by its dispatcher: not built; a hung link core is named by its
+  dispatcher and reset by the host (`run.reset_link`; [how reset
+  works](../concepts/reset.md#4-reset-a-link-core-from-the-host)).

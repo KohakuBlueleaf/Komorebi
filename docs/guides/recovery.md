@@ -15,7 +15,8 @@ is the guide for finding the missing call in a kernel; this one is about what th
 does meanwhile and what is left for you to do. The pages with every rule are
 [giving up one command](../reference/runtime.md#giving-up-one-command),
 [inspecting a run](../reference/host.md#inspecting-a-run) and the
-[watch on the dispatcher](../concepts/dispatch.md#the-watch).
+[watch on the dispatcher](../concepts/dispatch.md#the-watch). How each step is done on
+the card, what it was run on and what it costs is on [how reset works](../concepts/reset.md).
 
 ## The ladder
 
