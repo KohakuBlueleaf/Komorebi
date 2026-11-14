@@ -152,7 +152,28 @@
 #define KM_ASK_HOLDER 8u
 #define KM_ASK_FROM 9u
 #define KM_ASK_END 15u
-#define KM_LINK_AREA_BYTES (KM_ASK_INBOX + KM_ASK_SLOTS * 64u)
+/* Then a core's puts of pages into DRAM another island holds (km::write_pages), the
+ * same way the other direction: on link core 0 the count its cores reserve put lines
+ * with, the put lines its page CPU took, the far island's count of puts confirmed
+ * written; the pages the far island's puts wrote here (their last packets add them
+ * once written), the puts confirmed here, their pages; a core's own put line and two
+ * answer words for each of its two data-movement CPUs; the page CPU's three headers
+ * (a put line across, a confirmation's count and its done word); the put lines, then
+ * the far island's (an ask line each: KM_ASK_TO the asker's L1, KM_ASK_TENSOR the
+ * holder's tensor) */
+#define KM_PUT_TAIL (KM_ASK_INBOX + KM_ASK_SLOTS * 64u)
+#define KM_PUT_TAKEN (KM_PUT_TAIL + 0x10u)
+#define KM_PUT_DONE (KM_PUT_TAIL + 0x20u)
+#define KM_PUT_LANDED (KM_PUT_TAIL + 0x30u)
+#define KM_PUT_CONFIRMED (KM_PUT_TAIL + 0x34u)
+#define KM_PUT_USED (KM_PUT_TAIL + 0x38u)
+#define KM_PUT_BAD (KM_PUT_TAIL + 0x3Cu)
+#define KM_PUT_OWN (KM_PUT_TAIL + 0x40u) /* + 0x60 the second CPU's */
+#define KM_PUT_OWN_BYTES 0x60u
+#define KM_PUT_HEADERS (KM_PUT_OWN + 2u * KM_PUT_OWN_BYTES + 0x40u)
+#define KM_PUT_LINES (KM_PUT_HEADERS + 0xC0u)
+#define KM_PUT_INBOX (KM_PUT_LINES + KM_ASK_SLOTS * 64u)
+#define KM_LINK_AREA_BYTES (KM_PUT_INBOX + KM_ASK_SLOTS * 64u)
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u
@@ -518,7 +539,8 @@ KM_STATIC_ASSERT(
 );
 KM_STATIC_ASSERT(
     KM_ISLAND_LINK_AREA + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&
-        KM_ASK_READ + 16u <= KM_ASK_HEADERS,
+        KM_ASK_READ + 16u <= KM_ASK_HEADERS && KM_PUT_HEADERS % 64u == 0 &&
+        KM_PUT_LINES % 64u == 0,
     "the link area word after the island table; the ask lines whole lines"
 );
 KM_STATIC_ASSERT(

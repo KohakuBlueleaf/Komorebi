@@ -12,6 +12,9 @@ constexpr uint32_t kHandlerMap = 1;
 constexpr uint32_t kInputFirst = 0;
 constexpr uint32_t kInputSecond = 1;
 constexpr uint32_t kAskPort = 1;
+// MAP's a8: the placement of its output among the writer's two, numbered the same:
+// pages another island holds are put there (km::write_pages), counted at kPutPort.
+constexpr uint32_t kPutPort = 2;
 // STALL: rank a0 stalled_rank waits for the stop flag and does not report; the others
 // report.
 constexpr uint32_t kHandlerStall = 2;

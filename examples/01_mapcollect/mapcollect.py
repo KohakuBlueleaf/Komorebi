@@ -197,7 +197,7 @@ def run(session, args, generator):
         ],
         compile_args={
             "reader": inputs[0].accessor_args() + 2 * inputs[0].placement_args(),
-            "writer": outputs[0].accessor_args(),
+            "writer": outputs[0].accessor_args() + 2 * outputs[0].placement_args(),
         },
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         depth=args.depth,

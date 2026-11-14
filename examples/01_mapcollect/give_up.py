@@ -76,7 +76,7 @@ def main():
             ],
             compile_args={
                 "reader": source.accessor_args() + 2 * source.placement_args(),
-                "writer": output.accessor_args(),
+                "writer": output.accessor_args() + 2 * output.placement_args(),
             },
             compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
             depth=4,
