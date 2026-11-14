@@ -155,8 +155,7 @@ inline bool read_table(
 }
 
 // Sender: K tiles [block_start, block_start + keys_in_block) of every head-dim tile
-// (head-tile-major), then their V rows, into `address` (km::read_pages). False: gave
-// up.
+// (head-tile-major), then their V rows, into `address` (km::read_pages); false: gave up
 template <
     uint32_t HEAD_TILES,
     uint32_t VALUE_TILES,

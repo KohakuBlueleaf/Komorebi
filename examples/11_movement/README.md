@@ -92,3 +92,9 @@ B`):
 On the full grid NoC 0 reads DRAM faster than NoC 1, so the best share gives mover B one
 block in four. On fewer cores the routes differ and so does the best pattern; the
 [reference](../../docs/reference/movement.md#choosing-a-pattern) has the measured table.
+
+Over two p150a cards, island 0's first 4 cores read 48 tiles each in blocks of 8 from an
+input that island 1 holds alone; the kernels are the same, the pages cross the link
+(`python islands.py --kernel-bytes 98304`; with the page links built in the kernels take
+84,704 bytes of kernel buffer, more than the default): the copy is exact, COPY takes
+305.1 us and READ 292.5 us, 1.34 GB/s.

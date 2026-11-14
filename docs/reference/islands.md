@@ -251,7 +251,11 @@ accessor and an address stays (example 01).
 The examples and projects whose kernels read or write a tensor's pages use these calls:
 06, 07 and 09 (the reader), 11, 15, 17, 19, 22, 23, the dense project's grid and K-split
 forms, and attention. Example 11's `islands.py` runs the movement stream on island 0's
-cores over an input island 1 holds alone.
+cores over an input island 1 holds alone (exact; 1.34 GB/s for four cores), and the
+dense project's `islands.py --b-far` has island 1's grid read the whole of W from island
+0 (exact on integer inputs). Both need a kernel buffer larger than the default
+(`Session(kernel_bytes=...)`): with the page links built in, example 11's kernels take
+84,704 bytes and the dense grid's 105,808.
 
 ## Measured
 

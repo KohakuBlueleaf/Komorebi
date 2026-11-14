@@ -95,7 +95,14 @@ page another island holds ends the command (`not_across`): writes do not cross y
 When the tensor's placement says this island holds every page (one island, or a copy),
 the stream keeps the tensor's accessor and its build is the one-card stream's: the
 movement example's two kernels have the same code size within 0.6% (mover A 15,248
-bytes against 15,340, mover B 11,044 against 11,024) and read at the same rate.
+bytes against 15,340, mover B 11,044 against 11,024) and read at the same rate (the
+whole grid of a p150a, patterns `A`, `AB`, `AAAB`, `B`: 427.9, 486.4, 502.7 and 247.2 GB/s
+against the example's 427.8, 485.9, 502.6 and 247.4).
+
+Over two cards, island 0's first four cores copy 192 pages that island 1 holds alone,
+exact, with the movement example's kernels unchanged (`examples/11_movement/islands.py`):
+a READ of 48 pages a core takes 292.5 us, 1.34 GB/s in all. Each row of a block crosses as one ask and
+its answer; the cores wait for it before the block is handed on.
 
 ### The blocks of a stream
 

@@ -30,6 +30,7 @@ def parse():
     parser.add_argument("--pattern", default="AB", help="the pattern of A and B")
     parser.add_argument("--rounds", type=int, default=3, help="timed READ rounds")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--kernel-bytes", type=int, default=None, help="kernel buffer")
     return parser.parse_args()
 
 
@@ -48,7 +49,9 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     pattern = km.Pattern(args.pattern)
     report = {"cards": cards, "cores": args.cores, "tiles": args.tiles}
-    with km.Session(cards=cards, links=1, log=log) as session:
+    with km.Session(
+        cards=cards, links=1, kernel_bytes=args.kernel_bytes, log=log
+    ) as session:
         islands = [
             (session.graph.first(i), session.graph.count(i))
             for i in range(len(session.sessions))
