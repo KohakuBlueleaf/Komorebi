@@ -21,6 +21,7 @@ from komorebi.program import Program
 M32 = 0xFFFFFFFF
 SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
+TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries
 # The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
 LINK_ARGS = 9
@@ -480,7 +481,7 @@ class IslandSession:
         self.link_cores = ()  # per island: the local cores (core table) of its links
         self._regions = []  # the message service's L1 region on every core, by island
         self.channels = ()  # per island: the Ethernet channel of each link it sends on
-        self._entries = [None] * islands.TENSORS_MAX  # the tensor table, by word
+        self._entries = [None] * TENSORS_MAX  # the tensor table, by word
         self._tables = []  # per island: its cores' tensor table (L1), from a load
 
     def __enter__(self):
