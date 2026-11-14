@@ -1,0 +1,102 @@
+/* Decode: what the X280 thread, the operations' parts and Python share. Plain C. */
+#pragma once
+
+#include <stdint.h>
+
+/* The operations, overlays of the K-split program, called after a product's sum at
+ * the root of each group (add, gate) or as a command of their own (norm). */
+enum { DC_OVERLAY_ADD = 1, DC_OVERLAY_GATE = 2, DC_OVERLAY_NORM = 3 };
+
+/* Buffers of the operations, beside the K split's (indices 0, 1, 2, 5, 6, 16, 24). */
+enum {
+    DC_CB_BLOCK = 3,    /* add, gate: the block of the other operand, oh x ow tiles */
+    DC_CB_ROW = 4,      /* norm: x's whole row, DC_ROW_TILES tiles */
+    DC_CB_WEIGHT = 7,   /* norm: the core's tiles of the norm's weight */
+    DC_CB_CONSTANT = 8, /* norm: the identity tile and the mean tile */
+    DC_CB_SQUARES = 9,  /* norm: the row's sums of squares on the diagonal */
+    DC_CB_SCALE = 10,   /* norm: each row's 1 / rms in every column */
+    DC_CB_NORMED = 17   /* norm: the core's tiles of the output */
+};
+
+/* The norm's shape: the row's tiles (the model's width) and the cores of a command,
+ * each DC_ROW_TILES / DC_NORM_CORES of the output. */
+enum { DC_ROW_TILES = 64, DC_NORM_CORES = 16, DC_NORM_SHARE = 4 };
+
+/* A norm command (SPLIT mode 2): a1 epsilon's float bits, a2 the output, a7 x, a8 the
+ * weight (its row in every row of a tile row), a9 the constants (identity, mean). */
+enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
+
+/* The thread. LAYERS: a0 tokens, a1 layers, a2 the stats slot, a3 the first layer, a4
+ * 1 for the products only, 3 for their parts only. Its words: handler, plans, operation
+ * words, in order. */
+enum { DC_HANDLER_LAYERS = 1 };
+
+enum {
+    DC_WORD_SPLIT,     /* the SPLIT handler */
+    DC_WORD_REDUCE,    /* the reduce form */
+    DC_WORD_EXCLUSIVE, /* the command flag of a product */
+    DC_WORD_CORES,     /* the cores of a product */
+    DC_WORD_PLAN_Q,    /* plan indices: 2048 x 2048 */
+    DC_WORD_PLAN_KV,   /* 2048 x 1024 */
+    DC_WORD_PLAN_UP,   /* 2048 x 6144 */
+    DC_WORD_PLAN_DOWN, /* 6144 x 2048 */
+    DC_WORD_ADD,       /* a6 of each operation: its overlay and parts */
+    DC_WORD_GATE,
+    DC_WORD_NORM,
+    DC_WORD_EPSILON, /* the norm's epsilon, float bits */
+    DC_WORDS
+};
+
+/* Region `tensors`: the activations' addresses. */
+enum {
+    DC_TENSOR_X, /* the residual stream, [32, D] */
+    DC_TENSOR_H, /* the norm's output */
+    DC_TENSOR_Q,
+    DC_TENSOR_K,
+    DC_TENSOR_V,
+    DC_TENSOR_UP,
+    DC_TENSOR_GATED, /* silu(h Wg) * (h Wu) */
+    DC_TENSOR_CONSTANTS,
+    DC_TENSORS = 16
+};
+
+/* Region `weights`: a layer's addresses, DC_LAYER_WORDS a layer. */
+enum {
+    DC_W_Q,
+    DC_W_K,
+    DC_W_V,
+    DC_W_O,
+    DC_W_UP,
+    DC_W_GATE,
+    DC_W_DOWN,
+    DC_W_NORM1,
+    DC_W_NORM2,
+    DC_LAYER_WORDS = 16
+};
+
+/* A layer's commands, in order: their kinds, for the stats. */
+enum {
+    DC_STEP_NORM1,
+    DC_STEP_Q,
+    DC_STEP_K,
+    DC_STEP_V,
+    DC_STEP_O,
+    DC_STEP_NORM2,
+    DC_STEP_UP,
+    DC_STEP_GATE,
+    DC_STEP_DOWN,
+    DC_STEPS
+};
+
+/* Region `stats`, a slot of DC_STATS_WORDS a job: status, done, ticks (low, high), then
+ * per step the event ticks summed (low, high), the most and the least. */
+enum {
+    DC_ST_STATUS,
+    DC_ST_DONE,
+    DC_ST_TICKS_LOW,
+    DC_ST_TICKS_HIGH,
+    DC_ST_STEPS,
+    DC_ST_STEP_WORDS = 4,
+    DC_STATS_WORDS = 64,
+    DC_STATS_SLOTS = 8
+};
