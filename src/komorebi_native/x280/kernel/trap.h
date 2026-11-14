@@ -1,5 +1,5 @@
-/* Trap guard: main points mtvec at kmd_trap for the run; an exception ends in
- * kmd_trapped and main returns. Interrupts, and a second trap, go to the runtime's. */
+/* Trap guard: an exception ends in kmd_trapped and main returns; core 0's software
+ * interrupt re-enters its loop (kmd_resumed); others go to the runtime's handler. */
 #pragma once
 
 __asm__(
@@ -8,6 +8,9 @@ __asm__(
     ".type main, @function\n"
     "main:\n"
     "    addi sp, sp, -128\n"
+    /* main's words 112 and 120: run()'s sp and the state once core 0's loop runs */
+    "    sd zero, 112(sp)\n"
+    "    sd zero, 120(sp)\n"
     "    sd ra, 0(sp)\n"
     "    sd s0, 8(sp)\n"
     "    sd s1, 16(sp)\n"
@@ -50,7 +53,7 @@ __asm__(
     ".balign 4\n"
     "kmd_trap:\n"
     "    csrr t0, mcause\n"
-    "    bltz t0, 1f\n"
+    "    bltz t0, 2f\n"
     "    csrr sp, mscratch\n"
     "    ld t0, 104(sp)\n"
     "    csrw mtvec, t0\n"
@@ -63,5 +66,19 @@ __asm__(
     "    csrw mepc, t0\n"
     "    li a0, 0\n"
     "    mret\n"
+    /* Machine software interrupt (cause 3) with a saved frame: never returns to mepc.
+     */
+    "2:  li t1, 0x8000000000000003\n"
+    "    bne t0, t1, 1f\n"
+    "    csrr t0, mscratch\n"
+    "    ld t1, 112(t0)\n"
+    "    beqz t1, 1f\n"
+    "    mv sp, t1\n"
+    "    ld a0, 120(t0)\n"
+    "    csrr a1, mepc\n"
+    "    call kmd_resumed\n"
+    "    csrr sp, mscratch\n"
+    "    li a0, 0\n"
+    "    j kmd_trap_return\n"
     "1:  j _trap_handler\n"
 );
