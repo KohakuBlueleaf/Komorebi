@@ -121,6 +121,27 @@ written for islands runs on one card unchanged.
   ranks' buffers launched apart; the link cores take no overlay slots. Otherwise (a
   program with messages, a split card, a program placed by overlays) both are
   session tensors on every core, rows of the table too.
+- **L1 of a link core.** A program's circular buffers are launched on the ranks
+  alone when the link cores run the link kernels, so none of a link core's L1 goes to
+  them. What it holds on two p150a cards with packets of 8,192 bytes:
+
+  | What | Bytes |
+  |---|---|
+  | The kernel buffer (every core's) | 128 KiB by default (`kernel_bytes`) |
+  | What the session keeps (above: own words, tensor table) | as on a rank |
+  | The run's control block, its share a core | 17,024 |
+  | The transfer buffer (the host's transfers) | 32,848, or 131,152 with room |
+  | The link area and the relay | 48,192 |
+  | The put queue (`KM_QUEUE_BYTES`) | 84,032 |
+  | Two chunks a link CPU (its own sends and its put ring) | 2 x 512 KiB |
+  | Left (`LINK_CHUNK_MARGIN` at least) | 64 KiB or more |
+
+  The chunk is at most 512 KiB, whole 64 KiB, two in what is left after the rows above
+  and the margin, and at least the least that holds a put ring of 8 slots
+  (`session.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
+  CPUs have no chunk of their own and the puts go one line at a time. A program
+  whose buffers are on the link cores too (a program with messages, a split card, a
+  program placed by overlays) has its buffers counted first.
 - A link core is named outside the ranks: a command's group with first
   `KM_GROUP_LINK_BASE + k` and count n names link cores k to k + n - 1 of the island
   that takes it (`graph.link_group(island, k, count)`). Such a group is never cut by
