@@ -83,7 +83,15 @@
 /* byte k: Ethernet channel of link k; CPU c of link core r sends on link 2r + c.
    Link 0 carries the lines (LINE); pages go on links 1 on, on link 0 when alone. */
 #define KM_PAGES_LINKS 8u
-#define KM_PAGES_BUFFER 9u    /* send: L1 of CPU c at buffer + c * chunk */
+/* send: L1 of CPU c at buffer + c * chunk (bits 0..23), the push's shape << 24 */
+#define KM_PAGES_BUFFER 9u
+/* the shape of a send's push (0: the loop's own; the others measure it): pages a DRAM
+ * read 4 ** (bits 0..1), slots 15 << (bits 2..3) - 1 (0: as many as fit, at most 15),
+ * no read (bit 4: the slots are sent as they are), no wait for a slot's packet to
+ * leave L1 (bit 5, with bit 4) */
+#define KM_PAGES_SHAPE_SHIFT 24u
+#define KM_PAGES_SHAPE_NO_READ 0x10u
+#define KM_PAGES_SHAPE_NO_WAIT 0x20u
 #define KM_PAGES_DRAM 0xFFFFu /* page p into page p of the tensor at KM_PAGES_TO */
 #define KM_PAGES_NO_LINK 0xFFu
 #define KM_PAGES_SEND 0u
