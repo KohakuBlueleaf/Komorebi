@@ -754,11 +754,19 @@ to close in 14 s (the mesh with the fabric 5 s; the tensors and both loads 2 s).
   link, and a put goes one link only. A copy with both sides placed moves a chunk at a
   time, a line a run of the chunk; a copy that asks pages another island holds sends a
   line a run, all in flight ([pages across a link](#pages-across-a-link)).
-- A dict of programs switching groups over islands (`run.load`), engines and uploads
-  over islands; tensors in L1. Programs of the runtime's form load as on one card: a
-  list, or a dict of groups in flat ranks, is planned over every rank and each island
-  runs its part, the runtime's kernels built with the island's defines (example 19,
-  `--far`; a dict's groups cut at an island are built, not yet run on two cards).
+- Engines and uploads over islands; tensors in L1. Programs of the runtime's form load
+  as on one card: a list, or a dict of groups in flat ranks, is planned over every rank
+  and each island runs its part, the runtime's kernels built with the island's defines
+  (example 19, `--far`; example 16 `--cards 0,1`, a dict whose group is cut at the
+  island boundary, exact).
+- `run.load(program, group)` on an `IslandRun` takes flat ranks and sends each island
+  it touches its part, as `submit` does (one ticket). It loads only a program that
+  some group of each of those islands holds: a program's parts are built against the
+  kernels of a group that holds it (its buffers' formats are in them), so a program
+  whose groups are all on the other island is refused with a sentence, before any part
+  is sent. Example 16 `--cards 0,1 --phase live`: sum cut at the boundary, its island
+  1 half switching to scale and widen and back 200 times, 600 commands exact, the load
+  onto island 0 refused.
 - A write of part of a page another island holds (example 09's writer gives up: the
   page calls move whole pages) and a tensor read by an address the kernel builds itself
   (`InterleavedAddrGen`: profile pages, job tables, the raster and ray tracer projects)

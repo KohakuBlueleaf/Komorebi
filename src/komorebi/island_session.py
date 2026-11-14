@@ -299,6 +299,45 @@ class IslandRun:
         self._next += 1
         return ticket
 
+    def load(self, program, group):
+        """Run.load over flat ranks: the cores of `group` hold `program`, one of the
+        dict session.load took; a part on each island it touches. Its ticket."""
+        group = tuple(group)
+        parts = self.graph.split(group)
+        for island, _first, _count in parts:  # every part refused before one is sent
+            try:
+                self.runs[island].load_field(program)
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+        self._grow(1)
+        ticket = self._next
+        for island, _first, _count in parts:
+            try:
+                handle = self.runs[island].load(program, group, part=True)
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+            self._parts[island][ticket] = handle
+        self._next += 1
+        return ticket
+
+    @property
+    def check_programs(self):
+        """Whether the host refuses a command to cores not holding its program (every
+        island's run); False: the dispatchers alone refuse."""
+        return all(run.check_programs for run in self.runs)
+
+    @check_programs.setter
+    def check_programs(self, value):
+        for run in self.runs:
+            run.check_programs = value
+
+    def forget(self, tickets):
+        """Run.forget of every part of `tickets` on its island."""
+        tickets = [tickets] if isinstance(tickets, int) else list(tickets)
+        for island, run in enumerate(self.runs):
+            handles = [int(self._parts[island][t]) for t in tickets]
+            run.forget([handle for handle in handles if handle])
+
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """n commands at once, as Run.submit_many takes them, the groups in flat
         ranks; each island gets its parts in one submit_many. The tickets, a range."""

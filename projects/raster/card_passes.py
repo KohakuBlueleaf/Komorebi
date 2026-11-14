@@ -372,7 +372,7 @@ def fill_frame(session, uploaded, report):
     times = report["times"]
     workers = card.workers(session)
     started = time.perf_counter()
-    fill = session.load(card.program(), deadline=1.0)
+    fill = session.load(card.program(uploaded), deadline=1.0)
     times["load_fill_s"] = time.perf_counter() - started
     microseconds = card.loop(fill, lists.K["kHandlerFill"], card.words(uploaded, 5), 1)
     report["fill_microseconds"] = float(microseconds[0]) if len(microseconds) else None

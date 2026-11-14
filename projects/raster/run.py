@@ -150,13 +150,27 @@ def main():
         "--no-frame", action="store_true", help="time only: no read-back"
     )
     parser.add_argument("--json", default=None)
+    parser.add_argument(
+        "--cards", default="", help="e.g. 0,1: a session of islands, every flat rank"
+    )
+    parser.add_argument(
+        "--far", action="store_true", help="with --cards: the frame on island 1 alone"
+    )
+    parser.add_argument("--save", default=None, help="the frame's pages to this .npy")
     args = parser.parse_args()
     report = {"scene": args.scene, "assign": args.assign, "reps": args.reps}
     report["split"] = args.split
 
     scene, report["load_s"] = load(args.scene)
-    with km.Session(log=card.log) as session:
+    cards = [int(n) for n in args.cards.split(",")] if args.cards else []
+    opened = {"cards": cards, "links": 1} if len(cards) > 1 else {}
+    report["cards"], report["far"] = cards, args.far
+    with km.Session(log=card.log, **opened) as session:
         workers = card.workers(session)
+        frame_placed = None
+        if opened and args.far:
+            graph = session.graph
+            frame_placed = {"split": 0, "group": (graph.first(1), graph.count(1))}
         prepared = prepare(
             scene, workers, args.assign, args.tiles, args.cores, args.split
         )
@@ -177,7 +191,10 @@ def main():
             K["kPlanes"],
             repetitions=args.reps,
             frame=not args.no_frame,
+            frame_placed=frame_placed,
         )
+    if args.save and frame is not None:  # for a comparison on the host
+        np.save(args.save, frame)
     report["frame_microseconds"] = frame_stats(microseconds)
     rows = profile_rows(profile, workers)
     busy = rows["total"]

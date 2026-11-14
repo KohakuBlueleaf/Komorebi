@@ -19,6 +19,12 @@ packet's lanes at different nodes, about 6 of 32 lanes are alive at an inner nod
 it, and most box tests serve few rays. [What bounds it, and what was tried](#what-bounds-it-and-what-was-tried) lists what
 was measured against that, with its numbers.
 
+On a session of two cards: the tree, the treelets, the directory entries and the
+profile pages are read and written with the page calls (`km::read_pages`,
+`km::write_pages`), but a packet is an item inside a page of 64 packets (its stream's
+pages), read and written by address as a part of the page; no call moves a part of a
+page across cards yet, so the ray tracer runs on one card.
+
 ## What each core does
 
 A pass (primary, shadow, bounce or shadow at the bounce hit) is one command of the

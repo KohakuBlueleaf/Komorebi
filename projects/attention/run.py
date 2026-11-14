@@ -48,6 +48,13 @@ def parse():
     )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--json", default=None)
+    parser.add_argument(
+        "--cards", default="", help="e.g. 0,1: a session of islands, every flat rank"
+    )
+    parser.add_argument(
+        "--far", action="store_true", help="with --cards: O held by island 1 alone"
+    )
+    parser.add_argument("--save", default=None, help="O's raw pages to this .npy")
     return parser.parse_args()
 
 
@@ -125,27 +132,43 @@ def main():
         arguments.approx,
         arguments.noc,
     )
-    with km.Session(log=log) as session:
-        nocs = session.nocs()
-        plan = pl.make(
-            call, nocs.grid, length=arguments.broadcast, chunks=arguments.chunks
-        )
+    cards = [int(n) for n in arguments.cards.split(",")] if arguments.cards else []
+    opened = {"cards": cards, "links": 1} if len(cards) > 1 else {}
+    report["cards"], report["far"] = cards, arguments.far
+    with km.Session(log=log, **opened) as session:
+        grid, held = None, {}
+        if opened:  # one grid of the islands, every flat rank
+            plan, grid = card.island_plan(
+                session, call, length=arguments.broadcast, chunks=arguments.chunks
+            )
+            if arguments.far:
+                graph = session.graph
+                held = {"split": 0, "group": (graph.first(1), graph.count(1))}
+        else:
+            nocs = session.nocs()
+            plan = pl.make(
+                call, nocs.grid, length=arguments.broadcast, chunks=arguments.chunks
+            )
         report["plan"] = plan.summary()
         started = time.perf_counter()
+        zeros = np.zeros((batches, heads, sequence_length, head_dim), np.float32)
         tensors = {
             "q": card.bf16_tensor(session, queries),
             "k": card.bf16_tensor(session, keys),
             "v": card.bf16_tensor(session, values),
-            "o": card.bf16_tensor(
-                session,
-                np.zeros((batches, heads, sequence_length, head_dim), np.float32),
-            ),
+            "o": card.bf16_tensor(session, zeros, **held),
             "tables": card.table_tensor(session, pl.tables(plan)),
         }
         report["upload_s"] = round(time.perf_counter() - started, 3)
         log(f"uploaded, plan {report['plan']}")
         attention = card.Attention(
-            session, plan, tensors, scale, arguments.approx, noc=arguments.noc
+            session,
+            plan,
+            tensors,
+            scale,
+            arguments.approx,
+            noc=arguments.noc,
+            grid=grid,
         )
         log("loaded")
         host_s, command_microseconds = attention.calls(arguments.calls)
@@ -156,6 +179,10 @@ def main():
             session, tensors["o"], queries, keys, values, call, causal, arguments.approx
         )
         log("sampled rows read back")
+        if arguments.save:  # every page of O, for a comparison on the host
+            (pages,) = session.read(tensors["o"])
+            np.save(arguments.save, pages)
+            log(f"O saved: {arguments.save}")
     report["ok"] = report["check"]["ok"] and report["run"]["ok"]
     print(json.dumps(report), flush=True)
     if arguments.json:

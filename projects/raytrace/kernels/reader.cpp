@@ -6,7 +6,13 @@
 #include "timed.hpp"
 #include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/km_ask.hpp"
 #include "raytrace.h"
+
+// The tree's and the treelets' pages, then the directory's (km::Tensor): compile
+// arguments from 0.
+using TreePages = km::Tensor<0>;
+using Directories = km::Tensor<TreePages::next_compile_time_args_offset()>;
 
 namespace {
 
@@ -108,6 +114,7 @@ namespace {
             volatile tt_l1_ptr uint32_t* directory
         ) :
             reader_(reader),
+            command_(command),
             treelet_images_address_(command.a5),
             list_entries_(command.a6),
             slot_bytes_(command.a7),
@@ -314,10 +321,6 @@ namespace {
 
         bool fetch(uint32_t treelet, uint32_t slot) {
             const uint32_t started = km::wall();
-            const InterleavedAddrGen<true> images = {
-                .bank_base_address = treelet_images_address_,
-                .page_size = kTreePageBytes
-            };
             const uint32_t first_page = treelet_table_[2 * treelet];
             const uint32_t pages = treelet_table_[2 * treelet + 1];
             const uint32_t destination = slots_.base + slot * slots_.bytes;
@@ -330,14 +333,17 @@ namespace {
                 );
                 return false;
             }
-            for (uint32_t page = 0; page < pages; ++page) {
-                noc_async_read(
-                    get_noc_addr(first_page + page, images),
-                    destination + page * kTreePageBytes,
-                    kTreePageBytes
-                );
-            }
-            if (!timed::reads_done(reader_, km::kStReader)) {
+            if (
+                !km::read_pages(
+                    reader_,
+                    command_,
+                    TreePages(treelet_images_address_),
+                    first_page,
+                    pages,
+                    destination
+                ) ||
+                !timed::reads_done(reader_, km::kStReader)
+            ) {
                 return false;
             }
             slots_.treelet[slot] = treelet;
@@ -348,6 +354,7 @@ namespace {
         }
 
         km::Reader& reader_;
+        const km_command_t& command_;
         const uint32_t treelet_images_address_;
         const uint32_t list_entries_;
         const uint32_t slot_bytes_;
@@ -820,22 +827,17 @@ void kernel_main() {
             if (!reader.reserve(kCbTree, pages)) {
                 return;
             }
-            const InterleavedAddrGen<true> tree = {
-                .bank_base_address = tree_address, .page_size = kTreePageBytes
-            };
             const uint32_t base = get_write_ptr(kCbTree);
             if (!timed::fits(kCbTree, pages * kTreePageBytes)) {
                 reader.gave_up(km::kStReader, km::kGaveLimit, km::kWhereData, 2, pages);
                 return;
             }
-            for (uint32_t page = 0; page < pages; ++page) {
-                noc_async_read(
-                    get_noc_addr(page, tree),
-                    base + page * kTreePageBytes,
-                    kTreePageBytes
-                );
-            }
-            if (!timed::reads_done(reader, km::kStReader)) {
+            if (
+                !km::read_pages(
+                    reader, command, TreePages(tree_address), 0, pages, base
+                ) ||
+                !timed::reads_done(reader, km::kStReader)
+            ) {
                 return;
             }
             g_tree = base;
@@ -848,13 +850,17 @@ void kernel_main() {
             const uint32_t unsort_vectors = command.a5;
             const uint32_t directory_space = get_write_ptr(kCbDirReader);
             volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
-            const InterleavedAddrGen<true> directories = {
-                .bank_base_address = directory_address, .page_size = kDirBytes
-            };
-            noc_async_read(
-                get_noc_addr(reader.me(), directories), directory_space, kDirBytes
-            );
-            if (!timed::reads_done(reader, km::kStReader)) {
+            if (
+                !km::read_pages(
+                    reader,
+                    command,
+                    Directories(directory_address),
+                    reader.me(),
+                    1,
+                    directory_space
+                ) ||
+                !timed::reads_done(reader, km::kStReader)
+            ) {
                 return;
             }
             for (uint32_t counter = 0; counter < kRdCounters; ++counter) {
@@ -896,12 +902,10 @@ void kernel_main() {
         const uint32_t started = km::wall();
         const uint32_t directory_space = get_write_ptr(kCbDirReader);
         volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
-        noc_async_read(
-            directory_noc_address(command, handler, reader.me()),
-            directory_space,
-            kDirBytes
-        );
-        if (!timed::reads_done(reader, km::kStReader)) {
+        if (
+            !read_directory<Directories>(reader, command, handler, directory_space) ||
+            !timed::reads_done(reader, km::kStReader)
+        ) {
             return;
         }
         for (uint32_t counter = 0; counter < kRdCounters; ++counter) {

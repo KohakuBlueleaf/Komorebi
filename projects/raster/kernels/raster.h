@@ -98,6 +98,9 @@ constexpr uint32_t kGaveBadItem = 3;
 constexpr uint32_t kWhereBadOut = 16;
 constexpr uint32_t kWhereBadSend = 17;
 constexpr uint32_t kWhereBadHeader = 24;  // a tile header's tile or rows out of range
+// A band (rows of a tile's pages, a part of each page) on a session of islands: the
+// page calls move whole pages, so a band is written on one island only.
+constexpr uint32_t kWhereBandFar = 25;
 // Compute's waits give up after kWaitCycles with kGaveWait in the writer's gave-up
 // word; the reader's and writer's NoC waits use the runtime's timeout. Where each is:
 constexpr uint32_t kGaveWait = 4;

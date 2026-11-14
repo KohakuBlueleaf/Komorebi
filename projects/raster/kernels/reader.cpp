@@ -4,6 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/km_ask.hpp"
 #include "raster.h"
 
 // Timed noc_async_read_barrier. False: gave up (recorded in the reader's word).
@@ -21,6 +22,10 @@ bool read_done(const km::Reader& reader, uint32_t sequence) {
     return false;
 }
 
+// The directory pages and the list pages (km::Tensor): compile arguments from 0.
+using Directories = km::Tensor<0>;
+using Lists = km::Tensor<Directories::next_compile_time_args_offset()>;
+
 // FILL and ARITH of one command; the frame program's reader calls it as well.
 void fill_reader_command(const km::Reader& reader, const km_command_t& command) {
     if (km::handler(command) != kHandlerFill && km::handler(command) != kHandlerArith) {
@@ -30,18 +35,17 @@ void fill_reader_command(const km::Reader& reader, const km_command_t& command) 
     const uint32_t started = km::wall();
     const uint32_t scratch = get_write_ptr(kCbDirReader);
     volatile tt_l1_ptr uint32_t* directory = km::l1(scratch);
-    const InterleavedAddrGen<true> directories = {
-        .bank_base_address = directory_address, .page_size = kDirBytes
-    };
-    noc_async_read(get_noc_addr(reader.me(), directories), scratch, kDirBytes);
-    if (!read_done(reader, command.sequence)) {
+    if (
+        !km::read_pages(
+            reader, command, Directories(directory_address), reader.me(), 1, scratch
+        ) ||
+        !read_done(reader, command.sequence)
+    ) {
         return;
     }
     invalidate_l1_cache();
     const uint32_t first = directory[kDirFirst], pages = directory[kDirPages];
-    const InterleavedAddrGen<true> lists = {
-        .bank_base_address = lists_address, .page_size = kInPageBytes
-    };
+    const Lists lists(lists_address);
     uint32_t wait = 0, read = 0;
     for (uint32_t page = 0; page < pages; ++page) {
         const uint32_t asked = km::wall();
@@ -49,10 +53,12 @@ void fill_reader_command(const km::Reader& reader, const km_command_t& command) 
             return;
         }
         const uint32_t reserved = km::wall();
-        noc_async_read(
-            get_noc_addr(first + page, lists), get_write_ptr(kCbIn), kInPageBytes
-        );
-        if (!read_done(reader, command.sequence)) {
+        if (
+            !km::read_pages(
+                reader, command, lists, first + page, 1, get_write_ptr(kCbIn)
+            ) ||
+            !read_done(reader, command.sequence)
+        ) {
             return;
         }
         cb_push_back(kCbIn, 1);
