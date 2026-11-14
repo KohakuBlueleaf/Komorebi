@@ -270,6 +270,19 @@ def _link_kernels(island, program, split, cores):
     return (cores - links, links) if links else (cores, 0)
 
 
+def _link_kernel_path(kernel):
+    """The runtime's link kernel of `kernel` (reader, writer, compute)."""
+    return _env.include_directory().parent / "kernels" / f"link_{kernel}.cpp"
+
+
+def _is_link_kernel(source):
+    """Whether a kernel `source` of a build is one of the runtime's link kernels."""
+    return any(
+        Path(source) == _link_kernel_path(kernel)
+        for kernel in ("reader", "writer", "compute")
+    )
+
+
 def kernel_build(program, kernel, defines):
     """A kernel's defines, and its optimisation level when the program sets one. A set
     level also adds a define naming it: the runtime's build cache key leaves the level
@@ -1112,7 +1125,11 @@ class Session:
                 link=list(link.line(dispatch)) if link is not None else [],
             )
             check_bases(lim_bases(dispatch.lim_base))
-            plan, port_lines = _port_lines(owner, dispatch, rings)
+            # an island's ports serve its ranks, not its link cores
+            served, _ = _link_kernels(
+                self.island, program, None, dispatch.grid_x * dispatch.grid_y
+            )
+            plan, port_lines = _port_lines(owner, dispatch, rings, served)
             backend = _Backend(self, dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
             if ranks is not None:
@@ -1581,12 +1598,12 @@ class _PortLines(NamedTuple):
     lines: dict
 
 
-def _port_lines(program, dispatch, rings):
-    """The program's X280 ports: ({core: (cluster, cpu)}, _PortLines), or (None,
-    None) when it declares none."""
+def _port_lines(program, dispatch, rings, cores=None):
+    """The program's X280 ports over the first `cores` cores (default the grid):
+    ({core: (cluster, cpu)}, _PortLines), or (None, None) when it declares none."""
     if program.x280_ports is None:
         return None, None
-    cores = dispatch.grid_x * dispatch.grid_y
+    cores = cores or dispatch.grid_x * dispatch.grid_y
     plan = thread_module.port_plan(program.x280_ports["serve"], cores, set(rings))
     lines = {}
     for core, (cluster, _) in plan.items():
@@ -2128,11 +2145,7 @@ class _Backend:
             ] + [("KM_LINK_SERVICES", "1")]
             for kernel, args, processor, _ in kernels:
                 launch.kernel(
-                    str(
-                        _env.include_directory().parent
-                        / "kernels"
-                        / f"link_{kernel}.cpp"
-                    ),
+                    str(_link_kernel_path(kernel)),
                     served,
                     processor,
                     [],
@@ -2335,7 +2348,9 @@ class _Backend:
         session, abi_headers = self.session, abi.headers()
         started = time.perf_counter()
         recipes = {}
-        for _, builds in descriptor.recipes():
+        for source, builds in descriptor.recipes():
+            if _is_link_kernel(source):  # the link cores': no overlay runs there
+                continue
             for row in builds:
                 recipe = overlay.Recipe.from_native(row)
                 recipes[recipe.target] = recipe
