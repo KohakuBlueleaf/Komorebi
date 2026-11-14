@@ -28,6 +28,7 @@ LINK_GAVE = 0x90 // 4  # kLinkGave: the reader's, then the writer's 4 words
 WHERE_LINK_UP = 60  # kWhereLinkUp
 LINK_OUTBOX_AT = 0x190  # kLinkOutbox
 PACKET_BYTES = 4352  # kLinkPacketBytes
+LINK_TAIL = 0x20 + 2 * 16 * 256  # the reports and two passes of status lines
 PREFIX = 16  # kLinkPrefix
 MESSAGE_BYTES = 64
 RESULT_WORDS = 68  # cross.h's 16, then the link core's region words
@@ -77,6 +78,7 @@ class Island:
         self.rank = self.core[1] * self.grid[0] + self.core[0]
         entry = PREFIX + MESSAGE_BYTES
         region = LINK_OUTBOX_AT + args.outbox * entry + (args.inbox + 1) * PACKET_BYTES
+        region += LINK_TAIL
         self.region = self.session.empty(
             (self.cores, (region + 63) // 64 * 16), "uint32", shard_grid=self.grid
         )

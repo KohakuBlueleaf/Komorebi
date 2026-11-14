@@ -3,7 +3,9 @@ runtime over it, a dispatcher and the persistent grid on every island. Ranks are
 and contiguous by island; a command's group is split by island on the host, a tensor
 is placed by island. `Session(cards=[...])` with more than one card returns this."""
 
+import copy
 import os
+import secrets
 import time
 
 import numpy as np
@@ -15,6 +17,12 @@ from komorebi.errors import CardBusy, KomorebiError, WaitTimeout
 from komorebi.program import Program
 
 M32 = 0xFFFFFFFF
+# The link service (km_link.hpp): LinkArgs words, the region's layout, its sizes.
+LINK_ARGS = 12
+LINK_TEARDOWN, LINK_CURSOR = 0x60, 0x70
+LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
+LINK_TAIL = 0x20 + 2 * 16 * 256  # the reports, two passes of 256 status lines
+LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 
 
 def _named(error, island):
@@ -82,9 +90,10 @@ class IslandRun:
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
     and it completes when every part has. Errors name the island (`error.island`)."""
 
-    def __init__(self, graph, runs):
+    def __init__(self, graph, runs, linked=False):
         self.graph = graph
         self.runs = tuple(runs)
+        self.linked = linked  # a link joins the islands: a dynamic RUN takes them all
         self.cores = graph.ranks
         self.program = self.runs[0].program
         self._next = 1  # the next ticket
@@ -106,6 +115,7 @@ class IslandRun:
         (default every rank): a part on each island it touches. Returns its ticket."""
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
+        self._linked_group(handler, group)
         self._grow(1)
         ticket = self._next
         for island, _first, _count in parts:
@@ -143,6 +153,9 @@ class IslandRun:
                 f"group ({int(first[i])}, {int(count[i])}) of {self.cores} ranks"
             )
         rows = len(first)
+        for row in range(rows if self.linked else 0):
+            named = handler if scalar else handlers[row]
+            self._linked_group(named, (int(first[row]), int(count[row])))
         self._grow(rows)
         tickets = np.arange(self._next, self._next + rows)
         for island, run in enumerate(self.runs):
@@ -168,12 +181,25 @@ class IslandRun:
         self._next += rows
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
 
+    def _linked_group(self, handler, group):
+        """Over a link, a dynamic RUN's group is every rank: each island's part ends
+        at its link core."""
+        if not self.linked or self.program.messages is None:
+            return
+        number, _ = self.runs[0]._handler(handler)
+        if number in self.program.messages.handlers and group != (0, self.cores):
+            raise ValueError(
+                f"group {group}: a dynamic run over a link takes every rank "
+                f"(0, {self.cores})"
+            )
+
     def send(self):
-        """Gives every island's queued commands to its dispatcher, so that the
-        islands run their parts at once while the host waits on one."""
+        """Stores every island's queued commands on its card, so that the islands run
+        their parts at once (a run over a link needs every part started) while the
+        host waits on one."""
         for island, run in enumerate(self.runs):
             try:
-                run._hand()
+                run.store()
             except KomorebiError as error:
                 raise _named(error, island) from None
 
@@ -304,8 +330,9 @@ class IslandRun:
 
 class IslandSession:
     """Cards `cards` as islands of one 1 x n fabric mesh in this process: the X280
-    runtime once over the mesh, then per island a Session given its device. `links`
-    0: nothing crosses on the cards, every core is a rank. Use as a context manager."""
+    runtime once over the mesh, then per island a Session given its device. `links` 0:
+    nothing crosses; 1 (two cards): a dynamic run's messages cross through each
+    island's link core (its last core, no message rank). Use as a context manager."""
 
     def __init__(
         self,
@@ -321,10 +348,8 @@ class IslandSession:
         self.cards = tuple(int(card) for card in cards)
         if len(self.cards) < 2 or len(set(self.cards)) != len(self.cards):
             raise ValueError(f"cards {cards}: two or more different cards")
-        if links != 0:
-            raise ValueError(
-                f"links={links}: only 0 (the link service is not built yet)"
-            )
+        if links not in (0, 1) or (links and len(self.cards) != 2):
+            raise ValueError(f"links={links}: 0, or 1 between two cards")
         self.links = links
         self.log = log or (lambda message: None)
         self._options = {
@@ -341,6 +366,7 @@ class IslandSession:
         self.sessions = ()
         self.graph = None
         self.run = None
+        self._regions = []  # the link's L1 region on every core, an island each
 
     def __enter__(self):
         self.open()
@@ -406,7 +432,8 @@ class IslandSession:
                 columns, rows = session.grid
                 parts.append(islands.Island(tuple(range(columns * rows)), columns))
             links = [islands.Link(i, i + 1) for i in range(len(parts) - 1)]
-            self.graph = islands.Graph(parts, links, reserve=self.links > 0)
+            # a link core stays a core of the group (no message rank): ranks are cores
+            self.graph = islands.Graph(parts, links, reserve=False)
         except BaseException:
             self.close()
             raise
@@ -533,6 +560,8 @@ class IslandSession:
                 raise ValueError(
                     f"{one.name}: X280 threads over islands are not done yet"
                 )
+        if self.links:
+            programs = self._linked(programs)
         runs = []
         try:
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
@@ -545,12 +574,80 @@ class IslandSession:
             for run in runs:
                 run.abort()
             raise
-        self.run = IslandRun(self.graph, runs)
+        self.run = IslandRun(self.graph, runs, linked=bool(self._regions))
         return self.run
+
+    def link_core(self, island):
+        """Island `island`'s link core, its own core number: its last core (the one
+        place the host names it)."""
+        return self.graph.count(island) - 1
+
+    def _linked(self, programs):
+        """The dynamic programs with the link's arguments after their own reader and
+        writer arguments, KM_LINKS defined, a region on every core of each island
+        and one token for both sides' hello."""
+        for region in self._regions:
+            region.free()
+        self._regions = []
+        dynamic = [one.messages for one in programs if one.messages is not None]
+        if not dynamic:
+            return programs
+        if any(messages.x280_ranks for messages in dynamic):
+            raise ValueError("X280 ranks over a link are not done yet")
+        entry = LINK_PREFIX + max(messages.message_bytes for messages in dynamic)
+        size = (
+            LINK_OUTBOX_AT + LINK_OUTBOX * entry + (LINK_INBOX + 1) * LINK_PACKET_BYTES
+        ) + LINK_TAIL
+        for session in self.sessions:
+            columns, rows = session.grid
+            self._regions.append(
+                session.empty(
+                    (columns * rows, (size + 63) // 64 * 16),
+                    "uint32",
+                    shard_grid=session.grid,
+                )
+            )
+        token = secrets.randbits(31) | 1
+        out = []
+        for island, one in enumerate(programs):
+            if one.messages is None:
+                out.append(one)
+                continue
+            words = self._link_words(island, one.messages.message_bytes, token)
+            out.append(_with_link(one, words))
+        return out
+
+    def _link_words(self, island, message_bytes, token):
+        """LinkArgs of island `island`'s cores toward the other island."""
+        far = 1 - island
+        far_core = self.link_core(far)
+        columns = self.sessions[far].grid[0]
+        x, y = self.sessions[far].device.worker_core(
+            far_core % columns, far_core // columns
+        )
+        _count, channel, _x, _y = self.mesh.link(island, far, 0)
+        region = self._regions[island].address
+        words = [
+            self.link_core(island),
+            region,
+            LINK_OUTBOX,
+            LINK_INBOX,
+            LINK_PACKET_BYTES // (LINK_PREFIX + message_bytes),
+            island,
+            x | y << 16,
+            self._regions[far].address,
+            channel,
+            region + LINK_TEARDOWN,
+            region + LINK_CURSOR,
+            token,
+        ]
+        assert len(words) == LINK_ARGS
+        return words
 
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'
         sessions, then the mesh (not while a grid did not return)."""
+        self._regions = []
         try:
             for session in self.sessions:
                 session.close()
@@ -573,3 +670,29 @@ class IslandSession:
                 self.close()
             except Exception as error:  # noqa: BLE001 (the process ends: logged)
                 self.log(f"{why}: close raised {type(error).__name__}: {error}")
+
+
+def _with_link(program, words):
+    """A copy of `program` whose reader and writer take `words` after their own
+    arguments (as many on both), built with KM_LINKS."""
+    own = program.core_args(0)
+    after = len(own[0])
+    if len(own[1]) != after:
+        raise ValueError(
+            f"{program.name}: over a link the reader and the writer take as many "
+            f"arguments ({len(own[0])}, {len(own[1])})"
+        )
+
+    def args(core):
+        reader, writer, compute = program.core_args(core)
+        if len(reader) != after or len(writer) != after:
+            raise ValueError(
+                f"{program.name}: core {core}'s reader and writer arguments are not "
+                f"{after} each"
+            )
+        return [*reader, *words], [*writer, *words], compute
+
+    linked = copy.copy(program)
+    linked.args = args
+    linked.defines = {**program.defines, "KM_LINKS": 1, "KM_LINK_ARGS_AFTER": after}
+    return linked

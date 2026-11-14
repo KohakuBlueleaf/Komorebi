@@ -21,9 +21,13 @@ addresses; it runs the link's reader and writer (`km_link.hpp`).
 
 The link core is a member of the run's group, so its status line counts: sent, the
 messages it issued again locally; consumed, the messages it sent across. Each island
-then balances by itself. The link's line goes idle once the run's expected crossings
-(from the command words) are reached: a run over two islands has no sound quiet end
-per island while a message is on the fabric.
+then balances by itself. In this experiment each island runs its own RUN, and the link's
+line goes idle once the run's expected crossings (from the command words) are reached.
+A RUN whose group spans both islands (`Session(cards=..., links=1)`, see
+`examples/05_forward/islands.py`) ends instead once both islands are quiet: each link
+reader reads its island's status lines and sends a report across, and its line goes
+idle when both reports are quiet and each side's sent-across count meets the other's
+issued count.
 
 A run over two islands needs both RUN commands on the cards at once: `Run.submit`
 only queues a command, which reaches the card in a wait or in `Run.store()`.
