@@ -62,6 +62,17 @@
 /* host or a work cluster's thread, served by the service overlay: the group's cores
  * copy their slices of DRAM pages through L1 into other DRAM pages (km_copy.h) */
 #define KM_HANDLER_COPY 245u
+/* host, served by the service overlay: every rank of the group calls km::all_gather
+ * or km::all_reduce (km_ask.hpp) on pages of a copy tensor, with these words */
+#define KM_HANDLER_GATHER 243u
+#define KM_HANDLER_REDUCE 244u
+#define KM_COLL_TENSOR 0u  /* its reference word */
+#define KM_COLL_FIRST 1u   /* first page */
+#define KM_COLL_PAGES 2u   /* pages */
+#define KM_COLL_SCRATCH 3u /* reduce: a copy of 2 x pages pages, the same page size */
+#define KM_COLL_SUM 4u     /* reduce: km::Sum, 0 int32, 1 float32, 2 bfloat16 */
+#define KM_COLL_BUFFER 5u  /* reduce: L1 of every rank for the folds */
+#define KM_COLL_ROOM 6u    /* reduce: its bytes, two pages or more */
 /* served on link cores (km_pages.hpp): host: each CPU sends its pages share over its
  * link, or the reader waits a count; dispatcher: link 0 sends a staged packet */
 #define KM_HANDLER_PAGES 248u
@@ -203,10 +214,12 @@
 #define KM_ASK_GET_BYTES 2u
 #define KM_ASK_GET_SPAN 14u
 /* Collectives across islands (km::gather_pages): a put line from the asker's DRAM may
- * name a keeper on the holder island, its rank there + 1 | its port << 16 (0: none),
- * whose port the holder's lead page CPU adds the line's pages to once all are written.
- * Word 14 of a put line (a get line of bytes keeps it for its span). */
+ * name keepers on the holder island, ranks first .. first + n - 1 there: first + 1 |
+ * (n - 1) << 8 | their port << 16 (0: none); once all its pages are written there,
+ * the holder's lead page CPU adds share k of them (partition(pages, k, n)) to keeper
+ * k's port. Word 14 of a put line (a get line of bytes keeps it for its span). */
 #define KM_ASK_KEEPER 14u
+#define KM_KEEPER_RANKS_SHIFT 8u
 #define KM_KEEPER_PORT_SHIFT 16u
 /* Then a core's puts into another island's DRAM (km::write_pages), as the asks: link
  * core 0's counts and each ring's address, each CPU's ring words, the put lines */
@@ -364,10 +377,16 @@ KM_STATIC_ASSERT(
    alone count at the reader's KM_PORT_PAGES and at the writer's, the one after. */
 #define KM_PORTS 8u
 #define KM_PORT_PAGES KM_PORTS
-#define KM_PORT_SLOTS (KM_PORTS + 2u)
+/* the collectives' (km::all_gather, km::all_reduce): pages gathered into this island
+   from the island before it and after it on the line; in KM_PORT_LEFT's slot, word
+   KM_PORT_MET counts an island's ranks' meetings */
+#define KM_PORT_LEFT (KM_PORTS + 2u)
+#define KM_PORT_RIGHT (KM_PORTS + 3u)
+#define KM_PORT_SLOTS (KM_PORTS + 4u)
 #define KM_PORT_STRIDE 16u
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u
+#define KM_PORT_MET 2u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
 /* KM_BROADCASTS areas, KM_BROADCAST_BYTES each; on a 64-byte line after the ports */

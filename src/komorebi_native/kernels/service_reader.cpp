@@ -1,5 +1,6 @@
 // The runtime's service overlay, its reader part: this core's slice of a PUSH, PULL or
-// COPY; a failed bound or a timed-out wait gives up (its where code).
+// COPY, or its part of a GATHER or REDUCE (the collectives); a failed bound or a
+// timed-out wait gives up (its where code).
 #include <stdint.h>
 
 #include "komorebi/device/km_ask.hpp"
@@ -10,6 +11,38 @@ void km_overlay(km::Reader& reader, const km_command_t& command) {
     const uint32_t handler = km::handler(command);
     const bool push = handler == KM_HANDLER_PUSH;
     const bool copy = handler == KM_HANDLER_COPY;
+    if (handler == KM_HANDLER_GATHER || handler == KM_HANDLER_REDUCE) {
+        const uint32_t a[10] = {
+            command.a0,
+            command.a1,
+            command.a2,
+            command.a3,
+            command.a4,
+            command.a5,
+            command.a6,
+            command.a7,
+            command.a8,
+            command.a9
+        };
+        if (handler == KM_HANDLER_GATHER) {
+            km::all_gather(
+                reader, command, a[KM_COLL_TENSOR], a[KM_COLL_FIRST], a[KM_COLL_PAGES]
+            );
+        } else {
+            km::all_reduce(
+                reader,
+                command,
+                a[KM_COLL_TENSOR],
+                a[KM_COLL_FIRST],
+                a[KM_COLL_PAGES],
+                a[KM_COLL_SCRATCH],
+                static_cast<km::Sum>(a[KM_COLL_SUM]),
+                a[KM_COLL_BUFFER],
+                a[KM_COLL_ROOM]
+            );
+        }
+        return;  // a give-up is recorded where it happened
+    }
     if (!push && !copy && handler != KM_HANDLER_PULL) {  // not assigned yet
         reader.gave_up(
             km::kStReader,

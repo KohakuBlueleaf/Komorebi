@@ -292,8 +292,15 @@ namespace km {
         );
         const uint32_t mine = range ? share.len * r.pages : share.len;
         if (shape == 0 && mine >= kPagesBulkShare) {
-            per_read = slots_fit >= 3 * 16 ? 16 : slots_fit >= 2 * 4 ? 4 : 1;
-            asked = per_read == 1 ? kPagesSlotsDefault : kPagesSlotsMax;
+            // a read's block (every bank's pages from DRAM) within the share, else
+            // its pages would go a page a read in a few groups; slots as many as fit
+            const uint32_t spread = r.from_core == KM_PAGES_DRAM ? NUM_DRAM_BANKS : 1;
+            per_read = (
+                slots_fit >= 3 * 16 && mine >= spread * 16 ? 16
+                : slots_fit >= 2 * 4 && mine >= spread * 4 ? 4
+                                                           : 1
+            );
+            asked = kPagesSlotsMax;
         }
         // from DRAM only where a bank's pages lie one after another; a range's pages
         // in order (each rank's last page counts the rank's)
@@ -1689,9 +1696,9 @@ namespace km {
         );
     }
 
-    // The lead page CPU: a gather's `pages`, all written here, onto its keeper's port
-    // (`keeper`: KM_ASK_KEEPER, a rank of this island), one local NoC atomic; a keeper
-    // that names no rank or port is counted bad. kGave* code.
+    // The lead page CPU: a gather's `pages`, all written here, onto its keepers' port
+    // (`keeper`: KM_ASK_KEEPER, ranks of this island), share k onto keeper k's, a local
+    // NoC atomic each; keepers that name no rank or port are counted bad. kGave* code.
     template <typename Kernel>
     inline uint32_t pages_keeper(
         const Kernel& kernel, uint32_t area, uint32_t keeper, uint32_t pages
@@ -1700,20 +1707,23 @@ namespace km {
             return kGaveNone;
         }
         const Islands view = islands_at(kernel.args().control);
-        const uint32_t rank = (keeper & ((1u << KM_KEEPER_PORT_SHIFT) - 1)) - 1;
-        const uint32_t port = keeper >> KM_KEEPER_PORT_SHIFT;
-        if (rank >= view.ranks() || port >= KM_PORTS) {
+        const uint32_t rank = (keeper & 0xFFu) - 1;
+        const uint32_t ranks = (keeper >> KM_KEEPER_RANKS_SHIFT & 0xFFu) + 1;
+        const uint32_t port = keeper >> KM_KEEPER_PORT_SHIFT & 0xFFu;
+        if (rank + ranks > view.ranks() || port >= KM_PORT_SLOTS) {
             l1(area)[KM_PUT_BAD / 4] += 1;
             return kGaveNone;
         }
-        noc_semaphore_inc(
-            kernel.core_noc(
-                view.base() + rank,
-                kernel.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
-                    KM_PORT_COUNT * 4
-            ),
-            pages
+        const uint32_t count = (
+            kernel.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
+            KM_PORT_COUNT * 4
         );
+        for (uint32_t k = 0; k < ranks; k++) {
+            const uint32_t share = partition(pages, k, ranks).len;
+            if (share != 0) {
+                noc_semaphore_inc(kernel.core_noc(view.base() + rank + k, count), share);
+            }
+        }
         return kernel.poll_at(
             kWherePages,
             [] {
