@@ -33,7 +33,7 @@ namespace km {
     }
 
     // Writer: `pages` pages (at most P) at the front of `cb` into `arrival_slot` of
-    // core `destination`, bump its port (each step timed), pop. False: gave up.
+    // rank `destination`, bump its port (each step timed), pop. False: gave up.
     inline bool emit(
         const Writer& writer,
         const km_command_t& command,
@@ -63,7 +63,9 @@ namespace km {
         const uint32_t limit = writer.args().wait_limit;
         noc_async_write(
             get_read_ptr(cb),
-            writer.core_noc(destination, slot_addr(arrival, arrival_slot)),
+            writer.core_noc(
+                writer.core_of(destination), slot_addr(arrival, arrival_slot)
+            ),
             bytes
         );
         uint32_t code = writer.poll_at(
@@ -77,7 +79,9 @@ namespace km {
             const uint32_t port_address = (
                 writer.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE
             );
-            noc_semaphore_inc(writer.core_noc(destination, port_address), 1);
+            noc_semaphore_inc(
+                writer.core_noc(writer.core_of(destination), port_address), 1
+            );
             code = writer.poll_at(
                 kWhereEmit,
                 [] {

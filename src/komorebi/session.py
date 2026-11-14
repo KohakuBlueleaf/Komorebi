@@ -447,6 +447,7 @@ class Session:
         if device is not None and kernel_bytes is not None:
             raise ValueError("kernel_bytes is set when the session opens the device")
         self.run = None
+        self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.stuck = False  # the grid did not return: the runtime closes it at exit
         self._module = None
         self._starting = None  # the Dispatch of a load before its Run exists
@@ -879,6 +880,7 @@ class Session:
         settle_microseconds=1.0,
         image=None,
         thread="card",
+        island=None,
     ):
         """Launches `program` (or programs in the runtime's form: a list, every core
         holding each, or {program: (first, count)}) on every core, then the dispatcher,
@@ -886,6 +888,7 @@ class Session:
         are described in docs/reference/host.md."""
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
+        self.island = _island(island, self.grid)
         placed = None
         if not isinstance(program, Program) or program.form() == "program":
             grid = self.grid
@@ -961,6 +964,7 @@ class Session:
                     else 0
                 ),
                 programs=_held_fields(placed) if placed and placed.switch else [],
+                island=_island_word(self.island),
             )
             check_bases(lim_bases(dispatch.lim_base))
             plan, port_lines = _port_lines(owner, dispatch, rings)
@@ -1036,6 +1040,8 @@ class Session:
             holds=placed.holds() if placed is not None else None,
             thread_program=owner,
             switch=getattr(backend, "switch", None),
+            ranks=self.island[0].ranks if self.island else None,
+            island_first=self.island[0].first(self.island[1]) if self.island else 0,
         )
         self.run = run
         self._starting = None
@@ -1101,6 +1107,28 @@ def _recipe_group(recipe):
     header = recipe.elf.parent.parent / "defines_generated.h"
     found = GROUP_LINE.search(header.read_text()) if header.is_file() else None
     return int(found.group(1)) if found else None
+
+
+def _island(island, grid):
+    """Session.load's `island` (graph, i) checked: island i's ranks are this card's
+    cores in core order (no link cores), so rank first + c is core c."""
+    if island is None:
+        return None
+    graph, here = island
+    cores = grid[0] * grid[1]
+    if not 0 <= here < len(graph.islands):
+        raise ValueError(f"island {here} of {len(graph.islands)}")
+    if graph.rank_cores[here] != tuple(range(cores)):
+        raise ValueError(f"island {here}: its ranks are not the {cores} cores in order")
+    return graph, here
+
+
+def _island_word(island):
+    """The dispatcher's island word: first | count << 16 of its ranks; 0 for none."""
+    if island is None:
+        return 0
+    graph, here = island
+    return graph.first(here) | graph.count(here) << 16
 
 
 def _group_recipes(kernels, count):
@@ -1530,12 +1558,12 @@ class _Backend:
         return self.control_addr
 
     def _island_rows(self, cores, columns):
-        """Every core's island area in control_rows: one island, island 0 of 1 with
-        every core a rank (its header line, then its table)."""
+        """Every core's island area in control_rows: island i of the load's graph,
+        else island 0 of 1 with every core a rank (its header line, then its table)."""
         abi_headers = abi.headers()
-        graph = islands.one(cores, columns)
-        table = np.frombuffer(graph.table(0), np.uint32)
-        header = [0, len(graph.islands), graph.first(0), graph.count(0)]
+        graph, here = self.session.island or (islands.one(cores, columns), 0)
+        table = np.frombuffer(graph.table(here), np.uint32)
+        header = [here, len(graph.islands), graph.first(here), graph.count(here)]
         at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
         line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
         self.control_rows[:, at : at + line] = header

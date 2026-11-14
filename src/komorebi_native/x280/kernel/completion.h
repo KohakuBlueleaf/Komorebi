@@ -97,6 +97,19 @@ static inline int group_outside(
     return count == 0 || first > dispatcher->cores || count > dispatcher->cores - first;
 }
 
+/* A group word in flat ranks as this island's part in its cores (first | count << 16),
+ * 0 when it has none there; without islands, the word itself. */
+static inline uint32_t island_part(const kmd_t* dispatcher, uint32_t group) {
+    if (dispatcher->island_count == 0) {
+        return group;
+    }
+    const uint32_t first = group & 0xFFFFu, end = first + (group >> 16);
+    const uint32_t low = dispatcher->island_first;
+    const uint32_t high = low + dispatcher->island_count;
+    const uint32_t start = first > low ? first : low, stop = end < high ? end : high;
+    return stop > start ? (start - low) | (stop - start) << 16 : 0u;
+}
+
 /* Bits [low, high) of a 64-bit word, for low <= high <= 64. */
 static inline uint64_t bits_between(uint32_t low, uint32_t high) {
     const uint64_t below_high = high >= 64u ? ~0ull : (1ull << high) - 1u;
@@ -283,7 +296,7 @@ KMD_HOT void command_submit(
         request,
         source,
         header & 0xFFu,
-        (uint32_t)line[1],
+        island_part(dispatcher, (uint32_t)line[1]),
         now,
         ticks,
         result,

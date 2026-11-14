@@ -34,7 +34,7 @@ through `Session.launch()`.
   multiples of 16, and the two buffers fit its L1; the host computes the same slices
   (data from offset 0, words at 32 MiB, 64 bytes a core) and checks them first.
 - `clear_pcie_state` after the batch, before the report; the report holds the check.
-- Run on card 1 only (`TT_VISIBLE_DEVICES=1` is required), every job through the hang
+- Run on one card (`TT_VISIBLE_DEVICES` names it, 0 or 1), every job through the hang
   watcher, up the ladder: 4 KiB, 1 MiB, 4 MiB, 20 MiB, one core before more.
 
 ## Results
@@ -69,10 +69,11 @@ program (a 1 MiB pattern push also takes 13 ms), which a persistent kernel does 
 - One core already reaches 13.5 GB/s; more cores add up to about 15 GB/s, the link's
   limit (x8 at 16 GT/s is 15.8 GB/s before overhead). The core count does not matter;
   the link does.
-- Outliers: at 2 cores and more one push in three has a span 2 to 10 times longer
-  (for example 12 cores, 4 MiB: 4.0 M cycles instead of 0.38 M), all bytes still exact.
-  I think a core started late (the host starts the cores one after another); I did not
-  check, as the span is from the first start. The medians leave them out.
+- Outliers: at 2 cores and more some pushes have a span 2 to 10 times longer (for
+  example 12 cores, 4 MiB: 4.0 M cycles instead of 0.38 M), all bytes still exact. A
+  core started late: each core's own push time is the same in every push, and the host's
+  launch sometimes waits up to 0.48 ms between two cores' starts. See
+  [start_spread](../start_spread/README.md). The medians leave them out.
 - The sequence word is written after the flush of the data writes, as a separate
   write. Seen first, with the data complete, in every push (`exact` in every run); a
   run that wrote the word without the flush was not tried.

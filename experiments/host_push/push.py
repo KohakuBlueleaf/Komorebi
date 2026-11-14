@@ -1,6 +1,6 @@
 """Push bytes from Tensix cores into the host's memory channel and check every byte.
 Mode pattern: a pattern, then a sequence word; mode dram: pages of a DRAM tensor.
-Needs FR_LOG (the watched job's log) and TT_VISIBLE_DEVICES=1; one JSON line a push.
+Needs FR_LOG (the watched job's log) and TT_VISIBLE_DEVICES (0 or 1); one JSON line.
 Example: python push.py --mode pattern --bytes 4096 --cores 1"""
 
 import argparse
@@ -218,6 +218,9 @@ def run(args, session, channel, card):
         "status": [int(r[STATUS]) for r in rep],
         "pushed": [int(r[PUSHED]) for r in rep],
         "routing_clear": [int(r[MIDCLEAR]) for r in rep],
+        "start_spread": max(wall(r, START) for r in rep) - t0,
+        "core_data": [wall(r, DATA) - wall(r, START) for r in rep],
+        "core_start": [wall(r, START) - t0 for r in rep],
         "card_cycles_data": t1 - t0,
         "card_cycles_all": t2 - t0,
         "card_mb_s": round(args.bytes / ((t1 - t0) / hz) / 1e6, 1),
@@ -254,11 +257,12 @@ def main():
     p.add_argument("--reps", type=int, default=1, help="pushes in one session")
     p.add_argument("--readback", action="store_true", help="also time read_chunks")
     args = p.parse_args()
-    if os.environ.get("TT_VISIBLE_DEVICES") != "1":
-        sys.exit("stop: TT_VISIBLE_DEVICES must be 1 (card 0 is not for this run)")
+    card = os.environ.get("TT_VISIBLE_DEVICES")
+    if card not in ("0", "1"):
+        sys.exit("stop: TT_VISIBLE_DEVICES must be 0 or 1, the card of this run")
     if not os.environ.get("FR_LOG"):
         sys.exit("stop: FR_LOG names the log of the watched job")
-    card = 1
+    card = int(card)
     if args.bytes % PAGE or not 0 < args.bytes <= 20 << 20:
         sys.exit("stop: --bytes is a multiple of 4096 up to 20 MiB")
     if args.chunk % PAGE or not PAGE <= args.chunk <= 32768:

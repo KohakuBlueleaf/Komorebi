@@ -399,11 +399,22 @@ is on.
 An island is a set of cores that reach the others only through links; its table entry
 names its ranks. Ranks are flat and contiguous by island, so a group word `first |
 count << 16` names flat ranks, and a core's rank is its island's first rank plus its
-local core (the core table's index). A command reaches every core of the island; the
-cores of the group's part there run it, and the part completes through the first of its
-cores in the group (`km::local_part`), so an event's first core is a local core of the
-island whose dispatcher sends it. A message's destination is a flat rank of 16 bits;
-the writer turns it into a local core. The host writes the island area at load: on one
+local core (the core table's index). `me()` of `km::Core` (reader, writer, movement)
+and of `km::Compute` is that flat rank, so `me() - km::first(command)` is the rank in
+the group on every island; the core table and every NoC lookup take the local core
+(`core_of(rank)` turns a rank of this island into it). The dispatcher holds its island's
+first rank and count (`kmd_args.island`, 0 on one island) and cuts each group by them:
+it takes a group with a part on its island, places the line unchanged, and keeps the
+part (in local cores) for its overlap, program and completion checks; a group with no
+part there is rejected as outside (reason 3). A command reaches every core of the
+island; the cores of the group's part there run it, and the part completes through the
+first of its cores in the group (`km::local_part`), so an event's first core is a local
+core of the island whose dispatcher sends it. A message's destination is a flat rank of 16 bits;
+the writer turns it into a local core. A dynamic run's ranks, counter tiles and end test
+are flat as well (its counter tiles are the group's last ranks); queues, tail lines and
+status lines are addressed by local core, so a run on the group (first rank, n) of an
+island behaves as (0, n) does on one island. Engine streams and graphs check a group
+against the island's ranks, and `Run` checks programs held on the group's part here. The host writes the island area at load: on one
 island the header is island 0 of 1 with every core a rank, and every answer below is
 the one of a run without islands.
 

@@ -95,7 +95,15 @@ static int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
         (arguments->host_noc_addr & (NOC_2M_WINDOW_STRIDE - 1u)) + host_bytes <=
             NOC_2M_WINDOW_STRIDE &&
         work_args_valid(arguments) && dynamic_valid(arguments) &&
-        arguments->programs <= 1u
+        arguments->programs <= 1u &&
+        (
+            arguments->island == 0 ||
+            (
+                (arguments->island >> 16) >= 1u &&
+                (arguments->island >> 16) <= arguments->cores &&
+                (arguments->island & 0xFFFFu) + (arguments->island >> 16) <= 0xFFFFu
+            )
+        )
     );
 }
 
@@ -247,7 +255,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     uint32_t header = (uint32_t)(line[0] >> 32);
     const uint32_t handler = header & 0xFFu, flags = (header >> 8) & 0xFFu;
     const uint32_t group = (uint32_t)line[1], argument = (uint32_t)(line[1] >> 32);
-    const uint32_t first = group & 0xFFFFu, count = group >> 16;
+    uint32_t first = group & 0xFFFFu, count = group >> 16;
     const uint32_t queued = handler != KM_HANDLER_EXIT && (flags & KM_FLAG_QUEUE);
     if (handler == KM_HANDLER_DEADLINE && argument != 0) {
         ring_consumed(ring);
@@ -401,6 +409,11 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     ) {
         return work_command(dispatcher, source, now); /* to a work cluster's thread */
     }
+    if (!queued && handler != KM_HANDLER_EXIT) { /* flat ranks: this island's part */
+        const uint32_t part = island_part(dispatcher, group);
+        first = part & 0xFFFFu;
+        count = part >> 16; /* none here: count 0, rejected as outside */
+    }
     uint32_t reject = 0;
     if (handler == KM_HANDLER_DEADLINE) {
         reject = KMD_REJECT_DEADLINE;
@@ -478,7 +491,10 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         ) {
             return KMD_HELD;
         }
-        line[1] = (line[1] & ~(uint64_t)0xFFFFFFFFu) | KM_GROUP_ALL(dispatcher->cores);
+        line[1] = (
+            (line[1] & ~(uint64_t)0xFFFFFFFFu) | dispatcher->island_first |
+            KM_GROUP_ALL(dispatcher->cores)
+        );
     } else if (
         (
             (flags & KM_FLAG_EXCLUSIVE) &&
@@ -889,6 +905,8 @@ static __attribute__((noinline)) void run(uint64_t core) {
     dispatcher->depth = (uint32_t)arguments->depth;
     dispatcher->full = ~0ull >> (64u - dispatcher->depth);
     dispatcher->cores = (uint32_t)arguments->cores;
+    dispatcher->island_first = (uint32_t)arguments->island & 0xFFFFu;
+    dispatcher->island_count = (uint32_t)(arguments->island >> 16);
     dispatcher->messages.handler = (uint32_t)arguments->messages_handler;
     dispatcher->messages.x280_cluster = (
         KMD_X280_RANKS_CLUSTER(arguments->messages_handler)

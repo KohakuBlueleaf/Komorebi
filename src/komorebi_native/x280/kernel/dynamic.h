@@ -51,6 +51,7 @@ KMD_HOT void messages_submitted(
     run->slot = slot;
     run->sequence = (uint32_t)line[0];
     run->group = (uint32_t)line[1];
+    run->part = island_part(dispatcher, run->group);
     run->request = request;
     run->source = source;
     run->run_handler = (uint32_t)(line[0] >> 32) & 0xFFu;
@@ -75,10 +76,10 @@ static inline void messages_gave(kmd_t* dispatcher, uint32_t core) {
     messages_run_line(dispatcher, KM_X280_RUN_END);
 }
 
-/* The index of the run's line `index` of `lines`: the group's cores, then the X280
- * ranks at their core indices. */
+/* The index of the run's line `index` of `lines`: the group's cores on this island,
+ * then the X280 ranks at their core indices. */
 static inline uint32_t messages_line(const kmd_messages_t* run, uint32_t index) {
-    const uint32_t first = run->group & 0xFFFFu, count = run->group >> 16;
+    const uint32_t first = run->part & 0xFFFFu, count = run->part >> 16;
     return index < count ? first + index : KM_X280_RANK_CORE(index - count);
 }
 
@@ -86,7 +87,7 @@ static inline uint32_t messages_line(const kmd_messages_t* run, uint32_t index) 
  * Counter tiles and X280 ranks are read as the group's other cores. */
 static inline int messages_quiet(kmd_t* dispatcher) {
     kmd_messages_t* run = &dispatcher->messages;
-    const uint32_t lines_count = (run->group >> 16) + run->x280_count;
+    const uint32_t lines_count = (run->part >> 16) + run->x280_count;
     volatile const uint32_t* lines = (
         (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_MESSAGES)
     );

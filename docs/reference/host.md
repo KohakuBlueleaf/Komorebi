@@ -255,7 +255,7 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20)`.
 
 `session.load(program, depth=None, trace=0, deadline=1.0, wait=2.0, idle=120.0,
 kernel_idle=0.0, start=10.0, host_depth=64, event_depth=128, batch=64, settle_microseconds=1.0,
-image=None, thread="card")` returns a `Run`:
+image=None, thread="card", island=None)` returns a `Run`:
 
 1. finds or builds the dispatcher image and the native module (see below), and
    checks that the image is there and X280 cluster 0 is idle (else `km.StartError`);
@@ -282,6 +282,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `batch` | commands stored per batch: every line, then one fence |
 | `settle_microseconds` | the host's pause between a fence and its next store into the card |
 | `thread` | for a program with an X280 thread: `"card"` builds and starts it after READY, `"host"` runs its `host_fallback` instead |
+| `island` | `(graph, i)`: this card is island `i` of a `komorebi.islands.Graph` whose island `i` has every core a rank in core order. Every core's island area holds island `i`'s header and table, the dispatcher gets `i`'s first rank and count (`kmd_args.island`), and the run's groups are flat ranks of the whole graph (`Run.ranks`); a group's part on this card runs ([islands](runtime.md#islands)) |
 
 Event room. The dispatcher takes a command that ends in an event only while the
 unread events, one per busy slot and one more fit the event ring; it counts as read

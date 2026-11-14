@@ -398,7 +398,9 @@ namespace km {
             limit
         );
         noc_async_read(
-            get_noc_addr_from_bank_id<true>(reader.me() % kOverlayBanks, command.a0),
+            get_noc_addr_from_bank_id<true>(
+                reader.args().me % kOverlayBanks, command.a0
+            ),
             control + kOverlayArea + kOverlayRecord,
             kRecordBytes
         );
@@ -582,7 +584,9 @@ namespace km {
             volatile tt_l1_ptr uint32_t* epoch = overlay_epoch(control);
             *epoch = (*epoch + 1) & kOverlayEpochMask;  // after the record changed
             noc_async_read(
-                get_noc_addr_from_bank_id<true>(kernel_.me() % kOverlayBanks, entry[0]),
+                get_noc_addr_from_bank_id<true>(
+                    kernel_.args().me % kOverlayBanks, entry[0]
+                ),
                 overlay_slot_address(control, part, slot),
                 bytes
             );
