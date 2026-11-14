@@ -131,6 +131,7 @@ static void graph_start(kmd_engine_t* engine, uint32_t index) {
         error = (
             kmg_start(&run->executor, upload, bindings, binding_count, engine->cores)
         );
+        run->executor.first_rank = engine->island_first;
         error = error ? error | KM_GRAPH_NO_NODE << 8 : 0u;
     }
     if (error != 0) {

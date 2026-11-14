@@ -1044,7 +1044,7 @@ class Session:
             thread_program=owner,
             switch=getattr(backend, "switch", None),
             ranks=self.island[0].ranks if self.island else None,
-            first_rank=self.island[0].first(self.island[1]) if self.island else 0,
+            island_first=self.island[0].first(self.island[1]) if self.island else 0,
         )
         self.run = run
         self._starting = None

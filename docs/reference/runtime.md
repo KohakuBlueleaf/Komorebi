@@ -410,7 +410,11 @@ part there is rejected as outside (reason 3). A command reaches every core of th
 island; the cores of the group's part there run it, and the part completes through the
 first of its cores in the group (`km::local_part`), so an event's first core is a local
 core of the island whose dispatcher sends it. A message's destination is a flat rank of 16 bits;
-the writer turns it into a local core. The host writes the island area at load: on one
+the writer turns it into a local core. A dynamic run's ranks, counter tiles and end test
+are flat as well (its counter tiles are the group's last ranks); queues, tail lines and
+status lines are addressed by local core, so a run on the group (first rank, n) of an
+island behaves as (0, n) does on one island. Engine streams and graphs check a group
+against the island's ranks, and `Run` checks programs held on the group's part here. The host writes the island area at load: on one
 island the header is island 0 of 1 with every core a rank, and every answer below is
 the one of a run without islands.
 

@@ -41,6 +41,7 @@ typedef struct {
     uint32_t phase;
     uint32_t error_reason, error_node;
     uint32_t done, in_flight, head, ready_n, core_count;
+    uint32_t first_rank; /* the island's first rank (groups are flat); 0: one island */
     const km_graph_t* hdr;
     const km_node_t* nodes;
     const uint16_t* edges;
