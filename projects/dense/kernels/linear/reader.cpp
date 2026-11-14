@@ -1,6 +1,5 @@
-// Linear reader, on NoC0: the row broadcast of X blocks over this island's K, each row
-// read with km::read_pages; then, when that K is part of the whole, this core's share
-// of Y: its island's partial sums of it, and each other island's, asked.
+// Linear reader, NoC0: X's row broadcast over this island's K (km::read_pages); for
+// part of K, this core's share of Y's partial sums: its island's, the others' asked.
 #include <stdint.h>
 
 #include "../dense.h"
@@ -34,12 +33,14 @@ void kernel_main() {
         }
         const uint32_t x_address = command.a0, p_address = command.a3;
         const uint32_t k_whole = command.a4;
-        const Cover mine = cover<kWPlace>(plan(kPlNt));
-        km::Broadcast broadcast(reader, command, kArgBroadcast);
-        if (!broadcast.ok()) {
-            return;
-        }
-        if (broadcast.included()) {
+        const uint32_t here = km::island(), islands = km::islands();
+        const Cover mine = cover<kWPlace>(here, plan(kPlNt));
+        const Parts held_by = parts<kWPlace>(k_whole, plan(kPlNt));
+        if (mine.k_tiles != 0 && core(kCoreRank) != 0) {
+            km::Broadcast broadcast(reader, command, kArgBroadcast);
+            if (!broadcast.ok()) {
+                return;
+            }
             const uint32_t m_tiles = plan(kPlMt);
             const uint32_t block_height = plan(kPlBm);
             const uint32_t k_block_tiles = plan(kPlKb);
@@ -104,7 +105,7 @@ void kernel_main() {
                 return;
             }
         }
-        if (mine.k_tiles == k_whole) {  // the island's product is Y itself
+        if (held_by.whole) {  // one island's product is Y itself
             return;
         }
         // This core's share of the Y pages this island holds, once the writer has
@@ -117,33 +118,27 @@ void kernel_main() {
         }
         const auto p_matrix = TensorAccessor(p_args, p_address);
         const uint32_t bytes = p_matrix.get_aligned_page_size();
-        const uint32_t here = km::island(), islands = km::islands();
+        const uint32_t sums = __builtin_popcount(held_by.holders);
         for (uint32_t done = 0; done < share.len; done += kChunk) {
             const uint32_t count = (
                 share.len - done < kChunk ? share.len - done : kChunk
             );
             const uint32_t first = y_here.first + share.start + done;
-            if (!reader.reserve(kCbOwn, kChunk)) {
+            if (!reader.reserve(kCbSums, kChunk * sums)) {
                 return;
             }
-            for (uint32_t tile = 0; tile < count; ++tile) {
-                noc_async_read_page(
-                    first + tile, p_matrix, get_write_ptr(kCbOwn) + tile * bytes
-                );
-            }
-            if (!flushed(reader, km::kStReader, km::kFlushReads)) {
-                return;
-            }
-            cb_push_back(kCbOwn, kChunk);
-            if (!reader.reserve(kCbFar, kChunk * (islands - 1))) {
-                return;
-            }
-            uint32_t to = get_write_ptr(kCbFar);
+            // each holder's partial sums of the chunk, in island order: here read,
+            // elsewhere asked
+            uint32_t to = get_write_ptr(kCbSums), asked = 0;
             for (uint32_t island = 0; island < islands; ++island) {
-                if (island == here) {
+                if (!((held_by.holders >> island) & 1)) {
                     continue;
                 }
-                if (!km::ask_pages(
+                if (island == here) {
+                    for (uint32_t tile = 0; tile < count; ++tile) {
+                        noc_async_read_page(first + tile, p_matrix, to + tile * bytes);
+                    }
+                } else if (!km::ask_pages(
                     reader,
                     command,
                     island,
@@ -155,13 +150,18 @@ void kernel_main() {
                     kPortP
                 )) {
                     return;
+                } else {
+                    asked += count;
                 }
                 to += kChunk * bytes;
             }
-            if (!km::port_wait(reader, command, kPortP, count * (islands - 1))) {
+            if (!flushed(reader, km::kStReader, km::kFlushReads)) {
                 return;
             }
-            cb_push_back(kCbFar, kChunk * (islands - 1));
+            if (asked != 0 && !km::port_wait(reader, command, kPortP, asked)) {
+                return;
+            }
+            cb_push_back(kCbSums, kChunk * sums);
         }
     });
 }

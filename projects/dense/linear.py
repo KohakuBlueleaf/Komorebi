@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, layout  # noqa: E402
+from komorebi import abi, formats, layout  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -35,23 +35,22 @@ def held_rows(tensor, row_pages):
     return max(pages for _, pages in tensor.placement.parts) // row_pages
 
 
-def extra_buffers(plan, others):
+def extra_buffers(plan, islands):
     """The linear kernels' buffers past the grid plan's: fp32 output subblocks, a
-    share's chunks (this island's, each other island's), the token and its slot."""
+    share's chunk of every island's partial sums, the token and its slot."""
     chunk = L["kChunk"]
     return [
         (L["kCbPartOut"], "float32", L["kPartBytes"], 2 * plan.sh * plan.sw),
-        (L["kCbOwn"], "float32", L["kPartBytes"], 2 * chunk),
-        (L["kCbFar"], "float32", L["kPartBytes"], 2 * chunk * max(others, 1)),
+        (L["kCbSums"], "float32", L["kPartBytes"], 2 * chunk * islands),
         (L["kCbToken"], "uint32", L["kSignalBytes"], 1),
         (L["kCbArrive"], "uint32", L["kSignalBytes"], 1),
     ]
 
 
-def extra_bytes(others):
+def extra_bytes(islands):
     """L1 the extra buffers take at most (output subblocks of 4 tiles)."""
     chunk, page = L["kChunk"], L["kPartBytes"]
-    return 8 * page + 2 * chunk * page * (1 + max(others, 1)) + 2 * L["kSignalBytes"]
+    return 8 * page + 2 * chunk * page * islands + 2 * L["kSignalBytes"]
 
 
 def fitting_plan(m_tiles, k_tiles, n_tiles, grid, ranks, budget):
@@ -95,7 +94,7 @@ class Linear:
         self.islands = len(graph.islands)
         self.nocs = session.sessions[0].nocs()
         part_rows = held_rows(tensors["w"], n_tiles)
-        budget = pl.L1_BUDGET - extra_bytes(self.islands - 1)
+        budget = pl.L1_BUDGET - extra_bytes(self.islands)
         self.plan = fitting_plan(
             m_tiles, part_rows, n_tiles, self.nocs.grid, ranks, budget
         )
@@ -121,7 +120,7 @@ class Linear:
             buffers=[
                 km.Buffer(*buffer)
                 for buffer in self.plan.buffers()[:4]
-                + extra_buffers(self.plan, self.islands - 1)
+                + extra_buffers(self.plan, self.islands)
             ],
             compile_args={
                 "reader": x.accessor_args()
@@ -141,8 +140,7 @@ class Linear:
                 "fp32_dest_acc_en": True,
                 "unpack_to_dest_mode": {
                     L["kCbPart"]: fp32,
-                    L["kCbOwn"]: fp32,
-                    L["kCbFar"]: fp32,
+                    L["kCbSums"]: fp32,
                 },
             },
             handlers=LINEAR_H,
@@ -175,35 +173,34 @@ class Linear:
         )
 
     def crossed(self):
-        """Bytes a call crosses, counted from the placements and the plan: X's rows
-        another island holds, read by this island's X readers, and the partial sums
-        of Y's pages each island asks of every other (none when W's part is all K)."""
+        """Bytes a call should cross, counted from the placements and the plan: X's rows
+        another island holds, read by the X readers of an island holding part of W,
+        and (no island holding all of K) every other holder's partial sums asked."""
         x, w, y = (self.tensors[name] for name in "xwy")
         plan, k_tiles = self.plan, self.k_tiles
-        n_tiles = plan.nt
         places = plan.places(self.nocs.grid)
+        parts = [
+            (first // plan.nt, pages // plan.nt) for first, pages in w.placement.parts
+        ]
+        holders = [island for island, (_, k_part) in enumerate(parts) if k_part]
+        whole = any(k_part == k_tiles for _, k_part in parts)
         total = {"x": 0, "partials": 0}
-        for island, (w_first, w_pages) in enumerate(w.placement.parts):
-            k_part = w_pages // n_tiles
-            for core in self.x_senders:
+        for island, (k0, k_part) in enumerate(parts):
+            for core in self.x_senders if k_part else ():
                 first_row = places[core][0]
                 for block in range(plan.nbh * plan.nbw):
                     block_row = first_row + block // plan.nbw * plan.bm
                     for row in range(block_row, min(block_row + plan.bm, plan.mt)):
-                        page = row * k_tiles + w_first // n_tiles
-                        holders = x.holders(page, k_part)
+                        holders_x = x.holders(row * k_tiles + k0, k_part)
                         total["x"] += (
-                            sum(
-                                pages
-                                for holder, _, pages in holders
-                                if holder != island
-                            )
+                            sum(pages for at, _, pages in holders_x if at != island)
                             * x.aligned_page_bytes
                         )
-            if k_part < k_tiles:
+            if not whole:
+                others = len([at for at in holders if at != island])
                 total["partials"] += (
                     y.placement.parts[island][1]
-                    * (self.islands - 1)
+                    * others
                     * self.tensors["p"].aligned_page_bytes
                 )
         total["all"] = total["x"] + total["partials"]
@@ -275,22 +272,35 @@ class Grid:
 def measure(product, cards, seconds):
     """Three single calls, then calls back to back for about `seconds` with every
     card's AICLK sampled."""
+    before = product.run.crossings()
     single = product.single(3)
     one_microseconds = float(np.median(single))
     log(f"single call {one_microseconds:.1f} us")
+    if seconds <= 0:  # the single calls alone, each waited for
+        crossed = (product.run.crossings() - before).total()
+        return {
+            "single_microseconds": [float(value) for value in single],
+            "reps": 0,
+            "microseconds_per_call": round(one_microseconds, 3),
+            "crossed_a_call": {field: count / 3 for field, count in crossed.items()},
+            "aiclk_mhz": {},
+        }
     reps = max(2, math.ceil(seconds * 1e6 / one_microseconds))
+    before = product.run.crossings()
     with contextlib.ExitStack() as stack:
         clocks = [stack.enter_context(bench.Clock(index)) for index in cards]
         log(f"loop of {reps} calls")
         host_s, microseconds = product.calls(
             reps, timeout=3 * reps * one_microseconds / 1e6 + 5
         )
+    crossed = (product.run.crossings() - before).total()
     report = {
         "single_microseconds": [float(value) for value in single],
         "reps": reps,
         "seconds": round(host_s, 3),
         "microseconds_per_call": round(host_s * 1e6 / reps, 3),
         "part_microseconds_median": np.median(microseconds, axis=0).tolist(),
+        "crossed_a_call": {field: count / reps for field, count in crossed.items()},
         "aiclk_mhz": {
             card_index: clock.summary() for card_index, clock in zip(cards, clocks)
         },
@@ -305,14 +315,60 @@ def clean(stopped):
 
 
 def checked(session, tensors, dimensions, matrices, kind):
-    """Y's sampled rows read back and checked against the float64 product."""
+    """Y's sampled rows read back and checked against the float64 product; when the
+    check fails on several islands, each sampled row tile's error and its holder."""
     m_rows, _, n_columns = dimensions
     rows = ref.sampled_rows(m_rows)
     started = time.perf_counter()
     got = card.read_rows(session, tensors["y"], rows, log)
     report = run.check(got[:, :n_columns], rows, *matrices, kind)
     report["readback_s"] = round(time.perf_counter() - started, 3)
+    if not report["ok"] and len(session.sessions) > 1:
+        want = ref.matmul(matrices[0][rows], matrices[1])
+        y = tensors["y"]
+        report["row_tiles"] = [
+            {
+                "row_tile": int(rows[at]) // pl.TILE,
+                "holder": y.holders(
+                    int(rows[at]) // pl.TILE * y.shape[1] // pl.TILE, 1
+                )[0][0],
+                **ref.errors(
+                    got[at : at + pl.TILE, :n_columns], want[at : at + pl.TILE]
+                ),
+            }
+            for at in range(0, len(rows), pl.TILE)
+        ]
+        report["partials"] = partials(session, tensors, matrices)
     return report
+
+
+def partials(session, tensors, matrices):
+    """Each island's partial sums in P (its last call) for the first row tile of
+    each island's part of Y, against the float64 partial of its part of K."""
+    x_matrix, w_matrix = matrices
+    p, w, y = tensors["p"], tensors["w"], tensors["y"]
+    n_tiles = p.shape[1] // pl.TILE
+    out = []
+    for island, (k_first, k_pages) in enumerate(w.placement.parts):
+        k0, k_part = k_first // n_tiles * pl.TILE, k_pages // n_tiles * pl.TILE
+        if not k_part:
+            continue
+        for y_first, y_pages in y.placement.parts:
+            if not y_pages:
+                continue
+            row_tile = y_first // n_tiles
+            (raw,) = session.sessions[island].read(
+                p.parts[island], first=row_tile * n_tiles, pages=n_tiles
+            )
+            got = formats.untilize(raw.view(np.float32), pl.TILE, n_tiles * pl.TILE)
+            rows = slice(row_tile * pl.TILE, (row_tile + 1) * pl.TILE)
+            want = ref.matmul(
+                x_matrix[rows, k0 : k0 + k_part], w_matrix[k0 : k0 + k_part]
+            )
+            out.append(
+                {"island": island, "row_tile": row_tile, **ref.errors(got, want)}
+            )
+    return out
 
 
 def sizes(program):
@@ -345,10 +401,9 @@ def attempt(product_class, session, dimensions, tensors, cards, args, matrices):
     report["check"] = checked(session, tensors, dimensions, matrices, args.inputs)
     per_call = report["loop"]["microseconds_per_call"]
     report["tflops"] = round(flops / per_call / 1e6, 2)
-    if "crossed_bytes" in report and report["crossed_bytes"]["all"]:
-        report["crossed_gb_per_s"] = round(
-            report["crossed_bytes"]["all"] / per_call / 1e3, 2
-        )
+    crossed = report["loop"]["crossed_a_call"]["bytes"]
+    if crossed:
+        report["crossed_gb_per_s"] = round(crossed / per_call / 1e3, 2)
     report["ok"] = report["check"]["ok"] and clean(report["run"])
     return report
 

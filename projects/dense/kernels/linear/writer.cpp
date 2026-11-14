@@ -1,7 +1,5 @@
-// Linear writer, on NoC1: the column broadcast of this island's W blocks, then the
-// output. When W's part here covers the whole K, Y where its pages are; else the fp32
-// partial sums into P, every island told (km::local tree, leaders across), then Y's
-// share this core's reader and compute summed.
+// Linear writer, NoC1: the column broadcast of this island's W; Y (all of K) or the
+// partial sums into P, every island told, then this core's share of Y summed.
 #include <stdint.h>
 
 #include "../dense.h"
@@ -150,15 +148,15 @@ void kernel_main() {
         const uint32_t w_address = command.a1, y_address = command.a2;
         const uint32_t p_address = command.a3, k_whole = command.a4;
         const uint32_t n_tiles = plan(kPlNt);
-        const Cover mine = cover<kWPlace>(n_tiles);
-        const bool whole = mine.k_tiles == k_whole;
+        const Cover mine = cover<kWPlace>(km::island(), n_tiles);
+        const bool whole = parts<kWPlace>(k_whole, n_tiles).whole;
         const auto y_matrix = TensorAccessor(y_args, y_address);
         const auto p_matrix = TensorAccessor(p_args, p_address);
-        km::Broadcast broadcast(writer, command, kArgBroadcast);
-        if (!broadcast.ok()) {
-            return false;
-        }
-        if (broadcast.included()) {
+        if (mine.k_tiles != 0 && core(kCoreRank) != 0) {
+            km::Broadcast broadcast(writer, command, kArgBroadcast);
+            if (!broadcast.ok()) {
+                return false;
+            }
             const uint32_t m_tiles = plan(kPlMt);
             const uint32_t block_height = plan(kPlBm), block_width = plan(kPlBn);
             const uint32_t k_block_tiles = plan(kPlKb);

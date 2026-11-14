@@ -18,8 +18,7 @@ constexpr uint32_t kCbCol = 1;
 constexpr uint32_t kCbYOut = 16;
 constexpr uint32_t kCbPart = 24;
 constexpr uint32_t kCbPartOut = 17;
-constexpr uint32_t kCbOwn = 4;  // a share's chunk of this island's partial sums
-constexpr uint32_t kCbFar = 5;  // the same chunk from each other island, in order
+constexpr uint32_t kCbSums = 5;  // a share's chunk of each holder's partial sums, in order
 constexpr uint32_t kCbToken = 6;
 constexpr uint32_t kCbArrive = 7;
 constexpr uint32_t kBf16Bytes = 2048;
@@ -83,16 +82,34 @@ inline Span held(uint32_t at) {
     }
 }
 
-// The K tiles this island's part of W covers: whole rows of W's [K, N] tiles.
+// The K tiles island `at`'s part of W covers: whole rows of W's [K, N] tiles.
 struct Cover {
     uint32_t k0;
     uint32_t k_tiles;
 };
 
 template <uint32_t WBase>
-inline Cover cover(uint32_t n_tiles) {
-    const Span part = held<WBase>(km::island());
+inline Cover cover(uint32_t at, uint32_t n_tiles) {
+    const Span part = held<WBase>(at);
     return {part.first / n_tiles, part.pages / n_tiles};
+}
+
+// The islands whose part of W holds some of K, a bit each; `whole`: one holds all of
+// it (its product is Y, the others compute nothing), else each a partial sum of Y.
+struct Parts {
+    uint32_t holders;
+    bool whole;
+};
+
+template <uint32_t WBase>
+inline Parts parts(uint32_t k_whole, uint32_t n_tiles) {
+    Parts found = {0, false};
+    for (uint32_t at = 0; at < km::islands(); ++at) {
+        const uint32_t k_tiles = cover<WBase>(at, n_tiles).k_tiles;
+        found.holders |= (k_tiles != 0 ? 1u : 0u) << at;
+        found.whole = found.whole || k_tiles == k_whole;
+    }
+    return found;
 }
 
 inline uint32_t blocks_of(uint32_t numerator, uint32_t denominator) {
