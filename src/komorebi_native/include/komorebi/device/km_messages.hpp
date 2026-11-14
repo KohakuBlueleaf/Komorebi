@@ -93,6 +93,16 @@ namespace km {
         }
     };
 
+    // Word 0 of the message at `address` as two halves (little endian): the mark, then
+    // the handler and program. Each is stored alone, with no read of the other.
+    inline volatile tt_l1_ptr uint16_t* message_mark_half(uint32_t address) {
+        return reinterpret_cast<volatile tt_l1_ptr uint16_t*>(l1(address));
+    }
+
+    inline volatile tt_l1_ptr uint16_t* message_handler_half(uint32_t address) {
+        return message_mark_half(address) + 1;
+    }
+
     // The handler in a message's word 0.
     inline uint32_t messages_handler(uint32_t word) {
         return word >> kMessagesHandlerShift & 0xFF;
@@ -811,17 +821,18 @@ namespace km {
                 lost_to = bin_destination[bin];
                 return false;
             }
-            // Commit: the messages go out with the first one's word 0 zero, then after
+            // Commit: the messages go out with the first one's mark zero, then after
             // their barrier one 16-byte write sets it (each word 0 holds its handler).
             const uint32_t first_position = returned[0];
             const uint32_t base = (
                 store + bin * kMessagesPacket * messages_arguments.message_bytes
             );
-            const uint32_t first_word = l1(base)[0];
             const MessageMarks marks(first_position, shift, bin_messages);
-            l1(base)[0] = 0;
+            *message_mark_half(base) = 0;
             for (uint32_t i = 1; i < bin_messages; i++) {
-                l1(base + i * messages_arguments.message_bytes)[0] |= marks(i);
+                *message_mark_half(base + i * messages_arguments.message_bytes) = marks(
+                    i
+                );
             }
             invalidate_l1_cache();  // a fence: the NoC reads the stored marks
             for (uint32_t i = 0; i < bin_messages;) {
@@ -850,7 +861,7 @@ namespace km {
                 where = kWhereMessagesFlush;
                 return false;
             }
-            l1(base)[0] = first_word | marks(0);
+            *message_mark_half(base) = marks(0);
             invalidate_l1_cache();
             noc_async_write(
                 base,
@@ -939,17 +950,15 @@ namespace km {
                 bin_destination[bin] = destination;
                 held++;
             }
-            volatile tt_l1_ptr uint32_t* slot_words = (
-                l1(
-                    store +
-                    (bin * kMessagesPacket + bin_fill[bin]) *
-                        messages_arguments.message_bytes
-                )
+            const uint32_t slot_address = (
+                store +
+                (bin * kMessagesPacket + bin_fill[bin]) *
+                    messages_arguments.message_bytes
             );
-            slot_words[0] =
-                (
-                    (outgoing_word >> kMessagesOutHandlerShift) << kMessagesHandlerShift
-                );  // the handler; the flush adds the mark
+            volatile tt_l1_ptr uint32_t* slot_words = l1(slot_address);
+            // The handler; the flush adds the mark.
+            *message_handler_half(slot_address) = outgoing_word >>
+                kMessagesOutHandlerShift;
             for (uint32_t word = 1; word < words; word++) {
                 slot_words[word] = outgoing[word];
             }
