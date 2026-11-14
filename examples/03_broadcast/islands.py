@@ -227,10 +227,7 @@ def main():
     report = {"cards": cards, "blocks": args.blocks, "pages": args.pages}
     report["window"] = args.window
     links = 1 if len(cards) > 1 else 0
-    # the link cores' services (two cards) make the kernels 100.2 KB: past the default
-    with km.Session(
-        cards=cards, links=links, kernel_bytes=104 * 1024, log=log
-    ) as session:
+    with km.Session(cards=cards, links=links, log=log) as session:
         grid = session.island(0).nocs().grid
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)]

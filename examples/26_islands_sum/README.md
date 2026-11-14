@@ -35,7 +35,7 @@ its port as for a part from its own island.
 dispatcher, which sends the other island's part across), waits for each, and checks the
 total against numpy. The input is a copy on every island; integers in [-2, 2], so every
 partial sum is exact in float32. The link core's services make the kernels larger than
-the runtime's default buffer, so the session opens with `kernel_bytes=84 * 1024`.
+the runtime's default buffer; a session over two cards opens with one that holds them.
 
 ```
 python sum.py                 # cards 0 and 1, 238 ranks

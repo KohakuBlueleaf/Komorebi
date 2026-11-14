@@ -14,7 +14,7 @@ import numpy as np
 from komorebi import abi, dram, formats, islands, native
 from komorebi import channel as channel_module
 from komorebi import session as session_module
-from komorebi.errors import CardBusy, KomorebiError, WaitTimeout
+from komorebi.errors import CardBusy, CommandTimeout, KomorebiError, WaitTimeout
 from komorebi.program import Program
 
 M32 = 0xFFFFFFFF
@@ -26,6 +26,10 @@ LINK_ARGS = 9
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
 LINK_TAIL = 0x20 + 2 * 16 * 256
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
+# The kernel buffer of a session over two cards: the largest build with page links
+# (90,112 B) and at least 16 KiB more, in steps of 16 KiB. kernel_bytes= overrides it.
+KERNEL_BYTES = 112 * 1024
+CROSS_PAGE = 64  # bytes of a link CPU's row of what crossed, as COUNTS writes it
 
 
 def _named(error, island):
@@ -40,6 +44,44 @@ def _named(error, island):
 
 def _left(deadline):
     return max(deadline - time.monotonic(), 0.0)
+
+
+class Crossings:
+    """What crossed the links since the run's start: `rows[(link, source, target)]`,
+    what island `source` sent to `target` on its link `link` (FIELDS, each a count).
+    `after - before` is what crossed between two reads; `total` sums links."""
+
+    FIELDS = ("messages", "lines", "asks", "pages", "parts", "bytes")
+
+    def __init__(self, rows):
+        self.rows = dict(rows)
+
+    def __getitem__(self, key):
+        return self.rows[key]
+
+    def __sub__(self, other):
+        zero = dict.fromkeys(self.FIELDS, 0)
+        return Crossings(
+            {
+                key: {f: row[f] - other.rows.get(key, zero)[f] for f in self.FIELDS}
+                for key, row in self.rows.items()
+            }
+        )
+
+    def total(self, source=None, target=None):
+        """Every field summed over the links (from `source`, to `target`: None any)."""
+        out = dict.fromkeys(self.FIELDS, 0)
+        for (_, here, there), row in self.rows.items():
+            if source in (None, here) and target in (None, there):
+                for field in self.FIELDS:
+                    out[field] += row[field]
+        return out
+
+    def __repr__(self):
+        lines = [
+            f"link {k} island {a} -> {b}: {row}" for (k, a, b), row in self.rows.items()
+        ]
+        return "\n".join(lines) or "no link"
 
 
 class LinkPlan:
@@ -134,9 +176,10 @@ class IslandRun:
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
     and it completes when every part has. Errors name the island (`error.island`)."""
 
-    def __init__(self, graph, runs, linked=False):
+    def __init__(self, graph, runs, linked=False, counts=None):
         self.graph = graph
         self.runs = tuple(runs)
+        self._counts = counts  # () -> Crossings of the links, read now (None: no link)
         # a dynamic program's messages cross: a dynamic RUN takes every rank, and link
         # core 0 of each island serves it (a PAGES command of mode MESSAGES)
         self.linked = linked
@@ -172,7 +215,7 @@ class IslandRun:
                     handler, group, args, exclusive=exclusive, result=result, part=True
                 )
             except KomorebiError as error:
-                raise _named(error, island) from None
+                raise self._error(error, island) from None
             self._parts[island][ticket] = handle
         self._next += 1
         return ticket
@@ -227,7 +270,7 @@ class IslandRun:
                     part=True,
                 )
             except KomorebiError as error:
-                raise _named(error, island) from None
+                raise self._error(error, island) from None
             self._parts[island][tickets[mine]] = np.asarray(handles, np.int64)
         self._next += rows
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
@@ -257,7 +300,7 @@ class IslandRun:
                     h["KM_HANDLER_PAGES"], self.graph.link_group(island, 0, 1), words
                 )
             except KomorebiError as error:
-                raise _named(error, island) from None
+                raise self._error(error, island) from None
 
     def send(self):
         """Stores every island's queued commands on its card, so that the islands run
@@ -267,7 +310,7 @@ class IslandRun:
             try:
                 run.store()
             except KomorebiError as error:
-                raise _named(error, island) from None
+                raise self._error(error, island) from None
 
     def wait(self, tickets, timeout=10.0):
         """Sends what is queued and waits, within one `timeout` for all, for every
@@ -293,9 +336,9 @@ class IslandRun:
                 got = run.wait(handles[mine].tolist(), _left(deadline))
             except WaitTimeout as error:
                 error.pending = self._tickets(island, error.pending)
-                raise _named(error, island) from None
+                raise self._error(error, island) from None
             except KomorebiError as error:
-                raise _named(error, island) from None
+                raise self._error(error, island) from None
             for ticket, event in zip(wanted[mine].tolist(), got):
                 events.setdefault(ticket, []).append(event)
         out = [tuple(events[ticket]) for ticket in wanted.tolist()]
@@ -320,27 +363,82 @@ class IslandRun:
                     run._check_alive()
                     run._step(handles, int(handles[-1]), 0.0)
                 except KomorebiError as error:
-                    raise _named(error, island) from None
+                    raise self._error(error, island) from None
                 pending[island] = handles[~run._arrived(handles)]
 
-    def inspect(self, island, cores=None, timeout=10.0):
-        """Run.inspect of island `island`'s cores [first, first + count) of `cores`
-        (its own core numbers; default all), asked of that island's dispatcher."""
-        try:
-            return self.runs[island].inspect(cores, timeout)
-        except KomorebiError as error:
-            raise _named(error, island) from None
+    def inspect(self, ranks=None, timeout=10.0):
+        """While the run goes on: what each rank of `ranks` (first, count; default every
+        rank) is doing, as Run.inspect reads it, asked of each island's dispatcher in
+        turn within one `timeout`; each core's dict also holds its `rank` and `island`.
+        """
+        group = (0, self.cores) if ranks is None else tuple(ranks)
+        deadline = time.monotonic() + timeout
+        out = []
+        for island, first, count in self.graph.split(group):
+            cores = self.graph.rank_cores[island][first : first + count]
+            if cores[-1] - cores[0] + 1 != count:
+                raise ValueError(
+                    f"ranks {group}: not one run of island {island}'s cores"
+                )
+            try:
+                read = self.runs[island].inspect((cores[0], count), _left(deadline))
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+            out.extend(self._ranked(island, read))
+        return out
 
-    def reset_core(self, island, core, timeout=10.0):
-        """Run.reset_core of island `island`'s core `core` (its own core number): by
-        that island's dispatcher from its kept lists, else by the host. Not a link
-        core: it would lose the connection it holds open."""
-        if core in self.graph.link_cores[island]:
-            raise ValueError(f"island {island}: core {core} is a link core")
+    def reset_core(self, rank, timeout=10.0):
+        """Resets the core of flat rank `rank` and loads its kernels again while the
+        other cores run, as Run.reset_core does on its island (by its dispatcher from
+        its kept lists, else by the host): its result with `rank` and `island`.
+        KomorebiError names the rank if the core did not come back."""
+        island, local = self.graph.resolve(rank)
+        core = self.graph.rank_cores[island][local]
         try:
-            return {"island": island} | self.runs[island].reset_core(core, timeout)
+            done = self.runs[island].reset_core(core, timeout)
         except KomorebiError as error:
-            raise _named(error, island) from None
+            if error.args:
+                where = f"rank {rank} (island {island}, core {core})"
+                error.args = (f"{where}: {error.args[0]}", *error.args[1:])
+            error.island = island
+            raise
+        return {**done, "rank": rank, "island": island}
+
+    def _ranked(self, island, cores):
+        """Core dicts of island `island` (its own core numbers in `core`) with their
+        flat `rank` and `island`; a link core's rank is None, its `link` its index."""
+        mine, links = self.graph.rank_cores[island], self.graph.link_cores[island]
+        first = self.graph.first(island)
+        out = []
+        for core in cores:
+            named = {**core, "rank": None, "island": island}
+            if core["core"] in mine:
+                named["rank"] = first + mine.index(core["core"])
+            elif core["core"] in links:
+                named["link"] = links.index(core["core"])
+            out.append(named)
+        return out
+
+    def _error(self, error, island):
+        """`error` from island `island`'s run as this run's: named by its island, and a
+        CommandTimeout by its ticket and the flat ranks of its cores."""
+        if isinstance(error, CommandTimeout) and getattr(error, "island", None) is None:
+            cores = self._ranked(island, error.cores)
+            ranks = {core["core"]: core["rank"] for core in cores}
+            tickets = self._tickets(island, [error.handle])
+            CommandTimeout.__init__(
+                error,
+                tickets[0] if tickets else error.handle,
+                error.slot,
+                error.sequence,
+                error.group,
+                cores,
+                error.result,
+                error.given_up,
+                [ranks.get(core, core) for core in error.recovered],
+                ranks=True,
+            )
+        return _named(error, island)
 
     @property
     def recovery(self):
@@ -350,15 +448,23 @@ class IslandRun:
     @property
     def recoveries(self):
         """Every island's give-ups whose cores its dispatcher reset, island order:
-        {island, ticket, handle, cores, text}, the text starting "island N: "."""
-        return [
-            {"island": island, "ticket": next(iter(tickets), None)}
-            | entry
-            | {"text": f"island {island}: {entry['text']}"}
-            for island, run in enumerate(self.runs)
-            for entry in run.recoveries
-            for tickets in [self._tickets(island, [entry["handle"]])]
-        ]
+        {island, ticket, handle, cores (its own core numbers), ranks, text}, the text
+        that of the give-up, naming the flat ranks."""
+        out = []
+        for island, run in enumerate(self.runs):
+            for entry in run.recoveries:
+                tickets = self._tickets(island, [entry["handle"]])
+                given_up = run.given_up(entry["handle"])
+                text = f"island {island}: {entry['text']}"
+                if given_up is not None:
+                    text = str(self._error(given_up, island))
+                ranked = self._ranked(island, [{"core": c} for c in entry["cores"]])
+                out.append(
+                    {"island": island, "ticket": next(iter(tickets), None)}
+                    | entry
+                    | {"ranks": [core["rank"] for core in ranked], "text": text}
+                )
+        return out
 
     def _tickets(self, island, handles):
         """The tickets whose part on `island` has one of these handles."""
@@ -376,7 +482,7 @@ class IslandRun:
             try:
                 waited += run.drain(_left(deadline))
             except KomorebiError as error:
-                raise _named(error, island) from None
+                raise self._error(error, island) from None
         return waited
 
     def event(self, ticket):
@@ -401,7 +507,7 @@ class IslandRun:
                 run.stop(_left(deadline))
             except BaseException as error:  # noqa: BLE001 (raised after the others)
                 if failure is None:
-                    failure = _named(error, island)
+                    failure = self._error(error, island)
         if failure is not None:
             raise failure
         return self.result()
@@ -415,20 +521,31 @@ class IslandRun:
         return [run.result() for run in self.runs]
 
     def state(self):
-        """Every rank's state words, as Run.state gives them, in flat rank order."""
+        """Every rank's state words, as Run.state gives them, in flat rank order, each
+        with its `rank` and `island`."""
         states = [run.state() for run in self.runs]
         return [
-            states[island][core]
+            {
+                **states[island][core],
+                "rank": self.graph.first(island) + i,
+                "island": island,
+            }
             for island, cores in enumerate(self.graph.rank_cores)
-            for core in cores
+            for i, core in enumerate(cores)
         ]
+
+    def crossings(self):
+        """What crossed each link since the run's start, by link and direction, read
+        now from the link cores (a Crossings; none on one island). The difference of
+        two reads, `after - before`, is what crossed between them."""
+        return Crossings({}) if self._counts is None else self._counts()
 
 
 class IslandSession:
     """Cards as islands of one 1 x n fabric mesh, the X280 runtime once over it, a
     Session an island (one card: its own; `islands` 2 to 4: it split into islands of
-    whole rows). `links` 1 to 4 (two cards): links pages cross on, a link core (the last
-    cores) a pair; 0: every core a rank. A context manager."""
+    whole rows). Two cards use every link found between them (`links`: at most that
+    many), a link core (the last cores) a pair. A context manager."""
 
     LINKS_MAX = 4  # a byte each in a PAGES command's link word
     # How a core's ask for pages another island holds reaches the holder: "core" (its
@@ -440,7 +557,7 @@ class IslandSession:
     def __init__(
         self,
         cards,
-        links=0,
+        links=None,
         islands=None,
         pll_mhz=None,
         tree=None,
@@ -453,12 +570,15 @@ class IslandSession:
         self.cards = tuple(int(card) for card in cards)
         if not self.cards or len(set(self.cards)) != len(self.cards):
             raise ValueError(f"cards {cards}: one or more different cards")
-        if not 0 <= links <= self.LINKS_MAX or (links and len(self.cards) != 2):
+        if links and (not 1 <= links <= self.LINKS_MAX or len(self.cards) != 2):
             raise ValueError(
-                f"links={links}: 0, or 1 to {self.LINKS_MAX} between two islands"
+                f"links={links}: None (every link found), or 1 to {self.LINKS_MAX} "
+                "between two cards"
             )
-        # two islands always have link 0 (commands across ride it): links 0 is 1
-        self.links = links or (1 if len(self.cards) == 2 else 0)
+        # two cards: every link found, at most `links` (set at the open); link 0 is
+        # always there (commands across ride it)
+        self._links_asked = links or None
+        self.links = 1 if len(self.cards) == 2 else 0
         self.split = islands or 1  # the islands one card is split into
         if self.split > 1 and (len(self.cards) != 1 or links):
             raise ValueError(f"islands={islands}: one card, without links")
@@ -470,6 +590,8 @@ class IslandSession:
             "channel": channel,
             "slow_code": slow_code,
         }
+        if kernel_bytes is None and len(self.cards) == 2:
+            kernel_bytes = KERNEL_BYTES  # the link services' code in every kernel
         self.kernel_bytes = kernel_bytes
         self._worker_l1 = session_module.worker_l1_size(kernel_bytes)
         self.tree = tree
@@ -560,6 +682,11 @@ class IslandSession:
                 )
                 for island, chip in enumerate(self.chips)
             )
+            if len(self.chips) == 2:
+                found = int(self.mesh.link(0, 1, 0)[0])
+                most = min(found, self.LINKS_MAX)
+                self.links = min(self._links_asked or most, most)
+                self.log(f"links: {self.links} of {found} found")
             parts, taken, link_cores = [], (self.links + 1) // 2, []
             for session in self.sessions:
                 columns, rows = session.grid
@@ -762,7 +889,12 @@ class IslandSession:
         finally:
             for one, own in zip(programs, defines):
                 one.defines = own
-        self.run = IslandRun(self.graph, runs, linked=bool(self._regions))
+        self.run = IslandRun(
+            self.graph,
+            runs,
+            linked=bool(self._regions),
+            counts=self._crossings if self.links else None,
+        )
         if self.links:
             try:
                 self._hold_links()
@@ -807,6 +939,35 @@ class IslandSession:
         self.wait_together(waits, timeout)
         self.log(f"page links held, hello both ways: link cores {self.link_cores}")
 
+    def _crossings(self, timeout=10.0):
+        """Crossings read now: a COUNTS command to every link core of each island (each
+        CPU writes its row into the island's counts tensor), waited for together."""
+        h = abi.headers()
+        waits = []
+        for island in range(2):
+            words = [0] * 10
+            words[h["KM_PAGES_TO"]] = self._counts[island].address
+            words[h["KM_PAGES_PAGE"]] = CROSS_PAGE
+            words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_COUNTS"] << 24
+            handle = self.run.island(island)._queue_command(
+                h["KM_HANDLER_PAGES"], self.graph.link_group(island), words
+            )
+            waits.append((island, handle))
+        self.wait_together(waits, timeout)
+        fields = [h[f"KM_CROSS_{name.upper()}"] for name in Crossings.FIELDS[:-1]]
+        rows = {}
+        for island in range(2):
+            (raw,) = self.sessions[island].read(self._counts[island])
+            words = raw.view("<u4").astype(np.int64)
+            for link in range(self.links):
+                row = words[link]
+                low = h["KM_CROSS_BYTES"]
+                rows[(link, island, 1 - island)] = {
+                    **dict(zip(Crossings.FIELDS, (int(row[f]) for f in fields))),
+                    "bytes": int(row[low]) | int(row[low + 1]) << 32,
+                }
+        return Crossings(rows)
+
     def noc_of(self, island, core):
         """x | y << 8: the NoC place of local core `core` of `island` (core table)."""
         columns = self.sessions[island].grid[0]
@@ -836,7 +997,9 @@ class IslandSession:
         (default `core`, else the first link core). Returns (island, handle)."""
         h = abi.headers()
         if not self.links:
-            raise KomorebiError("no page links: open the session with links=1 to 4")
+            raise KomorebiError(
+                "no page links: pages cross in a session over two cards"
+            )
         holders = source.holders(first, pages)
         if len(holders) != 1:
             raise ValueError(f"pages {first} + {pages}: held by islands {holders}")
@@ -1080,6 +1243,7 @@ class IslandSession:
         bytes_ = h["KM_LINK_AREA_BYTES"]
         plans = []
         self._link_areas = []
+        self._counts = []
         relays = []
         for island, session in enumerate(self.sessions):
             far = 1 - island
@@ -1102,6 +1266,12 @@ class IslandSession:
             )
             self._link_areas.append(relay)
             relays.append(relay.address)
+            # what crossed: a page a link CPU, as COUNTS writes it (_crossings)
+            self._counts.append(
+                session.empty(
+                    (2 * len(self.link_cores[island]), CROSS_PAGE // 4), "uint32"
+                )
+            )
             core = self.link_cores[island][0]
             plans.append(LinkPlan(self.graph, island, far, core, area.address))
             place = self.noc_of(far, self.link_cores[far][0])

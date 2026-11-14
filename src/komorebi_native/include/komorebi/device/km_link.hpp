@@ -825,6 +825,9 @@ namespace km {
                     sent_ += count;
                     sending()[kLinkSent] = packets + 1;
                     sending()[kLinkRunCount] = sent_;
+                    cross_count(
+                        view_.link_area(), KM_CROSS_MESSAGES, count, count * entry_
+                    );
                     moved = true;
                 }
             }

@@ -37,9 +37,9 @@ class KernelSizeError(ProgramError):
         total = f"{sizes.total} B" if sizes.total else "more"
         super().__init__(
             f"{program}: its kernels take {total} of the {sizes.limit} B kernel buffer "
-            f"(largest: {thread}, {sizes.text[thread]} B of text). Give the session "
-            f"more (Session(kernel_bytes=...), up to {most}) or build a kernel for "
-            "size (Program(opt={'reader': 'Os', 'writer': 'Os'}))."
+            f"(largest: {thread}, {sizes.text[thread]} B of text); L1 allows up to "
+            f"{most} B. Give the session more (Session(kernel_bytes=...)) or build a "
+            "kernel for size (Program(opt={'reader': 'Os', 'writer': 'Os'}))."
         )
         self.sizes = sizes
 
@@ -160,11 +160,10 @@ class KernelFailed(KomorebiError):
 
 
 class CommandTimeout(KernelFailed):
-    """A command's group missed its deadline: the command, slot, sequence and group, and
-    the cores: after the stop, those that did not report and where each was waiting;
-    `given_up`: the dispatcher gave it up, the run goes on, the cores as the deadline's
-    inspect read them; `recovered`: those it reset and loaded as they did not leave.
-    """
+    """A command's group missed its deadline: command, slot, sequence, group, and cores:
+    after the stop, those that did not report and where each waited; `given_up`: the
+    dispatcher gave it up, the run goes on, the cores as its inspect read them;
+    `recovered`: those reset and loaded again. `ranks`: named by flat rank (islands)."""
 
     def __init__(
         self,
@@ -176,8 +175,10 @@ class CommandTimeout(KernelFailed):
         result=None,
         given_up=False,
         recovered=(),
+        ranks=False,
     ):
         named = "; ".join(describe_core(core) for core in cores) or "none named"
+        unit = "ranks" if ranks else "cores"
         first, count = group if group else (None, None)
         what = (
             "was given up, the run goes on; at the deadline"
@@ -185,13 +186,13 @@ class CommandTimeout(KernelFailed):
             else "timed out; not reported"
         )
         back = (
-            f"; recovered (reset and loaded again): cores {list(recovered)}"
+            f"; recovered (reset and loaded again): {unit} {list(recovered)}"
             if recovered
             else ""
         )
         super().__init__(
             f"command {handle} {what}: slot {slot}, sequence {sequence}, "
-            f"group first {first} count {count}; cores: {named}{back}",
+            f"group first {first} count {count}; {unit}: {named}{back}",
             result=result,
             cores=cores,
         )
@@ -204,10 +205,16 @@ class CommandTimeout(KernelFailed):
 
 
 def describe_core(core):
-    """One core of a not-reported list, or of an inspect, as text: its index, its
-    give-ups, the runtime waits of its reader and writer, and of compute's threads
-    while they run a command."""
-    parts = [f"core {core['core']}"]
+    """One core of a not-reported list, or of an inspect, as text: its index (its flat
+    rank and island in a run over islands), its give-ups, the runtime waits of its
+    reader and writer, and of compute's threads while they run a command."""
+    where = f"(island {core.get('island')}, core {core['core']})"
+    if "island" not in core:
+        parts = [f"core {core['core']}"]
+    elif core.get("rank") is None:
+        parts = [f"link core {core.get('link', core['core'])} {where}"]
+    else:
+        parts = [f"rank {core['rank']} {where}"]
     for kernel in ("reader", "writer"):
         gave = core.get(kernel)
         if gave:
