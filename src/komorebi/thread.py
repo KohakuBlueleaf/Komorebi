@@ -239,6 +239,14 @@ class Ports(NamedTuple):
     noc: int = 0
 
 
+class Ranks(NamedTuple):
+    """A dynamic program's X280 ranks as their thread's block names them: the
+    kmx_ranks_line words by field name (`at` set by ranks_at) and each core's tile."""
+
+    words: dict
+    tiles: list
+
+
 def port_plan(serve, cores, clusters):
     """{core: (cluster, x280_core)}: `serve` checked against the grid's `cores` and the
     program's thread `clusters`, or (None) cores 0 to cores - 1 dealt in grid order
@@ -272,6 +280,13 @@ def ports_at(ring):
     constants = layout()
     bytes = constants["KMX_LIM_BYTES"] + constants["KMX_ALL_BYTES"]
     return bytes + (ring_area_bytes(ring) if ring is not None and ring.remote else 0)
+
+
+def ranks_at(ring, ports):
+    """LIM offset of the X280 ranks' area in the thread's block: after the ports area,
+    or where it would be."""
+    after = layout()["KMX_PORTS_BYTES"] if ports is not None else 0
+    return ports_at(ring) + after
 
 
 def port_box(lim_base, ring, core):
@@ -340,10 +355,12 @@ def kernel_work_args(ends):
 
 def ring_area_bytes(ring):
     """Bytes of the thread's LIM after the kmx block that the ring uses: the counts, the
-    events, then the command lines the dispatcher hands the thread (KMD_WORK_IN)."""
+    events, the command lines the dispatcher hands the thread (KMD_WORK_IN), run line.
+    """
     headers = abi.headers()
     events = -(-ring.event_depth * 16 // 64) * 64
-    return headers["KMD_WORK_EVENTS"] + events + headers["KMD_WORK_IN_DEPTH"] * 64
+    lines = headers["KMD_WORK_IN_DEPTH"] * 64 + headers["KMD_WORK_RUN_BYTES"]
+    return headers["KMD_WORK_EVENTS"] + events + lines
 
 
 def args_block(
@@ -357,11 +374,12 @@ def args_block(
     ports=None,
     records=None,
     buffer=0,
+    ranks=None,
 ):
     """The thread's LIM block (KMX_LIM_BYTES, a remote ring's events zeroed): argument
-    block, check line at `base`, region table (`table`, else place()), the lines of
-    `ring` (RingPlacement; `records` from load_records and the copies' L1 `buffer` into
-    it), `peers` (Peers; parallel_all lines after), `ports` (Ports; area after)."""
+    block, check line, region table (`table`, else place()), the lines of `ring`
+    (RingPlacement, with `records` and `buffer`), `peers` (Peers), `ports` (Ports) and
+    `ranks` (Ranks), the areas of the last three after the block."""
     constants = layout()
     if table is None:
         table = [
@@ -419,7 +437,25 @@ def args_block(
         flags = constants["KMX_PORTS_NOC1"] if ports.noc == 1 else 0
         line = struct.pack("<4I48x", ports_at(ring), ports.control, ports.cores, flags)
         block[constants["KMX_LIM_PORTS"] : constants["KMX_LIM_PORTS"] + 64] = line
+    if ranks is not None:
+        fields = abi.struct_fields(
+            native.kmx_directory() / "kmx_layout.h", "kmx_ranks_line"
+        )
+        words = ranks.words | {"at": ranks_at(ring, ports)}
+        line = struct.pack("<16I", *(int(words.get(name, 0)) for name in fields))
+        block[constants["KMX_LIM_RANKS"] : constants["KMX_LIM_RANKS"] + 64] = line
     return bytes(block)
+
+
+def ranks_area(ranks):
+    """The X280 ranks' area (Ranks): each core's tile, then the credit lines and the
+    inbox places zeroed."""
+    constants = layout()
+    area = bytearray(constants["KMX_RANKS_BYTES"])
+    tiles = struct.pack(f"<{len(ranks.tiles)}I", *ranks.tiles)
+    at = constants["KMX_RANKS_TILES"]
+    area[at : at + len(tiles)] = tiles
+    return bytes(area)
 
 
 def ports_area(ports):
@@ -521,6 +557,7 @@ class ThreadRun:
         self.ring = None  # RingPlacement of the command ring, when the kernel has one
         self.peers = None  # Peers: the clusters running the same image
         self.ports = None  # Ports: the program's X280 ports, when it declares them
+        self.ranks = None  # Ranks: the dynamic program's X280 ranks on this cluster
         self.records = None  # load_records(): the programs kmx_load can load
         self.buffer = 0  # the cores' L1 for kmx_fetch and kmx_store (0: none)
 
@@ -529,6 +566,16 @@ class ThreadRun:
         if self.on_card and self.ports is not None:
             self.port.work_write(
                 self.thread.cluster, ports_at(self.ring), ports_area(self.ports)
+            )
+
+    def write_ranks(self):
+        """Writes the X280 ranks' area into the cluster's LIM (Ranks; before any
+        start)."""
+        if self.on_card and self.ranks is not None:
+            self.port.work_write(
+                self.thread.cluster,
+                ranks_at(self.ring, self.ports),
+                ranks_area(self.ranks),
             )
 
     def start(self):
@@ -548,6 +595,7 @@ class ThreadRun:
             ports=self.ports,
             records=self.records,
             buffer=self.buffer,
+            ranks=self.ranks,
         )
         self.port.work_start(self.thread.cluster, str(self.image), block)
         self.running = True

@@ -30,6 +30,12 @@ namespace km {
         uint32_t counters;  // K: the group's last K cores are counter tiles
         uint32_t body;  // DRAM address of the bodies: a page of body_bytes a position
         uint32_t body_bytes;  // the most bytes of a body; 0: the program has none
+        uint32_t x280;  // X280 ranks after the group's cores (0: none), KM_X280_RANK_CORE
+        uint32_t x280_queue;    // bank address of X280 rank 0's queue, cap messages each
+        uint32_t x280_bank;     // that bank's DRAM tile, x | y << 16
+        uint32_t x280_tile;     // the X280 ranks' cluster: its tile, x | y << 16
+        uint32_t x280_credits;  // LIM address there of core 0's credit line (c: + 16 c)
+        uint32_t inbox;         // L1 address of this core's inbox, kMessagesInbox messages
     };
 
     constexpr uint32_t kMessagesArgs = sizeof(MessagesArgs) / 4;
@@ -38,7 +44,8 @@ namespace km {
     constexpr uint32_t kMessagesCArgBodyShift = 16;
     constexpr uint32_t kMessagesCArgQuota = 1;  // compute: sends at the start of a run
     constexpr uint32_t kMessagesCArgCounters = 2;  // compute: K, as MessagesArgs::counters
-    constexpr uint32_t kMessagesCArgs = 3;
+    constexpr uint32_t kMessagesCArgX280 = 3;      // compute: X280 ranks, as MessagesArgs::x280
+    constexpr uint32_t kMessagesCArgs = 4;
 
     // Buffers: packets reader -> compute, outgoing messages compute -> writer, bins.
     constexpr uint32_t kCbMessagesIn = 26;
@@ -50,6 +57,11 @@ namespace km {
                                               // reads land 64-byte aligned
     constexpr uint32_t kMessagesMessageMax = 256;  // bytes
     constexpr uint32_t kMessagesBinsMax = 16;
+    // A core's inbox: the X280 ranks' messages to it, in L1; its reader credits them back
+    // every kMessagesInbox / kMessagesCredit messages.
+    constexpr uint32_t kMessagesInbox = 32;
+    constexpr uint32_t kMessagesCredit = 4;
+    static_assert((kMessagesInbox & (kMessagesInbox - 1)) == 0, "an inbox of 2^n");
     constexpr uint32_t kMessagesEnd = 0xFFFFFFFF;  // packet n / outgoing dest: the run ended
     constexpr uint32_t kMessagesWaiting = 1u << 31;  // idle word bit (compute, writer)
 
@@ -512,6 +524,46 @@ namespace km {
             invalidate_l1_cache();
             return ok;
         };
+        // The second source, this core's inbox in L1: the X280 ranks' messages, taken
+        // as the prefix of valid marks from its head and credited back to their cluster.
+        const bool inbox = messages_arguments.x280 != 0 && !counter;
+        volatile tt_l1_ptr uint32_t* inbox_word = messages + KM_MESSAGES_INBOX_HEAD / 4;
+        uint32_t inbox_head = *inbox_word, credited = inbox_head;
+        auto arrived = [&] {
+            uint32_t valid = 0;
+            while (
+                inbox && valid < kMessagesPacket &&
+                (
+                    l1(
+                        messages_arguments.inbox +
+                        ((inbox_head + valid) & (kMessagesInbox - 1)) *
+                            messages_arguments.message_bytes
+                    )[0] &
+                    kMessagesMarkMask
+                ) == messages_mark(inbox_head + valid, __builtin_ctz(kMessagesInbox))
+            ) {
+                valid++;
+            }
+            return valid;
+        };
+        // The inbox's head to this core's credit line in the X280 ranks' cluster.
+        auto credit = [&] {
+            inbox_word[1] = inbox_word[2] = inbox_word[3] = 0;
+            invalidate_l1_cache();  // a fence: the NoC reads the stored line
+            noc_async_write(
+                arguments.control + KM_CONTROL_MESSAGES + KM_MESSAGES_INBOX_HEAD,
+                get_noc_addr(
+                    messages_arguments.x280_tile & 0xFFFF,
+                    messages_arguments.x280_tile >> 16,
+                    messages_arguments.x280_credits + KM_X280_CREDIT_BYTES * arguments.me
+                ),
+                KM_X280_CREDIT_BYTES
+            );
+            credited = inbox_head;
+            return noc_timeout(reader, [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            });
+        };
         bool idle_shown = false, busy = true, armed = false;
         uint32_t key[3] = {0, 0, 0};
         uint64_t since = 0, waiting_from = 0;
@@ -536,7 +588,7 @@ namespace km {
             words[1] = compute_flags[1];
             words[2] = writer_flags[1];
             return (
-                tail_value == head && compute_flags[0] == run &&
+                tail_value == head && arrived() == 0 && compute_flags[0] == run &&
                 writer_flags[0] == run && (words[1] & kMessagesWaiting) &&
                 (words[2] & kMessagesWaiting) && words[1] == words[2] &&
                 cb_pages_reservable_at_back(kCbMessagesIn, in_pages)
@@ -587,7 +639,8 @@ namespace km {
                 where = kWhereMessagesOverflow;
                 break;
             }
-            if (tail_value == head) {
+            const uint32_t from_inbox = arrived();
+            if (tail_value == head && from_inbox == 0) {
                 if (end_command()) {
                     break;
                 }
@@ -658,6 +711,51 @@ namespace km {
             }
             cb_reserve_back(kCbMessagesIn, 1);
             const uint32_t page = get_write_ptr(kCbMessagesIn);
+            if (from_inbox != 0) {  // the inbox first: its room is the X280 ranks' wait
+                const uint32_t words = messages_arguments.message_bytes / 4;
+                for (uint32_t i = 0; i < from_inbox; i++) {
+                    volatile tt_l1_ptr uint32_t* message = l1(
+                        messages_arguments.inbox +
+                        ((inbox_head + i) & (kMessagesInbox - 1)) *
+                            messages_arguments.message_bytes
+                    );
+                    volatile tt_l1_ptr uint32_t* to = l1(
+                        page + kMessagesHeader + i * messages_arguments.message_bytes
+                    );
+                    for (uint32_t word = 0; word < words; word++) {
+                        to[word] = message[word];
+                    }
+                }
+#if defined(KM_MESSAGE_HANDLERS)
+                refused = (
+                    message_groups(
+                        arguments.control, page, from_inbox, messages_arguments.message_bytes
+                    )
+                );
+                if (refused != 0) {
+                    where = kWhereMessagesHandler;
+                    break;
+                }
+#endif
+                l1(page)[0] = from_inbox;
+                l1(page)[1] = inbox_head;
+                cb_push_back(kCbMessagesIn, 1);
+                inbox_head += from_inbox;
+                *inbox_word = inbox_head;
+                if (
+                    inbox_head - credited >= kMessagesInbox / kMessagesCredit && !credit()
+                ) {
+                    where = kWhereMessagesFlush;
+                    break;
+                }
+#if defined(KM_MESSAGE_HANDLERS)
+                if (!message_loads(reader, page, messages_arguments.message_bytes)) {
+                    where = kWhereMessagesLoad;
+                    break;
+                }
+#endif
+                continue;
+            }
             const uint32_t packet = (
                 messages_arguments.body_bytes != 0
                     ? kMessagesBodyPacket
@@ -868,6 +966,32 @@ namespace km {
             }
         }
 
+        // Position `position` of `destination`'s queue: its NoC address, and how many
+        // messages from it are contiguous there (a DRAM page; an X280 rank's whole queue).
+        auto queue_noc = [&](uint32_t destination, uint32_t position) -> uint64_t {
+            const uint32_t at = position & (messages_arguments.cap - 1);
+            if (destination >= KM_X280_RANK_CORE(0)) {
+                return get_noc_addr(
+                    messages_arguments.x280_bank & 0xFFFF,
+                    messages_arguments.x280_bank >> 16,
+                    messages_arguments.x280_queue +
+                        ((destination - KM_X280_RANK_CORE(0)) * messages_arguments.cap +
+                         at) *
+                            messages_arguments.message_bytes
+                );
+            }
+            return queue_addresses.get_noc_addr(
+                messages_page(destination, position, messages_arguments.cap),
+                at % kMessagesPageMessages * messages_arguments.message_bytes
+            );
+        };
+        auto contiguous = [&](uint32_t destination, uint32_t position) {
+            const uint32_t at = position & (messages_arguments.cap - 1);
+            return destination >= KM_X280_RANK_CORE(0)
+                       ? messages_arguments.cap - at
+                       : kMessagesPageMessages - at % kMessagesPageMessages;
+        };
+
         // Bin `bin` to its destination: reserve, mark, write, wait for the writes.
         auto flush = [&](uint32_t bin) {
             const uint32_t bin_messages = bin_fill[bin];
@@ -929,20 +1053,12 @@ namespace km {
             }
             invalidate_l1_cache();  // a fence: the NoC reads the stored marks
             for (uint32_t i = 0; i < bin_messages;) {
-                const uint32_t position = (
-                    (first_position + i) & (messages_arguments.cap - 1)
-                );
-                const uint32_t in_page = position % kMessagesPageMessages;
-                uint32_t chunk = kMessagesPageMessages - in_page;
+                const uint32_t position = first_position + i;
+                uint32_t chunk = contiguous(bin_destination[bin], position);
                 chunk = chunk < bin_messages - i ? chunk : bin_messages - i;
                 noc_async_write(
                     base + i * messages_arguments.message_bytes,
-                    queue_addresses.get_noc_addr(
-                        messages_page(
-                            bin_destination[bin], position, messages_arguments.cap
-                        ),
-                        in_page * messages_arguments.message_bytes
-                    ),
+                    queue_noc(bin_destination[bin], position),
                     chunk * messages_arguments.message_bytes
                 );
                 i += chunk;
@@ -955,17 +1071,7 @@ namespace km {
             }
             *message_mark_half(base) = marks(0);
             invalidate_l1_cache();
-            noc_async_write(
-                base,
-                queue_addresses.get_noc_addr(
-                    messages_page(
-                        bin_destination[bin], first_position, messages_arguments.cap
-                    ),
-                    (first_position & (messages_arguments.cap - 1)) %
-                        kMessagesPageMessages * messages_arguments.message_bytes
-                ),
-                16
-            );
+            noc_async_write(base, queue_noc(bin_destination[bin], first_position), 16);
             if (!noc_timeout(writer, [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             })) {
@@ -1168,6 +1274,7 @@ namespace km {
             run_(command.sequence),
             first_(km::first(command)),
             count_(messages_ranks(command, compute.arg(kMessagesCArgCounters))),
+            x280_(compute.arg(kMessagesCArgX280)),
             rank_(compute.me() - km::first(command)),
             message_bytes_(compute.arg(kMessagesCArgMessage) & 0xFFFF),
             body_bytes_(compute.arg(kMessagesCArgMessage) >> kMessagesCArgBodyShift),
@@ -1200,6 +1307,11 @@ namespace km {
         // The run's cores (the group without its counter tiles), and this core's.
         uint32_t count() const {
             return count_;
+        }
+
+        // The run's X280 ranks: ranks count() to count() + x280() - 1.
+        uint32_t x280() const {
+            return x280_;
         }
 
         uint32_t rank() const {
@@ -1344,7 +1456,10 @@ namespace km {
             PACK(({
                 if (!failed_) {
                     push_out(
-                        (first_ + destination) |
+                        (destination < count_
+                             ? first_ + destination
+                             : islands_at(control_).first() +
+                                   KM_X280_RANK_CORE(destination - count_)) |
                             (handler & 0xFF) << kMessagesOutHandlerShift,
                         message,
                         0
@@ -1478,9 +1593,10 @@ namespace km {
         }
 
     private:
-        // False, and the run given up, when rank `destination` is outside the group.
+        // False, and the run given up, when rank `destination` is no core of the group
+        // and no X280 rank.
         bool reaches(uint32_t destination) {
-            if (destination < count_) {
+            if (destination < count_ + x280_) {
                 return true;
             }
             failed_ = true;
@@ -1596,6 +1712,7 @@ namespace km {
         uint32_t run_;
         uint32_t first_;
         uint32_t count_;
+        uint32_t x280_;
         uint32_t rank_;
         uint32_t message_bytes_;
         uint32_t body_bytes_;

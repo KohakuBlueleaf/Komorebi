@@ -145,6 +145,15 @@ place to ask a question and to be wrong.
   12 (the x8 link) against 1 to 2 MB/s for `Session.read_chunks`. Now in the session,
   both ways: a 20 MiB frame read in 30 ms without a run and 7 ms inside one, against
   10.1 s.
+- [code_address](code_address/README.md): loops of assembly copied to chosen L1
+  addresses and timed. A taken branch or jump whose target is at or above 1 MB costs 4
+  cycles more (about 7.5 to a line that is not the next), a branch never taken and
+  straight-line code do not, and data loads and stores above 1 MB are not slower;
+  distance, alignment and the words after the loop do not matter.
+- [start_spread](start_spread/README.md): why some host pushes are slower with two or
+  more cores. Each core's own push time never changes; the launch starts later cores up
+  to 0.48 ms late (most often 0.476 ms), with or without a push, whatever the bytes, the
+  clock, telemetry reads, the other card or link errors.
 - [texture_lookup](texture_lookup/README.md): what a texture lookup costs on a core:
   pages of texels in L1 through a 4-way table (10 cycles a pixel with every page held,
   17 to 40 through the table, the same on all four CPUs), a 4 KB miss from DRAM in
@@ -162,6 +171,13 @@ place to ask a question and to be wrong.
   1.20 and 1.21 with both at once, every tile exact. A handler holds a fabric
   connection across commands and writes 64 bytes into the other island's L1, exact
   both ways, 1.6 to 1.7 µs a write command.
+- [link_rate](link_rate/README.md): what a link between the two cards carries. One
+  sending core a link, plain writes of 4352-byte payloads and one count for a batch,
+  carries 28 to 29 GB/s a link, 111 to 115 GB/s over four, the same each way at once,
+  wherever the senders sit; a fused write and increment with every packet drops a link
+  to 10.6 GB/s. Packets for a DRAM bank or a core's L1 with no kernel running there
+  land exact at the same rate. Two CPUs of one core each run a link. The sender's own
+  per-packet work, not the link, sets the rate.
 - [bank_fetch](bank_fetch/README.md): how fast an X280 thread gets data from a DRAM
   bank its cluster cannot read. `kmx_fetch` has Tensix cores copy it into the thread's
   region: 64 MiB from bank 0 to bank 6 in 3.79 ms on one core, 1.06 ms on four and

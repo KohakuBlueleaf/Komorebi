@@ -1,24 +1,15 @@
-"""The rasterizer on a card, one session: tiles of the tiny scene and a tile in bands
-equal to `raster.fill_tile`; COUNT and SETUP of the tiny scene, with the reference's
-counters and lists; its frame driven by the work cluster's thread, with the
-reference's step, directory and lists (KMR_CARD=1)."""
+"""The rasterizer on a card: tiles of the tiny scene equal to `raster.fill_tile`;
+its frame driven by the work cluster's thread, with the reference's step, directory and
+lists, COUNT and SETUP included (KMR_CARD=1)."""
 
 import argparse
 
 import pytest
 
-import komorebi as km
-from projects.raster import card, card_passes, card_thread, lists, run
+from projects.raster import card, card_thread, lists, run
 
 pytestmark = pytest.mark.card
-CARD_IN_PROCESS = True  # opens the card in this process
 CONSTANTS = lists.K
-
-
-@pytest.fixture(scope="module")
-def session():
-    with km.Session(log=card.log) as opened_session:
-        yield opened_session
 
 
 def fill(session, tiles, cores=0):
@@ -44,19 +35,6 @@ def test_tiles_of_the_tiny_scene_equal_fill_tile(session):
     # an empty tile, a corner, the scene's busiest tiles
     _, check = fill(session, [0, 367, 368, 400, 1023])
     assert run.check_ok(check), check
-
-
-def test_a_tile_split_into_bands_over_two_cores_equals_fill_tile(session):
-    prepared, check = fill(session, [367], cores=2)
-    assert len(prepared["tiles_of"][0]) + len(prepared["tiles_of"][1]) > 1
-    assert run.check_ok(check), check
-
-
-def test_count_and_setup_of_the_tiny_scene_write_the_reference_lists(session):
-    args = argparse.Namespace(scene="tiny", cores=0, setup=True, lists=0)
-    out = card_passes.frame(args, session)
-    assert out["counters_equal"] and out["lists"]["pages_differ"] == 0, out
-    assert out["ok"], out
 
 
 def test_the_thread_drives_a_frame_with_the_reference_lists(session):

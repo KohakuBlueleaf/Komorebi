@@ -650,6 +650,7 @@ class Run:
             self.group(handle),
             cores,
             given_up=True,
+            recovered=[core["core"] for core in cores if core.get("reset")],
         )
 
     def _unsequence(self, handle):

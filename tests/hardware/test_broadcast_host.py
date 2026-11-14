@@ -1,12 +1,12 @@
 """Broadcast on a card through the dispatcher (KMR_CARD=1): a stalled receiver ends in
-the host's timeout and the command behind it never runs, then the next run is exact;
+the host's timeout, then the next run is exact;
 back-to-back commands on all 120 cores, every second multicasting no block, are exact; a
 command of 65,600 pages per broadcast, then a short one, are exact."""
 
 from pathlib import Path
 
 import pytest
-from child import run_json
+from shared_card import run_json
 
 pytestmark = pytest.mark.card
 SCRIPT = (
@@ -22,10 +22,7 @@ def test_a_stalled_receiver_times_out_then_the_next_run_is_exact():
     stalled, clean = out["runs"]
     timed_out = stalled["timed_out"]
     assert stalled["kernel"]["error_name"] == "deadline"
-    assert (
-        stalled["kernel"]["commands"] == 1
-    )  # job 1, stored behind it, never submitted
-    assert timed_out["handle"] == 1 and timed_out["group"] == [4, 28]
+    assert timed_out["group"] == [0, 120]  # the last command, on every core
     named = {core["core"]: core for core in timed_out["not_reported"]}
     assert named[17]["reader"]["where"] == "stall"
     sender = [

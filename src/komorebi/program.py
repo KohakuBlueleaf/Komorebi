@@ -455,10 +455,10 @@ def message_word(position, queue_messages, handler, program=0):
 
 @dataclass(frozen=True)
 class Dynamic:
-    """Dynamic `handlers` (default: `handler` alone; `parts`: bodies as overlay parts)
-    with messages of `message_bytes` (and a body of up to `body_bytes`) in the group's
-    queues (`queue_messages` each), at most `max_live` alive; `bins` open bins a writer;
-    idle after `idle_cycles`; the last `counters` cores are counter tiles."""
+    """Dynamic `handlers` (default: `handler` alone; `parts`: bodies as overlay parts),
+    messages of `message_bytes` (a body of up to `body_bytes`) in the group's queues
+    (`queue_messages` each), `max_live` alive; `bins` a writer; idle: `idle_cycles`;
+    `counters` counter tiles last; `x280_ranks` X280 cores of `x280_cluster` ranks."""
 
     handler: int
     message_bytes: int = 64
@@ -470,6 +470,8 @@ class Dynamic:
     handlers: tuple = ()
     parts: bool = False
     body_bytes: int = 0
+    x280_ranks: int = 0
+    x280_cluster: int = 1
 
     def __post_init__(self):
         constants, _ = messages_header()
@@ -519,6 +521,13 @@ class Dynamic:
                 f"body_bytes {self.body_bytes}: 0 or a multiple of 64 to "
                 f"{constants['kMessagesBodyMax']}"
             )
+        most = abi.headers()["KM_X280_RANKS_MAX"]
+        if not 0 <= self.x280_ranks <= most:
+            raise ValueError(f"x280_ranks {self.x280_ranks}: not in 0..{most}")
+        if self.x280_ranks and self.x280_cluster not in (1, 2, 3):
+            raise ValueError(f"x280_cluster {self.x280_cluster}: work clusters 1 to 3")
+        if self.x280_ranks and self.body_bytes:
+            raise ValueError("X280 ranks take no bodies: body_bytes must be 0")
 
     def buffers(self):
         """Runtime buffers of a dynamic handler: packets, outgoing messages, bins."""
@@ -566,9 +575,14 @@ class Dynamic:
             raise ValueError(
                 f"{cores} cores leave no core beside {self.counters} counter tiles"
             )
-        if self.max_live < cores - self.counters:
+        if self.max_live < self.ranks(cores):
             raise ValueError(
-                f"max_live {self.max_live} < {cores - self.counters} cores: no quota"
+                f"max_live {self.max_live} < {self.ranks(cores)} ranks: no quota"
+            )
+        first_index = abi.headers()["KM_CORES_MAX"] - abi.headers()["KM_X280_RANKS_MAX"]
+        if self.x280_ranks and cores > first_index:
+            raise ValueError(
+                f"X280 ranks take core indices {first_index} on: {cores} cores"
             )
         if depth < 2:
             raise ValueError("a dynamic run needs ring depth 2 for its end command")
@@ -588,13 +602,28 @@ class Dynamic:
         handlers = ",".join(str(number) for number in self.handlers)
         return [("KM_MESSAGE_PARTS", "1"), ("KM_MESSAGE_HANDLERS", handlers)]
 
-    def quota(self, cores):
-        """Sends each core starts a run with, for a group of `cores` cores."""
-        return self.max_live // max(cores - self.counters, 1)
+    def ranks(self, cores):
+        """The ranks of a group of `cores` cores: its cores without the counter tiles,
+        then the X280 ranks."""
+        return cores - self.counters + self.x280_ranks
 
-    def args(self, queue, lines, body=0):
+    def quota(self, cores):
+        """Sends each rank starts a run with, for a group of `cores` cores."""
+        return self.max_live // max(self.ranks(cores), 1)
+
+    def queue_region_bytes(self):
+        """Bytes of the X280 ranks' queues in their cluster's bank (0: none)."""
+        return self.x280_ranks * self.queue_messages * self.message_bytes
+
+    def dispatcher_word(self):
+        """The dispatcher's messages_handler: word() and the X280 ranks above it."""
+        ranks = self.x280_cluster | self.x280_ranks << 4 if self.x280_ranks else 0
+        return self.word() | ranks << 32
+
+    def args(self, queue, lines, body=0, x280=None):
         """Reader and writer words of km::MessagesArgs (they precede the program's);
-        `body`: the DRAM address of the bodies."""
+        `body`: the DRAM address of the bodies; `x280`: the X280 ranks' words by field
+        name (x280_queue, ..., inbox)."""
         _, fields = messages_header()
         values = {
             "handler": self.word(),
@@ -607,14 +636,16 @@ class Dynamic:
             "counters": self.counters,
             "body": body,
             "body_bytes": self.body_bytes,
+            "x280": self.x280_ranks,
         }
-        return [int(values[field]) & abi.M32 for field in fields]
+        values |= x280 or {}
+        return [int(values.get(field, 0)) & abi.M32 for field in fields]
 
     def compute_args(self, cores):
-        """Compute's words (message and body bytes, quota, counters) before the
-        program's."""
+        """Compute's words (message and body bytes, quota, counters, X280 ranks) before
+        the program's."""
         constants, _ = messages_header()
         sizes = (
             self.message_bytes | self.body_bytes << constants["kMessagesCArgBodyShift"]
         )
-        return [sizes, self.quota(cores), self.counters]
+        return [sizes, self.quota(cores), self.counters, self.x280_ranks]

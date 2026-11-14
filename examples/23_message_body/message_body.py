@@ -23,6 +23,7 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi import abi, overlay  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
@@ -57,6 +58,11 @@ def parse():
         "--parts",
         action="store_true",
         help="the handler as an overlay part under the runtime's kernels",
+    )
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="with --parts: the thread brings chain by name (start is the RUN's)",
     )
     parser.add_argument("--repeat", type=int, default=1, help="runs of each case")
     parser.add_argument("--max-live", type=int, default=128)
@@ -140,19 +146,30 @@ def run_once(session, args, body_bytes, change):
         handlers={"chain": WORDS["kHandlerChain"]},
     ).dynamic("chain", **options(args, body_bytes))
     # --8<-- [end:program]
-    if args.parts:  # the same handler as a part: kernels/parts/chain.cpp
+    parts = HERE / "kernels" / "parts"
+    if args.parts and not args.send:  # the same handler as a part: parts/chain.cpp
         program = km.Program(
             "message_body_parts",
             kernels=None,
             args=lambda core: ([], [], [area.address]),
             handlers={"chain": WORDS["kHandlerChain"]},
-        ).dynamic(
-            "chain", parts=HERE / "kernels" / "parts", **options(args, body_bytes)
-        )
+        ).dynamic("chain", parts=parts, **options(args, body_bytes))
+    if args.send:  # start on every core; chain loaded where the thread arrives
+        program = km.Program(
+            "message_body_send",
+            kernels=None,
+            args=lambda core: ([], [], [area.address]),
+            handlers={
+                "start": WORDS["kHandlerStart"],
+                "chain": WORDS["kHandlerChain"],
+            },
+        ).dynamic("start", "chain", parts=parts, **options(args, body_bytes))
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     count = args.count or cores
     words = [args.threads, args.hops, body_bytes, int(change)]
-    handle = run.submit("chain", (0, count), words, exclusive=True)
+    handle = run.submit(
+        "start" if args.send else "chain", (0, count), words, exclusive=True
+    )
     timed_out = None
     try:
         run.drain(timeout=args.deadline + 5.0)
@@ -163,8 +180,41 @@ def run_once(session, args, body_bytes, change):
     event, sequence = run.event(handle), run.sequence(handle)
     rows = (area.read().astype(np.int64) & 0xFFFFFFFF)[:count]
     states = run.state()[:count]
-    return check(args, (count, body_bytes, change), rows, (event, sequence), states) | {
-        "timed_out": timed_out
+    result = check(args, (count, body_bytes, change), rows, (event, sequence), states)
+    if args.send:
+        result |= laps(args, run, rows, count, result)
+    return result | {"timed_out": timed_out}
+
+
+def laps(args, run, rows, count, result):
+    """--send: the handlers each core loaded (its tile's epoch steps three a handler:
+    start, then chain where the thread arrived), and rank 0's lap clock in cycles."""
+    log("reading the overlay areas")
+    blocks = run.backend.control.read().astype(np.int64) & 0xFFFFFFFF
+    epoch = (
+        run.backend.control_offset
+        + (abi.headers()["KM_CONTROL_BYTES"] + overlay.constants()["kOverlayEpoch"])
+        // 4
+    )
+    loads = (blocks[:count, epoch] & overlay.constants()["kOverlayEpochMask"]) // 3
+    ranks = result["ranks"]
+    stamps = rows[0, WORDS["kResStamps"] : WORDS["kResStamps"] + WORDS["kStamps"]]
+    lap_cycles = (np.diff(stamps[: WORDS["kStamps"] - 1]) & 0xFFFFFFFF).tolist()
+    last_lap = (args.hops - 1) // ranks
+    span = int((stamps[-1] - stamps[0]) & 0xFFFFFFFF)
+    mhz = span / (last_lap * ranks * result["hop_microseconds"])
+    first_lap, later = lap_cycles[0], float(np.median(lap_cycles[1:]))
+    hop = later / ranks
+    first_arrival = hop + (first_lap - later) / (ranks - 1)
+    return {
+        "loads_per_core": loads[:ranks].tolist(),
+        "counter_loads": loads[ranks:].tolist(),
+        "lap_cycles": lap_cycles,
+        "clock_mhz_from_run": round(mhz, 1),
+        "later_arrival_cycles": round(hop, 1),
+        "first_arrival_cycles": round(first_arrival, 1),
+        "later_arrival_us": round(hop / mhz, 3),
+        "first_arrival_us": round(first_arrival / mhz, 3),
     }
 
 
@@ -175,7 +225,7 @@ def check(args, case, rows, event, states):
     threads = min(args.threads, ranks)
     body_words = body_bytes // 4
     arrivals, last, state, body = replay.replay(
-        threads, args.hops, ranks, body_words, change
+        threads, args.hops, ranks, body_words, change, 0 if args.send else 1
     )
     ended = np.zeros(ranks, dtype=np.int64)
     ended[last] = np.arange(threads) + 1

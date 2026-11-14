@@ -4,35 +4,59 @@ The tests here need a Blackhole card and run only with `KMR_CARD=1`. Each file i
 small set of known behaviours on the card; most also need the tt-metal tree with its
 X280 runtime (see [install](../../docs/install.md)).
 
-## One file per pytest process
+## One process, one device open
 
-Run every file in a pytest process of its own:
+    KMR_CARD=1 python -m pytest tests/hardware                       # the folder
+    KMR_CARD=1 python -m pytest tests/hardware/test_thread.py        # one file
 
-    KMR_CARD=1 python -m pytest tests/hardware/test_host.py
-    python tests/hardware/run_cards.py                    # every file, one by one
-    python tests/hardware/run_cards.py test_thread.py --timeout 300
+The folder runs in one pytest process on one open device. Opening the card takes about
+13 s (the driver's own start-up), so every test shares the open:
 
-Why: a process that opens the card keeps the chip's lock until it exits, even after its
-session closed the device (the driver takes the lock at the first open and gives it
-back only at the process's end). A file that opens the card in the pytest process
-(`CARD_IN_PROCESS = True`: `test_host.py`, `test_engines.py`, `test_mapcollect_fed.py`)
-followed in the same process by a file that runs a card script as a child would leave
-that child waiting for the card. `Session.open` now rejects at once in that case
-(`km.CardBusy`, naming the holder), and `conftest.py` rejects such a mixed run before
-any card access; one file per process avoids both.
+- A test file that drives a session takes the `session` fixture (`conftest.py`): the
+  one open `km.Session`. A run a file leaves loaded is aborted when the file ends.
+- A test that runs an example or a case script calls `shared_card.run_json(script,
+  *args)` (or `run_text`). The script runs in this process as `python script args...`
+  would, with `km.Session` replaced for its duration by a session on the shared device:
+  its `with km.Session(...)` loads, runs and stops its own run and leaves the device
+  open. Its stdout is passed on to the log and returned.
+- A session whose kernel buffer differs (`km.Session(kernel_bytes=...)`) closes the
+  shared device and opens another; keep such tests together at the end of the folder.
 
-`run_cards.py` runs the files in turn, each with a timeout (SIGTERM, then SIGKILL
-30 s later). `--wrap` puts a command in front of each pytest, with `{name}` replaced by
-the file's stem, so that each file can run under its own watcher job. The timeout's
-SIGTERM and SIGKILL then reach the wrapper only: a wrapper must pass SIGTERM on to its
-command, or give the command itself a timeout. A watcher that starts its job in a session of its
-own and has no SIGTERM handler ends at the SIGTERM and leaves pytest running; its own
-time limit is then the only one that reaches the test.
+A card test never starts a child process that opens the card: the chip stays locked by
+the process that opened it until that process exits, so a child would wait for it.
+`Session.open` raises `km.CardBusy` naming the holder when another live process has the
+card.
 
-## Child scripts
+Kernels are compiled once by the runtime's cache; the first run in a new checkout or
+after a kernel change pays the build.
 
-A test that runs a script as a child uses `child.run_json(script, *args, timeout=)`:
-it returns the script's last JSON line and fails the test on a non-zero exit. A child
-still running at the timeout gets SIGTERM first, so that its session closes the X280
-runtime (a process killed with the runtime open leaves the card needing a reset), and
-SIGKILL only after 30 s.
+## Expected time
+
+Seconds of the tests themselves, after the one device open (about 13 s, once), with the
+kernel cache warm. Read from one run of each file before the folder was shared, minus
+the kernel builds that run paid; the cases removed or shortened since are taken off.
+They are estimates until the folder has run once as it is now.
+
+| File | s | | File | s |
+| --- | ---: | --- | --- | ---: |
+| `test_host.py` | 19 | | `test_movement.py` | 4 |
+| `test_engines.py` | 2 | | `test_overlays.py` | 5 |
+| `test_mapcollect_fed.py` | 11 | | `test_programs.py` | 10 |
+| `test_host_transfer.py` | 2 | | `test_swiglu_host.py` | 4 |
+| `test_raster_card.py` | 10 | | `test_thread_commands.py` | 6 |
+| `test_attention_host.py` | 3 | | `test_thread.py` | 10 |
+| `test_bank_fetch.py` | 3 | | `test_thread_lifecycle.py` | 11 |
+| `test_broadcast_host.py` | 10 | | `test_x280_ports.py` | 6 |
+| `test_dense_host.py` | 11 | | `test_thread_split.py` | 6 |
+| `test_forward_host.py` | 5 | | `test_uop_stream.py` | 3 |
+| `test_kernel_buffer.py` | 2 | | `test_raytrace_card.py` | 6 |
+| `test_give_up.py` | 7 | | | |
+| `test_graph_host.py` | 11 | | | |
+| `test_leader.py` | 8 | | | |
+| `test_leader_overlay.py` | 3 | | | |
+| `test_message_handlers.py` | 6 | | **the folder** | **about 184 + 13** |
+
+A file run alone also pays the open. `test_raytrace_card.py` asks for a smaller kernel
+buffer than the others and `test_kernel_buffer.py` asks for 128 KiB, so the device is
+closed and opened again for each, and again for the next file after it; the 128 KiB case
+with its run took 1.2 s, so a reopen is cheap after the first open.

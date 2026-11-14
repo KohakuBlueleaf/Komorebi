@@ -178,6 +178,17 @@ packet; compute meets it only for a handler the tile does not hold. On 120 cores
 handlers as parts move 10^6 messages as fast as the same handlers compiled into the
 compute kernel ([20_message_overlays](../../examples/20_message_overlays/README.md)).
 
+**An overlay sent by name.** A message carries its overlay's name, not its bytes (code
+is larger than a 4 KiB body, and it is in DRAM already): `messages.send(rank, message,
+handler)` or `forward(rank, message, handler)` names a handler whose part is an overlay,
+and the core the message lands on loads that part from DRAM into a slot, if it does not
+hold it, before it calls it. So a thread brings its code with it, and a core that holds
+the overlay pays nothing. In [23_message_body](../../examples/23_message_body/README.md)'s
+`--send` run (card 1, 12 ranks, 1200 hops, a 4 KiB body changed at each hop) only the
+`RUN` command's small handler is loaded everywhere; each rank loaded the chain handler
+(7,232 bytes of parts) once, at the thread's first arrival: a first arrival took 8.32 µs,
+a later one 6.51 µs.
+
 ## Costs
 
 On one Blackhole card, AICLK 1,350 MHz, medians over cores and commands
