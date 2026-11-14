@@ -77,13 +77,17 @@ static inline uint64_t km_copy_end(
     return side->address + last * page;
 }
 
-/* Whether a side names banks the card has, whole lines, and pages inside its bank. */
+/* Whether a side names banks the card has, whole lines (or a tensor's reference word,
+ * KM_TENSORS_MAX: an interleaved side), and pages inside its bank. */
 static inline int km_copy_side_fits(
     const km_copy_side_t* side, uint32_t page, uint32_t pages, uint32_t banks
 ) {
+    const int named = (
+        side->bank == KM_COPY_INTERLEAVED && side->address < KM_TENSORS_MAX
+    );
     return (
         (side->bank < banks || side->bank == KM_COPY_INTERLEAVED) &&
-        side->address % KM_COPY_ALIGN == 0u &&
+        (side->address % KM_COPY_ALIGN == 0u || named) &&
         km_copy_end(side, page, pages, banks) <= KM_COPY_BANK_END
     );
 }

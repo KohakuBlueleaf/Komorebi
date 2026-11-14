@@ -1418,12 +1418,22 @@ class IslandSession:
         return transfer.address, transfer.chunk
 
     def send_pages(
-        self, source, first, pages, to, core=None, counted=None, port=None, there=None
+        self,
+        source,
+        first,
+        pages,
+        to,
+        core=None,
+        counted=None,
+        port=None,
+        there=None,
+        shape=0,
     ):
         """Sends pages first .. of `source` by its holder's link cores into island
         `there` (default: its one neighbour): the same pages of tensor `to`, or (`core`:
         a local core) L1 from address `to`; each batch adds its pages to port `port` of
-        `counted` (default `core`, else the link core across). (island, handle)."""
+        `counted` (default `core`, else the link core across). `shape`: the push's
+        (KM_PAGES_SHAPE_*, a measurement's; 0 the loop's own). (island, handle)."""
         if not self.links:
             raise KomorebiError(
                 "no page links: pages cross in a session over two cards"
@@ -1460,6 +1470,7 @@ class IslandSession:
             core,
             counted,
             port,
+            shape,
         )
 
     def _send(
@@ -1474,6 +1485,7 @@ class IslandSession:
         core=None,
         counted=None,
         port=None,
+        shape=0,
     ):
         """Queues the send by `here`'s link cores toward `there` of pages first .. of
         the DRAM buffer at `start` (aligned `page` bytes): into the same pages of the
@@ -1498,7 +1510,9 @@ class IslandSession:
             self.noc_of(there, counted) | 1 << 16 | h["KM_PAGES_SEND"] << 24
         )
         words[h["KM_PAGES_LINKS"]] = int.from_bytes(bytes(links[:4]), "little")
-        words[h["KM_PAGES_BUFFER"]] = buffer
+        if not self._regions:  # no message service holds link 0: it carries pages too
+            shape |= h["KM_PAGES_SHAPE_LINK0"]
+        words[h["KM_PAGES_BUFFER"]] = buffer | shape << h["KM_PAGES_SHAPE_SHIFT"]
         handle = self.run.island(here)._queue_command(
             h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, cores), words
         )
@@ -1638,11 +1652,11 @@ class IslandSession:
             events.update({(island, h): e for h, e in zip(handles, got)})
         return [events[(island, handle)] for island, handle in waits]
 
-    def cross(self, source, target, first=0, pages=None, timeout=10.0):
+    def cross(self, source, target, first=0, pages=None, timeout=10.0, shape=0):
         """Writes pages first .. of `source` into the same pages of `target` where
         another island holds them (a copy target: every other island's copy), sent
-        over the links, waited for on the far island. Returns pages, bytes and
-        seconds, the submit to the last count."""
+        over the links, waited for on the far island; `shape` as send_pages. Returns
+        pages, bytes and seconds, the submit to the last count."""
         start, count = dram.page_range(first, pages, source.pages)
         sends = []
         for here, low, length, _ in source.holders(start, count):
@@ -1661,7 +1675,9 @@ class IslandSession:
             here = source.holders(low, length)[0][0]
             counted = self.pair(here, self._toward(here, there)[0])[2]
             far.append((there, self.wait_pages(there, counted, length)))
-            waits.append(self.send_pages(source, low, length, target, there=there))
+            waits.append(
+                self.send_pages(source, low, length, target, there=there, shape=shape)
+            )
         # the senders first: a failure names the side that failed
         self.wait_together(waits + far, timeout)
         seconds = time.perf_counter() - started
@@ -1765,8 +1781,10 @@ class IslandSession:
                 area, relay = self._link_areas[:2]
             else:
                 words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
-                # the page CPUs a put line waits for (links 1 on, or link 0 alone)
-                words[:, h["KM_PUT_CPUS"] // 4] = max(self.links - 1, 1)
+                # the page CPUs (the last links): every link when no message service
+                # holds link 0, else links 1 on (link 0 alone)
+                cpus = self.links if not self._regions else max(self.links - 1, 1)
+                words[:, h["KM_PUT_CPUS"] // 4] = cpus
                 area = session.tensor(words, "uint32", shard_grid=(columns, rows))
                 relay = session.tensor(  # zeros: no ask, no count, no done word
                     np.zeros((columns * rows, -(-h["KM_RELAY_BYTES"] // 64) * 16)),
